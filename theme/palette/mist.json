@@ -38,6 +38,7 @@
   },
   "radius": {
     "small": 9,
+    "frame": 10,
     "card": 18,
     "window": 22,
     "dock": 28
