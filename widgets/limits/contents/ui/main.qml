@@ -34,7 +34,8 @@ PlasmoidItem {
     toolTipSubText: Tide.Texts.limitsToolTip(limitsSource.available, limitsSource.panelValue("chatgpt"),
                                              limitsSource.panelValue("claude"))
         + (limitsSource.available ? "\n" + services.map(tooltipLine).join("\n") : "")
-    preferredRepresentation: compactRepresentation
+    // Pasek boczny Tide pokazuje widok szczegółowy na stałe (scripts/panels/sidebar.js).
+    preferredRepresentation: Plasmoid.configuration.sidebarMode ? fullRepresentation : compactRepresentation
 
     // Po otwarciu popupu od razu świeży stan, bez czekania na kolejny cykl.
     onExpandedChanged: if (expanded) limitsSource.updateStatus()
@@ -127,6 +128,7 @@ PlasmoidItem {
                     title: modelData.name
                     sessionLabel: modelData.sessionLabel
                     hideEmptySession: modelData.hideEmptySession
+                    dense: Plasmoid.configuration.sidebarMode
                 }
             }
 

@@ -21,7 +21,8 @@ PlasmoidItem {
     toolTipMainText: "System"
     toolTipSubText: Logic.toolTip(systemSource.problem === "missing", systemSource.cpuPercent,
                                   systemSource.memoryPercent, systemSource.fullerDisk) + "\n" + diskLine()
-    preferredRepresentation: compactRepresentation
+    // Pasek boczny Tide pokazuje widok szczegółowy na stałe (scripts/panels/sidebar.js).
+    preferredRepresentation: Plasmoid.configuration.sidebarMode ? fullRepresentation : compactRepresentation
 
     SystemSource {
         id: systemSource
@@ -54,6 +55,7 @@ PlasmoidItem {
 
     fullRepresentation: FullSystem {
         source: systemSource
+        dense: Plasmoid.configuration.sidebarMode
         Layout.preferredWidth: Kirigami.Units.gridUnit * 22
         Layout.minimumWidth: Kirigami.Units.gridUnit * 17
         Layout.preferredHeight: implicitHeight

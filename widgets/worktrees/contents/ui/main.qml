@@ -23,12 +23,10 @@ PlasmoidItem {
 
     function showWindow() {
         source.call("ShowWindow", [], function (ok) {
-            if (ok === true) {
-                root.windowProblem = ""
-                root.expanded = false
-            } else {
-                root.windowProblem = ok === false ? "not-installed" : "no-service"
-                root.expanded = true
+            root.windowProblem = ok === true ? "" : ok === false ? "not-installed" : "no-service"
+            // W pasku bocznym podsumowanie jest zawsze widoczne — nie ma czego zwijać ani rozwijać.
+            if (!Plasmoid.configuration.sidebarMode) {
+                root.expanded = ok !== true
             }
         })
     }
@@ -38,7 +36,8 @@ PlasmoidItem {
     toolTipMainText: "Worktrees"
     toolTipSubText: Tide.Texts.worktreesToolTip(source.available, cleanable.length, cleanableBytes,
                                                 active.length, linked.length)
-    preferredRepresentation: compactRepresentation
+    // Pasek boczny Tide pokazuje podsumowanie na stałe, z przyciskiem do okna (scripts/panels/sidebar.js).
+    preferredRepresentation: Plasmoid.configuration.sidebarMode ? fullRepresentation : compactRepresentation
 
     Tide.DaemonSource {
         id: source
@@ -112,6 +111,7 @@ PlasmoidItem {
         cleanBytes: root.cleanableBytes
         activeCount: root.active.length
         totalCount: root.linked.length
+        sidebar: Plasmoid.configuration.sidebarMode
         onRetryRequested: root.showWindow()
     }
 }

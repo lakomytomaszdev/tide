@@ -1,4 +1,5 @@
 // Jeden limit w karcie usługi: etykieta i procent, miernik, tekst resetu.
+// W gęstym układzie (pasek boczny) reset stoi obok miernika — jedna linia mniej.
 import QtQuick
 import QtQuick.Layouts
 import "tide" as Tide
@@ -9,8 +10,10 @@ ColumnLayout {
     property string label: ""
     property var value: null              // pozostały procent albo null
     property var reset: null              // np. „poniedziałek 20:00”
+    property bool dense: false
+    readonly property string resetText: reset ? "reset " + reset : "reset: brak danych"
 
-    spacing: 4
+    spacing: dense ? 2 : 4
 
     RowLayout {
         Layout.fillWidth: true
@@ -30,14 +33,28 @@ ColumnLayout {
             font.weight: row.value === null ? Font.Normal : Font.DemiBold
         }
     }
-    Tide.MeterBar {
+    RowLayout {
         Layout.fillWidth: true
-        value: row.value === null ? null : row.value / 100
-        color: Tide.Theme.levelColor(row.value)
+        spacing: 8
+        Tide.MeterBar {
+            Layout.fillWidth: true
+            value: row.value === null ? null : row.value / 100
+            color: Tide.Theme.levelColor(row.value)
+        }
+        Text {
+            visible: row.dense
+            Layout.maximumWidth: row.width * 0.6
+            text: row.reset ? row.reset : "—"
+            color: Tide.Tokens.textMuted
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: Tide.Tokens.fontSizePt - 1
+            elide: Text.ElideRight
+        }
     }
     Text {
         Layout.fillWidth: true
-        text: row.reset ? "reset " + row.reset : "reset: brak danych"
+        visible: !row.dense
+        text: row.resetText
         color: Tide.Tokens.textMuted
         font.family: Tide.Theme.uiFamily
         font.pointSize: Tide.Tokens.fontSizePt - 1

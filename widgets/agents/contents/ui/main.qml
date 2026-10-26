@@ -31,10 +31,14 @@ PlasmoidItem {
 
     Plasmoid.title: "Sesje agentów"
     Plasmoid.icon: "utilities-terminal"
-    Plasmoid.status: waitingCount > 0 ? PlasmaCore.Types.NeedsAttentionStatus : PlasmaCore.Types.ActiveStatus
+    // W pasku bocznym (sidebarMode) bez NeedsAttention: chowany panel nie chowa się, dopóki
+    // któryś aplet wymaga uwagi, więc czekający agent trzymałby pasek na ekranie.
+    Plasmoid.status: waitingCount > 0 && !Plasmoid.configuration.sidebarMode
+        ? PlasmaCore.Types.NeedsAttentionStatus : PlasmaCore.Types.ActiveStatus
     toolTipMainText: "Sesje agentów"
     toolTipSubText: Tide.Texts.agentsToolTip(source.available, workingCount, waitingCount)
-    preferredRepresentation: compactRepresentation
+    // Pasek boczny Tide pokazuje widok szczegółowy na stałe (scripts/panels/sidebar.js).
+    preferredRepresentation: Plasmoid.configuration.sidebarMode ? fullRepresentation : compactRepresentation
 
     Tide.DaemonSource {
         id: source
@@ -114,6 +118,8 @@ PlasmoidItem {
         Layout.preferredHeight: Kirigami.Units.gridUnit * 28
         Layout.minimumWidth: Kirigami.Units.gridUnit * 18
         Layout.minimumHeight: Kirigami.Units.gridUnit * 12
+        // W pasku bocznym lista zajmuje miejsce, które zostaje po pozostałych widżetach.
+        Layout.fillHeight: Plasmoid.configuration.sidebarMode
 
         ColumnLayout {
             anchors.fill: parent
