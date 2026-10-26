@@ -21,6 +21,9 @@ help:
 	@echo "make backup [NAME=nazwa]   kopia obecnego wyglądu Plasmy"
 	@echo "make backups               lista kopii"
 	@echo "make restore NAME=nazwa    przywrócenie wyglądu z kopii"
+	@echo "make sddm-preview          zrzuty ekranu logowania w build/sddm/preview (bez sudo)"
+	@echo "make install-sddm          ekran logowania SDDM (sudo, osobno od make install)"
+	@echo "make uninstall-sddm        przywrócenie poprzedniego ekranu logowania (sudo)"
 
 install: pre-install-backup $(INSTALL_TARGETS)
 	@echo "Zainstalowano Tide."
