@@ -4,6 +4,7 @@ set -euo pipefail
 
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
 config="${XDG_CONFIG_HOME:-$HOME/.config}"
+state="${XDG_STATE_HOME:-$HOME/.local/state}"
 unit="$config/systemd/user/tide-daemon.service"
 
 if [[ -e "$unit" ]]; then
@@ -11,6 +12,9 @@ if [[ -e "$unit" ]]; then
 fi
 rm -f "$unit" "$data/dbus-1/services/org.tide.Daemon.service" "$data/dbus-1/services/org.tide.Daemon.KRunner.service"
 rm -rf "$data/tide/daemon"
+# Zatrzymana usługa sama przywraca karty Konsole; plik zostaje tylko po twardym zabiciu procesu.
+rm -f "$state/tide/konsole-tabs.json"
+rmdir "$state/tide" 2>/dev/null || true
 rmdir "$data/tide" 2>/dev/null || true
 systemctl --user daemon-reload || true
 echo "Odinstalowano tide-daemon."

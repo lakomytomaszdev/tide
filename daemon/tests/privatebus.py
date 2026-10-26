@@ -84,7 +84,11 @@ class PrivateBus:
         raise AssertionError(f"{service} nie zarejestrowała się na magistrali")
 
     def spawn_daemon(self, *args, **kwargs) -> subprocess.Popen:
-        return self.spawn([sys.executable, os.path.join(DAEMON_DIR, "tide-daemon.py"), *args], SERVICE, **kwargs)
+        # Własny XDG_STATE_HOME: usługa testowa nie może czytać ani kasować stanu kart Konsole
+        # zapisanego przez usługę z pulpitu (tabmarks.default_store).
+        extra_env = {"XDG_STATE_HOME": os.path.join(self.tmp, "state"), **(kwargs.pop("extra_env", None) or {})}
+        return self.spawn([sys.executable, os.path.join(DAEMON_DIR, "tide-daemon.py"), *args], SERVICE,
+                          extra_env=extra_env, **kwargs)
 
     def call(self, service, path, iface, member, *args, timeout=10000):
         msg = QDBusMessage.createMethodCall(service, path, iface, member)
