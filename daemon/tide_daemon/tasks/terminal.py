@@ -64,6 +64,12 @@ class KonsoleWindows:
         values = reply.arguments()
         return values[0] if values else True
 
+    def knows_profile(self, service: str, window: str, profile: str) -> bool:
+        """Konsola wczytuje profile tylko przy starcie procesu, a newSession z nieznaną nazwą po cichu
+        bierze profil domyślny — wtedy karta otworzyłaby gołą powłokę bez agenta."""
+        profiles = self._call(service, window, "org.kde.konsole.Window", "profileList")
+        return isinstance(profiles, list) and profile in profiles
+
     def new_session(self, service: str, window: str, profile: str, directory: str) -> int | None:
         value = self._call(service, window, "org.kde.konsole.Window", "newSession", profile, directory)
         return int(value) if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
@@ -114,6 +120,10 @@ class TaskTerminal:
         try:
             target = pick_window(self.probe(), self.read_env)
             if target is None:
+                return False
+            knows = getattr(self.konsole, "knows_profile", None)
+            if knows is not None and not knows(target["service"], target["window"], PROFILE_NAME):
+                # Okno sprzed instalacji profilu — zadanie idzie do nowego okna (ono profil zna).
                 return False
             session = self.konsole.new_session(target["service"], target["window"], PROFILE_NAME, plan.cwd)
             if session is None:

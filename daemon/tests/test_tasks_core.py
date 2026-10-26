@@ -437,6 +437,21 @@ class TerminalTest(unittest.TestCase):
             self.assertEqual(terminal.open(self.plan()), "window")
             self.assertEqual(TaskTerminal(FakeLaunchers(terminal=""), None).open(self.plan()), "")
 
+    def test_window_started_before_the_profile_gets_a_new_window(self):
+        # Konsola wczytuje profile przy starcie; stare okno wzięłoby profil domyślny i otworzyło
+        # gołą powłokę. Wtedy zadanie idzie do nowego okna, a karta w ogóle nie powstaje.
+        with tempfile.TemporaryDirectory(prefix="tide-term-") as tmp:
+            env = {"XDG_DATA_HOME": tmp, "HOME": tmp}
+            os.makedirs(os.path.dirname(profile_path(env)))
+            open(profile_path(env), "w").close()
+            konsole, launchers = FakeKonsole(), FakeLaunchers()
+            konsole.knows_profile = lambda service, window, profile: False
+            terminal = TaskTerminal(launchers, konsole, probe=self.table, env=env, read_env=self.envs)
+            self.assertEqual(terminal.open(self.plan()), "window")
+            self.assertEqual(konsole.calls, [])
+            konsole.knows_profile = lambda service, window, profile: profile == PROFILE_NAME
+            self.assertEqual(terminal.open(self.plan()), "tab")
+
 
 class NewTagTest(unittest.TestCase):
     """Znacznik „nowe”: sesja z okna „Nowe zadanie” przez 10 min, bez sesji sprzed startu."""
