@@ -41,3 +41,8 @@ Ustalenia z sesji projektowej (grilling) z 26.10.2026. Każda decyzja ma krótki
 - Wariant tapety dzień/noc.
 - Własny dock „Tide Dock”, jeśli mieszanka ikon nie przejdzie.
 - Hooki Claude Code i Codex dla natychmiastowych stanów.
+
+## Rozstrzygnięte po sesji
+
+- **Logo (#3):** propozycja 5, „trzy fale” (teal, lawenda, brzoskwinia). Generowana z palety w trzech wersjach: pełna na kafelku do dużych rozmiarów, uproszczona bez kafelka na pasek (czytelna od 18 px) i jednokolorowa, przefarbowywana przez Plasmę.
+- **Firefox:** profil lakomytomaszdev zostaje przy własnym niebieskim motywie, bo kolory motywów rozróżniają profile.
