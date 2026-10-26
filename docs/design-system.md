@@ -108,7 +108,9 @@ Ikony aplikacji są okrągłe (baza: McMojave-circle-dark). Nakładka „Tide”
 
 Zasady dla nowych ikon: okrąg, bez tekstu w środku, kolory z palety albo własne kolory marki aplikacji.
 
-**Aplikacje z docka (#8)** mają stonowane glify zamiast kolorowych ikon: zaokrąglony kwadrat (promień 26% boku) w kolorze `pastel × 0,16 + 24` na kanał i znak aplikacji w samym pastelu, zajmujący 46% boku, wyśrodkowany. Pełne znaki-kwadraty (JetBrains) są mniejsze (40%), żeby nie przeważały nad znakami z kreski. Kolory: Konsola teal, Dolphin i WebStorm sky, Firefox peach, Rider i Discord lavender, PyCharm i ChatGPT mint, Spectacle rose, T3 Code butter, Ustawienia i Zed `text.secondary`, Steam, Docker i VS Code sky. Lista i źródła znaków: `theme/icons/glyphs.json`, podgląd: `make icons-preview`.
+**Aplikacje z docka (#8)** mają stonowane glify zamiast kolorowych ikon: zaokrąglony kwadrat (promień 26% boku) w kolorze `pastel × 0,16 + 24` na kanał i znak aplikacji w samym pastelu, zajmujący 46% boku, wyśrodkowany. Pełne znaki-kwadraty (JetBrains) są mniejsze (40%), żeby nie przeważały nad znakami z kreski. Kolory: Konsola teal, Dolphin i WebStorm sky, Firefox peach, Rider i Discord lavender, PyCharm i ChatGPT mint, Spectacle rose, T3 Code butter, Ustawienia i Zed `text.secondary`, Steam, Docker i VS Code sky.
+
+**Pozostałe programy (decyzja 39)** mają glify w tym samym stylu. Kolor to pastel najbliższy kolorowi marki (Telegram, Writer, Chromium sky; Brave, VLC, Blender, Toolbox peach; Android Studio, Calc, NVIDIA mint; FileZilla, Redis, dotMemory rose; DBeaver, GIMP, Gnote, Ark butter; mpv, Kvantum, KeepSecret lavender; Tide Worktrees, Kate, KDE Connect teal), a narzędzia systemowe bez własnego koloru (Edytor menu, Ośrodek informacji i pomocy, LibreOffice Math, OBS) dostają `text.secondary` jak Ustawienia. Ręczne znaki (`theme/icons/glyphs/`) rysujemy kreską 2 px w siatce 24×24 z zaokrąglonymi końcami, bez wypełnień i tekstu, jak znaki symboliczne Breeze. Lista i źródła znaków: `theme/icons/glyphs.json`, podgląd wszystkich glifów obok obecnych ikon: `make icons-preview`.
 
 ## Brief: tapeta
 

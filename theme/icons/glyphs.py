@@ -196,6 +196,27 @@ def resolve(config: dict, palette: dict, resolver, cache_home: Path, warn=None) 
     return out
 
 
+def standalone(name: str, config: dict, palette: dict) -> Glyph:
+    """Glif pod nazwą `name` narysowany bez motywu bazowego i bez sieci — tylko z ręcznego znaku (`file`).
+
+    Służy ikonom zapasowym własnych aplikacji Tide w hicolor (np. Tide Worktrees):
+    działają także bez nakładki, a nakładka i tak je zasłania tym samym glifem.
+    """
+    local_dir = Path(config.get("_dir", CONFIG.parent)) / "glyphs"
+    if not local_dir.is_dir():
+        local_dir = LOCAL_DIR
+    for glyph in entries(config, palette):
+        if name not in glyph.names:
+            continue
+        for source in glyph.sources:
+            if "file" in source:
+                path, origin = locate(source, None, None, local_dir)
+                glyph.path, glyph.origin, glyph.mask = path, origin, glyph_mask(path)
+                return glyph
+        raise GlyphError(f"{glyph.app} nie ma ręcznego znaku (file) — bez motywu nie da się go narysować")
+    raise GlyphError(f"brak glifu o nazwie {name} w glyphs.json")
+
+
 # ---------------------------------------------------------------- rysowanie
 
 def hex_rgb(value: str) -> tuple[int, int, int]:

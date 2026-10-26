@@ -109,6 +109,46 @@ class RepoConfigTest(unittest.TestCase):
                 "dev.zed.Zed", "docker-desktop", "t3code"}
         self.assertEqual(dock - names, set())
 
+    def test_installed_apps_are_covered(self):
+        """Nazwy ikon zainstalowanych programów (audyt z 26.10.2026), które mają dostać glif.
+
+        Pominięte świadomie: gry ze Steama (okładki, nazwy steam_icon_<id>), narzędzia
+        deweloperskie Plasmy i diagnostyka (ogólne nazwy ikon współdzielone z resztą pulpitu,
+        np. tools-report-bug w menu Pomoc każdej aplikacji KDE)."""
+        names = {n for app in self.config["apps"] for n in app["names"]}
+        installed = {
+            # Tide i komunikatory, przeglądarki
+            "tide-worktrees", "chromium", "brave-browser", "falkon", "org.telegram.desktop",
+            "com.discordapp.Discord",
+            # programowanie (nazwy z Toolboksa trafiają tu przez wzorce z fixes.json)
+            "android-studio", "jetbrains-toolbox", "dotmemory", "dbeaver-ce", "redisinsight", "code",
+            "kate", "kwrite", "org.filezillaproject.Filezilla", "scrcpy", "krdc", "FreeRDP",
+            # biuro, grafika, multimedia, gry
+            "libreoffice-startcenter", "libreoffice-writer", "libreoffice-calc", "libreoffice-math", "okular",
+            "org.kde.gwenview", "gimp", "blender", "org.gnome.Gnote", "kasumi", "vlc", "mpv",
+            "com.obsproject.Studio", "org.ryujinx.Ryujinx",
+            # narzędzia KDE i systemu
+            "plasmadiscover", "kdeconnect", "ark", "kfind", "accessories-calculator",
+            "preferences-desktop-emoticons", "multimedia-volume-control", "org.kde.keepsecret",
+            "kwalletmanager", "kvantum", "nvidia-settings", "kmenuedit", "hwinfo", "help-browser",
+        }
+        self.assertEqual(installed - names, set())
+
+    def test_skipped_generic_names_stay_with_the_theme(self):
+        """Ogólnych nazw używanych poza aplikacją nie zasłaniamy glifem."""
+        names = {n for app in self.config["apps"] for n in app["names"]}
+        self.assertFalse(names & {"tools-report-bug", "system-search", "preferences-desktop-theme", "plasma",
+                                  "vcs-branch"})
+
+    def test_own_apps_render_without_theme_or_network(self):
+        glyph = glyphs.standalone("tide-worktrees", self.config, PALETTE)
+        image = glyphs.render(glyph, 64)
+        self.assertEqual(image.size, (64, 64))
+        with self.assertRaises(glyphs.GlyphError):
+            glyphs.standalone("utilities-terminal", self.config, PALETTE)  # znak z motywu
+        with self.assertRaises(glyphs.GlyphError):
+            glyphs.standalone("nie-ma-takiej", self.config, PALETTE)
+
     def test_hand_made_glyphs_render(self):
         for path in sorted(glyphs.LOCAL_DIR.glob("*.svg")):
             mask = glyphs.glyph_mask(path)
@@ -172,6 +212,51 @@ class OverlayTest(unittest.TestCase):
         details = {a["desktop_id"]: a["detail"] for a in report["apps"]}
         self.assertEqual(details["firefox.desktop"], "muted")
         self.assertEqual(details[f"{RIDER_ID}.desktop"], "muted → rider")
+
+    def pin(self, *launchers):
+        appletsrc = self.fake.config / "plasma-org.kde.plasma.desktop-appletsrc"
+        appletsrc.parent.mkdir(parents=True, exist_ok=True)
+        appletsrc.write_text("[Containments][1][Applets][2]\nplugin=org.kde.plasma.icontasks\n\n"
+                             "[Containments][1][Applets][2][Configuration][General]\n"
+                             f"launchers={','.join(launchers)}\n")
+
+    def test_pinned_launchers_without_glyph_fail_the_audit(self):
+        self.pin("applications:firefox.desktop", "preferred://filemanager", "applications:falkon.desktop",
+                 f"file://{self.fake.system}/applications/{RIDER_ID}.desktop")
+        self.fake.glyphs([FIREFOX, RIDER])
+        self.fake.run("sync")
+        result = self.fake.run("audit", "--json", "--theme", "Tide", check=False)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["pinned"], ["firefox.desktop", "org.kde.dolphin.desktop", "falkon.desktop",
+                                            f"{RIDER_ID}.desktop"])
+        # Dolphina w udawanym systemie nie ma, Falkon ma kafelek, ale nie glif.
+        self.assertEqual(report["pinnedWithoutGlyph"], ["org.kde.dolphin.desktop", "falkon.desktop"])
+        self.assertEqual(report["uncovered"], 0)
+        self.assertEqual(result.returncode, 1)
+        human = self.fake.run("audit", "--theme", "Tide", check=False).stdout
+        self.assertIn("Przypięte w menedżerach zadań: 4, bez glifu: 2", human)
+        self.assertIn("  falkon.desktop", human)
+
+    def test_every_pinned_launcher_with_a_glyph_passes(self):
+        self.pin("applications:firefox.desktop", f"applications:{RIDER_ID}.desktop")
+        self.fake.glyphs([FIREFOX, RIDER])
+        self.fake.run("sync")
+        result = self.fake.run("audit", "--json", "--theme", "Tide", check=False)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["pinnedWithoutGlyph"], [])
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(report["muted"], 3)  # Firefox, Rider i „Moja” z Icon=firefox
+
+    def test_standalone_glyph_command_writes_png(self):
+        out = self.fake.home / "hicolor/tide-worktrees.png"
+        self.fake.env["TIDE_GLYPHS"] = str(glyphs.CONFIG)  # prawdziwa lista z ręcznymi znakami
+        self.fake.run("glyph", "tide-worktrees", "--size", "128", "--out", str(out))
+        image = Image.open(out)
+        self.assertEqual(image.size, (128, 128))
+        self.assertEqual(image.convert("RGBA").getpixel((2, 2))[3], 0)
+        failed = self.fake.run("glyph", "utilities-terminal", "--out", str(out.with_name("x.png")), check=False)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertFalse(out.with_name("x.png").exists())
 
     def test_summary_counts_glyphs(self):
         self.fake.glyphs([FIREFOX, RIDER])

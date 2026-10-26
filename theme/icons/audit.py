@@ -155,7 +155,48 @@ def audit(apps: list[DesktopFile], resolver: Resolver) -> list[Finding]:
     return [classify(app, resolver, manifest) for app in apps]
 
 
-def report(findings: list[Finding], theme: str) -> str:
+# ---------------------------------------------------------------- przypięte w docku
+
+APPLETSRC = "plasma-org.kde.plasma.desktop-appletsrc"
+# Skróty „preferowanej aplikacji” w menedżerze zadań → plik .desktop, który Plasma za nimi podstawia.
+PREFERRED = {"preferred://filemanager": "org.kde.dolphin.desktop"}
+
+
+def pinned_launchers(xdg: Xdg) -> list[str]:
+    """Identyfikatory .desktop przypięte w menedżerach zadań (dock, paski). Tylko odczyt appletsrc."""
+    path = xdg.config_home / APPLETSRC
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    out: list[str] = []
+    for line in text.splitlines():
+        key, _, value = line.strip().partition("=")
+        if key != "launchers":
+            continue
+        for launcher in filter(None, (v.strip() for v in value.split(","))):
+            if launcher.startswith("applications:"):
+                desktop_id = launcher.removeprefix("applications:")
+            elif launcher.startswith("file://") and launcher.endswith(".desktop"):
+                desktop_id = Path(launcher.removeprefix("file://")).name
+            else:
+                desktop_id = PREFERRED.get(launcher, launcher)
+            if desktop_id not in out:
+                out.append(desktop_id)
+    return out
+
+
+def muted(finding: Finding) -> bool:
+    """Czy aplikacja ma stonowany glif Tide (a nie tylko ikonę z motywu albo kafelek)."""
+    return finding.category == "overlay" and finding.detail.startswith("muted")
+
+
+def pinned_without_glyph(findings: list[Finding], pinned: list[str]) -> list[str]:
+    by_id = {f.desktop_id: f for f in findings}
+    return [d for d in pinned if d not in by_id or not muted(by_id[d])]
+
+
+def report(findings: list[Finding], theme: str, pinned: list[str] | None = None) -> str:
     lines = [f"Motyw ikon: {theme}", f"Widoczne aplikacje: {len(findings)}", ""]
     for category, (label, _) in CATEGORIES.items():
         group = [f for f in findings if f.category == category]
@@ -168,20 +209,34 @@ def report(findings: list[Finding], theme: str) -> str:
             extra = f" ({f.detail})" if f.detail else ""
             lines.append(f"  {f.name} [{f.desktop_id}] Icon={f.icon}{extra}")
         lines.append("")
+    plain = [f for f in findings if not muted(f)]
+    lines.append(f"Ze stonowanym glifem Tide: {len(findings) - len(plain)}, bez glifu: {len(plain)}")
+    for f in plain:
+        lines.append(f"  {f.name} [{f.desktop_id}] Icon={f.icon}")
+    lines.append("")
+    if pinned:
+        missing = pinned_without_glyph(findings, pinned)
+        lines.append(f"Przypięte w menedżerach zadań: {len(pinned)}, bez glifu: {len(missing)}")
+        lines += [f"  {d}" for d in missing]
+        lines.append("")
     uncovered = [f for f in findings if not f.covered]
     lines.append("Wszystkie aplikacje mają ikonę z motywu albo kafelek." if not uncovered else
                  f"Bez spójnej ikony: {len(uncovered)}. Uruchom `tide-icons sync`.")
     return "\n".join(lines).rstrip() + "\n"
 
 
-def to_json(findings: list[Finding], theme: str) -> str:
+def to_json(findings: list[Finding], theme: str, pinned: list[str] | None = None) -> str:
     counts = {c: sum(f.category == c for f in findings) for c in CATEGORIES}
+    pinned = pinned or []
     return json.dumps({
         "theme": theme,
         "total": len(findings),
         "counts": counts,
         "uncovered": sum(not f.covered for f in findings),
-        "apps": [{**asdict(f), "covered": f.covered} for f in findings],
+        "muted": sum(muted(f) for f in findings),
+        "pinned": pinned,
+        "pinnedWithoutGlyph": pinned_without_glyph(findings, pinned),
+        "apps": [{**asdict(f), "covered": f.covered, "muted": muted(f)} for f in findings],
     }, ensure_ascii=False, indent=2) + "\n"
 
 
