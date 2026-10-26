@@ -15,7 +15,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | Katalog | Zawartość |
 | --- | --- |
 | `theme/palette/` | Paleta wariantu w JSON, jedyne źródło kolorów, promieni, przezroczystości i rozmiarów pasków dla generatorów |
-| `theme/wallpaper/` | Tapeta: warianty `cat` (ilustracja kota w `assets/cat`, czuwający i śpiący) i `blobs` (plamy z palety), zawsze jedno płótno na oba monitory (`variant.py`, `generate.py`) |
+| `theme/wallpaper/` | Tapeta: warianty `cat` (ilustracja kota w `assets/cat`, czuwający i śpiący) i `blobs` (plamy z palety), zawsze jedno płótno na oba monitory (`variant.py`, `generate.py`); wtyczka tapety „Tide: kot” z drzemiącym kotem (`plugin.py`, `org.tide.cat/`) i wspólny z ekranem blokady `qml/CatBackdrop.qml` |
 | `theme/plasma/` | Styl Plasmy „Tide” (desktoptheme): generator ramek, podgląd (`preview.py`) i sprawdzenie prawdziwym KSvg (`ksvg_check.py`) |
 | `theme/lookandfeel/` | Motyw globalny „Tide” (`org.tide.desktop`): wskazania na składniki Tide, podglądy i ekran ładowania (`splash/`, zrzuty z prawdziwego ksplashqml w `splash_shot.sh`) |
 | `theme/lockscreen/` | Ekran blokady Tide jako pakiet powłoki Plasmy (QML na bazie ekranu Plasmy 6.8), zrzuty z prawdziwego greetera, sprawdzenie kopii powłoki w zagnieżdżonej sesji (`shell_copy_check.sh`) |
@@ -215,19 +215,33 @@ make restore NAME=przed-tide    # powrót do wyglądu sprzed projektu
 
 Rodzaj tapety wybiera `wallpaper.variant` w `theme/palette/mist.json`:
 
-- **`cat`** (Mist, domyślnie): ilustracja kota z `theme/wallpaper/assets/cat` (opis, pochodzenie i sumy: `README.md` w tym katalogu). Na pulpicie kot ma otwarte oczy; wersja z zamkniętymi oczami jest tylko na ekranie blokady w bezczynności. Dla układu, pod który przygotowano obrazy (HDMI-A-1 1920×1080 po lewej, DP-2 2560×1440 po prawej, wyrównane do góry), instalacja kopiuje gotowe pliki na monitor bez obróbki. Dla innego układu kadry są przeliczane z panoramy 4480×1440: jedna skala w obu osiach dla całego płótna wszystkich monitorów i przycięcie wokół kota, bez rozciągania pojedynczych ekranów. Powiększenie ponad 4480×1440 to zwykła interpolacja — szczegółów nie przybywa.
+- **`cat`** (Mist, domyślnie): ilustracja kota z `theme/wallpaper/assets/cat` (opis, pochodzenie i sumy: `README.md` w tym katalogu). Na pulpicie kot zamyka oczy, gdy nikt nie używa komputera (niżej: „Kot na pulpicie”), na ekranie blokady śpi, dopóki ktoś nie używa ekranu. Dla układu, pod który przygotowano obrazy (HDMI-A-1 1920×1080 po lewej, DP-2 2560×1440 po prawej, wyrównane do góry), instalacja kopiuje gotowe pliki na monitor bez obróbki. Dla innego układu kadry są przeliczane z panoramy 4480×1440: jedna skala w obu osiach dla całego płótna wszystkich monitorów i przycięcie wokół kota, bez rozciągania pojedynczych ekranów. Powiększenie ponad 4480×1440 to zwykła interpolacja — szczegółów nie przybywa.
 - **`blobs`**: tapeta rysowana z palety (sekcja `wallpaper`: kolory plam, ich położenie, krycie, ziarno i stałe ziarno losowania). Generator rysuje jedno płótno obejmujące wszystkie monitory w ich prawdziwym położeniu i tnie je na ekrany, więc plamy przechodzą płynnie z lewego monitora na prawy. Delikatne ziarno z ditheringiem zapobiega pasmom na gradientach.
 
 Ten sam wariant (i te same kadry) dostają ekran blokady, ekran ładowania i ekran logowania. Ponowne `make install` z wariantem `cat` zostawia kota — plamy powstają tylko po zmianie wariantu na `blobs`.
 
-`make install` czyta układ monitorów z `kscreen-doctor -j` (gdy nie odpowiada, bierze znany układ), zapisuje po jednym obrazie na monitor w `~/.local/share/wallpapers/Tide/<wariant>/<złącze>.png` i ustawia je na pulpitach. Każdy wariant ma osobny katalog, więc po zmianie wariantu zmienia się adres obrazu i Plasma na pewno wczyta nowy; obrazy poprzedniego wariantu (i starsze `wallpapers/Tide/<złącze>.png`) są usuwane, jeśli żaden pulpit już ich nie pokazuje. Po zmianie monitorów wystarczy ponowne `make install`. Potrzebne są numpy i Pillow, które w KDE neon ma systemowy `/usr/bin/python3`.
+`make install` czyta układ monitorów z `kscreen-doctor -j` (gdy nie odpowiada, bierze znany układ), zapisuje po jednym obrazie na monitor w `~/.local/share/wallpapers/Tide/<wariant>/<złącze>.png` i ustawia je na pulpitach (przy kocie przez wtyczkę `org.tide.cat`, która ma w sobie oba stany kota dla tego układu). Każdy wariant ma osobny katalog, więc po zmianie wariantu zmienia się adres obrazu i Plasma na pewno wczyta nowy; obrazy poprzedniego wariantu (i starsze `wallpapers/Tide/<złącze>.png`) są usuwane, jeśli żaden pulpit już ich nie pokazuje. Po zmianie monitorów wystarczy ponowne `make install`. Potrzebne są numpy i Pillow, które w KDE neon ma systemowy `/usr/bin/python3`.
 
 ```bash
-make wallpaper-preview          # same obrazy w build/wallpaper (przy kocie także build/wallpaper/sleep), bez zmiany pulpitu
+make wallpaper-preview          # same obrazy w build/wallpaper (przy kocie także build/wallpaper/sleep i wtyczka org.tide.cat), bez zmiany pulpitu
 make install FORCE=1            # nadpisuje także własną tapetę
 ```
 
-**Własna tapeta.** Wystarczy ustawić inny obraz w Plasmie (prawy klik na pulpicie, Konfiguruj pulpit i tapetę). Kolejne `make install` nie ruszy pulpitu, na którym jest tapeta inna niż Tide albo ta sprzed Tide, chyba że podasz `FORCE=1`. `make uninstall` przywraca tapety sprzed Tide tylko tam, gdzie nadal jest tapeta Tide, i usuwa katalog `wallpapers/Tide`.
+### Kot na pulpicie
+
+W wariancie `cat` oba pulpity dostają wtyczkę tapety **„Tide: kot”** (`org.tide.cat`, w `~/.local/share/plasma/wallpapers`). Każdy monitor pokazuje swój kadr wspólnego płótna, tak jak przy zwykłych obrazach, i ten sam kadr co ekran blokady. Gdy przez **30 s** (`wallpaper.dozeAfterS`) nie było klawiatury ani myszy, kot zamyka oczy przenikaniem w 1100 ms (`lockscreen.sleepMs`); pierwszy ruch albo klawisz otwiera je w 650 ms (`lockscreen.wakeMs`). Przy wyłączonych animacjach zmiana jest natychmiastowa. W spoczynku tapeta nic nie robi — dwa nieruchome obrazy, bez zegarów.
+
+Bezczynność liczy KWin (protokół Wayland `ext_idle_notifier_v1`, liczy się tylko wejście użytkownika, odtwarzany film nie trzyma kota obudzonego), a podaje ją `tide-daemon` przez D-Bus (obiekt `/Idle`, [opis](docs/tide-daemon.md#bezczynność)). Bez usługi kot po prostu czuwa. Próg czyta usługa z kopii palety, więc po jego zmianie trzeba `make install-daemon`.
+
+```bash
+make install-daemon install-wallpaper   # usługa (bezczynność) i wtyczka na obu pulpitach
+make desktop-cat-preview                # zagnieżdżona sesja: build/desktop-cat/awake.png, asleep.png, waking.png, awake-again.png
+qdbus6 org.tide.Daemon /Idle org.tide.Daemon.Idle.State   # {"available": true, "idle": false, "thresholdMs": 30000, …}
+```
+
+Zwykłe obrazy w `wallpapers/Tide/cat/` zostają: wskazuje je konfiguracja „Obraz” każdego pulpitu (wybór „Obraz” w ustawieniach pulpitu daje tego samego, czuwającego kota) i tapeta ekranu blokady, a kopia zapasowa sprzed wtyczki po `make restore` wraca do nich. Po ponownej instalacji z innym układem monitorów nowe kadry wtyczki pojawią się po `systemctl --user restart plasma-plasmashell` albo ponownym zalogowaniu.
+
+**Własna tapeta.** Wystarczy ustawić inny obraz w Plasmie (prawy klik na pulpicie, Konfiguruj pulpit i tapetę). Kolejne `make install` nie ruszy pulpitu, na którym jest tapeta inna niż Tide albo ta sprzed Tide, chyba że podasz `FORCE=1`. `make uninstall` przywraca tapety sprzed Tide tylko tam, gdzie nadal jest tapeta Tide (obrazy albo wtyczka kota), i usuwa katalog `wallpapers/Tide` oraz wtyczkę `org.tide.cat`.
 
 ## Ikony
 
