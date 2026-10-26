@@ -2,8 +2,10 @@
 
 Użycie:
   tide-icons audit [--json] [--theme NAZWA] [--icons-dir KATALOG]...
-      Skąd przychodzą ikony widocznych aplikacji. Kod wyjścia 1, gdy któraś
-      nie ma ikony z motywu ani kafelka.
+      Skąd przychodzą ikony widocznych aplikacji i które nie mają jeszcze
+      stonowanego glifu. Kod wyjścia 1, gdy któraś nie ma ikony z motywu ani
+      kafelka albo gdy aplikacja przypięta w docku (launchers= w appletsrc,
+      tylko odczyt) nie ma glifu.
   tide-icons sync [--base NAZWA]
       Odświeża nakładkę w $XDG_DATA_HOME/icons/Tide i lokalne kopie .desktop
       dla aplikacji ze ścieżką do ikony.
@@ -14,6 +16,9 @@ Użycie:
   tide-icons pin-glyphs
       Pobiera logo Simple Icons dopisane do glyphs.json bez sumy SHA-256
       i zapisuje ich sumy (sprawdź pobrane pliki przed commitem).
+  tide-icons glyph NAZWA --out PLIK.png [--size 256]
+      Rysuje glif z ręcznego znaku (bez motywu i sieci), np. ikonę zapasową
+      Tide Worktrees w hicolor.
 """
 from __future__ import annotations
 
@@ -30,8 +35,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from theme.icons import desktop, glyphs  # noqa: E402
-from theme.icons.audit import (MANIFEST, OVERLAY, Resolver, audit, load_fixes, plan,  # noqa: E402
-                               report, to_json)
+from theme.icons.audit import (MANIFEST, OVERLAY, Resolver, audit, load_fixes,  # noqa: E402
+                               pinned_launchers, pinned_without_glyph, plan, report, to_json)
 from theme.icons.catalog import HICOLOR, Xdg, visible_apps  # noqa: E402
 from theme.icons.overlay import build  # noqa: E402
 
@@ -106,8 +111,10 @@ def cmd_audit(args) -> int:
     theme = args.theme or active_theme()
     resolver = Resolver(xdg, theme, load_fixes(), tuple(Path(d) for d in args.icons_dir))
     findings = audit(visible_apps(xdg), resolver)
-    sys.stdout.write(to_json(findings, theme) if args.json else report(findings, theme))
-    return 0 if all(f.covered for f in findings) else 1
+    pinned = pinned_launchers(xdg)
+    sys.stdout.write(to_json(findings, theme, pinned) if args.json else report(findings, theme, pinned))
+    # Aplikacja przypięta w docku bez stonowanego glifu to też braki — dock ma wyglądać jednolicie.
+    return 0 if all(f.covered for f in findings) and not pinned_without_glyph(findings, pinned) else 1
 
 
 def cmd_sync(args) -> int:
@@ -164,6 +171,21 @@ def cmd_pin_glyphs(args) -> int:
     return 0
 
 
+def cmd_glyph(args) -> int:
+    """Rysuje jeden glif z ręcznego znaku do pliku PNG (ikony zapasowe w hicolor)."""
+    palette = json.loads(PALETTE.read_text())
+    try:
+        glyph = glyphs.standalone(args.name, glyphs.load_config(), palette)
+    except glyphs.GlyphError as error:
+        raise SystemExit(f"tide-icons: {error}") from error
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(f".{out.name}.part")
+    tmp.write_bytes(glyphs.png(glyph, args.size))
+    tmp.replace(out)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tide-icons", description="Audyt i utrzymanie ikon Tide.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -184,6 +206,11 @@ def main(argv: list[str] | None = None) -> int:
     p_themes.set_defaults(func=cmd_themes)
     p_pin = sub.add_parser("pin-glyphs", help="zapisuje sumy SHA-256 nowych logo Simple Icons")
     p_pin.set_defaults(func=cmd_pin_glyphs)
+    p_glyph = sub.add_parser("glyph", help="rysuje glif z ręcznego znaku do PNG (bez motywu i sieci)")
+    p_glyph.add_argument("name", help="nazwa ikony z glyphs.json, np. tide-worktrees")
+    p_glyph.add_argument("--size", type=int, default=256)
+    p_glyph.add_argument("--out", required=True, help="plik PNG")
+    p_glyph.set_defaults(func=cmd_glyph)
     args = parser.parse_args(argv)
     return args.func(args)
 

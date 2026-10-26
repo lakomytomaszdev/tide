@@ -247,15 +247,18 @@ Zwykłe obrazy w `wallpapers/Tide/cat/` zostają: wskazuje je konfiguracja „Ob
 
 Nakładka „Tide” dziedziczy po motywie bazowym (domyślnie McMojave-circle-dark, inny przez `make install ICON_BASE=...`) i dokłada tylko to, czego bazie brakuje: aliasy dla ikon Toolboksa JetBrains i błędnych mapowań (`code`), okrągłe kafelki z oryginalnych ikon aplikacji spoza motywu, glify w kolorach palety dla aplikacji bez ikony i foldery przefarbowane na teal. Aplikacje, które w `Icon=` podają ścieżkę do pliku (snapy, Zed, Docker), dostają lokalną kopię `.desktop` w `~/.local/share/applications` ze znacznikiem `X-Tide-Icons=override`. Ręczne poprawki leżą w `theme/icons/fixes.json`.
 
-Aplikacje z docka i te najczęściej używane mają w nakładce **stonowane glify**: zaokrąglony kwadrat w ciemnym odcieniu pastelu z palety i jednokolorowy znak aplikacji w tym pastelu (decyzja 29). Ta sama ikona jest w docku, w menu i w KRunnerze. Lista to `theme/icons/glyphs.json`: nazwy ikon aplikacji, źródło znaku i kolor (pastel albo token `text.*`), opcjonalnie `scale`. Znak pochodzi z ikony symbolicznej motywu bazowego (albo Breeze), z [Simple Icons](https://simpleicons.org) (CC0, wersja przypięta w pliku, każde logo ma zapisaną sumę SHA-256; pobierane przy budowaniu do `~/.cache/tide/simple-icons/`) albo z ręcznie narysowanego znaku w `theme/icons/glyphs/`. Nazwy z Toolboksa JetBrains (`jetbrains-rider-<uuid>`) trafiają do glifu przez wzorce z `fixes.json`. Gdy źródła nie ma albo suma się nie zgadza, aplikacja zostaje przy swojej ikonie, a `tide-icons` wypisuje ostrzeżenie. Nowe logo Simple Icons: dopisz aplikację do `glyphs.json`, uruchom `tide-icons pin-glyphs` (dopisze sumę), obejrzyj `make icons-preview` i zatwierdź.
+Aplikacje z docka i wszystkie zainstalowane programy i narzędzia mają w nakładce **stonowane glify**: zaokrąglony kwadrat w ciemnym odcieniu pastelu z palety i jednokolorowy znak aplikacji w tym pastelu (decyzje 31 i 39). Bez glifu zostają tylko gry ze Steama i narzędzia deweloperskie Plasmy z ogólnymi nazwami ikon (decyzja 40). Ta sama ikona jest w docku, w menu i w KRunnerze. Lista to `theme/icons/glyphs.json`: nazwy ikon aplikacji, źródło znaku i kolor (pastel albo token `text.*`), opcjonalnie `scale`. Znak pochodzi z ikony symbolicznej motywu bazowego (albo Breeze), z [Simple Icons](https://simpleicons.org) (CC0, wersja przypięta w pliku, każde logo ma zapisaną sumę SHA-256; pobierane przy budowaniu do `~/.cache/tide/simple-icons/`) albo z ręcznie narysowanego znaku w `theme/icons/glyphs/`. Nazwy z Toolboksa JetBrains (`jetbrains-rider-<uuid>`) trafiają do glifu przez wzorce z `fixes.json`. Gdy źródła nie ma albo suma się nie zgadza, aplikacja zostaje przy swojej ikonie, a `tide-icons` wypisuje ostrzeżenie. Nowe logo Simple Icons: dopisz aplikację do `glyphs.json`, uruchom `tide-icons pin-glyphs` (dopisze sumę), obejrzyj `make icons-preview` i zatwierdź.
 
 ```bash
-tide-icons audit        # skąd ikony widocznych aplikacji; kod 1, gdy któraś nie pasuje
+tide-icons audit        # skąd ikony widocznych aplikacji, które nie mają glifu, czy przypięte w docku go mają;
+                        # kod 1, gdy któraś nie pasuje albo przypięta nie ma glifu
 tide-icons audit --json
+tide-icons audit --theme Tide --icons-dir build/icons   # to samo dla nakładki z make icons-build, przed instalacją
+tide-icons glyph tide-worktrees --out x.png             # glif z ręcznego znaku do PNG (bez motywu i sieci)
 tide-icons sync         # po instalacji nowej aplikacji: odświeża nakładkę i kopie .desktop
 tide-icons themes       # porównanie kandydatów na motyw bazowy
 make icons-build        # sama nakładka do podglądu w build/icons/Tide
-make icons-preview      # arkusz glifów obok obecnych ikon: build/icons/glyphs-preview.png
+make icons-preview      # arkusz wszystkich glifów obok obecnych ikon: build/icons/glyphs-preview.png
 tide-icons pin-glyphs   # sumy SHA-256 nowych logo Simple Icons do glyphs.json
 ```
 

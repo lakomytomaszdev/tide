@@ -199,7 +199,8 @@ def main(argv=None) -> int:
     app.setApplicationName("Tide Worktrees")
     app.setOrganizationName("Tide")
     app.setDesktopFileName(APP_ID)
-    app.setWindowIcon(QIcon.fromTheme("vcs-branch"))
+    # Ikona jak w pliku .desktop (glif z nakładki Tide albo zapasowy w hicolor), w ostateczności z motywu.
+    app.setWindowIcon(QIcon.fromTheme("tide-worktrees", QIcon.fromTheme("vcs-branch")))
 
     if args.data:
         with open(args.data, encoding="utf-8") as fh:

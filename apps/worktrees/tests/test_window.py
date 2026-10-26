@@ -363,7 +363,10 @@ class InstallTest(unittest.TestCase):
         self.assertIn("Name=Tide Worktrees\n", text)
         self.assertIn(f"Exec=/usr/bin/python3 -s {dest}/tide-worktrees.py\n", text)
         self.assertIn("StartupWMClass=tide-worktrees\n", text)
-        self.assertIn("Icon=vcs-branch\n", text)
+        self.assertIn("Icon=tide-worktrees\n", text)
+        icon = os.path.join(self.data, "icons/hicolor/256x256/apps/tide-worktrees.png")
+        with open(icon, "rb") as fh:
+            self.assertEqual(fh.read(8), b"\x89PNG\r\n\x1a\n")
         if shutil.which("desktop-file-validate"):
             check = subprocess.run(["desktop-file-validate", desktop], capture_output=True, text=True)
             self.assertEqual(check.returncode, 0, check.stdout + check.stderr)

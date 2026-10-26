@@ -1,5 +1,5 @@
 {
-  "description": "Stonowane glify aplikacji z docka (#8). Nazwy ikon → znak i pastel z palety. Kafelek: zaokrąglony kwadrat w ciemnym odcieniu pastelu, znak w pastelu. Źródła znaku po kolei: theme (ikona symboliczna motywu bazowego albo Breeze), simpleIcons (logo CC0 z Simple Icons, suma SHA-256 poniżej; tide-icons pin-glyphs dopisuje brakujące), file (ręczny znak z theme/icons/glyphs/). Opcjonalne `scale` (ułamek kafelka) zmienia wielkość znaku jednej aplikacji. Nazwy w stylu Toolboksa (jetbrains-rider-<uuid>) trafiają tu przez wzorce z fixes.json.",
+  "description": "Stonowane glify aplikacji z docka (#8) i pozostałych zainstalowanych programów (decyzja 39). Nazwy ikon → znak i pastel z palety. Kafelek: zaokrąglony kwadrat w ciemnym odcieniu pastelu, znak w pastelu. Źródła znaku po kolei: theme (ikona symboliczna motywu bazowego albo Breeze), simpleIcons (logo CC0 z Simple Icons, suma SHA-256 poniżej; tide-icons pin-glyphs dopisuje brakujące), file (ręczny znak z theme/icons/glyphs/). Opcjonalne `scale` (ułamek kafelka) zmienia wielkość znaku jednej aplikacji. Nazwy w stylu Toolboksa (jetbrains-rider-<uuid>) trafiają tu przez wzorce z fixes.json.",
   "tile": {
     "radius": 0.26,
     "glyph": 0.46,
@@ -11,13 +11,30 @@
     "url": "https://cdn.jsdelivr.net/npm/simple-icons@{version}/icons/{slug}.svg",
     "license": "CC0-1.0 (https://github.com/simple-icons/simple-icons). Znaki towarowe należą do ich właścicieli.",
     "sha256": {
+      "androidstudio": "465dda2b9f94726978d67e98922ecce2425e0ea3d839949c6657c62f3265024d",
+      "blender": "ec86e2c9cf9fc25f5c8d3bf2e8d201c0dce6683137f37a1e61f992da6566bff5",
+      "brave": "e32e023dbc07334bb967b1eafc8bca1ce184512b259f31edc71fa7d4a918e462",
+      "dbeaver": "50c0d850525c8bb738e76579721a6fde7cf6b76943c63c240270282094e042b8",
       "discord": "1d364b72c9eaf1fe37d17ca88cd8fb541308dc0f3b09e2ab3b824f380b3493d5",
       "docker": "65571291c261ef869c31540a38f3ca0f0ee3bb73f179c172211c8860f19a6359",
+      "filezilla": "d2ad6a760d56e018b342be7cf44f57ee33122752da862f8c235cb432c7a89e67",
       "firefoxbrowser": "5bb2f58d6b27b191af5d7793016b06de8ae571120f4f1d530c235b350ae83371",
+      "gimp": "e413e8789def4a8ad21d1492d6f715e774f0f7c3c79cd4bd5610c1432c5fe167",
+      "jetbrains": "7f6274cbe3e20314e756621812cf6129ef6c9d02d3b1218fc41bc3c606b5bda6",
+      "libreoffice": "865890340e369cafc9369a8e6ec70fbfac10a9d5862af04dc10dc764509eb855",
+      "libreofficecalc": "66f67cb23565d7b381ea85706b3ad28209d6976c3751b4beb3f19f1a76e4f9b3",
+      "libreofficemath": "216327d001382a9fbee8983588aa1e6b753648ea9342a18f027529ba3b6e9045",
+      "libreofficewriter": "c0b0dc48ca2d8ebc2a4c9f9e087bd59f4dff671aa0fecce442880c58438379c8",
+      "mpv": "9e0e99ee8cdbb5289a981a0195200c4ecdcd53d068462a02a635761c56e176c2",
+      "nvidia": "b0e4cfc12712c840d4d630c9a717200fbd09aeeadbd3faeac13bda2e2ed050b0",
+      "obsstudio": "1b1c6d637b53ce50d6c0bb7a9b402ea687a478b2079b790fd9672e3931359dcc",
       "openai": "2b4a04ddc2395b20d168694d3850ce2050a702c4a0cdeb4d8b31b9a970481a8c",
       "pycharm": "e51a005f805f46be5330ae1c066d44cbfd289db915650228e516048a74d956d2",
+      "redis": "428b86deb14c8bdacdcdf75987fe454f367bcd078a7e4ae3f84de29aa5bdf136",
       "rider": "875ebe2af63143d748560f8237cf3d1df4133ea0cb8d4b75eb176112774afd44",
       "steam": "5eef8f31106b81956ed908490bcf8c73abe476aa58bb9041acdf70b0d42ebcae",
+      "telegram": "147fd8f8923e7e5f463fe98c0eb9913bead6b2ae59935728cda141002ec8a7c9",
+      "vlcmediaplayer": "dcefad2f6a4e3a35aa667ca25803904311d8f5229c837d11612e012af358b2af",
       "webstorm": "11827451725f77c24128844a001cf557726f42f60fd94e4aa7884242593ae6b3",
       "zedindustries": "90848d3e8d74d4fb3efc7137b8a5181139082e212566b025843379a7cb0550a0"
     }
@@ -235,6 +252,598 @@
         }
       ],
       "color": "sky"
+    },
+    {
+      "app": "Tide Worktrees",
+      "names": [
+        "tide-worktrees"
+      ],
+      "glyph": [
+        {
+          "file": "worktree.svg"
+        }
+      ],
+      "color": "teal"
+    },
+    {
+      "app": "Chromium",
+      "names": [
+        "chromium",
+        "chromium-browser"
+      ],
+      "glyph": [
+        {
+          "theme": "chromium-browser-symbolic"
+        },
+        {
+          "theme": "web-browser-symbolic"
+        }
+      ],
+      "color": "sky"
+    },
+    {
+      "app": "Brave",
+      "names": [
+        "brave-browser",
+        "brave"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "brave"
+        }
+      ],
+      "color": "peach"
+    },
+    {
+      "app": "Falkon",
+      "names": [
+        "falkon",
+        "org.kde.falkon"
+      ],
+      "glyph": [
+        {
+          "theme": "internet-web-browser-symbolic"
+        }
+      ],
+      "color": "teal"
+    },
+    {
+      "app": "Telegram",
+      "names": [
+        "org.telegram.desktop",
+        "telegram"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "telegram"
+        }
+      ],
+      "color": "sky"
+    },
+    {
+      "app": "Android Studio",
+      "names": [
+        "android-studio",
+        "androidstudio"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "androidstudio"
+        }
+      ],
+      "color": "mint"
+    },
+    {
+      "app": "JetBrains Toolbox",
+      "names": [
+        "jetbrains-toolbox"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "jetbrains"
+        }
+      ],
+      "color": "peach",
+      "scale": 0.4
+    },
+    {
+      "app": "dotMemory",
+      "names": [
+        "dotmemory",
+        "jetbrains-dotmemory"
+      ],
+      "glyph": [
+        {
+          "file": "memory.svg"
+        }
+      ],
+      "color": "rose"
+    },
+    {
+      "app": "DBeaver",
+      "names": [
+        "dbeaver-ce",
+        "dbeaver"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "dbeaver"
+        }
+      ],
+      "color": "butter"
+    },
+    {
+      "app": "Redis Insight",
+      "names": [
+        "redisinsight",
+        "redis-insight"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "redis"
+        }
+      ],
+      "color": "rose"
+    },
+    {
+      "app": "Kate",
+      "names": [
+        "kate",
+        "org.kde.kate"
+      ],
+      "glyph": [
+        {
+          "theme": "kate-symbolic"
+        }
+      ],
+      "color": "teal"
+    },
+    {
+      "app": "KWrite",
+      "names": [
+        "kwrite",
+        "org.kde.kwrite"
+      ],
+      "glyph": [
+        {
+          "theme": "accessories-text-editor-symbolic"
+        }
+      ],
+      "color": "sky"
+    },
+    {
+      "app": "FileZilla",
+      "names": [
+        "org.filezillaproject.Filezilla",
+        "filezilla"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "filezilla"
+        }
+      ],
+      "color": "rose"
+    },
+    {
+      "app": "scrcpy",
+      "names": [
+        "scrcpy"
+      ],
+      "glyph": [
+        {
+          "theme": "smartphone-symbolic"
+        }
+      ],
+      "color": "mint"
+    },
+    {
+      "app": "KRDC",
+      "names": [
+        "krdc",
+        "org.kde.krdc"
+      ],
+      "glyph": [
+        {
+          "theme": "preferences-desktop-remote-desktop-symbolic"
+        }
+      ],
+      "color": "sky"
+    },
+    {
+      "app": "FreeRDP",
+      "names": [
+        "FreeRDP",
+        "xfreerdp"
+      ],
+      "glyph": [
+        {
+          "theme": "video-display-symbolic"
+        },
+        {
+          "theme": "computer-symbolic"
+        }
+      ],
+      "color": "lavender"
+    },
+    {
+      "app": "LibreOffice",
+      "names": [
+        "libreoffice-startcenter",
+        "libreoffice"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "libreoffice"
+        }
+      ],
+      "color": "teal"
+    },
+    {
+      "app": "LibreOffice Writer",
+      "names": [
+        "libreoffice-writer"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "libreofficewriter"
+        }
+      ],
+      "color": "sky"
+    },
+    {
+      "app": "LibreOffice Calc",
+      "names": [
+        "libreoffice-calc"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "libreofficecalc"
+        }
+      ],
+      "color": "mint"
+    },
+    {
+      "app": "LibreOffice Math",
+      "names": [
+        "libreoffice-math"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "libreofficemath"
+        }
+      ],
+      "color": "text.secondary"
+    },
+    {
+      "app": "Okular",
+      "names": [
+        "okular",
+        "org.kde.okular"
+      ],
+      "glyph": [
+        {
+          "theme": "x-office-document-symbolic"
+        }
+      ],
+      "color": "rose"
+    },
+    {
+      "app": "Gwenview",
+      "names": [
+        "org.kde.gwenview",
+        "gwenview"
+      ],
+      "glyph": [
+        {
+          "theme": "image-x-generic-symbolic"
+        }
+      ],
+      "color": "mint"
+    },
+    {
+      "app": "GIMP",
+      "names": [
+        "gimp"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "gimp"
+        }
+      ],
+      "color": "butter"
+    },
+    {
+      "app": "Blender",
+      "names": [
+        "blender"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "blender"
+        }
+      ],
+      "color": "peach"
+    },
+    {
+      "app": "Gnote",
+      "names": [
+        "org.gnome.Gnote",
+        "gnote"
+      ],
+      "glyph": [
+        {
+          "theme": "note-symbolic"
+        },
+        {
+          "theme": "knotes-symbolic"
+        }
+      ],
+      "color": "butter"
+    },
+    {
+      "app": "Anthy (słownik)",
+      "names": [
+        "kasumi"
+      ],
+      "glyph": [
+        {
+          "theme": "accessories-dictionary-symbolic"
+        }
+      ],
+      "color": "rose"
+    },
+    {
+      "app": "VLC",
+      "names": [
+        "vlc"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "vlcmediaplayer"
+        }
+      ],
+      "color": "peach"
+    },
+    {
+      "app": "mpv",
+      "names": [
+        "mpv"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "mpv"
+        }
+      ],
+      "color": "lavender"
+    },
+    {
+      "app": "OBS Studio",
+      "names": [
+        "com.obsproject.Studio",
+        "obs"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "obsstudio"
+        }
+      ],
+      "color": "text.secondary"
+    },
+    {
+      "app": "Ryujinx",
+      "names": [
+        "org.ryujinx.Ryujinx",
+        "ryujinx"
+      ],
+      "glyph": [
+        {
+          "theme": "input-gaming-symbolic"
+        }
+      ],
+      "color": "rose"
+    },
+    {
+      "app": "Discover",
+      "names": [
+        "plasmadiscover",
+        "org.kde.discover"
+      ],
+      "glyph": [
+        {
+          "theme": "system-software-install-symbolic"
+        }
+      ],
+      "color": "sky"
+    },
+    {
+      "app": "KDE Connect",
+      "names": [
+        "kdeconnect",
+        "org.kde.kdeconnect.app"
+      ],
+      "glyph": [
+        {
+          "theme": "kdeconnect-symbolic"
+        },
+        {
+          "theme": "smartphone-symbolic"
+        }
+      ],
+      "color": "teal"
+    },
+    {
+      "app": "Ark",
+      "names": [
+        "ark",
+        "org.kde.ark"
+      ],
+      "glyph": [
+        {
+          "theme": "package-x-generic-symbolic"
+        }
+      ],
+      "color": "butter"
+    },
+    {
+      "app": "KFind",
+      "names": [
+        "kfind",
+        "org.kde.kfind"
+      ],
+      "glyph": [
+        {
+          "theme": "edit-find-symbolic"
+        },
+        {
+          "theme": "system-search-symbolic"
+        }
+      ],
+      "color": "lavender"
+    },
+    {
+      "app": "Kalkulator",
+      "names": [
+        "accessories-calculator",
+        "org.kde.kcalc",
+        "kcalc"
+      ],
+      "glyph": [
+        {
+          "theme": "accessories-calculator-symbolic"
+        }
+      ],
+      "color": "peach"
+    },
+    {
+      "app": "Tablica emoji",
+      "names": [
+        "preferences-desktop-emoticons",
+        "org.kde.plasma.emojier"
+      ],
+      "glyph": [
+        {
+          "theme": "preferences-desktop-emoticons-symbolic"
+        }
+      ],
+      "color": "butter"
+    },
+    {
+      "app": "Sterowanie głośnością",
+      "names": [
+        "multimedia-volume-control",
+        "pavucontrol"
+      ],
+      "glyph": [
+        {
+          "theme": "multimedia-volume-control-symbolic"
+        },
+        {
+          "theme": "audio-volume-high-symbolic"
+        }
+      ],
+      "color": "teal"
+    },
+    {
+      "app": "KeepSecret",
+      "names": [
+        "org.kde.keepsecret",
+        "keepsecret"
+      ],
+      "glyph": [
+        {
+          "theme": "lock-symbolic"
+        },
+        {
+          "theme": "object-locked-symbolic"
+        }
+      ],
+      "color": "lavender"
+    },
+    {
+      "app": "Portfel KDE",
+      "names": [
+        "kwalletmanager",
+        "org.kde.kwalletmanager"
+      ],
+      "glyph": [
+        {
+          "theme": "wallet-closed-symbolic"
+        },
+        {
+          "theme": "dialog-password-symbolic"
+        }
+      ],
+      "color": "peach"
+    },
+    {
+      "app": "Menedżer Kvantum",
+      "names": [
+        "kvantum",
+        "kvantummanager"
+      ],
+      "glyph": [
+        {
+          "theme": "color-management-symbolic"
+        }
+      ],
+      "color": "lavender"
+    },
+    {
+      "app": "NVIDIA Settings",
+      "names": [
+        "nvidia-settings"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "nvidia"
+        }
+      ],
+      "color": "mint"
+    },
+    {
+      "app": "Edytor menu",
+      "names": [
+        "kmenuedit",
+        "org.kde.kmenuedit"
+      ],
+      "glyph": [
+        {
+          "theme": "format-list-unordered-symbolic"
+        },
+        {
+          "theme": "view-list-bullet-symbolic"
+        }
+      ],
+      "color": "text.secondary"
+    },
+    {
+      "app": "Ośrodek informacji",
+      "names": [
+        "hwinfo",
+        "org.kde.kinfocenter"
+      ],
+      "glyph": [
+        {
+          "theme": "dialog-information-symbolic"
+        },
+        {
+          "theme": "help-about-symbolic"
+        }
+      ],
+      "color": "text.secondary"
+    },
+    {
+      "app": "Ośrodek pomocy",
+      "names": [
+        "help-browser",
+        "org.kde.khelpcenter"
+      ],
+      "glyph": [
+        {
+          "theme": "help-browser-symbolic"
+        }
+      ],
+      "color": "text.secondary"
     }
   ]
 }
