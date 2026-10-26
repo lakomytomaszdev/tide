@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.tide.system",
+    "Name": "Tide · System",
+    "Description": "Procesor, pamięć, karta graficzna i dyski z czujników ksystemstats",
+    "Icon": "utilities-system-monitor",
+    "Category": "System Information",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "Authors": [{ "Name": "Tomek" }]
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}
