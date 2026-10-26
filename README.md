@@ -17,6 +17,8 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `theme/palette/` | Paleta wariantu w JSON, jedyne źródło kolorów, promieni, przezroczystości i rozmiarów pasków dla generatorów |
 | `theme/wallpaper/` | Generator tapety z palety (jedno płótno na oba monitory) |
 | `theme/plasma/` | Styl Plasmy „Tide” (desktoptheme): generator ramek, podgląd (`preview.py`) i sprawdzenie prawdziwym KSvg (`ksvg_check.py`) |
+| `theme/lookandfeel/` | Motyw globalny „Tide” (`org.tide.desktop`): wskazania na składniki Tide i podglądy |
+| `theme/lockscreen/` | Ekran blokady Tide jako pakiet powłoki Plasmy (QML na bazie ekranu Plasmy 6.8), zrzuty z prawdziwego greetera |
 | `theme/icons/` | Nakładka ikon „Tide” i polecenie `tide-icons` (audyt, synchronizacja, podgląd) |
 | `scripts/` | Kopie zapasowe i przywracanie wyglądu (`backup.sh`, `restore.sh`, `paths.sh`) oraz instalatory komponentów |
 | `scripts/panels/` | Skrypty plasmashell górnych pasków (zrzut, instalacja, kolejność, odinstalowanie) |
@@ -31,7 +33,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `mk/` | Cele `make` poszczególnych komponentów (`install-*`, `uninstall-*`, katalogi testów) |
 | `docs/` | Decyzje projektowe, opis usługi |
 
-Katalogi motywu (kolory, styl Plasmy, dekoracja okien, ikony, ekran blokady, SDDM) dochodzą razem z kolejnymi etapami planu.
+Katalogi motywu (ekran startowy, SDDM) dochodzą razem z kolejnymi etapami planu.
 
 ## Agenci AI
 
@@ -112,6 +114,24 @@ make install-daemon install-widget-worktrees
 ```
 
 Widżet „Tide · Worktrees” pokazuje w kafelku liczbę worktrees (lawenda) i liczbę gotowych do sprzątnięcia (mięta). Popup grupuje je według repozytoriów: teal — pracuje agent, mięta — scalony, masło — zmiany albo niescalone commity. „Scalony” znaczy scalony z **lokalną** gałęzią główną (master, main albo develop) — bez łączenia z serwerem. Przycisk „Wyczyść scalone” najpierw pyta o potwierdzenie i podaje, ile miejsca zwolni; usuwa tylko czyste, scalone worktrees bez agenta, bez `--force`, a gałąź kasuje wyłącznie `git branch -d`. Każdy worktree otwiera się z popupu w Konsoli albo w Riderze. Katalog projektów to `~/DevWorkspace` (zmiana: `TIDE_WORKSPACE` w środowisku usługi albo `--workspace`).
+
+## Motyw globalny i ekran blokady
+
+Motyw globalny „Tide” (`org.tide.desktop`) spina w Ustawieniach systemowych to, co instalują pozostałe części: schemat TideMist, styl Plasmy Tide, dekorację Aurorae Tide (przyciski po prawej: minimalizuj, maksymalizuj, zamknij), ikony Tide, kursor Nordic-cursors i czcionki Geist. Nie ma w nim skryptów układu ani tapety — panele i tapety ustawiają `scripts/panels.py` i `scripts/wallpaper.py`.
+
+`make install` (cel `install-lookandfeel`) kopiuje motyw do `~/.local/share/plasma/look-and-feel/org.tide.desktop` i zapisuje tylko wybór motywu (`kdeglobals [KDE] LookAndFeelPackage`, wyłączona automatyczna zmiana motywu) oraz tapetę ekranu blokady (obraz Tide głównego monitora w `kscreenlockerrc`). **Nie wywołuje `plasma-apply-lookandfeel`** i nie dotyka paneli. Poprzednie wartości są w `~/.local/state/tide/lookandfeel-previous.json`, `make uninstall` je przywraca.
+
+W Ustawieniach systemowych → Motyw globalny można kliknąć „Tide”, ale **nie zaznaczać „Układ pulpitu i okien”**: Plasma kasuje wtedy całą konfigurację paneli (`plasma-org.kde.plasma.desktop-appletsrc`) i ładuje układ Breeze. Ratunek: `make restore NAME=<kopia>` i ponowne `make install`.
+
+**Ekran blokady.** W Plasmie 6.8 greeter (`kscreenlocker_greet`) bierze ekran blokady wyłącznie z pakietu powłoki (`plasma/shells/<powłoka>/contents/lockscreen`), a powłokę wybiera tak samo jak plasmashell (`plasmashellrc [Shell] ShellPackage`, domyślnie `org.kde.plasma.desktop`). Katalog `lockscreen/` w motywie globalnym jest ignorowany, a klucz `kscreenlockerrc [Greeter] Theme` nie istnieje. Dlatego ekran Tide jest osobnym pakietem powłoki `org.tide.desktop`, który ma tylko `lockscreen/`, a resztę bierze z `org.kde.plasma.desktop`. Instalacja kładzie go do `~/.local/share/plasma/shells/`, ale **prawdziwa blokada nadal używa ekranu Plasmy** (już z tapetą, kolorami i czcionkami Tide) — sposób włączenia ekranu Tide czeka na decyzję (docs/decisions.md, punkt 24).
+
+```bash
+make lockscreen-screenshot   # zrzut prawdziwego greetera w zagnieżdżonym KWin, bez ekranu → build/lockscreen.png
+make lockscreen-test         # greeter w trybie testowym jako okno (XWayland); hasło zamyka okno
+make lookandfeel-build       # sam motyw globalny w build/lookandfeel
+```
+
+Wygląd z makiety: przyciemniona tapeta Mist (rozmyta przy widocznym polu hasła), zegar Geist 96 px i data („poniedziałek, 26 października”) w górnej części, logo „trzy fale”, nazwa użytkownika i pole hasła na karcie z tealową obwódką, na dole klawiatura, uśpienie i zmiana użytkownika jako same ikony. Linia „2 agenci pracują · 1 czeka” pochodzi z tide-daemon przez D-Bus sesji (greeter działa jako użytkownik i dziedziczy magistralę po KWin); pokazuje tylko liczby, bez nazw projektów, i znika, gdy usługi nie ma albo nikt nie pracuje. Gdy QML ekranu Tide się nie wczyta, greeter sam pokazuje awaryjny ekran KDE (sprawdzane w testach). Licencja i pochodzenie plików: `NOTICE` w pakiecie (GPL-2.0-or-later, jak ekran Plasmy).
 
 ## Kopie zapasowe
 

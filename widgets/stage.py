@@ -42,6 +42,11 @@ def palette_qml(palette: dict) -> str:
         props.append(("color", "windowButton" + key[0].upper() + key[1:], color(value)))
     for key, value in palette.get("radius", {}).items():
         props.append(("int", "radius" + key[0].upper() + key[1:], value))
+    for key, value in palette.get("opacity", {}).items():
+        props.append(("real", "opacity" + key[0].upper() + key[1:], value))
+    # Wymiary ekranu blokady (zegar, pole hasła, przyciemnienie tapety) — tylko z palety.
+    for key, value in palette.get("lockscreen", {}).items():
+        props.append(("real" if isinstance(value, float) else "int", "lock" + key[0].upper() + key[1:], value))
     fonts = palette.get("fonts", {})
     props.append(("string", "fontUi", fonts.get("ui", "")))
     props.append(("string", "fontMono", fonts.get("mono", "")))

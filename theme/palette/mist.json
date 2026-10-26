@@ -59,6 +59,16 @@
     "size": 12,
     "opacity": 0.3
   },
+  "lockscreen": {
+    "clockPx": 96,
+    "clockWeight": 600,
+    "datePx": 22,
+    "namePx": 17,
+    "fieldWidth": 340,
+    "fieldHeight": 48,
+    "logoPx": 44,
+    "dim": 0.2
+  },
   "fonts": {
     "ui": "Geist",
     "mono": "Geist Mono",
