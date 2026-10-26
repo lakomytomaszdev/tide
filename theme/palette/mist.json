@@ -121,6 +121,17 @@
     "mono": "Geist Mono",
     "uiSizePt": 10
   },
+  "terminal": {
+    "fontPt": 11,
+    "marginPx": 18,
+    "tabFontPt": 10,
+    "watermark": {
+      "color": "teal",
+      "opacity": 0.05,
+      "sizePx": 260,
+      "insetPx": 28
+    }
+  },
   "wallpaper": {
     "variant": "cat",
     "dozeAfterS": 15,
