@@ -42,6 +42,7 @@ class PanelsInstallTest(unittest.TestCase):
             **os.environ,
             "HOME": str(self.home),
             "XDG_CONFIG_HOME": str(self.home / ".config"),
+            "XDG_CONFIG_DIRS": "/etc/xdg",  # bez ~/.config/kdedefaults z sesji Plasmy
             "XDG_DATA_HOME": str(self.data),
             "XDG_STATE_HOME": str(self.state),
             "XDG_CACHE_HOME": str(self.home / ".cache"),
@@ -91,6 +92,12 @@ class PanelsInstallTest(unittest.TestCase):
 
         live = [p for p in self.plasma()["panels"] if not p["removed"]]
         self.assertEqual(sorted(p["screen"] for p in live if p["location"] == "top"), [0, 1])
+        # Wysokość trafia też do plasmashellrc, bo Plasma nie zapisuje tej ustawionej skryptem.
+        main = next(p for p in live if p["location"] == "top" and p["screen"] == 0)
+        thickness = subprocess.run(["kreadconfig6", "--file", "plasmashellrc", "--group", "PlasmaViews",
+                                    "--group", f"Panel {main['id']}", "--group", "Defaults", "--key", "thickness"],
+                                   env=self.env, capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(thickness, str(PALETTE["size"]["bar"]))
 
     def test_install_saves_the_previous_layout_with_launcher_files(self):
         self.panels("install")

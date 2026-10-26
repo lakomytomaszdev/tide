@@ -62,6 +62,7 @@ def make_env(tmp: str) -> dict:
         "HOME": os.path.join(tmp, "home"),
         "XDG_DATA_HOME": os.path.join(tmp, "data"),
         "XDG_CONFIG_HOME": os.path.join(tmp, "config"),
+        "XDG_CONFIG_DIRS": "/etc/xdg",  # bez ~/.config/kdedefaults z sesji Plasmy
         "BUILD_DIR": os.path.join(tmp, "build"),
         "TIDE_FAKE_LOG": os.path.join(tmp, "calls.log"),
         "PATH": fake + os.pathsep + "/usr/bin:/bin",

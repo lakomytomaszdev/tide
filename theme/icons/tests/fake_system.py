@@ -59,6 +59,7 @@ class FakeSystem:
             "XDG_DATA_HOME": str(self.data),
             "XDG_STATE_HOME": str(self.state),
             "XDG_CONFIG_HOME": str(self.config),
+            "XDG_CONFIG_DIRS": "/etc/xdg",  # bez ~/.config/kdedefaults z sesji Plasmy
             "XDG_CACHE_HOME": str(self.home / ".cache"),
             "XDG_DATA_DIRS": str(self.system),
             "PATH": f"{self.bin}:{os.environ['PATH']}",

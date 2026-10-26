@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.appearance import DATA, PALETTE, STATE  # noqa: E402
-from scripts.panels import evaluate, load, save, screens, script, settle  # noqa: E402
+from scripts.panels import evaluate, load, persist_thickness, save, screens, script, settle  # noqa: E402
 
 INSTALLED = STATE / "tide" / "dock-installed.json"
 # Kolejność kafelków z prawej strony docka, jak w mocku Mist.
@@ -34,6 +34,7 @@ def install() -> None:
     result = evaluate(script("dock", params()))
     settle()
     evaluate(script("order", {**screens(), "panels": [{"id": result["dock"], "order": result["order"]}]}))
+    persist_thickness(result["dock"], params()["dockHeight"])
     previous = load(INSTALLED)
     save(INSTALLED, {
         "dock": result["dock"],

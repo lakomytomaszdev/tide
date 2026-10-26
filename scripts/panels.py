@@ -93,6 +93,13 @@ def settle() -> None:
     time.sleep(float(os.environ.get("TIDE_PANEL_SETTLE", "1.0")))
 
 
+def persist_thickness(panel_id: int, thickness: int) -> None:
+    """Plasma nie zapisuje wysokości ustawionej skryptem (po zalogowaniu wracało 56 px), więc
+    wpisujemy ją wprost do plasmashellrc — stamtąd panel czyta grubość przy starcie."""
+    run("kwriteconfig6", "--file", "plasmashellrc", "--group", "PlasmaViews", "--group", f"Panel {panel_id}",
+        "--group", "Defaults", "--key", "thickness", str(thickness))
+
+
 def load(path: Path) -> dict:
     return json.loads(path.read_text()) if path.is_file() else {}
 
@@ -156,6 +163,9 @@ def install() -> None:
     result = evaluate(script("install", install_params(palette, installed)))
     settle()
     order = evaluate(script("order", order_params(result)))
+    for panel in order_params(result)["panels"]:
+        if panel.get("height"):
+            persist_thickness(panel["id"], panel["height"])
 
     save(INSTALLED, {
         "mainPanel": result["main"],
