@@ -5,6 +5,7 @@ chcemy krótki tytuł („summary-tabs 03 · version axis”) i osobno wyciszony
 („codex”). Reguły są heurystyczne — gdy nic nie pasuje, zostaje reszta nazwy bez zmian.
 """
 import re
+import unicodedata
 
 # Prefiksy, które są tylko kategorią gałęzi, a nie jej treścią (trafiają do znacznika).
 PREFIXES = ("codex", "claude", "feat", "feature", "fix", "bugfix", "hotfix", "docs", "doc", "chore",
@@ -73,9 +74,60 @@ def _short_hex(token: str) -> str:
 
 
 def guess_tool(path: str, tag: str) -> str:
-    """Narzędzie z położenia albo prefiksu gałęzi, gdy nie znamy sesji: codex, claude albo pusty."""
+    """Narzędzie z prefiksu gałęzi albo położenia, gdy nie znamy sesji: codex, claude albo pusty.
+
+    Prefiks wygrywa z położeniem: okno „Nowe zadanie” zakłada worktrees obu narzędzi w
+    `.claude/worktrees` repozytorium, a gałąź `codex/…` mówi wprost, kto w nim pracuje."""
+    if tag in TOOLS:
+        return TOOLS[tag]
     if "/.codex/worktrees/" in path:
         return "codex"
     if "/.claude/worktrees/" in path:
         return "claude"
-    return TOOLS.get(tag, "")
+    return ""
+
+
+# --- nazwa gałęzi z opisu zadania (okno „Nowe zadanie”) -------------------------------------
+#
+# Odwrotność humanize_branch: z polecenia dla agenta robimy gałąź w tej samej konwencji co gałęzie
+# agentów, które już znamy — prefiks narzędzia i słowa po myślnikach („codex/popraw-liczenie-vin”).
+# humanize_branch czyta ją potem jako znacznik „codex” i tytuł „popraw-liczenie-vin”, a guess_tool
+# rozpoznaje narzędzie po prefiksie.
+
+# Polskie litery: ł NFKD nie rozkłada, więc wszystkie zamieniamy jedną tablicą.
+_FOLD = str.maketrans("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ", "acelnoszzACELNOSZZ")
+# Słowa funkcyjne, które nic nie mówią o zadaniu (po polsku i angielsku, już bez polskich znaków).
+STOP_WORDS = {
+    "a", "an", "the", "to", "of", "and", "or", "for", "in", "on", "at", "by", "with", "is", "are", "be",
+    "please", "pls", "i", "w", "we", "z", "ze", "na", "do", "o", "od", "po", "oraz", "sie", "jak", "czy",
+    "ten", "ta", "te", "tym", "tego", "tej", "jest", "sa", "prosze", "zeby", "aby", "ktory", "ktora",
+    "ktore", "tak", "u", "dla", "przy", "nad", "pod", "za",
+}
+SLUG_WORDS = 6
+SLUG_LENGTH = 48
+FALLBACK_SLUG = "zadanie"
+
+
+def slug_from_prompt(prompt: str, words: int = SLUG_WORDS, length: int = SLUG_LENGTH) -> str:
+    """Krótki opis zadania do nazwy gałęzi i katalogu: małe litery ASCII, cyfry i myślniki.
+
+    „Popraw liczenie VIN-ów w wyszukiwarce, proszę” → „popraw-liczenie-vin-ow-wyszukiwarce”.
+    Pierwsze `words` znaczących słów, razem najwyżej `length` znaków; bez słów — FALLBACK_SLUG."""
+    text = unicodedata.normalize("NFKD", (prompt or "").translate(_FOLD))
+    text = text.encode("ascii", "ignore").decode("ascii").lower()
+    tokens = re.findall(r"[a-z0-9]+", text)
+    meaningful = [t for t in tokens if t not in STOP_WORDS] or tokens
+    out: list[str] = []
+    for token in meaningful:
+        token = token[:length]
+        if out and len("-".join(out + [token])) > length:
+            break
+        out.append(token)
+        if len(out) >= words:
+            break
+    return "-".join(out) or FALLBACK_SLUG
+
+
+def branch_from_prompt(prompt: str, tool: str) -> str:
+    """Gałąź dla nowego zadania: `<narzędzie>/<opis>`, np. „claude/popraw-liczenie-vin”."""
+    return f"{TOOLS.get(tool, 'task')}/{slug_from_prompt(prompt)}"
