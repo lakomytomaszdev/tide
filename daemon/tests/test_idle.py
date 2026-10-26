@@ -219,15 +219,15 @@ class IdleStateTest(unittest.TestCase):
         self.assertFalse(self.state.idled())
 
     def test_threshold_from_the_palette(self):
-        self.assertEqual(doze_after_s([PALETTE]), 30)
+        self.assertEqual(doze_after_s([PALETTE]), 15)
         with open(PALETTE, encoding="utf-8") as fh:
-            self.assertEqual(json.load(fh)["wallpaper"]["dozeAfterS"], 30)
+            self.assertEqual(json.load(fh)["wallpaper"]["dozeAfterS"], 15)
         self.assertEqual(doze_after_s(["/nie/ma/takiego/pliku.json"]), DEFAULT_DOZE_AFTER_S)
         broken = os.path.join(tempfile.mkdtemp(prefix="tide-pal-"), "p.json")
         self.addCleanup(shutil.rmtree, os.path.dirname(broken))
         with open(broken, "w", encoding="utf-8") as fh:
             json.dump({"wallpaper": {"dozeAfterS": 0}}, fh)
-        self.assertEqual(doze_after_s([broken, PALETTE]), 30)  # zły próg — następna paleta
+        self.assertEqual(doze_after_s([broken, PALETTE]), 15)  # zły próg — następna paleta
 
 
 class IdleMonitorTest(CompositorCase):
@@ -332,8 +332,8 @@ class IdleDBusTest(CompositorCase):
     def test_threshold_comes_from_the_installed_palette(self):
         fake = self.compositor()
         bus = self.start()
-        self.assertEqual(fake.wait_for_notifications()[0]["timeout_ms"], 30_000)
-        self.assertEqual(self.call(bus, "Get", "org.freedesktop.DBus.Properties", IDLE_IFACE, "ThresholdMs"), 30_000)
+        self.assertEqual(fake.wait_for_notifications()[0]["timeout_ms"], 15_000)
+        self.assertEqual(self.call(bus, "Get", "org.freedesktop.DBus.Properties", IDLE_IFACE, "ThresholdMs"), 15_000)
 
     def test_without_compositor_the_object_says_awake(self):
         bus = self.start(wayland=False)

@@ -94,7 +94,7 @@
   },
   "wallpaper": {
     "variant": "cat",
-    "dozeAfterS": 30,
+    "dozeAfterS": 15,
     "background": "desktop",
     "seed": 26102026,
     "grain": 1.1,

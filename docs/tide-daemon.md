@@ -252,7 +252,7 @@ Tapeta „Tide: kot” (`org.tide.cat`) zamyka kotu oczy, gdy nikt nie używa ko
 | --- | --- | --- |
 | `Idle` | właściwość `b` | od progu nie było klawiatury, myszy ani dotyku; `false`, gdy źródło nie działa |
 | `Available` | właściwość `b` | czy kompozytor podaje bezczynność |
-| `ThresholdMs` | właściwość `i` | próg w ms (`wallpaper.dozeAfterS` z palety, domyślnie 30 s) |
+| `ThresholdMs` | właściwość `i` | próg w ms (`wallpaper.dozeAfterS` z palety, domyślnie 15 s) |
 | `IsIdle()` | `→ b` | to samo co `Idle` jednym wywołaniem (QML) |
 | `State()` | `→ s` | JSON `{available, idle, thresholdMs, idleForMs, source}` — diagnostyka |
 | `IdleChanged` | sygnał `(b idle)` | bezczynność się zmieniła |

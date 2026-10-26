@@ -229,7 +229,7 @@ make install FORCE=1            # nadpisuje także własną tapetę
 
 ### Kot na pulpicie
 
-W wariancie `cat` oba pulpity dostają wtyczkę tapety **„Tide: kot”** (`org.tide.cat`, w `~/.local/share/plasma/wallpapers`). Każdy monitor pokazuje swój kadr wspólnego płótna, tak jak przy zwykłych obrazach, i ten sam kadr co ekran blokady. Gdy przez **30 s** (`wallpaper.dozeAfterS`) nie było klawiatury ani myszy, kot zamyka oczy przenikaniem w 1100 ms (`lockscreen.sleepMs`); pierwszy ruch albo klawisz otwiera je w 650 ms (`lockscreen.wakeMs`). Przy wyłączonych animacjach zmiana jest natychmiastowa. W spoczynku tapeta nic nie robi — dwa nieruchome obrazy, bez zegarów.
+W wariancie `cat` oba pulpity dostają wtyczkę tapety **„Tide: kot”** (`org.tide.cat`, w `~/.local/share/plasma/wallpapers`). Każdy monitor pokazuje swój kadr wspólnego płótna, tak jak przy zwykłych obrazach, i ten sam kadr co ekran blokady. Gdy przez **15 s** (`wallpaper.dozeAfterS`) nie było klawiatury ani myszy, kot zamyka oczy przenikaniem w 1100 ms (`lockscreen.sleepMs`); pierwszy ruch albo klawisz otwiera je w 650 ms (`lockscreen.wakeMs`). Przy wyłączonych animacjach zmiana jest natychmiastowa. W spoczynku tapeta nic nie robi — dwa nieruchome obrazy, bez zegarów.
 
 Bezczynność liczy KWin (protokół Wayland `ext_idle_notifier_v1`, liczy się tylko wejście użytkownika, odtwarzany film nie trzyma kota obudzonego), a podaje ją `tide-daemon` przez D-Bus (obiekt `/Idle`, [opis](docs/tide-daemon.md#bezczynność)). Bez usługi kot po prostu czuwa. Próg czyta usługa z kopii palety, więc po jego zmianie trzeba `make install-daemon`.
 
