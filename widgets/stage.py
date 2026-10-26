@@ -22,8 +22,11 @@ LIMITY_KEY = "X-Tide-LimityConfig"
 LIMITY_DEFAULT_PORT = 41817  # domyślny port QuotaApp (scripts/install.sh w tamtym repo)
 
 
-def palette_qml(palette: dict) -> str:
-    """Płaski singleton QML z palety: backgroundCard, textMuted, teal, working, radiusCard…"""
+def palette_qml(palette: dict, singleton: bool = True) -> str:
+    """Płaski obiekt QML z palety: backgroundCard, textMuted, teal, working, radiusCard, opacityPopup…
+
+    Widżety dostają singleton, ekran logowania (theme/sddm) zwykły QtObject tworzony w każdym pliku.
+    """
     pastel = palette.get("pastel", {})
     props: list[tuple[str, str, object]] = [("string", "name", palette.get("name", ""))]
 
@@ -42,14 +45,16 @@ def palette_qml(palette: dict) -> str:
         props.append(("color", "windowButton" + key[0].upper() + key[1:], color(value)))
     for key, value in palette.get("radius", {}).items():
         props.append(("int", "radius" + key[0].upper() + key[1:], value))
+    for key, value in palette.get("opacity", {}).items():
+        props.append(("real", "opacity" + key[0].upper() + key[1:], value))
     fonts = palette.get("fonts", {})
     props.append(("string", "fontUi", fonts.get("ui", "")))
     props.append(("string", "fontMono", fonts.get("mono", "")))
     props.append(("real", "fontSizePt", fonts.get("uiSizePt", 10)))
 
     lines = [
-        "// Wygenerowane przez widgets/stage.py z palety — nie edytować ręcznie.",
-        "pragma Singleton",
+        "// Wygenerowane z palety (widgets/stage.py) — nie edytować ręcznie.",
+        *(["pragma Singleton"] if singleton else []),
         "import QtQuick",
         "",
         "QtObject {",
