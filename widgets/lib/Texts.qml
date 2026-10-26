@@ -45,6 +45,14 @@ QtObject {
         return n > 0 ? n + " do sprzątnięcia" : "nic do sprzątnięcia"
     }
 
+    // Linia wartości kafelka worktrees, w tym samym układzie co agenci: tylko niezerowe części.
+    function worktreesSummary(activeCount, cleanCount) {
+        const parts = []
+        if (activeCount > 0) parts.push(activeCount + " w pracy")
+        if (cleanCount > 0) parts.push(cleanable(cleanCount))
+        return parts.length ? parts.join(" · ") : cleanable(0)
+    }
+
     function worktreesToolTip(available, cleanCount, cleanBytes, activeCount, totalCount) {
         if (!available) return "Usługa tide-daemon nie działa"
         const clean = cleanCount > 0 ? cleanable(cleanCount) + " (" + Theme.formatBytes(cleanBytes) + ")"

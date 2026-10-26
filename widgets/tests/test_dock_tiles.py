@@ -37,13 +37,15 @@ class TileTextsTest(unittest.TestCase):
     def test_busy_day(self):
         result = preview.render(preview.SCENARIOS["busy"])
         self.assertEqual(result["agents"], {"label": "Agenci", "summary": "2 pracują · 1 czeka"})
-        self.assertEqual(result["worktrees"], {"label": "Worktrees", "detail": "5 w pracy",
-                                               "summary": "15 do sprzątnięcia · 16 GB"})
+        # Ten sam układ co agenci: sam podpis, a w wartości niezerowe części z kropkami.
+        self.assertEqual(result["worktrees"], {"label": "Worktrees", "detail": "",
+                                               "summary": "5 w pracy · 15 do sprzątnięcia"})
         self.assertEqual(result["system"]["lines"], ["CPU 34%", "RAM 61%", "Dysk 88%"])
         self.assertEqual(result["limits"]["lines"], ["GPT 91%", "Claude 86%"])
-        # Dwie linie mieszczą się w 48 px kafelka, a cztery kafelki z odstępami 12 px — w 760 px.
+        # Dwie linie mieszczą się w 48 px kafelka, a cztery kafelki z odstępami 12 px — w 800 px
+        # (dock ma 2560 px, aplikacje są pośrodku).
         self.assertEqual(result["fits"], [True] * 4)
-        self.assertLess(result["total"], 760, result["widths"])
+        self.assertLess(result["total"], 800, result["widths"])
 
     def test_plural_forms(self):
         cases = [((1, 0), "1 pracuje"), ((2, 0), "2 pracują"), ((5, 0), "5 pracują"),
