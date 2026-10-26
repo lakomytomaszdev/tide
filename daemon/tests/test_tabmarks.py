@@ -101,6 +101,14 @@ class DesiredTabsTest(unittest.TestCase):
         self.assertEqual(tabmarks.desired_tabs(sessions, pids, table()), {})
         self.assertEqual(tabmarks.desired_tabs([{"id": "claude:a", "state": "working"}], {"claude:a": 511}, None), {})
 
+    def test_done_session_has_no_mark(self):
+        # Agent skończył turę i niczego nie blokuje — karta nie woła o uwagę.
+        self.assertEqual(tabmarks.desired_tabs([{"id": "claude:a", "state": "done"}], {"claude:a": 511}, table()), {})
+        # Pracujący agent w tej samej karcie nadal ją oznacza.
+        sessions = [{"id": "claude:b", "state": "done"}, {"id": "codex:c", "state": "working"}]
+        self.assertEqual(tabmarks.desired_tabs(sessions, {"claude:b": 521, "codex:c": 522}, table()),
+                         {"org.kde.konsole-500 /Sessions/2": "working"})
+
     def test_state_colors_come_from_palette(self):
         with open(os.path.join(REPO, "theme/palette/mist.json"), encoding="utf-8") as fh:
             palette = json.load(fh)

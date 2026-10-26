@@ -1,16 +1,21 @@
-"""Wspólny model sesji i wyprowadzanie stanu (working, waiting, idle, ended).
+"""Wspólny model sesji i wyprowadzanie stanu (working, waiting, done, idle, ended).
 
 Parsery dzienników (claude.py, codex.py) sprowadzają wpisy do fazy tury:
-- TURN_END     — agent skończył turę i czeka na odpowiedź,
+- TURN_END     — agent skończył turę (albo ją przerwano),
 - MID_TURN     — tura trwa (model myśli albo pisze),
 - TOOL_PENDING — agent wywołał narzędzie i nie ma jeszcze wyniku (narzędzie działa
                  albo czeka na zgodę użytkownika).
 Tutaj z fazy, czasu i informacji o procesach powstaje stan widoczny dla użytkownika.
+
+„Czeka” (waiting) znaczy wyłącznie, że agent stoi i nie ruszy bez użytkownika: zgoda na narzędzie,
+pytanie (AskUserQuestion, ExitPlanMode, request_user_input) albo status „waiting” zgłoszony przez
+Claude Code. Zwykły koniec tury to „skończył” (done) — agent oddał głos, ale niczego nie blokuje
+(np. wątek Codexa prowadzony przez zaplanowane zadanie, które samo wyśle następną wiadomość).
 """
 from dataclasses import dataclass
 
 # Progi (sekundy). Opisane też w docs/tide-daemon.md.
-IDLE_AFTER = 30 * 60        # czekająca sesja bez ruchu tyle czasu jest już „bezczynna”
+IDLE_AFTER = 30 * 60        # skończona albo czekająca sesja bez ruchu tyle czasu jest już „bezczynna”
 STALL_AFTER = 30 * 60       # tura bez żadnego wpisu tyle czasu — agent raczej nie pracuje
 APPROVAL_GRACE = 10         # tyle czekamy na wynik narzędzia, zanim uznamy, że czeka na zgodę
 MAX_AGE = 24 * 60 * 60      # sesje nieruszane dłużej są pomijane
@@ -19,8 +24,15 @@ TURN_END = "turn_end"
 MID_TURN = "mid_turn"
 TOOL_PENDING = "tool_pending"
 
+# Powody (pole reason): przy waiting — na co czeka, przy working/done/idle — dopowiedzenie.
+REASON_APPROVAL = "approval"      # narzędzie czeka na zgodę
+REASON_QUESTION = "question"      # agent zadał pytanie
+REASON_BACKGROUND = "background"  # tura skończona, ale działa zadanie w tle, do którego agent wróci
+REASON_SCHEDULED = "scheduled"    # ostatnią turę zaczęło zaplanowane zadanie (automatyzacja Codexa)
+
 WORKING = "working"
 WAITING = "waiting"
+DONE = "done"
 IDLE = "idle"
 ENDED = "ended"
 
@@ -61,6 +73,7 @@ class SessionLog:
         self.last_action = ""
         self.approvals_possible = True  # Codex z approval_policy=never nigdy nie pyta
         self.hidden = False  # np. podagenci Codexa — nie są osobnymi sesjami
+        self.scheduled = False  # bieżącą/ostatnią turę zaczęło zaplanowane zadanie, nie użytkownik
 
     def feed(self, record: dict) -> None:
         raise NotImplementedError
@@ -80,9 +93,15 @@ class SessionLog:
             self.pending.clear()
 
 
+def finished(log: SessionLog, now: float, since: float) -> tuple[str, str, float]:
+    """Tura skończona zwyczajnie: „skończył”, a po IDLE_AFTER bez ruchu — „bezczynna”."""
+    reason = REASON_SCHEDULED if log.scheduled else ""
+    return (IDLE if now - since > IDLE_AFTER else DONE), reason, since
+
+
 def derive_state(log: SessionLog, now: float, alive: bool | None, status: Status | None,
                  work_evidence) -> tuple[str, str, float]:
-    """Zwraca (stan, powód czekania, od kiedy).
+    """Zwraca (stan, powód, od kiedy).
 
     alive         — None, gdy nie wiemy nic o procesach; False, gdy procesu sesji już nie ma.
     status        — stan zgłoszony przez program agenta, jeśli jest.
@@ -96,25 +115,27 @@ def derive_state(log: SessionLog, now: float, alive: bool | None, status: Status
             return WORKING, "", status.since
         if status.status == "shell":
             # Agent czeka na własne zadanie w tle, nie na użytkownika — wróci sam, gdy się skończy.
-            return WORKING, "background", status.since
+            return WORKING, REASON_BACKGROUND, status.since
         if status.status == "waiting":
-            return WAITING, status.detail or "approval", status.since
-        since = max(status.since, log.last_activity)
-        return (IDLE if now - since > IDLE_AFTER else WAITING), "reply", since
+            return WAITING, status.detail or REASON_APPROVAL, status.since
+        # idle: Claude Code skończył turę i nic nie blokuje.
+        return finished(log, now, max(status.since, log.last_activity))
 
     age = now - log.last_activity
     if log.phase == TURN_END:
-        return (IDLE if age > IDLE_AFTER else WAITING), "reply", log.last_activity
+        return finished(log, now, log.last_activity)
 
     if log.phase == TOOL_PENDING and log.pending:
         call = max(log.pending.values(), key=lambda p: p.since)
         if call.asks_user:
-            return WAITING, "question", call.since
+            return WAITING, REASON_QUESTION, call.since
         if call.long_running or not log.approvals_possible:
             return (IDLE if age > STALL_AFTER and not work_evidence(call.since) else WORKING), "", call.since
         if now - call.since < APPROVAL_GRACE or work_evidence(call.since):
             return WORKING, "", call.since
-        return (IDLE if age > IDLE_AFTER else WAITING), "approval", call.since
+        if age > IDLE_AFTER:
+            return IDLE, "", call.since
+        return WAITING, REASON_APPROVAL, call.since
 
     # Tura trwa: model myśli i nic nie zapisuje — długie milczenie to raczej przerwana sesja.
     if age > STALL_AFTER and not work_evidence(log.last_activity):

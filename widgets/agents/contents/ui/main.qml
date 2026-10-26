@@ -1,4 +1,4 @@
-// Widżet agentów: kafelek „Agenci · 2 pracują · 1 czeka” (CompactAgents), popup z listą sesji.
+// Widżet agentów: kafelek „Agenci · 2 pracują · 1 czeka · 2 gotowe” (CompactAgents), popup z listą sesji.
 // Dane: tide-daemon przez D-Bus (org.tide.Daemon /Agents, opis w docs/tide-daemon.md).
 import QtQuick
 import QtQuick.Layouts
@@ -14,13 +14,15 @@ PlasmoidItem {
     readonly property var sessions: Array.isArray(source.result) ? source.result : []
     readonly property int workingCount: countOf("working")
     readonly property int waitingCount: countOf("waiting")
+    readonly property int doneCount: countOf("done")
     readonly property int endedCount: countOf("ended")
     readonly property var shownSessions: sessions.filter(s => showEnded || s.state !== "ended")
     property bool showEnded: false
     property real nowTs: Date.now() / 1000
 
+    // Stan liczony przez Theme.sessionState: starsza usługa zgłaszała koniec tury jako „czeka”.
     function countOf(state) {
-        return sessions.filter(s => s.state === state).length
+        return sessions.filter(s => Tide.Theme.sessionState(s) === state).length
     }
 
     function activate(sessionId) {
@@ -31,12 +33,13 @@ PlasmoidItem {
 
     Plasmoid.title: "Sesje agentów"
     Plasmoid.icon: "utilities-terminal"
+    // Uwagi wymaga tylko „czeka” — skończone sesje niczego nie blokują.
     // W pasku bocznym (sidebarMode) bez NeedsAttention: chowany panel nie chowa się, dopóki
     // któryś aplet wymaga uwagi, więc czekający agent trzymałby pasek na ekranie.
     Plasmoid.status: waitingCount > 0 && !Plasmoid.configuration.sidebarMode
         ? PlasmaCore.Types.NeedsAttentionStatus : PlasmaCore.Types.ActiveStatus
     toolTipMainText: "Sesje agentów"
-    toolTipSubText: Tide.Texts.agentsToolTip(source.available, workingCount, waitingCount)
+    toolTipSubText: Tide.Texts.agentsToolTip(source.available, workingCount, waitingCount, doneCount)
     // Pasek boczny Tide pokazuje widok szczegółowy na stałe (scripts/panels/sidebar.js).
     preferredRepresentation: Plasmoid.configuration.sidebarMode ? fullRepresentation : compactRepresentation
 
@@ -76,6 +79,7 @@ PlasmoidItem {
             height: Math.min(parent.height, Math.max(implicitHeight, dockHeight))
             workingCount: root.workingCount
             waitingCount: root.waitingCount
+            doneCount: root.doneCount
             available: source.available
             active: compact.containsMouse || root.expanded
         }
@@ -108,6 +112,12 @@ PlasmoidItem {
                 sessionState: "waiting"
                 count: root.waitingCount
                 emphasized: root.waitingCount > 0
+                textColor: Kirigami.Theme.textColor
+            }
+            Tide.CountPill {
+                visible: root.doneCount > 0
+                sessionState: "done"
+                count: root.doneCount
                 textColor: Kirigami.Theme.textColor
             }
         }
@@ -162,6 +172,12 @@ PlasmoidItem {
                     sessionState: "waiting"
                     count: root.waitingCount
                     emphasized: root.waitingCount > 0
+                    textColor: Kirigami.Theme.textColor
+                }
+                Tide.CountPill {
+                    visible: root.doneCount > 0
+                    sessionState: "done"
+                    count: root.doneCount
                     textColor: Kirigami.Theme.textColor
                 }
             }

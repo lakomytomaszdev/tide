@@ -25,7 +25,7 @@ Rectangle {
         StateDot {
             anchors.verticalCenter: parent.verticalCenter
             sessionState: pill.sessionState
-            color: pill.tint
+            tint: pill.tint
             size: Math.round(label.implicitHeight * 0.5)
         }
         Text {

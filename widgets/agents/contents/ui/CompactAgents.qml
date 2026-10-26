@@ -1,6 +1,8 @@
-// Kafelek agentów w docku: „Agenci”, pod spodem „● 2 pracują · ● 1 czeka”. Kropki w kolorach
-// stanów (teal, brzoskwinia), liczby w Geist Mono, słowa w text.secondary. Bez żywych sesji —
-// wyciszone „brak sesji”. Kafelek jest w tealu, a gdy ktoś czeka na ciebie — w brzoskwini.
+// Kafelek agentów w docku: „Agenci”, pod spodem „● 2 pracują · ● 1 czeka · ○ 2 gotowe” — tylko
+// niezerowe części. Kropki w kolorach stanów (teal, brzoskwinia, pusty błękit dla skończonych),
+// liczby w Geist Mono, słowa w text.secondary. Bez żywych sesji — wyciszone „brak sesji”.
+// Kafelek jest w tealu, a gdy ktoś naprawdę czeka na ciebie — w brzoskwini. Skończone sesje
+// niczego nie blokują, więc nie zmieniają koloru kafelka.
 // Bez PlasmoidItem, więc da się go załadować w teście (widgets/tests/test_dock_tiles.py).
 import QtQuick
 import "tide" as Tide
@@ -10,11 +12,12 @@ Tide.DockTile {
 
     property int workingCount: 0
     property int waitingCount: 0
+    property int doneCount: 0
     property bool available: true
 
-    readonly property string summary: available ? Tide.Texts.agentsSummary(workingCount, waitingCount)
+    readonly property string summary: available ? Tide.Texts.agentsSummary(workingCount, waitingCount, doneCount)
                                                 : "usługa nie działa"
-    readonly property bool quiet: !available || (workingCount === 0 && waitingCount === 0)
+    readonly property bool quiet: !available || (workingCount === 0 && waitingCount === 0 && doneCount === 0)
 
     label: "Agenci"
     tint: !available ? Tide.Tokens.textMuted : waitingCount > 0 ? Tide.Tokens.waiting : Tide.Tokens.working
@@ -24,7 +27,7 @@ Tide.DockTile {
 
         // Pracujące: kropka, liczba, słowo.
         Tide.StateDot {
-            visible: !tile.quiet && tile.workingCount > 0
+            visible: workingNumber.visible
             anchors.verticalCenter: parent.verticalCenter
             sessionState: "working"
             size: 7
@@ -47,7 +50,7 @@ Tide.DockTile {
             font.pointSize: tile.valuePointSize
         }
         Text {
-            visible: workingNumber.visible && waitingNumber.visible
+            visible: workingNumber.visible && (waitingNumber.visible || doneNumber.visible)
             anchors.baseline: workingNumber.baseline
             text: "·"
             color: Tide.Tokens.textMuted
@@ -75,6 +78,39 @@ Tide.DockTile {
             visible: waitingNumber.visible
             anchors.baseline: waitingNumber.baseline
             text: Tide.Texts.waitingWord(tile.waitingCount)
+            color: Tide.Tokens.textSecondary
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: tile.valuePointSize
+        }
+        Text {
+            visible: waitingNumber.visible && doneNumber.visible
+            anchors.baseline: waitingNumber.baseline
+            text: "·"
+            color: Tide.Tokens.textMuted
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: tile.valuePointSize
+        }
+
+        // Skończone: puste kółko i spokojna liczba — informacja, nie wezwanie.
+        Tide.StateDot {
+            visible: doneNumber.visible
+            anchors.verticalCenter: parent.verticalCenter
+            sessionState: "done"
+            size: 7
+        }
+        Text {
+            id: doneNumber
+            visible: !tile.quiet && tile.doneCount > 0
+            text: tile.doneCount
+            color: Tide.Tokens.textSecondary
+            font.family: Tide.Theme.monoFamily
+            font.pointSize: tile.valuePointSize
+            font.weight: Font.DemiBold
+        }
+        Text {
+            visible: doneNumber.visible
+            anchors.baseline: doneNumber.baseline
+            text: Tide.Texts.doneWord(tile.doneCount)
             color: Tide.Tokens.textSecondary
             font.family: Tide.Theme.uiFamily
             font.pointSize: tile.valuePointSize

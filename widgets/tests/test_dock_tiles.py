@@ -1,4 +1,5 @@
-"""Kafelki widżetów w docku: teksty (liczba mnoga, stany puste), wymiary i podpowiedzi.
+"""Kafelki widżetów w docku: teksty (liczba mnoga, stany puste), wymiary i podpowiedzi;
+karty sesji agentów w popupie (SessionCard) we wszystkich stanach.
 
 Kafelki (CompactAgents, CompactWorktrees, CompactSystem, CompactLimits) nie zależą od
 PlasmoidItem, więc qml6 offscreen ładuje je z przykładowymi danymi — tym samym kodem,
@@ -36,25 +37,35 @@ def png_size(path):
 class TileTextsTest(unittest.TestCase):
     def test_busy_day(self):
         result = preview.render(preview.SCENARIOS["busy"])
-        self.assertEqual(result["agents"], {"label": "Agenci", "summary": "2 pracują · 1 czeka"})
+        self.assertEqual(result["agents"], {"label": "Agenci", "summary": "2 pracują · 1 czeka · 2 gotowe"})
         # Ten sam układ co agenci: sam podpis, a w wartości niezerowe części z kropkami.
         self.assertEqual(result["worktrees"], {"label": "Worktrees", "detail": "",
                                                "summary": "5 w pracy · 15 do sprzątnięcia"})
         self.assertEqual(result["system"]["lines"], ["CPU 34%", "RAM 61%", "Dysk 88%"])
         self.assertEqual(result["limits"]["lines"], ["GPT 91%", "Claude 86%"])
-        # Dwie linie mieszczą się w 48 px kafelka, a cztery kafelki z odstępami 12 px — w 800 px
-        # (dock ma 2560 px, aplikacje są pośrodku).
+        # Dwie linie mieszczą się w 48 px kafelka, a cztery kafelki z odstępami 12 px — w 900 px
+        # (dock ma 2560 px, aplikacje są pośrodku). Było 800 px, zanim agenci dostali trzecią
+        # część („○ 2 gotowe”); kafelek agentów w najszerszym wariancie mieści się w 240 px.
         self.assertEqual(result["fits"], [True] * 4)
-        self.assertLess(result["total"], 800, result["widths"])
+        self.assertLess(result["total"], 900, result["widths"])
+        self.assertLessEqual(result["widths"][0], 240)
 
     def test_plural_forms(self):
-        cases = [((1, 0), "1 pracuje"), ((2, 0), "2 pracują"), ((5, 0), "5 pracują"),
-                 ((0, 1), "1 czeka"), ((0, 3), "3 czekają"), ((0, 12), "12 czekają"),
-                 ((1, 1), "1 pracuje · 1 czeka"), ((22, 4), "22 pracują · 4 czekają")]
-        for (working, waiting), expected in cases:
-            with self.subTest(working=working, waiting=waiting):
-                result = preview.render(scenario(agents={"working": working, "waiting": waiting}))
+        # Skończone liczymy jako sesje (rodzaj żeński): 1 gotowa, 2–4 gotowe, 5+ gotowych.
+        cases = [((1, 0, 0), "1 pracuje"), ((2, 0, 0), "2 pracują"), ((5, 0, 0), "5 pracują"),
+                 ((0, 1, 0), "1 czeka"), ((0, 3, 0), "3 czekają"), ((0, 12, 0), "12 czekają"),
+                 ((0, 0, 1), "1 gotowa"), ((0, 0, 2), "2 gotowe"), ((0, 0, 5), "5 gotowych"),
+                 ((0, 0, 12), "12 gotowych"), ((0, 0, 22), "22 gotowe"),
+                 ((1, 1, 0), "1 pracuje · 1 czeka"), ((22, 4, 0), "22 pracują · 4 czekają"),
+                 ((1, 0, 3), "1 pracuje · 3 gotowe"), ((1, 1, 2), "1 pracuje · 1 czeka · 2 gotowe")]
+        for (working, waiting, done), expected in cases:
+            with self.subTest(working=working, waiting=waiting, done=done):
+                result = preview.render(scenario(agents={"working": working, "waiting": waiting, "done": done}))
                 self.assertEqual(result["agents"]["summary"], expected)
+
+    def test_only_finished_sessions(self):
+        result = preview.render(preview.SCENARIOS["finished"])
+        self.assertEqual(result["agents"]["summary"], "3 gotowe")
 
     def test_empty_states(self):
         quiet = preview.render(preview.SCENARIOS["quiet"])
@@ -95,7 +106,9 @@ Item {
         const T = Tide.Texts
         console.warn("RESULT " + JSON.stringify({
             agents: [T.agentsToolTip(true, 2, 1), T.agentsToolTip(true, 1, 3), T.agentsToolTip(true, 0, 0),
-                     T.agentsToolTip(true, 0, 2), T.agentsToolTip(false, 2, 1)],
+                     T.agentsToolTip(true, 0, 2), T.agentsToolTip(false, 2, 1), T.agentsToolTip(true, 1, 1, 2),
+                     T.agentsToolTip(true, 0, 0, 1), T.agentsToolTip(true, 0, 0, 0)],
+            summary: [T.agentsSummary(1, 0), T.agentsSummary(0, 0, 5), T.agentsSummary(0, 0)],
             worktrees: [T.worktreesToolTip(true, 15, 17179869184, 5, 48), T.worktreesToolTip(true, 0, 0, 2, 3),
                         T.worktreesToolTip(false, 1, 1, 1, 1)],
             limits: [T.limitsToolTip(true, 91, 86), T.limitsToolTip(true, null, 12.4), T.limitsToolTip(false, 1, 1)]
@@ -113,7 +126,12 @@ Item {
             "Sesje agentów AI: 1 pracuje, 3 czekają na ciebie",
             "Sesje agentów AI: żadna nie pracuje ani nie czeka",
             "Sesje agentów AI: 2 czekają na ciebie",
-            "Usługa tide-daemon nie działa"])
+            "Usługa tide-daemon nie działa",
+            "Sesje agentów AI: 1 pracuje, 1 czeka na ciebie, 2 gotowe",
+            "Sesje agentów AI: 1 gotowa",
+            "Sesje agentów AI: żadna nie pracuje ani nie czeka"])
+        # Dwie liczby (starsze wywołania) działają jak dotąd.
+        self.assertEqual(result["summary"], ["1 pracuje", "5 gotowych", "brak sesji"])
         self.assertEqual(result["worktrees"], [
             "Dodatkowe worktrees git: 15 do sprzątnięcia (16 GB), 5 w pracy, razem 48"
             "\nKliknij, aby otworzyć okno Worktrees",
@@ -122,6 +140,42 @@ Item {
         self.assertEqual(result["limits"], ["Pozostały limit AI: GPT 91%, Claude 86%",
                                             "Pozostały limit AI: GPT —, Claude 12%",
                                             "Usługa Limity AI nie działa"])
+
+
+@unittest.skipUnless(shutil.which("qml6"), "brak qml6")
+class SessionCardsTest(unittest.TestCase):
+    """Karty sesji: brzoskwinia i pełny przycisk tylko dla czekających, skończone spokojne."""
+
+    def test_cards_in_every_state(self):
+        cards = preview.render_cards()
+        self.assertEqual([c["state"] for c in cards], ["waiting", "working", "done", "done", "idle"])
+        waiting, working, scheduled, done, idle = cards
+        self.assertTrue(waiting["highlighted"])
+        self.assertEqual(waiting["actionLine"], "czeka na zgodę · Bash · make test")
+        self.assertEqual(waiting["button"], "Przejdź do terminala")
+        self.assertEqual((working["highlighted"], working["button"]), (False, ""))
+        # Skończona: bez wyróżnienia, z przyciskiem; zaplanowana ma dopisek w linii stanu.
+        self.assertFalse(scheduled["highlighted"])
+        self.assertEqual(scheduled["stateLine"], "skończył  ·  Codex  ·  zaplanowane  ·  Kontynuacja")
+        self.assertEqual(scheduled["button"], "Przejdź do okna Codex")
+        self.assertEqual(done["stateLine"], "skończył  ·  Claude Code  ·  worktree wt-report  ·  Raport miesięczny")
+        self.assertEqual((done["highlighted"], done["button"]), (False, "Przejdź do terminala"))
+        self.assertEqual((idle["stateLine"], idle["button"]), ("bezczynna  ·  Codex", ""))
+
+    def test_older_daemon_reply_is_shown_as_done(self):
+        # Starsza usługa zgłaszała koniec tury jako waiting/reply — karta pokazuje go jako „skończył”.
+        old = dict(preview.SESSIONS[3], state="waiting", reason="reply")
+        card = preview.render_cards([old])[0]
+        self.assertEqual((card["state"], card["highlighted"]), ("done", False))
+        self.assertTrue(card["stateLine"].startswith("skończył"))
+
+    def test_screenshot(self):
+        with tempfile.TemporaryDirectory(prefix="tide-cards-png-") as tmp:
+            png = os.path.join(tmp, "cards.png")
+            preview.render_cards(png=png)
+            width, height = png_size(png)
+        self.assertEqual(width, preview.CARD_WIDTH + 2 * preview.MARGIN)
+        self.assertGreater(height, 300)
 
 
 class SourceTest(unittest.TestCase):

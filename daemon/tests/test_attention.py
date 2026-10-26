@@ -19,26 +19,43 @@ from tide_daemon.processes import ProcessInfo
 NOTIFY_SERVICE = "org.freedesktop.Notifications"
 NOTIFY_PATH = "/org/freedesktop/Notifications"
 FAKE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_notifications.py")
-CODEX_2 = os.path.join(CODEX, "sessions/2026/10/26/rollout-2026-10-26T11-40-00-0000000a-0000-4000-8000-000000000002.jsonl")
+CODEX_DAY = os.path.join(CODEX, "sessions/2026/10/26")
+CODEX_2 = os.path.join(CODEX_DAY, "rollout-2026-10-26T11-40-00-0000000a-0000-4000-8000-000000000002.jsonl")
+CODEX_10 = os.path.join(CODEX_DAY, "rollout-2026-10-26T11-44-00-0000000a-0000-4000-8000-000000000010.jsonl")
+ASK = {"timestamp": "2026-10-26T11:59:58.000Z", "type": "response_item",
+       "payload": {"type": "function_call", "name": "request_user_input", "arguments": "{}", "call_id": "q9"}}
+DONE = {"timestamp": "2026-10-26T11:59:57.000Z", "type": "event_msg", "payload": {"type": "task_complete"}}
 
 
 def session(sid, state, since=0.0, can=True, **extra):
     return dict({"id": sid, "state": state, "sinceTs": since, "canActivate": can, "project": "p", "tool": "claude",
-                 "reason": "reply", "branch": "", "title": "", "lastAction": ""}, **extra)
+                 "reason": "question", "branch": "", "title": "", "lastAction": ""}, **extra)
 
 
 class LongestWaitingTest(unittest.TestCase):
     def table(self):
-        # Codex w Konsoli czeka od 11:45 — dłużej niż sesje Claude Code (od 11:58).
-        codex = ProcessInfo(800, 301, "codex", at("11:40:00"), cwd="/srv/work/beta", tool="codex",
-                            open_files=(CODEX_2,))
-        return core.ProcessesTest().table(codex)
+        # Codex w Konsoli pyta od 11:45 — dłużej niż sesje Claude Code (od 11:58). Drugi Codex
+        # w Konsoli skończył turę jeszcze wcześniej (11:45), ale „skończył” to nie „czeka”.
+        asking = ProcessInfo(800, 301, "codex", at("11:40:00"), cwd="/srv/work/kappa", tool="codex",
+                             open_files=(CODEX_10,))
+        finished = ProcessInfo(801, 301, "codex", at("11:39:00"), cwd="/srv/work/beta", tool="codex",
+                               open_files=(CODEX_2,))
+        return core.ProcessesTest().table(asking, finished)
 
     def test_picks_activatable_session_waiting_longest(self):
         sessions = scan(CLAUDE, CODEX, NOW, self.table())
         waiting = [s["id"] for s in sessions if s["state"] == "waiting" and s["canActivate"]]
-        self.assertEqual(sorted(waiting), sorted(["claude:c-status", "claude:c-approval", codex_id(2)]))
-        self.assertEqual(longest_waiting(sessions)["id"], codex_id(2))
+        self.assertEqual(sorted(waiting), sorted(["claude:c-status", "claude:c-approval", codex_id(10)]))
+        self.assertEqual(longest_waiting(sessions)["id"], codex_id(10))
+
+    def test_done_session_is_never_a_target(self):
+        # Meta+A prowadzi wyłącznie do czekających — skończona sesja z oknem nie jest celem,
+        # nawet gdy nikt inny nie czeka.
+        sessions = scan(CLAUDE, CODEX, NOW, self.table())
+        done = {s["id"]: s for s in sessions}[codex_id(2)]
+        self.assertEqual((done["state"], done["canActivate"]), ("done", True))
+        self.assertIsNone(longest_waiting([done, session("w", "working")]))
+        self.assertIsNone(longest_waiting([session("d", "done", 1, reason="scheduled")]))
 
     def test_without_window_or_without_waiting_nothing_is_picked(self):
         self.assertIsNone(longest_waiting(scan(CLAUDE, CODEX, NOW)))  # bez procesów nie ma okien
@@ -80,7 +97,16 @@ class WaitingTrackerTest(unittest.TestCase):
         started, _ = tracker.update([session("x", "waiting", 30), session("y", "waiting", 10)])
         self.assertEqual([s["id"] for s in started], ["y", "x"])
 
-    def test_fixtures_appended_entry_announces_codex_session(self):
+    def test_done_is_not_announced(self):
+        tracker = WaitingTracker()
+        tracker.update([session("a", "working"), session("b", "waiting", 5)])
+        # Koniec tury (także z zaplanowanego zadania) nie jest wejściem w „czeka”,
+        # a przejście z „czeka” w „skończył” zamyka powiadomienie.
+        started, stopped = tracker.update([session("a", "done", 10, reason=""),
+                                           session("b", "done", 11, reason="scheduled")])
+        self.assertEqual((started, stopped), ([], ["b"]))
+
+    def test_fixtures_appended_entries_announce_only_real_waiting(self):
         tmp = tempfile.mkdtemp(prefix="tide-attn-")
         self.addCleanup(shutil.rmtree, tmp)
         shutil.copytree(CODEX, os.path.join(tmp, "codex"))
@@ -89,10 +115,12 @@ class WaitingTrackerTest(unittest.TestCase):
         log = os.path.join(tmp, "codex/sessions/2026/10/26/"
                                 "rollout-2026-10-26T11-30-00-0000000a-0000-4000-8000-000000000001.jsonl")
         with open(log, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"timestamp": "2026-10-26T11:59:58.000Z", "type": "event_msg",
-                                 "payload": {"type": "task_complete"}}) + "\n")
+            fh.write(json.dumps(DONE) + "\n")
+        self.assertEqual(tracker.update(scan(CLAUDE, os.path.join(tmp, "codex"), NOW)), ([], []))
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(ASK) + "\n")
         started, stopped = tracker.update(scan(CLAUDE, os.path.join(tmp, "codex"), NOW))
-        self.assertEqual(([s["id"] for s in started], stopped), ([codex_id(1)], []))
+        self.assertEqual(([(s["id"], s["reason"]) for s in started], stopped), ([(codex_id(1), "question")], []))
 
 
 class NotificationTextTest(unittest.TestCase):
@@ -100,8 +128,9 @@ class NotificationTextTest(unittest.TestCase):
         s = session("a", "waiting", project="alpha", tool="codex", reason="approval", lastAction="shell · make",
                     branch="feat/x")
         self.assertEqual(notification_text(s), ("Agent czeka: alpha", "Czeka na zgodę: shell · make\nCodex · feat/x"))
-        s = session("b", "waiting", project="beta", reason="reply", lastAction="Edit · a.py", title="Refaktor")
-        self.assertEqual(notification_text(s), ("Agent czeka: beta", "Skończył i czeka na odpowiedź\n"
+        s = session("b", "waiting", project="beta", reason="question", lastAction="AskUserQuestion",
+                    title="Refaktor")
+        self.assertEqual(notification_text(s), ("Agent czeka: beta", "Pyta o decyzję: AskUserQuestion\n"
                                                                      "Claude Code · Refaktor"))
 
 
@@ -188,9 +217,14 @@ class DaemonNotificationTest(unittest.TestCase):
 
         log = os.path.join(tmp, "codex/sessions/2026/10/26/"
                                 "rollout-2026-10-26T11-30-00-0000000a-0000-4000-8000-000000000001.jsonl")
+        # Skończona tura nie jest czekaniem — bez powiadomienia.
         with open(log, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"timestamp": "2026-10-26T11:59:58.000Z", "type": "event_msg",
-                                 "payload": {"type": "task_complete"}}) + "\n")
+            fh.write(json.dumps(DONE) + "\n")
+        wait_until(lambda: False, timeout=1.5)
+        self.assertEqual(notifies(), [], "koniec tury nie powiadamia")
+        # Pytanie do użytkownika — powiadomienie.
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(ASK) + "\n")
         sent = wait_until(notifies, timeout=5)
         self.assertEqual([n["summary"] for n in sent], ["Agent czeka: beta"])
         self.assertEqual(sent[0]["actions"], [], "bez procesów nie ma okna, więc nie ma przycisku")

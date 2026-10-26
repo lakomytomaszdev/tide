@@ -1,0 +1,8 @@
+{"type":"user","isSidechain":false,"timestamp":"2026-10-26T11:50:00.000Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-done","message":{"role":"user","content":"Explain the module"}}
+{"type":"assistant","isSidechain":false,"timestamp":"2026-10-26T11:51:00.000Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-done","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_r1","name":"Read","input":{"file_path":"/srv/work/alpha/src/module.py"}}]}}
+{"type":"user","isSidechain":false,"timestamp":"2026-10-26T11:51:01.000Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-done","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_r1","content":"..."}]}}
+{"type":"assistant","isSidechain":false,"timestamp":"2026-10-26T11:52:00.000Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-done","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}
+{"type":"system","subtype":"turn_duration","isSidechain":false,"timestamp":"2026-10-26T11:52:00.050Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-done","durationMs":120000}
+{"type":"ai-title","aiTitle":"Module walkthrough","sessionId":"c-done"}
+{"type":"assistant","isSidechain":true,"timestamp":"2026-10-26T11:53:00.000Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-done","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_s1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"system","subtype":"away_summary","isSidechain":false,"timestamp":"2026-10-26T11:58:00.000Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-done"}

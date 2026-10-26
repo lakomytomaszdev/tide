@@ -6,7 +6,9 @@ na samej karcie terminala, w którym działa agent:
 
 - pracuje → „◐ ” przed tytułem karty i kolor karty teal,
 - czeka   → „◆ ” przed tytułem karty i kolor karty brzoskwiniowy,
-- bezczynna, zakończona albo zniknęła → karta wraca do stanu sprzed oznaczenia.
+- skończyła turę (done), bezczynna, zakończona albo zniknęła → karta wraca do stanu sprzed
+  oznaczenia. „Skończył” celowo nie ma znacznika: karta nie woła o uwagę, gdy agent niczego
+  nie blokuje, a koniec pracy i tak widać po zniknięciu „◐ ”.
 
 Tytuł karty z prefiksem trafia też do tytułu okna (gdy to bieżąca karta), a więc na pasek
 tytułu, do paska zadań i przełącznika okien.
