@@ -19,6 +19,13 @@ def coverage(alpha: Image.Image) -> float:
     return sum(hist[201:]) / (alpha.width * alpha.height)
 
 
+def corners_clear(alpha: Image.Image) -> bool:
+    """Czy narożniki są puste — koło je odsłania, zaokrąglony kwadrat nie."""
+    w, h = alpha.size
+    probes = [(0.12, 0.12), (0.88, 0.12), (0.12, 0.88), (0.88, 0.88)]
+    return all(alpha.getpixel((min(w - 1, int(x * w)), min(h - 1, int(y * h)))) < 64 for x, y in probes)
+
+
 def dominant_color(icon: Image.Image) -> tuple[int, int, int]:
     rgb = Image.new("RGB", icon.size, (0, 0, 0))
     rgb.paste(icon, mask=icon.getchannel("A"))
@@ -28,14 +35,17 @@ def dominant_color(icon: Image.Image) -> tuple[int, int, int]:
 
 def tile(src: Image.Image, size: int) -> Image.Image:
     icon = src.convert("RGBA")
-    icon = icon.crop(icon.getchannel("A").getbbox() or (0, 0, *icon.size))
+    alpha = icon.getchannel("A")
+    # Kadrujemy do pełnego kształtu, bez miękkiego cienia wokół (ikony w stylu macOS go mają).
+    solid = alpha.point(lambda a: 255 if a > 200 else 0).getbbox()
+    icon = icon.crop(solid or alpha.getbbox() or (0, 0, *icon.size))
     w, h = icon.size
     square = abs(w - h) <= max(w, h) * 0.06
     cov = coverage(icon.getchannel("A"))
     mask = circle_mask(size)
     out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
 
-    if square and 0.72 <= cov <= 0.84:
+    if square and 0.72 <= cov <= 0.84 and corners_clear(icon.getchannel("A")):
         # Już okrągła — tylko wyrównujemy rozmiar.
         out.alpha_composite(icon.resize((size, size), Image.LANCZOS))
         return out
