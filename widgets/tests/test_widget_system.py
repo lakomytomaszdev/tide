@@ -7,6 +7,7 @@ Jeden test porównuje widżet z prawdziwymi czujnikami; bez działającego ksyst
 """
 import importlib.util
 import json
+import time
 import os
 import re
 import shutil
@@ -522,8 +523,14 @@ Window {
                                           "memory": False, "gpu": False, "disks": True, "monitor": True,
                                           "diskButton": False, "shown": True})
         self.assertEqual((result["historyCount"], result["capacity"]), (0, 30))
-        with open(self.log, encoding="utf-8") as fh:
-            log = fh.read().splitlines()
+        # Uruchamiane polecenia dopisują się do dziennika asynchronicznie — czekamy na oba kstart.
+        deadline = time.monotonic() + 5
+        while True:
+            with open(self.log, encoding="utf-8") as fh:
+                log = fh.read().splitlines()
+            if len([line for line in log if line.startswith("kstart")]) >= 2 or time.monotonic() > deadline:
+                break
+            time.sleep(0.05)
         self.assertIn("info", log)
         self.assertIn("mounts / /home", log)
         self.assertIn("top 3", log)
