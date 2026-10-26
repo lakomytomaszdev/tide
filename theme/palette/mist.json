@@ -29,7 +29,8 @@
     "neutral": "butter",
     "negative": "rose",
     "waiting": "peach",
-    "working": "teal"
+    "working": "teal",
+    "done": "sky"
   },
   "windowButtons": {
     "minimize": "butter",

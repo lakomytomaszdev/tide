@@ -46,6 +46,9 @@ class PaletteTest(unittest.TestCase):
         pastel = self.palette["pastel"]
         self.assertEqual(self.token("working"), pastel[self.palette["semantic"]["working"]])
         self.assertEqual(self.token("waiting"), pastel[self.palette["semantic"]["waiting"]])
+        # „Skończył” ma własny, spokojny kolor — inny niż „pracuje” i „czeka”.
+        self.assertEqual(self.token("done"), pastel[self.palette["semantic"]["done"]])
+        self.assertNotIn(self.token("done"), (self.token("working"), self.token("waiting")))
         self.assertEqual(self.token("textMuted"), self.palette["text"]["muted"])
         self.assertEqual(self.token("radiusCard"), self.palette["radius"]["card"])
         self.assertEqual(self.token("fontMono"), self.palette["fonts"]["mono"])
@@ -76,10 +79,15 @@ Item {
     Tide.Ring { value: 0.3; width: 30; height: 30 }
     Tide.CountPill { sessionState: "working"; count: 3; emphasized: true }
     Tide.DockTile { label: "Agenci"; detail: "2 w pracy"; Text { text: "x" } }
-    CompactAgents { workingCount: 2; waitingCount: 1 }
+    CompactAgents { workingCount: 2; waitingCount: 1; doneCount: 2 }
+    Tide.CountPill { sessionState: "done"; count: 2 }
+    Tide.StateDot { sessionState: "done" }
     SessionCard { session: ({ id: "x", tool: "claude", project: "p", branch: "b", worktree: "", title: "",
         state: "waiting", reason: "approval", sinceTs: 0, lastActivityTs: 0, lastAction: "Bash", canActivate: true,
         terminal: "Konsole" }) }
+    SessionCard { session: ({ id: "y", tool: "codex", project: "p", branch: "b", worktree: "", title: "",
+        state: "done", reason: "scheduled", sinceTs: 0, lastActivityTs: 0, lastAction: "", canActivate: true,
+        terminal: "Codex" }) }
     Component.onCompleted: { console.warn("SMOKE-OK " + Tide.Tokens.name); Qt.quit() }
 }
 """)

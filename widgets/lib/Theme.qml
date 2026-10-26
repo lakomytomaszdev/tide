@@ -12,11 +12,21 @@ QtObject {
         return family !== "" && Qt.fontFamilies().indexOf(family) >= 0
     }
 
-    // Stany sesji agentów: working, waiting, idle, ended.
+    // Stan sesji do wyświetlenia. Starsza usługa (sprzed stanu „done”) zgłaszała koniec tury jako
+    // waiting z powodem „reply” — to dziś „skończył”, więc widżet nie wyróżnia go brzoskwinią.
+    function sessionState(session) {
+        if (!session) return ""
+        return session.state === "waiting" && session.reason === "reply" ? "done" : session.state
+    }
+
+    // Stany sesji agentów: working, waiting, done, idle, ended (docs/tide-daemon.md).
+    // „czeka” (brzoskwinia) tylko wtedy, gdy agent stoi bez użytkownika; „skończył” to spokojny
+    // błękit (semantic.done), bez wyróżnienia.
     function stateColor(state) {
         switch (state) {
         case "working": return Tokens.working
         case "waiting": return Tokens.waiting
+        case "done": return Tokens.done
         default: return Tokens.textMuted
         }
     }
@@ -25,6 +35,7 @@ QtObject {
         switch (state) {
         case "working": return "pracuje"
         case "waiting": return "czeka na ciebie"
+        case "done": return "skończył"
         case "idle": return "bezczynna"
         case "ended": return "zakończona"
         default: return state

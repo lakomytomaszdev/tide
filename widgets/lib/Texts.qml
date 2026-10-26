@@ -14,6 +14,14 @@ QtObject {
         return Theme.plural(n, "czeka", "czekają", "czekają")
     }
 
+    // Sesje, w których agent skończył turę i niczego nie blokuje (stan „done”). Przymiotnik
+    // zamiast czasownika: „skończył/skończyli” wymusza rodzaj agenta (męskoosobowy, który bez
+    // rzeczownika brzmi obco: „2 skończyli”), a podmiotem kafelka są sesje — „1 gotowa”,
+    // „2 gotowe”, „5 gotowych”. Krótsze też od „skończyły”, a kafelek w docku liczy się w pikselach.
+    function doneWord(n) {
+        return Theme.plural(n, "gotowa", "gotowe", "gotowych")
+    }
+
     // „1 pracuje”, „2 pracują”, „5 pracują”.
     function working(n) {
         return n + " " + workingWord(n)
@@ -24,19 +32,27 @@ QtObject {
         return n + " " + waitingWord(n)
     }
 
+    // „1 gotowa”, „2 gotowe”, „5 gotowych”.
+    function done(n) {
+        return n + " " + doneWord(n)
+    }
+
     // Linia wartości kafelka agentów: tylko niezerowe części, bez sesji — „brak sesji”.
-    function agentsSummary(workingCount, waitingCount) {
+    // doneCount jest opcjonalny (starsze wywołania podają tylko dwie liczby).
+    function agentsSummary(workingCount, waitingCount, doneCount) {
         const parts = []
         if (workingCount > 0) parts.push(working(workingCount))
         if (waitingCount > 0) parts.push(waiting(waitingCount))
+        if (doneCount > 0) parts.push(done(doneCount))
         return parts.length ? parts.join(" · ") : "brak sesji"
     }
 
-    function agentsToolTip(available, workingCount, waitingCount) {
+    function agentsToolTip(available, workingCount, waitingCount, doneCount) {
         if (!available) return "Usługa tide-daemon nie działa"
         const parts = []
         if (workingCount > 0) parts.push(working(workingCount))
         if (waitingCount > 0) parts.push(waiting(waitingCount) + " na ciebie")
+        if (doneCount > 0) parts.push(done(doneCount))
         return "Sesje agentów AI: " + (parts.length ? parts.join(", ") : "żadna nie pracuje ani nie czeka")
     }
 

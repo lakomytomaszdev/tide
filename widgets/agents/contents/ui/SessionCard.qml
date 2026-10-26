@@ -1,6 +1,7 @@
-// Karta jednej sesji agenta w popupie. Czekająca jest wyróżniona brzoskwinią i ma przycisk
-// przejścia do terminala; pracująca ma pulsującą kropkę i linię ostatniej czynności;
-// bezczynna i zakończona są przygaszone.
+// Karta jednej sesji agenta w popupie. Czekająca (agent stoi bez ciebie) jest wyróżniona
+// brzoskwinią i ma pełny przycisk przejścia do terminala; skończona (done) jest spokojna — puste
+// błękitne kółko i ten sam przycisk bez wyróżnienia; pracująca ma pulsującą kropkę i linię
+// ostatniej czynności; bezczynna i zakończona są przygaszone.
 import QtQuick
 import QtQuick.Layouts
 import "tide" as Tide
@@ -12,12 +13,20 @@ Tide.Card {
     property real nowTs: Date.now() / 1000
     signal activateRequested(string sessionId)
 
-    readonly property bool waiting: session.state === "waiting"
+    // Starsza usługa zgłaszała koniec tury jako waiting/reply — Theme.sessionState robi z tego done.
+    readonly property string shownState: Tide.Theme.sessionState(session)
+    readonly property bool waiting: shownState === "waiting"
+    readonly property bool done: shownState === "done"
     readonly property bool clickable: session.canActivate === true
+    readonly property bool scheduled: session.reason === "scheduled"
+    // Przycisk przejścia: dla czekających wyróżniony, dla skończonych spokojny.
+    readonly property bool showButton: (waiting || done) && clickable
+    readonly property string buttonText: session.terminal && session.terminal !== "Konsole"
+                                         ? "Przejdź do okna " + session.terminal : "Przejdź do terminala"
 
     highlighted: waiting
     accent: Tide.Tokens.waiting
-    opacity: Tide.Theme.stateOpacity(session.state)
+    opacity: Tide.Theme.stateOpacity(shownState)
     spacing: 4
 
     function ago(ts) {
@@ -31,7 +40,6 @@ Tide.Card {
 
     function reasonText(reason) {
         switch (reason) {
-        case "reply": return "czeka na odpowiedź"
         case "question": return "pyta o decyzję"
         case "approval":
         case "permission": return "czeka na zgodę"
@@ -40,10 +48,18 @@ Tide.Card {
     }
 
     readonly property string toolName: session.tool === "claude" ? "Claude Code" : session.tool === "codex" ? "Codex" : session.tool
+    // Linia stanu: „skończył · Codex · zaplanowane · worktree x · tytuł”.
+    readonly property string stateLine: {
+        const parts = [Tide.Theme.stateLabel(shownState), toolName]
+        if (scheduled && shownState !== "working") parts.push("zaplanowane")
+        if (session.worktree) parts.push("worktree " + session.worktree)
+        if (session.title) parts.push(session.title)
+        return parts.join("  ·  ")
+    }
     readonly property string actionLine: {
         if (waiting) {
             const why = reasonText(session.reason)
-            return session.lastAction && session.reason !== "reply" ? why + " · " + session.lastAction : why
+            return session.lastAction ? why + " · " + session.lastAction : why
         }
         if (session.reason === "background")
             return "zadanie w tle" + (session.lastAction ? " · " + session.lastAction : "")
@@ -73,7 +89,7 @@ Tide.Card {
         spacing: 8
 
         Tide.StateDot {
-            sessionState: card.session.state
+            sessionState: card.shownState
             size: 9
         }
         Text {
@@ -105,7 +121,7 @@ Tide.Card {
         }
         Item { Layout.fillWidth: true }
         Text {
-            text: card.ago(card.waiting ? card.session.sinceTs : card.session.lastActivityTs)
+            text: card.ago(card.waiting || card.done ? card.session.sinceTs : card.session.lastActivityTs)
             color: Tide.Tokens.textMuted
             font.family: Tide.Theme.monoFamily
             font.pointSize: Tide.Tokens.fontSizePt - 1
@@ -114,12 +130,7 @@ Tide.Card {
 
     Text {
         Layout.fillWidth: true
-        text: {
-            const parts = [Tide.Theme.stateLabel(card.session.state), card.toolName]
-            if (card.session.worktree) parts.push("worktree " + card.session.worktree)
-            if (card.session.title) parts.push(card.session.title)
-            return parts.join("  ·  ")
-        }
+        text: card.stateLine
         color: card.waiting ? Tide.Tokens.waiting : Tide.Tokens.textSecondary
         font.family: Tide.Theme.uiFamily
         font.pointSize: Tide.Tokens.fontSizePt - 1
@@ -130,30 +141,33 @@ Tide.Card {
         Layout.fillWidth: true
         visible: text !== ""
         text: card.actionLine
-        color: card.session.state === "working" ? Tide.Tokens.working : Tide.Tokens.textMuted
+        color: card.shownState === "working" ? Tide.Tokens.working : Tide.Tokens.textMuted
         font.family: Tide.Theme.monoFamily
         font.pointSize: Tide.Tokens.fontSizePt - 1
         elide: Text.ElideRight
     }
 
-    // Przycisk tylko dla czekających sesji z ustalonym oknem.
+    // Przycisk dla czekających i skończonych sesji z ustalonym oknem: czekająca — pełna
+    // brzoskwinia, skończona — przezroczysty z obwódką, żeby nie konkurował z tymi, które czekają.
     Rectangle {
-        visible: card.waiting && card.clickable
+        visible: card.showButton
         Layout.topMargin: 4
         implicitHeight: buttonLabel.implicitHeight + 12
         implicitWidth: buttonLabel.implicitWidth + 28
         radius: Tide.Tokens.radiusSmall
-        color: buttonArea.containsMouse ? Qt.lighter(Tide.Tokens.waiting, 1.08) : Tide.Tokens.waiting
+        color: card.waiting ? (buttonArea.containsMouse ? Qt.lighter(Tide.Tokens.waiting, 1.08) : Tide.Tokens.waiting)
+                            : Tide.Theme.alpha(Tide.Tokens.textPrimary, buttonArea.containsMouse ? 0.10 : 0.05)
+        border.width: card.waiting ? 0 : 1
+        border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.14)
 
         Text {
             id: buttonLabel
             anchors.centerIn: parent
-            text: card.session.terminal && card.session.terminal !== "Konsole"
-                  ? "Przejdź do okna " + card.session.terminal : "Przejdź do terminala"
-            color: Tide.Tokens.backgroundWindow
+            text: card.buttonText
+            color: card.waiting ? Tide.Tokens.backgroundWindow : Tide.Tokens.textSecondary
             font.family: Tide.Theme.uiFamily
             font.pointSize: Tide.Tokens.fontSizePt
-            font.weight: Font.DemiBold
+            font.weight: card.waiting ? Font.DemiBold : Font.Medium
         }
         MouseArea {
             id: buttonArea
