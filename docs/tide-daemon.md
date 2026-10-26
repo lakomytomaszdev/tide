@@ -1,6 +1,6 @@
 # tide-daemon
 
-Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)). Piąty to raport poranny: raz na dobę strona HTML na każdy projekt z ruchem ([Raport poranny](#raport-poranny)). Szósty to historia Limitów AI, prognoza ich wyczerpania i powiadomienia o progach ([Limity AI](#limity-ai)).
+Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)). Piąty to raport poranny: raz na dobę strona HTML na każdy projekt z ruchem ([Raport poranny](#raport-poranny)). Szósty to historia Limitów AI, prognoza ich wyczerpania i powiadomienia o progach ([Limity AI](#limity-ai)). Siódmy to koordynacja: sesje, które zlecają pracę podagentom, jako tablica ticketów z planem i YouTrackiem ([Koordynacja](#koordynacja)).
 
 ## Kontrakt D-Bus
 
@@ -43,6 +43,7 @@ Pola sesji:
 | `newTask` | bool | tylko `true` i tylko przez 10 min: sesję uruchomiło przed chwilą okno „Nowe zadanie” (to samo narzędzie i katalog, sesji nie było przed startem). Widżet pokazuje przy niej znacznik „nowe”. W pozostałych sesjach pola nie ma |
 | `activation` | string | jak `ActivateSession` przejdzie do sesji: `deeplink` (Codex Desktop — wątek `codex://threads/<id>` w aplikacji, potem jej okno), `window` (okno terminala albo aplikacji, Konsole z przełączeniem karty) albo pusty |
 | `subagents` | int | ilu podagentów Codexa zwinięto do tej sesji i jeszcze działa (stan inny niż `ended`) |
+| `coordination` | object | tylko przy koordynatorze (sesja z podagentami, [Koordynacja](#koordynacja)): `label`, `done`, `total`, `text` („TOM-20 · 8/13”), `working`, `waiting`, `running`. W pozostałych sesjach pola nie ma |
 | `subagent` | bool | sesja to podagent Codexa, którego rodzica nie znamy (np. wątek główny sprzed doby) — pokazywany osobno z dopiskiem „podagent” |
 | `agentNickname` | string | przydomek podagenta (`agent_nickname`) albo pusty |
 
@@ -296,6 +297,7 @@ Co pokazuje:
 | Sesja (`session:<narzędzie>:<id>`) | `Codex · LogViewer · <tytuł>` / `<gałąź> · 3 dni temu` | okno sesji, jeśli jeszcze działa (jak `ActivateSession`); wątek z Codex Desktop — otwarty w aplikacji (`codex://threads/<id>`, podpowiedź „otwórz w Codex”); inaczej nowe okno Konsoli w katalogu sesji z `claude --resume <id>` albo `codex resume <id>`, a po wyjściu z agenta zostaje powłoka |
 | Projekt (`project:<ścieżka>`) | nazwa repozytorium / `Otwórz projekt · ~/DevWorkspace/…` | Konsole w katalogu; akcja `rider` |
 | Worktree (`worktree:<ścieżka>`) | gałąź / `Worktree · <repozytorium> · <ścieżka>` | Konsole w katalogu; akcja `rider` |
+| Tide Sesje (`sessions:window`, `coordination:<id>`) | „sesje” (od „ses”): `Tide Sesje` / liczba koordynatorów; „sesje <słowa>”: `Sesje · <projekt> · <tytuł>` / `TOM-20 · 8/13 · 1 czeka · 3 w toku · 5 min temu` | okno Tide Sesje (z wybranym koordynatorem); tylko gdy okno jest zainstalowane |
 
 - Zapytanie musi mieć co najmniej 3 znaki. Każde słowo musi trafić w któreś pole (sesja: projekt, gałąź, nazwa katalogu, tytuł, narzędzie; projekt: nazwa; worktree: gałąź, katalog, repozytorium), bez wielkości liter i polskich znaków. Sesje są dodatkowo ważone świeżością.
 - `ai <słowa>` pokazuje tylko sesje (do 20); zwykłe zapytanie — do 8 sesji, 5 projektów i 6 worktrees.
@@ -385,6 +387,8 @@ xdg-open "$(qdbus6 org.tide.Daemon /Reports org.tide.Daemon.Reports.Latest)"
 
 **KRunner.** „raport” (albo „rap…”, „raport poranny”) pokazuje najnowszy raport; Enter otwiera go w przeglądarce.
 
+**Plany i tickety** (`reports/plans.py`, dodatek — bez niego raport działa jak dotąd): na stronie projektu karta każdego koordynatora z okresu (z pliku tablicy `coordination.json`: tytuł, etykieta, pasek postępu, liczby po stanach, tickety od czekających z notatkami i odnośnikami do YouTracka) i każdego planu z `docs/agents/plans` (aktywnego albo zmienionego w okresie), którego tablica nie zna — wtedy stany z samego planu, z jego błędami. Karta projektu w indeksie dostaje znacznik „TOM-20 · 8/13”. Wszystkie teksty escapowane jak reszta raportu.
+
 ## Limity AI
 
 Widżet Limity AI czyta pozostałe limity prosto z usługi QuotaApp (decyzja 21). Usługa Tide dokłada do tego pamięć: zapisuje odczyty, z nich liczy tempo i prognozę wyczerpania, a przy progach wysyła powiadomienia. Widżet pokazuje prognozę, gdy usługa działa; bez niej wszystko zostaje jak dotąd.
@@ -458,6 +462,139 @@ qdbus6 org.tide.Daemon /Limits org.tide.Daemon.Limits.Forecast
 /usr/bin/python3 daemon/tide-daemon.py --print-limits   # historia + jeden GET /status, niczego nie zapisuje
 ```
 
+## Koordynacja
+
+Sesja, która zleca pracę podagentom (koordynator), dostaje tablicę ticketów: okno **Tide Sesje**
+(`apps/sessions`), postęp w widżecie agentów („TOM-20 · 8/13”), słowo „sesje” w KRunnerze i sekcję
+„Plany i tickety” w raporcie porannym. Wszystko z dzienników na dysku i z planu w repozytorium —
+usługa niczego nie zapisuje w repozytoriach i dziennikach, a YouTracka pyta wyłącznie przez GET.
+Standard planu: [agent-plan-standard.md](agent-plan-standard.md), uzasadnienie: decyzja 49.
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/Coordination` |
+| Interfejs | `org.tide.Daemon.Coordination` |
+| Plik dla raportu | `$XDG_STATE_HOME/tide/coordination.json` (0600) |
+| Ustawienia YouTracka | `$XDG_CONFIG_HOME/tide/youtrack.json` (opcjonalny) |
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `Coordinators()` | `→ s` | Koordynatorzy z ostatnich 7 dni jako JSON (najpierw działający, potem od najświeższej aktywności) — pola tablicy bez ticketów i przebiegów |
+| `Board(s id)` | `→ s` | Tablica koordynatora (pola niżej); `{}` dla nieznanego id |
+| `RunDetail(s id, s run)` | `→ s` | Wynik podagenta („Pokaż wynik”): `description`, `label`, `model`, `role`, `rounds` (`kind`, `status`, `startTs`, `endTs`, `summary`, `durationMs`), `result` (raport), `excerpt` (ostatnie wypowiedzi i wywołania narzędzi z jego dziennika: `ts`, `kind` `text`/`tool`, `text`), `transcript` |
+| `Activate(s id)` | `→ b` | Przejdź do koordynatora: okno działającej sesji (jak `ActivateSession`), inaczej wznowienie w nowym oknie Konsoli (`claude --resume` / `codex resume`) |
+| `OpenDiff(s id, s ticket)` | `→ b` | `git diff --stat --patch <główna>...<gałąź ticketu>` w Konsoli w głównym katalogu repozytorium (gałąź musi istnieć lokalnie); bez Konsoli — worktree ticketu w Riderze |
+| `OpenWorktree(s id, s ticket)` | `→ b` | Worktree z gałęzią ticketu w Konsoli (przycisk „Worktree”) |
+| `ShowWindow(s id)` | `→ b` | Okno „Tide Sesje”, z wybranym koordynatorem (pusty id — bez wyboru); `false`, gdy okno nie jest zainstalowane |
+| `Refresh(b force)` | `→` | Odświeżenie teraz; `force` pomija pamięć podręczną YouTracka |
+| `Changed` | sygnał | Lista albo któraś tablica się zmieniła |
+
+**Tablica** (`Board`): `id` (`claude:<sesja>` albo `codex:<wątek>`, jak w `/Agents`), `tool`, `sessionId`,
+`project`, `repoPath` (główny katalog repozytorium), `cwd`, `branch`, `title` (z planu, inaczej tytuł
+rozmowy), `sessionTitle`, `label` (ID z tytułu planu albo gałęzi, tylko ze znanym prefiksem ticketów —
+„TOM-20”), `model` („Opus”), `startedTs`, `lastActivityTs`, `state` i `reason` (stan sesji z `/Agents`,
+`ended`, gdy jej tam nie ma), `live`, `canActivate`, `question` (ostatnie pytanie bez odpowiedzi),
+`plan` (`path`, `title`, `tracker`, `trackerUrl`, `trackerProject`, `prefix`, `coordinator`, `session`,
+`status`, `updated`, `updatedTs`, `errors`) albo `null`, `tracker` (`kind`, `url`, `project`, `available`,
+`error`, `fetchedTs`, `checkedTs`), `counts` (po stanach, `total` bez odrzuconych, `done`), `progress`
+(`done`, `total`, `text`: „TOM-20 · 8/13”), `spawned`, `running`, `columns`, `tickets`, `runs`.
+
+**Ticket:** `key` (klucz porównania: `TOM-140`, `#22` albo `~opis` dla pracy bez ID), `id` (do pokazania,
+z planu albo pierwszy zapis), `title`, `state` (`todo`, `w-toku`, `czeka`, `review`, `gotowe`, `odrzucone`),
+`column`, `word`, `source` (`runs`, `plan`, `tracker`), `derived` (stan z samej pracy podagentów),
+`planState`, `planNote`, `planAgent`, `inPlan`, `trackerState`, `url` (YouTrack), `branch`, `worktree`,
+`note` („review OK”, „po review: 1 MAJOR — do poprawy”, „czeka na ciebie: „…””), `review` (`blocker`,
+`major`, `nit`, `ok`, `verdict`, `top`, `text`) albo `null`, `runs`, `agents` (ostatnie trzy rundy na
+kartę: `label`, `role`, `state`, `startTs`, `endTs`, `note` „poprawki”), `running`, `question`,
+`lastActivityTs`, `events` (oś czasu: `ts`, `kind` `launch`/`continue`/`finished`/`running`/`question`,
+`state`, `title`, `text`, `durationS`, `quote` — pierwsze BLOCKER/MAJOR z review, `review`).
+
+**Przebieg** (`runs`): `id` (agentId Claude Code albo id wątku Codexa), `ticket`, `role` (`implementer`,
+`reviewer`, `helper`), `agentType`, `label`, `description`, `nickname`, `model`, `background`, `state`
+(`running`, `completed`, `failed`, `killed`, `interrupted`), `startTs`, `endTs`, `rounds`, `lastAction`,
+`branch`, `summary`, `hasResult`, `review`.
+
+**Skąd koordynatorzy** (`coordination/claude.py`, `codex.py`, tylko odczyt):
+
+- Claude Code: `<claude>/projects/<katalog>/<sesja>.jsonl` zmieniony w ostatnich 7 dniach
+  (`--coordination-days`) z katalogiem `<sesja>/subagents/`. Zlecenie to blok `tool_use` `Agent`/`Task`
+  (`description`, `subagent_type`, `prompt`, `model`, `run_in_background`); wynik pierwszego planu
+  przychodzi w `tool_result`, a praca w tle kończy się blokiem `<task-notification>` (`task-id` =
+  agentId, `status`, `summary`, `result`) w załączniku `queued_command` albo wiadomości użytkownika —
+  kopie w `queue-operation` i `api-request-blob` są pomijane. Raport oddany przez SubagentHandback
+  przychodzi osobną wiadomością z `origin.kind = "peer"` (`handbackReportText`). `SendMessage`
+  z `resumedAgentId` zaczyna kolejną rundę podagenta, `TaskStop` go zatrzymuje, `AskUserQuestion` bez
+  wyniku to pytanie koordynatora. `subagents/agent-<id>.meta.json` uzupełnia typ, opis i model, a dziennik
+  podagenta — gałąź, ostatnią czynność i „Pokaż wynik”.
+- Codex: wątek główny (bez `source.subagent`) z co najmniej jednym podagentem `thread_spawn` — także
+  wnuki należą do niego; recenzent zgód (`subagent.other = "guardian"`) to szum. Przebieg to wątek
+  podagenta (`agent_path` → nazwa zadania, `agent_nickname`, `agent_role`), runda to jego tura
+  (`task_started` → `task_complete` z `last_agent_message`), polecenie z `spawn_agent` w rodzicu,
+  pytanie to `request_user_input` bez wyniku.
+- Pierwszy odczyt czyta cały dziennik (prawdziwy koordynator ma 50–100 MB, ok. 0,8 s), JSON tylko
+  w liniach, które mogą coś zmienić; potem wyłącznie dopisane bajty. W pamięci zostają opisy, początek
+  polecenia (2,4 KB — do szukania ID), raporty podagentów (do 24 KB) i pytania bez odpowiedzi; nic z tego
+  nie trafia do dziennika usługi ani do pliku dla raportu.
+
+**Tickety** (`coordination/ids.py`, `board.py`): ID z opisu podagenta, potem z jego gałęzi (gdy inna
+niż gałąź koordynatora), przydomka i początku polecenia; prefiks z planu (`ticket-prefix`, także
+`tom142`, `la_029`), bez planu — najczęstszy w opisach (`[A-Z]{2,6}-\d+`, bez skrótów w rodzaju UTF-8)
+albo `#22`. ID samego koordynatora (TOM-20 z gałęzi RC) nie jest ticketem, chyba że jest w planie.
+Mapa migracji z repozytorium (`docs/agents/youtrack-migration/*.csv`) zamienia stare klucze na nowe
+(TOM-10 → LOG-128, LA-001 → LEGAL-1). Praca bez ID grupuje się po opisie bez słów roli, a review dołącza
+do wcześniejszego zadania, którego słowa zawiera („Review anon key sync change” → „Implement anon key
+sync tool”).
+
+**Stan ticketu:** z pracy podagentów — pytanie koordynatora z ID ticketu → `czeka`; działa recenzent →
+`review`; działa inny podagent → `w-toku`; ostatnie review bez BLOCKER/MAJOR i bez prośby o zmiany →
+`gotowe`; z nimi → `w-toku` („do poprawy”); poprawki skończone po review → `gotowe` („bez ponownego
+review”); implementer skończył bez review → `w-toku` („czeka na review”), gdy koordynator działa i zleca
+review innym ticketom, inaczej `gotowe`; błąd, zatrzymanie albo przerwanie (koordynator nie działa,
+a dziennik podagenta stoi od 2 min) → `w-toku` z powodem. Plan wygrywa przy `odrzucone`, przy ticketach
+bez pracy podagentów i gdy jego `updated` jest nowszy niż ostatnie zdarzenie ticketu. YouTrack daje tytuł
+(gdy plan go nie ma) i adres; jego stan liczy się bez planu i pracy albo gdy ticket jest tam zamknięty
+(Fixed, Done, Verified… → `gotowe`; Won't fix, Duplicate, Obsolete… → `odrzucone`) i nikt nad nim nie pracuje.
+
+**Review** (`coordination/review.py`): recenzent to podagent z „review” w typie albo opisie (ale nie
+„review fix round”). Z raportu: jawne liczby („1 MAJOR, 2 NIT”, „BLOCKER: brak”, „nie ma BLOCKER-ów ani
+MAJOR-ów”), oznaczone znaleziska (`MAJOR-1`, `NIT-2`, `MAJOR B`), linie i punkty pod nagłówkami poziomów;
+zdania o zamkniętych znaleziskach z poprzedniej rundy się nie liczą. Werdykt z linii „Werdykt/Verdict”
+(`REQUEST CHANGES`, `CHANGES REQUIRED` albo `APPROVE`, `ACCEPT`). To heurystyka sprawdzona na kształtach
+prawdziwych raportów; stan zawsze da się nadpisać planem.
+
+**YouTrack** (`coordination/youtrack.py`): tylko dla planu z `tracker: youtrack`. Jedno zapytanie na
+projekt: `GET {url}/api/issues?query=project: {klucz}&fields=idReadable,summary,customFields(name,value(name))`
+z nagłówkiem `Authorization: Bearer <token>`, bez pośrednika, z limitem 4 s, w wątku roboczym. Wynik
+5 min w pamięci; przy błędzie zostają ostatnie dobre dane, a następna próba też dopiero po 5 min (serwer
+jest w sieci lokalnej — gdy go nie ma, tablica działa bez tytułów z YouTracka, z komunikatem w podpowiedzi
+przycisku). Token: plik z ustawień (`tokenFile`, domyślnie `~/.config/logviewer/youtrack-mcp-token`
+— ten sam co serwer MCP YouTracka LogViewera; `tokenVar` pusty: cały plik, podany: zmienna z pliku
+`.env`), czytany przy każdym zapytaniu, tylko w pamięci — nie trafia do dziennika, błędów, odpowiedzi
+D-Bus ani plików. Token idzie wyłącznie do serwera z ustawień (`url`, domyślnie
+`http://10.20.1.159:8111`); plan z innym `tracker-url` dostaje komunikat zamiast zapytania.
+`--no-youtrack` wyłącza zapytania.
+
+```json
+{"url": "http://10.20.1.159:8111", "tokenFile": "~/.config/logviewer/youtrack-mcp-token", "tokenVar": ""}
+```
+
+**Odświeżanie** (`coordination_monitor.py`): pierwszy odczyt 1,5 s po starcie, potem co 20 s, po zmianie
+w `/Agents` (najwyżej co 4 s) i na żądanie. Praca w jednym wątku roboczym, D-Bus odpowiada z gotowych
+danych. Po zmianie: sygnał `Changed`, pole `coordination` przy sesji koordynatora w `/Agents`
+(`label`, `done`, `total`, `text`, `working`, `waiting`, `running`) i plik dla raportu porannego
+(koordynatorzy, tickety ze stanem, tytułem, notatką i adresem — bez poleceń, raportów i pytań).
+
+**Okno „Tide Sesje”** (`apps/sessions`, `make install-sessions-window`): `ShowWindow()` uruchamia
+`/usr/bin/python3 -s $XDG_DATA_HOME/tide/sessions-window/tide-sessions.py [--select id]` (albo
+`$TIDE_SESSIONS_WINDOW`) przez `systemd-run --user --scope`. Okno rejestruje `org.tide.SessionsWindow`
+(obiekt `/Window`, `Raise(s id)`), więc kolejne uruchomienie tylko je pokazuje z wybranym koordynatorem.
+
+```bash
+qdbus6 org.tide.Daemon /Coordination org.tide.Daemon.Coordination.Coordinators
+/usr/bin/python3 daemon/tide-daemon.py --print-coordination   # dane okna jako JSON, tylko odczyt
+make preview-sessions-window SANITIZE=1                        # zrzut okna bez treści pracy: build/sessions-window.png
+```
+
 ## Uruchamianie
 
 ```bash
@@ -468,13 +605,15 @@ journalctl --user -u tide-daemon -f
 # Podgląd bez D-Bus (jednorazowy JSON):
 /usr/bin/python3 daemon/tide-daemon.py --print
 /usr/bin/python3 daemon/tide-daemon.py --print-worktrees      # tylko odczyt, niczego nie usuwa
+/usr/bin/python3 daemon/tide-daemon.py --print-coordination   # koordynatorzy i tablice (YouTrack tylko GET)
 # Jednorazowy raport poranny (bez D-Bus, powiadomienia i pliku stanu) do wskazanego katalogu:
 /usr/bin/python3 daemon/tide-daemon.py --report --report-days 1 --report-dir /tmp/raport
 # Opcje diagnostyczne: --claude-dir, --codex-dir, --workspace, --worktree-depth, --no-processes,
 #                      --no-notifications, --no-krunner, --no-tab-marks,
 #                      --now 2026-10-26T12:00:00Z, --idle-after 30, --no-idle,
 #                      --report-dir, --report-at 07:00, --no-report, --report-delay 120,
-#                      --limits-poll 120, --no-limits, --print-limits, --no-tasks
+#                      --limits-poll 120, --no-limits, --print-limits, --no-tasks,
+#                      --coordination-days 7, --no-coordination, --no-youtrack
 ```
 
 Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`, z której raport poranny bierze kolory i czcionki), `$XDG_CONFIG_HOME/systemd/user/tide-daemon.service`, `$XDG_DATA_HOME/dbus-1/services/org.tide.Daemon.service` (start na żądanie, gdy widżet zapyta, a usługa nie działa) i `org.tide.Daemon.KRunner.service` (to samo dla KRunnera). Usługa używa `/usr/bin/python3` z systemowym PyQt6 — `python3` z pyenv go nie ma.
@@ -506,6 +645,10 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_report_dbus.py` — cała usługa na prywatnej magistrali: raport przy starcie, jedno powiadomienie „Raport poranny gotowy” z „Otwórz” (atrapy `systemd-run`, `xdg-open`), `Generate()`, `Latest()`, brak powtórki po restarcie, wyłączony termin,
 - `daemon/tests/test_limits_core.py` — Limity AI bez Qt: odczyty z `/status` i etykiety resetu (także przy zmianie czasu), okna i historia (dopisywanie, restart, 14 dni, zepsute linie), prognoza na syntetycznych seriach (równe tempo, zrywami, przerwa, długi postój, przejście przez reset, tydzień z nocami, za mało danych, nieaktualne dane), powiadomienia raz na okno i po restarcie, konfiguracja z palety, klient API na atrapie QuotaApp (token tylko w nagłówku, nigdy w błędach), `--print-limits` bez zapisu,
 - `daemon/tests/test_limits_dbus.py` — obiekt `/Limits` na prywatnej magistrali z atrapą API QuotaApp (HTTP w wątku testu) i atrapą serwera powiadomień: `Forecast()`, sygnał `Changed`, powiadomienia, historia w `$XDG_STATE_HOME`, brak tokenu w plikach, restart bez powtórek, usługa niedostępna, `--no-limits`. Usługi w testach dostają nieistniejący `LIMITY_CONFIG`, więc nigdy nie pytają prawdziwej QuotaApp,
+- `daemon/tests/test_coordination_core.py` — koordynacja bez Qt na syntetycznym świecie o kształcie prawdziwych dzienników (`coordfix.py`): koordynator Claude Code (zlecenia w tle i na pierwszym planie, powiadomienia z kolejki i z wiadomości, szum kolejki i kopii dla API, raport przez SubagentHandback, SendMessage, TaskStop, AskUserQuestion, odczyt przyrostowy), drzewo wątków Codexa (wnuk, recenzent zgód), plany poprawne i błędne, ID ticketów (prefiks, nazwy zadań, mapa migracji, ID koordynatora), formaty review, reguły stanów (praca, plan, YouTrack, przerwanie, grupowanie bez ID), YouTrack na atrapie serwera HTTP (tylko GET, token tylko w nagłówku, nigdy w błędach, pamięć 5 min, inny serwer, zmienna z pliku `.env`), adnotacje `/Agents`, plik dla raportu (0600, bez raportów i poleceń), cel diffu i worktree,
+- `daemon/tests/test_coordination_dbus.py` — `/Coordination` na prywatnej magistrali z atrapą YouTracka i atrapami programów: `Coordinators`, `Board`, `RunDetail`, sygnał `Changed` po dopisaniu powiadomienia, `Activate` (wznowienie w Konsoli), `ShowWindow`, pole `coordination` w `/Agents`, plik dla raportu bez tokenu, wyłącznie GET do YouTracka, `--no-coordination`, `--no-youtrack`,
+- `daemon/tests/test_coordination_integration.py` — KRunner („sesje”, filtr słowami, uruchomienie tylko znanych), „Plany i tickety” w raporcie (tablica z pliku, plany z repozytoriów, escapowanie, brak pliku i błędy), `Launchers.show_sessions`,
+- `apps/sessions/tests/` — okno Tide Sesje: pakiet bez kolorów na sztywno, logika `sessions.js` w QJSEngine, zrzuty offscreen z `--data` (tablica, Codex, wynik podagenta) bez ostrzeżeń QML, dane po `tools/sessions_preview.py --sanitize` bez treści, launcher na prywatnej magistrali z prawdziwą usługą i drugie uruchomienie, instalacja,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
 Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawierają prawdziwych rozmów.
