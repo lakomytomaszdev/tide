@@ -14,12 +14,51 @@ Tide.DockTile {
     property int waitingCount: 0
     property int doneCount: 0
     property bool available: true
+    // „＋” po prawej otwiera okno „Nowe zadanie” (osobny kafelek byłby zbędny).
+    property bool showNewTask: true
+    signal newTaskRequested()
 
     readonly property string summary: available ? Tide.Texts.agentsSummary(workingCount, waitingCount, doneCount)
                                                 : "usługa nie działa"
     readonly property bool quiet: !available || (workingCount === 0 && waitingCount === 0 && doneCount === 0)
 
     label: "Agenci"
+    trailingWidth: showNewTask ? newTask.width + 6 : 0
+
+    Rectangle {
+        id: newTask
+        objectName: "newTaskButton"
+        parent: tile
+        visible: tile.showNewTask
+        width: 26
+        height: 26
+        radius: Tide.Tokens.radiusSmall
+        anchors.right: parent.right
+        anchors.rightMargin: 8
+        anchors.verticalCenter: parent.verticalCenter
+        color: Tide.Theme.alpha(Tide.Tokens.working, newTaskArea.containsMouse ? 0.28 : 0.14)
+        border.width: 1
+        border.color: Tide.Theme.alpha(Tide.Tokens.working, newTaskArea.containsMouse ? 0.55 : 0.30)
+        z: 2
+        Accessible.role: Accessible.Button
+        Accessible.name: "Nowe zadanie dla agenta"
+
+        Text {
+            anchors.centerIn: parent
+            text: "+"
+            color: Tide.Tokens.working
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: Tide.Tokens.fontSizePt + 2
+            font.weight: Font.DemiBold
+        }
+        MouseArea {
+            id: newTaskArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: tile.newTaskRequested()
+        }
+    }
     tint: !available ? Tide.Tokens.textMuted : waitingCount > 0 ? Tide.Tokens.waiting : Tide.Tokens.working
 
     Row {

@@ -18,7 +18,7 @@ from scripts.panels import evaluate, load, persist_thickness, save, screens, scr
 
 INSTALLED = STATE / "tide" / "dock-installed.json"
 # Kolejność kafelków z prawej strony docka, jak w mocku Mist; „Zadanie” obok agentów (mock #22).
-DOCK_WIDGETS = ["org.tide.agents", "org.tide.newtask", "org.tide.worktrees", "org.tide.system", "org.tide.limits"]
+DOCK_WIDGETS = ["org.tide.agents", "org.tide.worktrees", "org.tide.system", "org.tide.limits"]
 
 
 def installed_widgets() -> list[str]:

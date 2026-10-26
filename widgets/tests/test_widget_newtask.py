@@ -109,9 +109,18 @@ class InstallTest(unittest.TestCase):
             self.assertFalse(os.path.exists(installed))
             self.assertIn(f"kpackagetool6 -t Plasma/Applet -r {WIDGET_ID}", calls(env))
 
-    def test_dock_lists_the_tile_next_to_agents(self):
+    def test_dock_uses_the_plus_on_the_agents_tile_instead_of_its_own_tile(self):
+        # Decyzja użytkownika: osobny kafelek jest zbędny — „＋” siedzi na kafelku agentów,
+        # a dock.js zdejmuje stary kafelek przy ponownej instalacji.
         from scripts.dock import DOCK_WIDGETS
-        self.assertEqual(DOCK_WIDGETS[:2], ["org.tide.agents", WIDGET_ID])
+        self.assertNotIn(WIDGET_ID, DOCK_WIDGETS)
+        tile = open(os.path.join(REPO, "widgets/agents/contents/ui/CompactAgents.qml"), encoding="utf-8").read()
+        self.assertIn('objectName: "newTaskButton"', tile)
+        self.assertIn("signal newTaskRequested()", tile)
+        main = open(os.path.join(REPO, "widgets/agents/contents/ui/main.qml"), encoding="utf-8").read()
+        self.assertIn("onNewTaskRequested: root.newTask()", main)
+        dock_js = open(os.path.join(REPO, "scripts/panels/dock.js"), encoding="utf-8").read()
+        self.assertIn('tideW.type === "org.tide.newtask"', dock_js)
 
 
 if __name__ == "__main__":

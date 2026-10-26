@@ -37,6 +37,11 @@ for (var tideJ = 0; tideJ < tideWidgets.length; ++tideJ) {
         tideW.remove();
         continue;
     }
+    // Osobny kafelek „＋ Zadanie” zastąpił przycisk „＋” na kafelku agentów.
+    if (tideW.type === "org.tide.newtask" && P.widgets.indexOf("org.tide.newtask") < 0) {
+        tideW.remove();
+        continue;
+    }
     if (tideW.type === "org.kde.plasma.panelspacer") {
         tideSpacers.push(tideW);
         continue;

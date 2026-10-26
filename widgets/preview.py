@@ -142,7 +142,6 @@ Window {
             doneCount: window.sample.agents.done || 0
             available: window.sample.agents.available
         }
-        NewTask.CompactNewTask { id: newtask; height: %(tile)d; available: window.sample.agents.available }
         Worktrees.CompactWorktrees {
             id: worktrees
             height: %(tile)d
@@ -158,10 +157,9 @@ Window {
     Timer {
         interval: 400; running: true
         onTriggered: {
-            const tiles = [agents, newtask, worktrees, system, limits]
+            const tiles = [agents, worktrees, system, limits]
             const report = {
                 agents: { label: agents.label, summary: agents.summary },
-                newtask: { label: newtask.label, summary: newtask.summary },
                 worktrees: { label: worktrees.label, detail: worktrees.detail, summary: worktrees.summary },
                 system: { lines: system.lines },
                 limits: { lines: limits.lines, detail: limits.detail },

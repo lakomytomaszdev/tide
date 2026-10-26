@@ -15,6 +15,8 @@ Rectangle {
     property real tintStrength: 0.11
     property bool active: false            // najechany albo z otwartym popupem
     property real horizontalPadding: 11
+    // Miejsce po prawej na element przyklejony do krawędzi (np. przycisk „＋” w kafelku agentów).
+    property real trailingWidth: 0
     property real verticalPadding: 5
     property real labelPointSize: Tokens.fontSizePt - 2
     property real valuePointSize: Tokens.fontSizePt
@@ -25,7 +27,7 @@ Rectangle {
     property alias spacing: body.spacing
     default property alias content: body.data
 
-    implicitWidth: Math.ceil(body.implicitWidth + horizontalPadding * 2)
+    implicitWidth: Math.ceil(body.implicitWidth + horizontalPadding * 2 + trailingWidth)
     implicitHeight: Math.ceil(body.implicitHeight + verticalPadding * 2)
     radius: Tokens.radiusTile
     color: Theme.alpha(tint, active ? tintStrength * 1.9 : tintStrength)

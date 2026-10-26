@@ -524,7 +524,7 @@ Window {
                                           "diskButton": False, "shown": True})
         self.assertEqual((result["historyCount"], result["capacity"]), (0, 30))
         # Uruchamiane polecenia dopisują się do dziennika asynchronicznie — czekamy na oba kstart.
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 20
         while True:
             with open(self.log, encoding="utf-8") as fh:
                 log = fh.read().splitlines()

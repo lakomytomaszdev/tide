@@ -91,6 +91,7 @@ PlasmoidItem {
             doneCount: root.doneCount
             available: source.available
             active: compact.containsMouse || root.expanded
+            onNewTaskRequested: root.newTask()
         }
 
         // Pionowy panel: same liczniki z kropkami.
