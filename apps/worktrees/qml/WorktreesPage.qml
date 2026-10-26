@@ -2,6 +2,11 @@
 // (W pracy, Do sprzątnięcia, Do decyzji), brakujące katalogi, gałęzie główne i stopka z usuwaniem
 // zaznaczonych. Sam nie rozmawia z usługą — dostaje dane i zgłasza prośby sygnałami, dzięki czemu
 // da się go załadować w teście z przykładowymi danymi.
+//
+// Usuwanie: sugerowane („Do sprzątnięcia”) idą zwykłym potwierdzeniem i Remove(). Gdy wśród
+// zaznaczonych jest choć jeden nie-sugerowany (zmiany, niescalone commity, świeża praca), okno
+// pokazuje mocniejsze potwierdzenie: dla każdego worktree, co dokładnie przepadnie, pole „usuń też
+// gałąź” i czerwony przycisk „Usuń mimo to” — a potem woła RemoveForced() ze stanem z potwierdzenia.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -18,6 +23,8 @@ Rectangle {
     property string homeDir: ""
 
     signal removeRequested(var paths)
+    // confirmed: JSON {ścieżka: {dirty, unmerged, unpushed, branch}} — stan z potwierdzenia.
+    signal removeForcedRequested(var paths, bool deleteBranches, string confirmed)
     signal openRequested(string path, string app)
     signal refreshRequested()
     signal pruneRequested(string repoPath)
@@ -29,6 +36,7 @@ Rectangle {
     property bool showAllDecide: false
     property bool showMain: false
     property bool confirming: false
+    property bool deleteBranches: false  // pole „usuń też gałąź” w mocniejszym potwierdzeniu
     property bool removing: false
     property var results: null           // podsumowanie ostatniego usuwania (Logic.resultText)
     property string notice: ""           // komunikat po porządkowaniu brakujących katalogów
@@ -43,8 +51,9 @@ Rectangle {
     // Worktrees na gałęzi głównej; same główne katalogi repozytoriów nie są tu pokazywane.
     readonly property var mains: Logic.inGroup(shown, "main").filter(w => !w.isMain)
     readonly property var missing: Logic.missingByRepo(shown)
-    readonly property var allClean: Logic.inGroup(worktrees, "clean")
-    readonly property var picked: Logic.selection(allClean, selected)
+    readonly property var picked: Logic.selection(worktrees, selected)
+    readonly property bool forcing: picked.risky.length > 0
+    readonly property var unmergedInfo: Logic.unmergedBranches(picked.items)
     readonly property bool allShownPicked: clean.length > 0 && clean.every(w => selected[w.path] === true)
     readonly property bool canTerminal: launchers && launchers.terminal === true
     readonly property bool canRider: launchers && launchers.rider === true
@@ -55,6 +64,8 @@ Rectangle {
     }
 
     function toggle(path) {
+        const w = worktrees.find(x => x.path === path)
+        if (!Logic.selectable(w) && !selected[path]) return  // główny katalog, gałąź główna, agent…
         const next = Object.assign({}, selected)
         if (next[path]) delete next[path]
         else next[path] = true
@@ -72,17 +83,27 @@ Rectangle {
     }
 
     function askRemove() {
-        if (picked.items.length > 0 && !removing) confirming = true
+        if (picked.items.length > 0 && !removing) {
+            deleteBranches = false  // zawsze świadomie, od nowa przy każdym potwierdzeniu
+            confirming = true
+        }
     }
 
     function confirmRemove() {
         const names = {}
         for (const w of picked.items) names[w.path] = w.title + " · " + w.repo
         titles = names
+        const items = picked.items
+        const forced = forcing
         confirming = false
         removing = true
         results = null
-        removeRequested(picked.items.map(w => w.path))
+        if (forced) {
+            removeForcedRequested(items.map(w => w.path), deleteBranches && unmergedInfo.count > 0,
+                                  JSON.stringify(Logic.confirmedState(items)))
+        } else {
+            removeRequested(items.map(w => w.path))
+        }
     }
 
     // Wynik Remove() z usługi (tablica wyników dla ścieżek) albo null przy błędzie.
@@ -314,7 +335,8 @@ Rectangle {
                                 text: page.results === null ? "" :
                                       "Usunięto: " + page.results.removed + " (zwolniono "
                                       + Tide.Theme.formatBytes(page.results.freed) + ")"
-                                      + (page.results.skipped > 0 ? " · pominięto: " + page.results.skipped : "")
+                                      + (page.results.branchKept > 0 ? " · gałąź została: " + page.results.branchKept : "")
+                                      + (page.results.skipped > 0 ? " · nie usunięto: " + page.results.skipped : "")
                                 color: Tide.Tokens.textPrimary
                                 font.family: Tide.Theme.uiFamily
                                 font.pixelSize: 13
@@ -363,7 +385,7 @@ Rectangle {
                         tint: Tide.Tokens.working
                         title: "W pracy"
                         count: page.active.length
-                        description: "agent działa albo coś zmieniło się w ostatniej dobie — nie do usuwania"
+                        description: "agent działa (tych nie usuniesz, póki pracuje) albo coś zmieniło się w ostatniej dobie"
                     }
                     Repeater {
                         model: page.active
@@ -375,6 +397,9 @@ Rectangle {
                             homeDir: page.homeDir
                             canTerminal: page.canTerminal
                             canRider: page.canRider
+                            checked: page.selected[modelData.path] === true
+                            enabled: !page.removing
+                            onToggled: page.toggle(modelData.path)
                             onOpenRequested: (path, app) => page.openRequested(path, app)
                         }
                     }
@@ -429,7 +454,8 @@ Rectangle {
                         tint: Tide.Tokens.neutral
                         title: "Do decyzji"
                         count: page.decide.length
-                        description: "stoją od ponad doby, ale mają niescalone commity albo zmiany — otwórz i zdecyduj"
+                        description: "stoją od ponad doby, ale mają niescalone commity albo zmiany — otwórz i zdecyduj; "
+                                     + "zaznaczone usuniesz po potwierdzeniu, co przepadnie"
                     }
                     Repeater {
                         model: page.showAllDecide ? page.decide : page.decide.slice(0, Logic.DECIDE_PREVIEW)
@@ -441,6 +467,9 @@ Rectangle {
                             homeDir: page.homeDir
                             canTerminal: page.canTerminal
                             canRider: page.canRider
+                            checked: page.selected[modelData.path] === true
+                            enabled: !page.removing
+                            onToggled: page.toggle(modelData.path)
                             onOpenRequested: (path, app) => page.openRequested(path, app)
                         }
                     }
@@ -560,6 +589,9 @@ Rectangle {
                     maximumLineCount: 2
                     elide: Text.ElideRight
                     text: page.removing ? "Sprzątam… usługa sprawdza każdy worktree jeszcze raz przed usunięciem."
+                        : page.forcing
+                          ? "Zaznaczone: " + page.picked.items.length + ", w tym " + page.picked.risky.length
+                            + " ze zmianami albo niescalonymi commitami — potwierdzenie wymieni, co przepadnie."
                         : page.picked.items.length > 0
                           ? "Zaznaczone: " + page.picked.items.length + " · usunie foldery worktrees i scalone gałęzie; "
                             + "gałęzie główne i niescalone commity zostają."
@@ -600,15 +632,16 @@ Rectangle {
 
         Rectangle {
             id: dialog
+            objectName: "confirmDialog"
             anchors.centerIn: parent
-            width: Math.min(680, parent.width - 48)
+            width: Math.min(page.forcing ? 760 : 680, parent.width - 48)
             height: Math.min(dialogBody.implicitHeight + 40, parent.height - 48)
             radius: Tide.Tokens.radiusCard
             color: Tide.Tokens.backgroundCard
-            border.width: 1
-            border.color: Tide.Theme.alpha(Tide.Tokens.negative, 0.35)
+            border.width: page.forcing ? 2 : 1
+            border.color: Tide.Theme.alpha(Tide.Tokens.negative, page.forcing ? 0.9 : 0.35)
             Accessible.role: Accessible.Dialog
-            Accessible.name: "Potwierdzenie usunięcia"
+            Accessible.name: page.forcing ? "Potwierdzenie usunięcia mimo ryzyka" : "Potwierdzenie usunięcia"
 
             MouseArea { anchors.fill: parent }  // kliknięcie w okno potwierdzenia go nie zamyka
 
@@ -621,9 +654,16 @@ Rectangle {
                 Text {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
-                    text: "Usunąć " + Logic.count(page.picked.items.length, "worktree", "worktrees", "worktrees")
-                          + " i zwolnić ok. " + Tide.Theme.formatBytes(page.picked.bytes) + "?"
-                    color: Tide.Tokens.textPrimary
+                    text: page.forcing
+                          ? "⚠ Usunąć mimo to " + Logic.count(page.picked.items.length, "worktree", "worktrees", "worktrees")
+                            + "? " + (page.picked.risky.length === page.picked.items.length
+                                      ? (page.picked.risky.length === 1 ? "Nie jest sugerowany" : "Żaden nie jest sugerowany")
+                                      : page.picked.risky.length + " z nich nie " + (page.picked.risky.length === 1 ? "jest sugerowany"
+                                                                                                                    : "są sugerowane"))
+                            + " do usunięcia."
+                          : "Usunąć " + Logic.count(page.picked.items.length, "worktree", "worktrees", "worktrees")
+                            + " i zwolnić ok. " + Tide.Theme.formatBytes(page.picked.bytes) + "?"
+                    color: page.forcing ? Tide.Tokens.negative : Tide.Tokens.textPrimary
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: 17
                     font.weight: Font.DemiBold
@@ -631,9 +671,13 @@ Rectangle {
                 Text {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
-                    text: "Usunę dokładnie te katalogi (git worktree remove, bez wymuszania). Każdy jest scalony "
-                          + "z lokalną gałęzią główną i nie ma niezacommitowanych zmian — usługa sprawdzi to jeszcze raz "
-                          + "tuż przed usunięciem i pominie te, które się zmieniły."
+                    text: page.forcing
+                          ? "Usunę te katalogi z wymuszeniem (git worktree remove --force), razem z tym, co w nich jest. "
+                            + "Na czerwono to, co przepadnie bez kopii — tego nie da się cofnąć. Usługa sprawdzi stan "
+                            + "jeszcze raz i nic nie usunie, jeśli od tej chwili przybyło zmian albo commitów."
+                          : "Usunę dokładnie te katalogi (git worktree remove, bez wymuszania). Każdy jest scalony "
+                            + "z lokalną gałęzią główną i nie ma niezacommitowanych zmian — usługa sprawdzi to jeszcze raz "
+                            + "tuż przed usunięciem i pominie te, które się zmieniły."
                     color: Tide.Tokens.textSecondary
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: 13
@@ -643,7 +687,7 @@ Rectangle {
                     id: list
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    Layout.preferredHeight: Math.min(listColumn.implicitHeight, 340)
+                    Layout.preferredHeight: Math.min(listColumn.implicitHeight, page.forcing ? 420 : 340)
                     clip: true
                     contentHeight: listColumn.implicitHeight
                     boundsBehavior: Flickable.StopAtBounds
@@ -656,15 +700,18 @@ Rectangle {
                         Repeater {
                             model: page.confirming ? page.picked.items : []
                             Column {
+                                id: entry
                                 required property var modelData
+                                readonly property bool risky: Logic.risky(modelData)
+                                objectName: "confirmEntry"
                                 width: listColumn.width
                                 spacing: 2
                                 Text {
                                     width: parent.width
                                     elide: Text.ElideRight
-                                    text: "• " + modelData.title + " · " + modelData.repo + "  ("
+                                    text: (entry.risky ? "⚠ " : "• ") + modelData.title + " · " + modelData.repo + "  ("
                                           + Tide.Theme.formatBytes(modelData.size) + ")"
-                                    color: Tide.Tokens.textPrimary
+                                    color: entry.risky ? Tide.Tokens.negative : Tide.Tokens.textPrimary
                                     font.family: Tide.Theme.uiFamily
                                     font.pixelSize: 13
                                     font.weight: Font.Medium
@@ -681,21 +728,108 @@ Rectangle {
                                 Text {
                                     width: parent.width
                                     leftPadding: 12
+                                    visible: !page.forcing
                                     wrapMode: Text.WordWrap
                                     text: Logic.branchFate(modelData)
                                     color: Tide.Tokens.textMuted
                                     font.family: Tide.Theme.uiFamily
                                     font.pixelSize: 11
                                 }
+                                // Mocniejsze potwierdzenie: co dokładnie przepadnie (czerwone — bez kopii).
+                                Repeater {
+                                    model: page.forcing
+                                           ? Logic.lossLines(entry.modelData, page.deleteBranches,
+                                                             Tide.Theme.agoText(entry.modelData.lastChangeTs, page.nowTs))
+                                           : []
+                                    Text {
+                                        required property var modelData
+                                        objectName: modelData.danger ? "lossDanger" : "lossInfo"
+                                        width: entry.width
+                                        leftPadding: 12
+                                        wrapMode: Text.WordWrap
+                                        text: (modelData.danger ? "✕ " : "· ") + modelData.text
+                                        color: modelData.danger ? Tide.Tokens.negative : Tide.Tokens.textMuted
+                                        font.family: Tide.Theme.uiFamily
+                                        font.pixelSize: 12
+                                        font.weight: modelData.danger ? Font.DemiBold : Font.Normal
+                                    }
+                                }
                             }
                         }
+                    }
+                }
+
+                // „Usuń też gałąź” — tylko gdy któraś z gałęzi nie jest scalona; domyślnie odznaczone.
+                Rectangle {
+                    id: branchToggle
+                    objectName: "deleteBranchesToggle"
+                    Layout.fillWidth: true
+                    visible: page.forcing && page.unmergedInfo.count > 0
+                    implicitHeight: branchRow.implicitHeight + 16
+                    radius: Tide.Tokens.radiusFrame
+                    color: page.deleteBranches ? Tide.Theme.alpha(Tide.Tokens.negative, 0.12)
+                         : branchArea.containsMouse ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.06) : "transparent"
+                    border.width: 1
+                    border.color: Tide.Theme.alpha(Tide.Tokens.negative, page.deleteBranches ? 0.6 : 0.25)
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.CheckBox
+                    Accessible.name: branchLabel.text
+                    Accessible.checkable: true
+                    Accessible.checked: page.deleteBranches
+                    Accessible.onToggleAction: page.deleteBranches = !page.deleteBranches
+                    Accessible.onPressAction: page.deleteBranches = !page.deleteBranches
+                    Keys.onSpacePressed: page.deleteBranches = !page.deleteBranches
+
+                    RowLayout {
+                        id: branchRow
+                        anchors.fill: parent
+                        anchors.leftMargin: 10
+                        anchors.rightMargin: 10
+                        spacing: 10
+                        Rectangle {
+                            implicitWidth: 18
+                            implicitHeight: 18
+                            radius: 5
+                            color: page.deleteBranches ? Tide.Tokens.negative : "transparent"
+                            border.width: page.deleteBranches ? 0 : 1.5
+                            border.color: Tide.Theme.alpha(Tide.Tokens.negative, 0.7)
+                            Text {
+                                anchors.centerIn: parent
+                                visible: page.deleteBranches
+                                text: "✓"
+                                color: Tide.Tokens.backgroundDesktop
+                                font.pixelSize: 12
+                                font.weight: Font.Bold
+                            }
+                        }
+                        Text {
+                            id: branchLabel
+                            objectName: "deleteBranchesLabel"
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: Logic.deleteBranchLabel(page.unmergedInfo)
+                            color: page.deleteBranches ? Tide.Tokens.negative : Tide.Tokens.textSecondary
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 13
+                            font.weight: Font.Medium
+                        }
+                    }
+                    MouseArea {
+                        id: branchArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: page.deleteBranches = !page.deleteBranches
                     }
                 }
 
                 Text {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
-                    text: "Gałęzie główne (master, main, develop), niescalone commity i worktrees ze zmianami zostają."
+                    text: page.forcing
+                          ? "Nigdy nie usuwam głównego katalogu repozytorium ani gałęzi głównych (master, main, develop), "
+                            + "a gałąź niescaloną tylko z polem wyżej."
+                          : "Gałęzie główne (master, main, develop), niescalone commity i worktrees ze zmianami zostają."
                     color: Tide.Tokens.textMuted
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: 12
@@ -711,10 +845,13 @@ Rectangle {
                         onClicked: page.confirming = false
                     }
                     PillButton {
-                        text: "Usuń " + Logic.count(page.picked.items.length, "worktree", "worktrees", "worktrees")
+                        objectName: "confirmButton"
+                        text: page.forcing ? "Usuń mimo to"
+                                           : "Usuń " + Logic.count(page.picked.items.length, "worktree", "worktrees", "worktrees")
                         fill: Tide.Tokens.negative
                         textColor: Tide.Tokens.backgroundDesktop
                         strong: true
+                        horizontalPadding: page.forcing ? 20 : 14
                         onClicked: page.confirmRemove()
                     }
                 }

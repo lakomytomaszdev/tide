@@ -123,11 +123,124 @@ function isOld(w, nowTs) {
     return (w.lastActivityTs || 0) > 0 && nowTs - w.lastActivityTs > OLD_AFTER
 }
 
-// Zaznaczenie: tylko worktrees z grupy „Do sprzątnięcia” (niezależnie od filtrów, żeby nic
-// ukrytego filtrem nie zaskoczyło przy usuwaniu — potwierdzenie i tak wymienia wszystkie).
-function selection(cleanItems, selected) {
-    var chosen = cleanItems.filter(function (w) { return selected[w.path] === true })
-    return { items: chosen, bytes: bytesOf(chosen) }
+// Czy worktree da się zaznaczyć do usunięcia. Sugerowane (removable) zawsze; pozostałe tylko wtedy,
+// gdy usługa mówi, że nie mają twardej blokady (forceRemovable: nie główny katalog, nie gałąź
+// główna, nie brakujący, nie zablokowany, bez działającego agenta). Usługa sprawdza to i tak sama —
+// tu tylko nie pokazujemy pola wyboru tam, gdzie i tak by odmówiła. Starsza usługa bez pola
+// forceRemovable — jak dawniej, tylko sugerowane.
+function selectable(w) {
+    if (!w || w.isMain || w.missing || w.group === "main") return false
+    return w.removable === true || w.forceRemovable === true
+}
+
+// Zaznaczony nie-sugerowany: usunięcie wymaga mocniejszego potwierdzenia i RemoveForced.
+function risky(w) {
+    return selectable(w) && w.removable !== true
+}
+
+// Dlaczego wiersza nie da się zaznaczyć (podpowiedź); pusty napis, gdy się da.
+function lockReason(w) {
+    if (selectable(w)) return ""
+    var reason = w.forceBlocker || w.blocker || (w.isMain ? "main" : w.group === "main" ? "protected" : "")
+    var texts = {
+        main: "główny katalog repozytorium — nigdy go nie usuwamy",
+        protected: "gałąź główna (master, main, develop) — nigdy jej nie usuwamy",
+        missing: "katalogu już nie ma — porządkuje go git worktree prune",
+        locked: "zablokowany (git worktree lock) — najpierw git worktree unlock",
+        agent: "pracuje w nim agent — zamknij sesję, żeby móc go usunąć"
+    }
+    return texts[reason] || ""
+}
+
+// Zaznaczenie spośród wszystkich worktrees (niezależnie od filtrów, żeby nic ukrytego filtrem
+// nie zaskoczyło przy usuwaniu — potwierdzenie i tak wymienia wszystkie). risky: nie-sugerowane.
+function selection(items, selected) {
+    var chosen = items.filter(function (w) { return selectable(w) && selected[w.path] === true })
+    return { items: chosen, bytes: bytesOf(chosen), risky: chosen.filter(risky) }
+}
+
+// Stan widziany w potwierdzeniu — usługa porówna go ze świeżym i nic nie usunie, jeśli od tej
+// chwili przybyło zmian albo commitów (RemoveForced, argument confirmed).
+function confirmedState(items) {
+    var out = {}
+    items.forEach(function (w) {
+        out[w.path] = { dirty: w.dirty, unmerged: w.unmerged, unpushed: w.unpushed || 0, branch: w.branch || "" }
+    })
+    return out
+}
+
+// Gałęzie, które przepadną tylko z polem „usuń też gałąź”: nie-sugerowane z gałęzią, które nie są
+// scalone (albo nie wiadomo, bo brak gałęzi głównej). commits: suma znanych niescalonych commitów.
+function unmergedBranches(items) {
+    var list = items.filter(function (w) { return risky(w) && w.branch && w.unmerged !== 0 })
+    return {
+        count: list.length,
+        commits: list.reduce(function (s, w) { return s + Math.max(0, w.unmerged || 0) }, 0),
+        unknown: list.filter(function (w) { return w.unmerged === null || w.unmerged === undefined }).length
+    }
+}
+
+// Etykieta pola wyboru w potwierdzeniu: „Usuń też gałąź (4 niescalone commity przepadną)”.
+function deleteBranchLabel(info) {
+    var head = info.count === 1 ? "Usuń też gałąź" : "Usuń też gałęzie (" + info.count + ")"
+    var parts = []
+    if (info.commits > 0) {
+        parts.push(count(info.commits, "niescalony commit", "niescalone commity", "niescalonych commitów") + " "
+                   + plural(info.commits, "przepadnie", "przepadną", "przepadnie"))
+    }
+    if (info.unknown > 0) {
+        parts.push((info.unknown === 1 && info.count === 1 ? "" : "w " + info.unknown + " ")
+                   + "bez gałęzi głównej nie wiadomo, ile commitów przepadnie")
+    }
+    return head + " (" + parts.join("; ") + ")"
+}
+
+// Co przepadnie przy wymuszonym usunięciu — linie dla potwierdzenia. danger: przepada bez kopii.
+// ago: gotowy tekst „3 godz. temu” dla ostatniej zmiany (liczy go QML, Tide.Theme.agoText).
+function lossLines(w, deleteBranches, ago) {
+    var lines = []
+    if (!risky(w)) {
+        lines.push({ text: "bez ryzyka — scalony z " + (w.mainBranch || "gałęzią główną") + ", bez zmian", danger: false })
+        lines.push({ text: branchFate(w), danger: false })
+        return lines
+    }
+    if (w.dirty > 0) {
+        lines.push({ text: count(w.dirty, "niezacommitowana zmiana", "niezacommitowane zmiany", "niezacommitowanych zmian")
+                           + " " + plural(w.dirty, "przepadnie", "przepadną", "przepadnie")
+                           + " (także pliki nieśledzone)", danger: true })
+    } else if (w.dirty < 0) {
+        lines.push({ text: "stanu plików nie dało się odczytać — wszystko niezacommitowane przepadnie", danger: true })
+    }
+    var unpushed = w.unpushed || 0
+    var onlyHere = unpushed > 0 ? ", z tego " + unpushed + " bez kopii na serwerze ani w innej gałęzi"
+                 : unpushed < 0 ? ", nie wiadomo, ile ma kopię na serwerze"
+                 : (w.unmerged || 0) > 0 ? ", wszystkie mają kopię na serwerze albo w innej gałęzi" : ""
+    if ((w.unmerged || 0) > 0) {
+        lines.push({ text: count(w.unmerged, "commit", "commity", "commitów") + " poza " + w.mainBranch + onlyHere,
+                     danger: unpushed !== 0 && (!w.branch || deleteBranches) })
+    } else if (w.unmerged === null || w.unmerged === undefined) {
+        lines.push({ text: "brak lokalnej gałęzi głównej — nie wiadomo, co jest scalone"
+                           + (unpushed > 0 ? "; " + count(unpushed, "commit", "commity", "commitów") + " tylko tutaj" : ""),
+                     danger: false })
+    }
+    if (!w.branch) {
+        if ((w.unmerged || 0) > 0 || unpushed > 0) {
+            lines.push({ text: "odłączony HEAD " + w.head + ": te commity zostaną bez gałęzi (odzyskasz je tylko z refloga)",
+                         danger: true })
+        }
+    } else if (w.unmerged === 0) {
+        lines.push({ text: "gałąź " + w.branch + " jest scalona — zniknie (git branch -d)", danger: false })
+    } else if (deleteBranches) {
+        lines.push({ text: "gałąź " + w.branch + " zostanie usunięta (git branch -D)", danger: true })
+    } else {
+        lines.push({ text: "gałąź " + w.branch + " zostaje (usuniesz ją polem niżej)", danger: false })
+    }
+    if (w.sessionTitle) {
+        lines.push({ text: "sesja " + toolLabel(w.tool) + " „" + w.sessionTitle + "” — agent już w nim nie działa, "
+                           + "rozmowa zostaje w historii", danger: false })
+    }
+    if (ago) lines.push({ text: "ostatnia zmiana " + ago, danger: false })
+    return lines
 }
 
 function tildePath(path, home) {
@@ -155,18 +268,21 @@ function missingByRepo(items) {
     return out
 }
 
-// Podsumowanie wyniku Remove(): co usunięto, co pominięto i dlaczego.
+// Podsumowanie wyniku Remove() / RemoveForced(): co usunięto, przy których została gałąź, czego
+// usługa odmówiła i dlaczego.
 function resultText(results, titles) {
     var removed = results.filter(function (r) { return r.removed })
     var skipped = results.filter(function (r) { return !r.removed })
+    var kept = removed.filter(function (r) { return r.branch && !r.branchDeleted })
     var lines = []
     skipped.forEach(function (r) { lines.push((titles[r.path] || r.path) + ": " + r.message) })
-    removed.filter(function (r) { return r.branch && !r.branchDeleted }).forEach(function (r) {
-        lines.push((titles[r.path] || r.path) + ": " + r.branchMessage)
+    kept.forEach(function (r) {
+        lines.push((titles[r.path] || r.path) + ": " + (r.forced ? "usunięty, " : "") + r.branchMessage)
     })
     return {
         removed: removed.length,
         skipped: skipped.length,
+        branchKept: kept.length,
         freed: removed.reduce(function (s, r) { return s + (r.freed || 0) }, 0),
         details: lines
     }

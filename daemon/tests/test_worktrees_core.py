@@ -335,6 +335,25 @@ class ProtectedBranchTest(unittest.TestCase):
                                   capture_output=True, text=True, check=True).stdout
         self.assertIn("master", branches)
 
+    def test_forced_removal_never_touches_main_branch_worktree_or_main_directory(self):
+        import subprocess
+        with open(os.path.join(self.master_wt, "a.txt"), "a") as fh:
+            fh.write("zmiana na master\n")  # nawet ze zmianami nie staje się kandydatem
+        self.scanner.refresh()
+        items = by_path(self.scanner.snapshot([]))
+        self.assertEqual((items[self.master_wt]["forceRemovable"], items[self.master_wt]["forceBlocker"]),
+                         (False, "protected"))
+        self.assertEqual(items[self.repo]["forceBlocker"], "main")
+        results = self.scanner.remove([self.master_wt, self.repo], [], force=True, delete_unmerged=True,
+                                      confirmed={self.master_wt: {"dirty": 1, "unmerged": 0, "branch": "master"}})
+        self.assertEqual([(r["removed"], r["reason"], r["status"]) for r in results],
+                         [(False, "protected", "refused"), (False, "main", "refused")])
+        with open(os.path.join(self.master_wt, "a.txt")) as fh:
+            self.assertIn("zmiana na master", fh.read())
+        branches = subprocess.run(["git", "branch", "--format=%(refname:short)"], cwd=self.repo,
+                                  capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(sorted(branches), ["feat/summary", "master"])
+
 
 class GroupingTest(WorktreeTestCase):
     """Grupy okna Worktrees na tych samych repozytoriach: w pracy, do sprzątnięcia, do decyzji,
@@ -438,3 +457,172 @@ class PruneTest(WorktreeTestCase):
         self.listed()
         result = self.scanner.prune(os.path.join(self.root, "obce"))
         self.assertFalse(result["ok"])
+
+
+class ForceFieldsTest(WorktreeTestCase):
+    """Pola dla usuwania wymuszonego w List(): które worktrees da się usunąć „mimo to” i ile
+    commitów przepadłoby razem z gałęzią."""
+
+    def test_force_removable_only_without_hard_blockers(self):
+        items = self.listed()
+        got = {os.path.relpath(p, self.root): (w["forceRemovable"], w["forceBlocker"]) for p, w in items.items()}
+        self.assertEqual(got, {
+            "alpha": (False, "main"),
+            "alpha-wt/merged": (True, ""),
+            "alpha-wt/detached": (True, ""),
+            "alpha-wt/dirty": (True, ""),
+            "alpha-wt/unmerged": (True, ""),
+            "alpha-wt/agent": (False, "agent"),
+            "group/beta": (False, "main"),
+            "group/beta-wt/topic": (True, ""),
+        })
+
+    def test_unpushed_counts_commits_that_exist_only_here(self):
+        items = self.listed()
+        self.assertEqual(items[self.p["unmerged"]]["unpushed"], 2, "bez serwera oba commity są tylko tutaj")
+        self.assertEqual(items[self.p["merged"]]["unpushed"], 0)
+        self.assertEqual(items[self.p["alpha"]]["unpushed"], 0, "główny katalog nie jest liczony")
+        # Pierwszy z dwóch commitów trafia na „serwer” (lokalne repozytorium bare, bez sieci).
+        origin = os.path.join(self.tmp, "origin.git")
+        gitrepos.git(self.tmp, "init", "-q", "--bare", origin)
+        gitrepos.git(self.p["alpha"], "remote", "add", "origin", origin)
+        gitrepos.git(self.p["alpha"], "push", "-q", "origin", "feat/unmerged~1:refs/heads/feat/unmerged")
+        self.assertEqual(self.listed()[self.p["unmerged"]]["unpushed"], 1)
+        # Commit, który jest też w innej lokalnej gałęzi, nie przepada razem z tą.
+        gitrepos.git(self.p["alpha"], "branch", "kopia", "feat/unmerged")
+        self.assertEqual(self.listed()[self.p["unmerged"]]["unpushed"], 0)
+
+
+class ForceRemoveTest(WorktreeTestCase):
+    """Usuwanie wymuszone w rdzeniu: --force dla worktree, gałąź -d gdy scalona, -D tylko na
+    prośbę, twarde blokady bez wyjątków, świeży stan porównany ze stanem z potwierdzenia."""
+
+    def setUp(self):
+        super().setUp()
+        self.listed()
+        open(self.log, "w").close()
+
+    def forced(self, keys, delete_unmerged=False, confirmed=None, cwds=None):
+        return self.scanner.remove([self.p[k] for k in keys], self.agent if cwds is None else cwds, force=True,
+                                   delete_unmerged=delete_unmerged, confirmed=confirmed)
+
+    def destructive_calls(self):
+        return [c for c in self.git_calls() if " worktree remove" in c or " branch " in c]
+
+    def test_dirty_unmerged_and_no_main_are_removed_but_unmerged_branches_stay(self):
+        results = self.forced(["dirty", "unmerged", "topic", "detached"])
+        got = {os.path.basename(r["path"]): (r["removed"], r["status"], r["branchDeleted"]) for r in results}
+        self.assertEqual(got, {
+            "dirty": (True, "removed", True),        # scalona gałąź znika przez -d
+            "unmerged": (True, "branch-kept", False),
+            "topic": (True, "branch-kept", False),   # brak gałęzi głównej — nie wiadomo, co scalone
+            "detached": (True, "removed", False),    # bez gałęzi
+        })
+        for r in results:
+            self.assertTrue(r["forced"])
+            self.assertFalse(os.path.exists(r["path"]), r["path"])
+        by_name = {os.path.basename(r["path"]): r for r in results}
+        self.assertEqual(by_name["dirty"]["message"], "usunięty razem ze zmianami")
+        self.assertEqual(by_name["unmerged"]["branchMessage"], "gałąź feat/unmerged zostaje (2 commity poza master)")
+        self.assertIn("gałąź topic zostaje", by_name["topic"]["branchMessage"])
+        self.assertEqual(sorted(gitrepos.branches(self.p["alpha"])),
+                         ["feat/agent", "feat/merged", "feat/unmerged", "master"])
+        self.assertIn("topic", gitrepos.branches(self.p["beta"]))
+        self.assertEqual(sorted(self.destructive_calls()), sorted([
+            f"-C {self.p['alpha']} worktree remove --force {self.p['dirty']}",
+            f"-C {self.p['alpha']} branch -d feat/dirty",
+            f"-C {self.p['alpha']} worktree remove --force {self.p['unmerged']}",
+            f"-C {self.p['beta']} worktree remove --force {self.p['topic']}",
+            f"-C {self.p['alpha']} worktree remove --force {self.p['detached']}",
+        ]))
+
+    def test_unmerged_branch_deleted_only_with_explicit_flag(self):
+        [result] = self.forced(["unmerged"], delete_unmerged=True)
+        self.assertEqual((result["removed"], result["branchDeleted"], result["status"]), (True, True, "removed"))
+        self.assertNotIn("feat/unmerged", gitrepos.branches(self.p["alpha"]))
+        self.assertIn(f"-C {self.p['alpha']} branch -D feat/unmerged", self.git_calls())
+
+    def test_safe_remove_ignores_delete_flag(self):
+        [result] = self.scanner.remove([self.p["unmerged"]], self.agent, delete_unmerged=True)
+        self.assertEqual((result["removed"], result["reason"], result["status"]), (False, "unmerged", "refused"))
+        self.assertTrue(os.path.isdir(self.p["unmerged"]))
+        for call in self.git_calls():
+            self.assertNotRegex(call, r"(--force|\s-D\b)")
+
+    def test_main_worktree_and_running_agent_refused_even_forced(self):
+        results = self.forced(["alpha", "beta", "agent"], delete_unmerged=True)
+        self.assertEqual([(r["removed"], r["reason"], r["status"]) for r in results],
+                         [(False, "main", "refused"), (False, "main", "refused"), (False, "agent", "refused")])
+        self.assertIn("zamknij sesję", results[2]["message"])
+        for key in ("alpha", "beta", "agent"):
+            self.assertTrue(os.path.isdir(self.p[key]))
+        self.assertEqual(self.destructive_calls(), [])
+
+    def test_protected_branch_worktree_refused_even_forced_with_changes(self):
+        # develop w osobnym worktree, ze zmianą i własnym commitem — gdyby nie ochrona, byłby
+        # zwykłym kandydatem do „usuń mimo to” (i -D na develop).
+        develop = os.path.join(self.root, "alpha-wt", "develop")
+        gitrepos.git(self.p["alpha"], "worktree", "add", "-q", "-b", "develop", develop)
+        gitrepos.commit(develop, "d.txt")
+        with open(os.path.join(develop, "d.txt"), "a", encoding="utf-8") as fh:
+            fh.write("zmiana\n")
+        w = self.listed()[develop]
+        self.assertEqual((w["forceRemovable"], w["forceBlocker"], w["group"]), (False, "protected", "main"))
+        open(self.log, "w").close()
+        [result] = self.scanner.remove([develop], [], force=True, delete_unmerged=True,
+                                       confirmed={develop: {"dirty": 1, "unmerged": 1, "branch": "develop"}})
+        self.assertEqual((result["removed"], result["reason"], result["status"]), (False, "protected", "refused"))
+        self.assertTrue(os.path.isfile(os.path.join(develop, "d.txt")))
+        self.assertIn("develop", gitrepos.branches(self.p["alpha"]))
+        self.assertEqual(self.destructive_calls(), [])
+
+    def test_locked_and_missing_refused_even_forced(self):
+        gitrepos.git(self.p["alpha"], "worktree", "lock", self.p["dirty"])
+        gone = os.path.join(self.root, "alpha-wt", "gone")
+        gitrepos.git(self.p["alpha"], "worktree", "add", "-q", "-b", "feat/gone", gone)
+        shutil.rmtree(gone)
+        self.listed()
+        open(self.log, "w").close()
+        results = self.scanner.remove([self.p["dirty"], gone], [], force=True, delete_unmerged=True)
+        self.assertEqual([(r["removed"], r["reason"]) for r in results], [(False, "locked"), (False, "missing")])
+        self.assertIn("git worktree unlock", results[0]["message"])
+        self.assertTrue(os.path.isdir(self.p["dirty"]))
+        self.assertIn("feat/gone", gitrepos.branches(self.p["alpha"]))
+        self.assertEqual(self.destructive_calls(), [])
+
+    def test_refused_when_state_got_worse_since_confirmation(self):
+        seen = {"dirty": 1, "unmerged": 0, "unpushed": 0, "branch": "feat/dirty"}
+        with open(os.path.join(self.p["dirty"], "nowy.txt"), "w", encoding="utf-8") as fh:
+            fh.write("praca, której nie było w potwierdzeniu\n")
+        [result] = self.forced(["dirty"], confirmed={self.p["dirty"]: seen})
+        self.assertEqual((result["removed"], result["reason"]), (False, "changed"))
+        self.assertIn("było 1, jest 2", result["message"])
+        self.assertTrue(os.path.isfile(os.path.join(self.p["dirty"], "nowy.txt")))
+
+        gitrepos.commit(self.p["unmerged"], "u3.txt")
+        [result] = self.forced(["unmerged"], confirmed={self.p["unmerged"]: {"dirty": 0, "unmerged": 2}})
+        self.assertEqual(result["reason"], "changed")
+        [result] = self.forced(["unmerged"], confirmed={self.p["unmerged"]: {"branch": "feat/inna"}})
+        self.assertEqual(result["reason"], "changed")
+        self.assertTrue(os.path.isdir(self.p["unmerged"]))
+        self.assertFalse([c for c in self.git_calls() if " worktree remove" in c])
+
+    def test_same_or_better_state_than_confirmed_is_removed(self):
+        confirmed = {self.p["dirty"]: {"dirty": 1, "unmerged": 0, "unpushed": 0, "branch": "feat/dirty"},
+                     self.p["unmerged"]: {"dirty": 3, "unmerged": 2, "unpushed": 2, "branch": "feat/unmerged"}}
+        results = self.forced(["dirty", "unmerged"], confirmed=confirmed)
+        self.assertEqual([r["removed"] for r in results], [True, True])
+
+    def test_force_never_doubles_or_deletes_main_branches(self):
+        self.forced(["dirty", "unmerged", "topic", "alpha", "agent"], delete_unmerged=True)
+        self.assertTrue(self.destructive_calls())
+        for call in self.git_calls():
+            self.assertNotRegex(call, r"--force --force|-f -f|\s-ff\b")
+            self.assertNotRegex(call, r"branch -[dD] (master|main|develop)\b")
+
+
+class StatusFieldTest(WorktreeTestCase):
+    def test_safe_remove_reports_status(self):
+        self.listed()
+        results = self.scanner.remove([self.p["merged"], self.p["dirty"]], self.agent)
+        self.assertEqual([(r["status"], r["forced"]) for r in results], [("removed", False), ("refused", False)])

@@ -60,13 +60,28 @@ class WorktreeMonitor(QObject):
             self._json = text
             self.changed.emit()
 
-    def remove(self, paths: list[str], reply) -> None:
-        """Sprzątanie w tle; reply(json) dostaje wynik w wątku głównym."""
+    def remove(self, paths: list[str], reply, force: bool = False, delete_unmerged: bool = False,
+               confirmed: str = "") -> None:
+        """Sprzątanie (albo usuwanie wymuszone, force=True) w tle; reply(json) dostaje wynik
+        w wątku głównym. confirmed: JSON {ścieżka: {dirty, unmerged, unpushed, branch}} — stan
+        z potwierdzenia; niepoprawny JSON oznacza odmowę dla wszystkich ścieżek."""
+        paths = list(paths)
+        seen = None
+        if force and confirmed:
+            try:
+                seen = json.loads(confirmed)
+            except ValueError:
+                seen = None
+            if not isinstance(seen, dict):
+                reply(json.dumps([_refused(p, "bad-request", "niepoprawny opis potwierdzenia — nic nie usunięto")
+                                  for p in paths], ensure_ascii=False))
+                return
         if self.refresh_agents:
             self.refresh_agents()
         cwds = self.cwds_source()  # migawka agentów z chwili wywołania
-        paths = list(paths)
-        self._submit(lambda: self.scanner.remove(paths, cwds), lambda res: self._after_remove(paths, res, reply))
+        self._submit(lambda: self.scanner.remove(paths, cwds, force=force, delete_unmerged=delete_unmerged,
+                                                 confirmed=seen),
+                     lambda res: self._after_remove(paths, res, reply))
 
     def prune(self, repo_path: str, reply) -> None:
         """`git worktree prune` w tle (tylko wpisy bez katalogu); reply(json) w wątku głównym."""
@@ -100,7 +115,7 @@ class WorktreeMonitor(QObject):
 
     def _after_remove(self, paths, results, reply) -> None:
         if results is None:  # wyjątek w tle — nic nie zostało potwierdzone jako usunięte
-            results = [{"path": p, "removed": False, "reason": "error", "message": "błąd usługi"} for p in paths]
+            results = [_refused(p, "error", "błąd usługi") for p in paths]
         reply(json.dumps(results, ensure_ascii=False))
         self.publish()
         self._measure()
@@ -120,3 +135,9 @@ class WorktreeMonitor(QObject):
             print(f"tide-daemon: worktrees: {exc!r}", flush=True)
             result = None
         then(result)
+
+
+def _refused(path: str, reason: str, message: str) -> dict:
+    """Wynik dla ścieżki, której nie dotknęliśmy (te same pola co z WorktreeScanner.remove)."""
+    return {"path": path, "removed": False, "reason": reason, "message": message, "branch": "",
+            "branchDeleted": False, "branchMessage": "", "freed": 0, "status": "refused"}

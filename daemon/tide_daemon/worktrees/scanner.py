@@ -9,6 +9,8 @@ Co liczymy i skąd:
 - worktrees: `git worktree list --porcelain` każdego repozytorium (także te poza katalogiem projektów),
 - zmiany: liczba pozycji w `git status --porcelain` (nieśledzony katalog to jedna pozycja),
 - niescalone commity: `git rev-list --count <główna>..<HEAD>`; scalony = 0,
+- commity tylko tutaj (unpushed): z HEAD, ale z żadnej innej lokalnej gałęzi ani gałęzi zdalnej
+  (stan z ostatniego fetch) — liczone tylko dla niescalonych; to one przepadają po `branch -D`,
 - ostatnia zmiana: najnowsze z czasu ostatniego commita HEAD i mtime plików wskazanych przez
   `git status` — tanie, bo i tak czytamy status, a nie chodzimy po wszystkich plikach,
 - rozmiar: jak `du -s` (disk.py), w pamięci podręcznej i przeliczany najwyżej co SIZE_TTL,
@@ -20,7 +22,12 @@ Co liczymy i skąd:
 - grupa dla okna Worktrees (group_of): w pracy, do sprzątnięcia, do decyzji, gałęzie główne,
   brakujące katalogi.
 
-Sprzątanie usuwa wyłącznie `git worktree remove` bez --force, a gałąź tylko `git branch -d`.
+Sprzątanie (remove) usuwa wyłącznie `git worktree remove` bez --force, a gałąź tylko `git branch -d`.
+Usuwanie wymuszone (remove z force=True, RemoveForced w D-Bus) to świadoma decyzja użytkownika po
+potwierdzeniu, co przepadnie: `git worktree remove --force`, gałąź `-d` tylko gdy scalona, `-D` tylko
+na wyraźną prośbę. Twarde blokady (HARD_BLOCKERS) obowiązują także wtedy: główny katalog, gałąź
+główna, brakujący katalog, blokada `git worktree lock` i działający w nim agent — dla nich nie ma
+żadnej ścieżki wymuszenia.
 """
 import os
 import threading
@@ -40,6 +47,12 @@ SKIP_DIRS = {"node_modules", "bower_components", "vendor", "bin", "obj", "target
 
 # Powody pominięcia przy sprzątaniu (kolejność = pierwszeństwo).
 BLOCKERS = ("main", "protected", "missing", "locked", "agent", "dirty", "no-main", "unmerged")
+# Twarde blokady: tych worktrees nie usuwamy nigdy, także po potwierdzeniu „Usuń mimo to”.
+# Główny katalog i gałąź główna (master, main, develop) — po tym, jak sprzątanie omal nie skasowało
+# master w LogViewer; brakujący katalog porządkuje tylko prune; blokadę zdejmuje się świadomie
+# (`git worktree unlock`); agent pracujący w katalogu — usunięcie katalogu spod działającego procesu
+# kończy się jego błędami albo odtworzeniem plików w pustym miejscu (decyzja 41).
+HARD_BLOCKERS = ("main", "protected", "missing", "locked", "agent")
 
 # Grupy okna Worktrees. „W pracy”: agent albo jakakolwiek aktywność w ostatniej dobie.
 ACTIVE_WINDOW = 24 * 3600
@@ -75,6 +88,7 @@ class Worktree:
     main_branch: str = ""
     dirty: int = 0
     unmerged: int | None = None   # None: nie da się policzyć (brak gałęzi głównej)
+    unpushed: int = 0             # commity tylko w tym worktree (bez innej gałęzi i gałęzi zdalnej); -1: nie wiadomo
     last_change: float = 0.0
     subject: str = ""             # temat ostatniego commita HEAD
     nested: tuple = ()            # inne worktrees wewnątrz tego katalogu
@@ -103,6 +117,18 @@ class Worktree:
             "unmerged": not self.merged,
         }
         return next((name for name in BLOCKERS if checks[name]), "")
+
+    def force_blocker(self, has_agent: bool) -> str:
+        """Pierwsza twarda blokada (HARD_BLOCKERS) — powód, dla którego nie usuniemy go nawet
+        na wyraźne żądanie — albo pusty napis."""
+        checks = {
+            "main": self.is_main,
+            "protected": self.protected,
+            "missing": self.missing,
+            "locked": self.locked,
+            "agent": has_agent,
+        }
+        return next((name for name in HARD_BLOCKERS if checks[name]), "")
 
 
 def find_repositories(root: str, max_depth: int = MAX_DEPTH) -> list[str]:
@@ -216,8 +242,18 @@ class WorktreeScanner:
                 count = self.git.run(repo_path, "rev-list", "--count", f"refs/heads/{main_branch}..{entry.head}")
                 if count.ok and count.out.strip().isdigit():
                     wt.unmerged = int(count.out)
+            if entry.head and not wt.missing and not wt.is_main and not wt.protected and wt.unmerged != 0:
+                wt.unpushed = self._only_here(repo_path, entry.head, entry.branch)
             out.append(wt)
         return out
+
+    def _only_here(self, repo_path: str, head: str, branch: str) -> int:
+        """Commity osiągalne z head, a z żadnej innej lokalnej gałęzi ani gałęzi zdalnej (stan
+        z ostatniego fetch, bez sieci). To one przepadną po `git branch -D` (zostaje tylko reflog).
+        -1, gdy nie da się policzyć."""
+        exclude = [f"--exclude={branch}"] if branch else []
+        res = self.git.run(repo_path, "rev-list", "--count", head, "--not", *exclude, "--branches", "--remotes")
+        return int(res.out) if res.ok and res.out.strip().isdigit() else -1
 
     def _commits(self, repo_path: str, heads: list[str]) -> dict[str, tuple[float, str]]:
         """sha → (czas commita, temat) — jedno wywołanie gita na repozytorium."""
@@ -287,6 +323,7 @@ class WorktreeScanner:
 
     def _describe(self, wt: Worktree, has_agent: bool, session=None, now: float = 0.0) -> dict:
         blocker = wt.blocker(has_agent)
+        force_blocker = wt.force_blocker(has_agent)
         tag, title = humanize_branch(wt.branch)
         if not title:
             title = f"odłączony HEAD {wt.head}" if wt.detached else os.path.basename(wt.path.rstrip("/"))
@@ -306,6 +343,7 @@ class WorktreeScanner:
             "mainBranch": wt.main_branch,
             "merged": wt.merged,
             "unmerged": wt.unmerged,
+            "unpushed": wt.unpushed,
             "lastChange": iso(wt.last_change),
             "lastChangeTs": round(wt.last_change, 3),
             "size": self.size_of(wt.path),
@@ -313,6 +351,9 @@ class WorktreeScanner:
             "missing": wt.missing,
             "removable": blocker == "",
             "blocker": blocker,
+            # Usuwanie wymuszone (RemoveForced): możliwe tylko bez twardej blokady.
+            "forceRemovable": force_blocker == "",
+            "forceBlocker": force_blocker,
             # Dla okna Worktrees:
             "group": group_of(wt, blocker, has_agent, last_activity, now),
             "title": title,
@@ -328,22 +369,35 @@ class WorktreeScanner:
 
     # --- sprzątanie ------------------------------------------------------------------------
 
-    def remove(self, paths: list[str], cwds: list[str] = ()) -> list[dict]:
+    def remove(self, paths: list[str], cwds: list[str] = (), force: bool = False,
+               delete_unmerged: bool = False, confirmed: dict | None = None) -> list[dict]:
         """Usuwa wskazane worktrees, jeśli wolno. Wynik dla każdej ścieżki w kolejności wejścia.
 
         Przed usunięciem stan repozytorium jest czytany na nowo — decyzja nie opiera się na
         danych sprzed minuty.
+
+        force=False (sprzątanie): tylko worktrees bez żadnej blokady, `git worktree remove` bez
+        --force, gałąź `git branch -d`.
+        force=True (po potwierdzeniu w oknie): twarde blokady (HARD_BLOCKERS) dalej obowiązują,
+        resztę usuwa `git worktree remove --force`. Gałąź: `-d`, gdy scalona z lokalną gałęzią
+        główną, `-D` tylko z delete_unmerged, inaczej zostaje. confirmed: ścieżka → stan widziany
+        w potwierdzeniu (dirty, unmerged, unpushed, branch); gdy świeży stan jest gorszy (więcej
+        zmian albo commitów, inna gałąź), worktree jest pomijany z powodem „changed”.
+        delete_unmerged bez force nic nie zmienia — sprzątanie nigdy nie woła `-D`.
         """
+        seen_by_path = {os.path.normpath(k): v for k, v in (confirmed or {}).items() if k}
         results = []
         for raw in paths:
             path = os.path.normpath(raw) if raw else ""
-            results.append(self._remove_one(path, cwds))
+            result = self._remove_one(path, cwds, force, force and delete_unmerged, seen_by_path.get(path))
+            results.append(_finish(result))
         self.refresh()
         return results
 
-    def _remove_one(self, path: str, cwds) -> dict:
+    def _remove_one(self, path: str, cwds, force: bool = False, delete_unmerged: bool = False,
+                    seen: dict | None = None) -> dict:
         result = {"path": path, "removed": False, "reason": "", "message": "", "branch": "",
-                  "branchDeleted": False, "branchMessage": "", "freed": 0}
+                  "branchDeleted": False, "branchMessage": "", "freed": 0, "forced": force, "status": ""}
         with self._lock:
             known = next((w for w in self.items if w.path == path), None)
         if not known:
@@ -355,26 +409,48 @@ class WorktreeScanner:
             return _skip(result, "unknown")
         result["branch"] = wt.branch
         has_agent = path in _agents_by_worktree(fresh_items, cwds)
-        blocker = wt.blocker(has_agent)
+        blocker = wt.force_blocker(has_agent) if force else wt.blocker(has_agent)
         if blocker:
             return _skip(result, blocker, wt)
+        # Druga linia obrony: główny katalog i gałąź główna nigdy, niezależnie od listy blokad wyżej.
+        if wt.is_main or wt.protected:
+            return _skip(result, "main" if wt.is_main else "protected", wt)
+        if force:
+            changed = _changed_since(wt, seen)
+            if changed:
+                return _skip(result, "changed", wt, changed)
 
         size = self.size_of(path)
-        removed = self.git.run(wt.repo_path, "worktree", "remove", wt.path, timeout=600)
+        # Jedno --force: zmiany i pliki nieśledzone idą razem z katalogiem, ale blokady
+        # (git worktree lock) git i tak nie zdejmie — do tego trzeba by -f -f, którego nie używamy.
+        args = ("worktree", "remove", "--force", wt.path) if force else ("worktree", "remove", wt.path)
+        removed = self.git.run(wt.repo_path, *args, timeout=600)
         if not removed.ok:
             return _skip(result, "git", wt, removed.err)
         result["removed"] = True
         result["freed"] = max(size, 0)
-        result["message"] = "usunięty"
+        result["message"] = "usunięty razem ze zmianami" if force and wt.dirty else "usunięty"
         with self._lock:
             self._sizes.pop(path, None)
         # Druga linia obrony: gałęzi głównych nie kasujemy nigdy, nawet gdyby blokada wyżej zawiodła.
-        if wt.branch and not wt.protected:
-            deleted = self.git.run(wt.repo_path, "branch", "-d", wt.branch)
-            result["branchDeleted"] = deleted.ok
-            result["branchMessage"] = "gałąź usunięta" if deleted.ok else \
-                f"gałąź zostaje: {_first_line(deleted.err)}"
+        if wt.branch and not wt.protected and wt.branch not in MAIN_CANDIDATES:
+            self._delete_branch(wt, result, force, delete_unmerged)
         return result
+
+    def _delete_branch(self, wt: Worktree, result: dict, force: bool, delete_unmerged: bool) -> None:
+        """Gałąź po usuniętym worktree. Sprzątanie: zawsze `-d` (git sam pilnuje scalenia).
+        Wymuszone: `-D` tylko na wyraźną prośbę, `-d`, gdy scalona z lokalną gałęzią główną,
+        inaczej gałąź zostaje i wynik mówi dlaczego."""
+        if force and not delete_unmerged and not wt.merged:
+            count = (f"{wt.unmerged} {_commits_word(wt.unmerged)} poza {wt.main_branch}" if wt.unmerged
+                     else "nie wiadomo, co jest scalone — brak lokalnej gałęzi głównej")
+            result["branchMessage"] = f"gałąź {wt.branch} zostaje ({count})"
+            return
+        flag = "-D" if force and delete_unmerged else "-d"
+        deleted = self.git.run(wt.repo_path, "branch", flag, wt.branch)
+        result["branchDeleted"] = deleted.ok
+        result["branchMessage"] = "gałąź usunięta" if deleted.ok else \
+            f"gałąź zostaje: {_first_line(deleted.err)}"
 
 
     # --- brakujące katalogi -------------------------------------------------------------------
@@ -417,11 +493,17 @@ MESSAGES = {
     "no-main": "brak lokalnej gałęzi głównej (master, main, develop)",
     "unmerged": "nie jest scalony z lokalną gałęzią główną",
     "git": "git odmówił usunięcia",
+    "changed": "stan zmienił się od potwierdzenia — nic nie usunięto, sprawdź jeszcze raz",
+}
+# Przy usuwaniu wymuszonym te powody mówią, co zrobić, żeby jednak usunąć.
+FORCE_MESSAGES = {
+    "agent": "pracuje w nim agent — zamknij sesję, zanim usuniesz katalog",
+    "locked": "zablokowany (git worktree lock) — najpierw git worktree unlock",
 }
 
 
 def _skip(result: dict, reason: str, wt: Worktree | None = None, detail: str = "") -> dict:
-    message = MESSAGES[reason]
+    message = FORCE_MESSAGES.get(reason, MESSAGES[reason]) if result.get("forced") else MESSAGES[reason]
     if wt is not None and reason == "dirty":
         message += f" ({wt.dirty})"
     elif wt is not None and reason == "unmerged" and wt.unmerged:
@@ -430,6 +512,44 @@ def _skip(result: dict, reason: str, wt: Worktree | None = None, detail: str = "
         message += f": {_first_line(detail)}"
     result.update(reason=reason, message=message)
     return result
+
+
+def _finish(result: dict) -> dict:
+    """status: removed (worktree i jego gałąź, jeśli była, zniknęły), branch-kept (worktree
+    usunięty, gałąź została — powód w branchMessage), refused (nic nie usunięto — powód w reason
+    i message)."""
+    if not result["removed"]:
+        result["status"] = "refused"
+    elif result["branch"] and not result["branchDeleted"]:
+        result["status"] = "branch-kept"
+    else:
+        result["status"] = "removed"
+    return result
+
+
+def _changed_since(wt: Worktree, seen) -> str:
+    """Czym świeży stan jest gorszy od widzianego w potwierdzeniu; pusty napis, gdy niczym.
+    Bez wpisu (seen None) nie ma z czym porównać — okno zawsze go podaje."""
+    if not isinstance(seen, dict):
+        return ""
+    if "branch" in seen and (seen.get("branch") or "") != wt.branch:
+        return f"gałąź: było {seen.get('branch') or 'odłączony HEAD'}, jest {wt.branch or 'odłączony HEAD'}"
+    for key, label in (("dirty", "zmiany"), ("unmerged", "niescalone commity"), ("unpushed", "commity tylko tutaj")):
+        was = seen.get(key)
+        if not isinstance(was, int) or isinstance(was, bool):
+            continue
+        now = getattr(wt, key)
+        unknown = now is None or now < 0
+        if (unknown and was >= 0) or (not unknown and was >= 0 and now > was):
+            return f"{label}: było {was}, jest {'?' if unknown else now}"
+    return ""
+
+
+def _commits_word(n: int) -> str:
+    ones, tens = n % 10, n % 100
+    if n == 1:
+        return "commit"
+    return "commity" if 2 <= ones <= 4 and not 12 <= tens <= 14 else "commitów"
 
 
 def _clip(text: str, limit: int) -> str:

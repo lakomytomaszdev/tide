@@ -1,6 +1,8 @@
 // Jeden worktree w oknie: [pole wyboru] · narzędzie · tytuł · repozytorium / opis · kiedy · rozmiar · stan · akcje.
 // Wygląd zależy od grupy: „active” (teal), „clean” (mięta, z polem wyboru), „decide” (masło),
-// „main” (wyciszony). Sam niczego nie usuwa ani nie otwiera — zgłasza to sygnałami.
+// „main” (wyciszony). Pole wyboru ma każdy worktree, który da się usunąć (Logic.selectable) —
+// nie-sugerowany zaznaczony jest czerwony, bo jego usunięcie wymaga mocniejszego potwierdzenia.
+// Sam niczego nie usuwa ani nie otwiera — zgłasza to sygnałami.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -20,19 +22,22 @@ Rectangle {
     signal openRequested(string path, string app)
 
     readonly property string kind: worktree.group || ""
-    readonly property bool selectable: kind === "clean"
+    readonly property bool selectable: Logic.selectable(worktree)
+    readonly property bool risky: Logic.risky(worktree)
+    readonly property string lockReason: Logic.lockReason(worktree)
     readonly property bool old: kind === "decide" && Logic.isOld(worktree, nowTs)
     readonly property string why: Logic.whyText(worktree)
+    readonly property color pickTint: risky ? Tide.Tokens.negative : Tide.Tokens.positive
 
     implicitHeight: Math.max(52, body.implicitHeight + 20)
     radius: Tide.Tokens.radiusCard
-    color: kind === "active" ? Tide.Theme.alpha(Tide.Tokens.working, 0.07)
-         : selectable && checked ? Tide.Theme.alpha(Tide.Tokens.positive, 0.08)
+    color: selectable && checked ? Tide.Theme.alpha(pickTint, 0.08)
+         : kind === "active" ? Tide.Theme.alpha(Tide.Tokens.working, 0.07)
          : hover.containsMouse && selectable ? Qt.lighter(Tide.Tokens.backgroundView, 1.15)
          : Tide.Tokens.backgroundView
     border.width: 1
-    border.color: kind === "active" ? Tide.Theme.alpha(Tide.Tokens.working, 0.18)
-                : selectable && checked ? Tide.Theme.alpha(Tide.Tokens.positive, 0.25)
+    border.color: selectable && checked ? Tide.Theme.alpha(pickTint, 0.3)
+                : kind === "active" ? Tide.Theme.alpha(Tide.Tokens.working, 0.18)
                 : "transparent"
     opacity: old || kind === "main" ? 0.62 : 1.0
 
@@ -43,7 +48,7 @@ Rectangle {
     Accessible.onToggleAction: if (selectable) toggled()
     Accessible.onPressAction: if (selectable) toggled()
 
-    // Kliknięcie w dowolne miejsce wiersza „Do sprzątnięcia” zaznacza go albo odznacza.
+    // Kliknięcie w dowolne miejsce wiersza, który da się usunąć, zaznacza go albo odznacza.
     MouseArea {
         id: hover
         anchors.fill: parent
@@ -66,9 +71,10 @@ Rectangle {
                 anchors.fill: parent
                 visible: row.selectable
                 radius: 6
-                color: row.checked ? Tide.Tokens.accent : "transparent"
+                color: !row.checked ? "transparent" : row.risky ? Tide.Tokens.negative : Tide.Tokens.accent
                 border.width: row.checked ? 0 : 1.5
-                border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.25)
+                border.color: row.risky ? Tide.Theme.alpha(Tide.Tokens.negative, 0.45)
+                                        : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.25)
                 Text {
                     anchors.centerIn: parent
                     visible: row.checked
@@ -167,7 +173,7 @@ Rectangle {
             Layout.preferredWidth: 66
             layoutDirection: Qt.RightToLeft
             spacing: 6
-            visible: !row.selectable && !row.worktree.missing
+            visible: row.kind !== "clean" && !row.worktree.missing
 
             PillButton {
                 visible: row.canRider
@@ -193,12 +199,14 @@ Rectangle {
         }
         Item {
             Layout.preferredWidth: 66
-            visible: row.selectable || row.worktree.missing
+            visible: row.kind === "clean" || row.worktree.missing
         }
     }
 
-    QQC2.ToolTip.visible: hover.containsMouse && hover.mouseY < height && !row.selectable
+    QQC2.ToolTip.visible: hover.containsMouse && hover.mouseY < height && row.kind !== "clean"
     QQC2.ToolTip.delay: 900
     QQC2.ToolTip.text: Logic.tildePath(worktree.path, homeDir) + (worktree.branch ? "\n" + worktree.branch : "")
                        + (worktree.sessionTitle && worktree.subject ? "\n" + worktree.subject : "")
+                       + (lockReason ? "\nNie do usunięcia: " + lockReason
+                          : risky ? "\nMożna usunąć po potwierdzeniu, co przepadnie" : "")
 }

@@ -35,9 +35,13 @@ def item(path, repo, group, **extra):
         "locked": False, "missing": False, "removable": group == "clean", "blocker": "", "group": group,
         "title": os.path.basename(path), "tag": "feat", "subject": "commit " + os.path.basename(path), "tool": "",
         "sessionId": "", "sessionTitle": "", "sessionLastActivityTs": 0, "lastActivity": "",
-        "lastActivityTs": NOW - 5 * DAY,
+        "lastActivityTs": NOW - 5 * DAY, "unpushed": 0,
     }
     base.update(extra)
+    # Jak w usłudze: twarde blokady (main, protected, missing, locked, agent) wykluczają też RemoveForced.
+    hard = base["blocker"] if base["blocker"] in ("main", "protected", "missing", "locked", "agent") else ""
+    base.setdefault("forceBlocker", hard)
+    base.setdefault("forceRemovable", hard == "")
     return base
 
 
@@ -52,7 +56,8 @@ def sample() -> list:
              title="odłączony HEAD e0e6181", size=800_000_000),
         item("/w/beta/small", "beta", "clean", size=100_000),
         item("/w/alpha/old", "alpha", "decide", unmerged=4, dirty=3, merged=False, blocker="dirty",
-             lastActivityTs=NOW - 40 * DAY),
+             lastActivityTs=NOW - 40 * DAY, lastChangeTs=NOW - 40 * DAY, unpushed=2, tool="claude",
+             sessionTitle="Stara sesja"),
         item("/w/alpha/master-local", "alpha", "main", branch="master", tag="", blocker="protected"),
         item("/w/beta/gone", "beta", "missing", missing=True, size=-1, blocker="missing"),
     ]
@@ -147,8 +152,9 @@ Item {
 
         page.toggle("/w/alpha/vin")
         page.toggle("/w/beta/small")
-        page.toggle("/w/gamma/d1")          // spoza „Do sprzątnięcia” — nie da się go usunąć
-        console.warn("PICK " + page.picked.items.length + "|" + page.picked.bytes)
+        page.toggle("/w/alpha/master-local")  // gałąź główna — nie da się zaznaczyć
+        page.toggle("/w/alpha/agent")         // pracuje agent — nie da się zaznaczyć
+        console.warn("PICK " + page.picked.items.length + "|" + page.picked.bytes + "|" + page.forcing)
         page.askRemove()
         console.warn("CONFIRM " + page.confirming)
         page.confirmRemove()
@@ -195,10 +201,10 @@ Item {
                          "Wszystkie:23,gamma:12,alpha:4,beta:3,delta:1,eps:1,pozostałe:2")
         self.assertEqual(warned(log, "WHY"), "4 commity · 3 zmiany|1 commit|12 commitów · 22 zmiany")
         self.assertEqual(warned(log, "OLD"), "true")
-        self.assertEqual(warned(log, "PICK"), "2|1200100000")
+        self.assertEqual(warned(log, "PICK"), "2|1200100000|false")
         self.assertEqual(warned(log, "CONFIRM"), "true")
         self.assertEqual(warned(log, "REMOVE"), "/w/alpha/vin,/w/beta/small|true|false")
-        self.assertEqual(warned(log, "RESULT"), "1|1|1200000000|/w/beta/small;/w/gamma/d1|false")
+        self.assertEqual(warned(log, "RESULT"), "1|1|1200000000|/w/beta/small|false")
         self.assertEqual(warned(log, "DETAILS"), "small · beta: ma niezacommitowane zmiany (1)")
         self.assertEqual(warned(log, "NOREPLY"), "1|false")
         self.assertEqual(warned(log, "ALL"), "3|true")
@@ -213,6 +219,139 @@ Item {
         self.assertTrue(all(int(x) >= 0 for x in fate), fate)
         self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
 
+    def test_forced_confirmation_lists_what_would_be_lost(self):
+        """Nie-sugerowany worktree: mocniejsze potwierdzenie wymienia, co przepadnie (zmiany,
+        commity poza master i bez kopii, los gałęzi, sesję, ostatnią zmianę), pole „usuń też
+        gałąź” i czerwony „Usuń mimo to”; potem RemoveForced ze stanem z potwierdzenia."""
+        data = sample() + [
+            item("/w/beta/topic", "beta", "decide", branch="topic", mainBranch="", unmerged=None, merged=False,
+                 blocker="no-main", unpushed=3),
+            item("/w/gamma/det", "gamma", "decide", branch="", detached=True, head="1234567", unmerged=2,
+                 merged=False, blocker="unmerged", unpushed=2),
+            item("/w/gamma/locked", "gamma", "decide", locked=True, blocker="locked"),
+        ]
+        log = self.harness("ForceSmoke.qml", """import QtQuick
+import "tide" as Tide
+import "worktrees.js" as Logic
+Item {
+    id: root
+    width: 1180; height: 1100
+    property var forced: null
+    property var plain: null
+    WorktreesPage {
+        id: page
+        anchors.fill: parent
+        nowTs: %(now)d
+        homeDir: "/w"
+        worktrees: %(data)s
+        onRemoveRequested: paths => root.plain = paths
+        onRemoveForcedRequested: (paths, deleteBranches, confirmed) => root.forced = { paths: paths,
+                                                                                       deleteBranches: deleteBranches,
+                                                                                       confirmed: JSON.parse(confirmed) }
+    }
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children) {
+            const hit = find(child, name)
+            if (hit) return hit
+        }
+        return null
+    }
+    // Widoczne teksty pod elementem — to, co naprawdę jest w oknie potwierdzenia.
+    function texts(item, out, name) {
+        if (!item.visible) return out
+        if (typeof item.text === "string" && item.text !== "" && (!name || item.objectName === name)) out.push(item.text)
+        for (const child of item.children) texts(child, out, name)
+        return out
+    }
+    Component.onCompleted: {
+        console.warn("SELECTABLE " + ["/w/alpha/old", "/w/alpha/vin", "/w/alpha/agent", "/w/alpha/master-local",
+                                      "/r/alpha", "/w/beta/gone", "/w/gamma/locked", "/w/beta/topic"]
+                     .map(p => Logic.selectable(page.worktrees.find(w => w.path === p))).join("|"))
+        console.warn("LOCK " + Logic.lockReason(page.worktrees.find(w => w.path === "/w/alpha/agent")))
+        page.toggle("/w/alpha/old")
+        page.toggle("/w/alpha/vin")
+        page.toggle("/w/alpha/master-local")
+        console.warn("PICKED " + [page.picked.items.length, page.picked.risky.length, page.forcing].join("|"))
+        page.askRemove()
+        const dialog = find(page, "confirmDialog")
+        console.warn("DIALOG " + texts(dialog, []).join(" ¦ "))
+        console.warn("DANGER " + texts(dialog, [], "lossDanger").length)
+        console.warn("TOGGLE " + find(page, "deleteBranchesToggle").visible + "|" + page.deleteBranches)
+        page.deleteBranches = true
+        console.warn("DANGER2 " + texts(dialog, [], "lossDanger").join(" ¦ "))
+        page.confirmRemove()
+        console.warn("FORCED " + root.forced.paths.join(",") + "|" + root.forced.deleteBranches + "|"
+                     + JSON.stringify(root.forced.confirmed["/w/alpha/old"]) + "|" + (root.plain === null)
+                     + "|" + page.confirming + "|" + page.removing)
+        page.finishRemove([
+            { path: "/w/alpha/old", removed: true, forced: true, freed: 10, branch: "feat/x", branchDeleted: false,
+              branchMessage: "gałąź feat/x zostaje (4 commity poza master)", status: "branch-kept" },
+            { path: "/w/alpha/vin", removed: false, forced: true, reason: "changed", status: "refused",
+              message: "stan zmienił się od potwierdzenia — nic nie usunięto, sprawdź jeszcze raz" }])
+        console.warn("RESULTS " + [page.results.removed, page.results.branchKept, page.results.skipped].join("|"))
+        console.warn("RDETAILS " + page.results.details.join(" ¦ "))
+
+        // Bez zaznaczonego pola przy samych gałęziach bez gałęzi głównej i z odłączonym HEAD.
+        page.selected = ({})
+        page.toggle("/w/beta/topic")
+        page.toggle("/w/gamma/det")
+        page.askRemove()
+        console.warn("NOMAIN " + texts(find(page, "confirmDialog"), []).join(" ¦ "))
+        page.confirmRemove()
+        console.warn("NOFLAG " + root.forced.deleteBranches)
+        console.warn("LABEL " + Logic.deleteBranchLabel({ count: 2, commits: 5, unknown: 1 }) + " ¦ "
+                     + Logic.deleteBranchLabel({ count: 1, commits: 1, unknown: 0 }))
+        Qt.quit()
+    }
+}
+""" % {"now": NOW, "data": json.dumps(data, ensure_ascii=False)})
+        self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
+        self.assertEqual(warned(log, "SELECTABLE"), "true|true|false|false|false|false|false|true")
+        self.assertIn("zamknij sesję", warned(log, "LOCK"))
+        self.assertEqual(warned(log, "PICKED"), "2|1|true")
+        dialog = warned(log, "DIALOG")
+        for expected in (
+            "⚠ Usunąć mimo to 2 worktrees? 1 z nich nie jest sugerowany do usunięcia.",
+            "git worktree remove --force",
+            "⚠ old · alpha",
+            "✕ 3 niezacommitowane zmiany przepadną (także pliki nieśledzone)",
+            "· 4 commity poza master, z tego 2 bez kopii na serwerze ani w innej gałęzi",
+            "· gałąź feat/x zostaje (usuniesz ją polem niżej)",
+            "· sesja Claude „Stara sesja” — agent już w nim nie działa, rozmowa zostaje w historii",
+            "· ostatnia zmiana ",
+            "• fix · vin count · alpha",
+            "· bez ryzyka — scalony z master, bez zmian",
+            "Usuń też gałąź (4 niescalone commity przepadną)",
+            "Nigdy nie usuwam głównego katalogu repozytorium ani gałęzi głównych",
+            "Anuluj",
+            "Usuń mimo to",
+        ):
+            self.assertIn(expected, dialog)
+        self.assertEqual(warned(log, "DANGER"), "1")
+        self.assertEqual(warned(log, "TOGGLE"), "true|false")
+        self.assertEqual(warned(log, "DANGER2"),
+                         "✕ 3 niezacommitowane zmiany przepadną (także pliki nieśledzone) ¦ "
+                         "✕ 4 commity poza master, z tego 2 bez kopii na serwerze ani w innej gałęzi ¦ "
+                         "✕ gałąź feat/x zostanie usunięta (git branch -D)")
+        forced = warned(log, "FORCED").split("|")
+        self.assertEqual(forced[0], "/w/alpha/vin,/w/alpha/old")  # kolejność listy, nie kliknięć
+        self.assertEqual(forced[1], "true")
+        self.assertEqual(json.loads(forced[2]), {"dirty": 3, "unmerged": 4, "unpushed": 2, "branch": "feat/x"})
+        self.assertEqual(forced[3:], ["true", "false", "true"])
+        self.assertEqual(warned(log, "RESULTS"), "1|1|1")
+        self.assertEqual(warned(log, "RDETAILS"),
+                         "fix · vin count · alpha: stan zmienił się od potwierdzenia — nic nie usunięto, sprawdź jeszcze raz"
+                         " ¦ old · alpha: usunięty, gałąź feat/x zostaje (4 commity poza master)")
+        nomain = warned(log, "NOMAIN")
+        self.assertIn("brak lokalnej gałęzi głównej — nie wiadomo, co jest scalone; 3 commity tylko tutaj", nomain)
+        self.assertIn("✕ odłączony HEAD 1234567: te commity zostaną bez gałęzi (odzyskasz je tylko z refloga)", nomain)
+        self.assertIn("Usuń też gałąź (bez gałęzi głównej nie wiadomo, ile commitów przepadnie)", nomain)
+        self.assertEqual(warned(log, "NOFLAG"), "false")
+        self.assertEqual(warned(log, "LABEL"),
+                         "Usuń też gałęzie (2) (5 niescalonych commitów przepadnie; w 1 bez gałęzi głównej nie wiadomo, "
+                         "ile commitów przepadnie) ¦ Usuń też gałąź (1 niescalony commit przepadnie)")
+
     def test_main_window_with_stub_backend(self):
         log = self.harness("MainSmoke.qml", """import QtQuick
 Item {
@@ -226,7 +365,9 @@ Item {
         signal removeFinished(string text)
         signal pruneFinished(string text)
         signal raiseRequested()
+        property var forced: []
         function remove(paths) { removed = paths; removeFinished('[{"path": "/w/alpha/vin", "removed": true, "freed": 5}]') }
+        function removeForced(paths, deleteBranches, confirmed) { forced = [paths.join(","), deleteBranches] }
         function open(path, app) {}
         function refresh() {}
         function prune(repo) { pruneFinished("null") }
@@ -240,11 +381,16 @@ Item {
         stub.raiseRequested()
         console.warn("MAIN " + [win.worktrees.length, win.launchers.rider, stub.removed.join(","),
                                 page.results.removed, page.notice].join("|"))
+        page.toggle("/w/alpha/old")
+        page.askRemove()
+        page.confirmRemove()
+        console.warn("FORCEDCALL " + stub.forced.join("|"))
         Qt.quit()
     }
 }
 """ % {"json": json.dumps(json.dumps(sample()))})
         self.assertEqual(warned(log, "MAIN"), "24|false|/w/alpha/vin|1|Nie udało się: brak odpowiedzi usługi")
+        self.assertEqual(warned(log, "FORCEDCALL"), "/w/alpha/old|false")
         self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
 
 
@@ -267,6 +413,21 @@ class LauncherTest(unittest.TestCase):
         with open(shot, "rb") as fh:
             self.assertEqual(fh.read(8), b"\x89PNG\r\n\x1a\n")
         self.assertGreater(os.path.getsize(shot), 10_000)
+
+    def test_grab_forced_confirmation_preview(self):
+        """--select i --confirm: podgląd mocniejszego potwierdzenia (z --data nic nie jest usuwane)."""
+        data = os.path.join(self.tmp, "data.json")
+        with open(data, "w", encoding="utf-8") as fh:
+            json.dump(sample(), fh)
+        plain, confirm = os.path.join(self.tmp, "plain.png"), os.path.join(self.tmp, "confirm.png")
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+        env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+        base = ["/usr/bin/python3", os.path.join(self.pkg, "tide-worktrees.py"), "--data", data,
+                "--width", "1000", "--height", "800", "--select", "/w/alpha/old", "--select", "/w/alpha/vin"]
+        subprocess.run(base + ["--grab", plain], env=env, check=True, timeout=60, capture_output=True)
+        subprocess.run(base + ["--confirm", "--grab", confirm], env=env, check=True, timeout=60, capture_output=True)
+        with open(plain, "rb") as a, open(confirm, "rb") as b:
+            self.assertNotEqual(a.read(), b.read(), "z --confirm zrzut pokazuje okno potwierdzenia")
 
 
 def load_launcher():
@@ -317,6 +478,26 @@ class BackendOverDbusTest(unittest.TestCase):
                           timeout=15)
         self.assertTrue(gone, "lista w oknie odświeża się po sygnale Changed")
         self.assertIn("rider", json.loads(backend.launchersJson))
+
+    def test_remove_forced_through_backend(self):
+        """Backend.removeForced → RemoveForced(as, b, s): worktree ze zmianami znika po potwierdzeniu,
+        główny katalog nie — nawet gdy okno by o niego poprosiło."""
+        backend = self.launcher.Backend(self.service.bus)
+        listed = wait_until(lambda: {w["path"]: w for w in json.loads(backend.listJson)}.get(self.p["dirty"]),
+                            timeout=15)
+        self.assertTrue(listed)
+        self.assertEqual((listed["removable"], listed["forceRemovable"]), (False, True))
+        results = []
+        backend.removeFinished.connect(results.append)
+        confirmed = {self.p["dirty"]: {"dirty": listed["dirty"], "unmerged": listed["unmerged"],
+                                       "unpushed": listed["unpushed"], "branch": listed["branch"]}}
+        backend.removeForced([self.p["dirty"], self.p["alpha"]], False, json.dumps(confirmed))
+        self.assertTrue(wait_until(lambda: results, timeout=30))
+        got = json.loads(results[0])
+        self.assertEqual([(r["path"], r["status"], r["reason"]) for r in got],
+                         [(self.p["dirty"], "removed", ""), (self.p["alpha"], "refused", "main")])
+        self.assertFalse(os.path.exists(self.p["dirty"]))
+        self.assertTrue(os.path.isdir(self.p["alpha"]))
 
     def test_second_launch_only_raises_first_window(self):
         env = dict(self.service.env, QT_QPA_PLATFORM="offscreen")
