@@ -1,5 +1,6 @@
 // Okno „Tide Worktrees”. Dane i akcje daje obiekt backend z tide-worktrees.py (D-Bus do
 // tide-daemon albo stały plik JSON przy --data). grabPath: zapis zrzutu okna i wyjście (podgląd).
+// preselect i openConfirm (--select, --confirm): zaznaczenie i otwarte potwierdzenie do podglądu.
 import QtQuick
 import QtQuick.Window
 import "tide" as Tide
@@ -9,6 +10,8 @@ Window {
 
     property var backend: null
     property string grabPath: ""
+    property var preselect: []
+    property bool openConfirm: false
 
     readonly property var worktrees: {
         if (!backend) return []
@@ -40,9 +43,15 @@ Window {
         launchers: win.launchers
         homeDir: win.backend ? win.backend.homeDir : ""
         onRemoveRequested: paths => win.backend.remove(paths)
+        onRemoveForcedRequested: (paths, deleteBranches, confirmed) => win.backend.removeForced(paths, deleteBranches,
+                                                                                                 confirmed)
         onOpenRequested: (path, app) => win.backend.open(path, app)
         onRefreshRequested: win.backend.refresh()
         onPruneRequested: repoPath => win.backend.prune(repoPath)
+        Component.onCompleted: {
+            for (const path of win.preselect || []) toggle(path)
+            if (win.openConfirm) askRemove()
+        }
     }
 
     Connections {

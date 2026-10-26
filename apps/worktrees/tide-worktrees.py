@@ -2,10 +2,13 @@
 """Okno „Tide Worktrees”: QML (qml/Main.qml) z danymi z tide-daemon przez D-Bus.
 
 Użycie: /usr/bin/python3 tide-worktrees.py [--data PLIK.json] [--grab PLIK.png] [--width N --height N]
+                                            [--select ŚCIEŻKA ...] [--confirm]
 
---data  stała lista worktrees z pliku (np. wynik tide-daemon.py --print-worktrees), bez D-Bus —
-        do podglądu i testów; usuwanie i otwieranie są wtedy wyłączone,
---grab  zapisuje zrzut okna do pliku PNG i kończy (np. z QT_QPA_PLATFORM=offscreen).
+--data    stała lista worktrees z pliku (np. wynik tide-daemon.py --print-worktrees), bez D-Bus —
+          do podglądu i testów; usuwanie i otwieranie są wtedy wyłączone,
+--grab    zapisuje zrzut okna do pliku PNG i kończy (np. z QT_QPA_PLATFORM=offscreen),
+--select  zaznacza worktree (można powtórzyć), --confirm otwiera potwierdzenie usunięcia —
+          do podglądu okna potwierdzenia (z --data niczego nie usuwa).
 
 Okno działa w jednym egzemplarzu: rejestruje nazwę org.tide.WorktreesWindow, a kolejne
 uruchomienie (np. kliknięcie kafelka w docku) prosi pierwsze o pokazanie się i kończy pracę.
@@ -97,6 +100,19 @@ class Backend(QObject):
             return
         argument = QDBusArgument(list(paths), QMetaType.Type.QStringList.value)  # sygnatura „as”
         self._call("Remove", [argument], self._removed, timeout=REMOVE_TIMEOUT_MS)
+
+    @pyqtSlot("QStringList", bool, str)
+    def removeForced(self, paths, delete_branches: bool, confirmed: str) -> None:
+        """Usuwanie po potwierdzeniu „Usuń mimo to” (RemoveForced). confirmed: JSON ze stanem,
+        który użytkownik widział — usługa nic nie usunie, jeśli od tej chwili przybyło pracy."""
+        if self.bus is None:
+            self.removeFinished.emit(json.dumps([{"path": p, "removed": False, "reason": "error", "status": "refused",
+                                                  "message": "podgląd bez usługi — nic nie usunięto"} for p in paths],
+                                                ensure_ascii=False))
+            return
+        argument = QDBusArgument(list(paths), QMetaType.Type.QStringList.value)
+        self._call("RemoveForced", [argument, bool(delete_branches), confirmed or ""], self._removed,
+                   timeout=REMOVE_TIMEOUT_MS)
 
     def _removed(self, ok: bool, value) -> None:
         # Usługa odświeża listę w tle (pełny przegląd repozytoriów trwa kilka sekund), więc usunięte
@@ -190,6 +206,8 @@ def parse_args(argv):
     parser.add_argument("--grab", help="zapisz zrzut okna do PNG i zakończ")
     parser.add_argument("--width", type=int, default=0)
     parser.add_argument("--height", type=int, default=0)
+    parser.add_argument("--select", action="append", default=[], help="zaznacz worktree (podgląd)")
+    parser.add_argument("--confirm", action="store_true", help="otwórz potwierdzenie usunięcia (podgląd)")
     return parser.parse_args(argv)
 
 
@@ -221,7 +239,8 @@ def main(argv=None) -> int:
         bus.registerObject(WINDOW_PATH, service, QDBusConnection.RegisterOption.ExportAllSlots)
 
     engine = QQmlApplicationEngine()
-    engine.setInitialProperties({"backend": backend, "grabPath": os.path.abspath(args.grab) if args.grab else ""})
+    engine.setInitialProperties({"backend": backend, "grabPath": os.path.abspath(args.grab) if args.grab else "",
+                                 "preselect": list(args.select), "openConfirm": bool(args.confirm)})
     engine.load(QUrl.fromLocalFile(os.path.join(HERE, "qml", "Main.qml")))
     roots = engine.rootObjects()
     if not roots:

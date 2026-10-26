@@ -51,7 +51,7 @@ BLOCKERS = ("main", "protected", "missing", "locked", "agent", "dirty", "no-main
 # Główny katalog i gałąź główna (master, main, develop) — po tym, jak sprzątanie omal nie skasowało
 # master w LogViewer; brakujący katalog porządkuje tylko prune; blokadę zdejmuje się świadomie
 # (`git worktree unlock`); agent pracujący w katalogu — usunięcie katalogu spod działającego procesu
-# kończy się jego błędami albo odtworzeniem plików w pustym miejscu (decyzja 39).
+# kończy się jego błędami albo odtworzeniem plików w pustym miejscu (decyzja 41).
 HARD_BLOCKERS = ("main", "protected", "missing", "locked", "agent")
 
 # Grupy okna Worktrees. „W pracy”: agent albo jakakolwiek aktywność w ostatniej dobie.
