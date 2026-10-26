@@ -30,10 +30,12 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `widgets/agents/` | Widżet agentów `org.tide.agents`: kafelek „Agenci · 2 pracują · 1 czeka · 2 gotowe”, lista sesji w popupie |
 | `widgets/limits/` | Widżet `org.tide.limits`: pozostałe limity ChatGPT i Claude z usługi QuotaApp |
 | `widgets/worktrees/` | Kafelek worktrees `org.tide.worktrees`: ile do sprzątnięcia (i ile GB), ile w pracy; kliknięcie otwiera okno |
+| `widgets/newtask/` | Kafelek „＋ Zadanie · nowe dla agenta” `org.tide.newtask`: otwiera okno nowego zadania |
+| `apps/newtask/` | Okno „Tide: nowe zadanie” (QML + PyQt6, plik `.desktop`, profil Konsoli): repozytorium, Claude Code albo Codex, polecenie, zrzuty ekranu, nowy worktree |
 | `apps/worktrees/` | Okno „Tide Worktrees” (QML + PyQt6, plik `.desktop`): grupy W pracy / Do sprzątnięcia / Do decyzji, szukanie, filtry repozytoriów, usuwanie zaznaczonych |
 | `widgets/system/` | Widżet `org.tide.system`: procesor, pamięć, karta graficzna i dyski z czujników ksystemstats |
 | `widgets/sidebar/` | Nagłówek paska bocznego `org.tide.sidebar`: „Tide” i skrót Meta+S, który wysuwa pasek |
-| `kwin/` | Skrypt KWin `tide-agent-jump` ze skrótem Meta+A i jego instalator |
+| `kwin/` | Skrypty KWin `tide-agent-jump` (Meta+A) i `tide-new-task` (Meta+Alt+A, nowe zadanie) i ich instalator |
 | `krunner/` | Plik wtyczki KRunnera „Tide: agenci i projekty” i jej instalator (wyniki daje tide-daemon) |
 | `mk/` | Cele `make` poszczególnych komponentów (`install-*`, `uninstall-*`, katalogi testów) |
 | `docs/` | Decyzje projektowe, opis usługi |
@@ -51,6 +53,15 @@ make preview-widgets                        # kafelki na tle docka, popup agent�
 ```
 
 Gdy agent zaczyna czekać — prosi o zgodę albo zadaje pytanie — przychodzi powiadomienie „Agent czeka: <projekt>” z przyciskiem „Przejdź” (raz na każde wejście w czekanie). Zwykły koniec tury to „skończył” (w kafelku „gotowe”): bez powiadomienia i bez Meta+A, także w wątkach Codex Desktop prowadzonych przez zaplanowane zadanie („zaplanowane”). Meta+A przenosi do okna sesji, która czeka najdłużej (sesja z Codex Desktop otwiera w aplikacji swój wątek — u podagenta wątek główny — przez `codex://threads/<id>`); gdy nikt nie czeka, nic się nie dzieje. Jeśli Meta+A jest już zajęty (instalator to wypisze), trzeba go zwolnić w Ustawieniach systemowych → Skróty i przypisać akcji „Tide: przejdź do agenta, który czeka najdłużej”.
+
+**Nowe zadanie dla agenta.** Meta+Alt+A, kafelek „＋ Zadanie” w docku albo „＋ Nowe zadanie” w widżecie agentów otwiera okno „Co ma zrobić agent?”: repozytorium z `~/DevWorkspace` (od ostatnio aktywnych; pisanie na liście szuka), Claude Code albo Codex, zadanie (Ctrl+Enter uruchamia), zrzuty ekranu (Ctrl+V ze schowka, przeciąganie plików, „Zrób zrzut” zaznaczonego obszaru przez Spectacle) i „Nowy worktree” (domyślnie włączony) z gałęzią z polecenia, np. `claude/popraw-naglowek-listy`, do zmiany jednym kliknięciem. tide-daemon zakłada worktree od lokalnej gałęzi głównej (`git worktree add -b`, master/main/develop nietknięte, katalog `<repo>/.claude/worktrees/<nazwa>` albo istniejący `<repo>-worktrees`), otwiera nową kartę w ostatnio używanym oknie Konsoli (bez okna — nowe okno) z tytułem „projekt · gałąź” i uruchamia `claude -- "<zadanie>"` albo `codex --image … -- "<zadanie>"`. Po wyjściu z agenta w karcie zostaje powłoka. Błędy (zmiany na master, istniejąca gałąź, brak programu) okno pokazuje w miejscu; gdy Konsola nie uruchomi zadania, worktree i gałąź są wycofywane. Okno pamięta ostatnie repozytorium, narzędzie i przełącznik, a nowa sesja ma w widżecie przez 10 min znacznik „nowe”. Meta+Shift+A z mocka jest w Plasmie zajęty (aktywności), więc skrót to Meta+Alt+A (decyzja 46); zmiana: Ustawienia systemowe → Skróty → KWin → „Tide: nowe zadanie dla agenta”.
+
+```bash
+make install-daemon install-new-task install-new-task-shortcut install-widget-newtask
+make preview-new-task          # zrzut okna na repozytoriach z tego komputera (tylko odczyt): build/new-task.png
+```
+
+Zrzuty ekranu zadań zostają w `~/.local/share/tide/tasks/` (agent czyta je stamtąd; `make uninstall` ich nie usuwa). Szczegóły: [docs/tide-daemon.md](docs/tide-daemon.md#nowe-zadanie).
 
 **KRunner.** `make install-daemon install-krunner` dodaje wtyczkę „Tide: agenci i projekty”: po wpisaniu w KRunnerze (Alt+Spacja) nazwy projektu, gałęzi albo fragmentu tytułu rozmowy pokazuje sesje Claude Code i Codexa z ostatnich 30 dni (`Claude · plasma-tide · <tytuł>`, `<gałąź> · 3 dni temu`), projekty z `~/DevWorkspace` i worktrees. Enter wznawia sesję w nowym oknie Konsoli w jej katalogu (albo przenosi do okna, jeśli sesja jeszcze działa), otwiera projekt lub worktree w Konsoli; akcja obok otwiera w Riderze. `ai <słowa>` szuka tylko sesji. Szczegóły: [docs/tide-daemon.md](docs/tide-daemon.md#krunner).
 
