@@ -399,7 +399,7 @@ Od ostatniego odczytu: wyczerpanie = czas odczytu + (100 − zużycie) / tempo, 
 
 Kolor prognozy „przed resetem” w widżecie to `semantic.runout` (brzoskwinia).
 
-Logika bez Qt jest w `tide_daemon/limits/` (`readings.py`, `history.py`, `forecast.py`, `alerts.py`, `tracker.py`, `backend.py`, `config.py`), odpytywanie w `limits_monitor.py`, powiadomienia w `notifications.py` (`LimitsNotifier`). Uzasadnienie: decyzja 43 w `docs/decisions.md`.
+Logika bez Qt jest w `tide_daemon/limits/` (`readings.py`, `history.py`, `forecast.py`, `alerts.py`, `tracker.py`, `backend.py`, `config.py`), odpytywanie w `limits_monitor.py`, powiadomienia w `notifications.py` (`LimitsNotifier`). Uzasadnienie: decyzja 46 w `docs/decisions.md`.
 
 ```bash
 qdbus6 org.tide.Daemon /Limits org.tide.Daemon.Limits.Forecast

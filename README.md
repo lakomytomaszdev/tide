@@ -25,7 +25,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `scripts/` | Kopie zapasowe i przywracanie wyglądu (`backup.sh`, `restore.sh`, `paths.sh`), instalatory komponentów (`sddm_system.py` i `plymouth_system.py` to jedyne uruchamiane przez sudo) i synchronizacja kopii powłoki z ekranem blokady (`shell_sync.py`) |
 | `scripts/panels/` | Skrypty plasmashell górnych pasków, docka i paska bocznego (zrzut, instalacja, kolejność, odinstalowanie) |
 | `tools/` | Narzędzia do ikon: `make_tile.py` (kafelek z oryginalnej ikony), `make_tint.py` (eksperyment z przefarbowaniem, odrzucony) |
-| `daemon/` | Usługa `tide-daemon`: sesje agentów, worktrees i raport poranny przez D-Bus ([opis i kontrakt](docs/tide-daemon.md)) |
+| `daemon/` | Usługa `tide-daemon`: sesje agentów, worktrees, raport poranny, bezczynność i prognoza Limitów AI przez D-Bus ([opis i kontrakt](docs/tide-daemon.md)) |
 | `widgets/lib/` | Wspólna biblioteka QML widżetów: karta, kafelek docka, teksty kafelków, miernik, pierścień, wykres słupkowy z historią próbek, kropka i licznik stanu, źródło danych z usługi |
 | `widgets/agents/` | Widżet agentów `org.tide.agents`: kafelek „Agenci · 2 pracują · 1 czeka · 2 gotowe”, lista sesji w popupie |
 | `widgets/limits/` | Widżet `org.tide.limits`: pozostałe limity ChatGPT i Claude z usługi QuotaApp |
@@ -47,7 +47,7 @@ make install-daemon install-widget-agents   # usługa i widżet (bez kopii zapas
 make install-agent-jump                     # skrót Meta+A: przejście do agenta, który czeka najdłużej
 make install                                # wszystko, najpierw kopia zapasowa
 make test                                   # testy wszystkich komponentów
-make preview-widgets                        # kafelki na tle docka, popup agentów i pasek boczny: build/preview/dock-tiles-*.png, agents-popup.png, sidebar-*.png
+make preview-widgets                        # kafelki na tle docka, popup agentów, pasek boczny i popup limitów: build/preview/dock-tiles-*.png, agents-popup.png, sidebar-*.png, limits-popup-*.png
 ```
 
 Gdy agent zaczyna czekać — prosi o zgodę albo zadaje pytanie — przychodzi powiadomienie „Agent czeka: <projekt>” z przyciskiem „Przejdź” (raz na każde wejście w czekanie). Zwykły koniec tury to „skończył” (w kafelku „gotowe”): bez powiadomienia i bez Meta+A, także w wątkach Codex Desktop prowadzonych przez zaplanowane zadanie („zaplanowane”). Meta+A przenosi do okna sesji, która czeka najdłużej (sesja z Codex Desktop otwiera w aplikacji swój wątek — u podagenta wątek główny — przez `codex://threads/<id>`); gdy nikt nie czeka, nic się nie dzieje. Jeśli Meta+A jest już zajęty (instalator to wypisze), trzeba go zwolnić w Ustawieniach systemowych → Skróty i przypisać akcji „Tide: przejdź do agenta, który czeka najdłużej”.
@@ -60,7 +60,14 @@ Widżet „Tide · Agenci” dodaje się do panelu z listy widżetów. Po aktual
 
 ## Limity AI
 
-Widżet „Tide · Limity AI” (`org.tide.limits`) pokazuje w kafelku „Limity AI” pozostały procent ChatGPT i Claude (niższy z limitów sesji i tygodniowego), a w popupie oba limity z resetami. Dane bierze wprost z lokalnego API usługi [QuotaApp](https://github.com/julia-lakomy/QuotaApp) (`limity-ai-widget.service`), bez tide-daemon — usługa musi być zainstalowana i działać.
+Widżet „Tide · Limity AI” (`org.tide.limits`) pokazuje w kafelku „Limity AI” pozostały procent ChatGPT i Claude (niższy z limitów sesji i tygodniowego), a w popupie oba limity z resetami. Dane bierze wprost z lokalnego API usługi [QuotaApp](https://github.com/julia-lakomy/QuotaApp) (`limity-ai-widget.service`) — usługa musi być zainstalowana i działać.
+
+**Prognoza i powiadomienia** pochodzą z tide-daemon: co 2 min czyta on `/status` QuotaApp (bez wczytywania stron), zapisuje historię odczytów (`~/.local/state/tide/limits-history.jsonl`, 14 dni) i z tempa w bieżącym oknie liczy, kiedy limit się skończy. Popup pod resetem każdego limitu pisze „wyczerpie się ok. 17:40” (brzoskwinia) albo „starczy do resetu”, pasek boczny dopisuje „· koniec ok. 17:40” / „· starczy do resetu”, a kafelek w docku dostaje krótkie „· Claude do 17:40” tylko wtedy, gdy limit skończy się przed resetem. Przy za małej liczbie odczytów prognozy nie ma. Powiadomienie „Claude: zużyto 82% limitu sesji” przychodzi raz na okno przy 80% i 95%, a „… skończy się przed resetem” — raz, gdy prognoza mówi o więcej niż 30 min przed resetem; restart usługi ich nie powtarza. Progi są w palecie (`limits` w `theme/palette/mist.json`). Bez tide-daemon widżet działa jak dotąd, tylko bez prognoz. Szczegóły: [docs/tide-daemon.md](docs/tide-daemon.md#limity-ai).
+
+```bash
+make install-daemon install-widget-limits   # prognoza: usługa i widżet (nowy kod widżetu po restarcie plasmashell)
+qdbus6 org.tide.Daemon /Limits org.tide.Daemon.Limits.Forecast
+```
 
 ```bash
 make install-widget-limits     # instalacja albo aktualizacja widżetu
@@ -119,7 +126,7 @@ Do sprawdzenia po instalacji: Dolphin, Rider i Firefox na obu monitorach.
 
 ## Pasek boczny
 
-Na lewym monitorze (HDMI-A-1) przy lewej, zewnętrznej krawędzi jest chowany pasek boczny Tide (`scripts/sidebar.py`, cel `install-sidebar` na końcu `make install`): pionowy, pływający panel szeroki na `size.sidebar` (420 px), od dołu smukłego paska do dołu ekranu. Jest widoczny, dopóki nic go nie zasłania („unikaj okien”, nie zabiera oknom miejsca); gdy najedzie na niego okno, chowa się i wysuwa, gdy mysz dotknie lewej krawędzi ekranu albo po **Meta+S** (po skrócie: na 8 s bez myszy nad paskiem albo do drugiego Meta+S). Od góry: nagłówek „Tide” ze skrótem i cztery osobne kafelki — agenci (jedna linia na sesję, „Przejdź” tylko przy czekających, najwyżej 6 wierszy i „+N więcej” z pełną listą obok paska), system (CPU, RAM i dysk z paskami, mała historia procesora, karta graficzna w jednej linii, partycje), worktrees („● 2 w pracy · ● 0 do sprzątnięcia” i „Otwórz okno”) i Limity AI (GPT i Claude: niższy limit z paskiem i resetem). Wolne miejsce zostaje na dole (rozciągany odstęp na końcu panelu), a całość mieści się w ok. 1040 px bez przewijania. Podgląd bez Plasmy: `make preview-widgets` (`build/preview/sidebar-*.png`).
+Na lewym monitorze (HDMI-A-1) przy lewej, zewnętrznej krawędzi jest chowany pasek boczny Tide (`scripts/sidebar.py`, cel `install-sidebar` na końcu `make install`): pionowy, pływający panel szeroki na `size.sidebar` (420 px), od dołu smukłego paska do dołu ekranu. Jest widoczny, dopóki nic go nie zasłania („unikaj okien”, nie zabiera oknom miejsca); gdy najedzie na niego okno, chowa się i wysuwa, gdy mysz dotknie lewej krawędzi ekranu albo po **Meta+S** (po skrócie: na 8 s bez myszy nad paskiem albo do drugiego Meta+S). Od góry: nagłówek „Tide” ze skrótem i cztery osobne kafelki — agenci (jedna linia na sesję, „Przejdź” tylko przy czekających, najwyżej 6 wierszy i „+N więcej” z pełną listą obok paska), system (CPU, RAM i dysk z paskami, mała historia procesora, karta graficzna w jednej linii, partycje), worktrees („● 2 w pracy · ● 0 do sprzątnięcia” i „Otwórz okno”) i Limity AI (GPT i Claude: niższy limit z paskiem, resetem i prognozą z tide-daemon). Wolne miejsce zostaje na dole (rozciągany odstęp na końcu panelu), a całość mieści się w ok. 1040 px bez przewijania. Podgląd bez Plasmy: `make preview-widgets` (`build/preview/sidebar-*.png`).
 
 ```bash
 make install-widget-sidebar install-sidebar   # sam pasek (widżety Tide muszą być zainstalowane)
