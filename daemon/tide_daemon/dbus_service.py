@@ -5,6 +5,8 @@ Usługa org.tide.Daemon.
 Obiekt /Agents, interfejs org.tide.Daemon.Agents:
 - Sessions() -> s            lista sesji jako JSON,
 - ActivateSession(s id) -> b przejście do okna sesji, False gdy nie da się go ustalić,
+- ActivateLongestWaiting() -> b  przejście do sesji czekającej najdłużej (skrót Meta+A);
+                             False, gdy nic nie czeka albo okna nie da się ustalić,
 - sygnał Changed()           lista sesji się zmieniła — warto pobrać ją ponownie.
 
 Obiekt /Worktrees, interfejs org.tide.Daemon.Worktrees:
@@ -30,6 +32,7 @@ AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
     <arg name="id" type="s" direction="in"/>
     <arg name="ok" type="b" direction="out"/>
   </method>
+  <method name="ActivateLongestWaiting"><arg name="ok" type="b" direction="out"/></method>
   <signal name="Changed"/>
 </interface>"""
 
@@ -67,6 +70,10 @@ class AgentsAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(str, result=bool)
     def ActivateSession(self, session_id: str) -> bool:
         return self.monitor.activate(session_id)
+
+    @pyqtSlot(result=bool)
+    def ActivateLongestWaiting(self) -> bool:
+        return self.monitor.activate_longest_waiting()
 
 
 @pyqtClassInfo("D-Bus Interface", WORKTREES_IFACE)

@@ -22,6 +22,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `widgets/lib/` | Wspólna biblioteka QML widżetów: karta, miernik, pierścień, kropka i licznik stanu, źródło danych z usługi |
 | `widgets/agents/` | Widżet agentów `org.tide.agents`: liczby sesji w panelu, lista sesji w popupie |
 | `widgets/worktrees/` | Widżet worktrees `org.tide.worktrees`: liczba worktrees i do sprzątnięcia, lista według repozytoriów, sprzątanie scalonych |
+| `kwin/` | Skrypt KWin `tide-agent-jump` ze skrótem Meta+A i jego instalator |
 | `mk/` | Cele `make` poszczególnych komponentów (`install-*`, `uninstall-*`, katalogi testów) |
 | `docs/` | Decyzje projektowe, opis usługi |
 
@@ -31,9 +32,12 @@ Katalogi motywu (kolory, styl Plasmy, dekoracja okien, ikony, ekran blokady, SDD
 
 ```bash
 make install-daemon install-widget-agents   # usługa i widżet (bez kopii zapasowej wyglądu)
+make install-agent-jump                     # skrót Meta+A: przejście do agenta, który czeka najdłużej
 make install                                # wszystko, najpierw kopia zapasowa
 make test                                   # testy wszystkich komponentów
 ```
+
+Gdy agent zaczyna czekać, przychodzi powiadomienie „Agent czeka: <projekt>” z przyciskiem „Przejdź” (raz na każde wejście w czekanie). Meta+A przenosi do okna sesji, która czeka najdłużej; gdy nikt nie czeka, nic się nie dzieje. Jeśli Meta+A jest już zajęty (instalator to wypisze), trzeba go zwolnić w Ustawieniach systemowych → Skróty i przypisać akcji „Tide: przejdź do agenta, który czeka najdłużej”.
 
 Widżet „Tide · Agenci” dodaje się do panelu z listy widżetów. Po aktualizacji już dodanego widżetu Plasma wczyta nowy kod dopiero po `systemctl --user restart plasma-plasmashell`. Kolory biblioteki QML są generowane z palety przy składaniu pakietu (`widgets/stage.py` → `Tokens.qml`).
 

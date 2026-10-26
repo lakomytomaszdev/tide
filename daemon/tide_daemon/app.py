@@ -1,13 +1,15 @@
 """Punkt wejścia tide-daemon.
 
 Użycie: python3 tide-daemon.py [--print | --print-worktrees] [--claude-dir DIR] [--codex-dir DIR]
-                               [--workspace DIR] [--worktree-depth N] [--no-processes] [--now CZAS]
+                               [--workspace DIR] [--worktree-depth N] [--no-processes]
+                               [--no-notifications] [--now CZAS]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
 --workspace        katalog projektów z repozytoriami (domyślnie $TIDE_WORKSPACE albo ~/DevWorkspace),
 --worktree-depth   jak głęboko pod katalogiem projektów szukać repozytoriów (domyślnie 3),
 --no-processes     nie czyta /proc (stan bez wiedzy o procesach, bez przechodzenia do okien),
+--no-notifications bez powiadomień „Agent czeka”,
 --now              zamrożony zegar (ISO 8601) — dla testów i diagnostyki.
 """
 import argparse
@@ -39,6 +41,7 @@ def parse_args(argv):
     parser.add_argument("--claude-dir", default=default_claude_dir())
     parser.add_argument("--codex-dir", default=default_codex_dir())
     parser.add_argument("--no-processes", action="store_true")
+    parser.add_argument("--no-notifications", action="store_true")
     parser.add_argument("--now", help="zamrożony zegar, np. 2026-10-26T12:00:00Z")
     parser.add_argument("--workspace", default=default_workspace())
     parser.add_argument("--worktree-depth", type=int, default=worktrees.MAX_DEPTH)
@@ -104,6 +107,12 @@ def main(argv=None) -> int:
     wake.timeout.connect(lambda: None)
     wake.start()
     trees.start()  # pierwsze odczytanie repozytoriów już w tle, po rejestracji na magistrali
+
+    if not args.no_notifications:
+        from .notifications import Notifier
+        notifier = Notifier(monitor.activate)
+        notifier.update(monitor.sessions)  # stan wyjściowy: czekające już wcześniej nie dostają powiadomień
+        monitor.changed.connect(lambda: notifier.update(monitor.sessions))
 
     print(f"tide-daemon: działa, {len(scanner.logs)} plików sesji z ostatniej doby", flush=True)
     code = app.exec()

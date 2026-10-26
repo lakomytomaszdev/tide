@@ -10,7 +10,7 @@ import time
 
 from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 
-from . import processes, windows
+from . import attention, processes, windows
 from .agents import AgentScanner
 
 DEBOUNCE_MS = 250
@@ -80,6 +80,12 @@ class AgentMonitor(QObject):
         except Exception as exc:  # aktywacja okna nie może położyć usługi
             print(f"tide-daemon: nie udało się przejść do okna: {exc}", flush=True)
             return False
+
+    def activate_longest_waiting(self) -> bool:
+        """Przejście do sesji czekającej najdłużej (skrót Meta+A). False, gdy nic nie czeka."""
+        self.recompute()  # świeży stan i procesy — skrót wciska się teraz, nie 5 s temu
+        session = attention.longest_waiting(self.sessions)
+        return self.activate(session["id"]) if session else False
 
     def _probe(self):
         if not self.use_processes:

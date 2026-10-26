@@ -64,6 +64,11 @@ class DBusContractTest(unittest.TestCase):
         xml = self.service.call(SERVICE, PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
         self.assertIn(f'<interface name="{IFACE}">', xml)
         self.assertIn('<signal name="Changed"', xml)
+        self.assertIn('<method name="ActivateLongestWaiting">', xml)
+
+    def test_longest_waiting_without_windows_does_nothing(self):
+        # Bez procesów żadna czekająca sesja nie ma okna — skrót po cichu nic nie robi.
+        self.assertIs(self.call("ActivateLongestWaiting"), False)
 
 
 @requires_dbus

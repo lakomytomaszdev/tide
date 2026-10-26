@@ -21,6 +21,13 @@ except ImportError:  # pragma: no cover
     QDBusConnection = None
 
 SERVICE = "org.tide.Daemon"
+_APP = None  # QCoreApplication musi żyć — bez niego Qt nie dostarcza sygnałów D-Bus ani timerów
+
+
+def app():
+    global _APP
+    _APP = QCoreApplication.instance() or QCoreApplication([])
+    return _APP
 
 BUS_CONFIG = """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
@@ -44,7 +51,7 @@ class PrivateBus:
     """dbus-daemon z minimalną konfiguracją i połączenie testu z nim."""
 
     def __init__(self, name: str):
-        QCoreApplication.instance() or QCoreApplication([])
+        app()
         self.name = name
         self.tmp = tempfile.mkdtemp(prefix="tide-bus-")
         config = os.path.join(self.tmp, "bus.conf")
