@@ -51,6 +51,14 @@ def task_dialog_script(env) -> str:
     return os.path.join(data, "tide", "new-task", "tide-new-task.py")
 
 
+def sessions_window_script(env) -> str:
+    """Zainstalowane okno „Tide Sesje” ($TIDE_SESSIONS_WINDOW albo XDG_DATA_HOME/tide/sessions-window)."""
+    if env.get("TIDE_SESSIONS_WINDOW"):
+        return env["TIDE_SESSIONS_WINDOW"]
+    data = env.get("XDG_DATA_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local/share")
+    return os.path.join(data, "tide", "sessions-window", "tide-sessions.py")
+
+
 class Launchers:
     def __init__(self, env: dict | None = None, path: str | None = None):
         env = os.environ if env is None else env
@@ -68,6 +76,7 @@ class Launchers:
                        or _executable(os.path.join(home, ".local/bin", name)) or name for name in AGENTS}
         self.window_script = window_script(env)
         self.task_dialog_script = task_dialog_script(env)
+        self.sessions_script = sessions_window_script(env)
 
     @property
     def window(self) -> str:
@@ -83,6 +92,19 @@ class Launchers:
         if not self.task_dialog:
             return False
         return self.spawn(self._scoped([PYTHON, "-s", self.task_dialog]), self.home)
+
+    @property
+    def sessions_window(self) -> str:
+        return self.sessions_script if os.path.isfile(self.sessions_script) else ""
+
+    def show_sessions(self, coordinator: str = "") -> bool:
+        """Okno „Tide Sesje” (opcjonalnie od razu z koordynatorem); drugie uruchomienie tylko je pokazuje."""
+        if not self.sessions_window:
+            return False
+        argv = [PYTHON, "-s", self.sessions_window]
+        if coordinator:
+            argv += ["--select", coordinator]
+        return self.spawn(self._scoped(argv), self.home)
 
     def available(self) -> dict:
         return {TERMINAL: bool(self.terminal), RIDER: bool(self.rider), WINDOW: bool(self.window)}

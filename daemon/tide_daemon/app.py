@@ -6,6 +6,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [
                                [--idle-after SEKUNDY | --no-idle] [--limits-poll SEKUNDY | --no-limits]
                                [--report [--report-days N]] [--report-dir DIR] [--report-at GG:MM]
                                [--no-report] [--report-delay SEKUNDY] [--no-tasks]
+                               [--print-coordination] [--coordination-days N] [--no-coordination]
+                               [--no-youtrack]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
@@ -27,7 +29,11 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [
 --report-at        godzina raportu porannego (domyślnie „at” z $XDG_CONFIG_HOME/tide/report.json albo 07:00),
 --no-report        bez raportu porannego z terminu (Generate() z D-Bus działa dalej),
 --report-delay     ile sekund po starcie usługi sprawdzić, czy raport jest należny (domyślnie 120),
---no-tasks         bez obiektu /Tasks (nowe zadanie dla agenta: worktree i karta Konsoli).
+--no-tasks         bez obiektu /Tasks (nowe zadanie dla agenta: worktree i karta Konsoli),
+--print-coordination  jednorazowo: koordynatorzy i ich tablice jako JSON (jak dane okna Tide Sesje), bez D-Bus,
+--coordination-days   z ilu dni szukać koordynatorów (domyślnie 7),
+--no-coordination  bez obiektu /Coordination (tablica koordynatorów, tickety, podagenci),
+--no-youtrack      tablica bez YouTracka (żadnych zapytań sieciowych).
 """
 import argparse
 import json
@@ -70,6 +76,10 @@ def parse_args(argv):
     parser.add_argument("--no-limits", action="store_true")
     parser.add_argument("--print-limits", action="store_true")
     parser.add_argument("--no-tasks", action="store_true")
+    parser.add_argument("--print-coordination", action="store_true")
+    parser.add_argument("--coordination-days", type=float, default=7.0)
+    parser.add_argument("--no-coordination", action="store_true")
+    parser.add_argument("--no-youtrack", action="store_true")
     parser.add_argument("--print", dest="print_once", action="store_true")
     parser.add_argument("--print-worktrees", action="store_true")
     parser.add_argument("--report", action="store_true")
@@ -124,6 +134,15 @@ def main(argv=None) -> int:
         print(json.dumps(limits_once(clock), ensure_ascii=False, indent=2))
         return 0
 
+    if args.print_coordination:
+        from . import processes
+        now = clock()
+        scanner.discover(now)
+        scanner.update()
+        procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
+        print(json.dumps(coordination_once(args, clock, scanner.sessions(now, procs)), ensure_ascii=False, indent=2))
+        return 0
+
     if args.print_once:
         from . import processes
         now = clock()
@@ -151,14 +170,24 @@ def main(argv=None) -> int:
                             launchers, refresh_agents=monitor.recompute)
     monitor.changed.connect(trees.publish)  # nowy albo zakończony agent zmienia flagę „aktywny agent”
     # KRunner przed główną nazwą: gdy org.tide.Daemon jest już na magistrali, wtyczka też.
-    krunner = None if args.no_krunner else start_krunner(app, args, clock, monitor, trees)  # noqa: F841
+    coordination = None if args.no_coordination else start_coordination(app, args, clock, monitor, trees,
+                                                                         launchers)
+    krunner = None if args.no_krunner else start_krunner(app, args, clock, monitor, trees,  # noqa: F841
+                                                         coordination)
     idle = None if args.no_idle else start_idle(app, args)
     report = start_report(app, args, clock, report_settings, monitor, trees)
     limits = None if args.no_limits else start_limits(app, args, clock)
     tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
+    annotators = [a for a in (tasks.annotate if tasks is not None else None,
+                              coordination.annotate if coordination is not None else None) if a]
+    if annotators:
+        def annotate(sessions):
+            for annotator in annotators:
+                annotator(sessions)
+        monitor.annotate = annotate  # znacznik „nowe” (/Tasks) i postęp koordynatora (/Coordination)
     try:
         holder = dbus_service.register(monitor, trees, idle=idle, reports=report,  # noqa: F841 — musi żyć do końca
-                                       limits=limits, tasks=tasks)
+                                       limits=limits, tasks=tasks, coordination=coordination)
     except RuntimeError as exc:
         print(f"tide-daemon: {exc}", file=sys.stderr, flush=True)
         return 1
@@ -185,6 +214,8 @@ def main(argv=None) -> int:
             limits.alert.connect(limits_notifier.send)
     if limits is not None:
         limits.start()  # pierwszy odczyt /status po rejestracji i po podłączeniu powiadomień
+    if coordination is not None:
+        coordination.start()  # pierwszy odczyt dzienników koordynatorów w tle, chwilę po starcie
 
     # Stan agentów według katalogu dla promptu powłoki (cwdstate.py) — plik, nie D-Bus, bo prompt
     # czyta go przy każdym znaku zachęty.
@@ -225,6 +256,8 @@ def main(argv=None) -> int:
         idle.stop()
     if limits is not None:
         limits.stop()
+    if coordination is not None:
+        coordination.stop()
     if marker is not None:
         marker.clear()  # karty wracają do swoich tytułów i kolorów, gdy usługa się kończy
     cwd_state.clear()  # prompt nie pokazuje stanu agentów, których nikt już nie śledzi
@@ -247,7 +280,7 @@ def print_report(args, clock, scanner, settings) -> int:
             report_root(args.report_dir), schedule.report_day(now, settings).isoformat(), now - days * 86400, now,
             palette=reports.load_palette(palette_candidates()), workspace=args.workspace,
             claude_root=args.claude_dir, codex_root=args.codex_dir, live=scanner.sessions(now, procs),
-            max_depth=args.worktree_depth)
+            max_depth=args.worktree_depth, coordination_cache=coordination_cache_file(args))
     except (OSError, RuntimeError) as exc:
         print(f"tide-daemon: raport: {exc}", file=sys.stderr)
         return 1
@@ -279,7 +312,15 @@ def start_report(app, args, clock, settings, monitor, trees):
                          palette_paths=palette_candidates(), workspace=args.workspace, claude_root=args.claude_dir,
                          codex_root=args.codex_dir, max_depth=args.worktree_depth,
                          sessions=lambda: monitor.sessions, worktrees=worktree_items, notifier=notifier,
-                         clock=clock, parent=app, **kwargs)
+                         clock=clock, coordination_cache=coordination_cache_file(args), parent=app, **kwargs)
+
+
+def coordination_cache_file(args) -> str | None:
+    """Plik tablicy koordynacji dla raportu („Plany i tickety”); bez obszaru — brak pliku."""
+    if args.no_coordination:
+        return None
+    from .coordination import actions
+    return actions.cache_path()
 
 
 def start_tasks(app, args, launchers, trees, monitor):
@@ -301,8 +342,46 @@ def start_tasks(app, args, launchers, trees, monitor):
         timeout = CLAIM_TIMEOUT
     tasks = TaskMonitor(planner, terminal, launchers, trees, claim_timeout=timeout,
                         sessions_source=lambda: monitor.sessions, parent=app)
-    monitor.annotate = tasks.annotate  # znacznik „nowe” przy sesji świeżo uruchomionej z okna
     return tasks
+
+
+def coordination_scanner(args, clock):
+    """Skaner koordynatorów z YouTrackiem (tylko odczyt) i nazwami wątków Codexa."""
+    from .coordination import CoordinationScanner
+    from .coordination.youtrack import YouTrackCache
+    from .reports.sessions import codex_titles
+    cache = {"ts": 0.0, "titles": {}}
+
+    def titles():
+        if clock() - cache["ts"] > 300:  # nazwy wątków zmieniają się rzadko
+            cache["titles"], cache["ts"] = codex_titles(args.codex_dir), clock()
+        return cache["titles"]
+
+    tracker = None if args.no_youtrack else YouTrackCache(clock=clock)
+    return CoordinationScanner(args.claude_dir, args.codex_dir, days=max(0.1, args.coordination_days), clock=clock,
+                               tracker=tracker, titles=titles)
+
+
+def coordination_once(args, clock, live) -> dict:
+    """--print-coordination: dane okna Tide Sesje (koordynatorzy, tablice, sesje) — tylko odczyt."""
+    from .coordination import board as board_mod
+    scanner = coordination_scanner(args, clock)
+    boards = scanner.refresh(live)
+    return {"coordinators": [board_mod.summary(b) for b in boards], "boards": {b["id"]: b for b in boards},
+            "sessions": live}
+
+
+def start_coordination(app, args, clock, monitor, trees, launchers):
+    """Obszar /Coordination: koordynatorzy, tickety i podagenci (coordination/, coordination_monitor.py)."""
+    from .coordination import actions
+    from .coordination_monitor import CoordinationMonitor
+    coordination = CoordinationMonitor(coordination_scanner(args, clock), sessions_source=lambda: monitor.sessions,
+                                       launchers=launchers, activate=monitor.activate,
+                                       worktrees_source=lambda: trees.scanner.snapshot(),
+                                       cache_file=actions.cache_path(), clock=clock, parent=app)
+    monitor.changed.connect(coordination.sessions_changed)
+    coordination.changed.connect(monitor.recompute)  # postęp koordynatora przy jego sesji w /Agents
+    return coordination
 
 
 def start_idle(app, args):
@@ -340,7 +419,7 @@ def limits_once(clock) -> dict:
     return tracker.snapshot()
 
 
-def start_krunner(app, args, clock, monitor, trees):
+def start_krunner(app, args, clock, monitor, trees, coordination=None):
     """Wtyczka KRunnera na osobnym połączeniu D-Bus (krunner/service.py). Jej brak nie zatrzymuje usługi."""
     from .krunner import service
     if not service.available():
@@ -356,7 +435,8 @@ def start_krunner(app, args, clock, monitor, trees):
     core = KRunnerCore(index, lambda: trees.scanner.snapshot(), trees.launchers,
                        report=lambda: latest_index(reports_dir),
                        live=lambda: monitor.sessions, activate=monitor.activate, clock=clock,
-                       codex=monitor.codex_threads())
+                       codex=monitor.codex_threads(),
+                       coordination=(lambda: json.loads(coordination.coordinators_json())) if coordination else None)
     try:
         return service.register(core, lambda post: LazyIndex(index, post), app)
     except Exception as exc:  # np. nazwa zajęta — reszta usługi działa dalej
