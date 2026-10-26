@@ -38,6 +38,10 @@ class DaemonInstallTest(unittest.TestCase):
         self.assertIn("tide_daemon/agents/scanner.py", files)
         self.assertIn("tide_daemon/worktrees/scanner.py", files)
         self.assertFalse([f for f in files if "__pycache__" in f])
+        # Paleta jedzie z usługą: z niej są kolory kart Konsole z agentem (#11).
+        self.assertIn("palette.json", files)
+        with open(os.path.join(installed, "palette.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["semantic"]["waiting"], "peach")
 
         with open(os.path.join(self.config, "systemd/user/tide-daemon.service"), encoding="utf-8") as fh:
             unit = fh.read()
@@ -60,9 +64,15 @@ class DaemonInstallTest(unittest.TestCase):
 
     def test_uninstall_leaves_nothing_behind(self):
         make("install-daemon", self.env)
+        # Stan kart Konsole po twardo zabitej usłudze — odinstalowanie go usuwa.
+        state = os.path.join(self.env["HOME"], ".local/state/tide")
+        os.makedirs(state)
+        with open(os.path.join(state, "konsole-tabs.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
         make("uninstall-daemon", self.env)
         self.assertEqual(files_under(self.data), [])
         self.assertEqual(files_under(self.config), [])
+        self.assertFalse(os.path.exists(state))
         self.assertIn("systemctl --user disable --now tide-daemon.service", calls(self.env))
 
 

@@ -2,7 +2,7 @@
 
 Użycie: python3 tide-daemon.py [--print | --print-worktrees] [--claude-dir DIR] [--codex-dir DIR]
                                [--workspace DIR] [--worktree-depth N] [--no-processes]
-                               [--no-notifications] [--no-krunner] [--now CZAS]
+                               [--no-notifications] [--no-krunner] [--no-tab-marks] [--now CZAS]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
@@ -11,6 +11,7 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees] [--claude-dir DIR]
 --no-processes     nie czyta /proc (stan bez wiedzy o procesach, bez przechodzenia do okien),
 --no-notifications bez powiadomień „Agent czeka”,
 --no-krunner       bez wtyczki KRunnera (org.tide.Daemon.KRunner),
+--no-tab-marks     bez znacznika stanu na kartach Konsole (prefiks tytułu i kolor karty),
 --now              zamrożony zegar (ISO 8601) — dla testów i diagnostyki.
 """
 import argparse
@@ -44,6 +45,7 @@ def parse_args(argv):
     parser.add_argument("--no-processes", action="store_true")
     parser.add_argument("--no-notifications", action="store_true")
     parser.add_argument("--no-krunner", action="store_true")
+    parser.add_argument("--no-tab-marks", action="store_true")
     parser.add_argument("--now", help="zamrożony zegar, np. 2026-10-26T12:00:00Z")
     parser.add_argument("--workspace", default=default_workspace())
     parser.add_argument("--worktree-depth", type=int, default=worktrees.MAX_DEPTH)
@@ -118,9 +120,26 @@ def main(argv=None) -> int:
         notifier.update(monitor.sessions)  # stan wyjściowy: czekające już wcześniej nie dostają powiadomień
         monitor.changed.connect(lambda: notifier.update(monitor.sessions))
 
+    marker = None
+    if not args.no_tab_marks and not args.no_processes:
+        from . import tabmarks
+        from .konsole import KonsoleTabs
+        marker = tabmarks.TabMarker(KonsoleTabs(), tabmarks.load_state_colors(), tabmarks.default_store())
+
+        def mark_tabs() -> None:
+            try:
+                marker.update(tabmarks.desired_tabs(monitor.sessions, monitor.scanner.bound_pids, monitor.procs))
+            except Exception as exc:  # znacznik na karcie nie może położyć usługi
+                print(f"tide-daemon: nie udało się oznaczyć kart Konsole: {exc}", flush=True)
+
+        mark_tabs()  # także sprząta karty oznaczone przed restartem usługi
+        monitor.changed.connect(mark_tabs)
+
     print(f"tide-daemon: działa, {len(scanner.logs)} plików sesji z ostatniej doby", flush=True)
     code = app.exec()
     trees.stop()
+    if marker is not None:
+        marker.clear()  # karty wracają do swoich tytułów i kolorów, gdy usługa się kończy
     return code
 
 
