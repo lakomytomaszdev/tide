@@ -37,5 +37,6 @@ MIRRORED_DIRS=(
 ADD_ONLY_DIRS=(
     .local/share/icons
     .icons
+    .local/share/plasma_icons
     .local/share/wallpapers
 )
