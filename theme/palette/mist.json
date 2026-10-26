@@ -1,0 +1,50 @@
+{
+  "name": "Mist",
+  "description": "Miękki ciemny grafit z tealem i lawendą. Jedyne źródło kolorów dla generatorów motywu.",
+  "background": {
+    "desktop": "#181b1e",
+    "window": "#1d2124",
+    "titlebar": "#23272b",
+    "view": "#1a1d20",
+    "card": "#262a2e",
+    "panel": "#24282c"
+  },
+  "text": {
+    "primary": "#eceff1",
+    "secondary": "#c9ced2",
+    "muted": "#a9b0b5"
+  },
+  "accent": "#6fd6c6",
+  "pastel": {
+    "teal": "#6fd6c6",
+    "lavender": "#b9a7f5",
+    "peach": "#f5b99a",
+    "butter": "#ecd58c",
+    "rose": "#f2a0b3",
+    "mint": "#9fe3b8",
+    "sky": "#a6c8f0"
+  },
+  "semantic": {
+    "positive": "mint",
+    "neutral": "butter",
+    "negative": "rose",
+    "waiting": "peach",
+    "working": "teal"
+  },
+  "windowButtons": {
+    "minimize": "butter",
+    "maximize": "mint",
+    "close": "rose"
+  },
+  "radius": {
+    "small": 9,
+    "card": 18,
+    "window": 22,
+    "dock": 28
+  },
+  "fonts": {
+    "ui": "Geist",
+    "mono": "Geist Mono",
+    "uiSizePt": 10
+  }
+}
