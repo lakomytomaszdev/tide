@@ -1,10 +1,13 @@
 """Składa pakiet widżetu do instalacji: kod widżetu + wspólna biblioteka QML + paleta.
 
 Użycie: /usr/bin/python3 widgets/stage.py <katalog-widżetu> <katalog-wyjściowy> [paleta.json]
+        /usr/bin/python3 widgets/stage.py --app <katalog-aplikacji> <katalog-wyjściowy> [paleta.json]
 
 Wspólna biblioteka (widgets/lib) trafia do contents/ui/tide/, a Tokens.qml jest generowany
 z palety wariantu — w QML nie wpisujemy kolorów na sztywno. Plasma instaluje każdy widżet
 jako osobny pakiet, więc biblioteka jedzie w każdym z nich.
+
+Aplikacja QML (--app, np. apps/worktrees) dostaje bibliotekę w qml/tide/, bez katalogu tests.
 
 Widżet z kluczem "X-Tide-LimityConfig" w metadata.json dostaje dodatkowo plik JS (ścieżka
 z wartości klucza) z portem i tokenem usługi Limity AI (QuotaApp), przepisanymi z jej
@@ -105,16 +108,35 @@ def write_private(path: str, text: str) -> None:
         fh.write(text)
 
 
-def stage(widget_dir: str, out_dir: str, palette_path: str = DEFAULT_PALETTE) -> str:
+def load_palette(palette_path: str) -> dict:
     with open(palette_path, encoding="utf-8") as fh:
-        palette = json.load(fh)
-    if os.path.exists(out_dir):
-        shutil.rmtree(out_dir)
-    shutil.copytree(widget_dir, out_dir, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    lib_out = os.path.join(out_dir, "contents", "ui", "tide")
+        return json.load(fh)
+
+
+def copy_lib(lib_out: str, palette: dict) -> None:
+    """Wspólna biblioteka QML z Tokens.qml wygenerowanym z palety."""
     shutil.copytree(LIB, lib_out, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.py"))
     with open(os.path.join(lib_out, "Tokens.qml"), "w", encoding="utf-8") as fh:
         fh.write(palette_qml(palette))
+
+
+def stage_app(app_dir: str, out_dir: str, palette_path: str = DEFAULT_PALETTE) -> str:
+    """Aplikacja QML z biblioteką w qml/tide (np. okno Worktrees)."""
+    palette = load_palette(palette_path)
+    if os.path.exists(out_dir):
+        shutil.rmtree(out_dir)
+    shutil.copytree(app_dir, out_dir, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests", "__init__.py",
+                                                                 "install.sh"))
+    copy_lib(os.path.join(out_dir, "qml", "tide"), palette)
+    return out_dir
+
+
+def stage(widget_dir: str, out_dir: str, palette_path: str = DEFAULT_PALETTE) -> str:
+    palette = load_palette(palette_path)
+    if os.path.exists(out_dir):
+        shutil.rmtree(out_dir)
+    shutil.copytree(widget_dir, out_dir, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    copy_lib(os.path.join(out_dir, "contents", "ui", "tide"), palette)
     with open(os.path.join(widget_dir, "metadata.json"), encoding="utf-8") as fh:
         secret = json.load(fh).get(LIMITY_KEY)
     if secret:
@@ -123,6 +145,9 @@ def stage(widget_dir: str, out_dir: str, palette_path: str = DEFAULT_PALETTE) ->
 
 
 def main(argv: list[str]) -> int:
+    if argv and argv[0] == "--app" and len(argv) in (3, 4):
+        stage_app(*argv[1:])
+        return 0
     if len(argv) not in (2, 3):
         print(__doc__.strip().splitlines()[2], file=sys.stderr)
         return 2
