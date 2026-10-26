@@ -58,7 +58,7 @@
     "heading": 0.6,
     "border": 0.07,
     "outline": 0.12,
-    "loginDim": 0.3
+    "loginDim": 0.2
   },
   "shadow": {
     "size": 12,
@@ -72,7 +72,8 @@
     "fieldWidth": 340,
     "fieldHeight": 48,
     "logoPx": 44,
-    "dim": 0.2
+    "dim": 0.2,
+    "wakeMs": 550
   },
   "splash": {
     "logoPx": 128,
@@ -80,7 +81,8 @@
     "barHeight": 4,
     "barGap": 44,
     "dim": 0.35,
-    "pulseMs": 2400
+    "pulseMs": 2400,
+    "fadeMs": 400
   },
   "fonts": {
     "ui": "Geist",
@@ -88,6 +90,7 @@
     "uiSizePt": 10
   },
   "wallpaper": {
+    "variant": "cat",
     "background": "desktop",
     "seed": 26102026,
     "grain": 1.1,
