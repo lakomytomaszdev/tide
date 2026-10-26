@@ -21,14 +21,12 @@ uninstall-new-task-shortcut:
 	@bash kwin/install.sh uninstall kwin/new-task
 
 # Podgląd okna na repozytoriach z tego komputera (tylko odczyt), bez instalowania: build/new-task.png
+PREVIEW_PROMPT ?= Popraw nagłówek listy sesji w popupie agentów: liczby w Geist Mono, „gotowe” w kolorze semantic.done
 preview-new-task:
 	@mkdir -p build
 	@/usr/bin/python3 widgets/stage.py --app apps/newtask build/new-task
 	@/usr/bin/python3 daemon/tide-daemon.py --print-worktrees --no-processes > build/worktrees.json
-	@/usr/bin/python3 -c 'import json, sys; sys.path.insert(0, "daemon"); from tide_daemon.tasks import list_repos; \
-		print(json.dumps({"repos": list_repos(json.load(open(sys.argv[1]))), "defaults": {"tool": "claude", \
-		"newWorktree": True, "tools": {"claude": True, "codex": True}, "terminal": True}}))' \
-		build/worktrees.json > build/new-task.json
+	@/usr/bin/python3 tools/new_task_preview.py build/worktrees.json "$(PREVIEW_PROMPT)" > build/new-task.json
 	@QT_QPA_PLATFORM=offscreen /usr/bin/python3 build/new-task/tide-new-task.py --data build/new-task.json \
-		--prompt "Popraw nagłówek listy sesji w popupie agentów" --grab build/new-task.png
+		--prompt "$(PREVIEW_PROMPT)" --grab build/new-task.png
 	@echo "Podgląd: build/new-task.png"

@@ -149,6 +149,14 @@ def worktree_dir(repo_path: str) -> str:
     return os.path.join(repo_path, WORKTREES_SUBDIR)
 
 
+def worktree_path(repo_path: str, branch: str) -> str:
+    """Katalog worktree z nazwy gałęzi bez prefiksu narzędzia („claude/popraw-x” → popraw-x)."""
+    head, _, tail = branch.partition("/")
+    name = tail if tail and head in BRANCH_TOOLS else branch
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.") or "zadanie"
+    return os.path.join(worktree_dir(repo_path), name)
+
+
 def list_repos(items: list[dict]) -> list[dict]:
     """Repozytoria z listy worktrees (WorktreeScanner.snapshot): od ostatnio aktywnych.
 
@@ -334,11 +342,7 @@ class Planner:
         return self.git.run(repo_path, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").ok
 
     def _path_for(self, repo_path: str, branch: str) -> str:
-        """Katalog worktree z nazwy gałęzi bez prefiksu narzędzia („claude/popraw-x” → popraw-x)."""
-        head, _, tail = branch.partition("/")
-        name = tail if tail and head in BRANCH_TOOLS else branch
-        name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.") or "zadanie"
-        return os.path.join(worktree_dir(repo_path), name)
+        return worktree_path(repo_path, branch)
 
     def suggest(self, repo_path: str, tool: str, prompt: str) -> dict:
         """Proponowana gałąź i katalog: `<narzędzie>/<opis>`, z -2, -3…, gdy już są zajęte."""
