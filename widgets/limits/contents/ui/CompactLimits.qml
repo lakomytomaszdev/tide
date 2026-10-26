@@ -1,84 +1,49 @@
-// Zawartość kafelka: dwa wiersze „GPT” i „Claude”, w każdym cienki miernik i procent.
-// Wartość to niższy z limitów (sesja, tydzień); kolor miernika według poziomu, brak danych = „—”.
+// Kafelek Limitów AI w docku: etykieta „Limity AI”, pod nią „GPT 91%  Claude 86%” z cienkim
+// paskiem pod każdym — ile zostało, niższy z limitów (sesja, tydzień). Kolor paska według
+// poziomu (mięta, masło, róż), brak danych = „—”. Kafelek zabarwia poziom niższego z limitów.
 import QtQuick
-import QtQuick.Layouts
 import "tide" as Tide
 
-GridLayout {
-    id: grid
+Tide.DockTile {
+    id: tile
 
-    required property var source            // LimitsSource
+    required property var source            // LimitsSource (albo obiekt z panelValue i available)
+    property bool vertical: false
     property color textColor: Tide.Tokens.textPrimary
-    property real meterWidth: 40
-    property real meterHeight: 4
-    property real pointSize: Tide.Tokens.fontSizePt - 1
 
     readonly property var services: [
         { key: "chatgpt", label: "GPT" },
         { key: "claude", label: "Claude" }
     ]
-
-    function percentText(value) {
-        return value === null ? "—" : value + "%"
+    readonly property var values: services.map(s => source.panelValue(s.key))
+    readonly property var lowest: {
+        const known = values.filter(v => v !== null && v !== undefined)
+        return known.length ? Math.min.apply(null, known) : null
     }
+    // Teksty mierników, np. „GPT 91%” (dla testów i dostępności).
+    readonly property var lines: services.map((s, i) => s.label + " " + Tide.Texts.percent(values[i]))
 
-    columns: 3
-    rowSpacing: 2
-    columnSpacing: 6
+    label: "Limity AI"
+    tint: Tide.Theme.levelColor(lowest)
+    Accessible.name: "Limity AI: " + lines.join(", ")
 
-    Repeater {
-        model: grid.services
-        delegate: Text {
-            required property var modelData
-            required property int index
-            Layout.row: index
-            Layout.column: 0
-            text: modelData.label
-            color: grid.textColor
-            opacity: 0.75
-            font.family: Tide.Theme.uiFamily
-            font.pointSize: grid.pointSize
+    Grid {
+        columns: tile.vertical ? 1 : tile.services.length
+        columnSpacing: 10
+        rowSpacing: 4
+
+        Repeater {
+            model: tile.services
+
+            delegate: Tide.TileMeter {
+                required property var modelData
+                required property int index
+                label: modelData.label
+                percent: tile.values[index]
+                color: Tide.Theme.levelColor(percent)
+                textColor: tile.textColor
+                valuePointSize: tile.valuePointSize
+            }
         }
-    }
-    Repeater {
-        model: grid.services
-        delegate: Tide.MeterBar {
-            required property var modelData
-            required property int index
-            readonly property var percent: grid.source.panelValue(modelData.key)
-            Layout.row: index
-            Layout.column: 1
-            Layout.preferredWidth: grid.meterWidth
-            Layout.preferredHeight: grid.meterHeight
-            Layout.alignment: Qt.AlignVCenter
-            value: percent === null ? null : percent / 100
-            color: Tide.Theme.levelColor(percent)
-        }
-    }
-    Repeater {
-        model: grid.services
-        delegate: Text {
-            required property var modelData
-            required property int index
-            readonly property var percent: grid.source.panelValue(modelData.key)
-            Layout.row: index
-            Layout.column: 2
-            Layout.minimumWidth: widest.width
-            horizontalAlignment: Text.AlignRight
-            text: grid.percentText(percent)
-            color: percent === null ? Tide.Tokens.textMuted : grid.textColor
-            font.family: Tide.Theme.monoFamily
-            font.pointSize: grid.pointSize
-            font.weight: Font.DemiBold
-        }
-    }
-
-    // Stała szerokość kolumny procentów, żeby kafelek nie skakał przy zmianie wartości.
-    TextMetrics {
-        id: widest
-        text: "100%"
-        font.family: Tide.Theme.monoFamily
-        font.pointSize: grid.pointSize
-        font.weight: Font.DemiBold
     }
 }

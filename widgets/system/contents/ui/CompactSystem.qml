@@ -1,60 +1,46 @@
-// Kafelek w docku: trzy pierścienie — procesor (teal), pamięć (lawenda) i pełniejsza z partycji
-// (brzoskwinia) — z procentem w środku i małym podpisem pod spodem. Bez danych pierścień
-// pokazuje sam tor i „—”.
+// Kafelek System w docku: etykieta „System”, pod nią trzy mierniki „CPU 34%  RAM 61%  Dysk 88%”
+// z cienkim paskiem pod każdym — procesor (teal), pamięć (lawenda) i pełniejsza z partycji
+// (brzoskwinia). Bez pierścieni: w 48 px kafelka miały ok. 26 px, a procent w środku był
+// nieczytelny. Procent obok podpisu ma ten sam rozmiar co wartości innych kafelków.
+// W pionowym panelu mierniki stoją jeden pod drugim. Bez danych pasek jest pusty, a procent to „—”.
 import QtQuick
 import "../code/system.js" as Logic
 import "tide" as Tide
 
-Grid {
+Tide.DockTile {
     id: compact
 
-    required property var source            // SystemSource
+    required property var source            // SystemSource (albo obiekt z tymi samymi polami)
     property bool vertical: false
-    property real ringSize: 36
     property color textColor: Tide.Tokens.textPrimary
-    property real labelPointSize: Math.max(6, Tide.Tokens.fontSizePt - 3)
 
     readonly property var meters: [
         { label: "CPU", percent: source.cpuPercent, color: Tide.Tokens.teal },
         { label: "RAM", percent: source.memoryPercent, color: Tide.Tokens.lavender },
         { label: "Dysk", percent: source.fullerDisk ? source.fullerDisk.usedPercent : null, color: Tide.Tokens.peach }
     ]
+    // Teksty mierników w kolejności wyświetlania, np. „CPU 34%” (dla testów i dostępności).
+    readonly property var lines: meters.map(m => m.label + " " + Logic.percentText(m.percent))
 
-    columns: vertical ? 1 : meters.length
-    columnSpacing: Math.round(ringSize * 0.3)
-    rowSpacing: Math.round(ringSize * 0.2)
+    label: "System"
+    tint: Tide.Tokens.sky
+    Accessible.name: "System: " + lines.join(", ")
 
-    Repeater {
-        model: compact.meters
+    Grid {
+        columns: compact.vertical ? 1 : compact.meters.length
+        columnSpacing: 10
+        rowSpacing: 4
 
-        delegate: Column {
-            required property var modelData
-            spacing: 1
+        Repeater {
+            model: compact.meters
 
-            Tide.Ring {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: compact.ringSize
-                height: compact.ringSize
-                thickness: Math.max(3, compact.ringSize * 0.11)
-                value: Logic.fraction(modelData.percent)
+            delegate: Tide.TileMeter {
+                required property var modelData
+                label: modelData.label
+                percent: modelData.percent
                 color: modelData.color
-
-                Text {
-                    // Sam numer bez „%” — w 36 px mieści się tylko tyle.
-                    text: modelData.percent === null ? "—" : Math.round(modelData.percent)
-                    color: compact.textColor
-                    font.family: Tide.Theme.monoFamily
-                    font.pixelSize: Math.round(compact.ringSize * 0.3)
-                    font.weight: Font.DemiBold
-                }
-            }
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: modelData.label
-                color: compact.textColor
-                opacity: 0.7
-                font.family: Tide.Theme.uiFamily
-                font.pointSize: compact.labelPointSize
+                textColor: compact.textColor
+                valuePointSize: compact.valuePointSize
             }
         }
     }

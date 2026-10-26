@@ -25,8 +25,8 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `scripts/panels/` | Skrypty plasmashell górnych pasków (zrzut, instalacja, kolejność, odinstalowanie) |
 | `tools/` | Narzędzia do ikon: `make_tile.py` (kafelek z oryginalnej ikony), `make_tint.py` (eksperyment z przefarbowaniem, odrzucony) |
 | `daemon/` | Usługa `tide-daemon`: sesje agentów i worktrees przez D-Bus ([opis i kontrakt](docs/tide-daemon.md)) |
-| `widgets/lib/` | Wspólna biblioteka QML widżetów: karta, miernik, pierścień, wykres słupkowy z historią próbek, kropka i licznik stanu, źródło danych z usługi |
-| `widgets/agents/` | Widżet agentów `org.tide.agents`: liczby sesji w panelu, lista sesji w popupie |
+| `widgets/lib/` | Wspólna biblioteka QML widżetów: karta, kafelek docka, teksty kafelków, miernik, pierścień, wykres słupkowy z historią próbek, kropka i licznik stanu, źródło danych z usługi |
+| `widgets/agents/` | Widżet agentów `org.tide.agents`: kafelek „Agenci · 2 pracują · 1 czeka”, lista sesji w popupie |
 | `widgets/limits/` | Widżet `org.tide.limits`: pozostałe limity ChatGPT i Claude z usługi QuotaApp |
 | `widgets/worktrees/` | Kafelek worktrees `org.tide.worktrees`: ile do sprzątnięcia (i ile GB), ile w pracy; kliknięcie otwiera okno |
 | `apps/worktrees/` | Okno „Tide Worktrees” (QML + PyQt6, plik `.desktop`): grupy W pracy / Do sprzątnięcia / Do decyzji, szukanie, filtry repozytoriów, usuwanie zaznaczonych |
@@ -45,6 +45,7 @@ make install-daemon install-widget-agents   # usługa i widżet (bez kopii zapas
 make install-agent-jump                     # skrót Meta+A: przejście do agenta, który czeka najdłużej
 make install                                # wszystko, najpierw kopia zapasowa
 make test                                   # testy wszystkich komponentów
+make preview-widgets                        # kafelki widżetów na tle docka: build/preview/dock-tiles-*.png
 ```
 
 Gdy agent zaczyna czekać, przychodzi powiadomienie „Agent czeka: <projekt>” z przyciskiem „Przejdź” (raz na każde wejście w czekanie). Meta+A przenosi do okna sesji, która czeka najdłużej; gdy nikt nie czeka, nic się nie dzieje. Jeśli Meta+A jest już zajęty (instalator to wypisze), trzeba go zwolnić w Ustawieniach systemowych → Skróty i przypisać akcji „Tide: przejdź do agenta, który czeka najdłużej”.
@@ -55,7 +56,7 @@ Widżet „Tide · Agenci” dodaje się do panelu z listy widżetów. Po aktual
 
 ## Limity AI
 
-Widżet „Tide · Limity AI” (`org.tide.limits`) pokazuje w kafelku pozostały procent ChatGPT i Claude (niższy z limitów sesji i tygodniowego), a w popupie oba limity z resetami. Dane bierze wprost z lokalnego API usługi [QuotaApp](https://github.com/julia-lakomy/QuotaApp) (`limity-ai-widget.service`), bez tide-daemon — usługa musi być zainstalowana i działać.
+Widżet „Tide · Limity AI” (`org.tide.limits`) pokazuje w kafelku „Limity AI” pozostały procent ChatGPT i Claude (niższy z limitów sesji i tygodniowego), a w popupie oba limity z resetami. Dane bierze wprost z lokalnego API usługi [QuotaApp](https://github.com/julia-lakomy/QuotaApp) (`limity-ai-widget.service`), bez tide-daemon — usługa musi być zainstalowana i działać.
 
 ```bash
 make install-widget-limits     # instalacja albo aktualizacja widżetu
@@ -69,7 +70,7 @@ make uninstall-widget-limits   # usuwa tylko org.tide.limits
 
 ## System
 
-Widżet „Tide · System” (`org.tide.system`) pokazuje w kafelku trzy pierścienie: procesor (teal), pamięć (lawenda) i pełniejszą z partycji / i /home (brzoskwinia). W popupie — a później w pasku bocznym — jest wykres procesora z ostatniej minuty (próbka co 2 s), pamięć z trzema programami zajmującymi najwięcej, karta graficzna z VRAM i obie partycje z wolnym miejscem.
+Widżet „Tide · System” (`org.tide.system`) pokazuje w kafelku „System” trzy mierniki z procentem i cienkim paskiem („CPU 34%  RAM 61%  Dysk 88%”): procesor (teal), pamięć (lawenda) i pełniejszą z partycji / i /home (brzoskwinia). W popupie — a później w pasku bocznym — jest wykres procesora z ostatniej minuty (próbka co 2 s), pamięć z trzema programami zajmującymi najwięcej, karta graficzna z VRAM i obie partycje z wolnym miejscem.
 
 ```bash
 make install-widget-system     # instalacja albo aktualizacja widżetu

@@ -218,6 +218,7 @@ class StageTest(unittest.TestCase):
     def test_package_contains_widget_helper_and_library(self):
         files = files_under(self.pkg)
         for name in ("metadata.json", "contents/ui/main.qml", "contents/ui/SystemSource.qml",
+                     "contents/ui/tide/DockTile.qml", "contents/ui/tide/Texts.qml",
                      "contents/ui/CompactSystem.qml", "contents/ui/FullSystem.qml", "contents/ui/ActionButton.qml",
                      "contents/code/sysinfo.py", "contents/code/system.js",
                      "contents/ui/tide/Ring.qml", "contents/ui/tide/BarChart.qml", "contents/ui/tide/History.qml",
@@ -237,7 +238,10 @@ class StageTest(unittest.TestCase):
 
     def test_rings_and_charts_come_from_shared_library(self):
         with open(os.path.join(SYSTEM_DIR, "contents/ui/CompactSystem.qml"), encoding="utf-8") as fh:
-            self.assertIn("Tide.Ring", fh.read())
+            compact = fh.read()
+        # W docku mierniki z procentem obok podpisu zamiast małych pierścieni.
+        self.assertIn("Tide.TileMeter", compact)
+        self.assertNotIn("Tide.Ring", compact)
         with open(os.path.join(SYSTEM_DIR, "contents/ui/FullSystem.qml"), encoding="utf-8") as fh:
             full = fh.read()
         for component in ("Tide.BarChart", "Tide.MeterBar", "Tide.Card"):
@@ -372,6 +376,9 @@ Item {
             captionEmpty: Logic.historyCaption(null, null, 60),
             captionShort: Logic.historyCaption(1, 2, 30),
             percent: [Logic.percentText(33.5), Logic.percentText(null), Logic.fraction(150), Logic.fraction(null)],
+            tips: [Logic.toolTip(false, 33.5, 61, { target: "/home", usedPercent: 88 }),
+                   Logic.toolTip(true, null, null, { target: "/", usedPercent: 91 }),
+                   Logic.toolTip(false, null, null, null)],
             quote: Logic.shellQuote("/a b/it's.py"),
             path: Logic.localPath("file:///home/t/My%20Dir/sysinfo.py"),
             parsed: Logic.parseOutput({ "exit code": 0, stdout: '{"a": 1}' }),
@@ -397,6 +404,9 @@ Item {
         self.assertEqual(result["captionEmpty"], "ostatnia minuta · zbieram dane")
         self.assertEqual(result["captionShort"], "ostatnie 30 s · średnio 1% · szczyt 2%")
         self.assertEqual(result["percent"], ["34%", "—", 1, None])
+        self.assertEqual(result["tips"], ["Obciążenie procesora 34%, zajęta pamięć 61%, zajęty dysk /home 88%",
+                                          "Zainstaluj pakiet ksystemstats · zajęty dysk / 91%",
+                                          "Obciążenie procesora —, zajęta pamięć —, dysk —"])
         self.assertEqual(result["quote"], "'/a b/it'\\''s.py'")
         self.assertEqual(result["path"], "/home/t/My Dir/sysinfo.py")
         self.assertEqual(result["parsed"], {"a": 1})

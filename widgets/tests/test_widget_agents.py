@@ -53,6 +53,7 @@ class PaletteTest(unittest.TestCase):
     def test_package_contains_library(self):
         files = files_under(self.pkg)
         for name in ("metadata.json", "contents/ui/main.qml", "contents/ui/SessionCard.qml",
+                     "contents/ui/CompactAgents.qml", "contents/ui/tide/DockTile.qml", "contents/ui/tide/Texts.qml",
                      "contents/ui/tide/qmldir", "contents/ui/tide/Card.qml", "contents/ui/tide/Ring.qml",
                      "contents/ui/tide/MeterBar.qml", "contents/ui/tide/DaemonSource.qml"):
             self.assertIn(name, files)
@@ -74,6 +75,8 @@ Item {
     Tide.MeterBar { value: 0.5 }
     Tide.Ring { value: 0.3; width: 30; height: 30 }
     Tide.CountPill { sessionState: "working"; count: 3; emphasized: true }
+    Tide.DockTile { label: "Agenci"; detail: "2 w pracy"; Text { text: "x" } }
+    CompactAgents { workingCount: 2; waitingCount: 1 }
     SessionCard { session: ({ id: "x", tool: "claude", project: "p", branch: "b", worktree: "", title: "",
         state: "waiting", reason: "approval", sinceTs: 0, lastActivityTs: 0, lastAction: "Bash", canActivate: true,
         terminal: "Konsole" }) }

@@ -80,10 +80,15 @@ Przy zmaksymalizowanym oknie Plasma przykleja pływające panele do krawędzi i 
 - **Górny pasek (główny monitor):** pigułka 34 px — logo jako przycisk menu, globalne menu, zegar z datą w jednej linii pośrodku („pon. 26 paź 17:05”), skróty użytkownika, zasobnik.
 - **Pasek lewego monitora:** 30 px — globalne menu i zegar.
 - **Dock:** pełna szerokość głównego monitora, 64 px. Aplikacje pośrodku, kafelki widżetów z prawej: agenci, worktrees, system, Limity AI.
-- **Kafelek widżetu:** dwie linie albo kropki z licznikami; etykiety w `text.secondary`, liczby w Geist Mono. Kolor mówi o stanie.
+- **Kafelek widżetu:** osobna karta 48 px wysokości (dock 64 px) z promieniem `tile` (12 px), tło w pastelu widżetu o kryciu ~0,11 (po najechaniu ~0,2) z ramką w tym pastelu (~0,24), 12 px odstępu między kafelkami. Zawsze dwie linie: etykieta w `text.secondary` (8 pt: „Agenci”, „Worktrees · 5 w pracy”, „System”, „Limity AI”) i wartość słowami (10 pt), liczby w Geist Mono. Kolor mówi o stanie. Wspólne komponenty `DockTile` i `TileMeter`, teksty i liczba mnoga w `Texts`, podgląd: `make preview-widgets`.
+  - **Agenci** (teal, brzoskwinia gdy ktoś czeka): „● 2 pracują · ● 1 czeka”, tylko niezerowe części; bez sesji wyciszone „brak sesji”.
+  - **Worktrees** (lawenda): „15 do sprzątnięcia · 16 GB”, ile w pracy przy etykiecie; bez niczego do sprzątania „nic do sprzątnięcia”.
+  - **System** (sky): „CPU 34%  RAM 61%  Dysk 88%” z cienkim paskiem pod każdym miernikiem (teal, lawenda, brzoskwinia). Pierścienie w 48 px miały ok. 26 px i nieczytelną liczbę w środku, więc kafelek pokazuje procent tekstem i pasek.
+  - **Limity AI** (kolor niższego limitu): „GPT 91%  Claude 86%” z paskami w kolorze poziomu.
+  - Każdy kafelek ma podpowiedź z jednym zdaniem wyjaśnienia, np. „Sesje agentów AI: 2 pracują, 1 czeka na ciebie”. Cztery kafelki z odstępami mają do ~760 px.
 - **Popup:** nagłówek z ikoną i tytułem (15 px, 600), pod nim karty; promień 18 px.
 - **Karta:** tło `card` albo przyciemnione tło pastelu stanu (krycie ~0,08) z ramką w tym pastelu (~0,25–0,35). Karta wymagająca uwagi (agent czeka) jest w brzoskwini.
-- **Miernik:** pasek 4–6 px na tle tekstu o kryciu 0,1; wypełnienie: mięta >40%, masło 16–40%, róż ≤15%. Pierścienie w widżecie systemu tak samo.
+- **Miernik:** pasek 4–6 px na tle tekstu o kryciu 0,1; wypełnienie: mięta >40%, masło 16–40%, róż ≤15%. W kafelkach docka pasek ma 3 px; System i Limity AI malują go w kolorze miernika albo poziomu.
 - **Przyciski okna:** po prawej, minimalizuj · maksymalizuj · zamknij — pastelowe kółka 13 px (masło, mięta, róż) co 8 px; w oknie nieaktywnym szare, ikonki dopiero po najechaniu.
 - **Ekran ładowania:** przyciemniona tapeta Mist (`splash.dim` 0,35 koloru pulpitu), pośrodku pełne logo 128 px, 44 px niżej pasek 220×4 px — tor w kolorze tekstu o kryciu `opacity.outline`, wypełnienie `accent`, promień `radius.small` ograniczony do połowy wysokości. Logo „oddycha” (krycie 1 → 0,78, cykl `splash.pulseMs`), bez tekstu.
 - **Logo „trzy fale”:** fale teal, lawenda, brzoskwinia. Wersja pełna na kafelku `card` (promień 20/64), wersja bez kafelka z grubszymi falami od 18 px, wersja symboliczna jednokolorowa.
