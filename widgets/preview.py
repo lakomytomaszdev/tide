@@ -167,7 +167,7 @@ SESSIONS = [
      "worktree": "", "title": "Stany sesji agentów", "state": "waiting", "reason": "approval",
      "sinceTs": NOW_TS - 120, "lastActivityTs": NOW_TS - 120, "lastAction": "Bash · make test",
      "canActivate": True, "terminal": "Konsole"},
-    {"id": "claude:b", "tool": "claude", "project": "alpha", "branch": "claude/popraw-logowanie", "worktree": "",
+    {"id": "claude:b", "tool": "claude", "project": "alpha", "branch": "feat/login", "worktree": "",
      "newTask": True, "title": "", "state": "working", "reason": "", "sinceTs": NOW_TS - 40, "lastActivityTs": NOW_TS - 5,
      "lastAction": "Edit · main.py", "canActivate": True, "terminal": "Konsole"},
     {"id": "codex:c", "tool": "codex", "project": "legal-agents", "branch": "main", "worktree": "",
