@@ -1,11 +1,36 @@
-.PHONY: help backup backups restore
+.PHONY: help backup backups restore install uninstall test pre-install-backup
 
 NAME ?=
 
+# Każdy komponent dopisuje swoje cele w mk/<komponent>.mk:
+#   INSTALL_TARGETS += install-<komponent>
+#   UNINSTALL_TARGETS += uninstall-<komponent>
+#   TEST_DIRS += <katalog z testami>
+INSTALL_TARGETS :=
+UNINSTALL_TARGETS :=
+TEST_DIRS :=
+
+-include mk/*.mk
+
 help:
+	@echo "make install               instalacja Tide (najpierw kopia zapasowa)"
+	@echo "make uninstall             usunięcie wszystkiego, co zainstalował Tide"
+	@echo "make test                  testy wszystkich komponentów"
 	@echo "make backup [NAME=nazwa]   kopia obecnego wyglądu Plasmy"
 	@echo "make backups               lista kopii"
 	@echo "make restore NAME=nazwa    przywrócenie wyglądu z kopii"
+
+install: pre-install-backup $(INSTALL_TARGETS)
+	@echo "Zainstalowano Tide."
+
+uninstall: $(UNINSTALL_TARGETS)
+	@echo "Odinstalowano Tide."
+
+pre-install-backup:
+	@bash scripts/backup.sh "install-$$(date +%Y-%m-%d_%H%M%S)"
+
+test:
+	@for dir in $(TEST_DIRS); do /usr/bin/python3 -m unittest discover -s "$$dir" -t . || exit 1; done
 
 backup:
 	@bash scripts/backup.sh $(NAME)
