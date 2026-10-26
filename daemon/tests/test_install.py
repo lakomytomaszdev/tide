@@ -37,11 +37,16 @@ class DaemonInstallTest(unittest.TestCase):
         self.assertIn("tide-daemon.py", files)
         self.assertIn("tide_daemon/agents/scanner.py", files)
         self.assertIn("tide_daemon/worktrees/scanner.py", files)
+        self.assertIn("tide_daemon/limits/forecast.py", files)
+        self.assertIn("tide_daemon/limits_monitor.py", files)
         self.assertFalse([f for f in files if "__pycache__" in f])
         # Paleta jedzie z usługą: z niej są kolory kart Konsole z agentem (#11).
         self.assertIn("palette.json", files)
         with open(os.path.join(installed, "palette.json"), encoding="utf-8") as fh:
-            self.assertEqual(json.load(fh)["semantic"]["waiting"], "peach")
+            palette = json.load(fh)
+        self.assertEqual(palette["semantic"]["waiting"], "peach")
+        # Progi Limitów AI usługa czyta z tej samej kopii palety (sekcja „limits”).
+        self.assertEqual(palette["limits"]["alertUsedPercent"], [80, 95])
 
         with open(os.path.join(self.config, "systemd/user/tide-daemon.service"), encoding="utf-8") as fh:
             unit = fh.read()
@@ -69,6 +74,10 @@ class DaemonInstallTest(unittest.TestCase):
         os.makedirs(state)
         with open(os.path.join(state, "konsole-tabs.json"), "w", encoding="utf-8") as fh:
             fh.write("{}")
+        # Historia Limitów AI i pamięć powiadomień też należą do usługi.
+        for name in ("limits-history.jsonl", "limits-alerts.json"):
+            with open(os.path.join(state, name), "w", encoding="utf-8") as fh:
+                fh.write("{}\n")
         make("uninstall-daemon", self.env)
         self.assertEqual(files_under(self.data), [])
         self.assertEqual(files_under(self.config), [])

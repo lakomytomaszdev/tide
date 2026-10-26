@@ -60,6 +60,25 @@ class PaletteTest(unittest.TestCase):
         self.assertGreater(PALETTE["shadow"]["size"], 0)
         self.assertLessEqual(PALETTE["shadow"]["opacity"], 0.5)
 
+    def test_limits_thresholds_are_sane(self):
+        # Progi Limitów AI (tide-daemon, docs/tide-daemon.md „Limity AI”): rosnące procenty zużycia,
+        # okno sesji krótsze od tygodniowego, a tempo liczone z kawałka okna, nie z całego.
+        limits = PALETTE["limits"]
+        used = limits["alertUsedPercent"]
+        self.assertEqual(used, sorted(set(used)))
+        self.assertTrue(all(0 < v <= 100 for v in used))
+        self.assertGreater(limits["alertRunoutMarginMin"], 0)
+        self.assertGreaterEqual(limits["pollS"], 30)  # QuotaApp i tak czyta strony co 5 min
+        self.assertGreaterEqual(limits["historyDays"], 7)  # co najmniej całe okno tygodniowe
+        session, weekly = limits["session"], limits["weekly"]
+        self.assertLess(session["lengthMin"], weekly["lengthMin"])
+        for window in (session, weekly):
+            self.assertLess(window["minSpanMin"], window["lookbackMin"])
+            self.assertLess(window["lookbackMin"], window["lengthMin"])
+            self.assertLess(window["resetJumpMin"], window["lengthMin"])
+        # Kolor prognozy „wyczerpie się przed resetem” to pastel z palety.
+        self.assertIn(PALETTE["semantic"]["runout"], PALETTE["pastel"])
+
 
 if __name__ == "__main__":
     unittest.main()
