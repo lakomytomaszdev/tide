@@ -45,6 +45,8 @@ Tide.Card {
             const why = reasonText(session.reason)
             return session.lastAction && session.reason !== "reply" ? why + " · " + session.lastAction : why
         }
+        if (session.reason === "background")
+            return "zadanie w tle" + (session.lastAction ? " · " + session.lastAction : "")
         return session.lastAction || ""
     }
 

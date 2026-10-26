@@ -8,7 +8,8 @@ Co wiemy o strukturze (z obserwacji, format nie jest publiczny):
 - przerwanie przez użytkownika to user z tekstem „[Request interrupted by user…”,
 - wpisy isSidechain należą do podagentów i nie zmieniają stanu sesji głównej,
 - ai-title niesie krótki tytuł rozmowy,
-- sessions/<pid>.json opisuje działający proces: sessionId, cwd i status (busy, waiting, idle).
+- sessions/<pid>.json opisuje działający proces: sessionId, cwd i status (busy, waiting, idle,
+  shell — tura skończona, ale w tle działa uruchomione przez agenta zadanie, do którego on wróci).
 """
 import json
 import os
@@ -128,8 +129,8 @@ def read_process_status(sessions_dir: str) -> dict[int, dict]:
 
 def status_from(data: dict) -> Status | None:
     status = data.get("status")
-    if status not in ("busy", "waiting", "idle"):
-        return None
+    if status not in ("busy", "shell", "waiting", "idle"):
+        return None  # nieznany status — o stanie decyduje dziennik sesji
     since = data.get("statusUpdatedAt") or data.get("updatedAt") or 0
     try:
         since = float(since) / 1000.0

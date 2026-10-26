@@ -94,6 +94,9 @@ def derive_state(log: SessionLog, now: float, alive: bool | None, status: Status
     if status is not None:
         if status.status == "busy":
             return WORKING, "", status.since
+        if status.status == "shell":
+            # Agent czeka na własne zadanie w tle, nie na użytkownika — wróci sam, gdy się skończy.
+            return WORKING, "background", status.since
         if status.status == "waiting":
             return WAITING, status.detail or "approval", status.since
         since = max(status.since, log.last_activity)

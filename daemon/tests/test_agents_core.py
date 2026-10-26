@@ -230,3 +230,24 @@ class GitLocationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackgroundTaskTest(unittest.TestCase):
+    """Claude skończył turę, ale w tle działa jego zadanie (status „shell”) — wróci do niego sam,
+    więc sesja pracuje, a nie czeka na użytkownika."""
+
+    def derive(self, status_name):
+        from tide_daemon.agents.claude import status_from
+        from tide_daemon.agents.state import SessionLog, derive_state
+        log = SessionLog("x.jsonl")
+        log.last_activity = NOW - 60
+        status = status_from({"status": status_name, "statusUpdatedAt": (NOW - 30) * 1000})
+        return derive_state(log, NOW, True, status, lambda ts: False)
+
+    def test_background_shell_counts_as_working(self):
+        state, reason, _ = self.derive("shell")
+        self.assertEqual((state, reason), ("working", "background"))
+
+    def test_unknown_status_falls_back_to_the_log(self):
+        state, reason, _ = self.derive("something-new")
+        self.assertEqual((state, reason), ("waiting", "reply"))
