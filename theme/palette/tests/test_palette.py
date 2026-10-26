@@ -37,6 +37,16 @@ class PaletteTest(unittest.TestCase):
         self.assertLess(splash["dim"], 1)
         self.assertGreater(splash["pulseMs"], 0)
 
+    def test_lock_and_login_dim_are_light_and_equal(self):
+        # Cieplejsza tapeta kota (decyzja 49): blokada i logowanie przyciemnione tak samo i lekko
+        # (użytkownik zamówił 10–12%), żeby brzoskwiniowe światło nie zgasło pod nakładką.
+        dim = PALETTE["lockscreen"]["dim"]
+        self.assertEqual(dim, PALETTE["opacity"]["loginDim"])
+        self.assertGreaterEqual(dim, 0.1)
+        self.assertLessEqual(dim, 0.12)
+        # Ekran ładowania ma własne, mocniejsze przyciemnienie (pasek i logo na środku).
+        self.assertGreater(PALETTE["splash"]["dim"], dim)
+
     def test_wallpaper_variant_is_known(self):
         self.assertIn(PALETTE["wallpaper"].get("variant", "blobs"), ("blobs", "cat"))
         # Plamy zostają w palecie jako działająca alternatywa.
