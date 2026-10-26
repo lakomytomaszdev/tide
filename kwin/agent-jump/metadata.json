@@ -1,0 +1,15 @@
+{
+  "KPackageStructure": "KWin/Script",
+  "KPlugin": {
+    "Id": "tide-agent-jump",
+    "Name": "Tide · Przejdź do czekającego agenta",
+    "Description": "Skrót Meta+A: okno sesji Claude Code albo Codexa, która czeka na ciebie najdłużej (przez tide-daemon)",
+    "Icon": "utilities-terminal",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "EnabledByDefault": false,
+    "Authors": [{ "Name": "Tomek" }]
+  },
+  "X-Plasma-API": "javascript",
+  "X-Plasma-MainScript": "code/main.js"
+}

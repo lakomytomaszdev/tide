@@ -1,11 +1,16 @@
 """Punkt wejścia tide-daemon.
 
-Użycie: python3 tide-daemon.py [--print] [--claude-dir DIR] [--codex-dir DIR]
-                               [--no-processes] [--now CZAS]
+Użycie: python3 tide-daemon.py [--print | --print-worktrees] [--claude-dir DIR] [--codex-dir DIR]
+                               [--workspace DIR] [--worktree-depth N] [--no-processes]
+                               [--no-notifications] [--now CZAS]
 
---print         jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
---no-processes  nie czyta /proc (stan bez wiedzy o procesach, bez przechodzenia do okien),
---now           zamrożony zegar (ISO 8601) — dla testów i diagnostyki.
+--print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
+--print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
+--workspace        katalog projektów z repozytoriami (domyślnie $TIDE_WORKSPACE albo ~/DevWorkspace),
+--worktree-depth   jak głęboko pod katalogiem projektów szukać repozytoriów (domyślnie 3),
+--no-processes     nie czyta /proc (stan bez wiedzy o procesach, bez przechodzenia do okien),
+--no-notifications bez powiadomień „Agent czeka”,
+--now              zamrożony zegar (ISO 8601) — dla testów i diagnostyki.
 """
 import argparse
 import json
@@ -16,6 +21,7 @@ import time
 
 from .agents import AgentScanner
 from .agents.timeutil import parse_ts
+from . import worktrees
 
 
 def default_claude_dir() -> str:
@@ -26,13 +32,21 @@ def default_codex_dir() -> str:
     return os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
 
 
+def default_workspace() -> str:
+    return os.environ.get("TIDE_WORKSPACE") or os.path.expanduser("~/DevWorkspace")
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog="tide-daemon", description="Sesje agentów AI przez D-Bus")
     parser.add_argument("--claude-dir", default=default_claude_dir())
     parser.add_argument("--codex-dir", default=default_codex_dir())
     parser.add_argument("--no-processes", action="store_true")
+    parser.add_argument("--no-notifications", action="store_true")
     parser.add_argument("--now", help="zamrożony zegar, np. 2026-10-26T12:00:00Z")
+    parser.add_argument("--workspace", default=default_workspace())
+    parser.add_argument("--worktree-depth", type=int, default=worktrees.MAX_DEPTH)
     parser.add_argument("--print", dest="print_once", action="store_true")
+    parser.add_argument("--print-worktrees", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -48,6 +62,16 @@ def main(argv=None) -> int:
 
     scanner = AgentScanner(args.claude_dir, args.codex_dir)
 
+    if args.print_worktrees:
+        from . import processes
+        now = clock()
+        scanner.discover(now)
+        scanner.update()
+        procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
+        cwds = worktrees.agent_cwds(scanner.sessions(now, procs), procs)
+        print(json.dumps(worktrees.scan(args.workspace, cwds, args.worktree_depth), ensure_ascii=False, indent=2))
+        return 0
+
     if args.print_once:
         from . import processes
         now = clock()
@@ -60,13 +84,18 @@ def main(argv=None) -> int:
     from PyQt6.QtCore import QCoreApplication, QTimer
     from . import dbus_service
     from .monitor import AgentMonitor
+    from .worktree_monitor import WorktreeMonitor
 
     app = QCoreApplication(sys.argv[:1])
     app.setApplicationName("tide-daemon")
     monitor = AgentMonitor(scanner, use_processes=not args.no_processes, clock=clock)
     monitor.start()
+    trees = WorktreeMonitor(worktrees.WorktreeScanner(args.workspace, args.worktree_depth),
+                            lambda: worktrees.agent_cwds(monitor.sessions, monitor.procs),
+                            worktrees.Launchers(), refresh_agents=monitor.recompute)
+    monitor.changed.connect(trees.publish)  # nowy albo zakończony agent zmienia flagę „aktywny agent”
     try:
-        holder = dbus_service.register(monitor)  # noqa: F841 — musi żyć do końca
+        holder = dbus_service.register(monitor, trees)  # noqa: F841 — musi żyć do końca
     except RuntimeError as exc:
         print(f"tide-daemon: {exc}", file=sys.stderr, flush=True)
         return 1
@@ -77,6 +106,15 @@ def main(argv=None) -> int:
     wake = QTimer(interval=500)
     wake.timeout.connect(lambda: None)
     wake.start()
+    trees.start()  # pierwsze odczytanie repozytoriów już w tle, po rejestracji na magistrali
+
+    if not args.no_notifications:
+        from .notifications import Notifier
+        notifier = Notifier(monitor.activate)
+        notifier.update(monitor.sessions)  # stan wyjściowy: czekające już wcześniej nie dostają powiadomień
+        monitor.changed.connect(lambda: notifier.update(monitor.sessions))
 
     print(f"tide-daemon: działa, {len(scanner.logs)} plików sesji z ostatniej doby", flush=True)
-    return app.exec()
+    code = app.exec()
+    trees.stop()
+    return code

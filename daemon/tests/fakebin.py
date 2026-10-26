@@ -1,8 +1,10 @@
-"""Atrapy systemctl, kpackagetool6 i qdbus6 dla testów instalacji.
+"""Atrapy systemctl, kpackagetool6, qdbus6, kwriteconfig6 i dbus-send dla testów instalacji.
 
 Testy instalacji nigdy nie dotykają prawdziwego pulpitu: katalog z atrapami idzie na początek
-PATH, a każde wywołanie jest zapisywane do pliku dziennika. kpackagetool6 kopiuje pakiet do
-$XDG_DATA_HOME/plasma/plasmoids/<id> tak jak prawdziwe narzędzie, żeby dało się sprawdzić pliki.
+PATH, a każde wywołanie jest zapisywane do pliku dziennika. kpackagetool6 kopiuje pakiet tam,
+gdzie prawdziwe narzędzie ($XDG_DATA_HOME/plasma/plasmoids/<id> dla widżetów,
+$XDG_DATA_HOME/kwin/scripts/<id> dla skryptów KWin), żeby dało się sprawdzić pliki.
+kwriteconfig6 i dbus-send tylko zapisują wywołanie — nic nie trafia do konfiguracji ani na magistralę.
 qdbus6 zapisuje do dziennika tylko usługę, ścieżkę i metodę, a pełny ostatni argument (np. skrypt
 dla evaluateScript, zwykle wielowierszowy) do kolejnego pliku w <dziennik>.qdbus6/ — patrz qdbus_args().
 """
@@ -19,6 +21,8 @@ echo "kpackagetool6 $*" >> "$TIDE_FAKE_LOG"
 root="${XDG_DATA_HOME:?}/plasma/plasmoids"
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -t)
+            [[ "$2" == "KWin/Script" ]] && root="${XDG_DATA_HOME:?}/kwin/scripts"; shift 2 ;;
         -i|-u)
             id="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["KPlugin"]["Id"])' "$2/metadata.json")"
             mkdir -p "$root"; rm -rf "$root/$id"; cp -r "$2" "$root/$id"; shift 2 ;;
@@ -34,13 +38,18 @@ dir="$TIDE_FAKE_LOG.qdbus6"; mkdir -p "$dir"
 n=$(find "$dir" -type f | wc -l)
 printf '%s' "${@: -1}" > "$dir/$(printf '%03d' "$n")"
 """
+LOG_ONLY = """#!/bin/bash
+echo "$(basename "$0") $*" >> "$TIDE_FAKE_LOG"
+"""
+FAKES = {"systemctl": SYSTEMCTL, "kpackagetool6": KPACKAGETOOL, "kwriteconfig6": LOG_ONLY, "dbus-send": LOG_ONLY,
+         "qdbus6": QDBUS}
 
 
 def make_env(tmp: str) -> dict:
     """Środowisko z tymczasowym HOME, XDG_* i atrapami na początku PATH."""
     fake = os.path.join(tmp, "fakebin")
     os.makedirs(fake, exist_ok=True)
-    for name, body in (("systemctl", SYSTEMCTL), ("kpackagetool6", KPACKAGETOOL), ("qdbus6", QDBUS)):
+    for name, body in FAKES.items():
         path = os.path.join(fake, name)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(body)
@@ -57,7 +66,7 @@ def make_env(tmp: str) -> dict:
     for key in ("HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
         os.makedirs(env[key], exist_ok=True)
     # Bezpiecznik: atrapy muszą wygrywać z prawdziwymi narzędziami.
-    for tool in ("systemctl", "kpackagetool6", "qdbus6"):
+    for tool in FAKES:
         if shutil.which(tool, path=env["PATH"]) != os.path.join(fake, tool):
             raise RuntimeError(f"atrapa {tool} nie jest pierwsza w PATH")
     return env

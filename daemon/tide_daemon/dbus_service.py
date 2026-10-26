@@ -1,16 +1,30 @@
 """Kontrakt D-Bus usługi (opis: docs/tide-daemon.md).
 
-Usługa org.tide.Daemon, obiekt /Agents, interfejs org.tide.Daemon.Agents:
+Usługa org.tide.Daemon.
+
+Obiekt /Agents, interfejs org.tide.Daemon.Agents:
 - Sessions() -> s            lista sesji jako JSON,
 - ActivateSession(s id) -> b przejście do okna sesji, False gdy nie da się go ustalić,
+- ActivateLongestWaiting() -> b  przejście do sesji czekającej najdłużej (skrót Meta+A);
+                             False, gdy nic nie czeka albo okna nie da się ustalić,
 - sygnał Changed()           lista sesji się zmieniła — warto pobrać ją ponownie.
+
+Obiekt /Worktrees, interfejs org.tide.Daemon.Worktrees:
+- List() -> s                lista worktrees jako JSON,
+- Remove(as paths) -> s      sprzątanie; JSON z wynikiem dla każdej ścieżki (odpowiedź po zakończeniu),
+- Refresh()                  odświeżenie na żądanie (wynik przyjdzie sygnałem Changed),
+- Open(s path, s app) -> b   otwarcie worktree: app = "terminal" albo "rider",
+- Launchers() -> s           JSON {"terminal": bool, "rider": bool} — które przyciski pokazać,
+- sygnał Changed()           lista worktrees się zmieniła.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtSignal, pyqtSlot
-from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection
+from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
 
 SERVICE = "org.tide.Daemon"
 AGENTS_PATH = "/Agents"
 AGENTS_IFACE = "org.tide.Daemon.Agents"
+WORKTREES_PATH = "/Worktrees"
+WORKTREES_IFACE = "org.tide.Daemon.Worktrees"
 
 AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
   <method name="Sessions"><arg name="json" type="s" direction="out"/></method>
@@ -18,6 +32,23 @@ AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
     <arg name="id" type="s" direction="in"/>
     <arg name="ok" type="b" direction="out"/>
   </method>
+  <method name="ActivateLongestWaiting"><arg name="ok" type="b" direction="out"/></method>
+  <signal name="Changed"/>
+</interface>"""
+
+WORKTREES_XML = f"""<interface name="{WORKTREES_IFACE}">
+  <method name="List"><arg name="json" type="s" direction="out"/></method>
+  <method name="Remove">
+    <arg name="paths" type="as" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="Refresh"/>
+  <method name="Open">
+    <arg name="path" type="s" direction="in"/>
+    <arg name="app" type="s" direction="in"/>
+    <arg name="ok" type="b" direction="out"/>
+  </method>
+  <method name="Launchers"><arg name="json" type="s" direction="out"/></method>
   <signal name="Changed"/>
 </interface>"""
 
@@ -40,16 +71,68 @@ class AgentsAdaptor(QDBusAbstractAdaptor):
     def ActivateSession(self, session_id: str) -> bool:
         return self.monitor.activate(session_id)
 
+    @pyqtSlot(result=bool)
+    def ActivateLongestWaiting(self) -> bool:
+        return self.monitor.activate_longest_waiting()
 
-def register(monitor, bus: QDBusConnection | None = None) -> QObject:
-    """Rejestruje obiekt /Agents i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
+
+@pyqtClassInfo("D-Bus Interface", WORKTREES_IFACE)
+@pyqtClassInfo("D-Bus Introspection", WORKTREES_XML)
+class WorktreesAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, monitor, bus: QDBusConnection):
+        super().__init__(parent)
+        self.monitor = monitor
+        self.bus = bus
+        monitor.changed.connect(self.Changed)
+
+    @pyqtSlot(result=str)
+    def List(self) -> str:
+        return self.monitor.list_json()
+
+    @pyqtSlot("QStringList", QDBusMessage, result=str)
+    def Remove(self, paths, message: QDBusMessage) -> str:
+        # Usuwanie może trwać (duże katalogi), więc odpowiadamy później, z wątku głównego,
+        # a pętla zdarzeń w tym czasie obsługuje inne wywołania.
+        message.setDelayedReply(True)
+        request = QDBusMessage(message)  # kopia — oryginał żyje tylko do końca tego wywołania
+
+        def reply(text: str) -> None:
+            if not self.bus.send(request.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Remove", flush=True)
+
+        self.monitor.remove(list(paths), reply)
+        return ""
+
+    @pyqtSlot()
+    def Refresh(self) -> None:
+        self.monitor.refresh()
+
+    @pyqtSlot(str, str, result=bool)
+    def Open(self, path: str, app: str) -> bool:
+        return self.monitor.open(path, app)
+
+    @pyqtSlot(result=str)
+    def Launchers(self) -> str:
+        return self.monitor.launchers_json()
+
+
+def register(monitor, worktrees=None, bus: QDBusConnection | None = None) -> QObject:
+    """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
         raise RuntimeError("brak połączenia z magistralą sesji D-Bus")
     holder = QObject()
-    holder.adaptor = AgentsAdaptor(holder, monitor)
-    if not bus.registerObject(AGENTS_PATH, holder):
+    holder.agents = QObject(holder)
+    holder.agents.adaptor = AgentsAdaptor(holder.agents, monitor)
+    if not bus.registerObject(AGENTS_PATH, holder.agents):
         raise RuntimeError(f"nie udało się zarejestrować obiektu {AGENTS_PATH}")
+    if worktrees is not None:
+        holder.worktrees = QObject(holder)
+        holder.worktrees.adaptor = WorktreesAdaptor(holder.worktrees, worktrees, bus)
+        if not bus.registerObject(WORKTREES_PATH, holder.worktrees):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {WORKTREES_PATH}")
     if not bus.registerService(SERVICE):
         raise RuntimeError(f"nazwa {SERVICE} jest już zajęta (działa inna kopia usługi?)")
     return holder

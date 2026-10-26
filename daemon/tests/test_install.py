@@ -36,6 +36,7 @@ class DaemonInstallTest(unittest.TestCase):
         files = files_under(installed)
         self.assertIn("tide-daemon.py", files)
         self.assertIn("tide_daemon/agents/scanner.py", files)
+        self.assertIn("tide_daemon/worktrees/scanner.py", files)
         self.assertFalse([f for f in files if "__pycache__" in f])
 
         with open(os.path.join(self.config, "systemd/user/tide-daemon.service"), encoding="utf-8") as fh:
