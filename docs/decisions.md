@@ -46,3 +46,4 @@ Ustalenia z sesji projektowej (grilling) z 26.10.2026. Każda decyzja ma krótki
 
 - **Logo (#3):** propozycja 5, „trzy fale” (teal, lawenda, brzoskwinia). Generowana z palety w trzech wersjach: pełna na kafelku do dużych rozmiarów, uproszczona bez kafelka na pasek (czytelna od 18 px) i jednokolorowa, przefarbowywana przez Plasmę.
 - **Firefox:** profil lakomytomaszdev zostaje przy własnym niebieskim motywie, bo kolory motywów rozróżniają profile.
+- **Ikony (#7):** za spójną uznajemy tylko ikonę z rodziny motywu bazowego (dla McMojave-circle-dark także McMojave-circle). Ikona znaleziona dopiero w motywie zapasowym (np. Breeze dla Falkona) ma inny kształt, więc audyt traktuje ją jak własną ikonę aplikacji i dostaje kafelek. Własna ikona aplikacji, także z `/usr/share/pixmaps` (ChatGPT), ma pierwszeństwo przed generowanym glifem. Glif powstaje tylko wtedy, gdy ikony nie ma albo jest bitmapą mniejszą niż 48 px (Kasumi), bo po powiększeniu byłaby rozmyta.

@@ -1,0 +1,22 @@
+{
+  "description": "Ręcznie zebrane poprawki ikon. Czyta je tide-icons (audit, sync, build).",
+  "aliases": {
+    "code": "visual-studio-code"
+  },
+  "patterns": [
+    {
+      "description": "Toolbox JetBrains nazywa ikony identyfikatorem instalacji, np. jetbrains-rider-<uuid> albo dotMemory-<uuid>.",
+      "match": "^(?:jetbrains-)?(?P<product>[A-Za-z]+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "candidates": ["{product}", "jetbrains-{product}"]
+    }
+  ],
+  "desktopIcons": {},
+  "startupWMClass": {
+    "dev.zed.Zed.desktop": "dev.zed.Zed"
+  },
+  "genericIconStems": ["icon", "icon.original", "logo", "app", "default"],
+  "glyphs": {
+    "chatgpt": {"glyph": "chat", "color": "mint"},
+    "kasumi": {"glyph": "book", "color": "rose"}
+  }
+}

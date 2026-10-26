@@ -16,6 +16,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | --- | --- |
 | `theme/palette/` | Paleta wariantu w JSON, jedyne źródło kolorów dla generatorów |
 | `scripts/` | Kopie zapasowe i przywracanie wyglądu (`backup.sh`, `restore.sh`, `paths.sh`) |
+| `theme/icons/` | Nakładka ikon „Tide” i polecenie `tide-icons` (audyt, synchronizacja, podgląd) |
 | `tools/` | Narzędzia do ikon: `make_tile.py` (kafelek z oryginalnej ikony), `make_tint.py` (eksperyment z przefarbowaniem, odrzucony) |
 | `docs/` | Decyzje projektowe |
 
@@ -32,3 +33,17 @@ make restore NAME=przed-tide    # powrót do wyglądu sprzed projektu
 ```
 
 `restore` sam robi najpierw kopię bieżącego stanu, więc przywracanie też da się cofnąć. Po przywróceniu warto się wylogować i zalogować ponownie.
+
+## Ikony
+
+Nakładka „Tide” dziedziczy po motywie bazowym (domyślnie McMojave-circle-dark, inny przez `make install ICON_BASE=...`) i dokłada tylko to, czego bazie brakuje: aliasy dla ikon Toolboksa JetBrains i błędnych mapowań (`code`), okrągłe kafelki z oryginalnych ikon aplikacji spoza motywu, glify w kolorach palety dla aplikacji bez ikony i foldery przefarbowane na teal. Aplikacje, które w `Icon=` podają ścieżkę do pliku (snapy, Zed, Docker), dostają lokalną kopię `.desktop` w `~/.local/share/applications` ze znacznikiem `X-Tide-Icons=override`. Ręczne poprawki leżą w `theme/icons/fixes.json`.
+
+```bash
+tide-icons audit        # skąd ikony widocznych aplikacji; kod 1, gdy któraś nie pasuje
+tide-icons audit --json
+tide-icons sync         # po instalacji nowej aplikacji: odświeża nakładkę i kopie .desktop
+tide-icons themes       # porównanie kandydatów na motyw bazowy
+make icons-build        # sama nakładka do podglądu w build/icons/Tide
+```
+
+`make install` instaluje polecenie do `~/.local/bin/tide-icons`. Odinstalowanie usuwa nakładkę, tylko oznaczone kopie `.desktop` (pliki użytkownika, które nadpisaliśmy, wracają z kopii) i dostęp Flatpaka do ikon, jeśli dał go Tide.
