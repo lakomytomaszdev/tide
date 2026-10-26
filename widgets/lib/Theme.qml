@@ -66,6 +66,12 @@ QtObject {
         return Tokens.positive
     }
 
+    // Prognoza limitu z tide-daemon (/Limits): wyczerpanie przed resetem w brzoskwini
+    // (semantic.runout), „starczy do resetu” wyciszone.
+    function forecastColor(forecast) {
+        return forecast && forecast.state === "runs-out" ? Tokens.runout : Tokens.textMuted
+    }
+
     // Wyciszenie bezczynnych i zakończonych elementów.
     function stateOpacity(state) {
         return state === "idle" ? 0.62 : state === "ended" ? 0.45 : 1.0

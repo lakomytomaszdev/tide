@@ -1,6 +1,7 @@
 // Wiersz miernika w kafelku paska bocznego: podpis | cienki pasek | wartość, opcjonalnie
-// wyciszony dopisek pod paskiem („sesja · reset 18:30”). Podpisy mają wspólną szerokość
-// (labelWidth), więc paski kolejnych wierszy zaczynają się w jednym miejscu, jak w TileMeter.
+// wyciszony dopisek pod paskiem („sesja · reset 18:30”) i jego końcówka we własnym kolorze
+// („ · koniec ok. 17:40” w brzoskwini). Podpisy mają wspólną szerokość (labelWidth), więc paski
+// kolejnych wierszy zaczynają się w jednym miejscu, jak w TileMeter.
 import QtQuick
 import QtQuick.Layouts
 
@@ -14,6 +15,8 @@ ColumnLayout {
     property color valueColor: Tokens.textPrimary
     property bool monoValue: true         // procent w Geist Mono, „9,5 GB wolne” zwykłym krojem
     property string note: ""
+    property string noteTail: ""          // dopisane za note, np. „ · starczy do resetu”
+    property color noteTailColor: Tokens.textMuted
     property real labelWidth: 44
     property real valueWidth: 40
     readonly property real barX: labelWidth + row.spacing
@@ -51,14 +54,31 @@ ColumnLayout {
             font.weight: meter.monoValue ? Font.DemiBold : Font.Normal
         }
     }
-    Text {
+    // Dopisek skraca się pierwszy — końcówka (prognoza) zostaje w całości tuż za nim.
+    Item {
+        id: noteLine
         Layout.fillWidth: true
         Layout.leftMargin: meter.barX
-        visible: meter.note !== ""
-        text: meter.note
-        color: Tokens.textMuted
-        font.family: Theme.uiFamily
-        font.pointSize: Tokens.fontSizePt - 2
-        elide: Text.ElideRight
+        visible: meter.note !== "" || meter.noteTail !== ""
+        implicitHeight: Math.max(noteText.implicitHeight, tailText.implicitHeight)
+
+        Text {
+            id: noteText
+            width: Math.max(0, Math.min(implicitWidth, noteLine.width - (tailText.visible ? tailText.implicitWidth : 0)))
+            text: meter.note
+            color: Tokens.textMuted
+            font.family: Theme.uiFamily
+            font.pointSize: Tokens.fontSizePt - 2
+            elide: Text.ElideRight
+        }
+        Text {
+            id: tailText
+            x: noteText.width
+            visible: meter.noteTail !== ""
+            text: meter.noteTail
+            color: meter.noteTailColor
+            font.family: Theme.uiFamily
+            font.pointSize: Tokens.fontSizePt - 2
+        }
     }
 }

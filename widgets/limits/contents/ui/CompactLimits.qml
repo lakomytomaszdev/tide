@@ -1,6 +1,9 @@
 // Kafelek Limitów AI w docku: etykieta „Limity AI”, pod nią „GPT 91%  Claude 86%” z cienkim
 // paskiem pod każdym — ile zostało, niższy z limitów (sesja, tydzień). Kolor paska według
 // poziomu (mięta, masło, róż), brak danych = „—”. Kafelek zabarwia poziom niższego z limitów.
+// Gdy tide-daemon prognozuje wyczerpanie przed resetem, przy etykiecie pojawia się krótko
+// „· Claude do 17:40” w brzoskwini (najwcześniejsze z limitów); „starczy” nic nie dokłada,
+// żeby kafelek nie rósł — pełne prognozy są w popupie i podpowiedzi.
 import QtQuick
 import "tide" as Tide
 
@@ -22,10 +25,26 @@ Tide.DockTile {
     }
     // Teksty mierników, np. „GPT 91%” (dla testów i dostępności).
     readonly property var lines: services.map((s, i) => s.label + " " + Tide.Texts.percent(values[i]))
+    // Najwcześniejsze wyczerpanie przed resetem spośród usług i okien: {label, forecast} albo null.
+    readonly property var runout: {
+        let best = null
+        if (typeof source.forecastFor !== "function") return null
+        for (const s of services) {
+            for (const metric of ["session", "weekly"]) {
+                const f = source.forecastFor(s.key, metric)
+                if (f && f.state === "runs-out" && (best === null || f.exhaustTs < best.forecast.exhaustTs))
+                    best = { label: s.label, forecast: f }
+            }
+        }
+        return best
+    }
 
     label: "Limity AI"
+    detail: runout ? Tide.Texts.limitsRunoutDetail(runout.label, runout.forecast) : ""
+    detailColor: Tide.Tokens.runout
     tint: Tide.Theme.levelColor(lowest)
     Accessible.name: "Limity AI: " + lines.join(", ")
+        + (runout ? ", " + runout.label + " " + runout.forecast.text : "")
 
     Grid {
         columns: tile.vertical ? 1 : tile.services.length

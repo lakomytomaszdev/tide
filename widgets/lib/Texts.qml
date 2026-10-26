@@ -110,6 +110,22 @@ QtObject {
         return typeof value === "number" && isFinite(value) ? Math.round(value) + "%" : "—"
     }
 
+    // Prognoza limitu z tide-daemon (/Limits, docs/tide-daemon.md): „wyczerpie się ok. 17:40”,
+    // „starczy do resetu” albo nic (za mało danych, brak usługi). Krótka wersja do wąskich wierszy:
+    // „koniec ok. 17:40”.
+    function forecastText(forecast) {
+        return forecast && (forecast.state === "runs-out" || forecast.state === "lasts") ? forecast.text || "" : ""
+    }
+
+    function forecastShort(forecast) {
+        return forecast && (forecast.state === "runs-out" || forecast.state === "lasts") ? forecast.short || "" : ""
+    }
+
+    // Dopisek kafelka w docku, tylko gdy limit skończy się przed resetem: „Claude do 17:40”.
+    function limitsRunoutDetail(label, forecast) {
+        return forecast && forecast.state === "runs-out" && forecast.whenText ? label + " do " + forecast.whenText : ""
+    }
+
     // Pierwsza linia podpowiedzi Limitów AI: ile zostało, niższy z limitów sesji i tygodnia.
     function limitsToolTip(available, gpt, claude) {
         if (!available) return "Usługa Limity AI nie działa"

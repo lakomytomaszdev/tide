@@ -9,8 +9,10 @@ danymi. Każdy scenariusz daje osobny PNG: dock-tiles-<nazwa>.png. Do tego popup
 (SessionsView — zwarte wiersze, jak w pasku bocznym) z sesjami we wszystkich stanach:
 agents-popup.png, i cały pasek boczny lewego monitora
 (nagłówek, SidebarAgents, SidebarSystem, SidebarWorktrees, SidebarLimits) w 420×1040 px:
-sidebar-<nazwa>.png. Ten sam kod sprawdza teksty i wymiary w testach
-(widgets/tests/test_dock_tiles.py, widgets/tests/test_sidebar_tiles.py).
+sidebar-<nazwa>.png. Na koniec popup Limitów AI (karty usług z prognozą z tide-daemon):
+limits-popup-<nazwa>.png. Ten sam kod sprawdza teksty i wymiary w testach
+(widgets/tests/test_dock_tiles.py, widgets/tests/test_sidebar_tiles.py,
+widgets/tests/test_limits_forecast.py).
 """
 from __future__ import annotations
 
@@ -36,7 +38,21 @@ TILE_HEIGHT = 48        # tyle zostaje na kafelek w pływającym docku 64 px
 TILE_GAP = 12       # DockTile.dockGap: każdy kafelek ma po 6 px marginesu z obu stron
 MARGIN = 16
 
+def forecast_entry(state, when="", exhaust_in_s=0):
+    """Prognoza jednego limitu w kształcie odpowiedzi tide-daemon (/Limits, Forecast())."""
+    if state == "runs-out":
+        return {"state": state, "text": f"wyczerpie się ok. {when}", "short": f"koniec ok. {when}",
+                "whenText": when, "exhaustTs": NOW_TS + exhaust_in_s}
+    if state == "lasts":
+        return {"state": state, "text": "starczy do resetu", "short": "starczy do resetu", "whenText": "",
+                "exhaustTs": None}
+    return {"state": "unknown", "text": "", "short": "", "whenText": "", "exhaustTs": None}
+
+
+NOW_TS = 1793016000  # 2026-10-26 12:00 UTC
+
 # Przykładowe dane: zwykły dzień i stany puste (nic nie działa, nic do sprzątnięcia, brak usług).
+# „runout”: jak „busy”, ale tide-daemon prognozuje koniec limitu sesji Claude przed resetem.
 SCENARIOS = {
     "busy": {
         "agents": {"working": 2, "waiting": 1, "done": 2, "available": True},
@@ -61,6 +77,15 @@ SCENARIOS = {
         "worktrees": {"clean": 0, "bytes": 0, "active": 0, "available": False},
         "system": {"cpu": None, "memory": None, "disk": None},
         "limits": {"gpt": None, "claude": None, "available": False},
+    },
+    "runout": {
+        "agents": {"working": 2, "waiting": 1, "done": 2, "available": True},
+        "worktrees": {"clean": 15, "bytes": 16 * 1024 ** 3, "active": 5, "available": True},
+        "system": {"cpu": 34, "memory": 61, "disk": 88},
+        "limits": {"gpt": 91, "claude": 24, "available": True,
+                   "forecast": {"chatgpt": {"weekly": forecast_entry("lasts")},
+                                "claude": {"session": forecast_entry("runs-out", "17:40", 5400),
+                                           "weekly": forecast_entry("runs-out", "czwartek 11:00", 250000)}}},
     },
 }
 
@@ -95,6 +120,10 @@ Window {
         property bool available: window.sample.limits.available
         function panelValue(key) {
             return available ? window.sample.limits[key === "chatgpt" ? "gpt" : "claude"] : null
+        }
+        function forecastFor(key, metric) {
+            const all = window.sample.limits.forecast || {}
+            return available && all[key] ? (all[key][metric] || null) : null
         }
     }
 
@@ -132,7 +161,7 @@ Window {
                 agents: { label: agents.label, summary: agents.summary },
                 worktrees: { label: worktrees.label, detail: worktrees.detail, summary: worktrees.summary },
                 system: { lines: system.lines },
-                limits: { lines: limits.lines },
+                limits: { lines: limits.lines, detail: limits.detail },
                 widths: tiles.map(t => Math.round(t.width)),
                 fits: tiles.map(t => t.implicitHeight <= %(tile)d),
                 total: Math.round(row.width)
@@ -155,7 +184,6 @@ Window {
 
 
 # Karty sesji w popupie: każdy stan raz. Czas „teraz” jest zamrożony (NOW_TS), żeby PNG był powtarzalny.
-NOW_TS = 1793016000  # 2026-10-26 12:00 UTC
 # Popup kafelka agentów: 26 × 28 jednostek siatki Kirigami (main.qml) przy 18 px.
 POPUP_WIDTH = 468
 POPUP_HEIGHT = 504
@@ -275,7 +303,9 @@ SIDEBAR_SCENARIOS = {
         "worktrees": {"available": True, "active": 2, "clean": 0, "bytes": 0},
         "limits": {"available": True,
                    "chatgpt": {"session": None, "weekly": 91, "weeklyReset": "poniedziałek 20:00"},
-                   "claude": {"session": 86, "weekly": 64, "sessionReset": "18:30", "weeklyReset": "czwartek 11:51"}},
+                   "claude": {"session": 86, "weekly": 64, "sessionReset": "18:30", "weeklyReset": "czwartek 11:51"},
+                   "forecast": {"chatgpt": {"weekly": forecast_entry("lasts")},
+                                "claude": {"session": forecast_entry("lasts"), "weekly": forecast_entry("lasts")}}},
     },
     "busy": {
         "sessions": [
@@ -296,7 +326,10 @@ SIDEBAR_SCENARIOS = {
         "worktrees": {"available": True, "active": 5, "clean": 15, "bytes": 16 * GiB},
         "limits": {"available": True,
                    "chatgpt": {"session": 22, "weekly": 40, "sessionReset": "17:05"},
-                   "claude": {"session": 9, "weekly": 30, "sessionReset": "16:10"}},
+                   "claude": {"session": 9, "weekly": 30, "sessionReset": "16:10"},
+                   "forecast": {"chatgpt": {"session": forecast_entry("unknown"), "weekly": forecast_entry("lasts")},
+                                "claude": {"session": forecast_entry("runs-out", "15:40", 1800),
+                                           "weekly": forecast_entry("lasts")}}},
     },
     "offline": {
         "sessions": [],
@@ -383,6 +416,10 @@ Window {
         }
         function reset(key, metric) { return available ? (window.lim[key][metric + "Reset"] || null) : null }
         function lastRead(key) { return available ? "16:41" : null }
+        function forecastFor(key, metric) {
+            const all = window.lim.forecast || {}
+            return remaining(key, metric) !== null && all[key] ? (all[key][metric] || null) : null
+        }
         function open(key) {}
     }
 
@@ -426,8 +463,112 @@ Window {
                 system: { notice: system.noticeText, gpu: system.showGpu ? system.gpuText : "",
                           disks: system.diskLines, note: system.diskNote },
                 worktrees: { summary: worktrees.summary, problem: worktrees.showProblem ? worktrees.problemText : "" },
-                limits: { rows: limits.rows.map(r => [r.label, r.valueText, r.note]), notice: limits.notice }
+                limits: { rows: limits.rows.map(r => [r.label, r.valueText, r.note]), notice: limits.notice,
+                          tails: limits.rows.map(r => [r.tail, r.runsOut]) }
             }
+            const png = "%(png)s"
+            if (png === "") {
+                console.warn("RESULT " + JSON.stringify(report))
+                Qt.quit()
+                return
+            }
+            window.contentItem.grabToImage(function (result) {
+                result.saveToFile(png)
+                console.warn("RESULT " + JSON.stringify(report))
+                Qt.quit()
+            })
+        }
+    }
+}
+"""
+
+
+# Popup Limitów AI: karty usług (ServiceCard) z prognozą z tide-daemon pod resetem każdego limitu.
+LIMITS_POPUP_WIDTH = 380  # ok. 21 gridUnit popupu w Plasmie minus marginesy
+LIMITS_POPUP_SCENARIOS = {
+    "forecast": {
+        "available": True,
+        "chatgpt": {"state": "ready", "session": None, "weekly": 91, "weeklyReset": "poniedziałek 20:00"},
+        "claude": {"state": "ready", "session": 24, "weekly": 58, "sessionReset": "18:30",
+                   "weeklyReset": "czwartek 11:00"},
+        "forecast": {"chatgpt": {"weekly": forecast_entry("lasts")},
+                     "claude": {"session": forecast_entry("runs-out", "17:40", 5400),
+                                "weekly": forecast_entry("lasts")}},
+    },
+    "nodata": {
+        "available": True,
+        "chatgpt": {"state": "ready", "session": None, "weekly": 91, "weeklyReset": "poniedziałek 20:00"},
+        "claude": {"state": "ready", "session": 86, "weekly": 64, "sessionReset": "18:30",
+                   "weeklyReset": "czwartek 11:51"},
+        "forecast": None,
+    },
+}
+
+LIMITS_POPUP_HARNESS = """import QtQuick
+import QtQuick.Window
+import "limits/contents/ui" as Limits
+import "limits/contents/ui/tide" as Tide
+
+Window {
+    id: window
+    readonly property var sample: %(data)s
+    width: %(width)d + %(margin)d * 2
+    height: column.implicitHeight + %(margin)d * 2
+    visible: true
+    color: Tide.Tokens.backgroundWindow
+
+    Rectangle { anchors.fill: parent; color: Tide.Tokens.backgroundWindow }
+
+    QtObject {
+        id: stub
+        readonly property bool available: window.sample.available
+        function service(key) { return { state: window.sample[key].state } }
+        function remaining(key, metric) {
+            const value = window.sample[key][metric]
+            return typeof value === "number" ? value : null
+        }
+        function reset(key, metric) { return window.sample[key][metric + "Reset"] || null }
+        function lastRead(key) { return "16:41" }
+        function forecastFor(key, metric) {
+            const all = window.sample.forecast
+            return all && all[key] && remaining(key, metric) !== null ? (all[key][metric] || null) : null
+        }
+        function open(key) {}
+    }
+
+    Column {
+        id: column
+        x: %(margin)d
+        y: %(margin)d
+        width: %(width)d
+        spacing: 12
+        Limits.ServiceCard {
+            id: gpt; width: parent.width; source: stub; serviceKey: "chatgpt"; title: "ChatGPT"; hideEmptySession: true
+        }
+        Limits.ServiceCard {
+            id: claude; width: parent.width; source: stub; serviceKey: "claude"; title: "Claude"; sessionLabel: "Sesja (5 h)"
+        }
+    }
+
+    function rowsOf(card) {
+        const out = []
+        function walk(item) {
+            for (let i = 0; i < item.children.length; i++) {
+                const child = item.children[i]
+                if (child.forecastText !== undefined && child.label !== undefined)
+                    out.push({ label: child.label, visible: child.visible, forecast: child.forecastText,
+                               color: String(Tide.Theme.forecastColor(child.forecast)) })
+                walk(child)
+            }
+        }
+        walk(card)
+        return out.filter(r => r.visible)
+    }
+
+    Timer {
+        interval: 400; running: true
+        onTriggered: {
+            const report = { chatgpt: rowsOf(gpt), claude: rowsOf(claude), height: Math.round(column.implicitHeight) }
             const png = "%(png)s"
             if (png === "") {
                 console.warn("RESULT " + JSON.stringify(report))
@@ -509,6 +650,13 @@ def render_sidebar(scenario: dict, png: str | None = None, palette_path: str = D
     return _run(qml, palette_path, "paska bocznego")
 
 
+def render_limits_popup(scenario: dict, png: str | None = None, palette_path: str = DEFAULT_PALETTE) -> dict:
+    """Rysuje karty usług z popupu Limitów AI; zwraca widoczne limity z tekstem i kolorem prognozy."""
+    qml = LIMITS_POPUP_HARNESS % {"data": json.dumps(scenario, ensure_ascii=False), "width": LIMITS_POPUP_WIDTH,
+                           "margin": MARGIN, "png": os.path.abspath(png) if png else ""}
+    return _run(qml, palette_path, "popupu Limitów AI")
+
+
 def main(argv: list[str]) -> int:
     out_dir = argv[0] if argv else os.path.join(ROOT, "build", "preview")
     os.makedirs(out_dir, exist_ok=True)
@@ -524,6 +672,10 @@ def main(argv: list[str]) -> int:
         report = render_sidebar(scenario, png)
         print(f"{os.path.abspath(png)}: pasek boczny {report['heights']} px, razem {report['total']}"
               f" z {report['height']} px")
+    for name, scenario in LIMITS_POPUP_SCENARIOS.items():
+        png = os.path.join(out_dir, f"limits-popup-{name}.png")
+        report = render_limits_popup(scenario, png)
+        print(f"{os.path.abspath(png)}: popup Limitów AI, {report['height']} px")
     return 0
 
 
