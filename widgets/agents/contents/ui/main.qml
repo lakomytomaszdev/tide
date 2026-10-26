@@ -32,6 +32,14 @@ PlasmoidItem {
         })
     }
 
+    // Okno „Tide Sesje” (tablica koordynatora) otwiera usługa (/Coordination ShowWindow).
+    function showSessions(coordinatorId) {
+        source.callOn("/Coordination", "org.tide.Daemon.Coordination", "ShowWindow", [coordinatorId || ""],
+                      function (ok) {
+            if (ok === true) root.expanded = false
+        })
+    }
+
     function activate(sessionId) {
         source.call("ActivateSession", [sessionId], function (ok) {
             if (ok) root.expanded = false
@@ -164,6 +172,7 @@ PlasmoidItem {
                 onActivateRequested: id => root.activate(id)
                 onShowEndedToggled: root.showEnded = !root.showEnded
                 onNewTaskRequested: root.newTask()
+                onSessionsRequested: id => root.showSessions(id)
             }
         }
 
@@ -179,6 +188,7 @@ PlasmoidItem {
                 onShowEndedToggled: root.showEnded = !root.showEnded
                 onMoreRequested: morePopup.visible = !morePopup.visible
                 onNewTaskRequested: root.newTask()
+                onSessionsRequested: id => root.showSessions(id)
 
                 // Pełna lista sesji w okienku obok paska (pasek jest przy lewej krawędzi,
                 // więc okienko otwiera się na prawo od „+N więcej”).
@@ -204,6 +214,10 @@ PlasmoidItem {
                         onNewTaskRequested: {
                             morePopup.visible = false
                             root.newTask()
+                        }
+                        onSessionsRequested: id => {
+                            morePopup.visible = false
+                            root.showSessions(id)
                         }
                     }
                 }

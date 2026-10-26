@@ -14,6 +14,7 @@ ColumnLayout {
     property var rows: []
     property bool showDetail: false
     signal activateRequested(string sessionId)
+    signal progressRequested(string sessionId)   // postęp koordynatora → okno Tide Sesje
 
     readonly property bool anyButton: rows.some(r => r.button)
     // Kolumna przycisku jest zarezerwowana we wszystkich wierszach, gdy choć jeden czeka — wtedy
@@ -80,8 +81,9 @@ ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 6
                         Text {
-                            Layout.fillWidth: !row.modelData.fresh
-                            Layout.maximumWidth: row.modelData.fresh ? implicitWidth : Number.POSITIVE_INFINITY
+                            Layout.fillWidth: !row.modelData.fresh && (row.modelData.progress || "") === ""
+                            Layout.maximumWidth: row.modelData.fresh || (row.modelData.progress || "") !== ""
+                                                 ? implicitWidth : Number.POSITIVE_INFINITY
                             text: row.modelData.project
                             color: Tide.Tokens.textPrimary
                             font.family: Tide.Theme.uiFamily
@@ -93,8 +95,17 @@ ColumnLayout {
                         Tide.NewTag {
                             visible: row.modelData.fresh === true
                         }
+                        // Postęp koordynatora („TOM-20 · 8/13”) — link do okna Tide Sesje.
+                        Tide.TextButton {
+                            visible: (row.modelData.progress || "") !== ""
+                            text: row.modelData.progress || ""
+                            accent: Tide.Tokens.sky
+                            pointSize: Tide.Tokens.fontSizePt - 2
+                            Accessible.name: "Tickety koordynatora " + row.modelData.project + ": " + text
+                            onClicked: list.progressRequested(row.modelData.id)
+                        }
                         Item {
-                            visible: row.modelData.fresh === true
+                            visible: row.modelData.fresh === true || (row.modelData.progress || "") !== ""
                             Layout.fillWidth: true
                         }
                     }

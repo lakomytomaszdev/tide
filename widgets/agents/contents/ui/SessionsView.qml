@@ -19,6 +19,7 @@ ColumnLayout {
     signal activateRequested(string sessionId)
     signal showEndedToggled()
     signal newTaskRequested()
+    signal sessionsRequested(string coordinatorId)   // okno Tide Sesje (pusty id — bez wyboru)
 
     // Wiersze i liczniki — wspólne z kafelkiem paska bocznego (AgentRows).
     readonly property AgentRows agentRows: AgentRows {
@@ -81,8 +82,15 @@ ColumnLayout {
             textColor: Kirigami.Theme.textColor
         }
         Tide.TextButton {
-            objectName: "newTaskButton"
+            objectName: "sessionsButton"
             Layout.leftMargin: Kirigami.Units.smallSpacing
+            variant: "outline"
+            text: "Sesje"
+            Accessible.name: "Tide Sesje: koordynatorzy, tickety i podagenci"
+            onClicked: view.sessionsRequested("")
+        }
+        Tide.TextButton {
+            objectName: "newTaskButton"
             variant: "outline"
             text: "＋ Nowe zadanie"
             Accessible.name: "Nowe zadanie dla agenta"
@@ -110,6 +118,7 @@ ColumnLayout {
                 rows: view.rows
                 showDetail: true
                 onActivateRequested: id => view.activateRequested(id)
+                onProgressRequested: id => view.sessionsRequested(id)
             }
         }
     }

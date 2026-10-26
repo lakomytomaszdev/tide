@@ -211,7 +211,10 @@ SESSIONS = [
     {"id": "codex:f", "tool": "codex", "project": "agent-team", "branch": "feat/reports", "worktree": "",
      "title": "", "state": "waiting", "reason": "question", "sinceTs": NOW_TS - 60, "lastActivityTs": NOW_TS - 60,
      "lastAction": "request_user_input", "canActivate": True, "terminal": "Codex", "activation": "deeplink",
-     "subagents": 1},
+     "subagents": 1,
+     # Koordynator (zleca pracę podagentom): postęp ticketów z /Coordination, link do okna Tide Sesje.
+     "coordination": {"label": "LA-40", "done": 9, "total": 12, "text": "LA-40 · 9/12", "working": 2,
+                      "waiting": 1, "running": 1}},
     {"id": "claude:g", "tool": "claude", "project": "dev-dashboard", "branch": "main", "worktree": "", "title": "",
      "state": "ended", "reason": "", "sinceTs": NOW_TS - 7200, "lastActivityTs": NOW_TS - 7200,
      "lastAction": "", "canActivate": False, "terminal": ""},
