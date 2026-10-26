@@ -35,7 +35,7 @@ Mist to miękki, ciemny grafit z tealem jako podpisem i pastelami do statusów, 
 | --- | --- | --- |
 | `accent` = `pastel.teal` | `#6fd6c6` | Akcent: zaznaczenie, fokus, kropka uruchomionej aplikacji. Stan „agent pracuje” |
 | `pastel.lavender` | `#b9a7f5` | Drugi kolor marki: logo, worktrees, RAM |
-| `pastel.peach` | `#f5b99a` | „Czeka na ciebie”, dysk |
+| `pastel.peach` | `#f5b99a` | „Czeka na ciebie”, dysk. Limit AI skończy się przed resetem (`semantic.runout`) |
 | `pastel.butter` | `#ecd58c` | Uwaga: zmiany, niescalone commity, 16–40% limitu. Przycisk minimalizacji |
 | `pastel.rose` | `#f2a0b3` | Błąd, mało limitu (≤15%), usuwanie. Przycisk zamknięcia |
 | `pastel.mint` | `#9fe3b8` | Dobrze: scalony, dużo limitu (>40%). Przycisk maksymalizacji |

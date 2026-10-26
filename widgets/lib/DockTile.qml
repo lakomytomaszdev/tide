@@ -9,6 +9,7 @@ Rectangle {
 
     property string label: ""
     property string detail: ""            // dopisek przy etykiecie, np. „5 w pracy”
+    property color detailColor: Tokens.textMuted
     property bool showLabel: label !== ""
     property color tint: Tokens.textPrimary
     property real tintStrength: 0.11
@@ -53,7 +54,7 @@ Rectangle {
             Text {
                 visible: tile.detail !== ""
                 text: " · " + tile.detail
-                color: Tokens.textMuted
+                color: tile.detailColor
                 font.family: Theme.uiFamily
                 font.pointSize: tile.labelPointSize
             }

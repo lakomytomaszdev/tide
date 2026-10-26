@@ -1,6 +1,8 @@
 // Widżet Limity AI: kafelek z pozostałym procentem ChatGPT i Claude (CompactLimits), popup ze szczegółami.
 // Dane: usługa QuotaApp (lokalne API, opis w LimitsSource.qml). Port i token są w
 // ../code/Config.js, generowanym przy instalacji z ~/.config/limity-ai-widget/config.json.
+// Prognoza wyczerpania pochodzi z tide-daemon (org.tide.Daemon /Limits, Forecast() i sygnał
+// Changed) — bez usługi widżet działa jak dotąd, tylko bez prognoz.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -23,9 +25,13 @@ PlasmoidItem {
         return value === null ? "—" : value + "%"
     }
 
+    function tooltipPart(service, metric, word) {
+        const forecast = Tide.Texts.forecastText(limitsSource.forecastFor(service.key, metric))
+        return word + " " + percent(limitsSource.remaining(service.key, metric)) + (forecast ? " (" + forecast + ")" : "")
+    }
+
     function tooltipLine(service) {
-        return service.name + ": sesja " + percent(limitsSource.remaining(service.key, "session"))
-            + " · tydzień " + percent(limitsSource.remaining(service.key, "weekly"))
+        return service.name + ": " + tooltipPart(service, "session", "sesja") + " · " + tooltipPart(service, "weekly", "tydzień")
     }
 
     Plasmoid.title: "Limity AI"
@@ -45,6 +51,17 @@ PlasmoidItem {
         port: Config.port
         token: Config.token
         pollInterval: 10000
+        forecast: forecastSource.available ? forecastSource.result : null
+    }
+
+    // Prognoza z historii odczytów (tide-daemon). Usługa sama daje znać sygnałem Changed,
+    // więc rzadkie odpytywanie jest tylko zabezpieczeniem.
+    Tide.DaemonSource {
+        id: forecastSource
+        path: "/Limits"
+        iface: "org.tide.Daemon.Limits"
+        method: "Forecast"
+        pollInterval: 120000
     }
 
     compactRepresentation: MouseArea {

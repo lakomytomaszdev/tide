@@ -1,14 +1,15 @@
 """Punkt wejścia tide-daemon.
 
-Użycie: python3 tide-daemon.py [--print | --print-worktrees] [--claude-dir DIR] [--codex-dir DIR]
-                               [--workspace DIR] [--worktree-depth N] [--no-processes]
+Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [--claude-dir DIR]
+                               [--codex-dir DIR] [--workspace DIR] [--worktree-depth N] [--no-processes]
                                [--no-notifications] [--no-krunner] [--no-tab-marks] [--now CZAS]
-                               [--idle-after SEKUNDY | --no-idle]
+                               [--idle-after SEKUNDY | --no-idle] [--limits-poll SEKUNDY | --no-limits]
                                [--report [--report-days N]] [--report-dir DIR] [--report-at GG:MM]
                                [--no-report] [--report-delay SEKUNDY]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
+--print-limits     prognoza limitów z historii i jednego GET /status jako JSON (niczego nie zapisuje),
 --workspace        katalog projektów z repozytoriami (domyślnie $TIDE_WORKSPACE albo ~/DevWorkspace),
 --worktree-depth   jak głęboko pod katalogiem projektów szukać repozytoriów (domyślnie 3),
 --no-processes     nie czyta /proc (stan bez wiedzy o procesach, bez przechodzenia do okien),
@@ -18,6 +19,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees] [--claude-dir DIR]
 --now              zamrożony zegar (ISO 8601) — dla testów i diagnostyki,
 --idle-after       próg bezczynności w sekundach dla /Idle (domyślnie wallpaper.dozeAfterS z palety),
 --no-idle          bez obiektu /Idle (bezczynność z kompozytora Wayland),
+--limits-poll      co ile sekund pytać QuotaApp o /status (domyślnie limits.pollS z palety),
+--no-limits        bez obiektu /Limits (historia, prognoza i powiadomienia Limitów AI),
 --report           jednorazowy raport poranny za ostatnie --report-days dób (domyślnie 1) do --report-dir;
                    bez D-Bus, bez powiadomienia i bez pliku stanu — wypisuje ścieżkę index.html,
 --report-dir       katalog raportów (domyślnie $XDG_DATA_HOME/tide/reports),
@@ -62,6 +65,9 @@ def parse_args(argv):
     parser.add_argument("--worktree-depth", type=int, default=worktrees.MAX_DEPTH)
     parser.add_argument("--idle-after", type=float, help="próg bezczynności w sekundach")
     parser.add_argument("--no-idle", action="store_true")
+    parser.add_argument("--limits-poll", type=float, help="odstęp odczytów /status w sekundach")
+    parser.add_argument("--no-limits", action="store_true")
+    parser.add_argument("--print-limits", action="store_true")
     parser.add_argument("--print", dest="print_once", action="store_true")
     parser.add_argument("--print-worktrees", action="store_true")
     parser.add_argument("--report", action="store_true")
@@ -112,6 +118,10 @@ def main(argv=None) -> int:
                          ensure_ascii=False, indent=2))
         return 0
 
+    if args.print_limits:
+        print(json.dumps(limits_once(clock), ensure_ascii=False, indent=2))
+        return 0
+
     if args.print_once:
         from . import processes
         now = clock()
@@ -141,8 +151,10 @@ def main(argv=None) -> int:
     krunner = None if args.no_krunner else start_krunner(app, args, clock, monitor, trees)  # noqa: F841
     idle = None if args.no_idle else start_idle(app, args)
     report = start_report(app, args, clock, report_settings, monitor, trees)
+    limits = None if args.no_limits else start_limits(app, args, clock)
     try:
-        holder = dbus_service.register(monitor, trees, idle=idle, reports=report)  # noqa: F841 — musi żyć do końca
+        holder = dbus_service.register(monitor, trees, idle=idle, reports=report,  # noqa: F841 — musi żyć do końca
+                                       limits=limits)
     except RuntimeError as exc:
         print(f"tide-daemon: {exc}", file=sys.stderr, flush=True)
         return 1
@@ -163,6 +175,12 @@ def main(argv=None) -> int:
         notifier = Notifier(monitor.activate)
         notifier.update(monitor.sessions)  # stan wyjściowy: czekające już wcześniej nie dostają powiadomień
         monitor.changed.connect(lambda: notifier.update(monitor.sessions))
+        if limits is not None:
+            from .notifications import LimitsNotifier
+            limits_notifier = LimitsNotifier(parent=app)
+            limits.alert.connect(limits_notifier.send)
+    if limits is not None:
+        limits.start()  # pierwszy odczyt /status po rejestracji i po podłączeniu powiadomień
 
     marker = None
     if not args.no_tab_marks and not args.no_processes:
@@ -185,6 +203,8 @@ def main(argv=None) -> int:
     report.stop()
     if idle is not None:
         idle.stop()
+    if limits is not None:
+        limits.stop()
     if marker is not None:
         marker.clear()  # karty wracają do swoich tytułów i kolorów, gdy usługa się kończy
     return code
@@ -247,6 +267,33 @@ def start_idle(app, args):
     from .tabmarks import palette_candidates
     seconds = args.idle_after if args.idle_after and args.idle_after > 0 else doze_after_s(palette_candidates())
     return IdleMonitor(int(round(seconds * 1000)), parent=app)
+
+
+def start_limits(app, args, clock):
+    """Historia i prognoza Limitów AI (limits/, limits_monitor.py); progi z palety (sekcja „limits”)."""
+    from .limits import config as limits_config
+    from .limits.tracker import LimitsTracker
+    from .limits_monitor import LimitsMonitor
+    from .tabmarks import palette_candidates
+    cfg = limits_config.load(palette_candidates())
+    poll_ms = int(round(args.limits_poll * 1000)) if args.limits_poll and args.limits_poll > 0 else None
+    return LimitsMonitor(LimitsTracker(cfg, clock=clock), poll_ms=poll_ms, parent=app)
+
+
+def limits_once(clock) -> dict:
+    """--print-limits: historia z dysku plus jeden GET /status, tylko w pamięci (bez zapisu i powiadomień)."""
+    from .limits import backend, readings
+    from .limits import config as limits_config
+    from .limits.tracker import LimitsTracker
+    from .tabmarks import palette_candidates
+    tracker = LimitsTracker(limits_config.load(palette_candidates()), clock=clock)
+    try:
+        for reading in readings.from_status(backend.fetch_status()):
+            tracker.history.add(reading)
+        tracker.available = True
+    except backend.BackendError as exc:
+        tracker.failed(str(exc))
+    return tracker.snapshot()
 
 
 def start_krunner(app, args, clock, monitor, trees):

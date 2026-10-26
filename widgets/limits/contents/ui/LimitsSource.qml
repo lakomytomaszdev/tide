@@ -1,6 +1,8 @@
 // Źródło danych z usługi Limity AI (QuotaApp): lokalne API na 127.0.0.1:<port>
 // z nagłówkiem X-Limity-Token. GET /status co pollInterval (częściej, gdy usługa właśnie
 // czyta strony), POST /refresh i POST /open?service=chatgpt|claude|all.
+// Prognozę (forecast) liczy tide-daemon z historii odczytów — main.qml podaje ją tutaj
+// z obiektu /Limits (Forecast()), a widoki biorą ją przez forecastFor().
 import QtQuick
 
 Item {
@@ -12,6 +14,7 @@ Item {
     property int busyPollInterval: 2000
 
     property var snapshot: null          // ostatnia poprawna odpowiedź /status
+    property var forecast: null          // JSON z org.tide.Daemon.Limits.Forecast() albo null
     property bool available: false       // usługa odpowiedziała 200 przy ostatnim zapytaniu
     property bool checked: false         // było już co najmniej jedno zapytanie
     readonly property bool configured: token !== "" && port > 0
@@ -83,6 +86,14 @@ Item {
     function panelValue(key) {
         const values = [remaining(key, "session"), remaining(key, "weekly")].filter(v => v !== null)
         return values.length ? Math.min.apply(null, values) : null
+    }
+
+    // Prognoza jednego limitu ({state, text, short, whenText, …}) albo null, gdy usługa
+    // tide-daemon jej nie zna. Bez danych o limicie prognoza też znika — nie ma czego prognozować.
+    function forecastFor(key, metric) {
+        if (remaining(key, metric) === null) return null
+        const services = forecast && forecast.services
+        return (services && services[key] && services[key][metric]) || null
     }
 
     function reset(key, metric) {

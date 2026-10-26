@@ -38,6 +38,10 @@ Obiekt /Reports, interfejs org.tide.Daemon.Reports (raport poranny):
                              albo pusty napis przy błędzie (odpowiedź po zakończeniu),
 - Latest() -> s              ścieżka index.html najnowszego raportu albo pusty napis,
 - sygnał Ready(s path)       powstał nowy raport.
+
+Obiekt /Limits, interfejs org.tide.Daemon.Limits (prognoza Limitów AI z historii odczytów):
+- Forecast() -> s            JSON {available, error, services: {usługa: {session|weekly: prognoza}}},
+- sygnał Changed()           prognoza albo dostępność usługi Limity AI się zmieniła.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
@@ -51,6 +55,8 @@ IDLE_PATH = "/Idle"
 IDLE_IFACE = "org.tide.Daemon.Idle"
 REPORTS_PATH = "/Reports"
 REPORTS_IFACE = "org.tide.Daemon.Reports"
+LIMITS_PATH = "/Limits"
+LIMITS_IFACE = "org.tide.Daemon.Limits"
 
 AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
   <method name="Sessions"><arg name="json" type="s" direction="out"/></method>
@@ -102,6 +108,11 @@ IDLE_XML = f"""<interface name="{IDLE_IFACE}">
   <method name="IsIdle"><arg name="idle" type="b" direction="out"/></method>
   <method name="State"><arg name="json" type="s" direction="out"/></method>
   <signal name="IdleChanged"><arg name="idle" type="b"/></signal>
+</interface>"""
+
+LIMITS_XML = f"""<interface name="{LIMITS_IFACE}">
+  <method name="Forecast"><arg name="json" type="s" direction="out"/></method>
+  <signal name="Changed"/>
 </interface>"""
 
 
@@ -246,7 +257,23 @@ class ReportsAdaptor(QDBusAbstractAdaptor):
         return self.monitor.latest()
 
 
-def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None) -> QObject:
+@pyqtClassInfo("D-Bus Interface", LIMITS_IFACE)
+@pyqtClassInfo("D-Bus Introspection", LIMITS_XML)
+class LimitsAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, monitor):
+        super().__init__(parent)
+        self.monitor = monitor
+        monitor.changed.connect(self.Changed)
+
+    @pyqtSlot(result=str)
+    def Forecast(self) -> str:
+        return self.monitor.forecast_json()
+
+
+def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
+             limits=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -271,6 +298,11 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.reports.adaptor = ReportsAdaptor(holder.reports, reports, bus)
         if not bus.registerObject(REPORTS_PATH, holder.reports):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {REPORTS_PATH}")
+    if limits is not None:
+        holder.limits = QObject(holder)
+        holder.limits.adaptor = LimitsAdaptor(holder.limits, limits)
+        if not bus.registerObject(LIMITS_PATH, holder.limits):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {LIMITS_PATH}")
     if not bus.registerService(SERVICE):
         raise RuntimeError(f"nazwa {SERVICE} jest już zajęta (działa inna kopia usługi?)")
     return holder

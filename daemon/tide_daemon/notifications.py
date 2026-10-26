@@ -7,6 +7,10 @@ przez org.freedesktop.Notifications.
 - ActionInvoked („jump” albo „default”) → przejście do okna sesji (monitor.activate).
 
 Wywołania są asynchroniczne: serwer powiadomień, który nie odpowiada, nie blokuje usługi.
+
+LimitsNotifier (na końcu) wysyła powiadomienia Limitów AI (progi zużycia, wyczerpanie przed
+resetem — decyduje limits/alerts.py) w tym samym stylu: aplikacja „Tide”, bez wskazówek, bez
+przycisku. Nowe powiadomienie tego samego okna limitu zastępuje poprzednie (replaces_id).
 """
 import html
 
@@ -22,6 +26,7 @@ APP_NAME = "Tide"
 ICON = "utilities-terminal"
 JUMP = "jump"
 ACTIONS = ("default", "Przejdź", JUMP, "Przejdź")
+LIMITS_ICON = "view-statistics"  # ta sama ikona co widżet Limity AI
 
 
 class Notifier(QObject):
@@ -166,3 +171,37 @@ class ReportNotifier(QObject):
         self.path_of.pop(int(notice), None)
         if int(notice) == self.notice:
             self.notice = 0
+
+
+class LimitsNotifier(QObject):
+    """Powiadomienia Limitów AI: send({id, summary, body}) — tekst i decyzję daje limits/alerts.py."""
+
+    def __init__(self, bus: QDBusConnection | None = None, parent=None):
+        super().__init__(parent)
+        self.bus = bus or QDBusConnection.sessionBus()
+        self.notice_of: dict[str, int] = {}   # okno limitu („claude/session”) → id powiadomienia
+        self._watchers: set[QDBusPendingCallWatcher] = set()
+
+    def send(self, alert: dict) -> None:
+        key = alert.get("id", "")
+        msg = QDBusMessage.createMethodCall(SERVICE, PATH, IFACE, "Notify")
+        msg.setArguments([
+            APP_NAME,
+            QDBusArgument(self.notice_of.get(key, 0), QMetaType.Type.UInt.value),
+            LIMITS_ICON,
+            alert.get("summary", ""),
+            html.escape(alert.get("body", ""), quote=False),
+            QDBusArgument([], QMetaType.Type.QStringList.value),
+            {},
+            QDBusArgument(-1, QMetaType.Type.Int.value),
+        ])
+        watcher = QDBusPendingCallWatcher(self.bus.asyncCall(msg), self)
+        self._watchers.add(watcher)
+        watcher.finished.connect(lambda w, key=key: self._notified(w, key))
+
+    def _notified(self, watcher: QDBusPendingCallWatcher, key: str) -> None:
+        self._watchers.discard(watcher)
+        reply = QDBusPendingReply(watcher).reply()
+        watcher.deleteLater()
+        if reply.type() == QDBusMessage.MessageType.ReplyMessage and reply.arguments():
+            self.notice_of[key] = int(reply.arguments()[0])

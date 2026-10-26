@@ -1,6 +1,6 @@
 # tide-daemon
 
-Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)). Piąty to raport poranny: raz na dobę strona HTML na każdy projekt z ruchem ([Raport poranny](#raport-poranny)).
+Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)). Piąty to raport poranny: raz na dobę strona HTML na każdy projekt z ruchem ([Raport poranny](#raport-poranny)). Szósty to historia Limitów AI, prognoza ich wyczerpania i powiadomienia o progach ([Limity AI](#limity-ai)).
 
 ## Kontrakt D-Bus
 
@@ -333,6 +333,79 @@ xdg-open "$(qdbus6 org.tide.Daemon /Reports org.tide.Daemon.Reports.Latest)"
 
 **KRunner.** „raport” (albo „rap…”, „raport poranny”) pokazuje najnowszy raport; Enter otwiera go w przeglądarce.
 
+## Limity AI
+
+Widżet Limity AI czyta pozostałe limity prosto z usługi QuotaApp (decyzja 21). Usługa Tide dokłada do tego pamięć: zapisuje odczyty, z nich liczy tempo i prognozę wyczerpania, a przy progach wysyła powiadomienia. Widżet pokazuje prognozę, gdy usługa działa; bez niej wszystko zostaje jak dotąd.
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/Limits` |
+| Interfejs | `org.tide.Daemon.Limits` |
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `Forecast()` | `→ s` | JSON `{available, error, services}` (opis niżej) |
+| `Changed` | sygnał bez argumentów | prognoza albo dostępność QuotaApp się zmieniła — pobierz `Forecast()` ponownie |
+
+`available` mówi, czy ostatnie `GET /status` się udało, `error` to krótki powód po polsku (bez tokenu), a `services` to `{"claude": {"session": {…}, "weekly": {…}}, "chatgpt": {"weekly": {…}}}` — tylko okna, które mają historię. Prognoza jednego okna:
+
+| Pole | Typ | Opis |
+| --- | --- | --- |
+| `state` | string | `runs-out` (wyczerpie się przed resetem), `lasts` (starczy do resetu), `exhausted` (100%), `unknown` (brak prognozy) |
+| `reason` | string | dla `unknown`: `noData`, `tooLittleData`, `noReset`, `resetPassed`, `stale` |
+| `text` | string | „wyczerpie się ok. 17:40”, „starczy do resetu” albo pusty |
+| `short` | string | „koniec ok. 17:40”, „starczy do resetu” albo pusty — do wąskich wierszy |
+| `whenText` | string | sama chwila wyczerpania: „17:40”, „jutro 09:30”, „czwartek 11:00” |
+| `used`, `remaining` | int | zużyty i pozostały procent z ostatniego odczytu |
+| `readTs`, `resetTs`, `exhaustTs`, `windowStartTs` | int albo null | ostatni odczyt, reset okna, prognozowane wyczerpanie, pierwszy odczyt okna (epoch) |
+| `marginS` | int albo null | ile sekund przed resetem limit się skończy (tylko `runs-out`) |
+| `ratePerHour` | float albo null | tempo w punktach procentowych na godzinę |
+| `points` | int | ile odczytów weszło do prognozy |
+
+**Odczyty.** Co `limits.pollS` (120 s) usługa robi `GET /status` w lokalnym API QuotaApp. To tylko odczyt pamięci tamtej usługi — strony czyta ona sama co 5 min (i wcale przy pełnym ekranie), więc nie dokładamy żadnego wczytania strony ani `POST /refresh`. Nowy odczyt poznajemy po zmianie `lastRead`, a ten sam odczyt nie trafia do historii drugi raz. Port i token są w `~/.config/limity-ai-widget/config.json` (albo `$LIMITY_CONFIG`) — usługa czyta je przy każdym zapytaniu, tylko w pamięci; token nie trafia do dziennika, historii, stanu ani odpowiedzi D-Bus. Zapytanie idzie w wątku roboczym z limitem 5 s, więc wiszące API nie blokuje D-Bus.
+
+**Historia.** `$XDG_STATE_HOME/tide/limits-history.jsonl`: jedna linia na odczyt jednego okna, same liczby — `{"t":1793016060,"s":"claude","w":"session","u":62,"r":1793030400}` (czas odczytu, usługa, okno, zużyty procent, chwila resetu). Etykietę resetu z QuotaApp („poniedziałek 18:30”, „~czwartek 11:51” — liczoną od chwili odczytu, w strefie Europe/Warsaw jak w tamtej usłudze) zamieniamy na najbliższą taką chwilę od odczytu. Plik obejmuje `limits.historyDays` (14) dni: starsze linie wypadają przy starcie i najwyżej raz na godzinę (przepisanie przez plik tymczasowy). Doba to ok. 1150 linii, 14 dni — ok. 1 MB.
+
+**Okna.** Granic okien nie zapisujemy — wynikają z odczytów, więc po restarcie są takie same. Nowe okno zaczyna się, gdy: minął reset poprzedniego odczytu, reset przesunął się dalej niż o `resetJumpMin` (sesja 30 min, tydzień 6 h — „~” drga o minutę), zużycie spadło o więcej niż 3 punkty albo przerwa między odczytami jest dłuższa niż całe okno. Prognoza i powiadomienia biorą wyłącznie bieżące okno.
+
+**Prognoza.** Tempo to nachylenie prostej (najmniejsze kwadraty) przez odczyty bieżącego okna z ostatnich `lookbackMin` — sesja 90 min, tydzień doba. Oś czasu to „czas pracy”: idąc od najnowszego odczytu wstecz, płaski odcinek (zużycie się nie zmienia) liczy się najwyżej jako `idleGapMin`:
+
+- **Sesja (15 min).** Przerwa na obiad nie rozcieńcza tempa: po 80 min przerwy prognoza mówi „przy twoim tempie pracy”, a nie „średnio z ostatnich 90 min”. Krótkie plateau między kolejnymi procentami (strona podaje całe procenty) liczy się w całości, dopóki tempo przekracza ok. 4 punkty/h — wolniejsze i tak nie wyczerpie 5-godzinnego okna.
+- **Tydzień (0 = bez skracania).** Noce i przerwy to rytm tygodnia: tempo z ostatniej doby razem z nocą przewiduje kolejne dni lepiej niż tempo z samych godzin pracy, które zakładałoby pracę bez przerwy.
+
+Od ostatniego odczytu: wyczerpanie = czas odczytu + (100 − zużycie) / tempo, zaokrąglone do `roundMin` (sesja 5 min, tydzień 30 min). Przed resetem → `runs-out`, „wyczerpie się ok. 17:40”; po resecie albo przy zerowym tempie → `lasts`, „starczy do resetu”. Bez prognozy (pusty tekst): mniej niż 3 odczyty albo krócej niż `minSpanMin` (sesja 15 min, tydzień 3 h), nieznany reset (np. ChatGPT bez okna sesji), reset już minął albo ostatni odczyt jest starszy niż `staleMin` (sesja 30 min, tydzień 6 h — np. odczyt wstrzymany przy pełnym ekranie).
+
+**Powiadomienia.** Sprawdzane tylko przy nowym odczycie, w stylu „Agent czeka” (aplikacja „Tide”, ikona `view-statistics`, bez przycisku); nowe powiadomienie tego samego okna zastępuje poprzednie.
+
+| Kiedy | Tytuł | Treść |
+| --- | --- | --- |
+| zużycie przekroczyło próg z `alertUsedPercent` (80, 95) | „Claude: zużyto 82% limitu sesji” | „Zostało 18% · reset 18:30” |
+| prognoza: wyczerpanie więcej niż `alertRunoutMarginMin` (30 min) przed resetem | „Claude: limit sesji skończy się przed resetem” | „Przy obecnym tempie wyczerpie się ok. 17:40, a reset dopiero 18:30 · zostało 38%” |
+
+- Każdy próg i wyczerpanie — raz na okno limitu. Skok przez kilka progów naraz (70 → 96%) daje jedno powiadomienie o najwyższym. Próg i wyczerpanie w tym samym odczycie idą razem (treść progu dostaje linię „Przy obecnym tempie …”).
+- Co już poszło, jest w `$XDG_STATE_HOME/tide/limits-alerts.json` (okno rozpoznajemy po pierwszym odczycie albo po chwili resetu w tolerancji `resetJumpMin`), więc restart usługi niczego nie powtarza. Pierwszy start z limitem już powyżej progu daje jedno powiadomienie — potem już nie.
+- Odczyt z okna, którego reset już minął (np. stary `lastRead` po wstrzymaniu odczytów), nie powiadamia.
+- `--no-notifications` wyłącza także te powiadomienia.
+
+**Progi i parametry** są w palecie, sekcja `limits` w `theme/palette/mist.json` (usługa czyta kopię `palette.json` obok siebie, więc po zmianie: `make install-daemon`). Brak sekcji albo klucza = wartości domyślne z `tide_daemon/limits/config.py` (te same co w palecie).
+
+| Klucz | Domyślnie | Znaczenie |
+| --- | --- | --- |
+| `pollS` | 120 | odstęp `GET /status` w sekundach |
+| `historyDays` | 14 | ile dni historii trzymać |
+| `alertUsedPercent` | `[80, 95]` | progi zużycia dla powiadomień |
+| `alertRunoutMarginMin` | 30 | powiadom, gdy limit skończy się co najmniej tyle minut przed resetem |
+| `session.*`, `weekly.*` | | `lengthMin` (300 / 10080), `lookbackMin` (90 / 1440), `minSpanMin` (15 / 180), `idleGapMin` (15 / 0), `staleMin` (30 / 360), `resetJumpMin` (30 / 360), `roundMin` (5 / 30) |
+
+Kolor prognozy „przed resetem” w widżecie to `semantic.runout` (brzoskwinia).
+
+Logika bez Qt jest w `tide_daemon/limits/` (`readings.py`, `history.py`, `forecast.py`, `alerts.py`, `tracker.py`, `backend.py`, `config.py`), odpytywanie w `limits_monitor.py`, powiadomienia w `notifications.py` (`LimitsNotifier`). Uzasadnienie: decyzja 46 w `docs/decisions.md`.
+
+```bash
+qdbus6 org.tide.Daemon /Limits org.tide.Daemon.Limits.Forecast
+/usr/bin/python3 daemon/tide-daemon.py --print-limits   # historia + jeden GET /status, niczego nie zapisuje
+```
+
 ## Uruchamianie
 
 ```bash
@@ -348,7 +421,8 @@ journalctl --user -u tide-daemon -f
 # Opcje diagnostyczne: --claude-dir, --codex-dir, --workspace, --worktree-depth, --no-processes,
 #                      --no-notifications, --no-krunner, --no-tab-marks,
 #                      --now 2026-10-26T12:00:00Z, --idle-after 30, --no-idle,
-#                      --report-dir, --report-at 07:00, --no-report, --report-delay 120
+#                      --report-dir, --report-at 07:00, --no-report, --report-delay 120,
+#                      --limits-poll 120, --no-limits, --print-limits
 ```
 
 Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`, z której raport poranny bierze kolory i czcionki), `$XDG_CONFIG_HOME/systemd/user/tide-daemon.service`, `$XDG_DATA_HOME/dbus-1/services/org.tide.Daemon.service` (start na żądanie, gdy widżet zapyta, a usługa nie działa) i `org.tide.Daemon.KRunner.service` (to samo dla KRunnera). Usługa używa `/usr/bin/python3` z systemowym PyQt6 — `python3` z pyenv go nie ma.
@@ -375,6 +449,8 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_report_schedule.py` — termin raportu (pierwsze logowanie w dobie, 07:00, praca po północy, zmiana czasu, wyłączenie), okres (pierwszy, od poprzedniego, najwyżej 7 dni, ponowne wygenerowanie), jedno powiadomienie na dobę, ustawienia z pliku i opcji, stan, retencja 30 dni (tylko katalogi raportów, bez dowiązań),
 - `daemon/tests/test_report_generate.py` — raport z syntetycznego świata (`reportfix.py`: repozytoria z datowanymi commitami, dzienniki Claude Code i Codexa, zaplanowane zadanie, podagent, sesje sprzed okresu) przy zamrożonym zegarze: projekty z ruchem i bez, commity po gałęziach, znacznik agenta, ostatnie wiadomości, przebiegi zadań, worktrees, pliki i uprawnienia, podmiana katalogu, escapowanie (skrypt w temacie commita, tytule sesji, wiadomości agenta i nazwie pliku), CSP, brak zasobów z sieci; odczyt Limitów AI z atrapy API (token tylko w nagłówku, nigdy w błędzie),
 - `daemon/tests/test_report_dbus.py` — cała usługa na prywatnej magistrali: raport przy starcie, jedno powiadomienie „Raport poranny gotowy” z „Otwórz” (atrapy `systemd-run`, `xdg-open`), `Generate()`, `Latest()`, brak powtórki po restarcie, wyłączony termin,
+- `daemon/tests/test_limits_core.py` — Limity AI bez Qt: odczyty z `/status` i etykiety resetu (także przy zmianie czasu), okna i historia (dopisywanie, restart, 14 dni, zepsute linie), prognoza na syntetycznych seriach (równe tempo, zrywami, przerwa, długi postój, przejście przez reset, tydzień z nocami, za mało danych, nieaktualne dane), powiadomienia raz na okno i po restarcie, konfiguracja z palety, klient API na atrapie QuotaApp (token tylko w nagłówku, nigdy w błędach), `--print-limits` bez zapisu,
+- `daemon/tests/test_limits_dbus.py` — obiekt `/Limits` na prywatnej magistrali z atrapą API QuotaApp (HTTP w wątku testu) i atrapą serwera powiadomień: `Forecast()`, sygnał `Changed`, powiadomienia, historia w `$XDG_STATE_HOME`, brak tokenu w plikach, restart bez powtórek, usługa niedostępna, `--no-limits`. Usługi w testach dostają nieistniejący `LIMITY_CONFIG`, więc nigdy nie pytają prawdziwej QuotaApp,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
 Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawierają prawdziwych rozmów.

@@ -14,6 +14,9 @@ rm -f "$unit" "$data/dbus-1/services/org.tide.Daemon.service" "$data/dbus-1/serv
 rm -rf "$data/tide/daemon"
 # Zatrzymana usługa sama przywraca karty Konsole; plik zostaje tylko po twardym zabiciu procesu.
 rm -f "$state/tide/konsole-tabs.json"
+# Historia odczytów Limitów AI i pamięć wysłanych powiadomień (limits/history.py, limits/alerts.py).
+rm -f "$state/tide/limits-history.jsonl" "$state/tide/limits-history.jsonl.tmp" \
+      "$state/tide/limits-alerts.json" "$state/tide/limits-alerts.json.tmp"
 rmdir "$state/tide" 2>/dev/null || true
 rmdir "$data/tide" 2>/dev/null || true
 systemctl --user daemon-reload || true

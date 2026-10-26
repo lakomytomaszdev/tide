@@ -30,7 +30,8 @@
     "negative": "rose",
     "waiting": "peach",
     "working": "teal",
-    "done": "sky"
+    "done": "sky",
+    "runout": "peach"
   },
   "windowButtons": {
     "minimize": "butter",
@@ -90,6 +91,30 @@
   "plymouth": {
     "waveDelayMs": 300,
     "breatheTo": 0.6
+  },
+  "limits": {
+    "pollS": 120,
+    "historyDays": 14,
+    "alertUsedPercent": [80, 95],
+    "alertRunoutMarginMin": 30,
+    "session": {
+      "lengthMin": 300,
+      "lookbackMin": 90,
+      "minSpanMin": 15,
+      "idleGapMin": 15,
+      "staleMin": 30,
+      "resetJumpMin": 30,
+      "roundMin": 5
+    },
+    "weekly": {
+      "lengthMin": 10080,
+      "lookbackMin": 1440,
+      "minSpanMin": 180,
+      "idleGapMin": 0,
+      "staleMin": 360,
+      "resetJumpMin": 360,
+      "roundMin": 30
+    }
   },
   "fonts": {
     "ui": "Geist",

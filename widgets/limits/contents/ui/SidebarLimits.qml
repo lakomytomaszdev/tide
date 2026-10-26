@@ -1,6 +1,9 @@
 // Kafelek Limitów AI w pasku bocznym: dwa zwarte wiersze (GPT, Claude) — niższy z pozostałych
 // limitów (sesja albo tydzień) z cienkim paskiem w kolorze poziomu (mięta, masło, róż), a pod
-// paskiem wyciszone „tydzień · reset poniedziałek 20:00”. Problemy z usługą to jedna wyciszona
+// paskiem wyciszone „tydzień · reset poniedziałek 20:00”, a za nim prognoza tego limitu
+// z tide-daemon: „ · starczy do resetu” (wyciszone) albo „ · koniec ok. 17:40” (brzoskwinia,
+// wyczerpie się przed resetem). Bez prognozy (za mało danych, brak usługi) nic nie dochodzi.
+// Problemy z usługą to jedna wyciszona
 // linia zamiast kart. Pełne karty usług (oba limity, logowanie, otwieranie stron) są w popupie
 // kafelka w docku. Bez PlasmoidItem, więc da się go załadować w teście.
 import QtQuick
@@ -26,6 +29,9 @@ Tide.SidebarTile {
         const value = source.panelValue(s.key)
         const metric = lowerMetric(s.key)
         const state = source.available ? (source.service(s.key).state || "checking") : "offline"
+        const forecast = metric !== "" && typeof source.forecastFor === "function"
+            ? source.forecastFor(s.key, metric) : null
+        const short = state === "login" || state === "unavailable" ? "" : Tide.Texts.forecastShort(forecast)
         return {
             key: s.key,
             label: s.label,
@@ -33,6 +39,8 @@ Tide.SidebarTile {
             value: value,
             valueText: Tide.Texts.percent(value),
             note: noteFor(s.key, metric, state),
+            tail: short !== "" ? " · " + short : "",
+            runsOut: short !== "" && forecast.state === "runs-out",
             login: state === "login"
         }
     })
@@ -60,7 +68,7 @@ Tide.SidebarTile {
 
     title: "Limity AI"
     spacing: 8
-    Accessible.name: "Limity AI: " + rows.map(r => r.label + " " + r.valueText).join(", ")
+    Accessible.name: "Limity AI: " + rows.map(r => r.label + " " + r.valueText + r.tail).join(", ")
 
     headerItems: Text {
         visible: tile.readTime !== "" && tile.notice === ""
@@ -97,6 +105,8 @@ Tide.SidebarTile {
                 color: Tide.Theme.levelColor(row.modelData.value)
                 valueColor: Tide.Theme.levelColor(row.modelData.value)
                 note: row.modelData.note
+                noteTail: row.modelData.tail
+                noteTailColor: row.modelData.runsOut ? Tide.Tokens.runout : Tide.Tokens.textMuted
                 labelWidth: labelMetrics.advanceWidth
             }
             // Logowanie odbywa się w zwykłym Firefoksie (POST /open), usługa sama pobierze ciasteczka.

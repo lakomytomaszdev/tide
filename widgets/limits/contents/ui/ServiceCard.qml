@@ -1,4 +1,4 @@
-// Karta jednej usługi w popupie: limit sesji i tygodniowy, resety, godzina odczytu,
+// Karta jednej usługi w popupie: limit sesji i tygodniowy, resety z prognozą, godzina odczytu,
 // przycisk otwarcia strony w Firefoksie, a przy wylogowaniu przycisk logowania.
 import QtQuick
 import QtQuick.Layouts
@@ -61,12 +61,14 @@ Tide.Card {
         label: card.sessionLabel
         value: card.sessionValue
         reset: card.source.reset(card.serviceKey, "session")
+        forecast: card.source.forecastFor(card.serviceKey, "session")
     }
     MetricRow {
         Layout.fillWidth: true
         label: "Limit tygodniowy"
         value: card.source.remaining(card.serviceKey, "weekly")
         reset: card.source.reset(card.serviceKey, "weekly")
+        forecast: card.source.forecastFor(card.serviceKey, "weekly")
     }
 
     Text {
