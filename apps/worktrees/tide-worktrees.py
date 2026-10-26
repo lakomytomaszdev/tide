@@ -96,8 +96,21 @@ class Backend(QObject):
                                                 ensure_ascii=False))
             return
         argument = QDBusArgument(list(paths), QMetaType.Type.QStringList.value)  # sygnatura „as”
-        self._call("Remove", [argument], lambda ok, value: self.removeFinished.emit(value if ok else "null"),
-                   timeout=REMOVE_TIMEOUT_MS)
+        self._call("Remove", [argument], self._removed, timeout=REMOVE_TIMEOUT_MS)
+
+    def _removed(self, ok: bool, value) -> None:
+        # Usługa odświeża listę w tle (pełny przegląd repozytoriów trwa kilka sekund), więc usunięte
+        # wiersze zdejmujemy od razu, żeby okno nie pokazywało ich do następnego sygnału Changed.
+        if ok and isinstance(value, str):
+            try:
+                gone = {r["path"] for r in json.loads(value) if r.get("removed")}
+                items = [w for w in json.loads(self._list or "[]") if w.get("path") not in gone]
+            except (ValueError, TypeError, KeyError):
+                gone, items = set(), None
+            if gone and items is not None:
+                self._list = json.dumps(items, ensure_ascii=False)
+                self.listChanged.emit()
+        self.removeFinished.emit(value if ok else "null")
 
     @pyqtSlot(str)
     def prune(self, repo_path: str) -> None:
