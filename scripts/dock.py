@@ -17,8 +17,8 @@ from scripts.appearance import DATA, PALETTE, STATE  # noqa: E402
 from scripts.panels import evaluate, load, persist_thickness, save, screens, script, settle  # noqa: E402
 
 INSTALLED = STATE / "tide" / "dock-installed.json"
-# Kolejność kafelków z prawej strony docka, jak w mocku Mist.
-DOCK_WIDGETS = ["org.tide.agents", "org.tide.worktrees", "org.tide.system", "org.tide.limits"]
+# Kolejność kafelków z prawej strony docka, jak w mocku Mist; „Zadanie” obok agentów (mock #22).
+DOCK_WIDGETS = ["org.tide.agents", "org.tide.newtask", "org.tide.worktrees", "org.tide.system", "org.tide.limits"]
 
 
 def installed_widgets() -> list[str]:

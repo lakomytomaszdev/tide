@@ -40,6 +40,14 @@ Item {
             function () { if (done) done(undefined) })
     }
 
+    // To samo dla innego obiektu tej samej usługi, np. /Tasks ShowDialog z widżetu agentów.
+    function callOn(objectPath, objectIface, member, args, done) {
+        DBus.SessionBus.asyncCall({ service: service, path: objectPath, iface: objectIface, member: member,
+                                    arguments: args },
+            function (reply) { if (done) done(reply.value) },
+            function () { if (done) done(undefined) })
+    }
+
     DBus.DBusServiceWatcher {
         id: watcher
         busType: DBus.BusType.Session

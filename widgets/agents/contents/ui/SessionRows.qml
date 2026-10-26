@@ -76,14 +76,27 @@ ColumnLayout {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 1
-                    Text {
+                    RowLayout {
                         Layout.fillWidth: true
-                        text: row.modelData.project
-                        color: Tide.Tokens.textPrimary
-                        font.family: Tide.Theme.uiFamily
-                        font.pointSize: Tide.Tokens.fontSizePt
-                        font.weight: Font.Medium
-                        elide: Text.ElideRight
+                        spacing: 6
+                        Text {
+                            Layout.fillWidth: !row.modelData.fresh
+                            Layout.maximumWidth: row.modelData.fresh ? implicitWidth : Number.POSITIVE_INFINITY
+                            text: row.modelData.project
+                            color: Tide.Tokens.textPrimary
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt
+                            font.weight: Font.Medium
+                            elide: Text.ElideRight
+                        }
+                        // Sesja z okna „Nowe zadanie”, uruchomiona przed chwilą.
+                        Tide.NewTag {
+                            visible: row.modelData.fresh === true
+                        }
+                        Item {
+                            visible: row.modelData.fresh === true
+                            Layout.fillWidth: true
+                        }
                     }
                     Text {
                         Layout.fillWidth: true

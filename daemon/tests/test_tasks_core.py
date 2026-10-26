@@ -438,6 +438,33 @@ class TerminalTest(unittest.TestCase):
             self.assertEqual(TaskTerminal(FakeLaunchers(terminal=""), None).open(self.plan()), "")
 
 
+class NewTagTest(unittest.TestCase):
+    """Znacznik „nowe”: sesja z okna „Nowe zadanie” przez 10 min, bez sesji sprzed startu."""
+
+    def test_annotate_marks_only_new_sessions_from_the_task(self):
+        from .privatebus import app
+        from tide_daemon.task_monitor import NEW_TAG_S, TaskMonitor
+        from tide_daemon.tasks import Plan
+        app()
+        with tempfile.TemporaryDirectory(prefix="tide-newtag-") as tmp:
+            before = [{"id": "claude:old", "tool": "claude", "cwd": tmp, "state": "idle"}]
+            monitor = TaskMonitor(planner=None, terminal=None, sessions_source=lambda: before)
+            plan = Plan(repo_path=tmp, repo_name="r", tool="claude", prompt="a b", cwd=tmp, branch="", title="",
+                        argv=[])
+            monitor._record(plan)
+            started = monitor.recent[0]["ts"]
+            sessions = before + [{"id": "claude:new", "tool": "claude", "cwd": tmp, "state": "working"},
+                                 {"id": "codex:x", "tool": "codex", "cwd": tmp, "state": "working"},
+                                 {"id": "claude:else", "tool": "claude", "cwd": "/inny", "state": "working"}]
+            monitor.annotate(sessions, now=started + 5)
+            self.assertEqual([s["id"] for s in sessions if s.get("newTask")], ["claude:new"])
+            later = [{"id": "claude:new", "tool": "claude", "cwd": tmp, "state": "working"}]
+            monitor.annotate(later, now=started + NEW_TAG_S + 1)
+            self.assertNotIn("newTask", later[0])
+            self.assertEqual(monitor.recent, [])
+            monitor.stop()
+
+
 class LaunchersTest(unittest.TestCase):
     def test_task_dialog_script(self):
         with tempfile.TemporaryDirectory(prefix="tide-dialog-") as tmp:

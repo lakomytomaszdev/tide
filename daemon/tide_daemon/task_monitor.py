@@ -10,6 +10,7 @@ Start zadania (start):
 Wątek główny nigdy nie czeka na gita.
 """
 import json
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,14 +20,17 @@ from .tasks import Planner, TaskError, list_repos
 from .tasks.core import CLAIM_TIMEOUT, TaskFiles, failure
 
 CLAIM_POLL_MS = 100
+NEW_TAG_S = 600  # tyle sesja z nowego zadania ma w widżecie znacznik „nowe”
 
 
 class TaskMonitor(QObject):
     _finished = pyqtSignal(object, object)
 
     def __init__(self, planner: Planner, terminal, launchers=None, worktrees=None,
-                 claim_timeout: float = CLAIM_TIMEOUT, parent=None):
+                 claim_timeout: float = CLAIM_TIMEOUT, sessions_source=None, parent=None):
         super().__init__(parent)
+        self.sessions_source = sessions_source  # funkcja() → bieżące sesje obszaru Agents
+        self.recent: list[dict] = []            # zadania z ostatnich NEW_TAG_S (znacznik „nowe”)
         self.planner = planner
         self.terminal = terminal
         self.launchers = launchers
@@ -35,6 +39,29 @@ class TaskMonitor(QObject):
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-tasks")
         self._finished.connect(self._deliver)
         self._polls: set = set()
+
+    # --- znacznik „nowe” ------------------------------------------------------------------
+
+    def _record(self, plan) -> None:
+        real = os.path.realpath(plan.cwd)
+        sessions = self.sessions_source() if self.sessions_source else []
+        existing = {s.get("id") for s in sessions if os.path.realpath(s.get("cwd") or "/") == real}
+        self.recent.append({"cwd": real, "tool": plan.tool, "ts": time.time(), "existing": existing})
+
+    def annotate(self, sessions: list, now: float | None = None) -> None:
+        """Dopisuje `newTask: true` sesjom uruchomionym z okna „Nowe zadanie” w ostatnich
+        NEW_TAG_S: to samo narzędzie, ten sam katalog, a sesji nie było przed startem."""
+        now = time.time() if now is None else now
+        self.recent = [t for t in self.recent if now - t["ts"] < NEW_TAG_S]
+        if not self.recent:
+            return
+        for session in sessions:
+            if session.get("state") == "ended":
+                continue
+            real = os.path.realpath(session.get("cwd") or "/")
+            if any(t["tool"] == session.get("tool") and t["cwd"] == real and session.get("id") not in t["existing"]
+                   for t in self.recent):
+                session["newTask"] = True
 
     def stop(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)
@@ -114,6 +141,7 @@ class TaskMonitor(QObject):
         def check():
             if TaskFiles.claimed(plan.task_file):
                 self._done(timer)
+                self._record(plan)
                 self.planner.remember(plan)
                 if self.worktrees is not None and plan.worktree:
                     self.worktrees.refresh()
@@ -126,6 +154,7 @@ class TaskMonitor(QObject):
                     check_late()
 
         def check_late():
+            self._record(plan)
             self.planner.remember(plan)
             if self.worktrees is not None and plan.worktree:
                 self.worktrees.refresh()

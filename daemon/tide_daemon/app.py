@@ -144,7 +144,7 @@ def main(argv=None) -> int:
     krunner = None if args.no_krunner else start_krunner(app, args, clock, monitor, trees)  # noqa: F841
     idle = None if args.no_idle else start_idle(app, args)
     report = start_report(app, args, clock, report_settings, monitor, trees)
-    tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees)
+    tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
     try:
         holder = dbus_service.register(monitor, trees, idle=idle, reports=report,  # noqa: F841 — musi żyć
                                        tasks=tasks)
@@ -248,7 +248,7 @@ def start_report(app, args, clock, settings, monitor, trees):
                          clock=clock, parent=app, **kwargs)
 
 
-def start_tasks(app, args, launchers, trees):
+def start_tasks(app, args, launchers, trees, monitor):
     """Obszar /Tasks: nowe zadanie dla agenta (tasks/, task_monitor.py)."""
     from .task_monitor import TaskMonitor
     from .tasks import Planner
@@ -265,7 +265,10 @@ def start_tasks(app, args, launchers, trees):
         timeout = float(os.environ.get("TIDE_TASK_CLAIM_TIMEOUT") or CLAIM_TIMEOUT)
     except ValueError:
         timeout = CLAIM_TIMEOUT
-    return TaskMonitor(planner, terminal, launchers, trees, claim_timeout=timeout, parent=app)
+    tasks = TaskMonitor(planner, terminal, launchers, trees, claim_timeout=timeout,
+                        sessions_source=lambda: monitor.sessions, parent=app)
+    monitor.annotate = tasks.annotate  # znacznik „nowe” przy sesji świeżo uruchomionej z okna
+    return tasks
 
 
 def start_idle(app, args):

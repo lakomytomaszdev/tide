@@ -1,7 +1,8 @@
 // Pełna lista sesji agentów: nagłówek z liczbą sesji i licznikami, zwarte wiersze (SessionRows —
 // te same co w kafelku paska bocznego, tu z drugą, wyciszoną linią i bez limitu wierszy;
 // przy bardzo długiej liście przewijane) i „Pokaż zakończone”. To zawartość popupu kafelka
-// w docku i okienka „+N więcej” z paska bocznego. Bez PlasmoidItem, więc da się ją załadować w teście.
+// w docku i okienka „+N więcej” z paska bocznego. W nagłówku „＋ Nowe zadanie” otwiera okno nowego
+// zadania dla agenta (tide-daemon /Tasks ShowDialog). Bez PlasmoidItem, więc da się ją załadować w teście.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -17,6 +18,7 @@ ColumnLayout {
     property real nowTs: Date.now() / 1000
     signal activateRequested(string sessionId)
     signal showEndedToggled()
+    signal newTaskRequested()
 
     // Wiersze i liczniki — wspólne z kafelkiem paska bocznego (AgentRows).
     readonly property AgentRows agentRows: AgentRows {
@@ -77,6 +79,14 @@ ColumnLayout {
             sessionState: "done"
             count: view.doneCount
             textColor: Kirigami.Theme.textColor
+        }
+        Tide.TextButton {
+            objectName: "newTaskButton"
+            Layout.leftMargin: Kirigami.Units.smallSpacing
+            variant: "outline"
+            text: "＋ Nowe zadanie"
+            Accessible.name: "Nowe zadanie dla agenta"
+            onClicked: view.newTaskRequested()
         }
     }
 

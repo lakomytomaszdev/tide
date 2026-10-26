@@ -14,3 +14,4 @@ BarChart 1.0 BarChart.qml
 SidebarTile 1.0 SidebarTile.qml
 SidebarMeter 1.0 SidebarMeter.qml
 TextButton 1.0 TextButton.qml
+NewTag 1.0 NewTag.qml

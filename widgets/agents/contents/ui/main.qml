@@ -25,6 +25,13 @@ PlasmoidItem {
         return sessions.filter(s => Tide.Theme.sessionState(s) === state).length
     }
 
+    // Okno „Tide: nowe zadanie” otwiera usługa (/Tasks ShowDialog); drugie otwarcie tylko je pokazuje.
+    function newTask() {
+        source.callOn("/Tasks", "org.tide.Daemon.Tasks", "ShowDialog", [], function (ok) {
+            if (ok === true) root.expanded = false
+        })
+    }
+
     function activate(sessionId) {
         source.call("ActivateSession", [sessionId], function (ok) {
             if (ok) root.expanded = false
@@ -156,6 +163,7 @@ PlasmoidItem {
                 nowTs: root.nowTs
                 onActivateRequested: id => root.activate(id)
                 onShowEndedToggled: root.showEnded = !root.showEnded
+                onNewTaskRequested: root.newTask()
             }
         }
 
@@ -170,6 +178,7 @@ PlasmoidItem {
                 onActivateRequested: id => root.activate(id)
                 onShowEndedToggled: root.showEnded = !root.showEnded
                 onMoreRequested: morePopup.visible = !morePopup.visible
+                onNewTaskRequested: root.newTask()
 
                 // Pełna lista sesji w okienku obok paska (pasek jest przy lewej krawędzi,
                 // więc okienko otwiera się na prawo od „+N więcej”).
@@ -192,6 +201,10 @@ PlasmoidItem {
                             root.activate(id)
                         }
                         onShowEndedToggled: root.showEnded = !root.showEnded
+                        onNewTaskRequested: {
+                            morePopup.visible = false
+                            root.newTask()
+                        }
                     }
                 }
             }

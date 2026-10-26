@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.tide.newtask",
+    "Name": "Tide · Nowe zadanie",
+    "Description": "Kafelek „Zadanie · + nowe dla agenta”: otwiera okno, w którym wybierasz repozytorium, Claude Code albo Codex, wpisujesz polecenie i dołączasz zrzuty ekranu",
+    "Icon": "list-add",
+    "Category": "Utilities",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "Authors": [{ "Name": "Tomek" }]
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

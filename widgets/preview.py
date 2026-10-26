@@ -2,8 +2,8 @@
 
 Użycie: /usr/bin/python3 widgets/preview.py [katalog-wyjściowy]   (domyślnie build/preview)
 
-Składa pakiety (agenci, worktrees, system, Limity AI i nagłówek paska) do katalogu
-tymczasowego, a qml6 offscreen rysuje ich kafelki (CompactAgents, CompactWorktrees,
+Składa pakiety (agenci, nowe zadanie, worktrees, system, Limity AI i nagłówek paska) do katalogu
+tymczasowego, a qml6 offscreen rysuje ich kafelki (CompactAgents, CompactNewTask, CompactWorktrees,
 CompactSystem, CompactLimits) obok siebie na tle docka (background.panel, 64 px) z przykładowymi
 danymi. Każdy scenariusz daje osobny PNG: dock-tiles-<nazwa>.png. Do tego popup kafelka agentów
 (SessionsView — zwarte wiersze, jak w pasku bocznym) z sesjami we wszystkich stanach:
@@ -30,7 +30,7 @@ sys.path.insert(0, ROOT)
 from widgets.stage import DEFAULT_PALETTE, stage  # noqa: E402
 
 QML_TOOL = shutil.which("qml6") or "/usr/lib/qt6/bin/qml"
-WIDGETS = ("agents", "worktrees", "system", "limits")
+WIDGETS = ("agents", "newtask", "worktrees", "system", "limits")
 DOCK_HEIGHT = 64
 TILE_HEIGHT = 48        # tyle zostaje na kafelek w pływającym docku 64 px
 TILE_GAP = 12       # DockTile.dockGap: każdy kafelek ma po 6 px marginesu z obu stron
@@ -67,6 +67,7 @@ SCENARIOS = {
 HARNESS = """import QtQuick
 import QtQuick.Window
 import "agents/contents/ui" as Agents
+import "newtask/contents/ui" as NewTask
 import "worktrees/contents/ui" as Worktrees
 import "system/contents/ui" as System
 import "limits/contents/ui" as Limits
@@ -112,6 +113,7 @@ Window {
             doneCount: window.sample.agents.done || 0
             available: window.sample.agents.available
         }
+        NewTask.CompactNewTask { id: newtask; height: %(tile)d; available: window.sample.agents.available }
         Worktrees.CompactWorktrees {
             id: worktrees
             height: %(tile)d
@@ -127,9 +129,10 @@ Window {
     Timer {
         interval: 400; running: true
         onTriggered: {
-            const tiles = [agents, worktrees, system, limits]
+            const tiles = [agents, newtask, worktrees, system, limits]
             const report = {
                 agents: { label: agents.label, summary: agents.summary },
+                newtask: { label: newtask.label, summary: newtask.summary },
                 worktrees: { label: worktrees.label, detail: worktrees.detail, summary: worktrees.summary },
                 system: { lines: system.lines },
                 limits: { lines: limits.lines },
@@ -164,8 +167,8 @@ SESSIONS = [
      "worktree": "", "title": "Stany sesji agentów", "state": "waiting", "reason": "approval",
      "sinceTs": NOW_TS - 120, "lastActivityTs": NOW_TS - 120, "lastAction": "Bash · make test",
      "canActivate": True, "terminal": "Konsole"},
-    {"id": "claude:b", "tool": "claude", "project": "alpha", "branch": "feat/login", "worktree": "",
-     "title": "", "state": "working", "reason": "", "sinceTs": NOW_TS - 40, "lastActivityTs": NOW_TS - 5,
+    {"id": "claude:b", "tool": "claude", "project": "alpha", "branch": "claude/popraw-logowanie", "worktree": "",
+     "newTask": True, "title": "", "state": "working", "reason": "", "sinceTs": NOW_TS - 40, "lastActivityTs": NOW_TS - 5,
      "lastAction": "Edit · main.py", "canActivate": True, "terminal": "Konsole"},
     {"id": "codex:c", "tool": "codex", "project": "legal-agents", "branch": "main", "worktree": "",
      "title": "Kontynuacja", "state": "done", "reason": "scheduled", "sinceTs": NOW_TS - 300,
@@ -260,7 +263,7 @@ SIDEBAR_SCENARIOS = {
         "sessions": [
             sidebar_session("claude:a", "claude", "plasma-tide", "working", 20),
             sidebar_session("claude:b", "claude", "legal-agents", "waiting", 180, "approval"),
-            sidebar_session("codex:c", "codex", "app5-mobile", "working", 45, terminal="Codex"),
+            {**sidebar_session("codex:c", "codex", "app5-mobile", "working", 45, terminal="Codex"), "newTask": True},
             sidebar_session("claude:d", "claude", "limity-ai", "done", 720),
             sidebar_session("codex:e", "codex", "dev-dashboard", "idle", 5400, can=False, terminal=""),
             sidebar_session("claude:f", "claude", "stary-projekt", "ended", 20000),
