@@ -49,7 +49,8 @@ var tideSpacerRight = tideAdd(tideBar, "org.kde.plasma.panelspacer", ["General"]
 tideWrite(tideKickoff, ["General"], {icon: P.icon});
 // Menu tylko dla okien z tego monitora — na lewym monitorze jest osobny pasek.
 tideWrite(tideMenu, ["Appearance"], {compactView: false, allScreens: false});
-tideWrite(tideClock, ["Appearance"], {showDate: true});
+// Data obok godziny, jak na Macu: „pon 26 paź 17:03”.
+tideWrite(tideClock, ["Appearance"], {showDate: true, dateDisplayFormat: "BesideTime", dateFormat: "custom", customDateFormat: "ddd d MMM"});
 
 tideOut.main = tideBar.id;
 tideOut.mainOrder = [tideKickoff.id, tideMenu.id, tideSpacerLeft.id, tideClock.id, tideSpacerRight.id];
@@ -93,7 +94,7 @@ if (tideScreensNow.side >= 0) {
     var tideSideMenu = tideAdd(tideSide, "org.kde.plasma.appmenu", ["Appearance"],
                                {compactView: false, allScreens: false});
     var tideSideLeft = tideAdd(tideSide, "org.kde.plasma.panelspacer", ["General"], {expanding: true});
-    var tideSideClock = tideAdd(tideSide, "org.kde.plasma.digitalclock", ["Appearance"], {showDate: true});
+    var tideSideClock = tideAdd(tideSide, "org.kde.plasma.digitalclock", ["Appearance"], {showDate: true, dateDisplayFormat: "BesideTime", dateFormat: "custom", customDateFormat: "ddd d MMM"});
     var tideSideRight = tideAdd(tideSide, "org.kde.plasma.panelspacer", ["General"], {expanding: true});
 
     tideOut.side = tideSide.id;

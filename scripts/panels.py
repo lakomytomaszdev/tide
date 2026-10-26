@@ -79,9 +79,12 @@ def install_params(palette: dict, installed: dict) -> dict:
 
 
 def order_params(result: dict) -> dict:
-    panels = [{"id": result["main"], "order": result["mainOrder"]}]
+    palette = json.loads(PALETTE.read_text())
+    sizes = palette.get("size", {})
+    panels = [{"id": result["main"], "order": result["mainOrder"], "height": sizes.get("bar")}]
     if result.get("side"):
-        panels.append({"id": result["side"], "order": result["sideOrder"]})
+        # Wysokość ustawiamy ponownie po przeniesieniu panelu — Plasma nadpisuje ją przy zmianie ekranu.
+        panels.append({"id": result["side"], "order": result["sideOrder"], "height": sizes.get("barSlim")})
     return {**screens(), "panels": [p for p in panels if p["id"]]}
 
 

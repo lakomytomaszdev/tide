@@ -9,6 +9,9 @@ for (var tideI = 0; tideI < P.panels.length; ++tideI) {
     if (!tidePanel || !tideItem.order.length) {
         continue;
     }
+    if (tideItem.height) {
+        tidePanel.height = tideItem.height;
+    }
     tidePanel.currentConfigGroup = ["General"];
     tidePanel.writeConfig("AppletOrder", tideItem.order.join(";"));
     tidePanel.currentConfigGroup = [];
