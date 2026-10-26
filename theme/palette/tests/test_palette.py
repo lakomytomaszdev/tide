@@ -37,6 +37,18 @@ class PaletteTest(unittest.TestCase):
         self.assertLess(splash["dim"], 1)
         self.assertGreater(splash["pulseMs"], 0)
 
+    def test_wallpaper_variant_is_known(self):
+        self.assertIn(PALETTE["wallpaper"].get("variant", "blobs"), ("blobs", "cat"))
+        # Plamy zostają w palecie jako działająca alternatywa.
+        self.assertTrue(PALETTE["wallpaper"]["blobs"])
+
+    def test_lock_wake_and_splash_fade_are_short(self):
+        # Przenikanie śpiący → czuwający kot ok. 350–550 ms, wejście ekranu ładowania krótkie.
+        self.assertGreaterEqual(PALETTE["lockscreen"]["wakeMs"], 350)
+        self.assertLessEqual(PALETTE["lockscreen"]["wakeMs"], 550)
+        self.assertGreater(PALETTE["splash"]["fadeMs"], 0)
+        self.assertLessEqual(PALETTE["splash"]["fadeMs"], 550)
+
     def test_shadow_is_soft(self):
         self.assertGreater(PALETTE["shadow"]["size"], 0)
         self.assertLessEqual(PALETTE["shadow"]["opacity"], 0.5)
