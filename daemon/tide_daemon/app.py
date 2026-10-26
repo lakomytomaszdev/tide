@@ -3,6 +3,7 @@
 Użycie: python3 tide-daemon.py [--print | --print-worktrees] [--claude-dir DIR] [--codex-dir DIR]
                                [--workspace DIR] [--worktree-depth N] [--no-processes]
                                [--no-notifications] [--no-krunner] [--no-tab-marks] [--now CZAS]
+                               [--idle-after SEKUNDY | --no-idle]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
@@ -12,7 +13,9 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees] [--claude-dir DIR]
 --no-notifications bez powiadomień „Agent czeka”,
 --no-krunner       bez wtyczki KRunnera (org.tide.Daemon.KRunner),
 --no-tab-marks     bez znacznika stanu na kartach Konsole (prefiks tytułu i kolor karty),
---now              zamrożony zegar (ISO 8601) — dla testów i diagnostyki.
+--now              zamrożony zegar (ISO 8601) — dla testów i diagnostyki,
+--idle-after       próg bezczynności w sekundach dla /Idle (domyślnie wallpaper.dozeAfterS z palety),
+--no-idle          bez obiektu /Idle (bezczynność z kompozytora Wayland).
 """
 import argparse
 import json
@@ -49,6 +52,8 @@ def parse_args(argv):
     parser.add_argument("--now", help="zamrożony zegar, np. 2026-10-26T12:00:00Z")
     parser.add_argument("--workspace", default=default_workspace())
     parser.add_argument("--worktree-depth", type=int, default=worktrees.MAX_DEPTH)
+    parser.add_argument("--idle-after", type=float, help="próg bezczynności w sekundach")
+    parser.add_argument("--no-idle", action="store_true")
     parser.add_argument("--print", dest="print_once", action="store_true")
     parser.add_argument("--print-worktrees", action="store_true")
     return parser.parse_args(argv)
@@ -105,8 +110,9 @@ def main(argv=None) -> int:
     monitor.changed.connect(trees.publish)  # nowy albo zakończony agent zmienia flagę „aktywny agent”
     # KRunner przed główną nazwą: gdy org.tide.Daemon jest już na magistrali, wtyczka też.
     krunner = None if args.no_krunner else start_krunner(app, args, clock, monitor, trees)  # noqa: F841
+    idle = None if args.no_idle else start_idle(app, args)
     try:
-        holder = dbus_service.register(monitor, trees)  # noqa: F841 — musi żyć do końca
+        holder = dbus_service.register(monitor, trees, idle=idle)  # noqa: F841 — musi żyć do końca
     except RuntimeError as exc:
         print(f"tide-daemon: {exc}", file=sys.stderr, flush=True)
         return 1
@@ -118,6 +124,8 @@ def main(argv=None) -> int:
     wake.timeout.connect(lambda: None)
     wake.start()
     trees.start()  # pierwsze odczytanie repozytoriów już w tle, po rejestracji na magistrali
+    if idle is not None:
+        idle.start()  # połączenie z kompozytorem po rejestracji — /Idle odpowiada od razu (Idle = false)
 
     if not args.no_notifications:
         from .notifications import Notifier
@@ -143,9 +151,19 @@ def main(argv=None) -> int:
     print(f"tide-daemon: działa, {len(scanner.logs)} plików sesji z ostatniej doby", flush=True)
     code = app.exec()
     trees.stop()
+    if idle is not None:
+        idle.stop()
     if marker is not None:
         marker.clear()  # karty wracają do swoich tytułów i kolorów, gdy usługa się kończy
     return code
+
+
+def start_idle(app, args):
+    """Bezczynność użytkownika z kompozytora (idle.py) dla tapety z kotem; brak kompozytora nie zatrzymuje usługi."""
+    from .idle import IdleMonitor, doze_after_s
+    from .tabmarks import palette_candidates
+    seconds = args.idle_after if args.idle_after and args.idle_after > 0 else doze_after_s(palette_candidates())
+    return IdleMonitor(int(round(seconds * 1000)), parent=app)
 
 
 def start_krunner(app, args, clock, monitor, trees):

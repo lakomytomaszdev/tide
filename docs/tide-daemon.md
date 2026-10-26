@@ -1,6 +1,6 @@
 # tide-daemon
 
-Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)).
+Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)).
 
 ## Kontrakt D-Bus
 
@@ -239,6 +239,33 @@ Indeks powstaje leniwie: pierwsze `Match` po starcie usługi czeka na zbudowanie
 
 **Instalacja.** `make install-daemon` (kod i plik aktywacji `org.tide.Daemon.KRunner.service`) oraz `make install-krunner` (plik `.desktop`; oba są też w `make install`). KRunner czyta wtyczki D-Bus przy starcie, więc instalator i dezinstalator proszą działający KRunner o zamknięcie (`qdbus6 org.kde.krunner /MainApplication quit`) — wraca sam przy następnym Alt+Spacja. Wyszukiwanie w menu Plasmy (Kickoff) ma własną instancję i zobaczy zmianę po ponownym zalogowaniu albo `systemctl --user restart plasma-plasmashell`. `make uninstall-krunner` usuwa plik wtyczki, więc znika ona z KRunnera. Szybkie sprawdzenie: `qdbus6 org.kde.krunner /App querySingleRunner tide plasma` otwiera KRunnera z wynikami tylko tej wtyczki.
 
+## Bezczynność
+
+Tapeta „Tide: kot” (`org.tide.cat`) zamyka kotu oczy, gdy nikt nie używa komputera. Wie o tym od usługi:
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/Idle` |
+| Interfejs | `org.tide.Daemon.Idle` |
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `Idle` | właściwość `b` | od progu nie było klawiatury, myszy ani dotyku; `false`, gdy źródło nie działa |
+| `Available` | właściwość `b` | czy kompozytor podaje bezczynność |
+| `ThresholdMs` | właściwość `i` | próg w ms (`wallpaper.dozeAfterS` z palety, domyślnie 30 s) |
+| `IsIdle()` | `→ b` | to samo co `Idle` jednym wywołaniem (QML) |
+| `State()` | `→ s` | JSON `{available, idle, thresholdMs, idleForMs, source}` — diagnostyka |
+| `IdleChanged` | sygnał `(b idle)` | bezczynność się zmieniła |
+
+**Źródło.** Usługa łączy się z kompozytorem Wayland (KWin) i prosi o powiadomienie protokołu `ext_idle_notifier_v1` z progiem z palety: w wersji 2 `get_input_idle_notification` (liczy się tylko wejście użytkownika, blokady bezczynności — np. odtwarzany film — nie przeszkadzają), zapasowo wersja 1 i starszy `org_kde_kwin_idle`. Odlicza kompozytor, a usługa dostaje tylko dwa zdarzenia: „bezczynny” po progu i „wrócił” przy pierwszym wejściu — bez odpytywania i bez zużycia procesora w spoczynku. Klient protokołu to czysty Python (`tide_daemon/wayland_idle.py`), stan i połączenie z pętlą Qt — `tide_daemon/idle.py`. Gniazdo kompozytora jak w libwayland: `$WAYLAND_DISPLAY` w `$XDG_RUNTIME_DIR` (Plasma eksportuje obie zmienne do środowiska usług systemd użytkownika). Gdy kompozytora nie ma albo połączenie się zerwie (restart KWina), `Idle` = `false`, `Available` = `false`, a usługa próbuje ponownie co 2 s, potem coraz rzadziej, do 60 s; komunikaty idą do dziennika tylko przy zmianie.
+
+Próg czyta usługa z kopii palety obok siebie (`palette.json`), więc po zmianie `wallpaper.dozeAfterS` trzeba `make install-daemon`. Opcje: `--idle-after SEKUNDY` (nadpisuje próg), `--no-idle` (bez obiektu `/Idle`). Uzasadnienie i odrzucone źródła: decyzja 39 w `docs/decisions.md`.
+
+```bash
+qdbus6 org.tide.Daemon /Idle org.tide.Daemon.Idle.State
+dbus-monitor "type='signal',interface='org.tide.Daemon.Idle'"   # IdleChanged przy drzemce i przebudzeniu
+```
+
 ## Uruchamianie
 
 ```bash
@@ -251,7 +278,7 @@ journalctl --user -u tide-daemon -f
 /usr/bin/python3 daemon/tide-daemon.py --print-worktrees      # tylko odczyt, niczego nie usuwa
 # Opcje diagnostyczne: --claude-dir, --codex-dir, --workspace, --worktree-depth, --no-processes,
 #                      --no-notifications, --no-krunner, --no-tab-marks,
-#                      --now 2026-10-26T12:00:00Z
+#                      --now 2026-10-26T12:00:00Z, --idle-after 30, --no-idle
 ```
 
 Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`), `$XDG_CONFIG_HOME/systemd/user/tide-daemon.service`, `$XDG_DATA_HOME/dbus-1/services/org.tide.Daemon.service` (start na żądanie, gdy widżet zapyta, a usługa nie działa) i `org.tide.Daemon.KRunner.service` (to samo dla KRunnera). Usługa używa `/usr/bin/python3` z systemowym PyQt6 — `python3` z pyenv go nie ma.
@@ -273,6 +300,7 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`)
 - `daemon/tests/test_krunner_core.py` — dopasowanie i ranking, `ai `, teksty po polsku, polecenia `Run` (wznowienie Claude/Codex w Konsoli, przejście do okna żywej sesji, projekt, worktree, Rider) z zapisem zamiast uruchamiania; leniwe budowanie indeksu,
 - `daemon/tests/test_krunner_dbus.py` — `Match`, `Actions`, `Run` przez prywatną magistralę z sygnaturami KRunnera 6; programy to atrapy (`fakebin.py`: `systemd-run`, `konsole`, `rider`, `claude`, `codex` tylko zapisują wywołanie),
 - `apps/worktrees/tests/` — okno: QML na przykładowych danych (`qml6`, offscreen), launcher z `--data --grab`, backend okna na prywatnej magistrali z prawdziwą usługą (Remove tylko dla zaznaczonych), drugie uruchomienie, instalacja z atrapami `update-desktop-database` i `kbuildsycoca6`,
+- `daemon/tests/test_idle.py` — bezczynność na atrapie kompozytora Wayland (`fake_wayland.py`: prawdziwe gniazdo i format wiadomości, zamrożony zegar): próg, wejście liczy czas od nowa, wybór protokołu (v2, v1, `org_kde_kwin_idle`), brak protokołu, błąd protokołu, zerwane połączenie i ponowne połączenie; `IdleState` na zamrożonym zegarze; obiekt `/Idle` usługi na prywatnej magistrali (właściwości, `IsIdle`, sygnał `IdleChanged`, próg z palety, brak kompozytora, `--no-idle`). Usługi w testach dostają nieistniejące gniazdo Wayland, więc nigdy nie łączą się z kompozytorem pulpitu,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
 Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawierają prawdziwych rozmów.

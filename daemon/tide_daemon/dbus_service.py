@@ -19,8 +19,16 @@ Obiekt /Worktrees, interfejs org.tide.Daemon.Worktrees:
 - ShowWindow() -> b          otwiera okno Worktrees (False, gdy nie jest zainstalowane),
 - Prune(s repoPath) -> s     `git worktree prune` w repozytorium z worktrees bez katalogu (odpowiedź po zakończeniu),
 - sygnał Changed()           lista worktrees się zmieniła.
+
+Obiekt /Idle, interfejs org.tide.Daemon.Idle (bezczynność użytkownika dla tapety z kotem):
+- właściwość Idle (b)        od progu nie było klawiatury ani myszy (False, gdy źródło nie działa),
+- właściwość Available (b)   czy kompozytor podaje bezczynność,
+- właściwość ThresholdMs (i) próg bezczynności (paleta: wallpaper.dozeAfterS),
+- IsIdle() -> b              to samo co Idle, jednym wywołaniem (dla QML),
+- State() -> s               JSON {available, idle, thresholdMs, idleForMs, source} — diagnostyka,
+- sygnał IdleChanged(b idle) bezczynność się zmieniła.
 """
-from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
 
 SERVICE = "org.tide.Daemon"
@@ -28,6 +36,8 @@ AGENTS_PATH = "/Agents"
 AGENTS_IFACE = "org.tide.Daemon.Agents"
 WORKTREES_PATH = "/Worktrees"
 WORKTREES_IFACE = "org.tide.Daemon.Worktrees"
+IDLE_PATH = "/Idle"
+IDLE_IFACE = "org.tide.Daemon.Idle"
 
 AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
   <method name="Sessions"><arg name="json" type="s" direction="out"/></method>
@@ -58,6 +68,15 @@ WORKTREES_XML = f"""<interface name="{WORKTREES_IFACE}">
     <arg name="json" type="s" direction="out"/>
   </method>
   <signal name="Changed"/>
+</interface>"""
+
+IDLE_XML = f"""<interface name="{IDLE_IFACE}">
+  <property name="Idle" type="b" access="read"/>
+  <property name="Available" type="b" access="read"/>
+  <property name="ThresholdMs" type="i" access="read"/>
+  <method name="IsIdle"><arg name="idle" type="b" direction="out"/></method>
+  <method name="State"><arg name="json" type="s" direction="out"/></method>
+  <signal name="IdleChanged"><arg name="idle" type="b"/></signal>
 </interface>"""
 
 
@@ -137,7 +156,38 @@ class WorktreesAdaptor(QDBusAbstractAdaptor):
         return ""
 
 
-def register(monitor, worktrees=None, bus: QDBusConnection | None = None) -> QObject:
+@pyqtClassInfo("D-Bus Interface", IDLE_IFACE)
+@pyqtClassInfo("D-Bus Introspection", IDLE_XML)
+class IdleAdaptor(QDBusAbstractAdaptor):
+    IdleChanged = pyqtSignal(bool)
+
+    def __init__(self, parent: QObject, monitor):
+        super().__init__(parent)
+        self.monitor = monitor
+        monitor.idleChanged.connect(self.IdleChanged)
+
+    @pyqtProperty(bool)
+    def Idle(self) -> bool:
+        return self.monitor.idle
+
+    @pyqtProperty(bool)
+    def Available(self) -> bool:
+        return self.monitor.available
+
+    @pyqtProperty(int)
+    def ThresholdMs(self) -> int:
+        return self.monitor.state.threshold_ms
+
+    @pyqtSlot(result=bool)
+    def IsIdle(self) -> bool:
+        return self.monitor.idle
+
+    @pyqtSlot(result=str)
+    def State(self) -> str:
+        return self.monitor.state_json()
+
+
+def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -152,6 +202,11 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None) -> QOb
         holder.worktrees.adaptor = WorktreesAdaptor(holder.worktrees, worktrees, bus)
         if not bus.registerObject(WORKTREES_PATH, holder.worktrees):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {WORKTREES_PATH}")
+    if idle is not None:
+        holder.idle = QObject(holder)
+        holder.idle.adaptor = IdleAdaptor(holder.idle, idle)
+        if not bus.registerObject(IDLE_PATH, holder.idle):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {IDLE_PATH}")
     if not bus.registerService(SERVICE):
         raise RuntimeError(f"nazwa {SERVICE} jest już zajęta (działa inna kopia usługi?)")
     return holder

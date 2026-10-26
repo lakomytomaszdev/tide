@@ -86,7 +86,11 @@ class PrivateBus:
     def spawn_daemon(self, *args, **kwargs) -> subprocess.Popen:
         # Własny XDG_STATE_HOME: usługa testowa nie może czytać ani kasować stanu kart Konsole
         # zapisanego przez usługę z pulpitu (tabmarks.default_store).
-        extra_env = {"XDG_STATE_HOME": os.path.join(self.tmp, "state"), **(kwargs.pop("extra_env", None) or {})}
+        # Nieistniejące gniazdo Wayland: usługa testowa nie łączy się z kompozytorem pulpitu
+        # (obiekt /Idle zostaje „niedostępny”), chyba że test poda własny (atrapa kompozytora).
+        extra_env = {"XDG_STATE_HOME": os.path.join(self.tmp, "state"),
+                     "WAYLAND_DISPLAY": os.path.join(self.tmp, "no-wayland"),
+                     **(kwargs.pop("extra_env", None) or {})}
         return self.spawn([sys.executable, os.path.join(DAEMON_DIR, "tide-daemon.py"), *args], SERVICE,
                           extra_env=extra_env, **kwargs)
 
