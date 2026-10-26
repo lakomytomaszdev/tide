@@ -42,6 +42,21 @@ QtObject {
         }
     }
 
+    // Krótkie słowo stanu do jednej linii w pasku bocznym („czeka” zamiast „czeka na ciebie”).
+    function shortStateLabel(state) {
+        return state === "waiting" ? "czeka" : stateLabel(state)
+    }
+
+    // Krótki czas względny do wąskich wierszy: „teraz”, „4 min”, „2 h”, „3 d”.
+    function shortAgo(ts, nowTs) {
+        if (!ts) return "—"
+        const s = Math.max(0, nowTs - ts)
+        if (s < 60) return "teraz"
+        if (s < 3600) return Math.floor(s / 60) + " min"
+        if (s < 86400) return Math.floor(s / 3600) + " h"
+        return Math.floor(s / 86400) + " d"
+    }
+
     // Poziom pozostałego limitu w procentach: powyżej 40 dobrze, 16–40 uwaga, do 15 mało,
     // null = brak danych (wyciszony).
     function levelColor(percent) {

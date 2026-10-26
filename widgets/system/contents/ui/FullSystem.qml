@@ -1,6 +1,7 @@
-// Widok szczegółowy (popup, później pasek boczny na lewym monitorze): procesor z ostatniej
-// minuty, pamięć z największymi programami, karta graficzna z VRAM, partycje z wolnym miejscem
-// i podpowiedzią przy zajętości powyżej 85%, przyciski do Monitora systemu i analizy dysku.
+// Widok szczegółowy w popupie kafelka (pasek boczny ma własny, zwarty kafelek: SidebarSystem):
+// procesor z ostatniej minuty, pamięć z największymi programami, karta graficzna z VRAM,
+// partycje z wolnym miejscem i podpowiedzią przy zajętości powyżej 85%, przyciski do Monitora
+// systemu i analizy dysku.
 // Bez ksystemstats zamiast zer jest wyciszony komunikat, a dyski mają liczby ze statvfs.
 import QtQuick
 import QtQuick.Layouts
@@ -11,10 +12,7 @@ ColumnLayout {
     id: full
 
     required property var source            // SystemSource
-    // Gęsty układ dla paska bocznego (ok. 1000 px wysokości na cztery widżety): bez podpisów
-    // pod wykresem, pamięcią i kartą graficzną, mniejsze odstępy i niższy wykres.
-    property bool dense: false
-    // Czy widok jest naprawdę na ekranie (popup otwarty albo widżet rozwinięty w panelu bocznym).
+    // Czy widok jest naprawdę na ekranie (popup otwarty).
     readonly property bool shown: visible && Window.window !== null && Window.window.visible
 
     readonly property bool ready: source.sensorsReady
@@ -33,7 +31,7 @@ ColumnLayout {
     readonly property bool showMonitorButton: monitorApp !== ""
     readonly property bool showDiskButton: diskApp !== ""
 
-    spacing: dense ? 10 : 16
+    spacing: 16
 
     component Caption: Text {
         Layout.fillWidth: true
@@ -138,13 +136,12 @@ ColumnLayout {
         }
         Tide.BarChart {
             Layout.fillWidth: true
-            Layout.preferredHeight: full.dense ? 32 : 44
+            Layout.preferredHeight: 44
             slots: full.source.history.capacity
             values: full.source.history.samples.map(v => v === null ? null : v / 100)
             color: Tide.Tokens.teal
         }
         Caption {
-            visible: !full.dense && text !== ""
             text: Logic.historyCaption(full.source.history.average, full.source.history.peak, full.source.historySeconds)
         }
     }
@@ -167,7 +164,6 @@ ColumnLayout {
             color: Tide.Tokens.lavender
         }
         Caption {
-            visible: !full.dense && text !== ""
             text: Logic.processesLine(full.source.processes, full.source.formatBytes)
         }
     }
@@ -190,7 +186,6 @@ ColumnLayout {
             color: Tide.Tokens.mint
         }
         Caption {
-            visible: !full.dense && text !== ""
             text: full.gpu.name
         }
     }

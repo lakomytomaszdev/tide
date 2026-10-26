@@ -104,14 +104,47 @@ PlasmoidItem {
         }
     }
 
-    fullRepresentation: SummaryView {
-        available: source.available
-        problem: root.windowProblem
-        cleanCount: root.cleanable.length
-        cleanBytes: root.cleanableBytes
-        activeCount: root.active.length
-        totalCount: root.linked.length
-        sidebar: Plasmoid.configuration.sidebarMode
-        onRetryRequested: root.showWindow()
+    // Mały popup (SummaryView), gdy okna nie da się otworzyć; w pasku bocznym kafelek SidebarWorktrees.
+    fullRepresentation: Item {
+        id: full
+
+        readonly property bool sidebar: Plasmoid.configuration.sidebarMode
+        readonly property var view: loader.item
+
+        Layout.preferredWidth: sidebar ? -1 : (view ? view.Layout.preferredWidth : -1)
+        Layout.minimumWidth: sidebar ? -1 : (view ? view.Layout.minimumWidth : -1)
+        Layout.fillWidth: sidebar
+        Layout.preferredHeight: view ? (sidebar ? view.implicitHeight : view.Layout.preferredHeight) : 0
+        Layout.minimumHeight: sidebar ? Layout.preferredHeight : -1
+        Layout.maximumHeight: sidebar ? Layout.preferredHeight : Number.POSITIVE_INFINITY
+
+        Loader {
+            id: loader
+            anchors.fill: parent
+            sourceComponent: full.sidebar ? sidebarView : popupView
+        }
+        Component {
+            id: popupView
+            SummaryView {
+                available: source.available
+                problem: root.windowProblem
+                cleanCount: root.cleanable.length
+                cleanBytes: root.cleanableBytes
+                activeCount: root.active.length
+                totalCount: root.linked.length
+                onRetryRequested: root.showWindow()
+            }
+        }
+        Component {
+            id: sidebarView
+            SidebarWorktrees {
+                available: source.available
+                problem: root.windowProblem
+                cleanCount: root.cleanable.length
+                cleanBytes: root.cleanableBytes
+                activeCount: root.active.length
+                onOpenRequested: root.showWindow()
+            }
+        }
     }
 }

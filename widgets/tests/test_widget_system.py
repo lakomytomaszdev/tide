@@ -370,6 +370,12 @@ Item {
             hintNoDaemon: Logic.diskHint(home, null, targets, fmt),
             hintNoTrees: Logic.diskHint({ target: "/home", usedPercent: 90 }, [], targets, fmt),
             hintBelow: Logic.diskHint({ target: "/home", usedPercent: 85 }, trees, targets, fmt),
+            gpu: [Logic.gpuLine(31.4, 0.6 * 1073741824, 8 * 1073741824), Logic.gpuLine(5, null, null),
+                  Logic.gpuLine(null, 12.4 * 1073741824, 24 * 1073741824)],
+            notes: [Logic.diskNote([home, { target: "/", usedPercent: 40 }], trees, targets, fmt),
+                    Logic.diskNote([{ target: "/", usedPercent: 91 }], trees, targets, fmt),
+                    Logic.diskNote([{ target: "/", usedPercent: 91 }], null, targets, fmt),
+                    Logic.diskNote([{ target: "/", usedPercent: 80 }], trees, targets, fmt)],
             procs: Logic.processesLine([{ name: "rider", bytes: 4.1e9 }, { name: "firefox", bytes: 3.6e9 }], fmt),
             noProcs: Logic.processesLine([], fmt),
             caption: Logic.historyCaption(12.4, 48.6, 60),
@@ -398,6 +404,11 @@ Item {
         self.assertEqual(result["hintNoDaemon"], "Dysk prawie pełny")
         self.assertEqual(result["hintNoTrees"], "Dysk prawie pełny")
         self.assertEqual(result["hintBelow"], "")
+        # Pasek boczny: karta graficzna w jednej linii i jedna krótka uwaga o pełnym dysku.
+        self.assertEqual(result["gpu"], ["GPU 31% · VRAM 0,6/8 GB", "GPU 5%", "GPU — · VRAM 12/24 GB"])
+        self.assertEqual(result["notes"], ["Dysk prawie pełny · worktrees zwolnią 2.0 GB",
+                                           "Dysk prawie pełny · worktrees zwolnią 3.0 GB",
+                                           "Dysk prawie pełny", ""])
         self.assertEqual(result["procs"], "najwięcej: rider 4.1 GB · firefox 3.6 GB")
         self.assertEqual(result["noProcs"], "")
         self.assertEqual(result["caption"], "ostatnia minuta · średnio 12% · szczyt 49%")

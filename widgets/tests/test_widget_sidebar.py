@@ -4,7 +4,6 @@ kpackagetool6 jest atrapą (daemon/tests/fakebin.py), HOME i XDG_* są tymczasow
 Panel składa scripts/sidebar.py — jego testy są w scripts/tests (test_sidebar, test_panels_js).
 """
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -67,67 +66,31 @@ class SidebarModeTest(unittest.TestCase):
         text = read("agents", "contents/ui/main.qml")
         self.assertRegex(text, r"Plasmoid\.status: waitingCount > 0 && !Plasmoid\.configuration\.sidebarMode")
 
-    @unittest.skipUnless(shutil.which("qml6"), "brak qml6")
-    def test_worktrees_summary_in_the_sidebar_offers_the_window(self):
-        tmp = tempfile.mkdtemp(prefix="tide-stage-wt-side-")
-        self.addCleanup(shutil.rmtree, tmp)
-        pkg = os.path.join(tmp, "pkg")
-        subprocess.run(["/usr/bin/python3", os.path.join(WIDGETS_DIR, "stage.py"),
-                        os.path.join(WIDGETS_DIR, "worktrees"), pkg], check=True)
-        harness = os.path.join(pkg, "contents/ui/Smoke.qml")
-        with open(harness, "w", encoding="utf-8") as fh:
-            fh.write("""import QtQuick
-Item {
-    SummaryView { id: ok; sidebar: true; width: 280; height: 160; cleanCount: 2; totalCount: 6 }
-    SummaryView { id: broken; sidebar: true; width: 280; height: 160; problem: "no-service" }
-    SummaryView { id: popup; width: 280; height: 160 }
-    Component.onCompleted: {
-        console.warn("SMOKE " + [ok.showProblem, broken.showProblem, popup.showProblem].join("|"))
-        Qt.quit()
-    }
-}
-""")
-        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
-        log = subprocess.run(["qml6", harness], env=env, capture_output=True, text=True, timeout=30).stderr
-        self.assertIn("SMOKE false|true|true", log)
-        problems = [line for line in log.splitlines()
-                    if re.search(r"Unable to assign|TypeError|ReferenceError|is not a type", line)]
-        self.assertEqual(problems, [])
-        self.assertIn("Otwórz okno Worktrees", read("worktrees", "contents/ui/SummaryView.qml"))
+    def test_sidebar_mode_uses_the_sidebar_tiles(self):
+        # Pasek ma własne, zwarte kafelki; popupy kafelków w docku zostają bez zmian.
+        for widget, tile, popup in (("agents", "SidebarAgents", "SessionsView"), ("system", "SidebarSystem", "FullSystem"),
+                                    ("worktrees", "SidebarWorktrees", "SummaryView"),
+                                    ("limits", "SidebarLimits", "ServiceCard")):
+            with self.subTest(widget=widget):
+                text = read(widget, "contents/ui/main.qml")
+                self.assertIn("sourceComponent: full.sidebar ? sidebarView : popupView", text)
+                self.assertIn(tile + " {", text)
+                self.assertIn(popup + " {", text)
+                self.assertIn("Tide.SidebarTile", read(widget, "contents/ui", tile + ".qml"))
+                # Kafelek nie rozciąga się na resztę paska — wolne miejsce bierze odstęp na końcu.
+                self.assertNotIn("Layout.fillHeight: Plasmoid.configuration.sidebarMode", text)
 
-    @unittest.skipUnless(shutil.which("qml6"), "brak qml6")
-    def test_dense_limit_rows_are_shorter(self):
-        # Cztery widżety muszą się zmieścić w ok. 1000 px lewego monitora.
-        tmp = tempfile.mkdtemp(prefix="tide-stage-limits-side-")
-        self.addCleanup(shutil.rmtree, tmp)
-        pkg = os.path.join(tmp, "pkg")
-        subprocess.run(["/usr/bin/python3", os.path.join(WIDGETS_DIR, "stage.py"),
-                        os.path.join(WIDGETS_DIR, "limits"), pkg], check=True, capture_output=True)
-        harness = os.path.join(pkg, "contents/ui/Smoke.qml")
-        with open(harness, "w", encoding="utf-8") as fh:
-            fh.write("""import QtQuick
-Item {
-    width: 280
-    LimitsSource { id: src; port: 1; token: "" }
-    MetricRow { id: tall; width: 280; label: "Limit tygodniowy"; value: 86; reset: "poniedziałek 11:51" }
-    MetricRow { id: dense; width: 280; dense: true; label: "Limit tygodniowy"; value: 86; reset: "poniedziałek 11:51" }
-    ServiceCard { id: card; width: 280; dense: true; source: src; serviceKey: "claude"; title: "Claude" }
-    Component.onCompleted: {
-        console.warn("SMOKE " + (dense.implicitHeight < tall.implicitHeight) + "|" + card.padding)
-        Qt.quit()
-    }
-}
-""")
-        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
-        log = subprocess.run(["qml6", harness], env=env, capture_output=True, text=True, timeout=30).stderr
-        self.assertIn("SMOKE true|10", log)
-        problems = [line for line in log.splitlines()
-                    if re.search(r"Unable to assign|TypeError|ReferenceError|is not a type", line)]
-        self.assertEqual(problems, [])
+    def test_more_sessions_open_the_full_list_next_to_the_sidebar(self):
+        text = read("agents", "contents/ui/main.qml")
+        self.assertIn("onMoreRequested: morePopup.visible = !morePopup.visible", text)
+        self.assertIn("PlasmaCore.Dialog {", text)
+        self.assertIn("visualParent: side.moreButton", text)
 
-    def test_system_view_has_a_dense_layout_for_the_sidebar(self):
-        self.assertIn("dense: Plasmoid.configuration.sidebarMode", read("system", "contents/ui/main.qml"))
-        self.assertEqual(read("system", "contents/ui/FullSystem.qml").count("visible: !full.dense"), 3)
+    def test_popups_have_no_dense_variant_left(self):
+        for path in (("system", "contents/ui/FullSystem.qml"), ("limits", "contents/ui/ServiceCard.qml"),
+                     ("limits", "contents/ui/MetricRow.qml"), ("worktrees", "contents/ui/SummaryView.qml")):
+            with self.subTest(path=path):
+                self.assertNotIn("dense", read(*path))
 
 
 @unittest.skipUnless(shutil.which("make"), "brak make")

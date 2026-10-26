@@ -1,13 +1,15 @@
-"""Podgląd kafelków widżetów w docku, bez instalowania i bez Plasmy.
+"""Podgląd kafelków widżetów w docku i paska bocznego, bez instalowania i bez Plasmy.
 
 Użycie: /usr/bin/python3 widgets/preview.py [katalog-wyjściowy]   (domyślnie build/preview)
 
-Składa cztery pakiety (agenci, worktrees, system, Limity AI) do katalogu tymczasowego, a qml6
-offscreen rysuje ich kafelki (CompactAgents, CompactWorktrees, CompactSystem, CompactLimits)
-obok siebie na tle docka (background.panel, 64 px) z przykładowymi danymi. Każdy scenariusz
-daje osobny PNG: dock-tiles-<nazwa>.png. Do tego karty sesji agentów (SessionCard) we
-wszystkich stanach: session-cards.png. Ten sam kod sprawdza teksty kafelków i kart w testach
-(widgets/tests/test_dock_tiles.py).
+Składa pakiety (agenci, worktrees, system, Limity AI i nagłówek paska) do katalogu
+tymczasowego, a qml6 offscreen rysuje ich kafelki (CompactAgents, CompactWorktrees,
+CompactSystem, CompactLimits) obok siebie na tle docka (background.panel, 64 px) z przykładowymi
+danymi. Każdy scenariusz daje osobny PNG: dock-tiles-<nazwa>.png. Do tego karty sesji agentów
+(SessionCard) we wszystkich stanach: session-cards.png, i cały pasek boczny lewego monitora
+(nagłówek, SidebarAgents, SidebarSystem, SidebarWorktrees, SidebarLimits) w 420×1040 px:
+sidebar-<nazwa>.png. Ten sam kod sprawdza teksty i wymiary w testach
+(widgets/tests/test_dock_tiles.py, widgets/tests/test_sidebar_tiles.py).
 """
 from __future__ import annotations
 
@@ -231,13 +233,224 @@ Window {
 """
 
 
+GiB = 1024 ** 3
+
+# Pasek boczny na lewym monitorze: 420 px szerokości (size.sidebar), ok. 1040 px wysokości
+# (1080 px ekranu minus smukły pasek 30 px i odstępy pływającego panelu). Ramka panelu „west”
+# ma margines treści 10 px (round(radius.dock × 0,35), theme/plasma/generate.py).
+SIDEBAR_WIDTH = 420
+SIDEBAR_HEIGHT = 1040
+SIDEBAR_INSET = 10
+# Odstęp, który panel Plasmy 6.8 sam stawia między apletami (zmierzony na zrzucie z zagnieżdżonej
+# sesji, make sidebar-preview).
+SIDEBAR_APPLET_SPACING = 4
+
+
+def sidebar_session(sid, tool, project, state, ago, reason="", can=True, terminal="Konsole"):
+    return {"id": sid, "tool": tool, "project": project, "branch": "main", "worktree": "", "title": "",
+            "state": state, "reason": reason, "sinceTs": NOW_TS - ago, "lastActivityTs": NOW_TS - ago,
+            "lastAction": "", "canActivate": can, "terminal": terminal}
+
+
+# Przykładowe dane paska: zwykły dzień (5 żywych sesji i 1 zakończona), dużo sesji (lista
+# z „+N więcej”, worktrees do sprzątnięcia na pełnej partycji) i usługi, które nie działają.
+SIDEBAR_SCENARIOS = {
+    "typical": {
+        "sessions": [
+            sidebar_session("claude:a", "claude", "plasma-tide", "working", 20),
+            sidebar_session("claude:b", "claude", "legal-agents", "waiting", 180, "approval"),
+            sidebar_session("codex:c", "codex", "app5-mobile", "working", 45, terminal="Codex"),
+            sidebar_session("claude:d", "claude", "limity-ai", "done", 720),
+            sidebar_session("codex:e", "codex", "dev-dashboard", "idle", 5400, can=False, terminal=""),
+            sidebar_session("claude:f", "claude", "stary-projekt", "ended", 20000),
+        ],
+        "agentsAvailable": True,
+        "system": {"ready": True, "cpu": 34, "memory": 61, "memoryUsed": 9.8 * GiB, "memoryTotal": 16 * GiB,
+                   "gpu": {"available": True, "usage": 31, "usedVram": 0.6 * GiB, "totalVram": 8 * GiB},
+                   "disks": [{"target": "/", "usedPercent": 90.4, "free": 9.5 * GiB},
+                             {"target": "/home", "usedPercent": 52.0, "free": 412 * GiB}],
+                   "worktrees": [{"path": "/home/t/repo-wt", "isMain": False, "size": 2 * GiB, "removable": True}],
+                   "targets": ["/", "/home"]},
+        "worktrees": {"available": True, "active": 2, "clean": 0, "bytes": 0},
+        "limits": {"available": True,
+                   "chatgpt": {"session": None, "weekly": 91, "weeklyReset": "poniedziałek 20:00"},
+                   "claude": {"session": 86, "weekly": 64, "sessionReset": "18:30", "weeklyReset": "czwartek 11:51"}},
+    },
+    "busy": {
+        "sessions": [
+            sidebar_session(f"s:{i}", "claude" if i % 2 else "codex", name, state, ago, reason)
+            for i, (name, state, ago, reason) in enumerate([
+                ("plasma-tide", "waiting", 60, "question"), ("legal-agents", "waiting", 300, "approval"),
+                ("app5-mobile", "working", 10, ""), ("limity-ai", "working", 30, ""), ("dev-dashboard", "working", 90, ""),
+                ("alpha", "done", 600, ""), ("beta", "done", 1500, ""), ("gamma", "idle", 7200, ""),
+                ("delta", "idle", 9000, ""),
+            ])
+        ],
+        "agentsAvailable": True,
+        "system": {"ready": True, "cpu": 78, "memory": 83, "memoryUsed": 13.3 * GiB, "memoryTotal": 16 * GiB,
+                   "gpu": {"available": True, "usage": 64, "usedVram": 5.2 * GiB, "totalVram": 8 * GiB},
+                   "disks": [{"target": "/", "usedPercent": 88.0, "free": 11.4 * GiB}],
+                   "worktrees": [{"path": "/home/t/repo-wt", "isMain": False, "size": 3.2 * GiB, "removable": True}],
+                   "targets": ["/"]},
+        "worktrees": {"available": True, "active": 5, "clean": 15, "bytes": 16 * GiB},
+        "limits": {"available": True,
+                   "chatgpt": {"session": 22, "weekly": 40, "sessionReset": "17:05"},
+                   "claude": {"session": 9, "weekly": 30, "sessionReset": "16:10"}},
+    },
+    "offline": {
+        "sessions": [],
+        "agentsAvailable": False,
+        "system": {"ready": False, "problem": "missing", "cpu": None, "memory": None,
+                   "gpu": {"available": False},
+                   "disks": [{"target": "/", "usedPercent": 71.0, "free": 28 * GiB}],
+                   "worktrees": None, "targets": ["/"]},
+        "worktrees": {"available": False, "active": 0, "clean": 0, "bytes": 0},
+        "limits": {"available": False},
+    },
+}
+
+SIDEBAR_HARNESS = """import QtQuick
+import QtQuick.Window
+import "agents/contents/ui" as Agents
+import "worktrees/contents/ui" as Worktrees
+import "system/contents/ui" as System
+import "limits/contents/ui" as Limits
+import "sidebar/contents/ui" as Sidebar
+import "agents/contents/ui/tide" as Tide
+
+Window {
+    id: window
+    readonly property var sample: %(data)s
+    readonly property var sys: sample.system
+    readonly property var lim: sample.limits
+    width: %(width)d
+    height: %(height)d
+    visible: true
+    color: Tide.Tokens.backgroundDesktop
+
+    // Pulpit pod pływającym panelem i sam panel (tło panelu z kryciem z palety, promień docka).
+    Rectangle { anchors.fill: parent; color: Tide.Tokens.backgroundDesktop }
+    Rectangle {
+        anchors.fill: parent
+        radius: Tide.Tokens.radiusDock
+        color: Qt.tint(Tide.Tokens.backgroundDesktop, Qt.rgba(Tide.Tokens.backgroundPanel.r,
+            Tide.Tokens.backgroundPanel.g, Tide.Tokens.backgroundPanel.b, Tide.Tokens.opacityPanel))
+        border.width: 1
+        border.color: Qt.rgba(Tide.Tokens.textPrimary.r, Tide.Tokens.textPrimary.g, Tide.Tokens.textPrimary.b,
+                              Tide.Tokens.opacityBorder)
+    }
+
+    Item {
+        id: sysStub
+        readonly property bool sensorsReady: window.sys.ready
+        readonly property string problem: window.sys.problem || ""
+        readonly property var cpuPercent: window.sys.cpu
+        readonly property var memoryPercent: window.sys.memory
+        readonly property var memoryUsed: window.sys.memoryUsed === undefined ? null : window.sys.memoryUsed
+        readonly property var memoryTotal: window.sys.memoryTotal === undefined ? null : window.sys.memoryTotal
+        readonly property var gpu: window.sys.gpu
+        readonly property var disks: window.sys.disks
+        readonly property var fullerDisk: disks.reduce((a, d) => a === null || d.usedPercent > a.usedPercent ? d : a, null)
+        readonly property var worktrees: window.sys.worktrees
+        readonly property var targets: window.sys.targets
+        readonly property var info: ({ hostname: "tide" })
+        readonly property var apps: ({ systemMonitor: "org.kde.plasma-systemmonitor", diskUsage: "org.kde.filelight" })
+        readonly property QtObject history: QtObject {
+            readonly property int capacity: 30
+            readonly property var samples: window.sys.ready
+                ? [12, 18, 15, 22, 30, 41, 38, 27, 25, 33, 52, 61, 47, 35, 29, 24, 31, 36, 44, 39,
+                   28, 22, 26, 34, 48, 57, 43, 37, 31, window.sys.cpu] : []
+        }
+        function launch(app, url) {}
+    }
+
+    QtObject {
+        id: limStub
+        readonly property bool available: window.lim.available
+        readonly property bool configured: true
+        readonly property bool checked: true
+        readonly property var snapshot: ({ paused: false })
+        function service(key) { return { state: available ? "ok" : "offline" } }
+        function remaining(key, metric) {
+            if (!available) return null
+            const value = window.lim[key][metric]
+            return typeof value === "number" ? value : null
+        }
+        function panelValue(key) {
+            const values = [remaining(key, "session"), remaining(key, "weekly")].filter(v => v !== null)
+            return values.length ? Math.min.apply(null, values) : null
+        }
+        function reset(key, metric) { return available ? (window.lim[key][metric + "Reset"] || null) : null }
+        function lastRead(key) { return available ? "16:41" : null }
+        function open(key) {}
+    }
+
+    Column {
+        id: column
+        x: %(inset)d
+        y: %(inset)d
+        width: parent.width - %(inset)d * 2
+        spacing: %(spacing)d
+
+        Sidebar.Header { id: header; width: parent.width; shortcutText: "Meta+S" }
+        Agents.SidebarAgents {
+            id: agents
+            width: parent.width
+            sessions: window.sample.sessions
+            available: window.sample.agentsAvailable
+            nowTs: %(now)d
+        }
+        System.SidebarSystem { id: system; width: parent.width; source: sysStub }
+        Worktrees.SidebarWorktrees {
+            id: worktrees
+            width: parent.width
+            available: window.sample.worktrees.available
+            activeCount: window.sample.worktrees.active
+            cleanCount: window.sample.worktrees.clean
+            cleanBytes: window.sample.worktrees.bytes
+        }
+        Limits.SidebarLimits { id: limits; width: parent.width; source: limStub }
+    }
+
+    Timer {
+        interval: 500; running: true
+        onTriggered: {
+            const tiles = [header, agents, system, worktrees, limits]
+            const report = {
+                heights: tiles.map(t => Math.round(t.implicitHeight)),
+                total: Math.round(column.implicitHeight + %(inset)d * 2),
+                height: window.height,
+                agents: { rows: agents.rows, hidden: agents.hiddenCount, ended: agents.endedCount,
+                          summary: agents.summary },
+                system: { notice: system.noticeText, gpu: system.showGpu ? system.gpuText : "",
+                          disks: system.diskLines, note: system.diskNote },
+                worktrees: { summary: worktrees.summary, problem: worktrees.showProblem ? worktrees.problemText : "" },
+                limits: { rows: limits.rows.map(r => [r.label, r.valueText, r.note]), notice: limits.notice }
+            }
+            const png = "%(png)s"
+            if (png === "") {
+                console.warn("RESULT " + JSON.stringify(report))
+                Qt.quit()
+                return
+            }
+            window.contentItem.grabToImage(function (result) {
+                result.saveToFile(png)
+                console.warn("RESULT " + JSON.stringify(report))
+                Qt.quit()
+            })
+        }
+    }
+}
+"""
+
+
 def stage_all(target: str, palette_path: str = DEFAULT_PALETTE) -> str:
     """Pakiety do katalogu target. Limity AI bez prawdziwego tokenu: kafelek go nie potrzebuje."""
     previous = os.environ.get("LIMITY_CONFIG")
     os.environ["LIMITY_CONFIG"] = os.path.join(target, "brak-konfiguracji.json")
     try:
         with contextlib.redirect_stderr(io.StringIO()):
-            for name in WIDGETS:
+            for name in (*WIDGETS, "sidebar"):
                 stage(os.path.join(WIDGETS_DIR, name), os.path.join(target, name), palette_path)
     finally:
         if previous is None:
@@ -282,6 +495,18 @@ def render_cards(sessions: list[dict] | None = None, png: str | None = None,
     return _run(qml, palette_path, "kart sesji")
 
 
+def render_sidebar(scenario: dict, png: str | None = None, palette_path: str = DEFAULT_PALETTE,
+                   spacing: int = SIDEBAR_APPLET_SPACING) -> dict:
+    """Rysuje cały pasek boczny (nagłówek i cztery kafelki) w 420×1040 px; zwraca teksty i wysokości.
+
+    spacing to odstęp, który panel Plasmy dokłada między apletami (resztę przerwy mają kafelki).
+    """
+    qml = SIDEBAR_HARNESS % {"data": json.dumps(scenario, ensure_ascii=False), "width": SIDEBAR_WIDTH,
+                             "height": SIDEBAR_HEIGHT, "inset": SIDEBAR_INSET, "spacing": spacing, "now": NOW_TS,
+                             "png": os.path.abspath(png) if png else ""}
+    return _run(qml, palette_path, "paska bocznego")
+
+
 def main(argv: list[str]) -> int:
     out_dir = argv[0] if argv else os.path.join(ROOT, "build", "preview")
     os.makedirs(out_dir, exist_ok=True)
@@ -292,6 +517,11 @@ def main(argv: list[str]) -> int:
     png = os.path.join(out_dir, "session-cards.png")
     cards = render_cards(png=png)
     print(f"{os.path.abspath(png)}: karty sesji ({', '.join(c['state'] for c in cards)})")
+    for name, scenario in SIDEBAR_SCENARIOS.items():
+        png = os.path.join(out_dir, f"sidebar-{name}.png")
+        report = render_sidebar(scenario, png)
+        print(f"{os.path.abspath(png)}: pasek boczny {report['heights']} px, razem {report['total']}"
+              f" z {report['height']} px")
     return 0
 
 

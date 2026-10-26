@@ -11,3 +11,6 @@ CountPill 1.0 CountPill.qml
 DaemonSource 1.0 DaemonSource.qml
 History 1.0 History.qml
 BarChart 1.0 BarChart.qml
+SidebarTile 1.0 SidebarTile.qml
+SidebarMeter 1.0 SidebarMeter.qml
+TextButton 1.0 TextButton.qml

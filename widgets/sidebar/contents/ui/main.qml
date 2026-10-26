@@ -57,43 +57,12 @@ PlasmoidItem {
         onTriggered: root.revealed = false
     }
 
-    fullRepresentation: RowLayout {
-        Layout.minimumHeight: Math.max(title.implicitHeight, badge.implicitHeight) + Kirigami.Units.smallSpacing * 2
-        Layout.preferredHeight: Layout.minimumHeight
-        Layout.maximumHeight: Layout.minimumHeight
+    fullRepresentation: Header {
+        shortcutText: root.shortcutText
+        Layout.minimumHeight: implicitHeight
+        Layout.preferredHeight: implicitHeight
+        Layout.maximumHeight: implicitHeight
         Layout.minimumWidth: Kirigami.Units.gridUnit * 6
-        spacing: Kirigami.Units.smallSpacing
-
-        Text {
-            id: title
-            Layout.fillWidth: true
-            Layout.leftMargin: Kirigami.Units.smallSpacing
-            text: "Tide"
-            color: Kirigami.Theme.textColor
-            font.family: Tide.Theme.uiFamily
-            font.pixelSize: 15
-            font.weight: Font.DemiBold
-            elide: Text.ElideRight
-        }
-
-        // Plakietka ze skrótem, jak na mocku: Geist Mono na tle karty.
-        Rectangle {
-            id: badge
-            Layout.rightMargin: Kirigami.Units.smallSpacing
-            visible: root.shortcutText !== ""
-            implicitWidth: shortcut.implicitWidth + 14
-            implicitHeight: shortcut.implicitHeight + 6
-            radius: 6
-            color: Tide.Tokens.backgroundCard
-
-            Text {
-                id: shortcut
-                anchors.centerIn: parent
-                text: root.shortcutText
-                color: Tide.Tokens.textMuted
-                font.family: Tide.Theme.monoFamily
-                font.pixelSize: 11
-            }
-        }
+        Layout.fillWidth: true
     }
 }
