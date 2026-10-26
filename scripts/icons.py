@@ -38,6 +38,9 @@ TOOL_FILES = [
     "theme/icons/desktop.py",
     "theme/icons/tide_icons.py",
     "theme/icons/fixes.json",
+    "theme/icons/glyphs.py",
+    "theme/icons/glyphs.json",
+    *sorted(str(p.relative_to(ROOT)) for p in (ROOT / "theme/icons/glyphs").glob("*.svg")),
     "theme/palette/mist.json",
     "tools/make_tile.py",
 ]

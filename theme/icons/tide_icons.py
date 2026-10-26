@@ -11,6 +11,9 @@ Użycie:
       Buduje samą nakładkę do podglądu, bez zmian w systemie.
   tide-icons themes
       Porównuje zainstalowane motywy ikon jako kandydatów na motyw bazowy.
+  tide-icons pin-glyphs
+      Pobiera logo Simple Icons dopisane do glyphs.json bez sumy SHA-256
+      i zapisuje ich sumy (sprawdź pobrane pliki przed commitem).
 """
 from __future__ import annotations
 
@@ -26,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from theme.icons import desktop  # noqa: E402
+from theme.icons import desktop, glyphs  # noqa: E402
 from theme.icons.audit import (MANIFEST, OVERLAY, Resolver, audit, load_fixes, plan,  # noqa: E402
                                report, to_json)
 from theme.icons.catalog import HICOLOR, Xdg, visible_apps  # noqa: E402
@@ -68,18 +71,24 @@ def base_resolver(xdg: Xdg, base: str) -> Resolver:
     return resolver
 
 
+def cache_home() -> Path:
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path(os.environ.get("HOME") or Path.home()) / ".cache")
+
+
 def build_overlay(xdg: Xdg, base: str, out: Path, sources: list | None = None):
     resolver = base_resolver(xdg, base)
     apps = sources if sources is not None else visible_apps(xdg)
-    result = plan(apps, resolver, base)
-    manifest = build(result, resolver, json.loads(PALETTE.read_text()), out)
+    palette = json.loads(PALETTE.read_text())
+    muted = glyphs.resolve(glyphs.load_config(), palette, resolver, cache_home())
+    result = plan(apps, resolver, base, muted)
+    manifest = build(result, resolver, palette, out)
     return result, manifest
 
 
 def summary(manifest: dict) -> str:
     kinds = [entry["kind"] for entry in manifest["icons"].values()]
-    return (f"aliasy: {kinds.count('alias')}, kafelki: {kinds.count('tile')}, glify: {kinds.count('glyph')}, "
-            f"foldery: {manifest['folders']}")
+    return (f"stonowane glify: {kinds.count('muted')}, aliasy: {kinds.count('alias')}, "
+            f"kafelki: {kinds.count('tile')}, glify: {kinds.count('glyph')}, foldery: {manifest['folders']}")
 
 
 def refresh_desktop() -> None:
@@ -145,6 +154,16 @@ def cmd_themes(args) -> int:
     return 0
 
 
+def cmd_pin_glyphs(args) -> int:
+    path = Path(os.environ.get("TIDE_GLYPHS") or glyphs.CONFIG)
+    try:
+        added = glyphs.pin(path, cache_home())
+    except glyphs.GlyphError as error:
+        raise SystemExit(str(error)) from error
+    print(f"Dopisane sumy: {', '.join(added)}." if added else "Wszystkie logo Simple Icons mają już sumy.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tide-icons", description="Audyt i utrzymanie ikon Tide.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -163,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
     p_build.set_defaults(func=cmd_build)
     p_themes = sub.add_parser("themes", help="porównuje kandydatów na motyw bazowy")
     p_themes.set_defaults(func=cmd_themes)
+    p_pin = sub.add_parser("pin-glyphs", help="zapisuje sumy SHA-256 nowych logo Simple Icons")
+    p_pin.set_defaults(func=cmd_pin_glyphs)
     args = parser.parse_args(argv)
     return args.func(args)
 
