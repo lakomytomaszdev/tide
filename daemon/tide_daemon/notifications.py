@@ -1,4 +1,5 @@
-"""Powiadomienia KDE „Agent czeka” przez org.freedesktop.Notifications.
+"""Powiadomienia KDE „Agent czeka” (Notifier) i „Raport poranny gotowy” (ReportNotifier, niżej)
+przez org.freedesktop.Notifications.
 
 - sesja zaczyna czekać → Notify z przyciskiem „Przejdź” (i domyślną akcją po kliknięciu),
 - ta sama sesja nie dostaje drugiego powiadomienia, dopóki nie przestanie czekać (attention.py),
@@ -103,3 +104,65 @@ class Notifier(QObject):
         sid = self.session_of.pop(int(notice), None)
         if sid and self.notice_of.get(sid) == int(notice):
             del self.notice_of[sid]
+
+
+REPORT_ICON = "view-calendar-day"
+OPEN = "open"
+REPORT_ACTIONS = ("default", "Otwórz", OPEN, "Otwórz")
+
+
+class ReportNotifier(QObject):
+    """Powiadomienie „Raport poranny gotowy” z przyciskiem „Otwórz” (report_monitor.py).
+
+    Nowy raport zastępuje powiadomienie poprzedniego (replaces_id), a „Otwórz” albo kliknięcie
+    w powiadomienie woła opener(ścieżka index.html)."""
+
+    def __init__(self, opener, bus: QDBusConnection | None = None, parent=None):
+        super().__init__(parent)
+        self.opener = opener                  # funkcja(ścieżka) -> bool
+        self.bus = bus or QDBusConnection.sessionBus()
+        self.notice = 0
+        self.path_of: dict[int, str] = {}
+        self._watchers: set[QDBusPendingCallWatcher] = set()
+        self.bus.connect(SERVICE, PATH, IFACE, "ActionInvoked", self._action_invoked)
+        self.bus.connect(SERVICE, PATH, IFACE, "NotificationClosed", self._closed)
+
+    def notify(self, summary: str, body: str, path: str) -> None:
+        msg = QDBusMessage.createMethodCall(SERVICE, PATH, IFACE, "Notify")
+        msg.setArguments([
+            APP_NAME,
+            QDBusArgument(self.notice, QMetaType.Type.UInt.value),
+            REPORT_ICON,
+            summary,
+            html.escape(body, quote=False),
+            QDBusArgument(list(REPORT_ACTIONS), QMetaType.Type.QStringList.value),
+            {},
+            QDBusArgument(-1, QMetaType.Type.Int.value),
+        ])
+        watcher = QDBusPendingCallWatcher(self.bus.asyncCall(msg), self)
+        self._watchers.add(watcher)
+        watcher.finished.connect(lambda w, path=path: self._notified(w, path))
+
+    def _notified(self, watcher: QDBusPendingCallWatcher, path: str) -> None:
+        self._watchers.discard(watcher)
+        reply = QDBusPendingReply(watcher).reply()
+        watcher.deleteLater()
+        if reply.type() != QDBusMessage.MessageType.ReplyMessage or not reply.arguments():
+            return
+        self.notice = int(reply.arguments()[0])
+        self.path_of[self.notice] = path
+
+    @pyqtSlot("uint", str)
+    def _action_invoked(self, notice: int, action: str) -> None:
+        path = self.path_of.get(int(notice))
+        if path and action in (OPEN, "default"):
+            try:
+                self.opener(path)
+            except Exception as exc:  # otwarcie przeglądarki nie może położyć usługi
+                print(f"tide-daemon: nie udało się otworzyć raportu: {exc}", flush=True)
+
+    @pyqtSlot("uint", "uint")
+    def _closed(self, notice: int, _reason: int) -> None:
+        self.path_of.pop(int(notice), None)
+        if int(notice) == self.notice:
+            self.notice = 0

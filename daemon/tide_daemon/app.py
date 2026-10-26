@@ -4,6 +4,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees] [--claude-dir DIR]
                                [--workspace DIR] [--worktree-depth N] [--no-processes]
                                [--no-notifications] [--no-krunner] [--no-tab-marks] [--now CZAS]
                                [--idle-after SEKUNDY | --no-idle]
+                               [--report [--report-days N]] [--report-dir DIR] [--report-at GG:MM]
+                               [--no-report] [--report-delay SEKUNDY]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
@@ -15,7 +17,13 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees] [--claude-dir DIR]
 --no-tab-marks     bez znacznika stanu na kartach Konsole (prefiks tytułu i kolor karty),
 --now              zamrożony zegar (ISO 8601) — dla testów i diagnostyki,
 --idle-after       próg bezczynności w sekundach dla /Idle (domyślnie wallpaper.dozeAfterS z palety),
---no-idle          bez obiektu /Idle (bezczynność z kompozytora Wayland).
+--no-idle          bez obiektu /Idle (bezczynność z kompozytora Wayland),
+--report           jednorazowy raport poranny za ostatnie --report-days dób (domyślnie 1) do --report-dir;
+                   bez D-Bus, bez powiadomienia i bez pliku stanu — wypisuje ścieżkę index.html,
+--report-dir       katalog raportów (domyślnie $XDG_DATA_HOME/tide/reports),
+--report-at        godzina raportu porannego (domyślnie „at” z $XDG_CONFIG_HOME/tide/report.json albo 07:00),
+--no-report        bez raportu porannego z terminu (Generate() z D-Bus działa dalej),
+--report-delay     ile sekund po starcie usługi sprawdzić, czy raport jest należny (domyślnie 120).
 """
 import argparse
 import json
@@ -56,6 +64,12 @@ def parse_args(argv):
     parser.add_argument("--no-idle", action="store_true")
     parser.add_argument("--print", dest="print_once", action="store_true")
     parser.add_argument("--print-worktrees", action="store_true")
+    parser.add_argument("--report", action="store_true")
+    parser.add_argument("--report-days", type=float, default=1.0)
+    parser.add_argument("--report-dir")
+    parser.add_argument("--report-at")
+    parser.add_argument("--no-report", action="store_true")
+    parser.add_argument("--report-delay", type=float)
     return parser.parse_args(argv)
 
 
@@ -70,6 +84,19 @@ def main(argv=None) -> int:
         clock = lambda: frozen  # noqa: E731
 
     scanner = AgentScanner(args.claude_dir, args.codex_dir)
+
+    from .reports import schedule as report_schedule
+    try:
+        report_settings, warnings = report_schedule.load_settings(
+            report_schedule.config_path(), args.report_at, False if args.no_report else None)
+    except ValueError as exc:
+        print(f"tide-daemon: --report-at: {exc}", file=sys.stderr)
+        return 2
+    for warning in warnings:
+        print(f"tide-daemon: {warning}", file=sys.stderr, flush=True)
+
+    if args.report:
+        return print_report(args, clock, scanner, report_settings)
 
     if args.print_worktrees:
         from . import processes
@@ -111,8 +138,9 @@ def main(argv=None) -> int:
     # KRunner przed główną nazwą: gdy org.tide.Daemon jest już na magistrali, wtyczka też.
     krunner = None if args.no_krunner else start_krunner(app, args, clock, monitor, trees)  # noqa: F841
     idle = None if args.no_idle else start_idle(app, args)
+    report = start_report(app, args, clock, report_settings, monitor, trees)
     try:
-        holder = dbus_service.register(monitor, trees, idle=idle)  # noqa: F841 — musi żyć do końca
+        holder = dbus_service.register(monitor, trees, idle=idle, reports=report)  # noqa: F841 — musi żyć do końca
     except RuntimeError as exc:
         print(f"tide-daemon: {exc}", file=sys.stderr, flush=True)
         return 1
@@ -126,6 +154,7 @@ def main(argv=None) -> int:
     trees.start()  # pierwsze odczytanie repozytoriów już w tle, po rejestracji na magistrali
     if idle is not None:
         idle.start()  # połączenie z kompozytorem po rejestracji — /Idle odpowiada od razu (Idle = false)
+    report.start()  # pierwsze sprawdzenie terminu raportu po --report-delay (logowanie)
 
     if not args.no_notifications:
         from .notifications import Notifier
@@ -151,11 +180,63 @@ def main(argv=None) -> int:
     print(f"tide-daemon: działa, {len(scanner.logs)} plików sesji z ostatniej doby", flush=True)
     code = app.exec()
     trees.stop()
+    report.stop()
     if idle is not None:
         idle.stop()
     if marker is not None:
         marker.clear()  # karty wracają do swoich tytułów i kolorów, gdy usługa się kończy
     return code
+
+
+def print_report(args, clock, scanner, settings) -> int:
+    """Jednorazowy raport (--report): bez D-Bus, bez powiadomienia, bez pliku stanu."""
+    from . import processes, reports
+    from .report_monitor import report_root
+    from .reports import schedule
+    from .tabmarks import palette_candidates
+    now = clock()
+    scanner.discover(now)
+    scanner.update()
+    procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
+    days = max(0.01, min(args.report_days, schedule.MAX_PERIOD / 86400))
+    try:
+        index, report = reports.generate(
+            report_root(args.report_dir), schedule.report_day(now, settings).isoformat(), now - days * 86400, now,
+            palette=reports.load_palette(palette_candidates()), workspace=args.workspace,
+            claude_root=args.claude_dir, codex_root=args.codex_dir, live=scanner.sessions(now, procs),
+            max_depth=args.worktree_depth)
+    except (OSError, RuntimeError) as exc:
+        print(f"tide-daemon: raport: {exc}", file=sys.stderr)
+        return 1
+    print(index)
+    print(f"{len(report.active)} projektów z ruchem, {len(report.quiet)} bez ruchu", file=sys.stderr)
+    return 0
+
+
+def start_report(app, args, clock, settings, monitor, trees):
+    """Raport poranny (report_monitor.py): termin, D-Bus /Reports, powiadomienie z „Otwórz”."""
+    from .report_monitor import ReportMonitor, report_root
+    from .reports import schedule
+    from .tabmarks import palette_candidates
+
+    notifier = None
+    if not args.no_notifications:
+        from .notifications import ReportNotifier
+        notifier = ReportNotifier(trees.launchers.open_report, parent=app)
+
+    def worktree_items():
+        # Gotowa lista z obszaru Worktrees (z rozmiarami); przed pierwszym odczytem raport przejrzy repozytoria sam.
+        items = trees.scanner.snapshot(worktrees.agent_cwds(monitor.sessions, monitor.procs))
+        return items or None
+
+    kwargs = {}
+    if args.report_delay is not None:
+        kwargs["login_delay"] = max(0.0, args.report_delay)
+    return ReportMonitor(settings, root=report_root(args.report_dir), state_file=schedule.state_path(),
+                         palette_paths=palette_candidates(), workspace=args.workspace, claude_root=args.claude_dir,
+                         codex_root=args.codex_dir, max_depth=args.worktree_depth,
+                         sessions=lambda: monitor.sessions, worktrees=worktree_items, notifier=notifier,
+                         clock=clock, parent=app, **kwargs)
 
 
 def start_idle(app, args):
@@ -176,7 +257,11 @@ def start_krunner(app, args, clock, monitor, trees):
     from .krunner.runner import KRunnerCore, LazyIndex
 
     index = SessionIndex(args.claude_dir, args.codex_dir, clock=clock)
+    from .report_monitor import report_root
+    from .reports.schedule import latest_index
+    reports_dir = report_root(args.report_dir)
     core = KRunnerCore(index, lambda: trees.scanner.snapshot(), trees.launchers,
+                       report=lambda: latest_index(reports_dir),
                        live=lambda: monitor.sessions, activate=monitor.activate, clock=clock)
     try:
         return service.register(core, lambda post: LazyIndex(index, post), app)

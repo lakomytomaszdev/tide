@@ -11,7 +11,8 @@ Rodzaje dopasowań (id dopasowania):
 - `session:<narzędzie>:<id-sesji>` — Uruchom: przejście do okna, jeśli sesja jeszcze działa,
   inaczej wznowienie w nowym oknie Konsoli w katalogu sesji,
 - `project:<ścieżka>`  — główny katalog repozytorium z katalogu projektów → Konsole,
-- `worktree:<ścieżka>` — worktree (szukany po gałęzi) → Konsole.
+- `worktree:<ścieżka>` — worktree (szukany po gałęzi) → Konsole,
+- `report:latest`      — „raport” (albo „rap”, „raport poranny”) → najnowszy raport poranny w przeglądarce.
 Akcje dodatkowe: `terminal` (sam katalog w Konsoli, dla sesji) i `rider` (katalog w Riderze).
 
 Zapytanie zaczynające się od „ai ” pokazuje tylko sesje. Zwykłe zapytanie ma co najmniej
@@ -35,7 +36,10 @@ TOOL_NAMES = {"claude": "Claude", "codex": "Codex"}
 TOOL_ICONS = {"claude": "utilities-terminal", "codex": "openai"}
 PROJECT_ICON = "folder-git"
 WORKTREE_ICON = "vcs-branch"
-CATEGORIES = {"session": "Sesje agentów", "project": "Projekty", "worktree": "Worktrees"}
+CATEGORIES = {"session": "Sesje agentów", "project": "Projekty", "worktree": "Worktrees", "report": "Raport poranny"}
+REPORT_KEYWORD = "raport poranny"
+REPORT_MATCH = "report:latest"
+REPORT_ICON = "view-calendar-day"
 ACTIONS = {
     TERMINAL: ("Otwórz katalog w terminalu", "utilities-terminal"),
     RIDER: ("Otwórz w Riderze", "jetbrains-rider"),
@@ -47,7 +51,8 @@ HIGH, MODERATE, LOW = 70, 50, 30
 
 class KRunnerCore:
     def __init__(self, index, worktrees, launchers, live=None, activate=None, clock=time.time,
-                 exists=os.path.isdir, home: str | None = None):
+                 exists=os.path.isdir, home: str | None = None, report=None):
+        self.report = report or (lambda: "")  # funkcja() → index.html najnowszego raportu porannego
         self.index = index
         self.worktrees = worktrees
         self.launchers = launchers
@@ -74,7 +79,21 @@ class KRunnerCore:
             return self._sessions(words[1:], SESSIONS_ONLY_LIMIT, recent_if_empty=True)
         if len(query) < MIN_QUERY:
             return []
-        return self._sessions(words, LIMITS["session"]) + self._projects(words) + self._worktrees(words)
+        report = self._report(query)
+        return report + self._sessions(words, LIMITS["session"]) + self._projects(words) + self._worktrees(words)
+
+    def _report(self, query: str) -> list[dict]:
+        """„raport” (albo jego początek od 3 liter, „raport poranny”) → najnowszy raport poranny."""
+        text = " ".join(search.tokens(query))
+        if not (REPORT_KEYWORD.startswith(text) or text.startswith(REPORT_KEYWORD.split()[0])):
+            return []
+        path = self.report()
+        if not path or not os.path.isfile(path):
+            return []
+        day = os.path.basename(os.path.dirname(path))
+        exact = text in (REPORT_KEYWORD, REPORT_KEYWORD.split()[0])
+        return [_match(REPORT_MATCH, f"Raport poranny · {day}", REPORT_ICON, HIGH if exact else MODERATE,
+                       1.0 if exact else 0.8, f"Otwórz w przeglądarce · {self._short(path)}", CATEGORIES["report"], [])]
 
     def _sessions(self, words, limit, recent_if_empty=False) -> list[dict]:
         now = self.clock()
@@ -146,6 +165,9 @@ class KRunnerCore:
     # --- uruchomienie ----------------------------------------------------------------------
 
     def run(self, match_id: str, action_id: str = "") -> bool:
+        if match_id == REPORT_MATCH:
+            path = self.report()
+            return bool(path) and self.launchers.open_report(path)
         kind, _, key = (match_id or "").partition(":")
         if kind == "session":
             return self._run_session(key, action_id)

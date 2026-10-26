@@ -207,6 +207,29 @@ class CoreTest(unittest.TestCase):
             self.assertFalse(self.core.run(match_id, ""), match_id)
         self.assertEqual(self.launchers.spawned, [])
 
+    # --- raport poranny --------------------------------------------------------------------
+
+    def test_report_keyword_opens_latest_report(self):
+        reports = os.path.join(self.home, "reports", "2026-10-26")
+        os.makedirs(reports)
+        index = os.path.join(reports, "index.html")
+        core = KRunnerCore(self.index, lambda: self.trees, self.launchers, clock=lambda: history.NOW,
+                           home=self.home, report=lambda: index)
+        self.assertEqual(core.match("raport"), [], "bez pliku raportu nie ma czego otwierać")
+        with open(index, "w", encoding="utf-8") as fh:
+            fh.write("<!doctype html>")
+        for query in ("raport", "Raport poranny", "rap"):
+            first = core.match(query)[0]
+            self.assertEqual(first["id"], "report:latest", query)
+        m = core.match("raport")[0]
+        self.assertEqual((m["text"], m["categoryRelevance"]), ("Raport poranny · 2026-10-26", HIGH))
+        self.assertEqual(m["properties"]["subtext"], "Otwórz w przeglądarce · ~/reports/2026-10-26/index.html")
+        self.assertNotIn("report:latest", [x["id"] for x in core.match("alpha")])
+        self.assertTrue(core.run("report:latest", ""))
+        self.assertEqual(self.launchers.spawned,
+                         [(self.scoped(os.path.join(self.fake, "xdg-open"), index), reports)])
+        self.assertFalse(self.core.run("report:latest", ""), "bez źródła raportu nic się nie otwiera")
+
 
 class LazyIndexTest(unittest.TestCase):
     class SlowIndex:

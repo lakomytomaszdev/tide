@@ -48,6 +48,7 @@ class Launchers:
         env = os.environ if env is None else env
         home = env.get("HOME") or os.path.expanduser("~")
         search = path if path is not None else env.get("PATH", "")
+        self.search = search
         self.home = home
         self.terminal = shutil.which("konsole", path=search) or ""
         self.rider = env.get("TIDE_RIDER") or shutil.which("rider", path=search) or next(
@@ -105,6 +106,13 @@ class Launchers:
         if app not in (TERMINAL, RIDER):
             return False  # okno Worktrees otwiera tylko show_window()
         return self.spawn(self.command(app, path), path)
+
+    def open_report(self, path: str) -> bool:
+        """Raport poranny w domyślnej przeglądarce (xdg-open). Tylko istniejący plik .html."""
+        opener = shutil.which("xdg-open", path=self.search) or ""
+        if not opener or not path.endswith(".html") or not os.path.isfile(path):
+            return False
+        return self.spawn(self._scoped([opener, path]), os.path.dirname(path))
 
     def show_window(self) -> bool:
         """Okno Worktrees; drugie uruchomienie samo przekazuje prośbę o pokazanie pierwszemu."""

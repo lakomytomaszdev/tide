@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Service
 Name=Tide: agenci i projekty
-Comment=Wznawia sesje Claude Code i Codexa z ostatnich 30 dni, otwiera projekty i worktrees
+Comment=Wznawia sesje Claude Code i Codexa z ostatnich 30 dni, otwiera projekty, worktrees i raport poranny
 Icon=utilities-terminal
 X-KDE-PluginInfo-Name=tide
 X-KDE-PluginInfo-Author=Tide
@@ -13,5 +13,5 @@ X-Plasma-DBusRunner-Service=org.tide.Daemon.KRunner
 X-Plasma-DBusRunner-Path=/KRunner
 X-Plasma-Request-Actions-Once=true
 X-Plasma-Runner-Min-Letter-Count=3
-X-Plasma-Runner-Syntaxes=:q:,ai :q:
-X-Plasma-Runner-Syntax-Descriptions=Sesje agentów z ostatnich 30 dni oraz projekty i worktrees pasujące do :q:,Tylko sesje agentów pasujące do :q:
+X-Plasma-Runner-Syntaxes=:q:,ai :q:,raport
+X-Plasma-Runner-Syntax-Descriptions=Sesje agentów z ostatnich 30 dni oraz projekty i worktrees pasujące do :q:,Tylko sesje agentów pasujące do :q:,Najnowszy raport poranny w przeglądarce

@@ -47,7 +47,8 @@ FAKES = {"systemctl": SYSTEMCTL, "kpackagetool6": KPACKAGETOOL, "kwriteconfig6":
          "qdbus6": QDBUS, "update-desktop-database": LOG_ONLY, "kbuildsycoca6": LOG_ONLY,
          # Programy otwierane przez usługę (worktrees, KRunner) — tylko zapis wywołania, żadne okno
          # nie powstaje, a systemd-run nie dotyka prawdziwego menedżera usług użytkownika.
-         "systemd-run": LOG_ONLY, "konsole": LOG_ONLY, "rider": LOG_ONLY, "claude": LOG_ONLY, "codex": LOG_ONLY}
+         "systemd-run": LOG_ONLY, "konsole": LOG_ONLY, "rider": LOG_ONLY, "claude": LOG_ONLY, "codex": LOG_ONLY,
+         "xdg-open": LOG_ONLY}
 
 
 def make_env(tmp: str) -> dict:

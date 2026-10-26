@@ -32,6 +32,12 @@ Obiekt /Idle, interfejs org.tide.Daemon.Idle (bezczynność użytkownika dla tap
 - IsIdle() -> b              to samo co Idle, jednym wywołaniem (dla QML),
 - State() -> s               JSON {available, idle, thresholdMs, idleForMs, source} — diagnostyka,
 - sygnał IdleChanged(b idle) bezczynność się zmieniła.
+
+Obiekt /Reports, interfejs org.tide.Daemon.Reports (raport poranny):
+- Generate() -> s            składa raport bieżącej doby teraz (bez powiadomienia); ścieżka index.html
+                             albo pusty napis przy błędzie (odpowiedź po zakończeniu),
+- Latest() -> s              ścieżka index.html najnowszego raportu albo pusty napis,
+- sygnał Ready(s path)       powstał nowy raport.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
@@ -43,6 +49,8 @@ WORKTREES_PATH = "/Worktrees"
 WORKTREES_IFACE = "org.tide.Daemon.Worktrees"
 IDLE_PATH = "/Idle"
 IDLE_IFACE = "org.tide.Daemon.Idle"
+REPORTS_PATH = "/Reports"
+REPORTS_IFACE = "org.tide.Daemon.Reports"
 
 AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
   <method name="Sessions"><arg name="json" type="s" direction="out"/></method>
@@ -79,6 +87,12 @@ WORKTREES_XML = f"""<interface name="{WORKTREES_IFACE}">
     <arg name="json" type="s" direction="out"/>
   </method>
   <signal name="Changed"/>
+</interface>"""
+
+REPORTS_XML = f"""<interface name="{REPORTS_IFACE}">
+  <method name="Generate"><arg name="path" type="s" direction="out"/></method>
+  <method name="Latest"><arg name="path" type="s" direction="out"/></method>
+  <signal name="Ready"><arg name="path" type="s"/></signal>
 </interface>"""
 
 IDLE_XML = f"""<interface name="{IDLE_IFACE}">
@@ -208,7 +222,31 @@ class IdleAdaptor(QDBusAbstractAdaptor):
         return self.monitor.state_json()
 
 
-def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None) -> QObject:
+@pyqtClassInfo("D-Bus Interface", REPORTS_IFACE)
+@pyqtClassInfo("D-Bus Introspection", REPORTS_XML)
+class ReportsAdaptor(QDBusAbstractAdaptor):
+    Ready = pyqtSignal(str)
+
+    def __init__(self, parent: QObject, monitor, bus: QDBusConnection):
+        super().__init__(parent)
+        self.monitor = monitor
+        self.bus = bus
+        monitor.ready.connect(self.Ready)
+
+    @pyqtSlot(QDBusMessage, result=str)
+    def Generate(self, message: QDBusMessage) -> str:
+        # Składanie raportu trwa (git, dzienniki) — odpowiedź po zakończeniu, z wątku głównego.
+        message.setDelayedReply(True)
+        request = QDBusMessage(message)
+        self.monitor.generate(lambda path: self.bus.send(request.createReply([path])))
+        return ""
+
+    @pyqtSlot(result=str)
+    def Latest(self) -> str:
+        return self.monitor.latest()
+
+
+def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -228,6 +266,11 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.idle.adaptor = IdleAdaptor(holder.idle, idle)
         if not bus.registerObject(IDLE_PATH, holder.idle):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {IDLE_PATH}")
+    if reports is not None:
+        holder.reports = QObject(holder)
+        holder.reports.adaptor = ReportsAdaptor(holder.reports, reports, bus)
+        if not bus.registerObject(REPORTS_PATH, holder.reports):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {REPORTS_PATH}")
     if not bus.registerService(SERVICE):
         raise RuntimeError(f"nazwa {SERVICE} jest już zajęta (działa inna kopia usługi?)")
     return holder

@@ -43,7 +43,7 @@ class KRunnerInstallTest(unittest.TestCase):
         self.assertEqual(entry["X-KDE-PluginInfo-EnabledByDefault"], "true")
         self.assertEqual(entry["X-Plasma-Runner-Min-Letter-Count"], "3")
         syntaxes = entry["X-Plasma-Runner-Syntaxes"].split(",")
-        self.assertEqual(syntaxes, [":q:", "ai :q:"])
+        self.assertEqual(syntaxes, [":q:", "ai :q:", "raport"])
         self.assertEqual(len(entry["X-Plasma-Runner-Syntax-Descriptions"].split(",")), len(syntaxes))
 
     def test_uninstall_removes_plugin(self):

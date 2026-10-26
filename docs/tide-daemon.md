@@ -1,6 +1,6 @@
 # tide-daemon
 
-Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)).
+Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)). Piąty to raport poranny: raz na dobę strona HTML na każdy projekt z ruchem ([Raport poranny](#raport-poranny)).
 
 ## Kontrakt D-Bus
 
@@ -277,6 +277,49 @@ qdbus6 org.tide.Daemon /Idle org.tide.Daemon.Idle.State
 dbus-monitor "type='signal',interface='org.tide.Daemon.Idle'"   # IdleChanged przy drzemce i przebudzeniu
 ```
 
+## Raport poranny
+
+Raz na dobę usługa składa raport z tego, co działo się od poprzedniego: jedna strona HTML na projekt z ruchem i indeks z kartami projektów. Wszystko lokalnie — git, dzienniki agentów i Limity AI z `127.0.0.1`, bez żadnego modelu i bez sieci. Uzasadnienie: decyzja 42 w `docs/decisions.md`.
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/Reports` |
+| Interfejs | `org.tide.Daemon.Reports` |
+| Pliki | `$XDG_DATA_HOME/tide/reports/RRRR-MM-DD/index.html` i `<projekt>.html` (katalog 0700, pliki 0600) |
+| Stan | `$XDG_STATE_HOME/tide/report-state.json` (doba, okres i doba powiadomienia ostatniego raportu) |
+| Ustawienia | `$XDG_CONFIG_HOME/tide/report.json` (opcjonalny): `{"at": "07:00", "dayStart": "04:00", "keepDays": 30, "enabled": true}` |
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `Generate()` | `→ s` | Składa raport bieżącej doby teraz (ten sam początek okresu co poranny, nowy koniec) i zwraca ścieżkę `index.html`; pusty napis przy błędzie. Bez powiadomienia. Odpowiedź po zakończeniu (praca w tle) |
+| `Latest()` | `→ s` | `index.html` najnowszego raportu albo pusty napis |
+| `Ready` | sygnał `(s path)` | Powstał nowy raport |
+
+```bash
+qdbus6 org.tide.Daemon /Reports org.tide.Daemon.Reports.Generate   # raport teraz
+xdg-open "$(qdbus6 org.tide.Daemon /Reports org.tide.Daemon.Reports.Latest)"
+```
+
+**Kiedy.** Doba raportu zaczyna się o `dayStart` (04:00) — praca po północy należy jeszcze do poprzedniego dnia. Raport doby powstaje raz: przy pierwszym logowaniu w tej dobie (start usługi; sprawdzenie po 2 min, żeby nie spowalniać logowania) albo o `at` (07:00), jeśli użytkownik jest już zalogowany. Zegar ścienny sprawdzamy co minutę, więc wybudzenie po uśpieniu też łapie zaległy raport. Logowanie o 05:30 daje raport od razu, o 01:00 — nic (doba ma już raport), a o 07:00 przychodzi następny. `--report-at GG:MM` nadpisuje `at`, `--no-report` albo `"enabled": false` wyłącza termin (`Generate()` działa dalej).
+
+**Okres.** Od końca poprzedniego raportu do teraz, najwyżej 7 dni; pierwszy raport — ostatnia doba. `Generate()` w tej samej dobie zachowuje początek okresu, więc nie gubi niczego z porannego raportu.
+
+**Powiadomienie.** Po raporcie z terminu, najwyżej jedno na dobę (doba w pliku stanu, więc restart usługi go nie powtórzy): „Raport poranny gotowy — 3 projekty”, w treści liczba commitów, sesji i czekających, przycisk „Otwórz” (także kliknięcie) → `xdg-open index.html` przez `systemd-run --user --scope`. `--no-notifications` je wyłącza.
+
+**Retencja.** Po każdym raporcie znikają katalogi `RRRR-MM-DD` starsze niż `keepDays` (30) dób. Usuwamy tylko katalogi o takiej nazwie, nie dowiązania.
+
+**Co jest w raporcie.**
+
+- Indeks: liczby (czeka na ciebie, projekty z ruchem, commity z liniami, sesje, przebiegi zaplanowanych zadań), lista „Czeka na ciebie” z odnośnikami do sesji, karty projektów z ruchem (od czekających i najświeższych), zwinięta lista projektów bez ruchu z tym, co w nich zostało (worktrees do sprzątnięcia, zmiany), migawka Limitów AI (poziomy kolorami jak w widżecie) i miejsce na prognozę (`reports/limits.py: forecast` — na razie nic nie zwraca), odnośnik do poprzedniego raportu.
+- Strona projektu: sesje agentów z okresu (czeka / pracuje / skończył / przerwana) z tytułem, gałęzią, worktree, czasem trwania, ostatnią aktywnością i **ostatnią wiadomością agenta** z dziennika (to ona mówi, co zrobił; wycinek do granicy akapitu, całość pod „Cała wiadomość”), przyciskiem „Wznów” (kopiuje `cd … && claude --resume …`); dla wątków Codexa z zaplanowanym zadaniem — nazwa i rytm zadania (`automation.toml`) oraz przebiegi z okresu z wynikami. Commity z okresu po gałęziach (gałąź główna, gałęzie z commitami poza główną, odłączone HEAD-y worktrees; każdy commit raz) z autorem, godziną, tematem, liczbą plików i linii oraz znacznikiem „agent: Claude/Codex”, gdy wskazuje na to stopka Co-Authored-By albo adres autora, gałąź/worktree agenta albo commit powstał w czasie sesji agenta w tym katalogu. Worktrees do sprzątnięcia, worktrees z pracą tylko tutaj (commity bez innej gałęzi i serwera, zmiany) i niezacommitowane zmiany w głównym katalogu.
+- Projekt to repozytorium z katalogu projektów razem z worktrees (także tymi w `~/.codex/worktrees`); sesja spoza repozytoriów tworzy projekt po nazwie katalogu. Własną stronę dostaje tylko projekt z commitem albo sesją w okresie.
+
+**Czytanie dzienników.** Pliki zmienione od początku okresu; stan, tytuł i ostatnia wiadomość z ogona pliku (2 MB) przez te same parsery co obszar Agents, pierwszy wpis i pierwsze polecenie z początku (256 KB). Przebiegi zaplanowanych zadań: od miejsca w pliku, w którym zaczyna się okres (wyszukiwanie binarne po znacznikach czasu), JSON parsowany tylko w liniach z początkiem albo końcem tury. Stan sesji z ostatniej doby bierzemy z obszaru Agents; starsze — z dziennika (skończona tura to „skończył”). Worktrees z obszaru Worktrees (z rozmiarami), a przed jego pierwszym odczytem raport przegląda repozytoria sam.
+
+**Strony.** Samodzielne pliki: CSS z palety (`palette.json` obok usługi, w repozytorium `theme/palette/mist.json`), Geist i Geist Mono z systemu (`@font-face` z `local()`, zapasowo czcionka systemowa), bez sieci i zewnętrznych plików, ciemny Mist, układ od wąskiego okna (jedna kolumna, 16 px marginesu) do 2560 px (dwie kolumny na stronie projektu). Jedyny skrypt to „Kopiuj”, a `Content-Security-Policy` dopuszcza tylko jego skrót SHA-256. Każdy tekst z gita i dzienników jest escapowany (także w atrybutach). Zamiast schematu `tide://` są ścieżki z „Kopiuj”, polecenia do skopiowania (Konsole, Rider, wznowienie sesji) i zwykły link `file://` do katalogu.
+
+**KRunner.** „raport” (albo „rap…”, „raport poranny”) pokazuje najnowszy raport; Enter otwiera go w przeglądarce.
+
 ## Uruchamianie
 
 ```bash
@@ -287,12 +330,15 @@ journalctl --user -u tide-daemon -f
 # Podgląd bez D-Bus (jednorazowy JSON):
 /usr/bin/python3 daemon/tide-daemon.py --print
 /usr/bin/python3 daemon/tide-daemon.py --print-worktrees      # tylko odczyt, niczego nie usuwa
+# Jednorazowy raport poranny (bez D-Bus, powiadomienia i pliku stanu) do wskazanego katalogu:
+/usr/bin/python3 daemon/tide-daemon.py --report --report-days 1 --report-dir /tmp/raport
 # Opcje diagnostyczne: --claude-dir, --codex-dir, --workspace, --worktree-depth, --no-processes,
 #                      --no-notifications, --no-krunner, --no-tab-marks,
-#                      --now 2026-10-26T12:00:00Z, --idle-after 30, --no-idle
+#                      --now 2026-10-26T12:00:00Z, --idle-after 30, --no-idle,
+#                      --report-dir, --report-at 07:00, --no-report, --report-delay 120
 ```
 
-Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`), `$XDG_CONFIG_HOME/systemd/user/tide-daemon.service`, `$XDG_DATA_HOME/dbus-1/services/org.tide.Daemon.service` (start na żądanie, gdy widżet zapyta, a usługa nie działa) i `org.tide.Daemon.KRunner.service` (to samo dla KRunnera). Usługa używa `/usr/bin/python3` z systemowym PyQt6 — `python3` z pyenv go nie ma.
+Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`, z której raport poranny bierze kolory i czcionki), `$XDG_CONFIG_HOME/systemd/user/tide-daemon.service`, `$XDG_DATA_HOME/dbus-1/services/org.tide.Daemon.service` (start na żądanie, gdy widżet zapyta, a usługa nie działa) i `org.tide.Daemon.KRunner.service` (to samo dla KRunnera). Usługa używa `/usr/bin/python3` z systemowym PyQt6 — `python3` z pyenv go nie ma.
 
 ## Testy
 
@@ -312,6 +358,9 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`)
 - `daemon/tests/test_krunner_dbus.py` — `Match`, `Actions`, `Run` przez prywatną magistralę z sygnaturami KRunnera 6; programy to atrapy (`fakebin.py`: `systemd-run`, `konsole`, `rider`, `claude`, `codex` tylko zapisują wywołanie),
 - `apps/worktrees/tests/` — okno: QML na przykładowych danych (`qml6`, offscreen), launcher z `--data --grab`, backend okna na prywatnej magistrali z prawdziwą usługą (Remove tylko dla zaznaczonych), drugie uruchomienie, instalacja z atrapami `update-desktop-database` i `kbuildsycoca6`,
 - `daemon/tests/test_idle.py` — bezczynność na atrapie kompozytora Wayland (`fake_wayland.py`: prawdziwe gniazdo i format wiadomości, zamrożony zegar): próg, wejście liczy czas od nowa, wybór protokołu (v2, v1, `org_kde_kwin_idle`), brak protokołu, błąd protokołu, zerwane połączenie i ponowne połączenie; `IdleState` na zamrożonym zegarze; obiekt `/Idle` usługi na prywatnej magistrali (właściwości, `IsIdle`, sygnał `IdleChanged`, próg z palety, brak kompozytora, `--no-idle`). Usługi w testach dostają nieistniejące gniazdo Wayland, więc nigdy nie łączą się z kompozytorem pulpitu,
+- `daemon/tests/test_report_schedule.py` — termin raportu (pierwsze logowanie w dobie, 07:00, praca po północy, zmiana czasu, wyłączenie), okres (pierwszy, od poprzedniego, najwyżej 7 dni, ponowne wygenerowanie), jedno powiadomienie na dobę, ustawienia z pliku i opcji, stan, retencja 30 dni (tylko katalogi raportów, bez dowiązań),
+- `daemon/tests/test_report_generate.py` — raport z syntetycznego świata (`reportfix.py`: repozytoria z datowanymi commitami, dzienniki Claude Code i Codexa, zaplanowane zadanie, podagent, sesje sprzed okresu) przy zamrożonym zegarze: projekty z ruchem i bez, commity po gałęziach, znacznik agenta, ostatnie wiadomości, przebiegi zadań, worktrees, pliki i uprawnienia, podmiana katalogu, escapowanie (skrypt w temacie commita, tytule sesji, wiadomości agenta i nazwie pliku), CSP, brak zasobów z sieci; odczyt Limitów AI z atrapy API (token tylko w nagłówku, nigdy w błędzie),
+- `daemon/tests/test_report_dbus.py` — cała usługa na prywatnej magistrali: raport przy starcie, jedno powiadomienie „Raport poranny gotowy” z „Otwórz” (atrapy `systemd-run`, `xdg-open`), `Generate()`, `Latest()`, brak powtórki po restarcie, wyłączony termin,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
 Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawierają prawdziwych rozmów.
