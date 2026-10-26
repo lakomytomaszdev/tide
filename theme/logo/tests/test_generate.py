@@ -4,7 +4,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from theme.logo.generate import WAVES, svg
+from theme.logo.generate import WAVES, layers, svg
 
 PALETTE = json.loads((Path(__file__).resolve().parents[2] / "palette" / "mist.json").read_text())
 NS = "{http://www.w3.org/2000/svg}"
@@ -31,6 +31,18 @@ class LogoTest(unittest.TestCase):
         paths = list(ET.fromstring(svg(PALETTE, symbolic=True)).iter(f"{NS}path"))
         self.assertEqual(len(paths), 3)
         self.assertTrue(all(p.get("class") == "ColorScheme-Text" for p in paths))
+
+    def test_layers_split_the_full_logo_into_tile_and_waves(self):
+        parts = layers(PALETTE)
+        self.assertEqual(list(parts), ["tile", *WAVES])
+        self.assertEqual(ET.fromstring(parts["tile"]).find(f"{NS}rect").get("fill"), PALETTE["background"]["card"])
+        self.assertEqual([strokes(parts[name]) for name in WAVES], [[PALETTE["pastel"][name]] for name in WAVES])
+        # Ten sam viewBox i te same elementy co pełne logo — warstwy nałożone dają svg(palette).
+        full = ET.fromstring(svg(PALETTE))
+        elements = [el for name in parts for el in ET.fromstring(parts[name])]
+        self.assertEqual([ET.tostring(e) for e in elements], [ET.tostring(e) for e in full])
+        for document in parts.values():
+            self.assertEqual(ET.fromstring(document).get("viewBox"), full.get("viewBox"))
 
 
 if __name__ == "__main__":

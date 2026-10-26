@@ -47,6 +47,20 @@ def svg(palette: dict, small: bool = False, symbolic: bool = False) -> str:
     return "\n".join(parts) + "\n"
 
 
+def layers(palette: dict) -> dict[str, str]:
+    """Pełne logo rozłożone na warstwy: kafelek i każda fala osobno (ten sam viewBox).
+
+    Plymouth nie umie przyciemnić fragmentu obrazu, więc żeby fale „oddychały” po kolei,
+    każda musi być osobnym obrazem. Nałożone na siebie warstwy dają dokładnie svg(palette).
+    """
+    full = svg(palette).splitlines()
+    head, tile, waves, tail = full[0], full[1], full[2:-1], full[-1]
+    out = {"tile": "\n".join([head, tile, tail]) + "\n"}
+    for name, path in zip(WAVES, waves):
+        out[name] = "\n".join([head, path, tail]) + "\n"
+    return out
+
+
 def main() -> None:
     palette = json.loads(Path(sys.argv[1]).read_text())
     out = Path(sys.argv[2])
