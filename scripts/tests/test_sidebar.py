@@ -85,7 +85,7 @@ class SidebarInstallTest(unittest.TestCase):
     def test_install_builds_the_sidebar_and_persists_its_width(self):
         out = self.sidebar("install")
         [bar] = self.sidebars()
-        self.assertEqual((bar["screen"], bar["location"], bar["hiding"]), (1, "left", "autohide"))
+        self.assertEqual((bar["screen"], bar["location"], bar["hiding"]), (1, "left", "dodgewindows"))
         self.assertEqual(self.layout(bar), ALL)
         # Plasma nie zapisuje grubości ustawionej skryptem — szerokość trafia do plasmashellrc.
         self.assertEqual(self.thickness(bar["id"]), str(PALETTE["size"]["sidebar"]))

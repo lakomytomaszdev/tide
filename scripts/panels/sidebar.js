@@ -57,7 +57,8 @@ if (tideScreensNow.side >= 0) {
         tideSidebar.screen = tideScreensNow.side;
     }
     tideSidebar.location = "left";
-    tideSidebar.hiding = "autohide";
+    // Widoczny, gdy na lewym monitorze nic go nie zasłania; chowa się, gdy najedzie okno.
+    tideSidebar.hiding = "dodgewindows";
     tideSidebar.floating = true;
     // Długość „custom” od dołu górnego paska do dołu ekranu („fill” zawsze bierze cały ekran
     // i zasłaniałby smukły pasek). Najpierw maksimum, bo minimum większe od starego maksimum

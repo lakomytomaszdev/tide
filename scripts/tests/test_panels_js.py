@@ -176,7 +176,7 @@ class SidebarScriptTest(unittest.TestCase):
         bar = find(state, res["sidebar"])
         self.assertEqual(bar["screen"], 1)  # HDMI-A-1, nie główny DP-2
         self.assertEqual(bar["location"], "left")
-        self.assertEqual(bar["hiding"], "autohide")
+        self.assertEqual(bar["hiding"], "dodgewindows")
         self.assertTrue(bar["floating"])
         self.assertEqual(bar["height"], PALETTE["size"]["sidebar"])
         self.assertTrue(res["created"])
