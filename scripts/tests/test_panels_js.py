@@ -149,3 +149,121 @@ class DockScriptTest(unittest.TestCase):
         _, state = self.install(state)
         self.assertEqual(types(find(state, 90)).count("panelspacer"), 2)
         self.assertEqual(types(find(state, 90)).count("agents"), 1)
+
+
+@unittest.skipUnless(fake.available(), "Brak qml6 do uruchomienia skryptów")
+class SidebarScriptTest(unittest.TestCase):
+    HEADER = "org.tide.sidebar"
+    WIDGETS = ["org.tide.sidebar", "org.tide.agents", "org.tide.system", "org.tide.worktrees", "org.tide.limits"]
+    LAYOUT = ["sidebar", "agents", "system", "worktrees", "limits"]
+
+    def install(self, state, installed=None, shortcut="Meta+S", widgets=None):
+        params = {**panels.screens(), "sidebarPanel": (installed or {}).get("sidebar"),
+                  "width": PALETTE["size"]["sidebar"], "widgets": self.WIDGETS if widgets is None else widgets,
+                  "header": self.HEADER, "shortcut": shortcut, "floatingGap": 8}
+        out, state = fake.run(state, panels.script("sidebar", params))
+        res = result(out)
+        if res["sidebar"] is not None:
+            order = {"panels": [{"id": res["sidebar"], "order": res["order"], "height": params["width"]}]}
+            out, state = fake.run(state, panels.script("order", order))
+        return res, state
+
+    def sidebars(self, state):
+        return [p for p in live(state) if p["config"].get("/Tide", {}).get("role") == "sidebar"]
+
+    def test_sidebar_is_an_autohiding_panel_on_the_left_edge_of_the_left_monitor(self):
+        res, state = self.install(fake.desktop_like_this_one())
+        bar = find(state, res["sidebar"])
+        self.assertEqual(bar["screen"], 1)  # HDMI-A-1, nie główny DP-2
+        self.assertEqual(bar["location"], "left")
+        self.assertEqual(bar["hiding"], "autohide")
+        self.assertTrue(bar["floating"])
+        self.assertEqual(bar["height"], PALETTE["size"]["sidebar"])
+        self.assertTrue(res["created"])
+        # Bez górnego paska na lewym monitorze: cała wysokość ekranu.
+        self.assertEqual((bar["lengthMode"], bar["alignment"], bar["offset"]), ("custom", "left", 0))
+        self.assertEqual((bar["minimumLength"], bar["maximumLength"]), (1080, 1080))
+
+    def test_sidebar_starts_below_the_slim_top_bar(self):
+        out, state = fake.run(fake.desktop_like_this_one(), panels.script("install", panels.install_params(PALETTE, {})))
+        res, state = self.install(state)
+        bar = find(state, res["sidebar"])
+        top = PALETTE["size"]["barSlim"] + 8  # pływający pasek: 8 px od krawędzi ekranu
+        self.assertEqual(bar["offset"], top)
+        self.assertEqual((bar["minimumLength"], bar["maximumLength"]), (1080 - top, 1080 - top))
+
+    def test_widgets_go_top_to_bottom_in_full_view(self):
+        res, state = self.install(fake.desktop_like_this_one())
+        bar = find(state, res["sidebar"])
+        self.assertEqual(types(bar), self.LAYOUT)
+        for type_ in self.WIDGETS[1:]:
+            self.assertEqual(config(bar, type_, "/Configuration/General")["sidebarMode"], "true")
+        header = next(w for w in bar["widgets"] if w["type"] == self.HEADER)
+        self.assertNotIn("/Configuration/General", header["config"])
+
+    def test_header_gets_the_meta_s_shortcut(self):
+        res, state = self.install(fake.desktop_like_this_one())
+        self.assertEqual(res["shortcut"], "Meta+S")
+        self.assertEqual(state["shortcuts"], {"Meta+S": f"plasmashell/activate widget {res['header']}"})
+
+    def test_taken_shortcut_is_reported_as_missing(self):
+        state = fake.desktop_like_this_one()
+        state["shortcuts"] = {"Meta+S": "kwin/Something"}
+        res, state = self.install(state)
+        self.assertEqual(res["shortcut"], "")
+        self.assertEqual(state["shortcuts"], {"Meta+S": "kwin/Something"})
+
+    def test_without_shortcut_parameter_the_header_is_left_alone(self):
+        res, state = self.install(fake.desktop_like_this_one(), shortcut="")
+        self.assertEqual(res["shortcut"], "")
+        self.assertEqual(state.get("shortcuts", {}), {})
+
+    def test_reinstall_reuses_the_panel_and_the_header(self):
+        res, state = self.install(fake.desktop_like_this_one())
+        res2, state = self.install(state, {"sidebar": res["sidebar"]})
+        self.assertEqual((res2["sidebar"], res2["header"], res2["created"]), (res["sidebar"], res["header"], False))
+        self.assertEqual(len(self.sidebars(state)), 1)
+        self.assertEqual(types(find(state, res["sidebar"])), self.LAYOUT)
+        self.assertEqual(res2["shortcut"], "Meta+S")
+
+    def test_reinstall_finds_the_panel_by_marker_and_adds_new_widgets(self):
+        res, state = self.install(fake.desktop_like_this_one(), widgets=self.WIDGETS[:2])
+        self.assertEqual(types(find(state, res["sidebar"])), ["sidebar", "agents"])
+        res2, state = self.install(state)  # bez podpowiedzi identyfikatora
+        self.assertEqual(res2["sidebar"], res["sidebar"])
+        self.assertEqual(types(find(state, res["sidebar"])), self.LAYOUT)
+
+    def test_other_panels_are_untouched(self):
+        _, state = self.install(fake.desktop_like_this_one())
+        self.assertEqual(types(find(state, 73)), ["kickoff", "icon", "panelspacer", "digitalclock", "panelspacer",
+                                                  "systemtray"])
+        self.assertEqual(types(find(state, 90)), ["icontasks", "widget"])
+
+    def test_single_monitor_gets_no_sidebar(self):
+        res, state = self.install(fake.desktop_like_this_one(screens=("DP-2",)))
+        self.assertIsNone(res["sidebar"])
+        self.assertEqual(len(live(state)), 2)
+
+    def test_uninstall_removes_the_sidebar_and_frees_the_shortcut(self):
+        res, state = self.install(fake.desktop_like_this_one())
+        out, state = fake.run(state, panels.script("sidebar-uninstall", {**panels.screens(), "header": self.HEADER}))
+        undo = result(out)
+        self.assertEqual(undo["removed"], [res["sidebar"]])
+        self.assertEqual(undo["shortcutsCleared"], [res["header"]])
+        self.assertEqual(self.sidebars(state), [])
+        self.assertEqual(state["shortcuts"], {})
+        self.assertEqual([p["id"] for p in live(state)], [73, 90])
+
+    def test_top_bars_and_sidebar_do_not_touch_each_other(self):
+        res, state = self.install(fake.desktop_like_this_one())
+        out, state = fake.run(state, panels.script("install", panels.install_params(PALETTE, {})))
+        top = result(out)
+        self.assertNotEqual(top["side"], res["sidebar"])
+        self.assertEqual(find(state, top["side"])["location"], "top")
+        self.assertEqual(find(state, res["sidebar"])["location"], "left")
+        # Odinstalowanie górnych pasków usuwa tylko smukły pasek, nie pasek boczny.
+        params = {**panels.screens(), "previous": None, "mainPanel": 73, "mainCreated": False,
+                  "changedKeys": panels.CHANGED_KEYS, "defaults": panels.DEFAULTS}
+        out, state = fake.run(state, panels.script("uninstall", params))
+        self.assertEqual(result(out)["removed"], [top["side"]])
+        self.assertEqual(len(self.sidebars(state)), 1)

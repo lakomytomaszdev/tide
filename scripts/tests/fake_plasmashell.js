@@ -6,7 +6,9 @@
 // - addWidget dopisuje widżet na końcu układu panelu,
 // - widget.index czyta AppletOrder z [General] panelu (-1, gdy widżetu tam nie ma),
 //   a setter działa jak Widget::setIndex + LayoutManager.reorderApplets/move,
-// - panel zapisuje AppletOrder z bieżącego układu dopiero po zakończeniu skryptu (Qt.callLater).
+// - panel zapisuje AppletOrder z bieżącego układu dopiero po zakończeniu skryptu (Qt.callLater),
+// - widget.globalShortcut działa jak KGlobalAccel: klawisz zajęty przez inną akcję
+//   (state.shortcuts: {klawisz: "komponent/akcja"}) nie zostaje przypisany, a odczyt zwraca "".
 
 var __out = "";
 var __state = null;
@@ -76,6 +78,23 @@ function __widget(panel, data) {
     Object.defineProperty(widget, "geometry", {
         get: function () { return {x: panel.__data.layout.indexOf(data.id) * 40, y: 4, width: 36, height: 28}; }
     });
+    Object.defineProperty(widget, "globalShortcut", {
+        get: function () { return data.shortcut || ""; },
+        set: function (key) {
+            var own = "plasmashell/activate widget " + data.id;
+            var shortcuts = __state.shortcuts = __state.shortcuts || {};
+            for (var taken in shortcuts) {
+                if (shortcuts[taken] === own) {
+                    delete shortcuts[taken];
+                }
+            }
+            data.shortcut = "";
+            if (key && !shortcuts.hasOwnProperty(key)) {
+                shortcuts[key] = own;
+                data.shortcut = key;
+            }
+        }
+    });
     widget.remove = function () {
         panel.__data.layout = panel.__data.layout.filter(function (id) { return id !== data.id; });
         data.removed = true;
@@ -142,6 +161,12 @@ function __panel(data) {
 }
 
 var screenCount = 0;
+
+// Geometria ekranu: state.geometries[numer] albo 1920×1080.
+function screenGeometry(screen) {
+    var all = __state.geometries || [];
+    return all[screen] || {x: 1920 * screen, y: 0, width: 1920, height: 1080};
+}
 
 function screenForConnector(connector) {
     return __state.screens.indexOf(connector);

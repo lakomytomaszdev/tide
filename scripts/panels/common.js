@@ -39,6 +39,20 @@ function tideMarkSideBar(panel) {
     panel.currentConfigGroup = [];
 }
 
+// Rola panelu Tide ze znacznika [Tide] role (np. "side-bar", "sidebar"); "" dla obcych paneli.
+function tideRole(panel) {
+    panel.currentConfigGroup = ["Tide"];
+    var role = String(panel.readConfig("role", ""));
+    panel.currentConfigGroup = [];
+    return role;
+}
+
+function tideMarkRole(panel, role) {
+    panel.currentConfigGroup = ["Tide"];
+    panel.writeConfig("role", role);
+    panel.currentConfigGroup = [];
+}
+
 // Widżety w kolejności na panelu (index pochodzi z AppletOrder; nieznane na końcu wg położenia).
 function tideSorted(panel) {
     var widgets = panel.widgets();

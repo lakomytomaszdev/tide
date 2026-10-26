@@ -48,7 +48,8 @@
   "size": {
     "bar": 34,
     "barSlim": 30,
-    "dock": 64
+    "dock": 64,
+    "sidebar": 300
   },
   "opacity": {
     "panel": 0.7,
