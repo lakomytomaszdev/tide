@@ -70,6 +70,8 @@ QtObject {
             button: state === "waiting" && s.canActivate === true,
             clickable: s.canActivate === true,
             deeplink: deeplink,
+            // Sesja uruchomiona przed chwilą z okna „Nowe zadanie” (tide-daemon, przez 10 min).
+            fresh: s.newTask === true,
             buttonText: deeplink ? Tide.Texts.activateButton(s) : "Przejdź",
             // Pełny tekst przejścia (np. „Przejdź do terminala”) dla czytnika ekranu.
             activateText: Tide.Texts.activateButton(s)

@@ -30,6 +30,8 @@ class AgentMonitor(QObject):
         self.sessions: list[dict] = []   # ostatnia lista sesji (dla worktrees i powiadomień)
         self.procs = None                # ostatnia migawka procesów albo None
         self._dirty: set[str] = set()
+        # funkcja(sessions) dopisująca pola od innych obszarów (np. newTask z /Tasks) albo None
+        self.annotate = None
         self._discover = False
 
         self.watcher = QFileSystemWatcher(self)
@@ -60,6 +62,11 @@ class AgentMonitor(QObject):
     def recompute(self) -> None:
         procs = self._probe()
         sessions = self.scanner.sessions(self.clock(), procs)
+        if self.annotate is not None:
+            try:
+                self.annotate(sessions)
+            except Exception as exc:  # dodatek nie może zatrzymać listy sesji
+                print(f"tide-daemon: dopisywanie pól sesji: {exc!r}", flush=True)
         self.sessions, self.procs = sessions, procs
         text = json.dumps(sessions, ensure_ascii=False)
         if text != self._json:

@@ -43,12 +43,15 @@ class TileTextsTest(unittest.TestCase):
                                                "summary": "5 w pracy · 15 do sprzątnięcia"})
         self.assertEqual(result["system"]["lines"], ["CPU 34%", "RAM 61%", "Dysk 88%"])
         self.assertEqual(result["limits"]["lines"], ["GPT 91%", "Claude 86%"])
-        # Dwie linie mieszczą się w 48 px kafelka, a cztery kafelki z odstępami 12 px — w 900 px
+        self.assertEqual(result["newtask"], {"label": "Zadanie", "summary": "nowe dla agenta"})
+        # Dwie linie mieszczą się w 48 px kafelka, a pięć kafelków z odstępami 12 px — w 1000 px
         # (dock ma 2560 px, aplikacje są pośrodku). Było 800 px, zanim agenci dostali trzecią
-        # część („○ 2 gotowe”); kafelek agentów w najszerszym wariancie mieści się w 240 px.
-        self.assertEqual(result["fits"], [True] * 4)
-        self.assertLess(result["total"], 900, result["widths"])
+        # część („○ 2 gotowe”), potem 900 px; kafelek „＋ Zadanie” (#22) dokłada ok. 120 px.
+        # Kafelek agentów w najszerszym wariancie mieści się w 240 px, nowe zadanie w 130 px.
+        self.assertEqual(result["fits"], [True] * 5)
+        self.assertLess(result["total"], 1000, result["widths"])
         self.assertLessEqual(result["widths"][0], 240)
+        self.assertLessEqual(result["widths"][1], 130)
 
     def test_plural_forms(self):
         # Skończone liczymy jako sesje (rodzaj żeński): 1 gotowa, 2–4 gotowe, 5+ gotowych.
@@ -78,6 +81,7 @@ class TileTextsTest(unittest.TestCase):
         offline = preview.render(preview.SCENARIOS["offline"])
         self.assertEqual(offline["agents"]["summary"], "usługa nie działa")
         self.assertEqual(offline["worktrees"]["summary"], "usługa nie działa")
+        self.assertEqual(offline["newtask"]["summary"], "usługa nie działa")
         self.assertEqual(offline["system"]["lines"], ["CPU —", "RAM —", "Dysk —"])
         self.assertEqual(offline["limits"]["lines"], ["GPT —", "Claude —"])
 

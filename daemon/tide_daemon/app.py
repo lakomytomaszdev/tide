@@ -5,7 +5,7 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [
                                [--no-notifications] [--no-krunner] [--no-tab-marks] [--now CZAS]
                                [--idle-after SEKUNDY | --no-idle] [--limits-poll SEKUNDY | --no-limits]
                                [--report [--report-days N]] [--report-dir DIR] [--report-at GG:MM]
-                               [--no-report] [--report-delay SEKUNDY]
+                               [--no-report] [--report-delay SEKUNDY] [--no-tasks]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
@@ -26,7 +26,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [
 --report-dir       katalog raportów (domyślnie $XDG_DATA_HOME/tide/reports),
 --report-at        godzina raportu porannego (domyślnie „at” z $XDG_CONFIG_HOME/tide/report.json albo 07:00),
 --no-report        bez raportu porannego z terminu (Generate() z D-Bus działa dalej),
---report-delay     ile sekund po starcie usługi sprawdzić, czy raport jest należny (domyślnie 120).
+--report-delay     ile sekund po starcie usługi sprawdzić, czy raport jest należny (domyślnie 120),
+--no-tasks         bez obiektu /Tasks (nowe zadanie dla agenta: worktree i karta Konsoli).
 """
 import argparse
 import json
@@ -68,6 +69,7 @@ def parse_args(argv):
     parser.add_argument("--limits-poll", type=float, help="odstęp odczytów /status w sekundach")
     parser.add_argument("--no-limits", action="store_true")
     parser.add_argument("--print-limits", action="store_true")
+    parser.add_argument("--no-tasks", action="store_true")
     parser.add_argument("--print", dest="print_once", action="store_true")
     parser.add_argument("--print-worktrees", action="store_true")
     parser.add_argument("--report", action="store_true")
@@ -142,19 +144,21 @@ def main(argv=None) -> int:
     monitor.start()
     # Osobny, mały indeks sesji dla worktrees (KRunner ma własny, pełniejszy — krunner/index.py).
     worktree_sessions = worktrees.SessionIndex(args.claude_dir, args.codex_dir)
+    launchers = worktrees.Launchers()
     trees = WorktreeMonitor(worktrees.WorktreeScanner(args.workspace, args.worktree_depth, clock=clock,
                                                       sessions=worktree_sessions),
                             lambda: worktrees.agent_cwds(monitor.sessions, monitor.procs),
-                            worktrees.Launchers(), refresh_agents=monitor.recompute)
+                            launchers, refresh_agents=monitor.recompute)
     monitor.changed.connect(trees.publish)  # nowy albo zakończony agent zmienia flagę „aktywny agent”
     # KRunner przed główną nazwą: gdy org.tide.Daemon jest już na magistrali, wtyczka też.
     krunner = None if args.no_krunner else start_krunner(app, args, clock, monitor, trees)  # noqa: F841
     idle = None if args.no_idle else start_idle(app, args)
     report = start_report(app, args, clock, report_settings, monitor, trees)
     limits = None if args.no_limits else start_limits(app, args, clock)
+    tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
     try:
         holder = dbus_service.register(monitor, trees, idle=idle, reports=report,  # noqa: F841 — musi żyć do końca
-                                       limits=limits)
+                                       limits=limits, tasks=tasks)
     except RuntimeError as exc:
         print(f"tide-daemon: {exc}", file=sys.stderr, flush=True)
         return 1
@@ -201,6 +205,8 @@ def main(argv=None) -> int:
     code = app.exec()
     trees.stop()
     report.stop()
+    if tasks is not None:
+        tasks.stop()
     if idle is not None:
         idle.stop()
     if limits is not None:
@@ -259,6 +265,29 @@ def start_report(app, args, clock, settings, monitor, trees):
                          codex_root=args.codex_dir, max_depth=args.worktree_depth,
                          sessions=lambda: monitor.sessions, worktrees=worktree_items, notifier=notifier,
                          clock=clock, parent=app, **kwargs)
+
+
+def start_tasks(app, args, launchers, trees, monitor):
+    """Obszar /Tasks: nowe zadanie dla agenta (tasks/, task_monitor.py)."""
+    from .task_monitor import TaskMonitor
+    from .tasks import Planner
+    from .tasks.core import CLAIM_TIMEOUT
+    from .tasks.terminal import KonsoleWindows, TaskTerminal
+
+    probe = activate = None
+    if not args.no_processes:
+        from . import processes, windows
+        probe, activate = processes.probe, windows.activate
+    terminal = TaskTerminal(launchers, KonsoleWindows(), probe=probe, activate=activate)
+    planner = Planner(args.workspace, args.worktree_depth, terminal_available=terminal.available)
+    try:
+        timeout = float(os.environ.get("TIDE_TASK_CLAIM_TIMEOUT") or CLAIM_TIMEOUT)
+    except ValueError:
+        timeout = CLAIM_TIMEOUT
+    tasks = TaskMonitor(planner, terminal, launchers, trees, claim_timeout=timeout,
+                        sessions_source=lambda: monitor.sessions, parent=app)
+    monitor.annotate = tasks.annotate  # znacznik „nowe” przy sesji świeżo uruchomionej z okna
+    return tasks
 
 
 def start_idle(app, args):

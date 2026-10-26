@@ -43,6 +43,14 @@ def window_script(env) -> str:
     return os.path.join(data, "tide", "worktrees-window", "tide-worktrees.py")
 
 
+def task_dialog_script(env) -> str:
+    """Zainstalowane okno „Nowe zadanie” ($TIDE_NEW_TASK_WINDOW albo XDG_DATA_HOME/tide/new-task)."""
+    if env.get("TIDE_NEW_TASK_WINDOW"):
+        return env["TIDE_NEW_TASK_WINDOW"]
+    data = env.get("XDG_DATA_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local/share")
+    return os.path.join(data, "tide", "new-task", "tide-new-task.py")
+
+
 class Launchers:
     def __init__(self, env: dict | None = None, path: str | None = None):
         env = os.environ if env is None else env
@@ -59,11 +67,22 @@ class Launchers:
         self.agents = {name: shutil.which(name, path=search)
                        or _executable(os.path.join(home, ".local/bin", name)) or name for name in AGENTS}
         self.window_script = window_script(env)
+        self.task_dialog_script = task_dialog_script(env)
 
     @property
     def window(self) -> str:
         """Sprawdzane przy każdym użyciu — okno może zostać zainstalowane po starcie usługi."""
         return self.window_script if os.path.isfile(self.window_script) else ""
+
+    @property
+    def task_dialog(self) -> str:
+        return self.task_dialog_script if os.path.isfile(self.task_dialog_script) else ""
+
+    def show_task_dialog(self) -> bool:
+        """Okno „Nowe zadanie”; drugie uruchomienie tylko pokazuje już otwarte."""
+        if not self.task_dialog:
+            return False
+        return self.spawn(self._scoped([PYTHON, "-s", self.task_dialog]), self.home)
 
     def available(self) -> dict:
         return {TERMINAL: bool(self.terminal), RIDER: bool(self.rider), WINDOW: bool(self.window)}

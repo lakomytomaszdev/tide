@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Instaluje albo usuwa skrypt KWin Tide (kopią, przez kpackagetool6) i włącza go w kwinrc.
-# Użycie: bash kwin/install.sh install|uninstall <katalog-skryptu>   (np. kwin/agent-jump)
+# Użycie: bash kwin/install.sh install|uninstall <katalog-skryptu>   (np. kwin/agent-jump, kwin/new-task)
+# Skrót (klawisz, akcja, opis) jest w metadata.json skryptu, w kluczu X-Tide-Shortcut.
 #
 # Po instalacji KWin dostaje prośbę o ponowne wczytanie konfiguracji i skryptów
 # (org.kde.KWin /KWin reconfigure, /Scripting start). Gdy KWin nie działa (np. w testach),
@@ -14,8 +15,14 @@ data="${XDG_DATA_HOME:-$HOME/.local/share}"
 config="${XDG_CONFIG_HOME:-$HOME/.config}"
 id="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["KPlugin"]["Id"])' "$script/metadata.json")"
 installed="$data/kwin/scripts/$id"
-shortcut_key="Meta+A"
-shortcut_action="TideJumpToWaitingAgent"
+# Skrót skryptu z metadata.json (X-Tide-Shortcut): klawisz, nazwa akcji w KGlobalAccel i opis.
+read_shortcut() {
+    /usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["X-Tide-Shortcut"][sys.argv[2]])' \
+        "$script/metadata.json" "$1"
+}
+shortcut_key="$(read_shortcut key)"
+shortcut_action="$(read_shortcut action)"
+shortcut_label="$(read_shortcut label)"
 
 kwin_call() {
     # Najlepszy możliwy wysiłek: KWin może nie działać albo nie znać metody.
@@ -40,7 +47,7 @@ case "$action" in
             echo "Uwaga: $shortcut_key ma już przypisane:"
             echo "$taken" | sed 's/^/  - /'
             echo "KDE nie nada wtedy skrótu nowej akcji. Zwolnij go w Ustawieniach systemowych → Skróty,"
-            echo "a potem przypisz $shortcut_key akcji „Tide: przejdź do agenta, który czeka najdłużej” (KWin)."
+            echo "a potem przypisz $shortcut_key akcji „$shortcut_label” (KWin)."
         fi
         ;;
     uninstall)

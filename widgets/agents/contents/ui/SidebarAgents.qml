@@ -4,6 +4,7 @@
 // skończone i bezczynne są przygaszone.
 // Najwyżej maxRows wierszy (czekające pierwsze), resztę otwiera „+N więcej” — pełna lista
 // w okienku obok paska. Zakończone sesje są ukryte, dopóki nie kliknie się „Pokaż zakończone”.
+// W nagłówku link „＋ Nowe zadanie” (okno nowego zadania dla agenta).
 // Bez PlasmoidItem, więc da się go załadować w teście i w podglądzie (widgets/preview.py).
 import QtQuick
 import QtQuick.Layouts
@@ -20,6 +21,7 @@ Tide.SidebarTile {
     signal activateRequested(string sessionId)
     signal moreRequested()
     signal showEndedToggled()
+    signal newTaskRequested()
 
     // Wiersze i liczniki — wspólne z popupem kafelka w docku (AgentRows, SessionRows).
     readonly property AgentRows agentRows: AgentRows {
@@ -43,13 +45,21 @@ Tide.SidebarTile {
     Accessible.name: "Agenci: " + summary
 
     // Liczniki w nagłówku tylko obok wierszy — bez sesji powtarzałyby linię pod spodem.
-    headerItems: Text {
-        visible: tile.rows.length > 0
-        text: tile.summary
-        color: Tide.Tokens.textMuted
-        font.family: Tide.Theme.uiFamily
-        font.pointSize: Tide.Tokens.fontSizePt - 2
-    }
+    headerItems: [
+        Text {
+            visible: tile.rows.length > 0
+            text: tile.summary
+            color: Tide.Tokens.textMuted
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: Tide.Tokens.fontSizePt - 2
+        },
+        Tide.TextButton {
+            objectName: "newTaskButton"
+            text: "＋ Nowe zadanie"
+            Accessible.name: "Nowe zadanie dla agenta"
+            onClicked: tile.newTaskRequested()
+        }
+    ]
 
     SessionRows {
         Layout.fillWidth: true

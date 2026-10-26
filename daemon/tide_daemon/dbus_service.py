@@ -25,6 +25,17 @@ Obiekt /Worktrees, interfejs org.tide.Daemon.Worktrees:
 - Prune(s repoPath) -> s     `git worktree prune` w repozytorium z worktrees bez katalogu (odpowiedź po zakończeniu),
 - sygnał Changed()           lista worktrees się zmieniła.
 
+Obiekt /Tasks, interfejs org.tide.Daemon.Tasks (nowe zadanie dla agenta):
+- Repos() -> s               repozytoria z katalogu projektów jako JSON, od ostatnio aktywnych,
+- Defaults() -> s            JSON: zapamiętany wybór (repoPath, tool, newWorktree), dostępne narzędzia,
+                             Konsole, katalog zrzutów i limity,
+- SuggestBranch(s repoPath, s tool, s prompt) -> s
+                             JSON {ok, branch, path, base}: gałąź z polecenia (naming.py) i katalog worktree,
+- Start(s request) -> s      JSON prośby {repoPath, tool, prompt, newWorktree, branch, images} → wynik
+                             {ok, error, message, cwd, branch, worktree, title, mode}; worktree od gałęzi
+                             głównej, karta Konsoli z agentem; przy błędzie nic nie zostaje (odpowiedź po starcie),
+- ShowDialog() -> b          otwiera okno „Nowe zadanie” (False, gdy nie jest zainstalowane).
+
 Obiekt /Idle, interfejs org.tide.Daemon.Idle (bezczynność użytkownika dla tapety z kotem):
 - właściwość Idle (b)        od progu nie było klawiatury ani myszy (False, gdy źródło nie działa),
 - właściwość Available (b)   czy kompozytor podaje bezczynność,
@@ -51,6 +62,8 @@ AGENTS_PATH = "/Agents"
 AGENTS_IFACE = "org.tide.Daemon.Agents"
 WORKTREES_PATH = "/Worktrees"
 WORKTREES_IFACE = "org.tide.Daemon.Worktrees"
+TASKS_PATH = "/Tasks"
+TASKS_IFACE = "org.tide.Daemon.Tasks"
 IDLE_PATH = "/Idle"
 IDLE_IFACE = "org.tide.Daemon.Idle"
 REPORTS_PATH = "/Reports"
@@ -99,6 +112,22 @@ REPORTS_XML = f"""<interface name="{REPORTS_IFACE}">
   <method name="Generate"><arg name="path" type="s" direction="out"/></method>
   <method name="Latest"><arg name="path" type="s" direction="out"/></method>
   <signal name="Ready"><arg name="path" type="s"/></signal>
+</interface>"""
+
+TASKS_XML = f"""<interface name="{TASKS_IFACE}">
+  <method name="Repos"><arg name="json" type="s" direction="out"/></method>
+  <method name="Defaults"><arg name="json" type="s" direction="out"/></method>
+  <method name="SuggestBranch">
+    <arg name="repoPath" type="s" direction="in"/>
+    <arg name="tool" type="s" direction="in"/>
+    <arg name="prompt" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="Start">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="ShowDialog"><arg name="ok" type="b" direction="out"/></method>
 </interface>"""
 
 IDLE_XML = f"""<interface name="{IDLE_IFACE}">
@@ -202,6 +231,48 @@ class WorktreesAdaptor(QDBusAbstractAdaptor):
         return ""
 
 
+@pyqtClassInfo("D-Bus Interface", TASKS_IFACE)
+@pyqtClassInfo("D-Bus Introspection", TASKS_XML)
+class TasksAdaptor(QDBusAbstractAdaptor):
+    def __init__(self, parent: QObject, monitor, bus: QDBusConnection):
+        super().__init__(parent)
+        self.monitor = monitor
+        self.bus = bus
+
+    def _delayed(self, message: QDBusMessage, name: str):
+        message.setDelayedReply(True)
+        request = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if not self.bus.send(request.createReply([text])):
+                print(f"tide-daemon: nie udało się odesłać wyniku {name}", flush=True)
+
+        return reply
+
+    @pyqtSlot(QDBusMessage, result=str)
+    def Repos(self, message: QDBusMessage) -> str:
+        self.monitor.repos(self._delayed(message, "Repos"))
+        return ""
+
+    @pyqtSlot(result=str)
+    def Defaults(self) -> str:
+        return self.monitor.defaults_json()
+
+    @pyqtSlot(str, str, str, QDBusMessage, result=str)
+    def SuggestBranch(self, repo_path: str, tool: str, prompt: str, message: QDBusMessage) -> str:
+        self.monitor.suggest(repo_path, tool, prompt, self._delayed(message, "SuggestBranch"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Start(self, request: str, message: QDBusMessage) -> str:
+        self.monitor.start(request, self._delayed(message, "Start"))
+        return ""
+
+    @pyqtSlot(result=bool)
+    def ShowDialog(self) -> bool:
+        return self.monitor.show_dialog()
+
+
 @pyqtClassInfo("D-Bus Interface", IDLE_IFACE)
 @pyqtClassInfo("D-Bus Introspection", IDLE_XML)
 class IdleAdaptor(QDBusAbstractAdaptor):
@@ -273,7 +344,7 @@ class LimitsAdaptor(QDBusAbstractAdaptor):
 
 
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
-             limits=None) -> QObject:
+             limits=None, tasks=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -288,6 +359,11 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.worktrees.adaptor = WorktreesAdaptor(holder.worktrees, worktrees, bus)
         if not bus.registerObject(WORKTREES_PATH, holder.worktrees):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {WORKTREES_PATH}")
+    if tasks is not None:
+        holder.tasks = QObject(holder)
+        holder.tasks.adaptor = TasksAdaptor(holder.tasks, tasks, bus)
+        if not bus.registerObject(TASKS_PATH, holder.tasks):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {TASKS_PATH}")
     if idle is not None:
         holder.idle = QObject(holder)
         holder.idle.adaptor = IdleAdaptor(holder.idle, idle)

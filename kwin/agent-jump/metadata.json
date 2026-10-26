@@ -8,8 +8,17 @@
     "License": "MIT",
     "Version": "0.1.0",
     "EnabledByDefault": false,
-    "Authors": [{ "Name": "Tomek" }]
+    "Authors": [
+      {
+        "Name": "Tomek"
+      }
+    ]
   },
   "X-Plasma-API": "javascript",
-  "X-Plasma-MainScript": "code/main.js"
+  "X-Plasma-MainScript": "code/main.js",
+  "X-Tide-Shortcut": {
+    "key": "Meta+A",
+    "action": "TideJumpToWaitingAgent",
+    "label": "Tide: przejdź do agenta, który czeka najdłużej"
+  }
 }
