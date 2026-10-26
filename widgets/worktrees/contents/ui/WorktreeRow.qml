@@ -29,7 +29,9 @@ Tide.Card {
         if (w.missing) parts.push("katalogu już nie ma")
         if (w.dirty > 0) parts.push(w.dirty + " " + Tide.Theme.plural(w.dirty, "zmiana", "zmiany", "zmian"))
         if (w.dirty < 0) parts.push("stan nieznany")
-        if (!w.isMain) {
+        if (w.blocker === "protected") {
+            parts.push("gałąź główna, nie do sprzątania")
+        } else if (!w.isMain) {
             if (!w.mainBranch) parts.push("brak gałęzi głównej")
             else if (w.merged) parts.push("scalony z " + w.mainBranch)
             else if (w.unmerged > 0) parts.push(w.unmerged + " " + Tide.Theme.plural(w.unmerged, "niescalony commit",

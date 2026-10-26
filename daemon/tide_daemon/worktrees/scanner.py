@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 
 from ..agents.timeutil import iso
 from .disk import disk_usage
-from .git import Git, parse_status, parse_worktree_list, pick_main_branch
+from .git import MAIN_CANDIDATES, Git, parse_status, parse_worktree_list, pick_main_branch
 
 MAX_DEPTH = 3
 SIZE_TTL = 30 * 60
@@ -33,7 +33,7 @@ SKIP_DIRS = {"node_modules", "bower_components", "vendor", "bin", "obj", "target
              "out", "__pycache__", "venv", "env", "Pods", "DerivedData"}
 
 # Powody pominięcia przy sprzątaniu (kolejność = pierwszeństwo).
-BLOCKERS = ("main", "missing", "locked", "agent", "dirty", "no-main", "unmerged")
+BLOCKERS = ("main", "protected", "missing", "locked", "agent", "dirty", "no-main", "unmerged")
 
 
 @dataclass
@@ -58,10 +58,17 @@ class Worktree:
     def merged(self) -> bool:
         return self.unmerged == 0
 
+    @property
+    def protected(self) -> bool:
+        """Worktree z gałęzią główną (np. master w osobnym katalogu) — „scalony” sam ze sobą,
+        ale jego usunięcie, a tym bardziej gałęzi, nie jest sprzątaniem."""
+        return bool(self.branch) and (self.branch == self.main_branch or self.branch in MAIN_CANDIDATES)
+
     def blocker(self, has_agent: bool) -> str:
         """Pierwszy powód, dla którego nie wolno go usunąć, albo pusty napis."""
         checks = {
             "main": self.is_main,
+            "protected": self.protected,
             "missing": self.missing,
             "locked": self.locked,
             "agent": has_agent,
@@ -309,7 +316,8 @@ class WorktreeScanner:
         result["message"] = "usunięty"
         with self._lock:
             self._sizes.pop(path, None)
-        if wt.branch:
+        # Druga linia obrony: gałęzi głównych nie kasujemy nigdy, nawet gdyby blokada wyżej zawiodła.
+        if wt.branch and not wt.protected:
             deleted = self.git.run(wt.repo_path, "branch", "-d", wt.branch)
             result["branchDeleted"] = deleted.ok
             result["branchMessage"] = "gałąź usunięta" if deleted.ok else \
@@ -320,6 +328,7 @@ class WorktreeScanner:
 MESSAGES = {
     "unknown": "to nie jest znany worktree",
     "main": "główny katalog repozytorium — nigdy go nie usuwamy",
+    "protected": "stoi na gałęzi głównej (master, main, develop) — nigdy go nie usuwamy",
     "missing": "katalogu już nie ma (git worktree prune)",
     "locked": "zablokowany (git worktree lock)",
     "agent": "pracuje w nim agent",

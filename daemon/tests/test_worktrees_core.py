@@ -272,3 +272,51 @@ class HelpersTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which("git"), "brak gita")
+class ProtectedBranchTest(unittest.TestCase):
+    """Przypadek z LogViewer: główny katalog stoi na gałęzi funkcji, a master jest
+    wybrany w osobnym worktree. Master jest „scalony” sam ze sobą, ale nie wolno ani usunąć
+    jego worktree, ani skasować gałęzi."""
+
+    def setUp(self):
+        import subprocess
+        self.tmp = tempfile.mkdtemp(prefix="tide-wt-protected-")
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.root = os.path.join(self.tmp, "work")
+        self.repo = os.path.join(self.root, "app")
+        self.master_wt = os.path.join(self.root, "app-worktrees", "master-local")
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+        def git(*args, cwd=None):
+            subprocess.run(["git", *args], cwd=cwd or self.repo, env=env, check=True, capture_output=True)
+
+        os.makedirs(self.repo)
+        git("init", "-q", "-b", "master")
+        with open(os.path.join(self.repo, "a.txt"), "w") as fh:
+            fh.write("a")
+        git("add", "a.txt")
+        git("commit", "-q", "-m", "init")
+        git("checkout", "-q", "-b", "feat/summary")
+        git("commit", "-q", "--allow-empty", "-m", "feature")
+        git("worktree", "add", "-q", self.master_wt, "master")
+        self.git = git
+        self.scanner = WorktreeScanner(self.root)
+
+    def test_main_branch_worktree_is_protected(self):
+        self.scanner.refresh()
+        w = by_path(self.scanner.snapshot([]))[self.master_wt]
+        self.assertEqual(w["branch"], "master")
+        self.assertEqual((w["removable"], w["blocker"]), (False, "protected"))
+
+    def test_remove_keeps_main_branch_worktree_and_branch(self):
+        import subprocess
+        self.scanner.refresh()
+        [result] = self.scanner.remove([self.master_wt])
+        self.assertEqual((result["removed"], result["reason"]), (False, "protected"))
+        self.assertTrue(os.path.isdir(self.master_wt))
+        branches = subprocess.run(["git", "branch", "--list", "master"], cwd=self.repo,
+                                  capture_output=True, text=True, check=True).stdout
+        self.assertIn("master", branches)
