@@ -2,7 +2,7 @@
 
 Użycie: python3 tide-daemon.py [--print | --print-worktrees] [--claude-dir DIR] [--codex-dir DIR]
                                [--workspace DIR] [--worktree-depth N] [--no-processes]
-                               [--no-notifications] [--now CZAS]
+                               [--no-notifications] [--no-krunner] [--now CZAS]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
@@ -10,6 +10,7 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees] [--claude-dir DIR]
 --worktree-depth   jak głęboko pod katalogiem projektów szukać repozytoriów (domyślnie 3),
 --no-processes     nie czyta /proc (stan bez wiedzy o procesach, bez przechodzenia do okien),
 --no-notifications bez powiadomień „Agent czeka”,
+--no-krunner       bez wtyczki KRunnera (org.tide.Daemon.KRunner),
 --now              zamrożony zegar (ISO 8601) — dla testów i diagnostyki.
 """
 import argparse
@@ -42,6 +43,7 @@ def parse_args(argv):
     parser.add_argument("--codex-dir", default=default_codex_dir())
     parser.add_argument("--no-processes", action="store_true")
     parser.add_argument("--no-notifications", action="store_true")
+    parser.add_argument("--no-krunner", action="store_true")
     parser.add_argument("--now", help="zamrożony zegar, np. 2026-10-26T12:00:00Z")
     parser.add_argument("--workspace", default=default_workspace())
     parser.add_argument("--worktree-depth", type=int, default=worktrees.MAX_DEPTH)
@@ -94,6 +96,8 @@ def main(argv=None) -> int:
                             lambda: worktrees.agent_cwds(monitor.sessions, monitor.procs),
                             worktrees.Launchers(), refresh_agents=monitor.recompute)
     monitor.changed.connect(trees.publish)  # nowy albo zakończony agent zmienia flagę „aktywny agent”
+    # KRunner przed główną nazwą: gdy org.tide.Daemon jest już na magistrali, wtyczka też.
+    krunner = None if args.no_krunner else start_krunner(app, args, clock, monitor, trees)  # noqa: F841
     try:
         holder = dbus_service.register(monitor, trees)  # noqa: F841 — musi żyć do końca
     except RuntimeError as exc:
@@ -118,3 +122,22 @@ def main(argv=None) -> int:
     code = app.exec()
     trees.stop()
     return code
+
+
+def start_krunner(app, args, clock, monitor, trees):
+    """Wtyczka KRunnera na osobnym połączeniu D-Bus (krunner/service.py). Jej brak nie zatrzymuje usługi."""
+    from .krunner import service
+    if not service.available():
+        print("tide-daemon: brak python3-dbus albo python3-gi — wtyczka KRunnera wyłączona", flush=True)
+        return None
+    from .krunner.index import SessionIndex
+    from .krunner.runner import KRunnerCore, LazyIndex
+
+    index = SessionIndex(args.claude_dir, args.codex_dir, clock=clock)
+    core = KRunnerCore(index, lambda: trees.scanner.snapshot(), trees.launchers,
+                       live=lambda: monitor.sessions, activate=monitor.activate, clock=clock)
+    try:
+        return service.register(core, lambda post: LazyIndex(index, post), app)
+    except Exception as exc:  # np. nazwa zajęta — reszta usługi działa dalej
+        print(f"tide-daemon: wtyczka KRunnera niedostępna: {exc}", flush=True)
+        return None

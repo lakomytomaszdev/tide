@@ -1,0 +1,4 @@
+{"timestamp": "2026-10-02T09:00:00.000Z", "type": "session_meta", "payload": {"id": "0000000b-0000-4000-8000-000000000104", "timestamp": "2026-10-02T09:00:00.000Z", "cwd": "@ROOT@/work/beta", "originator": "codex_cli_rs", "source": "cli", "base_instructions": {"text": "Synthetic base instructions."}, "git": {"branch": "docs/krunner"}}}
+{"timestamp": "2026-10-02T09:00:01.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "# AGENTS.md instructions for beta"}]}}
+{"timestamp": "2026-10-02T09:00:02.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Write docs for the KRunner plugin"}]}}
+{"timestamp": "2026-10-02T09:20:00.000Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "t1"}}

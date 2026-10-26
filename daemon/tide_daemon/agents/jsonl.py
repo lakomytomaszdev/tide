@@ -11,8 +11,10 @@ TAIL_BYTES = 1024 * 1024  # stan sesji wynika z ostatnich wpisów, starsze nie s
 
 
 class JsonlTail:
-    def __init__(self, path: str):
+    def __init__(self, path: str, tail_bytes: int | None = TAIL_BYTES):
+        """tail_bytes=None: pierwszy odczyt bierze cały plik (małe pliki, np. indeks nazw wątków)."""
         self.path = path
+        self.tail_bytes = tail_bytes
         self.offset = 0
         self.size = 0
         self.mtime = 0.0
@@ -34,10 +36,10 @@ class JsonlTail:
         records: list[dict] = []
         try:
             with open(self.path, "rb") as fh:
-                if self.offset == 0 and st.st_size > TAIL_BYTES:
+                if self.offset == 0 and self.tail_bytes is not None and st.st_size > self.tail_bytes:
                     head = fh.readline()
                     records.extend(_parse_lines([head]))
-                    fh.seek(max(fh.tell(), st.st_size - TAIL_BYTES))
+                    fh.seek(max(fh.tell(), st.st_size - self.tail_bytes))
                     fh.readline()  # pierwsza linia ogona jest zwykle ucięta
                 else:
                     fh.seek(self.offset)
@@ -50,6 +52,19 @@ class JsonlTail:
         self._rest = lines.pop()  # pusty, jeśli plik kończy się znakiem nowej linii
         records.extend(_parse_lines(lines))
         return records
+
+
+def read_head(path: str, limit: int) -> list[dict]:
+    """Rekordy z pierwszych `limit` bajtów pliku (bez uciętej ostatniej linii)."""
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read(limit)
+    except OSError:
+        return []
+    lines = data.split(b"\n")
+    if len(data) == limit:
+        lines.pop()  # ostatnia linia może być ucięta w połowie
+    return _parse_lines(lines)
 
 
 def _parse_lines(lines) -> list[dict]:

@@ -7,7 +7,8 @@ Co wiemy o strukturze (z obserwacji, format nie jest publiczny):
 - wywołanie narzędzia to assistant z treścią tool_use, wynik przychodzi jako user z tool_result,
 - przerwanie przez użytkownika to user z tekstem „[Request interrupted by user…”,
 - wpisy isSidechain należą do podagentów i nie zmieniają stanu sesji głównej,
-- ai-title niesie krótki tytuł rozmowy,
+- ai-title niesie krótki tytuł rozmowy (dopisywany wielokrotnie, liczy się ostatni), a custom-title
+  tytuł nadany przez użytkownika,
 - sessions/<pid>.json opisuje działający proces: sessionId, cwd i status (busy, waiting, idle,
   shell — tura skończona, ale w tle działa uruchomione przez agenta zadanie, do którego on wróci).
 """
@@ -37,11 +38,18 @@ class ClaudeLog(SessionLog):
         super().__init__(path)
         self.session_id = os.path.splitext(os.path.basename(path))[0]
         self.project_dir = os.path.basename(os.path.dirname(path))
+        self.custom_title = False
 
     def feed(self, record: dict) -> None:
         kind = record.get("type")
+        if kind == "custom-title" and record.get("customTitle"):
+            # Tytuł nadany przez użytkownika (/rename) wygrywa z tytułem wygenerowanym.
+            self.title = str(record["customTitle"])
+            self.custom_title = True
+            return
         if kind == "ai-title":
-            self.title = str(record.get("aiTitle") or self.title)
+            if not self.custom_title:
+                self.title = str(record.get("aiTitle") or self.title)
             return
         if record.get("isSidechain"):
             return
