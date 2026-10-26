@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.tide.sidebar",
+    "Name": "Tide · Nagłówek paska bocznego",
+    "Description": "Nagłówek chowanego paska bocznego Tide; jego skrót (Meta+S) wysuwa pasek",
+    "Icon": "view-left-new",
+    "Category": "Windows and Tasks",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "Authors": [{ "Name": "Tomek" }]
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}
