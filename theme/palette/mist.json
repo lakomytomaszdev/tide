@@ -74,8 +74,8 @@
     "fieldHeight": 48,
     "logoPx": 44,
     "dim": 0.2,
-    "wakeMs": 900,
-    "sleepMs": 1600,
+    "wakeMs": 650,
+    "sleepMs": 1100,
     "dozeAfterMs": 3000
   },
   "splash": {
