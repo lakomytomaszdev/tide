@@ -26,6 +26,9 @@ help:
 	@echo "make sddm-preview          zrzuty ekranu logowania w build/sddm/preview (bez sudo)"
 	@echo "make install-sddm          ekran logowania SDDM (sudo, osobno od make install)"
 	@echo "make uninstall-sddm        przywrócenie poprzedniego ekranu logowania (sudo)"
+	@echo "make plymouth-preview      klatki ekranu startowego w build/plymouth/preview (bez sudo)"
+	@echo "make install-plymouth      ekran startowy Plymouth (sudo, update-initramfs, osobno od make install)"
+	@echo "make uninstall-plymouth    przywrócenie poprzedniego ekranu startowego (sudo)"
 
 install: pre-install-backup $(INSTALL_TARGETS) $(LATE_INSTALL_TARGETS)
 	@echo "Zainstalowano Tide."

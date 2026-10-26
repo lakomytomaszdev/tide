@@ -8,7 +8,7 @@ Własny motyw KDE Plasma 6 z widżetami do pracy z agentami AI. Pierwszy wariant
 
 ## Środowisko
 
-KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). Motyw instaluje się do katalogu domowego. Sudo wymaga tylko ekran logowania (SDDM).
+KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). Motyw instaluje się do katalogu domowego. Sudo wymagają tylko ekran logowania (SDDM) i ekran startowy systemu (Plymouth).
 
 ## Struktura
 
@@ -21,7 +21,8 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `theme/lockscreen/` | Ekran blokady Tide jako pakiet powłoki Plasmy (QML na bazie ekranu Plasmy 6.8), zrzuty z prawdziwego greetera, sprawdzenie kopii powłoki w zagnieżdżonej sesji (`shell_copy_check.sh`) |
 | `theme/icons/` | Nakładka ikon „Tide” i polecenie `tide-icons` (audyt, synchronizacja, podgląd) |
 | `theme/sddm/` | Ekran logowania SDDM „tide”: QML, składanie z palety (`build.py`), sprawdzenie przed instalacją (`check.py`, atrapa greetera w `harness/`), zrzut prawdziwego greetera (`greeter_shot.sh`) |
-| `scripts/` | Kopie zapasowe i przywracanie wyglądu (`backup.sh`, `restore.sh`, `paths.sh`), instalatory komponentów (`sddm_system.py` to jedyny uruchamiany przez sudo) i synchronizacja kopii powłoki z ekranem blokady (`shell_sync.py`) |
+| `theme/plymouth/` | Ekran startowy systemu, motyw Plymouth „tide”: składanie z palety (`build.py`), logika skryptu (`logic.script`), atrapa modułu script (`harness.py`), sprawdzenie przed instalacją (`check.py`), klatki bez roota (`preview.py`), podgląd na prawdziwym plymouthd (`preview_real.sh`) |
+| `scripts/` | Kopie zapasowe i przywracanie wyglądu (`backup.sh`, `restore.sh`, `paths.sh`), instalatory komponentów (`sddm_system.py` i `plymouth_system.py` to jedyne uruchamiane przez sudo) i synchronizacja kopii powłoki z ekranem blokady (`shell_sync.py`) |
 | `scripts/panels/` | Skrypty plasmashell górnych pasków, docka i paska bocznego (zrzut, instalacja, kolejność, odinstalowanie) |
 | `tools/` | Narzędzia do ikon: `make_tile.py` (kafelek z oryginalnej ikony), `make_tint.py` (eksperyment z przefarbowaniem, odrzucony) |
 | `daemon/` | Usługa `tide-daemon`: sesje agentów, worktrees i raport poranny przez D-Bus ([opis i kontrakt](docs/tide-daemon.md)) |
@@ -293,4 +294,41 @@ make sddm-status       # który motyw wybierze SDDM i skąd
 
 ```bash
 sudo rm /etc/sddm.conf.d/zz-tide.conf && sudo systemctl restart sddm
+```
+
+## Ekran startowy (Plymouth)
+
+Motyw Plymouth „tide” to pierwszy ekran po GRUB-ie: grafitowe tło (`background.desktop`), pośrodku logo „trzy fale” na kafelku i 44 px niżej cienki pasek postępu — w tym samym miejscu i rozmiarze co ekran ładowania Plasmy. Wejście to przenikanie `splash.fadeMs` (kafelek, potem fale co `plymouth.waveDelayMs`), potem fale po kolei „oddychają” (krycie 1 → `plymouth.breatheTo` → 1, cykl `splash.pulseMs`, ta sama krzywa co logo w `Splash.qml`). Przy wyłączaniu i restarcie jest samo logo, przy aktualizacjach systemu pasek i „Instalowanie aktualizacji · 42%”. Zaszyfrowany dysk: zamiast paska podpowiedź z systemu i pole hasła jak na ekranie blokady (karta, ramka i obwódka w tealu, kropki w kolorze tekstu, „Hasło” gdy puste), pod nim „Caps Lock jest włączony” w maśle; komunikaty systemu (np. sprawdzanie dysków) niżej w kolorze wyciszonym.
+
+```bash
+make plymouth-preview        # klatki bez roota w build/plymouth/preview (boot-*.png, password-*.png, boot.gif, …)
+make plymouth-check          # samo sprawdzenie, bez sudo
+make install-plymouth        # sprawdzenie, potem jedno sudo: kopia, update-alternatives, update-initramfs -u
+make uninstall-plymouth      # sudo: wraca motyw sprzed Tide, update-initramfs -u
+make plymouth-status         # który motyw wybierze Plymouth i czy jądro ma „quiet splash”
+make plymouth-real-preview   # składa motyw dla /run i wypisuje polecenie podglądu na prawdziwym plymouthd
+```
+
+**Moduł script.** `two-step.so` nie ma w systemie (pakiet `plymouth-themes`), a `script.so` jest — tego samego używa Breeze. Skrypt to tokeny z palety (kolory, czasy, wymiary w każdej skali; `theme/plymouth/build.py`) i stała logika (`theme/plymouth/logic.script`). Obrazy to warstwy logo (kafelek i każda fala osobno, żeby fale mogły oddychać po kolei), tor i wypełnienie paska oraz pole hasła — w czterech skalach: 0,75, 1, 4/3 i 2 względem 1920×1080. Plymouth rysuje te same duszki na wszystkich ekranach, ustawiając mniejsze środkiem do środka największego, więc skala idzie za najmniejszym ekranem: przy obu monitorach logo ma 128 px jak w Plasmie, sam monitor 2560×1440 dostaje 171 px, 4K bez skalowania 256 px. Plymouth podaje skryptowi wymiary logiczne, więc przy skalowaniu HiDPI (DeviceScale) obrazy są powiększane. Tekst rysuje `label-pango.so` czcionką z initramfs: hook Plymouth kopiuje tylko Ubuntu (jako „Sans”), więc Geist z palety jest pierwszy na liście, a faktycznie pisze Ubuntu.
+
+**Podgląd bez roota.** Prawdziwy `plymouthd` potrzebuje roota i ekranu (renderery drm i frame-buffer; renderera x11 w KDE neon nie ma). `theme/plymouth/harness.py` to atrapa modułu script: wykonuje ten sam `tide.script` na tych samych obrazach (interpreter języka skryptów Plymouth, biblioteki Math, Window, Sprite, Image, Plymouth i model ekranów jak w `script-lib-sprite.c`) i rysuje klatki w Pillow. Atrapa jest surowsza niż Plymouth: błąd składni, wywołanie czegoś, co nie jest funkcją, brakujący obraz czy działanie na NULL to wyjątek z numerem wiersza. Na niej działają `make plymouth-preview`, `make plymouth-check` i testy.
+
+**Podgląd na prawdziwym plymouthd** (opcjonalnie, uruchamia użytkownik): `make plymouth-real-preview`, potem na konsoli tekstowej (Ctrl+Alt+F3) `sudo sh theme/plymouth/preview_real.sh build/plymouth/run/tide`. Motyw trafia tylko do `/run/plymouth/themes/tide` (tmpfs), wybiera go podrobiony wiersz poleceń jądra (`--kernel-command-line … plymouth.splash=tide`), a alternatywy, initramfs i GRUB zostają bez zmian. Pokaz: start, komunikat, pole hasła (wpisz cokolwiek), tryb aktualizacji; dziennik w `/run/tide-plymouth-debug.log` (błędy skryptu to „Parser error” i „Execution error”). Powrót do sesji: Ctrl+Alt+F1 albo F2.
+
+**Instalacja.** `make install-plymouth` nie jest częścią `make install`, bo wymaga sudo i odświeża initramfs. KDE neon, jak Ubuntu, nie ma `plymouth-set-default-theme`: domyślny motyw to alternatywa `default.plymouth`, z której czyta też hook initramfs. `scripts/plymouth_system.py`:
+
+1. przerywa, zanim cokolwiek zmieni, jeśli inny motyw wymusza `plymouth.splash=` w wierszu poleceń jądra albo `Theme=` w `/etc/plymouth/plymouthd.conf` lub `/usr/share/plymouth/plymouthd.defaults`,
+2. kopiuje motyw do `/usr/share/plymouth/themes/.tide-new` i sprawdza tę kopię (`check.py`: pliki, ścieżki, skrypt w atrapie na siedmiu zestawach ekranów i we wszystkich trybach) — gdy nie przejdzie, w systemie nic się nie zmienia,
+3. przy pierwszej instalacji zapisuje w `/var/lib/tide/plymouth-previous.json` motyw sprzed Tide (wartość i tryb alternatywy: auto albo ręczny) i jego plik `.grub`,
+4. podmienia `/usr/share/plymouth/themes/tide`, rejestruje alternatywę (priorytet 100, niższy niż Breeze) i wybiera ją ręcznie (`update-alternatives --set`); podrzędne `default.grub` wskazuje `tide.grub` — kopię `.grub` poprzedniego motywu, więc `update-grub` da to samo menu co dotąd,
+5. uruchamia `update-initramfs -u` (najnowsze jądro).
+
+`make uninstall-plymouth` przywraca zapamiętany wybór (`--auto` albo `--set` poprzedniego motywu), wyrejestrowuje „tide”, usuwa katalog i zapis stanu, potem znów `update-initramfs -u`. Nowy ekran widać dopiero przy następnym uruchomieniu.
+
+**Wiersz poleceń jądra.** Plymouth pokazuje grafikę tylko z `splash` w wierszu poleceń jądra. Na tym komputerze jest (`/proc/cmdline`: `… ro quiet splash resume=… nvidia.NVreg_EnableGpuFirmware=0 vt.handoff=7`, `GRUB_CMDLINE_LINUX_DEFAULT='quiet splash …'` w `/etc/default/grub`), więc nic nie trzeba zmieniać. Tide nigdy nie zmienia GRUB-a; `make plymouth-status` pokazuje stan i podpowiada, co dopisać, gdyby `splash` zniknął. Karta NVIDIA (sterownik `nvidia-drm` z `modeset=1`): jeśli moduły NVIDIA nie są w initramfs, Plymouth zaczyna na prostym framebufferze (zwykle jeden ekran w rozdzielczości z firmware) i przechodzi na pełne ekrany, gdy sterownik się wczyta — skrypt przelicza wtedy układ (`SetDisplayHotplugFunction`).
+
+**Gdy coś pójdzie nie tak.** Błąd w skrypcie daje pusty grafitowy ekran zamiast logo, ale start systemu i pytanie o hasło działają dalej (hasło można wpisać na ślepo, Esc przełącza na tekst). Powrót do Breeze z konsoli tekstowej:
+
+```bash
+sudo update-alternatives --auto default.plymouth && sudo update-initramfs -u
 ```
