@@ -118,16 +118,23 @@ Karta Konsole, w której działa sesja, pokazuje jej stan (decyzja 29 — koloru
 
 | Stan sesji | Tytuł karty | Kolor karty |
 | --- | --- | --- |
-| `working` | `◐ ` przed tytułem | `pastel[semantic.working]` (teal) |
-| `waiting` | `◆ ` przed tytułem | `pastel[semantic.waiting]` (brzoskwinia) |
-| `done`, `idle`, `ended`, brak sesji | jak przed oznaczeniem | jak przed oznaczeniem |
+| `working` | `● projekt · gałąź` | `pastel[semantic.working]` (teal) |
+| `waiting` | `◆ projekt · gałąź · czeka` | `pastel[semantic.waiting]` (brzoskwinia) |
+| `done` | `○ projekt · gałąź` | bez zmian (puste kółko, informacja — #26) |
+| `idle`, `ended`, brak sesji | jak przed oznaczeniem | jak przed oznaczeniem |
+
+Projekt i gałąź pochodzą z sesji (`project`, `branch`); sesja bez projektu dostaje sam znak przed dotychczasowym tytułem. Konsole rysuje kolor karty jako pasek pod tytułem; arkusz stylów paska kart Tide (`make install-konsole`, decyzja 42) układa pigułkę tak, żeby pasek wypadał pod tekstem. Pojedynczej karcie nie da się nadać innego koloru tekstu ani tła, więc stan niosą kształt znaku, słowo „czeka” i pasek.
 
 - Kartę wskazują `KONSOLE_DBUS_SERVICE` i `KONSOLE_DBUS_SESSION` ze środowiska procesu agenta (jak przy przejściu do okna). Gdy w jednej karcie są dwie sesje, „czeka” wygrywa. Inne terminale i aplikacje nie mają API kart — zostają bez znacznika; okna bez agenta nie są ruszane.
 - Zmiana idzie przez `org.kde.konsole.Session`: prefiks trafia do obu formatów tytułu (`setTabTitleFormat` 0 i 1), więc przetrwa odświeżenia Konsoli, a wyświetlany tytuł jest ustawiany od razu (`setTitle(1, …)`, potem formaty), bo Konsole przelicza go dopiero po aktywności w terminalu. Kolor: `setTabColor`. Bieżąca karta przekazuje tytuł oknu, więc znacznik widać też na pasku tytułu, w pasku zadań i przełączniku okien.
 - Oryginalne formaty i kolor są w `$XDG_STATE_HOME/tide/konsole-tabs.json` (plik znika, gdy nic nie jest oznaczone). Karta wraca do nich, gdy stan mija, przy zamknięciu usługi i po jej restarcie. Jeśli użytkownik w międzyczasie zmienił tytuł albo kolor karty, jego zmiana zostaje.
-- Konsolę pytamy tylko przy zmianie stanu karty, wywołaniami z limitem 1 s. `--no-tab-marks` (albo `--no-processes`) wyłącza znacznik.
+- Konsolę pytamy tylko przy zmianie stanu albo etykiety karty, wywołaniami z limitem 1 s. `--no-tab-marks` (albo `--no-processes`) wyłącza znacznik.
 
 Logika jest w `tide_daemon/tabmarks.py` bez Qt, zaplecze D-Bus w `konsole.py`. Kolory pochodzą z palety: `palette.json` obok zainstalowanej usługi, w repozytorium `theme/palette/mist.json`, albo `$TIDE_PALETTE`.
+
+## Stan agentów dla promptu powłoki
+
+Prompt Tide (`make install-terminal`) pokazuje chip „claude pracuje” dla katalogu powłoki. Żeby nie pytać usługi przy każdym znaku zachęty, usługa przy każdej zmianie listy sesji zapisuje `$XDG_CACHE_HOME/tide/agents-by-cwd.tsv`: jeden wiersz `<stan>\t<narzędzie>\t<katalog>` na katalog (czeka > pracuje > skończył; bezczynne i zakończone pominięte). Zapis atomowy i tylko przy zmianie treści; przy zamknięciu usługi plik znika. Kod: `tide_daemon/cwdstate.py`.
 
 ## Worktrees
 

@@ -1,16 +1,20 @@
-"""Znacznik stanu agenta na karcie Konsole: prefiks w tytule i kolor karty.
+"""Znacznik stanu agenta na karcie Konsole: tytuł „projekt · gałąź” ze znakiem stanu i kolor karty.
 
 Kolor paska tytułu okna według stanu nie jest możliwy przy dekoracji Tide (Aurorae v2 rysuje
 kolory z SVG i nie czyta schematu kolorów okna — docs/decisions.md, #11), więc stan pokazujemy
-na samej karcie terminala, w którym działa agent:
+na samej karcie terminala, w którym działa agent (#26, jak kafelki Tide):
 
-- pracuje → „◐ ” przed tytułem karty i kolor karty teal,
-- czeka   → „◆ ” przed tytułem karty i kolor karty brzoskwiniowy,
-- skończyła turę (done), bezczynna, zakończona albo zniknęła → karta wraca do stanu sprzed
-  oznaczenia. „Skończył” celowo nie ma znacznika: karta nie woła o uwagę, gdy agent niczego
-  nie blokuje, a koniec pracy i tak widać po zniknięciu „◐ ”.
+- pracuje   → „● projekt · gałąź” i kolor karty teal (pasek pod tytułem),
+- czeka     → „◆ projekt · gałąź · czeka” i kolor karty brzoskwiniowy,
+- skończył  → „○ projekt · gałąź” bez koloru (puste kółko jak w widżetach, informacja, nie wezwanie),
+- bezczynna, zakończona albo zniknęła → karta wraca do stanu sprzed oznaczenia.
 
-Tytuł karty z prefiksem trafia też do tytułu okna (gdy to bieżąca karta), a więc na pasek
+Konsole nie umie pokolorować znaku ani tekstu pojedynczej karty (arkusz stylów paska kart nie ma
+selektora karty), więc stan niosą kształt znaku, słowo „czeka” i pasek koloru, który Konsole rysuje
+pod tytułem karty (`setTabColor`). Bez nazwy projektu (sesja bez katalogu) zostaje sam znak przed
+dotychczasowym tytułem.
+
+Tytuł karty ze znakiem trafia też do tytułu okna (gdy to bieżąca karta), a więc na pasek
 tytułu, do paska zadań i przełącznika okien.
 
 Czysta logika bez Qt: Konsole jest za interfejsem (`read`, `apply`), a oryginalne formaty
@@ -24,9 +28,15 @@ from . import windows
 
 WORKING = "working"
 WAITING = "waiting"
-PREFIXES = {WORKING: "◐ ", WAITING: "◆ "}
+DONE = "done"
+PREFIXES = {WORKING: "● ", WAITING: "◆ ", DONE: "○ "}
+# Dopisek za etykietą „projekt · gałąź” — samo słowo, bo kolor tekstu karty jest wspólny.
+SUFFIXES = {WAITING: " · czeka"}
+SEPARATOR = " · "
+# Znaki z wcześniejszych wersji (◐ pracuje) — zdejmowane przy sprzątaniu po starej usłudze.
+LEGACY_PREFIXES = ("◐ ",)
 # Kolejność ważności, gdy w jednej karcie jest kilka sesji (np. agent uruchomiony z agenta).
-PRIORITY = {WORKING: 1, WAITING: 2}
+PRIORITY = {DONE: 1, WORKING: 2, WAITING: 3}
 NO_COLOR = ""  # Konsole zwraca "#000000", gdy karta nie ma koloru; pusty napis go zdejmuje
 
 
@@ -40,14 +50,23 @@ def split_key(key: str) -> tuple[str, str]:
     return service, path
 
 
-def desired_tabs(sessions: list[dict], bound_pids: dict, procs) -> dict[str, str]:
-    """Karta Konsole → stan, który ma pokazywać. Tylko sesje pracujące i czekające z ustaloną kartą.
+def session_label(session: dict) -> str:
+    """„projekt · gałąź” sesji (sam projekt bez gałęzi); pusty, gdy projekt nie jest znany."""
+    project = (session.get("project") or "").strip()
+    branch = (session.get("branch") or "").strip()
+    if not project:
+        return ""
+    return f"{project}{SEPARATOR}{branch}" if branch and branch != project else project
 
-    W jednej karcie wygrywa „czeka” — to ono wymaga reakcji użytkownika.
+
+def tab_targets(sessions: list[dict], bound_pids: dict, procs) -> dict[str, tuple[str, str]]:
+    """Karta Konsole → (stan, etykieta). Sesje pracujące, czekające i skończone z ustaloną kartą.
+
+    W jednej karcie wygrywa „czeka” — to ono wymaga reakcji użytkownika — potem „pracuje”.
     """
     if procs is None:
         return {}
-    out: dict[str, str] = {}
+    out: dict[str, tuple[str, str]] = {}
     for session in sessions:
         state = session.get("state")
         if state not in PREFIXES:
@@ -58,9 +77,15 @@ def desired_tabs(sessions: list[dict], bound_pids: dict, procs) -> dict[str, str
         if not konsole:
             continue
         key = tab_key(konsole)
-        if PRIORITY[state] > PRIORITY.get(out.get(key), 0):
-            out[key] = state
+        current = out.get(key)
+        if PRIORITY[state] > PRIORITY.get(current[0] if current else None, 0):
+            out[key] = (state, session_label(session))
     return out
+
+
+def desired_tabs(sessions: list[dict], bound_pids: dict, procs) -> dict[str, str]:
+    """Karta Konsole → sam stan (bez etykiety), np. do diagnostyki."""
+    return {key: state for key, (state, _label) in tab_targets(sessions, bound_pids, procs).items()}
 
 
 def strip_marker(text: str) -> str:
@@ -68,7 +93,7 @@ def strip_marker(text: str) -> str:
     changed = True
     while changed:
         changed = False
-        for prefix in PREFIXES.values():
+        for prefix in (*PREFIXES.values(), *LEGACY_PREFIXES):
             if text.startswith(prefix):
                 text = text[len(prefix):]
                 changed = True
@@ -129,17 +154,18 @@ class TabMarker:
 
     # --- zmiany -------------------------------------------------------------------------
 
-    def update(self, desired: dict[str, str]) -> None:
-        """Doprowadza karty do stanu `desired` (klucz karty → working/waiting)."""
+    def update(self, desired: dict) -> None:
+        """Doprowadza karty do stanu `desired`: klucz karty → stan albo (stan, etykieta)."""
         changed = False
         for key in sorted(set(self.records) - set(desired)):
             self._restore(key)
             changed = True
-        for key, state in sorted(desired.items()):
+        for key, target in sorted(desired.items()):
+            state, label = (target, "") if isinstance(target, str) else target
             record = self.records.get(key)
-            if record and record.get("state") == state:
+            if record and record.get("state") == state and record.get("label", "") == label:
                 continue  # bez zmian — nie pytamy Konsoli przy każdym odświeżeniu listy
-            self._mark(key, state)
+            self._mark(key, state, label)
             changed = True
         if changed:
             self._save()
@@ -148,7 +174,7 @@ class TabMarker:
         """Przywraca wszystkie oznaczone karty (zamknięcie usługi)."""
         self.update({})
 
-    def _mark(self, key: str, state: str) -> None:
+    def _mark(self, key: str, state: str, label: str = "") -> None:
         current = self.konsole.read(key)
         if current is None:
             self.records.pop(key, None)  # karta albo cała Konsole już nie istnieje
@@ -170,17 +196,25 @@ class TabMarker:
                 original["color"] = normalize_color(current["color"], ours)
 
         prefix = PREFIXES[state]
-        marked = {"local": prefix + original["local"], "remote": prefix + original["remote"],
-                  "color": self.colors.get(state, original["color"])}
+        if label:
+            # Etykieta zastępuje tytuł (np. tytuł zadania, który ustawia sam agent) — jak na mocku.
+            # „%” w nazwie gałęzi Konsole wzięłaby za zmienną formatu, więc go podwajamy.
+            text = prefix + label + SUFFIXES.get(state, "")
+            local = remote = text.replace("%", "%%")
+            title = text
+        else:
+            local, remote = prefix + original["local"], prefix + original["remote"]
+            title = prefix + strip_marker(current["title"])
+        marked = {"local": local, "remote": remote, "color": self.colors.get(state, original["color"])}
         # Wyświetlany tytuł ustawiamy od razu: Konsole sama przelicza go z formatu dopiero przy
         # następnej aktywności w terminalu, a czekający agent nic już nie wypisuje. setTitle
         # nadpisuje przy tym oba formaty, więc zaraz po nim ustawiamy formaty ze znacznikiem.
-        ok = self.konsole.apply(key, title=prefix + strip_marker(current["title"]),
-                                local=marked["local"], remote=marked["remote"], color=marked["color"])
+        ok = self.konsole.apply(key, title=title, local=marked["local"], remote=marked["remote"],
+                                color=marked["color"])
         if not ok:
             self.records.pop(key, None)
             return
-        self.records[key] = {"state": state, **original, "markedLocal": marked["local"],
+        self.records[key] = {"state": state, "label": label, **original, "markedLocal": marked["local"],
                              "markedRemote": marked["remote"], "markedColor": marked["color"]}
 
     def _restore(self, key: str) -> None:
@@ -193,9 +227,14 @@ class TabMarker:
         color_ours = normalize_color(current["color"], set()) == record.get("markedColor", NO_COLOR)
         if not formats_ours and not color_ours:
             return  # użytkownik przejął kartę — zostawiamy jego tytuł i kolor
+        # Przy etykiecie wyświetlany tytuł był w całości nasz — Konsole przeliczy go z przywróconego
+        # formatu przy najbliższej aktywności, a do tego czasu pokazujemy sam format bez zmiennych.
+        restored_title = strip_marker(current["title"])
+        if record.get("label"):
+            restored_title = record["local"] if "%" not in record["local"] else record.get("label", "")
         self.konsole.apply(
             key,
-            title=strip_marker(current["title"]) if formats_ours else None,
+            title=restored_title if formats_ours else None,
             local=record["local"] if formats_ours else None,
             remote=record["remote"] if formats_ours else None,
             color=record["color"] if color_ours else None,

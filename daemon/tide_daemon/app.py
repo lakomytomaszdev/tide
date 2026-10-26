@@ -15,7 +15,7 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [
 --no-processes     nie czyta /proc (stan bez wiedzy o procesach, bez przechodzenia do okien),
 --no-notifications bez powiadomień „Agent czeka”,
 --no-krunner       bez wtyczki KRunnera (org.tide.Daemon.KRunner),
---no-tab-marks     bez znacznika stanu na kartach Konsole (prefiks tytułu i kolor karty),
+--no-tab-marks     bez znacznika stanu na kartach Konsole („● projekt · gałąź” i kolor karty),
 --now              zamrożony zegar (ISO 8601) — dla testów i diagnostyki,
 --idle-after       próg bezczynności w sekundach dla /Idle (domyślnie wallpaper.dozeAfterS z palety),
 --no-idle          bez obiektu /Idle (bezczynność z kompozytora Wayland),
@@ -186,6 +186,20 @@ def main(argv=None) -> int:
     if limits is not None:
         limits.start()  # pierwszy odczyt /status po rejestracji i po podłączeniu powiadomień
 
+    # Stan agentów według katalogu dla promptu powłoki (cwdstate.py) — plik, nie D-Bus, bo prompt
+    # czyta go przy każdym znaku zachęty.
+    from .cwdstate import CwdStateFile
+    cwd_state = CwdStateFile()
+
+    def write_cwd_state() -> None:
+        try:
+            cwd_state.update(monitor.sessions)
+        except Exception as exc:  # plik dla promptu nie może położyć usługi
+            print(f"tide-daemon: nie udało się zapisać stanu agentów dla promptu: {exc}", flush=True)
+
+    write_cwd_state()
+    monitor.changed.connect(write_cwd_state)
+
     marker = None
     if not args.no_tab_marks and not args.no_processes:
         from . import tabmarks
@@ -194,7 +208,7 @@ def main(argv=None) -> int:
 
         def mark_tabs() -> None:
             try:
-                marker.update(tabmarks.desired_tabs(monitor.sessions, monitor.scanner.bound_pids, monitor.procs))
+                marker.update(tabmarks.tab_targets(monitor.sessions, monitor.scanner.bound_pids, monitor.procs))
             except Exception as exc:  # znacznik na karcie nie może położyć usługi
                 print(f"tide-daemon: nie udało się oznaczyć kart Konsole: {exc}", flush=True)
 
@@ -213,6 +227,7 @@ def main(argv=None) -> int:
         limits.stop()
     if marker is not None:
         marker.clear()  # karty wracają do swoich tytułów i kolorów, gdy usługa się kończy
+    cwd_state.clear()  # prompt nie pokazuje stanu agentów, których nikt już nie śledzi
     return code
 
 

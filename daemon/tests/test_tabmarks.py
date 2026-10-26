@@ -101,10 +101,11 @@ class DesiredTabsTest(unittest.TestCase):
         self.assertEqual(tabmarks.desired_tabs(sessions, pids, table()), {})
         self.assertEqual(tabmarks.desired_tabs([{"id": "claude:a", "state": "working"}], {"claude:a": 511}, None), {})
 
-    def test_done_session_has_no_mark(self):
-        # Agent skończył turę i niczego nie blokuje — karta nie woła o uwagę.
-        self.assertEqual(tabmarks.desired_tabs([{"id": "claude:a", "state": "done"}], {"claude:a": 511}, table()), {})
-        # Pracujący agent w tej samej karcie nadal ją oznacza.
+    def test_done_session_gets_the_quiet_mark(self):
+        # Agent skończył turę: puste kółko bez koloru karty (#26), nie wezwanie.
+        self.assertEqual(tabmarks.desired_tabs([{"id": "claude:a", "state": "done"}], {"claude:a": 511}, table()),
+                         {"org.kde.konsole-500 /Sessions/1": "done"})
+        # Pracujący agent w tej samej karcie wygrywa ze skończonym.
         sessions = [{"id": "claude:b", "state": "done"}, {"id": "codex:c", "state": "working"}]
         self.assertEqual(tabmarks.desired_tabs(sessions, {"claude:b": 521, "codex:c": 522}, table()),
                          {"org.kde.konsole-500 /Sessions/2": "working"})
@@ -118,8 +119,22 @@ class DesiredTabsTest(unittest.TestCase):
         self.assertEqual(tabmarks.load_state_colors([os.path.join(REPO, "theme/palette/mist.json")]), colors)
         self.assertEqual(tabmarks.load_state_colors(["/nie/ma/takiej/palety.json"]), {})
 
+    def test_targets_carry_project_and_branch(self):
+        sessions = [
+            {"id": "claude:a", "state": "working", "project": "plasma-tide", "branch": "feat/x"},
+            {"id": "claude:b", "state": "done", "project": "legal-agents", "branch": ""},
+            {"id": "codex:c", "state": "waiting", "project": "LogViewer", "branch": "master"},
+        ]
+        pids = {"claude:a": 511, "claude:b": 521, "codex:c": 522}
+        self.assertEqual(tabmarks.tab_targets(sessions, pids, table()), {
+            "org.kde.konsole-500 /Sessions/1": ("working", "plasma-tide · feat/x"),
+            "org.kde.konsole-500 /Sessions/2": ("waiting", "LogViewer · master"),
+        })
+        self.assertEqual(tabmarks.session_label({"project": "tide"}), "tide")
+        self.assertEqual(tabmarks.session_label({"branch": "master"}), "")
+
     def test_strip_marker_removes_only_our_prefixes(self):
-        self.assertEqual(tabmarks.strip_marker("◆ ◐ ◆ tide : bash"), "tide : bash")
+        self.assertEqual(tabmarks.strip_marker("◆ ◐ ● ○ ◆ tide : bash"), "tide : bash")
         self.assertEqual(tabmarks.strip_marker("◆tide"), "◆tide")
         self.assertEqual(tabmarks.strip_marker("tide ◆ bash"), "tide ◆ bash")
 
@@ -137,7 +152,7 @@ class TabMarkerTest(unittest.TestCase):
 
     def test_working_then_waiting_then_idle(self):
         self.marker.update({KEY: "working"})
-        self.assertEqual(self.tab(), {"title": "◐ tide : bash", "local": "◐ %d : %n", "remote": "◐ (%u) %H",
+        self.assertEqual(self.tab(), {"title": "● tide : bash", "local": "● %d : %n", "remote": "● (%u) %H",
                                       "color": COLORS["working"]})
         self.assertTrue(os.path.isfile(self.store))
 
@@ -205,7 +220,7 @@ class TabMarkerTest(unittest.TestCase):
 
     def test_leftover_marks_without_state_file_are_not_doubled(self):
         # Usługa zabita twardo i bez pliku stanu: karta została ze znacznikiem i naszym kolorem.
-        self.konsole.tabs[KEY] = {"title": "◐ tide : bash", "local": "◐ %d : %n", "remote": "◐ (%u) %H",
+        self.konsole.tabs[KEY] = {"title": "◐ tide : bash", "local": "● %d : %n", "remote": "◐ (%u) %H",
                                   "color": COLORS["working"]}
         marker = tabmarks.TabMarker(self.konsole, COLORS, None)
         marker.update({KEY: "waiting"})
@@ -221,6 +236,33 @@ class TabMarkerTest(unittest.TestCase):
         self.assertEqual(self.tab()["color"], "#000000")
         marker.clear()
         self.assertEqual(self.tab()["title"], "tide : bash")
+
+    def test_label_replaces_the_title_and_comes_back(self):
+        self.marker.update({KEY: ("working", "plasma-tide · feat/x")})
+        self.assertEqual(self.tab(), {"title": "● plasma-tide · feat/x", "local": "● plasma-tide · feat/x",
+                                      "remote": "● plasma-tide · feat/x", "color": COLORS["working"]})
+        self.marker.update({KEY: ("waiting", "plasma-tide · feat/x")})
+        self.assertEqual(self.tab()["title"], "◆ plasma-tide · feat/x · czeka")
+        self.assertEqual(self.tab()["color"], COLORS["waiting"])
+        self.marker.update({KEY: ("done", "plasma-tide · feat/x")})
+        self.assertEqual(self.tab()["title"], "○ plasma-tide · feat/x")
+        self.assertEqual(self.tab()["color"], "#000000")  # skończony bez koloru — oryginał karty
+        self.marker.update({})
+        self.assertEqual((self.tab()["local"], self.tab()["remote"], self.tab()["color"]),
+                         ("%d : %n", "(%u) %H", "#000000"))
+        self.assertEqual(self.tab()["title"], "plasma-tide · feat/x")  # do najbliższego przeliczenia formatu
+
+    def test_branch_switch_updates_the_label(self):
+        self.marker.update({KEY: ("working", "tide · a")})
+        self.marker.update({KEY: ("working", "tide · b")})
+        self.assertEqual(self.tab()["title"], "● tide · b")
+        self.marker.update({})
+        self.assertEqual(self.tab()["local"], "%d : %n")
+
+    def test_percent_in_label_is_not_a_format_variable(self):
+        self.marker.update({KEY: ("working", "tide · fix/100%")})
+        self.assertEqual(self.tab()["local"], "● tide · fix/100%%")
+        self.assertEqual(self.tab()["title"], "● tide · fix/100%")
 
     def test_broken_state_file_is_ignored(self):
         os.makedirs(os.path.dirname(self.store))

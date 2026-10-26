@@ -85,7 +85,8 @@ class PrivateBus:
 
     def spawn_daemon(self, *args, **kwargs) -> subprocess.Popen:
         # Własny XDG_STATE_HOME: usługa testowa nie może czytać ani kasować stanu kart Konsole
-        # zapisanego przez usługę z pulpitu (tabmarks.default_store).
+        # zapisanego przez usługę z pulpitu (tabmarks.default_store). Własny XDG_CACHE_HOME z tego
+        # samego powodu: plik stanu agentów dla promptu (cwdstate.default_path) znika przy zamknięciu.
         # Nieistniejące gniazdo Wayland: usługa testowa nie łączy się z kompozytorem pulpitu
         # (obiekt /Idle zostaje „niedostępny”), chyba że test poda własny (atrapa kompozytora).
         # Brak Codex Desktop: usługa testowa nigdy nie uruchamia prawdziwej aplikacji ChatGPT
@@ -93,6 +94,7 @@ class PrivateBus:
         # Nieistniejąca konfiguracja Limitów AI: usługa testowa nie pyta prawdziwej QuotaApp
         # i nie zna jej tokenu, chyba że test poda własną (atrapa API w test_limits_dbus.py).
         extra_env = {"XDG_STATE_HOME": os.path.join(self.tmp, "state"),
+                     "XDG_CACHE_HOME": os.path.join(self.tmp, "cache"),
                      "WAYLAND_DISPLAY": os.path.join(self.tmp, "no-wayland"),
                      "TIDE_CODEX_DESKTOP": "",
                      "LIMITY_CONFIG": os.path.join(self.tmp, "no-limity-config.json"),
