@@ -44,7 +44,9 @@ class PanelScriptsTest(unittest.TestCase):
         res, state = self.install(fake.desktop_like_this_one())
         bar = find(state, 73)
         self.assertEqual(res["main"], 73)
-        self.assertEqual(types(bar), ["kickoff", "appmenu", "panelspacer", "digitalclock", "panelspacer", "systemtray"])
+        # Skrót użytkownika (widżet „Ikona”) zostaje, tuż przed zasobnikiem.
+        self.assertEqual(types(bar), ["kickoff", "appmenu", "panelspacer", "digitalclock", "panelspacer", "icon",
+                                      "systemtray"])
         self.assertEqual(bar["height"], PALETTE["size"]["bar"])
         self.assertTrue(bar["floating"])
         self.assertEqual(config(bar, "org.kde.plasma.kickoff", "/General")["icon"], "tide-logo")
@@ -75,7 +77,7 @@ class PanelScriptsTest(unittest.TestCase):
         self.assertEqual(res2["side"], res["side"])
         self.assertEqual(len(live(state)), 3)
         self.assertEqual(types(find(state, 73)), ["kickoff", "appmenu", "panelspacer", "digitalclock",
-                                                  "panelspacer", "systemtray"])
+                                                  "panelspacer", "icon", "systemtray"])
 
     def test_single_monitor_gets_no_left_bar(self):
         res, state = self.install(fake.desktop_like_this_one(screens=("DP-2",)))

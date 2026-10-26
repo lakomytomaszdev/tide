@@ -21,12 +21,16 @@ tideBar.height = P.barHeight;
 
 // Zostawiamy po jednym menu, menu globalnym, zegarze i zasobniku (z ich konfiguracją),
 // resztę usuwamy — poprzedni układ jest w panels-previous.json i w kopii zapasowej.
+// Wyjątek: widżety „Ikona” to skróty użytkownika, więc zostają wszystkie, przed zasobnikiem.
 var tideKeep = {"org.kde.plasma.kickoff": null, "org.kde.plasma.appmenu": null,
                 "org.kde.plasma.digitalclock": null, "org.kde.plasma.systemtray": null};
+var tideShortcuts = [];
 var tideCurrent = tideSorted(tideBar);
 for (var tideI = 0; tideI < tideCurrent.length; ++tideI) {
     var tideW = tideCurrent[tideI];
-    if (tideKeep.hasOwnProperty(tideW.type) && tideKeep[tideW.type] === null) {
+    if (tideW.type === "org.kde.plasma.icon") {
+        tideShortcuts.push(tideW);
+    } else if (tideKeep.hasOwnProperty(tideW.type) && tideKeep[tideW.type] === null) {
         tideKeep[tideW.type] = tideW;
     } else {
         tideW.remove();
@@ -48,8 +52,11 @@ tideWrite(tideMenu, ["Appearance"], {compactView: false, allScreens: false});
 tideWrite(tideClock, ["Appearance"], {showDate: true});
 
 tideOut.main = tideBar.id;
-tideOut.mainOrder = [tideKickoff.id, tideMenu.id, tideSpacerLeft.id, tideClock.id,
-                     tideSpacerRight.id, tideTray.id];
+tideOut.mainOrder = [tideKickoff.id, tideMenu.id, tideSpacerLeft.id, tideClock.id, tideSpacerRight.id];
+for (var tideS = 0; tideS < tideShortcuts.length; ++tideS) {
+    tideOut.mainOrder.push(tideShortcuts[tideS].id);
+}
+tideOut.mainOrder.push(tideTray.id);
 
 // --- pasek lewego monitora ----------------------------------------------------
 if (tideScreensNow.side >= 0) {
