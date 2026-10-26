@@ -5,8 +5,9 @@ Użycie: /usr/bin/python3 widgets/preview.py [katalog-wyjściowy]   (domyślnie 
 Składa pakiety (agenci, worktrees, system, Limity AI i nagłówek paska) do katalogu
 tymczasowego, a qml6 offscreen rysuje ich kafelki (CompactAgents, CompactWorktrees,
 CompactSystem, CompactLimits) obok siebie na tle docka (background.panel, 64 px) z przykładowymi
-danymi. Każdy scenariusz daje osobny PNG: dock-tiles-<nazwa>.png. Do tego karty sesji agentów
-(SessionCard) we wszystkich stanach: session-cards.png, i cały pasek boczny lewego monitora
+danymi. Każdy scenariusz daje osobny PNG: dock-tiles-<nazwa>.png. Do tego popup kafelka agentów
+(SessionsView — zwarte wiersze, jak w pasku bocznym) z sesjami we wszystkich stanach:
+agents-popup.png, i cały pasek boczny lewego monitora
 (nagłówek, SidebarAgents, SidebarSystem, SidebarWorktrees, SidebarLimits) w 420×1040 px:
 sidebar-<nazwa>.png. Ten sam kod sprawdza teksty i wymiary w testach
 (widgets/tests/test_dock_tiles.py, widgets/tests/test_sidebar_tiles.py).
@@ -155,7 +156,9 @@ Window {
 
 # Karty sesji w popupie: każdy stan raz. Czas „teraz” jest zamrożony (NOW_TS), żeby PNG był powtarzalny.
 NOW_TS = 1793016000  # 2026-10-26 12:00 UTC
-CARD_WIDTH = 440
+# Popup kafelka agentów: 26 × 28 jednostek siatki Kirigami (main.qml) przy 18 px.
+POPUP_WIDTH = 468
+POPUP_HEIGHT = 504
 SESSIONS = [
     {"id": "claude:a", "tool": "claude", "project": "plasma-tide", "branch": "feat/agents-done-state",
      "worktree": "", "title": "Stany sesji agentów", "state": "waiting", "reason": "approval",
@@ -166,16 +169,24 @@ SESSIONS = [
      "lastAction": "Edit · main.py", "canActivate": True, "terminal": "Konsole"},
     {"id": "codex:c", "tool": "codex", "project": "legal-agents", "branch": "main", "worktree": "",
      "title": "Kontynuacja", "state": "done", "reason": "scheduled", "sinceTs": NOW_TS - 300,
-     "lastActivityTs": NOW_TS - 300, "lastAction": "shell · make test", "canActivate": True, "terminal": "Codex"},
+     "lastActivityTs": NOW_TS - 300, "lastAction": "shell · make test", "canActivate": True, "terminal": "Codex",
+     "activation": "deeplink", "subagents": 2},
     {"id": "claude:d", "tool": "claude", "project": "beta", "branch": "fix/report", "worktree": "wt-report",
      "title": "Raport miesięczny", "state": "done", "reason": "", "sinceTs": NOW_TS - 720,
      "lastActivityTs": NOW_TS - 720, "lastAction": "Edit · report.py", "canActivate": True, "terminal": "Konsole"},
     {"id": "codex:e", "tool": "codex", "project": "gamma", "branch": "main", "worktree": "", "title": "",
      "state": "idle", "reason": "", "sinceTs": NOW_TS - 5400, "lastActivityTs": NOW_TS - 5400,
      "lastAction": "apply_patch · app.py", "canActivate": False, "terminal": ""},
+    {"id": "codex:f", "tool": "codex", "project": "agent-team", "branch": "feat/reports", "worktree": "",
+     "title": "", "state": "waiting", "reason": "question", "sinceTs": NOW_TS - 60, "lastActivityTs": NOW_TS - 60,
+     "lastAction": "request_user_input", "canActivate": True, "terminal": "Codex", "activation": "deeplink",
+     "subagents": 1},
+    {"id": "claude:g", "tool": "claude", "project": "dev-dashboard", "branch": "main", "worktree": "", "title": "",
+     "state": "ended", "reason": "", "sinceTs": NOW_TS - 7200, "lastActivityTs": NOW_TS - 7200,
+     "lastAction": "", "canActivate": False, "terminal": ""},
 ]
 
-CARDS_HARNESS = """import QtQuick
+POPUP_HARNESS = """import QtQuick
 import QtQuick.Window
 import "agents/contents/ui" as Agents
 import "agents/contents/ui/tide" as Tide
@@ -184,47 +195,37 @@ Window {
     id: window
     readonly property var sessions: %(sessions)s
     width: %(width)d + %(margin)d * 2
-    height: column.implicitHeight + %(margin)d * 2
+    height: %(height)d + %(margin)d * 2
     visible: true
     color: Tide.Tokens.backgroundWindow
 
     Rectangle { anchors.fill: parent; color: Tide.Tokens.backgroundWindow }
 
-    Column {
-        id: column
+    Agents.SessionsView {
+        id: view
         x: %(margin)d
         y: %(margin)d
-        spacing: 9
-        Repeater {
-            id: repeater
-            model: window.sessions
-            delegate: Agents.SessionCard {
-                required property var modelData
-                session: modelData
-                nowTs: %(now)d
-                width: %(width)d
-            }
-        }
+        width: %(width)d
+        height: %(height)d
+        sessions: window.sessions
+        showEnded: %(showEnded)s
+        nowTs: %(now)d
     }
 
     Timer {
         interval: 400; running: true
         onTriggered: {
-            const cards = []
-            for (let i = 0; i < repeater.count; i++) {
-                const c = repeater.itemAt(i)
-                cards.push({ state: c.shownState, stateLine: c.stateLine, actionLine: c.actionLine,
-                             highlighted: c.highlighted, button: c.showButton ? c.buttonText : "" })
-            }
+            const report = { rows: view.rows, ended: view.endedCount, working: view.workingCount,
+                             waiting: view.waitingCount, done: view.doneCount }
             const png = "%(png)s"
             if (png === "") {
-                console.warn("RESULT " + JSON.stringify(cards))
+                console.warn("RESULT " + JSON.stringify(report))
                 Qt.quit()
                 return
             }
             window.contentItem.grabToImage(function (result) {
                 result.saveToFile(png)
-                console.warn("RESULT " + JSON.stringify(cards))
+                console.warn("RESULT " + JSON.stringify(report))
                 Qt.quit()
             })
         }
@@ -486,13 +487,14 @@ def render(scenario: dict, png: str | None = None, palette_path: str = DEFAULT_P
     return _run(qml, palette_path, "kafelków")
 
 
-def render_cards(sessions: list[dict] | None = None, png: str | None = None,
-                 palette_path: str = DEFAULT_PALETTE) -> list[dict]:
-    """Rysuje karty sesji jedna pod drugą; zwraca ich linie, wyróżnienie i przycisk (i zapisuje PNG)."""
-    qml = CARDS_HARNESS % {"sessions": json.dumps(SESSIONS if sessions is None else sessions, ensure_ascii=False),
-                           "width": CARD_WIDTH, "margin": MARGIN, "now": NOW_TS,
+def render_popup(sessions: list[dict] | None = None, png: str | None = None, show_ended: bool = False,
+                 palette_path: str = DEFAULT_PALETTE) -> dict:
+    """Rysuje popup kafelka agentów (SessionsView); zwraca wiersze i liczniki (i zapisuje PNG)."""
+    qml = POPUP_HARNESS % {"sessions": json.dumps(SESSIONS if sessions is None else sessions, ensure_ascii=False),
+                           "width": POPUP_WIDTH, "height": POPUP_HEIGHT, "margin": MARGIN, "now": NOW_TS,
+                           "showEnded": "true" if show_ended else "false",
                            "png": os.path.abspath(png) if png else ""}
-    return _run(qml, palette_path, "kart sesji")
+    return _run(qml, palette_path, "popupu agentów")
 
 
 def render_sidebar(scenario: dict, png: str | None = None, palette_path: str = DEFAULT_PALETTE,
@@ -514,9 +516,9 @@ def main(argv: list[str]) -> int:
         png = os.path.join(out_dir, f"dock-tiles-{name}.png")
         report = render(scenario, png)
         print(f"{os.path.abspath(png)}: kafelki {report['widths']} px, razem {report['total']} px")
-    png = os.path.join(out_dir, "session-cards.png")
-    cards = render_cards(png=png)
-    print(f"{os.path.abspath(png)}: karty sesji ({', '.join(c['state'] for c in cards)})")
+    png = os.path.join(out_dir, "agents-popup.png")
+    popup = render_popup(png=png)
+    print(f"{os.path.abspath(png)}: popup agentów ({', '.join(r['state'] for r in popup['rows'])})")
     for name, scenario in SIDEBAR_SCENARIOS.items():
         png = os.path.join(out_dir, f"sidebar-{name}.png")
         report = render_sidebar(scenario, png)

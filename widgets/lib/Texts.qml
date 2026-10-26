@@ -56,6 +56,34 @@ QtObject {
         return "Sesje agentów AI: " + (parts.length ? parts.join(", ") : "żadna nie pracuje ani nie czeka")
     }
 
+    // Przycisk przejścia do sesji: Codex Desktop otwiera wątek w aplikacji, terminal Konsole
+    // przełącza kartę, inna aplikacja — samo okno.
+    function activateButton(session) {
+        if (session.activation === "deeplink") return "Otwórz w " + (session.terminal || "Codex")
+        return session.terminal && session.terminal !== "Konsole"
+               ? "Przejdź do okna " + session.terminal : "Przejdź do terminala"
+    }
+
+    // Na co czeka agent (pole reason przy stanie „waiting”).
+    function reasonText(reason) {
+        switch (reason) {
+        case "question": return "pyta o decyzję"
+        case "approval":
+        case "permission": return "czeka na zgodę"
+        default: return reason ? "czeka: " + reason : "czeka na ciebie"
+        }
+    }
+
+    // Podagenci Codexa w linii stanu: „+1 podagent”, „+2 podagentów” u wątku głównego,
+    // „podagent” (z przydomkiem, jeśli jest) u podagenta bez znanego rodzica.
+    function subagentsNote(session) {
+        const n = session.subagents || 0
+        if (n > 0) return "+" + n + " " + (n === 1 ? "podagent" : "podagentów")
+        if (session.subagent === true)
+            return session.agentNickname ? "podagent " + session.agentNickname : "podagent"
+        return ""
+    }
+
     // „15 do sprzątnięcia”, a gdy nie ma czego sprzątać — „nic do sprzątnięcia”.
     function cleanable(n) {
         return n > 0 ? n + " do sprzątnięcia" : "nic do sprzątnięcia"

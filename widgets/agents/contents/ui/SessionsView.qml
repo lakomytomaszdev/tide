@@ -1,6 +1,7 @@
-// Pełna lista sesji agentów: nagłówek z liczbą sesji i licznikami, karty sesji (SessionCard)
-// i „Pokaż zakończone”. To zawartość popupu kafelka w docku i okienka „+N więcej” z paska
-// bocznego. Bez PlasmoidItem, więc da się ją załadować w teście.
+// Pełna lista sesji agentów: nagłówek z liczbą sesji i licznikami, zwarte wiersze (SessionRows —
+// te same co w kafelku paska bocznego, tu z drugą, wyciszoną linią i bez limitu wierszy;
+// przy bardzo długiej liście przewijane) i „Pokaż zakończone”. To zawartość popupu kafelka
+// w docku i okienka „+N więcej” z paska bocznego. Bez PlasmoidItem, więc da się ją załadować w teście.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -17,16 +18,19 @@ ColumnLayout {
     signal activateRequested(string sessionId)
     signal showEndedToggled()
 
-    readonly property int workingCount: countOf("working")
-    readonly property int waitingCount: countOf("waiting")
-    readonly property int doneCount: countOf("done")
-    readonly property int endedCount: countOf("ended")
-    readonly property var shownSessions: sessions.filter(s => showEnded || s.state !== "ended")
-
-    // Stan liczony przez Theme.sessionState: starsza usługa zgłaszała koniec tury jako „czeka”.
-    function countOf(state) {
-        return sessions.filter(s => Tide.Theme.sessionState(s) === state).length
+    // Wiersze i liczniki — wspólne z kafelkiem paska bocznego (AgentRows).
+    readonly property AgentRows agentRows: AgentRows {
+        sessions: view.sessions
+        showEnded: view.showEnded
+        nowTs: view.nowTs
     }
+    readonly property int workingCount: agentRows.workingCount
+    readonly property int waitingCount: agentRows.waitingCount
+    readonly property int doneCount: agentRows.doneCount
+    readonly property int endedCount: agentRows.endedCount
+    // Wiersze z gotowymi tekstami — z nich rysujemy i to samo sprawdzają testy.
+    readonly property var rows: agentRows.rows
+    readonly property var shownSessions: agentRows.ordered
 
     spacing: Kirigami.Units.largeSpacing
 
@@ -77,20 +81,24 @@ ColumnLayout {
     }
 
     QQC2.ScrollView {
+        id: scroll
         Layout.fillWidth: true
         Layout.fillHeight: true
-        visible: view.shownSessions.length > 0
+        visible: view.rows.length > 0
+        contentWidth: availableWidth
+        QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
 
-        ListView {
-            id: list
-            model: view.shownSessions
-            spacing: Kirigami.Units.smallSpacing * 1.5
-            clip: true
-            delegate: SessionCard {
-                required property var modelData
-                session: modelData
-                nowTs: view.nowTs
-                width: ListView.view.width
+        // Wiersze mają tło wysunięte o 6 px w bok — wcięcie, żeby nie przycinał go brzeg widoku.
+        Item {
+            width: scroll.availableWidth
+            implicitHeight: rowsList.implicitHeight
+
+            SessionRows {
+                id: rowsList
+                x: 6
+                width: parent.width - 12
+                rows: view.rows
+                showDetail: true
                 onActivateRequested: id => view.activateRequested(id)
             }
         }

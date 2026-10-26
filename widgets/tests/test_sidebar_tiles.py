@@ -60,6 +60,14 @@ class SidebarTilesTest(unittest.TestCase):
         rows = preview.render_sidebar(data)["agents"]["rows"]
         self.assertEqual([(r["state"], r["button"]) for r in rows], [("waiting", False), ("done", False)])
 
+    def test_codex_desktop_row_opens_the_thread(self):
+        desktop = dict(preview.sidebar_session("codex:a", "codex", "legal-agents", "waiting", 60, terminal="Codex"),
+                       activation="deeplink")
+        cli = preview.sidebar_session("codex:b", "codex", "beta", "waiting", 30)
+        rows = preview.render_sidebar(scenario(sessions=[desktop, cli]))["agents"]["rows"]
+        self.assertEqual(sorted((r["id"], r["button"], r["activateText"]) for r in rows),
+                         [("codex:a", True, "Otwórz w Codex"), ("codex:b", True, "Przejdź do terminala")])
+
     def test_more_than_six_sessions_collapse_into_a_link(self):
         agents = preview.render_sidebar(scenario("busy"))["agents"]
         self.assertEqual(len(agents["rows"]), 6)
@@ -163,7 +171,7 @@ SessionsView {
     }
 }
 """ % (sessions, preview.NOW_TS))
-        self.assertEqual(result, {"working": 1, "waiting": 1, "done": 2, "shown": 5})
+        self.assertEqual(result, {"working": 1, "waiting": 2, "done": 2, "shown": 6})
 
 
 if __name__ == "__main__":

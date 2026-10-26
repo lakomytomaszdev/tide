@@ -55,7 +55,8 @@ class PaletteTest(unittest.TestCase):
 
     def test_package_contains_library(self):
         files = files_under(self.pkg)
-        for name in ("metadata.json", "contents/ui/main.qml", "contents/ui/SessionCard.qml",
+        for name in ("metadata.json", "contents/ui/main.qml", "contents/ui/SessionRows.qml",
+                     "contents/ui/AgentRows.qml", "contents/ui/SessionsView.qml",
                      "contents/ui/CompactAgents.qml", "contents/ui/tide/DockTile.qml", "contents/ui/tide/Texts.qml",
                      "contents/ui/tide/qmldir", "contents/ui/tide/Card.qml", "contents/ui/tide/Ring.qml",
                      "contents/ui/tide/MeterBar.qml", "contents/ui/tide/DaemonSource.qml"):
@@ -82,12 +83,15 @@ Item {
     CompactAgents { workingCount: 2; waitingCount: 1; doneCount: 2 }
     Tide.CountPill { sessionState: "done"; count: 2 }
     Tide.StateDot { sessionState: "done" }
-    SessionCard { session: ({ id: "x", tool: "claude", project: "p", branch: "b", worktree: "", title: "",
-        state: "waiting", reason: "approval", sinceTs: 0, lastActivityTs: 0, lastAction: "Bash", canActivate: true,
-        terminal: "Konsole" }) }
-    SessionCard { session: ({ id: "y", tool: "codex", project: "p", branch: "b", worktree: "", title: "",
-        state: "done", reason: "scheduled", sinceTs: 0, lastActivityTs: 0, lastAction: "", canActivate: true,
-        terminal: "Codex" }) }
+    AgentRows {
+        id: agentRows
+        sessions: [({ id: "x", tool: "claude", project: "p", branch: "b", worktree: "", title: "",
+            state: "waiting", reason: "approval", sinceTs: 0, lastActivityTs: 0, lastAction: "Bash", canActivate: true,
+            terminal: "Konsole" }), ({ id: "y", tool: "codex", project: "p", branch: "b", worktree: "", title: "",
+            state: "done", reason: "scheduled", sinceTs: 0, lastActivityTs: 0, lastAction: "", canActivate: true,
+            terminal: "Codex", activation: "deeplink", subagents: 2 })]
+    }
+    SessionRows { width: 400; rows: agentRows.rows; showDetail: true }
     Component.onCompleted: { console.warn("SMOKE-OK " + Tide.Tokens.name); Qt.quit() }
 }
 """)

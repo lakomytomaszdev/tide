@@ -1,5 +1,5 @@
 """Kafelki widżetów w docku: teksty (liczba mnoga, stany puste), wymiary i podpowiedzi;
-karty sesji agentów w popupie (SessionCard) we wszystkich stanach.
+popup kafelka agentów (SessionsView: zwarte wiersze, jak w pasku bocznym) we wszystkich stanach.
 
 Kafelki (CompactAgents, CompactWorktrees, CompactSystem, CompactLimits) nie zależą od
 PlasmoidItem, więc qml6 offscreen ładuje je z przykładowymi danymi — tym samym kodem,
@@ -143,39 +143,76 @@ Item {
 
 
 @unittest.skipUnless(shutil.which("qml6"), "brak qml6")
-class SessionCardsTest(unittest.TestCase):
-    """Karty sesji: brzoskwinia i pełny przycisk tylko dla czekających, skończone spokojne."""
+class AgentsPopupTest(unittest.TestCase):
+    """Popup kafelka agentów: te same zwarte wiersze co w pasku bocznym, z drugą linią i bez limitu."""
 
-    def test_cards_in_every_state(self):
-        cards = preview.render_cards()
-        self.assertEqual([c["state"] for c in cards], ["waiting", "working", "done", "done", "idle"])
-        waiting, working, scheduled, done, idle = cards
-        self.assertTrue(waiting["highlighted"])
-        self.assertEqual(waiting["actionLine"], "czeka na zgodę · Bash · make test")
-        self.assertEqual(waiting["button"], "Przejdź do terminala")
-        self.assertEqual((working["highlighted"], working["button"]), (False, ""))
-        # Skończona: bez wyróżnienia, z przyciskiem; zaplanowana ma dopisek w linii stanu.
-        self.assertFalse(scheduled["highlighted"])
-        self.assertEqual(scheduled["stateLine"], "skończył  ·  Codex  ·  zaplanowane  ·  Kontynuacja")
-        self.assertEqual(scheduled["button"], "Przejdź do okna Codex")
-        self.assertEqual(done["stateLine"], "skończył  ·  Claude Code  ·  worktree wt-report  ·  Raport miesięczny")
-        self.assertEqual((done["highlighted"], done["button"]), (False, "Przejdź do terminala"))
-        self.assertEqual((idle["stateLine"], idle["button"]), ("bezczynna  ·  Codex", ""))
+    def rows(self, sessions=None, **kwargs):
+        return preview.render_popup(sessions, **kwargs)["rows"]
+
+    def test_rows_in_every_state(self):
+        rows = self.rows()
+        # Czekający na górze, potem pracujący, skończeni i bezczynni; zakończona sesja ukryta.
+        self.assertEqual([(r["id"], r["state"], r["word"], r["ago"]) for r in rows], [
+            ("codex:f", "waiting", "czeka", "1 min"),
+            ("claude:a", "waiting", "czeka", "2 min"),
+            ("claude:b", "working", "pracuje", "teraz"),
+            ("codex:c", "done", "skończył", "5 min"),
+            ("claude:d", "done", "skończył", "12 min"),
+            ("codex:e", "idle", "bezczynna", "1 h"),
+        ])
+        self.assertEqual([r["detail"] for r in rows], [
+            "pyta o decyzję · +1 podagent · request_user_input",
+            "czeka na zgodę · Bash · make test",
+            "Claude Code · feat/login",
+            "Codex · +2 podagentów · zaplanowane · main · Kontynuacja",
+            "Claude Code · fix/report · Raport miesięczny",
+            "Codex · main",
+        ])
+        # Przycisk tylko u czekających; Codex Desktop otwiera wątek w aplikacji.
+        self.assertEqual([(r["button"], r["buttonText"]) for r in rows if r["button"]],
+                         [(True, "Otwórz w Codex"), (True, "Przejdź")])
+        self.assertEqual([r["activateText"] for r in rows[:2]], ["Otwórz w Codex", "Przejdź do terminala"])
+        self.assertEqual([r["clickable"] for r in rows], [True, True, True, True, True, False])
+
+    def test_ended_sessions_on_request(self):
+        report = preview.render_popup(show_ended=True)
+        self.assertEqual(report["ended"], 1)
+        self.assertEqual(report["rows"][-1]["state"], "ended")
+
+    def test_no_row_limit_in_the_popup(self):
+        many = [dict(preview.SESSIONS[1], id=f"claude:{n}", project=f"p{n}") for n in range(12)]
+        self.assertEqual(len(self.rows(many)), 12)
+
+    def test_codex_desktop_and_subagent_texts(self):
+        base = dict(preview.SESSIONS[2], reason="", title="", branch="")
+        rows = self.rows([
+            dict(base, id="codex:1", subagents=1, sinceTs=preview.NOW_TS - 10),
+            dict(base, id="codex:2", subagents=0, subagent=True, agentNickname="Pascal", sinceTs=preview.NOW_TS - 20),
+            dict(base, id="codex:3", subagents=0, subagent=True, agentNickname="", sinceTs=preview.NOW_TS - 30),
+            # Starsza usługa (bez pola activation) i okno aplikacji — samo podniesienie okna.
+            dict(base, id="codex:4", activation=None, subagents=0, sinceTs=preview.NOW_TS - 40),
+            # Codex z wiersza poleceń w Konsoli — przejście do karty terminala, jak dotąd.
+            dict(base, id="codex:5", activation="window", terminal="Konsole", subagents=0,
+                 sinceTs=preview.NOW_TS - 50),
+        ])
+        self.assertEqual([r["detail"] for r in rows], [
+            "Codex · +1 podagent", "Codex · podagent Pascal", "Codex · podagent", "Codex", "Codex"])
+        self.assertEqual([r["activateText"] for r in rows], [
+            "Otwórz w Codex", "Otwórz w Codex", "Otwórz w Codex", "Przejdź do okna Codex", "Przejdź do terminala"])
 
     def test_older_daemon_reply_is_shown_as_done(self):
-        # Starsza usługa zgłaszała koniec tury jako waiting/reply — karta pokazuje go jako „skończył”.
+        # Starsza usługa zgłaszała koniec tury jako waiting/reply — wiersz pokazuje go jako „skończył”.
         old = dict(preview.SESSIONS[3], state="waiting", reason="reply")
-        card = preview.render_cards([old])[0]
-        self.assertEqual((card["state"], card["highlighted"]), ("done", False))
-        self.assertTrue(card["stateLine"].startswith("skończył"))
+        row = self.rows([old])[0]
+        self.assertEqual((row["state"], row["word"], row["button"]), ("done", "skończył", False))
 
     def test_screenshot(self):
-        with tempfile.TemporaryDirectory(prefix="tide-cards-png-") as tmp:
-            png = os.path.join(tmp, "cards.png")
-            preview.render_cards(png=png)
+        with tempfile.TemporaryDirectory(prefix="tide-popup-png-") as tmp:
+            png = os.path.join(tmp, "popup.png")
+            preview.render_popup(png=png)
             width, height = png_size(png)
-        self.assertEqual(width, preview.CARD_WIDTH + 2 * preview.MARGIN)
-        self.assertGreater(height, 300)
+        self.assertEqual((width, height), (preview.POPUP_WIDTH + 2 * preview.MARGIN,
+                                           preview.POPUP_HEIGHT + 2 * preview.MARGIN))
 
 
 class SourceTest(unittest.TestCase):
