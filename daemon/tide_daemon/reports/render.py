@@ -341,6 +341,17 @@ button.copy.done{color:var(--bg);background:var(--accent);border-color:var(--acc
 .empty{color:var(--muted);font-size:14px;padding:4px 0}
 footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--border);color:var(--muted);font-size:13px;
 display:flex;flex-wrap:wrap;gap:8px 24px;justify-content:space-between}
+.plan .bar{display:flex;height:6px;border-radius:3px;background:var(--track);overflow:hidden;margin-top:12px}
+.plan .bar i{display:block;height:100%}
+.tickets{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:2px}
+.tickets li{display:grid;grid-template-columns:6.5em 5.6em minmax(0,1fr);gap:4px 12px;padding:6px 0;
+border-top:1px solid var(--border);font-size:13.5px;align-items:baseline}
+.tickets li:first-child{border-top:0}
+.tickets .tid{font-family:var(--mono);font-size:12.5px;color:var(--sky);overflow-wrap:anywhere}
+.tickets .st{font-size:12.5px;font-weight:500}
+.tickets .tn{grid-column:3;color:var(--muted);font-size:12.5px}
+.st-czeka{color:var(--peach)}.st-w-toku{color:var(--teal)}.st-review{color:var(--lavender)}
+.st-gotowe{color:var(--mint)}.st-todo,.st-odrzucone{color:var(--muted)}
 @media (min-width:1360px){.cols{grid-template-columns:minmax(0,1.08fr) minmax(0,1fr)}}
 @media (min-width:2000px){.wrap{max-width:1720px}body{font-size:16px}}
 @media (max-width:700px){
@@ -484,6 +495,11 @@ def _project_card(p) -> str:
         chips.append(f'<span class="chip butter">{esc(len(p.unpushed))} z pracą tylko tutaj</span>')
     if p.main_dirty_count:
         chips.append(f'<span class="chip butter">{esc(count(p.main_dirty_count, "zmiana", "zmiany", "zmian"))} w głównym</span>')
+    for plan in getattr(p, "plans", None) or ():
+        if plan["total"]:
+            label = f'{plan["label"]} · ' if plan["label"] else "plan "
+            tone = "peach" if plan["counts"]["czeka"] else "mint" if plan["done"] == plan["total"] else "sky"
+            chips.append(f'<span class="chip {tone}">{esc(label)}{plan["done"]}/{plan["total"]}</span>')
     last = f'ostatnio {day_time(p.last_ts)}' if p.last_ts else ""
     tools = sorted({s.tool for s in p.sessions})
     return (f'<a class="card pcard{" wait" if p.waiting else ""}" href="{esc(p.slug)}.html">'
@@ -573,7 +589,8 @@ def render_project(report, project, palette: dict, home: str = "") -> str:
     head.append(_stat(len(p.to_clean), "do sprzątnięcia"))
     head.append("</section>")
 
-    left = [f'<h2>Agenci <span class="n">{len(p.sessions)}</span></h2>']
+    left = [_plans(p)]
+    left.append(f'<h2>Agenci <span class="n">{len(p.sessions)}</span></h2>')
     if p.sessions:
         order = {"waiting": 0, "working": 1}
         ordered = sorted(p.sessions, key=lambda s: (order.get(s.state, 2), -s.last_ts))
@@ -591,6 +608,55 @@ def render_project(report, project, palette: dict, home: str = "") -> str:
     body = "".join(head) + f'<div class="cols"><div>{"".join(left)}</div><div>{"".join(right)}</div></div>' \
         + _footer(report, home, index=False)
     return page(f"{p.name} · raport {short_date(report.day)}", body, palette)
+
+
+def _plans(p) -> str:
+    """„Plany i tickety”: tablica koordynatora albo sam plan z repozytorium. Bez planów — nic."""
+    plans = getattr(p, "plans", None) or []
+    if not plans:
+        return ""
+    out = [f'<h2>Plany i tickety <span class="n">{len(plans)}</span></h2><div class="stack">']
+    for plan in plans:
+        c = plan["counts"]
+        meta = []
+        if plan["source"] == "board":
+            meta.append(esc(f'koordynator · {TOOLS.get(plan["tool"], plan["tool"])}' + (" · działa" if plan["live"] else "")))
+        else:
+            meta.append(esc("z planu" + (f' · {plan["status"]}' if plan["status"] else "")))
+        if plan["planPath"]:
+            meta.append(f'<span class="mono">{esc(os.path.basename(plan["planPath"]))}</span>')
+        if plan["tracker"] == "youtrack":
+            meta.append("YouTrack" + (f' — {esc(plan["trackerError"])}' if plan["trackerError"] else ""))
+        meta.append(esc(f'{plan["done"]} z {plan["total"]} gotowe'))
+        total = max(1, plan["total"])
+        bar = "".join(f'<i style="width:{100 * c[k] / total:.1f}%;background:var(--{color})"></i>'
+                      for k, color in (("gotowe", "mint"), ("review", "lavender"), ("w-toku", "teal"),
+                                       ("czeka", "peach")) if c[k])
+        chips = []
+        for key, word, tone in (("czeka", "czeka", "peach"), ("w-toku", "w toku", "teal"),
+                                ("review", "review", "lavender"), ("todo", "do zrobienia", ""),
+                                ("gotowe", "gotowe", "mint")):
+            if c[key]:
+                chips.append(f'<span class="chip {tone}">{c[key]} {esc(word)}</span>')
+        rows = []
+        for t in plan["tickets"]:
+            note = f'<span class="tn">{esc(t.get("note"))}</span>' if t.get("note") else ""
+            ident = esc(t.get("id") or "—")
+            if t.get("url"):
+                ident = f'<a href="{esc(t["url"])}">{ident}</a>'
+            rows.append(f'<li><span class="tid">{ident}</span><span class="st st-{esc(t.get("state"))}">'
+                        f'{esc(t.get("word"))}</span><span>{esc(t.get("title"))}</span>{note}</li>')
+        if plan["hidden"]:
+            rows.append(f'<li><span></span><span></span><span class="muted">+{plan["hidden"]} więcej</span></li>')
+        errors = "".join(f'<div class="empty">plan: {esc(e)}</div>' for e in plan["errors"][:3])
+        label = f'<span class="chip mono sky">{esc(plan["label"])}</span>' if plan["label"] else ""
+        meta_html = "".join(f"<span>{m}</span>" for m in meta)
+        out.append(f'<article class="card plan"><div class="row"><h3>{esc(plan["title"])}</h3>{label}</div>'
+                   f'<div class="meta">{meta_html}</div>'
+                   f'<div class="bar">{bar}</div><div class="counts">{"".join(chips)}</div>'
+                   f'<ul class="tickets">{"".join(rows)}</ul>{errors}</article>')
+    out.append("</div>")
+    return "".join(out)
 
 
 def _pathbar(path: str, is_repo: bool) -> str:

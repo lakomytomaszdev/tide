@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from ..worktrees.git import Git
 from ..worktrees.scanner import WorktreeScanner, agent_cwds
-from . import gitlog, limits, sessions as sessions_mod
+from . import gitlog, limits, plans as plans_mod, sessions as sessions_mod
 
 SLUG_RE = re.compile(r"[^a-z0-9._-]+")
 RESERVED = {"index", ""}
@@ -32,6 +32,7 @@ class Project:
     unpushed: list = field(default_factory=list)       # worktrees z pracą tylko tutaj albo zmianami
     main_dirty: list = field(default_factory=list)     # [(kod, ścieżka)] w głównym katalogu
     main_dirty_count: int = 0
+    plans: list = field(default_factory=list)          # plans.attach: plany i tickety (opcjonalny dodatek)
 
     @property
     def commits(self) -> int:
@@ -85,7 +86,8 @@ class Report:
 
 def build(day: str, start: float, end: float, *, workspace: str, claude_root: str, codex_root: str,
           live: list[dict] | None = None, worktrees: list[dict] | None = None, limits_result: dict | None = None,
-          git: Git | None = None, max_depth: int = 3, previous_day: str = "") -> Report:
+          git: Git | None = None, max_depth: int = 3, previous_day: str = "",
+          coordination_cache: str | None = None) -> Report:
     git = git or Git()
     if worktrees is None:
         scanner = WorktreeScanner(workspace, max_depth, git=git, clock=lambda: end)
@@ -146,6 +148,7 @@ def build(day: str, start: float, end: float, *, workspace: str, claude_root: st
         project.branches = gitlog.repo_commits(git, project.key, project.main_branch, start, end,
                                                repo_items, project.sessions)
 
+    plans_mod.attach(list(projects.values()), start, end, coordination_cache)
     ordered = sorted(projects.values(), key=lambda p: (not p.waiting, not p.active, -p.last_ts, p.name.lower()))
     assign_slugs(ordered)
     snap = limits.snapshot(limits_result)

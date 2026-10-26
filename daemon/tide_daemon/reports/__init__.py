@@ -4,6 +4,7 @@
 - sessions.py — sesje agentów z okresu i ostatnie wiadomości, przebiegi zaplanowanych zadań,
 - gitlog.py   — commity z okresu po gałęziach i worktrees,
 - limits.py   — migawka Limitów AI z QuotaApp,
+- plans.py    — plany i tickety (tablica koordynacji i plany w repozytoriach), dodatek opcjonalny,
 - collect.py  — model raportu, render.py — HTML.
 
 generate() składa raport w katalogu tymczasowym obok docelowego i podmienia go w całości,
@@ -32,14 +33,16 @@ def load_palette(candidates: list[str]) -> dict:
 
 def generate(root: str, day: str, start: float, end: float, *, palette: dict, workspace: str, claude_root: str,
              codex_root: str, live=None, worktrees=None, limits_result=None, fetch_limits: bool = True,
-             git=None, max_depth: int = 3, home: str | None = None) -> tuple[str, "collect.Report"]:
+             git=None, max_depth: int = 3, home: str | None = None,
+             coordination_cache: str | None = None) -> tuple[str, "collect.Report"]:
     """Zapisuje <root>/<day>/index.html i <projekt>.html. Zwraca (ścieżka index.html, raport)."""
     if limits_result is None and fetch_limits:
         limits_result = limits.fetch_status()
     days = [d for d in schedule.report_days(root) if d < day]
     report = collect.build(day, start, end, workspace=workspace, claude_root=claude_root, codex_root=codex_root,
                            live=live, worktrees=worktrees, limits_result=limits_result, git=git,
-                           max_depth=max_depth, previous_day=days[-1] if days else "")
+                           max_depth=max_depth, previous_day=days[-1] if days else "",
+                           coordination_cache=coordination_cache)
     home = os.path.expanduser("~") if home is None else home
     pages = {"index.html": render.render_index(report, palette, home)}
     for project in report.active:

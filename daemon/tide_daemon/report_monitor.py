@@ -25,7 +25,7 @@ class ReportMonitor(QObject):
                  workspace: str, claude_root: str, codex_root: str, max_depth: int = 3,
                  sessions=lambda: [], worktrees=lambda: None, notifier=None, clock=time.time,
                  login_delay: float = schedule.LOGIN_DELAY, check_interval: float = schedule.CHECK_INTERVAL,
-                 fetch_limits: bool = True, parent=None):
+                 fetch_limits: bool = True, coordination_cache: str | None = None, parent=None):
         super().__init__(parent)
         self.settings = settings
         self.root = root
@@ -40,6 +40,7 @@ class ReportMonitor(QObject):
         self.notifier = notifier
         self.clock = clock
         self.fetch_limits = fetch_limits
+        self.coordination_cache = coordination_cache  # plik tablicy koordynacji („Plany i tickety”) albo None
         self.running = False
         self._waiting: list = []        # odpowiedzi Generate() czekające na bieżący raport
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-report")
@@ -97,7 +98,8 @@ class ReportMonitor(QObject):
             index, report = reports.generate(
                 self.root, day, start, end, palette=palette, workspace=self.workspace,
                 claude_root=self.claude_root, codex_root=self.codex_root, live=live, worktrees=trees,
-                fetch_limits=self.fetch_limits, max_depth=self.max_depth)
+                fetch_limits=self.fetch_limits, max_depth=self.max_depth,
+                coordination_cache=self.coordination_cache)
             schedule.apply_retention(self.root, schedule.report_day(end, self.settings), self.settings.keep_days)
             return index, report
 
