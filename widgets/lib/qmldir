@@ -6,3 +6,5 @@ Ring 1.0 Ring.qml
 StateDot 1.0 StateDot.qml
 CountPill 1.0 CountPill.qml
 DaemonSource 1.0 DaemonSource.qml
+History 1.0 History.qml
+BarChart 1.0 BarChart.qml
