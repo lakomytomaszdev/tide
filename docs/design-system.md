@@ -39,7 +39,7 @@ Mist to miękki, ciemny grafit z tealem jako podpisem i pastelami do statusów, 
 | `pastel.butter` | `#ecd58c` | Uwaga: zmiany, niescalone commity, 16–40% limitu. Przycisk minimalizacji |
 | `pastel.rose` | `#f2a0b3` | Błąd, mało limitu (≤15%), usuwanie. Przycisk zamknięcia |
 | `pastel.mint` | `#9fe3b8` | Dobrze: scalony, dużo limitu (>40%). Przycisk maksymalizacji |
-| `pastel.sky` | `#a6c8f0` | Linki w terminalu, Codex |
+| `pastel.sky` | `#a6c8f0` | Linki w terminalu, Codex. Stan „agent skończył” (`semantic.done`, puste kółko) — informacja, nie wezwanie |
 
 Na tealowym zaznaczeniu tekst jest ciemny (`background.desktop`) — jasny tekst na tealu nie przechodzi testu kontrastu.
 
@@ -83,13 +83,13 @@ Przy zmaksymalizowanym oknie Plasma przykleja pływające panele do krawędzi i 
 - **Pasek boczny (lewy monitor):** 300 px, pływający, przy lewej, zewnętrznej krawędzi, od dołu smukłego paska do dołu ekranu, schowany do czasu najechania na krawędź albo Meta+S. Ramka panelu z prefiksem `west` i promieniem `dock`. Od góry: nagłówek „Tide” z plakietką skrótu (Geist Mono 11 px na tle `card`), potem widoki szczegółowe widżetów w gęstym układzie — agenci (lista zajmuje resztę miejsca), system (bez podpisów pod wykresem, pamięcią i kartą), worktrees (tytuł z przyciskiem „Otwórz okno Worktrees” i jedna linia liczb), Limity AI (reset obok miernika). Mock: artboard „Sidebar” na kanwie.
 - **Dock:** pełna szerokość głównego monitora, 64 px. Aplikacje pośrodku, kafelki widżetów z prawej: agenci, worktrees, system, Limity AI.
 - **Kafelek widżetu:** osobna karta 48 px wysokości (dock 64 px) z promieniem `tile` (12 px), tło w pastelu widżetu o kryciu ~0,11 (po najechaniu ~0,2) z ramką w tym pastelu (~0,24), 12 px odstępu między kafelkami. Zawsze dwie linie: etykieta w `text.secondary` (8 pt: „Agenci”, „Worktrees · 5 w pracy”, „System”, „Limity AI”) i wartość słowami (10 pt), liczby w Geist Mono. Kolor mówi o stanie. Wspólne komponenty `DockTile` i `TileMeter`, teksty i liczba mnoga w `Texts`, podgląd: `make preview-widgets`.
-  - **Agenci** (teal, brzoskwinia gdy ktoś czeka): „● 2 pracują · ● 1 czeka”, tylko niezerowe części; bez sesji wyciszone „brak sesji”.
+  - **Agenci** (teal, brzoskwinia gdy ktoś naprawdę czeka): „● 2 pracują · ● 1 czeka · ○ 2 gotowe”, tylko niezerowe części; skończone sesje mają puste błękitne kółko (`semantic.done`) i nie zmieniają koloru kafelka; bez sesji wyciszone „brak sesji”.
   - **Worktrees** (lawenda): „15 do sprzątnięcia · 16 GB”, ile w pracy przy etykiecie; bez niczego do sprzątania „nic do sprzątnięcia”.
   - **System** (sky): „CPU 34%  RAM 61%  Dysk 88%” z cienkim paskiem pod każdym miernikiem (teal, lawenda, brzoskwinia). Pierścienie w 48 px miały ok. 26 px i nieczytelną liczbę w środku, więc kafelek pokazuje procent tekstem i pasek.
   - **Limity AI** (kolor niższego limitu): „GPT 91%  Claude 86%” z paskami w kolorze poziomu.
-  - Każdy kafelek ma podpowiedź z jednym zdaniem wyjaśnienia, np. „Sesje agentów AI: 2 pracują, 1 czeka na ciebie”. Cztery kafelki z odstępami mają do ~760 px.
+  - Każdy kafelek ma podpowiedź z jednym zdaniem wyjaśnienia, np. „Sesje agentów AI: 2 pracują, 1 czeka na ciebie”. Cztery kafelki z odstępami mają do ~850 px (agenci z trzema częściami do 240 px).
 - **Popup:** nagłówek z ikoną i tytułem (15 px, 600), pod nim karty; promień 18 px.
-- **Karta:** tło `card` albo przyciemnione tło pastelu stanu (krycie ~0,08) z ramką w tym pastelu (~0,25–0,35). Karta wymagająca uwagi (agent czeka) jest w brzoskwini.
+- **Karta:** tło `card` albo przyciemnione tło pastelu stanu (krycie ~0,08) z ramką w tym pastelu (~0,25–0,35). Karta wymagająca uwagi (agent czeka) jest w brzoskwini; karta skończonej sesji zostaje zwykła, a jej przycisk „Przejdź” jest przezroczysty z obwódką.
 - **Miernik:** pasek 4–6 px na tle tekstu o kryciu 0,1; wypełnienie: mięta >40%, masło 16–40%, róż ≤15%. W kafelkach docka pasek ma 3 px; System i Limity AI malują go w kolorze miernika albo poziomu.
 - **Przyciski okna:** po prawej, minimalizuj · maksymalizuj · zamknij — pastelowe kółka 13 px (masło, mięta, róż) co 8 px; w oknie nieaktywnym szare, ikonki dopiero po najechaniu.
 - **Ekran ładowania:** przyciemniona tapeta (`splash.dim` 0,35 koloru pulpitu; przy kocie — kot z otwartymi oczami w kadrze monitora), wejście przenikaniem `splash.fadeMs` (400 ms), pośrodku pełne logo 128 px, 44 px niżej pasek 220×4 px — tor w kolorze tekstu o kryciu `opacity.outline`, wypełnienie `accent`, promień `radius.small` ograniczony do połowy wysokości. Logo „oddycha” (krycie 1 → 0,78, cykl `splash.pulseMs`), bez tekstu.

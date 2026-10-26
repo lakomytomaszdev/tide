@@ -15,10 +15,10 @@ Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Cla
 | --- | --- | --- |
 | `Sessions()` | `→ s` | Lista sesji jako JSON (tablica obiektów, opis niżej) |
 | `ActivateSession(s id)` | `→ b` | Przechodzi do okna sesji. `false`, gdy okna nie da się ustalić |
-| `ActivateLongestWaiting()` | `→ b` | Przechodzi do okna sesji, która czeka najdłużej (skrót Meta+A). `false` i nic się nie dzieje, gdy nic nie czeka |
+| `ActivateLongestWaiting()` | `→ b` | Przechodzi do okna sesji, która czeka najdłużej (skrót Meta+A). `false` i nic się nie dzieje, gdy nic nie czeka. Sesje `done` nie są brane pod uwagę |
 | `Changed` | sygnał bez argumentów | Lista sesji się zmieniła — pobierz `Sessions()` ponownie |
 
-Kolejność listy: najpierw czekające (najdłużej czekająca na górze), potem pracujące, bezczynne i zakończone (od najświeższej aktywności).
+Kolejność listy: najpierw czekające (najdłużej czekająca na górze), potem pracujące, skończone, bezczynne i zakończone (od najświeższej aktywności).
 
 Pola sesji:
 
@@ -32,9 +32,9 @@ Pola sesji:
 | `worktree` | string | nazwa katalogu worktree albo pusty napis |
 | `cwd` | string | katalog roboczy sesji |
 | `title` | string | krótki tytuł rozmowy (tylko Claude Code: `custom-title` nadany przez użytkownika, inaczej `ai-title`) |
-| `state` | string | `working`, `waiting`, `idle`, `ended` |
-| `reason` | string | dla `waiting`: `reply` (koniec tury), `approval` (zgoda na narzędzie), `question` (pytanie do użytkownika) albo wartość `waitingFor` zgłoszona przez Claude Code; inaczej pusty |
-| `since`, `sinceTs` | ISO 8601 / sekundy epoki | od kiedy trwa bieżący stan (dla `waiting` — od kiedy czeka) |
+| `state` | string | `working`, `waiting`, `done`, `idle`, `ended` |
+| `reason` | string | `waiting`: `approval` (zgoda na narzędzie), `question` (pytanie do użytkownika) albo wartość `waitingFor` zgłoszona przez Claude Code. `working`: `background` (tura skończona, ale działa zadanie w tle, do którego agent wróci) albo pusty. `done` i `idle`: `scheduled` (ostatnią turę zaczęło zaplanowane zadanie Codex Desktop) albo pusty. `ended`: pusty |
+| `since`, `sinceTs` | ISO 8601 / sekundy epoki | od kiedy trwa bieżący stan (dla `waiting` — od kiedy czeka, dla `done` — od końca tury) |
 | `lastActivity`, `lastActivityTs` | ISO 8601 / sekundy epoki | ostatni wpis agenta w dzienniku |
 | `lastAction` | string | ostatnia czynność, np. `Edit · main.py`, `shell · make test` |
 | `pid` | int | proces agenta albo 0 |
@@ -43,21 +43,29 @@ Pola sesji:
 
 Z QML (moduł `org.kde.plasma.workspace.dbus`) korzysta z tego `widgets/lib/DaemonSource.qml`.
 
+Zgodność wstecz: usługa sprzed stanu `done` zgłaszała koniec tury jako `waiting` z `reason: reply`. Widżet (`Theme.sessionState`) i linia na ekranie blokady traktują taki wpis jak `done`, więc po aktualizacji widżetów przed restartem usługi skończone sesje nie świecą brzoskwinią.
+
 ## Stany i progi
 
 Pomijamy sesje, w których dziennik nie ma wpisu od ponad **24 h**.
 
-| Stan | Kiedy |
-| --- | --- |
-| `working` | tura trwa: model myśli, pisze albo działa narzędzie |
-| `waiting` | tura skończona (czeka na odpowiedź), narzędzie czeka na zgodę albo agent zadał pytanie |
-| `idle` | czeka dłużej niż **30 min**; także tura bez żadnego wpisu przez 30 min i bez śladu działającego procesu |
-| `ended` | proces sesji już nie działa |
+| Stan | Kiedy | Widżet |
+| --- | --- | --- |
+| `working` | tura trwa: model myśli, pisze albo działa narzędzie | „pracuje”, teal |
+| `waiting` | agent **stoi i nie ruszy bez użytkownika**: narzędzie czeka na zgodę, agent zadał pytanie (`AskUserQuestion`, `ExitPlanMode`, `request_user_input`) albo Claude Code zgłosił status `waiting` | „czeka na ciebie”, brzoskwinia; powiadomienie, Meta+A, „◆ ” na karcie Konsole, licznik na ekranie blokady |
+| `done` | tura skończyła się zwyczajnie (Claude Code: status `idle`, `end_turn`; Codex: `task_complete`) albo została przerwana, w ciągu ostatnich **30 min** | „skończył”, spokojny błękit (`semantic.done`), puste kółko; bez powiadomienia, bez Meta+A, bez znacznika karty |
+| `idle` | `done` albo `waiting` bez ruchu dłużej niż **30 min**; także tura bez żadnego wpisu przez 30 min i bez śladu działającego procesu | „bezczynna”, przygaszona |
+| `ended` | proces sesji już nie działa | „zakończona”, przygaszona |
+
+Dlaczego koniec tury nie jest „czekaniem”: agent, który odpowiedział, niczego nie blokuje — może na odpowiedź nikt nie czekać (wątek prowadzony przez zaplanowane zadanie Codex Desktop sam dostanie następną wiadomość), a powiadomienie, brzoskwinia i Meta+A przy każdej skończonej turze uczyły ignorować „czeka”. Teraz „czeka” znaczy zawsze to samo: bez ciebie agent dalej nie pójdzie.
+
+**Meta+A tylko do czekających.** Rozważany zapasowy cel (najświeższa sesja `done`, gdy nikt nie czeka) odrzucony: skrót, który czasem prowadzi do skończonej rozmowy, przestaje znaczyć „ktoś cię potrzebuje”, a do skończonych sesji prowadzą lista w widżecie (przycisk „Przejdź”) i KRunner.
 
 Skąd to wiemy:
 
-- **Claude Code** sam zapisuje stan działającego procesu w `~/.claude/sessions/<pid>.json` (`status`: `busy`, `waiting`, `idle`, plus `waitingFor`). To główne źródło — obejmuje także czekanie na zgodę. Gdy pliku nie ma (starsze wersje), stan wynika z dziennika `~/.claude/projects/<katalog>/<sesja>.jsonl`: `stop_reason: end_turn` albo `system/turn_duration` kończy turę, `tool_use` bez `tool_result` to wywołanie narzędzia w toku.
-- **Codex** — `~/.codex/sessions/RRRR/MM/DD/rollout-*.jsonl`: `task_started` zaczyna turę, `task_complete` i `turn_aborted` ją kończą, `function_call`/`custom_tool_call` bez `*_output` to narzędzie w toku. Wątki podagentów i recenzenta zgód (`source.subagent`) nie są osobnymi sesjami.
+- **Claude Code** sam zapisuje stan działającego procesu w `~/.claude/sessions/<pid>.json` (`status`: `busy`, `waiting`, `idle`, `shell`, plus `waitingFor`). To główne źródło — obejmuje także czekanie na zgodę: `waiting` → `waiting` z powodem z `waitingFor`, `idle` → `done`, `busy` → `working`, `shell` → `working` z powodem `background`. Gdy pliku nie ma (starsze wersje), stan wynika z dziennika `~/.claude/projects/<katalog>/<sesja>.jsonl`: `stop_reason: end_turn` albo `system/turn_duration` kończy turę (`done`), `tool_use` bez `tool_result` to wywołanie narzędzia w toku, a `AskUserQuestion`/`ExitPlanMode` bez wyniku — pytanie (`waiting`, `question`).
+- **Codex** — `~/.codex/sessions/RRRR/MM/DD/rollout-*.jsonl`: `task_started` zaczyna turę, `task_complete` i `turn_aborted` ją kończą (`done`), `function_call`/`custom_tool_call` bez `*_output` to narzędzie w toku, a `request_user_input` bez wyniku — pytanie (`waiting`, `question`, także przy `approval_policy: never`). Wątki podagentów i recenzenta zgód (`source.subagent`) nie są osobnymi sesjami.
+- **Zaplanowane zadania Codex Desktop.** Automatyzacja (`~/.codex/automations/<id>/automation.toml`, `kind = "heartbeat"`, `rrule`, `target_thread_id`) co jakiś czas sama wysyła wiadomość do wskazanego wątku. Taką turę poznajemy po `event_msg/task_started` z `turn_attribution.turn_trigger = "automation_heartbeat_scheduled"` (nowsze wersje; wpisana ręcznie ma `composer`) albo po wiadomości użytkownika (`response_item` `message`, `role: user`) z `internal_chat_message_metadata_passthrough.content_item_kinds` zawierającym `user.heartbeat` (wpisana ręcznie: `user.text`). Po końcu takiej tury sesja jest `done` z powodem `scheduled` (widżet dopisuje „zaplanowane”), a następna tura zaczęta przez użytkownika zdejmuje ten powód. Pytanie albo zgoda w trakcie tury z automatyzacji to nadal `waiting` — agent naprawdę stoi. Format jest nieudokumentowany: gdy znaczniki znikną, tura z automatyzacji będzie zwykłym `done`, a nie `waiting`.
 - **Narzędzie w toku.** Przez **10 s** od wywołania sesja „pracuje”. Potem pracuje dalej tylko wtedy, gdy proces agenta uruchomił coś po wywołaniu (np. polecenie powłoki), narzędzie jest z natury długie (podagent, czekanie na podagenta) albo Codex ma `approval_policy: never`. W pozostałych przypadkach uznajemy, że czeka na zgodę. Długie wywołanie MCP bez własnego procesu może więc chwilowo wyglądać jak czekanie na zgodę.
 - **Proces sesji.** Claude Code: `pid` z pliku `sessions/<pid>.json`. Codex: proces `codex`, który trzyma otwarty plik dziennika (w aplikacji Codex Desktop to `codex app-server`; wątek, którego aplikacja nie trzyma otwartego, jest pokazywany jako zakończony). Zapasowo: proces narzędzia z tym samym katalogiem roboczym.
 
@@ -75,15 +83,15 @@ Best-effort. Z procesu agenta idziemy w górę drzewa procesów do znanego termi
 
 ## Skok do czekającego agenta
 
-**Skrót Meta+A.** Skrypt KWin `tide-agent-jump` (`kwin/agent-jump`, instalacja `make install-agent-jump`) rejestruje skrót przez `registerShortcut` i woła `ActivateLongestWaiting` na `/Agents`. Usługa odświeża stan i procesy, wybiera czekającą sesję z najwcześniejszym `sinceTs` spośród tych, do których okna da się przejść (czekająca w tmux czy przez ssh jest pomijana), i aktywuje okno tak jak `ActivateSession` (Konsole: najpierw karta). Gdy nic nie czeka — zwraca `false` bez żadnego komunikatu. Jeśli usługa nie działa, D-Bus uruchomi ją przy pierwszym naciśnięciu.
+**Skrót Meta+A.** Skrypt KWin `tide-agent-jump` (`kwin/agent-jump`, instalacja `make install-agent-jump`) rejestruje skrót przez `registerShortcut` i woła `ActivateLongestWaiting` na `/Agents`. Usługa odświeża stan i procesy, wybiera czekającą sesję z najwcześniejszym `sinceTs` spośród tych, do których okna da się przejść (czekająca w tmux czy przez ssh jest pomijana), i aktywuje okno tak jak `ActivateSession` (Konsole: najpierw karta). Gdy nic nie czeka — zwraca `false` bez żadnego komunikatu; sesje `done` nie są zapasowym celem (wyżej, „Meta+A tylko do czekających”). Jeśli usługa nie działa, D-Bus uruchomi ją przy pierwszym naciśnięciu.
 
 Dlaczego skrypt KWin, a nie rejestracja w KGlobalAccel prosto z usługi: na Waylandzie w Plasmie 6 globalne skróty obsługuje KWin, a `registerShortcut` to udokumentowane, stabilne API skryptów. Protokół D-Bus `org.kde.kglobalaccel` jest wewnętrzny (`doRegister`, `setShortcutKeys` ze strukturami klawiszy `a(ai)`, które zmieniły się między KF5 i KF6, `setInactive`, osobny obiekt `/component/<nazwa>` z sygnałem) — łatwo go zepsuć aktualizacją Frameworks i trudno poprawnie zbudować z PyQt. Skrót w skrypcie KWin nie znika przy restarcie usługi, widać go w Ustawieniach systemowych → Skróty → KWin („Tide: przejdź do agenta, który czeka najdłużej”) i można go tam zmienić. Przełączanie okien i tak idzie przez skrypty KWin.
 
 **Kolizja Meta+A.** KDE nie nada domyślnego klawisza, który ma już inna akcja. Instalator sprawdza `kglobalshortcutsrc` i wypisuje kolizje (np. „Przełączaj między aktywnościami” w plasmashell), niczego w nich nie zmieniając — trzeba wtedy zwolnić Meta+A w Ustawieniach systemowych i przypisać go akcji Tide.
 
-**Powiadomienia.** Gdy sesja wchodzi w stan `waiting`, usługa wysyła przez `org.freedesktop.Notifications` powiadomienie „Agent czeka: <projekt>” z powodem (np. „Czeka na zgodę: shell · make test”), narzędziem i gałęzią oraz przyciskiem „Przejdź” (także kliknięcie w powiadomienie), który aktywuje okno tej sesji (`ActionInvoked` → `ActivateSession`). Sesja bez ustalonego okna dostaje powiadomienie bez przycisku.
+**Powiadomienia.** Tylko wejście w stan `waiting` — koniec tury (`done`) nie powiadamia. Gdy sesja wchodzi w stan `waiting`, usługa wysyła przez `org.freedesktop.Notifications` powiadomienie „Agent czeka: <projekt>” z powodem (np. „Czeka na zgodę: shell · make test”), narzędziem i gałęzią oraz przyciskiem „Przejdź” (także kliknięcie w powiadomienie), który aktywuje okno tej sesji (`ActionInvoked` → `ActivateSession`). Sesja bez ustalonego okna dostaje powiadomienie bez przycisku.
 
-- Ta sama sesja nie dostaje drugiego powiadomienia, dopóki nie przestanie czekać (pracuje, bezczynna, zakończona albo zniknęła z listy) i nie zacznie znowu.
+- Ta sama sesja nie dostaje drugiego powiadomienia, dopóki nie przestanie czekać (pracuje, skończyła, bezczynna, zakończona albo zniknęła z listy) i nie zacznie znowu.
 - Gdy sesja przestaje czekać, jej powiadomienie jest zamykane (`CloseNotification`), żeby nie wisiało nieaktualne.
 - Sesje czekające już w chwili startu usługi nie dostają powiadomień — restart usługi nie zasypuje ekranu.
 - `--no-notifications` wyłącza powiadomienia.
@@ -98,7 +106,7 @@ Karta Konsole, w której działa sesja, pokazuje jej stan (decyzja 29 — koloru
 | --- | --- | --- |
 | `working` | `◐ ` przed tytułem | `pastel[semantic.working]` (teal) |
 | `waiting` | `◆ ` przed tytułem | `pastel[semantic.waiting]` (brzoskwinia) |
-| `idle`, `ended`, brak sesji | jak przed oznaczeniem | jak przed oznaczeniem |
+| `done`, `idle`, `ended`, brak sesji | jak przed oznaczeniem | jak przed oznaczeniem |
 
 - Kartę wskazują `KONSOLE_DBUS_SERVICE` i `KONSOLE_DBUS_SESSION` ze środowiska procesu agenta (jak przy przejściu do okna). Gdy w jednej karcie są dwie sesje, „czeka” wygrywa. Inne terminale i aplikacje nie mają API kart — zostają bez znacznika; okna bez agenta nie są ruszane.
 - Zmiana idzie przez `org.kde.konsole.Session`: prefiks trafia do obu formatów tytułu (`setTabTitleFormat` 0 i 1), więc przetrwa odświeżenia Konsoli, a wyświetlany tytuł jest ustawiany od razu (`setTitle(1, …)`, potem formaty), bo Konsole przelicza go dopiero po aktywności w terminalu. Kolor: `setTabColor`. Bieżąca karta przekazuje tytuł oknu, więc znacznik widać też na pasku tytułu, w pasku zadań i przełączniku okien.
