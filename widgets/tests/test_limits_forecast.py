@@ -35,9 +35,9 @@ class DockTileForecastTest(unittest.TestCase):
         # Najwcześniejsze wyczerpanie: sesja Claude (17:40), nie tydzień (czwartek).
         self.assertEqual(runout["limits"]["detail"], "Claude do 17:40")
         self.assertEqual(runout["limits"]["lines"], ["GPT 91%", "Claude 24%"])
-        self.assertEqual(runout["fits"], [True] * 4)
-        self.assertLess(runout["total"], 900, runout["widths"])
-        self.assertLessEqual(runout["widths"][3] - busy["widths"][3], 12, (busy["widths"], runout["widths"]))
+        self.assertEqual(runout["fits"], [True] * 5)
+        self.assertLess(runout["total"], 1000, runout["widths"])
+        self.assertLessEqual(runout["widths"][-1] - busy["widths"][-1], 12, (busy["widths"], runout["widths"]))
 
     def test_lasting_forecast_adds_nothing_to_the_tile(self):
         scenario = copy.deepcopy(preview.SCENARIOS["runout"])
