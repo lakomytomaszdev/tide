@@ -9,7 +9,7 @@ unit="$config/systemd/user/tide-daemon.service"
 if [[ -e "$unit" ]]; then
     systemctl --user disable --now tide-daemon.service || true
 fi
-rm -f "$unit" "$data/dbus-1/services/org.tide.Daemon.service"
+rm -f "$unit" "$data/dbus-1/services/org.tide.Daemon.service" "$data/dbus-1/services/org.tide.Daemon.KRunner.service"
 rm -rf "$data/tide/daemon"
 rmdir "$data/tide" 2>/dev/null || true
 systemctl --user daemon-reload || true
