@@ -46,7 +46,8 @@
   },
   "size": {
     "bar": 34,
-    "barSlim": 30
+    "barSlim": 30,
+    "dock": 64
   },
   "opacity": {
     "panel": 0.7,
@@ -81,10 +82,42 @@
     "seed": 26102026,
     "grain": 1.1,
     "blobs": [
-      { "color": "lavender", "x": 0.40, "y": 0.22, "size": 0.27, "stretch": 1.9, "angle": -10, "opacity": 0.17 },
-      { "color": "teal", "x": 0.80, "y": 0.82, "size": 0.27, "stretch": 1.6, "angle": 14, "opacity": 0.15 },
-      { "color": "teal", "x": 0.08, "y": 0.10, "size": 0.18, "stretch": 1.3, "angle": 20, "opacity": 0.11 },
-      { "color": "peach", "x": 0.64, "y": 0.47, "size": 0.12, "stretch": 1.4, "angle": -25, "opacity": 0.06 }
+      {
+        "color": "lavender",
+        "x": 0.4,
+        "y": 0.22,
+        "size": 0.27,
+        "stretch": 1.9,
+        "angle": -10,
+        "opacity": 0.17
+      },
+      {
+        "color": "teal",
+        "x": 0.8,
+        "y": 0.82,
+        "size": 0.27,
+        "stretch": 1.6,
+        "angle": 14,
+        "opacity": 0.15
+      },
+      {
+        "color": "teal",
+        "x": 0.08,
+        "y": 0.1,
+        "size": 0.18,
+        "stretch": 1.3,
+        "angle": 20,
+        "opacity": 0.11
+      },
+      {
+        "color": "peach",
+        "x": 0.64,
+        "y": 0.47,
+        "size": 0.12,
+        "stretch": 1.4,
+        "angle": -25,
+        "opacity": 0.06
+      }
     ]
   }
 }

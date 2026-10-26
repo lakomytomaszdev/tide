@@ -9,6 +9,8 @@ NAME ?=
 #   UNINSTALL_TARGETS += uninstall-<komponent>
 #   TEST_DIRS += <katalog z testami>
 INSTALL_TARGETS :=
+# Cele, które muszą iść po wszystkich innych (np. dock dokłada zainstalowane już widżety).
+LATE_INSTALL_TARGETS :=
 UNINSTALL_TARGETS :=
 TEST_DIRS :=
 
@@ -25,7 +27,7 @@ help:
 	@echo "make install-sddm          ekran logowania SDDM (sudo, osobno od make install)"
 	@echo "make uninstall-sddm        przywrócenie poprzedniego ekranu logowania (sudo)"
 
-install: pre-install-backup $(INSTALL_TARGETS)
+install: pre-install-backup $(INSTALL_TARGETS) $(LATE_INSTALL_TARGETS)
 	@echo "Zainstalowano Tide."
 
 uninstall: $(UNINSTALL_TARGETS)
