@@ -22,7 +22,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `theme/icons/` | Nakładka ikon „Tide” i polecenie `tide-icons` (audyt, synchronizacja, podgląd) |
 | `theme/sddm/` | Ekran logowania SDDM „tide”: QML, składanie z palety (`build.py`), sprawdzenie przed instalacją (`check.py`, atrapa greetera w `harness/`), zrzut prawdziwego greetera (`greeter_shot.sh`) |
 | `scripts/` | Kopie zapasowe i przywracanie wyglądu (`backup.sh`, `restore.sh`, `paths.sh`), instalatory komponentów (`sddm_system.py` to jedyny uruchamiany przez sudo) i synchronizacja kopii powłoki z ekranem blokady (`shell_sync.py`) |
-| `scripts/panels/` | Skrypty plasmashell górnych pasków (zrzut, instalacja, kolejność, odinstalowanie) |
+| `scripts/panels/` | Skrypty plasmashell górnych pasków, docka i paska bocznego (zrzut, instalacja, kolejność, odinstalowanie) |
 | `tools/` | Narzędzia do ikon: `make_tile.py` (kafelek z oryginalnej ikony), `make_tint.py` (eksperyment z przefarbowaniem, odrzucony) |
 | `daemon/` | Usługa `tide-daemon`: sesje agentów i worktrees przez D-Bus ([opis i kontrakt](docs/tide-daemon.md)) |
 | `widgets/lib/` | Wspólna biblioteka QML widżetów: karta, kafelek docka, teksty kafelków, miernik, pierścień, wykres słupkowy z historią próbek, kropka i licznik stanu, źródło danych z usługi |
@@ -31,6 +31,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `widgets/worktrees/` | Kafelek worktrees `org.tide.worktrees`: ile do sprzątnięcia (i ile GB), ile w pracy; kliknięcie otwiera okno |
 | `apps/worktrees/` | Okno „Tide Worktrees” (QML + PyQt6, plik `.desktop`): grupy W pracy / Do sprzątnięcia / Do decyzji, szukanie, filtry repozytoriów, usuwanie zaznaczonych |
 | `widgets/system/` | Widżet `org.tide.system`: procesor, pamięć, karta graficzna i dyski z czujników ksystemstats |
+| `widgets/sidebar/` | Nagłówek paska bocznego `org.tide.sidebar`: „Tide” i skrót Meta+S, który wysuwa pasek |
 | `kwin/` | Skrypt KWin `tide-agent-jump` ze skrótem Meta+A i jego instalator |
 | `krunner/` | Plik wtyczki KRunnera „Tide: agenci i projekty” i jej instalator (wyniki daje tide-daemon) |
 | `mk/` | Cele `make` poszczególnych komponentów (`install-*`, `uninstall-*`, katalogi testów) |
@@ -70,7 +71,7 @@ make uninstall-widget-limits   # usuwa tylko org.tide.limits
 
 ## System
 
-Widżet „Tide · System” (`org.tide.system`) pokazuje w kafelku „System” trzy mierniki z procentem i cienkim paskiem („CPU 34%  RAM 61%  Dysk 88%”): procesor (teal), pamięć (lawenda) i pełniejszą z partycji / i /home (brzoskwinia). W popupie — a później w pasku bocznym — jest wykres procesora z ostatniej minuty (próbka co 2 s), pamięć z trzema programami zajmującymi najwięcej, karta graficzna z VRAM i obie partycje z wolnym miejscem.
+Widżet „Tide · System” (`org.tide.system`) pokazuje w kafelku „System” trzy mierniki z procentem i cienkim paskiem („CPU 34%  RAM 61%  Dysk 88%”): procesor (teal), pamięć (lawenda) i pełniejszą z partycji / i /home (brzoskwinia). W popupie i w pasku bocznym jest wykres procesora z ostatniej minuty (próbka co 2 s), pamięć z trzema programami zajmującymi najwięcej, karta graficzna z VRAM i obie partycje z wolnym miejscem.
 
 ```bash
 make install-widget-system     # instalacja albo aktualizacja widżetu
@@ -90,7 +91,7 @@ make uninstall-widget-system   # usuwa tylko org.tide.system
 
 ## Styl Plasmy i górne paski
 
-Styl „Tide” zawiera tylko ramki o nowym kształcie: tło panelu (pasek z prefiksem `north` i promieniem paska, dock i panele boczne z promieniem docka), wyskakujące okna z nagłówkiem i stopką oraz podpowiedzi — w wersjach zwykłej, `translucent/`, `solid/` i `opaque/`, jak w Breeze. Resztę Plasma bierze z Breeze, bo „default” jest zawsze ostatnim motywem zapasowym (dodatkowo `FallbackTheme=default` w `plasmarc`). Kolory nadal pochodzą ze schematu: styl nie ma pliku `colors`, a wypełnienia mają klasy `ColorScheme-*`. Licencja i pochodzenie: `NOTICE` w katalogu stylu (LGPL-2.0-or-later, jak Breeze).
+Styl „Tide” zawiera tylko ramki o nowym kształcie: tło panelu (pasek z prefiksem `north` i promieniem paska, dock z prefiksem `south` i pasek boczny z prefiksem `west` z promieniem docka), wyskakujące okna z nagłówkiem i stopką oraz podpowiedzi — w wersjach zwykłej, `translucent/`, `solid/` i `opaque/`, jak w Breeze. Resztę Plasma bierze z Breeze, bo „default” jest zawsze ostatnim motywem zapasowym (dodatkowo `FallbackTheme=default` w `plasmarc`). Kolory nadal pochodzą ze schematu: styl nie ma pliku `colors`, a wypełnienia mają klasy `ColorScheme-*`. Licencja i pochodzenie: `NOTICE` w katalogu stylu (LGPL-2.0-or-later, jak Breeze).
 
 ```bash
 make preview-plasma-style                                      # podgląd w build/preview, bez instalowania
@@ -112,6 +113,22 @@ Działa przez moduł kded `appmenu` (instalacja włącza go, jeśli był wyłąc
 | Aplikacje GTK 3 | zależnie od aplikacji: przez `appmenu-gtk-module` (zainstalowany) i `gmenudbusmenuproxy`, pewnie tylko pod XWayland |
 
 Do sprawdzenia po instalacji: Dolphin, Rider i Firefox na obu monitorach.
+
+## Pasek boczny
+
+Na lewym monitorze (HDMI-A-1) przy lewej, zewnętrznej krawędzi jest chowany pasek boczny Tide (`scripts/sidebar.py`, cel `install-sidebar` na końcu `make install`): pionowy, pływający panel szeroki na `size.sidebar` (300 px), od dołu smukłego paska do dołu ekranu. Jest schowany (nie zabiera oknom miejsca) i wysuwa się, gdy mysz dotknie lewej krawędzi ekranu albo po **Meta+S**; chowa się sam, gdy mysz z niego zejdzie (po skrócie: po 8 s bez myszy nad paskiem albo od razu po drugim Meta+S). Od góry: nagłówek „Tide” ze skrótem, agenci (cała lista sesji), system (wykres procesora, pamięć, karta graficzna, dyski), worktrees (liczby i przycisk „Otwórz okno Worktrees”) i Limity AI.
+
+```bash
+make install-widget-sidebar install-sidebar   # sam pasek (widżety Tide muszą być zainstalowane)
+make show-sidebar                             # skrypt plasmashell, który uruchomi instalacja
+make sidebar-preview                          # zagnieżdżona sesja: schowany, wysunięty skrótem i znów schowany → build/sidebar
+make uninstall-sidebar                        # usuwa panel i zwalnia skrót
+```
+
+- **Widoki szczegółowe.** Widżety w pasku mają w konfiguracji `sidebarMode=true` (`[Configuration][General]`), więc Plasma pokazuje od razu ich pełną reprezentację zamiast kafelka, w gęstszym układzie. W docku nic się nie zmienia. Agenci w pasku nie zgłaszają „wymaga uwagi”, bo chowany panel nie chowałby się wtedy wcale — o czekającym agencie mówią dock i powiadomienie.
+- **Meta+S.** To globalny skrót widżetu-nagłówka `org.tide.sidebar` (w KGlobalAccel: komponent `plasmashell`, akcja `activate widget <id>`), zmieniany w jego ustawieniach (prawy przycisk na nagłówku → Skróty klawiszowe). Gdy Meta+S ma już inna akcja, instalator to wypisze i nie nada skrótu. Szczegóły w decyzji 34.
+- **Po pierwszej instalacji** Plasma wczyta nowy kod widżetów (tryb paska) dopiero po `systemctl --user restart plasma-plasmashell` albo ponownym zalogowaniu.
+- Panel ma znacznik `[Tide] role=sidebar`; ponowna instalacja używa tego samego panelu i tych samych widżetów, a szerokość trafia też do `plasmashellrc` (jak grubość górnych pasków).
 
 ## Worktrees
 

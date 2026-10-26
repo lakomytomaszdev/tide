@@ -67,6 +67,7 @@ Geist v1.7.2 (licencja OFL), instalowany do katalogu użytkownika. Rider i termi
 | `radius.window` | 22 px | Duże powierzchnie na mockach |
 | `radius.dock` | 28 px | Dock i panele boczne |
 | `size.bar` / `size.barSlim` | 34 / 30 px | Pasek główny / pasek lewego monitora |
+| `size.sidebar` | 300 px | Szerokość chowanego paska bocznego na lewym monitorze |
 | `opacity.panel` | 0,7 | Paski przy włączonym rozmyciu |
 | `opacity.popup` | 0,85 | Popupy |
 | `opacity.withoutBlur` | 0,95 | Gdy KWin nie rozmywa tła |
@@ -79,6 +80,7 @@ Przy zmaksymalizowanym oknie Plasma przykleja pływające panele do krawędzi i 
 
 - **Górny pasek (główny monitor):** pigułka 34 px — logo jako przycisk menu, globalne menu, zegar z datą w jednej linii pośrodku („pon. 26 paź 17:05”), skróty użytkownika, zasobnik.
 - **Pasek lewego monitora:** 30 px — globalne menu i zegar.
+- **Pasek boczny (lewy monitor):** 300 px, pływający, przy lewej, zewnętrznej krawędzi, od dołu smukłego paska do dołu ekranu, schowany do czasu najechania na krawędź albo Meta+S. Ramka panelu z prefiksem `west` i promieniem `dock`. Od góry: nagłówek „Tide” z plakietką skrótu (Geist Mono 11 px na tle `card`), potem widoki szczegółowe widżetów w gęstym układzie — agenci (lista zajmuje resztę miejsca), system (bez podpisów pod wykresem, pamięcią i kartą), worktrees (tytuł z przyciskiem „Otwórz okno Worktrees” i jedna linia liczb), Limity AI (reset obok miernika). Mock: artboard „Sidebar” na kanwie.
 - **Dock:** pełna szerokość głównego monitora, 64 px. Aplikacje pośrodku, kafelki widżetów z prawej: agenci, worktrees, system, Limity AI.
 - **Kafelek widżetu:** osobna karta 48 px wysokości (dock 64 px) z promieniem `tile` (12 px), tło w pastelu widżetu o kryciu ~0,11 (po najechaniu ~0,2) z ramką w tym pastelu (~0,24), 12 px odstępu między kafelkami. Zawsze dwie linie: etykieta w `text.secondary` (8 pt: „Agenci”, „Worktrees · 5 w pracy”, „System”, „Limity AI”) i wartość słowami (10 pt), liczby w Geist Mono. Kolor mówi o stanie. Wspólne komponenty `DockTile` i `TileMeter`, teksty i liczba mnoga w `Texts`, podgląd: `make preview-widgets`.
   - **Agenci** (teal, brzoskwinia gdy ktoś czeka): „● 2 pracują · ● 1 czeka”, tylko niezerowe części; bez sesji wyciszone „brak sesji”.
