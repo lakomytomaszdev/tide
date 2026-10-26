@@ -1,0 +1,7 @@
+{"timestamp":"2026-10-26T11:40:00.000Z","type":"session_meta","payload":{"id":"0000000a-0000-4000-8000-000000000002","timestamp":"2026-10-26T11:40:00.000Z","cwd":"/srv/work/beta","originator":"Codex Desktop","source":"vscode","git":{"branch":"feat/report","commit_hash":"0000000"}}}
+{"timestamp":"2026-10-26T11:44:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-10-26T11:44:00.010Z","type":"turn_context","payload":{"turn_id":"t1","cwd":"/srv/work/beta","approval_policy":"never"}}
+{"timestamp":"2026-10-26T11:44:30.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","status":"completed","call_id":"call_p1","input":"*** Begin Patch\n*** Update File: src/report.py\n@@\n-a\n+b\n*** End Patch\n"}}
+{"timestamp":"2026-10-26T11:44:31.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_p1","output":"Success"}}
+{"timestamp":"2026-10-26T11:45:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}
+{"timestamp":"2026-10-26T11:45:00.050Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"Done."}}

@@ -1,0 +1,2 @@
+{"type":"user","isSidechain":false,"timestamp":"2026-10-26T11:57:30.000Z","cwd":"/srv/work/gamma","gitBranch":"fix/crash","sessionId":"c-approval","message":{"role":"user","content":"Fix the crash"}}
+{"type":"assistant","isSidechain":false,"timestamp":"2026-10-26T11:58:00.000Z","cwd":"/srv/work/gamma","gitBranch":"fix/crash","sessionId":"c-approval","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_a1","name":"Edit","input":{"file_path":"/srv/work/gamma/app/crash.py","old_string":"","new_string":""}}]}}

@@ -1,0 +1,2 @@
+{"type":"user","isSidechain":false,"timestamp":"2026-10-26T11:57:00.000Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-status","message":{"role":"user","content":"Update the config"}}
+{"type":"assistant","isSidechain":false,"timestamp":"2026-10-26T11:57:10.000Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-status","message":{"role":"assistant","stop_reason":null,"content":[{"type":"thinking","thinking":""}]}}

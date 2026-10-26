@@ -1,0 +1,8 @@
+{"timestamp":"2026-10-26T11:30:00.000Z","type":"session_meta","payload":{"id":"0000000a-0000-4000-8000-000000000001","timestamp":"2026-10-26T11:30:00.000Z","cwd":"/srv/work/beta","originator":"codex_cli_rs","source":"cli","git":{"branch":"main","commit_hash":"0000000"}}}
+{"timestamp":"2026-10-26T11:59:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-10-26T11:59:00.010Z","type":"turn_context","payload":{"turn_id":"t1","cwd":"/srv/work/beta","approval_policy":"on-request"}}
+{"timestamp":"2026-10-26T11:59:00.020Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Run the checks"}]}}
+{"timestamp":"2026-10-26T11:59:10.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"make test\"]}","call_id":"call_w1"}}
+{"timestamp":"2026-10-26T11:59:20.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_w1","output":"ok"}}
+{"timestamp":"2026-10-26T11:59:50.000Z","type":"response_item","payload":{"type":"reasoning","summary":[]}}
+{"timestamp":"2026-10-26T11:59:50.100Z","type":"event_msg","payload":{"type":"token_count","info":null}}
