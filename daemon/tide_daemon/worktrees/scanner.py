@@ -1,0 +1,388 @@
+"""Rdzeń obszaru worktrees: katalog projektów na wejściu, lista worktrees i wynik sprzątania na wyjściu.
+
+Bez sieci: tylko lokalne polecenia gita (git.py). „Scalony” znaczy: czubek gałęzi worktree jest
+przodkiem lokalnej gałęzi głównej (master, main albo develop) — nie porównujemy z serwerem.
+
+Co liczymy i skąd:
+- repozytoria: katalogi z `.git` w katalogu projektów, do max_depth poziomów w głąb, bez
+  katalogów ukrytych i zależności (node_modules itp.); w repozytorium nie schodzimy niżej,
+- worktrees: `git worktree list --porcelain` każdego repozytorium (także te poza katalogiem projektów),
+- zmiany: liczba pozycji w `git status --porcelain` (nieśledzony katalog to jedna pozycja),
+- niescalone commity: `git rev-list --count <główna>..<HEAD>`; scalony = 0,
+- ostatnia zmiana: najnowsze z czasu ostatniego commita HEAD i mtime plików wskazanych przez
+  `git status` — tanie, bo i tak czytamy status, a nie chodzimy po wszystkich plikach,
+- rozmiar: jak `du -s` (disk.py), w pamięci podręcznej i przeliczany najwyżej co SIZE_TTL,
+- aktywny agent: katalog roboczy żywej sesji agenta (albo procesu claude/codex) leży w worktree;
+  przy zagnieżdżonych worktrees liczy się najgłębszy.
+
+Sprzątanie usuwa wyłącznie `git worktree remove` bez --force, a gałąź tylko `git branch -d`.
+"""
+import os
+import threading
+import time
+from dataclasses import dataclass, field
+
+from ..agents.timeutil import iso
+from .disk import disk_usage
+from .git import Git, parse_status, parse_worktree_list, pick_main_branch
+
+MAX_DEPTH = 3
+SIZE_TTL = 30 * 60
+# Katalogi, w których nie szukamy repozytoriów: zależności i wyniki budowania.
+SKIP_DIRS = {"node_modules", "bower_components", "vendor", "bin", "obj", "target", "build", "dist",
+             "out", "__pycache__", "venv", "env", "Pods", "DerivedData"}
+
+# Powody pominięcia przy sprzątaniu (kolejność = pierwszeństwo).
+BLOCKERS = ("main", "missing", "locked", "agent", "dirty", "no-main", "unmerged")
+
+
+@dataclass
+class Worktree:
+    repo: str            # nazwa repozytorium (katalog główny bez .git)
+    repo_path: str       # katalog, w którym uruchamiamy gita dla repozytorium
+    path: str
+    head: str = ""
+    branch: str = ""
+    detached: bool = False
+    is_main: bool = False
+    locked: bool = False
+    missing: bool = False
+    main_branch: str = ""
+    dirty: int = 0
+    unmerged: int | None = None   # None: nie da się policzyć (brak gałęzi głównej)
+    last_change: float = 0.0
+    nested: tuple = ()            # inne worktrees wewnątrz tego katalogu
+    real: str = ""                # ścieżka bez dowiązań — do porównań z katalogami agentów
+
+    @property
+    def merged(self) -> bool:
+        return self.unmerged == 0
+
+    def blocker(self, has_agent: bool) -> str:
+        """Pierwszy powód, dla którego nie wolno go usunąć, albo pusty napis."""
+        checks = {
+            "main": self.is_main,
+            "missing": self.missing,
+            "locked": self.locked,
+            "agent": has_agent,
+            "dirty": self.dirty != 0,  # -1: statusu nie dało się odczytać — traktujemy jak zmiany
+            "no-main": not self.main_branch,
+            "unmerged": not self.merged,
+        }
+        return next((name for name in BLOCKERS if checks[name]), "")
+
+
+def find_repositories(root: str, max_depth: int = MAX_DEPTH) -> list[str]:
+    """Katalogi repozytoriów (z katalogiem .git albo repozytoria bare) pod root."""
+    found: list[str] = []
+
+    def walk(path: str, depth: int) -> None:
+        dotgit = os.path.join(path, ".git")
+        if os.path.isdir(dotgit) or _is_bare(path):
+            found.append(path)
+            return
+        if os.path.exists(dotgit):
+            return  # plik .git: worktree albo submoduł — znajdziemy go przez główne repozytorium
+        if depth >= max_depth:
+            return
+        try:
+            entries = sorted(os.scandir(path), key=lambda e: e.name)
+        except OSError:
+            return
+        for entry in entries:
+            if entry.name.startswith(".") or entry.name in SKIP_DIRS:
+                continue
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    walk(entry.path, depth + 1)
+            except OSError:
+                continue
+
+    walk(os.path.normpath(root), 0)
+    return found
+
+
+def _is_bare(path: str) -> bool:
+    return (os.path.isfile(os.path.join(path, "HEAD")) and os.path.isdir(os.path.join(path, "objects"))
+            and os.path.isdir(os.path.join(path, "refs")))
+
+
+def agent_cwds(sessions: list[dict], procs=None) -> list[str]:
+    """Katalogi robocze żywych agentów: sesje inne niż zakończone i procesy claude/codex."""
+    cwds = [s.get("cwd", "") for s in sessions if s.get("state") != "ended"]
+    if procs is not None:
+        for tool in ("claude", "codex"):
+            cwds += [p.cwd for p in procs.agents(tool)]
+    return sorted({c for c in cwds if c})
+
+
+class WorktreeScanner:
+    def __init__(self, root: str, max_depth: int = MAX_DEPTH, size_ttl: float = SIZE_TTL,
+                 git: Git | None = None, clock=time.time):
+        self.root = root
+        self.max_depth = max_depth
+        self.size_ttl = size_ttl
+        self.git = git or Git()
+        self.clock = clock
+        self.items: list[Worktree] = []
+        self._sizes: dict[str, tuple[int, float]] = {}  # ścieżka → (bajty, kiedy policzone)
+        self._lock = threading.Lock()
+
+    # --- odczyt (praca w tle) -------------------------------------------------------------
+
+    def refresh(self) -> list[Worktree]:
+        """Przegląda repozytoria i odświeża listę. Ciężkie — wołać poza wątkiem D-Bus."""
+        items: list[Worktree] = []
+        for repo in find_repositories(self.root, self.max_depth):
+            items += self.scan_repo(repo)
+        items = _dedupe(items)
+        _mark_nested(items)
+        with self._lock:
+            self.items = items
+        return items
+
+    def scan_repo(self, repo_path: str) -> list[Worktree]:
+        listed = self.git.run(repo_path, "worktree", "list", "--porcelain")
+        if not listed.ok:
+            return []
+        entries = parse_worktree_list(listed.out)
+        if not entries:
+            return []
+        main_entry = entries[0]  # pierwszy wpis to zawsze główny katalog (albo repozytorium bare)
+        name = os.path.basename(main_entry.path.rstrip("/"))
+        if main_entry.bare and name.endswith(".git"):
+            name = name[:-4]
+
+        refs = self.git.run(repo_path, "for-each-ref", "--format=%(refname:short)",
+                            "refs/heads/master", "refs/heads/main", "refs/heads/develop")
+        existing = set(refs.out.split()) if refs.ok else set()
+        main_branch = pick_main_branch(existing, "" if main_entry.bare else main_entry.branch)
+
+        heads = [e.head for e in entries if e.head and not e.bare]
+        commit_times = self._commit_times(repo_path, heads)
+
+        out = []
+        for entry in entries:
+            if entry.bare:
+                continue
+            wt = Worktree(repo=name, repo_path=repo_path, path=entry.path, head=entry.head[:7],
+                          branch=entry.branch, detached=entry.detached, is_main=entry is main_entry,
+                          locked=entry.locked, main_branch=main_branch,
+                          missing=entry.prunable or not os.path.isdir(entry.path))
+            wt.real = os.path.realpath(entry.path)
+            wt.last_change = commit_times.get(entry.head, 0.0)
+            if not wt.missing:
+                self._read_status(wt)
+            if main_branch and entry.head:
+                count = self.git.run(repo_path, "rev-list", "--count", f"refs/heads/{main_branch}..{entry.head}")
+                if count.ok and count.out.strip().isdigit():
+                    wt.unmerged = int(count.out)
+            out.append(wt)
+        return out
+
+    def _commit_times(self, repo_path: str, heads: list[str]) -> dict[str, float]:
+        if not heads:
+            return {}
+        res = self.git.run(repo_path, "show", "-s", "--format=%H %ct", *sorted(set(heads)))
+        times = {}
+        for line in res.out.splitlines() if res.ok else ():
+            sha, _, ts = line.partition(" ")
+            if ts.isdigit():
+                times[sha] = float(ts)
+        return times
+
+    def _read_status(self, wt: Worktree) -> None:
+        res = self.git.run(wt.path, "status", "--porcelain=v1", "-z", "--untracked-files=normal")
+        if not res.ok:
+            wt.dirty = -1 if res.code else 0
+            return
+        paths = parse_status(res.out)
+        wt.dirty = len(paths)
+        for rel in paths:
+            try:
+                wt.last_change = max(wt.last_change, os.lstat(os.path.join(wt.path, rel.rstrip("/"))).st_mtime)
+            except OSError:
+                continue  # usunięty plik — nie ma mtime
+
+    # --- rozmiary ------------------------------------------------------------------------
+
+    def stale_sizes(self) -> list[Worktree]:
+        now = self.clock()
+        with self._lock:
+            items = list(self.items)
+            sizes = dict(self._sizes)
+        return [w for w in items if not w.missing
+                and (w.path not in sizes or now - sizes[w.path][1] > self.size_ttl)]
+
+    def measure_stale(self) -> int:
+        """Przelicza rozmiary bez wyniku albo starsze niż size_ttl. Zwraca liczbę przeliczonych."""
+        stale = self.stale_sizes()
+        for wt in stale:
+            self.measure(wt)
+        return len(stale)
+
+    def measure(self, wt: Worktree) -> int:
+        size = disk_usage(wt.path, wt.nested)
+        with self._lock:
+            self._sizes[wt.path] = (size, self.clock())
+        return size
+
+    def size_of(self, path: str) -> int:
+        with self._lock:
+            return self._sizes.get(path, (-1, 0))[0]
+
+    # --- wynik -----------------------------------------------------------------------------
+
+    def snapshot(self, cwds: list[str] = ()) -> list[dict]:
+        """Lista dla D-Bus z bieżących danych — tania, bez wołania gita."""
+        with self._lock:
+            items = list(self.items)
+        agents = _agents_by_worktree(items, cwds)
+        out = [self._describe(w, w.path in agents) for w in items]
+        out.sort(key=lambda d: (d["repo"].lower(), d["repoPath"], not d["isMain"], -d["lastChangeTs"]))
+        return out
+
+    def _describe(self, wt: Worktree, has_agent: bool) -> dict:
+        blocker = wt.blocker(has_agent)
+        return {
+            "repo": wt.repo,
+            "repoPath": wt.repo_path,
+            "path": wt.path,
+            "name": os.path.basename(wt.path.rstrip("/")),
+            "branch": wt.branch,
+            "detached": wt.detached,
+            "head": wt.head,
+            "isMain": wt.is_main,
+            "hasAgent": has_agent,
+            "dirty": wt.dirty,
+            "mainBranch": wt.main_branch,
+            "merged": wt.merged,
+            "unmerged": wt.unmerged,
+            "lastChange": iso(wt.last_change),
+            "lastChangeTs": round(wt.last_change, 3),
+            "size": self.size_of(wt.path),
+            "locked": wt.locked,
+            "missing": wt.missing,
+            "removable": blocker == "",
+            "blocker": blocker,
+        }
+
+    # --- sprzątanie ------------------------------------------------------------------------
+
+    def remove(self, paths: list[str], cwds: list[str] = ()) -> list[dict]:
+        """Usuwa wskazane worktrees, jeśli wolno. Wynik dla każdej ścieżki w kolejności wejścia.
+
+        Przed usunięciem stan repozytorium jest czytany na nowo — decyzja nie opiera się na
+        danych sprzed minuty.
+        """
+        results = []
+        for raw in paths:
+            path = os.path.normpath(raw) if raw else ""
+            results.append(self._remove_one(path, cwds))
+        self.refresh()
+        return results
+
+    def _remove_one(self, path: str, cwds) -> dict:
+        result = {"path": path, "removed": False, "reason": "", "message": "", "branch": "",
+                  "branchDeleted": False, "branchMessage": "", "freed": 0}
+        with self._lock:
+            known = next((w for w in self.items if w.path == path), None)
+        if not known:
+            return _skip(result, "unknown")
+        fresh_items = self.scan_repo(known.repo_path)
+        _mark_nested(fresh_items)
+        wt = next((w for w in fresh_items if w.path == path), None)
+        if not wt:
+            return _skip(result, "unknown")
+        result["branch"] = wt.branch
+        has_agent = path in _agents_by_worktree(fresh_items, cwds)
+        blocker = wt.blocker(has_agent)
+        if blocker:
+            return _skip(result, blocker, wt)
+
+        size = self.size_of(path)
+        removed = self.git.run(wt.repo_path, "worktree", "remove", wt.path, timeout=600)
+        if not removed.ok:
+            return _skip(result, "git", wt, removed.err)
+        result["removed"] = True
+        result["freed"] = max(size, 0)
+        result["message"] = "usunięty"
+        with self._lock:
+            self._sizes.pop(path, None)
+        if wt.branch:
+            deleted = self.git.run(wt.repo_path, "branch", "-d", wt.branch)
+            result["branchDeleted"] = deleted.ok
+            result["branchMessage"] = "gałąź usunięta" if deleted.ok else \
+                f"gałąź zostaje: {_first_line(deleted.err)}"
+        return result
+
+
+MESSAGES = {
+    "unknown": "to nie jest znany worktree",
+    "main": "główny katalog repozytorium — nigdy go nie usuwamy",
+    "missing": "katalogu już nie ma (git worktree prune)",
+    "locked": "zablokowany (git worktree lock)",
+    "agent": "pracuje w nim agent",
+    "dirty": "ma niezacommitowane zmiany",
+    "no-main": "brak lokalnej gałęzi głównej (master, main, develop)",
+    "unmerged": "nie jest scalony z lokalną gałęzią główną",
+    "git": "git odmówił usunięcia",
+}
+
+
+def _skip(result: dict, reason: str, wt: Worktree | None = None, detail: str = "") -> dict:
+    message = MESSAGES[reason]
+    if wt is not None and reason == "dirty":
+        message += f" ({wt.dirty})"
+    elif wt is not None and reason == "unmerged" and wt.unmerged:
+        message = f"niescalone commity względem {wt.main_branch}: {wt.unmerged}"
+    if detail:
+        message += f": {_first_line(detail)}"
+    result.update(reason=reason, message=message)
+    return result
+
+
+def _first_line(text: str) -> str:
+    lines = [line for line in (text or "").splitlines() if line.strip()]
+    return lines[0].strip() if lines else ""
+
+
+def _dedupe(items: list[Worktree]) -> list[Worktree]:
+    """To samo repozytorium znalezione dwa razy (np. przez dowiązanie) — zostaje pierwsze."""
+    seen, out = set(), []
+    for wt in items:
+        if wt.path not in seen:
+            seen.add(wt.path)
+            out.append(wt)
+    return out
+
+
+def _mark_nested(items: list[Worktree]) -> None:
+    for wt in items:
+        prefix = wt.path.rstrip("/") + "/"
+        wt.nested = tuple(other.path for other in items if other.path.startswith(prefix))
+
+
+def _agents_by_worktree(items: list[Worktree], cwds) -> set[str]:
+    """Ścieżki worktrees z agentem. Katalog agenta przypisujemy najgłębszemu worktree."""
+    hit = set()
+    for cwd in cwds:
+        real = os.path.realpath(cwd)
+        best = None
+        for wt in items:
+            base = wt.real or wt.path
+            if real == base or real.startswith(base.rstrip("/") + "/"):
+                if best is None or len(base) > len(best.real or best.path):
+                    best = wt
+        if best is not None:
+            hit.add(best.path)
+    return hit
+
+
+def scan(root: str, cwds: list[str] = (), max_depth: int = MAX_DEPTH, measure: bool = True) -> list[dict]:
+    """Jednorazowy przebieg dla testów i trybu --print: katalog projektów → lista worktrees."""
+    scanner = WorktreeScanner(root, max_depth)
+    scanner.refresh()
+    if measure:
+        scanner.measure_stale()
+    return scanner.snapshot(cwds)

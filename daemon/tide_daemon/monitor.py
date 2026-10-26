@@ -27,6 +27,8 @@ class AgentMonitor(QObject):
         self.use_processes = use_processes
         self.clock = clock
         self._json = "[]"
+        self.sessions: list[dict] = []   # ostatnia lista sesji (dla worktrees i powiadomień)
+        self.procs = None                # ostatnia migawka procesów albo None
         self._dirty: set[str] = set()
         self._discover = False
 
@@ -56,7 +58,9 @@ class AgentMonitor(QObject):
         self.recompute()
 
     def recompute(self) -> None:
-        sessions = self.scanner.sessions(self.clock(), self._probe())
+        procs = self._probe()
+        sessions = self.scanner.sessions(self.clock(), procs)
+        self.sessions, self.procs = sessions, procs
         text = json.dumps(sessions, ensure_ascii=False)
         if text != self._json:
             self._json = text
