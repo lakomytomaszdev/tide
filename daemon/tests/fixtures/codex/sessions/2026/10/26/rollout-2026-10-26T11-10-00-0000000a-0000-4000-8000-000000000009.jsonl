@@ -1,0 +1,9 @@
+{"timestamp":"2026-10-26T11:10:00.000Z","type":"session_meta","payload":{"id":"0000000a-0000-4000-8000-000000000009","timestamp":"2026-10-26T11:10:00.000Z","cwd":"/srv/work/iota","originator":"Codex Desktop","source":"vscode","git":{"branch":"main","commit_hash":"0000000"}}}
+{"timestamp":"2026-10-26T11:10:30.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-10-26T11:10:30.010Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Set up the loop"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"],"create_time":0.0,"turn_id":"t"}}}
+{"timestamp":"2026-10-26T11:11:00.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}
+{"timestamp":"2026-10-26T11:46:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}
+{"timestamp":"2026-10-26T11:46:00.010Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"..."}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["environments.environment_context"],"create_time":0.0,"turn_id":"t"}}}
+{"timestamp":"2026-10-26T11:46:00.020Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Check the queue"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.heartbeat"],"create_time":0.0,"turn_id":"t"}}}
+{"timestamp":"2026-10-26T11:47:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Ok."}]}}
+{"timestamp":"2026-10-26T11:47:00.050Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t2"}}

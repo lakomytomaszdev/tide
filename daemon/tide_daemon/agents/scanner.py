@@ -11,10 +11,10 @@ from . import gitinfo
 from .claude import ClaudeLog, escape_cwd, read_process_status, status_from
 from .codex import CodexLog
 from .jsonl import JsonlTail
-from .state import ENDED, IDLE, MAX_AGE, WAITING, WORKING, SessionLog, derive_state
+from .state import DONE, ENDED, IDLE, MAX_AGE, WAITING, WORKING, SessionLog, derive_state
 from .timeutil import iso
 
-STATE_ORDER = {WAITING: 0, WORKING: 1, IDLE: 2, ENDED: 3}
+STATE_ORDER = {WAITING: 0, WORKING: 1, DONE: 2, IDLE: 3, ENDED: 4}
 
 
 class AgentScanner:
@@ -110,7 +110,7 @@ class AgentScanner:
                 "cwd": log.cwd,
                 "title": log.title,
                 "state": state,
-                "reason": reason if state == WAITING else "",
+                "reason": reason if state != ENDED else "",
                 "since": iso(since),
                 "sinceTs": round(since, 3),
                 "lastActivity": iso(log.last_activity),

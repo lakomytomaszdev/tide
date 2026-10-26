@@ -7,7 +7,13 @@ Co wiemy o strukturze (z obserwacji, format nie jest publiczny):
 - turn_context niesie cwd i approval_policy (przy „never” Codex nigdy nie pyta o zgodę),
 - response_item function_call / custom_tool_call to wywołanie narzędzia, a *_output jego wynik
   (powiązane przez call_id),
-- prośby o zgodę nie trafiają do dziennika, więc wnioskujemy o nich z braku wyniku.
+- prośby o zgodę nie trafiają do dziennika, więc wnioskujemy o nich z braku wyniku,
+- turę zaczętą przez zaplanowane zadanie Codex Desktop (automatyzacja „heartbeat” z
+  ~/.codex/automations/<id>/automation.toml, która co jakiś czas pisze do wątku) poznajemy po
+  task_started.turn_attribution.turn_trigger == "automation_heartbeat_scheduled" (nowsze wersje,
+  ręcznie wpisana wiadomość ma tam „composer”) albo po wiadomości użytkownika (response_item
+  message, role user) z internal_chat_message_metadata_passthrough.content_item_kinds
+  zawierającym „user.heartbeat” — wpisana ręcznie ma „user.text”.
 """
 import json
 import os
@@ -19,6 +25,9 @@ from .timeutil import parse_ts
 
 ASKS_USER = {"request_user_input"}
 LONG_RUNNING = {"wait_agent", "wait", "sleep", "spawn_agent"}
+AUTOMATION_TRIGGER = "automation"           # przedrostek turn_trigger, np. automation_heartbeat_scheduled
+SCHEDULED_KINDS = {"user.heartbeat"}         # wiadomość wysłana przez zaplanowane zadanie
+TYPED_KINDS = {"user.text", "user.image"}    # wiadomość od człowieka
 CALLS = ("function_call", "custom_tool_call", "local_shell_call")
 OUTPUTS = ("function_call_output", "custom_tool_call_output", "local_shell_call_output")
 
@@ -55,6 +64,8 @@ class CodexLog(SessionLog):
                 self.approvals_possible = policy != "never"
         elif kind == "event_msg":
             event = payload.get("type")
+            if event == "task_started":
+                self.scheduled = _automation_trigger(payload)
             if event in ("task_started", "user_message"):
                 self.set_phase(MID_TURN, ts)
             elif event in ("task_complete", "turn_aborted"):
@@ -69,6 +80,12 @@ class CodexLog(SessionLog):
                 self.pending[str(payload.get("call_id") or payload.get("id"))] = Pending(
                     name, ts, asks_user=name in ASKS_USER, long_running=name in LONG_RUNNING)
                 self.last_action = describe_call(name, payload)
+            elif item == "message" and payload.get("role") == "user":
+                kinds = _content_kinds(payload)
+                if kinds & SCHEDULED_KINDS:
+                    self.scheduled = True
+                elif kinds & TYPED_KINDS:
+                    self.scheduled = False  # użytkownik dopisał się do tury
             elif item in OUTPUTS:
                 self.pending.pop(str(payload.get("call_id")), None)
                 if not self.pending and self.phase == TOOL_PENDING:
@@ -84,6 +101,18 @@ class CodexLog(SessionLog):
         source = payload.get("source")
         self.hidden = isinstance(source, dict) and "subagent" in source
         self.touch(parse_ts(payload.get("timestamp")))
+
+
+def _automation_trigger(payload: dict) -> bool:
+    attribution = payload.get("turn_attribution")
+    trigger = attribution.get("turn_trigger") if isinstance(attribution, dict) else None
+    return isinstance(trigger, str) and trigger.startswith(AUTOMATION_TRIGGER)
+
+
+def _content_kinds(payload: dict) -> set[str]:
+    meta = payload.get("internal_chat_message_metadata_passthrough")
+    kinds = meta.get("content_item_kinds") if isinstance(meta, dict) else None
+    return {k for k in kinds if isinstance(k, str)} if isinstance(kinds, list) else set()
 
 
 def describe_call(name: str, payload: dict) -> str:

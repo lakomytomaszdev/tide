@@ -1,0 +1,2 @@
+{"isSidechain":false,"cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-status-idle","type":"user","timestamp":"2026-10-26T11:54:00.000Z","message":{"role":"user","content":"Summarize the diff"}}
+{"isSidechain":false,"cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-status-idle","type":"assistant","timestamp":"2026-10-26T11:55:00.000Z","message":{"role":"assistant","stop_reason":null,"content":[{"type":"text","text":"Summary."}]}}

@@ -57,7 +57,7 @@ class DBusContractTest(unittest.TestCase):
         self.assertGreater(len(over_dbus), 0)
 
     def test_activate_unknown_window_returns_false(self):
-        self.assertIs(self.call("ActivateSession", "claude:c-waiting"), False)
+        self.assertIs(self.call("ActivateSession", "claude:c-done"), False)
         self.assertIs(self.call("ActivateSession", "nie-ma-takiej"), False)
 
     def test_introspection_declares_changed_signal(self):
@@ -96,9 +96,9 @@ class LiveUpdateTest(unittest.TestCase):
             fh.write(json.dumps({"timestamp": "2026-10-26T11:59:58.000Z", "type": "event_msg",
                                  "payload": {"type": "task_complete", "turn_id": "t1"}}) + "\n")
         started = time.time()
-        while time.time() - started < 3 and state() != "waiting":
+        while time.time() - started < 3 and state() != "done":
             time.sleep(0.1)
-        self.assertEqual(state(), "waiting", "stan nie zmienił się w ciągu 3 s")
+        self.assertEqual(state(), "done", "stan nie zmienił się w ciągu 3 s")
 
 
 if __name__ == "__main__":

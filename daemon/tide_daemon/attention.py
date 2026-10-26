@@ -2,11 +2,15 @@
 
 Czysta logika na liście sesji z AgentScanner.sessions() — bez D-Bus i bez Qt, żeby dało się
 ją sprawdzić na fixtures. Wiązanie z magistralą jest w notifications.py i monitor.py.
+
+Liczy się wyłącznie stan „waiting” — agent stoi, dopóki użytkownik nie odpowie (zgoda, pytanie).
+Sesja, która tylko skończyła turę („done”), nie dostaje powiadomienia i nie jest celem Meta+A:
+nic nie blokuje, a skrót, który czasem prowadzi do skończonej rozmowy, przestałby znaczyć
+„ktoś cię potrzebuje”. Do skończonych sesji prowadzi lista w widżecie i KRunner.
 """
 WAITING = "waiting"
 
 REASONS = {
-    "reply": "Skończył i czeka na odpowiedź",
     "question": "Pyta o decyzję",
     "approval": "Czeka na zgodę",
     "permission": "Czeka na zgodę",

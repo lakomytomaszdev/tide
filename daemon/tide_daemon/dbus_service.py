@@ -6,7 +6,8 @@ Obiekt /Agents, interfejs org.tide.Daemon.Agents:
 - Sessions() -> s            lista sesji jako JSON,
 - ActivateSession(s id) -> b przejście do okna sesji, False gdy nie da się go ustalić,
 - ActivateLongestWaiting() -> b  przejście do sesji czekającej najdłużej (skrót Meta+A);
-                             False, gdy nic nie czeka albo okna nie da się ustalić,
+                             False, gdy nic nie czeka albo okna nie da się ustalić; sesje
+                             w stanie „done” (skończona tura) nie są brane pod uwagę,
 - sygnał Changed()           lista sesji się zmieniła — warto pobrać ją ponownie.
 
 Obiekt /Worktrees, interfejs org.tide.Daemon.Worktrees:
