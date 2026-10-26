@@ -172,10 +172,11 @@ def main(argv=None) -> int:
     # KRunner przed główną nazwą: gdy org.tide.Daemon jest już na magistrali, wtyczka też.
     coordination = None if args.no_coordination else start_coordination(app, args, clock, monitor, trees,
                                                                          launchers)
-    krunner = None if args.no_krunner else start_krunner(app, args, clock, monitor, trees,  # noqa: F841
-                                                         coordination)
-    idle = None if args.no_idle else start_idle(app, args)
+    # Raport przed KRunnerem: „raport” w KRunnerze otwiera go przez ReportMonitor (oznacza przeczytany).
     report = start_report(app, args, clock, report_settings, monitor, trees)
+    krunner = None if args.no_krunner else start_krunner(app, args, clock, monitor, trees,  # noqa: F841
+                                                         coordination, report)
+    idle = None if args.no_idle else start_idle(app, args)
     limits = None if args.no_limits else start_limits(app, args, clock)
     tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
     annotators = [a for a in (tasks.annotate if tasks is not None else None,
@@ -296,9 +297,11 @@ def start_report(app, args, clock, settings, monitor, trees):
     from .tabmarks import palette_candidates
 
     notifier = None
+    holder = {}
     if not args.no_notifications:
         from .notifications import ReportNotifier
-        notifier = ReportNotifier(trees.launchers.open_report, parent=app)
+        # „Otwórz” w powiadomieniu idzie przez ReportMonitor, żeby oznaczyć raport jako przeczytany.
+        notifier = ReportNotifier(lambda path: holder["monitor"].open_path(path), parent=app)
 
     def worktree_items():
         # Gotowa lista z obszaru Worktrees (z rozmiarami); przed pierwszym odczytem raport przejrzy repozytoria sam.
@@ -308,11 +311,13 @@ def start_report(app, args, clock, settings, monitor, trees):
     kwargs = {}
     if args.report_delay is not None:
         kwargs["login_delay"] = max(0.0, args.report_delay)
-    return ReportMonitor(settings, root=report_root(args.report_dir), state_file=schedule.state_path(),
-                         palette_paths=palette_candidates(), workspace=args.workspace, claude_root=args.claude_dir,
-                         codex_root=args.codex_dir, max_depth=args.worktree_depth,
-                         sessions=lambda: monitor.sessions, worktrees=worktree_items, notifier=notifier,
-                         clock=clock, coordination_cache=coordination_cache_file(args), parent=app, **kwargs)
+    holder["monitor"] = ReportMonitor(
+        settings, root=report_root(args.report_dir), state_file=schedule.state_path(),
+        palette_paths=palette_candidates(), workspace=args.workspace, claude_root=args.claude_dir,
+        codex_root=args.codex_dir, max_depth=args.worktree_depth, sessions=lambda: monitor.sessions,
+        worktrees=worktree_items, notifier=notifier, clock=clock, coordination_cache=coordination_cache_file(args),
+        opener=trees.launchers.open_report, parent=app, **kwargs)
+    return holder["monitor"]
 
 
 def coordination_cache_file(args) -> str | None:
@@ -419,7 +424,7 @@ def limits_once(clock) -> dict:
     return tracker.snapshot()
 
 
-def start_krunner(app, args, clock, monitor, trees, coordination=None):
+def start_krunner(app, args, clock, monitor, trees, coordination=None, report=None):
     """Wtyczka KRunnera na osobnym połączeniu D-Bus (krunner/service.py). Jej brak nie zatrzymuje usługi."""
     from .krunner import service
     if not service.available():
@@ -434,6 +439,7 @@ def start_krunner(app, args, clock, monitor, trees, coordination=None):
     reports_dir = report_root(args.report_dir)
     core = KRunnerCore(index, lambda: trees.scanner.snapshot(), trees.launchers,
                        report=lambda: latest_index(reports_dir),
+                       open_report=report.open if report is not None else None,
                        live=lambda: monitor.sessions, activate=monitor.activate, clock=clock,
                        codex=monitor.codex_threads(),
                        coordination=(lambda: json.loads(coordination.coordinators_json())) if coordination else None)

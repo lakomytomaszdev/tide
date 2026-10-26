@@ -1,5 +1,7 @@
 """Raport poranny w całej usłudze na prywatnej magistrali: raport przy „logowaniu” (start usługi),
-jedno powiadomienie na dobę z przyciskiem „Otwórz”, /Reports Generate() i Latest(), KRunner „raport”.
+jedno powiadomienie na dobę z przyciskiem „Otwórz”, /Reports Generate() i Latest(), KRunner „raport”;
+przeczytanie: Status(), Open() i sygnał Changed (link „Raport” w widżetach), „Otwórz” w powiadomieniu
+oznacza przeczytany, nowa doba po restarcie usługi — znowu nieprzeczytany.
 
 Usługa dostaje zamrożony zegar (pon. 26.10.2026 07:00 w Warszawie), syntetyczny świat z
 reportfix.py, tymczasowe HOME i XDG_*, atrapy programów (systemd-run, xdg-open tylko zapisują
@@ -35,11 +37,19 @@ class ReportDaemonTest(unittest.TestCase):
         self.addCleanup(self.bus.stop)
         self.bus.spawn([sys.executable, FAKE], NOTIFY)
 
-    def start_daemon(self):
+    def start_daemon(self, now="2026-10-26T06:00:00Z"):
         return self.bus.spawn_daemon(
             "--claude-dir", self.p["claude"], "--codex-dir", self.p["codex"], "--workspace", self.p["work"],
-            "--no-processes", "--no-idle", "--now", "2026-10-26T06:00:00Z", "--report-delay", "0",
+            "--no-processes", "--no-idle", "--now", now, "--report-delay", "0",
             "--report-dir", self.reports, extra_env=self.env)
+
+    def stop_daemon(self, daemon):
+        daemon.terminate()
+        daemon.wait(10)
+        wait_until(lambda: not self.bus.bus.interface().isServiceRegistered(SERVICE).value())
+
+    def status(self):
+        return json.loads(self.call("Status"))
 
     def notifies(self):
         reply = self.bus.call(NOTIFY, NOTIFY_PATH, NOTIFY, "Calls")
@@ -71,6 +81,7 @@ class ReportDaemonTest(unittest.TestCase):
         self.assertEqual(len(opened), 1, calls(self.env))
         self.assertTrue(opened[0].startswith("systemd-run --user --scope"), opened[0])
         self.assertTrue(opened[0].endswith(f"xdg-open {index}"), opened[0])
+        self.assertTrue(wait_until(lambda: not self.status()["unread"]), "„Otwórz” w powiadomieniu → przeczytany")
 
         # Generate() na żądanie: ten sam raport doby, bez drugiego powiadomienia.
         self.assertEqual(self.call("Generate"), index)
@@ -79,7 +90,7 @@ class ReportDaemonTest(unittest.TestCase):
 
         with open(os.path.join(self.bus.tmp, "state", "tide", "report-state.json"), encoding="utf-8") as fh:
             state = json.load(fh)
-        self.assertEqual((state["day"], state["notified"]), (reportfix.DAY, reportfix.DAY))
+        self.assertEqual((state["day"], state["notified"], state["opened"]), (reportfix.DAY, reportfix.DAY, reportfix.DAY))
         self.assertEqual(state["end"] - state["start"], 86400, "pierwszy raport: ostatnia doba")
 
         # Ponowne „logowanie” tego samego dnia: bez nowego raportu i bez powiadomienia.
@@ -89,6 +100,58 @@ class ReportDaemonTest(unittest.TestCase):
         self.start_daemon()
         wait_until(lambda: False, timeout=1.5)
         self.assertEqual(len(self.notifies()), 1, "jedno powiadomienie na dobę")
+
+    def test_status_open_and_changed(self):
+        from PyQt6.QtCore import QObject, pyqtSlot
+
+        changes = []
+
+        class Receiver(QObject):
+            @pyqtSlot()
+            def changed(self):
+                changes.append(True)
+
+        receiver = Receiver()
+        self.assertTrue(self.bus.bus.connect(SERVICE, "/Reports", IFACE, "Changed", receiver.changed))
+        daemon = self.start_daemon()
+        self.assertTrue(wait_until(lambda: self.status()["path"], timeout=20), "raport przy starcie")
+        self.assertTrue(wait_until(lambda: changes), "sygnał Changed po nowym raporcie")
+
+        index = os.path.join(self.reports, reportfix.DAY, "index.html")
+        status = self.status()
+        self.assertEqual(status, {"path": index, "day": reportfix.DAY, "generatedAt": reportfix.NOW, "projects": 2,
+                                  "waiting": 1, "unread": True})
+
+        # Open() z widżetu: xdg-open przez systemd-run, przeczytany, sygnał Changed.
+        changes.clear()
+        self.assertIs(self.call("Open"), True)
+        opened = wait_until(lambda: [c for c in calls(self.env) if "xdg-open" in c])
+        self.assertTrue(opened and opened[0].startswith("systemd-run --user --scope"), calls(self.env))
+        self.assertTrue(opened[0].endswith(f"xdg-open {index}"), opened[0])
+        self.assertFalse(self.status()["unread"])
+        self.assertTrue(wait_until(lambda: changes), "sygnał Changed po przeczytaniu")
+
+        # Następna doba (restart usługi = logowanie): nowy raport, znowu nieprzeczytany.
+        self.stop_daemon(daemon)
+        self.start_daemon(now="2026-10-27T06:00:00Z")
+        self.assertTrue(wait_until(lambda: self.status()["day"] == "2026-10-27", timeout=20))
+        self.assertTrue(self.status()["unread"])
+
+    def test_open_without_report_and_introspection(self):
+        self.env["XDG_CONFIG_HOME"] = os.path.join(self.tmp, "config")
+        os.makedirs(os.path.join(self.env["XDG_CONFIG_HOME"], "tide"), exist_ok=True)
+        with open(os.path.join(self.env["XDG_CONFIG_HOME"], "tide", "report.json"), "w", encoding="utf-8") as fh:
+            json.dump({"enabled": False}, fh)
+        self.start_daemon()
+        self.assertTrue(wait_until(lambda: self.bus.bus.interface().isServiceRegistered(SERVICE).value()))
+        self.assertEqual(self.status(), {"path": "", "day": "", "generatedAt": None, "projects": None,
+                                         "waiting": None, "unread": False})
+        self.assertIs(self.call("Open"), False)
+        self.assertEqual([c for c in calls(self.env) if "xdg-open" in c], [])
+        xml = self.bus.call(SERVICE, "/Reports", "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
+        for piece in ('<method name="Status">', '<method name="Open">', '<signal name="Changed"/>',
+                      '<signal name="Ready">'):
+            self.assertIn(piece, xml)
 
     def test_no_report_option_still_answers_generate(self):
         self.env["XDG_CONFIG_HOME"] = os.path.join(self.tmp, "config")

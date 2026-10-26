@@ -15,7 +15,8 @@ Rodzaje dopasowań (id dopasowania):
   w katalogu sesji,
 - `project:<ścieżka>`  — główny katalog repozytorium z katalogu projektów → Konsole,
 - `worktree:<ścieżka>` — worktree (szukany po gałęzi) → Konsole,
-- `report:latest`      — „raport” (albo „rap”, „raport poranny”) → najnowszy raport poranny w przeglądarce,
+- `report:latest`      — „raport” (albo „rap”, „raport poranny”) → najnowszy raport poranny w przeglądarce
+                        (oznaczony jako przeczytany, jak z widżetu),
 - `sessions:window`    — „sesje” → okno „Tide Sesje” (tablica koordynatorów),
 - `coordination:<id>`  — „sesje <słowa>” → okno „Tide Sesje” z tym koordynatorem (projekt, tytuł, etykieta).
 Akcje dodatkowe: `terminal` (sam katalog w Konsoli, dla sesji) i `rider` (katalog w Riderze).
@@ -61,8 +62,12 @@ HIGH, MODERATE, LOW = 70, 50, 30
 
 class KRunnerCore:
     def __init__(self, index, worktrees, launchers, live=None, activate=None, clock=time.time,
-                 exists=os.path.isdir, home: str | None = None, report=None, codex=None, coordination=None):
+                 exists=os.path.isdir, home: str | None = None, report=None, codex=None, coordination=None,
+                 open_report=None):
         self.report = report or (lambda: "")  # funkcja() → index.html najnowszego raportu porannego
+        # funkcja() → bool: otwarcie najnowszego raportu z oznaczeniem przeczytania (ReportMonitor.open);
+        # bez niej samo xdg-open przez launchers
+        self.open_report = open_report
         self.coordination = coordination      # funkcja() → koordynatorzy (/Coordination Coordinators()) albo None
         self.index = index
         self.worktrees = worktrees
@@ -232,7 +237,11 @@ class KRunnerCore:
     def run(self, match_id: str, action_id: str = "") -> bool:
         if match_id == REPORT_MATCH:
             path = self.report()
-            return bool(path) and self.launchers.open_report(path)
+            if not path:
+                return False
+            if self.open_report is not None:
+                return bool(self.open_report())
+            return self.launchers.open_report(path)
         if match_id == SESSIONS_MATCH:
             return self.launchers.show_sessions("")
         if match_id.startswith("coordination:"):

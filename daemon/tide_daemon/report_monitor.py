@@ -5,8 +5,12 @@
   (gotowe migawki), git i dzienniki czyta wątek roboczy,
 - po raporcie z terminu jedno powiadomienie na dobę „Raport poranny gotowy — N projektów”
   z przyciskiem „Otwórz” (xdg-open index.html); Generate() z D-Bus nie powiadamia,
-- retencja: katalogi starsze niż keepDays znikają po każdym raporcie.
+- retencja: katalogi starsze niż keepDays znikają po każdym raporcie,
+- przeczytanie: Open() z D-Bus (widżety), „Otwórz” w powiadomieniu i KRunner „raport” otwierają
+  raport przez opener (xdg-open przez systemd-run) i oznaczają go jako przeczytany w pliku stanu;
+  każda zmiana (nowy raport, przeczytanie) to sygnał changed — widżety pobierają wtedy Status().
 """
+import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -19,13 +23,14 @@ from .reports import render, schedule
 
 class ReportMonitor(QObject):
     ready = pyqtSignal(str)                  # ścieżka index.html po każdym raporcie
+    changed = pyqtSignal()                   # nowy raport albo zmiana przeczytania (Status())
     _finished = pyqtSignal(object, object)   # (kontekst, Future) — z wątku roboczego do głównego
 
     def __init__(self, settings: schedule.Settings, *, root: str, state_file: str, palette_paths: list[str],
                  workspace: str, claude_root: str, codex_root: str, max_depth: int = 3,
                  sessions=lambda: [], worktrees=lambda: None, notifier=None, clock=time.time,
                  login_delay: float = schedule.LOGIN_DELAY, check_interval: float = schedule.CHECK_INTERVAL,
-                 fetch_limits: bool = True, coordination_cache: str | None = None, parent=None):
+                 fetch_limits: bool = True, coordination_cache: str | None = None, opener=None, parent=None):
         super().__init__(parent)
         self.settings = settings
         self.root = root
@@ -41,6 +46,7 @@ class ReportMonitor(QObject):
         self.clock = clock
         self.fetch_limits = fetch_limits
         self.coordination_cache = coordination_cache  # plik tablicy koordynacji („Plany i tickety”) albo None
+        self.opener = opener            # funkcja(ścieżka index.html) -> bool (xdg-open) albo None
         self.running = False
         self._waiting: list = []        # odpowiedzi Generate() czekające na bieżący raport
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-report")
@@ -63,6 +69,44 @@ class ReportMonitor(QObject):
 
     def latest(self) -> str:
         return schedule.latest_index(self.root)
+
+    def status(self) -> dict:
+        return schedule.status(self.root, schedule.load_state(self.state_file))
+
+    def status_json(self) -> str:
+        return json.dumps(self.status(), ensure_ascii=False)
+
+    def open(self) -> bool:
+        """Najnowszy raport w przeglądarce (D-Bus Open(), KRunner); oznacza go jako przeczytany."""
+        return self.open_path(self.latest())
+
+    def open_path(self, path: str) -> bool:
+        """Raport ze ścieżki (np. z powiadomienia). Przeczytany zostaje tylko wtedy, gdy to
+        najnowszy raport — „Otwórz” w starym powiadomieniu nie gasi kropki przy nowszym."""
+        if not path or self.opener is None:
+            return False
+        try:
+            ok = bool(self.opener(path))
+        except Exception as exc:  # otwarcie przeglądarki nie może położyć usługi
+            print(f"tide-daemon: nie udało się otworzyć raportu: {exc}", flush=True)
+            return False
+        if ok:
+            self._mark_opened(path)
+        return ok
+
+    def _mark_opened(self, path: str) -> None:
+        day = schedule.day_of(path)
+        if not day or os.path.abspath(path) != os.path.abspath(self.latest()):
+            return
+        state = schedule.load_state(self.state_file)
+        if not schedule.mark_opened(state, day):
+            return
+        try:
+            schedule.save_state(self.state_file, state)
+        except OSError as exc:
+            print(f"tide-daemon: raport: nie zapisano stanu: {exc}", flush=True)
+            return
+        self.changed.emit()
 
     def check(self, at_login: bool = False) -> bool:
         """Raport z terminu, jeśli należny. True, gdy właśnie ruszył."""
@@ -117,6 +161,7 @@ class ReportMonitor(QObject):
         if report is not None:
             state = schedule.load_state(self.state_file)
             state.day, state.start, state.end = context["day"], context["start"], context["end"]
+            state.projects, state.waiting = len(report.active), len(report.waiting)
             notify = context["scheduled"] and schedule.should_notify(state, context["day"])
             if notify:
                 state.notified = context["day"]
@@ -128,6 +173,7 @@ class ReportMonitor(QObject):
             if notify and self.notifier is not None:
                 self.notifier.notify(*notification_text(report), index)
             self.ready.emit(index)
+            self.changed.emit()
         for reply in waiting:  # także prośby, które przyszły w trakcie składania
             reply(index)
 
