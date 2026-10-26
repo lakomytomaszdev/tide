@@ -2,7 +2,11 @@
 
 Co wiemy o strukturze (z obserwacji, format nie jest publiczny):
 - pierwsza linia to session_meta: id, cwd, git.branch, originator, source,
-- source z kluczem „subagent” oznacza wątek podagenta albo recenzenta zgód — nie pokazujemy go,
+- source z kluczem „subagent” oznacza wątek podagenta albo recenzenta zgód — nie jest osobną
+  sesją. Podagent uruchomiony przez agenta (subagent.thread_spawn) ma parent_thread_id (także
+  w payload.parent_thread_id), a payload.session_id to id wątku głównego (u podagenta podagenta
+  też główny, nie rodzic). Jego stan liczymy, bo zwija się do rodzica (agents/scanner.py);
+  recenzent zgód (subagent.other = "guardian") i inne rodzaje bez rodzica są pomijane w całości,
 - event_msg/task_started zaczyna turę, task_complete albo turn_aborted ją kończy,
 - turn_context niesie cwd i approval_policy (przy „never” Codex nigdy nie pyta o zgodę),
 - response_item function_call / custom_tool_call to wywołanie narzędzia, a *_output jego wynik
@@ -41,6 +45,9 @@ class CodexLog(SessionLog):
         match = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$", path)
         self.session_id = match.group(1) if match else os.path.basename(path)
         self.originator = ""
+        self.parent_id = ""     # podagent (thread_spawn): id wątku rodzica
+        self.root_hint = ""     # podagent: payload.session_id — id wątku głównego według Codexa
+        self.nickname = ""      # podagent: agent_nickname
 
     def feed(self, record: dict) -> None:
         kind = record.get("type")
@@ -52,7 +59,7 @@ class CodexLog(SessionLog):
         if kind == "session_meta":
             self._meta(payload)
             return
-        if self.hidden:
+        if self.hidden and not self.parent_id:
             return
         self.touch(ts)
 
@@ -99,8 +106,23 @@ class CodexLog(SessionLog):
             self.branch = git["branch"]
         self.originator = str(payload.get("originator") or "")
         source = payload.get("source")
+        # hidden: nie jest osobną sesją (KRunner, worktrees). Podagent z rodzicem i tak jest
+        # czytany — jego stan trafia do karty wątku głównego.
         self.hidden = isinstance(source, dict) and "subagent" in source
+        spawn = _thread_spawn(source)
+        if spawn is not None:
+            self.parent_id = str(spawn.get("parent_thread_id") or payload.get("parent_thread_id") or "")
+            self.nickname = str(spawn.get("agent_nickname") or "")
+            root = payload.get("session_id")
+            self.root_hint = root if isinstance(root, str) and root != self.session_id else ""
         self.touch(parse_ts(payload.get("timestamp")))
+
+
+def _thread_spawn(source) -> dict | None:
+    """source.subagent.thread_spawn albo None (sesja główna, recenzent zgód, inne rodzaje)."""
+    sub = source.get("subagent") if isinstance(source, dict) else None
+    spawn = sub.get("thread_spawn") if isinstance(sub, dict) else None
+    return spawn if isinstance(spawn, dict) else None
 
 
 def _automation_trigger(payload: dict) -> bool:

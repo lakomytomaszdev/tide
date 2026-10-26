@@ -1,7 +1,9 @@
 """Przejście do okna sesji: terminal (albo aplikacja) w łańcuchu przodków procesu agenta.
 
 Ustalanie jest najlepszym możliwym przybliżeniem. Gdy w przodkach nie ma znanego terminala
-ani aplikacji, sesja po prostu nie jest klikalna.
+ani aplikacji, sesja po prostu nie jest klikalna. Wyjątek to Codex Desktop: wątek otwiera
+odnośnik codex://threads/<id> (codex_app.py), a okno aplikacji podnosimy po nazwie procesu
+(app_target), także gdy sesja nie ma procesu.
 
 Aktywacja na Waylandzie idzie przez skrypt KWin ładowany przez D-Bus (org.kde.KWin /Scripting),
 bo zwykła aplikacja nie może podnieść cudzego okna. Dla Konsole najpierw przełączamy kartę
@@ -59,6 +61,20 @@ def target_for(table: ProcessTable, pid: int) -> dict | None:
             "session": env["KONSOLE_DBUS_SESSION"],
         }
     return target
+
+
+def app_target(table: ProcessTable | None, names, label: str) -> dict | None:
+    """Cel aktywacji dla okna aplikacji bez procesu sesji (np. Codex Desktop): główne procesy
+    o podanych nazwach — te, których rodzic nie nazywa się tak samo (Electron ma dziesiątki
+    procesów potomnych, a okno należy do głównego). None, gdy aplikacja nie działa."""
+    if table is None:
+        return None
+    mains = [p for p in table.by_pid.values()
+             if p.name in names and not (table.get(p.ppid) and table.get(p.ppid).name in names)]
+    if not mains:
+        return None
+    mains.sort(key=lambda p: (p.start_time, p.pid))
+    return {"pids": [p.pid for p in mains], "label": label}
 
 
 def kwin_script(pids: list[int], caption_hint: str = "") -> str:

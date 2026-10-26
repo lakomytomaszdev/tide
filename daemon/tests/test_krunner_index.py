@@ -36,6 +36,7 @@ class IndexTest(unittest.TestCase):
             "id": "claude:h-titled", "tool": "claude", "sessionId": "h-titled", "cwd": self.p["alpha"],
             "project": "alpha", "branch": "feat/login", "title": "Login form fix",
             "lastActivity": history.NOW - 3 * 86400 + 60 - 2 * 3600,  # 2026-10-23T10:01Z
+            "desktop": False,
         })
 
     def test_order_is_most_recent_first(self):

@@ -2,11 +2,17 @@
 
 AgentScanner trzyma stan między odczytami (przesunięcia w plikach), więc usługa czyta tylko
 to, co agenci dopisali. Funkcja scan() to jednorazowy przebieg dla testów i trybu --print.
+
+Podagenci Codexa (wątki thread_spawn) nie są osobnymi pozycjami listy: zwijają się do
+najwyższego znanego przodka, który dostaje licznik `subagents` i stan „najpilniejszy” z siebie
+i podagentów (czeka > pracuje > skończył). Podagent, którego rodzica nie znamy (np. wątek
+główny sprzed doby), zostaje osobną pozycją z `subagent: true`. Przejście do sesji z Codex
+Desktop otwiera w aplikacji wątek główny (codex://threads/<id>) — który, pamięta `app_threads`.
 """
 import os
 
 from ..processes import ProcessTable
-from .. import windows
+from .. import codex_app, windows
 from . import gitinfo
 from .claude import ClaudeLog, escape_cwd, read_process_status, status_from
 from .codex import CodexLog
@@ -15,10 +21,14 @@ from .state import DONE, ENDED, IDLE, MAX_AGE, WAITING, WORKING, SessionLog, der
 from .timeutil import iso
 
 STATE_ORDER = {WAITING: 0, WORKING: 1, DONE: 2, IDLE: 3, ENDED: 4}
+MAX_DEPTH = 32  # zabezpieczenie przed pętlą w łańcuchu rodziców
+# Sposób przejścia do sesji (pole activation): wątek w aplikacji albo podniesienie okna.
+DEEPLINK = "deeplink"
+WINDOW = "window"
 
 
 class AgentScanner:
-    def __init__(self, claude_root: str, codex_root: str, max_age: float = MAX_AGE):
+    def __init__(self, claude_root: str, codex_root: str, max_age: float = MAX_AGE, codex_app=None):
         self.claude_projects = os.path.join(claude_root, "projects")
         self.claude_status_dir = os.path.join(claude_root, "sessions")
         self.codex_sessions = os.path.join(codex_root, "sessions")
@@ -26,6 +36,8 @@ class AgentScanner:
         self.logs: dict[str, tuple[SessionLog, JsonlTail]] = {}
         self.claude_status: dict[int, dict] = {}
         self.bound_pids: dict[str, int] = {}  # id sesji → pid z ostatniego sessions()
+        self.codex_app = codex_app             # CodexApp (codex_app.py) albo None — bez odnośników
+        self.app_threads: dict[str, str] = {}  # id sesji → wątek główny do otwarcia w Codex Desktop
 
     # --- pliki -------------------------------------------------------------------------
 
@@ -78,10 +90,14 @@ class AgentScanner:
 
     def sessions(self, now: float, procs: ProcessTable | None = None) -> list[dict]:
         visible = [log for log, _ in self.logs.values()
-                   if not log.hidden and log.last_activity and now - log.last_activity <= self.max_age]
+                   if (not log.hidden or _parent(log)) and log.last_activity
+                   and now - log.last_activity <= self.max_age]
         bindings = self._bind(visible, procs)
+        app_ready = self.codex_app is not None and self.codex_app.available()
+        threads = {log.session_id: log for log in visible if log.tool == "codex"}
         self.bound_pids = {}
-        out = []
+        self.app_threads = {}
+        entries: dict[int, dict] = {}
         for log in visible:
             pid = bindings.get(id(log))
             alive = None if procs is None else pid is not None
@@ -98,9 +114,16 @@ class AgentScanner:
             where = gitinfo.describe(log.cwd, log.branch)
             target = windows.target_for(procs, pid) if procs is not None and pid is not None else None
             sid = f"{log.tool}:{log.session_id}"
+            # Codex Desktop: wątek otwiera aplikacja, także bez procesu sesji (zakończony wątek
+            # da się przeczytać), a okno podnosimy potem tak jak dotąd.
+            desktop = log.tool == "codex" and (codex_app.is_desktop(getattr(log, "originator", ""))
+                                               or bool(target and target["label"] == codex_app.LABEL))
+            deeplink = desktop and app_ready
             if pid is not None and state != ENDED:
                 self.bound_pids[sid] = pid
-            out.append({
+            if deeplink:
+                self.app_threads[sid] = root_thread(log, threads)
+            entries[id(log)] = {
                 "id": sid,
                 "tool": log.tool,
                 "sessionId": log.session_id,
@@ -117,9 +140,14 @@ class AgentScanner:
                 "lastActivityTs": round(log.last_activity, 3),
                 "lastAction": log.last_action,
                 "pid": pid or 0,
-                "canActivate": bool(target) and state != ENDED,
-                "terminal": target["label"] if target else "",
-            })
+                "canActivate": deeplink or (bool(target) and state != ENDED),
+                "terminal": codex_app.LABEL if deeplink else (target["label"] if target else ""),
+                "activation": DEEPLINK if deeplink else (WINDOW if target and state != ENDED else ""),
+                "subagents": 0,
+                "subagent": bool(_parent(log)),
+                "agentNickname": getattr(log, "nickname", ""),
+            }
+        out = _fold_subagents(visible, entries, threads, self.bound_pids, self.app_threads)
         out.sort(key=lambda s: (STATE_ORDER[s["state"]],
                                 s["sinceTs"] if s["state"] == WAITING else -s["lastActivityTs"]))
         return out
@@ -151,8 +179,8 @@ class AgentScanner:
         # Reszta (starsze wersje, Codex bez otwartego pliku): po katalogu roboczym,
         # najświeższa sesja dostaje proces uruchomiony najpóźniej przed jej początkiem.
         for log in sorted(logs, key=lambda l: -l.last_activity):
-            if id(log) in bound:
-                continue
+            if id(log) in bound or _parent(log):
+                continue  # podagent żyje tylko wtedy, gdy proces trzyma jego dziennik
             candidates = [p for p in procs.agents(log.tool)
                           if p.pid not in used and not p.open_files and _same_place(log, p.cwd)
                           and p.start_time <= log.last_activity + 5]
@@ -165,12 +193,83 @@ class AgentScanner:
         return bound
 
 
-def scan(claude_root: str, codex_root: str, now: float, procs: ProcessTable | None = None) -> list[dict]:
+def scan(claude_root: str, codex_root: str, now: float, procs: ProcessTable | None = None,
+         codex_app=None) -> list[dict]:
     """Jednorazowy przebieg: katalogi dzienników → lista sesji ze stanami."""
-    scanner = AgentScanner(claude_root, codex_root)
+    scanner = AgentScanner(claude_root, codex_root, codex_app=codex_app)
     scanner.discover(now)
     scanner.update()
     return scanner.sessions(now, procs)
+
+
+def _parent(log: SessionLog) -> str:
+    """Id wątku rodzica dla podagenta Codexa (thread_spawn), inaczej pusty napis."""
+    return getattr(log, "parent_id", "") or ""
+
+
+def _top_known(log: SessionLog, threads: dict) -> SessionLog:
+    """Najwyższy znany przodek (albo sam log): idziemy po parent_id, dopóki rodzica znamy."""
+    seen = {log.session_id}
+    node = log
+    for _ in range(MAX_DEPTH):
+        parent = threads.get(_parent(node))
+        if parent is None or parent.session_id in seen:
+            break
+        seen.add(parent.session_id)
+        node = parent
+    return node
+
+
+def root_thread(log: SessionLog, threads: dict) -> str:
+    """Wątek główny do otwarcia w aplikacji (wątek podagenta nie ma w niej własnej rozmowy).
+
+    Łańcuch rodziców po znanych sesjach, dowolnej głębokości. Gdy rodzic najwyższego znanego
+    wątku jest nieznany (np. starszy niż doba), bierzemy jego payload.session_id (Codex zapisuje
+    tam id wątku głównego), a bez niego — samego nieznanego rodzica.
+    """
+    top = _top_known(log, threads)
+    if not _parent(top):
+        return top.session_id
+    return getattr(top, "root_hint", "") or _parent(top)
+
+
+def _fold_subagents(logs, entries: dict, threads: dict, bound_pids: dict, app_threads: dict) -> list[dict]:
+    """Zwija podagentów do najwyższego znanego przodka i zwraca pozycje listy.
+
+    Zwinięty podagent nie jest osobnym celem (powiadomienia, Meta+A, karty Konsole) — jego stan
+    niesie pozycja przodka, a przejście prowadzi do wątku głównego.
+    """
+    groups: dict[int, list[dict]] = {}
+    for log in logs:
+        if _parent(log):
+            top = _top_known(log, threads)
+            if top is not log:
+                groups.setdefault(id(top), []).append(entries[id(log)])
+    out = []
+    for log in logs:
+        if _parent(log) and _top_known(log, threads) is not log:
+            sid = entries[id(log)]["id"]
+            bound_pids.pop(sid, None)
+            app_threads.pop(sid, None)
+            continue
+        entry = entries[id(log)]
+        if id(log) in groups:
+            _aggregate(entry, groups[id(log)])
+        out.append(entry)
+    return out
+
+
+def _aggregate(entry: dict, children: list[dict]) -> None:
+    """Pozycja przodka: stan najpilniejszego członka grupy (czeka > pracuje > skończył >
+    bezczynna > zakończona; przy remisie zostaje przodek), z jego powodem, czasem i ostatnią
+    czynnością. `subagents` liczy podagentów, którzy jeszcze działają (stan inny niż ended)."""
+    entry["subagents"] = sum(1 for c in children if c["state"] != ENDED)
+    entry["lastActivityTs"] = max([entry["lastActivityTs"]] + [c["lastActivityTs"] for c in children])
+    entry["lastActivity"] = iso(entry["lastActivityTs"])
+    child = min(children, key=lambda c: (STATE_ORDER[c["state"]], c["sinceTs"] if c["state"] == WAITING else 0))
+    if STATE_ORDER[child["state"]] < STATE_ORDER[entry["state"]]:
+        for key in ("state", "reason", "since", "sinceTs", "lastAction"):
+            entry[key] = child[key]
 
 
 def _same_place(log: SessionLog, cwd: str) -> bool:

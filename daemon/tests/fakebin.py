@@ -48,7 +48,9 @@ FAKES = {"systemctl": SYSTEMCTL, "kpackagetool6": KPACKAGETOOL, "kwriteconfig6":
          # Programy otwierane przez usługę (worktrees, KRunner) — tylko zapis wywołania, żadne okno
          # nie powstaje, a systemd-run nie dotyka prawdziwego menedżera usług użytkownika.
          "systemd-run": LOG_ONLY, "konsole": LOG_ONLY, "rider": LOG_ONLY, "claude": LOG_ONLY, "codex": LOG_ONLY,
-         "xdg-open": LOG_ONLY}
+         "xdg-open": LOG_ONLY,
+         # Codex Desktop — atrapa zamiast prawdziwej aplikacji ChatGPT (odnośnik codex://threads/<id>).
+         "chatgpt": LOG_ONLY}
 
 
 def make_env(tmp: str) -> dict:
@@ -69,6 +71,8 @@ def make_env(tmp: str) -> dict:
         "TIDE_FAKE_LOG": os.path.join(tmp, "calls.log"),
         "PATH": fake + os.pathsep + "/usr/bin:/bin",
         "LANG": os.environ.get("LANG", "C.UTF-8"),
+        # Bez Codex Desktop, chyba że test wskaże własny plik .desktop z atrapą chatgpt.
+        "TIDE_CODEX_DESKTOP": "",
     }
     for key in ("HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
         os.makedirs(env[key], exist_ok=True)

@@ -88,8 +88,11 @@ class PrivateBus:
         # zapisanego przez usługę z pulpitu (tabmarks.default_store).
         # Nieistniejące gniazdo Wayland: usługa testowa nie łączy się z kompozytorem pulpitu
         # (obiekt /Idle zostaje „niedostępny”), chyba że test poda własny (atrapa kompozytora).
+        # Brak Codex Desktop: usługa testowa nigdy nie uruchamia prawdziwej aplikacji ChatGPT
+        # (odnośnik codex://), chyba że test wskaże atrapę pliku .desktop.
         extra_env = {"XDG_STATE_HOME": os.path.join(self.tmp, "state"),
                      "WAYLAND_DISPLAY": os.path.join(self.tmp, "no-wayland"),
+                     "TIDE_CODEX_DESKTOP": "",
                      **(kwargs.pop("extra_env", None) or {})}
         return self.spawn([sys.executable, os.path.join(DAEMON_DIR, "tide-daemon.py"), *args], SERVICE,
                           extra_env=extra_env, **kwargs)

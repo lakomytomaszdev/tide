@@ -2,6 +2,7 @@
 import os
 import tempfile
 import threading
+import types
 import unittest
 
 from . import history
@@ -172,6 +173,23 @@ class CoreTest(unittest.TestCase):
         argv, path = self.launchers.spawned[0]
         self.assertEqual(argv[-3:], [os.path.join(self.fake, "codex"), "resume", U(101)])
         self.assertEqual(path, self.p["beta"])
+
+    def test_codex_desktop_thread_opens_in_the_app(self):
+        opened = []
+        codex = types.SimpleNamespace(available=lambda: True, open_thread=lambda t: opened.append(t) or True)
+        core = KRunnerCore(self.index, lambda: self.trees, self.launchers, live=lambda: self.live,
+                           activate=self.activate, clock=lambda: history.NOW, home=self.home, codex=codex)
+        match = next(m for m in core.match("ai") if m["id"] == f"session:codex:{U(102)}")
+        self.assertTrue(match["properties"]["subtext"].endswith(" · otwórz w Codex"))
+        self.assertTrue(core.run(f"session:codex:{U(102)}", ""))
+        self.assertEqual((opened, self.launchers.spawned), ([U(102)], []))
+        # Codex z wiersza poleceń — wznowienie w Konsoli jak dotąd.
+        self.assertTrue(core.run(f"session:codex:{U(101)}", ""))
+        self.assertEqual((opened, len(self.launchers.spawned)), ([U(102)], 1))
+
+    def test_codex_desktop_without_the_app_resumes_in_konsole(self):
+        self.assertTrue(self.core.run(f"session:codex:{U(102)}", ""))
+        self.assertEqual(self.launchers.spawned[0][0][-3:], [os.path.join(self.fake, "codex"), "resume", U(102)])
 
     def test_run_live_session_activates_its_window(self):
         self.live = [{"id": "claude:h-titled", "state": "working", "canActivate": True}]

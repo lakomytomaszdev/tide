@@ -10,7 +10,7 @@ import time
 
 from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 
-from . import attention, processes, windows
+from . import attention, codex_app, processes, windows
 from .agents import AgentScanner
 
 DEBOUNCE_MS = 250
@@ -67,10 +67,13 @@ class AgentMonitor(QObject):
             self.changed.emit()
 
     def activate(self, session_id: str) -> bool:
-        if not self.use_processes:
-            return False
         procs = self._probe()
         self.scanner.sessions(self.clock(), procs)
+        thread = self.scanner.app_threads.get(session_id)
+        if thread:
+            return self._open_in_app(session_id, thread, procs)
+        if not self.use_processes:
+            return False
         pid = self.scanner.bound_pids.get(session_id)
         target = windows.target_for(procs, pid) if pid else None
         if not target:
@@ -80,6 +83,41 @@ class AgentMonitor(QObject):
         except Exception as exc:  # aktywacja okna nie może położyć usługi
             print(f"tide-daemon: nie udało się przejść do okna: {exc}", flush=True)
             return False
+
+    def codex_threads(self):
+        """Dla KRunnera: wątki Codex Desktop bez żywej sesji (available(), open_thread(id))."""
+        monitor = self
+
+        class Threads:
+            @staticmethod
+            def available() -> bool:
+                return monitor.scanner.codex_app is not None and monitor.scanner.codex_app.available()
+
+            @staticmethod
+            def open_thread(thread_id: str) -> bool:
+                return Threads.available() and monitor._open_in_app(None, thread_id, monitor._probe())
+
+        return Threads()
+
+    def _open_in_app(self, session_id: str | None, thread: str, procs) -> bool:
+        """Codex Desktop: aplikacja przełącza się na wątek (codex://threads/<id>), a potem
+        podnosimy jej okno — samo podniesienie pokazałoby ostatnio oglądaną rozmowę."""
+        try:
+            if not self.scanner.codex_app.open_thread(thread):
+                return False
+        except Exception as exc:  # uruchomienie programu nie może położyć usługi
+            print(f"tide-daemon: nie udało się otworzyć wątku w Codex: {exc}", flush=True)
+            return False
+        pid = self.scanner.bound_pids.get(session_id) if session_id else None
+        target = windows.target_for(procs, pid) if procs is not None and pid else None
+        if not target or target["label"] != codex_app.LABEL:
+            target = windows.app_target(procs, codex_app.WINDOW_PROCESSES, codex_app.LABEL)
+        if target:  # aplikacja nie działała — sama pokaże nowe okno
+            try:
+                windows.activate(target)
+            except Exception as exc:
+                print(f"tide-daemon: nie udało się podnieść okna Codex: {exc}", flush=True)
+        return True
 
     def activate_longest_waiting(self) -> bool:
         """Przejście do sesji czekającej najdłużej (skrót Meta+A). False, gdy nic nie czeka."""

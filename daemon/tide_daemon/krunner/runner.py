@@ -5,11 +5,14 @@ Bez D-Bus i bez Qt — dane przychodzą przez funkcje podane w konstruktorze:
 - worktrees       — funkcja() → lista worktrees jak z /Worktrees List() (projekty to główne katalogi),
 - live            — funkcja() → bieżące sesje obszaru Agents (czy sesja ma otwarte okno),
 - activate        — funkcja(id) → bool: przejście do okna żywej sesji (AgentMonitor.activate),
+- codex           — Codex Desktop: obiekt z available() i open_thread(id) → bool (otwiera wątek
+                    w aplikacji i podnosi jej okno) albo None,
 - launchers       — Launchers: Konsole, Rider, wznowienie sesji.
 
 Rodzaje dopasowań (id dopasowania):
 - `session:<narzędzie>:<id-sesji>` — Uruchom: przejście do okna, jeśli sesja jeszcze działa,
-  inaczej wznowienie w nowym oknie Konsoli w katalogu sesji,
+  wątek z Codex Desktop otwarty w aplikacji, inaczej wznowienie w nowym oknie Konsoli
+  w katalogu sesji,
 - `project:<ścieżka>`  — główny katalog repozytorium z katalogu projektów → Konsole,
 - `worktree:<ścieżka>` — worktree (szukany po gałęzi) → Konsole,
 - `report:latest`      — „raport” (albo „rap”, „raport poranny”) → najnowszy raport poranny w przeglądarce.
@@ -51,13 +54,14 @@ HIGH, MODERATE, LOW = 70, 50, 30
 
 class KRunnerCore:
     def __init__(self, index, worktrees, launchers, live=None, activate=None, clock=time.time,
-                 exists=os.path.isdir, home: str | None = None, report=None):
+                 exists=os.path.isdir, home: str | None = None, report=None, codex=None):
         self.report = report or (lambda: "")  # funkcja() → index.html najnowszego raportu porannego
         self.index = index
         self.worktrees = worktrees
         self.launchers = launchers
         self.live = live or (lambda: [])
         self.activate = activate
+        self.codex = codex
         self.clock = clock
         self.exists = exists
         self.home = (home or os.path.expanduser("~")).rstrip("/")
@@ -99,6 +103,7 @@ class KRunnerCore:
         now = self.clock()
         live = {s.get("id"): s for s in self.live() if s.get("canActivate") and s.get("state") != "ended"}
         actions = [a for a, _t, _i in self.actions()]
+        app = self._app_ready()
         scored = []
         for entry in self.index.entries():
             if not self.exists(entry["cwd"]):
@@ -120,7 +125,9 @@ class KRunnerCore:
             tool = TOOL_NAMES.get(entry["tool"], entry["tool"])
             text = " · ".join(p for p in (tool, entry["project"], entry["title"]) if p)
             sub = [entry["branch"], search.ago_text(entry["lastActivity"], now)]
-            if entry["id"] in live:
+            if entry.get("desktop") and app:
+                sub.append("otwórz w Codex")
+            elif entry["id"] in live:
                 sub.append("przejdź do okna")
             out.append(_match(f"session:{entry['id']}", text, TOOL_ICONS.get(entry["tool"], "utilities-terminal"),
                               _category_relevance(best), relevance, " · ".join(p for p in sub if p),
@@ -157,6 +164,12 @@ class KRunnerCore:
                               sub, CATEGORIES["worktree"], rider))
         return out
 
+    def _app_ready(self) -> bool:
+        try:
+            return bool(self.codex and self.codex.available())
+        except Exception:  # sprawdzenie aplikacji nie może zepsuć wyników KRunnera
+            return False
+
     def _short(self, path: str) -> str:
         if path == self.home or path.startswith(self.home + "/"):
             return "~" + path[len(self.home):]
@@ -192,6 +205,8 @@ class KRunnerCore:
                    for s in self.live())
         if live and self.activate and self.activate(session_id):
             return True  # sesja jeszcze działa — zamiast drugiej kopii przechodzimy do jej okna
+        if entry.get("desktop") and self._app_ready() and self.codex.open_thread(entry["sessionId"]):
+            return True  # wątek aplikacji: rozmowa w Codex Desktop, nie `codex resume` w Konsoli
         return self.launchers.spawn(self.launchers.resume_command(entry["tool"], entry["sessionId"], cwd), cwd)
 
 

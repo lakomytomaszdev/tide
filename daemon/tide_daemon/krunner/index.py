@@ -31,6 +31,7 @@ from ..agents.claude import ClaudeLog
 from ..agents.codex import CodexLog
 from ..agents.jsonl import JsonlTail, read_head
 from ..agents.scanner import _claude_files, _codex_files
+from ..codex_app import is_desktop
 
 HISTORY_AGE = 30 * 24 * 60 * 60
 HEAD_BYTES = 256 * 1024
@@ -213,6 +214,8 @@ class SessionIndex:
             "branch": log.branch or where.branch,
             "title": short_title(title) or entry.prompt,
             "lastActivity": log.last_activity or entry.stamp[1],
+            # Wątek z Codex Desktop — Uruchom otwiera go w aplikacji zamiast `codex resume` w Konsoli.
+            "desktop": log.tool == "codex" and is_desktop(getattr(log, "originator", "")),
         }
 
     def _read_thread_names(self) -> None:

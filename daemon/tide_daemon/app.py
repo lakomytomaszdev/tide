@@ -83,7 +83,9 @@ def main(argv=None) -> int:
             return 2
         clock = lambda: frozen  # noqa: E731
 
-    scanner = AgentScanner(args.claude_dir, args.codex_dir)
+    from .codex_app import CodexApp
+    # Codex Desktop: przejście do sesji otwiera jej wątek w aplikacji (codex://threads/<id>).
+    scanner = AgentScanner(args.claude_dir, args.codex_dir, codex_app=CodexApp())
 
     from .reports import schedule as report_schedule
     try:
@@ -262,7 +264,8 @@ def start_krunner(app, args, clock, monitor, trees):
     reports_dir = report_root(args.report_dir)
     core = KRunnerCore(index, lambda: trees.scanner.snapshot(), trees.launchers,
                        report=lambda: latest_index(reports_dir),
-                       live=lambda: monitor.sessions, activate=monitor.activate, clock=clock)
+                       live=lambda: monitor.sessions, activate=monitor.activate, clock=clock,
+                       codex=monitor.codex_threads())
     try:
         return service.register(core, lambda post: LazyIndex(index, post), app)
     except Exception as exc:  # np. nazwa zajęta — reszta usługi działa dalej
