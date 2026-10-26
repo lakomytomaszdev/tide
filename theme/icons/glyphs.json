@@ -267,6 +267,18 @@
       "color": "teal"
     },
     {
+      "app": "Tide: nowe zadanie",
+      "names": [
+        "tide-new-task"
+      ],
+      "glyph": [
+        {
+          "file": "new-task.svg"
+        }
+      ],
+      "color": "teal"
+    },
+    {
       "app": "Chromium",
       "names": [
         "chromium",

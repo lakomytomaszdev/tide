@@ -1,0 +1,24 @@
+{
+  "KPackageStructure": "KWin/Script",
+  "KPlugin": {
+    "Id": "tide-new-task",
+    "Name": "Tide · Nowe zadanie dla agenta",
+    "Description": "Skrót Meta+Alt+A: okno „Tide: nowe zadanie” (repozytorium, Claude Code albo Codex, polecenie, nowy worktree) przez tide-daemon",
+    "Icon": "list-add",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "EnabledByDefault": false,
+    "Authors": [
+      {
+        "Name": "Tomek"
+      }
+    ]
+  },
+  "X-Plasma-API": "javascript",
+  "X-Plasma-MainScript": "code/main.js",
+  "X-Tide-Shortcut": {
+    "key": "Meta+Alt+A",
+    "action": "TideNewAgentTask",
+    "label": "Tide: nowe zadanie dla agenta"
+  }
+}

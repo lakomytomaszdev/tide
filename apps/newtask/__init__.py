@@ -1,0 +1,1 @@
+"""Okno „Tide: nowe zadanie”."""
