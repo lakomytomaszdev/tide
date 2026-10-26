@@ -1,4 +1,4 @@
-// Widżet System: kafelek z pierścieniami procesora, pamięci i dysku, popup ze szczegółami.
+// Widżet System: kafelek z miernikami procesora, pamięci i dysku (CompactSystem), popup ze szczegółami.
 // Dane: czujniki ksystemstats i pomocnik ../code/sysinfo.py (opis w SystemSource.qml).
 import QtQuick
 import QtQuick.Layouts
@@ -19,10 +19,8 @@ PlasmoidItem {
     Plasmoid.title: "System"
     Plasmoid.icon: "utilities-system-monitor"
     toolTipMainText: "System"
-    toolTipSubText: systemSource.problem === "missing"
-        ? "Zainstaluj pakiet ksystemstats\n" + diskLine()
-        : "Procesor " + Logic.percentText(systemSource.cpuPercent)
-          + " · Pamięć " + Logic.percentText(systemSource.memoryPercent) + "\n" + diskLine()
+    toolTipSubText: Logic.toolTip(systemSource.problem === "missing", systemSource.cpuPercent,
+                                  systemSource.memoryPercent, systemSource.fullerDisk) + "\n" + diskLine()
     preferredRepresentation: compactRepresentation
 
     SystemSource {
@@ -34,33 +32,23 @@ PlasmoidItem {
         id: compact
 
         readonly property bool vertical: Plasmoid.formFactor === PlasmaCore.Types.Vertical
-        // Dock ma ok. 64 px wysokości: pierścień z podpisem mieści się z marginesem.
-        readonly property real ringSize: vertical
-            ? Math.min(Kirigami.Units.gridUnit * 2.2, width * 0.7)
-            : Math.max(Kirigami.Units.iconSizes.small, Math.min(Kirigami.Units.gridUnit * 2.4, height * 0.62))
-
-        Layout.minimumWidth: vertical ? -1 : rings.implicitWidth + Kirigami.Units.smallSpacing * 4
+        Layout.minimumWidth: vertical ? -1 : rings.implicitWidth + rings.dockGap
         Layout.preferredWidth: Layout.minimumWidth
-        Layout.minimumHeight: vertical ? rings.implicitHeight + Kirigami.Units.smallSpacing * 4 : -1
+        Layout.minimumHeight: vertical ? rings.implicitHeight + Kirigami.Units.smallSpacing * 2 : -1
         hoverEnabled: true
         onClicked: root.expanded = !root.expanded
+        Accessible.role: Accessible.Button
+        Accessible.name: rings.Accessible.name
 
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: Kirigami.Units.smallSpacing / 2
-            radius: Tide.Tokens.radiusSmall
-            color: Tide.Tokens.textPrimary
-            opacity: compact.containsMouse || root.expanded ? 0.08 : 0
-            Behavior on opacity { NumberAnimation { duration: Kirigami.Units.shortDuration } }
-        }
-
+        // „System”, pod spodem „CPU 34%  RAM 61%  Dysk 88%” z paskami.
         CompactSystem {
             id: rings
             anchors.centerIn: parent
+            height: compact.vertical ? implicitHeight : Math.min(parent.height, Math.max(implicitHeight, dockHeight))
+            width: compact.vertical ? Math.min(parent.width, implicitWidth) : implicitWidth
             source: systemSource
             vertical: compact.vertical
-            ringSize: compact.ringSize
-            textColor: Kirigami.Theme.textColor
+            active: compact.containsMouse || root.expanded
         }
     }
 

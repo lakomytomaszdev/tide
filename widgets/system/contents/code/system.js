@@ -20,6 +20,15 @@ function percentText(percent) {
     return value === null ? "—" : Math.round(value) + "%"
 }
 
+// Pierwsza linia podpowiedzi kafelka: co pokazują trzy pierścienie. Bez ksystemstats procesor
+// i pamięć nie mają danych, więc zamiast nich jest wskazówka, co doinstalować.
+function toolTip(missingSensors, cpuPercent, memoryPercent, disk) {
+    var diskPart = disk ? "zajęty dysk " + disk.target + " " + percentText(disk.usedPercent) : "dysk —"
+    if (missingSensors) return "Zainstaluj pakiet ksystemstats · " + diskPart
+    return "Obciążenie procesora " + percentText(cpuPercent) + ", zajęta pamięć " + percentText(memoryPercent)
+        + ", " + diskPart
+}
+
 // Partycja z największą zajętością (na kafelek „Dysk”); null bez danych.
 function fullerDisk(disks) {
     var best = null

@@ -39,6 +39,7 @@
   "radius": {
     "small": 9,
     "frame": 10,
+    "tile": 12,
     "bar": 14,
     "card": 18,
     "window": 22,

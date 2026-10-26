@@ -1,7 +1,10 @@
 singleton Tokens 1.0 Tokens.qml
 singleton Theme 1.0 Theme.qml
+singleton Texts 1.0 Texts.qml
 Card 1.0 Card.qml
+DockTile 1.0 DockTile.qml
 MeterBar 1.0 MeterBar.qml
+TileMeter 1.0 TileMeter.qml
 Ring 1.0 Ring.qml
 StateDot 1.0 StateDot.qml
 CountPill 1.0 CountPill.qml

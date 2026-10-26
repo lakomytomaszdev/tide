@@ -28,6 +28,7 @@ class PackageTest(unittest.TestCase):
     def test_package_contains_widget_and_library(self):
         files = files_under(self.pkg)
         for name in ("metadata.json", "contents/ui/main.qml", "contents/ui/SummaryView.qml",
+                     "contents/ui/CompactWorktrees.qml",
                      "contents/ui/tide/qmldir", "contents/ui/tide/Tokens.qml", "contents/ui/tide/DaemonSource.qml"):
             self.assertIn(name, files)
         self.assertNotIn("contents/ui/WorktreesView.qml", files, "lista żyje teraz w oknie Tide Worktrees")

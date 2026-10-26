@@ -1,4 +1,4 @@
-// Widżet agentów: kafelek z liczbą sesji pracujących i czekających, popup z listą sesji.
+// Widżet agentów: kafelek „Agenci · 2 pracują · 1 czeka” (CompactAgents), popup z listą sesji.
 // Dane: tide-daemon przez D-Bus (org.tide.Daemon /Agents, opis w docs/tide-daemon.md).
 import QtQuick
 import QtQuick.Layouts
@@ -33,9 +33,7 @@ PlasmoidItem {
     Plasmoid.icon: "utilities-terminal"
     Plasmoid.status: waitingCount > 0 ? PlasmaCore.Types.NeedsAttentionStatus : PlasmaCore.Types.ActiveStatus
     toolTipMainText: "Sesje agentów"
-    toolTipSubText: source.available
-        ? "Pracuje: " + workingCount + " · Czeka na ciebie: " + waitingCount
-        : "Usługa tide-daemon nie działa"
+    toolTipSubText: Tide.Texts.agentsToolTip(source.available, workingCount, waitingCount)
     preferredRepresentation: compactRepresentation
 
     Tide.DaemonSource {
@@ -58,13 +56,29 @@ PlasmoidItem {
 
         readonly property bool vertical: Plasmoid.formFactor === PlasmaCore.Types.Vertical
 
-        Layout.minimumWidth: vertical ? -1 : counters.implicitWidth + Kirigami.Units.smallSpacing * 2
+        Layout.minimumWidth: vertical ? -1 : tile.implicitWidth + tile.dockGap
         Layout.preferredWidth: Layout.minimumWidth
         Layout.minimumHeight: vertical ? counters.implicitHeight + Kirigami.Units.smallSpacing * 2 : -1
         hoverEnabled: true
         onClicked: root.expanded = !root.expanded
+        Accessible.role: Accessible.Button
+        Accessible.name: "Agenci: " + tile.summary
 
+        // Poziomy dock: kafelek z etykietą i słowami.
+        CompactAgents {
+            id: tile
+            visible: !compact.vertical
+            anchors.centerIn: parent
+            height: Math.min(parent.height, Math.max(implicitHeight, dockHeight))
+            workingCount: root.workingCount
+            waitingCount: root.waitingCount
+            available: source.available
+            active: compact.containsMouse || root.expanded
+        }
+
+        // Pionowy panel: same liczniki z kropkami.
         Rectangle {
+            visible: compact.vertical
             anchors.fill: parent
             anchors.margins: Kirigami.Units.smallSpacing / 2
             radius: Tide.Tokens.radiusSmall
@@ -75,8 +89,9 @@ PlasmoidItem {
 
         Grid {
             id: counters
+            visible: compact.vertical
             anchors.centerIn: parent
-            columns: compact.vertical ? 1 : 2
+            columns: 1
             spacing: Kirigami.Units.smallSpacing
             opacity: source.available ? 1 : 0.45
 

@@ -1,0 +1,92 @@
+// Kafelek agentów w docku: „Agenci”, pod spodem „● 2 pracują · ● 1 czeka”. Kropki w kolorach
+// stanów (teal, brzoskwinia), liczby w Geist Mono, słowa w text.secondary. Bez żywych sesji —
+// wyciszone „brak sesji”. Kafelek jest w tealu, a gdy ktoś czeka na ciebie — w brzoskwini.
+// Bez PlasmoidItem, więc da się go załadować w teście (widgets/tests/test_dock_tiles.py).
+import QtQuick
+import "tide" as Tide
+
+Tide.DockTile {
+    id: tile
+
+    property int workingCount: 0
+    property int waitingCount: 0
+    property bool available: true
+
+    readonly property string summary: available ? Tide.Texts.agentsSummary(workingCount, waitingCount)
+                                                : "usługa nie działa"
+    readonly property bool quiet: !available || (workingCount === 0 && waitingCount === 0)
+
+    label: "Agenci"
+    tint: !available ? Tide.Tokens.textMuted : waitingCount > 0 ? Tide.Tokens.waiting : Tide.Tokens.working
+
+    Row {
+        spacing: 4
+
+        // Pracujące: kropka, liczba, słowo.
+        Tide.StateDot {
+            visible: !tile.quiet && tile.workingCount > 0
+            anchors.verticalCenter: parent.verticalCenter
+            sessionState: "working"
+            size: 7
+        }
+        Text {
+            id: workingNumber
+            visible: !tile.quiet && tile.workingCount > 0
+            text: tile.workingCount
+            color: Tide.Tokens.textPrimary
+            font.family: Tide.Theme.monoFamily
+            font.pointSize: tile.valuePointSize
+            font.weight: Font.DemiBold
+        }
+        Text {
+            visible: workingNumber.visible
+            anchors.baseline: workingNumber.baseline
+            text: Tide.Texts.workingWord(tile.workingCount)
+            color: Tide.Tokens.textSecondary
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: tile.valuePointSize
+        }
+        Text {
+            visible: workingNumber.visible && waitingNumber.visible
+            anchors.baseline: workingNumber.baseline
+            text: "·"
+            color: Tide.Tokens.textMuted
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: tile.valuePointSize
+        }
+
+        // Czekające na ciebie: brzoskwiniowa liczba, bo to one wymagają reakcji.
+        Tide.StateDot {
+            visible: waitingNumber.visible
+            anchors.verticalCenter: parent.verticalCenter
+            sessionState: "waiting"
+            size: 7
+        }
+        Text {
+            id: waitingNumber
+            visible: !tile.quiet && tile.waitingCount > 0
+            text: tile.waitingCount
+            color: Tide.Tokens.waiting
+            font.family: Tide.Theme.monoFamily
+            font.pointSize: tile.valuePointSize
+            font.weight: Font.DemiBold
+        }
+        Text {
+            visible: waitingNumber.visible
+            anchors.baseline: waitingNumber.baseline
+            text: Tide.Texts.waitingWord(tile.waitingCount)
+            color: Tide.Tokens.textSecondary
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: tile.valuePointSize
+        }
+
+        // Brak żywych sesji albo usługa nie działa.
+        Text {
+            visible: tile.quiet
+            text: tile.summary
+            color: Tide.Tokens.textMuted
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: tile.valuePointSize
+        }
+    }
+}

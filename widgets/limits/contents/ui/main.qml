@@ -1,4 +1,4 @@
-// Widżet Limity AI: kafelek z pozostałym procentem ChatGPT i Claude, popup ze szczegółami.
+// Widżet Limity AI: kafelek z pozostałym procentem ChatGPT i Claude (CompactLimits), popup ze szczegółami.
 // Dane: usługa QuotaApp (lokalne API, opis w LimitsSource.qml). Port i token są w
 // ../code/Config.js, generowanym przy instalacji z ~/.config/limity-ai-widget/config.json.
 import QtQuick
@@ -31,7 +31,9 @@ PlasmoidItem {
     Plasmoid.title: "Limity AI"
     Plasmoid.icon: "view-statistics"
     toolTipMainText: "Limity AI"
-    toolTipSubText: limitsSource.available ? services.map(tooltipLine).join("\n") : "Usługa Limity AI nie działa"
+    toolTipSubText: Tide.Texts.limitsToolTip(limitsSource.available, limitsSource.panelValue("chatgpt"),
+                                             limitsSource.panelValue("claude"))
+        + (limitsSource.available ? "\n" + services.map(tooltipLine).join("\n") : "")
     preferredRepresentation: compactRepresentation
 
     // Po otwarciu popupu od razu świeży stan, bez czekania na kolejny cykl.
@@ -49,27 +51,21 @@ PlasmoidItem {
 
         readonly property bool vertical: Plasmoid.formFactor === PlasmaCore.Types.Vertical
 
-        Layout.minimumWidth: vertical ? -1 : limits.implicitWidth + Kirigami.Units.smallSpacing * 4
+        Layout.minimumWidth: vertical ? -1 : limits.implicitWidth + limits.dockGap
         Layout.preferredWidth: Layout.minimumWidth
         Layout.minimumHeight: vertical ? limits.implicitHeight + Kirigami.Units.smallSpacing * 2 : -1
         hoverEnabled: true
         onClicked: root.expanded = !root.expanded
-
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: Kirigami.Units.smallSpacing / 2
-            radius: Tide.Tokens.radiusSmall
-            color: Tide.Tokens.textPrimary
-            opacity: compact.containsMouse || root.expanded ? 0.08 : 0
-            Behavior on opacity { NumberAnimation { duration: Kirigami.Units.shortDuration } }
-        }
+        Accessible.role: Accessible.Button
+        Accessible.name: limits.Accessible.name
 
         CompactLimits {
             id: limits
             anchors.centerIn: parent
+            height: compact.vertical ? implicitHeight : Math.min(parent.height, Math.max(implicitHeight, dockHeight))
             source: limitsSource
-            textColor: Kirigami.Theme.textColor
-            meterWidth: Kirigami.Units.gridUnit * 2.5
+            vertical: compact.vertical
+            active: compact.containsMouse || root.expanded
             opacity: limitsSource.available ? 1 : 0.45
         }
     }
