@@ -155,12 +155,13 @@ class DockScriptTest(unittest.TestCase):
 class SidebarScriptTest(unittest.TestCase):
     HEADER = "org.tide.sidebar"
     WIDGETS = ["org.tide.sidebar", "org.tide.agents", "org.tide.system", "org.tide.worktrees", "org.tide.limits"]
-    LAYOUT = ["sidebar", "agents", "system", "worktrees", "limits"]
+    SPACER = "org.kde.plasma.panelspacer"
+    LAYOUT = ["sidebar", "agents", "system", "worktrees", "limits", "panelspacer"]
 
     def install(self, state, installed=None, shortcut="Meta+S", widgets=None):
         params = {**panels.screens(), "sidebarPanel": (installed or {}).get("sidebar"),
                   "width": PALETTE["size"]["sidebar"], "widgets": self.WIDGETS if widgets is None else widgets,
-                  "header": self.HEADER, "shortcut": shortcut, "floatingGap": 8}
+                  "header": self.HEADER, "shortcut": shortcut, "floatingGap": 8, "spacer": self.SPACER}
         out, state = fake.run(state, panels.script("sidebar", params))
         res = result(out)
         if res["sidebar"] is not None:
@@ -200,6 +201,17 @@ class SidebarScriptTest(unittest.TestCase):
             self.assertEqual(config(bar, type_, "/Configuration/General")["sidebarMode"], "true")
         header = next(w for w in bar["widgets"] if w["type"] == self.HEADER)
         self.assertNotIn("/Configuration/General", header["config"])
+        # Rozciągany odstęp na końcu: kafelki leżą od góry, wolne miejsce zostaje na dole.
+        self.assertEqual(config(bar, self.SPACER, "/General")["expanding"], "true")
+        self.assertNotIn("/Configuration/General", next(w for w in bar["widgets"] if w["type"] == self.SPACER)["config"])
+
+    def test_reinstall_keeps_a_single_spacer_at_the_end(self):
+        res, state = self.install(fake.desktop_like_this_one())
+        res2, state = self.install(state, {"sidebar": res["sidebar"]})
+        bar = find(state, res["sidebar"])
+        self.assertEqual(types(bar).count("panelspacer"), 1)
+        self.assertEqual(types(bar)[-1], "panelspacer")
+        self.assertEqual(res2["order"][-1], res["order"][-1])
 
     def test_header_gets_the_meta_s_shortcut(self):
         res, state = self.install(fake.desktop_like_this_one())
@@ -228,7 +240,7 @@ class SidebarScriptTest(unittest.TestCase):
 
     def test_reinstall_finds_the_panel_by_marker_and_adds_new_widgets(self):
         res, state = self.install(fake.desktop_like_this_one(), widgets=self.WIDGETS[:2])
-        self.assertEqual(types(find(state, res["sidebar"])), ["sidebar", "agents"])
+        self.assertEqual(types(find(state, res["sidebar"])), ["sidebar", "agents", "panelspacer"])
         res2, state = self.install(state)  # bez podpowiedzi identyfikatora
         self.assertEqual(res2["sidebar"], res["sidebar"])
         self.assertEqual(types(find(state, res["sidebar"])), self.LAYOUT)
