@@ -42,10 +42,17 @@ class PaletteTest(unittest.TestCase):
         # Plamy zostają w palecie jako działająca alternatywa.
         self.assertTrue(PALETTE["wallpaper"]["blobs"])
 
-    def test_lock_wake_and_splash_fade_are_short(self):
-        # Przenikanie śpiący → czuwający kot ok. 350–550 ms, wejście ekranu ładowania krótkie.
-        self.assertGreaterEqual(PALETTE["lockscreen"]["wakeMs"], 350)
-        self.assertLessEqual(PALETTE["lockscreen"]["wakeMs"], 550)
+    def test_lock_cat_timings_and_splash_fade(self):
+        # Kot na ekranie blokady: budzenie wyraźnie widoczne (ok. 0,6–1,2 s), zasypianie wolniejsze
+        # i łagodniejsze (do 2,5 s), drzemka po kilku sekundach bezczynności (2–6 s).
+        lock = PALETTE["lockscreen"]
+        self.assertGreaterEqual(lock["wakeMs"], 600)
+        self.assertLessEqual(lock["wakeMs"], 1200)
+        self.assertGreater(lock["sleepMs"], lock["wakeMs"])
+        self.assertLessEqual(lock["sleepMs"], 2500)
+        self.assertGreaterEqual(lock["dozeAfterMs"], 2000)
+        self.assertLessEqual(lock["dozeAfterMs"], 6000)
+        # Wejście ekranu ładowania krótkie.
         self.assertGreater(PALETTE["splash"]["fadeMs"], 0)
         self.assertLessEqual(PALETTE["splash"]["fadeMs"], 550)
 
