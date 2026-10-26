@@ -1,4 +1,4 @@
-"""Widżet worktrees: pakiet z biblioteką, ładowanie komponentów, instalacja i odinstalowanie.
+"""Kafelek worktrees: pakiet z biblioteką, ładowanie komponentów, instalacja i odinstalowanie.
 
 kpackagetool6 jest atrapą (daemon/tests/fakebin.py), HOME i XDG_* są tymczasowe.
 Wygląd QML nie jest testowany automatycznie — tylko to, że komponenty się ładują,
@@ -27,18 +27,19 @@ class PackageTest(unittest.TestCase):
 
     def test_package_contains_widget_and_library(self):
         files = files_under(self.pkg)
-        for name in ("metadata.json", "contents/ui/main.qml", "contents/ui/WorktreeRow.qml",
-                     "contents/ui/WorktreesView.qml", "contents/ui/tide/qmldir", "contents/ui/tide/Tokens.qml", "contents/ui/tide/DaemonSource.qml"):
+        for name in ("metadata.json", "contents/ui/main.qml", "contents/ui/SummaryView.qml",
+                     "contents/ui/tide/qmldir", "contents/ui/tide/Tokens.qml", "contents/ui/tide/DaemonSource.qml"):
             self.assertIn(name, files)
+        self.assertNotIn("contents/ui/WorktreesView.qml", files, "lista żyje teraz w oknie Tide Worktrees")
 
-    def test_ui_says_merged_means_local_main_branch(self):
-        texts = {}
-        for name in ("main.qml", "WorktreesView.qml"):
-            with open(os.path.join(WIDGET_DIR, "contents/ui", name), encoding="utf-8") as fh:
-                texts[name] = fh.read()
-        self.assertIn("scalony z lokalną gałęzią główną", texts["WorktreesView.qml"])
-        self.assertIn("Wyczyść scalone (", texts["WorktreesView.qml"])
-        self.assertIn('"/Worktrees"', texts["main.qml"])
+    def test_tile_opens_window_and_counts_groups(self):
+        with open(os.path.join(WIDGET_DIR, "contents/ui/main.qml"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn('"/Worktrees"', text)
+        self.assertIn('source.call("ShowWindow"', text)
+        self.assertIn('w.group === "clean"', text)
+        self.assertIn('w.group === "active"', text)
+        self.assertNotIn('"Remove"', text, "kafelek niczego nie usuwa — tylko okno, z zaznaczeniem")
 
     def test_qml_has_no_hardcoded_colors(self):
         for dirpath, _dirs, names in os.walk(WIDGET_DIR):
@@ -54,37 +55,11 @@ class PackageTest(unittest.TestCase):
             fh.write("""import QtQuick
 import "tide" as Tide
 Item {
-    WorktreeRow { worktree: ({ repo: "alpha", repoPath: "/r/alpha", path: "/r/alpha-wt/x", name: "x",
-        branch: "feat/x", detached: false, head: "abcdef1", isMain: false, hasAgent: false, dirty: 2,
-        mainBranch: "master", merged: false, unmerged: 3, lastChangeTs: 0, size: 1288490189,
-        locked: false, missing: false, removable: false, blocker: "dirty" }); canRider: true }
+    SummaryView { id: a; width: 320; height: 200; cleanCount: 16; cleanBytes: 19327352832; activeCount: 3
+                  totalCount: 48; problem: "not-installed" }
+    SummaryView { id: b; width: 320; height: 200; available: false }
     Tide.CountPill { tint: Tide.Tokens.positive; count: 4; emphasized: true }
-    WorktreesView {
-        id: view
-        width: 500; height: 700
-        worktrees: [
-            { repo: "alpha", repoPath: "/r/alpha", path: "/r/alpha", name: "alpha", branch: "master",
-              detached: false, head: "1234567", isMain: true, hasAgent: false, dirty: 0, mainBranch: "master",
-              merged: true, unmerged: 0, lastChangeTs: 900, size: 5000000, locked: false, missing: false,
-              removable: false, blocker: "main" },
-            { repo: "alpha", repoPath: "/r/alpha", path: "/r/wt/m", name: "m", branch: "feat/m", detached: false,
-              head: "2345678", isMain: false, hasAgent: false, dirty: 0, mainBranch: "master", merged: true,
-              unmerged: 0, lastChangeTs: 800, size: 2000000, locked: false, missing: false, removable: true,
-              blocker: "" },
-            { repo: "beta", repoPath: "/r/beta", path: "/r/beta-wt/t", name: "t", branch: "", detached: true,
-              head: "3456789", isMain: false, hasAgent: true, dirty: -1, mainBranch: "", merged: false,
-              unmerged: null, lastChangeTs: 0, size: -1, locked: true, missing: true, removable: false,
-              blocker: "missing" }]
-        launchers: ({ terminal: true, rider: true })
-    }
     Component.onCompleted: {
-        for (const state of ["confirm", "running", "done", ""]) {
-            view.cleanup = state
-            view.cleanupResults = [{ path: "/r/wt/m", removed: true, freed: 2000000, branch: "feat/m",
-                                     branchDeleted: false, branchMessage: "gałąź zostaje: x" },
-                                   { path: "/r/x", removed: false, reason: "dirty", message: "ma zmiany" }]
-        }
-        console.warn("VIEW " + view.groups.length + "|" + view.cleanable.length + "|" + view.linked.length)
         const T = Tide.Theme
         const out = [T.formatBytes(1288490189), T.formatBytes(-1), T.formatBytes(512),
                      T.plural(1, "a", "b", "c"), T.plural(3, "a", "b", "c"), T.plural(12, "a", "b", "c"),
@@ -101,7 +76,6 @@ Item {
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
         result = subprocess.run(["qml6", harness], env=env, capture_output=True, text=True, timeout=30)
         log = result.stderr
-        self.assertIn("VIEW 2|1|2", log)
         self.assertIn("SMOKE 1,2 GB|…|512 B|a|b|c|b|teraz|3 dni temu|true|true|true", log)
         problems = [line for line in log.splitlines()
                     if re.search(r"Unable to assign|TypeError|ReferenceError|is not a type|overrides a member", line)]
@@ -124,8 +98,7 @@ class WidgetInstallTest(unittest.TestCase):
         staged = os.path.join(self.env["BUILD_DIR"], "widgets", WIDGET_ID)
         self.assertEqual(calls(self.env), [f"kpackagetool6 -t Plasma/Applet -i {staged}"])
         files = files_under(self.installed)
-        self.assertIn("contents/ui/WorktreeRow.qml", files)
-        self.assertIn("contents/ui/WorktreesView.qml", files)
+        self.assertIn("contents/ui/SummaryView.qml", files)
         self.assertIn("contents/ui/tide/Tokens.qml", files)
 
         self.make("install-widget-worktrees")

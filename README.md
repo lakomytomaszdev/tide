@@ -28,7 +28,8 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `widgets/lib/` | Wspólna biblioteka QML widżetów: karta, miernik, pierścień, wykres słupkowy z historią próbek, kropka i licznik stanu, źródło danych z usługi |
 | `widgets/agents/` | Widżet agentów `org.tide.agents`: liczby sesji w panelu, lista sesji w popupie |
 | `widgets/limits/` | Widżet `org.tide.limits`: pozostałe limity ChatGPT i Claude z usługi QuotaApp |
-| `widgets/worktrees/` | Widżet worktrees `org.tide.worktrees`: liczba worktrees i do sprzątnięcia, lista według repozytoriów, sprzątanie scalonych |
+| `widgets/worktrees/` | Kafelek worktrees `org.tide.worktrees`: ile do sprzątnięcia (i ile GB), ile w pracy; kliknięcie otwiera okno |
+| `apps/worktrees/` | Okno „Tide Worktrees” (QML + PyQt6, plik `.desktop`): grupy W pracy / Do sprzątnięcia / Do decyzji, szukanie, filtry repozytoriów, usuwanie zaznaczonych |
 | `widgets/system/` | Widżet `org.tide.system`: procesor, pamięć, karta graficzna i dyski z czujników ksystemstats |
 | `kwin/` | Skrypt KWin `tide-agent-jump` ze skrótem Meta+A i jego instalator |
 | `krunner/` | Plik wtyczki KRunnera „Tide: agenci i projekty” i jej instalator (wyniki daje tide-daemon) |
@@ -114,10 +115,17 @@ Do sprawdzenia po instalacji: Dolphin, Rider i Firefox na obu monitorach.
 ## Worktrees
 
 ```bash
-make install-daemon install-widget-worktrees
+make install-daemon install-widget-worktrees install-worktrees-window
+make preview-worktrees-window   # zrzut okna na danych z tego komputera (tylko odczyt): build/worktrees-window.png
 ```
 
-Widżet „Tide · Worktrees” pokazuje w kafelku liczbę worktrees (lawenda) i liczbę gotowych do sprzątnięcia (mięta). Popup grupuje je według repozytoriów: teal — pracuje agent, mięta — scalony, masło — zmiany albo niescalone commity. „Scalony” znaczy scalony z **lokalną** gałęzią główną (master, main albo develop) — bez łączenia z serwerem. Przycisk „Wyczyść scalone” najpierw pyta o potwierdzenie i podaje, ile miejsca zwolni; usuwa tylko czyste, scalone worktrees bez agenta, bez `--force`, a gałąź kasuje wyłącznie `git branch -d`. Każdy worktree otwiera się z popupu w Konsoli albo w Riderze. Katalog projektów to `~/DevWorkspace` (zmiana: `TIDE_WORKSPACE` w środowisku usługi albo `--workspace`).
+Kafelek „Tide · Worktrees” w docku pokazuje, ile worktrees można sprzątnąć bez ryzyka i ile to GB (mięta), a pod spodem ile jest w pracy (teal). Kliknięcie otwiera okno **Tide Worktrees** (własna ikona i nazwa w pasku zadań, także w menu aplikacji). Okno dzieli worktrees na trzy grupy:
+
+- **W pracy** (teal) — pracuje w nim agent albo coś zmieniło się w ostatniej dobie; tylko otwieranie w Konsoli albo Riderze,
+- **Do sprzątnięcia** (mięta) — scalone z **lokalną** gałęzią główną (master, main albo develop, bez łączenia z serwerem), bez zmian i bez agenta. Każdy ma pole wyboru; „Usuń zaznaczone” najpierw wymienia dokładnie katalogi i gałęzie, które znikną. Usuwanie bez `--force`, gałąź tylko przez `git branch -d`, a usługa sprawdza każdy worktree jeszcze raz tuż przed usunięciem,
+- **Do decyzji** (masło) — stoją od ponad doby, ale mają niescalone commity albo zmiany; widać dlaczego („4 commity · 3 zmiany”), można je tylko otworzyć. Starsze niż 30 dni są wyciszone.
+
+Wiersz mówi, co to za worktree: narzędzie (Codex, Claude), tytuł z nazwy gałęzi bez prefiksu (`codex/summary-tabs-03-version-axis` → „summary-tabs 03 · version axis”), temat ostatniego commita albo tytuł powiązanej sesji agenta, ostatnią aktywność i rozmiar. Worktrees na gałęzi głównej są w zwiniętej sekcji „Gałęzie główne” i nigdy nie są sprzątane, a wpisy po ręcznie usuniętych katalogach porządkuje przycisk `git worktree prune` przy repozytorium. Katalog projektów to `~/DevWorkspace` (zmiana: `TIDE_WORKSPACE` w środowisku usługi albo `--workspace`).
 
 ## Motyw globalny i ekran blokady
 

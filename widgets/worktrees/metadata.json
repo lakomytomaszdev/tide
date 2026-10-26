@@ -3,11 +3,11 @@
   "KPlugin": {
     "Id": "org.tide.worktrees",
     "Name": "Tide · Worktrees",
-    "Description": "Worktrees z katalogu projektów: agent, zmiany, scalenie z lokalną gałęzią główną i bezpieczne sprzątanie",
+    "Description": "Ile worktrees można bezpiecznie sprzątnąć i ile jest w pracy; kliknięcie otwiera okno Tide Worktrees",
     "Icon": "vcs-branch",
     "Category": "System Information",
     "License": "MIT",
-    "Version": "0.1.0",
+    "Version": "0.2.0",
     "Authors": [{ "Name": "Tomek" }]
   },
   "X-Plasma-API-Minimum-Version": "6.0"

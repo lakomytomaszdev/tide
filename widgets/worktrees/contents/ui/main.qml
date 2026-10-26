@@ -1,9 +1,9 @@
-// Widżet worktrees: kafelek z liczbą worktrees i liczbą do sprzątnięcia, popup z listą
-// pogrupowaną według repozytoriów i sprzątaniem scalonych (z potwierdzeniem).
+// Widżet worktrees: kafelek z podsumowaniem („16 do sprzątnięcia · 18 GB”, ile w pracy).
+// Kliknięcie otwiera okno „Tide Worktrees” (tide-daemon: ShowWindow) — tam jest lista i sprzątanie.
+// Mały popup pojawia się tylko wtedy, gdy okna nie da się otworzyć (nie zainstalowane, usługa stoi).
 // Dane: tide-daemon przez D-Bus (org.tide.Daemon /Worktrees, opis w docs/tide-daemon.md).
 import QtQuick
 import QtQuick.Layouts
-import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.plasmoid
 import org.kde.plasma.core as PlasmaCore
@@ -15,40 +15,21 @@ PlasmoidItem {
     readonly property var worktrees: Array.isArray(source.result) ? source.result : []
     // Liczymy worktrees dodatkowe — główne katalogi repozytoriów to po prostu repozytoria.
     readonly property var linked: worktrees.filter(w => !w.isMain)
-    readonly property var cleanable: worktrees.filter(w => w.removable)
+    readonly property var cleanable: linked.filter(w => w.group === "clean")
+    readonly property var active: linked.filter(w => w.group === "active")
     readonly property real cleanableBytes: cleanable.reduce((sum, w) => sum + Math.max(0, w.size), 0)
-    property var launchers: ({ terminal: true, rider: false })
-    property real nowTs: Date.now() / 1000
-    property bool launchersLoaded: false
+    // Powód, dla którego okno się nie otworzyło ("" gdy otwarte).
+    property string windowProblem: ""
 
-    // Sprzątanie: "" → "confirm" → "running" → "done".
-    property string cleanup: ""
-    property var cleanupResults: []
-
-    function startCleanup() {
-        const paths = cleanable.map(w => w.path)
-        cleanup = "running"
-        source.call("Remove", [paths], function (reply) {
-            if (reply === undefined) {
-                cleanupResults = [{ path: "", removed: false, message: "Brak odpowiedzi usługi — lista odświeży się sama." }]
+    function showWindow() {
+        source.call("ShowWindow", [], function (ok) {
+            if (ok === true) {
+                root.windowProblem = ""
+                root.expanded = false
             } else {
-                try { cleanupResults = JSON.parse(reply) } catch (e) { cleanupResults = [] }
+                root.windowProblem = ok === false ? "not-installed" : "no-service"
+                root.expanded = true
             }
-            cleanup = "done"
-            source.refresh()
-        })
-    }
-
-    function open(path, app) {
-        source.call("Open", [path, app], function (ok) {
-            if (ok) root.expanded = false
-        })
-    }
-
-    function loadLaunchers() {
-        source.call("Launchers", [], function (reply) {
-            if (reply === undefined) return
-            try { root.launchers = JSON.parse(reply) } catch (e) {}
         })
     }
 
@@ -56,15 +37,10 @@ PlasmoidItem {
     Plasmoid.icon: "vcs-branch"
     toolTipMainText: "Worktrees"
     toolTipSubText: source.available
-        ? "Worktrees: " + linked.length + " · do sprzątnięcia: " + cleanable.length
-          + (cleanable.length > 0 ? " (" + Tide.Theme.formatBytes(cleanableBytes) + ")" : "")
+        ? "Do sprzątnięcia: " + cleanable.length + " (" + Tide.Theme.formatBytes(cleanableBytes) + ")"
+          + " · w pracy: " + active.length + " · razem: " + linked.length + "\nKliknij, aby otworzyć okno Worktrees"
         : "Usługa tide-daemon nie działa"
     preferredRepresentation: compactRepresentation
-
-    onExpandedChanged: if (expanded) {
-        source.call("Refresh", [], null)
-        if (cleanup === "done") cleanup = ""
-    }
 
     Tide.DaemonSource {
         id: source
@@ -72,14 +48,6 @@ PlasmoidItem {
         iface: "org.tide.Daemon.Worktrees"
         method: "List"
         pollInterval: 60000
-        onRefreshed: if (!root.launchersLoaded) { root.launchersLoaded = true; root.loadLaunchers() }
-    }
-
-    Timer {
-        interval: 60000
-        running: true
-        repeat: true
-        onTriggered: root.nowTs = Date.now() / 1000
     }
 
     compactRepresentation: MouseArea {
@@ -87,11 +55,13 @@ PlasmoidItem {
 
         readonly property bool vertical: Plasmoid.formFactor === PlasmaCore.Types.Vertical
 
-        Layout.minimumWidth: vertical ? -1 : counters.implicitWidth + Kirigami.Units.smallSpacing * 2
+        Layout.minimumWidth: vertical ? -1 : lines.implicitWidth + Kirigami.Units.smallSpacing * 3
         Layout.preferredWidth: Layout.minimumWidth
-        Layout.minimumHeight: vertical ? counters.implicitHeight + Kirigami.Units.smallSpacing * 2 : -1
+        Layout.minimumHeight: vertical ? pills.implicitHeight + Kirigami.Units.smallSpacing * 2 : -1
         hoverEnabled: true
-        onClicked: root.expanded = !root.expanded
+        onClicked: root.showWindow()
+        Accessible.role: Accessible.Button
+        Accessible.name: "Worktrees: " + root.cleanable.length + " do sprzątnięcia, otwórz okno"
 
         Rectangle {
             anchors.fill: parent
@@ -102,36 +72,93 @@ PlasmoidItem {
             Behavior on opacity { NumberAnimation { duration: Kirigami.Units.shortDuration } }
         }
 
-        Grid {
-            id: counters
+        // Poziomy dock: dwie linie — „16 do sprzątnięcia” i „18 GB · 3 w pracy”.
+        Column {
+            id: lines
             anchors.centerIn: parent
-            columns: compact.vertical ? 1 : 2
-            spacing: Kirigami.Units.smallSpacing
+            visible: !compact.vertical
+            spacing: 1
             opacity: source.available ? 1 : 0.45
 
-            Tide.CountPill {
-                tint: Tide.Tokens.lavender
-                count: root.linked.length
-                textColor: Kirigami.Theme.textColor
+            Row {
+                spacing: 6
+                Tide.StateDot {
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: root.cleanable.length > 0 ? Tide.Tokens.positive : Tide.Tokens.textMuted
+                    size: 7
+                }
+                Text {
+                    id: cleanCount
+                    text: root.cleanable.length
+                    color: root.cleanable.length > 0 ? Tide.Tokens.positive : Kirigami.Theme.textColor
+                    font.family: Tide.Theme.monoFamily
+                    font.pointSize: Tide.Tokens.fontSizePt
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    text: "do sprzątnięcia"
+                    color: Tide.Tokens.textSecondary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt - 1
+                    anchors.baseline: cleanCount.baseline
+                }
             }
+            Row {
+                spacing: 6
+                Text {
+                    text: root.cleanable.length > 0 ? Tide.Theme.formatBytes(root.cleanableBytes) : "—"
+                    color: Tide.Tokens.textSecondary
+                    font.family: Tide.Theme.monoFamily
+                    font.pointSize: Tide.Tokens.fontSizePt - 1
+                }
+                Text {
+                    text: "·"
+                    color: Tide.Tokens.textMuted
+                    font.pointSize: Tide.Tokens.fontSizePt - 1
+                }
+                Tide.StateDot {
+                    anchors.verticalCenter: parent.verticalCenter
+                    sessionState: root.active.some(w => w.hasAgent) ? "working" : ""
+                    color: Tide.Tokens.working
+                    size: 6
+                }
+                Text {
+                    text: root.active.length + " w pracy"
+                    color: Tide.Tokens.textSecondary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt - 1
+                }
+            }
+        }
+
+        // Pionowy panel: same liczniki.
+        Column {
+            id: pills
+            anchors.centerIn: parent
+            visible: compact.vertical
+            spacing: Kirigami.Units.smallSpacing
+            opacity: source.available ? 1 : 0.45
             Tide.CountPill {
                 tint: Tide.Tokens.positive
                 count: root.cleanable.length
                 emphasized: root.cleanable.length > 0
                 textColor: Kirigami.Theme.textColor
             }
+            Tide.CountPill {
+                tint: Tide.Tokens.working
+                count: root.active.length
+                textColor: Kirigami.Theme.textColor
+            }
         }
     }
 
-    fullRepresentation: WorktreesView {
-        worktrees: root.worktrees
+    fullRepresentation: SummaryView {
         available: source.available
-        launchers: root.launchers
-        nowTs: root.nowTs
-        cleanup: root.cleanup
-        cleanupResults: root.cleanupResults
-        onCleanupChangeRequested: state => root.cleanup = state
-        onRemoveRequested: root.startCleanup()
-        onOpenRequested: (path, app) => root.open(path, app)
+        problem: root.windowProblem
+        cleanCount: root.cleanable.length
+        cleanBytes: root.cleanableBytes
+        activeCount: root.active.length
+        totalCount: root.linked.length
+        onRetryRequested: root.showWindow()
     }
 }
