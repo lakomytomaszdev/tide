@@ -22,6 +22,7 @@ Tide.SidebarTile {
     signal moreRequested()
     signal showEndedToggled()
     signal newTaskRequested()
+    signal sessionsRequested(string coordinatorId)   // okno Tide Sesje (pusty id — bez wyboru)
 
     // Wiersze i liczniki — wspólne z popupem kafelka w docku (AgentRows, SessionRows).
     readonly property AgentRows agentRows: AgentRows {
@@ -66,6 +67,7 @@ Tide.SidebarTile {
         visible: tile.rows.length > 0
         rows: tile.rows
         onActivateRequested: id => tile.activateRequested(id)
+        onProgressRequested: id => tile.sessionsRequested(id)
     }
 
     Text {
@@ -80,7 +82,7 @@ Tide.SidebarTile {
 
     RowLayout {
         Layout.fillWidth: true
-        visible: tile.hiddenCount > 0 || tile.endedCount > 0
+        visible: tile.hiddenCount > 0 || tile.endedCount > 0 || tile.agentRows.coordinatorCount > 0
         spacing: 8
 
         Tide.TextButton {
@@ -89,6 +91,14 @@ Tide.SidebarTile {
             text: "+" + tile.hiddenCount + " więcej"
             Accessible.name: "Pokaż wszystkie sesje (" + tile.hiddenCount + " więcej)"
             onClicked: tile.moreRequested()
+        }
+        // Okno Tide Sesje — tylko gdy któraś sesja zleca pracę podagentom (w nagłówku brak miejsca).
+        Tide.TextButton {
+            objectName: "sessionsButton"
+            visible: tile.agentRows.coordinatorCount > 0
+            text: "Sesje"
+            Accessible.name: "Tide Sesje: koordynatorzy, tickety i podagenci"
+            onClicked: tile.sessionsRequested("")
         }
         Item { Layout.fillWidth: true }
         Tide.TextButton {

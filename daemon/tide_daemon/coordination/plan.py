@@ -1,0 +1,222 @@
+"""Plan pracy agentów: docs/agents/plans/YYYY-MM-DD-<slug>.md (standard: docs/agent-plan-standard.md).
+
+Plik ma frontmatter YAML (tylko płaskie pary `klucz: wartość`, więc czytamy go sami, bez
+biblioteki YAML) i tabelę Markdown `| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |`.
+Sekcje pod tabelą to wolny tekst — nie czytamy ich.
+
+Błędy nie przerywają odczytu: zły wiersz trafia do `errors`, a reszta planu działa. Plik bez
+`tide-plan: 1` to nie plan Tide (`parse` zwraca None).
+"""
+import os
+import re
+from dataclasses import dataclass, field
+
+from ..agents.timeutil import parse_ts
+
+PLANS_DIR = os.path.join("docs", "agents", "plans")
+NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+\.md$")
+STATES = ("todo", "w-toku", "review", "czeka", "gotowe", "odrzucone")
+TRACKERS = ("youtrack", "local", "none")
+COORDINATORS = ("claude", "codex")
+STATUSES = ("active", "paused", "done")
+COLUMNS = ("ticket", "tytuł", "stan", "gałąź", "agent", "uwagi")
+# Łagodność dla ręcznie pisanych planów: popularne warianty stanów.
+STATE_ALIASES = {"w toku": "w-toku", "wtoku": "w-toku", "in-progress": "w-toku", "doing": "w-toku",
+                 "done": "gotowe", "todo": "todo", "to-do": "todo", "do zrobienia": "todo",
+                 "rejected": "odrzucone", "waiting": "czeka", "blocked": "czeka"}
+MAX_BYTES = 512 * 1024
+
+
+@dataclass
+class PlanRow:
+    ticket: str
+    title: str
+    state: str
+    branch: str = ""
+    agent: str = ""
+    note: str = ""
+
+
+@dataclass
+class Plan:
+    path: str
+    title: str = ""
+    tracker: str = "none"
+    tracker_url: str = ""
+    tracker_project: str = ""
+    prefix: str = ""
+    coordinator: str = ""
+    session: str = ""
+    status: str = "active"
+    updated: str = ""
+    updated_ts: float = 0.0
+    rows: list = field(default_factory=list)
+    errors: list = field(default_factory=list)
+
+    def to_json(self) -> dict:
+        return {"path": self.path, "title": self.title, "tracker": self.tracker, "trackerUrl": self.tracker_url,
+                "trackerProject": self.tracker_project, "prefix": self.prefix, "coordinator": self.coordinator,
+                "session": self.session, "status": self.status, "updated": self.updated,
+                "updatedTs": round(self.updated_ts, 3), "errors": list(self.errors)}
+
+
+def parse(text: str, path: str = "", mtime: float = 0.0) -> Plan | None:
+    """Plan z tekstu pliku albo None, gdy to nie jest plan Tide (brak `tide-plan: 1`)."""
+    meta, body = _frontmatter(text)
+    if meta is None or str(meta.get("tide-plan", "")).strip() != "1":
+        return None
+    plan = Plan(path=path)
+    plan.title = meta.get("title", "").strip() or os.path.splitext(os.path.basename(path))[0]
+    tracker = meta.get("tracker", "none").strip().lower() or "none"
+    if tracker not in TRACKERS:
+        plan.errors.append(f"nieznany tracker „{tracker}” (youtrack, local, none)")
+        tracker = "none"
+    plan.tracker = tracker
+    plan.tracker_url = meta.get("tracker-url", "").strip().rstrip("/")
+    if plan.tracker_url and not re.match(r"^https?://[^\s/]+", plan.tracker_url):
+        plan.errors.append("tracker-url musi zaczynać się od http:// albo https://")
+        plan.tracker_url = ""
+    plan.tracker_project = meta.get("tracker-project", "").strip()
+    plan.prefix = meta.get("ticket-prefix", "").strip().upper()
+    if plan.prefix and not re.fullmatch(r"[A-Z][A-Z0-9]{0,9}", plan.prefix):
+        plan.errors.append(f"niepoprawny ticket-prefix „{plan.prefix}”")
+        plan.prefix = ""
+    coordinator = meta.get("coordinator", "").strip().lower()
+    if coordinator and coordinator not in COORDINATORS:
+        plan.errors.append(f"nieznany coordinator „{coordinator}” (claude, codex)")
+        coordinator = ""
+    plan.coordinator = coordinator
+    plan.session = meta.get("session", "").strip()
+    status = meta.get("status", "active").strip().lower() or "active"
+    if status not in STATUSES:
+        plan.errors.append(f"nieznany status „{status}” (active, paused, done)")
+        status = "active"
+    plan.status = status
+    plan.updated = meta.get("updated", "").strip()
+    plan.updated_ts = parse_ts(plan.updated) if plan.updated else 0.0
+    if plan.updated and not plan.updated_ts:
+        plan.errors.append(f"niepoprawny czas updated „{plan.updated}” (ISO 8601)")
+    if not plan.updated_ts:
+        plan.updated_ts = mtime
+    if plan.tracker == "youtrack" and not (plan.tracker_url and plan.tracker_project):
+        plan.errors.append("tracker youtrack wymaga tracker-url i tracker-project")
+    plan.rows = _table(body, plan.errors)
+    return plan
+
+
+def read(path: str) -> Plan | None:
+    try:
+        st = os.stat(path)
+        if st.st_size > MAX_BYTES:
+            return None
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return parse(text, path, st.st_mtime)
+
+
+def find_plans(roots) -> list[Plan]:
+    """Plany z docs/agents/plans w podanych katalogach (worktree koordynatora, główne repozytorium)."""
+    out, seen = [], set()
+    for root in roots:
+        folder = os.path.join(root or "", PLANS_DIR)
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            if not NAME_RE.match(name) or name in seen:
+                continue  # ten sam plan w worktree i w głównym katalogu — wygrywa pierwszy (świeższy)
+            plan = read(os.path.join(folder, name))
+            if plan is not None:
+                seen.add(name)
+                out.append(plan)
+    return out
+
+
+def pick(plans: list[Plan], session_id: str, tool: str) -> Plan | None:
+    """Plan koordynatora: wskazany przez `session`, inaczej najświeższy aktywny tego narzędzia."""
+    for plan in plans:
+        if plan.session and session_id and plan.session == session_id:
+            return plan
+    candidates = [p for p in plans if not p.session and p.status != "done"
+                  and (not p.coordinator or p.coordinator == tool)]
+    return max(candidates, key=lambda p: p.updated_ts) if candidates else None
+
+
+# --- wnętrze -----------------------------------------------------------------------------------
+
+def _frontmatter(text: str) -> tuple[dict | None, str]:
+    lines = text.lstrip("﻿").split("\n")
+    if not lines or lines[0].strip() != "---":
+        return None, text
+    meta = {}
+    for i, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            return meta, "\n".join(lines[i + 1:])
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        meta[key.strip().lower()] = _scalar(value)
+    return None, text
+
+
+def _scalar(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    if " #" in value:
+        value = value.split(" #", 1)[0].rstrip()
+    return value
+
+
+def _cells(line: str) -> list[str]:
+    line = line.strip()
+    if line.startswith("|"):
+        line = line[1:]
+    if line.endswith("|") and not line.endswith("\\|"):
+        line = line[:-1]
+    cells = re.split(r"(?<!\\)\|", line)
+    return [c.replace("\\|", "|").strip() for c in cells]
+
+
+def _table(body: str, errors: list) -> list[PlanRow]:
+    lines = body.split("\n")
+    rows: list[PlanRow] = []
+    for i, line in enumerate(lines):
+        if not line.strip().startswith("|"):
+            continue
+        header = [c.lower() for c in _cells(line)]
+        if header[:3] != list(COLUMNS[:3]):
+            continue
+        if header != list(COLUMNS):
+            errors.append("nagłówek tabeli: oczekiwano | Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |")
+        index = {name: header.index(name) for name in COLUMNS if name in header}
+        for raw in lines[i + 2:]:
+            if not raw.strip().startswith("|"):
+                break
+            cells = _cells(raw)
+            get = lambda name: cells[index[name]] if name in index and index[name] < len(cells) else ""  # noqa: E731
+            ticket = _plain(get("ticket"))
+            if not ticket:
+                continue
+            raw_state = _plain(get("stan")).lower()
+            state = STATE_ALIASES.get(raw_state, raw_state)
+            if state not in STATES:
+                errors.append(f"{ticket}: nieznany stan „{raw_state}”")
+                state = ""
+            rows.append(PlanRow(ticket=ticket, title=_plain(get("tytuł")), state=state,
+                                branch=_plain(get("gałąź")), agent=_plain(get("agent")), note=_plain(get("uwagi"))))
+        break
+    return rows
+
+
+def _plain(text: str) -> str:
+    """Komórka bez znaczników kodu i pogrubień: `tom-140-guard` → tom-140-guard."""
+    text = re.sub(r"`([^`]*)`", r"\1", text or "")
+    text = re.sub(r"\*\*([^*]*)\*\*|__([^_]*)__", lambda m: m.group(1) or m.group(2) or "", text)
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    return text.strip()

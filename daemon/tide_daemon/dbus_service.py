@@ -50,6 +50,17 @@ Obiekt /Reports, interfejs org.tide.Daemon.Reports (raport poranny):
 - Latest() -> s              ścieżka index.html najnowszego raportu albo pusty napis,
 - sygnał Ready(s path)       powstał nowy raport.
 
+Obiekt /Coordination, interfejs org.tide.Daemon.Coordination (koordynatorzy, tickety i podagenci):
+- Coordinators() -> s        lista koordynatorów z ostatnich dni jako JSON (z licznikami ticketów),
+- Board(s id) -> s           tablica koordynatora: tickety, ich stan, oś czasu, przebiegi podagentów,
+- RunDetail(s id, s run) -> s  wynik podagenta i wycinek jego dziennika („Pokaż wynik”),
+- Activate(s id) -> b        przejście do koordynatora (okno sesji albo wznowienie w Konsoli),
+- OpenDiff(s id, s ticket) -> b  `git diff <główna>...<gałąź ticketu>` w Konsoli,
+- OpenWorktree(s id, s ticket) -> b  worktree z gałęzią ticketu w Konsoli,
+- ShowWindow(s id) -> b      okno „Tide Sesje” (pusty id — bez wyboru koordynatora),
+- Refresh(b force)           odświeżenie; force pomija pamięć podręczną YouTracka,
+- sygnał Changed()           lista albo któraś tablica się zmieniła.
+
 Obiekt /Limits, interfejs org.tide.Daemon.Limits (prognoza Limitów AI z historii odczytów):
 - Forecast() -> s            JSON {available, error, services: {usługa: {session|weekly: prognoza}}},
 - sygnał Changed()           prognoza albo dostępność usługi Limity AI się zmieniła.
@@ -68,6 +79,8 @@ IDLE_PATH = "/Idle"
 IDLE_IFACE = "org.tide.Daemon.Idle"
 REPORTS_PATH = "/Reports"
 REPORTS_IFACE = "org.tide.Daemon.Reports"
+COORDINATION_PATH = "/Coordination"
+COORDINATION_IFACE = "org.tide.Daemon.Coordination"
 LIMITS_PATH = "/Limits"
 LIMITS_IFACE = "org.tide.Daemon.Limits"
 
@@ -137,6 +150,39 @@ IDLE_XML = f"""<interface name="{IDLE_IFACE}">
   <method name="IsIdle"><arg name="idle" type="b" direction="out"/></method>
   <method name="State"><arg name="json" type="s" direction="out"/></method>
   <signal name="IdleChanged"><arg name="idle" type="b"/></signal>
+</interface>"""
+
+COORDINATION_XML = f"""<interface name="{COORDINATION_IFACE}">
+  <method name="Coordinators"><arg name="json" type="s" direction="out"/></method>
+  <method name="Board">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="RunDetail">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="run" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="Activate">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="ok" type="b" direction="out"/>
+  </method>
+  <method name="OpenDiff">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="ticket" type="s" direction="in"/>
+    <arg name="ok" type="b" direction="out"/>
+  </method>
+  <method name="OpenWorktree">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="ticket" type="s" direction="in"/>
+    <arg name="ok" type="b" direction="out"/>
+  </method>
+  <method name="ShowWindow">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="ok" type="b" direction="out"/>
+  </method>
+  <method name="Refresh"><arg name="force" type="b" direction="in"/></method>
+  <signal name="Changed"/>
 </interface>"""
 
 LIMITS_XML = f"""<interface name="{LIMITS_IFACE}">
@@ -343,8 +389,51 @@ class LimitsAdaptor(QDBusAbstractAdaptor):
         return self.monitor.forecast_json()
 
 
+@pyqtClassInfo("D-Bus Interface", COORDINATION_IFACE)
+@pyqtClassInfo("D-Bus Introspection", COORDINATION_XML)
+class CoordinationAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, monitor):
+        super().__init__(parent)
+        self.monitor = monitor
+        monitor.changed.connect(self.Changed)
+
+    @pyqtSlot(result=str)
+    def Coordinators(self) -> str:
+        return self.monitor.coordinators_json()
+
+    @pyqtSlot(str, result=str)
+    def Board(self, coordinator_id: str) -> str:
+        return self.monitor.board_json(coordinator_id)
+
+    @pyqtSlot(str, str, result=str)
+    def RunDetail(self, coordinator_id: str, run_id: str) -> str:
+        return self.monitor.run_detail_json(coordinator_id, run_id)
+
+    @pyqtSlot(str, result=bool)
+    def Activate(self, coordinator_id: str) -> bool:
+        return self.monitor.activate(coordinator_id)
+
+    @pyqtSlot(str, str, result=bool)
+    def OpenDiff(self, coordinator_id: str, ticket: str) -> bool:
+        return self.monitor.open_diff(coordinator_id, ticket)
+
+    @pyqtSlot(str, str, result=bool)
+    def OpenWorktree(self, coordinator_id: str, ticket: str) -> bool:
+        return self.monitor.open_worktree(coordinator_id, ticket)
+
+    @pyqtSlot(str, result=bool)
+    def ShowWindow(self, coordinator_id: str) -> bool:
+        return self.monitor.show_window(coordinator_id)
+
+    @pyqtSlot(bool)
+    def Refresh(self, force: bool) -> None:
+        self.monitor.refresh(force_tracker=bool(force))
+
+
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
-             limits=None, tasks=None) -> QObject:
+             limits=None, tasks=None, coordination=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -379,6 +468,11 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.limits.adaptor = LimitsAdaptor(holder.limits, limits)
         if not bus.registerObject(LIMITS_PATH, holder.limits):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {LIMITS_PATH}")
+    if coordination is not None:
+        holder.coordination = QObject(holder)
+        holder.coordination.adaptor = CoordinationAdaptor(holder.coordination, coordination)
+        if not bus.registerObject(COORDINATION_PATH, holder.coordination):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {COORDINATION_PATH}")
     if not bus.registerService(SERVICE):
         raise RuntimeError(f"nazwa {SERVICE} jest już zajęta (działa inna kopia usługi?)")
     return holder

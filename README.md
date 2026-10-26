@@ -34,13 +34,14 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `widgets/worktrees/` | Kafelek worktrees `org.tide.worktrees`: ile do sprzątnięcia (i ile GB), ile w pracy; kliknięcie otwiera okno |
 | `widgets/newtask/` | Kafelek „＋ Zadanie · nowe dla agenta” `org.tide.newtask`: otwiera okno nowego zadania |
 | `apps/newtask/` | Okno „Tide: nowe zadanie” (QML + PyQt6, plik `.desktop`, profil Konsoli): repozytorium, Claude Code albo Codex, polecenie, zrzuty ekranu, nowy worktree |
+| `apps/sessions/` | Okno „Tide Sesje” (QML + PyQt6, plik `.desktop`): koordynatorzy, tablica ticketów (Do zrobienia / W toku / Czeka / Review / Gotowe), oś czasu podagentów, wynik podagenta, diff gałęzi, YouTrack |
 | `apps/worktrees/` | Okno „Tide Worktrees” (QML + PyQt6, plik `.desktop`): grupy W pracy / Do sprzątnięcia / Do decyzji, szukanie, filtry repozytoriów, usuwanie zaznaczonych |
 | `widgets/system/` | Widżet `org.tide.system`: procesor, pamięć, karta graficzna i dyski z czujników ksystemstats |
 | `widgets/sidebar/` | Nagłówek paska bocznego `org.tide.sidebar`: „Tide” i skrót Meta+S, który wysuwa pasek |
 | `kwin/` | Skrypty KWin `tide-agent-jump` (Meta+A) i `tide-new-task` (Meta+Alt+A, nowe zadanie) i ich instalator |
 | `krunner/` | Plik wtyczki KRunnera „Tide: agenci i projekty” i jej instalator (wyniki daje tide-daemon) |
 | `mk/` | Cele `make` poszczególnych komponentów (`install-*`, `uninstall-*`, katalogi testów) |
-| `docs/` | Decyzje projektowe, opis usługi |
+| `docs/` | Decyzje projektowe, opis usługi, standard planu pracy agentów (`agent-plan-standard.md`) |
 
 Ekran ładowania jest częścią motywu globalnego (`theme/lookandfeel/splash/`).
 
@@ -66,6 +67,13 @@ make preview-new-task          # zrzut okna na repozytoriach z tego komputera (t
 Zrzuty ekranu zadań zostają w `~/.local/share/tide/tasks/` (agent czyta je stamtąd; `make uninstall` ich nie usuwa). Szczegóły: [docs/tide-daemon.md](docs/tide-daemon.md#nowe-zadanie).
 
 **KRunner.** `make install-daemon install-krunner` dodaje wtyczkę „Tide: agenci i projekty”: po wpisaniu w KRunnerze (Alt+Spacja) nazwy projektu, gałęzi albo fragmentu tytułu rozmowy pokazuje sesje Claude Code i Codexa z ostatnich 30 dni (`Claude · plasma-tide · <tytuł>`, `<gałąź> · 3 dni temu`), projekty z `~/DevWorkspace` i worktrees. Enter wznawia sesję w nowym oknie Konsoli w jej katalogu (albo przenosi do okna, jeśli sesja jeszcze działa), otwiera projekt lub worktree w Konsoli; akcja obok otwiera w Riderze. `ai <słowa>` szuka tylko sesji. Szczegóły: [docs/tide-daemon.md](docs/tide-daemon.md#krunner).
+
+**Tide Sesje: koordynatorzy i tickety.** Sesja, która zleca pracę podagentom (Claude Code przez `Agent`, Codex przez `spawn_agent`), to koordynator. Okno **Tide Sesje** pokazuje koordynatorów z ostatnich 7 dni (z licznikami ticketów), tablicę wybranego — Do zrobienia, W toku, Czeka, Review, Gotowe — z postępem („8 z 13 ticketów gotowych”) i szczegóły ticketu z osią czasu: koordynator zlecił → implementer skończył → review z liczbą BLOCKER/MAJOR/NIT i pierwszym znaleziskiem → poprawki. „Pokaż wynik” otwiera raport podagenta i ostatnie kroki jego pracy (podagenci działają w procesie koordynatora, więc nie ma do czego przechodzić), „Przejdź do koordynatora” — okno jego sesji albo wznowienie w Konsoli, „Diff gałęzi” — `git diff` gałęzi ticketu w Konsoli, „Otwórz w YouTracku” — ticket w przeglądarce. Tickety grupują się po ID z opisu podagenta, gałęzi albo polecenia; stan wynika z pracy podagentów, planu w repozytorium ([standard planu](docs/agent-plan-standard.md): `docs/agents/plans/RRRR-MM-DD-<slug>.md`) i YouTracka (tylko odczyt, token z pliku MCP LogViewera, `~/.config/tide/youtrack.json`). Widżet agentów pokazuje przy koordynatorze „TOM-20 · 8/13” i link „Sesje”, KRunner — słowo „sesje”, a raport poranny — sekcję „Plany i tickety”. Szczegóły: [docs/tide-daemon.md](docs/tide-daemon.md#koordynacja).
+
+```bash
+make install-daemon install-sessions-window install-widget-agents
+make preview-sessions-window SANITIZE=1   # zrzut okna na danych z tego komputera bez treści pracy: build/sessions-window.png
+```
 
 **Raport poranny.** `make install-daemon` (i `install-krunner` dla słowa „raport”): raz na dobę — przy pierwszym logowaniu albo o 07:00, jeśli już jesteś zalogowany — usługa składa w `~/.local/share/tide/reports/RRRR-MM-DD/` stronę HTML na każdy projekt z ruchem (commity po gałęziach, sesje Claude i Codexa z ich ostatnią wiadomością, przebiegi zaplanowanych zadań Codexa, worktrees do sprzątnięcia i z pracą tylko tutaj, zmiany w głównym katalogu) i `index.html` z tym, co czeka na ciebie, kartami projektów i Limitami AI. Przychodzi jedno powiadomienie „Raport poranny gotowy — N projektów” z „Otwórz”. Raport na żądanie: `qdbus6 org.tide.Daemon /Reports org.tide.Daemon.Reports.Generate`. Raporty trzymamy 30 dni; godzina w `~/.config/tide/report.json` (`{"at": "07:00"}`). Wszystko lokalnie, bez wywołań AI. Szczegóły: [docs/tide-daemon.md](docs/tide-daemon.md#raport-poranny).
 

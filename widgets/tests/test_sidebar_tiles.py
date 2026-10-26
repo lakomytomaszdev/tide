@@ -55,6 +55,22 @@ class SidebarTilesTest(unittest.TestCase):
         self.assertEqual((agents["hidden"], agents["ended"]), (0, 1))
         self.assertEqual(agents["summary"], "2 pracują · 1 czeka · 1 gotowa")
 
+    def test_coordinator_row_shows_ticket_progress(self):
+        # Sesja, która zleca pracę podagentom: tide-daemon dopisuje postęp z /Coordination.
+        coordinator = dict(session("claude:k", "working", project="LogViewer"),
+                           coordination={"label": "TOM-20", "done": 8, "total": 13, "text": "TOM-20 · 8/13",
+                                         "working": 3, "waiting": 1, "running": 2})
+        empty = dict(session("claude:e", "done", project="beta"),
+                     coordination={"label": "", "done": 0, "total": 0, "text": "0/0"})
+        result = preview.render_sidebar(scenario(sessions=[coordinator, empty, session("c", "done")]))
+        rows = {r["id"]: r for r in result["agents"]["rows"]}
+        self.assertEqual(rows["claude:k"]["progress"], "TOM-20 · 8/13")
+        self.assertTrue(rows["claude:k"]["coordinator"])
+        self.assertEqual(rows["claude:e"]["progress"], "", "bez ticketów — bez postępu")
+        self.assertEqual(rows["c"]["progress"], "")
+        self.assertFalse(rows["c"]["coordinator"])
+        self.assertLessEqual(result["total"], preview.SIDEBAR_HEIGHT)
+
     def test_waiting_without_a_known_window_has_no_button(self):
         data = scenario(sessions=[session("a", "waiting", can=False), session("b", "done")])
         rows = preview.render_sidebar(data)["agents"]["rows"]

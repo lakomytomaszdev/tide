@@ -19,6 +19,7 @@ QtObject {
     readonly property int workingCount: countOf("working")
     readonly property int waitingCount: countOf("waiting")
     readonly property int doneCount: countOf("done")
+    readonly property int coordinatorCount: live.filter(s => s.coordination).length
     readonly property var ordered: (showEnded ? sessions : live).slice().sort((a, b) => {
         const ra = rankOf(a), rb = rankOf(b)
         return ra !== rb ? ra - rb : sinceOf(b) - sinceOf(a)
@@ -74,7 +75,11 @@ QtObject {
             fresh: s.newTask === true,
             buttonText: deeplink ? Tide.Texts.activateButton(s) : "Przejdź",
             // Pełny tekst przejścia (np. „Przejdź do terminala”) dla czytnika ekranu.
-            activateText: Tide.Texts.activateButton(s)
+            activateText: Tide.Texts.activateButton(s),
+            // Koordynator (sesja, która zleca pracę podagentom): postęp ticketów z /Coordination,
+            // np. „TOM-20 · 8/13” — kliknięcie otwiera okno Tide Sesje.
+            progress: s.coordination && s.coordination.total > 0 ? s.coordination.text : "",
+            coordinator: s.coordination ? true : false
         }
     }
 }
