@@ -31,6 +31,15 @@ QtObject {
         }
     }
 
+    // Poziom pozostałego limitu w procentach: powyżej 40 dobrze, 16–40 uwaga, do 15 mało,
+    // null = brak danych (wyciszony).
+    function levelColor(percent) {
+        if (percent === null || percent === undefined) return Tokens.textMuted
+        if (percent <= 15) return Tokens.negative
+        if (percent <= 40) return Tokens.neutral
+        return Tokens.positive
+    }
+
     // Wyciszenie bezczynnych i zakończonych elementów.
     function stateOpacity(state) {
         return state === "idle" ? 0.62 : state === "ended" ? 0.45 : 1.0

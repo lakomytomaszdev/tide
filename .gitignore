@@ -5,3 +5,4 @@ build/
 dist/
 *.tar.zst
 .claude/
+widgets/*/contents/code/Config.js

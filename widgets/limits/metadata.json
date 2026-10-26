@@ -1,0 +1,15 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.tide.limits",
+    "Name": "Tide · Limity AI",
+    "Description": "Pozostałe limity ChatGPT i Claude z usługi Limity AI (QuotaApp)",
+    "Icon": "view-statistics",
+    "Category": "System Information",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "Authors": [{ "Name": "Tomek" }]
+  },
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "X-Tide-LimityConfig": "contents/code/Config.js"
+}
