@@ -23,6 +23,8 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `theme/sddm/` | Ekran logowania SDDM „tide”: QML, składanie z palety (`build.py`), sprawdzenie przed instalacją (`check.py`, atrapa greetera w `harness/`), zrzut prawdziwego greetera (`greeter_shot.sh`) |
 | `theme/plymouth/` | Ekran startowy systemu, motyw Plymouth „tide”: składanie z palety (`build.py`), logika skryptu (`logic.script`), atrapa modułu script (`harness.py`), sprawdzenie przed instalacją (`check.py`), klatki bez roota (`preview.py`), podgląd na prawdziwym plymouthd (`preview_real.sh`) |
 | `scripts/` | Kopie zapasowe i przywracanie wyglądu (`backup.sh`, `restore.sh`, `paths.sh`), instalatory komponentów (`sddm_system.py` i `plymouth_system.py` to jedyne uruchamiane przez sudo) i synchronizacja kopii powłoki z ekranem blokady (`shell_sync.py`) |
+| `theme/konsole/` | Konsola Tide: kolorystyka (przezroczystość z rozmyciem, znak wodny), profil, arkusz stylów paska kart |
+| `theme/terminal/` | Prompt basha z chipami (`prompt.bash`), motywy bat, delty, btop, lazygit, fzf i LS_COLORS (`generate.py`), pasek statusu Claude Code (`statusline.py`) |
 | `scripts/panels/` | Skrypty plasmashell górnych pasków, docka i paska bocznego (zrzut, instalacja, kolejność, odinstalowanie) |
 | `tools/` | Narzędzia do ikon: `make_tile.py` (kafelek z oryginalnej ikony), `make_tint.py` (eksperyment z przefarbowaniem, odrzucony) |
 | `daemon/` | Usługa `tide-daemon`: sesje agentów, worktrees, raport poranny, bezczynność i prognoza Limitów AI przez D-Bus ([opis i kontrakt](docs/tide-daemon.md)) |
@@ -221,6 +223,34 @@ make splash-preview   # prawdziwy ksplashqml --test w zagnieżdżonym KWinie →
 ```
 
 Licencja: `NOTICE` w motywie (GPL-2.0-or-later, jak ekran Breeze, z którego pochodzi `Splash.qml`).
+
+## Terminal
+
+Konsola, prompt basha i Claude Code w kolorach Tide (#26), wszystko generowane z palety (sekcja `terminal`: rozmiar czcionki, marginesy, znak wodny). Podgląd bez dotykania bieżącej sesji — prawdziwa Konsole w zagnieżdżonym KWinie z tymczasowym domem:
+
+```bash
+make terminal-preview      # build/terminal/preview/konsole-agent.png i konsole-waiting.png
+make terminal-themes       # same pliki promptu i motywów narzędzi w build/terminal
+```
+
+| Cel | Co zmienia | Cofnięcie |
+| --- | --- | --- |
+| `make install-konsole` (część `make install`) | profil „Tide” (Geist Mono, marginesy 18 px, środek, bez paska przewijania, tytuł karty z powłoki `%w`), kolorystyka TideMist (krycie `opacity.panel` z rozmyciem, trzy fale w prawym dolnym rogu), `konsolerc`: arkusz stylów paska kart, wyłączony pasek menu | `make uninstall-konsole` — poprzednie wartości kluczy `konsolerc` |
+| `make install-terminal` (część `make install`) | oznaczony blok w `~/.bashrc` (kopia w `~/.local/state/tide/backups`), który wczytuje `~/.local/share/tide/terminal/tide.bash`; motywy narzędzi tylko dla zainstalowanych | `make uninstall-terminal` — blok znika, `~/.bashrc` wraca do treści sprzed instalacji |
+| `make install-claude-statusline` (osobno) | tylko klucz `statusLine` w `~/.claude/settings.json` (kopia pliku w `~/.local/state/tide/backups`) | `make uninstall-claude-statusline` (też w `make uninstall`) — poprzednia wartość albo brak klucza |
+
+**Pasek kart.** Pigułki jak kafelki Tide (Geist, tło `card`, promień `tile`, aktywna karta z obwódką teal) z arkusza stylów, który Konsole czyta z `konsolerc [TabBar] TabBarUseUserStyleSheet` / `TabBarUserStyleSheetFile` (klucze sprawdzone w Konsole 26.08 i na prawdziwej Konsoli w podglądzie). Karty z agentem oznacza tide-daemon: „● projekt · gałąź” (pracuje, pasek teal pod tytułem), „◆ projekt · gałąź · czeka” (pasek brzoskwiniowy), „○ projekt · gałąź” (skończył, bez koloru). Pozostałe karty pokazują tytuł z promptu: „projekt · gałąź”. Ograniczenia Konsoli: arkusz stylów nie ma selektora pojedynczej karty, więc kropka i słowo „czeka” nie mogą mieć własnego koloru ani karta tła w kolorze stanu — kolor stanu to pasek, który Konsole rysuje pod tytułem (`setTabColor`); arkusz układa pigułkę tak, żeby pasek wypadał pod tekstem. Przezroczyste jest tylko pole terminala (pasek kart i pasek narzędzi mają kolor okna). Paski narzędzi („Nowa karta”, „Podziel widok”) wyłącza się w Konsoli: Ustawienia → Pokaż paski narzędzi — Konsole zapisuje to w binarnym stanie okna, którego nie generujemy.
+
+**Prompt.** Czysty bash (bez starship): chipy projektu (nazwa głównego repozytorium także w worktree), gałęzi, „worktree”, liczby zmian, przed/za i stanu agenta z tide-daemon („● claude pracuje”, „◆ codex czeka”, „○ claude skończył”), godzina po prawej, druga linia „›” (róż po błędzie). Gałąź i worktree czytane z plików `.git`, jedynym procesem jest `git status` z limitem 22 ms (`TIDE_PROMPT_GIT_TIMEOUT`), więc znak zachęty mieści się w 30 ms (zmierzone: 7–20 ms mediany w repozytoriach z `~/DevWorkspace`); gdy git nie zdąży, prompt pokazuje ostatni wynik tego repozytorium albo „±?”. Stan agenta pochodzi z pliku `~/.cache/tide/agents-by-cwd.tsv`, który pisze tide-daemon — bez D-Bus przy każdym znaku zachęty. Geist Mono nie ma zaokrąglonych końcówek powerline, więc chipy to tło z odstępem. `TIDE_PROMPT=off` w `~/.bashrc` przed blokiem wyłącza sam prompt (kolory narzędzi zostają).
+
+**Pasek statusu Claude Code.** `projekt · gałąź · [worktree] · model · sesja ━━━ 63% · tydzień ━━━ 89% · starczy do resetu · kontekst 41%` z JSON-a, który Claude Code podaje skryptowi (`rate_limits`, `context_window`, `workspace`, `model`). Limity pokazują, ile zostało (kolory jak w widżecie Limity AI). Gdy Claude Code nie podaje limitów, skrypt pyta QuotaApp (`GET /status`, najwyżej co 60 s, wynik bez tokenu w `~/.cache/tide/claude-limits.json`). Prognoza: plik `~/.cache/tide/limits-forecast.json` z tide-daemon, gdy powstanie (#24), a do tego czasu tempo zużycia w bieżącym oknie limitu. Codex nie ma polecenia paska statusu (tylko wbudowane pozycje `/statusline` i wybór motywu składni), więc go nie zmieniamy.
+
+**Narzędzia.** `LS_COLORS` i kolory fzf są w `tide.bash`. Motywy bat (`Tide.tmTheme` + `bat cache --build`), delty (cecha „tide” przez `include.path` w `~/.gitconfig`), btop (`~/.config/btop/themes/tide.theme`) i lazygit (`LG_CONFIG_FILE`) instalują się tylko wtedy, gdy narzędzie jest zainstalowane. Żadnego z nich nie ma teraz w systemie. W repozytoriach Ubuntu 24.04 są btop 1.3.0, fzf 0.44.1, bat 0.24.0 (polecenie `batcat`) i git-delta 0.16.5; symulacja dokłada tylko `libgit2-1.7` i `libhttp-parser2.9`, bez Qt i KDE Frameworks. lazygit w repozytoriach nie ma.
+
+```bash
+apt-get -s install btop fzf bat git-delta   # najpierw symulacja
+sudo apt install btop fzf bat git-delta && make install-terminal
+```
 
 ## Kopie zapasowe
 

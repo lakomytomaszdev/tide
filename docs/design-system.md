@@ -104,6 +104,7 @@ Przy zmaksymalizowanym oknie Plasma przykleja pływające panele do krawędzi i 
 - **Ekran blokady:** zegar 96 px i data u góry, pole hasła pośrodku; tło przyciemnione raz (`lockscreen.dim` 0,2). Przy kocie: czuwa tylko przy aktywnym używaniu ekranu — budzi się przenikaniem `lockscreen.wakeMs` (650 ms), po `lockscreen.dozeAfterMs` (3 s) bez działania zasypia wolniej i łagodniej (`lockscreen.sleepMs`, 1100 ms), także przy widocznym formularzu; nie zasypia w trakcie sprawdzania hasła i przy komunikacie o błędzie; bez animacji natychmiast.
 - **Pulpit z kotem:** ten sam kadr monitora i to samo przenikanie co na blokadzie (`lockscreen.wakeMs` / `lockscreen.sleepMs`), ale kot zamyka oczy dopiero po `wallpaper.dozeAfterS` (15 s) bez klawiatury i myszy, a otwiera je przy pierwszym ruchu. Próg dużo dłuższy niż na blokadzie, bo pulpit jest zwykle zasłonięty oknami i widać go w krótkich przerwach — przy 3 s kot mrugałby przy każdym zawahaniu. Bez tide-daemon kot czuwa; bez animacji zmiana natychmiastowa.
 - **Ekran logowania (SDDM):** zegar i data u góry pośrodku, awatar w kole, imię, pole hasła z tealowym przyciskiem, „Zmień użytkownika”; wybór konta jako karty (awatar, imię, nazwa konta, zaznaczenie tealową obwódką) i karta „Inny użytkownik”. Tło przyciemnione raz (`opacity.loginDim` 0,2) i nieruchome przy zmianie widoku.
+- **Terminal (Konsola, #26):** karty jak pigułki kafelków (Geist, tło `card`, promień `tile`, ramka w kolorze tekstu o kryciu `opacity.outline`, aktywna z obwódką teal na tle teal ~0,11); karta agenta „● projekt · gałąź” z paskiem stanu pod tytułem (teal pracuje, brzoskwinia „czeka”, „○” skończył bez koloru). Pole terminala z kryciem `opacity.panel` i rozmyciem, Geist Mono `terminal.fontPt`, margines `terminal.marginPx`, bez paska przewijania i menu, w prawym dolnym rogu trzy fale z kryciem `terminal.watermark.opacity`. Prompt: chipy z tłem pastelu przesuniętym o 84% w stronę tła okna i tekstem w pastelu (projekt na `card`, gałąź lawenda, worktree sky, zmiany masło, agent w kolorze stanu), godzina po prawej, „›” teal (róż po błędzie). Pasek statusu Claude Code tym samym językiem, limity w kolorach poziomu jak w widżecie Limity AI.
 - **Logo „trzy fale”:** fale teal, lawenda, brzoskwinia. Wersja pełna na kafelku `card` (promień 20/64), wersja bez kafelka z grubszymi falami od 18 px, wersja symboliczna jednokolorowa.
 
 ## Ikony
@@ -165,7 +166,7 @@ Alternatywa **`blobs`** (`wallpaper.variant` w palecie): generator `theme/wallpa
 | Wtyczka tapety z drzemiącym kotem | `theme/wallpaper/plugin.py`, `theme/wallpaper/org.tide.cat/`, wspólny `theme/wallpaper/qml/CatBackdrop.qml` |
 | Ikony | `theme/icons/`, `tools/make_tile.py` |
 | Glify aplikacji z docka | `theme/icons/glyphs.json`, `theme/icons/glyphs.py`, `theme/icons/glyphs/` |
-| Konsole | `theme/konsole/generate.py` |
+| Terminal: Konsola, prompt, pasek statusu Claude Code, motywy narzędzi | `theme/konsole/generate.py`, `theme/terminal/` |
 | Widżety i wspólna biblioteka QML | `widgets/`, `widgets/lib/` |
 | Decyzje i ich uzasadnienia | `docs/decisions.md` |
 | Mocki (kanwa) | https://claude.ai/artifact/1h17Au71mmdEX5sNBSaAgC |
