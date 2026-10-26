@@ -17,11 +17,11 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `theme/palette/` | Paleta wariantu w JSON, jedyne źródło kolorów, promieni, przezroczystości i rozmiarów pasków dla generatorów |
 | `theme/wallpaper/` | Generator tapety z palety (jedno płótno na oba monitory) |
 | `theme/plasma/` | Styl Plasmy „Tide” (desktoptheme): generator ramek, podgląd (`preview.py`) i sprawdzenie prawdziwym KSvg (`ksvg_check.py`) |
-| `theme/lookandfeel/` | Motyw globalny „Tide” (`org.tide.desktop`): wskazania na składniki Tide i podglądy |
-| `theme/lockscreen/` | Ekran blokady Tide jako pakiet powłoki Plasmy (QML na bazie ekranu Plasmy 6.8), zrzuty z prawdziwego greetera |
+| `theme/lookandfeel/` | Motyw globalny „Tide” (`org.tide.desktop`): wskazania na składniki Tide, podglądy i ekran ładowania (`splash/`, zrzuty z prawdziwego ksplashqml w `splash_shot.sh`) |
+| `theme/lockscreen/` | Ekran blokady Tide jako pakiet powłoki Plasmy (QML na bazie ekranu Plasmy 6.8), zrzuty z prawdziwego greetera, sprawdzenie kopii powłoki w zagnieżdżonej sesji (`shell_copy_check.sh`) |
 | `theme/icons/` | Nakładka ikon „Tide” i polecenie `tide-icons` (audyt, synchronizacja, podgląd) |
 | `theme/sddm/` | Ekran logowania SDDM „tide”: QML, składanie z palety (`build.py`), sprawdzenie przed instalacją (`check.py`, atrapa greetera w `harness/`), zrzut prawdziwego greetera (`greeter_shot.sh`) |
-| `scripts/` | Kopie zapasowe i przywracanie wyglądu (`backup.sh`, `restore.sh`, `paths.sh`) oraz instalatory komponentów (`sddm_system.py` to jedyny uruchamiany przez sudo) |
+| `scripts/` | Kopie zapasowe i przywracanie wyglądu (`backup.sh`, `restore.sh`, `paths.sh`), instalatory komponentów (`sddm_system.py` to jedyny uruchamiany przez sudo) i synchronizacja kopii powłoki z ekranem blokady (`shell_sync.py`) |
 | `scripts/panels/` | Skrypty plasmashell górnych pasków (zrzut, instalacja, kolejność, odinstalowanie) |
 | `tools/` | Narzędzia do ikon: `make_tile.py` (kafelek z oryginalnej ikony), `make_tint.py` (eksperyment z przefarbowaniem, odrzucony) |
 | `daemon/` | Usługa `tide-daemon`: sesje agentów i worktrees przez D-Bus ([opis i kontrakt](docs/tide-daemon.md)) |
@@ -36,7 +36,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `mk/` | Cele `make` poszczególnych komponentów (`install-*`, `uninstall-*`, katalogi testów) |
 | `docs/` | Decyzje projektowe, opis usługi |
 
-Katalog ekranu ładowania dochodzi razem z kolejnym etapem planu.
+Ekran ładowania jest częścią motywu globalnego (`theme/lookandfeel/splash/`).
 
 ## Agenci AI
 
@@ -135,15 +135,48 @@ Motyw globalny „Tide” (`org.tide.desktop`) spina w Ustawieniach systemowych 
 
 W Ustawieniach systemowych → Motyw globalny można kliknąć „Tide”, ale **nie zaznaczać „Układ pulpitu i okien”**: Plasma kasuje wtedy całą konfigurację paneli (`plasma-org.kde.plasma.desktop-appletsrc`) i ładuje układ Breeze. Ratunek: `make restore NAME=<kopia>` i ponowne `make install`.
 
-**Ekran blokady.** W Plasmie 6.8 greeter (`kscreenlocker_greet`) bierze ekran blokady wyłącznie z pakietu powłoki (`plasma/shells/<powłoka>/contents/lockscreen`), a powłokę wybiera tak samo jak plasmashell (`plasmashellrc [Shell] ShellPackage`, domyślnie `org.kde.plasma.desktop`). Katalog `lockscreen/` w motywie globalnym jest ignorowany, a klucz `kscreenlockerrc [Greeter] Theme` nie istnieje. Dlatego ekran Tide jest osobnym pakietem powłoki `org.tide.desktop`, który ma tylko `lockscreen/`, a resztę bierze z `org.kde.plasma.desktop`. Instalacja kładzie go do `~/.local/share/plasma/shells/`, ale **prawdziwa blokada nadal używa ekranu Plasmy** (już z tapetą, kolorami i czcionkami Tide) — sposób włączenia ekranu Tide czeka na decyzję (docs/decisions.md, punkt 24).
+**Ekran blokady.** W Plasmie 6.8 greeter (`kscreenlocker_greet`) bierze ekran blokady wyłącznie z pakietu powłoki (`plasma/shells/<powłoka>/contents/lockscreen`), a powłokę wybiera tak samo jak plasmashell (`plasmashellrc [Shell] ShellPackage`, domyślnie `org.kde.plasma.desktop`). Katalog `lockscreen/` w motywie globalnym jest ignorowany, a klucz `kscreenlockerrc [Greeter] Theme` nie istnieje. Dlatego ekran Tide powstaje jako pakiet powłoki `org.tide.desktop` z samym `lockscreen/` (do trybu testowego), a prawdziwym ekranem blokady staje się przez **kopię powłoki** (decyzja 27, wariant a): `make install` kopiuje cały systemowy `/usr/share/plasma/shells/org.kde.plasma.desktop` do `~/.local/share/plasma/shells/org.kde.plasma.desktop` i podmienia w nim tylko `contents/lockscreen` na ekran Tide. Pakiet w katalogu domowym wygrywa z systemowym, więc greeter bierze z niego ekran Tide, a plasmashell resztę — identyczną z systemem. Powłoka się nie zmienia (`ShellPackage` zostaje `org.kde.plasma.desktop`), więc panele i plik `plasma-org.kde.plasma.desktop-appletsrc` też nie.
 
 ```bash
 make lockscreen-screenshot   # zrzut prawdziwego greetera w zagnieżdżonym KWin, bez ekranu → build/lockscreen.png
 make lockscreen-test         # greeter w trybie testowym jako okno (XWayland); hasło zamyka okno
+make lockscreen-shell-check  # kopia powłoki w zagnieżdżonej sesji: plasmashell i greeter → build/lockscreen-shell-check
+make shell-sync-status       # czy kopia powłoki jest włączona i jak skończyła się ostatnia synchronizacja
 make lookandfeel-build       # sam motyw globalny w build/lookandfeel
 ```
 
+**Synchronizacja kopii.** Po aktualizacji Plasmy plasmashell czytałby starą kopię, dlatego jednostka użytkownika `tide-shell-sync.service` (oneshot) uruchamia przy każdym logowaniu `~/.local/share/tide/shell-sync.py` — kopię skryptu `scripts/shell_sync.py`. Jednostka jest `WantedBy=plasma-workspace.target` i `Before=plasma-plasmashell.service`: startplasma uruchamia `plasma-workspace-wayland.target`, które wymaga `plasma-workspace.target`, a ono `plasma-core.target` z plasmashell, więc to jedna transakcja systemd i plasmashell czeka na koniec synchronizacji (sam plasmashell nie jest uporządkowany po `graphical-session-pre.target`, stąd jawne `Before=`). Skrypt liczy odcisk SHA-256 plików pakietu systemowego i ekranu Tide; gdy zgadza się z odciskiem zapisanym w kopii (`tide-shell-copy.json`), kończy się po ok. 40 ms. Gdy nie, składa nową kopię poza `plasma/shells/`, sprawdza ją prawdziwym greeterem (`kscreenlocker_greet --testing --shell`, poza ekranem, bez magistrali sesji, ok. 2 s) i dopiero wtedy podmienia. Gdy ekran Tide się nie wczyta, **usuwa kopię w całości** i zostaje ekran Plasmy z systemu; kolejna próba dopiero po następnej zmianie (aktualizacja Plasmy albo `make install`). Stan ostatniej decyzji: `~/.local/state/tide/shell-sync.json`, log: `journalctl --user -u tide-shell-sync`. `make uninstall` wyłącza jednostkę i usuwa ją razem z kopią, skryptem i stanem.
+
+**Ryzyka kopii powłoki.**
+
+- Plasmashell czyta z kopii cały pakiet powłoki, nie tylko ekran blokady. Gdyby kopia była niezgodna z systemem (np. Plasma zaktualizowana bez ponownego logowania, a potem restart samego plasmashell), pulpit może działać na plikach starszej wersji do następnego logowania. Synchronizacja działa tylko przy logowaniu; po aktualizacji Plasmy najlepiej się wylogować.
+- Sesja uruchamiana bez systemd (`startkderc [General] systemdBoot=false`) nie uruchomi jednostki — wtedy kopia nie odświeży się sama.
+- Sprawdzenie w greeterze wykrywa błędy wczytania QML, ale nie błędy, które wyjdą dopiero przy wpisywaniu hasła. Gdy ekran Tide się zepsuje w trakcie blokady, greeter sam przechodzi na awaryjny ekran KDE.
+- Po zmianie odcisku synchronizacja opóźnia start plasmashell o ok. 2 s (raz po każdej aktualizacji Plasmy). Gdy coś pójdzie nie tak, jednostka nie blokuje plasmashell (bez `Requires=`), a przy nieoczekiwanym błędzie skrypt usuwa kopię.
+- Kopii, której nie zrobił Tide (bez `tide-shell-copy.json`), skrypt nie rusza.
+- Kopia trafia też do kopii zapasowych (`.local/share/plasma`). Przywrócona stara kopia ma inny odcisk, więc przy następnym logowaniu jest odbudowywana.
+
+**Ratunek.** Gdy ekran blokady albo pulpit nie działa przez kopię powłoki: usunięcie katalogu przywraca ekran i powłokę Plasmy z systemu, a synchronizacja respektuje to usunięcie (nie odtworzy kopii aż do kolejnego `make install`).
+
+```bash
+rm -r ~/.local/share/plasma/shells/org.kde.plasma.desktop
+```
+
+Jeśli ekran jest zablokowany i nie da się odblokować: Ctrl+Alt+F3, zalogowanie w konsoli tekstowej, polecenie wyżej, potem `loginctl unlock-session <numer>` (numer sesji graficznej z `loginctl list-sessions`) i powrót Ctrl+Alt+F2 (albo F1). Pełne wyłączenie: `make uninstall-lookandfeel` albo `systemctl --user disable tide-shell-sync.service`.
+
 Wygląd z makiety: przyciemniona tapeta Mist (rozmyta przy widocznym polu hasła), zegar Geist 96 px i data („poniedziałek, 26 października”) w górnej części, logo „trzy fale”, nazwa użytkownika i pole hasła na karcie z tealową obwódką, na dole klawiatura, uśpienie i zmiana użytkownika jako same ikony. Linia „2 agenci pracują · 1 czeka” pochodzi z tide-daemon przez D-Bus sesji (greeter działa jako użytkownik i dziedziczy magistralę po KWin); pokazuje tylko liczby, bez nazw projektów, i znika, gdy usługi nie ma albo nikt nie pracuje. Gdy QML ekranu Tide się nie wczyta, greeter sam pokazuje awaryjny ekran KDE (sprawdzane w testach). Licencja i pochodzenie plików: `NOTICE` w pakiecie (GPL-2.0-or-later, jak ekran Plasmy).
+
+## Ekran ładowania
+
+Po zalogowaniu `ksplashqml` pokazuje ekran Tide z motywu globalnego (`contents/splash`): tapeta Mist przyciemniona kolorem pulpitu (przyciemnienie liczone przy składaniu pakietu, żeby gradient nie robił pasm), pośrodku pełne logo „trzy fale”, pod nim cienki tealowy pasek postępu (wymiary z sekcji `splash` palety, promień `radius.small` ograniczony do połowy wysokości paska), logo delikatnie „oddycha”, a całość wchodzi przenikaniem. QML to przerobiony ekran Breeze z tym samym API etapów: ksplashqml ustawia `stage` na 1…6 i kończy pracę po szóstym, więc pasek pokazuje `stage / 6`. Gdy w Ustawieniach wyłączono animacje, nic nie pulsuje. Ekran nie wydłuża startu: ksplashqml znika, gdy sesja jest gotowa, a obrazy wczytują się asynchronicznie.
+
+`make install` zapisuje `ksplashrc [KSplash] Theme=org.tide.desktop` (poprzednia wartość w `lookandfeel-previous.json`), `make uninstall` przywraca poprzedni ekran, jeśli nadal wybrany jest Tide. Ekran działa też w podglądzie Ustawień systemowych → Ekran powitalny.
+
+```bash
+make splash-preview   # prawdziwy ksplashqml --test w zagnieżdżonym KWinie → build/splash/splash-*.png
+```
+
+Licencja: `NOTICE` w motywie (GPL-2.0-or-later, jak ekran Breeze, z którego pochodzi `Splash.qml`).
 
 ## Kopie zapasowe
 

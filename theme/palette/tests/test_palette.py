@@ -29,6 +29,14 @@ class PaletteTest(unittest.TestCase):
         self.assertLess(opacity["popup"], opacity["withoutBlur"])
         self.assertLess(opacity["border"], 0.2)
 
+    def test_splash_bar_is_thin_and_background_dimmed(self):
+        splash = PALETTE["splash"]
+        self.assertLessEqual(splash["barHeight"], 6)  # „cienki pasek”, jak mierniki (4–6 px)
+        self.assertLess(splash["barHeight"], splash["barWidth"])
+        self.assertGreater(splash["dim"], 0)
+        self.assertLess(splash["dim"], 1)
+        self.assertGreater(splash["pulseMs"], 0)
+
     def test_shadow_is_soft(self):
         self.assertGreater(PALETTE["shadow"]["size"], 0)
         self.assertLessEqual(PALETTE["shadow"]["opacity"], 0.5)
