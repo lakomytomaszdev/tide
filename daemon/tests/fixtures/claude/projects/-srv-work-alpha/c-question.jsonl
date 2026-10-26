@@ -1,0 +1,2 @@
+{"type":"user","isSidechain":false,"timestamp":"2026-10-26T11:59:00.000Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-question","message":{"role":"user","content":"Plan the refactor"}}
+{"type":"assistant","isSidechain":false,"timestamp":"2026-10-26T11:59:58.000Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-question","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_q1","name":"AskUserQuestion","input":{"questions":[]}}]}}

@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.tide.agents",
+    "Name": "Tide · Agenci",
+    "Description": "Sesje Claude Code i Codexa: które pracują, a które czekają na ciebie",
+    "Icon": "utilities-terminal",
+    "Category": "System Information",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "Authors": [{ "Name": "Tomek" }]
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

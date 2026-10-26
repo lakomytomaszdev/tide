@@ -1,0 +1,2 @@
+{"timestamp":"2026-10-26T11:56:00.000Z","type":"session_meta","payload":{"id":"0000000a-0000-4000-8000-000000000005","timestamp":"2026-10-26T11:56:00.000Z","cwd":"/srv/work/epsilon","originator":"Codex Desktop","source":{"subagent":{"thread_spawn":{"parent_thread_id":"0000000a-0000-4000-8000-000000000004"}}},"git":{"branch":"main","commit_hash":"0000000"}}}
+{"timestamp":"2026-10-26T11:59:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}

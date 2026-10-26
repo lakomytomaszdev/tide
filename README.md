@@ -17,9 +17,23 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `theme/palette/` | Paleta wariantu w JSON, jedyne źródło kolorów dla generatorów |
 | `scripts/` | Kopie zapasowe i przywracanie wyglądu (`backup.sh`, `restore.sh`, `paths.sh`) |
 | `tools/` | Narzędzia do ikon: `make_tile.py` (kafelek z oryginalnej ikony), `make_tint.py` (eksperyment z przefarbowaniem, odrzucony) |
-| `docs/` | Decyzje projektowe |
+| `daemon/` | Usługa `tide-daemon`: sesje agentów przez D-Bus ([opis i kontrakt](docs/tide-daemon.md)) |
+| `widgets/lib/` | Wspólna biblioteka QML widżetów: karta, miernik, pierścień, kropka i licznik stanu, źródło danych z usługi |
+| `widgets/agents/` | Widżet agentów `org.tide.agents`: liczby sesji w panelu, lista sesji w popupie |
+| `mk/` | Cele `make` poszczególnych komponentów (`install-*`, `uninstall-*`, katalogi testów) |
+| `docs/` | Decyzje projektowe, opis usługi |
 
-Katalogi motywu (kolory, styl Plasmy, dekoracja okien, ikony, ekran blokady, SDDM), widżetów i usługi `tide-daemon` dochodzą razem z kolejnymi etapami planu.
+Katalogi motywu (kolory, styl Plasmy, dekoracja okien, ikony, ekran blokady, SDDM) dochodzą razem z kolejnymi etapami planu.
+
+## Agenci AI
+
+```bash
+make install-daemon install-widget-agents   # usługa i widżet (bez kopii zapasowej wyglądu)
+make install                                # wszystko, najpierw kopia zapasowa
+make test                                   # testy wszystkich komponentów
+```
+
+Widżet „Tide · Agenci” dodaje się do panelu z listy widżetów. Po aktualizacji już dodanego widżetu Plasma wczyta nowy kod dopiero po `systemctl --user restart plasma-plasmashell`. Kolory biblioteki QML są generowane z palety przy składaniu pakietu (`widgets/stage.py` → `Tokens.qml`).
 
 ## Kopie zapasowe
 

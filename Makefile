@@ -1,6 +1,8 @@
 .PHONY: help backup backups restore install uninstall test pre-install-backup
 
 NAME ?=
+# Fragmenty w mk/ definiują własne cele — bez tego pierwszym celem byłaby instalacja komponentu.
+.DEFAULT_GOAL := help
 
 # Każdy komponent dopisuje swoje cele w mk/<komponent>.mk:
 #   INSTALL_TARGETS += install-<komponent>

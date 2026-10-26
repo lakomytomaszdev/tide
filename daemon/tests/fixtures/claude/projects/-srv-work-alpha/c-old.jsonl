@@ -1,0 +1,2 @@
+{"type":"user","isSidechain":false,"timestamp":"2026-10-24T08:00:00.000Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-old","message":{"role":"user","content":"Old question"}}
+{"type":"assistant","isSidechain":false,"timestamp":"2026-10-24T08:01:00.000Z","cwd":"/srv/work/alpha","gitBranch":"main","sessionId":"c-old","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Old answer."}]}}

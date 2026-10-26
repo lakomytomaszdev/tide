@@ -35,6 +35,9 @@ Ustalenia z sesji projektowej (grilling) z 26.10.2026. Każda decyzja ma krótki
 17. **Usprawnienia:** skrót i powiadomienie „przejdź do czekającego agenta”, kolor okna według stanu agenta (najpierw prototyp, bo nie wiadomo, czy reguły KWin da się przełączać w locie), KRunner z sesjami i projektami. Tryb skupienia trafia na listę „później”.
 18. **Worktrees:** tylko dane lokalne, bez `git fetch` i bez VPN. Sprzątanie zawsze z potwierdzeniem, bez `--force`, a gałąź jest kasowana tylko po scaleniu.
 
+19. **Stan sesji agentów (26.10.2026, #9).** Claude Code sam zapisuje stan działającego procesu w `~/.claude/sessions/<pid>.json` (`busy`, `waiting`, `idle`), także czekanie na zgodę — to główne źródło, a dziennik jest zapasowym. Codex nie zapisuje próśb o zgodę, więc wnioskujemy o nich z wywołania narzędzia bez wyniku po 10 s, bez nowego procesu potomnego i przy `approval_policy` innym niż `never`. Sesja czekająca ponad 30 min jest bezczynna, sesje bez wpisu od doby pomijamy. Oba formaty są nieudokumentowane, więc parsery ignorują nieznane wpisy, a testy opierają się na syntetycznych dziennikach.
+20. **Biblioteka QML w każdym pakiecie.** Plasma instaluje widżety jako osobne pakiety, więc `widgets/lib` jest dołączana do każdego z nich przy składaniu (`widgets/stage.py`), razem z `Tokens.qml` wygenerowanym z palety. Singleton nazywa się `Tokens`, bo `Palette` koliduje z typem wbudowanym w QtQuick.
+
 ## Później
 
 - Tryb skupienia.
