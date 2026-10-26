@@ -15,7 +15,9 @@ Rodzaje dopasowań (id dopasowania):
   w katalogu sesji,
 - `project:<ścieżka>`  — główny katalog repozytorium z katalogu projektów → Konsole,
 - `worktree:<ścieżka>` — worktree (szukany po gałęzi) → Konsole,
-- `report:latest`      — „raport” (albo „rap”, „raport poranny”) → najnowszy raport poranny w przeglądarce.
+- `report:latest`      — „raport” (albo „rap”, „raport poranny”) → najnowszy raport poranny w przeglądarce,
+- `sessions:window`    — „sesje” → okno „Tide Sesje” (tablica koordynatorów),
+- `coordination:<id>`  — „sesje <słowa>” → okno „Tide Sesje” z tym koordynatorem (projekt, tytuł, etykieta).
 Akcje dodatkowe: `terminal` (sam katalog w Konsoli, dla sesji) i `rider` (katalog w Riderze).
 
 Zapytanie zaczynające się od „ai ” pokazuje tylko sesje. Zwykłe zapytanie ma co najmniej
@@ -39,7 +41,12 @@ TOOL_NAMES = {"claude": "Claude", "codex": "Codex"}
 TOOL_ICONS = {"claude": "utilities-terminal", "codex": "openai"}
 PROJECT_ICON = "folder-git"
 WORKTREE_ICON = "vcs-branch"
-CATEGORIES = {"session": "Sesje agentów", "project": "Projekty", "worktree": "Worktrees", "report": "Raport poranny"}
+CATEGORIES = {"session": "Sesje agentów", "project": "Projekty", "worktree": "Worktrees", "report": "Raport poranny",
+              "coordination": "Tide Sesje"}
+SESSIONS_KEYWORD = "sesje"
+SESSIONS_MATCH = "sessions:window"
+SESSIONS_ICON = "tide-sessions"
+COORDINATION_LIMIT = 6
 REPORT_KEYWORD = "raport poranny"
 REPORT_MATCH = "report:latest"
 REPORT_ICON = "view-calendar-day"
@@ -54,8 +61,9 @@ HIGH, MODERATE, LOW = 70, 50, 30
 
 class KRunnerCore:
     def __init__(self, index, worktrees, launchers, live=None, activate=None, clock=time.time,
-                 exists=os.path.isdir, home: str | None = None, report=None, codex=None):
+                 exists=os.path.isdir, home: str | None = None, report=None, codex=None, coordination=None):
         self.report = report or (lambda: "")  # funkcja() → index.html najnowszego raportu porannego
+        self.coordination = coordination      # funkcja() → koordynatorzy (/Coordination Coordinators()) albo None
         self.index = index
         self.worktrees = worktrees
         self.launchers = launchers
@@ -84,7 +92,51 @@ class KRunnerCore:
         if len(query) < MIN_QUERY:
             return []
         report = self._report(query)
-        return report + self._sessions(words, LIMITS["session"]) + self._projects(words) + self._worktrees(words)
+        board = self._coordination(words)
+        return report + board + self._sessions(words, LIMITS["session"]) + self._projects(words) + self._worktrees(words)
+
+    def _coordination(self, words) -> list[dict]:
+        """„sesje” (od 3 liter) → okno Tide Sesje; „sesje <słowa>” → koordynatorzy, w których słowa trafiają."""
+        if self.coordination is None or not words or not SESSIONS_KEYWORD.startswith(words[0]):
+            return []
+        if not getattr(self.launchers, "sessions_window", ""):
+            return []
+        try:
+            items = list(self.coordination() or [])
+        except Exception:  # lista koordynatorów nie może zepsuć KRunnera
+            items = []
+        rest = words[1:]
+        exact = words[0] == SESSIONS_KEYWORD
+        out = []
+        if not rest:
+            live = sum(1 for c in items if c.get("live"))
+            sub = f"Koordynatorzy, tickety i podagenci · {len(items)} z ostatnich dni" + (f", {live} działa" if live else "")
+            out.append(_match(SESSIONS_MATCH, "Tide Sesje", SESSIONS_ICON, HIGH if exact else MODERATE,
+                              1.0 if exact else 0.8, sub, CATEGORIES["coordination"], []))
+        scored = []
+        for item in items:
+            fields = [(search.fold(item.get("project")), 1.0), (search.fold(item.get("title")), 0.9),
+                      (search.fold(item.get("label")), 1.0), (search.fold(item.get("branch")), 0.8)]
+            if rest:
+                hit = search.score(rest, fields)
+                if not hit:
+                    continue
+                scored.append((hit[0], item))
+            else:
+                scored.append((0.6 if item.get("live") else 0.4, item))
+        scored.sort(key=lambda s: (-s[0], -(s[1].get("lastActivityTs") or 0)))
+        for value, item in scored[:COORDINATION_LIMIT]:
+            counts = item.get("counts") or {}
+            bits = [(item.get("progress") or {}).get("text", "")]
+            if counts.get("czeka"):
+                bits.append(f"{counts['czeka']} czeka")
+            if counts.get("w-toku") or counts.get("review"):
+                bits.append(f"{counts.get('w-toku', 0) + counts.get('review', 0)} w toku")
+            bits.append(search.ago_text(item.get("lastActivityTs") or 0, self.clock()))
+            text = " · ".join(p for p in ("Sesje", item.get("project"), item.get("title")) if p)
+            out.append(_match(f"coordination:{item.get('id')}", text, SESSIONS_ICON, MODERATE, value,
+                              " · ".join(b for b in bits if b), CATEGORIES["coordination"], []))
+        return out
 
     def _report(self, query: str) -> list[dict]:
         """„raport” (albo jego początek od 3 liter, „raport poranny”) → najnowszy raport poranny."""
@@ -181,6 +233,12 @@ class KRunnerCore:
         if match_id == REPORT_MATCH:
             path = self.report()
             return bool(path) and self.launchers.open_report(path)
+        if match_id == SESSIONS_MATCH:
+            return self.launchers.show_sessions("")
+        if match_id.startswith("coordination:"):
+            known = {c.get("id") for c in (self.coordination() if self.coordination else [])}
+            key = match_id[len("coordination:"):]
+            return key in known and self.launchers.show_sessions(key)
         kind, _, key = (match_id or "").partition(":")
         if kind == "session":
             return self._run_session(key, action_id)
