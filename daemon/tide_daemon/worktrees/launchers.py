@@ -1,4 +1,5 @@
-"""Otwieranie worktree w terminalu (Konsole) albo w Riderze i wznawianie sesji agenta w Konsoli.
+"""Otwieranie worktree w terminalu (Konsole) albo w Riderze, wznawianie sesji agenta w Konsoli
+i otwieranie okna Worktrees.
 
 Rider z JetBrains Toolbox ma skrypt uruchomieniowy w ~/.local/share/JetBrains/Toolbox/scripts,
 którego zwykle nie ma w PATH usługi systemd — dlatego szukamy go też tam (i w kilku innych
@@ -15,6 +16,8 @@ import threading
 
 TERMINAL = "terminal"
 RIDER = "rider"
+WINDOW = "window"
+PYTHON = "/usr/bin/python3"  # systemowy Python z PyQt6 (python3 z pyenv go nie ma)
 AGENTS = ("claude", "codex")
 # Po zakończeniu agenta karta nie znika: zostaje zwykła powłoka w tym samym katalogu.
 # "$0" "$@" to polecenie agenta przekazane jako osobne argumenty — bez sklejania napisów.
@@ -32,11 +35,20 @@ def rider_candidates(home: str) -> list[str]:
     ]
 
 
+def window_script(env) -> str:
+    """Zainstalowany launcher okna Worktrees ($TIDE_WORKTREES_WINDOW albo XDG_DATA_HOME/tide)."""
+    if env.get("TIDE_WORKTREES_WINDOW"):
+        return env["TIDE_WORKTREES_WINDOW"]
+    data = env.get("XDG_DATA_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local/share")
+    return os.path.join(data, "tide", "worktrees-window", "tide-worktrees.py")
+
+
 class Launchers:
     def __init__(self, env: dict | None = None, path: str | None = None):
         env = os.environ if env is None else env
         home = env.get("HOME") or os.path.expanduser("~")
         search = path if path is not None else env.get("PATH", "")
+        self.home = home
         self.terminal = shutil.which("konsole", path=search) or ""
         self.rider = env.get("TIDE_RIDER") or shutil.which("rider", path=search) or next(
             (p for p in rider_candidates(home) if os.path.isfile(p) and os.access(p, os.X_OK)), "")
@@ -45,9 +57,15 @@ class Launchers:
         # a w ostateczności sama nazwa — wtedy szuka jej powłoka w Konsoli.
         self.agents = {name: shutil.which(name, path=search)
                        or _executable(os.path.join(home, ".local/bin", name)) or name for name in AGENTS}
+        self.window_script = window_script(env)
+
+    @property
+    def window(self) -> str:
+        """Sprawdzane przy każdym użyciu — okno może zostać zainstalowane po starcie usługi."""
+        return self.window_script if os.path.isfile(self.window_script) else ""
 
     def available(self) -> dict:
-        return {TERMINAL: bool(self.terminal), RIDER: bool(self.rider)}
+        return {TERMINAL: bool(self.terminal), RIDER: bool(self.rider), WINDOW: bool(self.window)}
 
     def command(self, app: str, path: str) -> list[str]:
         """Polecenie otwierające katalog albo pusta lista, gdy program jest niedostępny."""
@@ -55,6 +73,8 @@ class Launchers:
             argv = [self.terminal, "--workdir", path]
         elif app == RIDER and self.rider:
             argv = [self.rider, path]
+        elif app == WINDOW and self.window:
+            argv = [PYTHON, "-s", self.window]
         else:
             return []
         return self._scoped(argv)
@@ -82,7 +102,13 @@ class Launchers:
         return argv
 
     def open(self, app: str, path: str) -> bool:
+        if app not in (TERMINAL, RIDER):
+            return False  # okno Worktrees otwiera tylko show_window()
         return self.spawn(self.command(app, path), path)
+
+    def show_window(self) -> bool:
+        """Okno Worktrees; drugie uruchomienie samo przekazuje prośbę o pokazanie pierwszemu."""
+        return self.spawn(self.command(WINDOW, ""), self.home)
 
     def spawn(self, argv: list[str], path: str) -> bool:
         """Uruchamia argv w katalogu path (w osobnej jednostce systemd, gdy się da)."""

@@ -14,7 +14,9 @@ Obiekt /Worktrees, interfejs org.tide.Daemon.Worktrees:
 - Remove(as paths) -> s      sprzątanie; JSON z wynikiem dla każdej ścieżki (odpowiedź po zakończeniu),
 - Refresh()                  odświeżenie na żądanie (wynik przyjdzie sygnałem Changed),
 - Open(s path, s app) -> b   otwarcie worktree: app = "terminal" albo "rider",
-- Launchers() -> s           JSON {"terminal": bool, "rider": bool} — które przyciski pokazać,
+- Launchers() -> s           JSON {"terminal": bool, "rider": bool, "window": bool} — które przyciski pokazać,
+- ShowWindow() -> b          otwiera okno Worktrees (False, gdy nie jest zainstalowane),
+- Prune(s repoPath) -> s     `git worktree prune` w repozytorium z worktrees bez katalogu (odpowiedź po zakończeniu),
 - sygnał Changed()           lista worktrees się zmieniła.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtSignal, pyqtSlot
@@ -49,6 +51,11 @@ WORKTREES_XML = f"""<interface name="{WORKTREES_IFACE}">
     <arg name="ok" type="b" direction="out"/>
   </method>
   <method name="Launchers"><arg name="json" type="s" direction="out"/></method>
+  <method name="ShowWindow"><arg name="ok" type="b" direction="out"/></method>
+  <method name="Prune">
+    <arg name="repoPath" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <signal name="Changed"/>
 </interface>"""
 
@@ -116,6 +123,17 @@ class WorktreesAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(result=str)
     def Launchers(self) -> str:
         return self.monitor.launchers_json()
+
+    @pyqtSlot(result=bool)
+    def ShowWindow(self) -> bool:
+        return self.monitor.show_window()
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Prune(self, repo_path: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        request = QDBusMessage(message)
+        self.monitor.prune(repo_path, lambda text: self.bus.send(request.createReply([text])))
+        return ""
 
 
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None) -> QObject:

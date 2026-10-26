@@ -71,7 +71,9 @@ def main(argv=None) -> int:
         scanner.update()
         procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
         cwds = worktrees.agent_cwds(scanner.sessions(now, procs), procs)
-        print(json.dumps(worktrees.scan(args.workspace, cwds, args.worktree_depth), ensure_ascii=False, indent=2))
+        index = worktrees.SessionIndex(args.claude_dir, args.codex_dir)
+        print(json.dumps(worktrees.scan(args.workspace, cwds, args.worktree_depth, now=now, sessions=index),
+                         ensure_ascii=False, indent=2))
         return 0
 
     if args.print_once:
@@ -92,7 +94,10 @@ def main(argv=None) -> int:
     app.setApplicationName("tide-daemon")
     monitor = AgentMonitor(scanner, use_processes=not args.no_processes, clock=clock)
     monitor.start()
-    trees = WorktreeMonitor(worktrees.WorktreeScanner(args.workspace, args.worktree_depth),
+    # Osobny, mały indeks sesji dla worktrees (KRunner ma własny, pełniejszy — krunner/index.py).
+    worktree_sessions = worktrees.SessionIndex(args.claude_dir, args.codex_dir)
+    trees = WorktreeMonitor(worktrees.WorktreeScanner(args.workspace, args.worktree_depth, clock=clock,
+                                                      sessions=worktree_sessions),
                             lambda: worktrees.agent_cwds(monitor.sessions, monitor.procs),
                             worktrees.Launchers(), refresh_agents=monitor.recompute)
     monitor.changed.connect(trees.publish)  # nowy albo zakończony agent zmienia flagę „aktywny agent”

@@ -254,11 +254,25 @@ class HelpersTest(unittest.TestCase):
             fh.write("#!/bin/sh\n")
         os.chmod(rider, 0o755)
         found = Launchers(env={"HOME": tmp, "PATH": ""}, path="")
-        self.assertEqual(found.available(), {"terminal": False, "rider": True})
+        self.assertEqual(found.available(), {"terminal": False, "rider": True, "window": False})
         self.assertEqual(found.command("rider", "/x"), [rider, "/x"])
         self.assertEqual(found.command("terminal", "/x"), [])
         missing = Launchers(env={"HOME": os.path.join(tmp, "nikt"), "PATH": ""}, path="")
         self.assertEqual(missing.available()["rider"], False)
+
+    def test_window_launcher_found_in_data_home(self):
+        tmp = tempfile.mkdtemp(prefix="tide-launch-")
+        self.addCleanup(shutil.rmtree, tmp)
+        env = {"HOME": tmp, "XDG_DATA_HOME": os.path.join(tmp, "data"), "PATH": ""}
+        launchers = Launchers(env=env, path="")
+        self.assertFalse(launchers.available()["window"], "bez instalacji okna nie ma przycisku")
+        self.assertFalse(launchers.show_window())
+        script = os.path.join(tmp, "data/tide/worktrees-window/tide-worktrees.py")
+        os.makedirs(os.path.dirname(script))
+        open(script, "w").close()
+        self.assertTrue(launchers.available()["window"], "okno zainstalowane po starcie usługi też się liczy")
+        self.assertEqual(launchers.command("window", ""), ["/usr/bin/python3", "-s", script])
+        self.assertFalse(launchers.open("window", tmp), "Open() nie uruchamia okna")
 
     def test_terminal_command_uses_workdir_in_own_scope(self):
         launchers = Launchers(env={"HOME": "/nonexistent", "PATH": "/usr/bin:/bin"})
@@ -309,7 +323,7 @@ class ProtectedBranchTest(unittest.TestCase):
         self.scanner.refresh()
         w = by_path(self.scanner.snapshot([]))[self.master_wt]
         self.assertEqual(w["branch"], "master")
-        self.assertEqual((w["removable"], w["blocker"]), (False, "protected"))
+        self.assertEqual((w["removable"], w["blocker"], w["group"]), (False, "protected", "main"))
 
     def test_remove_keeps_main_branch_worktree_and_branch(self):
         import subprocess
@@ -320,3 +334,107 @@ class ProtectedBranchTest(unittest.TestCase):
         branches = subprocess.run(["git", "branch", "--list", "master"], cwd=self.repo,
                                   capture_output=True, text=True, check=True).stdout
         self.assertIn("master", branches)
+
+
+class GroupingTest(WorktreeTestCase):
+    """Grupy okna Worktrees na tych samych repozytoriach: w pracy, do sprzątnięcia, do decyzji,
+    gałęzie główne, brakujące katalogi. Zegar zamrożony 10 dni po commitach z fixtures."""
+
+    NOW = gitrepos.COMMIT_TS + 10 * 86400
+
+    def setUp(self):
+        super().setUp()
+        # Zmiana w „dirty” ma czas commitów — liczy się jak stara (inaczej byłaby „w pracy”).
+        os.utime(os.path.join(self.p["dirty"], "README.md"), (gitrepos.COMMIT_TS, gitrepos.COMMIT_TS))
+
+    def groups(self, cwds=None):
+        self.scanner.refresh()
+        return {os.path.relpath(w["path"], self.root): w
+                for w in self.scanner.snapshot(self.agent if cwds is None else cwds, now=self.NOW)}
+
+    def test_groups_of_every_state(self):
+        got = {name: w["group"] for name, w in self.groups().items()}
+        self.assertEqual(got, {
+            "alpha": "main",                    # główny katalog
+            "alpha-wt/merged": "clean",         # scalony, czysty, bez agenta
+            "alpha-wt/detached": "clean",       # odłączony na commicie z master
+            "alpha-wt/dirty": "decide",         # zmiany, stoi od 10 dni
+            "alpha-wt/unmerged": "decide",      # niescalone commity
+            "alpha-wt/agent": "active",         # pracuje agent
+            "group/beta": "main",
+            "group/beta-wt/topic": "decide",    # brak gałęzi głównej
+        })
+
+    def test_recent_change_means_active_even_when_unmerged(self):
+        recent = self.NOW - 3600
+        os.utime(os.path.join(self.p["dirty"], "README.md"), (recent, recent))
+        w = self.groups()["alpha-wt/dirty"]
+        self.assertEqual((w["group"], w["lastActivityTs"], w["removable"]), ("active", recent, False))
+
+    def test_clean_group_is_exactly_the_removable_idle_ones(self):
+        for w in self.groups().values():
+            if w["group"] == "clean":
+                self.assertTrue(w["removable"], w["path"])
+            if w["removable"]:
+                self.assertIn(w["group"], ("clean", "active"), w["path"])
+
+    def test_missing_directory_has_its_own_group(self):
+        gone = os.path.join(self.root, "alpha-wt", "gone")
+        gitrepos.git(self.p["alpha"], "worktree", "add", "-q", "-b", "feat/gone", gone)
+        shutil.rmtree(gone)
+        w = self.groups()["alpha-wt/gone"]
+        self.assertEqual((w["group"], w["missing"], w["removable"]), ("missing", True, False))
+
+    def test_title_subject_and_tool(self):
+        items = self.groups()
+        merged = items["alpha-wt/merged"]
+        self.assertEqual((merged["tag"], merged["title"], merged["subject"]), ("feat", "merged", "add merged.txt"))
+        self.assertEqual((merged["tool"], merged["sessionTitle"], merged["sessionId"]), ("", "", ""))
+        self.assertEqual(merged["lastActivityTs"], gitrepos.COMMIT_TS)
+        detached = items["alpha-wt/detached"]
+        self.assertEqual(detached["title"], f"odłączony HEAD {detached['head']}")
+        self.assertEqual(items["alpha"]["subject"], "merge feat/merged")
+
+
+class RemoveSubsetTest(WorktreeTestCase):
+    def test_removes_only_the_selected_paths(self):
+        self.listed()
+        removable = sorted(w["path"] for w in self.scanner.snapshot(self.agent) if w["removable"])
+        self.assertEqual(removable, sorted([self.p["merged"], self.p["detached"]]))
+        results = self.scanner.remove([self.p["detached"]], self.agent)
+        self.assertEqual([(r["path"], r["removed"]) for r in results], [(self.p["detached"], True)])
+        self.assertFalse(os.path.exists(self.p["detached"]))
+        self.assertTrue(os.path.isdir(self.p["merged"]), "niezaznaczony scalony worktree zostaje")
+        self.assertIn("feat/merged", gitrepos.branches(self.p["alpha"]))
+        left = by_path(self.scanner.snapshot(self.agent))
+        self.assertTrue(left[self.p["merged"]]["removable"])
+        removals = [c for c in self.git_calls() if " worktree remove " in c]
+        self.assertEqual(removals, [f"-C {self.p['alpha']} worktree remove {self.p['detached']}"])
+
+
+class PruneTest(WorktreeTestCase):
+    def test_prune_only_drops_missing_entries(self):
+        gone = os.path.join(self.root, "alpha-wt", "gone")
+        gitrepos.git(self.p["alpha"], "worktree", "add", "-q", "-b", "feat/gone", gone)
+        shutil.rmtree(gone)
+        self.listed()
+        result = self.scanner.prune(self.p["alpha"])
+        self.assertEqual((result["ok"], result["pruned"]), (True, [gone]))
+        paths = set(by_path(self.scanner.snapshot(self.agent)))
+        self.assertNotIn(gone, paths)
+        for kept in ("merged", "dirty", "unmerged", "agent", "detached"):
+            self.assertIn(self.p[kept], paths)
+            self.assertTrue(os.path.isdir(self.p[kept]))
+        self.assertIn("feat/gone", gitrepos.branches(self.p["alpha"]), "prune nie kasuje gałęzi")
+
+    def test_prune_does_nothing_without_missing_worktrees(self):
+        self.listed()
+        open(self.log, "w").close()
+        result = self.scanner.prune(self.p["alpha"])
+        self.assertEqual((result["ok"], result["pruned"]), (True, []))
+        self.assertFalse([c for c in self.git_calls() if "prune" in c])
+
+    def test_prune_refuses_unknown_repository(self):
+        self.listed()
+        result = self.scanner.prune(os.path.join(self.root, "obce"))
+        self.assertFalse(result["ok"])

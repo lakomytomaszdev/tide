@@ -68,12 +68,25 @@ class WorktreeMonitor(QObject):
         paths = list(paths)
         self._submit(lambda: self.scanner.remove(paths, cwds), lambda res: self._after_remove(paths, res, reply))
 
+    def prune(self, repo_path: str, reply) -> None:
+        """`git worktree prune` w tle (tylko wpisy bez katalogu); reply(json) w wątku głównym."""
+        def done(result):
+            if result is None:
+                result = {"repoPath": repo_path, "ok": False, "pruned": [], "message": "błąd usługi"}
+            reply(json.dumps(result, ensure_ascii=False))
+            self.publish()
+        self._submit(lambda: self.scanner.prune(repo_path), done)
+
     def open(self, path: str, app: str) -> bool:
         known = any(w["path"] == path and not w["missing"] for w in json.loads(self._json))
         return bool(known and self.launchers and self.launchers.open(app, path))
 
+    def show_window(self) -> bool:
+        return bool(self.launchers and self.launchers.show_window())
+
     def launchers_json(self) -> str:
-        return json.dumps(self.launchers.available() if self.launchers else {"terminal": False, "rider": False})
+        return json.dumps(self.launchers.available() if self.launchers
+                          else {"terminal": False, "rider": False, "window": False})
 
     # --- wnętrze ---------------------------------------------------------------------------
 

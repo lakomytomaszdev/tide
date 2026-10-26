@@ -13,7 +13,8 @@ import unittest
 
 from . import gitrepos
 from .privatebus import SERVICE, PrivateBus, requires_dbus, wait_until
-from tide_daemon.worktrees import scan
+from tide_daemon.agents.timeutil import parse_ts
+from tide_daemon.worktrees import SessionIndex, scan
 
 try:
     from PyQt6.QtCore import QMetaType
@@ -44,6 +45,8 @@ class WorktreesContractTest(unittest.TestCase):
         cls.agent_cwd = os.path.join(cls.p["agent"], "src")
         write_agent_session(os.path.join(cls.tmp, "claude"), cls.agent_cwd)
         cls.service = PrivateBus("tide-worktrees-test")
+        # Nigdy prawdziwe okno z katalogu domowego — ShowWindow() ma tu zawsze odpowiadać False.
+        cls.service.env["TIDE_WORKTREES_WINDOW"] = os.path.join(cls.tmp, "brak-okna.py")
         cls.daemon = cls.service.spawn_daemon(
             "--claude-dir", os.path.join(cls.tmp, "claude"), "--codex-dir", os.path.join(cls.tmp, "codex"),
             "--no-processes", "--now", NOW_TEXT, "--workspace", cls.root)
@@ -68,9 +71,13 @@ class WorktreesContractTest(unittest.TestCase):
     def test_1_list_matches_core(self):
         over_dbus = wait_until(self.measured, timeout=15)
         self.assertTrue(over_dbus, "lista z rozmiarami nie pojawiła się")
-        self.assertEqual(over_dbus, scan(self.root, [self.agent_cwd]))
+        index = SessionIndex(os.path.join(self.tmp, "claude"), os.path.join(self.tmp, "codex"))
+        self.assertEqual(over_dbus, scan(self.root, [self.agent_cwd], now=parse_ts(NOW_TEXT), sessions=index))
         agent = next(w for w in over_dbus if w["path"] == self.p["agent"])
         self.assertTrue(agent["hasAgent"], "sesja agenta z obszaru Agents oznacza worktree")
+        self.assertEqual((agent["group"], agent["tool"], agent["sessionTitle"]), ("active", "claude", "hej"))
+        groups = {os.path.basename(w["path"]): w["group"] for w in over_dbus}
+        self.assertEqual((groups["merged"], groups["unmerged"], groups["alpha"]), ("clean", "decide", "main"))
 
     def test_2_remove_reports_each_path(self):
         wait_until(self.measured, timeout=15)
@@ -101,11 +108,21 @@ class WorktreesContractTest(unittest.TestCase):
         self.assertIs(self.call("Open", self.p["alpha"], "nieznany-program"), False)
 
     def test_launchers_and_introspection(self):
-        self.assertEqual(set(json.loads(self.call("Launchers"))), {"terminal", "rider"})
+        self.assertEqual(set(json.loads(self.call("Launchers"))), {"terminal", "rider", "window"})
         xml = self.service.call(SERVICE, PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
         self.assertIn(f'<interface name="{IFACE}">', xml)
         self.assertIn('<arg name="paths" type="as" direction="in"/>', xml)
         self.assertIn('<signal name="Changed"', xml)
+        self.assertIn('<method name="ShowWindow">', xml)
+        self.assertIn('<arg name="repoPath" type="s" direction="in"/>', xml)
+
+    def test_show_window_without_installed_window(self):
+        # Usługa w teście nie widzi zainstalowanego okna (HOME testu nie ma launchera).
+        self.assertIs(self.call("ShowWindow"), False)
+
+    def test_prune_refuses_unknown_repository(self):
+        result = json.loads(self.call("Prune", os.path.join(self.root, "nie-ma"), timeout=30000))
+        self.assertEqual((result["ok"], result["pruned"]), (False, []))
 
 
 if __name__ == "__main__":

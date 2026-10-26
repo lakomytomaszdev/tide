@@ -13,7 +13,12 @@ Co liczymy i skąd:
   `git status` — tanie, bo i tak czytamy status, a nie chodzimy po wszystkich plikach,
 - rozmiar: jak `du -s` (disk.py), w pamięci podręcznej i przeliczany najwyżej co SIZE_TTL,
 - aktywny agent: katalog roboczy żywej sesji agenta (albo procesu claude/codex) leży w worktree;
-  przy zagnieżdżonych worktrees liczy się najgłębszy.
+  przy zagnieżdżonych worktrees liczy się najgłębszy,
+- tytuł i narzędzie: z nazwy gałęzi (naming.py), opis z tematu ostatniego commita albo z tytułu
+  powiązanej sesji agenta z ostatnich 30 dni (sessions.py),
+- ostatnia aktywność: najnowsze z ostatniej zmiany i ostatniego wpisu powiązanej sesji,
+- grupa dla okna Worktrees (group_of): w pracy, do sprzątnięcia, do decyzji, gałęzie główne,
+  brakujące katalogi.
 
 Sprzątanie usuwa wyłącznie `git worktree remove` bez --force, a gałąź tylko `git branch -d`.
 """
@@ -25,6 +30,7 @@ from dataclasses import dataclass, field
 from ..agents.timeutil import iso
 from .disk import disk_usage
 from .git import MAIN_CANDIDATES, Git, parse_status, parse_worktree_list, pick_main_branch
+from .naming import guess_tool, humanize_branch
 
 MAX_DEPTH = 3
 SIZE_TTL = 30 * 60
@@ -34,6 +40,25 @@ SKIP_DIRS = {"node_modules", "bower_components", "vendor", "bin", "obj", "target
 
 # Powody pominięcia przy sprzątaniu (kolejność = pierwszeństwo).
 BLOCKERS = ("main", "protected", "missing", "locked", "agent", "dirty", "no-main", "unmerged")
+
+# Grupy okna Worktrees. „W pracy”: agent albo jakakolwiek aktywność w ostatniej dobie.
+ACTIVE_WINDOW = 24 * 3600
+GROUPS = ("active", "clean", "decide", "main", "missing")
+SUBJECT_LIMIT = 120
+
+
+def group_of(wt: "Worktree", blocker: str, has_agent: bool, last_activity: float, now: float) -> str:
+    """Grupa worktree w oknie. Kolejność reguł ma znaczenie:
+    brakujący katalog → missing; główny katalog i gałąź główna → main (nigdy do sprzątania);
+    agent albo aktywność krótsza niż ACTIVE_WINDOW → active; da się bezpiecznie usunąć → clean;
+    reszta (niescalone commity, zmiany, blokada, brak gałęzi głównej) → decide."""
+    if wt.missing:
+        return "missing"
+    if wt.is_main or wt.protected:
+        return "main"
+    if has_agent or now - last_activity < ACTIVE_WINDOW:
+        return "active"
+    return "clean" if blocker == "" else "decide"
 
 
 @dataclass
@@ -51,6 +76,7 @@ class Worktree:
     dirty: int = 0
     unmerged: int | None = None   # None: nie da się policzyć (brak gałęzi głównej)
     last_change: float = 0.0
+    subject: str = ""             # temat ostatniego commita HEAD
     nested: tuple = ()            # inne worktrees wewnątrz tego katalogu
     real: str = ""                # ścieżka bez dowiązań — do porównań z katalogami agentów
 
@@ -125,8 +151,9 @@ def agent_cwds(sessions: list[dict], procs=None) -> list[str]:
 
 class WorktreeScanner:
     def __init__(self, root: str, max_depth: int = MAX_DEPTH, size_ttl: float = SIZE_TTL,
-                 git: Git | None = None, clock=time.time):
+                 git: Git | None = None, clock=time.time, sessions=None):
         self.root = root
+        self.sessions = sessions  # SessionIndex albo None (bez powiązań z sesjami)
         self.max_depth = max_depth
         self.size_ttl = size_ttl
         self.git = git or Git()
@@ -144,6 +171,11 @@ class WorktreeScanner:
             items += self.scan_repo(repo)
         items = _dedupe(items)
         _mark_nested(items)
+        if self.sessions is not None:
+            try:
+                self.sessions.refresh(self.clock())
+            except Exception as exc:  # powiązanie z sesjami jest dodatkiem — nie może zatrzymać listy
+                print(f"tide-daemon: worktrees: sesje: {exc!r}", flush=True)
         with self._lock:
             self.items = items
         return items
@@ -166,7 +198,7 @@ class WorktreeScanner:
         main_branch = pick_main_branch(existing, "" if main_entry.bare else main_entry.branch)
 
         heads = [e.head for e in entries if e.head and not e.bare]
-        commit_times = self._commit_times(repo_path, heads)
+        commits = self._commits(repo_path, heads)
 
         out = []
         for entry in entries:
@@ -177,7 +209,7 @@ class WorktreeScanner:
                           locked=entry.locked, main_branch=main_branch,
                           missing=entry.prunable or not os.path.isdir(entry.path))
             wt.real = os.path.realpath(entry.path)
-            wt.last_change = commit_times.get(entry.head, 0.0)
+            wt.last_change, wt.subject = commits.get(entry.head, (0.0, ""))
             if not wt.missing:
                 self._read_status(wt)
             if main_branch and entry.head:
@@ -187,16 +219,18 @@ class WorktreeScanner:
             out.append(wt)
         return out
 
-    def _commit_times(self, repo_path: str, heads: list[str]) -> dict[str, float]:
+    def _commits(self, repo_path: str, heads: list[str]) -> dict[str, tuple[float, str]]:
+        """sha → (czas commita, temat) — jedno wywołanie gita na repozytorium."""
         if not heads:
             return {}
-        res = self.git.run(repo_path, "show", "-s", "--format=%H %ct", *sorted(set(heads)))
-        times = {}
+        res = self.git.run(repo_path, "show", "-s", "--format=%H %ct %s", *sorted(set(heads)))
+        out = {}
         for line in res.out.splitlines() if res.ok else ():
-            sha, _, ts = line.partition(" ")
+            sha, _, rest = line.partition(" ")
+            ts, _, subject = rest.partition(" ")
             if ts.isdigit():
-                times[sha] = float(ts)
-        return times
+                out[sha] = (float(ts), _clip(subject.strip(), SUBJECT_LIMIT))
+        return out
 
     def _read_status(self, wt: Worktree) -> None:
         res = self.git.run(wt.path, "status", "--porcelain=v1", "-z", "--untracked-files=normal")
@@ -240,17 +274,24 @@ class WorktreeScanner:
 
     # --- wynik -----------------------------------------------------------------------------
 
-    def snapshot(self, cwds: list[str] = ()) -> list[dict]:
+    def snapshot(self, cwds: list[str] = (), now: float | None = None) -> list[dict]:
         """Lista dla D-Bus z bieżących danych — tania, bez wołania gita."""
         with self._lock:
             items = list(self.items)
         agents = _agents_by_worktree(items, cwds)
-        out = [self._describe(w, w.path in agents) for w in items]
+        linked = self.sessions.link([(w.path, w.real) for w in items]) if self.sessions is not None else {}
+        now = self.clock() if now is None else now
+        out = [self._describe(w, w.path in agents, linked.get(w.path), now) for w in items]
         out.sort(key=lambda d: (d["repo"].lower(), d["repoPath"], not d["isMain"], -d["lastChangeTs"]))
         return out
 
-    def _describe(self, wt: Worktree, has_agent: bool) -> dict:
+    def _describe(self, wt: Worktree, has_agent: bool, session=None, now: float = 0.0) -> dict:
         blocker = wt.blocker(has_agent)
+        tag, title = humanize_branch(wt.branch)
+        if not title:
+            title = f"odłączony HEAD {wt.head}" if wt.detached else os.path.basename(wt.path.rstrip("/"))
+        session_ts = session.last_ts if session else 0.0
+        last_activity = max(wt.last_change, session_ts)
         return {
             "repo": wt.repo,
             "repoPath": wt.repo_path,
@@ -272,6 +313,17 @@ class WorktreeScanner:
             "missing": wt.missing,
             "removable": blocker == "",
             "blocker": blocker,
+            # Dla okna Worktrees:
+            "group": group_of(wt, blocker, has_agent, last_activity, now),
+            "title": title,
+            "tag": tag,
+            "subject": wt.subject,
+            "tool": session.tool if session else guess_tool(wt.path, tag),
+            "sessionId": session.session_id if session else "",
+            "sessionTitle": session.title if session else "",
+            "sessionLastActivityTs": round(session_ts, 3),
+            "lastActivity": iso(last_activity),
+            "lastActivityTs": round(last_activity, 3),
         }
 
     # --- sprzątanie ------------------------------------------------------------------------
@@ -325,6 +377,35 @@ class WorktreeScanner:
         return result
 
 
+    # --- brakujące katalogi -------------------------------------------------------------------
+
+    def prune(self, repo_path: str) -> dict:
+        """`git worktree prune` w znanym repozytorium, które ma worktrees bez katalogu.
+
+        Git usuwa wtedy wyłącznie wpisy administracyjne worktrees, których katalogu już nie ma
+        (zablokowane zostawia), nie dotyka plików ani gałęzi. Repozytorium jest czytane na nowo,
+        a polecenie pada tylko wtedy, gdy rzeczywiście brakuje jakiegoś katalogu."""
+        result = {"repoPath": repo_path, "ok": False, "pruned": [], "message": ""}
+        with self._lock:
+            known = any(w.repo_path == repo_path for w in self.items)
+        if not known:
+            result["message"] = "to nie jest znane repozytorium"
+            return result
+        missing = [w.path for w in self.scan_repo(repo_path) if w.missing and not w.locked]
+        if not missing:
+            result.update(ok=True, message="nie ma czego porządkować")
+            return result
+        res = self.git.run(repo_path, "worktree", "prune")
+        if not res.ok:
+            result["message"] = f"git odmówił: {_first_line(res.err)}"
+            return result
+        left = {w.path for w in self.scan_repo(repo_path) if w.missing}
+        result.update(ok=True, pruned=[p for p in missing if p not in left],
+                      message="usunięto wpisy worktrees bez katalogu")
+        self.refresh()
+        return result
+
+
 MESSAGES = {
     "unknown": "to nie jest znany worktree",
     "main": "główny katalog repozytorium — nigdy go nie usuwamy",
@@ -349,6 +430,10 @@ def _skip(result: dict, reason: str, wt: Worktree | None = None, detail: str = "
         message += f": {_first_line(detail)}"
     result.update(reason=reason, message=message)
     return result
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _first_line(text: str) -> str:
@@ -388,9 +473,11 @@ def _agents_by_worktree(items: list[Worktree], cwds) -> set[str]:
     return hit
 
 
-def scan(root: str, cwds: list[str] = (), max_depth: int = MAX_DEPTH, measure: bool = True) -> list[dict]:
+def scan(root: str, cwds: list[str] = (), max_depth: int = MAX_DEPTH, measure: bool = True,
+         now: float | None = None, sessions=None) -> list[dict]:
     """Jednorazowy przebieg dla testów i trybu --print: katalog projektów → lista worktrees."""
-    scanner = WorktreeScanner(root, max_depth)
+    scanner = WorktreeScanner(root, max_depth, sessions=sessions,
+                              clock=(lambda: now) if now is not None else time.time)
     scanner.refresh()
     if measure:
         scanner.measure_stale()
