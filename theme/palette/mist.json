@@ -87,6 +87,10 @@
     "pulseMs": 2400,
     "fadeMs": 400
   },
+  "plymouth": {
+    "waveDelayMs": 300,
+    "breatheTo": 0.6
+  },
   "fonts": {
     "ui": "Geist",
     "mono": "Geist Mono",
