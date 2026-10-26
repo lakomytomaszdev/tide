@@ -42,6 +42,14 @@ class WorktreesContractTest(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp(prefix="tide-wt-dbus-")
         cls.root = os.path.join(cls.tmp, "work")
         cls.p = gitrepos.build(cls.root)
+        # Do usuwania wymuszonego: develop w osobnym worktree (gałąź główna — nigdy) i drugi
+        # niescalony worktree, którego gałąź zniknie tylko z deleteUnmergedBranches.
+        cls.p["develop"] = os.path.join(cls.root, "alpha-wt", "develop")
+        gitrepos.git(cls.p["alpha"], "worktree", "add", "-q", "-b", "develop", cls.p["develop"])
+        gitrepos.commit(cls.p["develop"], "d.txt")
+        cls.p["extra"] = os.path.join(cls.root, "alpha-wt", "extra")
+        gitrepos.git(cls.p["alpha"], "worktree", "add", "-q", "-b", "feat/extra", cls.p["extra"])
+        gitrepos.commit(cls.p["extra"], "e.txt")
         cls.agent_cwd = os.path.join(cls.p["agent"], "src")
         write_agent_session(os.path.join(cls.tmp, "claude"), cls.agent_cwd)
         cls.service = PrivateBus("tide-worktrees-test")
@@ -103,6 +111,59 @@ class WorktreesContractTest(unittest.TestCase):
         dirty = wait_until(lambda: next((w["dirty"] for w in self.listed() if w["path"] == self.p["detached"]), 0))
         self.assertEqual(dirty, 1)
 
+    def remove_forced(self, paths, delete_unmerged, confirmed=""):
+        as_paths = QDBusArgument(paths, QMetaType.Type.QStringList.value)
+        return json.loads(self.call("RemoveForced", as_paths, delete_unmerged, confirmed, timeout=60000))
+
+    def test_4_remove_forced_keeps_unmerged_branch_and_refuses_hard_blockers(self):
+        wait_until(self.measured, timeout=15)
+        listed = {w["path"]: w for w in self.listed()}
+        self.assertEqual((listed[self.p["unmerged"]]["forceRemovable"], listed[self.p["unmerged"]]["unpushed"]),
+                         (True, 2))
+        self.assertEqual(listed[self.p["develop"]]["forceBlocker"], "protected")
+        self.assertEqual(listed[self.p["agent"]]["forceBlocker"], "agent")
+        ask = [self.p["unmerged"], self.p["topic"], self.p["agent"], self.p["alpha"], self.p["develop"]]
+        confirmed = {p: {k: listed[p][k] for k in ("dirty", "unmerged", "unpushed", "branch")} for p in ask}
+        results = self.remove_forced(ask, False, json.dumps(confirmed))
+        self.assertEqual([(r["path"], r["status"], r["reason"]) for r in results], [
+            (self.p["unmerged"], "branch-kept", ""),
+            (self.p["topic"], "branch-kept", ""),
+            (self.p["agent"], "refused", "agent"),
+            (self.p["alpha"], "refused", "main"),
+            (self.p["develop"], "refused", "protected"),
+        ])
+        self.assertTrue(all(r["forced"] for r in results))
+        self.assertIn("2 commity poza master", results[0]["branchMessage"])
+        self.assertFalse(os.path.exists(self.p["unmerged"]))
+        self.assertIn("feat/unmerged", gitrepos.branches(self.p["alpha"]))
+        for kept in ("agent", "alpha", "develop"):
+            self.assertTrue(os.path.isdir(self.p[kept]), kept)
+        self.assertIn("develop", gitrepos.branches(self.p["alpha"]))
+
+    def test_5_remove_forced_deletes_unmerged_branch_only_on_request(self):
+        wait_until(self.measured, timeout=15)
+        [result] = self.remove_forced([self.p["extra"]], True)
+        self.assertEqual((result["status"], result["branchDeleted"]), ("removed", True))
+        self.assertNotIn("feat/extra", gitrepos.branches(self.p["alpha"]))
+        # Ta sama flaga przy gałęzi głównej i głównym katalogu nie zmienia niczego.
+        results = self.remove_forced([self.p["develop"], self.p["alpha"]], True)
+        self.assertEqual([r["reason"] for r in results], ["protected", "main"])
+        self.assertIn("develop", gitrepos.branches(self.p["alpha"]))
+        self.assertIn("master", gitrepos.branches(self.p["alpha"]))
+
+    def test_6_remove_forced_rejects_bad_confirmation(self):
+        results = self.remove_forced([self.p["detached"]], False, "nie json")
+        self.assertEqual([(r["status"], r["reason"]) for r in results], [("refused", "bad-request")])
+        self.assertTrue(os.path.isdir(self.p["detached"]))
+
+    def test_old_remove_contract_still_refuses_forceable_worktrees(self):
+        # Remove() bez zmian: worktree ze zmianami (który RemoveForced by usunął) nie jest sprzątany.
+        as_paths = QDBusArgument([self.p["dirty"]], QMetaType.Type.QStringList.value)
+        [result] = json.loads(self.call("Remove", as_paths, timeout=60000))
+        self.assertEqual((result["removed"], result["reason"], result["status"], result["forced"]),
+                         (False, "dirty", "refused", False))
+        self.assertTrue(os.path.isdir(self.p["dirty"]))
+
     def test_open_refuses_unknown_targets(self):
         self.assertIs(self.call("Open", os.path.join(self.root, "nie-ma"), "terminal"), False)
         self.assertIs(self.call("Open", self.p["alpha"], "nieznany-program"), False)
@@ -115,6 +176,10 @@ class WorktreesContractTest(unittest.TestCase):
         self.assertIn('<signal name="Changed"', xml)
         self.assertIn('<method name="ShowWindow">', xml)
         self.assertIn('<arg name="repoPath" type="s" direction="in"/>', xml)
+        self.assertIn('<method name="Remove">', xml)
+        self.assertIn('<method name="RemoveForced">', xml)
+        self.assertIn('<arg name="deleteUnmergedBranches" type="b" direction="in"/>', xml)
+        self.assertIn('<arg name="confirmed" type="s" direction="in"/>', xml)
 
     def test_show_window_without_installed_window(self):
         # Usługa w teście nie widzi zainstalowanego okna (HOME testu nie ma launchera).

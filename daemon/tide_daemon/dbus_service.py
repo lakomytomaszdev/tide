@@ -13,6 +13,11 @@ Obiekt /Agents, interfejs org.tide.Daemon.Agents:
 Obiekt /Worktrees, interfejs org.tide.Daemon.Worktrees:
 - List() -> s                lista worktrees jako JSON,
 - Remove(as paths) -> s      sprzątanie; JSON z wynikiem dla każdej ścieżki (odpowiedź po zakończeniu),
+- RemoveForced(as paths, b deleteUnmergedBranches, s confirmed) -> s
+                             usuwanie po potwierdzeniu „Usuń mimo to”: `git worktree remove --force`,
+                             gałąź -d gdy scalona, -D tylko z deleteUnmergedBranches; główny katalog,
+                             gałąź główna, brakujący, zablokowany i z agentem — nigdy; confirmed to
+                             JSON ze stanem z potwierdzenia (gorszy świeży stan = odmowa „changed”),
 - Refresh()                  odświeżenie na żądanie (wynik przyjdzie sygnałem Changed),
 - Open(s path, s app) -> b   otwarcie worktree: app = "terminal" albo "rider",
 - Launchers() -> s           JSON {"terminal": bool, "rider": bool, "window": bool} — które przyciski pokazać,
@@ -53,6 +58,12 @@ WORKTREES_XML = f"""<interface name="{WORKTREES_IFACE}">
   <method name="List"><arg name="json" type="s" direction="out"/></method>
   <method name="Remove">
     <arg name="paths" type="as" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="RemoveForced">
+    <arg name="paths" type="as" direction="in"/>
+    <arg name="deleteUnmergedBranches" type="b" direction="in"/>
+    <arg name="confirmed" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
   <method name="Refresh"/>
@@ -122,15 +133,25 @@ class WorktreesAdaptor(QDBusAbstractAdaptor):
     def Remove(self, paths, message: QDBusMessage) -> str:
         # Usuwanie może trwać (duże katalogi), więc odpowiadamy później, z wątku głównego,
         # a pętla zdarzeń w tym czasie obsługuje inne wywołania.
+        self.monitor.remove(list(paths), self._delayed(message, "Remove"))
+        return ""
+
+    @pyqtSlot("QStringList", bool, str, QDBusMessage, result=str)
+    def RemoveForced(self, paths, delete_unmerged: bool, confirmed: str, message: QDBusMessage) -> str:
+        self.monitor.remove(list(paths), self._delayed(message, "RemoveForced"), force=True,
+                            delete_unmerged=bool(delete_unmerged), confirmed=confirmed)
+        return ""
+
+    def _delayed(self, message: QDBusMessage, name: str):
+        """Odpowiedź z opóźnieniem: funkcja, która odeśle tekst, gdy praca w tle się skończy."""
         message.setDelayedReply(True)
         request = QDBusMessage(message)  # kopia — oryginał żyje tylko do końca tego wywołania
 
         def reply(text: str) -> None:
             if not self.bus.send(request.createReply([text])):
-                print("tide-daemon: nie udało się odesłać wyniku Remove", flush=True)
+                print(f"tide-daemon: nie udało się odesłać wyniku {name}", flush=True)
 
-        self.monitor.remove(list(paths), reply)
-        return ""
+        return reply
 
     @pyqtSlot()
     def Refresh(self) -> None:

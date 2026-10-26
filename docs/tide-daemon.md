@@ -126,6 +126,7 @@ Logika jest w `tide_daemon/tabmarks.py` bez Qt, zaplecze D-Bus w `konsole.py`. K
 | --- | --- | --- |
 | `List()` | `→ s` | Lista worktrees jako JSON (pola niżej) |
 | `Remove(as paths)` | `→ s` | Sprzątanie wskazanych worktrees; JSON z wynikiem dla każdej ścieżki, w kolejności wejścia. Odpowiedź przychodzi po zakończeniu (praca w tle) |
+| `RemoveForced(as paths, b deleteUnmergedBranches, s confirmed)` | `→ s` | Usuwanie po potwierdzeniu „Usuń mimo to” w oknie: także worktrees ze zmianami, niescalone i bez gałęzi głównej (`git worktree remove --force`). Gałąź znika przez `-d` tylko scalona; niescalona zostaje, chyba że `deleteUnmergedBranches` (wtedy `-D`). Twarde blokady (niżej) obowiązują bez wyjątku. `confirmed`: JSON `{ścieżka: {dirty, unmerged, unpushed, branch}}` ze stanem, który widział użytkownik — gdy świeży stan jest gorszy, odmowa `changed`; pusty napis = bez porównania; niepoprawny JSON = odmowa `bad-request` dla wszystkich ścieżek. Wynik jak przy `Remove` |
 | `Refresh()` | `→` | Odświeżenie na żądanie; wynik przychodzi sygnałem `Changed` |
 | `Open(s path, s app)` | `→ b` | Otwiera worktree: `app` = `terminal` (`konsole --workdir`) albo `rider`. Tylko ścieżki z listy |
 | `Launchers()` | `→ s` | JSON `{"terminal": bool, "rider": bool, "window": bool}` — które przyciski pokazać; `window`: czy okno Worktrees jest zainstalowane |
@@ -150,10 +151,12 @@ Pola worktree:
 | `mainBranch` | string | lokalna gałąź główna: `master`, `main` albo `develop` (ta, na której stoi główny katalog, inaczej pierwsza istniejąca w tej kolejności); pusty, gdy żadnej nie ma |
 | `merged` | bool | czubek worktree jest przodkiem lokalnej gałęzi głównej (`unmerged == 0`) |
 | `unmerged` | int / null | `git rev-list --count <główna>..HEAD`; `null` bez gałęzi głównej |
+| `unpushed` | int | commity tylko w tym worktree: osiągalne z HEAD, a z żadnej innej lokalnej gałęzi ani gałęzi zdalnej (`rev-list --count HEAD --not --exclude=<gałąź> --branches --remotes`, stan z ostatniego fetch, bez sieci). To one przepadają po `branch -D` albo z odłączonym HEAD. Liczone tylko dla niescalonych (inaczej `0`); `-1`, gdy nie dało się policzyć |
 | `lastChange`, `lastChangeTs` | ISO 8601 / sekundy epoki | najnowsze z: czas ostatniego commita HEAD, mtime plików wskazanych przez `git status` |
 | `size` | int | bajty na dysku jak `du -s` (bez zagnieżdżonych worktrees); `-1`, póki nie policzone |
 | `locked`, `missing` | bool | `git worktree lock` / katalogu już nie ma (`prunable`) |
 | `removable`, `blocker` | bool, string | czy sprzątanie go usunie; jeśli nie — pierwszy powód (niżej) |
+| `forceRemovable`, `forceBlocker` | bool, string | czy `RemoveForced` go usunie; jeśli nie — twarda blokada: `main`, `protected`, `missing`, `locked` albo `agent` |
 | `group` | string | grupa w oknie Worktrees: `active`, `clean`, `decide`, `main`, `missing` (reguły niżej) |
 | `title`, `tag` | string | czytelny tytuł z nazwy gałęzi i wyciszony znacznik z prefiksu: `codex/summary-tabs-03-version-axis` → `summary-tabs 03 · version axis` i `codex`. Odłączony HEAD: `odłączony HEAD <skrót>` |
 | `subject` | string | temat ostatniego commita HEAD (do 120 znaków) |
@@ -167,20 +170,28 @@ Grupy (`group`, pierwsza pasująca reguła):
 | --- | --- | --- |
 | `missing` | katalogu już nie ma | linia z `git worktree prune` dla repozytorium |
 | `main` | główny katalog repozytorium albo worktree na gałęzi głównej (`protected`) | zwinięta sekcja „Gałęzie główne” (same główne katalogi pomijane) |
-| `active` | pracuje agent albo ostatnia aktywność krótsza niż 24 h | „W pracy”, tylko otwieranie |
-| `clean` | `removable`: scalony z lokalną gałęzią główną, czysty, bez agenta, nie zablokowany | „Do sprzątnięcia”: pola wyboru, usuwanie zaznaczonych |
-| `decide` | pozostałe: niescalone commity, zmiany, blokada, brak gałęzi głównej | „Do decyzji”, z powodem, tylko otwieranie |
+| `active` | pracuje agent albo ostatnia aktywność krótsza niż 24 h | „W pracy”: otwieranie; bez agenta także pole wyboru (usuwanie wymuszone, jeśli nie jest `removable`) |
+| `clean` | `removable`: scalony z lokalną gałęzią główną, czysty, bez agenta, nie zablokowany | „Do sprzątnięcia”: pola wyboru, „Zaznacz wszystkie”, usuwanie zaznaczonych |
+| `decide` | pozostałe: niescalone commity, zmiany, blokada, brak gałęzi głównej | „Do decyzji”, z powodem; otwieranie i pole wyboru (usuwanie wymuszone), zablokowane bez pola |
 
-Wynik `Remove` dla każdej ścieżki: `path`, `removed`, `reason` (pusty albo powód), `message` (po polsku), `branch`, `branchDeleted`, `branchMessage`, `freed` (bajty z ostatniego pomiaru).
+Wynik `Remove` i `RemoveForced` dla każdej ścieżki: `path`, `removed`, `status` (`removed` — worktree i jego gałąź, jeśli była, zniknęły; `branch-kept` — worktree usunięty, gałąź została, powód w `branchMessage`; `refused` — nic nie usunięto, powód w `reason` i `message`), `reason` (pusty albo powód), `message` (po polsku), `branch`, `branchDeleted`, `branchMessage`, `freed` (bajty z ostatniego pomiaru), `forced` (czy to `RemoveForced`).
 
-Powody pominięcia (w tej kolejności): `main`, `missing`, `locked`, `agent`, `dirty`, `no-main` (brak lokalnej gałęzi głównej), `unmerged`, a przy samym usuwaniu także `unknown` (ścieżka spoza listy), `git` (git odmówił — komunikat w `message`) i `error` (wyjątek w usłudze).
+Powody pominięcia (w tej kolejności): `main`, `protected`, `missing`, `locked`, `agent`, `dirty`, `no-main` (brak lokalnej gałęzi głównej), `unmerged`, a przy samym usuwaniu także `unknown` (ścieżka spoza listy), `git` (git odmówił — komunikat w `message`), `error` (wyjątek w usłudze), przy `RemoveForced` także `changed` (stan gorszy niż w potwierdzeniu) i `bad-request` (niepoprawne `confirmed`). `RemoveForced` pomija tylko twarde blokady: `main`, `protected`, `missing`, `locked`, `agent`.
 
-Zasady sprzątania:
+Zasady sprzątania (`Remove`):
 
 - **Bez sieci.** Żadnego `fetch`/`pull` — „scalony” znaczy scalony z *lokalną* gałęzią główną. Gałąź wypchnięta i scalona tylko na serwerze liczy się jako niescalona.
 - **Bez wymuszania.** Tylko `git worktree remove <ścieżka>` bez `--force`; git sam odmówi usunięcia worktree ze zmianami albo plikami nieśledzonymi (pliki ignorowane, np. `node_modules`, znikają razem z katalogiem).
 - **Świeży stan.** Przed usunięciem repozytorium jest czytane na nowo (status, scalenie, agenci z chwili wywołania), więc decyzja nie opiera się na liście sprzed minuty.
 - **Gałąź tylko bezpiecznie.** Po usunięciu worktree gałąź znika wyłącznie przez `git branch -d` (nigdy `-D`). Git porównuje wtedy z HEAD głównego katalogu albo z gałęzią śledzoną; gdy odmówi, gałąź zostaje, a wynik mówi dlaczego.
+
+Usuwanie wymuszone (`RemoveForced`, decyzja 39):
+
+- **Tylko po potwierdzeniu.** Okno woła je wyłącznie po mocniejszym potwierdzeniu, które wymienia dla każdego worktree, co przepadnie, i ma czerwony przycisk „Usuń mimo to”.
+- **Twarde blokady bez wyjątków.** Główny katalog repozytorium, worktree na gałęzi głównej (`master`, `main`, `develop` albo lokalna główna), brakujący katalog, zablokowany (`git worktree lock`) i ten, w którym pracuje agent — odmowa niezależnie od flag. Gałęzi głównych nie kasuje ani `-d`, ani `-D` (druga linia obrony po nazwie gałęzi).
+- **Jedno `--force`.** `git worktree remove --force <ścieżka>`: zmiany i pliki nieśledzone idą razem z katalogiem; blokady (`-f -f`) nie zdejmujemy.
+- **Gałąź.** Scalona z lokalną gałęzią główną → `git branch -d`; niescalona albo bez gałęzi głównej → zostaje (`status: branch-kept`, `branchMessage` np. „gałąź feat/x zostaje (2 commity poza master)”), chyba że `deleteUnmergedBranches` → `git branch -D`.
+- **Świeży stan i potwierdzenie.** Repozytorium jest czytane na nowo jak przy sprzątaniu; jeśli od potwierdzenia przybyło zmian, niescalonych commitów albo commitów tylko tutaj, albo zmieniła się gałąź — odmowa `changed`, nic nie jest usuwane.
 
 Skąd lista:
 
