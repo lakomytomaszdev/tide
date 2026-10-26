@@ -1,10 +1,14 @@
 """Udawany system: katalogi XDG z plikami .desktop i motywami ikon w katalogu tymczasowym.
 
 Każda aplikacja reprezentuje jedną kategorię audytu, a narzędzia zmieniające
-pulpit są atrapami zapisującymi wywołania do calls.log.
+pulpit są atrapami zapisującymi wywołania do calls.log. Simple Icons „pobieramy”
+z lokalnego katalogu (file://), więc testy nie korzystają z sieci, a lista
+glifów jest własna dla każdego testu (domyślnie pusta).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -17,6 +21,13 @@ TOOL = ROOT / "theme" / "icons" / "tide_icons.py"
 RIDER_ID = "jetbrains-rider-44178d44-9a4a-480d-b842-05b2863d7712"
 BLUE_FOLDER = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
                '<path d="M4 10h20l4 4h32v40H4z" fill="#35cafc"/><path d="M4 18h56v36H4z" fill="#78d9fd"/></svg>\n')
+# Znaki w stylu Simple Icons: czarne kształty w viewBox 24×24.
+SIMPLE_ICONS = {
+    "openai": '<svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="12"/></svg>\n',
+    "rider": '<svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M0 0h24v24H0z"/></svg>\n',
+}
+TERMINAL_SYMBOLIC = ('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">'
+                     '<path d="M2 2h12v12H2z" fill="#dedede"/></svg>\n')
 DOCUMENTS = BLUE_FOLDER.replace("</svg>", '<path d="M26 26h12v16H26z" fill="#03b6ec"/>'
                                           '<circle cx="50" cy="44" r="3" fill="#ffffff"/></svg>')
 
@@ -64,11 +75,17 @@ class FakeSystem:
             "XDG_DATA_DIRS": str(self.system),
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "TIDE_ICON_BASE": "Base",
+            "TIDE_GLYPHS": str(base / "glyphs.json"),
+            "TIDE_SIMPLE_ICONS_URL": (base / "simple-icons").as_uri() + "/{slug}.svg",
         }
         self.env.pop("FLATPAK_USER_DIR", None)
         self.stubs()
         self.themes()
         self.apps()
+        self.simple_icons = base / "simple-icons"
+        for slug, svg in SIMPLE_ICONS.items():
+            self.write(self.simple_icons / f"{slug}.svg", svg)
+        self.glyphs([])
 
     def cleanup(self):
         self.tmp.cleanup()
@@ -92,6 +109,20 @@ class FakeSystem:
     def calls(self) -> list[str]:
         return self.log.read_text().splitlines() if self.log.exists() else []
 
+    # ------------------------------------------------------------ glify
+
+    def glyphs(self, apps: list[dict], pins: dict[str, str] | None = None, **tile) -> Path:
+        """Lista glifów dla testu. Sumy SHA-256 domyślnie zgadzają się z lokalnymi plikami."""
+        if pins is None:
+            pins = {slug: hashlib.sha256(svg.encode()).hexdigest() for slug, svg in SIMPLE_ICONS.items()}
+        path = Path(self.env["TIDE_GLYPHS"])
+        path.write_text(json.dumps({
+            "tile": tile,
+            "simpleIcons": {"version": "0.0.0-test", "url": "https://example.invalid/{slug}.svg", "sha256": pins},
+            "apps": apps,
+        }, indent=2))
+        return path
+
     # ------------------------------------------------------------ motywy
 
     def write(self, path: Path, text: str) -> Path:
@@ -102,12 +133,14 @@ class FakeSystem:
     def themes(self) -> None:
         base = self.data / "icons/Base"
         self.write(base / "index.theme", "[Icon Theme]\nName=Base\nInherits=Other,hicolor\nPanelDefault=48\n"
-                   "KDE-Extensions=.svg\nDirectories=apps/scalable,places/scalable\n\n"
+                   "KDE-Extensions=.svg\nDirectories=apps/scalable,apps/symbolic,places/scalable\n\n"
                    "[apps/scalable]\nSize=64\nContext=Applications\nType=Scalable\nMinSize=16\nMaxSize=512\n\n"
+                   "[apps/symbolic]\nSize=16\nContext=Applications\nType=Scalable\nMinSize=8\nMaxSize=512\n\n"
                    "[places/scalable]\nSize=64\nContext=Places\nType=Scalable\nMinSize=16\nMaxSize=512\n")
         for name, color in (("firefox", "#ff8800"), ("rider", "#dd3377"), ("visual-studio-code", "#2277ee"),
                             ("code", "#ffaa00")):
             self.write(base / f"apps/scalable/{name}.svg", circle_svg(color))
+        self.write(base / "apps/symbolic/utilities-terminal-symbolic.svg", TERMINAL_SYMBOLIC)
         self.write(base / "places/scalable/folder.svg", BLUE_FOLDER)
         self.write(base / "places/scalable/folder-documents.svg", DOCUMENTS)
         self.write(base / "places/scalable/folder-blue.svg", BLUE_FOLDER)

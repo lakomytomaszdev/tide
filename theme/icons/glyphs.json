@@ -1,0 +1,240 @@
+{
+  "description": "Stonowane glify aplikacji z docka (#8). Nazwy ikon → znak i pastel z palety. Kafelek: zaokrąglony kwadrat w ciemnym odcieniu pastelu, znak w pastelu. Źródła znaku po kolei: theme (ikona symboliczna motywu bazowego albo Breeze), simpleIcons (logo CC0 z Simple Icons, suma SHA-256 poniżej; tide-icons pin-glyphs dopisuje brakujące), file (ręczny znak z theme/icons/glyphs/). Opcjonalne `scale` (ułamek kafelka) zmienia wielkość znaku jednej aplikacji. Nazwy w stylu Toolboksa (jetbrains-rider-<uuid>) trafiają tu przez wzorce z fixes.json.",
+  "tile": {
+    "radius": 0.26,
+    "glyph": 0.46,
+    "tint": 0.16,
+    "lift": 24
+  },
+  "simpleIcons": {
+    "version": "13.21.0",
+    "url": "https://cdn.jsdelivr.net/npm/simple-icons@{version}/icons/{slug}.svg",
+    "license": "CC0-1.0 (https://github.com/simple-icons/simple-icons). Znaki towarowe należą do ich właścicieli.",
+    "sha256": {
+      "discord": "1d364b72c9eaf1fe37d17ca88cd8fb541308dc0f3b09e2ab3b824f380b3493d5",
+      "docker": "65571291c261ef869c31540a38f3ca0f0ee3bb73f179c172211c8860f19a6359",
+      "firefoxbrowser": "5bb2f58d6b27b191af5d7793016b06de8ae571120f4f1d530c235b350ae83371",
+      "openai": "2b4a04ddc2395b20d168694d3850ce2050a702c4a0cdeb4d8b31b9a970481a8c",
+      "pycharm": "e51a005f805f46be5330ae1c066d44cbfd289db915650228e516048a74d956d2",
+      "rider": "875ebe2af63143d748560f8237cf3d1df4133ea0cb8d4b75eb176112774afd44",
+      "steam": "5eef8f31106b81956ed908490bcf8c73abe476aa58bb9041acdf70b0d42ebcae",
+      "webstorm": "11827451725f77c24128844a001cf557726f42f60fd94e4aa7884242593ae6b3",
+      "zedindustries": "90848d3e8d74d4fb3efc7137b8a5181139082e212566b025843379a7cb0550a0"
+    }
+  },
+  "apps": [
+    {
+      "app": "Konsole",
+      "names": [
+        "org.kde.konsole",
+        "utilities-terminal",
+        "konsole"
+      ],
+      "glyph": [
+        {
+          "theme": "utilities-terminal-symbolic"
+        }
+      ],
+      "color": "teal"
+    },
+    {
+      "app": "Dolphin",
+      "names": [
+        "org.kde.dolphin",
+        "system-file-manager",
+        "dolphin"
+      ],
+      "glyph": [
+        {
+          "theme": "system-file-manager-symbolic"
+        }
+      ],
+      "color": "sky"
+    },
+    {
+      "app": "Ustawienia systemowe",
+      "names": [
+        "systemsettings",
+        "preferences-system",
+        "configuration_section"
+      ],
+      "glyph": [
+        {
+          "theme": "preferences-system-symbolic"
+        }
+      ],
+      "color": "text.secondary"
+    },
+    {
+      "app": "Spectacle",
+      "names": [
+        "org.kde.spectacle",
+        "spectacle"
+      ],
+      "glyph": [
+        {
+          "theme": "accessories-screenshot-symbolic"
+        },
+        {
+          "theme": "camera-photo-symbolic"
+        }
+      ],
+      "color": "rose"
+    },
+    {
+      "app": "Firefox",
+      "names": [
+        "firefox"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "firefoxbrowser"
+        },
+        {
+          "theme": "firefox-symbolic"
+        }
+      ],
+      "color": "peach"
+    },
+    {
+      "app": "ChatGPT / Codex",
+      "names": [
+        "chatgpt",
+        "codex"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "openai"
+        }
+      ],
+      "color": "mint"
+    },
+    {
+      "app": "Rider",
+      "names": [
+        "rider",
+        "jetbrains-rider"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "rider"
+        }
+      ],
+      "color": "lavender",
+      "scale": 0.4
+    },
+    {
+      "app": "PyCharm",
+      "names": [
+        "pycharm",
+        "jetbrains-pycharm"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "pycharm"
+        }
+      ],
+      "color": "mint",
+      "scale": 0.4
+    },
+    {
+      "app": "WebStorm",
+      "names": [
+        "webstorm",
+        "jetbrains-webstorm"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "webstorm"
+        }
+      ],
+      "color": "sky",
+      "scale": 0.4
+    },
+    {
+      "app": "Discord",
+      "names": [
+        "discord",
+        "com.discordapp.Discord",
+        "com.discordapp.DiscordPTB"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "discord"
+        },
+        {
+          "theme": "discord-symbolic"
+        }
+      ],
+      "color": "lavender"
+    },
+    {
+      "app": "Steam",
+      "names": [
+        "steam"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "steam"
+        },
+        {
+          "theme": "steam-symbolic"
+        }
+      ],
+      "color": "sky"
+    },
+    {
+      "app": "Zed",
+      "names": [
+        "dev.zed.Zed",
+        "zed"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "zedindustries"
+        }
+      ],
+      "color": "text.secondary"
+    },
+    {
+      "app": "Docker Desktop",
+      "names": [
+        "docker-desktop",
+        "docker"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "docker"
+        }
+      ],
+      "color": "sky"
+    },
+    {
+      "app": "T3 Code",
+      "names": [
+        "t3code",
+        "t3-code"
+      ],
+      "glyph": [
+        {
+          "file": "agent-chat.svg"
+        }
+      ],
+      "color": "butter"
+    },
+    {
+      "app": "Visual Studio Code",
+      "names": [
+        "code",
+        "visual-studio-code",
+        "vscode"
+      ],
+      "glyph": [
+        {
+          "file": "code.svg"
+        }
+      ],
+      "color": "sky"
+    }
+  ]
+}

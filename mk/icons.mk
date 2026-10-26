@@ -6,7 +6,7 @@ TEST_DIRS += theme/icons/tests
 # Motyw bazowy nakładki, np. make install ICON_BASE=Papirus-Dark
 ICON_BASE ?=
 
-.PHONY: install-icons uninstall-icons icons-audit icons-sync icons-build
+.PHONY: install-icons uninstall-icons icons-audit icons-sync icons-build icons-preview
 
 install-icons:
 	@/usr/bin/python3 scripts/icons.py install $(if $(ICON_BASE),--base $(ICON_BASE))
@@ -22,3 +22,7 @@ icons-sync:
 
 icons-build:
 	@/usr/bin/python3 theme/icons/tide_icons.py build $(if $(ICON_BASE),--base $(ICON_BASE))
+
+# Arkusz stonowanych glifów obok obecnych ikon, bez zmian w systemie: build/icons/glyphs-preview.png
+icons-preview:
+	@/usr/bin/python3 theme/icons/preview.py $(if $(ICON_BASE),--base $(ICON_BASE))

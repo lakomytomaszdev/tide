@@ -91,7 +91,9 @@ Przy zmaksymalizowanym oknie Plasma przykleja pływające panele do krawędzi i 
 
 Ikony aplikacji są okrągłe (baza: McMojave-circle-dark). Nakładka „Tide” dziedziczy po bazie i dokłada tylko różnice: aliasy (Toolbox JetBrains, błędne `code`), kafelki z oryginalnych ikon (okrągłe zostają, pełne grafiki wycięte w koło, przezroczyste kształty na tle w swoim kolorze), foldery w tealu, glify w pastelach dla aplikacji bez ikony. `tide-icons audit` pokazuje pokrycie, `tide-icons sync` uzupełnia nakładkę.
 
-Zasady dla nowych ikon: okrąg, bez tekstu w środku, kolory z palety albo własne kolory marki aplikacji. Otwarte: styl ikon w docku (#8).
+Zasady dla nowych ikon: okrąg, bez tekstu w środku, kolory z palety albo własne kolory marki aplikacji.
+
+**Aplikacje z docka (#8)** mają stonowane glify zamiast kolorowych ikon: zaokrąglony kwadrat (promień 26% boku) w kolorze `pastel × 0,16 + 24` na kanał i znak aplikacji w samym pastelu, zajmujący 46% boku, wyśrodkowany. Pełne znaki-kwadraty (JetBrains) są mniejsze (40%), żeby nie przeważały nad znakami z kreski. Kolory: Konsola teal, Dolphin i WebStorm sky, Firefox peach, Rider i Discord lavender, PyCharm i ChatGPT mint, Spectacle rose, T3 Code butter, Ustawienia i Zed `text.secondary`, Steam, Docker i VS Code sky. Lista i źródła znaków: `theme/icons/glyphs.json`, podgląd: `make icons-preview`.
 
 ## Brief: tapeta
 
@@ -137,6 +139,7 @@ Generator `theme/wallpaper/generate.py` rysuje płótno z 4 miękkich plam (lawe
 | Logo | `theme/logo/generate.py` |
 | Tapeta | `theme/wallpaper/generate.py` |
 | Ikony | `theme/icons/`, `tools/make_tile.py` |
+| Glify aplikacji z docka | `theme/icons/glyphs.json`, `theme/icons/glyphs.py`, `theme/icons/glyphs/` |
 | Konsole | `theme/konsole/generate.py` |
 | Widżety i wspólna biblioteka QML | `widgets/`, `widgets/lib/` |
 | Decyzje i ich uzasadnienia | `docs/decisions.md` |

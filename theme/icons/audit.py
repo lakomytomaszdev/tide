@@ -3,8 +3,8 @@
 Audyt patrzy na aktywny łańcuch motywów (nakładka Tide → motyw bazowy → jego
 Inherits → hicolor) i dla każdej widocznej aplikacji mówi, skąd przychodzi jej
 ikona. Plan mówi, co nakładka musi zawierać, żeby każda aplikacja miała ikonę
-z motywu albo kafelek: aliasy, kafelki z oryginalnych ikon i glify dla
-aplikacji bez ikony.
+z motywu albo kafelek: stonowane glify aplikacji z docka (`glyphs.json`),
+aliasy, kafelki z oryginalnych ikon i glify dla aplikacji bez ikony.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import json
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from theme.icons.catalog import (HICOLOR, DesktopFile, IconTheme, Xdg, find_pixmap, icon_name,
                                  theme_chain)
@@ -189,17 +190,20 @@ def to_json(findings: list[Finding], theme: str) -> str:
 @dataclass
 class IconPlan:
     name: str
-    kind: str  # alias | tile | glyph
+    kind: str  # alias | tile | glyph | muted
     source: Path | None = None
     target: str = ""
     glyph: str = ""
     color: str = ""
     label: str = ""
+    art: Any = None  # glyphs.Glyph dla stonowanych glifów
 
     def manifest(self) -> dict:
         entry = {"kind": self.kind}
         if self.target:
             entry["target"] = self.target
+        if self.kind == "muted":
+            entry["glyph"] = self.glyph
         return entry
 
 
@@ -233,8 +237,34 @@ def glyph_plan(name: str, label: str, fixes: dict) -> IconPlan:
     return IconPlan(name, "glyph", glyph=spec.get("glyph", "letter"), color=spec.get("color", ""), label=label)
 
 
-def plan_icon(icon: str, label: str, base: Resolver) -> IconPlan | None:
+def muted_key(icon: str, base: Resolver, glyphs: dict) -> str | None:
+    """Nazwa z glyphs.json, pod którą jest glif dla `icon` — wprost albo przez wzorce z fixes.json."""
+    if icon in glyphs:
+        return icon
+    for pattern in base.fixes["patterns"]:
+        match = re.match(pattern["match"], icon)
+        if match:
+            product = match.group("product").lower()
+            for candidate in pattern["candidates"]:
+                if candidate.format(product=product) in glyphs:
+                    return candidate.format(product=product)
+    return None
+
+
+def muted_plan(icon: str, label: str, base: Resolver, glyphs: dict) -> IconPlan | None:
+    key = muted_key(icon, base, glyphs)
+    if key is None:
+        return None
+    art = glyphs[key]
+    return IconPlan(icon, "muted", source=art.path, target="" if key == icon else key, glyph=art.origin,
+                    color=art.color, label=art.app, art=art)
+
+
+def plan_icon(icon: str, label: str, base: Resolver, glyphs: dict | None = None) -> IconPlan | None:
     """Co nakładka musi mieć pod nazwą `icon`; None, gdy wystarczy motyw bazowy."""
+    muted = muted_plan(icon, label, base, glyphs or {})
+    if muted is not None:
+        return muted  # stonowany glif zasłania ikonę motywu, także tę poprawną
     if base.themed(icon) is not None:
         return None
     alias = alias_target(icon, base)
@@ -278,40 +308,50 @@ def name_candidates(app: DesktopFile, fixes: dict) -> list[str]:
     return out
 
 
-def path_icon_name(app: DesktopFile, base: Resolver) -> tuple[str, IconPlan | None]:
+def path_icon_name(app: DesktopFile, base: Resolver, glyphs: dict | None = None) -> tuple[str, IconPlan | None]:
     """Nazwa z motywu dla aplikacji ze ścieżką; gdy motyw jej nie zna — kafelek z oryginału."""
+    glyphs = glyphs or {}
+    entry = app.entry
+    name = entry.get("X-SnapInstanceName") or app.id.removesuffix(".desktop")
+    for candidate in [name, *name_candidates(app, base.fixes)]:
+        muted = muted_plan(candidate, app.name, base, glyphs)
+        if muted is not None:
+            return candidate, muted
     for candidate in name_candidates(app, base.fixes):
         if base.themed(candidate) is not None:
             return candidate, None
         alias = alias_target(candidate, base)
         if alias is not None:
             return alias[0], None
-    entry = app.entry
-    name = entry.get("X-SnapInstanceName") or app.id.removesuffix(".desktop")
     source = Path(app.icon)
     if source.is_file() and tileable(source):
         return name, IconPlan(name, "tile", source=source, label=app.name)
     return name, glyph_plan(name, app.name, base.fixes)
 
 
-def plan(apps: list[DesktopFile], base: Resolver, base_name: str) -> Plan:
+def plan(apps: list[DesktopFile], base: Resolver, base_name: str, glyphs: dict | None = None) -> Plan:
+    """Plan nakładki; `glyphs` to nazwa ikony → glyphs.Glyph z rozwiązanym źródłem."""
+    glyphs = glyphs or {}
     result = Plan(base_name)
+    # Stonowane glify są w nakładce pod każdą swoją nazwą, także gdy żadna aplikacja jej dziś nie używa.
+    for name in glyphs:
+        result.icons[name] = muted_plan(name, name, base, glyphs)
     # Znane błędy mapowania poprawiamy zawsze, nawet gdy żadna aplikacja ich dziś nie używa.
     for icon in base.fixes["aliases"]:
         item = plan_icon(icon, icon, base)
-        if item is not None and item.kind == "alias":
+        if item is not None and item.kind == "alias" and icon not in result.icons:
             result.icons[icon] = item
     for app in apps:
         if not app.icon:
             # Bez Icon= — lokalna kopia .desktop dostanie nazwę, a nakładka glif.
             name = app.id.removesuffix(".desktop")
             result.renamed[app.id] = name
-            item = glyph_plan(name, app.name, base.fixes)
+            item = muted_plan(name, app.name, base, glyphs) or glyph_plan(name, app.name, base.fixes)
         elif app.icon.startswith("/"):
-            name, item = path_icon_name(app, base)
+            name, item = path_icon_name(app, base, glyphs)
             result.renamed[app.id] = name
         else:
-            item = plan_icon(icon_name(app.icon), app.name, base)
+            item = plan_icon(icon_name(app.icon), app.name, base, glyphs)
         if item is not None:
             result.icons.setdefault(item.name, item)
     return result

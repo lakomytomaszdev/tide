@@ -1,7 +1,9 @@
 """Generuje nakładkę ikon „Tide” z planu i palety.
 
 Nakładka to zwykły motyw ikon, który dziedziczy po motywie bazowym, więc
-zawiera tylko to, czego bazie brakuje albo co robi źle:
+zawiera tylko to, czego bazie brakuje albo co robi źle, i to, co ma
+wyglądać inaczej niż w bazie:
+- stonowane glify: aplikacje z docka jako znak w pastelu na ciemnym kafelku (glyphs.py),
 - aliasy: kopie ikon motywu pod nazwami, których motyw nie zna (Toolbox JetBrains, `code`),
 - kafelki: oryginalne ikony aplikacji spoza motywu w okręgu jak McMojave-circle,
 - glify: proste kafelki w kolorach palety dla aplikacji bez żadnej ikony,
@@ -23,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from theme.icons import glyphs  # noqa: E402
 from theme.icons.audit import MANIFEST, OVERLAY, IconPlan, Plan, Resolver  # noqa: E402
 
 TILE_SIZE = 256
@@ -191,7 +194,7 @@ def index_theme(plan: Plan, base: Resolver) -> str:
     lines = [
         "[Icon Theme]",
         f"Name={OVERLAY}",
-        f"Comment=Nakładka Tide na {plan.base}: aliasy, kafelki aplikacji i foldery w kolorach palety",
+        f"Comment=Nakładka Tide na {plan.base}: stonowane glify, aliasy, kafelki aplikacji i foldery w kolorach palety",
         f"Inherits={plan.base},breeze-dark,hicolor",
         "Example=folder",
     ]
@@ -219,6 +222,8 @@ def build(plan: Plan, base: Resolver, palette: dict, out: Path) -> dict:
             shutil.copyfile(item.source, target)
         elif item.kind == "tile":
             (staging / "apps/256" / f"{item.name}.png").write_bytes(tile_png(item.source))
+        elif item.kind == "muted":
+            (staging / "apps/256" / f"{item.name}.png").write_bytes(glyphs.png(item.art, TILE_SIZE))
         else:
             (staging / "apps/scalable" / f"{item.name}.svg").write_text(glyph_svg(item, palette))
         manifest["icons"][item.name] = item.manifest()
