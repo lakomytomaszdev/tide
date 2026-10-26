@@ -166,12 +166,16 @@ make install FORCE=1            # nadpisuje także własną tapetę
 
 Nakładka „Tide” dziedziczy po motywie bazowym (domyślnie McMojave-circle-dark, inny przez `make install ICON_BASE=...`) i dokłada tylko to, czego bazie brakuje: aliasy dla ikon Toolboksa JetBrains i błędnych mapowań (`code`), okrągłe kafelki z oryginalnych ikon aplikacji spoza motywu, glify w kolorach palety dla aplikacji bez ikony i foldery przefarbowane na teal. Aplikacje, które w `Icon=` podają ścieżkę do pliku (snapy, Zed, Docker), dostają lokalną kopię `.desktop` w `~/.local/share/applications` ze znacznikiem `X-Tide-Icons=override`. Ręczne poprawki leżą w `theme/icons/fixes.json`.
 
+Aplikacje z docka i te najczęściej używane mają w nakładce **stonowane glify**: zaokrąglony kwadrat w ciemnym odcieniu pastelu z palety i jednokolorowy znak aplikacji w tym pastelu (decyzja 29). Ta sama ikona jest w docku, w menu i w KRunnerze. Lista to `theme/icons/glyphs.json`: nazwy ikon aplikacji, źródło znaku i kolor (pastel albo token `text.*`), opcjonalnie `scale`. Znak pochodzi z ikony symbolicznej motywu bazowego (albo Breeze), z [Simple Icons](https://simpleicons.org) (CC0, wersja przypięta w pliku, każde logo ma zapisaną sumę SHA-256; pobierane przy budowaniu do `~/.cache/tide/simple-icons/`) albo z ręcznie narysowanego znaku w `theme/icons/glyphs/`. Nazwy z Toolboksa JetBrains (`jetbrains-rider-<uuid>`) trafiają do glifu przez wzorce z `fixes.json`. Gdy źródła nie ma albo suma się nie zgadza, aplikacja zostaje przy swojej ikonie, a `tide-icons` wypisuje ostrzeżenie. Nowe logo Simple Icons: dopisz aplikację do `glyphs.json`, uruchom `tide-icons pin-glyphs` (dopisze sumę), obejrzyj `make icons-preview` i zatwierdź.
+
 ```bash
 tide-icons audit        # skąd ikony widocznych aplikacji; kod 1, gdy któraś nie pasuje
 tide-icons audit --json
 tide-icons sync         # po instalacji nowej aplikacji: odświeża nakładkę i kopie .desktop
 tide-icons themes       # porównanie kandydatów na motyw bazowy
 make icons-build        # sama nakładka do podglądu w build/icons/Tide
+make icons-preview      # arkusz glifów obok obecnych ikon: build/icons/glyphs-preview.png
+tide-icons pin-glyphs   # sumy SHA-256 nowych logo Simple Icons do glyphs.json
 ```
 
 `make install` instaluje polecenie do `~/.local/bin/tide-icons`. Odinstalowanie usuwa nakładkę, tylko oznaczone kopie `.desktop` (pliki użytkownika, które nadpisaliśmy, wracają z kopii) i dostęp Flatpaka do ikon, jeśli dał go Tide.
