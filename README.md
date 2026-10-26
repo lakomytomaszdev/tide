@@ -46,7 +46,7 @@ make install-daemon install-widget-agents   # usługa i widżet (bez kopii zapas
 make install-agent-jump                     # skrót Meta+A: przejście do agenta, który czeka najdłużej
 make install                                # wszystko, najpierw kopia zapasowa
 make test                                   # testy wszystkich komponentów
-make preview-widgets                        # kafelki widżetów na tle docka: build/preview/dock-tiles-*.png
+make preview-widgets                        # kafelki na tle docka i pasek boczny: build/preview/dock-tiles-*.png, sidebar-*.png
 ```
 
 Gdy agent zaczyna czekać — prosi o zgodę albo zadaje pytanie — przychodzi powiadomienie „Agent czeka: <projekt>” z przyciskiem „Przejdź” (raz na każde wejście w czekanie). Zwykły koniec tury to „skończył” (w kafelku „gotowe”): bez powiadomienia i bez Meta+A, także w wątkach Codex Desktop prowadzonych przez zaplanowane zadanie („zaplanowane”). Meta+A przenosi do okna sesji, która czeka najdłużej; gdy nikt nie czeka, nic się nie dzieje. Jeśli Meta+A jest już zajęty (instalator to wypisze), trzeba go zwolnić w Ustawieniach systemowych → Skróty i przypisać akcji „Tide: przejdź do agenta, który czeka najdłużej”.
@@ -116,7 +116,7 @@ Do sprawdzenia po instalacji: Dolphin, Rider i Firefox na obu monitorach.
 
 ## Pasek boczny
 
-Na lewym monitorze (HDMI-A-1) przy lewej, zewnętrznej krawędzi jest chowany pasek boczny Tide (`scripts/sidebar.py`, cel `install-sidebar` na końcu `make install`): pionowy, pływający panel szeroki na `size.sidebar` (300 px), od dołu smukłego paska do dołu ekranu. Jest schowany (nie zabiera oknom miejsca) i wysuwa się, gdy mysz dotknie lewej krawędzi ekranu albo po **Meta+S**; chowa się sam, gdy mysz z niego zejdzie (po skrócie: po 8 s bez myszy nad paskiem albo od razu po drugim Meta+S). Od góry: nagłówek „Tide” ze skrótem, agenci (cała lista sesji), system (wykres procesora, pamięć, karta graficzna, dyski), worktrees (liczby i przycisk „Otwórz okno Worktrees”) i Limity AI.
+Na lewym monitorze (HDMI-A-1) przy lewej, zewnętrznej krawędzi jest chowany pasek boczny Tide (`scripts/sidebar.py`, cel `install-sidebar` na końcu `make install`): pionowy, pływający panel szeroki na `size.sidebar` (420 px), od dołu smukłego paska do dołu ekranu. Jest widoczny, dopóki nic go nie zasłania („unikaj okien”, nie zabiera oknom miejsca); gdy najedzie na niego okno, chowa się i wysuwa, gdy mysz dotknie lewej krawędzi ekranu albo po **Meta+S** (po skrócie: na 8 s bez myszy nad paskiem albo do drugiego Meta+S). Od góry: nagłówek „Tide” ze skrótem i cztery osobne kafelki — agenci (jedna linia na sesję, „Przejdź” tylko przy czekających, najwyżej 6 wierszy i „+N więcej” z pełną listą obok paska), system (CPU, RAM i dysk z paskami, mała historia procesora, karta graficzna w jednej linii, partycje), worktrees („● 2 w pracy · ● 0 do sprzątnięcia” i „Otwórz okno”) i Limity AI (GPT i Claude: niższy limit z paskiem i resetem). Wolne miejsce zostaje na dole (rozciągany odstęp na końcu panelu), a całość mieści się w ok. 1040 px bez przewijania. Podgląd bez Plasmy: `make preview-widgets` (`build/preview/sidebar-*.png`).
 
 ```bash
 make install-widget-sidebar install-sidebar   # sam pasek (widżety Tide muszą być zainstalowane)
@@ -125,7 +125,7 @@ make sidebar-preview                          # zagnieżdżona sesja: schowany, 
 make uninstall-sidebar                        # usuwa panel i zwalnia skrót
 ```
 
-- **Widoki szczegółowe.** Widżety w pasku mają w konfiguracji `sidebarMode=true` (`[Configuration][General]`), więc Plasma pokazuje od razu ich pełną reprezentację zamiast kafelka, w gęstszym układzie. W docku nic się nie zmienia. Agenci w pasku nie zgłaszają „wymaga uwagi”, bo chowany panel nie chowałby się wtedy wcale — o czekającym agencie mówią dock i powiadomienie.
+- **Kafelki paska.** Widżety w pasku mają w konfiguracji `sidebarMode=true` (`[Configuration][General]`), więc Plasma pokazuje od razu ich pełną reprezentację zamiast kafelka — w trybie paska to zwarty kafelek (`SidebarAgents`, `SidebarSystem`, `SidebarWorktrees`, `SidebarLimits` na wspólnym `SidebarTile`). Kafelki w docku i ich popupy się nie zmieniają. Agenci w pasku nie zgłaszają „wymaga uwagi”, bo chowany panel nie chowałby się wtedy wcale — o czekającym agencie mówią dock i powiadomienie.
 - **Meta+S.** To globalny skrót widżetu-nagłówka `org.tide.sidebar` (w KGlobalAccel: komponent `plasmashell`, akcja `activate widget <id>`), zmieniany w jego ustawieniach (prawy przycisk na nagłówku → Skróty klawiszowe). Gdy Meta+S ma już inna akcja, instalator to wypisze i nie nada skrótu. Szczegóły w decyzji 34.
 - **Po pierwszej instalacji** Plasma wczyta nowy kod widżetów (tryb paska) dopiero po `systemctl --user restart plasma-plasmashell` albo ponownym zalogowaniu.
 - Panel ma znacznik `[Tide] role=sidebar`; ponowna instalacja używa tego samego panelu i tych samych widżetów, a szerokość trafia też do `plasmashellrc` (jak grubość górnych pasków).

@@ -71,68 +71,88 @@ PlasmoidItem {
         }
     }
 
+    // Popup kafelka w docku: karty usług. W pasku bocznym (sidebarMode) zwarty kafelek SidebarLimits.
     fullRepresentation: Item {
-        Layout.preferredWidth: Kirigami.Units.gridUnit * 21
-        Layout.minimumWidth: Kirigami.Units.gridUnit * 17
-        Layout.preferredHeight: body.implicitHeight + Kirigami.Units.smallSpacing * 2
+        id: full
+
+        readonly property bool sidebar: Plasmoid.configuration.sidebarMode
+        readonly property real contentHeight: loader.item ? loader.item.implicitHeight : 0
+
+        Layout.preferredWidth: sidebar ? -1 : Kirigami.Units.gridUnit * 21
+        Layout.minimumWidth: sidebar ? -1 : Kirigami.Units.gridUnit * 17
+        Layout.fillWidth: sidebar
+        Layout.preferredHeight: sidebar ? contentHeight : contentHeight + Kirigami.Units.smallSpacing * 2
         Layout.minimumHeight: Layout.preferredHeight
+        Layout.maximumHeight: sidebar ? contentHeight : Number.POSITIVE_INFINITY
 
-        ColumnLayout {
-            id: body
+        Loader {
+            id: loader
             anchors.fill: parent
-            anchors.margins: Kirigami.Units.smallSpacing
-            spacing: Kirigami.Units.largeSpacing
+            anchors.margins: full.sidebar ? 0 : Kirigami.Units.smallSpacing
+            sourceComponent: full.sidebar ? sidebarView : popupView
+        }
 
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Kirigami.Units.smallSpacing
+        Component {
+            id: sidebarView
+            SidebarLimits { source: limitsSource }
+        }
 
-                Text {
+        Component {
+            id: popupView
+            ColumnLayout {
+                id: body
+                spacing: Kirigami.Units.largeSpacing
+
+                RowLayout {
                     Layout.fillWidth: true
-                    text: "Limity AI"
-                    color: Kirigami.Theme.textColor
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt + 3
-                    font.weight: Font.DemiBold
-                }
-                PlasmaComponents3.BusyIndicator {
-                    visible: limitsSource.busy
-                    running: visible
-                    Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
-                    Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
-                }
-                PlasmaComponents3.ToolButton {
-                    icon.name: "view-refresh"
-                    text: "Odśwież"
-                    display: QQC2.AbstractButton.IconOnly
-                    enabled: limitsSource.available && !limitsSource.busy
-                    onClicked: limitsSource.refresh()
-                    PlasmaComponents3.ToolTip.text: text
-                    PlasmaComponents3.ToolTip.visible: hovered
-                    PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
-                }
-            }
+                    spacing: Kirigami.Units.smallSpacing
 
-            StatusNotice {
-                Layout.fillWidth: true
-                source: limitsSource
-            }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Limity AI"
+                        color: Kirigami.Theme.textColor
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt + 3
+                        font.weight: Font.DemiBold
+                    }
+                    PlasmaComponents3.BusyIndicator {
+                        visible: limitsSource.busy
+                        running: visible
+                        Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+                        Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
+                    }
+                    PlasmaComponents3.ToolButton {
+                        icon.name: "view-refresh"
+                        text: "Odśwież"
+                        display: QQC2.AbstractButton.IconOnly
+                        enabled: limitsSource.available && !limitsSource.busy
+                        onClicked: limitsSource.refresh()
+                        PlasmaComponents3.ToolTip.text: text
+                        PlasmaComponents3.ToolTip.visible: hovered
+                        PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
+                    }
+                }
 
-            Repeater {
-                model: root.services
-                delegate: ServiceCard {
-                    required property var modelData
+                StatusNotice {
                     Layout.fillWidth: true
                     source: limitsSource
-                    serviceKey: modelData.key
-                    title: modelData.name
-                    sessionLabel: modelData.sessionLabel
-                    hideEmptySession: modelData.hideEmptySession
-                    dense: Plasmoid.configuration.sidebarMode
                 }
-            }
 
-            Item { Layout.fillHeight: true }
+                Repeater {
+                    model: root.services
+                    delegate: ServiceCard {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        source: limitsSource
+                        serviceKey: modelData.key
+                        title: modelData.name
+                        sessionLabel: modelData.sessionLabel
+                        hideEmptySession: modelData.hideEmptySession
+                    }
+                }
+
+                Item { Layout.fillHeight: true }
+            }
         }
     }
 }

@@ -1,8 +1,8 @@
-// Widżet agentów: kafelek „Agenci · 2 pracują · 1 czeka · 2 gotowe” (CompactAgents), popup z listą sesji.
+// Widżet agentów: kafelek „Agenci · 2 pracują · 1 czeka · 2 gotowe” (CompactAgents), popup z listą
+// sesji (SessionsView), a w pasku bocznym kafelek z jedną linią na sesję (SidebarAgents).
 // Dane: tide-daemon przez D-Bus (org.tide.Daemon /Agents, opis w docs/tide-daemon.md).
 import QtQuick
 import QtQuick.Layouts
-import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.plasmoid
 import org.kde.plasma.core as PlasmaCore
@@ -15,10 +15,10 @@ PlasmoidItem {
     readonly property int workingCount: countOf("working")
     readonly property int waitingCount: countOf("waiting")
     readonly property int doneCount: countOf("done")
-    readonly property int endedCount: countOf("ended")
-    readonly property var shownSessions: sessions.filter(s => showEnded || s.state !== "ended")
     property bool showEnded: false
     property real nowTs: Date.now() / 1000
+    // Okienko z pełną listą otwarte z paska bocznego („+N więcej”).
+    property bool morePopupOpen: false
 
     // Stan liczony przez Theme.sessionState: starsza usługa zgłaszała koniec tury jako „czeka”.
     function countOf(state) {
@@ -35,9 +35,11 @@ PlasmoidItem {
     Plasmoid.icon: "utilities-terminal"
     // Uwagi wymaga tylko „czeka” — skończone sesje niczego nie blokują.
     // W pasku bocznym (sidebarMode) bez NeedsAttention: chowany panel nie chowa się, dopóki
-    // któryś aplet wymaga uwagi, więc czekający agent trzymałby pasek na ekranie.
+    // któryś aplet wymaga uwagi, więc czekający agent trzymałby pasek na ekranie. Otwarte
+    // okienko z pełną listą trzyma pasek celowo, tak jak popup apletu (CompactApplet.qml).
     Plasmoid.status: waitingCount > 0 && !Plasmoid.configuration.sidebarMode
-        ? PlasmaCore.Types.NeedsAttentionStatus : PlasmaCore.Types.ActiveStatus
+        ? PlasmaCore.Types.NeedsAttentionStatus
+        : morePopupOpen ? PlasmaCore.Types.RequiresAttentionStatus : PlasmaCore.Types.ActiveStatus
     toolTipMainText: "Sesje agentów"
     toolTipSubText: Tide.Texts.agentsToolTip(source.available, workingCount, waitingCount, doneCount)
     // Pasek boczny Tide pokazuje widok szczegółowy na stałe (scripts/panels/sidebar.js).
@@ -123,109 +125,74 @@ PlasmoidItem {
         }
     }
 
+    // Popup kafelka w docku: pełna lista sesji. W pasku bocznym (sidebarMode) kafelek z jedną
+    // linią na sesję (SidebarAgents) — cała lista otwiera się w okienku obok paska („+N więcej”).
     fullRepresentation: Item {
-        Layout.preferredWidth: Kirigami.Units.gridUnit * 26
-        Layout.preferredHeight: Kirigami.Units.gridUnit * 28
-        Layout.minimumWidth: Kirigami.Units.gridUnit * 18
-        Layout.minimumHeight: Kirigami.Units.gridUnit * 12
-        // W pasku bocznym lista zajmuje miejsce, które zostaje po pozostałych widżetach.
-        Layout.fillHeight: Plasmoid.configuration.sidebarMode
+        id: full
 
-        ColumnLayout {
+        readonly property bool sidebar: Plasmoid.configuration.sidebarMode
+        readonly property real sidebarHeight: loader.item ? loader.item.implicitHeight : 0
+
+        Layout.preferredWidth: sidebar ? -1 : Kirigami.Units.gridUnit * 26
+        Layout.preferredHeight: sidebar ? sidebarHeight : Kirigami.Units.gridUnit * 28
+        Layout.minimumWidth: sidebar ? -1 : Kirigami.Units.gridUnit * 18
+        Layout.minimumHeight: sidebar ? sidebarHeight : Kirigami.Units.gridUnit * 12
+        Layout.maximumHeight: sidebar ? sidebarHeight : Number.POSITIVE_INFINITY
+        Layout.fillWidth: sidebar
+
+        Loader {
+            id: loader
             anchors.fill: parent
-            anchors.margins: Kirigami.Units.smallSpacing
-            spacing: Kirigami.Units.largeSpacing
+            anchors.margins: full.sidebar ? 0 : Kirigami.Units.smallSpacing
+            sourceComponent: full.sidebar ? sidebarView : popupView
+        }
 
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Kirigami.Units.smallSpacing
-
-                Text {
-                    text: "Sesje agentów"
-                    color: Kirigami.Theme.textColor
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt + 3
-                    font.weight: Font.DemiBold
-                }
-                Rectangle {
-                    radius: height / 2
-                    color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.10)
-                    implicitHeight: countLabel.implicitHeight + 4
-                    implicitWidth: countLabel.implicitWidth + 14
-                    visible: root.sessions.length > 0
-                    Text {
-                        id: countLabel
-                        anchors.centerIn: parent
-                        text: root.sessions.length - root.endedCount
-                        color: Kirigami.Theme.textColor
-                        font.family: Tide.Theme.monoFamily
-                        font.pointSize: Tide.Tokens.fontSizePt
-                    }
-                }
-                Item { Layout.fillWidth: true }
-                Tide.CountPill {
-                    sessionState: "working"
-                    count: root.workingCount
-                    textColor: Kirigami.Theme.textColor
-                }
-                Tide.CountPill {
-                    sessionState: "waiting"
-                    count: root.waitingCount
-                    emphasized: root.waitingCount > 0
-                    textColor: Kirigami.Theme.textColor
-                }
-                Tide.CountPill {
-                    visible: root.doneCount > 0
-                    sessionState: "done"
-                    count: root.doneCount
-                    textColor: Kirigami.Theme.textColor
-                }
+        Component {
+            id: popupView
+            SessionsView {
+                sessions: root.sessions
+                available: source.available
+                showEnded: root.showEnded
+                nowTs: root.nowTs
+                onActivateRequested: id => root.activate(id)
+                onShowEndedToggled: root.showEnded = !root.showEnded
             }
+        }
 
-            QQC2.ScrollView {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                visible: root.shownSessions.length > 0
+        Component {
+            id: sidebarView
+            SidebarAgents {
+                id: side
+                sessions: root.sessions
+                available: source.available
+                showEnded: root.showEnded
+                nowTs: root.nowTs
+                onActivateRequested: id => root.activate(id)
+                onShowEndedToggled: root.showEnded = !root.showEnded
+                onMoreRequested: morePopup.visible = !morePopup.visible
 
-                ListView {
-                    id: list
-                    model: root.shownSessions
-                    spacing: Kirigami.Units.smallSpacing * 1.5
-                    clip: true
-                    delegate: SessionCard {
-                        required property var modelData
-                        session: modelData
+                // Pełna lista sesji w okienku obok paska (pasek jest przy lewej krawędzi,
+                // więc okienko otwiera się na prawo od „+N więcej”).
+                PlasmaCore.Dialog {
+                    id: morePopup
+                    visualParent: side.moreButton
+                    location: Plasmoid.location
+                    type: PlasmaCore.Dialog.PopupMenu
+                    hideOnWindowDeactivate: true
+                    onVisibleChanged: root.morePopupOpen = visible
+                    mainItem: SessionsView {
+                        width: Kirigami.Units.gridUnit * 26
+                        height: Kirigami.Units.gridUnit * 28
+                        sessions: root.sessions
+                        available: source.available
+                        showEnded: root.showEnded
                         nowTs: root.nowTs
-                        width: ListView.view.width
-                        onActivateRequested: id => root.activate(id)
+                        onActivateRequested: id => {
+                            morePopup.visible = false
+                            root.activate(id)
+                        }
+                        onShowEndedToggled: root.showEnded = !root.showEnded
                     }
-                }
-            }
-
-            Text {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                visible: root.shownSessions.length === 0
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-                wrapMode: Text.WordWrap
-                text: !source.available ? "Usługa tide-daemon nie działa.\nUruchom: systemctl --user start tide-daemon"
-                    : "Brak aktywnych sesji z ostatniej doby."
-                color: Tide.Tokens.textMuted
-                font.family: Tide.Theme.uiFamily
-                font.pointSize: Tide.Tokens.fontSizePt
-            }
-
-            Text {
-                visible: root.endedCount > 0
-                text: (root.showEnded ? "Ukryj zakończone" : "Pokaż zakończone") + " (" + root.endedCount + ")"
-                color: Tide.Tokens.textMuted
-                font.family: Tide.Theme.uiFamily
-                font.pointSize: Tide.Tokens.fontSizePt - 1
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.showEnded = !root.showEnded
                 }
             }
         }

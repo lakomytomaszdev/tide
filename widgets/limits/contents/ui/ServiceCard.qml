@@ -14,8 +14,6 @@ Tide.Card {
     property string sessionLabel: "Sesja"
     // ChatGPT często nie ma okna sesji — wtedy pokazujemy sam limit tygodniowy.
     property bool hideEmptySession: false
-    // Gęsty układ dla paska bocznego: reset obok miernika, mniejsze odstępy.
-    property bool dense: false
 
     readonly property var info: source.service(serviceKey)
     readonly property string serviceState: source.available ? (info.state || "checking") : "offline"
@@ -24,8 +22,7 @@ Tide.Card {
 
     highlighted: serviceState === "login"
     accent: Tide.Tokens.neutral
-    spacing: dense ? 6 : 8
-    padding: dense ? 10 : 12
+    spacing: 8
 
     RowLayout {
         Layout.fillWidth: true
@@ -64,14 +61,12 @@ Tide.Card {
         label: card.sessionLabel
         value: card.sessionValue
         reset: card.source.reset(card.serviceKey, "session")
-        dense: card.dense
     }
     MetricRow {
         Layout.fillWidth: true
         label: "Limit tygodniowy"
         value: card.source.remaining(card.serviceKey, "weekly")
         reset: card.source.reset(card.serviceKey, "weekly")
-        dense: card.dense
     }
 
     Text {

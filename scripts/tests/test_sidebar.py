@@ -16,6 +16,7 @@ from scripts.tests import fake_plasmashell as fake
 ROOT = Path(__file__).resolve().parents[2]
 PALETTE = json.loads((ROOT / "theme/palette/mist.json").read_text())
 ALL = ["org.tide.sidebar", "org.tide.agents", "org.tide.system", "org.tide.worktrees", "org.tide.limits"]
+SPACER = "org.kde.plasma.panelspacer"
 
 
 @unittest.skipUnless(fake.available(), "Brak qml6 do uruchomienia skryptów")
@@ -86,7 +87,7 @@ class SidebarInstallTest(unittest.TestCase):
         out = self.sidebar("install")
         [bar] = self.sidebars()
         self.assertEqual((bar["screen"], bar["location"], bar["hiding"]), (1, "left", "dodgewindows"))
-        self.assertEqual(self.layout(bar), ALL)
+        self.assertEqual(self.layout(bar), [*ALL, SPACER])
         # Plasma nie zapisuje grubości ustawionej skryptem — szerokość trafia do plasmashellrc.
         self.assertEqual(self.thickness(bar["id"]), str(PALETTE["size"]["sidebar"]))
         installed = json.loads(self.installed_file.read_text())
@@ -99,7 +100,7 @@ class SidebarInstallTest(unittest.TestCase):
             (self.data / "plasma/plasmoids" / widget).rmdir()
         self.sidebar("install")
         [bar] = self.sidebars()
-        self.assertEqual(self.layout(bar), ["org.tide.sidebar", "org.tide.agents", "org.tide.worktrees"])
+        self.assertEqual(self.layout(bar), ["org.tide.sidebar", "org.tide.agents", "org.tide.worktrees", SPACER])
 
     def test_reinstall_is_idempotent(self):
         self.sidebar("install")
@@ -107,7 +108,7 @@ class SidebarInstallTest(unittest.TestCase):
         self.sidebar("install")
         [bar] = self.sidebars()
         self.assertEqual(bar["id"], first["sidebar"])
-        self.assertEqual(self.layout(bar), ALL)
+        self.assertEqual(self.layout(bar), [*ALL, SPACER])
         self.assertEqual(json.loads(self.installed_file.read_text())["header"], first["header"])
         self.assertEqual(len([p for p in self.plasma()["panels"] if not p["removed"]]), 3)
 

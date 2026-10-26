@@ -32,6 +32,9 @@ HEADER = "org.tide.sidebar"
 # Kolejność od góry, jak na mocku „Sidebar” (lewy monitor).
 WIDGETS = ["org.tide.agents", "org.tide.system", "org.tide.worktrees", "org.tide.limits"]
 SHORTCUT = "Meta+S"
+# Rozciągany odstęp z Plasmy na końcu paska: kafelki widżetów leżą od góry, wolne miejsce zostaje
+# na dole (bez niego panel rozdziela nadmiar wysokości między aplety).
+SPACER = "org.kde.plasma.panelspacer"
 # Odstęp pływającego panelu od krawędzi ekranu: Plasma 6.8 bierze 8 px, gdy styl nie ma ramki
 # „floating” (Panel.qml w powłoce org.kde.plasma.desktop) — styl Tide jej nie ma.
 FLOATING_GAP = 8
@@ -54,7 +57,8 @@ def taken_by(installed: dict) -> list[str]:
 def params(installed: dict, shortcut: str) -> dict:
     palette = json.loads(PALETTE.read_text())
     return {**screens(), "sidebarPanel": installed.get("sidebar"), "width": palette["size"]["sidebar"],
-            "widgets": installed_widgets(), "header": HEADER, "shortcut": shortcut, "floatingGap": FLOATING_GAP}
+            "widgets": installed_widgets(), "header": HEADER, "shortcut": shortcut, "floatingGap": FLOATING_GAP,
+            "spacer": SPACER}
 
 
 def unregister(header_id: int | None) -> None:

@@ -9,7 +9,7 @@
 //
 // Parametry: P.sidebarPanel (podpowiedź), P.width, P.widgets (typy w kolejności, nagłówek
 // pierwszy), P.header (typ nagłówka), P.shortcut ("" = nie ustawiać), P.floatingGap (odstęp
-// pływającego panelu od krawędzi ekranu w Plasmie).
+// pływającego panelu od krawędzi ekranu w Plasmie), P.spacer (typ rozciąganego odstępu na końcu).
 
 var tideScreensNow = tideScreens();
 var tideOut = {screens: tideScreensNow, sidebar: null, created: false, header: null, order: [],
@@ -73,13 +73,17 @@ if (tideScreensNow.side >= 0) {
     // Dla panelu pionowego „height” to grubość, czyli szerokość paska.
     tideSidebar.height = P.width;
 
-    // Zostają widżety z listy (po jednym z typu, z ich konfiguracją), reszta znika — to nasz panel.
+    // Zostają widżety z listy (po jednym z typu, z ich konfiguracją) i jeden odstęp, reszta
+    // znika — to nasz panel.
     var tideByType = {};
+    var tideSpacer = null;
     var tideCurrent = tideSorted(tideSidebar);
     for (var tideI = 0; tideI < tideCurrent.length; ++tideI) {
         var tideW = tideCurrent[tideI];
         if (P.widgets.indexOf(tideW.type) >= 0 && !tideByType[tideW.type]) {
             tideByType[tideW.type] = tideW;
+        } else if (tideW.type === P.spacer && !tideSpacer) {
+            tideSpacer = tideW;
         } else {
             tideOut.removed.push(tideW.type);
             tideW.remove();
@@ -103,6 +107,14 @@ if (tideScreensNow.side >= 0) {
             tideOut.shortcut = String(tideWidget.globalShortcut || "");
         }
     }
+    // Rozciągany odstęp na końcu bierze wolne miejsce, więc kafelki leżą jeden pod drugim od
+    // góry. Bez niego panel rozkłada nadmiar wysokości między aplety i między kafelkami
+    // powstają nierówne dziury.
+    if (!tideSpacer) {
+        tideSpacer = tideAdd(tideSidebar, P.spacer, ["General"], {expanding: true});
+    }
+    tideWrite(tideSpacer, ["Tide"], {role: "sidebar-spacer"});
+    tideOut.order.push(tideSpacer.id);
     tideOut.sidebar = tideSidebar.id;
 }
 

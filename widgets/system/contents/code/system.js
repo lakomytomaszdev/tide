@@ -81,6 +81,34 @@ function diskHint(disk, worktrees, targets, formatBytes) {
         + ", z czego " + formatBytes(usage.freeable) + " można zwolnić"
 }
 
+// Gigabajty bez jednostki do krótkich zapisów: „0,6”, „8”, „24”. Całe liczby bez przecinka.
+function gigabytes(bytes) {
+    var gb = bytes / 1073741824
+    if (gb >= 10 || Math.abs(gb - Math.round(gb)) < 0.05) return String(Math.round(gb))
+    return gb.toFixed(1).replace(".", ",")
+}
+
+// Jedna linia karty graficznej w pasku bocznym: „GPU 31% · VRAM 0,6/8 GB”.
+function gpuLine(usage, usedVram, totalVram) {
+    var parts = ["GPU " + percentText(usage)]
+    if (number(usedVram) !== null && number(totalVram)) {
+        parts.push("VRAM " + gigabytes(usedVram) + "/" + gigabytes(totalVram) + " GB")
+    }
+    return parts.join(" · ")
+}
+
+// Jedna krótka linia ostrzeżenia w pasku bocznym, gdy któraś partycja przekroczy próg:
+// „Dysk prawie pełny”, a jeśli worktrees na tej partycji da się posprzątać — z dopiskiem,
+// ile to zwolni. Pusty napis, gdy żadna partycja nie jest zajęta powyżej progu.
+function diskNote(disks, worktrees, targets, formatBytes) {
+    var full = fullerDisk(disks)
+    if (!full || full.usedPercent <= HINT_THRESHOLD) return ""
+    var note = "Dysk prawie pełny"
+    if (!Array.isArray(worktrees)) return note
+    var usage = worktreeUsage(worktrees, full.target, targets)
+    return usage.freeable > 0 ? note + " · worktrees zwolnią " + formatBytes(usage.freeable) : note
+}
+
 // „najwięcej: dotnet 3,2 GiB · node 1,1 GiB · firefox 1,0 GiB”; pusty napis bez danych.
 function processesLine(processes, formatBytes) {
     var parts = []

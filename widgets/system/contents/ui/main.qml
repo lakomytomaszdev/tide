@@ -1,4 +1,5 @@
-// Widżet System: kafelek z miernikami procesora, pamięci i dysku (CompactSystem), popup ze szczegółami.
+// Widżet System: kafelek z miernikami procesora, pamięci i dysku (CompactSystem), popup ze szczegółami
+// (FullSystem), a w pasku bocznym zwarty kafelek (SidebarSystem).
 // Dane: czujniki ksystemstats i pomocnik ../code/sysinfo.py (opis w SystemSource.qml).
 import QtQuick
 import QtQuick.Layouts
@@ -53,12 +54,34 @@ PlasmoidItem {
         }
     }
 
-    fullRepresentation: FullSystem {
-        source: systemSource
-        dense: Plasmoid.configuration.sidebarMode
-        Layout.preferredWidth: Kirigami.Units.gridUnit * 22
-        Layout.minimumWidth: Kirigami.Units.gridUnit * 17
-        Layout.preferredHeight: implicitHeight
-        Layout.minimumHeight: implicitHeight
+    // Popup kafelka w docku: FullSystem. W pasku bocznym (sidebarMode) zwarty kafelek SidebarSystem.
+    fullRepresentation: Item {
+        id: full
+
+        readonly property bool sidebar: Plasmoid.configuration.sidebarMode
+        // Dla SystemSource.detailed: czujniki karty graficznej tylko wtedy, gdy widok jest na ekranie.
+        readonly property bool shown: loader.item ? loader.item.shown === true : false
+        readonly property real contentHeight: loader.item ? loader.item.implicitHeight : 0
+
+        Layout.preferredWidth: sidebar ? -1 : Kirigami.Units.gridUnit * 22
+        Layout.minimumWidth: sidebar ? -1 : Kirigami.Units.gridUnit * 17
+        Layout.fillWidth: sidebar
+        Layout.preferredHeight: contentHeight
+        Layout.minimumHeight: contentHeight
+        Layout.maximumHeight: sidebar ? contentHeight : Number.POSITIVE_INFINITY
+
+        Loader {
+            id: loader
+            anchors.fill: parent
+            sourceComponent: full.sidebar ? sidebarView : popupView
+        }
+        Component {
+            id: popupView
+            FullSystem { source: systemSource }
+        }
+        Component {
+            id: sidebarView
+            SidebarSystem { source: systemSource }
+        }
     }
 }
