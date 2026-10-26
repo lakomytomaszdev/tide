@@ -1,0 +1,4 @@
+{"type": "user", "isSidechain": false, "timestamp": "2026-10-23T10:00:00.000Z", "cwd": "@ROOT@/work/alpha", "gitBranch": "feat/login", "sessionId": "h-titled", "message": {"role": "user", "content": "Please fix the login form validation"}}
+{"type": "ai-title", "aiTitle": "Draft title", "sessionId": "h-titled"}
+{"type": "assistant", "isSidechain": false, "timestamp": "2026-10-23T10:01:00.000Z", "cwd": "@ROOT@/work/alpha", "gitBranch": "feat/login", "sessionId": "h-titled", "message": {"role": "assistant", "stop_reason": "end_turn", "content": [{"type": "text", "text": "Done."}]}}
+{"type": "ai-title", "aiTitle": "Login form fix", "sessionId": "h-titled"}

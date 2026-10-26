@@ -1,0 +1,3 @@
+{"timestamp": "2026-10-25T14:00:00.000Z", "type": "session_meta", "payload": {"id": "0000000b-0000-4000-8000-000000000102", "timestamp": "2026-10-25T14:00:00.000Z", "cwd": "@ROOT@/work/beta", "originator": "Codex Desktop", "source": "vscode", "base_instructions": {"text": "Synthetic base instructions."}, "git": {"branch": "main"}}}
+{"timestamp": "2026-10-25T14:00:01.000Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "UserMessage", "id": "u1", "content": [{"type": "text", "text": "Investigate the flaky test"}]}}}
+{"timestamp": "2026-10-25T14:30:00.000Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "t1"}}

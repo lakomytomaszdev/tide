@@ -48,7 +48,8 @@ Ustalenia z sesji projektowej (grilling) z 26.10.2026. Każda decyzja ma krótki
     a) pełna kopia `org.kde.plasma.desktop` w `~/.local/share/plasma/shells/` z naszym `lockscreen/` — panele bez zmian, ale po aktualizacji Plasmy plasmashell czytałby starą kopię, więc potrzebna jest automatyczna resynchronizacja (np. jednostka systemd użytkownika uruchamiana przed plasmashell, porównująca sumę plików systemowych); rekomendowana, jeśli ekran Tide ma działać na co dzień,
     b) `ShellPackage=org.tide.desktop` — plasmashell przeszedłby na nowy plik paneli (`plasma-org.tide.desktop-appletsrc`), czyli pusty pulpit; odrzucona,
     c) zostać przy ekranie Plasmy z tapetą, kolorami i czcionkami Tide, dopóki KDE nie przywróci ekranów blokady w motywach globalnych.
-    Do czasu decyzji działa c).
+    Użytkownik wybrał a) (26.10.2026); wdrożenie w gałęzi ekranu blokady i ekranu ładowania.
+28. **KRunner (26.10.2026, #13).** Wtyczka D-Bus KRunnera (`org.kde.krunner1`) w tide-daemon: sesje Claude Code i Codexa z 30 dni, projekty i worktrees. Obiekt obsługuje dbus-python na osobnym połączeniu z nazwą `org.tide.Daemon.KRunner`, bo PyQt6 nie zbuduje odpowiedzi `a(sssida{sv})` (tablica struktur wymaga typu zarejestrowanego w C++); dbus-python i Qt dzielą domyślną pętlę GLib, więc wszystko dzieje się w jednym wątku głównym. Indeks historii trzyma tylko małe metadane (tytuł skrócony do 100 znaków) i wyłącznie w pamięci — bez pliku pamięci podręcznej, kosztem ok. 2 s przy pierwszym zapytaniu po starcie usługi. Buduje się leniwie przy pierwszym zapytaniu i odświeża przyrostowo, tymi samymi czytnikami co obszar Agents. Tytuł wątku Codexa bierzemy także z bazy aplikacji (`state_<n>.sqlite`, tylko odczyt), bo wątki Codex Desktop nie mają tytułu ani w dzienniku, ani w `session_index.jsonl`. Wznowienie otwiera nowe okno Konsoli (jak „Otwórz” w widżecie worktrees), a sesja, która jeszcze działa, przenosi do swojego okna zamiast uruchamiać drugą kopię.
 
 ## Później
 

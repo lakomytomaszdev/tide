@@ -31,6 +31,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `widgets/worktrees/` | Widżet worktrees `org.tide.worktrees`: liczba worktrees i do sprzątnięcia, lista według repozytoriów, sprzątanie scalonych |
 | `widgets/system/` | Widżet `org.tide.system`: procesor, pamięć, karta graficzna i dyski z czujników ksystemstats |
 | `kwin/` | Skrypt KWin `tide-agent-jump` ze skrótem Meta+A i jego instalator |
+| `krunner/` | Plik wtyczki KRunnera „Tide: agenci i projekty” i jej instalator (wyniki daje tide-daemon) |
 | `mk/` | Cele `make` poszczególnych komponentów (`install-*`, `uninstall-*`, katalogi testów) |
 | `docs/` | Decyzje projektowe, opis usługi |
 
@@ -46,6 +47,8 @@ make test                                   # testy wszystkich komponentów
 ```
 
 Gdy agent zaczyna czekać, przychodzi powiadomienie „Agent czeka: <projekt>” z przyciskiem „Przejdź” (raz na każde wejście w czekanie). Meta+A przenosi do okna sesji, która czeka najdłużej; gdy nikt nie czeka, nic się nie dzieje. Jeśli Meta+A jest już zajęty (instalator to wypisze), trzeba go zwolnić w Ustawieniach systemowych → Skróty i przypisać akcji „Tide: przejdź do agenta, który czeka najdłużej”.
+
+**KRunner.** `make install-daemon install-krunner` dodaje wtyczkę „Tide: agenci i projekty”: po wpisaniu w KRunnerze (Alt+Spacja) nazwy projektu, gałęzi albo fragmentu tytułu rozmowy pokazuje sesje Claude Code i Codexa z ostatnich 30 dni (`Claude · plasma-tide · <tytuł>`, `<gałąź> · 3 dni temu`), projekty z `~/DevWorkspace` i worktrees. Enter wznawia sesję w nowym oknie Konsoli w jej katalogu (albo przenosi do okna, jeśli sesja jeszcze działa), otwiera projekt lub worktree w Konsoli; akcja obok otwiera w Riderze. `ai <słowa>` szuka tylko sesji. Szczegóły: [docs/tide-daemon.md](docs/tide-daemon.md#krunner).
 
 Widżet „Tide · Agenci” dodaje się do panelu z listy widżetów. Po aktualizacji już dodanego widżetu Plasma wczyta nowy kod dopiero po `systemctl --user restart plasma-plasmashell`. Kolory biblioteki QML są generowane z palety przy składaniu pakietu (`widgets/stage.py` → `Tokens.qml`).
 

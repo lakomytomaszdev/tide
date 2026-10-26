@@ -1,0 +1,2 @@
+{"timestamp": "2026-09-20T09:00:00.000Z", "type": "session_meta", "payload": {"id": "0000000b-0000-4000-8000-000000000105", "timestamp": "2026-09-20T09:00:00.000Z", "cwd": "@ROOT@/work/beta", "originator": "codex_cli_rs", "source": "cli", "base_instructions": {"text": "Synthetic base instructions."}, "git": {"branch": "main"}}}
+{"timestamp": "2026-09-20T09:00:01.000Z", "type": "event_msg", "payload": {"type": "user_message", "message": "Too old to show"}}

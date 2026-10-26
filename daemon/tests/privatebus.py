@@ -67,11 +67,13 @@ class PrivateBus:
         self.env = dict(os.environ, DBUS_SESSION_BUS_ADDRESS=self.address)
         self.bus = QDBusConnection.connectToBus(self.address, name)
 
-    def spawn(self, argv, service: str, **kwargs) -> subprocess.Popen:
-        """Uruchamia proces na tej magistrali i czeka, aż zarejestruje nazwę usługi."""
+    def spawn(self, argv, service: str, extra_env: dict | None = None, **kwargs) -> subprocess.Popen:
+        """Uruchamia proces na tej magistrali i czeka, aż zarejestruje nazwę usługi.
+
+        extra_env: dodatkowe zmienne (np. atrapy programów na początku PATH, tymczasowy HOME)."""
         kwargs.setdefault("stdout", subprocess.DEVNULL)
         kwargs.setdefault("stderr", subprocess.DEVNULL)
-        proc = subprocess.Popen(argv, env=self.env, **kwargs)
+        proc = subprocess.Popen(argv, env=dict(self.env, **(extra_env or {})), **kwargs)
         self.children.append(proc)
         deadline = time.time() + 15
         while time.time() < deadline and proc.poll() is None:

@@ -1,0 +1,2 @@
+{"type": "user", "isSidechain": false, "timestamp": "2026-09-01T08:00:00.000Z", "cwd": "@ROOT@/work/alpha", "gitBranch": "main", "sessionId": "h-old", "message": {"role": "user", "content": "Ancient work"}}
+{"type": "assistant", "isSidechain": false, "timestamp": "2026-09-01T08:01:00.000Z", "cwd": "@ROOT@/work/alpha", "gitBranch": "main", "sessionId": "h-old", "message": {"role": "assistant", "stop_reason": "end_turn", "content": [{"type": "text", "text": "Ok."}]}}

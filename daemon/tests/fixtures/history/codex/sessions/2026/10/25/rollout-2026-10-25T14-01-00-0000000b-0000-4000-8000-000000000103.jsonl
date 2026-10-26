@@ -1,0 +1,2 @@
+{"timestamp": "2026-10-25T14:01:00.000Z", "type": "session_meta", "payload": {"id": "0000000b-0000-4000-8000-000000000103", "timestamp": "2026-10-25T14:01:00.000Z", "cwd": "@ROOT@/work/beta", "originator": "Codex Desktop", "source": {"subagent": {"other": "guardian"}}, "base_instructions": {"text": "Synthetic base instructions."}, "git": {"branch": "main"}}}
+{"timestamp": "2026-10-25T14:01:01.000Z", "type": "event_msg", "payload": {"type": "user_message", "message": "Review this approval"}}

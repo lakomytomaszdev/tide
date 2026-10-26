@@ -1,4 +1,5 @@
-"""Atrapy systemctl, kpackagetool6, qdbus6, kwriteconfig6 i dbus-send dla testów instalacji.
+"""Atrapy systemctl, kpackagetool6, qdbus6, kwriteconfig6, dbus-send oraz programów uruchamianych
+przez usługę (systemd-run, konsole, rider, claude, codex) dla testów instalacji i uruchamiania.
 
 Testy instalacji nigdy nie dotykają prawdziwego pulpitu: katalog z atrapami idzie na początek
 PATH, a każde wywołanie jest zapisywane do pliku dziennika. kpackagetool6 kopiuje pakiet tam,
@@ -42,7 +43,10 @@ LOG_ONLY = """#!/bin/bash
 echo "$(basename "$0") $*" >> "$TIDE_FAKE_LOG"
 """
 FAKES = {"systemctl": SYSTEMCTL, "kpackagetool6": KPACKAGETOOL, "kwriteconfig6": LOG_ONLY, "dbus-send": LOG_ONLY,
-         "qdbus6": QDBUS}
+         "qdbus6": QDBUS,
+         # Programy otwierane przez usługę (worktrees, KRunner) — tylko zapis wywołania, żadne okno
+         # nie powstaje, a systemd-run nie dotyka prawdziwego menedżera usług użytkownika.
+         "systemd-run": LOG_ONLY, "konsole": LOG_ONLY, "rider": LOG_ONLY, "claude": LOG_ONLY, "codex": LOG_ONLY}
 
 
 def make_env(tmp: str) -> dict:

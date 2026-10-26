@@ -1,4 +1,4 @@
-"""Otwieranie worktree w terminalu (Konsole) albo w Riderze.
+"""Otwieranie worktree w terminalu (Konsole) albo w Riderze i wznawianie sesji agenta w Konsoli.
 
 Rider z JetBrains Toolbox ma skrypt uruchomieniowy w ~/.local/share/JetBrains/Toolbox/scripts,
 którego zwykle nie ma w PATH usługi systemd — dlatego szukamy go też tam (i w kilku innych
@@ -15,6 +15,10 @@ import threading
 
 TERMINAL = "terminal"
 RIDER = "rider"
+AGENTS = ("claude", "codex")
+# Po zakończeniu agenta karta nie znika: zostaje zwykła powłoka w tym samym katalogu.
+# "$0" "$@" to polecenie agenta przekazane jako osobne argumenty — bez sklejania napisów.
+KEEP_SHELL = '"$0" "$@"; exec "${SHELL:-/bin/sh}"'
 
 
 def rider_candidates(home: str) -> list[str]:
@@ -37,6 +41,10 @@ class Launchers:
         self.rider = env.get("TIDE_RIDER") or shutil.which("rider", path=search) or next(
             (p for p in rider_candidates(home) if os.path.isfile(p) and os.access(p, os.X_OK)), "")
         self.scope = shutil.which("systemd-run", path=search) or ""
+        # Programy agentów: z PATH usługi, zapasowo z ~/.local/bin (instalator Claude Code),
+        # a w ostateczności sama nazwa — wtedy szuka jej powłoka w Konsoli.
+        self.agents = {name: shutil.which(name, path=search)
+                       or _executable(os.path.join(home, ".local/bin", name)) or name for name in AGENTS}
 
     def available(self) -> dict:
         return {TERMINAL: bool(self.terminal), RIDER: bool(self.rider)}
@@ -49,12 +57,35 @@ class Launchers:
             argv = [self.rider, path]
         else:
             return []
+        return self._scoped(argv)
+
+    def terminal_command(self, path: str, argv: list[str]) -> list[str]:
+        """Konsole w katalogu path z poleceniem argv (np. wznowienie sesji agenta), po którym
+        zostaje powłoka. Pusta lista, gdy Konsoli nie ma."""
+        if not self.terminal or not argv:
+            return []
+        return self._scoped([self.terminal, "--workdir", path, "-e", "/bin/sh", "-c", KEEP_SHELL, *argv])
+
+    def resume_command(self, tool: str, session_id: str, cwd: str) -> list[str]:
+        """Wznowienie sesji: Claude Code `claude --resume <id>`, Codex `codex resume <id>`."""
+        if tool == "claude":
+            agent = [self.agents["claude"], "--resume", session_id]
+        elif tool == "codex":
+            agent = [self.agents["codex"], "resume", session_id]
+        else:
+            return []
+        return self.terminal_command(cwd, agent)
+
+    def _scoped(self, argv: list[str]) -> list[str]:
         if self.scope:
             argv = [self.scope, "--user", "--scope", "--collect", "--quiet", "--"] + argv
         return argv
 
     def open(self, app: str, path: str) -> bool:
-        argv = self.command(app, path)
+        return self.spawn(self.command(app, path), path)
+
+    def spawn(self, argv: list[str], path: str) -> bool:
+        """Uruchamia argv w katalogu path (w osobnej jednostce systemd, gdy się da)."""
         if not argv or not os.path.isdir(path):
             return False
         try:
@@ -65,3 +96,7 @@ class Launchers:
         # Zbieramy proces po zakończeniu, żeby nie zostawał zombie.
         threading.Thread(target=proc.wait, daemon=True).start()
         return True
+
+
+def _executable(path: str) -> str:
+    return path if os.path.isfile(path) and os.access(path, os.X_OK) else ""
