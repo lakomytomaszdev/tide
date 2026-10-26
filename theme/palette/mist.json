@@ -127,7 +127,7 @@
     "tabFontPt": 10,
     "watermark": {
       "color": "teal",
-      "opacity": 0.05,
+      "opacity": 0.035,
       "sizePx": 260,
       "insetPx": 28
     }
