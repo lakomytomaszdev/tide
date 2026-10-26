@@ -72,6 +72,14 @@
     "logoPx": 44,
     "dim": 0.2
   },
+  "splash": {
+    "logoPx": 128,
+    "barWidth": 220,
+    "barHeight": 4,
+    "barGap": 44,
+    "dim": 0.35,
+    "pulseMs": 2400
+  },
   "fonts": {
     "ui": "Geist",
     "mono": "Geist Mono",

@@ -85,6 +85,7 @@ Przy zmaksymalizowanym oknie Plasma przykleja pływające panele do krawędzi i 
 - **Karta:** tło `card` albo przyciemnione tło pastelu stanu (krycie ~0,08) z ramką w tym pastelu (~0,25–0,35). Karta wymagająca uwagi (agent czeka) jest w brzoskwini.
 - **Miernik:** pasek 4–6 px na tle tekstu o kryciu 0,1; wypełnienie: mięta >40%, masło 16–40%, róż ≤15%. Pierścienie w widżecie systemu tak samo.
 - **Przyciski okna:** po prawej, minimalizuj · maksymalizuj · zamknij — pastelowe kółka 13 px (masło, mięta, róż) co 8 px; w oknie nieaktywnym szare, ikonki dopiero po najechaniu.
+- **Ekran ładowania:** przyciemniona tapeta Mist (`splash.dim` 0,35 koloru pulpitu), pośrodku pełne logo 128 px, 44 px niżej pasek 220×4 px — tor w kolorze tekstu o kryciu `opacity.outline`, wypełnienie `accent`, promień `radius.small` ograniczony do połowy wysokości. Logo „oddycha” (krycie 1 → 0,78, cykl `splash.pulseMs`), bez tekstu.
 - **Logo „trzy fale”:** fale teal, lawenda, brzoskwinia. Wersja pełna na kafelku `card` (promień 20/64), wersja bez kafelka z grubszymi falami od 18 px, wersja symboliczna jednokolorowa.
 
 ## Ikony
