@@ -131,4 +131,36 @@ QtObject {
         if (!available) return "Usługa Limity AI nie działa"
         return "Pozostały limit AI: GPT " + percent(gpt) + ", Claude " + percent(claude)
     }
+
+    // Raport poranny (tide-daemon /Reports Status()): kiedy powstał, względem „teraz” w czasie
+    // lokalnym — „dziś 07:00”, „wczoraj”, starszy „24.10”. Pusty napis bez czasu.
+    function reportWhen(generatedAt, nowTs) {
+        if (typeof generatedAt !== "number" || !isFinite(generatedAt)) return ""
+        const made = new Date(generatedAt * 1000)
+        const now = new Date(nowTs * 1000)
+        const midnight = d => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+        const days = Math.round((midnight(now) - midnight(made)) / 86400000)
+        const two = n => (n < 10 ? "0" : "") + n
+        if (days <= 0) return "dziś " + two(made.getHours()) + ":" + two(made.getMinutes())
+        if (days === 1) return "wczoraj"
+        return made.getDate() + "." + two(made.getMonth() + 1)
+    }
+
+    // Link w nagłówku paska bocznego: „Raport · dziś 07:00”; bez raportu pusty (link znika).
+    function reportLink(status, nowTs) {
+        if (!status || !status.path) return ""
+        const when = reportWhen(status.generatedAt, nowTs)
+        return when ? "Raport · " + when : "Raport"
+    }
+
+    // Nazwa dla czytnika ekranu: „Raport poranny · dziś 07:00 · 1 czeka na ciebie · nowy, nieotwarty”.
+    function reportAccessible(status, nowTs) {
+        if (!status || !status.path) return ""
+        const parts = ["Raport poranny"]
+        const when = reportWhen(status.generatedAt, nowTs)
+        if (when) parts.push(when)
+        if (typeof status.waiting === "number" && status.waiting > 0) parts.push(status.waiting + " czeka na ciebie")
+        if (status.unread) parts.push("nowy, nieotwarty")
+        return parts.join(" · ")
+    }
 }

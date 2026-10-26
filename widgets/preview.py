@@ -10,7 +10,10 @@ danymi. Każdy scenariusz daje osobny PNG: dock-tiles-<nazwa>.png. Do tego popup
 agents-popup.png, i cały pasek boczny lewego monitora
 (nagłówek, SidebarAgents, SidebarSystem, SidebarWorktrees, SidebarLimits) w 420×1040 px:
 sidebar-<nazwa>.png. Na koniec popup Limitów AI (karty usług z prognozą z tide-daemon):
-limits-popup-<nazwa>.png. Ten sam kod sprawdza teksty i wymiary w testach
+limits-popup-<nazwa>.png. Link do raportu porannego (nagłówek paska i nagłówek popupu agentów)
+w trzech stanach — nowy, przeczytany, brak raportu: sidebar-report-<stan>.png
+i agents-popup-report-<stan>.png. Czas lokalny to Europe/Warsaw (powtarzalne „dziś 07:00”).
+Ten sam kod sprawdza teksty i wymiary w testach
 (widgets/tests/test_dock_tiles.py, widgets/tests/test_sidebar_tiles.py,
 widgets/tests/test_limits_forecast.py).
 """
@@ -50,6 +53,21 @@ def forecast_entry(state, when="", exhaust_in_s=0):
 
 
 NOW_TS = 1793016000  # 2026-10-26 12:00 UTC
+PREVIEW_TZ = "Europe/Warsaw"  # „teraz” = 13:00 czasu lokalnego
+
+
+def report_status(state):
+    """Najnowszy raport w kształcie /Reports Status() z tide-daemon (null — usługa nie działa)."""
+    if state is None:
+        return None
+    if state == "none":
+        return {"path": "", "day": "", "generatedAt": None, "projects": None, "waiting": None, "unread": False}
+    day, made = ("2026-10-25", NOW_TS - 30 * 3600) if state == "yesterday" else ("2026-10-26", NOW_TS - 6 * 3600)
+    return {"path": f"/home/t/.local/share/tide/reports/{day}/index.html", "day": day, "generatedAt": made,
+            "projects": 3, "waiting": 1, "unread": state != "read"}
+
+
+REPORT_STATES = ("unread", "read", "none")
 
 # Przykładowe dane: zwykły dzień i stany puste (nic nie działa, nic do sprzątnięcia, brak usług).
 # „runout”: jak „busy”, ale tide-daemon prognozuje koniec limitu sesji Claude przed resetem.
@@ -242,13 +260,32 @@ Window {
         sessions: window.sessions
         showEnded: %(showEnded)s
         nowTs: %(now)d
+        report: %(report)s
+    }
+
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (let i = 0; i < item.children.length; i++) {
+            const hit = find(item.children[i], name)
+            if (hit) return hit
+        }
+        return null
     }
 
     Timer {
         interval: 400; running: true
         onTriggered: {
+            const button = find(view, "reportButton")
+            const dot = button ? find(button, "reportDot") : null
+            const headerRow = find(view, "popupHeader")
+            const footerRow = find(view, "popupFooter")
             const report = { rows: view.rows, ended: view.endedCount, working: view.workingCount,
-                             waiting: view.waitingCount, done: view.doneCount }
+                             waiting: view.waitingCount, done: view.doneCount,
+                             header: { report: button.visible ? button.text : "", unread: dot.visible,
+                                       accessible: button.Accessible.name,
+                                       implicitWidth: Math.round(headerRow.implicitWidth),
+                                       width: Math.round(headerRow.width),
+                                       footerImplicitWidth: Math.round(footerRow.implicitWidth) } }
             const png = "%(png)s"
             if (png === "") {
                 console.warn("RESULT " + JSON.stringify(report))
@@ -298,6 +335,7 @@ SIDEBAR_SCENARIOS = {
             sidebar_session("claude:f", "claude", "stary-projekt", "ended", 20000),
         ],
         "agentsAvailable": True,
+        "report": report_status("unread"),
         "system": {"ready": True, "cpu": 34, "memory": 61, "memoryUsed": 9.8 * GiB, "memoryTotal": 16 * GiB,
                    "gpu": {"available": True, "usage": 31, "usedVram": 0.6 * GiB, "totalVram": 8 * GiB},
                    "disks": [{"target": "/", "usedPercent": 90.4, "free": 9.5 * GiB},
@@ -322,6 +360,7 @@ SIDEBAR_SCENARIOS = {
             ])
         ],
         "agentsAvailable": True,
+        "report": report_status("yesterday"),
         "system": {"ready": True, "cpu": 78, "memory": 83, "memoryUsed": 13.3 * GiB, "memoryTotal": 16 * GiB,
                    "gpu": {"available": True, "usage": 64, "usedVram": 5.2 * GiB, "totalVram": 8 * GiB},
                    "disks": [{"target": "/", "usedPercent": 88.0, "free": 11.4 * GiB}],
@@ -434,7 +473,13 @@ Window {
         width: parent.width - %(inset)d * 2
         spacing: %(spacing)d
 
-        Sidebar.Header { id: header; width: parent.width; shortcutText: "Meta+S" }
+        Sidebar.Header {
+            id: header
+            width: parent.width
+            shortcutText: "Meta+S"
+            report: window.sample.report === undefined ? null : window.sample.report
+            nowTs: %(now)d
+        }
         Agents.SidebarAgents {
             id: agents
             width: parent.width
@@ -458,7 +503,12 @@ Window {
         interval: 500; running: true
         onTriggered: {
             const tiles = [header, agents, system, worktrees, limits]
+            const link = header.children.find(c => c.objectName === "reportLink")
+            const dot = link.children.find(c => c.objectName === "reportDot")
             const report = {
+                header: { text: link.visible ? link.text : "", unread: dot.visible,
+                          accessible: link.Accessible.name, linkWidth: Math.round(link.width),
+                          linkRight: Math.round(link.x + link.width) },
                 heights: tiles.map(t => Math.round(t.implicitHeight)),
                 total: Math.round(column.implicitHeight + %(inset)d * 2),
                 height: window.height,
@@ -614,7 +664,8 @@ def _run(qml: str, palette_path: str, what: str):
         with open(harness, "w", encoding="utf-8") as fh:
             fh.write(qml)
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1",
-                   XDG_CONFIG_DIRS="/etc/xdg")  # bez ~/.config/kdedefaults z sesji Plasmy
+                   XDG_CONFIG_DIRS="/etc/xdg",  # bez ~/.config/kdedefaults z sesji Plasmy
+                   TZ=PREVIEW_TZ)  # godziny w tekstach (raport „dziś 07:00”) nie zależą od komputera
         result = subprocess.run([QML_TOOL, harness], env=env, capture_output=True, text=True, timeout=60)
     problems = [line for line in result.stderr.splitlines()
                 if re.search(r"Unable to assign|TypeError|ReferenceError|is not a type|overrides a member"
@@ -633,11 +684,14 @@ def render(scenario: dict, png: str | None = None, palette_path: str = DEFAULT_P
 
 
 def render_popup(sessions: list[dict] | None = None, png: str | None = None, show_ended: bool = False,
-                 palette_path: str = DEFAULT_PALETTE) -> dict:
-    """Rysuje popup kafelka agentów (SessionsView); zwraca wiersze i liczniki (i zapisuje PNG)."""
+                 palette_path: str = DEFAULT_PALETTE, report: str | None = "unread") -> dict:
+    """Rysuje popup kafelka agentów (SessionsView); zwraca wiersze i liczniki (i zapisuje PNG).
+
+    report: stan raportu porannego dla linku „Raport” (report_status), None — usługa nie działa."""
     qml = POPUP_HARNESS % {"sessions": json.dumps(SESSIONS if sessions is None else sessions, ensure_ascii=False),
                            "width": POPUP_WIDTH, "height": POPUP_HEIGHT, "margin": MARGIN, "now": NOW_TS,
                            "showEnded": "true" if show_ended else "false",
+                           "report": json.dumps(report_status(report)),
                            "png": os.path.abspath(png) if png else ""}
     return _run(qml, palette_path, "popupu agentów")
 
@@ -676,6 +730,14 @@ def main(argv: list[str]) -> int:
         report = render_sidebar(scenario, png)
         print(f"{os.path.abspath(png)}: pasek boczny {report['heights']} px, razem {report['total']}"
               f" z {report['height']} px")
+    for state in REPORT_STATES:
+        png = os.path.join(out_dir, f"sidebar-report-{state}.png")
+        report = render_sidebar(dict(SIDEBAR_SCENARIOS["typical"], report=report_status(state)), png)
+        print(f"{os.path.abspath(png)}: nagłówek paska, raport {state}: „{report['header']['text']}”")
+        png = os.path.join(out_dir, f"agents-popup-report-{state}.png")
+        popup = render_popup(png=png, report=state)
+        print(f"{os.path.abspath(png)}: popup agentów, raport {state}: „{popup['header']['report']}”"
+              f"{' •' if popup['header']['unread'] else ''}")
     for name, scenario in LIMITS_POPUP_SCENARIOS.items():
         png = os.path.join(out_dir, f"limits-popup-{name}.png")
         report = render_limits_popup(scenario, png)

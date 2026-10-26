@@ -1,6 +1,7 @@
 // Widżet agentów: kafelek „Agenci · 2 pracują · 1 czeka · 2 gotowe” (CompactAgents), popup z listą
 // sesji (SessionsView), a w pasku bocznym kafelek z jedną linią na sesję (SidebarAgents).
-// Dane: tide-daemon przez D-Bus (org.tide.Daemon /Agents, opis w docs/tide-daemon.md).
+// Dane: tide-daemon przez D-Bus (org.tide.Daemon /Agents, opis w docs/tide-daemon.md); link „Raport”
+// w nagłówku popupu z /Reports Status() i Open(). Kafelek w docku raportu nie pokazuje (nie rośnie).
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -40,6 +41,16 @@ PlasmoidItem {
         })
     }
 
+    // Raport poranny w przeglądarce; usługa oznacza go jako przeczytany (kropka przy „Raport” gaśnie).
+    function openReport() {
+        reports.call("Open", [], function (ok) {
+            if (ok === true) {
+                root.expanded = false
+                reports.refresh()
+            }
+        })
+    }
+
     function activate(sessionId) {
         source.call("ActivateSession", [sessionId], function (ok) {
             if (ok) root.expanded = false
@@ -66,6 +77,16 @@ PlasmoidItem {
         iface: "org.tide.Daemon.Agents"
         method: "Sessions"
     }
+
+    // Najnowszy raport poranny — tylko do nagłówka popupu w docku (w pasku bocznym jest w nagłówku paska).
+    Tide.DaemonSource {
+        id: reports
+        path: "/Reports"
+        iface: "org.tide.Daemon.Reports"
+        method: "Status"
+        pollInterval: Plasmoid.configuration.sidebarMode ? 0 : 60000
+    }
+    onExpandedChanged: if (expanded && !Plasmoid.configuration.sidebarMode) reports.refresh()
 
     // Czas „od ostatniej aktywności” liczony na bieżąco, bez pytania usługi.
     Timer {
@@ -170,10 +191,12 @@ PlasmoidItem {
                 available: source.available
                 showEnded: root.showEnded
                 nowTs: root.nowTs
+                report: reports.available ? reports.result : null
                 onActivateRequested: id => root.activate(id)
                 onShowEndedToggled: root.showEnded = !root.showEnded
                 onNewTaskRequested: root.newTask()
                 onSessionsRequested: id => root.showSessions(id)
+                onReportRequested: root.openReport()
             }
         }
 

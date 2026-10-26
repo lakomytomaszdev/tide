@@ -1,4 +1,8 @@
-// Nagłówek chowanego paska bocznego Tide (lewy monitor): nazwa i skrót, który wysuwa pasek.
+// Nagłówek chowanego paska bocznego Tide (lewy monitor): nazwa, link do raportu porannego i skrót,
+// który wysuwa pasek.
+//
+// Raport: tide-daemon /Reports Status() (odświeżane sygnałem Changed i co minutę); kliknięcie woła
+// Open() — usługa otwiera raport w przeglądarce i oznacza go jako przeczytany (kropka gaśnie).
 //
 // Skrót (domyślnie Meta+S) to globalny skrót tego widżetu („Aktywuj widżet”), nadawany przy
 // instalacji przez scripts/sidebar.py i zmieniany w jego ustawieniach (Skróty klawiszowe).
@@ -51,6 +55,31 @@ PlasmoidItem {
         }
     }
 
+    // Najnowszy raport poranny; bez usługi albo raportu link w nagłówku się chowa.
+    Tide.DaemonSource {
+        id: reports
+        path: "/Reports"
+        iface: "org.tide.Daemon.Reports"
+        method: "Status"
+        pollInterval: 60000
+    }
+    readonly property var report: reports.available ? reports.result : null
+    property real nowTs: Date.now() / 1000
+
+    // „dziś 07:00” → „wczoraj” po północy bez pytania usługi.
+    Timer {
+        interval: 60000
+        running: true
+        repeat: true
+        onTriggered: root.nowTs = Date.now() / 1000
+    }
+
+    function openReport() {
+        reports.call("Open", [], function (ok) {
+            if (ok === true) reports.refresh()
+        })
+    }
+
     Timer {
         id: hideTimer
         interval: root.revealMs
@@ -59,6 +88,9 @@ PlasmoidItem {
 
     fullRepresentation: Header {
         shortcutText: root.shortcutText
+        report: root.report
+        nowTs: root.nowTs
+        onReportRequested: root.openReport()
         Layout.minimumHeight: implicitHeight
         Layout.preferredHeight: implicitHeight
         Layout.maximumHeight: implicitHeight
