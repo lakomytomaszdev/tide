@@ -318,7 +318,9 @@ STDOUT, STDERR = 1, 2
 def demux(data: bytes) -> list[tuple[int, bytes]]:
     """Rozdziela strumień logów kontenera bez TTY: ramki [strumień, 0, 0, 0, długość(4, BE)] + treść.
 
-    Gdy dane nie wyglądają na ramki (kontener z TTY — surowy tekst), całość idzie jako stdout."""
+    Gdy dane nie wyglądają na ramki (kontener z TTY — surowy tekst), całość idzie jako stdout.
+    Ucięta ostatnia ramka (odpowiedź przerwana w połowie) daje to, co z niej doszło; zepsuty
+    nagłówek w środku — resztę jako surowy stdout."""
     frames = []
     pos = 0
     while pos + 8 <= len(data):
@@ -326,9 +328,11 @@ def demux(data: bytes) -> list[tuple[int, bytes]]:
         if kind not in (0, 1, 2) or data[pos + 1:pos + 4] != b"\0\0\0":
             break
         (size,) = struct.unpack(">I", data[pos + 4:pos + 8])
+        stream = STDERR if kind == 2 else STDOUT
         if pos + 8 + size > len(data):
-            break
-        frames.append((STDERR if kind == 2 else STDOUT, data[pos + 8:pos + 8 + size]))
+            frames.append((stream, data[pos + 8:]))
+            return frames
+        frames.append((stream, data[pos + 8:pos + 8 + size]))
         pos += 8 + size
     if pos < len(data):
         if not frames:
@@ -338,19 +342,22 @@ def demux(data: bytes) -> list[tuple[int, bytes]]:
 
 
 def log_lines(data: bytes, tty: bool | None = None, limit: int | None = None) -> list[dict]:
-    """Linie logów: [{text, stderr}] — demultipleksowane (bez TTY) i pocięte na linie."""
+    """Linie logów: [{text, stderr}] — demultipleksowane (bez TTY) i pocięte na linie.
+
+    Bajty każdego strumienia sklejamy przed dekodowaniem: znak UTF-8 rozcięty między ramkami
+    (Docker tnie po 16 KiB) zostaje cały."""
     frames = [(STDOUT, data)] if tty else demux(data)
     lines: list[dict] = []
-    pending: dict[int, str] = {}
+    pending: dict[int, bytes] = {}
     for kind, chunk in frames:
-        text = pending.pop(kind, "") + chunk.decode("utf-8", "replace")
-        parts = text.split("\n")
+        buffer = pending.pop(kind, b"") + chunk
+        parts = buffer.split(b"\n")
         pending[kind] = parts.pop()
         for part in parts:
-            lines.append({"text": part.rstrip("\r"), "stderr": kind == STDERR})
+            lines.append({"text": part.decode("utf-8", "replace").rstrip("\r"), "stderr": kind == STDERR})
     for kind, rest in pending.items():
         if rest:
-            lines.append({"text": rest.rstrip("\r"), "stderr": kind == STDERR})
+            lines.append({"text": rest.decode("utf-8", "replace").rstrip("\r"), "stderr": kind == STDERR})
     if limit is not None and len(lines) > limit:
         lines = lines[-limit:]
     return lines

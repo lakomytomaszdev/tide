@@ -12,6 +12,7 @@ Grupy:
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 PROJECT_LABEL = "com.docker.compose.project"
@@ -35,8 +36,18 @@ NON_HTTP_IMAGES = (
     "postgres", "pgvector", "postgis", "timescale", "mysql", "mariadb", "mongo", "redis", "valkey", "keydb",
     "memcached", "rabbitmq", "kafka", "zookeeper", "mssql", "sqlserver", "oracle", "cassandra", "scylla",
     "cockroach", "clickhouse", "nats", "mosquitto", "emqx", "etcd", "consul", "testcontainers/ryuk",
-    "firebird", "ravendb-backup",
+    "firebird",
 )
+# Panele WWW do baz i kolejek: nazwa obrazu zaczyna się jak baza („mongo-express”, „redis-commander”,
+# „kafka-ui”), ale to strony do otwarcia w przeglądarce.
+WEB_UI_IMAGES = (
+    "mongo-express", "redis-commander", "redisinsight", "redis/redisinsight", "kafka-ui", "provectuslabs/kafka-ui",
+    "kafbat/kafka-ui", "kafdrop", "akhq", "pgadmin", "dpage/pgadmin4", "adminer", "phpmyadmin", "cloudbeaver",
+    "dbgate", "rabbitmq-management",
+)
+# Fragmenty nazw obrazów, które zdradzają panel WWW albo eksporter metryk (HTTP).
+WEB_UI_HINTS = ("-ui", "ui-", "-web", "-admin", "admin-", "-express", "commander", "insight", "dashboard",
+                "-console", "-exporter")
 # Porty WWW obrazów z listy wyżej (panele administracyjne), które jednak są HTTP.
 HTTP_PORTS_OF_NON_HTTP_IMAGES = {15672, 8222, 8161, 8500, 18083, 8123}
 HTTPS_PORTS = {443, 8443, 9443}
@@ -95,9 +106,22 @@ def _image_base(image: str) -> str:
     return base.lower()
 
 
-def non_http_image(image: str) -> bool:
+def web_ui_image(image: str) -> bool:
     base = _image_base(image)
-    return any(base == key or base.startswith(key) or ("/" + key) in base or base.split("/")[-1].startswith(key)
+    last = base.split("/")[-1]
+    return (any(base == key or base.endswith("/" + key) or last.startswith(key) for key in WEB_UI_IMAGES)
+            or any(hint in last for hint in WEB_UI_HINTS))
+
+
+def non_http_image(image: str) -> bool:
+    """Obraz bazy, kolejki albo pamięci podręcznej: po nazwie albo po członie nazwy („bitnami/postgresql”,
+    „confluentinc/cp-kafka”). Panele WWW (web_ui_image) wygrywają."""
+    if web_ui_image(image):
+        return False
+    base = _image_base(image)
+    tokens = [t for t in re.split(r"[-_.]", base.split("/")[-1]) if t]
+    return any(base == key or base.startswith(key + "/") or base.endswith("/" + key)
+               or ("/" not in key and any(t.startswith(key) for t in tokens))
                for key in NON_HTTP_IMAGES)
 
 
@@ -136,12 +160,23 @@ def ports(item: dict, image: str) -> list[dict]:
     return sorted(seen.values(), key=lambda p: (p["hostPort"], p["containerPort"], p["proto"]))
 
 
-def failure(state: str, exit_code: int, oom: bool, error: str = "") -> tuple[bool, str]:
-    """(czy padł, powód po polsku). Zakończenie kodem spoza 0/143 to awaria, 137 też."""
+def failure(state: str, exit_code: int, oom: bool, error: str = "", stopped_by_tide: bool = False) -> tuple[bool, str]:
+    """(czy padł, powód po polsku). Zakończenie kodem spoza 0/143 to awaria, 137 też — chyba że kontener
+    zatrzymało Tide (wtedy 137 to zabicie po 10 s czekania, nie awaria: powód neutralny, failed false)."""
     if state == "dead":
         return True, "martwy — Docker nie zdołał go zatrzymać ani usunąć"
+    if state == "created":
+        # Pierwszy start się nie udał (np. zajęty port, brak pliku do zamontowania): Docker zostawia
+        # stan „created” z ExitCode 128 i opisem w State.Error.
+        if error:
+            return True, f"nie wystartował: {error}"
+        if exit_code:
+            return True, f"nie wystartował (kod {exit_code})"
+        return False, ""
     if state not in ("exited", "restarting"):
         return False, ""
+    if stopped_by_tide and not oom and exit_code == 137 and state == "exited":
+        return False, "zatrzymany z Tide — nie zamknął się w 10 s, więc Docker go zabił (kod 137)"
     if oom:
         reason = f"zabity przez brak pamięci (OOM, kod {exit_code})"
     elif exit_code in OK_EXIT_CODES:
@@ -175,7 +210,7 @@ STATE_TEXT = {
 HEALTH_TEXT = {"healthy": "zdrowy", "unhealthy": "chory", "starting": "sprawdzanie zdrowia"}
 
 
-def container(item: dict, details: dict | None) -> dict:
+def container(item: dict, details: dict | None, stopped_by_tide: bool = False) -> dict:
     details = details or {}
     labels = item.get("Labels") or {}
     state_info = details.get("State") or {}
@@ -192,8 +227,9 @@ def container(item: dict, details: dict | None) -> dict:
     exit_code = int(state_info.get("ExitCode") or 0)
     if not state_info and state == "exited":
         exit_code = _exit_from_status(item.get("Status") or "")
-    failed, reason = failure(state, exit_code, bool(state_info.get("OOMKilled")), state_info.get("Error") or "")
-    state_text = reason if failed else STATE_TEXT.get(state, state or "nieznany")
+    failed, reason = failure(state, exit_code, bool(state_info.get("OOMKilled")), state_info.get("Error") or "",
+                             stopped_by_tide)
+    state_text = reason or STATE_TEXT.get(state, state or "nieznany")
     if state == "running" and health in HEALTH_TEXT:
         state_text = f"działa · {HEALTH_TEXT[health]}"
     tc = any(k == TESTCONTAINERS_LABEL or k.startswith(TESTCONTAINERS_LABEL + ".") for k in labels)
@@ -208,7 +244,6 @@ def container(item: dict, details: dict | None) -> dict:
         "state": state,
         "running": state == "running",
         "health": health,
-        "status": item.get("Status") or "",
         "stateText": state_text,
         "startedTs": int(parse_time(state_info.get("StartedAt"))),
         "finishedTs": int(parse_time(state_info.get("FinishedAt"))),
@@ -235,12 +270,12 @@ def _exit_from_status(status: str) -> int:
     return 0
 
 
-def build(items: list, details: dict, resolve_repo=None) -> dict:
+def build(items: list, details: dict, resolve_repo=None, stopped_by_tide: set | None = None) -> dict:
     """Migawka: {summary, groups}. details: {id: inspect}; resolve_repo(working_dir) → {name, path, worktree}|None."""
     groups: dict[str, dict] = {}
     for item in items:
         labels = item.get("Labels") or {}
-        entry = container(item, details.get(item.get("Id") or ""))
+        entry = container(item, details.get(item.get("Id") or ""), (item.get("Id") or "") in (stopped_by_tide or ()))
         project = labels.get(PROJECT_LABEL, "")
         if entry["testcontainers"]:
             key, kind = "testcontainers", "testcontainers"

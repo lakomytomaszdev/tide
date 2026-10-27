@@ -165,7 +165,7 @@ class SnapshotTest(World):
         self.assertEqual(api["shortId"], self.c["api"].id[:12])
         self.assertEqual((api["state"], api["running"], api["health"], api["stateText"]),
                          ("running", True, "healthy", "działa · zdrowy"))
-        self.assertEqual(api["status"], "Up 2 hours (healthy)")
+        self.assertNotIn("status", api)  # tekst „Up 2 hours” zmienia się sam — okno liczy wiek z czasów
         self.assertEqual(api["startedTs"], 1793090000 - 3600)
         self.assertEqual(api["finishedTs"], 0)  # „0001-01-01T00:00:00Z”
         self.assertEqual((api["project"], api["service"]), ("cookapp", "api"))
@@ -197,6 +197,40 @@ class SnapshotTest(World):
         failed, reason = snap.failure("restarting", 1, False)
         self.assertTrue(failed)
         self.assertTrue(reason.startswith("restartuje się po błędzie"))
+
+    def test_created_container_that_failed_to_start(self):
+        broken = Container("broken-api", "cookapp-api", state="created", exit_code=128,
+                           error="driver failed programming external connectivity: port is already allocated")
+        fresh = Container("fresh", "nginx", state="created")
+        self.fake.add(broken, fresh)
+        s = self.snapshot()
+        item = self.item(s, "broken-api")
+        self.assertTrue(item["failed"])
+        self.assertEqual(item["reason"], "nie wystartował: driver failed programming external connectivity: "
+                                         "port is already allocated")
+        self.assertEqual(item["stateText"], item["reason"])
+        self.assertEqual((self.item(s, "fresh")["failed"], self.item(s, "fresh")["stateText"]),
+                         (False, "utworzony, nie uruchomiony"))
+        self.assertEqual(snap.failure("created", 128, False), (True, "nie wystartował (kod 128)"))
+
+    def test_exit_137_after_stop_from_tide_is_neutral(self):
+        self.snapshot()
+        self.assertTrue(self.engine.action("cookapp-docs", "stop")["ok"])
+        self.c["docs"].exit_code = 137  # nie zamknął się w 10 s — Docker go zabił
+        docs = self.item(self.snapshot(), "cookapp-docs")
+        self.assertFalse(docs["failed"])
+        self.assertIn("zatrzymany z Tide", docs["reason"])
+        self.assertEqual(docs["stateText"], docs["reason"])
+        self.assertTrue(self.item(self.snapshot(), "translations-slack-bot")["failed"])  # 137 bez Tide — awaria
+        self.c["docs"].state = "running"
+        self.snapshot()
+        self.assertNotIn(self.c["docs"].id, self.engine.stopped_by_tide)  # znowu działa — zapomniany
+        self.c["docs"].state, self.c["docs"].exit_code = "exited", 137
+        self.assertTrue(self.item(self.snapshot(), "cookapp-docs")["failed"])
+        self.c["docs"].oom = True
+        self.engine.stopped_by_tide.add(self.c["docs"].id)
+        self.engine.forget()
+        self.assertTrue(self.item(self.snapshot(), "cookapp-docs")["failed"])  # OOM zawsze jest awarią
 
     def test_testcontainers(self):
         s = self.snapshot()
@@ -236,6 +270,13 @@ class SnapshotTest(World):
         self.assertFalse(snap.likely_http(5672, "tcp", "rabbitmq:3-management"))
         self.assertFalse(snap.likely_http(8080, "udp", "nginx"))
         self.assertTrue(snap.likely_http(8111, "tcp", "jetbrains/youtrack:2026.2"))
+        # Panele WWW baz i kolejek: nazwa zaczyna się jak baza, ale to strona.
+        for image in ("mongo-express:1.0", "provectuslabs/kafka-ui:latest", "rediscommander/redis-commander",
+                      "redis/redisinsight:2.60", "dpage/pgadmin4", "adminer", "phpmyadmin/phpmyadmin",
+                      "prometheuscommunity/postgres-exporter"):
+            self.assertTrue(snap.likely_http(8081, "tcp", image), image)
+        self.assertFalse(snap.likely_http(8080, "tcp", "bitnami/postgresql:16"))
+        self.assertFalse(snap.likely_http(8080, "tcp", "confluentinc/cp-kafka"))
         ports = snap.ports({"Ports": [{"IP": "0.0.0.0", "PrivatePort": 443, "PublicPort": 8443, "Type": "tcp"},
                                       {"PrivatePort": 9000, "Type": "tcp"}]}, "caddy")
         self.assertEqual([(p["hostPort"], p["url"]) for p in ports], [(8443, "https://localhost:8443")])
@@ -253,11 +294,17 @@ class SnapshotTest(World):
             return len([r for r in self.fake.requests if r[1].endswith("/json") and r[1] != "/containers/json"])
         before = inspects()
         self.assertEqual(before, len(self.fake.containers))
-        self.snapshot()
+        first = json.dumps(self.snapshot())
         self.assertEqual(inspects(), before)  # nic się nie zmieniło — bez ponownych inspect
+        # Tekst Status zmienia się sam z czasem — ani inspect, ani inna migawka.
+        self.c["api"].status_text = lambda: "Up 3 hours (healthy)"
+        self.assertEqual(json.dumps(self.snapshot()), first)
+        self.assertEqual(inspects(), before)
         self.c["bot"].state, self.c["bot"].exit_code = "running", 0
         self.snapshot()
         self.assertEqual(inspects(), before + 1)
+        self.engine.refresh(full=True)  # bez strumienia zdarzeń: wszystko od nowa
+        self.assertEqual(inspects(), before + 1 + len(self.fake.containers))
 
 
 class ReposTest(unittest.TestCase):
@@ -288,9 +335,30 @@ class LogsTest(unittest.TestCase):
                                                      {"text": "linia 2", "stderr": False}])
         self.assertEqual(log_lines(raw), log_lines(raw, tty=True))  # bez ramek — rozpoznane jako surowy tekst
 
+    def test_multibyte_character_split_between_frames(self):
+        text = "zażółć gęślą jaźń\n".encode()
+        cut = text.index("ó".encode()) + 1  # w środku dwubajtowego „ó”
+        data = frame_bytes(1, text[:cut]) + frame_bytes(2, "e\n".encode()) + frame_bytes(1, text[cut:])
+        self.assertEqual(log_lines(data), [{"text": "e", "stderr": True},
+                                           {"text": "zażółć gęślą jaźń", "stderr": False}])
+
+    def test_truncated_last_frame_keeps_what_arrived(self):
+        data = frame(1, "cała\n") + frame(2, "ucięta w poło")[:-4]
+        self.assertEqual(log_lines(data), [{"text": "cała", "stderr": False}, {"text": "ucięta w p", "stderr": True}])
+
+    def test_corrupt_header_mid_stream(self):
+        data = frame(1, "dobra\n") + b"\x07garbage\nbez ramki\n"
+        self.assertEqual([l["text"] for l in log_lines(data)], ["dobra", "\x07garbage", "bez ramki"])
+        self.assertFalse(any(l["stderr"] for l in log_lines(data)))
+
     def test_limit_keeps_last_lines(self):
         data = b"".join(frame(1, f"{i}\n") for i in range(10))
         self.assertEqual([l["text"] for l in log_lines(data, limit=3)], ["7", "8", "9"])
+
+
+def frame_bytes(stream: int, data: bytes) -> bytes:
+    import struct
+    return bytes([stream, 0, 0, 0]) + struct.pack(">I", len(data)) + data
 
 
 class StatsTest(unittest.TestCase):
@@ -323,8 +391,24 @@ class DiskTest(World):
                          (2, 400_000_000, True))
         self.assertIn("dane baz", cats["volumes"]["note"])
         self.assertEqual((cats["stopped"]["count"], cats["stopped"]["reclaimableBytes"]), (2, 86_000))
+        self.assertEqual((cats["stopped"]["warn"], cats["stopped"]["anonymousVolumes"]), (False, 0))
         self.assertEqual(result["totalReclaimableBytes"], 347_279_469 + 1_000_000_000 + 400_000_000 + 86_000)
         self.assertEqual(self.fake.mutating(), [])
+
+    def test_stopped_with_anonymous_volume_warns(self):
+        anon = "f" * 64
+        self.fake.df["Containers"][1]["Mounts"] = [{"Type": "volume", "Name": anon, "Destination": "/var/lib/data"}]
+        self.fake.df["Containers"][2]["Mounts"] = [{"Type": "bind", "Source": "/srv", "Destination": "/srv"},
+                                                   {"Type": "volume", "Name": "named_data"}]
+        cats = {c["id"]: c for c in self.engine.disk()["categories"]}
+        self.assertEqual((cats["stopped"]["warn"], cats["stopped"]["anonymousVolumes"]), (True, 1))
+        self.assertIn("1 z anonimowym wolumenem", cats["stopped"]["note"])
+        # Wolumen z etykietą Dockera „anonymous” też, nawet z inną nazwą.
+        self.fake.df["Volumes"].append({"Name": "x1", "Labels": {"com.docker.volume.anonymous": ""},
+                                        "UsageData": {"RefCount": 1, "Size": 1}})
+        self.fake.df["Containers"][2]["Mounts"] = [{"Type": "volume", "Name": "x1"}]
+        cats = {c["id"]: c for c in self.engine.disk()["categories"]}
+        self.assertEqual(cats["stopped"]["anonymousVolumes"], 2)
 
     def test_new_api_usage_blocks(self):
         df = {"ImageUsage": {"Items": [{"Containers": 0, "Size": 10, "SharedSize": 0}]},
@@ -334,8 +418,10 @@ class DiskTest(World):
 
     def test_selection_parsing(self):
         self.assertEqual(disk_mod.parse_selection('["stopped", "cache", "images"]'), (["images", "cache", "stopped"], ""))
-        self.assertEqual(disk_mod.parse_selection('{"volumes": true, "cache": false}')[0], ["volumes"])
         self.assertEqual(disk_mod.parse_selection("[]"), ([], "nic nie zaznaczono"))
+        # Wyłącznie lista: obiekt (także z true) to odmowa całej prośby.
+        for text in ('{"volumes": true}', '{"volumes": "false"}', '{"volumes": 1}', "null", "true", '"images"'):
+            self.assertEqual(disk_mod.parse_selection(text), ([], "niepoprawny opis kategorii — nic nie usunięto"), text)
         self.assertIn("nieznana kategoria: system", disk_mod.parse_selection('["images", "system"]')[1])
         self.assertIn("niepoprawny", disk_mod.parse_selection("nie json")[1])
         self.assertIn("niepoprawny", disk_mod.parse_selection("[1]")[1])
@@ -357,11 +443,19 @@ class DiskTest(World):
         self.assertEqual(calls[1][2], {"all": "true"})
 
     def test_prune_refuses_bad_selection_without_calls(self):
-        for text in ("[]", '["everything"]', "{", '"images"'):
+        # Regresja: {"volumes": "false"} wysyłało POST /volumes/prune all=true.
+        for text in ("[]", '["everything"]', "{", '"images"', '{"volumes": "false"}', '{"volumes": true}',
+                     '["volumes", null]', '[["volumes"]]'):
             result = self.engine.prune(text)
             self.assertFalse(result["ok"])
             self.assertEqual(result["reclaimedBytes"], 0)
         self.assertEqual(self.fake.mutating(), [])
+
+    def test_prune_missing_endpoint_message(self):
+        self.fake.fail["/build/prune"] = (404, "page not found")
+        result = self.engine.prune('["cache"]')
+        self.assertEqual(result["details"][0]["error"], "ten Docker nie zna tej operacji porządków (za stary silnik?)")
+        self.assertNotIn("kontenera", result["error"])
 
     def test_prune_partial_failure(self):
         self.fake.fail["/build/prune"] = (500, "builder busy")
@@ -438,6 +532,30 @@ class ActionsTest(World):
                          [f"stop:{self.c['docs'].id[:4]}", f"stop:{self.c['api'].id[:4]}", f"stop:{self.c['pg'].id[:4]}",
                           f"start:{self.c['pg'].id[:4]}", f"start:{self.c['api'].id[:4]}",
                           f"start:{self.c['docs'].id[:4]}"])
+
+    def test_group_restart_partial_failure(self):
+        self.fake.fail[f"/containers/{self.c['api'].id}/stop"] = (500, "cannot kill")
+        result = self.engine.group_action("cookapp", "restart")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failed"], [{"name": "cookapp-api", "action": "stop",
+                                             "error": "Docker nie pozwolił zatrzymać: cannot kill"}])
+        self.assertEqual(result["done"], ["cookapp-docs", "cookapp-postgres"])
+        self.assertIn("cookapp-api: Docker nie pozwolił zatrzymać", result["error"])
+        steps = [p.split("/")[2][:6] + ":" + p.rsplit("/", 1)[1] for _m, p, _q in self.fake.mutating()]
+        ident = {k: self.c[k].id[:6] for k in ("api", "pg", "docs")}
+        # api nie zatrzymał się — nie dostaje ponownego startu; reszta zatrzymana i uruchomiona.
+        self.assertEqual(steps, [f"{ident['docs']}:stop", f"{ident['api']}:stop", f"{ident['pg']}:stop",
+                                 f"{ident['pg']}:start", f"{ident['docs']}:start"])
+
+    def test_single_action_timeouts_fit_dbus_limit(self):
+        from tide_daemon.docker import engine as engine_mod
+        # Odpowiedź D-Bus pojedynczej akcji musi zdążyć przed domyślnym limitem klienta (25 s).
+        self.assertLess(engine_mod.ACTION_TIMEOUT, 25)
+        self.assertLess(engine_mod.INSPECT_TIMEOUT + engine_mod.REMOVE_TIMEOUT, 25)
+        self.assertLess(engine_mod.LOGS_TIMEOUT, 25)
+        self.assertLess(engine_mod.DISK_TIMEOUT, 25)
+        self.assertLess(engine_mod.STATS_TIMEOUT, 25)
+        self.assertGreater(engine_mod.ACTION_TIMEOUT, engine_mod.STOP_TIMEOUT_S)
 
     def test_group_errors(self):
         self.assertEqual(self.engine.group_action("nie-ma", "start")["error"], "nie ma takiego projektu compose")

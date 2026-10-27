@@ -17,6 +17,13 @@ from .client import DockerError, DockerUnavailable, EngineClient, container_path
 from .repos import RepoResolver
 
 STOP_TIMEOUT_S = 10          # `docker stop -t 10` — po tym czasie Docker zabija kontener
+# Limity pojedynczych akcji: odpowiedź D-Bus musi zdążyć przed domyślnym limitem klienta (25 s).
+# stop/restart: do 10 s czekania na zamknięcie + zabicie i start; start: zwykle sekundy.
+ACTION_TIMEOUT = 20.0
+INSPECT_TIMEOUT = 5.0
+REMOVE_TIMEOUT = 15.0        # Remove = inspect (≤ 5 s) + DELETE (≤ 15 s)
+LOGS_TIMEOUT = 15.0
+DISK_TIMEOUT = 20.0
 STATS_TIMEOUT = 8.0          # całe Stats(): kontenery, które nie zdążyły, po prostu nie mają wiersza
 STATS_WORKERS = 8
 LOGS_MAX = 5000
@@ -41,6 +48,14 @@ def _fail(message: str, **extra) -> dict:
     return {"ok": False, "error": message, **extra}
 
 
+def _describe_prune(exc: Exception) -> str:
+    if isinstance(exc, DockerError) and exc.status == 404:
+        return "ten Docker nie zna tej operacji porządków (za stary silnik?)"
+    if isinstance(exc, DockerError) and exc.status == 409:
+        return "Docker właśnie porządkuje — spróbuj za chwilę"
+    return _describe(exc, "wyczyścić")
+
+
 def _describe(exc: Exception, verb: str = "") -> str:
     if isinstance(exc, DockerUnavailable):
         return exc.message
@@ -61,11 +76,17 @@ class DockerEngine:
         self._inspect: dict[str, tuple[tuple, dict]] = {}  # id → (klucz zmian, inspect)
         self.last: dict = unavailable("starting", "sprawdzanie Dockera…", self.client.host)
         self.containers: list[dict] = []  # z ostatniej udanej migawki
+        # Kontenery zatrzymane przez Tide: kod 137 po `stop` (zabicie po 10 s) to nie awaria.
+        # Tylko w pamięci — po restarcie usługi taki kontener znowu wygląda na „zabity”.
+        self.stopped_by_tide: set[str] = set()
 
     # --- migawka ---------------------------------------------------------------------------
 
-    def refresh(self) -> dict:
-        """Nowa migawka. Niedostępny Docker to stan migawki, nie wyjątek."""
+    def refresh(self, full: bool = False) -> dict:
+        """Nowa migawka. Niedostępny Docker to stan migawki, nie wyjątek. full — inspect wszystkich od nowa
+        (bez strumienia zdarzeń restart kontenera nie zmienia stanu z listy, a zmienia czas startu)."""
+        if full:
+            self.forget()
         try:
             if not self.engine:
                 version = self.client.version()
@@ -80,7 +101,10 @@ class DockerEngine:
         except DockerError as exc:
             self.last = unavailable("error", f"Docker odpowiedział błędem: {exc.message}", self.client.host)
             return self.last
-        built = snap.build(items, details, RepoResolver(self.workspace))
+        running = {i.get("Id") for i in items if (i.get("State") or "").lower() == "running"}
+        known = {i.get("Id") for i in items}
+        self.stopped_by_tide = {i for i in self.stopped_by_tide if i in known and i not in running}
+        built = snap.build(items, details, RepoResolver(self.workspace), stopped_by_tide=set(self.stopped_by_tide))
         self.containers = [c for g in built["groups"] for c in g["containers"]]
         self.last = {"available": True, "state": "ok", "error": "", "host": self.client.host,
                      "engine": dict(self.engine), "live": False, **built}
@@ -93,14 +117,16 @@ class DockerEngine:
             ident = item.get("Id") or ""
             if not ident:
                 continue
+            # Bez tekstu Status („Up 3 hours” zmienia się sam z czasem); zdrowie z listy (API ≥ 1.52),
+            # a w starszym API zmianę zdrowia zgłasza zdarzenie health_status (forget).
             health = (item.get("Health") or {}).get("Status") if isinstance(item.get("Health"), dict) else ""
-            key = (item.get("State"), item.get("Status"), health)
+            key = (item.get("State"), health)
             cached = self._inspect.get(ident)
             if cached and cached[0] == key:
                 fresh[ident] = cached
                 continue
             try:
-                fresh[ident] = (key, self.client.inspect(ident))
+                fresh[ident] = (key, self.client.get_json(container_path(ident, "json"), timeout=INSPECT_TIMEOUT) or {})
             except DockerError:
                 fresh[ident] = (key, {})  # kontener zniknął między listą a inspect — następne odświeżenie
         self._inspect = fresh
@@ -190,7 +216,7 @@ class DockerEngine:
 
     def disk(self) -> dict:
         try:
-            df = self.client.get_json("/system/df", timeout=60.0) or {}
+            df = self.client.get_json("/system/df", timeout=DISK_TIMEOUT) or {}
         except (DockerUnavailable, DockerError) as exc:
             return _fail(_describe(exc), generatedTs=int(self.clock()), categories=[], totalReclaimableBytes=0,
                          layersBytes=0)
@@ -209,7 +235,7 @@ class DockerEngine:
                 details.append(disk_mod.prune_result(category, data))
             except (DockerUnavailable, DockerError, ValueError) as exc:
                 details.append({"id": category, "label": disk_mod.LABELS[category], "ok": False, "reclaimedBytes": 0,
-                                "removed": 0, "error": _describe(exc, "wyczyścić")})
+                                "removed": 0, "error": _describe_prune(exc)})
         failed = [d for d in details if not d["ok"]]
         reclaimed = sum(d["reclaimedBytes"] for d in details)
         error = "; ".join(f"{d['label']}: {d['error']}" for d in failed)
@@ -227,9 +253,10 @@ class DockerEngine:
 
     def _act(self, target: dict, action: str) -> dict:
         query = {"t": str(STOP_TIMEOUT_S)} if action in ("stop", "restart") else None
-        timeout = STOP_TIMEOUT_S + 30 if action in ("stop", "restart") else 60
+        if action == "stop":
+            self.stopped_by_tide.add(target["id"])  # przed wywołaniem: zdarzenie „die” może przyjść pierwsze
         try:
-            status, _body = self.client.post(container_path(target["id"], action), query, timeout=timeout)
+            status, _body = self.client.post(container_path(target["id"], action), query, timeout=ACTION_TIMEOUT)
         except (DockerUnavailable, DockerError) as exc:
             return _fail(_describe(exc, VERB[action]), id=target["id"], name=target["name"])
         note = ""
@@ -243,14 +270,15 @@ class DockerEngine:
         if target is None:
             return _fail("nie ma takiego kontenera", id=ident)
         try:
-            state = ((self.client.inspect(target["id"]).get("State") or {}).get("Status") or "").lower()
+            details = self.client.get_json(container_path(target["id"], "json"), timeout=INSPECT_TIMEOUT) or {}
+            state = ((details.get("State") or {}).get("Status") or "").lower()
         except (DockerUnavailable, DockerError) as exc:
             return _fail(_describe(exc), id=target["id"], name=target["name"])
         if state in ("running", "paused", "restarting"):
             return _fail("kontener działa — najpierw go zatrzymaj", id=target["id"], name=target["name"])
         try:
             # Bez force i bez v: działającego Docker i tak nie usunie, a wolumeny zostają.
-            self.client.request("DELETE", container_path(target["id"]))
+            self.client.request("DELETE", container_path(target["id"]), timeout=REMOVE_TIMEOUT)
         except (DockerUnavailable, DockerError) as exc:
             return _fail(_describe(exc, VERB["remove"]), id=target["id"], name=target["name"])
         self.forget(target["id"])
@@ -281,14 +309,17 @@ class DockerEngine:
         else:
             running = [c for c in ordered if c["running"]]
             steps = [(c, "stop") for c in reversed(running)] + [(c, "start") for c in running]
-        done, failed = [], []
+        done, failed, broken = [], [], set()
         for c, step in steps:
+            if c["id"] in broken:
+                continue  # nie zatrzymał się — nie startujemy go ponownie, zostaje jak był
             result = self._act(c, step)
-            if result["ok"]:
-                if c["name"] not in done:
-                    done.append(c["name"])
-            else:
+            if not result["ok"]:
+                broken.add(c["id"])
                 failed.append({"name": c["name"], "action": step, "error": result["error"]})
+        for c, _step in steps:
+            if c["id"] not in broken and c["name"] not in done:
+                done.append(c["name"])
         if not steps:
             note = {"start": "wszystko już działa", "stop": "nic nie działa", "restart": "nic nie działa"}[action]
             return _ok(project=project, done=[], failed=[], note=note)
@@ -302,7 +333,7 @@ class DockerEngine:
         n = LOGS_DEFAULT if n <= 0 else min(n, LOGS_MAX)
         try:
             _status, body = self.client.request("GET", container_path(target["id"], "logs"),
-                                                {"stdout": "1", "stderr": "1", "tail": str(n)}, timeout=20.0)
+                                                {"stdout": "1", "stderr": "1", "tail": str(n)}, timeout=LOGS_TIMEOUT)
         except (DockerUnavailable, DockerError) as exc:
             return _fail(_describe(exc), id=target["id"], name=target["name"], lines=[])
         tty = target.get("tty") or None

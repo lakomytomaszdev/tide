@@ -14,6 +14,7 @@ try:
     from tide_daemon.docker_monitor import SHELL_COMMAND, DockerMonitor
     from tide_daemon.docker.client import EngineClient
     from tide_daemon.docker.engine import DockerEngine
+    from tide_daemon.tasks import launch
     from tide_daemon.tasks.core import TaskFiles
 except ImportError:  # pragma: no cover — bez PyQt6
     DockerMonitor = None
@@ -63,6 +64,18 @@ class MonitorTest(unittest.TestCase):
                 if c["name"] == name:
                     return c["state"]
         return None
+
+    def job(self, mon, method, *args):
+        """Zadanie (Prune, GroupAction): od razu {ok, job}, wynik sygnałem actionFinished."""
+        finished = []
+        mon.actionFinished.connect(lambda job, text: finished.append((job, json.loads(text))))
+        started = json.loads(method(*args))
+        if not started["ok"]:
+            return started, None
+        self.assertTrue(wait_until(lambda: any(j == started["job"] for j, _r in finished), timeout=5))
+        result = next(r for j, r in finished if j == started["job"])
+        self.assertEqual(result["job"], started["job"])
+        return started, result
 
     def call(self, method, *args):
         box = []
@@ -158,7 +171,8 @@ class MonitorTest(unittest.TestCase):
         self.assertTrue(self.call(mon.disk)["ok"])
         self.call(mon.disk)
         self.assertEqual(len(self.fake.calls("GET", "/system/df")), 1)
-        result = self.call(mon.prune, '["images"]')
+        started, result = self.job(mon, mon.prune, '["images"]')
+        self.assertTrue(started["job"].startswith("prune-"))
         self.assertEqual(result["reclaimedBytes"], 1_000_000_000)
         self.call(mon.disk)
         self.assertEqual(len(self.fake.calls("GET", "/system/df")), 2)
@@ -171,8 +185,11 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual((result["ok"], result["error"]), (True, ""))
         self.assertTrue(wait_until(lambda: self.state_of(mon, "translations-slack-bot") == "running", timeout=5))
         self.assertEqual(self.call(mon.remove, "cookapp-api")["ok"], False)
-        group = self.call(mon.group_action, "cookapp", "stop")
+        _started, group = self.job(mon, mon.group_action, "cookapp", "stop")
         self.assertEqual(group["done"], ["cookapp-docs", "cookapp-api", "cookapp-postgres"])
+        refused, none = self.job(mon, mon.group_action, "cookapp", "rm")
+        self.assertEqual((refused["ok"], refused["job"], none), (False, "", None))
+        self.assertIn("nieznana akcja", refused["error"])
         logs = self.call(mon.logs, "cookapp-api", 2)
         self.assertEqual(len(logs["lines"]), 2)
 
@@ -184,12 +201,13 @@ class MonitorTest(unittest.TestCase):
         plan, task = self.terminal.plans[-1]
         self.assertEqual(plan.title, "docker · translations-slack-bot")
         docker = task["argv"][0]
+        # Zawsze -H z socketem usługi i pełne ID zamiast nazwy.
         self.assertEqual(task["argv"][1:], ["-H", f"unix://{self.sock}", "logs", "-f", "--tail", "200",
-                                            "translations-slack-bot"])
+                                            self.c["bot"].id])
         self.assertTrue(docker.endswith("docker"))
-        self.assertTrue(mon.open_shell(self.c["api"].id))
+        self.assertTrue(mon.open_shell("cookapp-api"))
         _plan, task = self.terminal.plans[-1]
-        self.assertEqual(task["argv"][3:], ["exec", "-it", "cookapp-api", "sh", "-c", SHELL_COMMAND])
+        self.assertEqual(task["argv"][3:], ["exec", "-it", self.c["api"].id, "sh", "-c", SHELL_COMMAND])
         self.assertFalse(mon.open_shell("translations-slack-bot"))  # zatrzymany — nie ma do czego wejść
         self.assertFalse(mon.open_logs("nie-ma"))
         self.assertEqual(len(self.terminal.plans), 2)
@@ -205,6 +223,61 @@ class MonitorTest(unittest.TestCase):
         self.assertTrue(os.path.exists(plan.task_file + ".cancelled"))
         with open(plan.task_file + ".cancelled", encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "")  # treść polecenia znika od razu
+
+
+    def test_prune_bad_selection_is_refused_without_job(self):
+        self.fake.start()
+        mon = self.monitor()
+        self.assertTrue(wait_until(lambda: self.snapshot(mon)["available"], timeout=5))
+        for text in ('{"volumes": "false"}', '{"volumes": true}', "[]", '["system"]'):
+            started, result = self.job(mon, mon.prune, text)
+            self.assertEqual((started["ok"], started["job"], result), (False, "", None), text)
+        wait_until(lambda: False, timeout=0.3)
+        self.assertEqual(self.fake.mutating(), [])
+
+    def test_two_quick_shells_cannot_swap_in_profile_tabs(self):
+        self.fake.start()
+        mon = self.monitor()
+        self.assertTrue(wait_until(lambda: self.snapshot(mon)["available"], timeout=5))
+        self.assertTrue(mon.open_shell("cookapp-api"))
+        self.assertTrue(mon.open_shell("cookapp-postgres"))
+        (first, _t1), (second, _t2) = self.terminal.plans
+        self.assertNotEqual(first.cwd, second.cwd)
+        self.assertTrue(os.path.isdir(first.cwd) and not os.listdir(first.cwd))
+        # Karta z profilu przejmuje zadanie dla swojego katalogu — nawet gdy druga otworzy się pierwsza.
+        task = launch.claim_for_cwd(self.files.folder, second.cwd)
+        self.assertIn(self.c["pg"].id, task["argv"])
+        task = launch.claim_for_cwd(self.files.folder, first.cwd)
+        self.assertIn(self.c["api"].id, task["argv"])
+        self.assertIsNone(launch.claim_for_cwd(self.files.folder, first.cwd))
+
+    def test_refresh_without_change_emits_nothing(self):
+        self.fake.start()
+        mon = self.monitor(poll_ms=60_000)
+        self.assertTrue(wait_until(lambda: self.snapshot(mon).get("live"), timeout=5))
+        wait_until(lambda: False, timeout=0.3)
+        before = len(self.changes)
+        lists = len(self.fake.calls("GET", "/containers/json"))
+        self.c["api"].status_text = lambda: "Up 3 hours (healthy)"  # sam upływ czasu
+        for full in (False, True, False):
+            mon.refresh(full)
+            self.assertTrue(wait_until(lambda: not mon._refreshing, timeout=5))
+        self.assertGreater(len(self.fake.calls("GET", "/containers/json")), lists)
+        self.assertEqual(len(self.changes), before)
+
+    def test_stats_from_before_an_action_are_not_cached(self):
+        self.fake.start()
+        mon = self.monitor(stats_ttl=60)
+        self.assertTrue(wait_until(lambda: self.snapshot(mon)["available"], timeout=5))
+        self.fake.stats_delay = 0.5
+        box = []
+        mon.stats(box.append)  # trwa 0,5 s …
+        self.call(mon.action, "translations-slack-bot", "start")  # … a w tym czasie akcja się kończy
+        self.assertTrue(wait_until(lambda: box, timeout=5))
+        self.fake.stats_delay = 0.0
+        calls = len([r for r in self.fake.requests if r[1].endswith("/stats")])
+        self.call(mon.stats)
+        self.assertGreater(len([r for r in self.fake.requests if r[1].endswith("/stats")]), calls)
 
 
 if __name__ == "__main__":

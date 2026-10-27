@@ -39,7 +39,7 @@ def _iso(ts: float) -> str:
 class Container:
     def __init__(self, name, image, state="running", project="", workdir="", service="", number="", depends="",
                  oneoff=False, exit_code=0, oom=False, health="", ports=(), labels=None, tty=False,
-                 started=T0 - 3600, finished=0, size_rw=4096, ident=None):
+                 started=T0 - 3600, finished=0, size_rw=4096, ident=None, error="", mounts=()):
         self.id = ident or hashlib.sha256(name.encode()).hexdigest()
         self.name = name
         self.image = image
@@ -52,6 +52,8 @@ class Container:
         self.started = started
         self.finished = finished
         self.size_rw = size_rw
+        self.error = error
+        self.mounts = list(mounts)  # (typ, nazwa) — np. ("volume", "<64 znaki hex>") dla wolumenu anonimowego
         self.labels = dict(labels or {})
         if project:
             self.labels.update({PROJECT: project, WORKDIR: workdir, SERVICE: service, NUMBER: number or "1",
@@ -67,6 +69,8 @@ class Container:
             return f"Up 2 hours{extra}"
         if self.state == "exited":
             return f"Exited ({self.exit_code}) 2 days ago"
+        if self.state == "created":
+            return "Created"
         return self.state.capitalize()
 
     def listed(self) -> dict:
@@ -77,12 +81,13 @@ class Container:
                 "Ports": ports, "Labels": dict(self.labels), "State": self.state, "Status": self.status_text(),
                 "HostConfig": {"NetworkMode": "bridge"},
                 "Health": {"Status": self.health or "none", "FailingStreak": 0},
-                "NetworkSettings": {"Networks": {}}, "Mounts": []}
+                "NetworkSettings": {"Networks": {}},
+                "Mounts": [{"Type": kind, "Name": name, "Destination": "/data"} for kind, name in self.mounts]}
 
     def inspected(self) -> dict:
         state = {"Status": self.state, "Running": self.state == "running", "Paused": self.state == "paused",
                  "Restarting": self.state == "restarting", "OOMKilled": self.oom, "Dead": self.state == "dead",
-                 "Pid": 4242 if self.state == "running" else 0, "ExitCode": self.exit_code, "Error": "",
+                 "Pid": 4242 if self.state == "running" else 0, "ExitCode": self.exit_code, "Error": self.error,
                  "StartedAt": _iso(self.started), "FinishedAt": _iso(self.finished)}
         if self.health:
             state["Health"] = {"Status": self.health, "FailingStreak": 0, "Log": []}

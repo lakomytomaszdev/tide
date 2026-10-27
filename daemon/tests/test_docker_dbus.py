@@ -83,6 +83,27 @@ class DockerContractTest(unittest.TestCase):
     def call_json(self, member, *args):
         return json.loads(self.call(member, *args))
 
+    def job(self, member, *args):
+        """Zadanie: od razu {ok, job}; wynik przychodzi sygnałem ActionFinished(job, json)."""
+        from PyQt6.QtCore import QObject, pyqtSlot
+        finished = []
+
+        class Receiver(QObject):
+            @pyqtSlot(str, str)
+            def done(self, job, text):
+                finished.append((job, json.loads(text)))
+
+        receiver = Receiver()
+        self.assertTrue(self.service.bus.connect(SERVICE, PATH, IFACE, "ActionFinished", receiver.done))
+        try:
+            started = self.call_json(member, *args)
+            if not started["ok"]:
+                return started, None
+            self.assertTrue(wait_until(lambda: any(j == started["job"] for j, _r in finished), timeout=10))
+            return started, next(r for j, r in finished if j == started["job"])
+        finally:
+            self.service.bus.disconnect(SERVICE, PATH, IFACE, "ActionFinished", receiver.done)
+
     def state_of(self, name):
         for g in self.snapshot()["groups"]:
             for c in g["containers"]:
@@ -97,6 +118,7 @@ class DockerContractTest(unittest.TestCase):
                        "Logs", "OpenLogs", "OpenShell"):
             self.assertIn(f'<method name="{member}">', xml)
         self.assertIn('<signal name="Changed"', xml)
+        self.assertIn('<signal name="ActionFinished">', xml)
 
     def test_2_snapshot(self):
         snapshot = self.snapshot()
@@ -148,18 +170,28 @@ class DockerContractTest(unittest.TestCase):
 
     def test_5_group_action(self):
         self.fake.requests.clear()
-        result = self.call_json("GroupAction", "cookapp", "restart")
+        started, result = self.job("GroupAction", "cookapp", "restart")
+        self.assertTrue(started["job"].startswith("group-"))
         self.assertTrue(result["ok"], result)
+        self.assertEqual((result["job"], result["project"]), (started["job"], "cookapp"))
         self.assertEqual([p.rsplit("/", 1)[1] for _m, p, _q in self.fake.mutating()],
                          ["stop", "stop", "stop", "start", "start", "start"])
-        self.assertIn("nieznana akcja", self.call_json("GroupAction", "cookapp", "down")["error"])
+        refused, none = self.job("GroupAction", "cookapp", "down")
+        self.assertEqual((refused["ok"], refused["job"], none), (False, "", None))
+        self.assertIn("nieznana akcja", refused["error"])
+        _started, missing = self.job("GroupAction", "nie-ma", "start")
+        self.assertEqual((missing["ok"], missing["error"]), (False, "nie ma takiego projektu compose"))
 
     def test_6_prune_only_listed(self):
         self.fake.requests.clear()
-        result = self.call_json("Prune", json.dumps(["cache"]))
+        started, result = self.job("Prune", json.dumps(["cache"]))
+        self.assertTrue(started["ok"])
         self.assertEqual((result["ok"], result["reclaimedBytes"]), (True, 5_900_000_000))
         self.assertEqual([(m, p) for m, p, _q in self.fake.mutating()], [("POST", "/build/prune")])
-        self.assertFalse(self.call_json("Prune", "[]")["ok"])
+        # Regresja: {"volumes": "false"} wybierało wolumeny. Teraz każda prośba spoza listy id to odmowa.
+        for text in ("[]", '{"volumes": "false"}', '{"volumes": true}'):
+            refused, none = self.job("Prune", text)
+            self.assertEqual((refused["ok"], refused["job"], none), (False, "", None), text)
         self.assertEqual(len(self.fake.mutating()), 1)
 
     def test_7_logs_stats_disk(self):
@@ -185,8 +217,8 @@ class DockerContractTest(unittest.TestCase):
                 return [json.loads(line) for line in fh]
         self.assertTrue(wait_until(lambda: len(runs()) >= 2, timeout=10))
         runs = runs()
-        self.assertEqual(runs[0], ["-H", f"unix://{self.sock}", "logs", "-f", "--tail", "200", "translations-slack-bot"])
-        self.assertEqual(runs[1][:5], ["-H", f"unix://{self.sock}", "exec", "-it", "cookapp-api"])
+        self.assertEqual(runs[0], ["-H", f"unix://{self.sock}", "logs", "-f", "--tail", "200", self.c["bot"].id])
+        self.assertEqual(runs[1][:5], ["-H", f"unix://{self.sock}", "exec", "-it", self.c["api"].id])
         self.assertEqual(runs[1][5:7], ["sh", "-c"])
         with open(self.calls, encoding="utf-8") as fh:
             konsole = fh.read()

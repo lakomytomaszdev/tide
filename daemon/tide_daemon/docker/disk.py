@@ -4,7 +4,8 @@ Kategorie (id — co liczymy jako „do odzyskania”):
 - `cache` — pamięć podręczna budowania: wpisy nieużywane w tej chwili (InUse false) i niewspółdzielone,
 - `images` — obrazy bez żadnego kontenera (także zatrzymanego): Size − SharedSize,
 - `volumes` — wolumeny bez kontenera (RefCount 0); mogą trzymać dane baz, więc `warn`,
-- `stopped` — zatrzymane kontenery: ich warstwa zapisu (SizeRw); wolumeny zostają.
+- `stopped` — zatrzymane kontenery: ich warstwa zapisu (SizeRw); wolumeny zostają (`warn`, gdy któryś
+  ma wolumen anonimowy — po usunięciu kontenera jego dane zostaną bez nazwy).
 
 Nic, czego używa działający kontener, nie wchodzi do żadnej kategorii: działający kontener trzyma
 swój obraz i wolumeny (Containers/RefCount > 0), a jego wpisy cache są InUse.
@@ -54,6 +55,17 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
     return many
 
 
+def _anonymous_volumes(volumes: list) -> set:
+    """Nazwy wolumenów anonimowych: z etykietą Dockera (od 23.0) albo z nazwą z 64 znaków szesnastkowych."""
+    return {v.get("Name") for v in volumes if "com.docker.volume.anonymous" in (v.get("Labels") or {})}
+
+
+def _is_anonymous(name, labelled: set) -> bool:
+    if not isinstance(name, str):
+        return False
+    return name in labelled or (len(name) == 64 and all(ch in "0123456789abcdef" for ch in name))
+
+
 def categories(df: dict) -> dict:
     """{categories: [...], totalReclaimableBytes}. Każda kategoria: id, label, note, count, total,
     reclaimableBytes, totalBytes, warn."""
@@ -79,7 +91,15 @@ def categories(df: dict) -> dict:
     containers = _items(df, "Containers", "ContainerUsage")
     stopped = [c for c in containers if (c.get("State") or "").lower() not in ("running", "paused", "restarting")]
     stopped_bytes = sum(_size(c.get("SizeRw")) for c in stopped)
+    anonymous = _anonymous_volumes(volumes)
+    with_anonymous = [c for c in stopped if any(m.get("Type") == "volume" and _is_anonymous(m.get("Name"), anonymous)
+                                                for m in c.get("Mounts") or [])]
     stopped_note = f"{len(stopped)} · ich wolumeny zostają"
+    if with_anonymous:
+        # containers/prune nie usuwa wolumenów: anonimowy wolumen (np. dane bazy z VOLUME w obrazie)
+        # zostaje bez kontenera i bez nazwy, po której dałoby się go potem rozpoznać.
+        stopped_note += (f"; {len(with_anonymous)} z anonimowym wolumenem — jego dane zostaną "
+                         "bez kontenera i bez nazwy")
 
     rows = [
         {"id": "cache", "count": len(free_cache), "total": len(cache), "reclaimableBytes": cache_bytes,
@@ -90,7 +110,8 @@ def categories(df: dict) -> dict:
          "totalBytes": sum(_size((v.get("UsageData") or {}).get("Size")) for v in volumes), "note": volume_note,
          "warn": True},
         {"id": "stopped", "count": len(stopped), "total": len(containers), "reclaimableBytes": stopped_bytes,
-         "totalBytes": sum(_size(c.get("SizeRw")) for c in containers), "note": stopped_note, "warn": False},
+         "totalBytes": sum(_size(c.get("SizeRw")) for c in containers), "note": stopped_note,
+         "warn": bool(with_anonymous), "anonymousVolumes": len(with_anonymous)},
     ]
     for row in rows:
         row["label"] = LABELS[row["id"]]
@@ -98,26 +119,26 @@ def categories(df: dict) -> dict:
             "layersBytes": _size(df.get("LayersSize"))}
 
 
+BAD_SELECTION = "niepoprawny opis kategorii — nic nie usunięto"
+
+
 def parse_selection(text: str) -> tuple[list[str], str]:
-    """JSON z kategoriami: ["cache", "images"] albo {"cache": true, …}. (kategorie w kolejności prune, błąd)."""
+    """Wyłącznie lista JSON z id kategorii: ["cache", "images"]. (kategorie w kolejności prune, błąd).
+
+    Celowo bez obiektu {"cache": true}: przy nim każda „prawdziwa” wartość (np. napis "false")
+    wybierałaby kategorię. Cokolwiek innego niż lista znanych id — odmowa całej prośby."""
     try:
         data = json.loads(text or "")
     except ValueError:
-        return [], "niepoprawny opis kategorii — nic nie usunięto"
-    if isinstance(data, dict):
-        chosen = [k for k, v in data.items() if v]
-    elif isinstance(data, list):
-        chosen = data
-    else:
-        return [], "niepoprawny opis kategorii — nic nie usunięto"
-    if not all(isinstance(c, str) for c in chosen):
-        return [], "niepoprawny opis kategorii — nic nie usunięto"
-    unknown = sorted(set(chosen) - set(CATEGORIES))
+        return [], BAD_SELECTION
+    if not isinstance(data, list) or not all(isinstance(c, str) for c in data):
+        return [], BAD_SELECTION
+    unknown = sorted(set(data) - set(CATEGORIES))
     if unknown:
         return [], f"nieznana kategoria: {', '.join(unknown)} — nic nie usunięto"
-    if not chosen:
+    if not data:
         return [], "nic nie zaznaczono"
-    return [c for c in PRUNE_ORDER if c in chosen], ""
+    return [c for c in PRUNE_ORDER if c in data], ""
 
 
 def prune_request(category: str) -> tuple[str, str, dict]:

@@ -77,13 +77,16 @@ Obiekt /Docker, interfejs org.tide.Daemon.Docker (kontenery przez Docker Engine 
 - Start(s id), Stop(s id), Restart(s id), Remove(s id) -> s
                              JSON {ok, error, id, name, note}; Remove tylko zatrzymanego, bez wolumenów,
 - GroupAction(s project, s action) -> s
-                             start/stop/restart wszystkich kontenerów projektu compose; {ok, error, done, failed},
-- Prune(s categories) -> s   JSON ["cache", "images", "volumes", "stopped"] → {ok, error, reclaimedBytes, details};
-                             tylko wymienione kategorie,
+                             zadanie w tle: start/stop/restart wszystkich kontenerów projektu compose; od razu
+                             {ok, error, job}, wynik {ok, error, job, project, done, failed} sygnałem ActionFinished,
+- Prune(s categories) -> s   zadanie w tle dla listy JSON ["cache", "images", "volumes", "stopped"]; od razu
+                             {ok, error, job} (zła lista — odmowa bez zadania), wynik {ok, error, job,
+                             reclaimedBytes, details} sygnałem ActionFinished; tylko wymienione kategorie,
 - Logs(s id, i lines) -> s   ostatnie linie logów {ok, error, lines: [{text, stderr}]},
 - OpenLogs(s id) -> b        `docker logs -f --tail 200 <nazwa>` w karcie Konsoli,
 - OpenShell(s id) -> b       powłoka w działającym kontenerze (bash albo sh) w karcie Konsoli,
-- sygnał Changed()           migawka kontenerów się zmieniła.
+- sygnał Changed()           migawka kontenerów się zmieniła,
+- sygnał ActionFinished(s job, s json)  koniec zadania Prune albo GroupAction.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
@@ -248,6 +251,10 @@ DOCKER_XML = f"""<interface name="{DOCKER_IFACE}">
     <arg name="ok" type="b" direction="out"/>
   </method>
   <signal name="Changed"/>
+  <signal name="ActionFinished">
+    <arg name="job" type="s"/>
+    <arg name="json" type="s"/>
+  </signal>
 </interface>"""
 
 
@@ -506,15 +513,18 @@ class CoordinationAdaptor(QDBusAbstractAdaptor):
 @pyqtClassInfo("D-Bus Introspection", DOCKER_XML)
 class DockerAdaptor(QDBusAbstractAdaptor):
     Changed = pyqtSignal()
+    ActionFinished = pyqtSignal(str, str)
 
     def __init__(self, parent: QObject, monitor, bus: QDBusConnection):
         super().__init__(parent)
         self.monitor = monitor
         self.bus = bus
         monitor.changed.connect(self.Changed)
+        monitor.actionFinished.connect(self.ActionFinished)
 
     def _delayed(self, message: QDBusMessage, name: str):
-        # Engine API odpowiada z wątku roboczego (stop czeka do 10 s) — odpowiedź D-Bus później.
+        # Engine API odpowiada z wątku roboczego (stop czeka do 10 s) — odpowiedź D-Bus później, ale zawsze
+        # przed domyślnym limitem klienta 25 s (limity w docker/engine.py). Dłuższe prace to zadania.
         message.setDelayedReply(True)
         request = QDBusMessage(message)
 
@@ -558,15 +568,13 @@ class DockerAdaptor(QDBusAbstractAdaptor):
         self.monitor.remove(ident, self._delayed(message, "Remove"))
         return ""
 
-    @pyqtSlot(str, str, QDBusMessage, result=str)
-    def GroupAction(self, project: str, action: str, message: QDBusMessage) -> str:
-        self.monitor.group_action(project, action, self._delayed(message, "GroupAction"))
-        return ""
+    @pyqtSlot(str, str, result=str)
+    def GroupAction(self, project: str, action: str) -> str:
+        return self.monitor.group_action(project, action)
 
-    @pyqtSlot(str, QDBusMessage, result=str)
-    def Prune(self, categories: str, message: QDBusMessage) -> str:
-        self.monitor.prune(categories, self._delayed(message, "Prune"))
-        return ""
+    @pyqtSlot(str, result=str)
+    def Prune(self, categories: str) -> str:
+        return self.monitor.prune(categories)
 
     @pyqtSlot(str, int, QDBusMessage, result=str)
     def Logs(self, ident: str, lines: int, message: QDBusMessage) -> str:
