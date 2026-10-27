@@ -454,7 +454,8 @@ class Describer:
         with self._lock:
             self._called[cid] = self.clock()
             mode, timeout = self.mode, self.timeout  # set_mode w trakcie nie zmienia tego przebiegu
-            model = self._model(mode)
+        # Model poza blokadą: czyta models.json, a na blokadę czeka wątek Qt (decorate, due, set_mode).
+        model = self._model(mode)
         tickets = job["tickets"]
         hashes = dict(job["hashes"])
         started = time.monotonic()

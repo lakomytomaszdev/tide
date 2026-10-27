@@ -400,6 +400,31 @@ class LocalDescriberTest(unittest.TestCase):
         again.decorate(boards)
         self.assertEqual(boards[0]["tickets"][0]["describedBy"], "model", "powrót do Claude — jego opisy z pamięci")
 
+    def test_model_is_built_outside_the_lock(self):
+        """run() czyta models.json (Model) poza blokadą — wątek Qt (decorate, due, set_mode) nie czeka na plik."""
+        import threading
+        server = start_server(self, {("POST", "/api/chat"): [ollama_tickets("~a")]})
+        d = self.describer(self.config(server.url))
+        job = self.settle(d, [board([ticket("~a")])])
+        inside, release = threading.Event(), threading.Event()
+        real = summarize.Model
+
+        def slow_model(*args, **kwargs):
+            inside.set()
+            release.wait(5)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(summarize, "Model", side_effect=slow_model):
+            worker = threading.Thread(target=d.run, args=(job,))
+            worker.start()
+            try:
+                self.assertTrue(inside.wait(5))
+                self.assertTrue(d._lock.acquire(timeout=1), "blokada wolna, gdy run() tworzy Model")
+                d._lock.release()
+            finally:
+                release.set()
+                worker.join(5)
+
     def test_stop_interrupts_a_local_call(self):
         import threading
         import time
