@@ -121,9 +121,22 @@ class TemplatesTest(BoardCase):
         self.assertIn("Bez zmian w kodzie", text)
         self.assertIn("status: szkic", text)
         self.assertIn("`status: gotowa`", text)
-        self.assertIn("nie commitujesz niczego", text)
+        self.assertIn("Commit: niczego nie commitujesz — plik specyfikacji w tablicy commituje usługa Tide.", text,
+                      "ai-docs: tide — commituje usługa")
         self.assertNotIn("Zakładasz go według standardu", text, "bez planu i ticketów")
         self.assertIn("Istniejąca specyfikacja karty: /stara/specyfikacja.md", text)
+
+    def test_spec_mode_in_repo_commits_only_the_spec(self):
+        text = self.store.render_launch("K-2", {"mode": "spec"})["text"]
+        self.assertIn("zacommituj wyłącznie jej plik na bieżącej gałęzi", text)
+        self.assertIn("`git add docs/agents/specs/k-2-okno-dockera.md`", text)
+        self.assertIn('`git commit -m "docs(spec): K-2 <short English title>"`', text)
+        self.assertIn("po angielsku", text)
+        self.assertIn("bez żadnych podpisów i wzmianek o AI", text)
+        self.assertIn("Co-Authored-By", text)
+        self.assertIn("bez push", text)
+        self.assertNotIn("niczego nie commitujesz", text)
+        self.assertNotIn("{spec_commit}", self.store.render_launch("K-2", {"mode": "full"})["text"])
 
     def test_window_choice_overrides_tool_and_branch(self):
         flow = self.store.render_launch("K-1", {"mode": "light", "tool": "codex"})

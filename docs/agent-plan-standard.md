@@ -63,6 +63,8 @@ nie jest planem tego koordynatora. Klucz bez sensownej wartości (np. `card: 12`
 **Specyfikacja karty** (obok planu, w `specs/`): plik `k-12-<opis>.md` z frontmatterem `card: K-12`
 i `status: szkic`, zmienianym na `status: gotowa`, gdy użytkownik ją zaakceptuje. W trybie „tylko
 specyfikacja” to sygnał dla Tide: karta dostaje znacznik „specyfikacja gotowa” i wraca do Backlogu.
+Specyfikację w repozytorium projektu (`docs/agents/specs/`) agent w tym trybie commituje sam — tylko ten
+plik, na bieżącej gałęzi, `docs(spec): K-12 <short English title>`, bez push; w tablicy commituje tide-daemon.
 
 ## Numery ticketów: jedno źródło
 

@@ -276,6 +276,7 @@ class BoardStore:
                   "tool": tool, "docs_note": docs_note, "spec": card.spec or "brak (zaczynasz od zera)",
                   "spec_file": os.path.join(docs_ref, "specs", spec_name(card)), "check": check,
                   "check_label": flows.CHECK_LABELS[check], "finish": flows.finish_text(check, docs_ref)}
+        values["spec_commit"] = flows.spec_commit_text(in_board, card.id, values["spec_file"])
         return {"ok": True, "id": card.id, "mode": mode, "tool": tool, "branch": branch, "check": check, "docsDir": docs,
                 "aiDocs": ai_docs, "repo": values["repo"], "repoMissing": bool(project and project.repo_missing),
                 "project": card.project, "projectName": values["project"], "template": source,

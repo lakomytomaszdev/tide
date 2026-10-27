@@ -846,7 +846,7 @@ synchronizacja. Szablon bierze `flows/<projekt>/<tryb>.md`, potem `flows/<tryb>.
 tablicy — wbudowany szablon (`board/flows.py`, te same treści, które trafiają do nowej tablicy).
 Frontmatter szablonu nie trafia do polecenia. Zastępowane są wyłącznie pola `{card_id}`, `{title}`,
 `{description}`, `{project}`, `{repo}`, `{docs_dir}`, `{branch}`, `{tool}`, `{docs_note}`, `{spec}`,
-`{spec_file}`, `{check}`, `{check_label}`, `{finish}` — inne klamry zostają, a opis karty nie jest
+`{spec_file}`, `{check}`, `{check_label}`, `{finish}`, `{spec_commit}` — inne klamry zostają, a opis karty nie jest
 szablonem. Gałąź: z okna, inaczej `branch` karty albo propozycja `<narzędzie>/k-12-<opis-z-tytułu>`
 (po ID karty w gałęzi daemon połączy kartę z koordynatorem; w trybie spec polecenie mówi „bez gałęzi”).
 `{docs_dir}` to `docs/agents` (względnie — katalog roboczy agenta, także worktree) przy `ai-docs: repo`
@@ -863,7 +863,10 @@ numery ticketów z zasad projektu (CLAUDE.md/AGENTS.md, `make -C ~/DevWorkspace/
 `check-plans`; bez zasad — `tracker: local` z prefiksem zapisanym w planie), TDD (skill `tdd`),
 delegowanie i obowiązkowe review AI według standardu, pytania z ID ticketu; **lekki** — krótka
 specyfikacja, plan z 1–3 ticketami, TDD, review AI; **tylko specyfikacja** — pytania i specyfikacja
-z review AI, bez kodu, gałęzi, planu i commitów, na koniec `status: gotowa`.
+z review AI, bez kodu, gałęzi i planu, na koniec `status: gotowa`; `{spec_commit}`: w tablicy nic nie
+commituje (robi to usługa), a przy `ai-docs: repo` commituje wyłącznie plik specyfikacji na bieżącej
+gałęzi (`docs(spec): K-12 <short English title>`, po angielsku, bez podpisów i wzmianek o AI, bez push) —
+inaczej późniejszy start z nowym worktree dostałby odmowę `dirty-base`.
 
 **Migracja szablonów.** Tablica założona przed PT-4 ma w `flows/` dawne zaczyny. Przy starcie usługi
 (`migrate_flows`) plik `flows/<tryb>.md`, który jest bajt w bajt dawnym zaczynem (skróty SHA-256

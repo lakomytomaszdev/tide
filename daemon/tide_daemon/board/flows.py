@@ -11,7 +11,8 @@ docs/agents w katalogu roboczym albo katalog w tablicy), docs_note (jedno zdanie
 pliki), spec (istniejąca specyfikacja karty albo „brak”), spec_file (proponowana ścieżka specyfikacji
 — nazwa zaczyna się od ID karty, po niej usługa rozpoznaje gotową specyfikację), check (`auto` albo
 `manual` — „Test ręczny po zakończeniu” z okna uruchomienia), check_label (to samo słowami) i finish
-(jak skończyć pracę: po review AI od razu albo z listą „Co przetestować ręcznie i jak” — finish_text).
+(jak skończyć pracę: po review AI od razu albo z listą „Co przetestować ręcznie i jak” — finish_text),
+spec_commit (tryb spec: czy i jak commitować samą specyfikację — spec_commit_text).
 
 Treści trybów prowadzą agenta przez nasz przepływ pracy: grilling (skill `grilling` w Claude Code,
 w Codeksie to samo opisane słowami), specyfikacja, plan według standardu planu 1.1 z kluczem
@@ -28,7 +29,7 @@ from .frontmatter import Document, FrontmatterError
 from .model import MODES
 
 PLACEHOLDERS = ("card_id", "title", "description", "project", "repo", "docs_dir", "branch", "tool",
-                "docs_note", "spec", "spec_file", "check", "check_label", "finish")
+                "docs_note", "spec", "spec_file", "check", "check_label", "finish", "spec_commit")
 CHECKS = ("auto", "manual")
 _FIELD = re.compile(r"\{(" + "|".join(PLACEHOLDERS) + r")\}")
 
@@ -127,10 +128,10 @@ mode: spec
 ---
 """ + _COMMON + """
 Tryb „Tylko specyfikacja”: dopytujesz i piszesz specyfikację — nic więcej. Bez zmian w kodzie, bez
-gałęzi i worktree, bez planu i ticketów, bez commitów.
+gałęzi i worktree, bez planu i ticketów.
 
-Dokumenty AI: {docs_note} W tym trybie nie commitujesz niczego — plik specyfikacji zostaje do
-mojej decyzji.
+Dokumenty AI: {docs_note}
+Commit: {spec_commit}
 Istniejąca specyfikacja karty: {spec}
 
 1. Rozejrzyj się w kodzie i dokumentacji projektu tylko do odczytu, żeby pytać konkretnie.
@@ -175,6 +176,17 @@ def finish_text(check: str, docs_dir: str) -> str:
             "wtedy, gdy zasady projektu (CLAUDE.md albo AGENTS.md) na to pozwalają — inaczej zostaw gałąź do "
             "scalenia. Bez push, dopóki o to nie poproszę. W ostatniej wiadomości napisz krótko, co się zmieniło "
             "i gdzie.")
+
+
+def spec_commit_text(in_board: bool, card_id: str, spec_file: str) -> str:
+    """Tryb spec: w tablicy nic nie commitujemy (robi to usługa); w repozytorium projektu — wyłącznie plik
+    specyfikacji na bieżącej gałęzi, żeby późniejszy start z nowym worktree nie trafił na „dirty-base”."""
+    if in_board:
+        return "niczego nie commitujesz — plik specyfikacji w tablicy commituje usługa Tide."
+    return (f"gdy specyfikacja ma `status: gotowa`, zacommituj wyłącznie jej plik na bieżącej gałęzi repozytorium: "
+            f"`git add {spec_file}` i `git commit -m \"docs(spec): {card_id} <short English title>\"` — temat po "
+            "angielsku, w konwencji conventional commits, bez żadnych podpisów i wzmianek o AI ani agencie (bez "
+            "Co-Authored-By). Nic poza tym plikiem, bez push.")
 
 
 def digest(text: str) -> str:
