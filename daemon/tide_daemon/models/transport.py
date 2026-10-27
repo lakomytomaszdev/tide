@@ -119,12 +119,14 @@ def _exchange(endpoint, method: str, path: str, data: bytes | None, headers: dic
         except OSError:
             pass
 
-    timer = threading.Timer(_left(deadline), cut)
-    timer.daemon = True
-    timer.start()
-    conn = http.client.HTTPConnection(hostname, port)
-    try:
+    timer = conn = None
+    try:  # także _left() i konstruktor w try: termin może minąć tuż po połączeniu, gniazdo i tak zamykamy
+        timer = threading.Timer(_left(deadline), cut)
+        timer.daemon = True
+        timer.start()
+        conn = http.client.HTTPConnection(hostname, port)
         if scheme == "https":
+            conn.default_port = 443  # nagłówek Host bez „:443”, jak w zwykłym kliencie https
             sock = ssl.create_default_context().wrap_socket(sock, server_hostname=hostname)
         conn.sock = sock  # połączone wyżej (z terminem); http.client tylko pisze i czyta
         sock.settimeout(_left(deadline))
@@ -139,8 +141,10 @@ def _exchange(endpoint, method: str, path: str, data: bytes | None, headers: dic
             raise _Expired() from None
         raise
     finally:
-        timer.cancel()
-        conn.close()
+        if timer:
+            timer.cancel()
+        if conn:
+            conn.close()
         sock.close()
 
 

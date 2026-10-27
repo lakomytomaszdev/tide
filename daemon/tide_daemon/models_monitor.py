@@ -87,13 +87,14 @@ class ModelsMonitor(QObject):
             self.poll()
 
     def _log(self, state: dict) -> None:
-        """Do dziennika tylko zmiany: punkt zaczął albo przestał odpowiadać, błąd w models.json."""
-        lines = {"config": (state.get("config") or {}).get("error", "")}
+        """Do dziennika tylko zmiany: punkt zaczął albo przestał odpowiadać, błąd albo ostrzeżenia w models.json."""
+        config = state.get("config") or {}
+        lines = {"config": config.get("error", ""), "warnings": " · ".join(config.get("warnings") or ())}
         for name, endpoint in (state.get("endpoints") or {}).items():
             lines[f"endpoint:{name}"] = (f"{name}: odpowiada (wersja {endpoint.get('version') or '?'})"
                                          if endpoint.get("online") else f"{name}: {endpoint.get('error', '')}")
         for key, line in lines.items():
-            if line != self._logged.get(key, "" if key == "config" else None):
+            if line != self._logged.get(key, "" if key in ("config", "warnings") else None):
                 if line:
                     print(f"tide-daemon: Modele lokalne: {line}", flush=True)
                 self._logged[key] = line

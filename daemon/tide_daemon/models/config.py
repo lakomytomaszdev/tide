@@ -25,6 +25,8 @@ Punkt jest zły także wtedy, gdy adresu nie da się rozebrać na host i port (p
 IPv6 bez nawiasów) albo adres ma dane logowania (`user:hasło@` — hasło w pliku ustawień i w adresie
 widocznym w stanie; od tego jest `tokenFile`). Rola z przedrostkiem pominiętego punktu nie przechodzi
 cicho na `default`: zostaje przy swoim punkcie jako niedostępna (`error`), wywołanie daje ModelError.
+Tak samo zły `default` (nieznany, pominięty, nie napis): role bez punktu są niedostępne, a `default`
+w stanie to zapasowy punkt (`local` albo pierwszy) — tylko po to, żeby było co odczytywać.
 
 Token (`tokenFile`, z rozwinięciem `~`) czytamy przy każdym zapytaniu, tylko w pamięci, i wysyłamy
 jako `Authorization: Bearer`; nie trafia do dziennika, komunikatów błędów ani odpowiedzi D-Bus.
@@ -196,7 +198,7 @@ def _ctx(name, value, warnings) -> tuple[bool, int | None]:
     return True, value or None
 
 
-def _role(name, value, endpoints, skipped, default, warnings) -> Role | None:
+def _role(name, value, endpoints, skipped, default, unreachable, warnings) -> Role | None:
     ctx = None
     if isinstance(value, dict):
         ok, ctx = _ctx(name, value.get("ctx"), warnings)
@@ -215,6 +217,8 @@ def _role(name, value, endpoints, skipped, default, warnings) -> Role | None:
             reason = f"rola „{name}”: punkt „{head}” jest pominięty w models.json"
             warnings.append(f"{reason} — rola niedostępna")
             return Role(name, head, rest, ctx, reason)
+    if endpoint is None and unreachable:
+        return Role(name, unreachable[0], model, ctx, unreachable[1])
     return Role(name, endpoint or default, model, ctx)
 
 
@@ -248,15 +252,22 @@ def from_dict(data, path: str = "", exists: bool = True) -> ModelsConfig:
 
     skipped = set(raw_endpoints or {}) - set(endpoints)
 
+    # Zły `default` nie przenosi ról bez punktu na inny serwer: są niedostępne z powodem (jak rola na
+    # pominiętym punkcie). `default` w stanie to wtedy zapasowy punkt — tylko do odczytu stanu.
     default = data.get("default")
     fallback = DEFAULT_ENDPOINT if DEFAULT_ENDPOINT in endpoints else next(iter(endpoints))
+    unreachable = None
     if default is None:
         default = fallback
-    elif not isinstance(default, str):
-        warnings.append(f"default: oczekiwano nazwy punktu — używam „{fallback}”")
-        default = fallback
-    elif default not in endpoints:
-        warnings.append(f"default: nieznany punkt „{default[:40]}” — używam „{fallback}”")
+    elif not isinstance(default, str) or default not in endpoints:
+        if not isinstance(default, str):
+            name, reason = "default", "default: oczekiwano nazwy punktu"
+        elif default in skipped:
+            name, reason = default, f"default: punkt „{default[:40]}” jest pominięty w models.json"
+        else:
+            name, reason = default[:40], f"default: nieznany punkt „{default[:40]}”"
+        warnings.append(f"{reason} — role bez punktu niedostępne")
+        unreachable = (name, reason)
         default = fallback
 
     roles: dict = {}
@@ -268,11 +279,14 @@ def from_dict(data, path: str = "", exists: bool = True) -> ModelsConfig:
         if not NAME_RE.fullmatch(name):
             warnings.append(f"rola „{name[:40]}”: niepoprawna nazwa (litery, cyfry, _.-) — pominięta")
             continue
-        role = _role(name, value, endpoints, skipped, default, warnings)
+        role = _role(name, value, endpoints, skipped, default, unreachable, warnings)
         if role:
             roles[name] = role
     for name, model in DEFAULT_ROLES.items():
-        roles.setdefault(name, Role(name, default, model, ROLE_CTX.get(name)))
+        if unreachable:
+            roles.setdefault(name, Role(name, unreachable[0], model, ROLE_CTX.get(name), unreachable[1]))
+        else:
+            roles.setdefault(name, Role(name, default, model, ROLE_CTX.get(name)))
     return ModelsConfig(default, endpoints, roles, path, exists, "", tuple(warnings))
 
 

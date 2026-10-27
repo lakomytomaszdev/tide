@@ -244,9 +244,12 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(any("nieznany rodzaj „vllm”" in w for w in cfg.warnings))
         self.assertTrue(any("„haslo”: dane logowania w adresie" in w for w in cfg.warnings), cfg.warnings)
         self.assertNotIn("sekret", json.dumps(cfg.warnings))
-        # Zepsute role domyślne wracają z wartościami domyślnymi, poprawna zostaje.
-        self.assertEqual({n: (r.model, r.ctx) for n, r in cfg.roles.items() if not r.error},
-                         {"ok": ("qwen3:8b", None), "summary": ("qwen3:8b", 8192), "describe": ("qwen3:8b", 8192)})
+        # Poprawna rola z punktem zostaje. Role bez punktu (także zepsute role domyślne, które wracają
+        # z wartościami domyślnymi) nie idą cicho na „local”, bo `default` wskazuje nieznany punkt.
+        self.assertEqual({n: (r.model, r.ctx) for n, r in cfg.roles.items() if not r.error}, {"ok": ("qwen3:8b", None)})
+        self.assertEqual((cfg.roles["summary"].endpoint, cfg.roles["summary"].model, cfg.roles["summary"].ctx),
+                         ("nie-ma", "qwen3:8b", 8192))
+        self.assertIn("nieznany punkt „nie-ma”", cfg.roles["summary"].error)
         # Rola na pominiętym punkcie nie idzie cicho na `default` — jest niedostępna z powodem.
         agent = cfg.roles["agent"]
         self.assertEqual((agent.endpoint, agent.model), ("nawias", "qwen3-coder:30b"))
@@ -259,9 +262,29 @@ class ConfigTest(unittest.TestCase):
 
     def test_default_must_be_a_name(self):
         for value in (["mac"], {}, 5, None):
-            cfg = models_config.from_dict({"default": value, "endpoints": {"local": {"url": "http://127.0.0.1:11434"}}})
+            cfg = models_config.from_dict({"default": value, "endpoints": {"local": {"url": "http://127.0.0.1:11434"}},
+                                           "roles": {"ok": "local:qwen3:8b"}})
             self.assertEqual(cfg.default, "local")
             self.assertEqual(len(cfg.warnings), 0 if value is None else 1, cfg.warnings)
+            # Zły `default`: role bez punktu niedostępne, role z punktem działają.
+            self.assertEqual(bool(cfg.roles["summary"].error), value is not None)
+            self.assertFalse(cfg.roles["ok"].error)
+
+    def test_default_on_skipped_endpoint_does_not_move_roles_to_local(self):
+        cfg = models_config.from_dict({"default": "mac",
+                                       "endpoints": {"local": {"url": "http://127.0.0.1:11434"},
+                                                     "mac": {"url": "http://mac:abc"}},
+                                       "roles": {"agent": "qwen3-coder:30b", "ok": "local:qwen3:8b"}})
+        self.assertEqual(cfg.default, "local")  # tylko do odczytu stanu
+        for name in ("summary", "describe", "agent"):
+            role = cfg.roles[name]
+            self.assertEqual(role.endpoint, "mac", name)
+            self.assertIn("punkt „mac” jest pominięty", role.error)
+        self.assertEqual(cfg.roles["agent"].model, "qwen3-coder:30b")
+        self.assertFalse(cfg.roles["ok"].error)
+        self.assertTrue(any("role bez punktu niedostępne" in w for w in cfg.warnings), cfg.warnings)
+        with self.assertRaises(ModelError):
+            client.chat("x", role="summary", config=cfg)
 
     def test_default_role_on_skipped_endpoint_stays_there(self):
         cfg = models_config.from_dict({"endpoints": {"local": {"url": "http://127.0.0.1:11434"},
