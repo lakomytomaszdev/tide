@@ -130,6 +130,15 @@ def snapshot_variant(name: str) -> dict | None:
                                                              "expiresAt": "2026-10-27T18:30:00+01:00"}])},
                       default="mac", roles={"summary": role("qwen3:8b", endpoint="mac", installed=False),
                                             "agent": role("qwen3-coder:30b", endpoint="mac", ctx=None)})
+    if name == "moved":
+        # Adres punktu zmieniony w trakcie raportu: na nowym serwerze opis kart, na starym jeszcze raport (PT-16).
+        return status({"local": local(loaded=[QWEN_LOADED])}, report={"summary": "local"},
+                      queue={"local": {"running": {"endpoint": "local", "role": "describe", "model": "qwen3:8b",
+                                                   "since": "2026-10-27T16:59:00+01:00"},
+                                       "waiting": [],
+                                       "other": [{"lane": "http://10.0.0.5:11434", "waiting": [],
+                                                  "running": {"endpoint": "local", "role": "summary", "model": "qwen3:8b",
+                                                              "since": "2026-10-27T16:57:00+01:00"}}]}})
     if name == "busy":
         snap = status({"local": local(loaded=[GPT_OSS_LOADED]), "mac": mac(online=False)},
                       roles={"summary": role("qwen3:8b"), "describe": role("qwen3:8b"),
@@ -149,7 +158,7 @@ def snapshot_variant(name: str) -> dict | None:
 
 
 TILE_SCENARIOS = ("loaded", "ready", "partial", "working", "pulling", "pulled", "missing", "agent-missing", "offline", "starting", "down", "mac")
-POPUP_SCENARIOS = ("loaded", "working", "offline", "busy", "mac", "down")
+POPUP_SCENARIOS = ("loaded", "working", "offline", "busy", "mac", "moved", "down")
 
 TILE_HARNESS = """import QtQuick
 import QtQuick.Window
@@ -265,7 +274,8 @@ Window {
             const report = {
                 titles: texts(popup, [], "endpointTitle"), states: texts(popup, [], "endpointState"),
                 metas: texts(popup, [], "endpointMeta"), errors: texts(popup, [], "endpointError"),
-                queue: texts(popup, [], "queueLine"), pulls: texts(popup, [], "pullLine"),
+                queue: texts(popup, [], "queueLine"), queueOther: texts(popup, [], "queueOtherLine"),
+                pulls: texts(popup, [], "pullLine"),
                 loaded: texts(popup, [], "loadedName"), gpu: texts(popup, [], "loadedGpu"),
                 details: texts(popup, [], "loadedDetail"), idle: texts(popup, [], "idleLine"),
                 installed: texts(popup, [], "installedLine"), roles: texts(popup, [], "roleName"),

@@ -238,6 +238,18 @@ ColumnLayout {
                     color: Tide.Tokens.working
                     font.pointSize: Tide.Tokens.fontSizePt - 1
                 }
+                // Wywołania na starym adresie punktu (adres zmieniony w trakcie) — nie znikają (PT-16, `other`).
+                Repeater {
+                    model: Logic.queueOther(popup.snapshot, card.ep.name, popup.nowMs)
+                    Line {
+                        required property string modelData
+                        objectName: "queueOtherLine"
+                        Layout.leftMargin: 16
+                        text: modelData
+                        color: Tide.Tokens.working
+                        font.pointSize: Tide.Tokens.fontSizePt - 1
+                    }
+                }
 
                 // Pobieranie modeli (PT-25).
                 Repeater {

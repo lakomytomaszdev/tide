@@ -208,7 +208,27 @@ function roleName(role) {
 function queueFor(snap, name) {
     var all = snap && isObject(snap.queue) ? snap.queue : null
     var q = all && isObject(all[name]) ? all[name] : null
-    if (!q) return null
+    return q ? queueOf(q) : null
+}
+
+// Wywołania, które trwają albo czekają jeszcze na STARYM adresie punktu (adres zmieniony w trakcie, PT-16):
+// Status().queue.<punkt>.other = [{lane, running, waiting}]. Linie do popupu, bezczynne i zepsute pomijane:
+// „Na starym adresie 127.0.0.1:11434: pracuje: raport (qwen3:8b) od 3 min”.
+function queueOther(snap, name, nowMs) {
+    var all = snap && isObject(snap.queue) ? snap.queue : null
+    var list = all && isObject(all[name]) ? asList(all[name].other) : []
+    var out = []
+    for (var i = 0; i < list.length; i++) {
+        if (!isObject(list[i])) continue
+        var line = queueLine(queueOf(list[i]), nowMs)
+        if (!line) continue
+        var lane = typeof list[i].lane === "string" ? list[i].lane.replace(/^[a-z]+:\/\//, "") : ""
+        out.push("Na starym adresie" + (lane ? " " + lane : "") + ": " + line.charAt(0).toLowerCase() + line.slice(1))
+    }
+    return out
+}
+
+function queueOf(q) {
     var waiting = q.waiting
     var list = asList(waiting)
     var n = typeof waiting === "number" ? waiting : list.length

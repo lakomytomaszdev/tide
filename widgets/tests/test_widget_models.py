@@ -158,6 +158,14 @@ Item {
             String(Logic.queueFor({ queue: { mac: { running: null, waiting: [] } } }, "local")),
             String(Logic.queueBusy(Logic.queueFor({ queue: { local: { running: null, waiting: [] } } }, "local")))
         ].join(" | "))
+        // PT-16: wywołanie na starym adresie punktu (adres zmieniony w trakcie) — queue.<punkt>.other.
+        const moved = { queue: { local: { running: null, waiting: [], other: [
+            { lane: "http://127.0.0.1:11434", running: { endpoint: "local", role: "summary", model: "qwen3:8b",
+                                                         since: (now - 180000) / 1000 }, waiting: [] },
+            { lane: "http://10.0.0.5:11434", running: null, waiting: [{ role: "describe" }] },
+            { lane: "http://x:1", running: null, waiting: [] }, "zepsute" ] } } }
+        console.warn("OTHER " + [Logic.queueOther(moved, "local", now).join(" + "), Logic.queueOther(moved, "mac", now).length,
+                                 Logic.queueOther({}, "local", now).length].join(" | "))
         // Status().pulls z PT-25: klucz "<punkt>/<model>", wpis {endpoint, model, status, completed, total, running, error}.
         const pulls = { pulls: {
             "local/qwen3:8b": { endpoint: "local", model: "qwen3:8b", status: "pulling 3a4f", completed: 600, total: 1100, running: true, error: "" },
@@ -221,6 +229,9 @@ Item {
         # Jedna forma kolejki wszędzie: „· 2 w kolejce: raport”.
         self.assertEqual(got["QUEUE"], "2 w kolejce: raport, opis kart | 3 w kolejce | pracuje: raport | "
                          "Pracuje: opis kart (qwen3:8b) od 2 min · 2 w kolejce: raport | null | false")
+        self.assertEqual(got["OTHER"], "Na starym adresie 127.0.0.1:11434: pracuje: raport (qwen3:8b) od 3 min + "
+                         "Na starym adresie 10.0.0.5:11434: 1 w kolejce: opis kart | 0 | 0",
+                         "bezczynny i zepsuty wpis pominięte")
         self.assertEqual(got["PULLS"], "Pobieram qwen3:8b · 54% + Pobrano bge-m3 + "
                          "Nie udało się pobrać llama3.3:70b: brak miejsca na dysku + Pobieram Bielik:Q4_K_M… | "
                          "Pobieram qwen3:32b · 25% | 0 | 0")
@@ -284,6 +295,12 @@ class PopupTest(unittest.TestCase):
         self.assertEqual(result["titles"], ["mac", "Ten komputer"], "domyślny serwer pierwszy")
         self.assertEqual(result["idle"], ["Żaden model nie jest teraz w pamięci"])
         self.assertEqual(result["roleProblems"], ["model nie jest pobrany na ten serwer"])
+
+    def test_popup_shows_calls_on_the_old_address(self):
+        result = preview_models.render_popup("moved")
+        self.assertEqual(result["queue"], ["Pracuje: opis kart (qwen3:8b) od 1 min"])
+        self.assertEqual(result["queueOther"], ["Na starym adresie 10.0.0.5:11434: pracuje: raport (qwen3:8b) od 3 min"])
+        self.assertEqual(result["overflow"], [])
 
     def test_popup_offline_and_without_service(self):
         offline = preview_models.render_popup("offline")
