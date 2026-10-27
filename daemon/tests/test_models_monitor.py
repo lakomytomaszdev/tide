@@ -116,7 +116,7 @@ class ModelsMonitorTest(unittest.TestCase):
         state = wait_until(busy, timeout=3)
         self.assertEqual(state["running"]["role"], "summary")
         self.assertEqual([w["role"] for w in state["waiting"]], ["describe"])
-        self.assertEqual(set(state["waiting"][0]), {"role", "model", "since"}, "bez treści poleceń")
+        self.assertEqual(set(state["waiting"][0]), {"endpoint", "role", "model", "since"}, "bez treści poleceń")
         gate.set()
         for worker in workers:
             worker.join(5)
@@ -129,6 +129,35 @@ class ModelsMonitorTest(unittest.TestCase):
         self.assertGreaterEqual(queue_changes, 2)
         self.assertLessEqual(queue_changes, 2 + int(elapsed / 0.4))
         self.assertLess(queue_changes, 6)
+
+    def test_queue_by_server_shown_under_every_endpoint_name(self):
+        import json
+        url = "http://127.0.0.1:11434"
+
+        def read():
+            return {"checked": True, "config": {"error": ""}, "roles": {},
+                    "endpoints": {"local": {"url": url, "online": True, "error": ""},
+                                  "same": {"url": url + "/", "online": True, "error": ""},
+                                  "mac": {"url": "http://mac-studio:11434", "online": False, "error": ""}}}
+
+        queue = models_queue.Queue()
+        monitor, changes = self.monitor(read, queue=queue, queue_gap_ms=0)
+        monitor.poll()
+        self.assertTrue(wait_until(lambda: changes))
+        gate = threading.Event()
+        worker = threading.Thread(target=lambda: queue.run(lambda: gate.wait(5), endpoint="same",
+                                                           lane=models_queue.lane_of(url), role="describe",
+                                                           model="qwen3:8b"))
+        worker.start()
+        try:
+            state = wait_until(lambda: (json.loads(monitor.status_json())["queue"]["local"]["running"] and
+                                        json.loads(monitor.status_json())["queue"]), timeout=3)
+            self.assertEqual(state["local"], state["same"], "dwa punkty na jednym serwerze — ten sam stan toru")
+            self.assertEqual(state["local"]["running"]["endpoint"], "same")
+            self.assertEqual(state["mac"], {"running": None, "waiting": []})
+        finally:
+            gate.set()
+            worker.join(5)
 
     def test_stop_detaches_from_the_queue(self):
         queue = models_queue.Queue()

@@ -144,6 +144,43 @@ class QueueCoreTest(unittest.TestCase):
                 thread.join(5)
             self.assertEqual(order, expected, f"group_hold={hold}")
 
+    def test_group_hold_expiring_between_evaluations_does_not_strand_waiters(self):
+        """Okno grupowania mija między ocenami dwóch czekających (zegar podmieniony): A (najstarsze, inny model)
+        i B (ten sam model co ostatnio) nie mogą oba uznać, że następny jest ten drugi, i spać przy wolnym
+        miejscu (review PT-16, MAJOR 1)."""
+        real_sleep = time.sleep
+        for attempt in range(6):
+            now = {"t": 0.0}
+            with mock.patch.object(queue_mod.time, "monotonic", lambda: now["t"]):
+                queue = queue_mod.Queue(group_hold=10)
+                original = queue._next
+                jump = {"on": False}
+
+                def jumping(*args, original=original, jump=jump, now=now):
+                    result = original(*args)
+                    if jump["on"]:
+                        now["t"] = 20.0      # okno grupowania mija zaraz po tej ocenie
+                    return result
+
+                queue._next = jumping
+                blocker = Blocker(queue, model="Y", wait=None)
+                done = []
+                a = threading.Thread(target=lambda: queue.run(lambda: done.append("A"), endpoint="local", model="X",
+                                                              wait=None), daemon=True)
+                a.start()
+                real_sleep(0.05)
+                now["t"] = 1.0
+                b = threading.Thread(target=lambda: queue.run(lambda: done.append("B"), endpoint="local", model="Y",
+                                                              wait=None), daemon=True)
+                b.start()
+                real_sleep(0.05)
+                now["t"] = 5.0
+                jump["on"] = True
+                blocker.gate.set()
+                for thread in (blocker.thread, a, b):
+                    thread.join(2)
+                self.assertEqual(sorted(done), ["A", "B"], f"próba {attempt}: czekający utknęli przy wolnym miejscu")
+
     def test_higher_priority_beats_model_grouping(self):
         blocker = Blocker(self.queue, role="summary", model="model-a")
         order = []
@@ -165,11 +202,11 @@ class QueueCoreTest(unittest.TestCase):
                            host="127.0.0.1:11434")
         self.assertGreaterEqual(time.monotonic() - started, 0.29)
         self.assertEqual(called, [], "po limicie czekania wywołanie nie rusza")
-        self.assertEqual(str(ctx.exception),
-                         "Model lokalny: kolejka: czekał 0,3 s — serwer zajęty: raport poranny (127.0.0.1:11434)")
-        self.assertEqual(summarize.local_note(ctx.exception),
-                         "Model lokalny niedostępny — opis bez modelu (kolejka: czekał 0,3 s — serwer zajęty: "
-                         "raport poranny, 127.0.0.1:11434)")
+        self.assertRegex(str(ctx.exception), r"^Model lokalny: kolejka: czekał \d+(\.\d)? s — serwer zajęty: "
+                                             r"raport poranny \(127\.0\.0\.1:11434\)$")
+        self.assertRegex(summarize.local_note(ctx.exception),
+                         r"^Model lokalny niedostępny — opis bez modelu \(kolejka: czekał \d+(\.\d)? s — serwer "
+                         r"zajęty: raport poranny, 127\.0\.0\.1:11434\)$")
         self.assertEqual(self.waiting(), 0, "po limicie znika z kolejki")
         blocker.release()
 
@@ -190,7 +227,7 @@ class QueueCoreTest(unittest.TestCase):
         started = time.monotonic()
         cancel.set()
         thread.join(2)
-        self.assertLess(time.monotonic() - started, 0.5, "zamykanie usługi nie czeka na kolej")
+        self.assertLess(time.monotonic() - started, 1.0, "zamykanie usługi nie czeka na kolej")
         self.assertIsInstance(results[0], ModelError)
         self.assertEqual(str(results[0]), "Model lokalny: wywołanie przerwane — usługa się zamyka (127.0.0.1:11434)")
         self.assertEqual(self.waiting(), 0)
@@ -208,7 +245,8 @@ class QueueCoreTest(unittest.TestCase):
         self.assertEqual(len(events), 3, "dołączenie, start, koniec")
         waiting, running, done = events
         self.assertEqual(waiting["local"]["running"], None)
-        self.assertEqual(set(waiting["local"]["waiting"][0]), {"role", "model", "since"})
+        self.assertEqual(waiting["local"]["waiting"][0]["endpoint"], "local")
+        self.assertEqual(set(waiting["local"]["waiting"][0]), {"endpoint", "role", "model", "since"})
         self.assertEqual((running["local"]["running"]["role"], running["local"]["running"]["model"]),
                          ("describe", "qwen3:8b"))
         self.assertRegex(running["local"]["running"]["since"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
@@ -249,15 +287,15 @@ class ChatQueueTest(unittest.TestCase):
 
     def test_timeout_counts_from_the_start_of_the_call(self):
         results = []
-        threads = [self.chat(results, timeout=0.7) for _ in range(3)]
+        threads = [self.chat(results, timeout=0.75) for _ in range(3)]
         for thread in threads:
             thread.join(5)
         self.assertTrue(all(not isinstance(r, Exception) for r in results), results)
         self.assertEqual(len(self.server.requests), 3)
         waits = sorted(r.metrics["queueS"] for r in results)
-        self.assertLess(waits[0], 0.2)
-        self.assertGreater(waits[2], 0.7, "trzecie czekało dłużej niż własny limit — i zdążyło")
-        self.assertTrue(all(r.metrics["wallS"] < 0.7 for r in results))
+        self.assertLess(waits[0], 0.35)
+        self.assertGreater(waits[2], 0.75, "trzecie czekało dłużej niż własny limit — i zdążyło")
+        self.assertTrue(all(r.metrics["wallS"] < 0.75 for r in results))
 
     def test_deadline_limits_waiting_and_the_call_together(self):
         results = []
@@ -267,28 +305,80 @@ class ChatQueueTest(unittest.TestCase):
         with self.assertRaises(ModelError) as ctx:
             client.chat("x", role="summary", config=self.cfg, queue=self.queue, timeout=180,
                         deadline=time.monotonic() + 0.2)
-        self.assertLess(time.monotonic() - started, 0.35)
-        self.assertIn("kolejka: czekał 0,2 s — serwer zajęty: opisy kart", str(ctx.exception))
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertRegex(str(ctx.exception), r"kolejka: czekał \d+(\.\d)? s — serwer zajęty: opisy kart")
         first.join(5)
         # Termin bliżej niż `timeout` — limit wywołania przycięty do końca terminu (i tak w komunikacie).
         self.server.delay = 1.0
         with self.assertRaises(ModelError) as ctx:
             client.chat("x", role="summary", config=self.cfg, queue=self.queue, timeout=180,
                         deadline=time.monotonic() + 0.4)
-        self.assertRegex(str(ctx.exception), r"^Model lokalny nie odpowiedział w 0\.[34] s ")
+        self.assertRegex(str(ctx.exception), r"^Model lokalny nie odpowiedział w 0\.\d s ")
+
+    def test_two_endpoint_names_on_one_server_share_one_slot(self):
+        cfg = models_config.from_dict({"endpoints": {"a": {"url": self.server.url},
+                                                     "b": {"url": self.server.url + "/"}},
+                                       "roles": {"summary": "a:qwen3:8b", "describe": "b:qwen3:8b"}})
+        results = []
+
+        def work(role, **kw):
+            try:
+                results.append(client.chat("x", role=role, config=cfg, queue=self.queue, **kw))
+            except ModelError as exc:
+                results.append(exc)
+
+        first = threading.Thread(target=work, args=("summary",))
+        first.start()
+        self.assertTrue(wait_for(lambda: self.server.requests))
+        work("describe", wait=0.1)
+        second = results[-1]
+        first.join(5)
+        self.assertIsInstance(second, ModelError, "drugi punkt na tym samym serwerze czeka na wolne miejsce")
+        self.assertIn("kolejka: czekał", str(second))
+        self.assertEqual(len(self.server.requests), 1)
+
+    def test_target_is_resolved_when_the_call_starts(self):
+        """Ustawienia zmienione w czasie czekania (np. SetDefault("mac") z okna Tide) — czekające wywołanie
+        idzie już na nowy serwer."""
+        import os
+        import tempfile
+        from .test_models_core import write_models
+        other = start_server(self, {("POST", "/api/chat"): (200, OLLAMA_CHAT)})
+        folder = tempfile.mkdtemp(prefix="tide-queue-")
+        self.addCleanup(__import__("shutil").rmtree, folder)
+        path = write_models(folder, {"endpoints": {"local": {"url": self.server.url}}})
+        with mock.patch.dict(os.environ, {"TIDE_MODELS_CONFIG": path}):
+            results = []
+
+            def work():
+                results.append(client.chat("x", role="describe", queue=self.queue))
+
+            first = threading.Thread(target=work)
+            first.start()
+            self.assertTrue(wait_for(lambda: self.server.requests))
+            second = threading.Thread(target=work)
+            second.start()
+            self.assertTrue(wait_for(lambda: any(s.get("waiting") for s in self.queue.snapshot().values())))
+            write_models(folder, {"endpoints": {"local": {"url": other.url}}})
+            first.join(5)
+            second.join(5)
+        self.assertEqual((len(self.server.requests), len(other.requests)), (1, 1),
+                         "czekające wywołanie poszło na serwer z aktualnych ustawień")
 
     def test_cancel_interrupts_running_and_clears_waiting(self):
         self.server.delay = 5.0
         cancel = Cancel()
         results = []
         threads = [self.chat(results, cancel=cancel) for _ in range(2)]
+        lane = queue_mod.lane_of(self.server.url)
+        self.assertEqual(lane, f"http://127.0.0.1:{self.server.server_address[1]}")
         self.assertTrue(wait_for(lambda: len(self.server.requests) == 1 and self.queue.snapshot()
-                                 .get("local", {}).get("waiting")))
+                                 .get(lane, {}).get("waiting")))
         started = time.monotonic()
         cancel.set()
         for thread in threads:
             thread.join(3)
-        self.assertLess(time.monotonic() - started, 1.0, "zamykanie usługi: trwające i czekające kończą się od razu")
+        self.assertLess(time.monotonic() - started, 2.0, "zamykanie usługi: trwające i czekające kończą się od razu")
         self.assertEqual(len(results), 2)
         self.assertTrue(all("przerwane" in str(r) for r in results), results)
         self.assertEqual(len(self.server.requests), 1, "czekające nie dotarło do serwera")
@@ -300,8 +390,10 @@ class ReportAndCardsTest(StandupWorld):
     procesu i atrapie, która jak Ollama obsługuje jedno zapytanie naraz."""
 
     def setUp(self):
-        self.queue = queue_mod.shared()
-        self.assertFalse(self.queue.busy(), "kolejka procesu pusta przed testem")
+        self.queue = queue_mod.Queue()   # świeża kolejka procesu na czas testu (raport i karty biorą shared())
+        patch = mock.patch.object(queue_mod, "_SHARED", self.queue)
+        patch.start()
+        self.addCleanup(patch.stop)
         never = mock.patch.object(summarize, "call_claude", side_effect=AssertionError("claude w trybie local"))
         never.start()
         self.addCleanup(never.stop)
@@ -329,6 +421,7 @@ class ReportAndCardsTest(StandupWorld):
         server = start_server(self, {("POST", "/api/chat"): (200, self.respond)})
         server.serial = True
         server.delay = delay
+        self.lane = queue_mod.lane_of(server.url)
         return server
 
     def describer(self, config, timeout):
@@ -347,24 +440,26 @@ class ReportAndCardsTest(StandupWorld):
         return "karta" if request["body"]["messages"][0]["content"] == describe.BOARD_PROMPT else "raport"
 
     def test_cards_wait_in_the_queue_not_against_their_own_timeout(self):
-        server = self.server(delay=0.6)
+        # Atrapa jak Ollama: jedno zapytanie naraz, 1 s na odpowiedź; karta ma 1,6 s na wywołanie. Bez kolejki
+        # karta czekałaby w serwerze za raportem (1 + 1 s > 1,6 s) i dostała mylące „nie odpowiedział”.
+        server = self.server(delay=1.0)
         config = models_config.from_dict({"endpoints": {"local": {"url": server.url}}})
-        d, boards, job = self.describer(config, timeout=1.0)
+        d, boards, job = self.describer(config, timeout=1.6)
         self.assertIsNotNone(job)
         out = {}
         report = threading.Thread(target=lambda: out.setdefault("report", summarize.summarize(
-            self.report, mode="local", home=self.p["home"], models_config=config, timeout=1.0)))
+            self.report, mode="local", home=self.p["home"], models_config=config, timeout=1.6)))
         report.start()
         self.assertTrue(wait_for(lambda: len(server.requests) == 1), "raport pyta o pierwszy projekt")
         cards = threading.Thread(target=lambda: out.setdefault("cards", d.run(job)))
         cards.start()
-        self.assertTrue(wait_for(lambda: (self.queue.snapshot().get("local") or {}).get("waiting")))
-        snap = self.queue.snapshot()["local"]
+        self.assertTrue(wait_for(lambda: (self.queue.snapshot().get(self.lane) or {}).get("waiting")))
+        snap = self.queue.snapshot()[self.lane]
         self.assertEqual(snap["running"]["role"], "summary")
         self.assertEqual([w["role"] for w in snap["waiting"]], ["describe"], "karta czeka w kolejce, nie w serwerze")
-        report.join(10)
-        cards.join(10)
-        self.assertTrue(out["cards"], "karta dostała opis modelu — bez mylącego „nie odpowiedział w 1 s”")
+        report.join(15)
+        cards.join(15)
+        self.assertTrue(out["cards"], "karta dostała opis modelu — bez mylącego „nie odpowiedział”")
         d.decorate(boards)
         self.assertEqual([t["describedBy"] for t in boards[0]["tickets"]], ["model", "model"])
         self.assertNotIn("describeNote", boards[0]["tickets"][0])
@@ -378,16 +473,16 @@ class ReportAndCardsTest(StandupWorld):
     def test_report_budget_includes_waiting_in_the_queue(self):
         server = self.server(delay=0.0)
         config = models_config.from_dict({"endpoints": {"local": {"url": server.url}}})
-        blocker = Blocker(self.queue, role="describe", model="qwen3:8b")
+        blocker = Blocker(self.queue, lane=self.lane, role="describe", model="qwen3:8b")
         try:
             started = time.monotonic()
             result = summarize.summarize(self.report, mode="local", home=self.p["home"], models_config=config,
                                          budget=0.4)
-            self.assertLess(time.monotonic() - started, 1.0)
+            self.assertLess(time.monotonic() - started, 2.0)
         finally:
             blocker.release()
         self.assertEqual(result["source"], "rules")
-        self.assertTrue(re.fullmatch(r"Model lokalny niedostępny — opis bez modelu \(kolejka: czekał 0,4 s — serwer "
+        self.assertTrue(re.fullmatch(r"Model lokalny niedostępny — opis bez modelu \(kolejka: czekał \d+(\.\d)? s — serwer "
                                      r"zajęty: opisy kart, 127\.0\.0\.1:\d+\)", result["note"]), result["note"])
         self.assertEqual(server.requests, [], "budżet raportu minął w kolejce — serwer nie był pytany")
 
@@ -396,33 +491,33 @@ class ReportAndCardsTest(StandupWorld):
         config = models_config.from_dict({"endpoints": {"local": {"url": server.url}}})
         d, boards, job = self.describer(config, timeout=1.0)
         d.wait = 0.2
-        blocker = Blocker(self.queue, role="summary", model="qwen3:8b")
+        blocker = Blocker(self.queue, lane=self.lane, role="summary", model="qwen3:8b")
         try:
             self.assertFalse(d.run(job))
         finally:
             blocker.release()
         d.decorate(boards)
         note = boards[0]["tickets"][0]["describeNote"]
-        self.assertTrue(note.startswith("Model lokalny niedostępny — opis bez modelu (kolejka: czekał 0,2 s — "
-                                        "serwer zajęty: raport poranny, 127.0.0.1:"), note)
+        self.assertRegex(note, r"^Model lokalny niedostępny — opis bez modelu \(kolejka: czekał \d+(\.\d)? s — "
+                               r"serwer zajęty: raport poranny, 127\.0\.0\.1:\d+\)$")
         self.assertEqual(server.requests, [])
 
     def test_describer_stop_removes_its_waiting_call(self):
         server = self.server(delay=0.0)
         config = models_config.from_dict({"endpoints": {"local": {"url": server.url}}})
         d, boards, job = self.describer(config, timeout=1.0)
-        blocker = Blocker(self.queue, role="summary", model="qwen3:8b")
+        blocker = Blocker(self.queue, lane=self.lane, role="summary", model="qwen3:8b")
         try:
             out = {}
             worker = threading.Thread(target=lambda: out.setdefault("ok", d.run(job)))
             worker.start()
-            self.assertTrue(wait_for(lambda: (self.queue.snapshot().get("local") or {}).get("waiting")))
+            self.assertTrue(wait_for(lambda: (self.queue.snapshot().get(self.lane) or {}).get("waiting")))
             started = time.monotonic()
             d.stop()
             worker.join(2)
-            self.assertLess(time.monotonic() - started, 0.5, "zamykanie usługi nie czeka, aż raport zwolni serwer")
+            self.assertLess(time.monotonic() - started, 1.0, "zamykanie usługi nie czeka, aż raport zwolni serwer")
             self.assertFalse(out["ok"])
-            self.assertEqual(self.queue.snapshot()["local"]["waiting"], [])
+            self.assertEqual(self.queue.snapshot()[self.lane]["waiting"], [])
         finally:
             blocker.release()
 

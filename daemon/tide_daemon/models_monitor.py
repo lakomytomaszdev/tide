@@ -108,12 +108,23 @@ class ModelsMonitor(QObject):
     # --- kolejka modeli -------------------------------------------------------------------------
 
     def _compose(self) -> str:
-        """JSON stanu z polem `queue`: każdy punkt z konfiguracji (bezczynny — running null, waiting [])
-        i punkty, które są w kolejce, choć zniknęły z models.json (wywołanie sprzed zmiany ustawień)."""
+        """JSON stanu z polem `queue` po nazwie punktu. Kolejka ma tory po serwerach (`queue.lane_of(url)`),
+        więc punkty z tym samym adresem pokazują ten sam stan toru (wpisy mają `endpoint` — punkt, z którego
+        przyszło wywołanie). Każdy punkt z konfiguracji jest w polu (bezczynny — running null, waiting []);
+        tor bez punktu w konfiguracji (wywołanie sprzed zmiany ustawień) — pod nazwami punktów z jego wpisów."""
         snapshot = self.queue.snapshot()
-        names = list(self._state.get("endpoints") or {}) + [n for n in snapshot if n not in
-                                                             (self._state.get("endpoints") or {})]
-        return _dump(dict(self._state, queue={name: snapshot.get(name) or IDLE for name in names}))
+        endpoints = self._state.get("endpoints") or {}
+        out, used = {}, set()
+        for name, endpoint in endpoints.items():
+            lane = models_queue.lane_of((endpoint or {}).get("url") or "") or name
+            used.add(lane)
+            out[name] = snapshot.get(lane) or IDLE
+        for lane, state in snapshot.items():
+            if lane in used:
+                continue
+            for entry in ([state["running"]] if state.get("running") else []) + list(state.get("waiting") or ()):
+                out.setdefault(entry.get("endpoint") or lane, state)
+        return _dump(dict(self._state, queue=out))
 
     def _publish(self) -> None:
         text = self._compose()

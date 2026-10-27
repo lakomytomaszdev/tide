@@ -121,18 +121,26 @@ def chat(messages, *, role: str | None = None, endpoint: str | None = None, mode
     Kolejka (queue.py, domyślnie wspólna dla procesu): `priority` (queue.HIGH/NORMAL/LOW; domyślnie według
     roli), `wait` — najwyżej tyle sekund w kolejce (domyślnie queue.DEFAULT_WAIT_S), `timeout` — na samo
     wywołanie, liczony od jego startu; `deadline` (time.monotonic()) — czekanie i wywołanie razem kończą się
-    najpóźniej wtedy."""
-    cfg = config if config is not None else config_mod.load()
-    if role is not None:
-        chosen = cfg.role(role)
-        endpoint_name, model_name, context = chosen.endpoint, chosen.model, chosen.ctx
-    elif model:
-        endpoint_name, model_name, context = endpoint, model, None
-    else:
-        raise ValueError("podaj rolę albo model")
-    if ctx is not None:
-        context = ctx or None
-    target = cfg.endpoint(endpoint_name)
+    najpóźniej wtedy. Tor kolejki to serwer (`queue.lane_of(adres)`), a punkt, model i kontekst są ustalane
+    jeszcze raz, gdy wywołanie dostaje kolej (models.json czytany wtedy, chyba że podano `config`)."""
+    def resolve_target() -> tuple:
+        """(punkt, model, kontekst) z ustawień czytanych teraz (albo z podanych `config`)."""
+        cfg = config if config is not None else config_mod.load()
+        if role is not None:
+            chosen = cfg.role(role)
+            endpoint_name, model_name, context = chosen.endpoint, chosen.model, chosen.ctx
+        elif model:
+            endpoint_name, model_name, context = endpoint, model, None
+        else:
+            raise ValueError("podaj rolę albo model")
+        if ctx is not None:
+            context = ctx or None
+        return cfg.endpoint(endpoint_name), model_name, context
+
+    # Cel przy dołączeniu wybiera tor kolejki i od razu zgłasza błąd ustawień (nieznana rola, zły punkt);
+    # ostateczny cel ustalamy, gdy wywołanie dostaje kolej — po zmianie ustawień w czasie czekania
+    # (inny `default` albo adres, np. z okna Tide) wywołanie idzie już na nowy serwer.
+    current = {"target": resolve_target()}
     body = _messages(messages, system)
     lane = queue if queue is not None else queue_mod.shared()
     wait = queue_mod.DEFAULT_WAIT_S if wait is None else wait
@@ -140,7 +148,13 @@ def chat(messages, *, role: str | None = None, endpoint: str | None = None, mode
     if deadline is not None:
         wait = min(wait, deadline - queued)
 
+    def resolve() -> tuple:
+        current["target"] = resolve_target()
+        target, model_name, _context = current["target"]
+        return queue_mod.lane_of(target.url) or target.name, target.name, model_name, target.host
+
     def call() -> Answer:
+        target, model_name, context = current["target"]
         started = time.monotonic()
         limit = timeout
         if deadline is not None and deadline - started < timeout:
@@ -153,5 +167,7 @@ def chat(messages, *, role: str | None = None, endpoint: str | None = None, mode
         metrics["queueS"] = round(started - queued, 3)
         return Answer(text, target.name, model_name, metrics)
 
-    return lane.run(call, endpoint=target.name, role=role or "", model=model_name, priority=priority, wait=wait,
-                    cancel=cancel, host=target.host)
+    target, model_name, _context = current["target"]
+    return lane.run(call, endpoint=target.name, lane=queue_mod.lane_of(target.url) or target.name,
+                    role=role or "", model=model_name, priority=priority, wait=wait, cancel=cancel,
+                    host=target.host, resolve=resolve)

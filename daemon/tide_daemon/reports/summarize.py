@@ -430,6 +430,9 @@ class Model:
         self.role = role
         self.ctx = None
         self.config = None
+        # models.chat dostaje tylko ustawienia podane z zewnątrz (testy); bez nich czyta models.json sam,
+        # w chwili, gdy wywołanie rusza z kolejki — zmiana serwera w czasie czekania działa od razu.
+        self._given_config = config
         if self.engine == "claude":
             self.name = model if MODEL_RE.match(model or "") else DEFAULT_MODEL
             self.identity, self.host, self.remote = self.name, "", True
@@ -486,7 +489,7 @@ class Model:
         try:
             answer = models_mod.chat(json.dumps(payload, ensure_ascii=False), role=self.role, system=system_prompt,
                                      schema=schema, timeout=LOCAL_TIMEOUT if timeout is None else timeout,
-                                     config=self.config, cancel=self.cancel, priority=priority, wait=wait,
+                                     config=self._given_config, cancel=self.cancel, priority=priority, wait=wait,
                                      deadline=deadline)
         except models_mod.ModelError as exc:
             raise Unavailable(str(exc)) from None
