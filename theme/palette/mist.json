@@ -176,5 +176,17 @@
         "opacity": 0.06
       }
     ]
+  },
+  "vivaldi": {
+    "profiles": {
+      "Tomek": "teal",
+      "Tomek-Firma": "sky",
+      "lakomytomaszdev": "mint",
+      "Streamer": "peach"
+    },
+    "otherColors": ["lavender", "butter", "rose"],
+    "private": "lavender",
+    "tabBarTint": 0.16,
+    "privateTint": 0.14
   }
 }

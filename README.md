@@ -25,6 +25,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `scripts/` | Kopie zapasowe i przywracanie wyglądu (`backup.sh`, `restore.sh`, `paths.sh`), instalatory komponentów (`sddm_system.py` i `plymouth_system.py` to jedyne uruchamiane przez sudo) i synchronizacja kopii powłoki z ekranem blokady (`shell_sync.py`) |
 | `theme/konsole/` | Konsola Tide: kolorystyka (przezroczystość z rozmyciem, znak wodny), profil, arkusz stylów paska kart |
 | `theme/terminal/` | Prompt basha z chipami (`prompt.bash`), motywy bat, delty, btop, lazygit, fzf i LS_COLORS (`generate.py`), pasek statusu Claude Code (`statusline.py`) |
+| `theme/vivaldi/` | Vivaldi Tide: motywy profili i arkusz CSS interfejsu z palety (`generate.py`); instalator `scripts/vivaldi.py`, podgląd w zagnieżdżonym KWinie `scripts/vivaldi_preview.sh` |
 | `scripts/panels/` | Skrypty plasmashell górnych pasków, docka i paska bocznego (zrzut, instalacja, kolejność, odinstalowanie) |
 | `tools/` | Narzędzia do ikon: `make_tile.py` (kafelek z oryginalnej ikony), `make_tint.py` (eksperyment z przefarbowaniem, odrzucony) |
 | `daemon/` | Usługa `tide-daemon`: sesje agentów, worktrees, raport poranny, bezczynność i prognoza Limitów AI przez D-Bus ([opis i kontrakt](docs/tide-daemon.md)) |
@@ -260,6 +261,22 @@ make terminal-themes       # same pliki promptu i motywów narzędzi w build/ter
 ```bash
 apt-get -s install btop fzf bat git-delta   # najpierw symulacja
 sudo apt install btop fzf bat git-delta && make install-terminal
+```
+
+## Vivaldi
+
+Vivaldi to główna przeglądarka. `make install-vivaldi` (część `make install`) ubiera w Tide wszystkie profile naraz — Vivaldi musi być wtedy zamknięte, bo przy wyjściu nadpisuje swoje ustawienia (instalator odmawia, gdy przeglądarka działa):
+
+- **Motyw profilu.** Grafit Mist (pasek adresu w kolorze paska tytułu, panele i strona startowa w kolorze okna, tekst `text.primary`, promień `small`), a pastel profilu na pasku kart (ciemny odcień, `tabBarTint`) i w podświetleniach — okna profili odróżnia się na pierwszy rzut oka. Tomek: teal, Tomek-Firma: błękit, lakomytomaszdev: mięta, Streamer: brzoskwinia (`vivaldi.profiles` w palecie; nowy profil dostaje kolejny pastel z `otherColors`). Kolor strony nie przebarwia paska (`accentFromPage` wyłączone). Motyw jest ustawiony także w harmonogramie „jak w systemie” (domyślnym), więc jasny i ciemny tryb Plasmy dają ten sam motyw.
+- **Okno prywatne.** Osobny motyw „Tide Mist · prywatne”: całe okno lekko lawendowe (`privateTint`), lawendowe podświetlenia.
+- **Interfejs.** Arkusz `~/.local/share/tide/vivaldi/css/tide.css` przez eksperyment „Allow CSS modifications” (`vivaldi-css-mods` w `Local State`, katalog w Ustawienia → Wygląd): Geist w całym interfejsie i przyciski okna jak w dekoracji Tide — pastelowe kółka masło, mięta, róż, znak po najechaniu (przywracanie w zmaksymalizowanym oknie), szare w nieaktywnym.
+- **Awatary profili** zostają takie, jakie ustawisz w Vivaldi — instalator ich nie zmienia.
+- **Ikona.** Stonowany glif jak przy innych programach: znak Vivaldi z Simple Icons w różu na ciemnoróżowym kafelku (`make install-icons`).
+
+Przed zmianą instalator kopiuje `Local State` i `Preferences` każdego profilu do `~/.local/state/tide/vivaldi/backup-<czas>/`, a poprzednie wartości zmienianych kluczy zapisuje przy pierwszej instalacji. `make uninstall-vivaldi` (też przy zamkniętym Vivaldi) przywraca poprzednie motywy i flagę, usuwa motywy Tide z listy i pliki z `~/.local/share/tide/vivaldi`. Motywy Tide można potem zmieniać w Ustawienia → Motywy jak każdy inny; ponowne `make install-vivaldi` wybiera je z powrotem.
+
+```bash
+make preview-vivaldi       # prawdziwe Vivaldi w zagnieżdżonym KWinie, dwa profile i okno prywatne: build/vivaldi/*.png
 ```
 
 ## Kopie zapasowe
