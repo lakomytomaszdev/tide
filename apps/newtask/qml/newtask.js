@@ -1,6 +1,7 @@
 // Logika okna „Nowe zadanie” bez QML: filtrowanie repozytoriów, teksty i prośba dla usługi.
 // Osobny plik, żeby testy (qml6) sprawdzały ją bez rysowania okna.
 .pragma library
+.import "tide/modelnames.js" as ModelNames
 
 var TOOLS = [
     { id: "claude", label: "Claude Code" },
@@ -20,8 +21,7 @@ var CLAUDE_LOCAL_NOTE = "Konektory claude.ai będą wyłączone."
 // Model Ollama Cloud (`…:cloud`, `…:120b-cloud`) — lokalna Ollama tylko przekazuje rozmowę na ollama.com.
 // To samo co modelnames.is_cloud_model w usłudze.
 function isCloudModel(name) {
-    var i = (name || "").lastIndexOf(":")
-    return i >= 0 && /[:-]cloud$/i.test(":" + name.slice(i + 1))
+    return ModelNames.isCloudModel(name)   // widgets/lib/modelnames.js — ta sama reguła w widoku i kafelku Modele
 }
 
 function isLoopback(url) {
@@ -57,8 +57,10 @@ function localOption(status) {
         return { enabled: false, label: label, reason: reason, hint: hint !== false, model: role.model, server: server,
                  pending: pending === true }
     }
-    if (role.error) return result(role.error)
+    // Najpierw chmura: usługa (krok 3, decyzja 67) daje takiej roli też `error` z pełnym zdaniem i podpowiedzią,
+    // a tu mówimy krótko, z własną podpowiedzią „ustaw w Tide → Modele”.
     if (isCloudModel(role.model)) return result("Model " + role.model + " działa w chmurze Ollamy")
+    if (role.error) return result(role.error)
     if (status.checked === false) return result("Sprawdzam serwer modeli…", false, true)
     if (!endpoint || !endpoint.online) return result("Serwer " + (server || role.endpoint) + " nie odpowiada")
     if (role.installed === false) return result("Modelu " + role.model + " nie ma na serwerze")

@@ -259,7 +259,7 @@ Item {
                                  Logic.queueLines(odd, "local"), Logic.queueLines(odd, "mac"), Logic.queueLines(null, "local")]
                                 .map(l => l.map(x => (x.other ? "~" : "") + x.text).join(" + ")).join(" | "))
         console.warn("CLOUD " + ["gpt-oss:120b-cloud", "kimi-k2:cloud", "qwen3:8b", "cloud", "my-cloud:latest", "kimi-k2:1t-CLOUD",
-                      "mycloud:7b", "qwen3:cloudless", "x:7b-cloudy", "x:7bcloud"].map(Logic.isCloudModel).join(",")
+                      "mycloud:7b", "qwen3:cloudless", "x:7b-cloudy", "x:7bcloud", " kimi-k2:cloud "].map(Logic.isCloudModel).join(",")
                      + "|" + Logic.modelOptions(d.busy, "local", "").map(o => o.name).indexOf("gpt-oss:120b-cloud")
                      + "|" + Logic.modelOptions(d.busy, "local", "").length
                      + "|" + Logic.serverModels(d.busy, "local").filter(m => m.cloud).map(m => m.name + ":" + m.detail).join(",")
@@ -315,7 +315,7 @@ Item {
                                               "!serwer nie odpowiada|!brak odpowiedzi usługi")
         self.assertEqual(warned(log, "BYTES"), "5,2 GB|65,3 GB|567 MB|1,2 GB|")
         self.assertEqual(warned(log, "PROBLEM"), "Usługa tide-daemon nie odpowiada|Brak serwerów modeli|null")
-        self.assertEqual(warned(log, "CLOUD"), "true,true,false,false,false,true,false,false,false,false|-1|5|gpt-oss:120b-cloud:116.8B · MXFP4 · "
+        self.assertEqual(warned(log, "CLOUD"), "true,true,false,false,false,true,false,false,false,false,true|-1|5|gpt-oss:120b-cloud:116.8B · MXFP4 · "
                                                "w chmurze Ollamy|To model w chmurze Ollamy — Tide nie użyje go w raporcie "
                                                "ani w opisach kart (fakty wyszłyby z komputera).|",
                          "model chmurowy oznaczony i nie do wybrania w rolach; „Pobierz” ostrzega")
@@ -357,6 +357,40 @@ Item {
         self.assertEqual(warned(log, "BEFORE"), "false:")
         self.assertEqual(warned(log, "AFTER"), "true:To model w chmurze Ollamy — Tide nie użyje go w raporcie ani w "
                                                "opisach kart (fakty wyszłyby z komputera).")
+
+    def test_relative_token_file_warning_is_shown(self):
+        """Względny `tokenFile` (review PT-17): usługa pomija serwer z ostrzeżeniem w config.warnings, a widok je
+        pokazuje — stan składany prawdziwym kodem usługi (models.config, models.status), bez serwera."""
+        from tide_daemon.models import config as models_config
+        from tide_daemon.models import status as models_status
+        cfg = models_config.from_dict({"endpoints": {"local": {"url": "http://127.0.0.1:11434"},
+                                                     "mac": {"url": "http://mac-studio:11434", "tokenFile": "mac.token"}}})
+        state = load_backend().decorate(models_status.pending(cfg))
+        path = os.path.join(self.pkg, "views", "models", "qml", "TokenSmoke.qml")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("""import QtQuick
+Item {
+    width: 1500; height: 1000
+    ModelsPage {
+        id: page
+        anchors.fill: parent
+        status: %s
+    }
+    function texts(item, name, out) {
+        if (item.objectName === name && item.visible) out.push(item.text)
+        for (const child of item.children) texts(child, name, out)
+        return out
+    }
+    Timer {
+        interval: 200; running: true
+        onTriggered: { console.warn("WARNINGS " + texts(page, "configWarning", []).join(" + ")); Qt.quit() }
+    }
+}
+""" % json.dumps(state, ensure_ascii=False))
+        log = run_qml(path)
+        self.assertEqual(problems(log), [])
+        self.assertEqual(warned(log, "WARNINGS"), "⚠ models.json: serwer „mac”: tokenFile musi być ścieżką bezwzględną "
+                                                  "(albo zaczynać się od ~) — pominięty")
 
     def test_server_card_shows_queue(self):
         """Karta serwera: linia kolejki (PT-16) i wywołania na starym adresie serwera (`other`)."""

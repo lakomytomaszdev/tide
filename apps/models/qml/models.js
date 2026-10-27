@@ -3,6 +3,7 @@
 // endpoints.*.label (nazwa dla użytkownika: „Ten komputer”, „Mac Studio”), endpoints.*.local i problems.
 // Słowa dla użytkownika: „serwer”, nie „punkt”; „kontekst” tylko w „Zaawansowanych”.
 .pragma library
+.import "tide/modelnames.js" as ModelNames
 
 const ROLE_ORDER = ["summary", "describe", "agent"]
 const ROLE_INFO = {
@@ -249,18 +250,15 @@ function roleRows(status) {
 
 // Model chmurowy Ollamy (`…:cloud`, `…:120b-cloud`): lokalny serwer tylko przekazuje go na ollama.com, więc
 // tryb lokalny Tide go nie używa (usługa odmawia SetRole). Status() daje `cloud: true`; nazwę (pole „Pobierz”)
-// sprawdzamy tą samą zasadą co usługa (is_cloud_model) i „Nowe zadanie” (newtask.js): etykieta po ostatnim „:”
-// kończy się na „cloud” po „:” albo „-”, bez względu na wielkość liter.
+// sprawdzamy wspólną funkcją z biblioteki „tide” (widgets/lib/modelnames.js, reguła jak modelnames.py usługi).
 function isCloudModel(m) {
     if (m && typeof m === "object" && m.cloud === true) return true
-    const name = m && typeof m === "object" ? m.name : m
-    if (typeof name !== "string" || name.indexOf(":") < 0) return false
-    return /[:-]cloud$/i.test(":" + name.slice(name.lastIndexOf(":") + 1))
+    return ModelNames.isCloudModel(m && typeof m === "object" ? m.name : m)
 }
 
 // Ostrzeżenie przy „Pobierz model” dla nazwy chmurowej (pobranie usługa przyjmie, ale Tide modelu nie użyje).
 function pullWarning(name) {
-    return isCloudModel(String(name || "").trim()) ? "To model w chmurze Ollamy — Tide nie użyje go w raporcie ani w opisach kart "
+    return isCloudModel(name) ? "To model w chmurze Ollamy — Tide nie użyje go w raporcie ani w opisach kart "
                                 + "(fakty wyszłyby z komputera)." : ""
 }
 

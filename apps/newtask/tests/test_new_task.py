@@ -206,6 +206,16 @@ class LocalModelQmlTest(unittest.TestCase):
             "ROLEERR": models_status(error="rola „agent”: punkt „mac” jest pominięty w models.json", available=False),
             "PENDING": {**models_status(available=False), "checked": False},
             "CLOUDROLE": models_status(model="gpt-oss:120b-cloud"),
+            # Pełny Status() z PT-25/PT-16 (krok 3): rola z modelem chmurowym ma `error`, `available: false`
+            # i `pinned`, a model na serwerze `cloud: true` — okno mówi krótko „w chmurze”, bez podwójnej podpowiedzi.
+            "CLOUDFULL": {**models_status(model="gpt-oss:120b-cloud", available=False, pinned=True,
+                                         error="model „gpt-oss:120b-cloud” działa w chmurze Ollamy, nie lokalnie — "
+                                               "wybierz model lokalny w Tide → Modele"),
+                          "queue": {"local": {"running": None, "waiting": []}}, "pulls": {}},
+            "PINNEDMAC": {**models_status(endpoint="mac", pinned=True),
+                          "endpoints": {"mac": {"url": "http://mac-studio:11434", "online": True,
+                                                "models": [{"name": "qwen3-coder:30b"}, {"name": "kimi-k2:cloud", "cloud": True}]}}},
+            "CLOUDSPACES": models_status(model=" kimi-k2:cloud "),
         }
         with tempfile.TemporaryDirectory(prefix="tide-nt-local-") as tmp:
             pkg = stage(os.path.join(tmp, "pkg"))
@@ -280,6 +290,11 @@ Item {
         self.assertEqual(warned(log, "NOSERVICE"), "false|Lokalny|Usługa nie podaje stanu modeli lokalnych|false")
         self.assertEqual(warned(log, "CLOUDROLE"), "false|Lokalny: gpt-oss:120b-cloud · ten komputer|"
                                                "Model gpt-oss:120b-cloud działa w chmurze Ollamy|true")
+        self.assertEqual(warned(log, "CLOUDFULL"), "false|Lokalny: gpt-oss:120b-cloud · ten komputer|"
+                                                   "Model gpt-oss:120b-cloud działa w chmurze Ollamy|true")
+        self.assertEqual(warned(log, "PINNEDMAC"), "true|Lokalny: qwen3-coder:30b · mac-studio||false")
+        self.assertEqual(warned(log, "CLOUDSPACES").split("|")[2], "Model  kimi-k2:cloud  działa w chmurze Ollamy",
+                         "białe znaki obcinane jak w widoku i kafelku (widgets/lib/modelnames.js)")
         self.assertEqual(warned(log, "WAITING"), "local|Sprawdzam serwer modeli…|false",
                          "zapamiętany „Lokalny” czeka na odczyt serwera — start zablokowany, bez chmury")
         self.assertEqual(warned(log, "REMEMBERED"), "local")

@@ -4,6 +4,7 @@
 // pobieranie modeli po kluczu "<punkt>/<model>"), `queue` (PT-16: kolejka na punkt) — bez nich kafelek po
 // prostu ich nie pokazuje.
 .pragma library
+.import "../ui/tide/modelnames.js" as ModelNames
 
 // Role z models.json słowami: nazwa w popupie i to, co model robi („pracuje: opis kart”).
 var ROLE_NAMES = { summary: "Raport", describe: "Opisy kart", agent: "Agent", embed: "Wyszukiwanie", polish: "Polszczyzna" }
@@ -173,13 +174,11 @@ function bytes(value) {
 // --- model w pamięci ----------------------------------------------------------------------------
 
 // Model chmurowy Ollamy (`…:cloud`, `…:120b-cloud`): serwer tylko przekazuje go na ollama.com. Status() daje
-// `cloud: true`; nazwę sprawdzamy też sami (starsza usługa, /api/ps) tą samą regułą co usługa (is_cloud_model):
-// etykieta po ostatnim „:” kończy się na „cloud” po „:” albo „-”, bez względu na wielkość liter.
+// `cloud: true`; nazwę sprawdzamy też sami (starsza usługa, /api/ps) wspólną funkcją z biblioteki „tide”
+// (widgets/lib/modelnames.js, reguła jak modelnames.py usługi).
 function isCloudModel(m) {
     if (isObject(m) && m.cloud === true) return true
-    var name = isObject(m) ? m.name : m
-    if (typeof name !== "string" || name.indexOf(":") < 0) return false
-    return /[:-]cloud$/i.test(":" + name.slice(name.lastIndexOf(":") + 1))
+    return ModelNames.isCloudModel(isObject(m) ? m.name : m)
 }
 
 function gpuText(m) {
