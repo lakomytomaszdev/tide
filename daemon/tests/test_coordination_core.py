@@ -519,6 +519,30 @@ class YouTrackTest(World):
 
 
 class ScannerTest(World):
+    def test_codex_coordinator_started_before_the_window_is_found_by_id(self):
+        # Codex zapisuje wątek w katalogu dnia założenia: koordynator sprzed dwóch tygodni,
+        # który dziś wciąż zleca, leży poza oknem 7 dni, a jego podagenci — w oknie.
+        world = F.build_world(self.tmp)
+        day = os.path.join(world["codex"], "sessions", "2026", "10", "26")
+        old = os.path.join(world["codex"], "sessions", "2026", "10", "10")
+        os.makedirs(old)
+        name = next(n for n in os.listdir(day) if n.endswith(F.CODEX_ROOT + ".jsonl"))
+        src, dst = os.path.join(day, name), os.path.join(old, name)
+        st = os.stat(src)
+        os.rename(src, dst)
+        os.utime(dst, (st.st_atime, st.st_mtime))
+        scanner = CoordinationScanner(world["claude"], world["codex"], clock=lambda: F.NOW)
+        boards = scanner.refresh([LIVE_CLAUDE, LIVE_CODEX])
+        codex = next((x for x in boards if x["id"] == "codex:" + F.CODEX_ROOT), None)
+        self.assertIsNotNone(codex, "rodzic spoza okna dni musi zostać znaleziony")
+        self.assertEqual({k: v["state"] for k, v in tickets(codex).items()}, {"TOM-150": "gotowe", "TOM-151": "czeka"})
+        # Archiwum też się liczy.
+        archived = os.path.join(world["codex"], "archived_sessions")
+        os.makedirs(archived)
+        os.rename(dst, os.path.join(archived, name))
+        fresh = CoordinationScanner(world["claude"], world["codex"], clock=lambda: F.NOW)
+        self.assertIn("codex:" + F.CODEX_ROOT, [b["id"] for b in fresh.refresh([LIVE_CLAUDE, LIVE_CODEX])])
+
     def test_boards_from_fixtures(self):
         world = F.build_world(self.tmp)
         scanner = CoordinationScanner(world["claude"], world["codex"], clock=lambda: F.NOW)

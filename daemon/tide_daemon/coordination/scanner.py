@@ -9,6 +9,9 @@ Koordynator:
   z katalogiem `<sesja>/subagents/` (tani test) i co najmniej jednym zleceniem Agent/Task,
 - Codex: wątek główny z `<codex>/sessions/RRRR/MM/DD/` z tego samego okresu, który ma podagentów
   (wątki thread_spawn — także wnuki). Recenzent zgód (guardian) nie jest podagentem.
+  Katalog dnia to dzień ZAŁOŻENIA wątku, więc długo żyjący koordynator (np. założony dwa tygodnie
+  temu, a dziś wciąż zlecający) leży poza oknem — rodzica podagenta z okna szukamy wtedy po ID
+  w nazwie pliku (`rollout-…-<id>.jsonl`) we wszystkich dniach i w `archived_sessions`.
 """
 import os
 import time
@@ -21,6 +24,7 @@ from . import codex as codex_mod
 from . import ids, plan as plan_mod
 
 DAYS = 7
+MISSING_RETRY = 600.0   # s, po tylu znów szukamy rodzica, którego pliku nie było
 
 
 class CoordinationScanner:
@@ -38,6 +42,8 @@ class CoordinationScanner:
         self.coordinators: dict[str, object] = {}   # id → Coordinator (ostatni odczyt)
         self._transcripts: dict = {}
         self._plans: dict = {}
+        self._codex_paths: dict[str, str] = {}      # id wątku → plik (rodzice spoza okna)
+        self._codex_missing: dict[str, float] = {}  # id wątku → kiedy go nie znaleziono
 
     # --- odczyt ------------------------------------------------------------------------------
 
@@ -64,6 +70,7 @@ class CoordinationScanner:
                 log = self.codex_logs[path] = codex_mod.CodexThreadLog(path)
             if log.read_meta() and log.id:
                 threads[log.id] = log
+        self._add_codex_parents(threads, now)
         for path in list(self.codex_logs):
             if self.codex_logs[path].id not in threads:
                 del self.codex_logs[path]
@@ -86,6 +93,38 @@ class CoordinationScanner:
                 found[coord.id] = coord
         self.coordinators = found
         return found
+
+    def _add_codex_parents(self, threads: dict, now: float) -> None:
+        """Dokłada do `threads` rodziców (i dalszych przodków) spoza okna dni."""
+        pending = [log.parent_id for log in threads.values() if log.parent_id and not log.hidden]
+        while pending:
+            tid = pending.pop()
+            if tid in threads:
+                continue
+            path = self._codex_thread_path(tid, now)
+            if not path:
+                continue
+            log = self.codex_logs.get(path)
+            if log is None:
+                log = self.codex_logs[path] = codex_mod.CodexThreadLog(path)
+            if log.read_meta() and log.id == tid:
+                threads[tid] = log
+                if log.parent_id:
+                    pending.append(log.parent_id)
+
+    def _codex_thread_path(self, tid: str, now: float) -> str:
+        path = self._codex_paths.get(tid)
+        if path and os.path.isfile(path):
+            return path
+        if now - self._codex_missing.get(tid, -MISSING_RETRY) < MISSING_RETRY:
+            return ""
+        path = _find_codex_thread(self.codex_root, tid)
+        if path:
+            self._codex_paths[tid] = path
+            self._codex_missing.pop(tid, None)
+        else:
+            self._codex_missing[tid] = now
+        return path
 
     def refresh(self, live_sessions=(), force_tracker: bool = False) -> list[dict]:
         """Tablice wszystkich koordynatorów (najpierw działające, potem od najświeższej aktywności)."""
@@ -264,6 +303,32 @@ def _codex_files(root: str, cutoff: float, now: float):
                 if _recent(path, cutoff):
                     yield path
         day += timedelta(days=1)
+
+
+def _find_codex_thread(codex_root: str, tid: str) -> str:
+    """Plik wątku po ID: najpierw najnowsze dni w sessions/, potem archived_sessions/."""
+    if not tid or "/" in tid or tid.startswith("."):
+        return ""
+    suffix = f"-{tid}.jsonl"
+    sessions = os.path.join(codex_root, "sessions")
+
+    def listdir(folder):
+        try:
+            return sorted(os.listdir(folder), reverse=True)
+        except OSError:
+            return []
+    for year in listdir(sessions):
+        for month in listdir(os.path.join(sessions, year)):
+            for day in listdir(os.path.join(sessions, year, month)):
+                folder = os.path.join(sessions, year, month, day)
+                for name in listdir(folder):
+                    if name.endswith(suffix):
+                        return os.path.join(folder, name)
+    archived = os.path.join(codex_root, "archived_sessions")
+    for name in listdir(archived):
+        if name.endswith(suffix):
+            return os.path.join(archived, name)
+    return ""
 
 
 def _descendants(root_id: str, children: dict) -> list:
