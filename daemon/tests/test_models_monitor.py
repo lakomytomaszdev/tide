@@ -87,5 +87,136 @@ class ModelsMonitorTest(unittest.TestCase):
         self.assertIn("RuntimeError", text)
 
 
+@unittest.skipIf(models_monitor is None, "brak PyQt6")
+class ModelsMonitorWritesTest(unittest.TestCase):
+    """Zapis ustawień i pobieranie w ModelsMonitor bez D-Bus: models.json w katalogu tymczasowym, atrapa serwera."""
+
+    def setUp(self):
+        import json
+        import os
+        import shutil
+        import tempfile
+        app()
+        self.tmp = tempfile.mkdtemp(prefix="tide-models-monitor-")
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.path = os.path.join(self.tmp, "models.json")
+        patcher = mock.patch.dict(os.environ, {"TIDE_MODELS_CONFIG": self.path})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.json = json
+
+    def monitor(self, read, **kwargs):
+        monitor = models_monitor.ModelsMonitor(read=read, poll_ms=600_000, **kwargs)
+        self.addCleanup(monitor.stop)
+        changes = []
+        monitor.changed.connect(lambda: changes.append(self.json.loads(monitor.status_json())))
+        return monitor, changes
+
+    def test_read_started_before_a_write_does_not_bring_back_old_settings(self):
+        from tide_daemon.models import status as models_status
+        gate = threading.Event()
+        reads = []
+
+        def read():
+            cfg = models_config.load()  # stan z chwili rozpoczęcia odczytu
+            reads.append(cfg.default)
+            if len(reads) == 1:
+                gate.wait(5)
+            return models_status.assemble(cfg, {})
+
+        monitor, changes = self.monitor(read)
+        monitor.poll()
+        self.assertTrue(wait_until(lambda: reads == ["local"]))
+        result = self.json.loads(monitor.set_endpoint(self.json.dumps({"name": "mac", "url": "http://mac:1"})))
+        self.assertEqual(result, {"ok": True, "error": ""})
+        result = self.json.loads(monitor.set_default("mac"))
+        self.assertEqual(result, {"ok": True, "error": ""})
+        self.assertEqual(changes[-1]["default"], "mac", "stan od razu z nowych ustawień")
+        gate.set()
+        self.assertTrue(wait_until(lambda: len(reads) == 2, timeout=5))
+        wait_until(lambda: False, timeout=0.3)
+        defaults = [c["default"] for c in changes]
+        self.assertNotIn("local", defaults[defaults.index("mac"):], "odczyt sprzed zapisu nie cofa widoku")
+        self.assertEqual(self.json.loads(monitor.status_json())["default"], "mac")
+
+    def test_refused_write_sends_no_changed(self):
+        monitor, changes = self.monitor(lambda: None)
+        result = self.json.loads(monitor.set_default("mac"))
+        self.assertEqual(result, {"ok": False, "error": "default: nieznany punkt „mac”"})
+        self.assertEqual(changes, [])
+        self.assertEqual(self.json.loads(monitor.set_role("[]"))["error"], "niepoprawne żądanie: oczekiwano obiektu JSON")
+        self.assertIn("raport poranny jest wyłączony", self.json.loads(monitor.set_report_summary("local"))["error"])
+
+    def test_pull_changed_throttled_and_entry_cleared(self):
+        import time
+        from .test_models_core import start_server
+
+        lines = [{"status": "pulling manifest"}] + [
+            {"status": "pulling aaa", "digest": "sha256:aaa", "total": 1000, "completed": n * 20} for n in range(51)
+        ] + [{"status": "success"}]
+
+        def stream(handler):
+            try:
+                handler.send_response(200)
+                handler.send_header("Transfer-Encoding", "chunked")
+                handler.end_headers()
+                for line in lines:  # ok. 2 s: postęp co 40 ms
+                    data = (self.json.dumps(line) + "\n").encode()
+                    handler.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+                    handler.wfile.flush()
+                    time.sleep(0.04)
+                handler.wfile.write(b"0\r\n\r\n")
+            except OSError:
+                pass
+
+        server = start_server(self, {("POST", "/api/pull"): (200, stream)})
+        with open(self.path, "w", encoding="utf-8") as fh:
+            self.json.dump({"endpoints": {"local": {"url": server.url}}}, fh)
+        monitor, changes = self.monitor(lambda: None, pull_keep_ms=300)
+        started = time.monotonic()
+        reply = self.json.loads(monitor.pull_model(self.json.dumps({"endpoint": "local", "model": "qwen3:8b"})))
+        self.assertEqual(reply, {"ok": True, "error": "", "key": "local/qwen3:8b"})
+        done = wait_until(lambda: changes and changes[-1]["pulls"].get("local/qwen3:8b", {}).get("status") == "success",
+                          timeout=10)
+        self.assertTrue(done)
+        elapsed = time.monotonic() - started
+        progress = [c for c in changes if c["pulls"].get("local/qwen3:8b", {}).get("running")]
+        self.assertLessEqual(len(progress), int(elapsed) + 2, "Changed z postępem najwyżej raz na sekundę")
+        self.assertGreaterEqual(len(progress), 2)
+        self.assertEqual(changes[-1]["pulls"]["local/qwen3:8b"]["completed"], 1000)
+        self.assertTrue(wait_until(lambda: changes[-1]["pulls"] == {}, timeout=3), "wpis znika po chwili")
+
+    def test_stop_cancels_running_pull(self):
+        import time
+        from .test_models_core import start_server
+
+        def hang(handler):
+            try:
+                handler.send_response(200)
+                handler.send_header("Transfer-Encoding", "chunked")
+                handler.end_headers()
+                data = b'{"status": "pulling manifest"}\n'
+                handler.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+                handler.wfile.flush()
+                time.sleep(5)
+            except OSError:
+                pass
+
+        server = start_server(self, {("POST", "/api/pull"): (200, hang)})
+        with open(self.path, "w", encoding="utf-8") as fh:
+            self.json.dump({"endpoints": {"local": {"url": server.url}}}, fh)
+        monitor, changes = self.monitor(lambda: None)
+        monitor.pull_model(self.json.dumps({"endpoint": "local", "model": "qwen3:8b"}))
+        self.assertTrue(wait_until(lambda: changes and changes[-1]["pulls"]["local/qwen3:8b"]["status"]
+                                   == "pulling manifest", timeout=5))
+        monitor.stop()
+        entry = wait_until(lambda: not changes[-1]["pulls"]["local/qwen3:8b"]["running"]
+                           and changes[-1]["pulls"]["local/qwen3:8b"], timeout=2)
+        self.assertTrue(entry, "pobieranie przerwane od razu")
+        self.assertIn("usługa się zamyka", entry["error"])
+        self.assertIn("usługa się zamyka", self.json.loads(monitor.pull_model(
+            self.json.dumps({"endpoint": "local", "model": "qwen3:8b"})))["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

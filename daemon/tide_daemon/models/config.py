@@ -59,6 +59,8 @@ class Endpoint:
     url: str                 # adres serwera bez końcowego „/” (dla openai także bez „/v1”)
     kind: str                # "ollama" albo "openai"
     token_file: str = ""     # ścieżka po rozwinięciu „~”; pusta — bez nagłówka Authorization
+    # Token podany wprost (tylko TestEndpoint: próba przed zapisem) — w pamięci, nigdy w repr ani w stanie.
+    token: str = field(default="", repr=False, compare=False)
 
     def address(self) -> tuple[str, str, int | None]:
         """(schemat, host, port) z adresu; adres, którego nie da się rozebrać → ModelError."""
@@ -89,18 +91,26 @@ class Endpoint:
     def headers(self) -> dict:
         """Nagłówki zapytania; token z pliku czytany teraz, tylko w pamięci tego wywołania."""
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self.token_file:
+        if self.token:
+            if not valid_token(self.token):
+                raise ModelError(f"Model lokalny: niepoprawny token punktu „{self.name}”")
+            headers["Authorization"] = f"Bearer {self.token}"
+        elif self.token_file:
             try:
                 with open(self.token_file, encoding="utf-8") as fh:
                     token = fh.read().strip()
             except (OSError, UnicodeDecodeError) as exc:
                 raise ModelError(f"Model lokalny niedostępny: nie da się odczytać pliku tokenu punktu "
                                  f"„{self.name}” ({type(exc).__name__})") from None
-            # Tylko drukowalne ASCII: nagłówek HTTP nie uniesie innych znaków (i nowej linii — wstrzyknięcia).
-            if not token or not all(" " < c < "\x7f" for c in token):
+            if not valid_token(token):
                 raise ModelError(f"Model lokalny niedostępny: pusty albo niepoprawny plik tokenu punktu „{self.name}”")
             headers["Authorization"] = f"Bearer {token}"
         return headers
+
+
+def valid_token(token: str) -> bool:
+    """Tylko drukowalne ASCII bez spacji: nagłówek HTTP nie uniesie innych znaków (i nowej linii — wstrzyknięcia)."""
+    return bool(token) and all(" " < c < "\x7f" for c in token)
 
 
 @dataclass(frozen=True)
@@ -173,7 +183,7 @@ def _endpoint(name, value, warnings) -> Endpoint | None:
                         f"IPv6 w nawiasach) — pominięty")
         return None
     if "@" in parts.netloc:
-        warnings.append(f"punkt „{name}”: dane logowania w adresie — pominięty (token przez tokenFile)")
+        warnings.append(f"punkt „{name}”: dane logowania w adresie (token przez tokenFile) — pominięty")
         return None
     kind = value.get("kind", "ollama")
     if kind not in KINDS:
@@ -222,6 +232,37 @@ def _role(name, value, endpoints, skipped, default, unreachable, warnings) -> Ro
     return Role(name, endpoint or default, model, ctx)
 
 
+def bad_name(what: str, name) -> str:
+    """Komunikat o złej nazwie punktu albo roli — ten sam przy odczycie pliku i przy zapisie z D-Bus."""
+    return f"{what} „{str(name)[:40]}”: niepoprawna nazwa (litery, cyfry, _.-)"
+
+
+def _refusal(warnings: list) -> str:
+    """Ostrzeżenie z odczytu pliku jako powód odmowy zapisu (bez dopisku „— pominięty”)."""
+    text = warnings[-1] if warnings else "niepoprawne ustawienie"
+    return re.sub(r" — pominięt[ya]$", "", text)
+
+
+def check_endpoint(name, value) -> tuple[Endpoint | None, str]:
+    """Punkt tak, jak przeczytałby go load(): (Endpoint, "") albo (None, powód po polsku).
+
+    Zapis z D-Bus (models/settings.py) i odczyt pliku mają jedną walidację: ten sam kod i te same komunikaty."""
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+        return None, bad_name("punkt", name)
+    warnings: list[str] = []
+    endpoint = _endpoint(name, value, warnings)
+    return endpoint, "" if endpoint else _refusal(warnings)
+
+
+def check_role(name, value, cfg: "ModelsConfig") -> tuple[Role | None, str]:
+    """Rola tak, jak przeczytałby ją load() przy punktach z `cfg`: (Role, "") albo (None, powód po polsku)."""
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+        return None, bad_name("rola", name)
+    warnings: list[str] = []
+    role = _role(name, value, cfg.endpoints, set(), cfg.default, None, warnings)
+    return role, "" if role else _refusal(warnings)
+
+
 def defaults(path: str = "", exists: bool = False, error: str = "", warnings=()) -> ModelsConfig:
     endpoints = {DEFAULT_ENDPOINT: Endpoint(DEFAULT_ENDPOINT, DEFAULT_URL, "ollama")}
     roles = {name: Role(name, DEFAULT_ENDPOINT, model, ROLE_CTX.get(name)) for name, model in DEFAULT_ROLES.items()}
@@ -240,7 +281,7 @@ def from_dict(data, path: str = "", exists: bool = True) -> ModelsConfig:
         raw_endpoints = None
     for name, value in (raw_endpoints or {}).items():
         if not NAME_RE.fullmatch(name):
-            warnings.append(f"punkt „{name[:40]}”: niepoprawna nazwa (litery, cyfry, _.-) — pominięty")
+            warnings.append(f"{bad_name('punkt', name)} — pominięty")
             continue
         endpoint = _endpoint(name, value, warnings)
         if endpoint:
@@ -277,7 +318,7 @@ def from_dict(data, path: str = "", exists: bool = True) -> ModelsConfig:
         raw_roles = None
     for name, value in (raw_roles or {}).items():
         if not NAME_RE.fullmatch(name):
-            warnings.append(f"rola „{name[:40]}”: niepoprawna nazwa (litery, cyfry, _.-) — pominięta")
+            warnings.append(f"{bad_name('rola', name)} — pominięta")
             continue
         role = _role(name, value, endpoints, skipped, default, unreachable, warnings)
         if role:

@@ -324,6 +324,7 @@ class Describer:
         self.home = home if home else os.path.expanduser("~")
         self.env = env
         self.settle, self.gap, self.retry, self.max_age = settle, gap, retry, max_age
+        self._timeout = timeout                 # podany wprost (testy) — zostaje przy zmianie trybu
         self.timeout = timeout if timeout is not None else (LOCAL_TIMEOUT if self.mode == "local" else TIMEOUT)
         self.log = log or (lambda text: print(f"tide-daemon: koordynacja: {text}", flush=True))
         self.calls = 0                  # ile razy naprawdę wołaliśmy model (diagnostyka, testy)
@@ -339,6 +340,15 @@ class Describer:
         self._stopped = False
         self._cancel = models_mod.Cancel()         # stop() przerywa trwające wywołanie modelu lokalnego
         self._load()
+
+    def set_mode(self, mode: str) -> None:
+        """Zmiana trybu bez restartu usługi (SetReportSummary z okna Tide); kolejny przebieg idzie już nowym."""
+        if mode not in summarize.MODEL_MODES + ("rules",):
+            return
+        with self._lock:
+            self.mode = mode
+            if self._timeout is None:
+                self.timeout = LOCAL_TIMEOUT if mode == "local" else TIMEOUT
 
     # --- wątek odświeżania --------------------------------------------------------------------
 

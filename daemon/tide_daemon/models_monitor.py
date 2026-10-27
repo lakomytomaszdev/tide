@@ -1,47 +1,118 @@
-"""Obszar Modeli lokalnych w usłudze: co POLL_MS odczyt stanu serwerów modeli w wątku roboczym.
+"""Obszar Modeli lokalnych w usłudze: odczyt stanu serwerów, zapis ustawień z okna Tide i pobieranie modeli.
 
-models.json i zapytania HTTP (krótkie limity, models/status.py) idą poza wątkiem głównym, więc
-serwer, który nie odpowiada, nie blokuje D-Bus. Wynik wraca sygnałem Qt; Changed tylko wtedy,
-gdy JSON stanu się zmienił. Refresh() w trakcie odczytu zleca jeszcze jeden zaraz po nim — żeby
-po zmianie models.json albo załadowaniu modelu wynik był świeży, a nie sprzed chwili.
+Odczyt: co POLL_MS stan serwerów modeli w wątku roboczym. models.json i zapytania HTTP (krótkie
+limity, models/status.py) idą poza wątkiem głównym, więc serwer, który nie odpowiada, nie blokuje
+D-Bus. Wynik wraca sygnałem Qt; Changed tylko wtedy, gdy JSON stanu się zmienił. Refresh() w trakcie
+odczytu zleca jeszcze jeden zaraz po nim — żeby po zmianie models.json albo załadowaniu modelu wynik
+był świeży, a nie sprzed chwili.
+
+Zapis (SetEndpoint, RemoveEndpoint, SetDefault, SetRole, SetReportSummary; models/settings.py) idzie
+w wątku głównym — to zapis małego pliku. Po udanym zapisie stan składamy od razu z nowych ustawień
+i ostatnich stanów punktów (punkt nowy albo ze zmienionym adresem jest „nie sprawdzony”: online false
+bez błędu), wysyłamy Changed i zlecamy odczyt. Odczyt, który trwał w chwili zapisu, jest odrzucany
+(numer pokolenia) — nie cofnie widoku do starych ustawień.
+
+TestEndpoint idzie w osobnej puli (odpowiedź D-Bus później), PullModel — w osobnym wątku na pobieranie
+(jedno naraz na punkt), postęp w `pulls` stanu, Changed najwyżej raz na PULL_PUBLISH_MS. stop() przerywa
+pobierania i próby (models.Cancel).
 """
 from __future__ import annotations
 
 import json
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from .models import config as models_config
+from .models import pull as models_pull
+from .models import settings as models_settings
 from .models import status as models_status
+from .models.transport import Cancel, ModelError
 
 POLL_MS = 15_000
 FIRST_POLL_MS = 1000
+PULL_PUBLISH_MS = 1000     # postęp pobierania: Changed najwyżej raz na sekundę
+PULL_KEEP_MS = 15_000      # zakończone pobieranie zostaje w `pulls` jeszcze chwilę („pobrano”)
+PULL_ERROR_KEEP_MS = 60_000
 
 
 def _dump(state: dict) -> str:
     return json.dumps(state, ensure_ascii=False, sort_keys=True)
 
 
+def _reply(ok: bool, error: str = "", **extra) -> str:
+    return json.dumps({"ok": ok, "error": error, **extra}, ensure_ascii=False)
+
+
+def _request(text) -> dict | None:
+    try:
+        value = json.loads(text) if isinstance(text, str) else None
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+class ReportLink:
+    """Tryb „Na daily” (report.json, `summary`) w działającej usłudze: odczyt dla Status() i przełączenie.
+
+    `live()` — tryb, którego raport i opisy kart używają teraz; `apply(tryb)` — przełączenie bez restartu
+    usługi; `pinned` — tryb wymuszony opcją --report-summary (zapis zmienia wtedy tylko plik)."""
+
+    def __init__(self, path: str | None = None, live=None, apply=None, pinned: bool = False):
+        self.path = path
+        self.live = live
+        self.apply = apply
+        self.pinned = pinned
+
+    def state(self) -> dict:
+        return models_settings.report_state(self.path, self.live() if self.live else None, self.pinned)
+
+    def set(self, mode: str) -> None:
+        models_settings.set_report_summary(mode, self.path)
+        if self.apply is not None and not self.pinned:
+            self.apply(mode)
+
+
 class ModelsMonitor(QObject):
     changed = pyqtSignal()
-    _fetched = pyqtSignal(object)    # stan (słownik z models/status.py) — z wątku roboczego
+    _fetched = pyqtSignal(object, object, int)   # (stan z models/status.py, stan raportu, pokolenie) — z wątku
+    _tested = pyqtSignal(object, object)         # (odpowiedź D-Bus, wynik próby) — z puli prób
+    _pulled = pyqtSignal(str, int, object)       # (klucz, numer pobierania, stan) — z wątku pobierania
 
-    def __init__(self, read=models_status.read, poll_ms: int | None = None, parent=None):
+    def __init__(self, read=models_status.read, poll_ms: int | None = None, report: ReportLink | None = None,
+                 pull_keep_ms: int = PULL_KEEP_MS, pull_error_keep_ms: int = PULL_ERROR_KEEP_MS, parent=None):
         super().__init__(parent)
         self.read = read
+        self.report = report
         try:
             cfg = models_config.load()
         except Exception as exc:  # nieczytelne ustawienia nie mogą zatrzymać startu usługi
             cfg = models_config.defaults(error=f"models.json: nieoczekiwany błąd ({type(exc).__name__}) — "
                                                f"ustawienia domyślne")
-        self._json = _dump(models_status.pending(cfg))
+        self._base = models_status.pending(cfg)
+        self._report = self._report_state()   # report.json to mały plik — od startu, bez czekania na odczyt
+        self._pulls: dict[str, dict] = {}
+        self._pull_ids: dict[str, int] = {}
+        self._pull_seq = 0
+        self._json = _dump(self._compose())
         self._busy = False
         self._again = False
+        self._generation = 0
+        self._cancel = Cancel()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-models")
+        self._tests = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tide-models-test")
+        self.pull_keep_ms = pull_keep_ms
+        self.pull_error_keep_ms = pull_error_keep_ms
         self._fetched.connect(self._deliver)
+        self._tested.connect(lambda reply, result: reply(_reply(**result)))
+        self._pulled.connect(self._pull_progress)
         self._timer = QTimer(self, interval=max(50, poll_ms if poll_ms is not None else POLL_MS))
         self._timer.timeout.connect(self.poll)
+        self._pull_timer = QTimer(self, singleShot=True)
+        self._pull_timer.timeout.connect(self._publish)
+        self._published = 0.0
         self._logged: dict[str, str] = {}
 
     def start(self) -> None:
@@ -50,10 +121,14 @@ class ModelsMonitor(QObject):
 
     def stop(self) -> None:
         self._timer.stop()
+        self._cancel.set()  # trwające pobierania i próby połączenia kończą się od razu
         self._pool.shutdown(wait=False, cancel_futures=True)
+        self._tests.shutdown(wait=False, cancel_futures=True)
 
     def status_json(self) -> str:
         return self._json
+
+    # --- odczyt stanu ----------------------------------------------------------------------------
 
     def refresh(self) -> None:
         if self._busy:
@@ -65,26 +140,203 @@ class ModelsMonitor(QObject):
         if self._busy:
             return
         self._busy = True
-        self._pool.submit(self._work)
+        self._pool.submit(self._work, self._generation)
 
-    def _work(self) -> None:
+    def _work(self, generation: int) -> None:
         try:
-            self._fetched.emit(self.read())
+            state = self.read()
         except Exception as exc:  # nieoczekiwany błąd nie może zatrzymać odpytywania
             print(f"tide-daemon: Modele lokalne: błąd odczytu stanu ({type(exc).__name__}: {exc})", flush=True)
-            self._fetched.emit(None)
+            state = None
+        self._fetched.emit(state, self._report_state(), generation)
 
-    def _deliver(self, state) -> None:
+    def _report_state(self):
+        if self.report is None:
+            return None
+        try:
+            return self.report.state()
+        except Exception as exc:  # zły report.json nie może zatrzymać odczytu stanu modeli
+            return {"summary": "", "configured": "", "summaryModel": "", "raw": None, "pinned": self.report.pinned,
+                    "path": "", "warnings": [f"report.json: nieoczekiwany błąd ({type(exc).__name__})"]}
+
+    def _deliver(self, state, report, generation: int) -> None:
         self._busy = False
-        if state is not None:
-            self._log(state)
-            text = _dump(state)
-            if text != self._json:
-                self._json = text
-                self.changed.emit()
+        if generation != self._generation:
+            self._again = True  # odczyt sprzed zapisu ustawień — wynik nieaktualny, czytamy jeszcze raz
+        else:
+            if state is not None:
+                self._log(state)
+                self._base = state
+            if report is not None:
+                self._report = report
+            self._publish()
         if self._again:
             self._again = False
             self.poll()
+
+    def _compose(self) -> dict:
+        state = dict(self._base)
+        if self.report is not None and self._report is not None:
+            state["report"] = self._report
+        state["pulls"] = {key: dict(entry) for key, entry in self._pulls.items()}
+        return state
+
+    def _publish(self, force: bool = False) -> None:
+        self._pull_timer.stop()
+        self._published = time.monotonic()
+        text = _dump(self._compose())
+        if text != self._json or force:
+            self._json = text
+            self.changed.emit()
+
+    # --- zapis ustawień --------------------------------------------------------------------------
+
+    def _write(self, action, *args) -> str:
+        try:
+            action(*args)
+        except models_settings.SettingsError as exc:
+            return _reply(False, str(exc))
+        except Exception as exc:  # przeoczony przypadek: odmowa z komunikatem, usługa działa dalej
+            print(f"tide-daemon: Modele lokalne: błąd zapisu ustawień ({type(exc).__name__})", flush=True)
+            return _reply(False, f"nieoczekiwany błąd zapisu ustawień ({type(exc).__name__})")
+        self._generation += 1
+        try:
+            cfg = models_config.load()
+            self._base = models_status.assemble(cfg, self._base.get("endpoints") or {},
+                                                checked=bool(self._base.get("checked")))
+        except Exception as exc:  # stan złożymy przy najbliższym odczycie
+            print(f"tide-daemon: Modele lokalne: nie da się złożyć stanu po zapisie ({type(exc).__name__})",
+                  flush=True)
+        report = self._report_state()
+        if report is not None:
+            self._report = report
+        self._publish(force=True)
+        self.refresh()
+        return _reply(True)
+
+    def set_endpoint(self, text: str) -> str:
+        req = _request(text)
+        if req is None:
+            return _reply(False, "niepoprawne żądanie: oczekiwano obiektu JSON")
+        return self._write(models_settings.set_endpoint, req)
+
+    def remove_endpoint(self, name: str) -> str:
+        return self._write(models_settings.remove_endpoint, name)
+
+    def set_default(self, name: str) -> str:
+        return self._write(models_settings.set_default, name)
+
+    def set_role(self, text: str) -> str:
+        req = _request(text)
+        if req is None:
+            return _reply(False, "niepoprawne żądanie: oczekiwano obiektu JSON")
+        return self._write(models_settings.set_role, req)
+
+    def set_report_summary(self, mode: str) -> str:
+        if self.report is None:
+            return _reply(False, "raport poranny jest wyłączony w tej usłudze")
+        return self._write(self.report.set, mode)
+
+    # --- próba połączenia ------------------------------------------------------------------------
+
+    def test_endpoint(self, text: str, reply) -> None:
+        """Jeden odczyt (wersja, liczba modeli) bez zapisu; `reply(json)` w wątku głównym po odczycie."""
+        req = _request(text)
+        try:
+            if req is None:
+                raise models_settings.SettingsError("niepoprawne żądanie: oczekiwano obiektu JSON")
+            endpoint = models_settings.endpoint_for_test(req)
+        except models_settings.SettingsError as exc:
+            reply(_reply(False, str(exc), version=None, models=None))
+            return
+
+        def work():
+            result = models_status.probe(endpoint, cancel=self._cancel)
+            self._tested.emit(reply, result)
+
+        try:
+            self._tests.submit(work)
+        except RuntimeError:  # usługa się zamyka
+            reply(_reply(False, "usługa się zamyka", version=None, models=None))
+
+    # --- pobieranie modeli -----------------------------------------------------------------------
+
+    def pull_model(self, text: str) -> str:
+        """Zaczyna pobieranie w osobnym wątku; od razu {ok, error, key}, postęp w `pulls` stanu."""
+        req = _request(text)
+        try:
+            if req is None:
+                raise models_settings.SettingsError("niepoprawne żądanie: oczekiwano obiektu JSON")
+            endpoint, model = models_settings.endpoint_for_pull(req)
+        except models_settings.SettingsError as exc:
+            return _reply(False, str(exc), key="")
+        if self._cancel.is_set():
+            return _reply(False, "usługa się zamyka", key="")
+        busy = [e for e in self._pulls.values() if e["endpoint"] == endpoint.name and e["running"]]
+        if busy:
+            return _reply(False, f"na punkcie „{endpoint.name}” trwa już pobieranie {busy[0]['model']} — poczekaj, "
+                                 f"aż się skończy", key="")
+        key = f"{endpoint.name}/{model}"
+        self._pull_seq += 1
+        number = self._pull_seq
+        self._pull_ids[key] = number
+        self._pulls[key] = {"endpoint": endpoint.name, "model": model, "status": "start", "completed": 0, "total": 0,
+                            "running": True, "error": ""}
+        threading.Thread(target=self._pull_work, args=(key, number, endpoint, model), name="tide-models-pull",
+                         daemon=True).start()
+        self._publish()
+        return _reply(True, key=key)
+
+    def _pull_work(self, key: str, number: int, endpoint, model: str) -> None:
+        base = {"endpoint": endpoint.name, "model": model}
+
+        def progress(p: dict) -> None:
+            if p["status"] != "success":  # koniec przychodzi niżej, już z running: false
+                self._pulled.emit(key, number, {**base, **p, "running": True, "error": ""})
+
+        try:
+            models_pull.pull(endpoint, model, progress, cancel=self._cancel)
+            final = {**base, "status": "success", "running": False, "error": ""}
+        except ModelError as exc:
+            final = {**base, "status": "error", "running": False, "error": str(exc)}
+        except Exception as exc:  # przeoczony przypadek: błąd w stanie, wątek kończy się normalnie
+            final = {**base, "status": "error", "running": False,
+                     "error": f"Model lokalny: błąd pobierania ({type(exc).__name__})"}
+        self._pulled.emit(key, number, final)
+
+    def _pull_progress(self, key: str, number: int, entry: dict) -> None:
+        if self._pull_ids.get(key) != number:
+            return
+        previous = self._pulls.get(key) or {}
+        if not entry["running"]:
+            # Koniec: postęp z ostatniego odczytu zostaje (przy sukcesie — całość pobrana).
+            completed, total = previous.get("completed", 0), previous.get("total", 0)
+            if entry["status"] == "success":
+                completed = total
+            self._pulls[key] = {**entry, "completed": completed, "total": total}
+            self._publish()
+            keep = self.pull_keep_ms if entry["status"] == "success" else self.pull_error_keep_ms
+            QTimer.singleShot(keep, lambda: self._pull_expire(key, number))
+            if entry["status"] == "success":
+                print(f"tide-daemon: Modele lokalne: pobrano {entry['model']} na {entry['endpoint']}", flush=True)
+                self.refresh()  # nowy model na liście punktu
+            else:
+                print(f"tide-daemon: Modele lokalne: {entry['error']}", flush=True)
+            return
+        self._pulls[key] = entry
+        wait = PULL_PUBLISH_MS - (time.monotonic() - self._published) * 1000
+        if wait <= 0:
+            self._publish()
+        elif not self._pull_timer.isActive():
+            self._pull_timer.start(int(wait) + 1)
+
+    def _pull_expire(self, key: str, number: int) -> None:
+        if self._pull_ids.get(key) == number and not self._pulls.get(key, {}).get("running"):
+            self._pulls.pop(key, None)
+            self._pull_ids.pop(key, None)
+            self._publish()
+
+    # --- dziennik --------------------------------------------------------------------------------
 
     def _log(self, state: dict) -> None:
         """Do dziennika tylko zmiany: punkt zaczął albo przestał odpowiadać, błąd albo ostrzeżenia w models.json."""
