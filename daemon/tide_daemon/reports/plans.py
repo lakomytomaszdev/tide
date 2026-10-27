@@ -47,10 +47,15 @@ def _attach(projects: list, start: float, end: float, cache_file: str | None) ->
         plan = b.get("plan") or {}
         if plan.get("path"):
             covered.add(os.path.realpath(plan["path"]))
-        project.plans.append(_entry(b.get("title") or "", b.get("label") or "", "board", b.get("tickets") or [],
-                                    tool=b.get("tool", ""), live=bool(b.get("live")), state=b.get("state", ""),
-                                    plan_path=plan.get("path", ""), tracker=(b.get("tracker") or {}),
-                                    last=last))
+        entry = _entry(b.get("title") or "", b.get("label") or "", "board", b.get("tickets") or [],
+                       tool=b.get("tool", ""), live=bool(b.get("live")), state=b.get("state", ""),
+                       plan_path=plan.get("path", ""), tracker=(b.get("tracker") or {}), last=last)
+        # Do „Na daily”: sesja koordynatora (żeby nie liczyć jej drugi raz jako osobnej pracy)
+        # i jego pytanie bez odpowiedzi.
+        entry["id"] = str(b.get("id") or "")
+        entry["question"] = str(b.get("question") or "")
+        entry["all"] = [dict(t) for t in b.get("tickets") or []]
+        project.plans.append(entry)
     for project in projects:
         if not getattr(project, "is_repo", False):
             continue
@@ -63,9 +68,12 @@ def _attach(projects: list, start: float, end: float, cache_file: str | None) ->
                 continue
             tickets = [{"id": r.ticket, "title": r.title, "state": r.state or "todo", "note": r.note, "url": ""}
                        for r in plan.rows]
-            project.plans.append(_entry(plan.title, "", "plan", tickets, plan_path=plan.path,
-                                        tracker={"kind": plan.tracker}, last=plan.updated_ts,
-                                        status=plan.status, errors=plan.errors))
+            entry = _entry(plan.title, "", "plan", tickets, plan_path=plan.path,
+                           tracker={"kind": plan.tracker}, last=plan.updated_ts,
+                           status=plan.status, errors=plan.errors)
+            entry["id"], entry["question"], entry["all"] = "", "", [dict(t, lastActivityTs=plan.updated_ts)
+                                                                    for t in tickets]
+            project.plans.append(entry)
     for project in projects:
         project.plans.sort(key=lambda e: (-e["active"], -e["last"]))
 

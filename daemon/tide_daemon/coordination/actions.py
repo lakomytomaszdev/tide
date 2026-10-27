@@ -3,8 +3,9 @@
 - `annotate(sessions, boards)` — pole `coordination` przy sesji koordynatora w /Agents
   (widżet agentów pokazuje „TOM-20 · 8/13”),
 - `cache_payload(boards)` i `write_cache(path, payload)` — mały plik dla raportu porannego
-  ($XDG_STATE_HOME/tide/coordination.json, 0600): bez poleceń, wyników i pytań, tylko tickety,
-  stany i krótkie notatki,
+  ($XDG_STATE_HOME/tide/coordination.json, 0600): bez poleceń i pełnych raportów podagentów, tylko
+  tickety, stany, krótkie notatki, gałąź, wynik review w liczbach, pierwsza linia wyniku pracy
+  (do 220 znaków) i pytanie bez odpowiedzi (do 300) — z nich raport składa „Na daily”,
 - `diff_target(board, ticket, worktrees)` i `diff_argv(...)` — „Diff gałęzi”: `git diff
   <główna>...<gałąź>` w Konsoli (repozytorium z listy worktrees, gałąź musi istnieć lokalnie),
 - `worktree_of(board, ticket, worktrees)` — worktree z gałęzią ticketu (przycisk „Worktree”).
@@ -54,11 +55,33 @@ def cache_payload(boards: list, generated: float) -> dict:
             "plan": {k: (b.get("plan") or {}).get(k, "") for k in ("path", "title", "tracker", "status", "updated")}
             if b.get("plan") else None,
             "tracker": {k: (b.get("tracker") or {}).get(k) for k in ("kind", "available", "error")},
+            "question": _clip(((b.get("question") or {}).get("text") or ""), 300),
             "tickets": [{"id": t["id"], "title": t["title"], "state": t["state"], "note": t.get("note", ""),
-                         "lastActivityTs": t.get("lastActivityTs", 0), "url": t.get("url", "")}
+                         "lastActivityTs": t.get("lastActivityTs", 0), "url": t.get("url", ""),
+                         "branch": t.get("branch", ""), "review": _review(t), "result": _result_line(t),
+                         "question": _clip(((t.get("question") or {}).get("text") or ""), 300)}
                         for t in b.get("tickets", [])],
         })
     return {"version": CACHE_VERSION, "generated": round(generated, 3), "coordinators": out}
+
+
+def _review(ticket: dict) -> str:
+    """„1 MAJOR, 2 NIT” albo „bez uwag” z ostatniego review ticketu (pusty bez review)."""
+    review = ticket.get("review") or {}
+    return str(review.get("text") or "") if isinstance(review, dict) else ""
+
+
+def _result_line(ticket: dict) -> str:
+    """Pierwsza linia wyniku ostatniej skończonej pracy (nie review) — „co zrobił” w jednym zdaniu."""
+    for event in reversed(ticket.get("events") or []):
+        if event.get("kind") == "finished" and "review" not in event and event.get("state") == "done":
+            return _clip(event.get("text") or "", 220)
+    return ""
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def write_cache(path: str, payload: dict) -> None:

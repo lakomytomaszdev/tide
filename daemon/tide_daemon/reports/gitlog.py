@@ -16,6 +16,7 @@ Co-Authored-By albo adres autora, gałąź/worktree agenta (prefiks `codex/`, `c
 w tym katalogu. Inaczej pusty — raport nie twierdzi wtedy, że to „ty”, tylko nie ma znacznika.
 """
 import os
+import re
 from dataclasses import dataclass, field
 
 from ..worktrees.git import Git
@@ -41,6 +42,7 @@ class Commit:
     deleted: int = 0
     agent: str = ""        # claude, codex albo pusty
     agent_why: str = ""    # trailer, author, branch, session
+    parents: tuple = ()
 
 
 @dataclass
@@ -53,6 +55,9 @@ class BranchLog:
     tool: str = ""         # narzędzie z położenia/prefiksu worktree
     title: str = ""
     commits: list = field(default_factory=list)
+    # Scalenia w gałęzi głównej: [{"sha", "branch", "members": [sha, …]}] — commity, które weszły
+    # danym scaleniem (raport „Na daily” grupuje po nich pracę zamiast wypisywać tematy commitów).
+    merges: list = field(default_factory=list)
 
     @property
     def added(self) -> int:
@@ -77,7 +82,7 @@ def parse_log(text: str) -> list[Commit]:
         if not ts.isdigit():
             continue
         commit = Commit(sha=sha, author=author, email=email, ts=float(ts), subject=_clip(subject, SUBJECT_LIMIT),
-                        merge=len(parents.split()) > 1)
+                        merge=len(parents.split()) > 1, parents=tuple(parents.split()))
         for line in stats.splitlines():
             cols = line.split("\t")
             if len(cols) < 3:
@@ -146,6 +151,8 @@ def repo_commits(git: Git, repo_path: str, main_branch: str, start: float, end: 
                         is_main_checkout=bool(wt.get("isMain")),
                         tool=guess_tool(wt.get("path", ""), tag) if wt or tag else "", title=title, commits=own)
         _mark_agents(log, sessions)
+        if log.is_main:
+            log.merges = _merges(git, repo_path, log.commits)
         out.append(log)
     out.sort(key=lambda b: (not b.is_main, -max(c.ts for c in b.commits)))
     return out
@@ -168,6 +175,36 @@ def _mark_agents(log: BranchLog, sessions) -> None:
             if s.first_ts - 60 <= commit.ts <= s.last_ts + SESSION_SLACK:
                 commit.agent, commit.agent_why = s.tool, "session"
                 break
+
+
+MERGE_SUBJECTS = (
+    re.compile(r"^Merge (?:remote-tracking )?branch '(?:origin/)?([^']+)'"),
+    re.compile(r"^Merge pull request #\d+ from [^/\s]+/(\S+)"),
+    re.compile(r"^Merge branch \"([^\"]+)\""),
+)
+MERGE_MEMBERS = 500
+
+
+def merged_branch(subject: str) -> str:
+    """Nazwa scalonej gałęzi z tematu commita scalenia („Merge branch 'feat/x'”) albo pusty napis."""
+    for pattern in MERGE_SUBJECTS:
+        match = pattern.match(subject or "")
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _merges(git: Git, repo_path: str, commits: list) -> list[dict]:
+    """Dla każdego scalenia z okresu: commity drugiego rodzica, których nie ma w pierwszym."""
+    out = []
+    for commit in commits:
+        if not commit.merge or len(commit.parents) < 2:
+            continue
+        res = git.run(repo_path, "rev-list", f"--max-count={MERGE_MEMBERS}",
+                      f"{commit.parents[0]}..{commit.parents[1]}", "--")
+        members = res.out.split() if res.ok else []
+        out.append({"sha": commit.sha, "branch": merged_branch(commit.subject), "members": members})
+    return out
 
 
 def _branch_tips(git: Git, repo_path: str) -> dict[str, float]:
