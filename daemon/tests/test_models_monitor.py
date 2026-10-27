@@ -218,5 +218,97 @@ class ModelsMonitorWritesTest(unittest.TestCase):
             self.json.dumps({"endpoint": "local", "model": "qwen3:8b"})))["error"])
 
 
+    def hanging_pull_server(self):
+        import time
+        from .test_models_core import start_server
+
+        def hang(handler):
+            try:
+                handler.send_response(200)
+                handler.send_header("Transfer-Encoding", "chunked")
+                handler.end_headers()
+                data = b'{"status": "pulling manifest"}\n'
+                handler.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+                handler.wfile.flush()
+                time.sleep(5)
+            except OSError:
+                pass
+
+        return start_server(self, {("POST", "/api/pull"): (200, hang)})
+
+    def test_endpoint_changes_refused_while_pulling(self):
+        server = self.hanging_pull_server()
+        with open(self.path, "w", encoding="utf-8") as fh:
+            self.json.dump({"default": "local", "endpoints": {"local": {"url": "http://127.0.0.1:11434"},
+                                                              "box": {"url": server.url}}}, fh)
+        monitor, changes = self.monitor(lambda: None)
+        monitor.pull_model(self.json.dumps({"endpoint": "box", "model": "qwen3:8b"}))
+        self.assertTrue(wait_until(lambda: changes and changes[-1]["pulls"]["box/qwen3:8b"]["status"]
+                                   == "pulling manifest", timeout=5))
+        refused = self.json.loads(monitor.remove_endpoint("box"))
+        self.assertEqual(refused, {"ok": False, "error": "na punkcie „box” trwa pobieranie modelu qwen3:8b — "
+                                                         "poczekaj, aż się skończy"})
+        moved = self.json.loads(monitor.set_endpoint(self.json.dumps({"name": "box", "url": "http://other:1"})))
+        self.assertEqual(moved["error"], refused["error"])
+        same = self.json.loads(monitor.set_endpoint(self.json.dumps({"name": "box", "url": server.url + "/",
+                                                                     "token": "nowy"})))
+        self.assertEqual(same, {"ok": True, "error": ""}, "token przy tym samym adresie — wolno")
+        self.assertEqual(self.json.loads(monitor.remove_endpoint("local"))["ok"], False)  # domyślny, nie pobieranie
+
+    def test_set_endpoint_shows_the_endpoint_unchecked_until_next_read(self):
+        from tide_daemon.models import status as models_status
+        with open(self.path, "w", encoding="utf-8") as fh:
+            self.json.dump({"endpoints": {"local": {"url": "http://127.0.0.1:9"}}}, fh)
+        gate = threading.Event()
+
+        def read():
+            cfg = models_config.load()
+            state = models_status.assemble(cfg, {})
+            state["endpoints"]["local"].update(error="Model lokalny: serwer odpowiedział 401 (127.0.0.1:9)")
+            if gate.is_set():
+                threading.Event().wait(5)  # kolejny odczyt „trwa”
+            return state
+
+        monitor, changes = self.monitor(read)
+        self.assertEqual(self.json.loads(monitor.set_endpoint(self.json.dumps(
+            {"name": "local", "url": "http://127.0.0.1:9", "token": "stary"}))), {"ok": True, "error": ""})
+        self.assertTrue(wait_until(lambda: changes and "401" in changes[-1]["endpoints"]["local"]["error"]))
+        gate.set()
+        result = self.json.loads(monitor.set_endpoint(self.json.dumps({"name": "local", "url": "http://127.0.0.1:9",
+                                                                       "token": "nowy"})))
+        self.assertEqual(result, {"ok": True, "error": ""})
+        local = changes[-1]["endpoints"]["local"]
+        self.assertEqual((local["online"], local["error"], local["auth"]), (False, "", True),
+                         "nowy token — punkt niesprawdzony, nie stary błąd 401")
+
+    def test_bad_requests_and_test_queue_limit(self):
+        deep = "[" * 100000
+        for call in (monitor_call for monitor_call in ("set_endpoint", "set_role", "pull_model")):
+            monitor, _changes = self.monitor(lambda: None)
+            reply = self.json.loads(getattr(monitor, call)(deep))
+            self.assertEqual((reply["ok"], reply["error"]), (False, "niepoprawne żądanie: oczekiwano obiektu JSON"))
+        replies = []
+        monitor.test_endpoint(deep, replies.append)
+        self.assertEqual(self.json.loads(replies[0])["ok"], False)
+
+        # Próby w toku: powyżej limitu odmowa od razu, bez kolejki rosnącej bez końca.
+        import socket
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(64)  # przyjmuje połączenia i nic nie odpowiada — próba trwa do limitu 3 s
+        self.addCleanup(listener.close)
+        url = f"http://127.0.0.1:{listener.getsockname()[1]}"
+        replies = []
+        for _ in range(models_monitor.TESTS_MAX + 2):
+            monitor.test_endpoint(self.json.dumps({"url": url}), replies.append)
+        busy = [self.json.loads(r) for r in replies]
+        self.assertEqual(len(busy), 2)
+        self.assertEqual(busy[0]["error"], "za dużo prób połączenia naraz — spróbuj za chwilę")
+        self.assertTrue(wait_until(lambda: len(replies) == models_monitor.TESTS_MAX + 2, timeout=10))
+        monitor.test_endpoint(self.json.dumps({"url": url + "0"}), replies.append)  # po odpowiedziach znowu wolno
+        self.assertTrue(wait_until(lambda: len(replies) == models_monitor.TESTS_MAX + 3, timeout=10))
+        self.assertNotIn("za dużo", replies[-1])
+
+
 if __name__ == "__main__":
     unittest.main()

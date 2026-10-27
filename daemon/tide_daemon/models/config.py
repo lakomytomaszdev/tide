@@ -187,7 +187,7 @@ def _endpoint(name, value, warnings) -> Endpoint | None:
         return None
     kind = value.get("kind", "ollama")
     if kind not in KINDS:
-        warnings.append(f"punkt „{name}”: nieznany rodzaj „{kind}” (ollama albo openai) — pominięty")
+        warnings.append(f"punkt „{name}”: nieznany rodzaj „{str(kind)[:40]}” (ollama albo openai) — pominięty")
         return None
     base = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")).rstrip("/")
     if kind == "openai" and base.endswith("/v1"):

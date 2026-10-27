@@ -346,7 +346,13 @@ class Describer:
         if mode not in summarize.MODEL_MODES + ("rules",):
             return
         with self._lock:
+            if mode == self.mode:
+                return
             self.mode = mode
+            # Błędy i „model niedostępny” starego trybu nie dotyczą nowego: pierwszy przebieg bez czekania na ponowienie.
+            # Trwający przebieg kończy się ze swoim limitem (Model z limitem bierze run() na starcie).
+            self._notes.clear()
+            self._failed.clear()
             if self._timeout is None:
                 self.timeout = LOCAL_TIMEOUT if mode == "local" else TIMEOUT
 
@@ -441,7 +447,8 @@ class Describer:
         cid = job["coordinator"]
         with self._lock:
             self._called[cid] = self.clock()
-        model = self._model()
+            mode, timeout = self.mode, self.timeout  # set_mode w trakcie nie zmienia tego przebiegu
+            model = self._model(mode)
         tickets = job["tickets"]
         hashes = dict(job["hashes"])
         started = time.monotonic()
@@ -451,15 +458,16 @@ class Describer:
                 hashes = {t["key"]: job["hashes"][t["key"]] for t in tickets}
             payload = {"coordinator": job["context"], "tickets": tickets}
             self.calls += 1
-            text = self.call(payload) if self.call is not None else self._ask(model, payload)
+            text = self.call(payload) if self.call is not None else self._ask(model, payload, timeout)
             answer = summarize.parse_answer(text)
             valid = validate(answer, hashes)
         except (summarize.Failed, standup.Invalid) as exc:
             note = summarize.local_note(exc) if model.engine == "local" else f"opisy kart z reguł ({exc})"
             with self._lock:
-                self._failed[cid] = self.clock()
-                if model.engine == "local":
-                    self._notes[cid] = note
+                if self.mode == mode:  # błąd starego trybu nie trafia do nowego
+                    self._failed[cid] = self.clock()
+                    if model.engine == "local":
+                        self._notes[cid] = note
             if note != self._last_error:
                 self.log(note)
             self._last_error = note
@@ -493,9 +501,9 @@ class Describer:
 
     # --- wnętrze ------------------------------------------------------------------------------
 
-    def _model(self) -> "summarize.Model":
+    def _model(self, mode: str | None = None) -> "summarize.Model":
         """Model na ten przebieg (models.json czytany teraz — zmiana działa bez restartu usługi)."""
-        return summarize.Model(self.mode, model=self.model, role=self.role, env=self.env, config=self.models_config,
+        return summarize.Model(mode or self.mode, model=self.model, role=self.role, env=self.env, config=self.models_config,
                                started=self._started, cancel=self._cancel)
 
     def _identity(self) -> str:
@@ -503,11 +511,12 @@ class Describer:
         punkt, adres i model z roli."""
         return self._model().identity if self.mode == "local" else self.model
 
-    def _ask(self, model, payload: dict) -> str:
+    def _ask(self, model, payload: dict, timeout: float | None = None) -> str:
         if self._stopped:
             raise summarize.Failed("usługa się zamyka")
         try:
-            return model.ask(payload, system_prompt=BOARD_PROMPT, schema=SCHEMA, timeout=self.timeout)
+            return model.ask(payload, system_prompt=BOARD_PROMPT, schema=SCHEMA,
+                             timeout=self.timeout if timeout is None else timeout)
         finally:
             self._proc = None
 

@@ -21,7 +21,8 @@ def _int(value) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
-def pull(endpoint, model: str, on_progress, cancel=None, idle_timeout: float = IDLE_S, clock=time.monotonic) -> None:
+def pull(endpoint, model: str, on_progress, cancel=None, idle_timeout: float = IDLE_S, clock=time.monotonic,
+         connect_timeout: float = CONNECT_S) -> None:
     """Pobiera `model` na punkt `endpoint` (Ollama). `on_progress({status, completed, total})` w wątku
     wywołującego, najwyżej co PROGRESS_EVERY_S (i zawsze przy zmianie etapu). Błąd → ModelError."""
     layers: dict[str, tuple[int, int]] = {}
@@ -45,7 +46,7 @@ def pull(endpoint, model: str, on_progress, cancel=None, idle_timeout: float = I
         on_progress({"status": _clean(status)[:80], "completed": sum(c for c, _t in layers.values()),
                      "total": sum(t for _c, t in layers.values())})
 
-    stream(endpoint, "POST", "/api/pull", {"model": model, "stream": True}, line, connect_timeout=CONNECT_S,
+    stream(endpoint, "POST", "/api/pull", {"model": model, "stream": True}, line, connect_timeout=connect_timeout,
            idle_timeout=idle_timeout, cancel=cancel)
     if last["status"] != "success":
         raise ModelError(f"Model lokalny: pobieranie {model} przerwane przez serwer ({endpoint.host})")

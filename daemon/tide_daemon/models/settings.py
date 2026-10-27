@@ -36,6 +36,8 @@ from .config import DEFAULT_ENDPOINT, DEFAULT_ROLES, DEFAULT_URL
 
 LOCK = threading.Lock()
 TOKENS_DIR = "tokens"
+TEXT_MAX = 512             # adres, nazwa modelu — dłuższe to pomyłka albo śmieci
+TOKEN_MAX = 4096
 # Nazwa modelu do pobrania (Ollama): „qwen3:8b”, „hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M”.
 PULL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}")
 
@@ -78,6 +80,13 @@ def atomic_write(path: str, data: bytes, mode: int) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+    # Zmiana nazwy trafia na dysk dopiero z katalogiem — po awarii zasilania plik nie wróci do starej treści.
+    with contextlib.suppress(OSError):
+        dirfd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
 
 
 def _read_object(path: str, label: str) -> dict | None:
@@ -120,6 +129,8 @@ class _Draft:
         self.data = defaults() if raw is None else copy.deepcopy(raw)
         self.before = set(config_mod.from_dict(self.data, path).warnings)
         for key in ("endpoints", "roles"):
+            if key in self.data and self.data[key] is None:
+                del self.data[key]  # odczyt traktuje null jak brak klucza — zapis też
             if key in self.data and not isinstance(self.data[key], dict):
                 raise SettingsError(f"models.json: {key} nie jest obiektem — nie zapisuję, żeby nie nadpisać "
                                     f"pliku; popraw go albo usuń ({path})")
@@ -156,11 +167,21 @@ class _Draft:
             raise SettingsError(f"models.json: nie udało się zapisać ({type(exc).__name__})") from None
 
 
-def _text(req: dict, key: str, label: str, default=None):
+def _text(req: dict, key: str, label: str, default=None, limit: int = TEXT_MAX):
     value = req.get(key, default)
     if value is not None and not isinstance(value, str):
         raise SettingsError(f"{label}: oczekiwano napisu")
+    if isinstance(value, str) and len(value.strip()) > limit:
+        raise SettingsError(f"{label}: najwyżej {limit} znaków")
     return value.strip() if isinstance(value, str) else value
+
+
+def _meaning_changes(before, data: dict, path: str) -> list:
+    """Role, które po zmianie czytałyby się inaczej (inny punkt albo model) — np. nowy punkt `qwen3` sprawia,
+    że „qwen3:8b” w roli bez punktu staje się punktem qwen3 i modelem 8b."""
+    after = config_mod.from_dict(data, path).roles
+    return sorted((name, role) for name, role in before.roles.items()
+                  if name in after and (after[name].endpoint, after[name].model) != (role.endpoint, role.model))
 
 
 def _write_token(path: str, token: str):
@@ -199,7 +220,7 @@ def set_endpoint(req: dict, path: str | None = None) -> None:
     name = req.get("name")
     url = _text(req, "url", "url")
     kind = _text(req, "kind", "kind")
-    token = _text(req, "token", "token") or ""
+    token = _text(req, "token", "token", limit=TOKEN_MAX) or ""
     clear = req.get("clearToken", False)
     if not isinstance(clear, bool):
         raise SettingsError("clearToken: oczekiwano true albo false")
@@ -222,6 +243,11 @@ def set_endpoint(req: dict, path: str | None = None) -> None:
         if error:
             raise SettingsError(error)
         draft.endpoints[name] = value
+        changed = _meaning_changes(draft.cfg, draft.data, path)
+        if changed:
+            first = changed[0][1]
+            raise SettingsError(f"nazwa „{name}” zmieniłaby role {', '.join(r for r, _ in changed)} (model "
+                                f"„{first.model}” czytany jako punkt „{name}”) — wybierz inną nazwę serwera")
         restore = None
         if token:
             try:

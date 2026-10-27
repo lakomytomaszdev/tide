@@ -281,6 +281,57 @@ class ModelsJsonTest(SettingsTestCase):
         self.assertEqual(cfg.default, "local", "dodanie punktu nie przenosi ról z domyślnego local")
         self.assertIn("local", cfg.endpoints)
 
+    def test_new_endpoint_named_like_a_model_prefix_is_refused(self):
+        # „qwen3” jako nazwa punktu: „qwen3:8b” w rolach bez punktu czytałoby się jako punkt qwen3 + model 8b.
+        settings.set_role({"role": "agent", "model": "qwen3-coder:30b"}, self.path)
+        before = self.text()
+        message = self.refused(settings.set_endpoint, {"name": "qwen3", "url": "http://mac:11434"}, self.path)
+        self.assertEqual(message, "nazwa „qwen3” zmieniłaby role describe, summary (model „qwen3:8b” czytany "
+                                  "jako punkt „qwen3”) — wybierz inną nazwę serwera")
+        self.assertEqual(self.text(), before, "nic nie zapisane")
+        roles = self.cfg().roles
+        self.assertEqual((roles["summary"].endpoint, roles["summary"].model), ("local", "qwen3:8b"))
+        # Przypięta rola „local:qwen3:8b” nie jest dwuznaczna — taki punkt można dodać.
+        settings.set_role({"role": "summary", "model": "qwen3:8b", "endpoint": "local"}, self.path)
+        settings.set_role({"role": "describe", "model": "qwen3:8b", "endpoint": "local"}, self.path)
+        settings.set_endpoint({"name": "qwen3", "url": "http://mac:11434"}, self.path)
+        roles = self.cfg().roles
+        self.assertEqual((roles["summary"].endpoint, roles["summary"].model), ("local", "qwen3:8b"))
+        self.assertEqual((roles["agent"].endpoint, roles["agent"].model), ("local", "qwen3-coder:30b"))
+
+    def test_null_sections_read_as_missing(self):
+        self.write({"endpoints": None, "roles": None, "note": 1})
+        settings.set_endpoint({"name": "mac", "url": "http://mac:1"}, self.path)
+        data = self.data()
+        self.assertEqual(sorted(data["endpoints"]), ["local", "mac"])
+        self.assertEqual(data["note"], 1)
+        self.assertEqual(self.cfg().warnings, ())
+
+    def test_input_limits_and_trimmed_messages(self):
+        long = "x" * 600
+        self.assertEqual(self.refused(settings.set_endpoint, {"name": "mac", "url": "http://" + long}, self.path),
+                         "url: najwyżej 512 znaków")
+        self.assertEqual(self.refused(settings.set_role, {"role": "agent", "model": long}, self.path),
+                         "rola „agent”: model: najwyżej 512 znaków")
+        self.assertIn("najwyżej", self.refused(settings.set_endpoint, {"name": "mac", "url": "http://mac:1",
+                                                                        "token": "t" * 5000}, self.path))
+        message = self.refused(settings.set_endpoint, {"name": "mac", "url": "http://mac:1", "kind": long}, self.path)
+        self.assertLess(len(message), 120)
+        self.assertLess(len(self.refused(settings.set_report_summary, long, self.report)), 120)
+        self.assertLess(len(self.refused(settings.set_role, {"role": long, "model": "x"}, self.path)), 120)
+
+    def test_atomic_write_syncs_the_directory(self):
+        synced = []
+        real_fsync = os.fsync
+
+        def fsync(fd):
+            synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+            return real_fsync(fd)
+
+        with mock.patch.object(settings.os, "fsync", side_effect=fsync):
+            settings.set_default("local", self.path)
+        self.assertEqual(synced, [False, True], "plik, potem katalog po rename")
+
     def test_symlinked_file_stays_a_symlink(self):
         real = os.path.join(self.tmp, "dotfiles", "models.json")
         self.write({"endpoints": {"local": {"url": "http://127.0.0.1:11434"}}}, real)
@@ -391,6 +442,26 @@ class TestAndPullTest(SettingsTestCase):
             models_pull.pull(endpoint, "qwen3:8b", lambda p: None)
         self.assertIn("serwer odpowiedział 500: boom", str(ctx.exception))
 
+    def test_stream_headers_have_one_deadline(self):
+        import time
+
+        def drip_headers(handler):
+            try:
+                for byte in b"HTTP/1.1 200 OK\r\nX-Slow: " + b"a" * 100:
+                    handler.wfile.write(bytes([byte]))
+                    handler.wfile.flush()
+                    time.sleep(0.05)
+            except OSError:
+                pass
+
+        server = start_server(self, {("POST", "/api/pull"): (200, drip_headers)})
+        endpoint = models_config.Endpoint("local", server.url, "ollama")
+        started = time.monotonic()
+        with self.assertRaises(ModelError) as ctx:
+            models_pull.pull(endpoint, "qwen3:8b", lambda p: None, connect_timeout=0.5)
+        self.assertLess(time.monotonic() - started, 2, "nagłówki sączone po bajcie nie trzymają wątku")
+        self.assertIn("nie odpowiedział w 0.5 s", str(ctx.exception))
+
     def test_pull_cancel_and_idle_timeout(self):
         import threading
         import time
@@ -434,6 +505,12 @@ class DescriberModeTest(unittest.TestCase):
         self.assertEqual(describer.mode, "local")
         describer.set_mode("rules")
         self.assertEqual((describer.mode, describer.timeout), ("rules", describe.TIMEOUT))
+        describer._notes["k"] = "Model lokalny niedostępny"
+        describer._failed["k"] = 1.0
+        describer.set_mode("rules")  # ten sam tryb — nic nie znika
+        self.assertEqual((describer._notes, describer._failed), ({"k": "Model lokalny niedostępny"}, {"k": 1.0}))
+        describer.set_mode("claude")
+        self.assertEqual((describer._notes, describer._failed), ({}, {}), "nowy tryb — bez starych błędów")
         pinned = describe.Describer(mode="claude", timeout=5)
         pinned.set_mode("local")
         self.assertEqual(pinned.timeout, 5, "limit podany wprost zostaje")
