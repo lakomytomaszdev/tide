@@ -783,9 +783,14 @@ class BoardStore:
         return _local_iso(self.clock())
 
 
+def branch_slug(card: Card) -> str:
+    """Część gałęzi bez narzędzia: `k-12-<opis-z-tytułu>` (w migawce `branchSlug` dla okna uruchomienia)."""
+    return f"{card.id.lower()}-{slug_from_prompt(card.title, words=4, length=32)}"
+
+
 def suggest_branch(card: Card, tool: str) -> str:
     """Gałąź dla pracy nad kartą: `<narzędzie>/k-12-<opis>` — po ID karty daemon połączy ją z koordynatorem."""
-    return f"{tool or DEFAULT_TOOL}/{card.id.lower()}-{slug_from_prompt(card.title, words=4, length=32)}"
+    return f"{tool or DEFAULT_TOOL}/{branch_slug(card)}"
 
 
 def spec_name(card: Card) -> str:
@@ -840,6 +845,7 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived) -> 
         "updated": card.updated, "updatedTs": parse_ts(card.updated), "youtrack": card.youtrack,
         "spec": card.spec, "session": card.session, "branch": card.branch, "mode": card.mode, "tool": card.tool,
         "worktree": card.worktree, "launched": card.launched, "launchedTs": parse_ts(card.launched),
+        "branchSlug": branch_slug(card),
         "description": card.description,
         "derived": derived, "path": card.path,
     }

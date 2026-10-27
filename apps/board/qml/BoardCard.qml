@@ -16,7 +16,7 @@ Rectangle {
     property var card: ({})
     property bool compact: false
     property bool selected: false
-    property bool canLaunch: false      // PT-4: „Uruchom agenta…” w Do zrobienia
+    property bool canLaunch: false      // „Uruchom agenta…” w Do zrobienia (okno „Co ma zrobić agent?”)
     property bool canDiff: false        // PT-5: „Diff gałęzi” w Do sprawdzenia
     property var tagTone: null          // funkcja(nazwa) → kolor kropki tagu
     property var dragHost: null         // strona tablicy (BoardPage) — duch karty i upuszczanie
@@ -290,9 +290,11 @@ Rectangle {
             pillRadius: Tide.Tokens.radiusSmall
             pixelSize: 12
             strong: true
-            text: "Uruchom agenta…"
+            // Po starcie karta czeka w Do zrobienia, aż koordynator ruszy (PT-5) — wtedy „ponownie”.
+            text: (root.c.launched || "") !== "" ? "Uruchom ponownie…" : "Uruchom agenta…"
+            outline: (root.c.launched || "") !== ""
             fill: Tide.Tokens.accent
-            textColor: Tide.Tokens.backgroundDesktop
+            textColor: (root.c.launched || "") !== "" ? Tide.Tokens.accent : Tide.Tokens.backgroundDesktop
             onClicked: root.launchRequested()
         }
         Text {

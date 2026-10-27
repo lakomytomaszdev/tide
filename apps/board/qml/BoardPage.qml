@@ -1,6 +1,6 @@
 // Zawartość widoku „Tablica” (mock zatwierdzony 27.10.2026): nagłówek z podsumowaniem, szukaniem
 // i „＋ Karta”, pastylki tagów (filtr), filtr projektu i układ (Razem / Wiersz na projekt), kolumny
-// Backlog, Do zrobienia, W toku, Czeka na mnie, Do sprawdzenia i węższe Gotowe. Karty przeciąga się
+// Backlog, Do zrobienia, W toku, Czeka na mnie, Do sprawdzenia i Gotowe (równe szerokości). Karty przeciąga się
 // między kolumnami ręcznymi (Backlog, Do zrobienia, Gotowe) i w obrębie kolumny; kliknięcie otwiera
 // panel karty, „Projekty i tagi” — osobną stronę. Sam nie rozmawia z usługą: dostaje migawkę
 // i zgłasza zapisy sygnałami z tagiem, a odpowiedzi dostaje przez handleReply(tag, odpowiedź).
@@ -18,7 +18,7 @@ Rectangle {
     property bool preview: false
     property string homeDir: ""
     property real nowTs: Date.now() / 1000
-    property bool canLaunch: false       // PT-4: okno „Co ma zrobić agent?” (dziś go nie ma)
+    property bool canLaunch: true        // okno „Co ma zrobić agent?” (LaunchDialog)
     property bool canDiff: false         // PT-5: diff gałęzi karty
     // Filtry i układ.
     property string tagFilter: ""
@@ -39,6 +39,17 @@ Rectangle {
     property string dragId: ""
     readonly property alias ghost: ghost
     property int requestSerial: 0
+    // Uruchomienie agenta z karty: okno „Co ma zrobić agent?” i przebieg UpdateCard (opis) →
+    // RenderLaunch → /Tasks Start → UpdateCard (gałąź, worktree, tryb, narzędzie, sprawdzenie, chwila).
+    property bool launchOpen: false
+    property string launchCardId: ""
+    property bool launchFromMove: false
+    property int launchOriginIndex: -1        // miejsce karty w Backlogu przed przeniesieniem (Anuluj)
+    property string launchOriginBefore: ""
+    property var launchChoice: null
+    property var launchFlow: null
+    property string launchToast: ""
+    property string launchDescription: ""
 
     signal createRequested(string tag, string request)
     signal updateRequested(string tag, string cardId, string request)
@@ -46,7 +57,9 @@ Rectangle {
     signal projectRequested(string tag, string request)
     signal tagRequested(string tag, string request)
     signal sessionRequested(string session)  // PT-5: koordynator karty w widoku Sesje
-    signal launchRequested(string cardId)    // PT-4: tu otworzy się „Co ma zrobić agent?”
+    signal launchRequested(string cardId)    // otwarto „Co ma zrobić agent?” dla karty
+    signal renderRequested(string tag, string cardId, string request)   // /Board RenderLaunch
+    signal startRequested(string tag, string request)                   // /Tasks Start
 
     readonly property var filters: ({ tag: tagFilter, project: projectFilter, query: query })
     readonly property var cards: Logic.visible(snapshot, filters, optimistic)
@@ -71,6 +84,7 @@ Rectangle {
                                                                        : a.name.localeCompare(b.name))
     }
     readonly property alias cardPanel: cardPanel
+    readonly property alias launchDialog: launchDialog
     readonly property alias managePage: manage
     readonly property alias columnsRow: columnsRow
 
@@ -123,10 +137,15 @@ Rectangle {
         const index = column === "archived" ? 0 : Logic.moveIndex(snapshot, id, column, before)
         if (column === card.column && Logic.storedIndex(snapshot, id) === (index < 0
                 ? snapshot.cards.filter(c => c.column === column).length - 1 : index)) return
+        const fromBacklog = column === "todo" && card.column === "backlog"
+        const origin = fromBacklog ? Logic.storedIndex(snapshot, id) : -1
+        const backlogList = fromBacklog ? Logic.column(allCards, "backlog") : []
+        const at = backlogList.findIndex(c => c.id === id)
+        const originBefore = at >= 0 && at + 1 < backlogList.length ? backlogList[at + 1].id : ""
         const tag = nextTag("move:" + id)
         optimistic = optimistic.concat([{ id: id, column: column, before: before || "", tag: tag }])
         moveRequested(tag, id, column, index)
-        if (column === "todo" && card.column === "backlog") launchHook(id)
+        if (fromBacklog) launchHook(id, origin, originBefore)
     }
 
     // Gotowe dostają kartę na górę (najnowsze pierwsze), inne kolumny — na koniec.
@@ -136,9 +155,113 @@ Rectangle {
         return first ? first.id : ""
     }
 
-    // PT-4: po przeniesieniu z Backlogu do Do zrobienia tu zapyta „Co ma zrobić agent?”.
-    function launchHook(id) {
-        if (canLaunch) launchRequested(id)
+    // Po przeniesieniu z Backlogu do Do zrobienia: „Co ma zrobić agent?”.
+    function launchHook(id, origin, originBefore) {
+        if (canLaunch) openLaunch(id, true, origin, originBefore)
+    }
+
+    // --- uruchomienie agenta z karty --------------------------------------------------------------
+
+    function openLaunch(id, fromMove, origin, originBefore) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
+        if (!card) return
+        panelOpen = false
+        managing = false
+        selectedId = id
+        launchCardId = id
+        launchFromMove = !!fromMove
+        launchOriginIndex = origin === undefined ? -1 : origin
+        launchOriginBefore = originBefore || ""
+        launchChoice = null
+        launchFlow = null
+        launchOpen = true
+        launchDialog.load()
+        launchDialog.forceActiveFocus()
+        launchRequested(id)
+    }
+
+    function closeLaunch() {
+        launchOpen = false
+        launchDialog.busy = false
+        const item = findCard(launchCardId)
+        if (item) item.forceActiveFocus()
+        else page.forceActiveFocus()
+    }
+
+    // Anuluj: po przeniesieniu karta wraca na swoje miejsce w Backlogu; z przycisku — tylko zamykamy.
+    function cancelLaunch() {
+        const id = launchCardId
+        if (launchFromMove) {
+            const tag = nextTag("move:" + id)
+            optimistic = optimistic.filter(m => m.id !== id)
+                .concat([{ id: id, column: "backlog", before: launchOriginBefore, tag: tag }])
+            moveRequested(tag, id, "backlog", launchOriginIndex)
+        }
+        closeLaunch()
+    }
+
+    function startLaunch(choice, description, descriptionChanged) {
+        launchChoice = choice
+        launchDialog.error = ""
+        launchDialog.busy = true
+        if (descriptionChanged) {
+            launchDescription = description
+            launchDialog.busyText = "Zapisuję zadanie w karcie…"
+            updateRequested(nextTag("launch-desc:" + launchCardId), launchCardId, JSON.stringify({ description: description }))
+        } else {
+            renderLaunch()
+        }
+    }
+
+    function renderLaunch() {
+        const c = launchChoice
+        launchDialog.busyText = "Przygotowuję polecenie trybu…"
+        const request = { mode: c.mode, tool: c.tool, check: c.check }
+        if (c.mode !== "spec" && c.newWorktree && c.branch) request.branch = c.branch
+        renderRequested(nextTag("launch-render:" + launchCardId), launchCardId, JSON.stringify(request))
+    }
+
+    function failLaunch(text) {
+        launchDialog.busy = false
+        launchDialog.error = text
+    }
+
+    function handleLaunchReply(tag, reply) {
+        const error = reply && reply.ok ? "" : Logic.errorText(reply)
+        const id = tag.split(":")[1]
+        if (tag.indexOf("launch-project:") === 0) {
+            if (error) launchDialog.error = "Nie przypisano projektu: " + error
+            else Qt.callLater(() => launchDialog.reloadProject())
+            return
+        }
+        if (id !== launchCardId) return
+        if (tag.indexOf("launch-desc:") === 0) {
+            if (error) return failLaunch("Nie zapisano zadania w karcie: " + error)
+            launchDialog.loadedDescription = launchDescription   // ponowienie po błędzie nie zapisuje drugi raz
+            renderLaunch()
+        } else if (tag.indexOf("launch-render:") === 0) {
+            if (error) return failLaunch("Nie przygotowano polecenia: " + error)
+            launchFlow = reply
+            launchDialog.busyText = "Zakładam worktree i otwieram kartę Konsoli z agentem…"
+            startRequested(nextTag("launch-start:" + launchCardId), JSON.stringify(Logic.launchStartRequest(reply, launchChoice)))
+        } else if (tag.indexOf("launch-start:") === 0) {
+            if (error) return failLaunch(error)
+            updateRequested(nextTag("launch-mark:" + launchCardId), launchCardId,
+                            JSON.stringify(Logic.launchMarkRequest(reply, launchChoice, Logic.isoNow(Date.now()))))
+            const card = (snapshot && snapshot.cards || []).find(c => c.id === launchCardId)
+            if (card && card.column === "backlog" && !launchFromMove) {   // z popupu: karta z Backlogu idzie do kolejki
+                const tag2 = nextTag("move:" + launchCardId)
+                optimistic = optimistic.concat([{ id: launchCardId, column: "todo", before: "", tag: tag2 }])
+                moveRequested(tag2, launchCardId, "todo", -1)
+            }
+            launchToast = "Agent ruszył: " + (reply.title || launchCardId) + " — " + Logic.launchToolName(reply.tool)
+                + (reply.worktree ? ", worktree " + reply.branch : ", katalog projektu")
+            closeLaunch()
+            showToast(launchToast, "mint")
+        } else if (tag.indexOf("launch-mark:") === 0) {
+            if (error) showToast("Agent ruszył, ale karta " + id + " nie zapamiętała uruchomienia: " + error, "rose")
+            else if (Logic.commitNote(reply)) showToast(Logic.commitNote(reply), "butter")
+        }
     }
 
     function saveCard(request) {
@@ -156,7 +279,9 @@ Rectangle {
     function handleReply(tag, reply) {
         const error = reply && reply.ok ? "" : Logic.errorText(reply)
         const notice = Logic.commitNote(reply)
-        if (tag.indexOf("move:") === 0) {
+        if (tag.indexOf("launch-") === 0) {
+            handleLaunchReply(tag, reply)
+        } else if (tag.indexOf("move:") === 0) {
             if (error) {
                 optimistic = optimistic.filter(m => m.tag !== tag)
                 const id = tag.split(":")[1]
@@ -743,10 +868,11 @@ Rectangle {
                     BoardColumn {
                         required property var modelData
                         objectName: "column-" + modelData.id
-                        Layout.fillWidth: modelData.id !== "done"
+                        // Wszystkie kolumny dzielą szerokość po równo — Gotowe też (zwarte karty i „+N starszych”).
+                        Layout.fillWidth: true
                         Layout.fillHeight: true
-                        Layout.preferredWidth: modelData.id === "done" ? 150 : 100
-                        Layout.minimumWidth: modelData.id === "done" ? 150 : 150
+                        Layout.preferredWidth: 100
+                        Layout.minimumWidth: 150
                         spec: modelData
                         cards: Logic.column(page.cards, modelData.id)
                         selectedId: page.selectedId
@@ -759,7 +885,7 @@ Rectangle {
                         onDropped: (id, before) => page.moveCard(id, modelData.id, before)
                         onMoveRequested: (id, column) => page.moveCard(id, column, page.topOf(column))
                         onSessionRequested: session => page.sessionRequested(session)
-                        onLaunchRequested: id => page.launchRequested(id)
+                        onLaunchRequested: id => page.openLaunch(id, false)
                         onKeyNavigation: (id, dx, dy) => page.navigate(id, dx, dy)
                         onKeyMove: (id, dx, dy) => page.keyMove(id, dx, dy)
                     }
@@ -778,8 +904,8 @@ Rectangle {
                         model: page.columnSpecs
                         RowLayout {
                             required property var modelData
-                            Layout.fillWidth: modelData.id !== "done"
-                            Layout.preferredWidth: modelData.id === "done" ? 150 : 100
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 100
                             Layout.minimumWidth: 150
                             Layout.leftMargin: 12
                             spacing: 7
@@ -853,8 +979,8 @@ Rectangle {
                                         model: page.columnSpecs
                                         BoardColumn {
                                             required property var modelData
-                                            Layout.fillWidth: modelData.id !== "done"
-                                            Layout.preferredWidth: modelData.id === "done" ? 150 : 100
+                                            Layout.fillWidth: true
+                                            Layout.preferredWidth: 100
                                             Layout.minimumWidth: 150
                                             Layout.fillHeight: true
                                             Layout.minimumHeight: 52
@@ -872,7 +998,7 @@ Rectangle {
                                             onDropped: (id, before) => page.moveCard(id, modelData.id, before)
                                             onMoveRequested: (id, column) => page.moveCard(id, column, page.topOf(column))
                                             onSessionRequested: session => page.sessionRequested(session)
-                                            onLaunchRequested: id => page.launchRequested(id)
+                                            onLaunchRequested: id => page.openLaunch(id, false)
                                         }
                                     }
                                 }
@@ -984,7 +1110,10 @@ Rectangle {
         tagTone: page.tagTone
         onProjectRequested: (tag, request) => page.projectRequested(tag, JSON.stringify(request))
         onTagRequested: (tag, request) => page.tagRequested(tag, JSON.stringify(request))
-        onBackRequested: page.managing = false
+        onBackRequested: {
+            page.managing = false
+            if (page.launchOpen) Qt.callLater(() => { page.launchDialog.reloadProject(); page.launchDialog.forceActiveFocus() })
+        }
     }
 
     // --- panel karty ----------------------------------------------------------------------------
@@ -1016,6 +1145,28 @@ Rectangle {
         onCloseRequested: page.closePanel()
     }
 
+    // --- „Co ma zrobić agent?” -------------------------------------------------------------------
+    LaunchDialog {
+        id: launchDialog
+        objectName: "launchDialog"
+        anchors.fill: parent
+        visible: page.launchOpen && !page.managing
+        snapshot: page.snapshot
+        cardId: page.launchCardId
+        fromMove: page.launchFromMove
+        tagTone: page.tagTone
+        onLaunchRequested: (choice, description, changed) => page.startLaunch(choice, description, changed)
+        onCancelRequested: page.cancelLaunch()
+        onMoveOnlyRequested: page.closeLaunch()
+        onProjectChosen: (kind, key) => page.updateRequested(page.nextTag("launch-project:" + page.launchCardId),
+                                                             page.launchCardId,
+                                                             JSON.stringify(kind === "repo" ? { repo: key } : { project: key }))
+        onManageRequested: slug => {
+            page.managing = true
+            page.managePage.openProject = slug
+        }
+    }
+
     // --- duch przeciąganej karty ----------------------------------------------------------------
     Item {
         id: dragLayer
@@ -1036,7 +1187,8 @@ Rectangle {
     // Skróty: Ctrl+N nowa karta, Ctrl+F szukaj, Esc zamyka panel albo stronę.
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape) {
-            if (page.panelOpen) page.closePanel()
+            if (page.launchOpen && !page.managing) page.cancelLaunch()
+            else if (page.panelOpen) page.closePanel()
             else if (page.managing) page.managing = false
             else if (page.query !== "") { search.text = ""; page.query = "" }
             else return

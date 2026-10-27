@@ -145,11 +145,22 @@ Window {
         quickProject: "plasma-tide"
         onAddRequested: (title, project) => log.push("add:" + title + "|" + project)
         onOpenRequested: id => log.push("open:" + id)
+        onLaunchRequested: id => log.push("launch:" + id)
         onProjectChosen: slug => { log.push("project:" + slug); quickProject = slug }
+    }
+    function launchRows(item, out) {
+        for (const child of item.children) {
+            if (child.objectName === "launchRow" && child.visible) out.push(child)
+            launchRows(child, out)
+        }
+        return out
     }
     Timer {
         interval: 300; running: true
         onTriggered: {
+            const rows = launchRows(popup, [])
+            log.push("launchRows:" + rows.length)
+            rows[0].Accessible.pressAction()
             popup.input.text = "   "
             popup.submit()
             popup.input.text = "Eksport do CSV"
@@ -170,10 +181,15 @@ Window {
             log = subprocess.run(["qml6", harness], env=env, capture_output=True, text=True, timeout=60).stderr
         match = re.search(r"POPUP (.*)$", log, re.M)
         self.assertIsNotNone(match, log[-3000:])
-        self.assertEqual(json.loads(match.group(1)), ["add:Eksport do CSV|plasma-tide", "project:",
+        self.assertEqual(json.loads(match.group(1)), ["launchRows:2", "launch:K-16",
+                                                      "add:Eksport do CSV|plasma-tide", "project:",
                                                       "add:Bez projektu|", "open:K-13"],
                          "pusty tytuł i zapis w toku nic nie wysyłają")
         self.assertIsNone(re.search(QML_PROBLEMS, log), log[-3000:])
+
+    def test_launch_from_popup_opens_tide_with_launch_intent(self):
+        with open(os.path.join(WIDGET_DIR, "contents/ui/main.qml"), encoding="utf-8") as fh:
+            self.assertIn('onLaunchRequested: id => root.showWindow("launch:" + id)', fh.read())
 
     def test_quick_add_offers_workspace_repos_on_an_empty_board(self):
         # Regresja: na pustej tablicy menu projektu miało tylko „bez projektu”. Jak w oknie — repozytoria
