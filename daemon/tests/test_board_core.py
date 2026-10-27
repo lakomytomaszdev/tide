@@ -175,10 +175,12 @@ class CardTest(BoardCase):
             "note: robię sam\n"
             "created: " + self.cards()["K-1"]["created"] + "\n"
             "updated: " + self.cards()["K-1"]["created"] + "\n"
+            "moved: " + self.cards()["K-1"]["created"] + "\n"
             "youtrack: TOM-142\n"
             "spec:\n"
             "session:\n"
             "branch:\n"
+            "check: auto\n"
             "---\n"
             "\nOpis **karty**.\n\n- punkt\n"))
         card = self.cards()["K-1"]
@@ -216,11 +218,13 @@ class CardTest(BoardCase):
         self.assertEqual(self.column("todo"), ["K-1", "K-2", "K-3"])
         self.store.move_card("K-3", "todo", 0)
         self.assertEqual(self.column("todo"), ["K-3", "K-1", "K-2"])
-        self.assertEqual(self.store.move_card("K-3", "todo", 0)["changed"], False)  # bez zmian — bez commita
+        self.clock[0] += 60  # stempel moved z nowym czasem (ten sam czas — plik bez zmian, bez commita)
+        self.assertEqual(self.store.move_card("K-3", "todo", 0)["changed"], True)  # jawne przeniesienie: stempel moved
         self.store.move_card("K-4", "done", 99)
         self.store.move_card("K-4", "archived", 0)
-        self.assertEqual(self.log()[-6:], ["K-1: move to todo", "K-3: move to todo", "K-2: move to todo",
-                                           "K-3: reorder in todo", "K-4: move to done", "K-4: move to archived"])
+        self.assertEqual(self.log()[-7:], ["K-1: move to todo", "K-3: move to todo", "K-2: move to todo",
+                                           "K-3: reorder in todo", "K-3: move to todo", "K-4: move to done",
+                                           "K-4: move to archived"])
         orders = {c["id"]: c["order"] for c in self.store.snapshot()["cards"] if c["column"] == "todo"}
         self.assertEqual(orders, {"K-3": 0, "K-1": 10, "K-2": 15})  # środek między sąsiadami
         self.assertEqual(git_out(self.root, "status", "--porcelain"), "")
@@ -237,7 +241,7 @@ class CardTest(BoardCase):
 
     def test_update_keeps_hand_edits_and_unknown_keys(self):
         self.store.create_card({"title": "a", "description": "stary opis"})
-        text = self.card_text("K-1").replace("branch:\n", "branch:\npriorytet: wysoki # moje\n")
+        text = self.card_text("K-1").replace("check: auto\n", "check: auto\npriorytet: wysoki # moje\n")
         self.write("cards/K-1.md", text + "\nDopisek ręczny.\n")
         self.store.sync()
         self.clock[0] = NOW + 60

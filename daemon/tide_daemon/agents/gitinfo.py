@@ -65,3 +65,23 @@ def _branch(gitdir: str) -> str:
     if head.startswith("ref: refs/heads/"):
         return head[len("ref: refs/heads/"):]
     return head[:7]  # odłączony HEAD — skrót commita
+
+
+def main_root(cwd: str) -> str:
+    """Główny katalog repozytorium dla katalogu roboczego (także w worktree, gdziekolwiek leży)
+    albo pusty napis poza repozytorium. Tylko odczyt plików .git."""
+    top, dotgit = _find_dotgit((cwd or "").rstrip("/") or "/")
+    if not top:
+        return ""
+    if os.path.isdir(dotgit):
+        return top
+    gitdir = _read_gitdir(dotgit, top)
+    if not gitdir:
+        return top
+    common = gitdir
+    try:
+        with open(os.path.join(gitdir, "commondir"), encoding="utf-8") as fh:
+            common = os.path.normpath(os.path.join(gitdir, fh.read().strip()))
+    except OSError:
+        pass
+    return os.path.dirname(common) if os.path.basename(common) == ".git" else common

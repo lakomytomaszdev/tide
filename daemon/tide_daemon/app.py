@@ -220,7 +220,7 @@ def main(argv=None) -> int:
     limits = None if args.no_limits else start_limits(app, args, clock)
     models = None if args.no_models else start_models(app, args)
     tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
-    board = None if args.no_board else start_board(app, args, trees)
+    board = None if args.no_board else start_board(app, args, trees, monitor, coordination, clock)
     docker = None if args.no_docker else start_docker(app, args, clock, launchers)
     annotators = [a for a in (tasks.annotate if tasks is not None else None,
                               coordination.annotate if coordination is not None else None) if a]
@@ -490,17 +490,29 @@ def pastel_colors(paths) -> dict | None:
     return None
 
 
-def start_board(app, args, trees):
+def start_board(app, args, trees, monitor=None, coordination=None, clock=time.time):
     """Obszar /Board: tablica pracy w lokalnym repozytorium git (board/, board_monitor.py).
-    Repozytoria do dodania jako projekty bierzemy z gotowej listy obszaru Worktrees."""
+    Repozytoria do dodania jako projekty bierzemy z gotowej listy obszaru Worktrees, a stan kart
+    (W toku, Czeka na mnie, Do sprawdzenia — board/derive.py) z sesji /Agents i tablic /Coordination."""
+    from .board.derive import BranchState, CardDeriver
     from .board_monitor import BoardMonitor
 
     def repos():
         return sorted({item["repoPath"] for item in trees.scanner.snapshot()
                        if item.get("isMain") and not item.get("missing") and item.get("repoPath")})
 
-    board = BoardMonitor(board_store(args), repos_source=repos, launchers=trees.launchers, parent=app)
+    deriver = CardDeriver(sessions_source=(lambda: monitor.sessions) if monitor is not None else (lambda: []),
+                          boards_source=(lambda: coordination.boards) if coordination is not None else (lambda: []),
+                          branches=BranchState(clock=clock, background=True), clock=clock)
+    board = BoardMonitor(board_store(args), repos_source=repos, derive=deriver, launchers=trees.launchers,
+                         parent=app)
     trees.changed.connect(board.publish)  # nowe repozytorium w katalogu projektów
+    # Git (czy gałąź scalona) idzie w wątku roboczym; nowy wynik przelicza karty w wątku głównym.
+    deriver.branches.on_result = board.rederive_later
+    if monitor is not None:
+        monitor.changed.connect(board.rederive)  # agent zaczął, czeka, skończył — karta zmienia kolumnę
+    if coordination is not None:
+        coordination.changed.connect(board.rederive)  # tickety, plan, pytania koordynatora
     return board
 def docker_once(args, clock) -> dict:
     """--print-docker: migawka kontenerów i miejsce na dysku — wyłącznie zapytania GET do Engine API."""

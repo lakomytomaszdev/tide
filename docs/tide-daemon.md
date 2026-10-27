@@ -714,8 +714,9 @@ nie ticket. Dane są w lokalnym repozytorium git, które usługa zakłada przy p
 zapisie i commituje po każdej zmianie, więc historia i cofanie są za darmo. Bez remote — usługa nigdy nie
 wypycha ani nie dodaje zdalnego repozytorium. Widok Tablica w oknie Tide (`apps/board`) i kafelek
 `org.tide.board` (`widgets/board`) czytają `Snapshot()` i piszą wyłącznie przez metody niżej;
-uruchamianie agenta z karty, połączenie karty z koordynatorem i import z YouTracka to kolejne tickety
-(PT-4…PT-7) na tym samym formacie. Plan: `docs/agents/plans/2026-10-27-board-and-docker.md`.
+kolumny W toku, Czeka na mnie i Do sprawdzenia wynikają z prawdziwej pracy agentów (niżej, „Stan karty
+z pracy agentów”, PT-5); uruchamianie agenta z karty i import z YouTracka to kolejne tickety (PT-4, PT-7)
+na tym samym formacie. Plan: `docs/agents/plans/2026-10-27-board-and-docker.md`.
 
 | Element | Wartość |
 | --- | --- |
@@ -726,9 +727,9 @@ uruchamianie agenta z karty, połączenie karty z koordynatorem i import z YouTr
 | Składnik | Sygnatura | Opis |
 | --- | --- | --- |
 | `Snapshot()` | `→ s` | JSON całej tablicy (opis niżej); tylko odczyt — przed pierwszym zapisem niczego nie zakłada |
-| `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, tags, column, note, youtrack, spec, session, branch}` → `{ok, id, commitError}` |
+| `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
-| `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}` |
+| `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
 | `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, mode, description}`: istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie trybu dla karty (pusty `mode` — tryb projektu) → `{ok, text, mode, tool, branch, docsDir, aiDocs, repo, project, template}`; katalog `docsDir` w tablicy zakłada od razu |
@@ -789,10 +790,12 @@ order: 20
 note: bez agenta, robię sam
 created: 2026-10-27T14:00:00+01:00
 updated: 2026-10-27T14:05:12+01:00
+moved: 2026-10-27T14:00:00+01:00
 youtrack: TOM-142
 spec:
 session:
 branch:
+check: auto
 ---
 
 Wyszukiwanie zwraca tę samą frazę kilka razy…
@@ -807,8 +810,12 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `column` | tylko kolumny ręczne: `backlog`, `todo`, `done`, `archived` |
 | `order` | kolejność w kolumnie (mniejsza wyżej); nowa karta trafia na górę kolumny. `MoveCard` daje karcie środek między sąsiadami (zmienia się jeden plik), a całą kolumnę numeruje co 10 dopiero wtedy, gdy między sąsiadami nie ma miejsca |
 | `note` | krótka notatka widoczna na karcie (np. „bez agenta, robię sam”) |
-| `created`, `updated` | ISO 8601 z czasem lokalnym |
-| `youtrack`, `spec`, `session`, `branch` | zarezerwowane na później (import z YouTracka, gotowa specyfikacja, sesja koordynatora, gałąź); `branch` już teraz zastępuje propozycję gałęzi w `RenderFlow` |
+| `created`, `updated` | ISO 8601 z czasem lokalnym; `updated` zmienia każdy zapis karty |
+| `moved` | ostatnie jawne przeniesienie (ISO 8601): ustawia go tylko założenie karty i każde `MoveCard` (także w obrębie kolumny); edycja pól — nie. Karta bez klucza (sprzed PT-5) liczy się od `created`. Z niego stan z pracy agentów rozpoznaje „do poprawy” |
+| `youtrack`, `spec` | zarezerwowane na później (import z YouTracka, gotowa specyfikacja) |
+| `session` | sesja albo koordynator, który prowadzi kartę — id jak w `/Agents` i `/Coordination` (`claude:<id>`, `codex:<id>`, samo `<id>` też działa); pierwsze źródło stanu karty |
+| `branch` | gałąź pracy w repozytorium projektu; zastępuje propozycję gałęzi w `RenderFlow`, łączy kartę z pracą na tej gałęzi i jest gałęzią do scalenia |
+| `check` | sprawdzenie po skończonej pracy agenta: `auto` (domyślnie — wystarczą testy i review AI) albo `manual` (test ręczny użytkownika: karta czeka w Do sprawdzenia, aż przeniesiesz ją do Gotowe). Zła wartość w pliku — błąd i `auto`; brak klucza — `auto`. Ustawia go m.in. przełącznik „Test ręczny po zakończeniu” przy uruchomieniu agenta (PT-4) |
 
 Projekt — `projects/mobileapp.md`, treść to opcjonalny opis:
 
@@ -897,16 +904,80 @@ w raporcie porannym, gdziekolwiek leży.
 | `tools`, `modes` | dozwolone narzędzia i tryby |
 | `tags` | `[{name, slug, color, description, defined, cards}]` (`cards` — karty z tym tagiem po dziedziczeniu) |
 | `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, mode, description, docsDir, cards, path}]` |
-| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, youtrack, spec, session, branch, description, derived, path}]` w kolejności kolumn i `order` |
+| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, description, derived, path}]` w kolejności kolumn ręcznych i `order` |
 | `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
 | `errors` | `[{path, message}]` — złe pliki |
 
-`derived` to miejsce na stan z koordynatora karty (PT-5: kolumna `progress`/`waiting`/`review`/`done`,
-postęp, notatka) — na razie zawsze `null`; `boardColumn` to kolumna do wyświetlenia: z `derived`, a bez
-niego zapisana `column`. Pliki ręczne (`column`) nie zmieniają się od stanu koordynatora.
+`derived` to stan karty z pracy agentów (opis niżej) albo `null`; `boardColumn` to kolumna do
+wyświetlenia: `derived.column`, a bez niego (albo przy pustej) zapisana `column`. Pliki kart nie
+zmieniają się od stanu agentów — ręczna kolumna to wyłącznie decyzja użytkownika.
+
+**Stan karty z pracy agentów** (`board/derive.py`, PT-5). Karta w Do zrobienia (w Backlogu — tylko
+przy połączeniu jawnym) dostaje kolumnę z tego, co agenci naprawdę robią; Gotowe i Archiwum nigdy.
+
+Połączenie karty z pracą, pierwsze pasujące:
+
+1. `session` karty — sesja z `/Agents` albo koordynator z `/Coordination` (to samo id),
+2. `card: K-12` we frontmatterze planu koordynatora (klucz z PT-6, czytany ostrożnie),
+3. ID karty w nazwie gałęzi koordynatora, jego ticketu albo sesji (`claude/k-12-eksport` — propozycja
+   `RenderFlow`), w repozytorium projektu karty,
+4. `branch` karty równa gałęzi koordynatora, ticketu albo sesji w repozytorium projektu karty — także
+   z jego worktrees (główny katalog repozytorium z plików `.git`, `agents/gitinfo.py: main_root`);
+   gałęzi głównych (master, main, develop, HEAD) nie dopasowujemy.
+
+Przy kilku dopasowaniach tej samej reguły wygrywa najświeższa aktywność (żywe przed zakończonymi).
+Backlog to „kiedyś”: stan dostaje tylko z reguł 1–2, bo gałąź może pasować przypadkiem albo do starej
+pracy. Koordynator z karty, który już nie działa, ustępuje nowszemu, żywemu koordynatorowi tego samego
+planu (nowa sesja po wyczerpaniu kontekstu). Gdy gałąź karty jest inna niż gałąź koordynatora, a jego
+tickety mają tę gałąź, karta obejmuje tylko te tickety (`tickets`) — koordynator prowadzi kilka kart naraz.
+
+| Kolumna | Kiedy |
+| --- | --- |
+| `waiting` — Czeka na mnie | agent stoi w pół pracy i bez ciebie nie ruszy: sesja w stanie `waiting` (ta sama definicja co widżet agentów, `agents/state.py: waits_for_user` — koniec tury z pytaniem w ostatniej wiadomości to `done`, nie czekanie), ticket w `czeka` z pytaniem bez odpowiedzi albo ticket w `czeka` z samego planu, gdy agent nie pracuje (bezczynny, skończył turę, sesja zakończona — notatka „czeka na twoją decyzję według planu: <Uwagi z planu>”). Pytanie albo `czeka` ticketu spoza karty nie dotyczy karty |
+| `progress` — W toku | praca trwa albo stoi niedokończona: tickety niegotowe — także review AI i poprawki (`review`, `w-toku`, `todo`; `czeka` z planu, dopóki agent pracuje) —, agent pracuje albo jest bezczynny, skończył turę, sesja się zakończyła (notatka: „agent bezczynny od 16:46, w toku: LEGAL-6”, „sesja zakończona”) |
+| `review` — Do sprawdzenia | praca agentów skończona (wszystkie tickety gotowe albo odrzucone, plan `done` bez ticketów; agent już nie pracuje), ale potrzebny krok człowieka: `check: manual` („do sprawdzenia ręcznie”) albo niescalona gałąź („do scalenia: feat/x”) |
+| `done` — Gotowe | skończone, `check: auto` i nic do scalenia („✓ gotowe i scalone”); plik karty zostaje w Do zrobienia — przeciągnięcie do Gotowe (albo wybór w panelu karty) to zapisuje |
+
+Zwykła sesja bez ticketów nigdy nie jest „skończona” — bez ticketów i planu nie wiadomo, czy praca
+jest gotowa, więc taka karta zostaje w W toku z notatką, od kiedy agent stoi. Karta przeniesiona ręcznie po
+skończonej pracy (`moved` późniejszy niż ostatnia aktywność ticketów, np. „do poprawy” — z panelu
+z powrotem do Do zrobienia; sama edycja notatki się nie liczy) zostaje w swojej kolumnie (`derived.column` pusty, notatka „wróci do W
+toku…”), dopóki agent znów nad nią nie popracuje. Ręczne Gotowe zawsze wygrywa i potwierdza sprawdzenie.
+
+**Scalona gałąź**: czubek gałęzi jest przodkiem lokalnej gałęzi głównej (`git merge-base --is-ancestor`,
+jak w Worktrees). Gałąź, której nie ma lokalnie, jest scalona tylko wtedy, gdy w ostatnich 1000 commitach
+scalenia głównej jest jej „Merge branch 'feat/x'” (usunięta po scaleniu); bez tego — nigdy jej tu nie
+było albo scalenie szybkie/squash — „nie wiadomo”. Nie wiadomo (także brak repozytorium albo gałęzi
+głównej) — „do scalenia”, żeby człowiek spojrzał. Sprawdzamy tylko skończoną pracę: gałąź karty, a bez
+niej gałęzie ticketów i koordynatora. Git idzie w jednym wątku roboczym (`BranchState(background=True)`),
+przeliczenie odpowiada z pamięci (30 s; gałąź bez śladu — 10 min, żeby nie sprawdzać jej w kółko), a nowy
+wynik zleca kolejne przeliczenie; dopóki pierwszego wyniku nie ma, skończona karta stoi w Do sprawdzenia.
+
+`derived`: `column`, `done` i `total` (tickety karty: gotowe / wszystkie bez odrzuconych; zwykła sesja —
+0), `tool` (`claude`, `codex`), `note` (jedno zdanie po polsku, do 160 znaków: co teraz, pytanie, od kiedy
+stoi, czego brakuje), `nextStep` („odpowiedz agentowi”, „przetestuj ręcznie, potem scal gałąź feat/x”,
+„przenieś do Gotowe”; pusty w W toku — dla karty i przyszłej synchronizacji z YouTrackiem, PT-7), `check`,
+`branch` (gałąź karty albo pracy; w Do sprawdzenia — gałąź do scalenia), `session` (id dla „Otwórz
+w Sesjach” / „Przejdź do agenta”: koordynator albo sesja), `coordinator` (id koordynatora albo pusty —
+zwykła sesja), `link` (`session`, `plan`, `card-branch`, `branch`), `agentState` (stan sesji z `/Agents`),
+`tickets` (ID ticketów karty, gdy obejmuje część koordynatora; pusta lista — cały).
+
+**Na żywo.** `BoardMonitor` trzyma migawkę z plików w pamięci; zmiana w `/Agents` (`AgentMonitor.changed`)
+albo `/Coordination` (`CoordinationMonitor.changed`) przelicza tylko `derived` i `boardColumn`, najwyżej co
+500 ms (seria zmian sesji to jedno przeliczenie), bez czytania repozytorium tablicy, i wysyła `Changed`,
+gdy migawka się zmieniła. Indeksy (repozytoria bez dowiązań, `(repozytorium, gałąź)` → praca, numer
+karty z nazwy gałęzi) powstają raz na przeliczenie, więc karta to kilka wyszukań w słownikach (80 kart,
+60 koordynatorów po 15 ticketów i 40 sesji — kilka ms; test `SpeedTest`). Plakietka (`Badge()`) i kafelek liczą z `boardColumn`, więc idą za tym same.
+`--print-board` pokazuje migawkę bez stanu z pracy agentów (bez skanowania dzienników).
+
+Przejście z karty do pracy: karta emituje `sessionRequested(derived.session)` („Otwórz w Sesjach →”,
+„Przejdź do agenta”). Usługa ma już oba cele: `/Coordination ShowWindow(id)` (okno Tide na widoku Sesje
+z koordynatorem) i `/Agents ActivateSession(id)` (okno zwykłej sesji); podpięcie w `apps/board`
+(backend i `BoardView.qml`) czeka na scalenie z PT-4, który zmienia te pliki.
 
 Logika bez Qt jest w `tide_daemon/board/` (`marker.py`, `frontmatter.py`, `model.py`, `flows.py`,
-`store.py`, git w `repo.py`), obserwacja katalogu i odpowiedzi D-Bus w `board_monitor.py`.
+`store.py`, `derive.py`, git w `repo.py`), obserwacja katalogu, przeliczanie stanu kart i odpowiedzi
+D-Bus w `board_monitor.py`.
 
 ```bash
 qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.Snapshot

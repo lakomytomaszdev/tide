@@ -8,9 +8,13 @@
   katalogach i plikach tablicy, po DEBOUNCE_MS ciszy — commit „sync external changes” i Changed;
   dodatkowo co POLL_MS to samo sprawdzenie (zapis w miejscu bez zdarzenia, nowe podkatalogi,
   tablica założona poza usługą).
+- stan kart z pracy agentów (PT-5, board/derive.py): migawka z plików jest w pamięci (`_base`), a po
+  zmianie w /Agents albo /Coordination (rederive, najwyżej co REDERIVE_MS) przeliczamy tylko pola
+  `derived` i `boardColumn` — bez ponownego czytania repozytorium tablicy,
 - Badge() i ShowWindow(id) to zaczepy okna Tide: plakietka widoku Tablica (ta sama reguła co
   apps/board/backend.py) i otwarcie okna na widoku Tablica, od razu na karcie.
 """
+import copy
 import json
 import os
 
@@ -20,20 +24,24 @@ from .board.model import CARD_PREFIX, BoardError, card_num
 
 DEBOUNCE_MS = 2_000
 POLL_MS = 60_000
+REDERIVE_MS = 500  # zmiany sesji przychodzą seriami (co 250 ms przy pracy agenta) — przeliczenie najwyżej tak często
 MAX_WATCHED_FILES = 2_000  # powyżej — tylko katalogi i odpytywanie co POLL_MS
 
 
 class BoardMonitor(QObject):
     changed = pyqtSignal()
+    _rederive_requested = pyqtSignal()   # z dowolnego wątku (np. wynik gita w tle) — kolejka Qt do wątku głównego
 
     def __init__(self, store, repos_source=None, derive=None, debounce_ms: int = DEBOUNCE_MS,
-                 poll_ms: int = POLL_MS, launchers=None, parent=None):
+                 poll_ms: int = POLL_MS, launchers=None, rederive_ms: int = REDERIVE_MS, parent=None):
         super().__init__(parent)
         self.store = store
         self.launchers = launchers                        # worktrees.Launchers — okno Tide (ShowWindow)
         self.repos_source = repos_source or (lambda: [])  # funkcja() → ścieżki repozytoriów z katalogu projektów
-        self.derive = derive                              # stan karty z koordynatora (PT-5) albo None
+        # stan karty z pracy agentów (PT-5): board/derive.CardDeriver (z context()) albo funkcja(karta) → dict|None
+        self.derive = derive
         self._json = ""
+        self._base: dict | None = None                    # migawka z plików bez stanu z pracy agentów
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._touched)
         self._watcher.fileChanged.connect(self._touched)
@@ -41,6 +49,9 @@ class BoardMonitor(QObject):
         self._debounce.timeout.connect(self.sync)
         self._poll = QTimer(self, interval=poll_ms)
         self._poll.timeout.connect(self.sync)
+        self._rederive = QTimer(self, singleShot=True, interval=rederive_ms)
+        self._rederive.timeout.connect(self._apply)
+        self._rederive_requested.connect(self.rederive)
 
     def start(self) -> None:
         self.sync()  # zmiany zrobione, gdy usługa nie działała, też trafiają do historii
@@ -49,6 +60,19 @@ class BoardMonitor(QObject):
     def stop(self) -> None:
         self._poll.stop()
         self._debounce.stop()
+        self._rederive.stop()
+        if hasattr(self.derive, "stop"):
+            self.derive.stop()  # wątek gita (sprawdzanie scalenia) nie trzyma zamknięcia usługi
+
+    def rederive_later(self) -> None:
+        """To samo co rederive(), ale bezpieczne z innego wątku (wynik gita w tle — board/derive.py)."""
+        self._rederive_requested.emit()
+
+    def rederive(self) -> None:
+        """Zmiana w /Agents albo /Coordination: przeliczenie stanu kart z migawki w pamięci, najwyżej
+        co REDERIVE_MS (pierwsza zmiana z serii uruchamia odliczanie, kolejne tylko na nie czekają)."""
+        if self.derive is not None and not self._rederive.isActive():
+            self._rederive.start()
 
     # --- D-Bus ---------------------------------------------------------------------------------
 
@@ -104,15 +128,50 @@ class BoardMonitor(QObject):
             print(f"tide-daemon: tablica: repozytoria: {exc!r}", flush=True)
             repos = []
         try:
-            snapshot = self.store.snapshot(repos=repos, derive=self.derive)
+            snapshot = self.store.snapshot(repos=repos)
         except Exception as exc:  # odczyt nie może położyć usługi
             print(f"tide-daemon: tablica: odczyt: {exc!r}", flush=True)
             snapshot = {"boardDir": self.store.root, "exists": False, "cards": [], "projects": [], "tags": [],
                         "repos": [], "errors": [{"path": self.store.root, "message": f"błąd odczytu: {exc}"}]}
+        self._base = snapshot
+        self._apply()
+
+    def _apply(self) -> None:
+        """Migawka z plików + stan kart z pracy agentów → JSON; Changed tylko przy zmianie."""
+        if self._base is None:
+            self.publish()
+            return
+        snapshot = self._derived(self._base)
         text = json.dumps(snapshot, ensure_ascii=False)
         if text != self._json:
             self._json = text
             self.changed.emit()
+
+    def _derived(self, base: dict) -> dict:
+        if self.derive is None:
+            return base
+        snapshot = dict(base)
+        snapshot["errors"] = list(base.get("errors") or [])
+        try:
+            derive = self.derive.context() if hasattr(self.derive, "context") else self.derive
+        except Exception as exc:  # stan z pracy agentów to dodatek — tablica działa bez niego
+            print(f"tide-daemon: tablica: stan z pracy agentów: {exc!r}", flush=True)
+            return base
+        repos = {p.get("slug"): p.get("repo") or "" for p in base.get("projects") or [] if isinstance(p, dict)}
+        cards = []
+        for card in base.get("cards") or []:
+            card = copy.copy(card)
+            derived = None
+            try:
+                derived = derive({**card, "repo": repos.get(card.get("project"), "")})
+            except Exception as exc:
+                snapshot["errors"].append({"path": card.get("path", ""),
+                                           "message": f"{card.get('id', '')}: stan z pracy agentów: {exc}"})
+            card["derived"] = derived
+            card["boardColumn"] = (derived or {}).get("column") or card.get("column") or "backlog"
+            cards.append(card)
+        snapshot["cards"] = cards
+        return snapshot
 
     def sync(self) -> None:
         """Commit zmian z zewnątrz, nowe ścieżki do obserwacji i świeża migawka."""

@@ -5,8 +5,8 @@ Układ (opis: docs/tide-daemon.md, Tablica):
   board.md                 znacznik `tide-board: 1` i licznik `next-card` (ID nie wracają)
   projects/<slug>.md       name, repo, tags, ai-docs, tool, mode; treść — opis projektu
   tags/<slug>.md           name, color (nazwa pastelu z palety); treść — opis tagu
-  cards/K-<n>.md           id, title, project, tags, column, order, note, created, updated,
-                           youtrack, spec, session, branch; treść — opis karty (Markdown)
+  cards/K-<n>.md           id, title, project, tags, column, order, note, created, updated, moved,
+                           youtrack, spec, session, branch, check; treść — opis karty (Markdown)
   flows/<tryb>.md          szablony poleceń trybów (flows.py), flows/<projekt>/<tryb>.md — nadpisanie
   docs/<projekt>/          plany i specyfikacje agentów projektów z `ai-docs: tide`
 
@@ -33,7 +33,7 @@ from . import flows
 from .frontmatter import Document, FrontmatterError
 from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
-from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, COLUMNS, DEFAULT_COLUMN, DEFAULT_MODE,
+from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUMNS, DEFAULT_CHECK, DEFAULT_COLUMN, DEFAULT_MODE,
                     DEFAULT_TOOL, DESCRIPTION_MAX, FIELD_MAX, FILE_MAX, MANUAL_COLUMNS, MODES, NAME_MAX, NOTE_MAX,
                     PASTELS, RESERVED_CARD_KEYS, SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
                     TOOLS, BoardError, Card, Project, Tag, card_num, default_ai_docs, fallback_color, merge_tags,
@@ -67,7 +67,7 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 - `flows/<tryb>.md` — szablony poleceń trybów full, light i spec,
 - `docs/<projekt>/` — plany i specyfikacje agentów projektów z `ai-docs: tide`.
 """
-CARD_FIELDS = ("title", "description", "project", "repo", "tags", "note", *RESERVED_CARD_KEYS)
+CARD_FIELDS = ("title", "description", "project", "repo", "tags", "note", *RESERVED_CARD_KEYS, "check")
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "description")
 TAG_FIELDS = ("name", "newName", "color", "description")
@@ -144,7 +144,8 @@ class BoardStore:
 
     def snapshot(self, repos=None, derive=None) -> dict:
         """Migawka dla D-Bus i --print-board. repos: ścieżki repozytoriów z katalogu projektów
-        (do listy „dodaj jako projekt”); derive(card) → dict|None: stan z koordynatora (PT-5)."""
+        (do listy „dodaj jako projekt”); derive(card) → dict|None: stan z pracy agentów (PT-5,
+        board/derive.py) — karta dostaje na wejściu także `repo` swojego projektu."""
         board = self.load()
         tags = dict(board.tags)
         projects = sorted(board.projects.values(), key=lambda p: p.name.casefold())
@@ -158,7 +159,8 @@ class BoardStore:
             derived = None
             if derive is not None:
                 try:
-                    derived = derive(_card_json(card, project, resolved, None))
+                    derived = derive({**_card_json(card, project, resolved, None),
+                                      "repo": project.repo if project else ""})
                 except Exception as exc:  # stan z koordynatora to dodatek — nie może zepsuć tablicy
                     board.errors.append({"path": card.path, "message": f"{card.id}: stan koordynatora: {exc}"})
             cards_out.append(_card_json(card, project, resolved, derived))
@@ -343,9 +345,10 @@ class BoardStore:
         doc = Document()
         values = {"id": f"{CARD_PREFIX}{num}", "title": v["title"], "project": slug, "tags": ", ".join(v.get("tags", [])),
                   "column": v["column"], "order": order_value(order), "note": v.get("note", ""),
-                  "created": now, "updated": now}
+                  "created": now, "updated": now, "moved": now}
         for key in RESERVED_CARD_KEYS:
             values[key] = v.get(key, "")
+        values["check"] = v.get("check", DEFAULT_CHECK)
         for key in CARD_KEYS:
             doc.set(key, values[key])
         doc.body = v.get("description", "")
@@ -364,7 +367,7 @@ class BoardStore:
         changed = []
         if "project" in v or "repo" in v:
             changed += _doc_set(card.doc, "project", self._project_slug(board, v, change))
-        for key in ("title", "tags", "note", *RESERVED_CARD_KEYS):
+        for key in ("title", "tags", "note", *RESERVED_CARD_KEYS, "check"):
             if key in v:
                 changed += _doc_set(card.doc, key, ", ".join(v[key]) if key == "tags" else v[key])
         if "description" in v and v["description"].strip() != card.doc.body.strip():
@@ -380,7 +383,12 @@ class BoardStore:
 
     def _plan_move(self, board: Board, num: int, column: str, index: int) -> Change:
         """Nowa kolejność to środek między sąsiadami; całą kolumnę numerujemy co ORDER_STEP tylko
-        wtedy, gdy między nimi nie ma miejsca — zwykle zmienia się jeden plik."""
+        wtedy, gdy między nimi nie ma miejsca — zwykle zmienia się jeden plik.
+
+        Każde wywołanie to jawne przeniesienie przez użytkownika, więc zawsze stempluje `moved` —
+        także do tej samej zapisanej kolumny i na to samo miejsce: karta pokazana w Do sprawdzenia
+        ma zwykle zapisane `todo`, a przeniesienie jej „do poprawy” do Do zrobienia musi być widać
+        (board/derive.py)."""
         card = self._card(board, num)
         change = Change(result={"ok": True, "id": card.id, "changed": False})
         others = board.column_cards(column, skip=card.num)
@@ -389,6 +397,11 @@ class BoardStore:
         moved_column = card.column != column
         current = sum(1 for c in others if (c.order, c.num) < (card.order, card.num))
         if not moved_column and current == index:
+            now = self._now()
+            card.doc.set("updated", now)
+            card.doc.set("moved", now)
+            change.commits.append((f"{card.id}: move to {column}", [(_rel(self.root, card.path), card.doc.text())]))
+            change.result["changed"] = True
             return change
         before = others[index - 1].order if index > 0 else None
         after = others[index].order if index < len(others) else None
@@ -416,6 +429,7 @@ class BoardStore:
                     writes.append((_rel(self.root, item.path), item.doc.text()))
         card.doc.set("column", column)
         card.doc.set("updated", now)
+        card.doc.set("moved", now)  # „do poprawy” w derive.py patrzy na przeniesienie, nie na edycję
         writes.insert(0, (_rel(self.root, card.path), card.doc.text()))
         verb = f"move to {column}" if moved_column else f"reorder in {column}"
         change.commits.append((f"{card.id}: {verb}", writes))
@@ -702,8 +716,11 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived) -> 
         # Kolumna do wyświetlenia: z koordynatora (PT-5), a bez niego — zapisana ręcznie.
         "boardColumn": (derived or {}).get("column") or card.column,
         "order": card.order, "note": card.note, "created": card.created, "createdTs": parse_ts(card.created),
-        "updated": card.updated, "updatedTs": parse_ts(card.updated), "youtrack": card.youtrack,
-        "spec": card.spec, "session": card.session, "branch": card.branch, "description": card.description,
+        "updated": card.updated, "updatedTs": parse_ts(card.updated),
+        # Ostatnia zmiana kolumny; stare karty bez klucza — czas założenia.
+        "moved": card.moved, "movedTs": parse_ts(card.moved or card.created), "youtrack": card.youtrack,
+        "spec": card.spec, "session": card.session, "branch": card.branch, "check": card.check,
+        "description": card.description,
         "derived": derived, "path": card.path,
     }
 
@@ -826,6 +843,8 @@ def _card_values(data: dict, create: bool = False) -> dict:
     for key in RESERVED_CARD_KEYS:
         if key in data:
             out[key] = _line(data[key], FIELD_MAX, key)
+    if "check" in data:
+        out["check"] = _enum(data["check"], CHECKS, "sprawdzenie")
     if "description" in data:
         out["description"] = _body(data["description"])
     if "project" in data:

@@ -267,7 +267,10 @@ class MoveOrderTest(BoardCase):
         self.assertEqual(self.column("todo"), ["K-1", "K-3", "K-2"])
         self.assertEqual(sorted(self.changed_files()), ["cards/K-1.md", "cards/K-2.md", "cards/K-3.md"])
         self.assertEqual([c["order"] for c in self.store.snapshot()["cards"]], [10, 20, 30])
-        self.assertEqual(self.store.move_card("K-3", "todo", 1)["changed"], False)
+        self.clock[0] += 60
+        self.assertEqual(self.store.move_card("K-3", "todo", 1)["changed"], True)  # stempel moved, bez kolejności
+        self.assertEqual(self.changed_files(), ["cards/K-3.md"])
+        self.assertEqual([c["order"] for c in self.store.snapshot()["cards"]], [10, 20, 30])
 
 
 class HooksTest(BoardCase):
