@@ -1,5 +1,6 @@
 // Dock Tide na głównym monitorze: dolny panel na pełną szerokość, aplikacje pośrodku
-// (menedżer zadań między dwoma rozciągliwymi odstępami), kafelki widżetów Tide z prawej.
+// (menedżer zadań między dwoma rozciągliwymi odstępami), kafelki widżetów Tide po obu stronach:
+// z lewej system (P.left), z prawej sprawy AI (P.widgets).
 // Pełna szerokość, bo okna zwykle są zmaksymalizowane, a wąski dock zostawia paski tapety.
 
 var tideMainScreen = tideScreens().main;
@@ -65,12 +66,16 @@ for (var tideK = 2; tideK < tideSpacers.length; ++tideK) {
 tideWrite(tideSpacers[0], ["Tide"], {role: "dock-spacer"});
 tideWrite(tideSpacers[1], ["Tide"], {role: "dock-spacer"});
 
-var tideOrder = [tideSpacers[0].id, tideTasks.id, tideSpacers[1].id];
-for (var tideL = 0; tideL < P.widgets.length; ++tideL) {
-    var tideType = P.widgets[tideL];
-    var tideWidget = tideByType[tideType] || tideDock.addWidget(tideType);
-    tideOrder.push(tideWidget.id);
+function tideWidgetIds(types) {
+    var ids = [];
+    for (var i = 0; i < types.length; ++i) {
+        ids.push((tideByType[types[i]] || tideDock.addWidget(types[i])).id);
+    }
+    return ids;
 }
+// Kafelki z lewej przed pierwszym odstępem, z prawej za drugim; aplikacje zostają pośrodku.
+var tideOrder = tideWidgetIds(P.left || []).concat([tideSpacers[0].id, tideTasks.id, tideSpacers[1].id],
+                                                   tideWidgetIds(P.widgets));
 // Pozostałe widżety użytkownika zostają na końcu, w dotychczasowej kolejności.
 var tideRest = tideSorted(tideDock);
 for (var tideM = 0; tideM < tideRest.length; ++tideM) {
