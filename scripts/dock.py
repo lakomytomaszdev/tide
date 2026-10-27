@@ -1,4 +1,4 @@
-"""Dock Tide: dolny panel głównego monitora z aplikacjami pośrodku i widżetami Tide z prawej.
+"""Dock Tide: dolny panel głównego monitora z aplikacjami pośrodku, systemem z lewej i sprawami AI z prawej.
 
 Użycie: python3 dock.py install|uninstall|show
 
@@ -17,17 +17,22 @@ from scripts.appearance import DATA, PALETTE, STATE  # noqa: E402
 from scripts.panels import evaluate, load, persist_thickness, save, screens, script, settle  # noqa: E402
 
 INSTALLED = STATE / "tide" / "dock-installed.json"
-# Kolejność kafelków z prawej strony docka, jak w mocku Mist; „Zadanie” obok agentów (mock #22).
-DOCK_WIDGETS = ["org.tide.agents", "org.tide.worktrees", "org.tide.system", "org.tide.limits"]
+# Kafelki z lewej strony docka (przed aplikacjami): system. Prośba użytkownika: „ja go chciałem po lewej
+# mieć od ikonek z paska” — po prawej zostają sprawy AI.
+DOCK_LEFT = ["org.tide.system"]
+# Kafelki z prawej strony docka (za aplikacjami), w tej kolejności.
+DOCK_RIGHT = ["org.tide.agents", "org.tide.worktrees", "org.tide.limits"]
+DOCK_WIDGETS = DOCK_LEFT + DOCK_RIGHT
 
 
-def installed_widgets() -> list[str]:
-    return [w for w in DOCK_WIDGETS if (DATA / "plasma" / "plasmoids" / w).is_dir()]
+def installed_widgets(names: list[str] = DOCK_WIDGETS) -> list[str]:
+    return [w for w in names if (DATA / "plasma" / "plasmoids" / w).is_dir()]
 
 
 def params() -> dict:
     palette = json.loads(PALETTE.read_text())
-    return {**screens(), "widgets": installed_widgets(), "dockHeight": palette["size"]["dock"]}
+    return {**screens(), "left": installed_widgets(DOCK_LEFT), "widgets": installed_widgets(DOCK_RIGHT),
+            "dockHeight": palette["size"]["dock"]}
 
 
 def install() -> None:
@@ -42,7 +47,9 @@ def install() -> None:
         "previous": previous.get("previous") or result["previous"],
         "created": previous.get("created", result["created"]),
     })
-    print(f"Dock Tide: panel {result['dock']}, widżety: {', '.join(params()['widgets']) or 'brak'}.")
+    shown = params()
+    print(f"Dock Tide: panel {result['dock']}, z lewej: {', '.join(shown['left']) or 'brak'}, "
+          f"z prawej: {', '.join(shown['widgets']) or 'brak'}.")
 
 
 def uninstall() -> None:

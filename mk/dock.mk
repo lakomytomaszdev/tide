@@ -1,4 +1,4 @@
-# Dock Tide: dolny panel z aplikacjami pośrodku i widżetami Tide z prawej.
+# Dock Tide: dolny panel z aplikacjami pośrodku, systemem z lewej i widżetami AI z prawej.
 # Idzie na koniec instalacji (LATE_INSTALL_TARGETS), bo dokłada tylko widżety już zainstalowane.
 LATE_INSTALL_TARGETS += install-dock
 UNINSTALL_TARGETS += uninstall-dock

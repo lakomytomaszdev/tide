@@ -121,10 +121,12 @@ if __name__ == "__main__":
 
 @unittest.skipUnless(fake.available(), "Brak qml6 do uruchomienia skryptów")
 class DockScriptTest(unittest.TestCase):
-    WIDGETS = ["org.tide.agents", "org.tide.worktrees", "org.tide.system", "org.tide.limits"]
+    LEFT = ["org.tide.system"]
+    WIDGETS = ["org.tide.agents", "org.tide.worktrees", "org.tide.limits"]
 
-    def install(self, state, widgets=None):
-        params = {**panels.screens(), "widgets": self.WIDGETS if widgets is None else widgets,
+    def install(self, state, widgets=None, left=None):
+        params = {**panels.screens(), "left": self.LEFT if left is None else left,
+                  "widgets": self.WIDGETS if widgets is None else widgets,
                   "dockHeight": PALETTE["size"]["dock"]}
         out, state = fake.run(state, panels.script("dock", params))
         res = result(out)
@@ -132,13 +134,22 @@ class DockScriptTest(unittest.TestCase):
                                                              "panels": [{"id": res["dock"], "order": res["order"]}]}))
         return res, state
 
-    def test_dock_centres_apps_and_puts_tide_widgets_on_the_right(self):
+    def test_dock_centres_apps_system_on_the_left_ai_on_the_right(self):
         res, state = self.install(fake.desktop_like_this_one())
         dock = find(state, 90)
-        self.assertEqual(types(dock), ["panelspacer", "icontasks", "panelspacer", "agents", "worktrees", "system",
+        self.assertEqual(types(dock), ["system", "panelspacer", "icontasks", "panelspacer", "agents", "worktrees",
                                        "limits"])
         self.assertEqual((dock["lengthMode"], dock["height"]), ("fill", PALETTE["size"]["dock"]))
         self.assertIn(config(dock, "org.kde.plasma.icontasks", "/General")["fill"], (False, "false"))
+
+    def test_reinstall_moves_system_from_the_right_to_the_left(self):
+        # Dock po dawnej instalacji: wszystkie kafelki Tide z prawej (tak wrócił po restarcie).
+        _, state = self.install(fake.desktop_like_this_one(), left=[],
+                                widgets=["org.tide.agents", "org.tide.worktrees", "org.tide.system", "org.tide.limits"])
+        self.assertEqual(types(find(state, 90))[-2], "system")
+        _, state = self.install(state)
+        self.assertEqual(types(find(state, 90)), ["system", "panelspacer", "icontasks", "panelspacer", "agents",
+                                                  "worktrees", "limits"])
 
     def test_old_limits_widget_is_replaced_only_when_tide_limits_is_installed(self):
         _, state = self.install(fake.desktop_like_this_one(), widgets=["org.tide.agents"])
