@@ -78,7 +78,7 @@ def _outside(report) -> list[dict]:
     for p, s in sorted(sessions, key=lambda ps: (order.get(ps[1].state, 2), -ps[1].last_ts)):
         state, word = render.state_of(s)
         said = standup.clean(getattr(s, "waiting_text", "") or "", 320) if state == "waiting" else \
-            standup.first_sentences(s.final_message, 2, 320)
+            standup.first_sentences(s.final_message, 2, 320, whole=True)
         task = standup.clean(getattr(s, "prompt", "") or "", 300)
         out.append({"project": p.name, "path": p.path, "tool": s.tool, "state": state, "word": word,
                     "title": s.title or "", "task": task if task != s.title else "", "said": said or "",
@@ -101,8 +101,12 @@ def build(report) -> dict:
         hot = bool(waits or p.waiting)
         n = standup.counts(s)
         chores_only = bool(n.get("chores")) and not any(n.get(k) for k in standup.GROUP_KEYS + ("attention",))
+        label = render.project_label(p)
         entry = {
-            "name": p.name, "slug": p.slug, "page": f"{p.slug}.html", "path": p.path,
+            # name — klucz (nazwa katalogu: notki, wybór w widoku), label — nazwa z tablicy pracy do pokazania,
+            # folder — nazwa katalogu jako mały dopisek, gdy różni się od nazwy z tablicy.
+            "name": p.name, "label": label, "folder": p.name if label != p.name and p.name not in label else "",
+            "slug": p.slug, "page": f"{p.slug}.html", "path": p.path,
             "tools": sorted({x.tool for x in p.sessions}),
             "headline": s.get("headline") or s.get("theme") or "",
             "theme": s.get("theme") or "",
@@ -117,8 +121,8 @@ def build(report) -> dict:
         for key in standup.ALL_KEYS:
             entry[key] = _items(s.get(key))
         if chores_only and not hot and not entry["finished"]:
-            chore_projects.append({"name": p.name, "slug": p.slug, "page": entry["page"], "path": p.path,
-                                   "chores": entry["chores"]})
+            chore_projects.append({"name": p.name, "label": label, "slug": p.slug, "page": entry["page"],
+                                   "path": p.path, "chores": entry["chores"]})
             continue
         cards.append(((not hot, chores_only, i), entry))
     projects = [entry for _key, entry in sorted(cards, key=lambda c: c[0])]
@@ -161,6 +165,8 @@ def build(report) -> dict:
 
 SINCE_SLACK = 90.0      # s — ta sama blokada, gdy sesja czeka od (prawie) tej samej chwili
 NOW_SHOWN = 3
+NOW_QUESTION = 200      # znaków pytania w „Teraz czeka na ciebie” (dłuższe — bez cytatu)
+NOW_DETAIL = 100        # znaków opisu zgody (np. „Bash · make install”)
 
 
 def waiting_sessions(sessions) -> dict[str, dict]:
@@ -177,24 +183,27 @@ def is_stale(item: dict, waiting: dict[str, dict]) -> bool:
     return float(live.get("sinceTs") or 0) > float(item.get("since") or 0) + SINCE_SLACK
 
 
-def _project_of(session: dict, projects: list[dict]) -> str:
+def _project_of(session: dict, projects: list[dict]) -> tuple[str, str]:
+    """(nazwa projektu — klucz, nazwa do pokazania z tablicy pracy) sesji: po katalogu, potem po nazwie."""
     cwd = os.path.realpath(session.get("cwd") or "/") if session.get("cwd") else ""
-    best, best_len = "", -1
+    best, best_len = None, -1
     for p in projects:
         path = os.path.realpath(p.get("path") or "") if p.get("path") else ""
         if path and cwd and (cwd == path or cwd.startswith(path.rstrip("/") + "/")) and len(path) > best_len:
-            best, best_len = p.get("name") or "", len(path)
-    if best:
-        return best
-    names = {p.get("name") for p in projects}
-    return session.get("project") if session.get("project") in names else (session.get("project") or "")
+            best, best_len = p, len(path)
+    if best is None:
+        best = next((p for p in projects if p.get("name") and p.get("name") == session.get("project")), None)
+    if best is not None:
+        return best.get("name") or "", best.get("label") or best.get("name") or ""
+    return session.get("project") or "", session.get("project") or ""
 
 
 def now_waiting(sessions, projects: list[dict]) -> list[dict]:
     """Sesje, które czekają teraz (jak widżet agentów), od najdłużej czekającej."""
     out = []
     for s in sorted(waiting_sessions(sessions).values(), key=lambda s: s.get("sinceTs") or 0):
-        out.append({"id": s.get("id"), "project": _project_of(s, projects), "tool": s.get("tool") or "",
+        project, label = _project_of(s, projects)
+        out.append({"id": s.get("id"), "project": project, "label": label, "tool": s.get("tool") or "",
                     "title": standup.clean(s.get("title") or "", 120),
                     "text": standup.clean(s.get("waitingText") or "", 300), "reason": s.get("reason") or "",
                     "since": float(s.get("sinceTs") or 0)})
@@ -207,11 +216,14 @@ def now_text(waiting: list[dict]) -> str:
         return ""
     parts = []
     for w in waiting[:NOW_SHOWN]:
-        where = w["project"] or w["title"] or "agent"
+        where = w.get("label") or w["project"] or w["title"] or "agent"
+        # Pytanie tylko w całości (fit) — za długie zastępuje ogólne „czeka na odpowiedź”, bez „…” w pół zdania.
         if w["reason"] == "question" or (w["reason"] != "approval" and w["text"].endswith("?")):
-            what = f"agent pyta: „{standup.clean(w['text'], 120)}”" if w["text"] else "agent czeka na odpowiedź"
+            question = standup.fit(w["text"], NOW_QUESTION)
+            what = f"agent pyta: „{question}”" if question else "agent czeka na odpowiedź"
         else:
-            what = "agent czeka na twoją zgodę" + (f" ({standup.clean(w['text'], 80)})" if w["text"] else "")
+            detail = standup.fit(w["text"], NOW_DETAIL)
+            what = "agent czeka na twoją zgodę" + (f" ({detail})" if detail else "")
         parts.append(f"{where} — {what}")
     more = len(waiting) - NOW_SHOWN
     return "Teraz czeka na ciebie: " + "; ".join(parts) + (f"; i {more} więcej" if more > 0 else "") + "."

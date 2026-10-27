@@ -64,7 +64,8 @@ Rectangle {
                 Text {
                     objectName: "panelTitle"
                     Layout.fillWidth: true
-                    text: panel.project ? String(panel.project.name || "") : ""
+                    text: Logic.projectLabel(panel.project)
+                          + (Logic.projectFolder(panel.project) ? "  ·  " + Logic.projectFolder(panel.project) : "")
                     textFormat: Text.PlainText
                     color: Tide.Tokens.textPrimary
                     font.family: Tide.Theme.uiFamily

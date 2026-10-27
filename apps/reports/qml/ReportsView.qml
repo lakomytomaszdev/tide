@@ -544,7 +544,7 @@ Rectangle {
                                     objectName: "choreProject"
                                     Layout.fillWidth: true
                                     Layout.leftMargin: 15
-                                    text: modelData.name + ": " + Logic.list(modelData.chores).map(c => c.text).join("; ")
+                                    text: Logic.projectLabel(modelData) + ": " + Logic.list(modelData.chores).map(c => c.text).join("; ")
                                     textFormat: Text.PlainText
                                     color: Tide.Tokens.textMuted
                                     font.family: Tide.Theme.uiFamily

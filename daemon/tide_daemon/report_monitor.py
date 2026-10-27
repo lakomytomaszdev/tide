@@ -41,7 +41,7 @@ class ReportMonitor(QObject):
                  fetch_limits: bool = True, coordination_cache: str | None = None, opener=None,
                  summary: str | None = None, tracker=None, notes_file: str | None = None, note_notifier=None,
                  card_check=None, live_interval: float = live_mod.INTERVAL, live_settle: float = live_mod.SETTLE,
-                 note_settle: float = notes_mod.NOTE_SETTLE,
+                 note_settle: float = notes_mod.NOTE_SETTLE, board=None,
                  parent=None):
         super().__init__(parent)
         self.settings = settings
@@ -76,6 +76,10 @@ class ReportMonitor(QObject):
         # board/ticket to tablica koordynacji i jej ticket (D-Bus Board()); wynik czyta notes.manual_check.
         # Podpinany w app.main po starcie tablicy pracy (app.board_card_check); bez niej — tylko plan.
         self.card_check = card_check
+        # Migawka tablicy pracy: funkcja() → /Board Snapshot() albo None — nazwy projektów z tablicy i karty,
+        # do których należy praca (reports/cards.py). Podpinana w app.main po starcie tablicy; bez niej —
+        # nazwy katalogów i tytuły z nazw gałęzi.
+        self.board = board
         self._ticket_states: dict | None = None
         self._session_states: dict | None = None
         self._waiting_sig: tuple | None = None
@@ -354,6 +358,7 @@ class ReportMonitor(QObject):
         sessions = list(self.sessions() or [])
         trees = self.worktrees()
         notes = self._notes_of(day)
+        board = self._board_snapshot()
         context = {"scheduled": scheduled, "day": day, "start": start, "end": end, "live": live}
         self.running = True
 
@@ -365,12 +370,23 @@ class ReportMonitor(QObject):
                 fetch_limits=self.fetch_limits, max_depth=self.max_depth,
                 coordination_cache=self.coordination_cache, summary=self.summary,
                 summary_model=self.settings.summary_model, tracker=self.tracker, notes=notes,
-                cancel=self._cancel)
+                cancel=self._cancel, board=board)
             schedule.apply_retention(self.root, schedule.report_day(end, self.settings), self.settings.keep_days)
             return index, report
 
         future = self._pool.submit(work)
         future.add_done_callback(lambda f: self._finished.emit(context, f))
+
+    def _board_snapshot(self):
+        """Migawka tablicy pracy w wątku głównym (wątek raportu dostaje gotowy słownik) albo None."""
+        if self.board is None:
+            return None
+        try:
+            snapshot = self.board()
+        except Exception as exc:  # tablica to dodatek — raport powstaje i bez niej
+            print(f"tide-daemon: raport: tablica pracy niedostępna: {exc!r}", flush=True)
+            return None
+        return snapshot if isinstance(snapshot, dict) else None
 
     def _deliver(self, context: dict, future) -> None:
         self.running = False

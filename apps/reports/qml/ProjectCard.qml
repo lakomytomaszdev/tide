@@ -29,7 +29,7 @@ Rectangle {
     activeFocusOnTab: true
 
     Accessible.role: Accessible.Button
-    Accessible.name: (project.name || "") + (waits ? ", czeka na ciebie" : "")
+    Accessible.name: Logic.projectLabel(project) + (waits ? ", czeka na ciebie" : "")
     Accessible.onPressAction: clicked()
     Keys.onReturnPressed: clicked()
     Keys.onSpacePressed: clicked()
@@ -59,12 +59,25 @@ Rectangle {
             Text {
                 objectName: "projectName"
                 Layout.maximumWidth: card.width * 0.4
-                text: card.project.name || ""
+                text: Logic.projectLabel(card.project)
                 textFormat: Text.PlainText
                 color: Tide.Tokens.textPrimary
                 font.family: Tide.Theme.uiFamily
                 font.pixelSize: 15
                 font.weight: Font.DemiBold
+                elide: Text.ElideRight
+            }
+
+            // Nazwa katalogu — mały, szary dopisek, gdy projekt na tablicy nazywa się inaczej.
+            Text {
+                objectName: "projectFolder"
+                visible: text !== ""
+                Layout.maximumWidth: card.width * 0.25
+                text: Logic.projectFolder(card.project)
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.monoFamily
+                font.pixelSize: 11
                 elide: Text.ElideRight
             }
 

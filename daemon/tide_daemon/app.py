@@ -233,6 +233,8 @@ def main(argv=None) -> int:
     if board is not None:
         # Notki „Skończone dziś”: ręczne sprawdzenie z karty tablicy pracy (check: manual, spec — PT-5).
         report.card_check = board_card_check(board)
+        # Nazwy projektów z tablicy i karty, do których należy praca — w raporcie i jego tekście (reports/cards.py).
+        report.board = board_snapshot(board)
     docker = None if args.no_docker else start_docker(app, args, clock, launchers)
     annotators = [a for a in (tasks.annotate if tasks is not None else None,
                               coordination.annotate if coordination is not None else None) if a]
@@ -353,7 +355,7 @@ def print_report(args, clock, scanner, settings) -> int:
             claude_root=args.claude_dir, codex_root=args.codex_dir, live=scanner.sessions(now, procs),
             max_depth=args.worktree_depth, coordination_cache=coordination_cache_file(args),
             summary=args.report_summary or settings.summary, summary_model=settings.summary_model,
-            tracker=report_tracker(args, clock))
+            tracker=report_tracker(args, clock), board=report_board(args))
     except (OSError, RuntimeError) as exc:
         print(f"tide-daemon: raport: {exc}", file=sys.stderr)
         return 1
@@ -413,6 +415,27 @@ def board_card_check(board):
             return None
         return report_notes.card_check_from(snapshot, coord_board, ticket)
     return check
+
+
+def board_snapshot(board):
+    """Funkcja() → migawka tablicy pracy (/Board Snapshot()) dla raportu albo None."""
+    def snapshot():
+        try:
+            return json.loads(board.snapshot_json())
+        except ValueError:
+            return None
+    return snapshot
+
+
+def report_board(args):
+    """Migawka tablicy pracy dla jednorazowego raportu (--report); --no-board albo błąd — None."""
+    if args.no_board:
+        return None
+    try:
+        return board_store(args).snapshot()
+    except Exception as exc:  # tablica to dodatek
+        print(f"tide-daemon: raport: tablica pracy pominięta: {exc!r}", file=sys.stderr)
+        return None
 
 
 def report_tracker(args, clock):

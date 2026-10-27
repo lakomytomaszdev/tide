@@ -33,7 +33,8 @@ import os
 import re
 from collections import Counter
 
-from ..worktrees.naming import humanize_branch
+from ..worktrees.naming import TYPE_WORDS, humanize_branch
+from .cards import BoardInfo, card_label
 
 GROUPS = (("done", "Zrobione"), ("doing", "W toku"), ("waiting", "Czeka na mnie"), ("next", "Dalej"))
 GROUP_KEYS = tuple(k for k, _ in GROUPS)
@@ -44,10 +45,12 @@ ATTENTION = ("attention", "Uwaga")
 ALL_KEYS = GROUP_KEYS + (ATTENTION[0], CHORES[0])
 TEXT_ORDER = GROUPS[:3] + (ATTENTION,) + GROUPS[3:] + (CHORES,)   # kolejność sekcji w tekście i na stronie
 ITEMS_MAX = 8              # pozycji w grupie (reszta jako „i N więcej”)
-TEXT_MAX = 260
-ABOUT_MAX = 320
+# Limity długości to granice bezpieczeństwa, nie redakcja: tekst dla ludzi nigdy nie jest ucinany w pół zdania
+# (fit() bierze całe zdania albo nic), a model dostaje w instrukcjach krótsze, wyraźne długości.
+TEXT_MAX = 360
+ABOUT_MAX = 400
 THEME_MAX = 600
-HEADLINE_MAX = 320
+HEADLINE_MAX = 400
 NEXT_TODO = 5
 LOOSE_MAX = 2              # tyle gałęzi bez sesji i ticketu pokazujemy osobno
 AREAS_MAX = 6
@@ -105,6 +108,44 @@ def clean(text, limit: int = 0) -> str:
             cut = cut[:space]
         text = cut.rstrip(" ,;:—-") + "…"
     return text
+
+
+def sentences(text) -> list[str]:
+    """Zdania tekstu w jednej linii (granica: . ! ? … i wielka litera, cyfra albo cudzysłów po spacji)."""
+    return [part.strip() for part in _SENT.split(clean(text)) if part.strip()]
+
+
+def fit(text, limit: int) -> str:
+    """Tekst dla ludzi w limicie bez ucinania w pół zdania: całe zdania od początku, póki się mieszczą.
+    Pierwsze zdanie dłuższe niż limit → pusty napis — wołający pomija pozycję albo bierze zapas z reguł
+    (lepiej nic niż „…ma jasne znaczenie w modelu i w…”)."""
+    text = clean(text)
+    if not limit or len(text) <= limit:
+        return text
+    out = ""
+    for sentence in sentences(text):
+        candidate = f"{out} {sentence}" if out else sentence
+        if len(candidate) > limit:
+            break
+        out = candidate
+    return out
+
+
+def short_title(text, limit: int = 160) -> str:
+    """Tytuł sesji (bywa początkiem polecenia, gdy narzędzie nie nadało tytułu): odnośniki Markdownu jako
+    etykiety, całe zdania w limicie; jedno długie zdanie — ucięte do granicy słowa (tytuł to nie zdanie)."""
+    text = clean(_LINK.sub(r"\1", str(text or "")))
+    return fit(text, limit) or clean(text, limit)
+
+
+def session_title(s) -> str:
+    """Tytuł sesji do raportu. Tytuł z początku polecenia, ucięty w pół zdania przez indeks sesji („…”),
+    składamy od nowa z pełnego polecenia — całymi zdaniami."""
+    title = str(getattr(s, "title", "") or "")
+    prompt = str(getattr(s, "prompt", "") or "")
+    if title.endswith("…") and prompt and clean(prompt).startswith(clean(title)[:-1].rstrip()[:40]):
+        return short_title(plain(prompt).replace("\n", " "))
+    return short_title(title)
 
 
 def plain(text: str) -> str:
@@ -169,9 +210,11 @@ def list_items(text) -> list[str]:
     return [item for item in (flatten(_LIST_LINE.sub("", line, count=1)) for line in bullets) if item]
 
 
-def first_sentences(text: str, n: int = 2, limit: int = 280) -> str:
-    """Początek wiadomości agenta: pierwsze zdania pierwszych akapitów. Zbyt krótkie zdanie
-    („Gotowe.”) nie liczy się do n — dopiero ono i następne mówią, co zrobiono."""
+def first_sentences(text: str, n: int = 2, limit: int = 280, whole: bool = False) -> str:
+    """Początek wiadomości agenta: pierwsze zdania pierwszych akapitów, tylko całe — kolejne zdanie, które
+    się nie mieści, odpada. Zbyt krótkie zdanie („Gotowe.”) nie liczy się do n — dopiero ono i następne
+    mówią, co zrobiono. Pierwsze zdanie dłuższe niż limit: `whole` — pusty napis (tekst dla ludzi),
+    inaczej ucięte do granicy słowa z „…” (wejście modelu, gdzie liczy się sam początek)."""
     body = plain(text)
     if not body:
         return ""
@@ -188,11 +231,16 @@ def first_sentences(text: str, n: int = 2, limit: int = 280) -> str:
             break
     out, counted = [], 0
     for sentence in sentences:
+        if out and len(" ".join(out + [sentence])) > limit:
+            break
         out.append(sentence)
         counted += len(sentence) >= 25 or len(out) > 1  # tylko krótkie zdanie na początku się nie liczy
-        if counted >= n or len(" ".join(out)) >= limit:
+        if counted >= n:
             break
-    return clean(" ".join(out), limit)
+    text = clean(" ".join(out))
+    if len(text) > limit:   # samo pierwsze zdanie jest dłuższe niż limit
+        return "" if whole else clean(text, limit)
+    return text
 
 
 def last_question(text: str, limit: int = 280) -> str:
@@ -288,16 +336,58 @@ def areas(paths) -> list[list]:
 
 # --- fakty -----------------------------------------------------------------------------------------
 
+def project_label(project) -> str:
+    """Nazwa projektu do pokazania: z tablicy pracy (collect.assign_labels), inaczej nazwa katalogu."""
+    return getattr(project, "label", "") or project.name
+
+
 def facts(report) -> list[dict]:
-    """Fakty projektów-repozytoriów z ruchem (sesje spoza repozytoriów to nie projekty)."""
-    return [project_facts(report, p) for p in report.active if getattr(p, "is_repo", True)]
+    """Fakty projektów-repozytoriów z ruchem (sesje spoza repozytoriów to nie projekty). Karta tablicy
+    pracy z jednostkami w kilku projektach jest opisana raz — w projekcie głównym (link_cards)."""
+    out = [project_facts(report, p) for p in report.active if getattr(p, "is_repo", True)]
+    link_cards(out, _board(report))
+    return out
+
+
+def _board(report) -> BoardInfo:
+    board = getattr(report, "board", None)
+    return board if isinstance(board, BoardInfo) else BoardInfo(board if isinstance(board, dict) else None)
+
+
+def link_cards(all_facts: list[dict], board: BoardInfo) -> None:
+    """Praca nad jedną kartą w kilku projektach (PT-28, `projects` karty): projekt główny karty (albo — gdy
+    nie ma go w raporcie — pierwszy projekt z jej pracą) opisuje ją z „pracuje też w: …”, pozostałe dostają
+    tylko wzmiankę „zmiany w ramach K-1 …”. Ustawia `home` i `alsoIn` albo `homeProject` w unit["card"]."""
+    where: dict[str, list[dict]] = {}
+    for fact in all_facts:
+        for unit in fact["units"]:
+            card = unit.get("card")
+            if card and fact not in where.setdefault(card["id"], []):
+                where[card["id"]].append(fact)
+    for ident, found in where.items():
+        card = board.cards.get(ident.upper()) or {}
+        repos = board.card_repos(card) if card else []
+        home = next((f for f in found if repos and f.get("path") == repos[0]), found[0])
+        others = [board.names.get(r) or os.path.basename(r) for r in repos if r != home.get("path")]
+        others += [f["label"] for f in found if f is not home and f["label"] not in others
+                   and f.get("path") not in repos]
+        for fact in found:
+            for unit in fact["units"]:
+                if (unit.get("card") or {}).get("id") != ident:
+                    continue
+                if fact is home:
+                    unit["card"] = dict(unit["card"], home=True, alsoIn=others)
+                else:
+                    unit["card"] = dict(unit["card"], home=False, homeProject=home["label"])
 
 
 def project_facts(report, project) -> dict:
     start = report.start
     plans = list(getattr(project, "plans", None) or [])
     coordinators = {e.get("id") for e in plans if e.get("id")}
-    out = {"project": project.name, "slug": project.slug, "main": project.main_branch or "",
+    path = getattr(project, "path", "") or ""
+    out = {"project": project.name, "label": project_label(project), "path": os.path.realpath(path) if path else "",
+           "slug": project.slug, "main": project.main_branch or "",
            "plans": [], "tickets": [], "units": [], "questions": [],
            "toClean": len(project.to_clean),
            "unpushed": [b for b in (w.get("branch") or w.get("name") or "" for w in project.unpushed)
@@ -333,18 +423,21 @@ def project_facts(report, project) -> dict:
             if key in seen_tickets:
                 continue
             ident = (t.get("id") or "").strip().upper()
-            note = clean(t.get("note"), 220)
-            plan_note = clean(t.get("planNote"), 300)
+            # Długie pola zostają prawie całe: tekst dla ludzi bierze z nich całe zdania (fit), a wejście
+            # modelu tnie je samo (summarize._compact).
+            note = clean(t.get("note"), 300)
+            plan_note = clean(t.get("planNote"), 1000)
             if plan_note == note:
                 plan_note = ""
             title = clean(t.get("title"), 200)
             item = {"id": ident if TICKET_RE.match(ident) else "", "key": ticket_key(ident),
                     "title": title, "state": state, "note": note, "planNote": plan_note,
-                    "description": description(t.get("description")), "brief": clean(t.get("brief"), 300),
-                    "review": clean(t.get("review"), 80), "result": clean(t.get("result"), 240),
+                    "description": description(t.get("description"), 1200), "brief": clean(t.get("brief"), 600),
+                    "review": clean(t.get("review"), 80), "result": clean(t.get("result"), 1000),
                     "question": clean(t.get("question"), 300), "branch": t.get("branch") or "",
                     "plan": clean(entry.get("title"), 120), "ts": t.get("lastActivityTs") or 0,
                     "questionTs": t.get("questionTs") or 0, "coordinator": entry.get("id") or "",
+                    "card": str(entry.get("card") or ""),
                     "category": "chores" if plan_chore or text_is_chore(title) else "work"}
             seen_tickets[key] = item
             out["tickets"].append(item)
@@ -367,7 +460,7 @@ def project_facts(report, project) -> dict:
                     break
         if unit is None:
             branch = own_branch if own_branch not in (project.main_branch, "HEAD") else ""
-            unit = _unit("session", branch, clean(s.title, 160))
+            unit = _unit("session", branch, session_title(s))
             units.append(unit)
             if branch:
                 by_branch.setdefault(branch, unit)
@@ -390,6 +483,17 @@ def project_facts(report, project) -> dict:
                 hit = unit["ticket"]  # ID z tematu commita, którego nie ma w planie
         unit["ticket"] = hit
         unit["category"] = _unit_kind(unit)
+
+    # Karta tablicy pracy, do której należy jednostka: tytuł i numer karty zamiast nazwy gałęzi.
+    board = _board(report)
+    if board.cards:
+        for unit in units:
+            plan_card = next((t["card"] for t in out["tickets"] if t.get("card") and unit["ticket"]
+                              and unit["ticket"] in (t["id"], t["title"])), "")
+            card = board.card_for(branch=unit.get("branch") or "", sessions=[x.get("id") for x in unit["sessions"]],
+                                  plan_card=plan_card, repo=path)
+            if card is not None:
+                unit["card"] = {"id": str(card.get("id") or ""), "label": card_label(card)}
 
     # Ticket, którego cała praca w okresie to porządki, sam też jest porządkiem.
     for t in out["tickets"]:
@@ -443,7 +547,7 @@ def _session_fact(s) -> dict:
         state = "interrupted"
     message = s.final_message or ""
     task = clean(plain(getattr(s, "prompt", "") or ""), TASK_MAX)
-    title = clean(s.title, 160)
+    title = session_title(s)
     waiting = state == "waiting"
     # „Czeka” = agent stoi teraz (obszar Agents) — treść to jego waitingText, nigdy pytanie z ostatniego
     # tekstu (PT-23: stare „Pushować?” zamiast prawdziwego pytania z AskUserQuestion).
@@ -452,7 +556,8 @@ def _session_fact(s) -> dict:
         open_question(message, getattr(s, "final_ts", 0.0), getattr(s, "last_user_ts", 0.0))
     fact = {"id": getattr(s, "id", ""), "title": title, "task": "" if task == title else task, "tool": s.tool,
             "state": state, "reason": s.reason or "",
-            "message": waiting_for if waiting else first_sentences(message, 2, 320),
+            # Tylko całe zdania (whole): to dopisek pozycji w raporcie dla ludzi.
+            "message": waiting_for if waiting else first_sentences(message, 2, ABOUT_MAX, whole=True),
             "waitingFor": waiting_for, "question": left,
             "full": "" if waiting else message, "failing": failing_tests(message) if state not in ("working", "waiting") else "",
             "since": s.since, "first": s.first_ts, "last": s.last_ts,
@@ -462,7 +567,7 @@ def _session_fact(s) -> dict:
         last = next((r for r in reversed(runs) if r.result), None)
         fact["scheduled"] = {"name": clean((s.automation or {}).get("name") or "Zaplanowane zadanie", 80),
                              "runs": len(runs), "aborted": sum(1 for r in runs if r.aborted),
-                             "last": first_sentences(last.result, 1, 200) if last else ""}
+                             "last": first_sentences(last.result, 1, 300, whole=True) if last else ""}
     return fact
 
 
@@ -603,16 +708,22 @@ def rules(fact: dict) -> dict:
                                          about=t.get("planNote") or t.get("description"), next_=step))
 
     loose = []  # gałęzie z commitami bez sesji i ticketu — przy wielu jedna zbiorcza pozycja
+    cards_seen: set[str] = set()   # karta tablicy z kilkoma jednostkami w projekcie — jedna pozycja
     for unit in fact["units"]:
         if id(unit) in used_units:
             continue
-        if unit["kind"] == "branch" and not unit["sessions"] and not unit.get("ticket") \
+        card = (unit.get("card") or {}).get("id")
+        if card and card in cards_seen and not any(s["state"] == "waiting" or s["failing"] for s in unit["sessions"]):
+            continue
+        if card:
+            cards_seen.add(card)
+        if unit["kind"] == "branch" and not unit["sessions"] and not unit.get("ticket") and not card \
                 and _category(unit) != "chores" and not unit.get("mergedInto"):
             loose.append(unit)
             continue
         _unit_items(unit, fact, groups)
     if len(loose) > LOOSE_MAX:
-        names = ", ".join(_unit_title(u) for u in loose[:4]) + (f" i {len(loose) - 4} innych" if len(loose) > 4 else "")
+        names = ", ".join(_display_title(u)[0] for u in loose[:4]) + (f" i {len(loose) - 4} innych" if len(loose) > 4 else "")
         groups["doing"].append(_item("", f"{len(loose)} rozpoczętych zmian czeka na przejrzenie: {names}",
                                      next_="przejrzeć, scalić albo usunąć"))
     else:
@@ -679,7 +790,7 @@ def _category(unit: dict) -> str:
 def _unit_items(unit: dict, fact: dict, groups: dict) -> None:
     sessions = unit["sessions"]
     states = {s["state"] for s in sessions}
-    title, hint = _split_ref(_unit_title(unit))
+    title, hint = _display_title(unit)
     if hint and not unit.get("ticket"):
         unit = dict(unit, ticket=hint)
     message = next((s["message"] for s in sessions if s["message"] and s["state"] != "waiting"), "")
@@ -691,6 +802,16 @@ def _unit_items(unit: dict, fact: dict, groups: dict) -> None:
         s = next(s for s in sessions if s["state"] == "waiting")
         groups["waiting"].append(_waiting_item(title, s, unit.get("ticket", "")))
         return
+    card = unit.get("card") or {}
+    if card and card.get("home") is False:
+        # Karta opisana w swoim projekcie głównym — tutaj tylko wzmianka, bez powtarzania opisu.
+        finished = unit["kind"] in ("merged", "main") or unit.get("mergedInto") \
+            or (not unit["count"] and not states & {"working", "interrupted"})
+        groups["done" if finished else "doing"].append(
+            _item(unit.get("ticket", ""), f"Zmiany w ramach {card['label']}", also=True))
+        return
+    if card.get("alsoIn"):
+        title = f"{title} (pracuje też w: {', '.join(card['alsoIn'])})"
     left = next((s["question"] for s in sessions if s.get("question")), "")
     if left and not chores:
         # Pytanie w tekście skończonej tury to nie „czeka” (decyzja 36) — praca stoi w toku z pytaniem.
@@ -736,6 +857,42 @@ def _without_ref(text: str, ref: str) -> str:
     return text
 
 
+def _display_title(unit: dict) -> tuple[str, str]:
+    """(tytuł pozycji, ID ticketu z nazwy gałęzi). Karta tablicy pracy → „K-1 Data ważności wiadomości”
+    (jej numer i tytuł, tak jak na tablicy); tytuł z nazwy gałęzi bez karty → zwykłe zdanie („tide-9 ·
+    export” → „Export” z ID w ref, „k-1 · data waznosci” → „K-1 Data waznosci”)."""
+    card = unit.get("card") or {}
+    if card.get("label"):
+        return card["label"], ""
+    raw = _unit_title(unit)
+    title, hint = _split_ref(raw)
+    if not hint and raw == unit.get("title") and unit.get("branch") and unit["kind"] in ("merged", "branch"):
+        title = humane_branch_title(title)
+    return title, hint
+
+
+_CARD_SLUG = re.compile(r"^[A-Za-z]-\d{1,6}$")
+
+
+def humane_branch_title(title: str) -> str:
+    """Tytuł z nazwy gałęzi (worktrees.naming.humanize_branch) jako zwykły tekst: bez słowa typu („fix ·”),
+    numer karty wielkimi literami, pierwsza litera wielka — „fix · unique phrase entry” → „Unique phrase
+    entry”, „k-1 · data waznosci wiadomosci” → „K-1 Data waznosci wiadomosci”. Polskich znaków z nazwy
+    gałęzi nie da się odtworzyć — dlatego karta tablicy (z prawdziwym tytułem) ma pierwszeństwo."""
+    parts = [p.strip() for p in (title or "").split(" · ") if p.strip()]
+    if len(parts) > 1 and parts[0].lower() in TYPE_WORDS:
+        parts = parts[1:]
+    if not parts:
+        return title or ""
+    if len(parts) > 1 and _CARD_SLUG.match(parts[0]):
+        rest = " — ".join(parts[1:])
+        text = f"{parts[0].upper()} {rest[:1].upper()}{rest[1:]}"
+    else:
+        text = " — ".join(parts)
+        text = text[:1].upper() + text[1:]
+    return text
+
+
 def _unit_title(unit: dict) -> str:
     session_titles = [s["title"] for s in unit["sessions"] if s["title"] and s["title"] != "(bez tytułu)"]
     if unit["kind"] == "main":
@@ -769,8 +926,9 @@ def _theme(fact: dict) -> str:
         return ""
     if len(plans) == 1:
         p = plans[0]
-        if p.get("goal"):
-            return clean(f"{p['title']}: {first_sentences(p['goal'], 2, 400)}", THEME_MAX)
+        goal = first_sentences(p["goal"], 2, 400, whole=True) if p.get("goal") else ""
+        if goal:
+            return fit(f"{p['title']}: {goal}", THEME_MAX)
         text = f"Plan „{p['title']}”: {p['done']} z {p['total']} " + _plural(p["total"], "zadania", "zadań", "zadań") + " gotowe"
         if p["live"]:
             text += ", praca trwa"
@@ -780,29 +938,63 @@ def _theme(fact: dict) -> str:
     return "Plany: " + ", ".join(parts) + more + "."
 
 
+def _phrase(text: str) -> str:
+    """Pozycja jako fraza do zdania zbiorczego: bez kropki na końcu."""
+    return clean(text).rstrip(" .")
+
+
 def _headline(summary: dict) -> str:
-    """1–2 zdania do karty projektu w indeksie: co zrobiono i co trwa (albo same porządki)."""
-    def texts(key, n):
-        return [i["text"] for i in summary.get(key) or [] if not i.get("more")][:n]
+    """1–2 zdania do karty projektu w indeksie: co zrobiono i co trwa (albo same porządki). Za długie
+    zdanie traci pozycje (najpierw drugą zrobioną, potem „W toku”), a na końcu zostają same liczby —
+    nigdy nie jest ucinane w pół zdania."""
+    def texts(key):
+        return [_phrase(i["text"]) for i in summary.get(key) or [] if not i.get("more") and i.get("text")]
+    done, doing, chores = texts("done"), texts("doing"), texts("chores")
+    variants = []
+    for n_done, n_doing in ((2, 1), (1, 1), (2, 0), (1, 0), (0, 1)):
+        parts = []
+        if n_done and done:
+            parts.append("Zrobione: " + "; ".join(done[:n_done]) + ".")
+        if n_doing and doing:
+            parts.append("W toku: " + doing[0] + ".")
+        if parts:
+            variants.append(" ".join(parts))
+    if not done and not doing and chores:
+        variants += ["Same porządki: " + "; ".join(chores[:n]) + "." for n in (2, 1)]
+    for text in variants:
+        if len(text) <= HEADLINE_MAX:
+            return text
+    return _counted(len(done), len(doing), len(chores))
+
+
+def _counted(done: int, doing: int, chores: int = 0) -> str:
+    """Zdanie z samych liczb, gdy pozycje się nie mieszczą: „Zrobione: 3 rzeczy, w toku: 1.”."""
     parts = []
-    if texts("done", 2):
-        parts.append("Zrobione: " + "; ".join(texts("done", 2)) + ".")
-    if texts("doing", 1):
-        parts.append("W toku: " + texts("doing", 1)[0] + ".")
-    if not parts and texts("chores", 2):
-        parts.append("Same porządki: " + "; ".join(texts("chores", 2)) + ".")
-    return clean(" ".join(parts), HEADLINE_MAX)
+    if done:
+        parts.append(f"zrobione: {done} " + _plural(done, "rzecz", "rzeczy", "rzeczy"))
+    if doing:
+        parts.append(f"w toku: {doing} " + _plural(doing, "rzecz", "rzeczy", "rzeczy"))
+    if not parts and chores:
+        parts.append(f"same porządki: {chores} " + _plural(chores, "pozycja", "pozycje", "pozycji"))
+    text = ", ".join(parts)
+    return (text[:1].upper() + text[1:] + ".") if text else ""
 
 
 def _item(ref: str, text: str, about: str = "", next_: str = "", sessionId: str = "", since: float = 0.0,
-          kind: str = "") -> dict:
+          kind: str = "", also: bool = False) -> dict:
     """Pozycja „Na daily”. `kind`: "blocked" — „Czeka na mnie”, agent stoi teraz (z `sessionId` i `since`, żeby
-    widok na żywo poznał, że już nieaktualna); "attention" — „Uwaga” (test, konflikt numerów)."""
+    widok na żywo poznał, że już nieaktualna); "attention" — „Uwaga” (test, konflikt numerów). `also` — wzmianka
+    o karcie opisanej w innym projekcie (bez miejsca w „Dziś w skrócie”). Dopiski (`about`, `next`) to całe
+    zdania (fit) — za długie znikają, zamiast urywać się w pół zdania."""
     item = {"ref": ref if TICKET_RE.match(ref or "") else "", "text": clean(text, TEXT_MAX)}
+    about = fit(about, ABOUT_MAX) if about else ""
     if about:
-        item["about"] = clean(about, ABOUT_MAX)
+        item["about"] = about
+    next_ = fit(next_, ABOUT_MAX) if next_ else ""
     if next_:
-        item["next"] = clean(next_, ABOUT_MAX)
+        item["next"] = next_
+    if also:
+        item["also"] = True
     if kind:
         item["kind"] = kind
     if sessionId:
@@ -957,34 +1149,44 @@ def _split_ref(title: str) -> tuple[str, str]:
 
 
 BRIEF_MAX = 5
-BRIEF_SENTENCE = 240
+BRIEF_SENTENCE = 320       # granica bezpieczeństwa; model ma pisać zdania do ok. 200 znaków
 
 
-def rules_brief(projects: dict, order: list[str]) -> list[str]:
+def rules_brief(projects: dict, order: list[str], labels: dict | None = None) -> list[str]:
     """„Dziś w skrócie” bez modelu: zdanie na projekt z pracą (co skończone, co w toku), potem jedna
-    linia o projektach z samymi porządkami. „Czeka na ciebie” dokłada widok na żywo (data.live_brief)."""
+    linia o projektach z samymi porządkami. „Czeka na ciebie” dokłada widok na żywo (data.live_brief).
+    Projekt nazwany jak na tablicy pracy (`labels`: nazwa katalogu → nazwa z tablicy). Wzmianki o karcie
+    opisanej w innym projekcie („zmiany w ramach K-1 …”) się nie liczą — karta ma swoje zdanie w projekcie
+    głównym. Za długie zdanie traci części, a na końcu zostają liczby — bez ucinania w pół zdania."""
+    labels = labels or {}
     out = []
     chores_only = []
     for name in order:
         s = projects.get(name) or {}
-        done = [i["text"] for i in s.get("done") or [] if not i.get("more")]
-        doing = [i["text"] for i in s.get("doing") or [] if not i.get("more")]
+        label = labels.get(name) or name
+        done = [_phrase(i["text"]) for i in s.get("done") or [] if not i.get("more") and not i.get("also")]
+        doing = [_phrase(i["text"]) for i in s.get("doing") or [] if not i.get("more") and not i.get("also")]
         if not done and not doing:
-            if s.get("chores"):
-                chores_only.append(name)
+            if s.get("chores") and not any(i.get("also") for k in ("done", "doing") for i in s.get(k) or []):
+                chores_only.append(label)
             continue
         if len(out) >= BRIEF_MAX - 1:
             continue
-        parts = []
-        if done:
-            parts.append("skończone: " + _lower(done[0]).rstrip(".")
-                         + (f" (i {len(done) - 1} więcej)" if len(done) > 1 else ""))
-        if doing:
-            parts.append("w toku: " + _lower(doing[0]).rstrip("."))
-        out.append(clean(f"{name} — " + "; ".join(parts) + ".", BRIEF_SENTENCE))
+        more = f" (i {len(done) - 1} więcej)" if len(done) > 1 else ""
+        first_done = "skończone: " + _lower(done[0]) + more if done else ""
+        first_doing = "w toku: " + _lower(doing[0]) if doing else ""
+        variants = ["; ".join(p for p in (first_done, first_doing) if p), first_done, first_doing]
+        sentence = next((f"{label} — {v}." for v in variants if v and len(f"{label} — {v}.") <= BRIEF_SENTENCE), "")
+        out.append(sentence or f"{label} — {_lower(_counted(len(done), len(doing)))}")
     if chores_only:
-        out.append(clean("Same porządki: " + ", ".join(chores_only[:6])
-                         + (f" i {len(chores_only) - 6} innych" if len(chores_only) > 6 else "") + ".", BRIEF_SENTENCE))
+        shown = list(chores_only[:6])
+        while True:
+            sentence = "Same porządki: " + ", ".join(shown) \
+                + (f" i {len(chores_only) - len(shown)} innych" if len(chores_only) > len(shown) else "") + "."
+            if len(sentence) <= BRIEF_SENTENCE or len(shown) <= 1:
+                break
+            shown.pop()
+        out.append(sentence)
     return out[:BRIEF_MAX]
 
 
@@ -997,12 +1199,14 @@ def _lower(text: str) -> str:
 
 def validate_brief(raw, refs: dict | None = None) -> list[str]:
     """Zdania „Dziś w skrócie” z odpowiedzi modelu: napisy bez żargonu, ścieżek, angielskiego i samych
-    numerów, ID ticketów usunięte z treści; najwyżej BRIEF_MAX. Mniej niż dwa dobre — pusta lista (reguły)."""
+    numerów, ID ticketów usunięte z treści, tylko całe zdania (fit); najwyżej BRIEF_MAX. Mniej niż dwa dobre —
+    pusta lista (reguły)."""
     out = []
     for sentence in raw if isinstance(raw, list) else []:
         if not isinstance(sentence, str):
             continue
-        text, _ref, problem = _human(clean(sentence, BRIEF_SENTENCE), refs or {})
+        # Całe zdania w limicie; pierwsze zdanie za długie — pozycja odpada (nigdy „…i w…” w pół zdania).
+        text, _ref, problem = _human(fit(one_line(sentence), BRIEF_SENTENCE), refs or {})
         if not text or problem or JUNK_ANY.search(text):
             continue
         if text[-1] not in ".!?…":
@@ -1052,18 +1256,18 @@ def validate(data, all_facts: list[dict], local: bool = False) -> dict[str, dict
     if not isinstance(data, dict) or not isinstance(data.get("projects"), list):
         raise Invalid("brak listy projects")
     names = {f["project"]: f for f in all_facts}
-    lower = {n.lower(): n for n in names}
     out: dict[str, dict] = {}
     for entry in data["projects"][:50]:
         if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
             continue
-        name = names.get(entry["name"]) and entry["name"] or lower.get(entry["name"].strip().lower())
+        name = project_of(entry["name"], all_facts)
         if not name or name in out:
             continue
         refs = known_refs(names[name])
         standup = {}
         for key, limit in (("theme", THEME_MAX), ("headline", HEADLINE_MAX)):
-            text = clean(one_line(entry.get(key)), limit) if isinstance(entry.get(key), str) else ""
+            # Całe zdania w limicie (fit); za długie — reguły (headline) albo nic (theme).
+            text = fit(one_line(entry.get(key)), limit) if isinstance(entry.get(key), str) else ""
             text, _ref, problem = _human(text, refs)
             standup[key] = "" if problem else text
         rejected: dict[str, int] = {}
@@ -1091,6 +1295,21 @@ def validate(data, all_facts: list[dict], local: bool = False) -> dict[str, dict
     if not out:
         raise Invalid("żaden projekt z odpowiedzi nie pasuje do schematu")
     return out
+
+
+def project_of(name: str, all_facts: list[dict]) -> str:
+    """Projekt (nazwa katalogu, klucz faktów) z nazwy w odpowiedzi modelu: dokładnie albo bez wielkości liter —
+    nazwa z tablicy pracy (`label`, pod nią model widzi projekt) albo nazwa katalogu. Nieznana — pusty napis."""
+    for key in ("project", "label"):
+        hit = next((f["project"] for f in all_facts if f.get(key) == name), "")
+        if hit:
+            return hit
+    folded = (name or "").strip().casefold()
+    for key in ("project", "label"):
+        hit = next((f["project"] for f in all_facts if (f.get(key) or "").casefold() == folded), "")
+        if hit:
+            return hit
+    return ""
 
 
 def _move_chores(standup: dict) -> None:
@@ -1170,8 +1389,12 @@ def _valid_item(raw, refs: dict, group: str):
         raw = {"text": raw}
     if not isinstance(raw, dict) or not isinstance(raw.get("text"), str):
         return None
-    text = clean(one_line(raw["text"]), TEXT_MAX)
-    if not text or JUNK_ANY.search(text) or (group == "waiting" and JUNK_WAITING.search(text)):
+    if not clean(raw["text"]):
+        return None
+    text = fit(one_line(raw["text"]), TEXT_MAX)
+    if not text:
+        return REJECTED   # jedno zdanie dłuższe niż limit — nie do przeczytania na karcie
+    if JUNK_ANY.search(text) or (group == "waiting" and JUNK_WAITING.search(text)):
         return None
     ref = raw.get("ref") if isinstance(raw.get("ref"), str) else ""
     ref = refs.get(ticket_key(ref), "") if ref else ""
@@ -1182,11 +1405,11 @@ def _valid_item(raw, refs: dict, group: str):
     about = raw.get("about") if isinstance(raw.get("about"), str) else raw.get("why")
     if group in ("done", "doing", "next") and isinstance(about, str) and clean(one_line(about)) \
             and not JUNK_ANY.search(about):
-        about, _ref, problem = _human(clean(one_line(about), ABOUT_MAX), refs)
+        about, _ref, problem = _human(fit(one_line(about), ABOUT_MAX), refs)
         if about and not problem:
             item["about"] = about
     if group == "doing" and isinstance(raw.get("next"), str) and clean(one_line(raw["next"])):
-        nxt, _ref, problem = _human(clean(one_line(raw["next"]), ABOUT_MAX), refs)
+        nxt, _ref, problem = _human(fit(one_line(raw["next"]), ABOUT_MAX), refs)
         if nxt and not problem:
             item["next"] = nxt[:1].lower() + nxt[1:]
     return item
@@ -1215,6 +1438,8 @@ def merge(model: dict[str, dict], all_facts: list[dict]) -> dict[str, dict]:
         for key in ("done", "doing", "next", "chores"):
             if rejected.get(key) and not chosen.get(key) and fallback.get(key):
                 chosen[key] = fallback[key]
+        if not chosen.get("headline"):   # odrzucony (np. za długi) i bez pozycji modelu — z pozycji po scaleniu
+            chosen["headline"] = _headline(chosen) or fallback.get("headline") or ""
         out[fact["project"]] = chosen
     return out
 
@@ -1227,7 +1452,9 @@ FINISHED = ("finished", "Skończone dziś")
 def as_text(standup: dict, names: list[str], heading: str = "", brief=None, notes: dict | None = None) -> str:
     """Zwykły tekst „Na daily” (do przeczytania albo wklejenia na czat zespołu): „Dziś w skrócie”, potem
     projekty — skończone dziś (notki po tickecie), praca, porządki. Pozycje „już nieaktualne” (stale)
-    pomijamy — tekst ma się zgadzać z tym, co widać w oknie Tide."""
+    pomijamy — tekst ma się zgadzać z tym, co widać w oknie Tide. Projekt pod nazwą z tablicy pracy
+    (`standup["labels"]` albo `label` projektu w report.json), inaczej pod nazwą katalogu."""
+    labels = standup.get("labels") or {}
     lines = [heading] if heading else []
     brief = [b for b in brief or [] if b]
     if brief:
@@ -1243,7 +1470,7 @@ def as_text(standup: dict, names: list[str], heading: str = "", brief=None, note
             continue
         if lines:
             lines.append("")
-        lines.append(name)
+        lines.append(labels.get(name) or s.get("label") or name)
         if s.get("theme"):
             lines.append(f"Na czym polega: {s['theme']}")
         if finished:

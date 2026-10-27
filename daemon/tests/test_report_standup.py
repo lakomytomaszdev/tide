@@ -309,7 +309,7 @@ class RulesTest(StandupWorld):
              "sessions": [], "ticket": ""} for i in range(6)]}
         r = standup.rules(fact)
         self.assertEqual(len(r["doing"]), 1)
-        self.assertTrue(r["doing"][0]["text"].startswith("6 rozpoczętych zmian czeka na przejrzenie: b0, b1"))
+        self.assertTrue(r["doing"][0]["text"].startswith("6 rozpoczętych zmian czeka na przejrzenie: B0, B1"))
         many = {"project": "y", "plans": [], "questions": [], "units": [], "tickets": [
             {"id": f"Y-{i}", "key": f"Y-{i}", "title": f"t{i}", "state": "gotowe", "note": "", "result": "",
              "question": "", "branch": "", "review": ""} for i in range(20)]}
@@ -421,15 +421,20 @@ class ValidateTest(StandupWorld):
 
     def test_lengths_capped_and_control_chars(self):
         facts = standup.facts(self.report)
-        out = standup.validate({"projects": [{"name": "alpha", "theme": "a\x00b" + "t" * 5000,
-                                              "done": [{"text": f"Pozycja {i} " + "x" * 5000, "why": "y‮" * 2000}
+        long = " ".join(f"Zdanie numer {n} mówi o postępie pracy." for n in range(300))
+        out = standup.validate({"projects": [{"name": "alpha", "theme": "a\x00b. " + long,
+                                              "done": [{"text": f"Pozycja {i}. " + long, "why": "Krótko‮. " + long}
                                                        for i in range(30)]}]}, facts)
         alpha = out["alpha"]
         self.assertLessEqual(len(alpha["theme"]), standup.THEME_MAX)
         self.assertNotIn("\x00", alpha["theme"])
+        self.assertTrue(alpha["theme"].endswith("."), "całe zdania, bez „…”")
         self.assertEqual(len(alpha["done"]), standup.ITEMS_MAX)
         self.assertLessEqual(len(alpha["done"][0]["text"]), standup.TEXT_MAX)
+        self.assertTrue(alpha["done"][0]["text"].endswith("."), alpha["done"][0]["text"])
         self.assertNotIn("‮", alpha["done"][0]["about"], "stare pole „why” czytane jako „about”")
+        for item in alpha["done"]:
+            self.assertNotIn("…", item["text"] + item.get("about", ""))
 
     def test_parse_answer_forms(self):
         self.assertEqual(summarize.parse_answer('```json\n{"projects": []}\n```'), {"projects": []})
@@ -649,7 +654,8 @@ class CategoryTest(StandupWorld):
         self.assertEqual(search["category"], "work")
         self.assertEqual(search["areas"], [["search.py", 1], ["search_test.py", 1]])
         r = standup.rules(fact)
-        title = standup._unit_title(plan)
+        title = standup._display_title(plan)[0]
+        self.assertEqual(title, "Agent-plan", "tytuł z nazwy gałęzi bez „docs ·” i z wielkiej litery")
         self.assertIn(title, [i["text"] for i in r["chores"]])
         for key in standup.GROUP_KEYS:
             self.assertNotIn(title, [i["text"] for i in r[key]], key)
