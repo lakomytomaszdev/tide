@@ -6,7 +6,10 @@
 // w teście z przykładowymi danymi.
 //
 // Usuwanie kontenera i porządki idą przez potwierdzenie (wzór z widoku Worktrees): okno wymienia
-// dokładnie, co zniknie, a dopiero „Usuń”/„Wyczyść” wysyła prośbę. Zatrzymanie i restart są odwracalne,
+// dokładnie, co zniknie, a dopiero „Usuń”/„Wyczyść” wysyła prośbę. Potwierdzenie porządków prosi
+// o świeży odczyt miejsca (freshDiskRequested → DiskNow) i do jego nadejścia „Wyczyść” jest wyłączone:
+// lista z odczytu sprzed np. `docker compose down` gdzie indziej nie zawierałaby świeżo osieroconych
+// wolumenów baz, a `volumes/prune` usunąłby je mimo to. Zatrzymanie i restart są odwracalne,
 // więc idą od razu — przycisk jest wyłączony, dopóki usługa nie odpowie.
 import QtQuick
 import QtQuick.Layouts
@@ -30,6 +33,7 @@ Rectangle {
     signal openLogsRequested(string id)                    // karta Konsoli z docker logs -f
     signal shellRequested(string id)
     signal pruneRequested(string categories)               // lista JSON z id kategorii
+    signal freshDiskRequested()                            // świeży Disk dla potwierdzenia porządków
     signal linkRequested(string url)
 
     // Stan widoku.
@@ -49,6 +53,9 @@ Rectangle {
     property string confirming: ""           // "", "remove", "prune"
     property string removeId: ""
     property bool pruning: false
+    property int diskFreshSerial: 0          // ile świeżych odczytów Disk przyszło (backend.diskFreshSerial)
+    property int pruneAskSerial: -1          // stan licznika w chwili otwarcia potwierdzenia
+    property real pruneAskedTs: 0
     property var pruneResult: null
 
     readonly property var problem: Logic.problem(snapshot, serviceUp)
@@ -61,6 +68,11 @@ Rectangle {
     readonly property var removeEntry: Logic.findContainer(snapshot, removeId)
     readonly property var categories: disk && disk.categories ? disk.categories : []
     readonly property var pruneList: Logic.pruneSummary(categories, picks, snapshot)
+    // Odczyt miejsca nowszy niż otwarcie potwierdzenia — dopiero na nim można porządkować.
+    readonly property bool pruneDiskFresh: confirming === "prune" && diskFreshSerial > pruneAskSerial
+                                           && !!(disk && disk.ok) && (disk.generatedTs || 0) >= Math.floor(pruneAskedTs)
+    readonly property bool pruneDiskFailed: confirming === "prune" && diskFreshSerial > pruneAskSerial
+                                            && !(disk && disk.ok)
     readonly property bool collapsedStopped: {
         if (stoppedCollapsed !== null) return stoppedCollapsed
         const stopped = groups.find(g => g.kind === "stopped")
@@ -186,10 +198,15 @@ Rectangle {
     }
 
     function askPrune() {
-        if (Logic.pickedIds(categories, picks).length > 0 && !pruning) confirming = "prune"
+        if (Logic.pickedIds(categories, picks).length === 0 || pruning) return
+        pruneAskSerial = diskFreshSerial
+        pruneAskedTs = Date.now() / 1000
+        confirming = "prune"
+        freshDiskRequested()
     }
 
     function confirmPrune() {
+        if (!pruneDiskFresh) return  // jeszcze bez świeżego odczytu — nic nie wysyłamy
         const ids = Logic.pickedIds(categories, picks)
         confirming = ""
         if (ids.length === 0) return
@@ -606,7 +623,9 @@ Rectangle {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     text: page.confirming === "prune"
-                          ? "Wyczyścić zaznaczone i odzyskać ok. " + Logic.bytes(Logic.pickedBytes(page.categories, page.picks)) + "?"
+                          ? (page.pruneDiskFresh ? "Wyczyścić zaznaczone i odzyskać ok. "
+                                                   + Logic.bytes(Logic.pickedBytes(page.categories, page.picks)) + "?"
+                                                 : "Wyczyścić zaznaczone?")
                           : "Usunąć kontener " + (page.removeEntry ? page.removeEntry.container.name : page.removeId) + "?"
                     textFormat: Text.PlainText
                     color: Tide.Tokens.textPrimary
@@ -643,15 +662,22 @@ Rectangle {
                     }
                 }
 
-                // Porządki: lista dokładnie tego, co zniknie, w kolejności usuwania.
+                // Porządki: lista dokładnie tego, co zniknie, w kolejności usuwania — ze świeżego odczytu.
                 Text {
+                    objectName: "pruneIntro"
                     Layout.fillWidth: true
                     visible: page.confirming === "prune"
                     wrapMode: Text.WordWrap
-                    text: "Usunę dokładnie te kategorie, w tej kolejności. Docker sam omija wszystko, czego używa "
+                    text: page.pruneDiskFailed ? "Nie udało się policzyć miejsca od nowa: "
+                                                 + (page.disk && page.disk.error ? page.disk.error : "brak odpowiedzi usługi")
+                                                 + ". Bez świeżego odczytu nic nie wyczyszczę."
+                        : !page.pruneDiskFresh ? "Liczę od nowa, co jest do odzyskania — Docker mógł się zmienić od ostatniego "
+                                                 + "odczytu, a lista ma pokazać dokładnie to, co zniknie."
+                        : page.pruneList.length === 0 ? "Zaznaczonych kategorii nie ma już czego odzyskać."
+                        : "Usunę dokładnie te kategorie, w tej kolejności. Docker sam omija wszystko, czego używa "
                           + "działający kontener."
                     textFormat: Text.PlainText
-                    color: Tide.Tokens.textSecondary
+                    color: page.pruneDiskFailed ? Tide.Tokens.negative : Tide.Tokens.textSecondary
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: 13
                 }
@@ -659,7 +685,7 @@ Rectangle {
                     id: pruneFlick
                     Layout.fillWidth: true
                     Layout.preferredHeight: Math.min(pruneColumn.implicitHeight, 360)
-                    visible: page.confirming === "prune"
+                    visible: page.confirming === "prune" && page.pruneDiskFresh
                     clip: true
                     contentHeight: pruneColumn.implicitHeight
                     boundsBehavior: Flickable.StopAtBounds
@@ -669,7 +695,7 @@ Rectangle {
                         width: pruneFlick.width - 12
                         spacing: 10
                         Repeater {
-                            model: page.confirming === "prune" ? page.pruneList : []
+                            model: page.confirming === "prune" && page.pruneDiskFresh ? page.pruneList : []
                             Column {
                                 id: entry
                                 required property var modelData
@@ -729,9 +755,12 @@ Rectangle {
                     }
                     PillButton {
                         objectName: "confirmButton"
-                        text: page.confirming === "prune"
-                              ? "Wyczyść · " + Logic.bytes(Logic.pickedBytes(page.categories, page.picks))
-                              : "Usuń kontener"
+                        text: page.confirming !== "prune" ? "Usuń kontener"
+                            : page.pruneDiskFailed ? "Nie mogę policzyć"
+                            : !page.pruneDiskFresh ? "liczę…"
+                            : page.pruneList.length === 0 ? "Nic do wyczyszczenia"
+                            : "Wyczyść · " + Logic.bytes(Logic.pickedBytes(page.categories, page.picks))
+                        enabled: page.confirming !== "prune" || (page.pruneDiskFresh && page.pruneList.length > 0)
                         fill: Tide.Tokens.negative
                         textColor: Tide.Tokens.backgroundDesktop
                         strong: true

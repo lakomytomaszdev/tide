@@ -178,6 +178,17 @@ Item {
                      + " | " + Logic.bytes(Logic.pickedBytes(d.disk.categories, picks)))
         console.warn("PRUNEWARN " + prune.map(p => p.lines.filter(l => l.warn).map(l => l.text).join("/")).join(" ¦ "))
         console.warn("PRUNESTOP " + prune[2].lines[0].text)
+        const paused = JSON.parse(JSON.stringify(snap))
+        paused.groups[0].containers[0].running = false
+        paused.groups[0].containers[0].state = "paused"
+        console.warn("PAUSED " + Logic.stoppedNames(paused).indexOf("bocatalog-postgres") + "|"
+                     + Logic.stateLine(paused.groups[0].containers[0], %NOW%).text)
+        const lan = JSON.parse(JSON.stringify(snap))
+        lan.groups[0].containers[0].ports = [{ hostIp: "10.20.1.5", hostPort: 8088, containerPort: 80, proto: "tcp",
+                                               likelyHttp: true, url: "http://10.20.1.5:8088" }]
+        console.warn("URLS " + [Logic.openableUrl(lan, "http://10.20.1.5:8088"), Logic.openableUrl(lan, "http://localhost:8080"),
+                                Logic.openableUrl(lan, "http://192.168.1.6:8088"), Logic.openableUrl(lan, "file:///etc/passwd"),
+                                Logic.openableUrl(snap, "http://localhost:8080/../x"), Logic.ports(lan.groups[0].containers[0])[0].http].join("|"))
         const anon = JSON.parse(JSON.stringify(d.disk.categories))
         anon[3].anonymousVolumes = 2
         console.warn("ANON " + Logic.pruneSummary(anon, { stopped: true }, snap)[0].lines.filter(l => l.warn).map(l => l.text).join("/"))
@@ -233,6 +244,9 @@ Item {
         self.assertEqual(warned(log, "PRUNESTOP"), "4 kontenery: app4-hotfix-tom-142-web-1, app4-release-i-web-1, "
                          "app4-release-t-postgres-1, translations-slack-bot")
         self.assertIn("2 kontenery mają wolumeny anonimowe", warned(log, "ANON"))
+        self.assertEqual(warned(log, "PAUSED"), "-1|postgres:16 · wstrzymany", "wstrzymany nie trafia do porządków")
+        self.assertEqual(warned(log, "URLS"), "true|true|false|false|false|true",
+                         "link tylko do adresu z migawki, także na konkretnym adresie hosta")
         self.assertEqual(warned(log, "RESULT"), "Częściowo — odzyskano 5,9 GB | Pamięć podręczna budowania: odzyskano 5,9 GB "
                          "(121 elementów) | !Wolumeny bez kontenera: Docker właśnie porządkuje")
         self.assertEqual(warned(log, "NOTES"), "zatrzymany | uruchomiony — już działał | Docker nie pozwolił zatrzymać: boom"
@@ -260,6 +274,7 @@ Item {
         onOpenLogsRequested: id => root.calls.push("openlogs:" + id.slice(0, 6))
         onShellRequested: id => root.calls.push("shell:" + id.slice(0, 6))
         onPruneRequested: list => root.calls.push("prune:" + list)
+        onFreshDiskRequested: root.calls.push("fresh")
         onLinkRequested: url => root.calls.push("link:" + url)
     }
     function find(item, name) {
@@ -334,7 +349,25 @@ Item {
         page.togglePick("cache")
         page.togglePick("volumes")
         page.askPrune()
-        console.warn("PRUNEDIALOG " + texts(find(page, "confirmDialog"), []).join(" ¦ "))
+        // Potwierdzenie prosi o świeży Disk i do jego nadejścia nie pozwala wyczyścić.
+        const button = find(page, "confirmButton")
+        console.warn("WAITING " + [root.calls.join(","), button.text, button.enabled,
+                                   texts(find(page, "confirmDialog"), [], "pruneIntro").join(""),
+                                   texts(find(page, "confirmDialog"), [], "pruneWarn").length].join("|"))
+        page.confirmPrune()
+        console.warn("EARLY " + root.calls.join(",") + "|" + page.confirming)
+        // Odczyt z pamięci sprzed otwarcia (choć licznik urósł) — dalej czeka.
+        page.disk = Object.assign({}, root.d.disk, { generatedTs: Math.floor(page.pruneAskedTs) - 60 })
+        page.diskFreshSerial++
+        console.warn("STALE " + button.enabled + "|" + button.text)
+        // Świeży odczyt: po `docker compose down` gdzie indziej przybyło wolumenów bez kontenera.
+        const fresh = JSON.parse(JSON.stringify(root.d.disk))
+        fresh.generatedTs = Math.floor(Date.now() / 1000) + 1
+        fresh.categories[2].count = 12
+        fresh.categories[2].reclaimableBytes = 2147483648
+        page.disk = fresh
+        page.diskFreshSerial++
+        console.warn("PRUNEDIALOG " + texts(find(page, "confirmDialog"), []).join(" ¦ ") + "|" + button.enabled)
         page.confirmPrune()
         console.warn("PRUNING " + root.calls.join(",") + "|" + page.pruning + "|" + find(page, "cleanButton").text
                      + "|" + find(page, "cleanButton").enabled)
@@ -343,8 +376,12 @@ Item {
         console.warn("PRUNED " + texts(find(page, "pruneResult"), []).join(" ¦ ") + "|" + Object.keys(page.picks).length)
         page.togglePick("images")
         page.askPrune()
+        page.disk = { ok: false, error: "Docker nie odpowiada na czas", categories: [] }
+        page.diskFreshSerial++
+        console.warn("DISKFAIL " + button.text + "|" + button.enabled + "|"
+                     + texts(find(page, "confirmDialog"), [], "pruneIntro").join(""))
         page.confirming = ""  // Anuluj
-        console.warn("CANCEL " + root.calls.length + "|" + page.picks.images)
+        console.warn("CANCEL " + root.calls.filter(c => c.indexOf("prune:") === 0).length + "|" + page.picks.images)
         // Otwarcie na elemencie: testcontainers się odsłaniają, szukanie znika, zatrzymane się rozwijają.
         page.query = "youtrack"
         console.warn("REVEAL " + [page.reveal("testcontainers-ryuk-c6715127"), page.showTc, page.flashId.slice(0, 6),
@@ -376,13 +413,24 @@ Item {
                          % ((self.cid("cookapp-api")[:6],) * 2))
         self.assertEqual(warned(log, "CLOSED"), "|false")
         self.assertEqual(warned(log, "NOPICK"), "")
+        waiting = warned(log, "WAITING").split("|")
+        self.assertEqual(waiting[:3], ["fresh", "liczę…", "false"])
+        self.assertIn("Liczę od nowa", waiting[3])
+        self.assertEqual(waiting[4], "0", "bez świeżego odczytu lista się nie pokazuje")
+        self.assertEqual(warned(log, "EARLY"), "fresh|prune", "„Wyczyść” przed świeżym odczytem nic nie wysyła")
+        self.assertEqual(warned(log, "STALE"), "false|liczę…", "odczyt starszy niż otwarcie potwierdzenia nie wystarcza")
         dialog = warned(log, "PRUNEDIALOG")
-        for expected in ("Wyczyścić zaznaczone i odzyskać ok. 6,3 GB?", "1. Wolumeny bez kontenera", "410 MB",
+        self.assertTrue(dialog.endswith("|true"), dialog)
+        self.assertIn("12 wolumenów bez kontenera (także nazwane)", dialog, "lista ze świeżego odczytu")
+        for expected in ("Wyczyścić zaznaczone i odzyskać ok. 7,9 GB?", "1. Wolumeny bez kontenera", "2,0 GB",
                          "⚠ mogą trzymać dane baz — usuniętych nie da się odzyskać", "2. Pamięć podręczna budowania",
-                         "Anuluj", "Wyczyść · 6,3 GB"):
+                         "Anuluj", "Wyczyść · 7,9 GB"):
             self.assertIn(expected, dialog)
         self.assertNotIn("Nieużywane obrazy", dialog, "potwierdzenie wymienia tylko zaznaczone")
-        self.assertEqual(warned(log, "PRUNING"), 'prune:["cache","volumes"]|true|Porządkuję…|false')
+        self.assertEqual(warned(log, "PRUNING"), 'fresh,prune:["cache","volumes"]|true|Porządkuję…|false')
+        diskfail = warned(log, "DISKFAIL").split("|")
+        self.assertEqual(diskfail[:2], ["Nie mogę policzyć", "false"])
+        self.assertIn("Docker nie odpowiada na czas", diskfail[2])
         self.assertEqual(warned(log, "PRUNED"), "Odzyskano 5,9 GB ¦ OK ¦ Wolumeny bez kontenera: odzyskano 0 B|0")
         self.assertEqual(warned(log, "CANCEL"), "1|true", "Anuluj nic nie wysyła (jedno wywołanie to wcześniejsze porządki)")
         self.assertEqual(warned(log, "REVEAL"), "true|true|%s|true||true|compose:app4-release-localhost|false"
@@ -447,6 +495,15 @@ Item {
         signal opened(string what, string id, bool ok)
         function refreshStats() { stats++ }
         function refreshDisk() { disks++ }
+        property int diskFreshSerial: 0
+        property int freshCalls: 0
+        function refreshDiskNow() {
+            freshCalls++
+            const disk = JSON.parse(diskJson)
+            disk.generatedTs = Math.floor(Date.now() / 1000) + 1
+            diskJson = JSON.stringify(disk)
+            diskFreshSerial++
+        }
         function reload() {}
         function logs(id, lines) { logsCalls++; logsReady(id, JSON.stringify({ ok: true, lines: [{ text: "x", stderr: false }] })) }
         function start(id) { actions.push("start"); actionFinished(id, "start", JSON.stringify({ ok: true, note: "" })) }
@@ -472,7 +529,8 @@ Item {
         property string pending: ""
         onTriggered: {
             if (step === 0) {
-                console.warn("PENDING " + [pending, early.pendingItem, early.page.flashId === id("cookapp-api")].join("|"))
+                console.warn("PENDING " + [pending, early.pendingItem, early.page.flashId === id("cookapp-api"),
+                                           early.page.logsId === id("cookapp-api"), late.logsCalls > 0, front.freshCalls].join("|"))
                 console.warn("POLL " + [front.stats > 1, back.stats, front.disks > 0, back.disks].join("|"))
                 shown.active = false
                 hidden.active = true
@@ -501,6 +559,7 @@ Item {
         page.containerAction(id("app4-release-t-postgres-1"), "start")
         page.groupAction(page.groups.find(g => g.id === "compose:cookapp"), "stop")
         page.togglePick("cache")
+        page.askPrune()
         page.confirmPrune()
         page.containerAction(id("cookapp-api"), "shell")
         console.warn("ROUTED " + [front.actions.join(","), page.notes[id("cookapp-docs")].text,
@@ -526,7 +585,8 @@ Item {
         rail = json.loads(warned(log, "RAIL"))
         self.assertEqual(rail, {"label": "Docker Engine", "value": "29.9.2 · API 1.56",
                                 "note": "socket /var/run/docker.sock · zmiany na żywo"})
-        self.assertEqual(warned(log, "PENDING"), "cookapp-api||true", "element czeka na pierwszą migawkę")
+        self.assertEqual(warned(log, "PENDING"), "cookapp-api||true|true|true|1",
+                         "element czeka na pierwszą migawkę, a kontener dostaje szufladę logów")
         self.assertEqual(warned(log, "UNKNOWN"), "", "nieznany element w gotowej migawce przepada")
         self.assertEqual(warned(log, "POLL"), "true|0|true|0", "Stats() i Disk() tylko w widoku na wierzchu")
         self.assertEqual(warned(log, "SWITCH"), "true|true|1", "logi odświeżane, dopóki szuflada jest otwarta")
@@ -571,6 +631,27 @@ class BackendDataTest(unittest.TestCase):
         # Bez danych i bez magistrali — pusto, bez plakietki.
         empty = self.mod.create(None, None)
         self.assertEqual((empty.available, empty.badgeText), (False, ""))
+
+    def test_fresh_disk_in_fixture_mode_and_foreign_jobs_expire(self):
+        import time as _time
+        backend = self.mod.create(None, fixture(NOW))
+        seen = []
+        backend.diskChanged.connect(lambda: seen.append(backend.diskFreshSerial))
+        backend.refreshDiskNow()
+        self.assertEqual(seen, [1])
+        self.assertGreaterEqual(json.loads(backend.diskJson)["generatedTs"], int(_time.time()) - 1)
+        # Wynik cudzego zadania (kafelek, drugie okno) nie zostaje na zawsze: po minucie znika, najwyżej 32 wpisy.
+        live = self.mod.Backend(None)
+        live._early["stare"] = (_time.monotonic() - 2 * self.mod.EARLY_TTL_S, "{}")
+        live._action_finished("nowe", "{}")
+        self.assertEqual(sorted(live._early), ["nowe"])
+        for i in range(50):
+            live._action_finished(f"job-{i}", "{}")
+        self.assertLessEqual(len(live._early), self.mod.EARLY_MAX)
+        self.assertIn("job-49", live._early)
+        # Odczyt z pamięci starszy niż już znany (np. Disk po świeżym DiskNow) nie nadpisuje świeżego.
+        self.assertTrue(self.mod.older('{"generatedTs": 5}', '{"generatedTs": 9}'))
+        self.assertFalse(self.mod.older('{"generatedTs": 9}', '{"generatedTs": 5}'))
 
     def test_badge_matches_daemon(self):
         snap = fixture(NOW)["snapshot"]
@@ -632,6 +713,10 @@ class BackendOverDbusTest(unittest.TestCase):
         self.assertTrue(wait_until(lambda: json.loads(backend.statsJson).get("ok"), timeout=10))
         backend.refreshDisk()
         self.assertTrue(wait_until(lambda: json.loads(backend.diskJson).get("ok"), timeout=10))
+        before = len(self.fake.calls("GET", "/system/df"))
+        backend.refreshDiskNow()
+        self.assertTrue(wait_until(lambda: backend.diskFreshSerial == 1, timeout=10))
+        self.assertEqual(len(self.fake.calls("GET", "/system/df")), before + 1, "DiskNow czyta od nowa, mimo pamięci")
 
     def test_2_actions_logs_and_jobs(self):
         backend = self.backend()

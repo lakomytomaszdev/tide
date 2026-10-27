@@ -5,7 +5,8 @@
 // logs — kontener z otwartymi logami, pick — zaznaczona kategoria porządków (można powtórzyć),
 // confirm — prune albo remove:<kontener>, tc — testcontainers widoczne, query — szukanie),
 // showItem(item) — kontener (ID, początek ID, nazwa) albo grupa („compose:cookapp”): odsłania,
-// przewija i podświetla, takeFocus(), railInfo (wersja silnika i socket).
+// przewija i podświetla, a kontenerowi otwiera też szufladę logów („Logi” w popupie kafelka przez
+// ShowWindow), takeFocus(), railInfo (wersja silnika i socket).
 //
 // Statystyki (Stats) tylko wtedy, gdy widok jest na wierzchu, okno nie jest zminimalizowane i coś
 // działa — co STATS_MS; Docker liczy je dla każdego kontenera osobno. Miejsce na dysku (Disk) przy
@@ -51,6 +52,8 @@ Item {
         if (!item) return
         if (page.ready && page.reveal(item)) {
             pendingItem = ""
+            const entry = Logic.findContainer(snapshot, item)
+            if (entry && page.logsId !== entry.container.id) page.openLogs(entry.container.id)
             return
         }
         // Przed pierwszą migawką czekamy; w gotowej migawce nieznany element przepada.
@@ -68,9 +71,12 @@ Item {
         return Array.prototype.map.call(value, String)
     }
 
+    // Tylko adresy HTTP(S) z portów migawki (także port opublikowany na konkretnym adresie hosta) —
+    // nic innego okno nie otwiera. Zwraca, czy otworzyło.
     function openUrl(url) {
-        // Tylko adresy z migawki (http(s)://localhost:<port>) — nic innego okno nie otwiera.
-        if (/^https?:\/\/localhost:\d+\/?$/.test(url)) Qt.openUrlExternally(url)
+        if (!Logic.openableUrl(snapshot, url)) return false
+        Qt.openUrlExternally(url)
+        return true
     }
 
     // Po wiązaniach strony (page.ready liczy się z nowej migawki dopiero po tym sygnale).
@@ -83,6 +89,8 @@ Item {
         stats: view.stats
         disk: view.disk
         serviceUp: view.serviceUp
+        diskFreshSerial: view.backend && view.backend.diskFreshSerial !== undefined ? view.backend.diskFreshSerial : 0
+        onFreshDiskRequested: view.backend.refreshDiskNow()
         preview: view.backend ? view.backend.preview === true : false
         onActionRequested: (id, action) => {
             if (action === "start") view.backend.start(id)
@@ -136,7 +144,7 @@ Item {
         interval: view.diskMs
         repeat: true
         triggeredOnStart: true
-        running: view.active && view.serviceUp && page.ready
+        running: view.active && view.windowShown && view.serviceUp && page.ready
         onTriggered: view.backend.refreshDisk()
     }
     Timer {

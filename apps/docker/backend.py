@@ -15,6 +15,7 @@ Prune i GroupAction to zadania: odpowiedź od razu daje `job`, a wynik przychodz
 ActionFinished(job, json) — backend łączy się z nim od początku i dopasowuje wynik po `job`.
 """
 import json
+import time
 
 from PyQt6.QtCore import QObject, QTimer, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import (QDBusConnection, QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply,
@@ -31,6 +32,8 @@ GONE_ERROR = "usługa tide-daemon zniknęła w trakcie — wynik nieznany, spraw
 ACTIONS = ("start", "stop", "restart")
 EMPTY_STATS = {"ok": False, "error": "", "containers": {}, "total": {}, "missing": []}
 EMPTY_DISK = {"ok": False, "error": "", "categories": [], "totalReclaimableBytes": 0}
+EARLY_TTL_S = 60          # wynik zadania bez znanego `job` (cudze zadanie) nie leży w pamięci dłużej
+EARLY_MAX = 32
 
 
 def badge(snapshot: dict) -> tuple[str, str]:
@@ -53,6 +56,14 @@ def split_data(data) -> tuple[dict, dict, dict, dict]:
     disk = data.get("disk") if isinstance(data.get("disk"), dict) else {}
     logs = data.get("logs") if isinstance(data.get("logs"), dict) else {}
     return snapshot, stats, disk, logs
+
+
+def older(new: str, current: str) -> bool:
+    """Odpowiedź z pamięci usługi starsza niż to, co już mamy (np. Disk z pamięci po świeżym DiskNow)?"""
+    try:
+        return int(json.loads(new).get("generatedTs") or 0) < int(json.loads(current).get("generatedTs") or 0)
+    except (ValueError, TypeError, AttributeError):
+        return False
 
 
 def preview_logs(logs: dict, snapshot: dict, ident: str) -> dict:
@@ -94,7 +105,8 @@ class Backend(QObject):
         self._pending: set = set()      # QDBusPendingCallWatcher muszą żyć do odpowiedzi
         self._reading: set = set()      # Stats/Disk w drodze — bez nakładania się zapytań
         self._jobs: dict = {}           # job → (rodzaj, projekt, akcja, zegar)
-        self._early: dict = {}          # wyniki zadań, które przyszły przed odpowiedzią z `job`
+        self._early: dict = {}          # job → (czas, wynik): przyszedł przed odpowiedzią z `job`
+        self._disk_fresh = 0            # ile świeżych odczytów DiskNow() przyszło (potwierdzenie porządków)
         if self._preview or bus is None:
             return
         bus.connect(SERVICE, PATH, IFACE, "Changed", self._changed)
@@ -118,6 +130,11 @@ class Backend(QObject):
     @pyqtProperty(str, notify=diskChanged)
     def diskJson(self) -> str:
         return self._disk
+
+    # Rośnie z każdą odpowiedzią DiskNow() — potwierdzenie porządków czeka na odczyt nowszy niż jego otwarcie.
+    @pyqtProperty(int, notify=diskChanged)
+    def diskFreshSerial(self) -> int:
+        return self._disk_fresh
 
     # Usługa odpowiada (albo dane z pliku). Stan samego Dockera jest w migawce (available, state, error).
     @pyqtProperty(bool, notify=availableChanged)
@@ -159,6 +176,29 @@ class Backend(QObject):
             self.diskChanged.emit()
             return
         self._read("Disk", "_disk", self.diskChanged)
+
+    @pyqtSlot()
+    def refreshDiskNow(self) -> None:
+        """Świeży odczyt miejsca (DiskNow — bez pamięci usługi) dla potwierdzenia porządków."""
+        if self._preview:
+            disk = json.loads(self._disk)
+            if disk.get("ok"):
+                disk["generatedTs"] = int(time.time())  # podgląd: dane z pliku udają świeży odczyt
+                self._disk = json.dumps(disk, ensure_ascii=False)
+            self._disk_fresh += 1
+            self.diskChanged.emit()
+            return
+        if self.bus is None:
+            return
+
+        def done(ok: bool, value) -> None:
+            if ok and isinstance(value, str):
+                self._disk = value
+            else:
+                self._disk = json.dumps(dict(EMPTY_DISK, error=LOST_ERROR), ensure_ascii=False)
+            self._disk_fresh += 1
+            self.diskChanged.emit()
+        self._call("DiskNow", [], done, timeout=READ_TIMEOUT_MS)
 
     @pyqtSlot(str, int)
     def logs(self, ident: str, lines: int) -> None:
@@ -261,7 +301,7 @@ class Backend(QObject):
         timer.timeout.connect(lambda: self._finish_job(job, None, LOST_ERROR))
         self._jobs[job] = (kind, project, action, timer)
         if job in self._early:
-            self._finish_job(job, self._early.pop(job))
+            self._finish_job(job, self._early.pop(job)[1])
         else:
             timer.start()
 
@@ -269,8 +309,14 @@ class Backend(QObject):
     def _action_finished(self, job: str, text: str) -> None:
         if job in self._jobs:
             self._finish_job(job, text)
-        elif len(self._early) < 32:
-            self._early[job] = text  # odpowiedź z `job` jeszcze w drodze (albo zadanie innego klienta)
+            return
+        # Odpowiedź z `job` jeszcze w drodze — albo zadanie innego klienta (kafelek, drugie okno), na które
+        # nikt tu nie czeka: takie wpisy znikają po EARLY_TTL_S, a pamięć ma najwyżej EARLY_MAX wpisów.
+        now = time.monotonic()
+        self._early = {j: v for j, v in self._early.items() if now - v[0] < EARLY_TTL_S}
+        while len(self._early) >= EARLY_MAX:
+            self._early.pop(next(iter(self._early)))
+        self._early[job] = (now, text)
 
     def _finish_job(self, job: str, text, error: str = "") -> None:
         entry = self._jobs.pop(job, None)
@@ -318,7 +364,7 @@ class Backend(QObject):
 
         def done(ok: bool, value) -> None:
             self._reading.discard(member)
-            if ok and isinstance(value, str) and value != getattr(self, attr):
+            if ok and isinstance(value, str) and value != getattr(self, attr) and not older(value, getattr(self, attr)):
                 setattr(self, attr, value)
                 signal.emit()
         self._call(member, [], done, timeout=READ_TIMEOUT_MS)

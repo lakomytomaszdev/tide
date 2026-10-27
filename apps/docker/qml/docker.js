@@ -109,6 +109,11 @@ function stateLine(c, now) {
     } else if (c.failed) {
         tone = "bad"
         parts.push((c.reason || c.stateText || "padł") + (c.finishedTs ? " · " + ago(c.finishedTs, now) : ""))
+    } else if (c.state === "paused") {
+        parts.push("wstrzymany")
+    } else if (c.state === "restarting") {
+        parts.push("restartuje się" + (c.restartCount > 0 ? " (" + c.restartCount + "×)" : ""))
+        tone = "warn"
     } else if (c.state === "created") {
         parts.push(c.reason || "utworzony, jeszcze nie uruchomiony")
     } else {
@@ -405,8 +410,26 @@ function pickedBytes(categories, picks) {
 
 // Zatrzymane kontenery z migawki (także testcontainers — containers/prune usuwa wszystkie zatrzymane).
 function stoppedNames(snapshot) {
-    return allContainers(snapshot).filter(function (x) { return !x.container.running })
-                                  .map(function (x) { return x.container.name })
+    // Jak w usłudze (disk.py): wstrzymane i restartujące się nie są zatrzymane — containers/prune ich nie usunie.
+    return allContainers(snapshot).filter(function (x) {
+        var c = x.container
+        return !c.running && c.state !== "paused" && c.state !== "restarting"
+    }).map(function (x) { return x.container.name })
+}
+
+// Adresy HTTP z migawki (pole url portów) — tylko je okno otwiera w przeglądarce.
+function knownUrls(snapshot) {
+    var out = []
+    var all = allContainers(snapshot)
+    for (var i = 0; i < all.length; i++) {
+        var list = all[i].container.ports || []
+        for (var j = 0; j < list.length; j++) if (list[j].url) out.push(list[j].url)
+    }
+    return out
+}
+
+function openableUrl(snapshot, url) {
+    return /^https?:\/\/[^\s\/]+\/?$/.test(url || "") && knownUrls(snapshot).indexOf(url) >= 0
 }
 
 // Potwierdzenie porządków: dokładnie to, co zniknie, w kolejności usuwania (obrazy → wolumeny →
