@@ -573,6 +573,48 @@ Item {
         self.assertEqual(warned(log, "SAVE"), 'SetEndpoint({"name":"Mac-Studio","url":"http://10.20.1.40:11434",'
                                               '"kind":"ollama","token":"nowy-token"})@server:Mac-Studio:save')
 
+    def test_vanished_server_drops_edit_draft_and_removal(self):
+        """Serwer znika z listy (usunięty gdzie indziej, ręczna edycja pliku): edycja, szkic z tokenem i potwierdzenie
+        usunięcia znikają razem z nim — nie wracają, gdy serwer o tej nazwie pojawi się znowu."""
+        log = self.harness("VanishSmoke.qml", """import QtQuick
+Item {
+    id: top
+    width: 1500; height: 1000
+    readonly property var d: %DATA%
+    ModelsPage {
+        id: page
+        anchors.fill: parent
+        status: top.d["mac-offline"]
+    }
+    function without(name) {
+        const next = JSON.parse(JSON.stringify(top.d["mac-offline"]))
+        delete next.endpoints[name]
+        delete next.roles.agent
+        return next
+    }
+    Timer {
+        interval: 100
+        running: true
+        onTriggered: {
+            page.edit("Mac-Studio")
+            page.keepDraft("server:Mac-Studio", { url: "http://x:1", kind: "ollama", token: "sekret", clearToken: false })
+            page.status = top.without("Mac-Studio")
+            console.warn("GONE " + page.editing + "|" + JSON.stringify(page.draft("server:Mac-Studio")))
+            page.status = top.d["mac-offline"]
+            console.warn("BACK " + page.editing + "|" + JSON.stringify(page.draft("server:Mac-Studio")))
+            page.askRemove("Mac-Studio")
+            page.status = top.without("Mac-Studio")
+            console.warn("REMOVING " + page.removing)
+            Qt.quit()
+        }
+    }
+}
+""")
+        self.assertEqual(problems(log), [])
+        self.assertEqual(warned(log, "GONE"), "|null")
+        self.assertEqual(warned(log, "BACK"), "|null")
+        self.assertEqual(warned(log, "REMOVING"), "")
+
     def test_role_pinning(self):
         """Z `pinned` z usługi: przypięcie do używanego serwera widać, model i kontekst wysyłają serwer przypięcia,
         „przełączenie przeniesie” tylko przy nieprzypiętych. Bez `pinned` (stara usługa) — tylko do odczytu."""
@@ -645,7 +687,7 @@ Item {
         notes = warned(log, "NOTES").split("|")
         self.assertIn("zostaje na tym serwerze", notes[0])
         self.assertNotIn("przeniesie", notes[0])
-        self.assertIn("przeniesie", notes[1])
+        self.assertIn("przełączenie używanego serwera przeniesie", notes[1])
         self.assertEqual(warned(log, "SWITCH"), "Mac-Studio|")
         self.assertEqual(warned(log, "CALLS"),
                          'SetRole({"role":"agent","model":"qwen3:32b","endpoint":"Mac-Studio"})@role:agent,'

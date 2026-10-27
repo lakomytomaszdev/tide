@@ -53,7 +53,15 @@ Rectangle {
 
     onServerListChanged: {
         const names = serverList.map(s => s.name)
-        if (JSON.stringify(names) !== JSON.stringify(serverNames)) serverNames = names
+        if (JSON.stringify(names) === JSON.stringify(serverNames)) return
+        serverNames = names
+        // Serwer zniknął (usunięty gdzie indziej, ręczna edycja pliku): jego edycja, szkic z tokenem
+        // i potwierdzenie usunięcia znikają z nim, żeby nie wróciły z serwerem o tej samej nazwie.
+        for (const key in drafts) {
+            if (key.indexOf("server:") === 0 && names.indexOf(key.slice(7)) < 0) delete drafts[key]
+        }
+        if (editing !== "" && names.indexOf(editing) < 0) editing = ""
+        if (removing !== "" && names.indexOf(removing) < 0) removing = ""
     }
 
     function serverByName(name) {

@@ -183,7 +183,7 @@ ColumnLayout {
             visible: !role.readOnly
             text: role.row && role.row.pinned
                   ? "Przypięta: zostaje na tym serwerze, gdy przełączysz używany serwer."
-                  : "Idzie za używanym serwerem — przełączenie na Maca przeniesie ją razem z innymi."
+                  : "Idzie za używanym serwerem — przełączenie używanego serwera przeniesie ją razem z innymi."
         }
         Note {
             Layout.fillWidth: true
