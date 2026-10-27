@@ -151,6 +151,14 @@ class DockScriptTest(unittest.TestCase):
         self.assertEqual(types(find(state, 90)), ["system", "panelspacer", "icontasks", "panelspacer", "agents",
                                                   "worktrees", "limits"])
 
+    def test_docker_tile_goes_right_after_system(self):
+        """Kafelek Docker po lewej, zaraz za Systemem — kolejność z DOCK_LEFT w scripts/dock.py."""
+        from scripts import dock
+        self.assertEqual(dock.DOCK_LEFT, ["org.tide.system", "org.tide.docker"])
+        _, state = self.install(fake.desktop_like_this_one(), left=dock.DOCK_LEFT)
+        self.assertEqual(types(find(state, 90)), ["system", "docker", "panelspacer", "icontasks", "panelspacer",
+                                                  "agents", "worktrees", "limits"])
+
     def test_old_limits_widget_is_replaced_only_when_tide_limits_is_installed(self):
         _, state = self.install(fake.desktop_like_this_one(), widgets=["org.tide.agents"])
         self.assertIn("widget", types(find(state, 90)))  # org.limityai.widget zostaje

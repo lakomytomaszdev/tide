@@ -13,6 +13,7 @@ sidebar-<nazwa>.png. Na koniec popup Limitów AI (karty usług z prognozą z tid
 limits-popup-<nazwa>.png. Link do raportu porannego (nagłówek paska i nagłówek popupu agentów)
 w trzech stanach — nowy, przeczytany, brak raportu: sidebar-report-<stan>.png
 i agents-popup-report-<stan>.png. Czas lokalny to Europe/Warsaw (powtarzalne „dziś 07:00”).
+Kafelek Docker rysuje osobno widgets/preview_docker.py (docker-tile-*.png, docker-popup.png, docker-sidebar.png).
 Ten sam kod sprawdza teksty i wymiary w testach
 (widgets/tests/test_dock_tiles.py, widgets/tests/test_sidebar_tiles.py,
 widgets/tests/test_limits_forecast.py).
@@ -742,6 +743,9 @@ def main(argv: list[str]) -> int:
         png = os.path.join(out_dir, f"limits-popup-{name}.png")
         report = render_limits_popup(scenario, png)
         print(f"{os.path.abspath(png)}: popup Limitów AI, {report['height']} px")
+    # Kafelek Docker (kafelek obok System, popup, pasek boczny) — widgets/preview_docker.py.
+    from widgets import preview_docker
+    preview_docker.main([out_dir])
     return 0
 
 

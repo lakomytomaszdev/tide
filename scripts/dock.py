@@ -1,4 +1,4 @@
-"""Dock Tide: dolny panel głównego monitora z aplikacjami pośrodku, systemem z lewej i sprawami AI z prawej.
+"""Dock Tide: dolny panel głównego monitora z aplikacjami pośrodku, systemem i Dockerem z lewej i sprawami AI z prawej.
 
 Użycie: python3 dock.py install|uninstall|show
 
@@ -17,9 +17,10 @@ from scripts.appearance import DATA, PALETTE, STATE  # noqa: E402
 from scripts.panels import evaluate, load, persist_thickness, save, screens, script, settle  # noqa: E402
 
 INSTALLED = STATE / "tide" / "dock-installed.json"
-# Kafelki z lewej strony docka (przed aplikacjami): system. Prośba użytkownika: „ja go chciałem po lewej
-# mieć od ikonek z paska” — po prawej zostają sprawy AI.
-DOCK_LEFT = ["org.tide.system"]
+# Kafelki z lewej strony docka (przed aplikacjami): system, zaraz po nim Docker (mock „Kafelki Tablica
+# i Docker”). Prośba użytkownika: „ja go chciałem po lewej mieć od ikonek z paska” — po prawej zostają
+# sprawy AI.
+DOCK_LEFT = ["org.tide.system", "org.tide.docker"]
 # Kafelki z prawej strony docka (za aplikacjami), w tej kolejności.
 DOCK_RIGHT = ["org.tide.agents", "org.tide.worktrees", "org.tide.limits"]
 DOCK_WIDGETS = DOCK_LEFT + DOCK_RIGHT

@@ -98,7 +98,10 @@ function projects(snapshot) {
     for (var i = 0; i < groups.length; i++) {
         var g = groups[i]
         if (g.kind === "testcontainers" || !(g.running > 0)) continue
-        out.push({ id: g.id, project: g.project || "", label: g.label, compose: g.kind === "compose",
+        // Jeden kontener bez compose — jego nazwa mówi więcej niż „bez compose”.
+        var single = g.kind !== "compose" && g.running === 1
+            ? (g.containers || []).filter(function (c) { return c.running })[0] : null
+        out.push({ id: g.id, project: g.project || "", label: single ? single.name : g.label, compose: g.kind === "compose",
                    ports: httpPorts(g), count: g.running + "/" + (g.kind === "compose" ? g.total : g.running),
                    running: g.running, total: g.total })
     }

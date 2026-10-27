@@ -1,5 +1,7 @@
 // Źródło danych z tide-daemon przez D-Bus: wywołuje metodę zwracającą JSON i odświeża ją
 // po sygnale Changed, po pojawieniu się usługi i — na wszelki wypadek — co pollInterval.
+// Sygnał ActionFinished(job, json) obiektu (zadania /Docker: GroupAction, Prune) idzie dalej
+// jako actionFinished — obiekty bez tego sygnału po prostu go nie wysyłają.
 import QtQuick
 import org.kde.plasma.workspace.dbus as DBus
 
@@ -17,6 +19,7 @@ Item {
     property bool failed: false
 
     signal refreshed()
+    signal actionFinished(string job, string json)
 
     function refresh() {
         // Wywołanie aktywuje usługę przez D-Bus, nawet jeśli jeszcze nie działa.
@@ -61,6 +64,7 @@ Item {
         path: source.path
         iface: source.iface
         function dbusChanged() { source.refresh() }
+        function dbusActionFinished(job, json) { source.actionFinished(String(job), String(json)) }
     }
 
     Timer {

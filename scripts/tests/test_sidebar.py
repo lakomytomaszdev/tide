@@ -102,6 +102,13 @@ class SidebarInstallTest(unittest.TestCase):
         [bar] = self.sidebars()
         self.assertEqual(self.layout(bar), ["org.tide.sidebar", "org.tide.agents", "org.tide.worktrees", SPACER])
 
+    def test_docker_tile_sits_after_system(self):
+        self.plasmoids(["org.tide.docker"])
+        self.sidebar("install")
+        [bar] = self.sidebars()
+        self.assertEqual(self.layout(bar), ["org.tide.sidebar", "org.tide.agents", "org.tide.system", "org.tide.docker",
+                                            "org.tide.worktrees", "org.tide.limits", SPACER])
+
     def test_reinstall_is_idempotent(self):
         self.sidebar("install")
         first = json.loads(self.installed_file.read_text())
