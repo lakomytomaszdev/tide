@@ -28,7 +28,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `theme/vivaldi/` | Vivaldi Tide: motywy profili i arkusz CSS interfejsu z palety (`generate.py`); instalator `scripts/vivaldi.py`, podgląd w zagnieżdżonym KWinie `scripts/vivaldi_preview.sh` |
 | `scripts/panels/` | Skrypty plasmashell górnych pasków, docka i paska bocznego (zrzut, instalacja, kolejność, odinstalowanie) |
 | `tools/` | Narzędzia do ikon: `make_tile.py` (kafelek z oryginalnej ikony), `make_tint.py` (eksperyment z przefarbowaniem, odrzucony) |
-| `daemon/` | Usługa `tide-daemon`: sesje agentów, worktrees, raport poranny, bezczynność, prognoza Limitów AI i stan modeli lokalnych (`/Models`, punkty z `~/.config/tide/models.json`) przez D-Bus ([opis i kontrakt](docs/tide-daemon.md)) |
+| `daemon/` | Usługa `tide-daemon`: sesje agentów, worktrees, raport poranny, bezczynność, prognoza Limitów AI i modele lokalne (`/Models`: stan serwerów, ustawienia punktów i ról z okna Tide, test połączenia, pobieranie modeli; `~/.config/tide/models.json`) przez D-Bus ([opis i kontrakt](docs/tide-daemon.md)) |
 | `widgets/lib/` | Wspólna biblioteka QML widżetów: karta, kafelek docka, teksty kafelków, miernik, pierścień, wykres słupkowy z historią próbek, kropka i licznik stanu, źródło danych z usługi |
 | `widgets/agents/` | Widżet agentów `org.tide.agents`: kafelek „Agenci · 2 pracują · 1 czeka · 2 gotowe”, lista sesji w popupie |
 | `widgets/limits/` | Widżet `org.tide.limits`: pozostałe limity ChatGPT i Claude z usługi QuotaApp |
