@@ -177,6 +177,39 @@ class MonitorTest(unittest.TestCase):
         self.call(mon.disk)
         self.assertEqual(len(self.fake.calls("GET", "/system/df")), 2)
 
+    def test_disk_cache_dropped_by_events_and_disk_now_reads_fresh(self):
+        """Zdarzenie, które zmienia, co jest do odzyskania (kontener destroy/die/create/start, wolumen
+        create/destroy), kasuje pamięć Disk; health_status i mount — nie. DiskNow zawsze czyta od nowa."""
+        self.fake.start()
+        mon = self.monitor()
+        self.assertTrue(wait_until(lambda: self.snapshot(mon)["available"] and mon.live, timeout=5))
+        df = lambda: len(self.fake.calls("GET", "/system/df"))  # noqa: E731
+        self.call(mon.disk)
+        self.assertEqual(df(), 1)
+        self.fake.emit(self.c["api"], "health_status: healthy")
+        self.fake.emit_volume("recipes_pgdata", "mount")
+        wait_until(lambda: False, timeout=0.3)
+        self.call(mon.disk)
+        self.assertEqual(df(), 1, "zdrowie i mount nie zmieniają porządków")
+        for emit in (lambda: self.fake.emit(self.c["old"], "destroy"), lambda: self.fake.emit(self.c["bot"], "die"),
+                     lambda: self.fake.emit_volume("fresh_pgdata", "create"),
+                     lambda: self.fake.emit_volume("old_data", "destroy")):
+            before = df()
+            emit()
+            self.assertTrue(wait_until(lambda: mon._disk is None, timeout=3))
+            self.call(mon.disk)
+            self.assertEqual(df(), before + 1)
+        before = df()
+        self.call(lambda reply: mon.disk(reply, fresh=True))
+        self.assertEqual(df(), before + 1, "DiskNow omija pamięć")
+        # DiskNow w trakcie odczytu, który zaczął się wcześniej, czeka na kolejny odczyt.
+        mon._disk = None
+        before, first, second = df(), [], []
+        mon.disk(first.append)
+        mon.disk(second.append, fresh=True)
+        self.assertTrue(wait_until(lambda: first and second, timeout=5))
+        self.assertEqual(df(), before + 2)
+
     def test_actions_reply_json(self):
         self.fake.start()
         mon = self.monitor()
@@ -214,6 +247,32 @@ class MonitorTest(unittest.TestCase):
         self.assertFalse(mon.open_shell("translations-slack-bot"))  # zatrzymany — nie ma do czego wejść
         self.assertFalse(mon.open_logs("nie-ma"))
         self.assertEqual(len(self.terminal.plans), 2)
+
+    def test_badge_and_show_window(self):
+        """Badge() z migawki i ShowWindow(id): do okna trafia tylko znany kontener (pełne ID) albo grupa."""
+        class FakeLaunchers:
+            home = os.path.expanduser("~")
+            search = os.environ.get("PATH", "")
+            shown = []
+
+            def show_view(self, view, item=""):
+                self.shown.append((view, item))
+                return True
+
+        self.fake.start()
+        launchers = FakeLaunchers()
+        mon = self.monitor(launchers=launchers)
+        self.assertEqual(json.loads(mon.badge_json())["text"], "")  # przed pierwszym odczytem
+        self.assertTrue(wait_until(lambda: self.snapshot(mon)["available"], timeout=5))
+        self.assertEqual(json.loads(mon.badge_json()), {"text": "● 1", "tone": "negative"})
+        self.assertTrue(mon.show_window("translations-slack-bot"))
+        self.assertTrue(mon.show_window(self.c["api"].id[:12]))
+        self.assertTrue(mon.show_window("compose:cookapp"))
+        self.assertTrue(mon.show_window("nie-ma"))
+        self.assertTrue(mon.show_window(""))
+        self.assertEqual(launchers.shown, [("docker", self.c["bot"].id), ("docker", self.c["api"].id),
+                                           ("docker", "compose:cookapp"), ("docker", ""), ("docker", "")])
+        self.assertFalse(DockerMonitor(mon.engine).show_window("x"), "bez launcherów okna nie ma")
 
     def test_failed_terminal_cancels_task_file(self):
         self.fake.start()

@@ -44,7 +44,7 @@ WINDOW_SERVICE, WINDOW_PATH, WINDOW_IFACE = "org.tide.Window", "/Window", "org.t
 # Nazwy dawnych okien — kto jeszcze woła Raise, trafia do okna Tide na właściwym widoku.
 LEGACY_SESSIONS = "org.tide.SessionsWindow"
 LEGACY_WORKTREES = "org.tide.WorktreesWindow"
-TONES = ("muted", "waiting", "accent")
+TONES = ("muted", "waiting", "accent", "negative")
 
 
 def load_views(base: str = HERE) -> list[dict]:

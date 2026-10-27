@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.tide.docker",
+    "Name": "Tide · Docker",
+    "Description": "Kontenery Dockera: ile działa, co padło, projekty compose z portami; popup z akcjami i link do widoku Docker w oknie Tide",
+    "Icon": "docker",
+    "Category": "System Information",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "Authors": [{ "Name": "Tomek" }]
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

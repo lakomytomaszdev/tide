@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Ustawienia widżetu Tide · Tablica. sidebarMode włącza scripts/panels/sidebar.js dla widżetów
+     w pasku bocznym lewego monitora: widok szczegółowy na stałe zamiast kafelka. quickProject to
+     projekt, do którego trafia karta dopisana z popupu („Dopisz do backlogu i Enter”). -->
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0 http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <kcfgfile name=""/>
+  <group name="General">
+    <entry name="sidebarMode" type="Bool">
+      <label>Widok szczegółowy na stałe (pasek boczny Tide)</label>
+      <default>false</default>
+    </entry>
+    <entry name="quickProject" type="String">
+      <label>Projekt nowych kart dopisanych z popupu (slug; pusty — bez projektu)</label>
+      <default></default>
+    </entry>
+  </group>
+</kcfg>

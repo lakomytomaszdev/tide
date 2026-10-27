@@ -4,7 +4,7 @@ Użycie: python3 sidebar.py install|uninstall|show
 
 Pionowy panel przy lewej, zewnętrznej krawędzi lewego monitora (HDMI-A-1), chowany
 automatycznie (nie zabiera miejsca oknom) i pływający, szeroki na `size.sidebar` z palety.
-Od góry: nagłówek org.tide.sidebar ze skrótem, agenci, system, worktrees i Limity AI
+Od góry: nagłówek org.tide.sidebar ze skrótem, agenci, tablica, system, worktrees i Limity AI
 w widoku szczegółowym. Widżety Tide trafiają do paska tylko wtedy, gdy są zainstalowane,
 więc cel idzie na koniec `make install` (LATE_INSTALL_TARGETS), po widżetach.
 
@@ -30,7 +30,9 @@ INSTALLED = STATE / "tide" / "sidebar-installed.json"
 SHORTCUTS = xdg("XDG_CONFIG_HOME", ".config") / "kglobalshortcutsrc"
 HEADER = "org.tide.sidebar"
 # Kolejność od góry, jak na mocku „Sidebar” (lewy monitor).
-WIDGETS = ["org.tide.agents", "org.tide.system", "org.tide.worktrees", "org.tide.limits"]
+# Docker ma tryb paska, ale nie wchodzi do paska: z tablicą pasek miałby ok. 1080 px przy 1040 dostępnych
+# (limity AI ucięte na dole) — kafelek Dockera jest w docku zaraz po System.
+WIDGETS = ["org.tide.agents", "org.tide.board", "org.tide.system", "org.tide.worktrees", "org.tide.limits"]
 SHORTCUT = "Meta+S"
 # Rozciągany odstęp z Plasmy na końcu paska: kafelki widżetów leżą od góry, wolne miejsce zostaje
 # na dole (bez niego panel rozdziela nadmiar wysokości między aplety).

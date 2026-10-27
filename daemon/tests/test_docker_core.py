@@ -381,6 +381,17 @@ class SnapshotTest(World):
         self.assertEqual(s["summary"], {"total": 12, "running": 7, "stopped": 3, "failed": 1, "projects": 4,
                                         "projectsTotal": 7, "testcontainers": 2, "testcontainersRunning": 2})
 
+    def test_badge(self):
+        """Plakietka widoku: padnięte w różu, inaczej liczba działających, zero i brak Dockera — ukryta."""
+        s = dict(self.snapshot(), available=True)
+        self.assertEqual(snap.badge(s), {"text": "● 1", "tone": "negative"})
+        healthy = dict(s, summary=dict(s["summary"], failed=0))
+        self.assertEqual(snap.badge(healthy), {"text": "7", "tone": "muted"})
+        idle = dict(s, summary=dict(s["summary"], failed=0, running=0))
+        self.assertEqual(snap.badge(idle), {"text": "", "tone": "muted"})
+        self.assertEqual(snap.badge({"available": False, "summary": s["summary"]}), {"text": "", "tone": "muted"})
+        self.assertEqual(snap.badge({}), {"text": "", "tone": "muted"})
+
     def test_ports(self):
         s = self.snapshot()
         api = self.item(s, "cookapp-api")
@@ -754,15 +765,17 @@ class EventsTest(World):
         thread.start()
         self.assertTrue(connected.wait(3))
         _m, path, query = self.fake.calls("GET", "/events")[0]
-        self.assertEqual(json.loads(query["filters"]), {"type": ["container"]})
+        self.assertEqual(json.loads(query["filters"]), {"type": ["container", "volume"]})
         bot = self.c["bot"]
         self.fake.emit(bot, "exec_start: sh -c healthcheck")
         self.fake.emit(bot, "health_status: healthy")
         self.fake.emit(bot, "start")
+        self.fake.emit_volume("recipes_pgdata", "mount")    # razem ze startem kontenera — cisza
+        self.fake.emit_volume("old_data", "destroy")
         deadline = time.time() + 3
-        while len(seen) < 2 and time.time() < deadline:
+        while len(seen) < 3 and time.time() < deadline:
             time.sleep(0.02)
-        self.assertEqual(seen, [(bot.id, "health_status"), (bot.id, "start")])
+        self.assertEqual(seen, [(bot.id, "health_status"), (bot.id, "start"), ("old_data", "volume:destroy")])
         self.fake.drop_events()
         thread.join(3)
         self.assertFalse(thread.is_alive())  # koniec strumienia kończy jedno połączenie

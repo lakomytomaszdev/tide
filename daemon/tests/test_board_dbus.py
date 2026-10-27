@@ -134,7 +134,8 @@ class BoardDBusTest(unittest.TestCase):
     def test_1_introspection(self):
         xml = self.service.call(SERVICE, PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
         self.assertIn(f'<interface name="{IFACE}">', xml)
-        for member in ("Snapshot", "CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "RenderFlow"):
+        for member in ("Snapshot", "CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "RenderFlow",
+                       "Badge", "ShowWindow"):
             self.assertIn(f'<method name="{member}">', xml)
         self.assertIn('<signal name="Changed"', xml)
         self.assertIn('<arg name="order" type="i" direction="in"/>', xml)
@@ -205,6 +206,83 @@ class BoardDBusTest(unittest.TestCase):
             self.assertEqual((reply["ok"], reply["error"]), (False, code), (member, reply))
             self.assertTrue(reply["message"])
         self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)  # błąd nie zostawia commita
+
+
+class BadgeTest(unittest.TestCase):
+    """Reguła plakietki (ta sama w apps/board/backend.py): czeka → „● N”, inaczej karty w grze."""
+
+    def test_badge_rule(self):
+        from tide_daemon.board_monitor import badge
+        cards = [{"column": "backlog", "boardColumn": "backlog"}, {"column": "todo", "boardColumn": "progress"},
+                 {"column": "done", "boardColumn": "done"}, {"column": "archived", "boardColumn": "archived"}]
+        self.assertEqual(badge({"cards": cards}), ("2", "muted"))
+        cards.append({"column": "todo", "boardColumn": "waiting"})
+        cards.append({"column": "todo", "boardColumn": "waiting"})
+        self.assertEqual(badge({"cards": cards}), ("● 2", "waiting"))
+        self.assertEqual(badge({"cards": []}), ("", "muted"))
+        self.assertEqual(badge({"cards": "zle"}), ("", "muted"))
+        self.assertEqual(badge(None), ("", "muted"))
+        self.assertEqual(badge({"cards": [None, {"column": "todo"}]}), ("1", "muted"), "bez boardColumn — kolumna z pliku")
+
+
+@requires_dbus
+class BoardWindowTest(unittest.TestCase):
+    """Badge() i ShowWindow(id) na prywatnej magistrali: atrapa okna Tide ($TIDE_WINDOW) i atrapy
+    programów (systemd-run zapisuje wywołanie) — żadne prawdziwe okno nie powstaje."""
+
+    def setUp(self):
+        from .fakebin import make_env
+        self.tmp = tempfile.mkdtemp(prefix="tide-board-win-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.env = make_env(self.tmp)
+        self.window = os.path.join(self.tmp, "tide-window", "tide.py")
+        self.board = os.path.join(self.tmp, "board")
+        self.service = PrivateBus("tide-board-win-test")
+        self.addCleanup(self.service.stop)
+        env = {k: self.env[k] for k in ("HOME", "PATH", "TIDE_FAKE_LOG", "XDG_DATA_HOME", "XDG_CONFIG_HOME")}
+        env.update(git_config(self.tmp), TIDE_WINDOW=self.window)
+        workspace = os.path.join(self.tmp, "ws")
+        os.makedirs(workspace)
+        self.service.spawn_daemon("--claude-dir", os.path.join(self.tmp, "claude"), "--codex-dir",
+                                  os.path.join(self.tmp, "codex"), "--no-processes", "--no-notifications",
+                                  "--no-krunner", "--no-idle", "--no-limits", "--no-report", "--no-coordination",
+                                  "--no-docker", "--now", NOW_TEXT, "--workspace", workspace, "--board-dir", self.board,
+                                  extra_env=env)
+
+    def call(self, member, *args):
+        reply = self.service.call(SERVICE, PATH, IFACE, member, *args)
+        self.assertEqual(reply.type(), QDBusMessage.MessageType.ReplyMessage, reply.errorMessage())
+        return reply.arguments()[0]
+
+    def shown(self):
+        from .fakebin import calls
+        return [c for c in calls(self.env) if self.window in c]
+
+    def test_badge_follows_cards(self):
+        self.assertEqual(json.loads(self.call("Badge")), {"text": "", "tone": "muted"}, "bez tablicy — ukryta")
+        self.assertFalse(os.path.exists(self.board), "Badge() niczego nie zakłada")
+        self.call("CreateCard", json.dumps({"title": "a"}))
+        self.call("CreateCard", json.dumps({"title": "b", "column": "todo"}))
+        self.call("CreateCard", json.dumps({"title": "c", "column": "done"}))
+        self.assertEqual(json.loads(self.call("Badge")), {"text": "2", "tone": "muted"}, "Gotowe się nie liczą")
+        self.call("MoveCard", "K-1", "archived", 0)
+        self.assertEqual(json.loads(self.call("Badge")), {"text": "1", "tone": "muted"})
+
+    def test_show_window_opens_board_view(self):
+        from .fakebin import calls
+        self.assertFalse(self.call("ShowWindow", "K-3"), "okno nie jest zainstalowane")
+        self.assertEqual(self.shown(), [])
+        os.makedirs(os.path.dirname(self.window))
+        with open(self.window, "w", encoding="utf-8") as fh:
+            fh.write("# atrapa okna Tide\n")
+        self.assertTrue(self.call("ShowWindow", "k-3"))
+        self.assertTrue(wait_until(lambda: self.shown(), timeout=5), calls(self.env))
+        self.assertIn(f"{self.window} --view board --select K-3", self.shown()[0], "ID karty znormalizowane")
+        self.assertTrue(self.call("ShowWindow", ""))
+        self.assertTrue(self.call("ShowWindow", "--view sessions"), "nie-ID karty — samo okno, bez argumentu")
+        self.assertTrue(wait_until(lambda: len(self.shown()) == 3, timeout=5), calls(self.env))
+        for line in self.shown()[1:]:
+            self.assertTrue(line.endswith(f"{self.window} --view board"), line)
 
 
 @requires_dbus

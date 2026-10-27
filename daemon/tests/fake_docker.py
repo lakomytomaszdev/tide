@@ -179,6 +179,14 @@ class FakeDocker:
         for q in listeners:
             q.put(event)
 
+    def emit_volume(self, name: str, action: str):
+        event = {"Type": "volume", "Action": action, "Actor": {"ID": name, "Attributes": {"driver": "local"}},
+                 "scope": "local", "time": int(time.time()), "timeNano": time.time_ns()}
+        with self._lock:
+            listeners = list(self._listeners)
+        for q in listeners:
+            q.put(event)
+
     def drop_events(self):
         """Zrywa wszystkie strumienie /events (jak restart Dockera)."""
         with self._lock:
