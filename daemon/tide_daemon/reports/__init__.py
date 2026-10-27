@@ -35,6 +35,10 @@ def load_palette(candidates: list[str]) -> dict:
     raise RuntimeError("raport: nie znaleziono palety (palette.json obok usługi albo theme/palette/mist.json)")
 
 
+class Cancelled(RuntimeError):
+    """Zamykanie usługi przerwało raport — nic nie zapisujemy."""
+
+
 def generate(root: str, day: str, start: float, end: float, *, palette: dict, workspace: str, claude_root: str,
              codex_root: str, live=None, worktrees=None, limits_result=None, fetch_limits: bool = True,
              git=None, max_depth: int = 3, home: str | None = None,
@@ -45,7 +49,9 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
     summary: "claude" — opis „Na daily” modelem przez `claude -p` (summarize.py), "local" — model lokalny
     z roli `summary` w models.json (summary_model pomijany, nigdy Claude), "rules" — same reguły.
     tracker: YouTrackCache — opisy ticketów z planów w repozytoriach (plans.py, tylko GET) albo None.
-    cancel: models.Cancel — zamykanie usługi przerywa wywołania modelu lokalnego (summarize.summarize).
+    cancel: models.Cancel — zamykanie usługi przerywa wywołania modelu lokalnego (summarize.summarize);
+    raport przerwany w ten sposób kończy się Cancelled bez zapisu, żeby strona z samych reguł nie zastąpiła
+    dobrego raportu tego dnia (np. z wcześniejszego Generate()).
     Domyślnie reguły: model woła tylko usługa i --report według ustawień (report.json)."""
     if limits_result is None and fetch_limits:
         limits_result = limits.fetch_status()
@@ -58,6 +64,8 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
     target = os.path.join(root, day)
     report.standup = summarize.summarize(report, mode=summary, model=summary_model, cache_dir=target, home=home,
                                          env=env, cancel=cancel)
+    if cancel is not None and cancel.is_set():
+        raise Cancelled("raport przerwany — usługa się zamyka")
     pages = {"index.html": render.render_index(report, palette, home)}
     for project in report.repos:
         pages[f"{project.slug}.html"] = render.render_project(report, project, palette, home)
