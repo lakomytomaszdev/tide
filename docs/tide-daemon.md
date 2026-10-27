@@ -1029,7 +1029,12 @@ pracy.
 połączyło regułą 2 albo jednoznacznie (jedno dopasowanie — koordynator z ticketami to jedno) regułą 4 lub 5,
 dostaje tę sesję w pliku: `store.link_session`, commit `K-1: link session claude:<id> (launch)` (albo
 `(card-branch)`, `(branch)`). Zapis idzie po przeliczeniu (`QTimer`), ta sama para karta–sesja najwyżej raz
-na minutę. Ustawionego `session` (także ręcznie) usługa nigdy nie nadpisuje — czyści go tylko jawne ponowne
+na minutę. Ostrożnie przy świeżym uruchomieniu: przez 30 s po `launched` nic nie trafia do pliku
+(`PERSIST_DELAY`), „launch” utrwalamy tylko dla sesji, która zaczęła się najwyżej 15 s przed `launched`
+(wcześniejsza to raczej inna sesja w tym samym katalogu — w pamięci karta ją pokaże), a połączenia po gałęzi
+nigdy w oknie uruchomienia (5 min — np. stara, zakończona sesja tej gałęzi po ponownym uruchomieniu). Karta
+połączona z częścią ticketów koordynatora dostaje razem z `session` gałąź tych ticketów w `branch` (gdy jej
+nie miała), żeby reguła 1 dalej obejmowała tylko te tickety; tickety z kilku gałęzi — nie utrwalamy. Ustawionego `session` (także ręcznie) usługa nigdy nie nadpisuje — czyści go tylko jawne ponowne
 uruchomienie z okna (`UpdateCard` po starcie wysyła `session: ""`), a nową sesję przypina reguła 2 (stara
 zaczęła się poza oknem nowego `launched`). Później sesja może wejść
 gdzie indziej — karta jej nie zgubi. Przypadek z życia: agent K-1 zrobił `cd` do `<tablica>/docs/<projekt>/plans`,

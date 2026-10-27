@@ -65,7 +65,7 @@ class BoardMonitor(QObject):
         self._rederive = QTimer(self, singleShot=True, interval=rederive_ms)
         self._rederive.timeout.connect(self._apply)
         self._rederive_requested.connect(self.rederive)
-        self._links: list[tuple[str, str, str]] = []      # (karta, sesja, sposób) do utrwalenia
+        self._links: list[tuple[str, str, str, str]] = []  # (karta, sesja, sposób, gałąź) do utrwalenia
         self._link_tried: dict[tuple[str, str], float] = {}
 
     def start(self) -> None:
@@ -232,10 +232,10 @@ class BoardMonitor(QObject):
         `session` ustawionego wcześniej, także ręcznie), potem nowa migawka."""
         links, self._links = self._links, []
         wrote = False
-        for card_id, session, how in links:
+        for card_id, session, how, branch in links:
             self._link_tried[(card_id, session)] = time.monotonic()
             try:
-                result = self.store.link_session(card_id, session, how)
+                result = self.store.link_session(card_id, session, how, branch)
             except BoardError as exc:
                 print(f"tide-daemon: tablica: {card_id}: połączenie z sesją {session}: {exc}", flush=True)
                 continue

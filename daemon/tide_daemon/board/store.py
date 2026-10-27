@@ -660,21 +660,25 @@ class BoardStore:
         change.result["changed"] = True
         return change
 
-    def link_session(self, card_id: str, session: str, how: str = "") -> dict:
+    def link_session(self, card_id: str, session: str, how: str = "", branch: str = "") -> dict:
         """Trwałe połączenie karty z sesją agenta (PT-28): `session` karty dostaje id sesji, którą usługa
         rozpoznała (uruchomienie z karty albo pewne dopasowanie po gałęzi) — commit „K-1: link session
-        claude:…”. Karta, która ma już `session` (np. ustawioną ręcznie), zostaje bez zmian."""
+        claude:…”. Karta, która ma już `session` (np. ustawioną ręcznie), zostaje bez zmian. branch: gałąź
+        ticketów, gdy karta obejmuje część koordynatora — trafia do `branch` karty, jeśli ta go nie ma."""
         session = _line(session, FIELD_MAX, "session")
+        branch = _line(branch, FIELD_MAX, "branch")
         if not session:
             raise BoardError("brak id sesji do połączenia")
         num = card_num(card_id)
-        return self._execute(lambda board: self._plan_link(board, num, session, how))
+        return self._execute(lambda board: self._plan_link(board, num, session, how, branch))
 
-    def _plan_link(self, board: Board, num: int, session: str, how: str) -> Change:
+    def _plan_link(self, board: Board, num: int, session: str, how: str, branch: str = "") -> Change:
         card = self._card(board, num)
         change = Change(result={"ok": True, "id": card.id, "changed": False, "session": card.session})
         if card.session:
             return change
+        if branch and not card.branch:
+            card.doc.set("branch", branch)
         card.doc.set("session", session)
         card.doc.set("updated", self._now())
         suffix = f" ({how})" if how else ""

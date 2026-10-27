@@ -248,7 +248,7 @@ class LaunchLinkTest(unittest.TestCase):
         c = ctx([sess()])
         d = c(card())
         self.assertEqual((d["link"], d["session"], d["column"]), ("launch", "claude:s1", "progress"))
-        self.assertEqual(c.sticky(card()), ("claude:s1", "launch"))
+        self.assertEqual(c.sticky(card()), ("claude:s1", "launch", ""))
 
     def test_window_tool_and_place(self):
         for bad in (sess(started=10_000 + LAUNCH_WINDOW + 1), sess(started=10_000 - 200),
@@ -292,11 +292,47 @@ class LaunchLinkTest(unittest.TestCase):
                    branch="claude/k-1-data")
         plain = card(launchedTs=0, worktree="")
         self.assertEqual(ctx([one])(plain)["link"], "card-branch")
-        self.assertEqual(ctx([one]).sticky(plain), ("claude:g", "card-branch"))
+        self.assertEqual(ctx([one]).sticky(plain), ("claude:g", "card-branch", ""))
         two = dict(one, id="claude:h", sessionId="h", lastActivityTs=1)
         self.assertIsNone(ctx([one, two]).sticky(plain), "dwa dopasowania — nie utrwalamy")
         coord = board("claude:k", [ticket("T-1", branch="claude/k-1-t1")], branch="claude/k-1-data", repo="/srv/dpt")
-        self.assertEqual(ctx([], [coord]).sticky(plain), ("claude:k", "card-branch"), "koordynator i jego tickety to jedno")
+        self.assertEqual(ctx([], [coord]).sticky(plain), ("claude:k", "card-branch", ""),
+                         "koordynator i jego tickety to jedno")
+
+    def test_scoped_link_is_persisted_with_the_tickets_branch(self):
+        """Przegląd PT-28: karta połączona z częścią ticketów koordynatora nie może po utrwaleniu przejąć
+        całego koordynatora (cudze pytanie „Który format?” jako jej „czeka”)."""
+        coord = board("claude:koord", [ticket("T-1", "gotowe", branch="feat/k-1-a"),
+                                       ticket("T-2", "czeka", branch="feat/k-13-b", question="Który format?")],
+                      repo="/srv/dpt")
+        plain = card(launchedTs=0, worktree="")
+        before = ctx([], [coord])(plain)
+        self.assertEqual((before["link"], before["tickets"]), ("card-branch", ["T-1"]))
+        sid, how, branch = ctx([], [coord]).sticky(plain)
+        self.assertEqual((sid, how, branch), ("claude:koord", "card-branch", "feat/k-1-a"))
+        after = ctx([], [coord], claimed=[sid])(card(launchedTs=0, worktree="", session=sid, branch=branch))
+        self.assertEqual((after["link"], after["tickets"]), ("session", ["T-1"]))
+        self.assertNotEqual(after["column"], "waiting", "pytanie ticketu innej karty nie jest jej „czeka”")
+        two = board("claude:koord", [ticket("T-1", branch="feat/k-1-a"), ticket("T-3", branch="feat/k-1-c")],
+                    repo="/srv/dpt")
+        self.assertIsNone(ctx([], [two]).sticky(plain), "tickety z kilku gałęzi — nie utrwalamy")
+
+    def test_no_persisting_right_after_launch(self):
+        """Przegląd PT-28: świeże uruchomienie nie przypina obcej ani starej sesji."""
+        fresh = ctx([sess(started=10_005)], now=10_010)
+        self.assertEqual(fresh(card())["link"], "launch", "w pamięci karta już ją pokazuje")
+        self.assertIsNone(fresh.sticky(card()), "przez PERSIST_DELAY po launched nic do pliku")
+        self.assertEqual(ctx([sess(started=10_005)], now=10_040).sticky(card()), ("claude:s1", "launch", ""))
+        earlier = sess(started=10_000 - 60, launch="/srv/dpt")  # inna sesja w katalogu repozytorium
+        self.assertEqual(ctx([earlier])(card(worktree=""))["link"], "launch")
+        self.assertIsNone(ctx([earlier]).sticky(card(worktree="")), "zaczęła się przed uruchomieniem — tylko w pamięci")
+        old = sess("claude:stara", started=1000, launch="/srv/dpt/.claude/worktrees/x", state="ended",
+                   cwd="/srv/dpt/.claude/worktrees/x", branch="claude/k-1-data", lastActivityTs=2000)
+        relaunched = card(worktree="")  # po ponownym uruchomieniu (session: ""), nowa sesja jeszcze nie ruszyła
+        self.assertEqual(ctx([old], now=10_100)(relaunched)["link"], "card-branch")
+        self.assertIsNone(ctx([old], now=10_100).sticky(relaunched), "w oknie uruchomienia nie utrwalamy po gałęzi")
+        self.assertEqual(ctx([old], now=10_000 + LAUNCH_WINDOW + 1).sticky(relaunched),
+                         ("claude:stara", "card-branch", ""))
 
 
 class StickyMonitorTest(unittest.TestCase):
@@ -399,7 +435,10 @@ class StickyMonitorTest(unittest.TestCase):
 
     def test_link_session_store_method(self):
         store = self.w.store
-        self.assertTrue(store.link_session("K-1", "claude:x")["changed"])
+        self.assertTrue(store.link_session("K-1", "claude:x", "card-branch", "feat/k-1-a")["changed"])
+        self.assertEqual(self.file_session(), "claude:x")
+        self.assertEqual(next(c for c in store.snapshot()["cards"] if c["id"] == "K-1")["branch"], "feat/k-1-a",
+                         "gałąź ticketów, gdy karta jej nie miała")
         again = store.link_session("K-1", "claude:y")
         self.assertEqual((again["changed"], again["session"]), (False, "claude:x"))
         with self.assertRaises(BoardError):

@@ -60,6 +60,8 @@ EXPLICIT_LINKS = (LINK_SESSION, LINK_LAUNCH, LINK_PLAN)
 STICKY_LINKS = (LINK_LAUNCH, LINK_CARD_BRANCH, LINK_BRANCH)   # utrwalane w `session` karty (PT-28)
 LAUNCH_WINDOW = 300.0  # s — sesja uruchomiona z karty zaczyna się najwyżej tyle po `launched`…
 LAUNCH_SLACK = 120.0   # …albo do tylu sekund przed nim (`launched` zapisuje okno już po starcie agenta)
+PERSIST_DELAY = 30.0   # s po `launched` — dopiero potem utrwalamy połączenie w pliku karty
+LAUNCH_PERSIST_SLACK = 15.0  # utrwalamy „launch” tylko dla sesji, która zaczęła się najwyżej tyle przed `launched`
 MERGE_TTL = 30.0       # wynik „czy gałąź scalona” trzymamy tyle sekund (git tylko dla skończonej pracy)
 GONE_TTL = 600.0       # gałęzi, której nie ma, nie sprawdzamy częściej
 MERGE_LOG = 1000       # tyle ostatnich commitów scalenia w głównej przeglądamy dla usuniętej gałęzi
@@ -350,21 +352,46 @@ class Context:
         return Link(LINK_LAUNCH, board=self.boards_by_id.get(best["id"]), session=best,
                     activity=_ts(best.get("lastActivityTs")))
 
-    def sticky(self, card: dict) -> tuple[str, str] | None:
-        """(id sesji, sposób) do utrwalenia w `session` karty albo None: karta bez `session` połączona
-        przez uruchomienie z karty albo jednoznacznie (jedno dopasowanie) po gałęzi (PT-28)."""
+    def sticky(self, card: dict) -> tuple[str, str, str] | None:
+        """(id sesji, sposób, gałąź) do utrwalenia w karcie albo None: karta bez `session` połączona przez
+        uruchomienie z karty albo jednoznacznie (jedno dopasowanie) po gałęzi (PT-28).
+
+        - nic przez PERSIST_DELAY po `launched` (świeże uruchomienie: sesja jeszcze nie zapisała dziennika,
+          a pierwsze przeliczenie mogłoby przypiąć obcą sesję z tego samego katalogu),
+        - „launch” tylko dla sesji, która zaczęła się najwyżej LAUNCH_PERSIST_SLACK przed `launched`
+          (wcześniejsza to raczej inna sesja w tym katalogu; w pamięci karta i tak ją pokaże),
+        - po gałęzi nigdy w oknie uruchomienia (np. stara, zakończona sesja tej samej gałęzi po ponownym
+          uruchomieniu),
+        - połączenie z częścią ticketów koordynatora (gałąź karty ≠ gałąź koordynatora) utrwalamy razem
+          z gałęzią tych ticketów — inaczej reguła 1 wzięłaby całego koordynatora; tickety z kilku gałęzi —
+          nie utrwalamy."""
         if (card.get("session") or "").strip():
+            return None
+        launched = _ts(card.get("launchedTs"))
+        if launched and self.now < launched + PERSIST_DELAY:
             return None
         link = self.link(card)
         if link is None or link.how not in STICKY_LINKS:
             return None
-        if link.how != LINK_LAUNCH and link.extra.get("candidates", 1) != 1:
-            return None
+        if link.how == LINK_LAUNCH:
+            if _ts((link.session or {}).get("startedTs")) < launched - LAUNCH_PERSIST_SLACK:
+                return None
+        else:
+            if link.extra.get("candidates", 1) != 1:
+                return None
+            if launched and self.now < launched + LAUNCH_WINDOW:
+                return None
         target = link.board or link.session or {}
         sid = str(target.get("id") or "")
         if not sid or sid in self.claimed or str(target.get("sessionId") or "") in self.claimed:
             return None
-        return sid, link.how
+        branch = ""
+        if link.scope is not None and _branch(card.get("branch")) in NON_BRANCHES:
+            names = {_branch(t.get("branch")) for t in link.scope} - NON_BRANCHES
+            if len(names) != 1:
+                return None
+            branch = names.pop()
+        return sid, link.how, branch
 
     def _by_plan(self, card: dict) -> Link | None:
         num = _num(card.get("id"))
