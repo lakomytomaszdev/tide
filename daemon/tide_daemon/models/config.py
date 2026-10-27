@@ -39,6 +39,7 @@ import re
 import urllib.parse
 from dataclasses import dataclass, field
 
+from ..modelnames import is_cloud_model  # noqa: F401 — jedna reguła chmury Ollamy dla usługi (PT-17, decyzja 67)
 from .transport import ModelError
 
 KINDS = ("ollama", "openai")
@@ -159,20 +160,6 @@ def config_path(env=None) -> str:
         return env["TIDE_MODELS_CONFIG"]
     base = env.get("XDG_CONFIG_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".config")
     return os.path.join(base, "tide", "models.json")
-
-
-CLOUD_TAG = re.compile(r"[:-]cloud$", re.IGNORECASE)
-
-
-def is_cloud_model(name) -> bool:
-    """Model chmurowy Ollamy: etykieta po ostatnim „:” kończy się na „cloud” po „:” albo „-”, bez względu na
-    wielkość liter (`gpt-oss:cloud`, `gpt-oss:120b-cloud`, `kimi-k2:1t-CLOUD`; nie: `mycloud:7b`,
-    `qwen3:cloudless`, `x:7b-cloudy`, gołe `cloud`). Lokalna Ollama tylko przekazuje takie wywołanie na
-    ollama.com — fakty wyszłyby z komputera, więc tryb lokalny Tide takich modeli nie używa (decyzja 67).
-    Ta sama reguła co `modelnames.is_cloud_model` z PT-17 — przy scaleniu zostaje jedna funkcja (import)."""
-    if not isinstance(name, str) or ":" not in name:
-        return False
-    return bool(CLOUD_TAG.search(":" + name.rsplit(":", 1)[1]))
 
 
 def cloud_refusal(model: str) -> str:

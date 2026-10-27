@@ -37,7 +37,7 @@ def model_key(name: str) -> str:
 
 def _mark_cloud(models: list[dict]) -> list[dict]:
     """`cloud: true` przy modelach chmurowych Ollamy (`…:cloud`, `…:120b-cloud`) — tylko przy nich, żeby stan
-    lokalnych modeli się nie zmienił. Tide ich nie używa w trybie lokalnym (config.is_cloud_model)."""
+    lokalnych modeli się nie zmienił. Tide ich nie używa w trybie lokalnym (modelnames.is_cloud_model)."""
     for model in models:
         if config_mod.is_cloud_model(model.get("name")):
             model["cloud"] = True

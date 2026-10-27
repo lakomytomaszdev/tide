@@ -40,6 +40,10 @@ class CloudNameTest(unittest.TestCase):
         self.assertEqual([models_config.is_cloud_model(n) for n in local], [False] * len(local))
         self.assertEqual(models_config.cloud_refusal(CLOUD), REFUSAL)
 
+    def test_one_rule_for_the_whole_service(self):
+        from tide_daemon import modelnames
+        self.assertIs(models_config.is_cloud_model, modelnames.is_cloud_model, "models i agents biorą jedną funkcję")
+
 
 class CloudConfigTest(unittest.TestCase):
     def test_role_with_cloud_model_is_unavailable(self):
