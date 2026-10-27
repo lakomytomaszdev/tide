@@ -2,6 +2,9 @@
 // narzędziem i trybem; repozytoria z katalogu projektów, które można dodać jako projekt; tagi z kolorami
 // z palety. Każdy zapis to jeden UpsertProject albo UpsertTag w usłudze (commit w repozytorium
 // tablicy); błąd pokazuje się przy formularzu, który go wywołał. Esc albo „← Tablica” wraca.
+// YouTrack (PT-7): sekcja nad projektami — stan synchronizacji, mapa stanów, konflikty ze zmianą ręczną
+// („Weź z YouTracka” / „Nadpisz z Tide”, także dla ticketów planów bez karty) i „Importuj z YouTracka”
+// (ImportPanel). W formularzu projektu: klucz projektu YouTracka i przełącznik synchronizacji stanu.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -20,6 +23,10 @@ Rectangle {
     property string tagError: ""
     property string repoError: ""
     property string busyTag: ""         // tag żądania w toku
+    property bool importOpen: false
+    property int serial: 0
+    readonly property var youtrack: (snapshot && snapshot.youtrack) || null
+    readonly property alias importPanel: importPanel
     readonly property var projects: (snapshot && snapshot.projects) || []
     readonly property var tags: (snapshot && snapshot.tags) || []
     readonly property var repos: (snapshot && snapshot.repos) || []
@@ -27,6 +34,35 @@ Rectangle {
     signal projectRequested(string tag, var request)
     signal tagRequested(string tag, var request)
     signal backRequested()
+    signal issuesRequested(string tag, bool refresh)       // /Board YouTrackIssues
+    signal importRequested(string tag, var keys)           // /Board ImportYouTrack
+    signal resolveRequested(string tag, string ident, string choice)   // /Board ResolveYouTrack
+
+    function nextTag(prefix) {
+        serial++
+        return prefix + ":" + serial
+    }
+
+    // Wiersz projektu po slugu (testy i skróty): ProjectRow z formularzem.
+    function projectRow(slug) {
+        for (let i = 0; i < projectRepeater.count; i++) {
+            const item = projectRepeater.itemAt(i)
+            if (item && item.project && item.project.slug === slug) return item
+        }
+        return null
+    }
+
+    function openImport() {
+        importOpen = true
+        importPanel.error = ""
+        importPanel.result = ""
+        refreshImport()
+    }
+
+    function refreshImport() {
+        importPanel.loading = true
+        issuesRequested(nextTag("yt-issues"), true)
+    }
 
     // Odpowiedź usługi na zapis z tej strony (tag z prefiksem project:/tag:/repo:).
     function handleReply(tag, reply) {
@@ -40,8 +76,34 @@ Rectangle {
             if (!error) openTag = ""
         } else if (tag.indexOf("repo:") === 0) {
             repoError = error
+        } else if (tag.indexOf("yt-issues:") === 0) {
+            importPanel.loading = false
+            importPanel.error = error
+            if (!error) {
+                importPanel.issues = reply.issues || []
+                const keep = {}
+                for (const key of Object.keys(importPanel.picked))
+                    if (importPanel.issues.some(i => i.id === key && !i.card)) keep[key] = true
+                importPanel.picked = keep
+            }
+        } else if (tag.indexOf("yt-import:") === 0) {
+            importPanel.busy = false
+            importPanel.error = error
+            if (!error) {
+                const created = reply.created || []
+                const skipped = reply.skipped || []
+                importPanel.result = created.length
+                    ? "Dodane do Backlogu: " + created.map(c => c.issue + " → " + c.card).join(", ")
+                      + (skipped.length ? " · pominięte: " + skipped.length : "")
+                    : "Nic nowego — " + skipped.map(x => x.issue + " (" + x.reason + ")").join(", ")
+                importPanel.picked = ({})
+                issuesRequested(nextTag("yt-issues"), false)
+            }
+        } else if (tag.indexOf("yt-resolve:") === 0) {
+            youtrackError = error
         }
     }
+    property string youtrackError: ""
 
     function send(kind, key, request) {
         busyTag = kind + ":" + key
@@ -127,7 +189,107 @@ Rectangle {
                     width: projectsFlick.width - 12
                     spacing: 8
 
-                    SectionTitle { text: "PROJEKTY" }
+                    // --- YouTrack (PT-7) -------------------------------------------------------------
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: page.youtrack !== null
+                        SectionTitle { Layout.fillWidth: true; text: "YOUTRACK" }
+                        PillButton {
+                            objectName: "importOpen"
+                            implicitHeight: 28
+                            pixelSize: 12
+                            outline: true
+                            text: "Importuj z YouTracka" + (page.youtrack && page.youtrack.newIssues > 0
+                                                            ? " · " + page.youtrack.newIssues + " "
+                                                              + Logic.plural(page.youtrack.newIssues, "nowe", "nowe", "nowych") : "")
+                            toolTip: "Twoje zgłoszenia z YouTracka jako karty w Backlogu (bez duplikatów)"
+                            onClicked: page.importOpen ? page.importOpen = false : page.openImport()
+                        }
+                    }
+                    Text {
+                        objectName: "youtrackStatus"
+                        Layout.fillWidth: true
+                        visible: page.youtrack !== null
+                        text: Logic.youtrackSummary(page.youtrack, page.projects)
+                        textFormat: Text.PlainText
+                        color: page.youtrack && page.youtrack.enabled && !page.youtrack.available ? Tide.Tokens.butter
+                                                                                                    : Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    ImportPanel {
+                        id: importPanel
+                        objectName: "importPanel"
+                        Layout.fillWidth: true
+                        visible: page.importOpen
+                        onRefreshRequested: page.refreshImport()
+                        onCloseRequested: page.importOpen = false
+                        onImportRequested: keys => {
+                            busy = true
+                            result = ""
+                            page.importRequested(page.nextTag("yt-import"), keys)
+                        }
+                    }
+                    Repeater {
+                        model: page.youtrack ? page.youtrack.conflictItems || [] : []
+                        Rectangle {
+                            id: conflictRow
+                            required property var modelData
+                            objectName: "youtrackConflict"
+                            Layout.fillWidth: true
+                            implicitHeight: conflictLayout.implicitHeight + 16
+                            radius: 10
+                            color: Tide.Theme.alpha(Tide.Tokens.rose, 0.08)
+                            border.width: 1
+                            border.color: Tide.Theme.alpha(Tide.Tokens.rose, 0.35)
+                            RowLayout {
+                                id: conflictLayout
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 8
+                                spacing: 8
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: conflictRow.modelData.issue + " (" + conflictRow.modelData.label + "): w YouTracku „"
+                                          + (conflictRow.modelData.youtrack || "bez stanu") + "”, Tide: „" + conflictRow.modelData.tide + "”"
+                                    textFormat: Text.PlainText
+                                    color: Tide.Tokens.rose
+                                    font.family: Tide.Theme.uiFamily
+                                    font.pixelSize: 12
+                                    wrapMode: Text.Wrap
+                                }
+                                PillButton {
+                                    implicitHeight: 26
+                                    pixelSize: 11
+                                    outline: true
+                                    text: "Weź z YouTracka"
+                                    onClicked: page.resolveRequested(page.nextTag("yt-resolve"), conflictRow.modelData.issue, "youtrack")
+                                }
+                                PillButton {
+                                    implicitHeight: 26
+                                    pixelSize: 11
+                                    outline: true
+                                    text: "Nadpisz z Tide"
+                                    onClicked: page.resolveRequested(page.nextTag("yt-resolve"), conflictRow.modelData.issue, "tide")
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: page.youtrackError !== ""
+                        text: page.youtrackError
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.rose
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+
+                    SectionTitle { text: "PROJEKTY"; Layout.topMargin: page.youtrack !== null ? 14 : 0 }
                     Text {
                         Layout.fillWidth: true
                         visible: page.projects.length === 0
@@ -139,6 +301,7 @@ Rectangle {
                         wrapMode: Text.Wrap
                     }
                     Repeater {
+                        id: projectRepeater
                         model: page.projects
                         ProjectRow {
                             required property var modelData
@@ -395,6 +558,10 @@ Rectangle {
         property string aiDocs: ""
         property string tool: ""
         property string mode: ""
+        property bool youtrackSync: true
+        property alias youtrackKey: youtrackField.text
+        readonly property bool youtrackToggleEnabled: youtrackToggle.enabled
+        readonly property string youtrackSummary: youtrackLabel.visible ? youtrackLabel.text : ""
 
         function reset() {
             tags = (project.tags || []).slice()
@@ -403,6 +570,8 @@ Rectangle {
             mode = project.mode || "full"
             nameField.text = project.name || ""
             descriptionField.text = project.description || ""
+            youtrackField.text = project.youtrack || ""
+            youtrackSync = project.youtrack ? !!project.youtrackSync : true
         }
 
         function save() {
@@ -414,6 +583,9 @@ Rectangle {
             if (tool !== project.tool) request.tool = tool
             if (mode !== project.mode) request.mode = mode
             if (descriptionField.text.trim() !== (project.description || "")) request.description = descriptionField.text.trim()
+            const key = youtrackField.text.trim().toUpperCase()
+            if (key !== (project.youtrack || "")) request.youtrack = key
+            if (key && youtrackSync !== (project.youtrack ? !!project.youtrackSync : true)) request.youtrackSync = youtrackSync
             page.send("project", project.slug, request)
         }
 
@@ -483,6 +655,16 @@ Rectangle {
                         font.family: row.project.repo ? Tide.Theme.monoFamily : Tide.Theme.uiFamily
                         font.pixelSize: 11
                         elide: Text.ElideMiddle
+                    }
+                    Text {
+                        id: youtrackLabel
+                        objectName: "projectYouTrack"
+                        visible: !!row.project.youtrack
+                        text: "YouTrack " + (row.project.youtrack || "") + (row.project.youtrackSync ? " ⟲" : " · bez synchronizacji")
+                        textFormat: Text.PlainText
+                        color: row.project.youtrackSync ? Tide.Tokens.sky : Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
                     }
                     Text {
                         text: (row.project.aiDocs === "repo" ? "dokumenty AI w repozytorium" : "dokumenty AI w tablicy")
@@ -570,6 +752,41 @@ Rectangle {
                               { value: "spec", label: "Tylko spec" }]
                     current: row.mode
                     onPicked: value => row.mode = value
+                }
+                FieldLabel { text: "YouTrack" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    LineInput {
+                        id: youtrackField
+                        objectName: "projectYouTrackKey"
+                        implicitWidth: 110
+                        mono: true
+                        placeholder: "np. LOG"
+                        accessibleName: "Klucz projektu w YouTracku"
+                        maximumLength: 20
+                        invalid: text.trim() !== "" && !/^[A-Za-z][A-Za-z0-9_]{0,19}$/.test(text.trim())
+                        onAccepted: row.save()
+                    }
+                    Toggle {
+                        id: youtrackToggle
+                        objectName: "projectYouTrackSync"
+                        enabled: youtrackField.text.trim() !== ""
+                        checked: row.youtrackSync && enabled
+                        accessibleName: "Synchronizuj stan zgłoszeń z YouTrackiem"
+                        onToggled: value => row.youtrackSync = value
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: youtrackField.text.trim() === "" ? "bez klucza — karty i tickety nie zmieniają YouTracka"
+                            : row.youtrackSync ? "stan kart i ticketów idzie do YouTracka"
+                            : "tylko odnośniki, bez zmiany stanu"
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
                 }
                 FieldLabel { text: "Opis" }
                 LineInput {

@@ -4,6 +4,8 @@
 // między kolumnami ręcznymi (Backlog, Do zrobienia, Gotowe) i w obrębie kolumny; kliknięcie otwiera
 // panel karty, „Projekty i tagi” — osobną stronę. Sam nie rozmawia z usługą: dostaje migawkę
 // i zgłasza zapisy sygnałami z tagiem, a odpowiedzi dostaje przez handleReply(tag, odpowiedź).
+// YouTrack (PT-7): przy nagłówku dyskretne notki z migawki (konflikty, „YouTrack niedostępny”, „N nowych
+// zgłoszeń w YouTracku” — ta otwiera import na stronie „Projekty i tagi”).
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -66,6 +68,9 @@ Rectangle {
     signal docsRequested(string cardId)      // /Board CardDocs — plan i specyfikacja w panelu karty
     signal fileRequested(string path, string how)   // dokument karty: "open" — edytor, "folder" — menedżer plików
     signal linkRequested(string url)         // link http(s) z planu albo specyfikacji
+    signal youtrackIssuesRequested(string tag, bool refresh)            // /Board YouTrackIssues
+    signal importRequested(string tag, string request)                  // /Board ImportYouTrack
+    signal resolveRequested(string tag, string ident, string choice)    // /Board ResolveYouTrack
 
     readonly property var filters: ({ tag: tagFilter, project: projectFilter, query: query })
     readonly property var cards: Logic.visible(snapshot, filters, optimistic)
@@ -75,6 +80,7 @@ Rectangle {
     readonly property bool filtered: tagFilter !== "" || projectFilter !== "" || query.trim() !== ""
     readonly property var panelCard: panelCardId ? (snapshot && snapshot.cards || []).find(c => c.id === panelCardId) || null : null
     readonly property var errorLines: Logic.errorLines(snapshot, 3)
+    readonly property var youtrackNotes: Logic.youtrackNotes(snapshot)
     readonly property var lanes: {
         const groups = []
         const index = {}
@@ -282,6 +288,13 @@ Rectangle {
         }
     }
 
+    // Import z YouTracka: strona „Projekty i tagi” z otwartą listą zgłoszeń (pobieraną od razu).
+    function openImport() {
+        panelOpen = false
+        managing = true
+        manage.openImport()
+    }
+
     function saveCard(request) {
         if (panelCardId) updateRequested(nextTag("update:" + panelCardId), panelCardId, JSON.stringify(request))
         else createRequested(nextTag("create"), JSON.stringify(request))
@@ -317,6 +330,11 @@ Rectangle {
                 if (notice) showToast(notice, "butter")
                 Qt.callLater(() => revealCard(selectedId))
             }
+        } else if (tag.indexOf("yt-resolve:") === 0) {
+            if (error) showToast("YouTrack: " + error, "rose")
+            else if (!managing) cardPanel.notice = reply.choice === "tide" ? "Zapisuję stan karty w YouTracku…"
+                                                                           : "Zostaje stan z YouTracka."
+            if (managing) manage.handleReply(tag, reply)
         } else if (tag.indexOf("quicktag:") === 0) {
             tagEditorPopup.editorError = error
             if (!error) tagEditorPopup.close()
@@ -491,6 +509,52 @@ Rectangle {
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: 13
                     elide: Text.ElideRight
+                }
+            }
+            // YouTrack: konflikty, niedostępność, nowe zgłoszenia (PT-7) — małe, bez koloru tła.
+            Repeater {
+                model: page.youtrackNotes
+                Rectangle {
+                    id: ytNote
+                    required property var modelData
+                    objectName: "youtrackNote"
+                    readonly property bool clickable: modelData.kind !== "offline"
+                    implicitHeight: 26
+                    implicitWidth: ytNoteText.implicitWidth + 18
+                    radius: 13
+                    color: ytNoteArea.containsMouse && clickable ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.06) : "transparent"
+                    border.width: 1
+                    border.color: Tide.Theme.alpha(modelData.kind === "conflict" ? Tide.Tokens.rose
+                                                 : modelData.kind === "new" ? Tide.Tokens.peach : Tide.Tokens.textMuted, 0.4)
+                    activeFocusOnTab: clickable
+                    Accessible.role: clickable ? Accessible.Button : Accessible.StaticText
+                    Accessible.name: modelData.text
+                    Accessible.onPressAction: ytNoteArea.clicked(null)
+                    Keys.onReturnPressed: ytNoteArea.clicked(null)
+                    Text {
+                        id: ytNoteText
+                        anchors.centerIn: parent
+                        text: ytNote.modelData.text
+                        textFormat: Text.PlainText
+                        color: ytNote.modelData.kind === "conflict" ? Tide.Tokens.rose
+                             : ytNote.modelData.kind === "new" ? Tide.Tokens.peach : Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                    }
+                    MouseArea {
+                        id: ytNoteArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        enabled: ytNote.clickable
+                        cursorShape: ytNote.clickable ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: {
+                            if (ytNote.modelData.kind === "new") page.openImport()
+                            else {
+                                page.panelOpen = false
+                                page.managing = true
+                            }
+                        }
+                    }
                 }
             }
             Field {
@@ -1131,6 +1195,9 @@ Rectangle {
         tagTone: page.tagTone
         onProjectRequested: (tag, request) => page.projectRequested(tag, JSON.stringify(request))
         onTagRequested: (tag, request) => page.tagRequested(tag, JSON.stringify(request))
+        onIssuesRequested: (tag, refresh) => page.youtrackIssuesRequested(tag, refresh)
+        onImportRequested: (tag, keys) => page.importRequested(tag, JSON.stringify({ issues: keys }))
+        onResolveRequested: (tag, ident, choice) => page.resolveRequested(tag, ident, choice)
         onBackRequested: {
             page.managing = false
             if (page.launchOpen) Qt.callLater(() => { page.launchDialog.reloadProject(); page.launchDialog.forceActiveFocus() })
@@ -1165,6 +1232,7 @@ Rectangle {
         onShowInFolderRequested: path => page.fileRequested(path, "folder")
         onLinkRequested: url => page.linkRequested(url)
         onSaveRequested: request => page.saveCard(request)
+        onYoutrackResolveRequested: (cardId, choice) => page.resolveRequested(page.nextTag("yt-resolve:" + cardId), cardId, choice)
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))
             if (column === "archived") page.panelOpen = false

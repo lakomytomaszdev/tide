@@ -401,6 +401,7 @@ function createRequest(form) {
     if (form.projectKind === "repo") request.repo = form.project
     else if (form.project) request.project = form.project
     if (form.column) request.column = form.column
+    if (form.youtrack) request.youtrack = form.youtrack
     return request
 }
 
@@ -417,7 +418,97 @@ function updateRequest(card, form) {
     if (tags.length !== old.length || tags.some((t, i) => fold(t) !== fold(old[i]))) out.tags = tags
     if (form.projectKind === "repo") out.repo = form.project
     else if ((form.project || "") !== (card.project || "")) out.project = form.project || ""
+    if (form.youtrack !== undefined && (form.youtrack || "") !== (card.youtrack || "")) out.youtrack = form.youtrack || ""
     return out
+}
+
+// --- YouTrack (PT-7) ------------------------------------------------------------------------------
+
+// Znaczek stanu synchronizacji karty ze zgłoszeniem: ✓ zsynchronizowane, ⟳ czeka na zapis albo YouTrack
+// niedostępny, ⚠ konflikt albo odmowa YouTracka; bez synchronizacji — nic.
+function syncGlyph(sync) {
+    if (!sync) return ""
+    switch (sync.status) {
+    case "ok": return "✓"
+    case "pending": return "⟳"
+    case "offline": return "⟳"
+    case "conflict": return "⚠"
+    case "error": return "⚠"
+    default: return ""
+    }
+}
+
+// Ton znaczka (nazwa tokenu palety): konflikt — rose, odmowa — butter, w toku — sky, zgodne — mint.
+function syncTone(sync) {
+    if (!sync) return "textMuted"
+    return { ok: "mint", pending: "sky", offline: "textMuted", conflict: "rose", error: "butter" }[sync.status] || "textMuted"
+}
+
+// Podpowiedź na znaczniku YouTracka: klucz, stan w YouTracku i stan synchronizacji słowami.
+function syncHint(card) {
+    const sync = card ? card.youtrackSync : null
+    if (!sync) return card && card.youtrack ? "YouTrack " + card.youtrack : ""
+    const parts = ["YouTrack " + (sync.issue || card.youtrack)]
+    if (sync.text) parts.push(sync.text)
+    else if (sync.issueState) parts.push("w YouTracku „" + sync.issueState + "”")
+    if (sync.via === "ticket" && sync.label) parts.push("stan według: " + sync.label)
+    return parts.join(" · ")
+}
+
+// Adres zgłoszenia do „Otwórz w YouTracku” — tylko http(s).
+function youtrackUrl(card) {
+    const url = card && card.youtrackSync ? String(card.youtrackSync.url || "") : ""
+    return /^https?:\/\/\S+$/i.test(url) ? url : ""
+}
+
+// Klucz zgłoszenia z pola karty: „legal-35” albo adres …/issue/LEGAL-35 → „LEGAL-35”; pusty — brak; null — zły.
+function issueKey(text) {
+    let value = String(text || "").trim()
+    if (!value) return ""
+    const at = value.lastIndexOf("/issue/")
+    if (at >= 0) value = value.slice(at + 7).split(/[/?#]/)[0]
+    value = value.toUpperCase()
+    return /^[A-Z][A-Z0-9_]{0,19}-[1-9][0-9]{0,8}$/.test(value) ? value : null
+}
+
+// Pasek okna: „YouTrack niedostępny”, „N nowych zgłoszeń w YouTracku”, konflikty — albo pusty.
+function youtrackNotes(snapshot) {
+    const yt = snapshot && snapshot.youtrack
+    if (!yt) return []
+    const out = []
+    if (yt.conflicts > 0)
+        out.push({ kind: "conflict", text: yt.conflicts + " " + plural(yt.conflicts, "konflikt", "konflikty", "konfliktów")
+                                             + " z YouTrackiem" })
+    if (yt.enabled && !yt.available)
+        out.push({ kind: "offline", text: "YouTrack niedostępny" + (yt.pending > 0 ? " · " + yt.pending + " czeka" : "") })
+    if (yt.newIssues > 0)
+        out.push({ kind: "new", text: yt.newIssues + " " + plural(yt.newIssues, "nowe zgłoszenie", "nowe zgłoszenia",
+                                                                  "nowych zgłoszeń") + " w YouTracku" })
+    return out
+}
+
+// Linia stanu w sekcji YouTrack strony „Projekty i tagi”.
+function youtrackSummary(yt, projects) {
+    if (!yt) return ""
+    const synced = (projects || []).filter(p => p.youtrack && p.youtrackSync).map(p => p.youtrack + " → " + p.name)
+    if (!yt.sync) return "Synchronizacja wyłączona w ustawieniach (youtrack.json: \"sync\": false)."
+    if (!synced.length) return "Żaden projekt nie ma klucza YouTracka — ustaw go w projekcie (np. LOG), żeby stan kart szedł do YouTracka."
+    const states = yt.states || {}
+    const map = ["Do zrobienia → " + (states.open || "Open"), "W toku → " + (states.progress || "In Progress"),
+                 "Czeka → " + (states.waiting || "To be discussed"), "Do sprawdzenia → " + (states.review || "Fixed"),
+                 "Gotowe → " + (states.done || "Verified")].join(", ")
+    const parts = ["Synchronizacja: " + synced.join(", ") + "."]
+    if (!yt.available) parts.push("YouTrack niedostępny" + (yt.error ? " (" + yt.error + ")" : "") + " — zmiany czekają.")
+    else if (yt.pending > 0) parts.push(yt.pending + " " + plural(yt.pending, "zmiana czeka", "zmiany czekają", "zmian czeka") + " na zapis.")
+    parts.push(map + ".")
+    return parts.join(" ")
+}
+
+// Lista do importu: filtr po kluczu, tytule i projekcie; zgłoszenia z kartą na końcu.
+function importRows(issues, query) {
+    const q = fold(String(query || "").trim())
+    const rows = (issues || []).filter(i => !q || fold([i.id, i.summary, i.project, i.boardProjectName].join(" ")).indexOf(q) >= 0)
+    return rows.slice().sort((a, b) => (a.card ? 1 : 0) - (b.card ? 1 : 0))
 }
 
 function columnLabel(snapshot, id) {

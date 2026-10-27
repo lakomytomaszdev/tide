@@ -4,6 +4,9 @@
 // opis, notatka. Istniejąca karta ma też przeniesienie między kolumnami ręcznymi i archiwizację.
 // Błąd z usługi pokazuje się w panelu (komunikat po polsku), commitError — dyskretnie pod nim.
 // Ctrl+Enter zapisuje, Esc zamyka. Teksty z karty to dane: zawsze zwykły tekst.
+// YouTrack (PT-7): pole „Zgłoszenie w YouTracku” (klucz albo adres zgłoszenia), a przy połączonej karcie —
+// stan zgłoszenia, stan synchronizacji, „Otwórz w YouTracku” i przy konflikcie wybór „Weź z YouTracka” /
+// „Nadpisz z Tide” (/Board ResolveYouTrack).
 // Plan i specyfikacja karty (PT-5): zakładki „Opis” | „Plan” | „Specyfikacja” — dwie ostatnie tylko,
 // gdy /Board CardDocs(id) je znalazł. Wybrana zakładka zostaje dla kolejnych kart, póki działa okno
 // (karta bez takiego dokumentu pokazuje „Opis”). Przy dokumencie panel się poszerza (do 860 px, „Rozwiń” — prawie
@@ -61,10 +64,13 @@ Rectangle {
     signal openFileRequested(string path)          // „Otwórz plik”
     signal showInFolderRequested(string path)      // „Pokaż w katalogu”
     signal linkRequested(string url)               // link http(s) z Markdownu
+    signal youtrackResolveRequested(string cardId, string choice)   // konflikt: youtrack | tide
 
     function form() {
+        const key = Logic.issueKey(youtrackField.text)
         return { title: titleField.text, description: descriptionEdit.text, note: noteField.text, tags: tags,
-                 project: project, projectKind: projectKind, column: column }
+                 project: project, projectKind: projectKind, column: column,
+                 youtrack: key === null ? youtrackField.text.trim() : key }
     }
 
     // Wypełnia formularz kartą (albo pustym, dla nowej) — przy otwarciu panelu.
@@ -76,6 +82,7 @@ Rectangle {
         titleField.text = card ? card.title : ""
         descriptionEdit.text = card ? card.description || "" : ""
         noteField.text = card ? card.note || "" : ""
+        youtrackField.text = card ? card.youtrack || "" : ""
         tags = card ? (card.tags || []).slice() : []
         projectKind = card && card.project ? "project" : ""
         project = card ? card.project || "" : ""
@@ -109,6 +116,11 @@ Rectangle {
         if (values.title.trim() === "") {
             error = "Karta potrzebuje tytułu."
             titleField.focusInput()
+            return
+        }
+        if (Logic.issueKey(youtrackField.text) === null) {
+            error = "Zgłoszenie w YouTracku to klucz, np. LEGAL-35 (albo adres zgłoszenia)."
+            youtrackField.focusInput()
             return
         }
         const request = editing ? Logic.updateRequest(base || card, values) : Logic.createRequest(values)
@@ -416,6 +428,113 @@ Rectangle {
                     accessibleName: "Notatka na karcie"
                     maximumLength: 300
                     onAccepted: panel.save()
+                }
+
+                FieldLabel { text: "Zgłoszenie w YouTracku"; Layout.topMargin: 8 }
+                LineInput {
+                    id: youtrackField
+                    objectName: "cardYouTrackField"
+                    Layout.fillWidth: true
+                    placeholder: "np. LEGAL-35 — stan zgłoszenia pójdzie za kartą"
+                    accessibleName: "Zgłoszenie w YouTracku"
+                    maximumLength: 200
+                    invalid: Logic.issueKey(text) === null
+                    onAccepted: panel.save()
+                }
+
+                // Stan zgłoszenia i synchronizacji (PT-7) — tylko połączona karta.
+                Rectangle {
+                    id: ytBox
+                    objectName: "cardYouTrackBox"
+                    readonly property var sync: panel.editing && panel.card.youtrackSync ? panel.card.youtrackSync : null
+                    readonly property bool conflict: !!sync && sync.status === "conflict"
+                    Layout.fillWidth: true
+                    Layout.topMargin: 4
+                    visible: sync !== null
+                    radius: Tide.Tokens.radiusSmall
+                    color: conflict ? Tide.Theme.alpha(Tide.Tokens.rose, 0.10) : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.04)
+                    border.width: conflict ? 1 : 0
+                    border.color: Tide.Theme.alpha(Tide.Tokens.rose, 0.45)
+                    implicitHeight: ytColumn.implicitHeight + 16
+                    ColumnLayout {
+                        id: ytColumn
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 8
+                        anchors.leftMargin: 12
+                        spacing: 6
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Text {
+                                text: Logic.syncGlyph(ytBox.sync)
+                                visible: text !== ""
+                                textFormat: Text.PlainText
+                                color: Tide.Tokens[Logic.syncTone(ytBox.sync)]
+                                font.family: Tide.Theme.uiFamily
+                                font.pixelSize: 13
+                                font.weight: Font.DemiBold
+                            }
+                            Text {
+                                objectName: "cardYouTrackState"
+                                Layout.fillWidth: true
+                                text: ytBox.sync ? (ytBox.sync.issue || "") + (ytBox.sync.issueState ? " · " + ytBox.sync.issueState : "") : ""
+                                textFormat: Text.PlainText
+                                color: Tide.Tokens.textPrimary
+                                font.family: Tide.Theme.monoFamily
+                                font.pixelSize: 12
+                                elide: Text.ElideRight
+                            }
+                            PillButton {
+                                objectName: "cardYouTrackOpen"
+                                visible: Logic.youtrackUrl(panel.card) !== ""
+                                implicitHeight: 26
+                                pixelSize: 11
+                                flat: true
+                                text: "Otwórz w YouTracku ↗"
+                                toolTip: Logic.youtrackUrl(panel.card)
+                                onClicked: panel.linkRequested(Logic.youtrackUrl(panel.card))
+                            }
+                        }
+                        Text {
+                            objectName: "cardYouTrackText"
+                            Layout.fillWidth: true
+                            visible: text !== ""
+                            text: ytBox.sync ? (ytBox.sync.text || "")
+                                               + (ytBox.sync.via === "ticket" && ytBox.sync.label ? " · stan według: " + ytBox.sync.label : "")
+                                             : ""
+                            textFormat: Text.PlainText
+                            color: ytBox.conflict ? Tide.Tokens.rose : Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: ytBox.conflict
+                            spacing: 8
+                            PillButton {
+                                objectName: "cardYouTrackTake"
+                                implicitHeight: 28
+                                pixelSize: 12
+                                outline: true
+                                text: "Weź z YouTracka"
+                                toolTip: "Zostaw stan z YouTracka — Tide zapisze dopiero przy następnej zmianie karty"
+                                onClicked: panel.youtrackResolveRequested(panel.card.id, "youtrack")
+                            }
+                            PillButton {
+                                objectName: "cardYouTrackOverwrite"
+                                implicitHeight: 28
+                                pixelSize: 12
+                                outline: true
+                                text: "Nadpisz z Tide"
+                                toolTip: "Zapisz w YouTracku stan karty mimo zmiany ręcznej"
+                                onClicked: panel.youtrackResolveRequested(panel.card.id, "tide")
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+                    }
                 }
 
                 // Istniejąca karta: kolumna, archiwum, metadane.
