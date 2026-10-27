@@ -738,7 +738,7 @@ Nic, czego używa działający kontener, nie trafia do żadnej kategorii. `Prune
 
 **Projekt compose.** `GroupAction` bierze kontenery z etykietą projektu (`GET /containers/json?filters={"label":["com.docker.compose.project=…"]}`) i układa je według `com.docker.compose.depends_on`: `start` — niedziałające (bez jednorazowych `run`) od zależności, `stop` — działające od końca, `restart` — działające: zatrzymanie od końca, potem start od zależności.
 
-**Logi i powłoka w Konsoli** idą tym samym mechanizmem co „Nowe zadanie”: plik zadania z argv w `$XDG_RUNTIME_DIR/tide/tasks` i karta z profilem „Tide: zadanie agenta” w ostatnio używanym oknie Konsoli albo nowe okno z `launch.py --task` ([Nowe zadanie](#nowe-zadanie)). Tytuł karty „docker · <nazwa>”. Nazwa kontenera to osobny argument, bez sklejania poleceń; przy socketcie innym niż domyślny dochodzi `-H unix://…`, bo karta nie dziedziczy `DOCKER_HOST` usługi. Nieprzejęty plik zadania jest wycofywany po 20 s.
+**Logi i powłoka w Konsoli** idą tym samym mechanizmem co „Nowe zadanie”: plik zadania z argv w `$XDG_RUNTIME_DIR/tide/tasks` i karta z profilem „Tide: zadanie agenta” w ostatnio używanym oknie Konsoli albo nowe okno z `launch.py --task` ([Nowe zadanie](#nowe-zadanie)). Tytuł karty „docker · <nazwa>”. Nazwa kontenera to osobny argument, bez sklejania poleceń; przy sockecie innym niż domyślny dochodzi `-H unix://…`, bo karta nie dziedziczy `DOCKER_HOST` usługi. Nieprzejęty plik zadania jest wycofywany po 20 s.
 
 Logika bez Qt jest w `tide_daemon/docker/` (`client.py`, `snapshot.py`, `repos.py`, `disk.py`, `stats.py`, `engine.py`), wątki i pamięć podręczna w `docker_monitor.py`.
 
