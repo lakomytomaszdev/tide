@@ -56,6 +56,7 @@ CONVENTIONAL = re.compile(r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]{1,40})\))?!?:\s
 ACTIVE = ("w-toku", "review", "czeka")
 FAILING = re.compile(r"(?i)(test\w*[^.\n]{0,40}\bnie (?:przechodz|przeszł)\w*|\b[1-9]\d* (?:failed|failing|nie przesz\w*)\b|"
                      r"\bFAIL(?:ED|URES?)\b|\btesty? (?:padaj|czerwon)\w*)")
+CONFLICT = "Konflikt numerów: "
 AGENT_BRANCH = re.compile(r"^worktree-agent-")   # wewnętrzne gałęzie podagentów Claude Code (Agent z izolacją)
 
 # --- praca czy porządki ------------------------------------------------------------------------
@@ -232,7 +233,10 @@ def project_facts(report, project) -> dict:
            "toClean": len(project.to_clean),
            "unpushed": [b for b in (w.get("branch") or w.get("name") or "" for w in project.unpushed)
                         if not AGENT_BRANCH.match(b)],
-           "mainDirty": max(0, project.main_dirty_count)}
+           "mainDirty": max(0, project.main_dirty_count),
+           # Konflikty numerów ticketów (reports/plans.py, coordination/numbering.py) — do „Czeka na mnie”.
+           "conflicts": [clean(w.get("text"), TEXT_MAX - len(CONFLICT)) for w in getattr(project, "conflicts", None) or []
+                         if isinstance(w, dict) and w.get("text")]}
 
     seen_tickets: dict[str, dict] = {}
     for entry in plans:
@@ -460,6 +464,7 @@ STATE_SHORT = {"gotowe": "zrobione", "w-toku": "w toku", "review": "w review", "
 def rules(fact: dict) -> dict:
     """Podsumowanie projektu bez modelu."""
     groups = {k: [] for k in ALL_KEYS}
+    groups["waiting"] = conflict_items(fact)
     used_units: set[int] = set()
     tickets = fact["tickets"]
 
@@ -534,6 +539,11 @@ def rules(fact: dict) -> dict:
     out = {"theme": _theme(fact), **{k: _cap(v) for k, v in groups.items()}}
     out["headline"] = _headline(out)
     return out
+
+
+def conflict_items(fact: dict) -> list[dict]:
+    """„Konflikt numerów: …” — pozycje „Czeka na mnie” z kontroli numerów ticketów."""
+    return [_item("", CONFLICT + text) for text in fact.get("conflicts") or [] if text]
 
 
 def _category(unit: dict) -> str:
@@ -822,6 +832,11 @@ def merge(model: dict[str, dict], all_facts: list[dict]) -> dict[str, dict]:
         chosen = dict(chosen, source="model")
         if not chosen.get("waiting") and fallback.get("waiting"):
             chosen["waiting"] = fallback["waiting"]
+        conflicts = conflict_items(fact)
+        if conflicts:  # model faktów o konfliktach nie dostaje — pozycje zawsze z reguł, na początku
+            texts = {c["text"] for c in conflicts}
+            chosen["waiting"] = _cap(conflicts + [i for i in chosen.get("waiting") or []
+                                                  if i.get("text") not in texts and not i.get("more")])
         out[fact["project"]] = chosen
     return out
 

@@ -519,7 +519,8 @@ rozmowy), `sessionTitle`, `label` (ID z tytułu planu albo gałęzi, tylko ze zn
 `plan` (`path`, `title`, `tracker`, `trackerUrl`, `trackerProject`, `prefix`, `coordinator`, `session`,
 `status`, `updated`, `updatedTs`, `errors`) albo `null`, `tracker` (`kind`, `url`, `project`, `available`,
 `error`, `fetchedTs`, `checkedTs`), `counts` (po stanach, `total` bez odrzuconych, `done`), `progress`
-(`done`, `total`, `text`: „TOM-20 · 8/13”), `spawned`, `running`, `columns`, `tickets`, `runs`.
+(`done`, `total`, `text`: „TOM-20 · 8/13”), `spawned`, `running`, `columns`, `tickets`, `runs`,
+`warnings` (kontrola numerów ticketów w repozytorium, niżej; też w `Coordinators()`).
 
 **Ticket:** `key` (klucz porównania: `TOM-140`, `#22` albo `~opis` dla pracy bez ID), `id` (do pokazania,
 z planu albo pierwszy zapis), `title` (czym jest zadanie, po polsku — opis karty), `done` (co faktycznie
@@ -634,6 +635,31 @@ D-Bus ani plików. Token idzie wyłącznie do serwera z ustawień (`url`, domyś
 ```json
 {"url": "http://10.20.1.159:8111", "tokenFile": "~/.config/logviewer/youtrack-mcp-token", "tokenVar": ""}
 ```
+
+**Kontrola numerów ticketów** (`coordination/numbering.py`, decyzja 56; reguły: standard planu, „Numery
+ticketów: jedno źródło”). Plany ze wszystkich miejsc repozytorium (`coordination/repoplans.py`): główny
+katalog i każdy worktree (`git worktree list`, także niezacommitowane pliki) oraz każda gałąź lokalna
+(`git for-each-ref`, `ls-tree` tylko dla nowych commitów, `cat-file --batch` tylko dla nowych blobów;
+wynik repozytorium 60 s w pamięci), deklaracja z CLAUDE.md/AGENTS.md (sekcja „Plan pracy agentów (Tide)”:
+prefiks, tracker, projekt), rezerwacje numerów i — gdy repozytorium ma plany lokalne — klucze projektów
+YouTracka (`GET /api/admin/projects?fields=shortName`, raz na godzinę, po błędzie po 10 min; bez YouTracka
+ten punkt jest pominięty). Ostrzeżenie: `kind`, `severity` (`hard`, `soft`), `ticket`, `prefix`, `plans`
+(nazwy planów), `text` (po polsku, okno pokazuje je jako zwykły tekst). Rodzaje: `ticket-title` — ten sam
+klucz z różnymi tytułami w dwóch różnych planach, także zakończonych (kopie jednego planu w kilku worktree
+i gałęziach, po nazwie pliku albo tytule planu, to jeden plan; para planów `youtrack` się nie liczy);
+`local-prefix-tracker` — prefiks lokalny jest kluczem projektu w YouTracku; `prefix-alias` — plan
+`youtrack` z `ticket-prefix` ≠ `tracker-project` bez mapy migracji; `reserved-elsewhere` — numer
+zarezerwowany dla innego tytułu; `numbering-restart` (łagodne) — niezakończony plan lokalny, którego nowe
+numery zaczynają się nie wyżej niż największy numer wcześniejszych planów. Okno pokazuje pasek nad
+kolumnami (pastel `butter`), raport poranny — pozycję „Konflikt numerów: …” w „Czeka na mnie” projektu
+(zawsze z reguł, także przy opisie modelem). Z wiersza poleceń: `make check-plans` (`tools/check_plans.py
+[workspace]`, kod wyjścia 1 przy kolizji twardej).
+
+**Rezerwacja numerów** (`coordination/reservations.py`, `make next-id REPO=… [PREFIX=] [COUNT=] [TITLE=]
+[DRY_RUN=1]`, `tools/next_id.py`): pod `flock` na `$XDG_STATE_HOME/tide/ticket-ids.json` (0600)
+największy numer z rejestru (główny katalog repozytorium + prefiks) i ze wszystkich planów, kolejne N
+numerów zapisane z tytułem i czasem. Pusty rejestr zasiewa się z planów; prefiks z YouTracka — odmowa
+(„numer nadaje YouTrack — załóż ticket tam”); `--dry-run` niczego nie zapisuje.
 
 **Odświeżanie** (`coordination_monitor.py`): pierwszy odczyt 1,5 s po starcie, potem co 20 s, po zmianie
 w `/Agents` (najwyżej co 4 s) i na żądanie. Praca w jednym wątku roboczym, D-Bus odpowiada z gotowych

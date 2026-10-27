@@ -71,6 +71,49 @@ def grab(pkg: str, data_path: str, png: str, *extra, env=None) -> str:
     return result.stderr
 
 
+PROBE = r"""
+import importlib.util, json, sys
+from PyQt6.QtCore import QObject, QTimer, QUrl
+from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtQml import QQmlApplicationEngine, QQmlExpression
+pkg, data, select = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("tide_sessions", pkg + "/tide-sessions.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+app = QGuiApplication([])
+with open(data, encoding="utf-8") as fh:
+    backend = mod.Backend(None, json.load(fh), select=select)
+engine = QQmlApplicationEngine()
+engine.setInitialProperties({"backend": backend})
+engine.load(QUrl.fromLocalFile(pkg + "/qml/Main.qml"))
+root = engine.rootObjects()[0]
+
+def report():
+    bar = root.findChild(QObject, "numberingWarnings")
+    columns = root.findChild(QObject, "boardColumns")
+    # Linie z Repeatera nie są dziećmi QObject paska — czytamy je wyrażeniem QML w kontekście paska.
+    lines = QQmlExpression(engine.contextForObject(bar), bar,
+                           "JSON.stringify(Array.from(warningColumn.children).filter(c => c.objectName"
+                           " === 'numberingWarningLine').map(c => [c.text, c.textFormat]))").evaluate()[0]
+    texts = json.loads(lines or "[]")
+    print(json.dumps({"visible": bar.property("visible"), "height": bar.property("height"),
+                      "text": [t[0] for t in texts], "formats": [t[1] for t in texts],
+                      "barY": bar.property("y"), "columnsY": columns.property("y")}))
+    app.quit()
+QTimer.singleShot(800, report)
+app.exec()
+"""
+
+
+def probe(pkg: str, data_path: str, select: str) -> dict:
+    """Pasek ostrzeżeń o numerach w prawdziwym oknie (offscreen): widoczność, wysokość, teksty, położenie."""
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
+    result = subprocess.run(["/usr/bin/python3", "-c", PROBE, pkg, data_path, select], env=env,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr[-3000:]
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
 class PackageTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="tide-sesswin-")
@@ -152,6 +195,14 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js("duration(2 * 3600 + 14 * 60)"), "2 h 14 min")
         self.assertEqual(self.js("agentTime({state: 'running', startTs: 100}, 130)"), "teraz")
         self.assertEqual(self.js("agentTime({state: 'completed', startTs: 0, endTs: 0}, 130)"), "")
+        warnings = json.dumps({"warnings": [{"severity": "hard", "text": "PT-13 ma różne tytuły"},
+                                            {"severity": "soft", "text": "Plan x zaczyna od PT-1"},
+                                            {"severity": "hard", "text": "a"}, {"severity": "hard", "text": "b"}]})
+        self.assertEqual(self.js(f"warningLines({warnings})"),
+                         ["Konflikt numerów: PT-13 ma różne tytuły", "Numeracja: Plan x zaczyna od PT-1",
+                          "Konflikt numerów: a", "i 1 więcej — wszystkie pokaże make check-plans"])
+        self.assertEqual(self.js("warningLines({warnings: []})"), [])
+        self.assertEqual(self.js("warningLines(null)"), [])
         self.assertEqual(self.js("singleSessions([{id: 'a', state: 'working'}, {id: 'b', state: 'ended'},"
                                  " {id: 'c', state: 'working'}], [{id: 'c'}]).map(s => s.id)"), ["a"])
 
@@ -177,6 +228,24 @@ class GrabTest(unittest.TestCase):
         self.assert_png(png, grab(self.pkg, self.path, png, "--select", "codex:" + F.CODEX_ROOT))
         png = os.path.join(self.tmp, "result.png")
         self.assert_png(png, grab(self.pkg, self.path, png, "--ticket", "TOM-140", "--result", "a140rev00000000001"))
+
+    def test_numbering_warnings_bar_above_columns(self):
+        board_id = "claude:" + F.CLAUDE_COORD
+        self.assertEqual(probe(self.pkg, self.path, board_id)["visible"], False, "bez ostrzeżeń — bez paska")
+        self.data["boards"][board_id]["warnings"] = [
+            {"kind": "ticket-title", "severity": "hard", "ticket": "PT-13", "prefix": "PT", "plans": ["a", "b"],
+             "text": "PT-13 ma różne tytuły w planach: „<b>Raport</b>” (a), „Okno” (b)"}]
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(self.data, fh)
+        shown = probe(self.pkg, self.path, board_id)
+        self.assertEqual(shown["visible"], True, shown)
+        self.assertGreater(shown["height"], 20)
+        self.assertEqual(shown["text"], ["Konflikt numerów: PT-13 ma różne tytuły w planach: „<b>Raport</b>” (a), „Okno” (b)"],
+                         "tekst jako PlainText — znaczniki z planu nie są interpretowane")
+        self.assertEqual(shown["formats"], [0], "Text.PlainText")
+        self.assertLess(shown["barY"], shown["columnsY"], "pasek nad kolumnami")
+        png = os.path.join(self.tmp, "warnings.png")
+        self.assert_png(png, grab(self.pkg, self.path, png, "--select", board_id))
 
     def test_sanitized_data_keeps_structure_and_drops_content(self):
         out = subprocess.run(["/usr/bin/python3", os.path.join(REPO, "tools", "sessions_preview.py"), self.path,

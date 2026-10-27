@@ -35,6 +35,7 @@
       "rider": "875ebe2af63143d748560f8237cf3d1df4133ea0cb8d4b75eb176112774afd44",
       "steam": "5eef8f31106b81956ed908490bcf8c73abe476aa58bb9041acdf70b0d42ebcae",
       "telegram": "147fd8f8923e7e5f463fe98c0eb9913bead6b2ae59935728cda141002ec8a7c9",
+      "vivaldi": "2256538e34e60bae0f24d38028da62f8187eba9a1bfbff810eb6ecbeb0b3df18",
       "vlcmediaplayer": "dcefad2f6a4e3a35aa667ca25803904311d8f5229c837d11612e012af358b2af",
       "webstorm": "11827451725f77c24128844a001cf557726f42f60fd94e4aa7884242593ae6b3",
       "zedindustries": "90848d3e8d74d4fb3efc7137b8a5181139082e212566b025843379a7cb0550a0"
@@ -305,6 +306,23 @@
         }
       ],
       "color": "sky"
+    },
+    {
+      "app": "Vivaldi",
+      "names": [
+        "vivaldi",
+        "vivaldi-stable",
+        "vivaldi-snapshot"
+      ],
+      "glyph": [
+        {
+          "simpleIcons": "vivaldi"
+        },
+        {
+          "theme": "web-browser-symbolic"
+        }
+      ],
+      "color": "rose"
     },
     {
       "app": "Brave",

@@ -332,3 +332,18 @@ function titleSources(ticket) {
         parts.push("zlecenie: „" + ticket.taskTitle + "”")
     return parts.join(" · ")
 }
+
+// Pasek ostrzeżeń nad kolumnami: kontrola numerów ticketów w planach repozytorium (board.warnings,
+// coordination/numbering.py). Najpierw kolizje twarde, najwyżej `limit` linii, reszta jako „i N więcej”.
+var WARNINGS_SHOWN = 3
+
+function warningLines(board, limit) {
+    var list = (board && board.warnings) || []
+    limit = limit || WARNINGS_SHOWN
+    var out = list.slice(0, limit).map(function (w) {
+        return (w.severity === "hard" ? "Konflikt numerów: " : "Numeracja: ") + (w.text || "")
+    })
+    if (list.length > limit)
+        out.push("i " + (list.length - limit) + " więcej — wszystkie pokaże make check-plans")
+    return out
+}

@@ -29,7 +29,7 @@ Płaskie pary `klucz: wartość` (YAML bez zagnieżdżeń i list), pierwsza lini
 | `tracker` | `youtrack` \| `local` \| `none` | skąd są tickety (niżej) |
 | `tracker-url` | adres albo pusty | dla `youtrack`, np. `http://10.20.1.159:8111` |
 | `tracker-project` | klucz albo pusty | projekt w trackerze, np. `LOG`, `LEGAL`, `APP5` |
-| `ticket-prefix` | wielkie litery | prefiks ID ticketów w tym planie, np. `TOM`, `LA`, `TIDE` |
+| `ticket-prefix` | wielkie litery | prefiks ID ticketów w tym planie, np. `LOG`, `APP5`, `PT` |
 | `coordinator` | `claude` \| `codex` | narzędzie sesji koordynującej |
 | `session` | ID sesji albo pusty | ID sesji koordynatora (Claude Code: nazwa pliku dziennika, Codex: ID wątku), jeśli znane |
 | `status` | `active` \| `paused` \| `done` | stan całego planu |
@@ -39,10 +39,41 @@ Płaskie pary `klucz: wartość` (YAML bez zagnieżdżeń i list), pierwsza lini
 
 - `youtrack` — tickety żyją w YouTracku (`tracker-url`, `tracker-project`); plan wskazuje, które
   z nich są w tym ciągu pracy, a Tide dociąga z YouTracka (tylko odczyt) tytuły, stany i odnośniki.
-- `local` — **nie ma zewnętrznego trackera**: ID ticketów nadaje plan (`TIDE-1`, `TIDE-2`, …), a plan
+- `local` — **nie ma zewnętrznego trackera**: ID ticketów nadaje plan (`PT-1`, `PT-2`, …), a plan
   jest źródłem stanu dla tablicy Tide i raportu porannego. `tracker-url` i `tracker-project` puste.
 - `none` — praca bez śledzenia ticketów (np. jednorazowe zadanie). Tabela może być pusta albo
   zawierać zwykłe kroki; Tide pokazuje je, ale niczego nie dopasowuje do trackera.
+
+## Numery ticketów: jedno źródło
+
+Jeden numer to zawsze jedno zadanie — w całym repozytorium i w trackerze. Dlatego:
+
+1. **Jedno źródło numerów na repozytorium.** Gdy repozytorium ma projekt w YouTracku, plan ma
+   `tracker: youtrack`, a `ticket-prefix` jest równy `tracker-project`: ID w planie to dokładnie klucze
+   z YouTracka. Ticket najpierw zakładasz w YouTracku, dopiero potem wpisujesz go do planu. Nowe plany
+   nie używają aliasów (np. `LA-035` zamiast `LEGAL-35`); stare aliasy działają tylko przez mapę
+   migracji (`docs/agents/youtrack-migration/`) do czasu przejścia.
+2. **Prefiks lokalny jest jeden i wolny.** Przy `tracker: local` prefiks jest jeden dla całego
+   repozytorium (zapisany w CLAUDE.md/AGENTS.md) i nie może być kluczem żadnego projektu w YouTracku
+   (sprawdź listę projektów — tylko odczyt).
+3. **Numeracja lokalna jest ciągła w repozytorium.** Nowy numer = największy numer z tym prefiksem
+   we wszystkich planach repozytorium + 1 — w `docs/agents/plans/` głównego katalogu i **każdego
+   worktree** (`git worktree list`, także niezacommitowane) oraz na wszystkich gałęziach
+   (`git grep -h "^ticket-prefix\\|^| PREFIKS-" $(git for-each-ref --format='%(refname)' refs/heads) -- docs/agents/plans`).
+   Plan w innym worktree jest niewidoczny z głównego katalogu, a i tak zajmuje swoje numery.
+   Nowy plan nie zaczyna od 1, a numerów nie używa się ponownie, także po `odrzucone`.
+   **Nowy numer lokalny bierzesz wyłącznie z** `make -C ~/DevWorkspace/plasma-tide next-id REPO=<repozytorium>
+   [COUNT=N] [TITLE="…"]` (równoważnie `tools/next_id.py`): liczy to samo pod blokadą i zapisuje rezerwację
+   w `~/.local/state/tide/ticket-ids.json`, więc dwie równoległe sesje nie dostaną tego samego numeru.
+   Dla prefiksu z YouTracka odmawia — numer nadaje YouTrack. Ręczne liczenie tylko wtedy, gdy narzędzia nie ma.
+4. **Zanim założysz projekt w trackerze albo zmienisz prefiks**, sprawdź, czy klucz nie jest już
+   używany w planach repozytorium ani w trackerze. Przy kolizji zatrzymaj się i zapytaj użytkownika.
+5. Tide sprawdza to samo i pokazuje ostrzeżenie na tablicy Sesje i w raporcie: ten sam ID z różnymi
+   tytułami w dwóch planach, prefiks lokalny równy kluczowi projektu w YouTracku, prefiks planu
+   `youtrack` różny od `tracker-project` bez mapy migracji, numer zarezerwowany dla innego tytułu
+   i (łagodnie) nowy plan, który zaczyna numerację od nowa. Koordynator przed nadaniem nowego numeru
+   albo założeniem projektu w trackerze uruchamia `make -C ~/DevWorkspace/plasma-tide check-plans`
+   (albo równoważnie `tools/check_plans.py`; kod wyjścia 1 to kolizja — zatrzymaj się i zapytaj użytkownika).
 
 ## Tabela
 

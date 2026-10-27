@@ -12,6 +12,10 @@ Koordynator:
   Katalog dnia to dzień ZAŁOŻENIA wątku, więc długo żyjący koordynator (np. założony dwa tygodnie
   temu, a dziś wciąż zlecający) leży poza oknem — rodzica podagenta z okna szukamy wtedy po ID
   w nazwie pliku (`rollout-…-<id>.jsonl`) we wszystkich dniach i w `archived_sessions`.
+
+Tablica dostaje też `warnings` — kontrolę numerów ticketów (numbering.py) na planach ze wszystkich
+worktree i gałęzi repozytorium (repoplans.py), rezerwacjach numerów (reservations.py) i liście projektów
+YouTracka (tylko GET, raz na godzinę).
 """
 import os
 import re
@@ -22,7 +26,7 @@ from ..agents import gitinfo
 from . import board as board_mod
 from . import claude as claude_mod
 from . import codex as codex_mod
-from . import ids, plan as plan_mod
+from . import ids, plan as plan_mod, repoplans
 
 DAYS = 7
 MISSING_RETRY = 600.0   # s, po tylu znów szukamy rodzica, którego pliku nie było
@@ -35,7 +39,7 @@ BACKLOG_FILES = 400     # tyle plików backlogu czytamy najwyżej (nagłówki, n
 
 class CoordinationScanner:
     def __init__(self, claude_root: str, codex_root: str, days: float = DAYS, clock=time.time, tracker=None,
-                 titles=None):
+                 titles=None, repo_plans=None, registry=None):
         self.claude_projects = os.path.join(claude_root, "projects")
         self.codex_root = codex_root
         self.codex_sessions = os.path.join(codex_root, "sessions")
@@ -51,6 +55,8 @@ class CoordinationScanner:
         self._backlog: dict = {}                    # ścieżka → ((rozmiar, mtime), wpis)
         self._codex_paths: dict[str, str] = {}      # id wątku → plik (rodzice spoza okna)
         self._codex_missing: dict[str, float] = {}  # id wątku → kiedy go nie znaleziono
+        self.repo_plans = repo_plans or repoplans.RepoPlans(clock=clock)
+        self.registry = registry        # rejestr rezerwacji numerów (reservations.py) albo None — domyślny
 
     # --- odczyt ------------------------------------------------------------------------------
 
@@ -172,7 +178,16 @@ class CoordinationScanner:
                 issues, tracker = self.tracker.get(plan.tracker_url, plan.tracker_project, force=force_tracker)
         return board_mod.build(coord, plan=plan, aliases=aliases, issues=issues, tracker=tracker, live=live,
                                now=now, info=self._info, project=where.project or os.path.basename(coord.cwd or ""),
-                               repo_path=roots[-1] if roots else "", backlog=backlog)
+                               repo_path=roots[-1] if roots else "", backlog=backlog,
+                               warnings=self.warnings(roots, aliases))
+
+    def warnings(self, roots, aliases=None) -> list[dict]:
+        """Ostrzeżenia o numerach ticketów w repozytorium (numbering.conflicts); błąd — pusta lista."""
+        try:
+            return repoplans.check(roots, self.repo_plans, self.tracker, aliases or {}, self.registry)
+        except Exception as exc:  # kontrola to dodatek — tablica ma się pokazać i bez niej
+            print(f"tide-daemon: koordynacja: kontrola numerów: {exc!r}", flush=True)
+            return []
 
     def run_detail(self, coord_id: str, run_id: str) -> dict | None:
         """Wynik podagenta i wycinek jego dziennika (przycisk „Pokaż wynik”)."""
