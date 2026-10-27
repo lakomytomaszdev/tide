@@ -26,6 +26,10 @@
   projekt, tablica koordynatora z /Coordination) zbieramy w wątku głównym, pliki czytamy w jednym
   wątku roboczym, a odpowiedź D-Bus idzie później z wątku głównego (opóźniona odpowiedź jak w /Docker);
   kolejne prośby o tę samą kartę w czasie odczytu czekają na ten sam wynik (bez kolejki odczytów).
+- synchronizacja z YouTrackiem (PT-7, ytsync_monitor.py, board/ytsync.py): każde przeliczenie migawki
+  przekazuje karty (z kolumną wyświetlaną) do `youtrack.observe`, a migawka dostaje stan synchronizacji przy
+  kartach (`youtrackSync`), ogólny (`youtrack`) i konflikty w `errors`. Import zgłoszeń (ImportYouTrack)
+  zakłada karty w Backlogu tą samą drogą co CreateCard, bez duplikatów (po polu `youtrack`).
 """
 import copy
 import json
@@ -37,6 +41,8 @@ from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 
 from .board.docs import CardDocs
 from .board.model import CARD_PREFIX, BoardError, card_num
+from .board import ytsync
+from .coordination.youtrack import issue_key
 
 LAUNCH_PREFIX = "launch:"  # ShowWindow("launch:K-12") — okno Tide od razu z „Co ma zrobić agent?”
 
@@ -54,9 +60,11 @@ class BoardMonitor(QObject):
 
     def __init__(self, store, repos_source=None, derive=None, debounce_ms: int = DEBOUNCE_MS,
                  poll_ms: int = POLL_MS, launchers=None, rederive_ms: int = REDERIVE_MS, coordinators=None,
-                 docs=None, parent=None):
+                 docs=None, youtrack=None, parent=None):
         super().__init__(parent)
         self.store = store
+        # Synchronizacja z YouTrackiem (ytsync_monitor.YouTrackSyncMonitor) albo None (--no-youtrack).
+        self.youtrack = youtrack
         # CardDocs: tablice koordynatorów z /Coordination (funkcja() → lista) i czytnik dokumentów kart.
         self.coordinators = coordinators or (lambda: [])
         self.docs = docs or CardDocs(store.root)
@@ -82,6 +90,8 @@ class BoardMonitor(QObject):
         self._rederive_requested.connect(self.rederive)
         self._links: list[tuple[str, str, str, str]] = []  # (karta, sesja, sposób, gałąź) do utrwalenia
         self._link_tried: dict[tuple[str, str], float] = {}
+        if youtrack is not None:
+            youtrack.changed.connect(self._apply)  # wynik zapisu albo konflikt — nowy stan przy kartach
 
     def start(self) -> None:
         try:
@@ -91,8 +101,12 @@ class BoardMonitor(QObject):
             print(f"tide-daemon: tablica: szablony trybów: {exc!r}", flush=True)
         self.sync()  # zmiany zrobione, gdy usługa nie działała, też trafiają do historii
         self._poll.start()
+        if self.youtrack is not None:
+            self.youtrack.start()
 
     def stop(self) -> None:
+        if self.youtrack is not None:
+            self.youtrack.stop()
         self._poll.stop()
         self._debounce.stop()
         self._rederive.stop()
@@ -190,6 +204,83 @@ class BoardMonitor(QObject):
         self._docs_waiting[ident] = [reply]
         future.add_done_callback(lambda f: self._docs_ready.emit(ident, f))
 
+    def youtrack_issues(self, refresh: bool, reply) -> None:
+        """YouTrackIssues(refresh): zgłoszenia użytkownika do importu — reply(json) po pobraniu w wątku roboczym."""
+        if self.youtrack is None:
+            reply(json.dumps(_failure("unavailable", "YouTrack jest wyłączony w usłudze (--no-youtrack)"),
+                             ensure_ascii=False))
+            return
+        if self._current is None:
+            self.snapshot_json()
+        self.youtrack.issues(self._current or {}, reply, refresh=bool(refresh))
+
+    def import_youtrack(self, request: str) -> str:
+        """ImportYouTrack({"issues": ["LOG-1", …]}): karty w Backlogu z pobranej listy, z polem `youtrack`,
+        tytułem, opisem i projektem tablicy po kluczu projektu YouTracka. Zgłoszenie z kartą — pominięte."""
+        return self._mutate(lambda: self._import(_object(request)))
+
+    def _import(self, data: dict) -> dict:
+        if self.youtrack is None:
+            raise BoardError("YouTrack jest wyłączony w usłudze (--no-youtrack)", "unavailable")
+        unknown = [k for k in data if k != "issues"]
+        if unknown:
+            raise BoardError(f"nieznane pole „{unknown[0]}”; dozwolone: issues")
+        wanted = data.get("issues")
+        if not isinstance(wanted, list) or not wanted or not all(isinstance(i, str) for i in wanted):
+            raise BoardError("issues to niepusta lista kluczy zgłoszeń")
+        if len(wanted) > 200:
+            raise BoardError("najwyżej 200 zgłoszeń naraz")
+        board = self.store.load()
+        linked = {issue_key(c.youtrack): c.id for c in board.cards.values() if issue_key(c.youtrack)}
+        projects = {p.youtrack: p.slug for p in sorted(board.projects.values(), key=lambda p: p.slug) if p.youtrack}
+        created, skipped, commit_error = [], [], ""
+        for ident in wanted:
+            key = issue_key(ident)
+            if not key:
+                skipped.append({"issue": ident[:40], "card": "", "reason": "to nie jest klucz zgłoszenia"})
+                continue
+            if key in linked:
+                skipped.append({"issue": key, "card": linked[key], "reason": "już jest na tablicy"})
+                continue
+            issue = self.youtrack.engine.issue_for_import(key)
+            if issue is None:
+                skipped.append({"issue": key, "card": "", "reason": "nie ma go na liście z YouTracka — odśwież listę"})
+                continue
+            request = {"title": ytsync.card_title(issue), "description": ytsync.card_description(issue),
+                       "column": "backlog", "youtrack": key}
+            slug = projects.get(issue.get("project") or ytsync.project_of(key))
+            if slug:
+                request["project"] = slug
+            result = self.store.create_card(request)
+            commit_error = result.get("commitError") or commit_error
+            linked[key] = result["id"]
+            created.append({"issue": key, "card": result["id"], "project": slug or ""})
+        return {"ok": True, "created": created, "skipped": skipped, "commitError": commit_error}
+
+    def resolve_youtrack(self, ident: str, choice: str) -> str:
+        """ResolveYouTrack(karta albo zgłoszenie, youtrack|tide): rozstrzygnięcie konfliktu ze zmianą ręczną."""
+        if self.youtrack is None:
+            return json.dumps(_failure("unavailable", "YouTrack jest wyłączony w usłudze (--no-youtrack)"),
+                              ensure_ascii=False)
+        try:   # najpierw karta: „K-16” wygląda też jak klucz zgłoszenia
+            wanted = f"{CARD_PREFIX}{card_num(ident)}"
+        except BoardError:
+            wanted = ""
+        key = "" if wanted else issue_key(ident)
+        if not key:
+            if not wanted:
+                return json.dumps(_failure("bad-request", f"„{ident}” to ani karta, ani zgłoszenie"), ensure_ascii=False)
+            card = next((c for c in (self._current or {}).get("cards") or [] if c.get("id") == wanted), None)
+            key = issue_key((card or {}).get("youtrack") or "")
+            if not key:
+                return json.dumps(_failure("not-found", f"karta {wanted} nie ma zgłoszenia w YouTracku"),
+                                  ensure_ascii=False)
+        result = self.youtrack.engine.resolve(key, (choice or "").strip().lower())
+        if result.get("ok"):
+            self._apply()
+            self.youtrack.tick()
+        return json.dumps(result, ensure_ascii=False)
+
     def badge_json(self) -> str:
         """Plakietka widoku Tablica w pasku okna Tide: {"text", "tone"} (pusty tekst — ukryta)."""
         try:
@@ -238,6 +329,12 @@ class BoardMonitor(QObject):
             self.publish()
             return
         snapshot = self._derived(self._base)
+        if self.youtrack is not None:
+            try:
+                self.youtrack.observe(snapshot)
+                snapshot = self.youtrack.decorate(snapshot)
+            except Exception as exc:  # synchronizacja to dodatek — tablica działa bez niej
+                print(f"tide-daemon: tablica: YouTrack: {exc!r}", flush=True)
         self._current = snapshot
         text = json.dumps(snapshot, ensure_ascii=False)
         if text != self._json:

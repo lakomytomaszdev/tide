@@ -101,6 +101,11 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
                              z oknem „Co ma zrobić agent?” (False, gdy okna nie ma),
 - CardDocs(s id) -> s        plan i specyfikacja karty do panelu: {ok, card, plan, spec, others, warnings}
                              (odpowiedź po odczycie plików w wątku roboczym; tylko odczyt),
+- YouTrackIssues(b refresh) -> s  zgłoszenia użytkownika do importu: {ok, issues: [{id, summary, project, state,
+                             url, card, boardProject, boardProjectName, new}]} (odpowiedź po pobraniu w wątku roboczym),
+- ImportYouTrack(s json) -> s    karty w Backlogu z listy {issues: ["LOG-1", …]} → {ok, created, skipped, commitError},
+- ResolveYouTrack(s id, s choice) -> s  konflikt ze zmianą ręczną w YouTracku (karta K-16 albo klucz zgłoszenia;
+                             choice: youtrack — przyjmij stan z YouTracka, tide — nadpisz stanem Tide) → {ok, issue, choice},
 - sygnał Changed()           tablica się zmieniła (nasz zapis albo zmiana z zewnątrz).
 Każda zmiana to commit w repozytorium tablicy (nieudany commit: ok z opisem w commitError, commit
 czeka); błąd to JSON {ok: false, error: <kod>, message: <tekst po polsku>} jak w /Tasks — dane
@@ -369,6 +374,19 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
   </method>
   <method name="CardDocs">
     <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="YouTrackIssues">
+    <arg name="refresh" type="b" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="ImportYouTrack">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="ResolveYouTrack">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="choice" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
   <signal name="Changed"/>
@@ -688,6 +706,27 @@ class BoardAdaptor(QDBusAbstractAdaptor):
 
         self.monitor.card_docs(card_id, reply)
         return ""
+
+    @pyqtSlot(bool, QDBusMessage, result=str)
+    def YouTrackIssues(self, refresh: bool, message: QDBusMessage) -> str:
+        # Zgłoszenia pobieramy w wątku roboczym (ytsync_monitor.py) — odpowiedź później, najwyżej po kilku s.
+        message.setDelayedReply(True)
+        request = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(request.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.YouTrackIssues", flush=True)
+
+        self.monitor.youtrack_issues(refresh, reply)
+        return ""
+
+    @pyqtSlot(str, result=str)
+    def ImportYouTrack(self, request: str) -> str:
+        return self.monitor.import_youtrack(request)
+
+    @pyqtSlot(str, str, result=str)
+    def ResolveYouTrack(self, ident: str, choice: str) -> str:
+        return self.monitor.resolve_youtrack(ident, choice)
 
     @pyqtSlot(str, result=str)
     def CreateCard(self, request: str) -> str:

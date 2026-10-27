@@ -100,7 +100,13 @@ class PrivateBus:
         # chyba że test poda socket atrapy Engine API (test_docker_dbus.py).
         # models.json z punktem na zamkniętym porcie (fixtures/models-closed.json): usługa testowa nigdy
         # nie pyta prawdziwej Ollamy (domyślny punkt to 127.0.0.1:11434), chyba że test poda własny.
-        extra_env = {"XDG_STATE_HOME": os.path.join(self.tmp, "state"),
+        # youtrack.json z serwerem na zamkniętym porcie (fixtures/youtrack-closed.json): usługa testowa nigdy
+        # nie pyta (ani tym bardziej nie zmienia) prawdziwego YouTracka, chyba że test poda własny
+        # XDG_CONFIG_HOME z youtrack.json albo TIDE_YOUTRACK_CONFIG (atrapa serwera).
+        given = kwargs.get("extra_env") or {}
+        youtrack = {} if "XDG_CONFIG_HOME" in given or "TIDE_YOUTRACK_CONFIG" in given else \
+            {"TIDE_YOUTRACK_CONFIG": os.path.join(FIXTURES, "youtrack-closed.json")}
+        extra_env = {**youtrack,"XDG_STATE_HOME": os.path.join(self.tmp, "state"),
                      "XDG_CACHE_HOME": os.path.join(self.tmp, "cache"),
                      "WAYLAND_DISPLAY": os.path.join(self.tmp, "no-wayland"),
                      "TIDE_CODEX_DESKTOP": "",
