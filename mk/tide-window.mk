@@ -1,4 +1,5 @@
-# Okno „Tide” (QML + PyQt6) z paskiem widoków: Tablica, Sesje, Worktrees, Docker, Raporty (views.json).
+# Okno „Tide” (QML + PyQt6) z paskiem widoków: Tablica, Sesje, Worktrees, Docker, Raporty,
+# Modele (views.json).
 # Dane widoków daje tide-daemon (install-daemon); otwierają je widżety, KRunner i menu aplikacji.
 # Instaluje też przekierowania dawnych okien Sesje i Worktrees (apps/tide/install.sh).
 INSTALL_TARGETS += install-tide-window
@@ -15,7 +16,7 @@ uninstall-tide-window:
 
 # Podgląd każdego widoku na danych z tego komputera (tylko odczyt, YouTrack tylko GET), bez
 # instalowania: build/tide-window-<widok>.png; SANITIZE=1 — Sesje bez treści pracy.
-TIDE_VIEWS := board sessions worktrees docker reports
+TIDE_VIEWS := board sessions worktrees docker reports models
 preview-tide-window:
 	@mkdir -p build
 	@/usr/bin/python3 widgets/stage.py --app apps/tide build/tide-window

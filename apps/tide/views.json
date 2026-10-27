@@ -36,6 +36,13 @@
       "icon": "reports",
       "module": "apps/reports",
       "qml": "ReportsView.qml"
+    },
+    {
+      "id": "models",
+      "title": "Modele",
+      "icon": "models",
+      "module": "apps/models",
+      "qml": "ModelsView.qml"
     }
   ]
 }

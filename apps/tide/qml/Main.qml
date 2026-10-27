@@ -148,7 +148,7 @@ Window {
         }
     }
 
-    // Ctrl+1…5 — widoki w kolejności paska, Ctrl+PgUp/PgDown — poprzedni i następny.
+    // Ctrl+1…6 — widoki w kolejności paska, Ctrl+PgUp/PgDown — poprzedni i następny.
     Instantiator {
         model: win.views
         delegate: Shortcut {
