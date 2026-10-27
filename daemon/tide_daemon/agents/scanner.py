@@ -17,7 +17,7 @@ from . import gitinfo
 from .claude import ClaudeLog, escape_cwd, read_process_status, status_from
 from .codex import CodexLog
 from .jsonl import JsonlTail
-from .state import DONE, ENDED, IDLE, MAX_AGE, WAITING, WORKING, SessionLog, derive_state
+from .state import DONE, ENDED, IDLE, MAX_AGE, WAITING, WORKING, SessionLog, derive_state, waiting_text
 from .timeutil import iso
 
 STATE_ORDER = {WAITING: 0, WORKING: 1, DONE: 2, IDLE: 3, ENDED: 4}
@@ -139,6 +139,9 @@ class AgentScanner:
                 "lastActivity": iso(log.last_activity),
                 "lastActivityTs": round(log.last_activity, 3),
                 "lastAction": log.last_action,
+                # Na co czeka (tylko waiting): treść pytania albo wywołanie do zgody — raport i powiadomienia
+                # biorą je stąd, nigdy z ostatniego tekstu agenta (PT-23).
+                "waitingText": waiting_text(log) if state == WAITING else "",
                 "pid": pid or 0,
                 "canActivate": deeplink or (bool(target) and state != ENDED),
                 "terminal": codex_app.LABEL if deeplink else (target["label"] if target else ""),
@@ -268,7 +271,7 @@ def _aggregate(entry: dict, children: list[dict]) -> None:
     entry["lastActivity"] = iso(entry["lastActivityTs"])
     child = min(children, key=lambda c: (STATE_ORDER[c["state"]], c["sinceTs"] if c["state"] == WAITING else 0))
     if STATE_ORDER[child["state"]] < STATE_ORDER[entry["state"]]:
-        for key in ("state", "reason", "since", "sinceTs", "lastAction"):
+        for key in ("state", "reason", "since", "sinceTs", "lastAction", "waitingText"):
             entry[key] = child[key]
 
 

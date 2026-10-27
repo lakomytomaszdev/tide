@@ -53,6 +53,7 @@ class CodexLog(SessionLog):
         self.root_hint = ""     # podagent: payload.session_id — id wątku głównego według Codexa
         self.nickname = ""      # podagent: agent_nickname
         self.open_questions: dict[str, float] = {}  # pytania asynchroniczne bez odpowiedzi: call_id → czas
+        self.open_question_texts: dict[str, str] = {}  # call_id → treść pytania (waitingText)
 
     def feed(self, record: dict) -> None:
         kind = record.get("type")
@@ -89,17 +90,25 @@ class CodexLog(SessionLog):
             if item in CALLS:
                 name = str(payload.get("name") or item)
                 self.set_phase(TOOL_PENDING, ts)
-                self.pending[str(payload.get("call_id") or payload.get("id"))] = Pending(
-                    name, ts, asks_user=name in ASKS_USER, long_running=name in LONG_RUNNING)
-                self.last_action = describe_call(name, payload)
+                call_id = str(payload.get("call_id") or payload.get("id"))
+                described = describe_call(name, payload)
+                asks = name in ASKS_USER or name in ASKS_USER_ASYNC
+                self.pending[call_id] = Pending(name, ts, asks_user=name in ASKS_USER, long_running=name in LONG_RUNNING,
+                                                text=(question_text(payload) or described) if asks else described)
+                self.last_action = described
                 if name in ASKS_USER_ASYNC:
-                    self.open_questions[str(payload.get("call_id") or payload.get("id"))] = ts
+                    self.open_questions[call_id] = ts
+                    self.open_question_texts[call_id] = question_text(payload) or described
             elif item == "message" and payload.get("role") == "user":
                 kinds = _content_kinds(payload)
                 if self.open_questions and (_is_question_reply(payload) or kinds & TYPED_KINDS):
                     # Odpowiedź na pytanie (albo zwykła wiadomość użytkownika w wątku) zamyka
                     # najstarsze otwarte pytanie.
-                    del self.open_questions[min(self.open_questions, key=self.open_questions.get)]
+                    oldest = min(self.open_questions, key=self.open_questions.get)
+                    del self.open_questions[oldest]
+                    self.open_question_texts.pop(oldest, None)
+                if kinds & TYPED_KINDS or (not kinds and not _is_question_reply(payload) and _typed_text(payload)):
+                    self.last_user_ts = max(self.last_user_ts, ts)
                 if kinds & SCHEDULED_KINDS:
                     self.scheduled = True
                 elif kinds & TYPED_KINDS:
@@ -141,6 +150,35 @@ def _is_question_reply(payload: dict) -> bool:
         if isinstance(part, dict) and str(part.get("text") or "").lstrip().startswith(QUESTION_REPLY_TAG):
             return True
     return False
+
+
+def _typed_text(payload: dict) -> bool:
+    """Wiadomość użytkownika bez metadanych (starsze wersje): zwykły tekst, nie wstawka w znacznikach
+    (<environment_context>, <user_instructions> i podobne dopisuje sam Codex)."""
+    for part in payload.get("content") or []:
+        if isinstance(part, dict) and part.get("type") in ("input_text", "text"):
+            text = str(part.get("text") or "").lstrip()
+            if text and not text.startswith("<"):
+                return True
+    return False
+
+
+def question_text(payload: dict) -> str:
+    """Treść pytania z argumentów request_user_input (questions[].question albo question/prompt)."""
+    raw = payload.get("arguments") if "arguments" in payload else payload.get("input")
+    args = raw
+    if isinstance(raw, str):
+        try:
+            args = json.loads(raw)
+        except ValueError:
+            return ""
+    if not isinstance(args, dict):
+        return ""
+    questions = args.get("questions")
+    if isinstance(questions, list):
+        texts = [str(q.get("question") or q.get("prompt") or "").strip() for q in questions if isinstance(q, dict)]
+        return "\n".join(t for t in texts if t)
+    return str(args.get("question") or args.get("prompt") or "").strip()
 
 
 def _automation_trigger(payload: dict) -> bool:

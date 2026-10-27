@@ -24,6 +24,7 @@ ACTIVITY_SYSTEM = TURN_END_SYSTEM | {"compact_boundary"}
 ASKS_USER = {"AskUserQuestion", "ExitPlanMode"}
 LONG_RUNNING = {"Agent", "Task"}
 LOCAL_COMMAND_PREFIXES = ("<local-command-stdout>", "<local-command-stderr>")
+INJECTED_PREFIXES = ("<task-notification", "<system-reminder")  # wiadomości „user” dopisane przez Claude Code
 
 
 def escape_cwd(cwd: str) -> str:
@@ -86,9 +87,11 @@ class ClaudeLog(SessionLog):
             self.set_phase(TOOL_PENDING, ts)
             for use in uses:
                 name = str(use.get("name") or "?")
+                args = use.get("input") or {}
                 self.pending[str(use.get("id"))] = Pending(
-                    name, ts, asks_user=name in ASKS_USER, long_running=name in LONG_RUNNING)
-                self.last_action = describe_tool(name, use.get("input") or {})
+                    name, ts, asks_user=name in ASKS_USER, long_running=name in LONG_RUNNING,
+                    text=ask_text(name, args) if name in ASKS_USER else describe_tool(name, args))
+                self.last_action = describe_tool(name, args)
         elif message.get("stop_reason") in ("end_turn", "stop_sequence", "max_tokens", "refusal"):
             self.set_phase(TURN_END, ts)
         elif self.phase != TOOL_PENDING:
@@ -111,6 +114,8 @@ class ClaudeLog(SessionLog):
         elif text.startswith(LOCAL_COMMAND_PREFIXES):
             self.set_phase(TURN_END, ts)
         else:
+            if not text.startswith(INJECTED_PREFIXES):
+                self.last_user_ts = max(self.last_user_ts, ts)  # użytkownik napisał (odpowiedź na pytanie z tekstu)
             self.set_phase(MID_TURN, ts)
 
 
@@ -168,6 +173,22 @@ def describe_tool(name: str, args: dict) -> str:
     elif name == "Skill":
         detail = args.get("skill") or ""
     return shorten(f"{name} · {detail}" if detail else name)
+
+
+def ask_text(name: str, args: dict) -> str:
+    """Treść pytania do użytkownika: input.questions[].question (AskUserQuestion, jak
+    coordination/claude.py) albo plan do zatwierdzenia (ExitPlanMode, pierwsza linia planu)."""
+    if not isinstance(args, dict):
+        args = {}
+    if name == "ExitPlanMode":
+        lines = [re.sub(r"^\s*#+\s*", "", line).strip() for line in str(args.get("plan") or "").splitlines()]
+        first = next((line for line in lines if line), "")
+        return shorten("Plan do zatwierdzenia" + (f": {first}" if first else ""), 300)
+    questions = args.get("questions")
+    if isinstance(questions, list):
+        texts = [str(q.get("question") or "").strip() for q in questions if isinstance(q, dict)]
+        return "\n".join(t for t in texts if t)
+    return str(args.get("question") or "").strip()
 
 
 def shorten(text: str, limit: int = 72) -> str:

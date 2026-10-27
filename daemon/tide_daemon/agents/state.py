@@ -44,6 +44,7 @@ class Pending:
     since: float
     asks_user: bool = False   # narzędzie z natury czeka na użytkownika (pytanie, plan)
     long_running: bool = False  # narzędzie z natury długie (podagent, czekanie)
+    text: str = ""            # na co czeka: treść pytania albo opis wywołania do zgody (waitingText)
 
 
 @dataclass
@@ -74,6 +75,7 @@ class SessionLog:
         self.approvals_possible = True  # Codex z approval_policy=never nigdy nie pyta
         self.hidden = False  # np. podagenci Codexa — nie są osobnymi sesjami
         self.scheduled = False  # bieżącą/ostatnią turę zaczęło zaplanowane zadanie, nie użytkownik
+        self.last_user_ts = 0.0  # ostatnia wiadomość wpisana przez użytkownika (nie wynik narzędzia)
 
     def feed(self, record: dict) -> None:
         raise NotImplementedError
@@ -91,6 +93,20 @@ class SessionLog:
             self.phase_since = ts or self.phase_since
         if phase != TOOL_PENDING:
             self.pending.clear()
+
+
+def waiting_text(log: SessionLog) -> str:
+    """Na co agent czeka teraz — ten sam wybór co derive_state: najstarsze pytanie asynchroniczne
+    (Codex Desktop), inaczej najnowsze wywołanie bez wyniku (treść pytania AskUserQuestion,
+    ExitPlanMode, request_user_input albo opis narzędzia czekającego na zgodę). Pusty napis, gdy
+    dziennik nie mówi, na co (np. sam status „waiting” z pliku Claude Code)."""
+    questions = getattr(log, "open_questions", None)
+    if questions:
+        oldest = min(questions, key=questions.get)
+        return (getattr(log, "open_question_texts", None) or {}).get(oldest, "")
+    if log.phase == TOOL_PENDING and log.pending:
+        return max(log.pending.values(), key=lambda p: p.since).text
+    return ""
 
 
 def finished(log: SessionLog, now: float, since: float) -> tuple[str, str, float]:
