@@ -1,1 +1,1 @@
-"""Okno Tide Sesje."""
+"""Widok Sesje okna Tide (dawne okno „Tide Sesje”)."""

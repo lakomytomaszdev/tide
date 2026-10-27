@@ -1,5 +1,10 @@
 """Otwieranie worktree w terminalu (Konsole) albo w Riderze, wznawianie sesji agenta w Konsoli
-i otwieranie okna Worktrees.
+i otwieranie okna Tide na widoku (Sesje, Worktrees, w przyszłości Tablica, Docker, Raporty).
+
+Okno Tide ($TIDE_WINDOW albo XDG_DATA_HOME/tide/tide-window/tide.py) zastąpiło osobne okna Sesje
+i Worktrees. Bez niego — albo gdy test wskazuje dawne okno zmienną $TIDE_SESSIONS_WINDOW
+lub $TIDE_WORKTREES_WINDOW — używamy dawnego launchera widoku (po instalacji okna Tide to
+cienkie przekierowanie do niego).
 
 Rider z JetBrains Toolbox ma skrypt uruchomieniowy w ~/.local/share/JetBrains/Toolbox/scripts,
 którego zwykle nie ma w PATH usługi systemd — dlatego szukamy go też tam (i w kilku innych
@@ -35,8 +40,16 @@ def rider_candidates(home: str) -> list[str]:
     ]
 
 
+def tide_window_script(env) -> str:
+    """Zainstalowane okno Tide ($TIDE_WINDOW albo XDG_DATA_HOME/tide/tide-window/tide.py)."""
+    if env.get("TIDE_WINDOW"):
+        return env["TIDE_WINDOW"]
+    data = env.get("XDG_DATA_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local/share")
+    return os.path.join(data, "tide", "tide-window", "tide.py")
+
+
 def window_script(env) -> str:
-    """Zainstalowany launcher okna Worktrees ($TIDE_WORKTREES_WINDOW albo XDG_DATA_HOME/tide)."""
+    """Dawny launcher okna Worktrees ($TIDE_WORKTREES_WINDOW albo XDG_DATA_HOME/tide)."""
     if env.get("TIDE_WORKTREES_WINDOW"):
         return env["TIDE_WORKTREES_WINDOW"]
     data = env.get("XDG_DATA_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local/share")
@@ -52,7 +65,7 @@ def task_dialog_script(env) -> str:
 
 
 def sessions_window_script(env) -> str:
-    """Zainstalowane okno „Tide Sesje” ($TIDE_SESSIONS_WINDOW albo XDG_DATA_HOME/tide/sessions-window)."""
+    """Dawny launcher okna „Tide Sesje” ($TIDE_SESSIONS_WINDOW albo XDG_DATA_HOME/tide/sessions-window)."""
     if env.get("TIDE_SESSIONS_WINDOW"):
         return env["TIDE_SESSIONS_WINDOW"]
     data = env.get("XDG_DATA_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local/share")
@@ -77,11 +90,32 @@ class Launchers:
         self.window_script = window_script(env)
         self.task_dialog_script = task_dialog_script(env)
         self.sessions_script = sessions_window_script(env)
+        self.tide_script = tide_window_script(env)
+        # Test, który wskazuje dawne okno wprost, dostaje dawne okno — nawet gdy okno Tide
+        # jest zainstalowane w katalogu domowym.
+        self.legacy = {"sessions": bool(env.get("TIDE_SESSIONS_WINDOW")),
+                       "worktrees": bool(env.get("TIDE_WORKTREES_WINDOW"))}
+
+    @property
+    def tide_window(self) -> str:
+        """Sprawdzane przy każdym użyciu — okno może zostać zainstalowane po starcie usługi."""
+        return self.tide_script if os.path.isfile(self.tide_script) else ""
+
+    def _view_argv(self, view: str, item: str = "") -> list[str]:
+        """Polecenie otwierające okno Tide na widoku (i elemencie) albo dawne okno widoku; [] — brak."""
+        legacy = {"sessions": self.sessions_script, "worktrees": self.window_script}.get(view, "")
+        tide = "" if self.legacy.get(view) else self.tide_window
+        if tide:
+            return [PYTHON, "-s", tide, "--view", view] + (["--select", item] if item else [])
+        if legacy and os.path.isfile(legacy):
+            return [PYTHON, "-s", legacy] + (["--select", item] if item and view == "sessions" else [])
+        return []
 
     @property
     def window(self) -> str:
-        """Sprawdzane przy każdym użyciu — okno może zostać zainstalowane po starcie usługi."""
-        return self.window_script if os.path.isfile(self.window_script) else ""
+        """Okno z widokiem Worktrees (Tide albo dawne); sprawdzane przy każdym użyciu."""
+        argv = self._view_argv("worktrees")
+        return argv[2] if argv else ""
 
     @property
     def task_dialog(self) -> str:
@@ -95,16 +129,19 @@ class Launchers:
 
     @property
     def sessions_window(self) -> str:
-        return self.sessions_script if os.path.isfile(self.sessions_script) else ""
+        """Okno z widokiem Sesje (Tide albo dawne); pusty — KRunner nie proponuje „Tide Sesje”."""
+        argv = self._view_argv("sessions")
+        return argv[2] if argv else ""
+
+    def show_view(self, view: str, item: str = "") -> bool:
+        """Okno Tide na widoku (board, sessions, worktrees, docker, reports) i elemencie; drugie
+        uruchomienie tylko prosi działające okno o Show(widok, element)."""
+        argv = self._view_argv(view, item)
+        return bool(argv) and self.spawn(self._scoped(argv), self.home)
 
     def show_sessions(self, coordinator: str = "") -> bool:
-        """Okno „Tide Sesje” (opcjonalnie od razu z koordynatorem); drugie uruchomienie tylko je pokazuje."""
-        if not self.sessions_window:
-            return False
-        argv = [PYTHON, "-s", self.sessions_window]
-        if coordinator:
-            argv += ["--select", coordinator]
-        return self.spawn(self._scoped(argv), self.home)
+        """Widok Sesje (opcjonalnie od razu z koordynatorem)."""
+        return self.show_view("sessions", coordinator)
 
     def available(self) -> dict:
         return {TERMINAL: bool(self.terminal), RIDER: bool(self.rider), WINDOW: bool(self.window)}
@@ -116,7 +153,7 @@ class Launchers:
         elif app == RIDER and self.rider:
             argv = [self.rider, path]
         elif app == WINDOW and self.window:
-            argv = [PYTHON, "-s", self.window]
+            argv = self._view_argv("worktrees")
         else:
             return []
         return self._scoped(argv)
@@ -156,8 +193,8 @@ class Launchers:
         return self.spawn(self._scoped([opener, path]), os.path.dirname(path))
 
     def show_window(self) -> bool:
-        """Okno Worktrees; drugie uruchomienie samo przekazuje prośbę o pokazanie pierwszemu."""
-        return self.spawn(self.command(WINDOW, ""), self.home)
+        """Widok Worktrees; drugie uruchomienie samo przekazuje prośbę o pokazanie pierwszemu."""
+        return self.show_view("worktrees")
 
     def spawn(self, argv: list[str], path: str) -> bool:
         """Uruchamia argv w katalogu path (w osobnej jednostce systemd, gdy się da)."""

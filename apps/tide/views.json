@@ -1,0 +1,50 @@
+{
+  "comment": "Widoki okna Tide w kolejności paska. module: katalog aplikacji z backend.py (create(bus, data)) i qml/<qml>; bez modułu — PlaceholderView z tekstem z placeholder. badge: zaczep plakietki widoku bez modułu (metoda D-Bus tide-daemon zwracająca JSON {\"text\", \"tone\"}; brak obiektu albo metody — plakietka ukryta). Widok z modułem sam daje plakietkę: badgeText i badgeTone (muted, waiting, accent) backendu, pusty tekst — ukryta; klucz badge jest wtedy pomijany. Umowa strony QML widoku: backend, active, preview, showItem(item), takeFocus(), railInfo (apps/tide/qml/Main.qml i RailInfo.qml). default: widok bez --view w pierwszym egzemplarzu (drugie uruchomienie bez --view zostaje na bieżącym widoku).",
+  "views": [
+    {
+      "id": "board",
+      "title": "Tablica",
+      "icon": "board",
+      "placeholder": {
+        "title": "Tablica pracy jeszcze nie działa",
+        "text": "Tu będą karty ze wszystkich projektów: backlog, do zrobienia, w toku, czeka na ciebie, do sprawdzenia i gotowe."
+      },
+      "badge": {"path": "/Board", "interface": "org.tide.Daemon.Board", "method": "Badge"}
+    },
+    {
+      "id": "sessions",
+      "title": "Sesje",
+      "icon": "sessions",
+      "module": "apps/sessions",
+      "qml": "SessionsView.qml",
+      "default": true
+    },
+    {
+      "id": "worktrees",
+      "title": "Worktrees",
+      "icon": "worktrees",
+      "module": "apps/worktrees",
+      "qml": "WorktreesView.qml"
+    },
+    {
+      "id": "docker",
+      "title": "Docker",
+      "icon": "docker",
+      "placeholder": {
+        "title": "Widok Dockera jeszcze nie działa",
+        "text": "Tu będą kontenery: grupy compose, start, stop i restart, porty, CPU i RAM, logi i powłoka w Konsoli."
+      },
+      "badge": {"path": "/Docker", "interface": "org.tide.Daemon.Docker", "method": "Badge"}
+    },
+    {
+      "id": "reports",
+      "title": "Raporty",
+      "icon": "reports",
+      "placeholder": {
+        "title": "Raporty jeszcze nie działają",
+        "text": "Tu będą raporty poranne: lista dni, projekty „Na daily” i kopiowanie do schowka. Do tego czasu raport otwiera powiadomienie albo KRunner („raport”)."
+      },
+      "badge": {"path": "/Reports", "interface": "org.tide.Daemon.Reports", "method": "Badge"}
+    }
+  ]
+}

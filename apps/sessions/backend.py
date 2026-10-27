@@ -1,37 +1,35 @@
-#!/usr/bin/python3
-"""Okno „Tide Sesje”: koordynatorzy, tablica ticketów i podagenci — QML (qml/Main.qml) z danymi
-z tide-daemon przez D-Bus (/Coordination i /Agents).
+"""Widok „Sesje” okna Tide: koordynatorzy, tablica ticketów i podagenci — dane z tide-daemon przez
+D-Bus (/Coordination i /Agents) albo ze stałego pliku (--data).
 
-Użycie: /usr/bin/python3 tide-sessions.py [--select ID] [--data PLIK.json] [--grab PLIK.png]
-                                          [--ticket KLUCZ] [--result ID-PRZEBIEGU] [--width N --height N]
+Moduł widoku (apps/tide/views.json): okno Tide ładuje go z views/sessions/backend.py i woła
+create(bus, data). Strona QML to qml/SessionsView.qml (SessionsPage z akcjami i skrótami).
 
---select  koordynator do pokazania (np. claude:<sesja>); bez niego — pierwszy z listy,
---data    stałe dane z pliku (wynik `tide-daemon.py --print-coordination`, opcjonalnie z „details”:
-          {id przebiegu: RunDetail} i „now”: chwila do liczenia czasów), bez D-Bus — do podglądu
-          i testów; akcje są wtedy wyłączone,
---grab    zapisuje zrzut okna do PNG i kończy (np. z QT_QPA_PLATFORM=offscreen),
---ticket, --result  zaznaczony ticket i otwarty wynik podagenta — do podglądu.
-
-Okno działa w jednym egzemplarzu: rejestruje nazwę org.tide.SessionsWindow, a kolejne uruchomienie
-(widżet agentów, KRunner „sesje”) prosi pierwsze o pokazanie się z koordynatorem (Raise(id)) i kończy.
+Dane z pliku (--data) to wynik `tide-daemon.py --print-coordination`, opcjonalnie z „details”:
+{id przebiegu: RunDetail} i „now”: chwila do liczenia czasów; akcje są wtedy wyłączone.
+Plakietka w pasku widoków: „● N” (brzoskwinia) — ilu agentów czeka na ciebie (/Agents).
 """
-import argparse
 import json
-import os
-import sys
 
-from PyQt6.QtCore import QObject, QUrl, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
-from PyQt6.QtDBus import (QDBus, QDBusConnection, QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply,
+from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt6.QtDBus import (QDBusConnection, QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply,
                           QDBusServiceWatcher)
-from PyQt6.QtGui import QGuiApplication, QIcon
-from PyQt6.QtQml import QQmlApplicationEngine
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-APP_ID = "tide-sessions"
 SERVICE = "org.tide.Daemon"
 PATH, IFACE = "/Coordination", "org.tide.Daemon.Coordination"
 AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
-WINDOW_SERVICE, WINDOW_PATH, WINDOW_IFACE = "org.tide.SessionsWindow", "/Window", "org.tide.SessionsWindow"
+
+
+def waiting_count(sessions_json: str) -> int:
+    """Ilu agentów naprawdę czeka na ciebie — jak Theme.sessionState: „waiting” z powodem „reply”
+    to dziś „skończył”, nie wezwanie."""
+    try:
+        sessions = json.loads(sessions_json or "[]")
+    except ValueError:
+        return 0
+    if not isinstance(sessions, list):
+        return 0
+    return sum(1 for s in sessions if isinstance(s, dict) and s.get("state") == "waiting"
+               and s.get("reason") != "reply")
 
 
 class Backend(QObject):
@@ -43,7 +41,7 @@ class Backend(QObject):
     detailChanged = pyqtSignal()
     availableChanged = pyqtSignal()
     selectedChanged = pyqtSignal()
-    raiseRequested = pyqtSignal()
+    badgeChanged = pyqtSignal()
 
     def __init__(self, bus: QDBusConnection | None, data: dict | None = None, select: str = "", parent=None):
         super().__init__(parent)
@@ -57,6 +55,7 @@ class Backend(QObject):
         self._now = 0.0
         self._data = data
         self._pending: set = set()
+        self._badge = ""
         if data is not None:
             self._coordinators = json.dumps(data.get("coordinators") or [], ensure_ascii=False)
             self._sessions = json.dumps(data.get("sessions") or [], ensure_ascii=False)
@@ -65,6 +64,7 @@ class Backend(QObject):
             if not self._selected and data.get("coordinators"):
                 self._selected = data["coordinators"][0]["id"]
             self._board = json.dumps((data.get("boards") or {}).get(self._selected) or {}, ensure_ascii=False)
+            self._update_badge()
             return
         if bus is None:
             return
@@ -109,6 +109,15 @@ class Backend(QObject):
     @pyqtProperty(float, constant=True)
     def nowTs(self) -> float:
         return self._now
+
+    # Plakietka w pasku widoków okna Tide; pusta — ukryta (bez usługi albo nikt nie czeka).
+    @pyqtProperty(str, notify=badgeChanged)
+    def badgeText(self) -> str:
+        return self._badge
+
+    @pyqtProperty(str, constant=True)
+    def badgeTone(self) -> str:
+        return "waiting"
 
     # --- akcje --------------------------------------------------------------------------------
 
@@ -211,11 +220,21 @@ class Backend(QObject):
         if getattr(self, name) != value:
             setattr(self, name, value)
             signal.emit()
+            if name == "_sessions":
+                self._update_badge()
 
     def _set_available(self, value: bool) -> None:
         if value != self._available:
             self._available = value
             self.availableChanged.emit()
+            self._update_badge()
+
+    def _update_badge(self) -> None:
+        count = waiting_count(self._sessions) if self._available else 0
+        badge = f"● {count}" if count else ""
+        if badge != self._badge:
+            self._badge = badge
+            self.badgeChanged.emit()
 
     def _call(self, path: str, iface: str, member: str, args: list, then, timeout: int = 15_000) -> None:
         message = QDBusMessage.createMethodCall(SERVICE, path, iface, member)
@@ -236,71 +255,6 @@ class Backend(QObject):
         watcher.finished.connect(finished)
 
 
-@pyqtClassInfo("D-Bus Interface", WINDOW_IFACE)
-class WindowService(QObject):
-    """org.tide.SessionsWindow /Window: Raise(id) — prośba drugiego uruchomienia o pokazanie okna."""
-
-    def __init__(self, backend: Backend):
-        super().__init__()
-        self.backend = backend
-
-    @pyqtSlot(str)
-    def Raise(self, coordinator_id: str) -> None:
-        if coordinator_id:
-            self.backend.select(coordinator_id)
-        self.backend.raiseRequested.emit()
-
-
-def parse_args(argv):
-    parser = argparse.ArgumentParser(prog="tide-sessions", description="Okno Tide Sesje")
-    parser.add_argument("--select", default="", help="koordynator do pokazania")
-    parser.add_argument("--data", help="dane z pliku JSON zamiast z tide-daemon")
-    parser.add_argument("--grab", help="zapisz zrzut okna do PNG i zakończ")
-    parser.add_argument("--ticket", default="", help="zaznaczony ticket (podgląd)")
-    parser.add_argument("--result", default="", help="otwarty wynik podagenta (podgląd)")
-    parser.add_argument("--width", type=int, default=0)
-    parser.add_argument("--height", type=int, default=0)
-    return parser.parse_args(argv)
-
-
-def main(argv=None) -> int:
-    args = parse_args(sys.argv[1:] if argv is None else argv)
-    app = QGuiApplication(sys.argv[:1])
-    app.setApplicationName("Tide Sesje")
-    app.setOrganizationName("Tide")
-    app.setDesktopFileName(APP_ID)
-    app.setWindowIcon(QIcon.fromTheme("tide-sessions", QIcon.fromTheme("view-list-details")))
-
-    if args.data:
-        with open(args.data, encoding="utf-8") as fh:
-            backend = Backend(None, json.load(fh), select=args.select)
-    else:
-        bus = QDBusConnection.sessionBus()
-        if not bus.isConnected():
-            print("tide-sessions: brak magistrali sesji D-Bus", file=sys.stderr)
-            return 1
-        if not bus.registerService(WINDOW_SERVICE):
-            # Okno już działa — niech się pokaże (z wybranym koordynatorem), a my kończymy.
-            message = QDBusMessage.createMethodCall(WINDOW_SERVICE, WINDOW_PATH, WINDOW_IFACE, "Raise")
-            message.setArguments([args.select])
-            bus.call(message, QDBus.CallMode.Block, 5000)
-            return 0
-        backend = Backend(bus, select=args.select)
-        service = WindowService(backend)
-        bus.registerObject(WINDOW_PATH, service, QDBusConnection.RegisterOption.ExportAllSlots)
-
-    engine = QQmlApplicationEngine()
-    engine.setInitialProperties({"backend": backend, "grabPath": os.path.abspath(args.grab) if args.grab else "",
-                                 "preticket": args.ticket, "preresult": args.result})
-    engine.load(QUrl.fromLocalFile(os.path.join(HERE, "qml", "Main.qml")))
-    roots = engine.rootObjects()
-    if not roots:
-        return 1
-    if args.width and args.height:
-        roots[0].setProperty("width", args.width)
-        roots[0].setProperty("height", args.height)
-    return app.exec()
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+def create(bus: QDBusConnection | None, data=None) -> Backend:
+    """Backend widoku dla okna Tide: z magistralą (na żywo) albo ze stałymi danymi (data: dict)."""
+    return Backend(bus if data is None else None, data if isinstance(data, dict) else None)

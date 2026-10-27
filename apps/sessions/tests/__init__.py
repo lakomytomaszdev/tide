@@ -1,4 +1,4 @@
-"""Testy okna Tide Sesje: QML na przykładowych danych, launcher (--data --grab), backend na prywatnej magistrali, instalacja."""
+"""Testy widoku Sesje okna Tide: logika i QML na przykładowych danych, zrzuty (--data --grab), backend na prywatnej magistrali."""
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -1,11 +1,13 @@
-"""Okno Tide Worktrees.
+"""Widok Worktrees okna Tide (dawne okno „Tide Worktrees”).
 
-- pakiet: launcher, QML i biblioteka z Tokens.qml; bez kolorów wpisanych na sztywno,
+- pakiet okna Tide: moduł widoku w views/worktrees (backend.py, QML i biblioteka z Tokens.qml);
+  bez kolorów wpisanych na sztywno,
 - QML (qml6, offscreen) na przykładowych danych: grupy, filtry, szukanie, zaznaczanie, potwierdzenie
-  i wynik usuwania; Main.qml z atrapą backendu,
-- launcher: zrzut okna z --data (bez D-Bus) oraz Backend na prywatnej magistrali z prawdziwym
-  tide-daemon i tymczasowymi repozytoriami — Remove() dostaje tylko zaznaczone ścieżki,
-- instalacja i odinstalowanie na tymczasowym HOME z atrapami narzędzi.
+  i wynik usuwania; WorktreesView z atrapą backendu (akcje, plakietka, otwarcie na worktree),
+- dawny launcher (przekierowanie compat/tide-worktrees.py ze starymi opcjami): zrzut z --data
+  (bez D-Bus) oraz Backend na prywatnej magistrali z prawdziwym tide-daemon i tymczasowymi
+  repozytoriami — Remove() dostaje tylko zaznaczone ścieżki.
+Instalację i drugie uruchomienie sprawdza apps/tide/tests.
 """
 import importlib.util
 import json
@@ -18,7 +20,7 @@ import unittest
 
 from . import APP_DIR, REPO
 from daemon.tests import gitrepos
-from daemon.tests.fakebin import calls, files_under, make_env
+from daemon.tests.fakebin import files_under
 from daemon.tests.privatebus import PrivateBus, requires_dbus, wait_until
 
 NOW = 1_793_000_000
@@ -69,9 +71,18 @@ def sample() -> list:
     return items
 
 
+TIDE_DIR = os.path.join(REPO, "apps", "tide")
+
+
 def stage(out: str) -> str:
-    subprocess.run(["/usr/bin/python3", os.path.join(REPO, "widgets", "stage.py"), "--app", APP_DIR, out], check=True)
+    """Pakiet okna Tide z widokiem Worktrees w views/worktrees."""
+    subprocess.run(["/usr/bin/python3", os.path.join(REPO, "widgets", "stage.py"), "--app", TIDE_DIR, out], check=True)
     return out
+
+
+def launcher(pkg: str) -> str:
+    """Dawny launcher okna Worktrees — dziś przekierowanie do okna Tide na widoku Worktrees."""
+    return os.path.join(pkg, "compat", "tide-worktrees.py")
 
 
 def run_qml(path: str) -> str:
@@ -91,12 +102,13 @@ class PackageTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         self.pkg = stage(os.path.join(self.tmp, "pkg"))
 
-    def test_package_contains_launcher_qml_and_library(self):
-        files = files_under(self.pkg)
-        for name in ("tide-worktrees.py", "qml/Main.qml", "qml/WorktreesPage.qml", "qml/WorktreeItem.qml",
+    def test_package_contains_view_module_and_library(self):
+        files = files_under(os.path.join(self.pkg, "views", "worktrees"))
+        for name in ("backend.py", "qml/WorktreesView.qml", "qml/WorktreesPage.qml", "qml/WorktreeItem.qml",
                      "qml/worktrees.js", "qml/tide/Tokens.qml", "qml/tide/Theme.qml", "qml/tide/qmldir"):
             self.assertIn(name, files)
         self.assertFalse([f for f in files if f.startswith("tests/") or f.endswith(("__init__.py", "install.sh"))])
+        self.assertIn("compat/tide-worktrees.py", files_under(self.pkg))
 
     def test_no_hardcoded_colors(self):
         for dirpath, _dirs, names in os.walk(os.path.join(APP_DIR, "qml")):
@@ -114,7 +126,7 @@ class QmlTest(unittest.TestCase):
         self.pkg = stage(os.path.join(self.tmp, "pkg"))
 
     def harness(self, name: str, body: str) -> str:
-        path = os.path.join(self.pkg, "qml", name)
+        path = os.path.join(self.pkg, "views", "worktrees", "qml", name)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(body)
         return run_qml(path)
@@ -352,9 +364,10 @@ Item {
                          "Usuń też gałęzie (2) (5 niescalonych commitów przepadnie; w 1 bez gałęzi głównej nie wiadomo, "
                          "ile commitów przepadnie) ¦ Usuń też gałąź (1 niescalony commit przepadnie)")
 
-    def test_main_window_with_stub_backend(self):
-        log = self.harness("MainSmoke.qml", """import QtQuick
+    def test_view_with_stub_backend(self):
+        log = self.harness("ViewSmoke.qml", """import QtQuick
 Item {
+    width: 1180; height: 820
     QtObject {
         id: stub
         property string listJson: %(json)s
@@ -364,7 +377,6 @@ Item {
         property var removed: []
         signal removeFinished(string text)
         signal pruneFinished(string text)
-        signal raiseRequested()
         property var forced: []
         function remove(paths) { removed = paths; removeFinished('[{"path": "/w/alpha/vin", "removed": true, "freed": 5}]') }
         function removeForced(paths, deleteBranches, confirmed) { forced = [paths.join(","), deleteBranches] }
@@ -372,25 +384,102 @@ Item {
         function refresh() {}
         function prune(repo) { pruneFinished("null") }
     }
-    Main { id: win; backend: stub; visible: false }
+    WorktreesView { id: win; anchors.fill: parent; backend: stub }
     Component.onCompleted: {
-        const page = win.contentItem.children[0]
+        const page = win.page
         page.toggle("/w/alpha/vin")
         page.confirmRemove()
         page.pruneRequested("/r/beta")
-        stub.raiseRequested()
         console.warn("MAIN " + [win.worktrees.length, win.launchers.rider, stub.removed.join(","),
                                 page.results.removed, page.notice].join("|"))
         page.toggle("/w/alpha/old")
         page.askRemove()
         page.confirmRemove()
         console.warn("FORCEDCALL " + stub.forced.join("|"))
+        win.showItem("/w/alpha/vin")
+        console.warn("SHOWITEM " + page.query + "|" + page.shown.length)
         Qt.quit()
     }
 }
 """ % {"json": json.dumps(json.dumps(sample()))})
         self.assertEqual(warned(log, "MAIN"), "24|false|/w/alpha/vin|1|Nie udało się: brak odpowiedzi usługi")
         self.assertEqual(warned(log, "FORCEDCALL"), "/w/alpha/old|false")
+        self.assertEqual(warned(log, "SHOWITEM"), "codex/fix-vin-count|1", "otwarcie na worktree go odszukuje")
+        self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
+
+
+    def test_show_item_pending_search_field_and_first_refresh(self):
+        """showItem: czeka tylko na pierwszą niepustą listę, przepada po zmianie szukania przez
+        użytkownika, nigdy nie zaznacza; pole szukania pokazuje zapytanie także po wyczyszczeniu;
+        pełny przegląd (refresh) dopiero przy pierwszym pokazaniu widoku, raz."""
+        log = self.harness("ViewItem.qml", """import QtQuick
+Item {
+    width: 1180; height: 820
+    component Stub: QtObject {
+        property string listJson: "[]"
+        property bool available: true
+        property string launchersJson: '{"terminal": true, "rider": false}'
+        property string homeDir: "/w"
+        property int refreshes: 0
+        signal removeFinished(string text)
+        signal pruneFinished(string text)
+        function remove(paths) {}
+        function removeForced(paths, deleteBranches, confirmed) {}
+        function open(path, app) {}
+        function refresh() { refreshes++ }
+        function prune(repo) {}
+    }
+    Stub { id: a }
+    Stub { id: b }
+    Stub { id: c }
+    WorktreesView { id: va; anchors.fill: parent; backend: a }
+    WorktreesView { id: vb; anchors.fill: parent; backend: b }
+    WorktreesView { id: vc; anchors.fill: parent; backend: c; active: false }
+    function picked(v) { return Object.keys(v.page.selected).length + "/" + v.page.picked.items.length }
+    Component.onCompleted: {
+        // Element przed listą: czeka, a po liście szuka po gałęzi; nic nie zaznacza.
+        va.showItem("/w/alpha/vin")
+        const before = [va.pendingItem, va.page.query].join("|")
+        a.listJson = %(json)s
+        console.warn("PENDING " + [before, va.page.query, va.page.searchText, va.pendingItem, picked(va)].join("|"))
+        // Wyczyszczenie (× albo Esc ustawiają query = "") i kolejne otwarcie: pole pokazuje zapytanie.
+        va.page.query = ""
+        va.showItem("/w/beta/det")
+        console.warn("FIELD " + [va.page.query, va.page.searchText === va.page.query, picked(va)].join("|"))
+        va.page.query = ""
+        va.showItem("/w/alpha/old")
+        console.warn("DECIDE " + [va.page.query, va.page.searchText, picked(va)].join("|"))
+        // Użytkownik zmienia szukanie, zanim przyjdzie lista — element przepada.
+        vb.showItem("/w/alpha/vin")
+        vb.page.query = "moje"
+        b.listJson = %(json)s
+        console.warn("TYPED " + [vb.page.query, vb.pendingItem].join("|"))
+        // Elementu nie ma w pierwszej liście — przepada i nie wraca przy kolejnej.
+        vc.showItem("/w/nowy")
+        c.listJson = %(json)s
+        const after = vc.pendingItem
+        c.listJson = %(more)s
+        console.warn("MISSING " + [after, vc.page.query].join("|"))
+        // Pełny przegląd: raz przy pierwszym pokazaniu; widok w tle — dopiero gdy wyjdzie na wierzch.
+        // (Component.onCompleted widoków może przyjść po tym bloku — wynik po powrocie do pętli zdarzeń.)
+        Qt.callLater(function () {
+            const hidden = c.refreshes
+            vc.active = true
+            vc.active = false
+            vc.active = true
+            console.warn("REFRESH " + [a.refreshes, hidden, c.refreshes].join("|"))
+            Qt.quit()
+        })
+    }
+}
+""" % {"json": json.dumps(json.dumps(sample())),
+       "more": json.dumps(json.dumps(sample() + [item("/w/nowy", "alpha", "active", branch="feat/nowy")]))})
+        self.assertEqual(warned(log, "PENDING"), "/w/alpha/vin||codex/fix-vin-count|codex/fix-vin-count||0/0")
+        self.assertEqual(warned(log, "FIELD"), "det|true|0/0", "odłączony HEAD — szukanie po nazwie")
+        self.assertEqual(warned(log, "DECIDE"), "feat/x|feat/x|0/0", "nawet ryzykowny worktree nie jest zaznaczany")
+        self.assertEqual(warned(log, "TYPED"), "moje|", "zapytanie użytkownika wygrywa z czekającym elementem")
+        self.assertEqual(warned(log, "MISSING"), "|")
+        self.assertEqual(warned(log, "REFRESH"), "1|0|1")
         self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
 
 
@@ -407,7 +496,7 @@ class LauncherTest(unittest.TestCase):
         shot = os.path.join(self.tmp, "shot.png")
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
         env.pop("DBUS_SESSION_BUS_ADDRESS", None)  # --data nie potrzebuje magistrali
-        subprocess.run(["/usr/bin/python3", os.path.join(self.pkg, "tide-worktrees.py"), "--data", data,
+        subprocess.run(["/usr/bin/python3", launcher(self.pkg), "--data", data,
                         "--grab", shot, "--width", "900", "--height", "700"], env=env, check=True, timeout=60,
                        capture_output=True)
         with open(shot, "rb") as fh:
@@ -422,7 +511,7 @@ class LauncherTest(unittest.TestCase):
         plain, confirm = os.path.join(self.tmp, "plain.png"), os.path.join(self.tmp, "confirm.png")
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
         env.pop("DBUS_SESSION_BUS_ADDRESS", None)
-        base = ["/usr/bin/python3", os.path.join(self.pkg, "tide-worktrees.py"), "--data", data,
+        base = ["/usr/bin/python3", launcher(self.pkg), "--data", data,
                 "--width", "1000", "--height", "800", "--select", "/w/alpha/old", "--select", "/w/alpha/vin"]
         subprocess.run(base + ["--grab", plain], env=env, check=True, timeout=60, capture_output=True)
         subprocess.run(base + ["--confirm", "--grab", confirm], env=env, check=True, timeout=60, capture_output=True)
@@ -431,7 +520,7 @@ class LauncherTest(unittest.TestCase):
 
 
 def load_launcher():
-    spec = importlib.util.spec_from_file_location("tide_worktrees_window", os.path.join(APP_DIR, "tide-worktrees.py"))
+    spec = importlib.util.spec_from_file_location("tide_worktrees_view", os.path.join(APP_DIR, "backend.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -499,81 +588,49 @@ class BackendOverDbusTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.p["dirty"]))
         self.assertTrue(os.path.isdir(self.p["alpha"]))
 
-    def test_second_launch_only_raises_first_window(self):
-        env = dict(self.service.env, QT_QPA_PLATFORM="offscreen")
-        # Pierwsze okno: nazwa org.tide.WorktreesWindow zajęta przez atrapę z obiektem /Window.
-        first = load_launcher()
-        backend = first.Backend(None, [])
-        raised = []
-        backend.raiseRequested.connect(lambda: raised.append(True))
-        service = first.WindowService(backend)
+
+@requires_dbus
+class StartupCallsTest(unittest.TestCase):
+    """Backend na starcie pyta usługę tylko o listę i programy — pełny przegląd repozytoriów (Refresh)
+    dopiero na prośbę widoku (pierwsze pokazanie, „Odśwież”)."""
+
+    def test_start_is_cheap_and_refresh_on_demand(self):
+        from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtSlot
         from PyQt6.QtDBus import QDBusConnection
-        self.assertTrue(self.service.bus.registerService(first.WINDOW_SERVICE))
-        self.service.bus.registerObject(first.WINDOW_PATH, service, QDBusConnection.RegisterOption.ExportAllSlots)
-        try:
-            proc = subprocess.Popen(["/usr/bin/python3", os.path.join(APP_DIR, "tide-worktrees.py")], env=env,
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.assertTrue(wait_until(lambda: raised, timeout=15), "drugie uruchomienie nie poprosiło o Raise")
-            self.assertEqual(proc.wait(15), 0)
-        finally:
-            self.service.bus.unregisterObject(first.WINDOW_PATH)
-            self.service.bus.unregisterService(first.WINDOW_SERVICE)
 
+        @pyqtClassInfo("D-Bus Interface", "org.tide.Daemon.Worktrees")
+        class FakeWorktrees(QObject):
+            def __init__(self):
+                super().__init__()
+                self.called = []
 
-@unittest.skipUnless(shutil.which("make"), "brak make")
-class InstallTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="tide-wtwin-install-")
-        self.addCleanup(shutil.rmtree, self.tmp)
-        self.env = make_env(self.tmp)
-        self.data = self.env["XDG_DATA_HOME"]
+            @pyqtSlot(result=str)
+            def List(self):
+                self.called.append("List")
+                return json.dumps(sample())
 
-    def make(self, target):
-        subprocess.run(["make", "-s", "-C", REPO, target], env=self.env, check=True, capture_output=True, text=True)
+            @pyqtSlot(result=str)
+            def Launchers(self):
+                self.called.append("Launchers")
+                return json.dumps({"terminal": True, "rider": False})
 
-    def test_install_then_uninstall(self):
-        self.make("install-worktrees-window")
-        dest = os.path.join(self.data, "tide/worktrees-window")
-        files = files_under(dest)
-        for name in ("tide-worktrees.py", "qml/Main.qml", "qml/WorktreesPage.qml", "qml/tide/Tokens.qml"):
-            self.assertIn(name, files)
-        self.assertTrue(os.access(os.path.join(dest, "tide-worktrees.py"), os.X_OK))
-        desktop = os.path.join(self.data, "applications/tide-worktrees.desktop")
-        with open(desktop, encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertIn("Name=Tide Worktrees\n", text)
-        self.assertIn(f"Exec=/usr/bin/python3 -s {dest}/tide-worktrees.py\n", text)
-        self.assertIn("StartupWMClass=tide-worktrees\n", text)
-        self.assertIn("Icon=tide-worktrees\n", text)
-        icon = os.path.join(self.data, "icons/hicolor/256x256/apps/tide-worktrees.png")
-        with open(icon, "rb") as fh:
-            self.assertEqual(fh.read(8), b"\x89PNG\r\n\x1a\n")
-        if shutil.which("desktop-file-validate"):
-            check = subprocess.run(["desktop-file-validate", desktop], capture_output=True, text=True)
-            self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
-        self.assertIn(f"update-desktop-database {self.data}/applications", calls(self.env))
-        self.assertIn("kbuildsycoca6", [c.strip() for c in calls(self.env)])
+            @pyqtSlot()
+            def Refresh(self):
+                self.called.append("Refresh")
 
-        # Reinstalacja (aktualizacja) nie zostawia starych plików.
-        stale = os.path.join(dest, "qml", "Stary.qml")
-        open(stale, "w").close()
-        self.make("install-worktrees-window")
-        self.assertFalse(os.path.exists(stale))
-
-        self.make("uninstall-worktrees-window")
-        self.assertEqual(files_under(self.data), [])
-
-    def test_uninstall_keeps_foreign_desktop_file_and_daemon(self):
-        os.makedirs(os.path.join(self.data, "applications"))
-        foreign = os.path.join(self.data, "applications/tide-worktrees.desktop")
-        with open(foreign, "w", encoding="utf-8") as fh:
-            fh.write("[Desktop Entry]\nName=Cudze\n")
-        daemon_file = os.path.join(self.data, "tide/daemon/x")
-        os.makedirs(os.path.dirname(daemon_file))
-        open(daemon_file, "w").close()
-        self.make("uninstall-worktrees-window")
-        self.assertTrue(os.path.exists(foreign))
-        self.assertTrue(os.path.exists(daemon_file))
+        bus = PrivateBus("tide-wt-startup")
+        self.addCleanup(bus.stop)
+        daemon = QDBusConnection.connectToBus(bus.address, "tide-wt-startup-daemon")
+        self.addCleanup(QDBusConnection.disconnectFromBus, "tide-wt-startup-daemon")
+        fake = FakeWorktrees()
+        self.assertTrue(daemon.registerObject("/Worktrees", fake, QDBusConnection.RegisterOption.ExportAllSlots))
+        self.assertTrue(daemon.registerService("org.tide.Daemon"))
+        backend = load_launcher().Backend(bus.bus)
+        self.assertTrue(wait_until(lambda: backend.available and backend.badgeText == "1", timeout=5))
+        wait_until(lambda: False, timeout=0.3)
+        self.assertEqual(sorted(fake.called), ["Launchers", "List"])
+        backend.refresh()
+        self.assertTrue(wait_until(lambda: "Refresh" in fake.called, timeout=5))
 
 
 if __name__ == "__main__":

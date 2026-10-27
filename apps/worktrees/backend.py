@@ -1,36 +1,31 @@
-#!/usr/bin/python3
-"""Okno „Tide Worktrees”: QML (qml/Main.qml) z danymi z tide-daemon przez D-Bus.
+"""Widok „Worktrees” okna Tide: worktrees repozytoriów — dane i akcje z tide-daemon przez D-Bus
+(/Worktrees) albo stała lista z pliku (--data, np. wynik `tide-daemon.py --print-worktrees`;
+usuwanie i otwieranie są wtedy wyłączone).
 
-Użycie: /usr/bin/python3 tide-worktrees.py [--data PLIK.json] [--grab PLIK.png] [--width N --height N]
-                                            [--select ŚCIEŻKA ...] [--confirm]
-
---data    stała lista worktrees z pliku (np. wynik tide-daemon.py --print-worktrees), bez D-Bus —
-          do podglądu i testów; usuwanie i otwieranie są wtedy wyłączone,
---grab    zapisuje zrzut okna do pliku PNG i kończy (np. z QT_QPA_PLATFORM=offscreen),
---select  zaznacza worktree (można powtórzyć), --confirm otwiera potwierdzenie usunięcia —
-          do podglądu okna potwierdzenia (z --data niczego nie usuwa).
-
-Okno działa w jednym egzemplarzu: rejestruje nazwę org.tide.WorktreesWindow, a kolejne
-uruchomienie (np. kliknięcie kafelka w docku) prosi pierwsze o pokazanie się i kończy pracę.
-Identyfikator aplikacji (tide-worktrees) odpowiada plikowi tide-worktrees.desktop, więc pasek zadań
-pokazuje okno z ikoną i nazwą „Tide Worktrees”.
+Moduł widoku (apps/tide/views.json): okno Tide ładuje go z views/worktrees/backend.py i woła
+create(bus, data). Strona QML to qml/WorktreesView.qml (WorktreesPage z akcjami i skrótami).
+Plakietka w pasku widoków: ile worktrees jest w pracy (bez głównych katalogów repozytoriów).
 """
-import argparse
 import json
 import os
-import sys
 
-from PyQt6.QtCore import QMetaType, QObject, QUrl, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
-from PyQt6.QtDBus import (QDBus, QDBusArgument, QDBusConnection, QDBusMessage, QDBusPendingCallWatcher,
-                          QDBusPendingReply, QDBusServiceWatcher)
-from PyQt6.QtGui import QGuiApplication, QIcon
-from PyQt6.QtQml import QQmlApplicationEngine
+from PyQt6.QtCore import QMetaType, QObject, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt6.QtDBus import (QDBusArgument, QDBusConnection, QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply,
+                          QDBusServiceWatcher)
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-APP_ID = "tide-worktrees"
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Worktrees", "org.tide.Daemon.Worktrees"
-WINDOW_SERVICE, WINDOW_PATH, WINDOW_IFACE = "org.tide.WorktreesWindow", "/Window", "org.tide.WorktreesWindow"
 REMOVE_TIMEOUT_MS = 30 * 60 * 1000  # duże katalogi potrafią się usuwać długo
+
+
+def active_count(list_json: str) -> int:
+    """Worktrees w pracy jak w kafelku i nagłówku okna: grupa „active”, bez głównych katalogów."""
+    try:
+        items = json.loads(list_json or "[]")
+    except ValueError:
+        return 0
+    if not isinstance(items, list):
+        return 0
+    return sum(1 for w in items if isinstance(w, dict) and not w.get("isMain") and w.get("group") == "active")
 
 
 class Backend(QObject):
@@ -41,7 +36,7 @@ class Backend(QObject):
     launchersChanged = pyqtSignal()
     removeFinished = pyqtSignal(str)
     pruneFinished = pyqtSignal(str)
-    raiseRequested = pyqtSignal()
+    badgeChanged = pyqtSignal()
 
     def __init__(self, bus: QDBusConnection | None, data: list | None = None, parent=None):
         super().__init__(parent)
@@ -50,18 +45,24 @@ class Backend(QObject):
         self._available = False
         self._launchers = json.dumps({"terminal": False, "rider": False})
         self._pending: set = set()  # QDBusPendingCallWatcher muszą żyć do odpowiedzi
+        self._badge = ""
+        self.listChanged.connect(self._update_badge)
+        self.availableChanged.connect(self._update_badge)
         if data is not None:
             self._list = json.dumps(data, ensure_ascii=False)
             self._available = True
+            self._update_badge()
             return
         if bus is None:
             return
         bus.connect(SERVICE, PATH, IFACE, "Changed", self._changed)
         self._watcher = QDBusServiceWatcher(SERVICE, bus, QDBusServiceWatcher.WatchModeFlag.WatchForRegistration
                                             | QDBusServiceWatcher.WatchModeFlag.WatchForUnregistration, self)
-        self._watcher.serviceRegistered.connect(lambda _name: self.refresh())
+        self._watcher.serviceRegistered.connect(lambda _name: self.reload())
         self._watcher.serviceUnregistered.connect(lambda _name: self._set_available(False))
-        self.refresh()
+        # Na start tylko tanie odczyty (lista z pamięci usługi i programy) — plakietka w pasku okna Tide.
+        # Pełny przegląd repozytoriów (Refresh) woła widok przy pierwszym pokazaniu i przycisk „Odśwież”.
+        self.reload()
 
     # --- właściwości dla QML ------------------------------------------------------------------
 
@@ -81,6 +82,15 @@ class Backend(QObject):
     def homeDir(self) -> str:
         return os.path.expanduser("~")
 
+    # Plakietka w pasku widoków okna Tide; pusta — ukryta (bez usługi albo nic nie jest w pracy).
+    @pyqtProperty(str, notify=badgeChanged)
+    def badgeText(self) -> str:
+        return self._badge
+
+    @pyqtProperty(str, constant=True)
+    def badgeTone(self) -> str:
+        return "muted"
+
     # --- akcje --------------------------------------------------------------------------------
 
     @pyqtSlot()
@@ -88,6 +98,13 @@ class Backend(QObject):
         if self.bus is None:
             return
         self._call("Refresh", [], None)  # usługa przeczyta repozytoria na nowo i wyśle Changed
+        self.reload()
+
+    @pyqtSlot()
+    def reload(self) -> None:
+        """Lista i programy z usługi bez przeglądania repozytoriów od nowa."""
+        if self.bus is None:
+            return
         self._load()
         self._call("Launchers", [], self._got_launchers)
 
@@ -163,6 +180,13 @@ class Backend(QObject):
             self._launchers = value
             self.launchersChanged.emit()
 
+    def _update_badge(self) -> None:
+        count = active_count(self._list) if self._available else 0
+        badge = str(count) if count else ""
+        if badge != self._badge:
+            self._badge = badge
+            self.badgeChanged.emit()
+
     def _set_available(self, value: bool) -> None:
         if value != self._available:
             self._available = value
@@ -187,69 +211,10 @@ class Backend(QObject):
         watcher.finished.connect(finished)
 
 
-@pyqtClassInfo("D-Bus Interface", WINDOW_IFACE)
-class WindowService(QObject):
-    """org.tide.WorktreesWindow /Window: Raise() — prośba drugiego uruchomienia o pokazanie okna."""
-
-    def __init__(self, backend: Backend):
-        super().__init__()
-        self.backend = backend
-
-    @pyqtSlot()
-    def Raise(self) -> None:
-        self.backend.raiseRequested.emit()
-
-
-def parse_args(argv):
-    parser = argparse.ArgumentParser(prog="tide-worktrees", description="Okno Worktrees (Tide)")
-    parser.add_argument("--data", help="lista worktrees z pliku JSON zamiast z tide-daemon")
-    parser.add_argument("--grab", help="zapisz zrzut okna do PNG i zakończ")
-    parser.add_argument("--width", type=int, default=0)
-    parser.add_argument("--height", type=int, default=0)
-    parser.add_argument("--select", action="append", default=[], help="zaznacz worktree (podgląd)")
-    parser.add_argument("--confirm", action="store_true", help="otwórz potwierdzenie usunięcia (podgląd)")
-    return parser.parse_args(argv)
-
-
-def main(argv=None) -> int:
-    args = parse_args(sys.argv[1:] if argv is None else argv)
-    app = QGuiApplication(sys.argv[:1])
-    app.setApplicationName("Tide Worktrees")
-    app.setOrganizationName("Tide")
-    app.setDesktopFileName(APP_ID)
-    # Ikona jak w pliku .desktop (glif z nakładki Tide albo zapasowy w hicolor), w ostateczności z motywu.
-    app.setWindowIcon(QIcon.fromTheme("tide-worktrees", QIcon.fromTheme("vcs-branch")))
-
-    if args.data:
-        with open(args.data, encoding="utf-8") as fh:
-            backend = Backend(None, json.load(fh))
-        backend._launchers = json.dumps({"terminal": True, "rider": True})
-    else:
-        bus = QDBusConnection.sessionBus()
-        if not bus.isConnected():
-            print("tide-worktrees: brak magistrali sesji D-Bus", file=sys.stderr)
-            return 1
-        if not bus.registerService(WINDOW_SERVICE):
-            # Okno już działa — niech się pokaże, a my kończymy.
-            bus.call(QDBusMessage.createMethodCall(WINDOW_SERVICE, WINDOW_PATH, WINDOW_IFACE, "Raise"),
-                     QDBus.CallMode.Block, 5000)
-            return 0
-        backend = Backend(bus)
-        service = WindowService(backend)
-        bus.registerObject(WINDOW_PATH, service, QDBusConnection.RegisterOption.ExportAllSlots)
-
-    engine = QQmlApplicationEngine()
-    engine.setInitialProperties({"backend": backend, "grabPath": os.path.abspath(args.grab) if args.grab else "",
-                                 "preselect": list(args.select), "openConfirm": bool(args.confirm)})
-    engine.load(QUrl.fromLocalFile(os.path.join(HERE, "qml", "Main.qml")))
-    roots = engine.rootObjects()
-    if not roots:
-        return 1
-    if args.width and args.height:
-        roots[0].setProperty("width", args.width)
-        roots[0].setProperty("height", args.height)
-    return app.exec()
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+def create(bus: QDBusConnection | None, data=None) -> Backend:
+    """Backend widoku dla okna Tide: z magistralą (na żywo) albo ze stałą listą (data: list)."""
+    if data is not None:
+        backend = Backend(None, data if isinstance(data, list) else [])
+        backend._launchers = json.dumps({"terminal": True, "rider": True})  # podgląd z przyciskami
+        return backend
+    return Backend(bus)

@@ -1,6 +1,6 @@
 # tide-daemon
 
-Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)). Piąty to raport poranny: raz na dobę strona HTML na każdy projekt z ruchem ([Raport poranny](#raport-poranny)). Szósty to historia Limitów AI, prognoza ich wyczerpania i powiadomienia o progach ([Limity AI](#limity-ai)). Siódmy to koordynacja: sesje, które zlecają pracę podagentom, jako tablica ticketów z planem i YouTrackiem ([Koordynacja](#koordynacja)).
+Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)). Piąty to raport poranny: raz na dobę strona HTML na każdy projekt z ruchem ([Raport poranny](#raport-poranny)). Szósty to historia Limitów AI, prognoza ich wyczerpania i powiadomienia o progach ([Limity AI](#limity-ai)). Siódmy to koordynacja: sesje, które zlecają pracę podagentom, jako tablica ticketów z planem i YouTrackiem ([Koordynacja](#koordynacja)). Ósmy to tablica pracy: karty „rzeczy do zrobienia” ze wszystkich projektów w lokalnym repozytorium git ([Tablica](#tablica)). Dziewiąty to kontenery Dockera: grupy compose z repozytoriami, akcje, logi i porządki zamiast Docker Desktop ([Docker](#docker)).
 
 ## Kontrakt D-Bus
 
@@ -223,7 +223,7 @@ Skąd lista:
 
 Powiązanie z sesjami (`worktrees/sessions.py`, best effort, tylko odczyt): pliki z ostatnich 30 dni — Claude Code `<claude>/projects/<katalog>/<sesja>.jsonl` (nazwa katalogu to ścieżka z każdym znakiem spoza `[A-Za-z0-9]` zamienionym na `-`, więc nieodwracalna — katalog bierzemy z pola `cwd` wpisów) i Codex `<codex>/sessions/**/rollout-*.jsonl` (`session_meta.payload.cwd`, `turn_context.payload.cwd`; wątki podagentów pomijane). Tytuł: Claude — `custom-title`, `ai-title`, `summary`, inaczej pierwsze polecenie użytkownika; Codex — `thread_name` z `<codex>/session_index.jsonl`, inaczej pierwsze polecenie; najwyżej 80 znaków. Z pliku czytamy tylko początek i koniec (po 192 KB), a wynik trzymamy do zmiany rozmiaru albo mtime (pierwszy przegląd ok. 0,2 s, kolejne kilka ms). W pamięci są tylko metadane (narzędzie, identyfikator, tytuł, katalogi, czas), nic z rozmów nie trafia do dziennika usługi. Sesja uruchomiona w głównym katalogu, która zakłada worktree poleceniem powłoki, nie zostanie powiązana — liczy się katalog roboczy.
 
-Okno „Tide Worktrees” (`apps/worktrees`): `ShowWindow()` uruchamia `/usr/bin/python3 -s $XDG_DATA_HOME/tide/worktrees-window/tide-worktrees.py` (albo `$TIDE_WORKTREES_WINDOW`) przez `systemd-run --user --scope`. Okno rejestruje nazwę `org.tide.WorktreesWindow` (obiekt `/Window`, metoda `Raise()`), więc kolejne uruchomienie tylko pokazuje już otwarte.
+Widok „Worktrees” okna Tide (`apps/worktrees`, okno `apps/tide`): `ShowWindow()` uruchamia `/usr/bin/python3 -s $XDG_DATA_HOME/tide/tide-window/tide.py --view worktrees` (albo `$TIDE_WINDOW`) przez `systemd-run --user --scope`; bez okna Tide albo przy `$TIDE_WORKTREES_WINDOW` — dawny launcher `tide/worktrees-window/tide-worktrees.py` (po instalacji okna Tide to przekierowanie do niego). Okno rejestruje `org.tide.Window` (obiekt `/Window`, `Show(s widok, s element) → b`), więc kolejne uruchomienie tylko pokazuje już otwarte na widoku; dawne `org.tide.WorktreesWindow` `Raise()` też działa.
 
 Odświeżanie: co **60 s** w tle (jeden wątek roboczy: odczyt, potem rozmiary), na żądanie przez `Refresh()` (okno woła je przy starcie i przyciskiem „Odśwież”) i po sprzątaniu. Rozmiary są w pamięci podręcznej i przeliczane najwyżej co **30 min**. Zmiana sesji agentów przelicza tylko flagę `hasAgent`, bez gita. Wątek główny (D-Bus) nigdy nie czeka na gita ani na dysk.
 
@@ -672,10 +672,12 @@ zaszyfrowane polecenia Codexa pomijamy —, opisem karty `done` i `now` do 300 z
 bez pełnych poleceń i raportów podagentów). Opisy kart dokłada ten sam wątek z pamięci albo reguł, a gdy
 trzeba zapytać model (decyzja 54), robi to osobny wątek roboczy i po odpowiedzi zleca odświeżenie.
 
-**Okno „Tide Sesje”** (`apps/sessions`, `make install-sessions-window`): `ShowWindow()` uruchamia
-`/usr/bin/python3 -s $XDG_DATA_HOME/tide/sessions-window/tide-sessions.py [--select id]` (albo
-`$TIDE_SESSIONS_WINDOW`) przez `systemd-run --user --scope`. Okno rejestruje `org.tide.SessionsWindow`
-(obiekt `/Window`, `Raise(s id)`), więc kolejne uruchomienie tylko je pokazuje z wybranym koordynatorem.
+**Widok „Sesje” okna Tide** (`apps/sessions`, okno `apps/tide`, `make install-tide-window`): `ShowWindow()`
+uruchamia `/usr/bin/python3 -s $XDG_DATA_HOME/tide/tide-window/tide.py --view sessions [--select id]` (albo
+`$TIDE_WINDOW`) przez `systemd-run --user --scope`; bez okna Tide albo przy `$TIDE_SESSIONS_WINDOW` — dawny
+launcher `tide/sessions-window/tide-sessions.py [--select id]`. Okno rejestruje `org.tide.Window` (obiekt
+`/Window`, `Show(s widok, s element) → b`), więc kolejne uruchomienie tylko je pokazuje na widoku Sesje
+z wybranym koordynatorem; dawne `org.tide.SessionsWindow` `Raise(s id)` też działa.
 Karta: prawdziwe ID, tytuł po ludzku, linia „co zrobiono” albo „co teraz”, działający podagenci z rolą
 po polsku i czasem, stan słowami; szczegóły: „Co to jest”, „Co zrobiono”, „Teraz / review” i oś czasu.
 Teksty z danych zawsze jako zwykły tekst (`Text.PlainText`).
@@ -684,6 +686,301 @@ Teksty z danych zawsze jako zwykły tekst (`Text.PlainText`).
 qdbus6 org.tide.Daemon /Coordination org.tide.Daemon.Coordination.Coordinators
 /usr/bin/python3 daemon/tide-daemon.py --print-coordination   # dane okna jako JSON, tylko odczyt
 make preview-sessions-window SANITIZE=1                        # zrzut okna bez treści pracy: build/sessions-window.png
+```
+
+## Tablica
+
+Osobisty backlog ze wszystkich projektów: karta to „rzecz do zrobienia” (funkcja, poprawka, pomysł),
+nie ticket. Dane są w lokalnym repozytorium git, które usługa zakłada przy pierwszym poprawnym
+zapisie i commituje po każdej zmianie, więc historia i cofanie są za darmo. Bez remote — usługa nigdy nie
+wypycha ani nie dodaje zdalnego repozytorium. Okno tablicy, kafelek, uruchamianie agenta z karty,
+połączenie karty z koordynatorem i import z YouTracka to kolejne tickety (PT-2…PT-7) na tym samym
+formacie. Plan: `docs/agents/plans/2026-10-27-board-and-docker.md`.
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/Board` |
+| Interfejs | `org.tide.Daemon.Board` |
+| Repozytorium | `--board-dir`, inaczej `$TIDE_BOARD_DIR`, inaczej `~/DevWorkspace/tide-board` |
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `Snapshot()` | `→ s` | JSON całej tablicy (opis niżej); tylko odczyt — przed pierwszym zapisem niczego nie zakłada |
+| `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, tags, column, note, youtrack, spec, session, branch}` → `{ok, id, commitError}` |
+| `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
+| `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}` |
+| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, mode, description}`: istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
+| `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
+| `RenderFlow(s id, s mode)` | `→ s` | polecenie trybu dla karty (pusty `mode` — tryb projektu) → `{ok, text, mode, tool, branch, docsDir, aiDocs, repo, project, template}`; katalog `docsDir` w tablicy zakłada od razu |
+| `Changed` | sygnał bez argumentów | tablica się zmieniła (zapis przez D-Bus albo zmiana z zewnątrz) — pobierz `Snapshot()` ponownie |
+
+Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt
+jak w `/Tasks`: sukces to `{"ok": true, …}`, błąd — `{"ok": false, "error": "<kod>", "message": "…"}`
+z komunikatem po polsku dla człowieka, np. „do kolumny „progress” nie przenosi się ręcznie”, „nie ma
+projektu „app5””. Nieznane pole w żądaniu to błąd, nie cicha pomyłka.
+
+| Kod | Kiedy |
+| --- | --- |
+| `bad-request` | złe dane: nieznane pole, pusty tytuł, zła kolumna, kolor, tryb, ścieżka, niepoprawny JSON |
+| `not-found` | nie ma karty, projektu albo tagu (do zmiany nazwy) |
+| `exists` | repozytorium ma już projekt, tag o nowej nazwie już jest |
+| `broken-file` | plik karty, projektu albo tagu jest w `errors` (nie da się go przeczytać) — popraw go ręcznie |
+| `git-busy` | w repozytorium tablicy trwa revert, merge, cherry-pick albo rebase z konfliktami |
+| `not-a-board` | katalog tablicy istnieje i nie jest tablicą (cudzych plików nie ruszamy) |
+| `git-error`, `io-error`, `internal` | `git init` albo dysk zawiodły; błąd usługi (szczegóły w dzienniku) |
+
+Najpierw walidacja, potem zapis: żądanie z błędem (także na pustym katalogu) nie zostawia pliku,
+katalogu ani commita — tablica powstaje dopiero przy pierwszym poprawnym zapisie, a projekt
+zakładany przy karcie — dopiero gdy cała karta jest poprawna. Po zapisie plików plik jest źródłem
+prawdy: jeśli sam commit się nie uda (np. zajęty indeks), odpowiedź to nadal `ok: true` z opisem
+w `commitError`, a commit z tym samym komunikatem czeka i idzie przy następnym zapisie albo
+synchronizacji (migawka: `git.pending`, wpis w `errors`). Ponowienie żądania nie jest więc potrzebne
+i nie tworzy duplikatu. Kolejka jest tylko w pamięci usługi: po restarcie te zmiany trafiają do
+commitu „sync external changes”, podobnie jak wpis, który pada z trwałego powodu (np. pliku już nie
+ma) — kolejkę zatrzymuje wyłącznie zajęty indeks albo zawieszony git.
+
+**Układ repozytorium.** Wszystkie pliki to Markdown z płaskim frontmatterem (te same reguły co
+w planach: pary `klucz: wartość`, bez YAML), więc da się je czytać i poprawiać ręcznie.
+
+```
+tide-board/
+  board.md                   znacznik `tide-board: 1` i licznik `next-card`
+  .gitignore                 pliki tymczasowe edytorów i zapisu
+  projects/<slug>.md         projekt
+  tags/<slug>.md             tag z kolorem
+  cards/K-<n>.md             karta
+  flows/full.md, light.md, spec.md     szablony poleceń trybów
+  flows/<projekt>/<tryb>.md  nadpisanie szablonu dla jednego projektu (opcjonalne)
+  docs/<projekt>/            plany i specyfikacje agentów projektów z `ai-docs: tide`
+```
+
+Karta — `cards/K-12.md`, treść pod frontmatterem to opis:
+
+```markdown
+---
+id: K-12
+title: "Hotfix: unikalne wyszukiwanie fraz"
+project: logviewer
+tags: pilne
+column: todo
+order: 20
+note: bez agenta, robię sam
+created: 2026-10-27T14:00:00+01:00
+updated: 2026-10-27T14:05:12+01:00
+youtrack: TOM-142
+spec:
+session:
+branch:
+---
+
+Wyszukiwanie zwraca tę samą frazę kilka razy…
+```
+
+| Klucz | Znaczenie |
+| --- | --- |
+| `id` | `K-<numer>`; obowiązuje nazwa pliku (niezgodność to błąd w migawce). Numer nigdy nie wraca: następny = max z istniejących plików + 1, `next-card` z `board.md` i znacznika poza historią `.git/tide-next-card`, który przeżywa `git revert` commita zakładającego kartę (gałęzie `k-N` łączą kartę z koordynatorem). Gdy znacznika brak (np. kopia repozytorium), pierwsze założenie karty odbudowuje go raz z najwyższego numeru dodanego kiedykolwiek w historii gita; migawka historii nie czyta |
+| `title` | jedna linia, do 200 znaków |
+| `project` | slug projektu albo pusty (karta bez projektu) |
+| `tags` | własne tagi karty po przecinku (`[a, b]` też działa); w migawce `resolvedTags` = tagi projektu ∪ własne. Listy YAML w bloku (`tags:` i niżej `  - ui`) nie są obsługiwane — dają wpis w `errors`, a zapis tagów zastępuje taką listę jedną linią |
+| `column` | tylko kolumny ręczne: `backlog`, `todo`, `done`, `archived` |
+| `order` | kolejność w kolumnie (mniejsza wyżej); nowa karta trafia na górę kolumny. `MoveCard` daje karcie środek między sąsiadami (zmienia się jeden plik), a całą kolumnę numeruje co 10 dopiero wtedy, gdy między sąsiadami nie ma miejsca |
+| `note` | krótka notatka widoczna na karcie (np. „bez agenta, robię sam”) |
+| `created`, `updated` | ISO 8601 z czasem lokalnym |
+| `youtrack`, `spec`, `session`, `branch` | zarezerwowane na później (import z YouTracka, gotowa specyfikacja, sesja koordynatora, gałąź); `branch` już teraz zastępuje propozycję gałęzi w `RenderFlow` |
+
+Projekt — `projects/mobileapp.md`, treść to opcjonalny opis:
+
+```markdown
+---
+name: mobileapp
+repo: /home/user/DevWorkspace/mobileapp
+tags: Firma
+ai-docs: tide
+tool: claude
+mode: full
+---
+```
+
+- `repo`: ścieżka bezwzględna do repozytorium albo pusty (projekt bez kodu). Repozytorium tablicy nie może być projektem.
+- `ai-docs`: `repo` (plany i specyfikacje agentów w `docs/agents/` repozytorium) albo `tide` (w `tide-board/docs/<projekt>/`, nic nie trafia do repozytorium projektu). Przy zakładaniu: `repo`, gdy repozytorium ma już `docs/agents/`, inaczej `tide`; bez klucza w pliku — to samo wyliczane przy odczycie (`aiDocsDefault: true`).
+- `tool`: `claude` albo `codex`, `mode`: `full`, `light` albo `spec` — domyślne dla uruchomień z kart projektu (domyślnie `claude` i `full`: pełny przebieg, chyba że przy karcie wybierzesz inny tryb).
+- Projekty powstają jawnie (`UpsertProject`; ta sama nazwa drugi raz to ten sam projekt, nie `foo-2`) albo przy pierwszej karcie dla repozytorium (`CreateCard` z `repo`) — osobnym commitem. Usługa nie zakłada wpisów dla wszystkich repozytoriów z katalogu projektów; migawka podaje je w `repos` jako kandydatów.
+
+Tag — `tags/firma.md`: `name` (bez przecinka, do 40 znaków) i `color` — nazwa pastelu z palety
+(`teal`, `lavender`, `peach`, `butter`, `rose`, `mint`, `sky`; lista z `pastel` w `theme/palette/`),
+treść to opis. Nowa tablica dostaje „Firma” (`sky`, klient komercyjny) i „własne” (`lavender`).
+Tag użyty w karcie albo projekcie bez własnego pliku też jest w migawce (`defined: false`) ze stałym
+kolorem wyliczonym z nazwy. Wielkość liter w nazwach tagów nie ma znaczenia przy porównaniu.
+
+**Szablony trybów.** `RenderFlow` zakłada katalog dokumentów, jeśli leży w tablicy (`ai-docs: tide`,
+także `docs/_inbox` dla karty bez projektu) — agent dostanie go przez `--add-dir`; w repozytorium
+projektu (`ai-docs: repo`) niczego nie tworzy. Pusty katalog nie trafia do gita, pliki agenta zbierze
+synchronizacja. Szablon bierze `flows/<projekt>/<tryb>.md`, potem `flows/<tryb>.md`, a bez
+tablicy — wbudowany szablon (`board/flows.py`, te same treści, które trafiają do nowej tablicy).
+Frontmatter szablonu nie trafia do polecenia. Zastępowane są wyłącznie pola `{card_id}`, `{title}`,
+`{description}`, `{project}`, `{repo}`, `{docs_dir}`, `{branch}` — inne klamry zostają, a opis karty
+nie jest szablonem. Gałąź: `branch` karty albo propozycja `<narzędzie>/k-12-<opis-z-tytułu>`
+(po ID karty w gałęzi daemon połączy kartę z koordynatorem). Obecne treści szablonów to zaczyn —
+właściwe polecenia trybów dopisze PT-4.
+
+**Commity.** Każda zmiana z D-Bus to osobny commit tylko z plikami, które usługa zmieniła, np.
+`board: create`, `K-21: create`, `K-21: update title, tags`, `K-12: move to todo`,
+`K-12: reorder in todo`, `project mobileapp: create`, `tag pilne: update`,
+`tag własne: rename to Własne`. Autor z konfiguracji gita użytkownika (bez niej „Tide
+<tide@localhost>”), bez podpisu GPG i bez żadnych hooków (`--no-verify`, `core.hooksPath=/dev/null`)
+— to zapis stanu tablicy, nie praca nad kodem.
+
+**Git: blokady i przerwane operacje** (`board/repo.py`). Git dostaje 5 s. Zabity po czasie zostawia
+`.git/index.lock` — usługa usuwa go od razu, jeśli w katalogu tablicy nie działa żaden inny proces
+`git`; cudzą blokadę usuwa dopiero, gdy jest starsza niż 10 s i nie ma żywego procesu git z katalogiem
+w tablicy. Gdy w repozytorium trwa revert, merge, cherry-pick albo rebase (pliki `REVERT_HEAD`,
+`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `rebase-*` albo pliki z konfliktami w `git status`), usługa niczego
+nie commituje — commit „sync” utrwaliłby znaczniki konfliktu — zapisy z D-Bus kończą się błędem
+`git-busy` („dokończ go (git revert --continue) albo przerwij (git revert --abort)”), a migawka ma
+`git.busy` i wpis w `errors`. Frontmatter ze znacznikami konfliktu (`<<<<<<<`, `>>>>>>>`) to błąd
+pliku; w treści znaczniki są zwykłym tekstem (opis może zawierać wklejone wyjście gita), a trwający
+konflikt w treści widać po plikach niescalonych w `git status`.
+
+**Zmiany z zewnątrz.** Agent piszący plan w `docs/`, ręczna edycja karty, `git revert` — usługa
+obserwuje katalogi i pliki tablicy (`QFileSystemWatcher`), a po 2 s ciszy robi commit
+`sync external changes` ze wszystkim, co się zmieniło, i wysyła `Changed`. To samo sprawdzenie idzie
+przy starcie (zmiany z czasu, gdy usługa nie działała) i co 60 s (zapis bez zdarzenia, tablica
+założona poza usługą), razem z zaległymi commitami naszych zapisów (te z własnymi komunikatami).
+Nasze własne zapisy są już w commicie, więc nie dają drugiego.
+
+**Błędy plików.** Zły plik nie zatrzymuje tablicy: trafia do `errors` w migawce (`{path, message}`),
+a reszta działa. Pomijany jest plik bez frontmattera, ze znacznikami konfliktu we frontmatterze, nie w UTF-8, większy
+niż 256 KB (czytamy najwyżej tyle, nigdy całości), niebędący zwykłym plikiem (FIFO, urządzenie) albo
+dowiązanie wskazujące poza katalog tablicy (dowiązanie wewnątrz tablicy działa); numer karty takiego
+pliku i tak jest zajęty. Linie frontmattera, które nie są parą `klucz: wartość`, dają wpis w `errors`; zła wartość (kolumna, kolejność, narzędzie, tryb, `ai-docs`, kolor)
+daje błąd i wartość domyślną; karta z nieznanym projektem — błąd. Karty z pominiętego pliku nie da
+się zmienić przez D-Bus („popraw go ręcznie”). Zapis zmienia tylko linie ustawianych kluczy:
+nieznane klucze, komentarze i treść zostają co do znaku.
+
+**Repozytorium tablicy poza listami projektów.** Skaner repozytoriów (`worktrees/scanner.py:
+find_repositories`) pomija katalog z `board.md` zawierającym `tide-board` we frontmatterze — po
+znaczniku, nie po nazwie — więc tablicy nie ma w Worktrees, KRunnerze, oknie „Nowe zadanie” ani
+w raporcie porannym, gdziekolwiek leży.
+
+**Migawka** (`Snapshot()`, `--print-board`):
+
+| Pole | Opis |
+| --- | --- |
+| `boardDir`, `exists` | katalog tablicy i czy repozytorium już istnieje |
+| `lastCommit` | `{hash, short, ts, time, subject}` albo `null` |
+| `git` | `{busy, pending, error}`: trwająca operacja (`revert`, `merge`, `cherry-pick`, `rebase` albo pusty), liczba zaległych commitów i ostatni błąd commita |
+| `nextId` | ID, które dostanie następna karta |
+| `columns` | `[{id, label, manual, hidden?}]`: `backlog` „Backlog”, `todo` „Do zrobienia”, `progress` „W toku”, `waiting` „Czeka na mnie”, `review` „Do sprawdzenia”, `done` „Gotowe”, `archived` „Archiwum” (ukryta); `manual: false` — kolumny wyliczane z koordynatora |
+| `colors` | pastele z palety `{nazwa: "#rrggbb"}` |
+| `tools`, `modes` | dozwolone narzędzia i tryby |
+| `tags` | `[{name, slug, color, description, defined, cards}]` (`cards` — karty z tym tagiem po dziedziczeniu) |
+| `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, mode, description, docsDir, cards, path}]` |
+| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, youtrack, spec, session, branch, description, derived, path}]` w kolejności kolumn i `order` |
+| `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
+| `errors` | `[{path, message}]` — złe pliki |
+
+`derived` to miejsce na stan z koordynatora karty (PT-5: kolumna `progress`/`waiting`/`review`/`done`,
+postęp, notatka) — na razie zawsze `null`; `boardColumn` to kolumna do wyświetlenia: z `derived`, a bez
+niego zapisana `column`. Pliki ręczne (`column`) nie zmieniają się od stanu koordynatora.
+
+Logika bez Qt jest w `tide_daemon/board/` (`marker.py`, `frontmatter.py`, `model.py`, `flows.py`,
+`store.py`, git w `repo.py`), obserwacja katalogu i odpowiedzi D-Bus w `board_monitor.py`.
+
+```bash
+qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.Snapshot
+qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.CreateCard '{"title": "Eksport do PDF", "repo": "/home/user/DevWorkspace/LogViewer"}'
+/usr/bin/python3 daemon/tide-daemon.py --print-board            # migawka bez D-Bus, niczego nie zakłada
+/usr/bin/python3 daemon/tide-daemon.py --print-board --board-dir /tmp/tablica-testowa
+```
+
+## Docker
+
+Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Docker” w oknie Tide i kafelka w docku. Usługa rozmawia z Docker Engine API przez lokalny socket (sama biblioteka standardowa, bez `docker` CLI i bez `docker compose`). Socket z `$DOCKER_HOST` (`unix:///ścieżka`), domyślnie `/var/run/docker.sock`; `tcp://`, `ssh://` i inne → stan `unsupported`, bez łączenia się przez sieć.
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/Docker` |
+| Interfejs | `org.tide.Daemon.Docker` |
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `Snapshot()` | `→ s` | JSON migawki kontenerów (opis niżej); od razu, z pamięci |
+| `Stats()` | `→ s` | CPU i pamięć działających kontenerów; liczone tylko na żądanie (okno woła, gdy jest widoczne), pamiętane 5 s; odpowiedź po odczycie (łącznie najwyżej 8 s) |
+| `Disk()` | `→ s` | kategorie porządków z miejscem do odzyskania; pamiętane 30 s, kasowane po akcji; odpowiedź po odczycie (`/system/df` najwyżej 20 s) |
+| `Start(s id)`, `Stop(s id)`, `Restart(s id)` | `→ s` | `{ok, error, id, name, note}`; `stop` i `restart` z `t=10` (potem Docker zabija); `note`: „już działał”, „już był zatrzymany”. Zapytanie do Dockera najwyżej 20 s |
+| `Remove(s id)` | `→ s` | usuwa tylko zatrzymany kontener, bez `force` i bez wolumenów; sprawdzenie stanu (≤ 5 s) i usunięcie (≤ 15 s) |
+| `GroupAction(s project, s action)` | `→ s` | **zadanie w tle**: `start`/`stop`/`restart` całego projektu compose przez API. Od razu `{ok: true, error: "", job}` albo odmowa `{ok: false, error, job: ""}` (nieznana akcja, pusta nazwa); wynik `{ok, error, job, project, done, failed, note}` sygnałem `ActionFinished` |
+| `Prune(s categories)` | `→ s` | **zadanie w tle** dla listy JSON z id kategorii, np. `["cache", "images"]`. Od razu `{ok: true, error: "", job}`; cokolwiek innego niż lista znanych id (obiekt, napis, `null`, nieznane id, pusta lista) → `{ok: false, error, job: ""}` i żadnego wywołania. Wynik `{ok, error, job, reclaimedBytes, details}` sygnałem `ActionFinished` |
+| `Logs(s id, i lines)` | `→ s` | ostatnie linie logów `{ok, error, id, name, lines: [{text, stderr}]}`; `lines ≤ 0` → 200, najwyżej 5000; najwyżej 15 s |
+| `OpenLogs(s id)` | `→ b` | karta Konsoli z `docker -H <socket usługi> logs -f --tail 200 <pełne ID>` |
+| `OpenShell(s id)` | `→ b` | karta Konsoli z `docker -H <socket usługi> exec -it <pełne ID> sh -c 'command -v bash >/dev/null && exec bash \|\| exec sh'`; `false` dla zatrzymanego |
+| `Changed` | sygnał bez argumentów | migawka się zmieniła — pobierz `Snapshot()` ponownie |
+| `ActionFinished(s job, s json)` | sygnał | koniec zadania `Prune` albo `GroupAction`; `json` to wynik z tym samym `job` |
+
+`id` w akcjach to pełne ID, początek ID od 12 znaków albo nazwa — wyłącznie kontenera z ostatniej migawki (inny → `{ok: false, error: "nie ma takiego kontenera"}` bez żadnego wywołania API). Błędy są po polsku; komunikat Dockera (po angielsku) idzie po dwukropku: „Docker nie pozwolił zatrzymać: …”.
+
+**Odpowiedzi i zadania.** Metody z odpowiedzią „po odczycie” odpowiadają z opóźnieniem (praca w wątku, pętla D-Bus obsługuje w tym czasie inne wywołania). `Start`, `Stop`, `Restart`, `Remove` i `Logs` mają jeden termin na całą akcję: 20 s od chwili wywołania D-Bus, a w nim czekanie w kolejce wątków (cztery naraz), łączenie z ponowieniami i wszystkie zapytania akcji (`Remove` to sprawdzenie stanu i usunięcie); termin ogranicza każdy odczyt, nie tylko pojedyncze `recv`. Akcja, której kolej przyszła po terminie, nie woła Dockera i odpowiada „Tide nie zdążyło — za dużo akcji naraz, spróbuj ponownie”; gdy Docker nie zdąży w trakcie — „Docker nie odpowiada na czas” (operacja w Dockerze mogła się mimo to dokończyć — pokaże to następna migawka). Najgorszy przypadek to `Stop`/`Restart`: Docker czeka do 10 s na zamknięcie, potem zabija. `Stats` ma łączny limit 8 s, `Disk` 20 s na `/system/df` (oba co najwyżej jeden odczyt naraz). Odpowiedź przychodzi więc po ok. 20 s najpóźniej — poniżej domyślnego limitu klienta D-Bus (25 s), o ile pętla usługi nie jest zablokowana czymś innym. `Prune` (duże obrazy i cache potrafią się usuwać minutami, limit 300 s na kategorię) i `GroupAction` (kolejne `stop` po 10 s) to zadania: wywołanie od razu oddaje `job` (`prune-<n>-<los>`, `group-<n>-<los>`), a wynik przychodzi sygnałem `ActionFinished(job, json)`. Zadania idą po kolei w osobnym wątku, więc nie blokują pojedynczych akcji ani odświeżania. Klient łączy się z sygnałem przed wywołaniem i dopasowuje wynik po `job`.
+
+**Migawka.**
+
+```json
+{"available": true, "state": "ok", "error": "", "host": "unix:///var/run/docker.sock",
+ "engine": {"version": "29.9.2", "apiVersion": "1.56"}, "live": true,
+ "summary": {"total": 16, "running": 9, "stopped": 4, "failed": 1, "projects": 6, "projectsTotal": 10,
+             "testcontainers": 3, "testcontainersRunning": 3},
+ "groups": [{"id": "compose:cookapp", "kind": "compose", "project": "cookapp", "label": "cookapp",
+             "workingDir": "/home/…/CookApp", "repo": {"name": "CookApp", "path": "/home/…/CookApp", "worktree": ""},
+             "running": 3, "total": 3, "stopped": 0, "failed": 0, "containers": [{…}]}]}
+```
+
+| Pole | Opis |
+| --- | --- |
+| `available`, `state`, `error` | `state`: `ok`, `starting` (przed pierwszym odczytem), `unavailable` (brak socketu, odmowa połączenia, brak odpowiedzi), `denied` (brak uprawnień do socketu), `unsupported` (`DOCKER_HOST` inny niż unix), `error` (Docker odpowiedział błędem); `error` to powód po polsku, np. „Docker nie działa — brak socketu /var/run/docker.sock”, „brak uprawnień do /var/run/docker.sock — dodaj się do grupy docker i zaloguj ponownie”. Bez Dockera `groups` jest puste, a usługa próbuje dalej |
+| `live` | strumień zdarzeń jest połączony (zmiany przychodzą od razu) |
+| `summary` | `running`, `stopped`, `failed` bez testcontainers; `projects` — projekty compose z co najmniej jednym działającym kontenerem, `projectsTotal` — wszystkie |
+| grupa `kind` | `compose` (`id` = `compose:<projekt>`), `standalone` (`label` „bez compose”), `testcontainers` (etykieta `org.testcontainers`; okno domyślnie je chowa). Kolejność: compose z działającymi (alfabetycznie), compose zatrzymane, „bez compose”, testcontainers |
+| grupa `repo` | repozytorium z etykiety `com.docker.compose.project.working_dir`: od katalogu w górę do `.git`; dla worktree (plik `.git`) — repozytorium główne, a katalog worktree w `worktree`. Tylko repozytorium z katalogu projektów (`--workspace`), inaczej `null` |
+
+Pola kontenera:
+
+| Pole | Opis |
+| --- | --- |
+| `id`, `shortId`, `name` | pełne ID, 12 znaków, pełna nazwa (argument akcji) |
+| `displayName` | nazwa wygenerowana przez compose bez prefiksu projektu („app4-release-localhost-web-1” → „web-1”); własna `container_name` bez zmian |
+| `image`, `project`, `service` | obraz i etykiety compose |
+| `state`, `running`, `health` | stan Dockera (`running`, `exited`, `created`, `paused`, `restarting`, `dead`), zdrowie `healthy`/`unhealthy`/`starting` albo pusty |
+
+| `stateText` | stan słowami: „działa · zdrowy”, „zakończony”, a dla awarii (i zatrzymania z Tide zakończonego zabiciem) powód. Tekstu Dockera „Up 14 hours” w migawce nie ma — zmienia się sam z czasem, więc dawałby `Changed` bez zmiany; wiek okno liczy z czasów |
+| `startedTs`, `finishedTs`, `createdTs` | sekundy epoki (0 — nigdy) — okno liczy z nich „13 h”, „2 dni temu” |
+| `exitCode`, `failed`, `reason` | `failed`: zakończony kodem spoza 0/143 (143 to zwykłe `docker stop`), zabity przez OOM, `dead`, restartujący się po błędzie albo `created` po nieudanym pierwszym starcie (Docker zostawia `State.Error` i kod 128: „nie wystartował: port is already allocated”). `reason`: „zabity (kod 137), możliwy brak pamięci”, „zabity przez brak pamięci (OOM, kod 137)”, „padł (kod 1)”, „padł z naruszeniem pamięci (kod 139)”… Kod 137 po `Stop` z Tide (zabicie po 10 s czekania) to nie awaria: `failed: false` i neutralny `reason` „zatrzymany z Tide — nie zamknął się w 10 s, więc Docker go zabił (kod 137)”; Tide pamięta chwilę wysłania `stop` i zdejmuje znacznik dopiero, gdy kontener wystartował po niej (`StartedAt` późniejszy) albo zniknął — odświeżenie w trakcie zatrzymywania (Docker od razu zgłasza `kill`) go nie kasuje; znacznik żyje tylko w pamięci usługi |
+| `oomKilled`, `restartCount`, `tty`, `oneoff` | ze szczegółów kontenera; `oneoff` — `docker compose run` |
+| `ports` | opublikowane porty bez powtórek IPv4/IPv6: `{hostIp, hostPort, containerPort, proto, likelyHttp, url}`; `likelyHttp` false dla UDP, znanych portów baz, kolejek i pamięci podręcznych (5432, 3306, 6379, 27017, 5672…) i obrazów baz (postgres, pgvector, redis, mongo, rabbitmq, testcontainers/ryuk…) poza ich panelami WWW (porty 15672… i obrazy paneli: mongo-express, kafka-ui, redis-commander, redisinsight, pgadmin, adminer, phpmyadmin, nazwy z `-ui`, `-admin`, `commander`, `insight`, `-exporter`…). `url` — `http(s)://localhost:<port>` albo pusty |
+| `testcontainers` | etykieta `org.testcontainers` |
+
+**Odświeżanie.** Osobny wątek trzyma `GET /events` (tylko kontenery). Zdarzenie (bez `exec_*` — to m.in. każde sprawdzenie zdrowia) → po 300 ms odświeżenie migawki → `Changed`, gdy JSON się zmienił. Zerwany strumień → ponowne połączenie co 1, 2, 4… do 30 s, a w tym czasie odświeżanie co 10 s; przy działającym strumieniu i tak pełne odświeżenie co 5 min. Odświeżenie to lista kontenerów i `inspect` tylko tych, których stan albo zdrowie z listy się zmieniły (zdarzenie dla kontenera też wymusza jego `inspect`); bez strumienia i przy pełnym odświeżeniu co 5 min — `inspect` wszystkich, bo szybki restart nie zmienia stanu z listy, a zmienia czas startu. Wynik `Stats`/`Disk` policzony przed końcem akcji albo przed zdarzeniem nie trafia do pamięci (licznik zmian).
+
+**Statystyki.** `{ok, error, generatedTs, containers: {id: {id, name, cpuPercent, cpus, memBytes, memLimitBytes, memPercent}}, total: {cpuPercent, hostCpuPercent, cpus, memBytes, containers}, missing: [id]}`. `GET /containers/{id}/stats?stream=false` dla wszystkich działających równolegle, łącznie najwyżej 8 s — kto nie zdążył, trafia do `missing`. CPU jak `docker stats` (100% = jeden rdzeń), `hostCpuPercent` — udział w całym procesorze (dla kafelka); pamięć to zużycie bez nieaktywnej pamięci podręcznej (`inactive_file`).
+
+**Porządki.** `Disk()` → `{ok, error, generatedTs, categories, totalReclaimableBytes, layersBytes}` z `GET /system/df`; kategoria to `{id, label, note, count, total, reclaimableBytes, totalBytes, warn}`:
+
+| `id` | Co | Do odzyskania |
+| --- | --- | --- |
+| `cache` | „Pamięć podręczna budowania” | wpisy nieużywane w tej chwili i niewspółdzielone |
+| `images` | „Nieużywane obrazy” | obrazy bez żadnego kontenera (także zatrzymanego): rozmiar minus część współdzielona |
+| `volumes` | „Wolumeny bez kontenera” | wolumeny z `RefCount` 0; `warn: true`, notka „mogą trzymać dane baz” |
+| `stopped` | „Zatrzymane kontenery” | warstwa zapisu zatrzymanych; ich wolumeny zostają. `warn` i `anonymousVolumes`, gdy któryś ma wolumen anonimowy (etykieta `com.docker.volume.anonymous` albo nazwa z 64 znaków hex) — po usunięciu kontenera dane, np. bazy z `VOLUME` w obrazie, zostaną bez nazwy |
+
+Nic, czego używa działający kontener, nie trafia do żadnej kategorii. `Prune` woła endpointy Dockera, które same omijają rzeczy w użyciu — `images/prune` z `dangling=false`, `volumes/prune` z `all=true` (od API 1.42 bez tego tylko anonimowe), `build/prune?all=true`, `containers/prune` — wyłącznie dla wymienionych kategorii, zawsze w kolejności obrazy, wolumeny, cache, kontenery. Kontenery na końcu: usunięcie zatrzymanych przed obrazami i wolumenami odsłoniłoby rzeczy, których nie było na liście. Lista JSON to jedyny przyjmowany kształt (obiekt `{"cache": true}` celowo nie — wcześniej każda „prawdziwa” wartość, np. napis `"false"`, wybierała kategorię); pusta lista, nieznane id albo inny kształt → odmowa bez żadnego wywołania. 404 z endpointu prune to „ten Docker nie zna tej operacji porządków (za stary silnik?)”, 409 — „Docker właśnie porządkuje”. Wynik: `{ok, error, reclaimedBytes, details: [{id, label, ok, reclaimedBytes, removed, error}]}`.
+
+**Projekt compose.** `GroupAction` bierze kontenery z etykietą projektu (`GET /containers/json?filters={"label":["com.docker.compose.project=…"]}`) i układa je według `com.docker.compose.depends_on`: `start` — niedziałające (bez jednorazowych `run`) od zależności, `stop` — działające od końca, `restart` — działające: zatrzymanie od końca, potem start od zależności. Kontener, który przy `restart` nie dał się zatrzymać, nie dostaje ponownego startu i trafia do `failed`; `done` to kontenery, którym udały się wszystkie kroki.
+
+**Logi i powłoka w Konsoli** idą tym samym mechanizmem co „Nowe zadanie”: plik zadania z argv w `$XDG_RUNTIME_DIR/tide/tasks` i karta z profilem „Tide: zadanie agenta” w ostatnio używanym oknie Konsoli albo nowe okno z `launch.py --task` ([Nowe zadanie](#nowe-zadanie)). Tytuł karty „docker · <nazwa>”. W argv zawsze pełne ID (nazwę można nadać innemu kontenerowi) i `-H unix://<socket usługi>` (karta nie dziedziczy `DOCKER_HOST` usługi, a powłoka może mieć inny `docker context`); żadnego sklejania poleceń. Każda karta otwiera się we własnym, pustym katalogu w `$XDG_RUNTIME_DIR/tide/docker-tabs/` — karta z profilu przejmuje najstarsze zadanie dla swojego katalogu, więc przy wspólnym katalogu dwa szybkie `OpenShell` mogłyby zamienić się kontenerami. Plik zadania ma też `workdir` (katalog domowy): po przejęciu `launch.py` przechodzi tam, więc polecenie i powłoka, która zostaje po `docker logs -f`, są w `~`, a katalog karty od razu jest wolny. Katalogi kart starsze niż 10 min znikają przy kolejnej karcie, nieprzejęty plik zadania jest wycofywany po 20 s.
+
+Logika bez Qt jest w `tide_daemon/docker/` (`client.py`, `snapshot.py`, `repos.py`, `disk.py`, `stats.py`, `engine.py`), wątki i pamięć podręczna w `docker_monitor.py`.
+
+```bash
+qdbus6 org.tide.Daemon /Docker org.tide.Daemon.Docker.Snapshot
+/usr/bin/python3 daemon/tide-daemon.py --print-docker   # migawka i miejsce na dysku, wyłącznie GET do Engine API
 ```
 
 ## Uruchamianie
@@ -697,6 +994,8 @@ journalctl --user -u tide-daemon -f
 /usr/bin/python3 daemon/tide-daemon.py --print
 /usr/bin/python3 daemon/tide-daemon.py --print-worktrees      # tylko odczyt, niczego nie usuwa
 /usr/bin/python3 daemon/tide-daemon.py --print-coordination   # koordynatorzy i tablice (YouTrack tylko GET)
+/usr/bin/python3 daemon/tide-daemon.py --print-board          # tablica pracy (tylko odczyt)
+/usr/bin/python3 daemon/tide-daemon.py --print-docker         # kontenery i miejsce na dysku (tylko GET)
 # Jednorazowy raport poranny (bez D-Bus, powiadomienia i pliku stanu) do wskazanego katalogu:
 /usr/bin/python3 daemon/tide-daemon.py --report --report-days 1 --report-dir /tmp/raport
 # Opcje diagnostyczne: --claude-dir, --codex-dir, --workspace, --worktree-depth, --no-processes,
@@ -705,7 +1004,8 @@ journalctl --user -u tide-daemon -f
 #                      --report-dir, --report-at 07:00, --no-report, --report-delay 120,
 #                      --report-summary claude|rules,
 #                      --limits-poll 120, --no-limits, --print-limits, --no-tasks,
-#                      --coordination-days 7, --no-coordination, --no-youtrack
+#                      --coordination-days 7, --no-coordination, --no-youtrack,
+#                      --board-dir DIR, --no-board, --no-docker
 ```
 
 Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`, z której raport poranny bierze kolory i czcionki), `$XDG_CONFIG_HOME/systemd/user/tide-daemon.service`, `$XDG_DATA_HOME/dbus-1/services/org.tide.Daemon.service` (start na żądanie, gdy widżet zapyta, a usługa nie działa) i `org.tide.Daemon.KRunner.service` (to samo dla KRunnera). Usługa używa `/usr/bin/python3` z systemowym PyQt6 — `python3` z pyenv go nie ma.
@@ -745,6 +1045,12 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_coordination_describe.py` — opisy kart: reguły (formułki poleceń, stan i review słowami, raport implementacji), fakty bez sekretów i bez całych poleceń, walidacja odpowiedzi modelu (tylko znane tickety, same napisy, przycięcia), pamięć podręczna i odstępy (SETTLE, GAP, RETRY, stare koordynatory, partie), plik 0600 i jego walidacja, tryb `rules` bez wywołań, monitor z opisem w tle — model to zawsze atrapa,
 - `daemon/tests/test_coordination_integration.py` — KRunner („sesje”, filtr słowami, uruchomienie tylko znanych), „Plany i tickety” w raporcie (tablica z pliku, plany z repozytoriów, escapowanie, brak pliku i błędy), `Launchers.show_sessions`,
 - `apps/sessions/tests/` — okno Tide Sesje: pakiet bez kolorów na sztywno, logika `sessions.js` w QJSEngine, zrzuty offscreen z `--data` (tablica, Codex, wynik podagenta) bez ostrzeżeń QML, dane po `tools/sessions_preview.py --sanitize` bez treści, launcher na prywatnej magistrali z prawdziwą usługą i drugie uruchomienie, instalacja,
+- `daemon/tests/test_board_core.py` — tablica bez Qt na tymczasowych repozytoriach z własną konfiguracją gita: frontmatter (nieznane klucze, komentarze i treść po zapisie, cudzysłowy, nowe linie), założenie przy pierwszym zapisie (znacznik, tagi, szablony, brak remote, autor z konfiguracji i „Tide” bez niej, cudzy katalog nietknięty), dokładny format pliku karty, ID (max + 1, bez ponownego użycia, zepsuty plik zajmuje numer), kolejność i przenoszenie z komunikatami commitów, odmowy kolumn wyliczanych, walidacja pól i ID (także `../`), projekty zakładane przy karcie z domyślnym `ai-docs`, tagi (dziedziczenie, kolory z palety, zmiana nazwy w kartach i projektach), szablony trybów (pola, nadpisanie projektu, nieznane klamry), commit zmian z zewnątrz osobno od naszych, złe pliki w `errors`, pomijanie repozytorium tablicy w skanerze po znaczniku,
+- `daemon/tests/test_board_robustness.py` — trudne przypadki: nieudany commit (karta zostaje, `commitError`, bez duplikatu, zaległy commit z własnym komunikatem), osierocona blokada indeksu (git zabity po czasie, stara blokada, blokada żywego gita na atrapie `/proc`), revert z konfliktem (bez commita „sync”, `git-busy`, wpisy w `errors`, znaczniki konfliktu jako błąd pliku), numery kart po revercie (licznik poza historią; historia gita tylko raz, gdy licznika brak, nigdy w migawce), znaczniki konfliktu w opisie jako zwykły tekst, zaległy commit usuniętego pliku i trwały błąd bez blokowania kolejki, błąd bez pliku, katalogu i commita (pusty katalog i istniejąca tablica), dowiązania poza tablicę, FIFO i `/dev/zero`, listy YAML i pliki z Windows, kolejność środkiem i przenumerowanie bez miejsca, brak hooków (także post-commit), projekt po nazwie bez `foo-2`, domyślny tryb `full`, zmiana nazwy tagu bez pliku, katalog dokumentów z `RenderFlow`,
+- `daemon/tests/test_board_dbus.py` — `BoardMonitor` w procesie (zmiana z zewnątrz → commit i `Changed`, nasz zapis bez drugiego commita, błędy jako JSON) i `/Board` na prywatnej magistrali: introspekcja, `Snapshot`, `CreateCard` z repozytorium, `UpsertProject`, `UpsertTag`, `UpdateCard`, `MoveCard`, `RenderFlow`, sygnał `Changed`, historia commitów, edycja pliku z zewnątrz, błędy `{ok: false, error, message}` z kodami i bez commita, `--no-board`, `--print-board` bez zapisu. Usługi w testach dostają tymczasowy `TIDE_BOARD_DIR` (`privatebus.py`), więc nigdy nie dotykają prawdziwej tablicy,
+- `daemon/tests/test_docker_core.py` — Docker bez Qt na atrapie Engine API (`fake_docker.py`: prawdziwy socket unix w wątku testu, kształty odpowiedzi jak w Dockerze 29, odpowiedzi chunked pocięte w środku znaków, strumień `/events`, logi w ramkach, zapis każdego zapytania): `DOCKER_HOST` (unix, tcp/ssh → `unsupported`), brak socketu, odmowa, brak uprawnień, zawieszony Docker; grupy compose, repozytorium z worktree (także spoza katalogu projektów), „bez compose”, testcontainers, kod 137 i reguły awarii (0, 143, OOM, `dead`, restart, `created` po nieudanym starcie, 137 po `Stop` z Tide), porty bez powtórek i `likelyHttp`, czasy z nanosekundami, `inspect` tylko po zmianie stanu (nie tekstu „Up 3 hours”) i pełne odświeżenie; panele WWW baz w `likelyHttp`; kategorie dysku (nic w użyciu), wolumeny anonimowe zatrzymanych, prune tylko z listy id w bezpiecznej kolejności (regresja: `{"volumes": "false"}` bez żadnego wywołania), 404 z prune, dokładne metody, ścieżki i zapytania akcji, `Remove` działającego bez wywołania, kolejność zależności w projekcie, częściowa porażka `restart` projektu, limity pojedynczych akcji poniżej 25 s, jeden termin na zapytanie (odpowiedź sącząca się po bajcie) i na akcję (po terminie bez wywołań), znacznik „zatrzymany z Tide” przy odświeżeniu w trakcie `stop` i przy równoczesnym dopisywaniu, demultipleksowanie logów (stderr, TTY, linie i znaki UTF-8 rozcięte między ramkami, ucięta ostatnia ramka, zepsuty nagłówek w środku), statystyki równolegle z łącznym limitem czasu, filtr zdarzeń,
+- `daemon/tests/test_docker_monitor.py` — `DockerMonitor` w pętli Qt na atrapie: zdarzenie → `Changed`, zdarzenia `exec_*` bez odświeżenia, seria zdarzeń w jednym odświeżeniu, zerwany strumień i ponowne połączenie, odpytywanie bez Dockera aż się pojawi, zniknięcie Dockera, pamięć `Stats`/`Disk` (bez wyniku sprzed akcji), odświeżenie bez zmiany bez `Changed`, zadania `Prune`/`GroupAction` z `actionFinished` i odmowa bez zadania, karty z logami i powłoką (argv z ID i `-H` w pliku zadania, osobny katalog każdej karty — dwa szybkie `OpenShell` nie zamieniają się kontenerami, `workdir` w katalogu domowym, wycofanie przy nieudanej Konsoli), akcja czekająca w zajętej puli dostaje odmowę na czas,
+- `daemon/tests/test_docker_dbus.py` — `/Docker` na prywatnej magistrali z prawdziwą usługą i atrapą Engine API: introspekcja, `Snapshot`, sygnał `Changed` po zdarzeniu, akcje z dokładnymi wywołaniami, zadania `GroupAction` i `Prune` z sygnałem `ActionFinished` (tylko wskazana kategoria, odmowy bez zadania i bez wywołań), `Logs`, `Stats`, `Disk`, `OpenLogs`/`OpenShell` aż do atrapy `docker` uruchomionej przez `launch.py` w atrapie Konsoli (w katalogu domowym), niedostępny socket, `--no-docker`. Testy nigdy nie dotykają prawdziwego Dockera: `daemon/tests/__init__.py` i usługi w testach (`privatebus.py`) dostają nieistniejący `DOCKER_HOST`,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
 Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawierają prawdziwych rozmów.

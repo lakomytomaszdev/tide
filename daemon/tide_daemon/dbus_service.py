@@ -69,6 +69,37 @@ Obiekt /Coordination, interfejs org.tide.Daemon.Coordination (koordynatorzy, tic
 Obiekt /Limits, interfejs org.tide.Daemon.Limits (prognoza Limitów AI z historii odczytów):
 - Forecast() -> s            JSON {available, error, services: {usługa: {session|weekly: prognoza}}},
 - sygnał Changed()           prognoza albo dostępność usługi Limity AI się zmieniła.
+
+Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git, board/):
+- Snapshot() -> s            JSON: kolumny, projekty, tagi, karty (z tagami projektu), katalog, ostatni
+                             commit, błędy plików, repozytoria do dodania jako projekty,
+- CreateCard(s json) -> s    nowa karta {title, description, project|repo, tags, column, note, …} → {ok, id, commitError},
+- UpdateCard(s id, s json) -> s  zmiana pól karty (bez kolumny i kolejności) → {ok, id, changed, commitError},
+- MoveCard(s id, s column, i order) -> s  ręczna kolumna i pozycja w niej (od 0, -1 = koniec),
+- UpsertProject(s json) -> s nowy albo zmieniony projekt → {ok, slug, changed, commitError},
+- UpsertTag(s json) -> s     nowy albo zmieniony tag (także newName — zmiana nazwy w kartach) → {ok, name, changed, commitError},
+- RenderFlow(s id, s mode) -> s  polecenie trybu dla karty: {ok, text, mode, tool, branch, docsDir, …},
+- sygnał Changed()           tablica się zmieniła (nasz zapis albo zmiana z zewnątrz).
+Każda zmiana to commit w repozytorium tablicy (nieudany commit: ok z opisem w commitError, commit
+czeka); błąd to JSON {ok: false, error: <kod>, message: <tekst po polsku>} jak w /Tasks — dane
+sprawdzamy przed zapisem, więc złe żądanie nie zostawia pliku ani commita.
+Obiekt /Docker, interfejs org.tide.Daemon.Docker (kontenery przez Docker Engine API):
+- Snapshot() -> s            JSON {available, state, error, host, engine, live, summary, groups},
+- Stats() -> s               CPU i pamięć działających kontenerów (na żądanie, pamięć 5 s; odpowiedź po odczycie),
+- Disk() -> s                kategorie porządków z miejscem do odzyskania (odpowiedź po odczycie),
+- Start(s id), Stop(s id), Restart(s id), Remove(s id) -> s
+                             JSON {ok, error, id, name, note}; Remove tylko zatrzymanego, bez wolumenów,
+- GroupAction(s project, s action) -> s
+                             zadanie w tle: start/stop/restart wszystkich kontenerów projektu compose; od razu
+                             {ok, error, job}, wynik {ok, error, job, project, done, failed} sygnałem ActionFinished,
+- Prune(s categories) -> s   zadanie w tle dla listy JSON ["cache", "images", "volumes", "stopped"]; od razu
+                             {ok, error, job} (zła lista — odmowa bez zadania), wynik {ok, error, job,
+                             reclaimedBytes, details} sygnałem ActionFinished; tylko wymienione kategorie,
+- Logs(s id, i lines) -> s   ostatnie linie logów {ok, error, lines: [{text, stderr}]},
+- OpenLogs(s id) -> b        `docker logs -f --tail 200 <nazwa>` w karcie Konsoli,
+- OpenShell(s id) -> b       powłoka w działającym kontenerze (bash albo sh) w karcie Konsoli,
+- sygnał Changed()           migawka kontenerów się zmieniła,
+- sygnał ActionFinished(s job, s json)  koniec zadania Prune albo GroupAction.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
@@ -88,6 +119,10 @@ COORDINATION_PATH = "/Coordination"
 COORDINATION_IFACE = "org.tide.Daemon.Coordination"
 LIMITS_PATH = "/Limits"
 LIMITS_IFACE = "org.tide.Daemon.Limits"
+BOARD_PATH = "/Board"
+BOARD_IFACE = "org.tide.Daemon.Board"
+DOCKER_PATH = "/Docker"
+DOCKER_IFACE = "org.tide.Daemon.Docker"
 
 AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
   <method name="Sessions"><arg name="json" type="s" direction="out"/></method>
@@ -195,6 +230,79 @@ COORDINATION_XML = f"""<interface name="{COORDINATION_IFACE}">
 
 LIMITS_XML = f"""<interface name="{LIMITS_IFACE}">
   <method name="Forecast"><arg name="json" type="s" direction="out"/></method>
+  <signal name="Changed"/>
+</interface>"""
+
+_ID_ACTION = """  <method name="{name}">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>"""
+
+DOCKER_XML = f"""<interface name="{DOCKER_IFACE}">
+  <method name="Snapshot"><arg name="json" type="s" direction="out"/></method>
+  <method name="Stats"><arg name="json" type="s" direction="out"/></method>
+  <method name="Disk"><arg name="json" type="s" direction="out"/></method>
+{chr(10).join(_ID_ACTION.format(name=n) for n in ("Start", "Stop", "Restart", "Remove"))}
+  <method name="GroupAction">
+    <arg name="project" type="s" direction="in"/>
+    <arg name="action" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="Prune">
+    <arg name="categories" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="Logs">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="lines" type="i" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="OpenLogs">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="ok" type="b" direction="out"/>
+  </method>
+  <method name="OpenShell">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="ok" type="b" direction="out"/>
+  </method>
+  <signal name="Changed"/>
+  <signal name="ActionFinished">
+    <arg name="job" type="s"/>
+    <arg name="json" type="s"/>
+  </signal>
+</interface>"""
+
+
+BOARD_XML = f"""<interface name="{BOARD_IFACE}">
+  <method name="Snapshot"><arg name="json" type="s" direction="out"/></method>
+  <method name="CreateCard">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="UpdateCard">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="MoveCard">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="column" type="s" direction="in"/>
+    <arg name="order" type="i" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="UpsertProject">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="UpsertTag">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="RenderFlow">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="mode" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <signal name="Changed"/>
 </interface>"""
 
@@ -450,8 +558,131 @@ class CoordinationAdaptor(QDBusAbstractAdaptor):
         self.monitor.refresh(force_tracker=bool(force))
 
 
+@pyqtClassInfo("D-Bus Interface", BOARD_IFACE)
+@pyqtClassInfo("D-Bus Introspection", BOARD_XML)
+class BoardAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, monitor):
+        super().__init__(parent)
+        self.monitor = monitor
+        monitor.changed.connect(self.Changed)
+
+    @pyqtSlot(result=str)
+    def Snapshot(self) -> str:
+        return self.monitor.snapshot_json()
+
+    @pyqtSlot(str, result=str)
+    def CreateCard(self, request: str) -> str:
+        return self.monitor.create_card(request)
+
+    @pyqtSlot(str, str, result=str)
+    def UpdateCard(self, card_id: str, request: str) -> str:
+        return self.monitor.update_card(card_id, request)
+
+    @pyqtSlot(str, str, int, result=str)
+    def MoveCard(self, card_id: str, column: str, order: int) -> str:
+        return self.monitor.move_card(card_id, column, order)
+
+    @pyqtSlot(str, result=str)
+    def UpsertProject(self, request: str) -> str:
+        return self.monitor.upsert_project(request)
+
+    @pyqtSlot(str, result=str)
+    def UpsertTag(self, request: str) -> str:
+        return self.monitor.upsert_tag(request)
+
+    @pyqtSlot(str, str, result=str)
+    def RenderFlow(self, card_id: str, mode: str) -> str:
+        return self.monitor.render_flow(card_id, mode)
+
+
+
+@pyqtClassInfo("D-Bus Interface", DOCKER_IFACE)
+@pyqtClassInfo("D-Bus Introspection", DOCKER_XML)
+class DockerAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+    ActionFinished = pyqtSignal(str, str)
+
+    def __init__(self, parent: QObject, monitor, bus: QDBusConnection):
+        super().__init__(parent)
+        self.monitor = monitor
+        self.bus = bus
+        monitor.changed.connect(self.Changed)
+        monitor.actionFinished.connect(self.ActionFinished)
+
+    def _delayed(self, message: QDBusMessage, name: str):
+        # Engine API odpowiada z wątku roboczego (stop czeka do 10 s) — odpowiedź D-Bus później, w terminie
+        # REPLY_BUDGET (20 s) od wywołania, poniżej domyślnego limitu klienta 25 s (docker/engine.py).
+        # Dłuższe prace to zadania.
+        message.setDelayedReply(True)
+        request = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if not self.bus.send(request.createReply([text])):
+                print(f"tide-daemon: nie udało się odesłać wyniku Docker.{name}", flush=True)
+
+        return reply
+
+    @pyqtSlot(result=str)
+    def Snapshot(self) -> str:
+        return self.monitor.snapshot_json()
+
+    @pyqtSlot(QDBusMessage, result=str)
+    def Stats(self, message: QDBusMessage) -> str:
+        self.monitor.stats(self._delayed(message, "Stats"))
+        return ""
+
+    @pyqtSlot(QDBusMessage, result=str)
+    def Disk(self, message: QDBusMessage) -> str:
+        self.monitor.disk(self._delayed(message, "Disk"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Start(self, ident: str, message: QDBusMessage) -> str:
+        self.monitor.action(ident, "start", self._delayed(message, "Start"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Stop(self, ident: str, message: QDBusMessage) -> str:
+        self.monitor.action(ident, "stop", self._delayed(message, "Stop"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Restart(self, ident: str, message: QDBusMessage) -> str:
+        self.monitor.action(ident, "restart", self._delayed(message, "Restart"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Remove(self, ident: str, message: QDBusMessage) -> str:
+        self.monitor.remove(ident, self._delayed(message, "Remove"))
+        return ""
+
+    @pyqtSlot(str, str, result=str)
+    def GroupAction(self, project: str, action: str) -> str:
+        return self.monitor.group_action(project, action)
+
+    @pyqtSlot(str, result=str)
+    def Prune(self, categories: str) -> str:
+        return self.monitor.prune(categories)
+
+    @pyqtSlot(str, int, QDBusMessage, result=str)
+    def Logs(self, ident: str, lines: int, message: QDBusMessage) -> str:
+        self.monitor.logs(ident, lines, self._delayed(message, "Logs"))
+        return ""
+
+    @pyqtSlot(str, result=bool)
+    def OpenLogs(self, ident: str) -> bool:
+        return self.monitor.open_logs(ident)
+
+    @pyqtSlot(str, result=bool)
+    def OpenShell(self, ident: str) -> bool:
+        return self.monitor.open_shell(ident)
+
+
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
-             limits=None, tasks=None, coordination=None) -> QObject:
+             limits=None, tasks=None, coordination=None, board=None,
+             docker=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -491,6 +722,16 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.coordination.adaptor = CoordinationAdaptor(holder.coordination, coordination)
         if not bus.registerObject(COORDINATION_PATH, holder.coordination):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {COORDINATION_PATH}")
+    if board is not None:
+        holder.board = QObject(holder)
+        holder.board.adaptor = BoardAdaptor(holder.board, board)
+        if not bus.registerObject(BOARD_PATH, holder.board):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {BOARD_PATH}")
+    if docker is not None:
+        holder.docker = QObject(holder)
+        holder.docker.adaptor = DockerAdaptor(holder.docker, docker, bus)
+        if not bus.registerObject(DOCKER_PATH, holder.docker):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {DOCKER_PATH}")
     if not bus.registerService(SERVICE):
         raise RuntimeError(f"nazwa {SERVICE} jest już zajęta (działa inna kopia usługi?)")
     return holder
