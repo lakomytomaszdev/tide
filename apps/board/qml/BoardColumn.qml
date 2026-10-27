@@ -101,7 +101,8 @@ Rectangle {
 
     implicitHeight: content.implicitHeight + 20
     radius: 16
-    color: Tide.Theme.alpha(Tide.Tokens.backgroundPanel, compact ? 0.35 : 0.55)
+    // Wiersz na projekt: komórki spokojniejsze niż pełne kolumny, żeby puste nie dominowały.
+    color: Tide.Theme.alpha(Tide.Tokens.backgroundPanel, compact || !showHeader ? 0.35 : 0.55)
     border.width: hovered ? 1 : 0
     border.color: Tide.Theme.alpha(Tide.Tokens.accent, 0.45)
     opacity: dragging && !manual ? 0.55 : 1
@@ -288,6 +289,12 @@ Rectangle {
                     Layout.fillWidth: true
                 }
             }
+        }
+
+        // Bez przewijania (wiersz na projekt) komórka bywa wyższa niż karty — karty zostają u góry.
+        Item {
+            visible: !columnRoot.fill
+            Layout.fillHeight: true
         }
     }
 
