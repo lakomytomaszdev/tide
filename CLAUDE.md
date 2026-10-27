@@ -26,7 +26,8 @@ Single-context: `CONTEXT.md` i `docs/adr/` w katalogu głównym. See `docs/agent
 Standard: `~/DevWorkspace/plasma-tide/docs/agent-plan-standard.md`.
 
 1. Sesja koordynująca, która dzieli pracę na tickety, prowadzi plan `docs/agents/plans/YYYY-MM-DD-<slug>.md`, commitowany razem z pracą albo osobnym commitem `docs(plan): …`.
-2. Frontmatter: `tide-plan: 1`, `title`, `tracker: local`, `tracker-url` i `tracker-project` puste, `ticket-prefix: TIDE`, `coordinator` (`claude`|`codex`), `session` (ID sesji, jeśli znane), `status` (`active`|`paused`|`done`), `updated` (czas ISO 8601).
+2. Frontmatter: `tide-plan: 1`, `title`, `tracker: local`, `tracker-url` i `tracker-project` puste, `ticket-prefix: PT`, `coordinator` (`claude`|`codex`), `session` (ID sesji, jeśli znane), `status` (`active`|`paused`|`done`), `updated` (czas ISO 8601).
 3. Tabela `| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |`; `Stan` ∈ `todo`, `w-toku`, `review`, `czeka`, `gotowe`, `odrzucone`. Tabelę i `updated` aktualizuj przy każdym delegowaniu, wyniku, review i pytaniu do użytkownika.
-4. Delegowanie: opis/tytuł subagenta zaczyna się od ID ticketu (`TIDE-7: implement …`, `TIDE-7: review`); subagent Codex ma ID ticketu w zadaniu i w nickname. Gałąź zawiera ID małymi literami (`feat/tide-7-…`). Pytanie do użytkownika wymienia ID ticketu.
-5. Projekt nie ma zewnętrznego trackera: ID ticketów nadaje plan (`TIDE-1`, `TIDE-2`, …), a plan jest źródłem stanu dla tablicy Tide i porannego raportu. GitHub Issues (sekcja „Issue tracker” wyżej) nie są źródłem planu.
+4. Delegowanie: opis/tytuł subagenta zaczyna się od ID ticketu (`PT-7: implement …`, `PT-7: review`); subagent Codex ma ID ticketu w zadaniu i w nickname. Gałąź zawiera ID małymi literami (`feat/pt-7-…`). Pytanie do użytkownika wymienia ID ticketu.
+5. Projekt nie ma zewnętrznego trackera: ID ticketów nadaje plan (`PT-1`, `PT-2`, …), numeracja jest ciągła we wszystkich planach repozytorium (nowy numer = największy istniejący + 1, nowy plan nie zaczyna od 1), a plan jest źródłem stanu dla tablicy Tide i porannego raportu. GitHub Issues (sekcja „Issue tracker” wyżej) nie są źródłem planu.
+6. Projekt `TIDE` w YouTracku to wyłącznie archiwum zrobionej pracy (TIDE-1…31, 26–27.10.2026), nie źródło planu. Prefiksu `TIDE` nie używamy w planach — to klucz projektu w YouTracku (reguła „jedno źródło numerów” w standardzie).

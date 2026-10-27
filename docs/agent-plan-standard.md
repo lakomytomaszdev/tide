@@ -29,7 +29,7 @@ Płaskie pary `klucz: wartość` (YAML bez zagnieżdżeń i list), pierwsza lini
 | `tracker` | `youtrack` \| `local` \| `none` | skąd są tickety (niżej) |
 | `tracker-url` | adres albo pusty | dla `youtrack`, np. `http://10.20.1.159:8111` |
 | `tracker-project` | klucz albo pusty | projekt w trackerze, np. `LOG`, `LEGAL`, `APP5` |
-| `ticket-prefix` | wielkie litery | prefiks ID ticketów w tym planie, np. `TOM`, `LA`, `TIDE` |
+| `ticket-prefix` | wielkie litery | prefiks ID ticketów w tym planie, np. `LOG`, `APP5`, `PT` |
 | `coordinator` | `claude` \| `codex` | narzędzie sesji koordynującej |
 | `session` | ID sesji albo pusty | ID sesji koordynatora (Claude Code: nazwa pliku dziennika, Codex: ID wątku), jeśli znane |
 | `status` | `active` \| `paused` \| `done` | stan całego planu |
@@ -39,10 +39,31 @@ Płaskie pary `klucz: wartość` (YAML bez zagnieżdżeń i list), pierwsza lini
 
 - `youtrack` — tickety żyją w YouTracku (`tracker-url`, `tracker-project`); plan wskazuje, które
   z nich są w tym ciągu pracy, a Tide dociąga z YouTracka (tylko odczyt) tytuły, stany i odnośniki.
-- `local` — **nie ma zewnętrznego trackera**: ID ticketów nadaje plan (`TIDE-1`, `TIDE-2`, …), a plan
+- `local` — **nie ma zewnętrznego trackera**: ID ticketów nadaje plan (`PT-1`, `PT-2`, …), a plan
   jest źródłem stanu dla tablicy Tide i raportu porannego. `tracker-url` i `tracker-project` puste.
 - `none` — praca bez śledzenia ticketów (np. jednorazowe zadanie). Tabela może być pusta albo
   zawierać zwykłe kroki; Tide pokazuje je, ale niczego nie dopasowuje do trackera.
+
+## Numery ticketów: jedno źródło
+
+Jeden numer to zawsze jedno zadanie — w całym repozytorium i w trackerze. Dlatego:
+
+1. **Jedno źródło numerów na repozytorium.** Gdy repozytorium ma projekt w YouTracku, plan ma
+   `tracker: youtrack`, a `ticket-prefix` jest równy `tracker-project`: ID w planie to dokładnie klucze
+   z YouTracka. Ticket najpierw zakładasz w YouTracku, dopiero potem wpisujesz go do planu. Nowe plany
+   nie używają aliasów (np. `LA-035` zamiast `LEGAL-35`); stare aliasy działają tylko przez mapę
+   migracji (`docs/agents/youtrack-migration/`) do czasu przejścia.
+2. **Prefiks lokalny jest jeden i wolny.** Przy `tracker: local` prefiks jest jeden dla całego
+   repozytorium (zapisany w CLAUDE.md/AGENTS.md) i nie może być kluczem żadnego projektu w YouTracku
+   (sprawdź listę projektów — tylko odczyt).
+3. **Numeracja lokalna jest ciągła w repozytorium.** Nowy numer = największy numer z tym prefiksem
+   we wszystkich planach w `docs/agents/plans/` (także zakończonych i jeszcze niezacommitowanych) + 1.
+   Nowy plan nie zaczyna od 1, a numerów nie używa się ponownie, także po `odrzucone`.
+4. **Zanim założysz projekt w trackerze albo zmienisz prefiks**, sprawdź, czy klucz nie jest już
+   używany w planach repozytorium ani w trackerze. Przy kolizji zatrzymaj się i zapytaj użytkownika.
+5. Tide sprawdza to samo i pokazuje ostrzeżenie na tablicy Sesje i w raporcie: ten sam ID z różnymi
+   tytułami w dwóch planach, prefiks lokalny równy kluczowi projektu w YouTracku, prefiks planu
+   `youtrack` różny od `tracker-project` bez mapy migracji.
 
 ## Tabela
 
