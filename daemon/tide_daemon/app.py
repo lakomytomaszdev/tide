@@ -9,6 +9,7 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [
                                [--no-tasks]
                                [--print-coordination] [--coordination-days N] [--no-coordination]
                                [--no-youtrack] [--print-board] [--board-dir DIR] [--no-board]
+                               [--print-docker | --no-docker]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
@@ -40,6 +41,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [
 --print-board      jednorazowo: migawka tablicy pracy jako JSON (tylko odczyt, niczego nie zakłada), bez D-Bus,
 --board-dir        repozytorium tablicy pracy (domyślnie $TIDE_BOARD_DIR albo ~/DevWorkspace/tide-board),
 --no-board         bez obiektu /Board (tablica pracy: karty, projekty, tagi).
+--print-docker     jednorazowo: migawka kontenerów i miejsce na dysku jako JSON (tylko odczyt Engine API), bez D-Bus,
+--no-docker        bez obiektu /Docker (kontenery, akcje, porządki; socket z $DOCKER_HOST albo /var/run/docker.sock).
 """
 import argparse
 import json
@@ -89,6 +92,8 @@ def parse_args(argv):
     parser.add_argument("--print-board", action="store_true")
     parser.add_argument("--board-dir")
     parser.add_argument("--no-board", action="store_true")
+    parser.add_argument("--print-docker", action="store_true")
+    parser.add_argument("--no-docker", action="store_true")
     parser.add_argument("--print", dest="print_once", action="store_true")
     parser.add_argument("--print-worktrees", action="store_true")
     parser.add_argument("--report", action="store_true")
@@ -138,6 +143,10 @@ def main(argv=None) -> int:
         index = worktrees.SessionIndex(args.claude_dir, args.codex_dir)
         print(json.dumps(worktrees.scan(args.workspace, cwds, args.worktree_depth, now=now, sessions=index),
                          ensure_ascii=False, indent=2))
+        return 0
+
+    if args.print_docker:
+        print(json.dumps(docker_once(args, clock), ensure_ascii=False, indent=2))
         return 0
 
     if args.print_limits:
@@ -197,6 +206,7 @@ def main(argv=None) -> int:
     limits = None if args.no_limits else start_limits(app, args, clock)
     tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
     board = None if args.no_board else start_board(app, args, trees)
+    docker = None if args.no_docker else start_docker(app, args, clock, launchers)
     annotators = [a for a in (tasks.annotate if tasks is not None else None,
                               coordination.annotate if coordination is not None else None) if a]
     if annotators:
@@ -206,7 +216,8 @@ def main(argv=None) -> int:
         monitor.annotate = annotate  # znacznik „nowe” (/Tasks) i postęp koordynatora (/Coordination)
     try:
         holder = dbus_service.register(monitor, trees, idle=idle, reports=report,  # noqa: F841 — musi żyć do końca
-                                       limits=limits, tasks=tasks, coordination=coordination, board=board)
+                                       limits=limits, tasks=tasks, coordination=coordination, board=board,
+                                       docker=docker)
     except RuntimeError as exc:
         print(f"tide-daemon: {exc}", file=sys.stderr, flush=True)
         return 1
@@ -237,6 +248,8 @@ def main(argv=None) -> int:
         board.start()  # zmiany z czasu, gdy usługa nie działała, i obserwacja katalogu tablicy
     if coordination is not None:
         coordination.start()  # pierwszy odczyt dzienników koordynatorów w tle, chwilę po starcie
+    if docker is not None:
+        docker.start()  # migawka i strumień zdarzeń w tle; brak Dockera to stan, nie błąd usługi
 
     # Stan agentów według katalogu dla promptu powłoki (cwdstate.py) — plik, nie D-Bus, bo prompt
     # czyta go przy każdym znaku zachęty.
@@ -281,6 +294,8 @@ def main(argv=None) -> int:
         coordination.stop()
     if board is not None:
         board.stop()
+    if docker is not None:
+        docker.stop()
     if marker is not None:
         marker.clear()  # karty wracają do swoich tytułów i kolorów, gdy usługa się kończy
     cwd_state.clear()  # prompt nie pokazuje stanu agentów, których nikt już nie śledzi
@@ -467,6 +482,29 @@ def start_board(app, args, trees):
     board = BoardMonitor(board_store(args), repos_source=repos, parent=app)
     trees.changed.connect(board.publish)  # nowe repozytorium w katalogu projektów
     return board
+def docker_once(args, clock) -> dict:
+    """--print-docker: migawka kontenerów i miejsce na dysku — wyłącznie zapytania GET do Engine API."""
+    from .docker import DockerEngine
+    engine = DockerEngine(workspace=args.workspace, clock=clock)
+    snapshot = engine.refresh()
+    disk = engine.disk() if snapshot.get("available") else {"ok": False, "error": snapshot.get("error", "")}
+    return {"snapshot": snapshot, "disk": disk}
+
+
+def start_docker(app, args, clock, launchers):
+    """Obszar /Docker: kontenery przez Engine API (docker/, docker_monitor.py); logi i powłoka w karcie
+    Konsoli tym samym mechanizmem co „Nowe zadanie”."""
+    from .docker import DockerEngine
+    from .docker_monitor import DockerMonitor
+    from .tasks.core import TaskFiles, runtime_dir
+    from .tasks.terminal import KonsoleWindows, TaskTerminal
+    probe = activate = None
+    if not args.no_processes:
+        from . import processes, windows
+        probe, activate = processes.probe, windows.activate
+    terminal = TaskTerminal(launchers, KonsoleWindows(), probe=probe, activate=activate)
+    return DockerMonitor(DockerEngine(workspace=args.workspace, clock=clock), terminal=terminal,
+                         files=TaskFiles(runtime_dir()), launchers=launchers, parent=app)
 
 
 def start_idle(app, args):
