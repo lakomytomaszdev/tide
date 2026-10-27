@@ -84,6 +84,12 @@ QtObject {
         return ""
     }
 
+    // Sesja na modelu lokalnym (tide-daemon: localModel z dziennika sesji): „lokalny · qwen3-coder:30b”.
+    function localNote(session) {
+        if (!session || session.localModel !== true) return ""
+        return session.model ? "lokalny · " + session.model : "lokalny"
+    }
+
     // „15 do sprzątnięcia”, a gdy nie ma czego sprzątać — „nic do sprzątnięcia”.
     function cleanable(n) {
         return n > 0 ? n + " do sprzątnięcia" : "nic do sprzątnięcia"

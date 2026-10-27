@@ -1,7 +1,8 @@
 """Okno „Tide: nowe zadanie”.
 
 - pakiet: launcher, QML i biblioteka z Tokens.qml; bez kolorów wpisanych na sztywno,
-- QML (qml6, offscreen) na przykładowych danych: zapamiętany wybór, szukanie repozytoriów bez
+- QML (qml6, offscreen) na przykładowych danych: zapamiętany wybór, model chmura/lokalny (opcja
+  z roli `agent` w /Models: włączona, wyłączona z powodem, zapamiętany „Lokalny” tylko przy dostępnym), szukanie repozytoriów bez
   polskich znaków, co blokuje start, propozycja gałęzi i ręczna zmiana, prośba dla usługi,
 - launcher: zrzut okna z --data (bez D-Bus) w kilku stanach,
 - zrzuty ekranu: kopie przeciągniętych plików, obraz ze schowka, „Zrób zrzut” przez atrapę
@@ -168,7 +169,7 @@ Item {
         self.assertEqual(warned(log, "BRANCH"), "codex/popraw-liczenie||true")
         self.assertEqual(json.loads(warned(log, "REQUEST")), {
             "repoPath": "/w/legal-agents", "tool": "codex", "prompt": 'Popraw "liczenie"\nw raporcie',
-            "newWorktree": True, "branch": "codex/popraw-liczenie", "images": ["/t/zrzut-1.png"]})
+            "newWorktree": True, "branch": "codex/popraw-liczenie", "images": ["/t/zrzut-1.png"], "model": "cloud"})
         self.assertEqual(warned(log, "EDITED"), "fix/moja|/w/legal-agents/.claude/worktrees/fix-moja")
         self.assertEqual(warned(log, "MAIN"), "false||Agent pracuje w głównym katalogu na feat/x|false")
         self.assertEqual(warned(log, "DIRTY"),
@@ -179,6 +180,148 @@ Item {
         self.assertEqual(warned(log, "OUTCOME"), "Otworzy się nowa karta Konsoli z Codexem w tym worktree.|"
                                                  "Otworzy się nowa karta Konsoli z Claude Code w plasma-tide.")
         self.assertNotEqual(warned(log, "SUGGESTED"), "0")
+
+
+def models_status(**role_changes) -> dict:
+    """Status() obiektu /Models z rolą `agent` (bez prawdziwego serwera)."""
+    role = {"endpoint": "local", "model": "qwen3-coder:30b", "ctx": None, "installed": True, "available": True,
+            "error": ""}
+    role.update(role_changes)
+    return {"checked": True, "default": "local",
+            "endpoints": {"local": {"name": "local", "url": "http://127.0.0.1:11434", "kind": "ollama", "online": True},
+                          "mac": {"name": "mac", "url": "http://mac-studio:11434", "kind": "ollama", "online": False}},
+            "roles": {"agent": role}}
+
+
+@unittest.skipUnless(shutil.which("qml6"), "brak qml6")
+class LocalModelQmlTest(unittest.TestCase):
+    def test_local_option(self):
+        cases = {
+            "OK": models_status(),
+            "MAC": {**models_status(endpoint="mac"), "endpoints": {"mac": {"url": "http://mac-studio:11434",
+                                                                           "online": True}}},
+            "UNSET": {**models_status(), "roles": {}},
+            "OFFLINE": models_status(endpoint="mac", available=False, installed=None),
+            "MISSING": models_status(installed=False, available=False),
+            "ROLEERR": models_status(error="rola „agent”: punkt „mac” jest pominięty w models.json", available=False),
+            "PENDING": {**models_status(available=False), "checked": False},
+        }
+        with tempfile.TemporaryDirectory(prefix="tide-nt-local-") as tmp:
+            pkg = stage(os.path.join(tmp, "pkg"))
+            harness = os.path.join(pkg, "qml", "Local.qml")
+            data = sample()
+            data["defaults"]["model"] = "local"
+            with open(harness, "w", encoding="utf-8") as fh:
+                fh.write("""import QtQuick
+import "newtask.js" as Logic
+Item {
+    id: root
+    width: 860; height: 850
+    property var requests: []
+    property int modelsAsked: 0
+    readonly property var sample: %(data)s
+    readonly property var cases: %(cases)s
+    function line(name, s) {
+        const o = Logic.localOption(s)
+        console.warn(name + " " + [o.enabled, o.label, o.reason, o.hint].join("|"))
+    }
+    NewTaskPage {
+        id: page
+        anchors.fill: parent
+        nowTs: %(now)d
+        repos: root.sample.repos
+        defaults: root.sample.defaults
+        modelsStatus: ({ checked: false, roles: {}, endpoints: {} })
+        suggestion: root.sample.suggestion
+        onStartRequested: request => root.requests.push(JSON.parse(request))
+        onModelsRequested: root.modelsAsked++
+    }
+    Timer {
+        interval: 400; running: true
+        onTriggered: {
+            for (const name in root.cases) root.line(name, root.cases[name])
+            root.line("NOSERVICE", null)
+            console.warn("WAITING " + page.model + "|" + page.rememberedLocal)
+            page.modelsStatus = root.cases.OK
+            console.warn("REMEMBERED " + page.model + "|" + page.rememberedLocal)
+            page.prompt = "Popraw liczenie w raporcie"
+            page.start()
+            console.warn("REQUEST " + JSON.stringify(root.requests[0]))
+            console.warn("NOTE " + page.modelNote)
+            page.tool = "claude"
+            console.warn("NOTECLAUDE " + page.modelNote)
+            console.warn("OUTCOME " + Logic.outcome(page.repo, page.tool, true, page.localOption))
+            page.modelsStatus = root.cases.MISSING
+            console.warn("BLOCKED " + page.model + "|" + page.blocker + "|" + page.canStart)
+            console.warn("NOTEOFF " + page.modelNote)
+            page.model = "cloud"
+            console.warn("CLOUD " + page.blocker + "|" + page.canStart + "|" + page.modelNote)
+            page.modelsRequested()
+            console.warn("ASKED " + root.modelsAsked)
+            console.warn("EFFECTIVE " + Logic.effectiveModel("local", Logic.localOption(root.cases.OFFLINE)) + "|"
+                         + Logic.effectiveModel("local", Logic.localOption(root.cases.OK)) + "|"
+                         + Logic.effectiveModel("cloud", Logic.localOption(root.cases.OK)))
+            Qt.quit()
+        }
+    }
+}
+""" % {"data": json.dumps(data, ensure_ascii=False), "cases": json.dumps(cases, ensure_ascii=False), "now": NOW})
+            log = run_qml(harness)
+        self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
+        self.assertEqual(warned(log, "OK"), "true|Lokalny: qwen3-coder:30b · ten komputer||false")
+        self.assertEqual(warned(log, "MAC"), "true|Lokalny: qwen3-coder:30b · mac-studio||false")
+        self.assertEqual(warned(log, "UNSET"), "false|Lokalny|Model agenta nie jest ustawiony|true")
+        self.assertEqual(warned(log, "OFFLINE"), "false|Lokalny: qwen3-coder:30b · mac-studio|"
+                                                 "Serwer mac-studio nie odpowiada|true")
+        self.assertEqual(warned(log, "MISSING"), "false|Lokalny: qwen3-coder:30b · ten komputer|"
+                                                 "Modelu qwen3-coder:30b nie ma na serwerze|true")
+        self.assertEqual(warned(log, "ROLEERR"), "false|Lokalny: qwen3-coder:30b · ten komputer|"
+                                                 "rola „agent”: punkt „mac” jest pominięty w models.json|true")
+        self.assertEqual(warned(log, "PENDING"), "false|Lokalny: qwen3-coder:30b · ten komputer|"
+                                                 "Sprawdzam serwer modeli…|false")
+        self.assertEqual(warned(log, "NOSERVICE"), "false|Lokalny|Usługa nie podaje stanu modeli lokalnych|false")
+        self.assertEqual(warned(log, "WAITING"), "cloud|true", "zapamiętany „Lokalny” czeka na odczyt serwera")
+        self.assertEqual(warned(log, "REMEMBERED"), "local|false")
+        self.assertEqual(json.loads(warned(log, "REQUEST"))["model"], "local")
+        self.assertEqual(warned(log, "NOTE"), "Na tym komputerze (8 GB) agent lokalny jest wolny i słaby — "
+                                              "opcja głównie na Maca.")
+        self.assertTrue(warned(log, "NOTECLAUDE").endswith("Konektory claude.ai będą wyłączone."))
+        self.assertEqual(warned(log, "OUTCOME"),
+                         "Otworzy się nowa karta Konsoli z Claude Code na qwen3-coder:30b w tym worktree.")
+        self.assertEqual(warned(log, "BLOCKED"), "local|Model lokalny niedostępny: Modelu qwen3-coder:30b nie ma "
+                                                 "na serwerze|false", "wybrany „Lokalny” nie przechodzi po cichu na chmurę")
+        self.assertEqual(warned(log, "NOTEOFF"), "Modelu qwen3-coder:30b nie ma na serwerze — ustaw w Tide → Modele")
+        self.assertEqual(warned(log, "CLOUD"), "|true|Modelu qwen3-coder:30b nie ma na serwerze — ustaw w Tide → Modele")
+        self.assertEqual(warned(log, "ASKED"), "1")
+        self.assertEqual(warned(log, "EFFECTIVE"), "cloud|local|cloud")
+
+    def test_remembered_local_falls_back_when_unavailable(self):
+        with tempfile.TemporaryDirectory(prefix="tide-nt-local2-") as tmp:
+            pkg = stage(os.path.join(tmp, "pkg"))
+            harness = os.path.join(pkg, "qml", "Local2.qml")
+            data = sample()
+            data["defaults"]["model"] = "local"
+            with open(harness, "w", encoding="utf-8") as fh:
+                fh.write("""import QtQuick
+Item {
+    width: 860; height: 850
+    readonly property var sample: %(data)s
+    NewTaskPage {
+        id: page
+        anchors.fill: parent
+        repos: parent.sample.repos
+        defaults: parent.sample.defaults
+        modelsStatus: %(status)s
+    }
+    Timer {
+        interval: 300; running: true
+        onTriggered: { console.warn("MODEL " + page.model + "|" + page.rememberedLocal); Qt.quit() }
+    }
+}
+""" % {"data": json.dumps(data, ensure_ascii=False),
+       "status": json.dumps(models_status(installed=False, available=False))})
+            log = run_qml(harness)
+        self.assertEqual(warned(log, "MODEL"), "cloud|false")
 
 
 class LauncherTest(unittest.TestCase):
@@ -344,6 +487,16 @@ class BackendOverDbusTest(unittest.TestCase):
         self.assertFalse(backend.busy)
         result = json.loads(results[0])
         self.assertEqual((result["ok"], result["error"]), (False, "protected-branch"))
+        self.assertEqual(gitrepos.branches(self.alpha), ["master"])
+        # Stan modeli z /Models (models.json testów: zamknięty port, bez roli `agent`) i odmowa „Lokalny”.
+        self.assertTrue(wait_until(lambda: (json.loads(backend.modelsJson) or {}).get("roles"), timeout=10))
+        self.assertNotIn("agent", json.loads(backend.modelsJson)["roles"])
+        backend.start(json.dumps({"repoPath": self.alpha, "tool": "codex", "prompt": "Popraw raport", "model": "local",
+                                  "newWorktree": True, "branch": "", "images": []}))
+        self.assertTrue(wait_until(lambda: len(results) > 1, timeout=20))
+        result = json.loads(results[1])
+        self.assertEqual((result["ok"], result["error"]), (False, "local-unset"))
+        self.assertIn("Tide → Modele", result["message"])
         self.assertEqual(gitrepos.branches(self.alpha), ["master"])
 
     def test_second_launch_only_raises_first_window(self):

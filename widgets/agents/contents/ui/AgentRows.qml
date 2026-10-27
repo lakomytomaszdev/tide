@@ -43,11 +43,11 @@ QtObject {
         return tool === "claude" ? "Claude Code" : tool === "codex" ? "Codex" : (tool || "")
     }
     // Druga, wyciszona linia (tylko w popupie): czekający — na co czeka i przy czym; pozostali —
-    // narzędzie, podagenci, gałąź i tytuł rozmowy.
+    // narzędzie, podagenci, model lokalny („lokalny · qwen3-coder:30b”), gałąź i tytuł rozmowy.
     function detailOf(session, state) {
-        // Podagenci zaraz po pierwszej części — przy długiej linii koniec znika pod wielokropkiem.
+        // Podagenci i model lokalny zaraz po pierwszej części — przy długiej linii koniec znika pod wielokropkiem.
         const parts = [state === "waiting" ? Tide.Texts.reasonText(session.reason) : toolName(session.tool),
-                       Tide.Texts.subagentsNote(session)]
+                       Tide.Texts.subagentsNote(session), Tide.Texts.localNote(session)]
         if (state === "waiting") {
             parts.push(session.lastAction)
         } else {
@@ -73,6 +73,8 @@ QtObject {
             deeplink: deeplink,
             // Sesja uruchomiona przed chwilą z okna „Nowe zadanie” (tide-daemon, przez 10 min).
             fresh: s.newTask === true,
+            // Sesja na modelu lokalnym (tekst też w detail) — do testów i czytnika ekranu.
+            local: s.localModel === true,
             buttonText: deeplink ? Tide.Texts.activateButton(s) : "Przejdź",
             // Pełny tekst przejścia (np. „Przejdź do terminala”) dla czytnika ekranu.
             activateText: Tide.Texts.activateButton(s),

@@ -1,10 +1,11 @@
 #!/usr/bin/python3
-"""Okno „Tide: nowe zadanie”: QML (qml/Main.qml) z danymi z tide-daemon (/Tasks) przez D-Bus.
+"""Okno „Tide: nowe zadanie”: QML (qml/Main.qml) z danymi z tide-daemon (/Tasks i /Models) przez D-Bus.
 
 Użycie: /usr/bin/python3 tide-new-task.py [--data PLIK.json] [--grab PLIK.png] [--width N --height N]
                                            [--prompt TEKST] [--error TEKST] [--image PLIK ...] [--no-worktree]
 
---data         stałe dane z pliku zamiast z usługi: {"repos": […], "defaults": {…}, "suggestion": {…}} —
+--data         stałe dane z pliku zamiast z usługi: {"repos": […], "defaults": {…}, "suggestion": {…},
+               "models": <Status() z /Models albo null>} —
                do podglądu i testów; start niczego wtedy nie uruchamia,
 --grab         zapisuje zrzut okna do PNG i kończy (np. z QT_QPA_PLATFORM=offscreen),
 --prompt, --error, --image, --no-worktree
@@ -13,6 +14,11 @@ Użycie: /usr/bin/python3 tide-new-task.py [--data PLIK.json] [--grab PLIK.png] 
 Okno działa w jednym egzemplarzu: rejestruje nazwę org.tide.NewTaskWindow, a kolejne uruchomienie
 (skrót, przycisk w widżecie) prosi pierwsze o pokazanie się i kończy pracę. Identyfikator
 aplikacji (tide-new-task) odpowiada plikowi tide-new-task.desktop.
+
+Model lokalny: okno czyta Status() obiektu /Models (rola `agent`: serwer, model, dostępność) i odświeża
+go po sygnale Changed — opcja „Lokalny” gaśnie z powodem, gdy serwer przestanie odpowiadać. „Ustaw
+w Tide → Modele” otwiera okno Tide na widoku `models` (drugie uruchomienie tide.py prosi działające okno
+o Show("models", "")).
 
 Zrzuty ekranu (wklejone, przeciągnięte, „Zrób zrzut” przez Spectacle) trafiają do własnego katalogu
 zadania w $XDG_DATA_HOME/tide/tasks/<czas>-<los>/ (katalog podaje usługa). Okno zamknięte bez startu
@@ -35,6 +41,8 @@ from PyQt6.QtQml import QQmlApplicationEngine
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_ID = "tide-new-task"
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Tasks", "org.tide.Daemon.Tasks"
+MODELS_PATH, MODELS_IFACE = "/Models", "org.tide.Daemon.Models"
+MODELS_VIEW = "models"
 WINDOW_SERVICE, WINDOW_PATH, WINDOW_IFACE = "org.tide.NewTaskWindow", "/Window", "org.tide.NewTaskWindow"
 SHORTCUT_ACTION = ("kwin", "TideNewAgentTask")
 DEFAULT_SHORTCUT = "Meta+Alt+A"
@@ -46,6 +54,11 @@ IMAGE_BYTES = 20 * 1024 * 1024
 
 def data_home() -> str:
     return os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+
+
+def tide_window_script() -> str:
+    """Zainstalowane okno Tide ($TIDE_WINDOW albo XDG_DATA_HOME/tide/tide-window/tide.py) — jak w usłudze."""
+    return os.environ.get("TIDE_WINDOW") or os.path.join(data_home(), "tide", "tide-window", "tide.py")
 
 
 def shortcut_text(path: str | None = None) -> str:
@@ -138,6 +151,7 @@ class Backend(QObject):
     """Most między QML a tide-daemon (/Tasks): dane jako JSON, akcje i ich wyniki jako sygnały."""
 
     reposChanged = pyqtSignal()
+    modelsChanged = pyqtSignal()
     defaultsChanged = pyqtSignal()
     suggestionChanged = pyqtSignal()
     imagesChanged = pyqtSignal()
@@ -156,6 +170,7 @@ class Backend(QObject):
         self._repos = "[]"
         self._defaults = "{}"
         self._suggestion = "{}"
+        self._models = "null"
         self._available = False
         self._busy = False
         self._pending: set = set()
@@ -167,6 +182,7 @@ class Backend(QObject):
             self._repos = json.dumps(data.get("repos") or [], ensure_ascii=False)
             self._defaults = json.dumps(data.get("defaults") or {}, ensure_ascii=False)
             self._suggestion = json.dumps(data.get("suggestion") or {}, ensure_ascii=False)
+            self._models = json.dumps(data.get("models"), ensure_ascii=False)
             self._available = True
             return
         if bus is None:
@@ -175,6 +191,7 @@ class Backend(QObject):
                                             | QDBusServiceWatcher.WatchModeFlag.WatchForUnregistration, self)
         self._watcher.serviceRegistered.connect(lambda _name: self.refresh())
         self._watcher.serviceUnregistered.connect(lambda _name: self._set_available(False))
+        bus.connect(SERVICE, MODELS_PATH, MODELS_IFACE, "Changed", self._models_changed)
         self.refresh()
 
     # --- właściwości dla QML ------------------------------------------------------------------
@@ -190,6 +207,11 @@ class Backend(QObject):
     @pyqtProperty(str, notify=suggestionChanged)
     def suggestionJson(self) -> str:
         return self._suggestion
+
+    @pyqtProperty(str, notify=modelsChanged)
+    def modelsJson(self) -> str:
+        """Status() z /Models (JSON) albo "null", gdy usługa go nie podaje."""
+        return self._models
 
     @pyqtProperty(str, notify=imagesChanged)
     def imagesJson(self) -> str:
@@ -228,6 +250,18 @@ class Backend(QObject):
             return
         self._call("Defaults", [], self._got_defaults)
         self._call("Repos", [], self._got_repos, timeout=120_000)
+        self._models_changed()
+
+    @pyqtSlot()
+    def _models_changed(self) -> None:
+        if self.bus is not None:
+            self._call("Status", [], self._got_models, path=MODELS_PATH, iface=MODELS_IFACE)
+
+    def _got_models(self, ok: bool, value) -> None:
+        text = value if ok and isinstance(value, str) else "null"
+        if text != self._models:
+            self._models = text
+            self.modelsChanged.emit()
 
     def _got_defaults(self, ok: bool, value) -> None:
         if not ok or not isinstance(value, str):
@@ -277,6 +311,18 @@ class Backend(QObject):
             self.startFinished.emit(value if ok and isinstance(value, str) else "null")
 
         self._call("Start", [request], done, timeout=START_TIMEOUT_MS)
+
+    @pyqtSlot(result=str)
+    def openModels(self) -> str:
+        """Okno Tide na widoku Modele. Zwraca opis problemu albo pusty napis."""
+        script = tide_window_script()
+        if not os.path.isfile(script):
+            return "Okno Tide nie jest zainstalowane (make install-tide-window)"
+        if self.bus is None:
+            return ""  # podgląd — nic nie uruchamiamy
+        ok = QProcess.startDetached("/usr/bin/python3", ["-s", script, "--view", MODELS_VIEW])
+        ok = ok[0] if isinstance(ok, tuple) else ok
+        return "" if ok else "Nie udało się otworzyć okna Tide"
 
     @pyqtSlot()
     def finish(self) -> None:
@@ -378,8 +424,8 @@ class Backend(QObject):
             self._busy = value
             self.busyChanged.emit()
 
-    def _call(self, member: str, args: list, then, timeout: int = 25_000) -> None:
-        message = QDBusMessage.createMethodCall(SERVICE, PATH, IFACE, member)
+    def _call(self, member: str, args: list, then, timeout: int = 25_000, path: str = PATH, iface: str = IFACE) -> None:
+        message = QDBusMessage.createMethodCall(SERVICE, path, iface, member)
         if args:
             message.setArguments(args)
         watcher = QDBusPendingCallWatcher(self.bus.asyncCall(message, timeout), self)
