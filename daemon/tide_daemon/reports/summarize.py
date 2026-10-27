@@ -11,7 +11,8 @@ coordination/describe.py):
 - "claude" — `claude -p` (decyzje 52 i 53, domyślnie Sonnet), jedno wywołanie na raport;
 - "local" — `models.chat(role="summary", schema=…)` (PT-15): model z roli w models.json, schemat
   odpowiedzi w `format`, jedno wywołanie na projekt, bo kontekst roli (8192) nie mieści wszystkich
-  projektów naraz; wejście projektu przycięte do kontekstu (`Model.input_chars`). Tryb lokalny nigdy
+  projektów naraz; wejście projektu przycięte do kontekstu (`Model.input_chars`). Wywołania idą przez
+  kolejkę modeli (models/queue.py) z niskim priorytetem — opisy kart nie czekają na cały raport. Tryb lokalny nigdy
   nie przechodzi do Claude: błąd modelu lokalnego to reguły z informacją „Model lokalny niedostępny —
   opis bez modelu (…)” (`local_note`).
 
@@ -49,8 +50,8 @@ DEFAULT_MODEL = "sonnet"   # decyzja 53: Haiku pisał za płytko
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$")
 CACHE_NAME = "summary.json"
 MODEL_MODES = ("claude", "local")   # tryby z modelem; "rules" i każdy inny — same reguły
-LOCAL_TIMEOUT = 180.0      # s na jedno wywołanie modelu lokalnego (jeden projekt)
-LOCAL_BUDGET = 600.0       # s na wszystkie wywołania lokalne w raporcie; reszta projektów — reguły
+LOCAL_TIMEOUT = 180.0      # s na jedno wywołanie modelu lokalnego (jeden projekt), od jego startu
+LOCAL_BUDGET = 600.0       # s na wszystkie wywołania lokalne w raporcie z czekaniem w kolejce; reszta — reguły
 LOCAL_CTX = 8192           # kontekst przyjmowany, gdy rola go nie podaje (kontekst serwera)
 CHARS_PER_TOKEN = 2.5      # ostrożnie dla polskiego w JSON-ie (tokenizer qwen3)
 OUTPUT_TOKENS = 2048       # zapas kontekstu na odpowiedź o jednym projekcie
@@ -466,9 +467,14 @@ class Model:
         return int(min(cap, chars))
 
     def ask(self, payload: dict, *, system_prompt: str, schema: dict | None = None,
-            timeout: float | None = None) -> str:
+            timeout: float | None = None, priority: int | None = None, wait: float | None = None,
+            deadline: float | None = None) -> str:
         """Tekst odpowiedzi modelu. Failed (Claude) albo Unavailable (model lokalny) przy każdym błędzie;
-        model lokalny nigdy nie woła Claude."""
+        model lokalny nigdy nie woła Claude.
+
+        Tylko model lokalny (kolejka w models.chat): `priority`, `wait` (limit czekania w kolejce)
+        i `deadline` (time.monotonic(), czekanie i wywołanie razem); `timeout` liczy się od startu wywołania.
+        Claude bez zmian — `claude -p` nie idzie przez kolejkę."""
         if self.engine == "claude":
             binary = find_claude(self.env)
             if not binary:
@@ -480,7 +486,8 @@ class Model:
         try:
             answer = models_mod.chat(json.dumps(payload, ensure_ascii=False), role=self.role, system=system_prompt,
                                      schema=schema, timeout=LOCAL_TIMEOUT if timeout is None else timeout,
-                                     config=self.config, cancel=self.cancel)
+                                     config=self.config, cancel=self.cancel, priority=priority, wait=wait,
+                                     deadline=deadline)
         except models_mod.ModelError as exc:
             raise Unavailable(str(exc)) from None
         except Exception as exc:  # przeoczony błąd klienta nie może położyć raportu ani wątku opisów
@@ -527,8 +534,10 @@ def summarize(report, *, mode: str = "rules", model: str = DEFAULT_MODEL, cache_
 
     mode "claude" — model przez `claude -p` (summaryModel), "local" — model lokalny z roli `role`
     (summaryModel pomijany), "rules" i każdy inny — same reguły. Pamięć podręczna w cache_dir.
-    `timeout` — na jedno wywołanie (domyślnie TIMEOUT dla Claude, LOCAL_TIMEOUT dla modelu lokalnego),
-    `budget` — na wszystkie wywołania razem (liczy się przy kilku wywołaniach modelu lokalnego),
+    `timeout` — na jedno wywołanie (domyślnie TIMEOUT dla Claude, LOCAL_TIMEOUT dla modelu lokalnego; dla
+    lokalnego liczony od startu wywołania, bez czekania w kolejce modeli),
+    `budget` — na wszystkie wywołania razem, z czekaniem w kolejce (liczy się przy kilku wywołaniach
+    modelu lokalnego; raport ma w kolejce niski priorytet — opisy kart idą przed nim),
     `cancel` (models.Cancel) — zamykanie usługi: trwające wywołanie lokalne kończy się od razu, kolejnych nie ma."""
     all_facts = standup.facts(report)
     result = {"source": "rules", "engine": "", "model": "", "host": "", "remote": False, "note": "",
@@ -559,10 +568,16 @@ def summarize(report, *, mode: str = "rules", model: str = DEFAULT_MODEL, cache_
                     started = time.monotonic()
                     per_call = timeout if timeout is not None else (TIMEOUT if chosen.engine == "claude"
                                                                     else LOCAL_TIMEOUT)
-                    limit = min(per_call, left)
-                    limit = round(limit) if limit >= 10 else round(limit, 1)  # do komunikatu „nie odpowiedział w N s”
-                    answer = parse_answer(chosen.ask(payload, system_prompt=SYSTEM_PROMPT, schema=SCHEMA,
-                                                     timeout=max(limit, 0.1)))
+                    if local:
+                        # Kolejka modeli: czekanie liczy się do budżetu raportu, a limit wywołania od jego
+                        # startu (najwyżej do końca budżetu) — models.chat z `deadline`.
+                        text = chosen.ask(payload, system_prompt=SYSTEM_PROMPT, schema=SCHEMA, timeout=per_call,
+                                          priority=models_mod.queue.LOW, deadline=deadline)
+                    else:
+                        limit = min(per_call, left)
+                        limit = round(limit) if limit >= 10 else round(limit, 1)  # do komunikatu „nie odpowiedział w N s”
+                        text = chosen.ask(payload, system_prompt=SYSTEM_PROMPT, schema=SCHEMA, timeout=max(limit, 0.1))
+                    answer = parse_answer(text)
                     what = chosen.name if chosen.engine == "claude" else \
                         f"{chosen.name} ({', '.join(names)})"
                     print(f"tide-daemon: raport: podsumowanie {what} w {time.monotonic() - started:.1f} s", flush=True)

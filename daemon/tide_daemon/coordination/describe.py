@@ -11,8 +11,11 @@ i schematem odpowiedzi, wsadowo per koordynator, w wątku roboczym usługi (coor
 nigdy w wątku D-Bus. Tryb z konfiguracji raportu ($XDG_CONFIG_HOME/tide/report.json: `summary`):
 - "claude" — `claude -p` bez narzędzi, --safe-mode, wejście po `strip_secrets`, model `summaryModel`;
 - "local" — model lokalny z roli `describe` w models.json (PT-15), najwyżej LOCAL_BATCH ticketów
-  i tyle faktów, ile mieści kontekst roli; nigdy Claude. Gdy model lokalny zawiedzie, karty tego
-  koordynatora mają reguły i `describeNote` („Model lokalny niedostępny — opis bez modelu (…)”);
+  i tyle faktów, ile mieści kontekst roli; nigdy Claude. Wywołanie idzie przez kolejkę modeli
+  (models/queue.py) z wysokim priorytetem — przed raportem; LOCAL_TIMEOUT liczy się od startu wywołania,
+  a czekanie ma osobny limit LOCAL_WAIT. Gdy model lokalny zawiedzie (też po limicie czekania: „kolejka:
+  czekał N s — serwer zajęty: raport poranny”), karty tego koordynatora mają reguły i `describeNote`
+  („Model lokalny niedostępny — opis bez modelu (…)”);
 - "rules" — same reguły.
 
 Kiedy wołamy model (Describer.due):
@@ -56,7 +59,8 @@ MAX_AGE = 2 * 86400.0   # s bez ruchu, po których koordynator dostaje już tylk
 BATCH = 20              # ticketów w jednym wywołaniu
 TIMEOUT = 150.0         # s na wywołanie
 LOCAL_BATCH = 8         # ticketów w jednym wywołaniu modelu lokalnego (kontekst 8192)
-LOCAL_TIMEOUT = 90.0    # s na wywołanie modelu lokalnego (qwen3:8b: ok. 20 s na 8 ticketów)
+LOCAL_TIMEOUT = 90.0    # s na wywołanie modelu lokalnego od jego startu (qwen3:8b: ok. 20 s na 8 ticketów)
+LOCAL_WAIT = 300.0      # s czekania w kolejce modeli (np. za wywołaniem raportu), potem reguły z powodem
 TICKET_OUTPUT_TOKENS = 180  # zapas kontekstu na opis jednego ticketu
 CACHE_ENTRIES = 3000
 TITLE_MAX, DONE_MAX, NOW_MAX = 110, 260, 260
@@ -313,7 +317,7 @@ class Describer:
     def __init__(self, mode: str = "rules", model: str = summarize.DEFAULT_MODEL, cache_file: str = "",
                  clock=time.time, call=None, home: str = "", env=None, settle: float = SETTLE, gap: float = GAP,
                  retry: float = RETRY, max_age: float = MAX_AGE, timeout: float | None = None, log=None,
-                 role: str = "describe", models_config=None):
+                 role: str = "describe", models_config=None, wait: float = LOCAL_WAIT):
         self.mode = mode if mode in summarize.MODEL_MODES + ("rules",) else "rules"
         self.model = model if summarize.MODEL_RE.match(model or "") else summarize.DEFAULT_MODEL
         self.role = role
@@ -325,6 +329,7 @@ class Describer:
         self.env = env
         self.settle, self.gap, self.retry, self.max_age = settle, gap, retry, max_age
         self.timeout = timeout if timeout is not None else (LOCAL_TIMEOUT if self.mode == "local" else TIMEOUT)
+        self.wait = wait                        # model lokalny: limit czekania w kolejce modeli
         self.log = log or (lambda text: print(f"tide-daemon: koordynacja: {text}", flush=True))
         self.calls = 0                  # ile razy naprawdę wołaliśmy model (diagnostyka, testy)
         self._lock = threading.Lock()
@@ -497,7 +502,8 @@ class Describer:
         if self._stopped:
             raise summarize.Failed("usługa się zamyka")
         try:
-            return model.ask(payload, system_prompt=BOARD_PROMPT, schema=SCHEMA, timeout=self.timeout)
+            return model.ask(payload, system_prompt=BOARD_PROMPT, schema=SCHEMA, timeout=self.timeout,
+                             priority=models_mod.queue.HIGH, wait=self.wait)
         finally:
             self._proc = None
 

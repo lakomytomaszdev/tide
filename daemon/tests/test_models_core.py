@@ -46,7 +46,9 @@ class FakeModelServer(http.server.ThreadingHTTPServer):
 
     Odpowiedź to (kod, obiekt JSON albo surowe bajty[, nagłówki]) albo lista takich krotek — kolejne
     zapytania biorą kolejne pozycje (ostatnia zostaje). Zamiast treści może być funkcja, która sama
-    pisze odpowiedź przez handler (serwer sączący bajty). `delay` opóźnia każdą odpowiedź (limit czasu)."""
+    pisze odpowiedź przez handler (serwer sączący bajty; treść zapytania w `handler.body`). `delay` opóźnia
+    każdą odpowiedź (limit czasu); `serial` — zapytania obsługiwane po jednym, jak Ollama z
+    OLLAMA_NUM_PARALLEL=1 (kolejne czeka na serwerze, aż poprzednie skończy)."""
 
     daemon_threads = True
 
@@ -55,6 +57,8 @@ class FakeModelServer(http.server.ThreadingHTTPServer):
         self.routes = dict(routes)
         self.requests = []
         self.delay = 0.0
+        self.serial = False
+        self.lock = threading.Lock()
 
     @property
     def url(self):
@@ -75,6 +79,13 @@ class FakeModelHandler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
         body = json.loads(raw) if raw else None
+        self.body = body
+        if self.server.serial:
+            with self.server.lock:
+                return self._answer(body)
+        return self._answer(body)
+
+    def _answer(self, body):
         self.server.requests.append({"method": self.command, "path": self.path, "body": body,
                                      "auth": self.headers.get("Authorization")})
         if self.server.delay:
@@ -370,6 +381,7 @@ class OllamaClientTest(unittest.TestCase):
         self.assertEqual((answer.endpoint, answer.model), ("local", "qwen3:8b"))
         metrics = dict(answer.metrics)
         self.assertGreaterEqual(metrics.pop("wallS"), 0)
+        self.assertGreaterEqual(metrics.pop("queueS"), 0)   # czekanie w kolejce modeli — osobno od wywołania
         self.assertEqual(metrics, {"promptTokens": 4512, "outputTokens": 96, "loadS": 1.5, "promptS": 2.0,
                                    "outputS": 2.04})
         [sent] = server.requests
@@ -570,7 +582,7 @@ class OpenAIClientTest(unittest.TestCase):
                                        "default": "lm", "roles": {"summary": "lm:qwen3-8b-mlx"}})
         answer = client.chat("x", role="summary", system="s", schema=SCHEMA, config=cfg)
         self.assertEqual(answer.json(), {"zrobione": []})
-        self.assertEqual({k: v for k, v in answer.metrics.items() if k != "wallS"},
+        self.assertEqual({k: v for k, v in answer.metrics.items() if k not in ("wallS", "queueS")},
                          {"promptTokens": 120, "outputTokens": 7})
         [sent] = server.requests
         self.assertEqual(sent["path"], "/v1/chat/completions")

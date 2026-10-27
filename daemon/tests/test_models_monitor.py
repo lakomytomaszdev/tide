@@ -1,5 +1,6 @@
 """ModelsMonitor w pętli Qt bez D-Bus: odczyt w wątku roboczym, Refresh() w trakcie odczytu (jeszcze jeden
-odczyt zaraz po nim), Changed tylko przy zmianie, błąd odczytu i nieczytelne ustawienia przy starcie.
+odczyt zaraz po nim), Changed tylko przy zmianie, błąd odczytu i nieczytelne ustawienia przy starcie,
+pole `queue` (kolejka modeli z wątków roboczych) i Changed z jej powodu najwyżej raz na odstęp.
 
 Odczyt stanu jest atrapą (funkcja w teście) — żadnej sieci.
 """
@@ -12,6 +13,7 @@ from .privatebus import app, wait_until
 try:
     from tide_daemon import models_monitor
     from tide_daemon.models import config as models_config
+    from tide_daemon.models import queue as models_queue
 except ImportError:  # pragma: no cover — bez PyQt6
     models_monitor = None
 
@@ -35,8 +37,8 @@ class ModelsMonitorTest(unittest.TestCase):
         self.gate.wait(5)
         return state(version)
 
-    def monitor(self, read=None):
-        monitor = models_monitor.ModelsMonitor(read=read or self.read, poll_ms=600_000)
+    def monitor(self, read=None, **kw):
+        monitor = models_monitor.ModelsMonitor(read=read or self.read, poll_ms=600_000, **kw)
         self.addCleanup(monitor.stop)
         changes = []
         monitor.changed.connect(lambda: changes.append(monitor.status_json()))
@@ -85,6 +87,54 @@ class ModelsMonitorTest(unittest.TestCase):
         text = monitor.status_json()
         self.assertIn('"checked": false', text)
         self.assertIn("RuntimeError", text)
+
+    def test_queue_in_status_and_changed_throttled(self):
+        import json
+        import time
+        self.gate.set()
+        queue = models_queue.Queue()
+        monitor, changes = self.monitor(queue=queue, queue_gap_ms=400)
+        monitor.poll()
+        self.assertTrue(wait_until(lambda: len(changes) == 1))
+        self.assertEqual(json.loads(monitor.status_json())["queue"], {"local": {"running": None, "waiting": []}},
+                         "każdy punkt z konfiguracji, bezczynny")
+
+        gate = threading.Event()
+        workers = [threading.Thread(target=lambda: queue.run(lambda: gate.wait(5), endpoint="local", role="summary",
+                                                             model="qwen3:8b")),
+                   threading.Thread(target=lambda: queue.run(lambda: gate.wait(5), endpoint="local", role="describe",
+                                                             model="qwen3:8b"))]
+        workers[0].start()
+        self.assertTrue(wait_until(lambda: queue.snapshot().get("local", {}).get("running")))
+        workers[1].start()
+        self.assertTrue(wait_until(lambda: queue.snapshot().get("local", {}).get("waiting")))
+        started = time.monotonic()
+        def busy():
+            local = json.loads(monitor.status_json())["queue"]["local"]
+            return local if local["running"] and local["waiting"] else None
+
+        state = wait_until(busy, timeout=3)
+        self.assertEqual(state["running"]["role"], "summary")
+        self.assertEqual([w["role"] for w in state["waiting"]], ["describe"])
+        self.assertEqual(set(state["waiting"][0]), {"role", "model", "since"}, "bez treści poleceń")
+        gate.set()
+        for worker in workers:
+            worker.join(5)
+        self.assertTrue(wait_until(lambda: json.loads(monitor.status_json())["queue"]["local"] ==
+                                   {"running": None, "waiting": []}, timeout=3))
+        elapsed = time.monotonic() - started
+        # Sześć zmian kolejki (dwa dołączenia, dwa starty, dwa końce) w krótkim czasie — Changed najwyżej
+        # raz na 400 ms (plus pierwsza od razu), a końcowy stan zawsze dochodzi.
+        queue_changes = len(changes) - 1
+        self.assertGreaterEqual(queue_changes, 2)
+        self.assertLessEqual(queue_changes, 2 + int(elapsed / 0.4))
+        self.assertLess(queue_changes, 6)
+
+    def test_stop_detaches_from_the_queue(self):
+        queue = models_queue.Queue()
+        monitor, _changes = self.monitor(queue=queue)
+        monitor.stop()
+        self.assertEqual(queue._listeners, [])
 
 
 if __name__ == "__main__":

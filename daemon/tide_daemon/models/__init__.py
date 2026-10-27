@@ -7,11 +7,14 @@ w chwili wywołania. Wszystko tutaj jest bez Qt:
 - transport.py — jedno zapytanie HTTP z JSON-em, każdy błąd jako ModelError z komunikatem po polsku,
 - client.py    — odpowiedź modelu dla roli albo (punkt, model), adapter według rodzaju serwera:
                  `ollama` przez natywne /api/chat (num_ctx z roli), `openai` przez /v1/chat/completions,
+- queue.py     — kolejka wywołań całego procesu: jedno naraz na punkt, opisy kart przed raportem,
+                 limit czekania osobno od limitu wywołania; chat() zawsze przez nią przechodzi,
 - status.py    — stan serwerów: online, wersja, pobrane i załadowane modele (część na karcie), role.
 
 Tryb lokalny nigdy nie przechodzi do chmury: gdy serwer nie odpowiada, wywołujący dostaje ModelError
 i pokazuje informację zamiast opisu. Odpytywanie stanu: models_monitor.py, D-Bus: obiekt /Models.
 Opis i kontrakt D-Bus: docs/tide-daemon.md (sekcja „Modele lokalne”), uzasadnienie: docs/decisions.md.
 """
+from . import queue  # noqa: F401
 from .client import Answer, chat  # noqa: F401
 from .transport import Cancel, ModelError  # noqa: F401
