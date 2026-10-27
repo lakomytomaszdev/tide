@@ -4,7 +4,7 @@
 # Pliki: $XDG_DATA_HOME/tide/tide-window/ (launcher tide.py, QML z biblioteką i paletą, moduły widoków
 #        w views/<id>/ z views.json),
 #        $XDG_DATA_HOME/applications/tide.desktop (nazwa i ikona w docku i menu, akcje „Tablica”,
-#        „Sesje”, „Worktrees”, „Docker”, „Raporty” w menu kontekstowym),
+#        „Sesje”, „Worktrees”, „Docker”, „Raporty”, „Modele” w menu kontekstowym),
 #        $XDG_DATA_HOME/icons/hicolor/scalable/apps/tide.svg (logo „trzy fale” z palety).
 # Zgodność z dawnymi oknami Sesje i Worktrees (stały się widokami):
 #        $XDG_DATA_HOME/tide/sessions-window/tide-sessions.py i tide/worktrees-window/tide-worktrees.py —
@@ -74,15 +74,15 @@ write_main_desktop() {
 Type=Application
 Name=Tide
 GenericName=Praca z agentami
-Comment=Tablica, sesje agentów, worktrees, Docker i raporty w jednym oknie
+Comment=Tablica, sesje agentów, worktrees, Docker, raporty i modele lokalne w jednym oknie
 Exec=$(exec_line "")
 Icon=tide
 Terminal=false
 Categories=Development;
-Keywords=agent;claude;codex;tablica;sesje;worktree;docker;raport;
+Keywords=agent;claude;codex;tablica;sesje;worktree;docker;raport;model;ollama;
 StartupNotify=true
 StartupWMClass=tide
-Actions=board;sessions;worktrees;docker;reports;
+Actions=board;sessions;worktrees;docker;reports;models;
 $marker
 
 [Desktop Action board]
@@ -104,6 +104,10 @@ Exec=$(exec_line " --view docker")
 [Desktop Action reports]
 Name=Raporty
 Exec=$(exec_line " --view reports")
+
+[Desktop Action models]
+Name=Modele
+Exec=$(exec_line " --view models")
 EOF
 }
 

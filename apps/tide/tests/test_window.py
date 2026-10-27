@@ -39,7 +39,7 @@ from tide_daemon.worktrees.launchers import Launchers  # noqa: E402
 
 QML_PROBLEMS = r"Unable to assign|TypeError|ReferenceError|is not a type|overrides a member|is not defined|" \
                r"Cannot read|unavailable|Invalid property|Binding loop|failed to load|Only binding to one"
-VIEWS = ["board", "sessions", "worktrees", "docker", "reports"]
+VIEWS = ["board", "sessions", "worktrees", "docker", "reports", "models"]
 WINDOW = ("org.tide.Window", "/Window", "org.tide.Window")
 
 
@@ -105,7 +105,7 @@ class PackageTest(unittest.TestCase):
         with open(os.path.join(APP_DIR, "views.json"), encoding="utf-8") as fh:
             views = json.load(fh)["views"]
         self.assertEqual([v["id"] for v in views], VIEWS, "kolejność paska jak na mocku")
-        self.assertEqual([v["title"] for v in views], ["Tablica", "Sesje", "Worktrees", "Docker", "Raporty"])
+        self.assertEqual([v["title"] for v in views], ["Tablica", "Sesje", "Worktrees", "Docker", "Raporty", "Modele"])
         self.assertEqual(sum(1 for v in views if v.get("default")), 1)
         with open(os.path.join(APP_DIR, "qml", "RailIcon.qml"), encoding="utf-8") as fh:
             icons = fh.read()
@@ -245,7 +245,7 @@ class BackendsTest(unittest.TestCase):
                          "jeden agent czeka na odpowiedź")
         self.assertEqual((backends["worktrees"].badgeText, backends["worktrees"].badgeTone), ("1", "muted"),
                          "jeden worktree w pracy (bez głównych katalogów)")
-        for view in ("board", "docker", "reports"):
+        for view in ("board", "docker", "reports", "models"):
             self.assertEqual(backends[view].badgeText, "", view)
         self.assertTrue(backends["sessions"].available and backends["worktrees"].available)
 
@@ -260,7 +260,7 @@ class BackendsTest(unittest.TestCase):
         component = QQmlComponent(engine)
         component.setData(b'import QtQml\nQtObject { property var shell\n'
                           b'  function poke() { for (const id of ["board", "sessions", "worktrees", "docker", '
-                          b'"reports"]) shell.backend(id) } }', QUrl())
+                          b'"reports", "models"]) shell.backend(id) } }', QUrl())
         holder = component.createWithInitialProperties({"shell": shell})
         holder.poke()
         for _ in range(5):
@@ -389,7 +389,7 @@ class WindowOverDbusTest(unittest.TestCase):
         self.assertIsNone(re.search(QML_PROBLEMS, err or ""), err)
 
     def test_show_switches_views_and_rejects_unknown(self):
-        for view in ("worktrees", "docker", "reports", "sessions", "board"):
+        for view in ("worktrees", "docker", "reports", "models", "sessions", "board"):
             self.assertTrue(self.show(view))
             self.assertTrue(wait_until(lambda: self.current() == view, timeout=5), view)
         self.assertFalse(self.show("nieznany"))
@@ -478,7 +478,7 @@ class GrabTest(unittest.TestCase):
         sizes = {view: os.path.getsize(self.grab(view, "--view", view, *data)) for view in VIEWS}
         self.assertGreater(sizes["sessions"], 60_000, "widok Sesje z tablicą z pliku")
         self.assertGreater(sizes["worktrees"], 60_000, "widok Worktrees z listą z pliku")
-        for view in ("board", "docker", "reports"):
+        for view in ("board", "docker", "reports", "models"):
             self.assertGreater(sizes[view], 15_000, view)
 
     def test_data_for_shown_view_and_select(self):
@@ -582,7 +582,7 @@ class InstallTest(unittest.TestCase):
         self.assertIn(f"Exec=/usr/bin/python3 -s {self.dest}/tide.py\n", main)
         self.assertIn("StartupWMClass=tide\n", main)
         self.assertIn("Icon=tide\n", main)
-        self.assertIn("Actions=board;sessions;worktrees;docker;reports;\n", main)
+        self.assertIn("Actions=board;sessions;worktrees;docker;reports;models;\n", main)
         self.assertIn(f"Exec=/usr/bin/python3 -s {self.dest}/tide.py --view reports\n", main)
         self.assertIn("X-Tide-Component=tide-window\n", main)
         for view, name, title in (("sessions", "tide-sessions", "Tide Sesje"), ("worktrees", "tide-worktrees",
