@@ -30,6 +30,7 @@ from types import SimpleNamespace
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from .docker import disk as disk_mod
+from .docker import snapshot as snap
 from .docker.client import DEFAULT_SOCKET, DockerUnavailable
 from .docker.engine import ACTIONS, REPLY_BUDGET
 
@@ -115,6 +116,25 @@ class DockerMonitor(QObject):
 
     def snapshot_json(self) -> str:
         return self._json
+
+    def badge_json(self) -> str:
+        """Plakietka widoku Docker w pasku okna Tide: JSON {text, tone} (docker/snapshot.py badge)."""
+        return json.dumps(snap.badge(self._snapshot), ensure_ascii=False)
+
+    def show_window(self, ident: str = "") -> bool:
+        """Okno Tide na widoku Docker; ident — kontener (ID, początek ID, nazwa) albo grupa z migawki
+        („compose:<projekt>”, „standalone”, „testcontainers”), który widok odszuka i podświetli. Nieznany
+        element nie trafia do polecenia — okno otwiera się wtedy na samym widoku."""
+        item = ""
+        ident = (ident or "").strip()[:200]
+        if ident:
+            groups = {g.get("id") for g in self._snapshot.get("groups") or []}
+            if ident in groups:
+                item = ident
+            else:
+                target = self.engine.find(ident)
+                item = target["id"] if target else ""
+        return bool(self.launchers and self.launchers.show_view("docker", item))
 
     def refresh(self, full: bool = False) -> None:
         if self._refreshing:

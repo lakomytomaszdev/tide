@@ -381,6 +381,17 @@ class SnapshotTest(World):
         self.assertEqual(s["summary"], {"total": 12, "running": 7, "stopped": 3, "failed": 1, "projects": 4,
                                         "projectsTotal": 7, "testcontainers": 2, "testcontainersRunning": 2})
 
+    def test_badge(self):
+        """Plakietka widoku: padnięte w różu, inaczej liczba działających, zero i brak Dockera — ukryta."""
+        s = dict(self.snapshot(), available=True)
+        self.assertEqual(snap.badge(s), {"text": "● 1", "tone": "negative"})
+        healthy = dict(s, summary=dict(s["summary"], failed=0))
+        self.assertEqual(snap.badge(healthy), {"text": "7", "tone": "muted"})
+        idle = dict(s, summary=dict(s["summary"], failed=0, running=0))
+        self.assertEqual(snap.badge(idle), {"text": "", "tone": "muted"})
+        self.assertEqual(snap.badge({"available": False, "summary": s["summary"]}), {"text": "", "tone": "muted"})
+        self.assertEqual(snap.badge({}), {"text": "", "tone": "muted"})
+
     def test_ports(self):
         s = self.snapshot()
         api = self.item(s, "cookapp-api")

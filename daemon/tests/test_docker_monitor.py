@@ -215,6 +215,32 @@ class MonitorTest(unittest.TestCase):
         self.assertFalse(mon.open_logs("nie-ma"))
         self.assertEqual(len(self.terminal.plans), 2)
 
+    def test_badge_and_show_window(self):
+        """Badge() z migawki i ShowWindow(id): do okna trafia tylko znany kontener (pełne ID) albo grupa."""
+        class FakeLaunchers:
+            home = os.path.expanduser("~")
+            search = os.environ.get("PATH", "")
+            shown = []
+
+            def show_view(self, view, item=""):
+                self.shown.append((view, item))
+                return True
+
+        self.fake.start()
+        launchers = FakeLaunchers()
+        mon = self.monitor(launchers=launchers)
+        self.assertEqual(json.loads(mon.badge_json())["text"], "")  # przed pierwszym odczytem
+        self.assertTrue(wait_until(lambda: self.snapshot(mon)["available"], timeout=5))
+        self.assertEqual(json.loads(mon.badge_json()), {"text": "● 1", "tone": "negative"})
+        self.assertTrue(mon.show_window("translations-slack-bot"))
+        self.assertTrue(mon.show_window(self.c["api"].id[:12]))
+        self.assertTrue(mon.show_window("compose:cookapp"))
+        self.assertTrue(mon.show_window("nie-ma"))
+        self.assertTrue(mon.show_window(""))
+        self.assertEqual(launchers.shown, [("docker", self.c["bot"].id), ("docker", self.c["api"].id),
+                                           ("docker", "compose:cookapp"), ("docker", ""), ("docker", "")])
+        self.assertFalse(DockerMonitor(mon.engine).show_window("x"), "bez launcherów okna nie ma")
+
     def test_failed_terminal_cancels_task_file(self):
         self.fake.start()
         self.terminal.mode = ""

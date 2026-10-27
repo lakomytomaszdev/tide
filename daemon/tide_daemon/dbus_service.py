@@ -98,6 +98,9 @@ Obiekt /Docker, interfejs org.tide.Daemon.Docker (kontenery przez Docker Engine 
 - Logs(s id, i lines) -> s   ostatnie linie logów {ok, error, lines: [{text, stderr}]},
 - OpenLogs(s id) -> b        `docker logs -f --tail 200 <nazwa>` w karcie Konsoli,
 - OpenShell(s id) -> b       powłoka w działającym kontenerze (bash albo sh) w karcie Konsoli,
+- Badge() -> s               plakietka widoku Docker w oknie Tide: JSON {text, tone} — „● N” (negative), gdy coś
+                             padło, inaczej liczba działających (muted), pusta przy zerze i bez Dockera,
+- ShowWindow(s id) -> b      okno Tide na widoku Docker, opcjonalnie od razu na kontenerze albo grupie,
 - sygnał Changed()           migawka kontenerów się zmieniła,
 - sygnał ActionFinished(s job, s json)  koniec zadania Prune albo GroupAction.
 """
@@ -262,6 +265,11 @@ DOCKER_XML = f"""<interface name="{DOCKER_IFACE}">
     <arg name="ok" type="b" direction="out"/>
   </method>
   <method name="OpenShell">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="ok" type="b" direction="out"/>
+  </method>
+  <method name="Badge"><arg name="json" type="s" direction="out"/></method>
+  <method name="ShowWindow">
     <arg name="id" type="s" direction="in"/>
     <arg name="ok" type="b" direction="out"/>
   </method>
@@ -678,6 +686,14 @@ class DockerAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(str, result=bool)
     def OpenShell(self, ident: str) -> bool:
         return self.monitor.open_shell(ident)
+
+    @pyqtSlot(result=str)
+    def Badge(self) -> str:
+        return self.monitor.badge_json()
+
+    @pyqtSlot(str, result=bool)
+    def ShowWindow(self, ident: str) -> bool:
+        return self.monitor.show_window(ident)
 
 
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
