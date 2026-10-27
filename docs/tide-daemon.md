@@ -895,7 +895,7 @@ qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.CreateCard '{"title": "Ekspo
 
 ## Docker
 
-Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Docker” w oknie Tide i kafelka w docku. Usługa rozmawia z Docker Engine API przez lokalny socket (sama biblioteka standardowa, bez `docker` CLI i bez `docker compose`). Socket z `$DOCKER_HOST` (`unix:///ścieżka`), domyślnie `/var/run/docker.sock`; `tcp://`, `ssh://` i inne → stan `unsupported`, bez łączenia się przez sieć.
+Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Docker” w oknie Tide (`apps/docker`) i kafelka `org.tide.docker` w docku (`widgets/docker`). Usługa rozmawia z Docker Engine API przez lokalny socket (sama biblioteka standardowa, bez `docker` CLI i bez `docker compose`). Socket z `$DOCKER_HOST` (`unix:///ścieżka`), domyślnie `/var/run/docker.sock`; `tcp://`, `ssh://` i inne → stan `unsupported`, bez łączenia się przez sieć.
 
 | Element | Wartość |
 | --- | --- |
@@ -914,6 +914,8 @@ Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Do
 | `Logs(s id, i lines)` | `→ s` | ostatnie linie logów `{ok, error, id, name, lines: [{text, stderr}]}`; `lines ≤ 0` → 200, najwyżej 5000; najwyżej 15 s |
 | `OpenLogs(s id)` | `→ b` | karta Konsoli z `docker -H <socket usługi> logs -f --tail 200 <pełne ID>` |
 | `OpenShell(s id)` | `→ b` | karta Konsoli z `docker -H <socket usługi> exec -it <pełne ID> sh -c 'command -v bash >/dev/null && exec bash \|\| exec sh'`; `false` dla zatrzymanego |
+| `Badge()` | `→ s` | plakietka widoku Docker w pasku okna Tide: `{text, tone}` — kontenery, które padły, jako `"● N"` z tonem `negative` (róż), inaczej liczba działających z tonem `muted`; zero, brak Dockera i stan przed pierwszym odczytem — pusty tekst (plakietka ukryta). Testcontainers się nie liczą. Te same reguły liczy backend widoku z migawki (`apps/docker/backend.py`) |
+| `ShowWindow(s id)` | `→ b` | okno Tide na widoku Docker (`tide.py --view docker [--select <element>]`); `id` — kontener z ostatniej migawki (pełne ID, początek ID od 12 znaków, nazwa — do okna trafia zawsze pełne ID) albo grupa (`compose:<projekt>`, `standalone`, `testcontainers`), którą widok odsłoni, przewinie i podświetli. Nieznany element nie trafia do polecenia — okno otwiera się na samym widoku. `false`, gdy okna nie ma |
 | `Changed` | sygnał bez argumentów | migawka się zmieniła — pobierz `Snapshot()` ponownie |
 | `ActionFinished(s job, s json)` | sygnał | koniec zadania `Prune` albo `GroupAction`; `json` to wynik z tym samym `job` |
 
@@ -977,6 +979,8 @@ Nic, czego używa działający kontener, nie trafia do żadnej kategorii. `Prune
 **Logi i powłoka w Konsoli** idą tym samym mechanizmem co „Nowe zadanie”: plik zadania z argv w `$XDG_RUNTIME_DIR/tide/tasks` i karta z profilem „Tide: zadanie agenta” w ostatnio używanym oknie Konsoli albo nowe okno z `launch.py --task` ([Nowe zadanie](#nowe-zadanie)). Tytuł karty „docker · <nazwa>”. W argv zawsze pełne ID (nazwę można nadać innemu kontenerowi) i `-H unix://<socket usługi>` (karta nie dziedziczy `DOCKER_HOST` usługi, a powłoka może mieć inny `docker context`); żadnego sklejania poleceń. Każda karta otwiera się we własnym, pustym katalogu w `$XDG_RUNTIME_DIR/tide/docker-tabs/` — karta z profilu przejmuje najstarsze zadanie dla swojego katalogu, więc przy wspólnym katalogu dwa szybkie `OpenShell` mogłyby zamienić się kontenerami. Plik zadania ma też `workdir` (katalog domowy): po przejęciu `launch.py` przechodzi tam, więc polecenie i powłoka, która zostaje po `docker logs -f`, są w `~`, a katalog karty od razu jest wolny. Katalogi kart starsze niż 10 min znikają przy kolejnej karcie, nieprzejęty plik zadania jest wycofywany po 20 s.
 
 Logika bez Qt jest w `tide_daemon/docker/` (`client.py`, `snapshot.py`, `repos.py`, `disk.py`, `stats.py`, `engine.py`), wątki i pamięć podręczna w `docker_monitor.py`.
+
+**Klienci.** Widok „Docker” w oknie Tide bierze na starcie tylko `Snapshot()` (plakietka w pasku okna), `Stats()` woła co 4 s wyłącznie wtedy, gdy jest na wierzchu, okno nie jest zminimalizowane i coś działa, `Disk()` — przy pierwszym pokazaniu i co 2 min, a `Logs(id, 200)` co 3 s, dopóki szuflada logów jest otwarta. Kafelek w docku woła `Stats()` co 5 s tylko przy otwartym popupie i `Disk()` przy jego otwarciu. Oba łączą się z `ActionFinished` przed wywołaniem zadania i dopasowują wynik po `job`; zadanie bez wyniku (usługa zniknęła) zwalnia przyciski po 10 min (widok: projekt 10 min, porządki 30 min).
 
 ```bash
 qdbus6 org.tide.Daemon /Docker org.tide.Daemon.Docker.Snapshot
