@@ -5,6 +5,8 @@
 - gitlog.py   — commity z okresu po gałęziach i worktrees,
 - limits.py   — migawka Limitów AI z QuotaApp,
 - plans.py    — plany i tickety (tablica koordynacji i plany w repozytoriach), dodatek opcjonalny,
+- standup.py  — „Na daily”: fakty o projektach, podsumowanie z reguł, walidacja odpowiedzi modelu,
+- summarize.py — opis „Na daily” modelem przez lokalny `claude -p` (z regułami jako zapasem),
 - collect.py  — model raportu, render.py — HTML.
 
 generate() składa raport w katalogu tymczasowym obok docelowego i podmienia go w całości,
@@ -16,9 +18,9 @@ import os
 import shutil
 import tempfile
 
-from . import collect, limits, render, schedule
+from . import collect, limits, render, schedule, standup, summarize
 
-__all__ = ["collect", "generate", "limits", "load_palette", "render", "schedule"]
+__all__ = ["collect", "generate", "limits", "load_palette", "render", "schedule", "standup", "summarize"]
 
 
 def load_palette(candidates: list[str]) -> dict:
@@ -34,8 +36,12 @@ def load_palette(candidates: list[str]) -> dict:
 def generate(root: str, day: str, start: float, end: float, *, palette: dict, workspace: str, claude_root: str,
              codex_root: str, live=None, worktrees=None, limits_result=None, fetch_limits: bool = True,
              git=None, max_depth: int = 3, home: str | None = None,
-             coordination_cache: str | None = None) -> tuple[str, "collect.Report"]:
-    """Zapisuje <root>/<day>/index.html i <projekt>.html. Zwraca (ścieżka index.html, raport)."""
+             coordination_cache: str | None = None, summary: str = "rules", summary_model: str = "haiku",
+             env=None) -> tuple[str, "collect.Report"]:
+    """Zapisuje <root>/<day>/index.html i <projekt>.html. Zwraca (ścieżka index.html, raport).
+
+    summary: "claude" — opis „Na daily” modelem przez `claude -p` (summarize.py), "rules" — same reguły.
+    Domyślnie reguły: model woła tylko usługa i --report według ustawień (report.json)."""
     if limits_result is None and fetch_limits:
         limits_result = limits.fetch_status()
     days = [d for d in schedule.report_days(root) if d < day]
@@ -44,12 +50,14 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
                            max_depth=max_depth, previous_day=days[-1] if days else "",
                            coordination_cache=coordination_cache)
     home = os.path.expanduser("~") if home is None else home
+    target = os.path.join(root, day)
+    report.standup = summarize.summarize(report, mode=summary, model=summary_model, cache_dir=target, home=home,
+                                         env=env)
     pages = {"index.html": render.render_index(report, palette, home)}
     for project in report.active:
         pages[f"{project.slug}.html"] = render.render_project(report, project, palette, home)
 
     os.makedirs(root, mode=0o700, exist_ok=True)
-    target = os.path.join(root, day)
     work = tempfile.mkdtemp(prefix=f".{day}-", dir=root)
     try:
         for name, text in pages.items():
@@ -57,6 +65,7 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
             fd = os.open(os.path.join(work, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(text)
+        summarize.write_cache(work, report.standup.get("cache"))
         os.chmod(work, 0o700)
         old = None
         if os.path.isdir(target) and not os.path.islink(target):

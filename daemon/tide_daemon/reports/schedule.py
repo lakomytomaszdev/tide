@@ -33,6 +33,8 @@ LOGIN_DELAY = 120          # s po starcie usługi — logowanie nie czeka na git
 CHECK_INTERVAL = 60        # s między sprawdzeniami zegara
 
 DAY_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+SUMMARY_MODES = ("claude", "rules")
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$")
 
 
 @dataclass
@@ -41,6 +43,8 @@ class Settings:
     day_start: int = 4 * 60
     keep_days: int = KEEP_DAYS
     enabled: bool = True
+    summary: str = "claude"   # „Na daily”: "claude" (model przez `claude -p`, decyzja 52) albo "rules"
+    summary_model: str = "haiku"
 
 
 @dataclass
@@ -87,8 +91,9 @@ def reports_root(env=None) -> str:
 def load_settings(path: str | None = None, at: str | None = None, enabled: bool | None = None) -> tuple[Settings, list[str]]:
     """Ustawienia z pliku (opcjonalnego) i opcji wiersza poleceń. Zwraca (ustawienia, ostrzeżenia).
 
-    Plik JSON: {"at": "07:00", "dayStart": "04:00", "keepDays": 30, "enabled": true}. Błędna wartość
-    nie zatrzymuje usługi — zostaje domyślna, a ostrzeżenie idzie do dziennika."""
+    Plik JSON: {"at": "07:00", "dayStart": "04:00", "keepDays": 30, "enabled": true, "summary": "claude",
+    "summaryModel": "haiku"}. Błędna wartość nie zatrzymuje usługi — zostaje domyślna, a ostrzeżenie
+    idzie do dziennika."""
     settings, warnings = Settings(), []
     data = {}
     if path and os.path.exists(path):
@@ -114,6 +119,17 @@ def load_settings(path: str | None = None, at: str | None = None, enabled: bool 
             warnings.append(f"raport: keepDays musi być liczbą dni ≥ 1, jest {value!r}")
     if isinstance(data.get("enabled"), bool):
         settings.enabled = data["enabled"]
+    if "summary" in data:
+        if data["summary"] in SUMMARY_MODES:
+            settings.summary = data["summary"]
+        else:
+            warnings.append(f"raport: summary musi być jednym z {', '.join(SUMMARY_MODES)}, jest {data['summary']!r}")
+    if "summaryModel" in data:
+        value = data["summaryModel"]
+        if isinstance(value, str) and MODEL_RE.match(value):
+            settings.summary_model = value
+        else:
+            warnings.append(f"raport: summaryModel to nazwa modelu (np. haiku), jest {value!r}")
     if at:
         settings.at = parse_hhmm(at)  # opcja wiersza poleceń: błąd ma być głośny
     if enabled is not None:

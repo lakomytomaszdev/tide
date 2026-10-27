@@ -70,6 +70,7 @@ class Report:
     limits: dict = field(default_factory=dict)
     forecast: object = None
     previous_day: str = ""
+    standup: dict = field(default_factory=dict)   # „Na daily” (summarize.summarize), dokłada generate()
 
     @property
     def active(self) -> list:

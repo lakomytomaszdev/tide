@@ -5,7 +5,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [
                                [--no-notifications] [--no-krunner] [--no-tab-marks] [--now CZAS]
                                [--idle-after SEKUNDY | --no-idle] [--limits-poll SEKUNDY | --no-limits]
                                [--report [--report-days N]] [--report-dir DIR] [--report-at GG:MM]
-                               [--no-report] [--report-delay SEKUNDY] [--no-tasks]
+                               [--no-report] [--report-delay SEKUNDY] [--report-summary claude|rules]
+                               [--no-tasks]
                                [--print-coordination] [--coordination-days N] [--no-coordination]
                                [--no-youtrack]
 
@@ -29,6 +30,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [
 --report-at        godzina raportu porannego (domyślnie „at” z $XDG_CONFIG_HOME/tide/report.json albo 07:00),
 --no-report        bez raportu porannego z terminu (Generate() z D-Bus działa dalej),
 --report-delay     ile sekund po starcie usługi sprawdzić, czy raport jest należny (domyślnie 120),
+--report-summary   opis „Na daily”: claude (model przez `claude -p`) albo rules (bez modelu); domyślnie
+                   „summary” z $XDG_CONFIG_HOME/tide/report.json albo claude,
 --no-tasks         bez obiektu /Tasks (nowe zadanie dla agenta: worktree i karta Konsoli),
 --print-coordination  jednorazowo: koordynatorzy i ich tablice jako JSON (jak dane okna Tide Sesje), bez D-Bus,
 --coordination-days   z ilu dni szukać koordynatorów (domyślnie 7),
@@ -88,6 +91,7 @@ def parse_args(argv):
     parser.add_argument("--report-at")
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--report-delay", type=float)
+    parser.add_argument("--report-summary", choices=("claude", "rules"))
     return parser.parse_args(argv)
 
 
@@ -281,7 +285,8 @@ def print_report(args, clock, scanner, settings) -> int:
             report_root(args.report_dir), schedule.report_day(now, settings).isoformat(), now - days * 86400, now,
             palette=reports.load_palette(palette_candidates()), workspace=args.workspace,
             claude_root=args.claude_dir, codex_root=args.codex_dir, live=scanner.sessions(now, procs),
-            max_depth=args.worktree_depth, coordination_cache=coordination_cache_file(args))
+            max_depth=args.worktree_depth, coordination_cache=coordination_cache_file(args),
+            summary=args.report_summary or settings.summary, summary_model=settings.summary_model)
     except (OSError, RuntimeError) as exc:
         print(f"tide-daemon: raport: {exc}", file=sys.stderr)
         return 1
@@ -316,7 +321,7 @@ def start_report(app, args, clock, settings, monitor, trees):
         palette_paths=palette_candidates(), workspace=args.workspace, claude_root=args.claude_dir,
         codex_root=args.codex_dir, max_depth=args.worktree_depth, sessions=lambda: monitor.sessions,
         worktrees=worktree_items, notifier=notifier, clock=clock, coordination_cache=coordination_cache_file(args),
-        opener=trees.launchers.open_report, parent=app, **kwargs)
+        opener=trees.launchers.open_report, summary=args.report_summary or settings.summary, parent=app, **kwargs)
     return holder["monitor"]
 
 

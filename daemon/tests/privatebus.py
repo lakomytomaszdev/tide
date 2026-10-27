@@ -93,11 +93,13 @@ class PrivateBus:
         # (odnośnik codex://), chyba że test wskaże atrapę pliku .desktop.
         # Nieistniejąca konfiguracja Limitów AI: usługa testowa nie pyta prawdziwej QuotaApp
         # i nie zna jej tokenu, chyba że test poda własną (atrapa API w test_limits_dbus.py).
+        # Pusty TIDE_CLAUDE_BIN: raport poranny nie woła prawdziwego `claude -p`.
         extra_env = {"XDG_STATE_HOME": os.path.join(self.tmp, "state"),
                      "XDG_CACHE_HOME": os.path.join(self.tmp, "cache"),
                      "WAYLAND_DISPLAY": os.path.join(self.tmp, "no-wayland"),
                      "TIDE_CODEX_DESKTOP": "",
                      "LIMITY_CONFIG": os.path.join(self.tmp, "no-limity-config.json"),
+                     "TIDE_CLAUDE_BIN": "",  # raport: „Na daily” z reguł, nigdy prawdziwy claude
                      **(kwargs.pop("extra_env", None) or {})}
         return self.spawn([sys.executable, os.path.join(DAEMON_DIR, "tide-daemon.py"), *args], SERVICE,
                           extra_env=extra_env, **kwargs)

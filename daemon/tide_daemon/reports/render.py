@@ -8,6 +8,10 @@ nawet gdyby coś umknęło escapowaniu, wstrzyknięty skrypt się nie wykona.
 Escapowanie: każdy tekst z zewnątrz (tematy commitów, autorzy, nazwy gałęzi i plików, tytuły
 sesji, wiadomości agentów, ścieżki) przechodzi przez esc() — także w atrybutach.
 
+Układ: na górze „Na daily” (standup.py, summarize.py) — po projekcie Zrobione / W toku / Czeka na
+mnie / Dalej i „Na czym polega”, z przyciskiem „Kopiuj jako tekst”; surowe dane (commity po
+gałęziach, sesje, worktrees, limity) zwinięte niżej w „Szczegóły”.
+
 Linki do programów: zamiast własnego schematu tide:// (który mógłby wywołać każda strona w
 przeglądarce) raport daje ścieżki z przyciskiem „Kopiuj”, gotowe polecenia (Konsole, Rider,
 wznowienie sesji) do skopiowania i zwykły link file:// do katalogu.
@@ -22,6 +26,7 @@ import shlex
 import urllib.parse
 from datetime import datetime
 
+from . import standup as standup_mod
 from .schedule import local
 
 DAYS = ("poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota", "niedziela")
@@ -352,6 +357,35 @@ border-top:1px solid var(--border);font-size:13.5px;align-items:baseline}
 .tickets .tn{grid-column:3;color:var(--muted);font-size:12.5px}
 .st-czeka{color:var(--peach)}.st-w-toku{color:var(--teal)}.st-review{color:var(--lavender)}
 .st-gotowe{color:var(--mint)}.st-todo,.st-odrzucone{color:var(--muted)}
+.dhead{display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap;margin:30px 0 14px}
+.dhead h2{margin:0}
+.dhead .sp{flex:1}
+.dsrc{color:var(--muted);font-size:13px}
+.standup{padding:20px 22px}
+.standup+.standup{margin-top:14px}
+.standup .row h3{font-size:19px}
+.standup>.theme:first-child,.standup>.sgroups:first-child{margin-top:0}
+.standup h3 a{color:var(--text)}
+.theme{color:var(--text2);margin:8px 0 0;max-width:92ch;font-size:14.5px}
+.theme b{color:var(--muted);font-weight:500;font-size:12.5px;text-transform:uppercase;letter-spacing:.06em;margin-right:8px}
+.sgroups{display:grid;grid-template-columns:minmax(0,1fr);gap:18px 40px;margin-top:16px}
+.sg h4{font-size:12px;text-transform:uppercase;letter-spacing:.08em;margin:0 0 8px;font-weight:600}
+.sg.done h4{color:var(--mint)}.sg.doing h4{color:var(--teal)}.sg.waiting h4{color:var(--peach)}.sg.next h4{color:var(--text2)}
+.sg ul{list-style:none;margin:0;padding:0;display:grid;gap:9px}
+.sg li{position:relative;padding-left:16px;line-height:1.5;overflow-wrap:anywhere}
+.sg li::before{content:"";position:absolute;left:0;top:.6em;width:6px;height:6px;border-radius:50%;background:var(--muted)}
+.sg.done li::before{background:var(--mint)}.sg.doing li::before{background:var(--teal)}
+.sg.waiting li::before{background:var(--peach)}
+.sg .ref{font-family:var(--mono);font-size:12px;color:var(--sky);margin-right:7px;white-space:nowrap}
+.sg .why,.sg .nx{display:block;color:var(--text2);font-size:13.5px;margin-top:1px}
+.sg .nx{color:var(--muted)}
+.sg li.more{color:var(--muted);font-size:13px}
+.sg li.more::before{display:none}
+details.details{margin-top:44px;border-top:1px solid var(--border)}
+details.details>summary{cursor:pointer;padding:18px 0 6px;color:var(--text2);font-weight:600;font-size:13px;
+text-transform:uppercase;letter-spacing:.08em;width:max-content;max-width:100%}
+details.details>summary .muted{text-transform:none;letter-spacing:0;font-weight:400;margin-left:10px}
+@media (min-width:900px){.sgroups{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:1360px){.cols{grid-template-columns:minmax(0,1.08fr) minmax(0,1fr)}}
 @media (min-width:2000px){.wrap{max-width:1720px}body{font-size:16px}}
 @media (max-width:700px){
@@ -427,6 +461,9 @@ def render_index(report, palette: dict, home: str = "") -> str:
         f'<div class="brand">{LOGO}<span>Tide · raport poranny</span></div>',
         f'<h1>{esc(long_date(report.day).capitalize())}</h1>',
         f'<div class="period">Okres: {esc(period_text(report))}</div></div></header>',
+        daily(report, active, index=True),
+        '<details class="details"><summary>Szczegóły<span class="muted">liczby, czekające sesje, projekty, '
+        'limity</span></summary>',
         '<section class="stats">',
         _stat(len(waiting), plural(len(waiting), "czeka na ciebie", "czekają na ciebie", "czeka na ciebie"),
               hot=bool(waiting)),
@@ -469,8 +506,72 @@ def render_index(report, palette: dict, home: str = "") -> str:
         parts.append("</ul></details>")
 
     parts.append(_limits(report))
+    parts.append("</details>")
     parts.append(_footer(report, home, index=True))
     return page(f"Raport poranny · {short_date(report.day)}", "".join(parts), palette)
+
+
+# --- „Na daily” -----------------------------------------------------------------------------------
+
+def daily_text(report, projects) -> str:
+    """Standup podanych projektów jako zwykły tekst (przycisk „Kopiuj jako tekst”)."""
+    summary = getattr(report, "standup", None) or {}
+    heading = f"Na daily · {long_date(report.day)}"
+    return standup_mod.as_text(summary, [p.name for p in projects], heading)
+
+
+def daily(report, projects, index: bool) -> str:
+    """Sekcja „Na daily”: w indeksie wszystkie projekty z ruchem, na stronie projektu — ten jeden."""
+    summary = getattr(report, "standup", None) or {}
+    by_name = summary.get("projects") or {}
+    if summary.get("source") == "model":
+        source = f"opis: Claude {str(summary.get('model') or '').capitalize()}"
+        if summary.get("note"):
+            source += f" · {summary['note']}"
+    else:
+        source = summary.get("note") or "opis z reguł (bez modelu)"
+    text = daily_text(report, projects)
+    out = ['<section class="daily"><div class="dhead"><h2>Na daily</h2>'
+           f'<span class="dsrc">{esc(source)}</span><span class="sp"></span>'
+           + (copy_button(text, "Kopiuj jako tekst") if text else "") + "</div>"]
+    shown = 0
+    for p in projects:
+        s = by_name.get(p.name)
+        if not s or standup_mod.empty(s):
+            continue
+        shown += 1
+        name = f'<a href="{esc(p.slug)}.html">{esc(p.name)}</a>' if index else esc(p.name)
+        chips = ""
+        if index and p.waiting:
+            chips = f'<span class="chip peach">{esc(count(len(p.waiting), "czeka", "czekają", "czeka"))}</span>'
+        # Na stronie projektu nazwa jest już w nagłówku strony — karta bez tytułu.
+        out.append('<article class="card standup">' + (f'<div class="row"><h3>{name}</h3>{chips}</div>' if index else ""))
+        if s.get("theme"):
+            out.append(f'<p class="theme"><b>Na czym polega</b>{esc(s["theme"])}</p>')
+        groups = []
+        for key, label in standup_mod.GROUPS:
+            items = s.get(key) or []
+            if not items:
+                continue
+            rows = "".join(_daily_item(item) for item in items)
+            groups.append(f'<div class="sg {key}"><h4>{esc(label)}</h4><ul>{rows}</ul></div>')
+        if groups:
+            out.append(f'<div class="sgroups">{"".join(groups)}</div>')
+        out.append("</article>")
+    if not shown:
+        out.append('<div class="calm"><span class="dot"></span>W tym okresie nie ma nic do opowiedzenia — '
+                   'ani skończonej pracy, ani pracy w toku.</div>')
+    out.append("</section>")
+    return "".join(out)
+
+
+def _daily_item(item: dict) -> str:
+    if item.get("more"):
+        return f'<li class="more">{esc(item.get("text"))}</li>'
+    ref = f'<span class="ref">{esc(item["ref"])}</span>' if item.get("ref") else ""
+    why = f'<span class="why">{esc(item["why"])}</span>' if item.get("why") else ""
+    nxt = f'<span class="nx">dalej: {esc(item["next"])}</span>' if item.get("next") else ""
+    return f'<li>{ref}{esc(item.get("text"))}{why}{nxt}</li>'
 
 
 def _stat(value: int, label: str, extra: str = "", hot: bool = False) -> str:
@@ -556,8 +657,14 @@ def _footer(report, home: str, index: bool) -> str:
     prev = ""
     if index and report.previous_day:
         prev = f'<a href="../{esc(report.previous_day)}/index.html">← poprzedni raport ({esc(short_date(report.previous_day))})</a>'
-    return (f'<footer><span>Wygenerowano {esc(day_time(report.generated))} przez tide-daemon. Tylko dane z tego '
-            f'komputera: git i dzienniki agentów, bez wysyłania czegokolwiek.</span>{prev}</footer>')
+    summary = getattr(report, "standup", None) or {}
+    if summary.get("source") == "model":
+        where = ('Dane z tego komputera: git i dzienniki agentów. Opis „Na daily”: model '
+                 f'{esc(summary.get("model"))} przez lokalny Claude Code (fakty z raportu, bez sekretów, idą do Anthropic).')
+    else:
+        where = 'Tylko dane z tego komputera: git i dzienniki agentów, bez wysyłania czegokolwiek.'
+    return (f'<footer><span>Wygenerowano {esc(day_time(report.generated))} przez tide-daemon. {where}</span>'
+            f'{prev}</footer>')
 
 
 # --- strona projektu -------------------------------------------------------------------------------
@@ -577,6 +684,9 @@ def render_project(report, project, palette: dict, home: str = "") -> str:
         f'<h1>{esc(p.name)}</h1>',
         _pathbar(p.path, p.is_repo),
         '</div></header>',
+        daily(report, [p], index=False),
+        '<details class="details"><summary>Szczegóły<span class="muted">plany, sesje agentów, commity, '
+        'worktrees</span></summary>',
         '<section class="stats">',
         _stat(len(p.waiting), plural(len(p.waiting), "czeka na ciebie", "czekają na ciebie", "czeka na ciebie"),
               hot=bool(p.waiting)),
@@ -606,7 +716,7 @@ def render_project(report, project, palette: dict, home: str = "") -> str:
     right.append(_worktrees(p, home))
 
     body = "".join(head) + f'<div class="cols"><div>{"".join(left)}</div><div>{"".join(right)}</div></div>' \
-        + _footer(report, home, index=False)
+        + "</details>" + _footer(report, home, index=False)
     return page(f"{p.name} · raport {short_date(report.day)}", body, palette)
 
 
