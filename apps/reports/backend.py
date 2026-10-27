@@ -298,9 +298,11 @@ class Backend(QObject):
         names = [d.get("day") for d in days.get("days") or [] if isinstance(d, dict)]
         # Bez wyboru, wybrana doba zniknęła albo był wybrany najnowszy raport — teraz najnowszy.
         if not self._selected or self._selected not in names or self._selected == previous:
-            self._selected = days.get("latest") or ""
-            self._day = {}
-            self.dayChanged.emit()
+            latest = days.get("latest") or ""
+            if latest != self._selected:   # ta sama doba — bez czyszczenia (żadnego mignięcia przy Changed)
+                self._selected = latest
+                self._day = {}
+                self.dayChanged.emit()
         if self._selected:
             self._fetch_day()
         elif self._day:

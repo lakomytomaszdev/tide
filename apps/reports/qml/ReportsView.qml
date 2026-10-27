@@ -8,8 +8,9 @@
 // „Poza projektami”; po prawej „Na daily” wybranego projektu z „Kopiuj jako tekst” i „Pełna strona ↗”.
 //
 // Przeczytanie (decyzja 51): obejrzenie najnowszego, nieotwartego raportu w oknie — widok na wierzchu
-// w aktywnym oknie przez READ_AFTER_MS — woła backend.markRead(doba); usługa zapisuje przeczytanie
-// i kropka gaśnie wszędzie (pasek okna, widżety). Starsze doby niczego nie zmieniają.
+// w aktywnym oknie przez readAfterMs — woła backend.markRead(doba); usługa zapisuje przeczytanie
+// i kropka gaśnie wszędzie (pasek okna, widżety). Starsze doby niczego nie zmieniają, a raport sprzed
+// report.json (bez „Na daily” w oknie) też nie — jego treść jest tylko w przeglądarce.
 //
 // Umowa widoku okna Tide (apps/tide/qml/Main.qml): backend, active, preview (z --preview: project —
 // slug wybranego projektu, expand=1 — rozwinięte „Poza projektami”), showItem(item) — „RRRR-MM-DD”
@@ -135,7 +136,7 @@ Rectangle {
     Timer {
         id: readTimer
         interval: view.readAfterMs
-        running: view.active && view.windowActive && view.hasReport && view.report.latest === true
+        running: view.active && view.windowActive && view.hasReport && !view.legacy && view.report.latest === true
                  && view.report.unread === true && !!view.backend
         onTriggered: view.backend.markRead(view.report.day)
     }

@@ -391,6 +391,27 @@ Item {
         self.assertEqual(warned(log, "HIDDEN"), "0")
         self.assertEqual(warned(log, "SHOWN"), "read:2026-10-27")
 
+    def test_legacy_latest_report_is_not_marked_read(self):
+        """Najnowszy raport sprzed report.json (bez „Na daily” w oknie) — kropka zostaje do otwarcia w przeglądarce."""
+        sample = fixture.sample()
+        sample["reports"]["2026-10-27"] = dict(sample["reports"]["2026-10-24"])
+        log = self.harness("LegacyReadSmoke.qml", """import QtQuick
+Item {
+    width: 1440; height: 900
+    %(stub)s
+    ReportsView { id: view; anchors.fill: parent; backend: stub; windowActive: true; readAfterMs: 30 }
+    Timer {
+        running: true; interval: 300
+        onTriggered: {
+            console.warn("LEGACYREAD " + view.legacy + "|" + stub.calls.filter(c => c.startsWith("read:")).length)
+            Qt.quit()
+        }
+    }
+}
+""" % {"stub": self.stub(sample)})
+        self.assertEqual(problems(log), [])
+        self.assertEqual(warned(log, "LEGACYREAD"), "true|0")
+
     def test_generate_progress_empty_state_show_item_and_legacy(self):
         empty = fixture.sample()
         empty["days"]["days"], empty["days"]["latest"], empty["reports"] = [], "", {}
@@ -597,11 +618,15 @@ class BackendOverDbusTest(unittest.TestCase):
         self.assertEqual([p["name"] for p in day["projects"]], ["alpha", "beta"])
         self.assertIn(self.reportfix.INJECTION, day["copyAll"], "surowy tekst do schowka")
 
-        # Obejrzenie w oknie → MarkRead: kropka gaśnie (plakietka, Days(), Day()).
+        # Obejrzenie w oknie → MarkRead: kropka gaśnie (plakietka, Days(), Day()); raport w oknie nie miga
+        # (Changed odświeża tę samą dobę bez czyszczenia danych).
+        seen = []
+        backend.dayChanged.connect(lambda: seen.append(json.loads(backend.dayJson)))
         backend.markRead(self.reportfix.DAY)
         self.assertTrue(wait_until(lambda: backend.badgeText == "", timeout=10))
         self.assertTrue(wait_until(lambda: json.loads(backend.dayJson).get("unread") is False, timeout=10))
         self.assertFalse(json.loads(backend.daysJson)["unread"])
+        self.assertTrue(seen and all(d.get("ok") for d in seen), [d.get("ok") for d in seen])
 
         opened = []
         backend.openFinished.connect(opened.append)
