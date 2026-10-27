@@ -1,5 +1,5 @@
 // Kafelek tablicy w pasku bocznym: „● 2 w toku · ● 1 czeka · ● 1 do sprawdzenia” (albo „○ 3 do
-// zrobienia”, „pusto”) tym samym językiem co kafelek w docku i pod spodem do trzech wierszy — najpierw
+// zrobienia · ○ 12 w backlogu”, „brak kart”) tym samym językiem co kafelek w docku i pod spodem do trzech wierszy — najpierw
 // to, co czeka na ciebie. W nagłówku „Otwórz w Tide”; kliknięcie wiersza otwiera okno Tide na karcie.
 // Bez PlasmoidItem, więc da się go załadować w teście.
 import QtQuick

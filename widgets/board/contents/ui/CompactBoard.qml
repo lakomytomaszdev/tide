@@ -1,7 +1,7 @@
 // Kafelek tablicy w docku (mock zatwierdzony 27.10.2026): mięta, „Tablica · 11 kart”, pod spodem
 // „● 2 w toku · ● 1 czeka · ● 1 do sprawdzenia” — tylko niezerowe części, kropki w kolorach stanów
 // (teal, brzoskwinia, lawenda), liczby w Geist Mono, słowa w text.secondary. Bez pracy agentów —
-// „○ 3 do zrobienia”, bez kart — wyciszone „pusto”.
+// „○ 3 do zrobienia · ○ 12 w backlogu”, bez kart — wyciszone „brak kart”.
 // Bez PlasmoidItem, więc da się go załadować w teście (widgets/tests/test_widget_board.py).
 import QtQuick
 import "tide" as Tide
@@ -66,7 +66,7 @@ Tide.DockTile {
             }
         }
 
-        // Pusto albo usługa nie działa.
+        // Brak kart albo usługa nie działa.
         Text {
             visible: tile.parts.length === 0
             text: tile.summary

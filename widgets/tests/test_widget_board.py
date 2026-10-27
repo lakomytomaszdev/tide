@@ -81,9 +81,11 @@ class TileTest(unittest.TestCase):
         self.assertEqual(mock["toolTip"], "Tablica pracy: 11 kart — 2 w toku, 1 czeka na ciebie, 1 do sprawdzenia, "
                                           "2 do zrobienia, 5 w backlogu\nKliknij, aby zobaczyć, co czeka")
         today = preview.render_tile(preview.TILE_SCENARIOS["today"])
-        self.assertEqual(today["summary"], "6 do zrobienia", "bez pracy agentów — ile do zrobienia")
+        self.assertEqual(today["summary"], "6 do zrobienia · 5 w backlogu", "bez pracy agentów — co leży na tablicy")
+        self.assertTrue(today["fits"], "dwie linie mieszczą się w 48 px")
+        self.assertLess(today["width"], 300)
         empty = preview.render_tile(preview.TILE_SCENARIOS["empty"])
-        self.assertEqual((empty["detail"], empty["summary"]), ("", "pusto"))
+        self.assertEqual((empty["detail"], empty["summary"]), ("", "brak kart"))
         self.assertTrue(empty["toolTip"].startswith("Tablica pracy jest pusta"))
         offline = preview.render_tile(preview.TILE_SCENARIOS["offline"])
         self.assertEqual((offline["summary"], offline["toolTip"]), ("usługa nie działa", "Usługa tide-daemon nie działa"))
@@ -102,7 +104,9 @@ class TileTest(unittest.TestCase):
                  (dict(waiting=5), "Tablica", "5 kart", "5 czeka"),
                  (dict(progress=2, review=1, todo=2), "Tablica", "5 kart", "2 w toku · 1 do sprawdzenia"),
                  (dict(todo=22), "Tablica", "22 karty", "22 do zrobienia"),
-                 (dict(backlog=12), "Tablica", "12 kart", "pusto")]
+                 (dict(backlog=12), "Tablica", "12 kart", "12 w backlogu"),
+                 (dict(todo=2, backlog=3), "Tablica", "5 kart", "2 do zrobienia · 3 w backlogu"),
+                 (dict(progress=1, backlog=3), "Tablica", "4 karty", "1 w toku")]
         for counts, label, detail, summary in cases:
             with self.subTest(**counts):
                 result = preview.render_tile(cards(**counts))
