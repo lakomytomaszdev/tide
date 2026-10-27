@@ -122,10 +122,18 @@ _LIST_LINE = re.compile(r"^\s{0,3}(?:[-*+•]\s+|\d+[.)]\s+)")
 _MARKDOWN = re.compile(r"\*\*[^*\n]+\*\*|`[^`\n]+`|^\s{0,3}#{1,6}\s|\[[^\]\n]{1,200}\]\([^)\n]{0,500}\)", re.M)
 
 
+_INLINE_HEAD = re.compile(r"^\s{0,3}(?:#{1,6}\s+|>\s*)")
+
+
 def flatten(text) -> str:
     """Markdown → zwykły tekst w jednej linii: bez znaczników, punktorów i nagłówków, a linie łączone
     jak zdania („Indeks gotowy. Eksport w toku.”) — zamiast sklejania punktów listy w jeden ciąg słów.
-    Linia od małej litery to ciąg dalszy zdania (złamany wiersz) — bez kropki."""
+    Linia od małej litery to ciąg dalszy zdania (złamany wiersz) — bez kropki. Jedna linia to nie lista:
+    „2. etap migracji gotowy” i „- zdanie” zostają z numerem i myślnikiem (bez nich tylko nagłówek)."""
+    text = str(text or "")
+    if len([line for line in text.splitlines() if line.strip()]) <= 1:
+        line = _TAG.sub("", _MD.sub("", _LINK.sub(r"\1", text.strip())))
+        return " ".join(_INLINE_HEAD.sub("", line).split())
     parts: list[str] = []
     for line in plain(text).splitlines():
         line = line.strip()
@@ -139,9 +147,10 @@ def flatten(text) -> str:
 
 def one_line(text) -> str:
     """Pole odpowiedzi modelu: zwykłe jedno zdanie zostaje bez zmian (poprawna odpowiedź Claude'a się
-    nie zmienia), a tekst z nowymi liniami albo Markdownem przechodzi przez flatten()."""
+    nie zmienia, także „2. etap…” albo „1) wersja…”), a tekst z nowymi liniami albo Markdownem
+    przechodzi przez flatten()."""
     text = str(text or "")
-    if "\n" not in text and "\r" not in text and not _MARKDOWN.search(text) and not _LIST_LINE.match(text):
+    if "\n" not in text and "\r" not in text and not _MARKDOWN.search(text):
         return text
     return flatten(text)
 
@@ -153,7 +162,7 @@ def list_items(text) -> list[str]:
     bullets = [line for line in lines if _LIST_LINE.match(line)]
     if len(bullets) < 2:
         return [text]
-    return [item for item in (flatten(line) for line in bullets) if item]
+    return [item for item in (flatten(_LIST_LINE.sub("", line, count=1)) for line in bullets) if item]
 
 
 def first_sentences(text: str, n: int = 2, limit: int = 280) -> str:
@@ -791,9 +800,13 @@ def known_refs(fact: dict) -> dict[str, str]:
     return refs
 
 
-def validate(data, all_facts: list[dict]) -> dict[str, dict]:
+def validate(data, all_facts: list[dict], local: bool = False) -> dict[str, dict]:
     """Odpowiedź modelu → {nazwa projektu: podsumowanie}. Invalid, gdy całość nie pasuje do schematu;
-    pojedyncze złe pozycje i nieznane projekty są pomijane (projekt bez pozycji dostanie reguły)."""
+    pojedyncze złe pozycje i nieznane projekty są pomijane (projekt bez pozycji dostanie reguły).
+
+    `local` — odpowiedź modelu lokalnego: dodatkowo poprawki grup według stanu ticketów (_fix_waiting)
+    i bez powtórzeń (_dedupe). Odpowiedzi Claude tych heurystyk nie dostają — tam pytanie przy tickecie
+    gotowym („wypchnąć?”) albo zaplanowanym to zwykła, poprawna pozycja."""
     if not isinstance(data, dict) or not isinstance(data.get("projects"), list):
         raise Invalid("brak listy projects")
     names = {f["project"]: f for f in all_facts}
@@ -818,8 +831,9 @@ def validate(data, all_facts: list[dict]) -> dict[str, dict]:
                 if item and len(standup[key]) < ITEMS_MAX:
                     standup[key].append(item)
         _move_chores(standup)
-        _fix_waiting(standup, names[name])
-        _dedupe(standup)
+        if local:
+            _fix_waiting(standup, names[name])
+            _dedupe(standup)
         if not empty(standup):
             if not standup["headline"]:
                 standup["headline"] = _headline(standup)
@@ -844,15 +858,20 @@ def _move_chores(standup: dict) -> None:
 
 
 def _fix_waiting(standup: dict, fact: dict) -> None:
-    """„Czeka na mnie” z ID ticketu, który jeszcze nie ruszył (`todo`), przechodzi do „Dalej”, a z ID ticketu
-    gotowego znika; „Dalej” z ID gotowego ticketu też znika — mały model lokalny wpisywał tam zaplanowane
-    i skończone tickety (PT-15, prawdziwe dane)."""
+    """Tylko odpowiedź modelu lokalnego: „Czeka na mnie” z ID ticketu, który jeszcze nie ruszył (`todo`),
+    przechodzi do „Dalej”, a z ID ticketu gotowego znika; „Dalej” z ID gotowego ticketu też znika — qwen3:8b
+    wpisywał tam zaplanowane i skończone tickety (PT-15, prawdziwe dane). Pozycja „Czeka na mnie” zostaje,
+    gdy ticket ma w faktach pytanie albo czekającą sesję — wtedy naprawdę coś czeka."""
     states = {t["key"]: t["state"] for t in fact["tickets"] if t.get("key")}
+    asking = {t["key"] for t in fact["tickets"] if t.get("key") and t.get("question")}
+    asking |= {ticket_key(u.get("ticket") or "") for u in fact["units"]
+               if any(sess.get("state") == "waiting" for sess in u.get("sessions") or ())}
     standup["next"] = [item for item in standup["next"]
                        if not item["ref"] or states.get(ticket_key(item["ref"])) != "gotowe"]
     keep = []
     for item in standup["waiting"]:
-        state = states.get(ticket_key(item["ref"])) if item["ref"] else None
+        key = ticket_key(item["ref"]) if item["ref"] else ""
+        state = states.get(key) if key and key not in asking else None
         if state == "todo":
             if len(standup["next"]) < ITEMS_MAX:
                 standup["next"].append({"ref": item["ref"], "text": item["text"]})

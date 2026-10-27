@@ -54,6 +54,7 @@ LOCAL_BUDGET = 600.0       # s na wszystkie wywołania lokalne w raporcie; reszt
 LOCAL_CTX = 8192           # kontekst przyjmowany, gdy rola go nie podaje (kontekst serwera)
 CHARS_PER_TOKEN = 2.5      # ostrożnie dla polskiego w JSON-ie (tokenizer qwen3)
 OUTPUT_TOKENS = 2048       # zapas kontekstu na odpowiedź o jednym projekcie
+MIN_INPUT_CHARS = 1000     # mniej miejsca na fakty — kontekst roli za mały (Ollama obcięłaby instrukcje)
 DISALLOWED = ("Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit", "WebFetch", "WebSearch", "Agent",
               "Task", "TodoWrite", "Skill", "SlashCommand", "KillShell", "BashOutput", "ExitPlanMode", "mcp__*")
 
@@ -419,10 +420,11 @@ class Model:
     Claude sama nazwa, jak przed PT-15), host i remote (czy fakty wychodzą z tego komputera), ctx."""
 
     def __init__(self, mode: str, *, model: str = DEFAULT_MODEL, role: str = "summary", env=None, config=None,
-                 started=None):
+                 started=None, cancel=None):
         self.engine = "local" if mode == "local" else "claude"
         self.env = env
         self.started = started
+        self.cancel = cancel        # models.Cancel — przerwanie wywołania lokalnego z innego wątku
         self.error: Unavailable | None = None
         self.role = role
         self.ctx = None
@@ -451,11 +453,17 @@ class Model:
 
     def input_chars(self, system_prompt: str, output_tokens: int, cap: int) -> int:
         """Ile znaków faktów zmieści się w jednym wywołaniu: dla Claude `cap`, dla modelu lokalnego
-        kontekst roli minus instrukcje i zapas na odpowiedź (≈ CHARS_PER_TOKEN znaków na token)."""
+        kontekst roli minus instrukcje i zapas na odpowiedź (≈ CHARS_PER_TOKEN znaków na token).
+        Za mały kontekst (mniej niż MIN_INPUT_CHARS na fakty) → Unavailable, zamiast obciętych instrukcji."""
         if self.engine == "claude":
             return cap
-        tokens = (self.ctx or LOCAL_CTX) - len(system_prompt) / CHARS_PER_TOKEN - output_tokens
-        return int(max(2000, min(cap, tokens * CHARS_PER_TOKEN)))
+        ctx = self.ctx or LOCAL_CTX
+        chars = (ctx - len(system_prompt) / CHARS_PER_TOKEN - output_tokens) * CHARS_PER_TOKEN
+        if chars < MIN_INPUT_CHARS:
+            need = int((len(system_prompt) + MIN_INPUT_CHARS) / CHARS_PER_TOKEN + output_tokens) + 1
+            raise Unavailable(f"Model lokalny: kontekst roli „{self.role}” za mały ({ctx} tokenów) — "
+                              f"potrzeba co najmniej {need}")
+        return int(min(cap, chars))
 
     def ask(self, payload: dict, *, system_prompt: str, schema: dict | None = None,
             timeout: float | None = None) -> str:
@@ -472,7 +480,7 @@ class Model:
         try:
             answer = models_mod.chat(json.dumps(payload, ensure_ascii=False), role=self.role, system=system_prompt,
                                      schema=schema, timeout=LOCAL_TIMEOUT if timeout is None else timeout,
-                                     config=self.config)
+                                     config=self.config, cancel=self.cancel)
         except models_mod.ModelError as exc:
             raise Unavailable(str(exc)) from None
         except Exception as exc:  # przeoczony błąd klienta nie może położyć raportu ani wątku opisów
@@ -513,30 +521,38 @@ def batches(all_facts: list[dict], model: Model, home: str = "") -> list[tuple[d
 
 def summarize(report, *, mode: str = "rules", model: str = DEFAULT_MODEL, cache_dir: str = "", home: str = "",
               env=None, timeout: float | None = None, role: str = "summary", models_config=None,
-              budget: float = LOCAL_BUDGET) -> dict:
+              budget: float = LOCAL_BUDGET, cancel=None) -> dict:
     """{"source": "model"|"rules", "engine", "model", "host", "remote", "note", "projects": {nazwa: podsumowanie},
     "cache": {...}}.
 
     mode "claude" — model przez `claude -p` (summaryModel), "local" — model lokalny z roli `role`
     (summaryModel pomijany), "rules" i każdy inny — same reguły. Pamięć podręczna w cache_dir.
     `timeout` — na jedno wywołanie (domyślnie TIMEOUT dla Claude, LOCAL_TIMEOUT dla modelu lokalnego),
-    `budget` — na wszystkie wywołania razem (liczy się przy kilku wywołaniach modelu lokalnego)."""
+    `budget` — na wszystkie wywołania razem (liczy się przy kilku wywołaniach modelu lokalnego),
+    `cancel` (models.Cancel) — zamykanie usługi: trwające wywołanie lokalne kończy się od razu, kolejnych nie ma."""
     all_facts = standup.facts(report)
     result = {"source": "rules", "engine": "", "model": "", "host": "", "remote": False, "note": "",
               "projects": {}, "cache": None}
     model_out: dict[str, dict] = {}
     if mode in MODEL_MODES and all_facts:
-        chosen = Model(mode, model=model, role=role, env=env, config=models_config)
+        chosen = Model(mode, model=model, role=role, env=env, config=models_config, cancel=cancel)
+        local = chosen.engine == "local"
         answers: dict[str, dict] = {}
         error = None
         deadline = time.monotonic() + budget
-        for payload, names in batches(all_facts, chosen, home):
+        try:
+            work = batches(all_facts, chosen, home)
+        except Unavailable as exc:  # kontekst roli za mały
+            work, error = [], exc
+        for payload, names in work:
             key = input_hash(payload, chosen.identity)
             try:
                 answer = read_cache(cache_dir, key)
                 if answer is None:
                     if isinstance(error, Failed):  # serwer albo program zawiódł — nie pytamy dalej
                         continue
+                    if cancel is not None and cancel.is_set():
+                        raise Unavailable("Model lokalny: wywołanie przerwane — usługa się zamyka")
                     left = deadline - time.monotonic()
                     if left <= 0:
                         raise Unavailable(f"Model lokalny nie zdążył w {int(budget)} s na cały raport")
@@ -550,7 +566,7 @@ def summarize(report, *, mode: str = "rules", model: str = DEFAULT_MODEL, cache_
                     what = chosen.name if chosen.engine == "claude" else \
                         f"{chosen.name} ({', '.join(names)})"
                     print(f"tide-daemon: raport: podsumowanie {what} w {time.monotonic() - started:.1f} s", flush=True)
-                valid = standup.validate(answer, [f for f in all_facts if f["project"] in names])
+                valid = standup.validate(answer, [f for f in all_facts if f["project"] in names], local=local)
             except (Failed, standup.Invalid) as exc:
                 if error is None or (isinstance(exc, Failed) and not isinstance(error, Failed)):
                     error = exc  # pierwszy błąd; niedostępny model ważniejszy od złej odpowiedzi

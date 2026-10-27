@@ -922,6 +922,33 @@ class LocalModelTest(StandupWorld):
         remote = summarize.Model("local", config=mac)
         self.assertEqual((remote.remote, remote.host), (True, "mac-studio:11434"))
 
+    def test_too_small_context_is_unavailable(self):
+        server = self.server(project_answer("alpha", "x"))
+        tiny = models_config.from_dict({"endpoints": {"local": {"url": server.url}},
+                                        "roles": {"summary": {"model": "qwen3:8b", "ctx": 2048}}})
+        model = summarize.Model("local", config=tiny)
+        with self.assertRaises(summarize.Unavailable) as caught:
+            model.input_chars(summarize.SYSTEM_PROMPT, summarize.OUTPUT_TOKENS, summarize.PROJECT_CAP)
+        self.assertIn("kontekst roli „summary” za mały (2048", str(caught.exception))
+        result = self.local(tiny)
+        self.assertEqual(result["source"], "rules")
+        self.assertIn("Model lokalny niedostępny — opis bez modelu (kontekst roli „summary” za mały", result["note"])
+        self.assertEqual(server.requests, [], "bez obciętych instrukcji — nie pytamy wcale")
+
+    def test_cancel_stops_the_call_and_the_remaining_projects(self):
+        import threading
+        from tide_daemon.models import Cancel
+        server = self.server(project_answer("alpha", "x"), project_answer("beta", "y"))
+        server.delay = 5.0
+        cancel = Cancel()
+        threading.Timer(0.3, cancel.set).start()
+        started = time.monotonic()
+        result = self.local(self.config(server.url), cancel=cancel)
+        self.assertLess(time.monotonic() - started, 1.5, "zamykanie usługi nie czeka na model")
+        self.assertEqual(result["source"], "rules")
+        self.assertIn("przerwane", result["note"])
+        self.assertEqual(len(server.requests), 1, "po przerwaniu nie pytamy o kolejne projekty")
+
     def test_cache_key_separates_claude_and_local(self):
         payload, _names = summarize.model_input(standup.facts(self.report), self.p["home"])
         a = summarize.Model("local", config=self.config("http://127.0.0.1:11434"))
@@ -1012,7 +1039,8 @@ class MarkdownAnswerTest(StandupWorld):
                         {"ref": "ALPHA-1", "text": "Indeks czeka na ciebie"},
                         {"ref": "ALPHA-3", "text": "Czy wydajemy w piątek?"}],
             "next": [{"ref": "ALPHA-4", "text": "Eksport do CSV"}, {"ref": "ALPHA-1", "text": "Planuje się indeks"}],
-            "chores": [{"ref": "ALPHA-4", "text": "Eksport do CSV."}, {"text": "Indeks gotowy"}]}]}, facts)["alpha"]
+            "chores": [{"ref": "ALPHA-4", "text": "Eksport do CSV."}, {"text": "Indeks gotowy"}]}]}, facts,
+            local=True)["alpha"]
         self.assertEqual([i["text"] for i in alpha["done"]], ["Indeks gotowy."])
         self.assertEqual([(i["ref"], i["text"]) for i in alpha["waiting"]], [("ALPHA-3", "Czy wydajemy w piątek?")],
                          "ticket todo przechodzi do „Dalej”, gotowy znika")
@@ -1020,6 +1048,43 @@ class MarkdownAnswerTest(StandupWorld):
                          [("ALPHA-4", "Eksport do CSV"), ("ALPHA-4", "Trzeba zrobić eksport do CSV")],
                          "gotowy ticket nie jest „Dalej”")
         self.assertEqual(alpha["chores"], [], "powtórzenia z wcześniejszych grup znikają")
+
+    def test_claude_answer_with_questions_on_done_and_todo_tickets_is_unchanged(self):
+        # Review PT-15: push tylko na prośbę, pytania przy ticketach todo — typowe, poprawne odpowiedzi Claude.
+        facts = standup.facts(self.report)
+        answer = {"projects": [{
+            "name": "alpha", "done": [{"ref": "ALPHA-1", "text": "Indeks wyszukiwania gotowy"}],
+            "waiting": [{"ref": "ALPHA-1", "text": "Indeks gotowy — agent pyta, czy wypchnąć gałąź i scalić"},
+                        {"ref": "ALPHA-4", "text": "Agent czeka na decyzję, jaki separator przed startem"}],
+            "next": [{"ref": "ALPHA-1", "text": "Scalić indeks po akceptacji"}],
+            "chores": [{"ref": "ALPHA-1", "text": "Indeks wyszukiwania gotowy"}]}]}
+        alpha = standup.validate(answer, facts)["alpha"]
+        self.assertEqual([(i["ref"], i["text"]) for i in alpha["waiting"]], [
+            ("ALPHA-1", "Indeks gotowy — agent pyta, czy wypchnąć gałąź i scalić"),
+            ("ALPHA-4", "Agent czeka na decyzję, jaki separator przed startem")])
+        self.assertEqual([(i["ref"], i["text"]) for i in alpha["next"]], [("ALPHA-1", "Scalić indeks po akceptacji")])
+        self.assertEqual(len(alpha["chores"]), 1, "bez usuwania powtórzeń w odpowiedzi Claude")
+
+    def test_local_answer_keeps_waiting_items_with_question_or_waiting_session(self):
+        def t(ident, state, question=""):
+            return {"id": ident, "key": ident, "title": ident, "state": state, "note": "", "result": "",
+                    "question": question, "branch": "", "review": ""}
+        fact = {"project": "x", "plans": [], "questions": [], "unpushed": [], "tickets": [
+            t("XY-1", "todo", "Jaki separator?"), t("XY-2", "todo"), t("XY-3", "gotowe"), t("XY-4", "gotowe")],
+            "units": [{"branch": "feat/xy-3", "commits": [], "ticket": "XY-3", "sessions": [{"state": "waiting"}]}]}
+        out = standup.validate({"projects": [{"name": "x", "waiting": [
+            {"ref": "XY-1", "text": "Jaki separator przed startem?"}, {"ref": "XY-2", "text": "Trzeba zrobić XY-2"},
+            {"ref": "XY-3", "text": "Agent pyta, czy wypchnąć"}, {"ref": "XY-4", "text": "Gotowe XY-4"}]}]},
+            [fact], local=True)["x"]
+        self.assertEqual([i["ref"] for i in out["waiting"]], ["XY-1", "XY-3"],
+                         "pytanie w faktach albo czekająca sesja — pozycja zostaje")
+        self.assertEqual([i["ref"] for i in out["next"]], ["XY-2"])
+
+    def test_numbered_sentence_is_not_a_list(self):
+        for text in ("2. etap migracji gotowy", "1) wersja raportu", "- jedno zdanie z myślnikiem"):
+            self.assertEqual(standup.one_line(text), text)
+        self.assertEqual(standup.one_line("2. etap **migracji** gotowy"), "2. etap migracji gotowy")
+        self.assertEqual(standup.one_line("1. Indeks\n2. Eksport"), "Indeks. Eksport")
 
     def test_plain_claude_sentences_stay_unchanged(self):
         for text in ("Dodaliśmy warunek na wartościach logów: można filtrować po części wartości (np. „A_B”).",
@@ -1047,7 +1112,12 @@ class SettingsTest(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"summary": "gpt", "summaryModel": "haiku; rm -rf /"}, fh)
         settings, warnings = schedule.load_settings(path)
-        self.assertEqual((settings.summary, settings.summary_model, len(warnings)), ("claude", "sonnet", 2))
+        self.assertEqual((settings.summary, settings.summary_model, len(warnings)), ("rules", "sonnet", 2),
+                         "nieznany tryb (literówka „Local”) to reguły, nie wysyłka do Anthropic")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"summary": "Local"}, fh)
+        settings, warnings = schedule.load_settings(path)
+        self.assertEqual((settings.summary, len(warnings)), ("rules", 1))
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@
   /api/chat po 302 stałby się GET-em — stan pokazywałby „online”, choć odpowiada inny serwer.
 - Bez pośredników z $http_proxy — serwer jest na tym komputerze albo w sieci lokalnej (Tailscale), a
   pośrednik nie powinien widzieć ani promptów, ani tokenu (http.client nie czyta tych zmiennych).
+- Przerwanie z zewnątrz (`Cancel`, np. zamykanie usługi): set() z innego wątku zamyka gniazda
+  trwających zapytań, więc wywołanie kończy się od razu ModelError, a nie po terminie.
 Treść błędu serwera trafia do komunikatu (przycięta, bez znaków sterujących) — nagłówki z tokenem nigdy.
 """
 from __future__ import annotations
@@ -38,6 +40,41 @@ class ModelError(Exception):
 
 class _Expired(Exception):
     """Minął termin całego zapytania."""
+
+
+class _Cancelled(Exception):
+    """Wywołanie przerwane z zewnątrz (Cancel.set())."""
+
+
+class Cancel:
+    """Przerwanie wywołań modelu z innego wątku (zamykanie usługi). set() jest trwałe: trwające zapytania
+    tracą gniazdo od razu, a nowe w ogóle nie startują."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._set = False
+        self._hooks: set = set()
+
+    def is_set(self) -> bool:
+        return self._set
+
+    def set(self) -> None:
+        with self._lock:
+            self._set = True
+            hooks = list(self._hooks)
+        for hook in hooks:
+            hook()
+
+    def _register(self, hook) -> bool:
+        with self._lock:
+            if self._set:
+                return False
+            self._hooks.add(hook)
+            return True
+
+    def _unregister(self, hook) -> None:
+        with self._lock:
+            self._hooks.discard(hook)
 
 
 def _clean(text: str) -> str:
@@ -105,22 +142,38 @@ def _connect(hostname: str, port: int, deadline: float) -> socket.socket:
     raise last or OSError("brak adresu")
 
 
-def _exchange(endpoint, method: str, path: str, data: bytes | None, headers: dict, deadline: float):
-    """(kod, treść) z jednego zapytania; po terminie gniazdo jest zamykane z innego wątku."""
+def _exchange(endpoint, method: str, path: str, data: bytes | None, headers: dict, deadline: float,
+              cancel: Cancel | None = None):
+    """(kod, treść) z jednego zapytania; po terminie albo po cancel.set() gniazdo jest zamykane z innego wątku."""
     scheme, hostname, port = endpoint.address()
     port = port or (443 if scheme == "https" else 80)
+    if cancel is not None and cancel.is_set():
+        raise _Cancelled()
     sock = _connect(hostname, port, deadline)
     expired = threading.Event()
+    cancelled = threading.Event()
 
-    def cut():
-        expired.set()
+    def shut():
         try:
             sock.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
 
+    def cut():
+        expired.set()
+        shut()
+
+    def stop():
+        cancelled.set()
+        shut()
+
     timer = conn = None
+    registered = False
     try:  # także _left() i konstruktor w try: termin może minąć tuż po połączeniu, gniazdo i tak zamykamy
+        if cancel is not None:
+            registered = cancel._register(stop)
+            if not registered:
+                raise _Cancelled()
         timer = threading.Timer(_left(deadline), cut)
         timer.daemon = True
         timer.start()
@@ -133,14 +186,20 @@ def _exchange(endpoint, method: str, path: str, data: bytes | None, headers: dic
         conn.request(method, path, body=data, headers=headers)
         response = conn.getresponse()
         raw = response.read(MAX_BYTES + 1)
+        if cancelled.is_set():
+            raise _Cancelled()
         if expired.is_set():  # odczyt przerwany zamknięciem gniazda kończy się krótszą treścią, nie błędem
             raise _Expired()
         return response.status, raw
     except (OSError, http.client.HTTPException):
+        if cancelled.is_set():
+            raise _Cancelled() from None
         if expired.is_set() or time.monotonic() >= deadline:
             raise _Expired() from None
         raise
     finally:
+        if registered:
+            cancel._unregister(stop)
         if timer:
             timer.cancel()
         if conn:
@@ -148,16 +207,18 @@ def _exchange(endpoint, method: str, path: str, data: bytes | None, headers: dic
         sock.close()
 
 
-def request(endpoint, method: str, path: str, body=None, timeout: float = 10.0):
+def request(endpoint, method: str, path: str, body=None, timeout: float = 10.0, cancel: Cancel | None = None):
     """Zapytanie do `endpoint.url + path`, w całości najwyżej `timeout` s; odpowiedź JSON (dict albo list).
-    Błąd → ModelError."""
+    `cancel` — przerwanie z innego wątku. Błąd → ModelError."""
     host = endpoint.host
     headers = endpoint.headers()  # ModelError, gdy pliku tokenu nie da się odczytać
     data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
     full_path = urllib.parse.urlsplit(endpoint.url).path.rstrip("/") + path
     deadline = time.monotonic() + timeout
     try:
-        status, raw = _exchange(endpoint, method, full_path, data, headers, deadline)
+        status, raw = _exchange(endpoint, method, full_path, data, headers, deadline, cancel)
+    except _Cancelled:
+        raise ModelError(f"Model lokalny: wywołanie przerwane — usługa się zamyka ({host})") from None
     except _Expired:
         raise ModelError(f"Model lokalny nie odpowiedział w {timeout:g} s ({host})") from None
     except socket.gaierror:

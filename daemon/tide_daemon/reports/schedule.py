@@ -95,7 +95,8 @@ def load_settings(path: str | None = None, at: str | None = None, enabled: bool 
     Plik JSON: {"at": "07:00", "dayStart": "04:00", "keepDays": 30, "enabled": true, "summary": "claude",
     "summaryModel": "sonnet"}. `summary`: "claude", "local" albo "rules"; `summaryModel` liczy się tylko
     w trybie "claude" — w "local" model bierzemy z ról `summary` i `describe` w models.json. Błędna wartość
-    nie zatrzymuje usługi — zostaje domyślna, a ostrzeżenie idzie do dziennika."""
+    nie zatrzymuje usługi — zostaje domyślna, a ostrzeżenie idzie do dziennika; wyjątek: nieznany `summary`
+    (np. literówka „Local”) to "rules", żeby pomyłka nie wysyłała faktów do Anthropic. Bez klucza — "claude"."""
     settings, warnings = Settings(), []
     data = {}
     if path and os.path.exists(path):
@@ -124,8 +125,10 @@ def load_settings(path: str | None = None, at: str | None = None, enabled: bool 
     if "summary" in data:
         if data["summary"] in SUMMARY_MODES:
             settings.summary = data["summary"]
-        else:
-            warnings.append(f"raport: summary musi być jednym z {', '.join(SUMMARY_MODES)}, jest {data['summary']!r}")
+        else:  # literówka („Local”) nie może wysłać faktów do Anthropic — bez modelu, z ostrzeżeniem
+            settings.summary = "rules"
+            warnings.append(f"raport: summary musi być jednym z {', '.join(SUMMARY_MODES)}, jest {data['summary']!r} "
+                            f"— opis z reguł")
     if "summaryModel" in data:
         value = data["summaryModel"]
         if isinstance(value, str) and MODEL_RE.match(value):

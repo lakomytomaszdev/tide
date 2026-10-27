@@ -59,19 +59,19 @@ def _count(value) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _ollama(endpoint, model, messages, schema, ctx, timeout) -> tuple[str, dict]:
+def _ollama(endpoint, model, messages, schema, ctx, timeout, cancel=None) -> tuple[str, dict]:
     body = {"model": model, "messages": messages, "stream": False, "think": False}
     if ctx:
         body["options"] = {"num_ctx": ctx}
     if schema is not None:
         body["format"] = schema
     try:
-        data = request(endpoint, "POST", "/api/chat", body, timeout)
+        data = request(endpoint, "POST", "/api/chat", body, timeout, cancel)
     except ModelError as exc:
         if exc.status != 400 or "think" not in exc.detail.lower():
             raise
         body.pop("think")  # model bez przełącznika myślenia (jak w scripts/ollama/check.py)
-        data = request(endpoint, "POST", "/api/chat", body, timeout)
+        data = request(endpoint, "POST", "/api/chat", body, timeout, cancel)
     message = data.get("message") if isinstance(data, dict) else None
     text = message.get("content") if isinstance(message, dict) else None
     metrics = {"promptTokens": _count(data.get("prompt_eval_count")), "outputTokens": _count(data.get("eval_count")),
@@ -80,12 +80,12 @@ def _ollama(endpoint, model, messages, schema, ctx, timeout) -> tuple[str, dict]
     return text, metrics
 
 
-def _openai(endpoint, model, messages, schema, ctx, timeout) -> tuple[str, dict]:
+def _openai(endpoint, model, messages, schema, ctx, timeout, cancel=None) -> tuple[str, dict]:
     body = {"model": model, "messages": messages, "stream": False}
     if schema is not None:
         body["response_format"] = {"type": "json_schema",
                                    "json_schema": {"name": "answer", "strict": True, "schema": schema}}
-    data = request(endpoint, "POST", "/v1/chat/completions", body, timeout)
+    data = request(endpoint, "POST", "/v1/chat/completions", body, timeout, cancel)
     text = None
     choices = data.get("choices") if isinstance(data, dict) else None
     if isinstance(choices, list) and choices and isinstance(choices[0], dict):
@@ -101,10 +101,11 @@ ADAPTERS = {"ollama": _ollama, "openai": _openai}
 
 def chat(messages, *, role: str | None = None, endpoint: str | None = None, model: str | None = None,
          system: str | None = None, schema: dict | None = None, ctx: int | None = None,
-         timeout: float = DEFAULT_TIMEOUT_S, config=None) -> Answer:
+         timeout: float = DEFAULT_TIMEOUT_S, config=None, cancel=None) -> Answer:
     """Odpowiedź modelu. `messages` to tekst polecenia albo lista {role, content}; `system` — polecenie
     systemowe na początku. Model z roli (`role`) albo jawnie (`endpoint` — domyślnie `default`, `model`).
-    `ctx` nadpisuje kontekst roli. `schema` — schemat JSON odpowiedzi. Błąd → ModelError."""
+    `ctx` nadpisuje kontekst roli. `schema` — schemat JSON odpowiedzi. `cancel` (transport.Cancel) — przerwanie
+    z innego wątku (zamykanie usługi). Błąd → ModelError."""
     cfg = config if config is not None else config_mod.load()
     if role is not None:
         chosen = cfg.role(role)
@@ -117,7 +118,8 @@ def chat(messages, *, role: str | None = None, endpoint: str | None = None, mode
         context = ctx or None
     target = cfg.endpoint(endpoint_name)
     started = time.monotonic()
-    text, metrics = ADAPTERS[target.kind](target, model_name, _messages(messages, system), schema, context, timeout)
+    text, metrics = ADAPTERS[target.kind](target, model_name, _messages(messages, system), schema, context, timeout,
+                                          cancel)
     if not isinstance(text, str) or not text.strip():
         raise ModelError(f"Model lokalny: pusta odpowiedź modelu {model_name} ({target.host})")
     metrics = {k: v for k, v in metrics.items() if v is not None}

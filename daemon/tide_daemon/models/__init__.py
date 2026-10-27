@@ -14,4 +14,4 @@ i pokazuje informację zamiast opisu. Odpytywanie stanu: models_monitor.py, D-Bu
 Opis i kontrakt D-Bus: docs/tide-daemon.md (sekcja „Modele lokalne”), uzasadnienie: docs/decisions.md.
 """
 from .client import Answer, chat  # noqa: F401
-from .transport import ModelError  # noqa: F401
+from .transport import Cancel, ModelError  # noqa: F401

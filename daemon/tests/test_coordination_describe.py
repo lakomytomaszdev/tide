@@ -400,6 +400,65 @@ class LocalDescriberTest(unittest.TestCase):
         again.decorate(boards)
         self.assertEqual(boards[0]["tickets"][0]["describedBy"], "model", "powrót do Claude — jego opisy z pamięci")
 
+    def test_stop_interrupts_a_local_call(self):
+        import threading
+        import time
+        server = start_server(self, {("POST", "/api/chat"): [ollama_tickets("~a")]})
+        server.delay = 5.0
+        d = self.describer(self.config(server.url))
+        job = self.settle(d, [board([ticket("~a")])])
+        out = {}
+        worker = threading.Thread(target=lambda: out.setdefault("ok", d.run(job)))
+        started = time.monotonic()
+        worker.start()
+        time.sleep(0.3)
+        d.stop()
+        worker.join(5)
+        self.assertLess(time.monotonic() - started, 1.5, "zamykanie usługi nie czeka 90 s na model")
+        self.assertFalse(out["ok"])
+
+    def test_context_too_small_for_one_ticket(self):
+        server = start_server(self, {("POST", "/api/chat"): [ollama_tickets("~a")]})
+        d = self.describer(self.config(server.url, ctx=1200))
+        boards = [board([ticket("~a")])]
+        self.assertFalse(d.run(self.settle(d, boards)))
+        d.decorate(boards)
+        self.assertIn("kontekst roli „describe” za mały", boards[0]["tickets"][0]["describeNote"])
+        self.assertEqual(server.requests, [])
+
+    def test_fit_counts_the_coordinator_context(self):
+        server = start_server(self, {("POST", "/api/chat"): [ollama_tickets(*[f"~t{i}" for i in range(8)])]})
+        d = self.describer(self.config(server.url, ctx=2600))
+        big = [ticket(f"~t{i}", lastActivityTs=float(i), brief="Polecenie " + "słowo " * 60) for i in range(8)]
+        job = self.settle(d, [board(big)])
+        job["context"]["title"] = "Tytuł koordynatora " * 40
+        self.assertTrue(d.run(job))
+        payload = json.loads(server.requests[-1]["body"]["messages"][1]["content"])
+        model = d._model()
+        budget = model.input_chars(describe.BOARD_PROMPT, describe.TICKET_OUTPUT_TOKENS * len(payload["tickets"]),
+                                   1 << 20)
+        self.assertLessEqual(len(json.dumps(payload, ensure_ascii=False)), budget, "wejście razem z kontekstem")
+
+    def test_claude_model_change_keeps_stale_descriptions(self):
+        sonnet = describe.Describer(mode="claude", model="sonnet", cache_file=self.cache, clock=lambda: self.now,
+                                    log=lambda text: None, call=FakeModel())
+        boards = [board([ticket("~a")])]
+        self.assertTrue(sonnet.run(self.settle(sonnet, boards)))
+        haiku = describe.Describer(mode="claude", model="haiku", cache_file=self.cache, clock=lambda: self.now,
+                                   log=lambda text: None, call=FakeModel())
+        boards = [board([ticket("~a")])]
+        haiku.decorate(boards)
+        self.assertEqual((boards[0]["tickets"][0]["title"], boards[0]["tickets"][0]["describedBy"]),
+                         ("Opis ~a", "model-stale"), "w obrębie Claude zmiana modelu jak przed PT-15")
+        first = start_server(self, {("POST", "/api/chat"): [ollama_tickets("~a")]})
+        local = self.describer(self.config(first.url))
+        boards = [board([ticket("~a")])]
+        self.assertTrue(local.run(self.settle(local, boards)))
+        other = self.describer(self.config(f"http://127.0.0.1:{closed_port()}"))
+        boards = [board([ticket("~a")])]
+        other.decorate(boards)
+        self.assertEqual(boards[0]["tickets"][0]["describedBy"], "rules", "inny punkt lokalny — bez cudzego opisu")
+
     def test_batch_limited_by_count_and_context(self):
         server = start_server(self, {("POST", "/api/chat"): [ollama_tickets(*[f"~t{i}" for i in range(20)])]})
         d = self.describer(self.config(server.url))

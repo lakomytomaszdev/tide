@@ -42,6 +42,7 @@ import tempfile
 import threading
 import time
 
+from .. import models as models_mod
 from ..reports import standup, summarize
 from . import review
 
@@ -336,6 +337,7 @@ class Describer:
         self._last_error = ""
         self._proc = None
         self._stopped = False
+        self._cancel = models_mod.Cancel()         # stop() przerywa trwające wywołanie modelu lokalnego
         self._load()
 
     # --- wątek odświeżania --------------------------------------------------------------------
@@ -361,7 +363,7 @@ class Describer:
                     fallback = rules(t)
                     entry = self._entries.get(digest) if described else None
                     old = self._entries.get(last.get(t.get("key"), "")) if described else None
-                    if old and (old.get("by") or old.get("model")) != identity:
+                    if old and not _same_engine(old.get("by") or old.get("model") or "", identity):
                         old = None  # opis innego modelu (np. Claude po przejściu na lokalny) — nie pokazujemy
                     if entry and entry.get("model"):
                         desc, source = entry, "model"
@@ -431,12 +433,13 @@ class Describer:
             self._called[cid] = self.clock()
         model = self._model()
         tickets = job["tickets"]
-        if model.engine == "local":
-            tickets = _fit(tickets, model.input_chars(BOARD_PROMPT, TICKET_OUTPUT_TOKENS * len(tickets), 1 << 20))
-        hashes = {t["key"]: job["hashes"][t["key"]] for t in tickets}
-        payload = {"coordinator": job["context"], "tickets": tickets}
+        hashes = dict(job["hashes"])
         started = time.monotonic()
         try:
+            if model.engine == "local":
+                tickets = _fit(job["context"], tickets, model)
+                hashes = {t["key"]: job["hashes"][t["key"]] for t in tickets}
+            payload = {"coordinator": job["context"], "tickets": tickets}
             self.calls += 1
             text = self.call(payload) if self.call is not None else self._ask(model, payload)
             answer = summarize.parse_answer(text)
@@ -470,8 +473,10 @@ class Describer:
         return True
 
     def stop(self) -> None:
-        """Zamykanie usługi: żadnych nowych wywołań, trwające `claude` ginie razem z grupą."""
+        """Zamykanie usługi: żadnych nowych wywołań, trwające `claude` ginie razem z grupą, a trwające
+        wywołanie modelu lokalnego traci połączenie od razu (models.Cancel)."""
         self._stopped = True
+        self._cancel.set()
         proc = self._proc
         if proc is not None and proc.poll() is None:
             summarize.kill(proc)
@@ -481,7 +486,7 @@ class Describer:
     def _model(self) -> "summarize.Model":
         """Model na ten przebieg (models.json czytany teraz — zmiana działa bez restartu usługi)."""
         return summarize.Model(self.mode, model=self.model, role=self.role, env=self.env, config=self.models_config,
-                               started=self._started)
+                               started=self._started, cancel=self._cancel)
 
     def _identity(self) -> str:
         """Tożsamość modelu do skrótów faktów: dla Claude nazwa modelu (jak przed PT-15), dla lokalnego
@@ -549,15 +554,33 @@ class Describer:
             self.log(f"nie zapisano opisów kart: {exc}")
 
 
-def _fit(tickets: list, chars: int) -> list:
-    """Najświeższe tickety, których fakty razem mieszczą się w `chars` znakach JSON-u (co najmniej jeden)."""
-    out, used = [], 0
+def _same_engine(old: str, identity: str) -> bool:
+    """Czy opis z pamięci może być „model-stale”: w obrębie Claude tak (zmiana summaryModel, jak przed PT-15),
+    model lokalny — tylko ten sam punkt, adres, model i kontekst; nigdy claude ↔ local."""
+    if old.startswith("local|") or identity.startswith("local|"):
+        return old == identity
+    return True
+
+
+def _fit(context: dict, tickets: list, model) -> list:
+    """Najświeższe tickety, które razem z kontekstem koordynatora (całe wejście) mieszczą się w kontekście roli
+    z zapasem na odpowiedź. Gdy nie mieści się nawet jeden — summarize.Unavailable."""
+    out: list = []
     for t in tickets:
-        size = len(json.dumps(t, ensure_ascii=False))
-        if out and used + size > chars:
+        candidate = out + [t]
+        size = len(json.dumps({"coordinator": context, "tickets": candidate}, ensure_ascii=False))
+        try:
+            budget = model.input_chars(BOARD_PROMPT, TICKET_OUTPUT_TOKENS * len(candidate), 1 << 20)
+        except summarize.Unavailable:
+            if not out:
+                raise
+            break
+        if size > budget:
+            if not out:
+                raise summarize.Unavailable(f"Model lokalny: kontekst roli „{model.role}” za mały na jeden ticket "
+                                            f"({model.ctx or summarize.LOCAL_CTX} tokenów)")
             break
         out.append(t)
-        used += size
     return out
 
 

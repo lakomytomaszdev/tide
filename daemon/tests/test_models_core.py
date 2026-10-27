@@ -460,6 +460,23 @@ class OllamaClientTest(unittest.TestCase):
         self.assertEqual(str(caught.exception),
                          f"Model lokalny nie odpowiedział w 0.2 s ({server.url.removeprefix('http://')})")
 
+    def test_cancel_from_another_thread_ends_the_call_at_once(self):
+        from tide_daemon.models import Cancel
+        server = self.server()
+        server.delay = 5.0
+        cancel = Cancel()
+        threading.Timer(0.3, cancel.set).start()
+        started = time.monotonic()
+        with self.assertRaises(ModelError) as caught:
+            client.chat("x", role="summary", timeout=30, config=cfg_for(server.url), cancel=cancel)
+        self.assertLess(time.monotonic() - started, 1.5)
+        host = server.url.removeprefix("http://")
+        self.assertEqual(str(caught.exception), f"Model lokalny: wywołanie przerwane — usługa się zamyka ({host})")
+        count = len(server.requests)
+        with self.assertRaises(ModelError):
+            client.chat("x", role="summary", config=cfg_for(server.url), cancel=cancel)
+        self.assertEqual(len(server.requests), count, "po przerwaniu nowe zapytania nie startują")
+
     def test_token_goes_only_to_the_header(self):
         server = self.server()
         token = "tok-" + secrets.token_hex(12)
