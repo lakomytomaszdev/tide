@@ -17,3 +17,8 @@ os.environ["TIDE_CLAUDE_BIN"] = ""
 # kontenerów): domyślnie nieistniejący socket, usługi w testach dziedziczą tę zmienną. Testy
 # obszaru Docker podają socket atrapy Engine API (fake_docker.py).
 os.environ["DOCKER_HOST"] = "unix:///nonexistent/tide-tests/docker.sock"
+
+# Testy nigdy nie czytają prawdziwej tablicy pracy (~/DevWorkspace/tide-board): plany projektów
+# z `ai-docs: tide` (coordination/boardplans.py) i katalogi agentów (/Tasks addDirs) bierzemy
+# z nieistniejącego katalogu, chyba że test poda własną tablicę (TIDE_BOARD_DIR, --board-dir).
+os.environ["TIDE_BOARD_DIR"] = "/nonexistent/tide-tests/board"

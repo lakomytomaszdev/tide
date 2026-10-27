@@ -3,7 +3,8 @@
 Źródła (oba opcjonalne):
 - plik tablicy koordynacji z usługi ($XDG_STATE_HOME/tide/coordination.json, coordination/actions.py):
   stany ticketów wyprowadzone z pracy podagentów, planu i YouTracka,
-- plany w repozytoriach projektów (docs/agents/plans/*.md, docs/agent-plan-standard.md): aktywne,
+- plany w repozytoriach projektów (docs/agents/plans/*.md, docs/agent-plan-standard.md) i — dla projektów
+  tablicy z `ai-docs: tide` — w repozytorium tablicy (docs/<projekt>/plans/, standard 1.1): aktywne,
   wstrzymane albo zmienione w okresie raportu — gdy tablica ich nie zna (np. usługa jeszcze nie
   przeczytała koordynatora), stan bierzemy z samego planu.
 
@@ -76,6 +77,7 @@ def _attach(projects: list, start: float, end: float, cache_file: str | None, tr
         entry["question"] = str(b.get("question") or "")
         entry["all"] = [dict(t) for t in b.get("tickets") or []]
         entry["goal"] = str(plan.get("goal") or "") or _goal(plan.get("path") or "")
+        entry["card"] = str(b.get("card") or plan.get("card") or "")
         project.plans.append(entry)
     for project in projects:
         if not getattr(project, "is_repo", False):
@@ -96,6 +98,7 @@ def _attach(projects: list, start: float, end: float, cache_file: str | None, tr
             entry["id"], entry["question"], entry["all"] = "", "", [dict(t, lastActivityTs=plan.updated_ts)
                                                                     for t in tickets]
             entry["goal"] = plan.goal
+            entry["card"] = plan.card
             project.plans.append(entry)
     for project in projects:
         project.plans.sort(key=lambda e: (-e["active"], -e["last"]))

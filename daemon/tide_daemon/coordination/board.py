@@ -272,6 +272,7 @@ def build(coord, *, plan=None, aliases=None, issues=None, tracker=None, live=Non
         "canActivate": bool(live and live.get("canActivate")),
         "question": question,
         "plan": plan.to_json() if plan else None,
+        "card": plan.card if plan else "",
         "tracker": tracker or {"kind": plan.tracker if plan else "none"},
         "counts": dict(counts, total=total, done=counts["gotowe"]),
         "progress": {"done": counts["gotowe"], "total": total,
@@ -289,7 +290,7 @@ def summary(board: dict) -> dict:
     """Pozycja listy koordynatorów (Coordinators()) — bez ticketów i przebiegów."""
     keys = ("id", "tool", "sessionId", "project", "repoPath", "cwd", "branch", "title", "label", "model",
             "startedTs", "lastActivityTs", "state", "reason", "live", "canActivate", "question", "counts",
-            "progress", "spawned", "running")
+            "progress", "spawned", "running", "card")
     out = {k: board.get(k) for k in keys}
     out["planPath"] = (board.get("plan") or {}).get("path", "")
     out["tracker"] = (board.get("tracker") or {}).get("kind", "none")

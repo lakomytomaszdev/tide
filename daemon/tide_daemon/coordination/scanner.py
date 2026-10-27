@@ -168,7 +168,7 @@ class CoordinationScanner:
         if not roots:
             roots = repo_roots(coord.cwd)
         plans = [self._plan(path) for path in _plan_files(roots)]
-        plan = plan_mod.pick([p for p in plans if p is not None], coord.session_id, coord.tool)
+        plan = plan_mod.pick([p for p in plans if p is not None], coord.session_id, coord.tool, coord.branch or "")
         aliases = ids.load_aliases(roots)
         backlog = self._backlog_entries(roots, aliases)
         issues, tracker = None, None
@@ -331,9 +331,10 @@ def repo_roots(cwd: str) -> list[str]:
 
 
 def _plan_files(roots) -> list[str]:
+    """Pliki planów repozytorium: docs/agents/plans worktree i głównego katalogu, potem katalog
+    projektu w tablicy (`ai-docs: tide`, standard 1.1)."""
     out, seen = [], set()
-    for root in roots:
-        folder = os.path.join(root, plan_mod.PLANS_DIR)
+    for folder in plan_mod.plan_folders(roots):
         try:
             names = sorted(os.listdir(folder))
         except OSError:

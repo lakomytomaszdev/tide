@@ -1,5 +1,9 @@
 """Plan pracy agentów: docs/agents/plans/YYYY-MM-DD-<slug>.md (standard: docs/agent-plan-standard.md).
 
+Standard 1.1: opcjonalny klucz `card: K-12` (karta tablicy Tide, której służy plan), a plany projektów
+z dokumentami AI „w Tide” leżą w repozytorium tablicy (`<tablica>/docs/<projekt>/plans/`,
+boardplans.py) — plan_folders(roots) daje oba miejsca dla repozytorium.
+
 Plik ma frontmatter YAML (tylko płaskie pary `klucz: wartość`, więc czytamy go sami, bez
 biblioteki YAML) i tabelę Markdown `| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |`.
 Sekcje pod tabelą to wolny tekst — nie czytamy ich.
@@ -25,6 +29,8 @@ STATE_ALIASES = {"w toku": "w-toku", "wtoku": "w-toku", "in-progress": "w-toku",
                  "done": "gotowe", "todo": "todo", "to-do": "todo", "do zrobienia": "todo",
                  "rejected": "odrzucone", "waiting": "czeka", "blocked": "czeka"}
 MAX_BYTES = 512 * 1024
+CARD_RE = re.compile(r"^K-([1-9][0-9]{0,8})$", re.IGNORECASE)
+CARD_IN_BRANCH = re.compile(r"(?:^|[/_-])k-([1-9][0-9]{0,8})(?=$|[-_/.])", re.IGNORECASE)
 
 
 @dataclass
@@ -53,12 +59,14 @@ class Plan:
     rows: list = field(default_factory=list)
     errors: list = field(default_factory=list)
     goal: str = ""             # cel planu: akapit pod nagłówkiem „Cel…” albo pierwszy akapit tekstu
+    card: str = ""             # karta tablicy Tide (`card: K-12`, standard 1.1) albo pusty
 
     def to_json(self) -> dict:
         return {"path": self.path, "title": self.title, "tracker": self.tracker, "trackerUrl": self.tracker_url,
                 "trackerProject": self.tracker_project, "prefix": self.prefix, "coordinator": self.coordinator,
                 "session": self.session, "status": self.status, "updated": self.updated,
-                "updatedTs": round(self.updated_ts, 3), "errors": list(self.errors), "goal": self.goal}
+                "updatedTs": round(self.updated_ts, 3), "errors": list(self.errors), "goal": self.goal,
+                "card": self.card}
 
 
 def parse(text: str, path: str = "", mtime: float = 0.0) -> Plan | None:
@@ -88,6 +96,11 @@ def parse(text: str, path: str = "", mtime: float = 0.0) -> Plan | None:
         coordinator = ""
     plan.coordinator = coordinator
     plan.session = meta.get("session", "").strip()
+    card = meta.get("card", "").strip()
+    match = CARD_RE.match(card)
+    if card and not match:
+        plan.errors.append(f"niepoprawny klucz card „{card}” (oczekiwano K-<numer>)")
+    plan.card = f"K-{int(match.group(1))}" if match else ""
     status = meta.get("status", "active").strip().lower() or "active"
     if status not in STATUSES:
         plan.errors.append(f"nieznany status „{status}” (active, paused, done)")
@@ -118,11 +131,25 @@ def read(path: str) -> Plan | None:
     return parse(text, path, st.st_mtime)
 
 
+def plan_folders(roots, board_root: str | None = None) -> list[str]:
+    """Katalogi planów repozytorium: docs/agents/plans w podanych katalogach (worktree koordynatora,
+    główne repozytorium), a po nich katalogi planów projektu w tablicy (`ai-docs: tide`)."""
+    from . import boardplans  # tu: boardplans czyta pliki tablicy, a plan.py jest bazą dla wszystkich
+    roots = [r for r in roots or () if r]
+    return [os.path.join(root, PLANS_DIR) for root in roots] + boardplans.plan_dirs(roots, board_root)
+
+
+def card_of_branch(branch: str) -> str:
+    """ID karty z nazwy gałęzi (`claude/k-12-okno` → K-12) albo pusty napis."""
+    match = CARD_IN_BRANCH.search(branch or "")
+    return f"K-{int(match.group(1))}" if match else ""
+
+
 def find_plans(roots) -> list[Plan]:
-    """Plany z docs/agents/plans w podanych katalogach (worktree koordynatora, główne repozytorium)."""
+    """Plany z docs/agents/plans w podanych katalogach (worktree koordynatora, główne repozytorium)
+    i z katalogu projektu w tablicy (plan_folders)."""
     out, seen = [], set()
-    for root in roots:
-        folder = os.path.join(root or "", PLANS_DIR)
+    for folder in plan_folders(roots):
         try:
             names = sorted(os.listdir(folder))
         except OSError:
@@ -137,13 +164,22 @@ def find_plans(roots) -> list[Plan]:
     return out
 
 
-def pick(plans: list[Plan], session_id: str, tool: str) -> Plan | None:
-    """Plan koordynatora: wskazany przez `session`, inaczej najświeższy aktywny tego narzędzia."""
+def pick(plans: list[Plan], session_id: str, tool: str, branch: str = "") -> Plan | None:
+    """Plan koordynatora: wskazany przez `session`, inaczej najświeższy aktywny tego narzędzia.
+
+    Gałąź z ID karty (`claude/k-12-…`, uruchomienie z tablicy): najpierw plan z `card: K-12`
+    (też zakończony — to wciąż plan tej karty), a plany innych kart odpadają — w katalogu projektu
+    w tablicy leżą plany wielu kart naraz."""
     for plan in plans:
         if plan.session and session_id and plan.session == session_id:
             return plan
+    card = card_of_branch(branch)
+    if card:
+        mine = [p for p in plans if p.card == card and (not p.session or p.session == session_id)]
+        if mine:
+            return max(mine, key=lambda p: (p.status != "done", p.updated_ts))
     candidates = [p for p in plans if not p.session and p.status != "done"
-                  and (not p.coordinator or p.coordinator == tool)]
+                  and (not p.coordinator or p.coordinator == tool) and not (card and p.card)]
     return max(candidates, key=lambda p: p.updated_ts) if candidates else None
 
 
