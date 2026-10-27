@@ -8,7 +8,9 @@
 - retencja: katalogi starsze niż keepDays znikają po każdym raporcie,
 - przeczytanie: Open() z D-Bus (widżety), „Otwórz” w powiadomieniu i KRunner „raport” otwierają
   raport przez opener (xdg-open przez systemd-run) i oznaczają go jako przeczytany w pliku stanu;
-  każda zmiana (nowy raport, przeczytanie) to sygnał changed — widżety pobierają wtedy Status().
+  każda zmiana (nowy raport, przeczytanie) to sygnał changed — widżety pobierają wtedy Status(),
+- okno Tide (widok „Raporty”): lista dni i report.json doby (reports/data.py), otwarcie strony doby
+  albo projektu (OpenDay) i mark_read — obejrzenie najnowszego raportu w oknie gasi kropkę jak Open().
 """
 import json
 import os
@@ -18,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from . import reports
-from .reports import render, schedule
+from .reports import data as report_data, render, schedule
 
 
 class ReportMonitor(QObject):
@@ -79,6 +81,26 @@ class ReportMonitor(QObject):
     def status_json(self) -> str:
         return json.dumps(self.status(), ensure_ascii=False)
 
+    def days_json(self) -> str:
+        today = schedule.report_day(self.clock(), self.settings).isoformat()
+        return json.dumps(report_data.days(self.root, schedule.load_state(self.state_file), today,
+                                           self.settings.keep_days), ensure_ascii=False)
+
+    def day_json(self, day: str) -> str:
+        return json.dumps(report_data.day(self.root, day, schedule.load_state(self.state_file)), ensure_ascii=False)
+
+    def open_day(self, day: str, project: str = "") -> bool:
+        """Strona raportu doby (index.html albo <slug>.html projektu) w przeglądarce. Otwarcie którejkolwiek
+        strony najnowszego raportu oznacza go jako przeczytany; starszego — nie zmienia kropki."""
+        return self.open_path(report_data.page_path(self.root, day, project))
+
+    def mark_read(self, day: str) -> bool:
+        """Najnowszy raport obejrzany w oknie Tide: przeczytany jak po Open(). False — to nie
+        najnowsza doba albo już był przeczytany."""
+        if not report_data.valid_day(day):
+            return False
+        return self._mark_opened(os.path.join(self.root, day, "index.html"))
+
     def open(self) -> bool:
         """Najnowszy raport w przeglądarce (D-Bus Open(), KRunner); oznacza go jako przeczytany."""
         return self.open_path(self.latest())
@@ -97,19 +119,22 @@ class ReportMonitor(QObject):
             self._mark_opened(path)
         return ok
 
-    def _mark_opened(self, path: str) -> None:
+    def _mark_opened(self, path: str) -> bool:
+        # Doba strony (index.html albo strona projektu) musi być dobą najnowszego raportu.
         day = schedule.day_of(path)
-        if not day or os.path.abspath(path) != os.path.abspath(self.latest()):
-            return
+        if not day or day != schedule.day_of(self.latest()) \
+                or os.path.dirname(os.path.dirname(os.path.abspath(path))) != os.path.abspath(self.root):
+            return False
         state = schedule.load_state(self.state_file)
         if not schedule.mark_opened(state, day):
-            return
+            return False
         try:
             schedule.save_state(self.state_file, state)
         except OSError as exc:
             print(f"tide-daemon: raport: nie zapisano stanu: {exc}", flush=True)
-            return
+            return False
         self.changed.emit()
+        return True
 
     def check(self, at_login: bool = False) -> bool:
         """Raport z terminu, jeśli należny. True, gdy właśnie ruszył."""

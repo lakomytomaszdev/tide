@@ -55,8 +55,8 @@ class ReportDaemonTest(unittest.TestCase):
         reply = self.bus.call(NOTIFY, NOTIFY_PATH, NOTIFY, "Calls")
         return [c for c in json.loads(reply.arguments()[0]) if c["method"] == "Notify"]
 
-    def call(self, member):
-        reply = self.bus.call(SERVICE, "/Reports", IFACE, member, timeout=60000)
+    def call(self, member, *args):
+        reply = self.bus.call(SERVICE, "/Reports", IFACE, member, *args, timeout=60000)
         self.assertEqual(reply.errorMessage(), "", reply.errorMessage())
         return reply.arguments()[0]
 
@@ -150,8 +150,70 @@ class ReportDaemonTest(unittest.TestCase):
         self.assertEqual([c for c in calls(self.env) if "xdg-open" in c], [])
         xml = self.bus.call(SERVICE, "/Reports", "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
         for piece in ('<method name="Status">', '<method name="Open">', '<signal name="Changed"/>',
-                      '<signal name="Ready">'):
+                      '<signal name="Ready">', '<method name="Days">', '<method name="Day">',
+                      '<method name="OpenDay">', '<method name="MarkRead">'):
             self.assertIn(piece, xml)
+        days = json.loads(self.call("Days"))
+        self.assertEqual((days["days"], days["latest"], days["unread"], days["root"]), ([], "", False, self.reports))
+        self.assertEqual(json.loads(self.call("Day", reportfix.DAY)), {"ok": False, "error": "missing",
+                                                                      "day": reportfix.DAY})
+        self.assertIs(self.call("OpenDay", reportfix.DAY, ""), False)
+        self.assertIs(self.call("MarkRead", reportfix.DAY), False)
+
+    def test_tide_window_days_day_open_day_and_mark_read(self):
+        """Widok „Raporty” okna Tide: Days(), Day(doba), OpenDay(doba, projekt) i MarkRead(doba) —
+        obejrzenie najnowszego raportu w oknie gasi kropkę (Status().unread) i wysyła Changed."""
+        from PyQt6.QtCore import QObject, pyqtSlot
+
+        changes = []
+
+        class Receiver(QObject):
+            @pyqtSlot()
+            def changed(self):
+                changes.append(True)
+
+        receiver = Receiver()
+        self.assertTrue(self.bus.bus.connect(SERVICE, "/Reports", IFACE, "Changed", receiver.changed))
+        # Starszy raport sprzed report.json (tylko strony) — też jest na liście dni.
+        old = os.path.join(self.reports, "2026-10-25")
+        os.makedirs(old)
+        for name in ("index.html", "alpha.html"):
+            with open(os.path.join(old, name), "w", encoding="utf-8") as fh:
+                fh.write("<html></html>")
+        self.start_daemon()
+        self.assertTrue(wait_until(lambda: self.status()["day"] == reportfix.DAY, timeout=20), "raport przy starcie")
+
+        days = json.loads(self.call("Days"))
+        self.assertEqual((days["today"], days["latest"], days["unread"], days["keepDays"]),
+                         (reportfix.DAY, reportfix.DAY, True, 30))
+        self.assertEqual([(d["day"], d["projects"], d["data"]) for d in days["days"]],
+                         [(reportfix.DAY, 2, True), ("2026-10-25", 1, False)])
+        day = json.loads(self.call("Day", reportfix.DAY))
+        self.assertEqual((day["ok"], day["latest"], day["unread"], day["legacy"]), (True, True, True, False))
+        self.assertEqual([p["name"] for p in day["projects"]], ["alpha", "beta"])
+        self.assertIn(reportfix.INJECTION, day["projects"][0]["done"][0]["text"], "surowy tekst, nie HTML")
+        self.assertTrue(json.loads(self.call("Day", "2026-10-25"))["legacy"])
+        self.assertEqual(json.loads(self.call("Day", "../2026-10-25"))["ok"], False)
+
+        # Strona starszego raportu: xdg-open, kropka zostaje.
+        changes.clear()
+        self.assertIs(self.call("OpenDay", "2026-10-25", "alpha"), True)
+        opened = wait_until(lambda: [c for c in calls(self.env) if "xdg-open" in c])
+        self.assertTrue(opened[0].endswith(f"xdg-open {os.path.join(old, 'alpha.html')}"), opened[0])
+        self.assertTrue(self.status()["unread"])
+        self.assertIs(self.call("OpenDay", reportfix.DAY, "../2026-10-25/alpha"), False)
+        self.assertIs(self.call("MarkRead", "2026-10-25"), False, "starsza doba nie gasi kropki")
+        self.assertTrue(self.status()["unread"])
+
+        # Obejrzenie najnowszego raportu w oknie Tide: przeczytany i sygnał Changed, bez przeglądarki.
+        self.assertIs(self.call("MarkRead", reportfix.DAY), True)
+        self.assertFalse(self.status()["unread"])
+        self.assertFalse(json.loads(self.call("Days"))["unread"])
+        self.assertTrue(wait_until(lambda: changes), "sygnał Changed po przeczytaniu")
+        self.assertIs(self.call("MarkRead", reportfix.DAY), False, "drugi raz — bez zmiany")
+        self.assertEqual(len([c for c in calls(self.env) if "xdg-open" in c]), 1)
+        self.assertIs(self.call("OpenDay", reportfix.DAY, "beta"), True)
+        self.assertTrue(wait_until(lambda: any(c.endswith("beta.html") for c in calls(self.env))))
 
     def test_no_report_option_still_answers_generate(self):
         self.env["XDG_CONFIG_HOME"] = os.path.join(self.tmp, "config")

@@ -8,7 +8,8 @@
 - plans.py    — plany i tickety (tablica koordynacji i plany w repozytoriach), dodatek opcjonalny,
 - standup.py  — „Na daily”: fakty o projektach, podsumowanie z reguł, walidacja odpowiedzi modelu,
 - summarize.py — opis „Na daily” modelem przez lokalny `claude -p` (z regułami jako zapasem),
-- collect.py  — model raportu, render.py — HTML.
+- collect.py  — model raportu, render.py — HTML,
+- data.py     — report.json dla widoku „Raporty” w oknie Tide i odczyt dni (D-Bus Days(), Day()).
 
 generate() składa raport w katalogu tymczasowym obok docelowego i podmienia go w całości,
 więc przeglądarka nigdy nie widzi połowy raportu, a strony projektów, które w nowej wersji
@@ -19,9 +20,9 @@ import os
 import shutil
 import tempfile
 
-from . import collect, limits, render, schedule, standup, summarize
+from . import collect, data, limits, render, schedule, standup, summarize
 
-__all__ = ["collect", "generate", "limits", "load_palette", "render", "schedule", "standup", "summarize"]
+__all__ = ["collect", "data", "generate", "limits", "load_palette", "render", "schedule", "standup", "summarize"]
 
 
 def load_palette(candidates: list[str]) -> dict:
@@ -39,7 +40,7 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
              git=None, max_depth: int = 3, home: str | None = None,
              coordination_cache: str | None = None, summary: str = "rules", summary_model: str = "sonnet",
              env=None, tracker=None) -> tuple[str, "collect.Report"]:
-    """Zapisuje <root>/<day>/index.html i <projekt>.html. Zwraca (ścieżka index.html, raport).
+    """Zapisuje <root>/<day>/index.html, <projekt>.html i report.json (widok „Raporty”). Zwraca (ścieżka index.html, raport).
 
     summary: "claude" — opis „Na daily” modelem przez `claude -p` (summarize.py), "rules" — same reguły.
     tracker: YouTrackCache — opisy ticketów z planów w repozytoriach (plans.py, tylko GET) albo None.
@@ -58,6 +59,7 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
     pages = {"index.html": render.render_index(report, palette, home)}
     for project in report.repos:
         pages[f"{project.slug}.html"] = render.render_project(report, project, palette, home)
+    overview = data.build(report)
 
     os.makedirs(root, mode=0o700, exist_ok=True)
     work = tempfile.mkdtemp(prefix=f".{day}-", dir=root)
@@ -68,6 +70,7 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(text)
         summarize.write_cache(work, report.standup.get("cache"))
+        data.write(work, overview)
         os.chmod(work, 0o700)
         old = None
         if os.path.isdir(target) and not os.path.islink(target):

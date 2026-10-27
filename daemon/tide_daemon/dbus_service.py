@@ -52,6 +52,13 @@ Obiekt /Reports, interfejs org.tide.Daemon.Reports (raport poranny):
                              (bez raportu path pusty, unread false) — link „Raport” w widżetach,
 - Open() -> b                najnowszy raport w przeglądarce (xdg-open) i oznaczenie go jako przeczytany;
                              False, gdy raportu nie ma albo nie da się go otworzyć,
+- Days() -> s                JSON {root, today, keepDays, latest, unread, days: [{day, generatedAt, projects,
+                             waiting, data}]} — dni z raportem od najnowszego (widok „Raporty” okna Tide),
+- Day(s day) -> s            JSON raportu doby z report.json (przegląd, „Na daily”, teksty do schowka) z polami
+                             ok, latest, unread, legacy; brak doby — {ok: false, error: "missing"},
+- OpenDay(s day, s project) -> b  strona doby w przeglądarce: index.html (pusty project) albo <slug>.html;
+                             strona najnowszego raportu oznacza go jako przeczytany,
+- MarkRead(s day) -> b       najnowszy raport obejrzany w oknie Tide — przeczytany jak po Open(),
 - sygnał Ready(s path)       powstał nowy raport,
 - sygnał Changed()           nowy raport albo zmiana przeczytania — warto pobrać Status() ponownie.
 
@@ -166,6 +173,20 @@ REPORTS_XML = f"""<interface name="{REPORTS_IFACE}">
   <method name="Latest"><arg name="path" type="s" direction="out"/></method>
   <method name="Status"><arg name="json" type="s" direction="out"/></method>
   <method name="Open"><arg name="ok" type="b" direction="out"/></method>
+  <method name="Days"><arg name="json" type="s" direction="out"/></method>
+  <method name="Day">
+    <arg name="day" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="OpenDay">
+    <arg name="day" type="s" direction="in"/>
+    <arg name="project" type="s" direction="in"/>
+    <arg name="ok" type="b" direction="out"/>
+  </method>
+  <method name="MarkRead">
+    <arg name="day" type="s" direction="in"/>
+    <arg name="ok" type="b" direction="out"/>
+  </method>
   <signal name="Ready"><arg name="path" type="s"/></signal>
   <signal name="Changed"/>
 </interface>"""
@@ -498,6 +519,22 @@ class ReportsAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(result=bool)
     def Open(self) -> bool:
         return self.monitor.open()
+
+    @pyqtSlot(result=str)
+    def Days(self) -> str:
+        return self.monitor.days_json()
+
+    @pyqtSlot(str, result=str)
+    def Day(self, day: str) -> str:
+        return self.monitor.day_json(day)
+
+    @pyqtSlot(str, str, result=bool)
+    def OpenDay(self, day: str, project: str) -> bool:
+        return self.monitor.open_day(day, project)
+
+    @pyqtSlot(str, result=bool)
+    def MarkRead(self, day: str) -> bool:
+        return self.monitor.mark_read(day)
 
 
 @pyqtClassInfo("D-Bus Interface", LIMITS_IFACE)

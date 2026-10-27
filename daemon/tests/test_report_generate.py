@@ -52,6 +52,8 @@ class ReportWorld(unittest.TestCase):
         cls.dir = os.path.dirname(cls.index)
         cls.pages = {}
         for name in os.listdir(cls.dir):
+            if not name.endswith(".html"):
+                continue  # report.json (widok „Raporty” okna Tide) sprawdza test_report_data
             with open(os.path.join(cls.dir, name), encoding="utf-8") as fh:
                 cls.pages[name] = fh.read()
 
@@ -151,6 +153,7 @@ class ModelTest(ReportWorld):
 class FilesTest(ReportWorld):
     def test_one_page_per_active_project(self):
         self.assertEqual(sorted(self.pages), ["alpha.html", "beta.html", "index.html"])
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, "report.json")), "dane dla okna Tide")
         self.assertEqual(os.path.dirname(self.dir), self.p["reports"])
         self.assertEqual(os.path.basename(self.dir), reportfix.DAY)
 
@@ -217,7 +220,7 @@ class RegenerateTest(ReportWorld):
         index, report = self.generate(start=NOW - 30 * 60)
         self.assertEqual(index, self.index)
         self.assertEqual([p.name for p in report.active], ["alpha"])
-        self.assertEqual(sorted(os.listdir(os.path.dirname(index))), ["alpha.html", "index.html"],
+        self.assertEqual(sorted(os.listdir(os.path.dirname(index))), ["alpha.html", "index.html", "report.json"],
                          "strona projektu bez ruchu znika")
         self.assertEqual([n for n in os.listdir(self.p["reports"]) if n.startswith(".")], [], "bez katalogów roboczych")
 
