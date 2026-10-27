@@ -40,11 +40,8 @@
       "id": "reports",
       "title": "Raporty",
       "icon": "reports",
-      "placeholder": {
-        "title": "Raporty jeszcze nie działają",
-        "text": "Tu będą raporty poranne: lista dni, projekty „Na daily” i kopiowanie do schowka. Do tego czasu raport otwiera powiadomienie albo KRunner („raport”)."
-      },
-      "badge": {"path": "/Reports", "interface": "org.tide.Daemon.Reports", "method": "Badge"}
+      "module": "apps/reports",
+      "qml": "ReportsView.qml"
     }
   ]
 }
