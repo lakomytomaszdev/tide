@@ -57,7 +57,10 @@ Jeden numer to zawsze jedno zadanie — w całym repozytorium i w trackerze. Dla
    repozytorium (zapisany w CLAUDE.md/AGENTS.md) i nie może być kluczem żadnego projektu w YouTracku
    (sprawdź listę projektów — tylko odczyt).
 3. **Numeracja lokalna jest ciągła w repozytorium.** Nowy numer = największy numer z tym prefiksem
-   we wszystkich planach w `docs/agents/plans/` (także zakończonych i jeszcze niezacommitowanych) + 1.
+   we wszystkich planach repozytorium + 1 — w `docs/agents/plans/` głównego katalogu i **każdego
+   worktree** (`git worktree list`, także niezacommitowane) oraz na wszystkich gałęziach
+   (`git grep -h "^ticket-prefix\\|^| PREFIKS-" $(git for-each-ref --format='%(refname)' refs/heads) -- docs/agents/plans`).
+   Plan w innym worktree jest niewidoczny z głównego katalogu, a i tak zajmuje swoje numery.
    Nowy plan nie zaczyna od 1, a numerów nie używa się ponownie, także po `odrzucone`.
 4. **Zanim założysz projekt w trackerze albo zmienisz prefiks**, sprawdź, czy klucz nie jest już
    używany w planach repozytorium ani w trackerze. Przy kolizji zatrzymaj się i zapytaj użytkownika.
