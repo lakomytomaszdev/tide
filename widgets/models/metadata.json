@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.tide.models",
+    "Name": "Tide · Modele",
+    "Description": "Modele lokalne: czy serwer odpowiada, który model jest w pamięci i ile na karcie, role, kolejka; popup z serwerami i link do widoku Modele w oknie Tide",
+    "Icon": "cpu",
+    "Category": "System Information",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "Authors": [{ "Name": "Tomek" }]
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}
