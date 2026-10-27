@@ -1,6 +1,9 @@
-// Szczegóły ticketu po prawej: ID, tytuł, gałąź i liczba podagentów, skąd stan, oś czasu
-// (zlecił → podagent skończył → review z BLOCKER/MAJOR/NIT → poprawki…) i przyciski:
-// Pokaż wynik, Przejdź do koordynatora, Diff gałęzi, Otwórz w YouTracku, Worktree.
+// Szczegóły ticketu po prawej: ID, gałąź, liczba podagentów i stan, a pod nimi (przewijane) sekcje
+// „Co to jest” (tytuł po ludzku i skąd), „Co zrobiono”, „Teraz / review” (opis z describe.py, pełne
+// teksty), skąd stan, uwagi z planu i oś czasu po polsku (zlecił implementację → implementacja
+// skończona → review: uwagi słowami → poprawki…; angielski opis zlecenia jako drobny dopisek)
+// i przyciski: Pokaż wynik, Przejdź do koordynatora, Diff gałęzi, Otwórz w YouTracku, Worktree.
+// Teksty z danych zawsze jako Text.PlainText.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -33,6 +36,7 @@ Rectangle {
         Text {
             visible: detail.ticket !== null && (detail.ticket.id || "") !== ""
             text: detail.ticket ? (detail.ticket.id || "") : ""
+            textFormat: Text.PlainText
             color: Tide.Tokens.sky
             font.family: Tide.Theme.monoFamily
             font.pixelSize: 13
@@ -40,13 +44,13 @@ Rectangle {
         }
         Text {
             Layout.fillWidth: true
-            text: detail.ticket ? (detail.ticket.title || "") : "Wybierz ticket na tablicy"
-            color: detail.ticket ? Tide.Tokens.textPrimary : Tide.Tokens.textMuted
+            visible: detail.ticket === null
+            text: "Wybierz ticket na tablicy"
+            color: Tide.Tokens.textMuted
             font.family: Tide.Theme.uiFamily
             font.pixelSize: 17
             font.weight: Font.DemiBold
             wrapMode: Text.Wrap
-            Accessible.role: Accessible.Heading
         }
         Flow {
             Layout.fillWidth: true
@@ -69,142 +73,196 @@ Rectangle {
                                          "gotowe": "mint" })[detail.ticket.state] || "" : ""
             }
         }
-        Text {
-            Layout.fillWidth: true
-            visible: text !== ""
-            text: detail.ticket ? Logic.sourceText(detail.ticket) : ""
-            color: Tide.Tokens.textMuted
-            font.family: Tide.Theme.uiFamily
-            font.pixelSize: 12
-            wrapMode: Text.Wrap
-        }
-        Text {
-            Layout.fillWidth: true
-            visible: detail.ticket !== null && (detail.ticket.planNote || "") !== ""
-            text: detail.ticket ? "Uwagi z planu: " + (detail.ticket.planNote || "") : ""
-            color: Tide.Tokens.textSecondary
-            font.family: Tide.Theme.uiFamily
-            font.pixelSize: 12
-            wrapMode: Text.Wrap
-        }
-
-        // --- oś czasu ---------------------------------------------------------------------
+        // --- opis, źródła i oś czasu (przewijane razem) -----------------------------------------
         Flickable {
             id: flick
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.topMargin: 4
+            Layout.topMargin: 2
             clip: true
             contentWidth: width
-            contentHeight: timeline.implicitHeight
+            contentHeight: scroll.implicitHeight
             boundsBehavior: Flickable.StopAtBounds
             QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
 
             ColumnLayout {
-                id: timeline
+                id: scroll
                 width: flick.width - 8
-                spacing: 0
+                spacing: 12
+                visible: detail.ticket !== null
 
-                Text {
-                    visible: detail.ticket !== null && detail.events.length === 0
+                DetailSection {
                     Layout.fillWidth: true
-                    text: detail.ticket && detail.ticket.inPlan ? "W planie, żaden podagent jeszcze nad nim nie pracował."
-                                                               : "Brak zdarzeń."
+                    label: "Co to jest"
+                    text: detail.ticket ? (detail.ticket.title || "") : ""
+                    hint: Logic.titleSources(detail.ticket)
+                    heading: true
+                }
+                DetailSection {
+                    Layout.fillWidth: true
+                    visible: detail.ticket !== null && (detail.ticket.done || "") !== ""
+                    label: "Co zrobiono"
+                    text: detail.ticket ? (detail.ticket.done || "") : ""
+                }
+                DetailSection {
+                    Layout.fillWidth: true
+                    visible: detail.ticket !== null && (detail.ticket.now || "") !== ""
+                    label: "Teraz / review"
+                    text: detail.ticket ? (detail.ticket.now || "") : ""
+                    tint: detail.ticket && detail.ticket.state === "czeka" ? "peach" : ""
+                }
+                Text {
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    text: detail.ticket ? Logic.sourceText(detail.ticket) : ""
+                    textFormat: Text.PlainText
                     color: Tide.Tokens.textMuted
                     font.family: Tide.Theme.uiFamily
-                    font.pixelSize: 13
+                    font.pixelSize: 12
                     wrapMode: Text.Wrap
                 }
+                Text {
+                    Layout.fillWidth: true
+                    visible: detail.ticket !== null && (detail.ticket.planNote || "") !== ""
+                    text: detail.ticket ? "Uwagi z planu: " + (detail.ticket.planNote || "") : ""
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textSecondary
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                }
+                Text {
+                    Layout.topMargin: 6
+                    text: "PRZEBIEG"
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 11
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: 0.8
+                    Accessible.role: Accessible.Heading
+                }
 
-                Repeater {
-                    model: detail.events
-                    RowLayout {
-                        id: event
-                        required property var modelData
-                        required property int index
-                        readonly property bool last: index === detail.events.length - 1
+                ColumnLayout {
+                    id: timeline
+                    Layout.fillWidth: true
+                    spacing: 0
+
+                    Text {
+                        visible: detail.ticket !== null && detail.events.length === 0
                         Layout.fillWidth: true
-                        spacing: 10
+                        text: detail.ticket && detail.ticket.inPlan ? "W planie, żaden podagent jeszcze nad nim nie pracował."
+                                                                   : "Brak zdarzeń."
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 13
+                        wrapMode: Text.Wrap
+                    }
 
-                        // Szyna: kropka i linia do następnego zdarzenia.
-                        Item {
-                            Layout.preferredWidth: 22
-                            Layout.fillHeight: true
-                            Dot {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                y: 5
-                                tint: Logic.eventTint(event.modelData)
-                                hollow: event.modelData.state === "done" || event.modelData.state === "attention"
-                                pulse: event.modelData.kind === "running"
-                            }
-                            Rectangle {
-                                visible: !event.last
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                y: 17
-                                width: 1.5
-                                height: parent.height - 21
-                                color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.10)
-                            }
-                        }
-                        ColumnLayout {
+                    Repeater {
+                        model: detail.events
+                        RowLayout {
+                            id: event
+                            required property var modelData
+                            required property int index
+                            readonly property bool last: index === detail.events.length - 1
                             Layout.fillWidth: true
-                            Layout.bottomMargin: 14
-                            spacing: 3
-                            RowLayout {
+                            spacing: 10
+
+                            // Szyna: kropka i linia do następnego zdarzenia.
+                            Item {
+                                Layout.preferredWidth: 22
+                                Layout.fillHeight: true
+                                Dot {
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    y: 5
+                                    tint: Logic.eventTint(event.modelData)
+                                    hollow: event.modelData.state === "done" || event.modelData.state === "attention"
+                                    pulse: event.modelData.kind === "running"
+                                }
+                                Rectangle {
+                                    visible: !event.last
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    y: 17
+                                    width: 1.5
+                                    height: parent.height - 21
+                                    color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.10)
+                                }
+                            }
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                                spacing: 8
+                                Layout.bottomMargin: 14
+                                spacing: 3
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: event.modelData.title
+                                        textFormat: Text.PlainText
+                                        color: Tide.Tokens.textPrimary
+                                        font.family: Tide.Theme.uiFamily
+                                        font.pixelSize: 13
+                                        font.weight: Font.DemiBold
+                                        wrapMode: Text.Wrap
+                                        maximumLineCount: 2
+                                        elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        text: Logic.eventTime(event.modelData, detail.nowTs)
+                                        color: Tide.Tokens.textMuted
+                                        font.family: Tide.Theme.monoFamily
+                                        font.pixelSize: 12
+                                    }
+                                }
                                 Text {
                                     Layout.fillWidth: true
-                                    text: event.modelData.title
-                                    color: Tide.Tokens.textPrimary
+                                    visible: (event.modelData.meta || "") !== ""
+                                    text: event.modelData.meta || ""
+                                    textFormat: Text.PlainText
+                                    color: Tide.Tokens.textMuted
                                     font.family: Tide.Theme.uiFamily
-                                    font.pixelSize: 13
-                                    font.weight: Font.DemiBold
+                                    font.pixelSize: 11
                                     elide: Text.ElideRight
                                 }
                                 Text {
-                                    text: Logic.eventTime(event.modelData, detail.nowTs)
-                                    color: Tide.Tokens.textMuted
-                                    font.family: Tide.Theme.monoFamily
-                                    font.pixelSize: 12
-                                }
-                            }
-                            Text {
-                                Layout.fillWidth: true
-                                visible: (event.modelData.text || "") !== ""
-                                text: event.modelData.text || ""
-                                color: event.modelData.state === "attention" ? Tide.Tokens.textSecondary : Tide.Tokens.textSecondary
-                                font.family: Tide.Theme.uiFamily
-                                font.pixelSize: 13
-                                lineHeight: 1.12
-                                wrapMode: Text.Wrap
-                                maximumLineCount: 4
-                                elide: Text.ElideRight
-                            }
-                            Rectangle {
-                                Layout.fillWidth: true
-                                Layout.topMargin: 4
-                                visible: (event.modelData.quote || "") !== ""
-                                implicitHeight: quote.implicitHeight + 16
-                                radius: 8
-                                color: Tide.Theme.alpha(Tide.Tokens.peach, 0.06)
-                                Rectangle {
-                                    width: 2
-                                    height: parent.height
-                                    color: Tide.Tokens.peach
-                                }
-                                Text {
-                                    id: quote
-                                    x: 12
-                                    y: 8
-                                    width: parent.width - 20
-                                    text: event.modelData.quote || ""
-                                    color: Tide.Tokens.textPrimary
+                                    Layout.fillWidth: true
+                                    visible: (event.modelData.text || "") !== ""
+                                    text: event.modelData.text || ""
+                                    textFormat: Text.PlainText
+                                    color: Tide.Tokens.textSecondary
                                     font.family: Tide.Theme.uiFamily
                                     font.pixelSize: 13
+                                    lineHeight: 1.12
                                     wrapMode: Text.Wrap
                                     maximumLineCount: 4
                                     elide: Text.ElideRight
+                                }
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.topMargin: 4
+                                    visible: (event.modelData.quote || "") !== ""
+                                    implicitHeight: quote.implicitHeight + 16
+                                    radius: 8
+                                    color: Tide.Theme.alpha(Tide.Tokens.peach, 0.06)
+                                    Rectangle {
+                                        width: 2
+                                        height: parent.height
+                                        color: Tide.Tokens.peach
+                                    }
+                                    Text {
+                                        id: quote
+                                        x: 12
+                                        y: 8
+                                        width: parent.width - 20
+                                        text: event.modelData.quote || ""
+                                        textFormat: Text.PlainText
+                                        color: Tide.Tokens.textPrimary
+                                        font.family: Tide.Theme.uiFamily
+                                        font.pixelSize: 13
+                                        wrapMode: Text.Wrap
+                                        maximumLineCount: 4
+                                        elide: Text.ElideRight
+                                    }
                                 }
                             }
                         }
