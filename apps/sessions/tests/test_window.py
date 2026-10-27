@@ -1,12 +1,14 @@
-"""Okno Tide Sesje.
+"""Widok Sesje okna Tide (dawne okno „Tide Sesje”).
 
-- pakiet: launcher, QML i biblioteka z Tokens.qml; bez kolorów wpisanych na sztywno,
+- pakiet okna Tide: moduł widoku w views/sessions (backend.py, QML i biblioteka z Tokens.qml);
+  bez kolorów wpisanych na sztywno,
 - logika okna (sessions.js) w QJSEngine: kolumny, postęp, teksty kart, domyślny ticket, pojedyncze sesje,
 - zrzuty offscreen z --data (tablica z syntetycznego świata coordfix.py, wynik podagenta) bez ostrzeżeń QML,
 - dane po zakonserwowaniu (tools/sessions_preview.py --sanitize): bez treści, z tą samą strukturą,
-- launcher na prywatnej magistrali z prawdziwym tide-daemon: lista i tablica z /Coordination, drugie
-  uruchomienie tylko prosi pierwsze o pokazanie się,
-- instalacja i odinstalowanie na tymczasowym HOME z atrapami narzędzi.
+- dawny launcher (przekierowanie compat/tide-sessions.py ze starymi opcjami) na prywatnej magistrali
+  z prawdziwym tide-daemon: lista i tablica z /Coordination, okno trzyma też nazwę
+  org.tide.SessionsWindow, drugie uruchomienie tylko prosi pierwsze o pokazanie się.
+Instalację sprawdza apps/tide/tests.
 """
 import json
 import os
@@ -20,7 +22,7 @@ import unittest
 
 from . import APP_DIR, REPO
 from daemon.tests import coordfix as F
-from daemon.tests.fakebin import calls, files_under, make_env
+from daemon.tests.fakebin import files_under
 from daemon.tests.privatebus import PrivateBus, requires_dbus, wait_until
 
 sys.path.insert(0, os.path.join(REPO, "daemon"))
@@ -37,9 +39,18 @@ LIVE = [{"id": "claude:" + F.CLAUDE_COORD, "state": "working", "reason": "", "ca
          "tool": "claude", "project": "TimeTracker"}]
 
 
+TIDE_DIR = os.path.join(REPO, "apps", "tide")
+
+
 def stage(out: str) -> str:
-    subprocess.run(["/usr/bin/python3", os.path.join(REPO, "widgets", "stage.py"), "--app", APP_DIR, out], check=True)
+    """Pakiet okna Tide z widokiem Sesje w views/sessions."""
+    subprocess.run(["/usr/bin/python3", os.path.join(REPO, "widgets", "stage.py"), "--app", TIDE_DIR, out], check=True)
     return out
+
+
+def launcher(pkg: str) -> str:
+    """Dawny launcher okna Sesje — dziś przekierowanie do okna Tide na widoku Sesje."""
+    return os.path.join(pkg, "compat", "tide-sessions.py")
 
 
 def fixture_data(tmp: str) -> dict:
@@ -54,7 +65,7 @@ def fixture_data(tmp: str) -> dict:
 
 def grab(pkg: str, data_path: str, png: str, *extra, env=None) -> str:
     env = dict(os.environ if env is None else env, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
-    result = subprocess.run(["/usr/bin/python3", os.path.join(pkg, "tide-sessions.py"), "--data", data_path,
+    result = subprocess.run(["/usr/bin/python3", launcher(pkg), "--data", data_path,
                              "--grab", png, "--width", "1680", "--height", "980", *extra],
                             env=env, capture_output=True, text=True, timeout=60)
     return result.stderr
@@ -66,13 +77,14 @@ class PackageTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         self.pkg = stage(os.path.join(self.tmp, "pkg"))
 
-    def test_package_contains_launcher_qml_and_library(self):
-        files = files_under(self.pkg)
-        for name in ("tide-sessions.py", "qml/Main.qml", "qml/SessionsPage.qml", "qml/TicketCard.qml",
+    def test_package_contains_view_module_and_library(self):
+        files = files_under(os.path.join(self.pkg, "views", "sessions"))
+        for name in ("backend.py", "qml/SessionsView.qml", "qml/SessionsPage.qml", "qml/TicketCard.qml",
                      "qml/TicketDetail.qml", "qml/ResultPanel.qml", "qml/sessions.js", "qml/tide/Tokens.qml",
                      "qml/tide/Theme.qml"):
             self.assertIn(name, files)
         self.assertFalse([f for f in files if f.startswith("tests/") or f.endswith(("__init__.py", "install.sh"))])
+        self.assertIn("compat/tide-sessions.py", files_under(self.pkg))
 
     def test_no_hardcoded_colors(self):
         for name in os.listdir(os.path.join(APP_DIR, "qml")):
@@ -209,14 +221,14 @@ class BackendTest(unittest.TestCase):
 
     def test_window_reads_daemon_and_second_start_only_raises(self):
         env = dict(self.bus.env, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
-        first = subprocess.Popen(["/usr/bin/python3", os.path.join(self.pkg, "tide-sessions.py"),
+        first = subprocess.Popen(["/usr/bin/python3", launcher(self.pkg),
                                   "--select", "codex:" + F.CODEX_ROOT], env=env, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: first.poll() is None and first.kill())
         self.assertTrue(wait_until(lambda: self.bus.bus.interface().isServiceRegistered(
             "org.tide.SessionsWindow").value(), timeout=15), "okno rejestruje swoją nazwę")
         started = time.time()
-        second = subprocess.run(["/usr/bin/python3", os.path.join(self.pkg, "tide-sessions.py"), "--select",
+        second = subprocess.run(["/usr/bin/python3", launcher(self.pkg), "--select",
                                  "claude:" + F.CLAUDE_COORD, "--grab", os.path.join(self.tmp, "x.png")],
                                 env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(second.returncode, 0, second.stderr)
@@ -230,34 +242,11 @@ class BackendTest(unittest.TestCase):
     def test_grab_from_daemon(self):
         env = dict(self.bus.env, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
         png = os.path.join(self.tmp, "live.png")
-        result = subprocess.run(["/usr/bin/python3", os.path.join(self.pkg, "tide-sessions.py"), "--grab", png],
+        result = subprocess.run(["/usr/bin/python3", launcher(self.pkg), "--grab", png],
                                 env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(os.path.getsize(png) > 20_000)
         self.assertIsNone(re.search(QML_PROBLEMS, result.stderr), result.stderr)
-
-
-class InstallTest(unittest.TestCase):
-    def test_install_then_uninstall(self):
-        tmp = tempfile.mkdtemp(prefix="tide-sesswin-install-")
-        self.addCleanup(shutil.rmtree, tmp)
-        env = make_env(tmp)
-        script = os.path.join(APP_DIR, "install.sh")
-        subprocess.run(["bash", script, "install"], env=env, check=True, capture_output=True)
-        dest = os.path.join(env["XDG_DATA_HOME"], "tide", "sessions-window")
-        self.assertTrue(os.path.isfile(os.path.join(dest, "tide-sessions.py")))
-        self.assertTrue(os.path.isfile(os.path.join(dest, "qml", "tide", "Tokens.qml")))
-        desktop = os.path.join(env["XDG_DATA_HOME"], "applications", "tide-sessions.desktop")
-        with open(desktop, encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertIn("Name=Tide Sesje", text)
-        self.assertIn("StartupWMClass=tide-sessions", text)
-        self.assertIn("X-Tide-Component=sessions-window", text)
-        self.assertTrue(os.path.isfile(os.path.join(env["XDG_DATA_HOME"], "icons/hicolor/256x256/apps/tide-sessions.png")))
-        self.assertTrue(any(c.startswith("kbuildsycoca6") for c in calls(env)))
-        subprocess.run(["bash", script, "uninstall"], env=env, check=True, capture_output=True)
-        self.assertFalse(os.path.exists(dest))
-        self.assertFalse(os.path.exists(desktop))
 
 
 if __name__ == "__main__":

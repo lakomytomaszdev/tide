@@ -1,22 +1,19 @@
-# Okno „Tide Worktrees” (QML + PyQt6) z plikiem .desktop. Otwiera je kafelek org.tide.worktrees
-# przez tide-daemon (install-daemon), dane też idą z tide-daemon (/Worktrees).
-INSTALL_TARGETS += install-worktrees-window
-UNINSTALL_TARGETS += uninstall-worktrees-window
+# Widok „Worktrees” okna Tide (apps/worktrees: backend.py i QML; dawniej osobne okno „Tide Worktrees”).
+# Dane idą z tide-daemon (/Worktrees). Instaluje go okno Tide (mk/tide-window.mk) razem
+# z przekierowaniem dawnego launchera; tu zostają testy i podgląd samego widoku.
 TEST_DIRS += apps/worktrees/tests
 
 .PHONY: install-worktrees-window uninstall-worktrees-window preview-worktrees-window
 
-install-worktrees-window:
-	@bash apps/worktrees/install.sh install
+# Dawne cele — dziś to samo co okno Tide.
+install-worktrees-window: install-tide-window
+uninstall-worktrees-window: uninstall-tide-window
 
-uninstall-worktrees-window:
-	@bash apps/worktrees/install.sh uninstall
-
-# Podgląd okna na danych z tego komputera (tylko odczyt), bez instalowania: build/worktrees-window.png
+# Podgląd widoku na danych z tego komputera (tylko odczyt), bez instalowania: build/worktrees-window.png
 preview-worktrees-window:
 	@mkdir -p build
-	@/usr/bin/python3 widgets/stage.py --app apps/worktrees build/worktrees-window
+	@/usr/bin/python3 widgets/stage.py --app apps/tide build/tide-window
 	@/usr/bin/python3 daemon/tide-daemon.py --print-worktrees > build/worktrees.json
-	@QT_QPA_PLATFORM=offscreen /usr/bin/python3 build/worktrees-window/tide-worktrees.py \
+	@QT_QPA_PLATFORM=offscreen /usr/bin/python3 build/tide-window/tide.py --view worktrees \
 		--data build/worktrees.json --grab build/worktrees-window.png
 	@echo "Podgląd: build/worktrees-window.png"
