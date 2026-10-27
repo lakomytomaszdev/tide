@@ -124,7 +124,7 @@ class CreateBoardTest(BoardCase):
 
     def test_first_write_creates_repository_with_marker_and_seeds(self):
         result = self.store.create_card({"title": "Pierwsza karta"})
-        self.assertEqual(result, {"ok": True, "id": "K-1"})
+        self.assertEqual(result, {"ok": True, "id": "K-1", "commitError": ""})
         self.assertTrue(os.path.isdir(os.path.join(self.root, ".git")))
         self.assertTrue(is_board_repo(self.root))
         for rel in ("board.md", ".gitignore", "tags/firma.md", "tags/wlasne.md", "flows/full.md",
@@ -209,7 +209,7 @@ class CardTest(BoardCase):
         for title in ("a", "b", "c", "d"):
             self.store.create_card({"title": title})
         self.assertEqual(self.column("backlog"), ["K-4", "K-3", "K-2", "K-1"])
-        self.assertEqual(self.store.move_card("K-1", "todo", 0), {"ok": True, "id": "K-1", "changed": True})
+        self.assertEqual(self.store.move_card("K-1", "todo", 0), {"ok": True, "id": "K-1", "changed": True, "commitError": ""})
         self.assertEqual(self.store.move_card("K-3", "todo", -1)["changed"], True)
         self.assertEqual(self.column("todo"), ["K-1", "K-3"])
         self.store.move_card("K-2", "todo", 1)
@@ -222,7 +222,7 @@ class CardTest(BoardCase):
         self.assertEqual(self.log()[-6:], ["K-1: move to todo", "K-3: move to todo", "K-2: move to todo",
                                            "K-3: reorder in todo", "K-4: move to done", "K-4: move to archived"])
         orders = {c["id"]: c["order"] for c in self.store.snapshot()["cards"] if c["column"] == "todo"}
-        self.assertEqual(orders, {"K-3": 10, "K-1": 20, "K-2": 30})
+        self.assertEqual(orders, {"K-3": 0, "K-1": 10, "K-2": 15})  # środek między sąsiadami
         self.assertEqual(git_out(self.root, "status", "--porcelain"), "")
 
     def test_derived_and_unknown_columns_are_refused(self):
@@ -242,7 +242,7 @@ class CardTest(BoardCase):
         self.store.sync()
         self.clock[0] = NOW + 60
         result = self.store.update_card("K-1", {"title": "Nowy tytuł", "tags": "pilne, Pilne, własne"})
-        self.assertEqual(result, {"ok": True, "id": "K-1", "changed": True})
+        self.assertEqual(result, {"ok": True, "id": "K-1", "changed": True, "commitError": ""})
         text = self.card_text("K-1")
         self.assertIn("priorytet: wysoki # moje\n", text)
         self.assertIn("Dopisek ręczny.", text)
@@ -290,7 +290,7 @@ class ProjectAndTagTest(BoardCase):
                                       "project plasma-tide: create", "K-2: create", "K-3: create"])
         with open(os.path.join(self.root, "projects", "timetracker.md"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), f"---\nname: TimeTracker\nrepo: {plain}\ntags:\nai-docs: tide\n"
-                                        "tool: claude\nmode: light\n---\n")
+                                        "tool: claude\nmode: full\n---\n")
 
     def test_missing_ai_docs_key_uses_repo_default(self):
         agents = self.repo("agent-team", agents_docs=True)
@@ -305,7 +305,7 @@ class ProjectAndTagTest(BoardCase):
     def test_projects_without_repo_and_explicit_settings(self):
         result = self.store.upsert_project({"name": "Dom i ogród", "tags": ["własne"], "tool": "codex",
                                             "mode": "spec", "description": "Rzeczy poza kodem."})
-        self.assertEqual(result, {"ok": True, "slug": "dom-i-ogrod", "changed": True})
+        self.assertEqual(result, {"ok": True, "slug": "dom-i-ogrod", "changed": True, "commitError": ""})
         project = self.store.snapshot()["projects"][0]
         self.assertEqual((project["repo"], project["aiDocs"], project["tool"], project["mode"]),
                          ("", "tide", "codex", "spec"))
@@ -351,7 +351,7 @@ class ProjectAndTagTest(BoardCase):
         self.store.create_card({"title": "a", "tags": ["pilne", "własne"]})
         self.store.upsert_project({"name": "Dom", "tags": ["własne"]})
         self.assertEqual(self.store.upsert_tag({"name": "pilne", "color": "rose"}),
-                         {"ok": True, "name": "pilne", "changed": True})
+                         {"ok": True, "name": "pilne", "changed": True, "commitError": ""})
         self.assertEqual(self.store.upsert_tag({"name": "Pilne", "color": "rose"})["changed"], False)
         self.store.upsert_tag({"name": "własne", "newName": "Własne", "color": "mint"})
         snap = self.store.snapshot()

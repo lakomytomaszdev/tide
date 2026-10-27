@@ -73,14 +73,16 @@ Obiekt /Limits, interfejs org.tide.Daemon.Limits (prognoza Limitów AI z histori
 Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git, board/):
 - Snapshot() -> s            JSON: kolumny, projekty, tagi, karty (z tagami projektu), katalog, ostatni
                              commit, błędy plików, repozytoria do dodania jako projekty,
-- CreateCard(s json) -> s    nowa karta {title, description, project|repo, tags, column, note, …} → {ok, id}|{error},
-- UpdateCard(s id, s json) -> s  zmiana pól karty (bez kolumny i kolejności) → {ok, id, changed}|{error},
+- CreateCard(s json) -> s    nowa karta {title, description, project|repo, tags, column, note, …} → {ok, id, commitError},
+- UpdateCard(s id, s json) -> s  zmiana pól karty (bez kolumny i kolejności) → {ok, id, changed, commitError},
 - MoveCard(s id, s column, i order) -> s  ręczna kolumna i pozycja w niej (od 0, -1 = koniec),
-- UpsertProject(s json) -> s nowy albo zmieniony projekt → {ok, slug, changed}|{error},
-- UpsertTag(s json) -> s     nowy albo zmieniony tag (także newName — zmiana nazwy w kartach) → {ok, name, changed}|{error},
-- RenderFlow(s id, s mode) -> s  polecenie trybu dla karty: {text, mode, tool, branch, docsDir, …}|{error},
+- UpsertProject(s json) -> s nowy albo zmieniony projekt → {ok, slug, changed, commitError},
+- UpsertTag(s json) -> s     nowy albo zmieniony tag (także newName — zmiana nazwy w kartach) → {ok, name, changed, commitError},
+- RenderFlow(s id, s mode) -> s  polecenie trybu dla karty: {ok, text, mode, tool, branch, docsDir, …},
 - sygnał Changed()           tablica się zmieniła (nasz zapis albo zmiana z zewnątrz).
-Każda zmiana to commit w repozytorium tablicy; błędy to JSON {error} po polsku.
+Każda zmiana to commit w repozytorium tablicy (nieudany commit: ok z opisem w commitError, commit
+czeka); błąd to JSON {ok: false, error: <kod>, message: <tekst po polsku>} jak w /Tasks — dane
+sprawdzamy przed zapisem, więc złe żądanie nie zostawia pliku ani commita.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage

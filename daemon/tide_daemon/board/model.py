@@ -30,7 +30,7 @@ AI_DOCS = ("repo", "tide")
 TOOLS = ("claude", "codex")
 MODES = ("full", "light", "spec")
 DEFAULT_TOOL = "claude"
-DEFAULT_MODE = "light"
+DEFAULT_MODE = "full"  # pełny przebieg (grilling, spec, plan, TDD, review), chyba że karta wybierze inaczej
 
 # Kolory tagów to nazwy pasteli z palety (theme/palette: „pastel”); kolejność = kolejność wyboru
 # koloru dla tagu bez pliku. Paleta może dodać własne nazwy — wtedy obowiązuje jej lista.
@@ -61,7 +61,16 @@ _FOLD = str.maketrans("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ", "acelnoszzACELNOSZ
 
 
 class BoardError(ValueError):
-    """Błąd zapisu z komunikatem dla człowieka (po polsku) — trafia do JSON `{error}`."""
+    """Błąd zapisu z komunikatem dla człowieka (po polsku) i kodem dla programu — trafia do JSON
+    `{ok: false, error: <kod>, message: <tekst>}` (jak /Tasks).
+
+    Kody: bad-request (złe dane), not-found (nie ma karty, projektu, tagu), exists (już jest),
+    broken-file (pliku nie da się przeczytać — popraw ręcznie), git-busy (w repozytorium tablicy
+    trwa revert, merge, cherry-pick albo rebase), not-a-board (cudzy katalog)."""
+
+    def __init__(self, message: str, code: str = "bad-request"):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass
@@ -72,6 +81,7 @@ class Tag:
     slug: str = ""
     defined: bool = True      # False: tag użyty w karcie albo projekcie, ale bez pliku w tags/
     path: str = ""
+    doc: Document | None = None
 
 
 @dataclass
@@ -132,11 +142,20 @@ def card_num(card_id: str) -> int:
 
 
 def split_tags(value) -> list[str]:
-    """Lista tagów z napisu „a, b” albo listy; bez pustych i powtórzeń (wielkość liter bez znaczenia)."""
-    items = value.split(",") if isinstance(value, str) else list(value or [])
+    """Lista tagów z napisu „a, b” (także „[a, b]” w stylu YAML) albo listy; bez pustych i powtórzeń
+    (wielkość liter bez znaczenia), bez cudzysłowów wokół nazw."""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        items = text.split(",")
+    else:
+        items = list(value or [])
     out, seen = [], set()
     for item in items:
         name = " ".join(str(item).split())
+        if len(name) >= 2 and name[0] == name[-1] and name[0] in "\"'":
+            name = name[1:-1].strip()
         if name and name.casefold() not in seen:
             seen.add(name.casefold())
             out.append(name)
@@ -230,7 +249,7 @@ def parse_tag(doc: Document, path: str, slug: str, colors, errors: list) -> Tag:
         if color:
             errors.append(_err(path, f"{os.path.basename(path)}: nieznany kolor „{color}” ({', '.join(colors)})"))
         color = fallback_color(name, colors)
-    return Tag(name=name, color=color, description=doc.body.strip("\n"), slug=slug, path=path)
+    return Tag(name=name, color=color, description=doc.body.strip("\n"), slug=slug, path=path, doc=doc)
 
 
 def _choice(raw: str, allowed, default: str, label: str, path: str, errors: list) -> str:

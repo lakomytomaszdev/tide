@@ -56,7 +56,7 @@ class MonitorTest(unittest.TestCase):
         self.monitor.start()
         self.assertFalse(json.loads(self.monitor.snapshot_json())["exists"])
         reply = json.loads(self.monitor.create_card(json.dumps({"title": "Pierwsza"})))
-        self.assertEqual(reply, {"ok": True, "id": "K-1"})
+        self.assertEqual(reply, {"ok": True, "id": "K-1", "commitError": ""})
         self.assertTrue(self.changes)
         self.changes.clear()
         # agent pisze plan w docs/ (nowy podkatalog) i ktoś dopisuje do karty w miejscu
@@ -82,10 +82,13 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual(git_out(self.root, "log", "--format=%s").split("\n")[:2], ["K-1: move to todo", "K-1: create"])
 
     def test_errors_are_json(self):
-        self.assertEqual(json.loads(self.monitor.create_card("nie json")), {"error": "niepoprawny JSON"})
-        self.assertEqual(json.loads(self.monitor.create_card("[1]")), {"error": "oczekiwano obiektu JSON"})
-        self.assertIn("error", json.loads(self.monitor.move_card("K-1", "todo", 0)))
-        self.assertIn("error", json.loads(self.monitor.render_flow("zle", "")))
+        self.assertEqual(json.loads(self.monitor.create_card("nie json")),
+                         {"ok": False, "error": "bad-request", "message": "niepoprawny JSON"})
+        self.assertEqual(json.loads(self.monitor.create_card("[1]")),
+                         {"ok": False, "error": "bad-request", "message": "oczekiwano obiektu JSON"})
+        self.assertEqual(json.loads(self.monitor.move_card("K-1", "todo", 0))["error"], "not-found")
+        self.assertEqual(json.loads(self.monitor.render_flow("zle", ""))["error"], "bad-request")
+        self.assertFalse(os.path.exists(self.root))  # żaden błąd nie zakłada tablicy
 
 
 class Receiver(QObject):
@@ -147,15 +150,15 @@ class BoardDBusTest(unittest.TestCase):
         self.assertTrue(self.service.bus.connect(SERVICE, PATH, IFACE, "Changed", receiver.changed))
         created = self.call("CreateCard", json.dumps({"title": "Historia diagnoz po VIN", "repo": self.repo,
                                                       "tags": ["Firma"], "description": "Opis"}))
-        self.assertEqual(created, {"ok": True, "id": "K-1"})
+        self.assertEqual(created, {"ok": True, "id": "K-1", "commitError": ""})
         self.assertTrue(wait_until(lambda: receiver.count > 0, timeout=5), "sygnał Changed po CreateCard")
 
         self.assertEqual(self.call("UpsertProject", json.dumps({"slug": "mobileapp", "tags": "Firma", "mode": "spec"})),
-                         {"ok": True, "slug": "mobileapp", "changed": True})
+                         {"ok": True, "slug": "mobileapp", "changed": True, "commitError": ""})
         self.assertEqual(self.call("UpsertTag", json.dumps({"name": "pilne", "color": "rose"}))["ok"], True)
         self.call("CreateCard", json.dumps({"title": "Druga", "tags": "pilne"}))
         self.assertEqual(self.call("UpdateCard", "K-2", json.dumps({"note": "robię sam"}))["changed"], True)
-        self.assertEqual(self.call("MoveCard", "K-2", "todo", 0), {"ok": True, "id": "K-2", "changed": True})
+        self.assertEqual(self.call("MoveCard", "K-2", "todo", 0), {"ok": True, "id": "K-2", "changed": True, "commitError": ""})
 
         snap = self.snapshot()
         self.assertTrue(snap["exists"])
@@ -169,7 +172,8 @@ class BoardDBusTest(unittest.TestCase):
                          ["backlog", "todo", "progress", "waiting", "review", "done", "archived"])
 
         flow = self.call("RenderFlow", "K-1", "")
-        self.assertEqual((flow["mode"], flow["tool"], flow["branch"]), ("spec", "claude", "claude/k-1-historia-diagnoz-vin"))
+        self.assertEqual((flow["ok"], flow["mode"], flow["tool"], flow["branch"]),
+                         (True, "spec", "claude", "claude/k-1-historia-diagnoz-vin"))
         self.assertIn("Karta K-1: Historia diagnoz po VIN", flow["text"])
 
         log = git_out(self.board, "log", "--format=%an|%s").splitlines()[::-1]
@@ -188,15 +192,19 @@ class BoardDBusTest(unittest.TestCase):
         self.assertIn("Ręcznie.", {c["id"]: c for c in self.snapshot()["cards"]}["K-1"]["description"])
 
     def test_3_errors(self):
-        for member, args in (("CreateCard", ("{",)), ("CreateCard", (json.dumps({"title": ""}),)),
-                             ("UpdateCard", ("K-99", json.dumps({"title": "x"}))),
-                             ("MoveCard", ("K-1", "progress", 0)),
-                             ("UpsertProject", (json.dumps({"repo": "../wyjscie"}),)),
-                             ("UpsertTag", (json.dumps({"name": "x", "color": "zielony"}),)),
-                             ("RenderFlow", ("K-1", "turbo"))):
+        head = git_out(self.board, "rev-parse", "HEAD")
+        for member, args, code in (("CreateCard", ("{",), "bad-request"),
+                                   ("CreateCard", (json.dumps({"title": ""}),), "bad-request"),
+                                   ("UpdateCard", ("K-99", json.dumps({"title": "x"})), "not-found"),
+                                   ("MoveCard", ("K-1", "progress", 0), "bad-request"),
+                                   ("UpsertProject", (json.dumps({"repo": "../wyjscie"}),), "bad-request"),
+                                   ("UpsertTag", (json.dumps({"name": "x", "color": "zielony"}),), "bad-request"),
+                                   ("RenderFlow", ("K-1", "turbo"), "bad-request")):
             reply = self.call(member, *args)
-            self.assertEqual(list(reply), ["error"], (member, reply))
-            self.assertTrue(reply["error"])
+            self.assertEqual(sorted(reply), ["error", "message", "ok"], (member, reply))
+            self.assertEqual((reply["ok"], reply["error"]), (False, code), (member, reply))
+            self.assertTrue(reply["message"])
+        self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)  # błąd nie zostawia commita
 
 
 @requires_dbus

@@ -144,14 +144,19 @@ def _object(request: str):
 
 
 def _reply(work) -> str:
+    """Wynik jako JSON w kształcie /Tasks: {ok: true, …} albo {ok: false, error: <kod>, message: <tekst>}."""
     try:
         result = work()
     except BoardError as exc:
-        result = {"error": str(exc)}
+        result = _failure(exc.code, str(exc))
     except OSError as exc:
         print(f"tide-daemon: tablica: {exc!r}", flush=True)
-        result = {"error": f"błąd zapisu na dysku: {exc.strerror or exc}"}
+        result = _failure("io-error", f"błąd zapisu albo odczytu na dysku: {exc.strerror or exc}")
     except Exception as exc:  # błąd w kodzie nie może położyć usługi
         print(f"tide-daemon: tablica: {exc!r}", flush=True)
-        result = {"error": "błąd usługi — szczegóły w dzienniku (journalctl --user -u tide-daemon)"}
+        result = _failure("internal", "błąd usługi — szczegóły w dzienniku (journalctl --user -u tide-daemon)")
     return json.dumps(result, ensure_ascii=False)
+
+
+def _failure(code: str, message: str) -> dict:
+    return {"ok": False, "error": code, "message": message}

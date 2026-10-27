@@ -7,10 +7,15 @@ w wartości bez cudzysłowów. Bez biblioteki YAML.
 Plik ręcznie edytowany ma przetrwać nasz zapis: zmieniamy tylko linie kluczy, które ustawiamy,
 a nieznane klucze, komentarze, puste linie i treść pod frontmatterem zostają co do znaku.
 Nowe klucze trafiają na koniec frontmattera.
+
+Czego nie czytamy, nie przemilczamy: linie frontmattera, które nie są parą `klucz: wartość`
+(np. lista YAML w bloku `tags:` + `  - ui`), trafiają do `problems`, a plik ze znacznikami
+konfliktu gita (`<<<<<<<`, `>>>>>>>`) w ogóle nie jest poprawnym dokumentem.
 """
 import re
 
 # Wartości, które bez cudzysłowów czytalibyśmy inaczej (albo YAML by się na nich wyłożył).
+_CONFLICT = re.compile(r"^(<{7}|>{7})( |$)", re.MULTILINE)
 _NEWLINES = re.compile(r"[ \t]*[\r\n]+[ \t]*")
 _NEEDS_QUOTES = re.compile(r"(^\s|\s$|^[\"'#]|\s#|:\s|:$|^[-?!&*\[\]{}|>%@`,])")
 
@@ -25,17 +30,27 @@ class Document:
     def __init__(self, lines: list[str] | None = None, body: str = ""):
         self.lines = list(lines or [])
         self.body = body
+        self.problems: list[str] = []  # linie frontmattera, których nie rozumiemy (opis po polsku)
 
     # --- odczyt --------------------------------------------------------------------------------
 
     @classmethod
     def parse(cls, text: str) -> "Document":
-        lines = text.lstrip("﻿").split("\n")
+        text = text.lstrip("\ufeff").replace("\r\n", "\n")  # plik z Windows zapisujemy już z \n
+        if _CONFLICT.search(text):
+            raise FrontmatterError("znaczniki konfliktu gita (<<<<<<< / >>>>>>>) — dokończ albo przerwij "
+                                   "revert/merge i popraw plik")
+        lines = text.split("\n")
         if not lines or lines[0].strip() != "---":
             raise FrontmatterError("brak frontmattera (plik musi zaczynać się od linii ---)")
         for i, line in enumerate(lines[1:], start=1):
             if line.strip() == "---":
-                return cls(lines[1:i], "\n".join(lines[i + 1:]))
+                doc = cls(lines[1:i], "\n".join(lines[i + 1:]))
+                for number, raw in enumerate(doc.lines, start=2):
+                    if raw.strip() and not raw.lstrip().startswith("#") and not _key_of(raw):
+                        hint = " — listy zapisuj w jednej linii: tags: a, b" if _continuation(raw) else ""
+                        doc.problems.append(f"linia {number}: „{raw.strip()}” nie jest parą klucz: wartość{hint}")
+                return doc
         raise FrontmatterError("frontmatter bez zamykającej linii ---")
 
     def get(self, key: str, default: str = "") -> str:
@@ -61,13 +76,18 @@ class Document:
     # --- zapis ---------------------------------------------------------------------------------
 
     def set(self, key: str, value) -> None:
-        """Ustawia wartość: podmienia linię klucza w miejscu albo dopisuje nową na końcu."""
+        """Ustawia wartość: podmienia linię klucza w miejscu albo dopisuje nową na końcu. Linie
+        kontynuacji pod kluczem (lista YAML w bloku) znikają razem ze starą wartością."""
         line = f"{key}: {dump(value)}".rstrip()
         index = self._index(key)
         if index is None:
             self.lines.append(line)
-        else:
-            self.lines[index] = line
+            return
+        self.lines[index] = line
+        end = index + 1
+        while end < len(self.lines) and _continuation(self.lines[end]) and not _key_of(self.lines[end]):
+            end += 1
+        del self.lines[index + 1:end]
 
     def text(self) -> str:
         body = self.body
@@ -101,6 +121,10 @@ def dump(value) -> str:
         # Nasz odczyt zdejmuje tylko zewnętrzne cudzysłowy — cudzysłów w środku zostaje bez zmian.
         return f"\"{text}\""
     return text
+
+
+def _continuation(line: str) -> bool:
+    return bool(line.strip()) and (line[:1].isspace() or line.lstrip().startswith("- "))
 
 
 def _key_of(line: str) -> str:
