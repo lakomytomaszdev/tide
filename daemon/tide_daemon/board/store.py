@@ -510,7 +510,11 @@ class BoardStore:
             index = len(others)
         moved_column = card.column != column
         current = sum(1 for c in others if (c.order, c.num) < (card.order, card.num))
-        card.doc.set(MOVED_FROM_KEY, shown or card.column)  # bez wiedzy o pracy agentów — zapisana kolumna
+        # Skąd przeniesiona: kolumna wyświetlana (bez wiedzy o pracy agentów — zapisana). Karta, która zostaje
+        # w kolumnie, w której ją widać (zmiana kolejności „do poprawy” w Do zrobienia), zachowuje `moved-from`.
+        origin = shown or card.column
+        if origin != column or not card.doc.has(MOVED_FROM_KEY):
+            card.doc.set(MOVED_FROM_KEY, origin)
         if not moved_column and current == index:
             now = self._now()
             card.doc.set("updated", now)

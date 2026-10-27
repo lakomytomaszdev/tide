@@ -287,7 +287,11 @@ def _aggregate(entry: dict, children: list[dict]) -> None:
     entry["subagents"] = sum(1 for c in children if c["state"] != ENDED)
     entry["lastActivityTs"] = max([entry["lastActivityTs"]] + [c["lastActivityTs"] for c in children])
     entry["lastActivity"] = iso(entry["lastActivityTs"])
-    child = min(children, key=lambda c: (STATE_ORDER[c["state"]], c["sinceTs"] if c["state"] == WAITING else 0))
+    # Podagent nigdy nie przenosi na przodka „czeka na odpowiedź” (reply) — jego pytanie czyta koordynator.
+    eligible = [c for c in children if not (c["state"] == WAITING and c.get("reason") == "reply")]
+    if not eligible:
+        return
+    child = min(eligible, key=lambda c: (STATE_ORDER[c["state"]], c["sinceTs"] if c["state"] == WAITING else 0))
     if STATE_ORDER[child["state"]] < STATE_ORDER[entry["state"]]:
         for key in ("state", "reason", "since", "sinceTs", "lastAction", "waitingText"):
             entry[key] = child[key]

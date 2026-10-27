@@ -173,6 +173,42 @@ class CodexTurnTest(unittest.TestCase):
         self.assertEqual(s["state"], "done")
 
 
+class CodexSubagentTest(CodexTurnTest):
+    """Przegląd PT-29: podagent, którego raport kończy się pytaniem, nie czeka (nikt mu nie odpisze) i nie
+    robi „czeka” z pracującego koordynatora."""
+
+    def test_subagent_report_question_does_not_make_parent_wait(self):
+        parent, child = "0000000a-0000-4000-8000-000000000101", "0000000a-0000-4000-8000-000000000102"
+        self.session([{"type": "event_msg", "timestamp": iso(self.now - 30), "payload": {"type": "task_started"}},
+                      {"type": "response_item", "timestamp": iso(self.now - 3),
+                       "payload": {"type": "function_call", "name": "shell", "call_id": "x", "arguments": "{}"}}],
+                     tid=parent)
+        text = "Raport: zrobione. Testy przechodzą.\n\nCzy mam też poprawić README?"
+        meta = {"type": "session_meta", "timestamp": iso(self.now - 600),
+                "payload": {"id": child, "cwd": self.tmp, "originator": "codex_cli_rs", "timestamp": iso(self.now - 600),
+                            "source": {"subagent": {"thread_spawn": {"parent_thread_id": parent}}},
+                            "parent_thread_id": parent}}
+        with open(os.path.join(self.folder, f"rollout-2026-10-27T10-00-01-{child}.jsonl"), "w", encoding="utf-8") as fh:
+            fh.write("\n".join(json.dumps(r, ensure_ascii=False) for r in [meta] + self.turn(self.now - 60, text)) + "\n")
+        scanner = AgentScanner(os.path.join(self.tmp, "claude"), os.path.join(self.tmp, "codex"))
+        scanner.discover(self.now)
+        scanner.update()
+        sessions = scanner.sessions(self.now)
+        self.assertEqual([(s["id"][-3:], s["state"], s["reason"], s["subagents"]) for s in sessions],
+                         [("101", "working", "", 1)])
+        log = next(log for log, _ in scanner.logs.values() if log.session_id == child)
+        from tide_daemon.agents.state import reply_question
+        self.assertEqual(reply_question(log), "")
+
+    def test_aggregate_never_promotes_a_reply(self):
+        from tide_daemon.agents.scanner import _aggregate
+        entry = {"state": "working", "reason": "", "since": "", "sinceTs": 1.0, "lastActivityTs": 1.0,
+                 "lastAction": "", "waitingText": ""}
+        child = dict(entry, state="waiting", reason="reply", waitingText="Czy README?")
+        _aggregate(entry, [child])
+        self.assertEqual((entry["state"], entry["waitingText"]), ("working", ""))
+
+
 class NotificationTest(unittest.TestCase):
     def test_one_notification_per_new_question(self):
         tracker = attention.WaitingTracker()
@@ -242,6 +278,11 @@ class CardOfFinishedSessionTest(unittest.TestCase):
         c = self.card(boards=[coord])
         self.assertEqual((c["boardColumn"], c["movedFrom"]), ("todo", "review"))
         self.assertIn("przeniesiona ręcznie", c["derived"]["note"])
+        # Przegląd PT-28: zmiana kolejności w Do zrobienia (karta widoczna w todo) nie gubi „do poprawy”.
+        self.store.create_card({"title": "sąsiadka", "column": "todo"})
+        self.store.move_card("K-1", "todo", 1, "todo")
+        c = self.card(boards=[coord])
+        self.assertEqual((c["boardColumn"], c["movedFrom"]), ("todo", "review"))
         # Koordynator z pytaniem na końcu tury — Czeka na mnie, mimo skończonych ticketów.
         live = dict(coord, live=True, state="waiting")
         asked = self.session(state="waiting", reason="reply", waitingText="Czy donacje są w planach?")

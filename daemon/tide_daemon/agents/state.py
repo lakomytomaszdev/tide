@@ -121,6 +121,8 @@ def reply_question(log: SessionLog) -> str:
     text = getattr(log, "last_text", "")
     if not text or log.phase != TURN_END or getattr(log, "scheduled", False):
         return ""
+    if getattr(log, "parent_id", "") or log.hidden:
+        return ""  # podagent: raport dla koordynatora, nie pytanie do użytkownika — nikt mu nie odpisze
     if log.last_user_ts and log.last_user_ts >= log.last_text_ts:
         return ""
     cached = getattr(log, "_question", ("", ""))
