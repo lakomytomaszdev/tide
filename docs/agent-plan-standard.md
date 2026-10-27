@@ -48,7 +48,10 @@ Płaskie pary `klucz: wartość` (YAML bez zagnieżdżeń i list), pierwsza lini
 **Tracker:**
 
 - `youtrack` — tickety żyją w YouTracku (`tracker-url`, `tracker-project`); plan wskazuje, które
-  z nich są w tym ciągu pracy, a Tide dociąga z YouTracka (tylko odczyt) tytuły, stany i odnośniki.
+  z nich są w tym ciągu pracy, a Tide dociąga z YouTracka tytuły, stany i odnośniki. Gdy projekt YouTracka
+  ma na tablicy Tide klucz z włączoną synchronizacją (PT-7), Tide zapisuje w YouTracku stan ticketu
+  (`w-toku` i `review` → In Progress, `czeka` → To be discussed, `gotowe` → Fixed, `odrzucone` → Won't fix) —
+  tylko przy przejściach, bez nadpisywania zmian ręcznych (docs/tide-daemon.md, „Synchronizacja z YouTrackiem”).
 - `local` — **nie ma zewnętrznego trackera**: ID ticketów nadaje plan (`PT-1`, `PT-2`, …), a plan
   jest źródłem stanu dla tablicy Tide i raportu porannego. `tracker-url` i `tracker-project` puste.
 - `none` — praca bez śledzenia ticketów (np. jednorazowe zadanie). Tabela może być pusta albo
