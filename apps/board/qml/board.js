@@ -64,9 +64,35 @@ function displayColumn(card) {
     return card.boardColumn || card.column || "backlog"
 }
 
-// Karta w kolumnie ręcznej (bez stanu z koordynatora) — tylko taką da się przeciągać.
+// Karta w „Do sprawdzenia” albo w Gotowych z wyliczenia koordynatora: tak potwierdzasz sprawdzenie
+// (do Gotowych) albo odsyłasz do poprawy (do Do zrobienia).
+function confirmable(card) {
+    if (!card || !card.derived) return false
+    const shown = displayColumn(card)
+    return shown === "review" || (shown === "done" && card.column !== "done")
+}
+
+// Karta w kolumnie ręcznej (bez stanu z koordynatora) albo do potwierdzenia — tylko taką da się przeciągać.
 function draggable(card) {
-    return !!card && isManual(displayColumn(card)) && isManual(card.column)
+    return !!card && ((isManual(displayColumn(card)) && isManual(card.column)) || confirmable(card))
+}
+
+// Dokąd wolno przenieść kartę: z kolumn ręcznych do każdej ręcznej, kartę do potwierdzenia — tylko do
+// Gotowych albo z powrotem do Do zrobienia. Do kolumn wyliczanych nigdy.
+function dropTargets(card) {
+    if (confirmable(card)) return ["done", "todo"]
+    return draggable(card) ? MANUAL.slice() : []
+}
+
+// Cel „Otwórz w Sesjach” / „Przejdź do agenta”: koordynator karty (/Coordination), inaczej jej sesja (/Agents).
+function agentTarget(card) {
+    const d = card && card.derived
+    return d ? String(d.coordinator || d.session || "") : ""
+}
+
+// Czy cel z agentTarget to koordynator którejś karty (wtedy okno Tide na Sesjach), a nie zwykła sesja.
+function isCoordinator(snapshot, target) {
+    return !!target && ((snapshot && snapshot.cards) || []).some(c => c.derived && c.derived.coordinator === target)
 }
 
 // --- filtry --------------------------------------------------------------------------------
@@ -233,9 +259,13 @@ function noteTint(card, text) {
 }
 
 // Linia na karcie: notatka z koordynatora, inaczej notatka karty.
+// Gotowa specyfikacja (`spec` karty, tryb „tylko spec”) w Backlogu — „✓ specyfikacja gotowa”
+// przed własną notatką karty, bo to wynik pracy agenta, na który czekasz.
 function cardNote(card) {
     const d = card && card.derived
-    return (d && d.note) || (card && card.note) || ""
+    if (d && d.note) return d.note
+    if (card && card.spec && card.column === "backlog") return "✓ specyfikacja gotowa"
+    return (card && card.note) || ""
 }
 
 // Kolor tagu: nazwa pastelu z migawki (tags[].color), gdy jej nie ma — nic (QML da text.muted).
@@ -380,4 +410,116 @@ function updateRequest(card, form) {
 function columnLabel(snapshot, id) {
     const found = columns(snapshot).find(c => c.id === id)
     return found ? found.label : id === "archived" ? "Archiwum" : id
+}
+
+// --- „Co ma zrobić agent?” (uruchomienie z karty, PT-4) ------------------------------------------
+
+// Tryby z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.
+var LAUNCH_MODES = [
+    { id: "full", title: "Pełny flow", desc: "Grilling, specyfikacja, tickety w planie, implementacja przez TDD i review.",
+      meta: "na start zada ci pytania", steps: ["Grilling", "Specyfikacja", "Tickety w planie", "TDD", "Review"] },
+    { id: "light", title: "Lekki", desc: "Krótka specyfikacja i 1–3 tickety w planie, potem od razu praca.",
+      meta: "pyta tylko przy wątpliwościach", steps: ["Krótka specyfikacja", "1–3 tickety w planie", "Praca", "Review"] },
+    { id: "spec", title: "Tylko specyfikacja", desc: "Agent dopytuje i pisze specyfikację. Bez kodu i bez worktree.",
+      meta: "karta wraca do Backlogu", steps: ["Pytania", "Specyfikacja", "„specyfikacja gotowa” na karcie"] }
+]
+var LAUNCH_TOOLS = [{ value: "claude", label: "Claude Code" }, { value: "codex", label: "Codex" }]
+
+function launchMode(id) {
+    return LAUNCH_MODES.find(m => m.id === id) || LAUNCH_MODES[0]
+}
+
+function launchToolName(tool) {
+    return tool === "codex" ? "Codex" : "Claude Code"
+}
+
+// Projekt karty, w którym agent może pracować: z repozytorium, które istnieje. null — trzeba wybrać.
+function launchProject(snapshot, card) {
+    const project = card && card.project ? projectBySlug(snapshot, card.project) : null
+    return project && project.repo && !project.repoMissing ? project : null
+}
+
+// Dlaczego nie da się uruchomić (pusty napis — można).
+function launchBlocker(snapshot, card) {
+    if (!card) return "Nie ma już tej karty."
+    const project = card.project ? projectBySlug(snapshot, card.project) : null
+    if (!project) return "Karta nie ma projektu — agent potrzebuje repozytorium, w którym ma pracować. Wybierz projekt albo repozytorium."
+    if (!project.repo) return "Projekt „" + project.name + "” nie ma repozytorium — agent potrzebuje katalogu z kodem. Wybierz projekt z repozytorium."
+    if (project.repoMissing) return "Repozytorium projektu „" + project.name + "” nie istnieje (" + project.repo + "). Wybierz inny projekt albo popraw go w ustawieniach."
+    return ""
+}
+
+// Proponowana gałąź: zapisana w karcie albo `<narzędzie>/k-12-<opis>` (branchSlug z migawki).
+function launchBranch(card, tool) {
+    if (card && card.branch) return card.branch
+    return (tool || "claude") + "/" + ((card && card.branchSlug) || (card ? String(card.id).toLowerCase() : "zadanie"))
+}
+
+// Zmiana narzędzia podmienia jego prefiks w gałęzi (claude/… ↔ codex/…), resztę zostawia.
+function retoolBranch(branch, tool) {
+    const match = /^(claude|codex)\//.exec(branch || "")
+    return match ? tool + "/" + branch.slice(match[0].length) : branch
+}
+
+// „w repozytorium · docs/agents/” albo „w Tide · tide-board/docs/<projekt>/”.
+function docsLabel(project) {
+    if (!project) return ""
+    if (project.aiDocs === "repo") return "w repozytorium · docs/agents/"
+    const parts = String(project.docsDir || "").split("/").filter(x => x)
+    const tail = parts.slice(-3).join("/")
+    return "w Tide · " + (tail || "docs/" + project.slug) + "/"
+}
+
+// Katalog worktree jak w usłudze (tasks/core.py: worktree_path): `<repo>-worktrees/<nazwa>`, gdy taki
+// katalog już jest — tego okno nie wie, więc mówimy ogólnie o konwencji repozytorium.
+function worktreeNote(state) {
+    if (state.mode === "spec") return "Specyfikacja nie potrzebuje worktree: powstaje w " + specDir(state) + " w katalogu projektu."
+    if (!state.newWorktree) return "Agent pracuje w głównym katalogu repozytorium, na tym, co tam jest teraz."
+    const name = String(state.branch || "").replace(/^(claude|codex)\//, "")
+    return "Od lokalnej gałęzi głównej, katalog " + name + " obok repozytorium (konwencja projektu). Gałąź główna zostaje nietknięta."
+}
+
+function specDir(state) {
+    return state.aiDocs === "repo" ? "docs/agents/specs/" : "tide-board/docs/" + (state.slug || "…") + "/specs/"
+}
+
+// Zdanie „co się stanie” w stopce okna.
+function launchFooter(state) {
+    const tool = launchToolName(state.tool)
+    const where = state.repoName ? "„" + state.repoName + " · " + (state.newWorktree ? state.branch : "bieżąca gałąź") + "”" : ""
+    const check = state.check === "manual" ? " Na koniec zostawi listę „Co przetestować ręcznie i jak” i poczeka na twój test." : ""
+    if (state.mode === "spec")
+        return tool + " w katalogu projektu, bez worktree: dopyta i zapisze specyfikację w " + specDir(state)
+            + ". Potem karta wróci do Backlogu ze znacznikiem „specyfikacja gotowa”."
+    const room = state.newWorktree ? "praca w nowym worktree" : "praca w głównym katalogu"
+    if (state.mode === "light")
+        return "Nowa karta Konsoli " + where + ", " + tool + " z szablonem „Lekki”: krótka specyfikacja i plan z 1–3 ticketami, potem "
+            + room + "." + check + " Karta przejdzie do „W toku”, gdy agent ruszy."
+    return "Nowa karta Konsoli " + where + ", " + tool + " z szablonem „Pełny flow”. Agent najpierw zada ci pytania, potem założy plan z kluczem card: "
+        + state.cardId + "." + check + " Karta przejdzie do „W toku”, gdy agent ruszy."
+}
+
+// Prośba /Tasks Start z polecenia RenderLaunch: worktree tylko poza trybem spec, katalog dokumentów
+// w tablicy przez addDirs (ai-docs: tide).
+function launchStartRequest(flow, state) {
+    const worktree = state.mode !== "spec" && state.newWorktree
+    return { repoPath: flow.repo, tool: flow.tool || state.tool, prompt: flow.text, newWorktree: worktree,
+             branch: worktree ? (flow.branch || state.branch) : "", images: [],
+             addDirs: flow.aiDocs === "tide" && flow.docsDir ? [flow.docsDir] : [] }
+}
+
+// UpdateCard po udanym starcie: gałąź i worktree (tylko nowy worktree), tryb, narzędzie, sprawdzenie, chwila.
+function launchMarkRequest(result, state, nowIso) {
+    return { branch: result.worktree ? result.branch || "" : "", worktree: result.worktree || "", mode: state.mode,
+             tool: result.tool || state.tool, check: state.check === "manual" ? "manual" : "auto", launched: nowIso }
+}
+
+// Czas ISO 8601 z przesunięciem strefy (2026-10-27T12:04:00+01:00) — jak w plikach tablicy.
+function isoNow(ms) {
+    const d = new Date(ms)
+    const offset = -d.getTimezoneOffset()
+    const sign = offset >= 0 ? "+" : "-"
+    const abs = Math.abs(offset)
+    return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate()) + "T" + two(d.getHours()) + ":"
+        + two(d.getMinutes()) + ":" + two(d.getSeconds()) + sign + two(Math.floor(abs / 60)) + ":" + two(abs % 60)
 }

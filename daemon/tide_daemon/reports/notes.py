@@ -221,6 +221,37 @@ def manual_check(board: dict, ticket: dict, card_check=None) -> tuple[bool, list
     return needed or bool(items), items
 
 
+def card_for(cards: list, board: dict, ticket: dict) -> dict | None:
+    """Karta tablicy pracy związana z tablicą koordynacji (PT-5): najpierw klucz `card` planu („K-12”),
+    potem `session` karty równe koordynatorowi (`claude:<id>` albo samo id sesji), potem `branch` karty
+    równy gałęzi ticketu albo koordynatora."""
+    cards = [c for c in cards or [] if isinstance(c, dict)]
+    plan_card = str(((board.get("plan") or {}).get("card")) or board.get("card") or "").strip().upper()
+    if plan_card:
+        hit = next((c for c in cards if str(c.get("id") or "").upper() == plan_card), None)
+        if hit is not None:
+            return hit
+    ids = {str(board.get("id") or ""), str(board.get("sessionId") or "")} - {""}
+    hit = next((c for c in cards if str(c.get("session") or "").strip() in ids), None)
+    if hit is not None:
+        return hit
+    branches = {str(ticket.get("branch") or ""), str(board.get("branch") or "")} - {"", "HEAD"}
+    return next((c for c in cards if str(c.get("branch") or "").strip() in branches), None)
+
+
+def card_check_from(snapshot: dict, board: dict, ticket: dict) -> dict | None:
+    """Hak `card_check` z migawki tablicy pracy (/Board Snapshot()): {"check": "manual", "spec": ścieżka}
+    dla karty z ręcznym sprawdzeniem, None dla `auto` albo bez karty. Względna ścieżka specyfikacji —
+    od repozytorium tablicy koordynacji."""
+    card = card_for((snapshot or {}).get("cards"), board, ticket)
+    if card is None or str(card.get("check") or "").lower() != "manual":
+        return None
+    spec = str(card.get("spec") or "")
+    if spec and not os.path.isabs(spec):
+        spec = os.path.join(board.get("repoPath") or board.get("cwd") or "", spec)
+    return {"check": "manual", "spec": spec}
+
+
 def checklist(path: str, ident: str) -> list[str]:
     """Punkty z sekcji „Co przetestować ręcznie” pliku Markdown: te z ID ticketu albo pod podnagłówkiem
     z ID; plik bez ID w sekcji (specyfikacja jednego zadania) — wszystkie punkty."""

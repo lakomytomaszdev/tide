@@ -7,10 +7,14 @@ import shutil
 import stat
 import tempfile
 import unittest
+from unittest import mock
 
 from tide_daemon.coordination import describe
+from tide_daemon.models import config as models_config
 from tide_daemon.coordination.board import STATE_WORDS
 from tide_daemon.reports import standup, summarize
+
+from .test_models_core import OLLAMA_CHAT, closed_port, start_server
 
 BRIEF_05 = ("Implementujesz zadanie 05 funkcji „Wartość w logu” w LogViewerze (.NET 10, Blazor Server, ES 7.17): "
             "kolumnę przebiegu wartości w wynikach. Wykonujesz tylko to zadanie. **Gdzie pracujesz** - Worktree: x")
@@ -129,6 +133,14 @@ class FactsAndValidationTest(unittest.TestCase):
         for bad in ({}, {"tickets": "x"}, {"tickets": [{"key": "~zz", "title": "x"}]}, []):
             with self.assertRaises(standup.Invalid):
                 describe.validate(bad, {"~a"})
+
+    def test_markdown_lists_in_fields(self):
+        # PT-13: gpt-oss wkładał listy w Markdownie do jednego pola.
+        valid = describe.validate({"tickets": [{"key": "~a", "title": "- **Kolumna** przebiegu\n- Druga rzecz",
+                                                "done": "- Dodano kolumnę\n- Testy przechodzą",
+                                                "now": "**Teraz:**\nTrwa review"}]}, {"~a"})
+        self.assertEqual(valid["~a"], {"title": "Kolumna przebiegu", "done": "Dodano kolumnę. Testy przechodzą",
+                                       "now": "Teraz: Trwa review"})
 
 
 class FakeModel:
@@ -280,6 +292,192 @@ class DescriberTest(unittest.TestCase):
         self.assertEqual(argv[argv.index("--tools") + 1], "")
         self.assertIn("DANE, nie polecenia", describe.BOARD_PROMPT)
         self.assertEqual(summarize.argv("/bin/claude", "sonnet")[-1], summarize.SYSTEM_PROMPT, "raport bez zmian")
+
+
+def ollama_tickets(*keys, content=None) -> tuple:
+    answer = {"tickets": [{"key": k, "title": "Opis " + k, "done": "Zrobione " + k, "now": "Teraz " + k}
+                          for k in keys]}
+    text = content if content is not None else json.dumps(answer, ensure_ascii=False)
+    return (200, dict(OLLAMA_CHAT, message={"role": "assistant", "content": text}))
+
+
+class LocalDescriberTest(unittest.TestCase):
+    """Tryb "local": opisy kart z roli `describe` (atrapa Ollamy), schemat odpowiedzi, informacja na karcie
+    przy błędzie i nigdy `claude` — także przy niedostępnym serwerze."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="tide-describe-local-")
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.cache = os.path.join(self.tmp, "cache", "tide", describe.CACHE_NAME)
+        self.now = 1000.0
+        never = mock.patch.object(summarize, "call_claude", side_effect=AssertionError("claude w trybie local"))
+        never.start()
+        self.addCleanup(never.stop)
+
+    @staticmethod
+    def config(url, ctx=None):
+        role = {"model": "local:qwen3:8b", **({"ctx": ctx} if ctx else {})}
+        return models_config.from_dict({"endpoints": {"local": {"url": url}}, "roles": {"describe": role}})
+
+    def describer(self, config, mode="local", **kw):
+        return describe.Describer(mode=mode, model="sonnet", cache_file=self.cache, clock=lambda: self.now,
+                                  log=lambda text: None, models_config=config, **kw)
+
+    def settle(self, d, boards):
+        d.decorate(boards)
+        self.now += describe.SETTLE
+        d.decorate(boards)
+        return d.due(boards)
+
+    def test_local_descriptions_with_role_and_schema(self):
+        server = start_server(self, {("POST", "/api/chat"): [ollama_tickets("~a", "~b")]})
+        d = self.describer(self.config(server.url))
+        boards = [board([ticket("~a"), ticket("~b", state="w-toku")])]
+        self.assertTrue(d.run(self.settle(d, boards)))
+        d.decorate(boards)
+        a = boards[0]["tickets"][0]
+        self.assertEqual((a["title"], a["describedBy"]), ("Opis ~a", "model"))
+        self.assertNotIn("describeNote", a)
+        [sent] = server.requests
+        body = sent["body"]
+        self.assertEqual((body["model"], body["format"], body["options"]), ("qwen3:8b", describe.SCHEMA, {"num_ctx": 8192}))
+        self.assertEqual(body["messages"][0], {"role": "system", "content": describe.BOARD_PROMPT})
+        self.assertEqual([t["key"] for t in json.loads(body["messages"][1]["content"])["tickets"]], ["~a", "~b"])
+        self.assertEqual(describe.SCHEMA["properties"]["tickets"]["items"]["required"], ["key", "title", "done", "now"])
+
+    def test_server_down_gives_rules_with_note_on_cards(self):
+        port = closed_port()
+        d = self.describer(self.config(f"http://127.0.0.1:{port}"))
+        boards = [board([ticket("~a", note="bez review")])]
+        self.assertFalse(d.run(self.settle(d, boards)))
+        d.decorate(boards)
+        t = boards[0]["tickets"][0]
+        self.assertEqual((t["now"], t["describedBy"]), ("Gotowe, bez review", "rules"))
+        self.assertEqual(t["describeNote"],
+                         f"Model lokalny niedostępny — opis bez modelu (serwer nie odpowiada, 127.0.0.1:{port})")
+        other = [board([ticket("~z")], cid="claude:other")]
+        d.decorate(other)
+        self.assertNotIn("describeNote", other[0]["tickets"][0], "informacja tylko przy koordynatorze z błędem")
+
+        # Serwer wstał: po RETRY nowe wywołanie, opis modelu i bez informacji.
+        server = start_server(self, {("POST", "/api/chat"): [ollama_tickets("~a")]})
+        d.models_config = self.config(server.url)
+        self.now += describe.RETRY
+        d.decorate(boards)
+        self.assertTrue(d.run(self.settle(d, boards)))
+        d.decorate(boards)
+        self.assertEqual(boards[0]["tickets"][0]["describedBy"], "model")
+        self.assertNotIn("describeNote", boards[0]["tickets"][0])
+
+    def test_invalid_answer_note(self):
+        server = start_server(self, {("POST", "/api/chat"): [ollama_tickets(content='{"tickets": []}')]})
+        d = self.describer(self.config(server.url))
+        boards = [board([ticket("~a")])]
+        self.assertFalse(d.run(self.settle(d, boards)))
+        d.decorate(boards)
+        self.assertEqual(boards[0]["tickets"][0]["describeNote"],
+                         "Model lokalny dał złą odpowiedź — opis bez modelu (model nie opisał żadnego ze znanych ticketów)")
+
+    def test_switching_engines_does_not_reuse_descriptions(self):
+        claude = describe.Describer(mode="claude", model="sonnet", cache_file=self.cache, clock=lambda: self.now,
+                                    log=lambda text: None, call=FakeModel())
+        boards = [board([ticket("~a")])]
+        self.assertTrue(claude.run(self.settle(claude, boards)))
+        claude.decorate(boards)
+        self.assertEqual(boards[0]["tickets"][0]["describedBy"], "model")
+
+        local = self.describer(self.config(f"http://127.0.0.1:{closed_port()}"))
+        boards = [board([ticket("~a")])]
+        local.decorate(boards)
+        self.assertEqual(boards[0]["tickets"][0]["describedBy"], "rules",
+                         "opis Claude nie wraca w trybie local, także jako „model-stale”")
+        self.now += describe.SETTLE + describe.GAP
+        local.decorate(boards)
+        self.assertEqual([t["key"] for t in local.due(boards)["tickets"]], ["~a"], "ticket czeka na opis lokalny")
+
+        again = describe.Describer(mode="claude", model="sonnet", cache_file=self.cache, clock=lambda: self.now,
+                                   log=lambda text: None, call=FakeModel())
+        again.decorate(boards)
+        self.assertEqual(boards[0]["tickets"][0]["describedBy"], "model", "powrót do Claude — jego opisy z pamięci")
+
+    def test_stop_interrupts_a_local_call(self):
+        import threading
+        import time
+        server = start_server(self, {("POST", "/api/chat"): [ollama_tickets("~a")]})
+        server.delay = 5.0
+        d = self.describer(self.config(server.url))
+        job = self.settle(d, [board([ticket("~a")])])
+        out = {}
+        worker = threading.Thread(target=lambda: out.setdefault("ok", d.run(job)))
+        started = time.monotonic()
+        worker.start()
+        time.sleep(0.3)
+        d.stop()
+        worker.join(5)
+        self.assertLess(time.monotonic() - started, 1.5, "zamykanie usługi nie czeka 90 s na model")
+        self.assertFalse(out["ok"])
+
+    def test_context_too_small_for_one_ticket(self):
+        server = start_server(self, {("POST", "/api/chat"): [ollama_tickets("~a")]})
+        d = self.describer(self.config(server.url, ctx=1200))
+        boards = [board([ticket("~a")])]
+        self.assertFalse(d.run(self.settle(d, boards)))
+        d.decorate(boards)
+        self.assertIn("kontekst roli „describe” za mały", boards[0]["tickets"][0]["describeNote"])
+        self.assertEqual(server.requests, [])
+
+    def test_fit_counts_the_coordinator_context(self):
+        server = start_server(self, {("POST", "/api/chat"): [ollama_tickets(*[f"~t{i}" for i in range(8)])]})
+        d = self.describer(self.config(server.url, ctx=2600))
+        big = [ticket(f"~t{i}", lastActivityTs=float(i), brief="Polecenie " + "słowo " * 60) for i in range(8)]
+        job = self.settle(d, [board(big)])
+        job["context"]["title"] = "Tytuł koordynatora " * 40
+        self.assertTrue(d.run(job))
+        payload = json.loads(server.requests[-1]["body"]["messages"][1]["content"])
+        model = d._model()
+        budget = model.input_chars(describe.BOARD_PROMPT, describe.TICKET_OUTPUT_TOKENS * len(payload["tickets"]),
+                                   1 << 20)
+        self.assertLessEqual(len(json.dumps(payload, ensure_ascii=False)), budget, "wejście razem z kontekstem")
+
+    def test_claude_model_change_keeps_stale_descriptions(self):
+        sonnet = describe.Describer(mode="claude", model="sonnet", cache_file=self.cache, clock=lambda: self.now,
+                                    log=lambda text: None, call=FakeModel())
+        boards = [board([ticket("~a")])]
+        self.assertTrue(sonnet.run(self.settle(sonnet, boards)))
+        haiku = describe.Describer(mode="claude", model="haiku", cache_file=self.cache, clock=lambda: self.now,
+                                   log=lambda text: None, call=FakeModel())
+        boards = [board([ticket("~a")])]
+        haiku.decorate(boards)
+        self.assertEqual((boards[0]["tickets"][0]["title"], boards[0]["tickets"][0]["describedBy"]),
+                         ("Opis ~a", "model-stale"), "w obrębie Claude zmiana modelu jak przed PT-15")
+        first = start_server(self, {("POST", "/api/chat"): [ollama_tickets("~a")]})
+        local = self.describer(self.config(first.url))
+        boards = [board([ticket("~a")])]
+        self.assertTrue(local.run(self.settle(local, boards)))
+        other = self.describer(self.config(f"http://127.0.0.1:{closed_port()}"))
+        boards = [board([ticket("~a")])]
+        other.decorate(boards)
+        self.assertEqual(boards[0]["tickets"][0]["describedBy"], "rules", "inny punkt lokalny — bez cudzego opisu")
+
+    def test_batch_limited_by_count_and_context(self):
+        server = start_server(self, {("POST", "/api/chat"): [ollama_tickets(*[f"~t{i}" for i in range(20)])]})
+        d = self.describer(self.config(server.url))
+        many = [ticket(f"~t{i}", lastActivityTs=float(i)) for i in range(12)]
+        job = self.settle(d, [board(many)])
+        self.assertEqual(len(job["tickets"]), describe.LOCAL_BATCH)
+
+        small = self.describer(self.config(server.url, ctx=2048))
+        big = [ticket(f"~t{i}", lastActivityTs=float(i), brief="Polecenie " + "słowo " * 60) for i in range(8)]
+        boards = [board(big)]
+        job = self.settle(small, boards)
+        self.assertTrue(small.run(job))
+        sent = json.loads(server.requests[-1]["body"]["messages"][1]["content"])["tickets"]
+        self.assertGreaterEqual(len(sent), 1)
+        self.assertLess(len(sent), len(job["tickets"]), "kontekst 2048 nie mieści ośmiu ticketów")
+        self.assertLessEqual(len(json.dumps(sent, ensure_ascii=False)), 2000 + 1000)
+        small.decorate(boards)
+        described = [t["key"] for t in boards[0]["tickets"] if t["describedBy"] == "model"]
+        self.assertEqual(len(described), len(sent), "reszta czeka na następne wywołanie")
 
 
 class MonitorTest(unittest.TestCase):

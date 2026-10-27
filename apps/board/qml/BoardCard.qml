@@ -16,14 +16,14 @@ Rectangle {
     property var card: ({})
     property bool compact: false
     property bool selected: false
-    property bool canLaunch: false      // PT-4: „Uruchom agenta…” w Do zrobienia
+    property bool canLaunch: false      // „Uruchom agenta…” w Do zrobienia (okno „Co ma zrobić agent?”)
     property bool canDiff: false        // PT-5: „Diff gałęzi” w Do sprawdzenia
     property var tagTone: null          // funkcja(nazwa) → kolor kropki tagu
     property var dragHost: null         // strona tablicy (BoardPage) — duch karty i upuszczanie
     property bool ghost: false          // kopia karty pod kursorem w czasie przeciągania
     signal clicked()
     signal moveRequested(string column)       // „Gotowe” w Do sprawdzenia
-    signal sessionRequested(string session)   // Otwórz w Sesjach / Przejdź do agenta
+    signal sessionRequested(string session)   // Otwórz w Sesjach / Przejdź do agenta: koordynator albo sesja (agentTarget)
     signal launchRequested()
     signal diffRequested()
     signal keyNavigation(int dx, int dy)      // strzałki: sąsiednia karta
@@ -290,13 +290,15 @@ Rectangle {
             pillRadius: Tide.Tokens.radiusSmall
             pixelSize: 12
             strong: true
-            text: "Uruchom agenta…"
+            // Po starcie karta czeka w Do zrobienia, aż koordynator ruszy (PT-5) — wtedy „ponownie”.
+            text: (root.c.launched || "") !== "" ? "Uruchom ponownie…" : "Uruchom agenta…"
+            outline: (root.c.launched || "") !== ""
             fill: Tide.Tokens.accent
-            textColor: Tide.Tokens.backgroundDesktop
+            textColor: (root.c.launched || "") !== "" ? Tide.Tokens.accent : Tide.Tokens.backgroundDesktop
             onClicked: root.launchRequested()
         }
         Text {
-            visible: root.column === "progress" && root.derived !== null && (root.derived.session || "") !== ""
+            visible: root.column === "progress" && root.derived !== null && Logic.agentTarget(root.c) !== ""
             text: "Otwórz w Sesjach →"
             textFormat: Text.PlainText
             color: sessionsLink.containsMouse ? Tide.Theme.alpha(Tide.Tokens.accent, 0.8) : Tide.Tokens.accent
@@ -304,18 +306,18 @@ Rectangle {
             font.pixelSize: 12
             Accessible.role: Accessible.Link
             Accessible.name: text
-            Accessible.onPressAction: root.sessionRequested(root.derived.session)
+            Accessible.onPressAction: root.sessionRequested(Logic.agentTarget(root.c))
             MouseArea {
                 id: sessionsLink
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.sessionRequested(root.derived.session)
+                onClicked: root.sessionRequested(Logic.agentTarget(root.c))
             }
         }
         PillButton {
             Layout.fillWidth: true
-            visible: root.waiting && root.derived !== null && (root.derived.session || "") !== "" && !root.ghost
+            visible: root.waiting && root.derived !== null && Logic.agentTarget(root.c) !== "" && !root.ghost
             implicitHeight: 30
             pillRadius: Tide.Tokens.radiusSmall
             pixelSize: 12
@@ -323,7 +325,7 @@ Rectangle {
             text: "Przejdź do agenta"
             fill: Tide.Tokens.peach
             textColor: Tide.Tokens.backgroundDesktop
-            onClicked: root.sessionRequested(root.derived.session)
+            onClicked: root.sessionRequested(Logic.agentTarget(root.c))
         }
         RowLayout {
             Layout.fillWidth: true

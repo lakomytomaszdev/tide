@@ -1,6 +1,6 @@
 # tide-daemon
 
-Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)). Piąty to raport poranny: raz na dobę strona HTML na każdy projekt z ruchem ([Raport poranny](#raport-poranny)). Szósty to historia Limitów AI, prognoza ich wyczerpania i powiadomienia o progach ([Limity AI](#limity-ai)). Siódmy to koordynacja: sesje, które zlecają pracę podagentom, jako tablica ticketów z planem i YouTrackiem ([Koordynacja](#koordynacja)). Ósmy to tablica pracy: karty „rzeczy do zrobienia” ze wszystkich projektów w lokalnym repozytorium git ([Tablica](#tablica)). Dziewiąty to kontenery Dockera: grupy compose z repozytoriami, akcje, logi i porządki zamiast Docker Desktop ([Docker](#docker)).
+Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)). Piąty to raport poranny: raz na dobę strona HTML na każdy projekt z ruchem ([Raport poranny](#raport-poranny)). Szósty to historia Limitów AI, prognoza ich wyczerpania i powiadomienia o progach ([Limity AI](#limity-ai)). Siódmy to koordynacja: sesje, które zlecają pracę podagentom, jako tablica ticketów z planem i YouTrackiem ([Koordynacja](#koordynacja)). Ósmy to tablica pracy: karty „rzeczy do zrobienia” ze wszystkich projektów w lokalnym repozytorium git ([Tablica](#tablica)). Dziewiąty to kontenery Dockera: grupy compose z repozytoriami, akcje, logi i porządki zamiast Docker Desktop ([Docker](#docker)). Dziesiąty to modele lokalne: punkty dostępu do serwera modeli (Ollama, później Mac Studio), wywołanie modelu i stan serwerów ([Modele lokalne](#modele-lokalne)).
 
 ## Kontrakt D-Bus
 
@@ -246,7 +246,7 @@ Okno „Tide: nowe zadanie” (`apps/newtask`, skrót Meta+Alt+A, kafelek „＋
 | `Repos()` | `→ s` | Repozytoria z katalogu projektów jako JSON, od ostatnio aktywnych (najświeższa aktywność któregokolwiek worktree: zmiany, commity, sesje agentów). Z listy obszaru Worktrees; tuż po starcie usługi — jednorazowy przegląd w tle (odpowiedź po zakończeniu) |
 | `Defaults()` | `→ s` | JSON: zapamiętany wybór `repoPath`, `tool`, `newWorktree`, dostępne programy `tools` (`{"claude": bool, "codex": bool}`), `terminal` (czy jest Konsole), `imagesDir`, `promptLimit`, `imageLimit` |
 | `SuggestBranch(s repoPath, s tool, s prompt)` | `→ s` | JSON `{ok, branch, path, base, slug}` albo `{ok: false, error, message}`: gałąź z polecenia i katalog worktree; zajęta nazwa dostaje `-2`, `-3`… |
-| `Start(s request)` | `→ s` | Prośba `{repoPath, tool, prompt, newWorktree, branch, images}`, wynik `{ok, error, message, cwd, branch, worktree, base, title, repoPath, tool, mode}` (`mode`: `tab` albo `window`). Odpowiedź przychodzi po starcie agenta albo po wycofaniu |
+| `Start(s request)` | `→ s` | Prośba `{repoPath, tool, prompt, newWorktree, branch, images, addDirs}`, wynik `{ok, error, message, cwd, branch, worktree, base, title, repoPath, tool, mode}` (`mode`: `tab` albo `window`). Odpowiedź przychodzi po starcie agenta albo po wycofaniu |
 | `ShowDialog()` | `→ b` | Otwiera okno „Tide: nowe zadanie” (drugie wywołanie tylko je pokazuje). `false`, gdy okno nie jest zainstalowane |
 
 Pola repozytorium: `name`, `path`, `branch` (gałąź głównego katalogu), `mainBranch` (lokalna master/main/develop jak w Worktrees), `dirty`, `lastActivityTs`, `worktreeDir` (gdzie powstanie nowy worktree).
@@ -255,12 +255,17 @@ Pola repozytorium: `name`, `path`, `branch` (gałąź głównego katalogu), `mai
 
 **Worktree.** Katalog: `<repo>-worktrees/<nazwa>`, jeśli obok repozytorium jest już taki katalog, inaczej `<repo>/.claude/worktrees/<nazwa>` (konwencja `claude --worktree`, ta sama dla obu narzędzi); nazwa katalogu to gałąź bez prefiksu narzędzia. Gdy git nie ignoruje `.claude/worktrees`, usługa dopisuje `/.claude/worktrees/` do lokalnego `.git/info/exclude` (nie do śledzonego `.gitignore`), żeby główny katalog nie zrobił się „brudny”. Polecenie: `git worktree add -b <gałąź> <katalog> <commit lokalnej gałęzi głównej>` — gałąź główna nie jest zmieniana ani przełączana, bez `fetch` (stan lokalny, jak w całym obszarze Worktrees). Wyłączony „Nowy worktree” — agent startuje w głównym katalogu, na tym, co tam jest.
 
-**Odmowy** (pole `error`, po polsku w `message`; nic nie zostaje utworzone): `bad-request`, `bad-tool`, `missing-cli` (programu nie ma w PATH usługi ani w `~/.local/bin`), `no-terminal`, `unknown-repo` (tylko repozytoria z katalogu projektów, bez bare), `empty-prompt`, `one-word` (jedno słowo mogłoby zostać wzięte za podpolecenie, np. `claude doctor`), `prompt-too-long` (32 000 znaków), `bad-prompt` (NUL), `bad-image`, `no-base` (brak master/main/develop), `bad-branch` (`git check-ref-format --branch`), `protected-branch` (master, main, develop, gałąź główna, HEAD), `branch-exists`, `path-exists`, `dirty-base` (główny katalog stoi na gałęzi głównej i ma niezacommitowane zmiany — nowy worktree by ich nie zawierał), `git`, `launch` (Konsola nie uruchomiła zadania — worktree i gałąź wycofane).
+**Dodatkowe katalogi** (`addDirs`, uruchomienie z karty tablicy): katalog dokumentów AI karty
+projektu z `ai-docs: tide`, który agent dostaje przez `--add-dir` (oba narzędzia). Najwyżej 4,
+wyłącznie istniejące katalogi pod `<tablica>/docs/` (tablica z `--board-dir`, inaczej `$TIDE_BOARD_DIR`
+albo `~/DevWorkspace/tide-board`), sprawdzane po rozwinięciu dowiązań — inaczej `bad-add-dir`.
+
+**Odmowy** (pole `error`, po polsku w `message`; nic nie zostaje utworzone): `bad-request`, `bad-tool`, `missing-cli` (programu nie ma w PATH usługi ani w `~/.local/bin`), `no-terminal`, `unknown-repo` (tylko repozytoria z katalogu projektów, bez bare), `empty-prompt`, `one-word` (jedno słowo mogłoby zostać wzięte za podpolecenie, np. `claude doctor`), `prompt-too-long` (32 000 znaków), `bad-prompt` (NUL), `bad-image`, `bad-add-dir`, `no-base` (brak master/main/develop), `bad-branch` (`git check-ref-format --branch`), `protected-branch` (master, main, develop, gałąź główna, HEAD), `branch-exists`, `path-exists`, `dirty-base` (główny katalog stoi na gałęzi głównej i ma niezacommitowane zmiany — nowy worktree by ich nie zawierał), `git`, `launch` (Konsola nie uruchomiła zadania — worktree i gałąź wycofane).
 
 **Polecenie agenta** (`tasks/core.py`, `agent_argv`) — lista argumentów, nigdy napis dla powłoki; polecenie to jeden element, po `--`:
 
-- Claude Code: `claude [--add-dir <katalog zrzutów>] -- "<polecenie>[\n\nZałączone zrzuty ekranu (przeczytaj je narzędziem Read):\n<ścieżki>]"` — Claude Code nie ma opcji na obrazy, więc ścieżki idą na koniec polecenia, a `--add-dir` pozwala je przeczytać bez pytania o zgodę,
-- Codex: `codex --image <plik> … -- "<polecenie>"` (`-i/--image` dołącza obrazy do pierwszej wiadomości).
+- Claude Code: `claude [--add-dir <katalog z addDirs>] [--add-dir <katalog zrzutów>] -- "<polecenie>[\n\nZałączone zrzuty ekranu (przeczytaj je narzędziem Read):\n<ścieżki>]"` — Claude Code nie ma opcji na obrazy, więc ścieżki idą na koniec polecenia, a `--add-dir` pozwala je przeczytać bez pytania o zgodę,
+- Codex: `codex [--add-dir <katalog z addDirs>] --image <plik> … -- "<polecenie>"` (`-i/--image` dołącza obrazy do pierwszej wiadomości, `--add-dir` daje prawo zapisu w katalogu poza katalogiem roboczym).
 
 Program to bezwzględna ścieżka z PATH usługi (bez rozwiązywania dowiązań: `/snap/bin/codex` wskazuje na `/usr/bin/snap`, który rozpoznaje program po nazwie).
 
@@ -349,7 +354,7 @@ dbus-monitor "type='signal',interface='org.tide.Daemon.Idle'"   # IdleChanged pr
 
 ## Raport poranny
 
-Raz na dobę (o 07:00) usługa składa raport z tego, co działo się od poprzedniego: stan prac na dzień — „Dziś w skrócie” (3–5 zwykłych zdań o całym dniu), strona HTML na każdy projekt-repozytorium z ruchem — z jego własnym „Na daily” na górze (co zrobiono, co trwa, co czeka na ciebie, co dalej, osobno porządki) — i indeks, który jest przeglądem projektów. Raport bieżącej doby żyje: odświeża się sam po zmianach w pracy, „czeka” jest przeliczane na żywo, a po każdym skończonym tickecie dochodzi notka „Skończone dziś” z powiadomieniem ([Żywy raport](#żywy-raport)). To raport dla ludzi: bez żargonu pracy agentów, ścieżek plików i numerów ticketów w treści. Dane są lokalne — git, dzienniki agentów, plik tablicy koordynacji, plany w repozytoriach, Limity AI z `127.0.0.1` i (tylko odczyt) opisy ticketów z YouTracka w sieci lokalnej; jedyne, co może wyjść z komputera, to zwięzłe fakty do opisu „Na daily” modelem przez lokalny Claude Code (domyślnie, wyłączane `"summary": "rules"`). Uzasadnienie: decyzje 42, 52 i 53 w `docs/decisions.md`.
+Raz na dobę (o 07:00) usługa składa raport z tego, co działo się od poprzedniego: stan prac na dzień — „Dziś w skrócie” (3–5 zwykłych zdań o całym dniu), strona HTML na każdy projekt-repozytorium z ruchem — z jego własnym „Na daily” na górze (co zrobiono, co trwa, co czeka na ciebie, co dalej, osobno porządki) — i indeks, który jest przeglądem projektów. Raport bieżącej doby żyje: odświeża się sam po zmianach w pracy, „czeka” jest przeliczane na żywo, a po każdym skończonym tickecie dochodzi notka „Skończone dziś” z powiadomieniem ([Żywy raport](#żywy-raport)). To raport dla ludzi: bez żargonu pracy agentów, ścieżek plików i numerów ticketów w treści. Dane są lokalne — git, dzienniki agentów, plik tablicy koordynacji, plany w repozytoriach, Limity AI z `127.0.0.1` i (tylko odczyt) opisy ticketów z YouTracka w sieci lokalnej; jedyne, co może wyjść z komputera, to zwięzłe fakty do opisu „Na daily” modelem przez lokalny Claude Code (domyślnie, `"summary": "claude"`). Z `"summary": "local"` opis pisze model lokalny z `models.json` (sekcja „Modele lokalne”) i nic nie wychodzi z komputera — chyba że rola `summary` wskazuje serwer w sieci (np. przyszły Mac Studio), wtedy fakty idą tylko do niego; Claude nie jest wtedy wołany nigdy, także gdy serwer lokalny nie działa. `"summary": "rules"` — bez żadnego modelu. Uzasadnienie: decyzje 42, 52, 53 i 64 w `docs/decisions.md`.
 
 | Element | Wartość |
 | --- | --- |
@@ -357,8 +362,8 @@ Raz na dobę (o 07:00) usługa składa raport z tego, co działo się od poprzed
 | Interfejs | `org.tide.Daemon.Reports` |
 | Pliki | `$XDG_DATA_HOME/tide/reports/RRRR-MM-DD/index.html`, `<projekt>.html` i `report.json` — dane dla widoku „Raporty” okna Tide (katalog 0700, pliki 0600) |
 | Stan | `$XDG_STATE_HOME/tide/report-state.json` (doba, okres, doba powiadomienia, doba otwartego raportu i liczby projektów/czekających ostatniego raportu) |
-| Ustawienia | `$XDG_CONFIG_HOME/tide/report.json` (opcjonalny): `{"at": "07:00", "dayStart": "04:00", "keepDays": 30, "enabled": true, "summary": "claude", "summaryModel": "sonnet"}` |
-| Pamięć opisu | `<raport>/summary.json` (0600, wersja 2): model, per projekt klucz jego faktów i odpowiedź modelu (albo `null` — reguły) oraz zdania „Dziś w skrócie” z kluczem wszystkich projektów |
+| Ustawienia | `$XDG_CONFIG_HOME/tide/report.json` (opcjonalny): `{"at": "07:00", "dayStart": "04:00", "keepDays": 30, "enabled": true, "summary": "claude", "summaryModel": "sonnet"}`; `summary`: `claude`, `local` albo `rules` (też dla opisów kart tablicy); `summaryModel` liczy się tylko przy `claude` — w trybie `local` model biorą role `summary` i `describe` z `models.json`. Brak klucza `summary` — `claude`; nieznana wartość (np. literówka `"Local"`) — `rules` z ostrzeżeniem w dzienniku, żeby pomyłka nie wysyłała faktów do Anthropic |
+| Pamięć opisu | `<raport>/summary.json` (0600, wersja 2): tożsamość modelu (`identity`), nazwa i rodzaj (`claude`/`local`), per projekt klucz jego faktów i odpowiedź modelu (albo `null` — reguły) oraz zdania „Dziś w skrócie” z kluczem wszystkich projektów (tylko `claude`) |
 | Notki | `$XDG_STATE_HOME/tide/report-notes.json` (0600): opisane tickety (`seen`, 21 dni) i notki „Skończone dziś” po dobach (`days`, tyle dób co raporty) |
 
 | Składnik | Sygnatura | Opis |
@@ -417,10 +422,12 @@ xdg-open "$(qdbus6 org.tide.Daemon /Reports org.tide.Daemon.Reports.Latest)"
 - *Opis modelem* (`"summary": "claude"`, domyślnie): jedno wywołanie na raport, w wątku roboczym usługi:
   `claude -p --model <summaryModel> --output-format json --no-session-persistence --safe-mode --tools "" --disallowedTools <wbudowane narzędzia, mcp__*> --strict-mcp-config --mcp-config '{"mcpServers":{}}' --permission-mode dontAsk --disable-slash-commands --system-prompt <instrukcje>`,
   fakty na stdin, katalog roboczy to pusty katalog tymczasowy, własna grupa procesów (po 180 s `SIGKILL` całej grupy). `--safe-mode` zamiast `--bare`, bo `--bare` czyta wyłącznie `ANTHROPIC_API_KEY` i pomija logowanie subskrypcją. Program: `$TIDE_CLAUDE_BIN`, `PATH`, `~/.local/bin/claude`, `~/.claude/local/claude` (usługa systemd ma krótki `PATH`).
+- *Model lokalny* (`"summary": "local"`, PT-15): ten sam wybór modelu co dla kart (`summarize.Model` — jedno miejsce, które wybiera między `claude -p` a `models.chat`), te same fakty po `strip_secrets`, te same instrukcje i walidacja, a do tego schemat odpowiedzi wyprowadzony z przykładu na końcu instrukcji (`format` w Ollamie, `response_format` na serwerze `openai`). Model z roli `summary` w `models.json` (domyślnie `qwen3:8b` z kontekstem 8192), `summaryModel` jest pomijany. Jedno wywołanie **na projekt**, nie na raport: kontekst 8192 tokenów nie mieści instrukcji, faktów wszystkich projektów (w prawdziwym raporcie ok. 41 tys. znaków) i odpowiedzi naraz. Fakty projektu są przycinane jak dla Claude, tylko do mniejszego limitu z kontekstu roli (ok. 2,5 znaku na token, minus instrukcje i 2048 tokenów na odpowiedź — przy 8192 ok. 11 tys. znaków; przy większym kontekście, np. na Macu, do zwykłych 16 000). Limit 180 s na wywołanie i 600 s na cały raport (projekty po terminie — reguły). Rola z kontekstem za małym na instrukcje, odpowiedź i choć 1000 znaków faktów nie jest pytana wcale („kontekst roli „summary” za mały (2048 tokenów) — potrzeba co najmniej …”), bo Ollama obcięłaby instrukcje. W wątku roboczym raportu, jak wywołanie Claude; zamykanie usługi (`ReportMonitor.stop()`) przerywa trwające wywołanie od razu (`models.Cancel` zamyka gniazdo) i kolejnych projektów już nie pyta.
+  **Gdy model lokalny zawiedzie** (serwer nie odpowiada, rola niedostępna, przekroczony czas, błąd serwera, zła odpowiedź), raport bierze reguły i w nagłówku sekcji (a też w `report.json` → widok „Raporty”) oraz w dzienniku usługi pokazuje komunikat `ModelError` po polsku: „Model lokalny niedostępny — opis bez modelu (serwer nie odpowiada, 127.0.0.1:11434)”, przy złej odpowiedzi „Model lokalny dał złą odpowiedź — opis bez modelu (…)”. Po błędzie serwera kolejnych projektów już nie pytamy; zła odpowiedź o jednym projekcie nie zatrzymuje pozostałych. Gdy część projektów ma opis modelu, nagłówek mówi „opis: model lokalny qwen3:8b · część projektów z reguł: … — Model lokalny niedostępny — …”. Nigdy nie przechodzimy do Claude — nie ma też ustawienia, które by to włączało (decyzja planu z 27.10). Stopka strony: „model lokalny qwen3:8b (127.0.0.1:11434) — nic nie wychodzi z tego komputera” albo przy serwerze w sieci „…idą tylko do tego serwera modeli”.
 - *Wejście*: zwięzły JSON na projekt, najwyżej 16 000 znaków (coraz krótsze wycinki wiadomości, poleceń i opisów oraz mniej commitów, aż się zmieści) i 90 000 razem — projekty ponad limit dostają reguły. Tematy commitów w kolejności feat, fix, refactor, test, docs; porządki (`docs(plan)`, `chore`) pomijane. Notatka o review przy tickecie `gotowe` nie idzie (gotowe to koniec), liczby niescalonych gałęzi też nie. Przed wysłaniem z każdego napisu znika to, co wygląda na sekret: klucze `sk-…`, `ghp_…`, `github_pat_…`, `glpat-…`, `xox?-…`, `AKIA…`, `AIza…`, JWT, tokeny YouTracka `perm:…`, `Bearer …`, klucze prywatne PEM, hasła w adresach URL, przypisania `token=`/`password:`/`API_KEY=…`, linie w stylu `.env`, 40+ znaków szesnastkowych i długie losowe ciągi; katalog domowy → `~`. Instrukcje każą traktować napisy jako dane, nie polecenia.
 - *Instrukcje*: raport dla ludzi, nie dla AI — tylko po polsku, bez żargonu („koordynator”, „podagent”, „sesja”, „worktree”, „commit”, „gałąź”, „merge”, „prompt”), bez ścieżek i nazw plików, numer ticketu tylko w `ref`; każda pozycja „Zrobione” mówi, CO powstało albo się zmieniło, językiem, który da się powiedzieć na daily komuś, kto nie zna kodu (nie „ticket 01 gotowy”, nie „kroki V3b1–V3b10 scalone”); `about` — po co, konkretnie, pusty, gdy fakty nic nie mówią; `brief` — 3–5 zdań o całym dniu. Najlepsze źródła treści to polecenie użytkownika, opis ticketu i cel planu, tematy feat/fix i obszary zmian. Zakaz wymyślania faktów zostaje. Wejście: `{"projects": [fakty projektów do opisania], "others": [{"name", "headline"}]}` — „others” to projekty opisane wcześniej (z pamięci), tylko do „Dziś w skrócie”.
-- *Odpowiedź*: obiekt `{"brief": [zdania], "projects": [{"name", "headline", "theme", "done": [{"ref", "text", "about"}], "doing": [{"ref", "text", "about", "next"}], "next": [{"ref", "text"}], "chores": [{"ref", "text"}]}]}`. Czytelność (`standup.human_problem`): napis z żargonem, ścieżką albo nazwą pliku, po angielsku (heurystyka słów) albo z samych numerów („LA-035 gotowe”, „ticket 01 i ticket 02 …”, „kroki V3b1–V3b10”) jest odrzucany; ID ticketu na początku albo w nawiasie przechodzi do `ref` („LA-035: bazowa wersja…” → `ref` LA-035, „Bazowa wersja…”). Odrzucone `about`/`next` znikają, odrzucona pozycja liczy się w `rejected` — grupa, z której model stracił wszystko, dostaje pozycje z reguł; `headline` i `theme` z problemem zastępuje zdanie z pozycji. „Dziś w skrócie” z modelu przechodzi, gdy zostały co najmniej dwa dobre zdania (inaczej reguły). Walidacja (`standup.validate`): tylko projekty z wejścia, same napisy bez znaków sterujących, przycięte długości (tekst 260, `about` 320, akapit 600, `headline` 320), najwyżej 8 pozycji w grupie, `ref` tylko ze znanych ID (inna pisownia wraca do postaci z planu, wymyślone ID znika); pozycje-śmieci odrzucone („nic nie czeka”, „nie ma decyzji”, „N gałęzi nie jest scalonych”, „bez review”, „czeka na review”, `worktree-agent-*`), a pozycja Zrobione/W toku, która sama mówi o trackerze albo instrukcjach agentów, przechodzi do Porządków. Stare pole `why` czytamy jako `about`. Projekt, którego model nie opisał, dostaje reguły; „Czeka na mnie” zawsze z reguł (wyżej). Każdy napis jest escapowany przy składaniu HTML-a (CSP i tak blokuje obce skrypty). Błąd na którymkolwiek etapie → reguły z notatką w nagłówku sekcji i w dzienniku usługi.
-- *Pamięć per projekt*: `summary.json` trzyma odpowiedź modelu dla każdego projektu z kluczem SHA-256 jego zwięzłych faktów (z modelem i instrukcjami) i przechodzi do nowej wersji katalogu raportu. Ponowne złożenie w tej samej dobie (`Generate()`, żywy raport) woła model tylko z projektami, których fakty się zmieniły; niezmienione biorą opis z pamięci i idą jako „others”. Projekt, którego model nie opisał, zostaje przy regułach do zmiany faktów (bez ponownego pytania). Bez zmian w faktach — bez wywołania.
+- *Odpowiedź*: obiekt `{"brief": [zdania], "projects": [{"name", "headline", "theme", "done": [{"ref", "text", "about"}], "doing": [{"ref", "text", "about", "next"}], "next": [{"ref", "text"}], "chores": [{"ref", "text"}]}]}`. Czytelność (`standup.human_problem`): napis z żargonem, ścieżką albo nazwą pliku, po angielsku (heurystyka słów) albo z samych numerów („LA-035 gotowe”, „ticket 01 i ticket 02 …”, „kroki V3b1–V3b10”) jest odrzucany; ID ticketu na początku albo w nawiasie przechodzi do `ref` („LA-035: bazowa wersja…” → `ref` LA-035, „Bazowa wersja…”). Odrzucone `about`/`next` znikają, odrzucona pozycja liczy się w `rejected` — grupa, z której model stracił wszystko, dostaje pozycje z reguł; `headline` i `theme` z problemem zastępuje zdanie z pozycji. „Dziś w skrócie” z modelu przechodzi, gdy zostały co najmniej dwa dobre zdania (inaczej reguły). Walidacja (`standup.validate`): tylko projekty z wejścia, same napisy bez znaków sterujących, przycięte długości (tekst 260, `about` 320, akapit 600, `headline` 320), najwyżej 8 pozycji w grupie, `ref` tylko ze znanych ID (inna pisownia wraca do postaci z planu, wymyślone ID znika); pozycje-śmieci odrzucone („nic nie czeka”, „nie ma decyzji”, „N gałęzi nie jest scalonych”, „bez review”, „czeka na review”, `worktree-agent-*`), a pozycja Zrobione/W toku, która sama mówi o trackerze albo instrukcjach agentów, przechodzi do Porządków. Stare pole `why` czytamy jako `about`. Markdown w polu (PT-13: gpt-oss wkładał całe listy do jednego napisu) zamieniamy na zwykły tekst: pogrubienia, kod, nagłówki i odnośniki znikają, linie łączą się jak zdania, a lista punktów w polu `text` staje się osobnymi pozycjami z tym samym `ref` (`about`/`next` przy pierwszej); zwykłe jedno zdanie bez Markdownu zostaje bez zmian. Jedna linia to nie lista: „2. etap migracji gotowy” zostaje z numerem. Tylko w odpowiedzi modelu lokalnego (qwen3:8b robił te błędy na prawdziwych danych) dochodzą dwie poprawki: ta sama pozycja w kilku grupach zostaje tylko pierwszy raz (kolejność Zrobione, W toku, Czeka na mnie, Dalej, Porządki), a pozycja „Czeka na mnie” z ID ticketu w stanie `todo` przechodzi do „Dalej” (gotowego — znika), chyba że ticket ma w faktach pytanie albo czekającą sesję; „Dalej” z ID gotowego ticketu znika. Odpowiedź Claude tych poprawek nie dostaje. Projekt, którego model nie opisał, dostaje reguły; „Czeka na mnie” zawsze z reguł (wyżej) — także po poprawkach odpowiedzi modelu lokalnego. Każdy napis jest escapowany przy składaniu HTML-a (CSP i tak blokuje obce skrypty). Błąd na którymkolwiek etapie → reguły z notatką w nagłówku sekcji i w dzienniku usługi.
+- *Pamięć per projekt*: `summary.json` trzyma odpowiedź modelu dla każdego projektu z kluczem SHA-256 jego zwięzłych faktów (z tożsamością modelu i instrukcjami; tożsamość to nazwa modelu Claude albo `local|punkt|adres|model|ctx`, więc przełączenie `claude` ↔ `local` albo zmiana modelu w `models.json` nie bierze cudzej odpowiedzi) i przechodzi do nowej wersji katalogu raportu. Ponowne złożenie w tej samej dobie (`Generate()`, żywy raport) woła model tylko z projektami, których fakty się zmieniły; niezmienione biorą opis z pamięci i idą jako „others”. Projekt, którego model nie opisał, zostaje przy regułach do zmiany faktów (bez ponownego pytania). Bez zmian w faktach — bez wywołania. Claude: jedno wywołanie ze zmienionymi projektami (plus „others” do „Dziś w skrócie”); model lokalny: jedno wywołanie na zmieniony projekt (budżet 600 s, przerwanie przy zamykaniu usługi jak wyżej), a „Dziś w skrócie” z reguł — mały model widzi jeden projekt naraz.
 - *Koszt*: poranny raport — jedno wywołanie Sonneta (w prawdziwym raporcie z 9 projektami ok. 41 tys. znaków wejścia, odpowiedź w ok. 27 s; Haiku z decyzji 52 potrzebował ok. 75 s na mniejsze wejście). W ciągu dnia: najwyżej jedno żywe złożenie na 12 min, a w nim najwyżej jedno wywołanie — tylko ze zmienionymi projektami (zwykle 1–2, czyli kilka tysięcy znaków); przy ciągłej pracy to do 5 wywołań na godzinę, przy kilku skończonych ticketach dziennie — kilka do kilkunastu. Notka po tickecie: jedno małe wywołanie na paczkę ticketów z jednego odświeżenia tablicy (ok. 1–3 tys. znaków, limit 90 s). Wszystko liczy się do limitów Claude jak zwykła praca z Claude Code; dane idą do Anthropic na tych samych zasadach. `"summary": "rules"` — zero wywołań, notki i opis z reguł.
 
 **Plany i tickety** (`reports/plans.py`, dodatek — bez niego raport działa jak dotąd): na stronie projektu karta każdego koordynatora z okresu (z pliku tablicy `coordination.json`: tytuł, etykieta, pasek postępu, liczby po stanach, tickety od czekających z notatkami i odnośnikami do YouTracka) i każdego planu z `docs/agents/plans` (aktywnego albo zmienionego w okresie), którego tablica nie zna — wtedy stany z samego planu, z jego błędami. Karta projektu w indeksie dostaje znacznik „TOM-20 · 8/13”. Do „Na daily” plan daje cel i uwagi, a plan z `tracker: youtrack`, którego tablica nie zna, dostaje początki opisów ticketów z YouTracka (to samo zapytanie GET, serwer i token co tablica; ID przez mapę migracji, np. `LA-035` → `LEGAL-35`; `--no-youtrack` wyłącza). Wszystkie teksty escapowane jak reszta raportu.
@@ -433,7 +440,7 @@ Raport doby powstaje o 07:00 (albo przy pierwszym logowaniu), a potem odświeża
 - **Zbiorczo i tanio**: zdarzenie oznacza raport jako nieaktualny; składamy go najwcześniej 90 s po ostatnim zdarzeniu z serii (przy ciągłych zdarzeniach najpóźniej 12 min po pierwszym) i najwyżej raz na 12 min, w tym samym wątku co poranny raport, bez powiadomienia i bez zapalania kropki „nieprzeczytany” (ta sama doba). Przed porannym raportem doby nic się nie składa. Model — tylko zmienione projekty (pamięć per projekt, wyżej).
 - **Na żywo** (`data.apply_live`, bieżąca doba): pozycja „Czeka na mnie” z `sessionId`, której sesja już nie czeka albo czeka od później (na coś innego; 90 s zapasu), dostaje `stale` — widok ją przekreśla („już nieaktualne”), nie liczy się do plakietek (`Status().waiting`, `Days()`), znika z kart i tekstów do schowka. `now` to sesje, które czekają teraz (jak widżet agentów), `nowText` — zdanie „Teraz czeka na ciebie: …” do „Dziś w skrócie”. Starsze doby to migawki.
 
-**Skończone dziś** (`reports/notes.py`): ticket na tablicy koordynacji przechodzi do `gotowe` (po review OK albo bez review) → notka w raporcie doby pod projektem: 2–3 zdania — co zrobiono, co to daje użytkownikowi i czy trzeba sprawdzić ręcznie. Ticket skończony bez review (notatka tablicy „bez review”, brak wyniku review) mówi to wprost: „Skończone bez przeglądu.” — w notce (z reguł i z modelu, który dostaje `reviewed: false`) i w powiadomieniu („(bez przeglądu)” przy zdaniu w zbiorczym). Ręczne sprawdzenie: `check: manual` (albo „test ręczny”) w uwagach wiersza planu, pole `check: manual` karty tablicy pracy (hak `card_check`, gdy karta zna ticket — PT-5: argument `card_check=` konstruktora `ReportMonitor` w `app.start_report`, funkcja `(board, ticket) → {"check": "manual", "spec": ścieżka} | None`, gdzie `board`/`ticket` to tablica koordynacji z `Board()` i jej ticket; wynik czyta `notes.manual_check`) i punkty z sekcji „Co przetestować ręcznie” planu albo specyfikacji z karty (punkty z ID ticketu albo pod podnagłówkiem z ID; plik bez ID — wszystkie). Treść z modelu (to samo bezpieczne wywołanie, instrukcje `notes.NOTE_PROMPT`, walidacja czytelności) albo z reguł: opis karty („co zrobiono”) albo pierwsze zdanie wyniku pracy, pierwsze zdanie opisu ticketu, „Do sprawdzenia ręcznie: …”. Ticket musi zostać w `gotowe` 90 s, zanim dostanie notkę („gotowe bez review”, po którym zaraz rusza review, nie daje notki). Najwyżej jedna notka na ticket na dobę: ticket skończony ponownie (np. po review) zastępuje swoją notkę (po wcześniejszym „bez przeglądu” z dopiskiem „Teraz już po przeglądzie.”) i aktualizuje to samo powiadomienie (`replaces_id`), zamiast wysyłać drugie; powiadomienie idzie tylko dla notek naprawdę dodanych albo zmienionych, więc raport i powiadomienie mówią to samo. Ticket skończony, gdy usługa nie działała, dostaje notkę, jeśli jego ostatni ruch jest z bieżącej doby raportu. Notki są w pliku notek (nie w katalogu raportu), więc są widoczne od razu — `Day()` dokłada je do `report.json`, a następne złożenie raportu także do stron HTML i tekstów do schowka.
+**Skończone dziś** (`reports/notes.py`): ticket na tablicy koordynacji przechodzi do `gotowe` (po review OK albo bez review) → notka w raporcie doby pod projektem: 2–3 zdania — co zrobiono, co to daje użytkownikowi i czy trzeba sprawdzić ręcznie. Ticket skończony bez review (notatka tablicy „bez review”, brak wyniku review) mówi to wprost: „Skończone bez przeglądu.” — w notce (z reguł i z modelu, który dostaje `reviewed: false`) i w powiadomieniu („(bez przeglądu)” przy zdaniu w zbiorczym). Ręczne sprawdzenie: `check: manual` (albo „test ręczny”) w uwagach wiersza planu, pole `check: manual` karty tablicy pracy (hak `card_check` — `ReportMonitor.card_check`, podpinany w `app.main` po starcie tablicy pracy jako `app.board_card_check`: funkcja `(board, ticket) → {"check": "manual", "spec": ścieżka} | None`, gdzie `board`/`ticket` to tablica koordynacji z `Board()` i jej ticket. Kartę znajduje `notes.card_for` w migawce `/Board Snapshot()`: najpierw klucz `card` planu, potem `session` karty równe koordynatorowi, potem `branch` karty równy gałęzi ticketu albo koordynatora; względna `spec` — od repozytorium. Hak jest wołany w wątku głównym, wątek notek dostaje gotowe wyniki; wynik czyta `notes.manual_check`) i punkty z sekcji „Co przetestować ręcznie” planu albo specyfikacji z karty (punkty z ID ticketu albo pod podnagłówkiem z ID; plik bez ID — wszystkie). Treść z modelu (to samo bezpieczne wywołanie, instrukcje `notes.NOTE_PROMPT`, walidacja czytelności) albo z reguł: opis karty („co zrobiono”) albo pierwsze zdanie wyniku pracy, pierwsze zdanie opisu ticketu, „Do sprawdzenia ręcznie: …”. Ticket musi zostać w `gotowe` 90 s, zanim dostanie notkę („gotowe bez review”, po którym zaraz rusza review, nie daje notki). Najwyżej jedna notka na ticket na dobę: ticket skończony ponownie (np. po review) zastępuje swoją notkę (po wcześniejszym „bez przeglądu” z dopiskiem „Teraz już po przeglądzie.”) i aktualizuje to samo powiadomienie (`replaces_id`), zamiast wysyłać drugie; powiadomienie idzie tylko dla notek naprawdę dodanych albo zmienionych, więc raport i powiadomienie mówią to samo. Ticket skończony, gdy usługa nie działała, dostaje notkę, jeśli jego ostatni ruch jest z bieżącej doby raportu. Notki są w pliku notek (nie w katalogu raportu), więc są widoczne od razu — `Day()` dokłada je do `report.json`, a następne złożenie raportu także do stron HTML i tekstów do schowka.
 
 ## Limity AI
 
@@ -516,6 +523,16 @@ Sesja, która zleca pracę podagentom (koordynator), dostaje tablicę ticketów:
 usługa niczego nie zapisuje w repozytoriach i dziennikach, a YouTracka pyta wyłącznie przez GET.
 Standard planu: [agent-plan-standard.md](agent-plan-standard.md), uzasadnienie: decyzja 50.
 
+**Gdzie szukamy planów** (standard 1.1, `coordination/plan.py: plan_folders`, `coordination/boardplans.py`):
+`docs/agents/plans/` worktree koordynatora i głównego katalogu, a dla projektu tablicy z `ai-docs: tide`,
+którego `repo` to to repozytorium — także `<tablica>/docs/<projekt>/plans/` (tablica: `$TIDE_BOARD_DIR`,
+inaczej `~/DevWorkspace/tide-board`; pliki projektów czytane ponownie tylko po zmianie). To samo czytają
+raport poranny, kontrola numerów, `tools/check_plans.py` i `tools/next_id.py`, więc tickety takich
+projektów są widoczne i numerowane razem z resztą repozytorium. Koordynator na gałęzi z ID karty
+(`claude/k-12-…`, uruchomienie z tablicy) dostaje plan z `card: K-12` (także zakończony), a plany innych
+kart odpadają — w katalogu projektu w tablicy leżą plany wielu kart naraz; bez karty w gałęzi wybór jak
+dotąd (`session`, inaczej najświeższy aktywny plan tego narzędzia).
+
 | Element | Wartość |
 | --- | --- |
 | Obiekt | `/Coordination` |
@@ -545,7 +562,8 @@ rozmowy), `sessionTitle`, `label` (ID z tytułu planu albo gałęzi, tylko ze zn
 jego `waitingText` z `kind` `approval`, tak że tablica mówi to samo co widżet agentów; pytanie bez ID ticketu
 zostaje tutaj i nie trafia do żadnego ticketu),
 `plan` (`path`, `title`, `tracker`, `trackerUrl`, `trackerProject`, `prefix`, `coordinator`, `session`,
-`status`, `updated`, `updatedTs`, `errors`) albo `null`, `tracker` (`kind`, `url`, `project`, `available`,
+`status`, `updated`, `updatedTs`, `errors`, `goal`, `card`) albo `null`, `card` (karta tablicy z planu —
+`K-12` albo pusty; też w `Coordinators()`, dla PT-5), `tracker` (`kind`, `url`, `project`, `available`,
 `error`, `fetchedTs`, `checkedTs`), `counts` (po stanach, `total` bez odrzuconych, `done`), `progress`
 (`done`, `total`, `text`: „TOM-20 · 8/13”), `spawned`, `running`, `columns`, `tickets`, `runs`,
 `warnings` (kontrola numerów ticketów w repozytorium, niżej; też w `Coordinators()`).
@@ -553,7 +571,9 @@ zostaje tutaj i nie trafia do żadnego ticketu),
 **Ticket:** `key` (klucz porównania: `TOM-140`, `#22` albo `~opis` dla pracy bez ID), `id` (do pokazania,
 z planu albo pierwszy zapis), `title` (czym jest zadanie, po polsku — opis karty), `done` (co faktycznie
 zrobiono), `now` (co teraz / czego brakuje, review słowami), `describedBy` (`model`, `model-stale` —
-tytuł i „zrobione” z poprzedniego opisu modelu, „teraz” z reguł — albo `rules`), `officialTitle` i
+tytuł i „zrobione” z poprzedniego opisu modelu, „teraz” z reguł — albo `rules`), `describeNote` (tylko
+w trybie `local` po nieudanym wywołaniu: „Model lokalny niedostępny — opis bez modelu (…)”; okno Sesje
+pokazuje go w szczegółach ticketu zamiast „opis z reguł”), `officialTitle` i
 `officialFrom` (`plan`, `tracker`, `backlog`), `officialNote` (linia „Status:” z backlogu), `taskTitle`
 (z opisu zlecenia, np. „Implement ticket 05 value chain”), `state` (`todo`, `w-toku`, `czeka`, `review`, `gotowe`, `odrzucone`),
 `column`, `word`, `source` (`runs`, `plan`, `tracker`), `derived` (stan z samej pracy podagentów),
@@ -623,9 +643,18 @@ szuka repozytorium (plan, mapa migracji, backlog) w katalogach swoich podagentó
 ma tytuł z pierwszej wiadomości użytkownika.
 
 **Opis karty** (`coordination/describe.py`, decyzja 54): `title`, `done`, `now` po polsku. Model — to samo
-bezpieczne wywołanie co „Na daily” (`claude -p` bez narzędzi, `--safe-mode`, sekcja „Na daily” niżej),
-z własnymi instrukcjami, model i tryb z `report.json` (`summaryModel`; `"summary": "rules"` albo
-`--report-summary rules` — same reguły). Wejście: `{"coordinator": {"project", "title"}, "tickets": [{"key",
+wywołanie co „Na daily” (`summarize.Model`; `claude -p` bez narzędzi, `--safe-mode`, sekcja „Na daily” niżej),
+z własnymi instrukcjami i schematem odpowiedzi, tryb z `report.json` (`summary`, `--report-summary`
+ma pierwszeństwo): `claude` — model `summaryModel`; `local` — model lokalny z roli `describe` w `models.json`
+(nigdy Claude), najwyżej 8 ticketów w wywołaniu i tyle faktów, ile mieści kontekst roli (reszta w następnym
+wywołaniu), 90 s na wywołanie, a zamykanie usługi (`Describer.stop()`) przerywa trwające wywołanie od
+razu; `rules` — same reguły. Gdy model lokalny zawiedzie, karty koordynatora
+mają reguły i `describeNote` z komunikatem `ModelError` („Model lokalny niedostępny — opis bez modelu
+(serwer nie odpowiada, 127.0.0.1:11434)”), do dziennika usługi trafia ten sam tekst (raz, nie przy
+każdej próbie), a po 15 min wywołanie się powtarza; udane wywołanie zdejmuje informację. Skrót faktów
+zawiera tożsamość modelu (jak w „Na daily”). Poprzedni opis jako `model-stale` pokazujemy w obrębie Claude
+także po zmianie `summaryModel` (jak przed PT-15), a modelu lokalnego — tylko z tego samego punktu, adresu,
+modelu i kontekstu; po przełączeniu `claude` ↔ `local` karty nie pokazują opisu drugiego. Wejście: `{"coordinator": {"project", "title"}, "tickets": [{"key",
 "id", "state", "status" (stan z reguł), "officialTitle", "trackerStatus", "trackerDescription", "brief"
 (do 400 znaków), "planNote", "tasks" (opisy zleceń), "reports" ([{"role", "said"}], do 300 znaków, ostatnie
 6), "review", "question"}]}` po `strip_secrets`; odpowiedź `{"tickets": [{"key", "title", "done", "now"}]}`
@@ -723,8 +752,9 @@ nie ticket. Dane są w lokalnym repozytorium git, które usługa zakłada przy p
 zapisie i commituje po każdej zmianie, więc historia i cofanie są za darmo. Bez remote — usługa nigdy nie
 wypycha ani nie dodaje zdalnego repozytorium. Widok Tablica w oknie Tide (`apps/board`) i kafelek
 `org.tide.board` (`widgets/board`) czytają `Snapshot()` i piszą wyłącznie przez metody niżej;
-uruchamianie agenta z karty, połączenie karty z koordynatorem i import z YouTracka to kolejne tickety
-(PT-4…PT-7) na tym samym formacie. Plan: `docs/agents/plans/2026-10-27-board-and-docker.md`.
+kolumny W toku, Czeka na mnie i Do sprawdzenia wynikają z prawdziwej pracy agentów (niżej, „Stan karty
+z pracy agentów”, PT-5), uruchamianie agenta z karty (PT-4) opisuje „Uruchomienie z karty” niżej, a import
+z YouTracka to kolejny ticket (PT-7) na tym samym formacie. Plan: `docs/agents/plans/2026-10-27-board-and-docker.md`.
 
 | Element | Wartość |
 | --- | --- |
@@ -735,14 +765,15 @@ uruchamianie agenta z karty, połączenie karty z koordynatorem i import z YouTr
 | Składnik | Sygnatura | Opis |
 | --- | --- | --- |
 | `Snapshot()` | `→ s` | JSON całej tablicy (opis niżej); tylko odczyt — przed pierwszym zapisem niczego nie zakłada |
-| `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, tags, column, note, youtrack, spec, session, branch}` → `{ok, id, commitError}` |
+| `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
-| `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}` |
+| `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
 | `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, mode, description}`: istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
-| `RenderFlow(s id, s mode)` | `→ s` | polecenie trybu dla karty (pusty `mode` — tryb projektu) → `{ok, text, mode, tool, branch, docsDir, aiDocs, repo, project, template}`; katalog `docsDir` w tablicy zakłada od razu |
+| `RenderFlow(s id, s mode)` | `→ s` | polecenie trybu dla karty (pusty `mode` — tryb projektu) → `{ok, text, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
+| `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{mode, tool, branch, check}` (wszystko opcjonalne; `check`: `auto` — domyślnie, albo `manual`) |
 | `Badge()` | `→ s` | plakietka widoku Tablica w oknie Tide: JSON `{text, tone}` — „● N” (`waiting`), gdy karty czekają na ciebie, inaczej liczba kart w grze bez Gotowych i Archiwum (`muted`); zero — pusty tekst (plakietka ukryta). Tylko odczyt, niczego nie zakłada; ta sama reguła co `badge()` w `apps/board/backend.py` |
-| `ShowWindow(s id)` | `→ b` | okno Tide na widoku Tablica (`tide.py --view board`), z ID karty (`K-12`, wielkość liter bez znaczenia) od razu na niej (`--select K-12`); napis, który nie jest ID karty, pomijamy (samo okno); `false`, gdy okna nie ma — kafelek tablicy w docku |
+| `ShowWindow(s id)` | `→ b` | okno Tide na widoku Tablica (`tide.py --view board`), z ID karty (`K-12`, wielkość liter bez znaczenia) od razu na niej (`--select K-12`), z `launch:K-12` — na niej z oknem „Co ma zrobić agent?” (`--select launch:K-12`, „Uruchom” w popupie kafelka); napis, który nie jest ID karty, pomijamy (samo okno); `false`, gdy okna nie ma — kafelek tablicy w docku |
 | `Changed` | sygnał bez argumentów | tablica się zmieniła (zapis przez D-Bus albo zmiana z zewnątrz) — pobierz `Snapshot()` ponownie |
 
 Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt
@@ -798,10 +829,12 @@ order: 20
 note: bez agenta, robię sam
 created: 2026-10-27T14:00:00+01:00
 updated: 2026-10-27T14:05:12+01:00
+moved: 2026-10-27T14:00:00+01:00
 youtrack: TOM-142
 spec:
 session:
 branch:
+check: auto
 ---
 
 Wyszukiwanie zwraca tę samą frazę kilka razy…
@@ -816,8 +849,13 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `column` | tylko kolumny ręczne: `backlog`, `todo`, `done`, `archived` |
 | `order` | kolejność w kolumnie (mniejsza wyżej); nowa karta trafia na górę kolumny. `MoveCard` daje karcie środek między sąsiadami (zmienia się jeden plik), a całą kolumnę numeruje co 10 dopiero wtedy, gdy między sąsiadami nie ma miejsca |
 | `note` | krótka notatka widoczna na karcie (np. „bez agenta, robię sam”) |
-| `created`, `updated` | ISO 8601 z czasem lokalnym |
-| `youtrack`, `spec`, `session`, `branch` | zarezerwowane na później (import z YouTracka, gotowa specyfikacja, sesja koordynatora, gałąź); `branch` już teraz zastępuje propozycję gałęzi w `RenderFlow` |
+| `created`, `updated` | ISO 8601 z czasem lokalnym; `updated` zmienia każdy zapis karty |
+| `moved` | ostatnie jawne przeniesienie (ISO 8601): ustawia go tylko założenie karty i każde `MoveCard` (także w obrębie kolumny); edycja pól — nie. Karta bez klucza (sprzed PT-5) liczy się od `created`. Z niego stan z pracy agentów rozpoznaje „do poprawy” |
+| `youtrack`, `spec` | `youtrack` — zgłoszenie w YouTracku (PT-7); `spec` — ścieżka gotowej specyfikacji z trybu „tylko spec” |
+| `session` | sesja albo koordynator, który prowadzi kartę — id jak w `/Agents` i `/Coordination` (`claude:<id>`, `codex:<id>`, samo `<id>` też działa); pierwsze źródło stanu karty |
+| `branch` | gałąź pracy w repozytorium projektu; zastępuje propozycję gałęzi w `RenderFlow`, łączy kartę z pracą na tej gałęzi i jest gałęzią do scalenia |
+| `check` | sprawdzenie po skończonej pracy agenta: `auto` (domyślnie — wystarczą testy i review AI) albo `manual` (test ręczny użytkownika: karta czeka w Do sprawdzenia, aż przeniesiesz ją do Gotowe). Zła wartość w pliku — błąd i `auto`; brak klucza — `auto`. Ustawia go m.in. przełącznik „Test ręczny po zakończeniu” przy uruchomieniu agenta (PT-4) |
+| `mode`, `tool`, `worktree`, `launched` | ostatnie uruchomienie agenta z karty: tryb, narzędzie, katalog worktree (bezwzględny albo pusty — praca w katalogu projektu) i chwila (ISO 8601); w pliku tylko po uruchomieniu |
 
 Projekt — `projects/mobileapp.md`, treść to opcjonalny opis:
 
@@ -849,10 +887,43 @@ projektu (`ai-docs: repo`) niczego nie tworzy. Pusty katalog nie trafia do gita,
 synchronizacja. Szablon bierze `flows/<projekt>/<tryb>.md`, potem `flows/<tryb>.md`, a bez
 tablicy — wbudowany szablon (`board/flows.py`, te same treści, które trafiają do nowej tablicy).
 Frontmatter szablonu nie trafia do polecenia. Zastępowane są wyłącznie pola `{card_id}`, `{title}`,
-`{description}`, `{project}`, `{repo}`, `{docs_dir}`, `{branch}` — inne klamry zostają, a opis karty
-nie jest szablonem. Gałąź: `branch` karty albo propozycja `<narzędzie>/k-12-<opis-z-tytułu>`
-(po ID karty w gałęzi daemon połączy kartę z koordynatorem). Obecne treści szablonów to zaczyn —
-właściwe polecenia trybów dopisze PT-4.
+`{description}`, `{project}`, `{repo}`, `{docs_dir}`, `{branch}`, `{tool}`, `{docs_note}`, `{spec}`,
+`{spec_file}`, `{check}`, `{check_label}`, `{finish}`, `{spec_commit}` — inne klamry zostają, a opis karty nie jest
+szablonem. Gałąź: z okna, inaczej `branch` karty albo propozycja `<narzędzie>/k-12-<opis-z-tytułu>`
+(po ID karty w gałęzi daemon połączy kartę z koordynatorem; w trybie spec polecenie mówi „bez gałęzi”).
+`{docs_dir}` to `docs/agents` (względnie — katalog roboczy agenta, także worktree) przy `ai-docs: repo`
+i ścieżka bezwzględna w tablicy przy `ai-docs: tide`; `{docs_note}` mówi, kto commituje te pliki (w
+tablicy — tylko usługa). `{spec_file}`: `{docs_dir}/specs/k-12-<opis>.md`. `{finish}`: przy `manual`
+lista „Co przetestować ręcznie i jak” w planie, bez scalania i z informacją, że praca czeka na test
+ręczny; przy `auto` koniec po review AI z APPROVE, scalenie tylko wtedy, gdy pozwalają na nie zasady
+projektu.
+
+Treści trybów (`board/flows.py`, polecenia po polsku): **pełny** — grilling (skill `grilling` w Claude
+Code, w Codeksie te same pytania opisane słowami), specyfikacja w `{spec_file}` z frontmatterem
+`card`/`status: szkic`→`gotowa`, plan według standardu 1.1 z `card: {card_id}` i `coordinator: {tool}`,
+numery ticketów z zasad projektu (CLAUDE.md/AGENTS.md, `make -C ~/DevWorkspace/plasma-tide next-id`,
+`check-plans`; bez zasad — `tracker: local` z prefiksem zapisanym w planie), TDD (skill `tdd`),
+delegowanie i obowiązkowe review AI według standardu, pytania z ID ticketu; **lekki** — krótka
+specyfikacja, plan z 1–3 ticketami, TDD, review AI; **tylko specyfikacja** — pytania i specyfikacja
+z review AI, bez kodu, gałęzi i planu, na koniec `status: gotowa`; `{spec_commit}`: w tablicy nic nie
+commituje (robi to usługa), a przy `ai-docs: repo` commituje wyłącznie plik specyfikacji na bieżącej
+gałęzi (`docs(spec): K-12 <short English title>`, po angielsku, bez podpisów i wzmianek o AI, bez push) —
+inaczej późniejszy start z nowym worktree dostałby odmowę `dirty-base`.
+
+**Migracja szablonów.** Tablica założona przed PT-4 ma w `flows/` dawne zaczyny. Przy starcie usługi
+(`migrate_flows`) plik `flows/<tryb>.md`, który jest bajt w bajt dawnym zaczynem (skróty SHA-256
+w `flows.PREVIOUS_SEEDS`), dostaje nową treść jednym commitem `flows: update templates`; plik zmieniony
+przez użytkownika, nadpisania projektów (`flows/<projekt>/…`) i brakujące pliki zostają. W trakcie
+revertu albo merge'a migracja czeka, a `RenderFlow` i tak nigdy nie wstawia dawnego zaczynu do polecenia
+(bierze wtedy wbudowaną treść).
+
+**Gotowa specyfikacja** (`mark_ready_specs`, przy każdej synchronizacji — po zmianie w tablicy po 2 s,
+inaczej co 60 s, więc dla specyfikacji w repozytorium projektu do minuty): karta z `mode: spec`
+w Do zrobienia bez `spec`, której `<docs>/specs/` ma plik Markdown nazwany od ID karty (`k-12.md`,
+`k-12-…`) albo z `card: K-12` we frontmatterze i ze `status: gotowa` (także `gotowy`, `ready`, `done`),
+dostaje `spec: <ścieżka>` i wraca na górę Backlogu — commit `K-12: specification ready`. Na karcie
+w Backlogu widać „✓ specyfikacja gotowa”. Szkic (`status: szkic`), inny tryb i karta przeniesiona ręcznie
+— bez zmian. Agent niczego nie woła przez D-Bus: wystarczy zmiana linii `status` w pliku.
 
 **Commity.** Każda zmiana z D-Bus to osobny commit tylko z plikami, które usługa zmieniła, np.
 `board: create`, `K-21: create`, `K-21: update title, tags`, `K-12: move to todo`,
@@ -906,16 +977,94 @@ w raporcie porannym, gdziekolwiek leży.
 | `tools`, `modes` | dozwolone narzędzia i tryby |
 | `tags` | `[{name, slug, color, description, defined, cards}]` (`cards` — karty z tym tagiem po dziedziczeniu) |
 | `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, mode, description, docsDir, cards, path}]` |
-| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, youtrack, spec, session, branch, description, derived, path}]` w kolejności kolumn i `order` |
+| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, mode, tool, worktree, launched, launchedTs, branchSlug, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia |
 | `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
 | `errors` | `[{path, message}]` — złe pliki |
 
-`derived` to miejsce na stan z koordynatora karty (PT-5: kolumna `progress`/`waiting`/`review`/`done`,
-postęp, notatka) — na razie zawsze `null`; `boardColumn` to kolumna do wyświetlenia: z `derived`, a bez
-niego zapisana `column`. Pliki ręczne (`column`) nie zmieniają się od stanu koordynatora.
+`derived` to stan karty z pracy agentów (opis niżej) albo `null`; `boardColumn` to kolumna do
+wyświetlenia: `derived.column`, a bez niego (albo przy pustej) zapisana `column`. Pliki kart nie
+zmieniają się od stanu agentów — ręczna kolumna to wyłącznie decyzja użytkownika.
+
+**Stan karty z pracy agentów** (`board/derive.py`, PT-5). Karta w Do zrobienia (w Backlogu — tylko
+przy połączeniu jawnym) dostaje kolumnę z tego, co agenci naprawdę robią; Gotowe i Archiwum nigdy.
+
+Połączenie karty z pracą, pierwsze pasujące:
+
+1. `session` karty — sesja z `/Agents` albo koordynator z `/Coordination` (to samo id),
+2. `card: K-12` we frontmatterze planu koordynatora (klucz z PT-6, czytany ostrożnie),
+3. ID karty w nazwie gałęzi koordynatora, jego ticketu albo sesji (`claude/k-12-eksport` — propozycja
+   `RenderFlow`), w repozytorium projektu karty,
+4. `branch` karty równa gałęzi koordynatora, ticketu albo sesji w repozytorium projektu karty — także
+   z jego worktrees (główny katalog repozytorium z plików `.git`, `agents/gitinfo.py: main_root`);
+   gałęzi głównych (master, main, develop, HEAD) nie dopasowujemy.
+
+Przy kilku dopasowaniach tej samej reguły wygrywa najświeższa aktywność (żywe przed zakończonymi).
+Backlog to „kiedyś”: stan dostaje tylko z reguł 1–2, bo gałąź może pasować przypadkiem albo do starej
+pracy. Koordynator z karty, który już nie działa, ustępuje nowszemu, żywemu koordynatorowi tego samego
+planu (nowa sesja po wyczerpaniu kontekstu). Gdy gałąź karty jest inna niż gałąź koordynatora, a jego
+tickety mają tę gałąź, karta obejmuje tylko te tickety (`tickets`) — koordynator prowadzi kilka kart naraz.
+
+| Kolumna | Kiedy |
+| --- | --- |
+| `waiting` — Czeka na mnie | agent stoi w pół pracy i bez ciebie nie ruszy: sesja w stanie `waiting` (ta sama definicja co widżet agentów, `agents/state.py: waits_for_user` — koniec tury z pytaniem w ostatniej wiadomości to `done`, nie czekanie), ticket w `czeka` z pytaniem bez odpowiedzi albo ticket w `czeka` z samego planu, gdy agent nie pracuje (bezczynny, skończył turę, sesja zakończona — notatka „czeka na twoją decyzję według planu: <Uwagi z planu>”). Pytanie albo `czeka` ticketu spoza karty nie dotyczy karty |
+| `progress` — W toku | praca trwa albo stoi niedokończona: tickety niegotowe — także review AI i poprawki (`review`, `w-toku`, `todo`; `czeka` z planu, dopóki agent pracuje) —, agent pracuje albo jest bezczynny, skończył turę, sesja się zakończyła (notatka: „agent bezczynny od 16:46, w toku: LEGAL-6”, „sesja zakończona”) |
+| `review` — Do sprawdzenia | praca agentów skończona (wszystkie tickety gotowe albo odrzucone, plan `done` bez ticketów; agent już nie pracuje), ale potrzebny krok człowieka: `check: manual` („do sprawdzenia ręcznie”) albo niescalona gałąź („do scalenia: feat/x”) |
+| `done` — Gotowe | skończone, `check: auto` i nic do scalenia („✓ gotowe i scalone”); plik karty zostaje w Do zrobienia — przeciągnięcie do Gotowe (albo wybór w panelu karty) to zapisuje |
+
+Zwykła sesja bez ticketów nigdy nie jest „skończona” — bez ticketów i planu nie wiadomo, czy praca
+jest gotowa, więc taka karta zostaje w W toku z notatką, od kiedy agent stoi. Karta przeniesiona ręcznie po
+skończonej pracy (`moved` późniejszy niż ostatnia aktywność ticketów, np. „do poprawy” — z panelu
+z powrotem do Do zrobienia; sama edycja notatki się nie liczy) zostaje w swojej kolumnie (`derived.column` pusty, notatka „wróci do W
+toku…”), dopóki agent znów nad nią nie popracuje. Ręczne Gotowe zawsze wygrywa i potwierdza sprawdzenie.
+
+**Scalona gałąź**: czubek gałęzi jest przodkiem lokalnej gałęzi głównej (`git merge-base --is-ancestor`,
+jak w Worktrees). Gałąź, której nie ma lokalnie, jest scalona tylko wtedy, gdy w ostatnich 1000 commitach
+scalenia głównej jest jej „Merge branch 'feat/x'” (usunięta po scaleniu); bez tego — nigdy jej tu nie
+było albo scalenie szybkie/squash — „nie wiadomo”. Nie wiadomo (także brak repozytorium albo gałęzi
+głównej) — „do scalenia”, żeby człowiek spojrzał. Sprawdzamy tylko skończoną pracę: gałąź karty, a bez
+niej gałęzie ticketów i koordynatora. Git idzie w jednym wątku roboczym (`BranchState(background=True)`),
+przeliczenie odpowiada z pamięci (30 s; gałąź bez śladu — 10 min, żeby nie sprawdzać jej w kółko), a nowy
+wynik zleca kolejne przeliczenie; dopóki pierwszego wyniku nie ma, skończona karta stoi w Do sprawdzenia.
+
+`derived`: `column`, `done` i `total` (tickety karty: gotowe / wszystkie bez odrzuconych; zwykła sesja —
+0), `tool` (`claude`, `codex`), `note` (jedno zdanie po polsku, do 160 znaków: co teraz, pytanie, od kiedy
+stoi, czego brakuje), `nextStep` („odpowiedz agentowi”, „przetestuj ręcznie, potem scal gałąź feat/x”,
+„przenieś do Gotowe”; pusty w W toku — dla karty i przyszłej synchronizacji z YouTrackiem, PT-7), `check`,
+`branch` (gałąź karty albo pracy; w Do sprawdzenia — gałąź do scalenia), `session` (id dla „Otwórz
+w Sesjach” / „Przejdź do agenta”: koordynator albo sesja), `coordinator` (id koordynatora albo pusty —
+zwykła sesja), `link` (`session`, `plan`, `card-branch`, `branch`), `agentState` (stan sesji z `/Agents`),
+`tickets` (ID ticketów karty, gdy obejmuje część koordynatora; pusta lista — cały).
+
+**Na żywo.** `BoardMonitor` trzyma migawkę z plików w pamięci; zmiana w `/Agents` (`AgentMonitor.changed`)
+albo `/Coordination` (`CoordinationMonitor.changed`) przelicza tylko `derived` i `boardColumn`, najwyżej co
+500 ms (seria zmian sesji to jedno przeliczenie), bez czytania repozytorium tablicy, i wysyła `Changed`,
+gdy migawka się zmieniła. Indeksy (repozytoria bez dowiązań, `(repozytorium, gałąź)` → praca, numer
+karty z nazwy gałęzi) powstają raz na przeliczenie, więc karta to kilka wyszukań w słownikach (80 kart,
+60 koordynatorów po 15 ticketów i 40 sesji — kilka ms; test `SpeedTest`). Plakietka (`Badge()`) i kafelek liczą z `boardColumn`, więc idą za tym same.
+`--print-board` pokazuje migawkę bez stanu z pracy agentów (bez skanowania dzienników).
+
+Przejście z karty do pracy: karta emituje `sessionRequested(derived.session)` („Otwórz w Sesjach →”,
+„Przejdź do agenta”). Usługa ma już oba cele: `/Coordination ShowWindow(id)` (okno Tide na widoku Sesje
+z koordynatorem) i `/Agents ActivateSession(id)` (okno zwykłej sesji); podpięcie w `apps/board`
+(backend i `BoardView.qml`) czeka na scalenie z PT-4, który zmienia te pliki.
+
+**Uruchomienie z karty** (widok Tablica, `apps/board/qml/LaunchDialog.qml`). Okno „Co ma zrobić
+agent?” otwiera się po przeniesieniu karty z Backlogu do Do zrobienia (myszą albo Ctrl+→), z „Uruchom
+agenta…” na karcie w Do zrobienia i z „Uruchom” w popupie kafelka (`ShowWindow("launch:K-12")`).
+„Uruchom agenta” (Ctrl+Enter) to kolejno: `UpdateCard {description}` — tylko gdy zadanie w oknie różni
+się od opisu karty, `RenderLaunch(id, {mode, tool, branch, check})`, `/Tasks Start {repoPath, tool,
+prompt: text, newWorktree, branch, images: [], addDirs}` (`newWorktree` i `branch` tylko poza trybem
+spec; `addDirs: [docsDir]` przy `ai-docs: tide`) i po udanym starcie `UpdateCard {branch, worktree,
+mode, tool, check, launched}` (`branch` tylko z nowym worktree; pole `check` dodaje PT-5). Karta
+uruchomiona z Backlogu bez przeniesienia (popup) idzie do Do zrobienia; dalej stoi tam, aż PT-5 wyliczy
+„W toku”. Błąd którejkolwiek odpowiedzi zostaje w oknie, a ponowienie nie zapisuje opisu drugi raz.
+„Anuluj” po przeniesieniu oddaje kartę na jej miejsce w Backlogu (`MoveCard`), „Tylko przenieś”
+zostawia ją w Do zrobienia bez agenta. Karta bez projektu z repozytorium — wyjaśnienie i wybór projektu
+(`UpdateCard {project}` albo `{repo}`, który zakłada projekt).
 
 Logika bez Qt jest w `tide_daemon/board/` (`marker.py`, `frontmatter.py`, `model.py`, `flows.py`,
-`store.py`, git w `repo.py`), obserwacja katalogu i odpowiedzi D-Bus w `board_monitor.py`.
+`store.py`, `derive.py`, git w `repo.py`), obserwacja katalogu, przeliczanie stanu kart i odpowiedzi
+D-Bus w `board_monitor.py`.
 
 ```bash
 qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.Snapshot
@@ -1019,6 +1168,96 @@ qdbus6 org.tide.Daemon /Docker org.tide.Daemon.Docker.Snapshot
 /usr/bin/python3 daemon/tide-daemon.py --print-docker   # migawka i miejsce na dysku, wyłącznie GET do Engine API
 ```
 
+## Modele lokalne
+
+Jedno miejsce w usłudze, przez które Tide rozmawia z serwerem modeli lokalnych: teraz Ollama na tym komputerze (`http://127.0.0.1:11434`), później Mac Studio w sieci — zmianą adresu w ustawieniach, bez zmian w kodzie (plan `docs/agents/plans/2026-10-27-local-models.md`, PT-14). Usługa odczytuje stan serwerów i wystawia go przez D-Bus; przez wywołanie modelu (`tide_daemon.models.chat`) idą „Na daily” i opisy kart w trybie `"summary": "local"` (PT-15, sekcje „Raport poranny” i „Koordynacja”).
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/Models` |
+| Interfejs | `org.tide.Daemon.Models` |
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `Status()` | `→ s` | JSON `{checked, default, config, endpoints, roles}` (opis niżej), bez tokenów |
+| `Refresh()` | | odczyt stanu teraz, bez czekania na kolejny cykl (wynik przyjdzie sygnałem `Changed`, jeśli coś się zmieniło) |
+| `Changed` | sygnał bez argumentów | stan serwerów, modeli albo ustawień się zmienił — pobierz `Status()` ponownie |
+
+```json
+{
+  "checked": true,
+  "default": "local",
+  "config": {"path": "/home/user/.config/tide/models.json", "exists": false, "error": "", "warnings": []},
+  "endpoints": {
+    "local": {"name": "local", "url": "http://127.0.0.1:11434", "kind": "ollama", "auth": false,
+              "online": true, "error": "", "version": "0.40.11",
+              "models": [{"name": "qwen3:8b", "size": 5225388164, "family": "qwen3", "parameterSize": "8.2B",
+                          "quantization": "Q4_K_M"}],
+              "loaded": [{"name": "qwen3:8b", "size": 6000000000, "sizeVram": 6000000000, "gpuPercent": 100,
+                          "contextLength": 8192, "expiresAt": "2026-10-27T17:05:00+01:00"}]}
+  },
+  "roles": {
+    "summary": {"endpoint": "local", "model": "qwen3:8b", "ctx": 8192, "installed": true, "available": true}
+  }
+}
+```
+
+| Pole | Opis |
+| --- | --- |
+| `checked` | `false` tylko przed pierwszym odczytem po starcie usługi (wtedy wszystkie punkty `online: false` bez błędu) |
+| `config` | plik ustawień: ścieżka, czy istnieje, `error` (plik nie do użycia — wszystko domyślne), `warnings` (pominięte punkty i role) |
+| `endpoints.*.online`, `error` | czy serwer odpowiada; przy `false` krótki powód po polsku, np. „Model lokalny niedostępny: serwer nie odpowiada (127.0.0.1:11434)” |
+| `endpoints.*.auth` | punkt wysyła token (`tokenFile`) — sam token nigdy nie wychodzi z usługi |
+| `endpoints.*.version` | wersja Ollamy; `null` dla serwera `openai` |
+| `endpoints.*.models` | pobrane modele: `name`, a dla Ollamy też `size`, `family`, `parameterSize`, `quantization` |
+| `endpoints.*.loaded` | modele w pamięci (Ollama `/api/ps`): rozmiar, `sizeVram`, `gpuPercent` (część na karcie — poniżej 100 model pisze kilkanaście razy wolniej), `contextLength`, `expiresAt`; `null` dla serwera `openai`, który tego nie podaje |
+| `roles.*` | punkt, model, `ctx` (`null` — kontekst serwera), `installed` (model jest na serwerze; `null`, gdy serwer nie odpowiada), `available` (serwer odpowiada i model jest), `error` (rola niedostępna, np. jej punkt jest pominięty; zwykle pusty) |
+
+**Ustawienia.** `~/.config/tide/models.json` (`$XDG_CONFIG_HOME/tide/models.json`; `$TIDE_MODELS_CONFIG` podmienia ścieżkę — testy, diagnostyka), czytany przy każdym odczycie i wywołaniu — zmiana działa bez restartu usługi (`Refresh()` od razu). Plik jest opcjonalny; bez niego jest jeden punkt `local` (`http://127.0.0.1:11434`, `ollama`) i role `summary`, `describe` → `qwen3:8b` z kontekstem 8192.
+
+```json
+{
+  "default": "local",
+  "endpoints": {
+    "local": {"url": "http://127.0.0.1:11434", "kind": "ollama"},
+    "mac":   {"url": "http://mac-studio:11434", "kind": "ollama", "tokenFile": "~/.config/tide/mac.token"},
+    "lm":    {"url": "http://mac-studio:1234", "kind": "openai"}
+  },
+  "roles": {
+    "summary":  "local:qwen3:8b",
+    "describe": {"model": "local:qwen3:8b", "ctx": 8192},
+    "embed":    "local:bge-m3",
+    "agent":    "local:qwen3-coder:30b",
+    "polish":   "local:hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M"
+  }
+}
+```
+
+- `kind`: `ollama` (domyślnie) albo `openai` (MLX, LM Studio, llama.cpp — dowolny serwer z `/v1/chat/completions`); adres bez `/v1` (podany z `/v1` też działa).
+- Rola to `"punkt:model"` albo `{"model": "punkt:model", "ctx": N}`. Nazwy modeli mają dwukropki, więc napis dzielimy tylko na pierwszym — i tylko wtedy, gdy przed nim stoi nazwa znanego punktu. Inaczej cały napis to model na punkcie `default` (`"qwen3:8b"` = `default:qwen3:8b`). Brakujące role `summary` i `describe` dochodzą na punkcie `default`, więc przepięcie na Maca to zmiana `default` albo przedrostka w rolach.
+- `ctx` to kontekst (`num_ctx` w Ollamie). Role `summary` i `describe` bez `ctx` dostają 8192: z 16k model 8B nie mieści się na karcie 8 GB i odpowiedź trwa 165 s zamiast 8 s (pomiary PT-13). Inne role bez `ctx` i `ctx: 0` — kontekst serwera (16k w nakładce usługi Ollamy, dla agentów).
+- `tokenFile` (z `~`): plik z tokenem, wysyłanym jako `Authorization: Bearer …` — na Maca za pośrednikiem z tokenem (PT-21). Czytany przy każdym zapytaniu, tylko w pamięci; nie trafia do dziennika, komunikatów ani `Status()`.
+- Zepsuty plik (nie JSON albo nie obiekt) → ustawienia domyślne i `config.error`; zły punkt albo zła rola są pomijane z ostrzeżeniem w `config.warnings`, reszta działa. Nieznany, pominięty albo nie-napisowy `default` nie przenosi ról bez punktu na inny serwer: te role (także `summary` i `describe`) są niedostępne z powodem w `roles.*.error`, a `default` w stanie to zapasowy `local` (albo pierwszy punkt) — tylko do odczytu stanu; role z przedrostkiem poprawnego punktu działają. Żaden kształt pliku nie zatrzymuje usługi ani `--print-models`.
+- Zły punkt to: adres spoza `http(s)://`, adres, którego nie da się rozebrać na host i port (port nieliczbowy, 0 albo powyżej 65535, IPv6 bez nawiasów — poprawnie `http://[fd7a:115c::1]:11434`), adres z danymi logowania (`http://user:hasło@…` — hasło trafiłoby do stanu; od tego jest `tokenFile`), nieznany `kind`.
+- Rola z przedrostkiem pominiętego punktu (`"agent": "mac:qwen3-coder:30b"`, gdy `mac` ma zły adres) nie przechodzi cicho na `default`: zostaje przy `mac` jako niedostępna (`roles.agent.error`, ostrzeżenie), a wywołanie tej roli kończy się `ModelError`.
+
+**Stan.** Co 15 s (`--models-poll`) w wątku roboczym, z limitem 3 s na całe zapytanie, więc serwer, który wisi, sączy bajty albo nie istnieje, nie blokuje D-Bus ani kolejnych odczytów. Przeoczony błąd w jednym punkcie daje ten punkt `online: false` („błąd odczytu stanu”), pozostałe odczytują się normalnie. Dla Ollamy `GET /api/version`, `/api/tags` i `/api/ps` (żadne nie ładuje modelu ani nie przedłuża jego trzymania w pamięci), dla `openai` — `GET /v1/models`. Punkt, który nie odpowiada na pierwsze zapytanie, nie dostaje kolejnych. JSON nie ma czasu odczytu, więc `Changed` przychodzi tylko przy prawdziwej zmianie (serwer wstał albo padł, model załadowany albo zwolniony, nowy model, zmiana ustawień). Do dziennika usługi trafiają tylko zmiany: „Modele lokalne: local: odpowiada (wersja 0.40.11)”, powód niedostępności, błąd i ostrzeżenia z `models.json`.
+
+**Wywołanie modelu** (`tide_daemon/models/client.py`, bez Qt, do użycia w wątku roboczym): `chat(polecenie, role="summary", system=…, schema=…, timeout=180)` albo `chat(…, endpoint="mac", model="qwen3:8b")`. Wynik to tekst z miarami (`promptTokens`, `outputTokens`, `wallS`, a z Ollamy też `loadS`, `promptS`, `outputS`) i `json()` dla odpowiedzi według schematu. `cancel=models.Cancel()` pozwala przerwać wywołanie z innego wątku (zamykanie usługi): `set()` zamyka gniazdo trwającego zapytania i blokuje nowe — „Model lokalny: wywołanie przerwane — usługa się zamyka”. Adapter według `kind`:
+
+- `ollama` — natywne `POST /api/chat` z `stream: false`, `think: false`, `options.num_ctx` z roli i `format` = schemat JSON. Nie zgodny z OpenAI `/v1/chat/completions` Ollamy, bo ten pomija `num_ctx`, a kontekst decyduje, czy model mieści się na karcie. Model bez przełącznika myślenia (odpowiedź 400 z „think”) — ponowienie bez `think`.
+- `openai` — `POST /v1/chat/completions` z `response_format: {type: "json_schema", json_schema: {name, strict, schema}}`; kontekst ustawia serwer.
+
+**Gdy serwer nie działa.** Każdy błąd — serwer nie odpowiada, nie ma takiej nazwy, limit czasu, błąd HTTP (z treścią błędu serwera, np. „model 'x' not found”), nieczytelna albo pusta odpowiedź, przekierowanie, nieczytelny plik tokenu (token musi być drukowalnym ASCII), rola na pominiętym punkcie — to jeden wyjątek `ModelError` z krótkim komunikatem po polsku do pokazania użytkownikowi. Tryb lokalny nigdy nie przechodzi do chmury: klient nie zna Claude ani żadnego zapasowego wywołania, a wywołujący pokazuje informację zamiast opisu (decyzja z 27.10 w planie). Zapytania idą bez pośredników z `$http_proxy`. Limit czasu (`timeout` wywołania, 3 s dla stanu) obejmuje całe zapytanie: szukanie nazwy, łączenie, wysłanie i cały odczyt odpowiedzi — po terminie połączenie jest zamykane. Przekierowań (3xx) nie śledzimy: „Model lokalny: serwer odpowiedział 302 — przekierowanie nie jest obsługiwane”, bo przekierowanie zabrałoby token do innego hosta, a POST po 302 stałby się GET-em.
+
+Logika bez Qt jest w `tide_daemon/models/` (`config.py`, `transport.py`, `client.py`, `status.py`), odpytywanie w `models_monitor.py`. Uzasadnienie: decyzja 60 w `docs/decisions.md`.
+
+```bash
+qdbus6 org.tide.Daemon /Models org.tide.Daemon.Models.Status
+qdbus6 org.tide.Daemon /Models org.tide.Daemon.Models.Refresh
+/usr/bin/python3 daemon/tide-daemon.py --print-models   # jeden odczyt stanu, tylko GET, niczego nie zapisuje
+```
+
 ## Uruchamianie
 
 ```bash
@@ -1032,16 +1271,18 @@ journalctl --user -u tide-daemon -f
 /usr/bin/python3 daemon/tide-daemon.py --print-coordination   # koordynatorzy i tablice (YouTrack tylko GET)
 /usr/bin/python3 daemon/tide-daemon.py --print-board          # tablica pracy (tylko odczyt)
 /usr/bin/python3 daemon/tide-daemon.py --print-docker         # kontenery i miejsce na dysku (tylko GET)
+/usr/bin/python3 daemon/tide-daemon.py --print-models         # serwery modeli lokalnych i role (tylko GET)
 # Jednorazowy raport poranny (bez D-Bus, powiadomienia i pliku stanu) do wskazanego katalogu:
 /usr/bin/python3 daemon/tide-daemon.py --report --report-days 1 --report-dir /tmp/raport
 # Opcje diagnostyczne: --claude-dir, --codex-dir, --workspace, --worktree-depth, --no-processes,
 #                      --no-notifications, --no-krunner, --no-tab-marks,
 #                      --now 2026-10-26T12:00:00Z, --idle-after 30, --no-idle,
 #                      --report-dir, --report-at 07:00, --no-report, --report-delay 120,
-#                      --report-summary claude|rules,
+#                      --report-summary claude|local|rules,
 #                      --limits-poll 120, --no-limits, --print-limits, --no-tasks,
 #                      --coordination-days 7, --no-coordination, --no-youtrack,
-#                      --board-dir DIR, --no-board, --no-docker
+#                      --board-dir DIR, --no-board, --no-docker,
+#                      --models-poll 15, --no-models
 ```
 
 Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`, z której raport poranny bierze kolory i czcionki), `$XDG_CONFIG_HOME/systemd/user/tide-daemon.service`, `$XDG_DATA_HOME/dbus-1/services/org.tide.Daemon.service` (start na żądanie, gdy widżet zapyta, a usługa nie działa) i `org.tide.Daemon.KRunner.service` (to samo dla KRunnera). Usługa używa `/usr/bin/python3` z systemowym PyQt6 — `python3` z pyenv go nie ma.
@@ -1058,8 +1299,8 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_worktrees_core.py` — rdzeń worktrees na prawdziwych, tymczasowych repozytoriach (`gitrepos.py`: scalony, ze zmianami, z niescalonymi commitami, z agentem, odłączony, bez gałęzi głównej, główny); git owinięty skryptem zapisującym wywołania, żeby potwierdzić brak `--force`, `-D` i operacji sieciowych,
   Do tego grupy (`active`, `clean`, `decide`, `main`, `missing`) przy zamrożonym zegarze, usuwanie tylko wybranych ścieżek i `prune` wyłącznie dla brakujących katalogów,
 - `daemon/tests/test_worktrees_sessions.py` — tytuły z nazw gałęzi i powiązanie z sesjami na syntetycznych dziennikach (najświeższa i najgłębsza, rodzaje tytułów, podagenci, pliki starsze niż 30 dni, duże pliki, pamięć podręczna),
-- `daemon/tests/test_tasks_core.py` — nowe zadanie bez D-Bus na prawdziwych, tymczasowych repozytoriach: argv obu narzędzi (cudzysłowy, `$(…)`, nowe linie, emoji, myślnik na początku, zrzuty) sprawdzone tak, jak dociera do atrapy agenta przez `launch.py`, nazwa gałęzi z polecenia, worktree od gałęzi głównej (master nietknięty, wpis w `info/exclude`), katalog `<repo>-worktrees`, odmowy bez żadnych zmian (gałąź główna, istniejąca, zła nazwa, zmiany na master, brak gałęzi głównej, brak programu, repozytorium spoza katalogu projektów, zrzut spoza katalogu zadań, jedno słowo), wycofanie (gałąź z nowymi commitami zostaje), przejęcie i anulowanie pliku zadania, wybór okna Konsoli i tryb karta/okno na atrapach, znacznik `newTask`,
-- `daemon/tests/test_tasks_dbus.py` — `/Tasks` przez prywatną magistralę z prawdziwą usługą i atrapami `konsole` (uruchamia polecenie z `-e`), `systemd-run`, `claude` i `codex` (zapisują argv): `Repos`, `Defaults`, `SuggestBranch`, `Start` z dokładnym poleceniem w agencie, wycofanie, gdy Konsola nie uruchomi zadania, odmowy i praca w głównym katalogu,
+- `daemon/tests/test_tasks_core.py` — nowe zadanie bez D-Bus na prawdziwych, tymczasowych repozytoriach: argv obu narzędzi (cudzysłowy, `$(…)`, nowe linie, emoji, myślnik na początku, zrzuty) sprawdzone tak, jak dociera do atrapy agenta przez `launch.py`, nazwa gałęzi z polecenia, worktree od gałęzi głównej (master nietknięty, wpis w `info/exclude`), katalog `<repo>-worktrees`, odmowy bez żadnych zmian (gałąź główna, istniejąca, zła nazwa, zmiany na master, brak gałęzi głównej, brak programu, repozytorium spoza katalogu projektów, zrzut spoza katalogu zadań, jedno słowo, `addDirs` spoza `<tablica>/docs/`), `--add-dir` obu narzędzi, wycofanie (gałąź z nowymi commitami zostaje), przejęcie i anulowanie pliku zadania, wybór okna Konsoli i tryb karta/okno na atrapach, znacznik `newTask`,
+- `daemon/tests/test_tasks_dbus.py` — `/Tasks` przez prywatną magistralę z prawdziwą usługą i atrapami `konsole` (uruchamia polecenie z `-e`), `systemd-run`, `claude` i `codex` (zapisują argv): `Repos`, `Defaults`, `SuggestBranch`, `Start` z dokładnym poleceniem w agencie, wycofanie, gdy Konsola nie uruchomi zadania, odmowy i praca w głównym katalogu, `addDirs` z tablicy dla Codeksa (worktree) i Claude Code (katalog projektu) oraz odmowa `bad-add-dir`,
 - `daemon/tests/test_worktrees_dbus.py` — `List()`, `Remove()`, `Refresh()`, `Prune()` i `ShowWindow()` przez prywatną magistralę; agent symulowany sesją Claude Code w worktree,
 - `daemon/tests/test_krunner_index.py` — indeks historii na syntetycznych dziennikach (`history.py`, `fixtures/history`): tytuły obu narzędzi (także z bazy stanu Codexa zbudowanej w teście), pierwsza wiadomość z początku dużego pliku, odcięcie po 30 dniach, odczyt tylko zmienionych plików,
 - `daemon/tests/test_codex_desktop.py` — Codex Desktop: odnośnik tylko z UUID, linia `Exec` (kody pól, cudzysłowy, brak programu), szukanie pliku `.desktop` i `$TIDE_CODEX_DESKTOP`, polecenie jako lista argumentów w `systemd-run --scope`, zmienne ekranu z `systemctl --user show-environment`; uruchomienie z atrapą `chatgpt` (`fakebin.py`) — nigdy prawdziwej aplikacji; wątek główny podagenta (kilka poziomów, nieznany rodzic, pętla), zwijanie podagentów i stan najpilniejszy, podagent bez rodzica, `AgentMonitor.activate` i Meta+A (otwarcie wątku głównego, podniesienie okna `ChatGPT`) z atrapą aplikacji,
@@ -1086,9 +1327,14 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_board_core.py` — tablica bez Qt na tymczasowych repozytoriach z własną konfiguracją gita: frontmatter (nieznane klucze, komentarze i treść po zapisie, cudzysłowy, nowe linie), założenie przy pierwszym zapisie (znacznik, tagi, szablony, brak remote, autor z konfiguracji i „Tide” bez niej, cudzy katalog nietknięty), dokładny format pliku karty, ID (max + 1, bez ponownego użycia, zepsuty plik zajmuje numer), kolejność i przenoszenie z komunikatami commitów, odmowy kolumn wyliczanych, walidacja pól i ID (także `../`), projekty zakładane przy karcie z domyślnym `ai-docs`, tagi (dziedziczenie, kolory z palety, zmiana nazwy w kartach i projektach), szablony trybów (pola, nadpisanie projektu, nieznane klamry), commit zmian z zewnątrz osobno od naszych, złe pliki w `errors`, pomijanie repozytorium tablicy w skanerze po znaczniku,
 - `daemon/tests/test_board_robustness.py` — trudne przypadki: nieudany commit (karta zostaje, `commitError`, bez duplikatu, zaległy commit z własnym komunikatem), osierocona blokada indeksu (git zabity po czasie, stara blokada, blokada żywego gita na atrapie `/proc`), revert z konfliktem (bez commita „sync”, `git-busy`, wpisy w `errors`, znaczniki konfliktu jako błąd pliku), numery kart po revercie (licznik poza historią; historia gita tylko raz, gdy licznika brak, nigdy w migawce), znaczniki konfliktu w opisie jako zwykły tekst, zaległy commit usuniętego pliku i trwały błąd bez blokowania kolejki, błąd bez pliku, katalogu i commita (pusty katalog i istniejąca tablica), dowiązania poza tablicę, FIFO i `/dev/zero`, listy YAML i pliki z Windows, kolejność środkiem i przenumerowanie bez miejsca, brak hooków (także post-commit), projekt po nazwie bez `foo-2`, domyślny tryb `full`, zmiana nazwy tagu bez pliku, katalog dokumentów z `RenderFlow`,
 - `daemon/tests/test_board_dbus.py` — `BoardMonitor` w procesie (zmiana z zewnątrz → commit i `Changed`, nasz zapis bez drugiego commita, błędy jako JSON) i `/Board` na prywatnej magistrali: introspekcja, `Snapshot`, `CreateCard` z repozytorium, `UpsertProject`, `UpsertTag`, `UpdateCard`, `MoveCard`, `RenderFlow`, sygnał `Changed`, historia commitów, edycja pliku z zewnątrz, błędy `{ok: false, error, message}` z kodami i bez commita, `--no-board`, `--print-board` bez zapisu. Usługi w testach dostają tymczasowy `TIDE_BOARD_DIR` (`privatebus.py`), więc nigdy nie dotykają prawdziwej tablicy,
+- `daemon/tests/test_board_launch.py` — uruchamianie z karty po stronie tablicy: `RenderLaunch` z prawdziwymi szablonami (pełny, lekki, spec; dokumenty w tablicy i w repozytorium; narzędzie, gałąź i test ręczny z okna; błędy), migracja szablonów (dawny zaczyn bajt w bajt z `fixtures/flows-pt1/` podmieniony, zmieniony przez użytkownika i nadpisanie projektu zostają, zajęte repozytorium), pola uruchomienia karty z walidacją, znacznik „specyfikacja gotowa” (szkic, inny tryb, inna karta, specyfikacja w repozytorium, klucz `card`), `BoardMonitor` (migracja przy starcie, znacznik przy synchronizacji, `ShowWindow("launch:K-12")`, `RenderLaunch` jako JSON),
+- `daemon/tests/test_boardplans.py` — standard planu 1.1: klucz `card` (walidacja, ID karty z gałęzi, wybór planu po karcie), plany projektów z `ai-docs: tide` w tymczasowej tablicy (`TIDE_BOARD_DIR`) w `find_plans`, skanerze, tablicy i podsumowaniu koordynatora (`card`), kontroli numerów, raporcie porannym, `tools/next_id.py` i `tools/check_plans.py`; projekty `ai-docs: repo` bez zmian. `daemon/tests/__init__.py` kieruje `TIDE_BOARD_DIR` na nieistniejący katalog — testy nie czytają prawdziwej tablicy,
 - `daemon/tests/test_docker_core.py` — Docker bez Qt na atrapie Engine API (`fake_docker.py`: prawdziwy socket unix w wątku testu, kształty odpowiedzi jak w Dockerze 29, odpowiedzi chunked pocięte w środku znaków, strumień `/events`, logi w ramkach, zapis każdego zapytania): `DOCKER_HOST` (unix, tcp/ssh → `unsupported`), brak socketu, odmowa, brak uprawnień, zawieszony Docker; grupy compose, repozytorium z worktree (także spoza katalogu projektów), „bez compose”, testcontainers, kod 137 i reguły awarii (0, 143, OOM, `dead`, restart, `created` po nieudanym starcie, 137 po `Stop` z Tide), porty bez powtórek i `likelyHttp`, czasy z nanosekundami, `inspect` tylko po zmianie stanu (nie tekstu „Up 3 hours”) i pełne odświeżenie; panele WWW baz w `likelyHttp`; kategorie dysku (nic w użyciu), wolumeny anonimowe zatrzymanych, prune tylko z listy id w bezpiecznej kolejności (regresja: `{"volumes": "false"}` bez żadnego wywołania), 404 z prune, dokładne metody, ścieżki i zapytania akcji, `Remove` działającego bez wywołania, kolejność zależności w projekcie, częściowa porażka `restart` projektu, limity pojedynczych akcji poniżej 25 s, jeden termin na zapytanie (odpowiedź sącząca się po bajcie) i na akcję (po terminie bez wywołań), znacznik „zatrzymany z Tide” przy odświeżeniu w trakcie `stop` i przy równoczesnym dopisywaniu, demultipleksowanie logów (stderr, TTY, linie i znaki UTF-8 rozcięte między ramkami, ucięta ostatnia ramka, zepsuty nagłówek w środku), statystyki równolegle z łącznym limitem czasu, filtr zdarzeń,
 - `daemon/tests/test_docker_monitor.py` — `DockerMonitor` w pętli Qt na atrapie: zdarzenie → `Changed`, zdarzenia `exec_*` bez odświeżenia, seria zdarzeń w jednym odświeżeniu, zerwany strumień i ponowne połączenie, odpytywanie bez Dockera aż się pojawi, zniknięcie Dockera, pamięć `Stats`/`Disk` (bez wyniku sprzed akcji), odświeżenie bez zmiany bez `Changed`, zadania `Prune`/`GroupAction` z `actionFinished` i odmowa bez zadania, karty z logami i powłoką (argv z ID i `-H` w pliku zadania, osobny katalog każdej karty — dwa szybkie `OpenShell` nie zamieniają się kontenerami, `workdir` w katalogu domowym, wycofanie przy nieudanej Konsoli), akcja czekająca w zajętej puli dostaje odmowę na czas,
 - `daemon/tests/test_docker_dbus.py` — `/Docker` na prywatnej magistrali z prawdziwą usługą i atrapą Engine API: introspekcja, `Snapshot`, sygnał `Changed` po zdarzeniu, akcje z dokładnymi wywołaniami, zadania `GroupAction` i `Prune` z sygnałem `ActionFinished` (tylko wskazana kategoria, odmowy bez zadania i bez wywołań), `Logs`, `Stats`, `Disk`, `OpenLogs`/`OpenShell` aż do atrapy `docker` uruchomionej przez `launch.py` w atrapie Konsoli (w katalogu domowym), niedostępny socket, `--no-docker`. Testy nigdy nie dotykają prawdziwego Dockera: `daemon/tests/__init__.py` i usługi w testach (`privatebus.py`) dostają nieistniejący `DOCKER_HOST`,
+- `daemon/tests/test_models_core.py` — modele lokalne bez Qt na atrapie serwera HTTP w wątku testu: `models.json` (bez pliku, przykład z planu, dwukropki w nazwach modeli i podział tylko przy znanym punkcie, `default` dla ról bez punktu, kontekst ról, zepsuty plik, pominięte punkty i role z ostrzeżeniami, token z `~` jako `Authorization: Bearer` i nigdzie poza nagłówkiem, dane logowania w adresie), klient Ollamy (polecenie systemowe, schemat w `format`, `num_ctx`, `think: false` i ponowienie bez niego, inne 400 bez ponowienia, 404/500/502, nieczytelna i pusta odpowiedź, zamknięty port, limit czasu, `$http_proxy` pomijany, ustawienia czytane przy każdym wywołaniu) i serwera `openai` (`response_format` ze schematem, bez `num_ctx`), stan obu rodzajów (wersja, modele, część na karcie, role `installed`/`available`, tylko GET, serwer niedostępny, wiszący i padający po `/api/version`, nieprzewidziany błąd jednego punktu), adresy nie do rozebrania i z danymi logowania, `default` nie będący nazwą albo wskazujący pominięty punkt (role bez punktu niedostępne, nie na `local`), rola na pominiętym punkcie, token spoza ASCII, przekierowanie (druga atrapa nie dostaje zapytania ani tokenu), jeden termin na całe zapytanie (serwer sączący bajty, wolne szukanie nazwy). Prawdziwej Ollamy testy nie pytają: `daemon/tests/__init__.py` ustawia `TIDE_MODELS_CONFIG` na `fixtures/models-closed.json` (zamknięty port),
+- `daemon/tests/test_models_monitor.py` — `ModelsMonitor` w pętli Qt z atrapą odczytu: `Refresh()` w trakcie odczytu daje jeden odczyt zaraz po nim, `Changed` tylko przy zmianie, błąd odczytu zostawia ostatni stan, nieczytelne ustawienia przy starcie nie zatrzymują usługi,
+- `daemon/tests/test_models_dbus.py` — `/Models` na prywatnej magistrali z atrapą Ollamy i własnym `models.json`: `Status()` (punkt działający z tokenem i niedziałający), `Changed` tylko po zmianie (załadowany model), `Refresh()` po zmianie ustawień bez restartu, token tylko w nagłówku, introspekcja, `--no-models`, `--print-models` (tylko GET, niczego nie zapisuje). Usługi w testach dostają `models.json` z zamkniętym portem (`privatebus.py`), więc nigdy nie pytają Ollamy z pulpitu,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
 Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawierają prawdziwych rozmów.

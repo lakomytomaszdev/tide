@@ -1,7 +1,8 @@
 // Widżet tablicy: kafelek „Tablica · 11 kart” z „● 2 w toku · ● 1 czeka · ● 1 do sprawdzenia”
 // (CompactBoard), popup z tym, co czeka, jest w toku i do sprawdzenia, oraz szybkim dopisaniem do
 // backlogu (BoardPopup), a w pasku bocznym zwarty kafelek (SidebarBoard). Kliknięcie wiersza albo
-// „Otwórz w Tide ↗” otwiera okno Tide na widoku Tablica (tide-daemon /Board ShowWindow(id)).
+// „Otwórz w Tide ↗” otwiera okno Tide na widoku Tablica (tide-daemon /Board ShowWindow(id)), a „Uruchom”
+// przy karcie do zrobienia — od razu z oknem „Co ma zrobić agent?” (ShowWindow("launch:K-12")).
 // Dane: tide-daemon przez D-Bus (org.tide.Daemon /Board Snapshot(), opis w docs/tide-daemon.md).
 import QtQuick
 import QtQuick.Layouts
@@ -158,6 +159,7 @@ PlasmoidItem {
                 statusError: root.statusError
                 busy: root.busy
                 onOpenRequested: id => root.showWindow(id)
+                onLaunchRequested: id => root.showWindow("launch:" + id)
                 onAddRequested: (title, project) => root.addCard(title, project)
                 onProjectChosen: slug => Plasmoid.configuration.quickProject = slug
                 Component.onCompleted: input.forceActiveFocus()

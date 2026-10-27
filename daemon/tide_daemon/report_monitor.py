@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
-from . import reports
+from . import models, reports
 from .reports import data as report_data, live as live_mod, notes as notes_mod, render, schedule
 
 
@@ -60,10 +60,11 @@ class ReportMonitor(QObject):
         self.coordination_cache = coordination_cache  # plik tablicy koordynacji („Plany i tickety”) albo None
         self.tracker = tracker          # YouTrackCache (opisy ticketów planów w repozytoriach, tylko GET) albo None
         self.opener = opener            # funkcja(ścieżka index.html) -> bool (xdg-open) albo None
-        self.summary = summary or settings.summary    # „Na daily”: claude albo rules (--report-summary)
+        self.summary = summary or settings.summary    # „Na daily”: claude, local albo rules (--report-summary)
         self.running = False
         self._waiting: list = []        # odpowiedzi Generate() czekające na bieżący raport
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-report")
+        self._cancel = models.Cancel()  # stop() przerywa trwające wywołanie modelu lokalnego w raporcie
         self._finished.connect(self._deliver)
         # Żywy raport i notki po tickecie.
         self.live = live_mod.Live(interval=live_interval, settle=live_settle)
@@ -73,7 +74,7 @@ class ReportMonitor(QObject):
         self.batcher = notes_mod.Batcher()
         # Hak karty tablicy pracy (PT-5): funkcja(board, ticket) → {"check": "manual", "spec": ścieżka} albo None.
         # board/ticket to tablica koordynacji i jej ticket (D-Bus Board()); wynik czyta notes.manual_check.
-        # Podpinany w app.start_report (argument card_check=); bez niego — tylko plan.
+        # Podpinany w app.main po starcie tablicy pracy (app.board_card_check); bez niej — tylko plan.
         self.card_check = card_check
         self._ticket_states: dict | None = None
         self._session_states: dict | None = None
@@ -101,6 +102,7 @@ class ReportMonitor(QObject):
         self._timer.stop()
         self._live_timer.stop()
         self._note_timer.stop()
+        self._cancel.set()
         self._pool.shutdown(wait=False, cancel_futures=True)
         self._note_pool.shutdown(wait=False, cancel_futures=True)
 
@@ -227,7 +229,16 @@ class ReportMonitor(QObject):
     def _write_notes(self, day: str, finished: list, now: float) -> None:
         jobs = list(finished)
         mode, model = self.summary, self.settings.summary_model
-        card_check = self.card_check
+        card_check = None
+        if self.card_check is not None:
+            # Hak czyta migawkę tablicy pracy — w wątku głównym; wątek notek dostaje gotowe wyniki.
+            checks = {}
+            for board, ticket in jobs:
+                try:
+                    checks[notes_mod.ticket_id(board, ticket)] = self.card_check(board, ticket)
+                except Exception as exc:  # karta to dodatek
+                    print(f"tide-daemon: raport: karta tablicy dla notki: {exc!r}", flush=True)
+            card_check = lambda board, ticket: checks.get(notes_mod.ticket_id(board, ticket))  # noqa: E731
 
         def work():
             return notes_mod.write_notes(jobs, mode=mode, model=model, card_check=card_check, now=now,
@@ -353,7 +364,8 @@ class ReportMonitor(QObject):
                 claude_root=self.claude_root, codex_root=self.codex_root, live=sessions, worktrees=trees,
                 fetch_limits=self.fetch_limits, max_depth=self.max_depth,
                 coordination_cache=self.coordination_cache, summary=self.summary,
-                summary_model=self.settings.summary_model, tracker=self.tracker, notes=notes)
+                summary_model=self.settings.summary_model, tracker=self.tracker, notes=notes,
+                cancel=self._cancel)
             schedule.apply_retention(self.root, schedule.report_day(end, self.settings), self.settings.keep_days)
             return index, report
 

@@ -444,6 +444,16 @@ class MonitorLiveTest(unittest.TestCase):
         m.sessions_changed()
         self.assertEqual(m.live.delay(NOW + 60), live.SETTLE)
 
+    def test_card_check_runs_in_main_thread_before_note_worker(self):
+        import threading
+        m = self.monitor([], notes_file=os.path.join(tempfile.mkdtemp(dir=self.tmp), "n.json"))
+        threads = []
+        m.card_check = lambda board, ticket: threads.append(threading.current_thread()) or {"check": "manual", "spec": ""}
+        board = {"id": "claude:k", "project": "alpha", "plan": None}
+        m._write_notes(reportfix.DAY, [(board, {"key": "AB-1", "id": "AB-1", "title": "Eksport", "state": "gotowe"})], NOW)
+        self.assertEqual(threads, [threading.main_thread()], "hak czyta tablicę w wątku głównym")
+        m._note_pool.shutdown(wait=True)
+
     def test_ticket_change_triggers_live_regeneration_with_batching(self):
         m = self.monitor([], interval=0, settle=0)
         started = []
@@ -810,6 +820,39 @@ class NotesTest(unittest.TestCase):
         self.assertEqual((written["source"], written["text"]), ("model", "Logi można pobrać jako CSV. Skończone bez przeglądu."))
         with open(os.path.join(self.tmp, "c.jsonl"), encoding="utf-8") as fh:
             self.assertIs(json.loads(json.loads(fh.readline())["stdin"])["tickets"][0]["reviewed"], False)
+
+    def test_card_for_priorities_and_card_check(self):
+        cards = [{"id": "K-3", "session": "", "branch": "feat/x", "check": "manual", "spec": "docs/specs/K-3.md"},
+                 {"id": "K-5", "session": "claude:k", "branch": "", "check": "auto", "spec": ""},
+                 {"id": "K-12", "session": "", "branch": "", "check": "manual", "spec": "/abs/K-12.md"}]
+        board = {"id": "claude:k", "sessionId": "k", "branch": "feat/x", "repoPath": "/w/logtool",
+                 "plan": {"card": "K-12"}}
+        ticket = {"key": "LR-2", "branch": "feat/lr-2"}
+        self.assertEqual(notes.card_for(cards, board, ticket)["id"], "K-12", "klucz card planu pierwszy")
+        self.assertEqual(notes.card_for(cards, dict(board, plan={}), ticket)["id"], "K-5", "potem session karty")
+        self.assertEqual(notes.card_for(cards, dict(board, plan={}, id="claude:z", sessionId="z"), ticket)["id"], "K-3",
+                         "potem gałąź koordynatora")
+        self.assertEqual(notes.card_for([dict(cards[1], session="k")], dict(board, plan={}), ticket)["id"], "K-5",
+                         "samo id sesji też pasuje")
+        self.assertIsNone(notes.card_for(cards, {"id": "claude:q", "plan": None}, {"branch": "inna"}))
+        snapshot = {"cards": cards}
+        self.assertEqual(notes.card_check_from(snapshot, board, ticket), {"check": "manual", "spec": "/abs/K-12.md"})
+        self.assertIsNone(notes.card_check_from(snapshot, dict(board, plan={}), ticket), "check auto — nic")
+        self.assertEqual(notes.card_check_from(snapshot, dict(board, plan={}, id="claude:z", sessionId="z"), ticket),
+                         {"check": "manual", "spec": "/w/logtool/docs/specs/K-3.md"}, "względna spec od repozytorium")
+        # app.board_card_check czyta migawkę /Board przez snapshot_json().
+        from tide_daemon.app import board_card_check
+        fake = SimpleNamespace(snapshot_json=lambda: json.dumps(snapshot))
+        self.assertEqual(board_card_check(fake)(board, ticket)["spec"], "/abs/K-12.md")
+        self.assertIsNone(board_card_check(SimpleNamespace(snapshot_json=lambda: "nie json"))(board, ticket))
+        # Spec z karty daje listę z „Co przetestować ręcznie”.
+        spec = os.path.join(self.tmp, "K-12.md")
+        with open(spec, "w", encoding="utf-8") as fh:
+            fh.write("# Spec\n\n## Co przetestować ręcznie\n\n- eksport z polskimi znakami\n")
+        snapshot["cards"][2]["spec"] = spec
+        manual, items = notes.manual_check(dict(board, plan={"card": "K-12"}), dict(self.ticket, planNote=""),
+                                           lambda b, t: notes.card_check_from(snapshot, b, t))
+        self.assertEqual((manual, items), (True, ["eksport z polskimi znakami"]))
 
     def test_model_note_and_fallback(self):
         fake = os.path.join(self.tmp, "claude")

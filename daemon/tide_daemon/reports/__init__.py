@@ -7,7 +7,7 @@
 - limits.py   — migawka Limitów AI z QuotaApp,
 - plans.py    — plany i tickety (tablica koordynacji i plany w repozytoriach), dodatek opcjonalny,
 - standup.py  — „Na daily”: fakty o projektach, podsumowanie z reguł, walidacja odpowiedzi modelu,
-- summarize.py — opis „Na daily” modelem przez lokalny `claude -p` (z regułami jako zapasem),
+- summarize.py — opis „Na daily” modelem przez lokalny `claude -p` albo model lokalny (z regułami jako zapasem),
 - collect.py  — model raportu, render.py — HTML,
 - data.py     — report.json dla widoku „Raporty” w oknie Tide i odczyt dni (D-Bus Days(), Day()) z „czeka”
                 przeliczanym na żywo dla bieżącej doby,
@@ -39,16 +39,24 @@ def load_palette(candidates: list[str]) -> dict:
     raise RuntimeError("raport: nie znaleziono palety (palette.json obok usługi albo theme/palette/mist.json)")
 
 
+class Cancelled(RuntimeError):
+    """Zamykanie usługi przerwało raport — nic nie zapisujemy."""
+
+
 def generate(root: str, day: str, start: float, end: float, *, palette: dict, workspace: str, claude_root: str,
              codex_root: str, live=None, worktrees=None, limits_result=None, fetch_limits: bool = True,
              git=None, max_depth: int = 3, home: str | None = None,
              coordination_cache: str | None = None, summary: str = "rules", summary_model: str = "sonnet",
-             env=None, tracker=None, notes: dict | None = None) -> tuple[str, "collect.Report"]:
+             env=None, tracker=None, notes: dict | None = None, cancel=None) -> tuple[str, "collect.Report"]:
     """Zapisuje <root>/<day>/index.html, <projekt>.html i report.json (widok „Raporty”). Zwraca (ścieżka index.html, raport).
 
-    summary: "claude" — opis „Na daily” modelem przez `claude -p` (summarize.py), "rules" — same reguły.
+    summary: "claude" — opis „Na daily” modelem przez `claude -p` (summarize.py), "local" — model lokalny
+    z roli `summary` w models.json (summary_model pomijany, nigdy Claude), "rules" — same reguły.
     tracker: YouTrackCache — opisy ticketów z planów w repozytoriach (plans.py, tylko GET) albo None.
     notes: „Skończone dziś” tej doby — {projekt: [notka]} z reports/notes.py (żywy raport) albo None.
+    cancel: models.Cancel — zamykanie usługi przerywa wywołania modelu lokalnego (summarize.summarize);
+    raport przerwany w ten sposób kończy się Cancelled bez zapisu, żeby strona z samych reguł nie zastąpiła
+    dobrego raportu tego dnia (np. z wcześniejszego Generate()).
     Domyślnie reguły: model woła tylko usługa i --report według ustawień (report.json)."""
     if limits_result is None and fetch_limits:
         limits_result = limits.fetch_status()
@@ -61,7 +69,9 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
     home = os.path.expanduser("~") if home is None else home
     target = os.path.join(root, day)
     report.standup = summarize.summarize(report, mode=summary, model=summary_model, cache_dir=target, home=home,
-                                         env=env)
+                                         env=env, cancel=cancel)
+    if cancel is not None and cancel.is_set():
+        raise Cancelled("raport przerwany — usługa się zamyka")
     pages = {"index.html": render.render_index(report, palette, home)}
     for project in report.repos:
         pages[f"{project.slug}.html"] = render.render_project(report, project, palette, home)

@@ -31,6 +31,10 @@ TOOLS = ("claude", "codex")
 MODES = ("full", "light", "spec")
 DEFAULT_TOOL = "claude"
 DEFAULT_MODE = "full"  # pełny przebieg (grilling, spec, plan, TDD, review), chyba że karta wybierze inaczej
+# Sprawdzenie po skończonej pracy agenta: `manual` — test ręczny użytkownika (karta czeka w „Do sprawdzenia”,
+# aż przeniesie ją do Gotowe), `auto` — wystarczą testy i review AI (scalona praca od razu jako gotowa).
+CHECKS = ("auto", "manual")
+DEFAULT_CHECK = "auto"
 
 # Kolory tagów to nazwy pasteli z palety (theme/palette: „pastel”); kolejność = kolejność wyboru
 # koloru dla tagu bez pliku. Paleta może dodać własne nazwy — wtedy obowiązuje jej lista.
@@ -43,9 +47,12 @@ CARD_FILE_RE = re.compile(r"^K-([1-9][0-9]{0,8})\.md$")
 CARD_ID_RE = re.compile(r"^K-([1-9][0-9]{0,8})$", re.IGNORECASE)
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # Kolejność kluczy w nowych plikach (istniejące pliki zachowują swoją).
-CARD_KEYS = ("id", "title", "project", "tags", "column", "order", "note", "created", "updated",
-             "youtrack", "spec", "session", "branch")
+CARD_KEYS = ("id", "title", "project", "tags", "column", "order", "note", "created", "updated", "moved",
+             "youtrack", "spec", "session", "branch", "check")
 RESERVED_CARD_KEYS = ("youtrack", "spec", "session", "branch")  # wypełnią PT-4, PT-5, PT-7
+# Ostatnie uruchomienie agenta z karty (PT-4): tryb, narzędzie, katalog worktree i chwila startu.
+# W nowych plikach tylko wtedy, gdy są ustawione (karta bez uruchomienia ich nie ma).
+LAUNCH_KEYS = ("mode", "tool", "worktree", "launched")
 PROJECT_KEYS = ("name", "repo", "tags", "ai-docs", "tool", "mode")
 TAG_KEYS = ("name", "color")
 
@@ -53,7 +60,8 @@ TITLE_MAX = 200
 NOTE_MAX = 300
 TAG_MAX = 40
 NAME_MAX = 80
-FIELD_MAX = 200          # youtrack, spec, session, branch
+FIELD_MAX = 200          # youtrack, session, branch
+PATH_MAX = 1024          # spec, worktree (ścieżki)
 DESCRIPTION_MAX = 64 * 1024
 FILE_MAX = 256 * 1024    # większych plików nie czytamy (błąd w migawce)
 
@@ -111,10 +119,16 @@ class Card:
     note: str = ""
     created: str = ""
     updated: str = ""
+    moved: str = ""           # ostatnia zmiana kolumny (MoveCard, założenie karty); bez klucza — created
     youtrack: str = ""
     spec: str = ""
     session: str = ""
     branch: str = ""
+    check: str = DEFAULT_CHECK
+    mode: str = ""
+    tool: str = ""
+    worktree: str = ""
+    launched: str = ""
     description: str = ""
     path: str = ""
     doc: Document | None = None
@@ -210,8 +224,14 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.note = doc.get("note").strip()
     card.created = doc.get("created").strip()
     card.updated = doc.get("updated").strip()
+    card.moved = doc.get("moved").strip()
     for key in RESERVED_CARD_KEYS:
         setattr(card, key, doc.get(key).strip())
+    card.check = _choice(doc.get("check"), CHECKS, DEFAULT_CHECK, f"{name}: nieznane sprawdzenie", path, errors)
+    card.mode = _choice(doc.get("mode"), MODES, "", f"{name}: nieznany tryb uruchomienia", path, errors)
+    card.tool = _choice(doc.get("tool"), TOOLS, "", f"{name}: nieznane narzędzie uruchomienia", path, errors)
+    card.worktree = doc.get("worktree").strip()
+    card.launched = doc.get("launched").strip()
     return card
 
 

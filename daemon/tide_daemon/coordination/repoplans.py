@@ -8,7 +8,9 @@ worktree jest niewidoczny z głównego katalogu, a i tak zajmuje swoje numery.
 - gałęzie: `git for-each-ref refs/heads`, `git ls-tree` dla commitów, których jeszcze nie znamy,
   i `git cat-file --batch` dla nowych blobów — commit i blob się nie zmieniają, więc pamiętamy je
   na stałe; kolejne odczyty to dwa szybkie wywołania gita na repozytorium,
-- deklaracja z CLAUDE.md/AGENTS.md (sekcja „Plan pracy agentów (Tide)”): prefiks, tracker, projekt.
+- deklaracja z CLAUDE.md/AGENTS.md (sekcja „Plan pracy agentów (Tide)”): prefiks, tracker, projekt,
+- plany projektu z `ai-docs: tide` w repozytorium tablicy (`<tablica>/docs/<projekt>/plans/`,
+  boardplans.py, standard 1.1) — z dysku, jak worktree; zajmują numery tak samo.
 
 Wynik dla repozytorium trzymamy `ttl` sekund (usługa: 60 s, narzędzie wiersza poleceń: 0). Gdy git
 nie działa (katalog bez repozytorium), zostają same katalogi podane w `roots`. Ten sam plan w kilku
@@ -19,7 +21,7 @@ import os
 import subprocess
 import time
 
-from . import numbering, plan as plan_mod
+from . import boardplans, numbering, plan as plan_mod
 
 GIT_ENV = {"GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1", "LC_ALL": "C"}
 TIMEOUT = 10
@@ -70,8 +72,10 @@ class RepoPlans:
         worktrees = self._worktrees(roots[-1])
         dirs = list(dict.fromkeys(worktrees + roots))
         plans, seen = [], set()
-        for folder in dirs:
-            for plan, digest in self._dir_plans(folder):
+        folders = [os.path.join(folder, plan_mod.PLANS_DIR) for folder in dirs]
+        folders += [f for f in boardplans.plan_dirs(dirs) if f not in folders]
+        for folder in folders:
+            for plan, digest in self._folder_plans(folder):
                 if (os.path.basename(plan.path), digest) not in seen:
                     seen.add((os.path.basename(plan.path), digest))
                     plans.append(plan)
@@ -102,8 +106,7 @@ class RepoPlans:
                     paths.append(path)
         return paths
 
-    def _dir_plans(self, root: str):
-        folder = os.path.join(root, plan_mod.PLANS_DIR)
+    def _folder_plans(self, folder: str):
         try:
             names = sorted(os.listdir(folder))
         except OSError:

@@ -67,10 +67,12 @@ class TasksContractTest(unittest.TestCase):
         cls.calls = os.path.join(cls.tmp, "calls.log")
         cls.dead = os.path.join(cls.tmp, "martwa-konsola")
         cls.data = os.path.join(cls.tmp, "data")
+        cls.board = os.path.join(cls.tmp, "tide-board")
         cls.service = PrivateBus("tide-tasks-test")
         cls.service.spawn_daemon(
             "--claude-dir", os.path.join(cls.tmp, "claude"), "--codex-dir", os.path.join(cls.tmp, "codex"),
             "--no-processes", "--no-notifications", "--no-krunner", "--no-idle", "--workspace", cls.root,
+            "--board-dir", cls.board,
             extra_env={"PATH": cls.bin + os.pathsep + "/usr/bin:/bin", "HOME": cls.home,
                        "XDG_DATA_HOME": cls.data, "XDG_RUNTIME_DIR": os.path.join(cls.tmp, "run"),
                        "XDG_CONFIG_HOME": os.path.join(cls.tmp, "config"), "SHELL": "/bin/true",
@@ -171,6 +173,26 @@ class TasksContractTest(unittest.TestCase):
         self.assertEqual((result["cwd"], result["worktree"], result["branch"]), (self.beta, "", "main"))
         run = self.agent_calls()[before]
         self.assertEqual((run["name"], run["argv"]), ("codex", ["--", "Przejrzyj README w głównym katalogu"]))
+
+    def test_5_add_dirs_from_board_for_both_tools(self):
+        docs = os.path.join(self.board, "docs", "alpha")
+        os.makedirs(docs, exist_ok=True)
+        before = len(self.agent_calls())
+        result = self.start(repoPath=self.alpha, tool="codex", prompt="Karta K-1: plan w tablicy", newWorktree=True,
+                            branch="codex/k-1-plan", addDirs=[docs])
+        self.assertTrue(result["ok"], result)
+        result = self.start(repoPath=self.alpha, tool="claude", prompt="Karta K-1: tylko specyfikacja",
+                            newWorktree=False, addDirs=[docs])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["cwd"], result["worktree"]), (self.alpha, ""))
+        runs = self.agent_calls()[before:]
+        self.assertEqual([(r["name"], r["argv"]) for r in runs],
+                         [("codex", ["--add-dir", docs, "--", "Karta K-1: plan w tablicy"]),
+                          ("claude", ["--add-dir", docs, "--", "Karta K-1: tylko specyfikacja"])])
+        refused = self.start(repoPath=self.alpha, tool="claude", prompt="Zapisz coś poza tablicą", newWorktree=False,
+                             addDirs=[self.beta])
+        self.assertEqual((refused["ok"], refused["error"]), (False, "bad-add-dir"))
+        self.assertEqual(len(self.agent_calls()), before + 2, "odmowa nie uruchamia agenta")
 
 
 if __name__ == "__main__":

@@ -6,10 +6,14 @@ pierwszego podagenta (`brief` — zwykle dobry polski opis zadania), opisy zlece
 „Implement ticket 05 value chain”), początki raportów podagentów (oś czasu), review, notatka planu
 i pytanie do użytkownika.
 
-Model — to samo bezpieczne wywołanie co „Na daily” (reports/summarize.py: `claude -p` bez narzędzi,
---safe-mode, wejście po `strip_secrets`), z własnymi instrukcjami, wsadowo per koordynator, w wątku
-roboczym usługi (coordination_monitor.py) — nigdy w wątku D-Bus. Model i tryb z konfiguracji raportu
-($XDG_CONFIG_HOME/tide/report.json: `summary`, `summaryModel`); `"summary": "rules"` → same reguły.
+Model — to samo wywołanie co „Na daily” (reports/summarize.py: `Model`), z własnymi instrukcjami
+i schematem odpowiedzi, wsadowo per koordynator, w wątku roboczym usługi (coordination_monitor.py) —
+nigdy w wątku D-Bus. Tryb z konfiguracji raportu ($XDG_CONFIG_HOME/tide/report.json: `summary`):
+- "claude" — `claude -p` bez narzędzi, --safe-mode, wejście po `strip_secrets`, model `summaryModel`;
+- "local" — model lokalny z roli `describe` w models.json (PT-15), najwyżej LOCAL_BATCH ticketów
+  i tyle faktów, ile mieści kontekst roli; nigdy Claude. Gdy model lokalny zawiedzie, karty tego
+  koordynatora mają reguły i `describeNote` („Model lokalny niedostępny — opis bez modelu (…)”);
+- "rules" — same reguły.
 
 Kiedy wołamy model (Describer.due):
 - tylko dla ticketów, których fakty (skrót SHA-256 z modelem i wersją instrukcji) nie mają opisu
@@ -18,7 +22,9 @@ Kiedy wołamy model (Describer.due):
   jedno wywołanie naraz, najwyżej BATCH ticketów w nim,
 - koordynatorzy bez ruchu dłużej niż MAX_AGE (2 doby) — tylko reguły (i opisy już zapamiętane).
 Pamięć podręczna: $XDG_CACHE_HOME/tide/coordination-descriptions.json (0600) — skrót faktów → opis,
-plus ostatni opis modelu każdego ticketu. Gdy fakty się zmienią, do czasu nowego opisu karta trzyma
+plus ostatni opis modelu każdego ticketu. Skrót zawiera tożsamość modelu (`Model.identity`: dla Claude
+nazwa, dla lokalnego punkt, adres i model), więc przełączenie claude ↔ local nie bierze cudzych opisów —
+także jako „model-stale”. Gdy fakty się zmienią, do czasu nowego opisu karta trzyma
 tytuł i „zrobione” z poprzedniego opisu modelu, a „teraz” bierze z reguł (stan jest zawsze aktualny).
 
 Reguły (zapas, bez modelu): tytuł z planu/YouTracka/backlogu, inaczej pierwsze zdanie polecenia bez
@@ -36,6 +42,7 @@ import tempfile
 import threading
 import time
 
+from .. import models as models_mod
 from ..reports import standup, summarize
 from . import review
 
@@ -48,6 +55,9 @@ RETRY = 900.0           # s przerwy po nieudanym wywołaniu
 MAX_AGE = 2 * 86400.0   # s bez ruchu, po których koordynator dostaje już tylko reguły
 BATCH = 20              # ticketów w jednym wywołaniu
 TIMEOUT = 150.0         # s na wywołanie
+LOCAL_BATCH = 8         # ticketów w jednym wywołaniu modelu lokalnego (kontekst 8192)
+LOCAL_TIMEOUT = 90.0    # s na wywołanie modelu lokalnego (qwen3:8b: ok. 20 s na 8 ticketów)
+TICKET_OUTPUT_TOKENS = 180  # zapas kontekstu na opis jednego ticketu
 CACHE_ENTRIES = 3000
 TITLE_MAX, DONE_MAX, NOW_MAX = 110, 260, 260
 
@@ -66,6 +76,7 @@ Nie wymyślaj niczego, czego nie ma w faktach. Bez Markdownu, HTML-a, emoji i od
 
 Odpowiedz WYŁĄCZNIE jednym obiektem JSON, bez komentarza i bez bloku kodu:
 {"tickets":[{"key":"","title":"","done":"","now":""}]}"""
+SCHEMA = summarize.prompt_schema(BOARD_PROMPT)
 
 # --- reguły ----------------------------------------------------------------------------------------
 
@@ -277,7 +288,7 @@ def validate(answer, keys) -> dict:
         key = item.get("key")
         if not isinstance(key, str) or key not in keys or key in out:
             continue
-        title = _field(item.get("title"), TITLE_MAX)
+        title = _field(item.get("title"), TITLE_MAX, first=True)
         if not title:
             continue
         out[key] = {"title": title, "done": _field(item.get("done"), DONE_MAX),
@@ -301,15 +312,19 @@ class Describer:
 
     def __init__(self, mode: str = "rules", model: str = summarize.DEFAULT_MODEL, cache_file: str = "",
                  clock=time.time, call=None, home: str = "", env=None, settle: float = SETTLE, gap: float = GAP,
-                 retry: float = RETRY, max_age: float = MAX_AGE, timeout: float = TIMEOUT, log=None):
-        self.mode = mode if mode in ("claude", "rules") else "rules"
+                 retry: float = RETRY, max_age: float = MAX_AGE, timeout: float | None = None, log=None,
+                 role: str = "describe", models_config=None):
+        self.mode = mode if mode in summarize.MODEL_MODES + ("rules",) else "rules"
         self.model = model if summarize.MODEL_RE.match(model or "") else summarize.DEFAULT_MODEL
+        self.role = role
+        self.models_config = models_config      # testy; None — models.json czytany przy każdym przebiegu
         self.cache_file = cache_file
         self.clock = clock
-        self.call = call or self._call_claude
+        self.call = call                        # testy: call(payload) → tekst zamiast Model.ask
         self.home = home if home else os.path.expanduser("~")
         self.env = env
-        self.settle, self.gap, self.retry, self.max_age, self.timeout = settle, gap, retry, max_age, timeout
+        self.settle, self.gap, self.retry, self.max_age = settle, gap, retry, max_age
+        self.timeout = timeout if timeout is not None else (LOCAL_TIMEOUT if self.mode == "local" else TIMEOUT)
         self.log = log or (lambda text: print(f"tide-daemon: koordynacja: {text}", flush=True))
         self.calls = 0                  # ile razy naprawdę wołaliśmy model (diagnostyka, testy)
         self._lock = threading.Lock()
@@ -318,16 +333,21 @@ class Describer:
         self._seen: dict[tuple, tuple] = {}        # (koordynator, ticket) → (skrót, od kiedy)
         self._called: dict[str, float] = {}
         self._failed: dict[str, float] = {}
+        self._notes: dict[str, str] = {}           # koordynator → informacja o niedostępnym modelu lokalnym
         self._last_error = ""
         self._proc = None
         self._stopped = False
+        self._cancel = models_mod.Cancel()         # stop() przerywa trwające wywołanie modelu lokalnego
         self._load()
 
     # --- wątek odświeżania --------------------------------------------------------------------
 
     def decorate(self, boards: list) -> None:
-        """Dopisuje do ticketów `title`, `done`, `now` i `describedBy` (model | model-stale | rules)."""
+        """Dopisuje do ticketów `title`, `done`, `now` i `describedBy` (model | model-stale | rules), a w trybie
+        local po nieudanym wywołaniu — `describeNote` (dlaczego karta ma opis z reguł)."""
         now = self.clock()
+        identity = self._identity()
+        described = self.mode in summarize.MODEL_MODES
         with self._lock:
             present = set()
             for b in boards:
@@ -336,13 +356,15 @@ class Describer:
                 for t in b.get("tickets") or ():
                     ident = (b.get("id"), t.get("key"))
                     present.add(ident)
-                    digest = facts_hash(ticket_facts(t, runs, self.home), self.model)
+                    digest = facts_hash(ticket_facts(t, runs, self.home), identity)
                     seen = self._seen.get(ident)
                     if seen is None or seen[0] != digest:
                         self._seen[ident] = (digest, now)
                     fallback = rules(t)
-                    entry = self._entries.get(digest) if self.mode == "claude" else None
-                    old = self._entries.get(last.get(t.get("key"), "")) if self.mode == "claude" else None
+                    entry = self._entries.get(digest) if described else None
+                    old = self._entries.get(last.get(t.get("key"), "")) if described else None
+                    if old and not _same_engine(old.get("by") or old.get("model") or "", identity):
+                        old = None  # opis innego modelu (np. Claude po przejściu na lokalny) — nie pokazujemy
                     if entry and entry.get("model"):
                         desc, source = entry, "model"
                     elif entry:
@@ -357,6 +379,11 @@ class Describer:
                     t["done"] = desc.get("done") or ""
                     t["now"] = desc.get("now") or fallback["now"]
                     t["describedBy"] = source
+                    note = self._notes.get(b.get("id")) if source == "rules" else None
+                    if note:
+                        t["describeNote"] = note
+                    else:
+                        t.pop("describeNote", None)
             for ident in [i for i in self._seen if i not in present]:
                 del self._seen[ident]
 
@@ -365,7 +392,7 @@ class Describer:
     def due(self, boards: list) -> dict | None:
         """Następne wywołanie modelu albo None: jeden koordynator, najwyżej BATCH ticketów, których fakty
         nie mają opisu i od SETTLE się nie zmieniają; GAP między wywołaniami koordynatora, RETRY po błędzie."""
-        if self.mode != "claude" or self._stopped:
+        if self.mode not in summarize.MODEL_MODES or self._stopped:
             return None
         now = self.clock()
         with self._lock:
@@ -385,7 +412,7 @@ class Describer:
                     continue
                 pending.sort(key=lambda t: -(t.get("lastActivityTs") or 0))
                 runs = {r.get("id"): r for r in b.get("runs") or ()}
-                chosen = pending[:BATCH]
+                chosen = pending[:BATCH if self.mode == "claude" else LOCAL_BATCH]
                 return {
                     "coordinator": cid,
                     "context": {"project": standup.clean(b.get("project") or "", 80),
@@ -399,58 +426,78 @@ class Describer:
     # --- wątek roboczy ------------------------------------------------------------------------
 
     def run(self, job: dict) -> bool:
-        """Jedno wywołanie modelu dla zadania z due(). True, gdy opisy trafiły do pamięci."""
+        """Jedno wywołanie modelu dla zadania z due(). True, gdy opisy trafiły do pamięci.
+        Model lokalny dostaje tyle ticketów, ile mieści kontekst roli; reszta czeka na następne wywołanie."""
         cid = job["coordinator"]
         with self._lock:
             self._called[cid] = self.clock()
-        payload = {"coordinator": job["context"], "tickets": job["tickets"]}
+        model = self._model()
+        tickets = job["tickets"]
+        hashes = dict(job["hashes"])
         started = time.monotonic()
         try:
+            if model.engine == "local":
+                tickets = _fit(job["context"], tickets, model)
+                hashes = {t["key"]: job["hashes"][t["key"]] for t in tickets}
+            payload = {"coordinator": job["context"], "tickets": tickets}
             self.calls += 1
-            answer = summarize.parse_answer(self.call(payload))
-            valid = validate(answer, job["hashes"])
+            text = self.call(payload) if self.call is not None else self._ask(model, payload)
+            answer = summarize.parse_answer(text)
+            valid = validate(answer, hashes)
         except (summarize.Failed, standup.Invalid) as exc:
+            note = summarize.local_note(exc) if model.engine == "local" else f"opisy kart z reguł ({exc})"
             with self._lock:
                 self._failed[cid] = self.clock()
-            if str(exc) != self._last_error:
-                self.log(f"opisy kart z reguł ({exc})")
-            self._last_error = str(exc)
+                if model.engine == "local":
+                    self._notes[cid] = note
+            if note != self._last_error:
+                self.log(note)
+            self._last_error = note
             return False
         self._last_error = ""
         now = round(self.clock(), 3)
         with self._lock:
-            for key, digest in job["hashes"].items():
+            self._notes.pop(cid, None)
+            for key, digest in hashes.items():
                 if key in valid:
-                    self._entries[digest] = dict(valid[key], ts=now, model=self.model)
+                    self._entries[digest] = dict(valid[key], ts=now, model=model.name, by=model.identity)
                     self._last.setdefault(cid, {})[key] = digest
                 else:
                     self._entries[digest] = dict(job["rules"].get(key) or {}, ts=now, model="")
             self._prune()
             snapshot = {"version": CACHE_VERSION, "entries": dict(self._entries),
                         "last": {c: dict(v) for c, v in self._last.items()}}
-        self.log(f"opisy kart {self.model} w {time.monotonic() - started:.1f} s "
-                 f"({len(valid)}/{len(job['hashes'])} ticketów)")
+        self.log(f"opisy kart {model.name} w {time.monotonic() - started:.1f} s "
+                 f"({len(valid)}/{len(hashes)} ticketów)")
         self._save(snapshot)
         return True
 
     def stop(self) -> None:
-        """Zamykanie usługi: żadnych nowych wywołań, trwające `claude` ginie razem z grupą."""
+        """Zamykanie usługi: żadnych nowych wywołań, trwające `claude` ginie razem z grupą, a trwające
+        wywołanie modelu lokalnego traci połączenie od razu (models.Cancel)."""
         self._stopped = True
+        self._cancel.set()
         proc = self._proc
         if proc is not None and proc.poll() is None:
             summarize.kill(proc)
 
     # --- wnętrze ------------------------------------------------------------------------------
 
-    def _call_claude(self, payload: dict) -> str:
-        binary = summarize.find_claude(self.env)
-        if not binary:
-            raise summarize.Failed("brak programu claude")
+    def _model(self) -> "summarize.Model":
+        """Model na ten przebieg (models.json czytany teraz — zmiana działa bez restartu usługi)."""
+        return summarize.Model(self.mode, model=self.model, role=self.role, env=self.env, config=self.models_config,
+                               started=self._started, cancel=self._cancel)
+
+    def _identity(self) -> str:
+        """Tożsamość modelu do skrótów faktów: dla Claude nazwa modelu (jak przed PT-15), dla lokalnego
+        punkt, adres i model z roli."""
+        return self._model().identity if self.mode == "local" else self.model
+
+    def _ask(self, model, payload: dict) -> str:
         if self._stopped:
             raise summarize.Failed("usługa się zamyka")
         try:
-            return summarize.call_claude(binary, self.model, payload, timeout=self.timeout, env=self.env,
-                                         system_prompt=BOARD_PROMPT, started=self._started)
+            return model.ask(payload, system_prompt=BOARD_PROMPT, schema=SCHEMA, timeout=self.timeout)
         finally:
             self._proc = None
 
@@ -507,10 +554,44 @@ class Describer:
             self.log(f"nie zapisano opisów kart: {exc}")
 
 
-def _field(value, limit: int) -> str:
+def _same_engine(old: str, identity: str) -> bool:
+    """Czy opis z pamięci może być „model-stale”: w obrębie Claude tak (zmiana summaryModel, jak przed PT-15),
+    model lokalny — tylko ten sam punkt, adres, model i kontekst; nigdy claude ↔ local."""
+    if old.startswith("local|") or identity.startswith("local|"):
+        return old == identity
+    return True
+
+
+def _fit(context: dict, tickets: list, model) -> list:
+    """Najświeższe tickety, które razem z kontekstem koordynatora (całe wejście) mieszczą się w kontekście roli
+    z zapasem na odpowiedź. Gdy nie mieści się nawet jeden — summarize.Unavailable."""
+    out: list = []
+    for t in tickets:
+        candidate = out + [t]
+        size = len(json.dumps({"coordinator": context, "tickets": candidate}, ensure_ascii=False))
+        try:
+            budget = model.input_chars(BOARD_PROMPT, TICKET_OUTPUT_TOKENS * len(candidate), 1 << 20)
+        except summarize.Unavailable:
+            if not out:
+                raise
+            break
+        if size > budget:
+            if not out:
+                raise summarize.Unavailable(f"Model lokalny: kontekst roli „{model.role}” za mały na jeden ticket "
+                                            f"({model.ctx or summarize.LOCAL_CTX} tokenów)")
+            break
+        out.append(t)
+    return out
+
+
+def _field(value, limit: int, first: bool = False) -> str:
+    """Pole odpowiedzi jako zwykły tekst: Markdown usunięty, linie złączone jak zdania; `first` — z listy
+    punktów w jednym polu tylko pierwszy (tytuł)."""
     if not isinstance(value, str):
         return ""
-    text = standup.clean(standup.plain(value), limit)
+    if first:
+        value = standup.list_items(value)[0] or ""
+    text = standup.clean(standup.flatten(value), limit)
     return "" if text.lower().strip(" .") in _EMPTY else text
 
 

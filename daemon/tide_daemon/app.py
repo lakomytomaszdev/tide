@@ -1,11 +1,12 @@
 """Punkt wejścia tide-daemon.
 
-Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [--claude-dir DIR]
+Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | --print-models] [--claude-dir DIR]
                                [--codex-dir DIR] [--workspace DIR] [--worktree-depth N] [--no-processes]
                                [--no-notifications] [--no-krunner] [--no-tab-marks] [--now CZAS]
                                [--idle-after SEKUNDY | --no-idle] [--limits-poll SEKUNDY | --no-limits]
+                               [--models-poll SEKUNDY | --no-models]
                                [--report [--report-days N]] [--report-dir DIR] [--report-at GG:MM]
-                               [--no-report] [--report-delay SEKUNDY] [--report-summary claude|rules]
+                               [--no-report] [--report-delay SEKUNDY] [--report-summary claude|local|rules]
                                [--no-tasks]
                                [--print-coordination] [--coordination-days N] [--no-coordination]
                                [--no-youtrack] [--print-board] [--board-dir DIR] [--no-board]
@@ -14,6 +15,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
 --print-limits     prognoza limitów z historii i jednego GET /status jako JSON (niczego nie zapisuje),
+--print-models     jednorazowo: stan serwerów modeli lokalnych i ról z models.json jako JSON (tylko GET,
+                   niczego nie zapisuje), bez D-Bus,
 --workspace        katalog projektów z repozytoriami (domyślnie $TIDE_WORKSPACE albo ~/DevWorkspace),
 --worktree-depth   jak głęboko pod katalogiem projektów szukać repozytoriów (domyślnie 3),
 --no-processes     nie czyta /proc (stan bez wiedzy o procesach, bez przechodzenia do okien),
@@ -25,13 +28,16 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits] [
 --no-idle          bez obiektu /Idle (bezczynność z kompozytora Wayland),
 --limits-poll      co ile sekund pytać QuotaApp o /status (domyślnie limits.pollS z palety),
 --no-limits        bez obiektu /Limits (historia, prognoza i powiadomienia Limitów AI),
+--models-poll      co ile sekund odczytywać stan serwerów modeli lokalnych (domyślnie 15),
+--no-models        bez obiektu /Models (stan serwerów modeli lokalnych z $XDG_CONFIG_HOME/tide/models.json),
 --report           jednorazowy raport poranny za ostatnie --report-days dób (domyślnie 1) do --report-dir;
                    bez D-Bus, bez powiadomienia i bez pliku stanu — wypisuje ścieżkę index.html,
 --report-dir       katalog raportów (domyślnie $XDG_DATA_HOME/tide/reports),
 --report-at        godzina raportu porannego (domyślnie „at” z $XDG_CONFIG_HOME/tide/report.json albo 07:00),
 --no-report        bez raportu porannego z terminu (Generate() z D-Bus działa dalej),
 --report-delay     ile sekund po starcie usługi sprawdzić, czy raport jest należny (domyślnie 120),
---report-summary   opis „Na daily”: claude (model przez `claude -p`) albo rules (bez modelu); domyślnie
+--report-summary   opis „Na daily” i kart tablicy: claude (model przez `claude -p`), local (model lokalny z ról
+                   summary i describe w models.json, nigdy Claude) albo rules (bez modelu); domyślnie
                    „summary” z $XDG_CONFIG_HOME/tide/report.json albo claude,
 --no-tasks         bez obiektu /Tasks (nowe zadanie dla agenta: worktree i karta Konsoli),
 --print-coordination  jednorazowo: koordynatorzy i ich tablice jako JSON (jak dane okna Tide Sesje), bez D-Bus,
@@ -84,6 +90,9 @@ def parse_args(argv):
     parser.add_argument("--limits-poll", type=float, help="odstęp odczytów /status w sekundach")
     parser.add_argument("--no-limits", action="store_true")
     parser.add_argument("--print-limits", action="store_true")
+    parser.add_argument("--models-poll", type=float, help="odstęp odczytów stanu modeli w sekundach")
+    parser.add_argument("--no-models", action="store_true")
+    parser.add_argument("--print-models", action="store_true")
     parser.add_argument("--no-tasks", action="store_true")
     parser.add_argument("--print-coordination", action="store_true")
     parser.add_argument("--coordination-days", type=float, default=7.0)
@@ -102,7 +111,7 @@ def parse_args(argv):
     parser.add_argument("--report-at")
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--report-delay", type=float)
-    parser.add_argument("--report-summary", choices=("claude", "rules"))
+    parser.add_argument("--report-summary", choices=("claude", "local", "rules"))
     return parser.parse_args(argv)
 
 
@@ -151,6 +160,11 @@ def main(argv=None) -> int:
 
     if args.print_limits:
         print(json.dumps(limits_once(clock), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.print_models:
+        from .models import status as models_status
+        print(json.dumps(models_status.read(), ensure_ascii=False, indent=2))
         return 0
 
     if args.print_coordination:
@@ -204,8 +218,12 @@ def main(argv=None) -> int:
                                                          coordination, report)
     idle = None if args.no_idle else start_idle(app, args)
     limits = None if args.no_limits else start_limits(app, args, clock)
+    models = None if args.no_models else start_models(app, args)
     tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
-    board = None if args.no_board else start_board(app, args, trees)
+    board = None if args.no_board else start_board(app, args, trees, monitor, coordination, clock)
+    if board is not None:
+        # Notki „Skończone dziś”: ręczne sprawdzenie z karty tablicy pracy (check: manual, spec — PT-5).
+        report.card_check = board_card_check(board)
     docker = None if args.no_docker else start_docker(app, args, clock, launchers)
     annotators = [a for a in (tasks.annotate if tasks is not None else None,
                               coordination.annotate if coordination is not None else None) if a]
@@ -217,7 +235,7 @@ def main(argv=None) -> int:
     try:
         holder = dbus_service.register(monitor, trees, idle=idle, reports=report,  # noqa: F841 — musi żyć do końca
                                        limits=limits, tasks=tasks, coordination=coordination, board=board,
-                                       docker=docker)
+                                       docker=docker, models=models)
     except RuntimeError as exc:
         print(f"tide-daemon: {exc}", file=sys.stderr, flush=True)
         return 1
@@ -244,6 +262,8 @@ def main(argv=None) -> int:
             limits.alert.connect(limits_notifier.send)
     if limits is not None:
         limits.start()  # pierwszy odczyt /status po rejestracji i po podłączeniu powiadomień
+    if models is not None:
+        models.start()  # pierwszy odczyt stanu serwerów modeli w tle, po rejestracji na magistrali
     if board is not None:
         board.start()  # zmiany z czasu, gdy usługa nie działała, i obserwacja katalogu tablicy
     if coordination is not None:
@@ -292,6 +312,8 @@ def main(argv=None) -> int:
         idle.stop()
     if limits is not None:
         limits.stop()
+    if models is not None:
+        models.stop()
     if coordination is not None:
         coordination.stop()
     if board is not None:
@@ -362,13 +384,26 @@ def start_report(app, args, clock, settings, monitor, trees):
         codex_root=args.codex_dir, max_depth=args.worktree_depth, sessions=lambda: monitor.sessions,
         worktrees=worktree_items, notifier=notifier, clock=clock, coordination_cache=coordination_cache_file(args),
         opener=trees.launchers.open_report, summary=args.report_summary or settings.summary,
-        # card_check=funkcja(board, ticket) → {"check", "spec"} — karta tablicy pracy (PT-5), do podpięcia tutaj.
         tracker=report_tracker(args, clock), notes_file=report_notes.state_path(), note_notifier=note_notifier,
         parent=app, **kwargs)
     # Żywy raport: zmiany w /Agents („czeka”, agent skończył pracę); tablice koordynacji podłącza
     # start_coordination niżej w main (notki po tickecie, zmiany ticketów).
     monitor.changed.connect(holder["monitor"].sessions_changed)
     return holder["monitor"]
+
+
+def board_card_check(board):
+    """Hak card_check dla ReportMonitor: (tablica koordynacji, ticket) → {"check": "manual", "spec"} z karty
+    tablicy pracy powiązanej z koordynatorem (reports/notes.card_for), albo None."""
+    from .reports import notes as report_notes
+
+    def check(coord_board, ticket):
+        try:
+            snapshot = json.loads(board.snapshot_json())
+        except ValueError:
+            return None
+        return report_notes.card_check_from(snapshot, coord_board, ticket)
+    return check
 
 
 def report_tracker(args, clock):
@@ -399,7 +434,10 @@ def start_tasks(app, args, launchers, trees, monitor):
         from . import processes, windows
         probe, activate = processes.probe, windows.activate
     terminal = TaskTerminal(launchers, KonsoleWindows(), probe=probe, activate=activate)
-    planner = Planner(args.workspace, args.worktree_depth, terminal_available=terminal.available)
+    from .board import default_board_dir
+    # Katalogi dokumentów kart (addDirs) tylko z tej tablicy, którą obsługuje /Board.
+    planner = Planner(args.workspace, args.worktree_depth, terminal_available=terminal.available,
+                      board_root=args.board_dir or default_board_dir())
     try:
         timeout = float(os.environ.get("TIDE_TASK_CLAIM_TIMEOUT") or CLAIM_TIMEOUT)
     except ValueError:
@@ -428,7 +466,8 @@ def coordination_scanner(args, clock):
 
 def card_describer(args, clock, settings):
     """Opisy kart tablicy (coordination/describe.py): tryb i model z konfiguracji raportu porannego
-    („summary”, „summaryModel”; --report-summary ma pierwszeństwo), pamięć w $XDG_CACHE_HOME/tide."""
+    („summary”, „summaryModel”; --report-summary ma pierwszeństwo; w trybie local model z roli `describe`
+    w models.json), pamięć w $XDG_CACHE_HOME/tide."""
     from .coordination import describe
     mode = args.report_summary or (settings.summary if settings else "rules")
     model = settings.summary_model if settings else describe.summarize.DEFAULT_MODEL
@@ -481,17 +520,29 @@ def pastel_colors(paths) -> dict | None:
     return None
 
 
-def start_board(app, args, trees):
+def start_board(app, args, trees, monitor=None, coordination=None, clock=time.time):
     """Obszar /Board: tablica pracy w lokalnym repozytorium git (board/, board_monitor.py).
-    Repozytoria do dodania jako projekty bierzemy z gotowej listy obszaru Worktrees."""
+    Repozytoria do dodania jako projekty bierzemy z gotowej listy obszaru Worktrees, a stan kart
+    (W toku, Czeka na mnie, Do sprawdzenia — board/derive.py) z sesji /Agents i tablic /Coordination."""
+    from .board.derive import BranchState, CardDeriver
     from .board_monitor import BoardMonitor
 
     def repos():
         return sorted({item["repoPath"] for item in trees.scanner.snapshot()
                        if item.get("isMain") and not item.get("missing") and item.get("repoPath")})
 
-    board = BoardMonitor(board_store(args), repos_source=repos, launchers=trees.launchers, parent=app)
+    deriver = CardDeriver(sessions_source=(lambda: monitor.sessions) if monitor is not None else (lambda: []),
+                          boards_source=(lambda: coordination.boards) if coordination is not None else (lambda: []),
+                          branches=BranchState(clock=clock, background=True), clock=clock)
+    board = BoardMonitor(board_store(args), repos_source=repos, derive=deriver, launchers=trees.launchers,
+                         parent=app)
     trees.changed.connect(board.publish)  # nowe repozytorium w katalogu projektów
+    # Git (czy gałąź scalona) idzie w wątku roboczym; nowy wynik przelicza karty w wątku głównym.
+    deriver.branches.on_result = board.rederive_later
+    if monitor is not None:
+        monitor.changed.connect(board.rederive)  # agent zaczął, czeka, skończył — karta zmienia kolumnę
+    if coordination is not None:
+        coordination.changed.connect(board.rederive)  # tickety, plan, pytania koordynatora
     return board
 def docker_once(args, clock) -> dict:
     """--print-docker: migawka kontenerów i miejsce na dysku — wyłącznie zapytania GET do Engine API."""
@@ -551,6 +602,13 @@ def limits_once(clock) -> dict:
     except backend.BackendError as exc:
         tracker.failed(str(exc))
     return tracker.snapshot()
+
+
+def start_models(app, args):
+    """Stan serwerów modeli lokalnych (models/, models_monitor.py); models.json czytany przy każdym odczycie."""
+    from .models_monitor import ModelsMonitor
+    poll_ms = int(round(args.models_poll * 1000)) if args.models_poll and args.models_poll > 0 else None
+    return ModelsMonitor(poll_ms=poll_ms, parent=app)
 
 
 def start_krunner(app, args, clock, monitor, trees, coordination=None, report=None):
