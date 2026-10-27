@@ -91,6 +91,16 @@ class PackageTest(unittest.TestCase):
             with open(os.path.join(APP_DIR, "qml", name), encoding="utf-8") as fh:
                 self.assertEqual(re.findall(r'"#[0-9a-fA-F]{3,8}"', fh.read()), [], name)
 
+    def test_rail_texts_are_plain(self):
+        """Teksty paska i pustego stanu (plakietki i railInfo mogą przyjść z usługi) — nigdy jako HTML."""
+        for name in ("RailItem.qml", "RailInfo.qml", "PlaceholderView.qml"):
+            with open(os.path.join(APP_DIR, "qml", name), encoding="utf-8") as fh:
+                source = fh.read()
+            blocks = re.findall(r"\n(\s*)Text \{\n(.*?)\n\1\}", source, re.S)
+            self.assertTrue(blocks, name)
+            for _indent, body in blocks:
+                self.assertIn("textFormat: Text.PlainText", body, f"{name}: {body[:80]}")
+
     def test_views_registry_is_consistent(self):
         with open(os.path.join(APP_DIR, "views.json"), encoding="utf-8") as fh:
             views = json.load(fh)["views"]
@@ -120,7 +130,9 @@ class CliTest(unittest.TestCase):
 
     def test_view_select_data_and_preview(self):
         args = self.parse()
-        self.assertEqual((args.view, args.select, args.data_files), ("sessions", "", {}), "domyślny widok z views.json")
+        self.assertEqual((args.view, args.initial_view, args.select, args.data_files), ("", "sessions", "", {}),
+                         "bez --view: domyślny widok tylko na start, działające okno dostaje pusty widok")
+        self.assertEqual(self.parse("--data", "s.json").data_files, {"sessions": "s.json"})
         args = self.parse("--view", "worktrees", "--select", "/w/a", "--data", "w.json", "--data", "sessions=s.json",
                           "--preview", "pick=/w/a", "--preview", "pick=/w/b", "--preview", "confirm=1")
         self.assertEqual((args.view, args.select), ("worktrees", "/w/a"))
@@ -158,6 +170,56 @@ class CliTest(unittest.TestCase):
         self.assertIn("nie ma okna Tide", result.stderr)
 
 
+@unittest.skipUnless(shutil.which("qml6"), "brak qml6")
+class RailQmlTest(unittest.TestCase):
+    """Pasek z atrapą okna: plakietki z backendów, link i ramka railInfo (umowa widoku)."""
+
+    def test_rail_badges_link_and_box(self):
+        tmp = tempfile.mkdtemp(prefix="tide-win-rail-")
+        self.addCleanup(shutil.rmtree, tmp)
+        pkg = stage(os.path.join(tmp, "pkg"))
+        path = os.path.join(pkg, "qml", "RailSmoke.qml")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("""import QtQuick
+Item {
+    width: 200; height: 700
+    QtObject { id: waiting; property string badgeText: "● 2"; property string badgeTone: "waiting" }
+    QtObject {
+        id: shell
+        function backend(id) { return id === "sessions" ? waiting : null }
+    }
+    property var requests: []
+    property int activated: 0
+    Rail {
+        id: rail
+        anchors.fill: parent
+        views: [{id: "board", title: "Tablica", icon: "board"}, {id: "sessions", title: "Sesje", icon: "sessions"}]
+        current: "board"
+        shell: shell
+        onViewRequested: (id, item) => requests.push(id + ":" + item)
+    }
+    Component.onCompleted: {
+        rail.info = {link: {text: "Projekty i tagi", view: "board", item: "projekty"}}
+        const onlyLink = [rail.footer.visible, rail.footer.hasBox].join("|")
+        rail.footer.activateLink()
+        rail.info = {link: {text: "Akcja", activate: function () { activated++ }},
+                     label: "Dane tablicy", value: "~/DevWorkspace/tide-board", note: "<b>lokalne</b> repo"}
+        rail.footer.activateLink()
+        const withBox = [rail.footer.visible, rail.footer.hasBox].join("|")
+        rail.info = null
+        console.warn("RAIL " + [onlyLink, requests.join(","), activated, withBox, rail.footer.visible].join("|"))
+        Qt.quit()
+    }
+}
+""")
+        env = offscreen_env()
+        log = subprocess.run(["qml6", path], env=env, capture_output=True, text=True, timeout=60).stderr
+        match = re.search(r"RAIL (.*)$", log, re.M)
+        self.assertIsNotNone(match, log[-3000:])
+        self.assertEqual(match.group(1).strip(), "true|false|board:projekty|1|true|true|false")
+        self.assertIsNone(re.search(QML_PROBLEMS, log), log[-3000:])
+
+
 class BackendsTest(unittest.TestCase):
     """make_backends w trybie podglądu: każdy widok ma backend, plakietki z danych z pliku."""
 
@@ -186,6 +248,30 @@ class BackendsTest(unittest.TestCase):
         for view in ("board", "docker", "reports"):
             self.assertEqual(backends[view].badgeText, "", view)
         self.assertTrue(backends["sessions"].available and backends["worktrees"].available)
+
+    def test_backends_survive_transient_qml_references(self):
+        """Backend zwrócony do QML przez shell.backend(id) należy do okna — GC JavaScriptu go nie usuwa."""
+        from PyQt6 import sip
+        from PyQt6.QtCore import QCoreApplication, QEvent, QUrl
+        from PyQt6.QtQml import QQmlComponent, QQmlEngine
+        backends = self.tide.make_backends(self.views, None, {"sessions": self.sessions}, base=self.pkg)
+        shell = self.tide.Shell(self.views, backends)
+        engine = QQmlEngine()
+        component = QQmlComponent(engine)
+        component.setData(b'import QtQml\nQtObject { property var shell\n'
+                          b'  function poke() { for (const id of ["board", "sessions", "worktrees", "docker", '
+                          b'"reports"]) shell.backend(id) } }', QUrl())
+        holder = component.createWithInitialProperties({"shell": shell})
+        holder.poke()
+        for _ in range(5):
+            engine.collectGarbage()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+            QCoreApplication.processEvents()
+        for view, backend in backends.items():
+            self.assertFalse(sip.isdeleted(backend), view)
+            self.assertIs(backend.parent(), shell, view)
+            self.assertEqual(QQmlEngine.objectOwnership(backend), QQmlEngine.ObjectOwnership.CppOwnership, view)
+        self.assertEqual(backends["sessions"].badgeText, "● 1")
 
     def test_views_without_data_are_empty(self):
         backends = self.tide.make_backends(self.views, None, {"worktrees": sample()}, base=self.pkg)
@@ -313,6 +399,18 @@ class WindowOverDbusTest(unittest.TestCase):
         reply = self.bus.call("org.tide.SessionsWindow", "/Window", "org.tide.SessionsWindow", "Raise", "claude:x")
         self.assertEqual(reply.errorMessage(), "")
         self.assertTrue(wait_until(lambda: self.current() == "sessions", timeout=5))
+        self.finish()
+
+    def test_second_start_without_view_keeps_current_view(self):
+        """Menu, dock, KRunner „Tide”: tide.py bez --view tylko pokazuje okno, nie przełącza widoku."""
+        self.assertTrue(self.show("worktrees"))
+        self.assertTrue(wait_until(lambda: self.current() == "worktrees", timeout=5))
+        for argv in ([], ["--select", "/w/x"]):
+            second = subprocess.run(["/usr/bin/python3", os.path.join(self.pkg, "tide.py"), *argv], env=self.env,
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            wait_until(lambda: False, timeout=0.5)
+            self.assertEqual(self.current(), "worktrees", argv)
         self.finish()
 
     def test_second_start_only_asks_running_window(self):
@@ -511,6 +609,20 @@ class InstallTest(unittest.TestCase):
 
         self.make("uninstall-tide-window")
         self.assertEqual(files_under(self.data), [])
+
+    def test_install_does_not_overwrite_foreign_desktop_file(self):
+        os.makedirs(os.path.join(self.data, "applications"))
+        foreign = os.path.join(self.data, "applications", "tide.desktop")
+        with open(foreign, "w", encoding="utf-8") as fh:
+            fh.write("[Desktop Entry]\nName=Cudze\n")
+        result = subprocess.run(["make", "-s", "-C", REPO, "install-tide-window"], env=self.env, capture_output=True,
+                                text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nie jest plikiem Tide", result.stderr)
+        self.assertEqual(self.read("applications/tide.desktop"), "[Desktop Entry]\nName=Cudze\n")
+        self.assertIn("X-Tide-Component=tide-window\n", self.read("applications/tide-sessions.desktop"))
+        self.make("uninstall-tide-window")
+        self.assertEqual(files_under(self.data), ["applications/tide.desktop"])
 
     def test_uninstall_keeps_foreign_files(self):
         os.makedirs(os.path.join(self.data, "applications"))

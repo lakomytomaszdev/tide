@@ -35,6 +35,7 @@ Rectangle {
         Text {
             Layout.fillWidth: true
             text: view.title
+            textFormat: Text.PlainText
             color: Tide.Tokens.textPrimary
             font.family: Tide.Theme.uiFamily
             font.pixelSize: 21
@@ -44,6 +45,7 @@ Rectangle {
         Text {
             Layout.fillWidth: true
             text: "W przygotowaniu"
+            textFormat: Text.PlainText
             color: Tide.Tokens.textMuted
             font.family: Tide.Theme.uiFamily
             font.pixelSize: 13
@@ -89,6 +91,7 @@ Rectangle {
                         horizontalAlignment: Text.AlignHCenter
                         wrapMode: Text.WordWrap
                         text: view.heading
+                        textFormat: Text.PlainText
                         color: Tide.Tokens.textPrimary
                         font.family: Tide.Theme.uiFamily
                         font.pixelSize: 15
@@ -100,6 +103,7 @@ Rectangle {
                         wrapMode: Text.WordWrap
                         lineHeight: 1.2
                         text: view.text
+                        textFormat: Text.PlainText
                         color: Tide.Tokens.textMuted
                         font.family: Tide.Theme.uiFamily
                         font.pixelSize: 13

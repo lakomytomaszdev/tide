@@ -49,6 +49,7 @@ Rectangle {
         Text {
             Layout.fillWidth: true
             text: item.title
+            textFormat: Text.PlainText
             color: item.current ? Tide.Tokens.textPrimary : Tide.Tokens.textSecondary
             font.family: Tide.Theme.uiFamily
             font.pixelSize: 14
@@ -58,6 +59,7 @@ Rectangle {
         Text {
             visible: item.badgeText !== ""
             text: item.badgeText
+            textFormat: Text.PlainText  // tekst z usługi — nigdy jako HTML
             color: item.badgeTone === "waiting" ? Tide.Tokens.waiting
                  : item.badgeTone === "accent" ? Tide.Tokens.accent : Tide.Tokens.textMuted
             font.family: item.numeric ? Tide.Theme.monoFamily : Tide.Theme.uiFamily

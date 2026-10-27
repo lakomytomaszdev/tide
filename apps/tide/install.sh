@@ -11,7 +11,9 @@
 #        cienkie przekierowania do okna Tide na widoku (tide-daemon sprzed restartu, przypięte skróty);
 #        tide-sessions.desktop i tide-worktrees.desktop — wejścia do menu „Tide Sesje” i „Tide Worktrees”,
 #        które otwierają okno Tide od razu na widoku (przypięte w docku dalej działają), z glifami
-#        w hicolor/256x256 jak dotąd.
+#        w hicolor/256x256 jak dotąd. Wszystkie trzy mają StartupWMClass=tide: okno jest jedno, więc
+#        pasek zadań grupuje je pod tide.desktop (przypięty „Tide Sesje” pokazuje okno Tide, nie osobne).
+# Cudzego pliku .desktop o tej samej nazwie (bez znacznika Tide) instalacja nie nadpisuje.
 # Okno otwierają: widżety (przez tide-daemon: /Coordination i /Worktrees ShowWindow), KRunner
 # („sesje”), menu aplikacji; kolejne uruchomienie prosi działające okno o Show(widok, element).
 set -euo pipefail
@@ -52,11 +54,21 @@ ours() {
     [[ -n "$old" ]] && grep -q "^X-Tide-Component=$old\$" "$file"
 }
 
+# Instalacja jak deinstalacja: cudzego pliku .desktop o tej samej nazwie nie nadpisujemy, tylko o nim mówimy.
+may_write() {
+    local file="$1" old="${2:-}"
+    if [[ -e "$file" ]] && ! ours "$file" "$old"; then
+        echo "Uwaga: $file nie jest plikiem Tide — zostawiam go bez zmian." >&2
+        return 1
+    fi
+}
+
 exec_line() {
     echo "/usr/bin/python3 -s $dest/tide.py$1"
 }
 
 write_main_desktop() {
+    may_write "$desktop" || return 0
     cat > "$desktop" <<EOF
 [Desktop Entry]
 Type=Application
@@ -97,6 +109,7 @@ EOF
 
 write_view_desktop() {
     local view="$1" name="$2" generic="$3" comment="$4" keywords="$5"
+    may_write "$apps/${legacy_name[$view]}.desktop" "${legacy_marker[$view]}" || return 0
     cat > "$apps/${legacy_name[$view]}.desktop" <<EOF
 [Desktop Entry]
 Type=Application

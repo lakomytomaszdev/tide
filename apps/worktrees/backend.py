@@ -58,9 +58,11 @@ class Backend(QObject):
         bus.connect(SERVICE, PATH, IFACE, "Changed", self._changed)
         self._watcher = QDBusServiceWatcher(SERVICE, bus, QDBusServiceWatcher.WatchModeFlag.WatchForRegistration
                                             | QDBusServiceWatcher.WatchModeFlag.WatchForUnregistration, self)
-        self._watcher.serviceRegistered.connect(lambda _name: self.refresh())
+        self._watcher.serviceRegistered.connect(lambda _name: self.reload())
         self._watcher.serviceUnregistered.connect(lambda _name: self._set_available(False))
-        self.refresh()
+        # Na start tylko tanie odczyty (lista z pamięci usługi i programy) — plakietka w pasku okna Tide.
+        # Pełny przegląd repozytoriów (Refresh) woła widok przy pierwszym pokazaniu i przycisk „Odśwież”.
+        self.reload()
 
     # --- właściwości dla QML ------------------------------------------------------------------
 
@@ -96,6 +98,13 @@ class Backend(QObject):
         if self.bus is None:
             return
         self._call("Refresh", [], None)  # usługa przeczyta repozytoria na nowo i wyśle Changed
+        self.reload()
+
+    @pyqtSlot()
+    def reload(self) -> None:
+        """Lista i programy z usługi bez przeglądania repozytoriów od nowa."""
+        if self.bus is None:
+            return
         self._load()
         self._call("Launchers", [], self._got_launchers)
 

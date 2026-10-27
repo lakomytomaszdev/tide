@@ -408,6 +408,81 @@ Item {
         self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
 
 
+    def test_show_item_pending_search_field_and_first_refresh(self):
+        """showItem: czeka tylko na pierwszą niepustą listę, przepada po zmianie szukania przez
+        użytkownika, nigdy nie zaznacza; pole szukania pokazuje zapytanie także po wyczyszczeniu;
+        pełny przegląd (refresh) dopiero przy pierwszym pokazaniu widoku, raz."""
+        log = self.harness("ViewItem.qml", """import QtQuick
+Item {
+    width: 1180; height: 820
+    component Stub: QtObject {
+        property string listJson: "[]"
+        property bool available: true
+        property string launchersJson: '{"terminal": true, "rider": false}'
+        property string homeDir: "/w"
+        property int refreshes: 0
+        signal removeFinished(string text)
+        signal pruneFinished(string text)
+        function remove(paths) {}
+        function removeForced(paths, deleteBranches, confirmed) {}
+        function open(path, app) {}
+        function refresh() { refreshes++ }
+        function prune(repo) {}
+    }
+    Stub { id: a }
+    Stub { id: b }
+    Stub { id: c }
+    WorktreesView { id: va; anchors.fill: parent; backend: a }
+    WorktreesView { id: vb; anchors.fill: parent; backend: b }
+    WorktreesView { id: vc; anchors.fill: parent; backend: c; active: false }
+    function picked(v) { return Object.keys(v.page.selected).length + "/" + v.page.picked.items.length }
+    Component.onCompleted: {
+        // Element przed listą: czeka, a po liście szuka po gałęzi; nic nie zaznacza.
+        va.showItem("/w/alpha/vin")
+        const before = [va.pendingItem, va.page.query].join("|")
+        a.listJson = %(json)s
+        console.warn("PENDING " + [before, va.page.query, va.page.searchText, va.pendingItem, picked(va)].join("|"))
+        // Wyczyszczenie (× albo Esc ustawiają query = "") i kolejne otwarcie: pole pokazuje zapytanie.
+        va.page.query = ""
+        va.showItem("/w/beta/det")
+        console.warn("FIELD " + [va.page.query, va.page.searchText === va.page.query, picked(va)].join("|"))
+        va.page.query = ""
+        va.showItem("/w/alpha/old")
+        console.warn("DECIDE " + [va.page.query, va.page.searchText, picked(va)].join("|"))
+        // Użytkownik zmienia szukanie, zanim przyjdzie lista — element przepada.
+        vb.showItem("/w/alpha/vin")
+        vb.page.query = "moje"
+        b.listJson = %(json)s
+        console.warn("TYPED " + [vb.page.query, vb.pendingItem].join("|"))
+        // Elementu nie ma w pierwszej liście — przepada i nie wraca przy kolejnej.
+        vc.showItem("/w/nowy")
+        c.listJson = %(json)s
+        const after = vc.pendingItem
+        c.listJson = %(more)s
+        console.warn("MISSING " + [after, vc.page.query].join("|"))
+        // Pełny przegląd: raz przy pierwszym pokazaniu; widok w tle — dopiero gdy wyjdzie na wierzch.
+        // (Component.onCompleted widoków może przyjść po tym bloku — wynik po powrocie do pętli zdarzeń.)
+        Qt.callLater(function () {
+            const hidden = c.refreshes
+            vc.active = true
+            vc.active = false
+            vc.active = true
+            console.warn("REFRESH " + [a.refreshes, hidden, c.refreshes].join("|"))
+            Qt.quit()
+        })
+    }
+}
+""" % {"json": json.dumps(json.dumps(sample())),
+       "more": json.dumps(json.dumps(sample() + [item("/w/nowy", "alpha", "active", branch="feat/nowy")]))})
+        self.assertEqual(warned(log, "PENDING"), "/w/alpha/vin||codex/fix-vin-count|codex/fix-vin-count||0/0")
+        self.assertEqual(warned(log, "FIELD"), "det|true|0/0", "odłączony HEAD — szukanie po nazwie")
+        self.assertEqual(warned(log, "DECIDE"), "feat/x|feat/x|0/0", "nawet ryzykowny worktree nie jest zaznaczany")
+        self.assertEqual(warned(log, "TYPED"), "moje|", "zapytanie użytkownika wygrywa z czekającym elementem")
+        self.assertEqual(warned(log, "MISSING"), "|")
+        self.assertEqual(warned(log, "REFRESH"), "1|0|1")
+        self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
+
+
 class LauncherTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="tide-wtwin-run-")
@@ -512,6 +587,50 @@ class BackendOverDbusTest(unittest.TestCase):
                          [(self.p["dirty"], "removed", ""), (self.p["alpha"], "refused", "main")])
         self.assertFalse(os.path.exists(self.p["dirty"]))
         self.assertTrue(os.path.isdir(self.p["alpha"]))
+
+
+@requires_dbus
+class StartupCallsTest(unittest.TestCase):
+    """Backend na starcie pyta usługę tylko o listę i programy — pełny przegląd repozytoriów (Refresh)
+    dopiero na prośbę widoku (pierwsze pokazanie, „Odśwież”)."""
+
+    def test_start_is_cheap_and_refresh_on_demand(self):
+        from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtSlot
+        from PyQt6.QtDBus import QDBusConnection
+
+        @pyqtClassInfo("D-Bus Interface", "org.tide.Daemon.Worktrees")
+        class FakeWorktrees(QObject):
+            def __init__(self):
+                super().__init__()
+                self.called = []
+
+            @pyqtSlot(result=str)
+            def List(self):
+                self.called.append("List")
+                return json.dumps(sample())
+
+            @pyqtSlot(result=str)
+            def Launchers(self):
+                self.called.append("Launchers")
+                return json.dumps({"terminal": True, "rider": False})
+
+            @pyqtSlot()
+            def Refresh(self):
+                self.called.append("Refresh")
+
+        bus = PrivateBus("tide-wt-startup")
+        self.addCleanup(bus.stop)
+        daemon = QDBusConnection.connectToBus(bus.address, "tide-wt-startup-daemon")
+        self.addCleanup(QDBusConnection.disconnectFromBus, "tide-wt-startup-daemon")
+        fake = FakeWorktrees()
+        self.assertTrue(daemon.registerObject("/Worktrees", fake, QDBusConnection.RegisterOption.ExportAllSlots))
+        self.assertTrue(daemon.registerService("org.tide.Daemon"))
+        backend = load_launcher().Backend(bus.bus)
+        self.assertTrue(wait_until(lambda: backend.available and backend.badgeText == "1", timeout=5))
+        wait_until(lambda: False, timeout=0.3)
+        self.assertEqual(sorted(fake.called), ["Launchers", "List"])
+        backend.refresh()
+        self.assertTrue(wait_until(lambda: "Refresh" in fake.called, timeout=5))
 
 
 if __name__ == "__main__":

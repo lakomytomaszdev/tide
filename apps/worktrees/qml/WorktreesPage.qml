@@ -58,6 +58,10 @@ Rectangle {
     readonly property bool canTerminal: launchers && launchers.terminal === true
     readonly property bool canRider: launchers && launchers.rider === true
 
+    readonly property alias searchText: search.text  // to, co widać w polu szukania (testy)
+
+    onQueryChanged: if (search.text !== query) search.text = query
+
     function focusSearch() {
         search.forceActiveFocus()
         search.selectAll()
@@ -210,9 +214,11 @@ Rectangle {
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: 13
                     clip: true
-                    text: page.query
+                    // Bez wiązania text: page.query — przypisanie w Esc albo × by je zerwało i zapytanie
+                    // ustawione z zewnątrz (showItem okna Tide) filtrowałoby przy pustym polu.
+                    // Pole idzie za page.query przez onQueryChanged strony.
                     onTextEdited: page.query = text
-                    Keys.onEscapePressed: { page.query = ""; text = "" }
+                    Keys.onEscapePressed: page.query = ""
                     Accessible.role: Accessible.EditableText
                     Accessible.name: "Szukaj gałęzi, commita, sesji"
                     Text {
@@ -236,7 +242,7 @@ Rectangle {
                         anchors.fill: parent
                         anchors.margins: -6
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: { page.query = ""; search.text = "" }
+                        onClicked: page.query = ""
                     }
                 }
             }

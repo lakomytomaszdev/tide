@@ -15,7 +15,9 @@ Item {
     property var preview: ({})
     readonly property var railInfo: null
     readonly property alias page: page
-    property string pendingItem: ""
+    property string pendingItem: ""     // element sprzed pierwszej listy z usługi
+    property bool applyingItem: false
+    property bool refreshed: false       // pełny przegląd (Refresh) przy pierwszym pokazaniu widoku
 
     readonly property var worktrees: {
         if (!backend) return []
@@ -31,16 +33,26 @@ Item {
         try { return JSON.parse(backend.launchersJson) } catch (e) { return { terminal: false, rider: false } }
     }
 
-    // Element przychodzi zwykle przed listą z usługi — wtedy czeka, aż lista dojdzie.
+    // Element przychodzi zwykle przed listą z usługi — wtedy czeka na pierwszą niepustą listę (i tylko
+    // na nią: nieznaleziony przepada) albo do chwili, gdy użytkownik sam zmieni szukanie. Niczego
+    // nie zaznacza — tylko szuka po gałęzi worktree, żeby był widoczny.
     function showItem(item) {
         if (!item) return
         const w = worktrees.find(x => x.path === item)
         if (!w) {
-            pendingItem = item
+            pendingItem = worktrees.length > 0 ? "" : item
             return
         }
         pendingItem = ""
+        applyingItem = true
         page.query = w.branch || w.name || ""
+        applyingItem = false
+    }
+
+    function refreshOnce() {
+        if (refreshed || !active || !backend) return
+        refreshed = true
+        backend.refresh()
     }
 
     function takeFocus() {
@@ -55,7 +67,14 @@ Item {
         return Array.prototype.map.call(value, String)
     }
 
-    onWorktreesChanged: if (pendingItem !== "") showItem(pendingItem)
+    onWorktreesChanged: if (pendingItem !== "" && worktrees.length > 0) showItem(pendingItem)
+    onActiveChanged: refreshOnce()
+    Component.onCompleted: refreshOnce()
+
+    Connections {
+        target: page
+        function onQueryChanged() { if (!view.applyingItem) view.pendingItem = "" }
+    }
 
     WorktreesPage {
         id: page

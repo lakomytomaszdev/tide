@@ -5,7 +5,8 @@ QML (qml/Main.qml), dane widoków z tide-daemon przez D-Bus.
 Użycie: /usr/bin/python3 tide.py [--view WIDOK] [--select ELEMENT] [--data [WIDOK=]PLIK.json ...]
                                  [--preview KLUCZ=WARTOŚĆ ...] [--grab PLIK.png] [--width N --height N]
 
---view     widok na start: board, sessions, worktrees, docker, reports (bez — domyślny z views.json),
+--view     widok na start: board, sessions, worktrees, docker, reports (bez — domyślny z views.json;
+           gdy okno już działa, bez --view zostaje na bieżącym widoku i tylko się pokazuje),
 --select   element widoku: koordynator w Sesjach (claude:<sesja>), ścieżka worktree w Worktrees,
            w przyszłości karta, kontener, dzień raportu,
 --data     stałe dane widoku z pliku, bez D-Bus — do podglądu i testów (akcje wyłączone). Samo PLIK
@@ -34,7 +35,7 @@ from PyQt6.QtCore import QObject, QUrl, pyqtClassInfo, pyqtProperty, pyqtSignal,
 from PyQt6.QtDBus import (QDBus, QDBusAbstractAdaptor, QDBusConnection, QDBusMessage, QDBusPendingCallWatcher,
                           QDBusPendingReply, QDBusServiceWatcher)
 from PyQt6.QtGui import QGuiApplication, QIcon
-from PyQt6.QtQml import QQmlApplicationEngine
+from PyQt6.QtQml import QQmlApplicationEngine, QQmlEngine
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_ID = "tide"
@@ -154,6 +155,13 @@ class Shell(QObject):
         super().__init__(parent)
         self.views = views
         self.backends = backends
+        # Backendy żyją tyle co okno: rodzic po stronie C++ i jawna własność C++ — inaczej obiekt
+        # zwrócony do QML przez backend(id) dostaje własność JavaScriptu i GC mógłby go usunąć
+        # razem z połączeniami D-Bus, gdy QML nie trzyma do niego odwołania.
+        for backend in backends.values():
+            if backend.parent() is None:
+                backend.setParent(self)
+            QQmlEngine.setObjectOwnership(backend, QQmlEngine.ObjectOwnership.CppOwnership)
         self._json = json.dumps(views, ensure_ascii=False)
         self._current = ""
 
@@ -269,14 +277,17 @@ def parse_args(argv, views: list[dict]):
     parser.add_argument("--width", type=int, default=0)
     parser.add_argument("--height", type=int, default=0)
     args = parser.parse_args(argv)
-    args.view = args.view or default_view(views)
+    # args.view zostaje puste bez --view: drugie uruchomienie (menu, dock, KRunner „Tide”) prosi wtedy
+    # o Show("", element) i działające okno zostaje na swoim widoku. Domyślny widok dotyczy tylko
+    # pierwszego egzemplarza (initial_view).
+    args.initial_view = args.view or default_view(views)
     data_files = {}
     for value in args.data:
         view, sep, path = value.partition("=")
         if sep and view in ids:
             data_files[view] = path
         else:
-            data_files[args.view] = value
+            data_files[args.initial_view] = value
     args.data_files = data_files
     args.preview_map = parse_pairs(args.preview, "--preview")
     return args
@@ -328,7 +339,7 @@ def main(argv=None) -> int:
 
     engine = QQmlApplicationEngine()
     engine.setInitialProperties({"shell": shell, "grabPath": os.path.abspath(args.grab) if args.grab else "",
-                                 "initialView": args.view, "initialItem": args.select,
+                                 "initialView": args.initial_view, "initialItem": args.select,
                                  "preview": args.preview_map})
     engine.load(QUrl.fromLocalFile(os.path.join(HERE, "qml", "Main.qml")))
     roots = engine.rootObjects()

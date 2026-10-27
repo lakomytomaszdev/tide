@@ -5,7 +5,8 @@
 //
 // Widok z modułem ładuje się z views/<id>/qml/<qml> przy pierwszym pokazaniu i zostaje (zachowuje
 // zaznaczenie i przewinięcie). Umowa widoku: backend, active, preview, showItem(item), takeFocus(),
-// railInfo. Widok bez modułu to PlaceholderView.
+// railInfo ({label, value, note} — ramka na dole paska, {link: {text, view, item, activate}} — link
+// nad nią; RailInfo.qml). Widok bez modułu to PlaceholderView.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Window
@@ -75,7 +76,7 @@ Window {
             current: win.current
             shell: win.shell
             info: win.currentView && win.currentView.railInfo ? win.currentView.railInfo : null
-            onViewRequested: id => win.showView(id, "")
+            onViewRequested: (id, item) => win.showView(id, item)
         }
 
         StackLayout {
@@ -99,7 +100,7 @@ Window {
 
                     function properties() {
                         const backend = win.shell ? win.shell.backend(modelData.id) : null
-                        const base = { backend: backend, preview: win.preview }
+                        const base = { backend: backend, preview: win.preview, active: win.current === modelData.id }
                         if (modelData.url) return base
                         const placeholder = modelData.placeholder || {}
                         return Object.assign(base, { title: modelData.title, icon: modelData.icon,
