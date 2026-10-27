@@ -27,7 +27,8 @@ Rectangle {
     // Wklejenie obrazu ze schowka: funkcja() → true, gdy schowek miał obraz (albo pliki obrazów)
     // i trafił do zrzutów; wtedy pole tekstowe już nic nie wkleja.
     property var pasteImage: function () { return false }
-    // Stan modeli lokalnych: Status() obiektu /Models (null — usługa go nie podaje).
+    // Stan modeli lokalnych: Status() obiektu /Models, {pending: true} przed pierwszą odpowiedzią,
+    // null — usługa go nie podaje.
     property var modelsStatus: null
 
     signal startRequested(string request)
@@ -85,7 +86,7 @@ Rectangle {
     }
     function applyRememberedModel() {
         if (!rememberedLocal) return
-        if (modelsStatus && modelsStatus.checked === false) return  // jeszcze nie wiadomo
+        if (Logic.modelsPending(modelsStatus)) return  // jeszcze nie wiadomo — czekamy na Status()
         // Wprost ze stanu: wiązanie localOption mogło jeszcze nie zauważyć zmiany modelsStatus.
         model = Logic.effectiveModel("local", Logic.localOption(modelsStatus))
         rememberedLocal = false

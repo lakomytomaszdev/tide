@@ -43,6 +43,9 @@ APP_ID = "tide-new-task"
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Tasks", "org.tide.Daemon.Tasks"
 MODELS_PATH, MODELS_IFACE = "/Models", "org.tide.Daemon.Models"
 MODELS_VIEW = "models"
+# Stan modeli, zanim przyjdzie pierwsza odpowiedź Status() — „czekam”. Różny od null, który znaczy
+# „usługa nie podaje stanu” (błąd odpowiedzi, brak /Models): zapamiętany „Lokalny” czeka tylko na ten pierwszy.
+PENDING_MODELS = '{"pending": true}'
 WINDOW_SERVICE, WINDOW_PATH, WINDOW_IFACE = "org.tide.NewTaskWindow", "/Window", "org.tide.NewTaskWindow"
 SHORTCUT_ACTION = ("kwin", "TideNewAgentTask")
 DEFAULT_SHORTCUT = "Meta+Alt+A"
@@ -191,6 +194,7 @@ class Backend(QObject):
                                             | QDBusServiceWatcher.WatchModeFlag.WatchForUnregistration, self)
         self._watcher.serviceRegistered.connect(lambda _name: self.refresh())
         self._watcher.serviceUnregistered.connect(lambda _name: self._set_available(False))
+        self._models = PENDING_MODELS
         bus.connect(SERVICE, MODELS_PATH, MODELS_IFACE, "Changed", self._models_changed)
         self.refresh()
 
@@ -210,7 +214,8 @@ class Backend(QObject):
 
     @pyqtProperty(str, notify=modelsChanged)
     def modelsJson(self) -> str:
-        """Status() z /Models (JSON) albo "null", gdy usługa go nie podaje."""
+        """Status() z /Models (JSON), PENDING_MODELS przed pierwszą odpowiedzią albo "null", gdy usługa
+        go nie podaje."""
         return self._models
 
     @pyqtProperty(str, notify=imagesChanged)

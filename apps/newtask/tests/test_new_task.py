@@ -295,6 +295,55 @@ Item {
         self.assertEqual(warned(log, "ASKED"), "1")
         self.assertEqual(warned(log, "EFFECTIVE"), "cloud|local|cloud")
 
+    def remembered(self, initial, then="skip") -> str:
+        """Zapamiętany „Lokalny”: stan modeli na starcie (`initial`), Defaults od razu, potem Status (`then`)."""
+        with tempfile.TemporaryDirectory(prefix="tide-nt-local3-") as tmp:
+            pkg = stage(os.path.join(tmp, "pkg"))
+            harness = os.path.join(pkg, "qml", "Local3.qml")
+            data = sample()
+            data["defaults"]["model"] = "local"
+            with open(harness, "w", encoding="utf-8") as fh:
+                fh.write("""import QtQuick
+Item {
+    width: 860; height: 850
+    readonly property var sample: %(data)s
+    NewTaskPage {
+        id: page
+        anchors.fill: parent
+        repos: parent.sample.repos
+        modelsStatus: %(initial)s
+    }
+    Timer {
+        interval: 200; running: true
+        onTriggered: {
+            page.defaults = parent.sample.defaults
+            console.warn("BEFORE " + page.model + "|" + page.rememberedLocal + "|" + page.localOption.reason)
+            const then = %(then)s
+            if (then !== undefined) page.modelsStatus = then
+            console.warn("AFTER " + page.model + "|" + page.rememberedLocal)
+            Qt.quit()
+        }
+    }
+}
+""" % {"data": json.dumps(data, ensure_ascii=False), "initial": json.dumps(initial),
+       "then": "undefined" if then == "skip" else json.dumps(then)})
+            return run_qml(harness)
+
+    def test_remembered_local_waits_for_the_first_status(self):
+        """Defaults przychodzi przed Status (kolejność wywołań okna): „czekam”, nie „chmura”."""
+        log = self.remembered(json.loads(self.launcher().PENDING_MODELS), models_status())
+        self.assertEqual(warned(log, "BEFORE"), "cloud|true|Sprawdzam serwer modeli…")
+        self.assertEqual(warned(log, "AFTER"), "local|false")
+        # Usługa bez /Models (odpowiedź z błędem → null) — zapamiętany „Lokalny” nie ma na co czekać.
+        log = self.remembered(json.loads(self.launcher().PENDING_MODELS), None)
+        self.assertEqual(warned(log, "AFTER"), "cloud|false")
+        log = self.remembered(None)
+        self.assertEqual(warned(log, "BEFORE"), "cloud|false|Usługa nie podaje stanu modeli lokalnych")
+
+    @staticmethod
+    def launcher():
+        return load_launcher()
+
     def test_remembered_local_falls_back_when_unavailable(self):
         with tempfile.TemporaryDirectory(prefix="tide-nt-local2-") as tmp:
             pkg = stage(os.path.join(tmp, "pkg"))
@@ -468,6 +517,8 @@ class BackendOverDbusTest(unittest.TestCase):
 
     def test_defaults_repos_and_refused_start(self):
         backend = self.launcher.Backend(self.service.bus)
+        # Zanim przyjdzie Status() z /Models: „czekam”, nie null (null — usługa nie podaje stanu).
+        self.assertEqual(json.loads(backend.modelsJson), json.loads(self.launcher.PENDING_MODELS))
         self.assertTrue(wait_until(lambda: json.loads(backend.reposJson), timeout=20))
         repos = json.loads(backend.reposJson)
         self.assertEqual([r["name"] for r in repos], ["alpha"])

@@ -38,6 +38,7 @@ function localOption(status) {
     function off(reason, hint) {
         return { enabled: false, label: "Lokalny", reason: reason, hint: hint !== false, model: "", server: "" }
     }
+    if (status && status.pending === true) return off("Sprawdzam serwer modeli…", false)
     if (!status || typeof status !== "object" || !status.roles) return off("Usługa nie podaje stanu modeli lokalnych", false)
     var role = status.roles.agent
     if (!role) return off("Model agenta nie jest ustawiony")
@@ -62,6 +63,12 @@ function modelNote(option, model, tool) {
     if (model !== "local") return ""
     var note = option.server === "ten komputer" ? LOCAL_NOTE : "Agent pracuje na serwerze " + option.server + "."
     return note + (tool === "claude" ? " " + CLAUDE_LOCAL_NOTE : "")
+}
+
+// Czy na stan modeli trzeba jeszcze poczekać: pierwsza odpowiedź nie przyszła ({pending: true}) albo
+// usługa jeszcze nie odczytała serwera (checked: false). null — usługa stanu nie podaje, nie ma na co czekać.
+function modelsPending(status) {
+    return !!status && (status.pending === true || status.checked === false)
 }
 
 // Zapamiętany „Lokalny” wraca tylko wtedy, gdy opcja jest teraz dostępna.
