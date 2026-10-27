@@ -28,6 +28,10 @@ from .state import MID_TURN, TOOL_PENDING, TURN_END, Pending, SessionLog
 from .timeutil import parse_ts
 
 ASKS_USER = {"request_user_input"}
+# Codex Desktop pyta też asynchronicznie: wywołanie od razu dostaje {"accepted": true}, tura idzie dalej,
+# a pytanie wisi w aplikacji („Wymaga reakcji użytkownika”), aż przyjdzie wiadomość z odpowiedzią.
+ASKS_USER_ASYNC = {"request_user_input_async"}
+QUESTION_REPLY_TAG = "<send_user_message_question_reply"
 LONG_RUNNING = {"wait_agent", "wait", "sleep", "spawn_agent"}
 AUTOMATION_TRIGGER = "automation"           # przedrostek turn_trigger, np. automation_heartbeat_scheduled
 SCHEDULED_KINDS = {"user.heartbeat"}         # wiadomość wysłana przez zaplanowane zadanie
@@ -48,6 +52,7 @@ class CodexLog(SessionLog):
         self.parent_id = ""     # podagent (thread_spawn): id wątku rodzica
         self.root_hint = ""     # podagent: payload.session_id — id wątku głównego według Codexa
         self.nickname = ""      # podagent: agent_nickname
+        self.open_questions: dict[str, float] = {}  # pytania asynchroniczne bez odpowiedzi: call_id → czas
 
     def feed(self, record: dict) -> None:
         kind = record.get("type")
@@ -87,8 +92,14 @@ class CodexLog(SessionLog):
                 self.pending[str(payload.get("call_id") or payload.get("id"))] = Pending(
                     name, ts, asks_user=name in ASKS_USER, long_running=name in LONG_RUNNING)
                 self.last_action = describe_call(name, payload)
+                if name in ASKS_USER_ASYNC:
+                    self.open_questions[str(payload.get("call_id") or payload.get("id"))] = ts
             elif item == "message" and payload.get("role") == "user":
                 kinds = _content_kinds(payload)
+                if self.open_questions and (_is_question_reply(payload) or kinds & TYPED_KINDS):
+                    # Odpowiedź na pytanie (albo zwykła wiadomość użytkownika w wątku) zamyka
+                    # najstarsze otwarte pytanie.
+                    del self.open_questions[min(self.open_questions, key=self.open_questions.get)]
                 if kinds & SCHEDULED_KINDS:
                     self.scheduled = True
                 elif kinds & TYPED_KINDS:
@@ -123,6 +134,13 @@ def _thread_spawn(source) -> dict | None:
     sub = source.get("subagent") if isinstance(source, dict) else None
     spawn = sub.get("thread_spawn") if isinstance(sub, dict) else None
     return spawn if isinstance(spawn, dict) else None
+
+
+def _is_question_reply(payload: dict) -> bool:
+    for part in payload.get("content") or []:
+        if isinstance(part, dict) and str(part.get("text") or "").lstrip().startswith(QUESTION_REPLY_TAG):
+            return True
+    return False
 
 
 def _automation_trigger(payload: dict) -> bool:

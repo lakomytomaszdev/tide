@@ -121,6 +121,11 @@ def derive_state(log: SessionLog, now: float, alive: bool | None, status: Status
         # idle: Claude Code skończył turę i nic nie blokuje.
         return finished(log, now, max(status.since, log.last_activity))
 
+    # Pytanie asynchroniczne (Codex Desktop) czeka na odpowiedź niezależnie od tego, czy tura trwa.
+    questions = getattr(log, "open_questions", None)
+    if questions:
+        return WAITING, REASON_QUESTION, min(questions.values())
+
     age = now - log.last_activity
     if log.phase == TURN_END:
         return finished(log, now, log.last_activity)

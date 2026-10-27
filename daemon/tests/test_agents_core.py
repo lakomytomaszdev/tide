@@ -364,6 +364,25 @@ class CodexScheduledTurnTest(unittest.TestCase):
         self.assertEqual(self.feed(self.started(), self.user("user.heartbeat"), self.user("user.text"),
                                    self.complete()), ("done", ""))
 
+    def test_async_question_waits_while_the_turn_goes_on(self):
+        # Codex Desktop: request_user_input_async dostaje od razu {"accepted": true}, tura idzie dalej
+        # (a nawet się kończy), a pytanie wisi w aplikacji, aż przyjdzie odpowiedź.
+        ask = {"type": "response_item", "payload": {"type": "function_call", "name": "request_user_input_async",
+                                                     "arguments": '{"questions": []}', "call_id": "q1"}}
+        accepted = {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "q1",
+                                                          "output": '{"accepted":true}'}}
+        work = {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "c1",
+                                                      "input": "ls"}}
+        work_done = {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "c1"}}
+        reply = {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "<send_user_message_question_reply>…</send_user_message_question_reply>"}]}}
+        self.assertEqual(self.feed(self.started(), ask, accepted, work, work_done), ("waiting", "question"))
+        self.assertEqual(self.feed(self.started(), ask, accepted, self.complete()), ("waiting", "question"))
+        self.assertEqual(self.feed(self.started(), ask, accepted, work, work_done, reply, self.complete()),
+                         ("done", ""))
+        self.assertEqual(self.feed(self.started(), ask, accepted, self.user("user.text"), self.complete()),
+                         ("done", ""))
+
     def test_scheduled_turn_still_waits_for_question(self):
         ask = {"type": "response_item", "payload": {"type": "function_call", "name": "request_user_input",
                                                      "arguments": "{}", "call_id": "q"}}
