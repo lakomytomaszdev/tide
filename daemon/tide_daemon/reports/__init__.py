@@ -9,7 +9,10 @@
 - standup.py  — „Na daily”: fakty o projektach, podsumowanie z reguł, walidacja odpowiedzi modelu,
 - summarize.py — opis „Na daily” modelem przez lokalny `claude -p` (z regułami jako zapasem),
 - collect.py  — model raportu, render.py — HTML,
-- data.py     — report.json dla widoku „Raporty” w oknie Tide i odczyt dni (D-Bus Days(), Day()).
+- data.py     — report.json dla widoku „Raporty” w oknie Tide i odczyt dni (D-Bus Days(), Day()) z „czeka”
+                przeliczanym na żywo dla bieżącej doby,
+- live.py     — żywy raport w ciągu dnia: kiedy złożyć go ponownie (zdarzenia, odstęp, bez modelu co chwilę),
+- notes.py    — notki „Skończone dziś” po tickecie i ich powiadomienia (zbiorczo, bez powtórek po restarcie).
 
 generate() składa raport w katalogu tymczasowym obok docelowego i podmienia go w całości,
 więc przeglądarka nigdy nie widzi połowy raportu, a strony projektów, które w nowej wersji
@@ -20,9 +23,10 @@ import os
 import shutil
 import tempfile
 
-from . import collect, data, limits, render, schedule, standup, summarize
+from . import collect, data, limits, live, notes as notes_mod, render, schedule, standup, summarize
 
-__all__ = ["collect", "data", "generate", "limits", "load_palette", "render", "schedule", "standup", "summarize"]
+__all__ = ["collect", "data", "generate", "limits", "live", "load_palette", "notes_mod", "render", "schedule",
+           "standup", "summarize"]
 
 
 def load_palette(candidates: list[str]) -> dict:
@@ -39,11 +43,12 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
              codex_root: str, live=None, worktrees=None, limits_result=None, fetch_limits: bool = True,
              git=None, max_depth: int = 3, home: str | None = None,
              coordination_cache: str | None = None, summary: str = "rules", summary_model: str = "sonnet",
-             env=None, tracker=None) -> tuple[str, "collect.Report"]:
+             env=None, tracker=None, notes: dict | None = None) -> tuple[str, "collect.Report"]:
     """Zapisuje <root>/<day>/index.html, <projekt>.html i report.json (widok „Raporty”). Zwraca (ścieżka index.html, raport).
 
     summary: "claude" — opis „Na daily” modelem przez `claude -p` (summarize.py), "rules" — same reguły.
     tracker: YouTrackCache — opisy ticketów z planów w repozytoriach (plans.py, tylko GET) albo None.
+    notes: „Skończone dziś” tej doby — {projekt: [notka]} z reports/notes.py (żywy raport) albo None.
     Domyślnie reguły: model woła tylko usługa i --report według ustawień (report.json)."""
     if limits_result is None and fetch_limits:
         limits_result = limits.fetch_status()
@@ -52,6 +57,7 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
                            live=live, worktrees=worktrees, limits_result=limits_result, git=git,
                            max_depth=max_depth, previous_day=days[-1] if days else "",
                            coordination_cache=coordination_cache, tracker=tracker)
+    report.notes = dict(notes or {})
     home = os.path.expanduser("~") if home is None else home
     target = os.path.join(root, day)
     report.standup = summarize.summarize(report, mode=summary, model=summary_model, cache_dir=target, home=home,

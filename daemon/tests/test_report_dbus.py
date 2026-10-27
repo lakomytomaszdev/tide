@@ -120,7 +120,8 @@ class ReportDaemonTest(unittest.TestCase):
         index = os.path.join(self.reports, reportfix.DAY, "index.html")
         status = self.status()
         self.assertEqual(status, {"path": index, "day": reportfix.DAY, "generatedAt": reportfix.NOW, "projects": 2,
-                                  "waiting": 1, "unread": True})
+                                  "waiting": 1, "unread": True, "waitingNow": 1, "finished": 0},
+                         "„czeka” przeliczone na żywo z /Agents: c-ask stoi na AskUserQuestion")
 
         # Open() z widżetu: xdg-open przez systemd-run, przeczytany, sygnał Changed.
         changes.clear()

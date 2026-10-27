@@ -382,6 +382,11 @@ border-top:1px solid var(--border);font-size:13.5px;align-items:baseline}
 .sg .ref{font-family:var(--mono);font-size:12px;color:var(--sky);margin-right:7px;white-space:nowrap}
 .sg .why,.sg .nx{display:block;color:var(--text2);font-size:13.5px;margin-top:1px}
 .sg .nx{color:var(--muted)}
+.brief{background:var(--card);border:1px solid var(--border);border-radius:var(--r-card);padding:16px 20px;margin:22px 0 0}
+.brief h2{margin:0 0 8px}
+.brief ul{margin:0;padding-left:18px;display:grid;gap:6px;line-height:1.5;max-width:100ch}
+.sg.finished li::before{background:var(--mint)}
+.sg .chk{display:block;color:var(--peach);font-size:13px;margin-top:2px}
 .sg li.more{color:var(--muted);font-size:13px}
 .sg li.more::before{display:none}
 .sg.chores li{color:var(--text2);font-size:14px}
@@ -495,6 +500,7 @@ def render_index(report, palette: dict, home: str = "") -> str:
         f'<div class="brand">{LOGO}<span>Tide · raport poranny</span></div>',
         f'<h1>{esc(long_date(report.day).capitalize())}</h1>',
         f'<div class="period">Okres: {esc(period_text(report))}</div></div></header>',
+        brief_section(report),
         overview(report, repos),
     ]
     if outside:
@@ -552,11 +558,35 @@ def _outside(report) -> list:
 
 # --- przegląd projektów i „Na daily” ---------------------------------------------------------------
 
-def daily_text(report, projects) -> str:
-    """Standup podanych projektów jako zwykły tekst (przycisk „Kopiuj jako tekst”)."""
+def daily_text(report, projects, brief: bool = False) -> str:
+    """Standup podanych projektów jako zwykły tekst (przycisk „Kopiuj jako tekst”); brief — z „Dziś
+    w skrócie” na początku (kopiowanie całości). Ten sam generator co w oknie Tide (standup.as_text)."""
     summary = getattr(report, "standup", None) or {}
     heading = f"Na daily · {long_date(report.day)}"
-    return standup_mod.as_text(summary, [p.name for p in projects], heading)
+    return standup_mod.as_text(summary, [p.name for p in projects], heading,
+                               brief=summary.get("brief") if brief else None, notes=getattr(report, "notes", None))
+
+
+def brief_section(report) -> str:
+    """„Dziś w skrócie”: 3–5 zdań o wszystkich projektach (model albo reguły)."""
+    sentences = [b for b in (getattr(report, "standup", None) or {}).get("brief") or [] if b]
+    if not sentences:
+        return ""
+    rows = "".join(f"<li>{esc(b)}</li>" for b in sentences)
+    return f'<section class="brief"><h2>Dziś w skrócie</h2><ul>{rows}</ul></section>'
+
+
+def _finished(notes: list) -> str:
+    """„Skończone dziś” — notki po tickecie (reports/notes.py) z ręcznym sprawdzeniem."""
+    rows = []
+    for note in notes or []:
+        check = ""
+        if note.get("checklist"):
+            check = f'<span class="chk">Sprawdź ręcznie: {esc("; ".join(note["checklist"]))}</span>'
+        elif note.get("manual"):
+            check = '<span class="chk">Wymaga sprawdzenia ręcznego</span>'
+        rows.append(f'<li>{_ref(note)}{esc(note.get("text"))}{check}</li>')
+    return f'<div class="sg finished"><h4>{esc(standup_mod.FINISHED[1])}</h4><ul>{"".join(rows)}</ul></div>' if rows else ""
 
 
 def _source(summary: dict) -> str:
@@ -574,7 +604,7 @@ def overview(report, projects) -> str:
     w których coś czeka, są pierwsze i wyróżnione, a te z samymi porządkami — na końcu."""
     summary = getattr(report, "standup", None) or {}
     by_name = summary.get("projects") or {}
-    text = daily_text(report, projects)
+    text = daily_text(report, projects, brief=True)
     out = ['<section class="daily"><div class="dhead"><h2>Projekty <span class="n">'
            f'{len(projects)}</span></h2><span class="dsrc">{esc(_source(summary))}</span><span class="sp"></span>'
            + (copy_button(text, "Kopiuj wszystko jako tekst") if text else "") + "</div>"]
@@ -583,14 +613,26 @@ def overview(report, projects) -> str:
                    'ani commitów, ani sesji agentów w projektach.</div></section>')
         return "".join(out)
     cards = []
+    chores = []
+    notes = getattr(report, "notes", None) or {}
     for i, p in enumerate(projects):
         s = by_name.get(p.name) or {}
         waits = [item for item in s.get("waiting") or [] if not item.get("more")]
         hot = bool(waits or p.waiting)
         n = standup_mod.counts(s)
         chores_only = bool(n.get("chores")) and not any(n.get(k) for k in standup_mod.GROUP_KEYS)
+        if chores_only and not hot and not notes.get(p.name):
+            chores.append(p)   # same porządki — nie karta, tylko nazwa w zwiniętej linii pod kartami
+            continue
         cards.append((not hot, chores_only, i, _overview_card(p, s, waits, hot)))
-    out.append('<div class="ovgrid">' + "".join(card for *_key, card in sorted(cards)) + "</div></section>")
+    out.append('<div class="ovgrid">' + "".join(card for *_key, card in sorted(cards)) + "</div>")
+    if chores:
+        rows = "".join(f'<li><a href="{esc(p.slug)}.html">{esc(p.name)}</a><span>'
+                       f'{esc("; ".join(i["text"] for i in (by_name.get(p.name) or {}).get("chores") or [] if not i.get("more")))}'
+                       '</span></li>' for p in chores)
+        out.append(f'<details class="quiet chores-only"><summary>Porządki: {esc(", ".join(p.name for p in chores))}'
+                   f'</summary><ul>{rows}</ul></details>')
+    out.append("</section>")
     return "".join(out)
 
 
@@ -647,7 +689,8 @@ def daily(report, projects, index: bool = False) -> str:
             out.append(f'<div class="row"><h3><a href="{esc(p.slug)}.html">{esc(p.name)}</a></h3></div>')
         if s.get("theme"):
             out.append(f'<p class="theme"><b>Na czym polega</b>{esc(s["theme"])}</p>')
-        groups = []
+        groups = [_finished((getattr(report, "notes", None) or {}).get(p.name))] \
+            if (getattr(report, "notes", None) or {}).get(p.name) else []
         for key, label in standup_mod.GROUPS:
             items = s.get(key) or []
             if not items:
@@ -696,7 +739,8 @@ def _outside_section(report, projects) -> str:
     order = {"waiting": 0, "working": 1}
     for p, s in sorted(sessions, key=lambda ps: (order.get(ps[1].state, 2), -ps[1].last_ts)):
         state, word = state_of(s)
-        said = standup_mod.last_question(s.final_message) if state == "waiting" else \
+        # Sesja, która czeka: o co pyta według obszaru Agents (waitingText), nigdy stare pytanie z tekstu.
+        said = standup_mod.clean(getattr(s, "waiting_text", "") or "", 320) if state == "waiting" else \
             standup_mod.first_sentences(s.final_message, 2, 320)
         task = standup_mod.clean(getattr(s, "prompt", "") or "", 300)
         resume = (f"cd {shlex.quote(s.cwd)} && claude --resume {shlex.quote(s.session_id)}" if s.tool == "claude"

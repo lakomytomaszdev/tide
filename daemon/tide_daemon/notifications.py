@@ -1,5 +1,5 @@
-"""Powiadomienia KDE „Agent czeka” (Notifier) i „Raport poranny gotowy” (ReportNotifier, niżej)
-przez org.freedesktop.Notifications.
+"""Powiadomienia KDE „Agent czeka” (Notifier), „Raport poranny gotowy” (ReportNotifier, niżej)
+i „<projekt>: skończone — …” po tickecie (NoteNotifier) przez org.freedesktop.Notifications.
 
 - sesja zaczyna czekać → Notify z przyciskiem „Przejdź” (i domyślną akcją po kliknięciu),
 - ta sama sesja nie dostaje drugiego powiadomienia, dopóki nie przestanie czekać (attention.py),
@@ -171,6 +171,66 @@ class ReportNotifier(QObject):
         self.path_of.pop(int(notice), None)
         if int(notice) == self.notice:
             self.notice = 0
+
+
+class NoteNotifier(QObject):
+    """Powiadomienie „<projekt>: skończone — …” po tickecie (reports/notes.py, report_monitor.py).
+
+    notify(klucz, tytuł, treść, element): to samo `klucz` (paczka ticketów projektu w ciągu 5 min)
+    zastępuje poprzednie powiadomienie (replaces_id) zamiast dokładać nowe. „Otwórz” albo kliknięcie →
+    show(element) — okno Tide na widoku „Raporty” z dobą i projektem („2026-10-27/logtool”)."""
+
+    def __init__(self, show, bus: QDBusConnection | None = None, parent=None):
+        super().__init__(parent)
+        self.show = show                      # funkcja(element widoku) -> bool
+        self.bus = bus or QDBusConnection.sessionBus()
+        self.notice_of: dict[str, int] = {}   # klucz paczki → id powiadomienia
+        self.target_of: dict[int, str] = {}   # id powiadomienia → element widoku
+        self._watchers: set[QDBusPendingCallWatcher] = set()
+        self.bus.connect(SERVICE, PATH, IFACE, "ActionInvoked", self._action_invoked)
+        self.bus.connect(SERVICE, PATH, IFACE, "NotificationClosed", self._closed)
+
+    def notify(self, key: str, summary: str, body: str, target: str) -> None:
+        msg = QDBusMessage.createMethodCall(SERVICE, PATH, IFACE, "Notify")
+        msg.setArguments([
+            APP_NAME,
+            QDBusArgument(self.notice_of.get(key, 0), QMetaType.Type.UInt.value),
+            REPORT_ICON,
+            summary,
+            html.escape(body, quote=False),
+            QDBusArgument(list(REPORT_ACTIONS), QMetaType.Type.QStringList.value),
+            {},
+            QDBusArgument(-1, QMetaType.Type.Int.value),
+        ])
+        watcher = QDBusPendingCallWatcher(self.bus.asyncCall(msg), self)
+        self._watchers.add(watcher)
+        watcher.finished.connect(lambda w, key=key, target=target: self._notified(w, key, target))
+
+    def _notified(self, watcher: QDBusPendingCallWatcher, key: str, target: str) -> None:
+        self._watchers.discard(watcher)
+        reply = QDBusPendingReply(watcher).reply()
+        watcher.deleteLater()
+        if reply.type() != QDBusMessage.MessageType.ReplyMessage or not reply.arguments():
+            return
+        notice = int(reply.arguments()[0])
+        self.notice_of[key] = notice
+        self.target_of[notice] = target
+
+    @pyqtSlot("uint", str)
+    def _action_invoked(self, notice: int, action: str) -> None:
+        target = self.target_of.get(int(notice))
+        if target and action in (OPEN, "default"):
+            try:
+                self.show(target)
+            except Exception as exc:  # okno Tide nie może położyć usługi
+                print(f"tide-daemon: nie udało się otworzyć okna Tide: {exc}", flush=True)
+
+    @pyqtSlot("uint", "uint")
+    def _closed(self, notice: int, _reason: int) -> None:
+        self.target_of.pop(int(notice), None)
+        for key, value in list(self.notice_of.items()):
+            if value == int(notice):
+                del self.notice_of[key]
 
 
 class LimitsNotifier(QObject):

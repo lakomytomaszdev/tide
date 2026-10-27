@@ -25,7 +25,7 @@ from ..agents import gitinfo
 from ..agents.claude import ClaudeLog
 from ..agents.codex import SCHEDULED_KINDS, CodexLog
 from ..agents.jsonl import JsonlTail, _parse_lines, read_head
-from ..agents.state import TURN_END, derive_state
+from ..agents.state import TURN_END, WAITING, derive_state, waiting_text
 from ..agents.timeutil import parse_ts
 from ..krunner.index import _state_db, claude_prompt, codex_prompt, short_title
 from ..worktrees.sessions import _claude_files, _codex_files
@@ -68,6 +68,8 @@ class SessionReport:
     final_message: str = ""
     final_ts: float = 0.0
     prompt: str = ""           # pierwsze polecenie użytkownika w sesji (jedna linia, do PROMPT_LIMIT znaków)
+    waiting_text: str = ""     # na co czeka (tylko waiting): pytanie albo wywołanie do zgody — z obszaru Agents
+    last_user_ts: float = 0.0  # ostatnia wiadomość wpisana przez użytkownika (odpowiedź na pytanie z tekstu)
     live: bool = False         # stan z obszaru Agents (sesja z ostatniej doby)
     turn_ended: bool = False   # ostatnia tura skończyła się zwyczajnie (albo ją przerwano)
     runs: list = field(default_factory=list)
@@ -116,6 +118,9 @@ def collect(claude_root: str, codex_root: str, start: float, end: float,
         if state:
             report.state, report.reason, report.live = state.get("state", report.state), state.get("reason", ""), True
             report.since = float(state.get("sinceTs") or report.since)
+            # „Czeka” tylko według obszaru Agents (decyzja 36): treść z jego waitingText; własny odczyt
+            # dziennika zostaje tylko wtedy, gdy usługa sprzed tego pola go nie podała.
+            report.waiting_text = (state.get("waitingText") or report.waiting_text) if report.state == "waiting" else ""
         if report.state == "idle" and report.turn_ended:
             # W raporcie „bezczynna” po skończonej turze to po prostu „skończył” — liczy się wynik,
             # nie to, że od 30 min nic się nie dzieje.
@@ -149,6 +154,8 @@ def read_session(path: str, cls, start: float, end: float, automations: dict | N
         report.title = short_title(report.prompt)
     state, reason, since = derive_state(log, end, None, None, lambda _ts: False)
     report.state, report.reason, report.since = state, reason, since
+    report.waiting_text = waiting_text(log) if state == WAITING else ""
+    report.last_user_ts = log.last_user_ts
     report.turn_ended = log.phase == TURN_END
     if cls is CodexLog:
         report.automation = (automations or {}).get(log.session_id, {})

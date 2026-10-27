@@ -73,6 +73,7 @@ class Report:
     forecast: object = None
     previous_day: str = ""
     standup: dict = field(default_factory=dict)   # „Na daily” (summarize.summarize), dokłada generate()
+    notes: dict = field(default_factory=dict)     # „Skończone dziś”: projekt → notki po tickecie (reports/notes.py)
 
     @property
     def active(self) -> list:
@@ -169,13 +170,17 @@ def build(day: str, start: float, end: float, *, workspace: str, claude_root: st
                   forecast=limits.forecast(snap), previous_day=previous_day)
 
 
+def slug_base(name: str) -> str:
+    """Nazwa pliku strony projektu bez numeru przy powtórce (assign_slugs) — też dla notek po tickecie."""
+    base = SLUG_RE.sub("-", (name or "").lower()).strip("-.")[:60].strip("-.") or "projekt"
+    return f"{base}-projekt" if base in RESERVED else base
+
+
 def assign_slugs(projects: list[Project]) -> None:
     """Bezpieczne nazwy plików: [a-z0-9._-], bez „index”, bez kropki na początku, unikalne."""
     used: set[str] = set()
     for project in projects:
-        base = SLUG_RE.sub("-", project.name.lower()).strip("-.")[:60].strip("-.") or "projekt"
-        if base in RESERVED:
-            base = f"{base}-projekt"
+        base = slug_base(project.name)
         slug, n = base, 2
         while slug in used:
             slug, n = f"{base}-{n}", n + 1

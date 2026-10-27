@@ -74,6 +74,8 @@ def _attach(projects: list, start: float, end: float, cache_file: str | None, tr
         # i jego pytanie bez odpowiedzi.
         entry["id"] = str(b.get("id") or "")
         entry["question"] = str(b.get("question") or "")
+        entry["questionTs"] = b.get("questionTs") or 0
+        entry["questionKind"] = b.get("questionKind") or "question"
         entry["all"] = [dict(t) for t in b.get("tickets") or []]
         entry["goal"] = str(plan.get("goal") or "") or _goal(plan.get("path") or "")
         project.plans.append(entry)

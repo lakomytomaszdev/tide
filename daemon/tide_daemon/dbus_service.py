@@ -49,18 +49,21 @@ Obiekt /Reports, interfejs org.tide.Daemon.Reports (raport poranny):
                              albo pusty napis przy błędzie (odpowiedź po zakończeniu),
 - Latest() -> s              ścieżka index.html najnowszego raportu albo pusty napis,
 - Status() -> s              JSON {path, day, generatedAt, projects, waiting, unread} najnowszego raportu
-                             (bez raportu path pusty, unread false) — link „Raport” w widżetach,
+                             (bez raportu path pusty, unread false) — link „Raport” w widżetach; raport
+                             bieżącej doby: waiting na żywo (bez nieaktualnych), waitingNow, finished,
 - Open() -> b                najnowszy raport w przeglądarce (xdg-open) i oznaczenie go jako przeczytany;
                              False, gdy raportu nie ma albo nie da się go otworzyć,
 - Days() -> s                JSON {root, today, keepDays, latest, unread, days: [{day, generatedAt, projects,
                              waiting, data}]} — dni z raportem od najnowszego (widok „Raporty” okna Tide),
-- Day(s day) -> s            JSON raportu doby z report.json (przegląd, „Na daily”, teksty do schowka) z polami
-                             ok, latest, unread, legacy; brak doby — {ok: false, error: "missing"},
+- Day(s day) -> s            JSON raportu doby z report.json (przegląd, „Dziś w skrócie”, „Na daily”, notki
+                             „Skończone dziś”, teksty do schowka) z polami ok, latest, unread, legacy; bieżąca
+                             doba także stale/now/nowText (czeka na żywo); brak doby — {ok: false, error: "missing"},
 - OpenDay(s day, s project) -> b  strona doby w przeglądarce: index.html (pusty project) albo <slug>.html;
                              strona najnowszego raportu oznacza go jako przeczytany,
 - MarkRead(s day) -> b       najnowszy raport obejrzany w oknie Tide — przeczytany jak po Open(),
 - sygnał Ready(s path)       powstał nowy raport,
-- sygnał Changed()           nowy raport albo zmiana przeczytania — warto pobrać Status() ponownie.
+- sygnał Changed()           nowy (także żywy) raport, notka po tickecie, zmiana tego, co czeka, albo zmiana
+                             przeczytania — warto pobrać Status() (i Days()/Day()) ponownie.
 
 Obiekt /Coordination, interfejs org.tide.Daemon.Coordination (koordynatorzy, tickety i podagenci):
 - Coordinators() -> s        lista koordynatorów z ostatnich dni jako JSON (z licznikami ticketów),

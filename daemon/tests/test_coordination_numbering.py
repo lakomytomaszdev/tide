@@ -342,8 +342,8 @@ class ReportTest(unittest.TestCase):
         model = {"proj": {"headline": "x", "theme": "", "done": [], "doing": [], "next": [], "chores": [],
                           "waiting": [{"ref": "", "text": "Odpowiedz na pytanie o termin"}]}}
         merged = standup.merge(model, [fact])["proj"]["waiting"]
-        self.assertEqual([i["text"][:17] for i in merged], ["Konflikt numerów:", "Odpowiedz na pyta"],
-                         "model faktów o konfliktach nie dostaje — pozycja z reguł zawsze jest")
+        self.assertEqual([i["text"][:17] for i in merged], ["Konflikt numerów:"],
+                         "„Czeka na mnie” zawsze z reguł (PT-23 C): konflikt jest, pozycja modelu bez ref odpada")
 
 
 class ReservationTest(unittest.TestCase):

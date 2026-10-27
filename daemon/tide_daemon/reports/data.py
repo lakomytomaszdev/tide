@@ -44,13 +44,28 @@ def _items(items) -> list[dict]:
         if not isinstance(item, dict):
             continue
         entry = {"ref": str(item.get("ref") or ""), "text": str(item.get("text") or "")}
-        if item.get("about"):
-            entry["about"] = str(item["about"])
-        if item.get("next"):
-            entry["next"] = str(item["next"])
+        for key in ("about", "next", "kind", "sessionId"):
+            if item.get(key):
+                entry[key] = str(item[key])
+        if item.get("sessionId"):
+            entry["since"] = float(item.get("since") or 0)
         if item.get("more"):
             entry["more"] = True
         out.append(entry)
+    return out
+
+
+def _notes(notes) -> list[dict]:
+    """Notki „Skończone dziś” do report.json — same napisy i liczby (reports/notes.py)."""
+    out = []
+    for note in notes or []:
+        if not isinstance(note, dict) or not note.get("text"):
+            continue
+        out.append({"id": str(note.get("id") or ""), "ref": str(note.get("ref") or ""),
+                    "title": str(note.get("title") or ""), "text": str(note.get("text") or ""),
+                    "summary": str(note.get("summary") or ""), "manual": bool(note.get("manual")),
+                    "checklist": [str(c) for c in note.get("checklist") or [] if c][:8],
+                    "ts": float(note.get("ts") or 0)})
     return out
 
 
@@ -61,7 +76,7 @@ def _outside(report) -> list[dict]:
     out = []
     for p, s in sorted(sessions, key=lambda ps: (order.get(ps[1].state, 2), -ps[1].last_ts)):
         state, word = render.state_of(s)
-        said = standup.last_question(s.final_message) if state == "waiting" else \
+        said = standup.clean(getattr(s, "waiting_text", "") or "", 320) if state == "waiting" else \
             standup.first_sentences(s.final_message, 2, 320)
         task = standup.clean(getattr(s, "prompt", "") or "", 300)
         out.append({"project": p.name, "path": p.path, "tool": s.tool, "state": state, "word": word,
@@ -71,11 +86,14 @@ def _outside(report) -> list[dict]:
 
 
 def build(report) -> dict:
-    """Przegląd raportu do report.json — kolejność kart jak w indeksie (render.overview)."""
+    """Przegląd raportu do report.json — kolejność kart jak w indeksie (render.overview). Projekty z samymi
+    porządkami (bez niczego, co czeka) nie są kartami: idą do `choreProjects` (jedna zwinięta linia)."""
     summary = getattr(report, "standup", None) or {}
     by_name = summary.get("projects") or {}
+    notes = getattr(report, "notes", None) or {}
     repos = list(report.repos)
     cards = []
+    chore_projects = []
     for i, p in enumerate(repos):
         s = by_name.get(p.name) or {}
         waits = [item for item in s.get("waiting") or [] if not item.get("more")]
@@ -93,12 +111,18 @@ def build(report) -> dict:
             "plans": [{"label": plan.get("label") or "", "done": plan.get("done") or 0, "total": plan["total"]}
                       for plan in getattr(p, "plans", None) or () if plan.get("total")],
             "copyText": render.daily_text(report, [p]),
+            "finished": _notes(notes.get(p.name)),
         }
         for key in standup.ALL_KEYS:
             entry[key] = _items(s.get(key))
+        if chores_only and not hot and not entry["finished"]:
+            chore_projects.append({"name": p.name, "slug": p.slug, "page": entry["page"], "path": p.path,
+                                   "chores": entry["chores"]})
+            continue
         cards.append(((not hot, chores_only, i), entry))
     projects = [entry for _key, entry in sorted(cards, key=lambda c: c[0])]
     outside = _outside(report)
+    brief = [str(b) for b in summary.get("brief") or [] if b]
     return {
         "version": VERSION,
         "day": report.day,
@@ -119,10 +143,142 @@ def build(report) -> dict:
             "outsideWaiting": sum(1 for s in outside if s["state"] == "waiting"),
             "quiet": len(report.quiet),
         },
-        "copyAll": render.daily_text(report, repos),
+        "brief": brief,
+        "briefSource": summary.get("briefSource") or ("model" if summary.get("source") == "model" else "rules"),
+        "copyAll": render.daily_text(report, repos, brief=True),
         "projects": projects,
+        "choreProjects": chore_projects,
         "outside": outside,
     }
+
+
+# --- na żywo (bieżąca doba) ---------------------------------------------------------------------
+# „Czeka na ciebie” znaczy: agent stoi teraz (obszar Agents, decyzja 36). Raport to migawka z chwili
+# złożenia, więc dla bieżącej doby Day(), Days() i Status() przeliczają to przy każdym odczycie:
+# pozycja z sessionId, której sesja już nie czeka (albo czeka od później — na coś innego), dostaje
+# `stale` („już nieaktualne”, nie liczy się do plakietek), a `now` to lista tego, co czeka teraz.
+
+SINCE_SLACK = 90.0      # s — ta sama blokada, gdy sesja czeka od (prawie) tej samej chwili
+NOW_SHOWN = 3
+
+
+def waiting_sessions(sessions) -> dict[str, dict]:
+    return {s.get("id"): s for s in sessions or () if isinstance(s, dict) and s.get("state") == "waiting" and s.get("id")}
+
+
+def is_stale(item: dict, waiting: dict[str, dict]) -> bool:
+    sid = item.get("sessionId")
+    if not sid:
+        return False   # test, który nie przechodzi, konflikt numerów — nie zależą od sesji
+    live = waiting.get(sid)
+    if live is None:
+        return True
+    return float(live.get("sinceTs") or 0) > float(item.get("since") or 0) + SINCE_SLACK
+
+
+def _project_of(session: dict, projects: list[dict]) -> str:
+    cwd = os.path.realpath(session.get("cwd") or "/") if session.get("cwd") else ""
+    best, best_len = "", -1
+    for p in projects:
+        path = os.path.realpath(p.get("path") or "") if p.get("path") else ""
+        if path and cwd and (cwd == path or cwd.startswith(path.rstrip("/") + "/")) and len(path) > best_len:
+            best, best_len = p.get("name") or "", len(path)
+    if best:
+        return best
+    names = {p.get("name") for p in projects}
+    return session.get("project") if session.get("project") in names else (session.get("project") or "")
+
+
+def now_waiting(sessions, projects: list[dict]) -> list[dict]:
+    """Sesje, które czekają teraz (jak widżet agentów), od najdłużej czekającej."""
+    out = []
+    for s in sorted(waiting_sessions(sessions).values(), key=lambda s: s.get("sinceTs") or 0):
+        out.append({"id": s.get("id"), "project": _project_of(s, projects), "tool": s.get("tool") or "",
+                    "title": standup.clean(s.get("title") or "", 120),
+                    "text": standup.clean(s.get("waitingText") or "", 300), "reason": s.get("reason") or "",
+                    "since": float(s.get("sinceTs") or 0)})
+    return out
+
+
+def now_text(waiting: list[dict]) -> str:
+    """Jedno zdanie do „Dziś w skrócie”: „Teraz czeka na ciebie: LogTool — agent pyta: „Pushować?””."""
+    if not waiting:
+        return ""
+    parts = []
+    for w in waiting[:NOW_SHOWN]:
+        where = w["project"] or w["title"] or "agent"
+        if w["reason"] == "question" or (w["reason"] != "approval" and w["text"].endswith("?")):
+            what = f"agent pyta: „{standup.clean(w['text'], 120)}”" if w["text"] else "agent czeka na odpowiedź"
+        else:
+            what = "agent czeka na twoją zgodę" + (f" ({standup.clean(w['text'], 80)})" if w["text"] else "")
+        parts.append(f"{where} — {what}")
+    more = len(waiting) - NOW_SHOWN
+    return "Teraz czeka na ciebie: " + "; ".join(parts) + (f"; i {more} więcej" if more > 0 else "") + "."
+
+
+def apply_live(data: dict, today: str, sessions=None, notes: dict | None = None) -> dict:
+    """report.json z bieżącym stanem: notki „Skończone dziś” (każda doba) i — tylko dla bieżącej doby —
+    `stale` przy nieaktualnych pozycjach „Czeka na mnie”, `now` (co czeka teraz), przeliczone liczniki
+    i teksty do schowka, które zgadzają się z tym, co widać."""
+    data = json.loads(json.dumps(data))   # kopia — report.json zostaje migawką z chwili złożenia
+    projects = [p for p in data.get("projects") or [] if isinstance(p, dict)]
+    live = data.get("day") == today and sessions is not None
+    notes = {k: v for k, v in (notes or {}).items() if v}
+    known = {p.get("name") for p in projects}
+    for name, items in notes.items():
+        if name not in known:
+            # Projekt bez karty w porannym raporcie (praca zaczęła się później) — karta z samymi notkami.
+            slug = collect_slug(name)
+            projects.insert(0, {"name": name, "slug": slug, "page": "", "path": items[0].get("repoPath") or "",
+                                "tools": [], "headline": "", "theme": "", "counts": {}, "hot": False,
+                                "choresOnly": False, "commits": 0, "sessions": 0, "waitingSessions": 0,
+                                "lastTs": max(float(n.get("ts") or 0) for n in items), "plans": [],
+                                **{k: [] for k in standup.ALL_KEYS}})
+            data["choreProjects"] = [c for c in data.get("choreProjects") or [] if c.get("name") != name]
+    waiting = waiting_sessions(sessions) if live else {}
+    now = now_waiting(sessions, projects) if live else []
+    for p in projects:
+        if p.get("name") in notes:
+            p["finished"] = _notes(notes[p["name"]])
+        if live:
+            for item in p.get("waiting") or []:
+                if isinstance(item, dict) and not item.get("more"):
+                    item["stale"] = is_stale(item, waiting)
+        fresh = [i for i in p.get("waiting") or [] if isinstance(i, dict) and not i.get("stale")]
+        counts = dict(p.get("counts") or {})
+        counts["waiting"] = standup.counts({"waiting": fresh})["waiting"]
+        counts["finished"] = len(p.get("finished") or [])
+        p["counts"] = counts
+        if live:
+            p["hot"] = bool([i for i in fresh if not i.get("more")]) or any(w["project"] == p.get("name") for w in now)
+        p["copyText"] = standup.as_text({"projects": {p["name"]: p}}, [p["name"]], _heading(data),
+                                        notes={p["name"]: p.get("finished") or []})
+    if live:
+        data["now"] = now
+        data["nowText"] = now_text(now)
+        data["live"] = True
+    projects.sort(key=lambda p: (not p.get("hot"), not p.get("finished") and bool(p.get("choresOnly"))))
+    data["projects"] = projects
+    counts = dict(data.get("counts") or {})
+    counts["waiting"] = sum((p.get("counts") or {}).get("waiting", 0) for p in projects)
+    counts["finished"] = sum(len(p.get("finished") or []) for p in projects)
+    if live:
+        counts["waitingNow"] = len(now)
+    data["counts"] = counts
+    brief = list(data.get("brief") or []) + ([data["nowText"]] if data.get("nowText") else [])
+    data["copyAll"] = standup.as_text({"projects": {p["name"]: p for p in projects}}, [p["name"] for p in projects],
+                                      _heading(data), brief=brief,
+                                      notes={p["name"]: p.get("finished") or [] for p in projects})
+    return data
+
+
+def _heading(data: dict) -> str:
+    return f"Na daily · {render.long_date(data.get('day') or '')}" if data.get("day") else "Na daily"
+
+
+def collect_slug(name: str) -> str:
+    from .collect import slug_base   # collect importuje git i skanery — tylko gdy potrzeba
+    return slug_base(name)
 
 
 def write(folder: str, data: dict) -> None:
@@ -193,13 +349,16 @@ def _count(value) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
-def days(root: str, state: schedule.State, today: str, keep_days: int) -> dict:
-    """Lista dni z raportem, od najnowszego, dla lewej kolumny widoku."""
+def days(root: str, state: schedule.State, today: str, keep_days: int, sessions=None, notes_of=None) -> dict:
+    """Lista dni z raportem, od najnowszego, dla lewej kolumny widoku. Bieżąca doba — „czeka” na żywo
+    (sessions: lista z obszaru Agents), notes_of(doba) → notki „Skończone dziś”."""
     names = schedule.report_days(root)
     latest = names[-1] if names else ""
     out = []
     for day in reversed(names):
         data = load(root, day)
+        if data is not None and day == today and sessions is not None:
+            data = apply_live(data, today, sessions, notes_of(day) if notes_of else None)
         folder = os.path.join(root, day)
         if data is not None:
             counts = data.get("counts") if isinstance(data.get("counts"), dict) else {}
@@ -214,9 +373,9 @@ def days(root: str, state: schedule.State, today: str, keep_days: int) -> dict:
             "unread": bool(latest) and state.opened != latest, "days": out}
 
 
-def day(root: str, day_name: str, state: schedule.State) -> dict:
-    """Raport doby dla widoku: report.json z polami ok, latest i unread; raport sprzed report.json —
-    legacy z nazwami stron; brak doby — {ok: false, error: "missing"}."""
+def day(root: str, day_name: str, state: schedule.State, today: str = "", sessions=None, notes=None) -> dict:
+    """Raport doby dla widoku: report.json z polami ok, latest i unread (i stanem na żywo — apply_live);
+    raport sprzed report.json — legacy z nazwami stron; brak doby — {ok: false, error: "missing"}."""
     folder = _folder(root, day_name)
     if not folder:
         return {"ok": False, "error": "missing", "day": day_name if valid_day(day_name) else ""}
@@ -233,6 +392,8 @@ def day(root: str, day_name: str, state: schedule.State) -> dict:
                     counts={"projects": len(pages)},
                     projects=[{"name": slug, "slug": slug, "page": f"{slug}.html"} for slug in pages],
                     outside=[])
+    if sessions is not None or notes:
+        data = apply_live(data, today, sessions, notes)
     return dict(data, **meta, legacy=False)
 
 

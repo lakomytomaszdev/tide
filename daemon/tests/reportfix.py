@@ -12,7 +12,8 @@ Zegar zamrożony: NOW = 2026-10-26 07:00 czasu Europe/Warsaw (06:00Z), okres = o
   work/beta                  main; wątek Codexa z zaplanowanym zadaniem „Nocny przegląd”: 3 przebiegi
                              w okresie i 1 przed nim; plik z wypełnieniem, żeby zadziałało szukanie binarne
   work/gamma                 bez ruchu; scalony worktree gamma-wt/done → do sprzątnięcia
-  sesja Claude „c-ask”       alpha, czeka na odpowiedź (stan z obszaru Agents)
+  sesja Claude „c-ask”       alpha: „Pushować?” na końcu tury, odpowiedź użytkownika, potem AskUserQuestion
+                             (czeka na nie — stan i waitingText z obszaru Agents; PT-23)
   sesja Claude „c-old”       alpha, sprzed okresu → pomijana
   wątek podagenta Codexa     → pomijany
 """
@@ -34,6 +35,7 @@ CODEX_WT_THREAD = "0000000c-0000-4000-8000-000000000002"
 SUBAGENT_THREAD = "0000000c-0000-4000-8000-000000000003"
 
 INJECTION = '<script>alert("x")</script>'
+ASK_QUESTION = "Który wariant wydania wybierasz: pełny czy tylko poprawki?"
 
 STATUS = {
     "chatgpt": {"session": {"remaining": None, "reset": None}, "weekly": {"remaining": 91, "reset": "~poniedziałek 11:41"},
@@ -156,11 +158,21 @@ def _claude_logs(p: dict) -> None:
     ]
     _write_jsonl(os.path.join(root, escape_cwd(search), "c-search.jsonl"), records)
 
+    # Prawdziwy przypadek z PT-23: pytanie na końcu tury („Pushować?”), użytkownik odpowiada, agent
+    # pyta potem przez AskUserQuestion — czeka na TO pytanie, a nie na stare z tekstu.
     ask = [
-        _claude("c-ask", alpha, "master", NOW - 40 * 60, "user", message={"role": "user", "content": "Plan the release"}),
+        _claude("c-ask", alpha, "master", NOW - 50 * 60, "user", message={"role": "user", "content": "Plan the release"}),
+        _claude("c-ask", alpha, "master", NOW - 45 * 60, "assistant",
+                message={"role": "assistant", "stop_reason": "end_turn",
+                         "content": [{"type": "text", "text": "Zmiany w planie wydania są gotowe.\n\nPushować?"}]}),
+        {"type": "system", "subtype": "turn_duration", "isSidechain": False, "timestamp": iso(NOW - 45 * 60 + 1),
+         "cwd": alpha, "gitBranch": "master", "sessionId": "c-ask"},
+        _claude("c-ask", alpha, "master", NOW - 40 * 60, "user",
+                message={"role": "user", "content": "Tak, ale najpierw pokaż warianty"}),
         _claude("c-ask", alpha, "master", NOW - 30 * 60, "assistant",
                 message={"role": "assistant", "stop_reason": "tool_use",
-                         "content": [{"type": "tool_use", "id": "q1", "name": "AskUserQuestion", "input": {}}]}),
+                         "content": [{"type": "tool_use", "id": "q1", "name": "AskUserQuestion",
+                                      "input": {"questions": [{"question": ASK_QUESTION, "header": "Wariant"}]}}]}),
         {"type": "custom-title", "customTitle": "Release plan", "sessionId": "c-ask"},
     ]
     _write_jsonl(os.path.join(root, escape_cwd(alpha), "c-ask.jsonl"), ask)
@@ -226,7 +238,8 @@ def live_sessions(p: dict) -> list[dict]:
     """Stan z obszaru Agents w chwili raportu (tak jak AgentMonitor.sessions)."""
     return [
         {"id": "claude:c-ask", "tool": "claude", "sessionId": "c-ask", "cwd": p["alpha"], "state": "waiting",
-         "reason": "question", "sinceTs": NOW - 30 * 60, "lastActivityTs": NOW - 30 * 60, "canActivate": True},
+         "reason": "question", "sinceTs": NOW - 30 * 60, "lastActivityTs": NOW - 30 * 60, "canActivate": True,
+         "waitingText": ASK_QUESTION, "title": "Release plan", "project": "alpha"},
         {"id": "claude:c-search", "tool": "claude", "sessionId": "c-search", "cwd": p["search"], "state": "idle",
          "reason": "", "sinceTs": NOW - 3.5 * H, "lastActivityTs": NOW - 3.5 * H},
     ]

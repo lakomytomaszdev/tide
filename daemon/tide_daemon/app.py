@@ -247,6 +247,8 @@ def main(argv=None) -> int:
     if board is not None:
         board.start()  # zmiany z czasu, gdy usługa nie działała, i obserwacja katalogu tablicy
     if coordination is not None:
+        # Żywy raport i notki „Skończone dziś”: każda nowa wersja tablic koordynacji.
+        coordination.changed.connect(lambda: report.coordination_changed(coordination.boards))
         coordination.start()  # pierwszy odczyt dzienników koordynatorów w tle, chwilę po starcie
     if docker is not None:
         docker.start()  # migawka i strumień zdarzeń w tle; brak Dockera to stan, nie błąd usługi
@@ -335,12 +337,16 @@ def start_report(app, args, clock, settings, monitor, trees):
     from .reports import schedule
     from .tabmarks import palette_candidates
 
-    notifier = None
+    from .reports import notes as report_notes
+
+    notifier = note_notifier = None
     holder = {}
     if not args.no_notifications:
-        from .notifications import ReportNotifier
+        from .notifications import NoteNotifier, ReportNotifier
         # „Otwórz” w powiadomieniu idzie przez ReportMonitor, żeby oznaczyć raport jako przeczytany.
         notifier = ReportNotifier(lambda path: holder["monitor"].open_path(path), parent=app)
+        # Notka po tickecie: „Otwórz” → okno Tide, widok Raporty, doba/projekt.
+        note_notifier = NoteNotifier(lambda item: trees.launchers.show_view("reports", item), parent=app)
 
     def worktree_items():
         # Gotowa lista z obszaru Worktrees (z rozmiarami); przed pierwszym odczytem raport przejrzy repozytoria sam.
@@ -356,7 +362,11 @@ def start_report(app, args, clock, settings, monitor, trees):
         codex_root=args.codex_dir, max_depth=args.worktree_depth, sessions=lambda: monitor.sessions,
         worktrees=worktree_items, notifier=notifier, clock=clock, coordination_cache=coordination_cache_file(args),
         opener=trees.launchers.open_report, summary=args.report_summary or settings.summary,
-        tracker=report_tracker(args, clock), parent=app, **kwargs)
+        tracker=report_tracker(args, clock), notes_file=report_notes.state_path(), note_notifier=note_notifier,
+        parent=app, **kwargs)
+    # Żywy raport: zmiany w /Agents („czeka”, agent skończył pracę); tablice koordynacji podłącza
+    # start_coordination niżej w main (notki po tickecie, zmiany ticketów).
+    monitor.changed.connect(holder["monitor"].sessions_changed)
     return holder["monitor"]
 
 

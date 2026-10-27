@@ -152,6 +152,11 @@ def report_day(now: float, settings: Settings) -> date:
     return (local(now) - timedelta(minutes=settings.day_start)).date()
 
 
+def day_start_ts(day: date, settings: Settings) -> float:
+    """Chwila, w której zaczyna się doba raportu `day` (lokalnie, dayStart)."""
+    return (datetime.combine(day, datetime.min.time()).astimezone() + timedelta(minutes=settings.day_start)).timestamp()
+
+
 def due(now: float, state: State, settings: Settings, at_login: bool) -> bool:
     """Czy teraz trzeba wygenerować raport doby.
 

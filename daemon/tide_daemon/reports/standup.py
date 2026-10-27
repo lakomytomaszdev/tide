@@ -148,6 +148,20 @@ def last_question(text: str, limit: int = 280) -> str:
     return clean(questions[-1], limit) if questions else first_sentences(body, 1, limit)
 
 
+def open_question(text: str, said_ts: float = 0.0, user_ts: float = 0.0, limit: int = 280) -> str:
+    """Pytanie zostawione na końcu skończonej tury: zdanie ze znakiem zapytania w ostatnim akapicie
+    wiadomości agenta — i tylko wtedy, gdy użytkownik nie napisał nic po niej (user_ts > said_ts
+    znaczy, że już odpowiedział). To nigdy nie jest „czeka” (decyzja 36), najwyżej „zostawił pytanie”."""
+    if user_ts and said_ts and user_ts >= said_ts:
+        return ""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", plain(text)) if p.strip()]
+    if not paragraphs:
+        return ""
+    last = paragraphs[-1]
+    questions = [s for line in last.splitlines() for s in _SENT.split(line) if s.strip().endswith("?")]
+    return clean(questions[-1], limit) if questions else ""
+
+
 def failing_tests(text: str) -> str:
     """Zdanie o testach, które nie przechodzą (heurystyka), albo pusty napis."""
     for para in plain(text).splitlines():
@@ -250,7 +264,9 @@ def project_facts(report, project) -> dict:
             "source": entry.get("source") or "", "done": entry.get("done", 0), "total": entry.get("total", 0),
             "recent": len(recent)})
         if entry.get("question"):
-            out["questions"].append({"text": clean(entry["question"], 300), "plan": clean(entry.get("title"), 120)})
+            out["questions"].append({"text": clean(entry["question"], 300), "plan": clean(entry.get("title"), 120),
+                                     "coordinator": entry.get("id") or "", "ts": entry.get("questionTs") or 0,
+                                     "kind": entry.get("questionKind") or "question"})
         for t in tickets:
             state = t.get("state") or "todo"
             in_period = (t.get("lastActivityTs") or 0) >= start
@@ -273,6 +289,7 @@ def project_facts(report, project) -> dict:
                     "review": clean(t.get("review"), 80), "result": clean(t.get("result"), 240),
                     "question": clean(t.get("question"), 300), "branch": t.get("branch") or "",
                     "plan": clean(entry.get("title"), 120), "ts": t.get("lastActivityTs") or 0,
+                    "questionTs": t.get("questionTs") or 0, "coordinator": entry.get("id") or "",
                     "category": "chores" if plan_chore or text_is_chore(title) else "work"}
             seen_tickets[key] = item
             out["tickets"].append(item)
@@ -372,10 +389,17 @@ def _session_fact(s) -> dict:
     message = s.final_message or ""
     task = clean(plain(getattr(s, "prompt", "") or ""), TASK_MAX)
     title = clean(s.title, 160)
-    fact = {"title": title, "task": "" if task == title else task, "tool": s.tool, "state": state,
-            "reason": s.reason or "",
-            "message": last_question(message) if state == "waiting" else first_sentences(message, 2, 320),
-            "full": message, "failing": failing_tests(message) if state != "working" else "",
+    waiting = state == "waiting"
+    # „Czeka” = agent stoi teraz (obszar Agents) — treść to jego waitingText, nigdy pytanie z ostatniego
+    # tekstu (PT-23: stare „Pushować?” zamiast prawdziwego pytania z AskUserQuestion).
+    waiting_for = clean(plain(getattr(s, "waiting_text", "") or ""), 300) if waiting else ""
+    left = "" if waiting or state == "working" else \
+        open_question(message, getattr(s, "final_ts", 0.0), getattr(s, "last_user_ts", 0.0))
+    fact = {"id": getattr(s, "id", ""), "title": title, "task": "" if task == title else task, "tool": s.tool,
+            "state": state, "reason": s.reason or "",
+            "message": waiting_for if waiting else first_sentences(message, 2, 320),
+            "waitingFor": waiting_for, "question": left,
+            "full": "" if waiting else message, "failing": failing_tests(message) if state not in ("working", "waiting") else "",
             "since": s.since, "first": s.first_ts, "last": s.last_ts,
             "lastAction": clean(s.last_action, 80) if state in ("working", "waiting") else ""}
     if s.runs or s.automation:
@@ -467,6 +491,13 @@ def rules(fact: dict) -> dict:
     groups["waiting"] = conflict_items(fact)
     used_units: set[int] = set()
     tickets = fact["tickets"]
+    # Sesje koordynatorów według obszaru Agents: pytanie z pliku tablicy liczy się jako „czeka” tylko
+    # wtedy, gdy koordynator naprawdę stoi teraz (albo nie znamy jego sesji — wtedy ocenia to widok na żywo).
+    coordinators = {c.get("id"): c for c in fact.get("coordinatorSessions") or [] if c.get("id")}
+
+    def blocked(coordinator: str) -> bool:
+        known = coordinators.get(coordinator)
+        return known is None or known["state"] == "waiting"
 
     for t in tickets:
         linked = [u for u in fact["units"] if u.get("ticket") and u["ticket"] in (t["id"], t["title"])]
@@ -479,7 +510,14 @@ def rules(fact: dict) -> dict:
         if state == "czeka":
             question = t["question"] or (note.split("„", 1)[-1].rstrip("”") if "„" in note else note)
             question = _without_ref(question, ref)
-            groups["waiting"].append(_item(ref, f"{title}: {question}" if question else f"{title} — czeka na twoją decyzję"))
+            if not blocked(t.get("coordinator", "")):
+                # Agent już nie stoi na tym pytaniu (odpowiedź poszła albo rozmowa się skończyła).
+                groups["doing"].append(_item(ref, f"{title} — zostało pytanie bez odpowiedzi: „{question}”"
+                                             if question else f"{title} — czekało na decyzję"))
+                continue
+            groups["waiting"].append(_item(ref, f"{title}: {question}" if question else f"{title} — czeka na twoją decyzję",
+                                           sessionId=t.get("coordinator", ""), since=t.get("questionTs") or t.get("ts") or 0,
+                                           kind="blocked"))
             continue
         if t.get("category") == "chores":
             groups["chores"].append(_item(ref, f"{title} — {STATE_SHORT.get(state, state)}"))
@@ -517,33 +555,59 @@ def rules(fact: dict) -> dict:
             continue
         _unit_items(unit, fact, groups)
     if len(loose) > LOOSE_MAX:
-        commits = sum(u["count"] for u in loose)
-        names = ", ".join(u["branch"] for u in loose[:4]) + (f" i {len(loose) - 4} innych" if len(loose) > 4 else "")
-        groups["doing"].append(_item("", f"{len(loose)} " + _plural(len(loose), "gałąź", "gałęzie", "gałęzi")
-                                     + f" z niescaloną pracą ({commits} "
-                                     + _plural(commits, "commit", "commity", "commitów") + f"): {names}",
+        names = ", ".join(_unit_title(u) for u in loose[:4]) + (f" i {len(loose) - 4} innych" if len(loose) > 4 else "")
+        groups["doing"].append(_item("", f"{len(loose)} rozpoczętych zmian czeka na przejrzenie: {names}",
                                      next_="przejrzeć, scalić albo usunąć"))
     else:
         for unit in loose:
             _unit_items(unit, fact, groups)
 
-    asked = {t["question"] for t in tickets if t["question"]}
+    asked = {_same(t["question"]) for t in tickets if t["question"] and t["state"] == "czeka"}
     for q in fact["questions"]:
-        if q["text"] in asked:
-            continue  # to samo pytanie jest już przy tickecie
-        groups["waiting"].append(_item("", f"Pytanie koordynatora („{q['plan']}”): {q['text']}"))
+        if _same(q["text"]) in asked or not blocked(q.get("coordinator", "")):
+            continue  # to samo pytanie jest już przy tickecie albo agent już na nie nie czeka
+        asked.add(_same(q["text"]))
+        what = "czeka na twoją zgodę" if q.get("kind") == "approval" else "agent pyta"
+        groups["waiting"].append(_item("", f"{q['plan'] or 'Plan'}: {what}: „{q['text']}”",
+                                       sessionId=q.get("coordinator", ""), since=q.get("ts") or 0, kind="blocked"))
     for s in fact.get("coordinatorSessions") or []:
-        if s["state"] == "waiting" and s["message"] and not fact["questions"]:
-            groups["waiting"].append(_item("", f"Koordynator „{s['title']}” czeka: {s['message']}"))
+        if s["state"] == "waiting" and _same(s["waitingFor"]) not in asked:
+            groups["waiting"].append(_waiting_item(s["title"] or "Plan", s, ""))
 
+    for items in groups.values():
+        for item in items:
+            # Dopiski z wiadomości agenta i opisów: bez ścieżek i żargonu (raport dla ludzi).
+            for key in ("about", "next"):
+                if item.get(key) and human_problem(item[key]) in ("ścieżka", "żargon"):
+                    del item[key]
     out = {"theme": _theme(fact), **{k: _cap(v) for k, v in groups.items()}}
     out["headline"] = _headline(out)
     return out
 
 
+def _same(text: str) -> str:
+    """Klucz do porównania dwóch wersji tego samego pytania (z ID ticketu na początku albo bez)."""
+    text = clean(text).lower()
+    return re.sub(r"^[a-z][a-z0-9]{1,9}-\d{1,6}\s*[:—-]\s*", "", text)
+
+
+def _waiting_item(title: str, s: dict, ref: str) -> dict:
+    """Pozycja „Czeka na mnie” z sesji, która stoi teraz: o co pyta albo na jaką zgodę czeka
+    (waitingText z obszaru Agents), z sessionId i since — widok na żywo pozna, że już nieaktualna."""
+    text = s.get("waitingFor") or ""
+    asks = s.get("reason") == "question" or (s.get("reason") != "approval" and text.rstrip().endswith("?"))
+    if not asks:
+        line = f"{title}: agent czeka na twoją zgodę" + (f" ({text})" if text else "")
+    elif text:
+        line = f"{title}: agent pyta: „{text}”"
+    else:
+        line = f"{title}: agent czeka na ciebie"
+    return _item(ref, line, sessionId=s.get("id") or "", since=s.get("since") or 0, kind="blocked")
+
+
 def conflict_items(fact: dict) -> list[dict]:
     """„Konflikt numerów: …” — pozycje „Czeka na mnie” z kontroli numerów ticketów."""
-    return [_item("", CONFLICT + text) for text in fact.get("conflicts") or [] if text]
+    return [_item("", CONFLICT + text, kind="attention") for text in fact.get("conflicts") or [] if text]
 
 
 def _category(unit: dict) -> str:
@@ -553,16 +617,23 @@ def _category(unit: dict) -> str:
 def _unit_items(unit: dict, fact: dict, groups: dict) -> None:
     sessions = unit["sessions"]
     states = {s["state"] for s in sessions}
-    title = _unit_title(unit)
+    title, hint = _split_ref(_unit_title(unit))
+    if hint and not unit.get("ticket"):
+        unit = dict(unit, ticket=hint)
     message = next((s["message"] for s in sessions if s["message"] and s["state"] != "waiting"), "")
     chores = _category(unit) == "chores"
     for s in sessions:
         if s["failing"]:
-            groups["waiting"].append(_item("", f"{title}: {s['failing']}"))
+            groups["waiting"].append(_item("", f"{title}: {s['failing']}", kind="attention"))
     if "waiting" in states:
         s = next(s for s in sessions if s["state"] == "waiting")
-        what = "czeka na zgodę" if s["reason"] == "approval" else "czeka na odpowiedź"
-        groups["waiting"].append(_item(unit.get("ticket", ""), f"{title}: {what}" + (f" — {s['message']}" if s["message"] else "")))
+        groups["waiting"].append(_waiting_item(title, s, unit.get("ticket", "")))
+        return
+    left = next((s["question"] for s in sessions if s.get("question")), "")
+    if left and not chores:
+        # Pytanie w tekście skończonej tury to nie „czeka” (decyzja 36) — praca stoi w toku z pytaniem.
+        groups["doing"].append(_item(unit.get("ticket", ""), f"{title} — agent zostawił pytanie: „{left}”",
+                                     about=message if message != left else ""))
         return
     if chores:
         groups["chores"].append(_item(unit.get("ticket", ""), title))
@@ -576,19 +647,14 @@ def _unit_items(unit: dict, fact: dict, groups: dict) -> None:
     if scheduled and not unit["count"]:
         return  # wątek zaplanowanego zadania: liczą się przebiegi, nie sama sesja
     if "working" in states:
-        s = next(s for s in sessions if s["state"] == "working")
-        progress = "agent pracuje" + (f" ({s['lastAction']})" if s["lastAction"] else "")
-        if unit["count"]:
-            progress += f", {unit['count']} " + _plural(unit["count"], "commit", "commity", "commitów") + " na gałęzi"
-        groups["doing"].append(_item(unit.get("ticket", ""), f"{title} — {progress}", about=message or task))
+        groups["doing"].append(_item(unit.get("ticket", ""), f"{title} — trwa praca", about=message or task))
         return
     if unit["kind"] in ("merged", "main") or unit.get("mergedInto"):
         about = message or _commit_why(unit, title)
         groups["done"].append(_item(unit.get("ticket", ""), title, about=about))
         return
     if unit["kind"] == "branch":
-        branch = unit["branch"]
-        progress = f"{unit['count']} " + _plural(unit["count"], "commit", "commity", "commitów") + f" na gałęzi {branch}, niescalone"
+        progress = "zmiany czekają na scalenie"
         if "interrupted" in states:
             progress = "przerwane w trakcie, " + progress
         groups["doing"].append(_item(unit.get("ticket", ""), f"{title} — {progress}", about=message or task,
@@ -596,7 +662,7 @@ def _unit_items(unit: dict, fact: dict, groups: dict) -> None:
         return
     # sama sesja, bez commitów
     if "interrupted" in states:
-        groups["doing"].append(_item("", f"{title} — przerwane", about=task, next_="wznowić sesję"))
+        groups["doing"].append(_item("", f"{title} — przerwane", about=task, next_="wznowić pracę"))
     elif message or states & {"done", "idle", "ended"}:
         groups["done"].append(_item("", title, about=message))
 
@@ -626,18 +692,13 @@ def _commit_why(unit: dict, title: str = "") -> str:
     n = unit["count"]
     if unit["kind"] == "main" and n <= 1:
         return ""
-    if unit["kind"] == "merged":
-        where = f"scalone do {unit.get('into') or 'gałęzi głównej'}"
-    elif unit.get("mergedInto"):
-        where = f"scalone do {unit['mergedInto']}"
+    if unit.get("mergedInto"):
+        where = "Zmiany są w wersji zbiorczej"
     else:
-        where = f"w {unit.get('into')}"
+        where = "Zmiany są już w głównej wersji"
     picked = [subject_parts(s)[2] for s in unit["commits"] if subject_parts(s)[0] in ("feat", "fix", "")]
     picked = [p for p in picked if p and p not in title][:2]
-    text = f"{n} " + _plural(n, "commit", "commity", "commitów") + f" {where}"
-    if picked:
-        text += ", m.in. " + "; ".join(picked)
-    return text
+    return where + (", m.in.: " + "; ".join(picked) if picked else "") + "."
 
 
 def _theme(fact: dict) -> str:
@@ -648,9 +709,9 @@ def _theme(fact: dict) -> str:
         p = plans[0]
         if p.get("goal"):
             return clean(f"{p['title']}: {first_sentences(p['goal'], 2, 400)}", THEME_MAX)
-        text = f"Plan „{p['title']}”: {p['done']} z {p['total']} " + _plural(p["total"], "ticketu", "ticketów", "ticketów") + " gotowe"
+        text = f"Plan „{p['title']}”: {p['done']} z {p['total']} " + _plural(p["total"], "zadania", "zadań", "zadań") + " gotowe"
         if p["live"]:
-            text += ", koordynator dalej pracuje"
+            text += ", praca trwa"
         return text + "."
     parts = [f"„{p['title']}” ({p['done']}/{p['total']})" for p in plans[:4]]
     more = f" i {len(plans) - 4} więcej" if len(plans) > 4 else ""
@@ -671,12 +732,20 @@ def _headline(summary: dict) -> str:
     return clean(" ".join(parts), HEADLINE_MAX)
 
 
-def _item(ref: str, text: str, about: str = "", next_: str = "") -> dict:
+def _item(ref: str, text: str, about: str = "", next_: str = "", sessionId: str = "", since: float = 0.0,
+          kind: str = "") -> dict:
+    """Pozycja „Na daily”. Pozycje „Czeka na mnie” mają `kind`: "blocked" (agent stoi teraz — z `sessionId`
+    i `since`, żeby widok na żywo poznał, że już nieaktualna) albo "attention" (test, konflikt numerów)."""
     item = {"ref": ref if TICKET_RE.match(ref or "") else "", "text": clean(text, TEXT_MAX)}
     if about:
         item["about"] = clean(about, ABOUT_MAX)
     if next_:
         item["next"] = clean(next_, ABOUT_MAX)
+    if kind:
+        item["kind"] = kind
+    if sessionId:
+        item["sessionId"] = sessionId
+        item["since"] = round(float(since or 0), 3)
     return item
 
 
@@ -719,6 +788,167 @@ def counts(standup: dict) -> dict:
                 n += 1
         out[key] = n
     return out
+
+
+# --- czytelność: raport dla ludzi, nie dla AI ------------------------------------------------------
+# Napisy, które nie przechodzą: żargon pracy agentów, ścieżki plików, angielski, same numery ticketów.
+# Używane przy walidacji odpowiedzi modelu (pozycja odrzucona albo naprawiona) i w testach reguł.
+
+JARGON = re.compile(r"(?i)\b(?:koordynator\w*|podagen\w*|sub-?agent\w*|worktree\w*|heartbeat\w*|"
+                    r"commit\w*|merge\w*|branch\w*|gałąź|gałęzi\w*|sesj\w*|tool[_ ]use|agentSaid|"
+                    r"prompt\w*)\b")
+PATH_LIKE = re.compile(
+    r"(?<![\w/])(?:~|\.{1,2})?/[\w.@+-]+(?:/[\w.@+-]+)+"            # /abs/path, ~/x/y, ./x/y
+    r"|(?<![\w/])[\w.@+-]+/[\w.@+-]+/[\w.@+-]+"                     # a/b/c
+    r"|(?<![\w/])(?:[\w.@-]+/)+[\w@-]+\.[A-Za-z0-9]{1,5}\b"          # dir/file.ext
+    r"|\b[\w-]+\.(?:py|qml|js|ts|tsx|jsx|md|json|toml|ya?ml|cs|csproj|kt|java|go|rs|sh|sql|xml|html|css|txt)\b")
+_EN = re.compile(r"(?i)\b(?:the|and|with|for|from|into|of|is|are|was|were|this|that|it|to|add(?:ed|s)?|"
+                 r"fix(?:ed|es)?|implement\w*|update[sd]?|remove[sd]?|support\w*|should|now|new|when|after|"
+                 r"before|all|can|will|done|ready)\b")
+_PL = re.compile(r"(?i)[ąćęłńóśźż]|\b(?:i|w|z|na|do|się|że|nie|jest|są|oraz|po|od|dla|już|to|co|jak|przy|bez)\b")
+_FILLER = re.compile(r"(?i)\b(?:ticket\w*|zadani\w*|krok\w*|gotow\w*|zrobion\w*|scalon\w*|skończon\w*|"
+                     r"done|ready|merged|ok|i|oraz|do)\b")
+
+
+def looks_english(text: str) -> bool:
+    words = len(re.findall(r"[^\W\d_]+", text or ""))
+    english = len(_EN.findall(text or ""))
+    return words >= 3 and english >= 2 and english > len(_PL.findall(text or ""))
+
+
+def ids_only(text: str) -> bool:
+    """„Ticket 01 i 02 gotowe”, „V3b1–V3b10 scalone”, „LA-035 zrobione” — same numery i słowa o stanie,
+    bez treści. Krótki zwykły tekst („poprawki”) to nie to — liczy się tylko napis z numerem."""
+    text = text or ""
+    if not (TICKET_IN_TEXT.search(text) or re.search(r"\d", text)):
+        return False
+    rest = _FILLER.sub(" ", TICKET_IN_TEXT.sub(" ", text))
+    return len(re.findall(r"(?<![\w])[^\W\d_]{2,}(?![\w])", rest)) < 2
+
+
+_NUMBERED = re.compile(r"(?i)\b(?:ticket\w*|krok\w*|etap\w*|step\w*)\s+(?:nr\s*)?[A-Z]?\d")
+
+
+def human_problem(text: str) -> str:
+    """Powód, dla którego napis nie nadaje się do raportu dla ludzi, albo pusty napis."""
+    text = text or ""
+    if not text.strip():
+        return ""
+    if _NUMBERED.search(text):
+        return "same numery"   # „ticket 01 i ticket 02 …”, „kroki V3b1–V3b10” — numer zamiast treści
+    if JARGON.search(text):
+        return "żargon"
+    if PATH_LIKE.search(text):
+        return "ścieżka"
+    if ids_only(text):
+        return "same numery"
+    if looks_english(text):
+        return "angielski"
+    return ""
+
+
+_REF_HEAD = re.compile(r"^\s*\(?([A-Za-z][A-Za-z0-9]{1,9}-\d{1,6})\)?\s*(?:[:—–-]\s*)?")
+_REF_PAREN = re.compile(r"\s*\(\s*([A-Za-z][A-Za-z0-9]{1,9}-\d{1,6})\s*\)")
+
+
+def strip_refs(text: str, refs: dict, ref: str = "") -> tuple[str, str]:
+    """ID ticketów z treści do pola ref: „LA-035: bazowa wersja…” → („Bazowa wersja…”, „LA-035”).
+    Znane ID zostają w ref (pierwsze, gdy ref był pusty), nieznane po prostu znikają z treści."""
+    found = []
+
+    def take(match):
+        ident = match.group(1)
+        if ticket_key(ident):
+            found.append(ident)
+            return " " if match.group(0).startswith(" ") else ""
+        return match.group(0)
+    original = clean(text)
+    text = _REF_HEAD.sub(take, text or "", count=1)
+    text = _REF_PAREN.sub(take, text)
+    text = clean(text).lstrip(" :—–-")
+    if not ref:
+        ref = next((refs[ticket_key(i)] for i in found if ticket_key(i) in refs), "")
+    if text and text != original and original[:1] != text[:1]:
+        text = text[:1].upper() + text[1:]   # „LA-035: bazowa wersja” → „Bazowa wersja”
+    return text, ref
+
+
+def _human(text: str, refs: dict, ref: str = "") -> tuple[str, str, str]:
+    """(tekst, ref, powód odrzucenia) po naprawie ID ticketów. „LA-035 gotowe” to same numery także
+    po wyjęciu ID (zostałoby gołe „Gotowe”)."""
+    if ids_only(text):
+        return clean(text), ref, "same numery"
+    text, ref = strip_refs(text, refs, ref)
+    return text, ref, human_problem(text)
+
+
+_TITLE_REF = re.compile(r"^([A-Za-z][A-Za-z0-9]{1,9}-\d{1,6})\s*·\s*(.+)$")
+
+
+def _split_ref(title: str) -> tuple[str, str]:
+    """„tide-9 · export” (tytuł z nazwy gałęzi) → („Export”, „TIDE-9”) — numer do ref, nie do treści."""
+    match = _TITLE_REF.match(title or "")
+    if not match or not ticket_key(match.group(1)):
+        return title, ""
+    text = match.group(2).strip()
+    return text[:1].upper() + text[1:], match.group(1).upper()
+
+
+BRIEF_MAX = 5
+BRIEF_SENTENCE = 240
+
+
+def rules_brief(projects: dict, order: list[str]) -> list[str]:
+    """„Dziś w skrócie” bez modelu: zdanie na projekt z pracą (co skończone, co w toku), potem jedna
+    linia o projektach z samymi porządkami. „Czeka na ciebie” dokłada widok na żywo (data.live_brief)."""
+    out = []
+    chores_only = []
+    for name in order:
+        s = projects.get(name) or {}
+        done = [i["text"] for i in s.get("done") or [] if not i.get("more")]
+        doing = [i["text"] for i in s.get("doing") or [] if not i.get("more")]
+        if not done and not doing:
+            if s.get("chores"):
+                chores_only.append(name)
+            continue
+        if len(out) >= BRIEF_MAX - 1:
+            continue
+        parts = []
+        if done:
+            parts.append("skończone: " + _lower(done[0]).rstrip(".")
+                         + (f" (i {len(done) - 1} więcej)" if len(done) > 1 else ""))
+        if doing:
+            parts.append("w toku: " + _lower(doing[0]).rstrip("."))
+        out.append(clean(f"{name} — " + "; ".join(parts) + ".", BRIEF_SENTENCE))
+    if chores_only:
+        out.append(clean("Same porządki: " + ", ".join(chores_only[:6])
+                         + (f" i {len(chores_only) - 6} innych" if len(chores_only) > 6 else "") + ".", BRIEF_SENTENCE))
+    return out[:BRIEF_MAX]
+
+
+def _lower(text: str) -> str:
+    """Pierwsza litera mała, chyba że to skrót albo nazwa (dwie wielkie litery na początku)."""
+    if len(text) > 1 and text[:2].isupper():
+        return text
+    return text[:1].lower() + text[1:]
+
+
+def validate_brief(raw, refs: dict | None = None) -> list[str]:
+    """Zdania „Dziś w skrócie” z odpowiedzi modelu: napisy bez żargonu, ścieżek, angielskiego i samych
+    numerów, ID ticketów usunięte z treści; najwyżej BRIEF_MAX. Mniej niż dwa dobre — pusta lista (reguły)."""
+    out = []
+    for sentence in raw if isinstance(raw, list) else []:
+        if not isinstance(sentence, str):
+            continue
+        text, _ref, problem = _human(clean(sentence, BRIEF_SENTENCE), refs or {})
+        if not text or problem or JUNK_ANY.search(text):
+            continue
+        if text[-1] not in ".!?…":
+            text += "."
+        out.append(text)
+        if len(out) >= BRIEF_MAX:
+            break
+    return out if len(out) >= 2 else []
 
 
 # --- walidacja odpowiedzi modelu -------------------------------------------------------------------
@@ -765,8 +995,12 @@ def validate(data, all_facts: list[dict]) -> dict[str, dict]:
         if not name or name in out:
             continue
         refs = known_refs(names[name])
-        standup = {key: clean(entry.get(key), limit) if isinstance(entry.get(key), str) else ""
-                   for key, limit in (("theme", THEME_MAX), ("headline", HEADLINE_MAX))}
+        standup = {}
+        for key, limit in (("theme", THEME_MAX), ("headline", HEADLINE_MAX)):
+            text = clean(entry.get(key), limit) if isinstance(entry.get(key), str) else ""
+            text, _ref, problem = _human(text, refs)
+            standup[key] = "" if problem else text
+        rejected: dict[str, int] = {}
         for key in ALL_KEYS:
             items = entry.get(key)
             standup[key] = []
@@ -774,8 +1008,12 @@ def validate(data, all_facts: list[dict]) -> dict[str, dict]:
                 continue
             for raw in items[:ITEMS_MAX * 2]:
                 item = _valid_item(raw, refs, key)
-                if item and len(standup[key]) < ITEMS_MAX:
+                if item is REJECTED:
+                    rejected[key] = rejected.get(key, 0) + 1
+                elif item and len(standup[key]) < ITEMS_MAX:
                     standup[key].append(item)
+        if rejected:
+            standup["rejected"] = rejected
         _move_chores(standup)
         if not empty(standup):
             if not standup["headline"]:
@@ -800,7 +1038,10 @@ def _move_chores(standup: dict) -> None:
         standup[key] = keep
 
 
-def _valid_item(raw, refs: dict, group: str) -> dict | None:
+REJECTED = object()   # pozycja z treścią, ale nieczytelna (żargon, ścieżka, angielski, same numery)
+
+
+def _valid_item(raw, refs: dict, group: str):
     if isinstance(raw, str):
         raw = {"text": raw}
     if not isinstance(raw, dict) or not isinstance(raw.get("text"), str):
@@ -809,19 +1050,31 @@ def _valid_item(raw, refs: dict, group: str) -> dict | None:
     if not text or JUNK_ANY.search(text) or (group == "waiting" and JUNK_WAITING.search(text)):
         return None
     ref = raw.get("ref") if isinstance(raw.get("ref"), str) else ""
-    item = {"ref": refs.get(ticket_key(ref), "") if ref else "", "text": text}
+    ref = refs.get(ticket_key(ref), "") if ref else ""
+    text, ref, problem = _human(text, refs, ref)
+    if problem or not text:
+        return REJECTED
+    item = {"ref": ref, "text": text}
     about = raw.get("about") if isinstance(raw.get("about"), str) else raw.get("why")
     if group in ("done", "doing", "next") and isinstance(about, str) and clean(about) \
             and not JUNK_ANY.search(about):
-        item["about"] = clean(about, ABOUT_MAX)
+        about, _ref, problem = _human(clean(about, ABOUT_MAX), refs)
+        if about and not problem:
+            item["about"] = about
     if group == "doing" and isinstance(raw.get("next"), str) and clean(raw["next"]):
-        item["next"] = clean(raw["next"], ABOUT_MAX)
+        nxt, _ref, problem = _human(clean(raw["next"], ABOUT_MAX), refs)
+        if nxt and not problem:
+            item["next"] = nxt[:1].lower() + nxt[1:]
     return item
 
 
 def merge(model: dict[str, dict], all_facts: list[dict]) -> dict[str, dict]:
-    """Model tam, gdzie opisał projekt, reguły dla reszty. „Czeka na mnie” nigdy nie znika: gdy
-    model go pominął, a reguły coś tam mają (pytanie, test, który nie przechodzi), bierzemy pozycje z reguł."""
+    """Model tam, gdzie opisał projekt, reguły dla reszty.
+
+    „Czeka na mnie” zawsze składają reguły (PT-23 C): tylko one wiedzą, co stoi teraz (obszar Agents,
+    waitingText), a model widział wcześniej stare pytania z tekstu. Model może jedynie przeredagować
+    pozycję z tym samym `ref`; pozycje bez odpowiednika w regułach znikają. Grupa, z której walidacja
+    odrzuciła wszystkie pozycje modelu (żargon, ścieżki, angielski), dostaje pozycje z reguł."""
     out = {}
     for fact in all_facts:
         fallback = rules(fact)
@@ -830,33 +1083,50 @@ def merge(model: dict[str, dict], all_facts: list[dict]) -> dict[str, dict]:
             out[fact["project"]] = dict(fallback, source="rules")
             continue
         chosen = dict(chosen, source="model")
-        if not chosen.get("waiting") and fallback.get("waiting"):
-            chosen["waiting"] = fallback["waiting"]
-        conflicts = conflict_items(fact)
-        if conflicts:  # model faktów o konfliktach nie dostaje — pozycje zawsze z reguł, na początku
-            texts = {c["text"] for c in conflicts}
-            chosen["waiting"] = _cap(conflicts + [i for i in chosen.get("waiting") or []
-                                                  if i.get("text") not in texts and not i.get("more")])
+        worded = {i["ref"]: i["text"] for i in chosen.get("waiting") or [] if i.get("ref") and not i.get("more")}
+        chosen["waiting"] = [dict(i, text=worded[i["ref"]]) if i.get("ref") in worded else i
+                             for i in fallback.get("waiting") or []]
+        rejected = chosen.pop("rejected", {}) or {}
+        for key in ("done", "doing", "next", "chores"):
+            if rejected.get(key) and not chosen.get(key) and fallback.get(key):
+                chosen[key] = fallback[key]
         out[fact["project"]] = chosen
     return out
 
 
 # --- tekst do schowka ------------------------------------------------------------------------------
 
-def as_text(standup: dict, names: list[str], heading: str = "") -> str:
-    """Zwykły tekst „Na daily” (do przeczytania albo wklejenia na czat zespołu): praca, potem porządki."""
+FINISHED = ("finished", "Skończone dziś")
+
+
+def as_text(standup: dict, names: list[str], heading: str = "", brief=None, notes: dict | None = None) -> str:
+    """Zwykły tekst „Na daily” (do przeczytania albo wklejenia na czat zespołu): „Dziś w skrócie”, potem
+    projekty — skończone dziś (notki po tickecie), praca, porządki. Pozycje „już nieaktualne” (stale)
+    pomijamy — tekst ma się zgadzać z tym, co widać w oknie Tide."""
     lines = [heading] if heading else []
+    brief = [b for b in brief or [] if b]
+    if brief:
+        if lines:
+            lines.append("")
+        lines.append("Dziś w skrócie:")
+        lines += [f"- {b}" for b in brief]
+    notes = notes or {}
     for name in names:
-        s = (standup.get("projects") or {}).get(name)
-        if not s or empty(s):
+        s = (standup.get("projects") or {}).get(name) or {}
+        finished = notes.get(name) or []
+        if (not s or empty(s)) and not finished:
             continue
         if lines:
             lines.append("")
         lines.append(name)
         if s.get("theme"):
             lines.append(f"Na czym polega: {s['theme']}")
+        if finished:
+            lines.append(f"{FINISHED[1]}:")
+            for note in finished:
+                lines.append(f"- {note['ref']} {note['text']}" if note.get("ref") else f"- {note['text']}")
         for key, label in GROUPS + (CHORES,):
-            items = s.get(key) or []
+            items = [i for i in s.get(key) or [] if not i.get("stale")]
             if not items:
                 continue
             lines.append(f"{label}:")

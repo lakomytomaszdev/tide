@@ -262,7 +262,8 @@ class RulesTest(StandupWorld):
         self.assertNotIn("Pytanie koordynatora", waiting, "pytanie jest już przy tickecie ALPHA-3")
         self.assertIn("Filtry — review zgłosił 1 MAJOR", " | ".join(i["text"] for i in r["doing"]),
                       "uwagi z review poprawia agent — to praca w toku, nie sprawa dla użytkownika")
-        self.assertIn("Release plan: czeka na odpowiedź", waiting)
+        self.assertIn(f"Release plan: agent pyta: „{reportfix.ASK_QUESTION}”", waiting)
+        self.assertNotIn("Pushować", json.dumps(r, ensure_ascii=False), "stare pytanie z tekstu (PT-23)")
         self.assertEqual([i["ref"] for i in r["next"]], ["ALPHA-4"])
         self.assertNotIn("ALPHA-6", json.dumps(r))
         self.assertEqual(r["theme"], "Wyszukiwanie w alpha: Wyszukiwanie w aplikacji: indeks, UI i eksport do CSV.",
@@ -270,15 +271,16 @@ class RulesTest(StandupWorld):
 
     def test_merged_branch_not_commit_list(self):
         r = self.rules()
-        merged = next(i for i in r["done"] if "export" in i["text"])
-        self.assertEqual(merged["text"], "tide-9 · export", "tytuł z nazwy gałęzi, nie temat commita")
-        self.assertIn("2 commity scalone do master", merged["about"])
+        merged = next(i for i in r["done"] if "Export" in i["text"])
+        self.assertEqual((merged["ref"], merged["text"]), ("TIDE-9", "Export"),
+                         "tytuł z nazwy gałęzi, nie temat commita; numer w ref, nie w treści")
+        self.assertIn("Zmiany są już w głównej wersji", merged["about"])
         self.assertFalse(any("feat(" in i["text"] for g in standup.GROUP_KEYS for i in r[g]),
                          "żadnego surowego tematu commita z prefiksem typu")
 
     def test_session_branch_in_progress_and_scheduled(self):
         r = self.rules("beta")
-        self.assertTrue(any("codex/fix-upload" in i["text"] and i.get("about") == "Poprawiłem ponawianie wysyłki."
+        self.assertTrue(any(i["text"] == "check — zmiany czekają na scalenie" and i.get("about") == "Poprawiłem ponawianie wysyłki."
                             for i in r["doing"]), r["doing"])
         self.assertTrue(any(i["text"] == "Nocny przegląd: 3 przebiegi" for i in r["done"]), r["done"])
 
@@ -288,7 +290,7 @@ class RulesTest(StandupWorld):
              "sessions": [], "ticket": ""} for i in range(6)]}
         r = standup.rules(fact)
         self.assertEqual(len(r["doing"]), 1)
-        self.assertTrue(r["doing"][0]["text"].startswith("6 gałęzi z niescaloną pracą (6 commitów)"))
+        self.assertTrue(r["doing"][0]["text"].startswith("6 rozpoczętych zmian czeka na przejrzenie: b0, b1"))
         many = {"project": "y", "plans": [], "questions": [], "units": [], "tickets": [
             {"id": f"Y-{i}", "key": f"Y-{i}", "title": f"t{i}", "state": "gotowe", "note": "", "result": "",
              "question": "", "branch": "", "review": ""} for i in range(20)]}
@@ -529,7 +531,8 @@ class RenderTest(StandupWorld):
         # Kopiuj wszystko: standup wszystkich projektów zwykłym tekstem.
         copy = re.search(r'data-copy="([^"]*)" data-label="Kopiuj wszystko jako tekst"', page)
         text = render.html.unescape(copy.group(1))
-        self.assertTrue(text.startswith("Na daily · poniedziałek, 26 października 2026\n\nalpha\n"), text)
+        self.assertTrue(text.startswith("Na daily · poniedziałek, 26 października 2026\n\nDziś w skrócie:\n- alpha — "), text)
+        self.assertIn("\n\nalpha\n", text)
         self.assertIn("\nbeta\n", text, "beta z reguł")
         self.assertNotIn("notes", text, "sesja spoza repozytoriów nie trafia do „Na daily”")
 
@@ -661,8 +664,9 @@ class CategoryTest(StandupWorld):
         part = next(u for u in self.facts()["units"] if u.get("branch") == "feat/tide-12-part")
         self.assertEqual(part["mergedInto"], "feat/int")
         done = standup.rules(self.facts())["done"]
-        item = next(i for i in done if "part" in i["text"])
-        self.assertIn("scalone do feat/int", item["about"])
+        item = next(i for i in done if i["ref"] == "TIDE-12")
+        self.assertEqual(item["text"], "Part")
+        self.assertIn("w wersji zbiorczej", item["about"])
         payload, _names = summarize.model_input([self.facts()], self.p["home"])
         unit = next(u for u in payload["projects"][0]["work"] if u.get("branch") == "feat/tide-12-part")
         self.assertEqual((unit["kind"], unit["mergedInto"]), ("merged-into-integration-branch", "feat/int"))
@@ -725,7 +729,7 @@ class JunkTest(StandupWorld):
         self.assertEqual([i["ref"] for i in r["doing"]], ["XY-9"])
         payload, _names = summarize.model_input([fact], "")
         self.assertFalse(any("note" in t for t in payload["projects"][0]["tickets"]))
-        self.assertIn("„czeka na review” to tylko stan \"review\"", summarize.SYSTEM_PROMPT)
+        self.assertIn('stan "review" to praca w toku', summarize.SYSTEM_PROMPT)
 
 
 class PlanYouTrackTest(unittest.TestCase):

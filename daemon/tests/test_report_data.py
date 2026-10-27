@@ -93,7 +93,9 @@ class GeneratedTest(unittest.TestCase):
         self.assertEqual((alpha["slug"], alpha["page"], alpha["path"]), ("alpha", "alpha.html", self.p["alpha"]))
         self.assertTrue(alpha["hot"])
         self.assertEqual(alpha["counts"], {"done": 1, "doing": 1, "waiting": 1, "next": 0, "chores": 0})
-        self.assertEqual(alpha["waiting"], [{"ref": "", "text": "Release plan: czeka na odpowiedź"}])
+        self.assertEqual(alpha["waiting"], [{"ref": "", "text": f"Release plan: agent pyta: „{reportfix.ASK_QUESTION}”",
+                                             "kind": "blocked", "sessionId": "claude:c-ask",
+                                             "since": reportfix.NOW - 30 * 60}])
         self.assertEqual(alpha["doing"][0]["next"], "przejrzeć i scalić")
         self.assertEqual((alpha["commits"], alpha["sessions"], alpha["waitingSessions"], alpha["tools"]),
                          (4, 2, 1, ["claude"]))
@@ -102,7 +104,9 @@ class GeneratedTest(unittest.TestCase):
             self.assertEqual([i["text"] for i in alpha[key]], [i["text"] for i in standup.get(key) or []], key)
         # Ten sam tekst co przycisk „Kopiuj jako tekst” na stronie projektu i „Kopiuj wszystko” w indeksie.
         self.assertEqual(alpha["copyText"], render.daily_text(self.report, [self.report.repos[0]]))
-        self.assertEqual(self.data["copyAll"], render.daily_text(self.report, self.report.repos))
+        self.assertEqual(self.data["copyAll"], render.daily_text(self.report, self.report.repos, brief=True))
+        self.assertIn("\nDziś w skrócie:\n- alpha — ", self.data["copyAll"])
+        self.assertEqual(self.data["brief"], self.report.standup["brief"])
         self.assertTrue(alpha["copyText"].startswith("Na daily · poniedziałek, 26 października 2026\n\nalpha\n"))
 
     def test_text_is_raw_not_html(self):
@@ -150,13 +154,15 @@ class OrderingTest(unittest.TestCase):
                                  active=repos, outside=[], quiet=[], waiting=[(repos[3], object())],
                                  standup=standup)
         out = data.build(report)
-        self.assertEqual([p["name"] for p in out["projects"]], ["asks", "session", "plain", "chores"])
+        self.assertEqual([p["name"] for p in out["projects"]], ["asks", "session", "plain"],
+                         "projekt z samymi porządkami nie jest kartą")
+        self.assertEqual([(c["name"], [i["text"] for i in c["chores"]]) for c in out["choreProjects"]],
+                         [("chores", ["Porządek w planie"])], "tylko w zwiniętej linii „Porządki”")
         asks = out["projects"][0]
         self.assertEqual(asks["waiting"], [{"ref": "TIDE-2", "text": "Pytanie?"},
                                            {"ref": "", "text": "i 3 więcej", "more": True}])
         self.assertEqual(asks["counts"]["waiting"], 4, "„i 3 więcej” liczy się jako 3")
         self.assertEqual(asks["headline"], "Na czym polega", "bez headline — theme jak w indeksie")
-        self.assertTrue(out["projects"][-1]["choresOnly"])
         self.assertEqual(out["counts"]["waiting"], 4)
         self.assertEqual(out["source"], "opis: Claude Sonnet")
         self.assertEqual(out["since"], "Od niedzieli 07:00")
