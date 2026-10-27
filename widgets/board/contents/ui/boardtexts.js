@@ -38,22 +38,26 @@ function counts(snapshot) {
     return out
 }
 
-// Części linii kafelka (tylko niezerowe): [{count, word, tint, hollow}]. Bez pracy agentów — ile
-// do zrobienia; pusta lista — „pusto”.
+// Części linii kafelka (tylko niezerowe): [{count, word, tint, hollow}]. Bez pracy agentów — co leży
+// na tablicy (do zrobienia, w backlogu); „pusto” przy kartach w backlogu mówiło nieprawdę (uwaga
+// użytkownika). Pusta lista — tablica bez kart.
 function tileParts(n) {
     const parts = []
     if (n.progress) parts.push({ count: n.progress, word: "w toku", tint: "working", hollow: false })
     if (n.waiting) parts.push({ count: n.waiting, word: plural(n.waiting, "czeka", "czekają", "czeka"), tint: "waiting",
                                 hollow: false })
     if (n.review) parts.push({ count: n.review, word: "do sprawdzenia", tint: "lavender", hollow: false })
-    if (!parts.length && n.todo) parts.push({ count: n.todo, word: "do zrobienia", tint: "textSecondary", hollow: true })
+    if (!parts.length) {
+        if (n.todo) parts.push({ count: n.todo, word: "do zrobienia", tint: "textSecondary", hollow: true })
+        if (n.backlog) parts.push({ count: n.backlog, word: "w backlogu", tint: "textMuted", hollow: true })
+    }
     return parts
 }
 
-// „2 w toku · 1 czeka · 1 do sprawdzenia”, „3 do zrobienia”, „pusto”.
+// „2 w toku · 1 czeka · 1 do sprawdzenia”, „3 do zrobienia · 12 w backlogu”, „brak kart”.
 function tileSummary(n) {
     const parts = tileParts(n)
-    return parts.length ? parts.map(p => p.count + " " + p.word).join(" · ") : "pusto"
+    return parts.length ? parts.map(p => p.count + " " + p.word).join(" · ") : "brak kart"
 }
 
 // Dopisek przy etykiecie: „11 kart”; bez kart — nic.
