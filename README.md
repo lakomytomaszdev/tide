@@ -32,6 +32,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `widgets/lib/` | Wspólna biblioteka QML widżetów: karta, kafelek docka, teksty kafelków, miernik, pierścień, wykres słupkowy z historią próbek, kropka i licznik stanu, źródło danych z usługi |
 | `widgets/agents/` | Widżet agentów `org.tide.agents`: kafelek „Agenci · 2 pracują · 1 czeka · 2 gotowe”, lista sesji w popupie |
 | `widgets/limits/` | Widżet `org.tide.limits`: pozostałe limity ChatGPT i Claude z usługi QuotaApp |
+| `widgets/models/` | Kafelek „Modele” `org.tide.models` (w docku za Limitami AI): czy serwer modeli lokalnych odpowiada, model w pamięci i ile na karcie, kolejka; popup z serwerami, rolami i trybem raportu, link do widoku Modele w oknie Tide |
 | `widgets/worktrees/` | Kafelek worktrees `org.tide.worktrees`: ile do sprzątnięcia (i ile GB), ile w pracy; kliknięcie otwiera okno |
 | `widgets/newtask/` | Kafelek „＋ Zadanie · nowe dla agenta” `org.tide.newtask`: otwiera okno nowego zadania |
 | `apps/newtask/` | Okno „Tide: nowe zadanie” (QML + PyQt6, plik `.desktop`, profil Konsoli): repozytorium, Claude Code albo Codex, polecenie, zrzuty ekranu, nowy worktree |
@@ -111,6 +112,18 @@ make uninstall-widget-limits   # usuwa tylko org.tide.limits
 **Token.** Port i token API są w `~/.config/limity-ai-widget/config.json` (tworzy go instalator QuotaApp, tryb 0600). Przy instalacji `widgets/stage.py` przepisuje je do `contents/code/Config.js` w pakiecie, z trybem 0600; `widgets/install.sh` usuwa ten plik ze złożonej kopii w `build/` zaraz po instalacji. Token nigdy nie trafia do repozytorium. Po zmianie tokenu wystarczy ponowne `make install-widget-limits`.
 
 **Podmiana w panelu.** `make swap-limits-widget` robi kopię zapasową i przez `evaluateScript` Plasmy usuwa `org.limityai.widget` z dolnego panelu, a w to samo miejsce wstawia `org.tide.limits` (`TIDE_PANEL_SCREEN=n` ogranicza do ekranu n). Skrypt bez wykonywania: `bash scripts/swap-limits-widget.sh --print`. Panel z zablokowanymi widżetami trzeba najpierw odblokować.
+
+## Modele
+
+Kafelek „Tide · Modele” (`org.tide.models`) stoi w docku po prawej, zaraz za Limitami AI. Pokazuje stan domyślnego serwera modeli lokalnych z tide-daemon (`/Models`, `Status()` po sygnale `Changed`, [opis](docs/tide-daemon.md#modele-lokalne)): „● qwen3:8b · na karcie 100%” (model w pamięci; masło, gdy część jest na procesorze), „● gotowe”, „● pracuje: opis kart · 2 w kolejce” (teal), „● serwer nie odpowiada” (róż), bez usługi wyciszone „usługa nie działa”. Popup: karta na każdy serwer („Ten komputer” dla adresu lokalnego, adres, wersja, powód niedostępności, kolejka, pobieranie, modele w pamięci z udziałem karty i terminem zwolnienia, liczba pobranych), role z modelem i dostępnością, tryb raportu, „Odśwież” (`Refresh()`) i „Otwórz w Tide ↗”. Pola `report`, `queue` i `pulls` są opcjonalne — bez nich kafelek ich nie pokazuje.
+
+„Otwórz w Tide” woła wprost okno: `org.tide.Window /Window Show("models", "")`; gdy okno nie działa, uruchamia je jak menu (`kstart --application tide`) i ponawia `Show`. Dopóki okno nie ma widoku Modele, `Show` zwraca `false` — okno zostaje na swoim widoku, a popup mówi, że widok przyjdzie z nową wersją okna.
+
+```bash
+make install-widget-models     # instalacja albo aktualizacja widżetu
+make uninstall-widget-models   # usuwa tylko org.tide.models
+/usr/bin/python3 widgets/preview_models.py   # kafelek i popup na przykładowych danych: build/preview/models-*.png
+```
 
 ## System
 
