@@ -44,7 +44,7 @@ class Cancelled(RuntimeError):
 
 
 def generate(root: str, day: str, start: float, end: float, *, palette: dict, workspace: str, claude_root: str,
-             codex_root: str, live=None, worktrees=None, limits_result=None, fetch_limits: bool = True,
+             codex_root: str | list[str], live=None, worktrees=None, limits_result=None, fetch_limits: bool = True,
              git=None, max_depth: int = 3, home: str | None = None,
              coordination_cache: str | None = None, summary: str = "rules", summary_model: str = "sonnet",
              env=None, tracker=None, notes: dict | None = None, cancel=None) -> tuple[str, "collect.Report"]:

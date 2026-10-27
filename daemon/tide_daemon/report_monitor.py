@@ -35,7 +35,7 @@ class ReportMonitor(QObject):
     _noted = pyqtSignal(object, object)      # (doba, Future z notkami) — z wątku notek do głównego
 
     def __init__(self, settings: schedule.Settings, *, root: str, state_file: str, palette_paths: list[str],
-                 workspace: str, claude_root: str, codex_root: str, max_depth: int = 3,
+                 workspace: str, claude_root: str, codex_root: str | list[str], max_depth: int = 3,
                  sessions=lambda: [], worktrees=lambda: None, notifier=None, clock=time.time,
                  login_delay: float = schedule.LOGIN_DELAY, check_interval: float = schedule.CHECK_INTERVAL,
                  fetch_limits: bool = True, coordination_cache: str | None = None, opener=None,

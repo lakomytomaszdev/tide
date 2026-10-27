@@ -107,7 +107,10 @@ class CoordinationMonitor(QObject):
                 print(f"tide-daemon: koordynacja: przejście do sesji: {exc!r}", flush=True)
         if self.launchers is None or not board.get("cwd"):
             return False
-        argv = self.launchers.resume_command(board["tool"], board["sessionId"], board["cwd"])
+        # Plik dziennika koordynatora: wątek z Codexa ze snapa wznawia Codex ze snapa (worktrees/launchers.py).
+        coordinator = (getattr(self.scanner, "coordinators", None) or {}).get(coordinator_id)
+        source = getattr(coordinator, "path", "") or ""
+        argv = self.launchers.resume_command(board["tool"], board["sessionId"], board["cwd"], source=source)
         return self.launchers.spawn(argv, board["cwd"])
 
     def open_diff(self, coordinator_id: str, ticket: str) -> bool:

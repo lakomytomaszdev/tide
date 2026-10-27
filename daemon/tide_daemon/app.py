@@ -1,7 +1,7 @@
 """Punkt wejścia tide-daemon.
 
 Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | --print-models] [--claude-dir DIR]
-                               [--codex-dir DIR] [--workspace DIR] [--worktree-depth N] [--no-processes]
+                               [--codex-dir DIR …] [--workspace DIR] [--worktree-depth N] [--no-processes]
                                [--no-notifications] [--no-krunner] [--no-tab-marks] [--now CZAS]
                                [--idle-after SEKUNDY | --no-idle] [--limits-poll SEKUNDY | --no-limits]
                                [--models-poll SEKUNDY | --no-models]
@@ -17,6 +17,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
 --print-limits     prognoza limitów z historii i jednego GET /status jako JSON (niczego nie zapisuje),
 --print-models     jednorazowo: stan serwerów modeli lokalnych i ról z models.json jako JSON (tylko GET,
                    niczego nie zapisuje), bez D-Bus,
+--codex-dir        katalog danych Codexa, można powtórzyć (domyślnie $CODEX_HOME albo ~/.codex i
+                   ~/snap/codex/current — Codex CLI ze snapa pisze do własnego katalogu),
 --workspace        katalog projektów z repozytoriami (domyślnie $TIDE_WORKSPACE albo ~/DevWorkspace),
 --worktree-depth   jak głęboko pod katalogiem projektów szukać repozytoriów (domyślnie 3),
 --no-processes     nie czyta /proc (stan bez wiedzy o procesach, bez przechodzenia do okien),
@@ -66,8 +68,10 @@ def default_claude_dir() -> str:
     return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
 
 
-def default_codex_dir() -> str:
-    return os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+def default_codex_dirs() -> list[str]:
+    """Katalogi danych Codexa: $CODEX_HOME albo ~/.codex i ~/snap/codex/current (codex_homes.py)."""
+    from . import codex_homes
+    return codex_homes.default_homes()
 
 
 def default_workspace() -> str:
@@ -77,7 +81,8 @@ def default_workspace() -> str:
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog="tide-daemon", description="Sesje agentów AI przez D-Bus")
     parser.add_argument("--claude-dir", default=default_claude_dir())
-    parser.add_argument("--codex-dir", default=default_codex_dir())
+    # Powtarzalne: każdy --codex-dir to jeden katalog danych Codexa; podane zastępują domyślne.
+    parser.add_argument("--codex-dir", action="append", help="katalog danych Codexa (można powtórzyć)")
     parser.add_argument("--no-processes", action="store_true")
     parser.add_argument("--no-notifications", action="store_true")
     parser.add_argument("--no-krunner", action="store_true")
@@ -112,7 +117,10 @@ def parse_args(argv):
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--report-delay", type=float)
     parser.add_argument("--report-summary", choices=("claude", "local", "rules"))
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not args.codex_dir:
+        args.codex_dir = default_codex_dirs()
+    return args
 
 
 def main(argv=None) -> int:
@@ -147,7 +155,7 @@ def main(argv=None) -> int:
         now = clock()
         scanner.discover(now)
         scanner.update()
-        procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
+        procs = None if args.no_processes else processes.probe(log_roots=scanner.codex_log_roots())
         cwds = worktrees.agent_cwds(scanner.sessions(now, procs), procs)
         index = worktrees.SessionIndex(args.claude_dir, args.codex_dir)
         print(json.dumps(worktrees.scan(args.workspace, cwds, args.worktree_depth, now=now, sessions=index),
@@ -172,7 +180,7 @@ def main(argv=None) -> int:
         now = clock()
         scanner.discover(now)
         scanner.update()
-        procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
+        procs = None if args.no_processes else processes.probe(log_roots=scanner.codex_log_roots())
         print(json.dumps(coordination_once(args, clock, scanner.sessions(now, procs), report_settings),
                          ensure_ascii=False, indent=2))
         return 0
@@ -188,7 +196,7 @@ def main(argv=None) -> int:
         now = clock()
         scanner.discover(now)
         scanner.update()
-        procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
+        procs = None if args.no_processes else processes.probe(log_roots=scanner.codex_log_roots())
         print(json.dumps(scanner.sessions(now, procs), ensure_ascii=False, indent=2))
         return 0
 
@@ -335,7 +343,7 @@ def print_report(args, clock, scanner, settings) -> int:
     now = clock()
     scanner.discover(now)
     scanner.update()
-    procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
+    procs = None if args.no_processes else processes.probe(log_roots=scanner.codex_log_roots())
     days = max(0.01, min(args.report_days, schedule.MAX_PERIOD / 86400))
     try:
         index, report = reports.generate(

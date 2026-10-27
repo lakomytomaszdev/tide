@@ -274,7 +274,9 @@ class KRunnerCore:
             return True  # sesja jeszcze działa — zamiast drugiej kopii przechodzimy do jej okna
         if entry.get("desktop") and self._app_ready() and self.codex.open_thread(entry["sessionId"]):
             return True  # wątek aplikacji: rozmowa w Codex Desktop, nie `codex resume` w Konsoli
-        return self.launchers.spawn(self.launchers.resume_command(entry["tool"], entry["sessionId"], cwd), cwd)
+        # source: plik dziennika — sesję ze snapa wznawia Codex ze snapa (Launchers.codex_for).
+        argv = self.launchers.resume_command(entry["tool"], entry["sessionId"], cwd, source=entry.get("source", ""))
+        return self.launchers.spawn(argv, cwd)
 
 
 def _category_relevance(best: float) -> int:
