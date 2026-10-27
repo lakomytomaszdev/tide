@@ -69,6 +69,21 @@ Obiekt /Coordination, interfejs org.tide.Daemon.Coordination (koordynatorzy, tic
 Obiekt /Limits, interfejs org.tide.Daemon.Limits (prognoza Limitów AI z historii odczytów):
 - Forecast() -> s            JSON {available, error, services: {usługa: {session|weekly: prognoza}}},
 - sygnał Changed()           prognoza albo dostępność usługi Limity AI się zmieniła.
+
+Obiekt /Docker, interfejs org.tide.Daemon.Docker (kontenery przez Docker Engine API):
+- Snapshot() -> s            JSON {available, state, error, host, engine, live, summary, groups},
+- Stats() -> s               CPU i pamięć działających kontenerów (na żądanie, pamięć 5 s; odpowiedź po odczycie),
+- Disk() -> s                kategorie porządków z miejscem do odzyskania (odpowiedź po odczycie),
+- Start(s id), Stop(s id), Restart(s id), Remove(s id) -> s
+                             JSON {ok, error, id, name, note}; Remove tylko zatrzymanego, bez wolumenów,
+- GroupAction(s project, s action) -> s
+                             start/stop/restart wszystkich kontenerów projektu compose; {ok, error, done, failed},
+- Prune(s categories) -> s   JSON ["cache", "images", "volumes", "stopped"] → {ok, error, reclaimedBytes, details};
+                             tylko wymienione kategorie,
+- Logs(s id, i lines) -> s   ostatnie linie logów {ok, error, lines: [{text, stderr}]},
+- OpenLogs(s id) -> b        `docker logs -f --tail 200 <nazwa>` w karcie Konsoli,
+- OpenShell(s id) -> b       powłoka w działającym kontenerze (bash albo sh) w karcie Konsoli,
+- sygnał Changed()           migawka kontenerów się zmieniła.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
@@ -88,6 +103,8 @@ COORDINATION_PATH = "/Coordination"
 COORDINATION_IFACE = "org.tide.Daemon.Coordination"
 LIMITS_PATH = "/Limits"
 LIMITS_IFACE = "org.tide.Daemon.Limits"
+DOCKER_PATH = "/Docker"
+DOCKER_IFACE = "org.tide.Daemon.Docker"
 
 AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
   <method name="Sessions"><arg name="json" type="s" direction="out"/></method>
@@ -195,6 +212,41 @@ COORDINATION_XML = f"""<interface name="{COORDINATION_IFACE}">
 
 LIMITS_XML = f"""<interface name="{LIMITS_IFACE}">
   <method name="Forecast"><arg name="json" type="s" direction="out"/></method>
+  <signal name="Changed"/>
+</interface>"""
+
+_ID_ACTION = """  <method name="{name}">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>"""
+
+DOCKER_XML = f"""<interface name="{DOCKER_IFACE}">
+  <method name="Snapshot"><arg name="json" type="s" direction="out"/></method>
+  <method name="Stats"><arg name="json" type="s" direction="out"/></method>
+  <method name="Disk"><arg name="json" type="s" direction="out"/></method>
+{chr(10).join(_ID_ACTION.format(name=n) for n in ("Start", "Stop", "Restart", "Remove"))}
+  <method name="GroupAction">
+    <arg name="project" type="s" direction="in"/>
+    <arg name="action" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="Prune">
+    <arg name="categories" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="Logs">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="lines" type="i" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="OpenLogs">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="ok" type="b" direction="out"/>
+  </method>
+  <method name="OpenShell">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="ok" type="b" direction="out"/>
+  </method>
   <signal name="Changed"/>
 </interface>"""
 
@@ -450,8 +502,88 @@ class CoordinationAdaptor(QDBusAbstractAdaptor):
         self.monitor.refresh(force_tracker=bool(force))
 
 
+@pyqtClassInfo("D-Bus Interface", DOCKER_IFACE)
+@pyqtClassInfo("D-Bus Introspection", DOCKER_XML)
+class DockerAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, monitor, bus: QDBusConnection):
+        super().__init__(parent)
+        self.monitor = monitor
+        self.bus = bus
+        monitor.changed.connect(self.Changed)
+
+    def _delayed(self, message: QDBusMessage, name: str):
+        # Engine API odpowiada z wątku roboczego (stop czeka do 10 s) — odpowiedź D-Bus później.
+        message.setDelayedReply(True)
+        request = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if not self.bus.send(request.createReply([text])):
+                print(f"tide-daemon: nie udało się odesłać wyniku Docker.{name}", flush=True)
+
+        return reply
+
+    @pyqtSlot(result=str)
+    def Snapshot(self) -> str:
+        return self.monitor.snapshot_json()
+
+    @pyqtSlot(QDBusMessage, result=str)
+    def Stats(self, message: QDBusMessage) -> str:
+        self.monitor.stats(self._delayed(message, "Stats"))
+        return ""
+
+    @pyqtSlot(QDBusMessage, result=str)
+    def Disk(self, message: QDBusMessage) -> str:
+        self.monitor.disk(self._delayed(message, "Disk"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Start(self, ident: str, message: QDBusMessage) -> str:
+        self.monitor.action(ident, "start", self._delayed(message, "Start"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Stop(self, ident: str, message: QDBusMessage) -> str:
+        self.monitor.action(ident, "stop", self._delayed(message, "Stop"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Restart(self, ident: str, message: QDBusMessage) -> str:
+        self.monitor.action(ident, "restart", self._delayed(message, "Restart"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Remove(self, ident: str, message: QDBusMessage) -> str:
+        self.monitor.remove(ident, self._delayed(message, "Remove"))
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def GroupAction(self, project: str, action: str, message: QDBusMessage) -> str:
+        self.monitor.group_action(project, action, self._delayed(message, "GroupAction"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Prune(self, categories: str, message: QDBusMessage) -> str:
+        self.monitor.prune(categories, self._delayed(message, "Prune"))
+        return ""
+
+    @pyqtSlot(str, int, QDBusMessage, result=str)
+    def Logs(self, ident: str, lines: int, message: QDBusMessage) -> str:
+        self.monitor.logs(ident, lines, self._delayed(message, "Logs"))
+        return ""
+
+    @pyqtSlot(str, result=bool)
+    def OpenLogs(self, ident: str) -> bool:
+        return self.monitor.open_logs(ident)
+
+    @pyqtSlot(str, result=bool)
+    def OpenShell(self, ident: str) -> bool:
+        return self.monitor.open_shell(ident)
+
+
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
-             limits=None, tasks=None, coordination=None) -> QObject:
+             limits=None, tasks=None, coordination=None, docker=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -491,6 +623,11 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.coordination.adaptor = CoordinationAdaptor(holder.coordination, coordination)
         if not bus.registerObject(COORDINATION_PATH, holder.coordination):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {COORDINATION_PATH}")
+    if docker is not None:
+        holder.docker = QObject(holder)
+        holder.docker.adaptor = DockerAdaptor(holder.docker, docker, bus)
+        if not bus.registerObject(DOCKER_PATH, holder.docker):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {DOCKER_PATH}")
     if not bus.registerService(SERVICE):
         raise RuntimeError(f"nazwa {SERVICE} jest już zajęta (działa inna kopia usługi?)")
     return holder

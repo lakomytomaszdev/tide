@@ -12,3 +12,8 @@ if DAEMON_DIR not in sys.path:
 # $TIDE_CLAUDE_BIN znaczy „brak programu”, więc raport bierze reguły. Testy podsumowania podają
 # własną atrapę (test_report_standup.py), usługi uruchamiane w testach dziedziczą tę zmienną.
 os.environ["TIDE_CLAUDE_BIN"] = ""
+
+# Testy nigdy nie pytają prawdziwego Dockera (inne projekty na tym komputerze zależą od jego
+# kontenerów): domyślnie nieistniejący socket, usługi w testach dziedziczą tę zmienną. Testy
+# obszaru Docker podają socket atrapy Engine API (fake_docker.py).
+os.environ["DOCKER_HOST"] = "unix:///nonexistent/tide-tests/docker.sock"
