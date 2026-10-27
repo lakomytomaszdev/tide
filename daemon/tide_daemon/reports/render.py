@@ -29,6 +29,7 @@ import shlex
 import urllib.parse
 from datetime import datetime
 
+from .. import codex_homes
 from . import standup as standup_mod
 from .schedule import local
 
@@ -702,8 +703,7 @@ def _outside_section(report, projects) -> str:
         said = standup_mod.last_question(s.final_message) if state == "waiting" else \
             standup_mod.first_sentences(s.final_message, 2, 320)
         task = standup_mod.clean(getattr(s, "prompt", "") or "", 300)
-        resume = (f"cd {shlex.quote(s.cwd)} && claude --resume {shlex.quote(s.session_id)}" if s.tool == "claude"
-                  else f"cd {shlex.quote(s.cwd)} && codex resume {shlex.quote(s.session_id)}")
+        resume = resume_command(s)
         out.append(f'<article class="osession" id="{esc(session_anchor(s))}"><div class="head">'
                    f'<span class="dot {esc(state)}"></span><span class="state {esc(state)}">{esc(word)}</span>'
                    f'{tool_chip(s.tool)}<b>{esc(s.title)}</b><span class="sp"></span>{copy_button(resume, "Wznów")}</div>'
@@ -782,6 +782,16 @@ def _footer(report, home: str, index: bool) -> str:
 
 
 # --- strona projektu -------------------------------------------------------------------------------
+
+def resume_command(s) -> str:
+    """Polecenie „Wznów” do schowka: `claude --resume`, `codex resume`, a dla sesji Codexa ze snapa
+    (~/snap/codex/…) wprost `/snap/bin/codex resume` — tylko Codex ze snapa widzi jej katalog danych."""
+    cd = f"cd {shlex.quote(s.cwd)} && "
+    if s.tool == "claude":
+        return cd + f"claude --resume {shlex.quote(s.session_id)}"
+    program = codex_homes.SNAP_CODEX if codex_homes.is_snap(getattr(s, "path", "") or "") else "codex"
+    return cd + f"{program} resume {shlex.quote(s.session_id)}"
+
 
 def session_anchor(session) -> str:
     return "s-" + re.sub(r"[^A-Za-z0-9_-]", "-", session.id)
@@ -905,8 +915,7 @@ def _session_card(s, report) -> str:
     meta.append(f'<span>ostatnio {esc(day_time(s.last_ts))}</span>')
     if s.last_action and state in ("working", "waiting"):
         meta.append(f'<span class="mono">{esc(s.last_action)}</span>')
-    resume = (f"cd {shlex.quote(s.cwd)} && claude --resume {shlex.quote(s.session_id)}" if s.tool == "claude"
-              else f"cd {shlex.quote(s.cwd)} && codex resume {shlex.quote(s.session_id)}")
+    resume = resume_command(s)
     out = [f'<article class="card session{" wait" if state == "waiting" else ""}" id="{esc(session_anchor(s))}">',
            f'<div class="head"><span class="dot {esc(state)}"></span><span class="state {esc(state)}">{esc(word)}</span>'
            f'{tool_chip(s.tool)}'

@@ -14,7 +14,8 @@ Czytanie:
   binarne po znacznikach czasu), JSON parsowany tylko w liniach z początkiem albo końcem tury.
 
 Codex ma kilka katalogów danych (codex_homes.py: ~/.codex i ~/snap/codex/current) — czytamy
-wszystkie, a sesja obecna w dwóch katalogach trafia do raportu raz (z nowszym wpisem).
+wszystkie, a kopię tego samego pliku z drugiego katalogu pomijamy (nowszy plik). Segmenty jednego
+wątku (`rollout-…-<wątek>_<segment>.jsonl`) zostają osobnymi pozycjami, jak zawsze.
 
 Stan na koniec okresu bierzemy z obszaru Agents (żywe sesje z ostatniej doby), a gdy sesji tam
 nie ma — wyprowadzamy go z dziennika jak obszar Agents bez wiedzy o procesach.
@@ -99,16 +100,15 @@ def collect(claude_root: str, codex_root, start: float, end: float,
             report = read_session(path, ClaudeLog, start, end)
             if report:
                 out.append(report)
-    codex = []
-    for root in codex_homes.sessions_dirs(codex_root):
-        for path, st in _codex_files(root):
-            if st.st_mtime >= start:
-                report = read_session(path, CodexLog, start, end, automations)
-                if report:
-                    if not report.title:
-                        report.title = titles.get(report.session_id, "")
-                    codex.append(report)
-    out += codex_homes.newest(codex, key=lambda r: r.session_id, stamp=lambda r: r.last_ts)
+    roots = codex_homes.sessions_dirs(codex_root)
+    files = [(path, st) for root in roots for path, st in _codex_files(root)]
+    for path, st in codex_homes.unique_files(files, roots, stamp=lambda f: f[1].st_mtime):
+        if st.st_mtime >= start:
+            report = read_session(path, CodexLog, start, end, automations)
+            if report:
+                if not report.title:
+                    report.title = titles.get(report.session_id, "")
+                out.append(report)
     places: dict[str, gitinfo.Location] = {}
     for report in out:
         if not report.title:

@@ -177,7 +177,7 @@ class Launchers:
         """Program Codexa do wznowienia sesji z pliku source: ze snapa dla ~/snap/codex/…, inny dla
         reszty (~/.codex); gdy pasującego nie ma albo source nieznany — `codex` z PATH jak dotąd."""
         if source:
-            kind = "snap" if codex_homes.is_snap(source) else "other"
+            kind = "snap" if codex_homes.is_snap(source, self.home) else "other"
             if self.codex_bins.get(kind):
                 return self.codex_bins[kind]
         return self.agents["codex"]
@@ -228,8 +228,9 @@ class Launchers:
         return True
 
 
-def codex_binaries(search: str, home: str) -> dict:
-    """Pierwszy `codex` ze snapa (katalog …/snap/bin w PATH) i pierwszy spoza snapa (PATH, potem
+def codex_binaries(search: str, home: str, snap_fallback: str = codex_homes.SNAP_CODEX) -> dict:
+    """Pierwszy `codex` ze snapa (katalog …/snap/bin w PATH, zapasowo snap_fallback — usługa systemd
+    może nie mieć /snap/bin w PATH, jak przy kandydatach Ridera) i pierwszy spoza snapa (PATH, potem
     ~/.local/bin). Bez rozwiązywania dowiązań: /snap/bin/codex wskazuje na /usr/bin/snap, który
     rozpoznaje program po nazwie."""
     out = {"snap": "", "other": ""}
@@ -242,6 +243,8 @@ def codex_binaries(search: str, home: str) -> dict:
             out[kind] = path
     if not out["other"]:
         out["other"] = _executable(os.path.join(home, ".local/bin", "codex"))
+    if not out["snap"] and snap_fallback:
+        out["snap"] = _executable(snap_fallback)
     return out
 
 

@@ -18,8 +18,8 @@ Tytuł:
   pierwsza wiadomość użytkownika.
 
 Codex ma kilka katalogów danych (codex_homes.py: ~/.codex i ~/snap/codex/current) — dzienniki,
-nazwy wątków i bazy stanu czytamy ze wszystkich, a sesja obecna w dwóch katalogach jest jedną
-pozycją (z nowszą aktywnością). Pole `source` to plik dziennika: wznowienie sesji ze snapa
+nazwy wątków i bazy stanu czytamy ze wszystkich, kopię tego samego pliku z drugiego katalogu
+pomijamy, a segmenty jednego wątku (to samo id) są jedną pozycją z najnowszego segmentu. Pole `source` to plik dziennika: wznowienie sesji ze snapa
 uruchamia Codexa ze snapa (worktrees/launchers.py), bo tylko on widzi swój katalog.
 
 Indeks żyje wyłącznie w pamięci usługi — nic nie trafia na dysk ani poza komputer.
@@ -163,10 +163,11 @@ class SessionIndex:
             if mtime >= cutoff:
                 found[path] = (ClaudeLog, mtime)
         homes = codex_homes.resolve(self.codex_roots)
-        for home in homes:
-            for path, mtime in _codex_files(os.path.join(home, codex_homes.SESSIONS)):
-                if mtime >= cutoff:
-                    found[path] = (CodexLog, mtime)
+        roots = [os.path.join(home, codex_homes.SESSIONS) for home in homes]
+        codex = [(path, mtime) for root in roots for path, mtime in _codex_files(root)]
+        for path, mtime in codex_homes.unique_files(codex, roots):
+            if mtime >= cutoff:
+                found[path] = (CodexLog, mtime)
         for path in list(self._files):
             if path not in found:
                 del self._files[path]
@@ -192,7 +193,7 @@ class SessionIndex:
         self._places = {}  # gałąź i projekt mogły się zmienić — liczone od nowa, raz na katalog
         entries = [e for e in (self._describe(entry) for entry in self._files.values()) if e]
         entries = [e for e in entries if e["lastActivity"] >= cutoff]
-        # Ta sama sesja w dwóch katalogach danych Codexa — jedna pozycja, z nowszą aktywnością.
+        # Jeden wątek = jedno dopasowanie: segmenty wątku Codexa (to samo id) — najnowszy.
         entries = codex_homes.newest(entries, key=lambda e: e["id"], stamp=lambda e: e["lastActivity"])
         entries.sort(key=lambda e: -e["lastActivity"])
         with self._lock:
@@ -231,6 +232,9 @@ class SessionIndex:
         }
 
     def _read_thread_names(self, homes: list[str]) -> None:
+        for home in list(self._thread_names):
+            if home not in homes:
+                del self._thread_names[home]  # np. stara rewizja snapa po odświeżeniu
         for home in homes:
             tail = self._thread_names.get(home)
             if tail is None:

@@ -97,7 +97,7 @@ class Report:
         return [(p, s) for p in self.active for s in p.waiting]
 
 
-def build(day: str, start: float, end: float, *, workspace: str, claude_root: str, codex_root: str,
+def build(day: str, start: float, end: float, *, workspace: str, claude_root: str, codex_root: str | list[str],
           live: list[dict] | None = None, worktrees: list[dict] | None = None, limits_result: dict | None = None,
           git: Git | None = None, max_depth: int = 3, previous_day: str = "",
           coordination_cache: str | None = None, tracker=None) -> Report:

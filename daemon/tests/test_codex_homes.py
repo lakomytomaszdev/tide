@@ -44,22 +44,24 @@ def event(kind, ts, **extra):
     return {"timestamp": at(ts), "type": "event_msg", "payload": {"type": kind, **extra}}
 
 
-def session(sid, cwd, prompt="Zrób to", originator="codex_exec", state="done", last="11:50:00"):
-    """Wątek Codexa: meta, kontekst tury, polecenie i tura skończona, trwająca albo z pytaniem."""
+def session(sid, cwd, prompt="Zrób to", originator="codex_exec", state="done", last="11:50:00",
+            start="11:00:00", message="Gotowe."):
+    """Wątek Codexa (albo jego segment od `start`): meta, kontekst tury, polecenie i tura skończona,
+    trwająca albo z pytaniem."""
     records = [
-        {"timestamp": at("11:00:00"), "type": "session_meta",
-         "payload": {"id": sid, "timestamp": at("11:00:00"), "cwd": cwd, "originator": originator,
+        {"timestamp": at(start), "type": "session_meta",
+         "payload": {"id": sid, "timestamp": at(start), "cwd": cwd, "originator": originator,
                      "source": "exec", "model_provider": "ollama", "git": {"branch": "main"}}},
-        {"timestamp": at("11:00:00"), "type": "turn_context",
+        {"timestamp": at(start), "type": "turn_context",
          "payload": {"cwd": cwd, "approval_policy": "on-request", "model": "qwen3:8b"}},
-        event("user_message", "11:00:01", message=prompt),
+        event("user_message", start, message=prompt),
     ]
     if state == "done":
-        records += [event("task_started", "11:00:02"), event("task_complete", last, last_agent_message="Gotowe.")]
+        records += [event("task_started", start), event("task_complete", last, last_agent_message=message)]
     elif state == "working":
         records += [event("task_started", last)]
     else:  # pytanie do użytkownika
-        records += [event("task_started", "11:00:02"),
+        records += [event("task_started", start),
                     {"timestamp": at(last), "type": "response_item",
                      "payload": {"type": "function_call", "name": "request_user_input", "call_id": "q1",
                                  "arguments": "{}"}}]
@@ -90,10 +92,11 @@ class Homes:
     def roots(self) -> list[str]:
         return codex_homes.default_homes({"HOME": self.home})
 
-    def write(self, home, sid, records, day=("2026", "10", "26")) -> str:
+    def write(self, home, sid, records, day=("2026", "10", "26"), name="") -> str:
+        """Plik sesji; name — inna nazwa pliku (np. segment wątku `rollout-…-<wątek>_<segment>.jsonl`)."""
         folder = os.path.join(home, "sessions", *day)
         os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, f"rollout-{'-'.join(day)}T11-00-00-{sid}.jsonl")
+        path = os.path.join(folder, name or f"rollout-{'-'.join(day)}T11-00-00-{sid}.jsonl")
         with open(path, "w", encoding="utf-8") as fh:
             for record in records:
                 fh.write(json.dumps(record) + "\n")
@@ -137,10 +140,15 @@ class DefaultHomesTest(unittest.TestCase):
 
     def test_is_snap(self):
         h = Homes(self)
-        self.assertTrue(codex_homes.is_snap(os.path.join(h.current, "sessions", "x.jsonl")))
-        self.assertTrue(codex_homes.is_snap(os.path.join(h.rev, "sessions", "x.jsonl")))
-        self.assertFalse(codex_homes.is_snap(os.path.join(h.dot, "sessions", "x.jsonl")))
-        self.assertFalse(codex_homes.is_snap(""))
+        self.assertTrue(codex_homes.is_snap(os.path.join(h.current, "sessions", "x.jsonl"), h.home))
+        self.assertTrue(codex_homes.is_snap(os.path.join(h.rev, "sessions", "x.jsonl"), h.home))
+        self.assertFalse(codex_homes.is_snap(os.path.join(h.dot, "sessions", "x.jsonl"), h.home))
+        self.assertFalse(codex_homes.is_snap("", h.home))
+        # Tylko snap Codexa w katalogu domowym — nie dowolny katalog z „snap/codex” w ścieżce.
+        self.assertFalse(codex_homes.is_snap("/data/snap/codex/x/sessions/a.jsonl", h.home))
+        self.assertFalse(codex_homes.is_snap(os.path.join(h.tmp, "other", "snap", "codex", "34", "a.jsonl"), h.home))
+        with mock.patch.dict(os.environ, {"HOME": h.home}):
+            self.assertTrue(codex_homes.is_snap(os.path.join(h.rev, "sessions", "x.jsonl")))
 
     def test_newest_keeps_first_position_and_latest_item(self):
         items = [("a", 1), ("b", 5), ("a", 3), ("a", 2)]
@@ -268,6 +276,89 @@ class WatchTest(unittest.TestCase):
                                    == "working", timeout=3))
 
 
+    def test_watches_move_to_the_new_revision_after_a_snap_refresh(self):
+        from tide_daemon.monitor import AgentMonitor
+        from .privatebus import wait_until
+        h = Homes(self)
+        h.write(h.current, uid(14), session(uid(14), h.work))
+        monitor = AgentMonitor(AgentScanner(h.claude, h.roots), use_processes=False, clock=lambda: NOW)
+        monitor._rescan.setInterval(10 ** 7)
+        monitor.start()
+        self.addCleanup(lambda m=monitor: (m._tick.stop(), m._rescan.stop(), m.watcher.removePaths(
+            m.watcher.files() + m.watcher.directories())))
+        old = os.path.join(real(h.rev), "sessions")
+        self.assertIn(os.path.join(old, "2026", "10", "26"), monitor.watcher.directories())
+
+        # Odświeżenie snapa: snapd kopiuje dane do rewizji 35 i przestawia current.
+        new_rev = os.path.join(os.path.dirname(h.current), "35")
+        shutil.copytree(h.rev, new_rev, symlinks=True)
+        os.remove(h.current)
+        os.symlink("35", h.current)
+        monitor.rescan()
+        new = os.path.join(real(new_rev), "sessions")
+        watched = monitor.watcher.directories() + monitor.watcher.files()
+        self.assertIn(os.path.join(new, "2026", "10", "26"), watched)
+        self.assertFalse([p for p in watched if p.startswith(old)], "stara rewizja nie jest już obserwowana")
+        self.assertEqual({s["sessionId"] for s in monitor.sessions}, {uid(14)}, "kopia w 35 to ta sama sesja")
+        h.write(h.current, uid(15), session(uid(15), h.work, state="working", last="11:59:00"))
+        self.assertTrue(wait_until(lambda: uid(15) in {s["sessionId"] for s in monitor.sessions}, timeout=3))
+
+
+# --- segmenty jednego wątku ----------------------------------------------------------------------
+
+class SegmentsTest(unittest.TestCase):
+    """Codex Desktop dzieli długi wątek na pliki `rollout-…-<wątek>.jsonl` i `rollout-…-<wątek>_<segment>.jsonl`
+    (to samo id, kolejne przedziały czasu). Raport i worktrees widzą segmenty jak dotąd (osobno), karty
+    Agents i KRunner — jako jedną pozycję (najnowszy segment). Kopia w drugim katalogu danych to ten sam plik
+    (id i ścieżka względem sessions/) i nie dokłada pozycji."""
+
+    SEG = "0000000e-0000-4000-8000-0000000000ff"
+
+    def setUp(self):
+        h = self.h = Homes(self)
+        self.other = os.path.join(h.tmp, "work", "other")
+        os.makedirs(os.path.join(self.other, ".git"))
+        sid = self.sid = uid(50)
+        h.write(h.dot, sid, session(sid, h.work, prompt="Pierwszy segment", start="10:00:00", last="10:30:00",
+                                    message="Wynik pierwszego", originator="Codex Desktop"),
+                name=f"rollout-2026-10-26T10-00-00-{sid}.jsonl")
+        h.write(h.dot, sid, session(sid, self.other, prompt="Drugi segment", start="11:00:00", last="11:30:00",
+                                    message="Wynik drugiego", originator="Codex Desktop"),
+                name=f"rollout-2026-10-26T11-00-00-{sid}_{self.SEG}.jsonl")
+        # Kopia pierwszego segmentu w snapie (np. przeniesiona ręcznie) — ten sam plik, nie trzeci segment.
+        h.write(h.current, sid, session(sid, h.work, prompt="Pierwszy segment", start="10:00:00", last="10:20:00",
+                                        message="Starsza kopia", originator="Codex Desktop"),
+                name=f"rollout-2026-10-26T10-00-00-{sid}.jsonl")
+
+    def test_report_keeps_segments_apart(self):
+        found = [r for r in report_sessions.collect(self.h.claude, self.h.roots, NOW - 86400, NOW)
+                 if r.session_id == self.sid]
+        self.assertEqual(sorted((r.prompt, r.final_message) for r in found),
+                         [("Drugi segment", "Wynik drugiego"), ("Pierwszy segment", "Wynik pierwszego")])
+        self.assertFalse(any(codex_homes.is_snap(r.path, self.h.home) for r in found), "nowsza kopia z ~/.codex")
+
+    def test_worktrees_link_every_segment_directory(self):
+        index = wt_sessions.SessionIndex(self.h.claude, self.h.roots)
+        found = [s for s in index.refresh(NOW) if s.session_id == self.sid]
+        self.assertEqual(sorted(s.cwds for s in found), sorted([(self.h.work,), (self.other,)]))
+        linked = index.link([(self.h.work, real(self.h.work)), (self.other, real(self.other))])
+        self.assertEqual((linked[self.h.work].session_id, linked[self.other].session_id), (self.sid, self.sid))
+        self.assertEqual(linked[self.h.work].last_ts, parse_ts(at("10:30:00")))
+
+    def test_agents_card_is_one_entry_from_the_newest_segment(self):
+        found = [s for s in scan(self.h.claude, self.h.roots, NOW) if s["sessionId"] == self.sid]
+        self.assertEqual(len(found), 1)
+        self.assertEqual((found[0]["cwd"], found[0]["lastActivity"]), (self.other, "2026-10-26T11:30:00Z"))
+
+    def test_krunner_is_one_match_from_the_newest_segment(self):
+        index = SessionIndex(self.h.claude, self.h.roots, clock=lambda: NOW)
+        index.refresh()
+        found = [e for e in index.entries() if e["sessionId"] == self.sid]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["cwd"], self.other)
+        self.assertTrue(found[0]["source"].endswith(f"_{self.SEG}.jsonl"))
+
+
 # --- KRunner ------------------------------------------------------------------------------------
 
 class RecordingLaunchers(Launchers):
@@ -322,7 +413,7 @@ class KRunnerTest(unittest.TestCase):
         self.index.refresh()
         ids = [e["sessionId"] for e in self.index.entries()]
         self.assertEqual(ids.count(uid(21)), 1)
-        self.assertTrue(codex_homes.is_snap(self.entries()[uid(21)]["source"]), "nowsza kopia ze snapa")
+        self.assertTrue(codex_homes.is_snap(self.entries()[uid(21)]["source"], self.h.home), "nowsza kopia ze snapa")
 
     def test_new_thread_name_in_snap_home_is_read_incrementally(self):
         self.index.refresh()
@@ -330,6 +421,17 @@ class KRunnerTest(unittest.TestCase):
             fh.write(json.dumps({"id": uid(22), "thread_name": "Nowa nazwa"}) + "\n")
         self.index.refresh()
         self.assertEqual(self.entries()[uid(22)]["title"], "Nowa nazwa")
+
+    def test_thread_name_readers_follow_the_current_revision(self):
+        self.index.refresh()
+        self.assertEqual(set(self.index._thread_names), {real(self.h.dot), real(self.h.rev)})
+        new_rev = os.path.join(os.path.dirname(self.h.current), "35")
+        shutil.copytree(self.h.rev, new_rev, symlinks=True)
+        os.remove(self.h.current)
+        os.symlink("35", self.h.current)
+        self.index.refresh()
+        self.assertEqual(set(self.index._thread_names), {real(self.h.dot), real(new_rev)})
+        self.assertEqual(self.entries()[uid(21)]["title"], "Nazwa ze snapa")
 
     def core(self, path_dirs):
         env = make_env(self.h.tmp)
@@ -369,7 +471,11 @@ class LaunchersTest(unittest.TestCase):
         self.assertEqual(codex_binaries(path, os.path.join(tmp, "home")), {"snap": snap, "other": npm})
         self.assertEqual(codex_binaries(os.path.dirname(snap), os.path.join(tmp, "home")),
                          {"snap": snap, "other": local})
-        self.assertEqual(codex_binaries("", os.path.join(tmp, "nohome")), {"snap": "", "other": ""})
+        none = os.path.join(tmp, "nowhere", "codex")
+        self.assertEqual(codex_binaries("", os.path.join(tmp, "nohome"), snap_fallback=none), {"snap": "", "other": ""})
+        # Bez /snap/bin w PATH usługi — zapasowo stała ścieżka snapa (jak kandydaci Ridera).
+        self.assertEqual(codex_binaries(os.path.dirname(npm), os.path.join(tmp, "nohome"), snap_fallback=snap),
+                         {"snap": snap, "other": npm})
 
     def test_resume_command_with_source(self):
         tmp = tempfile.mkdtemp(prefix="tide-codex-resume-")
@@ -384,6 +490,22 @@ class LaunchersTest(unittest.TestCase):
         fake_codex = os.path.join(tmp, "fakebin", "codex")
         self.assertEqual(launchers.resume_command("codex", "id", tmp, source=dot_log)[-3:], [fake_codex, "resume", "id"])
         self.assertEqual(launchers.resume_command("codex", "id", tmp)[-3:], [fake_codex, "resume", "id"])
+
+
+class ReportResumeTest(unittest.TestCase):
+    def test_resume_command_runs_the_snap_codex_for_snap_sessions(self):
+        from types import SimpleNamespace
+        from tide_daemon.reports import render
+        h = Homes(self)
+        snap = SimpleNamespace(tool="codex", cwd="/w/a b", session_id="id-1",
+                               path=os.path.join(h.rev, "sessions", "2026", "10", "26", "r-id-1.jsonl"))
+        dot = SimpleNamespace(tool="codex", cwd="/w", session_id="id-2",
+                              path=os.path.join(h.dot, "sessions", "2026", "10", "26", "r-id-2.jsonl"))
+        claude = SimpleNamespace(tool="claude", cwd="/w", session_id="c-1", path="/x.jsonl")
+        with mock.patch.dict(os.environ, {"HOME": h.home}):
+            self.assertEqual(render.resume_command(snap), "cd '/w/a b' && /snap/bin/codex resume id-1")
+            self.assertEqual(render.resume_command(dot), "cd /w && codex resume id-2")
+            self.assertEqual(render.resume_command(claude), "cd /w && claude --resume c-1")
 
 
 # --- worktrees, raport, koordynacja --------------------------------------------------------------
@@ -420,7 +542,7 @@ class ReportSessionsTest(unittest.TestCase):
         ids = [r.session_id for r in found]
         self.assertEqual(sorted(ids), [uid(40), uid(41)])
         snap = next(r for r in found if r.session_id == uid(41))
-        self.assertTrue(codex_homes.is_snap(snap.path), "nowsza kopia ze snapa")
+        self.assertTrue(codex_homes.is_snap(snap.path, h.home), "nowsza kopia ze snapa")
         self.assertEqual((snap.prompt, snap.last_ts), ("Z terminala", parse_ts(at("11:40:00"))))
         self.assertEqual(report_sessions.codex_titles(h.roots)[uid(41)], "Test modelu lokalnego")
 
@@ -450,7 +572,7 @@ class CoordinationTest(unittest.TestCase):
         coords = scanner.read()
         coord = coords["codex:" + F.CODEX_ROOT]
         self.assertEqual(set(coord.runs), {F.CODEX_IMPL, F.CODEX_REVIEW, F.CODEX_PROBE})
-        self.assertTrue(codex_homes.is_snap(coord.path))
+        self.assertTrue(codex_homes.is_snap(coord.path, h.home))
         self.assertEqual(sum(1 for key in coords if key == "codex:" + F.CODEX_ROOT), 1)
 
         # „Przejdź” do zakończonego koordynatora ze snapa wznawia go Codexem ze snapa.

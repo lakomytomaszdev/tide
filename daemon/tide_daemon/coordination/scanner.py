@@ -13,7 +13,7 @@ Koordynator:
   temu, a dziś wciąż zlecający) leży poza oknem — rodzica podagenta z okna szukamy wtedy po ID
   w nazwie pliku (`rollout-…-<id>.jsonl`) we wszystkich dniach i w `archived_sessions`.
   Katalogów danych Codexa może być kilka (codex_homes.py: ~/.codex i ~/snap/codex/current) —
-  czytamy wszystkie; wątek obecny w dwóch to jeden wątek (plik zmieniony później wygrywa).
+  czytamy wszystkie; kopię tego samego pliku z drugiego katalogu pomijamy (nowszy plik wygrywa).
 
 Tablica dostaje też `warnings` — kontrolę numerów ticketów (numbering.py) na planach ze wszystkich
 worktree i gałęzi repozytorium (repoplans.py), rezerwacjach numerów (reservations.py) i liście projektów
@@ -80,19 +80,19 @@ class CoordinationScanner:
                 del self.claude_logs[path]
 
         threads = {}
-        for root in codex_homes.sessions_dirs(self.codex_roots):
-            for path in _codex_files(root, cutoff, now):
-                log = self.codex_logs.get(path)
-                if log is None:
-                    log = self.codex_logs[path] = codex_mod.CodexThreadLog(path)
-                if log.read_meta() and log.id:
-                    other = threads.get(log.id)
-                    if other is None or _mtime(path) > _mtime(other.path):
-                        threads[log.id] = log
+        roots = codex_homes.sessions_dirs(self.codex_roots)
+        paths = [path for root in roots for path in _codex_files(root, cutoff, now)]
+        # mtime liczy się tylko przy kopii tego samego pliku w drugim katalogu danych.
+        for path in codex_homes.unique_files(paths, roots, path=lambda p: p, stamp=_mtime):
+            log = self.codex_logs.get(path)
+            if log is None:
+                log = self.codex_logs[path] = codex_mod.CodexThreadLog(path)
+            if log.read_meta() and log.id:
+                threads[log.id] = log
         self._add_codex_parents(threads, now)
         for path in list(self.codex_logs):
-            if threads.get(self.codex_logs[path].id) is not self.codex_logs[path]:
-                del self.codex_logs[path]  # spoza okna albo kopia wątku z drugiego katalogu danych
+            if self.codex_logs[path].id not in threads:
+                del self.codex_logs[path]
         children: dict[str, list] = {}
         for log in threads.values():
             if log.parent_id and not log.hidden:

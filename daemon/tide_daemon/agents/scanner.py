@@ -9,8 +9,10 @@ i podagentów (czeka > pracuje > skończył). Podagent, którego rodzica nie zna
 główny sprzed doby), zostaje osobną pozycją z `subagent: true`. Przejście do sesji z Codex
 Desktop otwiera w aplikacji wątek główny (codex://threads/<id>) — który, pamięta `app_threads`.
 
-Codex może mieć kilka katalogów danych (codex_homes.py: ~/.codex i snap) — czytamy wszystkie,
-a ta sama sesja w dwóch katalogach jest jedną pozycją (nowsza aktywność wygrywa).
+Codex może mieć kilka katalogów danych (codex_homes.py: ~/.codex i snap) — czytamy wszystkie, a kopię
+tego samego pliku z drugiego katalogu pomijamy (nowszy plik wygrywa). Pliki z tym samym id wątku
+(segmenty jednego wątku Codex Desktop, `rollout-…-<wątek>_<segment>.jsonl`) to jedna karta z najnowszego
+segmentu — wcześniej każdy segment był osobną kartą z tym samym id.
 """
 import os
 
@@ -59,10 +61,11 @@ class AgentScanner:
         for path, mtime in _claude_files(self.claude_projects):
             if mtime >= cutoff:
                 found[path] = ClaudeLog
-        for root in self.codex_log_roots():
-            for path, mtime in _codex_files(root):
-                if mtime >= cutoff:
-                    found[path] = CodexLog
+        roots = self.codex_log_roots()
+        codex = [(path, mtime) for root in roots for path, mtime in _codex_files(root)]
+        for path, mtime in codex_homes.unique_files(codex, roots):
+            if mtime >= cutoff:
+                found[path] = CodexLog
         changed = False
         for path in list(self.logs):
             if path not in found:
@@ -106,7 +109,7 @@ class AgentScanner:
         visible = [log for log, _ in self.logs.values()
                    if (not log.hidden or _parent(log)) and log.last_activity
                    and now - log.last_activity <= self.max_age]
-        # Ten sam wątek Codexa w dwóch katalogach danych — zostaje plik z nowszą aktywnością.
+        # Jeden wątek Codexa = jedna karta: segmenty wątku (to samo id) zwijają się do najnowszego.
         visible = codex_homes.newest(visible, key=lambda l: (l.tool, l.session_id) if l.tool == "codex" else id(l),
                                      stamp=lambda l: l.last_activity)
         bindings = self._bind(visible, procs)

@@ -12,8 +12,9 @@ zagnieżdżonych worktrees liczy się najgłębszy). Bierzemy sesje z ostatnich 
   i `turn_context.payload.cwd` (worktrees Codexa leżą zwykle w ~/.codex/worktrees). Tytuł wątku
   z <codex>/session_index.jsonl (`thread_name`), inaczej pierwsze polecenie użytkownika
   (`event_msg/user_message`). Wątki podagentów pomijamy. Katalogów danych Codexa może być kilka
-  (codex_homes.py: ~/.codex i ~/snap/codex/current) — czytamy wszystkie, ta sama sesja w dwóch
-  liczy się raz (nowszy wpis wygrywa).
+  (codex_homes.py: ~/.codex i ~/snap/codex/current) — czytamy wszystkie, kopię tego samego pliku
+  z drugiego katalogu pomijamy (nowszy plik). Segmenty jednego wątku zostają osobno — katalogi
+  wszystkich segmentów wiążą wątek z worktrees, jak zawsze.
 
 Z każdego pliku czytamy tylko początek i koniec (HEAD_BYTES, TAIL_BYTES), a JSON parsujemy tylko
 w liniach, które mogą nieść potrzebne pola. Wynik pliku jest w pamięci do zmiany jego rozmiaru
@@ -78,9 +79,11 @@ class SessionIndex:
         cutoff = now - self.max_age
         found = {path: ("claude", st) for path, st in _claude_files(self.claude_projects) if st.st_mtime >= cutoff}
         homes = codex_homes.resolve(self.codex_roots)
-        for home in homes:
-            found.update({path: ("codex", st) for path, st in _codex_files(os.path.join(home, codex_homes.SESSIONS))
-                          if st.st_mtime >= cutoff})
+        roots = [os.path.join(home, codex_homes.SESSIONS) for home in homes]
+        codex = [(path, st) for root in roots for path, st in _codex_files(root)]
+        found.update({path: ("codex", st) for path, st in codex_homes.unique_files(codex, roots,
+                                                                                  stamp=lambda f: f[1].st_mtime)
+                      if st.st_mtime >= cutoff})
         files = {}
         for path, (tool, st) in found.items():
             old = self._files.get(path)
@@ -104,9 +107,6 @@ class SessionIndex:
             sessions.append(SessionInfo(parsed.tool, parsed.session_id, shorten(title or parsed.prompt, TITLE_LIMIT),
                                         parsed.cwds, parsed.last_ts or mtime,
                                         tuple(os.path.realpath(c) for c in parsed.cwds)))
-        # Ta sama sesja Codexa w dwóch katalogach danych — zostaje ta z nowszym wpisem.
-        sessions = codex_homes.newest(sessions, key=lambda x: (x.tool, x.session_id) if x.tool == "codex" else id(x),
-                                      stamp=lambda x: x.last_ts)
         with self._lock:
             self.sessions = sessions
         return sessions
