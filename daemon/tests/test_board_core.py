@@ -179,6 +179,7 @@ class CardTest(BoardCase):
             "spec:\n"
             "session:\n"
             "branch:\n"
+            "check: auto\n"
             "---\n"
             "\nOpis **karty**.\n\n- punkt\n"))
         card = self.cards()["K-1"]
@@ -237,7 +238,7 @@ class CardTest(BoardCase):
 
     def test_update_keeps_hand_edits_and_unknown_keys(self):
         self.store.create_card({"title": "a", "description": "stary opis"})
-        text = self.card_text("K-1").replace("branch:\n", "branch:\npriorytet: wysoki # moje\n")
+        text = self.card_text("K-1").replace("check: auto\n", "check: auto\npriorytet: wysoki # moje\n")
         self.write("cards/K-1.md", text + "\nDopisek ręczny.\n")
         self.store.sync()
         self.clock[0] = NOW + 60

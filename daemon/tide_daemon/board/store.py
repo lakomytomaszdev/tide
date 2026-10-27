@@ -6,7 +6,7 @@ Układ (opis: docs/tide-daemon.md, Tablica):
   projects/<slug>.md       name, repo, tags, ai-docs, tool, mode; treść — opis projektu
   tags/<slug>.md           name, color (nazwa pastelu z palety); treść — opis tagu
   cards/K-<n>.md           id, title, project, tags, column, order, note, created, updated,
-                           youtrack, spec, session, branch; treść — opis karty (Markdown)
+                           youtrack, spec, session, branch, check; treść — opis karty (Markdown)
   flows/<tryb>.md          szablony poleceń trybów (flows.py), flows/<projekt>/<tryb>.md — nadpisanie
   docs/<projekt>/          plany i specyfikacje agentów projektów z `ai-docs: tide`
 
@@ -33,7 +33,7 @@ from . import flows
 from .frontmatter import Document, FrontmatterError
 from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
-from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, COLUMNS, DEFAULT_COLUMN, DEFAULT_MODE,
+from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUMNS, DEFAULT_CHECK, DEFAULT_COLUMN, DEFAULT_MODE,
                     DEFAULT_TOOL, DESCRIPTION_MAX, FIELD_MAX, FILE_MAX, MANUAL_COLUMNS, MODES, NAME_MAX, NOTE_MAX,
                     PASTELS, RESERVED_CARD_KEYS, SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
                     TOOLS, BoardError, Card, Project, Tag, card_num, default_ai_docs, fallback_color, merge_tags,
@@ -67,7 +67,7 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 - `flows/<tryb>.md` — szablony poleceń trybów full, light i spec,
 - `docs/<projekt>/` — plany i specyfikacje agentów projektów z `ai-docs: tide`.
 """
-CARD_FIELDS = ("title", "description", "project", "repo", "tags", "note", *RESERVED_CARD_KEYS)
+CARD_FIELDS = ("title", "description", "project", "repo", "tags", "note", *RESERVED_CARD_KEYS, "check")
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "description")
 TAG_FIELDS = ("name", "newName", "color", "description")
@@ -144,7 +144,8 @@ class BoardStore:
 
     def snapshot(self, repos=None, derive=None) -> dict:
         """Migawka dla D-Bus i --print-board. repos: ścieżki repozytoriów z katalogu projektów
-        (do listy „dodaj jako projekt”); derive(card) → dict|None: stan z koordynatora (PT-5)."""
+        (do listy „dodaj jako projekt”); derive(card) → dict|None: stan z pracy agentów (PT-5,
+        board/derive.py) — karta dostaje na wejściu także `repo` swojego projektu."""
         board = self.load()
         tags = dict(board.tags)
         projects = sorted(board.projects.values(), key=lambda p: p.name.casefold())
@@ -158,7 +159,8 @@ class BoardStore:
             derived = None
             if derive is not None:
                 try:
-                    derived = derive(_card_json(card, project, resolved, None))
+                    derived = derive({**_card_json(card, project, resolved, None),
+                                      "repo": project.repo if project else ""})
                 except Exception as exc:  # stan z koordynatora to dodatek — nie może zepsuć tablicy
                     board.errors.append({"path": card.path, "message": f"{card.id}: stan koordynatora: {exc}"})
             cards_out.append(_card_json(card, project, resolved, derived))
@@ -346,6 +348,7 @@ class BoardStore:
                   "created": now, "updated": now}
         for key in RESERVED_CARD_KEYS:
             values[key] = v.get(key, "")
+        values["check"] = v.get("check", DEFAULT_CHECK)
         for key in CARD_KEYS:
             doc.set(key, values[key])
         doc.body = v.get("description", "")
@@ -364,7 +367,7 @@ class BoardStore:
         changed = []
         if "project" in v or "repo" in v:
             changed += _doc_set(card.doc, "project", self._project_slug(board, v, change))
-        for key in ("title", "tags", "note", *RESERVED_CARD_KEYS):
+        for key in ("title", "tags", "note", *RESERVED_CARD_KEYS, "check"):
             if key in v:
                 changed += _doc_set(card.doc, key, ", ".join(v[key]) if key == "tags" else v[key])
         if "description" in v and v["description"].strip() != card.doc.body.strip():
@@ -703,7 +706,8 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived) -> 
         "boardColumn": (derived or {}).get("column") or card.column,
         "order": card.order, "note": card.note, "created": card.created, "createdTs": parse_ts(card.created),
         "updated": card.updated, "updatedTs": parse_ts(card.updated), "youtrack": card.youtrack,
-        "spec": card.spec, "session": card.session, "branch": card.branch, "description": card.description,
+        "spec": card.spec, "session": card.session, "branch": card.branch, "check": card.check,
+        "description": card.description,
         "derived": derived, "path": card.path,
     }
 
@@ -826,6 +830,8 @@ def _card_values(data: dict, create: bool = False) -> dict:
     for key in RESERVED_CARD_KEYS:
         if key in data:
             out[key] = _line(data[key], FIELD_MAX, key)
+    if "check" in data:
+        out["check"] = _enum(data["check"], CHECKS, "sprawdzenie")
     if "description" in data:
         out["description"] = _body(data["description"])
     if "project" in data:

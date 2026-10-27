@@ -31,6 +31,10 @@ TOOLS = ("claude", "codex")
 MODES = ("full", "light", "spec")
 DEFAULT_TOOL = "claude"
 DEFAULT_MODE = "full"  # pełny przebieg (grilling, spec, plan, TDD, review), chyba że karta wybierze inaczej
+# Sprawdzenie po skończonej pracy agenta: `manual` — test ręczny użytkownika (karta czeka w „Do sprawdzenia”,
+# aż przeniesie ją do Gotowe), `auto` — wystarczą testy i review AI (scalona praca od razu jako gotowa).
+CHECKS = ("auto", "manual")
+DEFAULT_CHECK = "auto"
 
 # Kolory tagów to nazwy pasteli z palety (theme/palette: „pastel”); kolejność = kolejność wyboru
 # koloru dla tagu bez pliku. Paleta może dodać własne nazwy — wtedy obowiązuje jej lista.
@@ -44,7 +48,7 @@ CARD_ID_RE = re.compile(r"^K-([1-9][0-9]{0,8})$", re.IGNORECASE)
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # Kolejność kluczy w nowych plikach (istniejące pliki zachowują swoją).
 CARD_KEYS = ("id", "title", "project", "tags", "column", "order", "note", "created", "updated",
-             "youtrack", "spec", "session", "branch")
+             "youtrack", "spec", "session", "branch", "check")
 RESERVED_CARD_KEYS = ("youtrack", "spec", "session", "branch")  # wypełnią PT-4, PT-5, PT-7
 PROJECT_KEYS = ("name", "repo", "tags", "ai-docs", "tool", "mode")
 TAG_KEYS = ("name", "color")
@@ -115,6 +119,7 @@ class Card:
     spec: str = ""
     session: str = ""
     branch: str = ""
+    check: str = DEFAULT_CHECK
     description: str = ""
     path: str = ""
     doc: Document | None = None
@@ -212,6 +217,7 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.updated = doc.get("updated").strip()
     for key in RESERVED_CARD_KEYS:
         setattr(card, key, doc.get(key).strip())
+    card.check = _choice(doc.get("check"), CHECKS, DEFAULT_CHECK, f"{name}: nieznane sprawdzenie", path, errors)
     return card
 
 

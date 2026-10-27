@@ -146,3 +146,13 @@ def derive_state(log: SessionLog, now: float, alive: bool | None, status: Status
     if age > STALL_AFTER and not work_evidence(log.last_activity):
         return IDLE, "", log.last_activity
     return WORKING, "", log.phase_since or log.last_activity
+
+
+def waits_for_user(session: dict) -> bool:
+    """Czy sesja z listy /Agents stoi i czeka na użytkownika — ta sama definicja co widżet agentów,
+    Meta+A, powiadomienia i tablica (kolumna „Czeka na mnie”): wyłącznie stan `waiting` (zgoda na
+    narzędzie, pytanie, status „waiting” z Claude Code). Koniec tury z pytaniem w ostatniej wiadomości
+    to `done`, nie czekanie. Wpis sprzed stanu `done` (`waiting` z powodem `reply`) to koniec tury."""
+    if not isinstance(session, dict) or session.get("state") != WAITING:
+        return False
+    return session.get("reason") != "reply"
