@@ -13,6 +13,11 @@ Przebieg (Planner.prepare → terminal → claim albo Planner.rollback):
 5. gdy Konsole nie przejmie zadania w czasie — wycofanie: plik zadania anulowany, worktree
    i świeżo założona gałąź usunięte. Nic nie zostaje w połowie.
 
+Model: `"model": "cloud"` (domyślnie — model narzędzia w chmurze) albo `"local"` — model z roli `agent`
+w models.json (tasks/local.py). Przy `local` usługa sprawdza serwer teraz (online, model pobrany), argv
+dostaje opcje modelu, plik zadania jawne zmienne (`env`) i zmienne z tokenem (`secretEnv`: nazwa →
+ścieżka tokenFile — sam token czyta dopiero launch.py), a tytuł karty dopisek „· lokalnie”.
+
 Polecenie agenta nigdy nie przechodzi przez powłokę: argv to lista, a prompt jest jednym jej
 elementem, po `--` (myślnik na początku polecenia nie zostanie wzięty za opcję).
 """
@@ -24,12 +29,15 @@ import shutil
 import time
 from dataclasses import dataclass, field
 
+from . import local as local_mod
 from ..worktrees.git import MAIN_CANDIDATES, Git, pick_main_branch
 from ..worktrees.naming import TOOLS as BRANCH_TOOLS, branch_from_prompt, slug_from_prompt
 from ..worktrees.scanner import find_repositories
 
 TOOLS = ("claude", "codex")
 TOOL_LABELS = {"claude": "Claude Code", "codex": "Codex"}
+MODELS = ("cloud", "local")
+LOCAL_SUFFIX = "lokalnie"     # dopisek w tytule karty Konsoli
 PROMPT_LIMIT = 32_000          # znaków; jeden argument programu może mieć do 128 KiB
 IMAGE_LIMIT = 10
 ADD_DIR_LIMIT = 4
@@ -60,6 +68,9 @@ MESSAGES = {
                   "zawierał; zacommituj je albo wyłącz „Nowy worktree”",
     "git": "git odmówił: {detail}",
     "launch": "Konsola nie uruchomiła zadania{detail} — nic nie zostało utworzone",
+    "bad-model": "nieznany model (cloud albo local)",
+    "local-unset": "model lokalny agenta nie jest ustawiony — ustaw go w Tide → Modele",
+    "local-unavailable": "model lokalny niedostępny: {detail}",
 }
 
 
@@ -95,21 +106,37 @@ class Plan:
     base_sha: str = ""
     images: list = field(default_factory=list)
     task_file: str = ""
+    model: str = "cloud"       # "cloud" albo "local"
+    local: object = None       # local.LocalAgent przy modelu lokalnym
+    env: dict = field(default_factory=dict)          # jawne zmienne środowiska agenta
+    secret_env: dict = field(default_factory=dict)   # zmienna → plik tokenu (czyta launch.py)
 
     def result(self, mode: str = "") -> dict:
+        local = {"endpoint": self.local.endpoint, "model": self.local.model, "server": self.local.server} \
+            if self.local is not None else None
         return {"ok": True, "error": "", "message": "", "cwd": self.cwd, "branch": self.branch,
                 "worktree": self.worktree, "base": self.base, "title": self.title, "repoPath": self.repo_path,
-                "tool": self.tool, "mode": mode}
+                "tool": self.tool, "mode": mode, "model": self.model, "local": local}
+
+    def task_payload(self) -> dict:
+        """Treść pliku zadania dla launch.py — bez tokenów (tylko ścieżki plików z nimi)."""
+        payload = {"cwd": self.cwd, "argv": self.argv, "title": self.title}
+        if self.env:
+            payload["env"] = self.env
+        if self.secret_env:
+            payload["secretEnv"] = self.secret_env
+        return payload
 
 
 def failure(error: TaskError) -> dict:
     return {"ok": False, "error": error.code, "message": error.message, "cwd": "", "branch": "", "worktree": "",
-            "base": "", "title": "", "repoPath": "", "tool": "", "mode": ""}
+            "base": "", "title": "", "repoPath": "", "tool": "", "mode": "", "model": "", "local": None}
 
 
 # --- polecenie agenta ------------------------------------------------------------------------
 
-def agent_argv(tool: str, binary: str, prompt: str, images: list[str] = (), add_dirs: list[str] = ()) -> list[str]:
+def agent_argv(tool: str, binary: str, prompt: str, images: list[str] = (), add_dirs: list[str] = (),
+               model_options: list[str] = ()) -> list[str]:
     """argv sesji interaktywnej z poleceniem na start; prompt to jeden element listy.
 
     Codex: `codex [--add-dir D] --image A --image B -- <prompt>` (zrzuty dołączone do pierwszej wiadomości).
@@ -117,9 +144,10 @@ def agent_argv(tool: str, binary: str, prompt: str, images: list[str] = (), add_
     do `--add-dir`, żeby agent mógł je przeczytać narzędziem Read bez pytania o zgodę.
     add_dirs (oba narzędzia: `--add-dir`) — katalogi poza katalogiem roboczym, w których agent
     pisze (dokumenty AI karty w repozytorium tablicy).
+    model_options — opcje modelu lokalnego zaraz po programie (tasks/local.py), np. `--model qwen3-coder:30b`.
     `--` kończy opcje — polecenie zaczynające się od „-” nie zostanie wzięte za opcję."""
     images = list(images)
-    extra = []
+    extra = list(model_options)
     for folder in add_dirs:
         extra += ["--add-dir", folder]
     if tool == "codex":
@@ -138,10 +166,12 @@ def agent_argv(tool: str, binary: str, prompt: str, images: list[str] = (), add_
     raise TaskError("bad-tool")
 
 
-def task_title(project: str, branch: str) -> str:
-    """Tytuł karty Konsoli „projekt · gałąź”. Bez % (Konsole czyta go jako format tytułu)
-    i średników (separator opcji -p)."""
+def task_title(project: str, branch: str, local: bool = False) -> str:
+    """Tytuł karty Konsoli „projekt · gałąź” (z modelem lokalnym „projekt · gałąź · lokalnie”).
+    Bez % (Konsole czyta go jako format tytułu) i średników (separator opcji -p)."""
     text = f"{project} · {branch}" if branch else project
+    if local:
+        text += f" · {LOCAL_SUFFIX}"
     return re.sub(r"[%;\r\n\t]", "", text).strip()
 
 
@@ -266,7 +296,7 @@ class Planner:
 
     def __init__(self, workspace: str, max_depth: int = 3, git: Git | None = None, env=None,
                  files: TaskFiles | None = None, images_root: str | None = None, state_path: str | None = None,
-                 terminal_available=None, board_root: str | None = None):
+                 terminal_available=None, board_root: str | None = None, models_config=None, model_probe=None):
         env = dict(os.environ if env is None else env)
         self.workspace = workspace
         self.max_depth = max_depth
@@ -280,6 +310,10 @@ class Planner:
         self.state_path = state_path or os.path.join(state, "tide", "new-task.json")
         self.home = home
         self.terminal_available = terminal_available or (lambda: True)
+        # Model lokalny: models.json czytany przy każdym starcie i stan punktu sprawdzany teraz
+        # (podmienialne w testach — testy nigdy nie pytają prawdziwego serwera).
+        self.models_config = models_config or self._models_config
+        self.model_probe = model_probe or self._model_probe
         if board_root is None:
             from ..board.marker import default_board_dir
             board_root = env.get("TIDE_BOARD_DIR") or default_board_dir()
@@ -310,15 +344,17 @@ class Planner:
         if not isinstance(data, dict):
             data = {}
         tool = data.get("tool") if data.get("tool") in TOOLS else "claude"
+        model = data.get("model") if data.get("model") in MODELS else "cloud"
         return {"repoPath": str(data.get("repoPath") or ""), "tool": tool,
-                "newWorktree": data.get("newWorktree") is not False}
+                "newWorktree": data.get("newWorktree") is not False, "model": model}
 
     def remember(self, plan: Plan) -> None:
         try:
             os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
             tmp = self.state_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump({"repoPath": plan.repo_path, "tool": plan.tool, "newWorktree": bool(plan.worktree)}, fh)
+                json.dump({"repoPath": plan.repo_path, "tool": plan.tool, "newWorktree": bool(plan.worktree),
+                           "model": plan.model}, fh)
             os.replace(tmp, self.state_path)
         except OSError as exc:  # zapamiętanie to wygoda — nie może zepsuć startu
             print(f"tide-daemon: zadania: nie udało się zapisać wyboru: {exc}", flush=True)
@@ -400,8 +436,55 @@ class Planner:
         add_dirs = self._add_dirs(request.get("addDirs") or [])
         new_worktree = request.get("newWorktree") is not False
         branch = request.get("branch") if isinstance(request.get("branch"), str) else ""
+        model = request.get("model", "cloud")
+        if model not in MODELS:
+            raise TaskError("bad-model")
+        agent = self.local_agent() if model == "local" else None
         return {"tool": tool, "prompt": prompt, "binary": binary, "repo": repo, "images": images,
-                "addDirs": add_dirs, "newWorktree": new_worktree, "branch": branch.strip()}
+                "addDirs": add_dirs, "newWorktree": new_worktree, "branch": branch.strip(), "model": model,
+                "local": agent}
+
+    # --- model lokalny -------------------------------------------------------------------
+
+    def _models_config(self):
+        from ..models import config as models_config
+        return models_config.load(models_config.config_path(self.env))
+
+    @staticmethod
+    def _model_probe(endpoint) -> dict:
+        from ..models import status as models_status
+        return models_status.endpoint_status(endpoint)
+
+    def local_agent(self) -> "local_mod.LocalAgent":
+        """Rola `agent` z models.json po sprawdzeniu serwera teraz: online i model pobrany.
+        Kontekst z roli, inaczej z serwera (model załadowany), inaczej nieznany."""
+        from ..models.status import model_key
+        cfg = self.models_config()
+        role = cfg.roles.get("agent")
+        if role is None:
+            raise TaskError("local-unset")
+        if role.error:
+            raise TaskError("local-unavailable", detail=role.error)
+        endpoint = cfg.endpoints.get(role.endpoint)
+        if endpoint is None:
+            raise TaskError("local-unavailable", detail=f"nieznany serwer „{role.endpoint}”")
+        state = self.model_probe(endpoint) or {}
+        if not state.get("online"):
+            reason = state.get("error") or "serwer nie odpowiada"
+            raise TaskError("local-unavailable", detail=f"serwer „{endpoint.name}” ({endpoint.host}): {reason}")
+        names = [m.get("name") for m in state.get("models") or [] if isinstance(m, dict)]
+        if endpoint.kind == "ollama":
+            installed = model_key(role.model) in {model_key(n) for n in names if n}
+        else:
+            installed = role.model in names
+        if not installed:
+            raise TaskError("local-unavailable", detail=f"modelu {role.model} nie ma na serwerze „{endpoint.name}”")
+        ctx = role.ctx
+        if not ctx:
+            for loaded in state.get("loaded") or []:
+                if isinstance(loaded, dict) and model_key(loaded.get("name") or "") == model_key(role.model):
+                    ctx = loaded.get("contextLength") or None
+        return local_mod.LocalAgent(endpoint.name, endpoint.url, endpoint.kind, role.model, ctx, endpoint.token_file)
 
     def _add_dirs(self, paths) -> list[str]:
         """Katalogi do `--add-dir`: tylko istniejące katalogi pod `<tablica>/docs/` (dokumenty AI kart
@@ -474,12 +557,15 @@ class Planner:
         else:
             cwd = repo
             branch = self.repo_state(repo)["branch"]
-        argv = agent_argv(req["tool"], req["binary"], req["prompt"], req["images"], req["addDirs"])
+        agent = req["local"]
+        command = local_mod.options(req["tool"], agent) if agent is not None else local_mod.Command([])
+        argv = agent_argv(req["tool"], req["binary"], req["prompt"], req["images"], req["addDirs"], command.argv)
         plan = Plan(repo_path=repo, repo_name=name, tool=req["tool"], prompt=req["prompt"], cwd=cwd, branch=branch,
-                    title=task_title(name, branch or "odłączony HEAD"), argv=argv, worktree=plan_worktree, base=base,
-                    base_sha=base_sha, images=req["images"])
+                    title=task_title(name, branch or "odłączony HEAD", agent is not None), argv=argv,
+                    worktree=plan_worktree, base=base, base_sha=base_sha, images=req["images"], model=req["model"],
+                    local=agent, env=command.env, secret_env=command.secret_env)
         try:
-            plan.task_file = self.files.write({"cwd": cwd, "argv": argv, "title": plan.title})
+            plan.task_file = self.files.write(plan.task_payload())
         except OSError as exc:
             self.rollback(plan)
             raise TaskError("launch", detail=f" (plik zadania: {exc})")

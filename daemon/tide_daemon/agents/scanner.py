@@ -166,6 +166,8 @@ class AgentScanner:
                 "subagents": 0,
                 "subagent": bool(_parent(log)),
                 "agentNickname": getattr(log, "nickname", ""),
+                "model": log.model,
+                "localModel": log.local_model,
             }
         out = _fold_subagents(visible, entries, threads, self.bound_pids, self.app_threads)
         out.sort(key=lambda s: (STATE_ORDER[s["state"]],

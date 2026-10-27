@@ -5,6 +5,7 @@ kolory z SVG i nie czyta schematu kolorów okna — docs/decisions.md, #11), wi�
 na samej karcie terminala, w którym działa agent (#26, jak kafelki Tide):
 
 - pracuje   → „● projekt · gałąź” i kolor karty teal (pasek pod tytułem),
+  (sesja na modelu lokalnym ma w etykiecie dopisek „· lokalnie”, np. „◆ projekt · gałąź · lokalnie · czeka”),
 - czeka     → „◆ projekt · gałąź · czeka” i kolor karty brzoskwiniowy,
 - skończył  → „○ projekt · gałąź” bez koloru (puste kółko jak w widżetach, informacja, nie wezwanie),
 - bezczynna, zakończona albo zniknęła → karta wraca do stanu sprzed oznaczenia.
@@ -32,6 +33,7 @@ DONE = "done"
 PREFIXES = {WORKING: "● ", WAITING: "◆ ", DONE: "○ "}
 # Dopisek za etykietą „projekt · gałąź” — samo słowo, bo kolor tekstu karty jest wspólny.
 SUFFIXES = {WAITING: " · czeka"}
+LOCAL = "lokalnie"  # sesja na modelu lokalnym (tasks/core.py: LOCAL_SUFFIX)
 SEPARATOR = " · "
 # Znaki z wcześniejszych wersji (◐ pracuje) — zdejmowane przy sprzątaniu po starej usłudze.
 LEGACY_PREFIXES = ("◐ ",)
@@ -51,12 +53,14 @@ def split_key(key: str) -> tuple[str, str]:
 
 
 def session_label(session: dict) -> str:
-    """„projekt · gałąź” sesji (sam projekt bez gałęzi); pusty, gdy projekt nie jest znany."""
+    """„projekt · gałąź” sesji (sam projekt bez gałęzi), z modelem lokalnym „projekt · gałąź · lokalnie”
+    — jak tytuł karty z okna „Nowe zadanie”; pusty, gdy projekt nie jest znany."""
     project = (session.get("project") or "").strip()
     branch = (session.get("branch") or "").strip()
     if not project:
         return ""
-    return f"{project}{SEPARATOR}{branch}" if branch and branch != project else project
+    label = f"{project}{SEPARATOR}{branch}" if branch and branch != project else project
+    return label + SEPARATOR + LOCAL if session.get("localModel") is True else label
 
 
 def tab_targets(sessions: list[dict], bound_pids: dict, procs) -> dict[str, tuple[str, str]]:
