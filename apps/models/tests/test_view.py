@@ -358,7 +358,7 @@ Item {
         use.clicked()
         use.clicked()
         console.warn("DEFAULT " + top.calls.join(",") + "|" + use.enabled + "|" + use.text)
-        page.finish("server:Mac-Studio:default", "SetDefault", { ok: false, error: "default: punkt „Mac-Studio” jest pominięty w models.json — popraw go najpierw" })
+        page.finish("server:Mac-Studio:default", "SetDefault", { ok: false, error: "default: serwer „Mac-Studio” jest pominięty w models.json — popraw go najpierw" })
         console.warn("DEFAULTNOTE " + texts(mac, [], "defaultNote").join("") + "|" + use.enabled)
         // Próba połączenia: wynik w karcie.
         top.calls = []
@@ -370,7 +370,7 @@ Item {
         page.askRemove("local")
         console.warn("REMOVEASK " + find(local, "removeConfirm").visible + "|" + top.calls.length)
         find(local, "removeButton").clicked()
-        page.finish("server:local:remove", "RemoveEndpoint", { ok: false, error: "punkt „local” jest domyślny — najpierw ustaw inny punkt jako domyślny" })
+        page.finish("server:local:remove", "RemoveEndpoint", { ok: false, error: "serwer „local” jest domyślny — najpierw ustaw inny serwer jako domyślny" })
         console.warn("REMOVE " + top.calls.join(",") + "|" + texts(local, [], "removeNote").join("") + "|" + page.removing)
         page.askRemove("Mac-Studio")
         find(mac, "removeButton").clicked()
@@ -435,7 +435,7 @@ Item {
         find(page, "pullButton").clicked()
         pulls.text = "qwen3:14b"
         find(page, "pullButton").clicked()
-        page.finish("pull:local", "PullModel", { ok: false, error: "na punkcie „local” trwa już pobieranie qwen3:8b — poczekaj, aż się skończy", key: "" })
+        page.finish("pull:local", "PullModel", { ok: false, error: "na serwerze „local” trwa już pobieranie qwen3:8b — poczekaj, aż się skończy", key: "" })
         console.warn("PULL " + top.calls.join(",") + "|" + texts(page, [], "pullNote").join(""))
         // Otwarcie na serwerze i odświeżenie.
         console.warn("REVEAL " + page.reveal("Mac-Studio") + "|" + page.modelsServer + "|" + page.flashServer + "|" + page.reveal("nie-ma"))
@@ -457,13 +457,13 @@ Item {
         self.assertEqual(warned(log, "TITLES"), "Ten komputer,Mac-Studio")
         self.assertEqual(warned(log, "MARKS"), "true|false|false|true")
         self.assertEqual(warned(log, "DEFAULT"), "SetDefault(Mac-Studio)@server:Mac-Studio:default|false|Przełączam…")
-        self.assertEqual(warned(log, "DEFAULTNOTE"), "default: punkt „Mac-Studio” jest pominięty w models.json — popraw go "
+        self.assertEqual(warned(log, "DEFAULTNOTE"), "default: serwer „Mac-Studio” jest pominięty w models.json — popraw go "
                                                      "najpierw|true")
         self.assertEqual(warned(log, "TEST"), 'TestEndpoint({"name":"local"})@server:local:test|'
                                               "Połączenie działa · Ollama 0.40.11 · 5 modeli")
         self.assertEqual(warned(log, "REMOVEASK"), "true|0")
-        self.assertEqual(warned(log, "REMOVE"), "RemoveEndpoint(local)@server:local:remove|punkt „local” jest domyślny — "
-                                                "najpierw ustaw inny punkt jako domyślny|local")
+        self.assertEqual(warned(log, "REMOVE"), "RemoveEndpoint(local)@server:local:remove|serwer „local” jest domyślny — "
+                                                "najpierw ustaw inny serwer jako domyślny|local")
         self.assertEqual(warned(log, "REMOVED"), "|RemoveEndpoint(Mac-Studio)@server:Mac-Studio:remove")
         self.assertEqual(warned(log, "EDIT"), "true|http://mac-studio:11434|true|false")
         moves = warned(log, "MOVES")
@@ -493,7 +493,7 @@ Item {
                          'SetRole({"role":"summary","model":"qwen3:8b","endpoint":"","ctx":16384})@role:summary:ctx|'
                          "kontekst: liczba od 0 do 1048576 albo puste (domyślny)|true")
         self.assertEqual(warned(log, "PULL"), 'PullModel({"endpoint":"local","model":"qwen3:14b"})@pull:local|'
-                                              "na punkcie „local” trwa już pobieranie qwen3:8b — poczekaj, aż się skończy")
+                                              "na serwerze „local” trwa już pobieranie qwen3:8b — poczekaj, aż się skończy")
         self.assertEqual(warned(log, "REVEAL"), "true|Mac-Studio|Mac-Studio|false")
         self.assertEqual(warned(log, "REFRESH"), "Refresh")
         self.assertEqual(warned(log, "PULLROWS"), "2|Pobieranie gpt-oss:20b: 5,5 GB z 13,8 GB · 39%")
@@ -776,6 +776,10 @@ class BackendOverDbusTest(unittest.TestCase):
         _t, _m, result = self.ask(backend, "SetRole", json.dumps({"role": "agent", "model": "qwen3-coder:30b",
                                                                   "endpoint": "Mac-Studio"}), "role:agent")
         self.assertEqual(result["ok"], True)
+        self.assertTrue(wait_until(lambda: "agent" in self.status(backend).get("roles", {}), timeout=5))
+        roles = self.status(backend)["roles"]
+        self.assertEqual((roles["agent"]["pinned"], roles["summary"]["pinned"]), (True, False),
+                         "usługa mówi, które role są przypięte — widok może je zmieniać")
         backend.refresh()
         self.assertTrue(wait_until(lambda: backend.badgeText == "● 1", timeout=15), backend.badgeText)
         self.assertEqual(backend.badgeTone, "waiting")

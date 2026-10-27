@@ -17,15 +17,15 @@ PREVIEWS = [
     ("local", "local", [], (1800, 1000)),
     ("mac-offline", "mac-offline", [], (1800, 1000)),
     ("mac", "mac", ["advanced=summary"], (1800, 1000)),
-    ("pulling", "pulling", ["note=role:describe:pull|na punkcie „local” trwa już pobieranie gpt-oss:20b — poczekaj, "
+    ("pulling", "pulling", ["note=role:describe:pull|na serwerze „local” trwa już pobieranie gpt-oss:20b — poczekaj, "
                             "aż się skończy"], (1380, 900)),
     ("add", "local", ["add=Mac Studio", "url=http://mac-studio:11434",
                       "ok=add:test|Połączenie działa · Ollama 0.41.2 · 5 modeli"], (1800, 1000)),
     ("edit", "mac-offline", ["edit=Mac-Studio", "url=http://10.20.1.40:11434",
                              "note=server:Mac-Studio:edit-test|Model lokalny niedostępny: serwer nie odpowiada "
                              "(10.20.1.40:11434)"], (1800, 1000)),
-    ("errors", "errors", ["remove=local", "note=server:local:remove|punkt „local” jest domyślny — najpierw ustaw "
-                          "inny punkt jako domyślny", "note=report|raport: nie udało się zapisać report.json "
+    ("errors", "errors", ["remove=local", "note=server:local:remove|serwer „local” jest domyślny — najpierw ustaw "
+                          "inny serwer jako domyślny", "note=report|raport: nie udało się zapisać report.json "
                           "(PermissionError)"], (1800, 1000)),
     ("checking", "checking", [], (1380, 900)),
     ("min", "mac", ["edit=Mac-Studio", "advanced=agent"], (1380, 620)),   # najmniejsze okno Tide

@@ -129,7 +129,7 @@ def errors() -> dict:
                  "Mac-Studio": _endpoint("Mac-Studio", "http://mac-studio:11434", online=False, auth=True)}
     roles = {"summary": _role("local", "qwen3:8b", 8192, endpoints),
              "describe": _role("local", "qwen3:8b", 8192, endpoints)}
-    warnings = ["punkt „lm”: nieznany rodzaj „llamacpp” (ollama albo openai) — pominięty"]
+    warnings = ["serwer „lm”: nieznany rodzaj „llamacpp” (ollama albo openai) — pominięty"]
     return _status("local", endpoints, roles, report=_report("local", configured="claude", pinned=True),
                    warnings=warnings)
 
