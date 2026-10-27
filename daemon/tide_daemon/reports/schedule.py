@@ -33,7 +33,7 @@ LOGIN_DELAY = 120          # s po starcie usługi — logowanie nie czeka na git
 CHECK_INTERVAL = 60        # s między sprawdzeniami zegara
 
 DAY_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-SUMMARY_MODES = ("claude", "rules")
+SUMMARY_MODES = ("claude", "local", "rules")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$")
 
 
@@ -43,7 +43,8 @@ class Settings:
     day_start: int = 4 * 60
     keep_days: int = KEEP_DAYS
     enabled: bool = True
-    summary: str = "claude"   # „Na daily”: "claude" (model przez `claude -p`, decyzja 52) albo "rules"
+    summary: str = "claude"   # „Na daily” i opisy kart: "claude" (`claude -p`, decyzja 52), "local" (models.json,
+    #                           rola summary/describe, bez Claude — PT-15) albo "rules"
     summary_model: str = "sonnet"  # decyzja 53 (wcześniej haiku — za płytkie opisy)
 
 
@@ -92,8 +93,10 @@ def load_settings(path: str | None = None, at: str | None = None, enabled: bool 
     """Ustawienia z pliku (opcjonalnego) i opcji wiersza poleceń. Zwraca (ustawienia, ostrzeżenia).
 
     Plik JSON: {"at": "07:00", "dayStart": "04:00", "keepDays": 30, "enabled": true, "summary": "claude",
-    "summaryModel": "sonnet"}. Błędna wartość nie zatrzymuje usługi — zostaje domyślna, a ostrzeżenie
-    idzie do dziennika."""
+    "summaryModel": "sonnet"}. `summary`: "claude", "local" albo "rules"; `summaryModel` liczy się tylko
+    w trybie "claude" — w "local" model bierzemy z ról `summary` i `describe` w models.json. Błędna wartość
+    nie zatrzymuje usługi — zostaje domyślna, a ostrzeżenie idzie do dziennika; wyjątek: nieznany `summary`
+    (np. literówka „Local”) to "rules", żeby pomyłka nie wysyłała faktów do Anthropic. Bez klucza — "claude"."""
     settings, warnings = Settings(), []
     data = {}
     if path and os.path.exists(path):
@@ -122,8 +125,10 @@ def load_settings(path: str | None = None, at: str | None = None, enabled: bool 
     if "summary" in data:
         if data["summary"] in SUMMARY_MODES:
             settings.summary = data["summary"]
-        else:
-            warnings.append(f"raport: summary musi być jednym z {', '.join(SUMMARY_MODES)}, jest {data['summary']!r}")
+        else:  # literówka („Local”) nie może wysłać faktów do Anthropic — bez modelu, z ostrzeżeniem
+            settings.summary = "rules"
+            warnings.append(f"raport: summary musi być jednym z {', '.join(SUMMARY_MODES)}, jest {data['summary']!r} "
+                            f"— opis z reguł")
     if "summaryModel" in data:
         value = data["summaryModel"]
         if isinstance(value, str) and MODEL_RE.match(value):

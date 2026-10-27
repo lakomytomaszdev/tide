@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
-from . import reports
+from . import models, reports
 from .reports import data as report_data, render, schedule
 
 
@@ -51,10 +51,11 @@ class ReportMonitor(QObject):
         self.coordination_cache = coordination_cache  # plik tablicy koordynacji („Plany i tickety”) albo None
         self.tracker = tracker          # YouTrackCache (opisy ticketów planów w repozytoriach, tylko GET) albo None
         self.opener = opener            # funkcja(ścieżka index.html) -> bool (xdg-open) albo None
-        self.summary = summary or settings.summary    # „Na daily”: claude albo rules (--report-summary)
+        self.summary = summary or settings.summary    # „Na daily”: claude, local albo rules (--report-summary)
         self.running = False
         self._waiting: list = []        # odpowiedzi Generate() czekające na bieżący raport
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-report")
+        self._cancel = models.Cancel()  # stop() przerywa trwające wywołanie modelu lokalnego w raporcie
         self._finished.connect(self._deliver)
         self._login = QTimer(self, singleShot=True, interval=int(login_delay * 1000))
         self._login.timeout.connect(lambda: self.check(at_login=True))
@@ -70,6 +71,7 @@ class ReportMonitor(QObject):
     def stop(self) -> None:
         self._login.stop()
         self._timer.stop()
+        self._cancel.set()
         self._pool.shutdown(wait=False, cancel_futures=True)
 
     def latest(self) -> str:
@@ -172,7 +174,7 @@ class ReportMonitor(QObject):
                 claude_root=self.claude_root, codex_root=self.codex_root, live=live, worktrees=trees,
                 fetch_limits=self.fetch_limits, max_depth=self.max_depth,
                 coordination_cache=self.coordination_cache, summary=self.summary,
-                summary_model=self.settings.summary_model, tracker=self.tracker)
+                summary_model=self.settings.summary_model, tracker=self.tracker, cancel=self._cancel)
             schedule.apply_retention(self.root, schedule.report_day(end, self.settings), self.settings.keep_days)
             return index, report
 

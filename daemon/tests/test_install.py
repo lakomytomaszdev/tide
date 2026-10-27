@@ -39,6 +39,8 @@ class DaemonInstallTest(unittest.TestCase):
         self.assertIn("tide_daemon/worktrees/scanner.py", files)
         self.assertIn("tide_daemon/limits/forecast.py", files)
         self.assertIn("tide_daemon/limits_monitor.py", files)
+        self.assertIn("tide_daemon/models/client.py", files)
+        self.assertIn("tide_daemon/models_monitor.py", files)
         self.assertFalse([f for f in files if "__pycache__" in f])
         # Paleta jedzie z usługą: z niej są kolory kart Konsole z agentem (#11).
         self.assertIn("palette.json", files)

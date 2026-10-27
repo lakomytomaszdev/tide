@@ -316,7 +316,9 @@ function sourceText(ticket) {
     else if (ticket.source === "runs") parts.push("stan z pracy podagentów")
     if (ticket.planState && ticket.planState !== ticket.state) parts.push("w planie: " + ticket.planState)
     if (ticket.trackerState) parts.push("YouTrack: " + ticket.trackerState)
-    if (ticket.describedBy === "model") parts.push("opis: model")
+    // Tryb lokalny, gdy model zawiódł: „Model lokalny niedostępny — opis bez modelu (…)” zamiast „opis z reguł”.
+    if (ticket.describeNote) parts.push(ticket.describeNote)
+    else if (ticket.describedBy === "model") parts.push("opis: model")
     else if (ticket.describedBy === "model-stale") parts.push("opis: model (sprzed ostatniej zmiany)")
     else if (ticket.describedBy === "rules") parts.push("opis z reguł")
     return parts.join(" · ")

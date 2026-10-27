@@ -196,6 +196,10 @@ class LogicTest(unittest.TestCase):
                          "w YouTracku: „Value column” · zlecenie: „Implement ticket 05”")
         self.assertEqual(self.js("sourceText({source: 'runs', describedBy: 'model'})"),
                          "stan z pracy podagentów · opis: model")
+        self.assertEqual(self.js("sourceText({source: 'runs', describedBy: 'rules', describeNote: "
+                                 "'Model lokalny niedostępny — opis bez modelu (serwer nie odpowiada, 127.0.0.1:11434)'})"),
+                         "stan z pracy podagentów · Model lokalny niedostępny — opis bez modelu "
+                         "(serwer nie odpowiada, 127.0.0.1:11434)")
         self.assertEqual(self.js("duration(2 * 3600 + 14 * 60)"), "2 h 14 min")
         self.assertEqual(self.js("agentTime({state: 'running', startTs: 100}, 130)"), "teraz")
         self.assertEqual(self.js("agentTime({state: 'completed', startTs: 0, endTs: 0}, 130)"), "")

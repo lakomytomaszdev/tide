@@ -99,6 +99,11 @@ class MonitorReadTest(unittest.TestCase):
         self.changes = 0
         self.monitor.changed.connect(self.count_change)
 
+    def test_stop_cancels_local_model_calls(self):
+        self.assertFalse(self.monitor._cancel.is_set())
+        self.monitor.stop()
+        self.assertTrue(self.monitor._cancel.is_set(), "zamykanie usługi przerywa wywołanie modelu lokalnego")
+
     def count_change(self):
         self.changes += 1
 

@@ -157,6 +157,20 @@ class FilesTest(ReportWorld):
         self.assertEqual(os.path.dirname(self.dir), self.p["reports"])
         self.assertEqual(os.path.basename(self.dir), reportfix.DAY)
 
+    def test_cancelled_report_keeps_the_previous_one(self):
+        from tide_daemon.models import Cancel
+        before = {name: os.path.getmtime(os.path.join(self.dir, name)) for name in os.listdir(self.dir)}
+        cancel = Cancel()
+        cancel.set()
+        with self.assertRaises(reports.Cancelled):
+            reports.generate(self.p["reports"], reportfix.DAY, START, NOW, palette=self.palette,
+                             workspace=self.p["work"], claude_root=self.p["claude"], codex_root=self.p["codex"],
+                             limits_result={"ok": True, "status": reportfix.STATUS}, home=self.p["home"],
+                             cancel=cancel)
+        after = {name: os.path.getmtime(os.path.join(self.dir, name)) for name in os.listdir(self.dir)}
+        self.assertEqual(after, before)
+        self.assertEqual([n for n in os.listdir(self.p["reports"]) if n.startswith(".")], [], "bez katalogów roboczych")
+
     def test_private_permissions(self):
         self.assertEqual(stat.S_IMODE(os.stat(self.dir).st_mode), 0o700)
         for name in self.pages:

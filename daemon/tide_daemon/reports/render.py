@@ -561,7 +561,10 @@ def daily_text(report, projects) -> str:
 
 def _source(summary: dict) -> str:
     if summary.get("source") == "model":
-        source = f"opis: Claude {str(summary.get('model') or '').capitalize()}"
+        if summary.get("engine") == "local":
+            source = f"opis: model lokalny {summary.get('model') or ''}".rstrip()
+        else:
+            source = f"opis: Claude {str(summary.get('model') or '').capitalize()}"
         if summary.get("note"):
             source += f" · {summary['note']}"
         return source
@@ -764,7 +767,12 @@ def _footer(report, home: str, index: bool) -> str:
     if index and report.previous_day:
         prev = f'<a href="../{esc(report.previous_day)}/index.html">← poprzedni raport ({esc(short_date(report.previous_day))})</a>'
     summary = getattr(report, "standup", None) or {}
-    if summary.get("source") == "model":
+    if summary.get("source") == "model" and summary.get("engine") == "local":
+        where = ('Dane z tego komputera: git i dzienniki agentów. Opis „Na daily”: model lokalny '
+                 f'{esc(summary.get("model"))} ({esc(summary.get("host"))}) — ')
+        where += ('fakty z raportu, bez sekretów, idą tylko do tego serwera modeli.' if summary.get("remote")
+                  else 'nic nie wychodzi z tego komputera.')
+    elif summary.get("source") == "model":
         where = ('Dane z tego komputera: git i dzienniki agentów. Opis „Na daily”: model '
                  f'{esc(summary.get("model"))} przez lokalny Claude Code (fakty z raportu, bez sekretów, idą do Anthropic).')
     else:

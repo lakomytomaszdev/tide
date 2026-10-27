@@ -19,8 +19,10 @@ Trzy kroki, wszystkie bez I/O (testowane na fixtures):
    albo się nie udało.
 3. `validate(data, facts)` — odpowiedź modelu (summarize.py) sprawdzona względem schematu:
    tylko znane projekty i ID ticketów, same napisy, przycięte długości i liczby pozycji, bez
-   pozycji-śmieci („nic nie czeka”, „N gałęzi nie jest scalonych”, „bez review”). Projekt, którego
-   model nie opisał (albo opisał źle), dostaje podsumowanie z reguł.
+   pozycji-śmieci („nic nie czeka”, „N gałęzi nie jest scalonych”, „bez review”), Markdown w polu
+   zamieniony na zwykłe zdania, a lista punktów w jednym polu rozbita na osobne pozycje (PT-13:
+   gpt-oss wkładał całe listy do jednego napisu). Projekt, którego model nie opisał (albo opisał
+   źle), dostaje podsumowanie z reguł.
 
 Podsumowanie projektu: {"headline": 1–2 zdania do indeksu, "theme": na czym polega praca,
 "done"/"doing"/"waiting"/"next": praca, "chores": porządki}. Pozycja: {"ref": ID ticketu albo "",
@@ -113,6 +115,54 @@ def plain(text: str) -> str:
         line = _HEAD.sub("", _MD.sub("", _LINK.sub(r"\1", line)))
         out.append(line.strip())
     return "\n".join(out).strip()
+
+
+_LIST_LINE = re.compile(r"^\s{0,3}(?:[-*+•]\s+|\d+[.)]\s+)")
+# Pogrubienie, kod, nagłówek, odnośnik. Bez „__” — to raczej `__init__.py` w poprawnym zdaniu niż Markdown.
+_MARKDOWN = re.compile(r"\*\*[^*\n]+\*\*|`[^`\n]+`|^\s{0,3}#{1,6}\s|\[[^\]\n]{1,200}\]\([^)\n]{0,500}\)", re.M)
+
+
+_INLINE_HEAD = re.compile(r"^\s{0,3}(?:#{1,6}\s+|>\s*)")
+
+
+def flatten(text) -> str:
+    """Markdown → zwykły tekst w jednej linii: bez znaczników, punktorów i nagłówków, a linie łączone
+    jak zdania („Indeks gotowy. Eksport w toku.”) — zamiast sklejania punktów listy w jeden ciąg słów.
+    Linia od małej litery to ciąg dalszy zdania (złamany wiersz) — bez kropki. Jedna linia to nie lista:
+    „2. etap migracji gotowy” i „- zdanie” zostają z numerem i myślnikiem (bez nich tylko nagłówek)."""
+    text = str(text or "")
+    if len([line for line in text.splitlines() if line.strip()]) <= 1:
+        line = _TAG.sub("", _MD.sub("", _LINK.sub(r"\1", text.strip())))
+        return " ".join(_INLINE_HEAD.sub("", line).split())
+    parts: list[str] = []
+    for line in plain(text).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if parts and parts[-1][-1] not in ".!?…:;," and (line[0].isupper() or line[0].isdigit()):
+            parts[-1] += "."
+        parts.append(line)
+    return " ".join(parts)
+
+
+def one_line(text) -> str:
+    """Pole odpowiedzi modelu: zwykłe jedno zdanie zostaje bez zmian (poprawna odpowiedź Claude'a się
+    nie zmienia, także „2. etap…” albo „1) wersja…”), a tekst z nowymi liniami albo Markdownem
+    przechodzi przez flatten()."""
+    text = str(text or "")
+    if "\n" not in text and "\r" not in text and not _MARKDOWN.search(text):
+        return text
+    return flatten(text)
+
+
+def list_items(text) -> list[str]:
+    """Lista punktów w Markdownie w jednym polu (co najmniej dwie linie-punkty) → osobne pozycje bez
+    znaczników; linie, które nie są punktami (nagłówek „**Zrobione:**”), znikają. Inaczej [text]."""
+    lines = [line for line in str(text or "").splitlines() if line.strip()]
+    bullets = [line for line in lines if _LIST_LINE.match(line)]
+    if len(bullets) < 2:
+        return [text]
+    return [item for item in (flatten(_LIST_LINE.sub("", line, count=1)) for line in bullets) if item]
 
 
 def first_sentences(text: str, n: int = 2, limit: int = 280) -> str:
@@ -750,9 +800,13 @@ def known_refs(fact: dict) -> dict[str, str]:
     return refs
 
 
-def validate(data, all_facts: list[dict]) -> dict[str, dict]:
+def validate(data, all_facts: list[dict], local: bool = False) -> dict[str, dict]:
     """Odpowiedź modelu → {nazwa projektu: podsumowanie}. Invalid, gdy całość nie pasuje do schematu;
-    pojedyncze złe pozycje i nieznane projekty są pomijane (projekt bez pozycji dostanie reguły)."""
+    pojedyncze złe pozycje i nieznane projekty są pomijane (projekt bez pozycji dostanie reguły).
+
+    `local` — odpowiedź modelu lokalnego: dodatkowo poprawki grup według stanu ticketów (_fix_waiting)
+    i bez powtórzeń (_dedupe). Odpowiedzi Claude tych heurystyk nie dostają — tam pytanie przy tickecie
+    gotowym („wypchnąć?”) albo zaplanowanym to zwykła, poprawna pozycja."""
     if not isinstance(data, dict) or not isinstance(data.get("projects"), list):
         raise Invalid("brak listy projects")
     names = {f["project"]: f for f in all_facts}
@@ -765,18 +819,21 @@ def validate(data, all_facts: list[dict]) -> dict[str, dict]:
         if not name or name in out:
             continue
         refs = known_refs(names[name])
-        standup = {key: clean(entry.get(key), limit) if isinstance(entry.get(key), str) else ""
+        standup = {key: clean(one_line(entry.get(key)), limit) if isinstance(entry.get(key), str) else ""
                    for key, limit in (("theme", THEME_MAX), ("headline", HEADLINE_MAX))}
         for key in ALL_KEYS:
             items = entry.get(key)
             standup[key] = []
             if not isinstance(items, list):
                 continue
-            for raw in items[:ITEMS_MAX * 2]:
+            for raw in _expanded(items[:ITEMS_MAX * 2]):
                 item = _valid_item(raw, refs, key)
                 if item and len(standup[key]) < ITEMS_MAX:
                     standup[key].append(item)
         _move_chores(standup)
+        if local:
+            _fix_waiting(standup, names[name])
+            _dedupe(standup)
         if not empty(standup):
             if not standup["headline"]:
                 standup["headline"] = _headline(standup)
@@ -800,22 +857,76 @@ def _move_chores(standup: dict) -> None:
         standup[key] = keep
 
 
+def _fix_waiting(standup: dict, fact: dict) -> None:
+    """Tylko odpowiedź modelu lokalnego: „Czeka na mnie” z ID ticketu, który jeszcze nie ruszył (`todo`),
+    przechodzi do „Dalej”, a z ID ticketu gotowego znika; „Dalej” z ID gotowego ticketu też znika — qwen3:8b
+    wpisywał tam zaplanowane i skończone tickety (PT-15, prawdziwe dane). Pozycja „Czeka na mnie” zostaje,
+    gdy ticket ma w faktach pytanie albo czekającą sesję — wtedy naprawdę coś czeka."""
+    states = {t["key"]: t["state"] for t in fact["tickets"] if t.get("key")}
+    asking = {t["key"] for t in fact["tickets"] if t.get("key") and t.get("question")}
+    asking |= {ticket_key(u.get("ticket") or "") for u in fact["units"]
+               if any(sess.get("state") == "waiting" for sess in u.get("sessions") or ())}
+    standup["next"] = [item for item in standup["next"]
+                       if not item["ref"] or states.get(ticket_key(item["ref"])) != "gotowe"]
+    keep = []
+    for item in standup["waiting"]:
+        key = ticket_key(item["ref"]) if item["ref"] else ""
+        state = states.get(key) if key and key not in asking else None
+        if state == "todo":
+            if len(standup["next"]) < ITEMS_MAX:
+                standup["next"].append({"ref": item["ref"], "text": item["text"]})
+        elif state != "gotowe":
+            keep.append(item)
+    standup["waiting"] = keep
+
+
+def _dedupe(standup: dict) -> None:
+    """Ta sama pozycja w kilku grupach (albo dwa razy w jednej) zostaje tylko pierwszy raz, w kolejności
+    Zrobione, W toku, Czeka na mnie, Dalej, Porządki (PT-15: qwen3:8b powtarzał „Dalej” w „Porządkach”)."""
+    seen = set()
+    for key in ALL_KEYS:
+        keep = []
+        for item in standup[key]:
+            norm = (item["ref"], " ".join(item["text"].lower().rstrip(" .").split()))
+            if norm in seen:
+                continue
+            seen.add(norm)
+            keep.append(item)
+        standup[key] = keep
+
+
+def _expanded(items: list) -> list:
+    """Pozycja, której tekst to lista punktów, staje się kilkoma pozycjami z tym samym `ref`
+    (`about` i `next` zostają przy pierwszej)."""
+    out = []
+    for raw in items:
+        if isinstance(raw, str):
+            raw = {"text": raw}
+        parts = list_items(raw["text"]) if isinstance(raw, dict) and isinstance(raw.get("text"), str) else [None]
+        if len(parts) < 2:
+            out.append(raw)
+            continue
+        out.append(dict(raw, text=parts[0]))
+        out += [{"ref": raw.get("ref"), "text": part} for part in parts[1:]]
+    return out
+
+
 def _valid_item(raw, refs: dict, group: str) -> dict | None:
     if isinstance(raw, str):
         raw = {"text": raw}
     if not isinstance(raw, dict) or not isinstance(raw.get("text"), str):
         return None
-    text = clean(raw["text"], TEXT_MAX)
+    text = clean(one_line(raw["text"]), TEXT_MAX)
     if not text or JUNK_ANY.search(text) or (group == "waiting" and JUNK_WAITING.search(text)):
         return None
     ref = raw.get("ref") if isinstance(raw.get("ref"), str) else ""
     item = {"ref": refs.get(ticket_key(ref), "") if ref else "", "text": text}
     about = raw.get("about") if isinstance(raw.get("about"), str) else raw.get("why")
-    if group in ("done", "doing", "next") and isinstance(about, str) and clean(about) \
+    if group in ("done", "doing", "next") and isinstance(about, str) and clean(one_line(about)) \
             and not JUNK_ANY.search(about):
-        item["about"] = clean(about, ABOUT_MAX)
-    if group == "doing" and isinstance(raw.get("next"), str) and clean(raw["next"]):
-        item["next"] = clean(raw["next"], ABOUT_MAX)
+        item["about"] = clean(one_line(about), ABOUT_MAX)
+    if group == "doing" and isinstance(raw.get("next"), str) and clean(one_line(raw["next"])):
+        item["next"] = clean(one_line(raw["next"]), ABOUT_MAX)
     return item
 
 
