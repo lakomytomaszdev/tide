@@ -77,15 +77,19 @@ from PyQt6.QtCore import QObject, QTimer, QUrl
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtQml import QQmlApplicationEngine, QQmlExpression
 pkg, data, select = sys.argv[1:4]
-spec = importlib.util.spec_from_file_location("tide_sessions", pkg + "/tide-sessions.py")
+view = pkg + "/views/sessions"  # moduł widoku Sesje w pakiecie okna Tide
+spec = importlib.util.spec_from_file_location("tide_sessions_backend", view + "/backend.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 app = QGuiApplication([])
 with open(data, encoding="utf-8") as fh:
     backend = mod.Backend(None, json.load(fh), select=select)
 engine = QQmlApplicationEngine()
-engine.setInitialProperties({"backend": backend})
-engine.load(QUrl.fromLocalFile(pkg + "/qml/Main.qml"))
+# Widok to element, nie okno; układ (Column, Layout) liczy się dopiero w oknie — osadzamy go jak okno Tide.
+engine.setInitialProperties({"source": backend})
+engine.loadData(b"import QtQuick\nWindow { width: 1680; height: 980; visible: true\n"
+                b"  property var source: null\n  SessionsView { anchors.fill: parent; backend: source } }\n",
+                QUrl.fromLocalFile(view + "/qml/Probe.qml"))
 root = engine.rootObjects()[0]
 
 def report():
