@@ -125,7 +125,7 @@ class DockerContractTest(unittest.TestCase):
         xml = self.service.call(SERVICE, PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
         self.assertIn(f'<interface name="{IFACE}">', xml)
         for member in ("Snapshot", "Stats", "Disk", "Start", "Stop", "Restart", "Remove", "GroupAction", "Prune",
-                       "Logs", "OpenLogs", "OpenShell", "Badge", "ShowWindow"):
+                       "Logs", "OpenLogs", "OpenShell", "Badge", "ShowWindow", "DiskNow"):
             self.assertIn(f'<method name="{member}">', xml)
         self.assertIn('<signal name="Changed"', xml)
         self.assertIn('<signal name="ActionFinished">', xml)
@@ -216,6 +216,9 @@ class DockerContractTest(unittest.TestCase):
         self.assertGreater(stats["total"]["memBytes"], 0)
         disk = self.call_json("Disk")
         self.assertTrue(disk["ok"])
+        before = len(self.fake.calls("GET", "/system/df"))
+        self.assertTrue(self.call_json("DiskNow")["ok"])
+        self.assertEqual(len(self.fake.calls("GET", "/system/df")), before + 1, "DiskNow bez pamięci podręcznej")
         self.assertEqual([c["id"] for c in disk["categories"]], ["cache", "images", "volumes", "stopped"])
 
     def test_8_open_logs_and_shell_in_konsole(self):

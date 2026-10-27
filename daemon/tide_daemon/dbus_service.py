@@ -87,6 +87,7 @@ Obiekt /Docker, interfejs org.tide.Daemon.Docker (kontenery przez Docker Engine 
 - Snapshot() -> s            JSON {available, state, error, host, engine, live, summary, groups},
 - Stats() -> s               CPU i pamięć działających kontenerów (na żądanie, pamięć 5 s; odpowiedź po odczycie),
 - Disk() -> s                kategorie porządków z miejscem do odzyskania (odpowiedź po odczycie),
+- DiskNow() -> s             to samo, zawsze świeży odczyt (potwierdzenie porządków),
 - Start(s id), Stop(s id), Restart(s id), Remove(s id) -> s
                              JSON {ok, error, id, name, note}; Remove tylko zatrzymanego, bez wolumenów,
 - GroupAction(s project, s action) -> s
@@ -245,6 +246,7 @@ DOCKER_XML = f"""<interface name="{DOCKER_IFACE}">
   <method name="Snapshot"><arg name="json" type="s" direction="out"/></method>
   <method name="Stats"><arg name="json" type="s" direction="out"/></method>
   <method name="Disk"><arg name="json" type="s" direction="out"/></method>
+  <method name="DiskNow"><arg name="json" type="s" direction="out"/></method>
 {chr(10).join(_ID_ACTION.format(name=n) for n in ("Start", "Stop", "Restart", "Remove"))}
   <method name="GroupAction">
     <arg name="project" type="s" direction="in"/>
@@ -644,6 +646,11 @@ class DockerAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(QDBusMessage, result=str)
     def Disk(self, message: QDBusMessage) -> str:
         self.monitor.disk(self._delayed(message, "Disk"))
+        return ""
+
+    @pyqtSlot(QDBusMessage, result=str)
+    def DiskNow(self, message: QDBusMessage) -> str:
+        self.monitor.disk(self._delayed(message, "DiskNow"), fresh=True)
         return ""
 
     @pyqtSlot(str, QDBusMessage, result=str)

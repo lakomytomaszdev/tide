@@ -34,6 +34,9 @@ BUSY = "Tide nie zdążyło — za dużo akcji naraz, spróbuj ponownie"
 LOGS_MAX = 5000
 LOGS_DEFAULT = 200
 # Zdarzenia kontenerów, które nie zmieniają migawki (exec_* to np. każde sprawdzenie zdrowia).
+# Zdarzenia wolumenów: tylko te, które zmieniają listę wolumenów (porządki „Wolumeny bez kontenera”);
+# mount/unmount idą razem ze startem i zatrzymaniem kontenera, który i tak ma własne zdarzenie.
+VOLUME_EVENTS = ("create", "destroy", "prune")
 QUIET_EVENTS = ("exec_create", "exec_start", "exec_die", "exec_detach", "attach", "detach", "top", "resize",
                 "export", "commit", "copy", "archive-path", "extract-to-dir")
 ACTIONS = ("start", "stop", "restart")
@@ -182,9 +185,10 @@ class DockerEngine:
     # --- zdarzenia -------------------------------------------------------------------------
 
     def events(self, stop, on_event, on_connected=None) -> None:
-        """Jedno połączenie z /events (tylko kontenery). Wraca, gdy strumień się skończy albo stop;
-        DockerUnavailable przy braku połączenia."""
-        response = self.client.open("GET", "/events", {"filters": json.dumps({"type": ["container"]})},
+        """Jedno połączenie z /events (kontenery i wolumeny). Wraca, gdy strumień się skończy albo stop;
+        DockerUnavailable przy braku połączenia. on_event(id, akcja): dla kontenera ID i akcja Dockera,
+        dla wolumenu nazwa i „volume:<akcja>” (tylko create, destroy, prune)."""
+        response = self.client.open("GET", "/events", {"filters": json.dumps({"type": ["container", "volume"]})},
                                     timeout=1.0, stop=stop)
         try:
             if response.status >= 400:
@@ -199,9 +203,14 @@ class DockerEngine:
                 except ValueError:
                     continue
                 action = (event.get("Action") or event.get("status") or "").split(":", 1)[0].strip()
+                ident = event.get("id") or (event.get("Actor") or {}).get("ID") or ""
+                if (event.get("Type") or "container") == "volume":
+                    if action in VOLUME_EVENTS:
+                        on_event(ident, "volume:" + action)
+                    continue
                 if action in QUIET_EVENTS:
                     continue
-                on_event(event.get("id") or (event.get("Actor") or {}).get("ID") or "", action)
+                on_event(ident, action)
         except OSError as exc:
             if not stop.is_set():
                 raise DockerUnavailable("unavailable", f"strumień zdarzeń zerwany ({exc})") from None

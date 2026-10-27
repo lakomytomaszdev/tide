@@ -7,6 +7,8 @@
 - odświeżanie w jednym wątku roboczym, akcje w drugiej puli (wolne `stop` nie blokuje migawki),
   statystyki i dysk w trzeciej — wynik zawsze wraca do wątku głównego sygnałem Qt,
 - Stats() tylko na żądanie (okno woła je, gdy jest widoczne), pamiętane STATS_TTL_S; Disk() — DISK_TTL_S,
+  a pamięć Disk znika przy zdarzeniu, które zmienia, co jest do odzyskania (kontener create/destroy/start/die,
+  wolumen create/destroy/prune); DiskNow() zawsze czyta od nowa (potwierdzenie porządków),
 - Prune i GroupAction to zadania: wywołanie od razu oddaje `{ok, job}`, a wynik przychodzi sygnałem
   actionFinished(job, json) — porządki i zatrzymywanie projektu trwają dłużej niż limit odpowiedzi D-Bus,
 - wynik Stats/Disk liczony przed końcem akcji (albo przed zdarzeniem) nie trafia do pamięci (licznik zmian),
@@ -45,6 +47,9 @@ CLAIM_TIMEOUT_S = 20.0  # tyle karta ma na przejęcie pliku zadania; potem plik 
 # Puste katalogi kart sprzątamy przy następnej karcie, gdy są starsze niż 10 min (dłużej niż przejęcie
 # zadania): po przejęciu launch.py przechodzi do katalogu domowego, więc nikt w nich nie zostaje.
 TAB_DIR_TTL_S = 600
+# Zdarzenia kontenera, po których zmienia się, co jest do odzyskania (kontener, jego obraz i wolumeny
+# w użyciu albo nie); stop i kill kończą się zdarzeniem die.
+DISK_EVENTS = ("create", "destroy", "start", "die")
 SHELL_COMMAND = "command -v bash >/dev/null && exec bash || exec sh"
 
 
@@ -52,7 +57,7 @@ class DockerMonitor(QObject):
     changed = pyqtSignal()
     actionFinished = pyqtSignal(str, str)   # (job, wynik JSON) — Prune i GroupAction
     _finished = pyqtSignal(object, object)  # (co dalej, Future) — z wątku roboczego do głównego
-    _event = pyqtSignal(str)                # ID kontenera ze strumienia zdarzeń
+    _event = pyqtSignal(str, str)           # (ID kontenera albo nazwa wolumenu, akcja) ze strumienia zdarzeń
     _live = pyqtSignal(bool)                # strumień zdarzeń połączony / zerwany
 
     def __init__(self, engine, terminal=None, files=None, launchers=None, poll_ms: int = POLL_MS,
@@ -76,6 +81,7 @@ class DockerMonitor(QObject):
         self._stats_waiting: list = []
         self._disk = None
         self._disk_waiting: list = []
+        self._disk_next: list = []    # DiskNow w trakcie odczytu, który zaczął się przed prośbą — czeka na kolejny
         self._stop = threading.Event()
         self._thread = None
         self._refresh_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-docker")
@@ -153,14 +159,23 @@ class DockerMonitor(QObject):
             generation = self._generation
             self._submit(self._read_pool, self.engine.stats, lambda res: self._after_stats(res, generation))
 
-    def disk(self, reply) -> None:
-        if self._disk and time.monotonic() - self._disk[0] < self.disk_ttl:
+    def disk(self, reply, fresh: bool = False) -> None:
+        """Kategorie porządków. fresh — bez pamięci i bez odczytu, który zaczął się przed prośbą: potwierdzenie
+        porządków musi pokazać stan z tej chwili (np. po `docker compose down` gdzie indziej nowe wolumeny
+        bez kontenera — `volumes/prune all=true` usunąłby je, choć nie było ich na liście)."""
+        if not fresh and self._disk and time.monotonic() - self._disk[0] < self.disk_ttl:
             reply(json.dumps(self._disk[1], ensure_ascii=False))
+            return
+        if fresh and self._disk_waiting:
+            self._disk_next.append(reply)
             return
         self._disk_waiting.append(reply)
         if len(self._disk_waiting) == 1:
-            generation = self._generation
-            self._submit(self._read_pool, self.engine.disk, lambda res: self._after_disk(res, generation))
+            self._read_disk()
+
+    def _read_disk(self) -> None:
+        generation = self._generation
+        self._submit(self._read_pool, self.engine.disk, lambda res: self._after_disk(res, generation))
 
     # --- akcje -----------------------------------------------------------------------------
 
@@ -332,6 +347,9 @@ class DockerMonitor(QObject):
         waiting, self._disk_waiting = self._disk_waiting, []
         for reply in waiting:
             reply(text)
+        if self._disk_next:
+            self._disk_waiting, self._disk_next = self._disk_next, []
+            self._read_disk()
 
     def _tick(self) -> None:
         if not self.live:
@@ -340,9 +358,14 @@ class DockerMonitor(QObject):
             self._since_full = time.monotonic()
             self.refresh(full=True)
 
-    def _on_event(self, ident: str) -> None:
+    def _on_event(self, ident: str, action: str = "") -> None:
+        self._generation += 1  # odczyt Stats/Disk sprzed zdarzenia nie trafi do pamięci
+        if action.startswith("volume:"):
+            self._disk = None  # lista wolumenów się zmieniła; migawka kontenerów — nie
+            return
+        if action in DISK_EVENTS:
+            self._disk = None
         self.engine.forget(ident)
-        self._generation += 1
         self._stats = None
         self._debounce.start()
 
@@ -361,7 +384,7 @@ class DockerMonitor(QObject):
                 self._live.emit(True)
 
             try:
-                self.engine.events(self._stop, lambda ident, _action: self._event.emit(ident), connected)
+                self.engine.events(self._stop, lambda ident, action: self._event.emit(ident, action), connected)
             except DockerUnavailable:
                 pass
             except Exception as exc:  # strumień nie może zabić wątku — próbujemy dalej

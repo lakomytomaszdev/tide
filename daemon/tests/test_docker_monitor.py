@@ -177,6 +177,39 @@ class MonitorTest(unittest.TestCase):
         self.call(mon.disk)
         self.assertEqual(len(self.fake.calls("GET", "/system/df")), 2)
 
+    def test_disk_cache_dropped_by_events_and_disk_now_reads_fresh(self):
+        """Zdarzenie, które zmienia, co jest do odzyskania (kontener destroy/die/create/start, wolumen
+        create/destroy), kasuje pamięć Disk; health_status i mount — nie. DiskNow zawsze czyta od nowa."""
+        self.fake.start()
+        mon = self.monitor()
+        self.assertTrue(wait_until(lambda: self.snapshot(mon)["available"] and mon.live, timeout=5))
+        df = lambda: len(self.fake.calls("GET", "/system/df"))  # noqa: E731
+        self.call(mon.disk)
+        self.assertEqual(df(), 1)
+        self.fake.emit(self.c["api"], "health_status: healthy")
+        self.fake.emit_volume("recipes_pgdata", "mount")
+        wait_until(lambda: False, timeout=0.3)
+        self.call(mon.disk)
+        self.assertEqual(df(), 1, "zdrowie i mount nie zmieniają porządków")
+        for emit in (lambda: self.fake.emit(self.c["old"], "destroy"), lambda: self.fake.emit(self.c["bot"], "die"),
+                     lambda: self.fake.emit_volume("fresh_pgdata", "create"),
+                     lambda: self.fake.emit_volume("old_data", "destroy")):
+            before = df()
+            emit()
+            self.assertTrue(wait_until(lambda: mon._disk is None, timeout=3))
+            self.call(mon.disk)
+            self.assertEqual(df(), before + 1)
+        before = df()
+        self.call(lambda reply: mon.disk(reply, fresh=True))
+        self.assertEqual(df(), before + 1, "DiskNow omija pamięć")
+        # DiskNow w trakcie odczytu, który zaczął się wcześniej, czeka na kolejny odczyt.
+        mon._disk = None
+        before, first, second = df(), [], []
+        mon.disk(first.append)
+        mon.disk(second.append, fresh=True)
+        self.assertTrue(wait_until(lambda: first and second, timeout=5))
+        self.assertEqual(df(), before + 2)
+
     def test_actions_reply_json(self):
         self.fake.start()
         mon = self.monitor()
