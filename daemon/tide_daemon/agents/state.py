@@ -75,7 +75,7 @@ class SessionLog:
         self.hidden = False  # np. podagenci Codexa — nie są osobnymi sesjami
         self.scheduled = False  # bieżącą/ostatnią turę zaczęło zaplanowane zadanie, nie użytkownik
         self.model = ""         # ostatni model z dziennika (Codex: turn_context.model, Claude: message.model)
-        self.local_model = False  # sesja na modelu lokalnym (agents/localmodel.py)
+        self.provider = ""      # Codex: session_meta.model_provider (agents/localmodel.py)
 
     def feed(self, record: dict) -> None:
         raise NotImplementedError

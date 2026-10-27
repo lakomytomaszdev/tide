@@ -108,8 +108,7 @@ class Plan:
     task_file: str = ""
     model: str = "cloud"       # "cloud" albo "local"
     local: object = None       # local.LocalAgent przy modelu lokalnym
-    env: dict = field(default_factory=dict)          # jawne zmienne środowiska agenta
-    secret_env: dict = field(default_factory=dict)   # zmienna → plik tokenu (czyta launch.py)
+    command: object = None     # local.Command przy modelu lokalnym (środowisko i tokeny dla launch.py)
 
     def result(self, mode: str = "") -> dict:
         local = {"endpoint": self.local.endpoint, "model": self.local.model, "server": self.local.server} \
@@ -121,11 +120,17 @@ class Plan:
     def task_payload(self) -> dict:
         """Treść pliku zadania dla launch.py — bez tokenów (tylko ścieżki plików z nimi)."""
         payload = {"cwd": self.cwd, "argv": self.argv, "title": self.title}
-        if self.env:
-            payload["env"] = self.env
-        if self.secret_env:
-            payload["secretEnv"] = self.secret_env
+        if self.command is not None:
+            payload.update(self.command.task_fields())
         return payload
+
+    @property
+    def env(self) -> dict:
+        return self.command.env if self.command is not None else {}
+
+    @property
+    def secret_env(self) -> dict:
+        return self.command.secret_env if self.command is not None else {}
 
 
 def failure(error: TaskError) -> dict:
@@ -563,7 +568,7 @@ class Planner:
         plan = Plan(repo_path=repo, repo_name=name, tool=req["tool"], prompt=req["prompt"], cwd=cwd, branch=branch,
                     title=task_title(name, branch or "odłączony HEAD", agent is not None), argv=argv,
                     worktree=plan_worktree, base=base, base_sha=base_sha, images=req["images"], model=req["model"],
-                    local=agent, env=command.env, secret_env=command.secret_env)
+                    local=agent, command=command if agent is not None else None)
         try:
             plan.task_file = self.files.write(plan.task_payload())
         except OSError as exc:

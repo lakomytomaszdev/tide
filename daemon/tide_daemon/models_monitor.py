@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
+from .agents import localmodel
 from .models import config as models_config
 from .models import status as models_status
 
@@ -36,6 +37,7 @@ class ModelsMonitor(QObject):
             cfg = models_config.defaults(error=f"models.json: nieoczekiwany błąd ({type(exc).__name__}) — "
                                                f"ustawienia domyślne")
         self._json = _dump(models_status.pending(cfg))
+        self._known = localmodel.known_models(models_status.pending(cfg))
         self._busy = False
         self._again = False
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-models")
@@ -51,6 +53,10 @@ class ModelsMonitor(QObject):
     def stop(self) -> None:
         self._timer.stop()
         self._pool.shutdown(wait=False, cancel_futures=True)
+
+    def known_models(self) -> set:
+        """Modele z ról i serwerów z ostatniego odczytu — znacznik „lokalny” sesji Claude Code (agents/)."""
+        return set(self._known)
 
     def status_json(self) -> str:
         return self._json
@@ -79,6 +85,7 @@ class ModelsMonitor(QObject):
         if state is not None:
             self._log(state)
             text = _dump(state)
+            self._known = localmodel.known_models(state)
             if text != self._json:
                 self._json = text
                 self.changed.emit()

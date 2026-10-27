@@ -4,13 +4,18 @@ Narzędzie zostaje to samo (wykrywanie sesji, Meta+A, powiadomienia działają b
 tylko model: argv i środowisko programu agenta kierują go na serwer modeli. Przypadki:
 
 - Codex, Ollama na tym komputerze (127.0.0.1/localhost/::1) bez tokenu — wbudowany dostawca:
-  `codex --oss --local-provider ollama -m <model>` i `CODEX_OSS_BASE_URL=<adres>/v1` (PT-13),
+  `codex --oss --local-provider ollama --model=<model>` i `CODEX_OSS_BASE_URL=<adres>/v1` (PT-13),
 - Codex, każdy inny serwer (Ollama na Macu, serwer zgodny z OpenAI) — własny dostawca przez `-c`:
   `model_provider=tide-<punkt>`, `model_providers.tide-<punkt>.{name, base_url=<adres>/v1,
-  wire_api="responses"}` i przy tokenie `env_key="TIDE_MODEL_TOKEN"`. Codex 0.114 obsługuje już tylko
+  wire_api="responses"}` i przy tokenie `env_key="TIDE_MODEL_TOKEN"` oraz
+  `shell_environment_policy.exclude=["TIDE_MODEL_TOKEN"]` i `features.shell_snapshot=false` (token ma
+  Codex, a nie polecenia, które uruchamia; migawka powłoki przenosiła go do poleceń mimo wykluczenia). Codex 0.114 obsługuje już tylko
   Responses API (`wire_api = "chat"` odrzuca), więc serwer musi mieć `/v1/responses` (Ollama ma),
-- Claude Code (każdy serwer) — `--model <model>` i środowisko: `ANTHROPIC_BASE_URL=<adres>`,
-  `ANTHROPIC_AUTH_TOKEN` (token z pliku albo zaślepka „ollama”), pusty `ANTHROPIC_API_KEY`,
+- Claude Code (każdy serwer) — `--model=<model>` i środowisko: `ANTHROPIC_BASE_URL=<adres>`,
+  `ANTHROPIC_AUTH_TOKEN=ollama` bez tokenu; z tokenem `--settings
+  {"apiKeyHelper": "cat -- <tokenFile>"}` i bez `ANTHROPIC_AUTH_TOKEN` (token nie jest zmienną, więc
+  polecenia Bash agenta go nie widzą; `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` odpada — na tym komputerze
+  uruchamia Bash przez bwrap z przestrzenią użytkownika, której AppArmor zabrania, i Bash nie działa), pusty `ANTHROPIC_API_KEY`,
   `ANTHROPIC_MODEL` i `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS,FABLE}_MODEL` = model (żadne zadanie
   w tle nie idzie do chmury), `CLAUDE_CODE_MAX_CONTEXT_TOKENS` = kontekst, gdy go znamy i ma co najmniej
   32k (inaczej Claude Code zakłada 200k dla nieznanego modelu i nie kompaktuje rozmowy w porę), wtedy
@@ -22,9 +27,11 @@ tylko model: argv i środowisko programu agenta kierują go na serwer modeli. Pr
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (bez telemetrii — tryb lokalny ma nie wysyłać danych).
   Serwer musi mieć `/v1/messages` (Ollama ma).
 
-Token nigdy nie trafia do argv, tytułu karty, dziennika ani pliku zadania: plik zadania niesie tylko
-nazwę zmiennej i ścieżkę `tokenFile` (`secretEnv`), a launch.py czyta token w chwili startu agenta
-i wstawia go do środowiska. Kontekst (`ctx`): z roli `agent` w models.json, inaczej z serwera, gdy model
+Model idzie jednym argumentem (`--model=<model>`), więc nazwa z „-” na początku nie stanie się opcją.
+Token nigdy nie trafia do argv, tytułu karty, dziennika, pliku zadania ani do poleceń, które agent
+uruchamia. Plik zadania niesie tylko ścieżki: `secretEnv` (Codex: zmienna → plik; launch.py czyta token
+w chwili startu i wstawia go do środowiska Codexa) i `tokenFiles` (launch.py sprawdza je przed startem,
+żeby zły plik zatrzymał start z komunikatem, a nie pierwsze zapytanie agenta). Kontekst (`ctx`): z roli `agent` w models.json, inaczej z serwera, gdy model
 jest załadowany (`/api/ps`), inaczej nieznany — wtedy bez ustawienia.
 """
 from __future__ import annotations
@@ -32,6 +39,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import shlex
 import urllib.parse
 from dataclasses import dataclass, field
 
@@ -66,10 +74,19 @@ class LocalAgent:
 
 @dataclass
 class Command:
-    """Polecenie agenta: argv, jawne zmienne środowiska i zmienne z sekretem (nazwa → plik tokenu)."""
+    """Polecenie agenta: argv, jawne zmienne środowiska, zmienne z sekretem (nazwa → plik tokenu),
+    zmienne do usunięcia ze środowiska agenta i pliki tokenów do sprawdzenia przed startem."""
     argv: list
     env: dict = field(default_factory=dict)
     secret_env: dict = field(default_factory=dict)
+    unset_env: list = field(default_factory=list)
+    token_files: list = field(default_factory=list)
+
+    def task_fields(self) -> dict:
+        """Pola pliku zadania dla launch.py (tylko niepuste) — bez treści tokenów."""
+        fields = {"env": self.env, "secretEnv": self.secret_env, "unsetEnv": self.unset_env,
+                  "tokenFiles": self.token_files}
+        return {key: value for key, value in fields.items() if value}
 
 
 def is_loopback(url: str) -> bool:
@@ -97,7 +114,7 @@ def _toml(value: str) -> str:
 
 def codex_options(agent: LocalAgent) -> Command:
     """Opcje Codexa (przed --add-dir, --image i --) i środowisko dla modelu lokalnego."""
-    options, env, secret = [], {}, {}
+    options, env, secret, files = [], {}, {}, []
     if agent.kind == "ollama" and agent.is_this_computer and not agent.token_file:
         options += ["--oss", "--local-provider", "ollama"]
         env["CODEX_OSS_BASE_URL"] = agent.url + "/v1"
@@ -109,12 +126,18 @@ def codex_options(agent: LocalAgent) -> Command:
                     "-c", f"{prefix}.base_url={_toml(agent.url + '/v1')}",
                     "-c", f'{prefix}.wire_api="responses"']
         if agent.token_file:
-            options += ["-c", f"{prefix}.env_key={_toml(TOKEN_ENV)}"]
+            # Token dla Codexa, ale nie dla poleceń, które Codex uruchamia (env, skrypty z repozytorium):
+            # wykluczenie z polityki środowiska i bez migawki powłoki — ta zapisuje środowisko powłoki
+            # z tokenem i odtwarza je w każdym poleceniu (sprawdzone na 0.114: `env` w sesji pokazywał token).
+            options += ["-c", f"{prefix}.env_key={_toml(TOKEN_ENV)}",
+                        "-c", f"shell_environment_policy.exclude=[{_toml(TOKEN_ENV)}]",
+                        "-c", "features.shell_snapshot=false"]
             secret[TOKEN_ENV] = agent.token_file
-    options += ["-m", agent.model]
+            files.append(agent.token_file)
+    options.append(f"--model={agent.model}")  # jeden argument: model z „-” nie stanie się opcją
     if agent.ctx:
         options += ["-c", f"model_context_window={int(agent.ctx)}"]
-    return Command(options, env, secret)
+    return Command(options, env, secret, token_files=files)
 
 
 def claude_output_tokens(ctx: int) -> int:
@@ -132,12 +155,16 @@ def claude_options(agent: LocalAgent) -> Command:
     if agent.ctx and agent.ctx >= CLAUDE_MIN_CTX:
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(agent.ctx))
         env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(claude_output_tokens(agent.ctx))
-    secret = {}
-    if agent.token_file:
-        secret["ANTHROPIC_AUTH_TOKEN"] = agent.token_file
-    else:
+    argv = [f"--model={agent.model}"]
+    if not agent.token_file:
         env["ANTHROPIC_AUTH_TOKEN"] = PLACEHOLDER_TOKEN
-    return Command(["--model", agent.model], env, secret)
+        return Command(argv, env)
+    # Token nie jest zmienną środowiska — dziedziczyłyby ją polecenia Bash agenta. Claude Code bierze go
+    # z apiKeyHelper (czyta plik przy starcie i odświeżeniu), w argv jest tylko ścieżka. ANTHROPIC_AUTH_TOKEN
+    # użytkownika ma pierwszeństwo przed apiKeyHelper, więc znika ze środowiska agenta.
+    helper = {"apiKeyHelper": f"cat -- {shlex.quote(agent.token_file)}"}
+    argv += ["--settings", json.dumps(helper, ensure_ascii=False)]
+    return Command(argv, env, unset_env=["ANTHROPIC_AUTH_TOKEN"], token_files=[agent.token_file])
 
 
 def options(tool: str, agent: LocalAgent) -> Command:

@@ -25,7 +25,6 @@ import os
 import re
 
 from .claude import shorten
-from .localmodel import is_local_codex_provider
 from .state import MID_TURN, TOOL_PENDING, TURN_END, Pending, SessionLog
 from .timeutil import parse_ts
 
@@ -120,7 +119,8 @@ class CodexLog(SessionLog):
         if isinstance(git, dict) and git.get("branch"):
             self.branch = git["branch"]
         self.originator = str(payload.get("originator") or "")
-        self.local_model = is_local_codex_provider(payload.get("model_provider"))
+        provider = payload.get("model_provider")
+        self.provider = provider if isinstance(provider, str) else ""
         source = payload.get("source")
         # hidden: nie jest osobną sesją (KRunner, worktrees). Podagent z rodzicem i tak jest
         # czytany — jego stan trafia do karty wątku głównego.

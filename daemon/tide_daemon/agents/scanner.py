@@ -22,6 +22,7 @@ from . import gitinfo
 from .claude import ClaudeLog, escape_cwd, read_process_status, status_from
 from .codex import CodexLog
 from .jsonl import JsonlTail
+from .localmodel import config_models, session_is_local
 from .state import DONE, ENDED, IDLE, MAX_AGE, WAITING, WORKING, SessionLog, derive_state
 from .timeutil import iso
 
@@ -44,6 +45,9 @@ class AgentScanner:
         self.bound_pids: dict[str, int] = {}  # id sesji → pid z ostatniego sessions()
         self.codex_app = codex_app             # CodexApp (codex_app.py) albo None — bez odnośników
         self.app_threads: dict[str, str] = {}  # id sesji → wątek główny do otwarcia w Codex Desktop
+        # Modele znane z models.json (znacznik „lokalny” dla Claude Code bez etykiety nazwa:tag).
+        # Usługa podmienia to na stan /Models (role i modele na serwerach) — app.py.
+        self.known_local_models = config_models
 
     # --- pliki -------------------------------------------------------------------------
 
@@ -115,6 +119,10 @@ class AgentScanner:
         bindings = self._bind(visible, procs)
         app_ready = self.codex_app is not None and self.codex_app.available()
         threads = {log.session_id: log for log in visible if log.tool == "codex"}
+        try:
+            known = set(self.known_local_models() or ())
+        except Exception:  # znacznik to dodatek — nie może położyć listy sesji
+            known = set()
         self.bound_pids = {}
         self.app_threads = {}
         entries: dict[int, dict] = {}
@@ -167,7 +175,7 @@ class AgentScanner:
                 "subagent": bool(_parent(log)),
                 "agentNickname": getattr(log, "nickname", ""),
                 "model": log.model,
-                "localModel": log.local_model,
+                "localModel": session_is_local(log, known),
             }
         out = _fold_subagents(visible, entries, threads, self.bound_pids, self.app_threads)
         out.sort(key=lambda s: (STATE_ORDER[s["state"]],

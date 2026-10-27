@@ -17,7 +17,6 @@ import json
 import os
 import re
 
-from .localmodel import is_local_claude_model
 from .state import MID_TURN, TOOL_PENDING, TURN_END, Pending, SessionLog, Status
 from .timeutil import parse_ts
 
@@ -83,7 +82,6 @@ class ClaudeLog(SessionLog):
         model = message.get("model") if isinstance(message, dict) else None
         if isinstance(model, str) and model and not model.startswith("<"):
             self.model = model  # ostatni prawdziwy model (po /model liczy się nowy)
-            self.local_model = is_local_claude_model(model)
         if record.get("isApiErrorMessage"):
             self.set_phase(TURN_END, ts)
             return
