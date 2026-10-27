@@ -30,7 +30,7 @@ from . import standup
 
 PROJECT_CAP = 12000        # znaków JSON-u faktów na projekt
 TOTAL_CAP = 60000          # znaków na całe wejście (projekty ponad limit dostają reguły)
-TIMEOUT = 90.0             # s na całe wywołanie
+TIMEOUT = 180.0            # s na całe wywołanie (próba na prawdziwych danych: 74 s)
 OUTPUT_MAX = 256 * 1024    # tyle stdout czytamy
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$")
 CACHE_NAME = "summary.json"
