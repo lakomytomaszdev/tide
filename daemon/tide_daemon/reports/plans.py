@@ -11,11 +11,13 @@ Do „Na daily”: cel planu (akapit „Cel…”), uwagi z planu, a dla planu z
 tablica nie zna — początek opisu ticketu z YouTracka (`tracker`: YouTrackCache, tylko GET, ten sam token
 i serwer co tablica; błąd albo brak tokenu — bez opisów).
 
-`attach(projects, ...)` dopisuje do projektów listę `plans`; każdy błąd tylko pomija dodatek.
+`attach(projects, ...)` dopisuje do projektów listę `plans` i `conflicts` — ostrzeżenia o numerach
+ticketów (coordination/numbering.py) z planów wszystkich worktree i gałęzi repozytorium, z listą projektów
+YouTracka, gdy repozytorium ma plany lokalne; każdy błąd tylko pomija dodatek.
 """
 import os
 
-from ..coordination import actions, ids
+from ..coordination import actions, ids, repoplans
 from ..coordination import plan as plan_mod
 from ..coordination.board import STATE_WORDS
 
@@ -32,6 +34,19 @@ def attach(projects: list, start: float, end: float, cache_file: str | None = No
         print(f"tide-daemon: raport: plany i tickety pominięte: {exc!r}", flush=True)
         for project in projects:
             project.plans = []
+    for project in projects:
+        project.conflicts = []
+        if not getattr(project, "is_repo", False):
+            continue
+        try:
+            project.conflicts = conflicts(project.path, tracker)
+        except Exception as exc:  # dodatek nie może zepsuć raportu
+            print(f"tide-daemon: raport: kontrola numerów pominięta ({project.name}): {exc!r}", flush=True)
+
+
+def conflicts(path: str, tracker=None, repo_plans=None) -> list[dict]:
+    """Ostrzeżenia o numerach ticketów w repozytorium (coordination/repoplans.check)."""
+    return repoplans.check([path], repo_plans, tracker)
 
 
 def _attach(projects: list, start: float, end: float, cache_file: str | None, tracker=None) -> None:

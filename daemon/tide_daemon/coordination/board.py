@@ -147,14 +147,15 @@ def effective(run, live: bool, now: float, transcript_mtime: float = 0.0) -> str
 
 
 def build(coord, *, plan=None, aliases=None, issues=None, tracker=None, live=None, now: float = 0.0,
-          info=None, project: str = "", repo_path: str = "", backlog=None) -> dict:
+          info=None, project: str = "", repo_path: str = "", backlog=None, warnings=None) -> dict:
     """Tablica jako słownik (JSON dla D-Bus Board()).
 
     live: wpis sesji koordynatora z obszaru Agents (stan, powód) albo None (sesja nie działa),
     info(run) → {"mtime", "branch", "lastAction"} z dziennika podagenta (opcjonalne),
     issues: {klucz: {"id", "summary", "state", "url"}} z YouTracka albo None,
     tracker: {"kind", "url", "project", "available", "error", "fetchedTs"} albo None,
-    backlog: {klucz: {"title", "status"}} z docs/agents/backlog/<ID>.md albo None.
+    backlog: {klucz: {"title", "status"}} z docs/agents/backlog/<ID>.md albo None,
+    warnings: ostrzeżenia o numerach ticketów w repozytorium (numbering.conflicts) albo None.
     """
     info = info or (lambda run: {})
     is_live = bool(live) and live.get("state") not in ("ended", None)
@@ -280,6 +281,7 @@ def build(coord, *, plan=None, aliases=None, issues=None, tracker=None, live=Non
         "columns": list(COLUMNS),
         "tickets": out_tickets,
         "runs": runs_json,
+        "warnings": [dict(w) for w in warnings or ()],
     }
 
 
@@ -291,6 +293,7 @@ def summary(board: dict) -> dict:
     out = {k: board.get(k) for k in keys}
     out["planPath"] = (board.get("plan") or {}).get("path", "")
     out["tracker"] = (board.get("tracker") or {}).get("kind", "none")
+    out["warnings"] = list(board.get("warnings") or [])
     return out
 
 

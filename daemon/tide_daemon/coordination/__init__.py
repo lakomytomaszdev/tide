@@ -6,6 +6,9 @@
 - plan.py            — plan pracy w repozytorium (docs/agent-plan-standard.md),
 - review.py          — liczby BLOCKER/MAJOR/NIT i werdykt z raportu recenzenta,
 - youtrack.py        — YouTrack tylko do odczytu (GET), z pamięcią podręczną,
+- repoplans.py       — plany ze wszystkich worktree i gałęzi repozytorium, deklaracja z CLAUDE.md/AGENTS.md,
+- numbering.py       — kontrola numerów ticketów (kolizje, prefiks z YouTracka, aliasy, numeracja od nowa),
+- reservations.py    — rezerwacja lokalnych numerów pod blokadą (tools/next_id.py),
 - board.py           — tickety, ich stan i oś czasu,
 - describe.py        — opis kart po ludzku (title, done, now): model przez bezpieczne `claude -p` albo reguły,
 - scanner.py         — koordynatorzy z ostatnich dni i ich tablice.

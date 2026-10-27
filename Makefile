@@ -20,6 +20,8 @@ help:
 	@echo "make install               instalacja Tide (najpierw kopia zapasowa)"
 	@echo "make uninstall             usunięcie wszystkiego, co zainstalował Tide"
 	@echo "make test                  testy wszystkich komponentów"
+	@echo "make check-plans           kontrola numerów ticketów w planach agentów (~/DevWorkspace)"
+	@echo "make next-id REPO=katalog  następny lokalny numer ticketu z rezerwacją [PREFIX= COUNT= TITLE= DRY_RUN=1]"
 	@echo "make backup [NAME=nazwa]   kopia obecnego wyglądu Plasmy"
 	@echo "make backups               lista kopii"
 	@echo "make restore NAME=nazwa    przywrócenie wyglądu z kopii"

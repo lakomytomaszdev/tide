@@ -345,8 +345,50 @@ Rectangle {
                         }
                     }
 
+                    // Ostrzeżenia o numerach ticketów w planach repozytorium (dyskretnie, nad kolumnami).
+                    Rectangle {
+                        id: warningBar
+                        objectName: "numberingWarnings"
+                        readonly property var lines: Logic.warningLines(page.board)
+                        Layout.fillWidth: true
+                        visible: page.board !== null && lines.length > 0
+                        implicitHeight: warningColumn.implicitHeight + 16
+                        radius: 10
+                        color: Tide.Theme.alpha(Tide.Tokens.butter, 0.06)
+                        border.width: 1
+                        border.color: Tide.Theme.alpha(Tide.Tokens.butter, 0.26)
+                        Accessible.role: Accessible.AlertMessage
+                        Accessible.name: lines.join(" ")
+                        Column {
+                            id: warningColumn
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            spacing: 4
+                            Repeater {
+                                model: warningBar.lines
+                                Text {
+                                    required property var modelData
+                                    objectName: "numberingWarningLine"
+                                    width: warningColumn.width
+                                    text: modelData
+                                    textFormat: Text.PlainText
+                                    color: Tide.Tokens.butter
+                                    font.family: Tide.Theme.uiFamily
+                                    font.pixelSize: 12
+                                    wrapMode: Text.Wrap
+                                    maximumLineCount: 2
+                                    elide: Text.ElideRight
+                                }
+                            }
+                        }
+                    }
+
                     // Kolumny.
                     RowLayout {
+                        objectName: "boardColumns"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         visible: page.board !== null
