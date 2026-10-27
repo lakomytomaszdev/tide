@@ -93,6 +93,7 @@ class Want:
     label: str = ""                 # „karta K-16”, „ticket LOG-232 · plan „…””
     link_ts: float = 0.0            # od kiedy połączone (reguła pierwszego spotkania); 0 — nie wiadomo
     held: bool = False              # karta bez pracy i bez jawnego przeniesienia — stan zostaje
+    slow: bool = False              # stan krótkotrwały z pracy agentów: zapis dopiero po `stableMinutes`
     explicit_ts: float = 0.0        # ostatnie jawne źródło: przeniesienie karty albo praca nad ticketem
 
 
@@ -144,16 +145,20 @@ def _card_want(key: str, cards: list, record: dict | None) -> Want | None:
         if wanted is None:       # Archiwum — zgłoszenie zostaje, jak jest
             continue
         derived = card.get("derived") or {}
-        moved = float(card.get("movedTs") or 0)
-        explicit = moved if card.get("movedFrom") else 0.0   # MoveCard zapisuje moved-from (PT-29)
+        # Jawne przeniesienie to tylko prawdziwa zmiana kolumny (`column-moved`) — zmiana kolejności w Do
+        # zrobienia nie zwalnia wstrzymania i nie otwiera zgłoszenia na nowo.
+        explicit = float(card.get("columnMovedTs") or 0)
         held = False
-        # `moved` ma dokładność sekundy — przeniesienie w tej samej sekundzie co zapis Tide jest „po nim”.
+        # Czas ma dokładność sekundy — przeniesienie w tej samej sekundzie co zapis Tide jest „po nim”.
         if wanted == "open" and not derived.get("column") and record and record.get("key") not in OPEN_KEYS \
-                and int(moved) < int(float(record.get("ts") or 0)):
+                and int(explicit) < int(float(record.get("ts") or 0)):
             # Karta wróciła do kolumny ręcznej bez przeniesienia (praca zniknęła z widoku) — nie cofamy zgłoszenia.
             wanted, held = record.get("key"), True
+        # Stan z pracy agentów, który bywa chwilowy: „czeka” (każde pytanie o zgodę) i rozwiązane z kolumny
+        # wyliczonej (Do sprawdzenia, Gotowe po scaleniu) — zapis dopiero, gdy się utrzyma.
+        slow = not held and (wanted == "waiting" or (wanted in RESOLVED_KEYS and bool(derived.get("column"))))
         wants.append(Want(issue=key, key=wanted, via="card", label=f"karta {card.get('id', '')}",
-                          link_ts=float(card.get("createdTs") or 0), held=held, explicit_ts=explicit))
+                          link_ts=float(card.get("createdTs") or 0), held=held, explicit_ts=explicit, slow=slow))
     if not wants:
         return None
     # Kilka kart przy jednym zgłoszeniu: wygrywa ostatnio jawnie przeniesiona (bez wstrzymanych, jeśli się da).
@@ -161,7 +166,7 @@ def _card_want(key: str, cards: list, record: dict | None) -> Want | None:
 
 
 def _ticket_wants(boards: list, enabled: dict, snapshot: dict) -> dict:
-    done_coordinators = _done_cards(snapshot)
+    done_coordinators = _done_cards(snapshot, boards)
     found: dict[str, tuple] = {}
     for board in boards or []:
         if not isinstance(board, dict):
@@ -170,6 +175,9 @@ def _ticket_wants(boards: list, enabled: dict, snapshot: dict) -> dict:
         if (plan.get("tracker") or "") != "youtrack":
             continue
         plan_ts = float(plan.get("updatedTs") or 0)
+        uses_review = any(isinstance(r, dict) and r.get("role") == "reviewer" for r in board.get("runs") or []) \
+            or any(isinstance(t, dict) and t.get("review") for t in board.get("tickets") or [])
+        live = bool(board.get("live"))
         for ticket in board.get("tickets") or []:
             if not isinstance(ticket, dict) or ticket.get("source") == "tracker":
                 continue
@@ -177,6 +185,9 @@ def _ticket_wants(boards: list, enabled: dict, snapshot: dict) -> dict:
             wanted = TICKET_KEYS.get(ticket.get("state") or "")
             if not key or not wanted or project_of(key) not in enabled:
                 continue
+            if wanted == "review" and live and uses_review and not _passed_review(ticket):
+                # Poprawki po review skończone, ponowne review jeszcze się nie zaczęło — to wciąż W toku.
+                wanted = "progress"
             if wanted == "review" and _card_done(done_coordinators, board.get("id") or "", key):
                 wanted = "done"
             activity = max(float(ticket.get("lastActivityTs") or 0), plan_ts)
@@ -185,22 +196,42 @@ def _ticket_wants(boards: list, enabled: dict, snapshot: dict) -> dict:
             title = (plan.get("title") or board.get("title") or "").strip()
             want = Want(issue=key, key=wanted, via="ticket", coordinator=board.get("id") or "",
                         label=f"ticket {key}" + (f" · plan „{title[:60]}”" if title else ""),
-                        link_ts=link, explicit_ts=activity)
+                        link_ts=link, explicit_ts=activity, slow=wanted in RESOLVED_KEYS + ("waiting",))
             rank = (activity, float(board.get("lastActivityTs") or 0))
             if key not in found or rank > found[key][0]:
                 found[key] = (rank, want)
     return {key: item[1] for key, item in found.items()}
 
 
-def _done_cards(snapshot: dict) -> list:
-    """[(koordynator, tickety karty)] kart w Gotowe połączonych z koordynatorem — ticket gotowe → `done`."""
+def _passed_review(ticket: dict) -> bool:
+    """Ticket `gotowe` z pracy podagentów ma za sobą review bez uwag po ostatniej pracy (albo to samo rozpoznanie)."""
+    if ticket.get("source") != "runs":
+        return True              # stan z planu — decyzja koordynatora
+    note = ticket.get("note") or ""
+    if "rozpoznanie" in note:
+        return True
+    review = ticket.get("review") or {}
+    return bool(review.get("ok")) and "bez ponownego review" not in note
+
+
+def _done_cards(snapshot: dict, boards=()) -> list:
+    """[(koordynator, tickety karty)] kart w Gotowe połączonych z koordynatorem — ticket gotowe → `done`.
+    Karta przeniesiona do Gotowe ręcznie nie ma `derived` — jej koordynatora szukamy po `session` karty
+    i po kluczu `card` planu."""
+    ids = [b.get("id") or "" for b in boards or [] if isinstance(b, dict)]
     out = []
     for card in snapshot.get("cards") or []:
         if not isinstance(card, dict) or (card.get("boardColumn") or card.get("column")) != "done":
             continue
         derived = card.get("derived") or {}
-        if derived.get("coordinator"):
-            out.append((derived["coordinator"], [str(t).upper() for t in derived.get("tickets") or []]))
+        tickets = [str(t).upper() for t in derived.get("tickets") or []]
+        found = {derived["coordinator"]} if derived.get("coordinator") else set()
+        session = (card.get("session") or "").strip()
+        if session:
+            found.update(i for i in ids if i == session or i.split(":", 1)[-1] == session)
+        found.update(b.get("id") or "" for b in boards or [] if isinstance(b, dict)
+                     and ((b.get("plan") or {}).get("card") or "").upper() == (card.get("id") or "").upper())
+        out.extend((ident, tickets) for ident in found if ident)
     return out
 
 
@@ -220,7 +251,10 @@ class Client:
         config = self.config_loader()
         if not config.get("url"):
             raise yt.YouTrackError("brak adresu YouTracka w ustawieniach")
-        return config["url"], yt.read_token(config)
+        token = yt.read_token(config)
+        if not token:
+            raise yt.YouTrackError(yt.missing_token(config))
+        return config["url"], token
 
     def url(self) -> str:
         try:
@@ -256,6 +290,9 @@ class SyncEngine:
         self._lock = threading.Lock()
         self.records: dict[str, dict] = {}
         self.seen: set[str] = set()
+        # Licznik „N nowych zgłoszeń”: chwila pierwszego pobrania (ms). Zgłoszenia, które już wtedy były, nie są
+        # nowe — liczą się tylko założone później (pole `created`), bez karty i jeszcze niepokazane na liście.
+        self.baseline = 0
         self.wants: dict[str, Want] = {}
         self.settings = settings_loader()
         self._since: dict[str, tuple] = {}       # zgłoszenie → (klucz docelowy, od kiedy)
@@ -284,6 +321,9 @@ class SyncEngine:
             for key, record in issues.items():
                 if yt.issue_key(key) == key and isinstance(record, dict) and isinstance(record.get("state"), str):
                     self.records[key] = record
+        baseline = data.get("importBaseline")
+        if isinstance(baseline, int) and not isinstance(baseline, bool) and baseline > 0:
+            self.baseline = baseline
         seen = data.get("seen")
         if isinstance(seen, list):
             self.seen = {s for s in seen if isinstance(s, str) and yt.issue_key(s) == s}
@@ -291,7 +331,7 @@ class SyncEngine:
     def save(self) -> None:
         with self._lock:
             payload = {"version": VERSION, "issues": dict(sorted(self.records.items())),
-                       "seen": sorted(self.seen)[-SEEN_MAX:]}
+                       "seen": sorted(self.seen)[-SEEN_MAX:], "importBaseline": self.baseline}
         folder = os.path.dirname(self.path)
         os.makedirs(folder, mode=0o700, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".youtrack-sync-", dir=folder)
@@ -333,6 +373,7 @@ class SyncEngine:
         """[(Want, klucz docelowy, wymuszenie)] do zapisu albo sprawdzenia teraz (bez tych w toku)."""
         out = []
         now = self.clock()
+        stable = max(self.debounce, float(self.settings.get("stableMinutes", yt.DEFAULT_STABLE_MINUTES)) * 60)
         with self._lock:
             if not self.ready:
                 return []
@@ -342,7 +383,8 @@ class SyncEngine:
                 record = self.records.get(key)
                 target = target_key(want.key, record)
                 forced = key in self._force
-                if not forced and now - self._since.get(key, (target, now))[1] < self.debounce:
+                wait = stable if want.slow and target != (record or {}).get("key") else self.debounce
+                if not forced and now - self._since.get(key, (target, now))[1] < wait:
                     continue
                 retry = self._retry.get(key)
                 if retry and now < retry[0] and not forced:
@@ -485,12 +527,24 @@ class SyncEngine:
         except Exception as exc:  # klient nie może położyć usługi ani zdradzić tokenu
             print(f"tide-daemon: YouTrack: import: {type(exc).__name__}", flush=True)
             issues, error = None, "błąd zapytania do YouTracka"
+        first = False
         with self._lock:
             if issues is not None:
                 self.imported = {"issues": issues, "error": "", "ts": self.clock()}
+                if not self.baseline:   # pierwsze pobranie: wszystko, co już jest, to nie „nowe”
+                    first = True
+                    # Czas serwera (najnowsze `created`), nie zegar komputera — bez rozjazdu zegarów; pusta lista — teraz.
+                    created = [i.get("created") or 0 for i in issues]
+                    self.baseline = max(created) if any(created) else int(self.clock() * 1000)
             else:
                 self.imported = {**self.imported, "error": error, "ts": self.clock()}
-            return dict(self.imported)
+            result = dict(self.imported)
+        if first:
+            try:
+                self.save()
+            except OSError as exc:
+                print(f"tide-daemon: YouTrack: nie zapisano stanu synchronizacji: {exc}", flush=True)
+        return result
 
     # --- import ----------------------------------------------------------------------------------
 
@@ -499,6 +553,7 @@ class SyncEngine:
         with self._lock:
             issues = list(self.imported.get("issues") or [])
             seen = set(self.seen)
+            baseline = self.baseline
         linked = _linked_cards(snapshot)
         projects = {}
         for project in snapshot.get("projects") or []:
@@ -513,7 +568,8 @@ class SyncEngine:
                         "url": f"{base}/issue/{issue['id']}" if base else "",
                         "card": linked.get(issue["id"], ""), "boardProject": project.get("slug", "") if project else "",
                         "boardProjectName": project.get("name", "") if project else "",
-                        "new": issue["id"] not in seen and issue["id"] not in linked})
+                        "new": issue["id"] not in seen and issue["id"] not in linked
+                               and bool(baseline) and (issue.get("created") or 0) > baseline})
         return out
 
     def issue_for_import(self, ident: str) -> dict | None:
@@ -573,6 +629,9 @@ class SyncEngine:
             out.update(status="offline", text=f"YouTrack niedostępny — zapisze „{name}”, gdy wróci")
         elif record is None:
             out.update(status="pending", text="sprawdza zgłoszenie w YouTracku")
+        elif want.slow:
+            minutes = float(self.settings.get("stableMinutes", yt.DEFAULT_STABLE_MINUTES))
+            out.update(status="pending", text=f"zapisze „{name}” w YouTracku, gdy stan utrzyma się {minutes:g} min")
         else:
             out.update(status="pending", text=f"zapisze „{name}” w YouTracku")
         return out

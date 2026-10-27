@@ -59,6 +59,9 @@ PROJECTS_KEY = "projects"
 # Kolumna wyświetlana karty (z pracy agentów albo ręczna) w chwili ostatniego MoveCard (PT-29): „do poprawy”
 # (karta zostaje w swojej kolumnie po skończonej pracy) tylko po przeniesieniu z review albo done.
 MOVED_FROM_KEY = "moved-from"
+# Ostatnia prawdziwa zmiana kolumny przez MoveCard (PT-7): kolumna docelowa inna niż wyświetlana. Sama zmiana
+# kolejności w kolumnie jej nie stempluje — synchronizacja z YouTrackiem liczy tylko takie przeniesienia.
+COLUMN_MOVED_KEY = "column-moved"
 PROJECTS_MAX = 5
 PROJECT_KEYS = ("name", "repo", "tags", "ai-docs", "tool", "mode")
 # Synchronizacja z YouTrackiem (PT-7): klucz projektu YouTracka (LOG, LEGAL) i przełącznik. W pliku tylko,
@@ -137,6 +140,7 @@ class Card:
     updated: str = ""
     moved: str = ""           # ostatnia zmiana kolumny (MoveCard, założenie karty); bez klucza — created
     moved_from: str = ""      # kolumna wyświetlana przed ostatnim MoveCard (PT-29); pusta — nieznana
+    column_moved: str = ""    # ostatnia prawdziwa zmiana kolumny (PT-7); pusta — nigdy (albo sprzed PT-7)
     youtrack: str = ""
     spec: str = ""
     session: str = ""
@@ -245,6 +249,7 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.moved = doc.get("moved").strip()
     moved_from = doc.get(MOVED_FROM_KEY).strip().lower()
     card.moved_from = moved_from if moved_from in COLUMN_IDS else ""
+    card.column_moved = doc.get(COLUMN_MOVED_KEY).strip()
     for key in RESERVED_CARD_KEYS:
         setattr(card, key, doc.get(key).strip())
     card.check = _choice(doc.get("check"), CHECKS, DEFAULT_CHECK, f"{name}: nieznane sprawdzenie", path, errors)

@@ -13,10 +13,11 @@ czyta zgłoszenie (`fetch_issue`), a import kart bierze zgłoszenia użytkownika
 Token (decyzja użytkownika: ten sam co serwer MCP YouTracka w LogViewerze) czytamy z pliku przy
 każdym zapytaniu, tylko w pamięci. Nie trafia do dziennika, komunikatów błędów, pamięci podręcznej,
 odpowiedzi D-Bus ani plików. Ustawienia (opcjonalne) w `$XDG_CONFIG_HOME/tide/youtrack.json`:
-{"url": "http://10.20.1.159:8111", "tokenFile": "~/.config/logviewer/youtrack-mcp-token",
- "tokenVar": ""} — `tokenVar` pusty: cały plik to token; podany: linia `ZMIENNA=wartość` z pliku .env.
+{"url": "http://10.20.1.159:8111", "tokenFile": "~/.config/youtrack/token", "tokenVar": ""} — `tokenVar`
+pusty: cały plik to token; podany: linia `ZMIENNA=wartość` z pliku .env. Plik ustawień jest opcjonalny:
+token szukamy po kolei w `tokenFile` z ustawień, ~/.config/youtrack/token i ~/.config/logviewer/youtrack-mcp-token.
 Ten sam plik niesie ustawienia synchronizacji (load_sync_settings): `sync`, `states`, `stateField`,
-`projects`, `importQueries`, `importCheckMinutes`.
+`projects`, `importQueries`, `importCheckMinutes`, `stableMinutes`.
 
 Token idzie tylko do serwera z ustawień (`url`): plan w repozytorium może wskazać inny
 `tracker-url`, ale wtedy nie pytamy wcale — taki plan dostaje komunikat „inny serwer niż w ustawieniach”.
@@ -36,7 +37,10 @@ import urllib.parse
 import urllib.request
 
 DEFAULT_URL = "http://10.20.1.159:8111"
-DEFAULT_TOKEN_FILE = "~/.config/logviewer/youtrack-mcp-token"
+# Gdzie szukamy tokenu, gdy ustawienia go nie podają (albo podany plik nie istnieje), po kolei: token
+# serwera MCP YouTracka i dawne miejsce z LogViewera.
+DEFAULT_TOKEN_FILES = ("~/.config/youtrack/token", "~/.config/logviewer/youtrack-mcp-token")
+DEFAULT_TOKEN_FILE = DEFAULT_TOKEN_FILES[0]
 TTL = 300.0
 TIMEOUT = 4.0
 FIELDS = "idReadable,summary,description,customFields(name,value(name))"
@@ -46,7 +50,7 @@ MAX_BYTES = 8 * 1024 * 1024
 PROJECTS_TTL = 3600.0
 PROJECTS_RETRY = 600.0
 ISSUE_FIELDS = "idReadable,summary,updated,resolved,project(shortName),customFields(name,$type,value(name))"
-MINE_FIELDS = "idReadable,summary,description,updated,resolved,project(shortName),customFields(name,value(name))"
+MINE_FIELDS = "idReadable,summary,description,created,updated,resolved,project(shortName),customFields(name,value(name))"
 MINE_DESCRIPTION_MAX = 16 * 1024   # opis importowanej karty (plik karty przyjmuje do 64 KB)
 ISSUE_RE = re.compile(r"^([A-Z][A-Z0-9_]{0,19})-([1-9][0-9]{0,8})$")
 PROJECT_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,19}$")
@@ -57,6 +61,7 @@ DEFAULT_STATES = {"open": "Open", "reopened": "Reopened", "progress": "In Progre
                   "review": "Fixed", "done": "Verified", "rejected": "Won't fix"}
 DEFAULT_IMPORT_QUERIES = ("for: me #Unresolved", "reporter: me Assignee: Unassigned #Unresolved")
 DEFAULT_IMPORT_MINUTES = 15
+DEFAULT_STABLE_MINUTES = 10   # stany rozwiązane z pracy agentów i „czeka” — zapis dopiero, gdy tyle się trzymają
 
 
 def config_path(env=None) -> str:
@@ -70,9 +75,14 @@ def config_path(env=None) -> str:
 
 
 def load_config(path: str | None = None, env=None) -> dict:
-    """{"url", "tokenFile", "tokenVar"} — z pliku ustawień albo wartości domyślne."""
+    """{"url", "tokenFile", "tokenVar", "tokenFiles"} — z pliku ustawień albo wartości domyślne.
+
+    `tokenFiles`: kolejne miejsca tokenu [[ścieżka, zmienna], …] — najpierw `tokenFile` z ustawień (jeśli jest,
+    z `tokenVar`), potem DEFAULT_TOKEN_FILES (cały plik to token). `tokenFile` to pierwsze istniejące z nich
+    (bez żadnego — pierwsze z listy). Plik ustawień jest opcjonalny: bez niego działa domyślny serwer
+    i token z ~/.config/youtrack/token."""
     env = os.environ if env is None else env
-    config = {"url": DEFAULT_URL, "tokenFile": DEFAULT_TOKEN_FILE, "tokenVar": ""}
+    config = {"url": DEFAULT_URL, "tokenFile": "", "tokenVar": ""}
     try:
         with open(path or config_path(env), encoding="utf-8") as fh:
             data = json.load(fh)
@@ -82,12 +92,21 @@ def load_config(path: str | None = None, env=None) -> dict:
                     config[key] = data[key]
     except (OSError, ValueError):
         pass
-    config["url"] = config["url"].strip().rstrip("/")
+    config["url"] = (config["url"].strip() or DEFAULT_URL).rstrip("/")
     home = env.get("HOME") or os.path.expanduser("~")
-    token_file = config["tokenFile"]
-    if token_file.startswith("~/"):
-        token_file = os.path.join(home, token_file[2:])
-    config["tokenFile"] = token_file
+
+    def expand(name: str) -> str:
+        return os.path.join(home, name[2:]) if name.startswith("~/") else name
+
+    candidates = []
+    if config["tokenFile"].strip():
+        candidates.append([expand(config["tokenFile"].strip()), config["tokenVar"]])
+    for name in DEFAULT_TOKEN_FILES:
+        if expand(name) not in [c[0] for c in candidates]:
+            candidates.append([expand(name), ""])
+    found = next((c for c in candidates if os.path.isfile(c[0])), candidates[0])
+    config["tokenFile"], config["tokenVar"] = found
+    config["tokenFiles"] = candidates
     return config
 
 
@@ -97,7 +116,8 @@ def load_sync_settings(path: str | None = None, env=None) -> dict:
     "importQueries": [...], "importCheckMinutes": 15}. Brak pliku albo zła wartość — domyślne."""
     env = os.environ if env is None else env
     settings = {"sync": True, "states": dict(DEFAULT_STATES), "stateField": "State", "projects": {},
-                "importQueries": list(DEFAULT_IMPORT_QUERIES), "importCheckMinutes": DEFAULT_IMPORT_MINUTES}
+                "importQueries": list(DEFAULT_IMPORT_QUERIES), "importCheckMinutes": DEFAULT_IMPORT_MINUTES,
+                "stableMinutes": DEFAULT_STABLE_MINUTES}
     try:
         with open(path or config_path(env), encoding="utf-8") as fh:
             data = json.load(fh)
@@ -119,6 +139,9 @@ def load_sync_settings(path: str | None = None, env=None) -> dict:
     queries = data.get("importQueries")
     if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
         settings["importQueries"] = [q.strip() for q in queries if q.strip()][:5]
+    stable = data.get("stableMinutes")
+    if isinstance(stable, (int, float)) and not isinstance(stable, bool):
+        settings["stableMinutes"] = max(0.0, min(float(stable), 24 * 60.0))   # 0 — jak zwykłe odliczanie
     minutes = data.get("importCheckMinutes")
     if isinstance(minutes, (int, float)) and not isinstance(minutes, bool):
         settings["importCheckMinutes"] = max(0, min(int(minutes), 24 * 60))   # 0 — bez sprawdzania w tle
@@ -150,13 +173,35 @@ def issue_key(text: str) -> str:
 
 
 def read_token(config: dict) -> str:
-    """Token z pliku (cały plik albo zmienna tokenVar z pliku .env). Pusty napis, gdy go nie ma."""
+    """Token z pierwszego miejsca, które go ma (`tokenFiles`, inaczej `tokenFile` z `tokenVar`): cały plik
+    albo zmienna z pliku .env. Pusty napis, gdy nigdzie go nie ma. Ani token, ani treść pliku nie trafiają
+    nigdzie poza nagłówek zapytania."""
+    candidates = config.get("tokenFiles") or [[config.get("tokenFile") or "", config.get("tokenVar") or ""]]
+    for path, var in candidates:
+        token = _token_from(path, var)
+        if token:
+            return token
+    return ""
+
+
+def missing_token(config: dict) -> str:
+    """Komunikat „brak tokenu” z listą sprawdzonych plików (same ścieżki)."""
+    places = token_places(config)
+    return "brak tokenu YouTracka" + (f" (sprawdzone: {places})" if places else "")
+
+
+def token_places(config: dict) -> str:
+    """Sprawdzone miejsca tokenu do komunikatu błędu (same ścieżki, nigdy treść)."""
+    return ", ".join(path for path, _var in config.get("tokenFiles") or [[config.get("tokenFile") or "", ""]] if path)
+
+
+def _token_from(path: str, var: str) -> str:
     try:
-        with open(config.get("tokenFile") or "", encoding="utf-8") as fh:
+        with open(path or "", encoding="utf-8") as fh:
             text = fh.read(64 * 1024)
     except (OSError, UnicodeDecodeError):
         return ""
-    var = (config.get("tokenVar") or "").strip()
+    var = (var or "").strip()
     if not var:
         return text.strip()
     for line in text.splitlines():
@@ -247,7 +292,7 @@ def set_state(url: str, ident: str, state: str, token: str, state_field: str = "
 
 def fetch_mine(url: str, token: str, queries=DEFAULT_IMPORT_QUERIES, timeout: float = TIMEOUT, opener=None) -> list:
     """Zgłoszenia użytkownika do importu (GET, kolejne zapytania sklejone bez powtórzeń): [{"id", "summary",
-    "description", "project", "state", "updated", "resolved"}] od najświeższej zmiany."""
+    "description", "project", "state", "created", "updated", "resolved"}] od najświeższej zmiany."""
     out: dict[str, dict] = {}
     for text in queries or ():
         query = urllib.parse.urlencode({"query": text, "fields": MINE_FIELDS, "$top": "500"})
@@ -290,7 +335,8 @@ def _issue(data, state_field: str, ident: str) -> dict:
             "summary": str(data.get("summary") or "")[:500],
             "project": str(project.get("shortName") or "").upper() if isinstance(project, dict) else "",
             "state": state, "stateField": field_name, "stateType": field_type,
-            "updated": _millis(data.get("updated")), "resolved": _millis(data.get("resolved"))}
+            "updated": _millis(data.get("updated")), "resolved": _millis(data.get("resolved")),
+            "created": _millis(data.get("created"))}
 
 
 def _millis(value) -> int:
@@ -375,7 +421,10 @@ class YouTrackCache:
         if not fresh or force:
             issues, error = None, ""
             try:
-                issues = self.fetch(url, project, read_token(config))
+                token = read_token(config)
+                if not token:
+                    raise YouTrackError(missing_token(config))
+                issues = self.fetch(url, project, token)
             except YouTrackError as exc:
                 error = str(exc)
             except Exception:  # klient nie może położyć tablicy (i nie może zdradzić tokenu w komunikacie)
@@ -406,7 +455,10 @@ class YouTrackCache:
         if not fresh or force:
             keys, error = None, ""
             try:
-                keys = self.fetch_projects(url, read_token(config))
+                token = read_token(config)
+                if not token:
+                    raise YouTrackError(missing_token(config))
+                keys = self.fetch_projects(url, token)
             except YouTrackError as exc:
                 error = str(exc)
             except Exception:  # klient nie może położyć tablicy (i nie może zdradzić tokenu w komunikacie)

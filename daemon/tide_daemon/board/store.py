@@ -36,7 +36,7 @@ from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
 from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUMNS, DEFAULT_CHECK, DEFAULT_COLUMN,
                     DEFAULT_MODE, DEFAULT_TOOL, DESCRIPTION_MAX, FIELD_MAX, FILE_MAX, LAUNCH_KEYS, MANUAL_COLUMNS,
-                    MODES, MOVED_FROM_KEY, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, PROJECT_SYNC_KEY,
+                    MODES, MOVED_FROM_KEY, COLUMN_MOVED_KEY, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, PROJECT_SYNC_KEY,
                     PROJECT_YOUTRACK_KEY, PROJECTS_KEY, PROJECTS_MAX, RESERVED_CARD_KEYS, YOUTRACK_PROJECT_RE,
                     SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
                     TOOLS, BoardError, Card, Project, Tag, card_num, default_ai_docs, fallback_color, merge_tags,
@@ -516,8 +516,10 @@ class BoardStore:
         origin = shown or card.column
         if origin != column or not card.doc.has(MOVED_FROM_KEY):
             card.doc.set(MOVED_FROM_KEY, origin)
+        now = self._now()
+        if origin != column:   # prawdziwa zmiana kolumny (nie kolejność w kolumnie, w której karta jest widoczna)
+            card.doc.set(COLUMN_MOVED_KEY, now)
         if not moved_column and current == index:
-            now = self._now()
             card.doc.set("updated", now)
             card.doc.set("moved", now)
             change.commits.append((f"{card.id}: move to {column}", [(_rel(self.root, card.path), card.doc.text())]))
@@ -535,7 +537,6 @@ class BoardStore:
             target = before + (after - before) // 2
         else:
             target = None  # brak miejsca — numerujemy kolumnę od nowa
-        now = self._now()
         writes = []
         if target is not None:
             card.doc.set("order", order_value(target))
@@ -967,6 +968,8 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         "updated": card.updated, "updatedTs": parse_ts(card.updated),
         # Ostatnia zmiana kolumny; stare karty bez klucza — czas założenia.
         "moved": card.moved, "movedTs": parse_ts(card.moved or card.created), "movedFrom": card.moved_from,
+        # Ostatnia prawdziwa zmiana kolumny (PT-7, synchronizacja z YouTrackiem); 0 — nigdy.
+        "columnMoved": card.column_moved, "columnMovedTs": parse_ts(card.column_moved),
         "youtrack": card.youtrack,
         "spec": card.spec, "session": card.session, "branch": card.branch, "check": card.check,
         "mode": card.mode, "tool": card.tool, "worktree": card.worktree, "launched": card.launched,

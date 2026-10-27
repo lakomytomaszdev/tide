@@ -504,11 +504,20 @@ function youtrackSummary(yt, projects) {
     return parts.join(" ")
 }
 
-// Lista do importu: filtr po kluczu, tytule i projekcie; zgłoszenia z kartą na końcu.
-function importRows(issues, query) {
+// Lista do importu: filtr po kluczu, tytule i projekcie (oraz wybrany projekt YouTracka); zgłoszenia z kartą na końcu.
+function importRows(issues, query, project) {
     const q = fold(String(query || "").trim())
-    const rows = (issues || []).filter(i => !q || fold([i.id, i.summary, i.project, i.boardProjectName].join(" ")).indexOf(q) >= 0)
+    const rows = (issues || []).filter(i => (!project || i.project === project)
+                                            && (!q || fold([i.id, i.summary, i.project, i.boardProjectName].join(" ")).indexOf(q) >= 0))
     return rows.slice().sort((a, b) => (a.card ? 1 : 0) - (b.card ? 1 : 0))
+}
+
+// Przełącznik projektów nad listą importu: „Wszystkie” i projekty YouTracka z liczbą zgłoszeń.
+function importProjects(issues) {
+    const counts = {}
+    for (const issue of issues || []) counts[issue.project || "?"] = (counts[issue.project || "?"] || 0) + 1
+    return [{ value: "", label: "Wszystkie" }].concat(Object.keys(counts).sort()
+        .map(key => ({ value: key, label: key + " · " + counts[key] })))
 }
 
 function columnLabel(snapshot, id) {

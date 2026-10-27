@@ -50,12 +50,13 @@ class FakeYouTrack:
     # --- dane ------------------------------------------------------------------------------------
 
     def add(self, ident: str, state: str = "Open", summary: str = "", description: str = "", mine: str = "reporter",
-            updated: int | None = None) -> None:
+            updated: int | None = None, created: int | None = None) -> None:
         """mine: assignee (przypisane do mnie), reporter (zgłoszone przeze mnie, bez przypisania), other."""
         with self.lock:
+            stamp = updated if updated is not None else self._tick()
             self.issues[ident] = {"state": state, "summary": summary or f"Zgłoszenie {ident}",
-                                  "description": description, "mine": mine,
-                                  "updated": updated if updated is not None else self._tick()}
+                                  "description": description, "mine": mine, "created": created or stamp,
+                                  "updated": stamp}
 
     def human_sets(self, ident: str, state: str) -> None:
         """Zmiana ręczna w YouTracku (człowiek w przeglądarce)."""
@@ -130,7 +131,7 @@ class FakeYouTrack:
         return out
 
     def _issue_json(self, ident: str, issue: dict) -> dict:
-        return {"idReadable": ident, "summary": issue["summary"], "updated": issue["updated"],
+        return {"idReadable": ident, "summary": issue["summary"], "updated": issue["updated"], "created": issue["created"],
                 "resolved": issue["updated"] if issue["state"] in RESOLVED else None,
                 "project": {"shortName": ident.rsplit("-", 1)[0], "$type": "Project"},
                 "customFields": [

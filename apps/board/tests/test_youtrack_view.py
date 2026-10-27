@@ -67,6 +67,11 @@ class YouTrackLogicTest(unittest.TestCase):
         rows = self.js("importRows([{id: 'LOG-1', summary: 'Eksport', card: 'K-1'}, {id: 'LOG-2', summary: 'Łódź', card: ''}], '')")
         self.assertEqual([r["id"] for r in rows], ["LOG-2", "LOG-1"], "zgłoszenia z kartą na końcu")
         self.assertEqual([r["id"] for r in self.js("importRows([{id: 'LOG-2', summary: 'Łódź'}, {id: 'LOG-3', summary: 'Inne'}], 'ŁÓDŹ')")], ["LOG-2"])
+        mixed = "[{id: 'LOG-2', project: 'LOG'}, {id: 'APP5-1', project: 'APP5'}, {id: 'LOG-3', project: 'LOG'}]"
+        self.assertEqual([r["id"] for r in self.js(f"importRows({mixed}, '', 'LOG')")], ["LOG-2", "LOG-3"])
+        self.assertEqual(self.js(f"importProjects({mixed})"),
+                         [{"value": "", "label": "Wszystkie"}, {"value": "APP5", "label": "APP5 · 1"},
+                          {"value": "LOG", "label": "LOG · 2"}])
         projects = "[{youtrack: 'LOG', youtrackSync: true, name: 'logtool'}]"
         summary = self.js(f"youtrackSummary({yt}, {projects})")
         self.assertIn("LOG → logtool", summary)
@@ -115,24 +120,25 @@ class YouTrackViewTest(ProbeCase):
 out["glyphs"] = [js("page.findCard('K-7').syncGlyph"), js("page.findCard('K-13').syncGlyph"),
                  js("page.findCard('K-12').syncGlyph")]
 click(card("K-7"))
-wait(80)
+until(lambda: obj("cardYouTrackBox").property("visible"))
 out["box"] = obj("cardYouTrackBox").property("visible")
 out["state"] = obj("cardYouTrackState").property("text")
 out["text"] = obj("cardYouTrackText").property("text")
 out["field"] = obj("cardYouTrackField").property("text")
 click(named("cardYouTrackTake"))
-wait(80)
+until(lambda: calls() and calls()[-1][0] == "ResolveYouTrack" and js("page.cardPanel.notice"))
 out["resolve"] = calls()[-1]
 out["notice"] = js("page.cardPanel.notice")
 click(named("cardYouTrackOpen"))
+until(lambda: calls()[-1][0] == "openLink")
 out["link"] = calls()[-1]
 obj("cardYouTrackField").setProperty("text", "nie klucz")
 click(named("cardSave"))
-wait(50)
+until(lambda: js("page.cardPanel.error"))
 out["badKey"] = js("page.cardPanel.error")
 obj("cardYouTrackField").setProperty("text", "log-150")
 click(named("cardSave"))
-wait(80)
+until(lambda: calls()[-1][0] == "UpdateCard")
 out["update"] = calls()[-1]
 """, youtrack_data(self.data))
         self.assertEqual(out["glyphs"], ["⚠", "✓", ""], "konflikt, zsynchronizowana, karta bez zgłoszenia")
@@ -153,18 +159,23 @@ out["update"] = calls()[-1]
 out["notes"] = js("page.youtrackNotes.map(n => n.text)")
 replies.append(json.loads({issues!r}))
 js("page.openImport()")
-wait(120)
+until(lambda: obj("importList").property("count") == 3)
 out["managing"] = js("page.managing")
 out["asked"] = calls()[-1]
 out["rows"] = obj("importList").property("count")
+js("page.managePage.importPanel.project = 'APP5'")
+until(lambda: obj("importList").property("count") == 1)
+out["dp5Rows"] = obj("importList").property("count")
+js("page.managePage.importPanel.project = ''")
+until(lambda: obj("importList").property("count") == 3)
 js("page.managePage.importPanel.toggle('LOG-200')")
-wait(30)
+until(lambda: js("page.managePage.importPanel.pickedCount") == 1)
 out["picked"] = js("page.managePage.importPanel.pickedCount")
 replies.append({{"ok": True, "created": [{{"issue": "LOG-200", "card": "K-16", "project": "logviewer"}}],
                 "skipped": [], "commitError": ""}})
 replies.append(json.loads({issues!r}))
 click(named("importSubmit"))
-wait(150)
+until(lambda: obj("importResult").property("text") and calls()[-1][0] == "YouTrackIssues" and calls()[-1][1] is False)
 out["import"] = [c for c in calls() if c[0] == "ImportYouTrack"][-1]
 out["result"] = obj("importResult").property("text")
 out["refetch"] = calls()[-1]
@@ -174,6 +185,7 @@ out["conflicts"] = js("page.snapshot.youtrack.conflictItems.length")
         self.assertTrue(out["managing"])
         self.assertEqual(out["asked"], ["YouTrackIssues", True])
         self.assertEqual(out["rows"], 3)
+        self.assertEqual(out["dp5Rows"], 1, "filtr projektu YouTracka")
         self.assertEqual(out["picked"], 1)
         self.assertEqual(json.loads(out["import"][1]), {"issues": ["LOG-200"]})
         self.assertIn("LOG-200 → K-16", out["result"])
@@ -186,13 +198,13 @@ js("page.managing = true")
 slug = js("page.snapshot.projects.find(p => p.name === 'CookApp').slug")
 log = js("page.snapshot.projects.find(p => p.name === 'LogViewer').slug")
 js(f"page.managePage.openProject = '{slug}'")
-wait(80)
+until(lambda: js(f"page.managePage.projectRow('{slug}') !== null"))
 out["before"] = js(f"page.managePage.projectRow('{slug}').youtrackToggleEnabled")
 js(f"page.managePage.projectRow('{slug}').youtrackKey = 'chef'")
-wait(30)
+until(lambda: js(f"page.managePage.projectRow('{slug}').youtrackToggleEnabled"))
 out["toggleEnabled"] = js(f"page.managePage.projectRow('{slug}').youtrackToggleEnabled")
 js(f"page.managePage.projectRow('{slug}').save()")
-wait(80)
+until(lambda: calls() and calls()[-1][0] == "UpsertProject")
 out["save"] = calls()[-1]
 out["summaries"] = [js(f"page.managePage.projectRow('{log}').youtrackSummary"),
                     js(f"page.managePage.projectRow('{slug}').youtrackSummary")]

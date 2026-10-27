@@ -4,6 +4,7 @@ Konfiguracja magistrali nie ma katalogów usług, więc nic nie zostanie uruchom
 aktywację D-Bus (np. prawdziwy serwer powiadomień z /usr/share/dbus-1/services). Testy nigdy
 nie dotykają magistrali sesji pulpitu.
 """
+import json
 import os
 import shutil
 import subprocess
@@ -83,6 +84,16 @@ class PrivateBus:
         self.stop()
         raise AssertionError(f"{service} nie zarejestrowała się na magistrali")
 
+    def _closed_youtrack(self) -> str:
+        """youtrack.json z zamkniętym portem i nieprawdziwym tokenem (ścieżka bezwzględna do fixtures)."""
+        path = os.path.join(self.tmp, "youtrack-closed.json")
+        with open(os.path.join(FIXTURES, "youtrack-closed.json"), encoding="utf-8") as fh:
+            config = json.load(fh)
+        config["tokenFile"] = os.path.join(FIXTURES, "youtrack-closed-token")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(config, fh)
+        return path
+
     def spawn_daemon(self, *args, **kwargs) -> subprocess.Popen:
         # Własny XDG_STATE_HOME: usługa testowa nie może czytać ani kasować stanu kart Konsole
         # zapisanego przez usługę z pulpitu (tabmarks.default_store). Własny XDG_CACHE_HOME z tego
@@ -103,9 +114,12 @@ class PrivateBus:
         # youtrack.json z serwerem na zamkniętym porcie (fixtures/youtrack-closed.json): usługa testowa nigdy
         # nie pyta (ani tym bardziej nie zmienia) prawdziwego YouTracka, chyba że test poda własny
         # XDG_CONFIG_HOME z youtrack.json albo TIDE_YOUTRACK_CONFIG (atrapa serwera).
+        # Token szukany jest także w ~/.config/youtrack/token — atrapa wskazuje własny, nieprawdziwy token
+        # (fixtures/youtrack-closed-token), więc prawdziwy nie jest nawet czytany.
         given = kwargs.get("extra_env") or {}
-        youtrack = {} if "XDG_CONFIG_HOME" in given or "TIDE_YOUTRACK_CONFIG" in given else \
-            {"TIDE_YOUTRACK_CONFIG": os.path.join(FIXTURES, "youtrack-closed.json")}
+        own = given.get("XDG_CONFIG_HOME") and os.path.exists(os.path.join(given["XDG_CONFIG_HOME"], "tide", "youtrack.json"))
+        youtrack = {} if own or "TIDE_YOUTRACK_CONFIG" in given else \
+            {"TIDE_YOUTRACK_CONFIG": self._closed_youtrack()}
         extra_env = {**youtrack,"XDG_STATE_HOME": os.path.join(self.tmp, "state"),
                      "XDG_CACHE_HOME": os.path.join(self.tmp, "cache"),
                      "WAYLAND_DISPLAY": os.path.join(self.tmp, "no-wayland"),

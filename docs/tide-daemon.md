@@ -690,15 +690,16 @@ wyłącznie GET (zapis stanu — tylko synchronizacja tablicy, PT-7). Jedno zapy
 z nagłówkiem `Authorization: Bearer <token>`, bez pośrednika, z limitem 4 s, w wątku roboczym. Wynik
 5 min w pamięci; przy błędzie zostają ostatnie dobre dane, a następna próba też dopiero po 5 min (serwer
 jest w sieci lokalnej — gdy go nie ma, tablica działa bez tytułów z YouTracka, z komunikatem w podpowiedzi
-przycisku). Token: plik z ustawień (`tokenFile`, domyślnie `~/.config/logviewer/youtrack-mcp-token`
-— ten sam co serwer MCP YouTracka LogViewera; `tokenVar` pusty: cały plik, podany: zmienna z pliku
-`.env`), czytany przy każdym zapytaniu, tylko w pamięci — nie trafia do dziennika, błędów, odpowiedzi
+przycisku). Token (PT-7: plik ustawień jest opcjonalny), po kolei pierwsze miejsce, które go ma: `tokenFile`
+z `youtrack.json` (`tokenVar` pusty: cały plik, podany: zmienna z pliku `.env`), `~/.config/youtrack/token`
+(token serwera MCP YouTracka), `~/.config/logviewer/youtrack-mcp-token` (dawne miejsce LogViewera);
+bez tokenu komunikat podaje sprawdzone ścieżki (nigdy treść). Czytany przy każdym zapytaniu, tylko w pamięci — nie trafia do dziennika, błędów, odpowiedzi
 D-Bus ani plików. Token idzie wyłącznie do serwera z ustawień (`url`, domyślnie
 `http://10.20.1.159:8111`); plan z innym `tracker-url` dostaje komunikat zamiast zapytania.
 `--no-youtrack` wyłącza zapytania.
 
 ```json
-{"url": "http://10.20.1.159:8111", "tokenFile": "~/.config/logviewer/youtrack-mcp-token", "tokenVar": ""}
+{"url": "http://10.20.1.159:8111", "tokenFile": "~/.config/youtrack/token", "tokenVar": ""}
 ```
 
 Ten sam plik niesie ustawienia synchronizacji tablicy (opisane w „Tablica” — „Synchronizacja z YouTrackiem”):
@@ -866,6 +867,7 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `note` | krótka notatka widoczna na karcie (np. „bez agenta, robię sam”) |
 | `created`, `updated` | ISO 8601 z czasem lokalnym; `updated` zmienia każdy zapis karty |
 | `moved` | ostatnie jawne przeniesienie (ISO 8601): ustawia go tylko założenie karty i każde `MoveCard` (także w obrębie kolumny); edycja pól — nie. Karta bez klucza (sprzed PT-5) liczy się od `created`. Z niego i z `moved-from` stan z pracy agentów rozpoznaje „do poprawy” |
+| `column-moved` | ostatnia prawdziwa zmiana kolumny przez `MoveCard` (PT-7, ISO 8601): kolumna docelowa inna niż wyświetlana; zmiana kolejności w kolumnie go nie stempluje. W pliku dopiero po takim przeniesieniu; w migawce `columnMoved` i `columnMovedTs` |
 | `moved-from` | kolumna, w której karta była wyświetlana przy ostatnim `MoveCard` (PT-29): `boardColumn` z migawki usługi (z pracy agentów, np. `review`, choć w pliku jest `todo`), bez niej — zapisana kolumna. „Do poprawy” tylko po przeniesieniu z `review` albo `done`; karta założona do skończonej już pracy (albo połączona z nią przez `session`) nie „wraca ręcznie”. Zmiana kolejności w kolumnie, w której karta jest widoczna (np. „do poprawy” w Do zrobienia), zachowuje dotychczasowy `moved-from`. Karty przeniesione przed PT-29 nie mają klucza — reguła ich nie dotyczy |
 | `youtrack`, `spec` | `youtrack` — klucz zgłoszenia w YouTracku (PT-7): zapis przyjmuje klucz albo adres zgłoszenia (`…/issue/legal-35` → `LEGAL-35`), inny tekst — `bad-request`; stan karty idzie do zgłoszenia, gdy projekt YouTracka ma synchronizację (niżej); `spec` — ścieżka gotowej specyfikacji z trybu „tylko spec” |
 | `session` | sesja albo koordynator, który prowadzi kartę — id jak w `/Agents` i `/Coordination` (`claude:<id>`, `codex:<id>`, samo `<id>` też działa); pierwsze źródło stanu karty |
@@ -1112,7 +1114,10 @@ YouTrack (prywatny: użytkownik i domownik) dostaje stan kart i ticketów.
   `open` (Open), W toku → `progress` (In Progress), Czeka na mnie → `waiting` (To be discussed), Do sprawdzenia →
   `review` (Fixed — krok człowieka: test ręczny albo scalenie), Gotowe → `done` (Verified); ticket — `todo` →
   Open, `w-toku` i `review` (review AI to wciąż W toku) → In Progress, `czeka` → To be discussed, `gotowe` →
-  Fixed (Verified, gdy karta, która go prowadzi, stoi w Gotowe), `odrzucone` → `rejected` (Won't fix). Powrót do
+  Fixed (Verified, gdy karta, która go prowadzi, stoi w Gotowe — także przeniesiona tam ręcznie: koordynatora
+  karty szukamy po `derived`, `session` karty i kluczu `card` planu), `odrzucone` → `rejected` (Won't fix).
+  Ticket `gotowe` z samej pracy podagentów bez przejścia review (poprawki po review skończone, ponowne review
+  jeszcze się nie zaczęło) przy działającym koordynatorze, który używa review, to wciąż In Progress. Powrót do
   `open` po stanie rozwiązanym to `reopened` (Reopened), nie Open.
 - **Pierwszeństwo:** ticket przed kartą tego samego zgłoszenia (dokładniejszy), chyba że karta stoi w Gotowe
   (ręczne Gotowe wygrywa) albo została ręcznie przeniesiona (`moved-from`) po ostatniej pracy nad ticketem
@@ -1121,11 +1126,17 @@ YouTrack (prywatny: użytkownik i domownik) dostaje stan kart i ticketów.
   więc nic nie wraca do YouTracka, co z niego przyszło (bez ping-ponga).
 - **Tylko przejścia:** plik stanu `$XDG_STATE_HOME/tide/youtrack-sync.json` (0600; bez tokenu) pamięta dla
   zgłoszenia ostatni stan zapisany albo przyjęty przez Tide (`state`), jego klucz (`key`), `updated` zgłoszenia
-  z tej chwili, czas (`ts`) i ewentualny konflikt; do tego `seen` — zgłoszenia już pokazane w imporcie. Zapis
+  z tej chwili, czas (`ts`) i ewentualny konflikt; do tego `seen` — zgłoszenia już pokazane w imporcie — i `importBaseline` (punkt odniesienia licznika nowych). Zapis
   idzie, gdy klucz, którego chce Tide, różni się od zapamiętanego i trzyma się 5 s (seria zmian to jeden zapis).
+  Stany chwilowe z pracy agentów — rozwiązane z ticketów i z kolumn wyliczonych (Do sprawdzenia, Gotowe po
+  scaleniu) oraz To be discussed (każde pytanie o zgodę) — muszą się trzymać `stableMinutes` (10 min); na
+  karcie widać wtedy ⟳ „zapisze „Fixed” w YouTracku, gdy stan utrzyma się 10 min”. Ręczne przeniesienie do
+  Gotowe i powrót „do poprawy” idą po 5 s.
   Karta, która spadła do Do zrobienia albo Backlogu tylko dlatego, że zniknęła jej praca (koordynator poza
   oknem 7 dni, start usługi — `derived` bez kolumny), nie cofa zgłoszenia: liczy się jawne przeniesienie
-  (`moved` nie wcześniej niż ostatni zapis Tide, z dokładnością do sekundy).
+  (`column-moved` nie wcześniej niż ostatni zapis Tide, z dokładnością do sekundy). `column-moved` stempluje
+  `MoveCard` tylko przy prawdziwej zmianie kolumny (docelowa inna niż wyświetlana); zmiana kolejności w Do
+  zrobienia go nie zmienia, więc nie zwalnia wstrzymania.
 - **Przed zapisem** `GET /api/issues/{id}?fields=idReadable,summary,updated,resolved,project(shortName),customFields(name,$type,value(name))`:
   stan już taki, jakiego chce Tide — tylko zapamiętanie; stan inny niż zapamiętany — **konflikt** (ktoś zmienił
   go ręcznie): bez zapisu, notka na karcie (⚠, „YouTrack: stan zmieniony ręcznie — w YouTracku „…”, Tide: „…””),
@@ -1154,17 +1165,20 @@ YouTrack (prywatny: użytkownik i domownik) dostaje stan kart i ticketów.
   Lista z wyborem (klucz, tytuł, projekt tablicy po kluczu projektu YouTracka, stan, „nowe”, „już jest: K-13”);
   karta: Backlog, `youtrack`, tytuł (jedna linia, do 200 znaków), opis zwykłym tekstem (do 60 KB, bez znaków
   sterujących), projekt po kluczu. Bez duplikatów: zgłoszenie z kartą (po `youtrack`, także w Archiwum) jest
-  pomijane. Co `importCheckMinutes` (15, 0 — wyłączone) usługa w tle liczy zgłoszenia bez karty, których
-  jeszcze nie pokazała — niczego sama nie zakłada.
+  pomijane. Lista pokazuje wszystko, co nie ma karty, z filtrem
+  tekstu i przełącznikiem projektów YouTracka. Co `importCheckMinutes` (15, 0 — wyłączone) usługa w tle liczy
+  „nowe” zgłoszenia — niczego sama nie zakłada. Licznik ma punkt odniesienia: pierwsze udane pobranie zapisuje
+  w pliku stanu `importBaseline` (najnowsze `created` z tej listy, czas serwera), a nowe są tylko zgłoszenia
+  założone później, bez karty i jeszcze niepokazane na liście (pokazanie listy je przegląda).
 - **Token** jak w koordynacji: z pliku przy każdym zapytaniu, tylko w nagłówku, nigdy w dzienniku, błędach,
   pliku stanu ani odpowiedziach D-Bus. `--no-youtrack` wyłącza synchronizację i import (metody odpowiadają
   `unavailable`).
 
 ```json
-{"url": "http://10.20.1.159:8111", "tokenFile": "~/.config/youtrack/token", "sync": true,
+{"url": "http://10.20.1.159:8111", "sync": true,
  "states": {"open": "Open", "reopened": "Reopened", "progress": "In Progress", "waiting": "To be discussed",
             "review": "Fixed", "done": "Verified", "rejected": "Won't fix"},
- "stateField": "State", "projects": {"APP5": {"states": {"review": "In Review"}}},
+ "stateField": "State", "projects": {"APP5": {"states": {"review": "In Review"}}}, "stableMinutes": 10,
  "importQueries": ["for: me #Unresolved", "reporter: me Assignee: Unassigned #Unresolved"], "importCheckMinutes": 15}
 ```
 

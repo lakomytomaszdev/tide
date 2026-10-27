@@ -1,7 +1,7 @@
 // „Importuj z YouTracka” (PT-7) na stronie „Projekty i tagi”: lista zgłoszeń użytkownika (nierozwiązane,
 // przypisane do niego albo zgłoszone przez niego bez przypisania) z /Board YouTrackIssues, filtr, zaznaczanie
 // i „Importuj zaznaczone” (/Board ImportYouTrack) — karty trafiają do Backlogu z polem youtrack, tytułem,
-// opisem i projektem tablicy po kluczu projektu YouTracka. Zgłoszenie, które ma już kartę, jest na końcu
+// opisem i projektem tablicy po kluczu projektu YouTracka. Nad listą przełącznik projektów YouTracka. Zgłoszenie, które ma już kartę, jest na końcu
 // listy, z jej ID i bez pola wyboru (bez duplikatów). Teksty zgłoszeń to dane: zawsze zwykły tekst.
 import QtQuick
 import QtQuick.Layouts
@@ -19,7 +19,9 @@ Rectangle {
     property string error: ""
     property string result: ""
     property string query: ""
-    readonly property var rows: Logic.importRows(issues, query)
+    property string project: ""        // projekt YouTracka ("" — wszystkie)
+    readonly property var rows: Logic.importRows(issues, query, project)
+    readonly property var projectOptions: Logic.importProjects(issues)
     readonly property int pickedCount: Object.keys(picked).filter(k => picked[k]).length
     signal refreshRequested()
     signal importRequested(var keys)
@@ -82,6 +84,15 @@ Rectangle {
                 text: "Zamknij"
                 onClicked: panel.closeRequested()
             }
+        }
+
+        Segmented {
+            objectName: "importProjects"
+            visible: panel.projectOptions.length > 2
+            itemHeight: 26
+            options: panel.projectOptions
+            current: panel.project
+            onPicked: value => panel.project = value
         }
 
         LineInput {

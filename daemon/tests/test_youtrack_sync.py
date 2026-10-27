@@ -22,7 +22,8 @@ TOKEN = F.TOKEN_SENTINEL
 
 def card(ident, issue, column="todo", shown=None, derived=None, moved=T0, moved_from="", created=T0):
     return {"id": ident, "youtrack": issue, "column": column, "boardColumn": shown or column, "derived": derived,
-            "movedTs": moved, "movedFrom": moved_from, "createdTs": created, "path": f"/tablica/cards/{ident}.md"}
+            "movedTs": moved, "movedFrom": moved_from, "columnMovedTs": moved if moved_from else 0.0,
+            "createdTs": created, "path": f"/tablica/cards/{ident}.md"}
 
 
 def snap(*cards, projects=(("legalapp", "LEGAL", True), ("logtool", "LOG", True))):
@@ -30,18 +31,21 @@ def snap(*cards, projects=(("legalapp", "LEGAL", True), ("logtool", "LOG", True)
             "cards": list(cards), "errors": []}
 
 
-def coordinator(ident, *tickets, tracker="youtrack", plan_ts=0.0, last=0.0):
-    return {"id": ident, "title": "Plan", "lastActivityTs": last,
-            "plan": {"tracker": tracker, "title": "Plan LOG", "updatedTs": plan_ts},
+def coordinator(ident, *tickets, tracker="youtrack", plan_ts=0.0, last=0.0, live=False, reviewed=False, card=""):
+    return {"id": ident, "title": "Plan", "lastActivityTs": last, "live": live,
+            "runs": [{"id": "r1", "role": "reviewer"}] if reviewed else [],
+            "plan": {"tracker": tracker, "title": "Plan LOG", "updatedTs": plan_ts, "card": card},
             "tickets": [dict(t) for t in tickets]}
 
 
-def ticket(ident, state, source="runs", activity=T0, first=T0 - 50):
+def ticket(ident, state, source="runs", activity=T0, first=T0 - 50, note="", review=None):
     return {"id": ident, "key": ident, "state": state, "source": source, "lastActivityTs": activity,
-            "events": [{"ts": first}]}
+            "events": [{"ts": first}], "note": note, "review": review}
 
 
 class Sync(unittest.TestCase):
+    stable_minutes = 0
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="tide-ytsync-")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
@@ -52,6 +56,8 @@ class Sync(unittest.TestCase):
             fh.write(TOKEN + "\n")
         self.config = {"url": self.fake.url, "tokenFile": self.token_file, "tokenVar": ""}
         self.settings = yt.load_sync_settings(os.path.join(self.tmp, "nie-ma.json"))
+        # Okno stabilności (10 min) sprawdza StabilityTest; pozostałe testy patrzą na same reguły przejść.
+        self.settings["stableMinutes"] = self.stable_minutes
         self.now = T0 + 1000
         self.state_file = os.path.join(self.tmp, "state", "tide", "youtrack-sync.json")
         self.engine = self.make_engine()
@@ -235,7 +241,54 @@ class ReopenTest(Sync):
         self.assertEqual(self.posted()[-1], ("LOG-9", "In Progress"))
 
 
+class ReorderTest(Sync):
+    def test_reorder_within_todo_keeps_hold(self):
+        self.fake.add("LOG-9", "Open")
+        self.step(snap(card("K-5", "LOG-9", shown="review", derived={"column": "review"})))
+        self.assertEqual(self.posted(), [("LOG-9", "Fixed")])
+        self.now += 60
+        # Zmiana kolejności w Do zrobienia: `moved` i `moved-from` się zmieniają, prawdziwej zmiany kolumny nie ma.
+        reordered = card("K-5", "LOG-9", column="todo", derived=None, moved=self.now, moved_from="todo")
+        reordered["columnMovedTs"] = 0.0
+        self.step(snap(reordered))
+        self.step(snap(reordered))
+        self.assertEqual(len(self.fake.posts()), 1, "kolejność w kolumnie nie otwiera zgłoszenia")
+        self.assertEqual(self.engine.wants["LOG-9"].held, True)
+
+    def test_column_moved_is_stamped_only_on_real_column_change(self):
+        from tide_daemon.board.store import BoardStore
+        from .test_board_dbus import git_config
+        from unittest import mock
+        with mock.patch.dict(os.environ, git_config(self.tmp)):
+            store = BoardStore(os.path.join(self.tmp, "board"))
+            store.create_card({"title": "a", "column": "todo"})
+            store.create_card({"title": "b", "column": "todo"})
+            first = {c["id"]: c for c in store.snapshot()["cards"]}["K-1"]
+            self.assertEqual(first["columnMovedTs"], 0)
+            store.move_card("K-1", "todo", 1, "todo")             # kolejność w kolumnie
+            self.assertEqual({c["id"]: c for c in store.snapshot()["cards"]}["K-1"]["columnMovedTs"], 0)
+            store.move_card("K-1", "todo", 0, "review")           # „do poprawy” z Do sprawdzenia
+            moved = {c["id"]: c for c in store.snapshot()["cards"]}["K-1"]
+            self.assertGreater(moved["columnMovedTs"], 0)
+            stamp = moved["columnMoved"]
+            store.move_card("K-1", "todo", 1, "todo")
+            self.assertEqual({c["id"]: c for c in store.snapshot()["cards"]}["K-1"]["columnMoved"], stamp)
+            store.move_card("K-1", "done", 0)
+            self.assertGreater({c["id"]: c for c in store.snapshot()["cards"]}["K-1"]["columnMovedTs"], 0)
+
+
 class PrecedenceTest(Sync):
+    def test_manual_gotowe_card_makes_its_tickets_verified(self):
+        self.fake.add("LOG-11", "Open")
+        self.fake.add("LOG-12", "Open")
+        boards = [coordinator("claude:abc", ticket("LOG-11", "gotowe")),
+                  coordinator("codex:t2", ticket("LOG-12", "gotowe"), card="K-31")]
+        by_session = card("K-30", "", column="done", derived=None, moved=T0 + 5, moved_from="review")
+        by_session["session"] = "abc"                       # samo id, bez narzędzia
+        by_plan = card("K-31", "", column="done", derived=None, moved=T0 + 5, moved_from="review")
+        self.step(snap(by_session, by_plan), boards)
+        self.assertEqual(sorted(self.posted()), [("LOG-11", "Verified"), ("LOG-12", "Verified")])
+
     def test_ticket_wins_over_card_but_manual_done_wins(self):
         self.fake.add("LOG-232", "Open")
         boards = [coordinator("claude:a", ticket("LOG-232", "w-toku"))]
@@ -278,6 +331,56 @@ class PrecedenceTest(Sync):
                   coordinator("claude:new", ticket("LOG-3", "czeka", activity=T0 + 500))]
         self.step(snap(), boards)
         self.assertEqual(self.posted(), [("LOG-3", "To be discussed")])
+
+
+class StabilityTest(Sync):
+    """Stany chwilowe z pracy agentów: rozwiązane z ticketów i kolumn wyliczonych oraz „czeka” — zapis dopiero,
+    gdy trzymają się `stableMinutes` (10 min); inne przejścia po 5 s."""
+    stable_minutes = 10
+
+    def test_fix_round_gap_before_rereview_does_not_flip_fixed(self):
+        self.fake.add("LOG-1", "Open")
+        work = [coordinator("claude:a", ticket("LOG-1", "w-toku"), live=True, reviewed=True)]
+        self.step(snap(), work)
+        self.assertEqual(self.posted(), [("LOG-1", "In Progress")], "praca — po 5 s")
+        # Poprawki po review skończone, ponowne review zacznie się za 2 min: koordynator działa i używa review.
+        fixed = [coordinator("claude:a", ticket("LOG-1", "gotowe", note="poprawki po review, bez ponownego review",
+                                                review={"ok": False, "major": 1}), live=True, reviewed=True)]
+        for _ in range(4):
+            self.step(snap(), fixed, wait=30)
+        self.assertEqual(self.engine.wants["LOG-1"].key, "progress", "bez przejścia review — wciąż W toku")
+        self.step(snap(), [coordinator("claude:a", ticket("LOG-1", "review"), live=True, reviewed=True)], wait=30)
+        self.assertEqual(len(self.fake.posts()), 1)
+        # Review OK i koniec pracy: Fixed dopiero po 10 min bez zmian, nie po 2 min.
+        passed = [coordinator("claude:a", ticket("LOG-1", "gotowe", note="review OK", review={"ok": True}),
+                              live=True, reviewed=True)]
+        self.step(snap(), passed, wait=120)
+        self.assertEqual(len(self.fake.posts()), 1, "2 min to za mało")
+        self.assertEqual(self.engine.status("LOG-1")["status"], "pending")
+        self.assertIn("10 min", self.engine.status("LOG-1")["text"])
+        self.step(snap(), passed, wait=490)
+        self.assertEqual(self.posted()[-1], ("LOG-1", "Fixed"))
+
+    def test_short_permission_prompt_does_not_flip_waiting(self):
+        self.fake.add("LEGAL-35", "Open")
+        working = snap(card("K-16", "LEGAL-35", shown="progress", derived={"column": "progress"}))
+        prompt = snap(card("K-16", "LEGAL-35", shown="waiting", derived={"column": "waiting"}))
+        self.step(working)
+        self.assertEqual(self.posted(), [("LEGAL-35", "In Progress")])
+        for _ in range(3):   # pytanie o zgodę na 30 s i dalej praca — kilka razy
+            self.step(prompt, wait=30)
+            self.step(working, wait=10)
+        self.assertEqual(len(self.fake.posts()), 1, "krótkie „czeka” nie idzie do YouTracka")
+        self.step(prompt, wait=300)
+        self.step(prompt, wait=301)
+        self.assertEqual(self.posted()[-1], ("LEGAL-35", "To be discussed"), "czeka 10 min — zapis")
+
+    def test_manual_done_is_fast_derived_review_is_slow(self):
+        self.fake.add("LOG-2", "Open")
+        self.fake.add("LOG-3", "Open")
+        self.step(snap(card("K-1", "LOG-2", column="done", moved=T0 + 5, moved_from="todo"),
+                       card("K-2", "LOG-3", shown="review", derived={"column": "review"})))
+        self.assertEqual(self.posted(), [("LOG-2", "Verified")], "ręczne Gotowe po 5 s, Do sprawdzenia czeka")
 
 
 class OfflineTest(Sync):
@@ -350,7 +453,7 @@ class ConfigTest(Sync):
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"url": "http://yt:8111", "sync": True, "states": {"review": "In Review", "bogus": "x", "done": 5},
                        "projects": {"log": {"states": {"progress": "Develop"}}, "bad key": {}},
-                       "importQueries": ["for: me"], "importCheckMinutes": 0}, fh)
+                       "importQueries": ["for: me"], "importCheckMinutes": 0, "stableMinutes": 0}, fh)
         settings = yt.load_sync_settings(path)
         self.assertEqual(settings["states"]["review"], "In Review")
         self.assertEqual(settings["states"]["done"], "Verified", "zła wartość — domyślna")
@@ -361,10 +464,12 @@ class ConfigTest(Sync):
         self.assertEqual(yt.states_for(settings, "LEGAL")["progress"], "In Progress")
         self.assertEqual(settings["importQueries"], ["for: me"])
         self.assertEqual(settings["importCheckMinutes"], 0)
+        self.assertEqual(settings["stableMinutes"], 0)
         self.assertEqual(yt.load_config(path)["url"], "http://yt:8111", "ustawienia odczytu bez zmian")
         defaults = yt.load_sync_settings(os.path.join(self.tmp, "brak.json"))
         self.assertEqual(defaults["states"], yt.DEFAULT_STATES)
         self.assertTrue(defaults["sync"])
+        self.assertEqual(defaults["stableMinutes"], 10)
         self.assertEqual(yt.config_path({"TIDE_YOUTRACK_CONFIG": "/x.json", "HOME": "/h"}), "/x.json")
 
         self.fake.workflow.append("In Review")
@@ -398,13 +503,28 @@ class ImportListTest(Sync):
         self.assertEqual(items["LOG-1"]["boardProject"], "logtool")
         self.assertEqual(items["APP5-1"]["boardProject"], "")
         self.assertEqual(items["LOG-2"]["card"], "K-3")
-        self.assertFalse(items["LOG-2"]["new"], "już na tablicy")
-        self.assertTrue(items["LOG-1"]["new"])
         self.assertEqual(items["LOG-1"]["url"], self.fake.url + "/issue/LOG-1")
-        self.assertEqual(self.engine.new_count(s), 2)
-        self.engine.mark_seen(["LOG-1", "APP5-1"])
+        self.assertFalse(any(i["new"] for i in items.values()), "pierwsze pobranie to punkt odniesienia — nic nie jest nowe")
         self.assertEqual(self.engine.new_count(s), 0)
-        self.assertEqual(self.make_engine().seen, {"LOG-1", "APP5-1"}, "przejrzane przeżywają restart")
+        self.assertEqual(self.engine.baseline, self.fake.issues["APP5-1"]["created"], "czas serwera, nie komputera")
+        # Zgłoszenia założone po punkcie odniesienia są nowe — także po restarcie usługi.
+        self.fake.add("LOG-8", "Open", summary="Nowe po pierwszym razie", mine="assignee")
+        self.fake.add("LOG-9", "Open", mine="reporter")
+        self.fake.add("LOG-10", "Open", mine="assignee", created=BASE_MS - 10_000)   # stare, dopiero teraz moje
+        again = self.make_engine()
+        self.assertEqual(again.baseline, self.engine.baseline, "punkt odniesienia w pliku stanu")
+        again.fetch_import()
+        self.assertEqual(again.baseline, self.engine.baseline, "drugie pobranie go nie przesuwa")
+        items = {i["id"]: i for i in again.import_list(s)}
+        self.assertEqual(sorted(k for k, i in items.items() if i["new"]), ["LOG-8", "LOG-9"])
+        self.assertEqual(len(items), 6, "lista pokazuje wszystko bez karty (i z kartą — na końcu w oknie)")
+        self.assertEqual(again.new_count(s), 2)
+        self.assertEqual(again.new_count(snap(card("K-3", "log-2"), card("K-4", "LOG-8"))), 1, "z kartą — nie nowe")
+        again.mark_seen(["LOG-8", "LOG-9"])
+        self.assertEqual(again.new_count(s), 0, "pokazane na liście — przejrzane")
+        self.assertEqual(self.make_engine().seen, {"LOG-8", "LOG-9"}, "przejrzane przeżywają restart")
+        with open(self.state_file, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["importBaseline"], self.engine.baseline)
         issue = self.engine.issue_for_import("LOG-1")
         self.assertEqual(ytsync.card_title({"summary": "a\x07\n  b", "id": "X-1"}), "a b")
         self.assertEqual(ytsync.card_title({"summary": "", "id": "X-1"}), "X-1")
@@ -413,7 +533,7 @@ class ImportListTest(Sync):
         self.assertLessEqual(len(long.encode("utf-8")), 60 * 1024 + 100)
         self.assertTrue(long.endswith("(opis skrócony — całość w YouTracku)"))
         queries = [p for p in self.fake.gets() if p.startswith("/api/issues?")]
-        self.assertEqual(len(queries), 2, "dwa zapytania: przypisane do mnie i moje bez przypisania")
+        self.assertEqual(len(queries), 4, "dwa pobrania po dwa zapytania: przypisane do mnie i moje bez przypisania")
 
 
 if __name__ == "__main__":

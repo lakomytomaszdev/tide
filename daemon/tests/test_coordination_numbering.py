@@ -268,7 +268,8 @@ class TrackerProjectsTest(unittest.TestCase):
     def test_without_token_nothing_is_sent(self):
         self.config["tokenFile"] = os.path.join(self.tmp, "nie-ma")
         keys, error = youtrack.YouTrackCache(config_loader=lambda: dict(self.config)).projects()
-        self.assertEqual((keys, error), (None, "brak tokenu YouTracka"))
+        self.assertIsNone(keys)
+        self.assertTrue(error.startswith("brak tokenu YouTracka (sprawdzone: "), error)
         self.assertEqual(FakeProjects.calls, [])
 
 
