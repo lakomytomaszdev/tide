@@ -383,7 +383,12 @@ class BoardStore:
 
     def _plan_move(self, board: Board, num: int, column: str, index: int) -> Change:
         """Nowa kolejność to środek między sąsiadami; całą kolumnę numerujemy co ORDER_STEP tylko
-        wtedy, gdy między nimi nie ma miejsca — zwykle zmienia się jeden plik."""
+        wtedy, gdy między nimi nie ma miejsca — zwykle zmienia się jeden plik.
+
+        Każde wywołanie to jawne przeniesienie przez użytkownika, więc zawsze stempluje `moved` —
+        także do tej samej zapisanej kolumny i na to samo miejsce: karta pokazana w Do sprawdzenia
+        ma zwykle zapisane `todo`, a przeniesienie jej „do poprawy” do Do zrobienia musi być widać
+        (board/derive.py)."""
         card = self._card(board, num)
         change = Change(result={"ok": True, "id": card.id, "changed": False})
         others = board.column_cards(column, skip=card.num)
@@ -392,6 +397,11 @@ class BoardStore:
         moved_column = card.column != column
         current = sum(1 for c in others if (c.order, c.num) < (card.order, card.num))
         if not moved_column and current == index:
+            now = self._now()
+            card.doc.set("updated", now)
+            card.doc.set("moved", now)
+            change.commits.append((f"{card.id}: move to {column}", [(_rel(self.root, card.path), card.doc.text())]))
+            change.result["changed"] = True
             return change
         before = others[index - 1].order if index > 0 else None
         after = others[index].order if index < len(others) else None
@@ -419,8 +429,7 @@ class BoardStore:
                     writes.append((_rel(self.root, item.path), item.doc.text()))
         card.doc.set("column", column)
         card.doc.set("updated", now)
-        if moved_column:
-            card.doc.set("moved", now)  # „do poprawy” w derive.py patrzy na zmianę kolumny, nie na edycję
+        card.doc.set("moved", now)  # „do poprawy” w derive.py patrzy na przeniesienie, nie na edycję
         writes.insert(0, (_rel(self.root, card.path), card.doc.text()))
         verb = f"move to {column}" if moved_column else f"reorder in {column}"
         change.commits.append((f"{card.id}: {verb}", writes))

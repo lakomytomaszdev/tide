@@ -716,7 +716,7 @@ na tym samym formacie. Plan: `docs/agents/plans/2026-10-27-board-and-docker.md`.
 | `Snapshot()` | `→ s` | JSON całej tablicy (opis niżej); tylko odczyt — przed pierwszym zapisem niczego nie zakłada |
 | `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
-| `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}` |
+| `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
 | `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, mode, description}`: istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie trybu dla karty (pusty `mode` — tryb projektu) → `{ok, text, mode, tool, branch, docsDir, aiDocs, repo, project, template}`; katalog `docsDir` w tablicy zakłada od razu |
@@ -798,7 +798,7 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `order` | kolejność w kolumnie (mniejsza wyżej); nowa karta trafia na górę kolumny. `MoveCard` daje karcie środek między sąsiadami (zmienia się jeden plik), a całą kolumnę numeruje co 10 dopiero wtedy, gdy między sąsiadami nie ma miejsca |
 | `note` | krótka notatka widoczna na karcie (np. „bez agenta, robię sam”) |
 | `created`, `updated` | ISO 8601 z czasem lokalnym; `updated` zmienia każdy zapis karty |
-| `moved` | ostatnia zmiana kolumny (ISO 8601): ustawia go tylko założenie karty i `MoveCard` do innej kolumny (sama zmiana kolejności, edycja pól — nie). Karta bez klucza (sprzed PT-5) liczy się od `created`. Z niego stan z pracy agentów rozpoznaje „do poprawy” |
+| `moved` | ostatnie jawne przeniesienie (ISO 8601): ustawia go tylko założenie karty i każde `MoveCard` (także w obrębie kolumny); edycja pól — nie. Karta bez klucza (sprzed PT-5) liczy się od `created`. Z niego stan z pracy agentów rozpoznaje „do poprawy” |
 | `youtrack`, `spec` | zarezerwowane na później (import z YouTracka, gotowa specyfikacja) |
 | `session` | sesja albo koordynator, który prowadzi kartę — id jak w `/Agents` i `/Coordination` (`claude:<id>`, `codex:<id>`, samo `<id>` też działa); pierwsze źródło stanu karty |
 | `branch` | gałąź pracy w repozytorium projektu; zastępuje propozycję gałęzi w `RenderFlow`, łączy kartę z pracą na tej gałęzi i jest gałęzią do scalenia |
@@ -932,9 +932,13 @@ z powrotem do Do zrobienia; sama edycja notatki się nie liczy) zostaje w swojej
 toku…”), dopóki agent znów nad nią nie popracuje. Ręczne Gotowe zawsze wygrywa i potwierdza sprawdzenie.
 
 **Scalona gałąź**: czubek gałęzi jest przodkiem lokalnej gałęzi głównej (`git merge-base --is-ancestor`,
-jak w Worktrees); gałęzi, której już nie ma, nie ma czego scalać (usunięta po scaleniu). Sprawdzamy tylko
-skończoną pracę: gałąź karty, a bez niej gałęzie ticketów i koordynatora; wynik 30 s w pamięci. Nie
-wiadomo (brak repozytorium albo gałęzi głównej) — „do scalenia”, żeby człowiek spojrzał.
+jak w Worktrees). Gałąź, której nie ma lokalnie, jest scalona tylko wtedy, gdy w ostatnich 1000 commitach
+scalenia głównej jest jej „Merge branch 'feat/x'” (usunięta po scaleniu); bez tego — nigdy jej tu nie
+było albo scalenie szybkie/squash — „nie wiadomo”. Nie wiadomo (także brak repozytorium albo gałęzi
+głównej) — „do scalenia”, żeby człowiek spojrzał. Sprawdzamy tylko skończoną pracę: gałąź karty, a bez
+niej gałęzie ticketów i koordynatora. Git idzie w jednym wątku roboczym (`BranchState(background=True)`),
+przeliczenie odpowiada z pamięci (30 s; gałąź bez śladu — 10 min, żeby nie sprawdzać jej w kółko), a nowy
+wynik zleca kolejne przeliczenie; dopóki pierwszego wyniku nie ma, skończona karta stoi w Do sprawdzenia.
 
 `derived`: `column`, `done` i `total` (tickety karty: gotowe / wszystkie bez odrzuconych; zwykła sesja —
 0), `tool` (`claude`, `codex`), `note` (jedno zdanie po polsku, do 160 znaków: co teraz, pytanie, od kiedy
@@ -948,7 +952,9 @@ zwykła sesja), `link` (`session`, `plan`, `card-branch`, `branch`), `agentState
 **Na żywo.** `BoardMonitor` trzyma migawkę z plików w pamięci; zmiana w `/Agents` (`AgentMonitor.changed`)
 albo `/Coordination` (`CoordinationMonitor.changed`) przelicza tylko `derived` i `boardColumn`, najwyżej co
 500 ms (seria zmian sesji to jedno przeliczenie), bez czytania repozytorium tablicy, i wysyła `Changed`,
-gdy migawka się zmieniła. Plakietka (`Badge()`) i kafelek liczą z `boardColumn`, więc idą za tym same.
+gdy migawka się zmieniła. Indeksy (repozytoria bez dowiązań, `(repozytorium, gałąź)` → praca, numer
+karty z nazwy gałęzi) powstają raz na przeliczenie, więc karta to kilka wyszukań w słownikach (80 kart,
+60 koordynatorów po 15 ticketów i 40 sesji — kilka ms; test `SpeedTest`). Plakietka (`Badge()`) i kafelek liczą z `boardColumn`, więc idą za tym same.
 `--print-board` pokazuje migawkę bez stanu z pracy agentów (bez skanowania dzienników).
 
 Przejście z karty do pracy: karta emituje `sessionRequested(derived.session)` („Otwórz w Sesjach →”,

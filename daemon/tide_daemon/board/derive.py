@@ -32,13 +32,18 @@ agent znów nad nią nie popracuje.
 Ticket w `czeka` z samego planu (bez pytania w dzienniku) to „Czeka na mnie”, gdy agent nie pracuje —
 koordynator zapisał, że czeka na decyzję użytkownika, i stanął; gdy pracuje, to dalej „W toku”.
 """
+import functools
 import os
 import re
+import threading
 import time
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from ..agents import gitinfo
 from ..agents.state import waits_for_user
+from ..reports.gitlog import merged_branch
 from ..worktrees.git import MAIN_CANDIDATES, Git, pick_main_branch
 from .model import CARD_ID_RE, DEFAULT_CHECK
 
@@ -46,9 +51,13 @@ DONE_STATES = ("gotowe", "odrzucone")
 LINK_SESSION, LINK_PLAN, LINK_CARD_BRANCH, LINK_BRANCH = "session", "plan", "card-branch", "branch"
 EXPLICIT_LINKS = (LINK_SESSION, LINK_PLAN)
 MERGE_TTL = 30.0       # wynik „czy gałąź scalona” trzymamy tyle sekund (git tylko dla skończonej pracy)
+GONE_TTL = 600.0       # gałęzi, której nie ma, nie sprawdzamy częściej
+MERGE_LOG = 1000       # tyle ostatnich commitów scalenia w głównej przeglądamy dla usuniętej gałęzi
+PENDING = "pending"    # wynik gita jeszcze w drodze (BranchState w tle)
 NOTE_MAX = 160
 QUESTION_MAX = 120
 NON_BRANCHES = set(MAIN_CANDIDATES) | {"HEAD", ""}
+CARD_TOKEN = re.compile(r"(?:^|[/_.-])k-?([1-9][0-9]{0,8})(?=$|[/_.-])", re.IGNORECASE)  # ID karty w gałęzi
 
 
 @dataclass
@@ -62,31 +71,79 @@ class Link:
 
 
 class BranchState:
-    """„Czy gałąź jest scalona do głównej” w repozytorium — lokalny git, z krótką pamięcią."""
+    """„Czy gałąź jest scalona do głównej” w repozytorium — lokalny git, z pamięcią.
 
-    def __init__(self, git: Git | None = None, clock=time.time, ttl: float = MERGE_TTL):
+    background=True (usługa): git idzie w jednym wątku roboczym, `merged()` odpowiada od razu z pamięci
+    (świeżej albo starej), a brak wyniku to PENDING; po każdym nowym wyniku woła `on_result()` (z wątku
+    roboczego — BoardMonitor zamienia to na sygnał Qt i przelicza karty). background=False — od razu
+    (testy, store.snapshot(derive=...)). Gałąź, której nie ma, pamiętamy dłużej (GONE_TTL) — nie
+    sprawdzamy jej w kółko."""
+
+    def __init__(self, git: Git | None = None, clock=time.time, ttl: float = MERGE_TTL, background: bool = False,
+                 on_result=None):
         self.git = git or Git(timeout=5)
         self.clock = clock
         self.ttl = ttl
-        self._cache: dict[tuple, tuple[float, object]] = {}
+        self.on_result = on_result
+        self._cache: dict[tuple, tuple[float, float, object]] = {}   # klucz → (czas, ważność, wynik)
+        self._lock = threading.Lock()
+        self._pending: set[tuple] = set()
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-board-git") if background else None
+
+    def stop(self) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=False, cancel_futures=True)
 
     def main_branch(self, repo: str) -> str:
-        return self._cached(("main", repo), lambda: self._main_branch(repo))
+        if not repo:
+            return ""
+        value = self._lookup(("main", repo), lambda: (self._main_branch(repo), self.ttl))
+        return "" if value is PENDING else value
 
-    def merged(self, repo: str, branch: str) -> bool | None:
-        """True — scalona albo już usunięta (po scaleniu), False — ma commity spoza głównej,
-        None — nie wiadomo (brak repozytorium albo gałęzi głównej, dziwna nazwa)."""
+    def merged(self, repo: str, branch: str):
+        """True — scalona (albo usunięta po scaleniu: jest w temacie commita scalenia w głównej),
+        False — ma commity spoza głównej, None — nie wiadomo (brak repozytorium albo gałęzi głównej,
+        gałęzi nie ma i nie widać jej scalenia, dziwna nazwa), PENDING — sprawdzamy w tle."""
         if not repo or not branch or branch.startswith("-") or ".." in branch or any(c.isspace() for c in branch):
             return None
-        return self._cached(("merged", repo, branch), lambda: self._merged(repo, branch))
+        return self._lookup(("merged", repo, branch), lambda: self._merged(repo, branch))
 
-    def _cached(self, key, compute):
+    def _lookup(self, key, compute):
         now = self.clock()
-        hit = self._cache.get(key)
-        if hit is not None and now - hit[0] < self.ttl:
-            return hit[1]
-        value = compute()
-        self._cache[key] = (now, value)
+        with self._lock:
+            hit = self._cache.get(key)
+        if hit is not None and now - hit[0] < hit[1]:
+            return hit[2]
+        if self._pool is None:
+            return self._store(key, compute)
+        with self._lock:
+            busy = key in self._pending
+            self._pending.add(key)
+        if not busy:
+            try:
+                self._pool.submit(self._background, key, compute)
+            except RuntimeError:  # pula zamknięta (usługa się kończy)
+                with self._lock:
+                    self._pending.discard(key)
+        return hit[2] if hit is not None else PENDING  # stary wynik, dopóki nie ma świeżego
+
+    def _background(self, key, compute) -> None:
+        try:
+            previous = self._cache.get(key)
+            value = self._store(key, compute)
+        finally:
+            with self._lock:
+                self._pending.discard(key)
+        if self.on_result is not None and (previous is None or previous[2] != value):
+            try:
+                self.on_result()
+            except Exception as exc:  # przeliczenie kart to dodatek
+                print(f"tide-daemon: tablica: po sprawdzeniu gałęzi: {exc!r}", flush=True)
+
+    def _store(self, key, compute):
+        value, ttl = compute()
+        with self._lock:
+            self._cache[key] = (self.clock(), ttl, value)
         return value
 
     def _main_branch(self, repo: str) -> str:
@@ -100,18 +157,27 @@ class BranchState:
         return pick_main_branch(existing, gitinfo.describe(repo).branch)
 
     def _merged(self, repo: str, branch: str):
-        main = self.main_branch(repo)
+        hit = self._cache.get(("main", repo))
+        main = hit[2] if hit is not None and self.clock() - hit[0] < hit[1] else \
+            self._store(("main", repo), lambda: (self._main_branch(repo), self.ttl))
         if not main:
-            return None
+            return None, self.ttl
         if branch == main:
-            return True
+            return True, self.ttl
         result = self.git.run(repo, "merge-base", "--is-ancestor", f"refs/heads/{branch}", f"refs/heads/{main}")
         if result.code == 0:
-            return True
+            return True, self.ttl
         if result.code == 1:
-            return False
+            return False, self.ttl
         exists = self.git.run(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
-        return True if exists.code == 1 else None  # gałęzi nie ma — usunięta po scaleniu
+        if exists.code != 1:
+            return None, self.ttl
+        # Gałęzi nie ma: usunięta po scaleniu albo nigdy jej tu nie było (np. nazwa z planu). Scalenie
+        # poznajemy po temacie commita scalenia w głównej („Merge branch 'feat/x'”); scalenia szybkiego
+        # (fast-forward, squash) stąd nie widać — wtedy „nie wiadomo”, czyli „do scalenia” dla człowieka.
+        log = self.git.run(repo, "log", "--merges", f"--max-count={MERGE_LOG}", "--format=%s", f"refs/heads/{main}")
+        merged = log.code == 0 and any(merged_branch(line) == branch for line in log.out.splitlines())
+        return (True if merged else None), GONE_TTL
 
 
 class CardDeriver:
@@ -125,6 +191,9 @@ class CardDeriver:
         self.branches = branches or BranchState(clock=clock)
         self.clock = clock
         self._roots: dict[str, str] = {}
+
+    def stop(self) -> None:
+        self.branches.stop()
 
     def context(self) -> "Context":
         return Context(list(self.sessions_source() or []), list(self.boards_source() or []), self.branches,
@@ -144,6 +213,10 @@ class CardDeriver:
 
 
 class Context:
+    """Jedno przeliczenie migawki. Indeksy powstają raz: repozytoria (bez dowiązań) koordynatorów
+    i sesji, (repozytorium, gałąź) → praca na tej gałęzi oraz numer karty z nazwy gałęzi → gałęzie;
+    karta robi już tylko wyszukania w słownikach (80 kart × 60 koordynatorów to milisekundy)."""
+
     def __init__(self, sessions: list, boards: list, branches: BranchState, now: float, repo_of):
         self.now = now
         self.branches = branches
@@ -158,6 +231,29 @@ class Context:
         self.boards = [b for b in boards if isinstance(b, dict) and b.get("id")]
         self.boards_by_id = {b["id"]: b for b in self.boards}
         self.boards_by_sid = {str(b.get("sessionId")): b for b in self.boards if b.get("sessionId")}
+        self.board_repos = {b["id"]: _real(b.get("repoPath")) or self.repo_of(b.get("cwd") or "") for b in self.boards}
+        # (repozytorium, gałąź) → [(tablica albo None, sesja albo None, tickety albo None)]
+        self.work: dict[tuple, list] = defaultdict(list)
+        for b in self.boards:
+            repo, own = self.board_repos[b["id"]], _branch(b.get("branch"))
+            if own not in NON_BRANCHES:
+                self.work[(repo, own)].append((b, None, None))
+            scoped: dict[str, list] = defaultdict(list)
+            for t in b.get("tickets") or []:
+                name = _branch(t.get("branch"))
+                if name not in NON_BRANCHES and name != own:
+                    scoped[name].append(t)
+            for name, tickets in scoped.items():
+                self.work[(repo, name)].append((b, None, tickets))
+        for sess in self.sessions.values():
+            name = _branch(sess.get("branch"))
+            if sess["id"] in self.boards_by_id or name in NON_BRANCHES:
+                continue
+            self.work[(self.repo_of(sess.get("cwd") or ""), name)].append((None, sess, None))
+        self.card_branches: dict[int, list] = defaultdict(list)   # numer karty z gałęzi → klucze `work`
+        for key in self.work:
+            for match in CARD_TOKEN.finditer(key[1]):
+                self.card_branches[int(match.group(1))].append(key)
 
     # --- wejście ------------------------------------------------------------------------------
 
@@ -212,45 +308,42 @@ class Context:
         num = _num(card.get("id"))
         if num is None:
             return None
-        token = re.compile(rf"(?:^|[/_.-])k-?{num}(?=$|[/_.-])", re.IGNORECASE)
         repo = _real(card.get("repo"))
-        return self._branch_candidates(LINK_CARD_BRANCH, repo, lambda branch: bool(token.search(branch)),
-                                       require_repo=False)
+        keys = [k for k in self.card_branches.get(num, ()) if not repo or k[0] == repo]
+        return self._pick(LINK_CARD_BRANCH, keys)
 
     def _by_branch(self, card: dict) -> Link | None:
         wanted = _branch(card.get("branch"))
         repo = _real(card.get("repo"))
         if wanted in NON_BRANCHES or not repo:
             return None
-        return self._branch_candidates(LINK_BRANCH, repo, lambda branch: branch == wanted, require_repo=True)
+        return self._pick(LINK_BRANCH, [(repo, wanted)])
 
-    def _branch_candidates(self, how: str, repo: str, matches, require_repo: bool) -> Link | None:
+    def _pick(self, how: str, keys: list) -> Link | None:
+        """Najświeższa praca spośród dopasowanych gałęzi; jedna pozycja na koordynatora (cały
+        koordynator wygrywa z jego ticketami, tickety z kilku gałęzi się sumują)."""
+        boards: dict[str, Link] = {}
         candidates: list[Link] = []
-        for b in self.boards:
-            if repo and self._board_repo(b) != repo:
-                continue
-            if not repo and require_repo:
-                continue
-            if _branch(b.get("branch")) not in NON_BRANCHES and matches(_branch(b.get("branch"))):
-                candidates.append(Link(how, board=b, activity=_ts(b.get("lastActivityTs"))))
-                continue
-            scope = [t for t in b.get("tickets") or [] if _branch(t.get("branch")) not in NON_BRANCHES
-                     and matches(_branch(t.get("branch")))]
-            if scope:
-                candidates.append(Link(how, board=b, scope=scope, activity=_ts(b.get("lastActivityTs"))))
-        for s in self.sessions.values():
-            if s["id"] in self.boards_by_id or _branch(s.get("branch")) in NON_BRANCHES:
-                continue
-            if repo and self.repo_of(s.get("cwd") or "") != repo:
-                continue
-            if matches(_branch(s.get("branch"))):
-                candidates.append(Link(how, session=s, activity=_ts(s.get("lastActivityTs"))))
+        for key in keys:
+            for b, sess, scope in self.work.get(key, ()):
+                if b is None:
+                    candidates.append(Link(how, session=sess, activity=_ts(sess.get("lastActivityTs"))))
+                    continue
+                current = boards.get(b["id"])
+                if current is None:
+                    boards[b["id"]] = Link(how, board=b, scope=list(scope) if scope else None,
+                                           activity=_ts(b.get("lastActivityTs")))
+                elif current.scope is not None:
+                    current.scope = None if scope is None else current.scope + [t for t in scope
+                                                                                 if t not in current.scope]
+        candidates.extend(boards.values())
         if not candidates:
             return None
         return max(candidates, key=lambda c: (c.activity, _live(c)))
 
     def _board_repo(self, board: dict) -> str:
-        return _real(board.get("repoPath")) or self.repo_of(board.get("cwd") or "")
+        repo = self.board_repos.get(board.get("id"))
+        return repo if repo is not None else (_real(board.get("repoPath")) or self.repo_of(board.get("cwd") or ""))
 
     def _successor(self, board: dict) -> dict:
         """Koordynator z karty już nie działa, a ten sam plan prowadzi nowsza, żywa sesja (np. po
@@ -452,7 +545,9 @@ def _branch(value) -> str:
     return text.split()[0] if text else ""
 
 
+@functools.lru_cache(maxsize=4096)
 def _real(path) -> str:
+    """Ścieżka bez dowiązań — z pamięcią: te same repozytoria wracają przy każdym przeliczeniu."""
     return os.path.realpath(path) if path else ""
 
 

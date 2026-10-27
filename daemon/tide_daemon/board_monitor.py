@@ -30,6 +30,7 @@ MAX_WATCHED_FILES = 2_000  # powyżej — tylko katalogi i odpytywanie co POLL_M
 
 class BoardMonitor(QObject):
     changed = pyqtSignal()
+    _rederive_requested = pyqtSignal()   # z dowolnego wątku (np. wynik gita w tle) — kolejka Qt do wątku głównego
 
     def __init__(self, store, repos_source=None, derive=None, debounce_ms: int = DEBOUNCE_MS,
                  poll_ms: int = POLL_MS, launchers=None, rederive_ms: int = REDERIVE_MS, parent=None):
@@ -50,6 +51,7 @@ class BoardMonitor(QObject):
         self._poll.timeout.connect(self.sync)
         self._rederive = QTimer(self, singleShot=True, interval=rederive_ms)
         self._rederive.timeout.connect(self._apply)
+        self._rederive_requested.connect(self.rederive)
 
     def start(self) -> None:
         self.sync()  # zmiany zrobione, gdy usługa nie działała, też trafiają do historii
@@ -59,6 +61,12 @@ class BoardMonitor(QObject):
         self._poll.stop()
         self._debounce.stop()
         self._rederive.stop()
+        if hasattr(self.derive, "stop"):
+            self.derive.stop()  # wątek gita (sprawdzanie scalenia) nie trzyma zamknięcia usługi
+
+    def rederive_later(self) -> None:
+        """To samo co rederive(), ale bezpieczne z innego wątku (wynik gita w tle — board/derive.py)."""
+        self._rederive_requested.emit()
 
     def rederive(self) -> None:
         """Zmiana w /Agents albo /Coordination: przeliczenie stanu kart z migawki w pamięci, najwyżej

@@ -474,7 +474,7 @@ def start_board(app, args, trees, monitor=None, coordination=None, clock=time.ti
     """Obszar /Board: tablica pracy w lokalnym repozytorium git (board/, board_monitor.py).
     Repozytoria do dodania jako projekty bierzemy z gotowej listy obszaru Worktrees, a stan kart
     (W toku, Czeka na mnie, Do sprawdzenia — board/derive.py) z sesji /Agents i tablic /Coordination."""
-    from .board.derive import CardDeriver
+    from .board.derive import BranchState, CardDeriver
     from .board_monitor import BoardMonitor
 
     def repos():
@@ -483,10 +483,12 @@ def start_board(app, args, trees, monitor=None, coordination=None, clock=time.ti
 
     deriver = CardDeriver(sessions_source=(lambda: monitor.sessions) if monitor is not None else (lambda: []),
                           boards_source=(lambda: coordination.boards) if coordination is not None else (lambda: []),
-                          clock=clock)
+                          branches=BranchState(clock=clock, background=True), clock=clock)
     board = BoardMonitor(board_store(args), repos_source=repos, derive=deriver, launchers=trees.launchers,
                          parent=app)
     trees.changed.connect(board.publish)  # nowe repozytorium w katalogu projektów
+    # Git (czy gałąź scalona) idzie w wątku roboczym; nowy wynik przelicza karty w wątku głównym.
+    deriver.branches.on_result = board.rederive_later
     if monitor is not None:
         monitor.changed.connect(board.rederive)  # agent zaczął, czeka, skończył — karta zmienia kolumnę
     if coordination is not None:

@@ -19,7 +19,7 @@ from .privatebus import app, wait_until
 from tide_daemon import attention
 from tide_daemon.agents import state as agent_state
 from tide_daemon.agents.gitinfo import main_root
-from tide_daemon.board.derive import BranchState, CardDeriver
+from tide_daemon.board.derive import PENDING, BranchState, CardDeriver
 from tide_daemon.board.model import BoardError
 from tide_daemon.board.store import BoardStore
 
@@ -341,13 +341,41 @@ class BranchStateTest(unittest.TestCase):
         self.assertEqual(branches.main_branch(alpha), "master")
         self.assertTrue(branches.merged(alpha, "feat/merged"))
         self.assertFalse(branches.merged(alpha, "feat/unmerged"))
-        self.assertTrue(branches.merged(alpha, "feat/usunieta"))  # nie ma — usunięta po scaleniu
+        git(alpha, "checkout", "-q", "-b", "feat/old")
+        commit(alpha, "old.txt")
+        git(alpha, "checkout", "-q", "master")
+        git(alpha, "merge", "-q", "--no-ff", "-m", "Merge branch 'feat/old'", "feat/old")
+        git(alpha, "branch", "-q", "-d", "feat/old")
+        self.assertTrue(branches.merged(alpha, "feat/old"), "usunięta po scaleniu — widać commit scalenia")
+        self.assertIsNone(branches.merged(alpha, "feat/nigdy"), "nigdy jej nie było — nie wiadomo")
         self.assertIsNone(branches.merged(alpha, "-x"))
         self.assertIsNone(branches.merged(self.repos["beta"], "topic"))  # bez gałęzi głównej
         git(alpha, "merge", "-q", "--no-ff", "-m", "merge", "feat/unmerged")
         self.assertFalse(branches.merged(alpha, "feat/unmerged"), "wynik z pamięci")
         clock[0] += 60
         self.assertTrue(branches.merged(alpha, "feat/unmerged"), "po czasie pamięci — świeży odczyt")
+        calls = []
+        real_run = branches.git.run
+        branches.git.run = lambda *a, **k: calls.append(a) or real_run(*a, **k)
+        clock[0] += 120  # gałęzi bez śladu nie sprawdzamy co MERGE_TTL, tylko rzadziej
+        branches.merged(alpha, "feat/nigdy")
+        self.assertFalse([c for c in calls if "feat/nigdy" in " ".join(c[1:])], calls)
+
+    def test_background_checks_answer_from_memory_and_report_results(self):
+        alpha = self.repos["alpha"]
+        results = []
+        branches = BranchState(clock=lambda: NOW, background=True, on_result=lambda: results.append(True))
+        self.addCleanup(branches.stop)
+        self.assertEqual(branches.merged(alpha, "feat/unmerged"), PENDING)
+        self.assertTrue(wait_until(lambda: results, timeout=5))
+        self.assertIs(branches.merged(alpha, "feat/unmerged"), False)
+        self.assertEqual(branches.main_branch(alpha), "master")
+        deriver = CardDeriver(lambda: [], lambda: [board("claude:k", [ticket("A-1", "gotowe")], state="done",
+                                                         repo=alpha)], branches=branches, clock=lambda: NOW)
+        pending = deriver(card(session="claude:k", repo=alpha, branch="feat/merged"))
+        self.assertEqual(pending["column"], "review", "wynik w drodze — na razie „do scalenia”")
+        self.assertTrue(wait_until(lambda: len(results) >= 2, timeout=5))
+        self.assertEqual(deriver(card(session="claude:k", repo=alpha, branch="feat/merged"))["column"], "done")
 
     def test_main_root_of_worktree(self):
         self.assertEqual(main_root(self.repos["unmerged"]), self.repos["alpha"])
@@ -405,7 +433,7 @@ class CheckFieldTest(unittest.TestCase):
             fh.write(text.replace("check: auto\n", ""))
         self.assertEqual(self.store.snapshot()["cards"][0]["check"], "auto")
 
-    def test_moved_is_set_only_by_column_changes(self):
+    def test_moved_is_set_by_every_move_and_not_by_edits(self):
         clock = [NOW]
         self.store.clock = lambda: clock[0]
         self.store.create_card({"title": "a"})
@@ -415,8 +443,9 @@ class CheckFieldTest(unittest.TestCase):
         clock[0] = NOW + 60
         self.store.update_card("K-1", {"note": "do poprawy: brak testu"})
         self.assertEqual(self.cards()["K-1"]["movedTs"], NOW, "edycja nie przenosi")
-        self.store.move_card("K-1", "backlog", 0)  # tylko kolejność w kolumnie
-        self.assertEqual(self.cards()["K-1"]["movedTs"], NOW)
+        clock[0] = NOW + 90
+        self.assertTrue(self.store.move_card("K-1", "backlog", 1)["changed"])  # to samo miejsce: jawny ruch
+        self.assertEqual(self.cards()["K-1"]["movedTs"], NOW + 90)
         clock[0] = NOW + 120
         self.store.move_card("K-1", "todo", 0)
         self.assertEqual(self.cards()["K-1"]["movedTs"], NOW + 120)
@@ -428,6 +457,22 @@ class CheckFieldTest(unittest.TestCase):
         card = self.cards()["K-2"]
         self.assertEqual((card["moved"], card["movedTs"]), ("", card["createdTs"]))
 
+    def test_finished_card_moved_back_to_todo_leaves_review(self):
+        """„Do poprawy”: karta pokazana w Do sprawdzenia ma zapisane todo — MoveCard do todo też ją stempluje."""
+        clock = [NOW]
+        self.store.clock = lambda: clock[0]
+        self.store.create_card({"title": "a", "column": "todo", "check": "manual", "session": "claude:k"})
+        b = board("claude:k", [ticket("A-1", "gotowe", activity=NOW + 100)], state="ended", live=False,
+                  activity=NOW + 100)
+        deriver = CardDeriver(lambda: [], lambda: [b], branches=FakeBranches(), clock=lambda: NOW + 200)
+        first = self.cards(derive=deriver)["K-1"]
+        self.assertEqual((first["column"], first["boardColumn"]), ("todo", "review"))
+        clock[0] = NOW + 300
+        self.assertEqual(self.store.move_card("K-1", "todo", 0)["changed"], True)
+        after = self.cards(derive=deriver)["K-1"]
+        self.assertEqual(after["boardColumn"], "todo")
+        self.assertIn("wróci do W toku", after["derived"]["note"])
+
     def test_derive_gets_project_repo(self):
         repo = os.path.join(self.tmp, "dom")
         os.makedirs(repo)
@@ -436,6 +481,29 @@ class CheckFieldTest(unittest.TestCase):
         seen = []
         self.store.snapshot(derive=lambda c: seen.append(c) or None)
         self.assertEqual(seen[0]["repo"], repo)
+
+
+class SpeedTest(unittest.TestCase):
+    def test_rederive_of_a_large_board_is_fast(self):
+        """80 kart bez połączenia, 60 koordynatorów × 15 ticketów i 40 sesji — przeliczenie idzie co
+        500 ms w wątku głównym, więc musi zostać daleko poniżej tego (próg hojny, zwykle kilka ms)."""
+        boards = [board(f"claude:b{i}", [ticket(f"PT-{j}", "gotowe", branch=f"feat/pt-{j}-x") for j in range(15)],
+                        state="ended", live=False, branch=f"feat/x-{i}", activity=1000 + i) for i in range(60)]
+        sessions = [session(f"claude:s{i}", state="idle", branch=f"feat/s-{i}") for i in range(40)]
+        cards = [card(n, branch=f"feat/none-{n}") for n in range(1, 81)]
+        cards[0]["branch"] = "feat/pt-3-x"  # jedna karta pasuje do ticketów wszystkich koordynatorów
+        deriver = CardDeriver(lambda: sessions, lambda: boards, branches=FakeBranches(), clock=lambda: NOW)
+        deriver.repo_of = lambda cwd: os.path.realpath(REPO) if (cwd or "").startswith(REPO) else ""
+        best = None
+        for _ in range(3):
+            start = time.perf_counter()
+            ctx = deriver.context()
+            results = [ctx(c) for c in cards]
+            elapsed = time.perf_counter() - start
+            best = elapsed if best is None else min(best, elapsed)
+        self.assertEqual(results[0]["coordinator"], "claude:b59")
+        self.assertEqual(sum(r is not None for r in results), 1)
+        self.assertLess(best, 0.1, f"przeliczenie trwało {best * 1000:.0f} ms")
 
 
 class FakeSource:
