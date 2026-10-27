@@ -26,9 +26,11 @@ Kolumna:
   już nie pracuje), ale potrzebny krok człowieka: test ręczny (`check: manual`) albo scalenie gałęzi,
 - `done` („Gotowe”) — skończone, `check: auto` i nic do scalenia; plik karty się nie zmienia,
   użytkownik potwierdza, przeciągając kartę do Gotowe.
-Karta przeniesiona ręcznie (zapis karty po ostatniej aktywności skończonej pracy — np. „do poprawy”
-z Do sprawdzenia z powrotem do Do zrobienia) nie wraca do Do sprawdzenia, dopóki agent znów nad nią
-nie popracuje.
+Karta przeniesiona ręcznie po ostatniej aktywności skończonej pracy (`movedTs` — zmiana kolumny,
+nie edycja; np. „do poprawy” z panelu z powrotem do Do zrobienia) nie wraca do Do sprawdzenia, dopóki
+agent znów nad nią nie popracuje.
+Ticket w `czeka` z samego planu (bez pytania w dzienniku) to „Czeka na mnie”, gdy agent nie pracuje —
+koordynator zapisał, że czeka na decyzję użytkownika, i stanął; gdy pracuje, to dalej „W toku”.
 """
 import os
 import re
@@ -290,6 +292,11 @@ class Context:
         agent = session if session is not None else {"state": board.get("state"), "reason": board.get("reason")}
         if waits_for_user(agent) and not self._question_elsewhere(board, tickets, whole):
             return self._fill(out, "waiting", self._waiting_note(agent, board))
+        planned = [t for t in tickets if t.get("state") == "czeka"]
+        if planned and state != "working":
+            note = " ".join(str(planned[0].get("planNote") or "").split())
+            text = "czeka na twoją decyzję według planu" + (f": {note}" if note else f" ({_tid(planned[0])})")
+            return self._fill(out, "waiting", text)
 
         plan_done = ((board.get("plan") or {}).get("status") or "") == "done"
         finished = (total > 0 and not unfinished) or (total == 0 and plan_done)
@@ -301,7 +308,8 @@ class Context:
         board = link.board
         stamps = [_ts(t.get("lastActivityTs")) for t in tickets] if link.scope is not None else []
         finished_at = max(stamps or [_ts(board.get("lastActivityTs"))])
-        if _ts(card.get("updatedTs")) > finished_at > 0:
+        moved = _ts(card.get("movedTs")) or _ts(card.get("createdTs"))
+        if moved > finished_at > 0:
             # Użytkownik ruszył kartę po skończonej pracy (np. „do poprawy”) — zostaje w swojej kolumnie.
             return self._fill(out, "", "przeniesiona ręcznie po skończonej pracy — wróci do W toku, "
                                        "gdy agent znów nad nią usiądzie")

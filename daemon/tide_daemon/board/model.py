@@ -47,7 +47,7 @@ CARD_FILE_RE = re.compile(r"^K-([1-9][0-9]{0,8})\.md$")
 CARD_ID_RE = re.compile(r"^K-([1-9][0-9]{0,8})$", re.IGNORECASE)
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # Kolejność kluczy w nowych plikach (istniejące pliki zachowują swoją).
-CARD_KEYS = ("id", "title", "project", "tags", "column", "order", "note", "created", "updated",
+CARD_KEYS = ("id", "title", "project", "tags", "column", "order", "note", "created", "updated", "moved",
              "youtrack", "spec", "session", "branch", "check")
 RESERVED_CARD_KEYS = ("youtrack", "spec", "session", "branch")  # wypełnią PT-4, PT-5, PT-7
 PROJECT_KEYS = ("name", "repo", "tags", "ai-docs", "tool", "mode")
@@ -115,6 +115,7 @@ class Card:
     note: str = ""
     created: str = ""
     updated: str = ""
+    moved: str = ""           # ostatnia zmiana kolumny (MoveCard, założenie karty); bez klucza — created
     youtrack: str = ""
     spec: str = ""
     session: str = ""
@@ -215,6 +216,7 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.note = doc.get("note").strip()
     card.created = doc.get("created").strip()
     card.updated = doc.get("updated").strip()
+    card.moved = doc.get("moved").strip()
     for key in RESERVED_CARD_KEYS:
         setattr(card, key, doc.get(key).strip())
     card.check = _choice(doc.get("check"), CHECKS, DEFAULT_CHECK, f"{name}: nieznane sprawdzenie", path, errors)

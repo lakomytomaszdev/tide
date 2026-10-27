@@ -5,7 +5,7 @@ Układ (opis: docs/tide-daemon.md, Tablica):
   board.md                 znacznik `tide-board: 1` i licznik `next-card` (ID nie wracają)
   projects/<slug>.md       name, repo, tags, ai-docs, tool, mode; treść — opis projektu
   tags/<slug>.md           name, color (nazwa pastelu z palety); treść — opis tagu
-  cards/K-<n>.md           id, title, project, tags, column, order, note, created, updated,
+  cards/K-<n>.md           id, title, project, tags, column, order, note, created, updated, moved,
                            youtrack, spec, session, branch, check; treść — opis karty (Markdown)
   flows/<tryb>.md          szablony poleceń trybów (flows.py), flows/<projekt>/<tryb>.md — nadpisanie
   docs/<projekt>/          plany i specyfikacje agentów projektów z `ai-docs: tide`
@@ -345,7 +345,7 @@ class BoardStore:
         doc = Document()
         values = {"id": f"{CARD_PREFIX}{num}", "title": v["title"], "project": slug, "tags": ", ".join(v.get("tags", [])),
                   "column": v["column"], "order": order_value(order), "note": v.get("note", ""),
-                  "created": now, "updated": now}
+                  "created": now, "updated": now, "moved": now}
         for key in RESERVED_CARD_KEYS:
             values[key] = v.get(key, "")
         values["check"] = v.get("check", DEFAULT_CHECK)
@@ -419,6 +419,8 @@ class BoardStore:
                     writes.append((_rel(self.root, item.path), item.doc.text()))
         card.doc.set("column", column)
         card.doc.set("updated", now)
+        if moved_column:
+            card.doc.set("moved", now)  # „do poprawy” w derive.py patrzy na zmianę kolumny, nie na edycję
         writes.insert(0, (_rel(self.root, card.path), card.doc.text()))
         verb = f"move to {column}" if moved_column else f"reorder in {column}"
         change.commits.append((f"{card.id}: {verb}", writes))
@@ -705,7 +707,9 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived) -> 
         # Kolumna do wyświetlenia: z koordynatora (PT-5), a bez niego — zapisana ręcznie.
         "boardColumn": (derived or {}).get("column") or card.column,
         "order": card.order, "note": card.note, "created": card.created, "createdTs": parse_ts(card.created),
-        "updated": card.updated, "updatedTs": parse_ts(card.updated), "youtrack": card.youtrack,
+        "updated": card.updated, "updatedTs": parse_ts(card.updated),
+        # Ostatnia zmiana kolumny; stare karty bez klucza — czas założenia.
+        "moved": card.moved, "movedTs": parse_ts(card.moved or card.created), "youtrack": card.youtrack,
         "spec": card.spec, "session": card.session, "branch": card.branch, "check": card.check,
         "description": card.description,
         "derived": derived, "path": card.path,

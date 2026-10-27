@@ -777,6 +777,7 @@ order: 20
 note: bez agenta, robię sam
 created: 2026-10-27T14:00:00+01:00
 updated: 2026-10-27T14:05:12+01:00
+moved: 2026-10-27T14:00:00+01:00
 youtrack: TOM-142
 spec:
 session:
@@ -796,7 +797,8 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `column` | tylko kolumny ręczne: `backlog`, `todo`, `done`, `archived` |
 | `order` | kolejność w kolumnie (mniejsza wyżej); nowa karta trafia na górę kolumny. `MoveCard` daje karcie środek między sąsiadami (zmienia się jeden plik), a całą kolumnę numeruje co 10 dopiero wtedy, gdy między sąsiadami nie ma miejsca |
 | `note` | krótka notatka widoczna na karcie (np. „bez agenta, robię sam”) |
-| `created`, `updated` | ISO 8601 z czasem lokalnym |
+| `created`, `updated` | ISO 8601 z czasem lokalnym; `updated` zmienia każdy zapis karty |
+| `moved` | ostatnia zmiana kolumny (ISO 8601): ustawia go tylko założenie karty i `MoveCard` do innej kolumny (sama zmiana kolejności, edycja pól — nie). Karta bez klucza (sprzed PT-5) liczy się od `created`. Z niego stan z pracy agentów rozpoznaje „do poprawy” |
 | `youtrack`, `spec` | zarezerwowane na później (import z YouTracka, gotowa specyfikacja) |
 | `session` | sesja albo koordynator, który prowadzi kartę — id jak w `/Agents` i `/Coordination` (`claude:<id>`, `codex:<id>`, samo `<id>` też działa); pierwsze źródło stanu karty |
 | `branch` | gałąź pracy w repozytorium projektu; zastępuje propozycję gałęzi w `RenderFlow`, łączy kartę z pracą na tej gałęzi i jest gałęzią do scalenia |
@@ -889,7 +891,7 @@ w raporcie porannym, gdziekolwiek leży.
 | `tools`, `modes` | dozwolone narzędzia i tryby |
 | `tags` | `[{name, slug, color, description, defined, cards}]` (`cards` — karty z tym tagiem po dziedziczeniu) |
 | `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, mode, description, docsDir, cards, path}]` |
-| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, youtrack, spec, session, branch, check, description, derived, path}]` w kolejności kolumn ręcznych i `order` |
+| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, description, derived, path}]` w kolejności kolumn ręcznych i `order` |
 | `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
 | `errors` | `[{path, message}]` — złe pliki |
 
@@ -918,15 +920,15 @@ tickety mają tę gałąź, karta obejmuje tylko te tickety (`tickets`) — koor
 
 | Kolumna | Kiedy |
 | --- | --- |
-| `waiting` — Czeka na mnie | agent stoi w pół pracy i bez ciebie nie ruszy: sesja w stanie `waiting` (ta sama definicja co widżet agentów, `agents/state.py: waits_for_user` — koniec tury z pytaniem w ostatniej wiadomości to `done`, nie czekanie) albo ticket w `czeka` z pytaniem bez odpowiedzi. Pytanie koordynatora o ticket spoza karty nie dotyczy karty |
-| `progress` — W toku | praca trwa albo stoi niedokończona: tickety niegotowe — także review AI i poprawki (`review`, `w-toku`, `todo`, `czeka` z samego planu) —, agent pracuje albo jest bezczynny, skończył turę, sesja się zakończyła (notatka: „agent bezczynny od 16:46, w toku: LEGAL-6”, „sesja zakończona”) |
+| `waiting` — Czeka na mnie | agent stoi w pół pracy i bez ciebie nie ruszy: sesja w stanie `waiting` (ta sama definicja co widżet agentów, `agents/state.py: waits_for_user` — koniec tury z pytaniem w ostatniej wiadomości to `done`, nie czekanie), ticket w `czeka` z pytaniem bez odpowiedzi albo ticket w `czeka` z samego planu, gdy agent nie pracuje (bezczynny, skończył turę, sesja zakończona — notatka „czeka na twoją decyzję według planu: <Uwagi z planu>”). Pytanie albo `czeka` ticketu spoza karty nie dotyczy karty |
+| `progress` — W toku | praca trwa albo stoi niedokończona: tickety niegotowe — także review AI i poprawki (`review`, `w-toku`, `todo`; `czeka` z planu, dopóki agent pracuje) —, agent pracuje albo jest bezczynny, skończył turę, sesja się zakończyła (notatka: „agent bezczynny od 16:46, w toku: LEGAL-6”, „sesja zakończona”) |
 | `review` — Do sprawdzenia | praca agentów skończona (wszystkie tickety gotowe albo odrzucone, plan `done` bez ticketów; agent już nie pracuje), ale potrzebny krok człowieka: `check: manual` („do sprawdzenia ręcznie”) albo niescalona gałąź („do scalenia: feat/x”) |
 | `done` — Gotowe | skończone, `check: auto` i nic do scalenia („✓ gotowe i scalone”); plik karty zostaje w Do zrobienia — przeciągnięcie do Gotowe (albo wybór w panelu karty) to zapisuje |
 
 Zwykła sesja bez ticketów nigdy nie jest „skończona” — bez ticketów i planu nie wiadomo, czy praca
-jest gotowa, więc taka karta zostaje w W toku z notatką, od kiedy agent stoi. Karta ruszona ręcznie po
-skończonej pracy (zapis karty późniejszy niż ostatnia aktywność ticketów, np. „do poprawy” — z panelu
-z powrotem do Do zrobienia) zostaje w swojej kolumnie (`derived.column` pusty, notatka „wróci do W
+jest gotowa, więc taka karta zostaje w W toku z notatką, od kiedy agent stoi. Karta przeniesiona ręcznie po
+skończonej pracy (`moved` późniejszy niż ostatnia aktywność ticketów, np. „do poprawy” — z panelu
+z powrotem do Do zrobienia; sama edycja notatki się nie liczy) zostaje w swojej kolumnie (`derived.column` pusty, notatka „wróci do W
 toku…”), dopóki agent znów nad nią nie popracuje. Ręczne Gotowe zawsze wygrywa i potwierdza sprawdzenie.
 
 **Scalona gałąź**: czubek gałęzi jest przodkiem lokalnej gałęzi głównej (`git merge-base --is-ancestor`,

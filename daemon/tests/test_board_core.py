@@ -175,6 +175,7 @@ class CardTest(BoardCase):
             "note: robię sam\n"
             "created: " + self.cards()["K-1"]["created"] + "\n"
             "updated: " + self.cards()["K-1"]["created"] + "\n"
+            "moved: " + self.cards()["K-1"]["created"] + "\n"
             "youtrack: TOM-142\n"
             "spec:\n"
             "session:\n"

@@ -49,7 +49,8 @@ class FakeBranches:
 
 def card(num=12, column="todo", **kw) -> dict:
     out = {"id": f"K-{num}", "title": "Eksport do PDF", "project": "dom", "column": column, "session": "",
-           "branch": "", "check": "auto", "updatedTs": NOW - 7200, "repo": REPO}
+           "branch": "", "check": "auto", "createdTs": NOW - 9000, "updatedTs": NOW - 7200,
+           "movedTs": NOW - 7200, "repo": REPO}
     out.update(kw)
     return out
 
@@ -212,18 +213,31 @@ class StateTest(unittest.TestCase):
         self.assertFalse(agent_state.waits_for_user(legacy))
         self.assertEqual(derive(card(session="claude:s"), sessions=[legacy])["column"], "progress")
 
-    def test_ticket_waiting_with_question_and_plan_only_wait(self):
+    def test_ticket_waiting_with_question(self):
         b = board("claude:koord", [ticket("LEGAL-14", "czeka", question="Który wariant C007?"), ticket("LEGAL-6")],
                   state="idle")
         d = derive(card(session="claude:koord"), boards=[b])
         self.assertEqual((d["column"], d["note"]), ("waiting", "LEGAL-14: „Który wariant C007?”"))
-        b = board("claude:koord", [ticket("LEGAL-14", "czeka"), ticket("LEGAL-6")], state="idle",
-                  activity=NOW - 3600)
-        d = derive(card(session="claude:koord"), sessions=[session("claude:koord", state="idle", since=NOW - 3600)],
-                   boards=[b])
+
+    def test_plan_only_waiting_ticket_waits_when_agent_is_not_working(self):
+        tickets = [ticket("LEGAL-14", "czeka", planNote="Wybierz wariant C007 (A albo B)."), ticket("LEGAL-6")]
+        for state in ("idle", "done", "ended"):
+            b = board("claude:koord", tickets, state=state, live=state != "ended", activity=NOW - 3600)
+            sessions = [] if state == "ended" else [session("claude:koord", state=state, since=NOW - 3600)]
+            d = derive(card(session="claude:koord"), sessions=sessions, boards=[b])
+            self.assertEqual((d["column"], d["note"], d["nextStep"]),
+                             ("waiting", "czeka na twoją decyzję według planu: Wybierz wariant C007 (A albo B).",
+                              "odpowiedz agentowi"), state)
+        b = board("claude:koord", [ticket("LEGAL-14", "czeka"), ticket("LEGAL-6")], state="idle")
+        d = derive(card(session="claude:koord"), boards=[b])
+        self.assertEqual(d["note"], "czeka na twoją decyzję według planu (LEGAL-14)")
+        b = board("claude:koord", tickets)  # agent pracuje — dalej W toku, z dopiskiem
+        d = derive(card(session="claude:koord"), sessions=[session("claude:koord")], boards=[b])
         self.assertEqual(d["column"], "progress")
-        self.assertEqual(d["note"], f"agent bezczynny od {hhmm(NOW - 3600)}, w toku: LEGAL-14, LEGAL-6; "
-                                    "LEGAL-14 czeka według planu")
+        self.assertIn("LEGAL-14 czeka według planu", d["note"])
+        narrow = board("claude:koord", [ticket("PT-4", branch="feat/pt-4"), ticket("PT-23", "czeka")], state="idle")
+        d = derive(card(session="claude:koord", branch="feat/pt-4"), boards=[narrow])
+        self.assertEqual(d["column"], "progress", "czeka inny ticket koordynatora, nie ten z karty")
 
     def test_question_about_other_ticket_does_not_make_narrow_card_wait(self):
         b = board("claude:koord", [ticket("PT-4", branch="feat/pt-4"), ticket("PT-23", "czeka", question="Push?")])
@@ -301,12 +315,17 @@ class StateTest(unittest.TestCase):
     def test_card_moved_by_hand_after_finished_work_stays_until_agent_works_again(self):
         b = board("claude:koord", [ticket("A-1", "gotowe", branch="feat/a", activity=NOW - 3000)], state="done",
                   activity=NOW - 3000)
-        d = derive(card(session="claude:koord", updatedTs=NOW - 100), boards=[b])
+        d = derive(card(session="claude:koord", movedTs=NOW - 100), boards=[b])
         self.assertEqual(d["column"], "")  # migawka: boardColumn = ręczna kolumna
         self.assertIn("wróci do W toku", d["note"])
+        edited = derive(card(session="claude:koord", updatedTs=NOW - 100, movedTs=NOW - 5000), boards=[b])
+        self.assertEqual(edited["column"], "review", "edycja notatki to nie przeniesienie")
+        old = card(session="claude:koord", createdTs=NOW - 100)  # karta sprzed klucza moved
+        old.pop("movedTs")
+        self.assertEqual(derive(old, boards=[b])["column"], "")
         b["tickets"][0].update(state="w-toku", lastActivityTs=NOW - 10)  # agent znów nad nią pracuje
         b["counts"]["done"] = 0
-        self.assertEqual(derive(card(session="claude:koord", updatedTs=NOW - 100), boards=[b])["column"], "progress")
+        self.assertEqual(derive(card(session="claude:koord", movedTs=NOW - 100), boards=[b])["column"], "progress")
 
 
 class BranchStateTest(unittest.TestCase):
@@ -385,6 +404,29 @@ class CheckFieldTest(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text.replace("check: auto\n", ""))
         self.assertEqual(self.store.snapshot()["cards"][0]["check"], "auto")
+
+    def test_moved_is_set_only_by_column_changes(self):
+        clock = [NOW]
+        self.store.clock = lambda: clock[0]
+        self.store.create_card({"title": "a"})
+        self.store.create_card({"title": "b"})
+        created = self.cards()["K-1"]
+        self.assertEqual((created["moved"], created["movedTs"]), (created["created"], NOW))
+        clock[0] = NOW + 60
+        self.store.update_card("K-1", {"note": "do poprawy: brak testu"})
+        self.assertEqual(self.cards()["K-1"]["movedTs"], NOW, "edycja nie przenosi")
+        self.store.move_card("K-1", "backlog", 0)  # tylko kolejność w kolumnie
+        self.assertEqual(self.cards()["K-1"]["movedTs"], NOW)
+        clock[0] = NOW + 120
+        self.store.move_card("K-1", "todo", 0)
+        self.assertEqual(self.cards()["K-1"]["movedTs"], NOW + 120)
+        path = os.path.join(self.store.root, "cards", "K-2.md")  # stara karta bez klucza moved
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("".join(line for line in text.splitlines(True) if not line.startswith("moved:")))
+        card = self.cards()["K-2"]
+        self.assertEqual((card["moved"], card["movedTs"]), ("", card["createdTs"]))
 
     def test_derive_gets_project_repo(self):
         repo = os.path.join(self.tmp, "dom")
