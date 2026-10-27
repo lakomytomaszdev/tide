@@ -14,6 +14,7 @@ limits-popup-<nazwa>.png. Link do raportu porannego (nagłówek paska i nagłów
 w trzech stanach — nowy, przeczytany, brak raportu: sidebar-report-<stan>.png
 i agents-popup-report-<stan>.png. Widżet Tablica rysuje osobny moduł (widgets/preview_board.py:
 board-tile-<scenariusz>.png, board-popup*.png, board-sidebar.png). Czas lokalny to Europe/Warsaw (powtarzalne „dziś 07:00”).
+Kafelek Docker rysuje osobno widgets/preview_docker.py (docker-tile-*.png, docker-popup.png, docker-sidebar.png).
 Ten sam kod sprawdza teksty i wymiary w testach
 (widgets/tests/test_dock_tiles.py, widgets/tests/test_sidebar_tiles.py,
 widgets/tests/test_limits_forecast.py).
@@ -745,6 +746,9 @@ def main(argv: list[str]) -> int:
         print(f"{os.path.abspath(png)}: popup Limitów AI, {report['height']} px")
     from widgets import preview_board  # kafelek, popup i pasek boczny Tablicy (osobny moduł)
     preview_board.main([out_dir])
+    # Kafelek Docker (kafelek obok System, popup, pasek boczny) — widgets/preview_docker.py.
+    from widgets import preview_docker
+    preview_docker.main([out_dir])
     return 0
 
 

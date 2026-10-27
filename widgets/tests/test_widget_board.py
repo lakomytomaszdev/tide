@@ -182,6 +182,15 @@ Window {
         offline = preview.render_sidebar(None, available=False)
         self.assertEqual((offline["title"], offline["rows"]), ("Tablica", []))
 
+    def test_whole_sidebar_with_board_fits(self):
+        # Cały pasek boczny (typowy i pracowity) z kafelkiem tablicy mieści się w wysokości lewego monitora.
+        from widgets import preview as sidebar_preview
+        board = preview.render_sidebar()["height"]
+        for name in ("typical", "busy"):
+            base = sidebar_preview.render_sidebar(sidebar_preview.SIDEBAR_SCENARIOS[name])["total"]
+            total = base + board + sidebar_preview.SIDEBAR_APPLET_SPACING
+            self.assertLessEqual(total, sidebar_preview.SIDEBAR_HEIGHT, (name, base, board))
+
     def test_preview_writes_pngs(self):
         with tempfile.TemporaryDirectory(prefix="tide-board-png-") as tmp:
             with contextlib.redirect_stdout(io.StringIO()):

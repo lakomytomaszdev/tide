@@ -19,6 +19,12 @@ from .test_tasks_dbus import FAKE_KONSOLE, FAKE_SYSTEMD_RUN
 from .test_tasks_core import write_exec
 
 PATH, IFACE = "/Docker", "org.tide.Daemon.Docker"
+# Atrapa okna Tide (TIDE_WINDOW): zapisuje, z czym usługa je otworzyła.
+FAKE_TIDE_WINDOW = """#!/usr/bin/python3
+import json, os, sys
+with open(os.environ["TIDE_FAKE_WINDOW_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(sys.argv[1:]) + "\\n")
+"""
 FAKE_DOCKER_CLI = """#!/usr/bin/python3
 import json, os, sys
 with open(os.environ["TIDE_FAKE_DOCKER_LOG"], "a", encoding="utf-8") as fh:
@@ -43,6 +49,9 @@ class DockerContractTest(unittest.TestCase):
         write_exec(os.path.join(cls.bin, "konsole"), FAKE_KONSOLE)
         write_exec(os.path.join(cls.bin, "systemd-run"), FAKE_SYSTEMD_RUN)
         write_exec(os.path.join(cls.bin, "docker"), FAKE_DOCKER_CLI)
+        cls.window = os.path.join(cls.tmp, "tide.py")
+        write_exec(cls.window, FAKE_TIDE_WINDOW)
+        cls.window_log = os.path.join(cls.tmp, "window.log")
         cls.home = os.path.join(cls.tmp, "home")
         os.makedirs(cls.home)
         cls.calls = os.path.join(cls.tmp, "calls.log")
@@ -57,7 +66,8 @@ class DockerContractTest(unittest.TestCase):
                        "HOME": cls.home, "XDG_RUNTIME_DIR": cls.runtime, "SHELL": "/bin/true",
                        "XDG_DATA_HOME": os.path.join(cls.tmp, "data"),
                        "XDG_CONFIG_HOME": os.path.join(cls.tmp, "config"),
-                       "TIDE_FAKE_LOG": cls.calls, "TIDE_FAKE_DOCKER_LOG": cls.docker_log})
+                       "TIDE_FAKE_LOG": cls.calls, "TIDE_FAKE_DOCKER_LOG": cls.docker_log,
+                       "TIDE_WINDOW": cls.window, "TIDE_FAKE_WINDOW_LOG": cls.window_log})
         assert wait_until(lambda: cls.fetch_snapshot()["available"], timeout=10)
 
     @classmethod
@@ -115,7 +125,7 @@ class DockerContractTest(unittest.TestCase):
         xml = self.service.call(SERVICE, PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
         self.assertIn(f'<interface name="{IFACE}">', xml)
         for member in ("Snapshot", "Stats", "Disk", "Start", "Stop", "Restart", "Remove", "GroupAction", "Prune",
-                       "Logs", "OpenLogs", "OpenShell"):
+                       "Logs", "OpenLogs", "OpenShell", "Badge", "ShowWindow", "DiskNow"):
             self.assertIn(f'<method name="{member}">', xml)
         self.assertIn('<signal name="Changed"', xml)
         self.assertIn('<signal name="ActionFinished">', xml)
@@ -206,6 +216,9 @@ class DockerContractTest(unittest.TestCase):
         self.assertGreater(stats["total"]["memBytes"], 0)
         disk = self.call_json("Disk")
         self.assertTrue(disk["ok"])
+        before = len(self.fake.calls("GET", "/system/df"))
+        self.assertTrue(self.call_json("DiskNow")["ok"])
+        self.assertEqual(len(self.fake.calls("GET", "/system/df")), before + 1, "DiskNow bez pamięci podręcznej")
         self.assertEqual([c["id"] for c in disk["categories"]], ["cache", "images", "volumes", "stopped"])
 
     def test_8_open_logs_and_shell_in_konsole(self):
@@ -232,6 +245,23 @@ class DockerContractTest(unittest.TestCase):
         self.assertFalse(self.call("OpenShell", "translations-slack-bot"))  # zatrzymany
         self.assertFalse(self.call("OpenLogs", "nie-ma"))
 
+
+    def test_9_badge_and_show_window(self):
+        """Badge() → {text, tone} z migawki; ShowWindow(id) otwiera okno Tide na widoku Docker (atrapa)."""
+        before = len(self.fake.mutating())
+        self.assertEqual(self.call_json("Badge"), {"text": "● 1", "tone": "negative"})
+        self.assertTrue(self.call("ShowWindow", "translations-slack-bot"))
+        self.assertTrue(self.call("ShowWindow", ""))
+
+        def shown():
+            if not os.path.exists(self.window_log):
+                return []
+            with open(self.window_log, encoding="utf-8") as fh:
+                return [json.loads(line) for line in fh]
+        self.assertTrue(wait_until(lambda: len(shown()) >= 2, timeout=10))
+        self.assertEqual(sorted(shown(), key=len), [["--view", "docker"],
+                                                     ["--view", "docker", "--select", self.c["bot"].id]])
+        self.assertEqual(len(self.fake.mutating()), before, "plakietka i okno niczego w Dockerze nie zmieniają")
 
 @requires_dbus
 class DockerStatesTest(unittest.TestCase):

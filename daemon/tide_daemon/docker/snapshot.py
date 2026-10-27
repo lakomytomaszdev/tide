@@ -323,6 +323,18 @@ def build(items: list, details: dict, resolve_repo=None, stopped_by_tide: set | 
     return {"summary": summary, "groups": ordered}
 
 
+def badge(snapshot: dict) -> dict:
+    """Plakietka widoku Docker w pasku okna Tide (Badge() na /Docker i backend widoku): kontenery, które
+    padły, w różu („● 1”, tone negative), a bez nich liczba działających (muted); zero i brak Dockera —
+    pusta (plakietka ukryta). Testcontainers się nie liczą (summary ich nie zawiera)."""
+    summary = (snapshot.get("summary") or {}) if snapshot.get("available") else {}
+    failed = int(summary.get("failed") or 0)
+    if failed > 0:
+        return {"text": f"● {failed}", "tone": "negative"}
+    running = int(summary.get("running") or 0)
+    return {"text": str(running) if running > 0 else "", "tone": "muted"}
+
+
 def empty_summary() -> dict:
     return {"total": 0, "running": 0, "stopped": 0, "failed": 0, "projects": 0, "projectsTotal": 0,
             "testcontainers": 0, "testcontainersRunning": 0}

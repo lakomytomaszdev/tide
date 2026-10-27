@@ -30,6 +30,8 @@ INSTALLED = STATE / "tide" / "sidebar-installed.json"
 SHORTCUTS = xdg("XDG_CONFIG_HOME", ".config") / "kglobalshortcutsrc"
 HEADER = "org.tide.sidebar"
 # Kolejność od góry, jak na mocku „Sidebar” (lewy monitor).
+# Docker ma tryb paska, ale nie wchodzi do paska: z tablicą pasek miałby ok. 1080 px przy 1040 dostępnych
+# (limity AI ucięte na dole) — kafelek Dockera jest w docku zaraz po System.
 WIDGETS = ["org.tide.agents", "org.tide.board", "org.tide.system", "org.tide.worktrees", "org.tide.limits"]
 SHORTCUT = "Meta+S"
 # Rozciągany odstęp z Plasmy na końcu paska: kafelki widżetów leżą od góry, wolne miejsce zostaje

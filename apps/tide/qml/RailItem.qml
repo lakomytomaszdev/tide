@@ -1,5 +1,6 @@
 // Pozycja paska widoków: znak, nazwa i plakietka (liczba w Geist Mono, „● 1” albo słowo w kolorze
-// tonu). Wybrana — tło w tealu ~0,10, tekst główny 600, znak w tealu. Tab, strzałki, Enter i spacja.
+// tonu: waiting — brzoskwinia, accent — teal, negative — róż, np. kontenery, które padły).
+// Wybrana — tło w tealu ~0,10, tekst główny 600, znak w tealu. Tab, strzałki, Enter i spacja.
 import QtQuick
 import QtQuick.Layouts
 import "tide" as Tide
@@ -61,7 +62,8 @@ Rectangle {
             text: item.badgeText
             textFormat: Text.PlainText  // tekst z usługi — nigdy jako HTML
             color: item.badgeTone === "waiting" ? Tide.Tokens.waiting
-                 : item.badgeTone === "accent" ? Tide.Tokens.accent : Tide.Tokens.textMuted
+                 : item.badgeTone === "accent" ? Tide.Tokens.accent
+                 : item.badgeTone === "negative" ? Tide.Tokens.negative : Tide.Tokens.textMuted
             font.family: item.numeric ? Tide.Theme.monoFamily : Tide.Theme.uiFamily
             font.pixelSize: 11
         }
