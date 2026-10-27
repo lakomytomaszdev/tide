@@ -8,7 +8,9 @@ decyzje, niezmienniki i wymagania („ADR-0016”, „INV-001”), które ticket
 po opisie bez słów roli („Review compact distribution” i „Compact distribution” to jeden ticket).
 
 Stan z przebiegów (od najważniejszego):
-- pytanie koordynatora bez odpowiedzi, które wymienia ticket → `czeka`,
+- pytanie koordynatora bez odpowiedzi, które wymienia ticket → `czeka` (pytanie bez ID ticketu zostaje
+  pytaniem tablicy — `question` — a nie trafia do przypadkowego ticketu; koordynator czekający według
+  obszaru Agents bez pytania w dzienniku, np. na zgodę, daje `question` z jego `waitingText`),
 - działa recenzent → `review`; działa inny podagent → `w-toku`,
 - ostatnie review bez BLOCKER/MAJOR (i bez prośby o zmiany) → `gotowe`; z nimi → `w-toku`
   („do poprawy”), a poprawki skończone po review → `gotowe` (bez ponownego review),
@@ -250,7 +252,12 @@ def build(coord, *, plan=None, aliases=None, issues=None, tracker=None, live=Non
     pending = [q for q in coord.questions.values()]
     if pending:
         q = max(pending, key=lambda q: q.ts)
-        question = {"text": _clip(q.text, 400), "ts": round(q.ts, 3)}
+        question = {"text": _clip(q.text, 400), "ts": round(q.ts, 3), "kind": "question"}
+    elif live and live.get("state") == "waiting":
+        # Koordynator stoi według obszaru Agents, a w dzienniku nie ma pytania — zgoda na narzędzie
+        # (albo status „waiting” z Claude Code). Tablica mówi to samo co widżet agentów (PT-23 D).
+        question = {"text": _clip(live.get("waitingText") or "", 400), "ts": round(float(live.get("sinceTs") or 0), 3),
+                    "kind": "approval" if live.get("reason") == "approval" else "question"}
     state = live.get("state") if live else "ended"
     return {
         "id": coord.id,
