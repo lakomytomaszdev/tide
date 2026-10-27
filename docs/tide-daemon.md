@@ -30,7 +30,10 @@ Pola sesji:
 | `project` | string | nazwa repozytorium (dla worktree — repozytorium głównego) albo katalogu |
 | `branch` | string | bieżąca gałąź z `.git/HEAD`, zapasowo z dziennika |
 | `worktree` | string | nazwa katalogu worktree albo pusty napis |
-| `cwd` | string | katalog roboczy sesji |
+| `cwd` | string | katalog pracy sesji: bieżący katalog roboczy, a gdy agent wszedł (`cd`) do repozytorium tablicy Tide (np. pisze plan w `<tablica>/docs/<projekt>/`) — katalog startu sesji, bez niego repozytorium projektu `docs/<slug>/` (`board/place.py`, PT-28). Z niego też `project`, `branch` i `worktree` — sesja nie staje się „projektem” tide-board na master |
+| `launchCwd` | string | katalog startu sesji (stały, także po `cd`): Codex — `cwd` z `session_meta`, Claude Code — pierwszy `cwd` wpisu zgodny z katalogiem dziennika (`projects/<zakodowany katalog>/`); pusty, gdy dziennik tego nie mówi (np. ogon dużego pliku) |
+| `launchKey` | string | katalog startu zakodowany jak katalog projektu Claude Code (`/a/b.c` → `-a-b-c`): Claude Code — nazwa katalogu dziennika (zawsze), Codex — z `launchCwd`. Po nim tablica łączy kartę z sesją uruchomioną z karty, gdy `launchCwd` jest pusty |
+| `startedTs` | sekundy epoki | pierwszy wpis sesji (z przeczytanej części dziennika) |
 | `title` | string | krótki tytuł rozmowy (tylko Claude Code: `custom-title` nadany przez użytkownika, inaczej `ai-title`) |
 | `state` | string | `working`, `waiting`, `done`, `idle`, `ended` |
 | `reason` | string | `waiting`: `approval` (zgoda na narzędzie), `question` (pytanie do użytkownika) albo wartość `waitingFor` zgłoszona przez Claude Code. `working`: `background` (tura skończona, ale działa zadanie w tle, do którego agent wróci) albo pusty. `done` i `idle`: `scheduled` (ostatnią turę zaczęło zaplanowane zadanie Codex Desktop) albo pusty. `ended`: pusty |
@@ -256,9 +259,12 @@ Pola repozytorium: `name`, `path`, `branch` (gałąź głównego katalogu), `mai
 **Worktree.** Katalog: `<repo>-worktrees/<nazwa>`, jeśli obok repozytorium jest już taki katalog, inaczej `<repo>/.claude/worktrees/<nazwa>` (konwencja `claude --worktree`, ta sama dla obu narzędzi); nazwa katalogu to gałąź bez prefiksu narzędzia. Gdy git nie ignoruje `.claude/worktrees`, usługa dopisuje `/.claude/worktrees/` do lokalnego `.git/info/exclude` (nie do śledzonego `.gitignore`), żeby główny katalog nie zrobił się „brudny”. Polecenie: `git worktree add -b <gałąź> <katalog> <commit lokalnej gałęzi głównej>` — gałąź główna nie jest zmieniana ani przełączana, bez `fetch` (stan lokalny, jak w całym obszarze Worktrees). Wyłączony „Nowy worktree” — agent startuje w głównym katalogu, na tym, co tam jest.
 
 **Dodatkowe katalogi** (`addDirs`, uruchomienie z karty tablicy): katalog dokumentów AI karty
-projektu z `ai-docs: tide`, który agent dostaje przez `--add-dir` (oba narzędzia). Najwyżej 4,
-wyłącznie istniejące katalogi pod `<tablica>/docs/` (tablica z `--board-dir`, inaczej `$TIDE_BOARD_DIR`
-albo `~/DevWorkspace/tide-board`), sprawdzane po rozwinięciu dowiązań — inaczej `bad-add-dir`.
+projektu z `ai-docs: tide` i repozytoria dodatkowych projektów karty (PT-28), które agent dostaje przez
+`--add-dir` (oba narzędzia). Najwyżej 6, sprawdzane po rozwinięciu dowiązań: istniejący katalog pod
+`<tablica>/docs/` (tablica z `--board-dir`, inaczej `$TIDE_BOARD_DIR` albo `~/DevWorkspace/tide-board`)
+albo główny katalog repozytorium z katalogu projektów, które jest projektem tablicy (`projects/*.md`,
+`repo`) — nic innego z tablicy, żadne repozytorium spoza katalogu projektów ani niebędące projektem
+(inaczej `bad-add-dir`). Repozytorium samego zadania i powtórzenia pomijamy.
 
 **Odmowy** (pole `error`, po polsku w `message`; nic nie zostaje utworzone): `bad-request`, `bad-tool`, `missing-cli` (programu nie ma w PATH usługi ani w `~/.local/bin`), `no-terminal`, `unknown-repo` (tylko repozytoria z katalogu projektów, bez bare), `empty-prompt`, `one-word` (jedno słowo mogłoby zostać wzięte za podpolecenie, np. `claude doctor`), `prompt-too-long` (32 000 znaków), `bad-prompt` (NUL), `bad-image`, `bad-add-dir`, `no-base` (brak master/main/develop), `bad-branch` (`git check-ref-format --branch`), `protected-branch` (master, main, develop, gałąź główna, HEAD), `branch-exists`, `path-exists`, `dirty-base` (główny katalog stoi na gałęzi głównej i ma niezacommitowane zmiany — nowy worktree by ich nie zawierał), `git`, `launch` (Konsola nie uruchomiła zadania — worktree i gałąź wycofane).
 
@@ -765,13 +771,13 @@ z YouTracka to kolejny ticket (PT-7) na tym samym formacie. Plan: `docs/agents/p
 | Składnik | Sygnatura | Opis |
 | --- | --- | --- |
 | `Snapshot()` | `→ s` | JSON całej tablicy (opis niżej); tylko odczyt — przed pierwszym zapisem niczego nie zakłada |
-| `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
+| `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
 | `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, mode, description}`: istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie trybu dla karty (pusty `mode` — tryb projektu) → `{ok, text, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
-| `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{mode, tool, branch, check}` (wszystko opcjonalne; `check`: `auto` — domyślnie, albo `manual`) |
+| `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{mode, tool, branch, check}` (wszystko opcjonalne; `check`: `auto` — domyślnie, albo `manual`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
 | `Badge()` | `→ s` | plakietka widoku Tablica w oknie Tide: JSON `{text, tone}` — „● N” (`waiting`), gdy karty czekają na ciebie, inaczej liczba kart w grze bez Gotowych i Archiwum (`muted`); zero — pusty tekst (plakietka ukryta). Tylko odczyt, niczego nie zakłada; ta sama reguła co `badge()` w `apps/board/backend.py` |
 | `ShowWindow(s id)` | `→ b` | okno Tide na widoku Tablica (`tide.py --view board`), z ID karty (`K-12`, wielkość liter bez znaczenia) od razu na niej (`--select K-12`), z `launch:K-12` — na niej z oknem „Co ma zrobić agent?” (`--select launch:K-12`, „Uruchom” w popupie kafelka); napis, który nie jest ID karty, pomijamy (samo okno); `false`, gdy okna nie ma — kafelek tablicy w docku |
 | `Changed` | sygnał bez argumentów | tablica się zmieniła (zapis przez D-Bus albo zmiana z zewnątrz) — pobierz `Snapshot()` ponownie |
@@ -856,6 +862,7 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `branch` | gałąź pracy w repozytorium projektu; zastępuje propozycję gałęzi w `RenderFlow`, łączy kartę z pracą na tej gałęzi i jest gałęzią do scalenia |
 | `check` | sprawdzenie po skończonej pracy agenta: `auto` (domyślnie — wystarczą testy i review AI) albo `manual` (test ręczny użytkownika: karta czeka w Do sprawdzenia, aż przeniesiesz ją do Gotowe). Zła wartość w pliku — błąd i `auto`; brak klucza — `auto`. Ustawia go m.in. przełącznik „Test ręczny po zakończeniu” przy uruchomieniu agenta (PT-4) |
 | `mode`, `tool`, `worktree`, `launched` | ostatnie uruchomienie agenta z karty: tryb, narzędzie, katalog worktree (bezwzględny albo pusty — praca w katalogu projektu) i chwila (ISO 8601); w pliku tylko po uruchomieniu |
+| `projects` | dodatkowe projekty karty (PT-28) — slugi po przecinku, główny zostaje w `project`; zadanie zmienia kilka repozytoriów naraz. W pliku tylko, gdy ustawione. `CreateCard`/`UpdateCard` przyjmują listę (albo napis „a, b”) slugów istniejących projektów albo bezwzględnych ścieżek repozytoriów — repozytorium bez projektu dostaje projekt osobnym commitem (jak `repo`); główny projekt i powtórzenia wypadają, najwyżej 5, nieznany slug — `not-found`. Zmiana `project` na jeden z dodatkowych usuwa go z `projects`. Nieznany slug w pliku — wpis w `errors`, karta działa |
 
 Projekt — `projects/mobileapp.md`, treść to opcjonalny opis:
 
@@ -888,12 +895,20 @@ synchronizacja. Szablon bierze `flows/<projekt>/<tryb>.md`, potem `flows/<tryb>.
 tablicy — wbudowany szablon (`board/flows.py`, te same treści, które trafiają do nowej tablicy).
 Frontmatter szablonu nie trafia do polecenia. Zastępowane są wyłącznie pola `{card_id}`, `{title}`,
 `{description}`, `{project}`, `{repo}`, `{docs_dir}`, `{branch}`, `{tool}`, `{docs_note}`, `{spec}`,
-`{spec_file}`, `{check}`, `{check_label}`, `{finish}`, `{spec_commit}` — inne klamry zostają, a opis karty nie jest
-szablonem. Gałąź: z okna, inaczej `branch` karty albo propozycja `<narzędzie>/k-12-<opis-z-tytułu>`
+`{spec_file}`, `{check}`, `{check_label}`, `{finish}`, `{spec_commit}`, `{projects}` — inne klamry zostają, a opis karty nie jest
+szablonem. `{projects}` (PT-28, w nagłówku zaraz za „Plany i specyfikacje”) jest pusty przy jednym projekcie;
+przy dodatkowych — lista „nazwa: ścieżka” repozytoriów i zasady: plan i specyfikacja tylko w `{docs_dir}`
+głównego projektu, w każdym dodatkowym repozytorium, które agent zmienia, gałąź o tej samej nazwie `{branch}`
+od lokalnej gałęzi głównej (worktree tylko, gdy wymagają tego zasady repozytorium; przy zmianach albo innej
+gałęzi w głównym katalogu — pytanie do użytkownika; bez push), pliki po ścieżkach bezwzględnych i git przez
+`git -C`, bez `cd`, osobne commity w każdym repozytorium, a w Uwagach planu przy tickecie — które repozytorium
+zmienia; w trybie spec repozytoria są tylko do odczytu. Własny szablon bez `{projects}` dostaje tę listę na
+końcu polecenia. Gałąź: z okna, inaczej `branch` karty albo propozycja `<narzędzie>/k-12-<opis-z-tytułu>`
 (po ID karty w gałęzi daemon połączy kartę z koordynatorem; w trybie spec polecenie mówi „bez gałęzi”).
 `{docs_dir}` to `docs/agents` (względnie — katalog roboczy agenta, także worktree) przy `ai-docs: repo`
 i ścieżka bezwzględna w tablicy przy `ai-docs: tide`; `{docs_note}` mówi, kto commituje te pliki (w
-tablicy — tylko usługa). `{spec_file}`: `{docs_dir}/specs/k-12-<opis>.md`. `{finish}`: przy `manual`
+tablicy — tylko usługa), a w tablicy także: pliki po ścieżkach bezwzględnych, bez `cd` do katalogu
+dokumentów (katalog roboczy zostaje w repozytorium projektu — PT-28). `{spec_file}`: `{docs_dir}/specs/k-12-<opis>.md`. `{finish}`: przy `manual`
 lista „Co przetestować ręcznie i jak” w planie, bez scalania i z informacją, że praca czeka na test
 ręczny; przy `auto` koniec po review AI z APPROVE, scalenie tylko wtedy, gdy pozwalają na nie zasady
 projektu.
@@ -910,7 +925,8 @@ commituje (robi to usługa), a przy `ai-docs: repo` commituje wyłącznie plik s
 gałęzi (`docs(spec): K-12 <short English title>`, po angielsku, bez podpisów i wzmianek o AI, bez push) —
 inaczej późniejszy start z nowym worktree dostałby odmowę `dirty-base`.
 
-**Migracja szablonów.** Tablica założona przed PT-4 ma w `flows/` dawne zaczyny. Przy starcie usługi
+**Migracja szablonów.** Tablica założona przed PT-4 ma w `flows/` dawne zaczyny (a sprzed PT-28 —
+`tide-flow: 2` bez `{projects}`; oba są w `flows.PREVIOUS_SEEDS`). Przy starcie usługi
 (`migrate_flows`) plik `flows/<tryb>.md`, który jest bajt w bajt dawnym zaczynem (skróty SHA-256
 w `flows.PREVIOUS_SEEDS`), dostaje nową treść jednym commitem `flows: update templates`; plik zmieniony
 przez użytkownika, nadpisania projektów (`flows/<projekt>/…`) i brakujące pliki zostają. W trakcie
@@ -977,7 +993,7 @@ w raporcie porannym, gdziekolwiek leży.
 | `tools`, `modes` | dozwolone narzędzia i tryby |
 | `tags` | `[{name, slug, color, description, defined, cards}]` (`cards` — karty z tym tagiem po dziedziczeniu) |
 | `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, mode, description, docsDir, cards, path}]` |
-| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, mode, tool, worktree, launched, launchedTs, branchSlug, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia |
+| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, mode, tool, worktree, launched, launchedTs, branchSlug, projects, extraProjects, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia; `extraProjects` — dodatkowe projekty rozwiązane `[{slug, name, repo, repoMissing}]` (bez nieznanych slugów) |
 | `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
 | `errors` | `[{path, message}]` — złe pliki |
 
@@ -990,17 +1006,31 @@ przy połączeniu jawnym) dostaje kolumnę z tego, co agenci naprawdę robią; G
 
 Połączenie karty z pracą, pierwsze pasujące:
 
-1. `session` karty — sesja z `/Agents` albo koordynator z `/Coordination` (to samo id),
-2. `card: K-12` we frontmatterze planu koordynatora (klucz z PT-6, czytany ostrożnie),
-3. ID karty w nazwie gałęzi koordynatora, jego ticketu albo sesji (`claude/k-12-eksport` — propozycja
-   `RenderFlow`), w repozytorium projektu karty,
-4. `branch` karty równa gałęzi koordynatora, ticketu albo sesji w repozytorium projektu karty — także
-   z jego worktrees (główny katalog repozytorium z plików `.git`, `agents/gitinfo.py: main_root`);
+1. `session` karty — sesja z `/Agents` albo koordynator z `/Coordination` (to samo id), niezależnie od
+   tego, gdzie sesja jest teraz (cwd, projekt, gałąź). Przypięta sesja, która już nie działa, ustępuje
+   nowszej, żywej pracy karty z reguł 2, 4, 5 (ponowne uruchomienie, nowa sesja na gałęzi karty),
+2. uruchomienie z karty (PT-28): sesja tego samego narzędzia co `tool` karty, której katalog startu
+   (`launchCwd`, bez niego `launchKey`) to `worktree` karty — bez worktree repozytorium projektu — i która
+   zaczęła się (`startedTs`) od 2 min przed do 5 min po `launched` (`LAUNCH_SLACK`, `LAUNCH_WINDOW`); kilka —
+   najbliższa chwili uruchomienia; podagenci i sesje przypięte do innych kart się nie liczą,
+3. `card: K-12` we frontmatterze planu koordynatora (klucz z PT-6, czytany ostrożnie),
+4. ID karty w nazwie gałęzi koordynatora, jego ticketu albo sesji (`claude/k-12-eksport` — propozycja
+   `RenderFlow`), w repozytorium projektu karty albo jej dodatkowego projektu (`projects`),
+5. `branch` karty równa gałęzi koordynatora, ticketu albo sesji w tych repozytoriach — także
+   z ich worktrees (główny katalog repozytorium z plików `.git`, `agents/gitinfo.py: main_root`);
    gałęzi głównych (master, main, develop, HEAD) nie dopasowujemy.
 
 Przy kilku dopasowaniach tej samej reguły wygrywa najświeższa aktywność (żywe przed zakończonymi).
-Backlog to „kiedyś”: stan dostaje tylko z reguł 1–2, bo gałąź może pasować przypadkiem albo do starej
-pracy. Koordynator z karty, który już nie działa, ustępuje nowszemu, żywemu koordynatorowi tego samego
+Backlog to „kiedyś”: stan dostaje tylko z reguł 1–3, bo gałąź może pasować przypadkiem albo do starej
+pracy.
+
+**Trwałe połączenie** (PT-28, `Context.sticky`, `BoardMonitor`). Karta bez `session`, którą przeliczenie
+połączyło regułą 2 albo jednoznacznie (jedno dopasowanie — koordynator z ticketami to jedno) regułą 4 lub 5,
+dostaje tę sesję w pliku: `store.link_session`, commit `K-1: link session claude:<id> (launch)` (albo
+`(card-branch)`, `(branch)`). Zapis idzie po przeliczeniu (`QTimer`), ta sama para karta–sesja najwyżej raz
+na minutę. Ustawionego `session` (także ręcznie) usługa nigdy nie nadpisuje. Później sesja może wejść
+gdzie indziej — karta jej nie zgubi. Przypadek z życia: agent K-1 zrobił `cd` do `<tablica>/docs/<projekt>/plans`,
+żeby napisać plan, a karta wróciła do Do zrobienia z „Uruchom ponownie…”, choć agent dalej pracował. Koordynator z karty, który już nie działa, ustępuje nowszemu, żywemu koordynatorowi tego samego
 planu (nowa sesja po wyczerpaniu kontekstu). Gdy gałąź karty jest inna niż gałąź koordynatora, a jego
 tickety mają tę gałąź, karta obejmuje tylko te tickety (`tickets`) — koordynator prowadzi kilka kart naraz.
 
@@ -1022,7 +1052,10 @@ jak w Worktrees). Gałąź, której nie ma lokalnie, jest scalona tylko wtedy, g
 scalenia głównej jest jej „Merge branch 'feat/x'” (usunięta po scaleniu); bez tego — nigdy jej tu nie
 było albo scalenie szybkie/squash — „nie wiadomo”. Nie wiadomo (także brak repozytorium albo gałęzi
 głównej) — „do scalenia”, żeby człowiek spojrzał. Sprawdzamy tylko skończoną pracę: gałąź karty, a bez
-niej gałęzie ticketów i koordynatora. Git idzie w jednym wątku roboczym (`BranchState(background=True)`),
+niej gałęzie ticketów i koordynatora. Karta z dodatkowymi projektami (PT-28): gałąź karty (bez niej — pierwsza
+gałąź pracy) sprawdzamy też w każdym dodatkowym repozytorium; gałąź, której tam nie ma i nie widać jej scalenia
+(`MISSING` — agent nie zmieniał tego repozytorium), nie jest potrzebna, a niescalona daje „do scalenia:
+mobileapp feat/x” (z nazwą repozytorium przy każdej gałęzi, także głównego). Git idzie w jednym wątku roboczym (`BranchState(background=True)`),
 przeliczenie odpowiada z pamięci (30 s; gałąź bez śladu — 10 min, żeby nie sprawdzać jej w kółko), a nowy
 wynik zleca kolejne przeliczenie; dopóki pierwszego wyniku nie ma, skończona karta stoi w Do sprawdzenia.
 
@@ -1061,6 +1094,15 @@ uruchomiona z Backlogu bez przeniesienia (popup) idzie do Do zrobienia; dalej st
 „Anuluj” po przeniesieniu oddaje kartę na jej miejsce w Backlogu (`MoveCard`), „Tylko przenieś”
 zostawia ją w Do zrobienia bez agenta. Karta bez projektu z repozytorium — wyjaśnienie i wybór projektu
 (`UpdateCard {project}` albo `{repo}`, który zakłada projekt).
+
+**Dodatkowe projekty** (PT-28). Wiersz „Dodatkowe projekty” w oknie: chipy wybranych (✕ usuwa) i pole
+„+ dodaj projekt albo repozytorium” z listą projektów tablicy z istniejącym repozytorium (bez głównego
+i już wybranych), potem repozytoriów z katalogu projektów, które nie są jeszcze projektami (wybranie
+założy projekt). Okno startuje z `projects` karty. Gdy wybór różni się od karty, pierwszy zapis to
+`UpdateCard {description?, projects}` (ścieżki repozytoriów zakładają projekty), a `Start` dostaje
+`addDirs` z odpowiedzi `RenderLaunch`. Stopka dopisuje „Pracuje też w: …”. Na karcie tablicy dodatkowe
+projekty to małe chipy „+ mobileapp” obok nazwy projektu. Agent pracuje w worktree głównego projektu,
+a w dodatkowych repozytoriach zakłada gałąź o tej samej nazwie (polecenie, `{projects}` wyżej).
 
 Logika bez Qt jest w `tide_daemon/board/` (`marker.py`, `frontmatter.py`, `model.py`, `flows.py`,
 `store.py`, `derive.py`, git w `repo.py`), obserwacja katalogu, przeliczanie stanu kart i odpowiedzi
@@ -1299,7 +1341,7 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_worktrees_core.py` — rdzeń worktrees na prawdziwych, tymczasowych repozytoriach (`gitrepos.py`: scalony, ze zmianami, z niescalonymi commitami, z agentem, odłączony, bez gałęzi głównej, główny); git owinięty skryptem zapisującym wywołania, żeby potwierdzić brak `--force`, `-D` i operacji sieciowych,
   Do tego grupy (`active`, `clean`, `decide`, `main`, `missing`) przy zamrożonym zegarze, usuwanie tylko wybranych ścieżek i `prune` wyłącznie dla brakujących katalogów,
 - `daemon/tests/test_worktrees_sessions.py` — tytuły z nazw gałęzi i powiązanie z sesjami na syntetycznych dziennikach (najświeższa i najgłębsza, rodzaje tytułów, podagenci, pliki starsze niż 30 dni, duże pliki, pamięć podręczna),
-- `daemon/tests/test_tasks_core.py` — nowe zadanie bez D-Bus na prawdziwych, tymczasowych repozytoriach: argv obu narzędzi (cudzysłowy, `$(…)`, nowe linie, emoji, myślnik na początku, zrzuty) sprawdzone tak, jak dociera do atrapy agenta przez `launch.py`, nazwa gałęzi z polecenia, worktree od gałęzi głównej (master nietknięty, wpis w `info/exclude`), katalog `<repo>-worktrees`, odmowy bez żadnych zmian (gałąź główna, istniejąca, zła nazwa, zmiany na master, brak gałęzi głównej, brak programu, repozytorium spoza katalogu projektów, zrzut spoza katalogu zadań, jedno słowo, `addDirs` spoza `<tablica>/docs/`), `--add-dir` obu narzędzi, wycofanie (gałąź z nowymi commitami zostaje), przejęcie i anulowanie pliku zadania, wybór okna Konsoli i tryb karta/okno na atrapach, znacznik `newTask`,
+- `daemon/tests/test_tasks_core.py` — nowe zadanie bez D-Bus na prawdziwych, tymczasowych repozytoriach: argv obu narzędzi (cudzysłowy, `$(…)`, nowe linie, emoji, myślnik na początku, zrzuty) sprawdzone tak, jak dociera do atrapy agenta przez `launch.py`, nazwa gałęzi z polecenia, worktree od gałęzi głównej (master nietknięty, wpis w `info/exclude`), katalog `<repo>-worktrees`, odmowy bez żadnych zmian (gałąź główna, istniejąca, zła nazwa, zmiany na master, brak gałęzi głównej, brak programu, repozytorium spoza katalogu projektów, zrzut spoza katalogu zadań, jedno słowo, `addDirs` spoza `<tablica>/docs/` i repozytoriów projektów tablicy), `--add-dir` obu narzędzi, wycofanie (gałąź z nowymi commitami zostaje), przejęcie i anulowanie pliku zadania, wybór okna Konsoli i tryb karta/okno na atrapach, znacznik `newTask`,
 - `daemon/tests/test_tasks_dbus.py` — `/Tasks` przez prywatną magistralę z prawdziwą usługą i atrapami `konsole` (uruchamia polecenie z `-e`), `systemd-run`, `claude` i `codex` (zapisują argv): `Repos`, `Defaults`, `SuggestBranch`, `Start` z dokładnym poleceniem w agencie, wycofanie, gdy Konsola nie uruchomi zadania, odmowy i praca w głównym katalogu, `addDirs` z tablicy dla Codeksa (worktree) i Claude Code (katalog projektu) oraz odmowa `bad-add-dir`,
 - `daemon/tests/test_worktrees_dbus.py` — `List()`, `Remove()`, `Refresh()`, `Prune()` i `ShowWindow()` przez prywatną magistralę; agent symulowany sesją Claude Code w worktree,
 - `daemon/tests/test_krunner_index.py` — indeks historii na syntetycznych dziennikach (`history.py`, `fixtures/history`): tytuły obu narzędzi (także z bazy stanu Codexa zbudowanej w teście), pierwsza wiadomość z początku dużego pliku, odcięcie po 30 dniach, odczyt tylko zmienionych plików,
@@ -1328,6 +1370,7 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_board_robustness.py` — trudne przypadki: nieudany commit (karta zostaje, `commitError`, bez duplikatu, zaległy commit z własnym komunikatem), osierocona blokada indeksu (git zabity po czasie, stara blokada, blokada żywego gita na atrapie `/proc`), revert z konfliktem (bez commita „sync”, `git-busy`, wpisy w `errors`, znaczniki konfliktu jako błąd pliku), numery kart po revercie (licznik poza historią; historia gita tylko raz, gdy licznika brak, nigdy w migawce), znaczniki konfliktu w opisie jako zwykły tekst, zaległy commit usuniętego pliku i trwały błąd bez blokowania kolejki, błąd bez pliku, katalogu i commita (pusty katalog i istniejąca tablica), dowiązania poza tablicę, FIFO i `/dev/zero`, listy YAML i pliki z Windows, kolejność środkiem i przenumerowanie bez miejsca, brak hooków (także post-commit), projekt po nazwie bez `foo-2`, domyślny tryb `full`, zmiana nazwy tagu bez pliku, katalog dokumentów z `RenderFlow`,
 - `daemon/tests/test_board_dbus.py` — `BoardMonitor` w procesie (zmiana z zewnątrz → commit i `Changed`, nasz zapis bez drugiego commita, błędy jako JSON) i `/Board` na prywatnej magistrali: introspekcja, `Snapshot`, `CreateCard` z repozytorium, `UpsertProject`, `UpsertTag`, `UpdateCard`, `MoveCard`, `RenderFlow`, sygnał `Changed`, historia commitów, edycja pliku z zewnątrz, błędy `{ok: false, error, message}` z kodami i bez commita, `--no-board`, `--print-board` bez zapisu. Usługi w testach dostają tymczasowy `TIDE_BOARD_DIR` (`privatebus.py`), więc nigdy nie dotykają prawdziwej tablicy,
 - `daemon/tests/test_board_launch.py` — uruchamianie z karty po stronie tablicy: `RenderLaunch` z prawdziwymi szablonami (pełny, lekki, spec; dokumenty w tablicy i w repozytorium; narzędzie, gałąź i test ręczny z okna; błędy), migracja szablonów (dawny zaczyn bajt w bajt z `fixtures/flows-pt1/` podmieniony, zmieniony przez użytkownika i nadpisanie projektu zostają, zajęte repozytorium), pola uruchomienia karty z walidacją, znacznik „specyfikacja gotowa” (szkic, inny tryb, inna karta, specyfikacja w repozytorium, klucz `card`), `BoardMonitor` (migracja przy starcie, znacznik przy synchronizacji, `ShowWindow("launch:K-12")`, `RenderLaunch` jako JSON),
+- `daemon/tests/test_board_multiproject.py` — PT-28 na tymczasowych repozytoriach (toolssuite z worktree karty, mobileapp, legacyinfra) i syntetycznych dziennikach: katalog pracy sesji w tablicy (`board/place.py`: katalog startu, `docs/<slug>/`, `docs/_inbox`), `/Agents` (Claude Code przed i po `cd` do katalogu planów tablicy, Claude Code bez wpisu z katalogiem startu, Codex z `session_meta`), KRunner, raport poranny i koordynator w tablicy (repozytorium, gałąź i plan karty), reguła „uruchomienie z karty” (okno czasu, narzędzie, katalog bez worktree, `launchKey`, najbliższy start, sesje innych kart, przypięta sesja po zmianie cwd/projektu/gałęzi, zakończona przypięta ustępuje nowej), utrwalanie (`sticky`: uruchomienie, jednoznaczna gałąź, dwa dopasowania — nie), `BoardMonitor` z odtworzeniem K-1 (commit „K-1: link session …”, karta w W toku po `cd`, usługa widząca sesję dopiero po `cd`, ręczny `session` bez nadpisania i commita), pole `projects` (zapis, projekt z repozytorium, migawka, walidacja, nieznany slug w pliku), `RenderLaunch` (zdanie o ścieżkach bezwzględnych, lista repozytoriów i zasady, tryb spec, brakujące repozytorium, własny szablon bez `{projects}`, migracja szablonów `tide-flow: 2`), `/Tasks` `addDirs` z repozytoriami projektów (oba narzędzia, dowiązanie, odmowy) i stan karty po gałęzi we wszystkich repozytoriach,
 - `daemon/tests/test_boardplans.py` — standard planu 1.1: klucz `card` (walidacja, ID karty z gałęzi, wybór planu po karcie), plany projektów z `ai-docs: tide` w tymczasowej tablicy (`TIDE_BOARD_DIR`) w `find_plans`, skanerze, tablicy i podsumowaniu koordynatora (`card`), kontroli numerów, raporcie porannym, `tools/next_id.py` i `tools/check_plans.py`; projekty `ai-docs: repo` bez zmian. `daemon/tests/__init__.py` kieruje `TIDE_BOARD_DIR` na nieistniejący katalog — testy nie czytają prawdziwej tablicy,
 - `daemon/tests/test_docker_core.py` — Docker bez Qt na atrapie Engine API (`fake_docker.py`: prawdziwy socket unix w wątku testu, kształty odpowiedzi jak w Dockerze 29, odpowiedzi chunked pocięte w środku znaków, strumień `/events`, logi w ramkach, zapis każdego zapytania): `DOCKER_HOST` (unix, tcp/ssh → `unsupported`), brak socketu, odmowa, brak uprawnień, zawieszony Docker; grupy compose, repozytorium z worktree (także spoza katalogu projektów), „bez compose”, testcontainers, kod 137 i reguły awarii (0, 143, OOM, `dead`, restart, `created` po nieudanym starcie, 137 po `Stop` z Tide), porty bez powtórek i `likelyHttp`, czasy z nanosekundami, `inspect` tylko po zmianie stanu (nie tekstu „Up 3 hours”) i pełne odświeżenie; panele WWW baz w `likelyHttp`; kategorie dysku (nic w użyciu), wolumeny anonimowe zatrzymanych, prune tylko z listy id w bezpiecznej kolejności (regresja: `{"volumes": "false"}` bez żadnego wywołania), 404 z prune, dokładne metody, ścieżki i zapytania akcji, `Remove` działającego bez wywołania, kolejność zależności w projekcie, częściowa porażka `restart` projektu, limity pojedynczych akcji poniżej 25 s, jeden termin na zapytanie (odpowiedź sącząca się po bajcie) i na akcję (po terminie bez wywołań), znacznik „zatrzymany z Tide” przy odświeżeniu w trakcie `stop` i przy równoczesnym dopisywaniu, demultipleksowanie logów (stderr, TTY, linie i znaki UTF-8 rozcięte między ramkami, ucięta ostatnia ramka, zepsuty nagłówek w środku), statystyki równolegle z łącznym limitem czasu, filtr zdarzeń,
 - `daemon/tests/test_docker_monitor.py` — `DockerMonitor` w pętli Qt na atrapie: zdarzenie → `Changed`, zdarzenia `exec_*` bez odświeżenia, seria zdarzeń w jednym odświeżeniu, zerwany strumień i ponowne połączenie, odpytywanie bez Dockera aż się pojawi, zniknięcie Dockera, pamięć `Stats`/`Disk` (bez wyniku sprzed akcji), odświeżenie bez zmiany bez `Changed`, zadania `Prune`/`GroupAction` z `actionFinished` i odmowa bez zadania, karty z logami i powłoką (argv z ID i `-H` w pliku zadania, osobny katalog każdej karty — dwa szybkie `OpenShell` nie zamieniają się kontenerami, `workdir` w katalogu domowym, wycofanie przy nieudanej Konsoli), akcja czekająca w zajętej puli dostaje odmowę na czas,
