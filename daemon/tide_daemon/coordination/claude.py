@@ -175,6 +175,7 @@ class ClaudeCoordinatorLog:
     def _where(self, record: dict) -> None:
         if record.get("cwd"):
             self.coord.cwd = record["cwd"]
+            self.coord.launch_cwd = self.coord.launch_cwd or self.coord.cwd
         if record.get("gitBranch"):
             self.coord.branch = record["gitBranch"]
 

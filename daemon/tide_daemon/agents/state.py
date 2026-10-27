@@ -8,11 +8,15 @@ Parsery dzienników (claude.py, codex.py) sprowadzają wpisy do fazy tury:
 Tutaj z fazy, czasu i informacji o procesach powstaje stan widoczny dla użytkownika.
 
 „Czeka” (waiting) znaczy wyłącznie, że agent stoi i nie ruszy bez użytkownika: zgoda na narzędzie,
-pytanie (AskUserQuestion, ExitPlanMode, request_user_input) albo status „waiting” zgłoszony przez
-Claude Code. Zwykły koniec tury to „skończył” (done) — agent oddał głos, ale niczego nie blokuje
-(np. wątek Codexa prowadzony przez zaplanowane zadanie, które samo wyśle następną wiadomość).
+pytanie (AskUserQuestion, ExitPlanMode, request_user_input), status „waiting” zgłoszony przez
+Claude Code albo (PT-29) skończona tura, której ostatnia wiadomość pyta użytkownika (agents/question.py:
+„Pytanie 10: …?”), a użytkownik jeszcze nie odpisał — powód `reply`. Zwykły koniec tury to „skończył”
+(done) — agent oddał głos, ale niczego nie blokuje; tura zaczęta przez zaplanowane zadanie Codexa nie
+czeka nawet z pytaniem (zadanie samo wyśle następną wiadomość).
 """
 from dataclasses import dataclass
+
+from .question import ending_question
 
 # Progi (sekundy). Opisane też w docs/tide-daemon.md.
 IDLE_AFTER = 30 * 60        # skończona albo czekająca sesja bez ruchu tyle czasu jest już „bezczynna”
@@ -29,6 +33,7 @@ REASON_APPROVAL = "approval"      # narzędzie czeka na zgodę
 REASON_QUESTION = "question"      # agent zadał pytanie
 REASON_BACKGROUND = "background"  # tura skończona, ale działa zadanie w tle, do którego agent wróci
 REASON_SCHEDULED = "scheduled"    # ostatnią turę zaczęło zaplanowane zadanie (automatyzacja Codexa)
+REASON_REPLY = "reply"            # tura skończona pytaniem w tekście, bez odpowiedzi użytkownika (PT-29)
 
 WORKING = "working"
 WAITING = "waiting"
@@ -64,6 +69,10 @@ class SessionLog:
         self.path = path
         self.session_id = ""
         self.cwd = ""
+        # Katalog startu sesji — stały, także gdy agent potem wejdzie gdzie indziej (`cd`): Codex — cwd
+        # z session_meta, Claude Code — pierwszy cwd wpisu zgodny z katalogiem projektu dziennika
+        # (`projects/<zakodowany katalog startu>/`). Pusty, gdy dziennik tego nie mówi.
+        self.launch_cwd = ""
         self.branch = ""
         self.title = ""
         self.first_activity = 0.0
@@ -78,6 +87,11 @@ class SessionLog:
         self.last_user_ts = 0.0  # ostatnia wiadomość wpisana przez użytkownika (nie wynik narzędzia)
         self.model = ""         # ostatni model z dziennika (Codex: turn_context.model, Claude: message.model)
         self.provider = ""      # Codex: session_meta.model_provider (agents/localmodel.py)
+        # Ostatnia wiadomość tekstowa agenta, po której nie było już wywołania narzędzia, i jej czas —
+        # z niej pytanie na końcu tury (reply_question). Parsery czyszczą ją przy wywołaniu narzędzia.
+        self.last_text = ""
+        self.last_text_ts = 0.0
+        self._question = ("", "")  # pamięć: (tekst, pytanie)
 
     def feed(self, record: dict) -> None:
         raise NotImplementedError
@@ -89,12 +103,35 @@ class SessionLog:
                 self.first_activity = ts
             self.last_activity = max(self.last_activity, ts)
 
+    def said(self, text: str, ts: float) -> None:
+        """Agent napisał wiadomość tekstową (pusta — wywołał narzędzie, wcześniejszy tekst nie kończy tury)."""
+        self.last_text = text or ""
+        self.last_text_ts = ts if text else 0.0
+
     def set_phase(self, phase: str, ts: float) -> None:
         if phase != self.phase or not self.phase_since:
             self.phase = phase
             self.phase_since = ts or self.phase_since
         if phase != TOOL_PENDING:
             self.pending.clear()
+
+
+def reply_question(log: SessionLog) -> str:
+    """Pytanie z ostatniej wiadomości agenta w skończonej turze, na które użytkownik jeszcze nie odpisał
+    (PT-29), albo pusty napis. Liczy się tylko bieżąca tura: wiadomość użytkownika po pytaniu (także
+    przerwanie) albo wywołanie narzędzia po nim je kasuje; tura zaczęta przez zaplanowane zadanie nie pyta."""
+    text = getattr(log, "last_text", "")
+    if not text or log.phase != TURN_END or getattr(log, "scheduled", False):
+        return ""
+    if getattr(log, "parent_id", "") or log.hidden:
+        return ""  # podagent: raport dla koordynatora, nie pytanie do użytkownika — nikt mu nie odpisze
+    if log.last_user_ts and log.last_user_ts >= log.last_text_ts:
+        return ""
+    cached = getattr(log, "_question", ("", ""))
+    if cached[0] != text:
+        cached = (text, ending_question(text))
+        log._question = cached
+    return cached[1]
 
 
 def waiting_text(log: SessionLog) -> str:
@@ -108,11 +145,15 @@ def waiting_text(log: SessionLog) -> str:
         return (getattr(log, "open_question_texts", None) or {}).get(oldest, "")
     if log.phase == TOOL_PENDING and log.pending:
         return max(log.pending.values(), key=lambda p: p.since).text
-    return ""
+    return reply_question(log)
 
 
 def finished(log: SessionLog, now: float, since: float) -> tuple[str, str, float]:
-    """Tura skończona zwyczajnie: „skończył”, a po IDLE_AFTER bez ruchu — „bezczynna”."""
+    """Tura skończona zwyczajnie: „skończył”, a po IDLE_AFTER bez ruchu — „bezczynna”. Tura skończona
+    pytaniem bez odpowiedzi (reply_question) to „czeka” z powodem `reply` od chwili pytania — także po
+    IDLE_AFTER, jak każde pytanie: agent nie ruszy, dopóki użytkownik nie odpisze."""
+    if reply_question(log):
+        return WAITING, REASON_REPLY, log.last_text_ts or since
     reason = REASON_SCHEDULED if log.scheduled else ""
     return (IDLE if now - since > IDLE_AFTER else DONE), reason, since
 
@@ -169,8 +210,8 @@ def derive_state(log: SessionLog, now: float, alive: bool | None, status: Status
 def waits_for_user(session: dict) -> bool:
     """Czy sesja z listy /Agents stoi i czeka na użytkownika — ta sama definicja co widżet agentów,
     Meta+A, powiadomienia i tablica (kolumna „Czeka na mnie”): wyłącznie stan `waiting` (zgoda na
-    narzędzie, pytanie, status „waiting” z Claude Code). Koniec tury z pytaniem w ostatniej wiadomości
-    to `done`, nie czekanie. Wpis sprzed stanu `done` (`waiting` z powodem `reply`) to koniec tury."""
-    if not isinstance(session, dict) or session.get("state") != WAITING:
-        return False
-    return session.get("reason") != "reply"
+    narzędzie, pytanie, status „waiting” z Claude Code, a od PT-29 także `reply` — tura skończona pytaniem
+    w tekście, bez odpowiedzi). Dawniej `waiting/reply` znaczyło każdy koniec tury (usługa sprzed stanu
+    `done`) i było tu wykluczone; dziś usługa liczy je z bieżącej tury przy każdym odczycie dziennika, więc
+    stary wpis nie może się już pojawić."""
+    return isinstance(session, dict) and session.get("state") == WAITING

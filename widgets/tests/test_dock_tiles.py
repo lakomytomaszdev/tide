@@ -217,11 +217,11 @@ class AgentsPopupTest(unittest.TestCase):
         self.assertEqual(by_id["claude:4"]["detail"], "Claude Code · lokalny · qwen3-coder:30b · feat/login")
         self.assertEqual([by_id[k]["local"] for k in ("codex:1", "codex:2", "claude:4")], [True, False, True])
 
-    def test_older_daemon_reply_is_shown_as_done(self):
-        # Starsza usługa zgłaszała koniec tury jako waiting/reply — wiersz pokazuje go jako „skończył”.
-        old = dict(preview.SESSIONS[3], state="waiting", reason="reply")
-        row = self.rows([old])[0]
-        self.assertEqual((row["state"], row["word"], row["button"]), ("done", "skończył", False))
+    def test_reply_question_is_shown_as_waiting(self):
+        # PT-29: waiting/reply to tura skończona pytaniem bez odpowiedzi — wiersz „czeka”, jak inne pytania.
+        reply = dict(preview.SESSIONS[3], state="waiting", reason="reply")
+        row = self.rows([reply])[0]
+        self.assertEqual((row["state"], row["word"]), ("waiting", "czeka"))
 
     def test_screenshot(self):
         with tempfile.TemporaryDirectory(prefix="tide-popup-png-") as tmp:

@@ -500,7 +500,8 @@ function specDir(state) {
 function launchFooter(state) {
     const tool = launchToolName(state.tool)
     const where = state.repoName ? "„" + state.repoName + " · " + (state.newWorktree ? state.branch : "bieżąca gałąź") + "”" : ""
-    const check = state.check === "manual" ? " Na koniec zostawi listę „Co przetestować ręcznie i jak” i poczeka na twój test." : ""
+    const check = extrasNote(state)
+        + (state.check === "manual" ? " Na koniec zostawi listę „Co przetestować ręcznie i jak” i poczeka na twój test." : "")
     if (state.mode === "spec")
         return tool + " w katalogu projektu, bez worktree: dopyta i zapisze specyfikację w " + specDir(state)
             + ". Potem karta wróci do Backlogu ze znacznikiem „specyfikacja gotowa”."
@@ -512,19 +513,87 @@ function launchFooter(state) {
         + state.cardId + "." + check + " Karta przejdzie do „W toku”, gdy agent ruszy."
 }
 
-// Prośba /Tasks Start z polecenia RenderLaunch: worktree tylko poza trybem spec, katalog dokumentów
-// w tablicy przez addDirs (ai-docs: tide).
-function launchStartRequest(flow, state) {
-    const worktree = state.mode !== "spec" && state.newWorktree
-    return { repoPath: flow.repo, tool: flow.tool || state.tool, prompt: flow.text, newWorktree: worktree,
-             branch: worktree ? (flow.branch || state.branch) : "", images: [],
-             addDirs: flow.aiDocs === "tide" && flow.docsDir ? [flow.docsDir] : [] }
+// Zdanie stopki o dodatkowych projektach (PT-28): „ Pracuje też w mobileapp, infra (gałąź … w każdym, które zmieni).”
+function extrasNote(state) {
+    const names = (state.extras || []).map(p => p.name)
+    if (!names.length) return ""
+    const branch = state.newWorktree ? state.branch : "bieżąca gałąź"
+    return " Pracuje też w: " + names.join(", ") + " (gałąź " + branch + " w każdym, które zmieni)."
 }
 
-// UpdateCard po udanym starcie: gałąź i worktree (tylko nowy worktree), tryb, narzędzie, sprawdzenie, chwila.
+// Prośba /Tasks Start z polecenia RenderLaunch: worktree tylko poza trybem spec, katalogi dla --add-dir
+// z RenderLaunch (`addDirs`: dokumenty w tablicy przy ai-docs: tide i repozytoria dodatkowych projektów,
+// PT-28); usługa sprzed PT-28 — sam katalog dokumentów.
+function launchStartRequest(flow, state) {
+    const worktree = state.mode !== "spec" && state.newWorktree
+    const dirs = Array.isArray(flow.addDirs) ? flow.addDirs.slice()
+               : (flow.aiDocs === "tide" && flow.docsDir ? [flow.docsDir] : [])
+    return { repoPath: flow.repo, tool: flow.tool || state.tool, prompt: flow.text, newWorktree: worktree,
+             branch: worktree ? (flow.branch || state.branch) : "", images: [], addDirs: dirs }
+}
+
+// --- dodatkowe projekty karty (PT-28) -------------------------------------------------------------
+
+// Dodatkowe projekty zapisane w karcie jako pozycje okna: [{kind: "project", key: slug, name}].
+function cardExtras(snapshot, card) {
+    const out = []
+    for (const slug of (card && card.projects) || []) {
+        const project = projectBySlug(snapshot, slug)
+        out.push({ kind: "project", key: slug, name: project ? project.name : slug })
+    }
+    return out
+}
+
+// Do wyboru jako dodatkowy projekt: projekty tablicy z istniejącym repozytorium (bez głównego i już
+// wybranych), potem repozytoria z katalogu projektów, które nie są jeszcze projektami (wybranie założy
+// projekt — UpdateCard {projects: [ścieżka]}, jak `repo` w CreateCard).
+function extraOptions(snapshot, card, picked, query) {
+    const q = fold(query).trim()
+    const ok = text => !q || fold(text).indexOf(q) >= 0
+    const taken = (picked || []).map(p => p.key)
+    const primary = card ? card.project || "" : ""
+    const out = []
+    for (const p of (snapshot && snapshot.projects) || [])
+        if (p.repo && !p.repoMissing && p.slug !== primary && taken.indexOf(p.slug) < 0 && (ok(p.name) || ok(p.slug)))
+            out.push({ kind: "project", key: p.slug, name: p.name, detail: pathTail(p.repo) })
+    for (const r of (snapshot && snapshot.repos) || [])
+        if (taken.indexOf(r.path) < 0 && ok(r.name))
+            out.push({ kind: "repo", key: r.path, name: r.name, detail: "nowy projekt z repozytorium" })
+    return out
+}
+
+function addExtra(picked, kind, key, name) {
+    const list = (picked || []).slice()
+    if (!key || list.some(p => p.key === key) || list.length >= EXTRA_MAX) return list
+    list.push({ kind: kind || "project", key: key, name: name || key })
+    return list
+}
+
+function removeExtra(picked, key) {
+    return (picked || []).filter(p => p.key !== key)
+}
+
+// Czy wybór w oknie różni się od `projects` karty (wtedy UpdateCard {projects} przed uruchomieniem).
+function extrasChanged(card, picked) {
+    const saved = ((card && card.projects) || []).join("\n")
+    return (picked || []).map(p => p.key).join("\n") !== saved
+}
+
+var EXTRA_MAX = 5
+
+// „…/DevWorkspace/mobileapp” — ostatnie dwa człony ścieżki repozytorium (lista w oknie jest wąska).
+function pathTail(path) {
+    const text = String(path || "")
+    const parts = text.split("/").filter(x => x)
+    return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : text
+}
+
+// UpdateCard po udanym starcie: gałąź i worktree (tylko nowy worktree), tryb, narzędzie, sprawdzenie, chwila,
+// a `session` pusty — ponowne uruchomienie odpina poprzednią sesję i usługa przypnie nową (PT-28).
 function launchMarkRequest(result, state, nowIso) {
     return { branch: result.worktree ? result.branch || "" : "", worktree: result.worktree || "", mode: state.mode,
-             tool: result.tool || state.tool, check: state.check === "manual" ? "manual" : "auto", launched: nowIso }
+             tool: result.tool || state.tool, check: state.check === "manual" ? "manual" : "auto", launched: nowIso,
+             session: "" }
 }
 
 // Czas ISO 8601 z przesunięciem strefy (2026-10-27T12:04:00+01:00) — jak w plikach tablicy.

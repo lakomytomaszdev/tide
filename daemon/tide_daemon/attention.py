@@ -3,7 +3,9 @@
 Czysta logika na liście sesji z AgentScanner.sessions() — bez D-Bus i bez Qt, żeby dało się
 ją sprawdzić na fixtures. Wiązanie z magistralą jest w notifications.py i monitor.py.
 
-Liczy się wyłącznie stan „waiting” — agent stoi, dopóki użytkownik nie odpowie (zgoda, pytanie).
+Liczy się wyłącznie stan „waiting” — agent stoi, dopóki użytkownik nie odpowie (zgoda, pytanie, także
+pytanie na końcu tury — powód `reply`, PT-29). Powiadomienie idzie raz na wejście w „czeka”: kolejne
+odświeżenia tego samego pytania nic nie wysyłają, nowe pytanie po odpowiedzi — tak.
 Sesja, która tylko skończyła turę („done”), nie dostaje powiadomienia i nie jest celem Meta+A:
 nic nie blokuje, a skrót, który czasem prowadzi do skończonej rozmowy, przestałby znaczyć
 „ktoś cię potrzebuje”. Do skończonych sesji prowadzi lista w widżecie i KRunner.
@@ -12,6 +14,7 @@ WAITING = "waiting"
 
 REASONS = {
     "question": "Pyta o decyzję",
+    "reply": "Zadał pytanie",
     "approval": "Czeka na zgodę",
     "permission": "Czeka na zgodę",
 }
@@ -65,7 +68,11 @@ def notification_text(session: dict) -> tuple[str, str]:
     project = session.get("project") or session.get("cwd") or "?"
     reason = session.get("reason", "")
     why = REASONS.get(reason) or (f"Czeka: {reason}" if reason else "Czeka na ciebie")
-    if reason in ("approval", "permission", "question") and session.get("lastAction"):
+    if reason == "reply" and session.get("waitingText"):
+        # Pytanie na końcu tury (PT-29): samo pytanie, krótko — lastAction to tu ostatnie narzędzie, nie pytanie.
+        text = " ".join(str(session["waitingText"]).split())
+        why += ": " + (text if len(text) <= 120 else text[:119] + "…")
+    elif reason in ("approval", "permission", "question") and session.get("lastAction"):
         why += f": {session['lastAction']}"
     where = [TOOLS.get(session.get("tool", ""), session.get("tool", ""))]
     if session.get("branch"):

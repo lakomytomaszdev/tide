@@ -4,7 +4,9 @@
 - frontmatter.py — płaski frontmatter z zachowaniem nieznanych kluczy przy zapisie,
 - model.py       — kolumny, karty, projekty, tagi; odczyt z walidacją,
 - flows.py       — szablony poleceń trybów full, light i spec,
-- store.py       — odczyt, zapis z commitem każdej zmiany, migawka dla D-Bus.
+- store.py       — odczyt, zapis z commitem każdej zmiany, migawka dla D-Bus,
+- derive.py      — stan karty z pracy agentów i trwałe połączenie karta ↔ sesja,
+- place.py       — katalog pracy sesji, która weszła do repozytorium tablicy (PT-28).
 
 Celowo bez importu store.py: marker.py importuje skaner worktrees, a store.py — moduły worktrees.
 Opis: docs/tide-daemon.md (Tablica).

@@ -205,7 +205,8 @@ def last_question(text: str, limit: int = 280) -> str:
 def open_question(text: str, said_ts: float = 0.0, user_ts: float = 0.0, limit: int = 280) -> str:
     """Pytanie zostawione na końcu skończonej tury: zdanie ze znakiem zapytania w ostatnim akapicie
     wiadomości agenta — i tylko wtedy, gdy użytkownik nie napisał nic po niej (user_ts > said_ts
-    znaczy, że już odpowiedział). To nigdy nie jest „czeka” (decyzja 36), najwyżej „zostawił pytanie”."""
+    znaczy, że już odpowiedział). Sesja z takim pytaniem zwykle już czeka (`waiting/reply`, PT-29) i idzie do
+    „Czeka na mnie”; tu zostają tury, które nie czekają (np. tura zaplanowanego zadania) — „zostawił pytanie”."""
     if user_ts and said_ts and user_ts >= said_ts:
         return ""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", plain(text)) if p.strip()]
@@ -655,7 +656,8 @@ def _waiting_item(title: str, s: dict, ref: str) -> dict:
     """Pozycja „Czeka na mnie” z sesji, która stoi teraz: o co pyta albo na jaką zgodę czeka
     (waitingText z obszaru Agents), z sessionId i since — widok na żywo pozna, że już nieaktualna."""
     text = s.get("waitingFor") or ""
-    asks = s.get("reason") == "question" or (s.get("reason") != "approval" and text.rstrip().endswith("?"))
+    # reply: pytanie na końcu tury (PT-29) — pyta, nawet gdy to „Czekam na twoją odpowiedź.” bez „?”.
+    asks = s.get("reason") in ("question", "reply") or (s.get("reason") != "approval" and text.rstrip().endswith("?"))
     if not asks:
         line = f"{title}: agent czeka na twoją zgodę" + (f" ({text})" if text else "")
     elif text:

@@ -6,14 +6,20 @@ Wyjście: pole `derived` karty albo None (karta zostaje w swojej kolumnie ręczn
 
 Połączenie karty z pracą (pierwsze pasujące):
 1. `session` karty — id sesji albo koordynatora jak w /Agents i /Coordination (`claude:<id>`,
-   `codex:<id>`; samo `<id>` też),
-2. `card: K-12` we frontmatterze planu koordynatora (czytane ostrożnie — klucza może jeszcze nie być),
-3. ID karty w nazwie gałęzi (`claude/k-12-eksport`, propozycja `RenderFlow`) koordynatora, jego ticketu
-   albo sesji w repozytorium projektu karty,
-4. `branch` karty równa gałęzi koordynatora, ticketu albo sesji w repozytorium projektu karty (także
-   w jego worktrees); gałęzi głównych (master, main, develop) nie dopasowujemy.
+   `codex:<id>`; samo `<id>` też) — niezależnie od tego, gdzie sesja jest teraz (cwd, projekt, gałąź);
+   sesja, która już nie działa, ustępuje nowszej, żywej pracy karty (reguły 2–5),
+2. uruchomienie z karty (PT-28): sesja tego samego narzędzia, której katalog startu (Claude Code — katalog
+   dziennika, Codex — cwd z session_meta) to `worktree` karty (bez worktree — repozytorium projektu),
+   a początek wypada w oknie LAUNCH_WINDOW po `launched`; sesja przypięta do innej karty się nie liczy,
+3. `card: K-12` we frontmatterze planu koordynatora (czytane ostrożnie — klucza może jeszcze nie być),
+4. ID karty w nazwie gałęzi (`claude/k-12-eksport`, propozycja `RenderFlow`) koordynatora, jego ticketu
+   albo sesji w repozytorium projektu karty albo jej dodatkowego projektu (`projects`),
+5. `branch` karty równa gałęzi koordynatora, ticketu albo sesji w tych repozytoriach (także w ich
+   worktrees); gałęzi głównych (master, main, develop) nie dopasowujemy.
 Przy kilku dopasowaniach jednej reguły wygrywa najświeższa aktywność. Karta w Backlogu dostaje stan
-tylko z połączenia jawnego (1, 2) — gałąź może być przypadkowa albo stara, a Backlog to „kiedyś”.
+tylko z połączenia jawnego (1–3) — gałąź może być przypadkowa albo stara, a Backlog to „kiedyś”.
+Połączenie z reguł 2, 4 i 5 (4 i 5 — tylko jedno dopasowanie) usługa utrwala w `session` karty
+(`sticky`, BoardMonitor) — później sesja może wejść gdzie indziej (`cd`), a karta jej nie zgubi.
 Gotowe i Archiwum nigdy nie dostają stanu: ręczna kolumna `done` zawsze wygrywa.
 
 Kolumna:
@@ -49,11 +55,18 @@ from .model import CARD_ID_RE, DEFAULT_CHECK
 
 DONE_STATES = ("gotowe", "odrzucone")
 LINK_SESSION, LINK_PLAN, LINK_CARD_BRANCH, LINK_BRANCH = "session", "plan", "card-branch", "branch"
-EXPLICIT_LINKS = (LINK_SESSION, LINK_PLAN)
+LINK_LAUNCH = "launch"
+EXPLICIT_LINKS = (LINK_SESSION, LINK_LAUNCH, LINK_PLAN)
+STICKY_LINKS = (LINK_LAUNCH, LINK_CARD_BRANCH, LINK_BRANCH)   # utrwalane w `session` karty (PT-28)
+LAUNCH_WINDOW = 300.0  # s — sesja uruchomiona z karty zaczyna się najwyżej tyle po `launched`…
+LAUNCH_SLACK = 120.0   # …albo do tylu sekund przed nim (`launched` zapisuje okno już po starcie agenta)
+PERSIST_DELAY = 30.0   # s po `launched` — dopiero potem utrwalamy połączenie w pliku karty
+LAUNCH_PERSIST_SLACK = 15.0  # utrwalamy „launch” tylko dla sesji, która zaczęła się najwyżej tyle przed `launched`
 MERGE_TTL = 30.0       # wynik „czy gałąź scalona” trzymamy tyle sekund (git tylko dla skończonej pracy)
 GONE_TTL = 600.0       # gałęzi, której nie ma, nie sprawdzamy częściej
 MERGE_LOG = 1000       # tyle ostatnich commitów scalenia w głównej przeglądamy dla usuniętej gałęzi
 PENDING = "pending"    # wynik gita jeszcze w drodze (BranchState w tle)
+MISSING = "missing"    # gałęzi nie ma i nie widać jej scalenia (w dodatkowym repozytorium: nie była tam potrzebna)
 NOTE_MAX = 160
 QUESTION_MAX = 120
 NON_BRANCHES = set(MAIN_CANDIDATES) | {"HEAD", ""}
@@ -103,7 +116,8 @@ class BranchState:
     def merged(self, repo: str, branch: str):
         """True — scalona (albo usunięta po scaleniu: jest w temacie commita scalenia w głównej),
         False — ma commity spoza głównej, None — nie wiadomo (brak repozytorium albo gałęzi głównej,
-        gałęzi nie ma i nie widać jej scalenia, dziwna nazwa), PENDING — sprawdzamy w tle."""
+        dziwna nazwa), MISSING — gałęzi nie ma i nie widać jej scalenia (dla głównego repozytorium
+        karty to też „nie wiadomo”), PENDING — sprawdzamy w tle."""
         if not repo or not branch or branch.startswith("-") or ".." in branch or any(c.isspace() for c in branch):
             return None
         return self._lookup(("merged", repo, branch), lambda: self._merged(repo, branch))
@@ -177,7 +191,7 @@ class BranchState:
         # (fast-forward, squash) stąd nie widać — wtedy „nie wiadomo”, czyli „do scalenia” dla człowieka.
         log = self.git.run(repo, "log", "--merges", f"--max-count={MERGE_LOG}", "--format=%s", f"refs/heads/{main}")
         merged = log.code == 0 and any(merged_branch(line) == branch for line in log.out.splitlines())
-        return (True if merged else None), GONE_TTL
+        return (True if merged else MISSING), GONE_TTL
 
 
 class CardDeriver:
@@ -195,9 +209,11 @@ class CardDeriver:
     def stop(self) -> None:
         self.branches.stop()
 
-    def context(self) -> "Context":
+    def context(self, claimed=()) -> "Context":
+        """claimed: wartości `session` wszystkich kart — sesji przypiętej do jednej karty nie łączymy
+        z inną przez uruchomienie (reguła 2)."""
         return Context(list(self.sessions_source() or []), list(self.boards_source() or []), self.branches,
-                       self.clock(), self.repo_of)
+                       self.clock(), self.repo_of, claimed)
 
     def __call__(self, card: dict) -> dict | None:
         return self.context()(card)
@@ -217,10 +233,11 @@ class Context:
     i sesji, (repozytorium, gałąź) → praca na tej gałęzi oraz numer karty z nazwy gałęzi → gałęzie;
     karta robi już tylko wyszukania w słownikach (80 kart × 60 koordynatorów to milisekundy)."""
 
-    def __init__(self, sessions: list, boards: list, branches: BranchState, now: float, repo_of):
+    def __init__(self, sessions: list, boards: list, branches: BranchState, now: float, repo_of, claimed=()):
         self.now = now
         self.branches = branches
         self.repo_of = repo_of
+        self.claimed = {str(c).strip() for c in claimed or () if str(c or "").strip()}
         self.sessions: dict[str, dict] = {}
         self.sessions_by_sid: dict[str, dict] = {}
         for s in sessions:
@@ -271,7 +288,17 @@ class Context:
         column = card.get("column") or "backlog"
         if column not in ("todo", "backlog"):
             return None
-        found = self._by_session(card) or self._by_plan(card)
+        found = self._by_session(card)
+        if found is not None and not _live(found if found.board is None else
+                                           Link(found.how, board=self._successor(found.board))):
+            # Przypięta sesja już nie działa — nowsza, żywa praca karty (ponowne uruchomienie, nowa sesja
+            # na gałęzi karty) wygrywa; bez niej zostaje przypięta.
+            newer = self._by_launch(card) or (self._by_card_branch(card) or self._by_branch(card)
+                                               if column == "todo" else None)
+            pinned = _ts((found.board or found.session or {}).get("lastActivityTs"))
+            if newer is not None and _live(newer) and newer.activity > pinned:
+                found = newer
+        found = found or self._by_launch(card) or self._by_plan(card)
         if found is None and column == "todo":
             found = self._by_card_branch(card) or self._by_branch(card)
         if found is None:
@@ -296,6 +323,76 @@ class Context:
             return Link(LINK_SESSION, board=board, session=session)
         return None
 
+    def _by_launch(self, card: dict) -> Link | None:
+        """Sesja uruchomiona z karty (reguła 2): katalog startu = worktree karty (albo repozytorium projektu),
+        to samo narzędzie, początek w oknie po `launched`. Kilka — najbliższa chwili uruchomienia."""
+        launched = _ts(card.get("launchedTs"))
+        place = (card.get("worktree") or "").strip() or (card.get("repo") or "").strip()
+        if not launched or not place:
+            return None
+        tool = (card.get("tool") or "").strip()
+        own = (card.get("session") or "").strip()
+        best, best_gap = None, None
+        for sess in self.sessions.values():
+            if sess.get("subagent") or (tool and sess.get("tool") != tool):
+                continue
+            if (sess["id"] in self.claimed or str(sess.get("sessionId") or "") in self.claimed) and \
+                    own not in (sess["id"], str(sess.get("sessionId") or "")):
+                continue
+            started = _ts(sess.get("startedTs"))
+            if not started or not (launched - LAUNCH_SLACK <= started <= launched + LAUNCH_WINDOW):
+                continue
+            if not launched_in(sess, place):
+                continue
+            gap = abs(started - launched)
+            if best_gap is None or gap < best_gap:
+                best, best_gap = sess, gap
+        if best is None:
+            return None
+        return Link(LINK_LAUNCH, board=self.boards_by_id.get(best["id"]), session=best,
+                    activity=_ts(best.get("lastActivityTs")))
+
+    def sticky(self, card: dict) -> tuple[str, str, str] | None:
+        """(id sesji, sposób, gałąź) do utrwalenia w karcie albo None: karta bez `session` połączona przez
+        uruchomienie z karty albo jednoznacznie (jedno dopasowanie) po gałęzi (PT-28).
+
+        - nic przez PERSIST_DELAY po `launched` (świeże uruchomienie: sesja jeszcze nie zapisała dziennika,
+          a pierwsze przeliczenie mogłoby przypiąć obcą sesję z tego samego katalogu),
+        - „launch” tylko dla sesji, która zaczęła się najwyżej LAUNCH_PERSIST_SLACK przed `launched`
+          (wcześniejsza to raczej inna sesja w tym katalogu; w pamięci karta i tak ją pokaże),
+        - po gałęzi nigdy w oknie uruchomienia (np. stara, zakończona sesja tej samej gałęzi po ponownym
+          uruchomieniu),
+        - połączenie z częścią ticketów koordynatora (gałąź karty ≠ gałąź koordynatora) utrwalamy razem
+          z gałęzią tych ticketów — inaczej reguła 1 wzięłaby całego koordynatora; tickety z kilku gałęzi —
+          nie utrwalamy."""
+        if (card.get("session") or "").strip():
+            return None
+        launched = _ts(card.get("launchedTs"))
+        if launched and self.now < launched + PERSIST_DELAY:
+            return None
+        link = self.link(card)
+        if link is None or link.how not in STICKY_LINKS:
+            return None
+        if link.how == LINK_LAUNCH:
+            if _ts((link.session or {}).get("startedTs")) < launched - LAUNCH_PERSIST_SLACK:
+                return None
+        else:
+            if link.extra.get("candidates", 1) != 1:
+                return None
+            if launched and self.now < launched + LAUNCH_WINDOW:
+                return None
+        target = link.board or link.session or {}
+        sid = str(target.get("id") or "")
+        if not sid or sid in self.claimed or str(target.get("sessionId") or "") in self.claimed:
+            return None
+        branch = ""
+        if link.scope is not None and _branch(card.get("branch")) in NON_BRANCHES:
+            names = {_branch(t.get("branch")) for t in link.scope} - NON_BRANCHES
+            if len(names) != 1:
+                return None
+            branch = names.pop()
+        return sid, link.how, branch
+
     def _by_plan(self, card: dict) -> Link | None:
         num = _num(card.get("id"))
         if num is None:
@@ -308,16 +405,16 @@ class Context:
         num = _num(card.get("id"))
         if num is None:
             return None
-        repo = _real(card.get("repo"))
-        keys = [k for k in self.card_branches.get(num, ()) if not repo or k[0] == repo]
+        repos = _repos(card)
+        keys = [k for k in self.card_branches.get(num, ()) if not repos or k[0] in repos]
         return self._pick(LINK_CARD_BRANCH, keys)
 
     def _by_branch(self, card: dict) -> Link | None:
         wanted = _branch(card.get("branch"))
-        repo = _real(card.get("repo"))
-        if wanted in NON_BRANCHES or not repo:
+        repos = _repos(card)
+        if wanted in NON_BRANCHES or not repos:
             return None
-        return self._pick(LINK_BRANCH, [(repo, wanted)])
+        return self._pick(LINK_BRANCH, [(repo, wanted) for repo in repos])
 
     def _pick(self, how: str, keys: list) -> Link | None:
         """Najświeższa praca spośród dopasowanych gałęzi; jedna pozycja na koordynatora (cały
@@ -339,7 +436,9 @@ class Context:
         candidates.extend(boards.values())
         if not candidates:
             return None
-        return max(candidates, key=lambda c: (c.activity, _live(c)))
+        best = max(candidates, key=lambda c: (c.activity, _live(c)))
+        best.extra["candidates"] = len(candidates)
+        return best
 
     def _board_repo(self, board: dict) -> str:
         repo = self.board_repos.get(board.get("id"))
@@ -402,8 +501,10 @@ class Context:
         stamps = [_ts(t.get("lastActivityTs")) for t in tickets] if link.scope is not None else []
         finished_at = max(stamps or [_ts(board.get("lastActivityTs"))])
         moved = _ts(card.get("movedTs")) or _ts(card.get("createdTs"))
-        if moved > finished_at > 0:
-            # Użytkownik ruszył kartę po skończonej pracy (np. „do poprawy”) — zostaje w swojej kolumnie.
+        if moved > finished_at > 0 and card.get("movedFrom") in ("review", "done"):
+            # Użytkownik przeniósł kartę z Do sprawdzenia albo Gotowe po skończonej pracy („do poprawy”) — zostaje
+            # w swojej kolumnie. Założenie karty, ustawienie `session` i przeniesienie z innej kolumny się nie
+            # liczą (PT-29: karta założona do skończonej sesji nie może od razu „wrócić ręcznie”).
             return self._fill(out, "", "przeniesiona ręcznie po skończonej pracy — wróci do W toku, "
                                        "gdy agent znów nad nią usiądzie")
         repo = _real(card.get("repo")) or self._board_repo(board)
@@ -417,14 +518,27 @@ class Context:
         main = self.branches.main_branch(repo) if repo else ""
         branches = [b for b in branches if b != main]
         unmerged = [b for b in branches if self.branches.merged(repo, b) is not True]
+        # Karta z kilkoma projektami (PT-28): ta sama gałąź w każdym dodatkowym repozytorium, w którym
+        # powstała (gałęzi, której tam nigdy nie było, nie trzeba scalać).
+        extra = [r for r in _repos(card) if r != repo]
+        labels = [(os.path.basename(repo) + " " if extra else "") + b for b in unmerged]
+        for other in extra:
+            other_main = self.branches.main_branch(other)
+            for name in branches[:1]:
+                if name == other_main:
+                    continue
+                state = self.branches.merged(other, name)
+                if state is not True and state is not MISSING:
+                    unmerged.append(name)
+                    labels.append(f"{os.path.basename(other)} {name}")
         steps, notes = [], []
         if out["check"] == "manual":
             steps.append("przetestuj ręcznie")
             notes.append("do sprawdzenia ręcznie")
         if unmerged:
             more = f" (i {len(unmerged) - 1} innych)" if len(unmerged) > 1 else ""
-            steps.append(f"scal gałąź {unmerged[0]}{more}")
-            notes.append(f"do scalenia: {unmerged[0]}{more}")
+            steps.append(f"scal gałąź {labels[0]}{more}")
+            notes.append(f"do scalenia: {labels[0]}{more}")
             out["branch"] = unmerged[0]
         if steps:
             out["nextStep"] = ", potem ".join(steps)
@@ -490,8 +604,10 @@ class Context:
         if agent.get("reason") == "approval":
             action = (agent.get("lastAction") or "").strip()
             return f"czeka na zgodę: {action}" if action else "czeka na zgodę na narzędzie"
-        if agent.get("reason") == "question":
-            return "agent zadał pytanie i czeka na odpowiedź"
+        if agent.get("reason") in ("question", "reply"):  # reply: pytanie na końcu tury (PT-29)
+            text = " ".join(str(agent.get("waitingText") or "").split())
+            return f"czeka na odpowiedź: „{_clip(text, QUESTION_MAX)}”" if text else \
+                "agent zadał pytanie i czeka na odpowiedź"
         return "agent czeka na ciebie"
 
     def _progress_note(self, state: str, since: float, unfinished: list, agent: dict, tickets: list) -> str:
@@ -532,6 +648,30 @@ def _clock(ts: float, now: float) -> str:
     if (local.tm_year, local.tm_yday) == (today.tm_year, today.tm_yday):
         return time.strftime("%H:%M", local)
     return time.strftime("%d.%m %H:%M", local)
+
+
+def launched_in(session: dict, place: str) -> bool:
+    """Czy sesja wystartowała w katalogu `place`: dokładnie po `launchCwd` (bez dowiązań), a gdy go nie
+    ma — po `launchKey` (katalog startu zakodowany jak katalog projektu Claude Code)."""
+    start = str(session.get("launchCwd") or "")
+    if start:
+        return _real(start.rstrip("/") or "/") == _real(place.rstrip("/") or "/")
+    key = str(session.get("launchKey") or "")
+    return bool(key) and key in (_escape(place.rstrip("/")), _escape(_real(place.rstrip("/") or "/")))
+
+
+def _escape(path: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "-", path or "")
+
+
+def _repos(card: dict) -> list[str]:
+    """Repozytoria karty bez dowiązań: projektu, potem dodatkowych projektów (`extraRepos`)."""
+    out = []
+    for path in [card.get("repo")] + list(card.get("extraRepos") or []):
+        real = _real(path)
+        if real and real not in out:
+            out.append(real)
+    return out
 
 
 def _num(card_id) -> int | None:

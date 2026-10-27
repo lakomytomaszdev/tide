@@ -16,14 +16,26 @@
   o okno „Co ma zrobić agent?” (`launch:K-12`, przycisk „Uruchom” w popupie kafelka),
 - przy starcie dawne zaczyny szablonów trybów w flows/ dostają nową treść (migrate_flows: tylko
   pliki nietknięte przez użytkownika), a każda synchronizacja sprawdza, czy karty uruchomione
-  w trybie „tylko spec” mają już gotową specyfikację (mark_ready_specs: karta wraca do Backlogu).
+  w trybie „tylko spec” mają już gotową specyfikację (mark_ready_specs: karta wraca do Backlogu),
+- trwałe połączenie karty z sesją (PT-28): karta bez `session`, którą przeliczenie połączyło z sesją
+  uruchomioną z karty albo jednoznacznie po gałęzi (`Context.sticky`), dostaje tę sesję w pliku
+  (store.link_session, commit „K-1: link session claude:…”) — później sesja może wejść do innego
+  katalogu, a karta jej nie zgubi. Zapis idzie po przeliczeniu (QTimer), ta sama para karta–sesja
+  najwyżej raz na LINK_RETRY_S.
+- CardDocs(id) to plan i specyfikacja karty do panelu (board/docs.py): wejście (karta z migawki,
+  projekt, tablica koordynatora z /Coordination) zbieramy w wątku głównym, pliki czytamy w jednym
+  wątku roboczym, a odpowiedź D-Bus idzie później z wątku głównego (opóźniona odpowiedź jak w /Docker);
+  kolejne prośby o tę samą kartę w czasie odczytu czekają na ten sam wynik (bez kolejki odczytów).
 """
 import copy
 import json
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 
+from .board.docs import CardDocs
 from .board.model import CARD_PREFIX, BoardError, card_num
 
 LAUNCH_PREFIX = "launch:"  # ShowWindow("launch:K-12") — okno Tide od razu z „Co ma zrobić agent?”
@@ -32,16 +44,26 @@ DEBOUNCE_MS = 2_000
 POLL_MS = 60_000
 REDERIVE_MS = 500  # zmiany sesji przychodzą seriami (co 250 ms przy pracy agenta) — przeliczenie najwyżej tak często
 MAX_WATCHED_FILES = 2_000  # powyżej — tylko katalogi i odpytywanie co POLL_MS
+LINK_RETRY_S = 60.0  # nieudane utrwalenie sesji w karcie ponawiamy najwyżej tak często
 
 
 class BoardMonitor(QObject):
     changed = pyqtSignal()
     _rederive_requested = pyqtSignal()   # z dowolnego wątku (np. wynik gita w tle) — kolejka Qt do wątku głównego
+    _docs_ready = pyqtSignal(object, object)   # (ID karty, future) — wynik CardDocs z wątku roboczego
 
     def __init__(self, store, repos_source=None, derive=None, debounce_ms: int = DEBOUNCE_MS,
-                 poll_ms: int = POLL_MS, launchers=None, rederive_ms: int = REDERIVE_MS, parent=None):
+                 poll_ms: int = POLL_MS, launchers=None, rederive_ms: int = REDERIVE_MS, coordinators=None,
+                 docs=None, parent=None):
         super().__init__(parent)
         self.store = store
+        # CardDocs: tablice koordynatorów z /Coordination (funkcja() → lista) i czytnik dokumentów kart.
+        self.coordinators = coordinators or (lambda: [])
+        self.docs = docs or CardDocs(store.root)
+        self._docs_pool: ThreadPoolExecutor | None = None
+        self._docs_waiting: dict[str, list] = {}     # ID karty → odpowiedzi czekające na trwający odczyt
+        self._docs_ready.connect(self._deliver_docs)
+        self._current: dict | None = None                 # migawka z `derived` (to, co oddaje Snapshot())
         self.launchers = launchers                        # worktrees.Launchers — okno Tide (ShowWindow)
         self.repos_source = repos_source or (lambda: [])  # funkcja() → ścieżki repozytoriów z katalogu projektów
         # stan karty z pracy agentów (PT-5): board/derive.CardDeriver (z context()) albo funkcja(karta) → dict|None
@@ -58,6 +80,8 @@ class BoardMonitor(QObject):
         self._rederive = QTimer(self, singleShot=True, interval=rederive_ms)
         self._rederive.timeout.connect(self._apply)
         self._rederive_requested.connect(self.rederive)
+        self._links: list[tuple[str, str, str, str]] = []  # (karta, sesja, sposób, gałąź) do utrwalenia
+        self._link_tried: dict[tuple[str, str], float] = {}
 
     def start(self) -> None:
         try:
@@ -72,6 +96,9 @@ class BoardMonitor(QObject):
         self._poll.stop()
         self._debounce.stop()
         self._rederive.stop()
+        if self._docs_pool is not None:
+            self._docs_pool.shutdown(wait=False, cancel_futures=True)
+            self._docs_pool = None
         if hasattr(self.derive, "stop"):
             self.derive.stop()  # wątek gita (sprawdzanie scalenia) nie trzyma zamknięcia usługi
 
@@ -99,7 +126,16 @@ class BoardMonitor(QObject):
         return self._mutate(lambda: self.store.update_card(card_id, _object(request)))
 
     def move_card(self, card_id: str, column: str, order: int) -> str:
-        return self._mutate(lambda: self.store.move_card(card_id, column, order))
+        return self._mutate(lambda: self.store.move_card(card_id, column, order, self._shown_column(card_id)))
+
+    def _shown_column(self, card_id: str) -> str:
+        """Kolumna, w której karta jest teraz wyświetlana (boardColumn z ostatniej migawki) — do `moved-from`."""
+        try:
+            wanted = f"{CARD_PREFIX}{card_num(card_id)}"
+            cards = json.loads(self._json or "{}").get("cards") or []
+        except (BoardError, ValueError, AttributeError):
+            return ""
+        return next((str(c.get("boardColumn") or "") for c in cards if isinstance(c, dict) and c.get("id") == wanted), "")
 
     def upsert_project(self, request: str) -> str:
         return self._mutate(lambda: self.store.upsert_project(_object(request)))
@@ -112,6 +148,47 @@ class BoardMonitor(QObject):
 
     def render_launch(self, card_id: str, request: str) -> str:
         return _reply(lambda: self.store.render_launch(card_id, _object(request)))
+
+    def card_docs(self, card_id: str, reply) -> None:
+        """CardDocs(id): plan i specyfikacja karty (board/docs.py) — reply(json) później, z wątku głównego.
+        Błędy w kształcie zapisów: zły albo nieznany identyfikator — {ok: false, error, message}."""
+        try:
+            ident = f"{CARD_PREFIX}{card_num(card_id)}"
+        except BoardError as exc:
+            reply(json.dumps(_failure(exc.code, str(exc)), ensure_ascii=False))
+            return
+        if ident in self._docs_waiting:
+            self._docs_waiting[ident].append(reply)  # odczyt tej karty już trwa — ten sam wynik
+            return
+        if self._current is None:
+            self.snapshot_json()
+        snapshot = self._current or {}
+        card = next((c for c in snapshot.get("cards") or [] if isinstance(c, dict) and c.get("id") == ident), None)
+        if card is None:
+            reply(json.dumps(_failure("not-found", f"nie ma karty {ident}"), ensure_ascii=False))
+            return
+        project = next((p for p in snapshot.get("projects") or []
+                        if isinstance(p, dict) and card.get("project") and p.get("slug") == card.get("project")), None)
+        coordinator = None
+        wanted = (card.get("derived") or {}).get("coordinator") or ""
+        if wanted:
+            try:
+                found = next((b for b in self.coordinators() or [] if isinstance(b, dict) and b.get("id") == wanted), None)
+            except Exception as exc:  # koordynatorzy to dodatek — plan z klucza `card` działa bez nich
+                print(f"tide-daemon: tablica: koordynatorzy dla CardDocs: {exc!r}", flush=True)
+                found = None
+            if found:
+                coordinator = {"id": wanted, "cwd": found.get("cwd") or "", "repoPath": found.get("repoPath") or "",
+                               "plan": {"path": ((found.get("plan") or {}).get("path") or "")}}
+        card, project = copy.deepcopy(card), copy.deepcopy(project)
+        if self._docs_pool is None:
+            self._docs_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-board-docs")
+        try:
+            future = self._docs_pool.submit(self.docs.read, card, project, coordinator)
+        except RuntimeError:  # pula zamknięta (koniec usługi)
+            return
+        self._docs_waiting[ident] = [reply]
+        future.add_done_callback(lambda f: self._docs_ready.emit(ident, f))
 
     def badge_json(self) -> str:
         """Plakietka widoku Tablica w pasku okna Tide: {"text", "tone"} (pusty tekst — ukryta)."""
@@ -161,6 +238,7 @@ class BoardMonitor(QObject):
             self.publish()
             return
         snapshot = self._derived(self._base)
+        self._current = snapshot
         text = json.dumps(snapshot, ensure_ascii=False)
         if text != self._json:
             self._json = text
@@ -171,18 +249,25 @@ class BoardMonitor(QObject):
             return base
         snapshot = dict(base)
         snapshot["errors"] = list(base.get("errors") or [])
+        claimed = [c.get("session") for c in base.get("cards") or [] if isinstance(c, dict) and c.get("session")]
         try:
-            derive = self.derive.context() if hasattr(self.derive, "context") else self.derive
+            derive = self.derive.context(claimed) if hasattr(self.derive, "context") else self.derive
         except Exception as exc:  # stan z pracy agentów to dodatek — tablica działa bez niego
             print(f"tide-daemon: tablica: stan z pracy agentów: {exc!r}", flush=True)
             return base
         repos = {p.get("slug"): p.get("repo") or "" for p in base.get("projects") or [] if isinstance(p, dict)}
         cards = []
+        links = []
         for card in base.get("cards") or []:
             card = copy.copy(card)
             derived = None
             try:
-                derived = derive({**card, "repo": repos.get(card.get("project"), "")})
+                given = {**card, "repo": repos.get(card.get("project"), ""),
+                         "extraRepos": [repos.get(slug) for slug in card.get("projects") or [] if repos.get(slug)]}
+                derived = derive(given)
+                sticky = derive.sticky(given) if hasattr(derive, "sticky") else None
+                if sticky:
+                    links.append((card.get("id", ""), *sticky))
             except Exception as exc:
                 snapshot["errors"].append({"path": card.get("path", ""),
                                            "message": f"{card.get('id', '')}: stan z pracy agentów: {exc}"})
@@ -190,7 +275,41 @@ class BoardMonitor(QObject):
             card["boardColumn"] = (derived or {}).get("column") or card.get("column") or "backlog"
             cards.append(card)
         snapshot["cards"] = cards
+        self._queue_links(links)
         return snapshot
+
+    def _queue_links(self, links: list) -> None:
+        now = time.monotonic()
+        fresh = [item for item in links if now - self._link_tried.get(item[:2], -LINK_RETRY_S) >= LINK_RETRY_S]
+        if not fresh or not hasattr(self.store, "link_session"):
+            return
+        if not self._links:
+            QTimer.singleShot(0, self._persist_links)  # nie w trakcie przeliczenia — po nim
+        self._links.extend(i for i in fresh if i not in self._links)
+
+    def _persist_links(self) -> None:
+        """Utrwala w kartach sesje rozpoznane przy przeliczeniu (store.link_session nie nadpisuje
+        `session` ustawionego wcześniej, także ręcznie), potem nowa migawka."""
+        links, self._links = self._links, []
+        wrote = False
+        for card_id, session, how, branch in links:
+            self._link_tried[(card_id, session)] = time.monotonic()
+            try:
+                result = self.store.link_session(card_id, session, how, branch)
+            except BoardError as exc:
+                print(f"tide-daemon: tablica: {card_id}: połączenie z sesją {session}: {exc}", flush=True)
+                continue
+            except Exception as exc:  # zapis to dodatek — derive i tak łączy kartę z sesją
+                print(f"tide-daemon: tablica: {card_id}: połączenie z sesją {session}: {exc!r}", flush=True)
+                continue
+            if result.get("changed"):
+                wrote = True
+                print(f"tide-daemon: tablica: {card_id}: połączona z sesją {session} ({how})", flush=True)
+        if len(self._link_tried) > 1000:
+            self._link_tried.clear()
+        if wrote:
+            self._rewatch()
+            self.publish()
 
     def sync(self) -> None:
         """Commit zmian z zewnątrz, nowe ścieżki do obserwacji i świeża migawka."""
@@ -214,6 +333,19 @@ class BoardMonitor(QObject):
         self._rewatch()
         self.publish()
         return text
+
+    def _deliver_docs(self, ident, future) -> None:
+        replies = self._docs_waiting.pop(ident, [])
+        if future.cancelled():
+            return
+        try:
+            result = future.result()
+        except Exception as exc:  # błąd odczytu nie może położyć usługi
+            print(f"tide-daemon: tablica: CardDocs: {exc!r}", flush=True)
+            result = _failure("internal", "błąd usługi — szczegóły w dzienniku (journalctl --user -u tide-daemon)")
+        text = json.dumps(result, ensure_ascii=False)
+        for reply in replies:
+            reply(text)
 
     def _touched(self, _path: str) -> None:
         self._debounce.start()  # każda kolejna zmiana odsuwa commit — zapis z wielu plików to jeden commit

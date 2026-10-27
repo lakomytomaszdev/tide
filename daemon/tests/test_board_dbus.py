@@ -135,7 +135,7 @@ class BoardDBusTest(unittest.TestCase):
         xml = self.service.call(SERVICE, PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
         self.assertIn(f'<interface name="{IFACE}">', xml)
         for member in ("Snapshot", "CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "RenderFlow",
-                       "Badge", "ShowWindow"):
+                       "Badge", "ShowWindow", "CardDocs"):
             self.assertIn(f'<method name="{member}">', xml)
         self.assertIn('<signal name="Changed"', xml)
         self.assertIn('<arg name="order" type="i" direction="in"/>', xml)
@@ -206,6 +206,32 @@ class BoardDBusTest(unittest.TestCase):
             self.assertEqual((reply["ok"], reply["error"]), (False, code), (member, reply))
             self.assertTrue(reply["message"])
         self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)  # błąd nie zostawia commita
+
+    def test_4_card_docs(self):
+        # Plan karty w repozytorium projektu (docs/agents/plans) i specyfikacja po nazwie pliku — odczyt
+        # w wątku roboczym usługi, odpowiedź opóźniona; repozytorium tablicy bez zmian.
+        head = git_out(self.board, "rev-parse", "HEAD")
+        plans = os.path.join(self.repo, "docs", "agents", "plans")
+        os.makedirs(plans)
+        with open(os.path.join(plans, "2026-10-27-historia.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\ntide-plan: 1\ntitle: Historia diagnoz\ncard: K-1\nstatus: active\n---\n\n"
+                     "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |\n|---|---|---|---|---|---|\n"
+                     "| DP-1 | Lista | w-toku | feat/dp-1 | | |\n\n## Notatki\n\nTekst <b>planu</b>.\n")
+        specs = os.path.join(self.repo, "docs", "agents", "specs")
+        os.makedirs(specs)
+        with open(os.path.join(specs, "k-1-historia.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\nstatus: gotowa\n---\n# Historia po VIN\n\nOpis.\n")
+        docs = self.call("CardDocs", "k-1")
+        self.assertEqual((docs["ok"], docs["card"], docs["plan"]["title"], docs["plan"]["link"]),
+                         (True, "K-1", "Historia diagnoz", "card"))
+        self.assertEqual([t["id"] for t in docs["plan"]["tickets"]], ["DP-1"])
+        self.assertIn("Tekst <b>planu</b>.", docs["plan"]["markdown"], "surowy Markdown — oczyszcza okno")
+        self.assertEqual((docs["spec"]["title"], docs["spec"]["ready"]), ("Historia po VIN", True))
+        self.assertEqual(self.call("CardDocs", "K-2")["plan"], None)
+        for card_id, code in (("K-99", "not-found"), ("plan", "bad-request")):
+            reply = self.call("CardDocs", card_id)
+            self.assertEqual((reply["ok"], reply["error"]), (False, code))
+        self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)
 
 
 class BadgeTest(unittest.TestCase):

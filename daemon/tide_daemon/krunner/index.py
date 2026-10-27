@@ -37,6 +37,7 @@ from ..agents.codex import CodexLog
 from ..agents.jsonl import JsonlTail, read_head
 from ..agents.scanner import _claude_files, _codex_files
 from .. import codex_homes
+from ..board.place import work_cwd
 from ..codex_app import is_desktop
 
 HISTORY_AGE = 30 * 24 * 60 * 60
@@ -208,9 +209,12 @@ class SessionIndex:
         log = entry.log
         if log.hidden or not log.cwd or not log.session_id:
             return None
-        where = self._places.get(log.cwd)
+        # Sesja, która weszła do repozytorium tablicy Tide, należy do projektu z katalogu startu (PT-28).
+        cwd = work_cwd(log.cwd, getattr(log, "launch_cwd", ""))
+        moved = cwd != log.cwd
+        where = self._places.get(cwd)
         if where is None:
-            where = self._places[log.cwd] = gitinfo.describe(log.cwd)
+            where = self._places[cwd] = gitinfo.describe(cwd)
         if log.tool == "claude":
             title = log.title
         else:
@@ -219,10 +223,10 @@ class SessionIndex:
             "id": f"{log.tool}:{log.session_id}",
             "tool": log.tool,
             "sessionId": log.session_id,
-            "cwd": log.cwd,
+            "cwd": cwd,
             "project": where.project,
             # Gałąź z chwili sesji (z dziennika), a dopiero bez niej bieżąca z katalogu.
-            "branch": log.branch or where.branch,
+            "branch": (where.branch if moved else "") or log.branch or where.branch,
             "title": short_title(title) or entry.prompt,
             "lastActivity": log.last_activity or entry.stamp[1],
             # Wątek z Codex Desktop — Uruchom otwiera go w aplikacji zamiast `codex resume` w Konsoli.

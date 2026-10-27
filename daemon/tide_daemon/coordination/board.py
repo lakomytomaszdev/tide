@@ -149,7 +149,8 @@ def effective(run, live: bool, now: float, transcript_mtime: float = 0.0) -> str
 
 
 def build(coord, *, plan=None, aliases=None, issues=None, tracker=None, live=None, now: float = 0.0,
-          info=None, project: str = "", repo_path: str = "", backlog=None, warnings=None) -> dict:
+          info=None, project: str = "", repo_path: str = "", backlog=None, warnings=None, cwd=None,
+          work_branch=None) -> dict:
     """Tablica jako słownik (JSON dla D-Bus Board()).
 
     live: wpis sesji koordynatora z obszaru Agents (stan, powód) albo None (sesja nie działa),
@@ -157,7 +158,9 @@ def build(coord, *, plan=None, aliases=None, issues=None, tracker=None, live=Non
     issues: {klucz: {"id", "summary", "state", "url"}} z YouTracka albo None,
     tracker: {"kind", "url", "project", "available", "error", "fetchedTs"} albo None,
     backlog: {klucz: {"title", "status"}} z docs/agents/backlog/<ID>.md albo None,
-    warnings: ostrzeżenia o numerach ticketów w repozytorium (numbering.conflicts) albo None.
+    warnings: ostrzeżenia o numerach ticketów w repozytorium (numbering.conflicts) albo None,
+    cwd, work_branch: katalog pracy i gałąź koordynatora (scanner: katalog startu i jego gałąź, gdy wszedł do
+    tablicy Tide) albo None — coord.cwd i coord.branch.
     """
     info = info or (lambda run: {})
     is_live = bool(live) and live.get("state") not in ("ended", None)
@@ -265,8 +268,8 @@ def build(coord, *, plan=None, aliases=None, issues=None, tracker=None, live=Non
         "sessionId": coord.session_id,
         "project": project,
         "repoPath": repo_path,
-        "cwd": coord.cwd,
-        "branch": coord.branch,
+        "cwd": coord.cwd if cwd is None else cwd,
+        "branch": coord.branch if work_branch is None else work_branch,
         "title": (plan.title if plan and plan.title else "") or coord.title or coord.branch or project,
         "sessionTitle": coord.title,
         "label": label,

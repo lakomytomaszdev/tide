@@ -24,6 +24,11 @@ odpowiada też jako org.tide.SessionsWindow (Raise(s id) → Sesje) i org.tide.W
 
 Widoki opisuje views.json: widok z modułem (katalog z backend.py i qml/) dostaje backend z
 create(bus, data); widok bez modułu — PlaceholderView z pustym stanem i zaczepem plakietki.
+
+Sieć: silnik QML okna dostaje fabrykę menedżera sieci, który odmawia każdego żądania poza plikami
+lokalnymi (file:, qrc:, data:) — żaden widok nie ładuje treści z sieci, a w ten sposób obrazek albo
+inny zasób z dokumentu (plan, specyfikacja, raport) nie może niczego pobrać, nawet gdyby przeszedł
+przez oczyszczanie treści (druga warstwa po apps/board/backend.py: render_markdown).
 """
 import argparse
 import importlib.util
@@ -31,11 +36,13 @@ import json
 import os
 import sys
 
+from PyQt6 import sip
 from PyQt6.QtCore import QObject, QUrl, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import (QDBus, QDBusAbstractAdaptor, QDBusConnection, QDBusMessage, QDBusPendingCallWatcher,
                           QDBusPendingReply, QDBusServiceWatcher)
 from PyQt6.QtGui import QGuiApplication, QIcon
-from PyQt6.QtQml import QQmlApplicationEngine, QQmlEngine
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest
+from PyQt6.QtQml import QQmlApplicationEngine, QQmlEngine, QQmlNetworkAccessManagerFactory
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_ID = "tide"
@@ -45,6 +52,39 @@ WINDOW_SERVICE, WINDOW_PATH, WINDOW_IFACE = "org.tide.Window", "/Window", "org.t
 LEGACY_SESSIONS = "org.tide.SessionsWindow"
 LEGACY_WORKTREES = "org.tide.WorktreesWindow"
 TONES = ("muted", "waiting", "accent", "negative")
+
+
+LOCAL_SCHEMES = ("file", "qrc", "data")
+BLOCKED_URL = "tide-blocked:"   # nieznany schemat — QNetworkAccessManager od razu kończy żądanie błędem
+
+
+class LocalOnlyNetwork(QNetworkAccessManager):
+    """Menedżer sieci QML okna: żądanie spoza plików lokalnych zamienia na adres o nieznanym schemacie,
+    więc kończy się błędem (ProtocolUnknownError) bez żadnego połączenia."""
+
+    def createRequest(self, operation, request, data=None):
+        if request.url().scheme().lower() not in LOCAL_SCHEMES:
+            request = QNetworkRequest(QUrl(BLOCKED_URL + "network"))
+        return super().createRequest(operation, request, data)
+
+
+class LocalOnlyNetworkFactory(QQmlNetworkAccessManagerFactory):
+    def __init__(self):
+        super().__init__()
+        self._managers = []   # obiekty Pythona muszą żyć — inaczej znika nadpisane createRequest
+
+    def create(self, parent):
+        manager = LocalOnlyNetwork(parent)
+        sip.transferto(manager, None)    # usuwa go silnik QML (C++), nie Python
+        self._managers.append(manager)   # jeden na wątek silnika — kilka obiektów na całe życie okna
+        return manager
+
+
+def guard_network(engine: QQmlEngine) -> QQmlNetworkAccessManagerFactory:
+    """Silnik QML bez dostępu do sieci; fabrykę trzeba trzymać, póki żyje silnik."""
+    factory = LocalOnlyNetworkFactory()
+    engine.setNetworkAccessManagerFactory(factory)
+    return factory
 
 
 def load_views(base: str = HERE) -> list[dict]:
@@ -338,6 +378,7 @@ def main(argv=None) -> int:
             return 0 if ask_running(bus, args.view, args.select) else 1
 
     engine = QQmlApplicationEngine()
+    network_factory = guard_network(engine)  # noqa: F841 — żyje tak długo jak main(), czyli silnik
     engine.setInitialProperties({"shell": shell, "grabPath": os.path.abspath(args.grab) if args.grab else "",
                                  "initialView": args.initial_view, "initialItem": args.select,
                                  "preview": args.preview_map})

@@ -10,7 +10,11 @@
   pasek błędów plików, showItem przed migawką, klawiatura (Ctrl+N, Esc, Ctrl+→), nowy tag, projekty,
 - zrzuty z --data bez ostrzeżeń QML,
 - backend na prywatnej magistrali z prawdziwym tide-daemon i tymczasową tablicą (--board-dir):
-  zapis, migawka po zapisie, błąd w kształcie {ok: false, error, message}, plakietka.
+  zapis, migawka po zapisie, błąd w kształcie {ok: false, error, message}, plakietka,
+- plan i specyfikacja w panelu karty (PT-5): logika zakładek (cardDocs.js), zakładki tylko przy
+  dokumentach, tabela ticketów, Markdown, „Co przetestować ręcznie”, szerszy panel i „Rozwiń”,
+  odświeżenie po Changed, „Otwórz plik” / „Pokaż w katalogu” / linki tylko http(s), CardDocs na
+  prywatnej magistrali.
 """
 import json
 import os
@@ -48,7 +52,7 @@ class PackageTest(unittest.TestCase):
             files = files_under(os.path.join(stage(os.path.join(tmp, "pkg")), "views", "board"))
         for name in ("backend.py", "qml/BoardView.qml", "qml/BoardPage.qml", "qml/BoardColumn.qml", "qml/BoardCard.qml",
                      "qml/CardPanel.qml", "qml/ManagePage.qml", "qml/board.js", "qml/tide/Tokens.qml",
-                     "qml/tide/Theme.qml"):
+                     "qml/tide/Theme.qml", "qml/CardDocView.qml", "qml/MarkdownBlock.qml", "qml/cardDocs.js"):
             self.assertIn(name, files)
         self.assertFalse([f for f in files if f.startswith("tests/") or f.endswith(("__init__.py", "install.sh"))])
 
@@ -58,7 +62,8 @@ class PackageTest(unittest.TestCase):
                 source = fh.read()
             self.assertEqual(re.findall(r'"#[0-9a-fA-F]{3,8}"', source), [], name)
             self.assertNotIn("StyledText", source, name)
-            self.assertNotIn("RichText", source, name)
+            if name != "MarkdownBlock.qml":  # jedyny wyjątek: HTML z backend.renderMarkdown (bez obrazów i HTML ze źródła)
+                self.assertNotIn("RichText", source, name)
             for _indent, body in re.findall(r"\n(\s*)Text \{\n(.*?)\n\1\}", source, re.S):
                 self.assertIn("textFormat: Text.PlainText", body, f"{name}: {body[:80]}")
 
@@ -215,12 +220,43 @@ class LogicTest(unittest.TestCase):
         self.assertEqual((spec_start["newWorktree"], spec_start["branch"], spec_start["addDirs"]), (False, "", []))
         self.assertEqual(self.js(f"launchMarkRequest({{worktree: '/w/k-16', branch: 'claude/k-16-okno', tool: 'claude'}}, {js_state}, 'T')"),
                          {"branch": "claude/k-16-okno", "worktree": "/w/k-16", "mode": "full", "tool": "claude",
-                          "check": "auto", "launched": "T"})
+                          "check": "auto", "launched": "T", "session": ""})
         self.assertEqual(self.js(f"launchMarkRequest({{worktree: '', branch: 'master'}}, Object.assign({js_state}, {{check: 'manual'}}), 'T')")["branch"],
                          "", "bez worktree gałąź główna nie trafia do karty")
         self.assertRegex(self.js("isoNow(1793099040000)"), r"^2026-10-27T\d\d:\d\d:00[+-]\d\d:\d\d$")
         self.assertEqual(self.js("cardNote({column: 'backlog', spec: '/s/k-1.md', note: 'moja'})"), "✓ specyfikacja gotowa")
         self.assertEqual(self.js("cardNote({column: 'todo', spec: '/s/k-1.md', note: 'moja'})"), "moja")
+
+    def test_extra_projects_logic(self):
+        """PT-28: dodatkowe projekty w oknie uruchomienia — opcje, dodawanie, usuwanie, zmiana, stopka, Start."""
+        k9 = "S.cards.find(c => c.id === 'K-9')"
+        options = self.js(f"extraOptions(S, {k9}, [], '')")
+        keys = [o["key"] for o in options]
+        primary = self.js(f"{k9}.project")
+        self.assertNotIn(primary, keys, "główny projekt nie jest dodatkowym")
+        self.assertIn("mobileapp", keys)
+        repo = next(o for o in options if o["kind"] == "repo")
+        self.assertEqual((repo["name"], repo["detail"]), ("legal-agents", "nowy projekt z repozytorium"))
+        self.assertEqual([o["key"] for o in self.js(f"extraOptions(S, {k9}, [{{key: 'mobileapp'}}], 'app5')")],
+                         ["webservice"], "wybrane znikają z listy, szukanie po nazwie")
+        picked = self.js("addExtra(addExtra([], 'project', 'mobileapp', 'mobileapp'), 'repo', '/r/legal', 'legal')")
+        self.assertEqual(picked, [{"kind": "project", "key": "mobileapp", "name": "mobileapp"},
+                                  {"kind": "repo", "key": "/r/legal", "name": "legal"}])
+        self.assertEqual(self.js(f"addExtra({json.dumps(picked)}, 'project', 'mobileapp', 'x')"), picked, "bez powtórzeń")
+        self.assertEqual(self.js(f"removeExtra({json.dumps(picked)}, 'mobileapp')"), picked[1:])
+        self.assertTrue(self.js(f"extrasChanged({{projects: []}}, {json.dumps(picked)})"))
+        self.assertFalse(self.js("extrasChanged({projects: ['mobileapp']}, [{key: 'mobileapp'}])"))
+        self.assertEqual(self.js("cardExtras(S, {projects: ['mobileapp', 'nie-ma']})"),
+                         [{"kind": "project", "key": "mobileapp", "name": "mobileapp"},
+                          {"kind": "project", "key": "nie-ma", "name": "nie-ma"}])
+        state = {"cardId": "K-16", "mode": "light", "tool": "claude", "branch": "claude/k-16-okno", "newWorktree": True,
+                 "check": "auto", "aiDocs": "tide", "slug": "dp", "repoName": "dp", "extras": picked}
+        self.assertIn("Pracuje też w: mobileapp, legal (gałąź claude/k-16-okno w każdym, które zmieni).",
+                      self.js(f"launchFooter({json.dumps(state)})"))
+        flow = {"text": "x", "repo": "/r/dp", "tool": "claude", "branch": "claude/k-16-okno", "docsDir": "/b/docs/dp",
+                "aiDocs": "tide", "addDirs": ["/b/docs/dp", "/r/mobileapp"]}
+        self.assertEqual(self.js(f"launchStartRequest({json.dumps(flow)}, {json.dumps(state)})")["addDirs"],
+                         ["/b/docs/dp", "/r/mobileapp"], "katalogi --add-dir z RenderLaunch")
 
     def test_rail_note_errors_and_replies(self):
         now = 1793099040  # 12:04 w Warszawie
@@ -267,6 +303,55 @@ class LogicTest(unittest.TestCase):
         self.assertEqual([o["kind"] for o in options].count("project"), 7)
         self.assertEqual(options[-1]["kind"], "repo")
         self.assertEqual([o["name"] for o in self.js("projectOptions(S, 'legal')")], ["Bez projektu", "legal-agents"])
+
+
+class DocsLogicTest(unittest.TestCase):
+    """cardDocs.js w QJSEngine: zakładki, postęp, stany ticketów, statusy, linki."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt6.QtCore import QCoreApplication
+        from PyQt6.QtQml import QJSEngine
+        cls.app = QCoreApplication.instance() or QCoreApplication([])
+        cls.engine = QJSEngine()
+        with open(os.path.join(APP_DIR, "qml", "cardDocs.js"), encoding="utf-8") as fh:
+            result = cls.engine.evaluate(fh.read().replace(".pragma library", ""))
+        assert not result.isError(), result.toString()
+
+    def js(self, expression):
+        value = self.engine.evaluate(f"JSON.stringify({expression})")
+        self.assertFalse(value.isError(), value.toString())
+        return json.loads(value.toString())
+
+    def test_tabs_and_progress(self):
+        plan = "{tickets: [{id: 'A', state: 'gotowe'}, {id: 'B', state: 'w-toku'}, {id: 'C', state: 'odrzucone'}]}"
+        self.assertEqual(self.js("tabs(null)"), [{"value": "opis", "label": "Opis"}])
+        self.assertEqual([t["label"] for t in self.js(f"tabs({{plan: {plan}, spec: {{}}}})")],
+                         ["Opis", "Plan · 1/2", "Specyfikacja"], "odrzucone się nie liczą")
+        self.assertEqual([t["label"] for t in self.js("tabs({plan: {tickets: []}, spec: null})")], ["Opis", "Plan"])
+        self.assertEqual(self.js("effectiveTab({plan: {}, spec: null}, 'spec')"), "opis")
+        self.assertEqual(self.js("effectiveTab({plan: {}, spec: {}}, 'spec')"), "spec")
+        self.assertEqual(self.js("effectiveTab(null, 'plan')"), "opis")
+
+    def test_states_statuses_and_links(self):
+        self.assertEqual(self.js("ticketState('czeka')"), {"word": "czeka", "tint": "peach"})
+        self.assertEqual(self.js("ticketState('w-toku').tint"), "teal")
+        self.assertEqual(self.js("ticketState('')"), {"word": "bez stanu", "tint": "textMuted"})
+        self.assertEqual(self.js("planStatus('done').word"), "zakończony")
+        self.assertEqual(self.js("specStatus({ready: true, status: 'gotowa'})"), {"word": "gotowa", "tint": "mint"})
+        self.assertEqual(self.js("specStatus({ready: false, status: 'szkic'}).tint"), "butter")
+        self.assertEqual(self.js("specStatus({ready: false, status: ''}).word"), "bez statusu")
+        self.assertEqual(self.js("safeLink(' https://example.com/a?b=1 ')"), "https://example.com/a?b=1")
+        for bad in ("javascript:alert(1)", "file:///etc/passwd", "../specs/k-1.md", "https://a b", ""):
+            self.assertEqual(self.js(f"safeLink({json.dumps(bad)})"), "", bad)
+        self.assertEqual(self.js("docTime({updatedTs: 5, mtime: 9})"), 5)
+        self.assertEqual(self.js("docTime({updated: '2026-10-27T12:00:00Z', mtime: 9})"), 1793102400)
+        self.assertEqual(self.js("docTime({updated: 'zle', mtime: 9})"), 9)
+        self.assertTrue(self.js("outsideCard({cardTickets: ['A']}, {id: 'B'})"))
+        self.assertFalse(self.js("outsideCard({cardTickets: []}, {id: 'B'})"))
+        self.assertEqual(self.js("source({link: 'coordinator', where: 'worktree'}, 'plan')"),
+                         "plan koordynatora karty · w worktree")
+        self.assertEqual(self.js("source({link: 'field', where: 'board'}, 'spec')"), "z pola spec karty · w tablicy")
 
 
 class ProbeCase(unittest.TestCase):
@@ -524,6 +609,191 @@ out["update"] = calls()[-1]
 
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class CardDocsPanelTest(ProbeCase):
+    """Zakładki „Plan” i „Specyfikacja” panelu karty na odpowiedziach CardDocs z boardfix (K-5, K-14)."""
+
+    def test_plan_tab_table_markdown_and_open_buttons(self):
+        out = self.probe("""
+click(card("K-5"))
+wait(150)
+out["requests"] = backend.docsRequests
+out["tabs"] = js("page.cardPanel.docTabs.map(t => t.label)")
+out["tabsVisible"] = obj("cardTabs").property("visible")
+out["width0"] = js("page.cardPanel.width")
+js("page.cardPanel.tab = 'plan'")
+wait(300)
+out["shown"] = js("page.cardPanel.shownTab")
+out["formHidden"] = not obj("cardTitle").property("visible") or not js("page.cardPanel.docView.visible === false")
+out["width1"] = js("page.cardPanel.width")
+out["title"] = obj("docTitle").property("text")
+out["status"] = obj("docStatus").property("word")
+out["tickets"] = js("page.cardPanel.docView.tickets.map(t => t.id + ':' + t.state)")
+out["markdown"] = js("(function () { const m = page.cardPanel.docView.markdownItem; return m.getText(0, m.length).replace(/[\\\\u2028\\\\u2029]/g, ' ') })()")
+out["manualVisible"] = obj("docManual").property("visible")
+path = js("page.cardPanel.docs.plan.path")
+out["path"] = path
+click(named("docOpen"))
+click(named("docFolder"))
+out["opens"] = calls()[-2:]
+js("page.cardPanel.docView.markdownItem.linkActivated('javascript:alert(1)')")
+js("page.cardPanel.docView.markdownItem.linkActivated('file:///etc/passwd')")
+js("page.cardPanel.docView.markdownItem.linkActivated('https://example.com/tide/docs/tide-daemon.md')")
+out["links"] = [c for c in calls() if c[0] == "openLink"]
+out["foreign"] = backend.openFile("/etc/passwd")
+click(named("cardExpand"))
+wait(300)
+out["width2"] = js("page.cardPanel.width")
+out["pageWidth"] = js("page.width")
+js("page.cardPanel.tab = 'spec'")
+wait(200)
+out["specTitle"] = obj("docTitle").property("text")
+out["specStatus"] = obj("docStatus").property("word")
+out["manual"] = js("(function () { const m = page.cardPanel.docView.manualItem; return m.getText(0, m.length).replace(/[\\\\u2028\\\\u2029]/g, ' ') })()")
+out["manualShown"] = obj("docManual").property("visible")
+js("page.cardPanel.tab = 'opis'")
+wait(200)
+out["width3"] = js("page.cardPanel.width")
+out["titleField"] = obj("cardTitle").property("visible")
+""")
+        self.assertGreaterEqual(out["requests"], 1, "panel prosi o CardDocs przy otwarciu")
+        self.assertEqual(out["tabs"], ["Opis", "Plan · 2/6", "Specyfikacja"])
+        self.assertTrue(out["tabsVisible"])
+        self.assertEqual(out["width0"], 420, "Opis — zwykła szerokość")
+        self.assertEqual(out["shown"], "plan")
+        self.assertEqual(out["width1"], 860, "dokument — szerszy panel")
+        self.assertEqual((out["title"], out["status"]), ("Tablica pracy z backlogiem i tagami", "aktywny"))
+        self.assertEqual(out["tickets"], ["PT-1:gotowe", "PT-2:gotowe", "PT-3:review", "PT-4:w-toku", "PT-5:czeka",
+                                          "PT-6:todo"])
+        self.assertIn("Decyzje", out["markdown"])
+        self.assertIn("(obraz: mock tablicy)", out["markdown"], "obraz jako tekst, bez ładowania")
+        self.assertNotIn("| Ticket |", out["markdown"])
+        self.assertFalse(out["manualVisible"], "plan bez sekcji testu ręcznego")
+        self.assertEqual(out["path"], "/home/user/DevWorkspace/plasma-tide/docs/agents/plans/2026-10-27-tablica.md")
+        self.assertEqual(out["opens"], [["openFile", out["path"]], ["showInFolder", out["path"]]])
+        self.assertEqual(out["links"], [["openLink", "https://example.com/tide/docs/tide-daemon.md"]],
+                         "tylko http(s)")
+        self.assertFalse(out["foreign"], "ścieżka spoza odpowiedzi CardDocs się nie otwiera")
+        self.assertEqual(out["width2"], out["pageWidth"] - 24, "Rozwiń — prawie całe okno")
+        self.assertEqual((out["specTitle"], out["specStatus"]), ("K-5: Tablica pracy z backlogiem i tagami", "gotowa"))
+        self.assertTrue(out["manualShown"])
+        self.assertIn("Przeciągnij kartę z Backlogu", out["manual"])
+        self.assertEqual(out["width3"], 420)
+        self.assertTrue(out["titleField"])
+
+    def test_markdown_rendering_has_no_images_html_or_foreign_links(self):
+        # Regresje z review: każdy przypadek, w którym wyrażenia regularne rozjeżdżały się z md4c.
+        cases = {
+            "unmatched-backticks-html": "``<img src=\"http://evil.example/a.png\">`",
+            "unmatched-backticks-img": "``![a](http://evil.example/b.png)`",
+            "invalid-fence-info": "```foo`bar\n<img src=\"http://evil.example/c.png\">\n![x](http://evil.example/c2.png)",
+            "list-fence": "- ```\n  code\n  ```\n\n<img src=\"http://evil.example/d.png\">\n\n![x](http://evil.example/d2.png)",
+            "multiline-alt": "![alt\ntext](http://evil.example/e.png)",
+            "refdef": "![a]\n\n[a]: http://evil.example/f.png",
+            "html": "<img src=\"http://evil.example/g.png\"> <b>gruby</b> <i>x</i> <a href=\"http://evil.example\">a</a>",
+            "links": "[f](file:///etc/passwd) [j](javascript:alert(1)) [r](../specs/k-1.md) [h](https://ok.example/x)",
+            "pathological": "![" * 262_000,
+        }
+        out = self.probe(f"""
+import re, time
+from PyQt6.QtGui import QColor, QTextDocument
+cases = {cases!r}
+for name, md in cases.items():
+    start = time.monotonic()
+    html = module.render_markdown(md, QColor("#a6c8f0"))
+    elapsed = time.monotonic() - start
+    doc = QTextDocument()
+    doc.setHtml(html)
+    out[name] = {{"img": re.findall(r"<img[^>]*>", html), "href": re.findall(r'href="([^"]*)"', html),
+                  "bold": "font-weight:700" in html, "italicOnlyImages": html.count("(obraz:"),
+                  "text": doc.toPlainText()[:300], "elapsed": elapsed}}
+""")
+        for name, result in out.items():
+            self.assertEqual(result["img"], [], name)
+            self.assertFalse(result["bold"], f"{name}: HTML ze źródła nie formatuje")
+            self.assertLess(result["elapsed"], 15.0, name)
+        self.assertEqual(out["links"]["href"], ["https://ok.example/x"], "tylko linki http(s)")
+        self.assertEqual(out["html"]["href"], [])
+        self.assertIn('<img src="http://evil.example/g.png">', out["html"]["text"], "HTML jako zwykły tekst")
+        self.assertIn("(obraz: alt text)", out["multiline-alt"]["text"])
+        self.assertEqual(out["multiline-alt"]["italicOnlyImages"], 1, "opis z kilku linii to jeden obraz")
+        self.assertIn("(obraz: a)", out["refdef"]["text"])
+        for name in ("unmatched-backticks-img", "invalid-fence-info", "list-fence"):
+            self.assertIn("(obraz:", out[name]["text"], name)
+
+    def test_poll_waits_for_the_outstanding_reply(self):
+        out = self.probe("""
+held = []
+backend._got_docs = lambda card_id, text: held.append((card_id, text))   # odpowiedź „w drodze”
+click(card("K-5"))
+wait(100)
+first = backend.docsRequests
+for _ in range(3):
+    js("page.cardPanel.requestDocs()")
+out["whilePending"] = backend.docsRequests - first
+out["pending"] = js("page.cardPanel.docsPending")
+del backend._got_docs
+type(backend)._got_docs(backend, *held[0])
+wait(50)
+out["cleared"] = js("page.cardPanel.docsPending")
+js("page.cardPanel.requestDocs()")
+wait(50)
+out["afterReply"] = backend.docsRequests - first
+""")
+        self.assertEqual(out["whilePending"], 0, "bez nowych próśb, póki odpowiedź nie wróciła")
+        self.assertEqual(out["pending"], "K-5")
+        self.assertEqual(out["cleared"], "")
+        self.assertEqual(out["afterReply"], 1)
+
+    def test_tabs_only_with_documents_and_refresh_on_changed(self):
+        out = self.probe("""
+click(card("K-12"))
+wait(150)
+out["noDocsTabs"] = obj("cardTabs").property("visible")
+out["noDocsReading"] = js("page.cardPanel.reading")
+js("page.closePanel()")
+click(card("K-14"))
+wait(150)
+out["k14Tabs"] = js("page.cardPanel.docTabs.map(t => t.value)")
+js("page.cardPanel.tab = 'plan'")
+out["fallback"] = js("page.cardPanel.shownTab")
+js("page.cardPanel.tab = 'spec'")
+wait(100)
+out["k14Status"] = obj("docStatus").property("word")
+before = backend.docsRequests
+import copy
+backend._docs_data["K-14"] = copy.deepcopy(backend._docs_data["K-14"])
+backend._docs_data["K-14"]["spec"]["title"] = "Historia diagnoz — wersja 2"
+backend._docs_data["K-14"]["spec"]["status"] = "gotowa"
+backend._docs_data["K-14"]["spec"]["ready"] = True
+set_snapshot(data)
+wait(500)
+out["after"] = backend.docsRequests - before
+out["k14Title"] = obj("docTitle").property("text")
+out["k14Status2"] = obj("docStatus").property("word")
+out["stillSpec"] = js("page.cardPanel.shownTab")
+# zapamiętana zakładka: karta bez specyfikacji — Opis, następna ze specyfikacją — znów Specyfikacja
+js("page.closePanel()")
+click(card("K-12"))
+wait(150)
+out["rememberedNoDoc"] = js("page.cardPanel.shownTab")
+js("page.closePanel()")
+click(card("K-5"))
+wait(150)
+out["rememberedSpec"] = js("page.cardPanel.shownTab")
+""")
+        self.assertFalse(out["noDocsTabs"], "karta bez planu i specyfikacji — bez zakładek")
+        self.assertFalse(out["noDocsReading"])
+        self.assertEqual(out["k14Tabs"], ["opis", "spec"])
+        self.assertEqual(out["fallback"], "opis", "zakładki Plan nie ma — Opis")
+        self.assertEqual(out["k14Status"], "szkic")
+        self.assertGreaterEqual(out["after"], 1, "nowa migawka (Changed) — CardDocs ponownie")
+        self.assertEqual((out["k14Title"], out["k14Status2"], out["stillSpec"]),
+                         ("Historia diagnoz — wersja 2", "gotowa", "spec"))
+        self.assertEqual((out["rememberedNoDoc"], out["rememberedSpec"]), ("opis", "spec"),
+                         "ostatnia zakładka zostaje dla kolejnych kart, bez dokumentu — Opis")
+
+
+@unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class FiltersAndStatesTest(ProbeCase):
     def test_filters_search_and_lanes(self):
         out = self.probe("""
@@ -688,12 +958,13 @@ class LaunchMarkStoreTest(unittest.TestCase):
                 from unittest import mock
                 with mock.patch.dict(os.environ, git_env(tmp)):
                     board = store_mod.BoardStore(os.path.join(tmp, "board"))
-                    board.create_card({"title": "Grabie", "column": "todo"})
+                    board.create_card({"title": "Grabie", "column": "todo", "session": "claude:poprzednia"})
                     self.assertTrue(board.update_card("K-1", request)["ok"])
                     card = board.snapshot()["cards"][0]
             self.assertEqual((card["mode"], card["tool"], card["worktree"]), (choice["mode"], choice["tool"], result["worktree"]))
             self.assertEqual(card["branch"], result["branch"] if result["worktree"] else "")
             self.assertEqual(card.get("check"), choice["check"])
+            self.assertEqual(card["session"], "", "poprzednia sesja odpięta — usługa przypnie nową")
 
 
 class LaunchTest(ProbeCase):
@@ -777,6 +1048,7 @@ out["toast"] = js("[page.toast, page.toastTone]")
         self.assertEqual({k: mark[k] for k in ("branch", "worktree", "mode", "tool", "check")},
                          {"branch": "claude/k-15-tryb-skupienia", "worktree": "/w/k-15", "mode": "full", "tool": "claude",
                           "check": "auto"})
+        self.assertEqual(mark["session"], "", "ponowne uruchomienie odpina poprzednią sesję (PT-28)")
         self.assertRegex(mark["launched"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")
@@ -854,6 +1126,80 @@ out["project"] = calls()[-1]
         self.assertEqual(json.loads(out["project"][2]), {"project": "plasma-tide"})
 
 
+# Element po objectName wewnątrz delegatów Repeatera (findChild ich nie widzi): funkcja QML (korzeń, nazwa).
+FIND_PY = """
+FIND = "(function find(it, name) { if (!it) return null; if (it.objectName === name) return it; " \\
+       "for (const c of it.children) { const r = find(c, name); if (r) return r } return null })"
+"""
+
+
+class ExtraProjectsTest(ProbeCase):
+    """PT-28: „Dodatkowe projekty” w oknie uruchomienia (chipy, wybór z listy, repozytorium jako nowy
+    projekt) → UpdateCard {projects} przed RenderLaunch, Start z addDirs z polecenia; chipy na karcie."""
+
+    def test_pick_extra_projects_then_launch(self):
+        flow = dict(LaunchTest.FLOW, addDirs=["/home/user/DevWorkspace/mobileapp", "/home/user/DevWorkspace/legal-agents"],
+                    projects=["mobileapp", "legal-agents"])
+        out = self.probe(FIND_PY + f"""
+flow = json.loads({json.dumps(flow, ensure_ascii=False)!r})
+replies.extend([{{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # MoveCard
+                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # UpdateCard (projekty)
+                flow,                                                                     # RenderLaunch
+                {{"ok": True, "cwd": "/w/k-15", "branch": "claude/k-15-tryb", "worktree": "/w/k-15",
+                  "title": "plasma-tide · claude/k-15-tryb", "tool": "claude", "mode": "tab"}},
+                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}}])         # UpdateCard (uruchomienie)
+def type_text(text):
+    for ch in text:
+        QTest.keyClick(window, Qt.Key(ord(ch.upper())))
+    wait(60)
+
+
+def pick(text):
+    click(named("launchExtraPicker"))
+    type_text(text)
+    key(Qt.Key.Key_Return)
+
+
+drag(card("K-15"), column("todo", fy=0.75))
+out["visible"] = obj("launchExtras").property("visible")
+pick("mobi")
+pick("legal")
+pick("app4")
+out["picked"] = js("page.launchDialog.extras.map(p => p.kind + ':' + p.name)")
+click(at(FIND + "(page.launchDialog, 'launchExtraRemove-logviewer')"))
+out["afterRemove"] = js("page.launchDialog.extras.map(p => p.key)")
+out["footer"] = obj("launchFooter").property("text")
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(400)
+out["calls"] = calls()
+out["closed"] = not js("page.launchOpen")
+""")
+        self.assertTrue(out["visible"])
+        self.assertEqual(out["picked"], ["project:mobileapp", "repo:legal-agents", "project:LogViewer"])
+        self.assertEqual(out["afterRemove"], ["mobileapp", "/home/user/DevWorkspace/legal-agents"])
+        self.assertIn("Pracuje też w: mobileapp, legal-agents", out["footer"])
+        self.assertEqual([c[0] for c in out["calls"]], ["MoveCard", "UpdateCard", "RenderLaunch", "Start", "UpdateCard"])
+        self.assertEqual(json.loads(out["calls"][1][2]),
+                         {"projects": ["mobileapp", "/home/user/DevWorkspace/legal-agents"]},
+                         "projekty (repozytorium zakłada projekt) zapisane przed poleceniem, opis bez zmian")
+        start = json.loads(out["calls"][3][1])
+        self.assertEqual(start["addDirs"], flow["addDirs"])
+        self.assertTrue(out["closed"])
+
+    def test_card_shows_extra_projects_as_chips(self):
+        data = json.loads(json.dumps(self.data))
+        for c in data["cards"]:
+            if c["id"] == "K-9":
+                c["projects"] = ["mobileapp"]
+                c["extraProjects"] = [{"slug": "mobileapp", "name": "mobileapp", "repo": "/r/mobileapp", "repoMissing": False}]
+        out = self.probe(FIND_PY + """
+out["chip"] = js(FIND + "(page.findCard('K-9'), 'cardExtraProjectText').text")
+out["dialog"] = js("page.openLaunch('K-9', false); page.launchDialog.extras.map(p => p.key)")
+""", data)
+        self.assertEqual(out["chip"], "+ mobileapp")
+        self.assertEqual(out["dialog"], ["mobileapp"], "okno startuje z projektami zapisanymi w karcie")
+
+
 class GrabTest(ProbeCase):
     def grab(self, name, *argv, data=None) -> str:
         data_path = os.path.join(self.tmp, name + ".json")
@@ -873,6 +1219,10 @@ class GrabTest(ProbeCase):
     def test_views_render_without_warnings(self):
         self.grab("board")
         self.grab("card", "--preview", "card=K-13")
+        self.grab("card-plan", "--preview", "card=K-5", "--preview", "tab=plan")
+        self.grab("card-spec", "--preview", "card=K-5", "--preview", "tab=spec")
+        self.grab("card-expand", "--preview", "card=K-5", "--preview", "tab=plan", "--preview", "expand=1")
+        self.grab("card-plan-min", "--preview", "card=K-5", "--preview", "tab=plan", "--width", "1380", "--height", "620")
         self.grab("new", "--preview", "new=todo")
         self.grab("manage", "--preview", "manage=logviewer")
         self.grab("lanes", "--preview", "layout=lanes")
@@ -954,7 +1304,52 @@ class BackendTest(unittest.TestCase):
         self.assertIn("Karta K-1: Pierwsza karta", by_tag["launch-render:K-1"]["text"])
         self.assertEqual(by_tag["launch-start:K-1"]["error"], "bad-tool", "odpowiedź z /Tasks")
 
+    def test_card_docs_over_bus(self):
+        repo = os.path.join(self.tmp, "ws", "dom")
+        os.makedirs(os.path.join(repo, "docs", "agents", "plans"))
+        subprocess.run(["git", "-C", repo, "init", "-q"], check=True, env=dict(os.environ, **git_env(self.tmp)))
+        plan = os.path.join(repo, "docs", "agents", "plans", "2026-10-27-dom.md")
+        with open(plan, "w", encoding="utf-8") as fh:
+            fh.write("---\ntide-plan: 1\ntitle: Plan domu\ncard: K-1\n---\n\n## Cel\n\nDom.\n")
+        backend = self.module.create(self.bus.bus, None)
+        replies, docs = [], []
+        backend.replied.connect(lambda tag, text: replies.append(json.loads(text)))
+        backend.docsReplied.connect(lambda card_id, text: docs.append((card_id, json.loads(text))))
+        self.assertTrue(wait_until(lambda: backend.available, timeout=10))
+        backend.createCard("create:1", json.dumps({"title": "Dom", "repo": repo}))
+        self.assertTrue(wait_until(lambda: replies, timeout=10))
+        backend.cardDocs("K-1")
+        backend.cardDocs("K-9")
+        self.assertTrue(wait_until(lambda: len(docs) == 2, timeout=10))
+        by_id = dict(docs)
+        self.assertEqual((by_id["K-1"]["plan"]["title"], by_id["K-1"]["plan"]["path"]), ("Plan domu", os.path.realpath(plan)))
+        self.assertEqual(by_id["K-9"]["error"], "not-found")
+        self.assertFalse(backend.openFile("/etc/passwd"), "tylko ścieżki z odpowiedzi CardDocs")
+        self.assertFalse(backend.showInFolder(os.path.join(repo, "README.md")))
+        self.assertFalse(backend.openLink("javascript:alert(1)"))
+        self.assertEqual(backend.docsRequests, 2)
+
     def test_preview_mode_records_calls(self):
+        backend = self.module.create(None, {"exists": True, "cards": [{"id": "K-1", "column": "backlog"}],
+                                            "cardDocs": {"K-1": {"ok": True, "card": "K-1", "others": [],
+                                                                 "plan": {"path": "/b/docs/x/plans/p.md"}, "spec": None}}})
+        docs = []
+        backend.docsReplied.connect(lambda card_id, text: docs.append((card_id, json.loads(text))))
+        backend.cardDocs("K-1")
+        backend.cardDocs("K-2")
+        self.assertTrue(wait_until(lambda: len(docs) == 2, timeout=2))
+        self.assertEqual(docs[0][1]["plan"]["path"], "/b/docs/x/plans/p.md")
+        self.assertEqual(docs[1][1], {"ok": True, "card": "K-2", "plan": None, "spec": None, "others": [], "warnings": []})
+        self.assertNotIn("cardDocs", json.loads(backend.snapshotJson), "dane podglądu dokumentów nie trafiają do migawki")
+        self.assertTrue(backend.openFile("/b/docs/x/plans/p.md"))
+        self.assertTrue(backend.showInFolder("/b/docs/x/plans/p.md"))
+        self.assertFalse(backend.openFile("/b/inne.md"))
+        self.assertTrue(backend.openLink("https://example.com"))
+        self.assertEqual(json.loads(backend.callsJson), [["openFile", "/b/docs/x/plans/p.md"],
+                                                         ["showInFolder", "/b/docs/x/plans/p.md"],
+                                                         ["openLink", "https://example.com"]])
+
+    def test_preview_mode_records_writes(self):
         backend = self.module.create(None, {"exists": True, "cards": [{"id": "K-1", "column": "backlog"}]})
         replies = []
         backend.replied.connect(lambda tag, text: replies.append(json.loads(text)))

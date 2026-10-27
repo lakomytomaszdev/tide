@@ -183,6 +183,12 @@ def pick(plans: list[Plan], session_id: str, tool: str, branch: str = "") -> Pla
     return max(candidates, key=lambda p: p.updated_ts) if candidates else None
 
 
+def split_frontmatter(text: str) -> tuple[dict | None, str]:
+    """(klucze frontmattera małymi literami, treść pod nim); bez frontmattera — (None, cały tekst).
+    Te same łagodne reguły co w planie — czyta je też podgląd dokumentów karty (board/docs.py)."""
+    return _frontmatter(text)
+
+
 # --- wnętrze -----------------------------------------------------------------------------------
 
 def _frontmatter(text: str) -> tuple[dict | None, str]:
@@ -287,5 +293,7 @@ def _plain(text: str) -> str:
     """Komórka bez znaczników kodu i pogrubień: `tom-140-guard` → tom-140-guard."""
     text = re.sub(r"`([^`]*)`", r"\1", text or "")
     text = re.sub(r"\*\*([^*]*)\*\*|__([^_]*)__", lambda m: m.group(1) or m.group(2) or "", text)
-    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    # Klasy znaków wykluczają własny początek ([ i (), więc próby z kolejnych pozycji się nie nakładają —
+    # koszt liniowy także dla linii z tysiącami „[” (plan do 512 KB czyta też podgląd karty).
+    text = re.sub(r"\[([^\[\]]*)\]\([^()]*\)", r"\1", text)
     return text.strip()

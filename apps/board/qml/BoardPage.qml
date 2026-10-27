@@ -20,6 +20,7 @@ Rectangle {
     property real nowTs: Date.now() / 1000
     property bool canLaunch: true        // okno „Co ma zrobić agent?” (LaunchDialog)
     property bool canDiff: false         // PT-5: diff gałęzi karty
+    property var markdownRenderer: null  // backend.renderMarkdown: plan i specyfikacja w panelu karty jako bezpieczny HTML
     // Filtry i układ.
     property string tagFilter: ""
     property string projectFilter: ""
@@ -41,6 +42,7 @@ Rectangle {
     property int requestSerial: 0
     // Uruchomienie agenta z karty: okno „Co ma zrobić agent?” i przebieg UpdateCard (opis) →
     // RenderLaunch → /Tasks Start → UpdateCard (gałąź, worktree, tryb, narzędzie, sprawdzenie, chwila).
+    // Pierwszy UpdateCard niesie też dodatkowe projekty wybrane w oknie (PT-28).
     property bool launchOpen: false
     property string launchCardId: ""
     property bool launchFromMove: false
@@ -61,6 +63,9 @@ Rectangle {
     signal launchRequested(string cardId)    // otwarto „Co ma zrobić agent?” dla karty
     signal renderRequested(string tag, string cardId, string request)   // /Board RenderLaunch
     signal startRequested(string tag, string request)                   // /Tasks Start
+    signal docsRequested(string cardId)      // /Board CardDocs — plan i specyfikacja w panelu karty
+    signal fileRequested(string path, string how)   // dokument karty: "open" — edytor, "folder" — menedżer plików
+    signal linkRequested(string url)         // link http(s) z planu albo specyfikacji
 
     readonly property var filters: ({ tag: tagFilter, project: projectFilter, query: query })
     readonly property var cards: Logic.visible(snapshot, filters, optimistic)
@@ -213,10 +218,14 @@ Rectangle {
         launchChoice = choice
         launchDialog.error = ""
         launchDialog.busy = true
-        if (descriptionChanged) {
-            launchDescription = description
+        if (descriptionChanged || choice.projectsChanged) {
+            // Opis i dodatkowe projekty (PT-28; repozytorium spoza tablicy zakłada projekt) jednym zapisem.
+            const request = {}
+            if (descriptionChanged) request.description = description
+            if (choice.projectsChanged) request.projects = choice.projects
+            launchDescription = descriptionChanged ? description : launchDialog.loadedDescription
             launchDialog.busyText = "Zapisuję zadanie w karcie…"
-            updateRequested(nextTag("launch-desc:" + launchCardId), launchCardId, JSON.stringify({ description: description }))
+            updateRequested(nextTag("launch-desc:" + launchCardId), launchCardId, JSON.stringify(request))
         } else {
             renderLaunch()
         }
@@ -1149,6 +1158,12 @@ Rectangle {
         homeDir: page.homeDir
         nowTs: page.nowTs
         tagTone: page.tagTone
+        maxWidth: page.width - 24
+        renderer: page.markdownRenderer
+        onDocsRequested: cardId => page.docsRequested(cardId)
+        onOpenFileRequested: path => page.fileRequested(path, "open")
+        onShowInFolderRequested: path => page.fileRequested(path, "folder")
+        onLinkRequested: url => page.linkRequested(url)
         onSaveRequested: request => page.saveCard(request)
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))

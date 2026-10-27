@@ -1,11 +1,13 @@
 // Okno „Co ma zrobić agent?” (mock zatwierdzony 27.10.2026) — modalnie nad tablicą, po przeniesieniu
 // karty z Backlogu do Do zrobienia albo z „Uruchom agenta…” na karcie. Karta (ID, ◆ projekt, tagi),
 // zadanie z opisu karty (zmiany zapiszą się w karcie), narzędzie, tryb pracy z paskiem kroków,
-// miejsce dokumentów AI z linkiem do ustawień projektu, „Nowy worktree” z gałęzią (w trybie spec
+// miejsce dokumentów AI z linkiem do ustawień projektu, „Dodatkowe projekty” (PT-28: chipy i wybór
+// z projektów tablicy oraz repozytoriów — agent dostaje je przez --add-dir), „Nowy worktree” z gałęzią (w trybie spec
 // wyłączony), „Test ręczny po zakończeniu”, zdanie „co się stanie” i przyciski Anuluj, Tylko przenieś,
 // Uruchom agenta (Ctrl+Enter). Karta bez projektu z repozytorium — wyjaśnienie i wybór projektu.
 // Sam nie rozmawia z usługą: zgłasza sygnały, a stronę tablicy (BoardPage) prowadzi przebieg
-// UpdateCard → RenderLaunch → /Tasks Start → UpdateCard. Teksty z danych — zawsze PlainText.
+// UpdateCard (opis, dodatkowe projekty) → RenderLaunch → /Tasks Start → UpdateCard. Teksty z danych —
+// zawsze PlainText.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -30,6 +32,7 @@ Rectangle {
     property bool editingBranch: false
     property bool newWorktree: true
     property bool manualCheck: false
+    property var extras: []                // dodatkowe projekty: [{kind: "project"|"repo", key, name}]
     property string loadedDescription: ""
     readonly property var card: cardId ? ((snapshot && snapshot.cards) || []).find(c => c.id === cardId) || null : null
     readonly property var project: card && card.project ? Logic.projectBySlug(snapshot, card.project) : null
@@ -41,7 +44,8 @@ Rectangle {
         cardId: cardId, mode: mode, tool: tool, branch: branch, newWorktree: newWorktree,
         check: manualCheck ? "manual" : "auto", aiDocs: workProject ? workProject.aiDocs : "",
         slug: workProject ? workProject.slug : "",
-        repoName: workProject ? String(workProject.repo).split("/").filter(x => x).pop() : ""
+        repoName: workProject ? String(workProject.repo).split("/").filter(x => x).pop() : "",
+        extras: extras, projects: extras.map(p => p.key), projectsChanged: Logic.extrasChanged(card, extras)
     })
     readonly property alias taskEdit: taskEdit
 
@@ -66,6 +70,7 @@ Rectangle {
         editingBranch = false
         newWorktree = true
         manualCheck = false
+        extras = Logic.cardExtras(snapshot, c)
         error = ""
         busy = false
         loadedDescription = c ? (String(c.description || "").trim() || c.title || "") : ""
@@ -384,6 +389,93 @@ Rectangle {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: dialog.manageRequested(dialog.workProject.slug)
+                            }
+                        }
+                    }
+                }
+
+                // Dodatkowe projekty (PT-28): zadanie, które zmienia kilka repozytoriów.
+                RowLayout {
+                    objectName: "launchExtras"
+                    Layout.fillWidth: true
+                    visible: dialog.workProject !== null
+                    spacing: 10
+                    FieldLabel { text: "Dodatkowe projekty"; color: Tide.Tokens.textSecondary }
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Repeater {
+                            model: dialog.extras
+                            Rectangle {
+                                id: extraChip
+                                required property var modelData
+                                objectName: "launchExtra-" + modelData.key
+                                implicitWidth: extraRow.implicitWidth + 16
+                                implicitHeight: 28
+                                radius: 7
+                                color: Tide.Tokens.backgroundCard
+                                border.width: 1
+                                border.color: Tide.Theme.alpha(modelData.kind === "repo" ? Tide.Tokens.butter : Tide.Tokens.accent, 0.35)
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: "Dodatkowy projekt " + modelData.name
+                                Row {
+                                    id: extraRow
+                                    anchors.centerIn: parent
+                                    spacing: 6
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "◆"
+                                        textFormat: Text.PlainText
+                                        color: extraChip.modelData.kind === "repo" ? Tide.Tokens.butter : Tide.Tokens.accent
+                                        font.family: Tide.Theme.uiFamily
+                                        font.pixelSize: 10
+                                    }
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: extraChip.modelData.name + (extraChip.modelData.kind === "repo" ? " · nowy projekt" : "")
+                                        textFormat: Text.PlainText
+                                        color: Tide.Tokens.textPrimary
+                                        font.family: Tide.Theme.uiFamily
+                                        font.pixelSize: 12
+                                    }
+                                    Text {
+                                        objectName: "launchExtraRemove-" + extraChip.modelData.key
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "✕"
+                                        textFormat: Text.PlainText
+                                        color: removeArea.containsMouse ? Tide.Tokens.rose : Tide.Tokens.textMuted
+                                        font.family: Tide.Theme.uiFamily
+                                        font.pixelSize: 11
+                                        Accessible.role: Accessible.Button
+                                        Accessible.name: "Usuń " + extraChip.modelData.name
+                                        Accessible.onPressAction: dialog.extras = Logic.removeExtra(dialog.extras, extraChip.modelData.key)
+                                        MouseArea {
+                                            id: removeArea
+                                            anchors.fill: parent
+                                            anchors.margins: -4
+                                            enabled: !dialog.busy
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: dialog.extras = Logic.removeExtra(dialog.extras, extraChip.modelData.key)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        ProjectPicker {
+                            id: extraPicker
+                            objectName: "launchExtraPicker"
+                            visible: dialog.extras.length < Logic.EXTRA_MAX
+                            width: 230
+                            implicitHeight: 28
+                            snapshot: dialog.snapshot
+                            kind: ""
+                            key: ""
+                            label: ""
+                            placeholder: "+ dodaj projekt albo repozytorium"
+                            optionSource: query => Logic.extraOptions(dialog.snapshot, dialog.card, dialog.extras, query)
+                            onChosen: (kind, key, label) => {
+                                if (kind) dialog.extras = Logic.addExtra(dialog.extras, kind, key, label)
                             }
                         }
                     }

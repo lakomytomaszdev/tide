@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 
 from .. import codex_homes
 from ..agents import gitinfo
+from ..board.place import work_cwd
 from . import board as board_mod
 from . import claude as claude_mod
 from . import codex as codex_mod
@@ -158,24 +159,28 @@ class CoordinationScanner:
         return boards
 
     def board(self, coord, live, now: float, force_tracker: bool = False) -> dict:
-        where = gitinfo.describe(coord.cwd) if coord.cwd else gitinfo.Location("", "", "")
-        roots = repo_roots(coord.cwd) if coord.cwd and os.path.isdir(coord.cwd) else []
+        # Koordynator, który wszedł do repozytorium tablicy Tide (pisze plan w <tablica>/docs/<projekt>/),
+        # nadal pracuje w swoim katalogu startu — tam szukamy repozytorium i planu (PT-28).
+        cwd = work_cwd(coord.cwd, getattr(coord, "launch_cwd", ""))
+        where = gitinfo.describe(cwd) if cwd else gitinfo.Location("", "", "")
+        branch = coord.branch if cwd == coord.cwd else (where.branch or coord.branch)
+        roots = repo_roots(cwd) if cwd and os.path.isdir(cwd) else []
         if not roots:
             # Katalog koordynatora zniknął (np. usunięty worktree Codexa) — repozytorium z katalogów
             # podagentów, od najczęstszego (szukanie w górę od nieistniejącego katalogu mogłoby trafić
             # w obce repozytorium wyżej).
             counts: dict[str, int] = {}
             for run in coord.runs.values():
-                if run.cwd and run.cwd != coord.cwd:
+                if run.cwd and run.cwd != cwd:
                     counts[run.cwd] = counts.get(run.cwd, 0) + 1
             for cwd in sorted(counts, key=lambda c: -counts[c]):
                 roots = repo_roots(cwd) if os.path.isdir(cwd) else []
                 if roots:
                     break
         if not roots:
-            roots = repo_roots(coord.cwd)
+            roots = repo_roots(cwd)
         plans = [self._plan(path) for path in _plan_files(roots)]
-        plan = plan_mod.pick([p for p in plans if p is not None], coord.session_id, coord.tool, coord.branch or "")
+        plan = plan_mod.pick([p for p in plans if p is not None], coord.session_id, coord.tool, branch or "")
         aliases = ids.load_aliases(roots)
         backlog = self._backlog_entries(roots, aliases)
         issues, tracker = None, None
@@ -184,9 +189,9 @@ class CoordinationScanner:
             if plan.tracker == "youtrack" and self.tracker is not None:
                 issues, tracker = self.tracker.get(plan.tracker_url, plan.tracker_project, force=force_tracker)
         return board_mod.build(coord, plan=plan, aliases=aliases, issues=issues, tracker=tracker, live=live,
-                               now=now, info=self._info, project=where.project or os.path.basename(coord.cwd or ""),
+                               now=now, info=self._info, project=where.project or os.path.basename(cwd or ""),
                                repo_path=roots[-1] if roots else "", backlog=backlog,
-                               warnings=self.warnings(roots, aliases))
+                               warnings=self.warnings(roots, aliases), cwd=cwd, work_branch=branch)
 
     def warnings(self, roots, aliases=None) -> list[dict]:
         """Ostrzeżenia o numerach ticketów w repozytorium (numbering.conflicts); błąd — pusta lista."""
