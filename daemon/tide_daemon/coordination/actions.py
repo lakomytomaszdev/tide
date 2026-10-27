@@ -64,7 +64,9 @@ def cache_payload(boards: list, generated: float) -> dict:
                          "question": _clip(((t.get("question") or {}).get("text") or ""), 300),
                          "planNote": _clip(t.get("planNote") or "", 300),
                          "description": (t.get("description") or "").strip()[:400],
-                         "brief": _clip(t.get("brief") or "", 300)}
+                         "brief": _clip(t.get("brief") or "", 300),
+                         # Opis karty po ludzku (describe.py, decyzja 54) — krótkie napisy, nie polecenia.
+                         "done": _clip(t.get("done") or "", 300), "now": _clip(t.get("now") or "", 300)}
                         for t in b.get("tickets", [])],
         })
     return {"version": CACHE_VERSION, "generated": round(generated, 3), "coordinators": out}

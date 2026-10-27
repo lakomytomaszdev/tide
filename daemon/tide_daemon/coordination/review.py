@@ -215,6 +215,32 @@ def summary_text(review: dict) -> str:
     return ", ".join(parts) if parts else "bez uwag"
 
 
+def plural(n: int, one: str, few: str, many: str) -> str:
+    """Polska odmiana po liczbie: 1 uwaga, 2 uwagi, 5 uwag, 22 uwagi, 12 uwag."""
+    n = abs(n)
+    if n == 1:
+        return one
+    return few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many
+
+
+def human_text(review: dict) -> str:
+    """Wynik review po ludzku: „1 poważna uwaga i 8 drobnych”, „2 błędy blokujące”, „bez uwag”."""
+    words = (("blocker", ("błąd blokujący", "błędy blokujące", "błędów blokujących")),
+             ("major", ("poważna uwaga", "poważne uwagi", "poważnych uwag")),
+             ("nit", ("drobna uwaga", "drobne uwagi", "drobnych uwag")))
+    parts = []
+    for level, forms in words:
+        n = review.get(level) or 0
+        if n:
+            form = plural(n, *forms)
+            if parts and level == "nit":
+                form = form.split()[0]  # „1 poważna uwaga i 8 drobnych” — bez powtarzania „uwag”
+            parts.append(f"{n} {form}")
+    if not parts:
+        return "bez uwag"
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " i " + parts[-1]
+
+
 def _clip(text: str, limit: int) -> str:
     text = " ".join(text.replace("**", "").replace("`", "").split())
     return text if len(text) <= limit else text[: limit - 1] + "…"

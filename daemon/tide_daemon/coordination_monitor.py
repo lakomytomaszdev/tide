@@ -5,7 +5,9 @@
 - odświeżenie: co REFRESH_MS, po zmianie sesji agentów (najwyżej co MIN_GAP_MS) i na żądanie
   (Refresh() — także z pominięciem pamięci YouTracka),
 - po każdej zmianie: sygnał Changed, plik dla raportu porannego (coordination/actions.py)
-  i pole `coordination` przy sesjach koordynatorów w /Agents.
+  i pole `coordination` przy sesjach koordynatorów w /Agents,
+- opisy kart po ludzku (coordination/describe.py): z pamięci i reguł w wątku odświeżania, a model
+  w osobnym wątku roboczym (jedno wywołanie naraz, z odstępami) — po nim kolejne odświeżenie.
 """
 import json
 import time
@@ -23,10 +25,11 @@ START_DELAY_MS = 1_500
 class CoordinationMonitor(QObject):
     changed = pyqtSignal()
     _finished = pyqtSignal(object, object)
+    _described = pyqtSignal(object)
 
     def __init__(self, scanner, sessions_source=lambda: [], launchers=None, activate=None, worktrees_source=None,
                  cache_file: str | None = None, clock=time.time, refresh_ms: int = REFRESH_MS,
-                 start_delay_ms: int = START_DELAY_MS, parent=None):
+                 start_delay_ms: int = START_DELAY_MS, describer=None, parent=None):
         super().__init__(parent)
         self.scanner = scanner
         self.sessions_source = sessions_source      # funkcja() → sesje obszaru Agents
@@ -45,6 +48,10 @@ class CoordinationMonitor(QObject):
         self._force = False
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-coordination")
         self._finished.connect(self._deliver)
+        self.describer = describer                  # describe.Describer albo None (bez opisów kart)
+        self._describing = False
+        self._describe_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-describe")
+        self._described.connect(self._on_described)
         self._timer = QTimer(self, interval=refresh_ms)
         self._timer.timeout.connect(self.refresh)
         self._soon = QTimer(self, singleShot=True, interval=MIN_GAP_MS)
@@ -62,6 +69,9 @@ class CoordinationMonitor(QObject):
         self._soon.stop()
         self._start.stop()
         self._pool.shutdown(wait=False, cancel_futures=True)
+        if self.describer is not None:
+            self.describer.stop()  # trwające `claude -p` ginie, żeby zamknięcie usługi nie czekało
+        self._describe_pool.shutdown(wait=False, cancel_futures=True)
 
     def sessions_changed(self) -> None:
         """Zmiana w /Agents (np. podagent skończył) — odświeżenie, ale nie częściej niż co MIN_GAP_MS."""
@@ -134,10 +144,49 @@ class CoordinationMonitor(QObject):
         self._busy = True
         force, self._force = self._force, False
         live = [dict(s) for s in (self.sessions_source() or [])]
-        future = self._pool.submit(lambda: self.scanner.refresh(live, force_tracker=force))
+        future = self._pool.submit(self._scan, live, force)
         future.add_done_callback(lambda f: self._finished.emit(None, f))
 
     # --- wnętrze ---------------------------------------------------------------------------
+
+    def _scan(self, live: list, force: bool) -> list:
+        """Wątek roboczy: tablice i opisy kart z pamięci podręcznej albo reguł (bez modelu)."""
+        boards = self.scanner.refresh(live, force_tracker=force)
+        if self.describer is not None:
+            try:
+                self.describer.decorate(boards)
+            except Exception as exc:  # opis kart to ozdoba — tablica ma się pokazać i bez niego
+                print(f"tide-daemon: koordynacja: opisy kart: {exc!r}", flush=True)
+        return boards
+
+    def _describe_next(self) -> None:
+        """Następne wywołanie modelu dla opisów kart (describe.Describer.due), gdy żadne nie trwa."""
+        if self.describer is None or self._describing:
+            return
+        try:
+            job = self.describer.due(self.boards)
+        except Exception as exc:
+            print(f"tide-daemon: koordynacja: opisy kart: {exc!r}", flush=True)
+            return
+        if job is None:
+            return
+        self._describing = True
+        try:
+            future = self._describe_pool.submit(self.describer.run, job)
+        except RuntimeError:  # pula zamknięta (usługa się kończy)
+            self._describing = False
+            return
+        future.add_done_callback(lambda f: self._described.emit(f))
+
+    def _on_described(self, future) -> None:
+        self._describing = False
+        try:
+            fresh = future.result()
+        except Exception as exc:
+            print(f"tide-daemon: koordynacja: opisy kart: {exc!r}", flush=True)
+            fresh = False
+        if fresh:
+            self.refresh()  # nowe opisy z pamięci podręcznej trafiają na tablice
 
     def _deliver(self, _then, future) -> None:
         self._busy = False
@@ -175,3 +224,4 @@ class CoordinationMonitor(QObject):
                     print(f"tide-daemon: koordynacja: nie zapisano pliku dla raportu: {exc}", flush=True)
         if changed:
             self.changed.emit()
+        self._describe_next()

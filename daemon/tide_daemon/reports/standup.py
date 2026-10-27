@@ -442,13 +442,15 @@ def _units(project) -> list[dict]:
 # --- podsumowanie z reguł --------------------------------------------------------------------------
 
 NOTE_PROGRESS = {
-    "skończył, czeka na review": ("implementacja gotowa, czeka na review", "review"),
+    "skończył, czeka na review": ("implementacja gotowa, czeka na review", "review"),  # plik sprzed decyzji 54
+    "gotowe, czeka na review": ("implementacja gotowa, czeka na review", "review"),
     "przerwany — koordynator już nie działa": ("przerwane w trakcie", "wznowić albo zlecić od nowa"),
     "podagent zatrzymany": ("zatrzymane", "sprawdzić, dlaczego, i wznowić"),
 }
 NOTE_DONE = {
     "review OK": "review bez uwag",
     "bez review": "",
+    "rozpoznanie skończone": "",
     "poprawki po review, bez ponownego review": "poprawione po review",
     "zmiany po review, bez ponownego review": "dopracowane po review",
 }

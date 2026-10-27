@@ -198,6 +198,19 @@ class CodexThreadLog:
                 self.hidden = True  # guardian (recenzent zgód) i inne — szum
 
 
+def first_message_title(message: str, limit: int = 80) -> str:
+    """Tytuł wątku bez nazwy (session_index, Codex Desktop): pierwsza linia pierwszej wiadomości
+    użytkownika, przycięta — lepsza niż nazwa gałęzi. Pusty, gdy wiadomość to nie zwykły tekst."""
+    for line in (message or "").splitlines():
+        line = " ".join(line.strip(" #*>`-").split())
+        if len(line) >= 3 and not line.startswith("<"):
+            if len(line) > limit:
+                cut = line[: limit - 1]
+                line = (cut[: cut.rfind(" ")] if cut.rfind(" ") > limit * 0.6 else cut).rstrip(" ,;:") + "…"
+            return line
+    return ""
+
+
 def task_name(spawn: dict) -> str:
     """„/root/la029_adapter” → „la029_adapter”."""
     return os.path.basename(str(spawn.get("agent_path") or "").rstrip("/"))
@@ -206,7 +219,8 @@ def task_name(spawn: dict) -> str:
 def build(root: CodexThreadLog, children: list[CodexThreadLog], title: str = "") -> Coordinator:
     """Koordynator z wątku głównego i wszystkich jego potomków (już doczytanych)."""
     coord = Coordinator(id=f"codex:{root.id}", tool="codex", session_id=root.id, path=root.path, cwd=root.cwd,
-                        branch=root.branch, title=title, model=root.model, first_ts=root.first_ts,
+                        branch=root.branch, title=title or first_message_title(root.first_message),
+                        model=root.model, first_ts=root.first_ts,
                         last_ts=root.last_ts)
     spawns = dict(root.spawns)
     for child in children:

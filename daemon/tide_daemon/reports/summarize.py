@@ -271,30 +271,36 @@ def find_claude(env=None) -> str:
     return ""
 
 
-def argv(binary: str, model: str) -> list[str]:
+def argv(binary: str, model: str, system_prompt: str = SYSTEM_PROMPT) -> list[str]:
+    """Wywołanie bez narzędzi i bez konfiguracji użytkownika; instrukcje raportu albo innego wywołującego
+    (opis kart tablicy koordynacji — coordination/describe.py)."""
     return [binary, "-p", "--model", model, "--output-format", "json", "--no-session-persistence",
             "--safe-mode", "--tools", "", "--disallowedTools", ",".join(DISALLOWED),
             "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--permission-mode", "dontAsk",
-            "--disable-slash-commands", "--system-prompt", SYSTEM_PROMPT]
+            "--disable-slash-commands", "--system-prompt", system_prompt]
 
 
 class Failed(RuntimeError):
     pass
 
 
-def call_claude(binary: str, model: str, payload: dict, timeout: float = TIMEOUT, env=None) -> str:
+def call_claude(binary: str, model: str, payload: dict, timeout: float = TIMEOUT, env=None,
+                system_prompt: str = SYSTEM_PROMPT, started=None) -> str:
     """Tekst odpowiedzi modelu (pole `result` z --output-format json). Failed przy każdym błędzie.
-    Proces dostaje własną grupę, więc po przekroczeniu czasu znika razem z dziećmi."""
+    Proces dostaje własną grupę, więc po przekroczeniu czasu znika razem z dziećmi.
+    started(proc) — opcjonalnie: wywołujący dostaje proces (np. żeby zabić go przy zamykaniu usługi)."""
     env = dict(os.environ if env is None else env)
     for key in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"):
         env.pop(key, None)  # usługa nie jest sesją Claude Code
     data = json.dumps(payload, ensure_ascii=False)
     with tempfile.TemporaryDirectory(prefix="tide-summary-") as cwd:
         try:
-            proc = subprocess.Popen(argv(binary, model), cwd=cwd, env=env, stdin=subprocess.PIPE,
+            proc = subprocess.Popen(argv(binary, model, system_prompt), cwd=cwd, env=env, stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
         except OSError as exc:
             raise Failed(f"nie uruchomiono claude: {exc.strerror or exc}") from None
+        if started is not None:
+            started(proc)
         try:
             out, _ = proc.communicate(data.encode("utf-8"), timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -312,6 +318,11 @@ def call_claude(binary: str, model: str, payload: dict, timeout: float = TIMEOUT
     if not isinstance(envelope, dict) or envelope.get("is_error") or not isinstance(envelope.get("result"), str):
         raise Failed("claude zgłosił błąd")
     return envelope["result"]
+
+
+def kill(proc) -> None:
+    """Zabija proces `claude` razem z jego grupą (np. zamykanie usługi w trakcie wywołania)."""
+    _kill(proc)
 
 
 def _kill(proc) -> None:
