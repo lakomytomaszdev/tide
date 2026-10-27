@@ -145,6 +145,8 @@ def chat(messages, *, role: str | None = None, endpoint: str | None = None, mode
         if ctx is not None:
             context = ctx or None
         target = cfg.endpoint(endpoint_name)
+        if config_mod.is_cloud_model(model_name):   # także jawny model, nie tylko rola z models.json
+            raise ModelError(f"Model lokalny niedostępny: {config_mod.cloud_refusal(model_name)}")
         if expect is not None and (target.name, target.public_url(), model_name, context) != tuple(expect):
             raise TargetChanged("Model lokalny: ustawienia modeli zmieniły się w trakcie wywołania")
         return target, model_name, context

@@ -161,6 +161,22 @@ def config_path(env=None) -> str:
     return os.path.join(base, "tide", "models.json")
 
 
+def is_cloud_model(name) -> bool:
+    """Model chmurowy Ollamy: etykieta po ostatnim „:” kończy się na „cloud” (`kimi-k2:cloud`,
+    `gpt-oss:120b-cloud`). Lokalna Ollama tylko przekazuje takie wywołanie na ollama.com — fakty wyszłyby
+    z komputera, więc tryb lokalny Tide takich modeli nie używa (decyzja 67). Jedno miejsce dla usługi
+    i okna (agents/localmodel.py z PT-17 importuje stąd)."""
+    if not isinstance(name, str):
+        return False
+    _base, sep, tag = name.strip().rpartition(":")
+    return bool(sep and _base) and tag.lower().endswith("cloud")
+
+
+def cloud_refusal(model: str) -> str:
+    """Powód po polsku: przy roli w Status(), przy odmowie SetRole i w informacji raportu oraz kart."""
+    return f"model „{str(model)[:200]}” działa w chmurze Ollamy, nie lokalnie — wybierz model lokalny w Tide → Modele"
+
+
 def split_model(spec: str, endpoints) -> tuple[str | None, str]:
     """„local:qwen3:8b” → ("local", "qwen3:8b"); bez znanego punktu przed pierwszym „:” → (None, cały napis)."""
     head, sep, rest = spec.partition(":")
@@ -230,6 +246,10 @@ def _role(name, value, endpoints, skipped, default, unreachable, warnings) -> Ro
             return Role(name, head, rest, ctx, reason, pinned=True)
     if endpoint is None and unreachable:
         return Role(name, unreachable[0], model, ctx, unreachable[1])
+    if is_cloud_model(model):
+        reason = cloud_refusal(model)
+        warnings.append(f"rola „{name}”: {reason} — rola niedostępna")
+        return Role(name, endpoint or default, model, ctx, reason, pinned=endpoint is not None)
     return Role(name, endpoint or default, model, ctx, pinned=endpoint is not None)
 
 
@@ -261,6 +281,8 @@ def check_role(name, value, cfg: "ModelsConfig") -> tuple[Role | None, str]:
         return None, bad_name("rola", name)
     warnings: list[str] = []
     role = _role(name, value, cfg.endpoints, set(), cfg.default, None, warnings)
+    if role is not None and role.error:
+        return None, role.error   # np. model chmurowy Ollamy — zapis odmawia, odczyt pliku pokaże rolę niedostępną
     return role, "" if role else _refusal(warnings)
 
 

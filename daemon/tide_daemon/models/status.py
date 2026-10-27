@@ -35,6 +35,15 @@ def model_key(name: str) -> str:
     return name if ":" in name.rsplit("/", 1)[-1] else name + ":latest"
 
 
+def _mark_cloud(models: list[dict]) -> list[dict]:
+    """`cloud: true` przy modelach chmurowych Ollamy (`…:cloud`, `…:120b-cloud`) — tylko przy nich, żeby stan
+    lokalnych modeli się nie zmienił. Tide ich nie używa w trybie lokalnym (config.is_cloud_model)."""
+    for model in models:
+        if config_mod.is_cloud_model(model.get("name")):
+            model["cloud"] = True
+    return models
+
+
 def _ollama_models(tags) -> list[dict]:
     out = []
     for entry in _entries(tags, "models"):
@@ -44,7 +53,7 @@ def _ollama_models(tags) -> list[dict]:
         out.append({"name": _str(entry.get("name") or entry.get("model")), "size": _int(entry.get("size")),
                     "family": _str(details.get("family")), "parameterSize": _str(details.get("parameter_size")),
                     "quantization": _str(details.get("quantization_level"))})
-    return sorted(out, key=lambda m: m["name"])
+    return sorted(_mark_cloud(out), key=lambda m: m["name"])
 
 
 def _ollama_loaded(ps) -> list[dict]:
@@ -56,12 +65,12 @@ def _ollama_loaded(ps) -> list[dict]:
         out.append({"name": _str(entry.get("name") or entry.get("model")), "size": size, "sizeVram": vram,
                     "gpuPercent": round(100 * vram / size) if size and vram is not None else None,
                     "contextLength": _int(entry.get("context_length")), "expiresAt": _str(entry.get("expires_at"))})
-    return sorted(out, key=lambda m: m["name"])
+    return sorted(_mark_cloud(out), key=lambda m: m["name"])
 
 
 def _openai_models(listing) -> list[dict]:
     names = {_str(e.get("id")) for e in _entries(listing, "data")} - {""}
-    return [{"name": name} for name in sorted(names)]
+    return _mark_cloud([{"name": name} for name in sorted(names)])
 
 
 def _offline(endpoint, error: str = "") -> dict:
