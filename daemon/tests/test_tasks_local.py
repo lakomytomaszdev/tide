@@ -21,8 +21,8 @@ from .test_tasks_core import fake_bin, quiet_git, run_launcher, write_exec
 from tide_daemon import tabmarks
 from tide_daemon.agents.claude import ClaudeLog
 from tide_daemon.agents.codex import CodexLog
-from tide_daemon.agents.localmodel import (is_local_claude_model, is_local_codex_provider, known_models,
-                                           session_is_local)
+from tide_daemon.agents.localmodel import (is_cloud_model, is_local_claude_model, is_local_codex_provider,
+                                           known_models, session_is_local)
 from tide_daemon.agents.scanner import AgentScanner
 from tide_daemon.models import config as models_config
 from tide_daemon.tasks import Planner, TaskError, TaskFiles, agent_argv
@@ -215,6 +215,16 @@ class LauncherEnvTest(unittest.TestCase):
                     self.assertNotIn(token, run.stdout + run.stderr)
                 self.assertIsNotNone(after, "zostaje zwykła powłoka")
 
+    def test_relative_token_path_is_refused(self):
+        for tool, field in (("codex", "secretEnv"), ("claude", "tokenFiles")):
+            with self.subTest(tool=tool):
+                extra = {"secretEnv": {"TIDE_MODEL_TOKEN": "mac.token"}} if field == "secretEnv" \
+                    else {"tokenFiles": ["mac.token"]}
+                run, lines, after, _argv = self.run_task(extra, tool=tool)
+                self.assertEqual(lines, [], "agent nie startuje")
+                self.assertIn("ścieżka pliku tokenu musi być bezwzględna: mac.token", run.stdout)
+                self.assertIsNotNone(after)
+
     def test_bad_env_in_task_is_rejected(self):
         for extra in ({"env": {"lower-case": "x"}}, {"env": {"A; rm -rf /": "x"}}, {"secretEnv": ["X"]},
                       {"env": {"X": 1}}, {"unsetEnv": "X"}, {"unsetEnv": ["a-b"]}, {"tokenFiles": [1]},
@@ -336,6 +346,16 @@ class PlannerLocalTest(unittest.TestCase):
             self.planner(model_probe=probe(models=())).prepare(self.request())
         self.assertIn("qwen3-coder:30b", ctx.exception.message)
 
+    def test_cloud_model_in_agent_role_is_refused(self):
+        check = probe(models=("gpt-oss:120b-cloud",))
+        with self.assertRaises(TaskError) as ctx:
+            self.planner(config({"agent": "local:gpt-oss:120b-cloud"}), check).prepare(self.request())
+        self.assertEqual(ctx.exception.code, "local-cloud")
+        self.assertEqual(ctx.exception.message, "model gpt-oss:120b-cloud działa w chmurze Ollamy — wybierz model "
+                                                "lokalny w Tide → Modele")
+        self.assertEqual(check.calls, [], "bez pytania serwera")
+        self.assertEqual(gitrepos.branches(self.alpha), ["master"])
+
     def test_ollama_latest_tag_counts_as_installed(self):
         cfg = config({"agent": "local:bge-m3"})
         plan = self.planner(cfg, probe(models=("bge-m3:latest",))).prepare(self.request())
@@ -395,8 +415,7 @@ class SessionDetectionTest(unittest.TestCase):
         log = self.feed(ClaudeLog, [answer("qwen3-coder:30b"), answer("claude-opus-5-5")])
         self.assertEqual((log.model, session_is_local(log)), ("claude-opus-5-5", False), "po /model liczy się nowy")
         # Etykieta w stylu Ollamy „nazwa:tag” bez Claude'a — lokalny.
-        for model in ("qwen3-coder:30b", "gpt-oss:20b", "bge-m3:latest",
-                      "hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M"):
+        for model in ("qwen3-coder:30b", "gpt-oss:20b", "bge-m3:latest"):
             self.assertTrue(is_local_claude_model(model), model)
         # W razie wątpliwości — nie: Claude, aliasy, Bedrock (ARN, profile), modele przez bramkę.
         for model in ("claude-opus-5-5", "claude-opus-5-5[1m]", "us.anthropic.claude-sonnet-5-5-v1:0", "sonnet",
@@ -404,6 +423,27 @@ class SessionDetectionTest(unittest.TestCase):
                       "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc",
                       "anthropic/claude-opus-4-8", "claude:latest", "global.anthropic.claude-haiku-5-5:0"):
             self.assertFalse(is_local_claude_model(model), model)
+
+    def test_ollama_cloud_and_gateway_models_are_never_local(self):
+        """Ollama Cloud (`:cloud`, `:120b-cloud` — lokalna Ollama tylko przekazuje rozmowę na ollama.com)
+        i bramki (`dostawca/model:free`) nie są lokalne, nawet gdy są w models.json albo na serwerze."""
+        cloud = ("gpt-oss:120b-cloud", "qwen3-coder:480b-cloud", "deepseek-v3.1:671b-cloud", "kimi-k2:1t-CLOUD",
+                 "gpt-oss:cloud")
+        for model in cloud:
+            self.assertTrue(is_cloud_model(model), model)
+            self.assertFalse(is_local_claude_model(model, {model}), model)
+            for provider in ("ollama", "oss", "tide-mac"):
+                self.assertFalse(session_is_local(self.codex(provider, model)), (provider, model))
+        for model in ("qwen3-coder:30b", "mycloud:7b", "qwen3:cloudless", "x:7b-cloudy", "", None, "cloud"):
+            self.assertFalse(is_cloud_model(model), model)
+        for model in ("meta-llama/llama-3.3-70b-instruct:free", "deepseek/deepseek-r1:free",
+                      "hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M"):
+            self.assertFalse(is_local_claude_model(model), "z „/” tylko ze znanych modeli: " + model)
+        self.assertTrue(is_local_claude_model("hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M",
+                                              {"hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M"}))
+        # Funkcja bez zależności — moduł models może ją zaimportować bez pakietu agents.
+        from tide_daemon import modelnames
+        self.assertIs(modelnames.is_cloud_model, is_cloud_model)
 
     def test_claude_model_known_from_models_json(self):
         """Model bez tagu, ale z models.json (rola albo model na serwerze) — lokalny; inaczej nie."""

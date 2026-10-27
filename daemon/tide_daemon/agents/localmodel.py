@@ -9,17 +9,21 @@ dostawcy, Bedrock, Azure itp. zostają bez znacznika).
   z `turn_context.model`,
 - Claude Code: `message.model` odpowiedzi modelu, lokalny gdy nie jest Claude'em (`claude`, `anthropic`
   w nazwie, aliasy, `<synthetic>`) i albo jest znany z bieżącego models.json (role i modele na serwerach
-  ze stanu /Models — `known`), albo ma etykietę w stylu Ollamy `nazwa:tag` (dokładnie jeden dwukropek,
-  np. `qwen3-coder:30b`; ARN Bedrocka ma ich kilka).
+  ze stanu /Models — `known`), albo ma etykietę w stylu Ollamy `nazwa:tag` bez „/” (dokładnie jeden
+  dwukropek, np. `qwen3-coder:30b`; ARN Bedrocka ma ich kilka, a `dostawca/model:free` to bramka),
+- model Ollama Cloud (`…:cloud`, `…:120b-cloud`, modelnames.py) nigdy nie jest lokalny, także w Codexie
+  z dostawcą `ollama` albo `oss` — lokalna Ollama tylko przekazuje rozmowę na ollama.com.
 
 Wynik trafia do listy /Agents jako `model` i `localModel`, a widżet agentów dopisuje „lokalny · model”.
 """
 import re
 
+from ..modelnames import is_cloud_model  # noqa: F401 — wystawione też tutaj
+
 LOCAL_CODEX_PROVIDERS = {"ollama", "lmstudio", "oss"}
 TIDE_PROVIDER_PREFIX = "tide-"
 CLAUDE_ALIASES = {"opus", "sonnet", "haiku", "fable", "opusplan", "default", "best"}
-OLLAMA_TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9][A-Za-z0-9._-]*")
+OLLAMA_TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9][A-Za-z0-9._-]*")  # bez „/” (bramki)
 
 
 def is_local_codex_provider(provider) -> bool:
@@ -41,7 +45,7 @@ def is_claude(model: str) -> bool:
 
 
 def is_local_claude_model(model, known=frozenset()) -> bool:
-    if not isinstance(model, str) or is_claude(model):
+    if not isinstance(model, str) or is_claude(model) or is_cloud_model(model):
         return False
     if model in known or _key(model) in {_key(k) for k in known if isinstance(k, str) and k}:
         return True
@@ -50,6 +54,8 @@ def is_local_claude_model(model, known=frozenset()) -> bool:
 
 def session_is_local(log, known=frozenset()) -> bool:
     """Sesja (agents/claude.py, agents/codex.py) na modelu lokalnym."""
+    if is_cloud_model(log.model):
+        return False  # Ollama Cloud także przez dostawcę `ollama`/`oss`
     if log.tool == "codex":
         return is_local_codex_provider(getattr(log, "provider", ""))
     if log.tool == "claude":

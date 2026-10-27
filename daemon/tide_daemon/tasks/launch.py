@@ -154,6 +154,8 @@ def run_agent(argv: list[str], env: dict) -> int:
 def read_token(path: str) -> str:
     """Token z pliku (bez białych znaków na końcach); tylko drukowalne ASCII. Błąd → ValueError
     z opisem bez treści pliku."""
+    if not os.path.isabs(os.path.expanduser(path)):
+        raise ValueError(f"ścieżka pliku tokenu musi być bezwzględna: {path}")
     try:
         with open(os.path.expanduser(path), encoding="utf-8") as fh:
             token = fh.read().strip()

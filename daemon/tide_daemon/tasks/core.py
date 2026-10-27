@@ -30,6 +30,7 @@ import time
 from dataclasses import dataclass, field
 
 from . import local as local_mod
+from ..modelnames import is_cloud_model
 from ..worktrees.git import MAIN_CANDIDATES, Git, pick_main_branch
 from ..worktrees.naming import TOOLS as BRANCH_TOOLS, branch_from_prompt, slug_from_prompt
 from ..worktrees.scanner import find_repositories
@@ -71,6 +72,7 @@ MESSAGES = {
     "bad-model": "nieznany model (cloud albo local)",
     "local-unset": "model lokalny agenta nie jest ustawiony — ustaw go w Tide → Modele",
     "local-unavailable": "model lokalny niedostępny: {detail}",
+    "local-cloud": "model {model} działa w chmurze Ollamy — wybierz model lokalny w Tide → Modele",
 }
 
 
@@ -470,6 +472,8 @@ class Planner:
             raise TaskError("local-unset")
         if role.error:
             raise TaskError("local-unavailable", detail=role.error)
+        if is_cloud_model(role.model):
+            raise TaskError("local-cloud", model=role.model)
         endpoint = cfg.endpoints.get(role.endpoint)
         if endpoint is None:
             raise TaskError("local-unavailable", detail=f"nieznany serwer „{role.endpoint}”")
