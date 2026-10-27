@@ -8,13 +8,15 @@
   katalogach i plikach tablicy, po DEBOUNCE_MS ciszy — commit „sync external changes” i Changed;
   dodatkowo co POLL_MS to samo sprawdzenie (zapis w miejscu bez zdarzenia, nowe podkatalogi,
   tablica założona poza usługą).
+- Badge() i ShowWindow(id) to zaczepy okna Tide: plakietka widoku Tablica (ta sama reguła co
+  apps/board/backend.py) i otwarcie okna na widoku Tablica, od razu na karcie.
 """
 import json
 import os
 
 from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 
-from .board.model import BoardError
+from .board.model import CARD_PREFIX, BoardError, card_num
 
 DEBOUNCE_MS = 2_000
 POLL_MS = 60_000
@@ -25,9 +27,10 @@ class BoardMonitor(QObject):
     changed = pyqtSignal()
 
     def __init__(self, store, repos_source=None, derive=None, debounce_ms: int = DEBOUNCE_MS,
-                 poll_ms: int = POLL_MS, parent=None):
+                 poll_ms: int = POLL_MS, launchers=None, parent=None):
         super().__init__(parent)
         self.store = store
+        self.launchers = launchers                        # worktrees.Launchers — okno Tide (ShowWindow)
         self.repos_source = repos_source or (lambda: [])  # funkcja() → ścieżki repozytoriów z katalogu projektów
         self.derive = derive                              # stan karty z koordynatora (PT-5) albo None
         self._json = ""
@@ -71,6 +74,26 @@ class BoardMonitor(QObject):
 
     def render_flow(self, card_id: str, mode: str) -> str:
         return _reply(lambda: self.store.render_flow(card_id, mode))
+
+    def badge_json(self) -> str:
+        """Plakietka widoku Tablica w pasku okna Tide: {"text", "tone"} (pusty tekst — ukryta)."""
+        try:
+            snapshot = json.loads(self.snapshot_json())
+        except ValueError:
+            snapshot = {}
+        text, tone = badge(snapshot)
+        return json.dumps({"text": text, "tone": tone}, ensure_ascii=False)
+
+    def show_window(self, card_id: str = "") -> bool:
+        """Okno Tide na widoku Tablica; z ID karty (K-12) — od razu na niej. Napis, który nie jest
+        ID karty, pomijamy (samo okno). False, gdy okna nie ma (nie zainstalowane)."""
+        item = ""
+        if (card_id or "").strip():
+            try:
+                item = f"{CARD_PREFIX}{card_num(card_id)}"
+            except BoardError:
+                item = ""
+        return bool(self.launchers and self.launchers.show_view("board", item))
 
     # --- odświeżanie ---------------------------------------------------------------------------
 
@@ -131,6 +154,22 @@ class BoardMonitor(QObject):
         fresh = [p for p in wanted if p not in current]
         if fresh:
             self._watcher.addPaths(fresh)
+
+
+def badge(snapshot) -> tuple[str, str]:
+    """(tekst, ton) plakietki: „● N” w brzoskwini, gdy karty czekają na ciebie (stan z koordynatora),
+    inaczej liczba kart w grze (bez Gotowych i Archiwum); zero — ("", "muted"), plakietka ukryta."""
+    cards = snapshot.get("cards") if isinstance(snapshot, dict) else None
+    waiting = total = 0
+    for card in cards if isinstance(cards, list) else []:
+        if not isinstance(card, dict):
+            continue
+        column = card.get("boardColumn") or card.get("column") or "backlog"
+        waiting += column == "waiting"
+        total += column not in ("done", "archived")
+    if waiting:
+        return f"● {waiting}", "waiting"
+    return (str(total) if total else ""), "muted"
 
 
 def _object(request: str):

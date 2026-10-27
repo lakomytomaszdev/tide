@@ -130,9 +130,9 @@ class CliTest(unittest.TestCase):
 
     def test_view_select_data_and_preview(self):
         args = self.parse()
-        self.assertEqual((args.view, args.initial_view, args.select, args.data_files), ("", "sessions", "", {}),
-                         "bez --view: domyślny widok tylko na start, działające okno dostaje pusty widok")
-        self.assertEqual(self.parse("--data", "s.json").data_files, {"sessions": "s.json"})
+        self.assertEqual((args.view, args.initial_view, args.select, args.data_files), ("", "board", "", {}),
+                         "bez --view: domyślny widok (Tablica) tylko na start, działające okno dostaje pusty widok")
+        self.assertEqual(self.parse("--data", "s.json").data_files, {"board": "s.json"})
         args = self.parse("--view", "worktrees", "--select", "/w/a", "--data", "w.json", "--data", "sessions=s.json",
                           "--preview", "pick=/w/a", "--preview", "pick=/w/b", "--preview", "confirm=1")
         self.assertEqual((args.view, args.select), ("worktrees", "/w/a"))
@@ -323,8 +323,15 @@ class BadgeOverDbusTest(unittest.TestCase):
         from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtSlot
         from PyQt6.QtDBus import QDBusConnection, QDBusMessage
 
-        @pyqtClassInfo("D-Bus Interface", "org.tide.Daemon.Board")
-        class FakeBoard(QObject):
+        # Zaczep plakietki ma tylko widok bez modułu (pierwszy z views.json) — widoki z modułem liczą ją same.
+        hooks = [v for v in self.views if not v.get("module") and v.get("badge")]
+        if not hooks:
+            self.skipTest("każdy widok ma już moduł — nie ma zaczepu plakietki do sprawdzenia")
+        view, others = hooks[0], hooks[1:]
+        spec = view["badge"]
+
+        @pyqtClassInfo("D-Bus Interface", spec["interface"])
+        class FakeArea(QObject):
             text = "11"
 
             @pyqtSlot(result=str)
@@ -333,19 +340,20 @@ class BadgeOverDbusTest(unittest.TestCase):
 
         daemon = QDBusConnection.connectToBus(self.bus.address, "tide-win-fake-daemon")
         self.addCleanup(QDBusConnection.disconnectFromBus, "tide-win-fake-daemon")
-        board = FakeBoard()
-        self.assertTrue(daemon.registerObject("/Board", board, QDBusConnection.RegisterOption.ExportAllSlots))
+        area = FakeArea()
+        self.assertTrue(daemon.registerObject(spec["path"], area, QDBusConnection.RegisterOption.ExportAllSlots))
         self.assertTrue(daemon.registerService("org.tide.Daemon"))
         backends = self.tide.make_backends(self.views, self.bus.bus, None, base=self.pkg)
-        self.assertTrue(wait_until(lambda: backends["board"].badgeText == "11", timeout=5), "zaczep /Board Badge()")
-        board.text = "12"
-        daemon.send(QDBusMessage.createSignal("/Board", "org.tide.Daemon.Board", "Changed"))
-        self.assertTrue(wait_until(lambda: backends["board"].badgeText == "12", timeout=5), "odświeżenie po Changed")
+        backend = backends[view["id"]]
+        self.assertTrue(wait_until(lambda: backend.badgeText == "11", timeout=5), f"zaczep {spec['path']} Badge()")
+        area.text = "12"
+        daemon.send(QDBusMessage.createSignal(spec["path"], spec["interface"], "Changed"))
+        self.assertTrue(wait_until(lambda: backend.badgeText == "12", timeout=5), "odświeżenie po Changed")
         wait_until(lambda: False, timeout=0.5)
-        self.assertEqual((backends["docker"].badgeText, backends["reports"].badgeText), ("", ""),
-                         "usługa bez /Docker i /Reports — plakietki ukryte")
+        self.assertEqual([backends[v["id"]].badgeText for v in others], ["" for _ in others],
+                         "usługa bez pozostałych obiektów — plakietki ukryte")
         daemon.unregisterService("org.tide.Daemon")
-        self.assertTrue(wait_until(lambda: backends["board"].badgeText == "", timeout=5), "usługa znika — plakietka też")
+        self.assertTrue(wait_until(lambda: backend.badgeText == "", timeout=5), "usługa znika — plakietka też")
 
 
 @requires_dbus

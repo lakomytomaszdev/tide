@@ -479,7 +479,7 @@ def start_board(app, args, trees):
         return sorted({item["repoPath"] for item in trees.scanner.snapshot()
                        if item.get("isMain") and not item.get("missing") and item.get("repoPath")})
 
-    board = BoardMonitor(board_store(args), repos_source=repos, parent=app)
+    board = BoardMonitor(board_store(args), repos_source=repos, launchers=trees.launchers, parent=app)
     trees.changed.connect(board.publish)  # nowe repozytorium w katalogu projektów
     return board
 def docker_once(args, clock) -> dict:

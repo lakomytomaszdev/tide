@@ -699,9 +699,10 @@ make preview-sessions-window SANITIZE=1                        # zrzut okna bez 
 Osobisty backlog ze wszystkich projektów: karta to „rzecz do zrobienia” (funkcja, poprawka, pomysł),
 nie ticket. Dane są w lokalnym repozytorium git, które usługa zakłada przy pierwszym poprawnym
 zapisie i commituje po każdej zmianie, więc historia i cofanie są za darmo. Bez remote — usługa nigdy nie
-wypycha ani nie dodaje zdalnego repozytorium. Okno tablicy, kafelek, uruchamianie agenta z karty,
-połączenie karty z koordynatorem i import z YouTracka to kolejne tickety (PT-2…PT-7) na tym samym
-formacie. Plan: `docs/agents/plans/2026-10-27-board-and-docker.md`.
+wypycha ani nie dodaje zdalnego repozytorium. Widok Tablica w oknie Tide (`apps/board`) i kafelek
+`org.tide.board` (`widgets/board`) czytają `Snapshot()` i piszą wyłącznie przez metody niżej;
+uruchamianie agenta z karty, połączenie karty z koordynatorem i import z YouTracka to kolejne tickety
+(PT-4…PT-7) na tym samym formacie. Plan: `docs/agents/plans/2026-10-27-board-and-docker.md`.
 
 | Element | Wartość |
 | --- | --- |
@@ -718,6 +719,8 @@ formacie. Plan: `docs/agents/plans/2026-10-27-board-and-docker.md`.
 | `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, mode, description}`: istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie trybu dla karty (pusty `mode` — tryb projektu) → `{ok, text, mode, tool, branch, docsDir, aiDocs, repo, project, template}`; katalog `docsDir` w tablicy zakłada od razu |
+| `Badge()` | `→ s` | plakietka widoku Tablica w oknie Tide: JSON `{text, tone}` — „● N” (`waiting`), gdy karty czekają na ciebie, inaczej liczba kart w grze bez Gotowych i Archiwum (`muted`); zero — pusty tekst (plakietka ukryta). Tylko odczyt, niczego nie zakłada; ta sama reguła co `badge()` w `apps/board/backend.py` |
+| `ShowWindow(s id)` | `→ b` | okno Tide na widoku Tablica (`tide.py --view board`), z ID karty (`K-12`, wielkość liter bez znaczenia) od razu na niej (`--select K-12`); napis, który nie jest ID karty, pomijamy (samo okno); `false`, gdy okna nie ma — kafelek tablicy w docku |
 | `Changed` | sygnał bez argumentów | tablica się zmieniła (zapis przez D-Bus albo zmiana z zewnątrz) — pobierz `Snapshot()` ponownie |
 
 Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt

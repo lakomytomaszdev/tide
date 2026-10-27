@@ -21,7 +21,9 @@ INSTALLED = STATE / "tide" / "dock-installed.json"
 # mieć od ikonek z paska” — po prawej zostają sprawy AI.
 DOCK_LEFT = ["org.tide.system"]
 # Kafelki z prawej strony docka (za aplikacjami), w tej kolejności.
-DOCK_RIGHT = ["org.tide.agents", "org.tide.worktrees", "org.tide.limits"]
+# Tablica pracy przed Agentami (plan 2026-10-27-board-and-docker: „po prawej sprawy AI — Tablica,
+# Agenci z „+”, Worktrees, Limity AI”).
+DOCK_RIGHT = ["org.tide.board", "org.tide.agents", "org.tide.worktrees", "org.tide.limits"]
 DOCK_WIDGETS = DOCK_LEFT + DOCK_RIGHT
 
 
