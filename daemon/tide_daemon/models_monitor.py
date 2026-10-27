@@ -15,6 +15,12 @@ bez błędu), wysyłamy Changed i zlecamy odczyt. Odczyt, który trwał w chwili
 TestEndpoint idzie w osobnej puli (odpowiedź D-Bus później), PullModel — w osobnym wątku na pobieranie
 (jedno naraz na punkt), postęp w `pulls` stanu, Changed najwyżej raz na PULL_PUBLISH_MS. stop() przerywa
 pobierania i próby (models.Cancel).
+
+Pole `queue` w stanie: kolejka wywołań modeli (models/queue.py) na każdy punkt — co trwa i co czeka
+(punkt, rola, model, od kiedy; bez treści poleceń). Zmiany kolejki przychodzą z wątków roboczych (raport,
+opisy kart) i trafiają do wątku głównego sygnałem Qt; Changed z ich powodu najwyżej co QUEUE_GAP_MS.
+Postęp pobierania i kolejka dzielą jedno dławienie (`_publish_soon`): jeden zegar ostatniej publikacji
+i jeden odłożony zapis — oba źródła razem dają Changed najwyżej raz na odstęp.
 """
 from __future__ import annotations
 
@@ -27,6 +33,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from .models import config as models_config
 from .models import pull as models_pull
+from .models import queue as models_queue
 from .models import settings as models_settings
 from .models import status as models_status
 from .models.transport import Cancel, ModelError
@@ -37,6 +44,8 @@ PULL_PUBLISH_MS = 1000     # postęp pobierania: Changed najwyżej raz na sekund
 PULL_KEEP_MS = 15_000      # zakończone pobieranie zostaje w `pulls` jeszcze chwilę („pobrano”)
 PULL_ERROR_KEEP_MS = 60_000
 TESTS_MAX = 4              # próby połączenia w toku naraz; więcej — odmowa od razu, bez rosnącej kolejki
+QUEUE_GAP_MS = 1000        # zmiany kolejki modeli: Changed najwyżej raz na sekundę
+IDLE = {"running": None, "waiting": []}
 
 
 def _dump(state: dict) -> str:
@@ -81,12 +90,16 @@ class ModelsMonitor(QObject):
     _fetched = pyqtSignal(object, object, int)   # (stan z models/status.py, stan raportu, pokolenie) — z wątku
     _tested = pyqtSignal(object, object)         # (odpowiedź D-Bus, wynik próby) — z puli prób
     _pulled = pyqtSignal(str, int, object)       # (klucz, numer pobierania, stan) — z wątku pobierania
+    _queued = pyqtSignal()                       # zmiana w kolejce modeli — z dowolnego wątku
 
     def __init__(self, read=models_status.read, poll_ms: int | None = None, report: ReportLink | None = None,
-                 pull_keep_ms: int = PULL_KEEP_MS, pull_error_keep_ms: int = PULL_ERROR_KEEP_MS, parent=None):
+                 pull_keep_ms: int = PULL_KEEP_MS, pull_error_keep_ms: int = PULL_ERROR_KEEP_MS, queue=None,
+                 queue_gap_ms: int = QUEUE_GAP_MS, parent=None):
         super().__init__(parent)
         self.read = read
         self.report = report
+        self.queue = queue if queue is not None else models_queue.shared()
+        self._queue_gap_ms = max(0, queue_gap_ms)
         try:
             cfg = models_config.load()
         except Exception as exc:  # nieczytelne ustawienia nie mogą zatrzymać startu usługi
@@ -112,10 +125,13 @@ class ModelsMonitor(QObject):
         self._pulled.connect(self._pull_progress)
         self._timer = QTimer(self, interval=max(50, poll_ms if poll_ms is not None else POLL_MS))
         self._timer.timeout.connect(self.poll)
-        self._pull_timer = QTimer(self, singleShot=True)
-        self._pull_timer.timeout.connect(self._publish)
+        self._throttle = QTimer(self, singleShot=True)   # odłożona publikacja: postęp pobierania i kolejka
+        self._throttle.timeout.connect(self._publish)
         self._published = 0.0
         self._logged: dict[str, str] = {}
+        self._queued.connect(lambda: self._publish_soon(self._queue_gap_ms))
+        self._listener = self._queued.emit  # ten sam obiekt do remove_listener w stop()
+        self.queue.add_listener(self._listener)
 
     def start(self) -> None:
         QTimer.singleShot(min(FIRST_POLL_MS, self._timer.interval()), self.poll)
@@ -123,6 +139,8 @@ class ModelsMonitor(QObject):
 
     def stop(self) -> None:
         self._timer.stop()
+        self._throttle.stop()
+        self.queue.remove_listener(self._listener)
         self._cancel.set()  # trwające pobierania i próby połączenia kończą się od razu
         self._pool.shutdown(wait=False, cancel_futures=True)
         self._tests.shutdown(wait=False, cancel_futures=True)
@@ -181,15 +199,54 @@ class ModelsMonitor(QObject):
         if self.report is not None and self._report is not None:
             state["report"] = self._report
         state["pulls"] = {key: dict(entry) for key, entry in self._pulls.items()}
+        state["queue"] = self._queue_view()
         return state
 
+    def _queue_view(self) -> dict:
+        """Kolejka po nazwie punktu. Kolejka ma tory po serwerach (`queue.lane_of(url)`), więc punkty z tym
+        samym adresem pokazują ten sam stan toru (wpisy mają `endpoint` — punkt, z którego przyszło
+        wywołanie). Każdy punkt z konfiguracji jest w polu (bezczynny — running null, waiting []). Tor bez
+        punktu w konfiguracji (wywołanie sprzed zmiany ustawień, np. na starym adresie punktu) nie znika:
+        pod nazwą punktu z jego wpisów — jako cały wpis, gdy tej nazwy jeszcze nie ma, a obok bieżącego
+        stanu w liście `other` ({lane, running, waiting}), gdy punkt ma już nowy adres."""
+        snapshot = self.queue.snapshot()
+        endpoints = self._base.get("endpoints") or {}
+        out, used = {}, set()
+        for name, endpoint in endpoints.items():
+            lane = models_queue.lane_of((endpoint or {}).get("url") or "") or name
+            used.add(lane)
+            out[name] = snapshot.get(lane) or IDLE
+        for lane, state in snapshot.items():
+            if lane in used:
+                continue
+            entries = ([state["running"]] if state.get("running") else []) + list(state.get("waiting") or ())
+            for name in dict.fromkeys(entry.get("endpoint") or lane for entry in entries):
+                if name not in out:
+                    out[name] = state
+                else:
+                    current = dict(out[name])
+                    current["other"] = list(current.get("other") or ()) + [dict(state, lane=lane)]
+                    out[name] = current
+        return out
+
     def _publish(self, force: bool = False) -> None:
-        self._pull_timer.stop()
+        self._throttle.stop()
         self._published = time.monotonic()
         text = _dump(self._compose())
         if text != self._json or force:
             self._json = text
             self.changed.emit()
+
+    def _publish_soon(self, gap_ms: float) -> None:
+        """Publikacja najwyżej raz na `gap_ms` od poprzedniej (dowolnego źródła): od razu, gdy odstęp minął,
+        inaczej jedna odłożona — stan bierzemy z chwili publikacji, więc nic nie ginie."""
+        if self._throttle.isActive():
+            return
+        wait = gap_ms - (time.monotonic() - self._published) * 1000
+        if wait <= 0:
+            self._publish()
+        else:
+            self._throttle.start(int(wait) + 1)
 
     # --- zapis ustawień --------------------------------------------------------------------------
 
@@ -355,11 +412,7 @@ class ModelsMonitor(QObject):
                 print(f"tide-daemon: Modele lokalne: {entry['error']}", flush=True)
             return
         self._pulls[key] = entry
-        wait = PULL_PUBLISH_MS - (time.monotonic() - self._published) * 1000
-        if wait <= 0:
-            self._publish()
-        elif not self._pull_timer.isActive():
-            self._pull_timer.start(int(wait) + 1)
+        self._publish_soon(PULL_PUBLISH_MS)
 
     def _pull_expire(self, key: str, number: int) -> None:
         if self._pull_ids.get(key) == number and not self._pulls.get(key, {}).get("running"):

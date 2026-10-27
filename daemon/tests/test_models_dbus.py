@@ -72,6 +72,8 @@ class ModelsDBusTest(unittest.TestCase):
                                                      "pinned": True})
         self.assertEqual(state["roles"]["agent"]["available"], False)
         self.assertEqual(state["config"], {"path": path, "exists": True, "error": "", "warnings": []})
+        self.assertEqual(state["queue"], {"local": {"running": None, "waiting": []},
+                                          "mac": {"running": None, "waiting": []}}, "kolejka modeli — nic nie trwa")
 
         changes = []
 

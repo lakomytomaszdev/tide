@@ -82,7 +82,8 @@ Obiekt /Limits, interfejs org.tide.Daemon.Limits (prognoza Limitów AI z histori
 
 Obiekt /Models, interfejs org.tide.Daemon.Models (modele lokalne: serwery z models.json i role):
 - Status() -> s              JSON {checked, default, config, endpoints: {nazwa: stan}, roles: {rola: …}} — bez tokenów,
-                             oraz report (tryb „Na daily”) i pulls (pobierania modeli),
+                             oraz report (tryb „Na daily”), pulls (pobierania modeli) i queue (kolejka wywołań
+                             modeli na punkt: {running, waiting[, other]}, bez treści poleceń),
 - Refresh()                  odczyt stanu teraz (wynik przyjdzie sygnałem Changed, jeśli coś się zmieniło),
 - SetEndpoint(s json) -> s   nowy albo zmieniony punkt {name, url, kind, token?, clearToken?} → {ok, error};
                              token do $XDG_CONFIG_HOME/tide/tokens/<punkt> (0600), nigdy w odpowiedzi,
@@ -94,7 +95,8 @@ Obiekt /Models, interfejs org.tide.Daemon.Models (modele lokalne: serwery z mode
                              models} (odpowiedź po odczycie),
 - PullModel(s json) -> s     pobieranie modelu na punkt Ollamy {endpoint, model} → od razu {ok, error, key};
                              postęp w Status().pulls[key],
-- sygnał Changed()           stan serwerów, modeli albo ustawień się zmienił — warto pobrać Status() ponownie
+- sygnał Changed()           stan serwerów, modeli, ustawień, pobierania albo kolejki się zmienił — warto pobrać
+                             Status() ponownie (z powodu pobierania i kolejki najwyżej raz na sekundę)
                              (także po każdym udanym zapisie ustawień).
 
 Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git, board/):

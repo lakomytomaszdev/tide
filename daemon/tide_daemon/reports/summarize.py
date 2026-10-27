@@ -11,7 +11,8 @@ coordination/describe.py):
 - "claude" — `claude -p` (decyzje 52 i 53, domyślnie Sonnet), jedno wywołanie na raport;
 - "local" — `models.chat(role="summary", schema=…)` (PT-15): model z roli w models.json, schemat
   odpowiedzi w `format`, jedno wywołanie na projekt, bo kontekst roli (8192) nie mieści wszystkich
-  projektów naraz; wejście projektu przycięte do kontekstu (`Model.input_chars`). Tryb lokalny nigdy
+  projektów naraz; wejście projektu przycięte do kontekstu (`Model.input_chars`). Wywołania idą przez
+  kolejkę modeli (models/queue.py) z niskim priorytetem — opisy kart nie czekają na cały raport. Tryb lokalny nigdy
   nie przechodzi do Claude: błąd modelu lokalnego to reguły z informacją „Model lokalny niedostępny —
   opis bez modelu (…)” (`local_note`).
 
@@ -49,8 +50,8 @@ DEFAULT_MODEL = "sonnet"   # decyzja 53: Haiku pisał za płytko
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$")
 CACHE_NAME = "summary.json"
 MODEL_MODES = ("claude", "local")   # tryby z modelem; "rules" i każdy inny — same reguły
-LOCAL_TIMEOUT = 180.0      # s na jedno wywołanie modelu lokalnego (jeden projekt)
-LOCAL_BUDGET = 600.0       # s na wszystkie wywołania lokalne w raporcie; reszta projektów — reguły
+LOCAL_TIMEOUT = 180.0      # s na jedno wywołanie modelu lokalnego (jeden projekt), od jego startu
+LOCAL_BUDGET = 600.0       # s na wszystkie wywołania lokalne w raporcie z czekaniem w kolejce; reszta — reguły
 LOCAL_CTX = 8192           # kontekst przyjmowany, gdy rola go nie podaje (kontekst serwera)
 CHARS_PER_TOKEN = 2.5      # ostrożnie dla polskiego w JSON-ie (tokenizer qwen3)
 OUTPUT_TOKENS = 2048       # zapas kontekstu na odpowiedź o jednym projekcie
@@ -415,6 +416,16 @@ def local_note(exc) -> str:
     return f"Model lokalny niedostępny — opis bez modelu ({text})"
 
 
+class SettingsChanged(Unavailable):
+    """Wywołanie poszło według ustawień zmienionych w czasie czekania w kolejce (inny punkt, adres, model albo
+    kontekst niż założony przy tworzeniu `Model`) — odpowiedzi nie bierzemy, opis z reguł z informacją."""
+
+
+def _identity(endpoint: str, url: str, model: str, ctx) -> str:
+    """Tożsamość modelu lokalnego do kluczy pamięci: punkt, adres, model i kontekst."""
+    return f"local|{endpoint}|{url}|{model}|{ctx or ''}"
+
+
 class Model:
     """Model dla jednego przebiegu (raport albo partia kart) — jedyne miejsce, które wybiera między
     `claude -p` a modelem lokalnym. Niezmienny po utworzeniu, więc bezpieczny między wątkami.
@@ -427,7 +438,7 @@ class Model:
     Claude sama nazwa, jak przed PT-15), host i remote (czy fakty wychodzą z tego komputera), ctx."""
 
     def __init__(self, mode: str, *, model: str = DEFAULT_MODEL, role: str = "summary", env=None, config=None,
-                 started=None, cancel=None):
+                 started=None, cancel=None, pin: bool = False):
         self.engine = "local" if mode == "local" else "claude"
         self.env = env
         self.started = started
@@ -436,6 +447,13 @@ class Model:
         self.role = role
         self.ctx = None
         self.config = None
+        # pin=True (raport): jeden przebieg = jedne ustawienia — models.chat dostaje konfigurację z chwili
+        # utworzenia, więc stopka (host, remote), pamięć i przycięcie do kontekstu zgadzają się z tym, dokąd
+        # naprawdę poszły fakty. pin=False (opisy kart): models.chat czyta models.json, gdy wywołanie rusza
+        # z kolejki; jeśli odpowiedział inny punkt, adres, model albo kontekst niż ten, który tu założyliśmy,
+        # ask() zgłasza SettingsChanged (opis z reguł, następna partia już z nowymi ustawieniami).
+        self.pin = pin
+        self._given_config = config
         if self.engine == "claude":
             self.name = model if MODEL_RE.match(model or "") else DEFAULT_MODEL
             self.identity, self.host, self.remote = self.name, "", True
@@ -456,7 +474,7 @@ class Model:
         except models_mod.ModelError:
             hostname = ""
         self.remote = not (hostname in LOOPBACK_HOSTS or hostname.startswith("127."))
-        self.identity = f"local|{endpoint.name}|{endpoint.public_url()}|{chosen.model}|{chosen.ctx or ''}"
+        self.identity = _identity(endpoint.name, endpoint.public_url(), chosen.model, chosen.ctx)
 
     def input_chars(self, system_prompt: str, output_tokens: int, cap: int) -> int:
         """Ile znaków faktów zmieści się w jednym wywołaniu: dla Claude `cap`, dla modelu lokalnego
@@ -473,9 +491,14 @@ class Model:
         return int(min(cap, chars))
 
     def ask(self, payload: dict, *, system_prompt: str, schema: dict | None = None,
-            timeout: float | None = None) -> str:
+            timeout: float | None = None, priority: int | None = None, wait: float | None = None,
+            deadline: float | None = None) -> str:
         """Tekst odpowiedzi modelu. Failed (Claude) albo Unavailable (model lokalny) przy każdym błędzie;
-        model lokalny nigdy nie woła Claude."""
+        model lokalny nigdy nie woła Claude.
+
+        Tylko model lokalny (kolejka w models.chat): `priority`, `wait` (limit czekania w kolejce)
+        i `deadline` (time.monotonic(), czekanie i wywołanie razem); `timeout` liczy się od startu wywołania.
+        Claude bez zmian — `claude -p` nie idzie przez kolejkę."""
         if self.engine == "claude":
             binary = find_claude(self.env)
             if not binary:
@@ -487,11 +510,14 @@ class Model:
         try:
             answer = models_mod.chat(json.dumps(payload, ensure_ascii=False), role=self.role, system=system_prompt,
                                      schema=schema, timeout=LOCAL_TIMEOUT if timeout is None else timeout,
-                                     config=self.config, cancel=self.cancel)
+                                     config=self.config if self.pin else self._given_config, cancel=self.cancel,
+                                     priority=priority, wait=wait, deadline=deadline)
         except models_mod.ModelError as exc:
             raise Unavailable(str(exc)) from None
         except Exception as exc:  # przeoczony błąd klienta nie może położyć raportu ani wątku opisów
             raise Unavailable(f"Model lokalny: nieoczekiwany błąd ({type(exc).__name__})") from None
+        if _identity(answer.endpoint, answer.url, answer.model, answer.ctx) != self.identity:
+            raise SettingsChanged("Model lokalny: ustawienia modeli zmieniły się w trakcie wywołania")
         return answer.text
 
 
@@ -542,8 +568,10 @@ def summarize(report, *, mode: str = "rules", model: str = DEFAULT_MODEL, cache_
     (reszta z pamięci jako "others" dla „Dziś w skrócie”); "local" — model lokalny z roli `role`, jedno
     wywołanie na zmieniony projekt, „Dziś w skrócie” z reguł (mały model widzi jeden projekt naraz);
     "rules" i każdy inny — same reguły. Pamięć per projekt w cache_dir (summary.json, wersja 2).
-    `timeout` — na jedno wywołanie, `budget` — na wszystkie wywołania lokalne razem, `cancel` (models.Cancel)
-    — zamykanie usługi: trwające wywołanie lokalne kończy się od razu, kolejnych nie ma."""
+    `timeout` — na jedno wywołanie (dla modelu lokalnego liczony od startu wywołania, bez czekania w kolejce
+    modeli), `budget` — na wszystkie wywołania lokalne razem, z czekaniem w kolejce (raport ma w kolejce niski
+    priorytet — opisy kart idą przed nim; ustawienia modeli przypięte na cały przebieg), `cancel`
+    (models.Cancel) — zamykanie usługi: trwające wywołanie lokalne kończy się od razu, kolejnych nie ma."""
     all_facts = standup.facts(report)
     order = [f["project"] for f in all_facts]
     result = {"source": "rules", "engine": "", "model": "", "host": "", "remote": False, "note": "",
@@ -551,7 +579,7 @@ def summarize(report, *, mode: str = "rules", model: str = DEFAULT_MODEL, cache_
     model_out: dict[str, dict] = {}
     brief: list[str] = []
     if mode in MODEL_MODES and all_facts:
-        chosen = Model(mode, model=model, role=role, env=env, config=models_config, cancel=cancel)
+        chosen = Model(mode, model=model, role=role, env=env, config=models_config, cancel=cancel, pin=True)
         local = chosen.engine == "local"
         result.update(engine=chosen.engine, model=chosen.name, host=chosen.host, remote=chosen.remote)
         error = None
@@ -593,11 +621,16 @@ def summarize(report, *, mode: str = "rules", model: str = DEFAULT_MODEL, cache_
                 if local and left <= 0:
                     raise Unavailable(f"Model lokalny nie zdążył w {int(budget)} s na cały raport")
                 per_call = timeout if timeout is not None else (LOCAL_TIMEOUT if local else TIMEOUT)
-                limit = min(per_call, left) if local else per_call
-                limit = round(limit) if limit >= 10 else round(limit, 1)  # do komunikatu „nie odpowiedział w N s”
                 started = time.monotonic()
-                answer = parse_answer(chosen.ask(request, system_prompt=SYSTEM_PROMPT, schema=SCHEMA,
-                                                 timeout=max(limit, 0.1)))
+                if local:
+                    # Kolejka modeli: czekanie liczy się do budżetu raportu, a limit wywołania od jego startu
+                    # (najwyżej do końca budżetu) — models.chat z `deadline`.
+                    text = chosen.ask(request, system_prompt=SYSTEM_PROMPT, schema=SCHEMA, timeout=per_call,
+                                      priority=models_mod.queue.LOW, deadline=deadline)
+                else:
+                    limit = round(per_call) if per_call >= 10 else round(per_call, 1)  # do „nie odpowiedział w N s”
+                    text = chosen.ask(request, system_prompt=SYSTEM_PROMPT, schema=SCHEMA, timeout=max(limit, 0.1))
+                answer = parse_answer(text)
                 result["calls"] += 1
                 result["described"] += group
                 what = chosen.name if not local else f"{chosen.name} ({', '.join(group)})"
