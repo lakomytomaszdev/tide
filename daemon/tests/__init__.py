@@ -22,3 +22,7 @@ os.environ["DOCKER_HOST"] = "unix:///nonexistent/tide-tests/docker.sock"
 # lokalnych): ustawienia modeli wskazują zamknięty port, usługi w testach dziedziczą tę zmienną.
 # Testy modeli podają własny models.json z adresem atrapy (test_models_core.py, test_models_dbus.py).
 os.environ["TIDE_MODELS_CONFIG"] = os.path.join(FIXTURES, "models-closed.json")
+# Testy nigdy nie czytają prawdziwej tablicy pracy (~/DevWorkspace/tide-board): plany projektów
+# z `ai-docs: tide` (coordination/boardplans.py) i katalogi agentów (/Tasks addDirs) bierzemy
+# z nieistniejącego katalogu, chyba że test poda własną tablicę (TIDE_BOARD_DIR, --board-dir).
+os.environ["TIDE_BOARD_DIR"] = "/nonexistent/tide-tests/board"

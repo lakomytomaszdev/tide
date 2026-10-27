@@ -2,7 +2,8 @@
 // podsumowanie („11 kart w 7 projektach · Firma 5 · własne 6”), wiersze — najpierw to, co czeka
 // na ciebie (brzoskwiniowy wiersz z „Przejdź”), potem w toku (postęp 3/10), do sprawdzenia i do
 // zrobienia — a na dole szybkie dopisanie do backlogu („Dopisz do backlogu i Enter”) z wyborem
-// projektu. Kliknięcie wiersza otwiera okno Tide na tej karcie. Teksty z tablicy to dane: zwykły tekst.
+// projektu. Kliknięcie wiersza otwiera okno Tide na tej karcie, a „Uruchom” przy karcie do zrobienia —
+// okno Tide od razu z „Co ma zrobić agent?” (ShowWindow("launch:K-12")). Teksty z tablicy to dane: zwykły tekst.
 // Bez PlasmoidItem, więc da się go załadować w teście.
 import QtQuick
 import QtQuick.Layouts
@@ -20,6 +21,7 @@ ColumnLayout {
     property bool statusError: false
     property bool busy: false
     signal openRequested(string cardId)  // pusty — samo okno Tide na widoku Tablica
+    signal launchRequested(string cardId)  // „Uruchom” w wierszu do zrobienia
     signal addRequested(string title, string project)
     signal projectChosen(string slug)
 
@@ -199,7 +201,29 @@ ColumnLayout {
                         font.pointSize: Tide.Tokens.fontSizePt - 1
                     }
                     Text {
-                        visible: !row.waiting && row.modelData.progress === ""
+                        objectName: "launchRow"
+                        visible: row.modelData.kind === "todo"
+                        Layout.preferredWidth: 52
+                        horizontalAlignment: Text.AlignRight
+                        text: "Uruchom"
+                        textFormat: Text.PlainText
+                        color: launchArea.containsMouse ? Tide.Theme.alpha(Tide.Tokens.accent, 0.8) : Tide.Tokens.accent
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt - 1
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "Uruchom agenta dla karty " + row.modelData.id
+                        Accessible.onPressAction: popup.launchRequested(row.modelData.id)
+                        MouseArea {
+                            id: launchArea
+                            anchors.fill: parent
+                            anchors.margins: -4
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: popup.launchRequested(row.modelData.id)
+                        }
+                    }
+                    Text {
+                        visible: !row.waiting && row.modelData.progress === "" && row.modelData.kind !== "todo"
                         Layout.preferredWidth: 44
                         horizontalAlignment: Text.AlignRight
                         text: "Pokaż"

@@ -407,7 +407,10 @@ def start_tasks(app, args, launchers, trees, monitor):
         from . import processes, windows
         probe, activate = processes.probe, windows.activate
     terminal = TaskTerminal(launchers, KonsoleWindows(), probe=probe, activate=activate)
-    planner = Planner(args.workspace, args.worktree_depth, terminal_available=terminal.available)
+    from .board import default_board_dir
+    # Katalogi dokumentów kart (addDirs) tylko z tej tablicy, którą obsługuje /Board.
+    planner = Planner(args.workspace, args.worktree_depth, terminal_available=terminal.available,
+                      board_root=args.board_dir or default_board_dir())
     try:
         timeout = float(os.environ.get("TIDE_TASK_CLAIM_TIMEOUT") or CLAIM_TIMEOUT)
     except ValueError:

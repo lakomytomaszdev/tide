@@ -1,6 +1,7 @@
 # Standard planu pracy agentów (Tide)
 
-Wersja 1, 27.10.2026. Ten dokument jest wzorcem, do którego odsyłają pliki `CLAUDE.md` i `AGENTS.md`
+Wersja 1.1, 27.10.2026 (zgodna wstecz z wersją 1: klucz `card` i plany w repozytorium tablicy Tide
+są opcjonalne, a plan bez nich działa jak dotąd). Ten dokument jest wzorcem, do którego odsyłają pliki `CLAUDE.md` i `AGENTS.md`
 projektów. Plan czyta tide-daemon: tablica w oknie **Tide Sesje**, postęp koordynatora w widżecie
 agentów i sekcja „Plany i tickety” w raporcie porannym (opis: [tide-daemon.md](tide-daemon.md#koordynacja),
 uzasadnienie: decyzja 50 w [decisions.md](decisions.md)).
@@ -16,6 +17,14 @@ co w toku, co czeka na decyzję użytkownika, co po review — także dla kolejn
 - Ścieżka: `docs/agents/plans/RRRR-MM-DD-<slug>.md` (data założenia planu, slug z małych liter,
   cyfr i myślników), np. `docs/agents/plans/2026-10-26-release-candidate.md`.
 - Plan jest **commitowany** razem z pracą albo osobnym commitem `docs(plan): …`.
+- **Projekt z dokumentami AI „w Tide”** (wersja 1.1): gdy projekt na tablicy Tide ma `ai-docs: tide`,
+  plany i specyfikacje nie trafiają do repozytorium projektu, tylko do repozytorium tablicy:
+  `~/DevWorkspace/tide-board/docs/<projekt>/plans/RRRR-MM-DD-<slug>.md` i `…/specs/` (inna tablica:
+  `$TIDE_BOARD_DIR`). Agent dostaje ten katalog przez `--add-dir`, pisze w nim, ale **niczego tam nie
+  commituje** — repozytorium tablicy commituje tide-daemon. Tide liczy takie plany do repozytorium
+  projektu (`repo` w `projects/<projekt>.md` tablicy): tablica Sesje, raport poranny, kontrola numerów,
+  `check-plans` i `next-id` widzą je razem z planami z `docs/agents/plans/`. Polecenie uruchomienia
+  z karty podaje agentowi właściwy katalog.
 - Jeden plan na jeden ciąg pracy koordynatora. Zakończony plan zostaje w repozytorium ze statusem `done`.
 
 ## Frontmatter
@@ -34,6 +43,7 @@ Płaskie pary `klucz: wartość` (YAML bez zagnieżdżeń i list), pierwsza lini
 | `session` | ID sesji albo pusty | ID sesji koordynatora (Claude Code: nazwa pliku dziennika, Codex: ID wątku), jeśli znane |
 | `status` | `active` \| `paused` \| `done` | stan całego planu |
 | `updated` | czas ISO 8601 | chwila ostatniej zmiany planu, np. `2026-10-26T21:13:00+01:00` |
+| `card` | `K-<numer>` albo brak | **opcjonalny (1.1)**: karta tablicy Tide, której służy plan, np. `K-12`; plan uruchomiony z karty zawsze go ma |
 
 **Tracker:**
 
@@ -43,6 +53,18 @@ Płaskie pary `klucz: wartość` (YAML bez zagnieżdżeń i list), pierwsza lini
   jest źródłem stanu dla tablicy Tide i raportu porannego. `tracker-url` i `tracker-project` puste.
 - `none` — praca bez śledzenia ticketów (np. jednorazowe zadanie). Tabela może być pusta albo
   zawierać zwykłe kroki; Tide pokazuje je, ale niczego nie dopasowuje do trackera.
+
+**Karta (`card`).** Plan uruchomiony z karty tablicy Tide („Co ma zrobić agent?”) ma `card: K-12`,
+a gałąź koordynatora zawiera ID karty małymi literami (`claude/k-12-okno-dockera`). Po tej parze Tide
+łączy kartę z koordynatorem i jego planem: koordynator na gałęzi `…k-12…` dostaje plan z `card: K-12`
+(w katalogu projektu w tablicy leżą plany wielu kart naraz), a karta — stan z planu. Plan z innym `card`
+nie jest planem tego koordynatora. Klucz bez sensownej wartości (np. `card: 12`) to błąd planu.
+
+**Specyfikacja karty** (obok planu, w `specs/`): plik `k-12-<opis>.md` z frontmatterem `card: K-12`
+i `status: szkic`, zmienianym na `status: gotowa`, gdy użytkownik ją zaakceptuje. W trybie „tylko
+specyfikacja” to sygnał dla Tide: karta dostaje znacznik „specyfikacja gotowa” i wraca do Backlogu.
+Specyfikację w repozytorium projektu (`docs/agents/specs/`) agent w tym trybie commituje sam — tylko ten
+plik, na bieżącej gałęzi, `docs(spec): K-12 <short English title>`, bez push; w tablicy commituje tide-daemon.
 
 ## Numery ticketów: jedno źródło
 
@@ -62,6 +84,7 @@ Jeden numer to zawsze jedno zadanie — w całym repozytorium i w trackerze. Dla
    (`git grep -h "^ticket-prefix\\|^| PREFIKS-" $(git for-each-ref --format='%(refname)' refs/heads) -- docs/agents/plans`).
    Plan w innym worktree jest niewidoczny z głównego katalogu, a i tak zajmuje swoje numery.
    Nowy plan nie zaczyna od 1, a numerów nie używa się ponownie, także po `odrzucone`.
+   Plany projektu z dokumentami „w Tide” (`tide-board/docs/<projekt>/plans/`) zajmują numery tak samo.
    **Nowy numer lokalny bierzesz wyłącznie z** `make -C ~/DevWorkspace/plasma-tide next-id REPO=<repozytorium>
    [COUNT=N] [TITLE="…"]` (równoważnie `tools/next_id.py`): liczy to samo pod blokadą i zapisuje rezerwację
    w `~/.local/state/tide/ticket-ids.json`, więc dwie równoległe sesje nie dostaną tego samego numeru.
@@ -122,6 +145,16 @@ Tide łączy pracę podagentów z ticketami po ID, więc:
 4. Recenzent ma w opisie albo typie słowo „review” (`code-reviewer`, `Review TOM-140 …`), a jego raport
    podaje liczby `BLOCKER` / `MAJOR` / `NIT` i werdykt (`APPROVE` albo `REQUEST CHANGES`).
 
+## Zakończenie pracy (1.1)
+
+1. **Review AI jest obowiązkowe**: ticket i cała praca kończą się dopiero po review z werdyktem
+   `APPROVE` (bez BLOCKER i MAJOR).
+2. **Test ręczny tylko na życzenie**: gdy uruchomienie z karty ma „Test ręczny po zakończeniu”
+   (karta `check: manual`), koordynator po review dopisuje w planie, pod tabelą, sekcję
+   „Co przetestować ręcznie i jak” — kroki i oczekiwany wynik każdego — nie scala gałęzi i w ostatniej
+   wiadomości mówi, że praca czeka na test ręczny użytkownika. Bez testu ręcznego (`check: auto`,
+   domyślnie) praca kończy się po review; scalenie tylko wtedy, gdy pozwalają na nie zasady projektu.
+
 ## Jak Tide wyznacza stan
 
 Z pracy podagentów (dzienniki koordynatora, tylko odczyt): pytanie o ticket bez odpowiedzi → `czeka`;
@@ -136,6 +169,7 @@ stan liczy się, gdy nie ma ani planu, ani pracy podagentów, albo gdy ticket je
 ```markdown
 ---
 tide-plan: 1
+card: K-12
 title: Release candidate TOM-20
 tracker: youtrack
 tracker-url: http://10.20.1.159:8111

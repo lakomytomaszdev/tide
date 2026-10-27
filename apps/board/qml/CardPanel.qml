@@ -330,8 +330,10 @@ Rectangle {
                             itemHeight: 28
                             options: [{ value: "backlog", label: "Backlog" }, { value: "todo", label: "Do zrobienia" },
                                       { value: "done", label: "Gotowe" }]
-                            current: panel.editing ? panel.card.column : ""
-                            onPicked: value => { if (panel.editing && value !== panel.card.column) panel.moveRequested(value) }
+                            // Kolumna wyświetlana: karta „Do sprawdzenia” ma zwykle zapisane todo — „Do zrobienia”
+                            // to wtedy odesłanie do poprawy, a nie brak zmiany.
+                            current: panel.editing ? Logic.displayColumn(panel.card) : ""
+                            onPicked: value => { if (panel.editing && value !== Logic.displayColumn(panel.card)) panel.moveRequested(value) }
                         }
                         Item { Layout.fillWidth: true }
                         PillButton {

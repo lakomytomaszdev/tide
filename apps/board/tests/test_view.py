@@ -113,6 +113,22 @@ class LogicTest(unittest.TestCase):
         self.assertTrue(self.js("draggable(S.cards.find(c => c.id === 'K-15'))"))
         self.assertFalse(self.js("draggable(S.cards.find(c => c.id === 'K-5'))"), "kartę prowadzi koordynator")
 
+    def test_confirming_review_cards_and_agent_target(self):
+        k7, k5, k15 = ("S.cards.find(c => c.id === '%s')" % i for i in ("K-7", "K-5", "K-15"))
+        self.assertTrue(self.js(f"confirmable({k7})"), "Do sprawdzenia — potwierdzasz przeniesieniem")
+        self.assertTrue(self.js(f"draggable({k7})"))
+        self.assertEqual(self.js(f"dropTargets({k7})"), ["done", "todo"])
+        self.assertFalse(self.js(f"draggable({k5})"), "W toku dalej nie")
+        self.assertEqual(self.js(f"dropTargets({k5})"), [])
+        self.assertEqual(self.js(f"dropTargets({k15})"), ["backlog", "todo", "done"])
+        self.assertTrue(self.js("confirmable({column: 'todo', boardColumn: 'done', derived: {column: 'done'}})"))
+        self.assertFalse(self.js("confirmable({column: 'done', boardColumn: 'done', derived: {column: 'done'}})"))
+        self.assertEqual(self.js(f"agentTarget({k5})"), "claude:5f0c")
+        self.assertEqual(self.js("agentTarget({derived: {coordinator: 'codex:019a', session: 'codex:x'}})"), "codex:019a")
+        self.assertEqual(self.js("agentTarget({derived: null})"), "")
+        self.assertFalse(self.js("isCoordinator(S, 'claude:5f0c')"))
+        self.assertTrue(self.js("isCoordinator({cards: [{derived: {coordinator: 'codex:019a'}}]}, 'codex:019a')"))
+
     def test_move_index_and_optimistic_moves(self):
         # Kolumna zapisana todo: K-11, K-9, K-8, K-7, K-6, K-5 (cztery ostatnie wyświetlane gdzie indziej).
         self.assertEqual(self.js("moveIndex(S, 'K-15', 'todo', '')"), -1, "na koniec")
@@ -161,6 +177,46 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js("doneShown([1,2,3,4,5,6,7,8], true).length"), 8)
         self.assertEqual(self.js("shortPath('/home/t/DevWorkspace/tide-board', '/home/t')"), "~/DevWorkspace/tide-board")
         self.assertEqual(self.js("shortPath('/home/tomasz/x', '/home/t')"), "/home/tomasz/x")
+
+    def test_launch_texts_and_requests(self):
+        k9 = "S.cards.find(c => c.id === 'K-9')"
+        self.assertEqual(self.js(f"launchBranch({k9}, 'codex')"), "codex/k-9-wlasne-okno-kafelek-dockera")
+        self.assertEqual(self.js("retoolBranch('claude/k-9-okno', 'codex')"), "codex/k-9-okno")
+        self.assertEqual(self.js("retoolBranch('feat/k-9-okno', 'codex')"), "feat/k-9-okno", "własna gałąź bez prefiksu narzędzia")
+        self.assertEqual(self.js(f"launchBlocker(S, {k9})"), "")
+        self.assertIn("nie ma projektu", self.js(f"launchBlocker(S, Object.assign({{}}, {k9}, {{project: ''}}))"))
+        self.assertEqual(self.js(f"docsLabel(launchProject(S, {k9}))"), "w repozytorium · docs/agents/")
+        self.assertEqual(self.js("docsLabel({aiDocs: 'tide', slug: 'mobileapp', docsDir: '/h/DevWorkspace/tide-board/docs/mobileapp'})"),
+                         "w Tide · tide-board/docs/mobileapp/")
+        state = {"cardId": "K-16", "mode": "full", "tool": "claude", "branch": "claude/k-16-okno", "newWorktree": True,
+                 "check": "auto", "aiDocs": "repo", "slug": "plasma-tide", "repoName": "plasma-tide"}
+        js_state = json.dumps(state)
+        self.assertEqual(self.js(f"launchFooter({js_state})"),
+                         "Nowa karta Konsoli „plasma-tide · claude/k-16-okno”, Claude Code z szablonem „Pełny flow”. Agent "
+                         "najpierw zada ci pytania, potem założy plan z kluczem card: K-16. Karta przejdzie do „W toku”, "
+                         "gdy agent ruszy.")
+        light = self.js(f"launchFooter(Object.assign({js_state}, {{mode: 'light', tool: 'codex', check: 'manual'}}))")
+        self.assertIn("Codex z szablonem „Lekki”", light)
+        self.assertIn("„Co przetestować ręcznie i jak”", light)
+        spec = self.js(f"launchFooter(Object.assign({js_state}, {{mode: 'spec', aiDocs: 'tide', slug: 'mobileapp'}}))")
+        self.assertEqual(spec, "Claude Code w katalogu projektu, bez worktree: dopyta i zapisze specyfikację w "
+                               "tide-board/docs/mobileapp/specs/. Potem karta wróci do Backlogu ze znacznikiem "
+                               "„specyfikacja gotowa”.")
+        flow = {"text": "Karta K-16…", "repo": "/r/plasma-tide", "tool": "claude", "branch": "claude/k-16-okno",
+                "docsDir": "/b/docs/mobileapp", "aiDocs": "tide"}
+        self.assertEqual(self.js(f"launchStartRequest({json.dumps(flow)}, {js_state})"),
+                         {"repoPath": "/r/plasma-tide", "tool": "claude", "prompt": "Karta K-16…", "newWorktree": True,
+                          "branch": "claude/k-16-okno", "images": [], "addDirs": ["/b/docs/mobileapp"]})
+        spec_start = self.js(f"launchStartRequest({json.dumps(dict(flow, aiDocs='repo'))}, Object.assign({js_state}, {{mode: 'spec'}}))")
+        self.assertEqual((spec_start["newWorktree"], spec_start["branch"], spec_start["addDirs"]), (False, "", []))
+        self.assertEqual(self.js(f"launchMarkRequest({{worktree: '/w/k-16', branch: 'claude/k-16-okno', tool: 'claude'}}, {js_state}, 'T')"),
+                         {"branch": "claude/k-16-okno", "worktree": "/w/k-16", "mode": "full", "tool": "claude",
+                          "check": "auto", "launched": "T"})
+        self.assertEqual(self.js(f"launchMarkRequest({{worktree: '', branch: 'master'}}, Object.assign({js_state}, {{check: 'manual'}}), 'T')")["branch"],
+                         "", "bez worktree gałąź główna nie trafia do karty")
+        self.assertRegex(self.js("isoNow(1793099040000)"), r"^2026-10-27T\d\d:\d\d:00[+-]\d\d:\d\d$")
+        self.assertEqual(self.js("cardNote({column: 'backlog', spec: '/s/k-1.md', note: 'moja'})"), "✓ specyfikacja gotowa")
+        self.assertEqual(self.js("cardNote({column: 'todo', spec: '/s/k-1.md', note: 'moja'})"), "moja")
 
     def test_rail_note_errors_and_replies(self):
         now = 1793099040  # 12:04 w Warszawie
@@ -247,6 +303,8 @@ drag(card("K-15"), column("todo", fy=0.75))
 out["toTodo"] = calls()[-1]
 out["todo"] = col("todo")
 out["hint"] = js("page.columnItems()[1].hintVisible")
+out["dialog"] = js("page.launchOpen && page.launchCardId")
+js("page.launchDialog.moveOnlyRequested()")
 set_snapshot(json.loads(backend.snapshotJson))  # nowa migawka — przeniesienie „w locie” znika
 drag(card("K-10"), card("K-14", fy=0.15))
 out["reorder"] = calls()[-1]
@@ -264,6 +322,7 @@ out["clickedPanel"] = js("page.panelOpen && page.panelCardId")
         self.assertEqual(out["toTodo"], ["MoveCard", "K-15", "todo", -1])
         self.assertEqual(out["todo"], ["K-11", "K-9", "K-15"], "karta od razu w nowej kolumnie")
         self.assertTrue(out["hint"], "podpowiedź „Upuść kartę z Backlogu”")
+        self.assertEqual(out["dialog"], "K-15", "po przeniesieniu z Backlogu — „Co ma zrobić agent?”")
         self.assertEqual(out["reorder"], ["MoveCard", "K-10", "backlog", 1], "przed K-14, wśród kart bez przenoszonej")
         self.assertEqual(out["backlog"][:3], ["K-15", "K-10", "K-14"])
         self.assertEqual(out["toDone"], ["MoveCard", "K-13", "done", 0], "na górę Gotowych")
@@ -277,12 +336,14 @@ out["clickedPanel"] = js("page.panelOpen && page.panelCardId")
 replies.append({"ok": False, "error": "git-busy", "message": "w repozytorium tablicy trwa git revert — dokończ go"})
 drag(card("K-15"), column("todo", fy=0.75))
 wait(150)
+js("page.launchDialog.moveOnlyRequested()")
 out["todo"] = js("page.cards.filter(x => x.boardColumn === 'todo').map(x => x.id)")
 out["toast"] = js("page.toast")
 out["tone"] = js("page.toastTone")
 replies.append({"ok": True, "id": "K-14", "changed": True, "commitError": "index.lock: File exists"})
 drag(card("K-14"), column("todo", fy=0.75))
 wait(150)
+js("page.launchDialog.moveOnlyRequested()")
 out["notice"] = js("page.toast")
 out["noticeTone"] = js("page.toastTone")
 """)
@@ -291,6 +352,64 @@ out["noticeTone"] = js("page.toastTone")
         self.assertEqual(out["tone"], "rose")
         self.assertEqual(out["notice"], "Zapisane w pliku, commit czeka: index.lock: File exists")
         self.assertEqual(out["noticeTone"], "butter")
+
+
+@unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class DerivedCardsTest(ProbeCase):
+    """Karty ze stanem z koordynatora (PT-5): potwierdzenie z Do sprawdzenia i przejście do agenta."""
+
+    def test_review_card_goes_to_done_or_back_to_todo_only(self):
+        out = self.probe("""
+drag(card("K-7"), column("backlog", fy=0.8))
+out["refused"] = [len(calls()), js("page.toast")]
+drag(card("K-7"), column("done", fy=0.8))
+out["done"] = calls()[-1]
+set_snapshot(json.loads(backend.snapshotJson))
+js("page.findCard('K-7').forceActiveFocus()")
+key(Qt.Key.Key_Left, Qt.KeyboardModifier.ControlModifier)
+out["back"] = calls()[-1]
+out["dialog"] = js("page.launchOpen")
+""")
+        self.assertEqual(out["refused"][0], 0, "z Do sprawdzenia nie do Backlogu")
+        self.assertIn("do Gotowych", out["refused"][1])
+        self.assertEqual(out["done"][:3], ["MoveCard", "K-7", "done"], "potwierdzenie: Gotowe")
+        self.assertEqual(out["back"], ["MoveCard", "K-7", "todo", -1], "Ctrl+← — do poprawy")
+        self.assertFalse(out["dialog"], "odesłanie do poprawy nie pyta o nowego agenta")
+
+    def test_panel_and_drag_move_review_card_back_to_todo(self):
+        # Karta „Do sprawdzenia” ma zapisane todo (K-7): „Do zrobienia” w panelu i przeciągnięcie do Do zrobienia
+        # to odesłanie do poprawy — MoveCard musi pójść, choć zapisana kolumna się nie zmienia.
+        out = self.probe("""
+out["stored"] = js("page.snapshot.cards.find(c => c.id === 'K-7').column")
+click(card("K-7"))
+out["current"] = obj("cardColumn").property("current")
+engine.rootContext().setContextProperty("probeTarget", obj("cardColumn"))
+js("probeTarget.picked('todo')")
+wait(100)
+out["panel"] = calls()[-1] if calls() else None
+set_snapshot(json.loads(backend.snapshotJson))
+key(Qt.Key.Key_Escape)
+n = len(calls())
+drag(card("K-7"), column("todo", fy=0.8))
+out["drag"] = calls()[n] if len(calls()) > n else None
+""")
+        self.assertEqual(out["stored"], "todo")
+        self.assertEqual(out["current"], "review", "panel pokazuje kolumnę z ekranu")
+        self.assertEqual(out["panel"][:3], ["MoveCard", "K-7", "todo"])
+        self.assertEqual(out["drag"][:3], ["MoveCard", "K-7", "todo"])
+
+    def test_session_links_open_coordinator_or_session(self):
+        data = json.loads(json.dumps(self.data))
+        for c in data["cards"]:
+            if c["id"] == "K-6":
+                c["derived"]["coordinator"] = "codex:019a-koordynator"
+        out = self.probe("""
+for cid in ("K-5", "K-6"):
+    out[cid] = js(f"(function () {{ const it = page.findCard('{cid}'); if (!it) return 'brak'; const d = it.card.derived; const t = d.coordinator || d.session; it.sessionRequested(t); return t }})()")
+out["calls"] = calls()
+""", data)
+        self.assertEqual(out["calls"], [["/Agents ActivateSession", "claude:5f0c"],
+                                        ["/Coordination ShowWindow", "codex:019a-koordynator"]], out)
 
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
@@ -474,6 +593,9 @@ out["filterCleared"] = js("page.tagFilter")
 out["focus"] = js("page.findCard('K-12').activeFocus")
 key(Qt.Key.Key_Right, Qt.KeyboardModifier.ControlModifier)
 out["keyMove"] = calls()[-1] if calls() else None
+out["keyDialog"] = js("page.launchOpen")
+key(Qt.Key.Key_Escape)  # Anuluj — karta wraca do Backlogu
+out["keyBack"] = calls()[-1]
 key(Qt.Key.Key_N, Qt.KeyboardModifier.ControlModifier)
 out["ctrlN"] = js("page.panelOpen && page.panelCardId === ''")
 key(Qt.Key.Key_Escape)
@@ -484,6 +606,8 @@ out["closed"] = not js("page.panelOpen")
         self.assertEqual(out["filterCleared"], "", "filtr, który chował kartę, znika")
         self.assertTrue(out["focus"])
         self.assertEqual(out["keyMove"], ["MoveCard", "K-12", "todo", -1], "Ctrl+→ — następna kolumna ręczna")
+        self.assertTrue(out["keyDialog"], "przeniesienie klawiaturą też pyta o agenta")
+        self.assertEqual(out["keyBack"], ["MoveCard", "K-12", "backlog", 3], "Esc — Anuluj, karta na swoje miejsce")
         self.assertTrue(out["ctrlN"])
         self.assertTrue(out["closed"])
 
@@ -522,6 +646,200 @@ out["repo"] = calls()[-1]
         self.assertEqual(json.loads(out["repo"][1]), {"repo": "/home/user/DevWorkspace/legal-agents"})
 
 
+@unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class LaunchMarkStoreTest(unittest.TestCase):
+    """Żądanie UpdateCard po starcie (board.js launchMarkRequest) przyjęte przez prawdziwy BoardStore.
+    Pole `check` dodaje store z PT-5 — bez niego test jest pomijany."""
+
+    def test_mark_request_is_accepted_by_the_store(self):
+        from PyQt6.QtCore import QCoreApplication
+        from PyQt6.QtQml import QJSEngine
+        from tide_daemon.board import store as store_mod
+        from .boardfix import git_env
+        if "check" not in store_mod.CARD_FIELDS:
+            self.skipTest("store bez pola check (PT-5)")
+        QCoreApplication.instance() or QCoreApplication([])
+        engine = QJSEngine()
+        with open(os.path.join(APP_DIR, "qml", "board.js"), encoding="utf-8") as fh:
+            engine.evaluate(fh.read().replace(".pragma library", ""))
+        for result, choice in (({"worktree": "/w/k-1", "branch": "claude/k-1-grabie", "tool": "claude"},
+                                {"mode": "full", "tool": "claude", "check": "manual"}),
+                               ({"worktree": "", "branch": "master", "tool": "codex"},
+                                {"mode": "spec", "tool": "codex", "check": "auto"})):
+            value = engine.evaluate(f"JSON.stringify(launchMarkRequest({json.dumps(result)}, {json.dumps(choice)}, "
+                                    f"isoNow(1793099040000)))")
+            self.assertFalse(value.isError(), value.toString())
+            request = json.loads(value.toString())
+            with tempfile.TemporaryDirectory(prefix="tide-board-mark-") as tmp:
+                from unittest import mock
+                with mock.patch.dict(os.environ, git_env(tmp)):
+                    board = store_mod.BoardStore(os.path.join(tmp, "board"))
+                    board.create_card({"title": "Grabie", "column": "todo"})
+                    self.assertTrue(board.update_card("K-1", request)["ok"])
+                    card = board.snapshot()["cards"][0]
+            self.assertEqual((card["mode"], card["tool"], card["worktree"]), (choice["mode"], choice["tool"], result["worktree"]))
+            self.assertEqual(card["branch"], result["branch"] if result["worktree"] else "")
+            self.assertEqual(card.get("check"), choice["check"])
+
+
+class LaunchTest(ProbeCase):
+    """„Co ma zrobić agent?”: otwarcie po przeniesieniu i z przycisku, Anuluj, Tylko przenieś, przebieg
+    UpdateCard → RenderLaunch → Start → UpdateCard, tryb spec bez worktree, karta bez projektu, błędy."""
+
+    FLOW = {"ok": True, "id": "K-15", "mode": "full", "tool": "claude", "branch": "claude/k-15-tryb-skupienia",
+            "docsDir": "/home/user/DevWorkspace/plasma-tide/docs/agents", "aiDocs": "repo",
+            "repo": "/home/user/DevWorkspace/plasma-tide", "project": "plasma-tide", "text": "Karta K-15: polecenie"}
+
+    def test_move_then_cancel_or_move_only(self):
+        out = self.probe("""
+drag(card("K-15"), column("todo", fy=0.75))
+out["open"] = js("[page.launchOpen, page.launchCardId, page.launchFromMove]") + [obj("launchWhere").property("text")]
+out["defaults"] = js("[page.launchDialog.mode, page.launchDialog.tool, page.launchDialog.branch, page.launchDialog.taskEdit.text]")
+out["moveOnlyVisible"] = obj("launchMoveOnly").property("visible")
+click(named("launchCancel"))
+out["cancel"] = calls()[-1]
+out["closed"] = not js("page.launchOpen")
+out["backlog"] = js("page.cards.filter(x => x.boardColumn === 'backlog').map(x => x.id)")
+drag(card("K-14"), column("todo", fy=0.75))
+n = len(calls())
+click(named("launchMoveOnly"))
+out["moveOnlyCalls"] = len(calls()) - n
+out["todo"] = js("page.cards.filter(x => x.boardColumn === 'todo').map(x => x.id)")
+out["closed2"] = not js("page.launchOpen")
+""")
+        self.assertEqual(out["open"], [True, "K-15", True, "Backlog → Do zrobienia"])
+        self.assertEqual(out["defaults"], ["full", "claude", "claude/k-15-tryb-skupienia-wyciszone",
+                                           "Tryb skupienia: wyciszone powiadomienia i przygaszony dock"],
+                         "tryb i narzędzie z projektu, zadanie z tytułu (opis pusty)")
+        self.assertTrue(out["moveOnlyVisible"])
+        self.assertEqual(out["cancel"], ["MoveCard", "K-15", "backlog", 0], "Anuluj — karta wraca na swoje miejsce")
+        self.assertTrue(out["closed"])
+        self.assertEqual(out["backlog"][0], "K-15")
+        self.assertEqual(out["moveOnlyCalls"], 0, "Tylko przenieś — bez agenta i bez zapisu")
+        self.assertIn("K-14", out["todo"])
+        self.assertTrue(out["closed2"])
+
+    def test_launch_full_flow_sends_requests_in_order(self):
+        flow = json.dumps(self.FLOW, ensure_ascii=False)
+        out = self.probe(f"""
+flow = json.loads({flow!r})
+replies.extend([{{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # MoveCard
+                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # UpdateCard (opis)
+                flow,                                                                     # RenderLaunch
+                {{"ok": False, "error": "branch-exists", "message": "gałąź claude/k-15-x już istnieje — zmień nazwę"}}])
+drag(card("K-15"), column("todo", fy=0.75))
+obj("launchTask").setProperty("text", "Tryb skupienia: wycisz powiadomienia na 25 min")
+js("page.launchDialog.pickTool('codex'); page.launchDialog.pickTool('claude')")
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(300)
+out["inPlace"] = js("[page.launchOpen, page.launchDialog.busy, page.launchDialog.error]")
+out["calls1"] = calls()
+replies.extend([flow,
+                {{"ok": True, "cwd": "/w/k-15", "branch": "claude/k-15-tryb-skupienia", "worktree": "/w/k-15",
+                  "title": "plasma-tide · claude/k-15-tryb-skupienia", "tool": "claude", "mode": "tab"}},
+                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}}])
+click(named("launchStart"))
+wait(300)
+out["calls2"] = calls()[len(out["calls1"]):]
+out["closed"] = not js("page.launchOpen")
+out["toast"] = js("[page.toast, page.toastTone]")
+""")
+        self.assertEqual(out["inPlace"], [True, False, "gałąź claude/k-15-x już istnieje — zmień nazwę"], "błąd w oknie")
+        members = [c[0] for c in out["calls1"]]
+        self.assertEqual(members, ["MoveCard", "UpdateCard", "RenderLaunch", "Start"])
+        self.assertEqual(json.loads(out["calls1"][1][2]), {"description": "Tryb skupienia: wycisz powiadomienia na 25 min"},
+                         "zmienione zadanie zapisane w karcie przed poleceniem")
+        self.assertEqual(out["calls1"][2][1], "K-15")
+        self.assertEqual(json.loads(out["calls1"][2][2]),
+                         {"mode": "full", "tool": "claude", "check": "auto",
+                          "branch": "claude/k-15-tryb-skupienia-wyciszone"})
+        self.assertEqual(json.loads(out["calls1"][3][1]),
+                         {"repoPath": "/home/user/DevWorkspace/plasma-tide", "tool": "claude", "prompt": "Karta K-15: polecenie",
+                          "newWorktree": True, "branch": "claude/k-15-tryb-skupienia", "images": [], "addDirs": []})
+        self.assertEqual([c[0] for c in out["calls2"]], ["RenderLaunch", "Start", "UpdateCard"],
+                         "ponowienie bez drugiego zapisu opisu")
+        mark = json.loads(out["calls2"][2][2])
+        self.assertEqual(out["calls2"][2][1], "K-15")
+        self.assertEqual({k: mark[k] for k in ("branch", "worktree", "mode", "tool", "check")},
+                         {"branch": "claude/k-15-tryb-skupienia", "worktree": "/w/k-15", "mode": "full", "tool": "claude",
+                          "check": "auto"})
+        self.assertRegex(mark["launched"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
+        self.assertTrue(out["closed"])
+        self.assertEqual(out["toast"][1], "mint")
+        self.assertIn("Agent ruszył", out["toast"][0])
+
+    def test_spec_mode_from_tile_intent_without_worktree(self):
+        flow = json.dumps(dict(self.FLOW, id="K-14", tool="codex", mode="spec", aiDocs="tide",
+                               docsDir="/home/user/DevWorkspace/tide-board/docs/mobileapp",
+                               repo="/home/user/DevWorkspace/mobileapp"), ensure_ascii=False)
+        out = self.probe(f"""
+js("showItem('launch:k-14')")
+wait(150)
+out["open"] = js("[page.launchOpen, page.launchCardId, page.launchFromMove, page.selectedId]")
+out["moveOnlyVisible"] = obj("launchMoveOnly").property("visible")
+out["docs"] = obj("launchDocs").property("text")
+js("page.launchDialog.mode = 'spec'")
+js("page.launchDialog.pickTool('codex')")
+js("page.launchDialog.manualCheck = true")
+wait(50)
+out["branch"] = obj("launchBranch").property("text")
+out["worktreeEnabled"] = obj("launchWorktreeToggle").property("enabled")
+out["footer"] = obj("launchFooter").property("text")
+replies.extend([json.loads({flow!r}),
+                {{"ok": True, "cwd": "/home/user/DevWorkspace/mobileapp", "branch": "master", "worktree": "", "tool": "codex",
+                  "title": "mobileapp · master", "mode": "tab"}},
+                {{"ok": True, "id": "K-14", "changed": True, "commitError": ""}},
+                {{"ok": True, "id": "K-14", "changed": True, "commitError": ""}}])
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(300)
+out["calls"] = calls()
+""")
+        self.assertEqual(out["open"], [True, "K-14", False, "K-14"])
+        self.assertFalse(out["moveOnlyVisible"], "bez przeniesienia nie ma „Tylko przenieś”")
+        self.assertEqual(out["docs"], "w Tide · tide-board/docs/mobileapp/")
+        self.assertEqual(out["branch"], "bez gałęzi")
+        self.assertFalse(out["worktreeEnabled"], "spec — bez worktree")
+        self.assertIn("Codex w katalogu projektu, bez worktree", out["footer"])
+        self.assertEqual([c[0] for c in out["calls"]], ["RenderLaunch", "Start", "UpdateCard", "MoveCard"])
+        self.assertEqual(json.loads(out["calls"][0][2]), {"mode": "spec", "tool": "codex", "check": "manual"})
+        start = json.loads(out["calls"][1][1])
+        self.assertEqual((start["newWorktree"], start["branch"], start["addDirs"], start["tool"]),
+                         (False, "", ["/home/user/DevWorkspace/tide-board/docs/mobileapp"], "codex"))
+        mark = json.loads(out["calls"][2][2])
+        self.assertEqual({k: mark[k] for k in ("branch", "worktree", "mode", "tool", "check")},
+                         {"branch": "", "worktree": "", "mode": "spec", "tool": "codex", "check": "manual"})
+        self.assertEqual(out["calls"][3], ["MoveCard", "K-14", "todo", -1], "karta z Backlogu idzie do kolejki")
+
+    def test_card_button_and_card_without_project(self):
+        data = json.loads(json.dumps(self.data))
+        for c in data["cards"]:
+            if c["id"] == "K-11":
+                c["project"], c["projectName"] = "", ""
+        out = self.probe("""
+click(at("page.findCard('K-9')", 0.5, 1, 0, -24))   # „Uruchom agenta…” na karcie
+out["open"] = js("[page.launchOpen, page.launchCardId, page.launchFromMove]")
+click(named("launchCancel"))
+out["calls0"] = len(calls())
+js("page.openLaunch('K-11', false)")
+wait(80)
+out["blocker"] = [obj("launchBlocker").property("visible"), obj("launchBlockerText").property("text")]
+out["canStart"] = js("page.launchDialog.canStart")
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+out["calls1"] = len(calls())
+js("page.launchDialog.projectChosen('project', 'plasma-tide')")
+wait(100)
+out["project"] = calls()[-1]
+""", data)
+        self.assertEqual(out["open"], [True, "K-9", False])
+        self.assertEqual(out["calls0"], 0, "Anuluj z przycisku karty niczego nie przenosi")
+        self.assertTrue(out["blocker"][0])
+        self.assertIn("Karta nie ma projektu", out["blocker"][1])
+        self.assertFalse(out["canStart"])
+        self.assertEqual(out["calls1"], 0, "bez projektu nie uruchamiamy")
+        self.assertEqual(out["project"][:2], ["UpdateCard", "K-11"])
+        self.assertEqual(json.loads(out["project"][2]), {"project": "plasma-tide"})
+
+
 class GrabTest(ProbeCase):
     def grab(self, name, *argv, data=None) -> str:
         data_path = os.path.join(self.tmp, name + ".json")
@@ -545,6 +863,12 @@ class GrabTest(ProbeCase):
         self.grab("manage", "--preview", "manage=logviewer")
         self.grab("lanes", "--preview", "layout=lanes")
         self.grab("select", "--select", "K-1")
+        self.grab("min-width", "--width", "1380", "--height", "620")
+        for name, value in (("launch-full", "K-9,move"), ("launch-full-codex", "K-9,codex,move"),
+                            ("launch-light", "K-14,light"), ("launch-light-codex", "K-14,light,codex,manual"),
+                            ("launch-spec", "K-14,spec,move"), ("launch-spec-codex", "K-14,spec,codex")):
+            self.grab(name, "--preview", "launch=" + value)
+        self.grab("launch-min", "--preview", "launch=K-9,move", "--width", "1380", "--height", "620")
         with tempfile.TemporaryDirectory(prefix="tide-board-empty-") as tmp:
             self.grab("empty", data=empty_snapshot(tmp))
 
@@ -606,13 +930,25 @@ class BackendTest(unittest.TestCase):
                                    timeout=5))
         self.assertIn("dom", [p["name"] for p in json.loads(backend.snapshotJson)["projects"]])
         self.assertEqual(snap["boardDir"], self.board)
+        # Uruchomienie z karty: RenderLaunch idzie do /Board, Start do /Tasks (z długim terminem).
+        backend.renderLaunch("launch-render:K-1", "K-1", json.dumps({"mode": "spec", "tool": "codex"}))
+        backend.startTask("launch-start:K-1", json.dumps({"repoPath": "/nie/ma", "tool": "gemini", "prompt": "a b"}))
+        self.assertTrue(wait_until(lambda: len(replies) == 9, timeout=15))
+        by_tag = dict(replies[7:])
+        self.assertEqual((by_tag["launch-render:K-1"]["ok"], by_tag["launch-render:K-1"]["mode"],
+                          by_tag["launch-render:K-1"]["tool"]), (True, "spec", "codex"))
+        self.assertIn("Karta K-1: Pierwsza karta", by_tag["launch-render:K-1"]["text"])
+        self.assertEqual(by_tag["launch-start:K-1"]["error"], "bad-tool", "odpowiedź z /Tasks")
 
     def test_preview_mode_records_calls(self):
         backend = self.module.create(None, {"exists": True, "cards": [{"id": "K-1", "column": "backlog"}]})
         replies = []
         backend.replied.connect(lambda tag, text: replies.append(json.loads(text)))
         backend.moveCard("move:K-1", "K-1", "todo", -1)
-        self.assertEqual(json.loads(backend.callsJson), [["MoveCard", "K-1", "todo", -1]])
+        backend.renderLaunch("launch-render:K-1", "K-1", "{}")
+        backend.startTask("launch-start:K-1", "{}")
+        self.assertEqual(json.loads(backend.callsJson), [["MoveCard", "K-1", "todo", -1], ["RenderLaunch", "K-1", "{}"],
+                                                         ["Start", "{}"]])
         self.assertEqual(replies[0]["error"], "preview")
         self.assertEqual((backend.badgeText, backend.badgeTone), ("1", "muted"))
         self.assertTrue(backend.available and backend.preview)
