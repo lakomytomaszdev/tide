@@ -44,7 +44,7 @@ class Settings:
     keep_days: int = KEEP_DAYS
     enabled: bool = True
     summary: str = "claude"   # „Na daily”: "claude" (model przez `claude -p`, decyzja 52) albo "rules"
-    summary_model: str = "haiku"
+    summary_model: str = "sonnet"  # decyzja 53 (wcześniej haiku — za płytkie opisy)
 
 
 @dataclass
@@ -92,7 +92,7 @@ def load_settings(path: str | None = None, at: str | None = None, enabled: bool 
     """Ustawienia z pliku (opcjonalnego) i opcji wiersza poleceń. Zwraca (ustawienia, ostrzeżenia).
 
     Plik JSON: {"at": "07:00", "dayStart": "04:00", "keepDays": 30, "enabled": true, "summary": "claude",
-    "summaryModel": "haiku"}. Błędna wartość nie zatrzymuje usługi — zostaje domyślna, a ostrzeżenie
+    "summaryModel": "sonnet"}. Błędna wartość nie zatrzymuje usługi — zostaje domyślna, a ostrzeżenie
     idzie do dziennika."""
     settings, warnings = Settings(), []
     data = {}
@@ -129,7 +129,7 @@ def load_settings(path: str | None = None, at: str | None = None, enabled: bool 
         if isinstance(value, str) and MODEL_RE.match(value):
             settings.summary_model = value
         else:
-            warnings.append(f"raport: summaryModel to nazwa modelu (np. haiku), jest {value!r}")
+            warnings.append(f"raport: summaryModel to nazwa modelu (np. sonnet), jest {value!r}")
     if at:
         settings.at = parse_hhmm(at)  # opcja wiersza poleceń: błąd ma być głośny
     if enabled is not None:

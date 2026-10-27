@@ -31,7 +31,7 @@ class ReportMonitor(QObject):
                  sessions=lambda: [], worktrees=lambda: None, notifier=None, clock=time.time,
                  login_delay: float = schedule.LOGIN_DELAY, check_interval: float = schedule.CHECK_INTERVAL,
                  fetch_limits: bool = True, coordination_cache: str | None = None, opener=None,
-                 summary: str | None = None, parent=None):
+                 summary: str | None = None, tracker=None, parent=None):
         super().__init__(parent)
         self.settings = settings
         self.root = root
@@ -47,6 +47,7 @@ class ReportMonitor(QObject):
         self.clock = clock
         self.fetch_limits = fetch_limits
         self.coordination_cache = coordination_cache  # plik tablicy koordynacji („Plany i tickety”) albo None
+        self.tracker = tracker          # YouTrackCache (opisy ticketów planów w repozytoriach, tylko GET) albo None
         self.opener = opener            # funkcja(ścieżka index.html) -> bool (xdg-open) albo None
         self.summary = summary or settings.summary    # „Na daily”: claude albo rules (--report-summary)
         self.running = False
@@ -146,7 +147,7 @@ class ReportMonitor(QObject):
                 claude_root=self.claude_root, codex_root=self.codex_root, live=live, worktrees=trees,
                 fetch_limits=self.fetch_limits, max_depth=self.max_depth,
                 coordination_cache=self.coordination_cache, summary=self.summary,
-                summary_model=self.settings.summary_model)
+                summary_model=self.settings.summary_model, tracker=self.tracker)
             schedule.apply_retention(self.root, schedule.report_day(end, self.settings), self.settings.keep_days)
             return index, report
 
@@ -164,7 +165,7 @@ class ReportMonitor(QObject):
         if report is not None:
             state = schedule.load_state(self.state_file)
             state.day, state.start, state.end = context["day"], context["start"], context["end"]
-            state.projects, state.waiting = len(report.active), len(report.waiting)
+            state.projects, state.waiting = len(report.repos), len(report.waiting)
             notify = context["scheduled"] and schedule.should_notify(state, context["day"])
             if notify:
                 state.notified = context["day"]
@@ -183,7 +184,7 @@ class ReportMonitor(QObject):
 
 def notification_text(report) -> tuple[str, str]:
     """(tytuł, treść) powiadomienia."""
-    n = len(report.active)
+    n = len(report.repos)  # projekty-repozytoria; sesje spoza nich liczą się niżej
     if n:
         summary = f"Raport poranny gotowy — {render.count(n, 'projekt', 'projekty', 'projektów')}"
     else:

@@ -1,4 +1,4 @@
-"""HTML raportu porannego: index.html i strona każdego projektu z ruchem.
+"""HTML raportu porannego: index.html (przegląd) i strona każdego projektu-repozytorium z ruchem.
 
 Strony są samodzielne: CSS z palety wpisany w plik, czcionki Geist/Geist Mono z systemu
 (@font-face z local(), zapasowo czcionka systemowa), bez sieci i bez zewnętrznych plików. Jedyny
@@ -8,9 +8,12 @@ nawet gdyby coś umknęło escapowaniu, wstrzyknięty skrypt się nie wykona.
 Escapowanie: każdy tekst z zewnątrz (tematy commitów, autorzy, nazwy gałęzi i plików, tytuły
 sesji, wiadomości agentów, ścieżki) przechodzi przez esc() — także w atrybutach.
 
-Układ: na górze „Na daily” (standup.py, summarize.py) — po projekcie Zrobione / W toku / Czeka na
-mnie / Dalej i „Na czym polega”, z przyciskiem „Kopiuj jako tekst”; surowe dane (commity po
-gałęziach, sesje, worktrees, limity) zwinięte niżej w „Szczegóły”.
+Układ indeksu: przegląd — karta na projekt-repozytorium z 1–2 zdaniami „co się działo”, licznikami
+(zrobione, w toku, czeka, porządki) i pozycjami „Czeka na mnie” (projekty, w których coś czeka, pierwsze
+i wyróżnione), zwinięta sekcja „Poza projektami” (sesje spoza repozytoriów) i zwinięte „Szczegóły”.
+Strona projektu: na górze jego „Na daily” (standup.py, summarize.py) — praca: Zrobione / W toku /
+Czeka na mnie / Dalej i „Na czym polega”, zwinięte „Porządki”, „Kopiuj jako tekst” tylko dla tego
+projektu; surowe dane (plany, sesje, commity po gałęziach, worktrees) zwinięte niżej w „Szczegóły”.
 
 Linki do programów: zamiast własnego schematu tide:// (który mógłby wywołać każda strona w
 przeglądarce) raport daje ścieżki z przyciskiem „Kopiuj”, gotowe polecenia (Konsole, Rider,
@@ -381,6 +384,34 @@ border-top:1px solid var(--border);font-size:13.5px;align-items:baseline}
 .sg .nx{color:var(--muted)}
 .sg li.more{color:var(--muted);font-size:13px}
 .sg li.more::before{display:none}
+.sg.chores li{color:var(--text2);font-size:14px}
+.sg.chores li::before{background:var(--muted)}
+.ovgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:16px}
+.ov{display:flex;flex-direction:column;padding:18px 20px}
+.ov h3{font-size:18px}
+.ov h3 a{color:var(--text)}
+.ov .headline{margin:8px 0 0;color:var(--text2);font-size:14.5px;line-height:1.55;max-width:80ch}
+.ovwait{margin-top:14px;padding-top:12px;border-top:1px solid var(--peach-line)}
+.ovwait h4{font-size:12px;text-transform:uppercase;letter-spacing:.08em;margin:0 0 6px;color:var(--peach);font-weight:600}
+.ovwait ul{list-style:none;margin:0;padding:0;display:grid;gap:6px;font-size:14px;overflow-wrap:anywhere}
+.ovwait .ref{font-family:var(--mono);font-size:12px;color:var(--sky);margin-right:7px}
+.ovwait li.more{color:var(--muted)}
+.ov .meta{margin-top:auto;padding-top:14px;justify-content:space-between;align-items:center}
+.ov .go{font-size:13px}
+details.chores{margin-top:18px;border-top:1px solid var(--border)}
+details.chores summary{cursor:pointer;padding:12px 0 4px;color:var(--text2);font-size:12px;font-weight:600;
+text-transform:uppercase;letter-spacing:.08em;width:max-content;max-width:100%}
+details.chores summary .n{font-family:var(--mono);color:var(--muted);margin-left:6px;letter-spacing:0}
+details.chores summary .muted{text-transform:none;letter-spacing:0;font-weight:400;margin-left:10px}
+details.chores .sg{margin-top:8px}
+details.outside{margin-top:28px}
+details.outside summary .muted{margin-left:8px;font-weight:400}
+.osession{padding:12px 0;border-top:1px solid var(--border)}
+.osession .head{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap}
+.osession .head .sp{flex:1}
+.osession .head b{font-weight:500;overflow-wrap:anywhere}
+.otask{font-size:14px;color:var(--text2);margin-top:6px;overflow-wrap:anywhere}
+.otask b{color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin-right:8px}
 details.details{margin-top:44px;border-top:1px solid var(--border)}
 details.details>summary{cursor:pointer;padding:18px 0 6px;color:var(--text2);font-weight:600;font-size:13px;
 text-transform:uppercase;letter-spacing:.08em;width:max-content;max-width:100%}
@@ -389,7 +420,7 @@ details.details>summary .muted{text-transform:none;letter-spacing:0;font-weight:
 @media (min-width:1360px){.cols{grid-template-columns:minmax(0,1.08fr) minmax(0,1fr)}}
 @media (min-width:2000px){.wrap{max-width:1720px}body{font-size:16px}}
 @media (max-width:700px){
-.wrap{padding:24px 16px 48px}h1{font-size:28px}.grid{grid-template-columns:minmax(0,1fr)}
+.wrap{padding:24px 16px 48px}h1{font-size:28px}.grid,.ovgrid{grid-template-columns:minmax(0,1fr)}
 .waitrow{grid-template-columns:auto minmax(0,1fr)}.waitrow .when{grid-column:2;text-align:left}
 .commit{grid-template-columns:minmax(0,1fr) auto;padding:9px 14px}.commit .t{grid-column:1;grid-row:1}
 .commit .s{grid-column:1 / 3}.commit .by{grid-column:1 / 3}.commit .st{grid-column:2;grid-row:1}
@@ -449,7 +480,10 @@ def period_text(report) -> str:
 # --- indeks ---------------------------------------------------------------------------------------
 
 def render_index(report, palette: dict, home: str = "") -> str:
+    """Przegląd: karta na projekt (1–2 zdania, liczniki, „Czeka na mnie”), „Poza projektami”
+    (zwinięte) i szczegóły (liczby, czekające sesje, projekty bez ruchu, limity)."""
     active, quiet = report.active, report.quiet
+    repos, outside = _repos(report), _outside(report)
     commits = sum(p.commits for p in active)
     added = sum(b.added for p in active for b in p.branches)
     deleted = sum(b.deleted for p in active for b in p.branches)
@@ -461,13 +495,17 @@ def render_index(report, palette: dict, home: str = "") -> str:
         f'<div class="brand">{LOGO}<span>Tide · raport poranny</span></div>',
         f'<h1>{esc(long_date(report.day).capitalize())}</h1>',
         f'<div class="period">Okres: {esc(period_text(report))}</div></div></header>',
-        daily(report, active, index=True),
-        '<details class="details"><summary>Szczegóły<span class="muted">liczby, czekające sesje, projekty, '
-        'limity</span></summary>',
+        overview(report, repos),
+    ]
+    if outside:
+        parts.append(_outside_section(report, outside))
+    parts += [
+        '<details class="details"><summary>Szczegóły<span class="muted">liczby, czekające sesje, projekty bez '
+        'ruchu, limity</span></summary>',
         '<section class="stats">',
         _stat(len(waiting), plural(len(waiting), "czeka na ciebie", "czekają na ciebie", "czeka na ciebie"),
               hot=bool(waiting)),
-        _stat(len(active), plural(len(active), "projekt z ruchem", "projekty z ruchem", "projektów z ruchem")),
+        _stat(len(repos), plural(len(repos), "projekt z ruchem", "projekty z ruchem", "projektów z ruchem")),
         _stat(commits, plural(commits, "commit", "commity", "commitów"),
               f'<small><span class="add">+{added}</span> <span class="del">−{deleted}</span></small>' if commits else ""),
         _stat(sessions, plural(sessions, "sesja agenta", "sesje agentów", "sesji agentów")),
@@ -480,8 +518,9 @@ def render_index(report, palette: dict, home: str = "") -> str:
     if waiting:
         parts.append('<div class="waitlist">')
         for project, s in waiting:
+            target = f'{project.slug}.html#{session_anchor(s)}' if project.is_repo else f'#{session_anchor(s)}'
             parts.append(
-                f'<a class="waitrow" href="{esc(project.slug)}.html#{esc(session_anchor(s))}">'
+                f'<a class="waitrow" href="{esc(target)}">'
                 f'<span class="dot waiting"></span><span class="what"><span class="row">'
                 f'<b>{esc(project.name)}</b>{tool_chip(s.tool)}<span class="state waiting">{esc(state_of(s)[1])}</span>'
                 f'</span><span class="title">{esc(s.title)}</span></span>'
@@ -489,14 +528,6 @@ def render_index(report, palette: dict, home: str = "") -> str:
         parts.append("</div>")
     else:
         parts.append('<div class="calm"><span class="dot"></span>Nikt na ciebie nie czeka.</div>')
-
-    parts.append(f'<h2>Projekty <span class="n">{len(active)}</span></h2>')
-    if active:
-        parts.append('<div class="grid">')
-        parts += [_project_card(p) for p in active]
-        parts.append("</div>")
-    else:
-        parts.append('<div class="empty">W tym okresie nic się nie działo — ani commitów, ani sesji agentów.</div>')
 
     if quiet:
         parts.append(f'<h2>Bez ruchu <span class="n">{len(quiet)}</span></h2>'
@@ -511,7 +542,15 @@ def render_index(report, palette: dict, home: str = "") -> str:
     return page(f"Raport poranny · {short_date(report.day)}", "".join(parts), palette)
 
 
-# --- „Na daily” -----------------------------------------------------------------------------------
+def _repos(report) -> list:
+    return [p for p in report.active if getattr(p, "is_repo", True)]
+
+
+def _outside(report) -> list:
+    return [p for p in report.active if not getattr(p, "is_repo", True)]
+
+
+# --- przegląd projektów i „Na daily” ---------------------------------------------------------------
 
 def daily_text(report, projects) -> str:
     """Standup podanych projektów jako zwykły tekst (przycisk „Kopiuj jako tekst”)."""
@@ -520,19 +559,82 @@ def daily_text(report, projects) -> str:
     return standup_mod.as_text(summary, [p.name for p in projects], heading)
 
 
-def daily(report, projects, index: bool) -> str:
-    """Sekcja „Na daily”: w indeksie wszystkie projekty z ruchem, na stronie projektu — ten jeden."""
-    summary = getattr(report, "standup", None) or {}
-    by_name = summary.get("projects") or {}
+def _source(summary: dict) -> str:
     if summary.get("source") == "model":
         source = f"opis: Claude {str(summary.get('model') or '').capitalize()}"
         if summary.get("note"):
             source += f" · {summary['note']}"
+        return source
+    return summary.get("note") or "opis z reguł (bez modelu)"
+
+
+def overview(report, projects) -> str:
+    """Indeks: karta na projekt — 1–2 zdania „co się działo”, liczniki (zrobione, w toku, czeka,
+    porządki), pozycje „Czeka na mnie” i odnośnik do strony projektu z pełnym „Na daily”. Projekty,
+    w których coś czeka, są pierwsze i wyróżnione, a te z samymi porządkami — na końcu."""
+    summary = getattr(report, "standup", None) or {}
+    by_name = summary.get("projects") or {}
+    text = daily_text(report, projects)
+    out = ['<section class="daily"><div class="dhead"><h2>Projekty <span class="n">'
+           f'{len(projects)}</span></h2><span class="dsrc">{esc(_source(summary))}</span><span class="sp"></span>'
+           + (copy_button(text, "Kopiuj wszystko jako tekst") if text else "") + "</div>"]
+    if not projects:
+        out.append('<div class="calm"><span class="dot"></span>W tym okresie nie ma nic do opowiedzenia — '
+                   'ani commitów, ani sesji agentów w projektach.</div></section>')
+        return "".join(out)
+    cards = []
+    for i, p in enumerate(projects):
+        s = by_name.get(p.name) or {}
+        waits = [item for item in s.get("waiting") or [] if not item.get("more")]
+        hot = bool(waits or p.waiting)
+        n = standup_mod.counts(s)
+        chores_only = bool(n.get("chores")) and not any(n.get(k) for k in standup_mod.GROUP_KEYS)
+        cards.append((not hot, chores_only, i, _overview_card(p, s, waits, hot)))
+    out.append('<div class="ovgrid">' + "".join(card for *_key, card in sorted(cards)) + "</div></section>")
+    return "".join(out)
+
+
+def _overview_card(p, s: dict, waits: list, hot: bool) -> str:
+    n = standup_mod.counts(s)
+    chips = []
+    for key, word, tone in (("done", "zrobione", "mint"), ("doing", "w toku", "teal"), ("waiting", "czeka", "peach"),
+                            ("chores", "porządki", "")):
+        if n.get(key):
+            chips.append(f'<span class="chip{" " + tone if tone else ""}">{esc(word)} {n[key]}</span>')
+    headline = s.get("headline") or s.get("theme") or ""
+    body = [f'<article class="card ov{" wait" if hot else ""}">',
+            f'<div class="row"><h3><a href="{esc(p.slug)}.html">{esc(p.name)}</a></h3>'
+            f'{"".join(tool_chip(t) for t in sorted({x.tool for x in p.sessions}))}</div>']
+    if headline:
+        body.append(f'<p class="headline">{esc(headline)}</p>')
     else:
-        source = summary.get("note") or "opis z reguł (bez modelu)"
+        body.append('<p class="headline muted">Ruch bez opisu — szczegóły na stronie projektu.</p>')
+    for plan in getattr(p, "plans", None) or ():
+        if plan["total"]:
+            label = f'{plan["label"]} · ' if plan["label"] else "plan "
+            chips.append(f'<span class="chip sky">{esc(label)}{plan["done"]}/{plan["total"]}</span>')
+    if chips:
+        body.append(f'<div class="counts">{"".join(chips)}</div>')
+    if waits:
+        rows = "".join(f'<li>{_ref(item)}{esc(item.get("text"))}</li>' for item in waits[:3])
+        more = f'<li class="more">i {len(waits) - 3} więcej</li>' if len(waits) > 3 else ""
+        body.append(f'<div class="ovwait"><h4>Czeka na mnie</h4><ul>{rows}{more}</ul></div>')
+    meta = [count(p.commits, "commit", "commity", "commitów"), count(len(p.sessions), "sesja", "sesje", "sesji")]
+    if p.last_ts:
+        meta.append(f"ostatnio {day_time(p.last_ts)}")
+    body.append(f'<div class="meta"><span>{esc(" · ".join(meta))}</span>'
+                f'<a class="go" href="{esc(p.slug)}.html">Na daily i szczegóły →</a></div></article>')
+    return "".join(body)
+
+
+def daily(report, projects, index: bool = False) -> str:
+    """Sekcja „Na daily” strony projektu: praca (Zrobione / W toku / Czeka na mnie / Dalej), „Na czym
+    polega” i zwinięte „Porządki”, z „Kopiuj jako tekst” tylko dla tych projektów."""
+    summary = getattr(report, "standup", None) or {}
+    by_name = summary.get("projects") or {}
     text = daily_text(report, projects)
     out = ['<section class="daily"><div class="dhead"><h2>Na daily</h2>'
-           f'<span class="dsrc">{esc(source)}</span><span class="sp"></span>'
+           f'<span class="dsrc">{esc(_source(summary))}</span><span class="sp"></span>'
            + (copy_button(text, "Kopiuj jako tekst") if text else "") + "</div>"]
     shown = 0
     for p in projects:
@@ -540,12 +642,9 @@ def daily(report, projects, index: bool) -> str:
         if not s or standup_mod.empty(s):
             continue
         shown += 1
-        name = f'<a href="{esc(p.slug)}.html">{esc(p.name)}</a>' if index else esc(p.name)
-        chips = ""
-        if index and p.waiting:
-            chips = f'<span class="chip peach">{esc(count(len(p.waiting), "czeka", "czekają", "czeka"))}</span>'
-        # Na stronie projektu nazwa jest już w nagłówku strony — karta bez tytułu.
-        out.append('<article class="card standup">' + (f'<div class="row"><h3>{name}</h3>{chips}</div>' if index else ""))
+        out.append('<article class="card standup">')
+        if index:
+            out.append(f'<div class="row"><h3><a href="{esc(p.slug)}.html">{esc(p.name)}</a></h3></div>')
         if s.get("theme"):
             out.append(f'<p class="theme"><b>Na czym polega</b>{esc(s["theme"])}</p>')
         groups = []
@@ -557,6 +656,15 @@ def daily(report, projects, index: bool) -> str:
             groups.append(f'<div class="sg {key}"><h4>{esc(label)}</h4><ul>{rows}</ul></div>')
         if groups:
             out.append(f'<div class="sgroups">{"".join(groups)}</div>')
+        elif s.get("chores"):
+            out.append('<div class="empty">Bez zmian w produkcie — same porządki.</div>')
+        chores = s.get("chores") or []
+        if chores:
+            n = standup_mod.counts(s)["chores"]
+            rows = "".join(_daily_item(item) for item in chores)
+            out.append(f'<details class="chores"><summary>{esc(standup_mod.CHORES[1])} <span class="n">{n}</span>'
+                       '<span class="muted">tracker, plany i instrukcje agentów, konfiguracja</span></summary>'
+                       f'<div class="sg chores"><ul>{rows}</ul></div></details>')
         out.append("</article>")
     if not shown:
         out.append('<div class="calm"><span class="dot"></span>W tym okresie nie ma nic do opowiedzenia — '
@@ -565,49 +673,47 @@ def daily(report, projects, index: bool) -> str:
     return "".join(out)
 
 
+def _ref(item: dict) -> str:
+    return f'<span class="ref">{esc(item["ref"])}</span>' if item.get("ref") else ""
+
+
 def _daily_item(item: dict) -> str:
     if item.get("more"):
         return f'<li class="more">{esc(item.get("text"))}</li>'
-    ref = f'<span class="ref">{esc(item["ref"])}</span>' if item.get("ref") else ""
-    why = f'<span class="why">{esc(item["why"])}</span>' if item.get("why") else ""
+    about = f'<span class="why">{esc(item["about"])}</span>' if item.get("about") else ""
     nxt = f'<span class="nx">dalej: {esc(item["next"])}</span>' if item.get("next") else ""
-    return f'<li>{ref}{esc(item.get("text"))}{why}{nxt}</li>'
+    return f'<li>{_ref(item)}{esc(item.get("text"))}{about}{nxt}</li>'
+
+
+def _outside_section(report, projects) -> str:
+    """Sesje spoza repozytoriów git (korzeń przestrzeni roboczej, katalogi tymczasowe): bez „Na daily”,
+    zwinięte; czekająca sesja jest też w „Czeka na ciebie” (odnośnik do kotwicy tutaj)."""
+    sessions = [(p, s) for p in projects for s in p.sessions]
+    waiting = sum(1 for _p, s in sessions if s.state == "waiting")
+    label = count(len(sessions), "sesja", "sesje", "sesji") + (f" · {waiting} czeka" if waiting else "")
+    out = [f'<details class="quiet outside"{" open" if waiting else ""}><summary>Poza projektami '
+           f'<span class="muted">{esc(label)} w katalogach bez repozytorium</span></summary><div class="stack">']
+    order = {"waiting": 0, "working": 1}
+    for p, s in sorted(sessions, key=lambda ps: (order.get(ps[1].state, 2), -ps[1].last_ts)):
+        state, word = state_of(s)
+        said = standup_mod.last_question(s.final_message) if state == "waiting" else \
+            standup_mod.first_sentences(s.final_message, 2, 320)
+        task = standup_mod.clean(getattr(s, "prompt", "") or "", 300)
+        resume = (f"cd {shlex.quote(s.cwd)} && claude --resume {shlex.quote(s.session_id)}" if s.tool == "claude"
+                  else f"cd {shlex.quote(s.cwd)} && codex resume {shlex.quote(s.session_id)}")
+        out.append(f'<article class="osession" id="{esc(session_anchor(s))}"><div class="head">'
+                   f'<span class="dot {esc(state)}"></span><span class="state {esc(state)}">{esc(word)}</span>'
+                   f'{tool_chip(s.tool)}<b>{esc(s.title)}</b><span class="sp"></span>{copy_button(resume, "Wznów")}</div>'
+                   f'<div class="meta"><span class="mono">{esc(p.path)}</span><span>ostatnio {esc(day_time(s.last_ts))}</span></div>'
+                   + (f'<div class="otask"><b>Zadanie</b>{esc(task)}</div>' if task and task != s.title else "")
+                   + (f'<div class="otask"><b>{"Pyta" if state == "waiting" else "Wynik"}</b>{esc(said)}</div>' if said else "")
+                   + "</article>")
+    out.append("</div></details>")
+    return "".join(out)
 
 
 def _stat(value: int, label: str, extra: str = "", hot: bool = False) -> str:
     return f'<div class="stat{" hot" if hot else ""}"><b>{value}{extra}</b><span>{esc(label)}</span></div>'
-
-
-def _project_card(p) -> str:
-    chips = []
-    if p.waiting:
-        chips.append(f'<span class="chip peach">{esc(count(len(p.waiting), "czeka", "czekają", "czeka"))}</span>')
-    if p.working:
-        chips.append(f'<span class="chip teal">{esc(count(len(p.working), "pracuje", "pracują", "pracuje"))}</span>')
-    if p.commits:
-        chips.append(f'<span class="chip">{esc(count(p.commits, "commit", "commity", "commitów"))}</span>')
-    if p.sessions:
-        chips.append(f'<span class="chip">{esc(count(len(p.sessions), "sesja", "sesje", "sesji"))}</span>')
-    if p.runs:
-        chips.append(f'<span class="chip sky">{esc(count(p.runs, "przebieg zadania", "przebiegi zadań", "przebiegów zadań"))}</span>')
-    if p.to_clean:
-        chips.append(f'<span class="chip lavender">{esc(len(p.to_clean))} do sprzątnięcia</span>')
-    if p.unpushed:
-        chips.append(f'<span class="chip butter">{esc(len(p.unpushed))} z pracą tylko tutaj</span>')
-    if p.main_dirty_count:
-        chips.append(f'<span class="chip butter">{esc(count(p.main_dirty_count, "zmiana", "zmiany", "zmian"))} w głównym</span>')
-    for plan in getattr(p, "plans", None) or ():
-        if plan["total"]:
-            label = f'{plan["label"]} · ' if plan["label"] else "plan "
-            tone = "peach" if plan["counts"]["czeka"] else "mint" if plan["done"] == plan["total"] else "sky"
-            chips.append(f'<span class="chip {tone}">{esc(label)}{plan["done"]}/{plan["total"]}</span>')
-    last = f'ostatnio {day_time(p.last_ts)}' if p.last_ts else ""
-    tools = sorted({s.tool for s in p.sessions})
-    return (f'<a class="card pcard{" wait" if p.waiting else ""}" href="{esc(p.slug)}.html">'
-            f'<div class="row"><h3>{esc(p.name)}</h3>{"".join(tool_chip(t) for t in tools)}</div>'
-            f'<div class="path">{esc(p.path)}</div>'
-            f'<div class="counts">{"".join(chips)}</div>'
-            f'<div class="meta">{esc(last)}</div></a>')
 
 
 def _standing(p) -> str:

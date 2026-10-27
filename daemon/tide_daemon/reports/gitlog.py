@@ -9,6 +9,9 @@ Grupowanie:
 - worktree z odłączonym HEAD: commity z okresu, których nie ma w żadnej gałęzi.
 
 Gałęzie, których czubek jest starszy niż początek okresu, pomijamy bez pytania gita o log.
+Gałąź, której wszystkie commity z okresu są też w większej gałęzi poza główną, dostaje
+`merged_into` (scalona do gałęzi integracyjnej). Commit pamięta ścieżki zmienionych plików
+(`--numstat`) — z nich „Na daily” liczy obszary zmian i odróżnia pracę od porządków.
 
 Kto zrobił commit (pole `agent`): `claude` albo `codex`, gdy wskazuje na to stopka
 Co-Authored-By albo adres autora, gałąź/worktree agenta (prefiks `codex/`, `claude/`, katalog
@@ -27,6 +30,7 @@ RECORD = "\x1e"
 FORMAT = RECORD + FIELD.join(["%H", "%an", "%ae", "%ct", "%P", "%s", "%(trailers:key=Co-authored-by,valueonly,separator=%x1d)"])
 SUBJECT_LIMIT = 200
 SESSION_SLACK = 5 * 60  # commit tuż po ostatnim wpisie sesji też jest jej (agent commituje na końcu)
+PATHS_MAX = 200
 
 
 @dataclass
@@ -43,6 +47,7 @@ class Commit:
     agent: str = ""        # claude, codex albo pusty
     agent_why: str = ""    # trailer, author, branch, session
     parents: tuple = ()
+    paths: list = field(default_factory=list)   # zmienione pliki z --numstat (najwyżej PATHS_MAX)
 
 
 @dataclass
@@ -58,6 +63,9 @@ class BranchLog:
     # Scalenia w gałęzi głównej: [{"sha", "branch", "members": [sha, …]}] — commity, które weszły
     # danym scaleniem (raport „Na daily” grupuje po nich pracę zamiast wypisywać tematy commitów).
     merges: list = field(default_factory=list)
+    # Gałąź (poza główną), w której są już wszystkie commity tej gałęzi z okresu — np. gałąź ticketu
+    # scalona do gałęzi integracyjnej; pusty, gdy takiej nie ma.
+    merged_into: str = ""
 
     @property
     def added(self) -> int:
@@ -88,6 +96,8 @@ def parse_log(text: str) -> list[Commit]:
             if len(cols) < 3:
                 continue
             commit.files += 1
+            if len(commit.paths) < PATHS_MAX:
+                commit.paths.append(cols[2])
             commit.added += int(cols[0]) if cols[0].isdigit() else 0
             commit.deleted += int(cols[1]) if cols[1].isdigit() else 0
         tool = tool_from_text(trailers.replace("\x1d", " ") + " " + email)
@@ -134,6 +144,17 @@ def repo_commits(git: Git, repo_path: str, main_branch: str, start: float, end: 
             if commits:
                 candidates.append(("", commits, w))
 
+    # Gałąź scalona do innej gałęzi poza główną: jej commity z okresu zawierają się w tamtej.
+    # Przy łańcuchu gałęzi (każda założona z poprzedniej, wszystkie scalone do integracyjnej)
+    # wskazujemy największą — gałąź integracyjną, a nie następne ogniwo.
+    shas = {item[0]: {c.sha for c in item[1]} for item in candidates if item[0] and item[0] != main_branch}
+    merged_into = {}
+    for name, own_shas in shas.items():
+        holders = [other for other, other_shas in shas.items()
+                   if other != name and len(other_shas) > len(own_shas) and own_shas <= other_shas]
+        if holders:
+            merged_into[name] = max(holders, key=lambda other: len(shas[other]))
+
     # Każdy commit raz: najpierw gałąź główna, potem od najmniejszej liczby commitów.
     candidates.sort(key=lambda c: (c[0] != main_branch or not c[0], len(c[1])))
     seen: set[str] = set()
@@ -149,7 +170,8 @@ def repo_commits(git: Git, repo_path: str, main_branch: str, start: float, end: 
         log = BranchLog(name=branch or f"odłączony HEAD {wt.get('head', '')}", branch=branch,
                         is_main=bool(branch) and branch == main_branch, worktree=wt.get("path", ""),
                         is_main_checkout=bool(wt.get("isMain")),
-                        tool=guess_tool(wt.get("path", ""), tag) if wt or tag else "", title=title, commits=own)
+                        tool=guess_tool(wt.get("path", ""), tag) if wt or tag else "", title=title, commits=own,
+                        merged_into=merged_into.get(branch, ""))
         _mark_agents(log, sessions)
         if log.is_main:
             log.merges = _merges(git, repo_path, log.commits)

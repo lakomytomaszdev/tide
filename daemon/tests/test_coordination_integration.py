@@ -118,7 +118,7 @@ class ReportPlansTest(unittest.TestCase):
         self.assertIn("Plany i tickety", html)
         self.assertIn("Drugi &lt;b&gt;x&lt;/b&gt;", html, "tytuły z planu są escapowane")
         self.assertIn("1 z 2 gotowe", html)
-        card = render._project_card(repo)
+        card = render._overview_card(repo, {}, [], False)  # karta projektu w przeglądzie indeksu
         self.assertIn("TOM-20 · 2/10", card)
 
     def test_without_cache_and_on_errors_the_report_goes_on(self):

@@ -1,35 +1,51 @@
-"""„Na daily” — co zrobiono, co trwa, co czeka na użytkownika i co dalej, po projekcie.
+"""„Na daily” — po projekcie: praca (co zrobiono, co trwa, co czeka na użytkownika, co dalej)
+oddzielona od porządków (tracker, plany, instrukcje agentów, konfiguracja).
 
 Trzy kroki, wszystkie bez I/O (testowane na fixtures):
 
-1. `facts(report)` — fakty o projekcie z modelu raportu: tickety z tablicy koordynacji i planów
-   (ID, tytuł z YouTracka/planu, stan, notatka, wynik review, pierwsza linia wyniku pracy, pytanie),
-   jednostki pracy (scalona gałąź, gałąź poza główną, grupa commitów w gałęzi głównej, sama sesja)
-   z tematami commitów i podpiętymi sesjami (tytuł, stan, pierwsze zdania ostatniej wiadomości),
-   zaplanowane zadania. Sesja koordynatora nie jest osobną pracą — jej plan to „Na czym polega”.
+1. `facts(report)` — fakty o każdym projekcie-repozytorium z ruchem (sesje spoza repozytoriów
+   nie są projektem — render.py pokazuje je osobno w „Poza projektami”): tickety z tablicy
+   koordynacji i planów (ID, tytuł, początek opisu z YouTracka, początek polecenia podagenta,
+   uwagi z planu, stan, notatka, wynik review, pierwsza linia wyniku pracy, pytanie), cele planów,
+   jednostki pracy (scalona gałąź, gałąź scalona do gałęzi integracyjnej, gałąź poza główną, grupa
+   commitów w gałęzi głównej, sama sesja) z tematami commitów, obszarami zmienionych plików
+   i podpiętymi sesjami (tytuł, pierwsze polecenie użytkownika, stan, pierwsze zdania ostatniej
+   wiadomości), zaplanowane zadania. Sesja koordynatora nie jest osobną pracą — jej plan i polecenie
+   to „Na czym polega”. Wewnętrzne gałęzie agentów (`worktree-agent-*`) pomijamy.
+   Każdy ticket i jednostka dostaje podpowiedź `category`: "work" (zmiana w produkcie) albo "chores"
+   (porządki) z deterministycznych sygnałów — `classify_*` niżej.
 2. `rules(fact)` — podsumowanie z reguł (bez modelu): grupowanie po ticketach, potem po gałęziach
-   i sesjach; tytuły ticketów zamiast tematów commitów, pierwsze zdania wiadomości agenta jako „po co”.
-   Używane, gdy podsumowanie modelem jest wyłączone albo się nie udało.
+   i sesjach; porządki według samych sygnałów. Używane, gdy podsumowanie modelem jest wyłączone
+   albo się nie udało.
 3. `validate(data, facts)` — odpowiedź modelu (summarize.py) sprawdzona względem schematu:
-   tylko znane projekty i ID ticketów, same napisy, przycięte długości i liczby pozycji. Projekt,
-   którego model nie opisał (albo opisał źle), dostaje podsumowanie z reguł.
+   tylko znane projekty i ID ticketów, same napisy, przycięte długości i liczby pozycji, bez
+   pozycji-śmieci („nic nie czeka”, „N gałęzi nie jest scalonych”, „bez review”). Projekt, którego
+   model nie opisał (albo opisał źle), dostaje podsumowanie z reguł.
 
-Pozycja: {"ref": ID ticketu albo "", "text": co, "why": po co / co to daje (Zrobione),
-"next": następny krok (W toku)}. HTML nie powstaje tutaj — render.py escapuje każdy napis.
+Podsumowanie projektu: {"headline": 1–2 zdania do indeksu, "theme": na czym polega praca,
+"done"/"doing"/"waiting"/"next": praca, "chores": porządki}. Pozycja: {"ref": ID ticketu albo "",
+"text": co, "about": czym to jest / po co (opcjonalnie), "next": następny krok (W toku)}.
+HTML nie powstaje tutaj — render.py escapuje każdy napis.
 """
 import os
 import re
+from collections import Counter
 
 from ..worktrees.naming import humanize_branch
 
 GROUPS = (("done", "Zrobione"), ("doing", "W toku"), ("waiting", "Czeka na mnie"), ("next", "Dalej"))
 GROUP_KEYS = tuple(k for k, _ in GROUPS)
+CHORES = ("chores", "Porządki")
+ALL_KEYS = GROUP_KEYS + (CHORES[0],)
 ITEMS_MAX = 8              # pozycji w grupie (reszta jako „i N więcej”)
 TEXT_MAX = 260
-WHY_MAX = 320
+ABOUT_MAX = 320
 THEME_MAX = 600
+HEADLINE_MAX = 320
 NEXT_TODO = 5
 LOOSE_MAX = 2              # tyle gałęzi bez sesji i ticketu pokazujemy osobno
+AREAS_MAX = 6
+TASK_MAX = 600
 TICKET_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}-\d{1,6}$")
 TICKET_IN_TEXT = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]{1,9})-(\d{1,6})(?![0-9])")
 TICKET_DASHLESS = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]{2,10})-?(\d{1,6})(?![0-9])")  # „la035” w nazwie gałęzi
@@ -40,6 +56,27 @@ CONVENTIONAL = re.compile(r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]{1,40})\))?!?:\s
 ACTIVE = ("w-toku", "review", "czeka")
 FAILING = re.compile(r"(?i)(test\w*[^.\n]{0,40}\bnie (?:przechodz|przeszł)\w*|\b[1-9]\d* (?:failed|failing|nie przesz\w*)\b|"
                      r"\bFAIL(?:ED|URES?)\b|\btesty? (?:padaj|czerwon)\w*)")
+AGENT_BRANCH = re.compile(r"^worktree-agent-")   # wewnętrzne gałęzie podagentów Claude Code (Agent z izolacją)
+
+# --- praca czy porządki ------------------------------------------------------------------------
+# Pliki, których zmiana nie zmienia produktu: instrukcje i plany agentów, ich konfiguracja,
+# konfiguracja trackera.
+CHORE_PATH = re.compile(
+    r"(?i)(?:^|/)(?:CLAUDE(?:\.local)?\.md|AGENTS\.md|GEMINI\.md|\.mcp\.json)$"
+    r"|^(?:docs/agents|\.claude|\.codex|\.agents|\.cursor|\.gemini)(?:/|$)"
+    r"|(?:^|/)[^/]*youtrack[^/]*(?:/|$)|(?:^|/)\.?(?:jira|linear)(?:[-_.][^/]*)?(?:/|$)")
+# Typy commitów bez zmiany produktu i zakresy „docs(…)” o planach i agentach.
+CHORE_TYPES = {"chore", "ci", "build"}
+CHORE_DOC_SCOPES = {"plan", "plans", "agents", "agent", "tracker", "youtrack"}
+# Tematy, polecenia i tytuły o trackerze, migracji zadań i instrukcjach agentów.
+CHORE_WORDS = re.compile(
+    r"(?i)(\byou ?track|\bjira\b|(?-i:\bLinear(?:a|em|u)?\b)"
+    r"|\btracker\w*|\bclaude\.md\b|\bagents\.md\b|\bmyai\b|\binstrukcj\w*\s+(?:dla\s+|do\s+)?agent\w*"
+    r"|\bplan\w*\s+prac\w*\s+agent\w*|\bagent (?:instructions|work plan|plan convention)"
+    r"|\bkonfiguracj\w*\s+agent\w*|\bstandard\w*\s+plan\w*)")
+GENERIC_DIRS = {"src", "lib", "libs", "app", "apps", "packages", "pkg", "internal", "cmd", "modules", "services",
+                "projects", "source", "tests", "test", "tools"}
+
 
 
 # --- tekst -----------------------------------------------------------------------------------------
@@ -143,10 +180,47 @@ def ticket_ids(text: str, dashless: bool = False) -> list[str]:
             if m.group(1).upper() not in NOT_TICKETS]
 
 
+# --- praca czy porządki ----------------------------------------------------------------------------
+
+def commit_is_chore(subject: str, paths=()) -> bool:
+    """Commit bez zmiany produktu: typ chore/ci/build, docs(plan|agents|…), temat o trackerze albo
+    same pliki instrukcji, planów i konfiguracji agentów lub trackera."""
+    kind, scope, _rest = subject_parts(subject)
+    if kind in CHORE_TYPES or (kind == "docs" and scope.lower() in CHORE_DOC_SCOPES):
+        return True
+    if CHORE_WORDS.search(subject or ""):
+        return True
+    paths = [p for p in paths or () if p]
+    return bool(paths) and all(CHORE_PATH.search(p) for p in paths)
+
+
+def text_is_chore(*texts: str) -> bool:
+    """Polecenie, tytuł albo nazwa planu o trackerze, migracji zadań, instrukcjach i planach agentów."""
+    return any(CHORE_WORDS.search(t or "") for t in texts)
+
+
+def areas(paths) -> list[list]:
+    """Obszary zmian: [[katalog, liczba plików], …] od największego. Katalog najwyższego poziomu,
+    a dla ogólnych (src, apps, tests, …) — dwa pierwsze człony („src/LegalApp.Web”)."""
+    counter: Counter = Counter()
+    for path in paths or ():
+        parts = [p for p in str(path).split("/") if p]
+        if not parts:
+            continue
+        if len(parts) == 1:
+            counter[parts[0]] += 1
+        elif parts[0].lower() in GENERIC_DIRS and len(parts) > 2:
+            counter["/".join(parts[:2])] += 1
+        else:
+            counter[parts[0]] += 1
+    return [[name, n] for name, n in counter.most_common(AREAS_MAX)]
+
+
 # --- fakty -----------------------------------------------------------------------------------------
 
 def facts(report) -> list[dict]:
-    return [project_facts(report, p) for p in report.active]
+    """Fakty projektów-repozytoriów z ruchem (sesje spoza repozytoriów to nie projekty)."""
+    return [project_facts(report, p) for p in report.active if getattr(p, "is_repo", True)]
 
 
 def project_facts(report, project) -> dict:
@@ -155,15 +229,19 @@ def project_facts(report, project) -> dict:
     coordinators = {e.get("id") for e in plans if e.get("id")}
     out = {"project": project.name, "slug": project.slug, "main": project.main_branch or "",
            "plans": [], "tickets": [], "units": [], "questions": [],
-           "toClean": len(project.to_clean), "unpushed": [w.get("branch") or w.get("name") or "" for w in project.unpushed],
+           "toClean": len(project.to_clean),
+           "unpushed": [b for b in (w.get("branch") or w.get("name") or "" for w in project.unpushed)
+                        if not AGENT_BRANCH.match(b)],
            "mainDirty": max(0, project.main_dirty_count)}
 
     seen_tickets: dict[str, dict] = {}
     for entry in plans:
         tickets = entry.get("all") or entry.get("tickets") or []
         recent = [t for t in tickets if (t.get("lastActivityTs") or 0) >= start]
+        plan_chore = text_is_chore(entry.get("title") or "")
         out["plans"].append({
             "title": clean(entry.get("title"), 200), "label": entry.get("label") or "",
+            "goal": clean(entry.get("goal"), 600), "category": "chores" if plan_chore else "work",
             "coordinator": entry.get("tool") or "", "live": bool(entry.get("live")),
             "source": entry.get("source") or "", "done": entry.get("done", 0), "total": entry.get("total", 0),
             "recent": len(recent)})
@@ -180,11 +258,18 @@ def project_facts(report, project) -> dict:
             if key in seen_tickets:
                 continue
             ident = (t.get("id") or "").strip().upper()
+            note = clean(t.get("note"), 220)
+            plan_note = clean(t.get("planNote"), 300)
+            if plan_note == note:
+                plan_note = ""
+            title = clean(t.get("title"), 200)
             item = {"id": ident if TICKET_RE.match(ident) else "", "key": ticket_key(ident),
-                    "title": clean(t.get("title"), 200), "state": state, "note": clean(t.get("note"), 220),
+                    "title": title, "state": state, "note": note, "planNote": plan_note,
+                    "description": description(t.get("description")), "brief": clean(t.get("brief"), 300),
                     "review": clean(t.get("review"), 80), "result": clean(t.get("result"), 240),
                     "question": clean(t.get("question"), 300), "branch": t.get("branch") or "",
-                    "plan": clean(entry.get("title"), 120), "ts": t.get("lastActivityTs") or 0}
+                    "plan": clean(entry.get("title"), 120), "ts": t.get("lastActivityTs") or 0,
+                    "category": "chores" if plan_chore or text_is_chore(title) else "work"}
             seen_tickets[key] = item
             out["tickets"].append(item)
 
@@ -194,9 +279,10 @@ def project_facts(report, project) -> dict:
     by_branch = {u["branch"]: u for u in units if u.get("branch")}
     by_worktree = [(os.path.realpath(u["worktree"]), u) for u in units if u.get("worktree")]
     for s in sessions:
+        own_branch = s.branch if s.branch and not AGENT_BRANCH.match(s.branch) else ""
         unit = None
-        if s.branch and s.branch not in (project.main_branch, "HEAD") and s.branch in by_branch:
-            unit = by_branch[s.branch]
+        if own_branch and own_branch not in (project.main_branch, "HEAD") and own_branch in by_branch:
+            unit = by_branch[own_branch]
         if unit is None and s.cwd:
             real = os.path.realpath(s.cwd)
             for base, candidate in by_worktree:
@@ -204,9 +290,8 @@ def project_facts(report, project) -> dict:
                     unit = candidate
                     break
         if unit is None:
-            branch = s.branch if s.branch not in (project.main_branch, "HEAD") else ""
-            unit = {"kind": "session", "title": clean(s.title, 160), "branch": branch, "worktree": "",
-                    "commits": [], "count": 0, "sessions": [], "ticket": ""}
+            branch = own_branch if own_branch not in (project.main_branch, "HEAD") else ""
+            unit = _unit("session", branch, clean(s.title, 160))
             units.append(unit)
             if branch:
                 by_branch.setdefault(branch, unit)
@@ -228,8 +313,52 @@ def project_facts(report, project) -> dict:
             if not hit and unit.get("ticket"):
                 hit = unit["ticket"]  # ID z tematu commita, którego nie ma w planie
         unit["ticket"] = hit
+        unit["category"] = _unit_kind(unit)
+
+    # Ticket, którego cała praca w okresie to porządki, sam też jest porządkiem.
+    for t in out["tickets"]:
+        linked = [u for u in units if u["ticket"] and u["ticket"] in (t["id"], t["title"])]
+        if linked and all(u["category"] == "chores" for u in linked):
+            t["category"] = "chores"
     out["units"] = units
     return out
+
+
+_BOILERPLATE = re.compile(r"(?i)^\s*(?:źródło|source|oryginalny identyfikator|original (?:id|key)\w*)\s*:")
+
+
+def description(text, limit: int = 400) -> str:
+    """Opis ticketu z YouTracka jako jedna linia: bez Markdownu i bez wierszy-metryczek po migracji
+    („Źródło: …”, „Oryginalny identyfikator: …”)."""
+    lines = [line for line in plain(str(text or "")).splitlines() if not _BOILERPLATE.match(line)]
+    return clean(" ".join(lines), limit)
+
+
+def _unit(kind: str, branch: str, title: str, **extra) -> dict:
+    unit = {"kind": kind, "branch": branch, "title": title, "worktree": "", "commits": [], "count": 0,
+            "chores": 0, "paths": [], "sessions": [], "ticket": ""}
+    unit.update(extra)
+    return unit
+
+
+def _add_commit(unit: dict, commit) -> None:
+    unit["commits"].append(commit.subject)
+    unit["count"] += 1
+    paths = list(getattr(commit, "paths", None) or ())
+    unit["chores"] += commit_is_chore(commit.subject, paths)
+    unit["paths"] += paths
+
+
+def _unit_kind(unit: dict) -> str:
+    """„chores”, gdy wszystkie commity jednostki to porządki, a bez commitów — gdy polecenie
+    albo tytuł sesji dotyczy trackera, migracji zadań albo instrukcji agentów."""
+    if unit["count"]:
+        return "chores" if unit.get("chores", 0) == unit["count"] else "work"
+    if any(s.get("scheduled") for s in unit["sessions"]):
+        return "work"
+    texts = [unit.get("title") or ""] + [s.get("task") or "" for s in unit["sessions"]] \
+        + [s.get("title") or "" for s in unit["sessions"]]
+    return "chores" if unit["sessions"] and text_is_chore(*texts) else "work"
 
 
 def _session_fact(s) -> dict:
@@ -237,7 +366,10 @@ def _session_fact(s) -> dict:
     if state in ("done", "idle") and s.interrupted:
         state = "interrupted"
     message = s.final_message or ""
-    fact = {"title": clean(s.title, 160), "tool": s.tool, "state": state, "reason": s.reason or "",
+    task = clean(plain(getattr(s, "prompt", "") or ""), TASK_MAX)
+    title = clean(s.title, 160)
+    fact = {"title": title, "task": "" if task == title else task, "tool": s.tool, "state": state,
+            "reason": s.reason or "",
             "message": last_question(message) if state == "waiting" else first_sentences(message, 2, 320),
             "full": message, "failing": failing_tests(message) if state != "working" else "",
             "since": s.since, "first": s.first_ts, "last": s.last_ts,
@@ -252,7 +384,8 @@ def _session_fact(s) -> dict:
 
 
 def _units(project) -> list[dict]:
-    """Jednostki pracy z commitów: scalenia i bezpośrednie commity gałęzi głównej, gałęzie poza nią."""
+    """Jednostki pracy z commitów: scalenia i bezpośrednie commity gałęzi głównej, gałęzie poza nią
+    (bez wewnętrznych gałęzi podagentów `worktree-agent-*`)."""
     units = []
     for b in project.branches:
         commits = sorted(b.commits, key=lambda c: c.ts)
@@ -260,9 +393,11 @@ def _units(project) -> list[dict]:
             member_of: dict[str, dict] = {}
             for merge in getattr(b, "merges", None) or []:
                 name = merge.get("branch") or ""
-                tag, title = humanize_branch(name)
-                unit = {"kind": "merged", "branch": name, "title": title or name or "scalenie",
-                        "worktree": "", "commits": [], "count": 0, "sessions": [], "ticket": "", "into": b.branch}
+                if AGENT_BRANCH.match(name):
+                    unit = _unit("agent", name, name, into=b.branch)  # policzone, ale pominięte niżej
+                else:
+                    tag, title = humanize_branch(name)
+                    unit = _unit("merged", name, title or name or "scalenie", into=b.branch)
                 units.append(unit)
                 for sha in merge.get("members") or []:
                     member_of[sha] = unit
@@ -270,10 +405,8 @@ def _units(project) -> list[dict]:
             groups: dict[str, dict] = {}
             for c in commits:
                 if c.sha in member_of:
-                    unit = member_of[c.sha]
                     if not c.merge:
-                        unit["commits"].append(c.subject)
-                        unit["count"] += 1
+                        _add_commit(member_of[c.sha], c)
                     continue
                 if c.merge:
                     continue
@@ -283,18 +416,27 @@ def _units(project) -> list[dict]:
                 key = ticket_key(ids[0]) if ids else (scope or "")
                 unit = groups.get(key)
                 if unit is None:
-                    unit = groups[key] = {"kind": "main", "branch": "", "scope": scope, "into": b.branch,
-                                          "title": key or f"bezpośrednio w {b.branch}", "worktree": "",
-                                          "commits": [], "count": 0, "sessions": [], "ticket": ids[0] if ids else ""}
+                    unit = groups[key] = _unit("main", "", key or f"bezpośrednio w {b.branch}", scope=scope,
+                                               into=b.branch, ticket=ids[0] if ids else "")
                     units.append(unit)
-                unit["commits"].append(c.subject)
-                unit["count"] += 1
+                _add_commit(unit, c)
+            continue
+        if AGENT_BRANCH.match(b.branch or ""):
             continue
         tag, title = humanize_branch(b.branch)
-        units.append({"kind": "branch", "branch": b.branch, "title": title or b.name, "worktree": b.worktree or "",
-                      "commits": [c.subject for c in commits if not c.merge], "count": sum(1 for c in commits if not c.merge),
-                      "sessions": [], "ticket": "", "tool": b.tool})
-    return [u for u in units if u["count"] or u["kind"] != "merged" or u["branch"]]
+        unit = _unit("branch", b.branch, title or b.name, worktree=b.worktree or "", tool=b.tool,
+                     mergedInto=getattr(b, "merged_into", "") or "")
+        for c in commits:
+            if not c.merge:
+                _add_commit(unit, c)
+        units.append(unit)
+    out = []
+    for u in units:
+        if u["kind"] == "agent" or not (u["count"] or u["kind"] != "merged" or u["branch"]):
+            continue
+        u["areas"] = areas(u.pop("paths"))
+        out.append(u)
+    return out
 
 
 # --- podsumowanie z reguł --------------------------------------------------------------------------
@@ -310,11 +452,12 @@ NOTE_DONE = {
     "poprawki po review, bez ponownego review": "poprawione po review",
     "zmiany po review, bez ponownego review": "dopracowane po review",
 }
+STATE_SHORT = {"gotowe": "zrobione", "w-toku": "w toku", "review": "w review", "czeka": "czeka", "todo": "do zrobienia"}
 
 
 def rules(fact: dict) -> dict:
     """Podsumowanie projektu bez modelu."""
-    groups = {k: [] for k in GROUP_KEYS}
+    groups = {k: [] for k in ALL_KEYS}
     used_units: set[int] = set()
     tickets = fact["tickets"]
 
@@ -324,24 +467,28 @@ def rules(fact: dict) -> dict:
         ref, title = t["id"], t["title"] or t["id"]
         message = next((s["message"] for u in linked for s in u["sessions"] if s["message"]), "")
         state, note = t["state"], t["note"]
-        if state == "gotowe":
-            why = t["result"] or message
-            extra = NOTE_DONE.get(note, note)
-            if extra and extra not in why:
-                why = f"{why} ({extra})" if why else extra[:1].upper() + extra[1:]
-            groups["done"].append(_item(ref, title, why=why))
-        elif state == "czeka":
+        if state == "odrzucone":
+            continue
+        if state == "czeka":
             question = t["question"] or (note.split("„", 1)[-1].rstrip("”") if "„" in note else note)
             question = _without_ref(question, ref)
             groups["waiting"].append(_item(ref, f"{title}: {question}" if question else f"{title} — czeka na twoją decyzję"))
+            continue
+        if t.get("category") == "chores":
+            groups["chores"].append(_item(ref, f"{title} — {STATE_SHORT.get(state, state)}"))
+            continue
+        if state == "gotowe":
+            about = t["result"] or t.get("description") or t.get("planNote") or message
+            extra = NOTE_DONE.get(note, note)
+            if extra and extra not in about:
+                about = f"{about} ({extra})" if about else extra[:1].upper() + extra[1:]
+            groups["done"].append(_item(ref, title, about=about))
         elif state == "todo":
             if len(groups["next"]) < NEXT_TODO:
-                groups["next"].append(_item(ref, title))
-        elif state == "odrzucone":
-            continue
+                groups["next"].append(_item(ref, title, about=t.get("description")))
         elif note.startswith("po review:"):
             findings = note[len("po review:"):].replace("— do poprawy", "").strip()
-            groups["waiting"].append(_item(ref, f"{title}: review zgłosił {findings} — do poprawy"))
+            groups["doing"].append(_item(ref, f"{title} — review zgłosił {findings}", next_="poprawki po review"))
         elif note == "podagent zakończył się błędem":
             groups["waiting"].append(_item(ref, f"{title}: praca zakończyła się błędem"))
         else:
@@ -350,13 +497,15 @@ def rules(fact: dict) -> dict:
                 progress, step = "trwa review", "poprawki albo scalenie po review"
             if any(s["state"] == "working" for u in linked for s in u["sessions"]):
                 progress = progress or "trwa praca"
-            groups["doing"].append(_item(ref, f"{title} — {progress}" if progress else title, next_=step))
+            groups["doing"].append(_item(ref, f"{title} — {progress}" if progress else title,
+                                         about=t.get("planNote") or t.get("description"), next_=step))
 
     loose = []  # gałęzie z commitami bez sesji i ticketu — przy wielu jedna zbiorcza pozycja
     for unit in fact["units"]:
         if id(unit) in used_units:
             continue
-        if unit["kind"] == "branch" and not unit["sessions"] and not unit.get("ticket"):
+        if unit["kind"] == "branch" and not unit["sessions"] and not unit.get("ticket") \
+                and _category(unit) != "chores" and not unit.get("mergedInto"):
             loose.append(unit)
             continue
         _unit_items(unit, fact, groups)
@@ -380,7 +529,13 @@ def rules(fact: dict) -> dict:
         if s["state"] == "waiting" and s["message"] and not fact["questions"]:
             groups["waiting"].append(_item("", f"Koordynator „{s['title']}” czeka: {s['message']}"))
 
-    return {"theme": _theme(fact), **{k: _cap(v) for k, v in groups.items()}}
+    out = {"theme": _theme(fact), **{k: _cap(v) for k, v in groups.items()}}
+    out["headline"] = _headline(out)
+    return out
+
+
+def _category(unit: dict) -> str:
+    return unit.get("category") or _unit_kind(unit)
 
 
 def _unit_items(unit: dict, fact: dict, groups: dict) -> None:
@@ -388,6 +543,7 @@ def _unit_items(unit: dict, fact: dict, groups: dict) -> None:
     states = {s["state"] for s in sessions}
     title = _unit_title(unit)
     message = next((s["message"] for s in sessions if s["message"] and s["state"] != "waiting"), "")
+    chores = _category(unit) == "chores"
     for s in sessions:
         if s["failing"]:
             groups["waiting"].append(_item("", f"{title}: {s['failing']}"))
@@ -396,11 +552,15 @@ def _unit_items(unit: dict, fact: dict, groups: dict) -> None:
         what = "czeka na zgodę" if s["reason"] == "approval" else "czeka na odpowiedź"
         groups["waiting"].append(_item(unit.get("ticket", ""), f"{title}: {what}" + (f" — {s['message']}" if s["message"] else "")))
         return
+    if chores:
+        groups["chores"].append(_item(unit.get("ticket", ""), title))
+        return
+    task = next((s["task"] for s in sessions if s.get("task")), "")
     scheduled = [s["scheduled"] for s in sessions if s.get("scheduled")]
     for run in scheduled:
         if run["runs"]:
             text = f"{run['name']}: {run['runs']} " + _plural(run["runs"], "przebieg", "przebiegi", "przebiegów")
-            groups["done"].append(_item("", text, why=run["last"]))
+            groups["done"].append(_item("", text, about=run["last"]))
     if scheduled and not unit["count"]:
         return  # wątek zaplanowanego zadania: liczą się przebiegi, nie sama sesja
     if "working" in states:
@@ -408,25 +568,25 @@ def _unit_items(unit: dict, fact: dict, groups: dict) -> None:
         progress = "agent pracuje" + (f" ({s['lastAction']})" if s["lastAction"] else "")
         if unit["count"]:
             progress += f", {unit['count']} " + _plural(unit["count"], "commit", "commity", "commitów") + " na gałęzi"
-        groups["doing"].append(_item(unit.get("ticket", ""), f"{title} — {progress}", why=message))
+        groups["doing"].append(_item(unit.get("ticket", ""), f"{title} — {progress}", about=message or task))
         return
-    if unit["kind"] in ("merged", "main"):
-        why = message or _commit_why(unit, title)
-        groups["done"].append(_item(unit.get("ticket", ""), title, why=why))
+    if unit["kind"] in ("merged", "main") or unit.get("mergedInto"):
+        about = message or _commit_why(unit, title)
+        groups["done"].append(_item(unit.get("ticket", ""), title, about=about))
         return
     if unit["kind"] == "branch":
         branch = unit["branch"]
         progress = f"{unit['count']} " + _plural(unit["count"], "commit", "commity", "commitów") + f" na gałęzi {branch}, niescalone"
         if "interrupted" in states:
             progress = "przerwane w trakcie, " + progress
-        groups["doing"].append(_item(unit.get("ticket", ""), f"{title} — {progress}", why=message,
+        groups["doing"].append(_item(unit.get("ticket", ""), f"{title} — {progress}", about=message or task,
                                      next_="przejrzeć i scalić"))
         return
     # sama sesja, bez commitów
     if "interrupted" in states:
-        groups["doing"].append(_item("", f"{title} — przerwane", next_="wznowić sesję"))
+        groups["doing"].append(_item("", f"{title} — przerwane", about=task, next_="wznowić sesję"))
     elif message or states & {"done", "idle", "ended"}:
-        groups["done"].append(_item("", title, why=message))
+        groups["done"].append(_item("", title, about=message))
 
 
 def _without_ref(text: str, ref: str) -> str:
@@ -454,7 +614,12 @@ def _commit_why(unit: dict, title: str = "") -> str:
     n = unit["count"]
     if unit["kind"] == "main" and n <= 1:
         return ""
-    where = f"scalone do {unit.get('into') or 'gałęzi głównej'}" if unit["kind"] == "merged" else f"w {unit.get('into')}"
+    if unit["kind"] == "merged":
+        where = f"scalone do {unit.get('into') or 'gałęzi głównej'}"
+    elif unit.get("mergedInto"):
+        where = f"scalone do {unit['mergedInto']}"
+    else:
+        where = f"w {unit.get('into')}"
     picked = [subject_parts(s)[2] for s in unit["commits"] if subject_parts(s)[0] in ("feat", "fix", "")]
     picked = [p for p in picked if p and p not in title][:2]
     text = f"{n} " + _plural(n, "commit", "commity", "commitów") + f" {where}"
@@ -464,11 +629,13 @@ def _commit_why(unit: dict, title: str = "") -> str:
 
 
 def _theme(fact: dict) -> str:
-    plans = [p for p in fact["plans"] if p["title"]]
+    plans = [p for p in fact["plans"] if p["title"] and p.get("category") != "chores"]
     if not plans:
         return ""
     if len(plans) == 1:
         p = plans[0]
+        if p.get("goal"):
+            return clean(f"{p['title']}: {first_sentences(p['goal'], 2, 400)}", THEME_MAX)
         text = f"Plan „{p['title']}”: {p['done']} z {p['total']} " + _plural(p["total"], "ticketu", "ticketów", "ticketów") + " gotowe"
         if p["live"]:
             text += ", koordynator dalej pracuje"
@@ -478,12 +645,26 @@ def _theme(fact: dict) -> str:
     return "Plany: " + ", ".join(parts) + more + "."
 
 
-def _item(ref: str, text: str, why: str = "", next_: str = "") -> dict:
+def _headline(summary: dict) -> str:
+    """1–2 zdania do karty projektu w indeksie: co zrobiono i co trwa (albo same porządki)."""
+    def texts(key, n):
+        return [i["text"] for i in summary.get(key) or [] if not i.get("more")][:n]
+    parts = []
+    if texts("done", 2):
+        parts.append("Zrobione: " + "; ".join(texts("done", 2)) + ".")
+    if texts("doing", 1):
+        parts.append("W toku: " + texts("doing", 1)[0] + ".")
+    if not parts and texts("chores", 2):
+        parts.append("Same porządki: " + "; ".join(texts("chores", 2)) + ".")
+    return clean(" ".join(parts), HEADLINE_MAX)
+
+
+def _item(ref: str, text: str, about: str = "", next_: str = "") -> dict:
     item = {"ref": ref if TICKET_RE.match(ref or "") else "", "text": clean(text, TEXT_MAX)}
-    if why:
-        item["why"] = clean(why, WHY_MAX)
+    if about:
+        item["about"] = clean(about, ABOUT_MAX)
     if next_:
-        item["next"] = clean(next_, WHY_MAX)
+        item["next"] = clean(next_, ABOUT_MAX)
     return item
 
 
@@ -510,13 +691,38 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
 
 
 def empty(standup: dict) -> bool:
-    return not standup.get("theme") and not any(standup.get(k) for k in GROUP_KEYS)
+    return not standup.get("theme") and not any(standup.get(k) for k in ALL_KEYS)
+
+
+def counts(standup: dict) -> dict:
+    """Liczniki do karty projektu w indeksie (pozycja „i N więcej” liczy się jako N)."""
+    out = {}
+    for key in ALL_KEYS:
+        n = 0
+        for item in standup.get(key) or []:
+            if item.get("more"):
+                found = re.search(r"\d+", item.get("text") or "")
+                n += int(found.group(0)) if found else 0
+            else:
+                n += 1
+        out[key] = n
+    return out
 
 
 # --- walidacja odpowiedzi modelu -------------------------------------------------------------------
 
 class Invalid(ValueError):
     pass
+
+
+# Pozycje bez treści, które model potrafi dopisać mimo instrukcji.
+JUNK_ANY = re.compile(r"(?i)(\bnic (?:już )?nie czeka|\bnie ma (?:teraz |obecnie |już |tu )?(?:żadnych |żadnej |nic )?"
+                      r"(?:decyzji|pyta\w*|nic do|czego)|\bbrak (?:decyzji|pyta\w*|zadań)\b|"
+                      r"nie potrzebuje (?:odpowiedzi|decyzji)|\bworktree-agent-)")
+JUNK_WAITING = re.compile(r"(?i)(^\s*\d+\s+(?:gałęzi|gałęzie|gałąź|worktree\w*|gotow\w+|ticket\w*|zada\w+)\b|"
+                          r"\b(?:bez|brak|nie ma(?:ją)?)\s+(?:jeszcze\s+)?(?:ponownego\s+)?review|"
+                          r"czekaj\w*\s+na\s+review|\bczeka\s+na\s+review|"
+                          r"(?:niescalon|nie\s*(?:jest|są|zostały?)\s*scalon|nie\s+scalon)\w*)")
 
 
 def known_refs(fact: dict) -> dict[str, str]:
@@ -547,45 +753,63 @@ def validate(data, all_facts: list[dict]) -> dict[str, dict]:
         if not name or name in out:
             continue
         refs = known_refs(names[name])
-        standup = {"theme": clean(entry.get("theme"), THEME_MAX) if isinstance(entry.get("theme"), str) else ""}
-        for key in GROUP_KEYS:
+        standup = {key: clean(entry.get(key), limit) if isinstance(entry.get(key), str) else ""
+                   for key, limit in (("theme", THEME_MAX), ("headline", HEADLINE_MAX))}
+        for key in ALL_KEYS:
             items = entry.get(key)
             standup[key] = []
             if not isinstance(items, list):
                 continue
-            for raw in items[:ITEMS_MAX]:
+            for raw in items[:ITEMS_MAX * 2]:
                 item = _valid_item(raw, refs, key)
-                if item:
+                if item and len(standup[key]) < ITEMS_MAX:
                     standup[key].append(item)
+        _move_chores(standup)
         if not empty(standup):
+            if not standup["headline"]:
+                standup["headline"] = _headline(standup)
             out[name] = standup
     if not out:
         raise Invalid("żaden projekt z odpowiedzi nie pasuje do schematu")
     return out
 
 
-def _valid_item(raw, refs: set, group: str) -> dict | None:
+def _move_chores(standup: dict) -> None:
+    """Pozycja Zrobione / W toku, która sama mówi o trackerze albo instrukcjach agentów („migracja
+    z Lineara do YouTracka”), to porządek — przenosimy ją do „Porządki” (model czasem je powtarza)."""
+    for key in ("done", "doing"):
+        keep = []
+        for item in standup[key]:
+            if text_is_chore(item["text"]):
+                if len(standup["chores"]) < ITEMS_MAX:
+                    standup["chores"].append({"ref": item["ref"], "text": item["text"]})
+            else:
+                keep.append(item)
+        standup[key] = keep
+
+
+def _valid_item(raw, refs: dict, group: str) -> dict | None:
     if isinstance(raw, str):
         raw = {"text": raw}
     if not isinstance(raw, dict) or not isinstance(raw.get("text"), str):
         return None
     text = clean(raw["text"], TEXT_MAX)
-    if not text:
+    if not text or JUNK_ANY.search(text) or (group == "waiting" and JUNK_WAITING.search(text)):
         return None
     ref = raw.get("ref") if isinstance(raw.get("ref"), str) else ""
     item = {"ref": refs.get(ticket_key(ref), "") if ref else "", "text": text}
-    if group == "done" and isinstance(raw.get("why"), str) and clean(raw["why"]):
-        item["why"] = clean(raw["why"], WHY_MAX)
-    if group == "doing" and isinstance(raw.get("why"), str) and clean(raw["why"]):
-        item["why"] = clean(raw["why"], WHY_MAX)
+    about = raw.get("about") if isinstance(raw.get("about"), str) else raw.get("why")
+    if group in ("done", "doing", "next") and isinstance(about, str) and clean(about) \
+            and not JUNK_ANY.search(about):
+        item["about"] = clean(about, ABOUT_MAX)
     if group == "doing" and isinstance(raw.get("next"), str) and clean(raw["next"]):
-        item["next"] = clean(raw["next"], WHY_MAX)
+        item["next"] = clean(raw["next"], ABOUT_MAX)
     return item
 
 
 def merge(model: dict[str, dict], all_facts: list[dict]) -> dict[str, dict]:
     """Model tam, gdzie opisał projekt, reguły dla reszty. „Czeka na mnie” nigdy nie znika: gdy
-    model go pominął, a reguły coś tam mają (pytanie, review do poprawy), bierzemy pozycje z reguł."""
+    model go pominął, a reguły coś tam mają (pytanie, test, który nie przechodzi), bierzemy pozycje z reguł."""
     out = {}
     for fact in all_facts:
         fallback = rules(fact)
@@ -603,7 +827,7 @@ def merge(model: dict[str, dict], all_facts: list[dict]) -> dict[str, dict]:
 # --- tekst do schowka ------------------------------------------------------------------------------
 
 def as_text(standup: dict, names: list[str], heading: str = "") -> str:
-    """Zwykły tekst „Na daily” (do przeczytania albo wklejenia na czat zespołu)."""
+    """Zwykły tekst „Na daily” (do przeczytania albo wklejenia na czat zespołu): praca, potem porządki."""
     lines = [heading] if heading else []
     for name in names:
         s = (standup.get("projects") or {}).get(name)
@@ -614,15 +838,15 @@ def as_text(standup: dict, names: list[str], heading: str = "") -> str:
         lines.append(name)
         if s.get("theme"):
             lines.append(f"Na czym polega: {s['theme']}")
-        for key, label in GROUPS:
+        for key, label in GROUPS + (CHORES,):
             items = s.get(key) or []
             if not items:
                 continue
             lines.append(f"{label}:")
             for item in items:
                 line = f"- {item['ref']} {item['text']}" if item.get("ref") else f"- {item['text']}"
-                if item.get("why"):
-                    line += f" — {item['why']}"
+                if item.get("about"):
+                    line += f" — {item['about']}"
                 if item.get("next"):
                     line += f" (dalej: {item['next']})"
                 lines.append(line)

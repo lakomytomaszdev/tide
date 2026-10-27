@@ -1,7 +1,8 @@
 """Sesje Claude Code i Codexa z ruchem w okresie raportu — tylko odczyt dzienników.
 
-Dla każdej sesji: tytuł, katalog, gałąź, pierwszy i ostatni wpis, stan na koniec okresu i ostatnia
-wiadomość agenta (to ona mówi, „co zrobił” — bez wołania żadnego modelu). Dla wątków Codexa
+Dla każdej sesji: tytuł, katalog, gałąź, pierwszy i ostatni wpis, stan na koniec okresu, pierwsze
+polecenie użytkownika (zadanie — „co robimy”) i ostatnia wiadomość agenta (to ona mówi, „co zrobił”
+— bez wołania żadnego modelu). Dla wątków Codexa
 prowadzonych przez zaplanowane zadanie (automatyzacja „heartbeat” Codex Desktop) dodatkowo
 przebiegi z okresu i ich wyniki.
 
@@ -32,6 +33,7 @@ from ..worktrees.sessions import _claude_files, _codex_files
 TAIL_BYTES = 2 * 1024 * 1024
 HEAD_BYTES = 256 * 1024
 MESSAGE_LIMIT = 8000       # tyle znaków ostatniej wiadomości trafia do raportu (reszta ucięta)
+PROMPT_LIMIT = 1500        # pierwsze polecenie użytkownika (zadanie sesji)
 RUN_LIMIT = 2000           # wynik jednego przebiegu zaplanowanego zadania
 SEEK_SLACK = 64 * 1024
 TS_RE = re.compile(rb'"timestamp"\s*:\s*"([^"]+)"')
@@ -65,6 +67,7 @@ class SessionReport:
     last_action: str = ""
     final_message: str = ""
     final_ts: float = 0.0
+    prompt: str = ""           # pierwsze polecenie użytkownika w sesji (jedna linia, do PROMPT_LIMIT znaków)
     live: bool = False         # stan z obszaru Agents (sesja z ostatniej doby)
     turn_ended: bool = False   # ostatnia tura skończyła się zwyczajnie (albo ją przerwano)
     runs: list = field(default_factory=list)
@@ -140,9 +143,10 @@ def read_session(path: str, cls, start: float, end: float, automations: dict | N
     report = SessionReport(tool=log.tool, session_id=log.session_id, path=path, cwd=log.cwd, branch=log.branch,
                            title=short_title(log.title), first_ts=first, last_ts=log.last_activity,
                            last_action=log.last_action, final_message=_clip(final, MESSAGE_LIMIT), final_ts=final_ts)
+    prompt_of = claude_prompt if cls is ClaudeLog else codex_prompt
+    report.prompt = next((p for p in (prompt_of(r, PROMPT_LIMIT) for r in head) if p), "")
     if not report.title:
-        prompt_of = claude_prompt if cls is ClaudeLog else codex_prompt
-        report.title = next((p for p in map(prompt_of, head) if p), "")
+        report.title = short_title(report.prompt)
     state, reason, since = derive_state(log, end, None, None, lambda _ts: False)
     report.state, report.reason, report.since = state, reason, since
     report.turn_ended = log.phase == TURN_END

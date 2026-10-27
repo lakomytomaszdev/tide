@@ -10,13 +10,16 @@ import shutil
 import stat
 import tempfile
 import time
+import types
 import unittest
 
 from . import reportfix
 from .reportfix import NOW, START, H
 from tide_daemon import reports
+from tide_daemon.agents.claude import escape_cwd
+from tide_daemon.agents.timeutil import iso
 from tide_daemon.coordination import actions
-from tide_daemon.reports import render, schedule, standup, summarize
+from tide_daemon.reports import plans, render, schedule, standup, summarize
 from tide_daemon.tabmarks import palette_candidates
 
 _OLD_TZ = None
@@ -49,15 +52,21 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
 HOSTILE = '<script>alert(1)</script><img src=x onerror=alert(2)>'
 
 ANSWER = {"projects": [
-    {"name": "alpha", "theme": "Wydanie z wyszukiwaniem: indeks i eksport.",
-     "done": [{"ref": "ALPHA-1", "text": "Indeks wyszukiwania " + HOSTILE, "why": "Wyniki szybciej."},
-              {"ref": "EVIL-666", "text": "Pozycja z wymyślonym ID", "why": ""},
+    {"name": "alpha", "headline": "Indeks wyszukiwania gotowy, wyszukiwarka w UI czeka na review.",
+     "theme": "Wydanie z wyszukiwaniem: indeks i eksport.",
+     "done": [{"ref": "ALPHA-1", "text": "Indeks wyszukiwania " + HOSTILE, "about": "Wyniki szybciej."},
+              {"ref": "EVIL-666", "text": "Pozycja z wymyślonym ID", "about": ""},
               "goły napis zamiast obiektu",
               {"ref": "ALPHA-1", "text": ""},
               42],
      "doing": [{"ref": "alpha-2", "text": "Wyszukiwanie — implementacja gotowa, trwa review", "next": "poprawki"}],
-     "waiting": [],
-     "next": [{"ref": "ALPHA-4", "text": "Eksport do CSV"}]},
+     # Same śmieci — walidacja je odrzuca, a puste „Czeka na mnie” uzupełniają reguły.
+     "waiting": [{"text": "Nie ma teraz decyzji dla Ciebie. Agent napisał, że nie potrzebuje odpowiedzi."},
+                 {"ref": "ALPHA-2", "text": "26 gałęzi ALPHA-2 nie jest scalonych."},
+                 {"text": "25 gotowych ticketów nie ma jeszcze review."},
+                 {"text": "Nie scalone pozostały dwie gałęzie: feat/x oraz worktree-agent-a024."}],
+     "next": [{"ref": "ALPHA-4", "text": "Eksport do CSV"}],
+     "chores": [{"text": "Plan pracy agentów dopisany do instrukcji " + HOSTILE}]},
     {"name": "gamma-evil", "done": [{"text": "projekt spoza raportu"}]},
     {"name": "beta", "theme": 7, "done": "nie lista"},
 ]}
@@ -87,11 +96,13 @@ def coordination_cache(p: dict) -> dict:
         "id": "claude:c-coord", "tool": "claude", "project": "alpha", "repoPath": p["alpha"], "cwd": p["alpha"],
         "title": "Wyszukiwanie w alpha", "label": "ALPHA-0", "state": "working", "live": True,
         "startedTs": NOW - 20 * H, "lastActivityTs": NOW - H, "counts": {}, "progress": {},
-        "plan": {"path": "", "title": "Wyszukiwanie w alpha", "tracker": "local", "status": "active", "updated": ""},
+        "plan": {"path": "", "title": "Wyszukiwanie w alpha", "tracker": "local", "status": "active", "updated": "",
+                 "goal": "Wyszukiwanie w aplikacji: indeks, UI i eksport do CSV."},
         "tracker": {"kind": "local", "available": None, "error": None},
         "question": "ALPHA-3: czy wydajemy w piątek?",
         "tickets": [
             ticket("ALPHA-1", "Indeks wyszukiwania", "gotowe", NOW - 5 * H, note="review OK", review="bez uwag",
+                   description="Indeks pełnotekstowy dla wyszukiwarki w aplikacji.",
                    result="Dodałem indeks pełnotekstowy, wyszukiwanie działa bez skanowania plików."),
             ticket("ALPHA-2", "Wyszukiwarka w UI", "w-toku", NOW - 3 * H, note="skończył, czeka na review",
                    branch="feat/search"),
@@ -117,6 +128,36 @@ class StandupWorld(unittest.TestCase):
         reportfix.git(alpha, "checkout", "-q", "master", ts=NOW - 8 * H)
         reportfix.git(alpha, "merge", "-q", "--no-ff", "-m", "Merge branch 'feat/tide-9-export'",
                       "feat/tide-9-export", ts=NOW - 8 * H)
+        # Gałąź porządków: same instrukcje i plan agentów.
+        reportfix.git(alpha, "checkout", "-q", "-b", "docs/agent-plan", "master", ts=NOW - 6 * H)
+        os.makedirs(os.path.join(alpha, "docs", "agents", "plans"))
+        reportfix.commit(alpha, "CLAUDE.md", NOW - 6 * H, "docs(plan): agent work plan for the board")
+        reportfix.commit(alpha, "docs/agents/plans/2026-10-26-search.md", NOW - 5.8 * H, "docs: search plan table")
+        # Gałąź integracyjna z gałęzią ticketu scaloną do niej (nie do master).
+        reportfix.git(alpha, "checkout", "-q", "-b", "feat/int", "master", ts=NOW - 7 * H)
+        reportfix.commit(alpha, "int.py", NOW - 7 * H, "feat(int): integration base")
+        reportfix.git(alpha, "checkout", "-q", "-b", "feat/tide-12-part", ts=NOW - 6.9 * H)
+        reportfix.commit(alpha, "part.py", NOW - 6.8 * H, "feat(part): add the part")
+        reportfix.git(alpha, "checkout", "-q", "feat/int", ts=NOW - 6.5 * H)
+        reportfix.git(alpha, "merge", "-q", "--no-ff", "-m", "Merge branch 'feat/tide-12-part' into feat/int",
+                      "feat/tide-12-part", ts=NOW - 6.5 * H)
+        reportfix.git(alpha, "checkout", "-q", "master", ts=NOW - 6.4 * H)
+        # Wewnętrzna gałąź podagenta w osobnym worktree — nie jest pracą do opowiedzenia.
+        cls.agent_wt = os.path.join(cls.tmp, "agentwt", "agent-abc123")
+        reportfix.git(alpha, "worktree", "add", "-q", "-b", "worktree-agent-abc123", cls.agent_wt, ts=NOW - 5 * H)
+        reportfix.commit(cls.agent_wt, "agent_tmp.py", NOW - 4.9 * H, "feat: internal agent step")
+        # Sesja spoza repozytoriów (katalog bez gita) — „Poza projektami”, bez „Na daily”.
+        cls.notes = os.path.join(p["work"], "notes")
+        os.makedirs(cls.notes)
+        reportfix._write_jsonl(os.path.join(p["claude"], "projects", escape_cwd(cls.notes), "c-notes.jsonl"), [
+            reportfix._claude("c-notes", cls.notes, "", NOW - 2 * H, "user",
+                              message={"role": "user", "content": "Dobierz tapetę do telefonu"}),
+            reportfix._claude("c-notes", cls.notes, "", NOW - 1.5 * H, "assistant",
+                              message={"role": "assistant", "stop_reason": "end_turn",
+                                       "content": [{"type": "text", "text": "Tapeta gotowa: spokojniejszy wariant."}]}),
+            {"type": "system", "subtype": "turn_duration", "isSidechain": False, "timestamp": iso(NOW - 1.5 * H + 1),
+             "cwd": cls.notes, "gitBranch": "", "sessionId": "c-notes"},
+        ])
         cls.cache = os.path.join(cls.tmp, "coordination.json")
         with open(cls.cache, "w", encoding="utf-8") as fh:
             json.dump(coordination_cache(p), fh)
@@ -213,29 +254,31 @@ class RulesTest(StandupWorld):
         done = {i["ref"]: i for i in r["done"] if i["ref"]}
         self.assertIn("ALPHA-1", done)
         self.assertEqual(done["ALPHA-1"]["text"], "Indeks wyszukiwania")
-        self.assertTrue(done["ALPHA-1"]["why"].startswith("Dodałem indeks pełnotekstowy"))
+        self.assertTrue(done["ALPHA-1"]["about"].startswith("Dodałem indeks pełnotekstowy"))
         doing = {i["ref"]: i for i in r["doing"]}
         self.assertEqual(doing["ALPHA-2"]["text"], "Wyszukiwarka w UI — implementacja gotowa, czeka na review")
         waiting = " | ".join(i["text"] for i in r["waiting"])
         self.assertIn("Termin wydania: czy wydajemy w piątek?", waiting)
         self.assertNotIn("Pytanie koordynatora", waiting, "pytanie jest już przy tickecie ALPHA-3")
-        self.assertIn("Filtry: review zgłosił 1 MAJOR — do poprawy", waiting)
+        self.assertIn("Filtry — review zgłosił 1 MAJOR", " | ".join(i["text"] for i in r["doing"]),
+                      "uwagi z review poprawia agent — to praca w toku, nie sprawa dla użytkownika")
         self.assertIn("Release plan: czeka na odpowiedź", waiting)
         self.assertEqual([i["ref"] for i in r["next"]], ["ALPHA-4"])
         self.assertNotIn("ALPHA-6", json.dumps(r))
-        self.assertIn("Plan „Wyszukiwanie w alpha”", r["theme"])
+        self.assertEqual(r["theme"], "Wyszukiwanie w alpha: Wyszukiwanie w aplikacji: indeks, UI i eksport do CSV.",
+                         "cel planu")
 
     def test_merged_branch_not_commit_list(self):
         r = self.rules()
         merged = next(i for i in r["done"] if "export" in i["text"])
         self.assertEqual(merged["text"], "tide-9 · export", "tytuł z nazwy gałęzi, nie temat commita")
-        self.assertIn("2 commity scalone do master", merged["why"])
+        self.assertIn("2 commity scalone do master", merged["about"])
         self.assertFalse(any("feat(" in i["text"] for g in standup.GROUP_KEYS for i in r[g]),
                          "żadnego surowego tematu commita z prefiksem typu")
 
     def test_session_branch_in_progress_and_scheduled(self):
         r = self.rules("beta")
-        self.assertTrue(any("codex/fix-upload" in i["text"] and i.get("why") == "Poprawiłem ponawianie wysyłki."
+        self.assertTrue(any("codex/fix-upload" in i["text"] and i.get("about") == "Poprawiłem ponawianie wysyłki."
                             for i in r["doing"]), r["doing"])
         self.assertTrue(any(i["text"] == "Nocny przegląd: 3 przebiegi" for i in r["done"]), r["done"])
 
@@ -364,7 +407,7 @@ class ValidateTest(StandupWorld):
         self.assertNotIn("\x00", alpha["theme"])
         self.assertEqual(len(alpha["done"]), standup.ITEMS_MAX)
         self.assertLessEqual(len(alpha["done"][0]["text"]), standup.TEXT_MAX)
-        self.assertNotIn("‮", alpha["done"][0]["why"])
+        self.assertNotIn("‮", alpha["done"][0]["about"], "stare pole „why” czytane jako „about”")
 
     def test_parse_answer_forms(self):
         self.assertEqual(summarize.parse_answer('```json\n{"projects": []}\n```'), {"projects": []})
@@ -459,32 +502,55 @@ class RenderTest(StandupWorld):
         self.assertEqual(stat.S_IMODE(os.stat(cache).st_mode), 0o600)
         with open(index, encoding="utf-8") as fh:
             page = fh.read()
-        # „Na daily” na górze, szczegóły zwinięte niżej.
-        self.assertLess(page.index("<h2>Na daily</h2>"), page.index('<details class="details">'))
+        # Indeks to przegląd: karty projektów na górze, szczegóły zwinięte niżej.
+        self.assertLess(page.index("<h2>Projekty"), page.index('<details class="details">'))
         self.assertNotIn('<details class="details" open', page)
         self.assertLess(page.index('<details class="details">'), page.index("Limity AI"))
-        self.assertIn("opis: Claude Haiku", page)
+        self.assertIn("opis: Claude Sonnet", page)
         self.assertIn("idą do Anthropic", page)
         # Złośliwy tekst modelu escapowany; jedyny skrypt to „Kopiuj”.
         self.assertNotIn("<img src=x", page)
-        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
         self.assertEqual(len(re.findall(r"<script>", page)), 1)
-        self.assertIn('<span class="ref">ALPHA-1</span>', page)
-        # Kopiuj jako tekst: cały standup zwykłym tekstem.
-        copy = re.search(r'data-copy="([^"]*)" data-label="Kopiuj jako tekst"', page)
+        # Karta alpha: zdanie z modelu, liczniki, „Czeka na mnie” (pytanie z reguł — śmieci modelu odrzucone),
+        # odnośnik do strony projektu; wyróżniona i pierwsza, bo coś czeka.
+        cards = re.findall(r'<article class="card ov( wait)?">.*?</article>', page, re.S)
+        self.assertEqual(len(cards), 2)
+        alpha_card = re.search(r'<article class="card ov wait">.*?</article>', page, re.S).group(0)
+        self.assertIn('<a href="alpha.html">alpha</a>', alpha_card)
+        self.assertIn("Indeks wyszukiwania gotowy, wyszukiwarka w UI czeka na review.", alpha_card)
+        self.assertIn('<span class="chip mint">zrobione 3</span>', alpha_card)
+        self.assertIn('<span class="chip peach">czeka ', alpha_card)
+        self.assertIn('<span class="chip">porządki 1</span>', alpha_card)
+        self.assertIn("Termin wydania: czy wydajemy w piątek?", alpha_card)
+        self.assertNotIn("nie potrzebuje odpowiedzi", page)
+        self.assertNotIn("26 gałęzi", page)
+        self.assertLess(page.index('href="alpha.html"'), page.index('href="beta.html"'))
+        self.assertNotIn('<span class="ref">ALPHA-4</span>', page, "„Dalej” tylko na stronie projektu")
+        # Kopiuj wszystko: standup wszystkich projektów zwykłym tekstem.
+        copy = re.search(r'data-copy="([^"]*)" data-label="Kopiuj wszystko jako tekst"', page)
         text = render.html.unescape(copy.group(1))
         self.assertTrue(text.startswith("Na daily · poniedziałek, 26 października 2026\n\nalpha\n"), text)
-        self.assertIn("Na czym polega: Wydanie z wyszukiwaniem: indeks i eksport.", text)
-        self.assertIn("Zrobione:\n- ALPHA-1 Indeks wyszukiwania " + HOSTILE + " — Wyniki szybciej.", text)
-        self.assertIn("- ALPHA-2 Wyszukiwanie — implementacja gotowa, trwa review (dalej: poprawki)", text)
-        self.assertIn("Czeka na mnie:\n", text)
         self.assertIn("\nbeta\n", text, "beta z reguł")
-        # Strona projektu: tylko jego standup, szczegóły zwinięte, sesje i commity nadal są.
+        self.assertNotIn("notes", text, "sesja spoza repozytoriów nie trafia do „Na daily”")
+
+        # Strona projektu: własne „Na daily” na górze, kopiowanie tylko tego projektu, porządki zwinięte.
         with open(os.path.join(folder, "alpha.html"), encoding="utf-8") as fh:
             alpha = fh.read()
         self.assertLess(alpha.index("<h2>Na daily</h2>"), alpha.index('<details class="details">'))
         copy = render.html.unescape(re.search(r'data-copy="([^"]*)" data-label="Kopiuj jako tekst"', alpha).group(1))
+        self.assertTrue(copy.startswith("Na daily · poniedziałek, 26 października 2026\n\nalpha\n"), copy)
         self.assertNotIn("\nbeta\n", copy)
+        self.assertIn("Na czym polega: Wydanie z wyszukiwaniem: indeks i eksport.", copy)
+        self.assertIn("Zrobione:\n- ALPHA-1 Indeks wyszukiwania " + HOSTILE + " — Wyniki szybciej.", copy)
+        self.assertIn("- ALPHA-2 Wyszukiwanie — implementacja gotowa, trwa review (dalej: poprawki)", copy)
+        self.assertIn("Czeka na mnie:\n", copy)
+        self.assertIn("Porządki:\n- Plan pracy agentów dopisany do instrukcji " + HOSTILE, copy)
+        self.assertLess(copy.index("Dalej:"), copy.index("Porządki:"), "porządki po pracy")
+        self.assertIn('<span class="ref">ALPHA-2</span>', alpha)
+        self.assertIn('<details class="chores"><summary>Porządki <span class="n">1</span>', alpha)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", alpha)
+        self.assertNotIn("<img src=x", alpha)
+        self.assertEqual(len(re.findall(r"<script>", alpha)), 1)
         self.assertIn("Release plan", alpha)
         self.assertIn("feat(search): index builder", alpha)
         self.assertEqual(len(self.calls(env)), 1)
@@ -502,13 +568,200 @@ class RenderTest(StandupWorld):
         self.assertIn("bez wysyłania czegokolwiek", page)
         self.assertNotIn("Anthropic", page)
         self.assertFalse(os.path.exists(os.path.join(os.path.dirname(self.index), summarize.CACHE_NAME)))
-        self.assertIn('<span class="ref">ALPHA-2</span>', page)
+        self.assertRegex(page, r'<p class="headline">Zrobione: [^<]+</p>', "zdanie do karty z reguł")
+        with open(os.path.join(os.path.dirname(self.index), "alpha.html"), encoding="utf-8") as fh:
+            alpha = fh.read()
+        self.assertIn('<span class="ref">ALPHA-2</span>', alpha)
+        self.assertIn('<details class="chores">', alpha, "gałąź z samymi instrukcjami agentów to porządki")
+
+    def test_outside_projects(self):
+        (outside,) = self.report.outside
+        self.assertEqual([s.id for s in outside.sessions], ["claude:c-notes"])
+        self.assertNotIn(outside.name, [f["project"] for f in standup.facts(self.report)])
+        folder = os.path.dirname(self.index)
+        self.assertFalse(os.path.exists(os.path.join(folder, f"{outside.slug}.html")), "bez własnej strony")
+        with open(self.index, encoding="utf-8") as fh:
+            page = fh.read()
+        section = re.search(r'<details class="quiet outside">.*?</details>', page, re.S).group(0)
+        self.assertIn("Poza projektami", section)
+        self.assertIn("Dobierz tapetę do telefonu", section)
+        self.assertIn("Tapeta gotowa: spokojniejszy wariant.", section)
+        self.assertIn('id="s-claude-c-notes"', section)
+        self.assertIn("claude --resume c-notes", section)
+        self.assertLess(page.index("Poza projektami"), page.index('<details class="details">'))
 
     def test_quiet_period(self):
         root = tempfile.mkdtemp(dir=self.tmp)
         index, report = self.generate(root, )
         empty = render.daily(type("R", (), {"standup": {"projects": {}}, "day": report.day})(), [], index=True)
         self.assertIn("nie ma nic do opowiedzenia", empty)
+
+
+class CategoryTest(StandupWorld):
+    """Praca czy porządki: sygnały z gita, tematów i poleceń jako podpowiedź (model może poprawić)."""
+
+    def test_signals(self):
+        chore = standup.commit_is_chore
+        self.assertTrue(chore("docs(plan): track LA-035 review"))
+        self.assertTrue(chore("chore: bump tools"))
+        self.assertTrue(chore("feat: add resumable YouTrack migration tool", ["tools/migrate.py"]))
+        self.assertTrue(chore("docs: agent rules", ["CLAUDE.md", "docs/agents/workflow.md", ".claude/settings.json"]))
+        self.assertTrue(chore("fix: token check", ["tools/youtrack-mcp/run.sh"]))
+        self.assertFalse(chore("feat(queries): compare a part of the log value", ["src/Queries/Value.cs", "CLAUDE.md"]))
+        self.assertFalse(chore("docs(library): record acceptance", ["docs/library/x.md"]))
+        self.assertFalse(chore("perf: use a linear scan", ["src/a.py"]), "„linear” małą literą to nie tracker")
+        self.assertTrue(standup.text_is_chore("Migruj integrację Linear do YouTrack"))
+        self.assertTrue(standup.text_is_chore("usuń MyAI z instrukcji we wszystkich projektach"))
+        self.assertFalse(standup.text_is_chore("Dodaj warunek na wartościach logów"))
+        self.assertEqual(standup.areas(["src/App.Web/a.cs", "src/App.Web/b.cs", "README.md", "daemon/x/y.py",
+                                        "tests/Unit/a.cs"]),
+                         [["src/App.Web", 2], ["README.md", 1], ["daemon", 1], ["tests/Unit", 1]])
+
+    def test_chore_branch_and_ticket(self):
+        fact = self.facts()
+        plan = next(u for u in fact["units"] if u.get("branch") == "docs/agent-plan")
+        self.assertEqual(plan["category"], "chores")
+        self.assertEqual(plan["areas"], [["CLAUDE.md", 1], ["docs", 1]])
+        search = next(u for u in fact["units"] if u.get("branch") == "feat/search")
+        self.assertEqual(search["category"], "work")
+        self.assertEqual(search["areas"], [["search.py", 1], ["search_test.py", 1]])
+        r = standup.rules(fact)
+        title = standup._unit_title(plan)
+        self.assertIn(title, [i["text"] for i in r["chores"]])
+        for key in standup.GROUP_KEYS:
+            self.assertNotIn(title, [i["text"] for i in r[key]], key)
+        payload, _names = summarize.model_input([fact], self.p["home"])
+        unit = next(u for u in payload["projects"][0]["work"] if u.get("branch") == "docs/agent-plan")
+        self.assertEqual(unit["category"], "chores")
+        self.assertLessEqual(len(unit.get("commits") or []), 2, "tematy porządków nie zajmują miejsca w wejściu")
+        # Ticket planu o trackerze — porządek; pytanie przy nim i tak idzie do „Czeka na mnie”.
+        tracker = dict(fact, tickets=[
+            {"id": "TR-1", "key": "TR-1", "title": "Przepięcie na YouTrack", "state": "gotowe", "note": "",
+             "result": "", "question": "", "branch": "", "review": "", "category": "chores"},
+            {"id": "TR-2", "key": "TR-2", "title": "Migracja zadań do YouTracka", "state": "czeka", "note": "",
+             "result": "", "question": "Czy usunąć stare zadania?", "branch": "", "review": "", "category": "chores"}],
+            units=[], questions=[])
+        r = standup.rules(tracker)
+        self.assertEqual([i["ref"] for i in r["chores"]], ["TR-1"])
+        self.assertEqual([i["ref"] for i in r["waiting"]], ["TR-2"])
+        self.assertEqual(r["done"], [])
+
+    def test_agent_branches_skipped(self):
+        alpha = next(p for p in self.report.active if p.name == "alpha")
+        self.assertIn("worktree-agent-abc123", [w.get("branch") for w in alpha.unpushed], "świat ma taką gałąź")
+        fact = self.facts()
+        self.assertNotIn("worktree-agent-abc123", fact["unpushed"])
+        self.assertFalse(any((u.get("branch") or "").startswith("worktree-agent-") for u in fact["units"]))
+        payload, _names = summarize.model_input(standup.facts(self.report), self.p["home"])
+        text = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn("worktree-agent", text)
+        self.assertNotIn("unmergedBranches", text, "liczniki gałęzi nie idą do modelu")
+
+    def test_merged_into_integration_branch(self):
+        part = next(u for u in self.facts()["units"] if u.get("branch") == "feat/tide-12-part")
+        self.assertEqual(part["mergedInto"], "feat/int")
+        done = standup.rules(self.facts())["done"]
+        item = next(i for i in done if "part" in i["text"])
+        self.assertIn("scalone do feat/int", item["about"])
+        payload, _names = summarize.model_input([self.facts()], self.p["home"])
+        unit = next(u for u in payload["projects"][0]["work"] if u.get("branch") == "feat/tide-12-part")
+        self.assertEqual((unit["kind"], unit["mergedInto"]), ("merged-into-integration-branch", "feat/int"))
+
+    def test_task_and_ticket_context_in_input(self):
+        search = next(u for u in self.facts()["units"] if u.get("branch") == "feat/search")
+        self.assertEqual(search["sessions"][0]["task"], "Build the search index", "pierwsze polecenie użytkownika")
+        payload, _names = summarize.model_input(standup.facts(self.report), self.p["home"])
+        alpha = payload["projects"][0]
+        unit = next(u for u in alpha["work"] if u.get("branch") == "feat/search")
+        self.assertEqual(unit["sessions"][0]["task"], "Build the search index")
+        self.assertEqual(unit["commits"], ["feat(search): index builder", "test(search): cover the index"])
+        self.assertIn("search.py (1)", unit["areas"])
+        first = alpha["tickets"][0]
+        self.assertEqual(first["id"], "ALPHA-1")
+        self.assertNotIn("note", first, "„review OK” przy gotowym tickecie tylko myli — gotowe to koniec")
+        self.assertEqual(first["description"], "Indeks pełnotekstowy dla wyszukiwarki w aplikacji.")
+        self.assertEqual(alpha["plans"][0]["goal"], "Wyszukiwanie w aplikacji: indeks, UI i eksport do CSV.")
+
+    def test_ticket_description_one_line(self):
+        text = ("Źródło: docs/agents/backlog/LA-035.md\nOryginalny identyfikator: LA-035\n# LA-035: Pokrycie ustaw\n\n"
+                "**Status:** `in-progress` — [szkice](../x.md) gotowe.")
+        self.assertEqual(standup.description(text), "LA-035: Pokrycie ustaw Status: in-progress — szkice gotowe.")
+
+    def test_pick_commits(self):
+        subjects = ["docs(plan): track", "test(x): a", "feat(x): b", "docs(lib): c", "fix(x): d", "chore: e"]
+        self.assertEqual(summarize.pick_commits(subjects, 3), ["test(x): a", "feat(x): b", "fix(x): d"])
+
+
+class JunkTest(StandupWorld):
+    def test_waiting_junk_dropped(self):
+        facts = standup.facts(self.report)
+        junk = ["Nie ma teraz decyzji dla Ciebie.", "Nic nie czeka.", "26 gałęzi LA-035 nie jest scalonych.",
+                "25 gotowych ticketów nie ma review.", "Sześć zadań skończonych, czekających na review.",
+                "Bez ponownego review: synchronizacja klucza.", "Nie scalone pozostały gałęzie, m.in. feat/x.",
+                "Gałąź worktree-agent-a024 ma zmiany."]
+        out = standup.validate({"projects": [{"name": "alpha", "done": [{"text": "Indeks"}],
+                                              "waiting": [{"text": t} for t in junk]
+                                              + [{"ref": "ALPHA-3", "text": "Czy wydajemy w piątek?"},
+                                                 {"text": "Dwa testy eksportu nie przechodzą."}]}]}, facts)
+        self.assertEqual([i["text"] for i in out["alpha"]["waiting"]],
+                         ["Czy wydajemy w piątek?", "Dwa testy eksportu nie przechodzą."])
+        self.assertEqual(out["alpha"]["headline"], "Zrobione: Indeks.", "bez zdania od modelu — z pozycji")
+        moved = standup.validate({"projects": [{"name": "alpha", "doing": [
+            {"text": "Migracja z Lineara do YouTracka: zadania poprawione.", "next": "dokończyć"},
+            {"text": "Eksport do CSV — trwa review"}]}]}, facts)["alpha"]
+        self.assertEqual([i["text"] for i in moved["doing"]], ["Eksport do CSV — trwa review"])
+        self.assertEqual([i["text"] for i in moved["chores"]], ["Migracja z Lineara do YouTracka: zadania poprawione."],
+                         "pozycja o trackerze to porządek, nawet gdy model wpisał ją do pracy")
+
+    def test_done_ticket_is_finished_not_waiting_for_review(self):
+        fact = {"project": "x", "plans": [], "questions": [], "units": [], "unpushed": [], "tickets": [
+            {"id": f"XY-{i}", "key": f"XY-{i}", "title": f"t{i}", "state": "gotowe", "note": "bez review",
+             "result": "", "question": "", "branch": "", "review": ""} for i in range(3)] + [
+            {"id": "XY-9", "key": "XY-9", "title": "w review", "state": "review", "note": "", "result": "",
+             "question": "", "branch": "", "review": ""}]}
+        r = standup.rules(fact)
+        self.assertEqual(r["waiting"], [])
+        self.assertEqual([i["ref"] for i in r["done"]], ["XY-0", "XY-1", "XY-2"])
+        self.assertEqual([i["ref"] for i in r["doing"]], ["XY-9"])
+        payload, _names = summarize.model_input([fact], "")
+        self.assertFalse(any("note" in t for t in payload["projects"][0]["tickets"]))
+        self.assertIn("„czeka na review” to tylko stan \"review\"", summarize.SYSTEM_PROMPT)
+
+
+class PlanYouTrackTest(unittest.TestCase):
+    """Plan z repozytorium, którego tablica nie zna: cel planu i opis ticketu z YouTracka (przez mapę migracji)."""
+
+    def test_plan_goal_and_description(self):
+        tmp = tempfile.mkdtemp(prefix="tide-standup-plan-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        plans_dir = os.path.join(tmp, "docs", "agents", "plans")
+        os.makedirs(plans_dir)
+        with open(os.path.join(plans_dir, "2026-10-26-la035.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\ntide-plan: 1\ntitle: LA-035 dowód\ntracker: youtrack\ntracker-url: http://yt.local\n"
+                     "tracker-project: LEGAL\nticket-prefix: LA\nstatus: active\nupdated: 2026-10-26T05:00:00Z\n---\n\n"
+                     "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |\n| --- | --- | --- | --- | --- | --- |\n"
+                     "| LA-035 | Art. 58 | w-toku | feat/x | k | V3c scalone |\n\n## Cel\n\nOstrzeżenie z urzędowego tekstu.\n")
+        migration = os.path.join(tmp, "docs", "agents", "youtrack-migration")
+        os.makedirs(migration)
+        with open(os.path.join(migration, "map.csv"), "w", encoding="utf-8") as fh:
+            fh.write("source_key,youtrack_id,kind\nlocal:LA-035,LEGAL-35,ticket\n")
+        asked = []
+
+        class Tracker:
+            def get(self, url, project, force=False):
+                asked.append((url, project))
+                return {"LEGAL-35": {"id": "LEGAL-35", "description": "Źródło: x\n# Pokrycie ustaw\nUPN i UOOZ."}}, {}
+
+        project = types.SimpleNamespace(name="legal", path=tmp, is_repo=True, plans=[])
+        plans.attach([project], START, NOW, None, Tracker())
+        (entry,) = project.plans
+        self.assertEqual(entry["goal"], "Ostrzeżenie z urzędowego tekstu.")
+        (ticket,) = entry["all"]
+        self.assertEqual((ticket["planNote"], ticket["branch"]), ("V3c scalone", "feat/x"))
+        self.assertEqual(standup.description(ticket["description"]), "Pokrycie ustaw UPN i UOOZ.")
+        self.assertEqual(asked, [("http://yt.local", "LEGAL")])
+        plans.attach([project], START, NOW, None, None)
+        self.assertEqual(project.plans[0]["all"][0]["description"], "", "bez YouTracka — bez opisu")
 
 
 class CachePayloadTest(unittest.TestCase):
@@ -533,7 +786,7 @@ class SettingsTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp, True)
         path = os.path.join(tmp, "report.json")
         settings, warnings = schedule.load_settings(path)
-        self.assertEqual((settings.summary, settings.summary_model, warnings), ("claude", "haiku", []))
+        self.assertEqual((settings.summary, settings.summary_model, warnings), ("claude", "sonnet", []))
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"summary": "rules", "summaryModel": "sonnet"}, fh)
         settings, warnings = schedule.load_settings(path)
@@ -541,7 +794,7 @@ class SettingsTest(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"summary": "gpt", "summaryModel": "haiku; rm -rf /"}, fh)
         settings, warnings = schedule.load_settings(path)
-        self.assertEqual((settings.summary, settings.summary_model, len(warnings)), ("claude", "haiku", 2))
+        self.assertEqual((settings.summary, settings.summary_model, len(warnings)), ("claude", "sonnet", 2))
 
 
 if __name__ == "__main__":

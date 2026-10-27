@@ -286,12 +286,13 @@ def print_report(args, clock, scanner, settings) -> int:
             palette=reports.load_palette(palette_candidates()), workspace=args.workspace,
             claude_root=args.claude_dir, codex_root=args.codex_dir, live=scanner.sessions(now, procs),
             max_depth=args.worktree_depth, coordination_cache=coordination_cache_file(args),
-            summary=args.report_summary or settings.summary, summary_model=settings.summary_model)
+            summary=args.report_summary or settings.summary, summary_model=settings.summary_model,
+            tracker=report_tracker(args, clock))
     except (OSError, RuntimeError) as exc:
         print(f"tide-daemon: raport: {exc}", file=sys.stderr)
         return 1
     print(index)
-    print(f"{len(report.active)} projektów z ruchem, {len(report.quiet)} bez ruchu", file=sys.stderr)
+    print(f"{len(report.repos)} projektów z ruchem, {len(report.quiet)} bez ruchu", file=sys.stderr)
     return 0
 
 
@@ -321,8 +322,17 @@ def start_report(app, args, clock, settings, monitor, trees):
         palette_paths=palette_candidates(), workspace=args.workspace, claude_root=args.claude_dir,
         codex_root=args.codex_dir, max_depth=args.worktree_depth, sessions=lambda: monitor.sessions,
         worktrees=worktree_items, notifier=notifier, clock=clock, coordination_cache=coordination_cache_file(args),
-        opener=trees.launchers.open_report, summary=args.report_summary or settings.summary, parent=app, **kwargs)
+        opener=trees.launchers.open_report, summary=args.report_summary or settings.summary,
+        tracker=report_tracker(args, clock), parent=app, **kwargs)
     return holder["monitor"]
+
+
+def report_tracker(args, clock):
+    """YouTrack dla „Na daily” (opisy ticketów z planów w repozytoriach, tylko GET); --no-youtrack — bez."""
+    if args.no_youtrack:
+        return None
+    from .coordination.youtrack import YouTrackCache
+    return YouTrackCache(clock=clock)
 
 
 def coordination_cache_file(args) -> str | None:
