@@ -44,8 +44,9 @@ OPENAI_CHAT = {"choices": [{"index": 0, "message": {"role": "assistant", "conten
 class FakeModelServer(http.server.ThreadingHTTPServer):
     """Atrapa serwera modeli: odpowiedzi według (metoda, ścieżka); zapisuje zapytania z nagłówkiem i treścią.
 
-    Odpowiedź to (kod, obiekt JSON albo surowe bajty) albo lista takich par — kolejne zapytania biorą
-    kolejne pozycje (ostatnia zostaje). `delay` opóźnia każdą odpowiedź (limit czasu)."""
+    Odpowiedź to (kod, obiekt JSON albo surowe bajty[, nagłówki]) albo lista takich krotek — kolejne
+    zapytania biorą kolejne pozycje (ostatnia zostaje). Zamiast treści może być funkcja, która sama
+    pisze odpowiedź przez handler (serwer sączący bajty). `delay` opóźnia każdą odpowiedź (limit czasu)."""
 
     daemon_threads = True
 
@@ -78,10 +79,14 @@ class FakeModelHandler(http.server.BaseHTTPRequestHandler):
                                      "auth": self.headers.get("Authorization")})
         if self.server.delay:
             time.sleep(self.server.delay)
-        code, value = self.server.reply(self.command, self.path)
+        code, value, *extra = self.server.reply(self.command, self.path)
+        if callable(value):
+            return value(self)
         data = value if isinstance(value, bytes) else json.dumps(value).encode()
         try:
             self.send_response(code)
+            for key, header in (extra[0] if extra else {}).items():
+                self.send_header(key, header)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -106,6 +111,21 @@ def ollama_routes():
             ("GET", "/api/ps"): (200, OLLAMA_PS), ("POST", "/api/chat"): (200, OLLAMA_CHAT)}
 
 
+def trickle(handler):
+    """Nagłówki od razu, potem po bajcie co 0,1 s przez 5 s — każdy odczyt mieści się w limicie gniazda."""
+    try:
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", "100")
+        handler.end_headers()
+        for _ in range(50):
+            handler.wfile.write(b" ")
+            handler.wfile.flush()
+            time.sleep(0.1)
+    except OSError:
+        pass
+
+
 def closed_port() -> int:
     """Port, na którym nikt nie słucha (zajęty i od razu zwolniony)."""
     with socket.socket() as sock:
@@ -124,6 +144,14 @@ def cfg_for(url, kind="ollama", token_file=None):
     """Jeden punkt `local` pod wskazanym adresem i role domyślne."""
     endpoint = {"url": url, "kind": kind, **({"tokenFile": token_file} if token_file else {})}
     return models_config.from_dict({"endpoints": {"local": endpoint}})
+
+
+class TestEnvironmentTest(unittest.TestCase):
+    def test_tests_never_reach_the_real_ollama(self):
+        # daemon/tests/__init__.py: bez jawnej ścieżki ustawienia wskazują zamknięty port, nie 127.0.0.1:11434.
+        cfg = models_config.load()
+        self.assertTrue(cfg.exists, cfg.path)
+        self.assertEqual({e.url for e in cfg.endpoints.values()}, {"http://127.0.0.1:9"})
 
 
 class ConfigTest(unittest.TestCase):
@@ -200,17 +228,55 @@ class ConfigTest(unittest.TestCase):
             "default": "nie-ma",
             "endpoints": {"local": {"url": "http://127.0.0.1:11434"}, "ftp": {"url": "ftp://x"},
                           "bez": {"kind": "ollama"}, "zly": {"url": "http://x", "kind": "vllm"},
-                          "token": {"url": "http://x", "tokenFile": 5}, "lista": [], "z spacją": {"url": "http://x"}},
+                          "token": {"url": "http://x", "tokenFile": 5}, "lista": [], "z spacją": {"url": "http://x"},
+                          # Adresy, których nie da się rozebrać na host i port, i dane logowania w adresie.
+                          "nawias": {"url": "http://[fd7a:115c::1:11434"}, "port-abc": {"url": "http://mac:abc"},
+                          "port-duzy": {"url": "http://127.0.0.1:99999"}, "port-zero": {"url": "http://mac:0"},
+                          "ipv6": {"url": "http://fd7a:115c:a1e0::1:11434"},
+                          "haslo": {"url": "http://user:sekret@mac:11434"}},
             "roles": {"summary": 7, "describe": {"model": "local:qwen3:8b", "ctx": -1}, "pusta": "",
-                      "flaga": {"model": "qwen3:8b", "ctx": True}, "ok": "local:qwen3:8b"}})
+                      "flaga": {"model": "qwen3:8b", "ctx": True}, "ok": "local:qwen3:8b",
+                      "agent": "nawias:qwen3-coder:30b"}})
         self.assertEqual(sorted(cfg.endpoints), ["local"])
         self.assertEqual(cfg.default, "local")
-        self.assertEqual(len(cfg.warnings), 11, cfg.warnings)
+        self.assertEqual(len(cfg.warnings), 18, cfg.warnings)
         self.assertTrue(any("default: nieznany punkt „nie-ma”" in w for w in cfg.warnings))
         self.assertTrue(any("nieznany rodzaj „vllm”" in w for w in cfg.warnings))
+        self.assertTrue(any("„haslo”: dane logowania w adresie" in w for w in cfg.warnings), cfg.warnings)
+        self.assertNotIn("sekret", json.dumps(cfg.warnings))
         # Zepsute role domyślne wracają z wartościami domyślnymi, poprawna zostaje.
-        self.assertEqual({n: (r.model, r.ctx) for n, r in cfg.roles.items()},
+        self.assertEqual({n: (r.model, r.ctx) for n, r in cfg.roles.items() if not r.error},
                          {"ok": ("qwen3:8b", None), "summary": ("qwen3:8b", 8192), "describe": ("qwen3:8b", 8192)})
+        # Rola na pominiętym punkcie nie idzie cicho na `default` — jest niedostępna z powodem.
+        agent = cfg.roles["agent"]
+        self.assertEqual((agent.endpoint, agent.model), ("nawias", "qwen3-coder:30b"))
+        self.assertTrue(any("rola „agent”: punkt „nawias” jest pominięty" in w for w in cfg.warnings), cfg.warnings)
+        with self.assertRaises(ModelError) as caught:
+            cfg.role("agent")
+        self.assertIn("punkt „nawias” jest pominięty", str(caught.exception))
+        with self.assertRaises(ModelError):
+            client.chat("x", role="agent", config=cfg)
+
+    def test_default_must_be_a_name(self):
+        for value in (["mac"], {}, 5, None):
+            cfg = models_config.from_dict({"default": value, "endpoints": {"local": {"url": "http://127.0.0.1:11434"}}})
+            self.assertEqual(cfg.default, "local")
+            self.assertEqual(len(cfg.warnings), 0 if value is None else 1, cfg.warnings)
+
+    def test_default_role_on_skipped_endpoint_stays_there(self):
+        cfg = models_config.from_dict({"endpoints": {"local": {"url": "http://127.0.0.1:11434"},
+                                                     "mac": {"url": "http://mac:abc"}},
+                                       "roles": {"summary": "mac:qwen3:8b"}})
+        self.assertEqual(cfg.roles["summary"].endpoint, "mac")  # nie „local” — rola niedostępna
+        self.assertTrue(cfg.roles["summary"].error)
+        self.assertEqual(cfg.roles["describe"].endpoint, "local")
+
+    def test_unexpected_failure_while_reading_gives_defaults(self):
+        path = write_models(self.tmp, {"endpoints": {}})
+        with mock.patch.object(models_config, "from_dict", side_effect=RuntimeError("boom")):
+            cfg = models_config.load(path)
+        self.assertIn("RuntimeError", cfg.error)
+        self.assertEqual(cfg.endpoint().name, "local")
 
     def test_no_valid_endpoint_means_default_local(self):
         cfg = models_config.from_dict({"endpoints": {"mac": {"url": "mac-studio"}}, "roles": "nie"})
@@ -248,11 +314,20 @@ class ConfigTest(unittest.TestCase):
                 endpoint.headers()
             self.assertIn("tokenu punktu „mac”", str(caught.exception))
 
-    def test_credentials_in_url_never_shown(self):
-        endpoint = models_config.from_dict({"endpoints": {"mac": {"url": "http://user:sekret@mac:11434"}}}) \
+    def test_ipv6_address_in_brackets(self):
+        endpoint = models_config.from_dict({"endpoints": {"mac": {"url": "http://[fd7a:115c::1]:11434"}}}) \
             .endpoint("mac")
-        self.assertEqual(endpoint.public_url(), "http://mac:11434")
-        self.assertEqual(endpoint.host, "mac:11434")
+        self.assertEqual((endpoint.host, endpoint.public_url()), ("[fd7a:115c::1]:11434", "http://[fd7a:115c::1]:11434"))
+
+    def test_token_must_be_printable_ascii(self):
+        path = os.path.join(self.tmp, "pl.token")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("zażółć-gęślą")
+        endpoint = models_config.Endpoint("mac", "http://127.0.0.1:9", "ollama", path)
+        with self.assertRaises(ModelError) as caught:
+            endpoint.headers()
+        self.assertIn("niepoprawny plik tokenu punktu „mac”", str(caught.exception))
+        self.assertNotIn("zażółć", str(caught.exception))
 
 
 class OllamaClientTest(unittest.TestCase):
@@ -377,6 +452,52 @@ class OllamaClientTest(unittest.TestCase):
         self.assertNotIn(token, str(caught.exception))
         self.assertNotIn(token, json.dumps(status.snapshot(cfg, timeout=1)))
 
+    def test_redirect_is_not_followed_and_token_stays(self):
+        other = self.server()
+        token = "tok-" + secrets.token_hex(12)
+        path = os.path.join(self.tmp, "token")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(token)
+        first = start_server(self, {
+            ("POST", "/api/chat"): (302, b"", {"Location": other.url + "/api/chat"}),
+            ("GET", "/api/version"): (307, b"", {"Location": other.url + "/api/version"})})
+        cfg = cfg_for(first.url, token_file=path)
+        with self.assertRaises(ModelError) as caught:
+            client.chat("x", role="summary", config=cfg)
+        self.assertEqual(str(caught.exception),
+                         f"Model lokalny: serwer odpowiedział 302 — przekierowanie nie jest obsługiwane "
+                         f"({first.url.removeprefix('http://')})")
+        local = status.snapshot(cfg, timeout=2)["endpoints"]["local"]
+        self.assertFalse(local["online"])
+        self.assertIn("307", local["error"])
+        self.assertEqual(other.requests, [], "drugi serwer nie dostał zapytania ani tokenu")
+        self.assertEqual({r["auth"] for r in first.requests}, {f"Bearer {token}"})
+
+    def test_one_deadline_for_the_whole_request(self):
+        server = self.server()
+        server.routes[("POST", "/api/chat")] = (200, trickle)
+        started = time.monotonic()
+        with self.assertRaises(ModelError) as caught:
+            client.chat("x", role="summary", timeout=0.5, config=cfg_for(server.url))
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertIn("nie odpowiedział w 0.5 s", str(caught.exception))
+
+    def test_slow_name_lookup_counts_into_the_deadline(self):
+        real = socket.getaddrinfo
+
+        def slow(host, *args, **kwargs):
+            if host == "wolny-dns.test":
+                time.sleep(3)
+            return real(host, *args, **kwargs)
+
+        cfg = models_config.from_dict({"endpoints": {"local": {"url": "http://wolny-dns.test:11434"}}})
+        started = time.monotonic()
+        with mock.patch("socket.getaddrinfo", slow):
+            with self.assertRaises(ModelError) as caught:
+                client.chat("x", role="summary", timeout=0.3, config=cfg)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertIn("nie odpowiedział w 0.3 s (wolny-dns.test:11434)", str(caught.exception))
+
     def test_proxy_from_environment_is_not_used(self):
         server = self.server()
         bogus = f"http://127.0.0.1:{closed_port()}"
@@ -469,7 +590,7 @@ class StatusTest(unittest.TestCase):
             "error": f"Model lokalny niedostępny: serwer nie odpowiada (127.0.0.1:{port})", "version": None,
             "models": [], "loaded": []})
         self.assertEqual(state["roles"]["summary"], {"endpoint": "local", "model": "qwen3:8b", "ctx": 8192,
-                                                     "installed": None, "available": False})
+                                                     "installed": None, "available": False, "error": ""})
 
     def test_server_failing_after_version_is_offline(self):
         server = start_server(self, ollama_routes())
@@ -478,6 +599,22 @@ class StatusTest(unittest.TestCase):
         self.assertFalse(local["online"])
         self.assertIn("500: boom", local["error"])
         self.assertEqual((local["models"], local["loaded"], local["version"]), ([], [], None))
+
+    def test_unexpected_error_in_one_endpoint_does_not_break_snapshot(self):
+        server = start_server(self, ollama_routes())
+        cfg = models_config.from_dict({"endpoints": {"local": {"url": server.url}, "mac": {"url": server.url}}})
+        real = status.request
+
+        def broken(endpoint, *args, **kwargs):
+            if endpoint.name == "mac":
+                raise ValueError("coś nieprzewidzianego")
+            return real(endpoint, *args, **kwargs)
+
+        with mock.patch.object(status, "request", broken):
+            state = status.snapshot(cfg, timeout=2)
+        self.assertTrue(state["endpoints"]["local"]["online"])
+        self.assertFalse(state["endpoints"]["mac"]["online"])
+        self.assertIn("ValueError", state["endpoints"]["mac"]["error"])
 
     def test_hanging_server_does_not_hang_status(self):
         server = start_server(self, ollama_routes())

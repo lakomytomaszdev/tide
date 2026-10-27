@@ -30,7 +30,12 @@ class ModelsMonitor(QObject):
     def __init__(self, read=models_status.read, poll_ms: int | None = None, parent=None):
         super().__init__(parent)
         self.read = read
-        self._json = _dump(models_status.pending(models_config.load()))
+        try:
+            cfg = models_config.load()
+        except Exception as exc:  # nieczytelne ustawienia nie mogą zatrzymać startu usługi
+            cfg = models_config.defaults(error=f"models.json: nieoczekiwany błąd ({type(exc).__name__}) — "
+                                               f"ustawienia domyślne")
+        self._json = _dump(models_status.pending(cfg))
         self._busy = False
         self._again = False
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-models")

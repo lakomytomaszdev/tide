@@ -68,7 +68,7 @@ class ModelsDBusTest(unittest.TestCase):
         self.assertEqual(mac["error"], f"Model lokalny niedostępny: serwer nie odpowiada "
                                        f"({self.down.removeprefix('http://')})")
         self.assertEqual(state["roles"]["summary"], {"endpoint": "local", "model": "qwen3:8b", "ctx": 8192,
-                                                     "installed": True, "available": True})
+                                                     "installed": True, "available": True, "error": ""})
         self.assertEqual(state["roles"]["agent"]["available"], False)
         self.assertEqual(state["config"], {"path": path, "exists": True, "error": "", "warnings": []})
 

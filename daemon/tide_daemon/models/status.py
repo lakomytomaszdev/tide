@@ -87,11 +87,13 @@ def endpoint_status(endpoint, timeout: float = STATUS_TIMEOUT_S) -> dict:
     except ModelError as exc:
         # Serwer odpowiedział na /api/version, a potem nie — też „niedostępny”, z pustymi listami.
         return _offline(endpoint, str(exc))
+    except Exception as exc:  # przeoczony przypadek w jednym punkcie nie kładzie odczytu pozostałych
+        return _offline(endpoint, f"Model lokalny: błąd odczytu stanu ({type(exc).__name__})")
     return result
 
 
 def snapshot(cfg, timeout: float = STATUS_TIMEOUT_S) -> dict:
-    """Stan wszystkich punktów i ról z konfiguracji. Role: {endpoint, model, ctx, installed, available}."""
+    """Stan wszystkich punktów i ról z konfiguracji. Role: {endpoint, model, ctx, installed, available, error}."""
     endpoints = {name: endpoint_status(endpoint, timeout) for name, endpoint in cfg.endpoints.items()}
     roles = {}
     for name, role in cfg.roles.items():
@@ -104,15 +106,15 @@ def snapshot(cfg, timeout: float = STATUS_TIMEOUT_S) -> dict:
             else:
                 installed = role.model in names
         roles[name] = {"endpoint": role.endpoint, "model": role.model, "ctx": role.ctx, "installed": installed,
-                       "available": bool(state.get("online") and installed)}
+                       "available": bool(state.get("online") and installed and not role.error), "error": role.error}
     return {"checked": True, "default": cfg.default, "config": cfg.public(), "endpoints": endpoints, "roles": roles}
 
 
 def pending(cfg) -> dict:
     """Stan przed pierwszym odczytem (usługa dopiero wystartowała): `checked: false`, nic nie wiadomo."""
     endpoints = {name: _offline(endpoint) for name, endpoint in cfg.endpoints.items()}
-    roles = {name: {"endpoint": r.endpoint, "model": r.model, "ctx": r.ctx, "installed": None, "available": False}
-             for name, r in cfg.roles.items()}
+    roles = {name: {"endpoint": r.endpoint, "model": r.model, "ctx": r.ctx, "installed": None, "available": False,
+                    "error": r.error} for name, r in cfg.roles.items()}
     return {"checked": False, "default": cfg.default, "config": cfg.public(), "endpoints": endpoints, "roles": roles}
 
 

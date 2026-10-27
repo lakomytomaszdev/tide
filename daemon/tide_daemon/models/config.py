@@ -21,6 +21,10 @@ pozostałe role bez `ctx` — kontekst serwera. `ctx: 0` też znaczy „kontekst
 Bez pliku: punkt `local` (http://127.0.0.1:11434, ollama) i role `summary`, `describe` → qwen3:8b.
 Zepsuty plik (nie JSON, nie obiekt) → wartości domyślne i `error`; zły punkt albo rola są pomijane
 z ostrzeżeniem w `warnings`, reszta działa. Brakujące role domyślne dochodzą na punkcie `default`.
+Punkt jest zły także wtedy, gdy adresu nie da się rozebrać na host i port (port spoza 1…65535,
+IPv6 bez nawiasów) albo adres ma dane logowania (`user:hasło@` — hasło w pliku ustawień i w adresie
+widocznym w stanie; od tego jest `tokenFile`). Rola z przedrostkiem pominiętego punktu nie przechodzi
+cicho na `default`: zostaje przy swoim punkcie jako niedostępna (`error`), wywołanie daje ModelError.
 
 Token (`tokenFile`, z rozwinięciem `~`) czytamy przy każdym zapytaniu, tylko w pamięci, i wysyłamy
 jako `Authorization: Bearer`; nie trafia do dziennika, komunikatów błędów ani odpowiedzi D-Bus.
@@ -54,11 +58,26 @@ class Endpoint:
     kind: str                # "ollama" albo "openai"
     token_file: str = ""     # ścieżka po rozwinięciu „~”; pusta — bez nagłówka Authorization
 
+    def address(self) -> tuple[str, str, int | None]:
+        """(schemat, host, port) z adresu; adres, którego nie da się rozebrać → ModelError."""
+        try:
+            parts = urllib.parse.urlsplit(self.url)
+            port = parts.port
+        except ValueError:
+            raise ModelError(f"Model lokalny: niepoprawny adres punktu „{self.name}”") from None
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ModelError(f"Model lokalny: niepoprawny adres punktu „{self.name}”")
+        return parts.scheme, parts.hostname, port
+
     @property
     def host(self) -> str:
-        """„127.0.0.1:11434” — do komunikatów (bez danych logowania z adresu)."""
-        parts = urllib.parse.urlsplit(self.url)
-        return parts.hostname + (f":{parts.port}" if parts.port else "") if parts.hostname else self.url
+        """„127.0.0.1:11434” albo „[fd7a::1]:11434” — do komunikatów (bez danych logowania z adresu)."""
+        try:
+            _scheme, hostname, port = self.address()
+        except ModelError:
+            return self.name
+        hostname = f"[{hostname}]" if ":" in hostname else hostname
+        return hostname + (f":{port}" if port else "")
 
     def public_url(self) -> str:
         parts = urllib.parse.urlsplit(self.url)
@@ -75,7 +94,8 @@ class Endpoint:
             except (OSError, UnicodeDecodeError) as exc:
                 raise ModelError(f"Model lokalny niedostępny: nie da się odczytać pliku tokenu punktu "
                                  f"„{self.name}” ({type(exc).__name__})") from None
-            if not token or any(c in token for c in "\r\n"):
+            # Tylko drukowalne ASCII: nagłówek HTTP nie uniesie innych znaków (i nowej linii — wstrzyknięcia).
+            if not token or not all(" " < c < "\x7f" for c in token):
                 raise ModelError(f"Model lokalny niedostępny: pusty albo niepoprawny plik tokenu punktu „{self.name}”")
             headers["Authorization"] = f"Bearer {token}"
         return headers
@@ -87,6 +107,7 @@ class Role:
     endpoint: str
     model: str
     ctx: int | None          # None — kontekst serwera
+    error: str = ""          # rola niedostępna (np. jej punkt jest pominięty) — powód po polsku
 
 
 @dataclass(frozen=True)
@@ -108,7 +129,10 @@ class ModelsConfig:
     def role(self, name: str) -> Role:
         if name not in self.roles:
             raise ModelError(f"Model lokalny: nieznana rola „{name}” w models.json")
-        return self.roles[name]
+        role = self.roles[name]
+        if role.error:
+            raise ModelError(f"Model lokalny niedostępny: {role.error}")
+        return role
 
     def public(self) -> dict:
         """Stan pliku ustawień dla D-Bus (bez tokenów — tylko czy punkt go używa)."""
@@ -137,9 +161,17 @@ def _endpoint(name, value, warnings) -> Endpoint | None:
         warnings.append(f"punkt „{name}”: oczekiwano obiektu — pominięty")
         return None
     url = value.get("url")
-    parts = urllib.parse.urlsplit(url.strip()) if isinstance(url, str) else None
-    if not parts or parts.scheme not in ("http", "https") or not parts.hostname:
-        warnings.append(f"punkt „{name}”: niepoprawny adres (oczekiwano http:// albo https://) — pominięty")
+    try:
+        parts = urllib.parse.urlsplit(url.strip()) if isinstance(url, str) else None
+        port = parts.port if parts else None
+    except ValueError:  # „http://[fd7a::1:11434”, „http://mac:abc”, port spoza zakresu, IPv6 bez nawiasów
+        parts, port = None, None
+    if not parts or parts.scheme not in ("http", "https") or not parts.hostname or port == 0:
+        warnings.append(f"punkt „{name}”: niepoprawny adres (oczekiwano http(s)://host[:port], "
+                        f"IPv6 w nawiasach) — pominięty")
+        return None
+    if "@" in parts.netloc:
+        warnings.append(f"punkt „{name}”: dane logowania w adresie — pominięty (token przez tokenFile)")
         return None
     kind = value.get("kind", "ollama")
     if kind not in KINDS:
@@ -164,7 +196,7 @@ def _ctx(name, value, warnings) -> tuple[bool, int | None]:
     return True, value or None
 
 
-def _role(name, value, endpoints, default, warnings) -> Role | None:
+def _role(name, value, endpoints, skipped, default, warnings) -> Role | None:
     ctx = None
     if isinstance(value, dict):
         ok, ctx = _ctx(name, value.get("ctx"), warnings)
@@ -177,6 +209,12 @@ def _role(name, value, endpoints, default, warnings) -> Role | None:
         warnings.append(f"rola „{name}”: oczekiwano „punkt:model” — pominięta")
         return None
     endpoint, model = split_model(value.strip(), endpoints)
+    if endpoint is None:
+        head, _sep, rest = value.strip().partition(":")
+        if head in skipped and rest:
+            reason = f"rola „{name}”: punkt „{head}” jest pominięty w models.json"
+            warnings.append(f"{reason} — rola niedostępna")
+            return Role(name, head, rest, ctx, reason)
     return Role(name, endpoint or default, model, ctx)
 
 
@@ -208,12 +246,17 @@ def from_dict(data, path: str = "", exists: bool = True) -> ModelsConfig:
             warnings.append(f"żaden punkt nie jest poprawny — punkt domyślny {DEFAULT_ENDPOINT} ({DEFAULT_URL})")
         endpoints = {DEFAULT_ENDPOINT: Endpoint(DEFAULT_ENDPOINT, DEFAULT_URL, "ollama")}
 
+    skipped = set(raw_endpoints or {}) - set(endpoints)
+
     default = data.get("default")
+    fallback = DEFAULT_ENDPOINT if DEFAULT_ENDPOINT in endpoints else next(iter(endpoints))
     if default is None:
-        default = DEFAULT_ENDPOINT if DEFAULT_ENDPOINT in endpoints else next(iter(endpoints))
+        default = fallback
+    elif not isinstance(default, str):
+        warnings.append(f"default: oczekiwano nazwy punktu — używam „{fallback}”")
+        default = fallback
     elif default not in endpoints:
-        fallback = DEFAULT_ENDPOINT if DEFAULT_ENDPOINT in endpoints else next(iter(endpoints))
-        warnings.append(f"default: nieznany punkt „{default}” — używam „{fallback}”")
+        warnings.append(f"default: nieznany punkt „{default[:40]}” — używam „{fallback}”")
         default = fallback
 
     roles: dict = {}
@@ -225,7 +268,7 @@ def from_dict(data, path: str = "", exists: bool = True) -> ModelsConfig:
         if not NAME_RE.fullmatch(name):
             warnings.append(f"rola „{name[:40]}”: niepoprawna nazwa (litery, cyfry, _.-) — pominięta")
             continue
-        role = _role(name, value, endpoints, default, warnings)
+        role = _role(name, value, endpoints, skipped, default, warnings)
         if role:
             roles[name] = role
     for name, model in DEFAULT_ROLES.items():
@@ -246,4 +289,7 @@ def load(path: str | None = None) -> ModelsConfig:
         return defaults(path, True, f"models.json: niepoprawny JSON{line} — ustawienia domyślne")
     except OSError as exc:
         return defaults(path, True, f"models.json: nie da się odczytać ({type(exc).__name__}) — ustawienia domyślne")
-    return from_dict(data, path)
+    try:
+        return from_dict(data, path)
+    except Exception as exc:  # przeoczony kształt pliku nie może położyć usługi ani odczytu stanu
+        return defaults(path, True, f"models.json: nieoczekiwany błąd ({type(exc).__name__}) — ustawienia domyślne")
