@@ -66,6 +66,8 @@ class ClaudeLog(SessionLog):
         self.touch(ts)
         if record.get("cwd"):
             self.cwd = record["cwd"]
+            if not self.launch_cwd and escape_cwd(self.cwd) == self.project_dir:
+                self.launch_cwd = self.cwd
         if record.get("gitBranch"):
             self.branch = record["gitBranch"]
 
@@ -83,6 +85,13 @@ class ClaudeLog(SessionLog):
             self.set_phase(TURN_END, ts)
             return
         uses = [c for c in _content(message) if c.get("type") == "tool_use"]
+        text = "\n".join(str(c.get("text") or "") for c in _content(message) if c.get("type") == "text").strip()
+        if isinstance(message.get("content"), str):
+            text = message["content"].strip()
+        if uses:
+            self.said("", ts)  # narzędzie po tekście — wcześniejsze pytanie nie kończy tury
+        elif text:
+            self.said(text, ts)
         if uses:
             self.set_phase(TOOL_PENDING, ts)
             for use in uses:
@@ -111,6 +120,7 @@ class ClaudeLog(SessionLog):
         if text.startswith("[Request interrupted by user"):
             self.set_phase(TURN_END, ts)
             self.last_action = "Przerwano"
+            self.said("", ts)  # użytkownik przerwał — pytanie sprzed przerwania nie czeka
         elif text.startswith(LOCAL_COMMAND_PREFIXES):
             self.set_phase(TURN_END, ts)
         else:

@@ -1,6 +1,7 @@
 // Wybór projektu karty: pole z nazwą i lista (projekty z tablicy, potem repozytoria, które jeszcze
 // nie są projektami — wybranie takiego założy projekt przy zapisie karty, CreateCard z `repo`).
-// Pisanie na zamkniętym polu otwiera listę i od razu szuka.
+// Pisanie na zamkniętym polu otwiera listę i od razu szuka. Z `optionSource` — własna lista (dodatkowe
+// projekty w oknie uruchomienia, PT-28), bez pozycji „Bez projektu”.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -16,7 +17,11 @@ Field {
     property string label: ""
     property string query: ""
     property int current: 0
-    readonly property var options: Logic.projectOptions(snapshot, query)
+    // Własna lista (np. dodatkowe projekty w oknie uruchomienia): funkcja(zapytanie) → opcje jak
+    // projectOptions; null — projekt karty („Bez projektu”, projekty, repozytoria).
+    property var optionSource: null
+    property string placeholder: "Bez projektu"
+    readonly property var options: optionSource ? optionSource(query) : Logic.projectOptions(snapshot, query)
     readonly property alias opened: popup.opened
     signal chosen(string kind, string key, string label)
 
@@ -40,9 +45,11 @@ Field {
     focused: activeFocus || popup.opened
     activeFocusOnTab: true
     Accessible.role: Accessible.ComboBox
-    Accessible.name: "Projekt: " + (label || "bez projektu")
+    Accessible.name: optionSource ? placeholder : "Projekt: " + (label || "bez projektu")
     Keys.onPressed: event => {
-        if (event.key === Qt.Key_Down || event.key === Qt.Key_Return || event.key === Qt.Key_Space) {
+        if (event.modifiers & Qt.ControlModifier) {
+            event.accepted = false   // Ctrl+Enter należy do okna (np. „Uruchom agenta”)
+        } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Return || event.key === Qt.Key_Space) {
             picker.open("")
             event.accepted = true
         } else if (event.text && event.text.trim() !== "" && !(event.modifiers & Qt.ControlModifier)) {
@@ -66,7 +73,7 @@ Field {
         }
         Text {
             Layout.fillWidth: true
-            text: picker.kind === "" ? "Bez projektu" : picker.label
+            text: picker.kind === "" ? picker.placeholder : picker.label
             textFormat: Text.PlainText
             color: picker.kind === "" ? Tide.Tokens.textMuted : Tide.Tokens.textPrimary
             font.family: Tide.Theme.uiFamily
@@ -128,7 +135,7 @@ Field {
                     clip: true
                     onTextEdited: {
                         picker.query = text
-                        picker.current = picker.options.length > 1 ? 1 : 0
+                        picker.current = !picker.optionSource && picker.options.length > 1 ? 1 : 0
                     }
                     Keys.onDownPressed: picker.current = Math.min(picker.options.length - 1, picker.current + 1)
                     Keys.onUpPressed: picker.current = Math.max(0, picker.current - 1)

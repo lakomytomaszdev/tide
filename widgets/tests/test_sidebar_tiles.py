@@ -91,10 +91,11 @@ class SidebarTilesTest(unittest.TestCase):
         self.assertEqual([r["state"] for r in agents["rows"]][:2], ["waiting", "waiting"])
         self.assertEqual(sum(r["button"] for r in agents["rows"]), 2)
 
-    def test_older_daemon_reply_is_a_calm_done_row(self):
-        old = dict(session("a", "waiting"), reason="reply")
-        rows = preview.render_sidebar(scenario(sessions=[old]))["agents"]["rows"]
-        self.assertEqual((rows[0]["state"], rows[0]["word"], rows[0]["button"]), ("done", "skończył", False))
+    def test_reply_question_is_a_waiting_row(self):
+        # PT-29: tura skończona pytaniem bez odpowiedzi — agent czeka.
+        reply = dict(session("a", "waiting"), reason="reply")
+        rows = preview.render_sidebar(scenario(sessions=[reply]))["agents"]["rows"]
+        self.assertEqual(rows[0]["state"], "waiting")
 
     def test_system_tile_texts(self):
         system = preview.render_sidebar(scenario())["system"]

@@ -20,16 +20,15 @@ AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
 
 
 def waiting_count(sessions_json: str) -> int:
-    """Ilu agentów naprawdę czeka na ciebie — jak Theme.sessionState: „waiting” z powodem „reply”
-    to dziś „skończył”, nie wezwanie."""
+    """Ilu agentów czeka na ciebie — stan „waiting” (także z powodem „reply”: tura skończona pytaniem
+    bez odpowiedzi, PT-29), jak Theme.sessionState."""
     try:
         sessions = json.loads(sessions_json or "[]")
     except ValueError:
         return 0
     if not isinstance(sessions, list):
         return 0
-    return sum(1 for s in sessions if isinstance(s, dict) and s.get("state") == "waiting"
-               and s.get("reason") != "reply")
+    return sum(1 for s in sessions if isinstance(s, dict) and s.get("state") == "waiting")
 
 
 class Backend(QObject):

@@ -27,6 +27,7 @@ from ..agents.codex import SCHEDULED_KINDS, CodexLog
 from ..agents.jsonl import JsonlTail, _parse_lines, read_head
 from ..agents.state import TURN_END, WAITING, derive_state, waiting_text
 from ..agents.timeutil import parse_ts
+from ..board.place import work_cwd
 from ..krunner.index import _state_db, claude_prompt, codex_prompt, short_title
 from ..worktrees.sessions import _claude_files, _codex_files
 
@@ -145,7 +146,11 @@ def read_session(path: str, cls, start: float, end: float, automations: dict | N
     if not log.last_activity or log.last_activity < start or not log.cwd:
         return None
     first = _first_ts(head) or log.first_activity
-    report = SessionReport(tool=log.tool, session_id=log.session_id, path=path, cwd=log.cwd, branch=log.branch,
+    # Sesja, która weszła do repozytorium tablicy Tide (plan w <tablica>/docs/<projekt>/), należy do
+    # projektu z katalogu startu — nie do „tide-board” (PT-28); gałąź wtedy z katalogu pracy.
+    cwd = work_cwd(log.cwd, log.launch_cwd)
+    report = SessionReport(tool=log.tool, session_id=log.session_id, path=path, cwd=cwd,
+                           branch=log.branch if cwd == log.cwd else "",
                            title=short_title(log.title), first_ts=first, last_ts=log.last_activity,
                            last_action=log.last_action, final_message=_clip(final, MESSAGE_LIMIT), final_ts=final_ts)
     prompt_of = claude_prompt if cls is ClaudeLog else codex_prompt

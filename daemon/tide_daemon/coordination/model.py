@@ -130,6 +130,7 @@ class Coordinator:
     session_id: str
     path: str
     cwd: str = ""
+    launch_cwd: str = ""          # katalog startu (pierwszy cwd) — stały, także po `cd` agenta (PT-28)
     branch: str = ""
     title: str = ""
     model: str = ""

@@ -13,6 +13,7 @@ import os
 
 from ..processes import ProcessTable
 from .. import codex_app, windows
+from ..board.place import work_cwd
 from . import gitinfo
 from .claude import ClaudeLog, escape_cwd, read_process_status, status_from
 from .codex import CodexLog
@@ -111,7 +112,10 @@ class AgentScanner:
                 return procs is not None and pid is not None and procs.started_after(pid, ts)
 
             state, reason, since = derive_state(log, now, alive, status, evidence)
-            where = gitinfo.describe(log.cwd, log.branch)
+            # Katalog pracy: bieżący, a gdy agent wszedł do repozytorium tablicy Tide (np. pisze plan
+            # w <tablica>/docs/<projekt>/) — katalog startu; projekt i gałąź wtedy stamtąd (PT-28).
+            place = work_cwd(log.cwd, log.launch_cwd)
+            where = gitinfo.describe(place, log.branch if place == log.cwd else "")
             target = windows.target_for(procs, pid) if procs is not None and pid is not None else None
             sid = f"{log.tool}:{log.session_id}"
             # Codex Desktop: wątek otwiera aplikacja, także bez procesu sesji (zakończony wątek
@@ -130,7 +134,12 @@ class AgentScanner:
                 "project": where.project,
                 "branch": where.branch,
                 "worktree": where.worktree,
-                "cwd": log.cwd,
+                "cwd": place,
+                # Katalog startu (stały) i jego zakodowana nazwa jak katalog projektu Claude Code — po nich
+                # tablica łączy kartę z sesją uruchomioną z karty (board/derive.py, PT-28).
+                "launchCwd": log.launch_cwd,
+                "launchKey": launch_key(log),
+                "startedTs": round(log.first_activity, 3),
                 "title": log.title,
                 "state": state,
                 "reason": reason if state != ENDED else "",
@@ -205,6 +214,15 @@ def scan(claude_root: str, codex_root: str, now: float, procs: ProcessTable | No
     return scanner.sessions(now, procs)
 
 
+def launch_key(log: SessionLog) -> str:
+    """Katalog startu zakodowany jak katalog projektu Claude Code (`/a/b.c` → `-a-b-c`): Claude Code —
+    nazwa katalogu dziennika (znana zawsze, także gdy wpisów z katalogiem startu nie ma już w ogonie
+    pliku), Codex — z cwd z session_meta."""
+    if isinstance(log, ClaudeLog):
+        return log.project_dir
+    return escape_cwd(log.launch_cwd) if log.launch_cwd else ""
+
+
 def _parent(log: SessionLog) -> str:
     """Id wątku rodzica dla podagenta Codexa (thread_spawn), inaczej pusty napis."""
     return getattr(log, "parent_id", "") or ""
@@ -269,7 +287,11 @@ def _aggregate(entry: dict, children: list[dict]) -> None:
     entry["subagents"] = sum(1 for c in children if c["state"] != ENDED)
     entry["lastActivityTs"] = max([entry["lastActivityTs"]] + [c["lastActivityTs"] for c in children])
     entry["lastActivity"] = iso(entry["lastActivityTs"])
-    child = min(children, key=lambda c: (STATE_ORDER[c["state"]], c["sinceTs"] if c["state"] == WAITING else 0))
+    # Podagent nigdy nie przenosi na przodka „czeka na odpowiedź” (reply) — jego pytanie czyta koordynator.
+    eligible = [c for c in children if not (c["state"] == WAITING and c.get("reason") == "reply")]
+    if not eligible:
+        return
+    child = min(eligible, key=lambda c: (STATE_ORDER[c["state"]], c["sinceTs"] if c["state"] == WAITING else 0))
     if STATE_ORDER[child["state"]] < STATE_ORDER[entry["state"]]:
         for key in ("state", "reason", "since", "sinceTs", "lastAction", "waitingText"):
             entry[key] = child[key]

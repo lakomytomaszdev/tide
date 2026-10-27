@@ -215,12 +215,43 @@ class LogicTest(unittest.TestCase):
         self.assertEqual((spec_start["newWorktree"], spec_start["branch"], spec_start["addDirs"]), (False, "", []))
         self.assertEqual(self.js(f"launchMarkRequest({{worktree: '/w/k-16', branch: 'claude/k-16-okno', tool: 'claude'}}, {js_state}, 'T')"),
                          {"branch": "claude/k-16-okno", "worktree": "/w/k-16", "mode": "full", "tool": "claude",
-                          "check": "auto", "launched": "T"})
+                          "check": "auto", "launched": "T", "session": ""})
         self.assertEqual(self.js(f"launchMarkRequest({{worktree: '', branch: 'master'}}, Object.assign({js_state}, {{check: 'manual'}}), 'T')")["branch"],
                          "", "bez worktree gałąź główna nie trafia do karty")
         self.assertRegex(self.js("isoNow(1793099040000)"), r"^2026-10-27T\d\d:\d\d:00[+-]\d\d:\d\d$")
         self.assertEqual(self.js("cardNote({column: 'backlog', spec: '/s/k-1.md', note: 'moja'})"), "✓ specyfikacja gotowa")
         self.assertEqual(self.js("cardNote({column: 'todo', spec: '/s/k-1.md', note: 'moja'})"), "moja")
+
+    def test_extra_projects_logic(self):
+        """PT-28: dodatkowe projekty w oknie uruchomienia — opcje, dodawanie, usuwanie, zmiana, stopka, Start."""
+        k9 = "S.cards.find(c => c.id === 'K-9')"
+        options = self.js(f"extraOptions(S, {k9}, [], '')")
+        keys = [o["key"] for o in options]
+        primary = self.js(f"{k9}.project")
+        self.assertNotIn(primary, keys, "główny projekt nie jest dodatkowym")
+        self.assertIn("mobileapp", keys)
+        repo = next(o for o in options if o["kind"] == "repo")
+        self.assertEqual((repo["name"], repo["detail"]), ("legal-agents", "nowy projekt z repozytorium"))
+        self.assertEqual([o["key"] for o in self.js(f"extraOptions(S, {k9}, [{{key: 'mobileapp'}}], 'app5')")],
+                         ["webservice"], "wybrane znikają z listy, szukanie po nazwie")
+        picked = self.js("addExtra(addExtra([], 'project', 'mobileapp', 'mobileapp'), 'repo', '/r/legal', 'legal')")
+        self.assertEqual(picked, [{"kind": "project", "key": "mobileapp", "name": "mobileapp"},
+                                  {"kind": "repo", "key": "/r/legal", "name": "legal"}])
+        self.assertEqual(self.js(f"addExtra({json.dumps(picked)}, 'project', 'mobileapp', 'x')"), picked, "bez powtórzeń")
+        self.assertEqual(self.js(f"removeExtra({json.dumps(picked)}, 'mobileapp')"), picked[1:])
+        self.assertTrue(self.js(f"extrasChanged({{projects: []}}, {json.dumps(picked)})"))
+        self.assertFalse(self.js("extrasChanged({projects: ['mobileapp']}, [{key: 'mobileapp'}])"))
+        self.assertEqual(self.js("cardExtras(S, {projects: ['mobileapp', 'nie-ma']})"),
+                         [{"kind": "project", "key": "mobileapp", "name": "mobileapp"},
+                          {"kind": "project", "key": "nie-ma", "name": "nie-ma"}])
+        state = {"cardId": "K-16", "mode": "light", "tool": "claude", "branch": "claude/k-16-okno", "newWorktree": True,
+                 "check": "auto", "aiDocs": "tide", "slug": "dp", "repoName": "dp", "extras": picked}
+        self.assertIn("Pracuje też w: mobileapp, legal (gałąź claude/k-16-okno w każdym, które zmieni).",
+                      self.js(f"launchFooter({json.dumps(state)})"))
+        flow = {"text": "x", "repo": "/r/dp", "tool": "claude", "branch": "claude/k-16-okno", "docsDir": "/b/docs/dp",
+                "aiDocs": "tide", "addDirs": ["/b/docs/dp", "/r/mobileapp"]}
+        self.assertEqual(self.js(f"launchStartRequest({json.dumps(flow)}, {json.dumps(state)})")["addDirs"],
+                         ["/b/docs/dp", "/r/mobileapp"], "katalogi --add-dir z RenderLaunch")
 
     def test_rail_note_errors_and_replies(self):
         now = 1793099040  # 12:04 w Warszawie
@@ -688,12 +719,13 @@ class LaunchMarkStoreTest(unittest.TestCase):
                 from unittest import mock
                 with mock.patch.dict(os.environ, git_env(tmp)):
                     board = store_mod.BoardStore(os.path.join(tmp, "board"))
-                    board.create_card({"title": "Grabie", "column": "todo"})
+                    board.create_card({"title": "Grabie", "column": "todo", "session": "claude:poprzednia"})
                     self.assertTrue(board.update_card("K-1", request)["ok"])
                     card = board.snapshot()["cards"][0]
             self.assertEqual((card["mode"], card["tool"], card["worktree"]), (choice["mode"], choice["tool"], result["worktree"]))
             self.assertEqual(card["branch"], result["branch"] if result["worktree"] else "")
             self.assertEqual(card.get("check"), choice["check"])
+            self.assertEqual(card["session"], "", "poprzednia sesja odpięta — usługa przypnie nową")
 
 
 class LaunchTest(ProbeCase):
@@ -777,6 +809,7 @@ out["toast"] = js("[page.toast, page.toastTone]")
         self.assertEqual({k: mark[k] for k in ("branch", "worktree", "mode", "tool", "check")},
                          {"branch": "claude/k-15-tryb-skupienia", "worktree": "/w/k-15", "mode": "full", "tool": "claude",
                           "check": "auto"})
+        self.assertEqual(mark["session"], "", "ponowne uruchomienie odpina poprzednią sesję (PT-28)")
         self.assertRegex(mark["launched"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")
@@ -852,6 +885,80 @@ out["project"] = calls()[-1]
         self.assertEqual(out["calls1"], 0, "bez projektu nie uruchamiamy")
         self.assertEqual(out["project"][:2], ["UpdateCard", "K-11"])
         self.assertEqual(json.loads(out["project"][2]), {"project": "plasma-tide"})
+
+
+# Element po objectName wewnątrz delegatów Repeatera (findChild ich nie widzi): funkcja QML (korzeń, nazwa).
+FIND_PY = """
+FIND = "(function find(it, name) { if (!it) return null; if (it.objectName === name) return it; " \\
+       "for (const c of it.children) { const r = find(c, name); if (r) return r } return null })"
+"""
+
+
+class ExtraProjectsTest(ProbeCase):
+    """PT-28: „Dodatkowe projekty” w oknie uruchomienia (chipy, wybór z listy, repozytorium jako nowy
+    projekt) → UpdateCard {projects} przed RenderLaunch, Start z addDirs z polecenia; chipy na karcie."""
+
+    def test_pick_extra_projects_then_launch(self):
+        flow = dict(LaunchTest.FLOW, addDirs=["/home/user/DevWorkspace/mobileapp", "/home/user/DevWorkspace/legal-agents"],
+                    projects=["mobileapp", "legal-agents"])
+        out = self.probe(FIND_PY + f"""
+flow = json.loads({json.dumps(flow, ensure_ascii=False)!r})
+replies.extend([{{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # MoveCard
+                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # UpdateCard (projekty)
+                flow,                                                                     # RenderLaunch
+                {{"ok": True, "cwd": "/w/k-15", "branch": "claude/k-15-tryb", "worktree": "/w/k-15",
+                  "title": "plasma-tide · claude/k-15-tryb", "tool": "claude", "mode": "tab"}},
+                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}}])         # UpdateCard (uruchomienie)
+def type_text(text):
+    for ch in text:
+        QTest.keyClick(window, Qt.Key(ord(ch.upper())))
+    wait(60)
+
+
+def pick(text):
+    click(named("launchExtraPicker"))
+    type_text(text)
+    key(Qt.Key.Key_Return)
+
+
+drag(card("K-15"), column("todo", fy=0.75))
+out["visible"] = obj("launchExtras").property("visible")
+pick("mobi")
+pick("legal")
+pick("app4")
+out["picked"] = js("page.launchDialog.extras.map(p => p.kind + ':' + p.name)")
+click(at(FIND + "(page.launchDialog, 'launchExtraRemove-logviewer')"))
+out["afterRemove"] = js("page.launchDialog.extras.map(p => p.key)")
+out["footer"] = obj("launchFooter").property("text")
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(400)
+out["calls"] = calls()
+out["closed"] = not js("page.launchOpen")
+""")
+        self.assertTrue(out["visible"])
+        self.assertEqual(out["picked"], ["project:mobileapp", "repo:legal-agents", "project:LogViewer"])
+        self.assertEqual(out["afterRemove"], ["mobileapp", "/home/user/DevWorkspace/legal-agents"])
+        self.assertIn("Pracuje też w: mobileapp, legal-agents", out["footer"])
+        self.assertEqual([c[0] for c in out["calls"]], ["MoveCard", "UpdateCard", "RenderLaunch", "Start", "UpdateCard"])
+        self.assertEqual(json.loads(out["calls"][1][2]),
+                         {"projects": ["mobileapp", "/home/user/DevWorkspace/legal-agents"]},
+                         "projekty (repozytorium zakłada projekt) zapisane przed poleceniem, opis bez zmian")
+        start = json.loads(out["calls"][3][1])
+        self.assertEqual(start["addDirs"], flow["addDirs"])
+        self.assertTrue(out["closed"])
+
+    def test_card_shows_extra_projects_as_chips(self):
+        data = json.loads(json.dumps(self.data))
+        for c in data["cards"]:
+            if c["id"] == "K-9":
+                c["projects"] = ["mobileapp"]
+                c["extraProjects"] = [{"slug": "mobileapp", "name": "mobileapp", "repo": "/r/mobileapp", "repoMissing": False}]
+        out = self.probe(FIND_PY + """
+out["chip"] = js(FIND + "(page.findCard('K-9'), 'cardExtraProjectText').text")
+out["dialog"] = js("page.openLaunch('K-9', false); page.launchDialog.extras.map(p => p.key)")
+""", data)
+        self.assertEqual(out["chip"], "+ mobileapp")
+        self.assertEqual(out["dialog"], ["mobileapp"], "okno startuje z projektami zapisanymi w karcie")
 
 
 class GrabTest(ProbeCase):

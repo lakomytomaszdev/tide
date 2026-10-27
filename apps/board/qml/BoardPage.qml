@@ -41,6 +41,7 @@ Rectangle {
     property int requestSerial: 0
     // Uruchomienie agenta z karty: okno „Co ma zrobić agent?” i przebieg UpdateCard (opis) →
     // RenderLaunch → /Tasks Start → UpdateCard (gałąź, worktree, tryb, narzędzie, sprawdzenie, chwila).
+    // Pierwszy UpdateCard niesie też dodatkowe projekty wybrane w oknie (PT-28).
     property bool launchOpen: false
     property string launchCardId: ""
     property bool launchFromMove: false
@@ -213,10 +214,14 @@ Rectangle {
         launchChoice = choice
         launchDialog.error = ""
         launchDialog.busy = true
-        if (descriptionChanged) {
-            launchDescription = description
+        if (descriptionChanged || choice.projectsChanged) {
+            // Opis i dodatkowe projekty (PT-28; repozytorium spoza tablicy zakłada projekt) jednym zapisem.
+            const request = {}
+            if (descriptionChanged) request.description = description
+            if (choice.projectsChanged) request.projects = choice.projects
+            launchDescription = descriptionChanged ? description : launchDialog.loadedDescription
             launchDialog.busyText = "Zapisuję zadanie w karcie…"
-            updateRequested(nextTag("launch-desc:" + launchCardId), launchCardId, JSON.stringify({ description: description }))
+            updateRequested(nextTag("launch-desc:" + launchCardId), launchCardId, JSON.stringify(request))
         } else {
             renderLaunch()
         }
