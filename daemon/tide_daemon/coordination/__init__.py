@@ -5,7 +5,7 @@
 - ids.py             — ID ticketów w opisach, gałęziach i poleceniach; mapa migracji ID,
 - plan.py            — plan pracy w repozytorium (docs/agent-plan-standard.md),
 - review.py          — liczby BLOCKER/MAJOR/NIT i werdykt z raportu recenzenta,
-- youtrack.py        — YouTrack tylko do odczytu (GET), z pamięcią podręczną,
+- youtrack.py        — YouTrack: odczyt (GET, z pamięcią podręczną) i klient synchronizacji stanu (PT-7),
 - repoplans.py       — plany ze wszystkich worktree i gałęzi repozytorium, deklaracja z CLAUDE.md/AGENTS.md,
 - numbering.py       — kontrola numerów ticketów (kolizje, prefiks z YouTracka, aliasy, numeracja od nowa),
 - reservations.py    — rezerwacja lokalnych numerów pod blokadą (tools/next_id.py),
