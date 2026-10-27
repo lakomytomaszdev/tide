@@ -12,7 +12,8 @@ agents-popup.png, i cały pasek boczny lewego monitora
 sidebar-<nazwa>.png. Na koniec popup Limitów AI (karty usług z prognozą z tide-daemon):
 limits-popup-<nazwa>.png. Link do raportu porannego (nagłówek paska i nagłówek popupu agentów)
 w trzech stanach — nowy, przeczytany, brak raportu: sidebar-report-<stan>.png
-i agents-popup-report-<stan>.png. Czas lokalny to Europe/Warsaw (powtarzalne „dziś 07:00”).
+i agents-popup-report-<stan>.png. Widżet Tablica rysuje osobny moduł (widgets/preview_board.py:
+board-tile-<scenariusz>.png, board-popup*.png, board-sidebar.png). Czas lokalny to Europe/Warsaw (powtarzalne „dziś 07:00”).
 Ten sam kod sprawdza teksty i wymiary w testach
 (widgets/tests/test_dock_tiles.py, widgets/tests/test_sidebar_tiles.py,
 widgets/tests/test_limits_forecast.py).
@@ -742,6 +743,8 @@ def main(argv: list[str]) -> int:
         png = os.path.join(out_dir, f"limits-popup-{name}.png")
         report = render_limits_popup(scenario, png)
         print(f"{os.path.abspath(png)}: popup Limitów AI, {report['height']} px")
+    from widgets import preview_board  # kafelek, popup i pasek boczny Tablicy (osobny moduł)
+    preview_board.main([out_dir])
     return 0
 
 

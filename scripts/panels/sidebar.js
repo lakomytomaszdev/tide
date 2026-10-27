@@ -1,6 +1,6 @@
 // Pasek boczny Tide: pionowy panel przy lewej, zewnętrznej krawędzi lewego monitora
 // (nie przy krawędzi między monitorami — tam mysz przechodzi na drugi ekran), chowany
-// automatycznie i pływający. Od góry: nagłówek ze skrótem (org.tide.sidebar), agenci,
+// automatycznie i pływający. Od góry: nagłówek ze skrótem (org.tide.sidebar), agenci, tablica,
 // system, worktrees i Limity AI — widżety w widoku szczegółowym (sidebarMode).
 //
 // Panel rozpoznajemy po znaczniku [Tide] role=sidebar. Ponowna instalacja używa tego samego
