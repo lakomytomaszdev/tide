@@ -20,7 +20,7 @@ Rectangle {
     property real nowTs: Date.now() / 1000
     property bool canLaunch: true        // okno „Co ma zrobić agent?” (LaunchDialog)
     property bool canDiff: false         // PT-5: diff gałęzi karty
-    property var markdownStyler: null    // backend.styleMarkdown: wygląd planu i specyfikacji w panelu karty
+    property var markdownRenderer: null  // backend.renderMarkdown: plan i specyfikacja w panelu karty jako bezpieczny HTML
     // Filtry i układ.
     property string tagFilter: ""
     property string projectFilter: ""
@@ -1154,7 +1154,7 @@ Rectangle {
         nowTs: page.nowTs
         tagTone: page.tagTone
         maxWidth: page.width - 24
-        styler: page.markdownStyler
+        renderer: page.markdownRenderer
         onDocsRequested: cardId => page.docsRequested(cardId)
         onOpenFileRequested: path => page.fileRequested(path, "open")
         onShowInFolderRequested: path => page.fileRequested(path, "folder")

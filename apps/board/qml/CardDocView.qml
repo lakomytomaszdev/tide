@@ -1,8 +1,8 @@
 // Zakładka „Plan” albo „Specyfikacja” panelu karty: nagłówek dokumentu (tytuł, status, kiedy zmieniony,
 // skąd i ścieżka, „Otwórz plik”, „Pokaż w katalogu”), przy planie zwarta tabela ticketów (ID, tytuł
 // z uwagami, stan słowem w kolorze stanu, gałąź), wyróżniona sekcja „Co przetestować ręcznie” i reszta
-// dokumentu jako Markdown. Markdown przychodzi z usługi już oczyszczony (bez obrazów i surowego HTML,
-// board/docs.py: safe_markdown); link otwiera się tylko dla http(s), i to przez backend.
+// dokumentu jako Markdown — surowy z usługi, renderowany bezpiecznie przez backend (MarkdownBlock,
+// renderMarkdown: bez obrazów i HTML ze źródła); link otwiera się tylko dla http(s), i to przez backend.
 // Dane z dysku (tytuły, tickety, ścieżki) pokazujemy zwykłym tekstem.
 import QtQuick
 import QtQuick.Layouts
@@ -19,7 +19,7 @@ Item {
     property var others: []           // inne dokumenty karty ({kind, path, title, status, updated})
     property string homeDir: ""
     property real nowTs: Date.now() / 1000
-    property var styler: null         // backend.styleMarkdown — nagłówki i linki w Markdownie
+    property var renderer: null       // backend.renderMarkdown — bezpieczny HTML z Markdownu
     readonly property alias flick: flick
     readonly property alias markdownItem: markdownBlock
     readonly property alias manualItem: manualBlock
@@ -315,7 +315,7 @@ Item {
                         objectName: "docManualText"
                         Layout.fillWidth: true
                         markdown: view.doc ? view.doc.manualTest || "" : ""
-                        styler: view.styler
+                        renderer: view.renderer
                         onLinkClicked: url => view.openLink(url)
                     }
                 }
@@ -328,7 +328,7 @@ Item {
                 Layout.fillWidth: true
                 Layout.topMargin: 4
                 markdown: view.doc ? view.doc.markdown || "" : ""
-                styler: view.styler
+                renderer: view.renderer
                 onLinkClicked: url => view.openLink(url)
             }
 

@@ -62,7 +62,8 @@ class PackageTest(unittest.TestCase):
                 source = fh.read()
             self.assertEqual(re.findall(r'"#[0-9a-fA-F]{3,8}"', source), [], name)
             self.assertNotIn("StyledText", source, name)
-            self.assertNotIn("RichText", source, name)
+            if name != "MarkdownBlock.qml":  # jedyny wyjątek: HTML z backend.renderMarkdown (bez obrazów i HTML ze źródła)
+                self.assertNotIn("RichText", source, name)
             for _indent, body in re.findall(r"\n(\s*)Text \{\n(.*?)\n\1\}", source, re.S):
                 self.assertIn("textFormat: Text.PlainText", body, f"{name}: {body[:80]}")
 
@@ -647,6 +648,70 @@ out["titleField"] = obj("cardTitle").property("visible")
         self.assertIn("Przeciągnij kartę z Backlogu", out["manual"])
         self.assertEqual(out["width3"], 420)
         self.assertTrue(out["titleField"])
+
+    def test_markdown_rendering_has_no_images_html_or_foreign_links(self):
+        # Regresje z review: każdy przypadek, w którym wyrażenia regularne rozjeżdżały się z md4c.
+        cases = {
+            "unmatched-backticks-html": "``<img src=\"http://evil.example/a.png\">`",
+            "unmatched-backticks-img": "``![a](http://evil.example/b.png)`",
+            "invalid-fence-info": "```foo`bar\n<img src=\"http://evil.example/c.png\">\n![x](http://evil.example/c2.png)",
+            "list-fence": "- ```\n  code\n  ```\n\n<img src=\"http://evil.example/d.png\">\n\n![x](http://evil.example/d2.png)",
+            "multiline-alt": "![alt\ntext](http://evil.example/e.png)",
+            "refdef": "![a]\n\n[a]: http://evil.example/f.png",
+            "html": "<img src=\"http://evil.example/g.png\"> <b>gruby</b> <i>x</i> <a href=\"http://evil.example\">a</a>",
+            "links": "[f](file:///etc/passwd) [j](javascript:alert(1)) [r](../specs/k-1.md) [h](https://ok.example/x)",
+            "pathological": "![" * 262_000,
+        }
+        out = self.probe(f"""
+import re, time
+from PyQt6.QtGui import QColor, QTextDocument
+cases = {cases!r}
+for name, md in cases.items():
+    start = time.monotonic()
+    html = module.render_markdown(md, QColor("#a6c8f0"))
+    elapsed = time.monotonic() - start
+    doc = QTextDocument()
+    doc.setHtml(html)
+    out[name] = {{"img": re.findall(r"<img[^>]*>", html), "href": re.findall(r'href="([^"]*)"', html),
+                  "bold": "font-weight:700" in html, "italicOnlyImages": html.count("(obraz:"),
+                  "text": doc.toPlainText()[:300], "elapsed": elapsed}}
+""")
+        for name, result in out.items():
+            self.assertEqual(result["img"], [], name)
+            self.assertFalse(result["bold"], f"{name}: HTML ze źródła nie formatuje")
+            self.assertLess(result["elapsed"], 15.0, name)
+        self.assertEqual(out["links"]["href"], ["https://ok.example/x"], "tylko linki http(s)")
+        self.assertEqual(out["html"]["href"], [])
+        self.assertIn('<img src="http://evil.example/g.png">', out["html"]["text"], "HTML jako zwykły tekst")
+        self.assertIn("(obraz: alt text)", out["multiline-alt"]["text"])
+        self.assertEqual(out["multiline-alt"]["italicOnlyImages"], 1, "opis z kilku linii to jeden obraz")
+        self.assertIn("(obraz: a)", out["refdef"]["text"])
+        for name in ("unmatched-backticks-img", "invalid-fence-info", "list-fence"):
+            self.assertIn("(obraz:", out[name]["text"], name)
+
+    def test_poll_waits_for_the_outstanding_reply(self):
+        out = self.probe("""
+held = []
+backend._got_docs = lambda card_id, text: held.append((card_id, text))   # odpowiedź „w drodze”
+click(card("K-5"))
+wait(100)
+first = backend.docsRequests
+for _ in range(3):
+    js("page.cardPanel.requestDocs()")
+out["whilePending"] = backend.docsRequests - first
+out["pending"] = js("page.cardPanel.docsPending")
+del backend._got_docs
+type(backend)._got_docs(backend, *held[0])
+wait(50)
+out["cleared"] = js("page.cardPanel.docsPending")
+js("page.cardPanel.requestDocs()")
+wait(50)
+out["afterReply"] = backend.docsRequests - first
+""")
+        self.assertEqual(out["whilePending"], 0, "bez nowych próśb, póki odpowiedź nie wróciła")
+        self.assertEqual(out["pending"], "K-5")
+        self.assertEqual(out["cleared"], "")
+        self.assertEqual(out["afterReply"], 1)
 
     def test_tabs_only_with_documents_and_refresh_on_changed(self):
         out = self.probe("""

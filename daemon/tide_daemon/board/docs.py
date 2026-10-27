@@ -23,19 +23,25 @@ Skąd specyfikacja (pierwsze pasujące):
 Bezpieczeństwo: czytamy wyłącznie zwykłe pliki `.md`/`.markdown`/`.txt`, których ścieżka po realpath
 leży w repozytorium projektu, jego worktree albo w `<tablica>/docs` — dowiązanie wychodzące poza te
 katalogi odpada (z ostrzeżeniem, gdy to pole `spec` albo plan koordynatora). Najwyżej DOC_MAX bajtów
-z pliku (dłuższy — ucięty, z dopiskiem), najwyżej FOLDER_MAX plików z katalogu. Treść do pokazania
-(`markdown`, `manualTest`) przechodzi przez safe_markdown: bez obrazów (także zdalnych) i bez
-surowego HTML — panel renderuje Markdown w Qt, który HTML wykonałby jako formatowanie i ładował obrazy.
+z pliku (dłuższy — ucięty, z dopiskiem), najwyżej FOLDER_MAX plików z katalogu.
 
-Pamięć: plik czytamy ponownie tylko po zmianie rozmiaru albo czasu zmiany, listę katalogu — po zmianie
-czasu katalogu, więc wywołanie przy każdym odświeżeniu panelu kosztuje kilka stat(). Usługa woła
-read() w jednym wątku roboczym (board_monitor.py), testy — bezpośrednio.
+Treść (`markdown`, `manualTest`) to Markdown źródłowy — bez frontmattera, tytułu i tabeli ticketów, z sekcją
+„Co przetestować ręcznie” osobno — NIEOCZYSZCZONY. Bezpieczne pokazanie (bez obrazów, bez HTML, tylko
+linki http(s)) robi okno Tide parserem samego Qt (apps/board/backend.py: render_markdown), bo tylko ten
+sam parser, który potem renderuje, zgadza się co do tego, co jest obrazem albo HTML-em — wyrażenia
+regularne tutaj rozjeżdżały się z md4c. Usługa działa na QCoreApplication, a QTextDocument potrzebuje
+QGuiApplication (czcionki), więc renderowanie nie może być tutaj. Wszystkie wzorce w tym module są
+zakotwiczone na początku linii i ograniczone — koszt liniowy także dla linii o długości 512 KB.
+
+Pamięć: plik czytamy ponownie tylko po zmianie rozmiaru albo czasu zmiany (razem z wyliczoną treścią
+do pokazania), listę katalogu — po zmianie czasu katalogu, więc wywołanie przy każdym odświeżeniu panelu
+kosztuje kilka stat(). Usługa woła read() w jednym wątku roboczym (board_monitor.py), testy — bezpośrednio.
 """
 import os
 import re
 import stat
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..agents import gitinfo
 from ..coordination import plan as plan_mod
@@ -53,12 +59,7 @@ DRAFT = ("szkic", "draft", "wip")
 TRUNCATED_NOTE = "*Plik ma ponad 512 KB — pokazujemy jego początek. Całość: „Otwórz plik”.*"
 _MANUAL_HEAD = re.compile(r"^(#{1,6})\s*co\s+przetestowa[ćc]\s+r[ęe]cznie", re.IGNORECASE)
 _HEADING = re.compile(r"^(#{1,6})\s+\S")
-_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
-_CODE_SPAN = re.compile(r"(`+[^`]*`+)")
-_IMAGE = re.compile(r"!\[([^\]]*)\](\([^)]*\)|\[[^\]]*\])?")
-_AUTOLINK = re.compile(r"<(https?://[^\s<>]+)>")
-_COMMENT = re.compile(r"<!--.*?-->")
-_TAG = re.compile(r"<(?=[A-Za-z/!?])")
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
 @dataclass
@@ -69,6 +70,7 @@ class Doc:
     mtime: float
     truncated: bool
     plan: object = None  # plan_mod.Plan dla planu Tide (plik z katalogu planów)
+    shown: dict = field(default_factory=dict)  # treść do pokazania (markdown, manualTest) — liczona raz na wersję pliku
 
 
 class CardDocs:
@@ -253,30 +255,6 @@ def worktrees(main: str) -> list[str]:
     return out
 
 
-def safe_markdown(text: str) -> str:
-    """Markdown do pokazania w Qt (TextEdit.MarkdownText): obrazy → „(obraz: opis)”, surowy HTML jako
-    zwykły tekst (`<` → `&lt;`), komentarze HTML usunięte, `<https://…>` → zwykły link. Bloki
-    i fragmenty kodu zostają co do znaku (tam `<` i tak jest tekstem)."""
-    out, fence = [], ""
-    for line in (text or "").split("\n"):
-        match = _FENCE.match(line)
-        if fence:
-            out.append(line)
-            if match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence) \
-                    and not line.strip().strip(fence[0]):
-                fence = ""
-            continue
-        if match:
-            fence = match.group(1)
-            out.append(line)
-            continue
-        parts = _CODE_SPAN.split(line)
-        for i in range(0, len(parts), 2):
-            parts[i] = _clean(parts[i])
-        out.append("".join(parts))
-    return "\n".join(out)
-
-
 def manual_section(text: str) -> tuple[str, str]:
     """(treść bez sekcji, sekcja „Co przetestować ręcznie…” bez nagłówka) — sekcja do nagłówka
     tego samego albo wyższego poziomu; bez niej — (tekst, "")."""
@@ -321,19 +299,22 @@ def strip_ticket_table(body: str) -> str:
     return "\n".join(out)
 
 
-def _display(body: str, truncated: bool, plan: bool) -> tuple[str, str]:
-    text = strip_ticket_table(body) if plan else body
-    text = _strip_title(text)
-    text, manual = manual_section(text)
-    text = text.strip("\n")
-    if truncated:
-        text += "\n\n---\n\n" + TRUNCATED_NOTE
-    return safe_markdown(text), safe_markdown(manual)
+def _display(doc: Doc, plan: bool) -> tuple[str, str]:
+    """(markdown, manualTest) do pokazania — raz na wersję pliku (Doc jest w pamięci po rozmiarze i czasie)."""
+    if plan not in doc.shown:
+        text = strip_ticket_table(doc.body) if plan else doc.body
+        text = _strip_title(text)
+        text, manual = manual_section(text)
+        text = text.strip("\n")
+        if doc.truncated:
+            text += "\n\n---\n\n" + TRUNCATED_NOTE
+        doc.shown[plan] = (text, manual)
+    return doc.shown[plan]
 
 
 def _plan_json(doc: Doc, link: str, where: str, repo: str, scope: list) -> dict:
     plan = doc.plan
-    markdown, manual = _display(doc.body, doc.truncated, plan=True)
+    markdown, manual = _display(doc, plan=True)
     return {"path": doc.path, "title": plan.title or _title(doc), "status": plan.status, "updated": plan.updated,
             "updatedTs": round(plan.updated_ts, 3), "card": plan.card, "coordinator": plan.coordinator,
             "link": link, "where": where, "repo": repo, "mtime": round(doc.mtime, 3),
@@ -344,17 +325,10 @@ def _plan_json(doc: Doc, link: str, where: str, repo: str, scope: list) -> dict:
 
 
 def _spec_json(doc: Doc, link: str, where: str) -> dict:
-    markdown, manual = _display(doc.body, doc.truncated, plan=False)
+    markdown, manual = _display(doc, plan=False)
     return {"path": doc.path, "title": _title(doc), "status": _status(doc), "ready": _ready(doc.meta),
             "updated": _updated(doc), "card": _card_of(doc.meta), "link": link, "where": where,
             "mtime": round(doc.mtime, 3), "markdown": markdown, "manualTest": manual, "truncated": doc.truncated}
-
-
-def _clean(text: str) -> str:
-    text = _COMMENT.sub("", text)
-    text = _IMAGE.sub(lambda m: f"*(obraz: {m.group(1).strip() or 'bez opisu'})*", text)
-    text = _AUTOLINK.sub(r"[\1](\1)", text)
-    return _TAG.sub("&lt;", text)
 
 
 def _fence_state(line: str, fence: str) -> str:

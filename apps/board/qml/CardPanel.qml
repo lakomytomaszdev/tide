@@ -40,10 +40,11 @@ Rectangle {
     // Plan i specyfikacja karty (CardDocs): odpowiedź usługi, wybrana zakładka i szerokość.
     property var docs: null
     property string docsText: ""
+    property string docsPending: ""          // ID karty, na której CardDocs czekamy ("" — nic w drodze)
     property string tab: "opis"              // ostatni wybór użytkownika (opis | plan | spec) — także dla następnej karty
     property bool expanded: false
     property real maxWidth: 1200             // szerokość dostępna w oknie (ustawia BoardPage)
-    property var styler: null                // backend.styleMarkdown (przez BoardPage) albo null
+    property var renderer: null              // backend.renderMarkdown (przez BoardPage) albo null
     readonly property bool editing: card !== null
     readonly property string shownTab: editing ? Docs.effectiveTab(docs, tab) : "opis"
     readonly property bool reading: shownTab !== "opis"
@@ -81,16 +82,21 @@ Rectangle {
         projectLabel = card ? card.projectName || card.project || "" : ""
         docs = null
         docsText = ""
+        docsPending = ""
         requestDocs()   // `tab` zostaje: ostatnio wybrana zakładka, póki działa okno Tide
         titleField.focusInput()
     }
 
+    // Bez kolejki: póki odpowiedź dla tej karty nie wróciła, kolejne odświeżenie (5 s, Changed) czeka.
     function requestDocs() {
-        if (editing && card) docsRequested(card.id)
+        if (!editing || !card || docsPending === card.id) return
+        docsPending = card.id
+        docsRequested(card.id)
     }
 
     // Odpowiedź CardDocs: tylko dla karty w panelu i tylko inna niż poprzednia (bez skoku przewinięcia).
     function applyDocs(cardId, text) {
+        if (cardId === docsPending) docsPending = ""
         if (!editing || !card || cardId !== card.id || text === docsText) return
         docsText = text
         const value = Logic.parse(text, null)
@@ -236,7 +242,7 @@ Rectangle {
             others: panel.docs ? (panel.docs.others || []).filter(o => o.kind === kind) : []
             homeDir: panel.homeDir
             nowTs: panel.nowTs
-            styler: panel.styler
+            renderer: panel.renderer
             onOpenFile: path => panel.openFileRequested(path)
             onShowInFolder: path => panel.showInFolderRequested(path)
             onOpenLink: url => panel.linkRequested(url)

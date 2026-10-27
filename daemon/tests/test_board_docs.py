@@ -20,7 +20,7 @@ from unittest import mock
 from .gitrepos import commit, git
 from .privatebus import app, wait_until
 from tide_daemon.board import docs as docs_mod
-from tide_daemon.board.docs import CardDocs, manual_section, safe_markdown, strip_ticket_table
+from tide_daemon.board.docs import CardDocs, manual_section, strip_ticket_table
 
 
 def plan_text(title, card="", status="active", updated="2026-10-27T10:00:00+01:00", rows=(), body=""):
@@ -242,36 +242,40 @@ class SafetyTest(Fixture):
             self.assertEqual(self.read()["plan"]["title"], "Drugi tytuł")
         self.assertIn(path, opened)
 
+    def test_display_is_computed_once_per_file_version(self):
+        path = write(os.path.join(self.plans, "2026-10-27-plan.md"), plan_text("Plan", "K-12"))
+        with mock.patch.object(docs_mod, "manual_section", wraps=docs_mod.manual_section) as spy:
+            self.read()
+            self.read()
+            self.assertEqual(spy.call_count, 1, "treść do pokazania z pamięci, póki plik się nie zmienił")
+            write(path, plan_text("Plan 2", "K-12"))
+            os.utime(path, (2_000_000_000, 2_000_000_000))
+            self.assertEqual(self.read()["plan"]["title"], "Plan 2")
+            self.assertEqual(spy.call_count, 2)
+
 
 class MarkdownTest(unittest.TestCase):
-    def test_images_html_and_links_are_neutralised(self):
-        text = ("Tekst ![wykres](https://example.com/a.png) i ![](x.png)\n"
-                "<img src=\"http://example.com/t.png\"> <b>gruby</b> <!-- ukryte -->\n"
-                "Link <https://example.com/x> i [dok](https://example.com/d) a < b\n"
-                "Kod `<b>x</b>` zostaje\n"
-                "```html\n<script>alert(1)</script>\n![obraz](http://e/x.png)\n```\n"
-                "Po kodzie <i>x</i>")
-        out = safe_markdown(text)
-        self.assertIn("*(obraz: wykres)*", out)
-        self.assertIn("*(obraz: bez opisu)*", out)
-        self.assertNotIn("![", out.split("```")[0])
-        self.assertIn("&lt;img src=", out)
-        self.assertIn("&lt;b>gruby&lt;/b>", out)
-        self.assertNotIn("ukryte", out)
-        self.assertIn("[https://example.com/x](https://example.com/x)", out)
-        self.assertIn("[dok](https://example.com/d) a < b", out)
-        self.assertIn("`<b>x</b>`", out, "fragment kodu bez zmian")
-        self.assertIn("<script>alert(1)</script>\n![obraz](http://e/x.png)", out, "blok kodu bez zmian")
-        self.assertTrue(out.endswith("Po kodzie &lt;i>x&lt;/i>"))
+    def test_markdown_is_source_without_sanitising(self):
+        # Oczyszczanie robi okno parserem Qt (apps/board/backend.py: render_markdown) — tu treść źródłowa.
+        with tempfile.TemporaryDirectory(prefix="tide-card-docs-raw-") as tmp:
+            write(os.path.join(tmp, "docs", "_inbox", "specs", "k-5.md"), "# T\n\na ![x](http://e/x.png) <b>c</b>\n")
+            spec = CardDocs(tmp).read({"id": "K-5"})["spec"]
+        self.assertEqual(spec["markdown"], "a ![x](http://e/x.png) <b>c</b>")
 
-    def test_rendered_by_qt_without_images_or_html(self):
-        from PyQt6.QtGui import QTextDocument
-        app()
-        doc = QTextDocument()
-        doc.setMarkdown(safe_markdown("a ![x](http://e/x.png) <img src='http://e/y.png'> <b>c</b>"))
-        self.assertNotIn("<img", doc.toHtml())
-        self.assertIn("<img src='http://e/y.png'>", doc.toPlainText())
-        self.assertIn("<b>c</b>", doc.toPlainText())
+    def test_pathological_long_lines_are_linear(self):
+        # Linia 512 KB z „![”, „<!--”, „[”, „](”, „`a”, „**” — wcześniej wyrażenia kwadratowe (minuty).
+        import time
+        for unit in ("![", "<!--", "[", "](", "`a", "**", "<http://", "| Ticket | Tytuł | Stan |"):
+            line = unit * ((docs_mod.DOC_MAX - 300) // len(unit))
+            with tempfile.TemporaryDirectory(prefix="tide-card-docs-long-") as tmp:
+                write(os.path.join(tmp, "docs", "_inbox", "plans", "2026-10-27-x.md"),
+                      plan_text("Długi", "K-1", rows=[("PT-1", line[:100_000], "todo", "", "")]) + line + "\n")
+                write(os.path.join(tmp, "docs", "_inbox", "specs", "k-1.md"), "## Co przetestować ręcznie\n\n" + line)
+                start = time.monotonic()
+                out = CardDocs(tmp).read({"id": "K-1"})
+                elapsed = time.monotonic() - start
+            self.assertTrue(out["plan"] and out["spec"], unit)
+            self.assertLess(elapsed, 5.0, f"{unit!r}: {elapsed:.2f} s")
 
     def test_manual_section_and_ticket_table(self):
         text = ("## Zakres\n\nA\n\n## Co przetestować ręcznie i jak\n\n1. Otwórz panel.\n\n### Szczegóły\n\nx\n\n"
@@ -291,7 +295,7 @@ class MarkdownTest(unittest.TestCase):
             write(os.path.join(board, "docs", "_inbox", "specs", "k-5.md"),
                   "# Spec\n\n## Wymagania\n\nA\n\n## Co przetestować ręcznie\n\n- Kliknij <b>x</b>.\n")
             spec = CardDocs(board).read({"id": "K-5"})["spec"]
-        self.assertEqual(spec["manualTest"], "- Kliknij &lt;b>x&lt;/b>.")
+        self.assertEqual(spec["manualTest"], "- Kliknij <b>x</b>.")
         self.assertNotIn("Co przetestować", spec["markdown"])
 
 
@@ -333,6 +337,29 @@ class MonitorCardDocsTest(unittest.TestCase):
         self.assertEqual((out["ok"], out["card"], out["plan"]["title"], out["plan"]["link"]),
                          (True, "K-1", "Plan domu", "coordinator"))
         self.assertIsNone(self.ask("K-2")["plan"])
+
+    def test_requests_for_the_same_card_share_one_read(self):
+        calls = []
+        real = self.monitor.docs.read
+
+        def slow(*args):
+            calls.append(args[0]["id"])
+            import time
+            time.sleep(0.3)
+            return real(*args)
+
+        self.monitor.docs.read = slow
+        replies = []
+        for _ in range(4):
+            self.monitor.card_docs("K-1", replies.append)   # odświeżanie co 5 s i Changed w czasie odczytu
+        self.monitor.card_docs("K-2", replies.append)
+        self.assertTrue(wait_until(lambda: len(replies) == 5, timeout=5))
+        self.assertEqual(sorted(calls), ["K-1", "K-2"], "jeden odczyt na kartę, reszta czeka na ten sam wynik")
+        self.assertEqual(len({r for r in replies if "Plan domu" in r}), 1)
+        self.assertEqual(sum("Plan domu" in r for r in replies), 4)
+        self.monitor.card_docs("K-1", replies.append)   # po odpowiedzi — nowy odczyt
+        self.assertTrue(wait_until(lambda: len(replies) == 6, timeout=5))
+        self.assertEqual(calls.count("K-1"), 2)
 
     def test_errors(self):
         replies = []

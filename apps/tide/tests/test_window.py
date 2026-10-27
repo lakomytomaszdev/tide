@@ -12,6 +12,7 @@
   → False, dawne Raise z org.tide.SessionsWindow i org.tide.WorktreesWindow, drugie uruchomienie
   (także przez dawny launcher) tylko prosi pierwsze okno o pokazanie się,
 - zrzuty offscreen każdego widoku z danymi z pliku bez ostrzeżeń QML,
+- silnik QML okna bez sieci (guard_network): obrazek z http nie łączy się z serwerem,
 - tide-daemon (Launchers): okno Tide na widoku, gdy jest zainstalowane, inaczej dawne okno,
 - instalacja, reinstalacja na dawnych oknach i odinstalowanie na tymczasowym HOME z atrapami.
 """
@@ -453,6 +454,72 @@ class WindowOverDbusTest(unittest.TestCase):
         self.assertTrue(wait_until(lambda: self.current() == "sessions", timeout=5), "dawny launcher Sesje")
         self.assertIsNone(self.window.poll(), "pierwsze okno działa dalej")
         self.finish()
+
+
+NETWORK_PROBE = r"""
+import json, socket, sys, threading
+sys.path.insert(0, sys.argv[1])
+from PyQt6.QtCore import QTimer, QUrl
+from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtQml import QQmlApplicationEngine
+import tide
+app = QGuiApplication([])
+server = socket.socket()
+server.bind(("127.0.0.1", 0))
+server.listen(8)
+server.settimeout(0.2)
+port = server.getsockname()[1]
+hits = []
+def accept():
+    while not done:
+        try:
+            conn, _ = server.accept()
+            hits.append(1)
+            conn.close()
+        except OSError:
+            pass
+done = False
+threading.Thread(target=accept, daemon=True).start()
+engine = QQmlApplicationEngine()
+factory = tide.guard_network(engine) if sys.argv[2] == "guard" else None
+engine.loadData(("import QtQuick\nWindow { visible: true; width: 200; height: 200; property int st: img.status\n"
+                 "  Image { id: img; source: 'http://127.0.0.1:%d/a.png' }\n"
+                 "  TextEdit { textFormat: TextEdit.RichText; text: '<img src=\"http://127.0.0.1:%d/b.png\">' } }"
+                 % (port, port)).encode(), QUrl.fromLocalFile("/tmp/probe.qml"))
+def finish():
+    global done
+    done = True
+    try:
+        print(json.dumps({"hits": len(hits), "status": engine.rootObjects()[0].property("st")}))
+    finally:
+        app.quit()
+QTimer.singleShot(1500, finish)
+app.exec()
+"""
+
+
+class NetworkGuardTest(unittest.TestCase):
+    """Silnik QML okna nie wpuszcza żadnych żądań sieciowych (druga warstwa po oczyszczaniu treści)."""
+
+    def run_probe(self, mode):
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", no_proxy="*", NO_PROXY="*")
+        env.pop("http_proxy", None)
+        env.pop("HTTP_PROXY", None)
+        result = subprocess.run(["/usr/bin/python3", "-c", NETWORK_PROBE, APP_DIR, mode], env=env,
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        return json.loads(result.stdout.strip().splitlines()[-1])
+
+    def test_remote_image_is_refused_without_connection(self):
+        self.assertGreater(self.run_probe("plain")["hits"], 0, "kontrola: bez strażnika Image łączy się z serwerem")
+        guarded = self.run_probe("guard")
+        self.assertEqual(guarded["hits"], 0, "ze strażnikiem — żadnego połączenia")
+        self.assertEqual(guarded["status"], 3, "Image.Error")
+
+    def test_window_installs_the_guard(self):
+        with open(os.path.join(APP_DIR, "tide.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("network_factory = guard_network(engine)", source)
 
 
 class GrabTest(unittest.TestCase):

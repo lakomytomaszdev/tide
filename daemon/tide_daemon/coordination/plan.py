@@ -293,5 +293,7 @@ def _plain(text: str) -> str:
     """Komórka bez znaczników kodu i pogrubień: `tom-140-guard` → tom-140-guard."""
     text = re.sub(r"`([^`]*)`", r"\1", text or "")
     text = re.sub(r"\*\*([^*]*)\*\*|__([^_]*)__", lambda m: m.group(1) or m.group(2) or "", text)
-    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    # Klasy znaków wykluczają własny początek ([ i (), więc próby z kolejnych pozycji się nie nakładają —
+    # koszt liniowy także dla linii z tysiącami „[” (plan do 512 KB czyta też podgląd karty).
+    text = re.sub(r"\[([^\[\]]*)\]\([^()]*\)", r"\1", text)
     return text.strip()

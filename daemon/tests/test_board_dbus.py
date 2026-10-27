@@ -225,7 +225,7 @@ class BoardDBusTest(unittest.TestCase):
         self.assertEqual((docs["ok"], docs["card"], docs["plan"]["title"], docs["plan"]["link"]),
                          (True, "K-1", "Historia diagnoz", "card"))
         self.assertEqual([t["id"] for t in docs["plan"]["tickets"]], ["DP-1"])
-        self.assertIn("Tekst &lt;b>planu&lt;/b>.", docs["plan"]["markdown"])
+        self.assertIn("Tekst <b>planu</b>.", docs["plan"]["markdown"], "surowy Markdown — oczyszcza okno")
         self.assertEqual((docs["spec"]["title"], docs["spec"]["ready"]), ("Historia po VIN", True))
         self.assertEqual(self.call("CardDocs", "K-2")["plan"], None)
         for card_id, code in (("K-99", "not-found"), ("plan", "bad-request")):

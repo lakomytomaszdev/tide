@@ -80,7 +80,7 @@ Item {
         available: view.available
         preview: view.backend ? view.backend.preview : false
         homeDir: view.backend ? view.backend.homeDir : ""
-        markdownStyler: view.backend ? function (edit, link) { view.backend.styleMarkdown(edit, link) } : null
+        markdownRenderer: view.backend ? function (markdown, link) { return view.backend ? view.backend.renderMarkdown(markdown, link) : "" } : null
         nowTs: view.nowTs
         onCreateRequested: (tag, request) => view.backend.createCard(tag, request)
         onUpdateRequested: (tag, id, request) => view.backend.updateCard(tag, id, request)

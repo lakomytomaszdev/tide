@@ -1087,11 +1087,14 @@ ma zakładki „Opis” | „Plan” | „Specyfikacja” — dwie ostatnie tylk
   odpowiedź D-Bus jest opóźniona (jak w `/Docker`).
 - **Treść do pokazania** (`markdown`, `manualTest`): bez frontmattera, bez pierwszego nagłówka `# …`
   (tytuł jest w nagłówku panelu), przy planie bez tabeli ticketów (jest w `tickets`), z sekcją
-  „Co przetestować ręcznie…” wyjętą do `manualTest` (do nagłówka tego samego albo wyższego poziomu),
-  oczyszczona (`safe_markdown`): obraz → „*(obraz: opis)*” (nic się nie ładuje, także z sieci), surowy
-  HTML jako tekst (`<` → `&lt;`), komentarze HTML usunięte, `<https://…>` → zwykły link; bloki
-  i fragmenty kodu bez zmian. Panel renderuje Markdown w Qt (`TextEdit.MarkdownText`), który HTML
-  wykonałby jako formatowanie i ładowałby obrazy — stąd oczyszczanie po stronie usługi.
+  „Co przetestować ręcznie…” wyjętą do `manualTest` (do nagłówka tego samego albo wyższego poziomu) —
+  poza tym **źródłowy, nieoczyszczony** Markdown. Bezpiecznie pokazuje go dopiero okno (niżej): ten
+  sam parser, który renderuje (md4c w Qt), decyduje, co jest obrazem albo HTML-em — wyrażenia
+  regularne po stronie usługi rozjeżdżały się z nim (niedomknięte odwrotne apostrofy, płoty w listach,
+  opis obrazu w kilku liniach). Usługa działa na `QCoreApplication`, a `QTextDocument` potrzebuje
+  `QGuiApplication`, więc renderowanie jest w oknie. Wzorce w `docs.py` (i `_plain` w `plan.py`) są
+  liniowe — linia 512 KB z tysiącami `![`, `[`, `<!--` to milisekundy; treść do pokazania liczona raz na
+  wersję pliku. Kolejne prośby o tę samą kartę w czasie odczytu czekają na ten sam wynik.
 
 Odpowiedź: `{ok: true, card, plan, spec, others, warnings}`; zły ID — `bad-request`, nieznana karta —
 `not-found` (kształt błędów jak w zapisach).
@@ -1113,8 +1116,17 @@ w `docs/` tablicy) i co 5 s, póki panel jest otwarty (plan w repozytorium proje
 migawki); treść podmienia się tylko przy innej odpowiedzi, więc przewinięcie zostaje. „Otwórz plik”
 (`QDesktopServices`) i „Pokaż w katalogu” (`org.freedesktop.FileManager1.ShowItems`, bez niego —
 katalog) przyjmują w backendzie wyłącznie ścieżki z odpowiedzi CardDocs; link z Markdownu otwiera się
-tylko jako http(s) (inne schematy i ścieżki — sama podpowiedź). Backend dokłada wyrenderowanemu
-Markdownowi odstęp nad nagłówkami i kolor linków z palety (`styleMarkdown`).
+tylko jako http(s) (inne schematy i ścieżki — sama podpowiedź). Panel nie prosi o CardDocs, póki
+poprzednia odpowiedź dla karty nie wróciła.
+
+Renderowanie (`apps/board/backend.py: render_markdown`, `renderMarkdown` dla QML, pamięć ostatnich 24
+dokumentów): `QTextDocument.setMarkdown(…, MarkdownDialectGitHub | MarkdownNoHTML)` — HTML ze źródła
+zostaje tekstem; każdy fragment z `QTextImageFormat` (także obraz z definicji odnośnika i opis z kilku
+linii) → kursywą „(obraz: opis)”; link inny niż http(s) → zwykły tekst; nagłówki z odstępem nad nimi,
+linki w sky; `toHtml()` bez stylu `<body>` (krój z TextEdit) trafia do `MarkdownBlock.qml` jako
+`RichText` — jedyne miejsce widoku z RichText. Druga warstwa: silnik QML okna Tide ma menedżera sieci,
+który odmawia każdego żądania poza `file:`, `qrc:`, `data:` (`apps/tide/tide.py: guard_network`), więc
+nawet przeoczony obraz niczego nie pobierze.
 
 ```bash
 qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.CardDocs K-12

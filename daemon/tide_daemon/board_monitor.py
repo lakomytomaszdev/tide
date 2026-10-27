@@ -19,7 +19,8 @@
   w trybie „tylko spec” mają już gotową specyfikację (mark_ready_specs: karta wraca do Backlogu),
 - CardDocs(id) to plan i specyfikacja karty do panelu (board/docs.py): wejście (karta z migawki,
   projekt, tablica koordynatora z /Coordination) zbieramy w wątku głównym, pliki czytamy w jednym
-  wątku roboczym, a odpowiedź D-Bus idzie później z wątku głównego (opóźniona odpowiedź jak w /Docker).
+  wątku roboczym, a odpowiedź D-Bus idzie później z wątku głównego (opóźniona odpowiedź jak w /Docker);
+  kolejne prośby o tę samą kartę w czasie odczytu czekają na ten sam wynik (bez kolejki odczytów).
 """
 import copy
 import json
@@ -42,7 +43,7 @@ MAX_WATCHED_FILES = 2_000  # powyżej — tylko katalogi i odpytywanie co POLL_M
 class BoardMonitor(QObject):
     changed = pyqtSignal()
     _rederive_requested = pyqtSignal()   # z dowolnego wątku (np. wynik gita w tle) — kolejka Qt do wątku głównego
-    _docs_ready = pyqtSignal(object, object)   # (reply, future) — wynik CardDocs z wątku roboczego
+    _docs_ready = pyqtSignal(object, object)   # (ID karty, future) — wynik CardDocs z wątku roboczego
 
     def __init__(self, store, repos_source=None, derive=None, debounce_ms: int = DEBOUNCE_MS,
                  poll_ms: int = POLL_MS, launchers=None, rederive_ms: int = REDERIVE_MS, coordinators=None,
@@ -53,6 +54,7 @@ class BoardMonitor(QObject):
         self.coordinators = coordinators or (lambda: [])
         self.docs = docs or CardDocs(store.root)
         self._docs_pool: ThreadPoolExecutor | None = None
+        self._docs_waiting: dict[str, list] = {}     # ID karty → odpowiedzi czekające na trwający odczyt
         self._docs_ready.connect(self._deliver_docs)
         self._current: dict | None = None                 # migawka z `derived` (to, co oddaje Snapshot())
         self.launchers = launchers                        # worktrees.Launchers — okno Tide (ShowWindow)
@@ -137,6 +139,9 @@ class BoardMonitor(QObject):
         except BoardError as exc:
             reply(json.dumps(_failure(exc.code, str(exc)), ensure_ascii=False))
             return
+        if ident in self._docs_waiting:
+            self._docs_waiting[ident].append(reply)  # odczyt tej karty już trwa — ten sam wynik
+            return
         if self._current is None:
             self.snapshot_json()
         snapshot = self._current or {}
@@ -164,7 +169,8 @@ class BoardMonitor(QObject):
             future = self._docs_pool.submit(self.docs.read, card, project, coordinator)
         except RuntimeError:  # pula zamknięta (koniec usługi)
             return
-        future.add_done_callback(lambda f: self._docs_ready.emit(reply, f))
+        self._docs_waiting[ident] = [reply]
+        future.add_done_callback(lambda f: self._docs_ready.emit(ident, f))
 
     def badge_json(self) -> str:
         """Plakietka widoku Tablica w pasku okna Tide: {"text", "tone"} (pusty tekst — ukryta)."""
@@ -269,7 +275,8 @@ class BoardMonitor(QObject):
         self.publish()
         return text
 
-    def _deliver_docs(self, reply, future) -> None:
+    def _deliver_docs(self, ident, future) -> None:
+        replies = self._docs_waiting.pop(ident, [])
         if future.cancelled():
             return
         try:
@@ -277,7 +284,9 @@ class BoardMonitor(QObject):
         except Exception as exc:  # błąd odczytu nie może położyć usługi
             print(f"tide-daemon: tablica: CardDocs: {exc!r}", flush=True)
             result = _failure("internal", "błąd usługi — szczegóły w dzienniku (journalctl --user -u tide-daemon)")
-        reply(json.dumps(result, ensure_ascii=False))
+        text = json.dumps(result, ensure_ascii=False)
+        for reply in replies:
+            reply(text)
 
     def _touched(self, _path: str) -> None:
         self._debounce.start()  # każda kolejna zmiana odsuwa commit — zapis z wielu plików to jeden commit

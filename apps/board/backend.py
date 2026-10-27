@@ -24,18 +24,23 @@ docsReplied(id, json). „Otwórz plik” i „Pokaż w katalogu” przyjmują w
 CardDocs (plik w edytorze przez QDesktopServices, katalog — org.freedesktop.FileManager1 ShowItems
 z zaznaczonym plikiem, bez niego katalog nadrzędny), a openLink — wyłącznie adresy http(s).
 W podglądzie z pliku odpowiedź CardDocs bierzemy z klucza „cardDocs” ({"K-12": {...}}) danych,
-a otwarcia trafiają do `callsJson` zamiast do systemu. styleMarkdown(dokument, kolor) poprawia
-wyrenderowany Markdown (Qt nie daje mu arkusza stylów): odstęp nad nagłówkami i linki w kolorze z palety
-zamiast systemowego niebieskiego.
+a otwarcia trafiają do `callsJson` zamiast do systemu.
+
+Markdown planu i specyfikacji (usługa oddaje go nieoczyszczonego) renderuje render_markdown parserem
+samego Qt — tym samym, który rozumie TextEdit — z MarkdownNoHTML (HTML zostaje tekstem), każdy obraz
+zamienia na „(obraz: opis)”, link inny niż http(s) — na zwykły tekst, a do tego odstęp nad nagłówkami
+i kolor linków z palety. QML pokazuje gotowy HTML (RichText) bez obrazów i bez obcych linków; okno
+dodatkowo nie wpuszcza żadnych żądań sieciowych (apps/tide/tide.py: guard_network).
 """
 import json
 import os
 import re
+from collections import OrderedDict
 
 from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import (QDBusConnection, QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply,
                           QDBusServiceWatcher)
-from PyQt6.QtGui import QColor, QDesktopServices, QTextCursor, QTextDocument
+from PyQt6.QtGui import QColor, QDesktopServices, QTextCharFormat, QTextCursor, QTextDocument, QTextFormat
 
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Board", "org.tide.Daemon.Board"
 PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku — zmiany są wyłączone."}
@@ -51,6 +56,70 @@ FM_SERVICE, FM_PATH, FM_IFACE = "org.freedesktop.FileManager1", "/org/freedeskto
     "org.freedesktop.FileManager1"
 LINK_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 HEADING_MARGINS = {1: (18, 6), 2: (16, 4), 3: (12, 3)}  # poziom nagłówka → (odstęp nad, pod) w px; niższe jak 3
+MARKDOWN = QTextDocument.MarkdownFeature.MarkdownDialectGitHub | QTextDocument.MarkdownFeature.MarkdownNoHTML
+RENDER_CACHE = 24   # tyle ostatnich dokumentów trzymamy wyrenderowanych (odświeżanie co 5 s nie renderuje od nowa)
+_BODY_STYLE = re.compile(r'<body style="[^"]*">')
+_IMG_TAG = re.compile(r"<img[^>]*>")
+
+
+def render_markdown(markdown: str, link: QColor | None = None) -> str:
+    """HTML do TextEdit (RichText) z Markdownu, bez obrazów, bez HTML ze źródła i bez linków innych niż http(s).
+
+    Parser to md4c z Qt — ten sam, którego używa TextEdit.MarkdownText — więc nie ma rozjazdu „co jest
+    obrazem” między oczyszczaniem a renderowaniem. Obraz (także zdefiniowany odnośnikiem) → kursywą
+    „(obraz: opis)”; HTML ze źródła z MarkdownNoHTML jest zwykłym tekstem; link file:, javascript:,
+    względny → zwykły tekst. Krój i wielkość czcionki zostają z TextEdit (bez stylu <body>)."""
+    doc = QTextDocument()
+    doc.setMarkdown(markdown or "", MARKDOWN)
+    images, anchors = [], []
+    block = doc.begin()
+    while block.isValid():
+        fmt = block.blockFormat()
+        level = fmt.headingLevel()
+        if level:
+            top, bottom = HEADING_MARGINS.get(level, HEADING_MARGINS[3])
+            fmt.setTopMargin(0 if block.blockNumber() == 0 else top)
+            fmt.setBottomMargin(bottom)
+            QTextCursor(block).setBlockFormat(fmt)
+        it = block.begin()
+        while not it.atEnd():
+            fragment = it.fragment()
+            char = fragment.charFormat()
+            if char.isImageFormat():
+                alt = str(char.property(QTextFormat.Property.ImageAltText) or "").strip()
+                name = char.toImageFormat().name()
+                last = images[-1] if images else None
+                if last and last[0] + last[1] == fragment.position() and last[3] == name:
+                    # md4c dzieli opis z kilku linii na kilka fragmentów tego samego obrazu — jeden obraz
+                    images[-1] = (last[0], last[1] + fragment.length(), " ".join(p for p in (last[2], alt) if p), name)
+                else:
+                    images.append((fragment.position(), fragment.length(), alt, name))
+            elif char.isAnchor():
+                anchors.append((fragment.position(), fragment.length(), char))
+            it += 1
+        block = block.next()
+    for position, length, char in anchors:
+        span = QTextCursor(doc)
+        span.setPosition(position)
+        span.setPosition(position + length, QTextCursor.MoveMode.KeepAnchor)
+        if LINK_RE.match(char.anchorHref() or ""):
+            if link is not None:
+                char.setForeground(link)
+        else:
+            char.setAnchor(False)
+            char.setAnchorHref("")
+            char.clearForeground()
+            char.setFontUnderline(False)
+        span.setCharFormat(char)
+    for position, length, alt, _name in reversed(images):   # od końca — wcześniejsze pozycje się nie przesuwają
+        span = QTextCursor(doc)
+        span.setPosition(position)
+        span.setPosition(position + length, QTextCursor.MoveMode.KeepAnchor)
+        plain = QTextCharFormat()
+        plain.setFontItalic(True)
+        span.insertText(f"(obraz: {alt or 'bez opisu'})", plain)
+    html = _BODY_STYLE.sub("<body>", doc.toHtml(), count=1)
+    return _IMG_TAG.sub("", html)   # zabezpieczenie: po zamianie nie powinno już być żadnego <img>
 
 
 def badge(snapshot) -> tuple[str, str]:
@@ -94,6 +163,7 @@ class Backend(QObject):
         self._docs_data: dict = {}      # podgląd: ID karty → odpowiedź CardDocs
         self._doc_paths: set = set()    # ścieżki z odpowiedzi CardDocs — tylko je wolno otworzyć
         self._docs_requests = 0
+        self._rendered: OrderedDict = OrderedDict()   # (markdown, kolor linku) → HTML
         if data is not None:
             self._now = float(data.get("now") or 0)
             self._home = str(data.get("home") or "")
@@ -263,42 +333,19 @@ class Backend(QObject):
             return True
         return QDesktopServices.openUrl(QUrl(url))
 
-    @pyqtSlot(QObject, QColor)
-    def styleMarkdown(self, text_edit, link: QColor) -> None:
-        """Odstęp nad nagłówkami i kolor linków w dokumencie TextEdit (MarkdownText) — QML woła to po każdej
-        zmianie treści; zmienia tylko to, co jeszcze nie ma docelowego wyglądu, więc drugi raz nic nie robi.
-        Dokument to QTextDocument, którego właścicielem jest TextEdit (PyQt6 bez modułu QtQuick nie sięga
-        do QQuickTextDocument.textDocument())."""
-        doc = text_edit.findChild(QTextDocument) if text_edit is not None else None
-        if doc is None:
-            return
-        cursor = QTextCursor(doc)
-        cursor.beginEditBlock()
-        block = doc.begin()
-        while block.isValid():
-            fmt = block.blockFormat()
-            level = fmt.headingLevel()
-            if level:
-                top, bottom = HEADING_MARGINS.get(level, HEADING_MARGINS[3])
-                if block.blockNumber() == 0:
-                    top = 0
-                if (fmt.topMargin(), fmt.bottomMargin()) != (top, bottom):
-                    fmt.setTopMargin(top)
-                    fmt.setBottomMargin(bottom)
-                    QTextCursor(block).setBlockFormat(fmt)
-            it = block.begin()
-            while not it.atEnd():
-                fragment = it.fragment()
-                char = fragment.charFormat()
-                if char.isAnchor() and char.foreground().color() != link:
-                    char.setForeground(link)
-                    span = QTextCursor(doc)
-                    span.setPosition(fragment.position())
-                    span.setPosition(fragment.position() + fragment.length(), QTextCursor.MoveMode.KeepAnchor)
-                    span.setCharFormat(char)
-                it += 1
-            block = block.next()
-        cursor.endEditBlock()
+    @pyqtSlot(str, QColor, result=str)
+    def renderMarkdown(self, markdown: str, link: QColor) -> str:
+        """render_markdown dla QML, z pamięcią ostatnich dokumentów (ta sama treść — ten sam HTML)."""
+        key = (markdown, link.name())
+        html = self._rendered.get(key)
+        if html is None:
+            html = render_markdown(markdown, link)
+            self._rendered[key] = html
+            while len(self._rendered) > RENDER_CACHE:
+                self._rendered.popitem(last=False)
+        else:
+            self._rendered.move_to_end(key)
+        return html
 
     # --- wnętrze ------------------------------------------------------------------------------
 

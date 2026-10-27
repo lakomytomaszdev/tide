@@ -1,8 +1,9 @@
 // Dokument Markdown w panelu karty (plan, specyfikacja): TextEdit tylko do odczytu, z zaznaczaniem
-// i kopiowaniem, jak raport podagenta w oknie Sesje (ResultPanel). Treść przychodzi oczyszczona przez
-// usługę (bez obrazów i surowego HTML), a kliknięty link idzie dalej tylko jako http(s) — resztę
-// (file:, javascript:, ścieżki względne) pomijamy; adres pokazuje podpowiedź. `styler` (backend
-// styleMarkdown) dokłada po każdej zmianie odstęp nad nagłówkami i kolor linków z palety.
+// i kopiowaniem, jak raport podagenta w oknie Sesje (ResultPanel). Markdown z usługi jest surowy —
+// HTML do pokazania robi `renderer` (backend.renderMarkdown: parser Qt bez HTML ze źródła, obrazy jako
+// „(obraz: opis)”, tylko linki http(s), nagłówki z odstępem, linki w sky). To jedyne miejsce widoku
+// z RichText, i tylko dla tego HTML-a; bez renderera treść idzie zwykłym tekstem. Kliknięty link
+// przechodzi dalej tylko jako http(s) (drugie sprawdzenie); adres pokazuje podpowiedź.
 import QtQuick
 import QtQuick.Controls as QQC2
 import "tide" as Tide
@@ -12,14 +13,14 @@ TextEdit {
     id: block
 
     property string markdown: ""
-    property var styler: null           // funkcja(ten TextEdit, kolor linku) albo null
+    property var renderer: null         // funkcja(markdown, kolor linku) → HTML albo null
     signal linkClicked(string url)
 
     readOnly: true
     selectByMouse: true
     wrapMode: TextEdit.Wrap
-    textFormat: TextEdit.MarkdownText
-    text: markdown
+    textFormat: renderer ? TextEdit.RichText : TextEdit.PlainText
+    text: renderer ? (markdown ? renderer(markdown, Tide.Tokens.sky) : "") : markdown
     color: Tide.Tokens.textSecondary
     selectionColor: Tide.Tokens.accent
     selectedTextColor: Tide.Tokens.backgroundDesktop
@@ -27,14 +28,6 @@ TextEdit {
     font.pixelSize: 13
     activeFocusOnTab: false
     Accessible.role: Accessible.StaticText
-
-    onTextChanged: if (styler) Qt.callLater(block.restyle)
-    onStylerChanged: restyle()
-    Component.onCompleted: restyle()
-
-    function restyle() {
-        if (styler) styler(block, Tide.Tokens.sky)
-    }
 
     onLinkActivated: link => {
         const url = Docs.safeLink(link)
@@ -46,6 +39,6 @@ TextEdit {
                                        : Qt.IBeamCursor
     }
     QQC2.ToolTip.visible: block.hoveredLink !== ""
-    QQC2.ToolTip.text: Docs.safeLink(block.hoveredLink) ? block.hoveredLink : block.hoveredLink + " — tylko podgląd, nie otwieram"
+    QQC2.ToolTip.text: block.hoveredLink
     QQC2.ToolTip.delay: 400
 }
