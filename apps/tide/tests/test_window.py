@@ -283,7 +283,8 @@ class BackendsTest(unittest.TestCase):
         sessions = load(os.path.join(self.pkg, "views", "sessions", "backend.py"), "sessions_backend")
         self.assertEqual(sessions.waiting_count(json.dumps([{"state": "waiting", "reason": "question"},
                                                             {"state": "waiting", "reason": "reply"},
-                                                            {"state": "working"}])), 1, "„reply” to dziś „skończył”")
+                                                            {"state": "working"}])), 2,
+                         "„reply” to pytanie na końcu tury (PT-29) — też czeka")
         self.assertEqual(sessions.waiting_count("nie json"), 0)
         worktrees = load(os.path.join(self.pkg, "views", "worktrees", "backend.py"), "worktrees_backend")
         self.assertEqual(worktrees.active_count(json.dumps([{"group": "active"}, {"group": "active", "isMain": True},

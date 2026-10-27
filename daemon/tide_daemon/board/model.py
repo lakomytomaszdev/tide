@@ -56,6 +56,9 @@ LAUNCH_KEYS = ("mode", "tool", "worktree", "launched")
 # Dodatkowe projekty karty (PT-28): slugi po przecinku, główny zostaje w `project`. W nowych plikach
 # tylko wtedy, gdy są ustawione. Najwyżej PROJECTS_MAX (agent dostaje ich repozytoria przez --add-dir).
 PROJECTS_KEY = "projects"
+# Kolumna wyświetlana karty (z pracy agentów albo ręczna) w chwili ostatniego MoveCard (PT-29): „do poprawy”
+# (karta zostaje w swojej kolumnie po skończonej pracy) tylko po przeniesieniu z review albo done.
+MOVED_FROM_KEY = "moved-from"
 PROJECTS_MAX = 5
 PROJECT_KEYS = ("name", "repo", "tags", "ai-docs", "tool", "mode")
 TAG_KEYS = ("name", "color")
@@ -124,6 +127,7 @@ class Card:
     created: str = ""
     updated: str = ""
     moved: str = ""           # ostatnia zmiana kolumny (MoveCard, założenie karty); bez klucza — created
+    moved_from: str = ""      # kolumna wyświetlana przed ostatnim MoveCard (PT-29); pusta — nieznana
     youtrack: str = ""
     spec: str = ""
     session: str = ""
@@ -230,6 +234,8 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.created = doc.get("created").strip()
     card.updated = doc.get("updated").strip()
     card.moved = doc.get("moved").strip()
+    moved_from = doc.get(MOVED_FROM_KEY).strip().lower()
+    card.moved_from = moved_from if moved_from in COLUMN_IDS else ""
     for key in RESERVED_CARD_KEYS:
         setattr(card, key, doc.get(key).strip())
     card.check = _choice(doc.get("check"), CHECKS, DEFAULT_CHECK, f"{name}: nieznane sprawdzenie", path, errors)

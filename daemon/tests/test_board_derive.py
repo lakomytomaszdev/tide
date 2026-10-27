@@ -202,16 +202,20 @@ class StateTest(unittest.TestCase):
         self.assertEqual((d["column"], d["note"]), ("waiting", "czeka na zgodę: Edit · pdf.py"))
 
     def test_waiting_definition_is_the_agents_widget_definition(self):
-        """Tylko stan `waiting` (agents/state.py, widżet, Meta+A) — koniec tury z pytaniem to `done`."""
+        """Tylko stan `waiting` (agents/state.py, widżet, Meta+A); koniec tury z pytaniem bez odpowiedzi to
+        `waiting/reply` (PT-29)."""
         for state in (agent_state.WORKING, agent_state.WAITING, agent_state.DONE, agent_state.IDLE, agent_state.ENDED):
             s = session("claude:s", state=state, reason="question" if state == agent_state.WAITING else "",
                         canActivate=True)
             d = derive(card(session="claude:s"), sessions=[s])
             self.assertEqual(d["column"] == "waiting", state == agent_state.WAITING, state)
             self.assertEqual(agent_state.waits_for_user(s), attention.longest_waiting([s]) is not None, state)
-        legacy = session("claude:s", state="waiting", reason="reply")  # usługa sprzed stanu done
-        self.assertFalse(agent_state.waits_for_user(legacy))
-        self.assertEqual(derive(card(session="claude:s"), sessions=[legacy])["column"], "progress")
+        # PT-29: tura skończona pytaniem w tekście, bez odpowiedzi — to też czekanie (z pytaniem w notatce).
+        reply = session("claude:s", state="waiting", reason="reply", waitingText="Pytanie 10: skąd czat?")
+        self.assertTrue(agent_state.waits_for_user(reply))
+        d = derive(card(session="claude:s"), sessions=[reply])
+        self.assertEqual((d["column"], d["note"], d["nextStep"]),
+                         ("waiting", "czeka na odpowiedź: „Pytanie 10: skąd czat?”", "odpowiedz agentowi"))
 
     def test_ticket_waiting_with_question(self):
         b = board("claude:koord", [ticket("LEGAL-14", "czeka", question="Który wariant C007?"), ticket("LEGAL-6")],
@@ -315,17 +319,21 @@ class StateTest(unittest.TestCase):
     def test_card_moved_by_hand_after_finished_work_stays_until_agent_works_again(self):
         b = board("claude:koord", [ticket("A-1", "gotowe", branch="feat/a", activity=NOW - 3000)], state="done",
                   activity=NOW - 3000)
-        d = derive(card(session="claude:koord", movedTs=NOW - 100), boards=[b])
+        d = derive(card(session="claude:koord", movedTs=NOW - 100, movedFrom="review"), boards=[b])
         self.assertEqual(d["column"], "")  # migawka: boardColumn = ręczna kolumna
         self.assertIn("wróci do W toku", d["note"])
+        # PT-29: liczy się tylko przeniesienie z Do sprawdzenia albo Gotowe, nie z innej kolumny.
+        other = derive(card(session="claude:koord", movedTs=NOW - 100, movedFrom="backlog"), boards=[b])
+        self.assertEqual(other["column"], "review")
         edited = derive(card(session="claude:koord", updatedTs=NOW - 100, movedTs=NOW - 5000), boards=[b])
         self.assertEqual(edited["column"], "review", "edycja notatki to nie przeniesienie")
-        old = card(session="claude:koord", createdTs=NOW - 100)  # karta sprzed klucza moved
+        old = card(session="claude:koord", createdTs=NOW - 100)  # karta założona po pracy (sprzed klucza moved)
         old.pop("movedTs")
-        self.assertEqual(derive(old, boards=[b])["column"], "")
+        self.assertEqual(derive(old, boards=[b])["column"], "review", "założenie karty to nie przeniesienie (PT-29)")
         b["tickets"][0].update(state="w-toku", lastActivityTs=NOW - 10)  # agent znów nad nią pracuje
         b["counts"]["done"] = 0
-        self.assertEqual(derive(card(session="claude:koord", movedTs=NOW - 100), boards=[b])["column"], "progress")
+        self.assertEqual(derive(card(session="claude:koord", movedTs=NOW - 100, movedFrom="review"), boards=[b])["column"],
+                         "progress")
 
 
 class BranchStateTest(unittest.TestCase):
@@ -470,7 +478,9 @@ class CheckFieldTest(unittest.TestCase):
         first = self.cards(derive=deriver)["K-1"]
         self.assertEqual((first["column"], first["boardColumn"]), ("todo", "review"))
         clock[0] = NOW + 300
-        self.assertEqual(self.store.move_card("K-1", "todo", 0)["changed"], True)
+        # BoardMonitor podaje kolumnę wyświetlaną (boardColumn) — zapisane jest todo, a widać Do sprawdzenia.
+        self.assertEqual(self.store.move_card("K-1", "todo", 0, "review")["changed"], True)
+        self.assertEqual(self.cards()["K-1"]["movedFrom"], "review")
         after = self.cards(derive=deriver)["K-1"]
         self.assertEqual(after["boardColumn"], "todo")
         self.assertIn("wróci do W toku", after["derived"]["note"])

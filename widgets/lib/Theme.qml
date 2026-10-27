@@ -12,11 +12,11 @@ QtObject {
         return family !== "" && Qt.fontFamilies().indexOf(family) >= 0
     }
 
-    // Stan sesji do wyświetlenia. Starsza usługa (sprzed stanu „done”) zgłaszała koniec tury jako
-    // waiting z powodem „reply” — to dziś „skończył”, więc widżet nie wyróżnia go brzoskwinią.
+    // Stan sesji do wyświetlenia. „waiting” z powodem „reply” to od PT-29 tura skończona pytaniem bez
+    // odpowiedzi — agent naprawdę czeka (dawniej tak usługa zgłaszała każdy koniec tury).
     function sessionState(session) {
         if (!session) return ""
-        return session.state === "waiting" && session.reason === "reply" ? "done" : session.state
+        return session.state
     }
 
     // Stany sesji agentów: working, waiting, done, idle, ended (docs/tide-daemon.md).

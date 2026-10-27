@@ -108,7 +108,16 @@ class BoardMonitor(QObject):
         return self._mutate(lambda: self.store.update_card(card_id, _object(request)))
 
     def move_card(self, card_id: str, column: str, order: int) -> str:
-        return self._mutate(lambda: self.store.move_card(card_id, column, order))
+        return self._mutate(lambda: self.store.move_card(card_id, column, order, self._shown_column(card_id)))
+
+    def _shown_column(self, card_id: str) -> str:
+        """Kolumna, w której karta jest teraz wyświetlana (boardColumn z ostatniej migawki) — do `moved-from`."""
+        try:
+            wanted = f"{CARD_PREFIX}{card_num(card_id)}"
+            cards = json.loads(self._json or "{}").get("cards") or []
+        except (BoardError, ValueError, AttributeError):
+            return ""
+        return next((str(c.get("boardColumn") or "") for c in cards if isinstance(c, dict) and c.get("id") == wanted), "")
 
     def upsert_project(self, request: str) -> str:
         return self._mutate(lambda: self.store.upsert_project(_object(request)))

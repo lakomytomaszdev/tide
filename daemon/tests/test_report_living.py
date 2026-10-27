@@ -216,15 +216,16 @@ class RealCaseTest(unittest.TestCase):
         self.assertEqual(r["waiting"], [])
         self.assertEqual(r["done"][0]["about"], "Wdrożyłem na środowisko testowe.")
 
-    def test_question_at_end_of_turn_is_left_question_not_waiting(self):
+    def test_question_at_end_of_turn_waits_for_reply(self):
+        # PT-29 (odwraca A z decyzji 36): pytanie na końcu tury bez odpowiedzi to „czeka”, z treścią pytania.
         s = self.report(self.records[:3])
-        self.assertIn(s.state, ("done", "idle"))
+        self.assertEqual((s.state, s.reason, s.waiting_text), ("waiting", "reply", "Pushować?"))
         fact = standup._session_fact(s)
-        self.assertEqual(fact["question"], "Pushować?")
+        self.assertEqual(fact["question"], "", "sesja czeka — nie „zostawił pytanie”")
         r = standup.rules(unit_fact(fact))
-        self.assertEqual(r["waiting"], [], "pytanie w tekście skończonej tury nigdy nie jest „czeka” (A)")
-        self.assertEqual(r["doing"][0]["text"], "Zmień public_key_hash w konfiguracji — agent zostawił pytanie: „Pushować?”")
-        self.assertIn("leftQuestion", summarize._compact(unit_fact(fact), summarize.LEVELS[0], "")["work"][0]["sessions"][0])
+        self.assertEqual([i["text"] for i in r["waiting"]],
+                         ["Zmień public_key_hash w konfiguracji: agent pyta: „Pushować?”"])
+        self.assertEqual(r["waiting"][0]["kind"], "blocked")
 
     def test_live_state_wins_over_log(self):
         # Obszar Agents wie lepiej (np. plik statusu Claude Code): sesja już nie czeka.

@@ -474,8 +474,10 @@ class Context:
         stamps = [_ts(t.get("lastActivityTs")) for t in tickets] if link.scope is not None else []
         finished_at = max(stamps or [_ts(board.get("lastActivityTs"))])
         moved = _ts(card.get("movedTs")) or _ts(card.get("createdTs"))
-        if moved > finished_at > 0:
-            # Użytkownik ruszył kartę po skończonej pracy (np. „do poprawy”) — zostaje w swojej kolumnie.
+        if moved > finished_at > 0 and card.get("movedFrom") in ("review", "done"):
+            # Użytkownik przeniósł kartę z Do sprawdzenia albo Gotowe po skończonej pracy („do poprawy”) — zostaje
+            # w swojej kolumnie. Założenie karty, ustawienie `session` i przeniesienie z innej kolumny się nie
+            # liczą (PT-29: karta założona do skończonej sesji nie może od razu „wrócić ręcznie”).
             return self._fill(out, "", "przeniesiona ręcznie po skończonej pracy — wróci do W toku, "
                                        "gdy agent znów nad nią usiądzie")
         repo = _real(card.get("repo")) or self._board_repo(board)
@@ -575,8 +577,10 @@ class Context:
         if agent.get("reason") == "approval":
             action = (agent.get("lastAction") or "").strip()
             return f"czeka na zgodę: {action}" if action else "czeka na zgodę na narzędzie"
-        if agent.get("reason") == "question":
-            return "agent zadał pytanie i czeka na odpowiedź"
+        if agent.get("reason") in ("question", "reply"):  # reply: pytanie na końcu tury (PT-29)
+            text = " ".join(str(agent.get("waitingText") or "").split())
+            return f"czeka na odpowiedź: „{_clip(text, QUESTION_MAX)}”" if text else \
+                "agent zadał pytanie i czeka na odpowiedź"
         return "agent czeka na ciebie"
 
     def _progress_note(self, state: str, since: float, unfinished: list, agent: dict, tickets: list) -> str:

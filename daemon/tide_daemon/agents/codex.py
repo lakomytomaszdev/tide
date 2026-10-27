@@ -85,10 +85,14 @@ class CodexLog(SessionLog):
                 self.set_phase(TURN_END, ts)
                 if event == "turn_aborted":
                     self.last_action = "Przerwano"
+                    self.said("", ts)
+                elif isinstance(payload.get("last_agent_message"), str) and payload["last_agent_message"].strip():
+                    self.said(payload["last_agent_message"].strip(), ts)
         elif kind == "response_item":
             item = payload.get("type")
             if item in CALLS:
                 name = str(payload.get("name") or item)
+                self.said("", ts)  # narzędzie po tekście — wcześniejsze pytanie nie kończy tury
                 self.set_phase(TOOL_PENDING, ts)
                 call_id = str(payload.get("call_id") or payload.get("id"))
                 described = describe_call(name, payload)
@@ -99,6 +103,11 @@ class CodexLog(SessionLog):
                 if name in ASKS_USER_ASYNC:
                     self.open_questions[call_id] = ts
                     self.open_question_texts[call_id] = question_text(payload) or described
+            elif item == "message" and payload.get("role") == "assistant":
+                text = "\n".join(str(p.get("text") or "") for p in payload.get("content") or []
+                                 if isinstance(p, dict) and p.get("type") in ("output_text", "text")).strip()
+                if text:
+                    self.said(text, ts)
             elif item == "message" and payload.get("role") == "user":
                 kinds = _content_kinds(payload)
                 if self.open_questions and (_is_question_reply(payload) or kinds & TYPED_KINDS):

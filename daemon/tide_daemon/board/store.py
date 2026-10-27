@@ -35,7 +35,8 @@ from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
 from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUMNS, DEFAULT_CHECK, DEFAULT_COLUMN,
                     DEFAULT_MODE, DEFAULT_TOOL, DESCRIPTION_MAX, FIELD_MAX, FILE_MAX, LAUNCH_KEYS, MANUAL_COLUMNS,
-                    MODES, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, PROJECTS_KEY, PROJECTS_MAX, RESERVED_CARD_KEYS,
+                    MODES, MOVED_FROM_KEY, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, PROJECTS_KEY, PROJECTS_MAX,
+                    RESERVED_CARD_KEYS,
                     SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
                     TOOLS, BoardError, Card, Project, Tag, card_num, default_ai_docs, fallback_color, merge_tags,
                     order_value, parse_card, parse_project, parse_tag, slugify, split_tags)
@@ -358,13 +359,17 @@ class BoardStore:
         num = card_num(card_id)
         return self._execute(lambda board: self._plan_update(board, num, values))
 
-    def move_card(self, card_id: str, column: str, index: int = -1) -> dict:
-        """Przenosi kartę na pozycję `index` (od 0) kolumny; -1 albo poza zakresem — na koniec."""
+    def move_card(self, card_id: str, column: str, index: int = -1, from_column: str = "") -> dict:
+        """Przenosi kartę na pozycję `index` (od 0) kolumny; -1 albo poza zakresem — na koniec.
+        from_column: kolumna, w której karta była wyświetlana (z pracy agentów, BoardMonitor) — trafia do
+        `moved-from` (PT-29: „do poprawy” tylko po przeniesieniu z Do sprawdzenia albo Gotowe)."""
         column = _column(column)
         num = card_num(card_id)
         if isinstance(index, bool) or not isinstance(index, (int, float)) or index != int(index):
             raise BoardError("kolejność musi być liczbą całkowitą (pozycja w kolumnie od 0)")
-        return self._execute(lambda board: self._plan_move(board, num, column, int(index)))
+        shown = _text(from_column, "kolumna").strip().lower()
+        shown = shown if shown in [c["id"] for c in COLUMNS] else ""
+        return self._execute(lambda board: self._plan_move(board, num, column, int(index), shown))
 
     def upsert_project(self, data: dict) -> dict:
         values = _project_values(_fields(data, PROJECT_FIELDS), self.root)
@@ -490,7 +495,7 @@ class BoardStore:
         change.result["changed"] = True
         return change
 
-    def _plan_move(self, board: Board, num: int, column: str, index: int) -> Change:
+    def _plan_move(self, board: Board, num: int, column: str, index: int, shown: str = "") -> Change:
         """Nowa kolejność to środek między sąsiadami; całą kolumnę numerujemy co ORDER_STEP tylko
         wtedy, gdy między nimi nie ma miejsca — zwykle zmienia się jeden plik.
 
@@ -505,6 +510,7 @@ class BoardStore:
             index = len(others)
         moved_column = card.column != column
         current = sum(1 for c in others if (c.order, c.num) < (card.order, card.num))
+        card.doc.set(MOVED_FROM_KEY, shown or card.column)  # bez wiedzy o pracy agentów — zapisana kolumna
         if not moved_column and current == index:
             now = self._now()
             card.doc.set("updated", now)
@@ -942,7 +948,8 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         "order": card.order, "note": card.note, "created": card.created, "createdTs": parse_ts(card.created),
         "updated": card.updated, "updatedTs": parse_ts(card.updated),
         # Ostatnia zmiana kolumny; stare karty bez klucza — czas założenia.
-        "moved": card.moved, "movedTs": parse_ts(card.moved or card.created), "youtrack": card.youtrack,
+        "moved": card.moved, "movedTs": parse_ts(card.moved or card.created), "movedFrom": card.moved_from,
+        "youtrack": card.youtrack,
         "spec": card.spec, "session": card.session, "branch": card.branch, "check": card.check,
         "mode": card.mode, "tool": card.tool, "worktree": card.worktree, "launched": card.launched,
         "launchedTs": parse_ts(card.launched), "branchSlug": branch_slug(card),
