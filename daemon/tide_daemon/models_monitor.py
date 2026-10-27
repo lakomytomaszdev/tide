@@ -110,8 +110,10 @@ class ModelsMonitor(QObject):
     def _compose(self) -> str:
         """JSON stanu z polem `queue` po nazwie punktu. Kolejka ma tory po serwerach (`queue.lane_of(url)`),
         więc punkty z tym samym adresem pokazują ten sam stan toru (wpisy mają `endpoint` — punkt, z którego
-        przyszło wywołanie). Każdy punkt z konfiguracji jest w polu (bezczynny — running null, waiting []);
-        tor bez punktu w konfiguracji (wywołanie sprzed zmiany ustawień) — pod nazwami punktów z jego wpisów."""
+        przyszło wywołanie). Każdy punkt z konfiguracji jest w polu (bezczynny — running null, waiting []).
+        Tor bez punktu w konfiguracji (wywołanie sprzed zmiany ustawień, np. na starym adresie punktu) nie
+        znika: pod nazwą punktu z jego wpisów — jako cały wpis, gdy tej nazwy jeszcze nie ma, a obok
+        bieżącego stanu w liście `other` ({lane, running, waiting}), gdy punkt ma już nowy adres."""
         snapshot = self.queue.snapshot()
         endpoints = self._state.get("endpoints") or {}
         out, used = {}, set()
@@ -122,8 +124,14 @@ class ModelsMonitor(QObject):
         for lane, state in snapshot.items():
             if lane in used:
                 continue
-            for entry in ([state["running"]] if state.get("running") else []) + list(state.get("waiting") or ()):
-                out.setdefault(entry.get("endpoint") or lane, state)
+            entries = ([state["running"]] if state.get("running") else []) + list(state.get("waiting") or ())
+            for name in dict.fromkeys(entry.get("endpoint") or lane for entry in entries):
+                if name not in out:
+                    out[name] = state
+                else:
+                    current = dict(out[name])
+                    current["other"] = list(current.get("other") or ()) + [dict(state, lane=lane)]
+                    out[name] = current
         return _dump(dict(self._state, queue=out))
 
     def _publish(self) -> None:

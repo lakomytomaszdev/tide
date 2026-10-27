@@ -409,6 +409,16 @@ def local_note(exc) -> str:
     return f"Model lokalny niedostępny — opis bez modelu ({text})"
 
 
+class SettingsChanged(Unavailable):
+    """Wywołanie poszło według ustawień zmienionych w czasie czekania w kolejce (inny punkt, adres, model albo
+    kontekst niż założony przy tworzeniu `Model`) — odpowiedzi nie bierzemy, opis z reguł z informacją."""
+
+
+def _identity(endpoint: str, url: str, model: str, ctx) -> str:
+    """Tożsamość modelu lokalnego do kluczy pamięci: punkt, adres, model i kontekst."""
+    return f"local|{endpoint}|{url}|{model}|{ctx or ''}"
+
+
 class Model:
     """Model dla jednego przebiegu (raport albo partia kart) — jedyne miejsce, które wybiera między
     `claude -p` a modelem lokalnym. Niezmienny po utworzeniu, więc bezpieczny między wątkami.
@@ -421,7 +431,7 @@ class Model:
     Claude sama nazwa, jak przed PT-15), host i remote (czy fakty wychodzą z tego komputera), ctx."""
 
     def __init__(self, mode: str, *, model: str = DEFAULT_MODEL, role: str = "summary", env=None, config=None,
-                 started=None, cancel=None):
+                 started=None, cancel=None, pin: bool = False):
         self.engine = "local" if mode == "local" else "claude"
         self.env = env
         self.started = started
@@ -430,8 +440,12 @@ class Model:
         self.role = role
         self.ctx = None
         self.config = None
-        # models.chat dostaje tylko ustawienia podane z zewnątrz (testy); bez nich czyta models.json sam,
-        # w chwili, gdy wywołanie rusza z kolejki — zmiana serwera w czasie czekania działa od razu.
+        # pin=True (raport): jeden przebieg = jedne ustawienia — models.chat dostaje konfigurację z chwili
+        # utworzenia, więc stopka (host, remote), pamięć i przycięcie do kontekstu zgadzają się z tym, dokąd
+        # naprawdę poszły fakty. pin=False (opisy kart): models.chat czyta models.json, gdy wywołanie rusza
+        # z kolejki; jeśli odpowiedział inny punkt, adres, model albo kontekst niż ten, który tu założyliśmy,
+        # ask() zgłasza SettingsChanged (opis z reguł, następna partia już z nowymi ustawieniami).
+        self.pin = pin
         self._given_config = config
         if self.engine == "claude":
             self.name = model if MODEL_RE.match(model or "") else DEFAULT_MODEL
@@ -453,7 +467,7 @@ class Model:
         except models_mod.ModelError:
             hostname = ""
         self.remote = not (hostname in LOOPBACK_HOSTS or hostname.startswith("127."))
-        self.identity = f"local|{endpoint.name}|{endpoint.public_url()}|{chosen.model}|{chosen.ctx or ''}"
+        self.identity = _identity(endpoint.name, endpoint.public_url(), chosen.model, chosen.ctx)
 
     def input_chars(self, system_prompt: str, output_tokens: int, cap: int) -> int:
         """Ile znaków faktów zmieści się w jednym wywołaniu: dla Claude `cap`, dla modelu lokalnego
@@ -489,12 +503,14 @@ class Model:
         try:
             answer = models_mod.chat(json.dumps(payload, ensure_ascii=False), role=self.role, system=system_prompt,
                                      schema=schema, timeout=LOCAL_TIMEOUT if timeout is None else timeout,
-                                     config=self._given_config, cancel=self.cancel, priority=priority, wait=wait,
-                                     deadline=deadline)
+                                     config=self.config if self.pin else self._given_config, cancel=self.cancel,
+                                     priority=priority, wait=wait, deadline=deadline)
         except models_mod.ModelError as exc:
             raise Unavailable(str(exc)) from None
         except Exception as exc:  # przeoczony błąd klienta nie może położyć raportu ani wątku opisów
             raise Unavailable(f"Model lokalny: nieoczekiwany błąd ({type(exc).__name__})") from None
+        if _identity(answer.endpoint, answer.url, answer.model, answer.ctx) != self.identity:
+            raise SettingsChanged("Model lokalny: ustawienia modeli zmieniły się w trakcie wywołania")
         return answer.text
 
 
@@ -547,7 +563,7 @@ def summarize(report, *, mode: str = "rules", model: str = DEFAULT_MODEL, cache_
               "projects": {}, "cache": None}
     model_out: dict[str, dict] = {}
     if mode in MODEL_MODES and all_facts:
-        chosen = Model(mode, model=model, role=role, env=env, config=models_config, cancel=cancel)
+        chosen = Model(mode, model=model, role=role, env=env, config=models_config, cancel=cancel, pin=True)
         local = chosen.engine == "local"
         answers: dict[str, dict] = {}
         error = None

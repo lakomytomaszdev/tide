@@ -14,7 +14,8 @@ nigdy w wątku D-Bus. Tryb z konfiguracji raportu ($XDG_CONFIG_HOME/tide/report.
   i tyle faktów, ile mieści kontekst roli; nigdy Claude. Wywołanie idzie przez kolejkę modeli
   (models/queue.py) z wysokim priorytetem — przed raportem; LOCAL_TIMEOUT liczy się od startu wywołania,
   a czekanie ma osobny limit LOCAL_WAIT. Gdy model lokalny zawiedzie (też po limicie czekania: „kolejka:
-  czekał N s — serwer zajęty: raport poranny”), karty tego koordynatora mają reguły i `describeNote`
+  czekał N s — serwer zajęty: raport poranny”, albo gdy odpowiedział inny model niż założony, bo ustawienia
+  zmieniły się w czasie czekania — wtedy bez przerwy RETRY), karty tego koordynatora mają reguły i `describeNote`
   („Model lokalny niedostępny — opis bez modelu (…)”);
 - "rules" — same reguły.
 
@@ -452,7 +453,8 @@ class Describer:
         except (summarize.Failed, standup.Invalid) as exc:
             note = summarize.local_note(exc) if model.engine == "local" else f"opisy kart z reguł ({exc})"
             with self._lock:
-                self._failed[cid] = self.clock()
+                if not isinstance(exc, summarize.SettingsChanged):  # nowe ustawienia — bez 15 min przerwy
+                    self._failed[cid] = self.clock()
                 if model.engine == "local":
                     self._notes[cid] = note
             if note != self._last_error:

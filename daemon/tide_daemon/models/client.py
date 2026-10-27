@@ -34,6 +34,8 @@ class Answer:
     endpoint: str
     model: str
     metrics: dict = field(default_factory=dict)  # promptTokens, outputTokens, wallS, queueS, loadS, promptS, outputS
+    url: str = ""            # adres serwera, który naprawdę odpowiedział (bez danych logowania)
+    ctx: int | None = None   # kontekst, z którym poszło wywołanie (None — kontekst serwera)
 
     def json(self):
         """Odpowiedź według schematu jako obiekt Pythona; zły JSON → ModelError."""
@@ -165,7 +167,7 @@ def chat(messages, *, role: str | None = None, endpoint: str | None = None, mode
         metrics = {k: v for k, v in metrics.items() if v is not None}
         metrics["wallS"] = round(time.monotonic() - started, 3)
         metrics["queueS"] = round(started - queued, 3)
-        return Answer(text, target.name, model_name, metrics)
+        return Answer(text, target.name, model_name, metrics, target.public_url(), context)
 
     target, model_name, _context = current["target"]
     return lane.run(call, endpoint=target.name, lane=queue_mod.lane_of(target.url) or target.name,

@@ -181,6 +181,29 @@ class QueueCoreTest(unittest.TestCase):
                     thread.join(2)
                 self.assertEqual(sorted(done), ["A", "B"], f"próba {attempt}: czekający utknęli przy wolnym miejscu")
 
+    def test_moved_call_keeps_its_original_waiting_since(self):
+        """Wywołanie przeniesione na inny tor (ustawienia zmienione w czasie czekania) pokazuje w `waiting`
+        pierwotną chwilę dołączenia, nie chwilę próby startu."""
+        ticks = iter(range(1_800_000_000, 1_900_000_000, 100))   # każdy odczyt zegara ściennego +100 s
+        queue = queue_mod.Queue(wall=lambda: float(next(ticks)))
+        blocker = Blocker(queue, endpoint="b", lane="lane-b")
+        moved = threading.Event()
+
+        def resolve():
+            moved.set()      # kolej na torze A, ale cel jest już na torze B
+            return "lane-b", "b", "qwen3:8b", "b"
+
+        thread = threading.Thread(target=lambda: queue.run(lambda: None, endpoint="a", lane="lane-a", role="describe",
+                                                           model="qwen3:8b", resolve=resolve), daemon=True)
+        thread.start()
+        self.assertTrue(moved.wait(5))
+        self.assertTrue(wait_for(lambda: (queue.snapshot().get("lane-b") or {}).get("waiting")))
+        [entry] = queue.snapshot()["lane-b"]["waiting"]
+        self.assertEqual(entry["since"], queue_mod._iso(1_800_000_200.0), "chwila dołączenia, nie próby startu (+300)")
+        self.assertEqual(entry["endpoint"], "b")
+        blocker.release()
+        thread.join(5)
+
     def test_higher_priority_beats_model_grouping(self):
         blocker = Blocker(self.queue, role="summary", model="model-a")
         order = []
@@ -501,6 +524,68 @@ class ReportAndCardsTest(StandupWorld):
         self.assertRegex(note, r"^Model lokalny niedostępny — opis bez modelu \(kolejka: czekał \d+(\.\d)? s — "
                                r"serwer zajęty: raport poranny, 127\.0\.0\.1:\d+\)$")
         self.assertEqual(server.requests, [])
+
+    def settings(self, folder, url, **extra):
+        from .test_models_core import write_models
+        return write_models(folder, {"endpoints": {"local": {"url": url}, **extra.pop("more", {})}, **extra})
+
+    def test_report_keeps_the_settings_it_started_with(self):
+        """Raport: jeden przebieg = jedne ustawienia. Zmiana `default` w trakcie nie przenosi reszty projektów
+        na inny serwer, a host, remote i model w wyniku (stopka) mówią, dokąd naprawdę poszły fakty."""
+        import os
+        import shutil
+        import tempfile
+        first = self.server(delay=0.5)
+        other = start_server(self, {("POST", "/api/chat"): (200, self.respond)})
+        folder = tempfile.mkdtemp(prefix="tide-queue-report-")
+        self.addCleanup(shutil.rmtree, folder)
+        path = self.settings(folder, first.url, more={"mac": {"url": other.url}})
+        with mock.patch.dict(os.environ, {"TIDE_MODELS_CONFIG": path}):
+            out = {}
+            report = threading.Thread(target=lambda: out.setdefault("report", summarize.summarize(
+                self.report, mode="local", home=self.p["home"])))
+            report.start()
+            self.assertTrue(wait_for(lambda: first.requests), "raport pyta o pierwszy projekt")
+            self.settings(folder, first.url, more={"mac": {"url": other.url}}, default="mac")
+            report.join(10)
+        result = out["report"]
+        self.assertEqual((result["source"], result["engine"]), ("model", "local"))
+        self.assertEqual(len(first.requests), 2, "wszystkie projekty na serwerze z początku przebiegu")
+        self.assertEqual(other.requests, [])
+        self.assertEqual((result["host"], result["remote"]), (f"127.0.0.1:{first.server_address[1]}", False))
+
+    def test_card_settings_changed_while_waiting_gives_rules_with_note(self):
+        """Opisy kart nie przypinają ustawień: wywołanie idzie tam, gdzie wskazuje models.json w chwili startu.
+        Gdy to nie ten model, który partia założyła (tożsamość w pamięci, kontekst), opis nie trafia do pamięci
+        pod złą tożsamością — karta ma reguły i informację, a następna próba bierze już nowe ustawienia."""
+        import os
+        import shutil
+        import tempfile
+        server = self.server(delay=0.0)
+        other = start_server(self, {("POST", "/api/chat"): (200, self.respond)})
+        folder = tempfile.mkdtemp(prefix="tide-queue-cards-")
+        self.addCleanup(shutil.rmtree, folder)
+        path = self.settings(folder, server.url)
+        with mock.patch.dict(os.environ, {"TIDE_MODELS_CONFIG": path}):
+            d, boards, job = self.describer(None, timeout=5.0)
+            blocker = Blocker(self.queue, lane=self.lane, role="summary", model="qwen3:8b")
+            out = {}
+            worker = threading.Thread(target=lambda: out.setdefault("ok", d.run(job)))
+            worker.start()
+            try:
+                self.assertTrue(wait_for(lambda: (self.queue.snapshot().get(self.lane) or {}).get("waiting")))
+                self.settings(folder, other.url)       # ten sam punkt `local`, inny serwer
+            finally:
+                blocker.release()
+            worker.join(10)
+            self.assertFalse(out["ok"])
+            self.assertEqual(len(other.requests), 1, "wywołanie poszło według aktualnych ustawień")
+            self.assertEqual(d._entries, {}, "nic w pamięci pod tożsamością z początku partii")
+            d.decorate(boards)
+        note = boards[0]["tickets"][0]["describeNote"]
+        self.assertEqual(note, "Model lokalny niedostępny — opis bez modelu (ustawienia modeli zmieniły się "
+                               "w trakcie wywołania)")
+        self.assertEqual(boards[0]["tickets"][0]["describedBy"], "rules")
 
     def test_describer_stop_removes_its_waiting_call(self):
         server = self.server(delay=0.0)

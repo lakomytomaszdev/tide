@@ -87,14 +87,17 @@ def _iso(wall: float) -> str:
 
 
 class _Item:
-    __slots__ = ("seq", "lane", "endpoint", "role", "model", "host", "priority", "queued", "wall")
+    __slots__ = ("seq", "lane", "endpoint", "role", "model", "host", "priority", "queued", "wall", "started")
 
     def __init__(self, seq, lane, endpoint, role, model, host, priority, queued, wall):
         self.seq, self.lane, self.endpoint, self.role, self.model = seq, lane, endpoint, role, model
-        self.host, self.priority, self.queued, self.wall = host, priority, queued, wall
+        self.host, self.priority, self.queued = host, priority, queued
+        self.wall = wall          # dołączenie do kolejki (zegar ścienny) — zostaje także po przeniesieniu toru
+        self.started = wall       # start wywołania — ustawiany w _start
 
-    def public(self) -> dict:
-        return {"endpoint": self.endpoint, "role": self.role, "model": self.model, "since": _iso(self.wall)}
+    def public(self, running: bool = False) -> dict:
+        return {"endpoint": self.endpoint, "role": self.role, "model": self.model,
+                "since": _iso(self.started if running else self.wall)}
 
 
 class Queue:
@@ -198,7 +201,7 @@ class Queue:
 
     def _start(self, item: _Item) -> None:
         self._remove(self._waiting, item)
-        item.wall = self._wall()  # od teraz „since” to początek wywołania
+        item.started = self._wall()  # „since” trwającego to początek wywołania; czekającego — dołączenie
         self._running.setdefault(item.lane, []).append(item)
         self._choose(item.lane)
 
@@ -298,7 +301,7 @@ class Queue:
             for lane in sorted(set(self._waiting) | set(self._running)):
                 running = self._running.get(lane) or []
                 waiting = sorted(self._waiting.get(lane) or [], key=lambda i: (i.priority, i.seq))
-                out[lane] = {"running": running[0].public() if running else None,
+                out[lane] = {"running": running[0].public(running=True) if running else None,
                              "waiting": [i.public() for i in waiting]}
             return out
 

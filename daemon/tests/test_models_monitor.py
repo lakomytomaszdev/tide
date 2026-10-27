@@ -159,6 +159,39 @@ class ModelsMonitorTest(unittest.TestCase):
             gate.set()
             worker.join(5)
 
+    def test_call_on_the_old_address_stays_visible_after_url_change(self):
+        """Adres punktu zmieniony w trakcie wywołania: trwające wywołanie na starym serwerze nie znika ze
+        Status() — jest pod nazwą punktu, z którego przyszło, w `other` (z adresem toru)."""
+        import json
+
+        def read():
+            return {"checked": True, "config": {"error": ""}, "roles": {},
+                    "endpoints": {"local": {"url": "http://127.0.0.1:11435", "online": True, "error": ""}}}
+
+        queue = models_queue.Queue()
+        monitor, changes = self.monitor(read, queue=queue, queue_gap_ms=0)
+        monitor.poll()
+        self.assertTrue(wait_until(lambda: changes))
+        gate = threading.Event()
+        old = models_queue.lane_of("http://127.0.0.1:11434")
+        worker = threading.Thread(target=lambda: queue.run(lambda: gate.wait(5), endpoint="local", lane=old,
+                                                           role="summary", model="qwen3:8b"))
+        worker.start()
+        try:
+            def moved_running():
+                local = json.loads(monitor.status_json())["queue"]["local"]
+                return local if (local.get("other") or [{}])[0].get("running") else None
+
+            local = wait_until(moved_running, timeout=3)
+            self.assertTrue(local, "trwające wywołanie na starym adresie widoczne")
+            self.assertEqual((local["running"], local["waiting"]), (None, []), "nowy adres bezczynny")
+            [moved] = local["other"]
+            self.assertEqual(moved["lane"], "http://127.0.0.1:11434")
+            self.assertEqual((moved["running"]["endpoint"], moved["running"]["role"]), ("local", "summary"))
+        finally:
+            gate.set()
+            worker.join(5)
+
     def test_stop_detaches_from_the_queue(self):
         queue = models_queue.Queue()
         monitor, _changes = self.monitor(queue=queue)
