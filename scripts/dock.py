@@ -23,8 +23,8 @@ INSTALLED = STATE / "tide" / "dock-installed.json"
 DOCK_LEFT = ["org.tide.system", "org.tide.docker"]
 # Kafelki z prawej strony docka (za aplikacjami), w tej kolejności.
 # Tablica pracy przed Agentami (plan 2026-10-27-board-and-docker: „po prawej sprawy AI — Tablica,
-# Agenci z „+”, Worktrees, Limity AI”).
-DOCK_RIGHT = ["org.tide.board", "org.tide.agents", "org.tide.worktrees", "org.tide.limits"]
+# Agenci z „+”, Worktrees, Limity AI”), a za Limitami AI modele lokalne (plan 2026-10-27-local-models, PT-18).
+DOCK_RIGHT = ["org.tide.board", "org.tide.agents", "org.tide.worktrees", "org.tide.limits", "org.tide.models"]
 DOCK_WIDGETS = DOCK_LEFT + DOCK_RIGHT
 
 
