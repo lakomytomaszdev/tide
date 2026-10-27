@@ -52,12 +52,13 @@ class Plan:
     updated_ts: float = 0.0
     rows: list = field(default_factory=list)
     errors: list = field(default_factory=list)
+    goal: str = ""             # cel planu: akapit pod nagłówkiem „Cel…” albo pierwszy akapit tekstu
 
     def to_json(self) -> dict:
         return {"path": self.path, "title": self.title, "tracker": self.tracker, "trackerUrl": self.tracker_url,
                 "trackerProject": self.tracker_project, "prefix": self.prefix, "coordinator": self.coordinator,
                 "session": self.session, "status": self.status, "updated": self.updated,
-                "updatedTs": round(self.updated_ts, 3), "errors": list(self.errors)}
+                "updatedTs": round(self.updated_ts, 3), "errors": list(self.errors), "goal": self.goal}
 
 
 def parse(text: str, path: str = "", mtime: float = 0.0) -> Plan | None:
@@ -101,6 +102,7 @@ def parse(text: str, path: str = "", mtime: float = 0.0) -> Plan | None:
     if plan.tracker == "youtrack" and not (plan.tracker_url and plan.tracker_project):
         plan.errors.append("tracker youtrack wymaga tracker-url i tracker-project")
     plan.rows = _table(body, plan.errors)
+    plan.goal = goal_of(body)
     return plan
 
 
@@ -212,6 +214,37 @@ def _table(body: str, errors: list) -> list[PlanRow]:
                                 branch=_plain(get("gałąź")), agent=_plain(get("agent")), note=_plain(get("uwagi"))))
         break
     return rows
+
+
+GOAL_MAX = 600
+_GOAL_HEAD = re.compile(r"(?i)^#{1,6}\s*(cel|zakres|po co|goal|kontekst)\b")
+
+
+def goal_of(body: str) -> str:
+    """Cel planu: pierwszy akapit pod nagłówkiem „Cel…” („Zakres”, „Po co”, „Kontekst”), a bez takiego
+    nagłówka — pierwszy akapit tekstu przed tabelą albo po niej. Bez tabel, list kodu i nagłówków."""
+    paragraphs, current, heading = [], [], ""
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            if current:
+                paragraphs.append((heading, " ".join(current)))
+                current = []
+            heading = stripped
+            continue
+        if not stripped or stripped.startswith(("|", "```", "---")):
+            if current:
+                paragraphs.append((heading, " ".join(current)))
+                current = []
+            continue
+        current.append(stripped)
+    if current:
+        paragraphs.append((heading, " ".join(current)))
+    chosen = next((text for head, text in paragraphs if _GOAL_HEAD.match(head)), "")
+    if not chosen and paragraphs:
+        chosen = paragraphs[0][1]
+    text = " ".join(_plain(chosen).split())
+    return text if len(text) <= GOAL_MAX else text[: GOAL_MAX - 1].rstrip() + "…"
 
 
 def _plain(text: str) -> str:

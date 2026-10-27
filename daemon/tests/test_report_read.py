@@ -109,8 +109,8 @@ class MonitorReadTest(unittest.TestCase):
     def deliver(self, day, active=2, waiting=1, scheduled=True):
         """Kończy składanie raportu doby `day` tak, jak wątek roboczy (bez gita i dzienników)."""
         path = write_report(self.root, day)
-        report = SimpleNamespace(active=[SimpleNamespace(commits=1, sessions=[]) for _ in range(active)],
-                                 waiting=[object()] * waiting)
+        projects = [SimpleNamespace(commits=1, sessions=[], is_repo=True) for _ in range(active)]
+        report = SimpleNamespace(active=projects, repos=projects, waiting=[object()] * waiting)
         future = Future()
         future.set_result((path, report))
         with contextlib.redirect_stdout(io.StringIO()):  # wpis do dziennika usługi

@@ -1,7 +1,7 @@
-"""YouTrack — tylko odczyt: tytuły i stany ticketów projektu z planu (tracker: youtrack).
+"""YouTrack — tylko odczyt: tytuły, początki opisów i stany ticketów projektu z planu (tracker: youtrack).
 
 Jedno zapytanie na projekt: `GET {url}/api/issues?query=project: {klucz}&fields=idReadable,summary,
-customFields(name,value(name))` z tokenem stałym w nagłówku `Authorization: Bearer`. Nigdy nie
+description,customFields(name,value(name))` z tokenem stałym w nagłówku `Authorization: Bearer`. Nigdy nie
 wysyłamy niczego innego niż GET.
 
 Token (decyzja użytkownika: ten sam co serwer MCP YouTracka w LogViewerze) czytamy z pliku przy
@@ -27,7 +27,8 @@ DEFAULT_URL = "http://10.20.1.159:8111"
 DEFAULT_TOKEN_FILE = "~/.config/logviewer/youtrack-mcp-token"
 TTL = 300.0
 TIMEOUT = 4.0
-FIELDS = "idReadable,summary,customFields(name,value(name))"
+FIELDS = "idReadable,summary,description,customFields(name,value(name))"
+DESCRIPTION_MAX = 1200     # tyle znaków opisu trzymamy (do raportu porannego idzie jeszcze mniej)
 STATE_FIELDS = ("State", "Stan", "Status")
 MAX_BYTES = 8 * 1024 * 1024
 
@@ -93,7 +94,7 @@ def same_server(a: str, b: str) -> bool:
 
 
 def fetch_issues(url: str, project: str, token: str, timeout: float = TIMEOUT, opener=None) -> dict:
-    """{klucz: {"id", "summary", "state", "url"}} dla projektu. Tylko GET."""
+    """{klucz: {"id", "summary", "description", "state", "url"}} dla projektu. Tylko GET."""
     if not token:
         raise YouTrackError("brak tokenu YouTracka")
     query = urllib.parse.urlencode({"query": f"project: {project}", "fields": FIELDS, "$top": "2000"})
@@ -124,8 +125,10 @@ def fetch_issues(url: str, project: str, token: str, timeout: float = TIMEOUT, o
                     state = str(value.get("name") or "")
         key = _key(ident)
         if key:
+            description = item.get("description")
             out[key] = {"id": ident, "summary": str(item.get("summary") or ""), "state": state,
-                        "url": f"{url}/issue/{ident}"}
+                        "url": f"{url}/issue/{ident}",
+                        "description": description[:DESCRIPTION_MAX] if isinstance(description, str) else ""}
     return out
 
 

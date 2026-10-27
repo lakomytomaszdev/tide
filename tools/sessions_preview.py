@@ -33,6 +33,7 @@ def sanitize(data: dict) -> dict:
         if board.get("plan"):
             board["plan"]["path"] = "docs/agents/plans/plan.md"
             board["plan"]["title"] = titles[coord_id]
+            board["plan"]["goal"] = "" if not board["plan"].get("goal") else "(cel ukryty)"
         tracker = board.get("tracker") or {}
         if tracker.get("url"):
             tracker["url"] = "http://youtrack.local"
@@ -46,6 +47,8 @@ def sanitize(data: dict) -> dict:
                 ticket["key"] = f"~zadanie-{fallback}"
             ticket["branch"] = _branch(ticket.get("branch") or "", ticket.get("id") or "")
             ticket["planNote"] = "" if not ticket.get("planNote") else "(uwagi ukryte)"
+            ticket["description"] = "" if not ticket.get("description") else "(opis ukryty)"
+            ticket["brief"] = "" if not ticket.get("brief") else "(polecenie ukryte)"
             ticket["url"] = f"http://youtrack.local/issue/{ticket['id']}" if ticket.get("url") else ""
             ticket["worktree"] = ""
             if ticket.get("question"):

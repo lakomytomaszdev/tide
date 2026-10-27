@@ -2,9 +2,11 @@
 
 Projekt to repozytorium z katalogu projektów (z wszystkimi swoimi worktrees). Sesja agenta
 należy do projektu, w którego worktree (najgłębszym) leży jej katalog roboczy; sesja spoza
-repozytoriów tworzy projekt po nazwie katalogu. Projekt „z ruchem” ma w okresie commit, sesję
-albo przebieg zaplanowanego zadania — tylko taki dostaje własną stronę; reszta trafia na
-zwiniętą listę w indeksie (z tym, co w nich czeka: worktrees do sprzątnięcia, zmiany).
+repozytoriów tworzy „projekt” po nazwie katalogu (np. korzeń przestrzeni roboczej) — to nie jest
+prawdziwy projekt: bez strony i bez „Na daily”, jego sesje są w indeksie w zwiniętej sekcji „Poza
+projektami”. Repozytorium „z ruchem” ma w okresie commit, sesję albo przebieg zaplanowanego zadania
+— tylko takie dostaje własną stronę; reszta trafia na zwiniętą listę w indeksie (z tym, co w nich
+czeka: worktrees do sprzątnięcia, zmiany).
 """
 import os
 import re
@@ -77,6 +79,16 @@ class Report:
         return [p for p in self.projects if p.active]
 
     @property
+    def repos(self) -> list:
+        """Projekty-repozytoria z ruchem — każdy ma własną stronę z „Na daily”."""
+        return [p for p in self.active if p.is_repo]
+
+    @property
+    def outside(self) -> list:
+        """Sesje spoza repozytoriów (katalogi po nazwie) — sekcja „Poza projektami” w indeksie."""
+        return [p for p in self.active if not p.is_repo]
+
+    @property
     def quiet(self) -> list:
         return [p for p in self.projects if not p.active]
 
@@ -88,7 +100,7 @@ class Report:
 def build(day: str, start: float, end: float, *, workspace: str, claude_root: str, codex_root: str,
           live: list[dict] | None = None, worktrees: list[dict] | None = None, limits_result: dict | None = None,
           git: Git | None = None, max_depth: int = 3, previous_day: str = "",
-          coordination_cache: str | None = None) -> Report:
+          coordination_cache: str | None = None, tracker=None) -> Report:
     git = git or Git()
     if worktrees is None:
         scanner = WorktreeScanner(workspace, max_depth, git=git, clock=lambda: end)
@@ -149,7 +161,7 @@ def build(day: str, start: float, end: float, *, workspace: str, claude_root: st
         project.branches = gitlog.repo_commits(git, project.key, project.main_branch, start, end,
                                                repo_items, project.sessions)
 
-    plans_mod.attach(list(projects.values()), start, end, coordination_cache)
+    plans_mod.attach(list(projects.values()), start, end, coordination_cache, tracker)
     ordered = sorted(projects.values(), key=lambda p: (not p.waiting, not p.active, -p.last_ts, p.name.lower()))
     assign_slugs(ordered)
     snap = limits.snapshot(limits_result)

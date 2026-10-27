@@ -47,17 +47,17 @@ def short_title(text: str, limit: int = TITLE_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def _prompt_text(text) -> str:
+def _prompt_text(text, limit: int = TITLE_LIMIT) -> str:
     if not isinstance(text, str):
         return ""
     text = text.strip()
     if not text or text.startswith(_NOT_A_PROMPT):
         return ""
-    return short_title(text)
+    return short_title(text, limit)
 
 
-def claude_prompt(record: dict) -> str:
-    """Pierwsza wiadomość użytkownika z wpisu Claude Code albo pusty napis."""
+def claude_prompt(record: dict, limit: int = TITLE_LIMIT) -> str:
+    """Pierwsza wiadomość użytkownika z wpisu Claude Code albo pusty napis (skrócona do limit znaków)."""
     if record.get("type") != "user" or record.get("isMeta") or record.get("isSidechain"):
         return ""
     content = (record.get("message") or {}).get("content")
@@ -65,30 +65,30 @@ def claude_prompt(record: dict) -> str:
         if any(isinstance(c, dict) and c.get("type") == "tool_result" for c in content):
             return ""
         content = next((c.get("text") for c in content if isinstance(c, dict) and c.get("type") == "text"), "")
-    return _prompt_text(content)
+    return _prompt_text(content, limit)
 
 
-def codex_prompt(record: dict) -> str:
+def codex_prompt(record: dict, limit: int = TITLE_LIMIT) -> str:
     """Wiadomość użytkownika z wpisu Codexa (CLI albo aplikacja) albo pusty napis."""
     payload = record.get("payload")
     if not isinstance(payload, dict):
         return ""
     kind = record.get("type")
     if kind == "event_msg" and payload.get("type") == "user_message":
-        return _prompt_text(payload.get("message"))
+        return _prompt_text(payload.get("message"), limit)
     if kind == "event_msg" and payload.get("type") == "item_completed":
         item = payload.get("item") or {}
         if isinstance(item, dict) and item.get("type") == "UserMessage":
-            return _first_text(item.get("content"), "text")
+            return _first_text(item.get("content"), "text", limit)
     if kind == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
-        return _first_text(payload.get("content"), "input_text")
+        return _first_text(payload.get("content"), "input_text", limit)
     return ""
 
 
-def _first_text(content, kind: str) -> str:
+def _first_text(content, kind: str, limit: int = TITLE_LIMIT) -> str:
     for item in content if isinstance(content, list) else ():
         if isinstance(item, dict) and item.get("type") == kind:
-            text = _prompt_text(item.get("text"))
+            text = _prompt_text(item.get("text"), limit)
             if text:
                 return text
     return ""

@@ -165,6 +165,17 @@ updated: wczoraj
                          "updated", "nagłówek tabeli", "A-2: nieznany stan"):
             self.assertIn(fragment, joined)
 
+    def test_goal_paragraph(self):
+        head = "---\ntide-plan: 1\ntitle: X\n---\n"
+        table = "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |\n| --- | --- | --- | --- | --- | --- |\n| A-1 | a | todo | | | |\n"
+        with_goal = plan_mod.parse(head + table + "\n## Notatki\n\nNotatka.\n\n## Cel i bramki\n\nC007 to **pierwszy**\n"
+                                   "kazus z `KW`.\n\nDruga część.\n")
+        self.assertEqual(with_goal.goal, "C007 to pierwszy kazus z KW.", "akapit pod „Cel…”, bez znaczników")
+        first = plan_mod.parse(head + "# Plan\n\nWydanie z eksportem do CSV.\n\n" + table)
+        self.assertEqual(first.goal, "Wydanie z eksportem do CSV.", "bez nagłówka „Cel” — pierwszy akapit")
+        self.assertEqual(plan_mod.parse(head + table).goal, "")
+        self.assertLessEqual(len(plan_mod.parse(head + "## Cel\n\n" + "słowo " * 500).goal), plan_mod.GOAL_MAX)
+
     def test_youtrack_without_url_is_an_error_and_pick_prefers_session(self):
         plan = plan_mod.parse("---\ntide-plan: 1\ntitle: X\ntracker: youtrack\n---\n")
         self.assertIn("tracker youtrack wymaga tracker-url i tracker-project", plan.errors)
@@ -335,11 +346,22 @@ updated: {updated}
         self.assertEqual([t["id"] for t in b["tickets"][:4]], ["AB-1", "AB-2", "AB-3", "AB-4"], "kolejność planu")
 
     def test_youtrack_fills_titles_and_closed_states(self):
-        issues = {"AB-1": {"id": "AB-1", "summary": "Z YouTracka", "state": "Fixed", "url": "u/A-1"},
+        issues = {"AB-1": {"id": "AB-1", "summary": "Z YouTracka", "state": "Fixed", "url": "u/A-1",
+                           "description": "Opis\n\nz   YouTracka " + "x" * 900},
                   "AB-2": {"id": "AB-2", "summary": "Drugi", "state": "In Progress", "url": "u/A-2"}}
-        b = self.build([run("a1", "AB-1: implement", end=50, status="failed")], issues=issues)
+        first = run("a1", "AB-1: implement", end=50, status="failed")
+        first.prompt_head = "AB-1: dodaj   eksport\n" + "y" * 600
+        b = self.build([first], issues=issues)
         t = tickets(b)["AB-1"]
         self.assertEqual((t["title"], t["state"], t["source"], t["url"]), ("Z YouTracka", "gotowe", "tracker", "u/A-1"))
+        self.assertTrue(t["description"].startswith("Opis\n\nz   YouTracka x"), "początek opisu do raportu porannego")
+        self.assertLessEqual(len(t["description"]), 600)
+        self.assertTrue(t["brief"].startswith("AB-1: dodaj eksport y"), "początek polecenia podagenta")
+        self.assertLessEqual(len(t["brief"]), 400)
+        hidden = run("a2", "AB-2: implement", end=40)
+        hidden.prompt_head = "gAAAAABq37fPgp-FOPkSz62gzXvO0jATx5k68KvKAbiGab1weHwrmdN4QFJeUeAY0ztxIAl3u5j5F93Ectmou"
+        b = self.build([hidden], issues=issues)
+        self.assertEqual(tickets(b)["AB-2"]["brief"], "", "zaszyfrowane polecenie Codexa to nie treść")
 
     def test_fallback_grouping_and_coordinator_id(self):
         b = board_mod.build(coordinator([
@@ -371,7 +393,8 @@ class FakeYouTrack(BaseHTTPRequestHandler):
         body = json.dumps([
             {"idReadable": "LOG-7", "summary": "Stary klucz", "customFields": [
                 {"name": "Priority", "value": {"name": "Normal"}}, {"name": "State", "value": {"name": "Fixed"}}]},
-            {"idReadable": "TOM-146", "summary": "CSV z YouTracka", "customFields": [
+            {"idReadable": "TOM-146", "summary": "CSV z YouTracka", "description": "Eksport wyników do CSV. " * 100,
+             "customFields": [
                 {"name": "State", "value": {"name": "Submitted"}}]},
             {"idReadable": "TOM-141", "summary": "Migracja", "customFields": [{"name": "State", "value": None}]},
         ]).encode()
@@ -415,14 +438,15 @@ class YouTrackTest(World):
         issues, info = cache.get(self.url + "/", "LOG")
         self.assertTrue(info["available"])
         self.assertEqual(issues["LOG-7"], {"id": "LOG-7", "summary": "Stary klucz", "state": "Fixed",
-                                           "url": self.url + "/issue/LOG-7"})
+                                           "url": self.url + "/issue/LOG-7", "description": ""})
         self.assertEqual(issues["TOM-141"]["state"], "")
+        self.assertEqual(len(issues["TOM-146"]["description"]), youtrack.DESCRIPTION_MAX, "początek opisu")
         self.assertEqual(len(FakeYouTrack.calls), 1)
         method, path, auth = FakeYouTrack.calls[0]
         self.assertEqual(method, "GET")
         self.assertTrue(path.startswith("/api/issues?"))
         self.assertIn("query=project%3A+LOG", path)
-        self.assertIn("fields=idReadable%2Csummary%2CcustomFields%28name%2Cvalue%28name%29%29", path)
+        self.assertIn("fields=idReadable%2Csummary%2Cdescription%2CcustomFields%28name%2Cvalue%28name%29%29", path)
         self.assertNotIn(F.TOKEN_SENTINEL, path)
         self.assertEqual(auth, "Bearer " + F.TOKEN_SENTINEL)
         cache.get(self.url, "LOG")
@@ -576,7 +600,12 @@ class ActionsTest(World):
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
         self.assertNotIn("MAJOR-1", text, "w pliku nie ma raportów podagentów")
-        self.assertNotIn("Zadanie:", text, "ani poleceń")
+        # Z poleceń podagentów tylko początek (do 300 znaków) w polu „brief” ticketu — nic więcej.
+        briefless = json.loads(text)
+        for coordinator in briefless["coordinators"]:
+            for t in coordinator["tickets"]:
+                self.assertLessEqual(len(t.pop("brief")), 300)
+        self.assertNotIn("Zadanie:", json.dumps(briefless, ensure_ascii=False), "ani poleceń poza „brief”")
 
         b = boards[0]
         trees = [{"isMain": True, "repoPath": world["repo"], "path": world["repo"], "mainBranch": "master"},

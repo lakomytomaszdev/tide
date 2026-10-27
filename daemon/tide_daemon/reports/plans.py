@@ -7,29 +7,34 @@
   wstrzymane albo zmienione w okresie raportu — gdy tablica ich nie zna (np. usługa jeszcze nie
   przeczytała koordynatora), stan bierzemy z samego planu.
 
+Do „Na daily”: cel planu (akapit „Cel…”), uwagi z planu, a dla planu z `tracker: youtrack`, którego
+tablica nie zna — początek opisu ticketu z YouTracka (`tracker`: YouTrackCache, tylko GET, ten sam token
+i serwer co tablica; błąd albo brak tokenu — bez opisów).
+
 `attach(projects, ...)` dopisuje do projektów listę `plans`; każdy błąd tylko pomija dodatek.
 """
 import os
 
-from ..coordination import actions
+from ..coordination import actions, ids
 from ..coordination import plan as plan_mod
 from ..coordination.board import STATE_WORDS
 
 ACTIVE_STATES = ("czeka", "w-toku", "review", "todo")
 ORDER = {"czeka": 0, "review": 1, "w-toku": 2, "todo": 3, "gotowe": 4, "odrzucone": 5}
 SHOWN = 12
+DESCRIPTION_MAX = 600
 
 
-def attach(projects: list, start: float, end: float, cache_file: str | None = None) -> None:
+def attach(projects: list, start: float, end: float, cache_file: str | None = None, tracker=None) -> None:
     try:
-        _attach(projects, start, end, cache_file)
+        _attach(projects, start, end, cache_file, tracker)
     except Exception as exc:  # dodatek nie może zepsuć raportu
         print(f"tide-daemon: raport: plany i tickety pominięte: {exc!r}", flush=True)
         for project in projects:
             project.plans = []
 
 
-def _attach(projects: list, start: float, end: float, cache_file: str | None) -> None:
+def _attach(projects: list, start: float, end: float, cache_file: str | None, tracker=None) -> None:
     cache = (actions.read_cache(cache_file) if cache_file else None) or {}
     boards = cache.get("coordinators") or []
     for project in projects:
@@ -55,6 +60,7 @@ def _attach(projects: list, start: float, end: float, cache_file: str | None) ->
         entry["id"] = str(b.get("id") or "")
         entry["question"] = str(b.get("question") or "")
         entry["all"] = [dict(t) for t in b.get("tickets") or []]
+        entry["goal"] = str(plan.get("goal") or "") or _goal(plan.get("path") or "")
         project.plans.append(entry)
     for project in projects:
         if not getattr(project, "is_repo", False):
@@ -66,16 +72,41 @@ def _attach(projects: list, start: float, end: float, cache_file: str | None) ->
                 continue
             if plan.status != "active" and plan.updated_ts < start:
                 continue
-            tickets = [{"id": r.ticket, "title": r.title, "state": r.state or "todo", "note": r.note, "url": ""}
-                       for r in plan.rows]
+            issues = _issues(plan, project.path, tracker)
+            tickets = [{"id": r.ticket, "title": r.title, "state": r.state or "todo", "note": r.note, "url": "",
+                        "planNote": r.note, "branch": r.branch, "description": issues(r.ticket)} for r in plan.rows]
             entry = _entry(plan.title, "", "plan", tickets, plan_path=plan.path,
                            tracker={"kind": plan.tracker}, last=plan.updated_ts,
                            status=plan.status, errors=plan.errors)
             entry["id"], entry["question"], entry["all"] = "", "", [dict(t, lastActivityTs=plan.updated_ts)
                                                                     for t in tickets]
+            entry["goal"] = plan.goal
             project.plans.append(entry)
     for project in projects:
         project.plans.sort(key=lambda e: (-e["active"], -e["last"]))
+
+
+def _issues(plan, repo: str, tracker):
+    """funkcja(ID z planu) → początek opisu z YouTracka (ID przez mapę migracji, np. LA-035 → LEGAL-35)."""
+    if tracker is None or plan.tracker != "youtrack":
+        return lambda ident: ""
+    found, _info = tracker.get(plan.tracker_url, plan.tracker_project)
+    if not found:
+        return lambda ident: ""
+    matcher = ids.TicketMatcher([plan.prefix] if plan.prefix else [], ids.load_aliases([repo]))
+
+    def description(ident: str) -> str:
+        issue = found.get(matcher.find(ident) or "") or {}
+        return str(issue.get("description") or "").strip()[:DESCRIPTION_MAX]
+    return description
+
+
+def _goal(path: str) -> str:
+    """Cel planu z pliku (plik tablicy sprzed pola „goal” go nie ma)."""
+    if not path:
+        return ""
+    plan = plan_mod.read(path)
+    return plan.goal if plan is not None else ""
 
 
 def _entry(title, label, source, tickets, tool="", live=False, state="", plan_path="", tracker=None, last=0.0,

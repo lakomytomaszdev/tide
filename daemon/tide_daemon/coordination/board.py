@@ -304,6 +304,11 @@ def _ticket_json(t, coord, plan, tracker, live, uses_review, now, runs_info) -> 
         "derived": derived or "",
         "planState": plan_state,
         "planNote": row.note if row else "",
+        # Do raportu porannego („Na daily” — czym jest ticket): początek opisu z YouTracka i początek
+        # polecenia pierwszego podagenta, który nad nim pracował.
+        "description": (issue.get("description") or "").strip()[:600] if issue else "",
+        "brief": _clip(" ".join(next((r.prompt_head for r in runs if _readable(r.prompt_head)
+                                      and role_of(r) != ROLE_REVIEWER), "").split()), 400),
         "planAgent": row.agent if row else "",
         "inPlan": row is not None,
         "trackerState": issue.get("state", "") if issue else "",
@@ -318,6 +323,13 @@ def _ticket_json(t, coord, plan, tracker, live, uses_review, now, runs_info) -> 
         "lastActivityTs": round(last_ts, 3),
         "events": _events(t, runs, states, runs_info),
     }
+
+
+def _readable(text: str) -> bool:
+    """Polecenie do pokazania: zwykły tekst, nie zaszyfrowany blob (Codex trzyma niektóre polecenia
+    podagentów zaszyfrowane — „gAAAA…” bez spacji)."""
+    head = (text or "").strip()[:120]
+    return bool(head) and " " in head
 
 
 def _agents(runs, states, limit: int = 3) -> list[dict]:

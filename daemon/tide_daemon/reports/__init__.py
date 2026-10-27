@@ -1,4 +1,5 @@
-"""Raport poranny: jedna strona HTML na projekt z ruchem i indeks z kartami projektów.
+"""Raport poranny: strona HTML na każdy projekt-repozytorium z ruchem (z własnym „Na daily”) i indeks
+— przegląd z kartą na projekt i zwiniętą sekcją „Poza projektami”.
 
 - schedule.py — kiedy (pierwsze logowanie w dobie albo o 07:00), za jaki okres, retencja, stan,
 - sessions.py — sesje agentów z okresu i ostatnie wiadomości, przebiegi zaplanowanych zadań,
@@ -36,11 +37,12 @@ def load_palette(candidates: list[str]) -> dict:
 def generate(root: str, day: str, start: float, end: float, *, palette: dict, workspace: str, claude_root: str,
              codex_root: str, live=None, worktrees=None, limits_result=None, fetch_limits: bool = True,
              git=None, max_depth: int = 3, home: str | None = None,
-             coordination_cache: str | None = None, summary: str = "rules", summary_model: str = "haiku",
-             env=None) -> tuple[str, "collect.Report"]:
+             coordination_cache: str | None = None, summary: str = "rules", summary_model: str = "sonnet",
+             env=None, tracker=None) -> tuple[str, "collect.Report"]:
     """Zapisuje <root>/<day>/index.html i <projekt>.html. Zwraca (ścieżka index.html, raport).
 
     summary: "claude" — opis „Na daily” modelem przez `claude -p` (summarize.py), "rules" — same reguły.
+    tracker: YouTrackCache — opisy ticketów z planów w repozytoriach (plans.py, tylko GET) albo None.
     Domyślnie reguły: model woła tylko usługa i --report według ustawień (report.json)."""
     if limits_result is None and fetch_limits:
         limits_result = limits.fetch_status()
@@ -48,13 +50,13 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
     report = collect.build(day, start, end, workspace=workspace, claude_root=claude_root, codex_root=codex_root,
                            live=live, worktrees=worktrees, limits_result=limits_result, git=git,
                            max_depth=max_depth, previous_day=days[-1] if days else "",
-                           coordination_cache=coordination_cache)
+                           coordination_cache=coordination_cache, tracker=tracker)
     home = os.path.expanduser("~") if home is None else home
     target = os.path.join(root, day)
     report.standup = summarize.summarize(report, mode=summary, model=summary_model, cache_dir=target, home=home,
                                          env=env)
     pages = {"index.html": render.render_index(report, palette, home)}
-    for project in report.active:
+    for project in report.repos:
         pages[f"{project.slug}.html"] = render.render_project(report, project, palette, home)
 
     os.makedirs(root, mode=0o700, exist_ok=True)
