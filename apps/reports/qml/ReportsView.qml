@@ -26,7 +26,7 @@ Rectangle {
     property bool active: true
     property var preview: ({})
     property bool windowActive: Window.active
-    readonly property int readAfterMs: 1500
+    property int readAfterMs: 1500
 
     readonly property var days: backend ? Logic.parse(backend.daysJson, ({})) : ({})
     readonly property var dayList: Array.isArray(days.days) ? days.days : []
@@ -61,7 +61,11 @@ Rectangle {
         const target = Logic.splitItem(item)
         if (!target.day) return
         pendingProject = target.project
-        if (dayList.some(d => d.day === target.day)) {
+        if (target.day === selectedDay && hasReport) {
+            pendingDay = ""
+            pendingProject = ""
+            if (target.project) selectedKey = target.project   // ta sama doba — od razu projekt
+        } else if (dayList.some(d => d.day === target.day)) {
             pendingDay = ""
             selectDay(target.day)
         } else {
