@@ -29,7 +29,7 @@ from .frontmatter import Document, FrontmatterError
 from .model import MODES
 
 PLACEHOLDERS = ("card_id", "title", "description", "project", "repo", "docs_dir", "branch", "tool",
-                "docs_note", "spec", "spec_file", "check", "check_label", "finish", "spec_commit")
+                "docs_note", "spec", "spec_file", "check", "check_label", "finish", "spec_commit", "projects")
 CHECKS = ("auto", "manual")
 _FIELD = re.compile(r"\{(" + "|".join(PLACEHOLDERS) + r")\}")
 
@@ -40,7 +40,7 @@ _COMMON = """Karta {card_id}: {title}
 Projekt: {project}
 Repozytorium: {repo}
 Gałąź: {branch}
-Plany i specyfikacje: {docs_dir}
+Plany i specyfikacje: {docs_dir}{projects}
 
 Opis karty:
 
@@ -66,7 +66,7 @@ _PLAN = f"""Zakładasz go według standardu Tide ({STANDARD}, wersja 1.1)
 
 SEED_FLOWS = {
     "full": """---
-tide-flow: 2
+tide-flow: 3
 mode: full
 ---
 """ + _COMMON + """
@@ -99,7 +99,7 @@ Istniejąca specyfikacja karty: {spec}
 8. Zakończenie (sprawdzenie: {check_label}): {finish}
 """,
     "light": """---
-tide-flow: 2
+tide-flow: 3
 mode: light
 ---
 """ + _COMMON + """
@@ -123,7 +123,7 @@ Istniejąca specyfikacja karty: {spec}
 5. Zakończenie (sprawdzenie: {check_label}): {finish}
 """,
     "spec": """---
-tide-flow: 2
+tide-flow: 3
 mode: spec
 ---
 """ + _COMMON + """
@@ -153,10 +153,14 @@ Istniejąca specyfikacja karty: {spec}
 }
 
 # Dawne zaczyny z flows/ (PT-1) — skróty SHA-256 treści zapisanej przy zakładaniu tablicy.
+# Kolejne wersje: PT-1 (pierwszy zaczyn), PT-4 (`tide-flow: 2`, przed polem {projects} z PT-28).
 PREVIOUS_SEEDS = {
-    "full": {"50e7022ef834891b46ef499318146a3ee322b0ce11015f83474ffdae54666e7a"},
-    "light": {"6476221fe489d549b497b19cb77bba3c72590e904448e7b13eec2354228f4913"},
-    "spec": {"7e01493f02a65ba87bc4bc944c85d3170452a1be96ebf8d745e95b548ddb15e3"},
+    "full": {"50e7022ef834891b46ef499318146a3ee322b0ce11015f83474ffdae54666e7a",
+             "dfc6241e85b5a4b99b8ac61b4ed576bb4c64fe4e775cb0b8d7f1ad568cb8fe19"},
+    "light": {"6476221fe489d549b497b19cb77bba3c72590e904448e7b13eec2354228f4913",
+              "5a695d2e37399a36ae1a460d1f663f110f46498a8450fc8403e361bb457df101"},
+    "spec": {"7e01493f02a65ba87bc4bc944c85d3170452a1be96ebf8d745e95b548ddb15e3",
+             "916603ea5a4534eccdadcdb8098a9a8f5e3d46cb74bd1e069fe31b7e11348349"},
 }
 
 
@@ -189,6 +193,31 @@ def spec_commit_text(in_board: bool, card_id: str, spec_file: str) -> str:
             "Co-Authored-By). Nic poza tym plikiem, bez push.")
 
 
+def projects_text(extra: list, mode: str, branch: str, repo: str, docs_dir: str) -> str:
+    """Pole {projects}: dodatkowe repozytoria karty (PT-28) i zasady pracy w kilku naraz — pusty napis,
+    gdy karta ma jeden projekt. extra: [(nazwa projektu, ścieżka repozytorium)]. Zaczyna się od nowej
+    linii, bo w szablonie stoi zaraz za linią „Plany i specyfikacje”."""
+    if not extra:
+        return ""
+    listed = "\n".join(f"- {name}: {path}" for name, path in extra)
+    if mode == "spec":
+        return (f"\nDodatkowe repozytoria tej karty (masz do nich dostęp przez --add-dir; w tym trybie tylko "
+                f"do odczytu):\n{listed}\nW specyfikacji napisz, co trzeba zmienić w którym repozytorium.")
+    return (f"\nDodatkowe repozytoria tej karty (masz do nich dostęp przez --add-dir):\n{listed}\n"
+            "Praca w kilku repozytoriach:\n"
+            f"- główne repozytorium to {repo}: plan i specyfikacja są tylko w {docs_dir} (nie zakładaj planów "
+            "w dodatkowych repozytoriach), a twój katalog roboczy zostaje w głównym repozytorium,\n"
+            f"- w każdym dodatkowym repozytorium, które zmieniasz, załóż gałąź o tej samej nazwie {branch} od "
+            "lokalnej gałęzi głównej (worktree tylko wtedy, gdy wymagają tego zasady tego repozytorium — "
+            "CLAUDE.md albo AGENTS.md). Gdy jego główny katalog ma niezacommitowane zmiany albo stoi na innej "
+            "gałęzi niż główna, zapytaj mnie, zanim cokolwiek przełączysz. Bez push,\n"
+            "- pliki w dodatkowych repozytoriach czytaj i zapisuj po ścieżkach bezwzględnych, gita wołaj przez "
+            "`git -C <ścieżka> …` — nie przechodź do nich przez `cd`,\n"
+            "- commituj w każdym repozytorium osobno, według jego zasad,\n"
+            "- w tabeli planu przy każdym tickecie zapisz w Uwagach, które repozytorium zmienia "
+            "(np. „repo: " + extra[0][0] + "”).")
+
+
 def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -207,8 +236,14 @@ def body_of(text: str) -> str:
 
 
 def render(template: str, values: dict) -> str:
-    """Wypełnia pola z PLACEHOLDERS; brakująca wartość to pusty napis."""
-    return _FIELD.sub(lambda m: str(values.get(m.group(1)) or ""), body_of(template))
+    """Wypełnia pola z PLACEHOLDERS; brakująca wartość to pusty napis. Szablon bez pola {projects}
+    (własny szablon użytkownika sprzed PT-28) dostaje listę dodatkowych repozytoriów na końcu — karta
+    z kilkoma projektami nigdy nie traci tej informacji."""
+    body = body_of(template)
+    text = _FIELD.sub(lambda m: str(values.get(m.group(1)) or ""), body)
+    if values.get("projects") and "{projects}" not in body:
+        text = text.rstrip("\n") + "\n" + str(values["projects"]) + "\n"
+    return text
 
 
 assert set(SEED_FLOWS) == set(MODES)

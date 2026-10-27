@@ -16,11 +16,17 @@
   o okno „Co ma zrobić agent?” (`launch:K-12`, przycisk „Uruchom” w popupie kafelka),
 - przy starcie dawne zaczyny szablonów trybów w flows/ dostają nową treść (migrate_flows: tylko
   pliki nietknięte przez użytkownika), a każda synchronizacja sprawdza, czy karty uruchomione
-  w trybie „tylko spec” mają już gotową specyfikację (mark_ready_specs: karta wraca do Backlogu).
+  w trybie „tylko spec” mają już gotową specyfikację (mark_ready_specs: karta wraca do Backlogu),
+- trwałe połączenie karty z sesją (PT-28): karta bez `session`, którą przeliczenie połączyło z sesją
+  uruchomioną z karty albo jednoznacznie po gałęzi (`Context.sticky`), dostaje tę sesję w pliku
+  (store.link_session, commit „K-1: link session claude:…”) — później sesja może wejść do innego
+  katalogu, a karta jej nie zgubi. Zapis idzie po przeliczeniu (QTimer), ta sama para karta–sesja
+  najwyżej raz na LINK_RETRY_S.
 """
 import copy
 import json
 import os
+import time
 
 from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 
@@ -32,6 +38,7 @@ DEBOUNCE_MS = 2_000
 POLL_MS = 60_000
 REDERIVE_MS = 500  # zmiany sesji przychodzą seriami (co 250 ms przy pracy agenta) — przeliczenie najwyżej tak często
 MAX_WATCHED_FILES = 2_000  # powyżej — tylko katalogi i odpytywanie co POLL_MS
+LINK_RETRY_S = 60.0  # nieudane utrwalenie sesji w karcie ponawiamy najwyżej tak często
 
 
 class BoardMonitor(QObject):
@@ -58,6 +65,8 @@ class BoardMonitor(QObject):
         self._rederive = QTimer(self, singleShot=True, interval=rederive_ms)
         self._rederive.timeout.connect(self._apply)
         self._rederive_requested.connect(self.rederive)
+        self._links: list[tuple[str, str, str]] = []      # (karta, sesja, sposób) do utrwalenia
+        self._link_tried: dict[tuple[str, str], float] = {}
 
     def start(self) -> None:
         try:
@@ -171,18 +180,25 @@ class BoardMonitor(QObject):
             return base
         snapshot = dict(base)
         snapshot["errors"] = list(base.get("errors") or [])
+        claimed = [c.get("session") for c in base.get("cards") or [] if isinstance(c, dict) and c.get("session")]
         try:
-            derive = self.derive.context() if hasattr(self.derive, "context") else self.derive
+            derive = self.derive.context(claimed) if hasattr(self.derive, "context") else self.derive
         except Exception as exc:  # stan z pracy agentów to dodatek — tablica działa bez niego
             print(f"tide-daemon: tablica: stan z pracy agentów: {exc!r}", flush=True)
             return base
         repos = {p.get("slug"): p.get("repo") or "" for p in base.get("projects") or [] if isinstance(p, dict)}
         cards = []
+        links = []
         for card in base.get("cards") or []:
             card = copy.copy(card)
             derived = None
             try:
-                derived = derive({**card, "repo": repos.get(card.get("project"), "")})
+                given = {**card, "repo": repos.get(card.get("project"), ""),
+                         "extraRepos": [repos.get(slug) for slug in card.get("projects") or [] if repos.get(slug)]}
+                derived = derive(given)
+                sticky = derive.sticky(given) if hasattr(derive, "sticky") else None
+                if sticky:
+                    links.append((card.get("id", ""), *sticky))
             except Exception as exc:
                 snapshot["errors"].append({"path": card.get("path", ""),
                                            "message": f"{card.get('id', '')}: stan z pracy agentów: {exc}"})
@@ -190,7 +206,41 @@ class BoardMonitor(QObject):
             card["boardColumn"] = (derived or {}).get("column") or card.get("column") or "backlog"
             cards.append(card)
         snapshot["cards"] = cards
+        self._queue_links(links)
         return snapshot
+
+    def _queue_links(self, links: list) -> None:
+        now = time.monotonic()
+        fresh = [item for item in links if now - self._link_tried.get(item[:2], -LINK_RETRY_S) >= LINK_RETRY_S]
+        if not fresh or not hasattr(self.store, "link_session"):
+            return
+        if not self._links:
+            QTimer.singleShot(0, self._persist_links)  # nie w trakcie przeliczenia — po nim
+        self._links.extend(i for i in fresh if i not in self._links)
+
+    def _persist_links(self) -> None:
+        """Utrwala w kartach sesje rozpoznane przy przeliczeniu (store.link_session nie nadpisuje
+        `session` ustawionego wcześniej, także ręcznie), potem nowa migawka."""
+        links, self._links = self._links, []
+        wrote = False
+        for card_id, session, how in links:
+            self._link_tried[(card_id, session)] = time.monotonic()
+            try:
+                result = self.store.link_session(card_id, session, how)
+            except BoardError as exc:
+                print(f"tide-daemon: tablica: {card_id}: połączenie z sesją {session}: {exc}", flush=True)
+                continue
+            except Exception as exc:  # zapis to dodatek — derive i tak łączy kartę z sesją
+                print(f"tide-daemon: tablica: {card_id}: połączenie z sesją {session}: {exc!r}", flush=True)
+                continue
+            if result.get("changed"):
+                wrote = True
+                print(f"tide-daemon: tablica: {card_id}: połączona z sesją {session} ({how})", flush=True)
+        if len(self._link_tried) > 1000:
+            self._link_tried.clear()
+        if wrote:
+            self._rewatch()
+            self.publish()
 
     def sync(self) -> None:
         """Commit zmian z zewnątrz, nowe ścieżki do obserwacji i świeża migawka."""

@@ -155,13 +155,40 @@ Rectangle {
                 font.weight: Font.DemiBold
             }
             Text {
-                Layout.fillWidth: true
+                Layout.fillWidth: (root.c.extraProjects || []).length === 0
+                Layout.maximumWidth: (root.c.extraProjects || []).length ? implicitWidth : -1
                 text: root.c.projectName || ""
                 textFormat: Text.PlainText
                 color: Tide.Tokens.textMuted
                 font.family: Tide.Theme.uiFamily
                 font.pixelSize: 11
                 elide: Text.ElideRight
+            }
+            // Dodatkowe projekty karty (PT-28): małe chipy „+ mobileapp” obok projektu.
+            Repeater {
+                model: root.c.extraProjects || []
+                Rectangle {
+                    required property var modelData
+                    objectName: "cardExtraProject"
+                    radius: 5
+                    color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.06)
+                    implicitWidth: extraText.implicitWidth + 10
+                    implicitHeight: extraText.implicitHeight + 2
+                    Text {
+                        id: extraText
+                        objectName: "cardExtraProjectText"
+                        anchors.centerIn: parent
+                        text: "+ " + (parent.modelData.name || parent.modelData.slug || "")
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 10
+                    }
+                }
+            }
+            Item {
+                Layout.fillWidth: true
+                visible: (root.c.extraProjects || []).length > 0
             }
             Rectangle {
                 visible: (root.c.youtrack || "") !== ""

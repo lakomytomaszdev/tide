@@ -35,8 +35,8 @@ from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
 from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUMNS, DEFAULT_CHECK, DEFAULT_COLUMN,
                     DEFAULT_MODE, DEFAULT_TOOL, DESCRIPTION_MAX, FIELD_MAX, FILE_MAX, LAUNCH_KEYS, MANUAL_COLUMNS,
-                    MODES, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, RESERVED_CARD_KEYS, SEED_TAGS, SLUG_RE, TAG_MAX,
-                    TITLE_MAX,
+                    MODES, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, PROJECTS_KEY, PROJECTS_MAX, RESERVED_CARD_KEYS,
+                    SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
                     TOOLS, BoardError, Card, Project, Tag, card_num, default_ai_docs, fallback_color, merge_tags,
                     order_value, parse_card, parse_project, parse_tag, slugify, split_tags)
 
@@ -68,7 +68,8 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 - `flows/<tryb>.md` — szablony poleceń trybów full, light i spec,
 - `docs/<projekt>/` — plany i specyfikacje agentów projektów z `ai-docs: tide`.
 """
-CARD_FIELDS = ("title", "description", "project", "repo", "tags", "note", *RESERVED_CARD_KEYS, "check", *LAUNCH_KEYS)
+CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "note", *RESERVED_CARD_KEYS, "check",
+               *LAUNCH_KEYS)
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "description")
 TAG_FIELDS = ("name", "newName", "color", "description")
@@ -141,6 +142,10 @@ class BoardStore:
         for card in board.cards.values():
             if card.project and card.project not in board.projects:
                 board.errors.append({"path": card.path, "message": f"{card.id}: nieznany projekt „{card.project}”"})
+            for slug in card.projects:
+                if slug not in board.projects:
+                    board.errors.append({"path": card.path,
+                                         "message": f"{card.id}: nieznany dodatkowy projekt „{slug}”"})
         return board
 
     def snapshot(self, repos=None, derive=None) -> dict:
@@ -158,13 +163,15 @@ class BoardStore:
             for name in resolved:
                 counts[name.casefold()] = counts.get(name.casefold(), 0) + 1
             derived = None
+            extra = [board.projects[slug] for slug in card.projects if slug in board.projects]
             if derive is not None:
                 try:
-                    derived = derive({**_card_json(card, project, resolved, None),
-                                      "repo": project.repo if project else ""})
+                    derived = derive({**_card_json(card, project, resolved, None, extra),
+                                      "repo": project.repo if project else "",
+                                      "extraRepos": [p.repo for p in extra if p.repo]})
                 except Exception as exc:  # stan z koordynatora to dodatek — nie może zepsuć tablicy
                     board.errors.append({"path": card.path, "message": f"{card.id}: stan koordynatora: {exc}"})
-            cards_out.append(_card_json(card, project, resolved, derived))
+            cards_out.append(_card_json(card, project, resolved, derived, extra))
         for name in board.used_tags():
             tags.setdefault(name.casefold(), Tag(name, fallback_color(name, self.colors), slug=slugify(name, "tag"),
                                                  defined=False))
@@ -268,11 +275,16 @@ class BoardStore:
         if in_board:
             docs_note = (f"plany i specyfikacje zapisujesz w {docs} — to repozytorium tablicy Tide (masz do niego "
                          "dostęp przez --add-dir). Niczego tam nie commituj ani nie dodawaj do gita: te pliki "
-                         "commituje usługa Tide. Do repozytorium projektu nie trafia żaden plan ani specyfikacja.")
+                         "commituje usługa Tide. Do repozytorium projektu nie trafia żaden plan ani specyfikacja. "
+                         "Pliki w tym katalogu czytaj i zapisuj po ścieżkach bezwzględnych — nie wchodź do niego "
+                         "przez `cd`: twój katalog roboczy zostaje w repozytorium projektu.")
         else:
             docs_note = ("plany i specyfikacje zapisujesz w docs/agents/ w swoim katalogu roboczym (repozytorium "
                          "projektu); plan commitujesz razem z pracą albo osobnym commitem `docs(plan): …`, "
                          "jak mówi standard.")
+        extra = [board.projects[slug] for slug in card.projects if slug in board.projects]
+        extra_repos = [(p.name, p.repo) for p in extra if p.repo and not p.repo_missing]
+        add_dirs = ([docs] if in_board else []) + [repo for _name, repo in extra_repos]
         values = {"card_id": card.id, "title": card.title, "description": card.description.strip(),
                   "project": project.name if project else "", "repo": project.repo if project else "",
                   "docs_dir": docs_ref, "branch": branch if mode != "spec" else "bez gałęzi — katalog projektu",
@@ -280,10 +292,13 @@ class BoardStore:
                   "spec_file": os.path.join(docs_ref, "specs", spec_name(card)), "check": check,
                   "check_label": flows.CHECK_LABELS[check], "finish": flows.finish_text(check, docs_ref)}
         values["spec_commit"] = flows.spec_commit_text(in_board, card.id, values["spec_file"])
+        values["projects"] = flows.projects_text(extra_repos, mode, branch, values["repo"], docs_ref)
         return {"ok": True, "id": card.id, "mode": mode, "tool": tool, "branch": branch, "check": check, "docsDir": docs,
                 "aiDocs": ai_docs, "repo": values["repo"], "repoMissing": bool(project and project.repo_missing),
                 "project": card.project, "projectName": values["project"], "template": source,
-                "specFile": os.path.join(docs, "specs", spec_name(card)), "text": flows.render(template, values)}
+                "specFile": os.path.join(docs, "specs", spec_name(card)), "text": flows.render(template, values),
+                "projects": [p.slug for p in extra], "extraRepos": [repo for _name, repo in extra_repos],
+                "addDirs": add_dirs}
 
     def migrate_flows(self) -> list[str]:
         """Podmienia w flows/ szablony trybów, które są nietkniętymi dawnymi zaczynami (flows.PREVIOUS_SEEDS),
@@ -416,6 +431,7 @@ class BoardStore:
     def _plan_create(self, board: Board, v: dict) -> Change:
         change = Change()
         slug = self._project_slug(board, v, change)
+        extra = self._extra_projects(board, v["projects"], slug, change) if "projects" in v else []
         num = self._next_num(board, rebuild=True)
         while os.path.lexists(os.path.join(self.root, "cards", f"{CARD_PREFIX}{num}.md")):
             num += 1
@@ -434,6 +450,8 @@ class BoardStore:
         for key in LAUNCH_KEYS:  # tylko ustawione — karta bez uruchomienia ich nie ma
             if v.get(key):
                 doc.set(key, v[key])
+        if extra:
+            doc.set(PROJECTS_KEY, ", ".join(extra))
         doc.body = v.get("description", "")
         writes = [(os.path.join("cards", f"{CARD_PREFIX}{num}.md"), doc.text())]
         if board.meta is not None:
@@ -448,8 +466,16 @@ class BoardStore:
         card = self._card(board, num)
         change = Change(result={"ok": True, "id": card.id, "changed": False})
         changed = []
+        primary = card.project
         if "project" in v or "repo" in v:
-            changed += _doc_set(card.doc, "project", self._project_slug(board, v, change))
+            primary = self._project_slug(board, v, change)
+            changed += _doc_set(card.doc, "project", primary)
+        if "projects" in v:
+            extra = self._extra_projects(board, v["projects"], primary, change)
+            if extra or card.doc.has(PROJECTS_KEY):
+                changed += _doc_set(card.doc, PROJECTS_KEY, ", ".join(extra))
+        elif primary != card.project and primary in card.projects:  # nowy główny wypada z dodatkowych
+            changed += _doc_set(card.doc, PROJECTS_KEY, ", ".join(p for p in card.projects if p != primary))
         for key in ("title", "tags", "note", *RESERVED_CARD_KEYS, "check", *LAUNCH_KEYS):
             if key in v and (v[key] or card.doc.has(key) or key not in LAUNCH_KEYS):
                 changed += _doc_set(card.doc, key, ", ".join(v[key]) if key == "tags" else v[key])
@@ -628,6 +654,61 @@ class BoardStore:
         change.result["changed"] = True
         return change
 
+    def link_session(self, card_id: str, session: str, how: str = "") -> dict:
+        """Trwałe połączenie karty z sesją agenta (PT-28): `session` karty dostaje id sesji, którą usługa
+        rozpoznała (uruchomienie z karty albo pewne dopasowanie po gałęzi) — commit „K-1: link session
+        claude:…”. Karta, która ma już `session` (np. ustawioną ręcznie), zostaje bez zmian."""
+        session = _line(session, FIELD_MAX, "session")
+        if not session:
+            raise BoardError("brak id sesji do połączenia")
+        num = card_num(card_id)
+        return self._execute(lambda board: self._plan_link(board, num, session, how))
+
+    def _plan_link(self, board: Board, num: int, session: str, how: str) -> Change:
+        card = self._card(board, num)
+        change = Change(result={"ok": True, "id": card.id, "changed": False, "session": card.session})
+        if card.session:
+            return change
+        card.doc.set("session", session)
+        card.doc.set("updated", self._now())
+        suffix = f" ({how})" if how else ""
+        change.commits.append((f"{card.id}: link session {session}{suffix}",
+                               [(_rel(self.root, card.path), card.doc.text())]))
+        change.result.update(changed=True, session=session)
+        return change
+
+    def _extra_projects(self, board: Board, items: list, primary: str, change: Change) -> list[str]:
+        """Dodatkowe projekty karty: slug istniejącego projektu albo ścieżka repozytorium (istniejący
+        projekt tego repozytorium albo nowy — osobny commit przed commitem karty, jak `repo` w CreateCard).
+        Bez głównego projektu i bez powtórzeń."""
+        planned: dict[str, str] = {}   # repozytorium (realpath) → slug założony w tym zapisie
+        for message, writes in change.commits:  # projekt założony już dla głównego `repo`
+            for rel, text in writes:
+                if rel.startswith("projects" + os.sep) and message.endswith(": create"):
+                    repo = Document.parse(text).get("repo").strip()
+                    if repo:
+                        planned[os.path.realpath(repo)] = os.path.basename(rel)[:-3]
+        out = []
+        for item in items:
+            if item.startswith("/"):
+                project = board.project_by_repo(item)
+                slug = project.slug if project else planned.get(os.path.realpath(item), "")
+                if not slug:
+                    slug = self._free_slug(board, slugify(os.path.basename(item)), taken=set(planned.values()))
+                    planned[os.path.realpath(item)] = slug
+                    change.commits.append((f"project {slug}: create", [(os.path.join("projects", f"{slug}.md"),
+                                                                         _new_project_doc(os.path.basename(item),
+                                                                                          item).text())]))
+            else:
+                if item not in board.projects:
+                    raise BoardError(f"nie ma projektu „{item}”", "not-found")
+                slug = item
+            if slug != primary and slug not in out:
+                out.append(slug)
+        if len(out) > PROJECTS_MAX:
+            raise BoardError(f"najwyżej {PROJECTS_MAX} dodatkowych projektów")
+        return out
+
     def _project_slug(self, board: Board, v: dict, change: Change) -> str:
         """Projekt karty: `project` (slug istniejącego) albo `repo` (istniejący projekt repozytorium
         albo nowy — osobny commit przed commitem karty)."""
@@ -770,9 +851,10 @@ class BoardStore:
             writes.append((_rel(self.root, item.path), item.doc.text()))
         return writes
 
-    def _free_slug(self, board: Board, base: str) -> str:
+    def _free_slug(self, board: Board, base: str, taken=()) -> str:
         slug, n = base, 2
-        while slug in board.projects or os.path.lexists(os.path.join(self.root, "projects", f"{slug}.md")):
+        while slug in board.projects or slug in taken or \
+                os.path.lexists(os.path.join(self.root, "projects", f"{slug}.md")):
             slug, n = f"{base}-{n}", n + 1
         return slug
 
@@ -850,7 +932,7 @@ def find_ready_spec(docs_dir: str, card_id: str) -> str:
     return ""
 
 
-def _card_json(card: Card, project: Project | None, resolved: list, derived) -> dict:
+def _card_json(card: Card, project: Project | None, resolved: list, derived, extra=()) -> dict:
     return {
         "id": card.id, "num": card.num, "title": card.title, "project": card.project,
         "projectName": project.name if project else "", "tags": list(card.tags), "resolvedTags": resolved,
@@ -864,6 +946,10 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived) -> 
         "spec": card.spec, "session": card.session, "branch": card.branch, "check": card.check,
         "mode": card.mode, "tool": card.tool, "worktree": card.worktree, "launched": card.launched,
         "launchedTs": parse_ts(card.launched), "branchSlug": branch_slug(card),
+        # Dodatkowe projekty (PT-28): slugi z pliku i rozwiązane projekty (nieznane slugi pomijamy — błąd w errors).
+        "projects": list(card.projects),
+        "extraProjects": [{"slug": p.slug, "name": p.name, "repo": p.repo, "repoMissing": p.repo_missing}
+                          for p in extra],
         "description": card.description,
         "derived": derived, "path": card.path,
     }
@@ -1012,6 +1098,31 @@ def _card_values(data: dict, create: bool = False) -> dict:
         out["project"] = slug
     if "repo" in data:
         out["repo"] = _repo(data["repo"]) if _text(data["repo"], "repo").strip() else ""
+    if "projects" in data:
+        out["projects"] = _projects(data["projects"])
+    return out
+
+
+def _projects(value) -> list[str]:
+    """Dodatkowe projekty z żądania: lista (albo napis „a, b”) slugów albo ścieżek repozytoriów."""
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, list):
+        items = [_text(item, "projects").strip() for item in value]
+    else:
+        raise BoardError("dodatkowe projekty to lista slugów albo ścieżek repozytoriów")
+    out = []
+    for item in items:
+        if not item:
+            continue
+        if item.startswith("/") or item.startswith("~"):
+            item = _repo(item)
+        elif not SLUG_RE.match(item):
+            raise BoardError(f"niepoprawny identyfikator projektu „{item}”")
+        if item not in out:
+            out.append(item)
+    if len(out) > PROJECTS_MAX + 1:  # +1: główny projekt na liście wypada później
+        raise BoardError(f"najwyżej {PROJECTS_MAX} dodatkowych projektów")
     return out
 
 

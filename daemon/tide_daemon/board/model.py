@@ -53,6 +53,10 @@ RESERVED_CARD_KEYS = ("youtrack", "spec", "session", "branch")  # wypełnią PT-
 # Ostatnie uruchomienie agenta z karty (PT-4): tryb, narzędzie, katalog worktree i chwila startu.
 # W nowych plikach tylko wtedy, gdy są ustawione (karta bez uruchomienia ich nie ma).
 LAUNCH_KEYS = ("mode", "tool", "worktree", "launched")
+# Dodatkowe projekty karty (PT-28): slugi po przecinku, główny zostaje w `project`. W nowych plikach
+# tylko wtedy, gdy są ustawione. Najwyżej PROJECTS_MAX (agent dostaje ich repozytoria przez --add-dir).
+PROJECTS_KEY = "projects"
+PROJECTS_MAX = 5
 PROJECT_KEYS = ("name", "repo", "tags", "ai-docs", "tool", "mode")
 TAG_KEYS = ("name", "color")
 
@@ -129,6 +133,7 @@ class Card:
     tool: str = ""
     worktree: str = ""
     launched: str = ""
+    projects: list = field(default_factory=list)   # dodatkowe projekty (slugi), bez głównego
     description: str = ""
     path: str = ""
     doc: Document | None = None
@@ -232,6 +237,11 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.tool = _choice(doc.get("tool"), TOOLS, "", f"{name}: nieznane narzędzie uruchomienia", path, errors)
     card.worktree = doc.get("worktree").strip()
     card.launched = doc.get("launched").strip()
+    for slug in split_tags(doc.get(PROJECTS_KEY)):
+        if not SLUG_RE.match(slug):
+            errors.append(_err(path, f"{name}: niepoprawny dodatkowy projekt „{slug}” — pomijam"))
+        elif slug != card.project and slug not in card.projects:
+            card.projects.append(slug)
     return card
 
 

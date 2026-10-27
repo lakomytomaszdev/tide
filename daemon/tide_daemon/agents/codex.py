@@ -121,6 +121,7 @@ class CodexLog(SessionLog):
     def _meta(self, payload: dict) -> None:
         self.session_id = str(payload.get("id") or self.session_id)
         self.cwd = payload.get("cwd") or self.cwd
+        self.launch_cwd = self.launch_cwd or str(payload.get("cwd") or "")
         git = payload.get("git")
         if isinstance(git, dict) and git.get("branch"):
             self.branch = git["branch"]

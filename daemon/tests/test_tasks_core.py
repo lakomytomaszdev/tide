@@ -340,7 +340,7 @@ class PlannerTest(unittest.TestCase):
         self.planner = planner
         for bad in ([os.path.join(board, "cards")], [board], [os.path.join(board, "docs")], ["docs/mobileapp"],
                     [os.path.join(board, "docs", "skrot")], [os.path.join(board, "docs", "nie-ma")],
-                    [os.path.join(board, "docs", "mobileapp", "..", "..", "cards")], "zle", [1], [docs] * 5):
+                    [os.path.join(board, "docs", "mobileapp", "..", "..", "cards")], "zle", [1], [docs] * 7):
             self.assert_refused("bad-add-dir", self.request(addDirs=bad, branch="claude/inna"))
         no_board = Planner(self.root, git=quiet_git(), env=self.env, board_root="")
         with self.assertRaises(TaskError) as ctx:

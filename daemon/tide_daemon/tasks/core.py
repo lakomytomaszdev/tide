@@ -3,7 +3,8 @@
 Przebieg (Planner.prepare → terminal → claim albo Planner.rollback):
 1. prośba z okna: repozytorium z katalogu projektów, narzędzie, polecenie, „nowy worktree”
    z nazwą gałęzi, zrzuty ekranu i dodatkowe katalogi agenta (addDirs: katalog dokumentów karty
-   w repozytorium tablicy — tylko pod `<tablica>/docs/`),
+   w repozytorium tablicy — tylko pod `<tablica>/docs/` — i repozytoria dodatkowych projektów karty:
+   repozytoria z katalogu projektów, które są projektami tablicy),
 2. sprawdzenie wszystkiego, co da się sprawdzić bez zmian na dysku (program agenta, Konsole,
    nazwa gałęzi, gałąź główna, zmiany w głównym katalogu, zrzuty),
 3. `git worktree add -b <gałąź> <ścieżka> <gałąź główna>` — gałąź główna (master, main, develop)
@@ -32,7 +33,7 @@ TOOLS = ("claude", "codex")
 TOOL_LABELS = {"claude": "Claude Code", "codex": "Codex"}
 PROMPT_LIMIT = 32_000          # znaków; jeden argument programu może mieć do 128 KiB
 IMAGE_LIMIT = 10
-ADD_DIR_LIMIT = 4
+ADD_DIR_LIMIT = 6              # katalog dokumentów karty i do 5 repozytoriów dodatkowych projektów (PT-28)
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 # Konwencja Claude Code (`claude --worktree`): worktrees w ignorowanym katalogu repozytorium.
 WORKTREES_SUBDIR = os.path.join(".claude", "worktrees")
@@ -397,34 +398,57 @@ class Planner:
             raise TaskError("no-terminal")
         repo = self._repo(request.get("repoPath") or "")
         images = self._images(request.get("images") or [])
-        add_dirs = self._add_dirs(request.get("addDirs") or [])
+        add_dirs = self._add_dirs(request.get("addDirs") or [], repo)
         new_worktree = request.get("newWorktree") is not False
         branch = request.get("branch") if isinstance(request.get("branch"), str) else ""
         return {"tool": tool, "prompt": prompt, "binary": binary, "repo": repo, "images": images,
                 "addDirs": add_dirs, "newWorktree": new_worktree, "branch": branch.strip()}
 
-    def _add_dirs(self, paths) -> list[str]:
-        """Katalogi do `--add-dir`: tylko istniejące katalogi pod `<tablica>/docs/` (dokumenty AI kart
-        projektów z `ai-docs: tide`), po rozwinięciu dowiązań; nic spoza tablicy."""
+    def _add_dirs(self, paths, repo: str = "") -> list[str]:
+        """Katalogi do `--add-dir`, po rozwinięciu dowiązań: istniejące katalogi pod `<tablica>/docs/`
+        (dokumenty AI kart projektów z `ai-docs: tide`) albo repozytoria dodatkowych projektów karty
+        (PT-28) — główny katalog repozytorium z katalogu projektów, które jest projektem tablicy. Nic
+        innego; repozytorium zadania (`repo`) pomijamy — agent i tak w nim pracuje."""
         if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
             raise TaskError("bad-add-dir", detail="niepoprawna lista")
         if len(paths) > ADD_DIR_LIMIT:
-            raise TaskError("bad-add-dir", detail=f"najwyżej {ADD_DIR_LIMIT} katalogi")
+            raise TaskError("bad-add-dir", detail=f"najwyżej {ADD_DIR_LIMIT} katalogów")
         if paths and not self.board_root:
             raise TaskError("bad-add-dir", detail="nie wiadomo, gdzie jest tablica Tide")
-        docs = os.path.join(os.path.realpath(self.board_root), "docs")
+        board = os.path.realpath(self.board_root) if self.board_root else ""
+        docs = os.path.join(board, "docs")
+        own = os.path.realpath(repo) if repo else ""
+        repos = projects = None  # liczone dopiero przy pierwszym repozytorium (skan katalogu projektów)
         out = []
         for path in paths:
             if "\0" in path or not os.path.isabs(path):
                 raise TaskError("bad-add-dir", detail=f"{path or '(pusty)'} nie jest ścieżką bezwzględną")
             real = os.path.realpath(path)
-            if not real.startswith(docs + os.sep):
-                raise TaskError("bad-add-dir", detail=f"{path} leży poza dokumentami tablicy ({docs})")
             if not os.path.isdir(real):
                 raise TaskError("bad-add-dir", detail=f"{path} nie jest katalogiem")
+            if real.startswith(docs + os.sep):
+                pass
+            elif real == board or real.startswith(board + os.sep):
+                raise TaskError("bad-add-dir", detail=f"{path} leży w tablicy poza jej dokumentami ({docs})")
+            else:
+                if repos is None:
+                    repos = {os.path.realpath(p) for p in self.repositories()}
+                    projects = self._board_project_repos()
+                if real not in repos:
+                    raise TaskError("bad-add-dir", detail=f"{path} nie jest ani katalogiem dokumentów tablicy, ani "
+                                                          "repozytorium z katalogu projektów")
+                if real not in projects:
+                    raise TaskError("bad-add-dir", detail=f"repozytorium {path} nie jest projektem tablicy Tide")
+                if real == own:
+                    continue
             if real not in out:
                 out.append(real)
         return out
+
+    def _board_project_repos(self) -> set[str]:
+        """Repozytoria projektów tablicy (po realpath) — z plików projects/*.md, tylko odczyt."""
+        from ..coordination import boardplans  # tu: czyta pliki tablicy (z pamięcią), import tylko w razie potrzeby
+        return {repo for repo, _slug, _ai_docs in boardplans.projects(self.board_root)}
 
     def _images(self, paths) -> list[str]:
         if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):

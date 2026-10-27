@@ -19,7 +19,7 @@ from .privatebus import app, wait_until
 from tide_daemon import attention
 from tide_daemon.agents import state as agent_state
 from tide_daemon.agents.gitinfo import main_root
-from tide_daemon.board.derive import PENDING, BranchState, CardDeriver
+from tide_daemon.board.derive import MISSING, PENDING, BranchState, CardDeriver
 from tide_daemon.board.model import BoardError
 from tide_daemon.board.store import BoardStore
 
@@ -347,7 +347,9 @@ class BranchStateTest(unittest.TestCase):
         git(alpha, "merge", "-q", "--no-ff", "-m", "Merge branch 'feat/old'", "feat/old")
         git(alpha, "branch", "-q", "-d", "feat/old")
         self.assertTrue(branches.merged(alpha, "feat/old"), "usunięta po scaleniu — widać commit scalenia")
-        self.assertIsNone(branches.merged(alpha, "feat/nigdy"), "nigdy jej nie było — nie wiadomo")
+        # Nigdy jej nie było: dla głównego repozytorium karty „nie wiadomo” (≠ True), dla dodatkowego —
+        # gałąź tam niepotrzebna (PT-28).
+        self.assertEqual(branches.merged(alpha, "feat/nigdy"), MISSING)
         self.assertIsNone(branches.merged(alpha, "-x"))
         self.assertIsNone(branches.merged(self.repos["beta"], "topic"))  # bez gałęzi głównej
         git(alpha, "merge", "-q", "--no-ff", "-m", "merge", "feat/unmerged")

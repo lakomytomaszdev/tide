@@ -42,6 +42,7 @@ class CodexThreadLog:
         self.meta_read = False
         self.id = ""
         self.cwd = ""
+        self.launch_cwd = ""        # cwd z session_meta — katalog startu wątku
         self.branch = ""
         self.parent_id = ""
         self.hidden = False         # recenzent zgód i inne rodzaje bez rodzica
@@ -183,6 +184,7 @@ class CodexThreadLog:
     def _meta(self, payload: dict) -> None:
         self.id = str(payload.get("id") or self.id)
         self.cwd = str(payload.get("cwd") or self.cwd)
+        self.launch_cwd = self.launch_cwd or str(payload.get("cwd") or "")
         git = payload.get("git")
         if isinstance(git, dict) and git.get("branch"):
             self.branch = str(git["branch"])
@@ -219,7 +221,7 @@ def task_name(spawn: dict) -> str:
 def build(root: CodexThreadLog, children: list[CodexThreadLog], title: str = "") -> Coordinator:
     """Koordynator z wątku głównego i wszystkich jego potomków (już doczytanych)."""
     coord = Coordinator(id=f"codex:{root.id}", tool="codex", session_id=root.id, path=root.path, cwd=root.cwd,
-                        branch=root.branch, title=title or first_message_title(root.first_message),
+                        launch_cwd=root.launch_cwd, branch=root.branch, title=title or first_message_title(root.first_message),
                         model=root.model, first_ts=root.first_ts,
                         last_ts=root.last_ts)
     spawns = dict(root.spawns)

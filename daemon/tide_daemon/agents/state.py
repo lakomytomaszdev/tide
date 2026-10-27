@@ -64,6 +64,10 @@ class SessionLog:
         self.path = path
         self.session_id = ""
         self.cwd = ""
+        # Katalog startu sesji — stały, także gdy agent potem wejdzie gdzie indziej (`cd`): Codex — cwd
+        # z session_meta, Claude Code — pierwszy cwd wpisu zgodny z katalogiem projektu dziennika
+        # (`projects/<zakodowany katalog startu>/`). Pusty, gdy dziennik tego nie mówi.
+        self.launch_cwd = ""
         self.branch = ""
         self.title = ""
         self.first_activity = 0.0

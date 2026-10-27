@@ -66,6 +66,8 @@ class ClaudeLog(SessionLog):
         self.touch(ts)
         if record.get("cwd"):
             self.cwd = record["cwd"]
+            if not self.launch_cwd and escape_cwd(self.cwd) == self.project_dir:
+                self.launch_cwd = self.cwd
         if record.get("gitBranch"):
             self.branch = record["gitBranch"]
 
