@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 from .reportfix import H, NOW, START
 from .test_report_standup import FAKE_CLAUDE
-from tide_daemon.reports import cards, collect, data, render, standup, summarize
+from tide_daemon.reports import cards, collect, data, notes, render, standup, summarize
 
 # Prawdziwe zdania z „Dziś w skrócie”, które wyszły ucięte (PT-24): jedno za długie zdanie i dwa zdania,
 # z których drugie się nie mieściło.
@@ -339,3 +339,93 @@ class MultiProjectCardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- notki przypisane do repozytorium tablicy (sprzed PT-28) ---------------------------------------------
+
+class BoardNotesTest(unittest.TestCase):
+    """Prawdziwy przypadek: notki DPT-1…3 karty K-1 zapisane z `project: "tide-board"` (koordynator, którego
+    sesja weszła do katalogu dokumentów tablicy, zanim PT-28 poprawił przypisanie) — raport pokazywał pusty
+    projekt „tide-board”."""
+
+    COORD = "claude:41c8e6e3-0000-4000-8000-000000000001"
+    DAY = "2026-10-27"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="tide-board-notes-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.board = os.path.join(self.tmp, "tide-board")
+        self.repo = os.path.join(self.tmp, "toolssuite")
+        os.makedirs(self.board)
+        os.makedirs(self.repo)
+        with open(os.path.join(self.board, "board.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\ntide-board: 1\nnext-card: 2\n---\n# Tablica\n")
+        self.path = os.path.join(self.tmp, "state", "report-notes.json")
+        store = notes.Store(self.path)
+        store.days[self.DAY] = [
+            {"id": f"{self.COORD}|DPT-{n}", "project": "tide-board", "repoPath": self.board, "ref": f"DPT-{n}",
+             "title": f"Krok {n}", "text": f"Krok {n} gotowy.", "summary": "", "ts": NOW + n}
+            for n in (1, 2, 3)] + [
+            {"id": "claude:inny|LA-1", "project": "agent-team", "repoPath": "/w/agent-team", "ref": "LA-1",
+             "title": "Dobra notka", "text": "Gotowe.", "summary": "", "ts": NOW}]
+        store.save()
+
+    def snapshot(self, session=""):
+        return {"projects": [{"slug": "toolssuite", "name": "toolssuite", "repo": self.repo}],
+                "cards": [{"id": "K-1", "title": "Data ważności wiadomości", "project": "toolssuite",
+                           "session": session, "branch": ""}]}
+
+    def test_board_notes_hidden_until_reattributed_and_persisted(self):
+        store = notes.Store(self.path)
+        self.assertEqual(list(store.notes(self.DAY)), ["agent-team"], "bez karty „tide-board”")
+        boards = [{"id": self.COORD, "project": "toolssuite", "repoPath": self.repo}]
+        fixed = store.reattribute(lambda note: notes.owner_of(note, boards, {}))
+        self.assertEqual(fixed, 3)
+        store.save()
+        again = notes.Store(self.path)
+        self.assertEqual([n["ref"] for n in again.notes(self.DAY)["toolssuite"]], ["DPT-1", "DPT-2", "DPT-3"])
+        self.assertEqual(again.reattribute(lambda note: self.fail("nic już do poprawy")), 0, "poprawione raz")
+
+    def test_owner_from_card_session_and_unresolved(self):
+        note = {"id": f"{self.COORD}|DPT-1", "project": "tide-board", "repoPath": self.board}
+        self.assertEqual(notes.owner_of(note, [], self.snapshot(session=self.COORD)), ("toolssuite", self.repo))
+        self.assertEqual(notes.owner_of(note, [{"id": self.COORD, "repoPath": self.board}],
+                                        self.snapshot(session=self.COORD)), ("toolssuite", self.repo),
+                         "tablica koordynacji wciąż wskazuje tablicę — karta rozstrzyga")
+        self.assertIsNone(notes.owner_of(note, [], self.snapshot()))
+        store = notes.Store(self.path)
+        self.assertEqual(store.reattribute(lambda n: notes.owner_of(n, [], self.snapshot())), 0)
+        self.assertNotIn("tide-board", store.notes(self.DAY), "nierozstrzygnięta zostaje ukryta")
+
+    def test_apply_live_never_makes_board_card(self):
+        board_note = {"id": f"{self.COORD}|DPT-1", "project": "tide-board", "repoPath": self.board, "text": "x",
+                      "ts": NOW}
+        out = data.apply_live({"day": self.DAY, "projects": []}, self.DAY, [],
+                              {"tide-board": [board_note], "": [dict(board_note, project="")]})
+        self.assertEqual(out["projects"], [])
+
+    def test_collect_skips_board_repo(self):
+        report = collect.build(self.DAY, START, NOW, workspace=self.tmp, claude_root=os.path.join(self.tmp, "c"),
+                               codex_root=os.path.join(self.tmp, "x"), live=[],
+                               worktrees=[{"repoPath": self.board, "path": self.board, "isMain": True,
+                                           "repo": "tide-board", "mainBranch": "master"}])
+        self.assertEqual([p.name for p in report.projects], [])
+
+    def test_monitor_fixes_notes_on_coordination_change(self):
+        from .privatebus import app
+        from tide_daemon.reports import schedule
+        from tide_daemon.report_monitor import ReportMonitor
+        app()
+        settings, _ = schedule.load_settings(None)
+        m = ReportMonitor(settings, root=os.path.join(self.tmp, "reports"),
+                          state_file=os.path.join(self.tmp, "state.json"), palette_paths=[], workspace=self.tmp,
+                          claude_root=self.tmp, codex_root=self.tmp, clock=lambda: NOW, fetch_limits=False,
+                          notes_file=self.path, board=lambda: self.snapshot(session=self.COORD))
+        emitted = []
+        m.changed.connect(lambda: emitted.append(1))
+        m.coordination_changed([])
+        self.assertEqual(emitted, [1])
+        with open(self.path, encoding="utf-8") as fh:
+            stored = json.load(fh)["days"][self.DAY]
+        self.assertEqual({n["project"] for n in stored}, {"toolssuite", "agent-team"})
+        self.assertNotIn("tide-board", m._notes_of(self.DAY))

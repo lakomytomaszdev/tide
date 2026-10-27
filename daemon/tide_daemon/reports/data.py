@@ -14,6 +14,7 @@ import os
 import re
 from datetime import datetime
 
+from ..board.marker import is_board_repo
 from . import render, schedule, standup
 
 NAME = "report.json"
@@ -236,7 +237,8 @@ def apply_live(data: dict, today: str, sessions=None, notes: dict | None = None)
     data = json.loads(json.dumps(data))   # kopia — report.json zostaje migawką z chwili złożenia
     projects = [p for p in data.get("projects") or [] if isinstance(p, dict)]
     live = data.get("day") == today and sessions is not None
-    notes = {k: v for k, v in (notes or {}).items() if v}
+    # Notka bez projektu albo z repozytorium tablicy pracy (sprzed PT-28) nie robi karty „tide-board”.
+    notes = {k: v for k, v in (notes or {}).items() if v and k and not _board_notes(v)}
     known = {p.get("name") for p in projects}
     for name, items in notes.items():
         if name not in known:
@@ -283,6 +285,11 @@ def apply_live(data: dict, today: str, sessions=None, notes: dict | None = None)
                                       _heading(data), brief=brief,
                                       notes={p["name"]: p.get("finished") or [] for p in projects})
     return data
+
+
+def _board_notes(items: list) -> bool:
+    paths = {str(n.get("repoPath") or "") for n in items if isinstance(n, dict)} - {""}
+    return bool(paths) and all(is_board_repo(p) for p in paths)
 
 
 def _heading(data: dict) -> str:

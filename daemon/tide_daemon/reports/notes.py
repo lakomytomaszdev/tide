@@ -24,6 +24,7 @@ import os
 import re
 import tempfile
 
+from ..board.marker import is_board_repo
 from . import standup
 
 NAME = "report-notes.json"
@@ -69,6 +70,7 @@ class Store:
         self.exists = False
         self.seen: dict[str, float] = {}
         self.days: dict[str, list] = {}
+        self._board_paths: dict[str, bool] = {}   # repoPath → czy to repozytorium tablicy (znacznik)
         self.load()
 
     def load(self) -> None:
@@ -103,12 +105,44 @@ class Store:
             raise
         self.exists = True
 
+    def is_board(self, note: dict) -> bool:
+        """Notka przypisana do repozytorium tablicy pracy (tablica to dane, nie projekt raportu)."""
+        path = str(note.get("repoPath") or "")
+        if not path:
+            return False
+        if path not in self._board_paths:
+            self._board_paths[path] = is_board_repo(path)
+        return self._board_paths[path]
+
     def notes(self, day: str) -> dict[str, list]:
-        """Notki doby po projekcie, od najstarszej."""
+        """Notki doby po projekcie, od najstarszej. Notka bez projektu albo przypisana do repozytorium tablicy
+        (sprzed PT-28: sesja z katalogu dokumentów tablicy) nie jest projektem raportu — czeka na
+        reattribute(), a do tego czasu jej nie pokazujemy."""
         out: dict[str, list] = {}
         for note in sorted(self.days.get(day) or [], key=lambda n: n.get("ts") or 0):
-            out.setdefault(note.get("project") or "", []).append(note)
+            if not note.get("project") or self.is_board(note):
+                continue
+            out.setdefault(note["project"], []).append(note)
         return out
+
+    def reattribute(self, resolve) -> int:
+        """Notki przypisane do repozytorium tablicy dostają projekt koordynatora: resolve(notka) →
+        (projekt, ścieżka repozytorium) albo None (nie wiadomo — notka zostaje ukryta, następna próba przy
+        kolejnej wersji tablic). Zwraca liczbę poprawionych — wołający zapisuje plik raz."""
+        fixed = 0
+        for notes in self.days.values():
+            for note in notes:
+                if not self.is_board(note):
+                    continue
+                try:
+                    found = resolve(note)
+                except Exception:  # rozpoznanie projektu to dodatek
+                    found = None
+                if not found or not found[0] or not found[1] or is_board_repo(found[1]):
+                    continue
+                note["project"], note["repoPath"] = found[0], found[1]
+                fixed += 1
+        return fixed
 
     def add(self, day: str, notes: list[dict]) -> list[dict]:
         """Dopisuje notki doby — najwyżej jedna na ticket na dobę: ticket skończony ponownie (np. „gotowe bez
@@ -237,6 +271,36 @@ def card_for(cards: list, board: dict, ticket: dict) -> dict | None:
         return hit
     branches = {str(ticket.get("branch") or ""), str(board.get("branch") or "")} - {"", "HEAD"}
     return next((c for c in cards if str(c.get("branch") or "").strip() in branches), None)
+
+
+def coordinator_of(note: dict) -> str:
+    """Id koordynatora z id notki („claude:41c8…|DPT-1” → „claude:41c8…”)."""
+    return str(note.get("id") or "").split("|", 1)[0]
+
+
+def owner_of(note: dict, boards: list, snapshot: dict | None = None) -> tuple[str, str] | None:
+    """(projekt, ścieżka repozytorium) dla notki przypisanej do tablicy: obecna tablica koordynacji tego
+    koordynatora (po PT-28 zna właściwe repozytorium), a bez niej — karta tablicy pracy związana z jego
+    sesją albo planem (card_for) → repozytorium projektu karty. None — nie wiadomo."""
+    coord = coordinator_of(note)
+    if not coord:
+        return None
+    board = next((b for b in boards or [] if isinstance(b, dict) and coord in (b.get("id"), b.get("sessionId"))),
+                 None)
+    if board is not None:
+        repo = str(board.get("repoPath") or "")
+        if repo and not is_board_repo(repo):
+            return str(board.get("project") or os.path.basename(repo.rstrip("/"))), repo
+    snapshot = snapshot or {}
+    card = card_for(snapshot.get("cards"), board or {"id": coord}, {})
+    if card is None:
+        return None
+    project = next((p for p in snapshot.get("projects") or [] if isinstance(p, dict)
+                    and p.get("slug") and p.get("slug") == card.get("project")), None)
+    repo = str((project or {}).get("repo") or "")
+    if not repo or is_board_repo(repo):
+        return None
+    return os.path.basename(repo.rstrip("/")), repo
 
 
 def card_check_from(snapshot: dict, board: dict, ticket: dict) -> dict | None:

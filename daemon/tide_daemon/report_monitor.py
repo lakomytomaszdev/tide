@@ -178,7 +178,31 @@ class ReportMonitor(QObject):
             self.mark_dirty("zmiana ticketu")
         self._ticket_states = states
         self._boards = boards
+        if self._fix_notes():
+            self.changed.emit()
         self._check_notes()
+
+    def _fix_notes(self, save: bool = True) -> int:
+        """Notki przypisane do repozytorium tablicy pracy (sprzed PT-28) → projekt koordynatora z bieżących
+        tablic koordynacji albo z karty tablicy pracy; poprawka trafia do pliku notek raz."""
+        if self.notes is None:
+            return 0
+        snapshot = None
+
+        def resolve(note):
+            nonlocal snapshot
+            if snapshot is None:
+                snapshot = self._board_snapshot() or {}
+            return notes_mod.owner_of(note, self._boards, snapshot)
+        fixed = self.notes.reattribute(resolve)
+        if fixed:
+            print(f"tide-daemon: raport: {fixed} notek przeniesionych z repozytorium tablicy do projektów", flush=True)
+            if save:
+                try:
+                    self.notes.save()
+                except OSError as exc:
+                    print(f"tide-daemon: raport: nie zapisano notek: {exc}", flush=True)
+        return fixed
 
     def _check_notes(self) -> None:
         if self.note_tracker is None:
@@ -264,11 +288,16 @@ class ReportMonitor(QObject):
         written = self.notes.add(day, written)   # tylko dodane albo zmienione — raport i powiadomienie zgodne
         if not written:
             return
+        self._fix_notes(save=False)              # zapis niżej
         self.notes.prune(self.clock(), schedule.report_days(self.root) + [day])
         try:
             self.notes.save()
         except OSError as exc:
             print(f"tide-daemon: raport: nie zapisano notek: {exc}", flush=True)
+        # Notka, której projektu nie dało się ustalić (repozytorium tablicy), nie idzie do raportu ani powiadomień.
+        written = [n for n in written if n.get("project") and not self.notes.is_board(n)]
+        if not written:
+            return
         print(f"tide-daemon: raport {day}: {len(written)} skończonych ticketów", flush=True)
         self.changed.emit()
         if self.note_notifier is None:
@@ -357,6 +386,7 @@ class ReportMonitor(QObject):
         start, end = schedule.period(now, state, day)
         sessions = list(self.sessions() or [])
         trees = self.worktrees()
+        self._fix_notes()
         notes = self._notes_of(day)
         board = self._board_snapshot()
         context = {"scheduled": scheduled, "day": day, "start": start, "end": end, "live": live}

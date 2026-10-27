@@ -12,6 +12,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from ..board.marker import is_board_repo
 from ..worktrees.git import Git
 from ..worktrees.scanner import WorktreeScanner, agent_cwds
 from . import cards as cards_mod, gitlog, limits, plans as plans_mod, sessions as sessions_mod
@@ -115,6 +116,11 @@ def build(day: str, start: float, end: float, *, workspace: str, claude_root: st
         scanner = WorktreeScanner(workspace, max_depth, git=git, clock=lambda: end)
         scanner.refresh()
         worktrees = scanner.snapshot(agent_cwds(live or []), now=end)
+
+    # Repozytorium tablicy pracy (znacznik board.md) to dane, nie projekt raportu — także gdy lista worktrees
+    # przyszła z zewnątrz (board/marker.py). Sesje z jego katalogu idą do „Poza projektami”.
+    boards = {key for key in {w.get("repoPath") or w.get("path") for w in worktrees} if key and is_board_repo(key)}
+    worktrees = [w for w in worktrees if (w.get("repoPath") or w.get("path")) not in boards]
 
     found = sessions_mod.collect(claude_root, codex_root, start, end, live)
 
