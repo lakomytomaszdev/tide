@@ -335,6 +335,8 @@ Item {
         self.assertEqual(warned(log, "SELECTED"), "log-explorer|log-explorer", "pierwszy projekt (czeka) wybrany")
         self.assertEqual(warned(log, "SECTIONTITLES"), "Zrobione|W toku|Czeka na mnie|Dalej")
         self.assertEqual(warned(log, "ITEMS"),
+                         "K-14: Wyniki wyszukiwania da się pobrać jako plik CSV. Zespół otworzy je w arkuszu bez "
+                         "kopiowania. ¦ "
                          "Wyszukiwanie fraz nie zwraca już duplikatów; poprawka przeszła review bez uwag. ¦ "
                          "Test liczby rekordów nie zależy już od czasu wykonania. ¦ "
                          "K-13: Wartość w logu: 5 z 9 ticketów, teraz warunki na kolumnach przebiegu. ¦ "
@@ -355,6 +357,50 @@ Item {
         self.assertEqual(warned(log, "STEPUP"), "2026-10-27")
         self.assertNotIn("read:2026-10-26", log)
         self.assertEqual(warned(log, "TAGS"), "praca|praca|własne|własne|własne", "tagi projektów z tablicy")
+
+    def test_brief_now_finished_stale_and_chores(self):
+        """„Dziś w skrócie” z „Czeka teraz” (na żywo), „Skończone dziś” na karcie i w panelu z ręcznym
+        sprawdzeniem, nieaktualne „Czeka na mnie” przekreślone, projekty z samymi porządkami w jednej linii."""
+        log = self.harness("LivingSmoke.qml", """import QtQuick
+Item {
+    width: 1440; height: 900
+    %(stub)s
+    ReportsView { id: view; anchors.fill: parent; backend: stub; windowActive: false }
+    %(find)s
+    Component.onCompleted: {
+        console.warn("BRIEF " + texts(view, "briefLine").join(" ¦ "))
+        console.warn("NOW " + find(view, "nowTitle").text + "|" + texts(view, "nowLine").join(" ¦ "))
+        console.warn("CARDFINISHED " + texts(view, "finishedText").join(" ¦ "))
+        console.warn("PANELFINISHED " + find(view.panel, "finishedTitle").text + "|"
+                     + all(view.panel, "finishedItem", []).length + "|" + texts(view.panel, "itemCheck").join(" ¦ "))
+        console.warn("CHORELINE " + find(view, "choreLine").text + "|" + all(view, "choreProject", []).length)
+        find(view, "choreLine").forceActiveFocus()
+        view.showChoreProjects = true
+        console.warn("CHOREOPEN " + texts(view, "choreProject").join(" ¦ "))
+        view.selectedKey = "mobile-app"
+        console.warn("STALE " + texts(view.panel, "itemStale").join("|") + "|"
+                     + all(view.panel, "itemText", []).filter(t => t.font.strikeout).map(t => t.text).join("|"))
+        console.warn("MOBILEWAIT " + texts(view, "waitText").join(" ¦ "))
+        view.selectDay("2026-10-26")
+        console.warn("OLDNOW " + find(view, "nowBox").visible + "|" + texts(view, "briefLine").length + "|"
+                     + find(view, "choreProjects").visible)
+        Qt.quit()
+    }
+}
+""" % {"stub": self.stub(fixture.sample()), "find": self.FIND})
+        self.assertEqual(problems(log), [])
+        self.assertEqual(warned(log, "BRIEF"), " ¦ ".join(fixture.today_report()["brief"]))
+        self.assertEqual(warned(log, "NOW"),
+                         "Czeka teraz · 1|log-explorer — pyta: „czy warunek ma działać też na archiwalnych logach?”")
+        self.assertEqual(warned(log, "CARDFINISHED"), "Skończone dziś: Wyniki wyszukiwania da się pobrać jako CSV")
+        self.assertEqual(warned(log, "PANELFINISHED"),
+                         "Skończone dziś|1|Sprawdź ręcznie: pobierz CSV i otwórz w arkuszu; polskie znaki w nagłówkach")
+        self.assertEqual(warned(log, "CHORELINE"), "▸ Porządki: QuotaApp, dev-dashboard|0")
+        self.assertEqual(warned(log, "CHOREOPEN"), "QuotaApp: Instrukcje dla agentów uporządkowane. ¦ "
+                                                   "dev-dashboard: Zadania przeniesione do nowego trackera.")
+        self.assertEqual(warned(log, "STALE"), "już nieaktualne — agent na to nie czeka|Wydanie: agent pyta: „Pushować?”")
+        self.assertEqual(warned(log, "MOBILEWAIT").count("Pushować"), 0, "nieaktualne nie na karcie")
+        self.assertEqual(warned(log, "OLDNOW"), "false|2|false", "starsza doba — bez „Czeka teraz”")
 
     def test_read_needs_active_view_and_window(self):
         """Widok w tle albo okno bez fokusu — raport nie jest „przeczytany”; po wejściu na wierzch tak."""
@@ -685,6 +731,8 @@ class GrabTest(unittest.TestCase):
             "reports-outside": self.grab("reports-outside", "--select", "2026-10-27/plasma-tide",
                                          "--preview", "expand=1"),
             "reports-legacy": self.grab("reports-legacy", "--select", "2026-10-24"),
+            # Projekt z nieaktualną pozycją „Czeka na mnie” (agent już nie czeka — przekreślona).
+            "reports-stale": self.grab("reports-stale", "--select", "2026-10-27/mobile-app"),
         }
         for name, png in shots.items():
             self.assertGreater(os.path.getsize(png), 40_000, name)

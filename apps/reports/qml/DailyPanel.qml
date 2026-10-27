@@ -1,5 +1,5 @@
-// Prawy panel: „Na daily” wybranego projektu — Na czym polega, Zrobione, W toku, Czeka na mnie, Dalej
-// i zwinięte Porządki; na dole „Kopiuj jako tekst” (tekst z raportu, ten sam co przycisk na stronie)
+// Prawy panel: „Na daily” wybranego projektu — Na czym polega, Skończone dziś (notki po tickecie),
+// Zrobione, W toku, Czeka na mnie (nieaktualne przekreślone), Dalej i zwinięte Porządki; na dole „Kopiuj jako tekst” (tekst z raportu, ten sam co przycisk na stronie)
 // i „Pełna strona ↗” (strona projektu w przeglądarce). Teksty z raportu zawsze jako zwykły tekst.
 import QtQuick
 import QtQuick.Layouts
@@ -16,6 +16,7 @@ Rectangle {
     property bool showChores: false
     readonly property var sections: Logic.sections(project)
     readonly property var chores: Logic.chores(project)
+    readonly property var finished: Logic.finished(project)
     readonly property string copyText: project && project.copyText ? String(project.copyText) : ""
     signal copyRequested(string text)
     signal pageRequested(string slug)
@@ -108,6 +109,36 @@ Rectangle {
                     font.pixelSize: 13
                     lineHeight: 1.25
                     wrapMode: Text.Wrap
+                }
+            }
+
+            // „Skończone dziś” — notki po tickecie (co zrobiono, co to daje, czy sprawdzić ręcznie).
+            ColumnLayout {
+                objectName: "section-finished"
+                Layout.fillWidth: true
+                visible: !panel.legacy && panel.finished.length > 0
+                spacing: 6
+                RowLayout {
+                    spacing: 7
+                    Dot { tint: "mint"; size: 8 }
+                    Text {
+                        objectName: "finishedTitle"
+                        text: "Skończone dziś"
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        font.weight: Font.DemiBold
+                    }
+                }
+                Repeater {
+                    model: panel.legacy ? [] : panel.finished
+                    delegate: DailyItem {
+                        objectName: "finishedItem"
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 15
+                        item: modelData
+                    }
                 }
             }
 

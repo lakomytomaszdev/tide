@@ -1,5 +1,6 @@
 // Karta projektu w raporcie: nazwa, tagi z tablicy (jeśli są), 1–2 zdania „co się działo”,
-// liczniki (zrobione / w toku / czeka) i „Czeka na ciebie: …” w brzoskwini. Wybrana — obwódka akcentu.
+// liczniki (zrobione / w toku / czeka), „Skończone dziś: …” w mięcie i „Czeka na ciebie: …” w brzoskwini
+// (bez pozycji, na które agent już nie czeka). Wybrana — obwódka akcentu.
 // Teksty z raportu zawsze jako zwykły tekst.
 import QtQuick
 import QtQuick.Layouts
@@ -14,6 +15,7 @@ Rectangle {
     property bool legacy: false
     readonly property var n: Logic.counts(project)
     readonly property string waits: Logic.waitText(project, 2)
+    readonly property string done: Logic.finishedText(project)
     readonly property var tags: Logic.tags(project, 3)
     signal clicked()
 
@@ -162,6 +164,20 @@ Rectangle {
             lineHeight: 1.25
             wrapMode: Text.Wrap
             maximumLineCount: 4
+            elide: Text.ElideRight
+        }
+
+        Text {
+            objectName: "finishedText"
+            Layout.fillWidth: true
+            visible: card.done !== ""
+            text: "Skończone dziś: " + card.done
+            textFormat: Text.PlainText
+            color: Tide.Tokens.mint
+            font.family: Tide.Theme.uiFamily
+            font.pixelSize: 12
+            wrapMode: Text.Wrap
+            maximumLineCount: 2
             elide: Text.ElideRight
         }
 

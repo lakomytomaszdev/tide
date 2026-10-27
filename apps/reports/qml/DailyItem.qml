@@ -1,5 +1,6 @@
 // Pozycja „Na daily”: „TOM-146: tekst”, pod spodem po co (about) i następny krok (dalej: …).
-// Pozycja „i N więcej” wyciszona. Wszystko jako zwykły tekst.
+// Pozycja „i N więcej” wyciszona, nieaktualna („już nieaktualne”) przekreślona i wyciszona, notka
+// „Skończone dziś” z dopiskiem o ręcznym sprawdzeniu. Wszystko jako zwykły tekst.
 import QtQuick
 import QtQuick.Layouts
 import "tide" as Tide
@@ -18,11 +19,36 @@ ColumnLayout {
         Layout.fillWidth: true
         text: Logic.itemText(entry.item)
         textFormat: Text.PlainText
-        color: entry.item.more || entry.muted ? Tide.Tokens.textMuted : Tide.Tokens.textPrimary
+        color: entry.item.more || entry.muted || entry.item.stale ? Tide.Tokens.textMuted : Tide.Tokens.textPrimary
         font.family: Tide.Theme.uiFamily
         font.pixelSize: 13
         font.italic: !!entry.item.more
+        font.strikeout: !!entry.item.stale
         lineHeight: 1.25
+        wrapMode: Text.Wrap
+    }
+    // Pozycja „Czeka na mnie”, na którą agent już nie czeka (przeliczane na żywo w usłudze).
+    Text {
+        objectName: "itemStale"
+        Layout.fillWidth: true
+        visible: !!entry.item.stale
+        text: "już nieaktualne — agent na to nie czeka"
+        textFormat: Text.PlainText
+        color: Tide.Tokens.textMuted
+        font.family: Tide.Theme.uiFamily
+        font.pixelSize: 11
+    }
+    // Notka „Skończone dziś”: co sprawdzić ręcznie (z planu albo karty).
+    Text {
+        objectName: "itemCheck"
+        Layout.fillWidth: true
+        visible: text !== ""
+        text: Logic.checkText(entry.item)
+        textFormat: Text.PlainText
+        color: Tide.Tokens.waiting
+        font.family: Tide.Theme.uiFamily
+        font.pixelSize: 12
+        lineHeight: 1.2
         wrapMode: Text.Wrap
     }
     Text {

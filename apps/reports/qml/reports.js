@@ -1,4 +1,5 @@
-// Logika widoku „Raporty” bez QML: etykiety dni, liczby z odmianą, sekcje „Na daily”.
+// Logika widoku „Raporty” bez QML: etykiety dni, liczby z odmianą, sekcje „Na daily”, „Dziś w skrócie”,
+// „Czeka teraz” (na żywo), „Skończone dziś” i linia projektów z samymi porządkami.
 // Dane przychodzą z /Reports Days() i Day(doba) (report.json z usługi) — wszystko jako zwykły tekst.
 .pragma library
 
@@ -114,9 +115,10 @@ function itemText(item) {
     return item.ref ? String(item.ref) + ": " + text : text
 }
 
-// „Czeka na ciebie: …” na karcie projektu — pierwsze pozycje „Czeka na mnie”, bez „i N więcej”.
+// „Czeka na ciebie: …” na karcie projektu — pierwsze pozycje „Czeka na mnie”, bez „i N więcej”
+// i bez nieaktualnych (stale: agent już na to nie czeka — usługa przelicza to na żywo).
 function waitText(project, limit) {
-    const items = list(project ? project.waiting : null).filter(i => i && !i.more)
+    const items = list(project ? project.waiting : null).filter(i => i && !i.more && !i.stale)
     if (items.length === 0) return ""
     const shown = items.slice(0, limit || 2).map(itemText)
     const rest = items.length - shown.length
@@ -133,6 +135,54 @@ function sections(project) {
 
 function chores(project) {
     return list(project ? project.chores : null)
+}
+
+// „Skończone dziś” — notki po tickecie (reports/notes.py w usłudze).
+function finished(project) {
+    return list(project ? project.finished : null).filter(n => n && n.text)
+}
+
+// Pierwsze zdanie notki na karcie projektu: „Skończone dziś: Eksport logów do CSV” (+ „i N więcej”).
+function finishedText(project) {
+    const notes = finished(project)
+    if (notes.length === 0) return ""
+    const first = String(notes[notes.length - 1].summary || notes[notes.length - 1].title || "")
+    return first + (notes.length > 1 ? " · i " + (notes.length - 1) + " więcej" : "")
+}
+
+// Dopisek o ręcznym sprawdzeniu pod notką: „Sprawdź ręcznie: a; b” albo „Wymaga sprawdzenia ręcznego”.
+function checkText(note) {
+    if (!note) return ""
+    const items = list(note.checklist).filter(c => c)
+    if (items.length) return "Sprawdź ręcznie: " + items.join("; ")
+    return note.manual ? "Wymaga sprawdzenia ręcznego" : ""
+}
+
+// „Dziś w skrócie”: zdania z raportu (model albo reguły), bez pustych.
+function briefLines(report) {
+    return list(report ? report.brief : null).filter(b => b).map(String)
+}
+
+// „Czeka teraz” (na żywo, jak widżet agentów): [{project, text}] — tekst bez projektu.
+function nowItems(report) {
+    return list(report ? report.now : null).filter(w => w).map(w => {
+        const asks = w.reason === "question" || (w.reason !== "approval" && String(w.text || "").endsWith("?"))
+        const what = asks ? (w.text ? "pyta: „" + w.text + "”" : "czeka na odpowiedź")
+                          : "czeka na zgodę" + (w.text ? " (" + w.text + ")" : "")
+        return { project: String(w.project || w.title || "agent"), text: what, id: String(w.id || "") }
+    })
+}
+
+// Projekty z samymi porządkami — jedna zwinięta linia „Porządki: QuotaApp, BO, dev-dashboard…”.
+function choreProjects(report) {
+    return list(report ? report.choreProjects : null).filter(p => p && p.name)
+}
+
+function choreLine(report, limit) {
+    const names = choreProjects(report).map(p => String(p.name))
+    if (names.length === 0) return ""
+    const shown = names.slice(0, limit || 4)
+    return "Porządki: " + shown.join(", ") + (names.length > shown.length ? "…" : "")
 }
 
 // Projekt do pokazania: po slugu albo nazwie (showItem, poprzedni wybór), inaczej pierwszy.
