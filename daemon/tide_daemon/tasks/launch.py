@@ -14,6 +14,10 @@ argumentów z pliku i przechodzi do /bin/sh jako "$@", bez sklejania napisów: c
 linie i znaki narodowe w poleceniu dla agenta docierają bez zmian. Po zakończeniu agenta karta
 zostaje ze zwykłą powłoką w tym samym katalogu.
 
+Opcjonalne pole `workdir`: katalog, w którym idzie polecenie i zostaje powłoka, gdy `cwd` służy tylko
+do przejęcia zadania (karty z logami i powłoką Dockera mają własny, pusty katalog, żeby dwie szybkie
+karty nie zamieniły się zadaniami — a powłoka po `docker logs -f` ma zostać w katalogu domowym).
+
 Skrypt celowo nie importuje niczego z tide_daemon — startuje szybko i działa także wtedy,
 gdy usługa jest w trakcie aktualizacji.
 """
@@ -121,10 +125,11 @@ def main(argv=None) -> int:
         print("Tide: nie ma zadania do uruchomienia w tym katalogu (wycofane albo już uruchomione).", flush=True)
         argv_exec = shell()
     else:
+        workdir = task.get("workdir") if isinstance(task.get("workdir"), str) and task.get("workdir") else task["cwd"]
         try:
-            os.chdir(task["cwd"])
+            os.chdir(workdir)
         except OSError as exc:
-            print(f"Tide: nie da się wejść do {task['cwd']}: {exc}", flush=True)
+            print(f"Tide: nie da się wejść do {workdir}: {exc}", flush=True)
             argv_exec = shell()
         else:
             os.environ["TIDE_TASK"] = "1"

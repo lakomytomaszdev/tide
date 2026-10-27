@@ -31,7 +31,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from .docker import disk as disk_mod
 from .docker.client import DEFAULT_SOCKET, DockerUnavailable
-from .docker.engine import ACTIONS
+from .docker.engine import ACTIONS, REPLY_BUDGET
 
 DEBOUNCE_MS = 300
 POLL_MS = 10_000
@@ -41,7 +41,9 @@ BACKOFF_MAX = 30.0
 STATS_TTL_S = 5.0
 DISK_TTL_S = 30.0
 CLAIM_TIMEOUT_S = 20.0  # tyle karta ma na przejęcie pliku zadania; potem plik jest wycofywany
-TAB_DIR_TTL_S = 86400   # puste katalogi kart starsze niż doba są sprzątane przy następnej karcie
+# Puste katalogi kart sprzątamy przy następnej karcie, gdy są starsze niż 10 min (dłużej niż przejęcie
+# zadania): po przejęciu launch.py przechodzi do katalogu domowego, więc nikt w nich nie zostaje.
+TAB_DIR_TTL_S = 600
 SHELL_COMMAND = "command -v bash >/dev/null && exec bash || exec sh"
 
 
@@ -142,11 +144,17 @@ class DockerMonitor(QObject):
 
     # --- akcje -----------------------------------------------------------------------------
 
+    # Pojedyncze akcje mają jeden termin od chwili wywołania D-Bus (REPLY_BUDGET): czekanie w kolejce
+    # wątków też się w nim mieści, więc piąta akcja przy czterech wolnych `stop` dostaje odmowę na czas,
+    # a nie odpowiedź po limicie klienta.
+
     def action(self, ident: str, action: str, reply) -> None:
-        self._run(lambda: self.engine.action(ident, action), reply)
+        deadline = time.monotonic() + REPLY_BUDGET
+        self._run(lambda: self.engine.action(ident, action, deadline), reply)
 
     def remove(self, ident: str, reply) -> None:
-        self._run(lambda: self.engine.remove(ident), reply)
+        deadline = time.monotonic() + REPLY_BUDGET
+        self._run(lambda: self.engine.remove(ident, deadline), reply)
 
     def group_action(self, project: str, action: str) -> str:
         """Zadanie w tle; od razu JSON {ok, error, job}. Wynik: actionFinished(job, json)."""
@@ -176,7 +184,8 @@ class DockerMonitor(QObject):
         return json.dumps({"ok": True, "error": "", "job": job}, ensure_ascii=False)
 
     def logs(self, ident: str, lines: int, reply) -> None:
-        self._submit(self._action_pool, lambda: self.engine.logs(ident, int(lines)),
+        deadline = time.monotonic() + REPLY_BUDGET
+        self._submit(self._action_pool, lambda: self.engine.logs(ident, int(lines), deadline),
                      lambda res: reply(json.dumps(res or {"ok": False, "error": "błąd usługi", "lines": []},
                                                   ensure_ascii=False)))
 
@@ -222,7 +231,9 @@ class DockerMonitor(QObject):
             return False
         try:
             cwd = self._tab_dir()
-            task_file = self.files.write({"argv": argv, "cwd": cwd})
+            home = self.launchers.home if self.launchers is not None else os.path.expanduser("~")
+            # cwd — własny katalog karty (do przejęcia zadania), workdir — tam idzie polecenie i zostaje powłoka.
+            task_file = self.files.write({"argv": argv, "cwd": cwd, "workdir": home})
         except OSError as exc:
             print(f"tide-daemon: docker: nie udało się zapisać pliku zadania: {exc}", flush=True)
             return False

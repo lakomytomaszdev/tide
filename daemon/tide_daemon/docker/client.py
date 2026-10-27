@@ -65,14 +65,20 @@ def host_label(path: str) -> str:
 class _Reader:
     """Bufor nad socketem: linie nagłówków, dokładna liczba bajtów, kawałki chunked."""
 
-    def __init__(self, sock: socket.socket, stop: threading.Event | None = None):
+    def __init__(self, sock: socket.socket, stop: threading.Event | None = None, deadline: float | None = None):
         self.sock = sock
         self.buf = b""
         self.eof = False
         self.stop = stop
+        self.deadline = deadline  # time.monotonic(): koniec całego zapytania, nie pojedynczego recv
 
     def _fill(self) -> bool:
         while True:
+            if self.deadline is not None:
+                left = self.deadline - time.monotonic()
+                if left <= 0:
+                    raise socket.timeout()
+                self.sock.settimeout(left)
             try:
                 data = self.sock.recv(65536)
             except socket.timeout:
@@ -201,12 +207,13 @@ class EngineClient:
     def host(self) -> str:
         return host_label(self.path)
 
-    def _connect(self, timeout: float | None) -> socket.socket:
+    def _connect(self, timeout: float | None, deadline: float | None = None) -> socket.socket:
         if self.problem:
             raise DockerUnavailable("unsupported", self.problem)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(timeout)
-        deadline = time.monotonic() + (timeout or TIMEOUT)
+        if deadline is None:
+            deadline = time.monotonic() + (timeout or TIMEOUT)
         try:
             while True:
                 try:
@@ -237,9 +244,16 @@ class EngineClient:
         return sock
 
     def open(self, method: str, path: str, query: dict | None = None, body=None, timeout: float | None = None,
-             stop: threading.Event | None = None) -> Response:
-        """Wysyła zapytanie i czyta nagłówki odpowiedzi. Treść czyta wywołujący (read, lines, pieces)."""
+             stop: threading.Event | None = None, deadline: float | None = None) -> Response:
+        """Wysyła zapytanie i czyta nagłówki odpowiedzi. Treść czyta wywołujący (read, lines, pieces).
+
+        deadline (time.monotonic()) ogranicza całość: łączenie z ponowieniami, wysłanie i każdy odczyt.
+        Bez niego timeout dotyczy pojedynczej operacji — tak działa strumień zdarzeń (stop)."""
         timeout = self.timeout if timeout is None else timeout
+        if deadline is not None:
+            timeout = deadline - time.monotonic()
+            if timeout <= 0:
+                raise DockerUnavailable("unavailable", "Docker nie odpowiada na czas")
         target = path
         if query:
             target += "?" + urlencode({k: v for k, v in query.items() if v is not None})
@@ -251,10 +265,12 @@ class EngineClient:
             head += ["Content-Type: application/json", f"Content-Length: {len(payload)}"]
         elif method in ("POST", "PUT"):
             head.append("Content-Length: 0")
-        sock = self._connect(timeout)
+        sock = self._connect(timeout, deadline)
         try:
+            if deadline is not None:
+                sock.settimeout(max(0.001, deadline - time.monotonic()))
             sock.sendall(("\r\n".join(head) + "\r\n\r\n").encode() + payload)
-            reader = _Reader(sock, stop)
+            reader = _Reader(sock, stop, deadline)
             status_line = reader.line().decode("latin-1")
             parts = status_line.split(" ", 2)
             if len(parts) < 2 or not parts[0].startswith("HTTP/"):
@@ -269,20 +285,23 @@ class EngineClient:
                 headers[name.strip().lower()] = value.strip()
         except socket.timeout:
             sock.close()
-            raise DockerUnavailable("unavailable", f"Docker nie odpowiada w {timeout:g} s") from None
+            raise DockerUnavailable("unavailable", "Docker nie odpowiada na czas") from None
         except (ConnectionError, OSError, ValueError) as exc:
             sock.close()
             raise DockerUnavailable("unavailable", f"zerwane połączenie z Dockerem ({exc})") from None
         return Response(status, headers, reader, sock)
 
     def request(self, method: str, path: str, query: dict | None = None, body=None,
-                timeout: float | None = None) -> tuple[int, bytes]:
-        """Całe zapytanie: (status, treść). Błąd HTTP (≥ 400) → DockerError."""
-        response = self.open(method, path, query, body, timeout)
+                timeout: float | None = None, deadline: float | None = None) -> tuple[int, bytes]:
+        """Całe zapytanie: (status, treść), w całości najwyżej timeout (albo do deadline). Błąd HTTP (≥ 400)
+        → DockerError."""
+        if deadline is None:
+            deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
+        response = self.open(method, path, query, body, timeout, deadline=deadline)
         try:
             data = response.read()
         except socket.timeout:
-            raise DockerUnavailable("unavailable", "Docker nie odpowiada w czasie odczytu") from None
+            raise DockerUnavailable("unavailable", "Docker nie odpowiada na czas") from None
         except (ConnectionError, OSError, ValueError) as exc:
             raise DockerUnavailable("unavailable", f"zerwane połączenie z Dockerem ({exc})") from None
         finally:
@@ -291,15 +310,17 @@ class EngineClient:
             raise DockerError(response.status, _message(data, response.status))
         return response.status, data
 
-    def get_json(self, path: str, query: dict | None = None, timeout: float | None = None):
-        _status, data = self.request("GET", path, query, timeout=timeout)
+    def get_json(self, path: str, query: dict | None = None, timeout: float | None = None,
+                 deadline: float | None = None):
+        _status, data = self.request("GET", path, query, timeout=timeout, deadline=deadline)
         try:
             return json.loads(data.decode("utf-8", "replace")) if data else None
         except ValueError:
             raise DockerError(0, "niezrozumiała odpowiedź Dockera (nie JSON)") from None
 
-    def post(self, path: str, query: dict | None = None, timeout: float | None = None) -> tuple[int, bytes]:
-        return self.request("POST", path, query, timeout=timeout)
+    def post(self, path: str, query: dict | None = None, timeout: float | None = None,
+             deadline: float | None = None) -> tuple[int, bytes]:
+        return self.request("POST", path, query, timeout=timeout, deadline=deadline)
 
     # --- wygodne skróty -------------------------------------------------------------------
 

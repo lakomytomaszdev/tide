@@ -33,7 +33,8 @@ T0 = 1793090000  # 2026-10-27, około południa
 def _iso(ts: float) -> str:
     if not ts:
         return "0001-01-01T00:00:00Z"
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ts)) + ".123456789Z"
+    # Ułamek z prawdziwego czasu, rozpisany do nanosekund jak w Dockerze.
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ts)) + f".{int((ts % 1) * 1e9):09d}Z"
 
 
 class Container:
@@ -127,6 +128,8 @@ class FakeDocker:
         }
         self.fail = {}             # ścieżka → (status, komunikat) — wymuszony błąd
         self.stats_delay = 0.0
+        self.stop_delay = 0.0      # jak długo `stop` czeka po SIGTERM (zdarzenie „kill”), zanim kontener padnie
+        self.stop_exit = 0         # kod wyjścia po `stop` (137 — zabity po limicie)
         self.event_streams = 0     # ile razy ktoś połączył się z /events
         self._listeners: list[queue.Queue] = []
         self._lock = threading.Lock()
@@ -291,8 +294,10 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "POST" and action == "stop":
             if c.state != "running":
                 return self._send(304)
-            c.state, c.exit_code, c.finished = "exited", 0, time.time()
-            fake.emit(c, "kill")
+            fake.emit(c, "kill")  # Docker wysyła je od razu, z SIGTERM — kontener jeszcze działa
+            if fake.stop_delay:
+                time.sleep(fake.stop_delay)
+            c.state, c.exit_code, c.finished = "exited", fake.stop_exit, time.time()
             fake.emit(c, "die")
             fake.emit(c, "stop")
             return self._send(204)

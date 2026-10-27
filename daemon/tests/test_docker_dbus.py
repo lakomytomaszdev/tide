@@ -22,7 +22,7 @@ PATH, IFACE = "/Docker", "org.tide.Daemon.Docker"
 FAKE_DOCKER_CLI = """#!/usr/bin/python3
 import json, os, sys
 with open(os.environ["TIDE_FAKE_DOCKER_LOG"], "a", encoding="utf-8") as fh:
-    fh.write(json.dumps(sys.argv[1:]) + "\\n")
+    fh.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd()}) + "\\n")
 """
 COMMON = ("--no-processes", "--no-notifications", "--no-krunner", "--no-idle", "--no-limits", "--no-coordination",
           "--no-tab-marks", "--no-report")
@@ -212,11 +212,14 @@ class DockerContractTest(unittest.TestCase):
         self.assertTrue(self.call("OpenLogs", "translations-slack-bot"))
         self.assertTrue(wait_until(lambda: os.path.exists(self.docker_log), timeout=10))
         self.assertTrue(self.call("OpenShell", "cookapp-api"))
-        def runs():
+        def logged():
             with open(self.docker_log, encoding="utf-8") as fh:
                 return [json.loads(line) for line in fh]
-        self.assertTrue(wait_until(lambda: len(runs()) >= 2, timeout=10))
-        runs = runs()
+        self.assertTrue(wait_until(lambda: len(logged()) >= 2, timeout=10))
+        entries = logged()
+        runs = [e["argv"] for e in entries]
+        # Karta przejmuje zadanie po własnym katalogu, ale polecenie (i powłoka po nim) idzie w $HOME.
+        self.assertEqual([e["cwd"] for e in entries], [self.home, self.home])
         self.assertEqual(runs[0], ["-H", f"unix://{self.sock}", "logs", "-f", "--tail", "200", self.c["bot"].id])
         self.assertEqual(runs[1][:5], ["-H", f"unix://{self.sock}", "exec", "-it", self.c["api"].id])
         self.assertEqual(runs[1][5:7], ["sh", "-c"])

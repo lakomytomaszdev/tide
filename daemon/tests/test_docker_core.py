@@ -44,6 +44,15 @@ class World(unittest.TestCase):
         return next(c for g in snapshot["groups"] for c in g["containers"] if c["name"] == name)
 
 
+def wait_for(predicate, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
 class SocketPathTest(unittest.TestCase):
     def test_docker_host(self):
         self.assertEqual(socket_path({}), ("/var/run/docker.sock", ""))
@@ -149,6 +158,37 @@ class BacklogTest(unittest.TestCase):
                 conn.close()
         threading.Thread(target=serve, daemon=True).start()
         self.assertEqual(EngineClient(path, timeout=3).request("GET", "/_ping"), (200, b"OK"))
+
+
+class DeadlineTest(unittest.TestCase):
+    def test_trickling_response_bounded_by_one_deadline(self):
+        tmp = tempfile.mkdtemp(prefix="tide-docker-slow-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = os.path.join(tmp, "wolny.sock")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(path)
+        server.listen(4)
+        self.addCleanup(server.close)
+
+        def serve():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            conn.recv(4096)
+            try:  # po bajcie co 0,1 s — żaden pojedynczy odczyt nie przekracza limitu
+                for byte in b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n" + b"x" * 1000:
+                    conn.sendall(bytes([byte]))
+                    time.sleep(0.1)
+            except OSError:
+                pass
+            conn.close()
+        threading.Thread(target=serve, daemon=True).start()
+        start = time.monotonic()
+        with self.assertRaises(DockerUnavailable) as ctx:
+            EngineClient(path).request("GET", "/version", timeout=0.6)
+        self.assertLess(time.monotonic() - start, 1.5)
+        self.assertIn("nie odpowiada na czas", ctx.exception.message)
 
 
 class ClientTest(World):
@@ -264,15 +304,68 @@ class SnapshotTest(World):
         self.assertIn("zatrzymany z Tide", docs["reason"])
         self.assertEqual(docs["stateText"], docs["reason"])
         self.assertTrue(self.item(self.snapshot(), "translations-slack-bot")["failed"])  # 137 bez Tide — awaria
-        self.c["docs"].state = "running"
+        self.c["docs"].state = "running"  # działa, ale z tym samym StartedAt — to wciąż zatrzymywanie
+        self.snapshot()
+        self.assertIn(self.c["docs"].id, self.engine.stopped_by_tide)
+        self.c["docs"].started = time.time() + 1  # wystartował po zatrzymaniu
+        self.engine.forget()
         self.snapshot()
         self.assertNotIn(self.c["docs"].id, self.engine.stopped_by_tide)  # znowu działa — zapomniany
         self.c["docs"].state, self.c["docs"].exit_code = "exited", 137
         self.assertTrue(self.item(self.snapshot(), "cookapp-docs")["failed"])
         self.c["docs"].oom = True
-        self.engine.stopped_by_tide.add(self.c["docs"].id)
+        self.engine.mark_stopped(self.c["docs"].id)
         self.engine.forget()
         self.assertTrue(self.item(self.snapshot(), "cookapp-docs")["failed"])  # OOM zawsze jest awarią
+
+    def test_refresh_during_stop_keeps_the_marker(self):
+        # Regresja: zdarzenie „kill” (SIGTERM) przychodzi od razu, odświeżenie widzi kontener jeszcze
+        # działający — znacznik nie może wtedy zniknąć, bo po 10 s przyjdzie 137.
+        self.snapshot()
+        self.fake.stop_delay, self.fake.stop_exit = 0.6, 137
+        result = {}
+        stopper = threading.Thread(target=lambda: result.update(self.engine.action("cookapp-docs", "stop")))
+        stopper.start()
+        self.assertTrue(wait_for(lambda: self.c["docs"].id in self.engine.stopped_by_tide))
+        mid = self.item(self.snapshot(), "cookapp-docs")
+        self.assertEqual(mid["state"], "running")
+        self.assertIn(self.c["docs"].id, self.engine.stopped_by_tide)
+        stopper.join(5)
+        self.assertTrue(result["ok"], result)
+        docs = self.item(self.snapshot(), "cookapp-docs")
+        self.assertEqual((docs["exitCode"], docs["failed"]), (137, False))
+        self.assertIn("zatrzymany z Tide", docs["reason"])
+        self.assertTrue(self.engine.action("cookapp-docs", "start")["ok"])  # start po znaczniku — znika
+        self.snapshot()
+        self.assertNotIn(self.c["docs"].id, self.engine.stopped_by_tide)
+
+    def test_markers_survive_concurrent_add_and_refresh(self):
+        details = {f"id{i}": {"State": {"StartedAt": "2020-01-01T00:00:00Z"}} for i in range(2000)}
+        errors, stop = [], threading.Event()
+
+        def adder():
+            i = 0
+            while not stop.is_set():
+                self.engine.mark_stopped(f"id{i % 2000}")
+                self.engine.mark_stopped(f"gone{i}")  # nieznany kontener — odświeżenie go zdejmie
+                i += 1
+
+        thread = threading.Thread(target=adder)
+        thread.start()
+        try:
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                try:
+                    self.engine._settle_stopped(details)
+                except RuntimeError as exc:  # „dictionary changed size during iteration”
+                    errors.append(exc)
+                    break
+        finally:
+            stop.set()
+            thread.join(5)
+        self.assertEqual(errors, [])
+        left = self.engine._settle_stopped(details)
+        self.assertTrue(left and all(i.startswith("id") for i in left))
 
     def test_testcontainers(self):
         s = self.snapshot()
@@ -589,9 +682,19 @@ class ActionsTest(World):
         self.assertEqual(steps, [f"{ident['docs']}:stop", f"{ident['api']}:stop", f"{ident['pg']}:stop",
                                  f"{ident['pg']}:start", f"{ident['docs']}:start"])
 
+    def test_expired_deadline_refuses_without_calls(self):
+        past = time.monotonic() - 0.1
+        from tide_daemon.docker.engine import BUSY
+        for result in (self.engine.action("cookapp-docs", "stop", past), self.engine.remove("translations-slack-bot", past),
+                       self.engine.logs("cookapp-api", 5, past)):
+            self.assertEqual((result["ok"], result["error"]), (False, BUSY))
+        self.assertEqual(self.fake.requests, [])
+        self.assertNotIn(self.c["docs"].id, self.engine.stopped_by_tide)
+
     def test_single_action_timeouts_fit_dbus_limit(self):
         from tide_daemon.docker import engine as engine_mod
         # Odpowiedź D-Bus pojedynczej akcji musi zdążyć przed domyślnym limitem klienta (25 s).
+        self.assertLess(engine_mod.REPLY_BUDGET, 25)
         self.assertLess(engine_mod.ACTION_TIMEOUT, 25)
         self.assertLess(engine_mod.INSPECT_TIMEOUT + engine_mod.REMOVE_TIMEOUT, 25)
         self.assertLess(engine_mod.LOGS_TIMEOUT, 25)

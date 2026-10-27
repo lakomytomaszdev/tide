@@ -523,8 +523,9 @@ class DockerAdaptor(QDBusAbstractAdaptor):
         monitor.actionFinished.connect(self.ActionFinished)
 
     def _delayed(self, message: QDBusMessage, name: str):
-        # Engine API odpowiada z wątku roboczego (stop czeka do 10 s) — odpowiedź D-Bus później, ale zawsze
-        # przed domyślnym limitem klienta 25 s (limity w docker/engine.py). Dłuższe prace to zadania.
+        # Engine API odpowiada z wątku roboczego (stop czeka do 10 s) — odpowiedź D-Bus później, w terminie
+        # REPLY_BUDGET (20 s) od wywołania, poniżej domyślnego limitu klienta 25 s (docker/engine.py).
+        # Dłuższe prace to zadania.
         message.setDelayedReply(True)
         request = QDBusMessage(message)
 

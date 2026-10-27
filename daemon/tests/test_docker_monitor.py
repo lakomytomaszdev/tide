@@ -205,6 +205,9 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual(task["argv"][1:], ["-H", f"unix://{self.sock}", "logs", "-f", "--tail", "200",
                                             self.c["bot"].id])
         self.assertTrue(docker.endswith("docker"))
+        # cwd — własny katalog karty (przejęcie zadania), workdir — tam idzie polecenie i zostaje powłoka.
+        self.assertEqual(task["cwd"], plan.cwd)
+        self.assertEqual(task["workdir"], os.path.expanduser("~"))
         self.assertTrue(mon.open_shell("cookapp-api"))
         _plan, task = self.terminal.plans[-1]
         self.assertEqual(task["argv"][3:], ["exec", "-it", self.c["api"].id, "sh", "-c", SHELL_COMMAND])
@@ -278,6 +281,26 @@ class MonitorTest(unittest.TestCase):
         calls = len([r for r in self.fake.requests if r[1].endswith("/stats")])
         self.call(mon.stats)
         self.assertGreater(len([r for r in self.fake.requests if r[1].endswith("/stats")]), calls)
+
+
+    def test_queued_action_past_its_deadline_is_refused_in_time(self):
+        import time
+        from tide_daemon import docker_monitor
+        self.fake.start()
+        mon = self.monitor()
+        self.assertTrue(wait_until(lambda: self.snapshot(mon)["available"], timeout=5))
+        self.fake.requests.clear()
+        budget = docker_monitor.REPLY_BUDGET
+        docker_monitor.REPLY_BUDGET = 0.3
+        self.addCleanup(setattr, docker_monitor, "REPLY_BUDGET", budget)
+        for _ in range(4):  # cztery wolne akcje zajmują całą pulę
+            mon._action_pool.submit(time.sleep, 0.8)
+        start = time.monotonic()
+        result = self.call(mon.action, "cookapp-docs", "stop")
+        from tide_daemon.docker.engine import BUSY
+        self.assertEqual((result["ok"], result["error"]), (False, BUSY))
+        self.assertLess(time.monotonic() - start, 3)
+        self.assertEqual(self.fake.mutating(), [])
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ nazwa), a każdy wynik to słownik `{ok, error, …}` z błędem po polsku.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
 
@@ -18,14 +19,18 @@ from .repos import RepoResolver
 
 STOP_TIMEOUT_S = 10          # `docker stop -t 10` — po tym czasie Docker zabija kontener
 # Limity pojedynczych akcji: odpowiedź D-Bus musi zdążyć przed domyślnym limitem klienta (25 s).
-# stop/restart: do 10 s czekania na zamknięcie + zabicie i start; start: zwykle sekundy.
-ACTION_TIMEOUT = 20.0
+# REPLY_BUDGET to jeden termin na całą akcję, liczony od wywołania D-Bus: obejmuje czekanie w kolejce
+# wątków, łączenie (z ponowieniami) i wszystkie zapytania akcji. stop/restart: do 10 s czekania na
+# zamknięcie, potem zabicie i (restart) start.
+REPLY_BUDGET = 20.0
+ACTION_TIMEOUT = 20.0        # jeden krok akcji poza D-Bus (zadanie GroupAction)
 INSPECT_TIMEOUT = 5.0
 REMOVE_TIMEOUT = 15.0        # Remove = inspect (≤ 5 s) + DELETE (≤ 15 s)
 LOGS_TIMEOUT = 15.0
 DISK_TIMEOUT = 20.0
 STATS_TIMEOUT = 8.0          # całe Stats(): kontenery, które nie zdążyły, po prostu nie mają wiersza
 STATS_WORKERS = 8
+BUSY = "Tide nie zdążyło — za dużo akcji naraz, spróbuj ponownie"
 LOGS_MAX = 5000
 LOGS_DEFAULT = 200
 # Zdarzenia kontenerów, które nie zmieniają migawki (exec_* to np. każde sprawdzenie zdrowia).
@@ -76,9 +81,13 @@ class DockerEngine:
         self._inspect: dict[str, tuple[tuple, dict]] = {}  # id → (klucz zmian, inspect)
         self.last: dict = unavailable("starting", "sprawdzanie Dockera…", self.client.host)
         self.containers: list[dict] = []  # z ostatniej udanej migawki
-        # Kontenery zatrzymane przez Tide: kod 137 po `stop` (zabicie po 10 s) to nie awaria.
-        # Tylko w pamięci — po restarcie usługi taki kontener znowu wygląda na „zabity”.
-        self.stopped_by_tide: set[str] = set()
+        # Kontenery zatrzymane przez Tide: id → chwila wysłania `stop` (czas ścienny, jak StartedAt Dockera).
+        # Kod 137 po takim `stop` (zabicie po 10 s) to nie awaria. Znacznik znika dopiero, gdy kontener
+        # wystartował po nim (StartedAt późniejszy) albo zniknął — nie wtedy, gdy odświeżenie w trakcie
+        # zatrzymywania widzi go jeszcze działającego. Akcje dopisują z wątków roboczych, odświeżenie czyta
+        # z własnego — stąd blokada. Tylko w pamięci: po restarcie usługi taki kontener znowu wygląda na „zabity”.
+        self._stopped: dict[str, float] = {}
+        self._stopped_lock = threading.Lock()
 
     # --- migawka ---------------------------------------------------------------------------
 
@@ -101,14 +110,33 @@ class DockerEngine:
         except DockerError as exc:
             self.last = unavailable("error", f"Docker odpowiedział błędem: {exc.message}", self.client.host)
             return self.last
-        running = {i.get("Id") for i in items if (i.get("State") or "").lower() == "running"}
-        known = {i.get("Id") for i in items}
-        self.stopped_by_tide = {i for i in self.stopped_by_tide if i in known and i not in running}
-        built = snap.build(items, details, RepoResolver(self.workspace), stopped_by_tide=set(self.stopped_by_tide))
+        built = snap.build(items, details, RepoResolver(self.workspace), stopped_by_tide=self._settle_stopped(details))
         self.containers = [c for g in built["groups"] for c in g["containers"]]
         self.last = {"available": True, "state": "ok", "error": "", "host": self.client.host,
                      "engine": dict(self.engine), "live": False, **built}
         return self.last
+
+    def mark_stopped(self, ident: str, when: float | None = None) -> None:
+        with self._stopped_lock:
+            self._stopped[ident] = time.time() if when is None else when
+
+    @property
+    def stopped_by_tide(self) -> frozenset[str]:
+        """Migawka znaczników tylko do odczytu; dopisywanie wyłącznie przez mark_stopped (pod blokadą)."""
+        with self._stopped_lock:
+            return frozenset(self._stopped)
+
+    def _settle_stopped(self, details: dict) -> set[str]:
+        """Zdejmuje znaczniki kontenerów, które zniknęły albo wystartowały po zatrzymaniu; zwraca pozostałe."""
+        with self._stopped_lock:
+            for ident, when in list(self._stopped.items()):
+                if ident not in details:
+                    del self._stopped[ident]
+                    continue
+                started = snap.parse_time(((details[ident] or {}).get("State") or {}).get("StartedAt"))
+                if started > when:
+                    del self._stopped[ident]
+            return set(self._stopped)
 
     def _details(self, items: list) -> dict:
         """Inspect każdego kontenera — z pamięci, dopóki nie zmienił się jego stan z listy."""
@@ -243,20 +271,24 @@ class DockerEngine:
 
     # --- akcje -----------------------------------------------------------------------------
 
-    def action(self, ident: str, action: str) -> dict:
+    def action(self, ident: str, action: str, deadline: float | None = None) -> dict:
+        """deadline (time.monotonic()) — termin całej akcji, ustalony przy wywołaniu D-Bus."""
         if action not in ACTIONS:
             return _fail(f"nieznana akcja: {action}")
         target = self.find(ident)
         if target is None:
             return _fail("nie ma takiego kontenera", id=ident)
-        return self._act(target, action)
+        return self._act(target, action, deadline)
 
-    def _act(self, target: dict, action: str) -> dict:
+    def _act(self, target: dict, action: str, deadline: float | None = None) -> dict:
         query = {"t": str(STOP_TIMEOUT_S)} if action in ("stop", "restart") else None
+        deadline = deadline if deadline is not None else time.monotonic() + ACTION_TIMEOUT
+        if deadline <= time.monotonic():
+            return _fail(BUSY, id=target["id"], name=target["name"])
         if action == "stop":
-            self.stopped_by_tide.add(target["id"])  # przed wywołaniem: zdarzenie „die” może przyjść pierwsze
+            self.mark_stopped(target["id"])  # przed wywołaniem: zdarzenie „die” może przyjść pierwsze
         try:
-            status, _body = self.client.post(container_path(target["id"], action), query, timeout=ACTION_TIMEOUT)
+            status, _body = self.client.post(container_path(target["id"], action), query, deadline=deadline)
         except (DockerUnavailable, DockerError) as exc:
             return _fail(_describe(exc, VERB[action]), id=target["id"], name=target["name"])
         note = ""
@@ -265,12 +297,16 @@ class DockerEngine:
         self.forget(target["id"])
         return _ok(id=target["id"], name=target["name"], note=note)
 
-    def remove(self, ident: str) -> dict:
+    def remove(self, ident: str, deadline: float | None = None) -> dict:
         target = self.find(ident)
         if target is None:
             return _fail("nie ma takiego kontenera", id=ident)
+        deadline = deadline if deadline is not None else time.monotonic() + INSPECT_TIMEOUT + REMOVE_TIMEOUT
+        if deadline <= time.monotonic():
+            return _fail(BUSY, id=target["id"], name=target["name"])
         try:
-            details = self.client.get_json(container_path(target["id"], "json"), timeout=INSPECT_TIMEOUT) or {}
+            details = self.client.get_json(container_path(target["id"], "json"),
+                                           deadline=min(deadline, time.monotonic() + INSPECT_TIMEOUT)) or {}
             state = ((details.get("State") or {}).get("Status") or "").lower()
         except (DockerUnavailable, DockerError) as exc:
             return _fail(_describe(exc), id=target["id"], name=target["name"])
@@ -278,7 +314,7 @@ class DockerEngine:
             return _fail("kontener działa — najpierw go zatrzymaj", id=target["id"], name=target["name"])
         try:
             # Bez force i bez v: działającego Docker i tak nie usunie, a wolumeny zostają.
-            self.client.request("DELETE", container_path(target["id"]), timeout=REMOVE_TIMEOUT)
+            self.client.request("DELETE", container_path(target["id"]), deadline=deadline)
         except (DockerUnavailable, DockerError) as exc:
             return _fail(_describe(exc, VERB["remove"]), id=target["id"], name=target["name"])
         self.forget(target["id"])
@@ -326,14 +362,18 @@ class DockerEngine:
         error = "; ".join(f"{f['name']}: {f['error']}" for f in failed)
         return {"ok": not failed, "error": error, "project": project, "done": done, "failed": failed, "note": ""}
 
-    def logs(self, ident: str, n: int) -> dict:
+    def logs(self, ident: str, n: int, deadline: float | None = None) -> dict:
         target = self.find(ident)
         if target is None:
             return _fail("nie ma takiego kontenera", id=ident, lines=[])
         n = LOGS_DEFAULT if n <= 0 else min(n, LOGS_MAX)
+        deadline = min(deadline, time.monotonic() + LOGS_TIMEOUT) if deadline is not None else (
+            time.monotonic() + LOGS_TIMEOUT)
+        if deadline <= time.monotonic():
+            return _fail(BUSY, id=target["id"], name=target["name"], lines=[])
         try:
             _status, body = self.client.request("GET", container_path(target["id"], "logs"),
-                                                {"stdout": "1", "stderr": "1", "tail": str(n)}, timeout=LOGS_TIMEOUT)
+                                                {"stdout": "1", "stderr": "1", "tail": str(n)}, deadline=deadline)
         except (DockerUnavailable, DockerError) as exc:
             return _fail(_describe(exc), id=target["id"], name=target["name"], lines=[])
         tty = target.get("tty") or None
