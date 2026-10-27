@@ -1,6 +1,8 @@
 // Rola modelu (Raport, Opisy kart, Agent): wybór modelu z zainstalowanych na serwerze roli, ostrzeżenie,
 // gdy wybranego modelu tam nie ma (z „Pobierz teraz”), i „Zaawansowane”: przypięcie do serwera albo
-// „za domyślnym” oraz kontekst (puste — domyślny). Każda zmiana to SetRole; wynik obok kontrolki.
+// „za domyślnym” oraz kontekst (puste — domyślny). Każda zmiana to SetRole z serwerem przypięcia (bez niego
+// usługa odpina rolę); wynik obok kontrolki. readOnly — usługa nie podaje roles.*.pinned: bez zgadywania,
+// wiersz tylko do odczytu. Wpisany, niezapisany kontekst nie wraca do zapisu przy nowym Status().
 import QtQuick
 import QtQuick.Layouts
 import "tide" as Tide
@@ -13,6 +15,8 @@ ColumnLayout {
     property var status: null
     property var page: null
     property bool advanced: false
+    property bool readOnly: false
+    property bool ctxDirty: false            // kontekst wpisany, jeszcze niezapisany
     readonly property string tag: "role:" + (row ? row.id : "")
     readonly property string warning: row ? Logic.roleWarning(row) : ""
     readonly property var server: row && status ? Logic.server(status, row.endpoint) : null
@@ -29,14 +33,19 @@ ColumnLayout {
     function pinValue() {
         return row && row.pinned ? row.endpoint : ""
     }
+    function syncCtx() {
+        if (!ctxDirty) ctxField.text = row ? Logic.ctxText(row.id, row.ctx) : ""
+    }
     function setModel(name) {
+        if (readOnly) return
         page.send("SetRole", Logic.roleRequest(row.id, name, pinValue(), undefined), tag)
     }
     function setPin(endpoint) {
-        if (!row.model) return
+        if (readOnly || !row.model) return
         page.send("SetRole", Logic.roleRequest(row.id, row.model, endpoint, undefined), tag + ":pin")
     }
     function saveCtx() {
+        if (readOnly) return
         const value = Logic.ctxValue(ctxField.text)
         if (value === undefined) {
             page.setNote(tag + ":ctx", { text: "kontekst: liczba od 0 do 1048576 albo puste (domyślny)", error: true })
@@ -46,6 +55,19 @@ ColumnLayout {
     }
 
     spacing: 6
+
+    onRowChanged: syncCtx()
+    Component.onCompleted: syncCtx()
+
+    Connections {
+        target: role.page
+        function onFinished(tag, ok) {
+            if (tag === role.tag + ":ctx" && ok) {
+                role.ctxDirty = false
+                role.syncCtx()
+            }
+        }
+    }
 
     RowLayout {
         Layout.fillWidth: true
@@ -63,7 +85,8 @@ ColumnLayout {
             objectName: "roleServer"
             Layout.fillWidth: true
             horizontalAlignment: Text.AlignRight
-            text: !role.row ? "" : "na: " + role.row.serverLabel + (role.row.pinned ? " · przypięta" : " · za domyślnym")
+            text: !role.row ? "" : "na: " + role.row.serverLabel
+                  + (!role.row.pinKnown ? "" : role.row.pinned ? " · przypięta" : " · za domyślnym")
             textFormat: Text.PlainText
             color: Tide.Tokens.textMuted
             font.family: Tide.Theme.uiFamily
@@ -86,7 +109,7 @@ ColumnLayout {
         Layout.topMargin: 2
         model: role.row ? role.row.model : ""
         options: role.row ? role.row.models : []
-        enabled: !role.busy("")
+        enabled: !role.readOnly && !role.busy("")
         emptyText: role.row && !role.row.exists ? "nie ustawiony — wybierz model" : "wybierz model"
         accessibleName: role.row ? "Model: " + role.row.title : "Model"
         onChosen: name => role.setModel(name)
@@ -111,7 +134,7 @@ ColumnLayout {
         }
         LinkText {
             objectName: "pullNow"
-            visible: role.canPull
+            visible: role.canPull && !role.readOnly
             text: role.busy("pull") ? "Zaczynam…" : "Pobierz teraz"
             enabled: !role.busy("pull")
             onClicked: page.send("PullModel", Logic.pullRequest(role.row.endpoint, role.row.model), role.tag + ":pull")
@@ -150,12 +173,14 @@ ColumnLayout {
             Layout.maximumWidth: role.width - 12
             options: role.status ? Logic.pinOptions(role.status) : []
             current: role.pinValue()
-            enabled: !!role.row && role.row.model !== "" && !role.busy("pin")
+            enabled: !role.readOnly && !!role.row && role.row.model !== "" && !role.busy("pin")
             itemHeight: 26
             onPicked: value => { if (value !== role.pinValue()) role.setPin(value) }
         }
         Note {
+            objectName: "pinNote"
             Layout.fillWidth: true
+            visible: !role.readOnly
             text: role.row && role.row.pinned
                   ? "Przypięta: zostaje na tym serwerze, gdy przełączysz używany serwer."
                   : "Idzie za używanym serwerem — przełączenie na Maca przeniesie ją razem z innymi."
@@ -177,13 +202,14 @@ ColumnLayout {
                 mono: true
                 placeholder: role.row ? Logic.ctxPlaceholder(role.row.id) : ""
                 accessibleName: "Kontekst roli " + (role.row ? role.row.title : "")
-                text: role.row ? Logic.ctxText(role.row.id, role.row.ctx) : ""
+                enabled: !role.readOnly
+                onEdited: role.ctxDirty = true
                 onAccepted: role.saveCtx()
             }
             PillButton {
                 objectName: "ctxSave"
                 text: role.busy("ctx") ? "Zapisuję…" : "Zapisz"
-                enabled: !!role.row && role.row.model !== "" && !role.busy("ctx")
+                enabled: !role.readOnly && !!role.row && role.row.model !== "" && !role.busy("ctx")
                 implicitHeight: 32
                 fill: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.08)
                 onClicked: role.saveCtx()

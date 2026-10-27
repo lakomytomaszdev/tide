@@ -19,6 +19,7 @@ Rectangle {
 
     signal requested(string member, string argument, string tag)
     signal refreshRequested()
+    signal finished(string tag, bool ok)     // po finish(): RoleRow czyści niezapisany kontekst po zapisie
 
     // Stan widoku.
     property var notes: ({})                 // tag → {text, error}
@@ -29,6 +30,13 @@ Rectangle {
     property string flashServer: ""
     property string chosenServer: ""         // „Modele na serwerze” — wybrany ręcznie
     property var advanced: ({})              // rola → true (otwarte „Zaawansowane”)
+    // Niezapisane formularze (tag → pola, także token — tylko w pamięci okna). Zmieniane w miejscu, bez
+    // powiadomień: czyta je formularz przy otwarciu, a nowy Status() ich nie dotyka.
+    property var drafts: ({})
+    // Nazwy serwerów dla Repeatera kart — nowa tablica tylko wtedy, gdy zmieni się lista nazw. Inaczej każdy
+    // Status() (model załadowany, serwer wstał) odtwarzałby karty, a otwarty formularz wracałby do zapisu.
+    property var serverNames: []
+    readonly property var roleIds: ["summary", "describe", "agent"]
 
     readonly property var problem: Logic.problem(status, serviceUp)
     readonly property bool ready: problem === null
@@ -41,6 +49,26 @@ Rectangle {
                                            : status && status.default ? status.default : ""
     readonly property int columns: Math.max(1, Math.min(3, Math.floor((serversColumn.width + 14) / (330 + 14))))
     readonly property alias flick: flick
+    readonly property bool rolesWritable: ready && Logic.rolesWritable(status)
+
+    onServerListChanged: {
+        const names = serverList.map(s => s.name)
+        if (JSON.stringify(names) !== JSON.stringify(serverNames)) serverNames = names
+    }
+
+    function serverByName(name) {
+        return serverList.find(s => s.name === name) || null
+    }
+
+    function draft(key) {
+        return drafts[key] || null
+    }
+    function keepDraft(key, values) {
+        drafts[key] = values
+    }
+    function dropDraft(key) {
+        delete drafts[key]
+    }
 
     function setIn(map, key, value) {
         const next = Object.assign({}, map)
@@ -70,11 +98,13 @@ Rectangle {
         else if (member === "PullModel") note = { text: "Pobieranie ruszyło — postęp jest na liście modeli serwera.", error: false }
         else if (tag.endsWith(":ctx")) note = { text: "Zapisano", error: false }
         notes = setIn(notes, tag, note)
+        finished(tag, ok)
         if (!ok) return
         if (tag === "add:save") {
             adding = false
             notes = setIn(setIn(notes, "add:test", null), "add:save", null)
         } else if (tag.endsWith(":save") && tag.indexOf("server:") === 0) {
+            dropDraft(tag.replace(/:save$/, ""))
             editing = ""
             notes = setIn(notes, tag.replace(/:save$/, ":edit-test"), null)
         } else if (tag.endsWith(":remove")) {
@@ -110,8 +140,13 @@ Rectangle {
         editing = name
     }
 
-    function askRemove(name) {
+    function closeEdit() {
+        if (editing !== "") dropDraft("server:" + editing)
         editing = ""
+    }
+
+    function askRemove(name) {
+        closeEdit()
         notes = setIn(notes, "server:" + name + ":remove", null)
         removing = name
     }
@@ -141,7 +176,7 @@ Rectangle {
     focus: true
     Keys.onEscapePressed: {
         if (removing !== "") removing = ""
-        else if (editing !== "") editing = ""
+        else if (editing !== "") closeEdit()
         else if (adding) adding = false
     }
 
@@ -290,23 +325,23 @@ Rectangle {
                         rowSpacing: 14
                         Repeater {
                             id: cards
-                            model: root.serverList
+                            model: root.serverNames
                             ServerCard {
-                                required property var modelData
+                                required property var modelData   // nazwa serwera
                                 Layout.fillWidth: true
                                 Layout.alignment: Qt.AlignTop
                                 Layout.preferredWidth: 330
                                 // Jeden serwer nie rozciąga się na całą szerokość — karta ma szerokość kolumny siatki.
                                 Layout.maximumWidth: Math.max(330, (serversColumn.width - 14 * (root.columns - 1)) / root.columns)
-                                server: modelData
+                                server: root.serverByName(modelData)
                                 status: root.status
                                 page: root
-                                editing: root.editing === modelData.name
-                                confirmingRemove: root.removing === modelData.name
-                                flash: root.flashServer === modelData.name
-                                onEditRequested: root.edit(modelData.name)
-                                onEditClosed: root.editing = ""
-                                onRemoveAsked: root.askRemove(modelData.name)
+                                editing: root.editing === modelData
+                                confirmingRemove: root.removing === modelData
+                                flash: root.flashServer === modelData
+                                onEditRequested: root.edit(modelData)
+                                onEditClosed: root.closeEdit()
+                                onRemoveAsked: root.askRemove(modelData)
                                 onRemoveCancelled: root.removing = ""
                             }
                         }
@@ -511,11 +546,24 @@ Rectangle {
                             text: root.notes["report"] && root.notes["report"].error ? root.notes["report"].text : ""
                         }
 
+                        Note {
+                            objectName: "rolesReadOnly"
+                            Layout.fillWidth: true
+                            Layout.topMargin: 6
+                            visible: root.ready && !root.rolesWritable
+                            tone: "warn"
+                            text: "Ta wersja usługi nie mówi, czy rola jest przypięta do serwera — role pokazuję tylko do "
+                                  + "odczytu. Żeby je zmieniać, zaktualizuj usługę Tide (make install-daemon)."
+                        }
+
+                        // Stałe role (nie wiersze ze Status()): nowy stan nie odtwarza wierszy, więc otwarte
+                        // „Zaawansowane” i niezapisany kontekst zostają.
                         Repeater {
-                            model: root.roles
+                            model: root.roleIds
                             ColumnLayout {
                                 id: roleBlock
-                                required property var modelData
+                                required property var modelData   // id roli
+                                readonly property var row: root.roles.find(r => r.id === modelData) || null
                                 Layout.fillWidth: true
                                 spacing: 12
                                 Rectangle {
@@ -525,14 +573,15 @@ Rectangle {
                                     color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.07)
                                 }
                                 RoleRow {
-                                    objectName: "role_" + roleBlock.modelData.id
+                                    objectName: "role_" + roleBlock.modelData
                                     Layout.fillWidth: true
-                                    row: roleBlock.modelData
+                                    row: roleBlock.row
                                     status: root.status
                                     page: root
-                                    advanced: root.advanced[roleBlock.modelData.id] === true
-                                    onAdvancedChanged: if (advanced !== (root.advanced[roleBlock.modelData.id] === true))
-                                                           root.advanced = root.setIn(root.advanced, roleBlock.modelData.id, advanced)
+                                    readOnly: !root.rolesWritable
+                                    advanced: root.advanced[roleBlock.modelData] === true
+                                    onAdvancedChanged: if (advanced !== (root.advanced[roleBlock.modelData] === true))
+                                                           root.advanced = root.setIn(root.advanced, roleBlock.modelData, advanced)
                                 }
                             }
                         }

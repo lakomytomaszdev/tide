@@ -11,7 +11,7 @@ import "models.js" as Logic
 Rectangle {
     id: card
 
-    property var server: null               // pozycja z Logic.servers()
+    property var server: null               // pozycja z Logic.servers() (ModelsPage szuka jej po nazwie)
     property var status: null
     property var page: null                  // ModelsPage: notes, busy, send()
     property bool editing: false
@@ -87,13 +87,23 @@ Rectangle {
                     elide: Text.ElideRight
                 }
                 Text {
+                    objectName: "serverHost"
                     Layout.fillWidth: true
-                    text: card.server ? Logic.hostText(card.server.url) + (card.server.auth ? " · z tokenem" : "") : ""
+                    text: card.server ? Logic.hostText(card.server.url) : ""
                     textFormat: Text.PlainText
                     color: Tide.Tokens.textMuted
                     font.family: Tide.Theme.monoFamily
                     font.pixelSize: 12
                     elide: Text.ElideMiddle
+                }
+                Text {
+                    objectName: "serverAuth"
+                    visible: !!card.server && card.server.auth === true
+                    text: "z tokenem"
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 11
                 }
             }
             Rectangle {
@@ -289,16 +299,21 @@ Rectangle {
             saving: card.busy("save")
             testNote: card.note("edit-test")
             saveNote: card.note("save")
+            onEdited: card.page.keepDraft(card.tag, form.draft())
             onTestRequested: request => card.page.send("TestEndpoint", request, card.tag + ":edit-test")
             onSaveRequested: request => card.page.send("SetEndpoint", request, card.tag + ":save")
             onCancelled: card.editClosed()
         }
     }
 
-    onEditingChanged: if (editing) {
-        form.load(server)
+    function openForm() {
+        form.load(server, page ? page.draft(tag) : null)
         focusTimer.start()
     }
+
+    onEditingChanged: if (editing) openForm()
+    // Karta odtworzona w trakcie edycji (nowy serwer na liście) — formularz ze szkicu.
+    Component.onCompleted: if (editing) openForm()
 
     // Fokus po pokazaniu formularza; zegar ginie razem z kartą (Repeater odtwarza karty przy nowym stanie).
     Timer {

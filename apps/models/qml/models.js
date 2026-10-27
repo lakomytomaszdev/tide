@@ -189,22 +189,29 @@ function endpointRequest(form, adding) {
 }
 
 // TestEndpoint przed zapisem: nowy adres ({url, kind, token?}) albo zapisany serwer z podmienionymi polami
-// ({name, url, kind, token?} — bez nowego tokenu idzie zapisany).
+// ({name, url, kind, token?} — bez nowego tokenu idzie zapisany). Z „Usuń token” próba idzie jak nowy adres
+// (bez name), bo usługa dołożyłaby zapisany token — ma odpowiadać temu, co się zapisze.
 function testRequest(form, adding) {
     const req = { url: String(form.url || "").trim(), kind: form.kind || "ollama" }
-    if (!adding) req.name = form.name
+    if (!adding && !form.clearToken) req.name = form.name
     if (form.token && !form.clearToken) req.token = form.token
     return JSON.stringify(req)
 }
 
 // --- role --------------------------------------------------------------------------------------
 
-// Czy rola jest przypięta do serwera. Status() mówi to wprost (roles.*.pinned), jeśli usługa to podaje;
-// inaczej wiemy na pewno tylko tyle, że rola na innym serwerze niż domyślny jest przypięta.
+// Czy rola jest przypięta do serwera: roles.*.pinned z usługi. Bez tego pola (starsza usługa) — null:
+// nie zgadujemy, bo SetRole bez serwera odpina rolę, a przypięcie do używanego serwera jest niewidoczne.
 function pinned(status, role) {
     if (!role) return false
-    if (typeof role.pinned === "boolean") return role.pinned
-    return !!role.endpoint && role.endpoint !== status.default
+    return typeof role.pinned === "boolean" ? role.pinned : null
+}
+
+// Role można zmieniać tylko wtedy, gdy usługa mówi o każdej, czy jest przypięta.
+function rolesWritable(status) {
+    const roles = status && status.roles ? status.roles : {}
+    for (const id in roles) if (roles[id] && typeof roles[id].pinned !== "boolean") return false
+    return true
 }
 
 function modelNames(status, endpointName) {
@@ -229,7 +236,8 @@ function roleRows(status) {
             endpoint: endpointName,
             serverLabel: labelOf(status, endpointName),
             serverState: state,
-            pinned: pinned(status, role),
+            pinned: pinned(status, role) === true,
+            pinKnown: pinned(status, role) !== null,
             installed: role ? role.installed : null,
             available: role ? role.available === true : false,
             error: role && role.error ? role.error : "",

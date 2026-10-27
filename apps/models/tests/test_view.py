@@ -120,13 +120,14 @@ class BackendDataTest(unittest.TestCase):
         for url in ("http://mac-studio:11434", "http://10.20.1.40:11434", "http://[fd7a:115c::1]:11434", "nie url"):
             self.assertFalse(m.is_local_url(url), url)
         self.assertEqual(m.server_label("local", "http://127.0.0.1:11434"), "Ten komputer")
-        self.assertEqual(m.server_label("Mac-Studio", "http://mac-studio:11434"), "Mac Studio")
+        self.assertEqual(m.server_label("Mac-Studio", "http://mac-studio:11434"), "Mac-Studio")
+        self.assertEqual(m.server_label("lm_studio", "http://mac-studio:1234"), "lm_studio", "nazwa z pliku bez przerabiania")
         two = {"local": {"url": "http://127.0.0.1:11434"}, "lm": {"url": "http://127.0.0.1:1234"}}
         self.assertEqual(m.server_label("lm", "http://127.0.0.1:1234", two), "Ten komputer · lm")
         status = m.decorate(sample("mac"))
         self.assertEqual({n: (e["label"], e["local"]) for n, e in status["endpoints"].items()},
-                         {"local": ("Ten komputer", True), "Mac-Studio": ("Mac Studio", False),
-                          "lm-studio": ("lm studio", False)})
+                         {"local": ("Ten komputer", True), "Mac-Studio": ("Mac-Studio", False),
+                          "lm-studio": ("lm-studio", False)})
 
     def test_problems_and_badge(self):
         m = self.mod
@@ -135,7 +136,7 @@ class BackendDataTest(unittest.TestCase):
         self.assertEqual(texts["local"], [])
         self.assertEqual(texts["mac"], [])
         self.assertEqual(texts["checking"], [], "przed pierwszym odczytem nic nie jest problemem")
-        self.assertEqual(texts["mac-offline"], ["Agent: serwer „Mac Studio” nie odpowiada"],
+        self.assertEqual(texts["mac-offline"], ["Agent: serwer „Mac-Studio” nie odpowiada"],
                          "raport z Claude: serwer lokalny liczy się tylko dla agenta")
         self.assertEqual(texts["pulling"], ["Opisy kart: modelu gpt-oss:20b nie ma na serwerze „Ten komputer”"])
         self.assertEqual(texts["errors"], ["Używany serwer „Ten komputer” nie odpowiada"],
@@ -155,7 +156,7 @@ class BackendDataTest(unittest.TestCase):
         backend = self.mod.create(None, sample("mac-offline"))
         self.assertTrue(backend.available and backend.preview)
         status = json.loads(backend.statusJson)
-        self.assertEqual(status["endpoints"]["Mac-Studio"]["label"], "Mac Studio")
+        self.assertEqual(status["endpoints"]["Mac-Studio"]["label"], "Mac-Studio")
         self.assertEqual(len(status["problems"]), 1)
         self.assertEqual((backend.badgeText, backend.badgeTone), ("● 1", "waiting"))
         got = []
@@ -220,7 +221,10 @@ Item {
         console.warn("AGENT " + JSON.stringify(Logic.roleRows(d.local)[2].exists) + ":" + Logic.roleRows(d.local)[2].endpoint)
         const explicit = JSON.parse(JSON.stringify(d.local))
         explicit.roles.summary.pinned = true
+        const old = JSON.parse(JSON.stringify(d.local))
+        delete old.roles.summary.pinned
         console.warn("PIN " + Logic.pinned(d.local, d.local.roles.summary) + "|" + Logic.pinned(explicit, explicit.roles.summary)
+                     + "|" + Logic.pinned(old, old.roles.summary) + "|" + Logic.rolesWritable(old) + "|" + Logic.rolesWritable(d.local)
                      + "|" + Logic.pinOptions(mac).map(o => o.value + "=" + o.label).join(","))
         console.warn("CTX " + [Logic.ctxText("summary", 8192), Logic.ctxText("agent", 32768), Logic.ctxText("agent", null),
                                Logic.ctxPlaceholder("describe"), Logic.ctxPlaceholder("agent"),
@@ -244,7 +248,8 @@ Item {
         console.warn("EPREQ " + Logic.endpointRequest({ name: "Mac Studio", url: " http://m:1 ", kind: "ollama", token: "t0k" }, true)
                      + " " + Logic.endpointRequest({ name: "local", url: "http://127.0.0.1:11434", kind: "openai", token: "x", clearToken: true }, false)
                      + " " + Logic.testRequest({ name: "Mac-Studio", url: "http://m:1", kind: "ollama", token: "" }, false)
-                     + " " + Logic.testRequest({ name: "Nowy", url: "http://n:1", kind: "openai", token: "abc" }, true))
+                     + " " + Logic.testRequest({ name: "Nowy", url: "http://n:1", kind: "openai", token: "abc" }, true)
+                     + " " + Logic.testRequest({ name: "Mac-Studio", url: "http://m:2", kind: "ollama", token: "", clearToken: true }, false))
         console.warn("TEST " + [Logic.testText({ ok: true, version: "0.40.11", models: 3 }), Logic.testText({ ok: true, version: null, models: 1 }),
                                 Logic.testText({ ok: false, error: "serwer nie odpowiada" }), Logic.testText(null)].map(t => (t.error ? "!" : "") + t.text).join("|"))
         console.warn("BYTES " + [Logic.bytes(5225388164), Logic.bytes(65290196070), Logic.bytes(566700000), Logic.bytes(1157672605), Logic.bytes(-1)].join("|"))
@@ -254,25 +259,25 @@ Item {
 }
 """)
         self.assertEqual(problems(log), [])
-        self.assertEqual(warned(log, "SERVERS"), "Ten komputer:online,Mac Studio:online*,lm studio:online")
+        self.assertEqual(warned(log, "SERVERS"), "Ten komputer:online,Mac-Studio:online*,lm-studio:online")
         self.assertEqual(warned(log, "STATES"), "nie odpowiada|sprawdzam…|sprawdzam…|działa")
         self.assertEqual(warned(log, "FACTS"), "Ollama 0.41.2 · 5 modeli|zgodny z OpenAI · 2 modele|Ollama")
         self.assertEqual(warned(log, "LOADED"), "gpt-oss:20b:true:83% na karcie — reszta na procesorze, pisze wolniej|"
                                                 "nic nie jest teraz załadowane|serwer nie mówi, co ma w pamięci")
-        self.assertEqual(warned(log, "SUMMARY"), "Używany serwer: Mac Studio · działa · Ollama 0.41.2 · 5 modeli")
+        self.assertEqual(warned(log, "SUMMARY"), "Używany serwer: Mac-Studio · działa · Ollama 0.41.2 · 5 modeli")
         self.assertEqual(warned(log, "ROLES"), "summary:qwen3:8b@local:5,describe:qwen3:8b@local:5,"
                                                "agent:qwen3-coder:30b@Mac-Studio!:0")
-        self.assertEqual(warned(log, "WARN"), "||Serwer „Mac Studio” nie odpowiada — rola niedostępna|"
+        self.assertEqual(warned(log, "WARN"), "||Serwer „Mac-Studio” nie odpowiada — rola niedostępna|"
                                               "Modelu gpt-oss:20b nie ma na serwerze „Ten komputer”")
         self.assertEqual(warned(log, "AGENT"), "false:local")
-        self.assertEqual(warned(log, "PIN"), "false|true|=Za domyślnym,local=Ten komputer,Mac-Studio=Mac Studio")
+        self.assertEqual(warned(log, "PIN"), "false|true|null|false|true|=Za domyślnym,local=Ten komputer,Mac-Studio=Mac-Studio")
         self.assertEqual(warned(log, "CTX"), "|32768||domyślny (8192)|domyślny (kontekst serwera)|null|16384|undefined|undefined")
         self.assertEqual(warned(log, "ROLEREQ"), '{"role":"agent","model":"qwen3:8b","endpoint":""} '
                                                  '{"role":"summary","model":"x","endpoint":"local","ctx":null}')
         report = warned(log, "REPORT").split(" ¦ ")
         self.assertIn("Anthropic", report[0])
         self.assertIn("limitów Claude", report[0])
-        self.assertIn("na serwerze „Mac Studio” (gpt-oss:120b)", report[1])
+        self.assertIn("na serwerze „Mac-Studio” (gpt-oss:120b)", report[1])
         self.assertIn("Nic nie jest wysyłane", report[2])
         self.assertIn("na tym komputerze. Tekst jest tu słabszy niż z Claude", warned(log, "REPORTLOCAL"))
         notes = warned(log, "NOTES")
@@ -293,7 +298,8 @@ Item {
         self.assertEqual(warned(log, "EPREQ"), '{"name":"Mac-Studio","url":"http://m:1","kind":"ollama","token":"t0k"} '
                                                '{"name":"local","url":"http://127.0.0.1:11434","kind":"openai","clearToken":true} '
                                                '{"url":"http://m:1","kind":"ollama","name":"Mac-Studio"} '
-                                               '{"url":"http://n:1","kind":"openai","token":"abc"}')
+                                               '{"url":"http://n:1","kind":"openai","token":"abc"} '
+                                               '{"url":"http://m:2","kind":"ollama"}')
         self.assertEqual(warned(log, "TEST"), "Połączenie działa · Ollama 0.40.11 · 3 modele|Połączenie działa · 1 model|"
                                               "!serwer nie odpowiada|!brak odpowiedzi usługi")
         self.assertEqual(warned(log, "BYTES"), "5,2 GB|65,3 GB|567 MB|1,2 GB|")
@@ -378,8 +384,10 @@ Item {
         form.urlText = "http://10.20.1.40:11434"
         console.warn("MOVES " + find(form, "tokenMoves").visible + "|" + texts(form, [], "tokenMoves").join(""))
         form.test()
+        page.finish("server:Mac-Studio:edit-test", "TestEndpoint", { ok: false, error: "serwer nie odpowiada" })
         find(form, "clearToken").clicked()
         console.warn("CLEARED " + find(form, "tokenMoves").visible + "|" + form.clearToken)
+        form.test()
         form.save()
         console.warn("EDITREQ " + top.calls.join(","))
         page.finish("server:Mac-Studio:save", "SetEndpoint", { ok: false, error: "nazwa „qwen3” jest początkiem modelu roli summary" })
@@ -445,8 +453,8 @@ Item {
 """)
         self.assertEqual(problems(log), [])
         self.assertEqual(warned(log, "SUMMARY"), "Używany serwer: Ten komputer · działa · Ollama 0.40.11 · 5 modeli")
-        self.assertEqual(warned(log, "ISSUES"), "● Agent: serwer „Mac Studio” nie odpowiada")
-        self.assertEqual(warned(log, "TITLES"), "Ten komputer,Mac Studio")
+        self.assertEqual(warned(log, "ISSUES"), "● Agent: serwer „Mac-Studio” nie odpowiada")
+        self.assertEqual(warned(log, "TITLES"), "Ten komputer,Mac-Studio")
         self.assertEqual(warned(log, "MARKS"), "true|false|false|true")
         self.assertEqual(warned(log, "DEFAULT"), "SetDefault(Mac-Studio)@server:Mac-Studio:default|false|Przełączam…")
         self.assertEqual(warned(log, "DEFAULTNOTE"), "default: punkt „Mac-Studio” jest pominięty w models.json — popraw go "
@@ -464,6 +472,7 @@ Item {
         self.assertEqual(warned(log, "EDITREQ"),
                          'TestEndpoint({"url":"http://10.20.1.40:11434","kind":"ollama","name":"Mac-Studio"})'
                          '@server:Mac-Studio:edit-test,'
+                         'TestEndpoint({"url":"http://10.20.1.40:11434","kind":"ollama"})@server:Mac-Studio:edit-test,'
                          'SetEndpoint({"name":"Mac-Studio","url":"http://10.20.1.40:11434","kind":"ollama",'
                          '"clearToken":true})@server:Mac-Studio:save')
         self.assertEqual(warned(log, "EDITERR"), "nazwa „qwen3” jest początkiem modelu roli summary|Mac-Studio")
@@ -475,7 +484,7 @@ Item {
                                                '"kind":"ollama"})@add:save|false')
         self.assertEqual(warned(log, "REPORT"), "SetReportSummary(local)@report|raport: nie udało się zapisać report.json "
                                                 "(PermissionError)")
-        self.assertEqual(warned(log, "AGENTROW"), "na: Mac Studio · przypięta|⚠ Serwer „Mac Studio” nie odpowiada — rola "
+        self.assertEqual(warned(log, "AGENTROW"), "na: Mac-Studio · przypięta|⚠ Serwer „Mac-Studio” nie odpowiada — rola "
                                                   "niedostępna")
         self.assertEqual(warned(log, "ROLES"),
                          'SetRole({"role":"agent","model":"qwen3:8b","endpoint":"Mac-Studio"})@role:agent,'
@@ -489,6 +498,165 @@ Item {
         self.assertEqual(warned(log, "REFRESH"), "Refresh")
         self.assertEqual(warned(log, "PULLROWS"), "2|Pobieranie gpt-oss:20b: 5,5 GB z 13,8 GB · 39%")
         self.assertEqual(warned(log, "NOSERVICE"), "true|Usługa tide-daemon nie odpowiada|false")
+
+    def test_drafts_survive_status_updates(self):
+        """Formularz edycji serwera i niezapisany kontekst roli nie wracają do zapisanych wartości, gdy przyjdzie
+        nowy Status() (model się załadował, serwer wstał albo padł, odczyt po „Sprawdź”, nowy serwer)."""
+        log = self.harness("DraftSmoke.qml", """import QtQuick
+Item {
+    id: top
+    width: 1500; height: 1100
+    readonly property var d: %DATA%
+    property var calls: []
+    ModelsPage {
+        id: page
+        anchors.fill: parent
+        status: top.d["mac-offline"]
+        onRequested: (member, argument, tag) => top.calls.push(member + "(" + argument + ")@" + tag)
+    }
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children) {
+            const hit = find(child, name)
+            if (hit) return hit
+        }
+        return null
+    }
+    function findAll(item, name, out) {
+        if (item.objectName === name) out.push(item)
+        for (const child of item.children) findAll(child, name, out)
+        return out
+    }
+    function form() {
+        return findAll(page, "editForm", []).find(f => f.visible) || null
+    }
+    function changed(base, fn) {
+        const next = JSON.parse(JSON.stringify(base))
+        fn(next)
+        return next
+    }
+    Timer {
+        interval: 100
+        running: true
+        onTriggered: top.steps()
+    }
+    function steps() {
+        page.edit("Mac-Studio")
+        Qt.callLater(() => {
+            const f = form()
+            f.urlText = "http://10.20.1.40:11434"
+            find(f, "tokenField").text = "nowy-token"
+            find(f, "tokenField").edited()
+            const summary = find(page, "role_summary")
+            summary.advanced = true
+            find(summary, "ctxField").text = "16384"
+            find(summary, "ctxField").edited()
+            // Nowe stany z usługi: model załadowany, inna wersja, Mac wstał, potem nowy serwer.
+            page.status = top.changed(top.d["mac-offline"], s => { s.endpoints.local.loaded = []; s.endpoints.local.version = "0.41.0" })
+            page.status = top.changed(top.d["mac-offline"], s => { s.endpoints["Mac-Studio"].online = true; s.endpoints["Mac-Studio"].error = "" })
+            page.status = top.changed(top.d.mac, s => {})
+            Qt.callLater(() => {
+                const g = form()
+                console.warn("FORM " + (g !== null) + "|" + (g ? g.urlText + "|" + find(g, "tokenField").text : "") + "|" + page.editing)
+                console.warn("CTX " + find(find(page, "role_summary"), "ctxField").text + "|" + find(page, "role_summary").advanced)
+                g.save()
+                console.warn("SAVE " + top.calls.join(","))
+                Qt.quit()
+            })
+        })
+    }
+}
+""")
+        self.assertEqual(problems(log), [])
+        self.assertEqual(warned(log, "FORM"), "true|http://10.20.1.40:11434|nowy-token|Mac-Studio")
+        self.assertEqual(warned(log, "CTX"), "16384|true")
+        self.assertEqual(warned(log, "SAVE"), 'SetEndpoint({"name":"Mac-Studio","url":"http://10.20.1.40:11434",'
+                                              '"kind":"ollama","token":"nowy-token"})@server:Mac-Studio:save')
+
+    def test_role_pinning(self):
+        """Z `pinned` z usługi: przypięcie do używanego serwera widać, model i kontekst wysyłają serwer przypięcia,
+        „przełączenie przeniesie” tylko przy nieprzypiętych. Bez `pinned` (stara usługa) — tylko do odczytu."""
+        log = self.harness("PinSmoke.qml", """import QtQuick
+Item {
+    id: top
+    width: 1500; height: 1100
+    readonly property var d: %DATA%
+    property var calls: []
+    ModelsPage {
+        id: page
+        anchors.fill: parent
+        status: top.d.mac
+        onRequested: (member, argument, tag) => top.calls.push(member + "(" + argument + ")@" + tag)
+    }
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children) {
+            const hit = find(child, name)
+            if (hit) return hit
+        }
+        return null
+    }
+    function texts(item, out, name) {
+        if (!item.visible) return out
+        if (typeof item.text === "string" && item.text !== "" && (!name || item.objectName === name)) out.push(item.text)
+        for (const child of item.children) texts(child, out, name)
+        return out
+    }
+    Timer {
+        interval: 100
+        running: true
+        onTriggered: top.steps()
+    }
+    function steps() {
+        // Agent przypięty do Maca, który jest też używanym serwerem; opisy kart — za domyślnym.
+        const agent = find(page, "role_agent"), describe = find(page, "role_describe")
+        agent.advanced = true
+        describe.advanced = true
+        console.warn("LABELS " + texts(agent, [], "roleServer").join("") + "|" + texts(describe, [], "roleServer").join(""))
+        console.warn("NOTES " + texts(agent, [], "pinNote").join("") + "|" + texts(describe, [], "pinNote").join(""))
+        console.warn("SWITCH " + find(agent, "pinSwitch").current + "|" + find(describe, "pinSwitch").current)
+        agent.setModel("qwen3:32b")
+        find(agent, "ctxField").text = "65536"
+        agent.saveCtx()
+        describe.setModel("qwen3:32b")
+        console.warn("CALLS " + top.calls.join(","))
+        // Stara usługa bez `pinned`: role tylko do odczytu, żadnego SetRole.
+        top.calls = []
+        const old = JSON.parse(JSON.stringify(top.d.mac))
+        for (const r in old.roles) delete old.roles[r].pinned
+        page.status = old
+        Qt.callLater(() => {
+            const a = find(page, "role_agent")
+            console.warn("OLD " + find(a, "modelPicker").enabled + "|" + find(a, "pinSwitch").enabled + "|"
+                         + find(a, "ctxSave").enabled + "|" + texts(page, [], "rolesReadOnly").join("") + "|"
+                         + texts(a, [], "roleServer").join(""))
+            a.setModel("qwen3:8b")
+            a.setPin("")
+            a.saveCtx()
+            find(page, "role_summary").setModel("qwen3:8b")
+            console.warn("OLDCALLS " + top.calls.length)
+            Qt.quit()
+        })
+    }
+}
+""")
+        self.assertEqual(problems(log), [])
+        self.assertEqual(warned(log, "LABELS"), "na: Mac-Studio · przypięta|na: Mac-Studio · za domyślnym")
+        notes = warned(log, "NOTES").split("|")
+        self.assertIn("zostaje na tym serwerze", notes[0])
+        self.assertNotIn("przeniesie", notes[0])
+        self.assertIn("przeniesie", notes[1])
+        self.assertEqual(warned(log, "SWITCH"), "Mac-Studio|")
+        self.assertEqual(warned(log, "CALLS"),
+                         'SetRole({"role":"agent","model":"qwen3:32b","endpoint":"Mac-Studio"})@role:agent,'
+                         'SetRole({"role":"agent","model":"qwen3-coder:30b","endpoint":"Mac-Studio","ctx":65536})'
+                         '@role:agent:ctx,'
+                         'SetRole({"role":"describe","model":"qwen3:32b","endpoint":""})@role:describe')
+        old = warned(log, "OLD").split("|")
+        self.assertEqual(old[:3], ["false", "false", "false"])
+        self.assertIn("zaktualizuj usługę Tide", old[3])
+        self.assertEqual(old[4], "na: Mac-Studio")
+        self.assertEqual(warned(log, "OLDCALLS"), "0")
 
     def test_view_routes_backend_and_preview(self):
         """ModelsView z atrapą backendu: prośby strony idą do backend.request, replied wraca do strony, railInfo,
@@ -536,7 +704,7 @@ Item {
 """)
         self.assertEqual(problems(log), [])
         self.assertEqual(warned(log, "BEFORE"), "null|false")
-        self.assertEqual(json.loads(warned(log, "RAIL")), {"label": "Używany serwer", "value": "Mac Studio",
+        self.assertEqual(json.loads(warned(log, "RAIL")), {"label": "Używany serwer", "value": "Mac-Studio",
                                                            "note": "mac-studio:11434 · działa · Ollama 0.41.2 · 5 modeli"})
         self.assertEqual(warned(log, "PENDING"), "|Mac-Studio|Mac-Studio")
         self.assertEqual(warned(log, "PREVIEW"), "true|rola „summary”: podaj nazwę modelu")
@@ -600,7 +768,7 @@ class BackendOverDbusTest(unittest.TestCase):
                         "stan od razu po zapisie, bez czekania na cykl")
         mac = self.status(backend)["endpoints"]["Mac-Studio"]
         # Atrapa „Maca” też jest na 127.0.0.1, więc to drugi serwer na tym komputerze — z nazwą.
-        self.assertEqual((mac["label"], mac["auth"]), ("Ten komputer · Mac Studio", True))
+        self.assertEqual((mac["label"], mac["auth"]), ("Ten komputer · Mac-Studio", True))
         self.assertEqual(self.status(backend)["endpoints"]["local"]["label"], "Ten komputer · local")
         self.assertNotIn("sekret-123", backend.statusJson)
 
@@ -669,7 +837,7 @@ class GrabTest(unittest.TestCase):
 
     def test_grabs(self):
         self.assertGreater(self.grab("mac", "mac", "--select", "lm-studio"), 60_000)
-        self.assertGreater(self.grab("add", "local", "--preview", "add=Mac Studio", "--preview", "url=http://m:11434"),
+        self.assertGreater(self.grab("add", "local", "--preview", "add=Mac-Studio", "--preview", "url=http://m:11434"),
                            60_000)
         self.assertGreater(self.grab("errors", "errors", "--preview", "remove=local", "--preview", "edit=Mac-Studio",
                                      "--preview", "note=server:local:remove|odmowa", size=("1380", "620")), 40_000)

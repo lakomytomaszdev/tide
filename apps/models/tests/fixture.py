@@ -3,12 +3,16 @@
 Warianty (nazwa → Status):
   local        — tylko ten komputer: Ollama działa, qwen3:8b w pamięci w całości na karcie, raport lokalnie,
   mac-offline  — ten komputer i Mac Studio, który nie odpowiada; agent przypięty do Maca, raport z Claude,
-  mac          — Mac Studio jako używany serwer (działa, duże modele) i serwer zgodny z OpenAI na Macu,
+  mac          — Mac Studio jako używany serwer (działa, duże modele) i serwer zgodny z OpenAI na Macu;
+                 agent przypięty do Maca, który jest też używanym serwerem,
   pulling      — pobieranie w toku i nieudane, rola z modelem, którego jeszcze nie ma na serwerze,
   errors       — używany serwer nie odpowiada, ostrzeżenie z models.json, tryb raportu wymuszony opcją
                  --report-summary local (w pliku claude),
                  nowy serwer jeszcze niesprawdzony,
   checking     — pierwszy odczyt po starcie usługi (checked: false).
+
+Role mają `pinned` (PT-25 po review: przypięta do serwera czy za domyślnym); stara usługa go nie podaje
+— test usuwa pole i sprawdza, że widok pokazuje role tylko do odczytu.
 
 Rozmiary i wersje jak na tym komputerze (PT-13), bez ścieżek prywatnych plików.
 
@@ -48,12 +52,12 @@ def _loaded(model: dict, gpu: int, ctx: int = 8192) -> dict:
             "contextLength": ctx, "expiresAt": "2026-10-27T17:05:00+01:00"}
 
 
-def _role(endpoint, model, ctx, endpoints, error="") -> dict:
+def _role(endpoint, model, ctx, endpoints, error="", pinned=False) -> dict:
     state = endpoints.get(endpoint) or {}
     online = bool(state.get("online"))
     installed = (model in [m["name"] for m in state.get("models") or []]) if online else None
     return {"endpoint": endpoint, "model": model, "ctx": ctx, "installed": installed,
-            "available": bool(online and installed and not error), "error": error}
+            "available": bool(online and installed and not error), "error": error, "pinned": pinned}
 
 
 def _report(summary="local", configured=None, pinned=False, warnings=()) -> dict:
@@ -87,7 +91,7 @@ def mac_offline() -> dict:
                                          error="Model lokalny niedostępny: serwer nie odpowiada (mac-studio:11434)")}
     roles = {"summary": _role("local", "qwen3:8b", 8192, endpoints),
              "describe": _role("local", "qwen3:8b", 8192, endpoints),
-             "agent": _role("Mac-Studio", "qwen3-coder:30b", None, endpoints)}
+             "agent": _role("Mac-Studio", "qwen3-coder:30b", None, endpoints, pinned=True)}
     return _status("local", endpoints, roles, report=_report("claude"))
 
 
@@ -100,7 +104,7 @@ def mac() -> dict:
                                         models=[{"name": "qwen/qwen3-32b"}, {"name": "mistral-small-3.2"}])}
     roles = {"summary": _role("Mac-Studio", "gpt-oss:120b", 8192, endpoints),
              "describe": _role("Mac-Studio", "qwen3:8b", 8192, endpoints),
-             "agent": _role("Mac-Studio", "qwen3-coder:30b", 32768, endpoints)}
+             "agent": _role("Mac-Studio", "qwen3-coder:30b", 32768, endpoints, pinned=True)}
     return _status("Mac-Studio", endpoints, roles)
 
 

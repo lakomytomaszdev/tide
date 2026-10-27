@@ -45,12 +45,11 @@ def is_local_url(url: str) -> bool:
 
 def server_label(name: str, url: str, endpoints: dict | None = None) -> str:
     """Nazwa serwera dla użytkownika: „Ten komputer” dla adresu lokalnego (z nazwą, gdy lokalnych jest kilka),
-    inaczej nazwa punktu z odstępami zamiast - i _ („Mac-Studio” → „Mac Studio”)."""
-    pretty = re.sub(r"[-_]+", " ", str(name)).strip() or str(name)
+    inaczej nazwa z ustawień bez przerabiania („Mac-Studio”, „lm-studio”)."""
     if not is_local_url(url):
-        return pretty
+        return str(name)
     local = [n for n, e in (endpoints or {}).items() if isinstance(e, dict) and is_local_url(e.get("url", ""))]
-    return THIS_PC if len(local) <= 1 else f"{THIS_PC} · {pretty}"
+    return THIS_PC if len(local) <= 1 else f"{THIS_PC} · {name}"
 
 
 def _endpoints(status: dict) -> dict:

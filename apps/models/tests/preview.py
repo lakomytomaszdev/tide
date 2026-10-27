@@ -28,6 +28,7 @@ PREVIEWS = [
                           "inny punkt jako domyślny", "note=report|raport: nie udało się zapisać report.json "
                           "(PermissionError)"], (1800, 1000)),
     ("checking", "checking", [], (1380, 900)),
+    ("min", "mac", ["edit=Mac-Studio", "advanced=agent"], (1380, 620)),   # najmniejsze okno Tide
 ]
 
 

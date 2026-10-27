@@ -27,6 +27,7 @@ ColumnLayout {
     property bool showToken: false
     property var problem: null               // {field, text} z ostatniej próby wysłania
 
+    signal edited()                          // pole zmienione ręcznie — szkic do zachowania w ModelsPage
     signal testRequested(string request)
     signal saveRequested(string request)
     signal cancelled()
@@ -38,17 +39,25 @@ ColumnLayout {
     readonly property bool tokenMoves: !adding && auth && !clearToken && tokenField.text === ""
                                        && urlField.text.trim() !== "" && urlField.text.trim() !== originalUrl.trim()
 
-    function load(endpoint) {
+    // Zapisany serwer (albo nic — dodawanie) i niezapisany szkic z ModelsPage, jeśli jest: nowy Status()
+    // odtwarza karty, a wpisany adres i token nie mogą wtedy przepaść.
+    function load(endpoint, draft) {
         name = endpoint ? endpoint.name : ""
         auth = endpoint ? !!endpoint.auth : false
-        nameField.text = ""
-        urlField.text = endpoint ? endpoint.url : ""
-        originalUrl = urlField.text
-        kind = endpoint && endpoint.kind ? endpoint.kind : "ollama"
-        tokenField.text = ""
-        clearToken = false
-        showToken = false
+        originalUrl = endpoint ? endpoint.url : ""
+        nameField.text = draft ? draft.name || "" : ""
+        urlField.text = draft ? draft.url : originalUrl
+        kind = draft ? draft.kind : endpoint && endpoint.kind ? endpoint.kind : "ollama"
+        tokenField.text = draft ? draft.token || "" : ""
+        clearToken = draft ? !!draft.clearToken : false
+        showToken = draft ? !!draft.showToken : false
         problem = null
+    }
+
+    // Stan pól do zachowania (token tylko w pamięci okna).
+    function draft() {
+        return { name: nameField.text, url: urlField.text, kind: kind, token: tokenField.text, clearToken: clearToken,
+                 showToken: showToken }
     }
 
     function focusFirst() {
@@ -84,7 +93,7 @@ ColumnLayout {
         accessibleName: "Nazwa serwera"
         maximumLength: 60
         invalid: form.problem !== null && form.problem.field === "name"
-        onEdited: form.problem = null
+        onEdited: { form.problem = null; form.edited() }
         onAccepted: form.save()
         onEscaped: form.cancelled()
     }
@@ -104,7 +113,7 @@ ColumnLayout {
         accessibleName: "Adres serwera"
         mono: true
         invalid: form.problem !== null && form.problem.field === "url"
-        onEdited: form.problem = null
+        onEdited: { form.problem = null; form.edited() }
         onAccepted: form.save()
         onEscaped: form.cancelled()
     }
@@ -115,7 +124,7 @@ ColumnLayout {
         options: [{ value: "ollama", label: "Ollama" }, { value: "openai", label: "Zgodny z OpenAI" }]
         current: form.kind
         itemHeight: 26
-        onPicked: value => form.kind = value
+        onPicked: value => { form.kind = value; form.edited() }
     }
     Note {
         Layout.fillWidth: true
@@ -138,7 +147,7 @@ ColumnLayout {
                        : form.auth ? "zostaw puste — bez zmiany" : "bez tokenu"
             accessibleName: "Token serwera"
             invalid: form.problem !== null && form.problem.field === "token"
-            onEdited: form.problem = null
+            onEdited: { form.problem = null; form.edited() }
             onAccepted: form.save()
             onEscaped: form.cancelled()
         }
@@ -188,6 +197,7 @@ ColumnLayout {
         onClicked: {
             form.clearToken = !form.clearToken
             if (form.clearToken) tokenField.text = ""
+            form.edited()
         }
     }
 
