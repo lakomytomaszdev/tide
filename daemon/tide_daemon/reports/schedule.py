@@ -91,7 +91,9 @@ def reports_root(env=None) -> str:
 
 def summary_problem(value) -> str:
     """Komunikat o złym `summary` — ten sam przy odczycie report.json i przy zapisie z D-Bus (/Models)."""
-    return f"raport: summary musi być jednym z {', '.join(SUMMARY_MODES)}, jest {value!r}"
+    shown = repr(value)
+    shown = shown if len(shown) <= 40 else shown[:39] + "…"
+    return f"raport: summary musi być jednym z {', '.join(SUMMARY_MODES)}, jest {shown}"
 
 
 def load_settings(path: str | None = None, at: str | None = None, enabled: bool | None = None) -> tuple[Settings, list[str]]:

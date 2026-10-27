@@ -282,10 +282,10 @@ def stream(endpoint, method: str, path: str, body, on_line, connect_timeout: flo
     port = port or (443 if scheme == "https" else 80)
     deadline = time.monotonic() + connect_timeout
     cancelled = threading.Event()
+    expired = threading.Event()
     state = {"waited": f"{connect_timeout:g} s", "sock": None}
 
-    def stop():
-        cancelled.set()
+    def shut():
         sock = state["sock"]
         if sock is not None:
             try:
@@ -293,8 +293,16 @@ def stream(endpoint, method: str, path: str, body, on_line, connect_timeout: flo
             except OSError:
                 pass
 
+    def stop():
+        cancelled.set()
+        shut()
+
+    def cut():  # termin łączenia i nagłówków minął — serwer sączący nagłówki nie trzyma wątku
+        expired.set()
+        shut()
+
     registered = False
-    conn = None
+    conn = timer = None
     try:
         if cancel is not None:
             registered = cancel._register(stop)
@@ -310,9 +318,15 @@ def stream(endpoint, method: str, path: str, body, on_line, connect_timeout: flo
             sock = ssl.create_default_context().wrap_socket(sock, server_hostname=hostname)
             state["sock"] = sock
         conn.sock = sock
+        timer = threading.Timer(_left(deadline), cut)
+        timer.daemon = True
+        timer.start()
         sock.settimeout(_left(deadline))
         conn.request(method, full_path, body=data, headers=headers)
         response = conn.getresponse()
+        timer.cancel()
+        if expired.is_set():
+            raise _Expired()
         state["waited"] = f"{idle_timeout:g} s"
         sock.settimeout(idle_timeout)
         if response.status >= 300:
@@ -340,8 +354,12 @@ def stream(endpoint, method: str, path: str, body, on_line, connect_timeout: flo
     except TimeoutError:
         raise _failure(_Cancelled() if cancelled.is_set() else _Expired(), host, state["waited"]) from None
     except _FAILURES as exc:
+        if not cancelled.is_set() and expired.is_set():
+            exc = _Expired()
         raise _failure(_Cancelled() if cancelled.is_set() else exc, host, state["waited"]) from None
     finally:
+        if timer:
+            timer.cancel()
         if registered:
             cancel._unregister(stop)
         if conn:

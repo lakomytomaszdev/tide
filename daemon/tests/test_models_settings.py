@@ -196,11 +196,11 @@ class ModelsJsonTest(SettingsTestCase):
                     "roles": {"agent": "mac:qwen3-coder:30b", "embed": {"model": "mac:bge-m3"},
                               "summary": "qwen3:8b"}})
         self.assertEqual(self.refused(settings.remove_endpoint, "local", self.path),
-                         "punkt „local” jest domyślny — najpierw ustaw inny punkt jako domyślny")
+                         "serwer „local” jest domyślny — najpierw ustaw inny serwer jako domyślny")
         self.assertEqual(self.refused(settings.remove_endpoint, "mac", self.path),
-                         "punkt „mac” jest używany przez role: agent, embed — przepnij je na inny punkt albo na "
+                         "serwer „mac” jest używany przez role: agent, embed — przepnij je na inny serwer albo na "
                          "domyślny, zanim go usuniesz")
-        self.assertEqual(self.refused(settings.remove_endpoint, "nope", self.path), "nieznany punkt „nope”")
+        self.assertEqual(self.refused(settings.remove_endpoint, "nope", self.path), "nieznany serwer „nope”")
         token_file = settings.token_path("lm", self.path)
         settings.set_endpoint({"name": "lm", "url": "http://lm:1234", "kind": "openai", "token": "t"}, self.path)
         self.assertTrue(os.path.exists(token_file))
@@ -216,7 +216,7 @@ class ModelsJsonTest(SettingsTestCase):
         self.write({"endpoints": {"mac": {"url": "http://mac:1"}, "zly": {"url": "ftp://x"}}, "default": "zly"})
         # `default` wskazuje pominięty punkt — usunąć można tylko poprawiony domyślny, a ostatniego poprawnego nigdy.
         self.assertEqual(self.refused(settings.remove_endpoint, "mac", self.path),
-                         "punkt „mac” jest jedynym punktem — dodaj inny, zanim go usuniesz")
+                         "serwer „mac” jest jedynym serwerem — dodaj inny, zanim go usuniesz")
 
     def test_default_switch_moves_bare_roles_and_pinned_roles_stay(self):
         settings.set_endpoint({"name": "mac", "url": "http://mac-studio:11434", "kind": "ollama"}, self.path)
@@ -229,11 +229,26 @@ class ModelsJsonTest(SettingsTestCase):
         self.assertEqual(cfg.default, "mac")
         self.assertEqual((cfg.roles["summary"].endpoint, cfg.roles["agent"].endpoint), ("mac", "mac"))
         self.assertEqual((cfg.roles["describe"].endpoint, cfg.roles["describe"].ctx), ("local", 8192))
-        self.assertEqual(self.refused(settings.set_default, "nope", self.path), "default: nieznany punkt „nope”")
+        self.assertEqual(self.refused(settings.set_default, "nope", self.path), "default: nieznany serwer „nope”")
         self.write({**self.data(), "endpoints": {**self.data()["endpoints"], "zly": {"url": "ftp://x"}}})
         self.assertIn("jest pominięty", self.refused(settings.set_default, "zly", self.path))
         settings.set_default("local", self.path)
         self.assertEqual(self.cfg().roles["agent"].endpoint, "local")
+
+    def test_roles_report_whether_they_are_pinned(self):
+        self.write({"default": "local", "endpoints": {"local": {"url": "http://127.0.0.1:11434"},
+                                                     "mac": {"url": "http://mac:11434"}, "zly": {"url": "ftp://x"}},
+                    "roles": {"summary": "local:qwen3:8b", "agent": "qwen3-coder:30b",
+                              "embed": {"model": "mac:bge-m3"}, "broken": "zly:x"}})
+        cfg = self.cfg()
+        pinned = {name: role.pinned for name, role in cfg.roles.items()}
+        self.assertEqual(pinned, {"summary": True, "agent": False, "embed": True, "broken": True, "describe": False},
+                         "przypięta także do obecnego domyślnego; brakująca rola domyślna — nie")
+        state = status.pending(cfg)
+        self.assertEqual({n: r["pinned"] for n, r in state["roles"].items()}, pinned)
+        # SetRole bez endpoint odpina rolę przypiętą do domyślnego serwera.
+        settings.set_role({"role": "summary", "model": "qwen3:8b"}, self.path)
+        self.assertFalse(self.cfg().roles["summary"].pinned)
 
     def test_set_role_ctx_and_validation(self):
         settings.set_role({"role": "summary", "model": "qwen3:8b", "ctx": 4096}, self.path)
@@ -256,8 +271,8 @@ class ModelsJsonTest(SettingsTestCase):
         self.assertIn("niepoprawna nazwa", self.refused(settings.set_role, {"role": "zła rola", "model": "x"},
                                                         self.path))
         self.assertEqual(self.refused(settings.set_role, {"role": "agent", "model": "x", "endpoint": "mac"},
-                                      self.path), "rola „agent”: punkt „mac” nie istnieje")
-        self.assertIn("wybierz punkt jawnie", self.refused(settings.set_role, {"role": "agent", "model": "local:x"},
+                                      self.path), "rola „agent”: serwer „mac” nie istnieje")
+        self.assertIn("wybierz serwer jawnie", self.refused(settings.set_role, {"role": "agent", "model": "local:x"},
                                                            self.path))
         bielik = "hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M"
         settings.set_role({"role": "polish", "model": bielik, "endpoint": "local"}, self.path)
@@ -280,6 +295,57 @@ class ModelsJsonTest(SettingsTestCase):
         cfg = self.cfg()
         self.assertEqual(cfg.default, "local", "dodanie punktu nie przenosi ról z domyślnego local")
         self.assertIn("local", cfg.endpoints)
+
+    def test_new_endpoint_named_like_a_model_prefix_is_refused(self):
+        # „qwen3” jako nazwa punktu: „qwen3:8b” w rolach bez punktu czytałoby się jako punkt qwen3 + model 8b.
+        settings.set_role({"role": "agent", "model": "qwen3-coder:30b"}, self.path)
+        before = self.text()
+        message = self.refused(settings.set_endpoint, {"name": "qwen3", "url": "http://mac:11434"}, self.path)
+        self.assertEqual(message, "nazwa „qwen3” zmieniłaby role describe, summary (model „qwen3:8b” czytany "
+                                  "jako serwer „qwen3”) — wybierz inną nazwę serwera")
+        self.assertEqual(self.text(), before, "nic nie zapisane")
+        roles = self.cfg().roles
+        self.assertEqual((roles["summary"].endpoint, roles["summary"].model), ("local", "qwen3:8b"))
+        # Przypięta rola „local:qwen3:8b” nie jest dwuznaczna — taki punkt można dodać.
+        settings.set_role({"role": "summary", "model": "qwen3:8b", "endpoint": "local"}, self.path)
+        settings.set_role({"role": "describe", "model": "qwen3:8b", "endpoint": "local"}, self.path)
+        settings.set_endpoint({"name": "qwen3", "url": "http://mac:11434"}, self.path)
+        roles = self.cfg().roles
+        self.assertEqual((roles["summary"].endpoint, roles["summary"].model), ("local", "qwen3:8b"))
+        self.assertEqual((roles["agent"].endpoint, roles["agent"].model), ("local", "qwen3-coder:30b"))
+
+    def test_null_sections_read_as_missing(self):
+        self.write({"endpoints": None, "roles": None, "note": 1})
+        settings.set_endpoint({"name": "mac", "url": "http://mac:1"}, self.path)
+        data = self.data()
+        self.assertEqual(sorted(data["endpoints"]), ["local", "mac"])
+        self.assertEqual(data["note"], 1)
+        self.assertEqual(self.cfg().warnings, ())
+
+    def test_input_limits_and_trimmed_messages(self):
+        long = "x" * 600
+        self.assertEqual(self.refused(settings.set_endpoint, {"name": "mac", "url": "http://" + long}, self.path),
+                         "url: najwyżej 512 znaków")
+        self.assertEqual(self.refused(settings.set_role, {"role": "agent", "model": long}, self.path),
+                         "rola „agent”: model: najwyżej 512 znaków")
+        self.assertIn("najwyżej", self.refused(settings.set_endpoint, {"name": "mac", "url": "http://mac:1",
+                                                                        "token": "t" * 5000}, self.path))
+        message = self.refused(settings.set_endpoint, {"name": "mac", "url": "http://mac:1", "kind": long}, self.path)
+        self.assertLess(len(message), 120)
+        self.assertLess(len(self.refused(settings.set_report_summary, long, self.report)), 120)
+        self.assertLess(len(self.refused(settings.set_role, {"role": long, "model": "x"}, self.path)), 120)
+
+    def test_atomic_write_syncs_the_directory(self):
+        synced = []
+        real_fsync = os.fsync
+
+        def fsync(fd):
+            synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+            return real_fsync(fd)
+
+        with mock.patch.object(settings.os, "fsync", side_effect=fsync):
+            settings.set_default("local", self.path)
+        self.assertEqual(synced, [False, True], "plik, potem katalog po rename")
 
     def test_symlinked_file_stays_a_symlink(self):
         real = os.path.join(self.tmp, "dotfiles", "models.json")
@@ -338,7 +404,7 @@ class TestAndPullTest(SettingsTestCase):
         self.assertEqual(endpoint.headers()["Authorization"], "Bearer abc")
         self.assertFalse(os.path.exists(self.path), "próba niczego nie zapisuje")
         self.assertEqual(settings.endpoint_for_test({"name": "local"}, self.path).url, "http://127.0.0.1:11434")
-        self.assertEqual(self.refused(settings.endpoint_for_test, {"name": "mac"}, self.path), "nieznany punkt „mac”")
+        self.assertEqual(self.refused(settings.endpoint_for_test, {"name": "mac"}, self.path), "nieznany serwer „mac”")
         self.assertIn("niepoprawny adres", self.refused(settings.endpoint_for_test, {"url": "mac"}, self.path))
 
     def test_probe_against_fake_server(self):
@@ -361,7 +427,7 @@ class TestAndPullTest(SettingsTestCase):
                                                      self.path))
         self.assertIn("nazwa modelu", self.refused(settings.endpoint_for_pull,
                                                    {"endpoint": "local", "model": "x y"}, self.path))
-        self.assertIn("nieznany punkt", self.refused(settings.endpoint_for_pull, {"endpoint": "mac", "model": "x"},
+        self.assertIn("nieznany serwer", self.refused(settings.endpoint_for_pull, {"endpoint": "mac", "model": "x"},
                                                      self.path))
 
     def test_pull_progress_and_errors(self):
@@ -390,6 +456,26 @@ class TestAndPullTest(SettingsTestCase):
         with self.assertRaises(ModelError) as ctx:
             models_pull.pull(endpoint, "qwen3:8b", lambda p: None)
         self.assertIn("serwer odpowiedział 500: boom", str(ctx.exception))
+
+    def test_stream_headers_have_one_deadline(self):
+        import time
+
+        def drip_headers(handler):
+            try:
+                for byte in b"HTTP/1.1 200 OK\r\nX-Slow: " + b"a" * 100:
+                    handler.wfile.write(bytes([byte]))
+                    handler.wfile.flush()
+                    time.sleep(0.05)
+            except OSError:
+                pass
+
+        server = start_server(self, {("POST", "/api/pull"): (200, drip_headers)})
+        endpoint = models_config.Endpoint("local", server.url, "ollama")
+        started = time.monotonic()
+        with self.assertRaises(ModelError) as ctx:
+            models_pull.pull(endpoint, "qwen3:8b", lambda p: None, connect_timeout=0.5)
+        self.assertLess(time.monotonic() - started, 2, "nagłówki sączone po bajcie nie trzymają wątku")
+        self.assertIn("nie odpowiedział w 0.5 s", str(ctx.exception))
 
     def test_pull_cancel_and_idle_timeout(self):
         import threading
@@ -434,6 +520,12 @@ class DescriberModeTest(unittest.TestCase):
         self.assertEqual(describer.mode, "local")
         describer.set_mode("rules")
         self.assertEqual((describer.mode, describer.timeout), ("rules", describe.TIMEOUT))
+        describer._notes["k"] = "Model lokalny niedostępny"
+        describer._failed["k"] = 1.0
+        describer.set_mode("rules")  # ten sam tryb — nic nie znika
+        self.assertEqual((describer._notes, describer._failed), ({"k": "Model lokalny niedostępny"}, {"k": 1.0}))
+        describer.set_mode("claude")
+        self.assertEqual((describer._notes, describer._failed), ({}, {}), "nowy tryb — bez starych błędów")
         pinned = describe.Describer(mode="claude", timeout=5)
         pinned.set_mode("local")
         self.assertEqual(pinned.timeout, 5, "limit podany wprost zostaje")

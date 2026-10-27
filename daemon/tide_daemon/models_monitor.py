@@ -36,6 +36,7 @@ FIRST_POLL_MS = 1000
 PULL_PUBLISH_MS = 1000     # postęp pobierania: Changed najwyżej raz na sekundę
 PULL_KEEP_MS = 15_000      # zakończone pobieranie zostaje w `pulls` jeszcze chwilę („pobrano”)
 PULL_ERROR_KEEP_MS = 60_000
+TESTS_MAX = 4              # próby połączenia w toku naraz; więcej — odmowa od razu, bez rosnącej kolejki
 
 
 def _dump(state: dict) -> str:
@@ -49,7 +50,7 @@ def _reply(ok: bool, error: str = "", **extra) -> str:
 def _request(text) -> dict | None:
     try:
         value = json.loads(text) if isinstance(text, str) else None
-    except ValueError:
+    except (ValueError, RecursionError):  # RecursionError: „[[[[…” bardzo głęboko
         return None
     return value if isinstance(value, dict) else None
 
@@ -106,7 +107,8 @@ class ModelsMonitor(QObject):
         self.pull_keep_ms = pull_keep_ms
         self.pull_error_keep_ms = pull_error_keep_ms
         self._fetched.connect(self._deliver)
-        self._tested.connect(lambda reply, result: reply(_reply(**result)))
+        self._tests_running = 0
+        self._tested.connect(self._test_done)
         self._pulled.connect(self._pull_progress)
         self._timer = QTimer(self, interval=max(50, poll_ms if poll_ms is not None else POLL_MS))
         self._timer.timeout.connect(self.poll)
@@ -191,7 +193,9 @@ class ModelsMonitor(QObject):
 
     # --- zapis ustawień --------------------------------------------------------------------------
 
-    def _write(self, action, *args) -> str:
+    def _write(self, action, *args, reset=()) -> str:
+        """Zapis i stan od razu z nowych ustawień. `reset` — punkty, których ostatni stan już nie obowiązuje
+        (zmieniony punkt: np. nowy token przy tym samym pliku tokenu) — „niesprawdzone” do odczytu."""
         try:
             action(*args)
         except models_settings.SettingsError as exc:
@@ -202,8 +206,8 @@ class ModelsMonitor(QObject):
         self._generation += 1
         try:
             cfg = models_config.load()
-            self._base = models_status.assemble(cfg, self._base.get("endpoints") or {},
-                                                checked=bool(self._base.get("checked")))
+            known = {k: v for k, v in (self._base.get("endpoints") or {}).items() if k not in reset}
+            self._base = models_status.assemble(cfg, known, checked=bool(self._base.get("checked")))
         except Exception as exc:  # stan złożymy przy najbliższym odczycie
             print(f"tide-daemon: Modele lokalne: nie da się złożyć stanu po zapisie ({type(exc).__name__})",
                   flush=True)
@@ -214,13 +218,30 @@ class ModelsMonitor(QObject):
         self.refresh()
         return _reply(True)
 
+    def _pulling(self, name) -> str:
+        """Odmowa, gdy na punkcie trwa pobieranie (zmiana adresu albo usunięcie zostawiłoby je bez punktu)."""
+        busy = [e for e in self._pulls.values() if e["endpoint"] == name and e["running"]]
+        if not busy:
+            return ""
+        return f"na serwerze „{name}” trwa pobieranie modelu {busy[0]['model']} — poczekaj, aż się skończy"
+
     def set_endpoint(self, text: str) -> str:
         req = _request(text)
         if req is None:
             return _reply(False, "niepoprawne żądanie: oczekiwano obiektu JSON")
-        return self._write(models_settings.set_endpoint, req)
+        name = req.get("name")
+        if isinstance(name, str) and self._pulling(name):
+            current = models_config.load().endpoints.get(name)
+            wanted, _error = models_config.check_endpoint(name, {
+                "url": req.get("url").strip() if isinstance(req.get("url"), str) else req.get("url"),
+                "kind": req.get("kind") or (current.kind if current else "ollama")})
+            if current is None or wanted is None or (wanted.url, wanted.kind) != (current.url, current.kind):
+                return _reply(False, self._pulling(name))
+        return self._write(models_settings.set_endpoint, req, reset=(name,) if isinstance(name, str) else ())
 
     def remove_endpoint(self, name: str) -> str:
+        if self._pulling(name):
+            return _reply(False, self._pulling(name))
         return self._write(models_settings.remove_endpoint, name)
 
     def set_default(self, name: str) -> str:
@@ -250,6 +271,10 @@ class ModelsMonitor(QObject):
             reply(_reply(False, str(exc), version=None, models=None))
             return
 
+        if self._tests_running >= TESTS_MAX:
+            reply(_reply(False, "za dużo prób połączenia naraz — spróbuj za chwilę", version=None, models=None))
+            return
+
         def work():
             result = models_status.probe(endpoint, cancel=self._cancel)
             self._tested.emit(reply, result)
@@ -258,6 +283,12 @@ class ModelsMonitor(QObject):
             self._tests.submit(work)
         except RuntimeError:  # usługa się zamyka
             reply(_reply(False, "usługa się zamyka", version=None, models=None))
+            return
+        self._tests_running += 1
+
+    def _test_done(self, reply, result: dict) -> None:
+        self._tests_running -= 1
+        reply(_reply(**result))
 
     # --- pobieranie modeli -----------------------------------------------------------------------
 
@@ -274,7 +305,7 @@ class ModelsMonitor(QObject):
             return _reply(False, "usługa się zamyka", key="")
         busy = [e for e in self._pulls.values() if e["endpoint"] == endpoint.name and e["running"]]
         if busy:
-            return _reply(False, f"na punkcie „{endpoint.name}” trwa już pobieranie {busy[0]['model']} — poczekaj, "
+            return _reply(False, f"na serwerze „{endpoint.name}” trwa już pobieranie {busy[0]['model']} — poczekaj, "
                                  f"aż się skończy", key="")
         key = f"{endpoint.name}/{model}"
         self._pull_seq += 1

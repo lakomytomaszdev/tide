@@ -138,7 +138,8 @@ def assemble(cfg, endpoints: dict, checked: bool = True) -> dict:
             else:
                 installed = role.model in names
         roles[name] = {"endpoint": role.endpoint, "model": role.model, "ctx": role.ctx, "installed": installed,
-                       "available": bool(state.get("online") and installed and not role.error), "error": role.error}
+                       "available": bool(state.get("online") and installed and not role.error), "error": role.error,
+                       "pinned": role.pinned}
     return {"checked": checked, "default": cfg.default, "config": cfg.public(), "endpoints": endpoints, "roles": roles}
 
 
