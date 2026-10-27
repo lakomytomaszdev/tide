@@ -69,6 +69,12 @@ def role(model, endpoint="local", installed=True, online=True, ctx=8192, error="
             "available": bool(online and installed and not error), "error": error}
 
 
+def pull(model, state="pulling", completed=0, total=0, error="", endpoint="local"):
+    """Wpis Status().pulls z PT-25 (klucz "<punkt>/<model>"): running, success albo error."""
+    return {"endpoint": endpoint, "model": model, "status": "pulling 3a4f9c…" if state == "pulling" else state,
+            "completed": completed, "total": total, "running": state == "pulling", "error": error}
+
+
 def status(endpoints, roles=None, default="local", **extra):
     online = {name: ep["online"] for name, ep in endpoints.items()}
     roles = roles if roles is not None else {
@@ -95,11 +101,19 @@ def snapshot_variant(name: str) -> dict | None:
                       queue={"local": {"running": {"role": "describe", "model": "qwen3:8b", "since": "2026-10-27T16:58:00+01:00"},
                                        "waiting": [{"role": "summary", "model": "qwen3:8b"}, {"role": "describe", "model": "qwen3:8b"}]}})
     if name == "pulling":
-        return status({"local": local()}, pulls={"local": [{"model": "qwen3:14b", "completed": 3_900_000_000,
-                                                            "total": 9_300_000_000, "status": "pobieranie"}]})
+        return status({"local": local()}, pulls={"local/qwen3:14b": pull("qwen3:14b", completed=3_900_000_000,
+                                                                          total=9_300_000_000)})
+    if name == "pulled":
+        return status({"local": local()}, pulls={"local/qwen3:14b": pull("qwen3:14b", "success")})
     if name == "missing":
         snap = status({"local": local()})
         snap["roles"]["summary"] = role("qwen3:14b", installed=False)
+        return snap
+    if name == "agent-missing":
+        # Opcjonalne role (agent, wyszukiwanie) bez pobranego modelu nie ostrzegają na kafelku.
+        snap = status({"local": local()})
+        snap["roles"]["agent"] = role("qwen3-coder:32b", installed=False, ctx=None)
+        snap["roles"]["embed"] = role("nomic-embed-text", installed=False, ctx=None)
         return snap
     if name == "offline":
         return status({"local": local(online=False)}, report={"summary": "local"})
@@ -125,15 +139,16 @@ def snapshot_variant(name: str) -> dict | None:
                       report={"summary": "claude"},
                       queue={"local": {"running": {"role": "summary", "model": "gpt-oss:20b", "since": "2026-10-27T16:57:00+01:00"},
                                        "waiting": 1}},
-                      pulls={"local": [{"model": "qwen3:14b", "percent": 42.4, "status": "pobieranie"},
-                                       {"model": "llama3.3:70b", "error": "brak miejsca na dysku"}]})
+                      pulls={"local/qwen3:14b": pull("qwen3:14b", completed=424, total=1000),
+                             "local/bge-m3": pull("bge-m3", "success"),
+                             "local/llama3.3:70b": pull("llama3.3:70b", "error", error="brak miejsca na dysku")})
         snap["config"]["exists"] = True
         snap["config"]["warnings"] = ["rola „vision”: nieznany punkt „lm” — pominięta"]
         return snap
     raise KeyError(name)
 
 
-TILE_SCENARIOS = ("loaded", "ready", "partial", "working", "pulling", "missing", "offline", "starting", "down", "mac")
+TILE_SCENARIOS = ("loaded", "ready", "partial", "working", "pulling", "pulled", "missing", "agent-missing", "offline", "starting", "down", "mac")
 POPUP_SCENARIOS = ("loaded", "working", "offline", "busy", "mac", "down")
 
 TILE_HARNESS = """import QtQuick
@@ -256,7 +271,7 @@ Window {
                 installed: texts(popup, [], "installedLine"), roles: texts(popup, [], "roleName"),
                 roleModels: texts(popup, [], "roleModel"), roleProblems: texts(popup, [], "roleProblem"),
                 report: texts(popup, [], "report").join(""), config: texts(popup, [], "config").join(""),
-                problem: texts(popup, [], "problem").join(""), note: texts(popup, [], "windowNote").join(""),
+                problem: texts(popup, [], "problem").join(""), command: texts(popup, [], "problemCommand").join(""), note: texts(popup, [], "windowNote").join(""),
                 overflow: overflow(popup, popup.width, []), calls: window.calls, height: Math.round(card.height)
             }
             const png = "%(png)s"

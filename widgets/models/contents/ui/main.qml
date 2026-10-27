@@ -2,7 +2,8 @@
 // CompactModels), popup z serwerami, modelami w pamięci, kolejką, rolami i trybem raportu (ModelsPopup).
 // Dane: tide-daemon przez D-Bus (org.tide.Daemon /Models, docs/tide-daemon.md#modele-lokalne): Status()
 // po sygnale Changed i co minutę na wszelki wypadek; „Odśwież” woła Refresh() — wynik przychodzi sygnałem
-// Changed, a gdy nic się nie zmieniło, po chwili czytamy Status() sami.
+// Changed, a gdy nic się nie zmieniło, po chwili czytamy Status() sami (ModelsState.qml, tam też „teraz”
+// do czasów w podpowiedzi — przesuwane przy każdym odczycie i najechaniu).
 // „Otwórz w Tide” otwiera okno Tide na widoku Modele przez org.tide.Window Show("models", "") (TideWindow.qml).
 import QtQuick
 import QtQuick.Layouts
@@ -15,44 +16,29 @@ import "tide" as Tide
 PlasmoidItem {
     id: root
 
-    readonly property var snapshot: source.result && typeof source.result === "object" && !Array.isArray(source.result)
-                                    ? source.result : null
-    readonly property bool serviceUp: source.available
-    property real nowMs: Date.now()
-    property bool refreshing: false
+    readonly property var snapshot: models.snapshot
+    readonly property bool serviceUp: models.serviceUp
     property string windowNote: ""
-
-    function refresh() {
-        if (refreshing) return
-        refreshing = true
-        source.call("Refresh", [], function () { refreshDone.restart() })
-    }
 
     Plasmoid.title: "Modele"
     Plasmoid.icon: "cpu"
     toolTipMainText: "Modele lokalne"
-    toolTipSubText: Logic.toolTip(snapshot, serviceUp, nowMs)
+    toolTipSubText: models.toolTip
     preferredRepresentation: compactRepresentation
 
-    onExpandedChanged: if (expanded) nowMs = Date.now()
+    onExpandedChanged: if (expanded) models.touch()
 
     Tide.DaemonSource {
-        id: source
+        id: daemon
         path: "/Models"
         iface: "org.tide.Daemon.Models"
         method: "Status"
         pollInterval: 60000
     }
 
-    // Refresh() odpowiada od razu, a odczyt idzie w tle usługi (do 3 s na serwer): potem czytamy stan sami,
-    // bo Changed przychodzi tylko przy prawdziwej zmianie.
-    Timer {
-        id: refreshDone
-        interval: 3500
-        onTriggered: {
-            source.refresh()
-            root.refreshing = false
-        }
+    ModelsState {
+        id: models
+        source: daemon
     }
 
     // „zwolni pamięć za 4 min” i „od 2 min” w kolejce liczone na bieżąco przy otwartym popupie.
@@ -60,7 +46,7 @@ PlasmoidItem {
         interval: 30000
         repeat: true
         running: root.expanded
-        onTriggered: root.nowMs = Date.now()
+        onTriggered: models.touch()
     }
 
     Timer {
@@ -90,6 +76,7 @@ PlasmoidItem {
         Layout.preferredWidth: Layout.minimumWidth
         Layout.minimumHeight: vertical ? dot.implicitHeight + Kirigami.Units.smallSpacing * 4 : -1
         hoverEnabled: true
+        onContainsMouseChanged: if (containsMouse) models.touch()
         onClicked: root.expanded = !root.expanded
         Accessible.role: Accessible.Button
         Accessible.name: tile.Accessible.name
@@ -126,10 +113,10 @@ PlasmoidItem {
             anchors.margins: Kirigami.Units.largeSpacing
             snapshot: root.snapshot
             serviceUp: root.serviceUp
-            nowMs: root.nowMs
-            refreshing: root.refreshing
+            nowMs: models.nowMs
+            refreshing: models.refreshing
             windowNote: root.windowNote
-            onRefreshRequested: root.refresh()
+            onRefreshRequested: models.refresh()
             onOpenRequested: tideWindow.open()
         }
     }

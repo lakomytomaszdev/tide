@@ -1,13 +1,17 @@
 // Logika kafelka Modele bez wyglądu: stan i teksty po polsku z Status() tide-daemon (/Models,
 // docs/tide-daemon.md#modele-lokalne). Kafelek, popup i podpowiedź biorą słowa stąd, żeby mówiły to samo.
-// Pola dokładane przez równoległe zmiany usługi są opcjonalne: `report` (tryb raportu), `queue` (kolejka
-// na punkt), `pulls` (pobieranie modeli) — bez nich kafelek po prostu ich nie pokazuje.
+// Pola dokładane przez równoległe zmiany usługi są opcjonalne: `report` i `pulls` (PT-25: tryb raportu,
+// pobieranie modeli po kluczu "<punkt>/<model>"), `queue` (PT-16: kolejka na punkt) — bez nich kafelek po
+// prostu ich nie pokazuje.
 .pragma library
 
 // Role z models.json słowami: nazwa w popupie i to, co model robi („pracuje: opis kart”).
 var ROLE_NAMES = { summary: "Raport", describe: "Opisy kart", agent: "Agent", embed: "Wyszukiwanie", polish: "Polszczyzna" }
 var ROLE_WORK = { summary: "raport", describe: "opis kart", agent: "agent", embed: "wyszukiwanie", polish: "polszczyzna" }
 var ROLE_ORDER = ["summary", "describe", "agent", "embed"]
+// Role pracy w tle (raport, opisy kart): ich brakujący model to ostrzeżenie na kafelku. Opcjonalne role
+// (agent, wyszukiwanie…) widać tylko w popupie.
+var BACKGROUND_ROLES = ["summary", "describe"]
 // Tryb raportu (report.json, PT-25): kto pisze „Na daily”.
 var REPORT_MODES = { claude: "Claude", local: "lokalnie", rules: "bez modelu" }
 
@@ -21,11 +25,6 @@ function plural(n, one, few, many) {
 
 function count(n, one, few, many) {
     return n + " " + plural(n, one, few, many)
-}
-
-function parse(text) {
-    if (typeof text !== "string") return null
-    try { return JSON.parse(text) } catch (e) { return null }
 }
 
 // Obiekt JSON (nie tablica ani lista Qt).
@@ -225,14 +224,19 @@ function queueBusy(q) {
     return !!q && (q.running !== null || q.waiting > 0)
 }
 
-// Krótko do kafelka: „pracuje: opis kart · 2 w kolejce”, „w kolejce: 2”.
-function queueShort(q) {
-    if (!queueBusy(q)) return ""
-    if (!q.running) return "w kolejce: " + q.waiting
-    return "pracuje: " + roleWord(q.running.role) + (q.waiting > 0 ? " · " + q.waiting + " w kolejce" : "")
+// Oczekujące jedną formą wszędzie: „2 w kolejce”, w popupie z rolami: „2 w kolejce: raport, opis kart”.
+function waitingText(q, withRoles) {
+    return q.waiting + " w kolejce" + (withRoles && q.waitingRoles.length ? ": " + q.waitingRoles.slice(0, 3).join(", ") : "")
 }
 
-// Pełniej do popupu: „Pracuje: opis kart (qwen3:8b) od 2 min · w kolejce 2: raport”.
+// Krótko do kafelka: „pracuje: opis kart · 2 w kolejce”, „3 w kolejce”.
+function queueShort(q) {
+    if (!queueBusy(q)) return ""
+    if (!q.running) return waitingText(q, false)
+    return "pracuje: " + roleWord(q.running.role) + (q.waiting > 0 ? " · " + waitingText(q, false) : "")
+}
+
+// Pełniej do popupu: „Pracuje: opis kart (qwen3:8b) od 2 min · 2 w kolejce: raport”.
 function queueLine(q, nowMs) {
     if (!queueBusy(q)) return ""
     var parts = []
@@ -241,45 +245,43 @@ function queueLine(q, nowMs) {
         var since = sinceText(q.running.since, nowMs)
         parts.push("Pracuje: " + roleWord(q.running.role) + model + (since ? " " + since : ""))
     }
-    if (q.waiting > 0) {
-        var head = q.running ? "w kolejce " : "W kolejce "
-        parts.push(head + q.waiting + (q.waitingRoles.length ? ": " + q.waitingRoles.slice(0, 3).join(", ") : ""))
-    }
+    if (q.waiting > 0) parts.push(waitingText(q, true))
     return parts.join(" · ")
 }
 
 function pullPercent(p) {
-    if (typeof p.percent === "number" && isFinite(p.percent)) return Math.max(0, Math.min(100, p.percent))
     if (typeof p.total === "number" && p.total > 0 && typeof p.completed === "number")
         return Math.max(0, Math.min(100, 100 * p.completed / p.total))
     return null
 }
 
-// Pobieranie modeli na punkt: [{model, percent, status, error}]. `pulls` może być listą (z polem
-// endpoint) albo obiektem punkt → lista/obiekt. Zakończone bez błędu znikają.
+// Pobieranie modeli na punkt (PT-25, PullModel): Status().pulls to obiekt po kluczu "<punkt>/<model>",
+// wpis {endpoint, model, status, completed, total, running, error}; zakończony znika po 15 s, nieudany po
+// 60 s, pusty obiekt — nic się nie pobiera. Wpis należy do punktu z pola endpoint, a bez niego — z klucza.
+// Wynik: [{model, percent, state: running|done|error, error}].
 function pullsFor(snap, name) {
-    var raw = snap ? snap.pulls : null
-    var list = []
-    if (raw && typeof raw === "object" && typeof raw.length === "number") {
-        var first = defaultName(snap)
-        list = asList(raw).filter(function (p) { return isObject(p) && (p.endpoint ? p.endpoint === name : name === first) })
-    } else if (isObject(raw)) {
-        var own = raw[name]
-        list = isObject(own) ? [own] : asList(own).filter(isObject)
-    }
+    var raw = snap && isObject(snap.pulls) ? snap.pulls : null
+    if (!raw) return []
     var out = []
-    for (var i = 0; i < list.length; i++) {
-        var p = list[i]
+    var keys = Object.keys(raw)
+    for (var i = 0; i < keys.length; i++) {
+        var key = keys[i]
+        var p = raw[key]
+        if (!isObject(p)) continue
+        var own = typeof p.endpoint === "string" && p.endpoint ? p.endpoint === name : key.indexOf(name + "/") === 0
+        if (!own) continue
+        var model = typeof p.model === "string" && p.model ? p.model : key.slice(key.indexOf("/") + 1)
         var error = typeof p.error === "string" ? p.error : ""
-        if ((p.done === true || p.status === "success") && !error) continue
-        out.push({ model: shortModel(p.model || p.name), percent: pullPercent(p), status: String(p.status || ""), error: error })
+        var state = p.status === "error" || error ? "error" : p.status === "success" ? "done" : "running"
+        out.push({ model: shortModel(model), percent: pullPercent(p), state: state, error: error })
     }
     return out
 }
 
-// „Pobieram bge-m3 · 42%”, „bge-m3: <błąd>”.
+// „Pobieram bge-m3 · 42%”, „Pobieram bge-m3…”, „Pobrano bge-m3”, „Nie udało się pobrać bge-m3: <błąd>”.
 function pullLine(p) {
-    if (p.error) return "Nie udało się pobrać " + p.model + ": " + p.error
+    if (p.state === "error") return "Nie udało się pobrać " + p.model + (p.error ? ": " + p.error : "")
+    if (p.state === "done") return "Pobrano " + p.model
     return "Pobieram " + p.model + (p.percent !== null ? " · " + Math.floor(p.percent) + "%" : "…")
 }
 
@@ -316,12 +318,13 @@ function roleProblem(r, ep) {
     return "niedostępna"
 }
 
-// Rola na domyślnym punkcie, której model nie jest pobrany (do kafelka): pierwsza z raportu i opisów.
+// Rola pracy w tle (raport, opisy kart) na domyślnym punkcie, której model nie jest pobrany — do kafelka.
+// Opcjonalne role (agent, wyszukiwanie…) nie ostrzegają: ich brak widać tylko w popupie.
 function missingModel(snap) {
     var name = defaultName(snap)
     var all = snap && isObject(snap.roles) ? snap.roles : {}
-    for (var i = 0; i < ROLE_ORDER.length; i++) {
-        var r = all[ROLE_ORDER[i]]
+    for (var i = 0; i < BACKGROUND_ROLES.length; i++) {
+        var r = all[BACKGROUND_ROLES[i]]
         if (isObject(r) && r.endpoint === name && r.installed === false) return shortModel(r.model)
     }
     return ""
@@ -361,11 +364,11 @@ function tile(snap, serviceUp) {
     var label = "Modele" + (ep && !isLocalUrl(ep.url) ? " · " + defaultName(snap) : "")
     if (st === "down") return { label: "Modele", value: "usługa nie działa", tone: "muted", pulse: false }
     if (st === "starting") return { label: "Modele", value: "łączę się…", tone: "muted", pulse: false }
-    if (st === "offline") return { label: label, value: ep ? "serwer nie odpowiada" : "brak serwera", tone: "offline", pulse: false }
+    if (st === "offline") return { label: label, value: ep ? "serwer nie odpowiada" : NO_SERVER_SHORT, tone: "offline", pulse: false }
     var name = defaultName(snap)
     var q = queueFor(snap, name)
     if (queueBusy(q)) return { label: label, value: queueShort(q), tone: "working", pulse: q.running !== null }
-    var pulls = pullsFor(snap, name).filter(function (p) { return !p.error })
+    var pulls = pullsFor(snap, name).filter(function (p) { return p.state === "running" })
     if (pulls.length) {
         var p = pulls[0]
         return { label: label, value: "pobieram " + p.model + (p.percent !== null ? " " + Math.floor(p.percent) + "%" : "…"),
@@ -381,13 +384,21 @@ function tile(snap, serviceUp) {
     return { label: label, value: "gotowe", tone: "ok", pulse: false }
 }
 
-// Podpowiedź kafelka: jedno zdanie i „Kliknij…”.
+var NO_SERVER_SHORT = "brak serwera"
+var CLICK_HINT = "Kliknij, aby zobaczyć serwery i role"
+
+// Podpowiedź kafelka: jedno zdanie i „Kliknij…” — w każdym stanie.
 function toolTip(snap, serviceUp, nowMs) {
+    var head = toolTipHead(snap, serviceUp, nowMs)
+    return head + "\n" + CLICK_HINT
+}
+
+function toolTipHead(snap, serviceUp, nowMs) {
     var st = status(snap, serviceUp)
     if (st === "down") return "Usługa tide-daemon nie działa"
     if (st === "starting") return "Tide sprawdza serwery modeli"
     var ep = defaultEndpoint(snap)
-    if (st === "offline") return (ep && ep.error) || "Serwer modeli nie odpowiada"
+    if (st === "offline") return ep ? (ep.error || "Serwer modeli nie odpowiada") : "Brak serwera modeli w ustawieniach"
     var n = installed(ep).length
     var text = "Modele lokalne: " + endpointTitle(ep) + " odpowiada" + (ep.version ? " (Ollama " + ep.version + ")" : "")
         + ", " + count(n, "model pobrany", "modele pobrane", "modeli pobranych")
@@ -398,14 +409,13 @@ function toolTip(snap, serviceUp, nowMs) {
     }
     var q = queueLine(queueFor(snap, defaultName(snap)), nowMs)
     if (q) text += "\n" + q
-    return text + "\nKliknij, aby zobaczyć serwery i role"
+    return text
 }
 
 // --- popup ------------------------------------------------------------------------------------------
 
-// Stan serwera w karcie: „działa”, „nie odpowiada”, „sprawdzam…”.
-function endpointState(ep, snap) {
-    if (snap && snap.checked === false) return "sprawdzam…"
+// Stan serwera w karcie: „działa”, „nie odpowiada” (popup pokazuje karty dopiero po pierwszym odczycie).
+function endpointState(ep) {
     return ep.online ? "działa" : "nie odpowiada"
 }
 
@@ -431,12 +441,17 @@ function idleLine(ep) {
     return "Żaden model nie jest teraz w pamięci"
 }
 
-// Co mówi popup, gdy nie ma czego pokazać: usługa stoi albo pierwszy odczyt.
+// Co mówi popup, gdy nie ma czego pokazać: usługa stoi albo pierwszy odczyt. Polecenie osobno (Geist Mono,
+// w jednej linii).
 function problem(snap, serviceUp) {
     var st = status(snap, serviceUp)
-    if (st === "down") return "Usługa tide-daemon nie odpowiada. Uruchom: systemctl --user start tide-daemon"
+    if (st === "down") return "Usługa tide-daemon nie odpowiada. Uruchom:"
     if (st === "starting") return "Sprawdzam serwery modeli…"
     return ""
+}
+
+function problemCommand(snap, serviceUp) {
+    return status(snap, serviceUp) === "down" ? "systemctl --user start tide-daemon" : ""
 }
 
 // Notatka po „Otwórz w Tide”, gdy okno nie przeszło na widok Modele.

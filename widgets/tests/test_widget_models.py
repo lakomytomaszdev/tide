@@ -48,7 +48,7 @@ class PackageTest(unittest.TestCase):
     def test_package_contains_widget_and_library(self):
         files = files_under(self.pkg)
         for name in ("metadata.json", "contents/ui/main.qml", "contents/ui/CompactModels.qml",
-                     "contents/ui/ModelsPopup.qml", "contents/ui/TideWindow.qml", "contents/code/models.js",
+                     "contents/ui/ModelsPopup.qml", "contents/ui/TideWindow.qml", "contents/ui/ModelsState.qml", "contents/code/models.js",
                      "contents/ui/tide/Tokens.qml", "contents/ui/tide/DaemonSource.qml"):
             self.assertIn(name, files)
         with open(os.path.join(self.pkg, "metadata.json"), encoding="utf-8") as fh:
@@ -59,6 +59,9 @@ class PackageTest(unittest.TestCase):
         self.assertIn('path: "/Models"', text)
         self.assertIn('iface: "org.tide.Daemon.Models"', text)
         self.assertIn('method: "Status"', text)
+        self.assertIn("ModelsState {", text)
+        self.assertIn("toolTipSubText: models.toolTip", text, "podpowiedź z ModelsState — z czasem z odczytu")
+        text += self.read("contents/ui/ModelsState.qml")
         self.assertIn('source.call("Refresh"', text)
         calls_made = set(re.findall(r'source\.call\("(\w+)"', text))
         self.assertEqual(calls_made, {"Refresh"}, "kafelek tylko czyta stan i prosi o odczyt — ustawienia są w oknie")
@@ -67,7 +70,8 @@ class PackageTest(unittest.TestCase):
         text = self.read("contents/ui/TideWindow.qml")
         self.assertIn('property string view: "models"', text)
         self.assertIn('service: "org.tide.Window", path: "/Window", iface: "org.tide.Window"', text)
-        self.assertIn('member: "Show", arguments: [view, ""]', text)
+        self.assertIn('member: "Show", arguments: [target, ""]', text)
+        self.assertIn('ask(view, function', text)
         self.assertIn('"kstart --application tide"', text)
 
     def test_qml_has_no_hardcoded_colors_and_plain_texts(self):
@@ -97,7 +101,9 @@ class TileTest(unittest.TestCase):
             "partial": ("Modele", "gpt-oss:20b · na karcie 83%", "partial", False),
             "working": ("Modele", "pracuje: opis kart · 2 w kolejce", "working", True),
             "pulling": ("Modele", "pobieram qwen3:14b 41%", "working", True),
+            "pulled": ("Modele", "gotowe", "ok", False),
             "missing": ("Modele", "brak modelu qwen3:14b", "warning", False),
+            "agent-missing": ("Modele", "gotowe", "ok", False),
             "offline": ("Modele", "serwer nie odpowiada", "offline", False),
             "starting": ("Modele", "łączę się…", "muted", False),
             "down": ("Modele", "usługa nie działa", "muted", False),
@@ -144,6 +150,7 @@ Item {
                                   "2026-10-27T16:59:00+01:00", "2318-01-01T00:00:00Z", "0001-01-01T00:00:00Z", "", null]
                                  .map(v => Logic.unloadText(v, now)).join(" | "))
         console.warn("QUEUE " + [
+            Logic.queueLine(Logic.queueFor({ queue: { local: { running: null, waiting: [{ role: "summary" }, { role: "describe" }] } } }, "local"), now),
             Logic.queueShort(Logic.queueFor({ queue: { local: { running: null, waiting: 3 } } }, "local")),
             Logic.queueShort(Logic.queueFor({ queue: { local: { running: { role: "summary" }, waiting: [] } } }, "local")),
             Logic.queueLine(Logic.queueFor({ queue: { local: { running: { role: "describe", model: "qwen3:8b", since: (now - 120000) / 1000 },
@@ -151,14 +158,28 @@ Item {
             String(Logic.queueFor({ queue: { mac: { running: null, waiting: [] } } }, "local")),
             String(Logic.queueBusy(Logic.queueFor({ queue: { local: { running: null, waiting: [] } } }, "local")))
         ].join(" | "))
-        const pullsList = { default: "local", endpoints: { local: {} }, pulls: [{ model: "a", percent: 10 },
-            { endpoint: "mac", model: "b", completed: 1, total: 4 }, { endpoint: "local", model: "c", status: "success", done: true }] }
-        const pullsMap = { pulls: { mac: { model: "b", completed: 1, total: 4 }, local: [{ model: "x:latest", error: "brak miejsca" }] } }
-        console.warn("PULLS " + [Logic.pullsFor(pullsList, "local").map(Logic.pullLine).join("+"),
-                                 Logic.pullsFor(pullsList, "mac").map(Logic.pullLine).join("+"),
-                                 Logic.pullsFor(pullsMap, "mac").map(Logic.pullLine).join("+"),
-                                 Logic.pullsFor(pullsMap, "local").map(Logic.pullLine).join("+"),
-                                 Logic.pullsFor({}, "local").length].join(" | "))
+        // Status().pulls z PT-25: klucz "<punkt>/<model>", wpis {endpoint, model, status, completed, total, running, error}.
+        const pulls = { pulls: {
+            "local/qwen3:8b": { endpoint: "local", model: "qwen3:8b", status: "pulling 3a4f", completed: 600, total: 1100, running: true, error: "" },
+            "local/bge-m3": { endpoint: "local", model: "bge-m3", status: "success", completed: 9, total: 9, running: false, error: "" },
+            "local/llama3.3:70b": { endpoint: "local", model: "llama3.3:70b", status: "error", completed: 0, total: 0, running: false,
+                                    error: "brak miejsca na dysku" },
+            "local/hf.co/org/Bielik:Q4_K_M": { status: "start", completed: 0, total: 0, running: true },
+            "localhost/x": { status: "start", running: true },
+            "mac/qwen3:32b": { endpoint: "mac", model: "qwen3:32b", status: "pulling ab", completed: 1, total: 4, running: true, error: "" } } }
+        console.warn("PULLS " + [Logic.pullsFor(pulls, "local").map(Logic.pullLine).join(" + "),
+                                 Logic.pullsFor(pulls, "mac").map(Logic.pullLine).join(" + "),
+                                 Logic.pullsFor({ pulls: {} }, "local").length, Logic.pullsFor({}, "local").length].join(" | "))
+        const withPulls = p => Object.assign({}, snap, { endpoints: { local: Object.assign({}, snap.endpoints.local, { loaded: [] }) }, pulls: p })
+        console.warn("PULLTILE " + [Logic.tile(withPulls({ "local/qwen3:8b": pulls.pulls["local/qwen3:8b"] }), true).value,
+                                    Logic.tile(withPulls({ "local/bge-m3": pulls.pulls["local/bge-m3"] }), true).value,
+                                    Logic.tile(withPulls({ "local/llama3.3:70b": pulls.pulls["local/llama3.3:70b"] }), true).value].join(" | "))
+        const ready = Object.assign({}, snap, { endpoints: { local: Object.assign({}, snap.endpoints.local, { loaded: [] }) } })
+        const withRole = (key, model) => Object.assign({}, ready, { roles: Object.assign({}, ready.roles,
+            { [key]: { endpoint: "local", model: model, installed: false, available: false } }) })
+        console.warn("MISSING " + [Logic.tile(withRole("describe", "qwen3:14b"), true).value, Logic.tile(withRole("summary", "a:1"), true).value,
+                                   Logic.tile(withRole("embed", "bge-m3"), true).value, Logic.tile(withRole("agent", "qwen3-coder:30b"), true).value,
+                                   Logic.tile(withRole("polish", "bielik"), true).value].join(" | "))
         const withReport = mode => Object.assign({}, snap, { report: { summary: mode } })
         const down = Object.assign({}, snap, { report: { summary: "local" },
                                               roles: { summary: { endpoint: "local", model: "q", available: false } } })
@@ -173,7 +194,11 @@ Item {
             zzz: { endpoint: "nowhere", model: "m", available: false } } })
             .map(r => r.key + ":" + r.name + ":" + r.where + ":" + (r.problem || "ok")).join(" | "))
         console.warn("TIP " + Logic.toolTip(snap, true, now).replace(/\\n/g, " // "))
-        console.warn("TIP2 " + [Logic.toolTip(null, false, now), Logic.toolTip({ checked: false, endpoints: {} }, true, now)].join(" | "))
+        const offline = { checked: true, default: "local", endpoints: { local: { online: false, url: "http://127.0.0.1:11434", error: "serwer nie odpowiada" } } }
+        console.warn("TIP2 " + [Logic.toolTip(null, false, now), Logic.toolTip({ checked: false, endpoints: {} }, true, now),
+                                Logic.toolTip(offline, true, now)].join(" | ").replace(/\\n/g, " // "))
+        const empty = { checked: true, default: "local", endpoints: {}, roles: {} }
+        console.warn("EMPTY " + Logic.tile(empty, true).value + " | " + Logic.toolTip(empty, true, now).replace(/\\n/g, " // "))
         console.warn("META " + [Logic.endpointMeta({ url: "http://127.0.0.1:11434", kind: "ollama", version: "0.40.11" }),
                                 Logic.endpointMeta({ url: "https://mac:1234/", kind: "openai", version: null, auth: true })].join(" | "))
         console.warn("CONFIG " + [Logic.configLine({ config: { error: "to nie JSON", warnings: ["x"] } }),
@@ -193,10 +218,16 @@ Item {
         self.assertEqual(got["SHORT"], "bge-m3 | Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M | qwen3:8b")
         self.assertEqual(got["UNLOAD"], "zwolni pamięć za chwilę | zwolni pamięć za 4 min | zwolni pamięć o 18:30 | "
                          "zwalnia pamięć | zostaje w pamięci | zostaje w pamięci |  |")
-        self.assertEqual(got["QUEUE"], "w kolejce: 3 | pracuje: raport | Pracuje: opis kart (qwen3:8b) od 2 min · "
-                         "w kolejce 2: raport | null | false")
-        self.assertEqual(got["PULLS"], "Pobieram a · 10% | Pobieram b · 25% | Pobieram b · 25% | "
-                         "Nie udało się pobrać x: brak miejsca | 0")
+        # Jedna forma kolejki wszędzie: „· 2 w kolejce: raport”.
+        self.assertEqual(got["QUEUE"], "2 w kolejce: raport, opis kart | 3 w kolejce | pracuje: raport | "
+                         "Pracuje: opis kart (qwen3:8b) od 2 min · 2 w kolejce: raport | null | false")
+        self.assertEqual(got["PULLS"], "Pobieram qwen3:8b · 54% + Pobrano bge-m3 + "
+                         "Nie udało się pobrać llama3.3:70b: brak miejsca na dysku + Pobieram Bielik:Q4_K_M… | "
+                         "Pobieram qwen3:32b · 25% | 0 | 0")
+        self.assertEqual(got["PULLTILE"], "pobieram qwen3:8b 54% | gotowe | gotowe",
+                         "na kafelku tylko trwające pobieranie; sukces i błąd są w popupie")
+        self.assertEqual(got["MISSING"], "brak modelu qwen3:14b | brak modelu a:1 | gotowe | gotowe | gotowe",
+                         "ostrzega tylko o rolach pracy w tle (raport, opisy kart)")
         self.assertEqual(got["REPORT"], "Raport: Claude | Raport: lokalnie | Raport: bez modelu | "
                          "Raport: lokalnie · model niedostępny, opis bez modelu |")
         self.assertEqual(got["ROLES"], "summary:Raport:Ten komputer:model nie jest pobrany na ten serwer | "
@@ -205,7 +236,10 @@ Item {
                          "zzz:zzz:nowhere:serwer „nowhere” nie jest ustawiony")
         self.assertEqual(got["TIP"], "Modele lokalne: Ten komputer odpowiada (Ollama 0.40.11), 5 modeli pobranych; "
                          "w pamięci qwen3:8b (na karcie 100%, zwolni pamięć za 4 min) // Kliknij, aby zobaczyć serwery i role")
-        self.assertEqual(got["TIP2"], "Usługa tide-daemon nie działa | Tide sprawdza serwery modeli")
+        self.assertEqual(got["TIP2"], "Usługa tide-daemon nie działa // Kliknij, aby zobaczyć serwery i role | "
+                         "Tide sprawdza serwery modeli // Kliknij, aby zobaczyć serwery i role | "
+                         "serwer nie odpowiada // Kliknij, aby zobaczyć serwery i role")
+        self.assertEqual(got["EMPTY"], "brak serwera | Brak serwera modeli w ustawieniach // Kliknij, aby zobaczyć serwery i role")
         self.assertEqual(got["META"], "127.0.0.1:11434 · Ollama 0.40.11 | mac:1234 · serwer zgodny z OpenAI · z tokenem")
         self.assertEqual(got["CONFIG"], "Ustawienia: to nie JSON | Ustawienia: a; b |")
         self.assertEqual(got["TITLE"], "Ten komputer | mac")
@@ -233,8 +267,9 @@ class PopupTest(unittest.TestCase):
         self.assertEqual(result["states"], ["działa", "nie odpowiada"])
         self.assertEqual(result["errors"], ["Model lokalny niedostępny: nie ma takiej nazwy (mac-studio)"])
         self.assertEqual(result["metas"][1], "mac-studio:11434 · Ollama · z tokenem")
-        self.assertEqual(result["queue"], ["Pracuje: raport (gpt-oss:20b) od 3 min · w kolejce 1"])
-        self.assertEqual(result["pulls"], ["Pobieram qwen3:14b · 42%", "Nie udało się pobrać llama3.3:70b: brak miejsca na dysku"])
+        self.assertEqual(result["queue"], ["Pracuje: raport (gpt-oss:20b) od 3 min · 1 w kolejce"])
+        self.assertEqual(result["pulls"], ["Pobieram qwen3:14b · 42%", "Pobrano bge-m3",
+                                           "Nie udało się pobrać llama3.3:70b: brak miejsca na dysku"])
         self.assertEqual(result["gpu"], ["na karcie 83%"])
         self.assertIn("reszta na procesorze — wolniej", result["details"][0])
         self.assertEqual(result["report"], "Raport: Claude")
@@ -258,10 +293,67 @@ class PopupTest(unittest.TestCase):
         self.assertEqual(offline["roleProblems"], ["serwer nie odpowiada", "serwer nie odpowiada"])
         self.assertEqual((offline["installed"], offline["idle"]), ([], []))
         down = preview_models.render_popup("down", note="Okno Tide nie ma jeszcze widoku")
-        self.assertIn("Usługa tide-daemon nie odpowiada", down["problem"])
+        self.assertEqual(down["problem"], "Usługa tide-daemon nie odpowiada. Uruchom:")
+        self.assertEqual(down["command"], "systemctl --user start tide-daemon", "polecenie w osobnej linii")
+        self.assertNotIn("problemCommand", down["overflow"])
         self.assertEqual((down["titles"], down["roles"]), ([], []))
         self.assertEqual(down["calls"], ["open"], "bez usługi nie ma czego odświeżać, okno można otworzyć")
         self.assertEqual(down["note"], "Okno Tide nie ma jeszcze widoku")
+
+
+@unittest.skipUnless(shutil.which("qml6"), "brak qml6")
+class ModelsStateTest(unittest.TestCase):
+    """Podpowiedź kafelka liczy czas od chwili odczytu, nie od ostatniego otwarcia popupu: nowMs idzie do
+    przodu przy każdym refreshed źródła; „Odśwież” woła Refresh() i po chwili czyta Status() sam."""
+
+    def test_tooltip_time_follows_refreshes(self):
+        tmp = tempfile.mkdtemp(prefix="tide-models-state-")
+        self.addCleanup(shutil.rmtree, tmp)
+        pkg = os.path.join(tmp, "pkg")
+        subprocess.run(["/usr/bin/python3", os.path.join(WIDGETS_DIR, "stage.py"), WIDGET_DIR, pkg], check=True)
+        snap = json.dumps(preview_models.snapshot_variant("loaded"), ensure_ascii=False)
+        log = run_qml(os.path.join(pkg, "contents/ui"), "StateSmoke.qml", """import QtQuick
+Item {
+    id: test
+    property real now: %(now)d - 31 * 60000      // kafelek stoi od pół godziny bez otwierania popupu
+    property var log: []
+    QtObject {
+        id: fake
+        property var result: null
+        property bool available: true
+        signal refreshed()
+        function call(member, args, done) { test.log.push(member); done(true) }
+        function refresh() { test.log.push("Status") }
+    }
+    ModelsState { id: models; source: fake; clock: () => test.now; refreshDelayMs: 50 }
+    Component.onCompleted: {
+        test.now = %(now)d
+        fake.result = %(snap)s
+        fake.refreshed()
+        console.warn("TIP " + models.toolTip.split("\\n")[0])
+        models.refresh(); models.refresh()
+        console.warn("BUSY " + test.log.join(",") + "|" + models.refreshing)
+        later.start()
+    }
+    Timer {
+        id: later
+        interval: 200
+        onTriggered: {
+            console.warn("DONE " + test.log.join(",") + "|" + models.refreshing)
+            test.now += 60000
+            models.touch()
+            console.warn("TOUCH " + models.toolTip.split("\\n")[0])
+            Qt.quit()
+        }
+    }
+}
+""" % {"now": preview_models.NOW_MS, "snap": snap})
+        self.assertEqual([l for l in log.splitlines() if re.search(r"TypeError|ReferenceError|is not|unavailable", l)], [], log)
+        got = tags(log)
+        self.assertIn("zwolni pamięć za 4 min", got["TIP"], "czas z chwili odczytu, nie sprzed pół godziny")
+        self.assertEqual(got["BUSY"], "Refresh|true", "drugie „Odśwież” w trakcie niczego nie wysyła")
+        self.assertEqual(got["DONE"], "Refresh,Status|false")
+        self.assertIn("zwolni pamięć za 3 min", got["TOUCH"], "najechanie też odświeża czas")
 
 
 @unittest.skipUnless(shutil.which("qml6"), "brak qml6")
@@ -330,6 +422,20 @@ Item {
             const shows = test.log.filter(l => l.startsWith("Show")).length
             test.log = test.log.filter(l => !l.startsWith("Show"))
             console.warn("TIMEOUT " + test.log.join(";") + "|" + test.events.join(";") + "|" + win.busy + "|" + (shows > 3))
+            test.log = []; test.events = []
+            // Okno wisi: Show nigdy nie odpowiada (do limitu D-Bus 25–50 s).
+            win.showCall = function (view, item, ok, error) { test.log.push("Show(" + view + "," + item + ")"); test.late = ok }
+            win.open()
+            hang.start()
+        }
+    }
+    property var late: null
+    Timer {
+        id: hang
+        interval: 600
+        onTriggered: {
+            if (test.late) test.late(true)
+            console.warn("HANG " + test.log.join(";") + "|" + test.events.join(";") + "|" + win.busy)
             Qt.quit()
         }
     }
@@ -338,11 +444,13 @@ Item {
         self.assertEqual([l for l in log.splitlines() if re.search(r"TypeError|ReferenceError|is not|unavailable", l)], [], log)
         got = tags(log)
         self.assertEqual(got["RUNNING"], "Show(models,)|opened|false")
-        self.assertEqual(got["NOVIEW"], "Show(models,)|failed:noview|false")
+        self.assertEqual(got["NOVIEW"], "Show(models,);Show(,)|failed:noview|false", "okno bez widoku wychodzi na wierzch")
         self.assertEqual(got["LAUNCHED"], "Show(models,);launch:kstart --application tide;Show(models,);Show(models,)|opened|false")
-        self.assertEqual(got["LAUNCHED_NOVIEW"], "Show(models,);launch:kstart --application tide;Show(models,)|failed:noview|false")
+        self.assertEqual(got["LAUNCHED_NOVIEW"], "Show(models,);launch:kstart --application tide;Show(models,);Show(,)|failed:noview|false")
         self.assertEqual(got["TIMEOUT"], "launch:kstart --application tide|failed:timeout|false|true",
                          "drugie kliknięcie w trakcie niczego nie uruchamia")
+        self.assertEqual(got["HANG"], "Show(models,)|failed:timeout|false",
+                         "wiszące wywołanie nie trzyma przycisku dłużej niż waitMs, spóźniona odpowiedź nic nie zmienia")
 
 
 @unittest.skipUnless(shutil.which("make"), "brak make")

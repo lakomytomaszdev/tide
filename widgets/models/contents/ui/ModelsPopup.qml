@@ -113,6 +113,18 @@ ColumnLayout {
         font.pointSize: Tide.Tokens.fontSizePt - 1
         wrapMode: Text.WordWrap
     }
+    // Polecenie w osobnej linii, bez zawijania — do skopiowania w całości.
+    Text {
+        objectName: "problemCommand"
+        Layout.topMargin: -8
+        visible: !popup.ready && text !== ""
+        text: Logic.problemCommand(popup.snapshot, popup.serviceUp)
+        textFormat: Text.PlainText
+        color: Tide.Tokens.textSecondary
+        font.family: Tide.Theme.monoFamily
+        font.pointSize: Tide.Tokens.fontSizePt - 1.5
+        wrapMode: Text.NoWrap
+    }
 
     // --- tryb raportu (PT-25) -------------------------------------------------------------------
     Rectangle {
@@ -167,10 +179,7 @@ ColumnLayout {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 8
-                    Dot {
-                        tint: popup.snapshot && popup.snapshot.checked === false ? Tide.Tokens.textMuted
-                            : card.ep.online ? Tide.Tokens.positive : Tide.Tokens.negative
-                    }
+                    Dot { tint: card.ep.online ? Tide.Tokens.positive : Tide.Tokens.negative }
                     Text {
                         id: title
                         objectName: "endpointTitle"
@@ -193,10 +202,9 @@ ColumnLayout {
                     Item { Layout.fillWidth: true }
                     Text {
                         objectName: "endpointState"
-                        text: Logic.endpointState(card.ep, popup.snapshot)
+                        text: Logic.endpointState(card.ep)
                         textFormat: Text.PlainText
-                        color: popup.snapshot && popup.snapshot.checked === false ? Tide.Tokens.textMuted
-                            : card.ep.online ? Tide.Tokens.positive : Tide.Tokens.negative
+                        color: card.ep.online ? Tide.Tokens.positive : Tide.Tokens.negative
                         font.family: Tide.Theme.uiFamily
                         font.pointSize: Tide.Tokens.fontSizePt - 1
                     }
@@ -244,12 +252,13 @@ ColumnLayout {
                         Line {
                             objectName: "pullLine"
                             text: Logic.pullLine(pullRow.modelData)
-                            color: pullRow.modelData.error ? Tide.Tokens.negative : Tide.Tokens.textSecondary
+                            color: pullRow.modelData.state === "error" ? Tide.Tokens.negative
+                                : pullRow.modelData.state === "done" ? Tide.Tokens.positive : Tide.Tokens.textSecondary
                             font.pointSize: Tide.Tokens.fontSizePt - 1
                         }
                         Tide.MeterBar {
                             Layout.fillWidth: true
-                            visible: !pullRow.modelData.error
+                            visible: pullRow.modelData.state === "running"
                             implicitHeight: 4
                             value: pullRow.modelData.percent === null ? null : pullRow.modelData.percent / 100
                             color: Tide.Tokens.accent
