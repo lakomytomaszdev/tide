@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..agents.timeutil import parse_ts
+from ..coordination.youtrack import issue_key
 from ..worktrees.git import Git
 from ..worktrees.naming import slug_from_prompt
 from . import flows
@@ -35,8 +36,8 @@ from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
 from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUMNS, DEFAULT_CHECK, DEFAULT_COLUMN,
                     DEFAULT_MODE, DEFAULT_TOOL, DESCRIPTION_MAX, FIELD_MAX, FILE_MAX, LAUNCH_KEYS, MANUAL_COLUMNS,
-                    MODES, MOVED_FROM_KEY, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, PROJECTS_KEY, PROJECTS_MAX,
-                    RESERVED_CARD_KEYS,
+                    MODES, MOVED_FROM_KEY, COLUMN_MOVED_KEY, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, PROJECT_SYNC_KEY,
+                    PROJECT_YOUTRACK_KEY, PROJECTS_KEY, PROJECTS_MAX, RESERVED_CARD_KEYS, YOUTRACK_PROJECT_RE,
                     SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
                     TOOLS, BoardError, Card, Project, Tag, card_num, default_ai_docs, fallback_color, merge_tags,
                     order_value, parse_card, parse_project, parse_tag, slugify, split_tags)
@@ -72,7 +73,7 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "note", *RESERVED_CARD_KEYS, "check",
                *LAUNCH_KEYS)
 CREATE_FIELDS = CARD_FIELDS + ("column",)
-PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "description")
+PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "description", "youtrack", "youtrackSync")
 TAG_FIELDS = ("name", "newName", "color", "description")
 
 
@@ -515,8 +516,10 @@ class BoardStore:
         origin = shown or card.column
         if origin != column or not card.doc.has(MOVED_FROM_KEY):
             card.doc.set(MOVED_FROM_KEY, origin)
+        now = self._now()
+        if origin != column:   # prawdziwa zmiana kolumny (nie kolejność w kolumnie, w której karta jest widoczna)
+            card.doc.set(COLUMN_MOVED_KEY, now)
         if not moved_column and current == index:
-            now = self._now()
             card.doc.set("updated", now)
             card.doc.set("moved", now)
             change.commits.append((f"{card.id}: move to {column}", [(_rel(self.root, card.path), card.doc.text())]))
@@ -534,7 +537,6 @@ class BoardStore:
             target = before + (after - before) // 2
         else:
             target = None  # brak miejsca — numerujemy kolumnę od nowa
-        now = self._now()
         writes = []
         if target is not None:
             card.doc.set("order", order_value(target))
@@ -605,6 +607,15 @@ class BoardStore:
                 _doc_set(doc, key, ", ".join(v[field_name]) if field_name == "tags" else v[field_name])
         if doc.get("ai-docs").strip().lower() == "repo" and not doc.get("repo").strip():
             raise BoardError("ai-docs „repo” wymaga repozytorium projektu")
+        if "youtrack" in v:
+            other = next((p for p in board.projects.values() if v["youtrack"] and p.youtrack == v["youtrack"]
+                          and p.slug != slug), None)
+            if other is not None:
+                raise BoardError(f"klucz YouTracka {v['youtrack']} ma już projekt „{other.name}”", "exists")
+            if v["youtrack"] or doc.has(PROJECT_YOUTRACK_KEY):
+                _doc_set(doc, PROJECT_YOUTRACK_KEY, v["youtrack"])
+        if "youtrackSync" in v and (doc.has(PROJECT_SYNC_KEY) or not v["youtrackSync"]):
+            _doc_set(doc, PROJECT_SYNC_KEY, "on" if v["youtrackSync"] else "off")
         if "description" in v and v["description"].strip() != doc.body.strip():
             doc.body = v["description"]
         change.result = {"ok": True, "slug": slug, "changed": False}
@@ -957,6 +968,8 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         "updated": card.updated, "updatedTs": parse_ts(card.updated),
         # Ostatnia zmiana kolumny; stare karty bez klucza — czas założenia.
         "moved": card.moved, "movedTs": parse_ts(card.moved or card.created), "movedFrom": card.moved_from,
+        # Ostatnia prawdziwa zmiana kolumny (PT-7, synchronizacja z YouTrackiem); 0 — nigdy.
+        "columnMoved": card.column_moved, "columnMovedTs": parse_ts(card.column_moved),
         "youtrack": card.youtrack,
         "spec": card.spec, "session": card.session, "branch": card.branch, "check": card.check,
         "mode": card.mode, "tool": card.tool, "worktree": card.worktree, "launched": card.launched,
@@ -974,7 +987,8 @@ def _project_json(project: Project, docs_dir: str, cards: int) -> dict:
     return {"slug": project.slug, "name": project.name, "repo": project.repo, "repoMissing": project.repo_missing,
             "tags": list(project.tags), "aiDocs": project.ai_docs, "aiDocsDefault": not project.ai_docs_set,
             "tool": project.tool, "mode": project.mode, "description": project.description,
-            "docsDir": docs_dir, "cards": cards, "path": project.path}
+            "docsDir": docs_dir, "cards": cards, "path": project.path,
+            "youtrack": project.youtrack, "youtrackSync": bool(project.youtrack) and project.youtrack_sync}
 
 
 def _column_index(column: str) -> int:
@@ -1088,6 +1102,11 @@ def _card_values(data: dict, create: bool = False) -> dict:
     for key in RESERVED_CARD_KEYS:
         if key in data:
             out[key] = _line(data[key], PATH_MAX if key == "spec" else FIELD_MAX, key)
+    if out.get("youtrack"):
+        key = issue_key(out["youtrack"])   # klucz albo adres …/issue/LEGAL-35 → „LEGAL-35” (PT-7)
+        if not key:
+            raise BoardError(f"pole youtrack to klucz zgłoszenia, np. LEGAL-35 („{out['youtrack']}”)")
+        out["youtrack"] = key
     if "check" in data:
         out["check"] = _enum(data["check"], CHECKS, "sprawdzenie")
     if "mode" in data:
@@ -1165,6 +1184,15 @@ def _project_values(data: dict, board_root: str) -> dict:
         out["mode"] = _enum(data["mode"], MODES, "tryb")
     if "description" in data:
         out["description"] = _body(data["description"])
+    if "youtrack" in data:
+        key = _line(data["youtrack"], 20, "youtrack").upper()
+        if key and not YOUTRACK_PROJECT_RE.match(key):
+            raise BoardError(f"klucz projektu YouTracka to wielkie litery i cyfry, np. LOG („{key}”)")
+        out["youtrack"] = key
+    if "youtrackSync" in data:
+        if not isinstance(data["youtrackSync"], bool):
+            raise BoardError("youtrackSync to true albo false")
+        out["youtrackSync"] = data["youtrackSync"]
     if not (out.get("slug") or out.get("name") or out.get("repo")):
         raise BoardError("projekt potrzebuje identyfikatora (slug), nazwy albo repozytorium")
     return out

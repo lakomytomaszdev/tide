@@ -540,7 +540,8 @@ class YouTrackTest(World):
         self.assertIn("inny serwer", info["error"])
         self.config["tokenFile"] = os.path.join(self.tmp, "brak")
         _issues, info = self.cache().get(self.url, "LOG")
-        self.assertEqual(info["error"], "brak tokenu YouTracka")
+        self.assertTrue(info["error"].startswith("brak tokenu YouTracka (sprawdzone: "), info["error"])
+        self.assertIn(self.config["tokenFile"], info["error"], "komunikat podaje sprawdzone ścieżki")
         self.assertEqual(FakeYouTrack.calls, [])
 
     def test_token_from_env_file_variable_and_config_defaults(self):
@@ -552,12 +553,58 @@ class YouTrackTest(World):
         home = os.path.join(self.tmp, "home")
         config = youtrack.load_config(os.path.join(self.tmp, "nie-ma.json"), env={"HOME": home})
         self.assertEqual(config["url"], youtrack.DEFAULT_URL)
-        self.assertEqual(config["tokenFile"], os.path.join(home, ".config/logviewer/youtrack-mcp-token"))
+        self.assertEqual(config["tokenFile"], os.path.join(home, ".config/youtrack/token"), "bez żadnego pliku — pierwsze miejsce")
+        self.assertEqual(config["tokenFiles"], [[os.path.join(home, ".config/youtrack/token"), ""],
+                                                [os.path.join(home, ".config/logviewer/youtrack-mcp-token"), ""]])
+        self.assertEqual(youtrack.read_token(config), "")
         path = os.path.join(self.tmp, "youtrack.json")
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"url": "http://yt:8111/", "tokenFile": "/t", "tokenVar": "V"}, fh)
-        self.assertEqual(youtrack.load_config(path, env={"HOME": home}),
-                         {"url": "http://yt:8111", "tokenFile": "/t", "tokenVar": "V"})
+        config = youtrack.load_config(path, env={"HOME": home})
+        self.assertEqual((config["url"], config["tokenFile"], config["tokenVar"]), ("http://yt:8111", "/t", "V"),
+                         "plik z ustawień pierwszy (nawet gdy go nie ma)")
+        self.assertEqual(config["tokenFiles"][0], ["/t", "V"])
+
+    def test_token_discovery_order_without_config_file(self):
+        home = os.path.join(self.tmp, "home")
+        legacy = os.path.join(home, ".config", "logviewer", "youtrack-mcp-token")
+        mcp = os.path.join(home, ".config", "youtrack", "token")
+        os.makedirs(os.path.dirname(legacy))
+        with open(legacy, "w", encoding="utf-8") as fh:
+            fh.write("legacy-" + F.TOKEN_SENTINEL + "\n")
+        none = os.path.join(self.tmp, "brak.json")
+        config = youtrack.load_config(none, env={"HOME": home})
+        self.assertEqual(config["tokenFile"], legacy, "tylko dawne miejsce LogViewera")
+        self.assertEqual(youtrack.read_token(config), "legacy-" + F.TOKEN_SENTINEL)
+        os.makedirs(os.path.dirname(mcp))
+        with open(mcp, "w", encoding="utf-8") as fh:
+            fh.write(F.TOKEN_SENTINEL + "\n")
+        config = youtrack.load_config(none, env={"HOME": home})
+        self.assertEqual((config["tokenFile"], youtrack.read_token(config)), (mcp, F.TOKEN_SENTINEL),
+                         "~/.config/youtrack/token przed LogViewerem")
+        self.assertEqual(config["url"], "http://10.20.1.159:8111")
+        settings = os.path.join(self.tmp, "youtrack.json")
+        own = os.path.join(self.tmp, "own-token")
+        with open(settings, "w", encoding="utf-8") as fh:
+            json.dump({"tokenFile": own}, fh)
+        config = youtrack.load_config(settings, env={"HOME": home})
+        self.assertEqual(youtrack.read_token(config), F.TOKEN_SENTINEL, "brak pliku z ustawień — następne miejsce")
+        with open(own, "w", encoding="utf-8") as fh:
+            fh.write("own-token-value")
+        self.assertEqual(youtrack.read_token(youtrack.load_config(settings, env={"HOME": home})), "own-token-value")
+        # Pamięć podręczna koordynacji bierze token tak samo — tylko w nagłówku, nigdy w komunikatach.
+        empty = os.path.join(self.tmp, "empty-home")
+        cache = youtrack.YouTrackCache(config_loader=lambda: dict(youtrack.load_config(none, env={"HOME": empty}),
+                                                                  url=self.url), clock=lambda: F.NOW)
+        _issues, info = cache.get(self.url, "LOG")
+        self.assertIn(os.path.join(empty, ".config/youtrack/token"), info["error"])
+        self.assertEqual(FakeYouTrack.calls, [])
+        cache = youtrack.YouTrackCache(config_loader=lambda: dict(youtrack.load_config(none, env={"HOME": home}),
+                                                                  url=self.url), clock=lambda: F.NOW)
+        issues, info = cache.get(self.url, "LOG")
+        self.assertTrue(info["available"])
+        self.assertEqual(FakeYouTrack.calls[-1][2], "Bearer " + F.TOKEN_SENTINEL)
+        self.assertNotIn(F.TOKEN_SENTINEL, json.dumps(info))
 
     def test_scanner_board_with_tracker(self):
         world = F.build_world(self.tmp, plan_url=self.url)

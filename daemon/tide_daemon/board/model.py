@@ -59,8 +59,18 @@ PROJECTS_KEY = "projects"
 # Kolumna wyświetlana karty (z pracy agentów albo ręczna) w chwili ostatniego MoveCard (PT-29): „do poprawy”
 # (karta zostaje w swojej kolumnie po skończonej pracy) tylko po przeniesieniu z review albo done.
 MOVED_FROM_KEY = "moved-from"
+# Ostatnia prawdziwa zmiana kolumny przez MoveCard (PT-7): kolumna docelowa inna niż wyświetlana. Sama zmiana
+# kolejności w kolumnie jej nie stempluje — synchronizacja z YouTrackiem liczy tylko takie przeniesienia.
+COLUMN_MOVED_KEY = "column-moved"
 PROJECTS_MAX = 5
 PROJECT_KEYS = ("name", "repo", "tags", "ai-docs", "tool", "mode")
+# Synchronizacja z YouTrackiem (PT-7): klucz projektu YouTracka (LOG, LEGAL) i przełącznik. W pliku tylko,
+# gdy ustawione; projekt bez klucza nie synchronizuje niczego, z kluczem — domyślnie tak (`youtrack-sync: off`).
+PROJECT_YOUTRACK_KEY = "youtrack"
+PROJECT_SYNC_KEY = "youtrack-sync"
+YOUTRACK_PROJECT_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,19}$")
+ON_WORDS = ("on", "true", "yes", "tak", "1")
+OFF_WORDS = ("off", "false", "no", "nie", "0")
 TAG_KEYS = ("name", "color")
 
 TITLE_MAX = 200
@@ -112,6 +122,8 @@ class Project:
     description: str = ""
     path: str = ""
     repo_missing: bool = False
+    youtrack: str = ""        # klucz projektu YouTracka (PT-7), pusty — bez synchronizacji
+    youtrack_sync: bool = True
     doc: Document | None = None
 
 
@@ -128,6 +140,7 @@ class Card:
     updated: str = ""
     moved: str = ""           # ostatnia zmiana kolumny (MoveCard, założenie karty); bez klucza — created
     moved_from: str = ""      # kolumna wyświetlana przed ostatnim MoveCard (PT-29); pusta — nieznana
+    column_moved: str = ""    # ostatnia prawdziwa zmiana kolumny (PT-7); pusta — nigdy (albo sprzed PT-7)
     youtrack: str = ""
     spec: str = ""
     session: str = ""
@@ -236,6 +249,7 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.moved = doc.get("moved").strip()
     moved_from = doc.get(MOVED_FROM_KEY).strip().lower()
     card.moved_from = moved_from if moved_from in COLUMN_IDS else ""
+    card.column_moved = doc.get(COLUMN_MOVED_KEY).strip()
     for key in RESERVED_CARD_KEYS:
         setattr(card, key, doc.get(key).strip())
     card.check = _choice(doc.get("check"), CHECKS, DEFAULT_CHECK, f"{name}: nieznane sprawdzenie", path, errors)
@@ -275,6 +289,15 @@ def parse_project(doc: Document, path: str, slug: str, errors: list) -> Project:
         project.ai_docs = "tide"
     project.tool = _choice(doc.get("tool"), TOOLS, DEFAULT_TOOL, f"{name}: nieznane narzędzie", path, errors)
     project.mode = _choice(doc.get("mode"), MODES, DEFAULT_MODE, f"{name}: nieznany tryb", path, errors)
+    key = doc.get(PROJECT_YOUTRACK_KEY).strip().upper()
+    if key and not YOUTRACK_PROJECT_RE.match(key):
+        errors.append(_err(path, f"{name}: niepoprawny klucz projektu YouTracka „{key}” (np. LOG) — bez synchronizacji"))
+        key = ""
+    project.youtrack = key
+    sync = doc.get(PROJECT_SYNC_KEY).strip().lower()
+    if sync and sync not in ON_WORDS + OFF_WORDS:
+        errors.append(_err(path, f"{name}: nieznana wartość youtrack-sync „{sync}” (on, off) — włączona"))
+    project.youtrack_sync = sync not in OFF_WORDS
     return project
 
 

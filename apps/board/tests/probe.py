@@ -10,6 +10,7 @@ Scenariusz to kod Pythona wykonywany po załadowaniu widoku, z pomocnikami:
   named(objectName)        — punkt elementu po objectName,
   drag(od, do)             — przeciągnięcie myszą (QPoint → QPoint), z krokami jak u człowieka,
   click(punkt), key(klawisz, modyfikatory), wait(ms),
+  until(funkcja, ms)       — czeka, aż funkcja() da prawdę (najwyżej ms; pod obciążeniem zamiast stałych pauz),
   calls()                  — zapisy wysłane do usługi: [[metoda, argumenty…], …],
   replies                  — lista odpowiedzi usługi na kolejne zapisy (domyślnie {ok: true}),
   set_snapshot(dane)       — nowa migawka (jak po sygnale Changed),
@@ -68,6 +69,15 @@ out = {}
 
 def wait(ms=50):
     QTest.qWait(ms)
+
+
+def until(predicate, ms=5000):
+    for _ in range(max(1, ms // 20)):
+        value = predicate()
+        if value:
+            return value
+        wait(20)
+    return predicate()
 
 
 def js(expression):

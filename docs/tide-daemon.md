@@ -542,7 +542,9 @@ qdbus6 org.tide.Daemon /Limits org.tide.Daemon.Limits.Forecast
 Sesja, która zleca pracę podagentom (koordynator), dostaje tablicę ticketów: okno **Tide Sesje**
 (`apps/sessions`), postęp w widżecie agentów („TOM-20 · 8/13”), słowo „sesje” w KRunnerze i sekcję
 „Plany i tickety” w raporcie porannym. Wszystko z dzienników na dysku i z planu w repozytorium —
-usługa niczego nie zapisuje w repozytoriach i dziennikach, a YouTracka pyta wyłącznie przez GET.
+usługa niczego nie zapisuje w repozytoriach i dziennikach, a koordynacja pyta YouTracka wyłącznie przez GET.
+Stan zgłoszeń ticketów z planów `tracker: youtrack` zmienia tylko synchronizacja tablicy (PT-7, niżej
+w „Tablica” — „Synchronizacja z YouTrackiem”), wyłącznie w projektach z kluczem YouTracka na tablicy.
 Standard planu: [agent-plan-standard.md](agent-plan-standard.md), uzasadnienie: decyzja 50.
 
 **Gdzie szukamy planów** (standard 1.1, `coordination/plan.py: plan_folders`, `coordination/boardplans.py`):
@@ -561,7 +563,7 @@ dotąd (`session`, inaczej najświeższy aktywny plan tego narzędzia).
 | Interfejs | `org.tide.Daemon.Coordination` |
 | Plik dla raportu | `$XDG_STATE_HOME/tide/coordination.json` (0600) |
 | Opisy kart (pamięć) | `$XDG_CACHE_HOME/tide/coordination-descriptions.json` (0600) |
-| Ustawienia YouTracka | `$XDG_CONFIG_HOME/tide/youtrack.json` (opcjonalny) |
+| Ustawienia YouTracka | `$XDG_CONFIG_HOME/tide/youtrack.json` (opcjonalny; `$TIDE_YOUTRACK_CONFIG` — inny plik, testy usługi) |
 
 | Składnik | Sygnatura | Opis |
 | --- | --- | --- |
@@ -701,22 +703,26 @@ zdania o zamkniętych znaleziskach z poprzedniej rundy się nie liczą. Werdykt 
 (`REQUEST CHANGES`, `CHANGES REQUIRED` albo `APPROVE`, `ACCEPT`). To heurystyka sprawdzona na kształtach
 prawdziwych raportów; stan zawsze da się nadpisać planem.
 
-**YouTrack** (`coordination/youtrack.py`): tylko dla planu z `tracker: youtrack`. Jedno zapytanie na
-projekt: `GET {url}/api/issues?query=project: {klucz}&fields=idReadable,summary,description,customFields(name,value(name))`
+**YouTrack** (`coordination/youtrack.py`): tylko dla planu z `tracker: youtrack`. Koordynacja robi
+wyłącznie GET (zapis stanu — tylko synchronizacja tablicy, PT-7). Jedno zapytanie na projekt: `GET {url}/api/issues?query=project: {klucz}&fields=idReadable,summary,description,customFields(name,value(name))`
 (z opisu trzymamy 1200 znaków; tablica pokazuje 600, raport poranny bierze 400)
 z nagłówkiem `Authorization: Bearer <token>`, bez pośrednika, z limitem 4 s, w wątku roboczym. Wynik
 5 min w pamięci; przy błędzie zostają ostatnie dobre dane, a następna próba też dopiero po 5 min (serwer
 jest w sieci lokalnej — gdy go nie ma, tablica działa bez tytułów z YouTracka, z komunikatem w podpowiedzi
-przycisku). Token: plik z ustawień (`tokenFile`, domyślnie `~/.config/logviewer/youtrack-mcp-token`
-— ten sam co serwer MCP YouTracka LogViewera; `tokenVar` pusty: cały plik, podany: zmienna z pliku
-`.env`), czytany przy każdym zapytaniu, tylko w pamięci — nie trafia do dziennika, błędów, odpowiedzi
+przycisku). Token (PT-7: plik ustawień jest opcjonalny), po kolei pierwsze miejsce, które go ma: `tokenFile`
+z `youtrack.json` (`tokenVar` pusty: cały plik, podany: zmienna z pliku `.env`), `~/.config/youtrack/token`
+(token serwera MCP YouTracka), `~/.config/logviewer/youtrack-mcp-token` (dawne miejsce LogViewera);
+bez tokenu komunikat podaje sprawdzone ścieżki (nigdy treść). Czytany przy każdym zapytaniu, tylko w pamięci — nie trafia do dziennika, błędów, odpowiedzi
 D-Bus ani plików. Token idzie wyłącznie do serwera z ustawień (`url`, domyślnie
 `http://10.20.1.159:8111`); plan z innym `tracker-url` dostaje komunikat zamiast zapytania.
 `--no-youtrack` wyłącza zapytania.
 
 ```json
-{"url": "http://10.20.1.159:8111", "tokenFile": "~/.config/logviewer/youtrack-mcp-token", "tokenVar": ""}
+{"url": "http://10.20.1.159:8111", "tokenFile": "~/.config/youtrack/token", "tokenVar": ""}
 ```
+
+Ten sam plik niesie ustawienia synchronizacji tablicy (opisane w „Tablica” — „Synchronizacja z YouTrackiem”):
+`sync`, `states`, `stateField`, `projects`, `importQueries`, `importCheckMinutes`.
 
 **Kontrola numerów ticketów** (`coordination/numbering.py`, decyzja 56; reguły: standard planu, „Numery
 ticketów: jedno źródło”). Plany ze wszystkich miejsc repozytorium (`coordination/repoplans.py`): główny
@@ -778,8 +784,8 @@ zapisie i commituje po każdej zmianie, więc historia i cofanie są za darmo. B
 wypycha ani nie dodaje zdalnego repozytorium. Widok Tablica w oknie Tide (`apps/board`) i kafelek
 `org.tide.board` (`widgets/board`) czytają `Snapshot()` i piszą wyłącznie przez metody niżej;
 kolumny W toku, Czeka na mnie i Do sprawdzenia wynikają z prawdziwej pracy agentów (niżej, „Stan karty
-z pracy agentów”, PT-5), uruchamianie agenta z karty (PT-4) opisuje „Uruchomienie z karty” niżej, a import
-z YouTracka to kolejny ticket (PT-7) na tym samym formacie. Plan: `docs/agents/plans/2026-10-27-board-and-docker.md`.
+z pracy agentów”, PT-5), uruchamianie agenta z karty (PT-4) opisuje „Uruchomienie z karty” niżej, a stan
+zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTrackiem” (PT-7). Plan: `docs/agents/plans/2026-10-27-board-and-docker.md`.
 
 | Element | Wartość |
 | --- | --- |
@@ -793,13 +799,16 @@ z YouTracka to kolejny ticket (PT-7) na tym samym formacie. Plan: `docs/agents/p
 | `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
-| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, mode, description}`: istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
+| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, mode, description, youtrack, youtrackSync}`: istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie trybu dla karty (pusty `mode` — tryb projektu) → `{ok, text, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
 | `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{mode, tool, branch, check}` (wszystko opcjonalne; `check`: `auto` — domyślnie, albo `manual`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
 | `Badge()` | `→ s` | plakietka widoku Tablica w oknie Tide: JSON `{text, tone}` — „● N” (`waiting`), gdy karty czekają na ciebie, inaczej liczba kart w grze bez Gotowych i Archiwum (`muted`); zero — pusty tekst (plakietka ukryta). Tylko odczyt, niczego nie zakłada; ta sama reguła co `badge()` w `apps/board/backend.py` |
 | `ShowWindow(s id)` | `→ b` | okno Tide na widoku Tablica (`tide.py --view board`), z ID karty (`K-12`, wielkość liter bez znaczenia) od razu na niej (`--select K-12`), z `launch:K-12` — na niej z oknem „Co ma zrobić agent?” (`--select launch:K-12`, „Uruchom” w popupie kafelka); napis, który nie jest ID karty, pomijamy (samo okno); `false`, gdy okna nie ma — kafelek tablicy w docku |
 | `CardDocs(s id)` | `→ s` | plan i specyfikacja karty do panelu karty (niżej, „Plan i specyfikacja na karcie”): `{ok, card, plan, spec, others, warnings}`; tylko odczyt, odpowiedź po odczycie plików w wątku roboczym |
+| `YouTrackIssues(b refresh)` | `→ s` | zgłoszenia użytkownika do importu (PT-7): `{ok, issues: [{id, summary, project, state, updated, url, card, boardProject, boardProjectName, new}], error}`; odpowiedź po pobraniu w wątku roboczym (`refresh: false` — ostatnia lista z pamięci); pokazane zgłoszenia liczą się jako przejrzane |
+| `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
+| `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
 | `Changed` | sygnał bez argumentów | tablica się zmieniła (zapis przez D-Bus albo zmiana z zewnątrz) — pobierz `Snapshot()` ponownie |
 
 Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt
@@ -877,8 +886,9 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `note` | krótka notatka widoczna na karcie (np. „bez agenta, robię sam”) |
 | `created`, `updated` | ISO 8601 z czasem lokalnym; `updated` zmienia każdy zapis karty |
 | `moved` | ostatnie jawne przeniesienie (ISO 8601): ustawia go tylko założenie karty i każde `MoveCard` (także w obrębie kolumny); edycja pól — nie. Karta bez klucza (sprzed PT-5) liczy się od `created`. Z niego i z `moved-from` stan z pracy agentów rozpoznaje „do poprawy” |
+| `column-moved` | ostatnia prawdziwa zmiana kolumny przez `MoveCard` (PT-7, ISO 8601): kolumna docelowa inna niż wyświetlana; zmiana kolejności w kolumnie go nie stempluje. W pliku dopiero po takim przeniesieniu; w migawce `columnMoved` i `columnMovedTs` |
 | `moved-from` | kolumna, w której karta była wyświetlana przy ostatnim `MoveCard` (PT-29): `boardColumn` z migawki usługi (z pracy agentów, np. `review`, choć w pliku jest `todo`), bez niej — zapisana kolumna. „Do poprawy” tylko po przeniesieniu z `review` albo `done`; karta założona do skończonej już pracy (albo połączona z nią przez `session`) nie „wraca ręcznie”. Zmiana kolejności w kolumnie, w której karta jest widoczna (np. „do poprawy” w Do zrobienia), zachowuje dotychczasowy `moved-from`. Karty przeniesione przed PT-29 nie mają klucza — reguła ich nie dotyczy |
-| `youtrack`, `spec` | `youtrack` — zgłoszenie w YouTracku (PT-7); `spec` — ścieżka gotowej specyfikacji z trybu „tylko spec” |
+| `youtrack`, `spec` | `youtrack` — klucz zgłoszenia w YouTracku (PT-7): zapis przyjmuje klucz albo adres zgłoszenia (`…/issue/legal-35` → `LEGAL-35`), inny tekst — `bad-request`; stan karty idzie do zgłoszenia, gdy projekt YouTracka ma synchronizację (niżej); `spec` — ścieżka gotowej specyfikacji z trybu „tylko spec” |
 | `session` | sesja albo koordynator, który prowadzi kartę — id jak w `/Agents` i `/Coordination` (`claude:<id>`, `codex:<id>`, samo `<id>` też działa); pierwsze źródło stanu karty |
 | `branch` | gałąź pracy w repozytorium projektu; zastępuje propozycję gałęzi w `RenderFlow`, łączy kartę z pracą na tej gałęzi i jest gałęzią do scalenia |
 | `check` | sprawdzenie po skończonej pracy agenta: `auto` (domyślnie — wystarczą testy i review AI) albo `manual` (test ręczny użytkownika: karta czeka w Do sprawdzenia, aż przeniesiesz ją do Gotowe). Zła wartość w pliku — błąd i `auto`; brak klucza — `auto`. Ustawia go m.in. przełącznik „Test ręczny po zakończeniu” przy uruchomieniu agenta (PT-4) |
@@ -901,6 +911,7 @@ mode: full
 - `repo`: ścieżka bezwzględna do repozytorium albo pusty (projekt bez kodu). Repozytorium tablicy nie może być projektem.
 - `ai-docs`: `repo` (plany i specyfikacje agentów w `docs/agents/` repozytorium) albo `tide` (w `tide-board/docs/<projekt>/`, nic nie trafia do repozytorium projektu). Przy zakładaniu: `repo`, gdy repozytorium ma już `docs/agents/`, inaczej `tide`; bez klucza w pliku — to samo wyliczane przy odczycie (`aiDocsDefault: true`).
 - `tool`: `claude` albo `codex`, `mode`: `full`, `light` albo `spec` — domyślne dla uruchomień z kart projektu (domyślnie `claude` i `full`: pełny przebieg, chyba że przy karcie wybierzesz inny tryb).
+- `youtrack`: klucz projektu YouTracka (`LOG`, `LEGAL`; wielkie litery i cyfry, unikalny na tablicy — drugi projekt z tym samym kluczem to `exists`), `youtrack-sync`: `on` (domyślnie, bez klucza w pliku) albo `off` — PT-7, „Synchronizacja z YouTrackiem” niżej. Projekt bez klucza nie synchronizuje niczego. Klucz z importu przypisuje też zaimportowane karty do projektu.
 - Projekty powstają jawnie (`UpsertProject`; ta sama nazwa drugi raz to ten sam projekt, nie `foo-2`) albo przy pierwszej karcie dla repozytorium (`CreateCard` z `repo`) — osobnym commitem. Usługa nie zakłada wpisów dla wszystkich repozytoriów z katalogu projektów; migawka podaje je w `repos` jako kandydatów.
 
 Tag — `tags/firma.md`: `name` (bez przecinka, do 40 znaków) i `color` — nazwa pastelu z palety
@@ -1013,10 +1024,16 @@ w raporcie porannym, gdziekolwiek leży.
 | `colors` | pastele z palety `{nazwa: "#rrggbb"}` |
 | `tools`, `modes` | dozwolone narzędzia i tryby |
 | `tags` | `[{name, slug, color, description, defined, cards}]` (`cards` — karty z tym tagiem po dziedziczeniu) |
-| `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, mode, description, docsDir, cards, path}]` |
+| `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, mode, description, docsDir, cards, path, youtrack, youtrackSync}]` (`youtrackSync` — klucz ustawiony i synchronizacja włączona) |
 | `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, mode, tool, worktree, launched, launchedTs, branchSlug, projects, extraProjects, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia; `extraProjects` — dodatkowe projekty rozwiązane `[{slug, name, repo, repoMissing}]` (bez nieznanych slugów) |
 | `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
-| `errors` | `[{path, message}]` — złe pliki |
+| `errors` | `[{path, message}]` — złe pliki; także konflikty z YouTrackiem (PT-7, z pustym `path`) |
+| `youtrack` | stan synchronizacji (PT-7, tylko usługa z YouTrackiem — bez `--no-youtrack`): `{enabled, sync, url, available, error, pending, conflicts, conflictItems: [{issue, label, cards, youtrack, tide, url}], newIssues, importError, states}` |
+
+Karta ma też `youtrackSync` (PT-7): `null` bez pola `youtrack`, inaczej `{status, text, issue, issueState, url,
+via, label, conflict}` — `status`: `ok`, `pending`, `offline`, `error`, `conflict`, `off` (projekt bez
+synchronizacji); `via`: `card` albo `ticket` (stan wzięty z ticketu planu, `label` mówi którego); `conflict`:
+`{youtrack, tide}`.
 
 `derived` to stan karty z pracy agentów (opis niżej) albo `null`; `boardColumn` to kolumna do
 wyświetlenia: `derived.column`, a bez niego (albo przy pustej) zapisana `column`. Pliki kart nie
@@ -1091,7 +1108,7 @@ wynik zleca kolejne przeliczenie; dopóki pierwszego wyniku nie ma, skończona k
 `derived`: `column`, `done` i `total` (tickety karty: gotowe / wszystkie bez odrzuconych; zwykła sesja —
 0), `tool` (`claude`, `codex`), `note` (jedno zdanie po polsku, do 160 znaków: co teraz, pytanie, od kiedy
 stoi, czego brakuje), `nextStep` („odpowiedz agentowi”, „przetestuj ręcznie, potem scal gałąź feat/x”,
-„przenieś do Gotowe”; pusty w W toku — dla karty i przyszłej synchronizacji z YouTrackiem, PT-7), `check`,
+„przenieś do Gotowe”; pusty w W toku), `check`,
 `branch` (gałąź karty albo pracy; w Do sprawdzenia — gałąź do scalenia), `session` (id dla „Otwórz
 w Sesjach” / „Przejdź do agenta”: koordynator albo sesja), `coordinator` (id koordynatora albo pusty —
 zwykła sesja), `link` (`session`, `plan`, `card-branch`, `branch`), `agentState` (stan sesji z `/Agents`),
@@ -1104,6 +1121,85 @@ gdy migawka się zmieniła. Indeksy (repozytoria bez dowiązań, `(repozytorium,
 karty z nazwy gałęzi) powstają raz na przeliczenie, więc karta to kilka wyszukań w słownikach (80 kart,
 60 koordynatorów po 15 ticketów i 40 sesji — kilka ms; test `SpeedTest`). Plakietka (`Badge()`) i kafelek liczą z `boardColumn`, więc idą za tym same.
 `--print-board` pokazuje migawkę bez stanu z pracy agentów (bez skanowania dzienników).
+
+**Synchronizacja z YouTrackiem** (PT-7, `board/ytsync.py`, `ytsync_monitor.py`; zmienia dawne „YouTrack tylko do
+odczytu”). Użytkownik: „to ma się dynamicznie zmieniać, aktualizować youtracka”. Tide jest źródłem stanu,
+YouTrack (prywatny: użytkownik i domownik) dostaje stan kart i ticketów.
+
+- **Co:** karta z polem `youtrack` i ticket planu z `tracker: youtrack`, którego ID jest kluczem zgłoszenia —
+  tylko w projektach YouTracka, które mają na tablicy projekt z kluczem (`youtrack: LOG`) i włączoną
+  synchronizacją, i tylko przy `sync: true` w ustawieniach (domyślnie). Archiwum — bez zmian w YouTracku.
+- **Mapa** (klucze w `states`, domyślne nazwy z workflow LOG i LEGAL): karta — Backlog i Do zrobienia →
+  `open` (Open), W toku → `progress` (In Progress), Czeka na mnie → `waiting` (To be discussed), Do sprawdzenia →
+  `review` (Fixed — krok człowieka: test ręczny albo scalenie), Gotowe → `done` (Verified); ticket — `todo` →
+  Open, `w-toku` i `review` (review AI to wciąż W toku) → In Progress, `czeka` → To be discussed, `gotowe` →
+  Fixed (Verified, gdy karta, która go prowadzi, stoi w Gotowe — także przeniesiona tam ręcznie: koordynatora
+  karty szukamy po `derived`, `session` karty i kluczu `card` planu), `odrzucone` → `rejected` (Won't fix).
+  Ticket `gotowe` z samej pracy podagentów bez przejścia review (poprawki po review skończone, ponowne review
+  jeszcze się nie zaczęło) przy działającym koordynatorze, który używa review, to wciąż In Progress. Powrót do
+  `open` po stanie rozwiązanym to `reopened` (Reopened), nie Open.
+- **Pierwszeństwo:** ticket przed kartą tego samego zgłoszenia (dokładniejszy), chyba że karta stoi w Gotowe
+  (ręczne Gotowe wygrywa) albo została ręcznie przeniesiona (`moved-from`) po ostatniej pracy nad ticketem
+  i zmianie planu. Karta połączona ze zgłoszeniem-parasolem synchronizuje się sama. Ten sam ticket u kilku
+  koordynatorów — najświeższa praca. Stan ticketu wzięty z samego YouTracka (`source: tracker`) się nie liczy,
+  więc nic nie wraca do YouTracka, co z niego przyszło (bez ping-ponga).
+- **Tylko przejścia:** plik stanu `$XDG_STATE_HOME/tide/youtrack-sync.json` (0600; bez tokenu) pamięta dla
+  zgłoszenia ostatni stan zapisany albo przyjęty przez Tide (`state`), jego klucz (`key`), `updated` zgłoszenia
+  z tej chwili, czas (`ts`) i ewentualny konflikt; do tego `seen` — zgłoszenia już pokazane w imporcie — i `importBaseline` (punkt odniesienia licznika nowych). Zapis
+  idzie, gdy klucz, którego chce Tide, różni się od zapamiętanego i trzyma się 5 s (seria zmian to jeden zapis).
+  Stany chwilowe z pracy agentów — rozwiązane z ticketów i z kolumn wyliczonych (Do sprawdzenia, Gotowe po
+  scaleniu) oraz To be discussed (każde pytanie o zgodę) — muszą się trzymać `stableMinutes` (10 min); na
+  karcie widać wtedy ⟳ „zapisze „Fixed” w YouTracku, gdy stan utrzyma się 10 min”. Ręczne przeniesienie do
+  Gotowe i powrót „do poprawy” idą po 5 s.
+  Karta, która spadła do Do zrobienia albo Backlogu tylko dlatego, że zniknęła jej praca (koordynator poza
+  oknem 7 dni, start usługi — `derived` bez kolumny), nie cofa zgłoszenia: liczy się jawne przeniesienie
+  (`column-moved` nie wcześniej niż ostatni zapis Tide, z dokładnością do sekundy). `column-moved` stempluje
+  `MoveCard` tylko przy prawdziwej zmianie kolumny (docelowa inna niż wyświetlana); zmiana kolejności w Do
+  zrobienia go nie zmienia, więc nie zwalnia wstrzymania.
+- **Przed zapisem** `GET /api/issues/{id}?fields=idReadable,summary,updated,resolved,project(shortName),customFields(name,$type,value(name))`:
+  stan już taki, jakiego chce Tide — tylko zapamiętanie; stan inny niż zapamiętany — **konflikt** (ktoś zmienił
+  go ręcznie): bez zapisu, notka na karcie (⚠, „YouTrack: stan zmieniony ręcznie — w YouTracku „…”, Tide: „…””),
+  wpis w `errors` i w „Projekty i tagi”, aż użytkownik wybierze „Weź z YouTracka” (Tide przyjmuje stan, zapis
+  dopiero przy następnej zmianie karty) albo „Nadpisz z Tide” (`ResolveYouTrack`), albo YouTrack sam dojdzie do
+  stanu Tide (sprawdzenie co 5 min i przy każdej nowej zmianie). Zapis:
+  `POST /api/issues/{id}?fields=…` z `{"customFields": [{"name": "State", "$type": "StateIssueCustomField",
+  "value": {"name": "In Progress"}}]}` — nazwa i `$type` pola z odczytu (kształt sprawdzony odczytem prawdziwego
+  zgłoszenia), wynik musi mieć nowy stan.
+- **Pierwsze spotkanie** zgłoszenia (brak wpisu w pliku): zapis tylko wtedy, gdy Tide wie coś o pracy (nie
+  `open`), zgłoszenie jest nierozwiązane (`resolved` puste), w innym stanie i nikt go nie zmieniał po połączeniu
+  (`updated` najwyżej minutę po założeniu karty albo pierwszym zdarzeniu ticketu); inaczej Tide przyjmuje stan
+  z YouTracka. Zaimportowana karta w Backlogu nie cofa więc „In Progress” do „Open”.
+- **Bez sieci:** YouTrack w sieci lokalnej bywa wyłączony — brak odpowiedzi, 5xx, 401/403/408/429 to ponowienie po
+  5, 15, 60 i co 300 s (znaczek ⟳ i notka „YouTrack niedostępny · N czeka” przy nagłówku tablicy); przejście
+  czeka w pliku stanu także przez restart usługi. Odmowa (inne 4xx, np. stan spoza workflow) — ⚠ z opisem
+  YouTracka i ponowienie po 30 min albo przy nowym stanie.
+- **Kiedy:** zegar co 1 s pyta silnik, co dojrzało; sieć w jednym wątku roboczym (`tide-youtrack`), wątek główny
+  nigdy nie czeka. Pierwszy zapis po starcie dopiero po pierwszym odczycie koordynacji i 20 s
+  (`TIDE_YOUTRACK_START_GRACE` w testach) — wcześniej karty nie mają jeszcze stanu z pracy agentów. Zegar
+  synchronizacji jest prawdziwy także przy `--now`.
+- **Import** (`YouTrackIssues`, `ImportYouTrack`; „Importuj z YouTracka” w „Projekty i tagi” i notka „N nowych
+  zgłoszeń w YouTracku” przy nagłówku): zgłoszenia użytkownika — nierozwiązane, `for: me` oraz zgłoszone przez
+  niego bez przypisania (`reporter: me Assignee: Unassigned`; w tym YouTracku zgłoszenia nie mają przypisania),
+  oba zapytania w `importQueries` — pole `fields=idReadable,summary,description,updated,resolved,project(shortName),customFields(name,value(name))`.
+  Lista z wyborem (klucz, tytuł, projekt tablicy po kluczu projektu YouTracka, stan, „nowe”, „już jest: K-13”);
+  karta: Backlog, `youtrack`, tytuł (jedna linia, do 200 znaków), opis zwykłym tekstem (do 60 KB, bez znaków
+  sterujących), projekt po kluczu. Bez duplikatów: zgłoszenie z kartą (po `youtrack`, także w Archiwum) jest
+  pomijane. Lista pokazuje wszystko, co nie ma karty, z filtrem
+  tekstu i przełącznikiem projektów YouTracka. Co `importCheckMinutes` (15, 0 — wyłączone) usługa w tle liczy
+  „nowe” zgłoszenia — niczego sama nie zakłada. Licznik ma punkt odniesienia: pierwsze udane pobranie zapisuje
+  w pliku stanu `importBaseline` (najnowsze `created` z tej listy, czas serwera), a nowe są tylko zgłoszenia
+  założone później, bez karty i jeszcze niepokazane na liście (pokazanie listy je przegląda).
+- **Token** jak w koordynacji: z pliku przy każdym zapytaniu, tylko w nagłówku, nigdy w dzienniku, błędach,
+  pliku stanu ani odpowiedziach D-Bus. `--no-youtrack` wyłącza synchronizację i import (metody odpowiadają
+  `unavailable`).
+
+```json
+{"url": "http://10.20.1.159:8111", "sync": true,
+ "states": {"open": "Open", "reopened": "Reopened", "progress": "In Progress", "waiting": "To be discussed",
+            "review": "Fixed", "done": "Verified", "rejected": "Won't fix"},
+ "stateField": "State", "projects": {"APP5": {"states": {"review": "In Review"}}}, "stableMinutes": 10,
+ "importQueries": ["for: me #Unresolved", "reporter: me Assignee: Unassigned #Unresolved"], "importCheckMinutes": 15}
+```
 
 Przejście z karty do pracy: karta emituje `sessionRequested(derived.session)` („Otwórz w Sesjach →”,
 „Przejdź do agenta”). Usługa ma już oba cele: `/Coordination ShowWindow(id)` (okno Tide na widoku Sesje
@@ -1473,7 +1569,7 @@ journalctl --user -u tide-daemon -f
 #                      --report-dir, --report-at 07:00, --no-report, --report-delay 120,
 #                      --report-summary claude|local|rules,
 #                      --limits-poll 120, --no-limits, --print-limits, --no-tasks,
-#                      --coordination-days 7, --no-coordination, --no-youtrack,
+#                      --coordination-days 7, --no-coordination, --no-youtrack (też bez synchronizacji tablicy),
 #                      --board-dir DIR, --no-board, --print-card-docs K-12, --no-docker,
 #                      --models-poll 15, --no-models
 ```
@@ -1525,6 +1621,8 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_board_dbus.py` — `BoardMonitor` w procesie (zmiana z zewnątrz → commit i `Changed`, nasz zapis bez drugiego commita, błędy jako JSON) i `/Board` na prywatnej magistrali: introspekcja, `Snapshot`, `CreateCard` z repozytorium, `UpsertProject`, `UpsertTag`, `UpdateCard`, `MoveCard`, `RenderFlow`, sygnał `Changed`, historia commitów, edycja pliku z zewnątrz, błędy `{ok: false, error, message}` z kodami i bez commita, `--no-board`, `--print-board` bez zapisu. Usługi w testach dostają tymczasowy `TIDE_BOARD_DIR` (`privatebus.py`), więc nigdy nie dotykają prawdziwej tablicy,
 - `daemon/tests/test_board_launch.py` — uruchamianie z karty po stronie tablicy: `RenderLaunch` z prawdziwymi szablonami (pełny, lekki, spec; dokumenty w tablicy i w repozytorium; narzędzie, gałąź i test ręczny z okna; błędy), migracja szablonów (dawny zaczyn bajt w bajt z `fixtures/flows-pt1/` podmieniony, zmieniony przez użytkownika i nadpisanie projektu zostają, zajęte repozytorium), pola uruchomienia karty z walidacją, znacznik „specyfikacja gotowa” (szkic, inny tryb, inna karta, specyfikacja w repozytorium, klucz `card`), `BoardMonitor` (migracja przy starcie, znacznik przy synchronizacji, `ShowWindow("launch:K-12")`, `RenderLaunch` jako JSON),
 - `daemon/tests/test_board_multiproject.py` — PT-28 na tymczasowych repozytoriach (toolssuite z worktree karty, mobileapp, legacyinfra) i syntetycznych dziennikach: katalog pracy sesji w tablicy (`board/place.py`: katalog startu, `docs/<slug>/`, `docs/_inbox`), `/Agents` (Claude Code przed i po `cd` do katalogu planów tablicy, Claude Code bez wpisu z katalogiem startu, Codex z `session_meta`), KRunner, raport poranny i koordynator w tablicy (repozytorium, gałąź i plan karty), reguła „uruchomienie z karty” (okno czasu, narzędzie, katalog bez worktree, `launchKey`, najbliższy start, sesje innych kart, przypięta sesja po zmianie cwd/projektu/gałęzi, zakończona przypięta ustępuje nowej), utrwalanie (`sticky`: uruchomienie, jednoznaczna gałąź, dwa dopasowania — nie), `BoardMonitor` z odtworzeniem K-1 (commit „K-1: link session …”, karta w W toku po `cd`, usługa widząca sesję dopiero po `cd`, ręczny `session` bez nadpisania i commita), pole `projects` (zapis, projekt z repozytorium, migawka, walidacja, nieznany slug w pliku), `RenderLaunch` (zdanie o ścieżkach bezwzględnych, lista repozytoriów i zasady, tryb spec, brakujące repozytorium, własny szablon bez `{projects}`, migracja szablonów `tide-flow: 2`), `/Tasks` `addDirs` z repozytoriami projektów (oba narzędzia, dowiązanie, odmowy) i stan karty po gałęzi we wszystkich repozytoriach,
+- `daemon/tests/test_youtrack_sync.py` — synchronizacja z YouTrackiem bez Qt (PT-7) na atrapie REST API (`fake_youtrack.py`: GET i POST zgłoszenia z kształtem prawdziwego pola State, wyszukiwanie, dziennik wywołań): zapis przy każdym przejściu karty (kształt POST), bez zapisu i bez sieci bez przejścia, odliczanie 5 s, Archiwum i projekt bez synchronizacji, wyłącznik globalny, przyjęcie stanu przy pierwszym spotkaniu (zmiana po połączeniu, rozwiązane, `open`), plik stanu 0600 przez restart, konflikt (bez nadpisania, notka, `errors`, bez odpytywania w kółko, „weź z YouTracka”, „nadpisz z Tide”, samo wygaszenie), Reopened zamiast Open i brak cofnięcia po zniknięciu pracy, pierwszeństwo ticketu i ręcznego Gotowe bez ping-ponga, parasol, stan z YouTracka i plan lokalny pominięte, Verified z karty koordynatora, Won't fix, najświeższy koordynator, kolejka bez sieci z ponowieniem i przez restart, 503 i odmowa stanu, token nigdy w dzienniku, pliku, migawce i adresie, mapa stanów z ustawień i per projekt, klucze zgłoszeń, lista importu (przypisane, zgłoszone bez przypisania, rozwiązane i cudze poza listą, karta już jest, „nowe” przez restart, tytuł i opis karty),
+- `daemon/tests/test_youtrack_board.py` — PT-7 w tablicy: klucz projektu YouTracka i przełącznik (plik, migawka, unikalność, walidacja), pole `youtrack` karty (adres → klucz, walidacja), `BoardMonitor` z `YouTrackSyncMonitor` na atrapie (Gotowe → Verified, powrót → Reopened, konflikt w migawce i rozstrzygnięcie po karcie, import do Backlogu z projektem i bez duplikatów, metody bez YouTracka), `/Board` na prywatnej magistrali z `TIDE_YOUTRACK_CONFIG` (lista, import, przeniesienie → Verified, `ResolveYouTrack`). Usługi w pozostałych testach dostają `fixtures/youtrack-closed.json` (zamknięty port) — nigdy prawdziwy YouTrack,
 - `daemon/tests/test_boardplans.py` — standard planu 1.1: klucz `card` (walidacja, ID karty z gałęzi, wybór planu po karcie), plany projektów z `ai-docs: tide` w tymczasowej tablicy (`TIDE_BOARD_DIR`) w `find_plans`, skanerze, tablicy i podsumowaniu koordynatora (`card`), kontroli numerów, raporcie porannym, `tools/next_id.py` i `tools/check_plans.py`; projekty `ai-docs: repo` bez zmian. `daemon/tests/__init__.py` kieruje `TIDE_BOARD_DIR` na nieistniejący katalog — testy nie czytają prawdziwej tablicy,
 - `daemon/tests/test_docker_core.py` — Docker bez Qt na atrapie Engine API (`fake_docker.py`: prawdziwy socket unix w wątku testu, kształty odpowiedzi jak w Dockerze 29, odpowiedzi chunked pocięte w środku znaków, strumień `/events`, logi w ramkach, zapis każdego zapytania): `DOCKER_HOST` (unix, tcp/ssh → `unsupported`), brak socketu, odmowa, brak uprawnień, zawieszony Docker; grupy compose, repozytorium z worktree (także spoza katalogu projektów), „bez compose”, testcontainers, kod 137 i reguły awarii (0, 143, OOM, `dead`, restart, `created` po nieudanym starcie, 137 po `Stop` z Tide), porty bez powtórek i `likelyHttp`, czasy z nanosekundami, `inspect` tylko po zmianie stanu (nie tekstu „Up 3 hours”) i pełne odświeżenie; panele WWW baz w `likelyHttp`; kategorie dysku (nic w użyciu), wolumeny anonimowe zatrzymanych, prune tylko z listy id w bezpiecznej kolejności (regresja: `{"volumes": "false"}` bez żadnego wywołania), 404 z prune, dokładne metody, ścieżki i zapytania akcji, `Remove` działającego bez wywołania, kolejność zależności w projekcie, częściowa porażka `restart` projektu, limity pojedynczych akcji poniżej 25 s, jeden termin na zapytanie (odpowiedź sącząca się po bajcie) i na akcję (po terminie bez wywołań), znacznik „zatrzymany z Tide” przy odświeżeniu w trakcie `stop` i przy równoczesnym dopisywaniu, demultipleksowanie logów (stderr, TTY, linie i znaki UTF-8 rozcięte między ramkami, ucięta ostatnia ramka, zepsuty nagłówek w środku), statystyki równolegle z łącznym limitem czasu, filtr zdarzeń,
 - `daemon/tests/test_docker_monitor.py` — `DockerMonitor` w pętli Qt na atrapie: zdarzenie → `Changed`, zdarzenia `exec_*` bez odświeżenia, seria zdarzeń w jednym odświeżeniu, zerwany strumień i ponowne połączenie, odpytywanie bez Dockera aż się pojawi, zniknięcie Dockera, pamięć `Stats`/`Disk` (bez wyniku sprzed akcji), odświeżenie bez zmiany bez `Changed`, zadania `Prune`/`GroupAction` z `actionFinished` i odmowa bez zadania, karty z logami i powłoką (argv z ID i `-H` w pliku zadania, osobny katalog każdej karty — dwa szybkie `OpenShell` nie zamieniają się kontenerami, `workdir` w katalogu domowym, wycofanie przy nieudanej Konsoli), akcja czekająca w zajętej puli dostaje odmowę na czas,

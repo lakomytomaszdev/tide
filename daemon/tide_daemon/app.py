@@ -46,7 +46,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
 --print-coordination  jednorazowo: koordynatorzy i ich tablice jako JSON (jak dane okna Tide Sesje), bez D-Bus,
 --coordination-days   z ilu dni szukać koordynatorów (domyślnie 7),
 --no-coordination  bez obiektu /Coordination (tablica koordynatorów, tickety, podagenci),
---no-youtrack      tablica bez YouTracka (żadnych zapytań sieciowych),
+--no-youtrack      bez YouTracka (żadnych zapytań sieciowych): tablica koordynatorów bez tytułów i stanów,
+                   tablica pracy bez synchronizacji stanu i importu zgłoszeń (PT-7),
 --print-board      jednorazowo: migawka tablicy pracy jako JSON (tylko odczyt, niczego nie zakłada), bez D-Bus,
 --print-card-docs  jednorazowo: plan i specyfikacja karty (jak /Board CardDocs, bez koordynatorów — plan tylko
                    z klucza `card`), bez D-Bus,
@@ -569,9 +570,23 @@ def start_board(app, args, trees, monitor=None, coordination=None, clock=time.ti
     deriver = CardDeriver(sessions_source=(lambda: monitor.sessions) if monitor is not None else (lambda: []),
                           boards_source=(lambda: coordination.boards) if coordination is not None else (lambda: []),
                           branches=BranchState(clock=clock, background=True), clock=clock)
+    youtrack = None
+    if not getattr(args, "no_youtrack", True):   # bez opcji (testy z częściowymi argumentami) — bez YouTracka
+        # Synchronizacja stanu kart i ticketów z YouTrackiem (PT-7): zapis dopiero po pierwszym odczycie koordynacji.
+        from .board.ytsync import SyncEngine
+        from .ytsync_monitor import START_GRACE_S, YouTrackSyncMonitor
+        try:  # testy usługi skracają odczekanie po starcie (atrapa YouTracka)
+            grace = float(os.environ.get("TIDE_YOUTRACK_START_GRACE") or START_GRACE_S)
+        except ValueError:
+            grace = START_GRACE_S
+        # Zegar prawdziwy, nie --now: odliczanie i ponowienia to czas rzeczywisty.
+        youtrack = YouTrackSyncMonitor(SyncEngine(), start_grace_s=grace,
+                                       coordinators=(lambda: coordination.boards) if coordination is not None else None,
+                                       ready=(lambda: coordination.ready) if coordination is not None else None,
+                                       parent=app)
     board = BoardMonitor(board_store(args), repos_source=repos, derive=deriver, launchers=trees.launchers,
                          coordinators=(lambda: coordination.boards) if coordination is not None else None,
-                         parent=app)
+                         youtrack=youtrack, parent=app)
     trees.changed.connect(board.publish)  # nowe repozytorium w katalogu projektów
     # Git (czy gałąź scalona) idzie w wątku roboczym; nowy wynik przelicza karty w wątku głównym.
     deriver.branches.on_result = board.rederive_later

@@ -1,5 +1,5 @@
 // Karta tablicy (mock zatwierdzony 27.10.2026): ID w Geist Mono (sky), projekt, opcjonalny znacznik
-// YouTracka, tytuł, tagi z kropkami, notatka, a gdy kartę prowadzi koordynator (derived, PT-5) —
+// YouTracka (ze stanem synchronizacji, PT-7), tytuł, tagi z kropkami, notatka, a gdy kartę prowadzi koordynator (derived, PT-5) —
 // pasek postępu, „● Claude · koordynator · 3 z 10” i akcja kolumny (Otwórz w Sesjach, Przejdź do
 // agenta, Gotowe). W Gotowych zwarta wersja (compact): „K-10 · projekt” i tytuł.
 // Czekająca — brzoskwiniowe tło; zaznaczona — tealowa obwódka; przeciągana — przygaszona.
@@ -7,6 +7,7 @@
 // Teksty to dane: zawsze Text.PlainText.
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "board.js" as Logic
 
@@ -39,6 +40,7 @@ Rectangle {
     readonly property bool canDrag: !ghost && dragHost !== null && Logic.draggable(root.c)
     readonly property bool dragged: dragHost !== null && dragHost.dragging && dragHost.dragId === root.c.id && !ghost
     readonly property bool dragActive: area.drag.active
+    readonly property string syncGlyph: ytChip.visible ? ytChip.glyph : ""   // znaczek synchronizacji z YouTrackiem (PT-7)
 
     function tone(name) {
         return tagTone ? tagTone(name) : Tide.Tokens.textMuted
@@ -191,21 +193,47 @@ Rectangle {
                 Layout.fillWidth: true
                 visible: (root.c.extraProjects || []).length > 0
             }
+            // Znacznik YouTracka ze stanem synchronizacji (PT-7): ✓ / ⟳ / ⚠; podpowiedź mówi resztę.
             Rectangle {
+                id: ytChip
+                objectName: "cardYouTrack"
+                readonly property var sync: root.c.youtrackSync || null
+                readonly property string glyph: Logic.syncGlyph(sync)
                 visible: (root.c.youtrack || "") !== ""
                 radius: 5
-                color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.06)
-                implicitWidth: ytText.implicitWidth + 10
-                implicitHeight: ytText.implicitHeight + 2
-                Text {
-                    id: ytText
+                color: sync && sync.status === "conflict" ? Tide.Theme.alpha(Tide.Tokens.rose, 0.14)
+                                                          : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.06)
+                implicitWidth: ytRow.implicitWidth + 10
+                implicitHeight: ytRow.implicitHeight + 2
+                Accessible.role: Accessible.StaticText
+                Accessible.name: Logic.syncHint(root.c)
+                Row {
+                    id: ytRow
                     anchors.centerIn: parent
-                    text: "YT " + (root.c.youtrack || "")
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.textSecondary
-                    font.family: Tide.Theme.monoFamily
-                    font.pixelSize: 10
+                    spacing: 4
+                    Text {
+                        id: ytText
+                        text: "YT " + (root.c.youtrack || "")
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.monoFamily
+                        font.pixelSize: 10
+                    }
+                    Text {
+                        objectName: "cardYouTrackSync"
+                        visible: ytChip.glyph !== ""
+                        text: ytChip.glyph
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens[Logic.syncTone(ytChip.sync)]
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 10
+                        font.weight: Font.DemiBold
+                    }
                 }
+                HoverHandler { id: ytHover }
+                QQC2.ToolTip.visible: ytHover.hovered && !root.ghost
+                QQC2.ToolTip.text: Logic.syncHint(root.c)
+                QQC2.ToolTip.delay: 400
             }
         }
 

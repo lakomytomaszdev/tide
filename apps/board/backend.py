@@ -26,6 +26,11 @@ z zaznaczonym plikiem, bez niego katalog nadrzędny), a openLink — wyłącznie
 W podglądzie z pliku odpowiedź CardDocs bierzemy z klucza „cardDocs” ({"K-12": {...}}) danych,
 a otwarcia trafiają do `callsJson` zamiast do systemu.
 
+YouTrack (PT-7): youtrackIssues (lista do importu, /Board YouTrackIssues — odpowiedź po pobraniu w usłudze),
+importYouTrack (ImportYouTrack) i resolveYouTrack (ResolveYouTrack — konflikt ze zmianą ręczną) idą tą samą
+drogą co zapisy (tag i sygnał replied). W podglądzie z pliku lista do importu to klucz „youtrackIssues”
+danych, a wywołania trafiają do `callsJson`. „Otwórz w YouTracku” to openLink (tylko http(s)).
+
 Markdown planu i specyfikacji (usługa oddaje go nieoczyszczonego) renderuje render_markdown parserem
 samego Qt — tym samym, który rozumie TextEdit — z MarkdownNoHTML (HTML zostaje tekstem), każdy obraz
 zamienia na „(obraz: opis)”, link inny niż http(s) — na zwykły tekst, a do tego odstęp nad nagłówkami
@@ -46,7 +51,8 @@ SERVICE, PATH, IFACE = "org.tide.Daemon", "/Board", "org.tide.Daemon.Board"
 PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku — zmiany są wyłączone."}
 NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
-WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag")
+WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "ImportYouTrack", "ResolveYouTrack")
+YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w sieci lokalnej (po 4 s) i zapas
 TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
 COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
 AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
@@ -161,6 +167,7 @@ class Backend(QObject):
         self._now = 0.0
         self._home = ""
         self._docs_data: dict = {}      # podgląd: ID karty → odpowiedź CardDocs
+        self._issues_data = None        # podgląd: odpowiedź YouTrackIssues
         self._doc_paths: set = set()    # ścieżki z odpowiedzi CardDocs — tylko je wolno otworzyć
         self._docs_requests = 0
         self._rendered: OrderedDict = OrderedDict()   # (markdown, kolor linku) → HTML
@@ -170,6 +177,7 @@ class Backend(QObject):
             data = dict(data)
             docs = data.pop("cardDocs", None)
             self._docs_data = docs if isinstance(docs, dict) else {}
+            self._issues_data = data.pop("youtrackIssues", None)
             self._snapshot = json.dumps(data, ensure_ascii=False)
             self._available = True
             self._update_badge()
@@ -260,6 +268,24 @@ class Backend(QObject):
     @pyqtSlot(str, str)
     def startTask(self, tag: str, request: str) -> None:
         self._write(tag, "Start", [request])
+
+    # YouTrack (PT-7): lista zgłoszeń do importu, import i rozstrzygnięcie konfliktu — odpowiedź sygnałem replied.
+    @pyqtSlot(str, bool)
+    def youtrackIssues(self, tag: str, refresh: bool) -> None:
+        if self._preview and self._issues_data is not None:
+            self._record("YouTrackIssues", bool(refresh))
+            text = json.dumps(self._issues_data, ensure_ascii=False)
+            QTimer.singleShot(0, lambda: self.replied.emit(tag, text))
+            return
+        self._write(tag, "YouTrackIssues", [bool(refresh)])
+
+    @pyqtSlot(str, str)
+    def importYouTrack(self, tag: str, request: str) -> None:
+        self._write(tag, "ImportYouTrack", [request])
+
+    @pyqtSlot(str, str, str)
+    def resolveYouTrack(self, tag: str, ident: str, choice: str) -> None:
+        self._write(tag, "ResolveYouTrack", [ident, choice])
 
     # „Otwórz w Sesjach →” / „Przejdź do agenta” na karcie: koordynator karty — okno Tide na Sesjach
     # (/Coordination ShowWindow), zwykła sesja — jej okno (/Agents ActivateSession). Bez odpowiedzi do QML.
@@ -382,6 +408,8 @@ class Backend(QObject):
 
         if member == "Start":
             self._call(member, args, done, timeout=START_TIMEOUT_MS, path=TASKS_PATH, iface=TASKS_IFACE)
+        elif member == "YouTrackIssues":
+            self._call(member, args, done, timeout=YOUTRACK_TIMEOUT_MS)
         else:
             self._call(member, args, done)
 

@@ -7,7 +7,8 @@
 // karcie (K-12: zaznaczona i przewinięta; przed pierwszą migawką czeka na nią; launch:K-12 — do tego
 // okno „Co ma zrobić agent?”, przycisk „Uruchom” w popupie kafelka), takeFocus(), tab=plan|spec
 // i expand=1 — zakładka dokumentu w otwartym panelu karty (z card=K-12),
-// railInfo — ramka „Dane tablicy” i link „Projekty i tagi” na dole paska.
+// railInfo — ramka „Dane tablicy” i link „Projekty i tagi” na dole paska; import=1 — strona „Projekty i tagi”
+// z otwartym importem z YouTracka (PT-7).
 import QtQuick
 import "board.js" as Logic
 
@@ -102,6 +103,10 @@ Item {
             else view.backend.openFile(path)
         }
         onLinkRequested: url => { if (view.backend) view.backend.openLink(url) }
+        // YouTrack (PT-7): lista do importu, import i konflikt ze zmianą ręczną.
+        onYoutrackIssuesRequested: (tag, refresh) => { if (view.backend) view.backend.youtrackIssues(tag, refresh) }
+        onImportRequested: (tag, request) => { if (view.backend) view.backend.importYouTrack(tag, request) }
+        onResolveRequested: (tag, ident, choice) => { if (view.backend) view.backend.resolveYouTrack(tag, ident, choice) }
         Component.onCompleted: {
             if (view.previewValue("tag")) tagFilter = view.previewValue("tag")
             if (view.previewValue("project")) projectFilter = view.previewValue("project")
@@ -124,6 +129,7 @@ Item {
                 managing = true
                 managePage.openProject = view.previewValue("manage") === "1" ? "" : view.previewValue("manage")
             }
+            if (view.previewValue("import")) openImport()
         }
     }
 
