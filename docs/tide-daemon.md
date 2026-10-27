@@ -496,6 +496,7 @@ Standard planu: [agent-plan-standard.md](agent-plan-standard.md), uzasadnienie: 
 | Obiekt | `/Coordination` |
 | Interfejs | `org.tide.Daemon.Coordination` |
 | Plik dla raportu | `$XDG_STATE_HOME/tide/coordination.json` (0600) |
+| Opisy kart (pamięć) | `$XDG_CACHE_HOME/tide/coordination-descriptions.json` (0600) |
 | Ustawienia YouTracka | `$XDG_CONFIG_HOME/tide/youtrack.json` (opcjonalny) |
 
 | Składnik | Sygnatura | Opis |
@@ -521,14 +522,22 @@ rozmowy), `sessionTitle`, `label` (ID z tytułu planu albo gałęzi, tylko ze zn
 (`done`, `total`, `text`: „TOM-20 · 8/13”), `spawned`, `running`, `columns`, `tickets`, `runs`.
 
 **Ticket:** `key` (klucz porównania: `TOM-140`, `#22` albo `~opis` dla pracy bez ID), `id` (do pokazania,
-z planu albo pierwszy zapis), `title`, `state` (`todo`, `w-toku`, `czeka`, `review`, `gotowe`, `odrzucone`),
+z planu albo pierwszy zapis), `title` (czym jest zadanie, po polsku — opis karty), `done` (co faktycznie
+zrobiono), `now` (co teraz / czego brakuje, review słowami), `describedBy` (`model`, `model-stale` —
+tytuł i „zrobione” z poprzedniego opisu modelu, „teraz” z reguł — albo `rules`), `officialTitle` i
+`officialFrom` (`plan`, `tracker`, `backlog`), `officialNote` (linia „Status:” z backlogu), `taskTitle`
+(z opisu zlecenia, np. „Implement ticket 05 value chain”), `state` (`todo`, `w-toku`, `czeka`, `review`, `gotowe`, `odrzucone`),
 `column`, `word`, `source` (`runs`, `plan`, `tracker`), `derived` (stan z samej pracy podagentów),
 `planState`, `planNote`, `planAgent`, `inPlan`, `trackerState`, `url` (YouTrack), `branch`, `worktree`,
-`note` („review OK”, „po review: 1 MAJOR — do poprawy”, „czeka na ciebie: „…””), `review` (`blocker`,
-`major`, `nit`, `ok`, `verdict`, `top`, `text`) albo `null`, `runs`, `agents` (ostatnie trzy rundy na
-kartę: `label`, `role`, `state`, `startTs`, `endTs`, `note` „poprawki”), `running`, `question`,
-`lastActivityTs`, `events` (oś czasu: `ts`, `kind` `launch`/`continue`/`finished`/`running`/`question`,
-`state`, `title`, `text`, `durationS`, `quote` — pierwsze BLOCKER/MAJOR z review, `review`).
+`note` („review OK”, „gotowe, czeka na review”, „rozpoznanie skończone”, „po review: 1 MAJOR — do poprawy”,
+„czeka na ciebie: „…””), `review` (`blocker`, `major`, `nit`, `ok`, `verdict`, `top`, `text`) albo `null`,
+`runs`, `agents` (ostatnie trzy rundy na kartę: `label`, `role`, `word` — rola słowem: implementacja,
+poprawki, review, ponowne review, rozpoznanie —, `state`, `startTs`, `endTs`, `note` „poprawki”), `running`,
+`question`, `lastActivityTs`, `events` (oś czasu po polsku: `ts`, `kind` `launch`/`continue`/`finished`/
+`running`/`question`, `state`, `title` („Koordynator zlecił implementację”, „Implementacja skończona”,
+„Review: 1 poważna uwaga i 2 drobne”), `text` (początek raportu — dwa zdania, do 300 znaków — albo „do
+poprawy”), `meta` (drobny dopisek przy zleceniu: „„Implement ticket 05 value chain” · implementer · Opus ·
+tło”), `word`, `durationS`, `quote` — pierwsze BLOCKER/MAJOR z review, `review`).
 
 **Przebieg** (`runs`): `id` (agentId Claude Code albo id wątku Codexa), `ticket`, `role` (`implementer`,
 `reviewer`, `helper`), `agentType`, `label`, `description`, `nickname`, `model`, `background`, `state`
@@ -558,9 +567,11 @@ kartę: `label`, `role`, `state`, `startTs`, `endTs`, `note` „poprawki”), `r
   nie trafia do dziennika usługi ani do pliku dla raportu.
 
 **Tickety** (`coordination/ids.py`, `board.py`): ID z opisu podagenta, potem z jego gałęzi (gdy inna
-niż gałąź koordynatora), przydomka i początku polecenia; prefiks z planu (`ticket-prefix`, także
-`tom142`, `la_029`), bez planu — najczęstszy w opisach (`[A-Z]{2,6}-\d+`, bez skrótów w rodzaju UTF-8)
-albo `#22`. ID samego koordynatora (TOM-20 z gałęzi RC) nie jest ticketem, chyba że jest w planie.
+niż gałąź koordynatora), przydomka, a z początku polecenia tylko z prefiksem z planu (polecenie cytuje
+decyzje, niezmienniki i wymagania — „ADR-0016”, „INV-001” — które ticketami nie są); prefiks z planu
+(`ticket-prefix`, także `tom142`, `la_029`), bez planu — najczęstszy w opisach i nazwach zadań
+(`[A-Z]{2,6}-\d+`, bez skrótów w rodzaju UTF-8, ADR, INV, REQ, NFR, AC) albo `#22`. ID samego
+koordynatora (TOM-20 z gałęzi RC) nie jest ticketem, chyba że jest w planie.
 Mapa migracji z repozytorium (`docs/agents/youtrack-migration/*.csv`) zamienia stare klucze na nowe
 (TOM-10 → LOG-128, LA-001 → LEGAL-1). Praca bez ID grupuje się po opisie bez słów roli, a review dołącza
 do wcześniejszego zadania, którego słowa zawiera („Review anon key sync change” → „Implement anon key
@@ -569,12 +580,36 @@ sync tool”).
 **Stan ticketu:** z pracy podagentów — pytanie koordynatora z ID ticketu → `czeka`; działa recenzent →
 `review`; działa inny podagent → `w-toku`; ostatnie review bez BLOCKER/MAJOR i bez prośby o zmiany →
 `gotowe`; z nimi → `w-toku` („do poprawy”); poprawki skończone po review → `gotowe` („bez ponownego
-review”); implementer skończył bez review → `w-toku` („czeka na review”), gdy koordynator działa i zleca
-review innym ticketom, inaczej `gotowe`; błąd, zatrzymanie albo przerwanie (koordynator nie działa,
+review”); implementer skończył bez review → `review` („gotowe, czeka na review”), gdy koordynator działa
+i zleca review innym ticketom — chyba że od końca pracy minęły ponad 2 h, a koordynator w tym czasie
+zlecał review innym (review pominięte → `gotowe`, „bez review”); samo rozpoznanie (Explore, explorer)
+→ `gotowe` („rozpoznanie skończone”); błąd, zatrzymanie albo przerwanie (koordynator nie działa,
 a dziennik podagenta stoi od 2 min) → `w-toku` z powodem. Plan wygrywa przy `odrzucone`, przy ticketach
 bez pracy podagentów i gdy jego `updated` jest nowszy niż ostatnie zdarzenie ticketu. YouTrack daje tytuł
 (gdy plan go nie ma) i adres; jego stan liczy się bez planu i pracy albo gdy ticket jest tam zamknięty
 (Fixed, Done, Verified… → `gotowe`; Won't fix, Duplicate, Obsolete… → `odrzucone`) i nikt nad nim nie pracuje.
+Lokalny backlog `docs/agents/backlog/<ID>.md` (nagłówek „# LA-040: tytuł”, linia „**Status:** …”) daje
+tytuł, gdy nie ma go plan ani YouTrack. Koordynator, którego katalogu już nie ma (usunięty worktree),
+szuka repozytorium (plan, mapa migracji, backlog) w katalogach swoich podagentów. Wątek Codexa bez nazwy
+ma tytuł z pierwszej wiadomości użytkownika.
+
+**Opis karty** (`coordination/describe.py`, decyzja 54): `title`, `done`, `now` po polsku. Model — to samo
+bezpieczne wywołanie co „Na daily” (`claude -p` bez narzędzi, `--safe-mode`, sekcja „Na daily” niżej),
+z własnymi instrukcjami, model i tryb z `report.json` (`summaryModel`; `"summary": "rules"` albo
+`--report-summary rules` — same reguły). Wejście: `{"coordinator": {"project", "title"}, "tickets": [{"key",
+"id", "state", "status" (stan z reguł), "officialTitle", "trackerStatus", "trackerDescription", "brief"
+(do 400 znaków), "planNote", "tasks" (opisy zleceń), "reports" ([{"role", "said"}], do 300 znaków, ostatnie
+6), "review", "question"}]}` po `strip_secrets`; odpowiedź `{"tickets": [{"key", "title", "done", "now"}]}`
+walidowana (tylko znane klucze, same napisy, bez Markdownu, tytuł 110, pozostałe 260 znaków). Kiedy:
+w osobnym wątku roboczym, jedno wywołanie naraz, wsadowo per koordynator (do 20 ticketów), tylko dla
+ticketów, których fakty (skrót SHA-256 z modelem i wersją instrukcji) nie mają opisu i od 2 min się nie
+zmieniają; najwyżej raz na 5 min na koordynatora, po błędzie 15 min przerwy, koordynatorzy bez ruchu od
+dwóch dób — same reguły. Ticket, którego model nie opisał, dostaje reguły (bez ponawiania). Zapas
+z reguł: tytuł z planu/YouTracka/backlogu, inaczej pierwsze polskie zdanie polecenia bez formułek
+(„Jesteś wykonawcą…”, „Rola: …”, „Model: …”, „Implementujesz zadanie 05 funkcji „X” …: reszta” → „X:
+reszta”), inaczej opis zlecenia; `done` — początek ostatniego raportu implementacji; `now` — stan, review
+słowami, pytanie, zdanie o testach, które nie przechodzą. `--print-coordination` pokazuje opisy z pamięci
+albo reguł, nigdy nie woła modelu.
 
 **Review** (`coordination/review.py`): recenzent to podagent z „review” w typie albo opisie (ale nie
 „review fix round”). Z raportu: jawne liczby („1 MAJOR, 2 NIT”, „BLOCKER: brak”, „nie ma BLOCKER-ów ani
@@ -607,12 +642,17 @@ danych. Po zmianie: sygnał `Changed`, pole `coordination` przy sesji koordynato
 (koordynatorzy z celem planu, tickety ze stanem, tytułem, notatką, adresem i gałęzią, wynikiem review
 w liczbach, pierwszą linią wyniku pracy do 220 znaków, pytaniem bez odpowiedzi do 300, uwagami z planu
 do 300, początkiem opisu z YouTracka do 400 i początkiem polecenia pierwszego podagenta do 300 —
-zaszyfrowane polecenia Codexa pomijamy — z nich „Na daily”; bez pełnych poleceń i raportów podagentów).
+zaszyfrowane polecenia Codexa pomijamy —, opisem karty `done` i `now` do 300 znaków — z nich „Na daily”;
+bez pełnych poleceń i raportów podagentów). Opisy kart dokłada ten sam wątek z pamięci albo reguł, a gdy
+trzeba zapytać model (decyzja 54), robi to osobny wątek roboczy i po odpowiedzi zleca odświeżenie.
 
 **Okno „Tide Sesje”** (`apps/sessions`, `make install-sessions-window`): `ShowWindow()` uruchamia
 `/usr/bin/python3 -s $XDG_DATA_HOME/tide/sessions-window/tide-sessions.py [--select id]` (albo
 `$TIDE_SESSIONS_WINDOW`) przez `systemd-run --user --scope`. Okno rejestruje `org.tide.SessionsWindow`
 (obiekt `/Window`, `Raise(s id)`), więc kolejne uruchomienie tylko je pokazuje z wybranym koordynatorem.
+Karta: prawdziwe ID, tytuł po ludzku, linia „co zrobiono” albo „co teraz”, działający podagenci z rolą
+po polsku i czasem, stan słowami; szczegóły: „Co to jest”, „Co zrobiono”, „Teraz / review” i oś czasu.
+Teksty z danych zawsze jako zwykły tekst (`Text.PlainText`).
 
 ```bash
 qdbus6 org.tide.Daemon /Coordination org.tide.Daemon.Coordination.Coordinators
@@ -676,6 +716,7 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_limits_dbus.py` — obiekt `/Limits` na prywatnej magistrali z atrapą API QuotaApp (HTTP w wątku testu) i atrapą serwera powiadomień: `Forecast()`, sygnał `Changed`, powiadomienia, historia w `$XDG_STATE_HOME`, brak tokenu w plikach, restart bez powtórek, usługa niedostępna, `--no-limits`. Usługi w testach dostają nieistniejący `LIMITY_CONFIG`, więc nigdy nie pytają prawdziwej QuotaApp,
 - `daemon/tests/test_coordination_core.py` — koordynacja bez Qt na syntetycznym świecie o kształcie prawdziwych dzienników (`coordfix.py`): koordynator Claude Code (zlecenia w tle i na pierwszym planie, powiadomienia z kolejki i z wiadomości, szum kolejki i kopii dla API, raport przez SubagentHandback, SendMessage, TaskStop, AskUserQuestion, odczyt przyrostowy), drzewo wątków Codexa (wnuk, recenzent zgód), plany poprawne i błędne, ID ticketów (prefiks, nazwy zadań, mapa migracji, ID koordynatora), formaty review, reguły stanów (praca, plan, YouTrack, przerwanie, grupowanie bez ID), YouTrack na atrapie serwera HTTP (tylko GET, token tylko w nagłówku, nigdy w błędach, pamięć 5 min, inny serwer, zmienna z pliku `.env`), adnotacje `/Agents`, plik dla raportu (0600, bez raportów i poleceń), cel diffu i worktree,
 - `daemon/tests/test_coordination_dbus.py` — `/Coordination` na prywatnej magistrali z atrapą YouTracka i atrapami programów: `Coordinators`, `Board`, `RunDetail`, sygnał `Changed` po dopisaniu powiadomienia, `Activate` (wznowienie w Konsoli), `ShowWindow`, pole `coordination` w `/Agents`, plik dla raportu bez tokenu, wyłącznie GET do YouTracka, `--no-coordination`, `--no-youtrack`,
+- `daemon/tests/test_coordination_describe.py` — opisy kart: reguły (formułki poleceń, stan i review słowami, raport implementacji), fakty bez sekretów i bez całych poleceń, walidacja odpowiedzi modelu (tylko znane tickety, same napisy, przycięcia), pamięć podręczna i odstępy (SETTLE, GAP, RETRY, stare koordynatory, partie), plik 0600 i jego walidacja, tryb `rules` bez wywołań, monitor z opisem w tle — model to zawsze atrapa,
 - `daemon/tests/test_coordination_integration.py` — KRunner („sesje”, filtr słowami, uruchomienie tylko znanych), „Plany i tickety” w raporcie (tablica z pliku, plany z repozytoriów, escapowanie, brak pliku i błędy), `Launchers.show_sessions`,
 - `apps/sessions/tests/` — okno Tide Sesje: pakiet bez kolorów na sztywno, logika `sessions.js` w QJSEngine, zrzuty offscreen z `--data` (tablica, Codex, wynik podagenta) bez ostrzeżeń QML, dane po `tools/sessions_preview.py --sanitize` bez treści, launcher na prywatnej magistrali z prawdziwą usługą i drugie uruchomienie, instalacja,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
