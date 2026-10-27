@@ -441,6 +441,51 @@ function pullStage(status) {
     return "pobieram…"
 }
 
+// --- kolejka modeli (PT-16) ----------------------------------------------------------------------
+
+const QUEUE_WORDS = { summary: "raport", describe: "opisy kart", agent: "agent", embed: "wyszukiwanie" }
+
+function queueWord(role) {
+    return QUEUE_WORDS[role] || String(role || "zadanie")
+}
+
+// Jeden stan toru {running, waiting} → „Pracuje: raport (qwen3:8b) · 2 w kolejce: opisy kart”; "" — bezczynny.
+function queueText(q) {
+    if (!q || typeof q !== "object") return ""
+    const waiting = list(q.waiting)
+    const count = typeof q.waiting === "number" ? q.waiting : waiting ? waiting.length : 0
+    const roles = []
+    for (const w of waiting || []) {
+        const word = w && typeof w === "object" && w.role ? queueWord(w.role) : ""
+        if (word && roles.indexOf(word) < 0) roles.push(word)
+    }
+    const parts = []
+    if (q.running && typeof q.running === "object")
+        parts.push("Pracuje: " + queueWord(q.running.role) + (q.running.model ? " (" + q.running.model + ")" : ""))
+    if (count > 0) parts.push(count + " w kolejce" + (roles.length ? ": " + roles.slice(0, 3).join(", ") : ""))
+    return parts.join(" · ")
+}
+
+// Linie kolejki na karcie serwera z Status().queue.<serwer>: bieżący tor i wywołania, które trwają jeszcze na
+// starym adresie serwera po jego zmianie (`other`, jak w kafelku). [{text, other}]; pusta lista — bez pola
+// `queue` (starsza usługa) albo nic nie trwa ani nie czeka.
+function queueLines(status, endpointName) {
+    const all = status && status.queue && typeof status.queue === "object" ? status.queue : null
+    const q = all ? all[endpointName] : null
+    if (!q || typeof q !== "object") return []
+    const out = []
+    const main = queueText(q)
+    if (main) out.push({ text: main, other: false })
+    for (const o of list(q.other) || []) {
+        const text = o && typeof o === "object" ? queueText(o) : ""
+        if (!text) continue
+        const lane = typeof o.lane === "string" ? hostText(o.lane) : ""
+        out.push({ text: "Na starym adresie" + (lane ? " " + lane : "") + ": " + text.charAt(0).toLowerCase() + text.slice(1),
+                   other: true })
+    }
+    return out
+}
+
 // --- pusty stan ---------------------------------------------------------------------------------
 
 function problem(status, serviceUp) {

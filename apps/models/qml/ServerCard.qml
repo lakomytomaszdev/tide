@@ -182,6 +182,21 @@ Rectangle {
                 Layout.fillWidth: true
                 text: card.lines.length === 0 ? Logic.loadedSummary(card.server) : ""
             }
+            // Kolejka modeli na tym serwerze (PT-16): co trwa i ile czeka; także wywołania na starym adresie.
+            Repeater {
+                model: card.server ? Logic.queueLines(card.status, card.server.name) : []
+                Text {
+                    required property var modelData
+                    objectName: modelData.other ? "queueOtherLine" : "queueLine"
+                    Layout.fillWidth: true
+                    text: modelData.text
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.working
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+            }
 
             // Przełącznik „ten komputer / Mac”: jedno kliknięcie, role bez przypięcia idą za nim.
             PillButton {

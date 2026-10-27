@@ -186,7 +186,7 @@ class QmlTest(unittest.TestCase):
         cls.pkg = stage(os.path.join(cls.tmp, "pkg"))
         mod = load_backend()
         cls.data = {v: mod.decorate(sample(v)) for v in ("local", "mac-offline", "mac", "pulling", "errors",
-                                                         "checking")}
+                                                         "checking", "busy")}
 
     @classmethod
     def tearDownClass(cls):
@@ -253,6 +253,11 @@ Item {
         console.warn("TEST " + [Logic.testText({ ok: true, version: "0.40.11", models: 3 }), Logic.testText({ ok: true, version: null, models: 1 }),
                                 Logic.testText({ ok: false, error: "serwer nie odpowiada" }), Logic.testText(null)].map(t => (t.error ? "!" : "") + t.text).join("|"))
         console.warn("BYTES " + [Logic.bytes(5225388164), Logic.bytes(65290196070), Logic.bytes(566700000), Logic.bytes(1157672605), Logic.bytes(-1)].join("|"))
+        const odd = { queue: { local: { running: null, waiting: 3, other: [{ lane: "http://x:1", running: null, waiting: [] }, "zepsute"] },
+                               mac: { running: { role: "embed", model: "bge-m3" }, waiting: [] } } }
+        console.warn("QUEUE " + [Logic.queueLines(d.busy, "local"), Logic.queueLines(d.local, "local"),
+                                 Logic.queueLines(odd, "local"), Logic.queueLines(odd, "mac"), Logic.queueLines(null, "local")]
+                                .map(l => l.map(x => (x.other ? "~" : "") + x.text).join(" + ")).join(" | "))
         console.warn("PROBLEM " + Logic.problem(d.local, false).title + "|" + Logic.problem({ endpoints: {} }, true).title + "|" + Logic.problem(d.local, true))
         Qt.quit()
     }
@@ -304,6 +309,44 @@ Item {
                                               "!serwer nie odpowiada|!brak odpowiedzi usługi")
         self.assertEqual(warned(log, "BYTES"), "5,2 GB|65,3 GB|567 MB|1,2 GB|")
         self.assertEqual(warned(log, "PROBLEM"), "Usługa tide-daemon nie odpowiada|Brak serwerów modeli|null")
+        self.assertEqual(warned(log, "QUEUE"), "Pracuje: raport (qwen3:8b) · 2 w kolejce: opisy kart + "
+                                               "~Na starym adresie 10.0.0.5:11434: pracuje: agent (qwen3-coder:30b) | "
+                                               " | 3 w kolejce | Pracuje: wyszukiwanie (bge-m3) |",
+                         "bez pola `queue` i przy bezczynnej kolejce nic; bezczynny i zepsuty wpis `other` pominięte")
+
+    def test_server_card_shows_queue(self):
+        """Karta serwera: linia kolejki (PT-16) i wywołania na starym adresie serwera (`other`)."""
+        log = self.harness("QueueSmoke.qml", """import QtQuick
+Item {
+    id: top
+    width: 1500; height: 1000
+    readonly property var d: %DATA%
+    ModelsPage {
+        id: page
+        anchors.fill: parent
+        status: top.d.busy
+    }
+    function texts(item, name, out) {
+        if (item.objectName === name && item.visible) out.push(item.text)
+        for (const child of item.children) texts(child, name, out)
+        return out
+    }
+    Timer {
+        interval: 200
+        running: true
+        onTriggered: {
+            console.warn("LINES " + texts(page, "queueLine", []).join(" + ") + " | " + texts(page, "queueOtherLine", []).join(" + "))
+            page.status = top.d.local
+            console.warn("IDLE " + texts(page, "queueLine", []).length + "|" + texts(page, "queueOtherLine", []).length)
+            Qt.quit()
+        }
+    }
+}
+""")
+        self.assertEqual(problems(log), [])
+        self.assertEqual(warned(log, "LINES"), "Pracuje: raport (qwen3:8b) · 2 w kolejce: opisy kart | "
+                                               "Na starym adresie 10.0.0.5:11434: pracuje: agent (qwen3-coder:30b)")
+        self.assertEqual(warned(log, "IDLE"), "0|0")
 
     def test_page_requests_notes_forms_and_empty_state(self):
         log = self.harness("PageSmoke.qml", """import QtQuick
@@ -889,6 +932,7 @@ class GrabTest(unittest.TestCase):
                                      "--preview", "note=server:local:remove|odmowa", size=("1380", "620")), 40_000)
         self.assertGreater(self.grab("pulling", "pulling", "--preview", "advanced=summary", "--preview",
                                      "advanced=agent"), 60_000)
+        self.assertGreater(self.grab("busy", "busy"), 60_000)
 
 
 if __name__ == "__main__":
