@@ -388,6 +388,19 @@ class ChatQueueTest(unittest.TestCase):
         self.assertEqual((len(self.server.requests), len(other.requests)), (1, 1),
                          "czekające wywołanie poszło na serwer z aktualnych ustawień")
 
+    def test_expected_target_is_checked_before_sending(self):
+        from tide_daemon.models import TargetChanged
+        url = self.server.url
+        ok = client.chat("x", role="describe", config=self.cfg, queue=self.queue,
+                         expect=("local", url, "qwen3:8b", 8192))
+        self.assertEqual((ok.endpoint, ok.url, ok.model, ok.ctx), ("local", url, "qwen3:8b", 8192))
+        with self.assertRaises(TargetChanged) as ctx:
+            client.chat("x", role="describe", config=self.cfg, queue=self.queue,
+                        expect=("local", url, "qwen3:14b", 8192))
+        self.assertEqual(str(ctx.exception), "Model lokalny: ustawienia modeli zmieniły się w trakcie wywołania")
+        self.assertEqual(len(self.server.requests), 1, "przy innym celu nic nie wychodzi do serwera")
+        self.assertEqual(self.queue.snapshot(), {})
+
     def test_cancel_interrupts_running_and_clears_waiting(self):
         self.server.delay = 5.0
         cancel = Cancel()
@@ -555,9 +568,10 @@ class ReportAndCardsTest(StandupWorld):
         self.assertEqual((result["host"], result["remote"]), (f"127.0.0.1:{first.server_address[1]}", False))
 
     def test_card_settings_changed_while_waiting_gives_rules_with_note(self):
-        """Opisy kart nie przypinają ustawień: wywołanie idzie tam, gdzie wskazuje models.json w chwili startu.
-        Gdy to nie ten model, który partia założyła (tożsamość w pamięci, kontekst), opis nie trafia do pamięci
-        pod złą tożsamością — karta ma reguły i informację, a następna próba bierze już nowe ustawienia."""
+        """Opisy kart nie przypinają ustawień: cel ustala się, gdy wywołanie dostaje kolej. Gdy to nie ten model,
+        który partia założyła (tożsamość w pamięci, kontekst), wywołanie nie wychodzi wcale (sprawdzenie przed
+        wysłaniem), nic nie trafia do pamięci — karta ma reguły i informację, a następna partia bierze już nowe
+        ustawienia."""
         import os
         import shutil
         import tempfile
@@ -579,7 +593,8 @@ class ReportAndCardsTest(StandupWorld):
                 blocker.release()
             worker.join(10)
             self.assertFalse(out["ok"])
-            self.assertEqual(len(other.requests), 1, "wywołanie poszło według aktualnych ustawień")
+            self.assertEqual(other.requests, [], "różnicę widać przed wysłaniem — fakty nie idą na nowy serwer")
+            self.assertEqual(len(server.requests), 0)
             self.assertEqual(d._entries, {}, "nic w pamięci pod tożsamością z początku partii")
             d.decorate(boards)
         note = boards[0]["tickets"][0]["describeNote"]

@@ -28,6 +28,11 @@ from .transport import ModelError, request
 DEFAULT_TIMEOUT_S = 180.0
 
 
+class TargetChanged(ModelError):
+    """Cel z ustawień czytanych przy starcie wywołania nie jest tym, którego wywołujący oczekiwał (`expect`)
+    — wywołanie nie wychodzi do serwera."""
+
+
 @dataclass(frozen=True)
 class Answer:
     text: str
@@ -114,7 +119,7 @@ def _limit(value: float) -> float:
 def chat(messages, *, role: str | None = None, endpoint: str | None = None, model: str | None = None,
          system: str | None = None, schema: dict | None = None, ctx: int | None = None,
          timeout: float = DEFAULT_TIMEOUT_S, config=None, cancel=None, priority: int | None = None,
-         wait: float | None = None, deadline: float | None = None, queue=None) -> Answer:
+         wait: float | None = None, deadline: float | None = None, queue=None, expect: tuple | None = None) -> Answer:
     """Odpowiedź modelu. `messages` to tekst polecenia albo lista {role, content}; `system` — polecenie
     systemowe na początku. Model z roli (`role`) albo jawnie (`endpoint` — domyślnie `default`, `model`).
     `ctx` nadpisuje kontekst roli. `schema` — schemat JSON odpowiedzi. `cancel` (transport.Cancel) — przerwanie
@@ -124,7 +129,9 @@ def chat(messages, *, role: str | None = None, endpoint: str | None = None, mode
     roli), `wait` — najwyżej tyle sekund w kolejce (domyślnie queue.DEFAULT_WAIT_S), `timeout` — na samo
     wywołanie, liczony od jego startu; `deadline` (time.monotonic()) — czekanie i wywołanie razem kończą się
     najpóźniej wtedy. Tor kolejki to serwer (`queue.lane_of(adres)`), a punkt, model i kontekst są ustalane
-    jeszcze raz, gdy wywołanie dostaje kolej (models.json czytany wtedy, chyba że podano `config`)."""
+    jeszcze raz, gdy wywołanie dostaje kolej (models.json czytany wtedy, chyba że podano `config`).
+    `expect` — (punkt, adres, model, kontekst), którego wywołujący oczekuje: inny cel (przy dołączeniu albo przy
+    starcie) → TargetChanged, zanim cokolwiek wyjdzie do serwera."""
     def resolve_target() -> tuple:
         """(punkt, model, kontekst) z ustawień czytanych teraz (albo z podanych `config`)."""
         cfg = config if config is not None else config_mod.load()
@@ -137,7 +144,10 @@ def chat(messages, *, role: str | None = None, endpoint: str | None = None, mode
             raise ValueError("podaj rolę albo model")
         if ctx is not None:
             context = ctx or None
-        return cfg.endpoint(endpoint_name), model_name, context
+        target = cfg.endpoint(endpoint_name)
+        if expect is not None and (target.name, target.public_url(), model_name, context) != tuple(expect):
+            raise TargetChanged("Model lokalny: ustawienia modeli zmieniły się w trakcie wywołania")
+        return target, model_name, context
 
     # Cel przy dołączeniu wybiera tor kolejki i od razu zgłasza błąd ustawień (nieznana rola, zły punkt);
     # ostateczny cel ustalamy, gdy wywołanie dostaje kolej — po zmianie ustawień w czasie czekania

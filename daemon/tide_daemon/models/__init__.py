@@ -19,5 +19,5 @@ i pokazuje informację zamiast opisu. Odpytywanie stanu, zapis i pobieranie: mod
 Opis i kontrakt D-Bus: docs/tide-daemon.md (sekcja „Modele lokalne”), uzasadnienie: docs/decisions.md.
 """
 from . import queue  # noqa: F401
-from .client import Answer, chat  # noqa: F401
+from .client import Answer, TargetChanged, chat  # noqa: F401
 from .transport import Cancel, ModelError  # noqa: F401

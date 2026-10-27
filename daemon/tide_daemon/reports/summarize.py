@@ -450,8 +450,9 @@ class Model:
         # pin=True (raport): jeden przebieg = jedne ustawienia — models.chat dostaje konfigurację z chwili
         # utworzenia, więc stopka (host, remote), pamięć i przycięcie do kontekstu zgadzają się z tym, dokąd
         # naprawdę poszły fakty. pin=False (opisy kart): models.chat czyta models.json, gdy wywołanie rusza
-        # z kolejki; jeśli odpowiedział inny punkt, adres, model albo kontekst niż ten, który tu założyliśmy,
-        # ask() zgłasza SettingsChanged (opis z reguł, następna partia już z nowymi ustawieniami).
+        # z kolejki, i dostaje oczekiwany cel (`expect`); inny punkt, adres, model albo kontekst niż ten, który
+        # tu założyliśmy → SettingsChanged przed wysłaniem (fakty nie wychodzą; opis z reguł, następna partia
+        # już z nowymi ustawieniami). Odpowiedź (`Answer`) sprawdzamy jeszcze raz — druga linia obrony.
         self.pin = pin
         self._given_config = config
         if self.engine == "claude":
@@ -475,6 +476,7 @@ class Model:
             hostname = ""
         self.remote = not (hostname in LOOPBACK_HOSTS or hostname.startswith("127."))
         self.identity = _identity(endpoint.name, endpoint.public_url(), chosen.model, chosen.ctx)
+        self._target = (endpoint.name, endpoint.public_url(), chosen.model, chosen.ctx)
 
     def input_chars(self, system_prompt: str, output_tokens: int, cap: int) -> int:
         """Ile znaków faktów zmieści się w jednym wywołaniu: dla Claude `cap`, dla modelu lokalnego
@@ -511,7 +513,10 @@ class Model:
             answer = models_mod.chat(json.dumps(payload, ensure_ascii=False), role=self.role, system=system_prompt,
                                      schema=schema, timeout=LOCAL_TIMEOUT if timeout is None else timeout,
                                      config=self.config if self.pin else self._given_config, cancel=self.cancel,
-                                     priority=priority, wait=wait, deadline=deadline)
+                                     priority=priority, wait=wait, deadline=deadline,
+                                     expect=None if self.pin else self._target)
+        except models_mod.TargetChanged as exc:   # sprawdzone przed wysłaniem — fakty nie wyszły
+            raise SettingsChanged(str(exc)) from None
         except models_mod.ModelError as exc:
             raise Unavailable(str(exc)) from None
         except Exception as exc:  # przeoczony błąd klienta nie może położyć raportu ani wątku opisów
