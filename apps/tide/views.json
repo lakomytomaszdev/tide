@@ -5,19 +5,16 @@
       "id": "board",
       "title": "Tablica",
       "icon": "board",
-      "placeholder": {
-        "title": "Tablica pracy jeszcze nie działa",
-        "text": "Tu będą karty ze wszystkich projektów: backlog, do zrobienia, w toku, czeka na ciebie, do sprawdzenia i gotowe."
-      },
-      "badge": {"path": "/Board", "interface": "org.tide.Daemon.Board", "method": "Badge"}
+      "module": "apps/board",
+      "qml": "BoardView.qml",
+      "default": true
     },
     {
       "id": "sessions",
       "title": "Sesje",
       "icon": "sessions",
       "module": "apps/sessions",
-      "qml": "SessionsView.qml",
-      "default": true
+      "qml": "SessionsView.qml"
     },
     {
       "id": "worktrees",

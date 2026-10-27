@@ -1,0 +1,610 @@
+"""Widok Tablica okna Tide.
+
+- pakiet okna Tide: moduł widoku w views/board (backend.py, QML, board.js i biblioteka z Tokens.qml);
+  bez kolorów wpisanych na sztywno, teksty jako zwykły tekst,
+- logika (board.js) w QJSEngine: kolumny, filtry, pozycja dla MoveCard, przeniesienia „w locie”,
+  podsumowanie z liczbą mnogą, plakietka, notatki, ramka „Dane tablicy”, żądania z formularza,
+- sonda w oknie offscreen (probe.py): przeciąganie myszą między kolumnami i w kolumnie (MoveCard),
+  kolumny wyliczane nie przyjmują karty, nowa karta i edycja (CreateCard, UpdateCard tylko ze zmianami),
+  archiwizacja, błąd usługi w panelu, commitError, filtry tagów, projektu i szukanie, pusty stan,
+  pasek błędów plików, showItem przed migawką, klawiatura (Ctrl+N, Esc, Ctrl+→), nowy tag, projekty,
+- zrzuty z --data bez ostrzeżeń QML,
+- backend na prywatnej magistrali z prawdziwym tide-daemon i tymczasową tablicą (--board-dir):
+  zapis, migawka po zapisie, błąd w kształcie {ok: false, error, message}, plakietka.
+"""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+from . import APP_DIR, REPO
+from .boardfix import build_snapshot, empty_snapshot, git_env, preview_data
+from daemon.tests.fakebin import files_under
+from daemon.tests.privatebus import PrivateBus, requires_dbus, wait_until
+
+QML_PROBLEMS = r"Unable to assign|TypeError|ReferenceError|is not a type|overrides a member|is not defined|" \
+               r"Cannot read|unavailable|Invalid property|Binding loop|failed to load|Only binding to one"
+TIDE_DIR = os.path.join(REPO, "apps", "tide")
+PROBE = os.path.join(APP_DIR, "tests", "probe.py")
+
+
+def stage(out: str) -> str:
+    """Pakiet okna Tide z widokiem Tablica w views/board."""
+    subprocess.run(["/usr/bin/python3", os.path.join(REPO, "widgets", "stage.py"), "--app", TIDE_DIR, out], check=True)
+    return out
+
+
+def offscreen(base=None) -> dict:
+    return dict(os.environ if base is None else base, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
+
+
+class PackageTest(unittest.TestCase):
+    def test_package_contains_view_module_and_library(self):
+        with tempfile.TemporaryDirectory(prefix="tide-board-pkg-") as tmp:
+            files = files_under(os.path.join(stage(os.path.join(tmp, "pkg")), "views", "board"))
+        for name in ("backend.py", "qml/BoardView.qml", "qml/BoardPage.qml", "qml/BoardColumn.qml", "qml/BoardCard.qml",
+                     "qml/CardPanel.qml", "qml/ManagePage.qml", "qml/board.js", "qml/tide/Tokens.qml",
+                     "qml/tide/Theme.qml"):
+            self.assertIn(name, files)
+        self.assertFalse([f for f in files if f.startswith("tests/") or f.endswith(("__init__.py", "install.sh"))])
+
+    def test_no_hardcoded_colors_and_plain_texts(self):
+        for name in os.listdir(os.path.join(APP_DIR, "qml")):
+            with open(os.path.join(APP_DIR, "qml", name), encoding="utf-8") as fh:
+                source = fh.read()
+            self.assertEqual(re.findall(r'"#[0-9a-fA-F]{3,8}"', source), [], name)
+            self.assertNotIn("StyledText", source, name)
+            self.assertNotIn("RichText", source, name)
+            for _indent, body in re.findall(r"\n(\s*)Text \{\n(.*?)\n\1\}", source, re.S):
+                self.assertIn("textFormat: Text.PlainText", body, f"{name}: {body[:80]}")
+
+    def test_registered_as_default_view(self):
+        with open(os.path.join(TIDE_DIR, "views.json"), encoding="utf-8") as fh:
+            views = {v["id"]: v for v in json.load(fh)["views"]}
+        self.assertEqual((views["board"]["module"], views["board"]["qml"], views["board"].get("default")),
+                         ("apps/board", "BoardView.qml", True))
+        self.assertEqual([v for v in views if views[v].get("default")], ["board"])
+
+
+class LogicTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from PyQt6.QtCore import QCoreApplication
+        from PyQt6.QtQml import QJSEngine
+        cls.app = QCoreApplication.instance() or QCoreApplication([])
+        cls.engine = QJSEngine()
+        with open(os.path.join(APP_DIR, "qml", "board.js"), encoding="utf-8") as fh:
+            source = fh.read().replace(".pragma library", "")
+        result = cls.engine.evaluate(source)
+        assert not result.isError(), result.toString()
+        cls.tmp = tempfile.mkdtemp(prefix="tide-board-logic-")
+        cls.snap = build_snapshot(cls.tmp, derived=True)
+        cls.engine.globalObject().setProperty("S", cls.engine.toScriptValue(json.dumps(cls.snap)))
+        cls.engine.evaluate("S = JSON.parse(S)")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def js(self, expression):
+        value = self.engine.evaluate(f"JSON.stringify({expression})")
+        self.assertFalse(value.isError(), value.toString())
+        return json.loads(value.toString())
+
+    def ids(self, expression):
+        return self.js(f"({expression}).map(c => c.id)")
+
+    def test_columns_and_filters(self):
+        self.assertEqual([c["id"] for c in self.js("columns(S)")],
+                         ["backlog", "todo", "progress", "waiting", "review", "done"], "archiwum ukryte")
+        self.assertEqual([c["manual"] for c in self.js("columns(S)")], [True, True, False, False, False, True])
+        self.assertEqual(self.ids("column(visible(S, null, null), 'backlog')"), ["K-15", "K-14", "K-13", "K-12", "K-10"])
+        self.assertEqual(self.ids("column(visible(S, null, null), 'progress')"), ["K-6", "K-5"], "kolumna z koordynatora")
+        self.assertEqual(self.ids("visible(S, {tag: 'PILNE'}, null)"), ["K-12", "K-7"], "tag bez wielkości liter")
+        self.assertEqual(self.ids("visible(S, {tag: 'Firma'}, null)").count("K-13"), 1, "tag z projektu")
+        self.assertEqual(self.ids("visible(S, {query: 'pdf mail'}, null)"), ["K-13"], "słowa w tytule i opisie")
+        self.assertEqual(self.ids("visible(S, {query: 'tom-146'}, null)"), ["K-8"], "notatka koordynatora")
+        self.assertEqual(self.ids("visible(S, {project: 'cookapp'}, null)"), ["K-10"])
+        self.assertEqual(self.ids("visible(S, {project: NO_PROJECT}, null)"), [])
+        self.assertTrue(self.js("draggable(S.cards.find(c => c.id === 'K-15'))"))
+        self.assertFalse(self.js("draggable(S.cards.find(c => c.id === 'K-5'))"), "kartę prowadzi koordynator")
+
+    def test_move_index_and_optimistic_moves(self):
+        # Kolumna zapisana todo: K-11, K-9, K-8, K-7, K-6, K-5 (cztery ostatnie wyświetlane gdzie indziej).
+        self.assertEqual(self.js("moveIndex(S, 'K-15', 'todo', '')"), -1, "na koniec")
+        self.assertEqual(self.js("moveIndex(S, 'K-15', 'todo', 'K-9')"), 1)
+        self.assertEqual(self.js("moveIndex(S, 'K-15', 'todo', 'K-11')"), 0)
+        self.assertEqual(self.js("moveIndex(S, 'K-10', 'backlog', 'K-15')"), 0, "w tej samej kolumnie, bez siebie")
+        self.assertEqual(self.js("moveIndex(S, 'K-15', 'backlog', 'K-10')"), 3)
+        self.assertEqual(self.js("moveIndex(S, 'K-15', 'done', 'K-4')"), 0)
+        self.assertEqual(self.js("storedIndex(S, 'K-9')"), 1)
+        moved = "visible(S, null, [{id: 'K-15', column: 'todo', before: 'K-9'}, {id: 'K-10', column: 'backlog', before: 'K-14'}])"
+        self.assertEqual(self.ids(f"column({moved}, 'todo')"), ["K-11", "K-15", "K-9"])
+        self.assertEqual(self.ids(f"column({moved}, 'backlog')"), ["K-10", "K-14", "K-13", "K-12"])
+        self.assertEqual(self.ids("column(visible(S, null, {id: 'K-15', column: 'done', before: ''}), 'done')")[-1], "K-15")
+        self.assertNotIn("K-13", self.ids("visible(S, null, {id: 'K-13', column: 'archived'})"))
+        self.assertEqual((self.js("neighbourColumn('backlog', 1)"), self.js("neighbourColumn('todo', 1)"),
+                          self.js("neighbourColumn('done', 1)"), self.js("neighbourColumn('backlog', -1)")),
+                         ("todo", "done", "", ""))
+
+    def test_summary_badge_and_plurals(self):
+        self.assertEqual(self.js("summary(visible(S, null, null))"),
+                         "11 kart · 2 w toku · 1 czeka na ciebie · 1 do sprawdzenia")
+        self.assertEqual(self.js("summary([{column: 'todo'}, {column: 'backlog'}, {column: 'done'}])"),
+                         "2 karty · 1 do zrobienia", "bez stanu z koordynatora — ile do zrobienia")
+        self.assertEqual(self.js("summary([{column: 'backlog'}])"), "1 karta")
+        self.assertEqual(self.js("summary([])"), "0 kart")
+        self.assertEqual(self.js("summary([{boardColumn: 'waiting'}, {boardColumn: 'waiting'}])"),
+                         "2 karty · 2 czekają na ciebie")
+        self.assertEqual([self.js(f"cards({n})") for n in (1, 2, 4, 5, 12, 22, 25)],
+                         ["1 karta", "2 karty", "4 karty", "5 kart", "12 kart", "22 karty", "25 kart"])
+        self.assertEqual(self.js("badge(S)"), {"text": "● 1", "tone": "waiting"})
+        self.assertEqual(self.js("badge({cards: [{column: 'backlog'}, {column: 'done'}]})"), {"text": "1", "tone": "muted"})
+        self.assertEqual(self.js("badge({cards: []})"), {"text": "", "tone": "muted"})
+        self.assertEqual(self.js("counts(visible(S, null, null)).projects"), 7, "projekty kart w grze (bez Gotowych)")
+
+    def test_card_texts(self):
+        k8 = "S.cards.find(c => c.id === 'K-8')"
+        self.assertEqual(self.js(f"progress({k8})"), {"done": 5, "total": 9, "ratio": 5 / 9, "text": "5 z 9",
+                                                       "short": "5/9"})
+        self.assertIsNone(self.js("progress({derived: null})"))
+        self.assertEqual(self.js(f"who({k8})"), "Claude · koordynator")
+        self.assertEqual(self.js(f"noteTint({k8}, cardNote({k8}))"), "peach")
+        self.assertEqual(self.js("noteTint({column: 'backlog'}, '✓ specyfikacja gotowa')"), "mint")
+        self.assertEqual(self.js("noteTint({column: 'todo'}, 'bez agenta')"), "textMuted")
+        self.assertEqual(self.js("tagColor(S, 'firma')"), "sky")
+        self.assertEqual(self.js("doneShown([1,2,3,4,5,6,7,8], false).length"), 6)
+        self.assertEqual(self.js("doneShown([1,2,3,4,5,6,7,8], true).length"), 8)
+        self.assertEqual(self.js("shortPath('/home/t/DevWorkspace/tide-board', '/home/t')"), "~/DevWorkspace/tide-board")
+        self.assertEqual(self.js("shortPath('/home/tomasz/x', '/home/t')"), "/home/tomasz/x")
+
+    def test_rail_note_errors_and_replies(self):
+        now = 1793099040  # 12:04 w Warszawie
+        self.assertEqual(self.js("railNote({exists: false})"), "jeszcze nie założona — powstanie przy pierwszej karcie")
+        self.assertEqual(self.js("railNote({exists: true, git: {busy: 'revert'}})"), "trwa git revert — zapis wstrzymany")
+        self.assertEqual(self.js("railNote({exists: true, git: {pending: 2}})"), "lokalne repo · 2 zmiany czekają na commit")
+        note = self.js(f"railNote({{exists: true, git: {{}}, lastCommit: {{ts: {now - 60}}}}}, {now})")
+        self.assertRegex(note, r"^lokalne repo · zapisano \d\d:\d\d$")
+        self.assertRegex(self.js(f"when({now - 86400 * 3}, {now})"), r"^\d+\.\d\d \d\d:\d\d$")
+        errors = json.dumps({"boardDir": "/b", "errors": [{"path": "/b/cards/K-3.md", "message": "brak frontmattera"},
+                                                          {"path": "/b", "message": "trwa git revert"},
+                                                          {"path": "/b/tags/x.md", "message": "a"},
+                                                          {"path": "/b/tags/y.md", "message": "b"}]})
+        self.assertEqual(self.js(f"errorLines({errors}, 3)"),
+                         ["cards/K-3.md: brak frontmattera", "trwa git revert",
+                          "i 2 więcej — szczegóły: tide-daemon.py --print-board"])
+        self.assertEqual(self.js("errorLines({errors: []})"), [])
+        self.assertEqual(self.js("errorText({ok: false, error: 'bad-request', message: 'pusty tytuł'})"), "pusty tytuł")
+        self.assertEqual(self.js("errorText({ok: false, error: 'git-busy'})"),
+                         "W repozytorium tablicy trwa operacja gita — dokończ ją albo przerwij.")
+        self.assertTrue(self.js("errorText(null)").startswith("Usługa tide-daemon nie odpowiedziała"))
+        self.assertEqual(self.js("commitNote({ok: true, commitError: 'index.lock'})"),
+                         "Zapisane w pliku, commit czeka: index.lock")
+        self.assertEqual(self.js("commitNote({ok: true, commitError: ''})"), "")
+
+    def test_requests_from_form(self):
+        self.assertEqual(self.js("createRequest({title: '  Nowa  ', description: 'd', note: ' n ', tags: ['a'],"
+                                 " project: 'cookapp', projectKind: 'project', column: 'todo'})"),
+                         {"title": "Nowa", "description": "d", "note": "n", "tags": ["a"], "project": "cookapp",
+                          "column": "todo"})
+        self.assertEqual(self.js("createRequest({title: 'x', project: '/r/new', projectKind: 'repo'})"),
+                         {"title": "x", "description": "", "note": "", "tags": [], "repo": "/r/new"})
+        k12 = "S.cards.find(c => c.id === 'K-12')"
+        self.assertEqual(self.js(f"updateRequest({k12}, {{title: {k12}.title, description: '', note: 'teraz',"
+                                 f" tags: ['pilne'], project: 'timetracker', projectKind: 'project'}})"), {"note": "teraz"},
+                         "tylko zmienione pola")
+        self.assertEqual(self.js(f"updateRequest({k12}, {{title: 'Inny', description: 'opis', note: '', tags: [],"
+                                 f" project: '', projectKind: ''}})"),
+                         {"title": "Inny", "description": "opis", "tags": [], "project": ""})
+        self.assertEqual(self.js(f"updateRequest({k12}, {{title: {k12}.title, tags: ['Pilne'], project: '/r/x',"
+                                 f" projectKind: 'repo'}})"), {"repo": "/r/x"}, "wielkość liter tagu bez znaczenia")
+        options = self.js("projectOptions(S, '')")
+        self.assertEqual(options[0], {"kind": "none", "key": "", "name": "Bez projektu", "detail": ""})
+        self.assertEqual([o["kind"] for o in options].count("project"), 7)
+        self.assertEqual(options[-1]["kind"], "repo")
+        self.assertEqual([o["name"] for o in self.js("projectOptions(S, 'legal')")], ["Bez projektu", "legal-agents"])
+
+
+class ProbeCase(unittest.TestCase):
+    """Wspólne: pakiet okna Tide i dane przykładowej tablicy (jak na mocku)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="tide-board-probe-")
+        cls.pkg = stage(os.path.join(cls.tmp, "pkg"))
+        cls.data = preview_data(os.path.join(cls.tmp, "fx"))
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def probe(self, scenario: str, data: dict | None = None) -> dict:
+        data_path = os.path.join(self.tmp, "data.json")
+        with open(data_path, "w", encoding="utf-8") as fh:
+            json.dump(self.data if data is None else data, fh, ensure_ascii=False)
+        script = os.path.join(self.tmp, "scenario.py")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(scenario)
+        result = subprocess.run(["/usr/bin/python3", PROBE, self.pkg, data_path, script], env=offscreen(),
+                                capture_output=True, text=True, timeout=90)
+        self.assertEqual(result.returncode, 0, result.stderr[-3000:])
+        self.assertIsNone(re.search(QML_PROBLEMS, result.stderr), result.stderr[-3000:])
+        out = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertNotIn("error", out, out)
+        return out
+
+
+@unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class DragTest(ProbeCase):
+    def test_drag_between_and_within_columns(self):
+        out = self.probe("""
+col = lambda c: js(f"page.cards.filter(x => x.boardColumn === '{c}').map(x => x.id)")
+drag(card("K-15"), column("todo", fy=0.75))
+out["toTodo"] = calls()[-1]
+out["todo"] = col("todo")
+out["hint"] = js("page.columnItems()[1].hintVisible")
+set_snapshot(json.loads(backend.snapshotJson))  # nowa migawka — przeniesienie „w locie” znika
+drag(card("K-10"), card("K-14", fy=0.15))
+out["reorder"] = calls()[-1]
+out["backlog"] = col("backlog")
+drag(card("K-13"), card("K-4", fy=0.1))
+out["toDone"] = calls()[-1]
+drag(card("K-12"), column("progress"))
+out["count"] = len(calls())
+out["toast"] = js("page.toast")
+drag(card("K-6"), column("backlog"))
+out["derived"] = len(calls())
+click(card("K-11"))
+out["clickedPanel"] = js("page.panelOpen && page.panelCardId")
+""")
+        self.assertEqual(out["toTodo"], ["MoveCard", "K-15", "todo", -1])
+        self.assertEqual(out["todo"], ["K-11", "K-9", "K-15"], "karta od razu w nowej kolumnie")
+        self.assertTrue(out["hint"], "podpowiedź „Upuść kartę z Backlogu”")
+        self.assertEqual(out["reorder"], ["MoveCard", "K-10", "backlog", 1], "przed K-14, wśród kart bez przenoszonej")
+        self.assertEqual(out["backlog"][:3], ["K-15", "K-10", "K-14"])
+        self.assertEqual(out["toDone"], ["MoveCard", "K-13", "done", 0], "na górę Gotowych")
+        self.assertEqual(out["count"], 3, "W toku nie przyjmuje karty ręcznie")
+        self.assertIn("trafia sama", out["toast"])
+        self.assertEqual(out["derived"], 3, "karty prowadzonej przez koordynatora nie da się przeciągnąć")
+        self.assertEqual(out["clickedPanel"], "K-11", "kliknięcie bez ruchu otwiera kartę")
+
+    def test_failed_move_returns_card_and_shows_message(self):
+        out = self.probe("""
+replies.append({"ok": False, "error": "git-busy", "message": "w repozytorium tablicy trwa git revert — dokończ go"})
+drag(card("K-15"), column("todo", fy=0.75))
+wait(150)
+out["todo"] = js("page.cards.filter(x => x.boardColumn === 'todo').map(x => x.id)")
+out["toast"] = js("page.toast")
+out["tone"] = js("page.toastTone")
+replies.append({"ok": True, "id": "K-14", "changed": True, "commitError": "index.lock: File exists"})
+drag(card("K-14"), column("todo", fy=0.75))
+wait(150)
+out["notice"] = js("page.toast")
+out["noticeTone"] = js("page.toastTone")
+""")
+        self.assertEqual(out["todo"], ["K-11", "K-9"], "po błędzie karta wraca")
+        self.assertEqual(out["toast"], "Nie przeniesiono K-15: w repozytorium tablicy trwa git revert — dokończ go")
+        self.assertEqual(out["tone"], "rose")
+        self.assertEqual(out["notice"], "Zapisane w pliku, commit czeka: index.lock: File exists")
+        self.assertEqual(out["noticeTone"], "butter")
+
+
+@unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class PanelTest(ProbeCase):
+    def test_create_card_from_column_and_errors_in_place(self):
+        out = self.probe("""
+js("page.columnItems()[1].addRequested('todo')")
+wait(80)
+out["open"] = js("page.panelOpen")
+out["column"] = js("page.cardPanel.column")
+replies.append({"ok": False, "error": "bad-request", "message": "nie ma projektu „app5”"})
+js("page.cardPanel.save()")
+out["empty"] = js("page.cardPanel.error")
+out["calls0"] = len(calls())
+obj("cardTitle").setProperty("text", "Eksport do CSV")
+obj("cardNote").setProperty("text", "pilne na piątek")
+js("page.cardPanel.tags = ['pilne', 'nowy-tag']")
+js("page.cardPanel.projectKind = 'repo'; page.cardPanel.project = '/home/user/DevWorkspace/legal-agents'")
+click(named("cardSave"))  # „Dodaj kartę”
+wait(100)
+out["call"] = calls()[-1]
+out["serviceError"] = js("page.cardPanel.error")
+out["stillOpen"] = js("page.panelOpen")
+out["busy"] = js("page.cardPanel.busy")
+js("page.cardPanel.save()")
+wait(100)
+out["closed"] = not js("page.panelOpen")
+out["selected"] = js("page.selectedId")
+""")
+        self.assertTrue(out["open"])
+        self.assertEqual(out["column"], "todo")
+        self.assertEqual(out["empty"], "Karta potrzebuje tytułu.")
+        self.assertEqual(out["calls0"], 0, "pusty tytuł nie idzie do usługi")
+        member, request = out["call"][0], json.loads(out["call"][1])
+        self.assertEqual(member, "CreateCard")
+        self.assertEqual(request, {"title": "Eksport do CSV", "description": "", "note": "pilne na piątek",
+                                   "tags": ["pilne", "nowy-tag"], "repo": "/home/user/DevWorkspace/legal-agents",
+                                   "column": "todo"}, "repozytorium zakłada projekt przy zapisie karty")
+        self.assertEqual(out["serviceError"], "nie ma projektu „app5”", "błąd usługi w panelu, po polsku")
+        self.assertTrue(out["stillOpen"])
+        self.assertFalse(out["busy"])
+        self.assertTrue(out["closed"], "po udanym zapisie panel się zamyka")
+        self.assertEqual(out["selected"], "K-99", "nowa karta zaznaczona")
+
+    def test_edit_sends_only_changes_and_archive(self):
+        out = self.probe("""
+click(card("K-12"))
+out["panel"] = js("page.cardPanel.card.id")
+out["dirty0"] = js("page.cardPanel.dirty")
+out["inherited"] = js("page.cardPanel.inherited")
+obj("cardNote").setProperty("text", "do faktury na 1. listopada")
+out["dirty1"] = js("page.cardPanel.dirty")
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(100)
+out["update"] = calls()[-1]
+click(card("K-13"))
+js("page.cardPanel.moveRequested('archived')")
+wait(100)
+out["archive"] = calls()[-1]
+out["closedAfterArchive"] = not js("page.panelOpen")
+out["visible"] = js("page.cards.some(c => c.id === 'K-13')")
+click(card("K-14"))
+key(Qt.Key.Key_Escape)
+out["esc"] = js("page.panelOpen")
+""")
+        self.assertEqual(out["panel"], "K-12")
+        self.assertFalse(out["dirty0"])
+        self.assertEqual(out["inherited"], ["własne"], "tag z projektu TimeTracker")
+        self.assertTrue(out["dirty1"])
+        self.assertEqual(out["update"][:2], ["UpdateCard", "K-12"])
+        self.assertEqual(json.loads(out["update"][2]), {"note": "do faktury na 1. listopada"})
+        self.assertEqual(out["archive"], ["MoveCard", "K-13", "archived", 0])
+        self.assertTrue(out["closedAfterArchive"])
+        self.assertFalse(out["visible"], "zarchiwizowana znika z tablicy od razu")
+        self.assertFalse(out["esc"], "Esc zamyka panel")
+
+
+@unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class FiltersAndStatesTest(ProbeCase):
+    def test_filters_search_and_lanes(self):
+        out = self.probe("""
+out["summary"] = obj("boardSummary").property("text")
+js("page.tagFilter = 'pilne'")
+out["tag"] = js("page.cards.map(c => c.id)")
+out["tagSummary"] = obj("boardSummary").property("text")
+js("page.tagFilter = ''; page.projectFilter = 'logviewer'")
+out["project"] = js("page.cards.map(c => c.id)")
+js("page.projectFilter = ''")
+js("page.focusSearch()")
+obj("searchInput").setProperty("text", "eksport pdf")
+js("page.query = 'eksport pdf'")
+wait(80)
+out["query"] = js("page.cards.map(c => c.id)")
+key(Qt.Key.Key_Escape)
+out["cleared"] = js("page.query")
+js("page.layoutMode = 'lanes'")
+wait(80)
+out["lanes"] = js("page.lanes.map(l => l.name + ':' + l.cards.length)")
+""")
+        self.assertEqual(out["summary"], "11 kart · 2 w toku · 1 czeka na ciebie · 1 do sprawdzenia")
+        self.assertEqual(out["tag"], ["K-12", "K-7"])
+        self.assertEqual(out["tagSummary"], "2 karty · 1 do sprawdzenia · filtr")
+        self.assertEqual(out["project"], ["K-13", "K-8", "K-7", "K-4"])
+        self.assertEqual(out["query"], ["K-13"])
+        self.assertEqual(out["cleared"], "", "Esc w szukaniu czyści je")
+        self.assertEqual(out["lanes"][:3], ["agent-team:1", "LogViewer:4", "mobileapp:1"])
+
+    def test_empty_board_and_first_card(self):
+        with tempfile.TemporaryDirectory(prefix="tide-board-empty-") as tmp:
+            data = empty_snapshot(tmp)
+        out = self.probe("""
+out["empty"] = obj("emptyState").property("visible")
+out["filters"] = obj("filterRow").property("visible")
+out["summary"] = obj("boardSummary").property("text")
+out["rail"] = js("railInfo.note")
+click(named("firstCardButton"))
+out["panel"] = js("page.panelOpen && page.cardPanel.column")
+""", data)
+        self.assertTrue(out["empty"])
+        self.assertFalse(out["filters"])
+        self.assertEqual(out["summary"], "jeszcze pusta")
+        self.assertEqual(out["rail"], "jeszcze nie założona — powstanie przy pierwszej karcie")
+        self.assertEqual(out["panel"], "backlog", "„＋ Pierwsza karta” otwiera nową kartę")
+
+    def test_file_errors_bar_and_rail_info(self):
+        data = json.loads(json.dumps(self.data))
+        data["errors"] = [{"path": data["boardDir"] + "/cards/K-30.md", "message": "<b>brak</b> frontmattera"}]
+        out = self.probe("""
+bar = obj("boardErrors")
+out["visible"] = bar.property("visible")
+out["lines"] = js("page.errorLines")
+out["rail"] = js("[railInfo.label, railInfo.value, railInfo.note, railInfo.link.text]")
+js("railInfo.link.activate()")
+out["managing"] = js("page.managing")
+key(Qt.Key.Key_Escape)
+out["back"] = js("page.managing")
+out["badge"] = [backend.badgeText, backend.badgeTone]
+""", data)
+        self.assertTrue(out["visible"])
+        self.assertEqual(out["lines"], ["cards/K-30.md: <b>brak</b> frontmattera"])
+        self.assertEqual(out["rail"], ["Dane tablicy", "~/DevWorkspace/tide-board", "lokalne repo · zapisano 12:04",
+                                       "Projekty i tagi"])
+        self.assertTrue(out["managing"], "link „Projekty i tagi” otwiera stronę")
+        self.assertFalse(out["back"], "Esc wraca do tablicy")
+        self.assertEqual(out["badge"], ["● 1", "waiting"])
+
+    def test_show_item_keyboard_and_shortcuts(self):
+        data = json.loads(json.dumps(self.data))
+        out = self.probe("""
+snap = json.loads(backend.snapshotJson)
+set_snapshot({"exists": False, "cards": []})
+js("showItem('k-12')")
+out["pending"] = js("pendingItem")
+js("page.tagFilter = 'Firma'")
+set_snapshot(snap)
+wait(120)
+out["selected"] = js("page.selectedId")
+out["filterCleared"] = js("page.tagFilter")
+out["focus"] = js("page.findCard('K-12').activeFocus")
+key(Qt.Key.Key_Right, Qt.KeyboardModifier.ControlModifier)
+out["keyMove"] = calls()[-1] if calls() else None
+key(Qt.Key.Key_N, Qt.KeyboardModifier.ControlModifier)
+out["ctrlN"] = js("page.panelOpen && page.panelCardId === ''")
+key(Qt.Key.Key_Escape)
+out["closed"] = not js("page.panelOpen")
+""", data)
+        self.assertEqual(out["pending"], "k-12", "przed migawką karta czeka")
+        self.assertEqual(out["selected"], "K-12")
+        self.assertEqual(out["filterCleared"], "", "filtr, który chował kartę, znika")
+        self.assertTrue(out["focus"])
+        self.assertEqual(out["keyMove"], ["MoveCard", "K-12", "todo", -1], "Ctrl+→ — następna kolumna ręczna")
+        self.assertTrue(out["ctrlN"])
+        self.assertTrue(out["closed"])
+
+    def test_tags_and_projects(self):
+        out = self.probe("""
+click(named("addTagChip"))
+obj("tagName").setProperty("text", "na weekend")
+click(named("tagSave"))
+out["quick"] = calls()[-1]
+js("page.managing = true")
+js("page.managePage.openProject = 'cookapp'")
+wait(80)
+js("page.managePage.send('project', 'cookapp', {slug: 'cookapp', mode: 'light'})")
+wait(80)
+out["project"] = calls()[-1]
+out["closed"] = js("page.managePage.openProject")
+replies.append({"ok": False, "error": "exists", "message": "tag „pilne” już jest"})
+js("page.managePage.openTag = 'pomysł'")
+js("page.managePage.send('tag', 'pomysł', {name: 'pomysł', newName: 'pilne', color: 'butter', description: ''})")
+wait(80)
+out["tag"] = calls()[-1]
+out["tagError"] = js("page.managePage.tagError")
+out["tagOpen"] = js("page.managePage.openTag")
+js("page.managePage.send('repo', '/r', {repo: '/home/user/DevWorkspace/legal-agents'})")
+wait(80)
+out["repo"] = calls()[-1]
+""")
+        self.assertEqual(out["quick"][0], "UpsertTag")
+        self.assertEqual(json.loads(out["quick"][1])["name"], "na weekend")
+        self.assertEqual(out["project"][0], "UpsertProject")
+        self.assertEqual(json.loads(out["project"][1]), {"slug": "cookapp", "mode": "light"})
+        self.assertEqual(out["closed"], "", "po zapisie formularz projektu się zamyka")
+        self.assertEqual(out["tag"][0], "UpsertTag")
+        self.assertEqual(out["tagError"], "tag „pilne” już jest")
+        self.assertEqual(out["tagOpen"], "pomysł", "po błędzie formularz zostaje")
+        self.assertEqual(json.loads(out["repo"][1]), {"repo": "/home/user/DevWorkspace/legal-agents"})
+
+
+class GrabTest(ProbeCase):
+    def grab(self, name, *argv, data=None) -> str:
+        data_path = os.path.join(self.tmp, name + ".json")
+        with open(data_path, "w", encoding="utf-8") as fh:
+            json.dump(self.data if data is None else data, fh, ensure_ascii=False)
+        png = os.path.join(self.tmp, name + ".png")
+        env = offscreen()
+        env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+        result = subprocess.run(["/usr/bin/python3", os.path.join(self.pkg, "tide.py"), "--view", "board", "--data",
+                                 data_path, "--grab", png, "--width", "1440", "--height", "900", *argv],
+                                env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr[-3000:])
+        self.assertIsNone(re.search(QML_PROBLEMS, result.stderr), result.stderr[-3000:])
+        self.assertGreater(os.path.getsize(png), 30_000, name)
+        return png
+
+    def test_views_render_without_warnings(self):
+        self.grab("board")
+        self.grab("card", "--preview", "card=K-13")
+        self.grab("new", "--preview", "new=todo")
+        self.grab("manage", "--preview", "manage=logviewer")
+        self.grab("lanes", "--preview", "layout=lanes")
+        self.grab("select", "--select", "K-1")
+        with tempfile.TemporaryDirectory(prefix="tide-board-empty-") as tmp:
+            self.grab("empty", data=empty_snapshot(tmp))
+
+
+@requires_dbus
+class BackendTest(unittest.TestCase):
+    """backend.py z prawdziwym tide-daemon na prywatnej magistrali i tymczasową tablicą."""
+
+    def setUp(self):
+        from PyQt6.QtCore import QCoreApplication
+        self.app = QCoreApplication.instance() or QCoreApplication([])
+        self.tmp = tempfile.mkdtemp(prefix="tide-board-bus-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.bus = PrivateBus("tide-board-view-test")
+        self.addCleanup(self.bus.stop)
+        workspace = os.path.join(self.tmp, "ws")
+        os.makedirs(workspace)
+        self.board = os.path.join(self.tmp, "board")
+        self.bus.spawn_daemon("--claude-dir", os.path.join(self.tmp, "c"), "--codex-dir", os.path.join(self.tmp, "x"),
+                              "--workspace", workspace, "--no-processes", "--no-notifications", "--no-krunner",
+                              "--no-idle", "--no-limits", "--no-report", "--no-coordination", "--no-docker",
+                              "--board-dir", self.board, extra_env=git_env(self.tmp))
+        sys.path.insert(0, APP_DIR)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("tide_board_backend_live", os.path.join(APP_DIR, "backend.py"))
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+
+    def test_writes_reload_snapshot_and_badge(self):
+        backend = self.module.create(self.bus.bus, None)
+        replies = []
+        backend.replied.connect(lambda tag, text: replies.append((tag, json.loads(text))))
+        self.assertTrue(wait_until(lambda: backend.available, timeout=10))
+        self.assertFalse(json.loads(backend.snapshotJson)["exists"])
+        self.assertEqual(backend.badgeText, "")
+        backend.createCard("create:1", json.dumps({"title": "Pierwsza karta", "column": "todo"}))
+        self.assertTrue(wait_until(lambda: replies, timeout=10))
+        self.assertEqual(replies[0], ("create:1", {"ok": True, "id": "K-1", "commitError": ""}))
+        self.assertTrue(wait_until(lambda: json.loads(backend.snapshotJson).get("exists"), timeout=10))
+        self.assertTrue(wait_until(lambda: backend.badgeText == "1", timeout=5))
+        backend.createCard("create:2", json.dumps({"title": "Druga"}))
+        backend.moveCard("move:K-2", "K-2", "todo", 0)
+        self.assertTrue(wait_until(lambda: len(replies) == 3, timeout=10))
+        self.assertEqual(replies[2][1]["ok"], True)
+        self.assertTrue(wait_until(lambda: [c["id"] for c in json.loads(backend.snapshotJson)["cards"]
+                                            if c["column"] == "todo"] == ["K-2", "K-1"], timeout=10))
+        backend.moveCard("move:K-2", "K-2", "progress", 0)
+        backend.updateCard("update:K-9", "K-9", json.dumps({"title": "x"}))
+        self.assertTrue(wait_until(lambda: len(replies) == 5, timeout=10))
+        for _tag, reply in replies[3:]:
+            self.assertEqual(sorted(reply), ["error", "message", "ok"])
+            self.assertFalse(reply["ok"])
+        self.assertEqual([r[1]["error"] for r in replies[3:]], ["bad-request", "not-found"])
+        backend.upsertTag("tag:1", json.dumps({"name": "pilne", "color": "rose"}))
+        backend.upsertProject("project:1", json.dumps({"name": "dom"}))
+        self.assertTrue(wait_until(lambda: len(replies) == 7, timeout=10))
+        snap = json.loads(backend.snapshotJson)
+        self.assertTrue(wait_until(lambda: any(t["name"] == "pilne" for t in json.loads(backend.snapshotJson)["tags"]),
+                                   timeout=5))
+        self.assertIn("dom", [p["name"] for p in json.loads(backend.snapshotJson)["projects"]])
+        self.assertEqual(snap["boardDir"], self.board)
+
+    def test_preview_mode_records_calls(self):
+        backend = self.module.create(None, {"exists": True, "cards": [{"id": "K-1", "column": "backlog"}]})
+        replies = []
+        backend.replied.connect(lambda tag, text: replies.append(json.loads(text)))
+        backend.moveCard("move:K-1", "K-1", "todo", -1)
+        self.assertEqual(json.loads(backend.callsJson), [["MoveCard", "K-1", "todo", -1]])
+        self.assertEqual(replies[0]["error"], "preview")
+        self.assertEqual((backend.badgeText, backend.badgeTone), ("1", "muted"))
+        self.assertTrue(backend.available and backend.preview)
+
+    def test_without_daemon_writes_fail_softly(self):
+        self.bus.stop()
+        backend = self.module.create(None, None)
+        replies = []
+        backend.replied.connect(lambda tag, text: replies.append(json.loads(text)))
+        backend.createCard("create:1", json.dumps({"title": "x"}))
+        self.assertEqual(replies[0]["error"], "no-service")
+        self.assertFalse(backend.available)
+        self.assertEqual(backend.badgeText, "")
+
+
+if __name__ == "__main__":
+    unittest.main()
