@@ -87,6 +87,11 @@ Item {
         onTagRequested: (tag, request) => view.backend.upsertTag(tag, request)
         onRenderRequested: (tag, id, request) => view.backend.renderLaunch(tag, id, request)
         onStartRequested: (tag, request) => view.backend.startTask(tag, request)
+        // Koordynator karty — okno Tide na Sesjach, zwykła sesja — jej okno.
+        onSessionRequested: target => {
+            if (Logic.isCoordinator(view.snapshot, target)) view.backend.showCoordinator(target)
+            else view.backend.activateSession(target)
+        }
         Component.onCompleted: {
             if (view.previewValue("tag")) tagFilter = view.previewValue("tag")
             if (view.previewValue("project")) projectFilter = view.previewValue("project")

@@ -64,9 +64,35 @@ function displayColumn(card) {
     return card.boardColumn || card.column || "backlog"
 }
 
-// Karta w kolumnie ręcznej (bez stanu z koordynatora) — tylko taką da się przeciągać.
+// Karta w „Do sprawdzenia” albo w Gotowych z wyliczenia koordynatora: tak potwierdzasz sprawdzenie
+// (do Gotowych) albo odsyłasz do poprawy (do Do zrobienia).
+function confirmable(card) {
+    if (!card || !card.derived) return false
+    const shown = displayColumn(card)
+    return shown === "review" || (shown === "done" && card.column !== "done")
+}
+
+// Karta w kolumnie ręcznej (bez stanu z koordynatora) albo do potwierdzenia — tylko taką da się przeciągać.
 function draggable(card) {
-    return !!card && isManual(displayColumn(card)) && isManual(card.column)
+    return !!card && ((isManual(displayColumn(card)) && isManual(card.column)) || confirmable(card))
+}
+
+// Dokąd wolno przenieść kartę: z kolumn ręcznych do każdej ręcznej, kartę do potwierdzenia — tylko do
+// Gotowych albo z powrotem do Do zrobienia. Do kolumn wyliczanych nigdy.
+function dropTargets(card) {
+    if (confirmable(card)) return ["done", "todo"]
+    return draggable(card) ? MANUAL.slice() : []
+}
+
+// Cel „Otwórz w Sesjach” / „Przejdź do agenta”: koordynator karty (/Coordination), inaczej jej sesja (/Agents).
+function agentTarget(card) {
+    const d = card && card.derived
+    return d ? String(d.coordinator || d.session || "") : ""
+}
+
+// Czy cel z agentTarget to koordynator którejś karty (wtedy okno Tide na Sesjach), a nie zwykła sesja.
+function isCoordinator(snapshot, target) {
+    return !!target && ((snapshot && snapshot.cards) || []).some(c => c.derived && c.derived.coordinator === target)
 }
 
 // --- filtry --------------------------------------------------------------------------------

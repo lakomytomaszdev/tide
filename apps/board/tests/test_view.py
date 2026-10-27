@@ -113,6 +113,22 @@ class LogicTest(unittest.TestCase):
         self.assertTrue(self.js("draggable(S.cards.find(c => c.id === 'K-15'))"))
         self.assertFalse(self.js("draggable(S.cards.find(c => c.id === 'K-5'))"), "kartę prowadzi koordynator")
 
+    def test_confirming_review_cards_and_agent_target(self):
+        k7, k5, k15 = ("S.cards.find(c => c.id === '%s')" % i for i in ("K-7", "K-5", "K-15"))
+        self.assertTrue(self.js(f"confirmable({k7})"), "Do sprawdzenia — potwierdzasz przeniesieniem")
+        self.assertTrue(self.js(f"draggable({k7})"))
+        self.assertEqual(self.js(f"dropTargets({k7})"), ["done", "todo"])
+        self.assertFalse(self.js(f"draggable({k5})"), "W toku dalej nie")
+        self.assertEqual(self.js(f"dropTargets({k5})"), [])
+        self.assertEqual(self.js(f"dropTargets({k15})"), ["backlog", "todo", "done"])
+        self.assertTrue(self.js("confirmable({column: 'todo', boardColumn: 'done', derived: {column: 'done'}})"))
+        self.assertFalse(self.js("confirmable({column: 'done', boardColumn: 'done', derived: {column: 'done'}})"))
+        self.assertEqual(self.js(f"agentTarget({k5})"), "claude:5f0c")
+        self.assertEqual(self.js("agentTarget({derived: {coordinator: 'codex:019a', session: 'codex:x'}})"), "codex:019a")
+        self.assertEqual(self.js("agentTarget({derived: null})"), "")
+        self.assertFalse(self.js("isCoordinator(S, 'claude:5f0c')"))
+        self.assertTrue(self.js("isCoordinator({cards: [{derived: {coordinator: 'codex:019a'}}]}, 'codex:019a')"))
+
     def test_move_index_and_optimistic_moves(self):
         # Kolumna zapisana todo: K-11, K-9, K-8, K-7, K-6, K-5 (cztery ostatnie wyświetlane gdzie indziej).
         self.assertEqual(self.js("moveIndex(S, 'K-15', 'todo', '')"), -1, "na koniec")
@@ -336,6 +352,42 @@ out["noticeTone"] = js("page.toastTone")
         self.assertEqual(out["tone"], "rose")
         self.assertEqual(out["notice"], "Zapisane w pliku, commit czeka: index.lock: File exists")
         self.assertEqual(out["noticeTone"], "butter")
+
+
+@unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class DerivedCardsTest(ProbeCase):
+    """Karty ze stanem z koordynatora (PT-5): potwierdzenie z Do sprawdzenia i przejście do agenta."""
+
+    def test_review_card_goes_to_done_or_back_to_todo_only(self):
+        out = self.probe("""
+drag(card("K-7"), column("backlog", fy=0.8))
+out["refused"] = [len(calls()), js("page.toast")]
+drag(card("K-7"), column("done", fy=0.8))
+out["done"] = calls()[-1]
+set_snapshot(json.loads(backend.snapshotJson))
+js("page.findCard('K-7').forceActiveFocus()")
+key(Qt.Key.Key_Left, Qt.KeyboardModifier.ControlModifier)
+out["back"] = calls()[-1]
+out["dialog"] = js("page.launchOpen")
+""")
+        self.assertEqual(out["refused"][0], 0, "z Do sprawdzenia nie do Backlogu")
+        self.assertIn("do Gotowych", out["refused"][1])
+        self.assertEqual(out["done"][:3], ["MoveCard", "K-7", "done"], "potwierdzenie: Gotowe")
+        self.assertEqual(out["back"], ["MoveCard", "K-7", "todo", -1], "Ctrl+← — do poprawy")
+        self.assertFalse(out["dialog"], "odesłanie do poprawy nie pyta o nowego agenta")
+
+    def test_session_links_open_coordinator_or_session(self):
+        data = json.loads(json.dumps(self.data))
+        for c in data["cards"]:
+            if c["id"] == "K-6":
+                c["derived"]["coordinator"] = "codex:019a-koordynator"
+        out = self.probe("""
+for cid in ("K-5", "K-6"):
+    out[cid] = js(f"(function () {{ const it = page.findCard('{cid}'); if (!it) return 'brak'; const d = it.card.derived; const t = d.coordinator || d.session; it.sessionRequested(t); return t }})()")
+out["calls"] = calls()
+""", data)
+        self.assertEqual(out["calls"], [["/Agents ActivateSession", "claude:5f0c"],
+                                        ["/Coordination ShowWindow", "codex:019a-koordynator"]], out)
 
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")

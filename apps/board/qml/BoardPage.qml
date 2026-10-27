@@ -134,8 +134,14 @@ Rectangle {
             showToast("Do kolumny „" + Logic.columnLabel(snapshot, column) + "” karta trafia sama, gdy pracuje nad nią agent.", "rose")
             return
         }
+        const confirming = Logic.confirmable(card)
+        if (confirming && Logic.dropTargets(card).indexOf(column) < 0) {
+            showToast("Kartę z „" + Logic.columnLabel(snapshot, Logic.displayColumn(card)) + "” przenosisz do Gotowych "
+                      + "(sprawdzone) albo z powrotem do Do zrobienia (do poprawy).", "rose")
+            return
+        }
         const index = column === "archived" ? 0 : Logic.moveIndex(snapshot, id, column, before)
-        if (column === card.column && Logic.storedIndex(snapshot, id) === (index < 0
+        if (!confirming && column === card.column && Logic.storedIndex(snapshot, id) === (index < 0
                 ? snapshot.cards.filter(c => c.column === column).length - 1 : index)) return
         const fromBacklog = column === "todo" && card.column === "backlog"
         const origin = fromBacklog ? Logic.storedIndex(snapshot, id) : -1
@@ -389,11 +395,12 @@ Rectangle {
         if (!card || !Logic.draggable(card)) return
         const columnId = Logic.displayColumn(card)
         if (dx !== 0) {
-            const target = Logic.neighbourColumn(columnId, dx)
+            const target = Logic.confirmable(card) ? (dx > 0 ? "done" : "todo") : Logic.neighbourColumn(columnId, dx)
             if (target) moveCard(id, target, "")
             Qt.callLater(() => { const item = findCard(id); if (item) item.forceActiveFocus() })
             return
         }
+        if (Logic.confirmable(card)) return   // w kolumnie wyliczanej kolejność ustala koordynator
         const list = Logic.column(cards, columnId)
         const at = list.findIndex(c => c.id === id)
         const target = at + dy

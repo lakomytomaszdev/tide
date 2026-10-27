@@ -32,6 +32,8 @@ NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag")
 TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
+COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
+AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
 START_TIMEOUT_MS = 120_000  # worktree, Konsola i przejęcie zadania (usługa czeka na nie do 15 s)
 
 
@@ -161,6 +163,16 @@ class Backend(QObject):
     def startTask(self, tag: str, request: str) -> None:
         self._write(tag, "Start", [request])
 
+    # „Otwórz w Sesjach →” / „Przejdź do agenta” na karcie: koordynator karty — okno Tide na Sesjach
+    # (/Coordination ShowWindow), zwykła sesja — jej okno (/Agents ActivateSession). Bez odpowiedzi do QML.
+    @pyqtSlot(str)
+    def showCoordinator(self, coordinator_id: str) -> None:
+        self._open("ShowWindow", coordinator_id, COORDINATION_PATH, COORDINATION_IFACE)
+
+    @pyqtSlot(str)
+    def activateSession(self, session_id: str) -> None:
+        self._open("ActivateSession", session_id, AGENTS_PATH, AGENTS_IFACE)
+
     # --- wnętrze ------------------------------------------------------------------------------
 
     def _write(self, tag: str, member: str, args: list) -> None:
@@ -183,6 +195,13 @@ class Backend(QObject):
             self._call(member, args, done, timeout=START_TIMEOUT_MS, path=TASKS_PATH, iface=TASKS_IFACE)
         else:
             self._call(member, args, done)
+
+    def _open(self, member: str, ident: str, path: str, iface: str) -> None:
+        if self._preview or self.bus is None:
+            self._calls.append([path + " " + member, ident])
+            self.callsChanged.emit()
+            return
+        self._call(member, [ident], None, path=path, iface=iface)
 
     @pyqtSlot()
     def _changed(self) -> None:

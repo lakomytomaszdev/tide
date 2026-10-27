@@ -23,7 +23,7 @@ Rectangle {
     property bool ghost: false          // kopia karty pod kursorem w czasie przeciągania
     signal clicked()
     signal moveRequested(string column)       // „Gotowe” w Do sprawdzenia
-    signal sessionRequested(string session)   // Otwórz w Sesjach / Przejdź do agenta
+    signal sessionRequested(string session)   // Otwórz w Sesjach / Przejdź do agenta: koordynator albo sesja (agentTarget)
     signal launchRequested()
     signal diffRequested()
     signal keyNavigation(int dx, int dy)      // strzałki: sąsiednia karta
@@ -298,7 +298,7 @@ Rectangle {
             onClicked: root.launchRequested()
         }
         Text {
-            visible: root.column === "progress" && root.derived !== null && (root.derived.session || "") !== ""
+            visible: root.column === "progress" && root.derived !== null && Logic.agentTarget(root.c) !== ""
             text: "Otwórz w Sesjach →"
             textFormat: Text.PlainText
             color: sessionsLink.containsMouse ? Tide.Theme.alpha(Tide.Tokens.accent, 0.8) : Tide.Tokens.accent
@@ -306,18 +306,18 @@ Rectangle {
             font.pixelSize: 12
             Accessible.role: Accessible.Link
             Accessible.name: text
-            Accessible.onPressAction: root.sessionRequested(root.derived.session)
+            Accessible.onPressAction: root.sessionRequested(Logic.agentTarget(root.c))
             MouseArea {
                 id: sessionsLink
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.sessionRequested(root.derived.session)
+                onClicked: root.sessionRequested(Logic.agentTarget(root.c))
             }
         }
         PillButton {
             Layout.fillWidth: true
-            visible: root.waiting && root.derived !== null && (root.derived.session || "") !== "" && !root.ghost
+            visible: root.waiting && root.derived !== null && Logic.agentTarget(root.c) !== "" && !root.ghost
             implicitHeight: 30
             pillRadius: Tide.Tokens.radiusSmall
             pixelSize: 12
@@ -325,7 +325,7 @@ Rectangle {
             text: "Przejdź do agenta"
             fill: Tide.Tokens.peach
             textColor: Tide.Tokens.backgroundDesktop
-            onClicked: root.sessionRequested(root.derived.session)
+            onClicked: root.sessionRequested(Logic.agentTarget(root.c))
         }
         RowLayout {
             Layout.fillWidth: true
