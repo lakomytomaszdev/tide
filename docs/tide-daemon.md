@@ -1106,7 +1106,8 @@ Odpowiedź: `{ok: true, card, plan, spec, others, warnings}`; zły ID — `bad-r
 `--print-card-docs K-12` wypisuje to samo bez D-Bus (bez koordynatorów — plan tylko z klucza `card`).
 
 Panel (`apps/board/qml/CardPanel.qml`, `CardDocView.qml`, `MarkdownBlock.qml`, logika `cardDocs.js`):
-przy dokumencie panel ma 860 px (przy węższym oknie — tyle, ile jest), „Rozwiń” — szerokość okna bez
+ostatnio wybrana zakładka zostaje dla kolejnych kart, póki działa okno Tide (karta bez takiego dokumentu
+pokazuje „Opis”); przy dokumencie panel ma 860 px (przy węższym oknie — tyle, ile jest), „Rozwiń” — szerokość okna bez
 marginesów. CardDocs idzie przy otwarciu karty, po każdej nowej migawce (`Changed` — także plik
 w `docs/` tablicy) i co 5 s, póki panel jest otwarty (plan w repozytorium projektu nie zmienia
 migawki); treść podmienia się tylko przy innej odpowiedzi, więc przewinięcie zostaje. „Otwórz plik”

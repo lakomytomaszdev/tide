@@ -675,6 +675,15 @@ out["after"] = backend.docsRequests - before
 out["k14Title"] = obj("docTitle").property("text")
 out["k14Status2"] = obj("docStatus").property("word")
 out["stillSpec"] = js("page.cardPanel.shownTab")
+# zapamiętana zakładka: karta bez specyfikacji — Opis, następna ze specyfikacją — znów Specyfikacja
+js("page.closePanel()")
+click(card("K-12"))
+wait(150)
+out["rememberedNoDoc"] = js("page.cardPanel.shownTab")
+js("page.closePanel()")
+click(card("K-5"))
+wait(150)
+out["rememberedSpec"] = js("page.cardPanel.shownTab")
 """)
         self.assertFalse(out["noDocsTabs"], "karta bez planu i specyfikacji — bez zakładek")
         self.assertFalse(out["noDocsReading"])
@@ -684,6 +693,8 @@ out["stillSpec"] = js("page.cardPanel.shownTab")
         self.assertGreaterEqual(out["after"], 1, "nowa migawka (Changed) — CardDocs ponownie")
         self.assertEqual((out["k14Title"], out["k14Status2"], out["stillSpec"]),
                          ("Historia diagnoz — wersja 2", "gotowa", "spec"))
+        self.assertEqual((out["rememberedNoDoc"], out["rememberedSpec"]), ("opis", "spec"),
+                         "ostatnia zakładka zostaje dla kolejnych kart, bez dokumentu — Opis")
 
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")

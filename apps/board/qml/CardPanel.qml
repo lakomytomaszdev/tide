@@ -5,7 +5,8 @@
 // Błąd z usługi pokazuje się w panelu (komunikat po polsku), commitError — dyskretnie pod nim.
 // Ctrl+Enter zapisuje, Esc zamyka. Teksty z karty to dane: zawsze zwykły tekst.
 // Plan i specyfikacja karty (PT-5): zakładki „Opis” | „Plan” | „Specyfikacja” — dwie ostatnie tylko,
-// gdy /Board CardDocs(id) je znalazł. Przy dokumencie panel się poszerza (do 860 px, „Rozwiń” — prawie
+// gdy /Board CardDocs(id) je znalazł. Wybrana zakładka zostaje dla kolejnych kart, póki działa okno
+// (karta bez takiego dokumentu pokazuje „Opis”). Przy dokumencie panel się poszerza (do 860 px, „Rozwiń” — prawie
 // całe okno). Dokumenty odświeżamy przy każdej nowej migawce (sygnał Changed) i co 5 s, póki panel
 // jest otwarty — usługa czyta plik ponownie tylko po zmianie, a widok podmienia treść tylko wtedy,
 // gdy odpowiedź jest inna (przewinięcie zostaje).
@@ -39,7 +40,7 @@ Rectangle {
     // Plan i specyfikacja karty (CardDocs): odpowiedź usługi, wybrana zakładka i szerokość.
     property var docs: null
     property string docsText: ""
-    property string tab: "opis"              // wybór użytkownika: opis | plan | spec
+    property string tab: "opis"              // ostatni wybór użytkownika (opis | plan | spec) — także dla następnej karty
     property bool expanded: false
     property real maxWidth: 1200             // szerokość dostępna w oknie (ustawia BoardPage)
     property var styler: null                // backend.styleMarkdown (przez BoardPage) albo null
@@ -80,8 +81,7 @@ Rectangle {
         projectLabel = card ? card.projectName || card.project || "" : ""
         docs = null
         docsText = ""
-        tab = "opis"
-        requestDocs()
+        requestDocs()   // `tab` zostaje: ostatnio wybrana zakładka, póki działa okno Tide
         titleField.focusInput()
     }
 
