@@ -1,5 +1,5 @@
 // Widżet worktrees: kafelek z podsumowaniem („15 do sprzątnięcia · 16 GB”, ile w pracy; CompactWorktrees).
-// Kliknięcie otwiera okno „Tide Worktrees” (tide-daemon: ShowWindow) — tam jest lista i sprzątanie.
+// Kliknięcie otwiera okno Tide na widoku Worktrees (tide-daemon: ShowWindow) — tam jest lista i sprzątanie.
 // Mały popup pojawia się tylko wtedy, gdy okna nie da się otworzyć (nie zainstalowane, usługa stoi).
 // Dane: tide-daemon przez D-Bus (org.tide.Daemon /Worktrees, opis w docs/tide-daemon.md).
 import QtQuick

@@ -33,7 +33,7 @@ PlasmoidItem {
         })
     }
 
-    // Okno „Tide Sesje” (tablica koordynatora) otwiera usługa (/Coordination ShowWindow).
+    // Okno Tide na widoku Sesje (tablica koordynatora) otwiera usługa (/Coordination ShowWindow).
     function showSessions(coordinatorId) {
         source.callOn("/Coordination", "org.tide.Daemon.Coordination", "ShowWindow", [coordinatorId || ""],
                       function (ok) {

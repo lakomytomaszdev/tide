@@ -223,7 +223,7 @@ Skąd lista:
 
 Powiązanie z sesjami (`worktrees/sessions.py`, best effort, tylko odczyt): pliki z ostatnich 30 dni — Claude Code `<claude>/projects/<katalog>/<sesja>.jsonl` (nazwa katalogu to ścieżka z każdym znakiem spoza `[A-Za-z0-9]` zamienionym na `-`, więc nieodwracalna — katalog bierzemy z pola `cwd` wpisów) i Codex `<codex>/sessions/**/rollout-*.jsonl` (`session_meta.payload.cwd`, `turn_context.payload.cwd`; wątki podagentów pomijane). Tytuł: Claude — `custom-title`, `ai-title`, `summary`, inaczej pierwsze polecenie użytkownika; Codex — `thread_name` z `<codex>/session_index.jsonl`, inaczej pierwsze polecenie; najwyżej 80 znaków. Z pliku czytamy tylko początek i koniec (po 192 KB), a wynik trzymamy do zmiany rozmiaru albo mtime (pierwszy przegląd ok. 0,2 s, kolejne kilka ms). W pamięci są tylko metadane (narzędzie, identyfikator, tytuł, katalogi, czas), nic z rozmów nie trafia do dziennika usługi. Sesja uruchomiona w głównym katalogu, która zakłada worktree poleceniem powłoki, nie zostanie powiązana — liczy się katalog roboczy.
 
-Okno „Tide Worktrees” (`apps/worktrees`): `ShowWindow()` uruchamia `/usr/bin/python3 -s $XDG_DATA_HOME/tide/worktrees-window/tide-worktrees.py` (albo `$TIDE_WORKTREES_WINDOW`) przez `systemd-run --user --scope`. Okno rejestruje nazwę `org.tide.WorktreesWindow` (obiekt `/Window`, metoda `Raise()`), więc kolejne uruchomienie tylko pokazuje już otwarte.
+Widok „Worktrees” okna Tide (`apps/worktrees`, okno `apps/tide`): `ShowWindow()` uruchamia `/usr/bin/python3 -s $XDG_DATA_HOME/tide/tide-window/tide.py --view worktrees` (albo `$TIDE_WINDOW`) przez `systemd-run --user --scope`; bez okna Tide albo przy `$TIDE_WORKTREES_WINDOW` — dawny launcher `tide/worktrees-window/tide-worktrees.py` (po instalacji okna Tide to przekierowanie do niego). Okno rejestruje `org.tide.Window` (obiekt `/Window`, `Show(s widok, s element) → b`), więc kolejne uruchomienie tylko pokazuje już otwarte na widoku; dawne `org.tide.WorktreesWindow` `Raise()` też działa.
 
 Odświeżanie: co **60 s** w tle (jeden wątek roboczy: odczyt, potem rozmiary), na żądanie przez `Refresh()` (okno woła je przy starcie i przyciskiem „Odśwież”) i po sprzątaniu. Rozmiary są w pamięci podręcznej i przeliczane najwyżej co **30 min**. Zmiana sesji agentów przelicza tylko flagę `hasAgent`, bez gita. Wątek główny (D-Bus) nigdy nie czeka na gita ani na dysk.
 
@@ -646,10 +646,12 @@ zaszyfrowane polecenia Codexa pomijamy —, opisem karty `done` i `now` do 300 z
 bez pełnych poleceń i raportów podagentów). Opisy kart dokłada ten sam wątek z pamięci albo reguł, a gdy
 trzeba zapytać model (decyzja 54), robi to osobny wątek roboczy i po odpowiedzi zleca odświeżenie.
 
-**Okno „Tide Sesje”** (`apps/sessions`, `make install-sessions-window`): `ShowWindow()` uruchamia
-`/usr/bin/python3 -s $XDG_DATA_HOME/tide/sessions-window/tide-sessions.py [--select id]` (albo
-`$TIDE_SESSIONS_WINDOW`) przez `systemd-run --user --scope`. Okno rejestruje `org.tide.SessionsWindow`
-(obiekt `/Window`, `Raise(s id)`), więc kolejne uruchomienie tylko je pokazuje z wybranym koordynatorem.
+**Widok „Sesje” okna Tide** (`apps/sessions`, okno `apps/tide`, `make install-tide-window`): `ShowWindow()`
+uruchamia `/usr/bin/python3 -s $XDG_DATA_HOME/tide/tide-window/tide.py --view sessions [--select id]` (albo
+`$TIDE_WINDOW`) przez `systemd-run --user --scope`; bez okna Tide albo przy `$TIDE_SESSIONS_WINDOW` — dawny
+launcher `tide/sessions-window/tide-sessions.py [--select id]`. Okno rejestruje `org.tide.Window` (obiekt
+`/Window`, `Show(s widok, s element) → b`), więc kolejne uruchomienie tylko je pokazuje na widoku Sesje
+z wybranym koordynatorem; dawne `org.tide.SessionsWindow` `Raise(s id)` też działa.
 Karta: prawdziwe ID, tytuł po ludzku, linia „co zrobiono” albo „co teraz”, działający podagenci z rolą
 po polsku i czasem, stan słowami; szczegóły: „Co to jest”, „Co zrobiono”, „Teraz / review” i oś czasu.
 Teksty z danych zawsze jako zwykły tekst (`Text.PlainText`).
