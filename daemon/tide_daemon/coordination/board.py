@@ -2,21 +2,30 @@
 ticketu i oś czasu — bez Qt, czysta funkcja `build()` (testowana na fixtures).
 
 Grupowanie (ids.py): ID ticketu z opisu podagenta, z jego gałęzi (gdy inna niż gałąź
-koordynatora), z przydomka (Codex) albo z początku polecenia; prefiks z planu albo najczęstszy
-w opisach. Bez ID — grupa po opisie bez słów roli („Review compact distribution” i „Compact
-distribution” to jeden ticket).
+koordynatora), z przydomka (Codex), a z początku polecenia tylko z prefiksem z planu; prefiks z planu
+albo najczęstszy w opisach i nazwach zadań. Treść polecenia bez prefiksu z planu nie daje ID: cytuje
+decyzje, niezmienniki i wymagania („ADR-0016”, „INV-001”), które ticketami nie są. Bez ID — grupa
+po opisie bez słów roli („Review compact distribution” i „Compact distribution” to jeden ticket).
 
 Stan z przebiegów (od najważniejszego):
 - pytanie koordynatora bez odpowiedzi, które wymienia ticket → `czeka`,
 - działa recenzent → `review`; działa inny podagent → `w-toku`,
 - ostatnie review bez BLOCKER/MAJOR (i bez prośby o zmiany) → `gotowe`; z nimi → `w-toku`
   („do poprawy”), a poprawki skończone po review → `gotowe` (bez ponownego review),
-- implementer skończył bez review → `w-toku` („czeka na review”), gdy koordynator działa
-  i zleca review innym ticketom; inaczej `gotowe`; przerwany albo z błędem → `w-toku`.
+- implementer skończył bez review → `review` („gotowe, czeka na review”), gdy koordynator działa
+  i zleca review innym ticketom — chyba że od końca tej pracy minęło SKIPPED_REVIEW, a koordynator
+  w tym czasie zlecał review innym (to review pominął); inaczej `gotowe` („bez review”);
+  przerwany albo z błędem → `w-toku`,
+- samo rozpoznanie (Explore, explorer, research) skończone → `gotowe` („rozpoznanie skończone”).
 Plan (plan.py) wygrywa zawsze przy `odrzucone`, przy ticketach bez przebiegów (`todo`
 i każdy inny stan) i wtedy, gdy jego `updated` jest nowszy niż ostatnie zdarzenie ticketu.
 YouTrack (tylko odczyt) daje tytuł i adres, a stan bierzemy z niego tylko wtedy, gdy nie ma
 ani planu, ani przebiegów, albo gdy ticket jest tam zamknięty, a żaden podagent nad nim nie pracuje.
+Lokalny backlog (`docs/agents/backlog/<ID>.md`, nagłówek „# LA-040: tytuł”) daje tylko tytuł.
+
+Opis karty po ludzku (title, done, now) dokłada describe.py — tu zostają surowe źródła:
+`officialTitle` (plan, YouTrack, backlog), `taskTitle` (z opisu zlecenia) i oś czasu po polsku
+(rola słowem: implementacja, poprawki, review, rozpoznanie; angielski opis zlecenia w `meta`).
 """
 import re
 
@@ -29,8 +38,17 @@ COLUMN_OF = {"todo": "todo", "w-toku": "w-toku", "czeka": "czeka", "review": "re
              "odrzucone": "gotowe"}
 STATE_WORDS = {"todo": "do zrobienia", "w-toku": "w toku", "czeka": "czeka", "review": "review",
                "gotowe": "gotowe", "odrzucone": "odrzucone"}
+SKIPPED_REVIEW = 2 * 3600  # s — po tylu godzinach i review innych ticketów praca bez review jest „gotowe”
 STALE_RUN = 120          # s — podagent bez wyniku, którego dziennik stoi tyle czasu po końcu koordynatora, jest przerwany
 HELPER_TYPES = re.compile(r"explor|plan|research|guide|investig|badacz", re.I)
+# Rola rundy słowem (karta, oś czasu): (mianownik, biernik, „skończon…”, „trwa/trwają”).
+ROLE_WORDS = {
+    "implementacja": ("implementacja", "implementację", "skończona", "Trwa"),
+    "poprawki": ("poprawki", "poprawki", "skończone", "Trwają"),
+    "review": ("review", "review", "skończone", "Trwa"),
+    "ponowne review": ("ponowne review", "ponowne review", "skończone", "Trwa"),
+    "rozpoznanie": ("rozpoznanie", "rozpoznanie", "skończone", "Trwa"),
+}
 HELPER_WORDS = re.compile(r"^\s*(?:research|investigate|explore|diagnose|zbadaj|sprawdź|draw|mock)\b", re.I)
 ROLE_PREFIX = re.compile(r"^\s*(?:(?:privacy|security|code|final|second|ponowne)\s+)?(?:re-?)?review(?:\s+of)?\s+|"
                          r"^\s*(?:apply|implement|fix|napraw|popraw|poprawki|build|add|dodaj|zrób)\s+", re.I)
@@ -53,6 +71,15 @@ def role_of(run) -> str:
     if HELPER_TYPES.search(run.agent_type or "") or HELPER_WORDS.search(run.description or ""):
         return ROLE_HELPER
     return ROLE_IMPLEMENTER
+
+
+def role_word(role: str, kind: str = "launch") -> str:
+    """Rola rundy po polsku: implementacja / poprawki (kontynuacja) / review / ponowne review / rozpoznanie."""
+    if role == ROLE_REVIEWER:
+        return "ponowne review" if kind == "continue" else "review"
+    if role == ROLE_HELPER:
+        return "rozpoznanie"
+    return "poprawki" if kind == "continue" else "implementacja"
 
 
 def youtrack_state(name: str) -> str:
@@ -120,13 +147,14 @@ def effective(run, live: bool, now: float, transcript_mtime: float = 0.0) -> str
 
 
 def build(coord, *, plan=None, aliases=None, issues=None, tracker=None, live=None, now: float = 0.0,
-          info=None, project: str = "", repo_path: str = "") -> dict:
+          info=None, project: str = "", repo_path: str = "", backlog=None) -> dict:
     """Tablica jako słownik (JSON dla D-Bus Board()).
 
     live: wpis sesji koordynatora z obszaru Agents (stan, powód) albo None (sesja nie działa),
     info(run) → {"mtime", "branch", "lastAction"} z dziennika podagenta (opcjonalne),
     issues: {klucz: {"id", "summary", "state", "url"}} z YouTracka albo None,
-    tracker: {"kind", "url", "project", "available", "error", "fetchedTs"} albo None.
+    tracker: {"kind", "url", "project", "available", "error", "fetchedTs"} albo None,
+    backlog: {klucz: {"title", "status"}} z docs/agents/backlog/<ID>.md albo None.
     """
     info = info or (lambda run: {})
     is_live = bool(live) and live.get("state") not in ("ended", None)
@@ -138,8 +166,9 @@ def build(coord, *, plan=None, aliases=None, issues=None, tracker=None, live=Non
             key = matcher.find(row.ticket) or row.ticket.upper()
             plan_keys.add(key)
     matcher.ignore = {(aliases or {}).get(k, k) for k in own_ids(coord)} - plan_keys
-    matcher.learn([r.description for r in coord.runs.values()] + [r.nickname for r in coord.runs.values()]
-                  + [r.prompt_head[:400] for r in coord.runs.values()])
+    # Prefiks uczymy się tylko z opisów i nazw zadań — nie z poleceń (ADR-0016, INV-001 to nie tickety).
+    matcher.learn([r.description for r in coord.runs.values()] + [r.nickname for r in coord.runs.values()])
+    plan_prefix = bool(prefixes)
 
     tickets: dict[str, dict] = {}
     order: list[str] = []
@@ -148,7 +177,8 @@ def build(coord, *, plan=None, aliases=None, issues=None, tracker=None, live=Non
         if key not in tickets:
             tickets[key] = {"key": key, "id": display or ("" if key.startswith("~") else matcher.show(key)),
                             "title": title, "plan": None, "issue": None, "runs": [], "question": None,
-                            "branch": ""}
+                            "branch": "", "taskTitle": "", "official": title, "officialFrom": "plan" if title else "",
+                            "officialNote": ""}
             order.append(key)
         return tickets[key]
 
@@ -172,14 +202,14 @@ def build(coord, *, plan=None, aliases=None, issues=None, tracker=None, live=Non
             key = matcher.find(branch, generic=False)
         if not key and run.nickname:
             key = matcher.find(run.nickname, generic=False)
-        if not key:
-            key = matcher.find(run.prompt_head, generic=bool(matcher.prefixes))
+        if not key and plan_prefix:
+            key = matcher.find(run.prompt_head, generic=False)
         if not key:
             key = _join_fallback(fallback_key(run.description), order)
         t = ticket(key, title="")
         t["runs"].append(run)
-        if not t["title"] and role != ROLE_REVIEWER:
-            t["title"] = _title(matcher.strip(run.description), "")
+        if not t["taskTitle"] and role != ROLE_REVIEWER:
+            t["taskTitle"] = _title(matcher.strip(run.description), "")
         if not t["branch"] and branch and branch not in (coord.branch, "HEAD") and len(branch) < 120:
             t["branch"] = branch
 
@@ -189,18 +219,25 @@ def build(coord, *, plan=None, aliases=None, issues=None, tracker=None, live=Non
             tickets[key]["question"] = question
 
     for t in tickets.values():
-        if not t["title"]:
+        if not t["taskTitle"]:
             first = t["runs"][0].description if t["runs"] else ""
-            t["title"] = _title(matcher.strip(first), "") if first else t["id"]
+            t["taskTitle"] = _title(matcher.strip(first), "") if first else ""
         if issues and t["key"] in issues:
             t["issue"] = issues[t["key"]]
-            if t["plan"] is None or not t["plan"].title:
-                t["title"] = t["issue"].get("summary") or t["title"]
+            if not t["official"] and t["issue"].get("summary"):
+                t["official"], t["officialFrom"] = t["issue"]["summary"], "tracker"
+        entry = (backlog or {}).get(t["key"])
+        if entry:
+            if not t["official"] and entry.get("title"):
+                t["official"], t["officialFrom"] = entry["title"], "backlog"
+            t["officialNote"] = entry.get("status") or ""
+        t["title"] = t["official"] or t["taskTitle"] or t["id"]
 
     out_tickets = []
+    review_starts = sorted(r.start_ts for r in coord.runs.values() if role_of(r) == ROLE_REVIEWER)
     for key in order:
         t = tickets[key]
-        out_tickets.append(_ticket_json(t, coord, plan, tracker, is_live, uses_review, now, runs_info))
+        out_tickets.append(_ticket_json(t, coord, plan, tracker, is_live, uses_review, now, runs_info, review_starts))
 
     counts = {state: 0 for state in ("todo", "w-toku", "czeka", "review", "gotowe", "odrzucone")}
     for t in out_tickets:
@@ -259,10 +296,10 @@ def summary(board: dict) -> dict:
 
 # --- wnętrze ---------------------------------------------------------------------------------
 
-def _ticket_json(t, coord, plan, tracker, live, uses_review, now, runs_info) -> dict:
+def _ticket_json(t, coord, plan, tracker, live, uses_review, now, runs_info, review_starts=()) -> dict:
     runs = t["runs"]
     states = {run.id: effective(run, live, now, runs_info.get(run.id, {}).get("mtime", 0.0)) for run in runs}
-    derived, note, review_info = _derive(t, runs, states, live, uses_review)
+    derived, note, review_info = _derive(t, runs, states, live, uses_review, review_starts, now)
     last_ts = max([r.last_ts for r in runs] + [t["question"].ts if t["question"] else 0.0], default=0.0)
     row = t["plan"]
     plan_state = row.state if row else ""
@@ -297,6 +334,10 @@ def _ticket_json(t, coord, plan, tracker, live, uses_review, now, runs_info) -> 
         "key": t["key"],
         "id": t["id"],
         "title": t["title"],
+        "officialTitle": _clip(t["official"], 200),
+        "officialFrom": t["officialFrom"] if t["official"] else "",
+        "officialNote": _clip(t["officialNote"], 300),
+        "taskTitle": t["taskTitle"],
         "state": state,
         "column": COLUMN_OF[state],
         "word": STATE_WORDS[state],
@@ -342,6 +383,7 @@ def _agents(runs, states, limit: int = 3) -> list[dict]:
             last = i == len(run.rounds) - 1
             state = states[run.id] if last else round_.status
             rows.append({"run": run.id, "role": role, "label": _agent_label(run), "state": state,
+                         "word": role_word(role, round_.kind),
                          "startTs": round(round_.start, 3),
                          "endTs": round(round_.end, 3) if state != RUNNING else 0,
                          "note": "poprawki" if round_.kind == "continue" and role != ROLE_REVIEWER else ""})
@@ -349,7 +391,7 @@ def _agents(runs, states, limit: int = 3) -> list[dict]:
     return rows[-limit:]
 
 
-def _derive(t, runs, states, live, uses_review):
+def _derive(t, runs, states, live, uses_review, review_starts=(), now: float = 0.0):
     """(stan, notatka, review) z przebiegów albo ("", "", None) bez przebiegów."""
     if t["question"]:
         return "czeka", "", None
@@ -380,8 +422,12 @@ def _derive(t, runs, states, live, uses_review):
         state = states[last_work.id]
         if state != COMPLETED:
             return "w-toku", _stopped(state), None
-        if uses_review and live:
-            return "w-toku", "skończył, czeka na review", None
+        if all(role_of(r) == ROLE_HELPER for r in workers):
+            return "gotowe", "rozpoznanie skończone", None
+        end = last_work.end_ts or last_work.last_ts
+        skipped = now - end > SKIPPED_REVIEW and any(ts > end for ts in review_starts)
+        if uses_review and live and not skipped:
+            return "review", "gotowe, czeka na review", None
         return "gotowe", "bez review", None
     return "w-toku", "", None
 
@@ -399,49 +445,49 @@ def _result(run) -> str:
 
 
 def _events(t, runs, states, runs_info) -> list[dict]:
+    """Oś czasu ticketu po polsku: „Koordynator zlecił implementację” → „Implementacja skończona” →
+    „Review skończone” (uwagi słowami) → „Koordynator zlecił poprawki”… Angielski opis zlecenia,
+    podagent, model i „tło” idą do `meta` (drobny dopisek), a `text` mówi, co wyszło."""
     events = []
     for run in runs:
         role = role_of(run)
         label = _agent_label(run)
+        what = [label] + ([_model_name(run.model)] if run.model else []) + (["tło"] if run.background else [])
         for i, round_ in enumerate(run.rounds):
-            what = []
-            if run.model:
-                what.append(_model_name(run.model))
-            if run.background:
-                what.append("tło")
-            target = label + (f" ({', '.join(what)})" if what else "")
-            if round_.kind == "launch":
-                events.append({"ts": round(round_.start, 3), "kind": "launch", "state": "neutral", "run": run.id,
-                               "title": "Koordynator zlecił", "text": f"„{_clip(run.description, 90)}” → {target}"})
-            else:
-                events.append({"ts": round(round_.start, 3), "kind": "continue", "state": "neutral", "run": run.id,
-                               "title": "Koordynator wznowił" + (" · poprawki" if role != ROLE_REVIEWER else ""),
-                               "text": f"{label}: „{_clip(round_.note, 90)}”" if round_.note else label})
+            word = role_word(role, round_.kind)
+            nom, acc, done, lasts = ROLE_WORDS[word]
+            asked = run.description if round_.kind == "launch" else (round_.note or "")
+            meta = " · ".join(([f"„{_clip(asked, 90)}”"] if asked else []) + what)
+            events.append({"ts": round(round_.start, 3), "kind": round_.kind, "state": "neutral", "run": run.id,
+                           "title": f"Koordynator zlecił {acc}", "text": "", "meta": meta, "word": word})
             last = i == len(run.rounds) - 1
             status = states[run.id] if last else round_.status
             if status == RUNNING:
                 action = runs_info.get(run.id, {}).get("lastAction") or run.last_action
                 events.append({"ts": round(round_.start, 3), "kind": "running", "state": "working", "run": run.id,
-                               "title": f"{label} · {'review' if role == ROLE_REVIEWER else 'pracuje'}",
-                               "text": action or "", "durationS": 0, "now": True})
+                               "title": f"{lasts} {nom}", "text": action or "", "durationS": 0, "now": True,
+                               "word": word})
                 continue
             duration = max(0.0, (round_.end or round_.start) - round_.start)
             event = {"ts": round(round_.end or round_.start, 3), "kind": "finished", "state": "done", "run": run.id,
-                     "durationS": round(duration), "title": f"{label} skończył", "text": ""}
+                     "durationS": round(duration), "title": f"{nom[:1].upper() + nom[1:]} {done}", "text": "",
+                     "word": word}
             if status in (FAILED, KILLED, INTERRUPTED):
                 event["state"] = "stopped"
-                event["title"] = {FAILED: f"{label} — błąd", KILLED: f"{label} zatrzymany",
-                                  INTERRUPTED: f"{label} przerwany"}[status]
-                event["text"] = _first_line(round_.summary or round_.result)
+                ending = {FAILED: "z błędem", KILLED: "zatrzyman" + done[-1], INTERRUPTED: "przerwan" + done[-1]}
+                event["title"] = f"{nom[:1].upper() + nom[1:]} {ending[status]}"
+                event["text"] = _lead(round_.summary or round_.result)
             elif role == ROLE_REVIEWER and round_.result:
                 info = review.parse(round_.result)
-                event["text"] = f"„{_clip(run.description, 70)}” — {review.summary_text(info)}"
+                event["title"] = f"{nom[:1].upper() + nom[1:]}: {review.human_text(info)}"
+                event["text"] = "do poprawy" if not info["ok"] else "bez zastrzeżeń" if not info["nit"] \
+                    else "drobne uwagi, bez błędów blokujących"
                 event["review"] = {k: info[k] for k in ("blocker", "major", "nit", "ok", "verdict")}
                 if info["top"]:
                     event["quote"] = info["top"]
                 event["state"] = "done" if info["ok"] else "attention"
             else:
-                event["text"] = _first_line(round_.result) or _first_line(round_.summary)
+                event["text"] = _lead(round_.result) or _lead(round_.summary)
             events.append(event)
     if t["question"]:
         events.append({"ts": round(t["question"].ts, 3), "kind": "question", "state": "waiting", "run": "",
@@ -506,12 +552,10 @@ def _title(description: str, display: str) -> str:
     return (text[:1].upper() + text[1:]) if text else display
 
 
-def _first_line(text: str) -> str:
-    for line in (text or "").split("\n"):
-        line = line.strip(" #*-`>")
-        if len(line) > 3:
-            return _clip(line, 220)
-    return ""
+def _lead(text: str, limit: int = 300) -> str:
+    """Początek raportu podagenta: pierwsze zdania (bez nagłówków i Markdownu), do `limit` znaków."""
+    from ..reports import standup  # tu, nie na górze: reports.plans importuje board (cykl)
+    return standup.first_sentences(text or "", 2, limit)
 
 
 def _clip(text: str, limit: int) -> str:

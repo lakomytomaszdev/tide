@@ -1,6 +1,8 @@
-// Karta ticketu na tablicy: ID (sky, Geist Mono), tytuł, do trzech ostatnich podagentów z czasem,
-// a niżej — powód czekania (brzoskwinia), „w planie · bez agenta” albo „✓ review OK”.
+// Karta ticketu na tablicy: ID (sky, Geist Mono — tylko prawdziwe ID), tytuł po ludzku (do trzech linii),
+// jedna linia „co zrobiono” albo „co teraz” (opis z describe.py), działający podagenci z rolą po polsku
+// i czasem, a na dole stan słowami („✓ gotowe, review OK”, „gotowe, czeka na review”, „w trakcie”).
 // Zaznaczona — tealowa obwódka; czekająca — brzoskwiniowe tło; gotowa — przygaszona.
+// Teksty to dane: zawsze Text.PlainText.
 import QtQuick
 import QtQuick.Layouts
 import "tide" as Tide
@@ -16,7 +18,9 @@ Rectangle {
 
     readonly property bool waiting: ticket.state === "czeka"
     readonly property bool finished: ticket.state === "gotowe" || ticket.state === "odrzucone"
-    readonly property string footer: Logic.cardFooter(ticket)
+    readonly property string line: Logic.cardLine(ticket)
+    readonly property string stateLine: Logic.stateLine(ticket)
+    readonly property var running: Logic.runningAgents(ticket)
 
     implicitHeight: body.implicitHeight + 20
     radius: 12
@@ -29,7 +33,8 @@ Rectangle {
     activeFocusOnTab: true
 
     Accessible.role: Accessible.Button
-    Accessible.name: (ticket.id || "") + " " + (ticket.title || "") + ", " + (ticket.word || "")
+    Accessible.name: (ticket.id || "") + " " + (ticket.title || "") + ", " + (stateLine || ticket.word || "")
+    Accessible.description: line
     Accessible.onPressAction: card.clicked()
     Keys.onReturnPressed: card.clicked()
     Keys.onSpacePressed: card.clicked()
@@ -52,11 +57,12 @@ Rectangle {
         anchors.top: parent.top
         anchors.margins: 11
         anchors.topMargin: 10
-        spacing: 6
+        spacing: 5
 
         Text {
             visible: (card.ticket.id || "") !== ""
             text: card.ticket.id || ""
+            textFormat: Text.PlainText
             color: Tide.Tokens.sky
             font.family: Tide.Theme.monoFamily
             font.pixelSize: 12
@@ -65,79 +71,74 @@ Rectangle {
         Text {
             Layout.fillWidth: true
             text: card.ticket.title || ""
+            textFormat: Text.PlainText
             color: card.ticket.state === "todo" ? Tide.Tokens.textSecondary : Tide.Tokens.textPrimary
             font.family: Tide.Theme.uiFamily
             font.pixelSize: 13
+            font.weight: Font.Medium
             lineHeight: 1.15
             wrapMode: Text.Wrap
             maximumLineCount: 3
             elide: Text.ElideRight
         }
+        Text {
+            Layout.fillWidth: true
+            visible: card.line !== ""
+            text: card.line
+            textFormat: Text.PlainText
+            color: card.waiting ? Tide.Tokens.peach : Tide.Tokens.textSecondary
+            font.family: Tide.Theme.uiFamily
+            font.pixelSize: 12
+            lineHeight: 1.1
+            wrapMode: Text.Wrap
+            maximumLineCount: card.waiting ? 3 : 2
+            elide: Text.ElideRight
+        }
         ColumnLayout {
             Layout.fillWidth: true
+            Layout.topMargin: 2
             spacing: 4
-            visible: !card.finished && (card.ticket.agents || []).length > 0
+            visible: card.running.length > 0
             Repeater {
-                model: card.finished ? [] : (card.ticket.agents || [])
+                model: card.running
                 RowLayout {
                     required property var modelData
-                    readonly property bool running: modelData.state === "running"
                     Layout.fillWidth: true
                     spacing: 7
                     Dot {
+                        Layout.alignment: Qt.AlignTop
+                        Layout.topMargin: 5
                         tint: Logic.agentTint(modelData, card.ticket.state)
                         hollow: Logic.agentHollow(modelData)
+                        pulse: true
                         size: 7
                     }
+                    // Rola i czas w jednym tekście — w wąskiej kolumnie zawija się na granicy słów
+                    // („implementacja ·” / „30 min”), zamiast łamać słowo.
                     Text {
                         Layout.fillWidth: true
-                        text: modelData.label + (modelData.note && running ? " · " + modelData.note : "")
+                        text: Logic.agentWord(modelData) + " · " + Logic.agentTime(modelData, card.nowTs)
+                        textFormat: Text.PlainText
                         color: Tide.Tokens.textSecondary
                         font.family: Tide.Theme.uiFamily
                         font.pixelSize: 12
-                        font.weight: running ? Font.DemiBold : Font.Normal
-                        wrapMode: Text.Wrap
+                        font.weight: Font.DemiBold
+                        wrapMode: Text.WordWrap
                         maximumLineCount: 2
                         elide: Text.ElideRight
-                    }
-                    Text {
-                        text: Logic.agentTime(modelData, card.nowTs)
-                        color: Tide.Tokens.textMuted
-                        font.family: Tide.Theme.monoFamily
-                        font.pixelSize: 11
                     }
                 }
             }
         }
         Text {
             Layout.fillWidth: true
-            visible: card.waiting && (card.ticket.note || "") !== ""
-            text: card.ticket.note || ""
-            color: Tide.Tokens.peach
+            Layout.topMargin: 1
+            visible: card.stateLine !== ""
+            text: card.stateLine
+            textFormat: Text.PlainText
+            color: Tide.Tokens[Logic.stateTint(card.ticket)]
             font.family: Tide.Theme.uiFamily
             font.pixelSize: 12
-            wrapMode: Text.Wrap
-            maximumLineCount: 4
-            elide: Text.ElideRight
-        }
-        Text {
-            Layout.fillWidth: true
-            visible: card.footer !== ""
-            text: card.footer
-            color: card.ticket.state === "gotowe" ? Tide.Tokens.mint : Tide.Tokens.textMuted
-            font.family: Tide.Theme.uiFamily
-            font.pixelSize: 12
-            elide: Text.ElideRight
-        }
-        Text {
-            Layout.fillWidth: true
-            visible: !card.waiting && !card.finished && card.ticket.state !== "todo" && (card.ticket.note || "") !== ""
-            text: card.ticket.note || ""
-            color: Tide.Tokens.textMuted
-            font.family: Tide.Theme.uiFamily
-            font.pixelSize: 12
-            wrapMode: Text.Wrap
-            maximumLineCount: 2
             elide: Text.ElideRight
         }
     }

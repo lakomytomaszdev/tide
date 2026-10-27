@@ -236,14 +236,77 @@ function runMeta(board, ticket, nowTs) {
     return count(n, "subagent", "subagentów", "subagentów") + (first ? " · " + duration(last - first) : "")
 }
 
-function cardFooter(ticket) {
+// Linia pod tytułem karty: przy gotowym — co zrobiono, przy czekającym na review — też co zrobiono,
+// a przy pracy w toku — co teraz (opisy z describe.py; bez nich nic).
+function cardLine(ticket) {
+    if (!ticket) return ""
+    var done = ticket.done || "", now = ticket.now || ""
+    if (ticket.state === "gotowe" || ticket.state === "odrzucone" || ticket.note === "gotowe, czeka na review")
+        return done || now
+    if (ticket.state === "todo") return ""
+    return now || done
+}
+
+// Stan karty słowami: „✓ gotowe, review OK”, „gotowe, czeka na review”, „w trakcie”, „do poprawy”…
+// Pusty, gdy coś działa (wtedy karta pokazuje wiersze podagentów) albo ticket czeka na odpowiedź.
+// W kolumnie „Gotowe” słowo „gotowe” jest zbędne — zostaje to, jak się skończyło.
+var DONE_WORDS = {
+    "review OK": "✓ review OK",
+    "bez review": "✓ bez review",
+    "rozpoznanie skończone": "✓ rozpoznanie skończone",
+    "poprawki po review, bez ponownego review": "✓ poprawione po review",
+    "zmiany po review, bez ponownego review": "✓ zmienione po review"
+}
+var STOPPED_WORDS = {
+    "przerwany — koordynator już nie działa": "przerwane — koordynator już nie działa",
+    "podagent zakończył się błędem": "przerwane błędem podagenta",
+    "podagent zatrzymany": "zatrzymane"
+}
+function stateLine(ticket) {
+    if (!ticket) return ""
+    var note = ticket.note || ""
     if (ticket.state === "todo") return ticket.inPlan ? "w planie · bez agenta" : "bez agenta"
     if (ticket.state === "odrzucone") return "odrzucone"
     if (ticket.state === "gotowe") {
-        if (ticket.review && ticket.review.ok) return "✓ review OK"
-        return "✓ " + (ticket.note || "gotowe")
+        if (DONE_WORDS[note]) return DONE_WORDS[note]
+        if (ticket.review && ticket.review.ok) return DONE_WORDS["review OK"]
+        return ticket.source === "plan" ? "✓ gotowe według planu" : ticket.source === "tracker" ? "✓ zamknięte w YouTracku"
+                                                                                                : "✓ gotowe"
     }
-    return ""
+    if (ticket.state === "czeka") return ""
+    if (runningAgents(ticket).length > 0) return ""
+    if (note === "gotowe, czeka na review") return "gotowe, czeka na review"
+    if (STOPPED_WORDS[note]) return STOPPED_WORDS[note]
+    if (note.indexOf("po review:") === 0) return "po review — do poprawy"
+    if (ticket.state === "review") return "w review"
+    return "w trakcie"
+}
+
+// Kolor linii stanu (nazwa tokenu).
+function stateTint(ticket) {
+    if (!ticket) return "textMuted"
+    if (ticket.state === "gotowe") return "mint"
+    if (ticket.note === "gotowe, czeka na review") return "lavender"
+    if (STOPPED_WORDS[ticket.note || ""]) return "rose"
+    if ((ticket.note || "").indexOf("po review:") === 0) return "peach"
+    return "textMuted"
+}
+
+// Działający podagenci ticketu (do wierszy na karcie).
+function runningAgents(ticket) {
+    return ((ticket && ticket.agents) || []).filter(function (a) { return a.state === "running" })
+}
+
+// Rola podagenta słowem: implementacja, poprawki, review, ponowne review, rozpoznanie.
+function agentWord(agent) {
+    if (!agent) return ""
+    if (agent.word) return agent.word
+    return agent.role === "reviewer" ? "review" : agent.role === "helper" ? "rozpoznanie" : "implementacja"
+}
+
+// Zgodność ze starszą usługą (bez pól opisu): stan karty jak wcześniej.
+function cardFooter(ticket) {
+    return stateLine(ticket)
 }
 
 function sourceText(ticket) {
@@ -253,5 +316,19 @@ function sourceText(ticket) {
     else if (ticket.source === "runs") parts.push("stan z pracy podagentów")
     if (ticket.planState && ticket.planState !== ticket.state) parts.push("w planie: " + ticket.planState)
     if (ticket.trackerState) parts.push("YouTrack: " + ticket.trackerState)
+    if (ticket.describedBy === "model") parts.push("opis: model")
+    else if (ticket.describedBy === "model-stale") parts.push("opis: model (sprzed ostatniej zmiany)")
+    else if (ticket.describedBy === "rules") parts.push("opis z reguł")
+    return parts.join(" · ")
+}
+
+// Skąd tytuł i jak brzmiało zlecenie — drobny dopisek pod „Co to jest”.
+function titleSources(ticket) {
+    if (!ticket) return ""
+    var parts = []
+    var from = { "plan": "w planie", "tracker": "w YouTracku", "backlog": "w backlogu" }[ticket.officialFrom || ""]
+    if (from && ticket.officialTitle && ticket.officialTitle !== ticket.title) parts.push(from + ": „" + ticket.officialTitle + "”")
+    if (ticket.taskTitle && ticket.taskTitle !== ticket.title && ticket.taskTitle !== ticket.officialTitle)
+        parts.push("zlecenie: „" + ticket.taskTitle + "”")
     return parts.join(" · ")
 }

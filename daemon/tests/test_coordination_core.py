@@ -13,8 +13,9 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import coordfix as F
-from tide_daemon.coordination import actions, board as board_mod, ids, plan as plan_mod, review, youtrack
+from tide_daemon.coordination import actions, board as board_mod, describe, ids, plan as plan_mod, review, youtrack
 from tide_daemon.coordination.claude import ClaudeCoordinatorLog, excerpt, final_report
+from tide_daemon.coordination.codex import first_message_title
 from tide_daemon.coordination.model import Coordinator, Question, Run
 from tide_daemon.coordination.scanner import CoordinationScanner, repo_roots
 
@@ -114,9 +115,18 @@ class CodexTest(World):
         self.assertIn("TOM-150", impl.prompt_head)
         self.assertEqual(coord.runs[F.CODEX_PROBE].state, "running")
         self.assertEqual(list(coord.questions), ["call_q"])
+        self.assertEqual(coord.title, "Zrób TOM-150 i TOM-151.", "wątek bez nazwy — pierwsza wiadomość, nie gałąź")
         for key in coords:
             self.assertNotIn(F.CODEX_IMPL, key, "podagent nie jest osobnym koordynatorem")
         self.assertNotIn("claude:" + F.CLAUDE_SINGLE, coords, "sesja bez podagentów nie jest koordynatorem")
+
+
+    def test_first_message_title(self):
+        self.assertEqual(first_message_title("## Zrób eksport\nszczegóły"), "Zrób eksport")
+        self.assertEqual(first_message_title("<environment_context>x</environment_context>"), "")
+        long = first_message_title("Przejrzyj " + "bardzo długie zadanie " * 10)
+        self.assertLessEqual(len(long), 80)
+        self.assertTrue(long.endswith("…"))
 
 
 class PlanTest(unittest.TestCase):
@@ -204,6 +214,14 @@ class IdsTest(World):
         self.assertEqual(g.find("Implement ticket 01 log value"), "")
         self.assertEqual(ids.TicketMatcher(ignore={"TOM-20"}).find("TOM-20 RC, potem TOM-21"), "TOM-21")
         self.assertEqual(g.strip("LA-028: tax tails"), "tax tails")
+
+    def test_document_ids_are_not_tickets(self):
+        g = ids.TicketMatcher()
+        for text in ("Zgodnie z ADR-0016", "Niezmiennik INV-001", "Wymaganie REQ-12", "NFR-3 wydajność", "AC-2 spełnione"):
+            self.assertEqual(g.find(text), "", text)
+        g.learn(["Implement ADR-0016 rule", "Check INV-001"])
+        self.assertEqual(g.prefixes, [], "skróty dokumentów nie są prefiksem ticketów")
+        self.assertEqual(ids.TicketMatcher(["ADR"]).find("ADR-0016"), "ADR-16", "prefiks z planu wygrywa")
 
     def test_learn_prefix_from_descriptions_and_task_names(self):
         m = ids.TicketMatcher()
@@ -303,10 +321,11 @@ class BoardRulesTest(unittest.TestCase):
         self.assertIn("1 MAJOR", tickets(b)["AB-4"]["note"])
         self.assertEqual(tickets(b)["AB-4"]["review"]["major"], 1)
         self.assertEqual(self.state(b, "AB-5"), "gotowe", "poprawki po review skończone")
-        self.assertEqual(self.state(b, "AB-6"), "w-toku", "koordynator działa i zleca review — czeka na review")
+        self.assertEqual(self.state(b, "AB-6"), "review", "koordynator działa i zleca review — czeka na review")
+        self.assertEqual(tickets(b)["AB-6"]["note"], "gotowe, czeka na review")
         self.assertEqual(self.state(b, "AB-7"), "czeka")
         self.assertIn("czy mogę usunąć tabelę", tickets(b)["AB-7"]["note"])
-        self.assertEqual(b["counts"]["review"], 1)
+        self.assertEqual(b["counts"]["review"], 2)
         self.assertEqual(b["progress"]["text"], "2/7")
 
     def test_ended_coordinator_interrupts_runs_and_closes_unreviewed_work(self):
@@ -362,6 +381,42 @@ updated: {updated}
         hidden.prompt_head = "gAAAAABq37fPgp-FOPkSz62gzXvO0jATx5k68KvKAbiGab1weHwrmdN4QFJeUeAY0ztxIAl3u5j5F93Ectmou"
         b = self.build([hidden], issues=issues)
         self.assertEqual(tickets(b)["AB-2"]["brief"], "", "zaszyfrowane polecenie Codexa to nie treść")
+
+    def test_ids_from_prompt_body_only_with_plan_prefix(self):
+        first = run("i1", "Implement ticket 01 log value", end=50)
+        first.prompt_head = "Jesteś wykonawcą zadania 01. Zgodnie z ADR-0016 i niezmiennikiem INV-001 dodaj LOG-5."
+        second = run("i2", "Implement ticket 02 log value", end=40)
+        second.prompt_head = "Implementujesz zadanie 02. INV-001 musi zostać. Zobacz LOG-5."
+        rev = run("r2", "Review ticket 02 log value", "code-reviewer", 30, 20, result="Verdict: APPROVE")
+        b = self.build([first, second, rev])
+        self.assertEqual([(t["key"], t["id"]) for t in b["tickets"]],
+                         [("~ticket 01 log value", ""), ("~ticket 02 log value", "")],
+                         "ID z treści polecenia (ADR, INV, a bez planu żadne) nie grupują ticketów")
+        plan = plan_mod.parse("---\ntide-plan: 1\ntitle: P\nticket-prefix: AB\nupdated: 2026-10-26T09:00:00Z\n---\n"
+                              "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |\n| --- | --- | --- | --- | --- | --- |\n"
+                              "| AB-9 | Eksport | todo | | | |\n")
+        work = run("i9", "Implement export", end=10)
+        work.prompt_head = "Zadanie AB-9: eksport do CSV."
+        b = self.build([work], plan=plan)
+        self.assertEqual([t["key"] for t in b["tickets"]], ["AB-9"], "z prefiksem z planu polecenie wskazuje ticket")
+
+    def test_research_waiting_and_skipped_review(self):
+        b = self.build([
+            run("e1", "Map condition path", "Explore", 100, 90, result="Ścieżka warunku: A → B."),
+            run("a2", "AB-2: implement", start=300, end=250),
+            run("r2", "AB-2: review", "code-reviewer", 150, 140, result="Verdict: APPROVE"),
+            run("a1", "AB-1: implement", start=260, end=200),
+            run("a3", "AB-3: implement", start=80, end=60),
+        ])
+        t = tickets(b)
+        self.assertEqual((t["~map condition path"]["state"], t["~map condition path"]["note"]),
+                         ("gotowe", "rozpoznanie skończone"), "samo rozpoznanie nie czeka na review")
+        self.assertEqual((t["AB-1"]["state"], t["AB-1"]["note"]), ("gotowe", "bez review"),
+                         "po końcu pracy koordynator zlecał review innym, a minęły ponad 2 h — review pominięte")
+        self.assertEqual((t["AB-3"]["state"], t["AB-3"]["note"]), ("review", "gotowe, czeka na review"))
+        events = t["~map condition path"]["events"]
+        self.assertEqual([e["title"] for e in events], ["Koordynator zlecił rozpoznanie", "Rozpoznanie skończone"])
+        self.assertEqual(events[1]["text"], "Ścieżka warunku: A → B.")
 
     def test_fallback_grouping_and_coordinator_id(self):
         b = board_mod.build(coordinator([
@@ -555,7 +610,7 @@ class ScannerTest(World):
         self.assertEqual(b["plan"]["path"], os.path.join(world["repo"], "docs/agents/plans/2026-10-26-release.md"))
         t = tickets(b)
         expected = {"TOM-139": "gotowe", "TOM-140": "w-toku", "TOM-141": "czeka", "TOM-142": "review",
-                    "TOM-143": "w-toku", "TOM-144": "w-toku", "TOM-145": "odrzucone", "TOM-146": "todo",
+                    "TOM-143": "review", "TOM-144": "w-toku", "TOM-145": "odrzucone", "TOM-146": "todo",
                     "TOM-147": "todo", "LOG-7": "w-toku", "~survey test suites": "gotowe"}
         self.assertEqual({k: v["state"] for k, v in t.items()}, expected)
         self.assertEqual(t["TOM-140"]["branch"], "tom-140-guard")
@@ -566,11 +621,18 @@ class ScannerTest(World):
         self.assertEqual(agents[0]["endTs"] - agents[0]["startTs"], 31 * 60)
         events = t["TOM-140"]["events"]
         self.assertEqual([e["kind"] for e in events], ["launch", "finished", "launch", "finished", "continue", "running"])
-        self.assertEqual(events[3]["text"], "„Review TOM-140 distribution guard” — 1 MAJOR, 2 NIT")
+        # Oś czasu po polsku: rola słowem, uwagi review słowami, angielski opis zlecenia w drobnym dopisku.
+        self.assertEqual([e["title"] for e in events],
+                         ["Koordynator zlecił implementację", "Implementacja skończona", "Koordynator zlecił review",
+                          "Review: 1 poważna uwaga i 2 drobne", "Koordynator zlecił poprawki", "Trwają poprawki"])
+        self.assertEqual(events[3]["text"], "do poprawy")
+        self.assertEqual(events[3]["review"]["major"], 1)
+        self.assertEqual(events[0]["meta"], "„TOM-140: implement distribution guard” · implementer · Sonnet · tło")
+        self.assertEqual([a["word"] for a in agents], ["implementacja", "review", "poprawki"])
         self.assertEqual(events[3]["quote"], "MAJOR: guard nie obejmuje ścieżki z pustym manifestem — brak testu")
         self.assertEqual(events[-1]["text"], "Read · DistributionGuard.cs")
         self.assertEqual(t["TOM-141"]["question"]["text"], "TOM-141: przenieść lokalny backlog do osobnego projektu?")
-        self.assertEqual(b["counts"], {"todo": 2, "w-toku": 4, "czeka": 1, "review": 1, "gotowe": 2, "odrzucone": 1,
+        self.assertEqual(b["counts"], {"todo": 2, "w-toku": 3, "czeka": 1, "review": 2, "gotowe": 2, "odrzucone": 1,
                                        "total": 10, "done": 2})
         self.assertEqual(b["progress"]["text"], "TOM-20 · 2/10")
         codex = next(x for x in boards if x["id"] == "codex:" + F.CODEX_ROOT)
@@ -584,6 +646,30 @@ class ScannerTest(World):
         summary = board_mod.summary(b)
         self.assertNotIn("tickets", summary)
         self.assertEqual(summary["planPath"], b["plan"]["path"])
+
+    def test_backlog_titles_and_missing_coordinator_directory(self):
+        world = F.build_world(self.tmp)
+        backlog = os.path.join(world["repo"], "docs", "agents", "backlog")
+        os.makedirs(backlog)
+        with open(os.path.join(backlog, "TOM-150.md"), "w", encoding="utf-8") as fh:
+            fh.write("# TOM-150: Eksport raportu do CSV\n\n**Status:** `in-progress` — brak testu.\n\nTreść.\n")
+        with open(os.path.join(backlog, "TOM-151.md"), "w", encoding="utf-8") as fh:
+            fh.write("Bez nagłówka\n")
+        scanner = CoordinationScanner(world["claude"], world["codex"], clock=lambda: F.NOW)
+        coord = scanner.read()["codex:" + F.CODEX_ROOT]
+        b = scanner.board(coord, LIVE_CODEX, F.NOW)
+        t = tickets(b)["TOM-150"]
+        self.assertEqual((t["title"], t["officialTitle"], t["officialFrom"]),
+                         ("Eksport raportu do CSV", "Eksport raportu do CSV", "backlog"))
+        self.assertEqual(t["officialNote"], "in-progress — brak testu.")
+        self.assertEqual(tickets(b)["TOM-151"]["officialTitle"], "")
+        # Katalog koordynatora zniknął (usunięty worktree) — repozytorium z katalogów podagentów.
+        coord.cwd = os.path.join(self.tmp, "nie-ma", "wt")
+        for item in coord.runs.values():
+            item.cwd = world["repo"]
+        b = scanner.board(coord, LIVE_CODEX, F.NOW)
+        self.assertEqual(b["repoPath"], world["repo"])
+        self.assertEqual(tickets(b)["TOM-150"]["officialTitle"], "Eksport raportu do CSV")
 
     def test_old_files_are_outside_the_window_and_roots(self):
         world = F.build_world(self.tmp)
@@ -630,6 +716,20 @@ class ActionsTest(World):
             for t in coordinator["tickets"]:
                 self.assertLessEqual(len(t.pop("brief")), 300)
         self.assertNotIn("Zadanie:", json.dumps(briefless, ensure_ascii=False), "ani poleceń poza „brief”")
+
+        # Opisy kart po ludzku trafiają do pliku (krótkie napisy), polecenia w całości — nie.
+        describe.Describer(mode="rules").decorate(boards)
+        payload = actions.cache_payload(boards, F.NOW)
+        t140 = next(t for t in payload["coordinators"][0]["tickets"] if t["id"] == "TOM-140")
+        self.assertEqual(t140["now"], "Trwają poprawki")
+        self.assertEqual(t140["done"], "Gotowe: guard i 6 testów.")
+        self.assertEqual(t140["title"], "Distribution guard dla kompaktowej dystrybucji")
+        for coordinator in payload["coordinators"]:
+            for t in coordinator["tickets"]:
+                self.assertLessEqual(len(t["done"]), 300)
+                self.assertLessEqual(len(t["now"]), 300)
+                self.assertLessEqual(len(t.pop("brief")), 300)
+        self.assertNotIn("Zadanie:", json.dumps(payload, ensure_ascii=False))
 
         b = boards[0]
         trees = [{"isMain": True, "repoPath": world["repo"], "path": world["repo"], "mainBranch": "master"},

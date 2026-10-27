@@ -14,6 +14,7 @@ Koordynator:
   w nazwie pliku (`rollout-…-<id>.jsonl`) we wszystkich dniach i w `archived_sessions`.
 """
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -25,6 +26,11 @@ from . import ids, plan as plan_mod
 
 DAYS = 7
 MISSING_RETRY = 600.0   # s, po tylu znów szukamy rodzica, którego pliku nie było
+BACKLOG_DIR = os.path.join("docs", "agents", "backlog")
+BACKLOG_NAME = re.compile(r"^([A-Za-z]{1,10})-(\d{1,6})\.md$")
+BACKLOG_HEADING = re.compile(r"^#\s+[A-Za-z]{1,10}-\d{1,6}\s*[:—–-]\s*(\S.*?)\s*$")
+BACKLOG_STATUS = re.compile(r"^\*\*Status:?\*\*:?\s*(.+)$")
+BACKLOG_FILES = 400     # tyle plików backlogu czytamy najwyżej (nagłówki, nie całość)
 
 
 class CoordinationScanner:
@@ -42,6 +48,7 @@ class CoordinationScanner:
         self.coordinators: dict[str, object] = {}   # id → Coordinator (ostatni odczyt)
         self._transcripts: dict = {}
         self._plans: dict = {}
+        self._backlog: dict = {}                    # ścieżka → ((rozmiar, mtime), wpis)
         self._codex_paths: dict[str, str] = {}      # id wątku → plik (rodzice spoza okna)
         self._codex_missing: dict[str, float] = {}  # id wątku → kiedy go nie znaleziono
 
@@ -139,10 +146,25 @@ class CoordinationScanner:
 
     def board(self, coord, live, now: float, force_tracker: bool = False) -> dict:
         where = gitinfo.describe(coord.cwd) if coord.cwd else gitinfo.Location("", "", "")
-        roots = repo_roots(coord.cwd)
+        roots = repo_roots(coord.cwd) if coord.cwd and os.path.isdir(coord.cwd) else []
+        if not roots:
+            # Katalog koordynatora zniknął (np. usunięty worktree Codexa) — repozytorium z katalogów
+            # podagentów, od najczęstszego (szukanie w górę od nieistniejącego katalogu mogłoby trafić
+            # w obce repozytorium wyżej).
+            counts: dict[str, int] = {}
+            for run in coord.runs.values():
+                if run.cwd and run.cwd != coord.cwd:
+                    counts[run.cwd] = counts.get(run.cwd, 0) + 1
+            for cwd in sorted(counts, key=lambda c: -counts[c]):
+                roots = repo_roots(cwd) if os.path.isdir(cwd) else []
+                if roots:
+                    break
+        if not roots:
+            roots = repo_roots(coord.cwd)
         plans = [self._plan(path) for path in _plan_files(roots)]
         plan = plan_mod.pick([p for p in plans if p is not None], coord.session_id, coord.tool)
         aliases = ids.load_aliases(roots)
+        backlog = self._backlog_entries(roots, aliases)
         issues, tracker = None, None
         if plan is not None:
             tracker = {"kind": plan.tracker, "url": plan.tracker_url, "project": plan.tracker_project}
@@ -150,7 +172,7 @@ class CoordinationScanner:
                 issues, tracker = self.tracker.get(plan.tracker_url, plan.tracker_project, force=force_tracker)
         return board_mod.build(coord, plan=plan, aliases=aliases, issues=issues, tracker=tracker, live=live,
                                now=now, info=self._info, project=where.project or os.path.basename(coord.cwd or ""),
-                               repo_path=roots[-1] if roots else "")
+                               repo_path=roots[-1] if roots else "", backlog=backlog)
 
     def run_detail(self, coord_id: str, run_id: str) -> dict | None:
         """Wynik podagenta i wycinek jego dziennika (przycisk „Pokaż wynik”)."""
@@ -197,6 +219,57 @@ class CoordinationScanner:
                 self._plans.clear()
             self._plans[key] = plan_mod.read(path)
         return self._plans[key]
+
+    def _backlog_entries(self, roots, aliases) -> dict:
+        """Tytuły ticketów z lokalnego backlogu (`docs/agents/backlog/LA-040.md`, pierwsza linia
+        „# LA-040: tytuł”, linia „**Status:** …”) — {klucz: {"title", "status"}}; najpierw worktree."""
+        out: dict = {}
+        for root in roots:
+            folder = os.path.join(root, BACKLOG_DIR)
+            try:
+                names = sorted(n for n in os.listdir(folder) if BACKLOG_NAME.match(n))[:BACKLOG_FILES]
+            except OSError:
+                continue
+            for name in names:
+                match = BACKLOG_NAME.match(name)
+                key = ids.key_of(match.group(1), match.group(2))
+                key = aliases.get(key, key)
+                if key in out:
+                    continue
+                entry = self._backlog_entry(os.path.join(folder, name))
+                if entry:
+                    out[key] = entry
+        return out
+
+    def _backlog_entry(self, path: str) -> dict | None:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        stamp = (st.st_size, st.st_mtime)
+        cached = self._backlog.get(path)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        entry = None
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                head = fh.read(4096).splitlines()
+        except OSError:
+            head = []
+        for i, line in enumerate(head[:3]):
+            match = BACKLOG_HEADING.match(line)
+            if match:
+                entry = {"title": match.group(1)[:200], "status": ""}
+                for rest in head[i + 1:i + 12]:
+                    status = BACKLOG_STATUS.match(rest.strip())
+                    if status:
+                        entry["status"] = " ".join(status.group(1).replace("`", "").split())[:300]
+                        break
+                break
+        if len(self._backlog) > 2000:
+            self._backlog.clear()
+        self._backlog[path] = (stamp, entry)
+        return entry
 
     def _codex_titles(self) -> dict:
         if self.titles is not None:

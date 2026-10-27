@@ -9,7 +9,9 @@ użytkownika wymienia ID. W praktyce bywa różnie: „Review LA-035 code part�
 - Z prefiksem z planu (`ticket-prefix`) szukamy `PREFIX-123`, `prefix123`, `prefix_123`
   bez względu na wielkość liter — także w gałęziach i nazwach zadań.
 - Bez prefiksu: ogólny wzorzec `[A-Z]{2,6}-\\d+` (tylko wielkie litery, bez znanych skrótów
-  w rodzaju UTF-8, SHA-256) i `#\\d+`.
+  w rodzaju UTF-8, SHA-256, ADR-0016 — decyzja architektoniczna, INV-001 — niezmiennik) i `#\\d+`,
+  ale tylko w opisie podagenta, nazwie zadania i gałęzi — nie w treści polecenia, która cytuje
+  decyzje, niezmienniki i wymagania (board.py).
 - Klucz ticketu to `PREFIX-<liczba>` bez zer wiodących (LA-029 i la29 to ten sam ticket),
   a pokazujemy zapis z planu albo pierwszy napotkany.
 - Mapa migracji (docs/agents/youtrack-migration/*.csv w repozytorium) zamienia stare klucze
@@ -25,7 +27,10 @@ HASH_RE = re.compile(r"(?<![\w&])#(\d{1,6})(?!\d)")
 NOT_TICKETS = {"UTF", "SHA", "ISO", "GPT", "RFC", "CVE", "HTTP", "HTTPS", "MD", "TLS", "SSL", "IPV", "CP", "PEP",
                "ES", "WCAG", "AES", "RSA", "TCP", "UDP", "X", "WIN", "COM", "LPT", "AM", "PM", "UTC", "GMT", "CET",
                "CEST", "TS", "ECMA", "NET", "QT", "KF", "API", "SQL", "PDF", "PNG", "JPG", "SVG", "OK", "VS", "CS",
-               "ARM", "EAN", "PIN", "VIN"}
+               "ARM", "EAN", "PIN", "VIN",
+               # Dokumenty i zapisy w specyfikacjach, nie tickety: decyzje architektoniczne, niezmienniki,
+               # wymagania (także niefunkcjonalne) i kryteria akceptacji.
+               "ADR", "INV", "REQ", "NFR", "AC"}
 TASK_NAME_RE = re.compile(r"^([a-z]{2,5})[-_ ]?(\d{1,5})(?:[-_ ]|$)")
 # Słowa, po których stoi liczba, a które nie są prefiksem ticketu („phase 1”, „step3_…”).
 NOT_PREFIX_WORDS = {"phase", "step", "round", "part", "krok", "etap", "faza", "wave", "batch", "ticket", "item",

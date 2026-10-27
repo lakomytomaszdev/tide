@@ -144,7 +144,8 @@ def main(argv=None) -> int:
         scanner.discover(now)
         scanner.update()
         procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
-        print(json.dumps(coordination_once(args, clock, scanner.sessions(now, procs)), ensure_ascii=False, indent=2))
+        print(json.dumps(coordination_once(args, clock, scanner.sessions(now, procs), report_settings),
+                         ensure_ascii=False, indent=2))
         return 0
 
     if args.print_once:
@@ -175,7 +176,7 @@ def main(argv=None) -> int:
     monitor.changed.connect(trees.publish)  # nowy albo zakończony agent zmienia flagę „aktywny agent”
     # KRunner przed główną nazwą: gdy org.tide.Daemon jest już na magistrali, wtyczka też.
     coordination = None if args.no_coordination else start_coordination(app, args, clock, monitor, trees,
-                                                                         launchers)
+                                                                         launchers, report_settings)
     # Raport przed KRunnerem: „raport” w KRunnerze otwiera go przez ReportMonitor (oznacza przeczytany).
     report = start_report(app, args, clock, report_settings, monitor, trees)
     krunner = None if args.no_krunner else start_krunner(app, args, clock, monitor, trees,  # noqa: F841
@@ -382,23 +383,35 @@ def coordination_scanner(args, clock):
                                tracker=tracker, titles=titles)
 
 
-def coordination_once(args, clock, live) -> dict:
-    """--print-coordination: dane okna Tide Sesje (koordynatorzy, tablice, sesje) — tylko odczyt."""
+def card_describer(args, clock, settings):
+    """Opisy kart tablicy (coordination/describe.py): tryb i model z konfiguracji raportu porannego
+    („summary”, „summaryModel”; --report-summary ma pierwszeństwo), pamięć w $XDG_CACHE_HOME/tide."""
+    from .coordination import describe
+    mode = args.report_summary or (settings.summary if settings else "rules")
+    model = settings.summary_model if settings else describe.summarize.DEFAULT_MODEL
+    return describe.Describer(mode=mode, model=model, cache_file=describe.cache_path(), clock=clock)
+
+
+def coordination_once(args, clock, live, settings=None) -> dict:
+    """--print-coordination: dane okna Tide Sesje (koordynatorzy, tablice, sesje) — tylko odczyt;
+    opisy kart z pamięci podręcznej albo reguł (bez wywołania modelu)."""
     from .coordination import board as board_mod
     scanner = coordination_scanner(args, clock)
     boards = scanner.refresh(live)
+    card_describer(args, clock, settings).decorate(boards)
     return {"coordinators": [board_mod.summary(b) for b in boards], "boards": {b["id"]: b for b in boards},
             "sessions": live}
 
 
-def start_coordination(app, args, clock, monitor, trees, launchers):
+def start_coordination(app, args, clock, monitor, trees, launchers, settings=None):
     """Obszar /Coordination: koordynatorzy, tickety i podagenci (coordination/, coordination_monitor.py)."""
     from .coordination import actions
     from .coordination_monitor import CoordinationMonitor
     coordination = CoordinationMonitor(coordination_scanner(args, clock), sessions_source=lambda: monitor.sessions,
                                        launchers=launchers, activate=monitor.activate,
                                        worktrees_source=lambda: trees.scanner.snapshot(),
-                                       cache_file=actions.cache_path(), clock=clock, parent=app)
+                                       cache_file=actions.cache_path(), clock=clock,
+                                       describer=card_describer(args, clock, settings), parent=app)
     monitor.changed.connect(coordination.sessions_changed)
     coordination.changed.connect(monitor.recompute)  # postęp koordynatora przy jego sesji w /Agents
     return coordination

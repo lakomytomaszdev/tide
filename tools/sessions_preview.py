@@ -4,8 +4,9 @@
 Użycie: /usr/bin/python3 tools/sessions_preview.py WEJŚCIE.json [--sanitize] > WYJŚCIE.json
 
 --sanitize  zostawia strukturę prawdziwych danych (koordynatorzy, ID ticketów, stany, role, czasy,
-            liczby BLOCKER/MAJOR/NIT), a wycina treść: tytuły rozmów i ticketów, opisy i polecenia
-            podagentów, pytania, wyniki, cytaty z review, ostatnie czynności i nazwy gałęzi —
+            liczby BLOCKER/MAJOR/NIT), a wycina treść: tytuły rozmów i ticketów, opisy kart (co
+            zrobiono, co teraz), opisy i polecenia podagentów, pytania, wyniki, cytaty z review,
+            ostatnie czynności i nazwy gałęzi —
             do zrzutów, które można pokazać bez treści pracy.
 
 Dopisuje „now” (chwila zebrania danych), żeby czasy na zrzucie były takie jak w chwili odczytu.
@@ -49,6 +50,11 @@ def sanitize(data: dict) -> dict:
             ticket["planNote"] = "" if not ticket.get("planNote") else "(uwagi ukryte)"
             ticket["description"] = "" if not ticket.get("description") else "(opis ukryty)"
             ticket["brief"] = "" if not ticket.get("brief") else "(polecenie ukryte)"
+            ticket["done"] = "" if not ticket.get("done") else "(co zrobiono — ukryte)"
+            ticket["now"] = "" if not ticket.get("now") else "(co teraz — ukryte)"
+            ticket["officialTitle"] = ticket["title"] if ticket.get("officialTitle") else ""
+            ticket["officialNote"] = ""
+            ticket["taskTitle"] = ""
             ticket["url"] = f"http://youtrack.local/issue/{ticket['id']}" if ticket.get("url") else ""
             ticket["worktree"] = ""
             if ticket.get("question"):
@@ -59,13 +65,11 @@ def sanitize(data: dict) -> dict:
                 ticket["review"]["top"] = ""
             for event in ticket.get("events") or []:
                 event.pop("quote", None)
+                if event.get("meta"):
+                    event["meta"] = re.sub(r"„[^”]*”", "„…”", event["meta"])
                 if event.get("kind") == "question":
                     event["text"] = "(treść pytania ukryta)"
-                elif event.get("review"):
-                    r = event["review"]
-                    parts = [f"{r[k]} {k.upper()}" for k in ("blocker", "major", "nit") if r.get(k)]
-                    event["text"] = "review — " + (", ".join(parts) if parts else "bez uwag")
-                elif event.get("kind") in ("launch", "continue"):
+                elif event.get("review") or event.get("kind") in ("launch", "continue"):
                     event["text"] = re.sub(r"„[^”]*”", "„…”", event.get("text") or "")
                 else:
                     event["text"] = ""

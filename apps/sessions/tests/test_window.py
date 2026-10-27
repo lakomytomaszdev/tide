@@ -24,7 +24,7 @@ from daemon.tests.fakebin import calls, files_under, make_env
 from daemon.tests.privatebus import PrivateBus, requires_dbus, wait_until
 
 sys.path.insert(0, os.path.join(REPO, "daemon"))
-from tide_daemon.coordination import board as board_mod  # noqa: E402
+from tide_daemon.coordination import board as board_mod, describe  # noqa: E402
 from tide_daemon.coordination.scanner import CoordinationScanner  # noqa: E402
 
 QML_PROBLEMS = r"Unable to assign|TypeError|ReferenceError|is not a type|overrides a member|is not defined|" \
@@ -46,6 +46,7 @@ def fixture_data(tmp: str) -> dict:
     world = F.build_world(os.path.join(tmp, "world"))
     scanner = CoordinationScanner(world["claude"], world["codex"], clock=lambda: F.NOW)
     boards = scanner.refresh(LIVE)
+    describe.Describer(mode="rules").decorate(boards)  # jak usługa: opisy kart (tu z reguł)
     details = {"a140rev00000000001": scanner.run_detail("claude:" + F.CLAUDE_COORD, "a140rev00000000001")}
     return {"coordinators": [board_mod.summary(b) for b in boards], "boards": {b["id"]: b for b in boards},
             "sessions": LIVE, "details": details, "now": F.NOW}
@@ -110,6 +111,32 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js("cardFooter({state: 'todo', inPlan: true})"), "w planie · bez agenta")
         self.assertEqual(self.js("cardFooter({state: 'gotowe', review: {ok: true}})"), "✓ review OK")
         self.assertEqual(self.js("cardFooter({state: 'gotowe', note: 'bez review'})"), "✓ bez review")
+
+    def test_card_line_state_words_and_roles(self):
+        done = "{state: 'gotowe', note: 'review OK', done: 'Kolumna działa', now: 'Review OK'}"
+        self.assertEqual(self.js(f"cardLine({done})"), "Kolumna działa", "gotowe — co zrobiono")
+        self.assertEqual(self.js(f"stateLine({done})"), "✓ review OK")
+        self.assertEqual(self.js(f"stateTint({done})"), "mint")
+        waiting = "{state: 'review', note: 'gotowe, czeka na review', done: 'Eksport działa', now: 'Gotowe, czeka na review'}"
+        self.assertEqual(self.js(f"cardLine({waiting})"), "Eksport działa")
+        self.assertEqual(self.js(f"stateLine({waiting})"), "gotowe, czeka na review")
+        self.assertEqual(self.js(f"stateTint({waiting})"), "lavender")
+        running = ("{state: 'w-toku', note: '', done: 'x', now: 'Trwają poprawki',"
+                   " agents: [{state: 'running', role: 'implementer', word: 'poprawki'}, {state: 'completed'}]}")
+        self.assertEqual(self.js(f"cardLine({running})"), "Trwają poprawki", "w toku — co teraz")
+        self.assertEqual(self.js(f"stateLine({running})"), "", "działający podagenci zamiast słowa stanu")
+        self.assertEqual(self.js(f"runningAgents({running}).map(a => agentWord(a))"), ["poprawki"])
+        self.assertEqual(self.js("stateLine({state: 'w-toku', note: ''})"), "w trakcie")
+        self.assertEqual(self.js("stateLine({state: 'w-toku', note: 'po review: 1 MAJOR — do poprawy'})"),
+                         "po review — do poprawy")
+        self.assertEqual(self.js("stateLine({state: 'w-toku', note: 'podagent zatrzymany'})"), "zatrzymane")
+        self.assertEqual(self.js("cardLine({state: 'todo', now: 'Jeszcze nie zaczęte'})"), "")
+        self.assertEqual(self.js("agentWord({role: 'helper'})"), "rozpoznanie")
+        self.assertEqual(self.js("titleSources({title: 'Kolumna', officialTitle: 'Value column', officialFrom: 'tracker',"
+                                 " taskTitle: 'Implement ticket 05'})"),
+                         "w YouTracku: „Value column” · zlecenie: „Implement ticket 05”")
+        self.assertEqual(self.js("sourceText({source: 'runs', describedBy: 'model'})"),
+                         "stan z pracy podagentów · opis: model")
         self.assertEqual(self.js("duration(2 * 3600 + 14 * 60)"), "2 h 14 min")
         self.assertEqual(self.js("agentTime({state: 'running', startTs: 100}, 130)"), "teraz")
         self.assertEqual(self.js("agentTime({state: 'completed', startTs: 0, endTs: 0}, 130)"), "")
@@ -143,7 +170,8 @@ class GrabTest(unittest.TestCase):
         out = subprocess.run(["/usr/bin/python3", os.path.join(REPO, "tools", "sessions_preview.py"), self.path,
                               "--sanitize"], capture_output=True, text=True, check=True).stdout
         for secret in ("Distribution guard", "przenieść lokalny backlog", "MAJOR-1: guard", "DistributionGuard.cs",
-                       "Release candidate TOM-20", "Implement TOM-140", "tom-140-guard"):
+                       "Release candidate TOM-20", "Implement TOM-140", "tom-140-guard", "guard i 6 testów",
+                       "implement distribution guard", "Retry dodany"):
             self.assertNotIn(secret, out)
         data = json.loads(out)
         board = data["boards"]["claude:" + F.CLAUDE_COORD]
