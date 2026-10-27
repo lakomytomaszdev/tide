@@ -196,11 +196,11 @@ class ModelsJsonTest(SettingsTestCase):
                     "roles": {"agent": "mac:qwen3-coder:30b", "embed": {"model": "mac:bge-m3"},
                               "summary": "qwen3:8b"}})
         self.assertEqual(self.refused(settings.remove_endpoint, "local", self.path),
-                         "punkt „local” jest domyślny — najpierw ustaw inny punkt jako domyślny")
+                         "serwer „local” jest domyślny — najpierw ustaw inny serwer jako domyślny")
         self.assertEqual(self.refused(settings.remove_endpoint, "mac", self.path),
-                         "punkt „mac” jest używany przez role: agent, embed — przepnij je na inny punkt albo na "
+                         "serwer „mac” jest używany przez role: agent, embed — przepnij je na inny serwer albo na "
                          "domyślny, zanim go usuniesz")
-        self.assertEqual(self.refused(settings.remove_endpoint, "nope", self.path), "nieznany punkt „nope”")
+        self.assertEqual(self.refused(settings.remove_endpoint, "nope", self.path), "nieznany serwer „nope”")
         token_file = settings.token_path("lm", self.path)
         settings.set_endpoint({"name": "lm", "url": "http://lm:1234", "kind": "openai", "token": "t"}, self.path)
         self.assertTrue(os.path.exists(token_file))
@@ -216,7 +216,7 @@ class ModelsJsonTest(SettingsTestCase):
         self.write({"endpoints": {"mac": {"url": "http://mac:1"}, "zly": {"url": "ftp://x"}}, "default": "zly"})
         # `default` wskazuje pominięty punkt — usunąć można tylko poprawiony domyślny, a ostatniego poprawnego nigdy.
         self.assertEqual(self.refused(settings.remove_endpoint, "mac", self.path),
-                         "punkt „mac” jest jedynym punktem — dodaj inny, zanim go usuniesz")
+                         "serwer „mac” jest jedynym serwerem — dodaj inny, zanim go usuniesz")
 
     def test_default_switch_moves_bare_roles_and_pinned_roles_stay(self):
         settings.set_endpoint({"name": "mac", "url": "http://mac-studio:11434", "kind": "ollama"}, self.path)
@@ -229,11 +229,26 @@ class ModelsJsonTest(SettingsTestCase):
         self.assertEqual(cfg.default, "mac")
         self.assertEqual((cfg.roles["summary"].endpoint, cfg.roles["agent"].endpoint), ("mac", "mac"))
         self.assertEqual((cfg.roles["describe"].endpoint, cfg.roles["describe"].ctx), ("local", 8192))
-        self.assertEqual(self.refused(settings.set_default, "nope", self.path), "default: nieznany punkt „nope”")
+        self.assertEqual(self.refused(settings.set_default, "nope", self.path), "default: nieznany serwer „nope”")
         self.write({**self.data(), "endpoints": {**self.data()["endpoints"], "zly": {"url": "ftp://x"}}})
         self.assertIn("jest pominięty", self.refused(settings.set_default, "zly", self.path))
         settings.set_default("local", self.path)
         self.assertEqual(self.cfg().roles["agent"].endpoint, "local")
+
+    def test_roles_report_whether_they_are_pinned(self):
+        self.write({"default": "local", "endpoints": {"local": {"url": "http://127.0.0.1:11434"},
+                                                     "mac": {"url": "http://mac:11434"}, "zly": {"url": "ftp://x"}},
+                    "roles": {"summary": "local:qwen3:8b", "agent": "qwen3-coder:30b",
+                              "embed": {"model": "mac:bge-m3"}, "broken": "zly:x"}})
+        cfg = self.cfg()
+        pinned = {name: role.pinned for name, role in cfg.roles.items()}
+        self.assertEqual(pinned, {"summary": True, "agent": False, "embed": True, "broken": True, "describe": False},
+                         "przypięta także do obecnego domyślnego; brakująca rola domyślna — nie")
+        state = status.pending(cfg)
+        self.assertEqual({n: r["pinned"] for n, r in state["roles"].items()}, pinned)
+        # SetRole bez endpoint odpina rolę przypiętą do domyślnego serwera.
+        settings.set_role({"role": "summary", "model": "qwen3:8b"}, self.path)
+        self.assertFalse(self.cfg().roles["summary"].pinned)
 
     def test_set_role_ctx_and_validation(self):
         settings.set_role({"role": "summary", "model": "qwen3:8b", "ctx": 4096}, self.path)
@@ -256,8 +271,8 @@ class ModelsJsonTest(SettingsTestCase):
         self.assertIn("niepoprawna nazwa", self.refused(settings.set_role, {"role": "zła rola", "model": "x"},
                                                         self.path))
         self.assertEqual(self.refused(settings.set_role, {"role": "agent", "model": "x", "endpoint": "mac"},
-                                      self.path), "rola „agent”: punkt „mac” nie istnieje")
-        self.assertIn("wybierz punkt jawnie", self.refused(settings.set_role, {"role": "agent", "model": "local:x"},
+                                      self.path), "rola „agent”: serwer „mac” nie istnieje")
+        self.assertIn("wybierz serwer jawnie", self.refused(settings.set_role, {"role": "agent", "model": "local:x"},
                                                            self.path))
         bielik = "hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M"
         settings.set_role({"role": "polish", "model": bielik, "endpoint": "local"}, self.path)
@@ -287,7 +302,7 @@ class ModelsJsonTest(SettingsTestCase):
         before = self.text()
         message = self.refused(settings.set_endpoint, {"name": "qwen3", "url": "http://mac:11434"}, self.path)
         self.assertEqual(message, "nazwa „qwen3” zmieniłaby role describe, summary (model „qwen3:8b” czytany "
-                                  "jako punkt „qwen3”) — wybierz inną nazwę serwera")
+                                  "jako serwer „qwen3”) — wybierz inną nazwę serwera")
         self.assertEqual(self.text(), before, "nic nie zapisane")
         roles = self.cfg().roles
         self.assertEqual((roles["summary"].endpoint, roles["summary"].model), ("local", "qwen3:8b"))
@@ -389,7 +404,7 @@ class TestAndPullTest(SettingsTestCase):
         self.assertEqual(endpoint.headers()["Authorization"], "Bearer abc")
         self.assertFalse(os.path.exists(self.path), "próba niczego nie zapisuje")
         self.assertEqual(settings.endpoint_for_test({"name": "local"}, self.path).url, "http://127.0.0.1:11434")
-        self.assertEqual(self.refused(settings.endpoint_for_test, {"name": "mac"}, self.path), "nieznany punkt „mac”")
+        self.assertEqual(self.refused(settings.endpoint_for_test, {"name": "mac"}, self.path), "nieznany serwer „mac”")
         self.assertIn("niepoprawny adres", self.refused(settings.endpoint_for_test, {"url": "mac"}, self.path))
 
     def test_probe_against_fake_server(self):
@@ -412,7 +427,7 @@ class TestAndPullTest(SettingsTestCase):
                                                      self.path))
         self.assertIn("nazwa modelu", self.refused(settings.endpoint_for_pull,
                                                    {"endpoint": "local", "model": "x y"}, self.path))
-        self.assertIn("nieznany punkt", self.refused(settings.endpoint_for_pull, {"endpoint": "mac", "model": "x"},
+        self.assertIn("nieznany serwer", self.refused(settings.endpoint_for_pull, {"endpoint": "mac", "model": "x"},
                                                      self.path))
 
     def test_pull_progress_and_errors(self):

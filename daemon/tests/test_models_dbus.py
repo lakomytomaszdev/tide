@@ -68,7 +68,8 @@ class ModelsDBusTest(unittest.TestCase):
         self.assertEqual(mac["error"], f"Model lokalny niedostępny: serwer nie odpowiada "
                                        f"({self.down.removeprefix('http://')})")
         self.assertEqual(state["roles"]["summary"], {"endpoint": "local", "model": "qwen3:8b", "ctx": 8192,
-                                                     "installed": True, "available": True, "error": ""})
+                                                     "installed": True, "available": True, "error": "",
+                                                     "pinned": True})
         self.assertEqual(state["roles"]["agent"]["available"], False)
         self.assertEqual(state["config"], {"path": path, "exists": True, "error": "", "warnings": []})
 
@@ -216,7 +217,7 @@ class ModelsSettingsDBusTest(unittest.TestCase):
         self.assertEqual(list(self.status()["endpoints"]), ["mac"])
         self.assertEqual(self.call("SetEndpoint", "nie json")["ok"], False)
         bad = self.call("SetEndpoint", json.dumps({"name": "lm", "url": "http://lm:1234", "kind": "llamacpp"}))
-        self.assertEqual(bad, {"ok": False, "error": "punkt „lm”: nieznany rodzaj „llamacpp” (ollama albo openai)"})
+        self.assertEqual(bad, {"ok": False, "error": "serwer „lm”: nieznany rodzaj „llamacpp” (ollama albo openai)"})
 
         self.assertEqual(self.call("SetReportSummary", "local"), {"ok": True, "error": ""})
         with open(self.report, encoding="utf-8") as fh:
@@ -248,7 +249,7 @@ class ModelsSettingsDBusTest(unittest.TestCase):
         down = self.call("TestEndpoint", json.dumps({"url": f"http://127.0.0.1:{closed_port()}"}))
         self.assertEqual(down["ok"], False)
         self.assertIn("serwer nie odpowiada", down["error"])
-        self.assertEqual(self.call("TestEndpoint", json.dumps({"name": "mac"}))["error"], "nieznany punkt „mac”")
+        self.assertEqual(self.call("TestEndpoint", json.dumps({"name": "mac"}))["error"], "nieznany serwer „mac”")
         self.assertFalse(os.path.exists(self.models), "próba niczego nie zapisuje")
 
         # Wolny serwer: odpowiedź po odczycie, a w tym czasie usługa odpowiada na inne wywołania.

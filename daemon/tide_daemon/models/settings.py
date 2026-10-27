@@ -247,7 +247,7 @@ def set_endpoint(req: dict, path: str | None = None) -> None:
         if changed:
             first = changed[0][1]
             raise SettingsError(f"nazwa „{name}” zmieniłaby role {', '.join(r for r, _ in changed)} (model "
-                                f"„{first.model}” czytany jako punkt „{name}”) — wybierz inną nazwę serwera")
+                                f"„{first.model}” czytany jako serwer „{name}”) — wybierz inną nazwę serwera")
         restore = None
         if token:
             try:
@@ -271,15 +271,15 @@ def remove_endpoint(name, path: str | None = None) -> None:
     with LOCK:
         draft = _Draft(path)
         if not isinstance(name, str) or name not in draft.endpoints:
-            raise SettingsError(f"nieznany punkt „{str(name)[:40]}”")
+            raise SettingsError(f"nieznany serwer „{str(name)[:40]}”")
         if name in draft.cfg.endpoints and len(draft.cfg.endpoints) == 1:
-            raise SettingsError(f"punkt „{name}” jest jedynym punktem — dodaj inny, zanim go usuniesz")
+            raise SettingsError(f"serwer „{name}” jest jedynym serwerem — dodaj inny, zanim go usuniesz")
         if name == draft.data.get("default") or name == draft.cfg.default:
-            raise SettingsError(f"punkt „{name}” jest domyślny — najpierw ustaw inny punkt jako domyślny")
+            raise SettingsError(f"serwer „{name}” jest domyślny — najpierw ustaw inny serwer jako domyślny")
         pinned = draft.pinned(name)
         if pinned:
-            raise SettingsError(f"punkt „{name}” jest używany przez role: {', '.join(pinned)} — przepnij je na inny "
-                                f"punkt albo na domyślny, zanim go usuniesz")
+            raise SettingsError(f"serwer „{name}” jest używany przez role: {', '.join(pinned)} — przepnij je na inny "
+                                f"serwer albo na domyślny, zanim go usuniesz")
         del draft.endpoints[name]
         draft.commit()
         _remove_token(name, path)
@@ -291,11 +291,11 @@ def set_default(name, path: str | None = None) -> None:
     with LOCK:
         draft = _Draft(path)
         if not isinstance(name, str):
-            raise SettingsError("default: oczekiwano nazwy punktu")
+            raise SettingsError("default: oczekiwano nazwy serwera")
         if name not in draft.cfg.endpoints:
             if name in draft.endpoints:
-                raise SettingsError(f"default: punkt „{name[:40]}” jest pominięty w models.json — popraw go najpierw")
-            raise SettingsError(f"default: nieznany punkt „{name[:40]}”")
+                raise SettingsError(f"default: serwer „{name[:40]}” jest pominięty w models.json — popraw go najpierw")
+            raise SettingsError(f"default: nieznany serwer „{name[:40]}”")
         draft.data["default"] = name
         draft.commit()
 
@@ -323,13 +323,13 @@ def set_role(req: dict, path: str | None = None) -> None:
         if endpoint:
             if endpoint not in draft.cfg.endpoints:
                 state = "jest pominięty w models.json" if endpoint in draft.endpoints else "nie istnieje"
-                raise SettingsError(f"rola „{role}”: punkt „{endpoint[:40]}” {state}")
+                raise SettingsError(f"rola „{role}”: serwer „{endpoint[:40]}” {state}")
             spec = f"{endpoint}:{model}"
         else:
             head, sep, rest = model.partition(":")
             if sep and rest and head in draft.endpoints:
-                raise SettingsError(f"rola „{role}”: nazwa modelu zaczyna się od nazwy punktu „{head}:” — wybierz "
-                                    f"punkt jawnie")
+                raise SettingsError(f"rola „{role}”: nazwa modelu zaczyna się od nazwy serwera „{head}:” — wybierz "
+                                    f"serwer jawnie")
             spec = model
         existing = draft.roles.get(role)
         value = dict(existing) if isinstance(existing, dict) else {}
@@ -400,9 +400,9 @@ def endpoint_for_test(req: dict, path: str | None = None):
     cfg = config_mod.load(path)
     saved = cfg.endpoints.get(name) if name else None
     if name and saved is None and url is None:
-        raise SettingsError(f"nieznany punkt „{name[:40]}”")
+        raise SettingsError(f"nieznany serwer „{name[:40]}”")
     if url is None and saved is None:
-        raise SettingsError("podaj nazwę zapisanego punktu albo adres (url)")
+        raise SettingsError("podaj nazwę zapisanego serwera albo adres (url)")
     if url is not None or kind is not None:
         value = {"url": url if url is not None else saved.url, "kind": kind or (saved.kind if saved else "ollama")}
         endpoint, error = config_mod.check_endpoint(name or "nowy", value)
@@ -432,10 +432,10 @@ def endpoint_for_pull(req: dict, path: str | None = None):
     model = _text(req, "model", "model") or ""
     cfg = config_mod.load(path)
     if name not in cfg.endpoints:
-        raise SettingsError(f"nieznany punkt „{name[:40]}”")
+        raise SettingsError(f"nieznany serwer „{name[:40]}”")
     endpoint = cfg.endpoints[name]
     if endpoint.kind != "ollama":
-        raise SettingsError(f"punkt „{name}” to serwer zgodny z OpenAI — modele pobiera się na nim samym, "
+        raise SettingsError(f"serwer „{name}” jest zgodny z OpenAI — modele pobiera się na nim samym, "
                             f"pobieranie z Tide działa tylko z Ollamą")
     if not PULL_NAME_RE.fullmatch(model):
         raise SettingsError("nazwa modelu: litery, cyfry i znaki ._:/@+- (np. qwen3:8b)")

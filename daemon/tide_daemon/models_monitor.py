@@ -223,7 +223,7 @@ class ModelsMonitor(QObject):
         busy = [e for e in self._pulls.values() if e["endpoint"] == name and e["running"]]
         if not busy:
             return ""
-        return f"na punkcie „{name}” trwa pobieranie modelu {busy[0]['model']} — poczekaj, aż się skończy"
+        return f"na serwerze „{name}” trwa pobieranie modelu {busy[0]['model']} — poczekaj, aż się skończy"
 
     def set_endpoint(self, text: str) -> str:
         req = _request(text)
@@ -305,7 +305,7 @@ class ModelsMonitor(QObject):
             return _reply(False, "usługa się zamyka", key="")
         busy = [e for e in self._pulls.values() if e["endpoint"] == endpoint.name and e["running"]]
         if busy:
-            return _reply(False, f"na punkcie „{endpoint.name}” trwa już pobieranie {busy[0]['model']} — poczekaj, "
+            return _reply(False, f"na serwerze „{endpoint.name}” trwa już pobieranie {busy[0]['model']} — poczekaj, "
                                  f"aż się skończy", key="")
         key = f"{endpoint.name}/{model}"
         self._pull_seq += 1

@@ -240,7 +240,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(sorted(cfg.endpoints), ["local"])
         self.assertEqual(cfg.default, "local")
         self.assertEqual(len(cfg.warnings), 18, cfg.warnings)
-        self.assertTrue(any("default: nieznany punkt „nie-ma”" in w for w in cfg.warnings))
+        self.assertTrue(any("default: nieznany serwer „nie-ma”" in w for w in cfg.warnings))
         self.assertTrue(any("nieznany rodzaj „vllm”" in w for w in cfg.warnings))
         self.assertTrue(any("„haslo”: dane logowania w adresie" in w for w in cfg.warnings), cfg.warnings)
         self.assertNotIn("sekret", json.dumps(cfg.warnings))
@@ -249,14 +249,14 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual({n: (r.model, r.ctx) for n, r in cfg.roles.items() if not r.error}, {"ok": ("qwen3:8b", None)})
         self.assertEqual((cfg.roles["summary"].endpoint, cfg.roles["summary"].model, cfg.roles["summary"].ctx),
                          ("nie-ma", "qwen3:8b", 8192))
-        self.assertIn("nieznany punkt „nie-ma”", cfg.roles["summary"].error)
+        self.assertIn("nieznany serwer „nie-ma”", cfg.roles["summary"].error)
         # Rola na pominiętym punkcie nie idzie cicho na `default` — jest niedostępna z powodem.
         agent = cfg.roles["agent"]
         self.assertEqual((agent.endpoint, agent.model), ("nawias", "qwen3-coder:30b"))
-        self.assertTrue(any("rola „agent”: punkt „nawias” jest pominięty" in w for w in cfg.warnings), cfg.warnings)
+        self.assertTrue(any("rola „agent”: serwer „nawias” jest pominięty" in w for w in cfg.warnings), cfg.warnings)
         with self.assertRaises(ModelError) as caught:
             cfg.role("agent")
-        self.assertIn("punkt „nawias” jest pominięty", str(caught.exception))
+        self.assertIn("serwer „nawias” jest pominięty", str(caught.exception))
         with self.assertRaises(ModelError):
             client.chat("x", role="agent", config=cfg)
 
@@ -279,10 +279,10 @@ class ConfigTest(unittest.TestCase):
         for name in ("summary", "describe", "agent"):
             role = cfg.roles[name]
             self.assertEqual(role.endpoint, "mac", name)
-            self.assertIn("punkt „mac” jest pominięty", role.error)
+            self.assertIn("serwer „mac” jest pominięty", role.error)
         self.assertEqual(cfg.roles["agent"].model, "qwen3-coder:30b")
         self.assertFalse(cfg.roles["ok"].error)
-        self.assertTrue(any("role bez punktu niedostępne" in w for w in cfg.warnings), cfg.warnings)
+        self.assertTrue(any("role bez serwera niedostępne" in w for w in cfg.warnings), cfg.warnings)
         with self.assertRaises(ModelError):
             client.chat("x", role="summary", config=cfg)
 
@@ -335,7 +335,7 @@ class ConfigTest(unittest.TestCase):
             endpoint = models_config.Endpoint("mac", "http://mac:11434", "ollama", path)
             with self.assertRaises(ModelError) as caught:
                 endpoint.headers()
-            self.assertIn("tokenu punktu „mac”", str(caught.exception))
+            self.assertIn("tokenu serwera „mac”", str(caught.exception))
 
     def test_ipv6_address_in_brackets(self):
         endpoint = models_config.from_dict({"endpoints": {"mac": {"url": "http://[fd7a:115c::1]:11434"}}}) \
@@ -349,7 +349,7 @@ class ConfigTest(unittest.TestCase):
         endpoint = models_config.Endpoint("mac", "http://127.0.0.1:9", "ollama", path)
         with self.assertRaises(ModelError) as caught:
             endpoint.headers()
-        self.assertIn("niepoprawny plik tokenu punktu „mac”", str(caught.exception))
+        self.assertIn("niepoprawny plik tokenu serwera „mac”", str(caught.exception))
         self.assertNotIn("zażółć", str(caught.exception))
 
 
@@ -630,7 +630,8 @@ class StatusTest(unittest.TestCase):
             "error": f"Model lokalny niedostępny: serwer nie odpowiada (127.0.0.1:{port})", "version": None,
             "models": [], "loaded": []})
         self.assertEqual(state["roles"]["summary"], {"endpoint": "local", "model": "qwen3:8b", "ctx": 8192,
-                                                     "installed": None, "available": False, "error": ""})
+                                                     "installed": None, "available": False, "error": "",
+                                                     "pinned": False})
 
     def test_server_failing_after_version_is_offline(self):
         server = start_server(self, ollama_routes())

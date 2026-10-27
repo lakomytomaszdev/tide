@@ -68,9 +68,9 @@ class Endpoint:
             parts = urllib.parse.urlsplit(self.url)
             port = parts.port
         except ValueError:
-            raise ModelError(f"Model lokalny: niepoprawny adres punktu „{self.name}”") from None
+            raise ModelError(f"Model lokalny: niepoprawny adres serwera „{self.name}”") from None
         if parts.scheme not in ("http", "https") or not parts.hostname:
-            raise ModelError(f"Model lokalny: niepoprawny adres punktu „{self.name}”")
+            raise ModelError(f"Model lokalny: niepoprawny adres serwera „{self.name}”")
         return parts.scheme, parts.hostname, port
 
     @property
@@ -93,17 +93,17 @@ class Endpoint:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if self.token:
             if not valid_token(self.token):
-                raise ModelError(f"Model lokalny: niepoprawny token punktu „{self.name}”")
+                raise ModelError(f"Model lokalny: niepoprawny token serwera „{self.name}”")
             headers["Authorization"] = f"Bearer {self.token}"
         elif self.token_file:
             try:
                 with open(self.token_file, encoding="utf-8") as fh:
                     token = fh.read().strip()
             except (OSError, UnicodeDecodeError) as exc:
-                raise ModelError(f"Model lokalny niedostępny: nie da się odczytać pliku tokenu punktu "
+                raise ModelError(f"Model lokalny niedostępny: nie da się odczytać pliku tokenu serwera "
                                  f"„{self.name}” ({type(exc).__name__})") from None
             if not valid_token(token):
-                raise ModelError(f"Model lokalny niedostępny: pusty albo niepoprawny plik tokenu punktu „{self.name}”")
+                raise ModelError(f"Model lokalny niedostępny: pusty albo niepoprawny plik tokenu serwera „{self.name}”")
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
@@ -120,6 +120,7 @@ class Role:
     model: str
     ctx: int | None          # None — kontekst serwera
     error: str = ""          # rola niedostępna (np. jej punkt jest pominięty) — powód po polsku
+    pinned: bool = False     # „punkt:model” w pliku — przypięta jawnie (także do obecnego `default`)
 
 
 @dataclass(frozen=True)
@@ -135,7 +136,7 @@ class ModelsConfig:
     def endpoint(self, name: str | None = None) -> Endpoint:
         name = name or self.default
         if name not in self.endpoints:
-            raise ModelError(f"Model lokalny: nieznany punkt „{name}” w models.json")
+            raise ModelError(f"Model lokalny: nieznany serwer „{name}” w models.json")
         return self.endpoints[name]
 
     def role(self, name: str) -> Role:
@@ -170,7 +171,7 @@ def split_model(spec: str, endpoints) -> tuple[str | None, str]:
 
 def _endpoint(name, value, warnings) -> Endpoint | None:
     if not isinstance(value, dict):
-        warnings.append(f"punkt „{name}”: oczekiwano obiektu — pominięty")
+        warnings.append(f"serwer „{name}”: oczekiwano obiektu — pominięty")
         return None
     url = value.get("url")
     try:
@@ -179,22 +180,22 @@ def _endpoint(name, value, warnings) -> Endpoint | None:
     except ValueError:  # „http://[fd7a::1:11434”, „http://mac:abc”, port spoza zakresu, IPv6 bez nawiasów
         parts, port = None, None
     if not parts or parts.scheme not in ("http", "https") or not parts.hostname or port == 0:
-        warnings.append(f"punkt „{name}”: niepoprawny adres (oczekiwano http(s)://host[:port], "
+        warnings.append(f"serwer „{name}”: niepoprawny adres (oczekiwano http(s)://host[:port], "
                         f"IPv6 w nawiasach) — pominięty")
         return None
     if "@" in parts.netloc:
-        warnings.append(f"punkt „{name}”: dane logowania w adresie (token przez tokenFile) — pominięty")
+        warnings.append(f"serwer „{name}”: dane logowania w adresie (token przez tokenFile) — pominięty")
         return None
     kind = value.get("kind", "ollama")
     if kind not in KINDS:
-        warnings.append(f"punkt „{name}”: nieznany rodzaj „{str(kind)[:40]}” (ollama albo openai) — pominięty")
+        warnings.append(f"serwer „{name}”: nieznany rodzaj „{str(kind)[:40]}” (ollama albo openai) — pominięty")
         return None
     base = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")).rstrip("/")
     if kind == "openai" and base.endswith("/v1"):
         base = base[:-3]  # adres podany razem z /v1 — ścieżki dokładamy sami
     token_file = value.get("tokenFile") or ""
     if not isinstance(token_file, str):
-        warnings.append(f"punkt „{name}”: tokenFile musi być ścieżką — pominięty")
+        warnings.append(f"serwer „{name}”: tokenFile musi być ścieżką — pominięty")
         return None
     return Endpoint(name, base, kind, os.path.expanduser(token_file) if token_file else "")
 
@@ -218,18 +219,18 @@ def _role(name, value, endpoints, skipped, default, unreachable, warnings) -> Ro
     else:
         ctx = ROLE_CTX.get(name)
     if not isinstance(value, str) or not value.strip():
-        warnings.append(f"rola „{name}”: oczekiwano „punkt:model” — pominięta")
+        warnings.append(f"rola „{name}”: oczekiwano „serwer:model” — pominięta")
         return None
     endpoint, model = split_model(value.strip(), endpoints)
     if endpoint is None:
         head, _sep, rest = value.strip().partition(":")
         if head in skipped and rest:
-            reason = f"rola „{name}”: punkt „{head}” jest pominięty w models.json"
+            reason = f"rola „{name}”: serwer „{head}” jest pominięty w models.json"
             warnings.append(f"{reason} — rola niedostępna")
-            return Role(name, head, rest, ctx, reason)
+            return Role(name, head, rest, ctx, reason, pinned=True)
     if endpoint is None and unreachable:
         return Role(name, unreachable[0], model, ctx, unreachable[1])
-    return Role(name, endpoint or default, model, ctx)
+    return Role(name, endpoint or default, model, ctx, pinned=endpoint is not None)
 
 
 def bad_name(what: str, name) -> str:
@@ -248,7 +249,7 @@ def check_endpoint(name, value) -> tuple[Endpoint | None, str]:
 
     Zapis z D-Bus (models/settings.py) i odczyt pliku mają jedną walidację: ten sam kod i te same komunikaty."""
     if not isinstance(name, str) or not NAME_RE.fullmatch(name):
-        return None, bad_name("punkt", name)
+        return None, bad_name("serwer", name)
     warnings: list[str] = []
     endpoint = _endpoint(name, value, warnings)
     return endpoint, "" if endpoint else _refusal(warnings)
@@ -277,18 +278,18 @@ def from_dict(data, path: str = "", exists: bool = True) -> ModelsConfig:
     endpoints: dict = {}
     raw_endpoints = data.get("endpoints")
     if raw_endpoints is not None and not isinstance(raw_endpoints, dict):
-        warnings.append("endpoints: oczekiwano obiektu — punkt domyślny")
+        warnings.append("endpoints: oczekiwano obiektu — serwer domyślny")
         raw_endpoints = None
     for name, value in (raw_endpoints or {}).items():
         if not NAME_RE.fullmatch(name):
-            warnings.append(f"{bad_name('punkt', name)} — pominięty")
+            warnings.append(f"{bad_name('serwer', name)} — pominięty")
             continue
         endpoint = _endpoint(name, value, warnings)
         if endpoint:
             endpoints[name] = endpoint
     if not endpoints:
         if raw_endpoints:
-            warnings.append(f"żaden punkt nie jest poprawny — punkt domyślny {DEFAULT_ENDPOINT} ({DEFAULT_URL})")
+            warnings.append(f"żaden serwer nie jest poprawny — serwer domyślny {DEFAULT_ENDPOINT} ({DEFAULT_URL})")
         endpoints = {DEFAULT_ENDPOINT: Endpoint(DEFAULT_ENDPOINT, DEFAULT_URL, "ollama")}
 
     skipped = set(raw_endpoints or {}) - set(endpoints)
@@ -302,12 +303,12 @@ def from_dict(data, path: str = "", exists: bool = True) -> ModelsConfig:
         default = fallback
     elif not isinstance(default, str) or default not in endpoints:
         if not isinstance(default, str):
-            name, reason = "default", "default: oczekiwano nazwy punktu"
+            name, reason = "default", "default: oczekiwano nazwy serwera"
         elif default in skipped:
-            name, reason = default, f"default: punkt „{default[:40]}” jest pominięty w models.json"
+            name, reason = default, f"default: serwer „{default[:40]}” jest pominięty w models.json"
         else:
-            name, reason = default[:40], f"default: nieznany punkt „{default[:40]}”"
-        warnings.append(f"{reason} — role bez punktu niedostępne")
+            name, reason = default[:40], f"default: nieznany serwer „{default[:40]}”"
+        warnings.append(f"{reason} — role bez serwera niedostępne")
         unreachable = (name, reason)
         default = fallback
 

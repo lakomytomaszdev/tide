@@ -142,7 +142,7 @@ class ModelsMonitorWritesTest(unittest.TestCase):
     def test_refused_write_sends_no_changed(self):
         monitor, changes = self.monitor(lambda: None)
         result = self.json.loads(monitor.set_default("mac"))
-        self.assertEqual(result, {"ok": False, "error": "default: nieznany punkt „mac”"})
+        self.assertEqual(result, {"ok": False, "error": "default: nieznany serwer „mac”"})
         self.assertEqual(changes, [])
         self.assertEqual(self.json.loads(monitor.set_role("[]"))["error"], "niepoprawne żądanie: oczekiwano obiektu JSON")
         self.assertIn("raport poranny jest wyłączony", self.json.loads(monitor.set_report_summary("local"))["error"])
@@ -246,7 +246,7 @@ class ModelsMonitorWritesTest(unittest.TestCase):
         self.assertTrue(wait_until(lambda: changes and changes[-1]["pulls"]["box/qwen3:8b"]["status"]
                                    == "pulling manifest", timeout=5))
         refused = self.json.loads(monitor.remove_endpoint("box"))
-        self.assertEqual(refused, {"ok": False, "error": "na punkcie „box” trwa pobieranie modelu qwen3:8b — "
+        self.assertEqual(refused, {"ok": False, "error": "na serwerze „box” trwa pobieranie modelu qwen3:8b — "
                                                          "poczekaj, aż się skończy"})
         moved = self.json.loads(monitor.set_endpoint(self.json.dumps({"name": "box", "url": "http://other:1"})))
         self.assertEqual(moved["error"], refused["error"])
