@@ -205,6 +205,7 @@ class LocalModelQmlTest(unittest.TestCase):
             "MISSING": models_status(installed=False, available=False),
             "ROLEERR": models_status(error="rola „agent”: punkt „mac” jest pominięty w models.json", available=False),
             "PENDING": {**models_status(available=False), "checked": False},
+            "CLOUDROLE": models_status(model="gpt-oss:120b-cloud"),
         }
         with tempfile.TemporaryDirectory(prefix="tide-nt-local-") as tmp:
             pkg = stage(os.path.join(tmp, "pkg"))
@@ -231,7 +232,7 @@ Item {
         nowTs: %(now)d
         repos: root.sample.repos
         defaults: root.sample.defaults
-        modelsStatus: ({ checked: false, roles: {}, endpoints: {} })
+        modelsStatus: ({ pending: true })
         suggestion: root.sample.suggestion
         onStartRequested: request => root.requests.push(JSON.parse(request))
         onModelsRequested: root.modelsAsked++
@@ -241,9 +242,9 @@ Item {
         onTriggered: {
             for (const name in root.cases) root.line(name, root.cases[name])
             root.line("NOSERVICE", null)
-            console.warn("WAITING " + page.model + "|" + page.rememberedLocal)
+            console.warn("WAITING " + page.model + "|" + page.blocker + "|" + page.canStart)
             page.modelsStatus = root.cases.OK
-            console.warn("REMEMBERED " + page.model + "|" + page.rememberedLocal)
+            console.warn("REMEMBERED " + page.model)
             page.prompt = "Popraw liczenie w raporcie"
             page.start()
             console.warn("REQUEST " + JSON.stringify(root.requests[0]))
@@ -258,9 +259,6 @@ Item {
             console.warn("CLOUD " + page.blocker + "|" + page.canStart + "|" + page.modelNote)
             page.modelsRequested()
             console.warn("ASKED " + root.modelsAsked)
-            console.warn("EFFECTIVE " + Logic.effectiveModel("local", Logic.localOption(root.cases.OFFLINE)) + "|"
-                         + Logic.effectiveModel("local", Logic.localOption(root.cases.OK)) + "|"
-                         + Logic.effectiveModel("cloud", Logic.localOption(root.cases.OK)))
             Qt.quit()
         }
     }
@@ -280,8 +278,11 @@ Item {
         self.assertEqual(warned(log, "PENDING"), "false|Lokalny: qwen3-coder:30b · ten komputer|"
                                                  "Sprawdzam serwer modeli…|false")
         self.assertEqual(warned(log, "NOSERVICE"), "false|Lokalny|Usługa nie podaje stanu modeli lokalnych|false")
-        self.assertEqual(warned(log, "WAITING"), "cloud|true", "zapamiętany „Lokalny” czeka na odczyt serwera")
-        self.assertEqual(warned(log, "REMEMBERED"), "local|false")
+        self.assertEqual(warned(log, "CLOUDROLE"), "false|Lokalny: gpt-oss:120b-cloud · ten komputer|"
+                                               "Model gpt-oss:120b-cloud działa w chmurze Ollamy|true")
+        self.assertEqual(warned(log, "WAITING"), "local|Sprawdzam serwer modeli…|false",
+                         "zapamiętany „Lokalny” czeka na odczyt serwera — start zablokowany, bez chmury")
+        self.assertEqual(warned(log, "REMEMBERED"), "local")
         self.assertEqual(json.loads(warned(log, "REQUEST"))["model"], "local")
         self.assertEqual(warned(log, "NOTE"), "Na tym komputerze (8 GB) agent lokalny jest wolny i słaby — "
                                               "opcja głównie na Maca.")
@@ -293,10 +294,10 @@ Item {
         self.assertEqual(warned(log, "NOTEOFF"), "Modelu qwen3-coder:30b nie ma na serwerze — ustaw w Tide → Modele")
         self.assertEqual(warned(log, "CLOUD"), "|true|Modelu qwen3-coder:30b nie ma na serwerze — ustaw w Tide → Modele")
         self.assertEqual(warned(log, "ASKED"), "1")
-        self.assertEqual(warned(log, "EFFECTIVE"), "cloud|local|cloud")
 
-    def remembered(self, initial, then="skip") -> str:
-        """Zapamiętany „Lokalny”: stan modeli na starcie (`initial`), Defaults od razu, potem Status (`then`)."""
+    def remembered(self, initial, then="skip", status_first=False) -> str:
+        """Zapamiętany „Lokalny”: stan modeli na starcie (`initial`), potem Defaults i Status (`then`) —
+        w kolejności wywołań okna albo odwrotnej (`status_first`)."""
         with tempfile.TemporaryDirectory(prefix="tide-nt-local3-") as tmp:
             pkg = stage(os.path.join(tmp, "pkg"))
             harness = os.path.join(pkg, "qml", "Local3.qml")
@@ -316,35 +317,44 @@ Item {
     Timer {
         interval: 200; running: true
         onTriggered: {
-            page.defaults = parent.sample.defaults
-            console.warn("BEFORE " + page.model + "|" + page.rememberedLocal + "|" + page.localOption.reason)
             const then = %(then)s
-            if (then !== undefined) page.modelsStatus = then
-            console.warn("AFTER " + page.model + "|" + page.rememberedLocal)
+            if (%(first)s && then !== undefined) page.modelsStatus = then
+            page.defaults = parent.sample.defaults
+            console.warn("BEFORE " + page.model + "|" + page.blocker + "|" + page.canStart)
+            if (!%(first)s && then !== undefined) page.modelsStatus = then
+            console.warn("AFTER " + page.model + "|" + page.blocker)
             Qt.quit()
         }
     }
 }
 """ % {"data": json.dumps(data, ensure_ascii=False), "initial": json.dumps(initial),
-       "then": "undefined" if then == "skip" else json.dumps(then)})
+       "then": "undefined" if then == "skip" else json.dumps(then), "first": json.dumps(status_first)})
             return run_qml(harness)
 
     def test_remembered_local_waits_for_the_first_status(self):
-        """Defaults przychodzi przed Status (kolejność wywołań okna): „czekam”, nie „chmura”."""
-        log = self.remembered(json.loads(self.launcher().PENDING_MODELS), models_status())
-        self.assertEqual(warned(log, "BEFORE"), "cloud|true|Sprawdzam serwer modeli…")
-        self.assertEqual(warned(log, "AFTER"), "local|false")
-        # Usługa bez /Models (odpowiedź z błędem → null) — zapamiętany „Lokalny” nie ma na co czekać.
-        log = self.remembered(json.loads(self.launcher().PENDING_MODELS), None)
-        self.assertEqual(warned(log, "AFTER"), "cloud|false")
+        """Zapamiętany „Lokalny” zostaje wybrany: póki stanu nie ma — start zablokowany „Sprawdzam…”,
+        po błędzie Status (null) — zablokowany z powodem; nigdy nie przechodzi na chmurę."""
+        pending = json.loads(self.launcher().PENDING_MODELS)
+        unread = {**models_status(available=False), "checked": False}
+        for initial in (pending, unread):
+            log = self.remembered(initial, models_status())
+            self.assertEqual(warned(log, "BEFORE"), "local|Sprawdzam serwer modeli…|false")
+            self.assertEqual(warned(log, "AFTER"), "local|Napisz, co agent ma zrobić")
+            log = self.remembered(initial, models_status(), status_first=True)
+            self.assertEqual(warned(log, "BEFORE"), "local|Napisz, co agent ma zrobić|false")
+        for status_first in (False, True):
+            log = self.remembered(pending, None, status_first=status_first)
+            self.assertEqual(warned(log, "AFTER"),
+                             "local|Model lokalny niedostępny: Usługa nie podaje stanu modeli lokalnych")
         log = self.remembered(None)
-        self.assertEqual(warned(log, "BEFORE"), "cloud|false|Usługa nie podaje stanu modeli lokalnych")
+        self.assertEqual(warned(log, "BEFORE"),
+                         "local|Model lokalny niedostępny: Usługa nie podaje stanu modeli lokalnych|false")
 
     @staticmethod
     def launcher():
         return load_launcher()
 
-    def test_remembered_local_falls_back_when_unavailable(self):
+    def test_remembered_local_stays_and_blocks_when_unavailable(self):
         with tempfile.TemporaryDirectory(prefix="tide-nt-local2-") as tmp:
             pkg = stage(os.path.join(tmp, "pkg"))
             harness = os.path.join(pkg, "qml", "Local2.qml")
@@ -364,13 +374,13 @@ Item {
     }
     Timer {
         interval: 300; running: true
-        onTriggered: { console.warn("MODEL " + page.model + "|" + page.rememberedLocal); Qt.quit() }
+        onTriggered: { console.warn("MODEL " + page.model + "|" + page.blocker); Qt.quit() }
     }
 }
 """ % {"data": json.dumps(data, ensure_ascii=False),
        "status": json.dumps(models_status(installed=False, available=False))})
             log = run_qml(harness)
-        self.assertEqual(warned(log, "MODEL"), "cloud|false")
+        self.assertEqual(warned(log, "MODEL"), "local|Model lokalny niedostępny: Modelu qwen3-coder:30b nie ma na serwerze")
 
 
 class LauncherTest(unittest.TestCase):

@@ -43,9 +43,9 @@ Rectangle {
     property string query: ""
     property string repoPath: ""
     property string tool: "claude"
+    // Zapamiętany „Lokalny” zostaje wybrany; póki serwer nie odpowie albo gdy model jest niedostępny,
+    // start blokuje powód (blocker) — okno nigdy samo nie przechodzi na chmurę.
     property string model: "cloud"
-    // Zapamiętany „Lokalny” czeka na pierwszy odczyt serwera — wraca tylko, gdy model jest dostępny.
-    property bool rememberedLocal: false
     property alias prompt: promptEdit.text
     property bool newWorktree: true
     property string branch: ""
@@ -74,8 +74,7 @@ Rectangle {
         if (!defaultsApplied) {
             tool = defaults.tool || "claude"
             newWorktree = defaults.newWorktree !== false
-            rememberedLocal = defaults.model === "local"
-            applyRememberedModel()
+            model = defaults.model === "local" ? "local" : "cloud"
             defaultsApplied = true
         }
         if (repoPath === "" && repos.length > 0) {
@@ -84,14 +83,6 @@ Rectangle {
             promptEdit.forceActiveFocus()
         }
     }
-    function applyRememberedModel() {
-        if (!rememberedLocal) return
-        if (Logic.modelsPending(modelsStatus)) return  // jeszcze nie wiadomo — czekamy na Status()
-        // Wprost ze stanu: wiązanie localOption mogło jeszcze nie zauważyć zmiany modelsStatus.
-        model = Logic.effectiveModel("local", Logic.localOption(modelsStatus))
-        rememberedLocal = false
-    }
-    onModelsStatusChanged: applyRememberedModel()
     onDefaultsChanged: applyDefaults()
     onReposChanged: applyDefaults()
 

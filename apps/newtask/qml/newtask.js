@@ -17,6 +17,13 @@ var MODELS_HINT = "ustaw w Tide → Modele"
 var LOCAL_NOTE = "Na tym komputerze (8 GB) agent lokalny jest wolny i słaby — opcja głównie na Maca."
 var CLAUDE_LOCAL_NOTE = "Konektory claude.ai będą wyłączone."
 
+// Model Ollama Cloud (`…:cloud`, `…:120b-cloud`) — lokalna Ollama tylko przekazuje rozmowę na ollama.com.
+// To samo co modelnames.is_cloud_model w usłudze.
+function isCloudModel(name) {
+    var i = (name || "").lastIndexOf(":")
+    return i >= 0 && /[:-]cloud$/i.test(":" + name.slice(i + 1))
+}
+
 function isLoopback(url) {
     var m = /^[a-z]+:\/\/(\[[^\]]*\]|[^\/:]*)/i.exec(url || "")
     var host = m ? m[1].replace(/^\[|\]$/g, "").toLowerCase() : ""
@@ -35,25 +42,28 @@ function serverName(endpoint, name) {
 // Wyłączona z krótkim powodem, gdy usługa nie podaje stanu, rola `agent` nie jest ustawiona,
 // serwer nie odpowiada albo modelu na nim nie ma. hint: czy pokazać „ustaw w Tide → Modele”.
 function localOption(status) {
-    function off(reason, hint) {
-        return { enabled: false, label: "Lokalny", reason: reason, hint: hint !== false, model: "", server: "" }
+    function off(reason, hint, pending) {
+        return { enabled: false, label: "Lokalny", reason: reason, hint: hint !== false, model: "", server: "",
+                 pending: pending === true }
     }
-    if (status && status.pending === true) return off("Sprawdzam serwer modeli…", false)
+    if (status && status.pending === true) return off("Sprawdzam serwer modeli…", false, true)
     if (!status || typeof status !== "object" || !status.roles) return off("Usługa nie podaje stanu modeli lokalnych", false)
     var role = status.roles.agent
     if (!role) return off("Model agenta nie jest ustawiony")
     var endpoint = (status.endpoints || {})[role.endpoint] || null
     var server = serverName(endpoint, role.endpoint)
     var label = "Lokalny: " + role.model + (server ? " · " + server : "")
-    var result = function (reason, hint) {
-        return { enabled: false, label: label, reason: reason, hint: hint !== false, model: role.model, server: server }
+    var result = function (reason, hint, pending) {
+        return { enabled: false, label: label, reason: reason, hint: hint !== false, model: role.model, server: server,
+                 pending: pending === true }
     }
     if (role.error) return result(role.error)
-    if (status.checked === false) return result("Sprawdzam serwer modeli…", false)
+    if (isCloudModel(role.model)) return result("Model " + role.model + " działa w chmurze Ollamy")
+    if (status.checked === false) return result("Sprawdzam serwer modeli…", false, true)
     if (!endpoint || !endpoint.online) return result("Serwer " + (server || role.endpoint) + " nie odpowiada")
     if (role.installed === false) return result("Modelu " + role.model + " nie ma na serwerze")
     if (!role.available) return result("Model niedostępny")
-    return { enabled: true, label: label, reason: "", hint: false, model: role.model, server: server }
+    return { enabled: true, label: label, reason: "", hint: false, model: role.model, server: server, pending: false }
 }
 
 // Linia pod wyborem modelu: powód wyłączenia albo uczciwa uwaga o jakości (i konektorach Claude Code).
@@ -65,16 +75,6 @@ function modelNote(option, model, tool) {
     return note + (tool === "claude" ? " " + CLAUDE_LOCAL_NOTE : "")
 }
 
-// Czy na stan modeli trzeba jeszcze poczekać: pierwsza odpowiedź nie przyszła ({pending: true}) albo
-// usługa jeszcze nie odczytała serwera (checked: false). null — usługa stanu nie podaje, nie ma na co czekać.
-function modelsPending(status) {
-    return !!status && (status.pending === true || status.checked === false)
-}
-
-// Zapamiętany „Lokalny” wraca tylko wtedy, gdy opcja jest teraz dostępna.
-function effectiveModel(model, option) {
-    return model === "local" && option && option.enabled ? "local" : "cloud"
-}
 
 // Bez wielkości liter i polskich znaków: „zolc” znajdzie „Żółć”.
 function fold(text) {
@@ -125,7 +125,10 @@ function blocker(state) {
     if (!state.available) return "Usługa tide-daemon nie działa"
     if (!state.repo) return "Wybierz repozytorium"
     if (state.tools && state.tools[state.tool] === false) return "Nie znaleziono programu " + state.tool
-    if (state.model === "local" && state.local && !state.local.enabled) return "Model lokalny niedostępny: " + state.local.reason
+    // Wybrany (także zapamiętany) „Lokalny” nigdy nie przechodzi po cichu na chmurę: póki stanu nie ma —
+    // czekamy, gdy niedostępny — powód.
+    if (state.model === "local" && state.local && !state.local.enabled)
+        return state.local.pending ? state.local.reason : "Model lokalny niedostępny: " + state.local.reason
     if (wordCount(state.prompt) === 0) return "Napisz, co agent ma zrobić"
     if (wordCount(state.prompt) < 2) return "Opisz zadanie co najmniej dwoma słowami"
     if (state.newWorktree && !state.repo.mainBranch) return "Repozytorium nie ma master, main ani develop — wyłącz „Nowy worktree”"
