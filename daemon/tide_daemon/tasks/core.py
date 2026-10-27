@@ -2,7 +2,8 @@
 
 Przebieg (Planner.prepare → terminal → claim albo Planner.rollback):
 1. prośba z okna: repozytorium z katalogu projektów, narzędzie, polecenie, „nowy worktree”
-   z nazwą gałęzi i zrzuty ekranu,
+   z nazwą gałęzi, zrzuty ekranu i dodatkowe katalogi agenta (addDirs: katalog dokumentów karty
+   w repozytorium tablicy — tylko pod `<tablica>/docs/`),
 2. sprawdzenie wszystkiego, co da się sprawdzić bez zmian na dysku (program agenta, Konsole,
    nazwa gałęzi, gałąź główna, zmiany w głównym katalogu, zrzuty),
 3. `git worktree add -b <gałąź> <ścieżka> <gałąź główna>` — gałąź główna (master, main, develop)
@@ -31,6 +32,7 @@ TOOLS = ("claude", "codex")
 TOOL_LABELS = {"claude": "Claude Code", "codex": "Codex"}
 PROMPT_LIMIT = 32_000          # znaków; jeden argument programu może mieć do 128 KiB
 IMAGE_LIMIT = 10
+ADD_DIR_LIMIT = 4
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 # Konwencja Claude Code (`claude --worktree`): worktrees w ignorowanym katalogu repozytorium.
 WORKTREES_SUBDIR = os.path.join(".claude", "worktrees")
@@ -48,6 +50,7 @@ MESSAGES = {
     "prompt-too-long": "polecenie jest za długie (najwyżej {limit} znaków)",
     "bad-prompt": "polecenie zawiera niedozwolony znak (NUL)",
     "bad-image": "nie da się dołączyć zrzutu: {detail}",
+    "bad-add-dir": "nie da się udostępnić katalogu agentowi: {detail}",
     "no-base": "repozytorium nie ma lokalnej gałęzi master, main ani develop — wyłącz „Nowy worktree”",
     "bad-branch": "niepoprawna nazwa gałęzi: {detail}",
     "protected-branch": "{branch} to gałąź główna — nowy worktree potrzebuje własnej gałęzi",
@@ -106,22 +109,27 @@ def failure(error: TaskError) -> dict:
 
 # --- polecenie agenta ------------------------------------------------------------------------
 
-def agent_argv(tool: str, binary: str, prompt: str, images: list[str] = ()) -> list[str]:
+def agent_argv(tool: str, binary: str, prompt: str, images: list[str] = (), add_dirs: list[str] = ()) -> list[str]:
     """argv sesji interaktywnej z poleceniem na start; prompt to jeden element listy.
 
-    Codex: `codex --image A --image B -- <prompt>` (zrzuty dołączone do pierwszej wiadomości).
+    Codex: `codex [--add-dir D] --image A --image B -- <prompt>` (zrzuty dołączone do pierwszej wiadomości).
     Claude Code nie ma opcji na obrazy: ścieżki trafiają na koniec polecenia, a katalogi zrzutów
     do `--add-dir`, żeby agent mógł je przeczytać narzędziem Read bez pytania o zgodę.
+    add_dirs (oba narzędzia: `--add-dir`) — katalogi poza katalogiem roboczym, w których agent
+    pisze (dokumenty AI karty w repozytorium tablicy).
     `--` kończy opcje — polecenie zaczynające się od „-” nie zostanie wzięte za opcję."""
     images = list(images)
+    extra = []
+    for folder in add_dirs:
+        extra += ["--add-dir", folder]
     if tool == "codex":
-        argv = [binary]
+        argv = [binary] + extra
         for path in images:
             argv += ["--image", path]
         return argv + ["--", prompt]
     if tool == "claude":
-        argv = [binary]
-        for folder in sorted({os.path.dirname(p) for p in images}):
+        argv = [binary] + extra
+        for folder in sorted({os.path.dirname(p) for p in images} - set(add_dirs)):
             argv += ["--add-dir", folder]
         text = prompt
         if images:
@@ -258,7 +266,7 @@ class Planner:
 
     def __init__(self, workspace: str, max_depth: int = 3, git: Git | None = None, env=None,
                  files: TaskFiles | None = None, images_root: str | None = None, state_path: str | None = None,
-                 terminal_available=None):
+                 terminal_available=None, board_root: str | None = None):
         env = dict(os.environ if env is None else env)
         self.workspace = workspace
         self.max_depth = max_depth
@@ -272,6 +280,10 @@ class Planner:
         self.state_path = state_path or os.path.join(state, "tide", "new-task.json")
         self.home = home
         self.terminal_available = terminal_available or (lambda: True)
+        if board_root is None:
+            from ..board.marker import default_board_dir
+            board_root = env.get("TIDE_BOARD_DIR") or default_board_dir()
+        self.board_root = os.path.abspath(os.path.expanduser(board_root)) if board_root else ""
 
     # --- narzędzia -----------------------------------------------------------------------
 
@@ -385,10 +397,34 @@ class Planner:
             raise TaskError("no-terminal")
         repo = self._repo(request.get("repoPath") or "")
         images = self._images(request.get("images") or [])
+        add_dirs = self._add_dirs(request.get("addDirs") or [])
         new_worktree = request.get("newWorktree") is not False
         branch = request.get("branch") if isinstance(request.get("branch"), str) else ""
         return {"tool": tool, "prompt": prompt, "binary": binary, "repo": repo, "images": images,
-                "newWorktree": new_worktree, "branch": branch.strip()}
+                "addDirs": add_dirs, "newWorktree": new_worktree, "branch": branch.strip()}
+
+    def _add_dirs(self, paths) -> list[str]:
+        """Katalogi do `--add-dir`: tylko istniejące katalogi pod `<tablica>/docs/` (dokumenty AI kart
+        projektów z `ai-docs: tide`), po rozwinięciu dowiązań; nic spoza tablicy."""
+        if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+            raise TaskError("bad-add-dir", detail="niepoprawna lista")
+        if len(paths) > ADD_DIR_LIMIT:
+            raise TaskError("bad-add-dir", detail=f"najwyżej {ADD_DIR_LIMIT} katalogi")
+        if paths and not self.board_root:
+            raise TaskError("bad-add-dir", detail="nie wiadomo, gdzie jest tablica Tide")
+        docs = os.path.join(os.path.realpath(self.board_root), "docs")
+        out = []
+        for path in paths:
+            if "\0" in path or not os.path.isabs(path):
+                raise TaskError("bad-add-dir", detail=f"{path or '(pusty)'} nie jest ścieżką bezwzględną")
+            real = os.path.realpath(path)
+            if not real.startswith(docs + os.sep):
+                raise TaskError("bad-add-dir", detail=f"{path} leży poza dokumentami tablicy ({docs})")
+            if not os.path.isdir(real):
+                raise TaskError("bad-add-dir", detail=f"{path} nie jest katalogiem")
+            if real not in out:
+                out.append(real)
+        return out
 
     def _images(self, paths) -> list[str]:
         if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
@@ -438,7 +474,7 @@ class Planner:
         else:
             cwd = repo
             branch = self.repo_state(repo)["branch"]
-        argv = agent_argv(req["tool"], req["binary"], req["prompt"], req["images"])
+        argv = agent_argv(req["tool"], req["binary"], req["prompt"], req["images"], req["addDirs"])
         plan = Plan(repo_path=repo, repo_name=name, tool=req["tool"], prompt=req["prompt"], cwd=cwd, branch=branch,
                     title=task_title(name, branch or "odłączony HEAD"), argv=argv, worktree=plan_worktree, base=base,
                     base_sha=base_sha, images=req["images"])

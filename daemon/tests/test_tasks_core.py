@@ -79,6 +79,15 @@ class ArgvTest(unittest.TestCase):
         with self.assertRaises(TaskError):
             agent_argv("vim", "v", "a b")
 
+    def test_add_dirs_for_both_tools(self):
+        docs = "/b/docs/mobileapp"
+        self.assertEqual(agent_argv("codex", "codex", "a b", ["/t/a.png"], [docs]),
+                         ["codex", "--add-dir", docs, "--image", "/t/a.png", "--", "a b"])
+        argv = agent_argv("claude", "claude", "a b", ["/t/1/a.png"], [docs])
+        self.assertEqual(argv[:6], ["claude", "--add-dir", docs, "--add-dir", "/t/1", "--"])
+        self.assertEqual(agent_argv("claude", "claude", "a b", (), [docs, "/b/docs/x"]),
+                         ["claude", "--add-dir", docs, "--add-dir", "/b/docs/x", "--", "a b"])
+
     def test_prompt_reaches_the_agent_unchanged_through_launcher(self):
         """Polecenie z cudzysłowami, $(…), nową linią i emoji to jeden argument — bez powłoki po drodze."""
         with tempfile.TemporaryDirectory(prefix="tide-argv-") as tmp:
@@ -316,6 +325,27 @@ class PlannerTest(unittest.TestCase):
         notes = os.path.join(folder, "notatki.txt")
         open(notes, "w").close()
         self.assert_refused("bad-image", self.request(images=[notes], branch="claude/inna"))
+
+    def test_add_dirs_only_inside_board_docs(self):
+        board = os.path.join(self.tmp, "tide-board")
+        docs = os.path.join(board, "docs", "mobileapp")
+        os.makedirs(docs)
+        os.makedirs(os.path.join(board, "cards"))
+        outside = os.path.join(self.tmp, "poza")
+        os.makedirs(outside)
+        os.symlink(outside, os.path.join(board, "docs", "skrot"))
+        planner = Planner(self.root, git=quiet_git(), env=self.env, board_root=board)
+        plan = planner.prepare(self.request(tool="codex", addDirs=[docs, docs + "/"], branch="codex/k-1-vin"))
+        self.assertEqual(plan.argv[1:4], ["--add-dir", os.path.realpath(docs), "--"])
+        self.planner = planner
+        for bad in ([os.path.join(board, "cards")], [board], [os.path.join(board, "docs")], ["docs/mobileapp"],
+                    [os.path.join(board, "docs", "skrot")], [os.path.join(board, "docs", "nie-ma")],
+                    [os.path.join(board, "docs", "mobileapp", "..", "..", "cards")], "zle", [1], [docs] * 5):
+            self.assert_refused("bad-add-dir", self.request(addDirs=bad, branch="claude/inna"))
+        no_board = Planner(self.root, git=quiet_git(), env=self.env, board_root="")
+        with self.assertRaises(TaskError) as ctx:
+            no_board.prepare(self.request(addDirs=[docs], branch="claude/inna"))
+        self.assertEqual(ctx.exception.code, "bad-add-dir")
 
     def test_rollback_removes_worktree_and_fresh_branch_only(self):
         plan = self.planner.prepare(self.request())
