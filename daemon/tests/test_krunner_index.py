@@ -37,6 +37,7 @@ class IndexTest(unittest.TestCase):
             "project": "alpha", "branch": "feat/login", "title": "Login form fix",
             "lastActivity": history.NOW - 3 * 86400 + 60 - 2 * 3600,  # 2026-10-23T10:01Z
             "desktop": False,
+            "source": os.path.join(self.p["claude"], "projects", "-ROOT-work-alpha", "h-titled.jsonl"),
         })
 
     def test_order_is_most_recent_first(self):

@@ -8,11 +8,14 @@ najwyższego znanego przodka, który dostaje licznik `subagents` i stan „najpi
 i podagentów (czeka > pracuje > skończył). Podagent, którego rodzica nie znamy (np. wątek
 główny sprzed doby), zostaje osobną pozycją z `subagent: true`. Przejście do sesji z Codex
 Desktop otwiera w aplikacji wątek główny (codex://threads/<id>) — który, pamięta `app_threads`.
+
+Codex może mieć kilka katalogów danych (codex_homes.py: ~/.codex i snap) — czytamy wszystkie,
+a ta sama sesja w dwóch katalogach jest jedną pozycją (nowsza aktywność wygrywa).
 """
 import os
 
 from ..processes import ProcessTable
-from .. import codex_app, windows
+from .. import codex_app, codex_homes, windows
 from . import gitinfo
 from .claude import ClaudeLog, escape_cwd, read_process_status, status_from
 from .codex import CodexLog
@@ -28,10 +31,11 @@ WINDOW = "window"
 
 
 class AgentScanner:
-    def __init__(self, claude_root: str, codex_root: str, max_age: float = MAX_AGE, codex_app=None):
+    def __init__(self, claude_root: str, codex_root, max_age: float = MAX_AGE, codex_app=None):
+        """codex_root: katalog danych Codexa albo ich lista (codex_homes.py)."""
         self.claude_projects = os.path.join(claude_root, "projects")
         self.claude_status_dir = os.path.join(claude_root, "sessions")
-        self.codex_sessions = os.path.join(codex_root, "sessions")
+        self.codex_roots = codex_root
         self.max_age = max_age
         self.logs: dict[str, tuple[SessionLog, JsonlTail]] = {}
         self.claude_status: dict[int, dict] = {}
@@ -41,6 +45,13 @@ class AgentScanner:
 
     # --- pliki -------------------------------------------------------------------------
 
+    def codex_log_roots(self) -> tuple:
+        """Katalogi sessions/ wszystkich katalogów danych Codexa, bez dowiązań — rozwiązywane przy
+        każdym użyciu (snap po odświeżeniu przestawia ~/snap/codex/current na nową rewizję).
+        Te same ścieżki idą do processes.probe(log_roots=…), żeby otwarte pliki procesów Codexa
+        dało się porównać z plikami sesji."""
+        return tuple(codex_homes.sessions_dirs(self.codex_roots))
+
     def discover(self, now: float) -> bool:
         """Szuka plików zmienionych w ostatniej dobie. Zwraca True, gdy zestaw się zmienił."""
         cutoff = now - self.max_age
@@ -48,9 +59,10 @@ class AgentScanner:
         for path, mtime in _claude_files(self.claude_projects):
             if mtime >= cutoff:
                 found[path] = ClaudeLog
-        for path, mtime in _codex_files(self.codex_sessions):
-            if mtime >= cutoff:
-                found[path] = CodexLog
+        for root in self.codex_log_roots():
+            for path, mtime in _codex_files(root):
+                if mtime >= cutoff:
+                    found[path] = CodexLog
         changed = False
         for path in list(self.logs):
             if path not in found:
@@ -81,9 +93,11 @@ class AgentScanner:
         return list(self.logs) + [os.path.join(self.claude_status_dir, f"{pid}.json") for pid in self.claude_status]
 
     def watched_dirs(self) -> list[str]:
-        dirs = [self.claude_projects, self.claude_status_dir, self.codex_sessions]
+        roots = self.codex_log_roots()
+        dirs = [self.claude_projects, self.claude_status_dir, *roots]
         dirs += [os.path.dirname(p) for p in self.logs]
-        dirs += _recent_codex_dirs(self.codex_sessions)
+        for root in roots:
+            dirs += _recent_codex_dirs(root)
         return sorted({d for d in dirs if os.path.isdir(d)})
 
     # --- stan ---------------------------------------------------------------------------
@@ -92,6 +106,9 @@ class AgentScanner:
         visible = [log for log, _ in self.logs.values()
                    if (not log.hidden or _parent(log)) and log.last_activity
                    and now - log.last_activity <= self.max_age]
+        # Ten sam wątek Codexa w dwóch katalogach danych — zostaje plik z nowszą aktywnością.
+        visible = codex_homes.newest(visible, key=lambda l: (l.tool, l.session_id) if l.tool == "codex" else id(l),
+                                     stamp=lambda l: l.last_activity)
         bindings = self._bind(visible, procs)
         app_ready = self.codex_app is not None and self.codex_app.available()
         threads = {log.session_id: log for log in visible if log.tool == "codex"}
@@ -193,7 +210,7 @@ class AgentScanner:
         return bound
 
 
-def scan(claude_root: str, codex_root: str, now: float, procs: ProcessTable | None = None,
+def scan(claude_root: str, codex_root, now: float, procs: ProcessTable | None = None,
          codex_app=None) -> list[dict]:
     """Jednorazowy przebieg: katalogi dzienników → lista sesji ze stanami."""
     scanner = AgentScanner(claude_root, codex_root, codex_app=codex_app)

@@ -13,6 +13,9 @@ Czytanie:
 - przebiegi zaplanowanych zadań — od miejsca w pliku, w którym zaczyna się okres (wyszukiwanie
   binarne po znacznikach czasu), JSON parsowany tylko w liniach z początkiem albo końcem tury.
 
+Codex ma kilka katalogów danych (codex_homes.py: ~/.codex i ~/snap/codex/current) — czytamy
+wszystkie, a sesja obecna w dwóch katalogach trafia do raportu raz (z nowszym wpisem).
+
 Stan na koniec okresu bierzemy z obszaru Agents (żywe sesje z ostatniej doby), a gdy sesji tam
 nie ma — wyprowadzamy go z dziennika jak obszar Agents bez wiedzy o procesach.
 """
@@ -21,13 +24,14 @@ import re
 import tomllib
 from dataclasses import dataclass, field
 
+from .. import codex_homes
 from ..agents import gitinfo
 from ..agents.claude import ClaudeLog
 from ..agents.codex import SCHEDULED_KINDS, CodexLog
 from ..agents.jsonl import JsonlTail, _parse_lines, read_head
 from ..agents.state import TURN_END, derive_state
 from ..agents.timeutil import parse_ts
-from ..krunner.index import _state_db, claude_prompt, codex_prompt, short_title
+from ..krunner.index import _read_titles, _state_db, claude_prompt, codex_prompt, short_title
 from ..worktrees.sessions import _claude_files, _codex_files
 
 TAIL_BYTES = 2 * 1024 * 1024
@@ -82,9 +86,9 @@ class SessionReport:
         return self.last_action == "Przerwano"
 
 
-def collect(claude_root: str, codex_root: str, start: float, end: float,
+def collect(claude_root: str, codex_root, start: float, end: float,
             live: list[dict] | None = None) -> list[SessionReport]:
-    """Sesje z wpisem w [start, end], od najświeższej."""
+    """Sesje z wpisem w [start, end], od najświeższej. codex_root: katalog danych Codexa albo lista."""
     live_by_id = {s.get("id"): s for s in live or ()}
     titles = codex_titles(codex_root)
     automations = read_automations(codex_root)
@@ -95,13 +99,16 @@ def collect(claude_root: str, codex_root: str, start: float, end: float,
             report = read_session(path, ClaudeLog, start, end)
             if report:
                 out.append(report)
-    for path, st in _codex_files(os.path.join(codex_root, "sessions")):
-        if st.st_mtime >= start:
-            report = read_session(path, CodexLog, start, end, automations)
-            if report:
-                if not report.title:
-                    report.title = titles.get(report.session_id, "")
-                out.append(report)
+    codex = []
+    for root in codex_homes.sessions_dirs(codex_root):
+        for path, st in _codex_files(root):
+            if st.st_mtime >= start:
+                report = read_session(path, CodexLog, start, end, automations)
+                if report:
+                    if not report.title:
+                        report.title = titles.get(report.session_id, "")
+                    codex.append(report)
+    out += codex_homes.newest(codex, key=lambda r: r.session_id, stamp=lambda r: r.last_ts)
     places: dict[str, gitinfo.Location] = {}
     for report in out:
         if not report.title:
@@ -185,9 +192,16 @@ def final_message(record: dict, claude: bool) -> tuple[str, float]:
 
 # --- zaplanowane zadania Codexa -------------------------------------------------------------
 
-def read_automations(codex_root: str) -> dict[str, dict]:
-    """id wątku → {name, status, rrule} z <codex>/automations/*/automation.toml (tylko „heartbeat”)."""
-    root = os.path.join(codex_root, "automations")
+def read_automations(codex_root) -> dict[str, dict]:
+    """id wątku → {name, status, rrule} z <codex>/automations/*/automation.toml (tylko „heartbeat”)
+    każdego katalogu danych Codexa."""
+    out = {}
+    for home in codex_homes.resolve(codex_root):
+        out.update(_read_automations(os.path.join(home, "automations")))
+    return out
+
+
+def _read_automations(root: str) -> dict[str, dict]:
     out = {}
     try:
         names = sorted(os.listdir(root))
@@ -281,27 +295,21 @@ def seek_since(fh, ts: float) -> int:
     return max(0, lo - SEEK_SLACK)
 
 
-def codex_titles(codex_root: str) -> dict[str, str]:
-    """Nazwy wątków Codexa: session_index.jsonl (nadane przez użytkownika), potem baza stanu aplikacji."""
+def codex_titles(codex_root) -> dict[str, str]:
+    """Nazwy wątków Codexa ze wszystkich katalogów danych: session_index.jsonl (nadane przez
+    użytkownika) wygrywa z bazą stanu aplikacji."""
+    homes = codex_homes.resolve(codex_root)
     titles: dict[str, str] = {}
-    db = _state_db(codex_root)
-    if db:
-        import sqlite3
-        try:
-            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
-            try:
-                for tid, title in conn.execute("SELECT id, title FROM threads WHERE title != ''"):
-                    if isinstance(tid, str) and isinstance(title, str):
-                        titles[tid] = short_title(title)
-            finally:
-                conn.close()
-        except sqlite3.Error:
-            pass
-    index = JsonlTail(os.path.join(codex_root, "session_index.jsonl"), tail_bytes=None)
-    for record in index.read_new():
-        tid, name = record.get("id"), record.get("thread_name")
-        if isinstance(tid, str) and isinstance(name, str) and name.strip():
-            titles[tid] = short_title(name)
+    for home in homes:
+        db = _state_db(home)
+        if db:
+            titles.update(_read_titles(db) or {})
+    for home in homes:
+        index = JsonlTail(os.path.join(home, "session_index.jsonl"), tail_bytes=None)
+        for record in index.read_new():
+            tid, name = record.get("id"), record.get("thread_name")
+            if isinstance(tid, str) and isinstance(name, str) and name.strip():
+                titles[tid] = short_title(name)
     return titles
 
 

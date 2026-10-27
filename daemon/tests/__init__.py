@@ -26,3 +26,6 @@ os.environ["TIDE_MODELS_CONFIG"] = os.path.join(FIXTURES, "models-closed.json")
 # z `ai-docs: tide` (coordination/boardplans.py) i katalogi agentów (/Tasks addDirs) bierzemy
 # z nieistniejącego katalogu, chyba że test poda własną tablicę (TIDE_BOARD_DIR, --board-dir).
 os.environ["TIDE_BOARD_DIR"] = "/nonexistent/tide-tests/board"
+# Testy nigdy nie czytają prawdziwych dzienników Codexa (~/.codex, ~/snap/codex): bez --codex-dir
+# usługa w teście dostaje nieistniejący $CODEX_HOME zamiast domyślnych katalogów (codex_homes.py).
+os.environ["CODEX_HOME"] = "/nonexistent/tide-tests/codex"

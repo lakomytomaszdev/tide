@@ -11,7 +11,9 @@ zagnieżdżonych worktrees liczy się najgłębszy). Bierzemy sesje z ostatnich 
 - Codex: <codex>/sessions/RRRR/MM/DD/rollout-*.jsonl, katalog z `session_meta.payload.cwd`
   i `turn_context.payload.cwd` (worktrees Codexa leżą zwykle w ~/.codex/worktrees). Tytuł wątku
   z <codex>/session_index.jsonl (`thread_name`), inaczej pierwsze polecenie użytkownika
-  (`event_msg/user_message`). Wątki podagentów pomijamy.
+  (`event_msg/user_message`). Wątki podagentów pomijamy. Katalogów danych Codexa może być kilka
+  (codex_homes.py: ~/.codex i ~/snap/codex/current) — czytamy wszystkie, ta sama sesja w dwóch
+  liczy się raz (nowszy wpis wygrywa).
 
 Z każdego pliku czytamy tylko początek i koniec (HEAD_BYTES, TAIL_BYTES), a JSON parsujemy tylko
 w liniach, które mogą nieść potrzebne pola. Wynik pliku jest w pamięci do zmiany jego rozmiaru
@@ -27,6 +29,7 @@ import os
 import threading
 from dataclasses import dataclass
 
+from .. import codex_homes
 from ..agents.claude import shorten
 from ..agents.timeutil import parse_ts
 
@@ -60,14 +63,13 @@ class _Parsed:
 
 
 class SessionIndex:
-    def __init__(self, claude_root: str, codex_root: str, max_age: float = MAX_AGE):
+    def __init__(self, claude_root: str, codex_root, max_age: float = MAX_AGE):
+        """codex_root: katalog danych Codexa albo ich lista (codex_homes.py)."""
         self.claude_projects = os.path.join(claude_root, "projects")
-        self.codex_sessions = os.path.join(codex_root, "sessions")
-        self.codex_index = os.path.join(codex_root, "session_index.jsonl")
+        self.codex_roots = codex_root
         self.max_age = max_age
         self._files: dict[str, tuple[int, float, _Parsed | None]] = {}
-        self._codex_titles: dict[str, str] = {}
-        self._codex_stamp: tuple | None = None
+        self._codex_titles: dict[str, tuple[tuple, dict[str, str]]] = {}  # session_index.jsonl → (znacznik, nazwy)
         self._lock = threading.Lock()
         self.sessions: list[SessionInfo] = []
 
@@ -75,7 +77,10 @@ class SessionIndex:
         """Doczytuje zmienione pliki z ostatnich max_age. Wołać poza wątkiem D-Bus."""
         cutoff = now - self.max_age
         found = {path: ("claude", st) for path, st in _claude_files(self.claude_projects) if st.st_mtime >= cutoff}
-        found.update({path: ("codex", st) for path, st in _codex_files(self.codex_sessions) if st.st_mtime >= cutoff})
+        homes = codex_homes.resolve(self.codex_roots)
+        for home in homes:
+            found.update({path: ("codex", st) for path, st in _codex_files(os.path.join(home, codex_homes.SESSIONS))
+                          if st.st_mtime >= cutoff})
         files = {}
         for path, (tool, st) in found.items():
             old = self._files.get(path)
@@ -85,7 +90,11 @@ class SessionIndex:
             parsed = read_claude(path) if tool == "claude" else read_codex(path)
             files[path] = (st.st_size, st.st_mtime, parsed)
         self._files = files
-        titles = self._read_codex_titles()
+        titles = {}
+        for home in homes:
+            titles.update(self._read_codex_titles(os.path.join(home, "session_index.jsonl")))
+        self._codex_titles = {k: v for k, v in self._codex_titles.items()
+                              if os.path.dirname(k) in homes}
 
         sessions = []
         for _size, mtime, parsed in files.values():
@@ -95,6 +104,9 @@ class SessionIndex:
             sessions.append(SessionInfo(parsed.tool, parsed.session_id, shorten(title or parsed.prompt, TITLE_LIMIT),
                                         parsed.cwds, parsed.last_ts or mtime,
                                         tuple(os.path.realpath(c) for c in parsed.cwds)))
+        # Ta sama sesja Codexa w dwóch katalogach danych — zostaje ta z nowszym wpisem.
+        sessions = codex_homes.newest(sessions, key=lambda x: (x.tool, x.session_id) if x.tool == "codex" else id(x),
+                                      stamp=lambda x: x.last_ts)
         with self._lock:
             self.sessions = sessions
         return sessions
@@ -116,25 +128,27 @@ class SessionIndex:
                     out[path] = session
         return out
 
-    def _read_codex_titles(self) -> dict[str, str]:
+    def _read_codex_titles(self, index: str) -> dict[str, str]:
+        """Nazwy wątków z jednego session_index.jsonl; plik bez zmian rozmiaru i mtime nie jest czytany."""
         try:
-            st = os.stat(self.codex_index)
+            st = os.stat(index)
         except OSError:
-            self._codex_titles, self._codex_stamp = {}, None
+            self._codex_titles.pop(index, None)
             return {}
         stamp = (st.st_size, st.st_mtime)
-        if stamp == self._codex_stamp:
-            return self._codex_titles
+        old = self._codex_titles.get(index)
+        if old and old[0] == stamp:
+            return old[1]
         titles = {}
         try:
-            with open(self.codex_index, "rb") as fh:
+            with open(index, "rb") as fh:
                 for line in fh:
                     record = _loads(line)
                     if record and record.get("id") and isinstance(record.get("thread_name"), str):
                         titles[str(record["id"])] = record["thread_name"]  # późniejszy wpis wygrywa
         except OSError:
-            return self._codex_titles
-        self._codex_titles, self._codex_stamp = titles, stamp
+            return old[1] if old else {}
+        self._codex_titles[index] = (stamp, titles)
         return titles
 
 

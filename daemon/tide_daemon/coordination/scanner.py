@@ -12,6 +12,8 @@ Koordynator:
   Katalog dnia to dzień ZAŁOŻENIA wątku, więc długo żyjący koordynator (np. założony dwa tygodnie
   temu, a dziś wciąż zlecający) leży poza oknem — rodzica podagenta z okna szukamy wtedy po ID
   w nazwie pliku (`rollout-…-<id>.jsonl`) we wszystkich dniach i w `archived_sessions`.
+  Katalogów danych Codexa może być kilka (codex_homes.py: ~/.codex i ~/snap/codex/current) —
+  czytamy wszystkie; wątek obecny w dwóch to jeden wątek (plik zmieniony później wygrywa).
 
 Tablica dostaje też `warnings` — kontrolę numerów ticketów (numbering.py) na planach ze wszystkich
 worktree i gałęzi repozytorium (repoplans.py), rezerwacjach numerów (reservations.py) i liście projektów
@@ -22,6 +24,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 
+from .. import codex_homes
 from ..agents import gitinfo
 from . import board as board_mod
 from . import claude as claude_mod
@@ -38,11 +41,11 @@ BACKLOG_FILES = 400     # tyle plików backlogu czytamy najwyżej (nagłówki, n
 
 
 class CoordinationScanner:
-    def __init__(self, claude_root: str, codex_root: str, days: float = DAYS, clock=time.time, tracker=None,
+    def __init__(self, claude_root: str, codex_root, days: float = DAYS, clock=time.time, tracker=None,
                  titles=None, repo_plans=None, registry=None):
+        """codex_root: katalog danych Codexa albo ich lista (codex_homes.py)."""
         self.claude_projects = os.path.join(claude_root, "projects")
-        self.codex_root = codex_root
-        self.codex_sessions = os.path.join(codex_root, "sessions")
+        self.codex_roots = codex_root
         self.days = days
         self.clock = clock
         self.tracker = tracker          # YouTrackCache albo None (bez YouTracka)
@@ -77,16 +80,19 @@ class CoordinationScanner:
                 del self.claude_logs[path]
 
         threads = {}
-        for path in _codex_files(self.codex_sessions, cutoff, now):
-            log = self.codex_logs.get(path)
-            if log is None:
-                log = self.codex_logs[path] = codex_mod.CodexThreadLog(path)
-            if log.read_meta() and log.id:
-                threads[log.id] = log
+        for root in codex_homes.sessions_dirs(self.codex_roots):
+            for path in _codex_files(root, cutoff, now):
+                log = self.codex_logs.get(path)
+                if log is None:
+                    log = self.codex_logs[path] = codex_mod.CodexThreadLog(path)
+                if log.read_meta() and log.id:
+                    other = threads.get(log.id)
+                    if other is None or _mtime(path) > _mtime(other.path):
+                        threads[log.id] = log
         self._add_codex_parents(threads, now)
         for path in list(self.codex_logs):
-            if self.codex_logs[path].id not in threads:
-                del self.codex_logs[path]
+            if threads.get(self.codex_logs[path].id) is not self.codex_logs[path]:
+                del self.codex_logs[path]  # spoza okna albo kopia wątku z drugiego katalogu danych
         children: dict[str, list] = {}
         for log in threads.values():
             if log.parent_id and not log.hidden:
@@ -131,7 +137,8 @@ class CoordinationScanner:
             return path
         if now - self._codex_missing.get(tid, -MISSING_RETRY) < MISSING_RETRY:
             return ""
-        path = _find_codex_thread(self.codex_root, tid)
+        path = next((p for p in (_find_codex_thread(home, tid) for home in codex_homes.resolve(self.codex_roots))
+                     if p), "")
         if path:
             self._codex_paths[tid] = path
             self._codex_missing.pop(tid, None)
@@ -394,8 +401,15 @@ def _codex_files(root: str, cutoff: float, now: float):
         day += timedelta(days=1)
 
 
+def _mtime(path: str) -> float:
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0.0
+
+
 def _find_codex_thread(codex_root: str, tid: str) -> str:
-    """Plik wątku po ID: najpierw najnowsze dni w sessions/, potem archived_sessions/."""
+    """Plik wątku po ID w jednym katalogu danych: najpierw najnowsze dni w sessions/, potem archived_sessions/."""
     if not tid or "/" in tid or tid.startswith("."):
         return ""
     suffix = f"-{tid}.jsonl"

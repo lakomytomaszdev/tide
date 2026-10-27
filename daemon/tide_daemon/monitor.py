@@ -135,7 +135,7 @@ class AgentMonitor(QObject):
     def _probe(self):
         if not self.use_processes:
             return None
-        return processes.probe(log_roots=(self.scanner.codex_sessions,))
+        return processes.probe(log_roots=self.scanner.codex_log_roots())
 
     def _file_changed(self, path: str) -> None:
         self._dirty.add(path)
