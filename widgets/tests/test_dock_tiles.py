@@ -201,6 +201,22 @@ class AgentsPopupTest(unittest.TestCase):
         self.assertEqual([r["activateText"] for r in rows], [
             "Otwórz w Codex", "Otwórz w Codex", "Otwórz w Codex", "Przejdź do okna Codex", "Przejdź do terminala"])
 
+    def test_local_model_marker(self):
+        """Sesja na modelu lokalnym (tide-daemon: localModel, model): „lokalny · model” po narzędziu."""
+        base = dict(preview.SESSIONS[2], reason="", title="", branch="main", subagents=0)
+        rows = self.rows([
+            dict(base, id="codex:1", localModel=True, model="qwen3-coder:30b", sinceTs=preview.NOW_TS - 10),
+            dict(base, id="codex:2", localModel=False, model="gpt-6-sol", sinceTs=preview.NOW_TS - 20),
+            dict(base, id="codex:3", localModel=True, model="", sinceTs=preview.NOW_TS - 30),
+            dict(preview.SESSIONS[1], id="claude:4", localModel=True, model="qwen3-coder:30b"),
+        ])
+        by_id = {r["id"]: r for r in rows}
+        self.assertEqual(by_id["codex:1"]["detail"], "Codex · lokalny · qwen3-coder:30b · main")
+        self.assertEqual(by_id["codex:2"]["detail"], "Codex · main")
+        self.assertEqual(by_id["codex:3"]["detail"], "Codex · lokalny · main")
+        self.assertEqual(by_id["claude:4"]["detail"], "Claude Code · lokalny · qwen3-coder:30b · feat/login")
+        self.assertEqual([by_id[k]["local"] for k in ("codex:1", "codex:2", "claude:4")], [True, False, True])
+
     def test_older_daemon_reply_is_shown_as_done(self):
         # Starsza usługa zgłaszała koniec tury jako waiting/reply — wiersz pokazuje go jako „skończył”.
         old = dict(preview.SESSIONS[3], state="waiting", reason="reply")

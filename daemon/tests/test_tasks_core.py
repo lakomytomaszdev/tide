@@ -364,10 +364,12 @@ class PlannerTest(unittest.TestCase):
         self.assertIn("master", gitrepos.branches(self.alpha))
 
     def test_remembers_last_choice(self):
-        self.assertEqual(self.planner.last_choice(), {"repoPath": "", "tool": "claude", "newWorktree": True})
+        self.assertEqual(self.planner.last_choice(), {"repoPath": "", "tool": "claude", "newWorktree": True,
+                                                      "model": "cloud"})
         plan = self.planner.prepare(self.request(repoPath=self.beta, tool="codex", newWorktree=False))
         self.planner.remember(plan)
-        self.assertEqual(self.planner.last_choice(), {"repoPath": self.beta, "tool": "codex", "newWorktree": False})
+        self.assertEqual(self.planner.last_choice(), {"repoPath": self.beta, "tool": "codex", "newWorktree": False,
+                                                      "model": "cloud"})
         defaults = self.planner.defaults()
         self.assertEqual(defaults["tools"], {"claude": True, "codex": True})
         self.assertEqual(defaults["imagesDir"], os.path.join(self.env["XDG_DATA_HOME"], "tide", "tasks"))

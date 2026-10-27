@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
+from .agents import localmodel
 from .models import config as models_config
 from .models import pull as models_pull
 from .models import queue as models_queue
@@ -110,6 +111,7 @@ class ModelsMonitor(QObject):
         self._pulls: dict[str, dict] = {}
         self._pull_ids: dict[str, int] = {}
         self._pull_seq = 0
+        self._known = localmodel.known_models(self._base)
         self._json = _dump(self._compose())
         self._busy = False
         self._again = False
@@ -144,6 +146,10 @@ class ModelsMonitor(QObject):
         self._cancel.set()  # trwające pobierania i próby połączenia kończą się od razu
         self._pool.shutdown(wait=False, cancel_futures=True)
         self._tests.shutdown(wait=False, cancel_futures=True)
+
+    def known_models(self) -> set:
+        """Modele z ról i serwerów z ostatniego odczytu — znacznik „lokalny” sesji Claude Code (agents/)."""
+        return set(self._known)
 
     def status_json(self) -> str:
         return self._json
@@ -231,6 +237,9 @@ class ModelsMonitor(QObject):
 
     def _publish(self, force: bool = False) -> None:
         self._throttle.stop()
+        # Modele z ról i serwerów (znacznik „lokalny” sesji, agents/localmodel.py) — z każdego nowego stanu:
+        # odczytu i zapisu ustawień z okna.
+        self._known = localmodel.known_models(self._base)
         self._published = time.monotonic()
         text = _dump(self._compose())
         if text != self._json or force:

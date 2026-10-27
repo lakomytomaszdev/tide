@@ -227,6 +227,8 @@ def main(argv=None) -> int:
     idle = None if args.no_idle else start_idle(app, args)
     limits = None if args.no_limits else start_limits(app, args, clock)
     models = None if args.no_models else start_models(app, args, report, coordination)
+    if models is not None:
+        scanner.known_local_models = models.known_models  # role i modele na serwerach ze stanu /Models
     tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
     board = None if args.no_board else start_board(app, args, trees, monitor, coordination, clock)
     if board is not None:

@@ -27,13 +27,14 @@ Obiekt /Worktrees, interfejs org.tide.Daemon.Worktrees:
 
 Obiekt /Tasks, interfejs org.tide.Daemon.Tasks (nowe zadanie dla agenta):
 - Repos() -> s               repozytoria z katalogu projektów jako JSON, od ostatnio aktywnych,
-- Defaults() -> s            JSON: zapamiętany wybór (repoPath, tool, newWorktree), dostępne narzędzia,
+- Defaults() -> s            JSON: zapamiętany wybór (repoPath, tool, newWorktree, model), dostępne narzędzia,
                              Konsole, katalog zrzutów i limity,
 - SuggestBranch(s repoPath, s tool, s prompt) -> s
                              JSON {ok, branch, path, base}: gałąź z polecenia (naming.py) i katalog worktree,
-- Start(s request) -> s      JSON prośby {repoPath, tool, prompt, newWorktree, branch, images, addDirs} → wynik
-                             {ok, error, message, cwd, branch, worktree, title, mode}; worktree od gałęzi
-                             głównej, karta Konsoli z agentem; przy błędzie nic nie zostaje (odpowiedź po starcie),
+- Start(s request) -> s      JSON prośby {repoPath, tool, prompt, newWorktree, branch, images, addDirs, model} → wynik
+                             {ok, error, message, cwd, branch, worktree, title, mode, model, local}; model „local” —
+                             rola `agent` z models.json (tasks/local.py); worktree od gałęzi głównej, karta
+                             Konsoli z agentem; przy błędzie nic nie zostaje (odpowiedź po starcie),
 - ShowDialog() -> b          otwiera okno „Nowe zadanie” (False, gdy nie jest zainstalowane).
 
 Obiekt /Idle, interfejs org.tide.Daemon.Idle (bezczynność użytkownika dla tapety z kotem):

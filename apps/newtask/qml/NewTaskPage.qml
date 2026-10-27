@@ -1,6 +1,6 @@
 // Zawartość okna „Nowe zadanie” (układ z mocka #22): „Co ma zrobić agent?” ze skrótem, repozytorium
 // (lista rozwijana od ostatnio aktywnych, z szukaniem po wpisaniu) i agent (Claude Code / Codex),
-// zadanie z licznikiem znaków, zrzuty ekranu (miniatury, „Zrób zrzut”, przeciąganie, Ctrl+V),
+// model (chmura albo lokalny z roli `agent` w /Models), zadanie z licznikiem znaków, zrzuty ekranu (miniatury, „Zrób zrzut”, przeciąganie, Ctrl+V),
 // karta „Nowy worktree” z gałęzią do zmiany, błąd w miejscu i „Uruchom agenta”.
 // Sam nie rozmawia z usługą — dostaje dane i zgłasza prośby sygnałami, dzięki czemu da się go
 // załadować w teście z przykładowymi danymi.
@@ -27,6 +27,9 @@ Rectangle {
     // Wklejenie obrazu ze schowka: funkcja() → true, gdy schowek miał obraz (albo pliki obrazów)
     // i trafił do zrzutów; wtedy pole tekstowe już nic nie wkleja.
     property var pasteImage: function () { return false }
+    // Stan modeli lokalnych: Status() obiektu /Models, {pending: true} przed pierwszą odpowiedzią,
+    // null — usługa go nie podaje.
+    property var modelsStatus: null
 
     signal startRequested(string request)
     signal suggestRequested(string repoPath, string tool, string prompt)
@@ -34,11 +37,15 @@ Rectangle {
     signal removeImageRequested(string path)
     signal filesDropped(var urls)
     signal cancelRequested()
+    signal modelsRequested()   // „ustaw w Tide → Modele”: okno Tide na widoku Modele
 
     // Stan formularza.
     property string query: ""
     property string repoPath: ""
     property string tool: "claude"
+    // Zapamiętany „Lokalny” zostaje wybrany; póki serwer nie odpowie albo gdy model jest niedostępny,
+    // start blokuje powód (blocker) — okno nigdy samo nie przechodzi na chmurę.
+    property string model: "cloud"
     property alias prompt: promptEdit.text
     property bool newWorktree: true
     property string branch: ""
@@ -50,9 +57,11 @@ Rectangle {
     readonly property var shownRepos: Logic.filterRepos(repos, query)
     readonly property var repo: Logic.findRepo(repos, repoPath)
     readonly property var tools: defaults && defaults.tools ? defaults.tools : ({})
+    readonly property var localOption: Logic.localOption(modelsStatus)
+    readonly property string modelNote: Logic.modelNote(localOption, model, tool)
     readonly property var formState: ({
         available: available, repo: repo, tool: tool, tools: tools, prompt: prompt, newWorktree: newWorktree,
-        branch: branch, images: images
+        branch: branch, images: images, model: model, local: localOption
     })
     readonly property string blocker: Logic.blocker(formState)
     readonly property bool canStart: blocker === "" && !busy
@@ -65,6 +74,7 @@ Rectangle {
         if (!defaultsApplied) {
             tool = defaults.tool || "claude"
             newWorktree = defaults.newWorktree !== false
+            model = defaults.model === "local" ? "local" : "cloud"
             defaultsApplied = true
         }
         if (repoPath === "" && repos.length > 0) {
@@ -427,6 +437,99 @@ Rectangle {
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // Model: chmura narzędzia albo model lokalny z roli `agent`.
+        Label { text: "Model"; Layout.topMargin: 10 }
+        Field {
+            Layout.fillWidth: true
+            implicitHeight: 44
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 4
+                spacing: 4
+                Repeater {
+                    model: Logic.MODELS
+                    delegate: Rectangle {
+                        id: modelSegment
+                        required property var modelData
+                        readonly property bool isLocal: modelData.id === "local"
+                        readonly property bool chosen: page.model === modelData.id
+                        readonly property bool disabled: isLocal && !page.localOption.enabled
+                        objectName: "model-" + modelData.id
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: isLocal ? 3 : 1
+                        Layout.fillHeight: true
+                        radius: Tide.Tokens.radiusFrame
+                        color: chosen ? Tide.Theme.alpha(Tide.Tokens.accent, 0.16)
+                             : modelArea.containsMouse && !disabled ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.05)
+                             : "transparent"
+                        border.width: chosen || activeFocus ? 1 : 0
+                        border.color: activeFocus ? Tide.Tokens.textPrimary : Tide.Theme.alpha(Tide.Tokens.accent, 0.55)
+                        activeFocusOnTab: !disabled
+                        Accessible.role: Accessible.RadioButton
+                        Accessible.name: isLocal ? page.localOption.label : "Chmura"
+                        Accessible.checked: chosen
+                        Accessible.description: disabled ? page.localOption.reason : ""
+                        Keys.onSpacePressed: if (!disabled) page.model = modelData.id
+                        QQC2.ToolTip.visible: modelArea.containsMouse && disabled
+                        QQC2.ToolTip.text: page.localOption.reason
+                        QQC2.ToolTip.delay: 300
+                        Text {
+                            anchors.centerIn: parent
+                            width: Math.min(implicitWidth, parent.width - 16)
+                            elide: Text.ElideRight
+                            text: (modelSegment.isLocal ? "⌂ " + page.localOption.label : "☁ Chmura")
+                            color: modelSegment.disabled ? Tide.Tokens.textMuted
+                                 : modelSegment.chosen ? Tide.Tokens.accent : Tide.Tokens.textSecondary
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 14
+                            font.weight: modelSegment.chosen ? Font.DemiBold : Font.Medium
+                        }
+                        MouseArea {
+                            id: modelArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: modelSegment.disabled ? Qt.ArrowCursor : Qt.PointingHandCursor
+                            onClicked: if (!modelSegment.disabled) page.model = modelSegment.modelData.id
+                        }
+                    }
+                }
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            visible: page.modelNote !== ""
+            spacing: 6
+            Text {
+                objectName: "modelNote"
+                Layout.fillWidth: !page.localOption.hint || page.localOption.enabled
+                text: page.localOption.enabled ? page.modelNote : page.localOption.reason
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 12
+                elide: Text.ElideRight
+            }
+            Text {
+                objectName: "modelsLink"
+                visible: !page.localOption.enabled && page.localOption.hint
+                Layout.fillWidth: true
+                text: "— " + Logic.MODELS_HINT
+                color: linkArea.containsMouse ? Tide.Tokens.accent : Tide.Tokens.textSecondary
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 12
+                font.underline: linkArea.containsMouse
+                elide: Text.ElideRight
+                Accessible.role: Accessible.Link
+                Accessible.name: "Otwórz Tide → Modele"
+                MouseArea {
+                    id: linkArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: page.modelsRequested()
                 }
             }
         }
@@ -802,7 +905,8 @@ Rectangle {
                 objectName: "outcome"
                 Layout.fillWidth: true
                 text: page.busy ? "Zakładam worktree i otwieram Konsolę…"
-                    : page.blocker !== "" ? page.blocker : Logic.outcome(page.repo, page.tool, page.newWorktree)
+                    : page.blocker !== "" ? page.blocker : Logic.outcome(page.repo, page.tool, page.newWorktree,
+                                                                                page.model === "local" ? page.localOption : null)
                 color: page.blocker !== "" && !page.busy ? Tide.Tokens.textMuted : Tide.Tokens.textSecondary
                 font.family: Tide.Theme.uiFamily
                 font.pixelSize: 12

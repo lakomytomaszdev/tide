@@ -1,8 +1,10 @@
 """Dane do podglądu okna „Tide: nowe zadanie” (make preview-new-task) z listy worktrees tego komputera.
 
-Użycie: /usr/bin/python3 tools/new_task_preview.py worktrees.json "polecenie" > dane.json
+Użycie: /usr/bin/python3 tools/new_task_preview.py worktrees.json "polecenie" [models.json [--local]] > dane.json
 Tylko odczyt: repozytoria z `tide-daemon.py --print-worktrees`, propozycja gałęzi z naming.py
-(bez gita), więc nic nie powstaje w prawdziwych repozytoriach.
+(bez gita), więc nic nie powstaje w prawdziwych repozytoriach. models.json to stan z
+`tide-daemon.py --print-models` (Status() obiektu /Models); --local dokłada przykładową rolę `agent`
+(qwen3-coder:30b na pierwszym serwerze, gdy rola nie jest ustawiona) i wybiera „Lokalny”.
 """
 import json
 import os
@@ -19,9 +21,20 @@ def main(argv: list[str]) -> int:
     with open(argv[0], encoding="utf-8") as fh:
         repos = list_repos(json.load(fh))
     prompt = argv[1] if len(argv) > 1 else ""
-    data = {"repos": repos, "defaults": {"repoPath": repos[0]["path"] if repos else "", "tool": "claude",
-                                         "newWorktree": True, "tools": {"claude": True, "codex": True},
-                                         "terminal": True}}
+    local = "--local" in argv[2:]
+    models = None
+    paths = [a for a in argv[2:] if a != "--local"]
+    if paths:
+        with open(paths[0], encoding="utf-8") as fh:
+            models = json.load(fh)
+    if local and isinstance(models, dict) and "agent" not in (models.get("roles") or {}):
+        endpoint = models.get("default") or next(iter(models.get("endpoints") or {"local": {}}))
+        models.setdefault("roles", {})["agent"] = {"endpoint": endpoint, "model": "qwen3-coder:30b", "ctx": None,
+                                                   "installed": True, "available": True, "error": ""}
+    data = {"repos": repos, "models": models,
+            "defaults": {"repoPath": repos[0]["path"] if repos else "", "tool": "claude", "newWorktree": True,
+                         "tools": {"claude": True, "codex": True}, "terminal": True,
+                         "model": "local" if local else "cloud"}}
     if repos:
         branch = branch_from_prompt(prompt, "claude")
         data["suggestion"] = {"ok": True, "branch": branch, "base": repos[0]["mainBranch"],

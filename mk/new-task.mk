@@ -26,7 +26,11 @@ preview-new-task:
 	@mkdir -p build
 	@/usr/bin/python3 widgets/stage.py --app apps/newtask build/new-task
 	@/usr/bin/python3 daemon/tide-daemon.py --print-worktrees --no-processes > build/worktrees.json
-	@/usr/bin/python3 tools/new_task_preview.py build/worktrees.json "$(PREVIEW_PROMPT)" > build/new-task.json
+	@/usr/bin/python3 daemon/tide-daemon.py --print-models > build/models-status.json
+	@/usr/bin/python3 tools/new_task_preview.py build/worktrees.json "$(PREVIEW_PROMPT)" build/models-status.json > build/new-task.json
+	@/usr/bin/python3 tools/new_task_preview.py build/worktrees.json "$(PREVIEW_PROMPT)" build/models-status.json --local > build/new-task-local.json
 	@QT_QPA_PLATFORM=offscreen /usr/bin/python3 build/new-task/tide-new-task.py --data build/new-task.json \
 		--prompt "$(PREVIEW_PROMPT)" --grab build/new-task.png
-	@echo "Podgląd: build/new-task.png"
+	@QT_QPA_PLATFORM=offscreen /usr/bin/python3 build/new-task/tide-new-task.py --data build/new-task-local.json \
+		--prompt "$(PREVIEW_PROMPT)" --grab build/new-task-local.png
+	@echo "Podgląd: build/new-task.png, build/new-task-local.png (model lokalny)"
