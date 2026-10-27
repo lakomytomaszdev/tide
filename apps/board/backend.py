@@ -18,13 +18,29 @@ liczenia czasów i „home”: katalog domowy do skracania ścieżek); zapisy s�
 (odpowiedź „preview”), a wywołania zostają w `callsJson` — do testów i podglądu.
 Plakietka w pasku widoków: „● N” (brzoskwinia), gdy karty czekają na ciebie, inaczej liczba kart
 w grze (bez Gotowych i Archiwum); zero — ukryta. Ta sama reguła co /Board Badge() w usłudze.
+
+Plan i specyfikacja w panelu karty (PT-5): cardDocs(id) woła /Board CardDocs, a wynik wraca sygnałem
+docsReplied(id, json). „Otwórz plik” i „Pokaż w katalogu” przyjmują wyłącznie ścieżki z odpowiedzi
+CardDocs (plik w edytorze przez QDesktopServices, katalog — org.freedesktop.FileManager1 ShowItems
+z zaznaczonym plikiem, bez niego katalog nadrzędny), a openLink — wyłącznie adresy http(s).
+W podglądzie z pliku odpowiedź CardDocs bierzemy z klucza „cardDocs” ({"K-12": {...}}) danych,
+a otwarcia trafiają do `callsJson` zamiast do systemu.
+
+Markdown planu i specyfikacji (usługa oddaje go nieoczyszczonego) renderuje render_markdown parserem
+samego Qt — tym samym, który rozumie TextEdit — z MarkdownNoHTML (HTML zostaje tekstem), każdy obraz
+zamienia na „(obraz: opis)”, link inny niż http(s) — na zwykły tekst, a do tego odstęp nad nagłówkami
+i kolor linków z palety. QML pokazuje gotowy HTML (RichText) bez obrazów i bez obcych linków; okno
+dodatkowo nie wpuszcza żadnych żądań sieciowych (apps/tide/tide.py: guard_network).
 """
 import json
 import os
+import re
+from collections import OrderedDict
 
-from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import (QDBusConnection, QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply,
                           QDBusServiceWatcher)
+from PyQt6.QtGui import QColor, QDesktopServices, QTextCharFormat, QTextCursor, QTextDocument, QTextFormat
 
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Board", "org.tide.Daemon.Board"
 PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku — zmiany są wyłączone."}
@@ -35,6 +51,75 @@ TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
 COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
 AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
 START_TIMEOUT_MS = 120_000  # worktree, Konsola i przejęcie zadania (usługa czeka na nie do 15 s)
+DOCS_TIMEOUT_MS = 20_000    # CardDocs odpowiada po odczycie plików w wątku roboczym usługi
+FM_SERVICE, FM_PATH, FM_IFACE = "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1", \
+    "org.freedesktop.FileManager1"
+LINK_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
+HEADING_MARGINS = {1: (18, 6), 2: (16, 4), 3: (12, 3)}  # poziom nagłówka → (odstęp nad, pod) w px; niższe jak 3
+MARKDOWN = QTextDocument.MarkdownFeature.MarkdownDialectGitHub | QTextDocument.MarkdownFeature.MarkdownNoHTML
+RENDER_CACHE = 24   # tyle ostatnich dokumentów trzymamy wyrenderowanych (odświeżanie co 5 s nie renderuje od nowa)
+_BODY_STYLE = re.compile(r'<body style="[^"]*">')
+_IMG_TAG = re.compile(r"<img[^>]*>")
+
+
+def render_markdown(markdown: str, link: QColor | None = None) -> str:
+    """HTML do TextEdit (RichText) z Markdownu, bez obrazów, bez HTML ze źródła i bez linków innych niż http(s).
+
+    Parser to md4c z Qt — ten sam, którego używa TextEdit.MarkdownText — więc nie ma rozjazdu „co jest
+    obrazem” między oczyszczaniem a renderowaniem. Obraz (także zdefiniowany odnośnikiem) → kursywą
+    „(obraz: opis)”; HTML ze źródła z MarkdownNoHTML jest zwykłym tekstem; link file:, javascript:,
+    względny → zwykły tekst. Krój i wielkość czcionki zostają z TextEdit (bez stylu <body>)."""
+    doc = QTextDocument()
+    doc.setMarkdown(markdown or "", MARKDOWN)
+    images, anchors = [], []
+    block = doc.begin()
+    while block.isValid():
+        fmt = block.blockFormat()
+        level = fmt.headingLevel()
+        if level:
+            top, bottom = HEADING_MARGINS.get(level, HEADING_MARGINS[3])
+            fmt.setTopMargin(0 if block.blockNumber() == 0 else top)
+            fmt.setBottomMargin(bottom)
+            QTextCursor(block).setBlockFormat(fmt)
+        it = block.begin()
+        while not it.atEnd():
+            fragment = it.fragment()
+            char = fragment.charFormat()
+            if char.isImageFormat():
+                alt = str(char.property(QTextFormat.Property.ImageAltText) or "").strip()
+                name = char.toImageFormat().name()
+                last = images[-1] if images else None
+                if last and last[0] + last[1] == fragment.position() and last[3] == name:
+                    # md4c dzieli opis z kilku linii na kilka fragmentów tego samego obrazu — jeden obraz
+                    images[-1] = (last[0], last[1] + fragment.length(), " ".join(p for p in (last[2], alt) if p), name)
+                else:
+                    images.append((fragment.position(), fragment.length(), alt, name))
+            elif char.isAnchor():
+                anchors.append((fragment.position(), fragment.length(), char))
+            it += 1
+        block = block.next()
+    for position, length, char in anchors:
+        span = QTextCursor(doc)
+        span.setPosition(position)
+        span.setPosition(position + length, QTextCursor.MoveMode.KeepAnchor)
+        if LINK_RE.match(char.anchorHref() or ""):
+            if link is not None:
+                char.setForeground(link)
+        else:
+            char.setAnchor(False)
+            char.setAnchorHref("")
+            char.clearForeground()
+            char.setFontUnderline(False)
+        span.setCharFormat(char)
+    for position, length, alt, _name in reversed(images):   # od końca — wcześniejsze pozycje się nie przesuwają
+        span = QTextCursor(doc)
+        span.setPosition(position)
+        span.setPosition(position + length, QTextCursor.MoveMode.KeepAnchor)
+        plain = QTextCharFormat()
+        plain.setFontItalic(True)
+        span.insertText(f"(obraz: {alt or 'bez opisu'})", plain)
+    html = _BODY_STYLE.sub("<body>", doc.toHtml(), count=1)
+    return _IMG_TAG.sub("", html)   # zabezpieczenie: po zamianie nie powinno już być żadnego <img>
 
 
 def badge(snapshot) -> tuple[str, str]:
@@ -62,6 +147,7 @@ class Backend(QObject):
     badgeChanged = pyqtSignal()
     callsChanged = pyqtSignal()
     replied = pyqtSignal(str, str)  # tag z QML, odpowiedź usługi (JSON)
+    docsReplied = pyqtSignal(str, str)  # ID karty, odpowiedź CardDocs (JSON)
 
     def __init__(self, bus: QDBusConnection | None, data: dict | None = None, parent=None):
         super().__init__(parent)
@@ -74,9 +160,16 @@ class Backend(QObject):
         self._preview = data is not None
         self._now = 0.0
         self._home = ""
+        self._docs_data: dict = {}      # podgląd: ID karty → odpowiedź CardDocs
+        self._doc_paths: set = set()    # ścieżki z odpowiedzi CardDocs — tylko je wolno otworzyć
+        self._docs_requests = 0
+        self._rendered: OrderedDict = OrderedDict()   # (markdown, kolor linku) → HTML
         if data is not None:
             self._now = float(data.get("now") or 0)
             self._home = str(data.get("home") or "")
+            data = dict(data)
+            docs = data.pop("cardDocs", None)
+            self._docs_data = docs if isinstance(docs, dict) else {}
             self._snapshot = json.dumps(data, ensure_ascii=False)
             self._available = True
             self._update_badge()
@@ -117,6 +210,11 @@ class Backend(QObject):
     @pyqtProperty(str, notify=callsChanged)
     def callsJson(self) -> str:
         return json.dumps(self._calls, ensure_ascii=False)
+
+    # Ile razy panel poprosił o CardDocs (testy odświeżania).
+    @pyqtProperty(int, notify=callsChanged)
+    def docsRequests(self) -> int:
+        return self._docs_requests
 
     # Plakietka w pasku widoków okna Tide; pusta — ukryta.
     @pyqtProperty(str, notify=badgeChanged)
@@ -173,7 +271,98 @@ class Backend(QObject):
     def activateSession(self, session_id: str) -> None:
         self._open("ActivateSession", session_id, AGENTS_PATH, AGENTS_IFACE)
 
+    # Plan i specyfikacja karty: odpowiedź sygnałem docsReplied(id, json).
+    @pyqtSlot(str)
+    def cardDocs(self, card_id: str) -> None:
+        self._docs_requests += 1
+        self.callsChanged.emit()
+        if self._preview or self.bus is None:
+            reply = self._docs_data.get(card_id) if self._preview else None
+            if reply is None:
+                reply = {"ok": True, "card": card_id, "plan": None, "spec": None, "others": [], "warnings": []} \
+                    if self._preview else NO_SERVICE_REPLY
+            text = json.dumps(reply, ensure_ascii=False)
+            QTimer.singleShot(0, lambda: self._got_docs(card_id, text))
+            return
+
+        def done(ok: bool, value) -> None:
+            text = value if ok and isinstance(value, str) else json.dumps(NO_SERVICE_REPLY, ensure_ascii=False)
+            self._got_docs(card_id, text)
+
+        self._call("CardDocs", [card_id], done, timeout=DOCS_TIMEOUT_MS)
+
+    @pyqtSlot(str, result=bool)
+    def openFile(self, path: str) -> bool:
+        """„Otwórz plik”: dokument karty w domyślnym programie (tylko ścieżka z odpowiedzi CardDocs)."""
+        if path not in self._doc_paths:
+            return False
+        if self._preview or self.bus is None:
+            self._record("openFile", path)
+            return True
+        return QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    @pyqtSlot(str, result=bool)
+    def showInFolder(self, path: str) -> bool:
+        """„Pokaż w katalogu”: menedżer plików z zaznaczonym plikiem (FileManager1), bez niego — katalog."""
+        if path not in self._doc_paths:
+            return False
+        if self._preview or self.bus is None:
+            self._record("showInFolder", path)
+            return True
+        message = QDBusMessage.createMethodCall(FM_SERVICE, FM_PATH, FM_IFACE, "ShowItems")
+        message.setArguments([[QUrl.fromLocalFile(path).toString()], ""])
+        watcher = QDBusPendingCallWatcher(self.bus.asyncCall(message, 5_000), self)
+        self._pending.add(watcher)
+
+        def finished(w):
+            self._pending.discard(w)
+            if QDBusPendingReply(w).isError():
+                QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
+            w.deleteLater()
+
+        watcher.finished.connect(finished)
+        return True
+
+    @pyqtSlot(str, result=bool)
+    def openLink(self, url: str) -> bool:
+        """Link z planu albo specyfikacji — wyłącznie http(s), w przeglądarce."""
+        if not LINK_RE.match(url or ""):
+            return False
+        if self._preview or self.bus is None:
+            self._record("openLink", url)
+            return True
+        return QDesktopServices.openUrl(QUrl(url))
+
+    @pyqtSlot(str, QColor, result=str)
+    def renderMarkdown(self, markdown: str, link: QColor) -> str:
+        """render_markdown dla QML, z pamięcią ostatnich dokumentów (ta sama treść — ten sam HTML)."""
+        key = (markdown, link.name())
+        html = self._rendered.get(key)
+        if html is None:
+            html = render_markdown(markdown, link)
+            self._rendered[key] = html
+            while len(self._rendered) > RENDER_CACHE:
+                self._rendered.popitem(last=False)
+        else:
+            self._rendered.move_to_end(key)
+        return html
+
     # --- wnętrze ------------------------------------------------------------------------------
+
+    def _got_docs(self, card_id: str, text: str) -> None:
+        try:
+            reply = json.loads(text)
+        except ValueError:
+            reply = {}
+        if isinstance(reply, dict):
+            for doc in [reply.get("plan"), reply.get("spec"), *(reply.get("others") or [])]:
+                if isinstance(doc, dict) and isinstance(doc.get("path"), str) and doc["path"]:
+                    self._doc_paths.add(doc["path"])
+        self.docsReplied.emit(card_id, text)
+
+    def _record(self, member: str, *args) -> None:
+        self._calls.append([member, *args])
+        self.callsChanged.emit()
 
     def _write(self, tag: str, member: str, args: list) -> None:
         if self._preview or self.bus is None:

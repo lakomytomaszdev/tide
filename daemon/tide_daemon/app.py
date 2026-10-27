@@ -9,7 +9,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
                                [--no-report] [--report-delay SEKUNDY] [--report-summary claude|local|rules]
                                [--no-tasks]
                                [--print-coordination] [--coordination-days N] [--no-coordination]
-                               [--no-youtrack] [--print-board] [--board-dir DIR] [--no-board]
+                               [--no-youtrack] [--print-board] [--print-card-docs K-12] [--board-dir DIR]
+                               [--no-board]
                                [--print-docker | --no-docker]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
@@ -45,6 +46,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
 --no-coordination  bez obiektu /Coordination (tablica koordynatorów, tickety, podagenci),
 --no-youtrack      tablica bez YouTracka (żadnych zapytań sieciowych),
 --print-board      jednorazowo: migawka tablicy pracy jako JSON (tylko odczyt, niczego nie zakłada), bez D-Bus,
+--print-card-docs  jednorazowo: plan i specyfikacja karty (jak /Board CardDocs, bez koordynatorów — plan tylko
+                   z klucza `card`), bez D-Bus,
 --board-dir        repozytorium tablicy pracy (domyślnie $TIDE_BOARD_DIR albo ~/DevWorkspace/tide-board),
 --no-board         bez obiektu /Board (tablica pracy: karty, projekty, tagi).
 --print-docker     jednorazowo: migawka kontenerów i miejsce na dysku jako JSON (tylko odczyt Engine API), bez D-Bus,
@@ -99,6 +102,7 @@ def parse_args(argv):
     parser.add_argument("--no-coordination", action="store_true")
     parser.add_argument("--no-youtrack", action="store_true")
     parser.add_argument("--print-board", action="store_true")
+    parser.add_argument("--print-card-docs", metavar="ID")
     parser.add_argument("--board-dir")
     parser.add_argument("--no-board", action="store_true")
     parser.add_argument("--print-docker", action="store_true")
@@ -181,6 +185,10 @@ def main(argv=None) -> int:
         print(json.dumps(board_store(args).snapshot(repos=worktrees.find_repositories(args.workspace,
                                                                                       args.worktree_depth)),
                          ensure_ascii=False, indent=2))
+        return 0
+
+    if args.print_card_docs:
+        print(json.dumps(card_docs_once(args), ensure_ascii=False, indent=2))
         return 0
 
     if args.print_once:
@@ -499,6 +507,23 @@ def start_coordination(app, args, clock, monitor, trees, launchers, settings=Non
     return coordination
 
 
+def card_docs_once(args) -> dict:
+    """--print-card-docs: dokumenty karty z migawki tablicy, bez stanu z pracy agentów (tylko odczyt)."""
+    from .board.docs import CardDocs
+    from .board.model import BoardError, card_num
+    store = board_store(args)
+    try:
+        ident = f"K-{card_num(args.print_card_docs)}"
+    except BoardError as exc:
+        return {"ok": False, "error": exc.code, "message": str(exc)}
+    snapshot = store.snapshot()
+    card = next((c for c in snapshot["cards"] if c["id"] == ident), None)
+    if card is None:
+        return {"ok": False, "error": "not-found", "message": f"nie ma karty {ident}"}
+    project = next((p for p in snapshot["projects"] if card["project"] and p["slug"] == card["project"]), None)
+    return CardDocs(store.root).read(card, project)
+
+
 def board_store(args):
     """Repozytorium tablicy pracy (board/store.py) z kolorami tagów z palety."""
     from .board import default_board_dir
@@ -535,6 +560,7 @@ def start_board(app, args, trees, monitor=None, coordination=None, clock=time.ti
                           boards_source=(lambda: coordination.boards) if coordination is not None else (lambda: []),
                           branches=BranchState(clock=clock, background=True), clock=clock)
     board = BoardMonitor(board_store(args), repos_source=repos, derive=deriver, launchers=trees.launchers,
+                         coordinators=(lambda: coordination.boards) if coordination is not None else None,
                          parent=app)
     trees.changed.connect(board.publish)  # nowe repozytorium w katalogu projektów
     # Git (czy gałąź scalona) idzie w wątku roboczym; nowy wynik przelicza karty w wątku głównym.

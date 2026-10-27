@@ -780,6 +780,7 @@ z YouTracka to kolejny ticket (PT-7) na tym samym formacie. Plan: `docs/agents/p
 | `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{mode, tool, branch, check}` (wszystko opcjonalne; `check`: `auto` — domyślnie, albo `manual`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
 | `Badge()` | `→ s` | plakietka widoku Tablica w oknie Tide: JSON `{text, tone}` — „● N” (`waiting`), gdy karty czekają na ciebie, inaczej liczba kart w grze bez Gotowych i Archiwum (`muted`); zero — pusty tekst (plakietka ukryta). Tylko odczyt, niczego nie zakłada; ta sama reguła co `badge()` w `apps/board/backend.py` |
 | `ShowWindow(s id)` | `→ b` | okno Tide na widoku Tablica (`tide.py --view board`), z ID karty (`K-12`, wielkość liter bez znaczenia) od razu na niej (`--select K-12`), z `launch:K-12` — na niej z oknem „Co ma zrobić agent?” (`--select launch:K-12`, „Uruchom” w popupie kafelka); napis, który nie jest ID karty, pomijamy (samo okno); `false`, gdy okna nie ma — kafelek tablicy w docku |
+| `CardDocs(s id)` | `→ s` | plan i specyfikacja karty do panelu karty (niżej, „Plan i specyfikacja na karcie”): `{ok, card, plan, spec, others, warnings}`; tylko odczyt, odpowiedź po odczycie plików w wątku roboczym |
 | `Changed` | sygnał bez argumentów | tablica się zmieniła (zapis przez D-Bus albo zmiana z zewnątrz) — pobierz `Snapshot()` ponownie |
 
 Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt
@@ -1114,8 +1115,78 @@ założy projekt). Okno startuje z `projects` karty. Gdy wybór różni się od 
 projekty to małe chipy „+ mobileapp” obok nazwy projektu. Agent pracuje w worktree głównego projektu,
 a w dodatkowych repozytoriach zakłada gałąź o tej samej nazwie (polecenie, `{projects}` wyżej).
 
+**Plan i specyfikacja na karcie** (`CardDocs(id)`, `board/docs.py`, PT-5). Panel karty w widoku Tablica
+ma zakładki „Opis” | „Plan” | „Specyfikacja” — dwie ostatnie tylko wtedy, gdy usługa znalazła dokument.
+
+- **Plan** (pierwsze pasujące): plan z `card: K-12` we frontmatterze (standard 1.1; przy kilku —
+  niezakończony przed zakończonym, potem świeższy `updated`), inaczej plan koordynatora połączonego
+  z kartą (`derived.coordinator` → `plan.path` jego tablicy w `/Coordination`, także bez klucza `card`).
+  Szukamy w `docs/agents/plans/` repozytorium projektu karty i każdego jego worktree (lista z plików
+  `.git/worktrees/*/gitdir`, bez wołania gita) oraz w `<tablica>/docs/<projekt>/plans/` (karta bez
+  projektu — `docs/_inbox`; tablica z `--board-dir`, inaczej `$TIDE_BOARD_DIR`). Ten sam plik w kilku
+  worktree to jeden plan — wygrywa kopia z nowszym `updated`, potem nowszy plik. Karta bez repozytorium,
+  połączona z koordynatorem (np. przez `session`), korzysta z repozytorium koordynatora.
+- **Specyfikacja**: pole `spec` karty (bezwzględne albo względne do repozytorium, jego worktree, katalogu
+  tablicy albo `docs/<projekt>` w tablicy), inaczej plik w `docs/agents/specs/` repozytorium i worktree
+  albo `<tablica>/docs/<projekt>/specs/` nazwany od ID karty (`k-12.md`, `k-12-…`, `k-12_…`) albo
+  z `card: K-12` — gotowa (`status` jak w „Gotowej specyfikacji”) przed szkicem, potem najnowsza.
+- **Bezpieczeństwo**: tylko zwykłe pliki `.md`, `.markdown`, `.txt`, których ścieżka po realpath leży
+  w repozytorium projektu, jego worktree albo w `<tablica>/docs` — dowiązanie wychodzące poza nie,
+  FIFO i inne rozszerzenia odpadają (pole `spec` i plan koordynatora — z ostrzeżeniem w `warnings`).
+  Z pliku najwyżej 512 KB (dłuższy — `truncated: true` i dopisek na końcu treści), z katalogu najwyżej
+  400 plików. Plik czytamy ponownie tylko po zmianie rozmiaru albo czasu, listę katalogu — po zmianie
+  czasu katalogu, więc odświeżanie panelu to kilka `stat()`. Odczyt idzie w jednym wątku roboczym,
+  odpowiedź D-Bus jest opóźniona (jak w `/Docker`).
+- **Treść do pokazania** (`markdown`, `manualTest`): bez frontmattera, bez pierwszego nagłówka `# …`
+  (tytuł jest w nagłówku panelu), przy planie bez tabeli ticketów (jest w `tickets`), z sekcją
+  „Co przetestować ręcznie…” wyjętą do `manualTest` (do nagłówka tego samego albo wyższego poziomu) —
+  poza tym **źródłowy, nieoczyszczony** Markdown. Bezpiecznie pokazuje go dopiero okno (niżej): ten
+  sam parser, który renderuje (md4c w Qt), decyduje, co jest obrazem albo HTML-em — wyrażenia
+  regularne po stronie usługi rozjeżdżały się z nim (niedomknięte odwrotne apostrofy, płoty w listach,
+  opis obrazu w kilku liniach). Usługa działa na `QCoreApplication`, a `QTextDocument` potrzebuje
+  `QGuiApplication`, więc renderowanie jest w oknie. Wzorce w `docs.py` (i `_plain` w `plan.py`) są
+  liniowe — linia 512 KB z tysiącami `![`, `[`, `<!--` to milisekundy; treść do pokazania liczona raz na
+  wersję pliku. Kolejne prośby o tę samą kartę w czasie odczytu czekają na ten sam wynik.
+
+Odpowiedź: `{ok: true, card, plan, spec, others, warnings}`; zły ID — `bad-request`, nieznana karta —
+`not-found` (kształt błędów jak w zapisach).
+
+| Pole | Opis |
+| --- | --- |
+| `plan` | `{path, title, status, updated, updatedTs, card, coordinator, link, where, repo, mtime, tickets, cardTickets, errors, markdown, manualTest, truncated}` albo `null`; `link`: `card` (klucz `card`) albo `coordinator`; `where`: `repo`, `worktree`, `board`; `repo` — główny katalog repozytorium projektu (pusty bez repozytorium); `tickets`: `[{id, title, state, branch, agent, notes}]` z tabeli planu; `cardTickets` — `derived.tickets` (karta obejmuje część ticketów koordynatora; pusta — całość); `errors` — błędy planu z `coordination/plan.py` |
+| `spec` | `{path, title, status, ready, updated, card, link, where, mtime, markdown, manualTest, truncated}` albo `null`; `status` z frontmattera małymi literami, `ready` — gotowa; `link`: `field`, `card`, `name` |
+| `others` | do 8 dalszych dokumentów karty (starsze plany z `card`, pozostałe specyfikacje), od najnowszego: `[{kind: plan\|spec, path, title, status, updated}]` |
+| `warnings` | zdania po polsku: plik z pola `spec` nie istnieje albo leży poza dozwolonymi katalogami, plan koordynatora poza nimi |
+
+`--print-card-docs K-12` wypisuje to samo bez D-Bus (bez koordynatorów — plan tylko z klucza `card`).
+
+Panel (`apps/board/qml/CardPanel.qml`, `CardDocView.qml`, `MarkdownBlock.qml`, logika `cardDocs.js`):
+ostatnio wybrana zakładka zostaje dla kolejnych kart, póki działa okno Tide (karta bez takiego dokumentu
+pokazuje „Opis”); przy dokumencie panel ma 860 px (przy węższym oknie — tyle, ile jest), „Rozwiń” — szerokość okna bez
+marginesów. CardDocs idzie przy otwarciu karty, po każdej nowej migawce (`Changed` — także plik
+w `docs/` tablicy) i co 5 s, póki panel jest otwarty (plan w repozytorium projektu nie zmienia
+migawki); treść podmienia się tylko przy innej odpowiedzi, więc przewinięcie zostaje. „Otwórz plik”
+(`QDesktopServices`) i „Pokaż w katalogu” (`org.freedesktop.FileManager1.ShowItems`, bez niego —
+katalog) przyjmują w backendzie wyłącznie ścieżki z odpowiedzi CardDocs; link z Markdownu otwiera się
+tylko jako http(s) (inne schematy i ścieżki — sama podpowiedź). Panel nie prosi o CardDocs, póki
+poprzednia odpowiedź dla karty nie wróciła.
+
+Renderowanie (`apps/board/backend.py: render_markdown`, `renderMarkdown` dla QML, pamięć ostatnich 24
+dokumentów): `QTextDocument.setMarkdown(…, MarkdownDialectGitHub | MarkdownNoHTML)` — HTML ze źródła
+zostaje tekstem; każdy fragment z `QTextImageFormat` (także obraz z definicji odnośnika i opis z kilku
+linii) → kursywą „(obraz: opis)”; link inny niż http(s) → zwykły tekst; nagłówki z odstępem nad nimi,
+linki w sky; `toHtml()` bez stylu `<body>` (krój z TextEdit) trafia do `MarkdownBlock.qml` jako
+`RichText` — jedyne miejsce widoku z RichText. Druga warstwa: silnik QML okna Tide ma menedżera sieci,
+który odmawia każdego żądania poza `file:`, `qrc:`, `data:` (`apps/tide/tide.py: guard_network`), więc
+nawet przeoczony obraz niczego nie pobierze.
+
+```bash
+qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.CardDocs K-12
+/usr/bin/python3 daemon/tide-daemon.py --print-card-docs K-12 --board-dir /tmp/kopia-tablicy
+```
+
 Logika bez Qt jest w `tide_daemon/board/` (`marker.py`, `frontmatter.py`, `model.py`, `flows.py`,
-`store.py`, `derive.py`, git w `repo.py`), obserwacja katalogu, przeliczanie stanu kart i odpowiedzi
+`store.py`, `derive.py`, `docs.py`, git w `repo.py`), obserwacja katalogu, przeliczanie stanu kart i odpowiedzi
 D-Bus w `board_monitor.py`.
 
 ```bash
@@ -1333,7 +1404,7 @@ journalctl --user -u tide-daemon -f
 #                      --report-summary claude|local|rules,
 #                      --limits-poll 120, --no-limits, --print-limits, --no-tasks,
 #                      --coordination-days 7, --no-coordination, --no-youtrack,
-#                      --board-dir DIR, --no-board, --no-docker,
+#                      --board-dir DIR, --no-board, --print-card-docs K-12, --no-docker,
 #                      --models-poll 15, --no-models
 ```
 

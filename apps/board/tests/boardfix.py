@@ -4,6 +4,11 @@ build_snapshot(tmp) zakłada w katalogu tymczasowym prawdziwą tablicę modułem
 z osobną konfiguracją gita — nigdy ~/DevWorkspace/tide-board) i zwraca jej migawkę. Z derived=True
 część kart dostaje stan z koordynatora w kształcie, którego widok oczekuje od PT-5 (W toku, Czeka na
 mnie, Do sprawdzenia) — dziś usługa zawsze daje derived: null, więc to tylko podgląd projektu karty.
+
+preview_data(tmp) dokłada `cardDocs` — odpowiedzi /Board CardDocs policzone modułem usługi
+(board/docs.py) z planu i specyfikacji zapisanych w tymczasowych repozytoriach i tablicy: K-5 ma plan
+w repozytorium plasma-tide (`card: K-5`) i specyfikację z sekcją „Co przetestować ręcznie”, K-14 —
+samą specyfikację w `docs/mobileapp/specs` tablicy.
 """
 import json
 import os
@@ -13,6 +18,7 @@ import sys
 from . import REPO
 
 sys.path.insert(0, os.path.join(REPO, "daemon"))
+from tide_daemon.board.docs import CardDocs  # noqa: E402
 from tide_daemon.board.store import BoardStore  # noqa: E402
 
 NOW = 1793099040  # 2026-10-27 12:04 czasu w Warszawie
@@ -108,6 +114,113 @@ def build_board(tmp: str) -> tuple[BoardStore, dict]:
                 os.environ[key] = value
 
 
+PLAN_K5 = """---
+tide-plan: 1
+title: Tablica pracy z backlogiem i tagami
+tracker: local
+tracker-url:
+tracker-project:
+ticket-prefix: PT
+coordinator: claude
+card: K-5
+status: active
+updated: 2026-10-27T11:48:00+01:00
+---
+
+# Tablica pracy z backlogiem i tagami
+
+## Cel
+
+Jeden widok na pracę ze wszystkich projektów: karta to rzecz do zrobienia, a kolumny W toku, Czeka na mnie
+i Do sprawdzenia wynikają z tego, co **naprawdę** robią agenci. Specyfikacja: `specs/k-5-tablica.md`.
+
+| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |
+| --- | --- | --- | --- | --- | --- |
+| PT-1 | Format repozytorium tablicy i zapis kart z commitem | gotowe | feat/pt-1-board-store | code-reviewer | review OK, scalone |
+| PT-2 | Widok Tablica w oknie Tide: kolumny i przeciąganie | gotowe | feat/pt-2-board-view | code-reviewer | APPROVE po jednej rundzie poprawek |
+| PT-3 | Stan karty z pracy agentów (W toku, Czeka, Do sprawdzenia) | review | feat/pt-3-derive | code-reviewer | czeka na ponowne review |
+| PT-4 | Uruchomienie agenta z karty | w-toku | feat/pt-4-launch | implementer | okno „Co ma zrobić agent?” gotowe, brakuje testów |
+| PT-5 | Plan i specyfikacja w panelu karty | czeka | | | czy panel ma zajmować całe okno? |
+| PT-6 | Klucz `card` w standardzie planu | todo | | | |
+
+## Decyzje
+
+1. Pliki kart to Markdown z płaskim frontmatterem — da się je czytać i poprawiać ręcznie.
+2. Usługa commituje każdą zmianę; **nigdy** nie wypycha repozytorium tablicy.
+3. Kolumny wyliczane nie przyjmują kart — ręczna kolumna to wyłącznie decyzja użytkownika.
+
+## Notatki
+
+Szczegóły formatu: [docs/tide-daemon.md](https://example.com/tide/docs/tide-daemon.md). Zrzut z mocka
+![mock tablicy](https://example.com/mock.png) został w zgłoszeniu.
+
+```bash
+qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.CardDocs K-5
+```
+"""
+
+SPEC_K5 = """---
+card: K-5
+status: gotowa
+updated: 2026-10-27T09:30:00+01:00
+---
+
+# K-5: Tablica pracy z backlogiem i tagami
+
+## Po co
+
+Tablica to główny punkt pracy: backlog ze wszystkich projektów i stan agentów bez przełączania okien.
+
+## Wymagania
+
+- Karta ma tytuł, projekt, tagi (tagi projektu dziedziczone), opis i notatkę.
+- Przeciąganie między Backlogiem, Do zrobienia i Gotowe; kolumny wyliczane tylko z pracy agentów.
+- Zapis karty to osobny commit w lokalnym repozytorium tablicy, bez remote.
+
+## Co przetestować ręcznie i jak
+
+1. Przeciągnij kartę z Backlogu do Do zrobienia — pojawia się okno „Co ma zrobić agent?”.
+2. Zmień tytuł w panelu i zapisz Ctrl+Enter — w `git log` tablicy jest commit „K-5: update title”.
+3. Zamknij usługę i edytuj plik karty ręcznie — po starcie widać commit „sync external changes”.
+
+## Poza zakresem
+
+Import z YouTracka (PT-7) i synchronizacja w drugą stronę.
+"""
+
+SPEC_K14 = """---
+card: K-14
+status: szkic
+---
+
+# Historia diagnoz pojazdu z filtrem po VIN
+
+## Wymagania
+
+- Lista diagnoz jednego pojazdu, najnowsze na górze, filtr po fragmencie VIN.
+- Bez sieci: dane z lokalnej bazy aplikacji.
+"""
+
+
+def card_docs(tmp: str, snap: dict) -> dict:
+    """Odpowiedzi CardDocs dla K-5 i K-14 z plików zapisanych w repozytorium plasma-tide i w tablicy."""
+    ws, board = os.path.join(tmp, "ws"), os.path.join(tmp, "board")
+    files = {os.path.join(ws, "plasma-tide", "docs", "agents", "plans", "2026-10-27-tablica.md"): PLAN_K5,
+             os.path.join(ws, "plasma-tide", "docs", "agents", "specs", "k-5-tablica.md"): SPEC_K5,
+             os.path.join(board, "docs", "mobileapp", "specs", "k-14-historia-diagnoz.md"): SPEC_K14}
+    for path, text in files.items():
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    reader = CardDocs(board)
+    projects = {p["slug"]: p for p in snap["projects"]}
+    out = {}
+    for card in snap["cards"]:
+        if card["id"] in ("K-5", "K-14"):
+            out[card["id"]] = reader.read(card, projects.get(card["project"]))
+    return out
+
+
 def build_snapshot(tmp: str, derived: bool = False) -> dict:
     store, _repos = build_board(tmp)
     snap = store.snapshot(repos=[os.path.join(tmp, "ws", "legal-agents")])
@@ -123,6 +236,7 @@ def preview_data(tmp: str, derived: bool = True) -> dict:
     """Dane do --data: migawka jak u użytkownika (~/DevWorkspace/tide-board, zapis 12:04), z „now”
     i „home” — powtarzalny zrzut niezależny od zegara i katalogu tymczasowego."""
     snap = build_snapshot(tmp, derived=derived)
+    snap["cardDocs"] = card_docs(tmp, snap)
     home = "/home/user"
     real = os.path.join(tmp, "")
 
