@@ -27,10 +27,13 @@ Rectangle {
     property string project: ""
     property string projectLabel: ""
     property var tags: []
+    // Karta z chwili otwarcia panelu: z nią porównujemy formularz. `card` śledzi żywą migawkę, więc
+    // porównanie z nią wysłałoby stare pola i cofnęło zmianę zrobioną w tym czasie z zewnątrz.
+    property var base: null
     readonly property bool editing: card !== null
     readonly property var inherited: projectKind === "project" ? Logic.inheritedTags(snapshot, project) : []
     readonly property var allTags: ((snapshot && snapshot.tags) || []).map(t => t.name)
-    readonly property bool dirty: editing ? Object.keys(Logic.updateRequest(card, form())).length > 0
+    readonly property bool dirty: editing && base ? Object.keys(Logic.updateRequest(base, form())).length > 0
                                           : titleField.text.trim() !== ""
     signal saveRequested(var request)               // CreateCard albo UpdateCard (pola zmienione)
     signal moveRequested(string column)
@@ -46,6 +49,7 @@ Rectangle {
         error = ""
         notice = ""
         busy = false
+        base = card ? Object.assign({}, card, {tags: (card.tags || []).slice()}) : null
         titleField.text = card ? card.title : ""
         descriptionEdit.text = card ? card.description || "" : ""
         noteField.text = card ? card.note || "" : ""
@@ -64,7 +68,7 @@ Rectangle {
             titleField.focusInput()
             return
         }
-        const request = editing ? Logic.updateRequest(card, values) : Logic.createRequest(values)
+        const request = editing ? Logic.updateRequest(base || card, values) : Logic.createRequest(values)
         if (editing && Object.keys(request).length === 0) {
             closeRequested()
             return

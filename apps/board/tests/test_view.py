@@ -367,6 +367,28 @@ out["esc"] = js("page.panelOpen")
         self.assertFalse(out["visible"], "zarchiwizowana znika z tablicy od razu")
         self.assertFalse(out["esc"], "Esc zamyka panel")
 
+    def test_edit_keeps_changes_made_elsewhere_while_panel_is_open(self):
+        # Regresja z review: formularz porównujemy z kartą z chwili otwarcia, nie z żywą migawką.
+        out = self.probe("""
+import copy
+click(card("K-12"))
+snap = copy.deepcopy(data)
+for c in snap["cards"]:
+    if c["id"] == "K-12":
+        c["description"] = "opis zmieniony z zewnątrz"
+        c["note"] = "notatka z zewnątrz"
+set_snapshot(snap)
+wait(100)
+out["dirtyAfterOutside"] = js("page.cardPanel.dirty")
+obj("cardTitle").setProperty("text", "Nowy tytuł")
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(100)
+out["update"] = calls()[-1]
+""")
+        self.assertFalse(out["dirtyAfterOutside"], "zmiana z zewnątrz nie robi formularza zmienionym")
+        self.assertEqual(out["update"][:2], ["UpdateCard", "K-12"])
+        self.assertEqual(json.loads(out["update"][2]), {"title": "Nowy tytuł"})
+
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class FiltersAndStatesTest(ProbeCase):
