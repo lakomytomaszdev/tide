@@ -1,7 +1,8 @@
 // Popup kafelka Docker (mock „Kafelki Tablica i Docker”): nagłówek ze znakiem i linkiem „Otwórz w Tide ↗”,
 // trzy małe liczby (CPU całego procesora, RAM kontenerów, do odzyskania na dysku), projekty compose
 // z portami HTTP, liczbą działających i przyciskiem zatrzymania (GroupAction — zadanie w usłudze),
-// kontenery, które padły (róż) z „Logi” (okno Tide na kontenerze) i „Uruchom”, stopka z zatrzymanymi.
+// kontenery, które padły (róż) z „Logi” (okno Tide na kontenerze z otwartą szufladą logów) i „Uruchom”,
+// stopka z zatrzymanymi.
 // Sam nie rozmawia z usługą: prośby idą sygnałami, stan akcji (busy, notes) daje main.qml.
 import QtQuick
 import QtQuick.Layouts

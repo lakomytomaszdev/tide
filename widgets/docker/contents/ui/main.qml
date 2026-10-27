@@ -4,7 +4,7 @@
 // (tide-daemon: ShowWindow(id)).
 // Dane: tide-daemon przez D-Bus (org.tide.Daemon /Docker, docs/tide-daemon.md#docker). Stats() tylko
 // przy otwartym popupie (co 5 s), Disk() przy otwarciu; zatrzymanie projektu to zadanie GroupAction,
-// którego wynik przychodzi sygnałem ActionFinished.
+// którego wynik przychodzi sygnałem ActionFinished (stan akcji: DockerActions.qml).
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -22,59 +22,14 @@ PlasmoidItem {
     readonly property bool dockerUp: Logic.status(snapshot, serviceUp) === "ok"
     property var stats: null
     property var disk: null
-    property var busy: ({})                  // id grupy albo kontenera → akcja w toku
-    property var notes: ({})                 // id grupy albo kontenera → {text, error}
-    property var jobs: ({})                  // job → {key, action, ts}
     property real nowTs: Date.now() / 1000
     readonly property bool popupShown: expanded && !Plasmoid.configuration.sidebarMode
-
-    function setIn(map, key, value) {
-        const next = Object.assign({}, map)
-        if (value === undefined || value === null || value === "") delete next[key]
-        else next[key] = value
-        return next
-    }
 
     // Okno Tide na widoku Docker (pusty element — bez wyboru); popup się zamyka, gdy okno się otworzyło.
     function showWindow(item) {
         source.call("ShowWindow", [item || ""], function (ok) {
             if (ok === true && !Plasmoid.configuration.sidebarMode) root.expanded = false
         })
-    }
-
-    function groupAction(project, action) {
-        const key = "compose:" + project
-        if (busy[key]) return
-        busy = setIn(busy, key, action)
-        notes = setIn(notes, key, null)
-        source.call("GroupAction", [project, action], function (value) {
-            const started = Logic.parse(value)
-            if (!started || !started.ok || !started.job) {
-                root.finish(key, Logic.groupNote(action, started || { ok: false, error: "usługa tide-daemon nie odpowiada" }))
-                return
-            }
-            root.jobs = root.setIn(root.jobs, started.job, { key: key, action: action, ts: Date.now() })
-        })
-    }
-
-    function startContainer(id) {
-        if (busy[id]) return
-        busy = setIn(busy, id, "start")
-        notes = setIn(notes, id, null)
-        source.call("Start", [id], value => root.finish(id, Logic.startNote(Logic.parse(value))))
-    }
-
-    function finish(key, note) {
-        busy = setIn(busy, key, null)
-        notes = setIn(notes, key, note)
-        noteTimer.restart()
-    }
-
-    function jobDone(job, text) {
-        const entry = jobs[job]
-        if (!entry) return
-        jobs = setIn(jobs, job, null)
-        finish(entry.key, Logic.groupNote(entry.action, Logic.parse(text)))
     }
 
     Plasmoid.title: "Docker"
@@ -90,7 +45,12 @@ PlasmoidItem {
         iface: "org.tide.Daemon.Docker"
         method: "Snapshot"
         pollInterval: 60000
-        onActionFinished: (job, text) => root.jobDone(job, text)
+    }
+
+    // Zatrzymanie projektu i uruchomienie kontenera ze stanem dla popupu (busy, notes).
+    DockerActions {
+        id: dockerActions
+        source: source
     }
 
     // Statystyki tylko przy otwartym popupie — liczenie ich kosztuje Dockera (decyzja 58).
@@ -105,23 +65,6 @@ PlasmoidItem {
         if (!popupShown) return
         nowTs = Date.now() / 1000
         source.call("Disk", [], value => { const d = Logic.parse(value); if (d) root.disk = d })
-    }
-    // Wyniki akcji gasną po chwili; zadanie bez wyniku (usługa zniknęła) zwalnia przycisk po 10 min.
-    Timer {
-        id: noteTimer
-        interval: 12000
-        onTriggered: root.notes = ({})
-    }
-    Timer {
-        interval: 30000
-        repeat: true
-        running: Object.keys(root.jobs).length > 0
-        onTriggered: {
-            for (const job in root.jobs) {
-                if (Date.now() - root.jobs[job].ts > 600000)
-                    root.jobDone(job, JSON.stringify({ ok: false, error: "brak wyniku z usługi — sprawdź stan w oknie Tide" }))
-            }
-        }
     }
 
     compactRepresentation: MouseArea {
@@ -206,11 +149,11 @@ PlasmoidItem {
                 stats: root.stats
                 disk: root.disk
                 nowTs: root.nowTs
-                busy: root.busy
-                notes: root.notes
+                busy: dockerActions.busy
+                notes: dockerActions.notes
                 onOpenRequested: item => root.showWindow(item)
-                onGroupActionRequested: (project, action) => root.groupAction(project, action)
-                onStartRequested: id => root.startContainer(id)
+                onGroupActionRequested: (project, action) => dockerActions.groupAction(project, action)
+                onStartRequested: id => dockerActions.startContainer(id)
             }
         }
         Component {

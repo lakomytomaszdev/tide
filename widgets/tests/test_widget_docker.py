@@ -31,7 +31,7 @@ class PackageTest(unittest.TestCase):
     def test_package_contains_widget_and_library(self):
         files = files_under(self.pkg)
         for name in ("metadata.json", "contents/ui/main.qml", "contents/ui/CompactDocker.qml",
-                     "contents/ui/DockerPopup.qml", "contents/ui/SidebarDocker.qml", "contents/code/docker.js",
+                     "contents/ui/DockerPopup.qml", "contents/ui/SidebarDocker.qml", "contents/ui/DockerActions.qml", "contents/code/docker.js",
                      "contents/config/main.xml", "contents/ui/tide/Tokens.qml", "contents/ui/tide/DaemonSource.qml"):
             self.assertIn(name, files)
         with open(os.path.join(self.pkg, "metadata.json"), encoding="utf-8") as fh:
@@ -42,6 +42,9 @@ class PackageTest(unittest.TestCase):
             text = fh.read()
         self.assertIn('path: "/Docker"', text)
         self.assertIn('source.call("ShowWindow"', text)
+        self.assertIn("DockerActions {", text)
+        with open(os.path.join(WIDGET_DIR, "contents/ui/DockerActions.qml"), encoding="utf-8") as fh:
+            text += fh.read()
         self.assertIn('source.call("GroupAction"', text)
         self.assertIn("onActionFinished", text)
         # Statystyki kosztują Dockera: tylko przy otwartym popupie.
@@ -165,6 +168,91 @@ class PopupTest(unittest.TestCase):
         self.assertEqual((down["projects"], down["footer"], down["minis"]), ([], "", []))
         offline = preview_docker.render_popup("offline")
         self.assertIn("Usługa tide-daemon nie odpowiada", offline["problem"])
+
+
+@unittest.skipUnless(shutil.which("qml6"), "brak qml6")
+class ActionsTest(unittest.TestCase):
+    """DockerActions z atrapą DaemonSource: zadanie GroupAction z wynikiem z ActionFinished (także gdy
+    wynik przyjdzie przed odpowiedzią z `job`), odmowa, Start, cudze zadania i zadanie bez wyniku."""
+
+    def test_jobs_with_fake_source(self):
+        tmp = tempfile.mkdtemp(prefix="tide-docker-actions-")
+        self.addCleanup(shutil.rmtree, tmp)
+        pkg = os.path.join(tmp, "pkg")
+        subprocess.run(["/usr/bin/python3", os.path.join(WIDGETS_DIR, "stage.py"), WIDGET_DIR, pkg], check=True)
+        harness = os.path.join(pkg, "contents/ui/ActionsSmoke.qml")
+        with open(harness, "w", encoding="utf-8") as fh:
+            fh.write("""import QtQuick
+Item {
+    // Atrapa DaemonSource: odpowiedzi na call() zapamiętane do ręcznego wywołania (jak asynchroniczne D-Bus).
+    QtObject {
+        id: fake
+        signal actionFinished(string job, string json)
+        property var pending: []
+        property var log: []
+        function call(member, args, done) { log.push(member + ":" + args.join(",")); pending.push(done) }
+        function answer(value) { const done = pending.shift(); done(value) }
+    }
+    DockerActions { id: actions; source: fake; jobTimeoutMs: 200; earlyMs: 100000 }
+    function state(key) { return [actions.busy[key] || "", actions.notes[key] ? actions.notes[key].text : ""].join("/") }
+    Timer {
+        id: later
+        interval: 700
+        onTriggered: {
+            console.warn("TIMEOUT " + state("compose:youtrack") + "|" + Object.keys(actions.jobs).length)
+            Qt.quit()
+        }
+    }
+    Component.onCompleted: {
+        // Zwykła kolejność: odpowiedź z job, potem ActionFinished.
+        actions.groupAction("cookapp", "stop")
+        actions.groupAction("cookapp", "stop")  // w trakcie — drugi raz nic nie wysyła
+        console.warn("BUSY " + fake.log.join(";") + "|" + state("compose:cookapp"))
+        fake.answer(JSON.stringify({ ok: true, error: "", job: "group-1" }))
+        fake.actionFinished("group-1", JSON.stringify({ ok: true, done: ["a", "b"], failed: [] }))
+        console.warn("DONE " + state("compose:cookapp"))
+        // Wynik przed odpowiedzią z job (sygnał wyprzedził odpowiedź) — czeka w early.
+        actions.groupAction("cockpit", "stop")
+        fake.actionFinished("group-2", JSON.stringify({ ok: false, failed: [{ name: "cockpit-db", error: "nie" }] }))
+        console.warn("EARLYWAIT " + state("compose:cockpit") + "|" + Object.keys(actions.early).join(","))
+        fake.answer(JSON.stringify({ ok: true, error: "", job: "group-2" }))
+        console.warn("EARLYDONE " + state("compose:cockpit") + "|" + Object.keys(actions.early).length)
+        // Odmowa usługi i brak odpowiedzi.
+        actions.groupAction("bo-catalog", "stop")
+        fake.answer(JSON.stringify({ ok: false, error: "nieznana akcja: stop", job: "" }))
+        actions.groupAction("app4", "stop")
+        fake.answer(undefined)
+        console.warn("REFUSED " + state("compose:bo-catalog") + "|" + state("compose:app4"))
+        // Start padniętego kontenera.
+        actions.startContainer("abc")
+        fake.answer(JSON.stringify({ ok: true, note: "" }))
+        console.warn("START " + state("abc"))
+        // Cudze zadanie (np. okno Tide) — nikt na nie nie czeka, nic się nie zmienia.
+        fake.actionFinished("prune-9", JSON.stringify({ ok: true }))
+        console.warn("FOREIGN " + Object.keys(actions.busy).length + "|" + Object.keys(actions.early).join(","))
+        // Zadanie bez wyniku: po jobTimeoutMs przycisk wraca z błędem.
+        actions.groupAction("youtrack", "stop")
+        fake.answer(JSON.stringify({ ok: true, error: "", job: "group-3" }))
+        later.start()
+    }
+}
+""")
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
+        log = subprocess.run(["qml6", harness], env=env, capture_output=True, text=True, timeout=30).stderr
+
+        def tag(name):
+            match = re.search(rf"{name} (.*)$", log, re.M)
+            return match.group(1).strip() if match else log
+
+        self.assertEqual([l for l in log.splitlines() if re.search(r"TypeError|ReferenceError|is not", l)], [])
+        self.assertEqual(tag("BUSY"), "GroupAction:cookapp,stop|stop/")
+        self.assertEqual(tag("DONE"), "/projekt zatrzymany")
+        self.assertEqual(tag("EARLYWAIT"), "stop/|group-2")
+        self.assertEqual(tag("EARLYDONE"), "/cockpit-db: nie|0")
+        self.assertEqual(tag("REFUSED"), "/nieznana akcja: stop|/usługa tide-daemon nie odpowiada")
+        self.assertEqual(tag("START"), "/uruchomiony")
+        self.assertEqual(tag("FOREIGN"), "0|prune-9")
+        self.assertEqual(tag("TIMEOUT"), "/brak wyniku z usługi — sprawdź stan w oknie Tide|0")
 
 
 @unittest.skipUnless(shutil.which("qml6"), "brak qml6")
