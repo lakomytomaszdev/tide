@@ -112,15 +112,41 @@ function rows(snapshot, limit) {
 }
 
 // Projekty do wyboru przy szybkim dopisaniu: [{slug, name}], pierwszy „bez projektu”.
+// Wybór projektu szybkiego dopisania, jak w oknie: projekty z tablicy, potem repozytoria z katalogu
+// projektów, które jeszcze nie są projektami — wartość "repo:<ścieżka>"; CreateCard z `repo` zakłada
+// projekt razem z kartą.
+const REPO = "repo:"
+
 function projects(snapshot) {
-    return [{ slug: "", name: "bez projektu" }].concat(((snapshot && snapshot.projects) || [])
-        .map(p => ({ slug: p.slug, name: p.name })))
+    return [{ slug: "", name: "bez projektu", kind: "none" }]
+        .concat(((snapshot && snapshot.projects) || []).map(p => ({ slug: p.slug, name: p.name, kind: "project" })))
+        .concat(((snapshot && snapshot.repos) || []).map(r => ({ slug: REPO + r.path, name: r.name, kind: "repo" })))
 }
 
-function projectName(snapshot, slug) {
-    if (!slug) return "bez projektu"
-    const found = ((snapshot && snapshot.projects) || []).find(p => p.slug === slug)
+// Zapamiętana wartość → bieżąca: slug projektu, "repo:<ścieżka>" albo "" (bez projektu). Repozytorium,
+// z którego powstał już projekt, wskazuje ten projekt.
+function resolveProject(snapshot, value) {
+    if (!value) return ""
+    const projectList = (snapshot && snapshot.projects) || []
+    if (value.indexOf(REPO) === 0) {
+        const path = value.slice(REPO.length)
+        const made = projectList.find(p => p.repo === path)
+        if (made) return made.slug
+        return ((snapshot && snapshot.repos) || []).some(r => r.path === path) ? value : ""
+    }
+    return projectList.some(p => p.slug === value) ? value : ""
+}
+
+function projectName(snapshot, value) {
+    if (!value) return "bez projektu"
+    const found = projects(snapshot).find(p => p.slug === value)
     return found ? found.name : "bez projektu"
+}
+
+// Pola CreateCard dla wybranej wartości: {project} albo {repo}.
+function projectRequest(value) {
+    if (!value) return {}
+    return value.indexOf(REPO) === 0 ? { repo: value.slice(REPO.length) } : { project: value }
 }
 
 // Odpowiedź CreateCard: "" — dopisane, inaczej komunikat po polsku.
