@@ -4,11 +4,17 @@
 // opis, notatka. Istniejąca karta ma też przeniesienie między kolumnami ręcznymi i archiwizację.
 // Błąd z usługi pokazuje się w panelu (komunikat po polsku), commitError — dyskretnie pod nim.
 // Ctrl+Enter zapisuje, Esc zamyka. Teksty z karty to dane: zawsze zwykły tekst.
+// Plan i specyfikacja karty (PT-5): zakładki „Opis” | „Plan” | „Specyfikacja” — dwie ostatnie tylko,
+// gdy /Board CardDocs(id) je znalazł. Przy dokumencie panel się poszerza (do 860 px, „Rozwiń” — prawie
+// całe okno). Dokumenty odświeżamy przy każdej nowej migawce (sygnał Changed) i co 5 s, póki panel
+// jest otwarty — usługa czyta plik ponownie tylko po zmianie, a widok podmienia treść tylko wtedy,
+// gdy odpowiedź jest inna (przewinięcie zostaje).
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "board.js" as Logic
+import "cardDocs.js" as Docs
 
 Rectangle {
     id: panel
@@ -30,7 +36,18 @@ Rectangle {
     // Karta z chwili otwarcia panelu: z nią porównujemy formularz. `card` śledzi żywą migawkę, więc
     // porównanie z nią wysłałoby stare pola i cofnęło zmianę zrobioną w tym czasie z zewnątrz.
     property var base: null
+    // Plan i specyfikacja karty (CardDocs): odpowiedź usługi, wybrana zakładka i szerokość.
+    property var docs: null
+    property string docsText: ""
+    property string tab: "opis"              // wybór użytkownika: opis | plan | spec
+    property bool expanded: false
+    property real maxWidth: 1200             // szerokość dostępna w oknie (ustawia BoardPage)
+    property var styler: null                // backend.styleMarkdown (przez BoardPage) albo null
     readonly property bool editing: card !== null
+    readonly property string shownTab: editing ? Docs.effectiveTab(docs, tab) : "opis"
+    readonly property bool reading: shownTab !== "opis"
+    readonly property var docTabs: Docs.tabs(docs)
+    readonly property alias docView: docView
     readonly property var inherited: projectKind === "project" ? Logic.inheritedTags(snapshot, project) : []
     readonly property var allTags: ((snapshot && snapshot.tags) || []).map(t => t.name)
     readonly property bool dirty: editing && base ? Object.keys(Logic.updateRequest(base, form())).length > 0
@@ -38,6 +55,10 @@ Rectangle {
     signal saveRequested(var request)               // CreateCard albo UpdateCard (pola zmienione)
     signal moveRequested(string column)
     signal closeRequested()
+    signal docsRequested(string cardId)            // /Board CardDocs
+    signal openFileRequested(string path)          // „Otwórz plik”
+    signal showInFolderRequested(string path)      // „Pokaż w katalogu”
+    signal linkRequested(string url)               // link http(s) z Markdownu
 
     function form() {
         return { title: titleField.text, description: descriptionEdit.text, note: noteField.text, tags: tags,
@@ -57,7 +78,23 @@ Rectangle {
         projectKind = card && card.project ? "project" : ""
         project = card ? card.project || "" : ""
         projectLabel = card ? card.projectName || card.project || "" : ""
+        docs = null
+        docsText = ""
+        tab = "opis"
+        requestDocs()
         titleField.focusInput()
+    }
+
+    function requestDocs() {
+        if (editing && card) docsRequested(card.id)
+    }
+
+    // Odpowiedź CardDocs: tylko dla karty w panelu i tylko inna niż poprzednia (bez skoku przewinięcia).
+    function applyDocs(cardId, text) {
+        if (!editing || !card || cardId !== card.id || text === docsText) return
+        docsText = text
+        const value = Logic.parse(text, null)
+        docs = value && value.ok ? value : null
     }
 
     function save() {
@@ -84,7 +121,8 @@ Rectangle {
         tags = tags.concat([value])
     }
 
-    width: 420
+    width: reading ? (expanded ? maxWidth : Math.min(maxWidth, 860)) : 420
+    Behavior on width { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
     radius: 16
     color: Tide.Tokens.backgroundPanel
     border.width: 1
@@ -104,6 +142,17 @@ Rectangle {
 
     // Klik w panel nie przechodzi do tablicy pod spodem.
     MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: wheel => wheel.accepted = true }
+
+    // Plan i specyfikacja na żywo: po nowej migawce (Changed — także plik w docs/ tablicy) i co 5 s
+    // (plan w repozytorium projektu nie zmienia migawki).
+    onSnapshotChanged: if (visible && editing) docsSoon.restart()
+    Timer { id: docsSoon; interval: 300; onTriggered: panel.requestDocs() }
+    Timer {
+        interval: 5000
+        repeat: true
+        running: panel.visible && panel.editing
+        onTriggered: panel.requestDocs()
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -136,6 +185,16 @@ Rectangle {
                 Accessible.role: Accessible.Heading
             }
             PillButton {
+                objectName: "cardExpand"
+                visible: panel.reading
+                implicitHeight: 30
+                pixelSize: 12
+                flat: true
+                text: panel.expanded ? "Zwęź" : "Rozwiń"
+                toolTip: panel.expanded ? "Panel o zwykłej szerokości" : "Panel na prawie całe okno"
+                onClicked: panel.expanded = !panel.expanded
+            }
+            PillButton {
                 implicitWidth: 30
                 implicitHeight: 30
                 flat: true
@@ -145,8 +204,47 @@ Rectangle {
             }
         }
 
+        // Zakładki: Opis zawsze, Plan i Specyfikacja — gdy są.
+        Segmented {
+            objectName: "cardTabs"
+            visible: panel.editing && panel.docTabs.length > 1
+            itemHeight: 28
+            options: panel.docTabs
+            current: panel.shownTab
+            onPicked: value => panel.tab = value
+        }
+        Text {
+            objectName: "cardDocsWarnings"
+            Layout.fillWidth: true
+            visible: panel.reading && !!panel.docs && (panel.docs.warnings || []).length > 0
+            text: panel.docs && panel.docs.warnings ? panel.docs.warnings.join(" · ") : ""
+            textFormat: Text.PlainText
+            color: Tide.Tokens.butter
+            font.family: Tide.Theme.uiFamily
+            font.pixelSize: 11
+            wrapMode: Text.Wrap
+        }
+
+        CardDocView {
+            id: docView
+            objectName: "cardDocView"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: panel.reading
+            kind: panel.shownTab === "spec" ? "spec" : "plan"
+            doc: panel.docs ? (panel.shownTab === "spec" ? panel.docs.spec : panel.docs.plan) : null
+            others: panel.docs ? (panel.docs.others || []).filter(o => o.kind === kind) : []
+            homeDir: panel.homeDir
+            nowTs: panel.nowTs
+            styler: panel.styler
+            onOpenFile: path => panel.openFileRequested(path)
+            onShowInFolder: path => panel.showInFolderRequested(path)
+            onOpenLink: url => panel.linkRequested(url)
+        }
+
         Flickable {
             id: formFlick
+            visible: !panel.reading
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
@@ -420,6 +518,7 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
+            visible: !panel.reading
             spacing: 8
             Text {
                 Layout.fillWidth: true

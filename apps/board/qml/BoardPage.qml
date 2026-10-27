@@ -20,6 +20,7 @@ Rectangle {
     property real nowTs: Date.now() / 1000
     property bool canLaunch: true        // okno „Co ma zrobić agent?” (LaunchDialog)
     property bool canDiff: false         // PT-5: diff gałęzi karty
+    property var markdownStyler: null    // backend.styleMarkdown: wygląd planu i specyfikacji w panelu karty
     // Filtry i układ.
     property string tagFilter: ""
     property string projectFilter: ""
@@ -61,6 +62,9 @@ Rectangle {
     signal launchRequested(string cardId)    // otwarto „Co ma zrobić agent?” dla karty
     signal renderRequested(string tag, string cardId, string request)   // /Board RenderLaunch
     signal startRequested(string tag, string request)                   // /Tasks Start
+    signal docsRequested(string cardId)      // /Board CardDocs — plan i specyfikacja w panelu karty
+    signal fileRequested(string path, string how)   // dokument karty: "open" — edytor, "folder" — menedżer plików
+    signal linkRequested(string url)         // link http(s) z planu albo specyfikacji
 
     readonly property var filters: ({ tag: tagFilter, project: projectFilter, query: query })
     readonly property var cards: Logic.visible(snapshot, filters, optimistic)
@@ -1149,6 +1153,12 @@ Rectangle {
         homeDir: page.homeDir
         nowTs: page.nowTs
         tagTone: page.tagTone
+        maxWidth: page.width - 24
+        styler: page.markdownStyler
+        onDocsRequested: cardId => page.docsRequested(cardId)
+        onOpenFileRequested: path => page.fileRequested(path, "open")
+        onShowInFolderRequested: path => page.fileRequested(path, "folder")
+        onLinkRequested: url => page.linkRequested(url)
         onSaveRequested: request => page.saveCard(request)
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))

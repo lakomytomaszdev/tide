@@ -5,7 +5,8 @@
 // z --preview: card — otwarty panel karty, new — panel nowej karty, manage — strona Projekty i tagi,
 // tag, project, query — filtry, layout=lanes — wiersz na projekt), showItem(item) — otwarcie na
 // karcie (K-12: zaznaczona i przewinięta; przed pierwszą migawką czeka na nią; launch:K-12 — do tego
-// okno „Co ma zrobić agent?”, przycisk „Uruchom” w popupie kafelka), takeFocus(),
+// okno „Co ma zrobić agent?”, przycisk „Uruchom” w popupie kafelka), takeFocus(), tab=plan|spec
+// i expand=1 — zakładka dokumentu w otwartym panelu karty (z card=K-12),
 // railInfo — ramka „Dane tablicy” i link „Projekty i tagi” na dole paska.
 import QtQuick
 import "board.js" as Logic
@@ -79,6 +80,7 @@ Item {
         available: view.available
         preview: view.backend ? view.backend.preview : false
         homeDir: view.backend ? view.backend.homeDir : ""
+        markdownStyler: view.backend ? function (edit, link) { view.backend.styleMarkdown(edit, link) } : null
         nowTs: view.nowTs
         onCreateRequested: (tag, request) => view.backend.createCard(tag, request)
         onUpdateRequested: (tag, id, request) => view.backend.updateCard(tag, id, request)
@@ -91,12 +93,23 @@ Item {
         // (karta Konsoli albo wątek Codexa), bez przełączania okna Tide.
         onSessionRequested: target => view.backend.showCoordinator(target)
         onAgentRequested: session => view.backend.activateSession(session)
+        // Plan i specyfikacja karty: CardDocs i otwieranie plików/linków przez backend (tylko ścieżki
+        // z odpowiedzi usługi i adresy http(s)).
+        onDocsRequested: cardId => { if (view.backend) view.backend.cardDocs(cardId) }
+        onFileRequested: (path, how) => {
+            if (!view.backend) return
+            if (how === "folder") view.backend.showInFolder(path)
+            else view.backend.openFile(path)
+        }
+        onLinkRequested: url => { if (view.backend) view.backend.openLink(url) }
         Component.onCompleted: {
             if (view.previewValue("tag")) tagFilter = view.previewValue("tag")
             if (view.previewValue("project")) projectFilter = view.previewValue("project")
             if (view.previewValue("query")) query = view.previewValue("query")
             if (view.previewValue("layout")) layoutMode = view.previewValue("layout")
             if (view.previewValue("card")) openCard(view.previewValue("card"))
+            if (view.previewValue("tab")) cardPanel.tab = view.previewValue("tab")
+            if (view.previewValue("expand")) cardPanel.expanded = true
             if (view.previewValue("new")) newCard(view.previewValue("new"))
             if (view.previewValue("launch")) {
                 const parts = view.previewValue("launch").split(",")   // launch=K-9[,light|spec][,codex][,move][,manual]
@@ -118,6 +131,9 @@ Item {
         target: view.backend
         function onReplied(tag, text) {
             page.handleReply(tag, Logic.parse(text, null))
+        }
+        function onDocsReplied(cardId, text) {
+            page.cardPanel.applyDocs(cardId, text)
         }
     }
 
