@@ -9,7 +9,9 @@ Pola: card_id, title, description, project, repo, branch (w trybie spec — „b
 (claude albo codex — do `coordinator:` w planie), docs_dir (gdzie agent pisze plany i specyfikacje:
 docs/agents w katalogu roboczym albo katalog w tablicy), docs_note (jedno zdanie, kto commituje te
 pliki), spec (istniejąca specyfikacja karty albo „brak”), spec_file (proponowana ścieżka specyfikacji
-— nazwa zaczyna się od ID karty, po niej usługa rozpoznaje gotową specyfikację).
+— nazwa zaczyna się od ID karty, po niej usługa rozpoznaje gotową specyfikację), check (`auto` albo
+`manual` — „Test ręczny po zakończeniu” z okna uruchomienia), check_label (to samo słowami) i finish
+(jak skończyć pracę: po review AI od razu albo z listą „Co przetestować ręcznie i jak” — finish_text).
 
 Treści trybów prowadzą agenta przez nasz przepływ pracy: grilling (skill `grilling` w Claude Code,
 w Codeksie to samo opisane słowami), specyfikacja, plan według standardu planu 1.1 z kluczem
@@ -26,7 +28,8 @@ from .frontmatter import Document, FrontmatterError
 from .model import MODES
 
 PLACEHOLDERS = ("card_id", "title", "description", "project", "repo", "docs_dir", "branch", "tool",
-                "docs_note", "spec", "spec_file")
+                "docs_note", "spec", "spec_file", "check", "check_label", "finish")
+CHECKS = ("auto", "manual")
 _FIELD = re.compile(r"\{(" + "|".join(PLACEHOLDERS) + r")\}")
 
 STANDARD = "~/DevWorkspace/plasma-tide/docs/agent-plan-standard.md"
@@ -55,7 +58,7 @@ _TICKETS = f"""Prefiks i numery ticketów bierz z zasad projektu: CLAUDE.md albo
    przez `{TOOLS_MAKE} next-id REPO={{repo}} PREFIX=<prefiks> TITLE="…"`. Przed nadaniem numerów uruchom
    `{TOOLS_MAKE} check-plans` — kod wyjścia 1 to kolizja: zatrzymaj się i zapytaj mnie."""
 
-_PLAN = f"""Plan zakładasz według standardu Tide ({STANDARD}, wersja 1.1)
+_PLAN = f"""Zakładasz go według standardu Tide ({STANDARD}, wersja 1.1)
    w `{{docs_dir}}/plans/RRRR-MM-DD-<slug>.md`: frontmatter z `tide-plan: 1`, `card: {{card_id}}`,
    `coordinator: {{tool}}`, `status: active`, `updated` i tabela
    `| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |`. Klucz `card` łączy plan z kartą na tablicy Tide."""
@@ -90,8 +93,9 @@ Istniejąca specyfikacja karty: {spec}
    BLOCKER / MAJOR / NIT i werdyktem, a po BLOCKER albo MAJOR — poprawki i ponowne sprawdzenie.
    Tabelę planu i `updated` aktualizuj przy każdym delegowaniu, wyniku, review i pytaniu do mnie.
 6. Każde pytanie do mnie zaczynaj od ID ticketu (`<PREFIKS>-7: …?`) — Tide pokaże je na tablicy.
-7. Na koniec: tickety `gotowe`, plan `status: done` i krótkie podsumowanie, co jest zrobione i co mam
-   sprawdzić. Bez scalania do gałęzi głównej i bez push, dopóki o to nie poproszę.
+7. Review AI jest obowiązkowe: żadnego ticketu ani całej pracy nie kończysz bez review z werdyktem
+   APPROVE (bez BLOCKER i MAJOR).
+8. Zakończenie (sprawdzenie: {check_label}): {finish}
 """,
     "light": """---
 tide-flow: 2
@@ -112,11 +116,10 @@ Istniejąca specyfikacja karty: {spec}
    """ + _TICKETS + """
 3. Implementacja przez TDD (skill `tdd`, jeśli go masz) na gałęzi {branch}; gałąź podagenta zawiera
    ID ticketu małymi literami, a jego opis zaczyna się od ID ticketu.
-4. Review: każdy ticket (przy małej zmianie wystarczy jedno review całości) z liczbami
-   BLOCKER / MAJOR / NIT; poprawki po BLOCKER albo MAJOR. Tabelę planu i `updated` aktualizuj
-   na bieżąco, pytania do mnie zaczynaj od ID ticketu.
-5. Na koniec: tickety `gotowe`, plan `status: done`, krótkie podsumowanie. Bez scalania i bez push,
-   dopóki o to nie poproszę.
+4. Review AI jest obowiązkowe: każdy ticket (przy małej zmianie wystarczy jedno review całości)
+   z liczbami BLOCKER / MAJOR / NIT i werdyktem; poprawki po BLOCKER albo MAJOR, kończysz dopiero
+   po APPROVE. Tabelę planu i `updated` aktualizuj na bieżąco, pytania do mnie zaczynaj od ID ticketu.
+5. Zakończenie (sprawdzenie: {check_label}): {finish}
 """,
     "spec": """---
 tide-flow: 2
@@ -137,7 +140,11 @@ Istniejąca specyfikacja karty: {spec}
 3. Zapisz specyfikację po polsku w `{spec_file}` z frontmatterem:
 """ + _SPEC_FRONTMATTER + """
    Treść: cel, zakres, poza zakresem, kryteria akceptacji, decyzje z rozmowy, otwarte pytania, ryzyka
-   i propozycja podziału na kroki (bez numerów ticketów).
+   i propozycja podziału na kroki (bez numerów ticketów). Sprawdzenie pracy po wdrożeniu:
+   {check_label} — przy teście ręcznym dopisz sekcję „Co przetestować ręcznie i jak” (kroki
+   i oczekiwany wynik), przy `auto` napisz, co sprawdzą testy automatyczne i review AI.
+   Zanim pokażesz mi specyfikację, zleć jej review AI (podagent: luki, sprzeczności, niesprawdzalne
+   kryteria) i popraw, co znajdzie.
 4. Gdy zaakceptuję specyfikację, zmień `status: szkic` na `status: gotowa` — wtedy Tide oznaczy kartę
    „specyfikacja gotowa” i odłoży ją do Backlogu.
 5. Napisz mi, że specyfikacja jest gotowa i gdzie leży. Nie implementuj.
@@ -150,6 +157,24 @@ PREVIOUS_SEEDS = {
     "light": {"6476221fe489d549b497b19cb77bba3c72590e904448e7b13eec2354228f4913"},
     "spec": {"7e01493f02a65ba87bc4bc944c85d3170452a1be96ebf8d745e95b548ddb15e3"},
 }
+
+
+CHECK_LABELS = {"auto": "auto — wystarczy review AI, bez testu ręcznego",
+                "manual": "manual — po review AI test ręczny użytkownika"}
+
+
+def finish_text(check: str, docs_dir: str) -> str:
+    """Jak agent kończy pracę (pole {finish}): przy `manual` lista „Co przetestować ręcznie i jak”
+    w planie i informacja, że praca czeka na test ręczny; przy `auto` — koniec po review AI."""
+    if check == "manual":
+        return ("po review AI z werdyktem APPROVE dopisz w planie (w {docs}/plans/, sekcja pod tabelą) krótką, "
+                "ludzką listę „Co przetestować ręcznie i jak”: kroki, które mam wykonać, i oczekiwany wynik każdego. "
+                "Tickety `gotowe`, plan `status: done`. Nie scalaj do gałęzi głównej i nie wypychaj. W ostatniej "
+                "wiadomości napisz, że praca czeka na mój test ręczny, i wskaż listę.").format(docs=docs_dir)
+    return ("po review AI z werdyktem APPROVE tickety `gotowe`, plan `status: done`; scal do gałęzi głównej tylko "
+            "wtedy, gdy zasady projektu (CLAUDE.md albo AGENTS.md) na to pozwalają — inaczej zostaw gałąź do "
+            "scalenia. Bez push, dopóki o to nie poproszę. W ostatniej wiadomości napisz krótko, co się zmieniło "
+            "i gdzie.")
 
 
 def digest(text: str) -> str:

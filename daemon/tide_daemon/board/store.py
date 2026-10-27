@@ -222,12 +222,13 @@ class BoardStore:
     def render_launch(self, card_id: str, request: dict | None = None) -> dict:
         """Polecenie trybu dla karty (szablon z flows/ albo wbudowany) i dane uruchomienia.
 
-        request: {mode, tool, branch} — wszystko opcjonalne; pusty tryb i narzędzie to domyślne
-        projektu, pusta gałąź — `branch` karty albo propozycja `<narzędzie>/k-12-<opis>`.
+        request: {mode, tool, branch, check} — wszystko opcjonalne; pusty tryb i narzędzie to domyślne
+        projektu, pusta gałąź — `branch` karty albo propozycja `<narzędzie>/k-12-<opis>`, check —
+        `auto` (domyślnie: koniec po review AI) albo `manual` (test ręczny użytkownika po zakończeniu).
         Katalog dokumentów w tablicy (`ai-docs: tide`) zakładamy od razu — agent dostaje go przez
         --add-dir. Szablon `flows/<tryb>.md`, który jest nietkniętym dawnym zaczynem, zastępuje
         wbudowana treść (migrate_flows podmieni plik przy najbliższej okazji)."""
-        data = _fields(request or {}, ("mode", "tool", "branch"))
+        data = _fields(request or {}, ("mode", "tool", "branch", "check"))
         board = self.load()
         card = self._card(board, card_num(card_id))
         project = board.projects.get(card.project)
@@ -238,6 +239,9 @@ class BoardStore:
         if tool not in TOOLS:
             raise BoardError(f"nieznane narzędzie „{tool}” (claude, codex)")
         branch = _line(data.get("branch"), FIELD_MAX, "branch") or card.branch or suggest_branch(card, tool)
+        check = _text(data.get("check"), "check").strip().lower() or "auto"
+        if check not in flows.CHECKS:
+            raise BoardError(f"nieznany sposób sprawdzenia „{check}” (auto, manual)")
         template, source = None, "builtin"
         candidates = ([os.path.join("flows", project.slug, f"{mode}.md")] if project else []) + \
             [os.path.join("flows", f"{mode}.md")]
@@ -270,8 +274,9 @@ class BoardStore:
                   "project": project.name if project else "", "repo": project.repo if project else "",
                   "docs_dir": docs_ref, "branch": branch if mode != "spec" else "bez gałęzi — katalog projektu",
                   "tool": tool, "docs_note": docs_note, "spec": card.spec or "brak (zaczynasz od zera)",
-                  "spec_file": os.path.join(docs_ref, "specs", spec_name(card))}
-        return {"ok": True, "id": card.id, "mode": mode, "tool": tool, "branch": branch, "docsDir": docs,
+                  "spec_file": os.path.join(docs_ref, "specs", spec_name(card)), "check": check,
+                  "check_label": flows.CHECK_LABELS[check], "finish": flows.finish_text(check, docs_ref)}
+        return {"ok": True, "id": card.id, "mode": mode, "tool": tool, "branch": branch, "check": check, "docsDir": docs,
                 "aiDocs": ai_docs, "repo": values["repo"], "repoMissing": bool(project and project.repo_missing),
                 "project": card.project, "projectName": values["project"], "template": source,
                 "specFile": os.path.join(docs, "specs", spec_name(card)), "text": flows.render(template, values)}

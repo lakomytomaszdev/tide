@@ -73,6 +73,30 @@ class TemplatesTest(BoardCase):
         self.assertIn("review", text)
         self.assertIn("Niczego tam nie commituj", text, "pliki tablicy commituje usługa")
         self.assertIn("Istniejąca specyfikacja karty: brak", text)
+        self.assertIn("Review AI jest obowiązkowe", text)
+        self.assertIn("sprawdzenie: auto", text, "domyślnie bez testu ręcznego")
+        self.assertIn("zasady projektu (CLAUDE.md albo AGENTS.md) na to pozwalają", text)
+        self.assertNotIn("Co przetestować ręcznie i jak", text)
+        self.assertEqual(flow["check"], "auto")
+
+    def test_manual_check_asks_for_checklist_in_every_mode(self):
+        docs = os.path.join(self.root, "docs", "mobileapp")
+        for mode in ("full", "light"):
+            flow = self.store.render_launch("K-1", {"mode": mode, "check": "manual"})
+            self.assertEqual(flow["check"], "manual")
+            text = flow["text"]
+            self.assertIn("sprawdzenie: manual", text, mode)
+            self.assertIn(f"w {docs}/plans/", text, mode)
+            self.assertIn("„Co przetestować ręcznie i jak”", text, mode)
+            self.assertIn("czeka na mój test ręczny", text, mode)
+            self.assertIn("Nie scalaj", text, mode)
+            self.assertIn("review AI", text, mode)
+        spec = self.store.render_launch("K-1", {"mode": "spec", "check": "manual"})["text"]
+        self.assertIn("manual — po review AI test ręczny użytkownika", spec)
+        self.assertIn("„Co przetestować ręcznie i jak”", spec)
+        self.assertIn("zleć jej review AI", spec)
+        with self.assertRaises(BoardError):
+            self.store.render_launch("K-1", {"check": "czasem"})
 
     def test_light_mode_with_docs_in_repo_and_codex(self):
         flow = self.store.render_launch("K-2", {})
@@ -98,7 +122,7 @@ class TemplatesTest(BoardCase):
         self.assertIn("status: szkic", text)
         self.assertIn("`status: gotowa`", text)
         self.assertIn("nie commitujesz niczego", text)
-        self.assertNotIn("Plan zakładasz", text, "bez planu i ticketów")
+        self.assertNotIn("Zakładasz go według standardu", text, "bez planu i ticketów")
         self.assertIn("Istniejąca specyfikacja karty: /stara/specyfikacja.md", text)
 
     def test_window_choice_overrides_tool_and_branch(self):
