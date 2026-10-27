@@ -77,6 +77,11 @@ Obiekt /Limits, interfejs org.tide.Daemon.Limits (prognoza Limitów AI z histori
 - Forecast() -> s            JSON {available, error, services: {usługa: {session|weekly: prognoza}}},
 - sygnał Changed()           prognoza albo dostępność usługi Limity AI się zmieniła.
 
+Obiekt /Models, interfejs org.tide.Daemon.Models (modele lokalne: serwery z models.json i role):
+- Status() -> s              JSON {checked, default, config, endpoints: {nazwa: stan}, roles: {rola: …}} — bez tokenów,
+- Refresh()                  odczyt stanu teraz (wynik przyjdzie sygnałem Changed, jeśli coś się zmieniło),
+- sygnał Changed()           stan serwerów, modeli albo ustawień się zmienił — warto pobrać Status() ponownie.
+
 Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git, board/):
 - Snapshot() -> s            JSON: kolumny, projekty, tagi, karty (z tagami projektu), katalog, ostatni
                              commit, błędy plików, repozytoria do dodania jako projekty,
@@ -126,6 +131,8 @@ COORDINATION_PATH = "/Coordination"
 COORDINATION_IFACE = "org.tide.Daemon.Coordination"
 LIMITS_PATH = "/Limits"
 LIMITS_IFACE = "org.tide.Daemon.Limits"
+MODELS_PATH = "/Models"
+MODELS_IFACE = "org.tide.Daemon.Models"
 BOARD_PATH = "/Board"
 BOARD_IFACE = "org.tide.Daemon.Board"
 DOCKER_PATH = "/Docker"
@@ -251,6 +258,12 @@ COORDINATION_XML = f"""<interface name="{COORDINATION_IFACE}">
 
 LIMITS_XML = f"""<interface name="{LIMITS_IFACE}">
   <method name="Forecast"><arg name="json" type="s" direction="out"/></method>
+  <signal name="Changed"/>
+</interface>"""
+
+MODELS_XML = f"""<interface name="{MODELS_IFACE}">
+  <method name="Status"><arg name="json" type="s" direction="out"/></method>
+  <method name="Refresh"/>
   <signal name="Changed"/>
 </interface>"""
 
@@ -552,6 +565,25 @@ class LimitsAdaptor(QDBusAbstractAdaptor):
         return self.monitor.forecast_json()
 
 
+@pyqtClassInfo("D-Bus Interface", MODELS_IFACE)
+@pyqtClassInfo("D-Bus Introspection", MODELS_XML)
+class ModelsAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, monitor):
+        super().__init__(parent)
+        self.monitor = monitor
+        monitor.changed.connect(self.Changed)
+
+    @pyqtSlot(result=str)
+    def Status(self) -> str:
+        return self.monitor.status_json()
+
+    @pyqtSlot()
+    def Refresh(self) -> None:
+        self.monitor.refresh()
+
+
 @pyqtClassInfo("D-Bus Interface", COORDINATION_IFACE)
 @pyqtClassInfo("D-Bus Introspection", COORDINATION_XML)
 class CoordinationAdaptor(QDBusAbstractAdaptor):
@@ -719,7 +751,7 @@ class DockerAdaptor(QDBusAbstractAdaptor):
 
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
              limits=None, tasks=None, coordination=None, board=None,
-             docker=None) -> QObject:
+             docker=None, models=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -754,6 +786,11 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.limits.adaptor = LimitsAdaptor(holder.limits, limits)
         if not bus.registerObject(LIMITS_PATH, holder.limits):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {LIMITS_PATH}")
+    if models is not None:
+        holder.models = QObject(holder)
+        holder.models.adaptor = ModelsAdaptor(holder.models, models)
+        if not bus.registerObject(MODELS_PATH, holder.models):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {MODELS_PATH}")
     if coordination is not None:
         holder.coordination = QObject(holder)
         holder.coordination.adaptor = CoordinationAdaptor(holder.coordination, coordination)

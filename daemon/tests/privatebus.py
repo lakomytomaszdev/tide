@@ -98,6 +98,12 @@ class PrivateBus:
         # pracy (~/DevWorkspace/tide-board), chyba że test poda własny katalog (--board-dir).
         # Nieistniejący socket Dockera: usługa testowa nigdy nie dotyka prawdziwych kontenerów,
         # chyba że test poda socket atrapy Engine API (test_docker_dbus.py).
+        # Własny models.json z punktem na zamkniętym porcie: usługa testowa nigdy nie pyta prawdziwej
+        # Ollamy (domyślny punkt to 127.0.0.1:11434), chyba że test poda własny (test_models_dbus.py).
+        models_config = os.path.join(self.tmp, "models.json")
+        if not os.path.exists(models_config):
+            with open(models_config, "w", encoding="utf-8") as fh:
+                fh.write('{"endpoints": {"local": {"url": "http://127.0.0.1:9", "kind": "ollama"}}}')
         extra_env = {"XDG_STATE_HOME": os.path.join(self.tmp, "state"),
                      "XDG_CACHE_HOME": os.path.join(self.tmp, "cache"),
                      "WAYLAND_DISPLAY": os.path.join(self.tmp, "no-wayland"),
@@ -106,6 +112,7 @@ class PrivateBus:
                      "TIDE_CLAUDE_BIN": "",  # raport: „Na daily” z reguł, nigdy prawdziwy claude
                      "TIDE_BOARD_DIR": os.path.join(self.tmp, "board"),
                      "DOCKER_HOST": "unix://" + os.path.join(self.tmp, "no-docker.sock"),
+                     "TIDE_MODELS_CONFIG": models_config,
                      **(kwargs.pop("extra_env", None) or {})}
         return self.spawn([sys.executable, os.path.join(DAEMON_DIR, "tide-daemon.py"), *args], SERVICE,
                           extra_env=extra_env, **kwargs)
