@@ -99,6 +99,8 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
                              liczba kart w grze; pusty tekst — ukryta),
 - ShowWindow(s id) -> b      okno Tide na widoku Tablica, z ID karty (K-12) od razu na niej, z launch:K-12 — także
                              z oknem „Co ma zrobić agent?” (False, gdy okna nie ma),
+- CardDocs(s id) -> s        plan i specyfikacja karty do panelu: {ok, card, plan, spec, others, warnings}
+                             (odpowiedź po odczycie plików w wątku roboczym; tylko odczyt),
 - sygnał Changed()           tablica się zmieniła (nasz zapis albo zmiana z zewnątrz).
 Każda zmiana to commit w repozytorium tablicy (nieudany commit: ok z opisem w commitError, commit
 czeka); błąd to JSON {ok: false, error: <kod>, message: <tekst po polsku>} jak w /Tasks — dane
@@ -364,6 +366,10 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
   <method name="ShowWindow">
     <arg name="id" type="s" direction="in"/>
     <arg name="ok" type="b" direction="out"/>
+  </method>
+  <method name="CardDocs">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
   </method>
   <signal name="Changed"/>
 </interface>"""
@@ -660,14 +666,28 @@ class CoordinationAdaptor(QDBusAbstractAdaptor):
 class BoardAdaptor(QDBusAbstractAdaptor):
     Changed = pyqtSignal()
 
-    def __init__(self, parent: QObject, monitor):
+    def __init__(self, parent: QObject, monitor, bus: QDBusConnection | None = None):
         super().__init__(parent)
         self.monitor = monitor
+        self.bus = bus
         monitor.changed.connect(self.Changed)
 
     @pyqtSlot(result=str)
     def Snapshot(self) -> str:
         return self.monitor.snapshot_json()
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def CardDocs(self, card_id: str, message: QDBusMessage) -> str:
+        # Pliki planu i specyfikacji czytamy w wątku roboczym (board_monitor.py) — odpowiedź później.
+        message.setDelayedReply(True)
+        request = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(request.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.CardDocs", flush=True)
+
+        self.monitor.card_docs(card_id, reply)
+        return ""
 
     @pyqtSlot(str, result=str)
     def CreateCard(self, request: str) -> str:
@@ -851,7 +871,7 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
             raise RuntimeError(f"nie udało się zarejestrować obiektu {COORDINATION_PATH}")
     if board is not None:
         holder.board = QObject(holder)
-        holder.board.adaptor = BoardAdaptor(holder.board, board)
+        holder.board.adaptor = BoardAdaptor(holder.board, board, bus)
         if not bus.registerObject(BOARD_PATH, holder.board):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {BOARD_PATH}")
     if docker is not None:

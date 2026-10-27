@@ -183,6 +183,12 @@ def pick(plans: list[Plan], session_id: str, tool: str, branch: str = "") -> Pla
     return max(candidates, key=lambda p: p.updated_ts) if candidates else None
 
 
+def split_frontmatter(text: str) -> tuple[dict | None, str]:
+    """(klucze frontmattera małymi literami, treść pod nim); bez frontmattera — (None, cały tekst).
+    Te same łagodne reguły co w planie — czyta je też podgląd dokumentów karty (board/docs.py)."""
+    return _frontmatter(text)
+
+
 # --- wnętrze -----------------------------------------------------------------------------------
 
 def _frontmatter(text: str) -> tuple[dict | None, str]:
