@@ -161,15 +161,18 @@ def config_path(env=None) -> str:
     return os.path.join(base, "tide", "models.json")
 
 
+CLOUD_TAG = re.compile(r"[:-]cloud$", re.IGNORECASE)
+
+
 def is_cloud_model(name) -> bool:
-    """Model chmurowy Ollamy: etykieta po ostatnim „:” kończy się na „cloud” (`kimi-k2:cloud`,
-    `gpt-oss:120b-cloud`). Lokalna Ollama tylko przekazuje takie wywołanie na ollama.com — fakty wyszłyby
-    z komputera, więc tryb lokalny Tide takich modeli nie używa (decyzja 67). Jedno miejsce dla usługi
-    i okna (agents/localmodel.py z PT-17 importuje stąd)."""
-    if not isinstance(name, str):
+    """Model chmurowy Ollamy: etykieta po ostatnim „:” kończy się na „cloud” po „:” albo „-”, bez względu na
+    wielkość liter (`gpt-oss:cloud`, `gpt-oss:120b-cloud`, `kimi-k2:1t-CLOUD`; nie: `mycloud:7b`,
+    `qwen3:cloudless`, `x:7b-cloudy`, gołe `cloud`). Lokalna Ollama tylko przekazuje takie wywołanie na
+    ollama.com — fakty wyszłyby z komputera, więc tryb lokalny Tide takich modeli nie używa (decyzja 67).
+    Ta sama reguła co `modelnames.is_cloud_model` z PT-17 — przy scaleniu zostaje jedna funkcja (import)."""
+    if not isinstance(name, str) or ":" not in name:
         return False
-    _base, sep, tag = name.strip().rpartition(":")
-    return bool(sep and _base) and tag.lower().endswith("cloud")
+    return bool(CLOUD_TAG.search(":" + name.rsplit(":", 1)[1]))
 
 
 def cloud_refusal(model: str) -> str:

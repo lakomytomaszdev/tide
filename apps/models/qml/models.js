@@ -249,17 +249,18 @@ function roleRows(status) {
 
 // Model chmurowy Ollamy (`…:cloud`, `…:120b-cloud`): lokalny serwer tylko przekazuje go na ollama.com, więc
 // tryb lokalny Tide go nie używa (usługa odmawia SetRole). Status() daje `cloud: true`; nazwę (pole „Pobierz”)
-// sprawdzamy tą samą zasadą co models.config.is_cloud_model: etykieta po ostatnim „:” kończy się na „cloud”.
+// sprawdzamy tą samą zasadą co usługa (is_cloud_model) i „Nowe zadanie” (newtask.js): etykieta po ostatnim „:”
+// kończy się na „cloud” po „:” albo „-”, bez względu na wielkość liter.
 function isCloudModel(m) {
     if (m && typeof m === "object" && m.cloud === true) return true
-    const name = String(m && typeof m === "object" ? m.name || "" : m || "").trim()
-    const i = name.lastIndexOf(":")
-    return i > 0 && /cloud$/i.test(name.slice(i + 1))
+    const name = m && typeof m === "object" ? m.name : m
+    if (typeof name !== "string" || name.indexOf(":") < 0) return false
+    return /[:-]cloud$/i.test(":" + name.slice(name.lastIndexOf(":") + 1))
 }
 
 // Ostrzeżenie przy „Pobierz model” dla nazwy chmurowej (pobranie usługa przyjmie, ale Tide modelu nie użyje).
 function pullWarning(name) {
-    return isCloudModel(name) ? "To model w chmurze Ollamy — Tide nie użyje go w raporcie ani w opisach kart "
+    return isCloudModel(String(name || "").trim()) ? "To model w chmurze Ollamy — Tide nie użyje go w raporcie ani w opisach kart "
                                 + "(fakty wyszłyby z komputera)." : ""
 }
 

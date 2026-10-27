@@ -173,13 +173,13 @@ function bytes(value) {
 // --- model w pamięci ----------------------------------------------------------------------------
 
 // Model chmurowy Ollamy (`…:cloud`, `…:120b-cloud`): serwer tylko przekazuje go na ollama.com. Status() daje
-// `cloud: true`; nazwę sprawdzamy też sami (starsza usługa, /api/ps). Ta sama zasada co models.config.is_cloud_model.
+// `cloud: true`; nazwę sprawdzamy też sami (starsza usługa, /api/ps) tą samą regułą co usługa (is_cloud_model):
+// etykieta po ostatnim „:” kończy się na „cloud” po „:” albo „-”, bez względu na wielkość liter.
 function isCloudModel(m) {
     if (isObject(m) && m.cloud === true) return true
     var name = isObject(m) ? m.name : m
-    if (typeof name !== "string") return false
-    var i = name.lastIndexOf(":")
-    return i > 0 && /cloud$/i.test(name.slice(i + 1))
+    if (typeof name !== "string" || name.indexOf(":") < 0) return false
+    return /[:-]cloud$/i.test(":" + name.slice(name.lastIndexOf(":") + 1))
 }
 
 function gpuText(m) {

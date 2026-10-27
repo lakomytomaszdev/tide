@@ -146,6 +146,8 @@ Item {
                           models: [{ name: "qwen3:8b" }, { name: "gpt-oss:120b-cloud", cloud: true }, { name: "kimi-k2:cloud" }] }
         console.warn("CLOUDTILE " + [Logic.installedLine(cloudEp), Logic.gpuText(cloudEp.loaded[0]),
                                      Logic.loadedDetail(cloudEp.loaded[0], now)].join(" | "))
+        console.warn("CLOUDNAMES " + ["gpt-oss:cloud", "kimi-k2:1t-CLOUD", "mycloud:7b", "qwen3:cloudless", "x:7b-cloudy",
+                                      "x:7bcloud", "cloud"].map(Logic.isCloudModel).join(","))
         console.warn("LOCAL " + ["http://127.0.0.1:11434", "http://localhost:11434/", "http://[::1]:11434",
                                  "http://mac-studio:11434", "http://127.0.0.1.evil:1"].map(Logic.isLocalUrl).join(","))
         console.warn("SHORT " + ["bge-m3:latest", "hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M", "qwen3:8b"]
@@ -236,6 +238,7 @@ Item {
         self.assertEqual(got["CLOUDTILE"], "Pobrane: 3 modele, w tym 2 w chmurze Ollamy | w chmurze Ollamy | "
                                            "Tide go nie używa — fakty wyszłyby z komputera",
                          "model chmurowy nie udaje modelu na karcie")
+        self.assertEqual(got["CLOUDNAMES"], "true,true,false,false,false,false,false", "reguła jak modelnames (PT-17)")
         self.assertEqual(got["OTHER"], "Na starym adresie 127.0.0.1:11434: pracuje: raport (qwen3:8b) od 3 min + "
                          "Na starym adresie 10.0.0.5:11434: 1 w kolejce: opis kart | 0 | 0",
                          "bezczynny i zepsuty wpis pominięte")

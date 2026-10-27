@@ -258,7 +258,8 @@ Item {
         console.warn("QUEUE " + [Logic.queueLines(d.busy, "local"), Logic.queueLines(d.local, "local"),
                                  Logic.queueLines(odd, "local"), Logic.queueLines(odd, "mac"), Logic.queueLines(null, "local")]
                                 .map(l => l.map(x => (x.other ? "~" : "") + x.text).join(" + ")).join(" | "))
-        console.warn("CLOUD " + ["gpt-oss:120b-cloud", "kimi-k2:cloud", "qwen3:8b", "cloud", "my-cloud:latest"].map(Logic.isCloudModel).join(",")
+        console.warn("CLOUD " + ["gpt-oss:120b-cloud", "kimi-k2:cloud", "qwen3:8b", "cloud", "my-cloud:latest", "kimi-k2:1t-CLOUD",
+                      "mycloud:7b", "qwen3:cloudless", "x:7b-cloudy", "x:7bcloud"].map(Logic.isCloudModel).join(",")
                      + "|" + Logic.modelOptions(d.busy, "local", "").map(o => o.name).indexOf("gpt-oss:120b-cloud")
                      + "|" + Logic.modelOptions(d.busy, "local", "").length
                      + "|" + Logic.serverModels(d.busy, "local").filter(m => m.cloud).map(m => m.name + ":" + m.detail).join(",")
@@ -314,7 +315,7 @@ Item {
                                               "!serwer nie odpowiada|!brak odpowiedzi usługi")
         self.assertEqual(warned(log, "BYTES"), "5,2 GB|65,3 GB|567 MB|1,2 GB|")
         self.assertEqual(warned(log, "PROBLEM"), "Usługa tide-daemon nie odpowiada|Brak serwerów modeli|null")
-        self.assertEqual(warned(log, "CLOUD"), "true,true,false,false,false|-1|5|gpt-oss:120b-cloud:116.8B · MXFP4 · "
+        self.assertEqual(warned(log, "CLOUD"), "true,true,false,false,false,true,false,false,false,false|-1|5|gpt-oss:120b-cloud:116.8B · MXFP4 · "
                                                "w chmurze Ollamy|To model w chmurze Ollamy — Tide nie użyje go w raporcie "
                                                "ani w opisach kart (fakty wyszłyby z komputera).|",
                          "model chmurowy oznaczony i nie do wybrania w rolach; „Pobierz” ostrzega")

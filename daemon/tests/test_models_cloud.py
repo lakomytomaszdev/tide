@@ -29,10 +29,13 @@ REFUSAL = f"model „{CLOUD}” działa w chmurze Ollamy, nie lokalnie — wybie
 
 class CloudNameTest(unittest.TestCase):
     def test_cloud_model_names(self):
+        # Ta sama reguła co modelnames.is_cloud_model z PT-17: etykieta po ostatnim „:” kończy się na „cloud”
+        # po „:” albo „-”, bez względu na wielkość liter.
         cloud = ["gpt-oss:120b-cloud", "qwen3-coder:480b-cloud", "deepseek-v3.1:671b-cloud", "kimi-k2:cloud",
-                 "gpt-oss:20B-Cloud", "hf.co/org/model:cloud"]
+                 "gpt-oss:cloud", "gpt-oss:20B-Cloud", "kimi-k2:1t-CLOUD", "hf.co/org/model:cloud"]
         local = ["qwen3:8b", "gpt-oss:20b", "bge-m3", "hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M",
-                 "cloud", "cloud-model:8b", "my-cloud:latest", "", None]
+                 "cloud", "cloud-model:8b", "my-cloud:latest", "mycloud:7b", "qwen3:cloudless", "x:7b-cloudy",
+                 "x:7bcloud", "", None]
         self.assertEqual([models_config.is_cloud_model(n) for n in cloud], [True] * len(cloud))
         self.assertEqual([models_config.is_cloud_model(n) for n in local], [False] * len(local))
         self.assertEqual(models_config.cloud_refusal(CLOUD), REFUSAL)
