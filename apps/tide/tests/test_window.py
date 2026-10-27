@@ -357,6 +357,19 @@ class BadgeOverDbusTest(unittest.TestCase):
 
 
 @requires_dbus
+class KeepWindowStateTest(unittest.TestCase):
+    def test_show_request_keeps_maximized_window(self):
+        # Uwaga użytkownika: „czemu mi zmienia rozmiar okna? zmaksymalizowałem sobie”. Window.show() w Qt
+        # wraca do zwykłego rozmiaru, więc Show() z usługi nie może go wołać na widocznym oknie.
+        with open(os.path.join(REPO, "apps", "tide", "qml", "Main.qml"), encoding="utf-8") as fh:
+            source = fh.read()
+        handler = source[source.index("function onShowRequested"):]
+        handler = handler[:handler.index("\n        }\n")]
+        self.assertNotIn("win.show()", handler)
+        self.assertIn("win.lastVisibility", handler, "zminimalizowane okno wraca do stanu sprzed minimalizacji")
+        self.assertIn("lastVisibility = visibility", source)
+
+
 class WindowOverDbusTest(unittest.TestCase):
     """Okno (offscreen) na prywatnej magistrali bez tide-daemon."""
 

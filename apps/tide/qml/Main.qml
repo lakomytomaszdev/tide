@@ -56,6 +56,13 @@ Window {
         showView(views[(currentIndex + delta + views.length) % views.length].id, "")
     }
 
+    // Ostatni stan okna poza minimalizacją — do niego wraca okno pokazane przez Show().
+    property int lastVisibility: Window.Windowed
+    onVisibilityChanged: {
+        if (visibility === Window.Maximized || visibility === Window.Windowed || visibility === Window.FullScreen)
+            lastVisibility = visibility
+    }
+
     width: 1800
     height: 1000
     minimumWidth: 1380
@@ -132,7 +139,10 @@ Window {
         target: win.shell
         function onShowRequested(view, item) {
             win.showView(view, item)
-            win.show()
+            // show() w Qt przywraca zwykły rozmiar i zdejmuje maksymalizację (uwaga użytkownika: „czemu mi
+            // zmienia rozmiar okna?”) — widoczne okno tylko podnosimy, zminimalizowane wraca do stanu sprzed.
+            if (win.visibility === Window.Minimized || !win.visible)
+                win.visibility = win.lastVisibility
             win.raise()
             win.requestActivate()
         }

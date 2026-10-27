@@ -23,7 +23,8 @@ Rectangle {
     property bool ghost: false          // kopia karty pod kursorem w czasie przeciągania
     signal clicked()
     signal moveRequested(string column)       // „Gotowe” w Do sprawdzenia
-    signal sessionRequested(string session)   // Otwórz w Sesjach / Przejdź do agenta: koordynator albo sesja (agentTarget)
+    signal sessionRequested(string session)   // „Otwórz w Sesjach”: koordynator karty w widoku Sesje
+    signal agentRequested(string session)     // „Przejdź do agenta”: okno agenta (Konsola, wątek Codexa)
     signal launchRequested()
     signal diffRequested()
     signal keyNavigation(int dx, int dy)      // strzałki: sąsiednia karta
@@ -297,27 +298,10 @@ Rectangle {
             textColor: (root.c.launched || "") !== "" ? Tide.Tokens.accent : Tide.Tokens.backgroundDesktop
             onClicked: root.launchRequested()
         }
-        Text {
-            visible: root.column === "progress" && root.derived !== null && Logic.agentTarget(root.c) !== ""
-            text: "Otwórz w Sesjach →"
-            textFormat: Text.PlainText
-            color: sessionsLink.containsMouse ? Tide.Theme.alpha(Tide.Tokens.accent, 0.8) : Tide.Tokens.accent
-            font.family: Tide.Theme.uiFamily
-            font.pixelSize: 12
-            Accessible.role: Accessible.Link
-            Accessible.name: text
-            Accessible.onPressAction: root.sessionRequested(Logic.agentTarget(root.c))
-            MouseArea {
-                id: sessionsLink
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.sessionRequested(Logic.agentTarget(root.c))
-            }
-        }
         PillButton {
+            objectName: "agentButton"
             Layout.fillWidth: true
-            visible: root.waiting && root.derived !== null && Logic.agentTarget(root.c) !== "" && !root.ghost
+            visible: root.waiting && root.derived !== null && Logic.agentSession(root.c) !== "" && !root.ghost
             implicitHeight: 30
             pillRadius: Tide.Tokens.radiusSmall
             pixelSize: 12
@@ -325,7 +309,52 @@ Rectangle {
             text: "Przejdź do agenta"
             fill: Tide.Tokens.peach
             textColor: Tide.Tokens.backgroundDesktop
-            onClicked: root.sessionRequested(Logic.agentTarget(root.c))
+            onClicked: root.agentRequested(Logic.agentSession(root.c))
+        }
+        // Dwa osobne linki: okno agenta (Konsola, wątek Codexa) i koordynator w widoku Sesje okna Tide.
+        RowLayout {
+            Layout.fillWidth: true
+            visible: (root.column === "progress" || root.waiting) && root.derived !== null && !root.ghost
+                     && Logic.agentSession(root.c) !== ""
+            spacing: 14
+            Text {
+                objectName: "agentLink"
+                visible: !root.waiting
+                text: "Przejdź do agenta"
+                textFormat: Text.PlainText
+                color: agentLink.containsMouse ? Tide.Theme.alpha(Tide.Tokens.accent, 0.8) : Tide.Tokens.accent
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 12
+                Accessible.role: Accessible.Link
+                Accessible.name: text
+                Accessible.onPressAction: root.agentRequested(Logic.agentSession(root.c))
+                MouseArea {
+                    id: agentLink
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.agentRequested(Logic.agentSession(root.c))
+                }
+            }
+            Text {
+                objectName: "sessionsLink"
+                visible: Logic.sessionsTarget(root.c) !== ""
+                text: "Otwórz w Sesjach →"
+                textFormat: Text.PlainText
+                color: sessionsLink.containsMouse ? Tide.Theme.alpha(Tide.Tokens.accent, 0.8) : Tide.Tokens.accent
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 12
+                Accessible.role: Accessible.Link
+                Accessible.name: text
+                Accessible.onPressAction: root.sessionRequested(Logic.sessionsTarget(root.c))
+                MouseArea {
+                    id: sessionsLink
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.sessionRequested(Logic.sessionsTarget(root.c))
+                }
+            }
         }
         RowLayout {
             Layout.fillWidth: true

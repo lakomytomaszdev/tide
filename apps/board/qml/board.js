@@ -90,6 +90,19 @@ function agentTarget(card) {
     return d ? String(d.coordinator || d.session || "") : ""
 }
 
+// Sesja agenta karty do „Przejdź do agenta”: okno Konsoli albo wątek Codexa (/Agents ActivateSession).
+// Koordynator to też sesja, więc bez osobnej sesji idzie jego id.
+function agentSession(card) {
+    const d = card && card.derived
+    return d ? String(d.session || d.coordinator || "") : ""
+}
+
+// Koordynator karty do „Otwórz w Sesjach” (widok Sesje okna Tide); bez koordynatora — pusto.
+function sessionsTarget(card) {
+    const d = card && card.derived
+    return d ? String(d.coordinator || "") : ""
+}
+
 // Czy cel z agentTarget to koordynator którejś karty (wtedy okno Tide na Sesjach), a nie zwykła sesja.
 function isCoordinator(snapshot, target) {
     return !!target && ((snapshot && snapshot.cards) || []).some(c => c.derived && c.derived.coordinator === target)

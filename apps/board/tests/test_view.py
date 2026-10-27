@@ -128,6 +128,10 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js("agentTarget({derived: null})"), "")
         self.assertFalse(self.js("isCoordinator(S, 'claude:5f0c')"))
         self.assertTrue(self.js("isCoordinator({cards: [{derived: {coordinator: 'codex:019a'}}]}, 'codex:019a')"))
+        self.assertEqual(self.js("agentSession({derived: {session: 'claude:1', coordinator: 'claude:2'}})"), "claude:1")
+        self.assertEqual(self.js("agentSession({derived: {session: '', coordinator: 'codex:9'}})"), "codex:9")
+        self.assertEqual(self.js("sessionsTarget({derived: {session: 'claude:1', coordinator: ''}})"), "")
+        self.assertEqual(self.js("sessionsTarget({derived: {coordinator: 'codex:9'}})"), "codex:9")
 
     def test_move_index_and_optimistic_moves(self):
         # Kolumna zapisana todo: K-11, K-9, K-8, K-7, K-6, K-5 (cztery ostatnie wyświetlane gdzie indziej).
@@ -398,17 +402,27 @@ out["drag"] = calls()[n] if len(calls()) > n else None
         self.assertEqual(out["panel"][:3], ["MoveCard", "K-7", "todo"])
         self.assertEqual(out["drag"][:3], ["MoveCard", "K-7", "todo"])
 
-    def test_session_links_open_coordinator_or_session(self):
+    def test_agent_jump_and_sessions_link_are_separate(self):
+        # Uwaga użytkownika: „Przejdź do agenta” przenosiło do widoku Sesje. Teraz „Przejdź do agenta” zawsze
+        # aktywuje okno agenta (/Agents ActivateSession), a „Otwórz w Sesjach” — koordynatora w widoku Sesje.
         data = json.loads(json.dumps(self.data))
         for c in data["cards"]:
             if c["id"] == "K-6":
                 c["derived"]["coordinator"] = "codex:019a-koordynator"
+                c["derived"]["session"] = ""
         out = self.probe("""
 for cid in ("K-5", "K-6"):
-    out[cid] = js(f"(function () {{ const it = page.findCard('{cid}'); if (!it) return 'brak'; const d = it.card.derived; const t = d.coordinator || d.session; it.sessionRequested(t); return t }})()")
+    # Te same reguły co agentSession/sessionsTarget w board.js (sprawdzone niżej w QJSEngine).
+    out[cid] = js(f"(function () {{ const it = page.findCard('{cid}'); if (!it) return 'brak'; const d = it.card.derived; const a = d.session || d.coordinator || ''; it.agentRequested(a); return [a, d.coordinator || ''] }})()")
+out["links"] = js("(function () { const it = page.findCard('K-5'); const r = []; for (const n of ['agentLink', 'sessionsLink']) { const o = (function f(x) { if (x.objectName === n) return x; for (const c of x.children) { const y = f(c); if (y) return y } return null })(it); r.push(o ? o.visible : null) } return r })()")
+js("(function () { const it = page.findCard('K-6'); it.sessionRequested(it.card.derived.coordinator) })()")
 out["calls"] = calls()
 """, data)
+        self.assertEqual(out["K-5"], ["claude:5f0c", ""])
+        self.assertEqual(out["links"], [True, False], "karta bez koordynatora: jest „Przejdź do agenta”, nie ma „Otwórz w Sesjach”")
+        self.assertEqual(out["K-6"], ["codex:019a-koordynator", "codex:019a-koordynator"])
         self.assertEqual(out["calls"], [["/Agents ActivateSession", "claude:5f0c"],
+                                        ["/Agents ActivateSession", "codex:019a-koordynator"],
                                         ["/Coordination ShowWindow", "codex:019a-koordynator"]], out)
 
 

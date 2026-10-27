@@ -87,11 +87,10 @@ Item {
         onTagRequested: (tag, request) => view.backend.upsertTag(tag, request)
         onRenderRequested: (tag, id, request) => view.backend.renderLaunch(tag, id, request)
         onStartRequested: (tag, request) => view.backend.startTask(tag, request)
-        // Koordynator karty — okno Tide na Sesjach, zwykła sesja — jej okno.
-        onSessionRequested: target => {
-            if (Logic.isCoordinator(view.snapshot, target)) view.backend.showCoordinator(target)
-            else view.backend.activateSession(target)
-        }
+        // „Otwórz w Sesjach” — koordynator w widoku Sesje okna Tide; „Przejdź do agenta” — okno agenta
+        // (karta Konsoli albo wątek Codexa), bez przełączania okna Tide.
+        onSessionRequested: target => view.backend.showCoordinator(target)
+        onAgentRequested: session => view.backend.activateSession(session)
         Component.onCompleted: {
             if (view.previewValue("tag")) tagFilter = view.previewValue("tag")
             if (view.previewValue("project")) projectFilter = view.previewValue("project")

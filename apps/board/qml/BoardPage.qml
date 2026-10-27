@@ -57,6 +57,7 @@ Rectangle {
     signal projectRequested(string tag, string request)
     signal tagRequested(string tag, string request)
     signal sessionRequested(string session)  // PT-5: koordynator karty w widoku Sesje
+    signal agentRequested(string session)    // okno agenta karty (Konsola, wątek Codexa)
     signal launchRequested(string cardId)    // otwarto „Co ma zrobić agent?” dla karty
     signal renderRequested(string tag, string cardId, string request)   // /Board RenderLaunch
     signal startRequested(string tag, string request)                   // /Tasks Start
@@ -894,6 +895,7 @@ Rectangle {
                         onDropped: (id, before) => page.moveCard(id, modelData.id, before)
                         onMoveRequested: (id, column) => page.moveCard(id, column, page.topOf(column))
                         onSessionRequested: session => page.sessionRequested(session)
+                        onAgentRequested: session => page.agentRequested(session)
                         onLaunchRequested: id => page.openLaunch(id, false)
                         onKeyNavigation: (id, dx, dy) => page.navigate(id, dx, dy)
                         onKeyMove: (id, dx, dy) => page.keyMove(id, dx, dy)
@@ -1007,6 +1009,7 @@ Rectangle {
                                             onDropped: (id, before) => page.moveCard(id, modelData.id, before)
                                             onMoveRequested: (id, column) => page.moveCard(id, column, page.topOf(column))
                                             onSessionRequested: session => page.sessionRequested(session)
+                                            onAgentRequested: session => page.agentRequested(session)
                                             onLaunchRequested: id => page.openLaunch(id, false)
                                         }
                                     }
