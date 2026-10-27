@@ -362,6 +362,29 @@ class StickyMonitorTest(unittest.TestCase):
         self.assertTrue(wait_until(lambda: self.file_session() == f"claude:{SID}", timeout=5))
         self.assertEqual(card_of(monitor.snapshot_json(), "K-1")["boardColumn"], "progress")
 
+    def test_relaunch_clears_session_and_links_the_new_one(self):
+        w = self.w
+        w.k1_session(moved=True)
+        self.agents.sessions = w.sessions()
+        monitor = self.start()
+        self.assertTrue(wait_until(lambda: self.file_session() == f"claude:{SID}", timeout=5))
+        # Ponowne uruchomienie z okna (board.js launchMarkRequest): nowe `launched` i `session: ""`.
+        relaunched = w.now - 60
+        reply = json.loads(monitor.update_card("K-1", json.dumps({
+            "branch": BRANCH, "worktree": w.worktree, "mode": "light", "tool": "claude", "check": "auto",
+            "launched": iso(relaunched), "session": ""})))
+        self.assertTrue(reply["ok"], reply)
+        new = "9e2a0000-0000-4000-8000-000000000002"
+        path = w.claude_log(sid=new)
+        w.claude_write(path, relaunched + 10, w.worktree, BRANCH)
+        w.claude_write(path, w.now - 5, w.docs, "master", tool_result=True)
+        self.agents.sessions = w.sessions()
+        self.agents.changed.emit()
+        self.assertTrue(wait_until(lambda: self.file_session() == f"claude:{new}", timeout=5), self.file_session())
+        self.assertEqual(self.last_subject(), f"K-1: link session claude:{new} (launch)")
+        self.assertEqual(card_of(monitor.snapshot_json(), "K-1")["derived"]["session"], f"claude:{new}",
+                         "stara sesja (start poza oknem nowego uruchomienia) pominięta")
+
     def test_manual_session_is_never_overwritten(self):
         w = self.w
         w.store.update_card(w.card_id, {"session": "claude:recznie"})

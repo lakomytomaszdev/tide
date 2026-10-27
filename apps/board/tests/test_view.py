@@ -211,7 +211,7 @@ class LogicTest(unittest.TestCase):
         self.assertEqual((spec_start["newWorktree"], spec_start["branch"], spec_start["addDirs"]), (False, "", []))
         self.assertEqual(self.js(f"launchMarkRequest({{worktree: '/w/k-16', branch: 'claude/k-16-okno', tool: 'claude'}}, {js_state}, 'T')"),
                          {"branch": "claude/k-16-okno", "worktree": "/w/k-16", "mode": "full", "tool": "claude",
-                          "check": "auto", "launched": "T"})
+                          "check": "auto", "launched": "T", "session": ""})
         self.assertEqual(self.js(f"launchMarkRequest({{worktree: '', branch: 'master'}}, Object.assign({js_state}, {{check: 'manual'}}), 'T')")["branch"],
                          "", "bez worktree gałąź główna nie trafia do karty")
         self.assertRegex(self.js("isoNow(1793099040000)"), r"^2026-10-27T\d\d:\d\d:00[+-]\d\d:\d\d$")
@@ -705,12 +705,13 @@ class LaunchMarkStoreTest(unittest.TestCase):
                 from unittest import mock
                 with mock.patch.dict(os.environ, git_env(tmp)):
                     board = store_mod.BoardStore(os.path.join(tmp, "board"))
-                    board.create_card({"title": "Grabie", "column": "todo"})
+                    board.create_card({"title": "Grabie", "column": "todo", "session": "claude:poprzednia"})
                     self.assertTrue(board.update_card("K-1", request)["ok"])
                     card = board.snapshot()["cards"][0]
             self.assertEqual((card["mode"], card["tool"], card["worktree"]), (choice["mode"], choice["tool"], result["worktree"]))
             self.assertEqual(card["branch"], result["branch"] if result["worktree"] else "")
             self.assertEqual(card.get("check"), choice["check"])
+            self.assertEqual(card["session"], "", "poprzednia sesja odpięta — usługa przypnie nową")
 
 
 class LaunchTest(ProbeCase):
@@ -794,6 +795,7 @@ out["toast"] = js("[page.toast, page.toastTone]")
         self.assertEqual({k: mark[k] for k in ("branch", "worktree", "mode", "tool", "check")},
                          {"branch": "claude/k-15-tryb-skupienia", "worktree": "/w/k-15", "mode": "full", "tool": "claude",
                           "check": "auto"})
+        self.assertEqual(mark["session"], "", "ponowne uruchomienie odpina poprzednią sesję (PT-28)")
         self.assertRegex(mark["launched"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")

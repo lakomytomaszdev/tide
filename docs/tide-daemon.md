@@ -1029,7 +1029,9 @@ pracy.
 połączyło regułą 2 albo jednoznacznie (jedno dopasowanie — koordynator z ticketami to jedno) regułą 4 lub 5,
 dostaje tę sesję w pliku: `store.link_session`, commit `K-1: link session claude:<id> (launch)` (albo
 `(card-branch)`, `(branch)`). Zapis idzie po przeliczeniu (`QTimer`), ta sama para karta–sesja najwyżej raz
-na minutę. Ustawionego `session` (także ręcznie) usługa nigdy nie nadpisuje. Później sesja może wejść
+na minutę. Ustawionego `session` (także ręcznie) usługa nigdy nie nadpisuje — czyści go tylko jawne ponowne
+uruchomienie z okna (`UpdateCard` po starcie wysyła `session: ""`), a nową sesję przypina reguła 2 (stara
+zaczęła się poza oknem nowego `launched`). Później sesja może wejść
 gdzie indziej — karta jej nie zgubi. Przypadek z życia: agent K-1 zrobił `cd` do `<tablica>/docs/<projekt>/plans`,
 żeby napisać plan, a karta wróciła do Do zrobienia z „Uruchom ponownie…”, choć agent dalej pracował. Koordynator z karty, który już nie działa, ustępuje nowszemu, żywemu koordynatorowi tego samego
 planu (nowa sesja po wyczerpaniu kontekstu). Gdy gałąź karty jest inna niż gałąź koordynatora, a jego
@@ -1090,7 +1092,8 @@ agenta…” na karcie w Do zrobienia i z „Uruchom” w popupie kafelka (`Show
 się od opisu karty, `RenderLaunch(id, {mode, tool, branch, check})`, `/Tasks Start {repoPath, tool,
 prompt: text, newWorktree, branch, images: [], addDirs}` (`newWorktree` i `branch` tylko poza trybem
 spec; `addDirs: [docsDir]` przy `ai-docs: tide`) i po udanym starcie `UpdateCard {branch, worktree,
-mode, tool, check, launched}` (`branch` tylko z nowym worktree; pole `check` dodaje PT-5). Karta
+mode, tool, check, launched, session: ""}` (`branch` tylko z nowym worktree; pole `check` dodaje PT-5;
+pusty `session` — ponowne uruchomienie odpina poprzednią sesję, a usługa przypnie nową, PT-28). Karta
 uruchomiona z Backlogu bez przeniesienia (popup) idzie do Do zrobienia; dalej stoi tam, aż PT-5 wyliczy
 „W toku”. Błąd którejkolwiek odpowiedzi zostaje w oknie, a ponowienie nie zapisuje opisu drugi raz.
 „Anuluj” po przeniesieniu oddaje kartę na jej miejsce w Backlogu (`MoveCard`), „Tylko przenieś”

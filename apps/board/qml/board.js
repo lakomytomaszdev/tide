@@ -575,10 +575,12 @@ function pathTail(path) {
     return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : text
 }
 
-// UpdateCard po udanym starcie: gałąź i worktree (tylko nowy worktree), tryb, narzędzie, sprawdzenie, chwila.
+// UpdateCard po udanym starcie: gałąź i worktree (tylko nowy worktree), tryb, narzędzie, sprawdzenie, chwila,
+// a `session` pusty — ponowne uruchomienie odpina poprzednią sesję i usługa przypnie nową (PT-28).
 function launchMarkRequest(result, state, nowIso) {
     return { branch: result.worktree ? result.branch || "" : "", worktree: result.worktree || "", mode: state.mode,
-             tool: result.tool || state.tool, check: state.check === "manual" ? "manual" : "auto", launched: nowIso }
+             tool: result.tool || state.tool, check: state.check === "manual" ? "manual" : "auto", launched: nowIso,
+             session: "" }
 }
 
 // Czas ISO 8601 z przesunięciem strefy (2026-10-27T12:04:00+01:00) — jak w plikach tablicy.
