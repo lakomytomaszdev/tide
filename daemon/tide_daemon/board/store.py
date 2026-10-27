@@ -358,7 +358,7 @@ class BoardStore:
             raise BoardError(f"niepoprawny identyfikator projektu „{slug}” (małe litery, cyfry, . _ -)")
         created = project is None
         if created:
-            name = _line(data.get("name") or (os.path.basename(repo) if repo else ""), NAME_MAX, "nazwa")
+            name = _line(data.get("name") or (os.path.basename(repo) if repo else "") or slug, NAME_MAX, "nazwa")
             if not name:
                 raise BoardError("projekt potrzebuje nazwy albo repozytorium")
             slug = slug or self._free_slug(board, slugify(name))
