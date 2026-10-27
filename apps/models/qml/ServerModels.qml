@@ -242,6 +242,13 @@ ColumnLayout {
             Item { Layout.fillWidth: true }
         }
         Note {
+            objectName: "pullCloudNote"
+            Layout.fillWidth: true
+            visible: text !== ""
+            tone: "warn"
+            text: Logic.pullWarning(pullField.text)
+        }
+        Note {
             objectName: "pullNote"
             Layout.fillWidth: true
             tone: section.note() && section.note().error ? "error" : "ok"

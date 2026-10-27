@@ -142,6 +142,10 @@ Item {
         const snap = %(snap)s
         const ep = n => ({ online: true, models: new Array(n).fill({ name: "m" }), loaded: [] })
         console.warn("INSTALLED " + [0, 1, 2, 5, 12, 22].map(n => Logic.installedLine(ep(n))).join(" | "))
+        const cloudEp = { online: true, loaded: [{ name: "gpt-oss:120b-cloud", size: 384, sizeVram: 0, gpuPercent: 0 }],
+                          models: [{ name: "qwen3:8b" }, { name: "gpt-oss:120b-cloud", cloud: true }, { name: "kimi-k2:cloud" }] }
+        console.warn("CLOUDTILE " + [Logic.installedLine(cloudEp), Logic.gpuText(cloudEp.loaded[0]),
+                                     Logic.loadedDetail(cloudEp.loaded[0], now)].join(" | "))
         console.warn("LOCAL " + ["http://127.0.0.1:11434", "http://localhost:11434/", "http://[::1]:11434",
                                  "http://mac-studio:11434", "http://127.0.0.1.evil:1"].map(Logic.isLocalUrl).join(","))
         console.warn("SHORT " + ["bge-m3:latest", "hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M", "qwen3:8b"]
@@ -229,6 +233,9 @@ Item {
         # Jedna forma kolejki wszędzie: „· 2 w kolejce: raport”.
         self.assertEqual(got["QUEUE"], "2 w kolejce: raport, opis kart | 3 w kolejce | pracuje: raport | "
                          "Pracuje: opis kart (qwen3:8b) od 2 min · 2 w kolejce: raport | null | false")
+        self.assertEqual(got["CLOUDTILE"], "Pobrane: 3 modele, w tym 2 w chmurze Ollamy | w chmurze Ollamy | "
+                                           "Tide go nie używa — fakty wyszłyby z komputera",
+                         "model chmurowy nie udaje modelu na karcie")
         self.assertEqual(got["OTHER"], "Na starym adresie 127.0.0.1:11434: pracuje: raport (qwen3:8b) od 3 min + "
                          "Na starym adresie 10.0.0.5:11434: 1 w kolejce: opis kart | 0 | 0",
                          "bezczynny i zepsuty wpis pominięte")

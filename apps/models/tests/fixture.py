@@ -11,7 +11,8 @@ Warianty (nazwa → Status):
                  nowy serwer jeszcze niesprawdzony,
   checking     — pierwszy odczyt po starcie usługi (checked: false),
   busy         — jak local, ale kolejka modeli (PT-16, `queue`) pracuje: raport trwa, opisy kart czekają,
-                 a na starym adresie serwera (adres zmieniony w trakcie) trwa jeszcze jedno wywołanie (`other`).
+                 a na starym adresie serwera (adres zmieniony w trakcie) trwa jeszcze jedno wywołanie (`other`);
+                 na serwerze jest też pobrany model chmurowy Ollamy (`cloud: true`) — nie do wybrania w rolach.
 
 Role mają `pinned` (PT-25 po review: przypięta do serwera czy za domyślnym); stara usługa go nie podaje
 — test usuwa pole i sprawdza, że widok pokazuje role tylko do odczytu.
@@ -143,8 +144,13 @@ def checking() -> dict:
     return _status("local", endpoints, roles, checked=False, exists=False)
 
 
+CLOUD120 = {"name": "gpt-oss:120b-cloud", "size": 384, "family": "gptoss", "parameterSize": "116.8B",
+            "quantization": "MXFP4", "cloud": True}
+
+
 def busy() -> dict:
     status = local()
+    status["endpoints"]["local"]["models"].append(dict(CLOUD120))
     status["queue"] = {"local": {
         "running": {"endpoint": "local", "role": "summary", "model": "qwen3:8b", "since": "2026-10-27T16:58:00+01:00"},
         "waiting": [{"endpoint": "local", "role": "describe", "model": "qwen3:8b", "since": "2026-10-27T16:59:00+01:00"},

@@ -258,6 +258,11 @@ Item {
         console.warn("QUEUE " + [Logic.queueLines(d.busy, "local"), Logic.queueLines(d.local, "local"),
                                  Logic.queueLines(odd, "local"), Logic.queueLines(odd, "mac"), Logic.queueLines(null, "local")]
                                 .map(l => l.map(x => (x.other ? "~" : "") + x.text).join(" + ")).join(" | "))
+        console.warn("CLOUD " + ["gpt-oss:120b-cloud", "kimi-k2:cloud", "qwen3:8b", "cloud", "my-cloud:latest"].map(Logic.isCloudModel).join(",")
+                     + "|" + Logic.modelOptions(d.busy, "local", "").map(o => o.name).indexOf("gpt-oss:120b-cloud")
+                     + "|" + Logic.modelOptions(d.busy, "local", "").length
+                     + "|" + Logic.serverModels(d.busy, "local").filter(m => m.cloud).map(m => m.name + ":" + m.detail).join(",")
+                     + "|" + Logic.pullWarning(" kimi-k2:cloud ") + "|" + Logic.pullWarning("qwen3:8b"))
         console.warn("PROBLEM " + Logic.problem(d.local, false).title + "|" + Logic.problem({ endpoints: {} }, true).title + "|" + Logic.problem(d.local, true))
         Qt.quit()
     }
@@ -309,10 +314,48 @@ Item {
                                               "!serwer nie odpowiada|!brak odpowiedzi usługi")
         self.assertEqual(warned(log, "BYTES"), "5,2 GB|65,3 GB|567 MB|1,2 GB|")
         self.assertEqual(warned(log, "PROBLEM"), "Usługa tide-daemon nie odpowiada|Brak serwerów modeli|null")
+        self.assertEqual(warned(log, "CLOUD"), "true,true,false,false,false|-1|5|gpt-oss:120b-cloud:116.8B · MXFP4 · "
+                                               "w chmurze Ollamy|To model w chmurze Ollamy — Tide nie użyje go w raporcie "
+                                               "ani w opisach kart (fakty wyszłyby z komputera).|",
+                         "model chmurowy oznaczony i nie do wybrania w rolach; „Pobierz” ostrzega")
         self.assertEqual(warned(log, "QUEUE"), "Pracuje: raport (qwen3:8b) · 2 w kolejce: opisy kart + "
                                                "~Na starym adresie 10.0.0.5:11434: pracuje: agent (qwen3-coder:30b) | "
                                                " | 3 w kolejce | Pracuje: wyszukiwanie (bge-m3) |",
                          "bez pola `queue` i przy bezczynnej kolejce nic; bezczynny i zepsuty wpis `other` pominięte")
+
+    def test_pull_field_warns_about_cloud_model(self):
+        log = self.harness("CloudSmoke.qml", """import QtQuick
+Item {
+    id: top
+    width: 1500; height: 1000
+    readonly property var d: %DATA%
+    ModelsPage {
+        id: page
+        anchors.fill: parent
+        status: top.d.busy
+    }
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children) { const f = find(child, name); if (f) return f }
+        return null
+    }
+    Timer {
+        interval: 200
+        running: true
+        onTriggered: {
+            const note = find(page, "pullCloudNote")
+            console.warn("BEFORE " + (note ? note.visible + ":" + note.text : "brak"))
+            find(page, "pullField").text = "gpt-oss:120b-cloud"
+            console.warn("AFTER " + note.visible + ":" + note.text)
+            Qt.quit()
+        }
+    }
+}
+""")
+        self.assertEqual(problems(log), [])
+        self.assertEqual(warned(log, "BEFORE"), "false:")
+        self.assertEqual(warned(log, "AFTER"), "true:To model w chmurze Ollamy — Tide nie użyje go w raporcie ani w "
+                                               "opisach kart (fakty wyszłyby z komputera).")
 
     def test_server_card_shows_queue(self):
         """Karta serwera: linia kolejki (PT-16) i wywołania na starym adresie serwera (`other`)."""

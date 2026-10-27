@@ -172,7 +172,18 @@ function bytes(value) {
 
 // --- model w pamięci ----------------------------------------------------------------------------
 
+// Model chmurowy Ollamy (`…:cloud`, `…:120b-cloud`): serwer tylko przekazuje go na ollama.com. Status() daje
+// `cloud: true`; nazwę sprawdzamy też sami (starsza usługa, /api/ps). Ta sama zasada co models.config.is_cloud_model.
+function isCloudModel(m) {
+    if (isObject(m) && m.cloud === true) return true
+    var name = isObject(m) ? m.name : m
+    if (typeof name !== "string") return false
+    var i = name.lastIndexOf(":")
+    return i > 0 && /cloud$/i.test(name.slice(i + 1))
+}
+
 function gpuText(m) {
+    if (isCloudModel(m)) return "w chmurze Ollamy"
     if (typeof m.gpuPercent !== "number") return "w pamięci"
     return m.gpuPercent >= 100 ? "na karcie 100%" : "na karcie " + Math.round(m.gpuPercent) + "%"
 }
@@ -184,6 +195,7 @@ function onCard(m) {
 
 // Druga linia wiersza modelu: „5,6 GB · kontekst 8192 · zwolni pamięć za 4 min”.
 function loadedDetail(m, nowMs) {
+    if (isCloudModel(m)) return "Tide go nie używa — fakty wyszłyby z komputera"
     var parts = []
     var size = bytes(m.size)
     if (size) parts.push(size)
@@ -451,8 +463,11 @@ function endpointMeta(ep) {
 // „Pobrane modele: 5”, a gdy serwer ich nie zgłasza — pusty.
 function installedLine(ep) {
     if (!ep.online) return ""
-    var n = installed(ep).length
-    return n > 0 ? "Pobrane: " + count(n, "model", "modele", "modeli") : "Brak pobranych modeli"
+    var all = installed(ep)
+    var n = all.length
+    var cloud = all.filter(isCloudModel).length
+    if (n === 0) return "Brak pobranych modeli"
+    return "Pobrane: " + count(n, "model", "modele", "modeli") + (cloud > 0 ? ", w tym " + cloud + " w chmurze Ollamy" : "")
 }
 
 // Gdy nic nie jest w pamięci: „Żaden model nie jest w pamięci” (Ollama), dla OpenAI — pusty (nie wiadomo).

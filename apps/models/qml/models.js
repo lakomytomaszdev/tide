@@ -247,12 +247,28 @@ function roleRows(status) {
     })
 }
 
-// Modele do wyboru: zainstalowane na serwerze roli, z rozmiarem i znacznikiem „w pamięci”.
+// Model chmurowy Ollamy (`…:cloud`, `…:120b-cloud`): lokalny serwer tylko przekazuje go na ollama.com, więc
+// tryb lokalny Tide go nie używa (usługa odmawia SetRole). Status() daje `cloud: true`; nazwę (pole „Pobierz”)
+// sprawdzamy tą samą zasadą co models.config.is_cloud_model: etykieta po ostatnim „:” kończy się na „cloud”.
+function isCloudModel(m) {
+    if (m && typeof m === "object" && m.cloud === true) return true
+    const name = String(m && typeof m === "object" ? m.name || "" : m || "").trim()
+    const i = name.lastIndexOf(":")
+    return i > 0 && /cloud$/i.test(name.slice(i + 1))
+}
+
+// Ostrzeżenie przy „Pobierz model” dla nazwy chmurowej (pobranie usługa przyjmie, ale Tide modelu nie użyje).
+function pullWarning(name) {
+    return isCloudModel(name) ? "To model w chmurze Ollamy — Tide nie użyje go w raporcie ani w opisach kart "
+                                + "(fakty wyszłyby z komputera)." : ""
+}
+
+// Modele do wyboru: zainstalowane na serwerze roli, z rozmiarem i znacznikiem „w pamięci”; bez chmurowych.
 function modelOptions(status, endpointName, current) {
     const e = status && status.endpoints ? status.endpoints[endpointName] : null
     if (!e || !e.online) return []
     const loaded = (list(e.loaded) || []).map(m => m.name)
-    return (e.models || []).map(m => ({
+    return (e.models || []).filter(m => !isCloudModel(m)).map(m => ({
         name: m.name,
         detail: [m.parameterSize || "", bytes(m.size), loaded.indexOf(m.name) >= 0 ? "w pamięci" : ""]
                 .filter(x => x).join(" · "),
@@ -372,10 +388,12 @@ function serverModels(status, endpointName) {
     return (e.models || []).map(m => {
         const l = loaded[m.name]
         const gpu = l && typeof l.gpuPercent === "number" ? l.gpuPercent : null
+        const cloud = isCloudModel(m)
         return {
             name: m.name,
-            detail: [m.parameterSize || "", m.quantization || ""].filter(x => x).join(" · "),
-            size: bytes(m.size),
+            cloud: cloud,
+            detail: [m.parameterSize || "", m.quantization || "", cloud ? "w chmurze Ollamy" : ""].filter(x => x).join(" · "),
+            size: cloud ? "" : bytes(m.size),   // pobrany „model” chmurowy to tylko odnośnik (kilkaset bajtów)
             loaded: !!l,
             loadedText: !l ? "" : gpu === null ? "w pamięci" : "w pamięci · " + gpu + "% na karcie",
             slow: gpu !== null && gpu < 100,
