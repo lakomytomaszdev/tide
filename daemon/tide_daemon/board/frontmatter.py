@@ -9,13 +9,15 @@ a nieznane klucze, komentarze, puste linie i treść pod frontmatterem zostają 
 Nowe klucze trafiają na koniec frontmattera.
 
 Czego nie czytamy, nie przemilczamy: linie frontmattera, które nie są parą `klucz: wartość`
-(np. lista YAML w bloku `tags:` + `  - ui`), trafiają do `problems`, a plik ze znacznikami
-konfliktu gita (`<<<<<<<`, `>>>>>>>`) w ogóle nie jest poprawnym dokumentem.
+(np. lista YAML w bloku `tags:` + `  - ui`), trafiają do `problems`, a frontmatter ze znacznikami
+konfliktu gita (`<<<<<<<`, `>>>>>>>`) w ogóle nie jest poprawnym dokumentem. W treści znaczniki
+nie są błędem — opis karty może zawierać wklejone wyjście gita; trwający konflikt w treści
+wykrywa repo.py (`busy()`: pliki niescalone w `git status`).
 """
 import re
 
 # Wartości, które bez cudzysłowów czytalibyśmy inaczej (albo YAML by się na nich wyłożył).
-_CONFLICT = re.compile(r"^(<{7}|>{7})( |$)", re.MULTILINE)
+_CONFLICT = re.compile(r"^(<{7}|>{7})( |$)")
 _NEWLINES = re.compile(r"[ \t]*[\r\n]+[ \t]*")
 _NEEDS_QUOTES = re.compile(r"(^\s|\s$|^[\"'#]|\s#|:\s|:$|^[-?!&*\[\]{}|>%@`,])")
 
@@ -37,20 +39,23 @@ class Document:
     @classmethod
     def parse(cls, text: str) -> "Document":
         text = text.lstrip("\ufeff").replace("\r\n", "\n")  # plik z Windows zapisujemy już z \n
-        if _CONFLICT.search(text):
-            raise FrontmatterError("znaczniki konfliktu gita (<<<<<<< / >>>>>>>) — dokończ albo przerwij "
-                                   "revert/merge i popraw plik")
         lines = text.split("\n")
         if not lines or lines[0].strip() != "---":
             raise FrontmatterError("brak frontmattera (plik musi zaczynać się od linii ---)")
         for i, line in enumerate(lines[1:], start=1):
             if line.strip() == "---":
+                if any(_CONFLICT.match(raw) for raw in lines[1:i]):
+                    raise FrontmatterError("znaczniki konfliktu gita (<<<<<<< / >>>>>>>) we frontmatterze — "
+                                           "dokończ albo przerwij revert/merge i popraw plik")
                 doc = cls(lines[1:i], "\n".join(lines[i + 1:]))
                 for number, raw in enumerate(doc.lines, start=2):
                     if raw.strip() and not raw.lstrip().startswith("#") and not _key_of(raw):
                         hint = " — listy zapisuj w jednej linii: tags: a, b" if _continuation(raw) else ""
                         doc.problems.append(f"linia {number}: „{raw.strip()}” nie jest parą klucz: wartość{hint}")
                 return doc
+        if any(_CONFLICT.match(raw) for raw in lines[1:]):
+            raise FrontmatterError("znaczniki konfliktu gita (<<<<<<< / >>>>>>>) we frontmatterze — "
+                                   "dokończ albo przerwij revert/merge i popraw plik")
         raise FrontmatterError("frontmatter bez zamykającej linii ---")
 
     def get(self, key: str, default: str = "") -> str:

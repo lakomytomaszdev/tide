@@ -7,6 +7,11 @@ Zasady:
 - git dostaje GIT_TIMEOUT sekund; zabity po czasie zostawia `.git/index.lock`, który usuwamy od
   razu, gdy w repozytorium nie działa żaden inny git, a cudzy — dopiero gdy jest starszy niż
   LOCK_STALE_S i nie ma żywego procesu git w katalogu tablicy,
+- zaległe commity są tylko w pamięci: po restarcie usługi ich zmiany trafiają do „sync external
+  changes”; wpis, który pada z trwałego powodu (np. ścieżki już nie ma), wypada z kolejki i też
+  zostaje dla sync — kolejkę blokuje tylko zajęty indeks albo zawieszony git,
+- numery kart: znacznik `.git/tide-next-card` przeżywa revert; historię gita przeglądamy tylko
+  wtedy, gdy znacznika brak (np. kopia repozytorium), i od razu go zapisujemy,
 - w trakcie revert, merge, cherry-pick albo rebase (pliki z konfliktami) niczego nie commitujemy:
   commit „sync” utrwaliłby znaczniki konfliktu,
 - bez podpisu GPG i bez hooków (`core.hooksPath=/dev/null`): to zapis stanu tablicy, nie kod.
@@ -18,6 +23,7 @@ import time
 from ..worktrees.git import Git
 
 GIT_TIMEOUT = 5
+HISTORY_TIMEOUT = 120  # jednorazowe odbudowanie znacznika numerów z historii może trwać dłużej
 LOCK_STALE_S = 10
 HIGH_WATER_FILE = "tide-next-card"   # w .git — poza historią, więc `git revert` go nie cofa
 IN_PROGRESS = (("MERGE_HEAD", "merge"), ("REVERT_HEAD", "revert"), ("CHERRY_PICK_HEAD", "cherry-pick"),
@@ -61,21 +67,34 @@ class BoardRepo:
         return (f"w repozytorium tablicy trwa {operation} z konfliktami — dokończ go (git {operation} --continue) "
                 f"albo przerwij (git {operation} --abort); do tego czasu tablica niczego nie zapisuje")
 
-    def history_max(self) -> int:
-        """Najwyższy numer karty, jaki kiedykolwiek powstał w historii (także cofniętej revertem)."""
+    def history_max(self) -> int | None:
+        """Najwyższy numer karty, jaki kiedykolwiek powstał w historii (także cofniętej revertem);
+        None, gdy git zawiódł. Liniowe względem liczby commitów — tylko do odbudowy znacznika."""
         res = self.git.run(self.root, "log", "--all", "--no-renames", "--diff-filter=A", "--name-only",
-                           "--format=", "--", "cards")
+                           "--format=", "--", "cards", timeout=HISTORY_TIMEOUT)
         if not res.ok:
-            return 0
+            return None
         nums = [int(m.group(1)) for m in map(_CARD_PATH.match, res.out.split()) if m]
         return max(nums, default=0)
 
-    def high_water(self) -> int:
+    def high_water(self, rebuild: bool = False) -> int:
+        """Następny wolny numer według znacznika. Bez znacznika i z rebuild=True — z historii gita
+        (raz: wynik od razu trafia do znacznika); bez rebuild — 0 (migawka nigdy nie czyta historii)."""
+        path = os.path.join(self.git_dir, HIGH_WATER_FILE)
         try:
-            with open(os.path.join(self.git_dir, HIGH_WATER_FILE), encoding="utf-8") as fh:
+            with open(path, encoding="utf-8") as fh:
                 return int(fh.read().strip() or 0)
+        except FileNotFoundError:
+            pass
         except (OSError, ValueError):
             return 0
+        if not rebuild or not self.initialized():
+            return 0
+        top = self.history_max()
+        if top is None:
+            return 0
+        self.set_high_water(top + 1)
+        return top + 1
 
     def set_high_water(self, next_num: int) -> None:
         if not self.initialized() or next_num <= self.high_water():
@@ -106,13 +125,17 @@ class BoardRepo:
         return self.flush()
 
     def flush(self) -> str:
-        """Próbuje zaległych commitów po kolei; pierwszy błąd zatrzymuje kolejkę."""
+        """Próbuje zaległych commitów po kolei. Przejściowy błąd (zajęty indeks, zawieszony git)
+        zatrzymuje kolejkę; trwały — usuwa wpis (jego zmiany zbierze `sync()`)."""
         while self.pending:
             message, paths = self.pending[0]
-            error = self._commit_now(message, paths)
-            if error:
+            error, transient = self._commit_now(message, paths)
+            if error and transient:
                 self.last_error = error
                 return error
+            if error:
+                print(f"tide-daemon: tablica: commit „{message}” pominięty ({error}) — zmiany zbierze sync",
+                      flush=True)
             self.pending.pop(0)
         self.last_error = ""
         return ""
@@ -128,7 +151,7 @@ class BoardRepo:
         status = self.git.run(self.root, "status", "--porcelain", "-uall")
         if not status.ok or not status.out.strip():
             return committed
-        error = self._commit_now(message, [])
+        error, _ = self._commit_now(message, [])
         if error:
             self.last_error = error
             return committed
@@ -136,15 +159,23 @@ class BoardRepo:
 
     # --- wnętrze -------------------------------------------------------------------------------
 
-    def _commit_now(self, message: str, paths: list[str]) -> str:
+    def _commit_now(self, message: str, paths: list[str]) -> tuple[str, bool]:
+        """(opis błędu albo pusty napis, czy błąd przejściowy)."""
         self.clear_stale_lock()
+        if paths:
+            # ścieżka, której już nie ma i której git nie zna, wywróciłaby `git add` („pathspec”)
+            tracked = self.git.run(self.root, "ls-files", "-z", "--", *paths)
+            known = set(tracked.out.split("\0")) if tracked.ok else set()
+            paths = [p for p in paths if os.path.lexists(os.path.join(self.root, p)) or p in known]
+            if not paths:
+                return "", False
         add = self._run("add", "-A", "--", *paths) if paths else self._run("add", "-A")
         if not add.ok:
-            return _describe(add)
+            return _describe(add), _transient(add)
         status = self.git.run(self.root, "status", "--porcelain", "--", *paths) if paths else \
             self.git.run(self.root, "status", "--porcelain")
         if status.ok and not status.out.strip():
-            return ""  # nic do zapisania (np. ktoś zrobił commit ręcznie)
+            return "", False  # nic do zapisania (np. ktoś zrobił commit ręcznie)
         args = [*COMMIT_OPTIONS, "commit", "--no-verify", "-q", "-m", message]
         if paths:
             args += ["--", *paths]
@@ -153,9 +184,9 @@ class BoardRepo:
             res = self._run(*COMMIT_OPTIONS, *FALLBACK_IDENTITY, *args[len(COMMIT_OPTIONS):])
         if not res.ok:
             if "nothing to commit" in res.err or "nothing added" in res.err:
-                return ""
-            return _describe(res)
-        return ""
+                return "", False
+            return _describe(res), _transient(res)
+        return "", False
 
     def _run(self, *args):
         res = self.git.run(self.root, *args)
@@ -198,6 +229,11 @@ class BoardRepo:
             if cwd == real_root or cwd.startswith(real_root + os.sep):
                 return True
         return False
+
+
+def _transient(res) -> bool:
+    """Błąd, który minie sam: zajęty indeks albo git zabity po czasie."""
+    return res.code == -1 or "index.lock" in res.err or "timed out" in res.err
 
 
 def _describe(res) -> str:

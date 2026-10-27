@@ -341,3 +341,84 @@ class DocsDirTest(BoardCase):
         self.assertEqual(flow["docsDir"], os.path.join(repo_docs, "docs", "agents"))
         self.assertEqual(os.listdir(os.path.join(repo_docs, "docs", "agents")), [])  # w repozytorium nic nie tworzymy
         self.assertEqual(git_out(self.root, "status", "--porcelain"), "")  # puste katalogi nie brudzą tablicy
+
+
+class ConflictMarkersInBodyTest(BoardCase):
+    """Znaczniki konfliktu w opisie (wklejone wyjście gita) to zwykły tekst, nie zepsuty plik."""
+
+    def test_description_with_git_output(self):
+        text = "Git powiedział:\n<<<<<<< HEAD\nfoo\n=======\nbar\n>>>>>>> gałąź\n"
+        self.assertEqual(self.store.create_card({"title": "pomoc przy merge", "description": text})["id"], "K-1")
+        snap = self.store.snapshot()
+        self.assertEqual(snap["errors"], [])
+        self.assertEqual(snap["cards"][0]["description"], text)
+        self.assertTrue(self.store.update_card("K-1", {"title": "inny"})["changed"])
+        self.assertEqual(self.cards()["K-1"]["description"], text)
+
+
+class HistoryScanTest(BoardCase):
+    """Historii gita (liniowej względem commitów) nie czytamy przy migawce ani przy zwykłym zapisie —
+    tylko raz, gdy brakuje znacznika `.git/tide-next-card`."""
+
+    def recording_store(self):
+        calls = []
+
+        class Recording(Git):
+            def run(self, cwd, *args, timeout=None):
+                if "--diff-filter=A" in args:
+                    calls.append(args)
+                return super().run(cwd, *args, timeout=timeout)
+
+        return BoardStore(self.root, git=Recording(timeout=5), clock=lambda: self.clock[0]), calls
+
+    def test_no_history_scan_while_marker_exists(self):
+        self.store.create_card({"title": "a"})
+        store, calls = self.recording_store()
+        store.snapshot()
+        store.create_card({"title": "b"})
+        store.move_card("K-1", "todo", 0)
+        store.snapshot()
+        self.assertEqual(calls, [])
+
+    def test_missing_marker_is_rebuilt_from_history_once(self):
+        for title in ("a", "b", "c"):
+            self.store.create_card({"title": title})
+        git_out(self.root, "revert", "--no-edit", "HEAD")
+        marker = os.path.join(self.root, ".git", "tide-next-card")
+        os.remove(marker)
+        store, calls = self.recording_store()
+        store.snapshot()
+        self.assertEqual(calls, [])  # migawka nigdy nie czyta historii
+        self.assertEqual(store.create_card({"title": "d"})["id"], "K-4")
+        self.assertEqual(len(calls), 1)
+        with open(marker, encoding="utf-8") as fh:
+            self.assertEqual(fh.read().strip(), "5")
+        store.create_card({"title": "e"})
+        self.assertEqual(len(calls), 1)
+
+
+class PendingPathGoneTest(BoardCase):
+    """Zaległy commit pliku, którego już nie ma, nie blokuje kolejki."""
+
+    def test_pending_entry_for_deleted_file(self):
+        self.store.create_card({"title": "jeden"})
+        lock = os.path.join(self.root, ".git", "index.lock")
+        open(lock, "w").close()
+        self.assertTrue(self.store.create_card({"title": "dwa"})["commitError"])
+        os.remove(os.path.join(self.root, "cards", "K-2.md"))
+        os.remove(lock)
+        self.assertEqual(self.store.create_card({"title": "trzy"})["commitError"], "")
+        self.assertEqual(self.store.repo.pending, [])
+        self.assertEqual(self.log()[-1], "K-3: create")
+        self.store.sync()
+        self.assertEqual(git_out(self.root, "status", "--porcelain"), "")
+
+    def test_permanent_failure_is_dropped_and_left_to_sync(self):
+        self.store.create_card({"title": "jeden"})
+        with open(os.path.join(self.ws, "poza.md"), "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        self.store.repo.pending.append(("zly wpis", ["../poza.md"]))  # git: „outside repository” — trwały błąd
+        self.write("docs/x.md", "x\n")
+        self.assertTrue(self.store.sync())
+        self.assertEqual(self.store.repo.pending, [])
+        self.assertEqual(self.log()[-1], "sync external changes")

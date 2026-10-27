@@ -334,7 +334,7 @@ class BoardStore:
     def _plan_create(self, board: Board, v: dict) -> Change:
         change = Change()
         slug = self._project_slug(board, v, change)
-        num = self._next_num(board)
+        num = self._next_num(board, rebuild=True)
         while os.path.lexists(os.path.join(self.root, "cards", f"{CARD_PREFIX}{num}.md")):
             num += 1
         now = self._now()
@@ -635,16 +635,17 @@ class BoardStore:
             raise BoardError(f"nie ma karty {CARD_PREFIX}{num}", "not-found")
         return card
 
-    def _next_num(self, board: Board) -> int:
-        """Następny numer karty: większy od każdego, jaki był — w plikach, w liczniku `board.md`,
-        w znaczniku poza historią (.git/tide-next-card) i w historii gita (także po revercie)."""
+    def _next_num(self, board: Board, rebuild: bool = False) -> int:
+        """Następny numer karty: większy od każdego, jaki był — w plikach, w liczniku `board.md`
+        i w znaczniku poza historią (.git/tide-next-card, przeżywa revert). Brakujący znacznik
+        odbudowujemy z historii gita tylko przy zakładaniu karty (rebuild), nigdy w migawce."""
         try:
             counter = int((board.meta.get("next-card") if board.meta else "") or 1)
         except ValueError:
             counter = 1
         if not self.repo.initialized():
             return max(board.max_num + 1, counter, 1)
-        return max(board.max_num + 1, counter, self.repo.high_water(), self.repo.history_max() + 1, 1)
+        return max(board.max_num + 1, counter, self.repo.high_water(rebuild=rebuild), 1)
 
     def _rename_tag_uses(self, board: Board, old: str, new: str) -> list[tuple[str, str]]:
         writes = []
