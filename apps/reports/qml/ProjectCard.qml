@@ -142,6 +142,15 @@ Rectangle {
                     font.pixelSize: 12
                 }
                 Text {
+                    objectName: "attentionCount"
+                    visible: card.n.attention > 0
+                    text: " · " + card.n.attention + " uwaga"
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.butter
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 12
+                }
+                Text {
                     visible: card.n.chores > 0
                     text: " · " + card.n.chores + " porządki"
                     textFormat: Text.PlainText

@@ -36,7 +36,11 @@ from ..worktrees.naming import humanize_branch
 GROUPS = (("done", "Zrobione"), ("doing", "W toku"), ("waiting", "Czeka na mnie"), ("next", "Dalej"))
 GROUP_KEYS = tuple(k for k, _ in GROUPS)
 CHORES = ("chores", "Porządki")
-ALL_KEYS = GROUP_KEYS + (CHORES[0],)
+# „Uwaga”: testy, które nie przechodzą, i konflikty numerów ticketów — warto wiedzieć, ale żaden agent na to
+# nie czeka, więc to nie „Czeka na mnie” i nie liczy się do plakietek ani powiadomień (decyzja 36, PT-24).
+ATTENTION = ("attention", "Uwaga")
+ALL_KEYS = GROUP_KEYS + (ATTENTION[0], CHORES[0])
+TEXT_ORDER = GROUPS[:3] + (ATTENTION,) + GROUPS[3:] + (CHORES,)   # kolejność sekcji w tekście i na stronie
 ITEMS_MAX = 8              # pozycji w grupie (reszta jako „i N więcej”)
 TEXT_MAX = 260
 ABOUT_MAX = 320
@@ -248,7 +252,7 @@ def project_facts(report, project) -> dict:
            "unpushed": [b for b in (w.get("branch") or w.get("name") or "" for w in project.unpushed)
                         if not AGENT_BRANCH.match(b)],
            "mainDirty": max(0, project.main_dirty_count),
-           # Konflikty numerów ticketów (reports/plans.py, coordination/numbering.py) — do „Czeka na mnie”.
+           # Konflikty numerów ticketów (reports/plans.py, coordination/numbering.py) — do „Uwaga”.
            "conflicts": [clean(w.get("text"), TEXT_MAX - len(CONFLICT)) for w in getattr(project, "conflicts", None) or []
                          if isinstance(w, dict) and w.get("text")]}
 
@@ -488,16 +492,18 @@ STATE_SHORT = {"gotowe": "zrobione", "w-toku": "w toku", "review": "w review", "
 def rules(fact: dict) -> dict:
     """Podsumowanie projektu bez modelu."""
     groups = {k: [] for k in ALL_KEYS}
-    groups["waiting"] = conflict_items(fact)
+    groups["attention"] = conflict_items(fact)
     used_units: set[int] = set()
     tickets = fact["tickets"]
-    # Sesje koordynatorów według obszaru Agents: pytanie z pliku tablicy liczy się jako „czeka” tylko
-    # wtedy, gdy koordynator naprawdę stoi teraz (albo nie znamy jego sesji — wtedy ocenia to widok na żywo).
+    # Sesje koordynatorów według obszaru Agents: pytanie z pliku tablicy albo planu liczy się jako „czeka”
+    # tylko wtedy, gdy sesja koordynatora jest w raporcie i stoi teraz. Bez koordynatora (plan, którego
+    # tablica nie zna) albo bez jego czekającej sesji nikt nie jest zablokowany — pozycja bez sessionId
+    # nie mogłaby się nigdy zestarzeć na żywo i wisiałaby w plakietkach cały dzień.
     coordinators = {c.get("id"): c for c in fact.get("coordinatorSessions") or [] if c.get("id")}
 
     def blocked(coordinator: str) -> bool:
-        known = coordinators.get(coordinator)
-        return known is None or known["state"] == "waiting"
+        known = coordinators.get(coordinator) if coordinator else None
+        return known is not None and known["state"] == "waiting"
 
     for t in tickets:
         linked = [u for u in fact["units"] if u.get("ticket") and u["ticket"] in (t["id"], t["title"])]
@@ -564,8 +570,12 @@ def rules(fact: dict) -> dict:
 
     asked = {_same(t["question"]) for t in tickets if t["question"] and t["state"] == "czeka"}
     for q in fact["questions"]:
-        if _same(q["text"]) in asked or not blocked(q.get("coordinator", "")):
-            continue  # to samo pytanie jest już przy tickecie albo agent już na nie nie czeka
+        if _same(q["text"]) in asked:
+            continue  # to samo pytanie jest już przy tickecie
+        if not blocked(q.get("coordinator", "")):
+            asked.add(_same(q["text"]))
+            groups["doing"].append(_item("", f"{q['plan'] or 'Plan'} — zostało pytanie bez odpowiedzi: „{q['text']}”"))
+            continue
         asked.add(_same(q["text"]))
         what = "czeka na twoją zgodę" if q.get("kind") == "approval" else "agent pyta"
         groups["waiting"].append(_item("", f"{q['plan'] or 'Plan'}: {what}: „{q['text']}”",
@@ -606,7 +616,7 @@ def _waiting_item(title: str, s: dict, ref: str) -> dict:
 
 
 def conflict_items(fact: dict) -> list[dict]:
-    """„Konflikt numerów: …” — pozycje „Czeka na mnie” z kontroli numerów ticketów."""
+    """„Konflikt numerów: …” — pozycje „Uwaga” z kontroli numerów ticketów."""
     return [_item("", CONFLICT + text, kind="attention") for text in fact.get("conflicts") or [] if text]
 
 
@@ -624,7 +634,7 @@ def _unit_items(unit: dict, fact: dict, groups: dict) -> None:
     chores = _category(unit) == "chores"
     for s in sessions:
         if s["failing"]:
-            groups["waiting"].append(_item("", f"{title}: {s['failing']}", kind="attention"))
+            groups["attention"].append(_item("", f"{title}: {s['failing']}", kind="attention"))
     if "waiting" in states:
         s = next(s for s in sessions if s["state"] == "waiting")
         groups["waiting"].append(_waiting_item(title, s, unit.get("ticket", "")))
@@ -734,8 +744,8 @@ def _headline(summary: dict) -> str:
 
 def _item(ref: str, text: str, about: str = "", next_: str = "", sessionId: str = "", since: float = 0.0,
           kind: str = "") -> dict:
-    """Pozycja „Na daily”. Pozycje „Czeka na mnie” mają `kind`: "blocked" (agent stoi teraz — z `sessionId`
-    i `since`, żeby widok na żywo poznał, że już nieaktualna) albo "attention" (test, konflikt numerów)."""
+    """Pozycja „Na daily”. `kind`: "blocked" — „Czeka na mnie”, agent stoi teraz (z `sessionId` i `since`, żeby
+    widok na żywo poznał, że już nieaktualna); "attention" — „Uwaga” (test, konflikt numerów)."""
     item = {"ref": ref if TICKET_RE.match(ref or "") else "", "text": clean(text, TEXT_MAX)}
     if about:
         item["about"] = clean(about, ABOUT_MAX)
@@ -1004,7 +1014,7 @@ def validate(data, all_facts: list[dict]) -> dict[str, dict]:
         for key in ALL_KEYS:
             items = entry.get(key)
             standup[key] = []
-            if not isinstance(items, list):
+            if key == "attention" or not isinstance(items, list):
                 continue
             for raw in items[:ITEMS_MAX * 2]:
                 item = _valid_item(raw, refs, key)
@@ -1086,6 +1096,7 @@ def merge(model: dict[str, dict], all_facts: list[dict]) -> dict[str, dict]:
         worded = {i["ref"]: i["text"] for i in chosen.get("waiting") or [] if i.get("ref") and not i.get("more")}
         chosen["waiting"] = [dict(i, text=worded[i["ref"]]) if i.get("ref") in worded else i
                              for i in fallback.get("waiting") or []]
+        chosen["attention"] = fallback.get("attention") or []   # testy i konflikty numerów — zawsze z reguł
         rejected = chosen.pop("rejected", {}) or {}
         for key in ("done", "doing", "next", "chores"):
             if rejected.get(key) and not chosen.get(key) and fallback.get(key):
@@ -1125,7 +1136,7 @@ def as_text(standup: dict, names: list[str], heading: str = "", brief=None, note
             lines.append(f"{FINISHED[1]}:")
             for note in finished:
                 lines.append(f"- {note['ref']} {note['text']}" if note.get("ref") else f"- {note['text']}")
-        for key, label in GROUPS + (CHORES,):
+        for key, label in TEXT_ORDER:
             items = [i for i in s.get(key) or [] if not i.get("stale")]
             if not items:
                 continue

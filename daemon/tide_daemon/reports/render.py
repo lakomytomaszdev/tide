@@ -386,6 +386,8 @@ border-top:1px solid var(--border);font-size:13.5px;align-items:baseline}
 .brief h2{margin:0 0 8px}
 .brief ul{margin:0;padding-left:18px;display:grid;gap:6px;line-height:1.5;max-width:100ch}
 .sg.finished li::before{background:var(--mint)}
+.sg.attention h4{color:var(--butter)}
+.sg.attention li::before{background:var(--butter)}
 .sg .chk{display:block;color:var(--peach);font-size:13px;margin-top:2px}
 .sg li.more{color:var(--muted);font-size:13px}
 .sg li.more::before{display:none}
@@ -620,7 +622,7 @@ def overview(report, projects) -> str:
         waits = [item for item in s.get("waiting") or [] if not item.get("more")]
         hot = bool(waits or p.waiting)
         n = standup_mod.counts(s)
-        chores_only = bool(n.get("chores")) and not any(n.get(k) for k in standup_mod.GROUP_KEYS)
+        chores_only = bool(n.get("chores")) and not any(n.get(k) for k in standup_mod.GROUP_KEYS + ("attention",))
         if chores_only and not hot and not notes.get(p.name):
             chores.append(p)   # same porządki — nie karta, tylko nazwa w zwiniętej linii pod kartami
             continue
@@ -640,7 +642,7 @@ def _overview_card(p, s: dict, waits: list, hot: bool) -> str:
     n = standup_mod.counts(s)
     chips = []
     for key, word, tone in (("done", "zrobione", "mint"), ("doing", "w toku", "teal"), ("waiting", "czeka", "peach"),
-                            ("chores", "porządki", "")):
+                            ("attention", "uwaga", "butter"), ("chores", "porządki", "")):
         if n.get(key):
             chips.append(f'<span class="chip{" " + tone if tone else ""}">{esc(word)} {n[key]}</span>')
     headline = s.get("headline") or s.get("theme") or ""
@@ -691,8 +693,10 @@ def daily(report, projects, index: bool = False) -> str:
             out.append(f'<p class="theme"><b>Na czym polega</b>{esc(s["theme"])}</p>')
         groups = [_finished((getattr(report, "notes", None) or {}).get(p.name))] \
             if (getattr(report, "notes", None) or {}).get(p.name) else []
-        for key, label in standup_mod.GROUPS:
+        for key, label in standup_mod.TEXT_ORDER[:-1]:
             items = s.get(key) or []
+            if key == "attention" and not items:
+                continue
             if not items:
                 continue
             rows = "".join(_daily_item(item) for item in items)

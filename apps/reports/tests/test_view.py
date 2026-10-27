@@ -258,7 +258,7 @@ Item {
                          "2 projekty z ruchem · raport sprzed widoku w oknie — szczegóły w przeglądarce ¦")
         self.assertEqual(warned(log, "WAIT"), "TOM-1: a? · b · i 1 więcej||")
         self.assertEqual(warned(log, "SECTIONS"),
-                         "Zrobione:1:mint,W toku:0:teal,Czeka na mnie:0:peach,Dalej:2:textMuted")
+                         "Zrobione:1:mint,W toku:0:teal,Czeka na mnie:0:peach,Uwaga:0:butter,Dalej:2:textMuted")
         self.assertEqual(warned(log, "FIND"), "B|a|a|", "pusta lista — null")
         self.assertEqual(warned(log, "SPLIT"),
                          '{"day":"2026-10-27","project":"plasma-tide"}{"day":"2026-10-27","project":""}'
@@ -381,6 +381,11 @@ Item {
         console.warn("STALE " + texts(view.panel, "itemStale").join("|") + "|"
                      + all(view.panel, "itemText", []).filter(t => t.font.strikeout).map(t => t.text).join("|"))
         console.warn("MOBILEWAIT " + texts(view, "waitText").join(" ¦ "))
+        view.selectedKey = "cookapp"
+        console.warn("ATTENTION " + find(view.panel, "section-attention").visible + "|"
+                     + texts(view.panel, "sectionTitle").join(",") + "|" + texts(view, "attentionCount").join(","))
+        view.selectedKey = "plasma-tide"
+        console.warn("NOATTENTION " + find(view.panel, "section-attention").visible)
         view.selectDay("2026-10-26")
         console.warn("OLDNOW " + find(view, "nowBox").visible + "|" + texts(view, "briefLine").length + "|"
                      + find(view, "choreProjects").visible)
@@ -401,6 +406,9 @@ Item {
         self.assertEqual(warned(log, "STALE"), "już nieaktualne — agent na to nie czeka|Wydanie: agent pyta: „Pushować?”")
         self.assertEqual(warned(log, "MOBILEWAIT").count("Pushować"), 0, "nieaktualne nie na karcie")
         self.assertEqual(warned(log, "OLDNOW"), "false|2|false", "starsza doba — bez „Czeka teraz”")
+        self.assertEqual(warned(log, "ATTENTION"), "true|Zrobione,W toku,Czeka na mnie,Uwaga,Dalej| · 1 uwaga",
+                         "konflikt numerów w „Uwaga”, nie w „Czeka na mnie”")
+        self.assertEqual(warned(log, "NOATTENTION"), "false", "pusta „Uwaga” ukryta")
 
     def test_read_needs_active_view_and_window(self):
         """Widok w tle albo okno bez fokusu — raport nie jest „przeczytany”; po wejściu na wierzch tak."""

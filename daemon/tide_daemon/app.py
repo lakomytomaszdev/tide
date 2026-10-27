@@ -362,6 +362,7 @@ def start_report(app, args, clock, settings, monitor, trees):
         codex_root=args.codex_dir, max_depth=args.worktree_depth, sessions=lambda: monitor.sessions,
         worktrees=worktree_items, notifier=notifier, clock=clock, coordination_cache=coordination_cache_file(args),
         opener=trees.launchers.open_report, summary=args.report_summary or settings.summary,
+        # card_check=funkcja(board, ticket) → {"check", "spec"} — karta tablicy pracy (PT-5), do podpięcia tutaj.
         tracker=report_tracker(args, clock), notes_file=report_notes.state_path(), note_notifier=note_notifier,
         parent=app, **kwargs)
     # Żywy raport: zmiany w /Agents („czeka”, agent skończył pracę); tablice koordynacji podłącza

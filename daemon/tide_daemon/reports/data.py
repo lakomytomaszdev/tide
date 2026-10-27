@@ -64,6 +64,7 @@ def _notes(notes) -> list[dict]:
         out.append({"id": str(note.get("id") or ""), "ref": str(note.get("ref") or ""),
                     "title": str(note.get("title") or ""), "text": str(note.get("text") or ""),
                     "summary": str(note.get("summary") or ""), "manual": bool(note.get("manual")),
+                    "unreviewed": bool(note.get("unreviewed")),
                     "checklist": [str(c) for c in note.get("checklist") or [] if c][:8],
                     "ts": float(note.get("ts") or 0)})
     return out
@@ -99,7 +100,7 @@ def build(report) -> dict:
         waits = [item for item in s.get("waiting") or [] if not item.get("more")]
         hot = bool(waits or p.waiting)
         n = standup.counts(s)
-        chores_only = bool(n.get("chores")) and not any(n.get(k) for k in standup.GROUP_KEYS)
+        chores_only = bool(n.get("chores")) and not any(n.get(k) for k in standup.GROUP_KEYS + ("attention",))
         entry = {
             "name": p.name, "slug": p.slug, "page": f"{p.slug}.html", "path": p.path,
             "tools": sorted({x.tool for x in p.sessions}),

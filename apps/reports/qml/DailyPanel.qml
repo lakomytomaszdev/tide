@@ -1,5 +1,6 @@
 // Prawy panel: „Na daily” wybranego projektu — Na czym polega, Skończone dziś (notki po tickecie),
-// Zrobione, W toku, Czeka na mnie (nieaktualne przekreślone), Dalej i zwinięte Porządki; na dole „Kopiuj jako tekst” (tekst z raportu, ten sam co przycisk na stronie)
+// Zrobione, W toku, Czeka na mnie (nieaktualne przekreślone), Uwaga (testy, konflikty numerów — tylko gdy są),
+// Dalej i zwinięte Porządki; na dole „Kopiuj jako tekst” (tekst z raportu, ten sam co przycisk na stronie)
 // i „Pełna strona ↗” (strona projektu w przeglądarce). Teksty z raportu zawsze jako zwykły tekst.
 import QtQuick
 import QtQuick.Layouts
@@ -149,6 +150,7 @@ Rectangle {
                     required property var modelData
                     objectName: "section-" + modelData.key
                     Layout.fillWidth: true
+                    visible: !modelData.optional || modelData.items.length > 0
                     spacing: 6
 
                     RowLayout {

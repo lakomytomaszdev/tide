@@ -92,7 +92,7 @@ class GeneratedTest(unittest.TestCase):
         alpha = self.data["projects"][0]
         self.assertEqual((alpha["slug"], alpha["page"], alpha["path"]), ("alpha", "alpha.html", self.p["alpha"]))
         self.assertTrue(alpha["hot"])
-        self.assertEqual(alpha["counts"], {"done": 1, "doing": 1, "waiting": 1, "next": 0, "chores": 0})
+        self.assertEqual(alpha["counts"], {"done": 1, "doing": 1, "waiting": 1, "next": 0, "attention": 0, "chores": 0})
         self.assertEqual(alpha["waiting"], [{"ref": "", "text": f"Release plan: agent pyta: „{reportfix.ASK_QUESTION}”",
                                              "kind": "blocked", "sessionId": "claude:c-ask",
                                              "since": reportfix.NOW - 30 * 60}])

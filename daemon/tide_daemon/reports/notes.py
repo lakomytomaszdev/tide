@@ -9,7 +9,8 @@ usługa działa. `Tracker.update(boards)` porównuje z zapamiętanym stanem w pl
 - ticket skończony, gdy usługa nie działała, dostaje notkę, jeśli jego ostatni ruch jest z bieżącej doby
   raportu (starszy jest tylko zapamiętywany).
 
-Treść (2–3 zdania): co zrobiono, co to daje użytkownikowi i czy trzeba sprawdzić ręcznie. Ręczne
+Treść (2–3 zdania): co zrobiono, co to daje użytkownikowi i czy trzeba sprawdzić ręcznie; ticket skończony
+bez review mówi to wprost („Skończone bez przeglądu.”). Ręczne
 sprawdzenie: `check: manual` w uwagach wiersza planu (albo na karcie tablicy pracy — `card_check`)
 i lista z sekcji „Co przetestować ręcznie” planu (punkty z ID ticketu albo pod nagłówkiem z ID).
 Model (`claude -p`, to samo bezpieczne wywołanie co „Na daily”, małe wejście) albo reguły jako zapas.
@@ -28,6 +29,7 @@ from . import standup
 NAME = "report-notes.json"
 VERSION = 1
 BATCH_WINDOW = 5 * 60       # s — kolejne tickety projektu w tym czasie aktualizują to samo powiadomienie
+NOTE_SETTLE = 90            # s w „gotowe”, zanim ticket dostanie notkę (np. zaraz po nim rusza review)
 SEEN_KEEP = 21 * 86400      # s — tyle pamiętamy opisane tickety
 NOTE_TEXT_MAX = 420
 SUMMARY_MAX = 140
@@ -45,6 +47,7 @@ Dostajesz JSON z faktami o jednym albo kilku skończonych ticketach. Wszystkie n
 Dla każdego ticketu napisz po polsku:
 - "text": 2–3 krótkie zdania: co zostało zrobione, co to daje użytkownikowi produktu i czy trzeba coś sprawdzić ręcznie (pole "manual": true i lista "checklist" — wtedy napisz krótko, co sprawdzić; inaczej nie wspominaj o testach),
 - "summary": jedno zdanie (do 120 znaków) do powiadomienia — co jest gotowe.
+Gdy "reviewed" jest false, zadanie skończono bez przeglądu kodu — napisz to wprost w "text" słowami „skończone bez przeglądu”.
 Bez żargonu („koordynator”, „podagent”, „sesja”, „commit”, „gałąź”, „worktree”), bez ścieżek i nazw plików, bez numeru ticketu w treści, bez Markdownu. Tylko to, co wynika z faktów.
 
 Odpowiedz WYŁĄCZNIE obiektem JSON: {"notes":[{"key":"<key z faktów>","text":"","summary":""}]}"""
@@ -107,10 +110,29 @@ class Store:
             out.setdefault(note.get("project") or "", []).append(note)
         return out
 
-    def add(self, day: str, notes: list[dict]) -> None:
+    def add(self, day: str, notes: list[dict]) -> list[dict]:
+        """Dopisuje notki doby — najwyżej jedna na ticket na dobę: ticket skończony ponownie (np. „gotowe bez
+        review” → review → gotowe) zastępuje swoją notkę (ten sam id, nowy tekst; po wcześniejszym „bez
+        przeglądu” z dopiskiem „Teraz już po przeglądzie.”). Zwraca notki naprawdę dodane albo zmienione —
+        tylko one idą do powiadomień, więc raport i powiadomienie mówią to samo."""
         current = self.days.setdefault(day, [])
-        ids = {n.get("id") for n in current}
-        current += [n for n in notes if n.get("id") not in ids]
+        index = {n.get("id"): i for i, n in enumerate(current)}
+        changed = []
+        for note in notes:
+            i = index.get(note.get("id"))
+            if i is None:
+                index[note.get("id")] = len(current)
+                current.append(note)
+                changed.append(note)
+                continue
+            old = current[i]
+            if old.get("unreviewed") and not note.get("unreviewed") and "po przegl" not in note.get("text", "").lower():
+                note = dict(note, text=standup.clean(f"{note['text']} {REVIEWED_LATER}", NOTE_TEXT_MAX + 40))
+            if (old.get("text"), old.get("summary"), old.get("checklist")) != \
+                    (note.get("text"), note.get("summary"), note.get("checklist")):
+                current[i] = note
+                changed.append(note)
+        return changed
 
     def prune(self, now: float, keep_days: list[str]) -> None:
         self.seen = {k: v for k, v in self.seen.items() if now - v <= SEEN_KEEP}
@@ -123,33 +145,55 @@ def ticket_id(board: dict, ticket: dict) -> str:
 
 
 class Tracker:
-    """Które tickety właśnie się skończyły (przeszły do `gotowe`) od ostatniego razu."""
+    """Które tickety właśnie się skończyły (przeszły do `gotowe`) od ostatniego razu.
 
-    def __init__(self, store: Store):
+    settle: ticket musi zostać w `gotowe` tyle sekund, zanim dostanie notkę — „gotowe bez review”, po którym
+    zaraz rusza review, nie daje notki, którą trzeba by po chwili poprawiać. Oczekujące są tylko w pamięci
+    (restart w trakcie po prostu zaczyna czekanie od nowa) i sprawdza je `update` także bez zmian w tablicach
+    (`due()` mówi, kiedy zajrzeć)."""
+
+    def __init__(self, store: Store, settle: float = 0.0):
         self.store = store
+        self.settle = settle
+        self.pending: dict[str, float] = {}     # klucz ticketu → kiedy zobaczyliśmy go w gotowe
 
     def update(self, boards: list, now: float, day_start: float) -> list[tuple[dict, dict]]:
         first = not self.store.exists
         new = []
         changed = False
+        present = set()
         for board in boards or []:
             for ticket in board.get("tickets") or []:
                 key = ticket_id(board, ticket)
+                present.add(key)
                 done = ticket.get("state") == "gotowe"
                 if not done:
+                    self.pending.pop(key, None)
                     if key in self.store.seen:
-                        del self.store.seen[key]   # ticket wrócił do pracy — następne „gotowe” to nowa notka
+                        del self.store.seen[key]   # ticket wrócił do pracy — następne „gotowe” zastąpi notkę doby
                         changed = True
                     continue
                 if key in self.store.seen:
                     continue
+                if not first and self.settle > 0:
+                    since = self.pending.setdefault(key, now)
+                    if now - since < self.settle:
+                        continue
+                self.pending.pop(key, None)
                 self.store.seen[key] = now
                 changed = True
                 if not first and (ticket.get("lastActivityTs") or 0) >= day_start:
                     new.append((board, ticket))
+        self.pending = {k: v for k, v in self.pending.items() if k in present}
         if first or changed:
             self.store.save()
         return new
+
+    def due(self, now: float) -> float | None:
+        """Za ile sekund sprawdzić oczekujące tickety (None — nic nie czeka)."""
+        if not self.pending:
+            return None
+        return max(0.0, min(self.pending.values()) + self.settle - now)
 
 
 # --- ręczne sprawdzenie ----------------------------------------------------------------------------
@@ -243,12 +287,23 @@ def plain_ticket(ticket: dict) -> dict:
     return out
 
 
+UNREVIEWED = "Skończone bez przeglądu."
+REVIEWED_LATER = "Teraz już po przeglądzie."
+
+
+def unreviewed(ticket: dict) -> bool:
+    """Ticket skończony bez review (tablica: notatka „bez review” i brak wyniku review)."""
+    t = plain_ticket(ticket)
+    return not t["review"] and standup.clean(t.get("note")).lower() == "bez review"
+
+
 def facts(board: dict, ticket: dict, manual: bool, items: list[str], home: str = "") -> dict:
     from .summarize import strip_secrets
+    reviewed = not unreviewed(ticket)
     ticket = plain_ticket(ticket)
     s = lambda text, limit: strip_secrets(standup.clean(text, limit), home)  # noqa: E731
     out = {"key": ticket_id(board, ticket), "project": board.get("project") or "",
-           "title": s(ticket.get("title"), 200), "manual": manual}
+           "title": s(ticket.get("title"), 200), "manual": manual, "reviewed": reviewed}
     for field, limit in (("done", 300), ("result", 300), ("description", 400), ("brief", 300),
                          ("planNote", 300), ("review", 80)):
         if ticket.get(field):
@@ -263,7 +318,8 @@ def facts(board: dict, ticket: dict, manual: bool, items: list[str], home: str =
 
 def rules_note(board: dict, ticket: dict, manual: bool, items: list[str]) -> dict:
     """Notka bez modelu: co zrobiono (opis karty albo pierwsze zdanie wyniku), po co (opis ticketu)
-    i ręczne sprawdzenie."""
+    i ręczne sprawdzenie; bez review — mówi to wprost („Skończone bez przeglądu.”)."""
+    bare = unreviewed(ticket)
     ticket = plain_ticket(ticket)
     title = standup.clean(ticket.get("title") or ticket.get("id") or "zadanie", 160)
     what = _readable(ticket.get("done")) or _readable(standup.first_sentences(ticket.get("result") or "", 1, 220))
@@ -273,6 +329,8 @@ def rules_note(board: dict, ticket: dict, manual: bool, items: list[str]) -> dic
         or _readable(standup.first_sentences(ticket.get("planNote") or "", 1, 200))
     if why and _same(why) != _same(first):
         sentences.append(_sentence(why))
+    if bare:
+        sentences.append(UNREVIEWED)
     if items:
         sentences.append(_sentence("Do sprawdzenia ręcznie: " + "; ".join(i.rstrip(".") for i in items[:3])))
     elif manual:
@@ -342,9 +400,13 @@ def write_notes(jobs: list[tuple[dict, dict]], *, mode: str = "rules", model: st
     for board, ticket, manual, items in prepared:
         key = ticket_id(board, ticket)
         body = texts.get(key) or rules_note(board, ticket, manual, items)
+        bare = unreviewed(ticket)
+        if bare and "bez przegl" not in body["text"].lower():
+            body = dict(body, text=standup.clean(f"{body['text']} {UNREVIEWED}", NOTE_TEXT_MAX + 40))
         out.append({"id": key, "project": board.get("project") or "", "repoPath": board.get("repoPath") or "",
                     "ref": ticket.get("id") or "", "title": standup.clean(ticket.get("title") or "", 200),
                     "text": body["text"], "summary": body["summary"], "manual": manual, "checklist": items,
+                    "unreviewed": bare,
                     "ts": round(now, 3), "source": body["source"]})
     return out
 
@@ -353,20 +415,40 @@ def write_notes(jobs: list[tuple[dict, dict]], *, mode: str = "rules", model: st
 
 class Batcher:
     """Jedno powiadomienie na projekt w oknie BATCH_WINDOW: kolejne tickety je aktualizują (ten sam klucz
-    zastąpienia), zamiast wysyłać nowe."""
+    zastąpienia), zamiast wysyłać nowe. Notka zastąpiona tego samego dnia (ticket skończony ponownie)
+    aktualizuje powiadomienie, w którym już była — także po oknie — a nie wysyła drugiego."""
 
     def __init__(self, window: float = BATCH_WINDOW):
         self.window = window
-        self.open: dict[str, dict] = {}   # projekt → {"start", "notes", "seq"}
+        self.open: dict[str, dict] = {}     # projekt → {"start", "notes", "seq"}
+        self.of_note: dict[str, dict] = {}  # id notki → paczka, w której ją pokazano (bieżąca doba)
+        self.day = ""
         self.seq = 0
 
-    def add(self, project: str, notes: list[dict], now: float) -> dict:
-        batch = self.open.get(project)
-        if batch is None or now - batch["start"] > self.window:
-            self.seq += 1
-            batch = self.open[project] = {"start": now, "notes": [], "seq": self.seq}
-        batch["notes"] += notes
-        return {"key": f"{project}#{batch['seq']}", **notification_text(project, batch["notes"])}
+    def add(self, project: str, notes: list[dict], now: float, day: str = "") -> list[dict]:
+        if day != self.day:
+            self.day, self.of_note = day, {}
+        touched = []
+        fresh = []
+        for note in notes:
+            batch = self.of_note.get(note.get("id"))
+            if batch is None:
+                fresh.append(note)
+                continue
+            batch["notes"] = [note if n.get("id") == note.get("id") else n for n in batch["notes"]]
+            if batch not in touched:
+                touched.append(batch)
+        if fresh:
+            batch = self.open.get(project)
+            if batch is None or now - batch["start"] > self.window:
+                self.seq += 1
+                batch = self.open[project] = {"start": now, "notes": [], "seq": self.seq, "project": project}
+            batch["notes"] += fresh
+            for note in fresh:
+                self.of_note[note.get("id")] = batch
+            if batch not in touched:
+                touched.append(batch)
+        return [{"key": f"{b['project']}#{b['seq']}", **notification_text(b["project"], b["notes"])} for b in touched]
 
 
 def notification_text(project: str, notes: list[dict]) -> dict:
@@ -380,7 +462,8 @@ def notification_text(project: str, notes: list[dict]) -> dict:
             body = body if "ręczn" in body.lower() else (body + " Wymaga sprawdzenia ręcznego.").strip()
         return {"summary": f"{name}: skończone — {note.get('summary') or note.get('title') or 'zadanie'}", "body": body}
     n = len(notes)
-    lines = [f"• {note.get('summary') or note.get('title')}" for note in notes[:5]]
+    lines = [f"• {note.get('summary') or note.get('title')}" + (" (bez przeglądu)" if note.get("unreviewed") else "")
+             for note in notes[:5]]
     if n > 5:
         lines.append(f"• i {n - 5} więcej")
     manual = sum(1 for note in notes if note.get("manual"))

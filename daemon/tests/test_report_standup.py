@@ -158,6 +158,15 @@ class StandupWorld(unittest.TestCase):
             {"type": "system", "subtype": "turn_duration", "isSidechain": False, "timestamp": iso(NOW - 1.5 * H + 1),
              "cwd": cls.notes, "gitBranch": "", "sessionId": "c-notes"},
         ])
+        # Sesja koordynatora alpha stoi na pytaniu ALPHA-3 (AskUserQuestion) — „czeka” według obszaru Agents.
+        reportfix._write_jsonl(os.path.join(p["claude"], "projects", escape_cwd(alpha), "c-coord.jsonl"), [
+            reportfix._claude("c-coord", alpha, "master", NOW - 3 * H, "user",
+                              message={"role": "user", "content": "Poprowadź plan wyszukiwania"}),
+            reportfix._claude("c-coord", alpha, "master", NOW - 2 * H, "assistant",
+                              message={"role": "assistant", "stop_reason": "tool_use", "content": [
+                                  {"type": "tool_use", "id": "qc", "name": "AskUserQuestion",
+                                   "input": {"questions": [{"question": "ALPHA-3: czy wydajemy w piątek?"}]}}]}),
+        ])
         cls.cache = os.path.join(cls.tmp, "coordination.json")
         with open(cls.cache, "w", encoding="utf-8") as fh:
             json.dump(coordination_cache(p), fh)
@@ -181,9 +190,16 @@ class StandupWorld(unittest.TestCase):
     def generate(cls, root=None, **kwargs):
         return reports.generate(root or os.path.join(cls.tmp, "reports"), reportfix.DAY, START, NOW,
                                 palette=cls.palette, workspace=cls.p["work"], claude_root=cls.p["claude"],
-                                codex_root=cls.p["codex"], live=reportfix.live_sessions(cls.p),
+                                codex_root=cls.p["codex"], live=cls.live(),
                                 limits_result={"ok": True, "status": reportfix.STATUS}, home=cls.p["home"],
                                 coordination_cache=cls.cache, **kwargs)
+
+    @classmethod
+    def live(cls):
+        return reportfix.live_sessions(cls.p) + [
+            {"id": "claude:c-coord", "tool": "claude", "sessionId": "c-coord", "cwd": cls.p["alpha"], "state": "waiting",
+             "reason": "question", "sinceTs": NOW - 2 * H, "lastActivityTs": NOW - 2 * H,
+             "waitingText": "ALPHA-3: czy wydajemy w piątek?"}]
 
     def env(self, mode="ok", log=None, answer=None):
         log = log or os.path.join(tempfile.mkdtemp(dir=self.tmp), "calls.jsonl")
@@ -643,7 +659,9 @@ class CategoryTest(StandupWorld):
              "result": "", "question": "", "branch": "", "review": "", "category": "chores"},
             {"id": "TR-2", "key": "TR-2", "title": "Migracja zadań do YouTracka", "state": "czeka", "note": "",
              "result": "", "question": "Czy usunąć stare zadania?", "branch": "", "review": "", "category": "chores"}],
-            units=[], questions=[])
+            units=[], questions=[], coordinatorSessions=[{"id": "claude:k", "state": "waiting", "title": "Plan",
+                                                          "waitingFor": "Czy usunąć stare zadania?", "message": ""}])
+        tracker["tickets"][1]["coordinator"] = "claude:k"
         r = standup.rules(tracker)
         self.assertEqual([i["ref"] for i in r["chores"]], ["TR-1"])
         self.assertEqual([i["ref"] for i in r["waiting"]], ["TR-2"])

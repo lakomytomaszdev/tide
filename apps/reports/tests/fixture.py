@@ -27,9 +27,9 @@ def note(ref, title, text, summary, manual=False, checklist=(), hours=1):
 
 
 def project(name, slug, headline, done=(), doing=(), waiting=(), next_=(), chores=(), theme="", tools=("claude",),
-            finished=()):
+            finished=(), attention=()):
     groups = {"done": list(done), "doing": list(doing), "waiting": list(waiting), "next": list(next_),
-              "chores": list(chores)}
+              "attention": list(attention), "chores": list(chores)}
     counts = {k: len(v) for k, v in groups.items()}
     counts["waiting"] = len([i for i in waiting if not i.get("stale")])
     counts["finished"] = len(finished)
@@ -39,8 +39,8 @@ def project(name, slug, headline, done=(), doing=(), waiting=(), next_=(), chore
     if finished:
         lines.append("Skończone dziś:")
         lines += [f"- {n['ref']} {n['text']}" for n in finished]
-    for key, label in (("done", "Zrobione"), ("doing", "W toku"), ("waiting", "Czeka na mnie"), ("next", "Dalej"),
-                       ("chores", "Porządki")):
+    for key, label in (("done", "Zrobione"), ("doing", "W toku"), ("waiting", "Czeka na mnie"), ("attention", "Uwaga"),
+                       ("next", "Dalej"), ("chores", "Porządki")):
         fresh = [i for i in groups[key] if not i.get("stale")]
         if fresh:
             lines.append(f"{label}:")
@@ -98,7 +98,8 @@ def today_report() -> dict:
                 next_=[item("LA-037, LA-038 z planu.")], tools=("codex",)),
         project("cookapp", "cookapp", "Kontenery działają od wczoraj; dokumentacja API opisuje stronicowanie.",
                 done=[item("Dokumentacja API opisuje stronicowanie listy przepisów.")],
-                next_=[item("import przepisu z linku.", "K-17")]),
+                next_=[item("import przepisu z linku.", "K-17")],
+                attention=[dict(item("Konflikt numerów: K-17 ma w dwóch planach różne tytuły."), kind="attention")]),
     ]
     return {
         "version": 1, "day": TODAY, "title": "Wtorek, 27 października 2026", "generatedAt": T0,

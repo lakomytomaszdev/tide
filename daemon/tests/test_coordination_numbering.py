@@ -336,14 +336,17 @@ class ReportTest(unittest.TestCase):
 
         fact = {"project": "proj", "tickets": [], "units": [], "questions": [], "plans": [],
                 "conflicts": [w["text"] for w in project.conflicts]}
-        waiting = standup.rules(fact)["waiting"]
-        self.assertEqual(len(waiting), 1)
-        self.assertTrue(waiting[0]["text"].startswith("Konflikt numerów: PT-3 ma różne tytuły"), waiting)
+        rules = standup.rules(fact)
+        self.assertEqual(rules["waiting"], [], "konflikt numerów to nie „czeka” — nikt na niego nie stoi")
+        attention = rules["attention"]
+        self.assertEqual(len(attention), 1)
+        self.assertTrue(attention[0]["text"].startswith("Konflikt numerów: PT-3 ma różne tytuły"), attention)
         model = {"proj": {"headline": "x", "theme": "", "done": [], "doing": [], "next": [], "chores": [],
                           "waiting": [{"ref": "", "text": "Odpowiedz na pytanie o termin"}]}}
-        merged = standup.merge(model, [fact])["proj"]["waiting"]
-        self.assertEqual([i["text"][:17] for i in merged], ["Konflikt numerów:"],
-                         "„Czeka na mnie” zawsze z reguł (PT-23 C): konflikt jest, pozycja modelu bez ref odpada")
+        merged = standup.merge(model, [fact])["proj"]
+        self.assertEqual(merged["waiting"], [], "„Czeka na mnie” zawsze z reguł (PT-23 C): pozycja modelu bez ref odpada")
+        self.assertEqual([i["text"][:17] for i in merged["attention"]], ["Konflikt numerów:"],
+                         "model faktów o konfliktach nie dostaje — pozycja z reguł zawsze jest, w „Uwaga”")
 
 
 class ReservationTest(unittest.TestCase):

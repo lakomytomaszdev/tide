@@ -41,6 +41,7 @@ class ReportMonitor(QObject):
                  fetch_limits: bool = True, coordination_cache: str | None = None, opener=None,
                  summary: str | None = None, tracker=None, notes_file: str | None = None, note_notifier=None,
                  card_check=None, live_interval: float = live_mod.INTERVAL, live_settle: float = live_mod.SETTLE,
+                 note_settle: float = notes_mod.NOTE_SETTLE,
                  parent=None):
         super().__init__(parent)
         self.settings = settings
@@ -67,10 +68,13 @@ class ReportMonitor(QObject):
         # Żywy raport i notki po tickecie.
         self.live = live_mod.Live(interval=live_interval, settle=live_settle)
         self.notes = notes_mod.Store(notes_file) if notes_file else None
-        self.note_tracker = notes_mod.Tracker(self.notes) if self.notes is not None else None
+        self.note_tracker = notes_mod.Tracker(self.notes, settle=note_settle) if self.notes is not None else None
         self.note_notifier = note_notifier      # obiekt z notify(klucz, tytuł, treść, element widoku) albo None
         self.batcher = notes_mod.Batcher()
-        self.card_check = card_check            # funkcja(board, ticket) → {"check", "spec"} z tablicy pracy albo None
+        # Hak karty tablicy pracy (PT-5): funkcja(board, ticket) → {"check": "manual", "spec": ścieżka} albo None.
+        # board/ticket to tablica koordynacji i jej ticket (D-Bus Board()); wynik czyta notes.manual_check.
+        # Podpinany w app.start_report (argument card_check=); bez niego — tylko plan.
+        self.card_check = card_check
         self._ticket_states: dict | None = None
         self._session_states: dict | None = None
         self._waiting_sig: tuple | None = None
@@ -78,6 +82,9 @@ class ReportMonitor(QObject):
         self._noted.connect(self._deliver_notes)
         self._live_timer = QTimer(self, singleShot=True)
         self._live_timer.timeout.connect(self._live_due)
+        self._boards: list = []
+        self._note_timer = QTimer(self, singleShot=True)   # tickety w gotowe czekające na notkę (settle)
+        self._note_timer.timeout.connect(lambda: self._check_notes())
         self._login = QTimer(self, singleShot=True, interval=int(login_delay * 1000))
         self._login.timeout.connect(lambda: self.check(at_login=True))
         self._timer = QTimer(self, interval=int(check_interval * 1000))
@@ -93,6 +100,7 @@ class ReportMonitor(QObject):
         self._login.stop()
         self._timer.stop()
         self._live_timer.stop()
+        self._note_timer.stop()
         self._pool.shutdown(wait=False, cancel_futures=True)
         self._note_pool.shutdown(wait=False, cancel_futures=True)
 
@@ -163,8 +171,13 @@ class ReportMonitor(QObject):
         if self._ticket_states is not None and changes:
             self.mark_dirty("zmiana ticketu")
         self._ticket_states = states
+        self._boards = boards
+        self._check_notes()
+
+    def _check_notes(self) -> None:
         if self.note_tracker is None:
             return
+        boards = self._boards
         now = self.clock()
         day = schedule.report_day(now, self.settings)
         try:
@@ -174,6 +187,11 @@ class ReportMonitor(QObject):
             return
         if finished:
             self._write_notes(day.isoformat(), finished, now)
+        wait = self.note_tracker.due(now)
+        if wait is None:
+            self._note_timer.stop()
+        else:
+            self._note_timer.start(int(wait * 1000) + 1000)
 
     def mark_dirty(self, reason: str) -> None:
         self.live.mark(reason, self.clock())
@@ -228,7 +246,9 @@ class ReportMonitor(QObject):
             return
         if not written or self.notes is None:
             return
-        self.notes.add(day, written)
+        written = self.notes.add(day, written)   # tylko dodane albo zmienione — raport i powiadomienie zgodne
+        if not written:
+            return
         self.notes.prune(self.clock(), schedule.report_days(self.root) + [day])
         try:
             self.notes.save()
@@ -242,12 +262,12 @@ class ReportMonitor(QObject):
         for note in written:
             by_project.setdefault(note["project"], []).append(note)
         for project, items in by_project.items():
-            message = self.batcher.add(project, items, self.clock())
             target = f"{day}/{reports.collect.slug_base(project)}"
-            try:
-                self.note_notifier.notify(message["key"], message["summary"], message["body"], target)
-            except Exception as exc:  # powiadomienie to dodatek
-                print(f"tide-daemon: raport: powiadomienie o notce: {exc!r}", flush=True)
+            for message in self.batcher.add(project, items, self.clock(), day):
+                try:
+                    self.note_notifier.notify(message["key"], message["summary"], message["body"], target)
+                except Exception as exc:  # powiadomienie to dodatek
+                    print(f"tide-daemon: raport: powiadomienie o notce: {exc!r}", flush=True)
 
     def open_day(self, day: str, project: str = "") -> bool:
         """Strona raportu doby (index.html albo <slug>.html projektu) w przeglądarce. Otwarcie którejkolwiek

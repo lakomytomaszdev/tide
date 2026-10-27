@@ -8,6 +8,8 @@ const SECTIONS = [
     { key: "done", title: "Zrobione", tint: "mint", hollow: false },
     { key: "doing", title: "W toku", tint: "teal", hollow: false },
     { key: "waiting", title: "Czeka na mnie", tint: "peach", hollow: false },
+    // „Uwaga”: testy, które nie przechodzą, i konflikty numerów — nie „czeka”, pokazywane tylko, gdy są.
+    { key: "attention", title: "Uwaga", tint: "butter", hollow: false, optional: true },
     { key: "next", title: "Dalej", tint: "textMuted", hollow: true }
 ]
 
@@ -105,7 +107,8 @@ function summaryParts(report) {
 
 function counts(project) {
     const c = project && project.counts ? project.counts : {}
-    return { done: c.done || 0, doing: c.doing || 0, waiting: c.waiting || 0, next: c.next || 0, chores: c.chores || 0 }
+    return { done: c.done || 0, doing: c.doing || 0, waiting: c.waiting || 0, next: c.next || 0, chores: c.chores || 0,
+             attention: c.attention || 0 }
 }
 
 // Tekst pozycji: „TOM-146 …” (ref przed tekstem) — do „Czeka na ciebie” na karcie.
@@ -125,10 +128,10 @@ function waitText(project, limit) {
     return shown.join(" · ") + (rest > 0 ? " · i " + rest + " więcej" : "")
 }
 
-// Sekcje prawego panelu w kolejności strony projektu (Zrobione, W toku, Czeka na mnie, Dalej).
+// Sekcje prawego panelu w kolejności strony projektu (Zrobione, W toku, Czeka na mnie, Uwaga, Dalej).
 function sections(project) {
     return SECTIONS.map(s => ({
-        key: s.key, title: s.title, tint: s.tint, hollow: s.hollow,
+        key: s.key, title: s.title, tint: s.tint, hollow: s.hollow, optional: !!s.optional,
         items: list(project ? project[s.key] : null)
     }))
 }

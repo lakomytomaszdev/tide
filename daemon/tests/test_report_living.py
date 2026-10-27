@@ -251,6 +251,8 @@ class WaitingFromRulesTest(unittest.TestCase):
 
     def test_model_can_only_reword_same_ref(self):
         fact = self.fact()
+        fact["coordinatorSessions"] = [{"id": "claude:k", "state": "waiting", "title": "Plan", "message": "",
+                                        "waitingFor": "AB-3: wydajemy w piątek?", "task": ""}]
         model = {"x": {"headline": "", "theme": "", "done": [], "doing": [], "next": [], "chores": [],
                        "waiting": [{"ref": "AB-3", "text": "Termin wydania: piątek czy poniedziałek?"},
                                    {"ref": "", "text": "Sesja o zmianie public_key_hash pyta: „Pushować?”"}]}}
@@ -258,6 +260,38 @@ class WaitingFromRulesTest(unittest.TestCase):
         texts = [i["text"] for i in merged["waiting"]]
         self.assertEqual(texts, ["Termin wydania: piątek czy poniedziałek?", "Wydanie: agent pyta: „Test czy produkcja?”"])
         self.assertEqual(merged["waiting"][0]["sessionId"], "claude:k", "metadane z reguł zostają")
+
+    def test_plan_question_without_coordinator_is_not_waiting(self):
+        """Recenzja: plan, którego tablica nie zna (wiersz PT-7 „czeka”, bez sesji) — nikt nie stoi, więc nie
+        „czeka” i nie liczy się do plakietek cały dzień (pozycja bez sessionId nie zestarzałaby się na żywo)."""
+        fact = {"project": "tide", "plans": [], "units": [], "conflicts": [], "coordinatorSessions": [],
+                "questions": [{"text": "Czy dodać kolumnę?", "plan": "Plan eksportu", "coordinator": "", "ts": 0}],
+                "tickets": [{"id": "PT-7", "key": "PT-7", "title": "Eksport CSV", "state": "czeka", "note": "",
+                             "question": "Czy dodać kolumnę?", "branch": "", "category": "work", "planNote": "",
+                             "description": "", "brief": "", "review": "", "result": "", "coordinator": "",
+                             "questionTs": 0, "ts": 0}]}
+        r = standup.rules(fact)
+        self.assertEqual(r["waiting"], [])
+        self.assertEqual([i["text"] for i in r["doing"]], ["Eksport CSV — zostało pytanie bez odpowiedzi: „Czy dodać kolumnę?”"])
+        self.assertEqual(standup.counts(r)["waiting"], 0)
+        board_only = dict(fact, tickets=[])
+        self.assertEqual([i["text"] for i in standup.rules(board_only)["doing"]],
+                         ["Plan eksportu — zostało pytanie bez odpowiedzi: „Czy dodać kolumnę?”"])
+        self.assertEqual(standup.rules(board_only)["waiting"], [])
+
+    def test_failing_tests_go_to_attention_not_waiting(self):
+        done = {"id": "claude:t", "title": "Import", "task": "", "tool": "claude", "state": "done", "reason": "",
+                "message": "Gotowe.", "waitingFor": "", "question": "", "full": "Gotowe. Dwa testy nie przechodzą na CI.",
+                "failing": "Dwa testy nie przechodzą na CI.", "since": 0, "first": 0, "last": 0, "lastAction": ""}
+        r = standup.rules(unit_fact(done, "Import"))
+        self.assertEqual(r["waiting"], [])
+        self.assertEqual([(i["text"], i["kind"]) for i in r["attention"]],
+                         [("Import: Dwa testy nie przechodzą na CI.", "attention")])
+        merged = standup.merge({"x": {"headline": "", "theme": "", "done": [], "doing": [], "next": [], "chores": [],
+                                      "attention": [{"ref": "", "text": "wymyślone"}]}}, [unit_fact(done, "Import")])["x"]
+        self.assertEqual([i["text"] for i in merged["attention"]], ["Import: Dwa testy nie przechodzą na CI."])
+        text = standup.as_text({"projects": {"x": merged}}, ["x"])
+        self.assertLess(text.index("Uwaga:"), text.index("Zrobione:") if "Zrobione:" in text else len(text) + 1)
 
     def test_answered_coordinator_question_moves_to_doing(self):
         fact = self.fact()
@@ -303,13 +337,13 @@ def day_json(day="2026-10-26"):
     return {"version": 1, "day": day, "title": "x", "counts": {"projects": 1, "waiting": 3},
             "brief": ["alpha — skończone: indeks."],
             "projects": [{"name": "alpha", "slug": "alpha", "path": "/w/alpha", "theme": "", "headline": "",
-                          "counts": {"done": 1, "waiting": 3}, "hot": True,
+                          "counts": {"done": 1, "waiting": 2, "attention": 1}, "hot": True,
                           "done": [{"ref": "", "text": "Indeks"}], "doing": [], "next": [], "chores": [],
                           "waiting": [{"ref": "", "text": "A: agent pyta: „X?”", "kind": "blocked",
                                        "sessionId": "claude:a", "since": NOW - 600},
                                       {"ref": "", "text": "B: agent pyta: „Y?”", "kind": "blocked",
-                                       "sessionId": "claude:b", "since": NOW - 600},
-                                      {"ref": "", "text": "Konflikt numerów: TIDE-3", "kind": "attention"}]}]}
+                                       "sessionId": "claude:b", "since": NOW - 600}],
+                          "attention": [{"ref": "", "text": "Konflikt numerów: TIDE-3", "kind": "attention"}]}]}
 
 
 class LiveDayTest(unittest.TestCase):
@@ -323,18 +357,21 @@ class LiveDayTest(unittest.TestCase):
         ]
         out = data.apply_live(day_json(), "2026-10-26", sessions_now)
         waiting = out["projects"][0]["waiting"]
-        self.assertEqual([i["stale"] for i in waiting], [False, True, False],
-                         "B czeka już na coś innego (później) — pozycja nieaktualna; konflikt nie zależy od sesji")
-        self.assertEqual(out["counts"]["waiting"], 2)
+        self.assertEqual([i["stale"] for i in waiting], [False, True],
+                         "B czeka już na coś innego (później) — pozycja nieaktualna")
+        self.assertEqual(out["counts"]["waiting"], 1, "konflikt numerów w „Uwaga” nie liczy się do „czeka”")
+        self.assertEqual(out["projects"][0]["counts"]["attention"], 1)
+        self.assertIn("Uwaga:\n- Konflikt numerów: TIDE-3", out["projects"][0]["copyText"])
         self.assertEqual(out["counts"]["waitingNow"], 2)
         self.assertEqual([w["project"] for w in out["now"]], ["alpha", "alpha"])
         self.assertEqual(out["nowText"], "Teraz czeka na ciebie: alpha — agent pyta: „X?”; "
                                          "alpha — agent czeka na twoją zgodę (Bash · make install).")
         self.assertNotIn("Y?", out["projects"][0]["copyText"], "tekst do schowka bez nieaktualnych")
         self.assertIn("Teraz czeka na ciebie", out["copyAll"])
-        # Nikt już nie czeka: wszystko z sesji nieaktualne, plakietka 1 (sam konflikt).
+        # Nikt już nie czeka: wszystko z sesji nieaktualne, plakietka 0 (konflikt to „Uwaga”).
         quiet = data.apply_live(day_json(), "2026-10-26", [])
-        self.assertEqual((quiet["counts"]["waiting"], quiet["now"], quiet["nowText"]), (1, [], ""))
+        self.assertEqual((quiet["counts"]["waiting"], quiet["now"], quiet["nowText"]), (0, [], ""))
+        self.assertFalse(quiet["projects"][0]["hot"])
         # Starsza doba to migawka — bez przeliczania.
         old = data.apply_live(day_json("2026-10-25"), "2026-10-26", [])
         self.assertNotIn("stale", json.dumps(old))
@@ -438,6 +475,7 @@ class MonitorLiveTest(unittest.TestCase):
                               "description": "Użytkownicy chcą otwierać listę w arkuszu."},
                              {"key": "AB-0", "id": "AB-0", "title": "Stare", "state": "gotowe", "lastActivityTs": NOW}]}
         m = self.monitor([], notes_file=notes_file, notifier=notifier)
+        m.note_tracker.settle = 0
         m.coordination_changed([board])   # pierwsze uruchomienie: stan wyjściowy, bez notek
         self.assertFalse(m._note_pool._threads, "bez notek przy pierwszym odczycie")
         done = dict(board, tickets=[dict(board["tickets"][0], state="gotowe"), board["tickets"][1]])
@@ -464,6 +502,7 @@ class MonitorLiveTest(unittest.TestCase):
         self.assertEqual(day["counts"]["finished"], 1)
         # Restart usługi: ten sam plik stanu, te same tablice — bez drugiej notki i powiadomienia.
         m2 = self.monitor([], notes_file=notes_file, notifier=notifier)
+        m2.note_tracker.settle = 0
         again = []
         m2._write_notes = lambda day, finished, now: again.append(finished)
         m2.coordination_changed([done])
@@ -472,6 +511,22 @@ class MonitorLiveTest(unittest.TestCase):
         m2.coordination_changed([dict(done, tickets=[dict(done["tickets"][0], state="w-toku")])])
         m2.coordination_changed([done])
         self.assertEqual(len(again), 1)
+        # …ale ta sama doba: notka zastąpiona, to samo powiadomienie zaktualizowane (raport i powiadomienie zgodne).
+        reviewed = dict(done["tickets"][0], note="review OK", review={"text": "bez uwag"},
+                        done="Lista przepisów da się pobrać jako plik CSV z nagłówkami.")
+        rewritten = notes.write_notes([(done, reviewed)], now=NOW + 120)
+        future = Future()
+        future.set_result(rewritten)
+        m._deliver_notes(reportfix.DAY, future)
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(sent[1][0], key, "replaces_id: ten sam klucz powiadomienia")
+        self.assertIn("z nagłówkami", sent[1][1])
+        day = json.loads(m.day_json(reportfix.DAY))
+        alpha = next(p for p in day["projects"] if p["name"] == "alpha")
+        self.assertEqual([n["text"].split(".")[0] for n in alpha["finished"]],
+                         ["Lista przepisów da się pobrać jako plik CSV z nagłówkami"], "jedna notka na ticket na dobę")
+        m._deliver_notes(reportfix.DAY, future)
+        self.assertEqual(len(sent), 2, "bez zmiany treści — bez powiadomienia")
 
 
 # --- raport dla ludzi: złote przykłady -----------------------------------------------------------------
@@ -630,6 +685,10 @@ class GoldenTest(unittest.TestCase):
         self.assertEqual(page.count('<article class="card ov'), 1)
         self.assertIn("<summary>Porządki: QuotaApp, BO</summary>", page)
         self.assertIn("Dziś w skrócie", render.brief_section(report))
+        standup_["projects"]["logtool"]["attention"] = [{"ref": "", "text": "Konflikt numerów: K-3", "kind": "attention"}]
+        page = render.daily(report, repos[:1])
+        self.assertIn('<div class="sg attention"><h4>Uwaga</h4><ul><li>Konflikt numerów: K-3</li>', page)
+        self.assertNotIn("Czeka na mnie", page)
 
 
 # --- żywe odświeżanie i powiadomienia -----------------------------------------------------------------
@@ -721,6 +780,37 @@ class NotesTest(unittest.TestCase):
         manual, items = notes.manual_check({"plan": None}, plain, lambda b, t: {"check": "manual", "spec": spec})
         self.assertEqual((manual, items), (True, ["zaloguj się jako gość"]))
 
+    def test_note_without_review_says_so(self):
+        bare = dict(self.ticket, planNote="", note="bez review", review=None)
+        note = notes.rules_note({"plan": None}, bare, False, [])
+        self.assertEqual(note["text"], "Listę logów da się pobrać jako plik CSV. Zespół chce analizować logi w arkuszu. "
+                                       "Skończone bez przeglądu.")
+        self.assertNotIn("bez przeglądu", notes.rules_note({"plan": None}, dict(bare, note="review OK",
+                                                                               review={"text": "bez uwag"}), False, [])["text"])
+        (written,) = notes.write_notes([({"id": "claude:k", "project": "LogTool", "plan": None}, bare)], now=NOW)
+        self.assertTrue(written["unreviewed"])
+        message = notes.notification_text("LogTool", [written])
+        self.assertTrue(message["body"].endswith("Skończone bez przeglądu."), message)
+        two = notes.notification_text("LogTool", [written, dict(written, unreviewed=False, summary="Filtr")])
+        self.assertIn("(bez przeglądu)", two["body"])
+
+    def test_model_note_without_review_gets_the_sentence(self):
+        fake = os.path.join(self.tmp, "claude")
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write(FAKE_CLAUDE)
+        os.chmod(fake, 0o755)
+        answer = os.path.join(self.tmp, "answer.json")
+        with open(answer, "w", encoding="utf-8") as fh:
+            json.dump({"notes": [{"key": "claude:k|LR-2", "text": "Logi można pobrać jako CSV.", "summary": "CSV"}]}, fh)
+        env = dict(os.environ, TIDE_CLAUDE_BIN=fake, FAKE_CLAUDE_LOG=os.path.join(self.tmp, "c.jsonl"),
+                   FAKE_CLAUDE_ANSWER=answer)
+        bare = dict(self.ticket, planNote="", note="bez review", review=None)
+        (written,) = notes.write_notes([({"id": "claude:k", "project": "LogTool", "plan": None}, bare)],
+                                       mode="claude", env=env, now=NOW)
+        self.assertEqual((written["source"], written["text"]), ("model", "Logi można pobrać jako CSV. Skończone bez przeglądu."))
+        with open(os.path.join(self.tmp, "c.jsonl"), encoding="utf-8") as fh:
+            self.assertIs(json.loads(json.loads(fh.readline())["stdin"])["tickets"][0]["reviewed"], False)
+
     def test_model_note_and_fallback(self):
         fake = os.path.join(self.tmp, "claude")
         with open(fake, "w", encoding="utf-8") as fh:
@@ -748,16 +838,48 @@ class NotesTest(unittest.TestCase):
 
     def test_batched_notifications(self):
         batcher = notes.Batcher(window=300)
-        one = {"summary": "Eksport do CSV", "text": "Logi da się pobrać jako CSV.", "manual": True}
-        first = batcher.add("LogTool", [one], 1000)
+        one = {"id": "k|1", "summary": "Eksport do CSV", "text": "Logi da się pobrać jako CSV.", "manual": True}
+        (first,) = batcher.add("LogTool", [one], 1000, "d")
         self.assertEqual(first["summary"], "LogTool: skończone — Eksport do CSV")
         self.assertEqual(first["body"], "Logi da się pobrać jako CSV. Wymaga sprawdzenia ręcznego.")
-        second = batcher.add("LogTool", [dict(one, summary="Filtr po dacie", manual=False)], 1200)
+        (second,) = batcher.add("LogTool", [dict(one, id="k|2", summary="Filtr po dacie", manual=False)], 1200, "d")
         self.assertEqual(second["key"], first["key"], "to samo powiadomienie się aktualizuje")
         self.assertEqual(second["summary"], "LogTool: skończone 2 zadania")
         self.assertEqual(second["body"], "• Eksport do CSV\n• Filtr po dacie\nDo sprawdzenia ręcznie: 1.")
-        self.assertNotEqual(batcher.add("LogTool", [one], 1600)["key"], first["key"], "po oknie — nowe")
-        self.assertNotEqual(batcher.add("Tide", [one], 1210)["key"], first["key"], "inny projekt — osobne")
+        (later,) = batcher.add("LogTool", [dict(one, id="k|3")], 1600, "d")
+        self.assertNotEqual(later["key"], first["key"], "po oknie — nowe")
+        self.assertNotEqual(batcher.add("Tide", [dict(one, id="t|1")], 1210, "d")[0]["key"], first["key"],
+                            "inny projekt — osobne")
+        # Ticket skończony ponownie tego samego dnia, po oknie: aktualizuje swoje powiadomienie, nie nowe.
+        (again,) = batcher.add("LogTool", [dict(one, text="Po przeglądzie.", summary="Eksport do CSV, po przeglądzie")],
+                               3000, "d")
+        self.assertEqual(again["key"], first["key"])
+        self.assertIn("• Eksport do CSV, po przeglądzie", again["body"])
+        self.assertNotEqual(batcher.add("LogTool", [one], 90000, "d2")[0]["key"], first["key"], "nowa doba — nowe")
+
+    def test_store_keeps_one_note_per_ticket_per_day(self):
+        store = notes.Store(os.path.join(self.tmp, "s.json"))
+        bare = {"id": "k|1", "project": "LogTool", "text": "CSV gotowe. Skończone bez przeglądu.", "summary": "CSV",
+                "unreviewed": True}
+        self.assertEqual(store.add("d", [bare]), [bare])
+        self.assertEqual(store.add("d", [bare]), [], "to samo — bez zmiany, bez powiadomienia")
+        changed = store.add("d", [dict(bare, text="CSV gotowe.", unreviewed=False)])
+        self.assertEqual([n["text"] for n in changed], ["CSV gotowe. Teraz już po przeglądzie."])
+        self.assertEqual([n["text"] for n in store.notes("d")["LogTool"]], ["CSV gotowe. Teraz już po przeglądzie."])
+
+    def test_settle_before_note(self):
+        path = os.path.join(self.tmp, "settle.json")
+        notes.Tracker(notes.Store(path)).update([], NOW, START)   # stan wyjściowy
+        tracker = notes.Tracker(notes.Store(path), settle=90)
+        done = [dict(self.board, tickets=[self.ticket])]
+        self.assertEqual(tracker.update(done, NOW, START), [])
+        self.assertEqual(tracker.due(NOW + 30), 60)
+        # „Gotowe bez review” → zaraz review → gotowe: jedna notka, dopiero po ciszy.
+        tracker.update([dict(self.board, tickets=[dict(self.ticket, state="review")])], NOW + 40, START)
+        self.assertIsNone(tracker.due(NOW + 40))
+        self.assertEqual(tracker.update(done, NOW + 100, START), [])
+        self.assertEqual([t["key"] for _b, t in tracker.update(done, NOW + 190, START)], ["LR-2"])
+        self.assertEqual(tracker.update(done, NOW + 300, START), [])
 
 
 @requires_dbus
