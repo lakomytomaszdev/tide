@@ -1,6 +1,6 @@
 # tide-daemon
 
-Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)). Piąty to raport poranny: raz na dobę strona HTML na każdy projekt z ruchem ([Raport poranny](#raport-poranny)). Szósty to historia Limitów AI, prognoza ich wyczerpania i powiadomienia o progach ([Limity AI](#limity-ai)). Siódmy to koordynacja: sesje, które zlecają pracę podagentom, jako tablica ticketów z planem i YouTrackiem ([Koordynacja](#koordynacja)). Ósmy to tablica pracy: karty „rzeczy do zrobienia” ze wszystkich projektów w lokalnym repozytorium git ([Tablica](#tablica)). Dziewiąty to kontenery Dockera: grupy compose z repozytoriami, akcje, logi i porządki zamiast Docker Desktop ([Docker](#docker)).
+Usługa użytkownika systemd (Python 3, PyQt6), która czyta dzienniki sesji Claude Code i Codexa, wyprowadza stan każdej sesji i wystawia go przez D-Bus. Nie zmienia konfiguracji Claude Code ani Codexa — tylko czyta ich pliki. Drugi obszar to worktrees repozytoriów z katalogu projektów: ich stan i bezpieczne sprzątanie scalonych (opis niżej, [Worktrees](#worktrees)). Trzeci to wtyczka KRunnera z sesjami z 30 dni, projektami i worktrees ([KRunner](#krunner)). Czwarty to bezczynność użytkownika dla tapety z drzemiącym kotem ([Bezczynność](#bezczynność)). Piąty to raport poranny: raz na dobę strona HTML na każdy projekt z ruchem ([Raport poranny](#raport-poranny)). Szósty to historia Limitów AI, prognoza ich wyczerpania i powiadomienia o progach ([Limity AI](#limity-ai)). Siódmy to koordynacja: sesje, które zlecają pracę podagentom, jako tablica ticketów z planem i YouTrackiem ([Koordynacja](#koordynacja)). Ósmy to tablica pracy: karty „rzeczy do zrobienia” ze wszystkich projektów w lokalnym repozytorium git ([Tablica](#tablica)). Dziewiąty to kontenery Dockera: grupy compose z repozytoriami, akcje, logi i porządki zamiast Docker Desktop ([Docker](#docker)). Dziesiąty to modele lokalne: punkty dostępu do serwera modeli (Ollama, później Mac Studio), wywołanie modelu i stan serwerów ([Modele lokalne](#modele-lokalne)).
 
 ## Kontrakt D-Bus
 
@@ -989,6 +989,94 @@ qdbus6 org.tide.Daemon /Docker org.tide.Daemon.Docker.Snapshot
 /usr/bin/python3 daemon/tide-daemon.py --print-docker   # migawka i miejsce na dysku, wyłącznie GET do Engine API
 ```
 
+## Modele lokalne
+
+Jedno miejsce w usłudze, przez które Tide rozmawia z serwerem modeli lokalnych: teraz Ollama na tym komputerze (`http://127.0.0.1:11434`), później Mac Studio w sieci — zmianą adresu w ustawieniach, bez zmian w kodzie (plan `docs/agents/plans/2026-10-27-local-models.md`, PT-14). Usługa odczytuje stan serwerów i wystawia go przez D-Bus; wywołanie modelu (`tide_daemon.models.chat`) jest gotowe dla raportu porannego i opisów kart, ale jeszcze ich nie zastępuje (PT-15).
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/Models` |
+| Interfejs | `org.tide.Daemon.Models` |
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `Status()` | `→ s` | JSON `{checked, default, config, endpoints, roles}` (opis niżej), bez tokenów |
+| `Refresh()` | | odczyt stanu teraz, bez czekania na kolejny cykl (wynik przyjdzie sygnałem `Changed`, jeśli coś się zmieniło) |
+| `Changed` | sygnał bez argumentów | stan serwerów, modeli albo ustawień się zmienił — pobierz `Status()` ponownie |
+
+```json
+{
+  "checked": true,
+  "default": "local",
+  "config": {"path": "/home/user/.config/tide/models.json", "exists": false, "error": "", "warnings": []},
+  "endpoints": {
+    "local": {"name": "local", "url": "http://127.0.0.1:11434", "kind": "ollama", "auth": false,
+              "online": true, "error": "", "version": "0.40.11",
+              "models": [{"name": "qwen3:8b", "size": 5225388164, "family": "qwen3", "parameterSize": "8.2B",
+                          "quantization": "Q4_K_M"}],
+              "loaded": [{"name": "qwen3:8b", "size": 6000000000, "sizeVram": 6000000000, "gpuPercent": 100,
+                          "contextLength": 8192, "expiresAt": "2026-10-27T17:05:00+01:00"}]}
+  },
+  "roles": {
+    "summary": {"endpoint": "local", "model": "qwen3:8b", "ctx": 8192, "installed": true, "available": true}
+  }
+}
+```
+
+| Pole | Opis |
+| --- | --- |
+| `checked` | `false` tylko przed pierwszym odczytem po starcie usługi (wtedy wszystkie punkty `online: false` bez błędu) |
+| `config` | plik ustawień: ścieżka, czy istnieje, `error` (plik nie do użycia — wszystko domyślne), `warnings` (pominięte punkty i role) |
+| `endpoints.*.online`, `error` | czy serwer odpowiada; przy `false` krótki powód po polsku, np. „Model lokalny niedostępny: serwer nie odpowiada (127.0.0.1:11434)” |
+| `endpoints.*.auth` | punkt wysyła token (`tokenFile`) — sam token nigdy nie wychodzi z usługi |
+| `endpoints.*.version` | wersja Ollamy; `null` dla serwera `openai` |
+| `endpoints.*.models` | pobrane modele: `name`, a dla Ollamy też `size`, `family`, `parameterSize`, `quantization` |
+| `endpoints.*.loaded` | modele w pamięci (Ollama `/api/ps`): rozmiar, `sizeVram`, `gpuPercent` (część na karcie — poniżej 100 model pisze kilkanaście razy wolniej), `contextLength`, `expiresAt`; `null` dla serwera `openai`, który tego nie podaje |
+| `roles.*` | punkt, model, `ctx` (`null` — kontekst serwera), `installed` (model jest na serwerze; `null`, gdy serwer nie odpowiada), `available` (serwer odpowiada i model jest) |
+
+**Ustawienia.** `~/.config/tide/models.json` (`$XDG_CONFIG_HOME/tide/models.json`; `$TIDE_MODELS_CONFIG` podmienia ścieżkę — testy, diagnostyka), czytany przy każdym odczycie i wywołaniu — zmiana działa bez restartu usługi (`Refresh()` od razu). Plik jest opcjonalny; bez niego jest jeden punkt `local` (`http://127.0.0.1:11434`, `ollama`) i role `summary`, `describe` → `qwen3:8b` z kontekstem 8192.
+
+```json
+{
+  "default": "local",
+  "endpoints": {
+    "local": {"url": "http://127.0.0.1:11434", "kind": "ollama"},
+    "mac":   {"url": "http://mac-studio:11434", "kind": "ollama", "tokenFile": "~/.config/tide/mac.token"},
+    "lm":    {"url": "http://mac-studio:1234", "kind": "openai"}
+  },
+  "roles": {
+    "summary":  "local:qwen3:8b",
+    "describe": {"model": "local:qwen3:8b", "ctx": 8192},
+    "embed":    "local:bge-m3",
+    "agent":    "local:qwen3-coder:30b",
+    "polish":   "local:hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M"
+  }
+}
+```
+
+- `kind`: `ollama` (domyślnie) albo `openai` (MLX, LM Studio, llama.cpp — dowolny serwer z `/v1/chat/completions`); adres bez `/v1` (podany z `/v1` też działa).
+- Rola to `"punkt:model"` albo `{"model": "punkt:model", "ctx": N}`. Nazwy modeli mają dwukropki, więc napis dzielimy tylko na pierwszym — i tylko wtedy, gdy przed nim stoi nazwa znanego punktu. Inaczej cały napis to model na punkcie `default` (`"qwen3:8b"` = `default:qwen3:8b`). Brakujące role `summary` i `describe` dochodzą na punkcie `default`, więc przepięcie na Maca to zmiana `default` albo przedrostka w rolach.
+- `ctx` to kontekst (`num_ctx` w Ollamie). Role `summary` i `describe` bez `ctx` dostają 8192: z 16k model 8B nie mieści się na karcie 8 GB i odpowiedź trwa 165 s zamiast 8 s (pomiary PT-13). Inne role bez `ctx` i `ctx: 0` — kontekst serwera (16k w nakładce usługi Ollamy, dla agentów).
+- `tokenFile` (z `~`): plik z tokenem, wysyłanym jako `Authorization: Bearer …` — na Maca za pośrednikiem z tokenem (PT-21). Czytany przy każdym zapytaniu, tylko w pamięci; nie trafia do dziennika, komunikatów ani `Status()`.
+- Zepsuty plik (nie JSON albo nie obiekt) → ustawienia domyślne i `config.error`; zły punkt (adres spoza `http(s)://`, nieznany `kind`) albo zła rola są pomijane z ostrzeżeniem w `config.warnings`, reszta działa. Nieznany `default` → `local` (albo pierwszy punkt).
+
+**Stan.** Co 15 s (`--models-poll`) w wątku roboczym, z limitem 3 s na zapytanie, więc serwer, który wisi albo nie istnieje, nie blokuje D-Bus. Dla Ollamy `GET /api/version`, `/api/tags` i `/api/ps` (żadne nie ładuje modelu ani nie przedłuża jego trzymania w pamięci), dla `openai` — `GET /v1/models`. Punkt, który nie odpowiada na pierwsze zapytanie, nie dostaje kolejnych. JSON nie ma czasu odczytu, więc `Changed` przychodzi tylko przy prawdziwej zmianie (serwer wstał albo padł, model załadowany albo zwolniony, nowy model, zmiana ustawień). Do dziennika usługi trafiają tylko zmiany: „Modele lokalne: local: odpowiada (wersja 0.40.11)”, powód niedostępności, błąd w `models.json`.
+
+**Wywołanie modelu** (`tide_daemon/models/client.py`, bez Qt, do użycia w wątku roboczym): `chat(polecenie, role="summary", system=…, schema=…, timeout=180)` albo `chat(…, endpoint="mac", model="qwen3:8b")`. Wynik to tekst z miarami (`promptTokens`, `outputTokens`, `wallS`, a z Ollamy też `loadS`, `promptS`, `outputS`) i `json()` dla odpowiedzi według schematu. Adapter według `kind`:
+
+- `ollama` — natywne `POST /api/chat` z `stream: false`, `think: false`, `options.num_ctx` z roli i `format` = schemat JSON. Nie zgodny z OpenAI `/v1/chat/completions` Ollamy, bo ten pomija `num_ctx`, a kontekst decyduje, czy model mieści się na karcie. Model bez przełącznika myślenia (odpowiedź 400 z „think”) — ponowienie bez `think`.
+- `openai` — `POST /v1/chat/completions` z `response_format: {type: "json_schema", json_schema: {name, strict, schema}}`; kontekst ustawia serwer.
+
+**Gdy serwer nie działa.** Każdy błąd — serwer nie odpowiada, nie ma takiej nazwy, limit czasu, błąd HTTP (z treścią błędu serwera, np. „model 'x' not found”), nieczytelna albo pusta odpowiedź, nieczytelny plik tokenu — to jeden wyjątek `ModelError` z krótkim komunikatem po polsku do pokazania użytkownikowi. Tryb lokalny nigdy nie przechodzi do chmury: klient nie zna Claude ani żadnego zapasowego wywołania, a wywołujący pokazuje informację zamiast opisu (decyzja z 27.10 w planie). Zapytania idą bez pośredników z `$http_proxy`.
+
+Logika bez Qt jest w `tide_daemon/models/` (`config.py`, `transport.py`, `client.py`, `status.py`), odpytywanie w `models_monitor.py`. Uzasadnienie: decyzja 60 w `docs/decisions.md`.
+
+```bash
+qdbus6 org.tide.Daemon /Models org.tide.Daemon.Models.Status
+qdbus6 org.tide.Daemon /Models org.tide.Daemon.Models.Refresh
+/usr/bin/python3 daemon/tide-daemon.py --print-models   # jeden odczyt stanu, tylko GET, niczego nie zapisuje
+```
+
 ## Uruchamianie
 
 ```bash
@@ -1002,6 +1090,7 @@ journalctl --user -u tide-daemon -f
 /usr/bin/python3 daemon/tide-daemon.py --print-coordination   # koordynatorzy i tablice (YouTrack tylko GET)
 /usr/bin/python3 daemon/tide-daemon.py --print-board          # tablica pracy (tylko odczyt)
 /usr/bin/python3 daemon/tide-daemon.py --print-docker         # kontenery i miejsce na dysku (tylko GET)
+/usr/bin/python3 daemon/tide-daemon.py --print-models         # serwery modeli lokalnych i role (tylko GET)
 # Jednorazowy raport poranny (bez D-Bus, powiadomienia i pliku stanu) do wskazanego katalogu:
 /usr/bin/python3 daemon/tide-daemon.py --report --report-days 1 --report-dir /tmp/raport
 # Opcje diagnostyczne: --claude-dir, --codex-dir, --workspace, --worktree-depth, --no-processes,
@@ -1011,7 +1100,8 @@ journalctl --user -u tide-daemon -f
 #                      --report-summary claude|rules,
 #                      --limits-poll 120, --no-limits, --print-limits, --no-tasks,
 #                      --coordination-days 7, --no-coordination, --no-youtrack,
-#                      --board-dir DIR, --no-board, --no-docker
+#                      --board-dir DIR, --no-board, --no-docker,
+#                      --models-poll 15, --no-models
 ```
 
 Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`, z której raport poranny bierze kolory i czcionki), `$XDG_CONFIG_HOME/systemd/user/tide-daemon.service`, `$XDG_DATA_HOME/dbus-1/services/org.tide.Daemon.service` (start na żądanie, gdy widżet zapyta, a usługa nie działa) i `org.tide.Daemon.KRunner.service` (to samo dla KRunnera). Usługa używa `/usr/bin/python3` z systemowym PyQt6 — `python3` z pyenv go nie ma.
@@ -1059,6 +1149,8 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_docker_core.py` — Docker bez Qt na atrapie Engine API (`fake_docker.py`: prawdziwy socket unix w wątku testu, kształty odpowiedzi jak w Dockerze 29, odpowiedzi chunked pocięte w środku znaków, strumień `/events`, logi w ramkach, zapis każdego zapytania): `DOCKER_HOST` (unix, tcp/ssh → `unsupported`), brak socketu, odmowa, brak uprawnień, zawieszony Docker; grupy compose, repozytorium z worktree (także spoza katalogu projektów), „bez compose”, testcontainers, kod 137 i reguły awarii (0, 143, OOM, `dead`, restart, `created` po nieudanym starcie, 137 po `Stop` z Tide), porty bez powtórek i `likelyHttp`, czasy z nanosekundami, `inspect` tylko po zmianie stanu (nie tekstu „Up 3 hours”) i pełne odświeżenie; panele WWW baz w `likelyHttp`; kategorie dysku (nic w użyciu), wolumeny anonimowe zatrzymanych, prune tylko z listy id w bezpiecznej kolejności (regresja: `{"volumes": "false"}` bez żadnego wywołania), 404 z prune, dokładne metody, ścieżki i zapytania akcji, `Remove` działającego bez wywołania, kolejność zależności w projekcie, częściowa porażka `restart` projektu, limity pojedynczych akcji poniżej 25 s, jeden termin na zapytanie (odpowiedź sącząca się po bajcie) i na akcję (po terminie bez wywołań), znacznik „zatrzymany z Tide” przy odświeżeniu w trakcie `stop` i przy równoczesnym dopisywaniu, demultipleksowanie logów (stderr, TTY, linie i znaki UTF-8 rozcięte między ramkami, ucięta ostatnia ramka, zepsuty nagłówek w środku), statystyki równolegle z łącznym limitem czasu, filtr zdarzeń,
 - `daemon/tests/test_docker_monitor.py` — `DockerMonitor` w pętli Qt na atrapie: zdarzenie → `Changed`, zdarzenia `exec_*` bez odświeżenia, seria zdarzeń w jednym odświeżeniu, zerwany strumień i ponowne połączenie, odpytywanie bez Dockera aż się pojawi, zniknięcie Dockera, pamięć `Stats`/`Disk` (bez wyniku sprzed akcji), odświeżenie bez zmiany bez `Changed`, zadania `Prune`/`GroupAction` z `actionFinished` i odmowa bez zadania, karty z logami i powłoką (argv z ID i `-H` w pliku zadania, osobny katalog każdej karty — dwa szybkie `OpenShell` nie zamieniają się kontenerami, `workdir` w katalogu domowym, wycofanie przy nieudanej Konsoli), akcja czekająca w zajętej puli dostaje odmowę na czas,
 - `daemon/tests/test_docker_dbus.py` — `/Docker` na prywatnej magistrali z prawdziwą usługą i atrapą Engine API: introspekcja, `Snapshot`, sygnał `Changed` po zdarzeniu, akcje z dokładnymi wywołaniami, zadania `GroupAction` i `Prune` z sygnałem `ActionFinished` (tylko wskazana kategoria, odmowy bez zadania i bez wywołań), `Logs`, `Stats`, `Disk`, `OpenLogs`/`OpenShell` aż do atrapy `docker` uruchomionej przez `launch.py` w atrapie Konsoli (w katalogu domowym), niedostępny socket, `--no-docker`. Testy nigdy nie dotykają prawdziwego Dockera: `daemon/tests/__init__.py` i usługi w testach (`privatebus.py`) dostają nieistniejący `DOCKER_HOST`,
+- `daemon/tests/test_models_core.py` — modele lokalne bez Qt na atrapie serwera HTTP w wątku testu: `models.json` (bez pliku, przykład z planu, dwukropki w nazwach modeli i podział tylko przy znanym punkcie, `default` dla ról bez punktu, kontekst ról, zepsuty plik, pominięte punkty i role z ostrzeżeniami, token z `~` jako `Authorization: Bearer` i nigdzie poza nagłówkiem, dane logowania w adresie), klient Ollamy (polecenie systemowe, schemat w `format`, `num_ctx`, `think: false` i ponowienie bez niego, inne 400 bez ponowienia, 404/500/502, nieczytelna i pusta odpowiedź, zamknięty port, limit czasu, `$http_proxy` pomijany, ustawienia czytane przy każdym wywołaniu) i serwera `openai` (`response_format` ze schematem, bez `num_ctx`), stan obu rodzajów (wersja, modele, część na karcie, role `installed`/`available`, tylko GET, serwer niedostępny, wiszący i padający po `/api/version`). Prawdziwej Ollamy testy nie pytają,
+- `daemon/tests/test_models_dbus.py` — `/Models` na prywatnej magistrali z atrapą Ollamy i własnym `models.json`: `Status()` (punkt działający z tokenem i niedziałający), `Changed` tylko po zmianie (załadowany model), `Refresh()` po zmianie ustawień bez restartu, token tylko w nagłówku, introspekcja, `--no-models`, `--print-models` (tylko GET, niczego nie zapisuje). Usługi w testach dostają `models.json` z zamkniętym portem (`privatebus.py`), więc nigdy nie pytają Ollamy z pulpitu,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
 Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawierają prawdziwych rozmów.
