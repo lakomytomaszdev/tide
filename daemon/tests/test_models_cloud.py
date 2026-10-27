@@ -49,6 +49,18 @@ class CloudConfigTest(unittest.TestCase):
         self.assertEqual(str(ctx.exception), f"Model lokalny niedostępny: {REFUSAL}")
         self.assertIn(f"rola „summary”: {REFUSAL} — rola niedostępna", cfg.warnings)
 
+    def test_token_file_must_be_absolute(self):
+        cfg = models_config.from_dict({"endpoints": {
+            "rel": {"url": "http://a:1", "tokenFile": "tokens/a"},
+            "dot": {"url": "http://b:1", "tokenFile": "./b.token"},
+            "home": {"url": "http://c:1", "tokenFile": "~/.config/tide/c.token"},
+            "abs": {"url": "http://d:1", "tokenFile": "/etc/tide/d.token"}}})
+        self.assertEqual(sorted(cfg.endpoints), ["abs", "home"])
+        self.assertEqual(cfg.endpoints["home"].token_file, os.path.expanduser("~/.config/tide/c.token"))
+        for name in ("rel", "dot"):
+            self.assertIn(f"serwer „{name}”: tokenFile musi być ścieżką bezwzględną (albo zaczynać się od ~) — "
+                          f"pominięty", cfg.warnings)
+
 
 class CloudCallTest(unittest.TestCase):
     """Nic nie wychodzi do serwera: ani z roli, ani z jawnego modelu, ani z raportu i kart."""

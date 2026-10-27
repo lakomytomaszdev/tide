@@ -213,6 +213,10 @@ def _endpoint(name, value, warnings) -> Endpoint | None:
     if not isinstance(token_file, str):
         warnings.append(f"serwer „{name}”: tokenFile musi być ścieżką — pominięty")
         return None
+    if token_file and not (os.path.isabs(token_file) or token_file.startswith("~")):
+        # Względna ścieżka zależałaby od katalogu, z którego wystartowała usługa — token z cudzego pliku.
+        warnings.append(f"serwer „{name}”: tokenFile musi być ścieżką bezwzględną (albo zaczynać się od ~) — pominięty")
+        return None
     return Endpoint(name, base, kind, os.path.expanduser(token_file) if token_file else "")
 
 
