@@ -34,8 +34,8 @@ from .frontmatter import Document, FrontmatterError
 from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
 from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, COLUMNS, DEFAULT_COLUMN, DEFAULT_MODE,
-                    DEFAULT_TOOL, DESCRIPTION_MAX, FIELD_MAX, FILE_MAX, MANUAL_COLUMNS, MODES, NAME_MAX, NOTE_MAX,
-                    PASTELS, RESERVED_CARD_KEYS, SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
+                    DEFAULT_TOOL, DESCRIPTION_MAX, FIELD_MAX, FILE_MAX, LAUNCH_KEYS, MANUAL_COLUMNS, MODES, NAME_MAX,
+                    NOTE_MAX, PASTELS, PATH_MAX, RESERVED_CARD_KEYS, SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
                     TOOLS, BoardError, Card, Project, Tag, card_num, default_ai_docs, fallback_color, merge_tags,
                     order_value, parse_card, parse_project, parse_tag, slugify, split_tags)
 
@@ -67,7 +67,7 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 - `flows/<tryb>.md` — szablony poleceń trybów full, light i spec,
 - `docs/<projekt>/` — plany i specyfikacje agentów projektów z `ai-docs: tide`.
 """
-CARD_FIELDS = ("title", "description", "project", "repo", "tags", "note", *RESERVED_CARD_KEYS)
+CARD_FIELDS = ("title", "description", "project", "repo", "tags", "note", *RESERVED_CARD_KEYS, *LAUNCH_KEYS)
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "description")
 TAG_FIELDS = ("name", "newName", "color", "description")
@@ -216,35 +216,108 @@ class BoardStore:
         return os.path.join(self.root, "docs", project.slug)
 
     def render_flow(self, card_id: str, mode: str = "") -> dict:
-        """Polecenie trybu dla karty (szablon z flows/ albo wbudowany) i dane uruchomienia. Katalog
-        dokumentów w tablicy (`ai-docs: tide`) zakładamy od razu — agent dostaje go przez --add-dir."""
+        """Polecenie trybu dla karty z narzędziem i gałęzią z projektu (RenderFlow)."""
+        return self.render_launch(card_id, {"mode": mode})
+
+    def render_launch(self, card_id: str, request: dict | None = None) -> dict:
+        """Polecenie trybu dla karty (szablon z flows/ albo wbudowany) i dane uruchomienia.
+
+        request: {mode, tool, branch} — wszystko opcjonalne; pusty tryb i narzędzie to domyślne
+        projektu, pusta gałąź — `branch` karty albo propozycja `<narzędzie>/k-12-<opis>`.
+        Katalog dokumentów w tablicy (`ai-docs: tide`) zakładamy od razu — agent dostaje go przez
+        --add-dir. Szablon `flows/<tryb>.md`, który jest nietkniętym dawnym zaczynem, zastępuje
+        wbudowana treść (migrate_flows podmieni plik przy najbliższej okazji)."""
+        data = _fields(request or {}, ("mode", "tool", "branch"))
         board = self.load()
         card = self._card(board, card_num(card_id))
         project = board.projects.get(card.project)
-        mode = (mode or "").strip().lower() or (project.mode if project else DEFAULT_MODE)
+        mode = _text(data.get("mode"), "mode").strip().lower() or (project.mode if project else DEFAULT_MODE)
         if mode not in MODES:
             raise BoardError(f"nieznany tryb „{mode}” (full, light, spec)")
-        tool = project.tool if project else DEFAULT_TOOL
-        branch = card.branch or suggest_branch(card, tool)
+        tool = _text(data.get("tool"), "tool").strip().lower() or (project.tool if project else DEFAULT_TOOL)
+        if tool not in TOOLS:
+            raise BoardError(f"nieznane narzędzie „{tool}” (claude, codex)")
+        branch = _line(data.get("branch"), FIELD_MAX, "branch") or card.branch or suggest_branch(card, tool)
         template, source = None, "builtin"
         candidates = ([os.path.join("flows", project.slug, f"{mode}.md")] if project else []) + \
             [os.path.join("flows", f"{mode}.md")]
         for rel in candidates:
             text = self._read_file(rel, [])
             if text is not None:
+                if rel == candidates[-1] and flows.outdated(mode, text):
+                    break  # dawny zaczyn — wbudowana treść
                 template, source = text, os.path.join(self.root, rel)
                 break
         if template is None:
             template = flows.SEED_FLOWS[mode]
         docs = self.docs_dir(project)
-        if _inside(docs, self.root):
+        in_board = _inside(docs, self.root)
+        if in_board:
             os.makedirs(docs, exist_ok=True)  # pusty katalog nie trafia do gita; pliki agenta zbierze sync
+        ai_docs = project.ai_docs if project else "tide"
+        # Agent w worktree pisze w docs/agents swojego katalogu roboczego (plan idzie z pracą na gałęzi),
+        # a w tablicy — pod ścieżką bezwzględną, którą dostaje przez --add-dir.
+        docs_ref = docs if in_board else os.path.join("docs", "agents")
+        if in_board:
+            docs_note = (f"plany i specyfikacje zapisujesz w {docs} — to repozytorium tablicy Tide (masz do niego "
+                         "dostęp przez --add-dir). Niczego tam nie commituj ani nie dodawaj do gita: te pliki "
+                         "commituje usługa Tide. Do repozytorium projektu nie trafia żaden plan ani specyfikacja.")
+        else:
+            docs_note = ("plany i specyfikacje zapisujesz w docs/agents/ w swoim katalogu roboczym (repozytorium "
+                         "projektu); plan commitujesz razem z pracą albo osobnym commitem `docs(plan): …`, "
+                         "jak mówi standard.")
         values = {"card_id": card.id, "title": card.title, "description": card.description.strip(),
                   "project": project.name if project else "", "repo": project.repo if project else "",
-                  "docs_dir": docs, "branch": branch}
+                  "docs_dir": docs_ref, "branch": branch if mode != "spec" else "bez gałęzi — katalog projektu",
+                  "tool": tool, "docs_note": docs_note, "spec": card.spec or "brak (zaczynasz od zera)",
+                  "spec_file": os.path.join(docs_ref, "specs", spec_name(card))}
         return {"ok": True, "id": card.id, "mode": mode, "tool": tool, "branch": branch, "docsDir": docs,
-                "aiDocs": project.ai_docs if project else "tide", "repo": values["repo"],
-                "project": card.project, "template": source, "text": flows.render(template, values)}
+                "aiDocs": ai_docs, "repo": values["repo"], "repoMissing": bool(project and project.repo_missing),
+                "project": card.project, "projectName": values["project"], "template": source,
+                "specFile": os.path.join(docs, "specs", spec_name(card)), "text": flows.render(template, values)}
+
+    def migrate_flows(self) -> list[str]:
+        """Podmienia w flows/ szablony trybów, które są nietkniętymi dawnymi zaczynami (flows.PREVIOUS_SEEDS),
+        na obecne — jednym commitem „flows: update templates”. Zmienionych przez użytkownika, nadpisań
+        projektów i brakujących plików nie dotyka. Zwraca zmienione ścieżki względne."""
+        if not self.exists() or not self.repo.initialized() or self.repo.busy():
+            return []
+        writes = []
+        for mode in MODES:
+            rel = os.path.join("flows", f"{mode}.md")
+            if flows.outdated(mode, self._read_file(rel, [])):
+                writes.append((rel, flows.SEED_FLOWS[mode]))
+        if not writes:
+            return []
+        paths = [self._write(rel, text) for rel, text in writes]
+        self.repo.commit("flows: update templates", paths)
+        return paths
+
+    def mark_ready_specs(self) -> list[str]:
+        """Karty uruchomione w trybie „tylko spec” (mode: spec, w Do zrobienia, bez `spec`), których
+        specyfikacja ma już `status: gotowa`: `spec` dostaje ścieżkę pliku, a karta wraca na górę
+        Backlogu — jednym commitem „K-12: specification ready”. Zwraca ID oznaczonych kart."""
+        if not self.exists() or not self.repo.initialized() or self.repo.busy():
+            return []
+        board = self.load()
+        done = []
+        for card in sorted(board.cards.values(), key=lambda c: c.num):
+            if card.mode != "spec" or card.column != "todo" or card.spec:
+                continue
+            path = find_ready_spec(self.docs_dir(board.projects.get(card.project)), card.id)
+            if not path:
+                continue
+            num = card.num
+
+            def planner(fresh: Board, num=num, path=path) -> Change:
+                return self._plan_spec_ready(fresh, num, path)
+            try:
+                self._execute(planner)
+            except BoardError as exc:  # np. plik karty zepsuty w międzyczasie — następnym razem
+                print(f"tide-daemon: tablica: specyfikacja {card.id}: {exc}", flush=True)
+                continue
+            done.append(card.id)
+        return done
 
     # --- zapis ---------------------------------------------------------------------------------
     #
@@ -348,6 +421,9 @@ class BoardStore:
             values[key] = v.get(key, "")
         for key in CARD_KEYS:
             doc.set(key, values[key])
+        for key in LAUNCH_KEYS:  # tylko ustawione — karta bez uruchomienia ich nie ma
+            if v.get(key):
+                doc.set(key, v[key])
         doc.body = v.get("description", "")
         writes = [(os.path.join("cards", f"{CARD_PREFIX}{num}.md"), doc.text())]
         if board.meta is not None:
@@ -364,8 +440,8 @@ class BoardStore:
         changed = []
         if "project" in v or "repo" in v:
             changed += _doc_set(card.doc, "project", self._project_slug(board, v, change))
-        for key in ("title", "tags", "note", *RESERVED_CARD_KEYS):
-            if key in v:
+        for key in ("title", "tags", "note", *RESERVED_CARD_KEYS, *LAUNCH_KEYS):
+            if key in v and (v[key] or card.doc.has(key) or key not in LAUNCH_KEYS):
                 changed += _doc_set(card.doc, key, ", ".join(v[key]) if key == "tags" else v[key])
         if "description" in v and v["description"].strip() != card.doc.body.strip():
             card.doc.body = v["description"]
@@ -420,6 +496,19 @@ class BoardStore:
         verb = f"move to {column}" if moved_column else f"reorder in {column}"
         change.commits.append((f"{card.id}: {verb}", writes))
         change.result["changed"] = True
+        return change
+
+    def _plan_spec_ready(self, board: Board, num: int, path: str) -> Change:
+        card = self._card(board, num)
+        if card.spec or card.column != "todo":
+            return Change(result={"ok": True, "id": card.id, "changed": False})
+        backlog = board.column_cards("backlog", skip=card.num)
+        card.doc.set("spec", path)
+        card.doc.set("column", "backlog")
+        card.doc.set("order", order_value((backlog[0].order - ORDER_STEP) if backlog else ORDER_STEP))
+        card.doc.set("updated", self._now())
+        change = Change(result={"ok": True, "id": card.id, "changed": True})
+        change.commits.append((f"{card.id}: specification ready", [(_rel(self.root, card.path), card.doc.text())]))
         return change
 
     def _plan_project(self, board: Board, v: dict) -> Change:
@@ -694,6 +783,47 @@ def suggest_branch(card: Card, tool: str) -> str:
     return f"{tool or DEFAULT_TOOL}/{card.id.lower()}-{slug_from_prompt(card.title, words=4, length=32)}"
 
 
+def spec_name(card: Card) -> str:
+    """Proponowana nazwa pliku specyfikacji: `k-12-<opis-z-tytułu>.md` (po ID karty ją rozpoznajemy)."""
+    return f"{card.id.lower()}-{slug_from_prompt(card.title, words=4, length=32)}.md"
+
+
+SPEC_READY = ("gotowa", "gotowy", "ready", "done")
+SPEC_FILES = 400
+
+
+def find_ready_spec(docs_dir: str, card_id: str) -> str:
+    """Gotowa specyfikacja karty w `<docs_dir>/specs/`: plik Markdown, którego nazwa zaczyna się od ID
+    karty (`k-12.md`, `k-12-…`) albo frontmatter ma `card: K-12`, ze `status: gotowa` (także gotowy,
+    ready, done). Czytamy najwyżej SPEC_FILES plików po 64 KB. Brak — pusty napis."""
+    folder = os.path.join(docs_dir, "specs")
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.lower().endswith(".md"))[:SPEC_FILES]
+    except OSError:
+        return ""
+    key = card_id.lower()
+    for name in names:
+        path = os.path.join(folder, name)
+        stem = name[:-3].lower()
+        by_name = stem == key or stem.startswith(key + "-") or stem.startswith(key + "_")
+        try:
+            if not os.path.isfile(path):
+                continue
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                head = fh.read(64 * 1024)
+        except OSError:
+            continue
+        try:
+            doc = Document.parse(head)
+        except FrontmatterError:
+            continue
+        if not by_name and doc.get("card").strip().lower() != key:
+            continue
+        if doc.get("status").strip().lower() in SPEC_READY:
+            return path
+    return ""
+
+
 def _card_json(card: Card, project: Project | None, resolved: list, derived) -> dict:
     return {
         "id": card.id, "num": card.num, "title": card.title, "project": card.project,
@@ -703,7 +833,9 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived) -> 
         "boardColumn": (derived or {}).get("column") or card.column,
         "order": card.order, "note": card.note, "created": card.created, "createdTs": parse_ts(card.created),
         "updated": card.updated, "updatedTs": parse_ts(card.updated), "youtrack": card.youtrack,
-        "spec": card.spec, "session": card.session, "branch": card.branch, "description": card.description,
+        "spec": card.spec, "session": card.session, "branch": card.branch, "mode": card.mode, "tool": card.tool,
+        "worktree": card.worktree, "launched": card.launched, "launchedTs": parse_ts(card.launched),
+        "description": card.description,
         "derived": derived, "path": card.path,
     }
 
@@ -825,7 +957,21 @@ def _card_values(data: dict, create: bool = False) -> dict:
         out["note"] = _line(data["note"], NOTE_MAX, "notatka")
     for key in RESERVED_CARD_KEYS:
         if key in data:
-            out[key] = _line(data[key], FIELD_MAX, key)
+            out[key] = _line(data[key], PATH_MAX if key == "spec" else FIELD_MAX, key)
+    if "mode" in data:
+        out["mode"] = _enum(data["mode"], ("", *MODES), "mode") if _text(data["mode"], "mode").strip() else ""
+    if "tool" in data:
+        out["tool"] = _enum(data["tool"], ("", *TOOLS), "tool") if _text(data["tool"], "tool").strip() else ""
+    if "worktree" in data:
+        worktree = _line(data["worktree"], PATH_MAX, "worktree")
+        if worktree and not os.path.isabs(worktree):
+            raise BoardError(f"worktree musi być ścieżką bezwzględną („{worktree}”)")
+        out["worktree"] = os.path.normpath(worktree) if worktree else ""
+    if "launched" in data:
+        launched = _line(data["launched"], FIELD_MAX, "launched")
+        if launched and not parse_ts(launched):
+            raise BoardError(f"launched musi być czasem ISO 8601 („{launched}”)")
+        out["launched"] = launched
     if "description" in data:
         out["description"] = _body(data["description"])
     if "project" in data:

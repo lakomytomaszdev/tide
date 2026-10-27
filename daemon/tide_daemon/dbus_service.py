@@ -31,7 +31,7 @@ Obiekt /Tasks, interfejs org.tide.Daemon.Tasks (nowe zadanie dla agenta):
                              Konsole, katalog zrzutów i limity,
 - SuggestBranch(s repoPath, s tool, s prompt) -> s
                              JSON {ok, branch, path, base}: gałąź z polecenia (naming.py) i katalog worktree,
-- Start(s request) -> s      JSON prośby {repoPath, tool, prompt, newWorktree, branch, images} → wynik
+- Start(s request) -> s      JSON prośby {repoPath, tool, prompt, newWorktree, branch, images, addDirs} → wynik
                              {ok, error, message, cwd, branch, worktree, title, mode}; worktree od gałęzi
                              głównej, karta Konsoli z agentem; przy błędzie nic nie zostaje (odpowiedź po starcie),
 - ShowDialog() -> b          otwiera okno „Nowe zadanie” (False, gdy nie jest zainstalowane).
@@ -86,9 +86,11 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
 - UpsertProject(s json) -> s nowy albo zmieniony projekt → {ok, slug, changed, commitError},
 - UpsertTag(s json) -> s     nowy albo zmieniony tag (także newName — zmiana nazwy w kartach) → {ok, name, changed, commitError},
 - RenderFlow(s id, s mode) -> s  polecenie trybu dla karty: {ok, text, mode, tool, branch, docsDir, …},
+- RenderLaunch(s id, s json) -> s  to samo z wyborem z okna „Co ma zrobić agent?”: {mode, tool, branch},
 - Badge() -> s               plakietka widoku Tablica w oknie Tide: JSON {text, tone} („● N” czeka, inaczej
                              liczba kart w grze; pusty tekst — ukryta),
-- ShowWindow(s id) -> b      okno Tide na widoku Tablica, z ID karty (K-12) od razu na niej (False, gdy okna nie ma),
+- ShowWindow(s id) -> b      okno Tide na widoku Tablica, z ID karty (K-12) od razu na niej, z launch:K-12 — także
+                             z oknem „Co ma zrobić agent?” (False, gdy okna nie ma),
 - sygnał Changed()           tablica się zmieniła (nasz zapis albo zmiana z zewnątrz).
 Każda zmiana to commit w repozytorium tablicy (nieudany commit: ok z opisem w commitError, commit
 czeka); błąd to JSON {ok: false, error: <kod>, message: <tekst po polsku>} jak w /Tasks — dane
@@ -335,6 +337,11 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
   <method name="RenderFlow">
     <arg name="id" type="s" direction="in"/>
     <arg name="mode" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="RenderLaunch">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
   <method name="Badge"><arg name="json" type="s" direction="out"/></method>
@@ -650,6 +657,10 @@ class BoardAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(str, str, result=str)
     def RenderFlow(self, card_id: str, mode: str) -> str:
         return self.monitor.render_flow(card_id, mode)
+
+    @pyqtSlot(str, str, result=str)
+    def RenderLaunch(self, card_id: str, request: str) -> str:
+        return self.monitor.render_launch(card_id, request)
 
     @pyqtSlot(result=str)
     def Badge(self) -> str:

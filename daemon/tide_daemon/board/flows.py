@@ -3,18 +3,34 @@
 Szablon to `flows/<tryb>.md` w tablicy, a dla jednego projektu można go nadpisać plikiem
 `flows/<projekt>/<tryb>.md`. Frontmatter szablonu (opcjonalny) nie trafia do polecenia.
 Zastępujemy wyłącznie znane pola w klamrach (PLACEHOLDERS) — inne klamry, np. przykład JSON
-w szablonie, zostają bez zmian.
+w szablonie, zostają bez zmian, a wartości pól (np. opis karty) nie są już szablonem.
 
-Treść poniżej to tylko zaczyn: prawdziwe polecenia trybów dopisze PT-4. Gdy tablicy jeszcze
-nie ma, wypełniamy te same szablony z kodu.
+Pola: card_id, title, description, project, repo, branch (w trybie spec — „bez gałęzi”), tool
+(claude albo codex — do `coordinator:` w planie), docs_dir (gdzie agent pisze plany i specyfikacje:
+docs/agents w katalogu roboczym albo katalog w tablicy), docs_note (jedno zdanie, kto commituje te
+pliki), spec (istniejąca specyfikacja karty albo „brak”), spec_file (proponowana ścieżka specyfikacji
+— nazwa zaczyna się od ID karty, po niej usługa rozpoznaje gotową specyfikację).
+
+Treści trybów prowadzą agenta przez nasz przepływ pracy: grilling (skill `grilling` w Claude Code,
+w Codeksie to samo opisane słowami), specyfikacja, plan według standardu planu 1.1 z kluczem
+`card:`, tickety z numerami według zasad projektu, TDD (skill `tdd`), review i pytania z ID ticketu.
+
+Migracja: nowa tablica dostaje SEED_FLOWS, a tablica założona wcześniej ma w `flows/` dawne zaczyny.
+Plik zastępujemy tylko wtedy, gdy jego treść jest bajt w bajt równa jednemu ze znanych dawnych
+zaczynów (PREVIOUS_SEEDS: skróty SHA-256) — szablonu zmienionego przez użytkownika nie ruszamy.
 """
+import hashlib
 import re
 
 from .frontmatter import Document, FrontmatterError
 from .model import MODES
 
-PLACEHOLDERS = ("card_id", "title", "description", "project", "repo", "docs_dir", "branch")
+PLACEHOLDERS = ("card_id", "title", "description", "project", "repo", "docs_dir", "branch", "tool",
+                "docs_note", "spec", "spec_file")
 _FIELD = re.compile(r"\{(" + "|".join(PLACEHOLDERS) + r")\}")
+
+STANDARD = "~/DevWorkspace/plasma-tide/docs/agent-plan-standard.md"
+TOOLS_MAKE = "make -C ~/DevWorkspace/plasma-tide"
 
 _COMMON = """Karta {card_id}: {title}
 Projekt: {project}
@@ -27,38 +43,122 @@ Opis karty:
 {description}
 """
 
+_SPEC_FRONTMATTER = """   ---
+   card: {card_id}
+   status: szkic
+   ---"""
+
+_TICKETS = f"""Prefiks i numery ticketów bierz z zasad projektu: CLAUDE.md albo AGENTS.md w repozytorium,
+   sekcja „Plan pracy agentów (Tide)” (tracker, prefiks, sposób nadawania numerów). Nowy numer lokalny
+   bierzesz wyłącznie z `{TOOLS_MAKE} next-id REPO={{repo}} TITLE="…"`. Jeśli projekt nie ma takich zasad:
+   `tracker: local`, własny krótki prefiks wielkimi literami zapisany w planie (`ticket-prefix`), numery
+   przez `{TOOLS_MAKE} next-id REPO={{repo}} PREFIX=<prefiks> TITLE="…"`. Przed nadaniem numerów uruchom
+   `{TOOLS_MAKE} check-plans` — kod wyjścia 1 to kolizja: zatrzymaj się i zapytaj mnie."""
+
+_PLAN = f"""Plan zakładasz według standardu Tide ({STANDARD}, wersja 1.1)
+   w `{{docs_dir}}/plans/RRRR-MM-DD-<slug>.md`: frontmatter z `tide-plan: 1`, `card: {{card_id}}`,
+   `coordinator: {{tool}}`, `status: active`, `updated` i tabela
+   `| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |`. Klucz `card` łączy plan z kartą na tablicy Tide."""
+
 SEED_FLOWS = {
     "full": """---
-tide-flow: 1
+tide-flow: 2
 mode: full
 ---
 """ + _COMMON + """
-Tryb pełny: dopytaj o wymagania, napisz specyfikację, rozpisz tickety w planie, zaimplementuj je
-przez TDD i zleć review. Plan zakładasz z kluczem `card: {card_id}`.
+Tryb „Pełny flow”: grilling → specyfikacja → plan z ticketami → implementacja przez TDD → review.
+Jesteś koordynatorem tej karty: dzielisz pracę na tickety, zlecasz je podagentom i prowadzisz plan.
 
-(Szablon tymczasowy — pełną treść dopisze PT-4.)
+Dokumenty AI: {docs_note}
+Istniejąca specyfikacja karty: {spec}
+
+1. Grilling. Zanim cokolwiek zaplanujesz, przepytaj mnie o wymagania. Użyj skilla `grilling`, jeśli go
+   masz (Claude Code). Jeśli nie (Codex) — zrób to samo słowami: pytaj po kolei, po jedno–trzy pytania
+   naraz, aż znasz cel, zakres, przypadki brzegowe, kryteria akceptacji i to, czego NIE robimy. Nie
+   zgaduj. Gdy specyfikacja już jest, przeczytaj ją i pytaj tylko o luki.
+2. Specyfikacja. Zapisz ją po polsku w `{spec_file}` z frontmatterem:
+""" + _SPEC_FRONTMATTER + """
+   Treść: cel, zakres, poza zakresem, kryteria akceptacji, decyzje z grillingu, ryzyka. Pokaż mi ją;
+   po mojej akceptacji zmień `status: szkic` na `status: gotowa`.
+3. Plan. """ + _PLAN + """
+   """ + _TICKETS + """
+4. Implementacja ticket po tickecie przez TDD: najpierw test, który nie przechodzi, potem kod, potem
+   porządki (skill `tdd`, jeśli go masz). Praca idzie na gałęzi {branch}; gałąź podagenta zawiera ID
+   ticketu małymi literami.
+5. Delegowanie i review według standardu: opis podagenta zaczyna się od ID ticketu
+   (`<PREFIKS>-7: implement …`, `<PREFIKS>-7: review`); każdy ticket przechodzi review z liczbami
+   BLOCKER / MAJOR / NIT i werdyktem, a po BLOCKER albo MAJOR — poprawki i ponowne sprawdzenie.
+   Tabelę planu i `updated` aktualizuj przy każdym delegowaniu, wyniku, review i pytaniu do mnie.
+6. Każde pytanie do mnie zaczynaj od ID ticketu (`<PREFIKS>-7: …?`) — Tide pokaże je na tablicy.
+7. Na koniec: tickety `gotowe`, plan `status: done` i krótkie podsumowanie, co jest zrobione i co mam
+   sprawdzić. Bez scalania do gałęzi głównej i bez push, dopóki o to nie poproszę.
 """,
     "light": """---
-tide-flow: 1
+tide-flow: 2
 mode: light
 ---
 """ + _COMMON + """
-Tryb lekki: krótka specyfikacja i jeden–kilka ticketów w planie z kluczem `card: {card_id}`,
-potem praca.
+Tryb „Lekki”: krótka specyfikacja, plan z 1–3 ticketami, praca i review. Pytaj tylko przy realnej
+wątpliwości — resztę rozstrzygnij sam i zapisz w specyfikacji.
 
-(Szablon tymczasowy — pełną treść dopisze PT-4.)
+Dokumenty AI: {docs_note}
+Istniejąca specyfikacja karty: {spec}
+
+1. Krótka specyfikacja (kilka akapitów: cel, zakres, kryteria akceptacji, decyzje) w `{spec_file}`
+   z frontmatterem:
+""" + _SPEC_FRONTMATTER + """
+   Gdy jest kompletna, zmień `status: szkic` na `status: gotowa`.
+2. Plan z 1–3 ticketami. """ + _PLAN + """
+   """ + _TICKETS + """
+3. Implementacja przez TDD (skill `tdd`, jeśli go masz) na gałęzi {branch}; gałąź podagenta zawiera
+   ID ticketu małymi literami, a jego opis zaczyna się od ID ticketu.
+4. Review: każdy ticket (przy małej zmianie wystarczy jedno review całości) z liczbami
+   BLOCKER / MAJOR / NIT; poprawki po BLOCKER albo MAJOR. Tabelę planu i `updated` aktualizuj
+   na bieżąco, pytania do mnie zaczynaj od ID ticketu.
+5. Na koniec: tickety `gotowe`, plan `status: done`, krótkie podsumowanie. Bez scalania i bez push,
+   dopóki o to nie poproszę.
 """,
     "spec": """---
-tide-flow: 1
+tide-flow: 2
 mode: spec
 ---
 """ + _COMMON + """
-Tryb „tylko spec”: dopytaj i napisz specyfikację, bez zmian w kodzie. Specyfikację zapisz
-w {docs_dir}.
+Tryb „Tylko specyfikacja”: dopytujesz i piszesz specyfikację — nic więcej. Bez zmian w kodzie, bez
+gałęzi i worktree, bez planu i ticketów, bez commitów.
 
-(Szablon tymczasowy — pełną treść dopisze PT-4.)
+Dokumenty AI: {docs_note} W tym trybie nie commitujesz niczego — plik specyfikacji zostaje do
+mojej decyzji.
+Istniejąca specyfikacja karty: {spec}
+
+1. Rozejrzyj się w kodzie i dokumentacji projektu tylko do odczytu, żeby pytać konkretnie.
+2. Grilling: użyj skilla `grilling`, jeśli go masz (Claude Code). Jeśli nie (Codex) — przepytaj mnie
+   słowami: po jedno–trzy pytania naraz, aż znasz cel, zakres, przypadki brzegowe, kryteria akceptacji
+   i to, czego NIE robimy. Nie zgaduj.
+3. Zapisz specyfikację po polsku w `{spec_file}` z frontmatterem:
+""" + _SPEC_FRONTMATTER + """
+   Treść: cel, zakres, poza zakresem, kryteria akceptacji, decyzje z rozmowy, otwarte pytania, ryzyka
+   i propozycja podziału na kroki (bez numerów ticketów).
+4. Gdy zaakceptuję specyfikację, zmień `status: szkic` na `status: gotowa` — wtedy Tide oznaczy kartę
+   „specyfikacja gotowa” i odłoży ją do Backlogu.
+5. Napisz mi, że specyfikacja jest gotowa i gdzie leży. Nie implementuj.
 """,
 }
+
+# Dawne zaczyny z flows/ (PT-1) — skróty SHA-256 treści zapisanej przy zakładaniu tablicy.
+PREVIOUS_SEEDS = {
+    "full": {"50e7022ef834891b46ef499318146a3ee322b0ce11015f83474ffdae54666e7a"},
+    "light": {"6476221fe489d549b497b19cb77bba3c72590e904448e7b13eec2354228f4913"},
+    "spec": {"7e01493f02a65ba87bc4bc944c85d3170452a1be96ebf8d745e95b548ddb15e3"},
+}
+
+
+def digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def outdated(mode: str, text: str | None) -> bool:
+    """Czy plik szablonu to nietknięty dawny zaczyn (wolno go zastąpić nową treścią)."""
+    return text is not None and digest(text) in PREVIOUS_SEEDS.get(mode, ())
 
 
 def body_of(text: str) -> str:
@@ -75,3 +175,4 @@ def render(template: str, values: dict) -> str:
 
 
 assert set(SEED_FLOWS) == set(MODES)
+assert not any(outdated(mode, text) for mode, text in SEED_FLOWS.items())

@@ -46,6 +46,9 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 CARD_KEYS = ("id", "title", "project", "tags", "column", "order", "note", "created", "updated",
              "youtrack", "spec", "session", "branch")
 RESERVED_CARD_KEYS = ("youtrack", "spec", "session", "branch")  # wypełnią PT-4, PT-5, PT-7
+# Ostatnie uruchomienie agenta z karty (PT-4): tryb, narzędzie, katalog worktree i chwila startu.
+# W nowych plikach tylko wtedy, gdy są ustawione (karta bez uruchomienia ich nie ma).
+LAUNCH_KEYS = ("mode", "tool", "worktree", "launched")
 PROJECT_KEYS = ("name", "repo", "tags", "ai-docs", "tool", "mode")
 TAG_KEYS = ("name", "color")
 
@@ -53,7 +56,8 @@ TITLE_MAX = 200
 NOTE_MAX = 300
 TAG_MAX = 40
 NAME_MAX = 80
-FIELD_MAX = 200          # youtrack, spec, session, branch
+FIELD_MAX = 200          # youtrack, session, branch
+PATH_MAX = 1024          # spec, worktree (ścieżki)
 DESCRIPTION_MAX = 64 * 1024
 FILE_MAX = 256 * 1024    # większych plików nie czytamy (błąd w migawce)
 
@@ -115,6 +119,10 @@ class Card:
     spec: str = ""
     session: str = ""
     branch: str = ""
+    mode: str = ""
+    tool: str = ""
+    worktree: str = ""
+    launched: str = ""
     description: str = ""
     path: str = ""
     doc: Document | None = None
@@ -212,6 +220,10 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.updated = doc.get("updated").strip()
     for key in RESERVED_CARD_KEYS:
         setattr(card, key, doc.get(key).strip())
+    card.mode = _choice(doc.get("mode"), MODES, "", f"{name}: nieznany tryb uruchomienia", path, errors)
+    card.tool = _choice(doc.get("tool"), TOOLS, "", f"{name}: nieznane narzędzie uruchomienia", path, errors)
+    card.worktree = doc.get("worktree").strip()
+    card.launched = doc.get("launched").strip()
     return card
 
 

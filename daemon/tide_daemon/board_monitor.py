@@ -9,7 +9,11 @@
   dodatkowo co POLL_MS to samo sprawdzenie (zapis w miejscu bez zdarzenia, nowe podkatalogi,
   tablica założona poza usługą).
 - Badge() i ShowWindow(id) to zaczepy okna Tide: plakietka widoku Tablica (ta sama reguła co
-  apps/board/backend.py) i otwarcie okna na widoku Tablica, od razu na karcie.
+  apps/board/backend.py) i otwarcie okna na widoku Tablica, od razu na karcie — także z prośbą
+  o okno „Co ma zrobić agent?” (`launch:K-12`, przycisk „Uruchom” w popupie kafelka),
+- przy starcie dawne zaczyny szablonów trybów w flows/ dostają nową treść (migrate_flows: tylko
+  pliki nietknięte przez użytkownika), a każda synchronizacja sprawdza, czy karty uruchomione
+  w trybie „tylko spec” mają już gotową specyfikację (mark_ready_specs: karta wraca do Backlogu).
 """
 import json
 import os
@@ -17,6 +21,8 @@ import os
 from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 
 from .board.model import CARD_PREFIX, BoardError, card_num
+
+LAUNCH_PREFIX = "launch:"  # ShowWindow("launch:K-12") — okno Tide od razu z „Co ma zrobić agent?”
 
 DEBOUNCE_MS = 2_000
 POLL_MS = 60_000
@@ -43,6 +49,11 @@ class BoardMonitor(QObject):
         self._poll.timeout.connect(self.sync)
 
     def start(self) -> None:
+        try:
+            if self.store.migrate_flows():
+                print("tide-daemon: tablica: szablony trybów zaktualizowane", flush=True)
+        except Exception as exc:  # migracja to wygoda — RenderFlow i tak bierze nową treść
+            print(f"tide-daemon: tablica: szablony trybów: {exc!r}", flush=True)
         self.sync()  # zmiany zrobione, gdy usługa nie działała, też trafiają do historii
         self._poll.start()
 
@@ -75,6 +86,9 @@ class BoardMonitor(QObject):
     def render_flow(self, card_id: str, mode: str) -> str:
         return _reply(lambda: self.store.render_flow(card_id, mode))
 
+    def render_launch(self, card_id: str, request: str) -> str:
+        return _reply(lambda: self.store.render_launch(card_id, _object(request)))
+
     def badge_json(self) -> str:
         """Plakietka widoku Tablica w pasku okna Tide: {"text", "tone"} (pusty tekst — ukryta)."""
         try:
@@ -85,12 +99,17 @@ class BoardMonitor(QObject):
         return json.dumps({"text": text, "tone": tone}, ensure_ascii=False)
 
     def show_window(self, card_id: str = "") -> bool:
-        """Okno Tide na widoku Tablica; z ID karty (K-12) — od razu na niej. Napis, który nie jest
-        ID karty, pomijamy (samo okno). False, gdy okna nie ma (nie zainstalowane)."""
+        """Okno Tide na widoku Tablica; z ID karty (K-12) — od razu na niej, z `launch:K-12` — na niej
+        z oknem „Co ma zrobić agent?”. Napis, który nie jest ID karty, pomijamy (samo okno). False,
+        gdy okna nie ma (nie zainstalowane)."""
+        text = (card_id or "").strip()
+        launch = text.lower().startswith(LAUNCH_PREFIX)
+        if launch:
+            text = text[len(LAUNCH_PREFIX):].strip()
         item = ""
-        if (card_id or "").strip():
+        if text:
             try:
-                item = f"{CARD_PREFIX}{card_num(card_id)}"
+                item = f"{LAUNCH_PREFIX if launch else ''}{CARD_PREFIX}{card_num(text)}"
             except BoardError:
                 item = ""
         return bool(self.launchers and self.launchers.show_view("board", item))
@@ -121,6 +140,11 @@ class BoardMonitor(QObject):
                 print("tide-daemon: tablica: zapisano zmiany z zewnątrz", flush=True)
         except Exception as exc:  # np. zablokowany indeks — spróbujemy przy następnej okazji
             print(f"tide-daemon: tablica: commit zmian z zewnątrz: {exc}", flush=True)
+        try:
+            for card_id in self.store.mark_ready_specs():
+                print(f"tide-daemon: tablica: {card_id}: specyfikacja gotowa", flush=True)
+        except Exception as exc:  # znacznik to dodatek — spróbujemy przy następnej synchronizacji
+            print(f"tide-daemon: tablica: gotowe specyfikacje: {exc!r}", flush=True)
         self._rewatch()
         self.publish()
 

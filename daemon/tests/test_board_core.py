@@ -398,11 +398,11 @@ class FlowTest(BoardCase):
         self.store.upsert_project({"name": "Dom"})
         self.store.create_card({"title": "Grabie", "project": "dom"})
         self.store.update_card("K-1", {"branch": "moja/galaz"})
-        self.write("flows/dom/spec.md", "Spec {card_id} {branch} {nieznane} {docs_dir}\n")
-        flow = self.store.render_flow("k-1", "spec")
-        self.assertEqual(flow["text"], f"Spec K-1 moja/galaz {{nieznane}} {os.path.join(self.root, 'docs', 'dom')}\n")
-        self.assertEqual(self.store.render_flow("K-1", "light")["template"],
-                         os.path.join(self.root, "flows", "light.md"))
+        self.write("flows/dom/light.md", "Lekki {card_id} {branch} {nieznane} {docs_dir}\n")
+        flow = self.store.render_flow("k-1", "light")
+        self.assertEqual(flow["text"], f"Lekki K-1 moja/galaz {{nieznane}} {os.path.join(self.root, 'docs', 'dom')}\n")
+        self.assertEqual(self.store.render_flow("K-1", "spec")["template"],
+                         os.path.join(self.root, "flows", "spec.md"))
         with self.assertRaises(BoardError):
             self.store.render_flow("K-1", "turbo")
         with self.assertRaises(BoardError):
