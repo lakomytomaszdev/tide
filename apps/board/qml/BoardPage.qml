@@ -141,7 +141,9 @@ Rectangle {
             return
         }
         const index = column === "archived" ? 0 : Logic.moveIndex(snapshot, id, column, before)
-        if (!confirming && column === card.column && Logic.storedIndex(snapshot, id) === (index < 0
+        // Bez zmiany tylko wtedy, gdy karta już stoi w tej kolumnie także na ekranie (kolumna wyliczana
+        // z koordynatora przy zapisanym todo to nie „ta sama kolumna”).
+        if (column === Logic.displayColumn(card) && column === card.column && Logic.storedIndex(snapshot, id) === (index < 0
                 ? snapshot.cards.filter(c => c.column === column).length - 1 : index)) return
         const fromBacklog = column === "todo" && card.column === "backlog"
         const origin = fromBacklog ? Logic.storedIndex(snapshot, id) : -1

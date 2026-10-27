@@ -376,6 +376,28 @@ out["dialog"] = js("page.launchOpen")
         self.assertEqual(out["back"], ["MoveCard", "K-7", "todo", -1], "Ctrl+← — do poprawy")
         self.assertFalse(out["dialog"], "odesłanie do poprawy nie pyta o nowego agenta")
 
+    def test_panel_and_drag_move_review_card_back_to_todo(self):
+        # Karta „Do sprawdzenia” ma zapisane todo (K-7): „Do zrobienia” w panelu i przeciągnięcie do Do zrobienia
+        # to odesłanie do poprawy — MoveCard musi pójść, choć zapisana kolumna się nie zmienia.
+        out = self.probe("""
+out["stored"] = js("page.snapshot.cards.find(c => c.id === 'K-7').column")
+click(card("K-7"))
+out["current"] = obj("cardColumn").property("current")
+engine.rootContext().setContextProperty("probeTarget", obj("cardColumn"))
+js("probeTarget.picked('todo')")
+wait(100)
+out["panel"] = calls()[-1] if calls() else None
+set_snapshot(json.loads(backend.snapshotJson))
+key(Qt.Key.Key_Escape)
+n = len(calls())
+drag(card("K-7"), column("todo", fy=0.8))
+out["drag"] = calls()[n] if len(calls()) > n else None
+""")
+        self.assertEqual(out["stored"], "todo")
+        self.assertEqual(out["current"], "review", "panel pokazuje kolumnę z ekranu")
+        self.assertEqual(out["panel"][:3], ["MoveCard", "K-7", "todo"])
+        self.assertEqual(out["drag"][:3], ["MoveCard", "K-7", "todo"])
+
     def test_session_links_open_coordinator_or_session(self):
         data = json.loads(json.dumps(self.data))
         for c in data["cards"]:
@@ -625,6 +647,41 @@ out["repo"] = calls()[-1]
 
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class LaunchMarkStoreTest(unittest.TestCase):
+    """Żądanie UpdateCard po starcie (board.js launchMarkRequest) przyjęte przez prawdziwy BoardStore.
+    Pole `check` dodaje store z PT-5 — bez niego test jest pomijany."""
+
+    def test_mark_request_is_accepted_by_the_store(self):
+        from PyQt6.QtCore import QCoreApplication
+        from PyQt6.QtQml import QJSEngine
+        from tide_daemon.board import store as store_mod
+        from .boardfix import git_env
+        if "check" not in store_mod.CARD_FIELDS:
+            self.skipTest("store bez pola check (PT-5)")
+        QCoreApplication.instance() or QCoreApplication([])
+        engine = QJSEngine()
+        with open(os.path.join(APP_DIR, "qml", "board.js"), encoding="utf-8") as fh:
+            engine.evaluate(fh.read().replace(".pragma library", ""))
+        for result, choice in (({"worktree": "/w/k-1", "branch": "claude/k-1-grabie", "tool": "claude"},
+                                {"mode": "full", "tool": "claude", "check": "manual"}),
+                               ({"worktree": "", "branch": "master", "tool": "codex"},
+                                {"mode": "spec", "tool": "codex", "check": "auto"})):
+            value = engine.evaluate(f"JSON.stringify(launchMarkRequest({json.dumps(result)}, {json.dumps(choice)}, "
+                                    f"isoNow(1793099040000)))")
+            self.assertFalse(value.isError(), value.toString())
+            request = json.loads(value.toString())
+            with tempfile.TemporaryDirectory(prefix="tide-board-mark-") as tmp:
+                from unittest import mock
+                with mock.patch.dict(os.environ, git_env(tmp)):
+                    board = store_mod.BoardStore(os.path.join(tmp, "board"))
+                    board.create_card({"title": "Grabie", "column": "todo"})
+                    self.assertTrue(board.update_card("K-1", request)["ok"])
+                    card = board.snapshot()["cards"][0]
+            self.assertEqual((card["mode"], card["tool"], card["worktree"]), (choice["mode"], choice["tool"], result["worktree"]))
+            self.assertEqual(card["branch"], result["branch"] if result["worktree"] else "")
+            self.assertEqual(card.get("check"), choice["check"])
+
+
 class LaunchTest(ProbeCase):
     """„Co ma zrobić agent?”: otwarcie po przeniesieniu i z przycisku, Anuluj, Tylko przenieś, przebieg
     UpdateCard → RenderLaunch → Start → UpdateCard, tryb spec bez worktree, karta bez projektu, błędy."""
