@@ -195,6 +195,8 @@ class FakeDocker:
 
 
 class _Server(socketserver.ThreadingUnixStreamServer):
+    request_queue_size = 128  # jak duża kolejka dockerd; domyślne 5 nie mieści równoległych `stats`
+
     def handle_error(self, request, client_address):
         # Klient, który zrezygnował (limit czasu w teście), to nie błąd atrapy.
         import sys

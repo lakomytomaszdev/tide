@@ -109,6 +109,48 @@ class UnavailableTest(unittest.TestCase):
         self.assertIn("nie odpowiada", snapshot["error"])
 
 
+class BacklogTest(unittest.TestCase):
+    def test_full_backlog_is_retried_not_failed(self):
+        tmp = tempfile.mkdtemp(prefix="tide-docker-backlog-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = os.path.join(tmp, "zatkany.sock")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(path)
+        server.listen(0)
+        self.addCleanup(server.close)
+        waiting = []
+        for _ in range(4):  # zapchana kolejka: kolejny connect z limitem czasu dostałby od razu EAGAIN
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.setblocking(False)
+            try:
+                s.connect(path)
+            except BlockingIOError:
+                s.close()
+                break
+            waiting.append(s)
+
+        def serve():
+            time.sleep(0.3)
+            for s in waiting:  # zapychacze rezygnują — ich wpisy w kolejce dadzą puste połączenia
+                s.close()
+            while True:
+                try:
+                    conn, _ = server.accept()
+                except OSError:
+                    return
+                data = b""
+                while b"\r\n\r\n" not in data:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                if data:
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                conn.close()
+        threading.Thread(target=serve, daemon=True).start()
+        self.assertEqual(EngineClient(path, timeout=3).request("GET", "/_ping"), (200, b"OK"))
+
+
 class ClientTest(World):
     def test_chunked_and_content_length(self):
         client = EngineClient(self.fake.path)

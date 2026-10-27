@@ -20,6 +20,7 @@ import os
 import socket
 import struct
 import threading
+import time
 from urllib.parse import quote, urlencode
 
 DEFAULT_SOCKET = "/var/run/docker.sock"
@@ -205,8 +206,18 @@ class EngineClient:
             raise DockerUnavailable("unsupported", self.problem)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(timeout)
+        deadline = time.monotonic() + (timeout or TIMEOUT)
         try:
-            sock.connect(self.path)
+            while True:
+                try:
+                    sock.connect(self.path)
+                    break
+                except BlockingIOError:
+                    # Pełna kolejka połączeń socketu unix: z limitem czasu connect nie czeka, tylko od razu
+                    # zwraca EAGAIN (np. kilkanaście równoległych `stats`). Próbujemy ponownie do limitu.
+                    if time.monotonic() >= deadline:
+                        raise socket.timeout() from None
+                    time.sleep(0.02)
         except FileNotFoundError:
             sock.close()
             raise DockerUnavailable("unavailable", f"Docker nie działa — brak socketu {self.path}") from None
