@@ -35,6 +35,7 @@ import time
 from dataclasses import dataclass, field
 
 from ..agents.timeutil import iso
+from ..board.marker import is_board_repo
 from .disk import disk_usage
 from .git import MAIN_CANDIDATES, Git, parse_status, parse_worktree_list, pick_main_branch
 from .naming import guess_tool, humanize_branch
@@ -132,13 +133,15 @@ class Worktree:
 
 
 def find_repositories(root: str, max_depth: int = MAX_DEPTH) -> list[str]:
-    """Katalogi repozytoriów (z katalogiem .git albo repozytoria bare) pod root."""
+    """Katalogi repozytoriów (z katalogiem .git albo repozytoria bare) pod root — bez repozytorium
+    tablicy Tide (rozpoznanego po znaczniku), więc nie ma go w worktrees, KRunnerze ani nowym zadaniu."""
     found: list[str] = []
 
     def walk(path: str, depth: int) -> None:
         dotgit = os.path.join(path, ".git")
         if os.path.isdir(dotgit) or _is_bare(path):
-            found.append(path)
+            if not is_board_repo(path):  # tablica Tide to dane, nie projekt (board/marker.py)
+                found.append(path)
             return
         if os.path.exists(dotgit):
             return  # plik .git: worktree albo submoduł — znajdziemy go przez główne repozytorium
