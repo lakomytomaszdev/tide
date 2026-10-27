@@ -175,6 +175,63 @@ Window {
                          "pusty tytuł i zapis w toku nic nie wysyłają")
         self.assertIsNone(re.search(QML_PROBLEMS, log), log[-3000:])
 
+    def test_quick_add_offers_workspace_repos_on_an_empty_board(self):
+        # Regresja: na pustej tablicy menu projektu miało tylko „bez projektu”. Jak w oknie — repozytoria
+        # z katalogu projektów zakładają projekt razem z kartą (CreateCard z `repo`).
+        empty = dict(preview.snapshot([], exists=False),
+                     repos=[{"name": "plasma-tide", "path": "/w/plasma-tide", "aiDocs": "repo"},
+                            {"name": "mobileapp", "path": "/w/mobileapp", "aiDocs": "tide"}])
+        made = dict(empty, exists=True, repos=[{"name": "mobileapp", "path": "/w/mobileapp", "aiDocs": "tide"}],
+                    projects=[{"slug": "plasma-tide", "name": "plasma-tide", "repo": "/w/plasma-tide", "tags": []}])
+        with tempfile.TemporaryDirectory(prefix="tide-board-repos-") as tmp:
+            preview.stage_board(tmp)
+            harness = os.path.join(tmp, "Repos.qml")
+            with open(harness, "w", encoding="utf-8") as fh:
+                fh.write("""import QtQuick
+import QtQuick.Window
+import "board/contents/ui" as Board
+import "board/contents/ui/boardtexts.js" as Texts
+Window {
+    width: 460; height: 520; visible: true
+    property var log: []
+    Board.BoardPopup {
+        id: popup
+        width: 420
+        snapshot: %s
+        onAddRequested: (title, project) => log.push("add:" + title + "|" + project)
+        onProjectChosen: slug => { log.push("project:" + slug); quickProject = slug }
+    }
+    Timer {
+        interval: 300; running: true
+        onTriggered: {
+            log.push("menu:" + popup.projectList.map(p => p.kind + "=" + p.name).join(","))
+            popup.projectChosen(popup.projectList[1].slug)
+            log.push("chip:" + Texts.projectName(popup.snapshot, popup.projectSlug))
+            popup.input.text = "Pierwsza karta"
+            popup.submit()
+            log.push("request:" + JSON.stringify(Texts.projectRequest(popup.projectSlug)))
+            popup.snapshot = %s
+            log.push("after:" + popup.projectSlug)
+            console.warn("REPOS " + JSON.stringify(log))
+            Qt.quit()
+        }
+    }
+}
+""" % (json.dumps(empty, ensure_ascii=False), json.dumps(made, ensure_ascii=False)))
+            env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
+            log = subprocess.run(["qml6", harness], env=env, capture_output=True, text=True, timeout=60).stderr
+        match = re.search(r"REPOS (.*)$", log, re.M)
+        self.assertIsNotNone(match, log[-3000:])
+        self.assertEqual(json.loads(match.group(1)), [
+            "menu:none=bez projektu,repo=plasma-tide,repo=mobileapp",
+            "project:repo:/w/plasma-tide",
+            "chip:plasma-tide",
+            "add:Pierwsza karta|repo:/w/plasma-tide",
+            'request:{"repo":"/w/plasma-tide"}',
+            "after:plasma-tide",
+        ], "po założeniu projektu zapamiętane repozytorium wskazuje ten projekt")
+        self.assertIsNone(re.search(QML_PROBLEMS, log), log[-3000:])
+
     def test_sidebar_tile(self):
         side = preview.render_sidebar()
         self.assertEqual((side["title"], side["summary"]), ("Tablica · 11 kart", "2 w toku · 1 czeka · 1 do sprawdzenia"))

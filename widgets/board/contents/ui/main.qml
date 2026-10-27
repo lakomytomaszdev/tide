@@ -33,8 +33,7 @@ PlasmoidItem {
 
     // Szybkie dopisanie: karta trafia na górę Backlogu wybranego projektu.
     function addCard(title, project) {
-        const request = { title: title, column: "backlog" }
-        if (project) request.project = project
+        const request = Object.assign({ title: title, column: "backlog" }, Texts.projectRequest(project))
         busy = true
         source.call("CreateCard", [JSON.stringify(request)], function (value) {
             root.busy = false

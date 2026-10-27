@@ -27,7 +27,7 @@ ColumnLayout {
     readonly property var listing: Texts.rows(snapshot, Texts.MAX_ROWS)
     readonly property var rows: listing.rows
     readonly property var projectList: Texts.projects(snapshot)
-    readonly property string projectSlug: projectList.some(p => p.slug === quickProject) ? quickProject : ""
+    readonly property string projectSlug: Texts.resolveProject(snapshot, quickProject)
     readonly property alias input: input
 
     function submit() {
@@ -356,7 +356,7 @@ ColumnLayout {
                             Text {
                                 anchors.verticalCenter: parent.verticalCenter
                                 x: 10
-                                width: parent.width - 20
+                                width: parent.width - 20 - (newHint.visible ? newHint.width + 8 : 0)
                                 text: option.modelData.name
                                 textFormat: Text.PlainText
                                 color: option.on ? Tide.Tokens.accent
@@ -364,6 +364,19 @@ ColumnLayout {
                                 font.family: Tide.Theme.uiFamily
                                 font.pointSize: Tide.Tokens.fontSizePt - 1
                                 elide: Text.ElideRight
+                            }
+                            Text {
+                                id: newHint
+                                // Repozytorium, które nie jest jeszcze projektem: projekt powstanie z kartą.
+                                visible: option.modelData.kind === "repo"
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.right: parent.right
+                                anchors.rightMargin: 10
+                                text: "nowy projekt"
+                                textFormat: Text.PlainText
+                                color: Tide.Tokens.butter
+                                font.family: Tide.Theme.uiFamily
+                                font.pointSize: Tide.Tokens.fontSizePt - 2
                             }
                             MouseArea {
                                 id: optionArea
