@@ -1,9 +1,19 @@
-"""Opis „Na daily” modelem przez lokalny Claude Code (`claude -p`), z regułami jako zapasem.
+"""Opis „Na daily” modelem — przez lokalny Claude Code (`claude -p`) albo model lokalny (`models.chat`),
+z regułami jako zapasem.
 
-Jedno wywołanie na raport (decyzje 52 i 53, domyślnie Sonnet): fakty o projektach (standup.facts) → zwięzły JSON
-(`model_input`, najwyżej PROJECT_CAP znaków na projekt i TOTAL_CAP razem, po usunięciu wszystkiego,
-co wygląda na sekret) → `claude -p` w trybie bez narzędzi → JSON zgodny ze schematem → standup.validate.
-Każdy błąd (brak programu, kod wyjścia, przekroczony czas, zła odpowiedź) daje podsumowanie z reguł.
+Fakty o projektach (standup.facts) → zwięzły JSON (`model_input`, najwyżej PROJECT_CAP znaków na projekt
+i TOTAL_CAP razem, po usunięciu wszystkiego, co wygląda na sekret) → model → JSON zgodny ze schematem
+→ standup.validate. Każdy błąd (brak programu, serwer nie odpowiada, przekroczony czas, zła odpowiedź)
+daje podsumowanie z reguł z notatką.
+
+Wybór modelu jest w jednym miejscu — klasa `Model` niżej (używa jej też opis kart tablicy,
+coordination/describe.py):
+- "claude" — `claude -p` (decyzje 52 i 53, domyślnie Sonnet), jedno wywołanie na raport;
+- "local" — `models.chat(role="summary", schema=…)` (PT-15): model z roli w models.json, schemat
+  odpowiedzi w `format`, jedno wywołanie na projekt, bo kontekst roli (8192) nie mieści wszystkich
+  projektów naraz; wejście projektu przycięte do kontekstu (`Model.input_chars`). Tryb lokalny nigdy
+  nie przechodzi do Claude: błąd modelu lokalnego to reguły z informacją „Model lokalny niedostępny —
+  opis bez modelu (…)” (`local_note`).
 
 Wywołanie (argv bez powłoki, katalog roboczy to pusty katalog tymczasowy):
   claude -p --model <model> --output-format json --no-session-persistence --safe-mode
@@ -13,8 +23,10 @@ Fakty idą na stdin. `--safe-mode` wyłącza CLAUDE.md, hooki, wtyczki, skille i
 zostaje (w odróżnieniu od `--bare`, które wymaga ANTHROPIC_API_KEY i pomija OAuth subskrypcji).
 `--no-session-persistence` — rozmowa nie trafia do ~/.claude/projects (ani do raportu, ani do Agents).
 
-Wynik trafia do pamięci podręcznej `summary.json` w katalogu raportu (klucz: skrót SHA-256 wejścia
-i modelu), więc ponowne `Generate()` bez zmian w faktach nie woła modelu drugi raz.
+Wynik trafia do pamięci podręcznej `summary.json` w katalogu raportu (klucz: skrót SHA-256 wejścia,
+tożsamości modelu i instrukcji; dla Claude tożsamość to nazwa modelu, dla modelu lokalnego
+„local|punkt|adres|model|ctx”), więc ponowne `Generate()` bez zmian w faktach nie woła modelu drugi
+raz, a przełączenie claude ↔ local nie bierze cudzej odpowiedzi.
 """
 import hashlib
 import json
@@ -26,6 +38,7 @@ import subprocess
 import tempfile
 import time
 
+from .. import models as models_mod
 from . import standup
 
 PROJECT_CAP = 16000        # znaków JSON-u faktów na projekt
@@ -35,6 +48,12 @@ OUTPUT_MAX = 256 * 1024    # tyle stdout czytamy
 DEFAULT_MODEL = "sonnet"   # decyzja 53: Haiku pisał za płytko
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$")
 CACHE_NAME = "summary.json"
+MODEL_MODES = ("claude", "local")   # tryby z modelem; "rules" i każdy inny — same reguły
+LOCAL_TIMEOUT = 180.0      # s na jedno wywołanie modelu lokalnego (jeden projekt)
+LOCAL_BUDGET = 600.0       # s na wszystkie wywołania lokalne w raporcie; reszta projektów — reguły
+LOCAL_CTX = 8192           # kontekst przyjmowany, gdy rola go nie podaje (kontekst serwera)
+CHARS_PER_TOKEN = 2.5      # ostrożnie dla polskiego w JSON-ie (tokenizer qwen3)
+OUTPUT_TOKENS = 2048       # zapas kontekstu na odpowiedź o jednym projekcie
 DISALLOWED = ("Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit", "WebFetch", "WebSearch", "Agent",
               "Task", "TodoWrite", "Skill", "SlashCommand", "KillShell", "BashOutput", "ExitPlanMode", "mcp__*")
 
@@ -67,6 +86,27 @@ Zasady:
 
 Odpowiedz WYŁĄCZNIE jednym obiektem JSON, bez komentarza i bez bloku kodu:
 {"projects":[{"name":"<nazwa>","headline":"","theme":"","done":[{"ref":"","text":"","about":""}],"doing":[{"ref":"","text":"","about":"","next":""}],"waiting":[{"ref":"","text":""}],"next":[{"ref":"","text":""}],"chores":[{"ref":"","text":""}]}]}"""
+
+
+
+
+def schema_of(example):
+    """Schemat JSON z przykładu odpowiedzi w instrukcjach: obiekt — wszystkie pola wymagane, bez innych,
+    lista — elementy jak pierwszy, reszta to napisy. Jeden kształt dla instrukcji, schematu i walidacji."""
+    if isinstance(example, dict):
+        return {"type": "object", "properties": {key: schema_of(value) for key, value in example.items()},
+                "required": list(example), "additionalProperties": False}
+    if isinstance(example, list):
+        return {"type": "array", "items": schema_of(example[0])}
+    return {"type": "string"}
+
+
+def prompt_schema(prompt: str) -> dict:
+    """Schemat z ostatniej linii instrukcji (przykład obiektu, którym model ma odpowiedzieć)."""
+    return schema_of(json.loads(prompt[prompt.rindex("\n") + 1:]))
+
+
+SCHEMA = prompt_schema(SYSTEM_PROMPT)
 
 
 # --- sekrety ---------------------------------------------------------------------------------------
@@ -248,6 +288,7 @@ def _compact(fact: dict, level: tuple, home: str) -> dict:
 
 
 def input_hash(payload: dict, model: str) -> str:
+    """Klucz pamięci: wejście, tożsamość modelu (`Model.identity`) i instrukcje."""
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n" + model + "\n" + SYSTEM_PROMPT
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -342,6 +383,103 @@ def _kill(proc) -> None:
             pass
 
 
+# --- wybór modelu: claude albo lokalny -------------------------------------------------------------
+
+class Unavailable(Failed):
+    """Model lokalny nie dał odpowiedzi (ModelError). Komunikat po polsku — do notatki `local_note`."""
+
+
+LOOPBACK_HOSTS = ("localhost", "::1")
+
+
+def local_note(exc) -> str:
+    """Informacja tam, gdzie byłby opis modelu lokalnego: „Model lokalny niedostępny — opis bez modelu
+    (serwer nie odpowiada, 127.0.0.1:11434)” albo — przy złej odpowiedzi — „Model lokalny dał złą
+    odpowiedź — opis bez modelu (…)”. Powód to komunikat ModelError bez przedrostka."""
+    if isinstance(exc, standup.Invalid):
+        return f"Model lokalny dał złą odpowiedź — opis bez modelu ({exc})"
+    text = str(exc)
+    for prefix in ("Model lokalny niedostępny: ", "Model lokalny: ", "Model lokalny "):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    text = re.sub(r" \(([^()]*)\)$", r", \1", text)  # „… (127.0.0.1:11434)” → „…, 127.0.0.1:11434”
+    return f"Model lokalny niedostępny — opis bez modelu ({text})"
+
+
+class Model:
+    """Model dla jednego przebiegu (raport albo partia kart) — jedyne miejsce, które wybiera między
+    `claude -p` a modelem lokalnym. Niezmienny po utworzeniu, więc bezpieczny między wątkami.
+
+    mode "claude" — `claude -p --model <model>` (call_claude, bez zmian); "local" — `models.chat` z roli
+    `role` w models.json (czytanym teraz; `config` podmienia go w testach), `model` jest pomijany.
+    Rola nie do użycia (zły punkt, nieznana rola) nie zatrzymuje tworzenia: `error` i ask() → Unavailable.
+
+    Pola: engine ("claude" | "local"), name (model do pokazania), identity (do kluczy pamięci — dla
+    Claude sama nazwa, jak przed PT-15), host i remote (czy fakty wychodzą z tego komputera), ctx."""
+
+    def __init__(self, mode: str, *, model: str = DEFAULT_MODEL, role: str = "summary", env=None, config=None,
+                 started=None):
+        self.engine = "local" if mode == "local" else "claude"
+        self.env = env
+        self.started = started
+        self.error: Unavailable | None = None
+        self.role = role
+        self.ctx = None
+        self.config = None
+        if self.engine == "claude":
+            self.name = model if MODEL_RE.match(model or "") else DEFAULT_MODEL
+            self.identity, self.host, self.remote = self.name, "", True
+            return
+        try:
+            self.config = config if config is not None else models_mod.config.load()
+            chosen = self.config.role(role)
+            endpoint = self.config.endpoint(chosen.endpoint)
+        except models_mod.ModelError as exc:
+            self.error = Unavailable(str(exc))
+            self.name, self.host, self.remote = "", "", False
+            self.identity = f"local|{role}|niedostępny"
+            return
+        self.name, self.ctx = chosen.model, chosen.ctx
+        self.host = endpoint.host
+        try:
+            hostname = endpoint.address()[1]
+        except models_mod.ModelError:
+            hostname = ""
+        self.remote = not (hostname in LOOPBACK_HOSTS or hostname.startswith("127."))
+        self.identity = f"local|{endpoint.name}|{endpoint.public_url()}|{chosen.model}|{chosen.ctx or ''}"
+
+    def input_chars(self, system_prompt: str, output_tokens: int, cap: int) -> int:
+        """Ile znaków faktów zmieści się w jednym wywołaniu: dla Claude `cap`, dla modelu lokalnego
+        kontekst roli minus instrukcje i zapas na odpowiedź (≈ CHARS_PER_TOKEN znaków na token)."""
+        if self.engine == "claude":
+            return cap
+        tokens = (self.ctx or LOCAL_CTX) - len(system_prompt) / CHARS_PER_TOKEN - output_tokens
+        return int(max(2000, min(cap, tokens * CHARS_PER_TOKEN)))
+
+    def ask(self, payload: dict, *, system_prompt: str, schema: dict | None = None,
+            timeout: float | None = None) -> str:
+        """Tekst odpowiedzi modelu. Failed (Claude) albo Unavailable (model lokalny) przy każdym błędzie;
+        model lokalny nigdy nie woła Claude."""
+        if self.engine == "claude":
+            binary = find_claude(self.env)
+            if not binary:
+                raise Failed("brak programu claude")
+            return call_claude(binary, self.name, payload, timeout=TIMEOUT if timeout is None else timeout,
+                               env=self.env, system_prompt=system_prompt, started=self.started)
+        if self.error is not None:
+            raise self.error
+        try:
+            answer = models_mod.chat(json.dumps(payload, ensure_ascii=False), role=self.role, system=system_prompt,
+                                     schema=schema, timeout=LOCAL_TIMEOUT if timeout is None else timeout,
+                                     config=self.config)
+        except models_mod.ModelError as exc:
+            raise Unavailable(str(exc)) from None
+        except Exception as exc:  # przeoczony błąd klienta nie może położyć raportu ani wątku opisów
+            raise Unavailable(f"Model lokalny: nieoczekiwany błąd ({type(exc).__name__})") from None
+        return answer.text
+
+
 def parse_answer(text: str):
     """JSON z odpowiedzi modelu: całość, blok ```json albo od pierwszej „{” do ostatniej „}”."""
     text = (text or "").strip()
@@ -358,43 +496,88 @@ def parse_answer(text: str):
 
 # --- całość ----------------------------------------------------------------------------------------
 
-def summarize(report, *, mode: str = "rules", model: str = DEFAULT_MODEL, cache_dir: str = "", home: str = "",
-              env=None, timeout: float = TIMEOUT) -> dict:
-    """{"source": "model"|"rules", "model", "note", "projects": {nazwa: podsumowanie}, "cache": {...}}.
-
-    mode "claude" — model przez `claude -p` (z pamięcią podręczną w cache_dir), "rules" — same reguły."""
-    all_facts = standup.facts(report)
-    result = {"source": "rules", "model": "", "note": "", "projects": {}, "cache": None}
-    model_out: dict[str, dict] = {}
-    if mode == "claude" and all_facts:
-        model = model if MODEL_RE.match(model or "") else DEFAULT_MODEL
+def batches(all_facts: list[dict], model: Model, home: str = "") -> list[tuple[dict, list[str]]]:
+    """[(wejście, nazwy projektów)]: dla Claude jedno wywołanie na raport (jak dotąd), dla modelu
+    lokalnego jedno na projekt, przycięte do kontekstu roli (ten sam kształt wejścia, mniejszy limit)."""
+    if model.engine == "claude":
         payload, names = model_input(all_facts, home)
-        key = input_hash(payload, model)
-        cached = read_cache(cache_dir, key)
-        try:
-            if cached is not None:
-                answer = cached
-            else:
-                binary = find_claude(env)
-                if not binary:
-                    raise Failed("brak programu claude")
-                started = time.monotonic()
-                answer = parse_answer(call_claude(binary, model, payload, timeout=timeout, env=env))
-                print(f"tide-daemon: raport: podsumowanie {model} w {time.monotonic() - started:.1f} s", flush=True)
-            valid = standup.validate(answer, [f for f in all_facts if f["project"] in names])
-            model_out = valid
-            result.update(source="model", model=model, cache={"key": key, "model": model, "answer": answer})
-            missing = [f["project"] for f in all_facts if f["project"] not in valid]
+        return [(payload, names)] if names else []
+    cap = model.input_chars(SYSTEM_PROMPT, OUTPUT_TOKENS, PROJECT_CAP)
+    out = []
+    for fact in all_facts:
+        payload, names = model_input([fact], home, project_cap=cap, total_cap=cap)
+        if names:
+            out.append((payload, names))
+    return out
+
+
+def summarize(report, *, mode: str = "rules", model: str = DEFAULT_MODEL, cache_dir: str = "", home: str = "",
+              env=None, timeout: float | None = None, role: str = "summary", models_config=None,
+              budget: float = LOCAL_BUDGET) -> dict:
+    """{"source": "model"|"rules", "engine", "model", "host", "remote", "note", "projects": {nazwa: podsumowanie},
+    "cache": {...}}.
+
+    mode "claude" — model przez `claude -p` (summaryModel), "local" — model lokalny z roli `role`
+    (summaryModel pomijany), "rules" i każdy inny — same reguły. Pamięć podręczna w cache_dir.
+    `timeout` — na jedno wywołanie (domyślnie TIMEOUT dla Claude, LOCAL_TIMEOUT dla modelu lokalnego),
+    `budget` — na wszystkie wywołania razem (liczy się przy kilku wywołaniach modelu lokalnego)."""
+    all_facts = standup.facts(report)
+    result = {"source": "rules", "engine": "", "model": "", "host": "", "remote": False, "note": "",
+              "projects": {}, "cache": None}
+    model_out: dict[str, dict] = {}
+    if mode in MODEL_MODES and all_facts:
+        chosen = Model(mode, model=model, role=role, env=env, config=models_config)
+        answers: dict[str, dict] = {}
+        error = None
+        deadline = time.monotonic() + budget
+        for payload, names in batches(all_facts, chosen, home):
+            key = input_hash(payload, chosen.identity)
+            try:
+                answer = read_cache(cache_dir, key)
+                if answer is None:
+                    if isinstance(error, Failed):  # serwer albo program zawiódł — nie pytamy dalej
+                        continue
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        raise Unavailable(f"Model lokalny nie zdążył w {int(budget)} s na cały raport")
+                    started = time.monotonic()
+                    per_call = timeout if timeout is not None else (TIMEOUT if chosen.engine == "claude"
+                                                                    else LOCAL_TIMEOUT)
+                    limit = min(per_call, left)
+                    limit = round(limit) if limit >= 10 else round(limit, 1)  # do komunikatu „nie odpowiedział w N s”
+                    answer = parse_answer(chosen.ask(payload, system_prompt=SYSTEM_PROMPT, schema=SCHEMA,
+                                                     timeout=max(limit, 0.1)))
+                    what = chosen.name if chosen.engine == "claude" else \
+                        f"{chosen.name} ({', '.join(names)})"
+                    print(f"tide-daemon: raport: podsumowanie {what} w {time.monotonic() - started:.1f} s", flush=True)
+                valid = standup.validate(answer, [f for f in all_facts if f["project"] in names])
+            except (Failed, standup.Invalid) as exc:
+                if error is None or (isinstance(exc, Failed) and not isinstance(error, Failed)):
+                    error = exc  # pierwszy błąd; niedostępny model ważniejszy od złej odpowiedzi
+                continue
+            model_out.update(valid)
+            answers[key] = answer
+        result.update(engine=chosen.engine, model=chosen.name, host=chosen.host, remote=chosen.remote)
+        if model_out:
+            first = next(iter(answers))
+            result.update(source="model", cache={"key": first, "model": chosen.name, "engine": chosen.engine,
+                                                 "answer": answers[first], "batches": answers})
+            missing = [f["project"] for f in all_facts if f["project"] not in model_out]
             if missing:
                 result["note"] = "część projektów z reguł: " + ", ".join(missing[:5])
-        except (Failed, standup.Invalid) as exc:
-            result["note"] = f"podsumowanie z reguł ({exc})"
-            print(f"tide-daemon: raport: {result['note']}", flush=True)
+                if error is not None and chosen.engine == "local":
+                    result["note"] += " — " + local_note(error)
+        elif error is not None:
+            result["note"] = local_note(error) if chosen.engine == "local" else f"podsumowanie z reguł ({error})"
+        if error is not None:
+            print(f"tide-daemon: raport: {local_note(error) if chosen.engine == 'local' else result['note']}",
+                  flush=True)
     result["projects"] = standup.merge(model_out, all_facts)
     return result
 
 
 def read_cache(folder: str, key: str):
+    """Odpowiedź dla klucza z summary.json: `answer` (pierwsze wywołanie) albo `batches` (każde wywołanie)."""
     if not folder:
         return None
     try:
@@ -402,9 +585,12 @@ def read_cache(folder: str, key: str):
             data = json.load(fh)
     except (OSError, ValueError):
         return None
-    if isinstance(data, dict) and data.get("key") == key and isinstance(data.get("answer"), dict):
+    if not isinstance(data, dict):
+        return None
+    if data.get("key") == key and isinstance(data.get("answer"), dict):
         return data["answer"]
-    return None
+    found = data.get("batches").get(key) if isinstance(data.get("batches"), dict) else None
+    return found if isinstance(found, dict) else None
 
 
 def write_cache(folder: str, cache: dict | None) -> None:

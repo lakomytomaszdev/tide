@@ -7,7 +7,7 @@
 - limits.py   — migawka Limitów AI z QuotaApp,
 - plans.py    — plany i tickety (tablica koordynacji i plany w repozytoriach), dodatek opcjonalny,
 - standup.py  — „Na daily”: fakty o projektach, podsumowanie z reguł, walidacja odpowiedzi modelu,
-- summarize.py — opis „Na daily” modelem przez lokalny `claude -p` (z regułami jako zapasem),
+- summarize.py — opis „Na daily” modelem przez lokalny `claude -p` albo model lokalny (z regułami jako zapasem),
 - collect.py  — model raportu, render.py — HTML,
 - data.py     — report.json dla widoku „Raporty” w oknie Tide i odczyt dni (D-Bus Days(), Day()).
 
@@ -42,7 +42,8 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
              env=None, tracker=None) -> tuple[str, "collect.Report"]:
     """Zapisuje <root>/<day>/index.html, <projekt>.html i report.json (widok „Raporty”). Zwraca (ścieżka index.html, raport).
 
-    summary: "claude" — opis „Na daily” modelem przez `claude -p` (summarize.py), "rules" — same reguły.
+    summary: "claude" — opis „Na daily” modelem przez `claude -p` (summarize.py), "local" — model lokalny
+    z roli `summary` w models.json (summary_model pomijany, nigdy Claude), "rules" — same reguły.
     tracker: YouTrackCache — opisy ticketów z planów w repozytoriach (plans.py, tylko GET) albo None.
     Domyślnie reguły: model woła tylko usługa i --report według ustawień (report.json)."""
     if limits_result is None and fetch_limits:

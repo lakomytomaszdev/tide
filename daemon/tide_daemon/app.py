@@ -6,7 +6,7 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
                                [--idle-after SEKUNDY | --no-idle] [--limits-poll SEKUNDY | --no-limits]
                                [--models-poll SEKUNDY | --no-models]
                                [--report [--report-days N]] [--report-dir DIR] [--report-at GG:MM]
-                               [--no-report] [--report-delay SEKUNDY] [--report-summary claude|rules]
+                               [--no-report] [--report-delay SEKUNDY] [--report-summary claude|local|rules]
                                [--no-tasks]
                                [--print-coordination] [--coordination-days N] [--no-coordination]
                                [--no-youtrack] [--print-board] [--board-dir DIR] [--no-board]
@@ -36,7 +36,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
 --report-at        godzina raportu porannego (domyślnie „at” z $XDG_CONFIG_HOME/tide/report.json albo 07:00),
 --no-report        bez raportu porannego z terminu (Generate() z D-Bus działa dalej),
 --report-delay     ile sekund po starcie usługi sprawdzić, czy raport jest należny (domyślnie 120),
---report-summary   opis „Na daily”: claude (model przez `claude -p`) albo rules (bez modelu); domyślnie
+--report-summary   opis „Na daily” i kart tablicy: claude (model przez `claude -p`), local (model lokalny z ról
+                   summary i describe w models.json, nigdy Claude) albo rules (bez modelu); domyślnie
                    „summary” z $XDG_CONFIG_HOME/tide/report.json albo claude,
 --no-tasks         bez obiektu /Tasks (nowe zadanie dla agenta: worktree i karta Konsoli),
 --print-coordination  jednorazowo: koordynatorzy i ich tablice jako JSON (jak dane okna Tide Sesje), bez D-Bus,
@@ -110,7 +111,7 @@ def parse_args(argv):
     parser.add_argument("--report-at")
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--report-delay", type=float)
-    parser.add_argument("--report-summary", choices=("claude", "rules"))
+    parser.add_argument("--report-summary", choices=("claude", "local", "rules"))
     return parser.parse_args(argv)
 
 
@@ -435,7 +436,8 @@ def coordination_scanner(args, clock):
 
 def card_describer(args, clock, settings):
     """Opisy kart tablicy (coordination/describe.py): tryb i model z konfiguracji raportu porannego
-    („summary”, „summaryModel”; --report-summary ma pierwszeństwo), pamięć w $XDG_CACHE_HOME/tide."""
+    („summary”, „summaryModel”; --report-summary ma pierwszeństwo; w trybie local model z roli `describe`
+    w models.json), pamięć w $XDG_CACHE_HOME/tide."""
     from .coordination import describe
     mode = args.report_summary or (settings.summary if settings else "rules")
     model = settings.summary_model if settings else describe.summarize.DEFAULT_MODEL

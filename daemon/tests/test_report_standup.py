@@ -12,13 +12,16 @@ import tempfile
 import time
 import types
 import unittest
+from unittest import mock
 
 from . import reportfix
+from .test_models_core import OLLAMA_CHAT, closed_port, start_server, write_models
 from .reportfix import NOW, START, H
 from tide_daemon import reports
 from tide_daemon.agents.claude import escape_cwd
 from tide_daemon.agents.timeutil import iso
 from tide_daemon.coordination import actions
+from tide_daemon.models import config as models_config
 from tide_daemon.reports import plans, render, schedule, standup, summarize
 from tide_daemon.tabmarks import palette_candidates
 
@@ -401,7 +404,8 @@ class ValidateTest(StandupWorld):
     def test_lengths_capped_and_control_chars(self):
         facts = standup.facts(self.report)
         out = standup.validate({"projects": [{"name": "alpha", "theme": "a\x00b" + "t" * 5000,
-                                              "done": [{"text": "x" * 5000, "why": "y‮" * 2000}] * 30}]}, facts)
+                                              "done": [{"text": f"{i} " + "x" * 5000, "why": "y‮" * 2000}
+                                                       for i in range(30)]}]}, facts)
         alpha = out["alpha"]
         self.assertLessEqual(len(alpha["theme"]), standup.THEME_MAX)
         self.assertNotIn("\x00", alpha["theme"])
@@ -780,6 +784,251 @@ class CachePayloadTest(unittest.TestCase):
                          ("feat/t-1", "1 NIT", "Dodałem A.", ""), "wynik pracy, nie review")
 
 
+def ollama_answer(answer) -> tuple:
+    """Odpowiedź atrapy Ollamy /api/chat z treścią (obiekt → JSON, napis bez zmian)."""
+    content = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+    return (200, dict(OLLAMA_CHAT, message={"role": "assistant", "content": content}))
+
+
+def project_answer(name, text) -> dict:
+    return {"projects": [{"name": name, "headline": f"{name}: {text}", "theme": "", "done": [
+        {"ref": "", "text": text, "about": ""}], "doing": [], "waiting": [], "next": [], "chores": []}]}
+
+
+class LocalModelTest(StandupWorld):
+    """Tryb "local": model lokalny przez models.chat (atrapa serwera Ollamy w wątku testu), jedno wywołanie
+    na projekt ze schematem odpowiedzi, a przy każdym błędzie reguły z informacją — nigdy `claude`."""
+
+    def server(self, *answers):
+        return start_server(self, {("POST", "/api/chat"): [ollama_answer(a) for a in answers]})
+
+    @staticmethod
+    def config(url):
+        return models_config.from_dict({"endpoints": {"local": {"url": url, "kind": "ollama"}}})
+
+    def local(self, config, env=None, **kwargs):
+        return summarize.summarize(self.report, mode="local", model="haiku", home=self.p["home"],
+                                   env=env or self.env("ok"), models_config=config, **kwargs)
+
+    def test_local_answer_with_schema_one_call_per_project(self):
+        server = self.server(project_answer("alpha", "Indeks pełnotekstowy dla wyszukiwarki"),
+                             project_answer("beta", "Poprawki w beta"))
+        env = self.env("ok")
+        result = self.local(self.config(server.url), env)
+        self.assertEqual((result["source"], result["engine"], result["model"], result["remote"]),
+                         ("model", "local", "qwen3:8b", False), "summaryModel pomijany w trybie local")
+        self.assertEqual(result["note"], "")
+        self.assertEqual(result["projects"]["alpha"]["done"][0]["text"], "Indeks pełnotekstowy dla wyszukiwarki")
+        self.assertEqual(result["projects"]["beta"]["source"], "model")
+        self.assertEqual(self.calls(env), [], "tryb lokalny nigdy nie woła claude")
+        self.assertEqual(len(server.requests), 2)
+        for sent, name in zip(server.requests, ("alpha", "beta")):
+            body = sent["body"]
+            self.assertEqual(body["format"], summarize.SCHEMA)
+            self.assertEqual(body["options"], {"num_ctx": 8192})
+            self.assertEqual(body["messages"][0], {"role": "system", "content": summarize.SYSTEM_PROMPT})
+            payload = json.loads(body["messages"][1]["content"])
+            self.assertEqual([p["name"] for p in payload["projects"]], [name], "jeden projekt na wywołanie")
+            self.assertLessEqual(len(body["messages"][1]["content"]),
+                                 summarize.Model("local", config=self.config(server.url)).input_chars(
+                                     summarize.SYSTEM_PROMPT, summarize.OUTPUT_TOKENS, summarize.PROJECT_CAP))
+        # Te same fakty co dla Claude (po usunięciu sekretów), tylko po projekcie.
+        claude_payload, _names = summarize.model_input(standup.facts(self.report), self.p["home"])
+        alpha = json.loads(server.requests[0]["body"]["messages"][1]["content"])["projects"][0]
+        self.assertEqual(alpha, claude_payload["projects"][0])
+
+    def test_server_down_gives_rules_with_note_and_never_claude(self):
+        port = closed_port()
+        env = self.env("ok")
+        result = self.local(self.config(f"http://127.0.0.1:{port}"), env)
+        self.assertEqual((result["source"], result["engine"]), ("rules", "local"))
+        self.assertEqual(result["note"],
+                         f"Model lokalny niedostępny — opis bez modelu (serwer nie odpowiada, 127.0.0.1:{port})")
+        self.assertEqual(result["projects"]["alpha"], dict(standup.rules(self.facts()), source="rules"))
+        self.assertIsNone(result["cache"])
+        self.assertEqual(self.calls(env), [], "brak serwera lokalnego nie przełącza na Claude")
+
+    def test_unavailable_role_and_timeout(self):
+        config = models_config.from_dict({"default": "mac", "endpoints": {"local": {"url": "http://127.0.0.1:9"}}})
+        env = self.env("ok")
+        result = self.local(config, env)
+        self.assertEqual(result["note"], "Model lokalny niedostępny — opis bez modelu (default: nieznany punkt „mac”)")
+        server = self.server(project_answer("alpha", "x"))
+        server.delay = 2.0
+        result = self.local(self.config(server.url), env, timeout=0.5)
+        self.assertEqual(result["source"], "rules")
+        self.assertEqual(result["note"], f"Model lokalny niedostępny — opis bez modelu (nie odpowiedział w 0.5 s, "
+                                         f"127.0.0.1:{server.server_address[1]})")
+        self.assertEqual(len(server.requests), 1, "po błędzie serwera nie pytamy o kolejne projekty")
+        self.assertEqual(self.calls(env), [])
+
+    def test_invalid_answer_gives_rules_with_note(self):
+        server = self.server("to nie JSON", {"projects": [{"name": "nieznany"}]})
+        env = self.env("ok")
+        result = self.local(self.config(server.url), env)
+        self.assertEqual(result["source"], "rules")
+        self.assertEqual(result["note"], "Model lokalny dał złą odpowiedź — opis bez modelu (odpowiedź modelu to nie JSON)")
+        self.assertEqual(len(server.requests), 2, "zła odpowiedź o jednym projekcie nie zatrzymuje pozostałych")
+        self.assertEqual(self.calls(env), [])
+
+    def test_partial_failure_keeps_model_projects(self):
+        server = start_server(self, {("POST", "/api/chat"): [
+            ollama_answer(project_answer("alpha", "Indeks gotowy")), (500, {"error": "model runner crashed"})]})
+        result = self.local(self.config(server.url))
+        self.assertEqual(result["source"], "model")
+        self.assertEqual(result["projects"]["alpha"]["source"], "model")
+        self.assertEqual(result["projects"]["beta"]["source"], "rules")
+        self.assertEqual(result["note"], "część projektów z reguł: beta — Model lokalny niedostępny — opis bez modelu "
+                                         f"(serwer odpowiedział 500: model runner crashed, 127.0.0.1:{server.server_address[1]})")
+        self.assertEqual(len(result["cache"]["batches"]), 1, "w pamięci tylko projekt z odpowiedzią")
+
+    def test_budget_for_the_whole_report(self):
+        server = self.server(project_answer("alpha", "Indeks gotowy"))
+        server.delay = 0.6
+        result = self.local(self.config(server.url), budget=0.5)
+        self.assertEqual(result["source"], "rules")
+        self.assertIn("nie odpowiedział w 0.5 s", result["note"], "wywołanie dostaje tylko to, co zostało z budżetu")
+        self.assertEqual(len(server.requests), 1)
+
+    def test_rules_mode_calls_nothing(self):
+        server = self.server(project_answer("alpha", "x"))
+        env = self.env("ok")
+        result = summarize.summarize(self.report, mode="rules", env=env, models_config=self.config(server.url))
+        self.assertEqual((result["source"], result["engine"], result["note"]), ("rules", "", ""))
+        self.assertEqual((server.requests, self.calls(env)), ([], []))
+
+    def test_seam_picks_claude_or_local(self):
+        claude = summarize.Model("claude", model="haiku; rm -rf /", env=self.env("ok"))
+        self.assertEqual((claude.engine, claude.name, claude.identity, claude.remote), ("claude", "sonnet", "sonnet", True))
+        self.assertEqual(claude.input_chars(summarize.SYSTEM_PROMPT, 2048, 16000), 16000)
+        env = self.env("ok")
+        text = summarize.Model("claude", model="haiku", env=env).ask({"projects": []},
+                                                                     system_prompt=summarize.SYSTEM_PROMPT)
+        self.assertEqual(json.loads(text), ANSWER)
+        self.assertEqual(len(self.calls(env)), 1)
+
+        server = self.server({"projects": []})
+        local = summarize.Model("local", model="haiku", config=self.config(server.url), env=env)
+        self.assertEqual((local.engine, local.name, local.ctx, local.remote, local.host),
+                         ("local", "qwen3:8b", 8192, False, f"127.0.0.1:{server.server_address[1]}"))
+        self.assertEqual(json.loads(local.ask({"projects": []}, system_prompt="s", schema={"type": "object"})),
+                         {"projects": []})
+        self.assertEqual(len(self.calls(env)), 1, "Model lokalny nie woła claude")
+        self.assertLess(local.input_chars(summarize.SYSTEM_PROMPT, 2048, 16000), 16000, "kontekst 8192 to mniej")
+        big = models_config.from_dict({"endpoints": {"local": {"url": server.url}},
+                                       "roles": {"summary": {"model": "qwen3:32b", "ctx": 32768}}})
+        self.assertEqual(summarize.Model("local", config=big).input_chars(summarize.SYSTEM_PROMPT, 2048, 16000), 16000)
+        mac = models_config.from_dict({"default": "mac", "endpoints": {"mac": {"url": "http://mac-studio:11434"}}})
+        remote = summarize.Model("local", config=mac)
+        self.assertEqual((remote.remote, remote.host), (True, "mac-studio:11434"))
+
+    def test_cache_key_separates_claude_and_local(self):
+        payload, _names = summarize.model_input(standup.facts(self.report), self.p["home"])
+        a = summarize.Model("local", config=self.config("http://127.0.0.1:11434"))
+        b = summarize.Model("local", config=self.config("http://127.0.0.1:11435"))
+        keys = {summarize.input_hash(payload, m.identity) for m in (summarize.Model("claude"), a, b)}
+        self.assertEqual(len(keys), 3)
+        self.assertEqual(summarize.input_hash(payload, summarize.Model("claude").identity),
+                         summarize.input_hash(payload, "sonnet"), "klucz Claude bez zmian — stare summary.json działa")
+
+        root = tempfile.mkdtemp(dir=self.tmp)
+        env = self.env("ok")
+        self.generate(root, summary="claude", env=env)
+        self.assertEqual(len(self.calls(env)), 1)
+        server = self.server(project_answer("alpha", "Indeks gotowy"), project_answer("beta", "Poprawki"))
+        models_file = write_models(tempfile.mkdtemp(dir=self.tmp), {"endpoints": {"local": {"url": server.url}}})
+        with mock.patch.dict(os.environ, {"TIDE_MODELS_CONFIG": models_file}):
+            index, report = self.generate(root, summary="local", env=env)
+            self.assertEqual((report.standup["source"], report.standup["engine"]), ("model", "local"))
+            self.assertEqual(len(server.requests), 2, "odpowiedź Claude z summary.json nie przechodzi na lokalny")
+            index, report = self.generate(root, summary="local", env=env)
+            self.assertEqual(len(server.requests), 2, "drugi raz z pamięci")
+            self.assertEqual(report.standup["projects"]["alpha"]["done"][0]["text"], "Indeks gotowy")
+        with open(index, encoding="utf-8") as fh:
+            page = fh.read()
+        self.assertIn("opis: model lokalny qwen3:8b", page)
+        self.assertIn("nic nie wychodzi z tego komputera", page)
+        self.assertNotIn("Anthropic", page)
+        self.generate(root, summary="claude", env=env)
+        self.assertEqual(len(self.calls(env)), 2, "opis lokalny nie zastępuje odpowiedzi Claude")
+
+    def test_failure_note_on_the_page(self):
+        root = tempfile.mkdtemp(dir=self.tmp)
+        port = closed_port()
+        env = self.env("ok")
+        models_file = write_models(tempfile.mkdtemp(dir=self.tmp),
+                                   {"endpoints": {"local": {"url": f"http://127.0.0.1:{port}"}}})
+        with mock.patch.dict(os.environ, {"TIDE_MODELS_CONFIG": models_file}):
+            index, report = self.generate(root, summary="local", env=env)
+        with open(index, encoding="utf-8") as fh:
+            page = fh.read()
+        note = f"Model lokalny niedostępny — opis bez modelu (serwer nie odpowiada, 127.0.0.1:{port})"
+        self.assertIn(f'<span class="dsrc">{note}</span>', page)
+        self.assertIn("bez wysyłania czegokolwiek", page)
+        with open(os.path.join(os.path.dirname(index), "report.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["source"], note)
+        self.assertEqual(self.calls(env), [])
+
+    def test_remote_endpoint_footer(self):
+        fake = types.SimpleNamespace(previous_day="", generated=NOW, standup={
+            "source": "model", "engine": "local", "model": "qwen3:32b", "host": "mac-studio:11434", "remote": True})
+        footer = render._footer(fake, self.p["home"], True)
+        self.assertIn("model lokalny qwen3:32b (mac-studio:11434)", footer)
+        self.assertIn("idą tylko do tego serwera modeli", footer)
+        self.assertEqual(render._source(fake.standup), "opis: model lokalny qwen3:32b")
+
+
+class MarkdownAnswerTest(StandupWorld):
+    """PT-13: gpt-oss wkładał całe listy w Markdownie do jednego pola — walidacja rozbija je na pozycje."""
+
+    def test_markdown_list_in_one_field_becomes_items(self):
+        facts = standup.facts(self.report)
+        answer = {"projects": [{
+            "name": "alpha", "headline": "**Wyszukiwanie**: indeks gotowy\n- eksport w toku",
+            "theme": "## Cel\nWyszukiwanie w aplikacji: indeks,\nUI i eksport",
+            "done": [{"ref": "ALPHA-1", "about": "Wyniki `szybciej`.",
+                      "text": "**Zrobione:**\n- **Indeks** pełnotekstowy\n- Wyszukiwarka w UI\n1. [Eksport](http://x) do CSV"},
+                     "- Pierwszy punkt\n- Drugi punkt"],
+            "doing": [{"ref": "ALPHA-2", "text": "Review wyszukiwarki", "next": "- poprawki\n- ponowne review"}]}]}
+        alpha = standup.validate(answer, facts)["alpha"]
+        self.assertEqual([(i["ref"], i["text"]) for i in alpha["done"]], [
+            ("ALPHA-1", "Indeks pełnotekstowy"), ("ALPHA-1", "Wyszukiwarka w UI"), ("ALPHA-1", "Eksport do CSV"),
+            ("", "Pierwszy punkt"), ("", "Drugi punkt")])
+        self.assertEqual(alpha["done"][0]["about"], "Wyniki szybciej.")
+        self.assertNotIn("about", alpha["done"][1])
+        self.assertEqual(alpha["headline"], "Wyszukiwanie: indeks gotowy eksport w toku")
+        self.assertEqual(alpha["theme"], "Cel. Wyszukiwanie w aplikacji: indeks, UI i eksport")
+        self.assertEqual(alpha["doing"][0]["next"], "poprawki ponowne review")
+        for item in alpha["done"] + alpha["doing"]:
+            self.assertNotIn("\n", item["text"])
+            self.assertNotIn("**", item["text"])
+
+    def test_duplicates_and_planned_tickets_waiting(self):
+        # PT-15, prawdziwe dane z qwen3:8b: zaplanowane tickety w „Czeka na mnie”, „Dalej” powtórzone w „Porządkach”.
+        facts = standup.facts(self.report)
+        alpha = standup.validate({"projects": [{
+            "name": "alpha", "done": [{"text": "Indeks gotowy."}, {"text": "indeks  gotowy"}],
+            "waiting": [{"ref": "ALPHA-4", "text": "Trzeba zrobić eksport do CSV"},
+                        {"ref": "ALPHA-1", "text": "Indeks czeka na ciebie"},
+                        {"ref": "ALPHA-3", "text": "Czy wydajemy w piątek?"}],
+            "next": [{"ref": "ALPHA-4", "text": "Eksport do CSV"}, {"ref": "ALPHA-1", "text": "Planuje się indeks"}],
+            "chores": [{"ref": "ALPHA-4", "text": "Eksport do CSV."}, {"text": "Indeks gotowy"}]}]}, facts)["alpha"]
+        self.assertEqual([i["text"] for i in alpha["done"]], ["Indeks gotowy."])
+        self.assertEqual([(i["ref"], i["text"]) for i in alpha["waiting"]], [("ALPHA-3", "Czy wydajemy w piątek?")],
+                         "ticket todo przechodzi do „Dalej”, gotowy znika")
+        self.assertEqual([(i["ref"], i["text"]) for i in alpha["next"]],
+                         [("ALPHA-4", "Eksport do CSV"), ("ALPHA-4", "Trzeba zrobić eksport do CSV")],
+                         "gotowy ticket nie jest „Dalej”")
+        self.assertEqual(alpha["chores"], [], "powtórzenia z wcześniejszych grup znikają")
+
+    def test_plain_claude_sentences_stay_unchanged(self):
+        for text in ("Dodaliśmy warunek na wartościach logów: można filtrować po części wartości (np. „A_B”).",
+                     "Poprawka w __init__.py — import bez cyklu, 3 testy przechodzą.",
+                     "Indeks " + HOSTILE, "Raport *nie* pokazuje sekretów; 2 * 3 = 6."):
+            self.assertEqual(standup.one_line(text), text)
+            self.assertEqual(standup.list_items(text), [text])
+
+
 class SettingsTest(unittest.TestCase):
     def test_summary_settings(self):
         tmp = tempfile.mkdtemp(prefix="tide-standup-settings-")
@@ -791,6 +1040,10 @@ class SettingsTest(unittest.TestCase):
             json.dump({"summary": "rules", "summaryModel": "sonnet"}, fh)
         settings, warnings = schedule.load_settings(path)
         self.assertEqual((settings.summary, settings.summary_model, warnings), ("rules", "sonnet", []))
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"summary": "local", "summaryModel": "haiku"}, fh)
+        settings, warnings = schedule.load_settings(path)
+        self.assertEqual((settings.summary, settings.summary_model, warnings), ("local", "haiku", []))
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"summary": "gpt", "summaryModel": "haiku; rm -rf /"}, fh)
         settings, warnings = schedule.load_settings(path)

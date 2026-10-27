@@ -51,7 +51,7 @@ class ReportMonitor(QObject):
         self.coordination_cache = coordination_cache  # plik tablicy koordynacji („Plany i tickety”) albo None
         self.tracker = tracker          # YouTrackCache (opisy ticketów planów w repozytoriach, tylko GET) albo None
         self.opener = opener            # funkcja(ścieżka index.html) -> bool (xdg-open) albo None
-        self.summary = summary or settings.summary    # „Na daily”: claude albo rules (--report-summary)
+        self.summary = summary or settings.summary    # „Na daily”: claude, local albo rules (--report-summary)
         self.running = False
         self._waiting: list = []        # odpowiedzi Generate() czekające na bieżący raport
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-report")
