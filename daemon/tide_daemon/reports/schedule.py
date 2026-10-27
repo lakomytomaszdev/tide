@@ -12,6 +12,10 @@ jeszcze do poprzedniego dnia, więc logowanie o 01:00 nie zabiera porannego rapo
 Okres: od końca poprzedniego raportu do teraz, najwyżej MAX_PERIOD (7 dni); pierwszy raport —
 ostatnia doba. Ponowne wygenerowanie w tej samej dobie (Generate() z D-Bus) zachowuje początek
 okresu i tylko przesuwa koniec, więc nie gubi niczego z porannego raportu.
+
+Przeczytanie: raport doby jest „nieprzeczytany”, dopóki w stanie nie ma tej doby w `opened`
+(otwarcie z widżetu, powiadomienia albo KRunnera). Nowa doba to nowy, nieprzeczytany raport;
+ponowne wygenerowanie tej samej doby nie wraca do „nieprzeczytany”.
 """
 import json
 import os
@@ -46,6 +50,9 @@ class State:
     start: float = 0.0        # początek okresu ostatniego raportu
     end: float = 0.0          # koniec okresu ostatniego raportu (chwila wygenerowania)
     notified: str = ""        # doba, dla której poszło już powiadomienie
+    opened: str = ""          # doba raportu, który użytkownik już otworzył
+    projects: int | None = None   # projekty z ruchem w ostatnim raporcie (None — nieznane)
+    waiting: int | None = None    # „czeka na ciebie” w ostatnim raporcie (None — nieznane)
 
 
 def parse_hhmm(text) -> int:
@@ -173,13 +180,23 @@ def load_state(path: str) -> State:
     if not isinstance(data, dict):
         return State()
     state = State()
-    for key in ("day", "notified"):
+    for key in ("day", "notified", "opened"):
         if isinstance(data.get(key), str):
             setattr(state, key, data[key])
     for key in ("start", "end"):
         if isinstance(data.get(key), (int, float)) and not isinstance(data.get(key), bool):
             setattr(state, key, float(data[key]))
+    for key in ("projects", "waiting"):
+        if _count(data.get(key)):
+            setattr(state, key, data[key])
+    if "opened" not in data:
+        # Stan sprzed śledzenia przeczytania: raportu, który już był, nie oznaczamy jako nowego.
+        state.opened = state.day
     return state
+
+
+def _count(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def save_state(path: str, state: State) -> None:
@@ -188,6 +205,44 @@ def save_state(path: str, state: State) -> None:
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(asdict(state), fh, indent=2)
     os.replace(tmp, path)
+
+
+# --- przeczytanie -------------------------------------------------------------------------
+
+def day_of(index: str) -> str:
+    """Doba raportu ze ścieżki …/RRRR-MM-DD/index.html (pusty napis, gdy to nie raport)."""
+    name = os.path.basename(os.path.dirname(index or ""))
+    return name if DAY_DIR.match(name) else ""
+
+
+def status(root: str, state: State) -> dict:
+    """Najnowszy raport dla widżetów (D-Bus Status()).
+
+    {path, day, generatedAt, projects, waiting, unread}; bez raportu path i day są puste,
+    a unread jest False. Liczby i chwila wygenerowania pochodzą ze stanu, gdy dotyczy tej samej
+    doby (raport z `--report` stanu nie zapisuje — wtedy czas pliku i liczby nieznane)."""
+    path = latest_index(root)
+    day = day_of(path)
+    if not day:
+        return {"path": "", "day": "", "generatedAt": None, "projects": None, "waiting": None, "unread": False}
+    same = state.day == day
+    generated = state.end if same and state.end else None
+    if generated is None:
+        try:
+            generated = os.path.getmtime(path)
+        except OSError:
+            generated = None
+    return {"path": path, "day": day, "generatedAt": generated,
+            "projects": state.projects if same else None, "waiting": state.waiting if same else None,
+            "unread": state.opened != day}
+
+
+def mark_opened(state: State, day: str) -> bool:
+    """Oznacza raport doby jako przeczytany. True, gdy stan się zmienił."""
+    if not day or state.opened == day:
+        return False
+    state.opened = day
+    return True
 
 
 # --- katalog raportów ----------------------------------------------------------------------

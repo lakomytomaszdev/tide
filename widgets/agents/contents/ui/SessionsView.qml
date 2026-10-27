@@ -2,7 +2,10 @@
 // te same co w kafelku paska bocznego, tu z drugą, wyciszoną linią i bez limitu wierszy;
 // przy bardzo długiej liście przewijane) i „Pokaż zakończone”. To zawartość popupu kafelka
 // w docku i okienka „+N więcej” z paska bocznego. W nagłówku „＋ Nowe zadanie” otwiera okno nowego
-// zadania dla agenta (tide-daemon /Tasks ShowDialog). Bez PlasmoidItem, więc da się ją załadować w teście.
+// zadania dla agenta (tide-daemon /Tasks ShowDialog). W dolnym wierszu, po prawej, „Raport · dziś 07:00”
+// (z brzoskwiniową kropką, dopóki najnowszy raport poranny jest nieotwarty) otwiera raport
+// (/Reports Open()); bez raportu go nie ma. W nagłówku nie ma na niego miejsca — popup ma stałą szerokość.
+// Bez PlasmoidItem, więc da się ją załadować w teście.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -20,6 +23,10 @@ ColumnLayout {
     signal showEndedToggled()
     signal newTaskRequested()
     signal sessionsRequested(string coordinatorId)   // okno Tide Sesje (pusty id — bez wyboru)
+    // Najnowszy raport poranny (/Reports Status()) albo null.
+    property var report: null
+    readonly property bool hasReport: !!report && !!report.path
+    signal reportRequested()
 
     // Wiersze i liczniki — wspólne z kafelkiem paska bocznego (AgentRows).
     readonly property AgentRows agentRows: AgentRows {
@@ -38,6 +45,7 @@ ColumnLayout {
     spacing: Kirigami.Units.largeSpacing
 
     RowLayout {
+        objectName: "popupHeader"
         Layout.fillWidth: true
         spacing: Kirigami.Units.smallSpacing
 
@@ -137,16 +145,32 @@ ColumnLayout {
         font.pointSize: Tide.Tokens.fontSizePt
     }
 
-    Text {
-        visible: view.endedCount > 0
-        text: (view.showEnded ? "Ukryj zakończone" : "Pokaż zakończone") + " (" + view.endedCount + ")"
-        color: Tide.Tokens.textMuted
-        font.family: Tide.Theme.uiFamily
-        font.pointSize: Tide.Tokens.fontSizePt - 1
-        MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: view.showEndedToggled()
+    RowLayout {
+        objectName: "popupFooter"
+        Layout.fillWidth: true
+        visible: view.endedCount > 0 || view.hasReport
+        spacing: Kirigami.Units.smallSpacing
+
+        Text {
+            visible: view.endedCount > 0
+            text: (view.showEnded ? "Ukryj zakończone" : "Pokaż zakończone") + " (" + view.endedCount + ")"
+            color: Tide.Tokens.textMuted
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: Tide.Tokens.fontSizePt - 1
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: view.showEndedToggled()
+            }
+        }
+        Item { Layout.fillWidth: true }
+        Tide.ReportLink {
+            objectName: "reportButton"
+            visible: view.hasReport
+            text: Tide.Texts.reportLink(view.report, view.nowTs)
+            unread: view.hasReport && view.report.unread === true
+            Accessible.name: Tide.Texts.reportAccessible(view.report, view.nowTs)
+            onClicked: view.reportRequested()
         }
     }
 }

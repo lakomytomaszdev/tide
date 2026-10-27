@@ -48,7 +48,12 @@ Obiekt /Reports, interfejs org.tide.Daemon.Reports (raport poranny):
 - Generate() -> s            składa raport bieżącej doby teraz (bez powiadomienia); ścieżka index.html
                              albo pusty napis przy błędzie (odpowiedź po zakończeniu),
 - Latest() -> s              ścieżka index.html najnowszego raportu albo pusty napis,
-- sygnał Ready(s path)       powstał nowy raport.
+- Status() -> s              JSON {path, day, generatedAt, projects, waiting, unread} najnowszego raportu
+                             (bez raportu path pusty, unread false) — link „Raport” w widżetach,
+- Open() -> b                najnowszy raport w przeglądarce (xdg-open) i oznaczenie go jako przeczytany;
+                             False, gdy raportu nie ma albo nie da się go otworzyć,
+- sygnał Ready(s path)       powstał nowy raport,
+- sygnał Changed()           nowy raport albo zmiana przeczytania — warto pobrać Status() ponownie.
 
 Obiekt /Coordination, interfejs org.tide.Daemon.Coordination (koordynatorzy, tickety i podagenci):
 - Coordinators() -> s        lista koordynatorów z ostatnich dni jako JSON (z licznikami ticketów),
@@ -124,7 +129,10 @@ WORKTREES_XML = f"""<interface name="{WORKTREES_IFACE}">
 REPORTS_XML = f"""<interface name="{REPORTS_IFACE}">
   <method name="Generate"><arg name="path" type="s" direction="out"/></method>
   <method name="Latest"><arg name="path" type="s" direction="out"/></method>
+  <method name="Status"><arg name="json" type="s" direction="out"/></method>
+  <method name="Open"><arg name="ok" type="b" direction="out"/></method>
   <signal name="Ready"><arg name="path" type="s"/></signal>
+  <signal name="Changed"/>
 </interface>"""
 
 TASKS_XML = f"""<interface name="{TASKS_IFACE}">
@@ -354,12 +362,14 @@ class IdleAdaptor(QDBusAbstractAdaptor):
 @pyqtClassInfo("D-Bus Introspection", REPORTS_XML)
 class ReportsAdaptor(QDBusAbstractAdaptor):
     Ready = pyqtSignal(str)
+    Changed = pyqtSignal()
 
     def __init__(self, parent: QObject, monitor, bus: QDBusConnection):
         super().__init__(parent)
         self.monitor = monitor
         self.bus = bus
         monitor.ready.connect(self.Ready)
+        monitor.changed.connect(self.Changed)
 
     @pyqtSlot(QDBusMessage, result=str)
     def Generate(self, message: QDBusMessage) -> str:
@@ -372,6 +382,14 @@ class ReportsAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(result=str)
     def Latest(self) -> str:
         return self.monitor.latest()
+
+    @pyqtSlot(result=str)
+    def Status(self) -> str:
+        return self.monitor.status_json()
+
+    @pyqtSlot(result=bool)
+    def Open(self) -> bool:
+        return self.monitor.open()
 
 
 @pyqtClassInfo("D-Bus Interface", LIMITS_IFACE)
