@@ -707,7 +707,9 @@ zakładany przy karcie — dopiero gdy cała karta jest poprawna. Po zapisie pli
 prawdy: jeśli sam commit się nie uda (np. zajęty indeks), odpowiedź to nadal `ok: true` z opisem
 w `commitError`, a commit z tym samym komunikatem czeka i idzie przy następnym zapisie albo
 synchronizacji (migawka: `git.pending`, wpis w `errors`). Ponowienie żądania nie jest więc potrzebne
-i nie tworzy duplikatu.
+i nie tworzy duplikatu. Kolejka jest tylko w pamięci usługi: po restarcie te zmiany trafiają do
+commitu „sync external changes”, podobnie jak wpis, który pada z trwałego powodu (np. pliku już nie
+ma) — kolejkę zatrzymuje wyłącznie zajęty indeks albo zawieszony git.
 
 **Układ repozytorium.** Wszystkie pliki to Markdown z płaskim frontmatterem (te same reguły co
 w planach: pary `klucz: wartość`, bez YAML), więc da się je czytać i poprawiać ręcznie.
@@ -748,7 +750,7 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 
 | Klucz | Znaczenie |
 | --- | --- |
-| `id` | `K-<numer>`; obowiązuje nazwa pliku (niezgodność to błąd w migawce). Numer nigdy nie wraca: następny = max z istniejących plików + 1, `next-card` z `board.md`, znacznika poza historią `.git/tide-next-card` i najwyższego numeru dodanego kiedykolwiek w historii gita — także po `git revert` commita, który kartę założył (gałęzie `k-N` łączą kartę z koordynatorem) |
+| `id` | `K-<numer>`; obowiązuje nazwa pliku (niezgodność to błąd w migawce). Numer nigdy nie wraca: następny = max z istniejących plików + 1, `next-card` z `board.md` i znacznika poza historią `.git/tide-next-card`, który przeżywa `git revert` commita zakładającego kartę (gałęzie `k-N` łączą kartę z koordynatorem). Gdy znacznika brak (np. kopia repozytorium), pierwsze założenie karty odbudowuje go raz z najwyższego numeru dodanego kiedykolwiek w historii gita; migawka historii nie czyta |
 | `title` | jedna linia, do 200 znaków |
 | `project` | slug projektu albo pusty (karta bez projektu) |
 | `tags` | własne tagi karty po przecinku (`[a, b]` też działa); w migawce `resolvedTags` = tagi projektu ∪ własne. Listy YAML w bloku (`tags:` i niżej `  - ui`) nie są obsługiwane — dają wpis w `errors`, a zapis tagów zastępuje taką listę jedną linią |
@@ -807,7 +809,9 @@ w tablicy. Gdy w repozytorium trwa revert, merge, cherry-pick albo rebase (pliki
 `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `rebase-*` albo pliki z konfliktami w `git status`), usługa niczego
 nie commituje — commit „sync” utrwaliłby znaczniki konfliktu — zapisy z D-Bus kończą się błędem
 `git-busy` („dokończ go (git revert --continue) albo przerwij (git revert --abort)”), a migawka ma
-`git.busy` i wpis w `errors`. Plik ze znacznikami konfliktu (`<<<<<<<`, `>>>>>>>`) to błąd pliku.
+`git.busy` i wpis w `errors`. Frontmatter ze znacznikami konfliktu (`<<<<<<<`, `>>>>>>>`) to błąd
+pliku; w treści znaczniki są zwykłym tekstem (opis może zawierać wklejone wyjście gita), a trwający
+konflikt w treści widać po plikach niescalonych w `git status`.
 
 **Zmiany z zewnątrz.** Agent piszący plan w `docs/`, ręczna edycja karty, `git revert` — usługa
 obserwuje katalogi i pliki tablicy (`QFileSystemWatcher`), a po 2 s ciszy robi commit
@@ -817,7 +821,7 @@ założona poza usługą), razem z zaległymi commitami naszych zapisów (te z w
 Nasze własne zapisy są już w commicie, więc nie dają drugiego.
 
 **Błędy plików.** Zły plik nie zatrzymuje tablicy: trafia do `errors` w migawce (`{path, message}`),
-a reszta działa. Pomijany jest plik bez frontmattera, ze znacznikami konfliktu, nie w UTF-8, większy
+a reszta działa. Pomijany jest plik bez frontmattera, ze znacznikami konfliktu we frontmatterze, nie w UTF-8, większy
 niż 256 KB (czytamy najwyżej tyle, nigdy całości), niebędący zwykłym plikiem (FIFO, urządzenie) albo
 dowiązanie wskazujące poza katalog tablicy (dowiązanie wewnątrz tablicy działa); numer karty takiego
 pliku i tak jest zajęty. Linie frontmattera, które nie są parą `klucz: wartość`, dają wpis w `errors`; zła wartość (kolumna, kolejność, narzędzie, tryb, `ai-docs`, kolor)
@@ -923,7 +927,7 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_coordination_integration.py` — KRunner („sesje”, filtr słowami, uruchomienie tylko znanych), „Plany i tickety” w raporcie (tablica z pliku, plany z repozytoriów, escapowanie, brak pliku i błędy), `Launchers.show_sessions`,
 - `apps/sessions/tests/` — okno Tide Sesje: pakiet bez kolorów na sztywno, logika `sessions.js` w QJSEngine, zrzuty offscreen z `--data` (tablica, Codex, wynik podagenta) bez ostrzeżeń QML, dane po `tools/sessions_preview.py --sanitize` bez treści, launcher na prywatnej magistrali z prawdziwą usługą i drugie uruchomienie, instalacja,
 - `daemon/tests/test_board_core.py` — tablica bez Qt na tymczasowych repozytoriach z własną konfiguracją gita: frontmatter (nieznane klucze, komentarze i treść po zapisie, cudzysłowy, nowe linie), założenie przy pierwszym zapisie (znacznik, tagi, szablony, brak remote, autor z konfiguracji i „Tide” bez niej, cudzy katalog nietknięty), dokładny format pliku karty, ID (max + 1, bez ponownego użycia, zepsuty plik zajmuje numer), kolejność i przenoszenie z komunikatami commitów, odmowy kolumn wyliczanych, walidacja pól i ID (także `../`), projekty zakładane przy karcie z domyślnym `ai-docs`, tagi (dziedziczenie, kolory z palety, zmiana nazwy w kartach i projektach), szablony trybów (pola, nadpisanie projektu, nieznane klamry), commit zmian z zewnątrz osobno od naszych, złe pliki w `errors`, pomijanie repozytorium tablicy w skanerze po znaczniku,
-- `daemon/tests/test_board_robustness.py` — trudne przypadki: nieudany commit (karta zostaje, `commitError`, bez duplikatu, zaległy commit z własnym komunikatem), osierocona blokada indeksu (git zabity po czasie, stara blokada, blokada żywego gita na atrapie `/proc`), revert z konfliktem (bez commita „sync”, `git-busy`, wpisy w `errors`, znaczniki konfliktu jako błąd pliku), numery kart po revercie (licznik poza historią i historia gita), błąd bez pliku, katalogu i commita (pusty katalog i istniejąca tablica), dowiązania poza tablicę, FIFO i `/dev/zero`, listy YAML i pliki z Windows, kolejność środkiem i przenumerowanie bez miejsca, brak hooków (także post-commit), projekt po nazwie bez `foo-2`, domyślny tryb `full`, zmiana nazwy tagu bez pliku, katalog dokumentów z `RenderFlow`,
+- `daemon/tests/test_board_robustness.py` — trudne przypadki: nieudany commit (karta zostaje, `commitError`, bez duplikatu, zaległy commit z własnym komunikatem), osierocona blokada indeksu (git zabity po czasie, stara blokada, blokada żywego gita na atrapie `/proc`), revert z konfliktem (bez commita „sync”, `git-busy`, wpisy w `errors`, znaczniki konfliktu jako błąd pliku), numery kart po revercie (licznik poza historią; historia gita tylko raz, gdy licznika brak, nigdy w migawce), znaczniki konfliktu w opisie jako zwykły tekst, zaległy commit usuniętego pliku i trwały błąd bez blokowania kolejki, błąd bez pliku, katalogu i commita (pusty katalog i istniejąca tablica), dowiązania poza tablicę, FIFO i `/dev/zero`, listy YAML i pliki z Windows, kolejność środkiem i przenumerowanie bez miejsca, brak hooków (także post-commit), projekt po nazwie bez `foo-2`, domyślny tryb `full`, zmiana nazwy tagu bez pliku, katalog dokumentów z `RenderFlow`,
 - `daemon/tests/test_board_dbus.py` — `BoardMonitor` w procesie (zmiana z zewnątrz → commit i `Changed`, nasz zapis bez drugiego commita, błędy jako JSON) i `/Board` na prywatnej magistrali: introspekcja, `Snapshot`, `CreateCard` z repozytorium, `UpsertProject`, `UpsertTag`, `UpdateCard`, `MoveCard`, `RenderFlow`, sygnał `Changed`, historia commitów, edycja pliku z zewnątrz, błędy `{ok: false, error, message}` z kodami i bez commita, `--no-board`, `--print-board` bez zapisu. Usługi w testach dostają tymczasowy `TIDE_BOARD_DIR` (`privatebus.py`), więc nigdy nie dotykają prawdziwej tablicy,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
