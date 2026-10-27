@@ -207,6 +207,7 @@ class LaunchFieldsTest(BoardCase):
         self.assertEqual((card["branch"], card["worktree"], card["mode"], card["tool"], card["launched"]),
                          ("claude/k-1-grabie", "/r-worktrees/k-1-grabie", "full", "claude", "2026-10-27T12:00:00+01:00"))
         self.assertGreater(card["launchedTs"], 0)
+        self.assertEqual(card["branchSlug"], "k-1-grabie", "część proponowanej gałęzi bez narzędzia")
         for bad in ({"mode": "turbo"}, {"tool": "gemini"}, {"worktree": "wzgledna"}, {"launched": "wczoraj"}):
             with self.assertRaises(BoardError, msg=bad):
                 self.store.update_card("K-1", bad)
