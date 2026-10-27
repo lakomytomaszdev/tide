@@ -68,7 +68,8 @@ class ModelsDBusTest(unittest.TestCase):
         self.assertEqual(mac["error"], f"Model lokalny niedostępny: serwer nie odpowiada "
                                        f"({self.down.removeprefix('http://')})")
         self.assertEqual(state["roles"]["summary"], {"endpoint": "local", "model": "qwen3:8b", "ctx": 8192,
-                                                     "installed": True, "available": True, "error": ""})
+                                                     "installed": True, "available": True, "error": "",
+                                                     "pinned": True})
         self.assertEqual(state["roles"]["agent"]["available"], False)
         self.assertEqual(state["config"], {"path": path, "exists": True, "error": "", "warnings": []})
 
@@ -124,6 +125,198 @@ class ModelsDBusTest(unittest.TestCase):
         self.assertEqual(reply.type(), QDBusMessage.MessageType.ErrorMessage)
         wait_until(lambda: False, timeout=1.5)
         self.assertEqual(self.server.requests, [], "bez obiektu nikt nie pyta serwera")
+
+
+@requires_dbus
+class ModelsSettingsDBusTest(unittest.TestCase):
+    """Zapis ustawień z D-Bus (PT-25): models.json i tokeny w katalogu testu, report.json we własnym
+    XDG_CONFIG_HOME — nigdy prawdziwe ~/.config. Serwery to atrapy; prawdziwa Ollama nie jest pytana."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="tide-models-settings-dbus-")
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.empty = os.path.join(self.tmp, "empty")
+        os.makedirs(self.empty)
+        self.config_home = os.path.join(self.tmp, "config")
+        self.models = os.path.join(self.config_home, "tide", "models.json")
+        self.report = os.path.join(self.config_home, "tide", "report.json")
+        self.server = start_server(self, ollama_routes())
+        self.server.routes[("GET", "/api/ps")] = (200, {"models": []})
+        self.bus = PrivateBus("tide-models-settings-test")
+        self.addCleanup(self.bus.stop)
+
+    def spawn(self, *args):
+        return self.bus.spawn_daemon(
+            "--claude-dir", self.empty, "--codex-dir", self.empty, "--workspace", self.empty, "--no-processes",
+            "--no-krunner", "--no-idle", "--no-limits", "--models-poll", "600", *args,
+            extra_env={"TIDE_MODELS_CONFIG": self.models, "XDG_CONFIG_HOME": self.config_home})
+
+    def call(self, member, *args):
+        reply = self.bus.call(SERVICE, MODELS_PATH, MODELS_IFACE, member, *args)
+        from PyQt6.QtDBus import QDBusMessage
+        self.assertEqual(reply.type(), QDBusMessage.MessageType.ReplyMessage, reply.errorMessage())
+        return json.loads(reply.arguments()[0])
+
+    def status(self):
+        return self.call("Status")
+
+    def changes(self):
+        from PyQt6.QtCore import QObject, pyqtSlot
+        seen = []
+
+        class Receiver(QObject):
+            @pyqtSlot()
+            def changed(self):
+                seen.append(True)
+
+        self.receiver = Receiver()
+        self.assertTrue(self.bus.bus.connect(SERVICE, MODELS_PATH, MODELS_IFACE, "Changed", self.receiver.changed))
+        return seen
+
+    def test_settings_written_from_dbus(self):
+        os.makedirs(os.path.dirname(self.report))
+        with open(self.report, "w", encoding="utf-8") as fh:
+            json.dump({"at": "06:45", "summaryModel": "opus"}, fh)
+        self.spawn()
+        state = self.status()
+        self.assertEqual(state["report"], {"summary": "claude", "configured": "claude", "summaryModel": "opus",
+                                           "raw": None, "pinned": False, "path": self.report, "warnings": []})
+        self.assertEqual(state["pulls"], {})
+        self.assertFalse(os.path.exists(self.models), "start usługi niczego nie zapisuje")
+        seen = self.changes()
+
+        token = "tok-" + secrets.token_hex(12)
+        result = self.call("SetEndpoint", json.dumps({"name": "mac", "url": self.server.url, "kind": "ollama",
+                                                      "token": token}))
+        self.assertEqual(result, {"ok": True, "error": ""})
+        self.assertTrue(wait_until(lambda: seen, timeout=5), "Changed po zapisie")
+        state = self.status()
+        self.assertEqual(state["endpoints"]["mac"]["auth"], True)
+        self.assertNotIn(token, json.dumps(state))
+        state = wait_until(lambda: self.status()["endpoints"]["mac"]["online"] and self.status(), timeout=10)
+        self.assertTrue(state, "nowy punkt sprawdzony zaraz po zapisie")
+        self.assertIn(("/api/version", f"Bearer {token}"), {(r["path"], r["auth"]) for r in self.server.requests})
+        token_file = os.path.join(self.config_home, "tide", "tokens", "mac")
+        self.assertEqual(oct(os.stat(token_file).st_mode & 0o777), oct(0o600))
+        self.assertEqual(oct(os.stat(self.models).st_mode & 0o777), oct(0o600))
+
+        self.assertEqual(self.call("SetRole", json.dumps({"role": "agent", "model": "qwen3-coder:30b"})),
+                         {"ok": True, "error": ""})
+        self.assertEqual(self.call("SetDefault", "mac"), {"ok": True, "error": ""})
+        state = self.status()  # stan po zapisie od razu z nowych ustawień, bez czekania na odczyt
+        self.assertEqual(state["default"], "mac")
+        self.assertEqual({r: state["roles"][r]["endpoint"] for r in ("summary", "describe", "agent")},
+                         {"summary": "mac", "describe": "mac", "agent": "mac"})
+        state = wait_until(lambda: self.status()["roles"]["summary"]["available"] and self.status(), timeout=10)
+        self.assertTrue(state, "rola summary dostępna na nowym domyślnym punkcie")
+
+        refused = self.call("RemoveEndpoint", "mac")
+        self.assertEqual(refused["ok"], False)
+        self.assertIn("domyślny", refused["error"])
+        self.assertEqual(self.call("RemoveEndpoint", "local"), {"ok": True, "error": ""})
+        self.assertEqual(list(self.status()["endpoints"]), ["mac"])
+        self.assertEqual(self.call("SetEndpoint", "nie json")["ok"], False)
+        bad = self.call("SetEndpoint", json.dumps({"name": "lm", "url": "http://lm:1234", "kind": "llamacpp"}))
+        self.assertEqual(bad, {"ok": False, "error": "serwer „lm”: nieznany rodzaj „llamacpp” (ollama albo openai)"})
+
+        self.assertEqual(self.call("SetReportSummary", "local"), {"ok": True, "error": ""})
+        with open(self.report, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), {"at": "06:45", "summaryModel": "opus", "summary": "local"})
+        self.assertEqual((self.status()["report"]["summary"], self.status()["report"]["configured"]),
+                         ("local", "local"), "tryb działa od razu w usłudze")
+        wrong = self.call("SetReportSummary", "Local")
+        self.assertEqual(wrong["ok"], False)
+        self.assertIn("claude, local, rules", wrong["error"])
+
+        xml = self.bus.call(SERVICE, MODELS_PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
+        for member in ("SetEndpoint", "RemoveEndpoint", "SetDefault", "SetRole", "SetReportSummary", "TestEndpoint",
+                       "PullModel"):
+            self.assertIn(f'<method name="{member}">', xml)
+
+    def test_pinned_report_summary_changes_only_the_file(self):
+        self.spawn("--report-summary", "rules")
+        self.assertEqual(self.call("SetReportSummary", "local"), {"ok": True, "error": ""})
+        report = self.status()["report"]
+        self.assertEqual((report["summary"], report["configured"], report["pinned"]), ("rules", "local", True))
+
+    def test_test_endpoint_is_async_and_saves_nothing(self):
+        import threading
+        import time
+        self.spawn()
+        result = self.call("TestEndpoint", json.dumps({"url": self.server.url, "kind": "ollama", "token": "abc"}))
+        self.assertEqual(result, {"ok": True, "error": "", "version": "0.40.11", "models": 3})
+        self.assertEqual({r["auth"] for r in self.server.requests if r["path"] == "/api/tags"}, {"Bearer abc"})
+        down = self.call("TestEndpoint", json.dumps({"url": f"http://127.0.0.1:{closed_port()}"}))
+        self.assertEqual(down["ok"], False)
+        self.assertIn("serwer nie odpowiada", down["error"])
+        self.assertEqual(self.call("TestEndpoint", json.dumps({"name": "mac"}))["error"], "nieznany serwer „mac”")
+        self.assertFalse(os.path.exists(self.models), "próba niczego nie zapisuje")
+
+        # Wolny serwer: odpowiedź po odczycie, a w tym czasie usługa odpowiada na inne wywołania.
+        slow = start_server(self, ollama_routes())
+        slow.delay = 1.0
+        box = {}
+
+        def call_slow():  # osobne połączenie testu w innym wątku — wywołanie blokujące
+            from PyQt6.QtDBus import QDBus, QDBusConnection, QDBusMessage
+            conn = QDBusConnection.connectToBus(self.bus.address, "tide-models-slow-thread")
+            msg = QDBusMessage.createMethodCall(SERVICE, MODELS_PATH, MODELS_IFACE, "TestEndpoint")
+            msg.setArguments([json.dumps({"url": slow.url})])
+            box["reply"] = conn.call(msg, QDBus.CallMode.Block, 10000).arguments()
+            QDBusConnection.disconnectFromBus("tide-models-slow-thread")
+
+        worker = threading.Thread(target=call_slow)
+        worker.start()
+        time.sleep(0.3)
+        started = time.monotonic()
+        self.status()
+        self.assertLess(time.monotonic() - started, 0.5, "Status() nie czeka na próbę połączenia")
+        worker.join(15)
+        self.assertEqual(json.loads(box["reply"][0])["version"], "0.40.11")
+
+    def test_pull_model_progress(self):
+        from .test_models_settings import PULL_LINES
+
+        def slow_stream(handler):
+            import time
+            try:
+                handler.send_response(200)
+                handler.send_header("Transfer-Encoding", "chunked")
+                handler.end_headers()
+                for line in PULL_LINES:
+                    data = (json.dumps(line) + "\n").encode()
+                    handler.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+                    handler.wfile.flush()
+                    time.sleep(0.4)
+                handler.wfile.write(b"0\r\n\r\n")
+            except OSError:
+                pass
+
+        self.server.routes[("POST", "/api/pull")] = (200, slow_stream)
+        os.makedirs(os.path.dirname(self.models))
+        with open(self.models, "w", encoding="utf-8") as fh:
+            json.dump({"endpoints": {"local": {"url": self.server.url},
+                                     "lm": {"url": self.server.url, "kind": "openai"}}}, fh)
+        self.spawn()
+        seen = self.changes()
+        self.assertEqual(self.call("PullModel", json.dumps({"endpoint": "local", "model": "qwen3:8b"})),
+                         {"ok": True, "error": "", "key": "local/qwen3:8b"})
+        busy = self.call("PullModel", json.dumps({"endpoint": "local", "model": "bge-m3"}))
+        self.assertEqual((busy["ok"], busy["key"]), (False, ""))
+        self.assertIn("trwa już pobieranie qwen3:8b", busy["error"])
+        self.assertIn("tylko z Ollamą", self.call("PullModel", json.dumps({"endpoint": "lm", "model": "x"}))["error"])
+
+        progress = wait_until(lambda: (self.status()["pulls"].get("local/qwen3:8b") or {}).get("total")
+                              and self.status()["pulls"]["local/qwen3:8b"], timeout=10)
+        self.assertTrue(progress, "postęp w Status().pulls")
+        self.assertEqual((progress["endpoint"], progress["model"], progress["running"]), ("local", "qwen3:8b", True))
+        done = wait_until(lambda: self.status()["pulls"]["local/qwen3:8b"]["status"] == "success"
+                          and self.status()["pulls"]["local/qwen3:8b"], timeout=10)
+        self.assertEqual(done, {"endpoint": "local", "model": "qwen3:8b", "status": "success", "completed": 1100,
+                                "total": 1100, "running": False, "error": ""})
+        self.assertTrue(seen)
+        self.assertEqual([r["body"] for r in self.server.requests if r["path"] == "/api/pull"],
+                         [{"model": "qwen3:8b", "stream": True}])
 
 
 class PrintModelsTest(unittest.TestCase):

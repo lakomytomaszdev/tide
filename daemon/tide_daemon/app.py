@@ -226,7 +226,7 @@ def main(argv=None) -> int:
                                                          coordination, report)
     idle = None if args.no_idle else start_idle(app, args)
     limits = None if args.no_limits else start_limits(app, args, clock)
-    models = None if args.no_models else start_models(app, args)
+    models = None if args.no_models else start_models(app, args, report, coordination)
     tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
     board = None if args.no_board else start_board(app, args, trees, monitor, coordination, clock)
     if board is not None:
@@ -612,11 +612,25 @@ def limits_once(clock) -> dict:
     return tracker.snapshot()
 
 
-def start_models(app, args):
-    """Stan serwerów modeli lokalnych (models/, models_monitor.py); models.json czytany przy każdym odczycie."""
-    from .models_monitor import ModelsMonitor
+def start_models(app, args, report=None, coordination=None):
+    """Modele lokalne (models/, models_monitor.py): stan serwerów (models.json czytany przy każdym odczycie)
+    i zapis ustawień z okna Tide. SetReportSummary przełącza od razu raport i opisy kart (bez restartu),
+    chyba że tryb wymusza --report-summary."""
+    from .models_monitor import ModelsMonitor, ReportLink
     poll_ms = int(round(args.models_poll * 1000)) if args.models_poll and args.models_poll > 0 else None
-    return ModelsMonitor(poll_ms=poll_ms, parent=app)
+
+    def live():
+        return args.report_summary or (report.summary if report is not None else None)
+
+    def apply(mode):
+        if report is not None:
+            report.summary = mode
+        describer = getattr(coordination, "describer", None)
+        if describer is not None:
+            describer.set_mode(mode)
+
+    link = ReportLink(live=live, apply=apply, pinned=bool(args.report_summary))
+    return ModelsMonitor(poll_ms=poll_ms, report=link, parent=app)
 
 
 def start_krunner(app, args, clock, monitor, trees, coordination=None, report=None):

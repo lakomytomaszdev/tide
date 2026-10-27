@@ -89,6 +89,13 @@ def reports_root(env=None) -> str:
     return os.path.join(data, "tide", "reports")
 
 
+def summary_problem(value) -> str:
+    """Komunikat o złym `summary` — ten sam przy odczycie report.json i przy zapisie z D-Bus (/Models)."""
+    shown = repr(value)
+    shown = shown if len(shown) <= 40 else shown[:39] + "…"
+    return f"raport: summary musi być jednym z {', '.join(SUMMARY_MODES)}, jest {shown}"
+
+
 def load_settings(path: str | None = None, at: str | None = None, enabled: bool | None = None) -> tuple[Settings, list[str]]:
     """Ustawienia z pliku (opcjonalnego) i opcji wiersza poleceń. Zwraca (ustawienia, ostrzeżenia).
 
@@ -127,8 +134,7 @@ def load_settings(path: str | None = None, at: str | None = None, enabled: bool 
             settings.summary = data["summary"]
         else:  # literówka („Local”) nie może wysłać faktów do Anthropic — bez modelu, z ostrzeżeniem
             settings.summary = "rules"
-            warnings.append(f"raport: summary musi być jednym z {', '.join(SUMMARY_MODES)}, jest {data['summary']!r} "
-                            f"— opis z reguł")
+            warnings.append(f"{summary_problem(data['summary'])} — opis z reguł")
     if "summaryModel" in data:
         value = data["summaryModel"]
         if isinstance(value, str) and MODEL_RE.match(value):

@@ -82,8 +82,20 @@ Obiekt /Limits, interfejs org.tide.Daemon.Limits (prognoza Limitów AI z histori
 
 Obiekt /Models, interfejs org.tide.Daemon.Models (modele lokalne: serwery z models.json i role):
 - Status() -> s              JSON {checked, default, config, endpoints: {nazwa: stan}, roles: {rola: …}} — bez tokenów,
+                             oraz report (tryb „Na daily”) i pulls (pobierania modeli),
 - Refresh()                  odczyt stanu teraz (wynik przyjdzie sygnałem Changed, jeśli coś się zmieniło),
-- sygnał Changed()           stan serwerów, modeli albo ustawień się zmienił — warto pobrać Status() ponownie.
+- SetEndpoint(s json) -> s   nowy albo zmieniony punkt {name, url, kind, token?, clearToken?} → {ok, error};
+                             token do $XDG_CONFIG_HOME/tide/tokens/<punkt> (0600), nigdy w odpowiedzi,
+- RemoveEndpoint(s name) -> s  usunięcie punktu; odmowa dla domyślnego, ostatniego i z przypiętymi rolami,
+- SetDefault(s name) -> s    domyślny punkt (przełącznik „ten komputer / Mac”: role bez punktu idą za nim),
+- SetRole(s json) -> s       rola {role, model, endpoint? ("" — za domyślnym), ctx? (null — domyślny)} → {ok, error},
+- SetReportSummary(s mode) -> s  `summary` w report.json (claude, local, rules), działa od razu → {ok, error},
+- TestEndpoint(s json) -> s  próba połączenia bez zapisu ({name} albo {url, kind, token?}) → {ok, error, version,
+                             models} (odpowiedź po odczycie),
+- PullModel(s json) -> s     pobieranie modelu na punkt Ollamy {endpoint, model} → od razu {ok, error, key};
+                             postęp w Status().pulls[key],
+- sygnał Changed()           stan serwerów, modeli albo ustawień się zmienił — warto pobrać Status() ponownie
+                             (także po każdym udanym zapisie ustawień).
 
 Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git, board/):
 - Snapshot() -> s            JSON: kolumny, projekty, tagi, karty (z tagami projektu), katalog, ostatni
@@ -273,9 +285,17 @@ LIMITS_XML = f"""<interface name="{LIMITS_IFACE}">
   <signal name="Changed"/>
 </interface>"""
 
+_JSON_CALL = """  <method name="{name}">
+    <arg name="{arg}" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>"""
+
 MODELS_XML = f"""<interface name="{MODELS_IFACE}">
   <method name="Status"><arg name="json" type="s" direction="out"/></method>
   <method name="Refresh"/>
+{chr(10).join(_JSON_CALL.format(name=n, arg=a) for n, a in (
+    ("SetEndpoint", "request"), ("RemoveEndpoint", "name"), ("SetDefault", "name"), ("SetRole", "request"),
+    ("SetReportSummary", "mode"), ("TestEndpoint", "request"), ("PullModel", "request")))}
   <signal name="Changed"/>
 </interface>"""
 
@@ -598,9 +618,10 @@ class LimitsAdaptor(QDBusAbstractAdaptor):
 class ModelsAdaptor(QDBusAbstractAdaptor):
     Changed = pyqtSignal()
 
-    def __init__(self, parent: QObject, monitor):
+    def __init__(self, parent: QObject, monitor, bus: QDBusConnection):
         super().__init__(parent)
         self.monitor = monitor
+        self.bus = bus
         monitor.changed.connect(self.Changed)
 
     @pyqtSlot(result=str)
@@ -610,6 +631,43 @@ class ModelsAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot()
     def Refresh(self) -> None:
         self.monitor.refresh()
+
+    @pyqtSlot(str, result=str)
+    def SetEndpoint(self, request: str) -> str:
+        return self.monitor.set_endpoint(request)
+
+    @pyqtSlot(str, result=str)
+    def RemoveEndpoint(self, name: str) -> str:
+        return self.monitor.remove_endpoint(name)
+
+    @pyqtSlot(str, result=str)
+    def SetDefault(self, name: str) -> str:
+        return self.monitor.set_default(name)
+
+    @pyqtSlot(str, result=str)
+    def SetRole(self, request: str) -> str:
+        return self.monitor.set_role(request)
+
+    @pyqtSlot(str, result=str)
+    def SetReportSummary(self, mode: str) -> str:
+        return self.monitor.set_report_summary(mode)
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def TestEndpoint(self, request: str, message: QDBusMessage) -> str:
+        # Odczyt z serwera (do 2 × 3 s) w puli monitora — odpowiedź D-Bus później, pętla Qt nie czeka.
+        message.setDelayedReply(True)
+        call = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if not self.bus.send(call.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Models.TestEndpoint", flush=True)
+
+        self.monitor.test_endpoint(request, reply)
+        return ""
+
+    @pyqtSlot(str, result=str)
+    def PullModel(self, request: str) -> str:
+        return self.monitor.pull_model(request)
 
 
 @pyqtClassInfo("D-Bus Interface", COORDINATION_IFACE)
@@ -841,7 +899,7 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
             raise RuntimeError(f"nie udało się zarejestrować obiektu {LIMITS_PATH}")
     if models is not None:
         holder.models = QObject(holder)
-        holder.models.adaptor = ModelsAdaptor(holder.models, models)
+        holder.models.adaptor = ModelsAdaptor(holder.models, models, bus)
         if not bus.registerObject(MODELS_PATH, holder.models):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {MODELS_PATH}")
     if coordination is not None:

@@ -67,7 +67,7 @@ def _openai_models(listing) -> list[dict]:
 def _offline(endpoint, error: str = "") -> dict:
     """Punkt bez odczytu: `loaded` to lista tylko dla Ollamy (serwer zgodny z OpenAI go nie podaje)."""
     return {"name": endpoint.name, "url": endpoint.public_url(), "kind": endpoint.kind,
-            "auth": bool(endpoint.token_file), "online": False, "error": error, "version": None, "models": [],
+            "auth": bool(endpoint.token_file or endpoint.token), "online": False, "error": error, "version": None, "models": [],
             "loaded": [] if endpoint.kind == "ollama" else None}
 
 
@@ -92,9 +92,41 @@ def endpoint_status(endpoint, timeout: float = STATUS_TIMEOUT_S) -> dict:
     return result
 
 
+def probe(endpoint, timeout: float = STATUS_TIMEOUT_S, cancel=None) -> dict:
+    """Próba połączenia (TestEndpoint z D-Bus, przed zapisem): wersja i liczba modeli, bez /api/ps.
+    {ok, error, version, models} — `ok` to „serwer odpowiada”; błąd to komunikat z ModelError."""
+    try:
+        if endpoint.kind == "ollama":
+            version = request(endpoint, "GET", "/api/version", timeout=timeout, cancel=cancel)
+            tags = request(endpoint, "GET", "/api/tags", timeout=timeout, cancel=cancel)
+            return {"ok": True, "error": "", "version": _str(version.get("version")) if isinstance(version, dict)
+                    else "", "models": len(_ollama_models(tags))}
+        listing = request(endpoint, "GET", "/v1/models", timeout=timeout, cancel=cancel)
+        return {"ok": True, "error": "", "version": None, "models": len(_openai_models(listing))}
+    except ModelError as exc:
+        return {"ok": False, "error": str(exc), "version": None, "models": None}
+    except Exception as exc:  # przeoczony przypadek nie może zostawić wywołującego bez odpowiedzi
+        return {"ok": False, "error": f"Model lokalny: błąd próby połączenia ({type(exc).__name__})",
+                "version": None, "models": None}
+
+
 def snapshot(cfg, timeout: float = STATUS_TIMEOUT_S) -> dict:
     """Stan wszystkich punktów i ról z konfiguracji. Role: {endpoint, model, ctx, installed, available, error}."""
     endpoints = {name: endpoint_status(endpoint, timeout) for name, endpoint in cfg.endpoints.items()}
+    return assemble(cfg, endpoints)
+
+
+def same_endpoint(state: dict, endpoint) -> bool:
+    """Stan punktu z poprzedniego odczytu nadal opisuje ten punkt (ta sama nazwa, adres, rodzaj i token)."""
+    return (isinstance(state, dict) and state.get("name") == endpoint.name and state.get("url") == endpoint.public_url()
+            and state.get("kind") == endpoint.kind and state.get("auth") == bool(endpoint.token_file))
+
+
+def assemble(cfg, endpoints: dict, checked: bool = True) -> dict:
+    """Stan z konfiguracji i stanów punktów. Punkt bez stanu (np. dopiero dodany z D-Bus) jest „nie sprawdzony”:
+    `online: false` bez błędu — do następnego odczytu."""
+    endpoints = {name: endpoints[name] if same_endpoint(endpoints.get(name), endpoint) else _offline(endpoint)
+                 for name, endpoint in cfg.endpoints.items()}
     roles = {}
     for name, role in cfg.roles.items():
         state = endpoints.get(role.endpoint) or {}
@@ -106,16 +138,14 @@ def snapshot(cfg, timeout: float = STATUS_TIMEOUT_S) -> dict:
             else:
                 installed = role.model in names
         roles[name] = {"endpoint": role.endpoint, "model": role.model, "ctx": role.ctx, "installed": installed,
-                       "available": bool(state.get("online") and installed and not role.error), "error": role.error}
-    return {"checked": True, "default": cfg.default, "config": cfg.public(), "endpoints": endpoints, "roles": roles}
+                       "available": bool(state.get("online") and installed and not role.error), "error": role.error,
+                       "pinned": role.pinned}
+    return {"checked": checked, "default": cfg.default, "config": cfg.public(), "endpoints": endpoints, "roles": roles}
 
 
 def pending(cfg) -> dict:
     """Stan przed pierwszym odczytem (usługa dopiero wystartowała): `checked: false`, nic nie wiadomo."""
-    endpoints = {name: _offline(endpoint) for name, endpoint in cfg.endpoints.items()}
-    roles = {name: {"endpoint": r.endpoint, "model": r.model, "ctx": r.ctx, "installed": None, "available": False,
-                    "error": r.error} for name, r in cfg.roles.items()}
-    return {"checked": False, "default": cfg.default, "config": cfg.public(), "endpoints": endpoints, "roles": roles}
+    return assemble(cfg, {}, checked=False)
 
 
 def read(path: str | None = None, timeout: float = STATUS_TIMEOUT_S) -> dict:

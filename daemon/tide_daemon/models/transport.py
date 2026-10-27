@@ -207,6 +207,38 @@ def _exchange(endpoint, method: str, path: str, data: bytes | None, headers: dic
         sock.close()
 
 
+def _failure(exc: BaseException, host: str, waited: str) -> ModelError:
+    """Wyjątek z gniazda albo terminu jako ModelError z krótkim komunikatem po polsku."""
+    if isinstance(exc, _Cancelled):
+        return ModelError(f"Model lokalny: wywołanie przerwane — usługa się zamyka ({host})")
+    if isinstance(exc, _Expired):
+        return ModelError(f"Model lokalny nie odpowiedział w {waited} ({host})")
+    if isinstance(exc, socket.gaierror):
+        return ModelError(f"Model lokalny niedostępny: nie znaleziono serwera ({host})")
+    if isinstance(exc, ssl.SSLError):
+        return ModelError(f"Model lokalny niedostępny: błąd TLS ({host}, {type(exc).__name__})")
+    if isinstance(exc, ConnectionRefusedError):
+        return ModelError(f"Model lokalny niedostępny: serwer nie odpowiada ({host})")
+    if isinstance(exc, (http.client.HTTPException, ConnectionError)):
+        return ModelError(f"Model lokalny niedostępny: połączenie przerwane ({host}, {type(exc).__name__})")
+    return ModelError(f"Model lokalny niedostępny: serwer nie odpowiada ({host}, {type(exc).__name__})")
+
+
+_FAILURES = (_Cancelled, _Expired, OSError, http.client.HTTPException)
+
+
+def _http_error(status: int, raw: bytes, host: str) -> ModelError | None:
+    if 300 <= status < 400:
+        return ModelError(f"Model lokalny: serwer odpowiedział {status} — przekierowanie nie jest obsługiwane "
+                          f"({host})", status=status)
+    if status >= 400:
+        detail = _detail(raw[:64 * 1024])
+        suffix = f": {detail}" if detail else ""
+        return ModelError(f"Model lokalny: serwer odpowiedział {status}{suffix} ({host})", status=status,
+                          detail=detail)
+    return None
+
+
 def request(endpoint, method: str, path: str, body=None, timeout: float = 10.0, cancel: Cancel | None = None):
     """Zapytanie do `endpoint.url + path`, w całości najwyżej `timeout` s; odpowiedź JSON (dict albo list).
     `cancel` — przerwanie z innego wątku. Błąd → ModelError."""
@@ -217,27 +249,11 @@ def request(endpoint, method: str, path: str, body=None, timeout: float = 10.0, 
     deadline = time.monotonic() + timeout
     try:
         status, raw = _exchange(endpoint, method, full_path, data, headers, deadline, cancel)
-    except _Cancelled:
-        raise ModelError(f"Model lokalny: wywołanie przerwane — usługa się zamyka ({host})") from None
-    except _Expired:
-        raise ModelError(f"Model lokalny nie odpowiedział w {timeout:g} s ({host})") from None
-    except socket.gaierror:
-        raise ModelError(f"Model lokalny niedostępny: nie znaleziono serwera ({host})") from None
-    except ssl.SSLError as exc:
-        raise ModelError(f"Model lokalny niedostępny: błąd TLS ({host}, {type(exc).__name__})") from None
-    except ConnectionRefusedError:
-        raise ModelError(f"Model lokalny niedostępny: serwer nie odpowiada ({host})") from None
-    except (http.client.HTTPException, ConnectionError) as exc:
-        raise ModelError(f"Model lokalny niedostępny: połączenie przerwane ({host}, {type(exc).__name__})") from None
-    except OSError as exc:
-        raise ModelError(f"Model lokalny niedostępny: serwer nie odpowiada ({host}, {type(exc).__name__})") from None
-    if 300 <= status < 400:
-        raise ModelError(f"Model lokalny: serwer odpowiedział {status} — przekierowanie nie jest obsługiwane "
-                         f"({host})", status=status)
-    if status >= 400:
-        detail = _detail(raw[:64 * 1024])
-        suffix = f": {detail}" if detail else ""
-        raise ModelError(f"Model lokalny: serwer odpowiedział {status}{suffix} ({host})", status=status, detail=detail)
+    except _FAILURES as exc:
+        raise _failure(exc, host, f"{timeout:g} s") from None
+    error = _http_error(status, raw, host)
+    if error:
+        raise error
     if len(raw) > MAX_BYTES:
         raise ModelError(f"Model lokalny: za duża odpowiedź serwera ({host})")
     try:
@@ -247,3 +263,106 @@ def request(endpoint, method: str, path: str, body=None, timeout: float = 10.0, 
     if not isinstance(result, (dict, list)):
         raise ModelError(f"Model lokalny: nieczytelna odpowiedź serwera ({host})")
     return result
+
+
+LINE_MAX = 64 * 1024
+
+
+def stream(endpoint, method: str, path: str, body, on_line, connect_timeout: float = 10.0,
+           idle_timeout: float = 120.0, cancel: Cancel | None = None) -> None:
+    """Zapytanie z odpowiedzią strumieniową (JSON w liniach, np. Ollama `POST /api/pull`): `on_line(obiekt)`
+    dla każdej linii, w wątku wywołującego. Bez terminu całości (pobieranie modelu trwa nawet godzinę):
+    łączenie i nagłówki najwyżej `connect_timeout` s, potem najwyżej `idle_timeout` s ciszy między
+    porcjami danych. `cancel.set()` z innego wątku zamyka gniazdo od razu. Błąd → ModelError."""
+    host = endpoint.host
+    headers = endpoint.headers()
+    data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+    full_path = urllib.parse.urlsplit(endpoint.url).path.rstrip("/") + path
+    scheme, hostname, port = endpoint.address()
+    port = port or (443 if scheme == "https" else 80)
+    deadline = time.monotonic() + connect_timeout
+    cancelled = threading.Event()
+    expired = threading.Event()
+    state = {"waited": f"{connect_timeout:g} s", "sock": None}
+
+    def shut():
+        sock = state["sock"]
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def stop():
+        cancelled.set()
+        shut()
+
+    def cut():  # termin łączenia i nagłówków minął — serwer sączący nagłówki nie trzyma wątku
+        expired.set()
+        shut()
+
+    registered = False
+    conn = timer = None
+    try:
+        if cancel is not None:
+            registered = cancel._register(stop)
+            if not registered:
+                raise _Cancelled()
+        sock = _connect(hostname, port, deadline)
+        state["sock"] = sock
+        if cancelled.is_set():
+            raise _Cancelled()
+        conn = http.client.HTTPConnection(hostname, port)
+        if scheme == "https":
+            conn.default_port = 443
+            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=hostname)
+            state["sock"] = sock
+        conn.sock = sock
+        timer = threading.Timer(_left(deadline), cut)
+        timer.daemon = True
+        timer.start()
+        sock.settimeout(_left(deadline))
+        conn.request(method, full_path, body=data, headers=headers)
+        response = conn.getresponse()
+        timer.cancel()
+        if expired.is_set():
+            raise _Expired()
+        state["waited"] = f"{idle_timeout:g} s"
+        sock.settimeout(idle_timeout)
+        if response.status >= 300:
+            error = _http_error(response.status, response.read(64 * 1024), host)
+            raise error
+        while True:
+            line = response.readline(LINE_MAX + 1)
+            if cancelled.is_set():
+                raise _Cancelled()
+            if not line:
+                return
+            if len(line) > LINE_MAX:
+                raise ModelError(f"Model lokalny: za długa linia odpowiedzi serwera ({host})")
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line.decode("utf-8"))
+            except ValueError:
+                raise ModelError(f"Model lokalny: nieczytelna odpowiedź serwera ({host})") from None
+            on_line(item)
+    except ModelError:
+        if cancelled.is_set():
+            raise _failure(_Cancelled(), host, "") from None
+        raise
+    except TimeoutError:
+        raise _failure(_Cancelled() if cancelled.is_set() else _Expired(), host, state["waited"]) from None
+    except _FAILURES as exc:
+        if not cancelled.is_set() and expired.is_set():
+            exc = _Expired()
+        raise _failure(_Cancelled() if cancelled.is_set() else exc, host, state["waited"]) from None
+    finally:
+        if timer:
+            timer.cancel()
+        if registered:
+            cancel._unregister(stop)
+        if conn:
+            conn.close()
+        if state["sock"] is not None:
+            state["sock"].close()
