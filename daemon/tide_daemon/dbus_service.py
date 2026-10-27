@@ -69,6 +69,18 @@ Obiekt /Coordination, interfejs org.tide.Daemon.Coordination (koordynatorzy, tic
 Obiekt /Limits, interfejs org.tide.Daemon.Limits (prognoza Limitów AI z historii odczytów):
 - Forecast() -> s            JSON {available, error, services: {usługa: {session|weekly: prognoza}}},
 - sygnał Changed()           prognoza albo dostępność usługi Limity AI się zmieniła.
+
+Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git, board/):
+- Snapshot() -> s            JSON: kolumny, projekty, tagi, karty (z tagami projektu), katalog, ostatni
+                             commit, błędy plików, repozytoria do dodania jako projekty,
+- CreateCard(s json) -> s    nowa karta {title, description, project|repo, tags, column, note, …} → {ok, id}|{error},
+- UpdateCard(s id, s json) -> s  zmiana pól karty (bez kolumny i kolejności) → {ok, id, changed}|{error},
+- MoveCard(s id, s column, i order) -> s  ręczna kolumna i pozycja w niej (od 0, -1 = koniec),
+- UpsertProject(s json) -> s nowy albo zmieniony projekt → {ok, slug, changed}|{error},
+- UpsertTag(s json) -> s     nowy albo zmieniony tag (także newName — zmiana nazwy w kartach) → {ok, name, changed}|{error},
+- RenderFlow(s id, s mode) -> s  polecenie trybu dla karty: {text, mode, tool, branch, docsDir, …}|{error},
+- sygnał Changed()           tablica się zmieniła (nasz zapis albo zmiana z zewnątrz).
+Każda zmiana to commit w repozytorium tablicy; błędy to JSON {error} po polsku.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
@@ -88,6 +100,8 @@ COORDINATION_PATH = "/Coordination"
 COORDINATION_IFACE = "org.tide.Daemon.Coordination"
 LIMITS_PATH = "/Limits"
 LIMITS_IFACE = "org.tide.Daemon.Limits"
+BOARD_PATH = "/Board"
+BOARD_IFACE = "org.tide.Daemon.Board"
 
 AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
   <method name="Sessions"><arg name="json" type="s" direction="out"/></method>
@@ -195,6 +209,40 @@ COORDINATION_XML = f"""<interface name="{COORDINATION_IFACE}">
 
 LIMITS_XML = f"""<interface name="{LIMITS_IFACE}">
   <method name="Forecast"><arg name="json" type="s" direction="out"/></method>
+  <signal name="Changed"/>
+</interface>"""
+
+
+BOARD_XML = f"""<interface name="{BOARD_IFACE}">
+  <method name="Snapshot"><arg name="json" type="s" direction="out"/></method>
+  <method name="CreateCard">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="UpdateCard">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="MoveCard">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="column" type="s" direction="in"/>
+    <arg name="order" type="i" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="UpsertProject">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="UpsertTag">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="RenderFlow">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="mode" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <signal name="Changed"/>
 </interface>"""
 
@@ -450,8 +498,47 @@ class CoordinationAdaptor(QDBusAbstractAdaptor):
         self.monitor.refresh(force_tracker=bool(force))
 
 
+@pyqtClassInfo("D-Bus Interface", BOARD_IFACE)
+@pyqtClassInfo("D-Bus Introspection", BOARD_XML)
+class BoardAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, monitor):
+        super().__init__(parent)
+        self.monitor = monitor
+        monitor.changed.connect(self.Changed)
+
+    @pyqtSlot(result=str)
+    def Snapshot(self) -> str:
+        return self.monitor.snapshot_json()
+
+    @pyqtSlot(str, result=str)
+    def CreateCard(self, request: str) -> str:
+        return self.monitor.create_card(request)
+
+    @pyqtSlot(str, str, result=str)
+    def UpdateCard(self, card_id: str, request: str) -> str:
+        return self.monitor.update_card(card_id, request)
+
+    @pyqtSlot(str, str, int, result=str)
+    def MoveCard(self, card_id: str, column: str, order: int) -> str:
+        return self.monitor.move_card(card_id, column, order)
+
+    @pyqtSlot(str, result=str)
+    def UpsertProject(self, request: str) -> str:
+        return self.monitor.upsert_project(request)
+
+    @pyqtSlot(str, result=str)
+    def UpsertTag(self, request: str) -> str:
+        return self.monitor.upsert_tag(request)
+
+    @pyqtSlot(str, str, result=str)
+    def RenderFlow(self, card_id: str, mode: str) -> str:
+        return self.monitor.render_flow(card_id, mode)
+
+
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
-             limits=None, tasks=None, coordination=None) -> QObject:
+             limits=None, tasks=None, coordination=None, board=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -491,6 +578,11 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.coordination.adaptor = CoordinationAdaptor(holder.coordination, coordination)
         if not bus.registerObject(COORDINATION_PATH, holder.coordination):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {COORDINATION_PATH}")
+    if board is not None:
+        holder.board = QObject(holder)
+        holder.board.adaptor = BoardAdaptor(holder.board, board)
+        if not bus.registerObject(BOARD_PATH, holder.board):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {BOARD_PATH}")
     if not bus.registerService(SERVICE):
         raise RuntimeError(f"nazwa {SERVICE} jest już zajęta (działa inna kopia usługi?)")
     return holder
