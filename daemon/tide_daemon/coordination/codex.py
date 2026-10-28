@@ -24,7 +24,7 @@ import re
 from ..agents.codex import describe_call
 from ..agents.timeutil import parse_ts
 from . import plan as plan_mod
-from .model import COMPLETED, KILLED, PROMPT_HEAD, Coordinator, Question, Run
+from .model import COMPLETED, KILLED, PROMPT_HEAD, Coordinator, Question, Run, add_plan_write
 
 LINE_MARKERS = (b'"task_started"', b'"task_complete"', b'"turn_aborted"', b'"spawn_agent"',
                 b'"request_user_input"', b'"function_call_output"', b'"user_message"', b'"turn_context"')
@@ -59,7 +59,7 @@ class CodexThreadLog:
         self.spawns: dict[str, dict] = {}        # task_name → {ts, agent_type, model, message}
         self._calls: dict[str, dict] = {}        # call_id → wywołanie request_user_input
         self.questions: dict[str, Question] = {}
-        self.plan_writes: dict[str, float] = {}  # plik planu zapisany łatką → czas (Coordinator.plan_writes)
+        self.plan_writes: dict[str, tuple] = {}  # plik planu zapisany łatką → (liczba, czas) (Coordinator.plan_writes)
 
     def read_meta(self) -> bool:
         """Sama pierwsza linia (session_meta) — tanio, do zbudowania drzewa wątków."""
@@ -172,7 +172,7 @@ class CodexThreadLog:
             if item in ("function_call", "custom_tool_call"):
                 raw = payload.get("input") if item == "custom_tool_call" else payload.get("arguments")
                 for name in plan_mod.patch_plan_files(raw if isinstance(raw, str) else ""):
-                    self.plan_writes[name] = max(ts, self.plan_writes.get(name, 0.0))
+                    add_plan_write(self.plan_writes, name, ts)
             if item == "function_call":
                 name = payload.get("name")
                 args = _args(payload.get("arguments"))

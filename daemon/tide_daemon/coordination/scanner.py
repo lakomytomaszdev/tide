@@ -146,7 +146,11 @@ class CoordinationScanner:
         live = {s.get("id"): s for s in live_sessions or ()}
         now = self.clock()
         places = {cid: self._place(coord) for cid, coord in coords.items()}
-        owners = plan_owners(coords.values(), {cid: (place[3] or [""])[-1] for cid, place in places.items()})
+        # Plan staje się „cudzy” tylko przez działającego koordynatora — zakończony albo taki, który poszedł
+        # dalej, nie blokuje planu następcy.
+        running = {cid for cid, session in live.items() if session and session.get("state") not in ("ended", None)}
+        owners = plan_owners([c for c in coords.values() if c.id in running],
+                             {cid: (place[3] or [""])[-1] for cid, place in places.items()})
         boards = []
         for coord in coords.values():
             boards.append(self.board(coord, live.get(coord.id), now, force_tracker, owners=owners,
@@ -155,17 +159,16 @@ class CoordinationScanner:
         return boards
 
     def board(self, coord, live, now: float, force_tracker: bool = False, owners=None, place=None) -> dict:
-        """Tablica koordynatora. `owners`: plan_owners() wszystkich koordynatorów — plan bez `session`
-        zapisany przez innego koordynatora tego repozytorium nie jest planem tego (plan.pick)."""
+        """Tablica koordynatora. `owners`: plan_owners() działających koordynatorów — plan bez `session`,
+        którego właścicielem jest inny koordynator tego repozytorium, nie jest planem tego (plan.pick), chyba
+        że ten sam go zapisywał."""
         cwd, where, branch, roots = place or self._place(coord)
         plans = [self._plan(path) for path in _plan_files(roots)]
         repo = roots[-1] if roots else ""
-        mine = {name: ts for (root, name), (ts, owner) in (owners or {}).items() if root == repo and owner == coord.id}
-        taken = {name for (root, name), (_ts, owner) in (owners or {}).items() if root == repo and owner != coord.id}
-        if owners is None:  # pojedyncza tablica (bez refresh) — zna tylko własne zapisy
-            mine = dict(getattr(coord, "plan_writes", None) or {})
+        mine = dict(getattr(coord, "plan_writes", None) or {})
+        taken = {name for (root, name), (_rank, owner) in (owners or {}).items() if root == repo and owner != coord.id}
         plan = plan_mod.pick([p for p in plans if p is not None], coord.session_id, coord.tool, branch or "",
-                             written=mine, taken=taken)
+                             written=mine, taken=taken - set(mine))
         aliases = ids.load_aliases(roots)
         backlog = self._backlog_entries(roots, aliases)
         issues, tracker = None, None
@@ -317,16 +320,18 @@ class CoordinationScanner:
 
 
 def plan_owners(coords, repos: dict) -> dict:
-    """{(główne repozytorium, nazwa pliku planu): (czas zapisu, id koordynatora)} — kto ostatni zapisał
-    plan w danym repozytorium (Coordinator.plan_writes). `repos`: {id koordynatora: główne repozytorium}.
-    Przy przekazaniu planu (zapisywało go kolejno dwóch koordynatorów) plan należy do ostatniego."""
+    """{(główne repozytorium, nazwa pliku planu): ((liczba zapisów, czas ostatniego), id koordynatora)} —
+    właściciel planu w danym repozytorium wśród podanych (działających) koordynatorów
+    (Coordinator.plan_writes): kto zapisywał go najczęściej, przy remisie — kto ostatni. Jedna poprawka
+    w cudzym planie go nie przejmuje; przy przekazaniu plan przechodzi na następcę, gdy ten zapisze go więcej razy.
+    `repos`: {id koordynatora: główne repozytorium}."""
     out: dict = {}
     for coord in coords:
         repo = repos.get(coord.id) or ""
-        for name, ts in (getattr(coord, "plan_writes", None) or {}).items():
-            key = (repo, name)
-            if key not in out or ts > out[key][0]:
-                out[key] = (ts, coord.id)
+        for name, rank in (getattr(coord, "plan_writes", None) or {}).items():
+            key, rank = (repo, name), tuple(rank)
+            if key not in out or rank > out[key][0]:
+                out[key] = (rank, coord.id)
     return out
 
 

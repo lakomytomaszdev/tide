@@ -30,7 +30,7 @@ import re
 from ..agents.claude import describe_tool
 from ..agents.jsonl import read_head
 from ..agents.timeutil import parse_ts
-from .model import (COMPLETED, FAILED, KILLED, PROMPT_HEAD, Coordinator, Question, Run)
+from .model import (COMPLETED, FAILED, KILLED, PROMPT_HEAD, Coordinator, Question, Run, add_plan_write)
 from .plan import plan_file_name
 
 SPAWN_TOOLS = ("Agent", "Task")
@@ -208,7 +208,7 @@ class ClaudeCoordinatorLog:
         args = block.get("input") if isinstance(block.get("input"), dict) else {}
         name = plan_file_name(args.get("file_path") or "")
         if name:
-            self.coord.plan_writes[name] = max(ts, self.coord.plan_writes.get(name, 0.0))
+            add_plan_write(self.coord.plan_writes, name, ts)
 
     def _result(self, block: dict, extra, ts: float) -> None:
         use_id = str(block.get("tool_use_id") or "")

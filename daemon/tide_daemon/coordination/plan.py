@@ -190,12 +190,14 @@ def pick(plans: list[Plan], session_id: str, tool: str, branch: str = "", writte
     (też zakończony — to wciąż plan tej karty), a plany innych kart odpadają — w katalogu projektu
     w tablicy leżą plany wielu kart naraz.
 
-    `written`: {nazwa pliku planu: czas ostatniego zapisu} — plany zapisane przez tego koordynatora
-    (Coordinator.plan_writes), `taken`: nazwy planów zapisanych przez innych koordynatorów tego repozytorium.
-    Bez nich dwa aktywne plany bez `session` w jednym repozytorium dostawały ten sam (najświeższy) plan
-    u obu koordynatorów — i raport podpisywał pytanie jednego tytułem planu drugiego."""
+    `written`: {nazwa pliku planu: (liczba zapisów, czas ostatniego)} — plany zapisane przez tego koordynatora
+    (Coordinator.plan_writes); z kilku własnych wygrywa ten zapisywany najczęściej, potem najświeższy (jedna
+    poprawka w cudzym planie nie przesłania własnego). `taken`: nazwy planów, których właścicielem jest inny
+    działający koordynator tego repozytorium (scanner.plan_owners) — plan, który ten koordynator sam zapisał,
+    nigdy nie jest dla niego cudzy. Bez tego dwa aktywne plany bez `session` w jednym repozytorium dostawały
+    ten sam (najświeższy) plan u obu koordynatorów — i raport podpisywał pytanie jednego tytułem planu drugiego."""
     written = written or {}
-    taken = set(taken or ())
+    taken = set(taken or ()) - set(written)
 
     def name(p):
         return os.path.basename(p.path)
@@ -212,7 +214,7 @@ def pick(plans: list[Plan], session_id: str, tool: str, branch: str = "", writte
     own = [p for p in plans if not p.session and p.status != "done" and name(p) in written
            and name(p) not in taken and not (card and p.card)]
     if own:
-        return max(own, key=lambda p: (written[name(p)], p.updated_ts))
+        return max(own, key=lambda p: (tuple(written[name(p)]), p.updated_ts))
     candidates = [p for p in plans if not p.session and p.status != "done" and name(p) not in taken
                   and (not p.coordinator or p.coordinator == tool) and not (card and p.card)]
     return max(candidates, key=lambda p: p.updated_ts) if candidates else None
