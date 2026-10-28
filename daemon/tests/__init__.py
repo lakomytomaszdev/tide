@@ -29,3 +29,8 @@ os.environ["TIDE_BOARD_DIR"] = "/nonexistent/tide-tests/board"
 # Testy nigdy nie czytają prawdziwych dzienników Codexa (~/.codex, ~/snap/codex): bez --codex-dir
 # usługa w teście dostaje nieistniejący $CODEX_HOME zamiast domyślnych katalogów (codex_homes.py).
 os.environ["CODEX_HOME"] = "/nonexistent/tide-tests/codex"
+# Testy nigdy nie nakładają wyglądu aktywności na pulpit (zainstalowany silnik w
+# $XDG_DATA_HOME/tide/activity-look zmieniałby kolory, styl i tapetę sesji): pusty
+# $TIDE_ACTIVITY_LOOK_ENGINE wyłącza nakładanie, usługi w testach dziedziczą tę zmienną.
+# Testy wyglądu aktywności podają atrapę uruchamiania silnika (test_activity_look.py).
+os.environ["TIDE_ACTIVITY_LOOK_ENGINE"] = ""

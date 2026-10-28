@@ -5,6 +5,7 @@ zapisującymi wywołania. kreadconfig6/kwriteconfig6 działają naprawdę, ale n
 tymczasowym XDG_CONFIG_HOME.
 """
 import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -73,14 +74,15 @@ class AppearanceInstallTest(unittest.TestCase):
     def calls(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
 
-    def test_install_applies_scheme_fonts_and_breeze_style(self):
+    def test_install_applies_scheme_and_fonts_but_leaves_the_plasma_style(self):
         self.appearance("install")
         self.assertTrue((self.data / "color-schemes/TideMist.colors").is_file())
         self.assertTrue((self.data / "fonts/tide/Geist-Regular.ttf").is_file())
         self.assertTrue((self.data / "fonts/tide/GeistMono-Regular.ttf").is_file())
         self.assertTrue(self.read_config("kdeglobals", "General", "font").startswith("Geist,10,"))
         self.assertIn("plasma-apply-colorscheme TideMist", self.calls())
-        self.assertIn("plasma-apply-desktoptheme default", self.calls())
+        # Styl Plasmy nakłada install-plasma-style według wyglądu aktywności (decyzja 78).
+        self.assertFalse([c for c in self.calls() if c.startswith("plasma-apply-desktoptheme")])
 
     def test_install_writes_the_streamer_scheme_beside_mist_but_applies_only_mist(self):
         self.appearance("install")
@@ -125,6 +127,36 @@ class AppearanceInstallTest(unittest.TestCase):
         self.appearance("install")
         self.appearance("uninstall")
         self.assertIn("plasma-apply-colorscheme Nordic", self.calls())
+
+    def enter_stream(self):
+        """Bieżąca aktywność to Stream (atrapa ActivityManager w qdbus6), przypisana do wyglądu stream."""
+        stream = "5e7a0c1d-0000-4000-8000-00000000beef"
+        qdbus = Path(self.env["PATH"].split(":")[0]) / "qdbus6"
+        qdbus.write_text(f'#!/bin/sh\necho "qdbus6 $*" >> "{self.log}"\necho {stream}\n')
+        qdbus.chmod(0o755)
+        bindings = self.home / ".config/tide/activities.json"
+        bindings.parent.mkdir(parents=True, exist_ok=True)
+        bindings.write_text(json.dumps({"activities": {stream: "stream"}}))
+
+    def test_install_in_the_stream_activity_does_not_apply_mist(self):
+        self.enter_stream()
+        (self.data / "color-schemes").mkdir(parents=True)
+        (self.data / "color-schemes/TideStreamer.colors").write_text("[General]\n")  # z PT-34
+        self.appearance("install")
+        self.assertIn("plasma-apply-colorscheme TideStreamer", self.calls())
+        self.assertNotIn("plasma-apply-colorscheme TideMist", self.calls())
+        self.assertTrue((self.data / "color-schemes/TideMist.colors").is_file())  # pliki pracy są
+
+    def test_install_refreshes_a_stale_engine_copy_for_the_service(self):
+        engine = self.data / "tide/activity-look"
+        (engine / "scripts").mkdir(parents=True)
+        (engine / "scripts/activity_look.py").write_text("# stara kopia\n")
+        (engine / ".tide-engine.json").write_text(json.dumps({"hash": "stara"}))
+        out = subprocess.run(["/usr/bin/python3", str(ROOT / "scripts/appearance.py"), "install"],
+                             env=self.env, check=True, capture_output=True, text=True).stdout
+        self.assertIn("odświeżono kopię silnika", out)
+        self.assertEqual((engine / "scripts/activity_look.py").read_text(),
+                         (ROOT / "scripts/activity_look.py").read_text())
 
     def test_wrong_font_checksum_stops_install(self):
         self.env["TIDE_GEIST_SHA256"] = "0" * 64
