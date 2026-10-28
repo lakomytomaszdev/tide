@@ -194,6 +194,8 @@ def _check(step: Step, home: str) -> None:
     """Katalogi kroku: nie w katalogu tymczasowym ani w `~/.local/share` (Codex ze snapa ich nie widzi), nie w ukrytym
     katalogu domowym (też nie), katalog tymczasowy Claude Code poza `~` (pod `~` zapis do niego odrzucało
     piaskownicę), worktree nie pod `/tmp/claude-<uid>` (to $TMPDIR piaskownicy: zapis tam jest zapisem obok worktree)."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", step.step_id):
+        raise StepError(f"identyfikator kroku: 1–64 znaków [A-Za-z0-9_-], bez innych: {step.step_id!r}")
     for what, path in (("worktree", step.worktree), ("repo", step.repo), ("step_dir", step.step_dir)):
         if not os.path.isabs(path):
             raise StepError(f"{what}: ścieżka musi być bezwzględna: {path}")
@@ -358,7 +360,7 @@ def background(step: Step) -> Background:
     files[os.path.join(inp, "ignore")] = "\n".join(SANDBOX_DUMMIES) + "\n"
     dirs = [inp, out, env["GH_CONFIG_DIR"]] + ([env["CLAUDE_CODE_TMPDIR"]] if step.tool == "claude" else [])
     return Background(argv, env, step.prompt, step.worktree, step.step_dir, session, step.tool, repo=step.repo,
-                      git_dir=git_dir, unit="tide-step-" + re.sub(r"[^A-Za-z0-9_-]", "_", step.step_id),
+                      git_dir=git_dir, unit="tide-step-" + step.step_id,
                       runtime_dir=base.get("XDG_RUNTIME_DIR", ""),
                       secret_env=extra.get("secret_env", {}), token_files=extra.get("token_files", []),
                       files=files, dirs=dirs)

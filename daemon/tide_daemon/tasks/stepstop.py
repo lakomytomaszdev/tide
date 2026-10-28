@@ -7,15 +7,21 @@
    i dziennik sesji zostają, `--resume` działa. Codex: niesprawdzone (logowanie wygasło). Bez jednostki (zapas: sam
    pid) sygnał dostaje tylko żywy proces — jego grupa, gdy jest liderem — nigdy grupa martwego pidu (pid mógł
    zostać użyty ponownie).
-2. Commit WIP na gałęzi kroku — przez usługę, nie przez program (ten już nie żyje). Git usługi działa POZA piaskownicą,
-   więc nie wolno mu ufać niczemu, co agent mógł zmienić (`step_git`): jawne `--git-dir=<repo>/.git/worktrees/<wt>`
-   (ustalony przez usługę przed krokiem, nie z pliku `.git` w worktree), `--work-tree`, `GIT_COMMON_DIR`, bez
-   konfiguracji użytkownika i systemu, `core.hooksPath=/dev/null`, bez atrybutów systemowych i użytkownika, plik
-   `config.worktree` (agent ma zapis w `.git/worktrees/<wt>`, a git czyta go przy `extensions.worktreeConfig`, czego `-c`
-   nie wyłącza — sprawdzone) odsunięty na czas gita. Gałąź: `symbolic-ref HEAD` musi być `refs/heads/<branch>` (agent
-   mógł przestawić HEAD), nie odłączony i nie główna. `git add -A` (także nowe pliki) i commit; wykluczenia atrap
-   piaskownicy (`<krok>/in/ignore`) tylko przez `core.excludesFile`. Pozostałe po zabitym kroku blokady (`index.lock`,
-   `HEAD.lock`, `refs/heads/<gałąź>.lock`) usuwane dopiero po sprawdzeniu, że program nie żyje.
+2. Commit WIP na gałęzi kroku — przez usługę, nie przez program (ten już nie żyje). Git usługi działa na treści napisanej
+   przez agenta (filtry, `.gitattributes`, `fsmonitor`, zagnieżdżone repozytoria), więc działa W PIASKOWNICY `bwrap`
+   (decyzja 8, specyfikacja przepływu kart), nie poza nią: `--ro-bind / /`, pusty `tmpfs` na `$HOME` i `/tmp`, zapis tylko
+   w worktree oraz w `.git/worktrees/<wt>`, `objects`, `refs`, `logs` (katalog gita worktree ustalony przez usługę
+   przed krokiem, nie z pliku `.git`), reszta `<repo>/.git` do odczytu, bez sieci, IPC i cudzych procesów, czyste
+   środowisko, `GIT_CONFIG_GLOBAL` kroku. Gdy `bwrap` nie działa: `error="no-sandbox"`, zmiany zostają w worktree —
+   nigdy cichego przejścia na git bez piaskownicy. Tańsze zabezpieczenia zostają jako druga warstwa: jawne `--git-dir`
+   i `--work-tree`, `GIT_COMMON_DIR` (plik `commondir` jest zapisywalny), `core.hooksPath=/dev/null`, bez atrybutów
+   systemu i użytkownika, bez `maintenance`, `gc` i `untrackedCache`. Gałąź: `symbolic-ref HEAD` musi być
+   `refs/heads/<branch>` (agent mógł przestawić HEAD), nie odłączony i nie główna. `git add -A` obejmuje nowe pliki,
+   ale zagnieżdżone repozytoria (katalog z `.git` albo wyglądający na katalog gita) są pomijane z notatką — gitlink
+   zgubiłby ich treść, a wciągnięcie `gd/` wpisałoby cudzą konfigurację do commita; bity `--assume-unchanged` i
+   `--skip-worktree` na plikach, które istnieją na dysku, są zdejmowane (z notatką — żadnej cichej utraty zmian).
+   Wykluczenia atrap piaskownicy (`<krok>/in/ignore`) tylko przez `core.excludesFile`. Pozostałe po zabitym kroku
+   blokady (`index.lock`, `HEAD.lock`, `refs/heads/<gałąź>.lock`) usuwane dopiero po sprawdzeniu, że krok nie żyje.
 3. Ostatnie wiadomości z dziennika sesji: Claude Code — `<projects>/*/<id>.jsonl` (wpisy `assistant` i `user`),
    Codex — najnowszy `rollout-*.jsonl` z `session_meta.cwd` równym katalogowi kroku (wpisy `response_item` typu
    `message`). Format Codexa z kodu czytnika agents/codex.py, nie z żywej sesji (PT-75: bez logowania).
@@ -24,6 +30,7 @@ from __future__ import annotations
 
 import glob
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -32,7 +39,7 @@ from dataclasses import dataclass, field
 from .. import codex_homes
 from ..agents.claude import synthetic_user
 from ..agents.jsonl import JsonlTail, read_head
-from ..worktrees.git import MAIN_CANDIDATES, Git
+from ..worktrees.git import MAIN_CANDIDATES, Result
 
 WIP_MESSAGE = "WIP: step stopped before it finished"
 MESSAGE_LIMIT = 3          # ile ostatnich wiadomości zwracamy
@@ -81,8 +88,11 @@ def _systemctl(*args: str) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(args, 1, b"", b"")
 
 
-def unit_active(unit: str) -> bool:
-    return _systemctl("is-active", "--quiet", unit + ".scope").returncode == 0
+def unit_state(unit: str) -> str:
+    """"active", "inactive" (jednostki nie ma albo jest nieaktywna: kody 3 i 4 `systemctl is-active`) albo "unknown"
+    (błąd samego systemctl, np. brak magistrali, timeout) — z "unknown" nie wolno wnosić, że krok się zatrzymał."""
+    code = _systemctl("is-active", "--quiet", unit + ".scope").returncode
+    return "active" if code == 0 else "inactive" if code in (3, 4) else "unknown"
 
 
 def _wait(still_running, seconds: float) -> bool:
@@ -95,17 +105,21 @@ def _wait(still_running, seconds: float) -> bool:
 
 
 def _terminate_unit(proc, unit: str, grace: float) -> bool:
-    if unit_active(unit):
+    state = unit_state(unit)
+    if state == "active":
         _systemctl("kill", "--kill-whom=all", "--signal=SIGTERM", unit + ".scope")
-        if not _wait(lambda: unit_active(unit), grace):
+        if not _wait(lambda: unit_state(unit) == "active", grace):
             _systemctl("kill", "--kill-whom=all", "--signal=SIGKILL", unit + ".scope")
-            _wait(lambda: unit_active(unit), 5.0)
+            _wait(lambda: unit_state(unit) == "active", 5.0)
+        state = unit_state(unit)
+    if state != "inactive":
+        return False                         # nie wiadomo albo wciąż działa — worktree zostaje nietknięty
     if hasattr(proc, "wait"):
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pass
-    return not unit_active(unit)
+    return not _alive(proc)                  # nieaktywna jednostka nie dowodzi, że proces z `proc` nie żyje
 
 
 def _terminate_pid(proc, grace: float) -> bool:
@@ -139,35 +153,67 @@ def terminate(proc=None, unit: str = "", grace: float = 10.0) -> bool:
 
 # --- commit WIP -------------------------------------------------------------------------------
 
-@dataclass
-class Snapshot:
-    committed: bool = False
-    commit: str = ""
-    files: int = 0
-    error: str = ""         # "", detached, protected-branch, wrong-branch, git: <opis>
-    notes: list = field(default_factory=list)
+BWRAP = "/usr/bin/bwrap"
+GIT_DIRS_WRITABLE = ("objects", "refs", "logs")
+SANDBOX_PATH = "/usr/local/bin:/usr/bin:/bin"
+
+
+def sandbox_available() -> bool:
+    """Czy `bwrap` działa z potrzebnymi przestrzeniami (profil AppArmor: scripts/sandbox/check.py)."""
+    try:
+        return subprocess.run([BWRAP, "--ro-bind", "/", "/", "--unshare-net", "--unshare-ipc", "--unshare-pid",
+                               "--die-with-parent", "--new-session", "true"], capture_output=True, timeout=20,
+                              stdin=subprocess.DEVNULL).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 class StepGit:
-    """Git usługi dla worktree kroku — poza piaskownicą, więc bez zaufania do tego, co agent mógł zmienić."""
+    """Git usługi dla worktree kroku, uruchamiany w piaskownicy `bwrap` (decyzja 8): treść napisana przez agenta
+    (filtry, `.gitattributes`, `fsmonitor`, zagnieżdżone repozytoria) może zrobić najwyżej to, co agent mógł
+    w swoim kroku. Katalog domowy i /tmp są puste, zapis tylko w worktree i katalogach zapisu gita kroku."""
 
-    def __init__(self, repo: str, git_dir: str, worktree: str, step_dir: str, git: Git | None = None):
-        self.worktree, self.git_dir = worktree, git_dir
-        self.git = git or Git()
-        # Bez konfiguracji użytkownika i systemu; wspólny katalog gita jawnie (plik `commondir` jest zapisywalny).
-        self.git.env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", GIT_ATTR_NOSYSTEM="1",
-                            GIT_COMMON_DIR=os.path.join(repo, ".git"))
-        for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
-            self.git.env.pop(name, None)
-        ignore = os.path.join(step_dir, "in", "ignore")
-        self.opts = ["--git-dir=" + git_dir, "--work-tree=" + worktree,
+    def __init__(self, repo: str, git_dir: str, worktree: str, step_dir: str, home: str | None = None,
+                 name: str = "Krok", email: str = "krok@tide.invalid"):
+        self.worktree, self.git_dir = os.path.realpath(worktree), git_dir
+        self.common = os.path.join(os.path.realpath(repo), ".git")
+        self.home = os.path.realpath(home or os.path.expanduser("~"))
+        self.inp = os.path.join(os.path.realpath(step_dir), "in")
+        gitconfig = os.path.join(self.inp, "gitconfig")
+        self.gitconfig = gitconfig if os.path.isfile(gitconfig) else "/dev/null"
+        self.opts = ["--git-dir=" + git_dir, "--work-tree=" + self.worktree,
                      "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "core.fsmonitor=false",
-                     "-c", "core.attributesFile=/dev/null"]
+                     "-c", "core.attributesFile=/dev/null", "-c", "maintenance.auto=false", "-c", "gc.auto=0",
+                     "-c", "core.untrackedCache=false", "-c", f"user.name={name}", "-c", f"user.email={email}"]
+        ignore = os.path.join(self.inp, "ignore")
         if os.path.isfile(ignore):
             self.opts += ["-c", f"core.excludesFile={ignore}"]
 
-    def run(self, *args, timeout=120):
-        return self.git.run(self.worktree, *self.opts, *args, timeout=timeout)
+    def sandbox(self) -> list:
+        argv = [BWRAP, "--die-with-parent", "--new-session", "--unshare-net", "--unshare-ipc", "--unshare-pid",
+                "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", self.home,
+                "--ro-bind", self.common, self.common, "--bind", self.worktree, self.worktree,
+                "--bind", self.git_dir, self.git_dir]
+        for name in GIT_DIRS_WRITABLE:
+            argv += ["--bind", os.path.join(self.common, name), os.path.join(self.common, name)]
+        argv += ["--ro-bind-try", self.inp, self.inp, "--clearenv"]
+        env = {"PATH": SANDBOX_PATH, "HOME": self.home, "TMPDIR": "/tmp", "LC_ALL": "C",
+               "GIT_CONFIG_GLOBAL": self.gitconfig, "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1",
+               "GIT_COMMON_DIR": self.common, "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
+               "GIT_ASKPASS": "/bin/false", "SSH_ASKPASS": "/bin/false",
+               "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent/tide-step/bus"}
+        for key, value in env.items():
+            argv += ["--setenv", key, value]
+        return argv + ["--chdir", self.worktree, "--"]
+
+    def run(self, *args, timeout=120) -> Result:
+        try:
+            proc = subprocess.run([*self.sandbox(), "git", *self.opts, *args], capture_output=True, text=True,
+                                  errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
+                                  env={"PATH": "/usr/bin:/bin"})
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return Result(-1, "", str(exc))
+        return Result(proc.returncode, proc.stdout, proc.stderr.strip())
 
 
 def _clear_stale_locks(git_dir: str, repo: str, branch: str) -> list:
@@ -182,64 +228,136 @@ def _clear_stale_locks(git_dir: str, repo: str, branch: str) -> list:
     return removed
 
 
-def git_snapshot(repo: str, git_dir: str, worktree: str, step_dir: str, branch: str, git: Git | None = None,
-                 stale_locks: bool = False, name: str = "Krok", email: str = "krok@tide.invalid") -> Snapshot:
-    """Commit WIP ze wszystkimi zmianami worktree (śledzonymi i nowymi) na gałęzi `branch`. Nic do zacommitowania —
-    bez commita. `stale_locks`: usuń blokady zabitego kroku (tylko gdy wiadomo, że program nie żyje)."""
+def _restore_commondir(git_dir: str, notes: list) -> None:
+    """Git bierze ścieżkę refów z pliku `commondir` w katalogu worktree (zmienna GIT_COMMON_DIR tego nie przesłania —
+    sprawdzone na gicie 2.43), a Codex ma tam zapis. Podmieniony plik przekierowałby gałąź kroku do katalogu agenta;
+    przywracamy `../..` (atomowo, podmianą pliku, nie zapisem przez ewentualny dowiązanie)."""
+    path = os.path.join(git_dir, "commondir")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            current = fh.read().strip()
+    except OSError:
+        current = None
+    if current == "../.." and not os.path.islink(path):
+        return
+    tmp = path + ".tide-new"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write("../..\n")
+        os.replace(tmp, path)
+        notes.append("przywrócono plik commondir katalogu worktree (krok go zmienił)")
+    except OSError:
+        pass
+
+
+def _looks_like_git_dir(path: str) -> bool:
+    return (os.path.isfile(os.path.join(path, "HEAD")) and os.path.isdir(os.path.join(path, "objects"))
+            and os.path.isdir(os.path.join(path, "refs")))
+
+
+def _nested_repositories(worktree: str, untracked_dirs) -> list:
+    """Katalogi nieśledzone, które są zagnieżdżonym repozytorium (`.git` plik albo katalog) albo katalogiem gita —
+    względem worktree. Przeglądamy tylko nieśledzone katalogi z `ls-files -o --directory`, bez wchodzenia w linki."""
+    found = []
+
+    def is_nested(path: str) -> bool:
+        return os.path.lexists(os.path.join(path, ".git")) or _looks_like_git_dir(path)
+
+    for rel in untracked_dirs:
+        top = os.path.join(worktree, rel)
+        if is_nested(top):
+            found.append(rel)
+            continue
+        for folder, dirs, _files in os.walk(top, followlinks=False):
+            nested = [d for d in dirs if d != ".git" and is_nested(os.path.join(folder, d))]
+            for d in nested:
+                found.append(os.path.relpath(os.path.join(folder, d), worktree))
+            dirs[:] = [d for d in dirs if d != ".git" and d not in nested]
+    return sorted(found)
+
+
+def _clear_hidden_bits(step_git: StepGit, worktree: str, notes: list) -> None:
+    """Agent mógł ustawić `--assume-unchanged` albo `--skip-worktree` (git przestaje widzieć zmiany pliku). Zdejmujemy
+    bity z plików, które istnieją na dysku. Brakujący plik z `skip-worktree` to zwykle sparse checkout — zostaje."""
+    listing = step_git.run("ls-files", "-v", "-z")
+    if not listing.ok:
+        return
+    assumed, skipped = [], []
+    for entry in listing.out.split("\0"):
+        if len(entry) < 3:
+            continue
+        tag, path = entry[0], entry[2:]
+        if not os.path.lexists(os.path.join(worktree, path)):
+            continue
+        if tag.islower():
+            assumed.append(path)
+        elif tag == "S":
+            skipped.append(path)
+    for flag, paths, label in (("--no-assume-unchanged", assumed, "assume-unchanged"),
+                               ("--no-skip-worktree", skipped, "skip-worktree")):
+        if paths:
+            done = _update_index(step_git, flag, paths)
+            if done:
+                notes.append(f"zdjęto {label} z {len(paths)} plików: " + ", ".join(paths[:10]))
+
+
+def _update_index(step_git: StepGit, flag: str, paths: list) -> bool:
+    for start in range(0, len(paths), 200):
+        if not step_git.run("update-index", flag, "--", *paths[start:start + 200]).ok:
+            return False
+    return True
+
+
+def git_snapshot(repo: str, git_dir: str, worktree: str, step_dir: str, branch: str, stale_locks: bool = False,
+                 home: str | None = None, name: str = "Krok", email: str = "krok@tide.invalid") -> Snapshot:
+    """Commit WIP ze wszystkimi zmianami worktree (śledzonymi i nowymi) na gałęzi `branch`, gitem w piaskownicy.
+    Nic do zacommitowania — bez commita. `stale_locks`: usuń blokady zabitego kroku (tylko gdy wiadomo, że krok nie żyje)."""
     snap = Snapshot()
     if branch in MAIN_CANDIDATES:
         snap.error = "protected-branch"
         return snap
-    step_git = StepGit(repo, git_dir, worktree, step_dir, git)
-    step_git.opts += ["-c", f"user.name={name}", "-c", f"user.email={email}"]
-    aside = os.path.join(git_dir, "config.worktree")
-    parked = aside + ".tide-aside"
-    moved = False
-    try:
-        try:
-            os.rename(aside, parked)          # git czyta ten plik przy extensions.worktreeConfig; pisze go agent
-            moved = True
-        except OSError:
-            pass
-        head = step_git.run("symbolic-ref", "--quiet", "HEAD")
-        if not head.ok or not head.out.strip():
-            snap.error = "detached"
-            return snap
-        if head.out.strip() != f"refs/heads/{branch}":
-            snap.error = "wrong-branch"
-            return snap
-        if stale_locks:
-            removed = _clear_stale_locks(git_dir, repo, branch)
-            if removed:
-                snap.notes.append("usunięto blokady zatrzymanego kroku: " + ", ".join(removed))
-        added = step_git.run("add", "-A")
-        if not added.ok:
-            snap.error = "git: " + (added.err.splitlines()[0] if added.err else "add")
-            return snap
-        changed = step_git.run("diff", "--cached", "--name-only", "-z")
-        snap.files = len([n for n in changed.out.split("\0") if n]) if changed.ok else 0
-        ignored = step_git.run("status", "--ignored", "--porcelain", "-z")
-        skipped = [e[3:] for e in ignored.out.split("\0") if e.startswith("!! ")] if ignored.ok else []
-        if skipped:
-            snap.notes.append(f"pominięte przez .gitignore ({len(skipped)}): " + ", ".join(skipped[:10]))
-        if not snap.files:
-            return snap
-        done = step_git.run("commit", "--no-verify", "-q", "-m", WIP_MESSAGE)
-        if not done.ok:
-            snap.error = "git: " + (done.err.splitlines()[0] if done.err else "commit")
-            return snap
-        sha = step_git.run("rev-parse", "HEAD")
-        snap.committed, snap.commit = True, sha.out.strip()
+    if not sandbox_available():
+        snap.error = "no-sandbox"           # nigdy git bez piaskownicy: zmiany zostają w worktree
         return snap
-    finally:
-        if moved:
-            try:
-                if os.path.exists(aside):
-                    os.unlink(parked)         # agent zdążył napisać nowy — zostaje nowy, odsunięty był starszy
-                else:
-                    os.rename(parked, aside)
-            except OSError:
-                pass
+    _restore_commondir(git_dir, snap.notes)
+    step_git = StepGit(repo, git_dir, worktree, step_dir, home, name, email)
+    head = step_git.run("symbolic-ref", "--quiet", "HEAD")
+    if not head.ok or not head.out.strip():
+        snap.error = "detached"
+        return snap
+    if head.out.strip() != f"refs/heads/{branch}":
+        snap.error = "wrong-branch"
+        return snap
+    if stale_locks:
+        removed = _clear_stale_locks(git_dir, repo, branch)
+        if removed:
+            snap.notes.append("usunięto blokady zatrzymanego kroku: " + ", ".join(removed))
+    _clear_hidden_bits(step_git, step_git.worktree, snap.notes)
+    untracked = step_git.run("ls-files", "-o", "--directory", "--exclude-standard", "-z")
+    dirs = [e.rstrip("/") for e in untracked.out.split("\0") if e.endswith("/")] if untracked.ok else []
+    nested = _nested_repositories(step_git.worktree, dirs)
+    if nested:
+        snap.notes.append("pominięto zagnieżdżone repozytoria (nie weszły do WIP, zostają na dysku): "
+                          + ", ".join(nested[:10]))
+    added = step_git.run("add", "-A", "--", ".", *[f":(exclude,literal){path}" for path in nested])
+    if not added.ok:
+        snap.error = "git: " + (added.err.splitlines()[0] if added.err else "add")
+        return snap
+    changed = step_git.run("diff", "--cached", "--name-only", "-z")
+    snap.files = len([n for n in changed.out.split("\0") if n]) if changed.ok else 0
+    ignored = step_git.run("status", "--ignored", "--porcelain", "-z")
+    skipped = [e[3:] for e in ignored.out.split("\0") if e.startswith("!! ")] if ignored.ok else []
+    if skipped:
+        snap.notes.append(f"pominięte przez .gitignore ({len(skipped)}): " + ", ".join(skipped[:10]))
+    if not snap.files:
+        return snap
+    done = step_git.run("commit", "--no-verify", "-q", "-m", WIP_MESSAGE)
+    if not done.ok:
+        snap.error = "git: " + (done.err.splitlines()[0] if done.err else "commit")
+        return snap
+    sha = step_git.run("rev-parse", "HEAD")
+    snap.committed, snap.commit = True, sha.out.strip()
+    return snap
 
 
 # --- dziennik sesji ---------------------------------------------------------------------------
@@ -316,7 +434,7 @@ def last_messages(path: str, tool: str, limit: int = MESSAGE_LIMIT) -> list:
 # --- całość -----------------------------------------------------------------------------------
 
 def stop_step(proc=None, *, unit: str = "", worktree: str, step_dir: str, repo: str, git_dir: str, branch: str,
-              tool: str, session_id: str = "", claude_projects: str = "", codex_roots=None, git: Git | None = None,
+              tool: str, session_id: str = "", claude_projects: str = "", codex_roots=None,
               grace: float = 10.0, limit: int = MESSAGE_LIMIT) -> StopResult:
     """Zatrzymuje krok, commituje WIP i czyta ostatnie wiadomości. `unit` (Background.unit) i/lub `proc` (Popen z
     Background.start() albo pid; None, gdy usługa się zrestartowała i zna tylko jednostkę). `git_dir` i `repo`
@@ -327,7 +445,7 @@ def stop_step(proc=None, *, unit: str = "", worktree: str, step_dir: str, repo: 
     if not stopped:
         result.error = "not-stopped"        # nie dotykamy worktree, w którym program jeszcze pisze
         return result
-    snap = git_snapshot(repo, git_dir, worktree, step_dir, branch, git, stale_locks=True)
+    snap = git_snapshot(repo, git_dir, worktree, step_dir, branch, stale_locks=True)
     result.committed, result.commit, result.files = snap.committed, snap.commit, snap.files
     result.error, result.notes = snap.error, snap.notes
     result.session_log = (find_claude_log(claude_projects, session_id) if tool == "claude"

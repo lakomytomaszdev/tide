@@ -114,6 +114,14 @@ class BackgroundClaudeTest(BackgroundBase):
         self.assertEqual(cmd.argv[cmd.argv.index("--disallowedTools") + 1], "Bash(make install*)")
         self.assertEqual(cmd.argv[cmd.argv.index("--permission-mode") + 1], "acceptEdits")
 
+    def test_step_id_is_a_short_plain_name_and_unit_names_do_not_collide(self):
+        for bad in ("", "a" * 65, "x/../../../home/user", "a.b", "a b", "ł", "..", "a/b"):
+            with self.assertRaises(agentcmd.StepError, msg=repr(bad)):
+                agentcmd.background(self.step(step_id=bad))
+        self.assertEqual(agentcmd.background(self.step(step_id="a_b")).unit, "tide-step-a_b")
+        self.assertEqual(agentcmd.background(self.step(step_id="a-b")).unit, "tide-step-a-b")
+        self.assertEqual(agentcmd.background(self.step(step_id="A" * 64)).unit, "tide-step-" + "A" * 64)
+
     def test_resume_needs_a_session_id(self):
         with self.assertRaises(agentcmd.StepError):
             agentcmd.background(self.step(resume=True, session_id=""))
@@ -437,7 +445,7 @@ class StopStepTest(unittest.TestCase):
         cmd.prepare()
         proc = cmd.start()
         self.units.append(cmd.unit)
-        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        self.addCleanup(lambda: (proc.poll() is None and proc.kill(), proc.wait()))
         child, grand = self.wait_ready()
         return proc, cmd, child, grand
 
@@ -603,10 +611,11 @@ class StopStepTest(unittest.TestCase):
         self.assertEqual(stepstop.git_snapshot(self.repo, self.gitdir, self.worktree, self.step_dir, "master").error,
                          "protected-branch")
 
-    def forge_filter(self, config_path):
+    def forge_filter(self, config_path, ran=None):
         """Filtr `clean` zdefiniowany tam, gdzie agent mógłby pisać, i `.gitattributes`, który go włącza."""
+        touch = f"{self.marker} {ran}" if ran else self.marker
         with open(config_path, "a", encoding="utf-8") as fh:
-            fh.write(f'[filter "x"]\n\tclean = touch {self.marker} && cat\n')
+            fh.write(f'[filter "x"]\n\tclean = touch {touch} && cat\n')
         with open(os.path.join(self.worktree, ".gitattributes"), "w", encoding="utf-8") as fh:
             fh.write("* filter=x\n")
 
@@ -633,6 +642,204 @@ class StopStepTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.marker), "filtr z config.worktree wykonał się poza piaskownicą")
         self.assertTrue(result.committed, result.error)
         self.assertTrue(os.path.isfile(config), "config.worktree zniknął po zatrzymaniu")
+
+    # --- git usługi w piaskownicy (decyzja 8) -------------------------------------------------
+
+    def untracked_names(self, ref="HEAD"):
+        return gitrepos.git(self.worktree, "show", "--name-only", "--format=", ref).split()
+
+    def test_nested_repositories_do_not_run_their_filters_outside_the_sandbox_and_are_not_pulled_in(self):
+        proc, cmd, _, _ = self.start()
+        fsm = self.marker + ".fsm"
+        for name, gitfile in (("sub1", False), ("sub2", True)):
+            sub = os.path.join(self.worktree, name)
+            os.makedirs(sub)
+            gitrepos.git(sub, "init", "-q", "-b", "m")
+            gitrepos.commit(sub, "f.txt", "f\n")
+            with open(os.path.join(sub, ".gitattributes"), "w", encoding="utf-8") as fh:
+                fh.write("* filter=x\n")
+            with open(os.path.join(sub, ".git", "config"), "a", encoding="utf-8") as fh:
+                fh.write(f'[filter "x"]\n\tclean = "touch {self.marker} && cat"\n[core]\n\tfsmonitor = "touch {fsm}"\n')
+            time.sleep(0.05)
+            with open(os.path.join(sub, "f.txt"), "w", encoding="utf-8") as fh:
+                fh.write("zmiana\n")
+            if gitfile:
+                shutil.move(os.path.join(sub, ".git"), os.path.join(self.worktree, "gd2"))
+                with open(os.path.join(sub, ".git"), "w", encoding="utf-8") as fh:
+                    fh.write("gitdir: ../gd2\n")
+        # trzecie: gitlink już w historii kroku, brudny
+        sub3 = os.path.join(self.worktree, "sub3")
+        os.makedirs(sub3)
+        gitrepos.git(sub3, "init", "-q", "-b", "m")
+        gitrepos.commit(sub3, "f.txt", "f\n")
+        gitrepos.git(self.worktree, "add", "sub3")
+        gitrepos.git(self.worktree, "commit", "-q", "--no-verify", "-m", "gitlink")
+        gitrepos.commit(sub3, "g.txt", "g\n")
+        with open(os.path.join(sub3, ".git", "config"), "a", encoding="utf-8") as fh:   # dopiero teraz: git testu nie ma go wykonać
+            fh.write(f'[core]\n\tfsmonitor = "touch {fsm}"\n')
+        result = self.stop(proc, cmd)
+        self.assertFalse(os.path.exists(self.marker), "filtr zagnieżdżonego repozytorium wykonał się poza piaskownicą")
+        self.assertFalse(os.path.exists(fsm), "fsmonitor zagnieżdżonego repozytorium wykonał się poza piaskownicą")
+        self.assertTrue(result.committed, result.error)
+        files = self.untracked_names()
+        # sub3 to gitlink już śledzony w gałęzi kroku: WIP zapisuje nowy wskaźnik, nie treść zagnieżdżonego repozytorium
+        self.assertEqual(sorted(files), ["nowy.txt", "src/glebokie/inny.py", "sub3", "tracked.txt"])
+        notes = " ".join(result.notes)
+        for name in ("sub1", "sub2", "gd2"):
+            self.assertIn(name, notes)
+
+    def test_a_forged_commondir_cannot_redirect_the_service_git(self):
+        proc, cmd, _, _ = self.start()
+        fake = os.path.join(self.gitdir, "fakecommon")
+        shutil.copytree(os.path.join(self.repo, ".git"), fake, ignore=shutil.ignore_patterns("worktrees"))
+        os.makedirs(os.path.join(fake, "worktrees"))
+        ran = os.path.join(self.worktree, "FILTER-RAN")
+        self.forge_filter(os.path.join(fake, "config"), ran)
+        with open(os.path.join(self.gitdir, "commondir"), "w", encoding="utf-8") as fh:
+            fh.write("fakecommon\n")
+        result = self.stop(proc, cmd)
+        self.assertFalse(os.path.exists(self.marker))
+        self.assertFalse(os.path.exists(ran), "git usługi użył podrobionego commondir (GIT_COMMON_DIR nie wygrał)")
+        self.assertTrue(result.committed, result.error)
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", BRANCH).strip(), result.commit)
+        self.assertIn("commondir", " ".join(result.notes))
+
+    def test_repository_hooks_other_than_pre_commit_do_not_run(self):
+        proc, cmd, _, _ = self.start()
+        ran = os.path.join(self.worktree, "HOOK-RAN")
+        for name in ("post-commit", "post-index-change", "reference-transaction", "post-checkout"):
+            hook = os.path.join(self.repo, ".git", "hooks", name)
+            with open(hook, "w", encoding="utf-8") as fh:
+                fh.write(f"#!/bin/sh\ntouch {ran} {self.marker}\n")
+            os.chmod(hook, 0o755)
+        result = self.stop(proc, cmd)
+        self.assertTrue(result.committed, result.error)
+        self.assertFalse(os.path.exists(ran), "hak repozytorium wykonał się (core.hooksPath nie działa)")
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_a_directory_under_the_old_aside_name_does_not_open_the_per_worktree_config(self):
+        gitrepos.git(self.repo, "config", "extensions.worktreeConfig", "true")
+        proc, cmd, _, _ = self.start()
+        config = os.path.join(self.gitdir, "config.worktree")
+        self.forge_filter(config)
+        os.makedirs(os.path.join(self.gitdir, "config.worktree.tide-aside", "x"))
+        with open(config, encoding="utf-8") as fh:
+            before = fh.read()
+        result = self.stop(proc, cmd)
+        self.assertFalse(os.path.exists(self.marker), "filtr z config.worktree wykonał się poza piaskownicą")
+        self.assertTrue(result.committed, result.error)
+        with open(config, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), before)       # usługa nie rusza plików w katalogu gita kroku
+
+    def test_without_the_sandbox_the_snapshot_is_refused_and_the_changes_stay(self):
+        proc, cmd, _, _ = self.start()
+        old, stepstop.BWRAP = stepstop.BWRAP, "/nonexistent/bwrap"
+        self.addCleanup(setattr, stepstop, "BWRAP", old)
+        result = self.stop(proc, cmd)
+        self.assertTrue(result.stopped)
+        self.assertFalse(result.committed)
+        self.assertEqual(result.error, "no-sandbox")
+        self.assertIn("nowy.txt", gitrepos.git(self.worktree, "status", "--porcelain"))
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", BRANCH).strip(),
+                         gitrepos.git(self.repo, "rev-parse", "master").strip())
+
+    def test_the_home_directory_is_invisible_to_the_service_git(self):
+        home = tempfile.mkdtemp(prefix="tide-pt76-home-", dir=os.path.expanduser("~"))
+        self.addCleanup(shutil.rmtree, home, True)
+        secret = os.path.join(home, "secret.txt")
+        with open(secret, "w", encoding="utf-8") as fh:
+            fh.write("SEKRET-76\n")
+        proc, cmd, _, _ = self.start()
+        config = os.path.join(self.gitdir, "config.worktree")
+        gitrepos.git(self.repo, "config", "extensions.worktreeConfig", "true")
+        with open(config, "a", encoding="utf-8") as fh:
+            fh.write(f'[filter "x"]\n\tclean = "cat {secret} >> {self.worktree}/LEAK.txt; cat"\n')
+        with open(os.path.join(self.worktree, ".gitattributes"), "w", encoding="utf-8") as fh:
+            fh.write("nowy.txt filter=x\n")
+        subprocess.run(["systemctl", "--user", "kill", "--signal=SIGKILL", cmd.unit + ".scope"], check=True)
+        proc.wait(timeout=10)
+        snap = stepstop.git_snapshot(self.repo, self.gitdir, self.worktree, self.step_dir, BRANCH, home=home)
+        self.assertTrue(snap.committed, snap.error)
+        leak = os.path.join(self.worktree, "LEAK.txt")
+        if os.path.exists(leak):
+            with open(leak, encoding="utf-8") as fh:
+                self.assertNotIn("SEKRET-76", fh.read())
+        self.assertNotIn("SEKRET-76", gitrepos.git(self.worktree, "show", "HEAD"))
+
+    def test_symlinks_are_committed_as_links_not_followed(self):
+        proc, cmd, _, _ = self.start()
+        os.symlink("/etc", os.path.join(self.worktree, "etcdir"))
+        os.symlink("/etc/hostname", os.path.join(self.worktree, "leak"))
+        result = self.stop(proc, cmd)
+        self.assertTrue(result.committed, result.error)
+        tree = gitrepos.git(self.worktree, "ls-tree", "HEAD")
+        self.assertRegex(tree, r"120000 blob \w+\s+etcdir")
+        self.assertRegex(tree, r"120000 blob \w+\s+leak")
+        self.assertNotIn("etc/hostname", self.untracked_names())
+
+    def test_assume_unchanged_and_skip_worktree_bits_set_by_the_agent_do_not_hide_changes(self):
+        proc, cmd, _, _ = self.start()
+        gitrepos.git(self.worktree, "update-index", "--assume-unchanged", "tracked.txt")
+        result = self.stop(proc, cmd)
+        self.assertTrue(result.committed, result.error)
+        self.assertIn("tracked.txt", self.untracked_names())
+        self.assertIn("assume-unchanged", " ".join(result.notes))
+        self.assertEqual(gitrepos.git(self.worktree, "ls-files", "-v", "tracked.txt").split()[0], "H")
+
+    def test_skip_worktree_on_a_file_missing_from_disk_is_a_sparse_checkout_and_stays(self):
+        with open(os.path.join(self.worktree, "sparse.txt"), "w", encoding="utf-8") as fh:
+            fh.write("s\n")
+        gitrepos.git(self.worktree, "add", "sparse.txt")
+        gitrepos.git(self.worktree, "commit", "-q", "--no-verify", "-m", "sparse")
+        proc, cmd, _, _ = self.start()
+        gitrepos.git(self.worktree, "update-index", "--skip-worktree", "sparse.txt")
+        os.unlink(os.path.join(self.worktree, "sparse.txt"))
+        result = self.stop(proc, cmd)
+        self.assertTrue(result.committed, result.error)
+        self.assertIn("sparse.txt", gitrepos.git(self.worktree, "ls-tree", "--name-only", "HEAD").split())
+        self.assertNotIn("sparse.txt", self.untracked_names())
+
+    def test_stopping_one_step_leaves_another_step_unit_running(self):
+        other = subprocess.Popen(["/usr/bin/systemd-run", "--user", "--scope", "--collect", "--quiet",
+                                  "--unit=tide-step-other" + self.sid, "--", "sleep", "300"])
+        self.units.append("tide-step-other" + self.sid)
+        self.addCleanup(other.wait)
+        self.addCleanup(other.kill)
+        deadline = time.time() + 10
+        while not stepstop.unit_state("tide-step-other" + self.sid) == "active" and time.time() < deadline:
+            time.sleep(0.05)
+        proc, cmd, _, _ = self.start()
+        self.assertTrue(self.stop(proc, cmd).stopped)
+        self.assertEqual(stepstop.unit_state("tide-step-other" + self.sid), "active")
+
+    def test_a_failing_systemctl_means_not_stopped_and_the_worktree_is_left_alone(self):
+        proc, cmd, _, _ = self.start()
+        fake = os.path.join(self.root, "fakebin")
+        os.makedirs(fake)
+        with open(os.path.join(fake, "systemctl"), "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\necho 'Failed to connect to bus' >&2\nexit 1\n")
+        os.chmod(os.path.join(fake, "systemctl"), 0o755)
+        lock = os.path.join(self.gitdir, "index.lock")
+        with open(lock, "w"):
+            pass
+        old = os.environ["PATH"]
+        os.environ["PATH"] = fake + os.pathsep + old
+        self.addCleanup(os.environ.__setitem__, "PATH", old)
+        result = self.stop(proc, cmd, grace=0.3)
+        os.environ["PATH"] = old
+        self.assertFalse(result.stopped)
+        self.assertEqual(result.error, "not-stopped")
+        self.assertFalse(result.committed)
+        self.assertTrue(os.path.exists(lock), "ruszono worktree żywego kroku")
+        self.assertIsNone(proc.poll())              # nikt go nie zatrzymał
+        self.assertEqual(stepstop.unit_state(cmd.unit), "active")
+
+    def test_a_live_process_is_not_stopped_just_because_its_unit_looks_inactive(self):
+        proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        self.assertFalse(stepstop.terminate(proc, unit="tide-step-nieistniejaca", grace=0.2))
+
 
     def test_last_messages_of_a_codex_session_log(self):
         sessions = os.path.join(self.root, "codex", "sessions", "2026", "10", "28")
