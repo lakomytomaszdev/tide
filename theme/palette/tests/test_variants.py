@@ -85,7 +85,7 @@ class StreamerTest(unittest.TestCase):
     def test_extra_keys_are_only_variant_specific(self):
         extra = {p.split(".")[0] + ("." + p.split(".")[1] if p.startswith("wallpaper.") else "")
                  for p in key_paths(self.k) - key_paths(self.mist)}
-        self.assertLessEqual(extra, {"brand", "wallpaper.map", "wallpaper.lock"})
+        self.assertLessEqual(extra, {"brand", "wallpaper.map", "wallpaper.pictures"})
 
     def test_shapes_and_timings_come_from_mist(self):
         for group in ("radius", "size", "opacity", "shadow", "fonts", "limits", "splash", "plymouth", "terminal"):

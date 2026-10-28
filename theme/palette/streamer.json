@@ -34,8 +34,17 @@
     "sky": "#97c8d8"
   },
   "wallpaper": {
-    "variant": "map",
+    "variant": "pictures",
     "background": "window",
+    "pictures": {
+      "assets": "streamer",
+      "desktop": "desktop",
+      "lock": "lock",
+      "lockIdle": "lock-idle",
+      "fallback": "DP-2",
+      "focus": [0.55, 0.15, 1.0, 0.85],
+      "lockScrim": {"color": "desktop", "x": 0.5, "y": 0.2, "width": 0.36, "height": 0.22, "opacity": 0.55}
+    },
     "map": {
       "from": "forest",
       "to": "night",
@@ -52,12 +61,6 @@
           {"amplitude": 0.012, "length": 0.47, "phase": 1.3}
         ]
       }
-    },
-    "lock": {
-      "image": "streamer/lock.png",
-      "focus": [0.7, 0.24, 1.0, 0.78],
-      "scrim": {"color": "desktop", "x": 0.5, "y": 0.2, "width": 0.36, "height": 0.22, "opacity": 0.55},
-      "sleepDim": 0.2
     }
   }
 }
