@@ -1697,9 +1697,10 @@ make activity-look-status    # przypisania aktywności, dostępne wyglądy, dzie
 
 ## Monitory PC ⇄ Xbox
 
-Układ monitorów dla aktywności Stream (PT-38, decyzja 81): `tide_daemon/monitors.py` (logika i polecenie
-`monitors.py status|pc|xbox [--json]`, kody 0/1/2), `monitors.toml` (monitory i kody wejść VCP 0x60),
-`monitors_service.py` (obiekt D-Bus i wątek roboczy).
+Wejście prawego monitora dla aktywności Stream (PT-38, decyzja 81): `tide_daemon/monitors.py` (logika i polecenie
+`monitors.py status|pc|xbox [--json]`, kody 0/1/2), `monitors.toml` (złącze i kody wejść VCP 0x60),
+`monitors_service.py` (obiekt D-Bus, wątek roboczy, powrót na PC po wyjściu ze Streamu). Układ ekranów w KWin
+się nie zmienia — numeracja ekranów w Plasmie idzie za priorytetem, a jego zmiana przenosiła dock Stream.
 
 | Element | Wartość |
 | --- | --- |
@@ -1708,37 +1709,48 @@ Układ monitorów dla aktywności Stream (PT-38, decyzja 81): `tide_daemon/monit
 
 | Metoda / sygnał | Sygnatura | Opis |
 | --- | --- | --- |
-| `Status()` | `→ s` | `{layout, target, available, error, since, saved, savedAt, ddc, notices, monitor, primary, disableMonitor, switching, result}`; `layout` z odczytu KWin (`kscreen-doctor -j`, w wątku, najwyżej co 30 s), `ddc` z ostatniego przełączenia: `ok`, `missing` (brak `ddcutil`), `unreachable` (monitor nie odpowiada), `result` — ostatnie przełączenie `{ok, layout, changed, notices, error, at}` albo `null` |
+| `Status()` | `→ s` | `{layout, target, available, error, interrupted, since, monitor, switching, result}` z pliku stanu (bez DDC); `layout` — `pc` albo `xbox` (przerwane przełączenie liczy się jak `xbox`), `available` — jest `ddcutil`, `result` — ostatnie przełączenie `{ok, layout, changed, error, auto, at}` albo `null` (`auto`: powrót na PC po wyjściu ze Streamu) |
 | `SetLayout(s layout)` | `→ s` | `pc` albo `xbox`; od razu `{accepted, error}` (odmowa: nieznany układ, przełączenie już trwa), samo przełączenie w wątku roboczym |
-| sygnał `Changed()` | | układ, przełączenie w toku albo jego wynik się zmienił |
+| sygnał `Changed()` | | przełączenie w toku albo jego wynik się zmienił |
 
-- **Xbox:** `ddcutil detect` (magistrala I²C po złączu DRM), `ddcutil --bus N setvcp 60 0x11 --noverify`, przerwa
-  1,5 s, `kscreen-doctor output.HDMI-A-1.priority.1 output.DP-2.disable`. Kopia układu PC trafia do
-  `$XDG_STATE_HOME/tide/monitors.json` przed pierwszą zmianą i nie jest nadpisywana przez powtórzone „Xbox”.
-- **PC:** różnice między bieżącym układem a kopią jako argumenty `kscreen-doctor` (tryb szukany po rozmiarze
-  i częstotliwości, nie po identyfikatorze), sprawdzenie po zmianie, potem `setvcp 60 0x0f` z trzema próbami.
-- **Błędy:** bez `kscreen-doctor` nic się nie zmienia; bez DDC zmienia się tylko KWin z uwagą „przełącz wejście
-  monitora … przyciskiem na monitorze”. Przełączenia z usługi i z polecenia — po kolei pod `monitors.lock`.
-- **Testy i wyłączenie:** `--no-monitors`; `$TIDE_MONITORS_BIN` wskazuje katalog z `kscreen-doctor` i `ddcutil`
-  zamiast PATH (testy: atrapy z `tests/fake_screens.py`, usługa w testach — nieistniejący katalog).
+- **Przełączenie:** `ddcutil detect` (magistrala I²C po złączu DRM, bloki „Invalid display” pominięte), odczyt
+  `getvcp 60` i — gdy wejście jest inne — `setvcp 60 0x11|0x0f --noverify`, do trzech prób co 1 s. Przed zapisem
+  stan dostaje `pending`; stan na dysku (`$XDG_STATE_HOME/tide/monitors.json`) to ostatnie potwierdzone wejście,
+  bo na HDMI monitor zwykle nie odpowiada przez DisplayPort.
+- **Błędy:** brak `ddcutil` albo brak odpowiedzi DDC — błąd z prośbą o przełączenie wejścia przyciskiem na monitorze,
+  stan zostaje przy poprzednim wejściu. Przełączenia z usługi i z polecenia — po kolei pod `monitors.lock`.
+- **Praca:** wyjście ze Streamu i start usługi w pracy ze stanem `xbox` (albo przerwanym) przełączają na PC
+  (źródło „czy Stream” — [Skróty Stream](#skróty-stream)).
+- **Testy i wyłączenie:** `--no-monitors`; `$TIDE_MONITORS_BIN` wskazuje katalog z `ddcutil` zamiast PATH (testy:
+  atrapy z `tests/fake_screens.py`, usługa w testach — nieistniejący katalog).
 
 ## Skróty Stream
 
 Pause, Meta+Pause i Meta+B działają tylko w aktywności Stream (PT-38, decyzja 81, `tide_daemon/stream_shortcuts.py`).
-Usługa nie wystawia obiektu — słucha `org.kde.ActivityManager.Activities.CurrentActivityChanged` i rozmawia
-z `org.kde.kglobalaccel`:
+Usługa nie wystawia obiektu. „Czy Stream” mówi `tide_daemon/current_activity.py`: słucha
+`org.kde.ActivityManager.Activities.CurrentActivityChanged`, przy starcie pyta o `CurrentActivity` (odpowiedź
+starsza niż ostatni sygnał przepada) i wysyła `changed(aktywność, stream)`; podpięcie odbiorców jest w `app.py`.
+Stream to aktywność przypisana do wyglądu `stream` w `$XDG_CONFIG_HOME/tide/activities.json`.
 
-- **Wejście do Streamu** (aktywność przypisana do wyglądu `stream` w `$XDG_CONFIG_HOME/tide/activities.json`):
-  klawisz zajęty przez inną akcję (dziś Meta+B — `org_kde_powerdevil/powerProfile`) jest jej odbierany
-  `setForeignShortcut`, a pełna lista jej klawiszy trafia wcześniej do `$XDG_STATE_HOME/tide/stream-shortcuts.json`;
-  potem `doRegister` i `setShortcut(…, SetPresent|NoAutoloading)` dla `tide_stream/mic` (Pause),
-  `tide_stream/privacy` (Meta+Pause) i `tide_stream/brb` (Meta+B).
+- **Wejście do Streamu:** klawisz zajęty przez inną akcję (dziś Meta+B — `org_kde_powerdevil/powerProfile`) jest
+  jej odbierany `setForeignShortcut`, a pełna lista jej klawiszy trafia wcześniej do
+  `$XDG_STATE_HOME/tide/stream-shortcuts.json`; potem `doRegister` i `setShortcut(…, SetPresent|NoAutoloading)` dla
+  `tide_stream/mic` (Pause), `tide_stream/privacy` (Meta+Pause) i `tide_stream/brb` (Meta+B).
 - **Naciśnięcie:** sygnał `org.kde.kglobalaccel.Component.globalShortcutPressed` na `/component/tide_stream` →
   `kamp mic.toggle`, `kamp privacy.toggle`, `kamp brb.toggle` w osobnym procesie (`$TIDE_KAMP`, PATH albo
   `~/.local/bin/kamp`); kod 2 to „rdzeń Streamer nie działa” w dzienniku.
 - **Wyjście ze Streamu, zatrzymanie usługi, start w pracy z pozostałym plikiem:** `unregister` akcji `tide_stream`
-  i oddanie odebranych klawiszy (zapisana lista, a gdy akcja zmieniła się w trakcie — tylko dopisany klawisz).
-  W pracy bez niczego do oddania usługa tylko czyta rejestr.
+  i oddanie odebranych klawiszy (zapisana lista, a gdy akcja zmieniła się w trakcie — tylko dopisany klawisz). Gdy
+  plik zginął, a nasze skróty są w rejestrze — klawisz wraca do akcji, która ma go w `defaultShortcut` (kandydaci
+  z `kglobalshortcutsrc`, tylko odczyt). W pracy bez niczego do oddania usługa tylko czyta rejestr.
+- **Wątek i ponowienia:** wywołania KGlobalAccel idą po kolei w jednym wątku roboczym (pętla usługi nie czeka),
+  każde zadanie bierze ostatni żądany stan; błąd KGlobalAccel to ponowienie co 5 s (najwyżej 12 razy na zdarzenie).
+- **Awaria w Stream:** gdy usługa padnie w aktywności Stream, Pause, Meta+Pause i Meta+B zostają przechwycone przez
+  `tide_stream` (bez reakcji) do jej restartu — systemd podnosi ją po 5 s, a start w pracy oddaje klawisze.
+- **Kopia zapasowa w trakcie Streamu:** `make install` (i `make backup`) kopiuje `kglobalshortcutsrc`; kopia
+  zrobiona w Stream ma Meta+B przy `tide_stream`, a profil zasilania tylko z Battery. Po przywróceniu takiej kopii
+  (`make restore`, działa od następnego logowania) usługa przy starcie w pracy widzi skróty `tide_stream` bez pliku
+  stanu: usuwa je i oddaje Meta+B akcji, która ma go w domyślnych. Bezpieczniej jednak robić kopie w pracy.
 - **Wyłączenie:** `--no-stream-shortcuts`; pusty `$TIDE_KAMP` — naciśnięcia nic nie wołają (tak robią testy).
 
 ## Uruchamianie
