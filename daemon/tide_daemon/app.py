@@ -266,10 +266,16 @@ def main(argv=None) -> int:
             for annotator in annotators:
                 annotator(sessions)
         monitor.annotate = annotate  # znacznik „nowe” (/Tasks) i postęp koordynatora (/Coordination)
+    look_state = notification_filter = None
+    if not args.no_activity_look:
+        # Wygląd bieżącej aktywności dla widżetów (/ActivityLook) i filtr powiadomień Stream (PT-36).
+        from .activity_state import ActivityState, NotificationFilter
+        look_state = ActivityState(parent=app)
+        notification_filter = NotificationFilter(look_state, parent=app)
     try:
         holder = dbus_service.register(monitor, trees, idle=idle, reports=report,  # noqa: F841 — musi żyć do końca
                                        limits=limits, tasks=tasks, coordination=coordination, board=board,
-                                       docker=docker, models=models)
+                                       docker=docker, models=models, activity_look=look_state)
     except RuntimeError as exc:
         print(f"tide-daemon: {exc}", file=sys.stderr, flush=True)
         return 1
@@ -313,6 +319,8 @@ def main(argv=None) -> int:
         from .activity_look_monitor import ActivityLookMonitor, default_engine
         activity_look = ActivityLookMonitor(default_engine(), parent=app)
         activity_look.start()  # nasłuch zmiany aktywności i kontrola wyglądu bieżącej (logowanie)
+    if look_state is not None:
+        look_state.start()  # bieżąca aktywność z ActivityManagera; filtr powiadomień idzie za jej wyglądem
 
     # Stan agentów według katalogu dla promptu powłoki (cwdstate.py) — plik, nie D-Bus, bo prompt
     # czyta go przy każdym znaku zachęty.
@@ -368,6 +376,9 @@ def main(argv=None) -> int:
         docker.stop()
     if activity_look is not None:
         activity_look.stop()
+    if look_state is not None:
+        look_state.stop()
+        notification_filter.stop()  # inhibicja i dozwolone aplikacje nie zostają po usłudze
     from . import windows
     windows.give_back_tabs()  # tytuł karty ze znacznikiem przejścia do okna, jeśli jeszcze nie wrócił
     if marker is not None:

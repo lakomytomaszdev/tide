@@ -53,6 +53,52 @@ def desktop_like_this_one(icon_path: str = "/tmp/plasma_icons/index.html.desktop
     return {"screens": list(screens), "panels": [top, dock], "nextId": 200}
 
 
+def desktop_with_tide_panels(work: str = "work") -> dict:
+    """Panele Tide jak na tym komputerze 28.10.2026 (panels.py dump): górny pasek i dock DP-2, smukły pasek
+    i pasek boczny HDMI-A-1 — z ustawieniami apletów pracy, które powrót ze Stream musi zachować."""
+    top = panel(73, 0, "top", 34, [
+        widget(74, "org.kde.plasma.kickoff", {"/General": {"icon": "tide-logo"}}),
+        widget(75, "org.kde.plasma.appmenu"),
+        widget(76, "org.kde.plasma.panelspacer", {"/General": {"expanding": "true"}}),
+        widget(77, "org.kde.plasma.digitalclock", {"/Appearance": {"showDate": "false"}}),
+        widget(78, "org.kde.plasma.panelspacer", {"/General": {"expanding": "true"}}),
+        widget(79, "org.kde.plasma.systemtray"),
+    ])
+    dock = panel(90, 0, "bottom", 64, [
+        widget(91, "org.tide.system"), widget(92, "org.tide.docker"), widget(93, "org.tide.worktrees"),
+        widget(94, "org.kde.plasma.panelspacer", {"/General": {"expanding": "true"}, "/Tide": {"role": "dock-spacer"}}),
+        widget(95, "org.kde.plasma.icontasks", {"/General": {"fill": "false", "launchers": "applications:org.kde.konsole.desktop"}}),
+        widget(96, "org.kde.plasma.panelspacer", {"/General": {"expanding": "true"}, "/Tide": {"role": "dock-spacer"}}),
+        widget(97, "org.tide.work", {"/Configuration/General": {"showDone": "true"}}),
+        widget(98, "org.tide.limits", {"/Configuration/General": {"provider": "claude"}}),
+    ])
+    slim = panel(103, 1, "top", 30, [
+        widget(104, "org.kde.plasma.appmenu"),
+        widget(105, "org.kde.plasma.panelspacer", {"/General": {"expanding": "true"}}),
+        widget(106, "org.kde.plasma.digitalclock"),
+        widget(107, "org.kde.plasma.panelspacer", {"/General": {"expanding": "true"}}),
+    ])
+    slim["config"]["/Tide"] = {"role": "side-bar"}
+    side = panel(118, 1, "left", 420, [
+        widget(119, "org.tide.sidebar"),
+        widget(120, "org.tide.work", {"/Configuration/General": {"sidebarMode": "true"}}),
+        widget(121, "org.tide.system", {"/Configuration/General": {"sidebarMode": "true"}}),
+        widget(122, "org.tide.worktrees", {"/Configuration/General": {"sidebarMode": "true"}}),
+        widget(123, "org.tide.limits", {"/Configuration/General": {"sidebarMode": "true"}}),
+        widget(124, "org.kde.plasma.panelspacer", {"/General": {"expanding": "true"}, "/Tide": {"role": "sidebar-spacer"}}),
+    ])
+    side.update(hiding="dodgewindows", lengthMode="custom", alignment="left", offset=38, minimumLength=1042,
+                maximumLength=1042)
+    side["config"]["/Tide"] = {"role": "sidebar"}
+    for p_ in (slim,):
+        p_.update(minimumLength=1920, maximumLength=1920)
+    return {"screens": ["DP-2", "HDMI-A-1"], "panels": [top, dock, slim, side], "nextId": 200,
+            "currentActivity": work, "geometries": [{"x": 1920, "y": 0, "width": 2560, "height": 1440},
+                                                     {"x": 0, "y": 0, "width": 1920, "height": 1080}],
+            "desktops": [{"id": 25, "screen": 0, "activity": work, "widgets": []},
+                         {"id": 26, "screen": 1, "activity": work, "widgets": []}]}
+
+
 def run(state: dict, script: str) -> tuple[str, dict]:
     """Wykonuje skrypt na stanie; zwraca wypisany tekst i nowy stan."""
     fake = (HERE / "fake_plasmashell.js").read_text()

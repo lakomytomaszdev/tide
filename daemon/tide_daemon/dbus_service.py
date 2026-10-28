@@ -181,6 +181,13 @@ BOARD_PATH = "/Board"
 BOARD_IFACE = "org.tide.Daemon.Board"
 DOCKER_PATH = "/Docker"
 DOCKER_IFACE = "org.tide.Daemon.Docker"
+ACTIVITY_LOOK_PATH = "/ActivityLook"
+ACTIVITY_LOOK_IFACE = "org.tide.Daemon.ActivityLook"
+
+ACTIVITY_LOOK_XML = f"""<interface name="{ACTIVITY_LOOK_IFACE}">
+  <method name="State"><arg name="json" type="s" direction="out"/></method>
+  <signal name="Changed"/>
+</interface>"""
 
 AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
   <method name="Sessions"><arg name="json" type="s" direction="out"/></method>
@@ -949,9 +956,24 @@ class DockerAdaptor(QDBusAbstractAdaptor):
         return self.monitor.show_window(ident)
 
 
+@pyqtClassInfo("D-Bus Interface", ACTIVITY_LOOK_IFACE)
+@pyqtClassInfo("D-Bus Introspection", ACTIVITY_LOOK_XML)
+class ActivityLookAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, state):
+        super().__init__(parent)
+        self.state = state
+        state.changed.connect(self.Changed)
+
+    @pyqtSlot(result=str)
+    def State(self) -> str:
+        return self.state.state_json()
+
+
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
              limits=None, tasks=None, coordination=None, board=None,
-             docker=None, models=None) -> QObject:
+             docker=None, models=None, activity_look=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -1006,6 +1028,11 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.docker.adaptor = DockerAdaptor(holder.docker, docker, bus)
         if not bus.registerObject(DOCKER_PATH, holder.docker):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {DOCKER_PATH}")
+    if activity_look is not None:
+        holder.activity_look = QObject(holder)
+        holder.activity_look.adaptor = ActivityLookAdaptor(holder.activity_look, activity_look)
+        if not bus.registerObject(ACTIVITY_LOOK_PATH, holder.activity_look):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {ACTIVITY_LOOK_PATH}")
     if not bus.registerService(SERVICE):
         raise RuntimeError(f"nazwa {SERVICE} jest już zajęta (działa inna kopia usługi?)")
     return holder

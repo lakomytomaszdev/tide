@@ -34,3 +34,7 @@ os.environ["CODEX_HOME"] = "/nonexistent/tide-tests/codex"
 # $TIDE_ACTIVITY_LOOK_ENGINE wyłącza nakładanie, usługi w testach dziedziczą tę zmienną.
 # Testy wyglądu aktywności podają atrapę uruchamiania silnika (test_activity_look.py).
 os.environ["TIDE_ACTIVITY_LOOK_ENGINE"] = ""
+# Wygląd aktywności dla widżetów i filtr powiadomień Stream (activity_state.py): bez opisów wyglądów każda
+# aktywność ma wygląd pracy, więc usługa w teście nigdy nie zmienia plasmanotifyrc — chyba że test poda
+# własny katalog opisów i tymczasowy XDG_CONFIG_HOME (test_stream_mode.py).
+os.environ["TIDE_ACTIVITY_LOOKS"] = "/nonexistent/tide-tests/activities"
