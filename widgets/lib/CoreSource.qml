@@ -37,12 +37,15 @@ Item {
     readonly property bool coreUp: watcher.registered
     property var view: null
 
-    // Pamięć stanu OBS (PT-83, decyzja 82): ostatni klucz Stream.obsKey poza przerwą w rdzeniu. Dzięki niej rozłączony
-    // OBS zaraz po antenie to awaria w trakcie streamu („lost”), a bez historii — zwykłe granie („off”). Tylko
-    // w pamięci widżetu, przerwa w rdzeniu jej nie zmienia.
-    property string obsMemory: ""
+    // Pamięć stanu OBS (PT-83, decyzja 82): {key, since} — ostatni klucz Stream.obsKey poza przerwą w rdzeniu i chwila
+    // utraty OBS. Dzięki niej rozłączony OBS zaraz po antenie to awaria w trakcie streamu („lost”, najwyżej przez
+    // obsLostLimit), a bez historii — zwykłe granie („off”). Tylko w pamięci widżetu, przerwa w rdzeniu jej nie zmienia.
+    property var obsMemory: ({ key: "", since: 0 })
     readonly property string obsRawKey: Stream.obsKey(view, coreUp, "")
-    onObsRawKeyChanged: obsMemory = Stream.obsMemory(obsMemory, obsRawKey)
+    onObsRawKeyChanged: obsMemory = Stream.obsMemory(obsMemory, obsRawKey, Date.now())
+    // „lost” wygasa po obsLostLimit bez połączenia z OBS (Stream.obsExpire); zegar chodzi tylko przy „lost”.
+    property int obsLostLimit: Stream.OBS_LOST_LIMIT
+    property int obsLostCheck: 60000
 
     property bool wantChat: false
     property int chatLimit: 200
@@ -238,6 +241,13 @@ Item {
             else source.refresh()
         }
         function dbusChat(eventJson) { if (source.wantChat) source.pushChat(eventJson) }
+    }
+
+    Timer {
+        interval: source.obsLostCheck
+        running: source.obsMemory.key === "lost"
+        repeat: true
+        onTriggered: source.obsMemory = Stream.obsExpire(source.obsMemory, Date.now(), source.obsLostLimit)
     }
 
     Timer {

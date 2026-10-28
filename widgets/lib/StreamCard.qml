@@ -14,7 +14,7 @@ Card {
     property var view: null
     property bool coreUp: false
     property bool full: false
-    property string obsMemory: ""      // CoreSource.obsMemory: rozłączony OBS po antenie to ostrzeżenie
+    property var obsMemory: ""      // CoreSource.obsMemory: rozłączony OBS po antenie to ostrzeżenie
     property string status: ""
     property bool statusError: false
     property bool busy: false

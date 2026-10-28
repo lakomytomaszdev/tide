@@ -399,6 +399,11 @@ var SHORTCUTS = [
 // zasada streamer: każdy automat ma ręczne nadpisanie i widać, kto ustawił wartość.
 var DESK_VIEWS = { console: "Konsola streamu", gaming: "Granie" }
 
+// Pamięć stanu OBS widżetu: napis (klucz) albo {key, since} z CoreSource.obsMemory — since to chwila wejścia w „lost”.
+function memoryKey(memory) {
+    return memory && typeof memory === "object" ? String(memory.key || "") : String(memory || "")
+}
+
 // Stan OBS, którego zmiana kończy nadpisanie: down i loading (rdzeń), live (na żywo), on (połączony poza anteną),
 // lost (rozłączony zaraz po antenie albo po lost — awaria w trakcie streamu), off (wyłączony, bez streamu).
 // „lost” wynika z pamięci widżetu (memory: poprzedni stan bez przerw rdzenia, obsMemory), nie z core.session — rdzeń
@@ -409,19 +414,36 @@ function obsKey(view, coreUp, memory) {
     if (s.core !== "up") return s.core
     if (s.live) return "live"
     if (s.obsConnected) return "on"
-    return memory === "live" || memory === "lost" ? "lost" : "off"
+    return streamMemory(memory) ? "lost" : "off"
 }
 
-// Nowa pamięć widżetu po zmianie surowego klucza (obsKey bez pamięci: live, on, off, down, loading): przerwa w rdzeniu
-// jej nie zmienia, a rozłączony OBS po antenie zostaje „lost” aż do ponownego połączenia z OBS.
-function obsMemory(memory, key) {
-    if (key === "down" || key === "loading") return memory || ""
-    if ((key === "off" || key === "lost") && streamMemory(memory)) return "lost"
-    return key
+// Nowa pamięć widżetu {key, since} po zmianie surowego klucza (obsKey bez pamięci: live, on, off, down, loading):
+// przerwa w rdzeniu jej nie zmienia, a rozłączony OBS po antenie zostaje „lost” (since — chwila utraty, now w ms)
+// aż do ponownego połączenia z OBS albo do wygaśnięcia (obsExpire).
+function obsMemory(memory, key, now) {
+    const prev = memoryKey(memory)
+    const since = memory && typeof memory === "object" ? Number(memory.since) || 0 : 0
+    if (key === "down" || key === "loading") return { key: prev, since: since }
+    if (key === "off" || key === "lost") {
+        if (prev === "lost") return { key: "lost", since: since }
+        if (prev === "live") return { key: "lost", since: now }
+    }
+    return { key: key, since: 0 }
+}
+
+// Po 10 min bez połączenia z OBS stream na pewno już nie idzie: „lost” przechodzi w „off” (spokojny kafelek,
+// automat Granie). CoreSource sprawdza to rzadkim zegarem tylko wtedy, gdy pamięć to „lost”.
+var OBS_LOST_LIMIT = 10 * 60 * 1000
+
+function obsExpire(memory, now, limit) {
+    const lim = typeof limit === "number" ? limit : OBS_LOST_LIMIT
+    if (memoryKey(memory) !== "lost" || now - (Number(memory.since) || 0) < lim) return memory
+    return { key: "off", since: 0 }
 }
 
 function streamMemory(memory) {
-    return memory === "live" || memory === "lost"
+    const key = memoryKey(memory)
+    return key === "live" || key === "lost"
 }
 
 var DESK_AUTO = {

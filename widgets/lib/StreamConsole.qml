@@ -10,7 +10,7 @@ ColumnLayout {
 
     property var view: null
     property bool coreUp: false
-    property string obsMemory: ""
+    property var obsMemory: ""
     property string previewImage: ""
     property bool previewSupported: true
     property string status: ""
