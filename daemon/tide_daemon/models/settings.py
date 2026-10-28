@@ -23,6 +23,9 @@ Ten moduł nie zna Qt — wywołuje go models_monitor.py w wątku głównym (zap
   niezależny od roli `agent` i od serwera (przełączenie na Maca go nie zmienia).
 - Wyszukiwanie po znaczeniu w KRunnerze (`semanticSearch`: true albo false, PT-19) — klucz najwyższego poziomu,
   jak `agentProgram`; model daje rola `embed`.
+- Katalog wykonawców (PT-60): klucze `executors` (lista) i `providers` w models.json. Bez klucza `executors`
+  działa katalog domyślny; pierwszy zapis wykonawcy zapisuje cały katalog (domyślny plus zmiana). Token innego
+  dostawcy: plik `tokens/provider-<nazwa>` (0600), w models.json tylko `tokenFile`.
 - Zapisy są szeregowane blokadą (D-Bus i ewentualne wątki), a piszemy tylko na wyraźne wywołanie.
 """
 from __future__ import annotations
@@ -36,6 +39,7 @@ import tempfile
 import threading
 
 from . import config as config_mod
+from . import executors as executors_mod
 from .config import DEFAULT_ENDPOINT, DEFAULT_ROLES, DEFAULT_URL
 
 LOCK = threading.Lock()
@@ -471,3 +475,163 @@ def endpoint_for_pull(req: dict, path: str | None = None):
     if not PULL_NAME_RE.fullmatch(model):
         raise SettingsError("nazwa modelu: litery, cyfry i znaki ._:/@+- (np. qwen3:8b)")
     return endpoint, model
+
+
+# --- katalog wykonawców i dostawcy (PT-60) -----------------------------------------------------------
+
+def _catalog_list(draft) -> list:
+    """Lista wykonawców do zmiany: zapisana, a bez niej katalog domyślny (pierwszy zapis zapisuje całość)."""
+    raw = draft.data.get("executors")
+    if raw is None:
+        return [executors_mod.executor_to_dict(e) for e in executors_mod.DEFAULT_EXECUTORS]
+    if not isinstance(raw, list):
+        raise SettingsError("models.json: executors nie jest listą — nie zapisuję, żeby nie nadpisać pliku; "
+                            "popraw go albo usuń")
+    return raw
+
+
+def _providers(draft) -> dict:
+    raw = draft.data.get("providers")
+    if raw is None:
+        raw = draft.data["providers"] = {}
+    if not isinstance(raw, dict):
+        raise SettingsError("models.json: providers nie jest obiektem — nie zapisuję, żeby nie nadpisać pliku; "
+                            "popraw go albo usuń")
+    return raw
+
+
+def set_executor(req: dict, path: str | None = None) -> None:
+    """Nowy albo zmieniony wykonawca: {name, program, model, provider, endpoint?, classes, oldName?}.
+    `oldName` — zmiana nazwy istniejącego (zostaje na swoim miejscu na liście). Program i model puste tylko
+    u lokalnego (jak agent lokalny)."""
+    path = path or config_mod.config_path()
+    if not isinstance(req, dict):
+        raise SettingsError("niepoprawne żądanie: oczekiwano obiektu JSON")
+    old = req.get("oldName")
+    if old is not None and not isinstance(old, str):
+        raise SettingsError("oldName: oczekiwano napisu")
+    with LOCK:
+        draft = _Draft(path)
+        listing = _catalog_list(draft)
+        catalog = executors_mod.parse({"providers": draft.data.get("providers"), "executors": []})
+        value = {k: req.get(k) for k in ("name", "program", "model", "provider", "endpoint", "classes")}
+        if value["classes"] is None:
+            value["classes"] = []
+        executor, error = executors_mod.executor_problem(value, catalog.providers, draft.cfg.endpoints)
+        if error:
+            raise SettingsError(error)
+        names = [e.get("name") if isinstance(e, dict) else None for e in listing]
+        target = old if old else executor.name
+        if old and old not in names:
+            raise SettingsError(f"nieznany wykonawca „{old[:40]}”")
+        if executor.name != target and executor.name in names:
+            raise SettingsError(f"wykonawca „{executor.name}” już jest w katalogu")
+        if not old and executor.name in names:
+            raise SettingsError(f"wykonawca „{executor.name}” już jest w katalogu — zmień go zamiast dodawać")
+        entry = executors_mod.executor_to_dict(executor)
+        if target in names:
+            listing[names.index(target)] = entry
+        else:
+            listing.append(entry)
+        draft.data["executors"] = listing
+        draft.commit()
+
+
+def remove_executor(name, path: str | None = None) -> None:
+    path = path or config_mod.config_path()
+    with LOCK:
+        draft = _Draft(path)
+        listing = _catalog_list(draft)
+        names = [e.get("name") if isinstance(e, dict) else None for e in listing]
+        if not isinstance(name, str) or name not in names:
+            raise SettingsError(f"nieznany wykonawca „{str(name)[:40]}”")
+        del listing[names.index(name)]
+        draft.data["executors"] = listing
+        draft.commit()
+
+
+def provider_token_path(name: str, path: str | None = None) -> str:
+    return token_path(executors_mod.TOKEN_FILE_PREFIX + name, path)
+
+
+def set_provider(req: dict, path: str | None = None) -> None:
+    """Inny dostawca: {name, label?, url, api ("openai"|"anthropic"), token?, clearToken?}. Token tylko do pliku
+    `tokens/provider-<nazwa>` (0600); puste albo brak `token` zostawia obecny, `clearToken: true` usuwa."""
+    path = path or config_mod.config_path()
+    if not isinstance(req, dict):
+        raise SettingsError("niepoprawne żądanie: oczekiwano obiektu JSON")
+    name = req.get("name")
+    url = _text(req, "url", "url")
+    api = _text(req, "api", "api")
+    label = _text(req, "label", "label", limit=executors_mod.EXECUTOR_NAME_MAX)
+    token = _text(req, "token", "token", limit=TOKEN_MAX) or ""
+    clear = req.get("clearToken", False)
+    if not isinstance(clear, bool):
+        raise SettingsError("clearToken: oczekiwano true albo false")
+    if token and clear:
+        raise SettingsError("podaj nowy token albo clearToken, nie oba naraz")
+    if token and not config_mod.valid_token(token):
+        raise SettingsError("token: tylko drukowalne znaki ASCII, bez spacji")
+    if not isinstance(name, str) or not executors_mod.NAME_RE.fullmatch(name) or name in executors_mod.RESERVED:
+        raise SettingsError(f"dostawca „{str(name)[:40]}”: niepoprawna albo zarezerwowana nazwa (litery, cyfry, "
+                            f"_.-; nie anthropic, openai, local, mixed)")
+    problem = executors_mod.url_problem(url)
+    if problem:
+        raise SettingsError(f"dostawca „{name}”: {problem}")
+    if api not in executors_mod.API_KINDS:
+        raise SettingsError(f"dostawca „{name}”: API to openai albo anthropic")
+    own = provider_token_path(name, path)
+    with LOCK:
+        draft = _Draft(path)
+        providers = _providers(draft)
+        existing = providers.get(name)
+        if isinstance(existing, dict) and existing.get("api") != api:
+            used = [e.get("name") for e in _catalog_list(draft) if isinstance(e, dict) and e.get("provider") == name]
+            if used:
+                raise SettingsError(f"dostawca „{name}” ma wykonawców ({', '.join(map(str, used))}) — zmiana API "
+                                    f"wymaga ich zmiany albo usunięcia")
+        value = dict(existing) if isinstance(existing, dict) else {}
+        value.update({"url": executors_mod.clean_url(url), "api": api})
+        if label:
+            value["label"] = label
+        else:
+            value.pop("label", None)
+        if clear:
+            value.pop("tokenFile", None)
+        elif token:
+            value["tokenFile"] = own
+        providers[name] = value
+        restore = None
+        if token:
+            try:
+                restore = _write_token(own, token)
+            except OSError as exc:
+                raise SettingsError(f"token: nie udało się zapisać pliku ({type(exc).__name__})") from None
+        try:
+            draft.commit()
+        except BaseException:
+            if restore:
+                restore()
+            raise
+        if clear:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(own)
+
+
+def remove_provider(name, path: str | None = None) -> None:
+    """Usuwa innego dostawcę i jego plik tokenu; odmowa, gdy ma wykonawców w katalogu."""
+    path = path or config_mod.config_path()
+    with LOCK:
+        draft = _Draft(path)
+        providers = _providers(draft)
+        if not isinstance(name, str) or name not in providers:
+            raise SettingsError(f"nieznany dostawca „{str(name)[:40]}”")
+        used = [e.get("name") for e in _catalog_list(draft) if isinstance(e, dict) and e.get("provider") == name]
+        if used:
+            raise SettingsError(f"dostawca „{name}” ma wykonawców: {', '.join(map(str, used))} — usuń ich najpierw")
+        del providers[name]
+        if not providers:
+            del draft.data["providers"]
+        draft.commit()
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(provider_token_path(name, path))

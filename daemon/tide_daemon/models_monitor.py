@@ -40,6 +40,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from .agents import localmodel
 from .models import config as models_config
+from .models import executors as models_executors
 from .models import pull as models_pull
 from .models import queue as models_queue
 from .models import settings as models_settings
@@ -361,6 +362,40 @@ class ModelsMonitor(QObject):
             except OSError as exc:
                 print(f"tide-daemon: wyszukiwanie: nie udało się usunąć indeksu ({type(exc).__name__})", flush=True)
         return reply
+
+    def set_executor(self, text: str) -> str:
+        req = _request(text)
+        if req is None:
+            return _reply(False, "niepoprawne żądanie: oczekiwano obiektu JSON")
+        return self._write(models_settings.set_executor, req)
+
+    def remove_executor(self, name: str) -> str:
+        return self._write(models_settings.remove_executor, name)
+
+    def set_provider(self, text: str) -> str:
+        req = _request(text)
+        if req is None:
+            return _reply(False, "niepoprawne żądanie: oczekiwano obiektu JSON")
+        return self._write(models_settings.set_provider, req)
+
+    def remove_provider(self, name: str) -> str:
+        return self._write(models_settings.remove_provider, name)
+
+    def resolve_executor(self, text: str) -> str:
+        """Klasa → wykonawca: {provider, class[, author]}; z `author` — recenzent innego modelu niż autor.
+        Odpowiedź: models/executors.py Resolution.to_dict() (bez tokenów). Dostępność lokalnych z ostatniego odczytu."""
+        req = _request(text)
+        if req is None:
+            return _reply(False, "niepoprawne żądanie: oczekiwano obiektu JSON")
+        try:
+            ctx = models_executors.context_from(models_config.load(), self._base)
+            if req.get("author"):
+                result = models_executors.reviewer(ctx, req.get("provider"), req.get("class"), req["author"])
+            else:
+                result = models_executors.resolve(ctx, req.get("provider"), req.get("class"))
+        except Exception as exc:  # zły plik albo przeoczony przypadek: odmowa z komunikatem
+            return _reply(False, f"nie da się zamienić klasy na wykonawcę ({type(exc).__name__})")
+        return json.dumps(result.to_dict(), ensure_ascii=False)
 
     def set_report_summary(self, mode: str) -> str:
         if self.report is None:

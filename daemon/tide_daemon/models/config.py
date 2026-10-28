@@ -41,6 +41,10 @@ go nie zmienia). Brak klucza — `codex`; nieznana wartość — ostrzeżenie i 
 (działa dopiero wtedy, gdy model roli `embed` jest na serwerze); zła wartość — ostrzeżenie i włączone. Wyłączone
 — usługa niczego nie indeksuje i usuwa zapisane wektory.
 
+`executors` i `providers` to katalog wykonawców (PT-60, models/executors.py): lista wykonawców
+{name, program, model, provider, endpoint, classes} i inni dostawcy {label, url, api, tokenFile}. Brak klucza
+`executors` — katalog domyślny; zły wykonawca albo dostawca jest pomijany z ostrzeżeniem.
+
 Token (`tokenFile`, z rozwinięciem `~`) czytamy przy każdym zapytaniu, tylko w pamięci, i wysyłamy
 jako `Authorization: Bearer`; nie trafia do dziennika, komunikatów błędów ani odpowiedzi D-Bus.
 """
@@ -52,6 +56,7 @@ import re
 import urllib.parse
 from dataclasses import dataclass, field
 
+from . import executors as executors_mod
 from ..modelnames import is_cloud_model  # noqa: F401 — jedna reguła chmury Ollamy dla usługi (PT-17, decyzja 67)
 from .transport import ModelError
 
@@ -153,6 +158,7 @@ class ModelsConfig:
     warnings: tuple = field(default_factory=tuple)
     agent_program: str = DEFAULT_AGENT_PROGRAM   # `agentProgram`: codex albo claude
     semantic_search: bool = True                 # `semanticSearch`: wyszukiwanie po znaczeniu w KRunnerze
+    catalog: executors_mod.Catalog = field(default_factory=executors_mod.default_catalog)  # wykonawcy i dostawcy
 
     def endpoint(self, name: str | None = None) -> Endpoint:
         name = name or self.default
@@ -405,7 +411,9 @@ def from_dict(data, path: str = "", exists: bool = True) -> ModelsConfig:
             roles.setdefault(name, Role(name, default, model, ROLE_CTX.get(name)))
     program = _agent_program(data, warnings)
     search = _semantic_search(data, warnings)
-    return ModelsConfig(default, endpoints, roles, path, exists, "", tuple(warnings), program, search)
+    catalog = executors_mod.parse(data, endpoints)
+    warnings.extend(catalog.warnings)
+    return ModelsConfig(default, endpoints, roles, path, exists, "", tuple(warnings), program, search, catalog)
 
 
 def load(path: str | None = None) -> ModelsConfig:
