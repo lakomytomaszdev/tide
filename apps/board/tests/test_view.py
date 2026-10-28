@@ -216,8 +216,8 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js("launchSteps('now', 'full')"), ["Ticket w tle", "Gałąź karty", "Do sprawdzenia"])
         self.assertEqual(self.js("[isFlowEntry('now'), isFlowEntry('planning'), entryHasModes('now')]"),
                          [True, False, False])
-        self.assertEqual(self.js("startCardRequest({entry: 'now', executor: 'Opus'}, ['/t/1.png'])"),
-                         {"entry": "now", "executor": "Opus", "images": ["/t/1.png"]})
+        self.assertEqual(self.js("startCardRequest({entry: 'now', executor: 'Opus', check: 'manual'}, ['/t/1.png'])"),
+                         {"entry": "now", "executor": "Opus", "check": "manual", "images": ["/t/1.png"]})
         flow = "{id: 'K-1', column: 'todo', boardColumn: '%s', derived: {column: '%s', flow: {ticket: 'PT-1'}}}"
         for shown in ("progress", "waiting"):
             card = flow % (shown, shown)
@@ -1550,6 +1550,7 @@ out["now"] = [js("page.launchDialog.entry"), shown("launchExecutor"), shown("lau
 out["options"] = js("page.launchDialog.executorOptions.map(o => o.value)")
 out["default"] = js("page.launchDialog.executor")
 choose("launchExecutor-Opus")
+js("page.launchDialog.manualCheck = true")
 out["footer"] = obj("launchFooter").property("text")
 replies.append({{"ok": False, "error": "flow-active", "message": "K-15: krok tej karty jeszcze trwa"}})
 key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
@@ -1579,7 +1580,8 @@ out["toast"] = js("[page.toast, page.toastTone]")
         self.assertNotIn("Start", [c[0] for c in out["calls"]])
         self.assertEqual([c[0] for c in out["second"]], ["StartCard", "MoveCard"])
         self.assertEqual(out["second"][0][1], "K-15")
-        self.assertEqual(json.loads(out["second"][0][2]), {"entry": "now", "executor": "Opus", "images": []})
+        self.assertEqual(json.loads(out["second"][0][2]),
+                         {"entry": "now", "executor": "Opus", "check": "manual", "images": []})
         self.assertEqual(out["second"][1], ["MoveCard", "K-15", "todo", -1], "karta z Backlogu idzie do kolejki")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")

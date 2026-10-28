@@ -520,7 +520,9 @@ class BoardStore:
         ma zwykle zapisane `todo`, a przeniesienie jej „do poprawy” do Do zrobienia musi być widać
         (board/derive.py)."""
         card = self._card(board, num)
-        change = Change(result={"ok": True, "id": card.id, "changed": False})
+        move_id = secrets.token_hex(16)
+        change = Change(result={"ok": True, "id": card.id, "changed": False, "moveId": move_id})
+        card.doc.set("move-id", move_id)
         others = board.column_cards(column, skip=card.num)
         if index < 0 or index > len(others):
             index = len(others)

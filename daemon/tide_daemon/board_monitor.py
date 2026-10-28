@@ -197,7 +197,7 @@ class BoardMonitor(QObject):
                 reply = {}
             if reply.get("ok") and reply.get("id") and self.flow.has_journal(reply["id"]):
                 # Backlog wstrzymuje, Gotowe i Archiwum kończą; skąd — „do poprawy” tylko z kolumn wyliczonych.
-                self.flow.moved(reply["id"], str(column).strip().lower(), shown)
+                self.flow.moved(reply["id"], str(column).strip().lower(), shown, reply.get("moveId") or "")
         return text
 
     def start_card(self, card_id: str, request: str, reply) -> None:

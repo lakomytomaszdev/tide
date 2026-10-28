@@ -572,7 +572,7 @@ function isFlowEntry(id) {
 
 // Prośba /Board StartCard z okna („Od razu”): wejście, wykonawca i zrzuty z katalogu zadań.
 function startCardRequest(state, images) {
-    return { entry: state.entry, executor: state.executor, images: (images || []).slice() }
+    return { entry: state.entry, executor: state.executor, check: state.check, images: (images || []).slice() }
 }
 
 // Tryby Planowania z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.

@@ -145,6 +145,7 @@ class Card:
     created: str = ""
     updated: str = ""
     moved: str = ""           # ostatnia zmiana kolumny (MoveCard, założenie karty); bez klucza — created
+    move_id: str = ""         # identyfikator ostatniego MoveCard; pozwala odtworzyć ruch po restarcie
     moved_from: str = ""      # kolumna wyświetlana przed ostatnim MoveCard (PT-29); pusta — nieznana
     column_moved: str = ""    # ostatnia prawdziwa zmiana kolumny (PT-7); pusta — nigdy (albo sprzed PT-7)
     youtrack: str = ""
@@ -254,6 +255,7 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.created = doc.get("created").strip()
     card.updated = doc.get("updated").strip()
     card.moved = doc.get("moved").strip()
+    card.move_id = doc.get("move-id").strip()
     moved_from = doc.get(MOVED_FROM_KEY).strip().lower()
     card.moved_from = moved_from if moved_from in COLUMN_IDS else ""
     card.column_moved = doc.get(COLUMN_MOVED_KEY).strip()

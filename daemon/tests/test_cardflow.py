@@ -141,6 +141,13 @@ class FlowInProcess(unittest.TestCase):
 
 
 class NowInProcessTest(FlowInProcess):
+    def test_manual_check_choice_is_kept_in_the_card_journal_and_marker(self):
+        card_id = self.card()
+        self.assertTrue(self.start(card_id, check="manual")["ok"])
+        shown = self.wait_column(card_id, "review")
+        self.assertEqual(self.of(card_id, "card.started")[0]["check"], "manual")
+        self.assertEqual(shown["derived"]["check"], "manual")
+
     def test_nonzero_exit_with_done_file_is_a_step_error(self):
         """Nie wolno scalać pracy, gdy program zgłosił błąd mimo zapisanego wcześniej pliku wyniku."""
         fake = self.fakes["claude"]
@@ -310,6 +317,101 @@ class GuardInProcessTest(FlowInProcess):
 
 
 class RestartInProcessTest(FlowInProcess):
+    def test_nonzero_exit_with_done_file_after_restart_is_not_merged(self):
+        fake = self.fakes["claude"]
+        with open(fake, encoding="utf-8") as fh:
+            script = fh.read()
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write(script + "\nsys.exit(7)\n")
+        card_id = self.card()
+        self.flow.stop()  # uruchomienie bez zegara: nowa usługa odczyta dopiero wynik z dysku
+        reply = self.start(card_id)
+        self.assertTrue(reply["ok"], reply)
+        step = self.started(card_id)
+        from tide_daemon.tasks import stepstop
+        self.assertEqual(wait_until(lambda: stepstop.read_exit_code(step["stepDir"]), timeout=10), 7)
+        self.flow = self.make_flow()
+        self.wait_column(card_id, "waiting")
+        finished = self.of(card_id, "step.finished")[0]
+        self.assertEqual((finished["result"], finished["reason"], finished["exit"]), ("error", "exit", 7))
+        self.assertEqual(self.results(card_id, "merge"), [])
+
+    def test_reservation_replay_uses_the_same_number_after_registry_write(self):
+        """Restart po zapisie rejestru, a przed wynikiem dziennika, nie spala drugiego numeru."""
+        from tide_daemon.coordination import reservations
+        card_id = self.card()
+        key = "launch-1"
+        got = reservations.reserve(self.repo, count=1, title="Eksport CSV", request_key=key)
+        journal = self.flow.engine.journal
+        journal.append(card_id, "card.started", entry="now", repo=self.repo, column="todo")
+        journal.append(card_id, "intent", action="reserve", key=key, repo=self.repo, title="Eksport CSV")
+        self.flow.engine.tick()
+        self.assertEqual(self.results(card_id, "reserve")[0]["ticket"], got["ids"][0])
+        self.assertEqual(len(reservations.load(self.repo)), 1)
+
+    def test_restart_after_review_to_todo_with_the_same_stored_column_keeps_rework(self):
+        """Ruch z kolumny wyliczonej zapisuje identyfikator, choć w pliku kolumna była już `todo`."""
+        card_id = self.card()
+        self.start(card_id)
+        self.wait_column(card_id, "review")
+        self.flow.stop()
+        moved = self.store.move_card(card_id, "todo", 0, "review")
+        self.assertTrue(moved["moveId"])
+        self.flow = self.make_flow()
+        self.assertTrue(wait_until(lambda: len(self.of(card_id, "card.moved")) == 1, timeout=10), self.events(card_id))
+        self.assertEqual(self.of(card_id, "card.moved")[0]["moveId"], moved["moveId"])
+        self.assertEqual(self.shown(card_id)["boardColumn"], "todo")
+
+    def test_restart_after_store_move_to_backlog_pauses_the_card(self):
+        card_id = self.card(description="ATRAPA: czekaj")
+        self.start(card_id)
+        step = self.started(card_id)
+        pid = self.unit_pid(step)
+        self.wait_column(card_id, "progress")
+        self.flow.stop()
+        self.store.move_card(card_id, "backlog", 0, "progress")
+        self.flow = self.make_flow()
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.paused"), timeout=10), self.events(card_id))
+        self.assertTrue(flowfakes.alive(pid))
+        self.assertEqual(len(self.of(card_id, "card.moved")), 1)
+
+    def test_restart_after_store_move_before_flow_event_finishes_the_card(self):
+        """Zapis kolumny przed asynchronicznym zdarzeniem też musi przeżyć restart usługi."""
+        card_id = self.card(description="ATRAPA: czekaj")
+        self.start(card_id)
+        step = self.started(card_id)
+        pid = self.unit_pid(step)
+        self.wait_column(card_id, "progress")
+        self.flow.stop()
+        self.store.move_card(card_id, "done", 0, "progress")
+        self.flow = self.make_flow()
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.finished"), timeout=10), self.events(card_id))
+        self.assertTrue(wait_until(lambda: not flowfakes.alive(pid), timeout=5))
+        self.assertEqual(len(self.of(card_id, "card.moved")), 1)
+        self.assertEqual([e["result"] for e in self.of(card_id, "step.finished")], ["stopped"])
+
+    def test_restart_after_launch_result_recovers_the_running_step(self):
+        """Awaria między wynikiem startu jednostki i step.started nie może osierocić kroku."""
+        card_id = self.card(description="ATRAPA: powoli 5")
+        self.start(card_id)
+        step = self.started(card_id)
+        pid = self.unit_pid(step)
+        journal = self.flow.engine.journal
+        self.flow.stop()
+        wait_until(lambda: False, timeout=0.3)
+        events = self.events(card_id)
+        self.assertEqual(events[-1]["type"], "step.started")
+        truncated = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events[:-1])
+        for path in (journal.path(card_id), journal.mirror_path(card_id)):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(truncated)
+        self.flow = self.make_flow()
+        self.assertTrue(wait_until(lambda: self.of(card_id, "step.started"), timeout=5), self.events(card_id))
+        self.assertTrue(flowfakes.alive(pid), "krok nie wystartował drugi raz ani nie zginął")
+        self.wait_column(card_id, "review", timeout=40)
+        self.assertEqual([e["type"] for e in self.events(card_id)].count("step.started"), 1)
+        self.assertEqual(len(self.results(card_id, "merge")), 1)
+
     def test_restart_during_a_step_neither_loses_it_nor_duplicates_events(self):
         card_id = self.card(description="ATRAPA: powoli 3")
         self.start(card_id)
@@ -351,6 +453,22 @@ class RestartInProcessTest(FlowInProcess):
 
 
 class ManualColumnsInProcessTest(FlowInProcess):
+    def test_done_waits_for_a_step_that_failed_to_stop(self):
+        card_id = self.card(description="ATRAPA: czekaj")
+        self.start(card_id)
+        step = self.started(card_id)
+        pid = self.unit_pid(step)
+        self.wait_column(card_id, "progress")
+        with mock.patch.object(self.flow.engine, "_stop", return_value=False) as failed_stop:
+            self.assertTrue(json.loads(self.board.move_card(card_id, "done", 0))["ok"])
+            self.assertTrue(wait_until(lambda: failed_stop.called, timeout=5), self.events(card_id))
+            self.assertEqual(self.of(card_id, "card.finished"), [])
+            self.assertEqual(self.of(card_id, "ticket.rejected"), [])
+            self.assertTrue(flowfakes.alive(pid))
+        self.flow.tick()
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.finished"), timeout=15), self.events(card_id))
+        self.assertTrue(wait_until(lambda: not flowfakes.alive(pid), timeout=5))
+
     def test_backlog_pauses_and_done_finishes_with_changes_kept(self):
         card_id = self.card(description="ATRAPA: czekaj")
         reply = self.start(card_id)
@@ -393,6 +511,20 @@ class ManualColumnsInProcessTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: len(self.of(card_id, "card.moved")) == 2, timeout=5))
         self.assertEqual([(m["from"], m["to"]) for m in self.of(card_id, "card.moved")],
                          [("backlog", "todo"), ("review", "todo")])
+
+    def test_rework_after_title_change_uses_the_original_card_branch(self):
+        card_id = self.card()
+        first = self.start(card_id)
+        self.wait_column(card_id, "review")
+        self.assertTrue(json.loads(self.board.move_card(card_id, "todo", 0))["ok"])
+        self.wait_column(card_id, "todo")
+        self.assertTrue(json.loads(self.board.update_card(card_id, json.dumps({"title": "Nowy tytuł"})))["ok"])
+        second = self.start(card_id)
+        self.assertTrue(second["ok"], second)
+        self.assertEqual(second["ticket"], "PT-2")
+        self.assertEqual(second["cardBranch"], first["cardBranch"])
+        self.assertEqual(second["cardWorktree"], first["cardWorktree"])
+        self.wait_column(card_id, "review")
 
     def test_moving_a_card_without_journal_writes_no_journal(self):
         card_id = self.card(description="zwykła", column="backlog")

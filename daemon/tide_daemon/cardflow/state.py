@@ -39,6 +39,8 @@ class FlowState:
     paused: bool = False
     card_finished: bool = False
     moved_to: str = ""                              # kolumna z ostatniego card.moved po ostatnim wyniku kroku
+    store_column: str = ""                          # kolumna ostatnio potwierdzona w dzienniku
+    store_move_id: str = ""                         # ostatni ruch MoveCard potwierdzony w dzienniku
     rejected: set = field(default_factory=set)
     last_seq: int = 0
 
@@ -70,6 +72,8 @@ def fold(events: list[dict]) -> FlowState:
         st.last_seq = max(st.last_seq, int(e.get("seq") or 0))
         if kind == "card.started":
             st.started, st.paused, st.card_finished, st.moved_to = e, False, False, ""
+            st.store_column = e.get("column") or ""
+            st.store_move_id = e.get("moveId") or ""
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
         elif kind == "result":
@@ -80,12 +84,15 @@ def fold(events: list[dict]) -> FlowState:
             st.moved_to = ""
         elif kind == "step.finished":
             st.finished[e.get("step")] = e
-            st.moved_to = ""
+            if st.moved_to not in ("done", "archived"):
+                st.moved_to = ""
         elif kind == "card.paused":
             st.paused = True
         elif kind == "card.finished":
             st.card_finished = True
         elif kind == "card.moved":
+            st.store_column = e.get("to") or ""
+            st.store_move_id = e.get("moveId") or ""
             # „Do poprawy” to przeniesienie z kolumny wyliczonej (Do sprawdzenia, Czeka na mnie); z Backlogu do Do
             # zrobienia to wznowienie albo kolejka po zleceniu z popupu — karta pokazuje dalej stan z dziennika.
             if e.get("from") not in ("backlog", "todo"):
@@ -125,7 +132,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
     ident = step.get("ticket") or ticket["id"] or "ticket"
     executor = st.started.get("executor") or ""
     out = {"column": "", "done": 0, "total": 1, "tool": st.started.get("program") or "", "note": "", "nextStep": "",
-           "check": card.get("check") or "auto", "branch": ticket["cardBranch"], "session": "", "coordinator": "",
+           "check": st.started.get("check") or card.get("check") or "auto", "branch": ticket["cardBranch"], "session": "", "coordinator": "",
            "link": "flow", "agentState": "", "tickets": [], "question": "",
            "flow": {"ticket": ident, "step": st.last_step, "executor": executor, "entry": st.started.get("entry") or "",
                     "result": done.get("result") or "", "cardBranch": ticket["cardBranch"],

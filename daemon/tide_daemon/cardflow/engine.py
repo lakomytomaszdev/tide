@@ -110,7 +110,15 @@ class FlowEngine:
     def busy_places(self) -> list[str]:
         """Worktree trwających kroków i worktree kart w toku — dla okna Worktrees zajęte jak katalog agenta (bez
         usuwania). Sesja kroku nie jest wierszem agenta, więc bez tego worktree kroku wyglądałby na wolny."""
-        return list(self._busy)
+        busy = set()
+        for card in self.journal.cards():
+            st = fold(self.journal.read(card))
+            busy.update(step["worktree"] for step in st.running() if step.get("worktree"))
+            if st.started is not None and not st.card_finished:
+                worktree = ticket_of(st)["cardWorktree"]
+                if worktree:
+                    busy.add(worktree)
+        return sorted(busy)
 
     def is_hidden(self, session: dict) -> bool:
         """Sesja kroku w tle: nie jest wierszem agenta (kafelek Praca, lista agentów, powiadomienia)."""
@@ -155,6 +163,9 @@ class FlowEngine:
         binary = self.which("claude")
         if not binary:
             raise FlowError("no-program", "nie znaleziono programu claude")
+        check = str(request.get("check") or card.check or "auto").strip().lower()
+        if check not in ("auto", "manual"):
+            raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
         images = self._images(request.get("images"))
         st = fold(self.journal.read(card.id))
         if st.active():
@@ -168,28 +179,35 @@ class FlowEngine:
             raise FlowError("no-base", f"{project.repo}: nie ma gałęzi głównej (master, main, develop)")
 
         started = self.journal.append(card.id, "card.started", entry="now", executor=executor.name,
-                                      program="claude", model=executor.model, check=card.check,
-                                      repo=project.repo, project=project.slug)
+                                      program="claude", model=executor.model, check=check,
+                                      repo=project.repo, project=project.slug, column=card.column,
+                                      moveId=card.move_id)
         launch = f"launch-{started['seq']}"
-        reserved = self._act(card.id, "reserve", launch, lambda: self._reserve(project.repo, card.title))
+        reserved = self._act(card.id, "reserve", launch,
+                             lambda: self._reserve(project.repo, card.title, launch),
+                             repo=project.repo, title=card.title)
         ticket = reserved["ticket"]
         slug = slug_from_prompt(card.title, words=4, length=32)
-        card_branch = f"card/{card.id.lower()}-{slug}"
+        card_branch = ticket_of(st)["cardBranch"] or f"card/{card.id.lower()}-{slug}"
+        card_worktree = worktree_for(project.repo, card_branch)
         made = self._act(card.id, "card-branch", card_branch,
-                         lambda: self.git.branch_worktree(project.repo, card_branch, worktree_for(project.repo, card_branch),
-                                                          main))
+                         lambda: self.git.branch_worktree(project.repo, card_branch, card_worktree, main),
+                         repo=project.repo, branch=card_branch, worktree=card_worktree, base=main)
         ticket_branch = f"ticket/{ticket.lower()}-{slug}"
+        ticket_worktree = worktree_for(project.repo, ticket_branch)
         made_ticket = self._act(card.id, "ticket-branch", ticket, lambda: {
-            **self.git.branch_worktree(project.repo, ticket_branch, worktree_for(project.repo, ticket_branch),
-                                       f"refs/heads/{card_branch}"), "ticket": ticket})
+            **self.git.branch_worktree(project.repo, ticket_branch, ticket_worktree,
+                                       f"refs/heads/{card_branch}"), "ticket": ticket},
+            repo=project.repo, branch=ticket_branch, worktree=ticket_worktree,
+            base=f"refs/heads/{card_branch}", ticket=ticket)
         step_id = f"{card.id}-{ticket}-{1 + sum(1 for s in st.steps.values() if s.get('ticket') == ticket)}"
         step = self._launch(card, project, executor, binary, ticket, made, made_ticket, step_id, images)
         return {"ok": True, "id": card.id, "ticket": ticket, "branch": made_ticket["branch"],
                 "worktree": made_ticket["worktree"], "cardBranch": made["branch"], "cardWorktree": made["worktree"],
                 "step": step_id, "session": step["session"], "executor": executor.name}
 
-    def _reserve(self, repo: str, title: str) -> dict:
-        got = reservations.reserve(repo, count=1, title=title)
+    def _reserve(self, repo: str, title: str, request_key: str) -> dict:
+        got = reservations.reserve(repo, count=1, title=title, request_key=request_key)
         return {"ticket": got["ids"][0], "title": title}
 
     def _images(self, value) -> list[str]:
@@ -262,7 +280,7 @@ class FlowEngine:
 
     # --- ręczne kolumny --------------------------------------------------------------------------
 
-    def moved(self, card_id: str, column: str, shown: str = "") -> None:
+    def moved(self, card_id: str, column: str, shown: str = "", move_id: str = "") -> None:
         """Karta przeniesiona ręcznie (MoveCard; `shown` — kolumna, w której ją widać): Backlog wstrzymuje, Gotowe
         i Archiwum kończą (krok zatrzymany z zapisem zmian, niescalony ticket odrzucony). Karta bez dziennika — nic."""
         if not self.journal.has(card_id):
@@ -270,18 +288,32 @@ class FlowEngine:
         st = fold(self.journal.read(card_id))
         if st.started is None or st.card_finished:
             return
-        self.journal.append(card_id, "card.moved", to=column, **({"from": shown} if shown else {}))
+        if (move_id and st.store_move_id == move_id) or (not move_id and st.store_column == column):
+            return
+        self.journal.append(card_id, "card.moved", to=column, moveId=move_id,
+                            **({"from": shown} if shown else {}))
         if column == "backlog" and not st.paused:
             self.journal.append(card_id, "card.paused")
         if column in ("done", "archived"):
-            for step in st.running():
-                self._stop(card_id, step, "stopped", "")
-            st = fold(self.journal.read(card_id))
-            ticket = ticket_of(st)["id"]
-            merged = st.results.get(("merge", ticket))
-            if ticket and not (merged and merged.get("ok")) and ticket not in st.rejected:
-                self.journal.append(card_id, "ticket.rejected", ticket=ticket)
-            self.journal.append(card_id, "card.finished", column=column)
+            self._complete_manual_finish(card_id, column)
+
+    def _complete_manual_finish(self, card: str, column: str) -> bool:
+        """Gotowe/Archiwum zapisujemy dopiero po zatrzymaniu wszystkich kroków; tick ponawia po błędzie."""
+        st = fold(self.journal.read(card))
+        if st.card_finished:
+            return True
+        for step in st.running():
+            if not self._stop(card, step, "stopped", ""):
+                return False
+        st = fold(self.journal.read(card))
+        if st.running():
+            return False
+        ticket = ticket_of(st)["id"]
+        merged = st.results.get(("merge", ticket))
+        if ticket and not (merged and merged.get("ok")) and ticket not in st.rejected:
+            self.journal.append(card, "ticket.rejected", ticket=ticket)
+        self.journal.append(card, "card.finished", column=column)
+        return True
 
     # --- co chwilę -------------------------------------------------------------------------------
 
@@ -309,9 +341,20 @@ class FlowEngine:
         self._busy = tuple(sorted(busy))
 
     def _tick_card(self, card: str, st: FlowState) -> None:
+        self._recover_started_steps(card, st)
+        st = fold(self.journal.read(card))
+        if st.started is not None and not st.card_finished and st.store_column:
+            stored = self.store.load().cards.get(card_num(card))
+            if stored is not None and (stored.column != st.store_column or
+                                       (stored.move_id and stored.move_id != st.store_move_id)):
+                self.moved(card, stored.column, stored.moved_from or st.store_column, stored.move_id)
+                st = fold(self.journal.read(card))
         for intent in st.open_intents():
             self._reconcile(card, intent)
         st = fold(self.journal.read(card))
+        if st.moved_to in ("done", "archived") and not st.card_finished:
+            self._complete_manual_finish(card, st.moved_to)
+            return
         for step in st.running():
             self._poll(card, step)
         st = fold(self.journal.read(card))
@@ -322,6 +365,16 @@ class FlowEngine:
     def _reconcile(self, card: str, intent: dict) -> None:
         """Akcja zaczęta przed restartem usługi, bez wyniku: dokończenie albo jawny błąd (nigdy druga kopia)."""
         action, key = intent.get("action"), intent.get("key")
+        if action == "reserve":
+            self._act(card, action, key, lambda: self._reserve(intent["repo"], intent["title"], key))
+            return
+        if action in ("card-branch", "ticket-branch"):
+            def make_branch():
+                made = self.git.branch_worktree(intent["repo"], intent["branch"],
+                                                intent["worktree"], intent["base"])
+                return {**made, **({"ticket": intent["ticket"]} if action == "ticket-branch" else {})}
+            self._act(card, action, key, make_branch)
+            return
         if action == "merge":
             st = fold(self.journal.read(card))
             step = next((s for s in st.steps.values() if s.get("ticket") == key), None)
@@ -331,22 +384,40 @@ class FlowEngine:
         if action == "step-start":
             unit = intent.get("unit") or f"tide-step-{key}"
             result = os.path.join(intent.get("stepDir") or "", "out", handoff.RESULT_FILE)
-            if stepstop.unit_state(unit) == "active" or os.path.isfile(result):
+            state = stepstop.unit_state(unit)
+            code = stepstop.read_exit_code(intent.get("stepDir") or "") if state == "inactive" else None
+            if state == "unknown":
+                return
+            if state == "active" or (code == 0 and os.path.isfile(result)):
                 git_dir = ""
                 try:
                     git_dir = agentcmd.resolve_git_dir(self._repo(card), intent.get("worktree") or "")
                 except agentcmd.StepError:
                     pass
                 self.journal.append(card, "result", action=action, key=key, ok=True, unit=unit, gitDir=git_dir)
-                st = fold(self.journal.read(card))
-                self.journal.append(card, "step.started", step=key, kind="ticket", ticket=ticket_of(st)["id"],
-                                    executor=(st.started or {}).get("executor") or "", program="claude",
-                                    unit=unit, session=intent.get("session") or "", worktree=intent.get("worktree") or "",
-                                    branch=ticket_of(st)["branch"], stepDir=intent.get("stepDir") or "",
-                                    gitDir=git_dir, repo=self._repo(card))
+                self._recover_started_steps(card, fold(self.journal.read(card)))
+                return
+            if code not in (None, 0):
+                self.journal.append(card, "result", action=action, key=key, ok=False,
+                                    error=f"program zakończył się kodem {code}")
                 return
         self.journal.append(card, "result", action=action, key=key, ok=False,
                             error="przerwane restartem usługi przed końcem akcji")
+
+    def _recover_started_steps(self, card: str, st: FlowState) -> None:
+        """Wynik startu zapisany przed awarią oznacza żywy albo zakończony krok, nawet bez step.started."""
+        ticket = ticket_of(st)
+        for (action, key), result in st.results.items():
+            if action != "step-start" or not result.get("ok") or key in st.steps:
+                continue
+            intent = st.intents.get((action, key)) or {}
+            self.journal.append(card, "step.started", step=key, kind="ticket", ticket=ticket["id"],
+                                executor=(st.started or {}).get("executor") or "",
+                                program=(st.started or {}).get("program") or "claude",
+                                model=(st.started or {}).get("model") or "", unit=result.get("unit") or intent.get("unit") or "",
+                                session=intent.get("session") or "", worktree=intent.get("worktree") or "",
+                                branch=ticket["branch"], stepDir=intent.get("stepDir") or "",
+                                gitDir=result.get("gitDir") or "", repo=self._repo(card))
 
     def _repo(self, card: str) -> str:
         st = fold(self.journal.read(card))
@@ -368,6 +439,8 @@ class FlowEngine:
                     exit_code = proc.wait(timeout=0.2)
                 except subprocess.TimeoutExpired:
                     return                   # menedżer już nie widzi jednostki, launcher jeszcze się kończy
+            elif not alive:
+                exit_code = stepstop.read_exit_code(step.get("stepDir") or "")
         if not alive:
             self._finish(card, step, exit_code=exit_code)
             return
@@ -408,7 +481,7 @@ class FlowEngine:
             log_st = None
         return count, size, newest, (log_st.st_size, log_st.st_mtime_ns) if log_st else None
 
-    def _stop(self, card: str, step: dict, result: str, reason: str) -> None:
+    def _stop(self, card: str, step: dict, result: str, reason: str) -> bool:
         stopped = stepstop.stop_step(self.procs.get(step.get("step") or ""), unit=step.get("unit") or "",
                                      worktree=step.get("worktree") or "", step_dir=step.get("stepDir") or "",
                                      repo=step.get("repo") or self._repo(card), git_dir=step.get("gitDir") or "",
@@ -419,9 +492,10 @@ class FlowEngine:
                "files": stopped.files, "error": stopped.error, "notes": stopped.notes}
         if not stopped.stopped:
             print(f"tide-daemon: przepływ karty {card}: kroku {step.get('step')} nie dało się zatrzymać", flush=True)
-            return                               # następne sprawdzenie spróbuje znowu; worktree nietknięty
+            return False                         # następne sprawdzenie spróbuje znowu; worktree nietknięty
         self._finish(card, step, forced={"result": result, "reason": reason}, wip=wip,
                      messages=stopped.messages, exit_code=stopped.exit_code)
+        return True
 
     def _finish(self, card: str, step: dict, forced: dict | None = None, wip: dict | None = None,
                 messages=None, exit_code=None) -> None:
@@ -430,8 +504,8 @@ class FlowEngine:
             return
         out = os.path.join(step.get("stepDir") or "", "out")
         data = forced or self._result(os.path.join(out, handoff.RESULT_FILE))
-        if forced is None and exit_code not in (None, 0):
-            data = {**data, "result": "error", "reason": "exit"}
+        if forced is None and exit_code != 0:
+            data = {**data, "result": "error", "reason": "lost" if exit_code is None else "exit"}
         kept = []
         for entry in sorted(os.listdir(out)) if os.path.isdir(out) else []:
             path = os.path.join(out, entry)
