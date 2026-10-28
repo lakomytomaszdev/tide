@@ -1,19 +1,29 @@
-// Kafelek Limitów AI w pasku bocznym: dwa zwarte wiersze (GPT, Claude) — niższy z pozostałych
+// Kafelek „AI” w pasku bocznym (do PT-41 „Limity AI”): dwa zwarte wiersze (GPT, Claude) — niższy z pozostałych
 // limitów (sesja albo tydzień) z cienkim paskiem w kolorze poziomu (mięta, masło, róż), a pod
 // paskiem wyciszone „tydzień · reset poniedziałek 20:00”, a za nim prognoza tego limitu
 // z tide-daemon: „ · starczy do resetu” (wyciszone) albo „ · koniec ok. 17:40” (brzoskwinia,
 // wyczerpie się przed resetem). Bez prognozy (za mało danych, brak usługi) nic nie dochodzi.
 // Problemy z usługą to jedna wyciszona
 // linia zamiast kart. Pełne karty usług (oba limity, logowanie, otwieranie stron) są w popupie
-// kafelka w docku. Bez PlasmoidItem, więc da się go załadować w teście.
+// kafelka w docku. Pod limitami wiersz modelu lokalnego (PT-41): „Lokalny ● qwen3:8b · na karcie 100%”
+// słowami kafelka Modele (tide/models.js) i „Modele ↗” do widoku Modele w oknie Tide; kolor ostrzegawczy
+// tylko przy niedziałającym serwerze, modelu częściowo na procesorze albo braku modelu roli. Bez usługi
+// tide-daemon, przed pierwszym odczytem i bez serwera w ustawieniach wiersza nie ma.
+// Bez PlasmoidItem, więc da się go załadować w teście.
 import QtQuick
 import QtQuick.Layouts
+import "tide/models.js" as ModelsLogic
 import "tide" as Tide
 
 Tide.SidebarTile {
     id: tile
 
     required property var source            // LimitsSource (albo obiekt z tymi samymi funkcjami)
+    // ModelsState z biblioteki (albo obiekt z snapshot i serviceUp); null — bez modelu lokalnego.
+    property var models: null
+    property string windowNote: ""          // notatka po nieudanym „Modele ↗” (okno bez widoku, limit czasu)
+
+    signal openModelsRequested()            // okno Tide na widoku Modele
 
     readonly property var services: [
         { key: "chatgpt", label: "GPT", name: "ChatGPT" },
@@ -44,6 +54,9 @@ Tide.SidebarTile {
             login: state === "login"
         }
     })
+    // Model lokalny: {visible, word, tone, warning, text} (tide/models.js, indicator()).
+    readonly property var local: models ? ModelsLogic.indicator(models.snapshot, models.serviceUp)
+                                        : ModelsLogic.indicator(null, false)
     readonly property string readTime: {
         const times = services.map(s => source.lastRead(s.key)).filter(t => !!t).sort()
         return times.length ? times[times.length - 1] : ""
@@ -66,9 +79,10 @@ Tide.SidebarTile {
         return (metric === "session" ? "sesja" : "tydzień") + (reset ? " · reset " + reset : "")
     }
 
-    title: "Limity AI"
+    title: "AI"
     spacing: 8
-    Accessible.name: "Limity AI: " + rows.map(r => r.label + " " + r.valueText + r.tail).join(", ")
+    Accessible.name: "AI: " + rows.map(r => r.label + " " + r.valueText + r.tail).join(", ")
+        + (local.visible ? ", model lokalny: " + local.text : "")
 
     headerItems: Text {
         visible: tile.readTime !== "" && tile.notice === ""
@@ -120,9 +134,67 @@ Tide.SidebarTile {
         }
     }
 
+    // Model lokalny: podpis w kolumnie podpisów mierników, kropka i stan słowami kafelka Modele.
+    RowLayout {
+        id: localRow
+        objectName: "localRow"
+        Layout.fillWidth: true
+        visible: tile.local.visible
+        spacing: 10
+
+        Text {
+            Layout.preferredWidth: labelMetrics.advanceWidth
+            text: "Lokalny"
+            textFormat: Text.PlainText
+            color: Tide.Tokens.textSecondary
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: Tide.Tokens.fontSizePt - 1
+            font.weight: Font.Medium
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 6
+            LocalDot {
+                id: localDot
+                objectName: "localDot"
+                Layout.alignment: Qt.AlignVCenter
+                tone: tile.local.tone
+            }
+            Text {
+                objectName: "localText"
+                Layout.fillWidth: true
+                text: tile.local.text
+                textFormat: Text.PlainText
+                color: tile.local.warning ? localDot.toneColor : Tide.Tokens.textPrimary
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt - 1
+                elide: Text.ElideMiddle
+            }
+        }
+        Tide.TextButton {
+            objectName: "openModels"
+            text: "Modele ↗"
+            Accessible.name: "Otwórz widok Modele w oknie Tide"
+            onClicked: tile.openModelsRequested()
+        }
+    }
+
+    Text {
+        objectName: "windowNote"
+        Layout.fillWidth: true
+        visible: tile.local.visible && tile.windowNote !== ""
+        text: tile.windowNote
+        textFormat: Text.PlainText
+        color: Tide.Tokens.neutral
+        font.family: Tide.Theme.uiFamily
+        font.pointSize: Tide.Tokens.fontSizePt - 2
+        wrapMode: Text.WordWrap
+    }
+
     TextMetrics {
         id: labelMetrics
-        text: "Claude"
+        // Wspólna szerokość podpisów: „Lokalny” tylko wtedy, gdy wiersz modelu jest widoczny.
+        text: tile.local.visible ? "Lokalny" : "Claude"
         font.family: Tide.Theme.uiFamily
         font.pointSize: Tide.Tokens.fontSizePt - 1
         font.weight: Font.Medium

@@ -16,3 +16,5 @@ SidebarMeter 1.0 SidebarMeter.qml
 TextButton 1.0 TextButton.qml
 ReportLink 1.0 ReportLink.qml
 NewTag 1.0 NewTag.qml
+ModelsState 1.0 ModelsState.qml
+TideWindow 1.0 TideWindow.qml

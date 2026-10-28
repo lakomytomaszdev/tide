@@ -179,6 +179,31 @@ class DockScriptTest(unittest.TestCase):
         self.assertEqual(types(find(state, 90)).count("panelspacer"), 2)
         self.assertEqual(types(find(state, 90)).count("agents"), 1)
 
+    def test_models_tile_leaves_the_dock_on_reinstall(self):
+        """PT-41: model lokalny jest w kafelku „AI” — ponowna instalacja zdejmuje stary kafelek Modele, bez duplikatów."""
+        from scripts import dock
+        self.assertNotIn("org.tide.models", dock.DOCK_RIGHT)
+        old = ["org.tide.agents", "org.tide.limits", "org.tide.models"]
+        _, state = self.install(fake.desktop_like_this_one(), widgets=old)
+        self.assertEqual(types(find(state, 90))[-2:], ["limits", "models"])
+        _, state = self.install(state, widgets=["org.tide.agents", "org.tide.limits"])
+        _, state = self.install(state, widgets=["org.tide.agents", "org.tide.limits"])
+        dock_types = types(find(state, 90))
+        self.assertEqual(dock_types, ["system", "panelspacer", "icontasks", "panelspacer", "agents", "limits"])
+        self.assertEqual(dock_types.count("limits"), 1)
+        self.assertEqual([w["type"] for w in find(state, 90)["widgets"] if w["removed"]].count("org.tide.models"), 1)
+
+    def test_dock_uninstall_also_removes_a_leftover_models_tile(self):
+        """Dock sprzed PT-41 odinstalowany bez ponownej instalacji: stary kafelek Modele też znika (DOCK_RETIRED)."""
+        from scripts import dock
+        res, state = self.install(fake.desktop_like_this_one(),
+                                  widgets=["org.tide.agents", "org.tide.limits", "org.tide.models"])
+        params = {**panels.screens(), "dock": res["dock"], "created": res["created"], "previous": res["previous"],
+                  "widgets": dock.DOCK_WIDGETS + dock.DOCK_RETIRED}
+        out, state = fake.run(state, panels.script("dock-uninstall", params))
+        self.assertIn("org.tide.models", result(out)["removed"])
+        self.assertEqual(types(find(state, 90)), ["icontasks"])
+
 
 @unittest.skipUnless(fake.available(), "Brak qml6 do uruchomienia skryptów")
 class SidebarScriptTest(unittest.TestCase):

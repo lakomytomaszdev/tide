@@ -1,5 +1,5 @@
-# Widżet Limity AI (org.tide.limits) na danych z usługi QuotaApp. Testy w widgets/tests
-# (katalog dopisuje już mk/widget-agents.mk). Port i token usługi trafiają do pakietu przy instalacji.
+# Widżet „AI” (org.tide.limits): Limity AI z usługi QuotaApp i model lokalny z tide-daemon (PT-41).
+# Testy w widgets/tests (katalog dopisuje już mk/widget-agents.mk). Port i token usługi trafiają do pakietu przy instalacji.
 INSTALL_TARGETS += install-widget-limits
 UNINSTALL_TARGETS += uninstall-widget-limits
 

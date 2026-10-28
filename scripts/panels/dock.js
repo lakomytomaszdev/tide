@@ -43,6 +43,11 @@ for (var tideJ = 0; tideJ < tideWidgets.length; ++tideJ) {
         tideW.remove();
         continue;
     }
+    // Kafelek Modele wszedł do kafelka „AI” (org.tide.limits, PT-41) — pakiet zostaje, ale z docka znika.
+    if (tideW.type === "org.tide.models" && P.widgets.indexOf("org.tide.models") < 0) {
+        tideW.remove();
+        continue;
+    }
     if (tideW.type === "org.kde.plasma.panelspacer") {
         tideSpacers.push(tideW);
         continue;
