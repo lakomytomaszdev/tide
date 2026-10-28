@@ -43,7 +43,7 @@
       "lockIdle": "lock-idle",
       "fallback": "DP-2",
       "focus": [0.55, 0.15, 1.0, 0.85],
-      "lockScrim": {"color": "desktop", "x": 0.5, "y": 0.2, "width": 0.36, "height": 0.22, "opacity": 0.62}
+      "lockScrim": {"color": "desktop", "x": 0.5, "y": 0.2, "width": 0.4, "height": 0.26, "opacity": 0.72}
     },
     "map": {
       "from": "forest",
