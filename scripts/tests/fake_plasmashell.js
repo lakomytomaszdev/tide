@@ -189,7 +189,7 @@ function currentActivity() {
 }
 
 function __desktop(data) {
-    var desktop = {id: data.id, screen: data.screen, type: "org.kde.plasma.folder", __data: data};
+    var desktop = {id: data.id, screen: data.screen, type: data.type || "org.kde.plasma.folder", __data: data};
     desktop.widgets = function () {
         return data.widgets.map(function (w) { return {id: w.id, type: w.type, geometry: w.geometry}; });
     };
@@ -199,6 +199,10 @@ function __desktop(data) {
         return {id: widget.id, type: type};
     };
     return desktop;
+}
+
+function desktops() {
+    return (__state.desktops || []).map(__desktop);
 }
 
 function desktopsForActivity(activity) {

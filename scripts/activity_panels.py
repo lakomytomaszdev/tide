@@ -45,6 +45,9 @@ SPACER = "org.kde.plasma.panelspacer"
 CONSOLE = {"scenes": "org.tide.stream.scenes", "chat": "org.tide.stream.chat", "margin": 32, "gap": 48,
            "scenesFraction": 1 / 3}
 SIDEBAR_HIDING = "autohide"
+# Typ pulpitu (kontenera) aktywności: Plasma daje nowej aktywności ten sam co pracy (na tym komputerze
+# org.kde.plasma.folder na obu monitorach, 28.10.2026); skrypt plasmashell typu zmienić nie może.
+DESKTOP_TYPE = "org.kde.plasma.folder"
 # Odstęp pływającego panelu od krawędzi ekranu (jak FLOATING_GAP w scripts/sidebar.py).
 FLOATING_GAP = 8
 STATE_FILE = "stream-panels.json"
@@ -119,13 +122,40 @@ def stream_differences(state: dict, layout: dict, desktop: bool) -> list[str]:
     return out
 
 
-def work_differences(state: dict, saved: dict) -> list[str]:
+def work_plan(state: dict, saved: dict) -> tuple[list[str], str | None]:
+    """Różnice paneli pracy i chowanie paska bocznego do przywrócenia (None — nic do przywrócenia).
+
+    Zapis sprzed Stream przywracamy tylko wtedy, gdy pasek ma nasze „autohide”. Inna wartość (a docka Stream
+    już nie ma) to wybór użytkownika po Stream — zapis jest nieaktualny i znika, a pasek zostaje, jak jest."""
     out = [f"dock Stream (panel {p['id']}) do usunięcia" for p in by_role(state, "stream-dock")]
     hiding = saved.get("hiding")
+    restore = None
     for sidebar in by_role(state, "sidebar"):
         if hiding and sidebar["hiding"] != hiding:
-            out.append(f"pasek boczny pracy: chowanie {sidebar['hiding']}, było {hiding}")
-    return out
+            if sidebar["hiding"] == SIDEBAR_HIDING:
+                restore = hiding
+                out.append(f"pasek boczny pracy: chowanie {sidebar['hiding']}, było {hiding}")
+            else:
+                out.append(f"nieaktualny zapis chowania paska ({hiding}; pasek ma {sidebar['hiding']}) — do usunięcia")
+    if saved and not out:
+        out.append("zapis chowania paska sprzed Stream bez potrzeby — do usunięcia")
+    return out, restore
+
+
+def leave_params(restore: str | None) -> dict:
+    return {**screens(), "sidebarHiding": restore}
+
+
+def desktop_type_note(state: dict) -> str:
+    """Typ pulpitu Stream na lewym monitorze względem pulpitów innych aktywności (pracy) — tylko do opisu."""
+    mine = state.get("desktopType")
+    if not mine:
+        return ""
+    others = state.get("otherDesktopTypes") or [DESKTOP_TYPE]
+    if mine in others:
+        return f"typ pulpitu jak w pracy: {mine}"
+    return (f"typ pulpitu {mine}, w pracy {', '.join(others)} — zmień w ustawieniach pulpitu "
+            "(skrypty Plasmy nie zmieniają typu)")
 
 
 def describe(state: dict) -> str:

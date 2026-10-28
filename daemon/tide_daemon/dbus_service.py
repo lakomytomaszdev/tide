@@ -160,6 +160,8 @@ Obiekt /Docker, interfejs org.tide.Daemon.Docker (kontenery przez Docker Engine 
 Obiekt /ActivityLook, interfejs org.tide.Daemon.ActivityLook (wygląd bieżącej aktywności, PT-36):
 - State() -> s               JSON {activity, look, workPanels, notificationsFiltered} — kafelki pracy chowają się,
                              gdy workPanels jest fałszem (aktywność Stream); bez przypisania wygląd pracy,
+- Refresh()                  ponowne odczytanie przypisań i opisów wyglądu (make uninstall-activity-look: bez
+                             kopii silnika każda aktywność ma wygląd pracy, więc tryb powiadomień Stream znika),
 - sygnał Changed()           zmieniła się bieżąca aktywność albo jej wygląd.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
@@ -191,6 +193,7 @@ ACTIVITY_LOOK_IFACE = "org.tide.Daemon.ActivityLook"
 
 ACTIVITY_LOOK_XML = f"""<interface name="{ACTIVITY_LOOK_IFACE}">
   <method name="State"><arg name="json" type="s" direction="out"/></method>
+  <method name="Refresh"/>
   <signal name="Changed"/>
 </interface>"""
 
@@ -974,6 +977,10 @@ class ActivityLookAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(result=str)
     def State(self) -> str:
         return self.state.state_json()
+
+    @pyqtSlot()
+    def Refresh(self) -> None:
+        self.state.set_activity(self.state.activity)
 
 
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
