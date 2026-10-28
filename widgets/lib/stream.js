@@ -247,9 +247,10 @@ var UNAVAILABLE = {
     chat: "Czat Twitcha: jeszcze niedostępny w rdzeniu"
 }
 
-// Domyślne nazwy scen rdzenia (core.py: start_scene, brb_scene) — rodzaj sceny, gdy `core.mode_scenes` poda
-// same nazwy. Sceny końca rdzeń nie nazywa, więc rozpoznajemy ją tylko po `kind: "ended"`.
-var CORE_SCENE_KINDS = { "Starting soon": "starting", "Be right back": "brb" }
+// Sceny pełnoekranowe z generatora scen streamer (scenes/scenes.json, moduł `screen` w stylu starting, brb
+// i ended; start_scene i brb_scene w core.py mają te same nazwy) — rodzaj sceny, gdy `core.mode_scenes` poda
+// same nazwy. `kind` z rdzenia ma pierwszeństwo.
+var CORE_SCENE_KINDS = { "Starting soon": "starting", "Be right back": "brb", "Thanks for watching": "ended" }
 var FULL_SCREEN_KINDS = ["starting", "ended"]
 var LIVE_LOCK_REASON = "na żywo — tylko poza anteną"
 

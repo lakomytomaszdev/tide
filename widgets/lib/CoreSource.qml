@@ -19,7 +19,9 @@
 //   wantPreview włącza zrzut przy każdej zmianie połączenia OBS albo sceny i odświeżanie co previewInterval,
 //   tylko gdy widżet jest widoczny w bieżącej aktywności (previewActive).
 // Tylko odpowiedź UnknownMethod/UnknownInterface znaczy „rdzeń tego nie ma” (do ponownej rejestracji usługi);
-// inny błąd (OBS chwilowo nie odpowiedział) czyści tylko obraz, a następna próba idzie normalnie.
+// inny błąd (OBS chwilowo nie odpowiedział) czyści tylko obraz, a następna próba idzie normalnie. Naraz idzie
+// najwyżej jedno zapytanie o zrzut; odpowiedź na zapytanie o inną scenę albo sprzed zniknięcia rdzenia odrzucamy
+// i od razu pytamy o bieżącą scenę.
 import QtQuick
 import org.kde.plasma.workspace.dbus as DBus
 import "stream.js" as Stream
@@ -48,6 +50,10 @@ Item {
     readonly property bool previewAvailable: previewSupported && previewImage !== ""
     // Scena (przy połączonym OBS), dla której ostatnio prosiliśmy o zrzut — zmiana wyzwala nowy zrzut od razu.
     property string previewKey: ""
+    property int previewRequest: 0       // numer zapytania w toku (0 — żadnego)
+    property int previewCounter: 0
+    property bool previewAgain: false    // podczas zapytania zmieniła się scena albo minął okres — zapytaj po nim
+    property int coreGeneration: 0       // rośnie przy każdym zniknięciu rdzenia z szyny
     readonly property string sceneForPreview: view && view.obs && view.obs.connected === true && view.obs.scene
         ? String(view.obs.scene) : ""
 
@@ -147,13 +153,38 @@ Item {
             previewImage = ""
             return
         }
+        if (previewRequest !== 0) {
+            previewAgain = true
+            return
+        }
+        const id = ++previewCounter
+        const generation = coreGeneration
+        previewRequest = id
+        // Odpowiedź liczy się tylko dla tego samego rdzenia i tej samej sceny.
+        const current = () => generation === source.coreGeneration && scene === source.sceneForPreview
         DBus.SessionBus.asyncCall(message("GetSceneScreenshot", [scene]), function (reply) {
-            const image = String(reply.value)
-            source.previewImage = image.indexOf("data:image/") === 0 ? image : ""
+            if (source.previewRequest !== id) return
+            source.previewRequest = 0
+            if (current()) {
+                const image = String(reply.value)
+                source.previewImage = image.indexOf("data:image/") === 0 ? image : ""
+            }
+            source.previewFinished()
         }, function (error) {
-            source.previewImage = ""
-            if (source.missingMethod(error)) source.previewSupported = false
+            if (source.previewRequest !== id) return
+            source.previewRequest = 0
+            if (current()) {
+                source.previewImage = ""
+                if (source.missingMethod(error)) source.previewSupported = false
+            }
+            source.previewFinished()
         })
+    }
+
+    function previewFinished() {
+        if (!previewAgain) return
+        previewAgain = false
+        refreshPreview()
     }
 
     // Każda zmiana połączenia OBS albo sceny — zrzut od razu (OBS mógł połączyć się po rdzeniu).
@@ -181,6 +212,9 @@ Item {
                 source.previewImage = ""
                 source.previewSupported = true
                 source.previewKey = ""
+                source.coreGeneration++
+                source.previewRequest = 0
+                source.previewAgain = false
             }
         }
     }
