@@ -1,4 +1,7 @@
-"""Instaluje i odinstalowuje podstawę wyglądu Tide: schemat kolorów, styl Plasmy i czcionki Geist.
+"""Instaluje i odinstalowuje podstawę wyglądu Tide: schemat kolorów i czcionki Geist.
+
+Nakładany jest schemat z opisu wyglądu bieżącej aktywności (scripts/activity_look.py), więc
+instalacja w aktywności Stream nie przestawia jej na Mist. Styl Plasmy nakłada plasma_style.py.
 
 Użycie: python3 appearance.py install|uninstall
 
@@ -118,10 +121,12 @@ def install() -> None:
     write_setting("kdeglobals", "General", "smallestReadableFont", qfont(family, size - 2))
     write_setting("kdeglobals", "WM", "activeFont", qfont(family, size, 500))
 
-    run("plasma-apply-colorscheme", "TideMist")
-    run("plasma-apply-desktoptheme", "default")
+    # Nałożenie: schemat z opisu wyglądu bieżącej aktywności (w Stream nie nakładamy Mist).
+    # Stylu Plasmy ta instalacja nie zmienia — ustawia go install-plasma-style według tego samego opisu.
+    from scripts import activity_look
+    report = activity_look.apply_current(["colorScheme"])
     notify_appearance_changed()
-    print("Kolory Tide Mist i czcionki Geist zainstalowane.")
+    print(f"Czcionki Geist i schemat kolorów TideMist zainstalowane (nałożony: {report.steps[0].target}).")
 
 
 def uninstall() -> None:

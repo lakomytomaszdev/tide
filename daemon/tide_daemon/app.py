@@ -13,6 +13,7 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
                                [--no-board]
                                [--print-docker | --no-docker]
                                [--search-delay SEKUNDY]
+                               [--no-activity-look]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
@@ -58,6 +59,9 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
 --no-board         bez obiektu /Board (tablica pracy: karty, projekty, tagi).
 --print-docker     jednorazowo: migawka kontenerów i miejsce na dysku jako JSON (tylko odczyt Engine API), bez D-Bus,
 --no-docker        bez obiektu /Docker (kontenery, akcje, porządki; socket z $DOCKER_HOST albo /var/run/docker.sock).
+--no-activity-look bez nakładania wyglądu aktywności po CurrentActivityChanged i przy starcie (PT-35; silnik
+                   z $XDG_DATA_HOME/tide/activity-look, make install-activity-look; pusty
+                   $TIDE_ACTIVITY_LOOK_ENGINE też wyłącza).
 """
 import argparse
 import json
@@ -117,6 +121,7 @@ def parse_args(argv):
     parser.add_argument("--no-board", action="store_true")
     parser.add_argument("--print-docker", action="store_true")
     parser.add_argument("--no-docker", action="store_true")
+    parser.add_argument("--no-activity-look", action="store_true")
     parser.add_argument("--print", dest="print_once", action="store_true")
     parser.add_argument("--print-worktrees", action="store_true")
     parser.add_argument("--report", action="store_true")
@@ -303,6 +308,11 @@ def main(argv=None) -> int:
         coordination.start()  # pierwszy odczyt dzienników koordynatorów w tle, chwilę po starcie
     if docker is not None:
         docker.start()  # migawka i strumień zdarzeń w tle; brak Dockera to stan, nie błąd usługi
+    activity_look = None
+    if not args.no_activity_look:
+        from .activity_look_monitor import ActivityLookMonitor, default_engine
+        activity_look = ActivityLookMonitor(default_engine(), parent=app)
+        activity_look.start()  # nasłuch zmiany aktywności i kontrola wyglądu bieżącej (logowanie)
 
     # Stan agentów według katalogu dla promptu powłoki (cwdstate.py) — plik, nie D-Bus, bo prompt
     # czyta go przy każdym znaku zachęty.
@@ -356,6 +366,8 @@ def main(argv=None) -> int:
         board.stop()
     if docker is not None:
         docker.stop()
+    if activity_look is not None:
+        activity_look.stop()
     from . import windows
     windows.give_back_tabs()  # tytuł karty ze znacznikiem przejścia do okna, jeśli jeszcze nie wrócił
     if marker is not None:
