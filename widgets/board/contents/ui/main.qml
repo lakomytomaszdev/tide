@@ -73,8 +73,8 @@ PlasmoidItem {
     preferredRepresentation: Plasmoid.configuration.sidebarMode ? fullRepresentation : compactRepresentation
     onExpandedChanged: if (expanded) { status = ""; source.refresh() }
 
-    Plasmoid.status: activityLook.workHidden ? PlasmaCore.Types.HiddenStatus : PlasmaCore.Types.ActiveStatus
     // W aktywności Stream kafelek pracy znika z panelu (widgets/lib/ActivityLook.qml, decyzja 80).
+    Plasmoid.status: activityLook.workHidden ? PlasmaCore.Types.HiddenStatus : PlasmaCore.Types.ActiveStatus
     Tide.ActivityLook { id: activityLook }
 
     Tide.DaemonSource {

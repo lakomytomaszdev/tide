@@ -39,8 +39,8 @@ PlasmoidItem {
     // Pasek boczny Tide pokazuje podsumowanie na stałe, z przyciskiem do okna (scripts/panels/sidebar.js).
     preferredRepresentation: Plasmoid.configuration.sidebarMode ? fullRepresentation : compactRepresentation
 
-    Plasmoid.status: activityLook.workHidden ? PlasmaCore.Types.HiddenStatus : PlasmaCore.Types.ActiveStatus
     // W aktywności Stream kafelek pracy znika z panelu (widgets/lib/ActivityLook.qml, decyzja 80).
+    Plasmoid.status: activityLook.workHidden ? PlasmaCore.Types.HiddenStatus : PlasmaCore.Types.ActiveStatus
     Tide.ActivityLook { id: activityLook }
 
     Tide.DaemonSource {

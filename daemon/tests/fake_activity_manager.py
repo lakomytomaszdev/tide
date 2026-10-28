@@ -59,8 +59,8 @@ class FakeActivities(QDBusAbstractAdaptor):
     @pyqtSlot(str)
     def RemoveActivity(self, activity):
         self.calls.append(["RemoveActivity", activity])
-        # Jak kactivitymanagerd: bieżącej aktywności nie da się usunąć (zostaje).
-        if activity in self.activities and activity != self.current:
+        # Jak kactivitymanagerd: bieżącej aktywności nie da się usunąć (zostaje). "locked" — atrapa odmowy.
+        if activity in self.activities and activity != self.current and not self.activities[activity].get("locked"):
             del self.activities[activity]
             self.ActivityRemoved.emit(activity)
 
