@@ -13,7 +13,7 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
                                [--no-board]
                                [--print-docker | --no-docker]
                                [--search-delay SEKUNDY]
-                               [--no-activity-look]
+                               [--no-activity-look] [--no-monitors] [--no-stream-shortcuts]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
@@ -62,6 +62,10 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
 --no-activity-look bez nakładania wyglądu aktywności po CurrentActivityChanged i przy starcie (PT-35; silnik
                    z $XDG_DATA_HOME/tide/activity-look, make install-activity-look; pusty
                    $TIDE_ACTIVITY_LOOK_ENGINE też wyłącza).
+--no-monitors      bez obiektu /Monitors (układ monitorów PC ⇄ Xbox, PT-38; kscreen-doctor i ddcutil szukane
+                   w $TIDE_MONITORS_BIN zamiast PATH, jeśli ustawione),
+--no-stream-shortcuts  bez skrótów Stream (Pause, Meta+Pause, Meta+B tylko w aktywności Stream, PT-38; CLI rdzenia
+                   z $TIDE_KAMP, pusty wyłącza).
 """
 import argparse
 import json
@@ -122,6 +126,8 @@ def parse_args(argv):
     parser.add_argument("--print-docker", action="store_true")
     parser.add_argument("--no-docker", action="store_true")
     parser.add_argument("--no-activity-look", action="store_true")
+    parser.add_argument("--no-monitors", action="store_true")
+    parser.add_argument("--no-stream-shortcuts", action="store_true")
     parser.add_argument("--print", dest="print_once", action="store_true")
     parser.add_argument("--print-worktrees", action="store_true")
     parser.add_argument("--report", action="store_true")
@@ -259,6 +265,10 @@ def main(argv=None) -> int:
         # Nazwy projektów z tablicy i karty, do których należy praca — w raporcie i jego tekście (reports/cards.py).
         report.board = board_snapshot(board)
     docker = None if args.no_docker else start_docker(app, args, clock, launchers)
+    monitors = None
+    if not args.no_monitors:
+        from .monitors_service import MonitorsService
+        monitors = MonitorsService(parent=app)  # układ monitorów PC ⇄ Xbox (PT-38)
     annotators = [a for a in (tasks.annotate if tasks is not None else None,
                               coordination.annotate if coordination is not None else None) if a]
     if annotators:
@@ -269,7 +279,7 @@ def main(argv=None) -> int:
     try:
         holder = dbus_service.register(monitor, trees, idle=idle, reports=report,  # noqa: F841 — musi żyć do końca
                                        limits=limits, tasks=tasks, coordination=coordination, board=board,
-                                       docker=docker, models=models)
+                                       docker=docker, models=models, monitors=monitors)
     except RuntimeError as exc:
         print(f"tide-daemon: {exc}", file=sys.stderr, flush=True)
         return 1
@@ -313,6 +323,13 @@ def main(argv=None) -> int:
         from .activity_look_monitor import ActivityLookMonitor, default_engine
         activity_look = ActivityLookMonitor(default_engine(), parent=app)
         activity_look.start()  # nasłuch zmiany aktywności i kontrola wyglądu bieżącej (logowanie)
+    if monitors is not None:
+        monitors.start()  # pierwszy odczyt układu z KWin w tle, po rejestracji na magistrali
+    stream_keys = None
+    if not args.no_stream_shortcuts:
+        from .stream_shortcuts import KGlobalAccel, StreamShortcuts, StreamShortcutsMonitor
+        stream_keys = StreamShortcutsMonitor(StreamShortcuts(KGlobalAccel()), parent=app)
+        stream_keys.start()  # skróty Stream tylko w aktywności Stream; przy starcie w pracy oddaje zaległe klawisze
 
     # Stan agentów według katalogu dla promptu powłoki (cwdstate.py) — plik, nie D-Bus, bo prompt
     # czyta go przy każdym znaku zachęty.
@@ -368,6 +385,10 @@ def main(argv=None) -> int:
         docker.stop()
     if activity_look is not None:
         activity_look.stop()
+    if stream_keys is not None:
+        stream_keys.stop()  # klawisze wracają do pracy (Meta+B — profil zasilania)
+    if monitors is not None:
+        monitors.stop()
     from . import windows
     windows.give_back_tabs()  # tytuł karty ze znacznikiem przejścia do okna, jeśli jeszcze nie wrócił
     if marker is not None:

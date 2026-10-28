@@ -34,3 +34,9 @@ os.environ["CODEX_HOME"] = "/nonexistent/tide-tests/codex"
 # $TIDE_ACTIVITY_LOOK_ENGINE wyłącza nakładanie, usługi w testach dziedziczą tę zmienną.
 # Testy wyglądu aktywności podają atrapę uruchamiania silnika (test_activity_look.py).
 os.environ["TIDE_ACTIVITY_LOOK_ENGINE"] = ""
+# Testy nigdy nie zmieniają prawdziwego układu monitorów ani wejścia monitora (PT-38): kscreen-doctor i ddcutil
+# usługa szuka w nieistniejącym katalogu, a testy układu podają katalog atrap (fake_screens.py). Skróty Stream
+# nie wołają prawdziwego `kamp` (rdzeń Streamer) — pusty $TIDE_KAMP; prawdziwy KGlobalAccel jest tylko
+# na magistrali pulpitu, której testy nie dotykają (privatebus.py).
+os.environ["TIDE_MONITORS_BIN"] = "/nonexistent/tide-tests/monitors-bin"
+os.environ["TIDE_KAMP"] = ""
