@@ -704,6 +704,50 @@ class StopStepTest(unittest.TestCase):
         self.assertEqual(gitrepos.git(self.repo, "rev-parse", BRANCH).strip(), result.commit)
         self.assertIn("commondir", " ".join(result.notes))
 
+    def test_a_planted_symlink_under_the_commondir_temp_name_does_not_overwrite_its_target(self):
+        proc, cmd, _, _ = self.start()
+        victim = os.path.join(self.root, "victim.txt")
+        with open(victim, "w", encoding="utf-8") as fh:
+            fh.write("nietkniete\n")
+        commondir = os.path.join(self.gitdir, "commondir")
+        with open(commondir, "w", encoding="utf-8") as fh:
+            fh.write("../../elsewhere\n")
+        os.symlink(victim, commondir + ".tide-new")
+        result = self.stop(proc, cmd)
+        with open(victim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "nietkniete\n", "przywracanie commondir zapisało przez dowiązanie")
+        self.assertFalse(os.path.islink(commondir))
+        self.assertTrue(os.path.isfile(commondir))
+        with open(commondir, encoding="utf-8") as fh:
+            self.assertEqual(fh.read().strip(), "../..")
+        self.assertTrue(result.committed, result.error)
+        self.assertIn("commondir", " ".join(result.notes))
+
+    def test_the_service_git_sandbox_hides_the_user_runtime_dir_and_its_sockets(self):
+        # Sonda: filtr w `.git/config` repozytorium (konfiguracja użytkownika, wykonuje się w piaskownicy; filtr
+        # z `config.worktree` jest odsunięty na czas gita, więc niczego by nie zbadał) zapisuje w worktree, co widzi.
+        uid = os.getuid()
+        script = os.path.join(self.root, "probe.sh")
+        paths = [f"/run/user/{uid}/bus", f"/run/user/{uid}/systemd/private", f"/run/user/{uid}"]
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(f"#!/bin/sh\necho ran > {self.worktree}/probe.out\n")
+            for path in paths:
+                fh.write(f'[ -e {path} ] && echo "VISIBLE {path}" >> {self.worktree}/probe.out\n')
+            fh.write("cat\n")
+        os.chmod(script, 0o755)
+        proc, cmd, _, _ = self.start()
+        gitrepos.git(self.repo, "config", "filter.probe.clean", script)
+        with open(os.path.join(self.worktree, ".gitattributes"), "w", encoding="utf-8") as fh:
+            fh.write("probe.txt filter=probe\n")
+        with open(os.path.join(self.worktree, "probe.txt"), "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        result = self.stop(proc, cmd)
+        self.assertTrue(result.committed, result.error)
+        with open(os.path.join(self.worktree, "probe.out"), encoding="utf-8") as fh:
+            seen = fh.read().split()
+        self.assertEqual(seen[:1], ["ran"], "sonda nie wykonała się w piaskownicy")
+        self.assertNotIn("VISIBLE", seen, "piaskownica gita usługi widzi /run/user/$UID: " + " ".join(seen))
+
     def test_repository_hooks_other_than_pre_commit_do_not_run(self):
         proc, cmd, _, _ = self.start()
         ran = os.path.join(self.worktree, "HOOK-RAN")

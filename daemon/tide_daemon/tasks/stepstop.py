@@ -33,6 +33,7 @@ import os
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 
@@ -191,7 +192,7 @@ class StepGit:
 
     def sandbox(self) -> list:
         argv = [BWRAP, "--die-with-parent", "--new-session", "--unshare-net", "--unshare-ipc", "--unshare-pid",
-                "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", self.home,
+                "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run", "--tmpfs", self.home,
                 "--ro-bind", self.common, self.common, "--bind", self.worktree, self.worktree,
                 "--bind", self.git_dir, self.git_dir]
         for name in GIT_DIRS_WRITABLE:
@@ -240,14 +241,23 @@ def _restore_commondir(git_dir: str, notes: list) -> None:
         current = None
     if current == "../.." and not os.path.islink(path):
         return
-    tmp = path + ".tide-new"
+    tmp = None
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
+        fd, tmp = tempfile.mkstemp(prefix="commondir.", dir=git_dir)     # O_EXCL: nie podąża za podłożonym dowiązaniem
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write("../..\n")
+        os.chmod(tmp, 0o644)
         os.replace(tmp, path)
+        tmp = None
         notes.append("przywrócono plik commondir katalogu worktree (krok go zmienił)")
     except OSError:
         pass
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _looks_like_git_dir(path: str) -> bool:
