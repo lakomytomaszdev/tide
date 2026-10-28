@@ -9,7 +9,7 @@ const ROLE_ORDER = ["summary", "describe", "agent"]
 const ROLE_INFO = {
     summary: { title: "Raport", hint: "„Na daily” w raporcie porannym" },
     describe: { title: "Opisy kart", hint: "Krótkie opisy kart na tablicy i w Sesjach" },
-    agent: { title: "Agent", hint: "Sesje z opcją „Lokalny” w oknie Nowe zadanie (wkrótce)" }
+    agent: { title: "Agent", hint: "Sesje z opcją „Lokalny” w oknie Nowe zadanie" }
 }
 // Domyślny kontekst ról raportu (decyzja 60: z 16k model 8B nie mieści się na karcie 8 GB).
 const ROLE_CTX = { summary: 8192, describe: 8192 }
