@@ -1671,6 +1671,28 @@ qdbus6 org.tide.Daemon /Models org.tide.Daemon.Models.SetSemanticSearch off     
 /usr/bin/python3 daemon/tide-daemon.py --print-models   # jeden odczyt stanu, tylko GET, niczego nie zapisuje
 ```
 
+## Wygląd aktywności
+
+Po każdej zmianie aktywności usługa nakłada cały wygląd docelowej aktywności (PT-35, decyzja 77). Nie ma obiektu D-Bus — usługa sama słucha:
+
+| Element | Wartość |
+| --- | --- |
+| Usługa | `org.kde.ActivityManager` |
+| Obiekt | `/ActivityManager/Activities` |
+| Sygnał | `org.kde.ActivityManager.Activities.CurrentActivityChanged(s activity)` |
+
+Każda droga przełączenia (skrót, `Meta+Q`, widżet, KDE Connect) kończy się tym sygnałem. `tide_daemon/activity_look_monitor.py` uruchamia wtedy silnik w osobnym procesie: `python3 -s $XDG_DATA_HOME/tide/activity-look/scripts/activity_look.py apply --activity ID --source daemon` (kopia z `make install-activity-look`). Silnik porównuje schemat kolorów, styl Plasmy, tapetę pulpitów tej aktywności, wariant ekranu blokady i układ paneli z opisem `theme/activities/<wygląd>.json` i nakłada tylko różnice, w tej kolejności. Wygląd `stream` dostaje aktywność przypisana w `$XDG_CONFIG_HOME/tide/activities.json`, każda inna — `work`.
+
+- **Kolejka.** Jedno nałożenie naraz. Zdarzenia z okna 400 ms i te, które przyszły w trakcie nałożenia, zlewają się w jedno — wygrywa ostatnia aktywność, bez równoległych nałożeń. Instalatory (`make install-*`) czekają na usługę i odwrotnie (`flock` na `$XDG_STATE_HOME/tide/activity-look.lock`).
+- **Start usługi (logowanie).** `apply` bez aktywności: silnik pyta o bieżącą, porównuje i naprawia różnice. Tym samym dokańcza przełączenie przerwane przed wylogowaniem (dziennik `$XDG_STATE_HOME/tide/activity-look.json` ze stanem `applying`).
+- **Błędy.** Kod 75 — plasmashell albo ActivityManager jeszcze nie odpowiada — to ponowienie po 2 s, potem coraz rzadziej, do 60 s. Inny błąd (np. „wariant niezainstalowany”) trafia do dziennika usługi i czeka na następne zdarzenie. Wyjście silnika jest w `journalctl --user -u tide-daemon` z przedrostkiem „wygląd aktywności:”.
+- **Wyłączenie.** `--no-activity-look` albo pusty `$TIDE_ACTIVITY_LOOK_ENGINE` (tak robią testy usługi). Bez zainstalowanego silnika usługa tylko o tym informuje.
+
+```bash
+make activity-look-check     # pulpit vs opis bieżącej aktywności, tylko odczyt (kod 1 przy różnicach)
+make activity-look-status    # przypisania aktywności, dostępne wyglądy, dziennik ostatniego przełączenia
+```
+
 ## Uruchamianie
 
 ```bash
@@ -1695,7 +1717,7 @@ journalctl --user -u tide-daemon -f
 #                      --limits-poll 120, --no-limits, --print-limits, --no-tasks,
 #                      --coordination-days 7, --no-coordination, --no-youtrack (też bez synchronizacji tablicy),
 #                      --board-dir DIR, --no-board, --print-card-docs K-12, --no-docker,
-#                      --models-poll 15, --no-models
+#                      --models-poll 15, --no-models, --no-activity-look
 ```
 
 Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`, z której raport poranny bierze kolory i czcionki), `$XDG_CONFIG_HOME/systemd/user/tide-daemon.service`, `$XDG_DATA_HOME/dbus-1/services/org.tide.Daemon.service` (start na żądanie, gdy widżet zapyta, a usługa nie działa) i `org.tide.Daemon.KRunner.service` (to samo dla KRunnera). Usługa używa `/usr/bin/python3` z systemowym PyQt6 — `python3` z pyenv go nie ma.
@@ -1759,6 +1781,7 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_models_monitor.py` — `ModelsMonitor` w pętli Qt z atrapą odczytu: `Refresh()` w trakcie odczytu daje jeden odczyt zaraz po nim, `Changed` tylko przy zmianie, błąd odczytu zostawia ostatni stan, nieczytelne ustawienia przy starcie nie zatrzymują usługi; zapis: odczyt sprzed zapisu nie cofa widoku, odmowa bez `Changed`; pobieranie: `Changed` z postępem najwyżej raz na sekundę, wpis znika po chwili, `stop()` przerywa pobieranie; kolejka: pole `queue` (bezczynne punkty, trwające i czekające z wątków roboczych, bez treści poleceń) i `Changed` z powodu kolejki najwyżej raz na odstęp, odłączenie od kolejki przy `stop()`,
 - `daemon/tests/test_models_queue.py` — kolejka modeli: jedno wywołanie naraz na punkt i dwa punkty równolegle, więcej miejsc na punkt, priorytety i kolejność przyjścia bez przerywania trwającego, grupowanie modeli (i jego limit, i pierwszeństwo priorytetu), koniec okna grupowania między ocenami dwóch czekających (podmieniony zegar — nikt nie śpi przy wolnym miejscu), limit czekania osobno od limitu wywołania z powodem w komunikacie, błąd zwalnia punkt, `Cancel` zdejmuje czekające od razu i przerywa trwające, brak własnych wątków i haków w `Cancel`; `chat()` na atrapie obsługującej jedno zapytanie naraz (`timeout` od startu, `deadline` dla czekania i wywołania razem, `queueS`, dwie nazwy punktu na jednym serwerze dzielą miejsce, cel z `models.json` zmienionego w czasie czekania); raport i opisy kart naraz — karta czeka w kolejce zamiast w serwerze i dostaje opis modelu (bez kolejki ten test kończy się mylącym „nie odpowiedział”), karta przed resztą raportu, budżet raportu z czekaniem, uczciwa informacja na karcie po limicie czekania, `Describer.stop()` zdejmuje czekające,
 - `daemon/tests/test_models_dbus.py` — `/Models` na prywatnej magistrali z atrapą Ollamy i własnym `models.json`: `Status()` (punkt działający z tokenem i niedziałający), `Changed` tylko po zmianie (załadowany model), `Refresh()` po zmianie ustawień bez restartu, token tylko w nagłówku, introspekcja, `--no-models`, `--print-models` (tylko GET, niczego nie zapisuje); zapis z D-Bus we własnym `XDG_CONFIG_HOME` (start niczego nie zapisuje, `SetEndpoint` z tokenem i od razu sprawdzony punkt, `SetRole`, `SetDefault` przenosi role, odmowy `RemoveEndpoint`, `SetReportSummary` działa od razu i zachowuje inne klucze, `--report-summary` zmienia tylko plik), `TestEndpoint` (atrapa, zamknięty port, wolny serwer nie blokuje `Status()`), `PullModel` (postęp w `pulls`, jedno pobieranie na punkt, odmowa dla `openai`). Usługi w testach dostają `models.json` z zamkniętym portem (`privatebus.py`), więc nigdy nie pytają Ollamy z pulpitu,
+- `daemon/tests/test_activity_look.py` — wygląd aktywności (PT-35) z atrapą uruchamiania silnika: kontrola przy starcie bez aktywności, szybkie przełączenia (jedno nałożenie, ostatnia aktywność), przełączenia w trakcie nałożenia (czekają, nic równolegle), ponowienie po kodzie 75 z tą samą aktywnością, inne błędy czekają na zdarzenie, nowe przełączenie zastępuje ponowienie, brak silnika; prawdziwy `QProcess` z atrapą silnika (kod i wyjście); `CurrentActivityChanged` od atrapy ActivityManagera na prywatnej magistrali. Silnik sam: `scripts/tests/test_activity_look.py`,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
 Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawierają prawdziwych rozmów.

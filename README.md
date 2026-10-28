@@ -16,6 +16,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | --- | --- |
 | `theme/palette/` | Paleta wariantu w JSON, jedyne źródło kolorów, promieni, przezroczystości i rozmiarów pasków dla generatorów |
 | `theme/wallpaper/` | Tapeta: warianty `cat` (ilustracja kota w `assets/cat`, czuwający i śpiący) i `blobs` (plamy z palety), zawsze jedno płótno na oba monitory (`variant.py`, `generate.py`); wtyczka tapety „Tide: kot” z drzemiącym kotem (`plugin.py`, `org.tide.cat/`) i wspólny z ekranem blokady `qml/CatBackdrop.qml` |
+| `theme/activities/` | Opisy wyglądu aktywności (`work.json` — dzisiejszy Mist, `stream.json`): schemat kolorów, styl Plasmy, paleta tapety, wariant ekranu blokady, układ paneli; nakłada je `scripts/activity_look.py` |
 | `theme/plasma/` | Styl Plasmy „Tide” (desktoptheme): generator ramek, podgląd (`preview.py`) i sprawdzenie prawdziwym KSvg (`ksvg_check.py`) |
 | `theme/lookandfeel/` | Motyw globalny „Tide” (`org.tide.desktop`): wskazania na składniki Tide, podglądy i ekran ładowania (`splash/`, zrzuty z prawdziwego ksplashqml w `splash_shot.sh`) |
 | `theme/lockscreen/` | Ekran blokady Tide jako pakiet powłoki Plasmy (QML na bazie ekranu Plasmy 6.8), zrzuty z prawdziwego greetera, sprawdzenie kopii powłoki w zagnieżdżonej sesji (`shell_copy_check.sh`) |
@@ -337,7 +338,7 @@ Rodzaj tapety wybiera `wallpaper.variant` w `theme/palette/mist.json`:
 
 Ten sam wariant (i te same kadry) dostają ekran blokady, ekran ładowania i ekran logowania. Ponowne `make install` z wariantem `cat` zostawia kota — plamy powstają tylko po zmianie wariantu na `blobs`.
 
-`make install` czyta układ monitorów z `kscreen-doctor -j` (gdy nie odpowiada, bierze znany układ), zapisuje po jednym obrazie na monitor w `~/.local/share/wallpapers/Tide/<wariant>/<złącze>.png` i ustawia je na pulpitach (przy kocie przez wtyczkę `org.tide.cat`, która ma w sobie oba stany kota dla tego układu). Każdy wariant ma osobny katalog, więc po zmianie wariantu zmienia się adres obrazu i Plasma na pewno wczyta nowy; obrazy poprzedniego wariantu (i starsze `wallpapers/Tide/<złącze>.png`) są usuwane, jeśli żaden pulpit już ich nie pokazuje. Po zmianie monitorów wystarczy ponowne `make install`. Potrzebne są numpy i Pillow, które w KDE neon ma systemowy `/usr/bin/python3`.
+`make install` czyta układ monitorów z `kscreen-doctor -j` (gdy nie odpowiada, bierze znany układ), zapisuje po jednym obrazie na monitor w `~/.local/share/wallpapers/Tide/<wariant>/<złącze>.png` i ustawia je na pulpitach bieżącej aktywności (przy kocie przez wtyczkę `org.tide.cat`, która ma w sobie oba stany kota dla tego układu); pulpity innych aktywności dostają swoją tapetę przy przełączeniu (niżej: „Wygląd aktywności”). Każdy wariant ma osobny katalog, więc po zmianie wariantu zmienia się adres obrazu i Plasma na pewno wczyta nowy; obrazy poprzedniego wariantu (i starsze `wallpapers/Tide/<złącze>.png`) są usuwane, jeśli żaden pulpit już ich nie pokazuje. Po zmianie monitorów wystarczy ponowne `make install`. Potrzebne są numpy i Pillow, które w KDE neon ma systemowy `/usr/bin/python3`.
 
 ```bash
 make wallpaper-preview          # same obrazy w build/wallpaper (przy kocie także build/wallpaper/sleep i wtyczka org.tide.cat), bez zmiany pulpitu
@@ -359,6 +360,18 @@ qdbus6 org.tide.Daemon /Idle org.tide.Daemon.Idle.State   # {"available": true, 
 Zwykłe obrazy w `wallpapers/Tide/cat/` zostają: wskazuje je konfiguracja „Obraz” każdego pulpitu (wybór „Obraz” w ustawieniach pulpitu daje tego samego, czuwającego kota) i tapeta ekranu blokady, a kopia zapasowa sprzed wtyczki po `make restore` wraca do nich. Po ponownej instalacji z innym układem monitorów nowe kadry wtyczki pojawią się po `systemctl --user restart plasma-plasmashell` albo ponownym zalogowaniu.
 
 **Własna tapeta.** Wystarczy ustawić inny obraz w Plasmie (prawy klik na pulpicie, Konfiguruj pulpit i tapetę). Kolejne `make install` nie ruszy pulpitu, na którym jest tapeta inna niż Tide albo ta sprzed Tide, chyba że podasz `FORCE=1`. `make uninstall` przywraca tapety sprzed Tide tylko tam, gdzie nadal jest tapeta Tide (obrazy albo wtyczka kota), i usuwa katalog `wallpapers/Tide` oraz wtyczkę `org.tide.cat`.
+
+## Wygląd aktywności
+
+Pulpit może mieć kilka aktywności KDE w jednej sesji. Każda ma wygląd z opisu w `theme/activities/`: **praca** (`work.json`, dzisiejszy Mist: `TideMist`, styl `Tide`, kot, ekran blokady Mist, obecne panele) i **Stream** (`stream.json`, paleta Streamer z PT-34, panele z PT-36). Wygląd `stream` dostaje aktywność przypisana do niego przy utworzeniu (`$XDG_CONFIG_HOME/tide/activities.json`, po ID aktywności); każda inna, także nowa, wygląda jak praca. Ikony, kursor, fonty, dekoracja okien, Konsole, Vivaldi i Claude są wspólne.
+
+Po każdej zmianie aktywności (skrót, `Meta+Q`, widżet, KDE Connect) `tide-daemon` nakłada cały wygląd docelowej aktywności, a przy logowaniu porównuje pulpit z opisem i naprawia różnice ([opis](docs/tide-daemon.md#wygląd-aktywności), decyzja 77). Nakładane są tylko różnice, narzędziami Plasmy, więc otwarte okna przerysowują się bez restartu. Instalatory też: `make install` w aktywności Stream nie przestawi jej na Mist, a tapeta trafia tylko na pulpity bieżącej aktywności.
+
+```bash
+make activity-look-check     # czy pulpit zgadza się z opisem bieżącej aktywności — tylko odczyt
+make activity-look-status    # przypisania, dostępne wyglądy, dziennik ostatniego przełączenia
+make install-activity-look   # kopia silnika dla usługi w ~/.local/share/tide/activity-look (część make install)
+```
 
 ## Ikony
 
