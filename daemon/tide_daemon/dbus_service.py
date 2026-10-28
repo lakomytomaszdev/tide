@@ -163,6 +163,16 @@ Obiekt /ActivityLook, interfejs org.tide.Daemon.ActivityLook (wygląd bieżącej
 - Refresh()                  ponowne odczytanie przypisań i opisów wyglądu (make uninstall-activity-look: bez
                              kopii silnika każda aktywność ma wygląd pracy, więc tryb powiadomień Stream znika),
 - sygnał Changed()           zmieniła się bieżąca aktywność albo jej wygląd.
+
+Obiekt /Monitors, interfejs org.tide.Daemon.Monitors (wejście prawego monitora PC ⇄ Xbox przez DDC/CI, PT-38,
+monitors.py; układ ekranów w KWin bez zmian):
+- Status() -> s              JSON {layout ("pc" | "xbox"; przerwane przełączenie liczy się jak "xbox"), target,
+                             available (jest ddcutil), error, interrupted, since, monitor, switching ("" albo układ
+                             w toku), result (ostatnie przełączenie: {ok, layout, changed, error, note, auto, at} albo null;
+                             auto — powrót na PC po wyjściu ze Streamu)}; tylko plik stanu, bez DDC,
+- SetLayout(s layout) -> s   przełączenie w tle na "pc" albo "xbox"; od razu {accepted, error} (odmowa: nieznany
+                             układ, przełączenie już trwa), koniec — sygnałem Changed i w Status().result,
+- sygnał Changed()           przełączenie w toku albo jego wynik się zmienił.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
@@ -196,6 +206,9 @@ ACTIVITY_LOOK_XML = f"""<interface name="{ACTIVITY_LOOK_IFACE}">
   <method name="Refresh"/>
   <signal name="Changed"/>
 </interface>"""
+
+MONITORS_PATH = "/Monitors"
+MONITORS_IFACE = "org.tide.Daemon.Monitors"
 
 AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
   <method name="Sessions"><arg name="json" type="s" direction="out"/></method>
@@ -332,6 +345,12 @@ MODELS_XML = f"""<interface name="{MODELS_IFACE}">
     ("SetEndpoint", "request"), ("RemoveEndpoint", "name"), ("SetDefault", "name"), ("SetRole", "request"),
     ("SetAgentProgram", "program"), ("SetSemanticSearch", "state"), ("SetReportSummary", "mode"),
     ("TestEndpoint", "request"), ("PullModel", "request")))}
+  <signal name="Changed"/>
+</interface>"""
+
+MONITORS_XML = f"""<interface name="{MONITORS_IFACE}">
+  <method name="Status"><arg name="json" type="s" direction="out"/></method>
+{_JSON_CALL.format(name="SetLayout", arg="layout")}
   <signal name="Changed"/>
 </interface>"""
 
@@ -982,10 +1001,28 @@ class ActivityLookAdaptor(QDBusAbstractAdaptor):
     def Refresh(self) -> None:
         self.state.set_activity(self.state.activity)
 
+@pyqtClassInfo("D-Bus Interface", MONITORS_IFACE)
+@pyqtClassInfo("D-Bus Introspection", MONITORS_XML)
+class MonitorsAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, service):
+        super().__init__(parent)
+        self.service = service
+        service.changed.connect(self.Changed)
+
+    @pyqtSlot(result=str)
+    def Status(self) -> str:
+        return self.service.status_json()
+
+    @pyqtSlot(str, result=str)
+    def SetLayout(self, layout: str) -> str:
+        return self.service.set_layout(layout)
+
 
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
              limits=None, tasks=None, coordination=None, board=None,
-             docker=None, models=None, activity_look=None) -> QObject:
+             docker=None, models=None, activity_look=None, monitors=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -1045,6 +1082,11 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.activity_look.adaptor = ActivityLookAdaptor(holder.activity_look, activity_look)
         if not bus.registerObject(ACTIVITY_LOOK_PATH, holder.activity_look):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {ACTIVITY_LOOK_PATH}")
+    if monitors is not None:
+        holder.monitors = QObject(holder)
+        holder.monitors.adaptor = MonitorsAdaptor(holder.monitors, monitors)
+        if not bus.registerObject(MONITORS_PATH, holder.monitors):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {MONITORS_PATH}")
     if not bus.registerService(SERVICE):
         raise RuntimeError(f"nazwa {SERVICE} jest już zajęta (działa inna kopia usługi?)")
     return holder

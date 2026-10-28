@@ -1,0 +1,24 @@
+# Wejście prawego monitora PC ⇄ Xbox (PT-38, decyzja 81). Czyta go tide_daemon/monitors.py.
+#
+# „Xbox” zmienia tylko wejście DP-2 przez DDC/CI — układ ekranów w KWin zostaje bez zmian (priorytety,
+# włączenie i pozycje), bo numeracja ekranów w Plasmie idzie za priorytetem, a zmiana chowałaby dock Stream
+# i konsolę z lewego monitora (decyzja użytkownika 29.10.2026).
+#
+# Sprawdzone tylko odczytem 28.10.2026:
+#   ddcutil detect:    HDMI-A-1 → /dev/i2c-2, DP-2 → /dev/i2c-4 (numer magistrali ustalamy przy każdym
+#                      przełączeniu z `ddcutil detect`, bo po restarcie może być inny).
+#   ddcutil -b 4 capabilities, VCP 60 (Input Source): 0x0f DisplayPort-1, 0x11 HDMI-1, 0x12 HDMI-2;
+#   ddcutil -b 4 getvcp 60: DisplayPort-1 (sl=0x0f).
+
+[ddc]
+# Monitor (złącze DRM), którego wejście przełączamy: Gigabyte G32QC, prawy.
+monitor = "DP-2"
+# Wejście dla pulpitu: DisplayPort-1.
+input_pc = 0x0f
+# Wejście dla Xboxa: HDMI-1. Do sprawdzenia na sprzęcie, do którego gniazda HDMI monitora jest wpięty
+# passthrough HD60 X — przy HDMI-2 wpisz 0x12.
+input_xbox = 0x11
+# Monitor po zmianie wejścia albo przy równoczesnym użyciu DDC przez KWin (jasność) potrzebuje chwili:
+# tyle prób, co tyle sekund.
+attempts = 3
+retry_s = 1.0

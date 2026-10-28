@@ -38,3 +38,10 @@ os.environ["TIDE_ACTIVITY_LOOK_ENGINE"] = ""
 # aktywność ma wygląd pracy, więc usługa w teście nigdy nie zmienia plasmanotifyrc — chyba że test poda
 # własny katalog opisów i tymczasowy XDG_CONFIG_HOME (test_stream_mode.py).
 os.environ["TIDE_ACTIVITY_LOOKS"] = "/nonexistent/tide-tests/activities"
+
+# Testy nigdy nie zmieniają prawdziwego układu monitorów ani wejścia monitora (PT-38): kscreen-doctor i ddcutil
+# usługa szuka w nieistniejącym katalogu, a testy układu podają katalog atrap (fake_screens.py). Skróty Stream
+# nie wołają prawdziwego `kamp` (rdzeń Streamer) — pusty $TIDE_KAMP; prawdziwy KGlobalAccel jest tylko
+# na magistrali pulpitu, której testy nie dotykają (privatebus.py).
+os.environ["TIDE_MONITORS_BIN"] = "/nonexistent/tide-tests/monitors-bin"
+os.environ["TIDE_KAMP"] = ""
