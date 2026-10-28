@@ -19,12 +19,13 @@ from scripts.panels import evaluate, load, persist_thickness, save, screens, scr
 INSTALLED = STATE / "tide" / "dock-installed.json"
 # Kafelki z lewej strony docka (przed aplikacjami): system, zaraz po nim Docker (mock „Kafelki Tablica
 # i Docker”). Prośba użytkownika: „ja go chciałem po lewej mieć od ikonek z paska” — po prawej zostają
-# sprawy AI.
-DOCK_LEFT = ["org.tide.system", "org.tide.docker"]
+# sprawy AI. Worktrees za Dockerem (28.10: „Worktrees bym chciał mieć po lewej stronie, za ciasno się zrobiło
+# po prawej”).
+DOCK_LEFT = ["org.tide.system", "org.tide.docker", "org.tide.worktrees"]
 # Kafelki z prawej strony docka (za aplikacjami), w tej kolejności.
 # Tablica pracy przed Agentami (plan 2026-10-27-board-and-docker: „po prawej sprawy AI — Tablica,
-# Agenci z „+”, Worktrees, Limity AI”), a za Limitami AI modele lokalne (plan 2026-10-27-local-models, PT-18).
-DOCK_RIGHT = ["org.tide.board", "org.tide.agents", "org.tide.worktrees", "org.tide.limits", "org.tide.models"]
+# Agenci z „+”, Limity AI”), a za Limitami AI modele lokalne (plan 2026-10-27-local-models, PT-18).
+DOCK_RIGHT = ["org.tide.board", "org.tide.agents", "org.tide.limits", "org.tide.models"]
 DOCK_WIDGETS = DOCK_LEFT + DOCK_RIGHT
 
 

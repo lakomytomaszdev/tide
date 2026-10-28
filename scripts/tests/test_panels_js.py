@@ -154,10 +154,20 @@ class DockScriptTest(unittest.TestCase):
     def test_docker_tile_goes_right_after_system(self):
         """Kafelek Docker po lewej, zaraz za Systemem — kolejność z DOCK_LEFT w scripts/dock.py."""
         from scripts import dock
-        self.assertEqual(dock.DOCK_LEFT, ["org.tide.system", "org.tide.docker"])
-        _, state = self.install(fake.desktop_like_this_one(), left=dock.DOCK_LEFT)
+        self.assertEqual(dock.DOCK_LEFT[:2], ["org.tide.system", "org.tide.docker"])
+        _, state = self.install(fake.desktop_like_this_one(), left=["org.tide.system", "org.tide.docker"])
         self.assertEqual(types(find(state, 90)), ["system", "docker", "panelspacer", "icontasks", "panelspacer",
                                                   "agents", "worktrees", "limits"])
+
+    def test_worktrees_move_from_the_right_to_the_left_on_reinstall(self):
+        """28.10: Worktrees z prawej strony przechodzą za Docker po lewej — bez duplikatu."""
+        from scripts import dock
+        self.assertEqual(dock.DOCK_LEFT, ["org.tide.system", "org.tide.docker", "org.tide.worktrees"])
+        self.assertNotIn("org.tide.worktrees", dock.DOCK_RIGHT)
+        _, state = self.install(fake.desktop_like_this_one(), left=["org.tide.system", "org.tide.docker"])
+        _, state = self.install(state, left=dock.DOCK_LEFT, widgets=["org.tide.agents", "org.tide.limits"])
+        self.assertEqual(types(find(state, 90)), ["system", "docker", "worktrees", "panelspacer", "icontasks",
+                                                  "panelspacer", "agents", "limits"])
 
     def test_old_limits_widget_is_replaced_only_when_tide_limits_is_installed(self):
         _, state = self.install(fake.desktop_like_this_one(), widgets=["org.tide.agents"])
