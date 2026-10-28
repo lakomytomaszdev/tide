@@ -1709,7 +1709,7 @@ się nie zmienia — numeracja ekranów w Plasmie idzie za priorytetem, a jego z
 
 | Metoda / sygnał | Sygnatura | Opis |
 | --- | --- | --- |
-| `Status()` | `→ s` | `{layout, target, available, error, interrupted, since, monitor, switching, result}` z pliku stanu (bez DDC); `layout` — `pc` albo `xbox` (przerwane przełączenie liczy się jak `xbox`), `available` — jest `ddcutil`, `result` — ostatnie przełączenie `{ok, layout, changed, error, auto, at}` albo `null` (`auto`: powrót na PC po wyjściu ze Streamu) |
+| `Status()` | `→ s` | `{layout, target, available, error, interrupted, since, monitor, switching, result}` z pliku stanu (bez DDC); `layout` — `pc` albo `xbox` (przerwane przełączenie liczy się jak `xbox`), `available` — jest `ddcutil`, `result` — ostatnie przełączenie `{ok, layout, changed, error, note, auto, at}` albo `null` (`auto`: powrót na PC po wyjściu ze Streamu) |
 | `SetLayout(s layout)` | `→ s` | `pc` albo `xbox`; od razu `{accepted, error}` (odmowa: nieznany układ, przełączenie już trwa), samo przełączenie w wątku roboczym |
 | sygnał `Changed()` | | przełączenie w toku albo jego wynik się zmienił |
 
@@ -1720,7 +1720,10 @@ się nie zmienia — numeracja ekranów w Plasmie idzie za priorytetem, a jego z
 - **Błędy:** brak `ddcutil` albo brak odpowiedzi DDC — błąd z prośbą o przełączenie wejścia przyciskiem na monitorze,
   stan zostaje przy poprzednim wejściu. Przełączenia z usługi i z polecenia — po kolei pod `monitors.lock`.
 - **Praca:** wyjście ze Streamu i start usługi w pracy ze stanem `xbox` (albo przerwanym) przełączają na PC
-  (źródło „czy Stream” — [Skróty Stream](#skróty-stream)).
+  (źródło „czy Stream” — [Skróty Stream](#skróty-stream)); wyjście w trakcie przełączania na Xbox — po jego końcu.
+  Nieudany automatyczny powrót to powiadomienie „Prawy monitor został na Xboxie” (bez `--no-notifications`).
+- **Wynik:** `{ok, layout, changed, error, note}`; `note`, gdy wejścia nie dało się odczytać i liczy się ostatnio
+  potwierdzone.
 - **Testy i wyłączenie:** `--no-monitors`; `$TIDE_MONITORS_BIN` wskazuje katalog z `ddcutil` zamiast PATH (testy:
   atrapy z `tests/fake_screens.py`, usługa w testach — nieistniejący katalog).
 
@@ -1732,7 +1735,8 @@ Usługa nie wystawia obiektu. „Czy Stream” mówi `tide_daemon/current_activi
 starsza niż ostatni sygnał przepada) i wysyła `changed(aktywność, stream)`; podpięcie odbiorców jest w `app.py`.
 Stream to aktywność przypisana do wyglądu `stream` w `$XDG_CONFIG_HOME/tide/activities.json`.
 
-- **Wejście do Streamu:** klawisz zajęty przez inną akcję (dziś Meta+B — `org_kde_powerdevil/powerProfile`) jest
+- **Wejście do Streamu:** najpierw plik stanu ze znacznikiem `entered` (zawsze, także gdy nic nie zabieramy),
+  potem klawisz zajęty przez inną akcję (dziś Meta+B — `org_kde_powerdevil/powerProfile`) jest
   jej odbierany `setForeignShortcut`, a pełna lista jej klawiszy trafia wcześniej do
   `$XDG_STATE_HOME/tide/stream-shortcuts.json`; potem `doRegister` i `setShortcut(…, SetPresent|NoAutoloading)` dla
   `tide_stream/mic` (Pause), `tide_stream/privacy` (Meta+Pause) i `tide_stream/brb` (Meta+B).
@@ -1740,9 +1744,9 @@ Stream to aktywność przypisana do wyglądu `stream` w `$XDG_CONFIG_HOME/tide/a
   `kamp mic.toggle`, `kamp privacy.toggle`, `kamp brb.toggle` w osobnym procesie (`$TIDE_KAMP`, PATH albo
   `~/.local/bin/kamp`); kod 2 to „rdzeń Streamer nie działa” w dzienniku.
 - **Wyjście ze Streamu, zatrzymanie usługi, start w pracy z pozostałym plikiem:** `unregister` akcji `tide_stream`
-  i oddanie odebranych klawiszy (zapisana lista, a gdy akcja zmieniła się w trakcie — tylko dopisany klawisz). Gdy
-  plik zginął, a nasze skróty są w rejestrze — klawisz wraca do akcji, która ma go w `defaultShortcut` (kandydaci
-  z `kglobalshortcutsrc`, tylko odczyt). W pracy bez niczego do oddania usługa tylko czyta rejestr.
+  i oddanie odebranych klawiszy (zapisana lista, a gdy akcja zmieniła się w trakcie — tylko dopisany klawisz). Tylko
+  gdy pliku nie ma, a nasze skróty są w rejestrze — klawisz wraca do akcji, która ma go w `defaultShortcut`
+  (kandydaci z `allMainComponents` i `allActionsForComponent`); z plikiem klawisz zdjęty przed Streamem zostaje zdjęty. W pracy bez niczego do oddania usługa tylko czyta rejestr.
 - **Wątek i ponowienia:** wywołania KGlobalAccel idą po kolei w jednym wątku roboczym (pętla usługi nie czeka),
   każde zadanie bierze ostatni żądany stan; błąd KGlobalAccel to ponowienie co 5 s (najwyżej 12 razy na zdarzenie).
 - **Awaria w Stream:** gdy usługa padnie w aktywności Stream, Pause, Meta+Pause i Meta+B zostają przechwycone przez
