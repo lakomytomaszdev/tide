@@ -127,6 +127,10 @@ class TabMarker:
         self.colors = {k: v.lower() for k, v in (colors or {}).items() if v}
         self.store = store
         self.records: dict[str, dict] = self._load()
+        # Karty, których tytuł chwilowo należy do przejścia do okna (windows.Activator, PT-33):
+        # nie oznaczamy ich ani nie przywracamy, dopóki go nie oddadzą.
+        self.held: set[str] = set()
+        self._desired: dict = {}
 
     # --- stan ---------------------------------------------------------------------------
 
@@ -160,11 +164,14 @@ class TabMarker:
 
     def update(self, desired: dict) -> None:
         """Doprowadza karty do stanu `desired`: klucz karty → stan albo (stan, etykieta)."""
+        self._desired = dict(desired)
         changed = False
-        for key in sorted(set(self.records) - set(desired)):
+        for key in sorted(set(self.records) - set(desired) - self.held):
             self._restore(key)
             changed = True
         for key, target in sorted(desired.items()):
+            if key in self.held:
+                continue
             state, label = (target, "") if isinstance(target, str) else target
             record = self.records.get(key)
             if record and record.get("state") == state and record.get("label", "") == label:
@@ -176,7 +183,18 @@ class TabMarker:
 
     def clear(self) -> None:
         """Przywraca wszystkie oznaczone karty (zamknięcie usługi)."""
+        self.held.clear()
         self.update({})
+
+    def hold(self, key: str) -> None:
+        """Wstrzymuje znacznik karty: jej wyświetlany tytuł chwilowo zmienia ktoś inny."""
+        self.held.add(key)
+
+    def release(self, key: str) -> None:
+        """Oddaje kartę i doprowadza ją do ostatniego żądanego stanu (mógł się zmienić w międzyczasie)."""
+        if key in self.held:
+            self.held.discard(key)
+            self.update(self._desired)
 
     def _mark(self, key: str, state: str, label: str = "") -> None:
         current = self.konsole.read(key)
