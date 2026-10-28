@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import uuid
@@ -354,15 +355,21 @@ class FlowEngine:
     def _poll(self, card: str, step: dict) -> None:
         name = step.get("step") or ""
         proc = self.procs.get(name)
-        if proc is not None and proc.poll() is not None:
+        exit_code = proc.poll() if proc is not None else None
+        if exit_code is not None:
             alive = False
         else:
             state = stepstop.unit_state(step.get("unit") or "")
             if state == "unknown":
                 return                       # bez menedżera nie wiemy — nie zgadujemy końca kroku
             alive = state == "active"
+            if not alive and proc is not None:
+                try:
+                    exit_code = proc.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    return                   # menedżer już nie widzi jednostki, launcher jeszcze się kończy
         if not alive:
-            self._finish(card, step, exit_code=getattr(proc, "returncode", None))
+            self._finish(card, step, exit_code=exit_code)
             return
         self._guard(card, step)
 
@@ -423,6 +430,8 @@ class FlowEngine:
             return
         out = os.path.join(step.get("stepDir") or "", "out")
         data = forced or self._result(os.path.join(out, handoff.RESULT_FILE))
+        if forced is None and exit_code not in (None, 0):
+            data = {**data, "result": "error", "reason": "exit"}
         kept = []
         for entry in sorted(os.listdir(out)) if os.path.isdir(out) else []:
             path = os.path.join(out, entry)

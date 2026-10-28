@@ -141,6 +141,22 @@ class FlowInProcess(unittest.TestCase):
 
 
 class NowInProcessTest(FlowInProcess):
+    def test_nonzero_exit_with_done_file_is_a_step_error(self):
+        """Nie wolno scalać pracy, gdy program zgłosił błąd mimo zapisanego wcześniej pliku wyniku."""
+        fake = self.fakes["claude"]
+        with open(fake, encoding="utf-8") as fh:
+            script = fh.read()
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write(script + "\nsys.exit(7)\n")
+        card_id = self.card()
+        reply = self.start(card_id)
+        self.wait_column(card_id, "waiting", timeout=15)
+        finished = self.of(card_id, "step.finished")
+        self.assertEqual((finished[0]["result"], finished[0]["reason"], finished[0]["exit"]),
+                         ("error", "exit", 7))
+        self.assertEqual(self.results(card_id, "merge"), [])
+        self.assertNotIn("ATRAPA.md", git(self.repo, "ls-tree", "-r", "--name-only", reply["cardBranch"]).split())
+
     def test_now_runs_one_background_ticket_from_launch_to_review(self):
         from tide_daemon.agents import AgentScanner
         from tide_daemon.monitor import AgentMonitor
