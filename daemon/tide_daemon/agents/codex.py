@@ -8,7 +8,8 @@ Co wiemy o strukturze (z obserwacji, format nie jest publiczny):
   też główny, nie rodzic). Jego stan liczymy, bo zwija się do rodzica (agents/scanner.py);
   recenzent zgód (subagent.other = "guardian") i inne rodzaje bez rodzica są pomijane w całości,
 - event_msg/task_started zaczyna turę, task_complete albo turn_aborted ją kończy,
-- turn_context niesie cwd i approval_policy (przy „never” Codex nigdy nie pyta o zgodę),
+- turn_context niesie cwd, model i approval_policy (przy „never” Codex nigdy nie pyta o zgodę),
+- session_meta.model_provider to dostawca modelu: `openai` (chmura) albo np. `ollama` — model lokalny,
 - response_item function_call / custom_tool_call to wywołanie narzędzia, a *_output jego wynik
   (powiązane przez call_id),
 - prośby o zgodę nie trafiają do dziennika, więc wnioskujemy o nich z braku wyniku,
@@ -72,6 +73,8 @@ class CodexLog(SessionLog):
         if kind == "turn_context":
             if payload.get("cwd"):
                 self.cwd = payload["cwd"]
+            if isinstance(payload.get("model"), str) and payload["model"]:
+                self.model = payload["model"]
             policy = payload.get("approval_policy")
             if isinstance(policy, str):
                 self.approvals_possible = policy != "never"
@@ -135,6 +138,8 @@ class CodexLog(SessionLog):
         if isinstance(git, dict) and git.get("branch"):
             self.branch = git["branch"]
         self.originator = str(payload.get("originator") or "")
+        provider = payload.get("model_provider")
+        self.provider = provider if isinstance(provider, str) else ""
         source = payload.get("source")
         # hidden: nie jest osobną sesją (KRunner, worktrees). Podagent z rodzicem i tak jest
         # czytany — jego stan trafia do karty wątku głównego.

@@ -46,7 +46,9 @@ class FakeModelServer(http.server.ThreadingHTTPServer):
 
     Odpowiedź to (kod, obiekt JSON albo surowe bajty[, nagłówki]) albo lista takich krotek — kolejne
     zapytania biorą kolejne pozycje (ostatnia zostaje). Zamiast treści może być funkcja, która sama
-    pisze odpowiedź przez handler (serwer sączący bajty). `delay` opóźnia każdą odpowiedź (limit czasu)."""
+    pisze odpowiedź przez handler (serwer sączący bajty; treść zapytania w `handler.body`). `delay` opóźnia
+    każdą odpowiedź (limit czasu); `serial` — zapytania obsługiwane po jednym, jak Ollama z
+    OLLAMA_NUM_PARALLEL=1 (kolejne czeka na serwerze, aż poprzednie skończy)."""
 
     daemon_threads = True
 
@@ -55,6 +57,8 @@ class FakeModelServer(http.server.ThreadingHTTPServer):
         self.routes = dict(routes)
         self.requests = []
         self.delay = 0.0
+        self.serial = False
+        self.lock = threading.Lock()
 
     @property
     def url(self):
@@ -75,6 +79,13 @@ class FakeModelHandler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
         body = json.loads(raw) if raw else None
+        self.body = body
+        if self.server.serial:
+            with self.server.lock:
+                return self._answer(body)
+        return self._answer(body)
+
+    def _answer(self, body):
         self.server.requests.append({"method": self.command, "path": self.path, "body": body,
                                      "auth": self.headers.get("Authorization")})
         if self.server.delay:
@@ -240,7 +251,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(sorted(cfg.endpoints), ["local"])
         self.assertEqual(cfg.default, "local")
         self.assertEqual(len(cfg.warnings), 18, cfg.warnings)
-        self.assertTrue(any("default: nieznany punkt „nie-ma”" in w for w in cfg.warnings))
+        self.assertTrue(any("default: nieznany serwer „nie-ma”" in w for w in cfg.warnings))
         self.assertTrue(any("nieznany rodzaj „vllm”" in w for w in cfg.warnings))
         self.assertTrue(any("„haslo”: dane logowania w adresie" in w for w in cfg.warnings), cfg.warnings)
         self.assertNotIn("sekret", json.dumps(cfg.warnings))
@@ -249,14 +260,14 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual({n: (r.model, r.ctx) for n, r in cfg.roles.items() if not r.error}, {"ok": ("qwen3:8b", None)})
         self.assertEqual((cfg.roles["summary"].endpoint, cfg.roles["summary"].model, cfg.roles["summary"].ctx),
                          ("nie-ma", "qwen3:8b", 8192))
-        self.assertIn("nieznany punkt „nie-ma”", cfg.roles["summary"].error)
+        self.assertIn("nieznany serwer „nie-ma”", cfg.roles["summary"].error)
         # Rola na pominiętym punkcie nie idzie cicho na `default` — jest niedostępna z powodem.
         agent = cfg.roles["agent"]
         self.assertEqual((agent.endpoint, agent.model), ("nawias", "qwen3-coder:30b"))
-        self.assertTrue(any("rola „agent”: punkt „nawias” jest pominięty" in w for w in cfg.warnings), cfg.warnings)
+        self.assertTrue(any("rola „agent”: serwer „nawias” jest pominięty" in w for w in cfg.warnings), cfg.warnings)
         with self.assertRaises(ModelError) as caught:
             cfg.role("agent")
-        self.assertIn("punkt „nawias” jest pominięty", str(caught.exception))
+        self.assertIn("serwer „nawias” jest pominięty", str(caught.exception))
         with self.assertRaises(ModelError):
             client.chat("x", role="agent", config=cfg)
 
@@ -279,10 +290,10 @@ class ConfigTest(unittest.TestCase):
         for name in ("summary", "describe", "agent"):
             role = cfg.roles[name]
             self.assertEqual(role.endpoint, "mac", name)
-            self.assertIn("punkt „mac” jest pominięty", role.error)
+            self.assertIn("serwer „mac” jest pominięty", role.error)
         self.assertEqual(cfg.roles["agent"].model, "qwen3-coder:30b")
         self.assertFalse(cfg.roles["ok"].error)
-        self.assertTrue(any("role bez punktu niedostępne" in w for w in cfg.warnings), cfg.warnings)
+        self.assertTrue(any("role bez serwera niedostępne" in w for w in cfg.warnings), cfg.warnings)
         with self.assertRaises(ModelError):
             client.chat("x", role="summary", config=cfg)
 
@@ -335,7 +346,7 @@ class ConfigTest(unittest.TestCase):
             endpoint = models_config.Endpoint("mac", "http://mac:11434", "ollama", path)
             with self.assertRaises(ModelError) as caught:
                 endpoint.headers()
-            self.assertIn("tokenu punktu „mac”", str(caught.exception))
+            self.assertIn("tokenu serwera „mac”", str(caught.exception))
 
     def test_ipv6_address_in_brackets(self):
         endpoint = models_config.from_dict({"endpoints": {"mac": {"url": "http://[fd7a:115c::1]:11434"}}}) \
@@ -349,7 +360,7 @@ class ConfigTest(unittest.TestCase):
         endpoint = models_config.Endpoint("mac", "http://127.0.0.1:9", "ollama", path)
         with self.assertRaises(ModelError) as caught:
             endpoint.headers()
-        self.assertIn("niepoprawny plik tokenu punktu „mac”", str(caught.exception))
+        self.assertIn("niepoprawny plik tokenu serwera „mac”", str(caught.exception))
         self.assertNotIn("zażółć", str(caught.exception))
 
 
@@ -370,6 +381,7 @@ class OllamaClientTest(unittest.TestCase):
         self.assertEqual((answer.endpoint, answer.model), ("local", "qwen3:8b"))
         metrics = dict(answer.metrics)
         self.assertGreaterEqual(metrics.pop("wallS"), 0)
+        self.assertGreaterEqual(metrics.pop("queueS"), 0)   # czekanie w kolejce modeli — osobno od wywołania
         self.assertEqual(metrics, {"promptTokens": 4512, "outputTokens": 96, "loadS": 1.5, "promptS": 2.0,
                                    "outputS": 2.04})
         [sent] = server.requests
@@ -570,7 +582,7 @@ class OpenAIClientTest(unittest.TestCase):
                                        "default": "lm", "roles": {"summary": "lm:qwen3-8b-mlx"}})
         answer = client.chat("x", role="summary", system="s", schema=SCHEMA, config=cfg)
         self.assertEqual(answer.json(), {"zrobione": []})
-        self.assertEqual({k: v for k, v in answer.metrics.items() if k != "wallS"},
+        self.assertEqual({k: v for k, v in answer.metrics.items() if k not in ("wallS", "queueS")},
                          {"promptTokens": 120, "outputTokens": 7})
         [sent] = server.requests
         self.assertEqual(sent["path"], "/v1/chat/completions")
@@ -630,7 +642,8 @@ class StatusTest(unittest.TestCase):
             "error": f"Model lokalny niedostępny: serwer nie odpowiada (127.0.0.1:{port})", "version": None,
             "models": [], "loaded": []})
         self.assertEqual(state["roles"]["summary"], {"endpoint": "local", "model": "qwen3:8b", "ctx": 8192,
-                                                     "installed": None, "available": False, "error": ""})
+                                                     "installed": None, "available": False, "error": "",
+                                                     "pinned": False})
 
     def test_server_failing_after_version_is_offline(self):
         server = start_server(self, ollama_routes())

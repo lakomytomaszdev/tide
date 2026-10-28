@@ -17,6 +17,11 @@ Tytuł:
   tytuł wątku z bazy stanu aplikacji (state_<n>.sqlite, tylko odczyt, gdy jest), inaczej
   pierwsza wiadomość użytkownika.
 
+Codex ma kilka katalogów danych (codex_homes.py: ~/.codex i ~/snap/codex/current) — dzienniki,
+nazwy wątków i bazy stanu czytamy ze wszystkich, kopię tego samego pliku z drugiego katalogu
+pomijamy, a segmenty jednego wątku (to samo id) są jedną pozycją z najnowszego segmentu. Pole `source` to plik dziennika: wznowienie sesji ze snapa
+uruchamia Codexa ze snapa (worktrees/launchers.py), bo tylko on widzi swój katalog.
+
 Indeks żyje wyłącznie w pamięci usługi — nic nie trafia na dysk ani poza komputer.
 """
 import glob
@@ -31,6 +36,7 @@ from ..agents.claude import ClaudeLog
 from ..agents.codex import CodexLog
 from ..agents.jsonl import JsonlTail, read_head
 from ..agents.scanner import _claude_files, _codex_files
+from .. import codex_homes
 from ..board.place import work_cwd
 from ..codex_app import is_desktop
 
@@ -127,17 +133,17 @@ class _Entry:
 class SessionIndex:
     """Metadane sesji z ostatnich max_age sekund. refresh() jest ciężkie — wołać w tle."""
 
-    def __init__(self, claude_root: str, codex_root: str, max_age: float = HISTORY_AGE, clock=time.time):
+    def __init__(self, claude_root: str, codex_root, max_age: float = HISTORY_AGE, clock=time.time):
+        """codex_root: katalog danych Codexa albo ich lista (codex_homes.py)."""
         self.claude_projects = os.path.join(claude_root, "projects")
-        self.codex_root = codex_root
-        self.codex_sessions = os.path.join(codex_root, "sessions")
+        self.codex_roots = codex_root
         self.max_age = max_age
         self.clock = clock
         self._files: dict[str, _Entry] = {}
-        self._thread_names = JsonlTail(os.path.join(codex_root, "session_index.jsonl"), tail_bytes=None)
+        self._thread_names: dict[str, JsonlTail] = {}  # katalog danych → czytnik session_index.jsonl
         self.codex_names: dict[str, str] = {}    # id wątku → nazwa nadana przez użytkownika
         self.codex_titles: dict[str, str] = {}   # id wątku → tytuł z bazy stanu aplikacji
-        self._db_stamp = None
+        self._db_titles: dict[str, tuple] = {}   # katalog danych → (znacznik bazy, {id wątku: tytuł})
         self._places: dict[str, gitinfo.Location] = {}
         self._entries: list[dict] = []
         self._lock = threading.Lock()
@@ -157,7 +163,10 @@ class SessionIndex:
         for path, mtime in _claude_files(self.claude_projects):
             if mtime >= cutoff:
                 found[path] = (ClaudeLog, mtime)
-        for path, mtime in _codex_files(self.codex_sessions):
+        homes = codex_homes.resolve(self.codex_roots)
+        roots = [os.path.join(home, codex_homes.SESSIONS) for home in homes]
+        codex = [(path, mtime) for root in roots for path, mtime in _codex_files(root)]
+        for path, mtime in codex_homes.unique_files(codex, roots):
             if mtime >= cutoff:
                 found[path] = (CodexLog, mtime)
         for path in list(self._files):
@@ -180,11 +189,13 @@ class SessionIndex:
             entry.read(claude_prompt if cls is ClaudeLog else codex_prompt)
             read += 1
 
-        self._read_thread_names()
-        self._read_thread_titles()
+        self._read_thread_names(homes)
+        self._read_thread_titles(homes)
         self._places = {}  # gałąź i projekt mogły się zmienić — liczone od nowa, raz na katalog
         entries = [e for e in (self._describe(entry) for entry in self._files.values()) if e]
         entries = [e for e in entries if e["lastActivity"] >= cutoff]
+        # Jeden wątek = jedno dopasowanie: segmenty wątku Codexa (to samo id) — najnowszy.
+        entries = codex_homes.newest(entries, key=lambda e: e["id"], stamp=lambda e: e["lastActivity"])
         entries.sort(key=lambda e: -e["lastActivity"])
         with self._lock:
             self._entries = entries
@@ -220,36 +231,65 @@ class SessionIndex:
             "lastActivity": log.last_activity or entry.stamp[1],
             # Wątek z Codex Desktop — Uruchom otwiera go w aplikacji zamiast `codex resume` w Konsoli.
             "desktop": log.tool == "codex" and is_desktop(getattr(log, "originator", "")),
+            # Plik dziennika — po nim wznowienie wybiera program (Codex ze snapa czyta tylko swój katalog).
+            "source": log.path,
         }
 
-    def _read_thread_names(self) -> None:
-        for record in self._thread_names.read_new():
-            tid, name = record.get("id"), record.get("thread_name")
-            if isinstance(tid, str) and isinstance(name, str) and name.strip():
-                self.codex_names[tid] = short_title(name)
+    def _read_thread_names(self, homes: list[str]) -> None:
+        for home in list(self._thread_names):
+            if home not in homes:
+                del self._thread_names[home]  # np. stara rewizja snapa po odświeżeniu
+        for home in homes:
+            tail = self._thread_names.get(home)
+            if tail is None:
+                tail = self._thread_names[home] = JsonlTail(os.path.join(home, "session_index.jsonl"),
+                                                            tail_bytes=None)
+            for record in tail.read_new():
+                tid, name = record.get("id"), record.get("thread_name")
+                if isinstance(tid, str) and isinstance(name, str) and name.strip():
+                    self.codex_names[tid] = short_title(name)
 
-    def _read_thread_titles(self) -> None:
-        """Tytuły wątków aplikacji Codex z jej bazy stanu — najlepszy możliwy wysiłek, tylko odczyt."""
-        db = _state_db(self.codex_root)
-        if not db:
-            return
-        stamp = tuple(_mtime(p) for p in (db, db + "-wal"))
-        if stamp == self._db_stamp:
-            return
-        wanted = {e.log.session_id for e in self._files.values() if e.log.tool == "codex" and not e.log.hidden}
-        titles = {}
+    def _read_thread_titles(self, homes: list[str]) -> None:
+        """Tytuły wątków Codexa z baz stanu wszystkich katalogów danych — najlepszy możliwy wysiłek,
+        tylko odczyt. Baza bez zmian od ostatniego odczytu nie jest otwierana."""
+        wanted = None
+        for home in homes:
+            db = _state_db(home)
+            if not db:
+                self._db_titles.pop(home, None)
+                continue
+            stamp = (db,) + tuple(_mtime(p) for p in (db, db + "-wal"))
+            if self._db_titles.get(home, (None,))[0] == stamp:
+                continue
+            if wanted is None:
+                wanted = {e.log.session_id for e in self._files.values()
+                          if e.log.tool == "codex" and not e.log.hidden}
+            titles = _read_titles(db, wanted)
+            if titles is not None:  # inna wersja schematu albo baza zajęta — zostają poprzednie tytuły
+                self._db_titles[home] = (stamp, titles)
+        for home in list(self._db_titles):
+            if home not in homes:
+                del self._db_titles[home]
+        merged: dict[str, str] = {}
+        for home in homes:
+            merged.update(self._db_titles.get(home, (None, {}))[1])
+        self.codex_titles = merged
+
+
+def _read_titles(db: str, wanted: set | None = None) -> dict[str, str] | None:
+    """id wątku → tytuł z tabeli threads bazy stanu Codexa (tylko odczyt); None przy błędzie bazy."""
+    titles = {}
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
         try:
-            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
-            try:
-                for tid, title in conn.execute("SELECT id, title FROM threads WHERE title != ''"):
-                    if tid in wanted and isinstance(title, str):
-                        titles[tid] = short_title(title)
-            finally:
-                conn.close()
-        except sqlite3.Error:
-            return  # inna wersja schematu albo baza zajęta — zostają poprzednie tytuły
-        self.codex_titles = titles
-        self._db_stamp = stamp
+            for tid, title in conn.execute("SELECT id, title FROM threads WHERE title != ''"):
+                if isinstance(tid, str) and isinstance(title, str) and (wanted is None or tid in wanted):
+                    titles[tid] = short_title(title)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return titles
 
 
 def _state_db(codex_root: str) -> str:

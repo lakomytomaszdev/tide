@@ -25,9 +25,9 @@ Window {
     }
 
     width: 860
-    height: 790
+    height: 850
     minimumWidth: 700
-    minimumHeight: 700
+    minimumHeight: 760
     visible: true
     title: "Nowe zadanie"
     color: Tide.Tokens.backgroundWindow
@@ -39,6 +39,7 @@ Window {
         defaults: win.backend ? win.parsed(win.backend.defaultsJson, {}) : ({})
         suggestion: win.backend ? win.parsed(win.backend.suggestionJson, {}) : ({})
         images: win.backend ? win.parsed(win.backend.imagesJson, []) : []
+        modelsStatus: win.backend ? win.parsed(win.backend.modelsJson, null) : null
         available: win.backend ? win.backend.available : false
         busy: win.backend ? win.backend.busy : false
         canCapture: win.backend ? win.backend.canCapture : false
@@ -60,6 +61,10 @@ Window {
         onRemoveImageRequested: path => win.backend.removeImage(path)
         onFilesDropped: urls => win.backend.addFiles(urls)
         onCancelRequested: win.close()
+        onModelsRequested: {
+            const problem = win.backend.openModels()
+            if (problem !== "") win.error = problem
+        }
         Component.onCompleted: {
             if (win.initialPrompt !== "") prompt = win.initialPrompt
             if (win.noWorktree) newWorktree = false

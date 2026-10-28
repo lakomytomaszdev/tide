@@ -1,7 +1,7 @@
 """Punkt wejścia tide-daemon.
 
 Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | --print-models] [--claude-dir DIR]
-                               [--codex-dir DIR] [--workspace DIR] [--worktree-depth N] [--no-processes]
+                               [--codex-dir DIR …] [--workspace DIR] [--worktree-depth N] [--no-processes]
                                [--no-notifications] [--no-krunner] [--no-tab-marks] [--now CZAS]
                                [--idle-after SEKUNDY | --no-idle] [--limits-poll SEKUNDY | --no-limits]
                                [--models-poll SEKUNDY | --no-models]
@@ -18,6 +18,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
 --print-limits     prognoza limitów z historii i jednego GET /status jako JSON (niczego nie zapisuje),
 --print-models     jednorazowo: stan serwerów modeli lokalnych i ról z models.json jako JSON (tylko GET,
                    niczego nie zapisuje), bez D-Bus,
+--codex-dir        katalog danych Codexa, można powtórzyć (domyślnie $CODEX_HOME albo ~/.codex i
+                   ~/snap/codex/current — Codex CLI ze snapa pisze do własnego katalogu),
 --workspace        katalog projektów z repozytoriami (domyślnie $TIDE_WORKSPACE albo ~/DevWorkspace),
 --worktree-depth   jak głęboko pod katalogiem projektów szukać repozytoriów (domyślnie 3),
 --no-processes     nie czyta /proc (stan bez wiedzy o procesach, bez przechodzenia do okien),
@@ -70,8 +72,10 @@ def default_claude_dir() -> str:
     return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
 
 
-def default_codex_dir() -> str:
-    return os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+def default_codex_dirs() -> list[str]:
+    """Katalogi danych Codexa: $CODEX_HOME albo ~/.codex i ~/snap/codex/current (codex_homes.py)."""
+    from . import codex_homes
+    return codex_homes.default_homes()
 
 
 def default_workspace() -> str:
@@ -81,7 +85,8 @@ def default_workspace() -> str:
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog="tide-daemon", description="Sesje agentów AI przez D-Bus")
     parser.add_argument("--claude-dir", default=default_claude_dir())
-    parser.add_argument("--codex-dir", default=default_codex_dir())
+    # Powtarzalne: każdy --codex-dir to jeden katalog danych Codexa; podane zastępują domyślne.
+    parser.add_argument("--codex-dir", action="append", help="katalog danych Codexa (można powtórzyć)")
     parser.add_argument("--no-processes", action="store_true")
     parser.add_argument("--no-notifications", action="store_true")
     parser.add_argument("--no-krunner", action="store_true")
@@ -117,7 +122,10 @@ def parse_args(argv):
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--report-delay", type=float)
     parser.add_argument("--report-summary", choices=("claude", "local", "rules"))
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not args.codex_dir:
+        args.codex_dir = default_codex_dirs()
+    return args
 
 
 def main(argv=None) -> int:
@@ -152,7 +160,7 @@ def main(argv=None) -> int:
         now = clock()
         scanner.discover(now)
         scanner.update()
-        procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
+        procs = None if args.no_processes else processes.probe(log_roots=scanner.codex_log_roots())
         agents = scanner.sessions(now, procs)
         cwds = worktrees.agent_cwds(agents, procs)
         index = worktrees.SessionIndex(args.claude_dir, args.codex_dir)
@@ -179,7 +187,7 @@ def main(argv=None) -> int:
         now = clock()
         scanner.discover(now)
         scanner.update()
-        procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
+        procs = None if args.no_processes else processes.probe(log_roots=scanner.codex_log_roots())
         print(json.dumps(coordination_once(args, clock, scanner.sessions(now, procs), report_settings),
                          ensure_ascii=False, indent=2))
         return 0
@@ -199,7 +207,7 @@ def main(argv=None) -> int:
         now = clock()
         scanner.discover(now)
         scanner.update()
-        procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
+        procs = None if args.no_processes else processes.probe(log_roots=scanner.codex_log_roots())
         print(json.dumps(scanner.sessions(now, procs), ensure_ascii=False, indent=2))
         return 0
 
@@ -230,7 +238,9 @@ def main(argv=None) -> int:
                                                          coordination, report)
     idle = None if args.no_idle else start_idle(app, args)
     limits = None if args.no_limits else start_limits(app, args, clock)
-    models = None if args.no_models else start_models(app, args)
+    models = None if args.no_models else start_models(app, args, report, coordination)
+    if models is not None:
+        scanner.known_local_models = models.known_models  # role i modele na serwerach ze stanu /Models
     tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
     board = None if args.no_board else start_board(app, args, trees, monitor, coordination, clock)
     if board is not None:
@@ -349,7 +359,7 @@ def print_report(args, clock, scanner, settings) -> int:
     now = clock()
     scanner.discover(now)
     scanner.update()
-    procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
+    procs = None if args.no_processes else processes.probe(log_roots=scanner.codex_log_roots())
     days = max(0.01, min(args.report_days, schedule.MAX_PERIOD / 86400))
     try:
         index, report = reports.generate(
@@ -671,11 +681,25 @@ def limits_once(clock) -> dict:
     return tracker.snapshot()
 
 
-def start_models(app, args):
-    """Stan serwerów modeli lokalnych (models/, models_monitor.py); models.json czytany przy każdym odczycie."""
-    from .models_monitor import ModelsMonitor
+def start_models(app, args, report=None, coordination=None):
+    """Modele lokalne (models/, models_monitor.py): stan serwerów (models.json czytany przy każdym odczycie)
+    i zapis ustawień z okna Tide. SetReportSummary przełącza od razu raport i opisy kart (bez restartu),
+    chyba że tryb wymusza --report-summary."""
+    from .models_monitor import ModelsMonitor, ReportLink
     poll_ms = int(round(args.models_poll * 1000)) if args.models_poll and args.models_poll > 0 else None
-    return ModelsMonitor(poll_ms=poll_ms, parent=app)
+
+    def live():
+        return args.report_summary or (report.summary if report is not None else None)
+
+    def apply(mode):
+        if report is not None:
+            report.summary = mode
+        describer = getattr(coordination, "describer", None)
+        if describer is not None:
+            describer.set_mode(mode)
+
+    link = ReportLink(live=live, apply=apply, pinned=bool(args.report_summary))
+    return ModelsMonitor(poll_ms=poll_ms, report=link, parent=app)
 
 
 def start_krunner(app, args, clock, monitor, trees, coordination=None, report=None):

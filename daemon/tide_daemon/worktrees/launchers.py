@@ -10,6 +10,10 @@ Rider z JetBrains Toolbox ma skrypt uruchomieniowy w ~/.local/share/JetBrains/To
 którego zwykle nie ma w PATH usługi systemd — dlatego szukamy go też tam (i w kilku innych
 typowych miejscach). Gdy Ridera nie ma, widżet ukrywa przycisk.
 
+Wznowienie sesji Codexa wybiera program po katalogu danych sesji (codex_homes.py): Codex ze snapa
+(`/snap/bin/codex`) widzi tylko swój katalog `~/snap/codex/<rewizja>`, a inny Codex (npm, tarball)
+tylko `~/.codex` — `codex resume <id>` niewłaściwym programem kończy się „nie znaleziono sesji”.
+
 Programy startują przez `systemd-run --user --scope`, żeby trafiły do własnej jednostki,
 a nie do grupy procesów tide-daemon — restart usługi nie zamyka wtedy otwartych okien.
 """
@@ -18,6 +22,8 @@ import os
 import shutil
 import subprocess
 import threading
+
+from .. import codex_homes
 
 TERMINAL = "terminal"
 RIDER = "rider"
@@ -87,6 +93,8 @@ class Launchers:
         # a w ostateczności sama nazwa — wtedy szuka jej powłoka w Konsoli.
         self.agents = {name: shutil.which(name, path=search)
                        or _executable(os.path.join(home, ".local/bin", name)) or name for name in AGENTS}
+        # Codex ze snapa i spoza niego osobno — wznowienie wybiera program po katalogu danych sesji.
+        self.codex_bins = codex_binaries(search, home)
         self.window_script = window_script(env)
         self.task_dialog_script = task_dialog_script(env)
         self.sessions_script = sessions_window_script(env)
@@ -165,12 +173,22 @@ class Launchers:
             return []
         return self._scoped([self.terminal, "--workdir", path, "-e", "/bin/sh", "-c", KEEP_SHELL, *argv])
 
-    def resume_command(self, tool: str, session_id: str, cwd: str) -> list[str]:
-        """Wznowienie sesji: Claude Code `claude --resume <id>`, Codex `codex resume <id>`."""
+    def codex_for(self, source: str = "") -> str:
+        """Program Codexa do wznowienia sesji z pliku source: ze snapa dla ~/snap/codex/…, inny dla
+        reszty (~/.codex); gdy pasującego nie ma albo source nieznany — `codex` z PATH jak dotąd."""
+        if source:
+            kind = "snap" if codex_homes.is_snap(source, self.home) else "other"
+            if self.codex_bins.get(kind):
+                return self.codex_bins[kind]
+        return self.agents["codex"]
+
+    def resume_command(self, tool: str, session_id: str, cwd: str, source: str = "") -> list[str]:
+        """Wznowienie sesji: Claude Code `claude --resume <id>`, Codex `codex resume <id>` programem,
+        który widzi katalog danych sesji (source — plik dziennika, codex_for())."""
         if tool == "claude":
             agent = [self.agents["claude"], "--resume", session_id]
         elif tool == "codex":
-            agent = [self.agents["codex"], "resume", session_id]
+            agent = [self.codex_for(source), "resume", session_id]
         else:
             return []
         return self.terminal_command(cwd, agent)
@@ -208,6 +226,26 @@ class Launchers:
         # Zbieramy proces po zakończeniu, żeby nie zostawał zombie.
         threading.Thread(target=proc.wait, daemon=True).start()
         return True
+
+
+def codex_binaries(search: str, home: str, snap_fallback: str = codex_homes.SNAP_CODEX) -> dict:
+    """Pierwszy `codex` ze snapa (katalog …/snap/bin w PATH, zapasowo snap_fallback — usługa systemd
+    może nie mieć /snap/bin w PATH, jak przy kandydatach Ridera) i pierwszy spoza snapa (PATH, potem
+    ~/.local/bin). Bez rozwiązywania dowiązań: /snap/bin/codex wskazuje na /usr/bin/snap, który
+    rozpoznaje program po nazwie."""
+    out = {"snap": "", "other": ""}
+    for folder in (search or "").split(os.pathsep):
+        if not folder:
+            continue
+        path = _executable(os.path.join(folder, "codex"))
+        kind = "snap" if os.path.normpath(folder).endswith(os.path.join(os.sep + "snap", "bin")) else "other"
+        if path and not out[kind]:
+            out[kind] = path
+    if not out["other"]:
+        out["other"] = _executable(os.path.join(home, ".local/bin", "codex"))
+    if not out["snap"] and snap_fallback:
+        out["snap"] = _executable(snap_fallback)
+    return out
 
 
 def _executable(path: str) -> str:

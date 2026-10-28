@@ -1,5 +1,6 @@
 // Znak widoku w pasku okna Tide: kreska 2 px w siatce 24×24, zaokrąglone końce, bez wypełnień
-// (jak glify aplikacji, docs/design-system.md „Ikony”). Kształty z mocka „Tide Tablica”.
+// (jak glify aplikacji, docs/design-system.md „Ikony”). Kształty z mocka „Tide Tablica”; „models” to układ
+// scalony jak w kafelku „Modele” (PT-18).
 import QtQuick
 import QtQuick.Shapes
 
@@ -20,7 +21,9 @@ Item {
         "worktrees": "M4 5a2 2 0 1 0 4 0a2 2 0 1 0 -4 0z M4 19a2 2 0 1 0 4 0a2 2 0 1 0 -4 0z"
                      + " M16 8a2 2 0 1 0 4 0a2 2 0 1 0 -4 0z M6 7v10 M18 10c0 4 -6 3 -11 7",
         "docker": "M3 8l9 -5 9 5v8l-9 5 -9 -5z M3 8l9 5 9 -5 M12 13v8",
-        "reports": "M7 3h7l4 4v14H7z M14 3v4h4 M10 12h5 M10 16h5"
+        "reports": "M7 3h7l4 4v14H7z M14 3v4h4 M10 12h5 M10 16h5",
+        "models": "M8 6h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2z M10 2v4 M14 2v4"
+                  + " M10 18v4 M14 18v4 M2 10h4 M2 14h4 M18 10h4 M18 14h4 M10 10h4v4h-4z"
     })
 
     implicitWidth: 18

@@ -1022,7 +1022,7 @@ class LocalModelTest(StandupWorld):
         config = models_config.from_dict({"default": "mac", "endpoints": {"local": {"url": "http://127.0.0.1:9"}}})
         env = self.env("ok")
         result = self.local(config, env)
-        self.assertEqual(result["note"], "Model lokalny niedostępny — opis bez modelu (default: nieznany punkt „mac”)")
+        self.assertEqual(result["note"], "Model lokalny niedostępny — opis bez modelu (default: nieznany serwer „mac”)")
         server = self.server(project_answer("alpha", "x"))
         server.delay = 2.0
         result = self.local(self.config(server.url), env, timeout=0.5)

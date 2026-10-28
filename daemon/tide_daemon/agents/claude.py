@@ -7,6 +7,7 @@ Co wiemy o strukturze (z obserwacji, format nie jest publiczny):
 - wywołanie narzędzia to assistant z treścią tool_use, wynik przychodzi jako user z tool_result,
 - przerwanie przez użytkownika to user z tekstem „[Request interrupted by user…”,
 - wpisy isSidechain należą do podagentów i nie zmieniają stanu sesji głównej,
+- odpowiedź modelu ma message.model (`claude-…` albo np. `qwen3-coder:30b` na serwerze lokalnym),
 - ai-title niesie krótki tytuł rozmowy (dopisywany wielokrotnie, liczy się ostatni), a custom-title
   tytuł nadany przez użytkownika,
 - sessions/<pid>.json opisuje działający proces: sessionId, cwd i status (busy, waiting, idle,
@@ -117,6 +118,9 @@ class ClaudeLog(SessionLog):
 
     def _assistant(self, record: dict, ts: float) -> None:
         message = record.get("message") or {}
+        model = message.get("model") if isinstance(message, dict) else None
+        if isinstance(model, str) and model and not model.startswith("<"):
+            self.model = model  # ostatni prawdziwy model (po /model liczy się nowy)
         if record.get("isApiErrorMessage"):
             self.set_phase(TURN_END, ts)
             return

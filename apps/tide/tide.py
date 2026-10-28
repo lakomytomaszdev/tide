@@ -1,14 +1,14 @@
 #!/usr/bin/python3
-"""Okno „Tide”: pasek widoków (Tablica, Sesje, Worktrees, Docker, Raporty) i widok na wierzchu —
+"""Okno „Tide”: pasek widoków (Tablica, Sesje, Worktrees, Docker, Raporty, Modele) i widok na wierzchu —
 QML (qml/Main.qml), dane widoków z tide-daemon przez D-Bus.
 
 Użycie: /usr/bin/python3 tide.py [--view WIDOK] [--select ELEMENT] [--data [WIDOK=]PLIK.json ...]
                                  [--preview KLUCZ=WARTOŚĆ ...] [--grab PLIK.png] [--width N --height N]
 
---view     widok na start: board, sessions, worktrees, docker, reports (bez — domyślny z views.json;
+--view     widok na start: board, sessions, worktrees, docker, reports, models (bez — domyślny z views.json;
            gdy okno już działa, bez --view zostaje na bieżącym widoku i tylko się pokazuje),
 --select   element widoku: koordynator w Sesjach (claude:<sesja>), ścieżka worktree w Worktrees,
-           w przyszłości karta, kontener, dzień raportu,
+           kontener w Dockerze, serwer w Modelach (nazwa z models.json), w przyszłości karta, dzień raportu,
 --data     stałe dane widoku z pliku, bez D-Bus — do podglądu i testów (akcje wyłączone). Samo PLIK
            to dane widoku z --view; WIDOK=PLIK — dane innego widoku (można powtórzyć, np. żeby pasek
            pokazał plakietki). Widoki bez danych są wtedy puste,

@@ -88,6 +88,8 @@ class SessionLog:
         self.hidden = False  # np. podagenci Codexa — nie są osobnymi sesjami
         self.scheduled = False  # bieżącą/ostatnią turę zaczęło zaplanowane zadanie, nie użytkownik
         self.last_user_ts = 0.0  # ostatnia wiadomość wpisana przez użytkownika (nie wynik narzędzia)
+        self.model = ""         # ostatni model z dziennika (Codex: turn_context.model, Claude: message.model)
+        self.provider = ""      # Codex: session_meta.model_provider (agents/localmodel.py)
         # Ostatnia wiadomość tekstowa agenta, po której nie było już wywołania narzędzia, i jej czas —
         # z niej pytanie na końcu tury (reply_question). Parsery czyszczą ją przy wywołaniu narzędzia.
         self.last_text = ""
