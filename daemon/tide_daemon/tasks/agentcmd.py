@@ -75,6 +75,7 @@ GIT_SSH = ("ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o Iden
 # Chronione pliki, które piaskownica Claude Code podmienia w katalogu roboczym na atrapy (urządzenia
 # znakowe) — `git add -A` bez wykluczenia kończy się błędem (PT-75). Zakotwiczone, w pliku kroku,
 # nie w repozytorium użytkownika.
+SYSTEMD_RUN = "/usr/bin/systemd-run"
 SANDBOX_DUMMIES = ("/.bash_profile", "/.bashrc", "/.claude", "/.gitconfig", "/.gitmodules", "/.idea",
                    "/.mcp.json", "/.profile", "/.ripgreprc", "/.vscode", "/.zprofile", "/.zshrc")
 CODEX_GIT_DIRS = ("objects", "refs", "logs")        # reszta wspólnego .git (haki, config) zostaje tylko do odczytu
@@ -122,8 +123,11 @@ class Background:
     cwd: str
     step_dir: str
     session_id: str = ""
+    tool: str = ""
     repo: str = ""
     git_dir: str = ""                              # <repo>/.git/worktrees/<wt>, ustalony przez usługę (resolve_git_dir)
+    unit: str = ""                                 # jednostka systemd (scope) kroku: tide-step-<id>
+    runtime_dir: str = ""                          # XDG_RUNTIME_DIR — tylko dla systemd-run, nie dla programu
     secret_env: dict = field(default_factory=dict)
     token_files: list = field(default_factory=list)
     files: dict = field(default_factory=dict)      # ścieżka → treść
@@ -143,18 +147,42 @@ class Background:
         with open(self.prompt_file, "w", encoding="utf-8") as fh:
             fh.write(self.stdin)
 
-    def start(self, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) -> subprocess.Popen:
-        """Uruchamia program we własnej sesji (zatrzymanie: stepstop.stop_step zabija całą grupę procesów).
-        Polecenie idzie z pliku kroku jako stdin, token z pliku punktu tylko do środowiska programu.
-        stdout: domyślnie rura — długi krok powinien dostać plik (np. dziennik w `out`), inaczej rura się zapcha."""
+    @property
+    def log_file(self) -> str:
+        return os.path.join(self.step_dir, "out", "step.log")
+
+    def stop_kwargs(self) -> dict:
+        """Argumenty `stepstop.stop_step` wynikające z samego kroku (dochodzi `branch` i ścieżki dzienników sesji)."""
+        return {"unit": self.unit, "worktree": self.cwd, "step_dir": self.step_dir, "repo": self.repo,
+                "git_dir": self.git_dir, "tool": self.tool, "session_id": self.session_id}
+
+    def start(self, stdout=None, stderr=subprocess.STDOUT) -> subprocess.Popen:
+        """Uruchamia program w osobnej jednostce `systemd-run --user --scope` (wzór z „Odporności” w specyfikacji):
+        restart albo śmierć usługi nie zabija kroku, a zatrzymanie jednostki zabija całą jej cgroup (także wnuki po
+        `setsid`). `--scope` daje programowi środowisko procesu — token punktu nie trafia do właściwości jednostki
+        ani do argv. systemd-run potrzebuje tylko `XDG_RUNTIME_DIR` (gniazdo menedżera; D-Bus niepotrzebny, w kroku
+        jest martwy); `env -u` zdejmuje tę zmienną (i INVOCATION_ID) przed programem.
+        stdout: domyślnie plik `<krok>/out/step.log` — rura do usługi zabiłaby krok przez SIGPIPE, gdy usługa padnie.
+        Polecenie idzie z pliku kroku jako stdin."""
         env = dict(self.env)
         for path in self.token_files:
             launch.read_token(path)
         for name, path in self.secret_env.items():
             env[name] = launch.read_token(path)
-        with open(self.prompt_file, "rb") as stdin:
-            return subprocess.Popen(self.argv, cwd=self.cwd, env=env, stdin=stdin, stdout=stdout, stderr=stderr,
-                                    text=True, start_new_session=True)
+        env["XDG_RUNTIME_DIR"] = self.runtime_dir or f"/run/user/{os.getuid()}"
+        argv = [SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet", f"--unit={self.unit}", "--",
+                "/usr/bin/env", "-u", "XDG_RUNTIME_DIR", "-u", "INVOCATION_ID", *self.argv]
+        log = None
+        if stdout is None:
+            os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+            log = stdout = open(self.log_file, "ab")
+        try:
+            with open(self.prompt_file, "rb") as stdin:
+                return subprocess.Popen(argv, cwd=self.cwd, env=env, stdin=stdin, stdout=stdout, stderr=stderr,
+                                        text=True, start_new_session=True)
+        finally:
+            if log is not None:
+                log.close()
 
 
 def _within(path: str, folder: str) -> bool:
@@ -329,7 +357,9 @@ def background(step: Step) -> Background:
                                               f"[core]\n\texcludesFile = {os.path.join(inp, 'ignore')}\n")
     files[os.path.join(inp, "ignore")] = "\n".join(SANDBOX_DUMMIES) + "\n"
     dirs = [inp, out, env["GH_CONFIG_DIR"]] + ([env["CLAUDE_CODE_TMPDIR"]] if step.tool == "claude" else [])
-    return Background(argv, env, step.prompt, step.worktree, step.step_dir, session, repo=step.repo, git_dir=git_dir,
+    return Background(argv, env, step.prompt, step.worktree, step.step_dir, session, step.tool, repo=step.repo,
+                      git_dir=git_dir, unit="tide-step-" + re.sub(r"[^A-Za-z0-9_-]", "_", step.step_id),
+                      runtime_dir=base.get("XDG_RUNTIME_DIR", ""),
                       secret_env=extra.get("secret_env", {}), token_files=extra.get("token_files", []),
                       files=files, dirs=dirs)
 

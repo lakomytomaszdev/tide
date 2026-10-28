@@ -15,8 +15,11 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import sys
+import textwrap
 import time
 import unittest
+import uuid
 
 from . import gitrepos
 from tide_daemon.tasks import agentcmd, local, stepstop
@@ -71,11 +74,10 @@ class BackgroundBase(unittest.TestCase):
         gitrepos.commit(self.repo, "a.txt")
         gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "feat/pt-1", self.worktree)
         self.gitdir = os.path.join(self.repo, ".git", "worktrees", "pt-1")
+        self.sid = "b" + uuid.uuid4().hex[:8]
         self.token_file = os.path.join(self.root, "token")
         with open(self.token_file, "w", encoding="utf-8") as fh:
             fh.write(SECRET + "\n")
-
-    sid = "s1"
 
     def step(self, tool="claude", **kw):
         base = dict(DIRTY_ENV, HOME=self.home)
@@ -145,7 +147,7 @@ class BackgroundClaudeTest(BackgroundBase):
         self.assertTrue(os.path.isdir(os.path.join(self.step_dir, "out")))
         self.assertTrue(os.path.isfile(os.path.join(self.step_dir, "in", "settings.json")))
         self.assertTrue(os.path.isdir(cmd.env["CLAUDE_CODE_TMPDIR"]))
-        proc = cmd.start()
+        proc = cmd.start(stdout=subprocess.PIPE)
         out, _ = proc.communicate()
         self.assertEqual(proc.returncode, 0)
         self.assertTrue(out.startswith(self.worktree + "\nZrób ticket"))
@@ -194,7 +196,7 @@ class BackgroundEnvironmentTest(BackgroundBase):
     def test_claude_environment_is_clean(self):
         cmd = agentcmd.background(self.step())
         self.check_clean(cmd, "claude")
-        self.assertEqual(cmd.env["CLAUDE_CODE_TMPDIR"], os.path.join(self.tmp_root, "tide-step-s1"))
+        self.assertEqual(cmd.env["CLAUDE_CODE_TMPDIR"], os.path.join(self.tmp_root, "tide-step-" + self.sid))
 
     def test_codex_environment_is_clean(self):
         self.check_clean(agentcmd.background(self.step("codex", codex_mcp=())), "codex")
@@ -225,7 +227,7 @@ class BackgroundEnvironmentTest(BackgroundBase):
             "mac", "http://mac.lan:11434", "ollama", "m", None, self.token_file)))
         cmd.argv = ["/bin/sh", "-c", "echo $TIDE_MODEL_TOKEN"]
         cmd.prepare()
-        out, _ = cmd.start().communicate()
+        out, _ = cmd.start(stdout=subprocess.PIPE).communicate()
         self.assertEqual(out.strip(), SECRET)
         self.assertNotIn(local.TOKEN_ENV, cmd.env)
 
@@ -307,7 +309,7 @@ class BackgroundCodexTest(BackgroundBase):
 
 
 # Atrapa programu agenta: pisze pliki w worktree (zmieniony śledzony, nowe nieśledzone, atrapa piaskownicy),
-# uruchamia dziecko (`sleep`), zgłasza gotowość i czeka.
+# uruchamia dziecko (`sleep`) i — na życzenie — wnuka we własnej sesji (`setsid`), zgłasza gotowość i czeka.
 DUMMY = """#!/usr/bin/python3
 import os, signal, subprocess, sys, time
 if os.environ.get("DUMMY_IGNORE_TERM"):
@@ -322,13 +324,50 @@ with open("src/glebokie/inny.py", "w") as fh:
 os.makedirs(".claude", exist_ok=True)
 with open(".claude/.cc-writes", "w") as fh:
     fh.write("atrapa\\n")
+with open("zignorowany.log", "w") as fh:
+    fh.write("log\\n")
 child = subprocess.Popen(["sleep", "300"])
-with open(os.environ["DUMMY_READY"], "w") as fh:
-    fh.write(str(child.pid))
+grand = subprocess.Popen(["sleep", "300"], start_new_session=True) if os.environ.get("DUMMY_SETSID") else None
+with open(os.environ["DUMMY_READY"] + ".tmp", "w") as fh:
+    fh.write("%d %d" % (child.pid, grand.pid if grand else 0))
+os.rename(os.environ["DUMMY_READY"] + ".tmp", os.environ["DUMMY_READY"])
 time.sleep(300)
 """
 
+LAUNCHER = """
+import json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+from tide_daemon.tasks import agentcmd
+spec = json.loads(sys.argv[2])
+ready = spec.pop("ready")
+cmd = agentcmd.background(agentcmd.Step(**spec))
+cmd.env["DUMMY_READY"] = ready
+cmd.prepare()
+proc = cmd.start()
+print(proc.pid, flush=True)
+time.sleep(300)
+"""
 
+BRANCH = "feat/pt-1-x"
+
+
+def systemd_scopes_work() -> bool:
+    try:
+        return subprocess.run(["/usr/bin/systemd-run", "--user", "--scope", "--collect", "--quiet", "--", "true"],
+                              capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def alive(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            return fh.read().rpartition(")")[2].split()[0] != "Z"
+    except OSError:
+        return False
+
+
+@unittest.skipUnless(systemd_scopes_work(), "brak `systemd-run --user --scope` — testy kroków w jednostce pominięte")
 class StopStepTest(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="tide-stop-")
@@ -337,47 +376,70 @@ class StopStepTest(unittest.TestCase):
         os.makedirs(self.repo)
         gitrepos.git(self.repo, "init", "-q", "-b", "master")
         gitrepos.commit(self.repo, "tracked.txt", "start\n")
+        with open(os.path.join(self.repo, ".gitignore"), "w", encoding="utf-8") as fh:
+            fh.write("*.log\n")
+        gitrepos.git(self.repo, "add", ".gitignore")
+        gitrepos.git(self.repo, "commit", "-q", "-m", "ignore")
         self.hook_marker = os.path.join(self.root, "hook-ran")
         hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
         with open(hook, "w", encoding="utf-8") as fh:
             fh.write(f"#!/bin/sh\ntouch {self.hook_marker}\nexit 1\n")
         os.chmod(hook, 0o755)
         self.worktree = os.path.join(self.root, "repo-wt", "pt-1")
-        gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "feat/pt-1-x", self.worktree)
+        gitrepos.git(self.repo, "worktree", "add", "-q", "-b", BRANCH, self.worktree)
+        self.gitdir = os.path.join(self.repo, ".git", "worktrees", "pt-1")
         self.step_dir = os.path.join(self.root, "repo-wt", "pt-1.step")
         self.ready = os.path.join(self.root, "ready")
         self.tmp_root = os.path.join(self.root, "tmp")
         os.makedirs(self.tmp_root)
         self.session = "11111111-2222-3333-4444-555555555555"
         self.projects = os.path.join(self.root, "claude", "projects")
+        self.sid = "t" + uuid.uuid4().hex[:8]
+        self.marker = os.path.join(self.root, "ESCAPED")
+        self.units = []
+        self.addCleanup(self._cleanup_units)
 
-    def start(self, ignore_term=False):
-        dummy = os.path.join(self.root, "dummy.py")
-        with open(dummy, "w", encoding="utf-8") as fh:
+    def _cleanup_units(self):
+        for unit in self.units:
+            subprocess.run(["systemctl", "--user", "kill", "--signal=SIGKILL", unit + ".scope"], capture_output=True)
+
+    def spec(self, **extra):
+        spec = dict(tool="claude", binary=self.dummy(), prompt="zrób", worktree=self.worktree, repo=self.repo,
+                    step_dir=self.step_dir, step_id=self.sid, session_id=self.session,
+                    base_env={"HOME": os.path.join(self.root, "home"), "PATH": os.environ["PATH"]},
+                    tmp_root=self.tmp_root)
+        spec.update(extra)
+        return spec
+
+    def dummy(self):
+        path = os.path.join(self.root, "dummy.py")
+        with open(path, "w", encoding="utf-8") as fh:
             fh.write(DUMMY)
-        os.chmod(dummy, 0o755)
-        cmd = agentcmd.background(agentcmd.Step(
-            "claude", dummy, "zrób", self.worktree, self.repo, self.step_dir, "s1", self.session,
-            base_env={"HOME": os.path.join(self.root, "home"), "PATH": os.environ["PATH"]}, tmp_root=self.tmp_root))
+        os.chmod(path, 0o755)
+        return path
+
+    def wait_ready(self):
+        deadline = time.time() + 15
+        while not os.path.exists(self.ready):
+            self.assertLess(time.time(), deadline, "atrapa nie zgłosiła gotowości")
+            time.sleep(0.05)
+        with open(self.ready, encoding="utf-8") as fh:
+            child, grand = (int(x) for x in fh.read().split())
+        return child, grand
+
+    def start(self, ignore_term=False, setsid=False):
+        cmd = agentcmd.background(agentcmd.Step(**self.spec()))
         cmd.env["DUMMY_READY"] = self.ready
         if ignore_term:
             cmd.env["DUMMY_IGNORE_TERM"] = "1"
+        if setsid:
+            cmd.env["DUMMY_SETSID"] = "1"
         cmd.prepare()
         proc = cmd.start()
-        self.addCleanup(lambda: proc.poll() is None and os.killpg(proc.pid, signal.SIGKILL))
-        self.addCleanup(lambda: proc.stdout.close())
-        deadline = time.time() + 10
-        while not self._ready():
-            self.assertLess(time.time(), deadline, "atrapa nie zgłosiła gotowości")
-            time.sleep(0.05)
-        return proc, int(self._ready())
-
-    def _ready(self) -> str:
-        try:
-            with open(self.ready, encoding="utf-8") as fh:
-                return fh.read()
-        except OSError:
-            return ""
+        self.units.append(cmd.unit)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        child, grand = self.wait_ready()
+        return proc, cmd, child, grand
 
     def write_claude_log(self, lines):
         folder = os.path.join(self.projects, agentcmd_escape(self.worktree))
@@ -386,11 +448,16 @@ class StopStepTest(unittest.TestCase):
             for line in lines:
                 fh.write(json.dumps(line, ensure_ascii=False) + "\n")
 
-    def stop(self, proc, **kw):
-        args = dict(worktree=self.worktree, step_dir=self.step_dir, tool="claude", session_id=self.session,
-                    claude_projects=self.projects, grace=5)
+    def stop(self, proc, cmd, **kw):
+        args = dict(cmd.stop_kwargs(), branch=BRANCH, claude_projects=self.projects, grace=5)
         args.update(kw)
         return stepstop.stop_step(proc, **args)
+
+    def wait_gone(self, *pids):
+        deadline = time.time() + 5
+        while any(alive(p) for p in pids) and time.time() < deadline:
+            time.sleep(0.05)
+        return not any(alive(p) for p in pids)
 
     def test_stop_ends_the_process_and_its_children_and_commits_every_change(self):
         self.write_claude_log([
@@ -399,84 +466,173 @@ class StopStepTest(unittest.TestCase):
             {"type": "user", "isMeta": True, "message": {"role": "user", "content": "meta"}},
             {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {}}]}},
             {"type": "assistant", "message": {"content": [{"type": "text", "text": "Prawie gotowe, brakuje testu"}]}}])
-        proc, child = self.start()
-        result = self.stop(proc)
+        proc, cmd, child, _ = self.start()
+        result = self.stop(proc, cmd)
         self.assertTrue(result.stopped)
         self.assertIsNotNone(proc.poll())
-        deadline = time.time() + 5
-        while not _gone(child) and time.time() < deadline:
-            time.sleep(0.05)
-        self.assertTrue(_gone(child), "dziecko atrapy przeżyło zatrzymanie")
+        self.assertTrue(self.wait_gone(child), "dziecko atrapy przeżyło zatrzymanie")
+        self.assertNotEqual(subprocess.run(["systemctl", "--user", "is-active", "--quiet", cmd.unit + ".scope"]).returncode, 0)
         self.assertTrue(result.committed, result.error)
         self.assertEqual(result.error, "")
-        # atrapa piaskownicy zostaje na dysku, ale nie w commicie
+        # atrapa piaskownicy zostaje na dysku, ale nie w commicie; plik z .gitignore jest w notatkach
         self.assertEqual(gitrepos.git(self.worktree, "status", "--porcelain"), "?? .claude/\n")
+        self.assertIn("zignorowany.log", " ".join(result.notes))
         shown = gitrepos.git(self.worktree, "show", "--name-only", "--format=%s%n%an", "HEAD").splitlines()
         self.assertEqual(shown[0], "WIP: step stopped before it finished")
         self.assertEqual(shown[1], "Krok")
         self.assertEqual(sorted(n for n in shown[2:] if n), ["nowy.txt", "src/glebokie/inny.py", "tracked.txt"])
         self.assertEqual(result.commit, gitrepos.git(self.worktree, "rev-parse", "HEAD").strip())
         self.assertEqual(result.files, 3)
-        self.assertEqual(gitrepos.git(self.worktree, "branch", "--show-current").strip(), "feat/pt-1-x")
-        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(),
-                         gitrepos.git(self.repo, "rev-parse", "HEAD").strip())
+        self.assertEqual(gitrepos.git(self.worktree, "branch", "--show-current").strip(), BRANCH)
         self.assertEqual([m["role"] for m in result.messages], ["user", "assistant", "assistant"])
         self.assertEqual(result.messages[-1]["text"], "Prawie gotowe, brakuje testu")
         self.assertNotIn("meta", [m["text"] for m in result.messages])
 
+    def test_a_grandchild_in_its_own_session_does_not_survive_the_stop(self):
+        proc, cmd, child, grand = self.start(setsid=True)
+        self.assertTrue(alive(grand))
+        self.assertTrue(self.stop(proc, cmd).stopped)
+        self.assertTrue(self.wait_gone(child, grand), "wnuk po setsid przeżył zatrzymanie jednostki")
+
+    def test_the_step_survives_the_death_of_the_process_that_started_it(self):
+        spec = self.spec(binary=self.dummy())
+        launcher = subprocess.Popen([sys.executable, "-c", LAUNCHER, os.path.dirname(os.path.dirname(stepstop.__file__)),
+                                     json.dumps(dict(spec, ready=self.ready))], stdout=subprocess.PIPE, text=True,
+                                    start_new_session=True)
+        self.addCleanup(lambda: launcher.poll() is None and launcher.kill())
+        self.addCleanup(launcher.stdout.close)
+        step_pid = int(launcher.stdout.readline())
+        self.units.append("tide-step-" + self.sid)
+        child, _ = self.wait_ready()
+        os.kill(launcher.pid, signal.SIGKILL)       # „restart usługi”
+        launcher.wait()
+        time.sleep(0.5)
+        self.assertTrue(alive(step_pid), "krok zginął razem z procesem, który go uruchomił")
+        self.assertTrue(alive(child))
+        result = stepstop.stop_step(None, unit="tide-step-" + self.sid, worktree=self.worktree, step_dir=self.step_dir,
+                                    repo=self.repo, git_dir=self.gitdir, branch=BRANCH, tool="claude", grace=5)
+        self.assertTrue(result.stopped)
+        self.assertTrue(result.committed, result.error)
+        self.assertTrue(self.wait_gone(step_pid, child))
+
+    def test_the_step_output_goes_to_a_file_not_to_a_pipe_of_the_service(self):
+        proc, cmd, _, _ = self.start()
+        self.assertIsNone(proc.stdout)
+        self.assertTrue(os.path.isfile(os.path.join(self.step_dir, "out", "step.log")))
+        self.stop(proc, cmd)
+
     def test_the_service_git_runs_no_hooks(self):
-        proc, _ = self.start()
-        result = self.stop(proc)
+        proc, cmd, _, _ = self.start()
+        result = self.stop(proc, cmd)
         self.assertTrue(result.committed, result.error)
         self.assertFalse(os.path.exists(self.hook_marker))
 
     def test_a_process_that_ignores_sigterm_is_killed_after_the_grace_period(self):
-        proc, _ = self.start(ignore_term=True)
+        proc, cmd, _, _ = self.start(ignore_term=True)
         started = time.time()
-        result = self.stop(proc, grace=0.5)
+        result = self.stop(proc, cmd, grace=0.5)
         self.assertTrue(result.stopped)
         self.assertLess(time.time() - started, 5)
         self.assertEqual(proc.returncode, -signal.SIGKILL)
         self.assertTrue(result.committed)
 
-    def test_stop_by_pid_and_nothing_to_commit(self):
-        proc, _ = self.start()
-        result_dirty = stepstop.git_snapshot(self.worktree, self.step_dir)
-        self.assertTrue(result_dirty.committed)
-        result = self.stop(proc.pid)
+    def test_stopping_twice_commits_nothing_new(self):
+        proc, cmd, _, _ = self.start()
+        self.assertTrue(self.stop(proc, cmd).committed)
+        again = self.stop(proc, cmd)
+        self.assertTrue(again.stopped)
+        self.assertFalse(again.committed)
+        self.assertEqual(again.error, "")
+
+    def test_without_a_unit_a_dead_pid_is_never_signalled_through_its_group(self):
+        # Lider grupy ginie, w grupie zostaje cudzy proces — stary kod robił killpg(pid) także dla martwego pidu.
+        leader = subprocess.Popen(
+            [sys.executable, "-c", "import subprocess,time; c=subprocess.Popen(['sleep','60']); print(c.pid,flush=True)"],
+            stdout=subprocess.PIPE, text=True, start_new_session=True)
+        bystander = int(leader.stdout.readline())
+        leader.wait()
+        leader.stdout.close()
+        self.addCleanup(lambda: alive(bystander) and os.kill(bystander, signal.SIGKILL))
+        result = stepstop.stop_step(leader, unit="", worktree=self.worktree, step_dir=self.step_dir, repo=self.repo,
+                                    git_dir=self.gitdir, branch=BRANCH, tool="claude")
         self.assertTrue(result.stopped)
-        self.assertFalse(result.committed)       # już zacommitowane wyżej, nic nowego
-        self.assertEqual(result.error, "")
+        self.assertTrue(alive(bystander))
+
+    def test_without_a_unit_a_live_pid_is_stopped(self):
+        proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        result = stepstop.stop_step(proc.pid, unit="", worktree=self.worktree, step_dir=self.step_dir, repo=self.repo,
+                                    git_dir=self.gitdir, branch=BRANCH, tool="claude", grace=2)
+        self.assertTrue(result.stopped)
+        self.assertEqual(proc.wait(timeout=5), -signal.SIGTERM)
 
     def test_an_already_finished_step_is_still_snapshotted(self):
-        proc, _ = self.start()
-        os.killpg(proc.pid, signal.SIGKILL)
-        proc.wait()
-        result = self.stop(proc)
+        proc, cmd, _, _ = self.start()
+        subprocess.run(["systemctl", "--user", "kill", "--signal=SIGKILL", cmd.unit + ".scope"], check=True)
+        proc.wait(timeout=10)
+        result = self.stop(proc, cmd)
         self.assertTrue(result.stopped)
         self.assertTrue(result.committed)
 
-    def test_stale_index_lock_of_the_killed_step_does_not_lose_the_changes(self):
-        proc, _ = self.start()
-        gitdir = gitrepos.git(self.worktree, "rev-parse", "--git-dir").strip()
-        lock = os.path.join(self.worktree, gitdir, "index.lock")
-        with open(lock, "w"):
-            pass
-        result = self.stop(proc)
+    def test_stale_locks_of_the_killed_step_do_not_lose_the_changes(self):
+        proc, cmd, _, _ = self.start()
+        locks = [os.path.join(self.gitdir, "index.lock"), os.path.join(self.gitdir, "HEAD.lock"),
+                 os.path.join(self.repo, ".git", "refs", "heads", BRANCH + ".lock")]
+        for lock in locks:
+            os.makedirs(os.path.dirname(lock), exist_ok=True)
+            with open(lock, "w"):
+                pass
+        result = self.stop(proc, cmd)
         self.assertTrue(result.committed, result.error)
-        self.assertFalse(os.path.exists(lock))
+        self.assertFalse(any(os.path.exists(lock) for lock in locks))
 
-    def test_detached_head_and_main_branches_are_not_committed_to(self):
-        proc, _ = self.start()
-        gitrepos.git(self.worktree, "checkout", "-q", "--detach")
-        result = self.stop(proc)
+    def test_detached_head_main_branches_and_a_foreign_head_are_not_committed_to(self):
+        proc, cmd, _, _ = self.start()
+        # agent przestawił HEAD w katalogu worktree (Codex ma tam zapis) na gałąź główną
+        with open(os.path.join(self.gitdir, "HEAD"), "w", encoding="utf-8") as fh:
+            fh.write("ref: refs/heads/master\n")
+        before = gitrepos.git(self.repo, "rev-parse", "master").strip()
+        result = self.stop(proc, cmd)
         self.assertFalse(result.committed)
-        self.assertEqual(result.error, "detached")
+        self.assertEqual(result.error, "wrong-branch")
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), before)
         self.assertIn("nowy.txt", gitrepos.git(self.worktree, "status", "--porcelain"))
-        gitrepos.git(self.worktree, "checkout", "-q", "-B", "master-copy")
-        gitrepos.git(self.worktree, "branch", "-q", "-f", "main")
-        gitrepos.git(self.worktree, "checkout", "-q", "main")
-        self.assertEqual(stepstop.git_snapshot(self.worktree, self.step_dir).error, "protected-branch")
+        with open(os.path.join(self.gitdir, "HEAD"), "w", encoding="utf-8") as fh:
+            fh.write(gitrepos.git(self.repo, "rev-parse", "master").strip() + "\n")
+        self.assertEqual(stepstop.git_snapshot(self.repo, self.gitdir, self.worktree, self.step_dir, BRANCH).error,
+                         "detached")
+        self.assertEqual(stepstop.git_snapshot(self.repo, self.gitdir, self.worktree, self.step_dir, "master").error,
+                         "protected-branch")
+
+    def forge_filter(self, config_path):
+        """Filtr `clean` zdefiniowany tam, gdzie agent mógłby pisać, i `.gitattributes`, który go włącza."""
+        with open(config_path, "a", encoding="utf-8") as fh:
+            fh.write(f'[filter "x"]\n\tclean = touch {self.marker} && cat\n')
+        with open(os.path.join(self.worktree, ".gitattributes"), "w", encoding="utf-8") as fh:
+            fh.write("* filter=x\n")
+
+    def test_a_forged_dot_git_pointer_does_not_run_agent_filters_outside_the_sandbox(self):
+        proc, cmd, _, _ = self.start()
+        fake = os.path.join(self.worktree, ".fakegit")
+        shutil.copytree(os.path.join(self.repo, ".git"), fake, ignore=shutil.ignore_patterns("worktrees"))
+        with open(os.path.join(fake, "HEAD"), "w", encoding="utf-8") as fh:
+            fh.write(f"ref: refs/heads/{BRANCH}\n")
+        self.forge_filter(os.path.join(fake, "config"))
+        with open(os.path.join(self.worktree, ".git"), "w", encoding="utf-8") as fh:
+            fh.write(f"gitdir: {fake}\n")
+        result = self.stop(proc, cmd)
+        self.assertFalse(os.path.exists(self.marker), "filtr agenta wykonał się poza piaskownicą")
+        self.assertTrue(result.committed, result.error)
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", BRANCH).strip(), result.commit)
+
+    def test_a_per_worktree_config_cannot_define_filters_for_the_service_git(self):
+        gitrepos.git(self.repo, "config", "extensions.worktreeConfig", "true")
+        proc, cmd, _, _ = self.start()
+        config = os.path.join(self.gitdir, "config.worktree")
+        self.forge_filter(config)
+        result = self.stop(proc, cmd)
+        self.assertFalse(os.path.exists(self.marker), "filtr z config.worktree wykonał się poza piaskownicą")
+        self.assertTrue(result.committed, result.error)
+        self.assertTrue(os.path.isfile(config), "config.worktree zniknął po zatrzymaniu")
 
     def test_last_messages_of_a_codex_session_log(self):
         sessions = os.path.join(self.root, "codex", "sessions", "2026", "10", "28")
@@ -493,16 +649,16 @@ class StopStepTest(unittest.TestCase):
                                {"type": "event_msg", "payload": {"type": "agent_message", "message": "Czytam kod"}},
                                msg("assistant", "output_text", "Piszę test")):
                     fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-        proc, _ = self.start()
-        result = self.stop(proc, tool="codex", session_id="", claude_projects="",
+        proc, cmd, _, _ = self.start()
+        result = self.stop(proc, cmd, tool="codex", session_id="", claude_projects="",
                            codex_roots=[os.path.join(self.root, "codex")], limit=2)
         self.assertEqual(result.session_log, mine)
         self.assertEqual([(m["role"], m["text"]) for m in result.messages],
                          [("assistant", "Czytam kod"), ("assistant", "Piszę test")])
 
     def test_no_session_log_means_no_messages_not_an_error(self):
-        proc, _ = self.start()
-        result = self.stop(proc)
+        proc, cmd, _, _ = self.start()
+        result = self.stop(proc, cmd)
         self.assertEqual((result.messages, result.session_log, result.error), ([], "", ""))
         self.assertTrue(result.committed)
 
@@ -525,7 +681,7 @@ class CodexSandboxIntegrationTest(unittest.TestCase):
         gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "step", self.wt)
 
     def test_commit_from_the_worktree_works_but_hooks_and_config_stay_read_only(self):
-        step = agentcmd.Step("codex", CODEX, "x", self.wt, self.repo, os.path.join(self.root, "step"), "s1")
+        step = agentcmd.Step("codex", CODEX, "x", self.wt, self.repo, os.path.join(self.root, "step"), "s1", codex_mcp=())
         roots = next(a for a in agentcmd.background(step).argv if a.startswith("sandbox_workspace_write"))
         with open(os.path.join(self.wt, "new.txt"), "w", encoding="utf-8") as fh:
             fh.write("x")
