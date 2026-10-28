@@ -4,7 +4,8 @@ Warianty (nazwa → Status):
   local        — tylko ten komputer: Ollama działa, qwen3:8b w pamięci w całości na karcie, raport lokalnie,
   mac-offline  — ten komputer i Mac Studio, który nie odpowiada; agent przypięty do Maca, raport z Claude,
   mac          — Mac Studio jako używany serwer (działa, duże modele) i serwer zgodny z OpenAI na Macu;
-                 agent przypięty do Maca, który jest też używanym serwerem,
+                 agent przypięty do Maca, który jest też używanym serwerem, program agenta Claude Code
+                 (`agentProgram`, PT-39; w pozostałych wariantach Codex),
   pulling      — pobieranie w toku i nieudane, rola z modelem, którego jeszcze nie ma na serwerze,
   errors       — używany serwer nie odpowiada, ostrzeżenie z models.json, tryb raportu wymuszony opcją
                  --report-summary local (w pliku claude),
@@ -69,11 +70,11 @@ def _report(summary="local", configured=None, pinned=False, warnings=()) -> dict
 
 
 def _status(default, endpoints: dict, roles: dict, report=None, pulls=None, checked=True, warnings=(),
-            exists=True) -> dict:
+            exists=True, agent_program="codex") -> dict:
     return {"checked": checked, "default": default,
             "config": {"path": CONFIG_PATH, "exists": exists, "error": "", "warnings": list(warnings)},
             "endpoints": endpoints, "roles": roles, "report": report if report is not None else _report(),
-            "pulls": pulls or {}}
+            "pulls": pulls or {}, "agentProgram": agent_program}
 
 
 LOCAL_MODELS = (QWEN8, GPTOSS20, BGE, BIELIK, CODER30)
@@ -108,7 +109,7 @@ def mac() -> dict:
     roles = {"summary": _role("Mac-Studio", "gpt-oss:120b", 8192, endpoints),
              "describe": _role("Mac-Studio", "qwen3:8b", 8192, endpoints),
              "agent": _role("Mac-Studio", "qwen3-coder:30b", 32768, endpoints, pinned=True)}
-    return _status("Mac-Studio", endpoints, roles)
+    return _status("Mac-Studio", endpoints, roles, agent_program="claude")
 
 
 def pulling() -> dict:

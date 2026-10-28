@@ -3,6 +3,8 @@
 // „za domyślnym” oraz kontekst (puste — domyślny). Każda zmiana to SetRole z serwerem przypięcia (bez niego
 // usługa odpina rolę); wynik obok kontrolki. readOnly — usługa nie podaje roles.*.pinned: bez zgadywania,
 // wiersz tylko do odczytu. Wpisany, niezapisany kontekst nie wraca do zapisu przy nowym Status().
+// Wiersz „Agent” ma też program agenta na modelu lokalnym (Codex / Claude Code, SetAgentProgram) — jeden
+// dla wszystkich serwerów; okno „Nowe zadanie” w trybie „Lokalny” bierze go stąd.
 import QtQuick
 import QtQuick.Layouts
 import "tide" as Tide
@@ -43,6 +45,10 @@ ColumnLayout {
     function setPin(endpoint) {
         if (readOnly || !row.model) return
         page.send("SetRole", Logic.roleRequest(row.id, row.model, endpoint, undefined), tag + ":pin")
+    }
+    function setProgram(value) {
+        if (!page || value === Logic.agentProgram(status)) return
+        page.send("SetAgentProgram", value, tag + ":program")
     }
     function saveCtx() {
         if (readOnly) return
@@ -151,6 +157,37 @@ ColumnLayout {
         Layout.fillWidth: true
         tone: "error"
         text: [role.note(""), role.note("pull")].filter(n => n && n.error).map(n => n.text).join("\n")
+    }
+
+    // Program agenta (tylko wiersz „Agent”): Codex albo Claude Code, z jednym uczciwym zdaniem o wybranym.
+    ColumnLayout {
+        objectName: "agentProgram"
+        Layout.fillWidth: true
+        Layout.topMargin: 4
+        visible: !!role.row && role.row.id === "agent"
+        spacing: 6
+        readonly property string program: Logic.agentProgram(role.status)
+        FieldLabel { text: "Program" }
+        Segmented {
+            objectName: "programSwitch"
+            options: Logic.agentPrograms()
+            current: parent.program
+            enabled: parent.program !== "" && !role.busy("program")
+            itemHeight: 26
+            onPicked: value => role.setProgram(value)
+        }
+        Note {
+            objectName: "programHint"
+            Layout.fillWidth: true
+            tone: parent.program === "" ? "warn" : "muted"
+            text: Logic.agentProgramHint(parent.program)
+        }
+        Note {
+            objectName: "programNote"
+            Layout.fillWidth: true
+            tone: "error"
+            text: role.note("program") && role.note("program").error ? role.note("program").text : ""
+        }
     }
 
     LinkText {

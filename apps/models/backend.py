@@ -24,7 +24,8 @@ from PyQt6.QtDBus import (QDBusConnection, QDBusMessage, QDBusPendingCallWatcher
 
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Models", "org.tide.Daemon.Models"
 # Metody zapisu i próby, które widok może wywołać (jeden argument: nazwa albo JSON).
-WRITES = ("SetEndpoint", "RemoveEndpoint", "SetDefault", "SetRole", "SetReportSummary", "TestEndpoint", "PullModel")
+WRITES = ("SetEndpoint", "RemoveEndpoint", "SetDefault", "SetRole", "SetAgentProgram", "SetReportSummary", "TestEndpoint",
+          "PullModel")
 WRITE_TIMEOUT_MS = 10_000
 TEST_TIMEOUT_MS = 15_000          # TestEndpoint czyta serwer do 2 × 3 s, odpowiedź przychodzi po odczycie
 PREVIEW_ERROR = "podgląd bez usługi — nic nie zmieniono"
