@@ -6,7 +6,7 @@ D-Bus. Wynik wraca sygnałem Qt; Changed tylko wtedy, gdy JSON stanu się zmieni
 odczytu zleca jeszcze jeden zaraz po nim — żeby po zmianie models.json albo załadowaniu modelu wynik
 był świeży, a nie sprzed chwili.
 
-Zapis (SetEndpoint, RemoveEndpoint, SetDefault, SetRole, SetReportSummary; models/settings.py) idzie
+Zapis (SetEndpoint, RemoveEndpoint, SetDefault, SetRole, SetAgentProgram, SetReportSummary; models/settings.py) idzie
 w wątku głównym — to zapis małego pliku. Po udanym zapisie stan składamy od razu z nowych ustawień
 i ostatnich stanów punktów (punkt nowy albo ze zmienionym adresem jest „nie sprawdzony”: online false
 bez błędu), wysyłamy Changed i zlecamy odczyt. Odczyt, który trwał w chwili zapisu, jest odrzucany
@@ -318,6 +318,9 @@ class ModelsMonitor(QObject):
         if req is None:
             return _reply(False, "niepoprawne żądanie: oczekiwano obiektu JSON")
         return self._write(models_settings.set_role, req)
+
+    def set_agent_program(self, program: str) -> str:
+        return self._write(models_settings.set_agent_program, program)
 
     def set_report_summary(self, mode: str) -> str:
         if self.report is None:

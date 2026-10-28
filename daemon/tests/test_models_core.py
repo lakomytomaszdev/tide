@@ -181,6 +181,24 @@ class ConfigTest(unittest.TestCase):
             role = cfg.role(name)
             self.assertEqual((role.endpoint, role.model, role.ctx), ("local", "qwen3:8b", 8192))
 
+    def test_agent_program_defaults_to_codex_and_bad_value_warns(self):
+        """PT-39: program agenta na modelu lokalnym — `agentProgram`, domyślnie Codex; zła wartość nie psuje reszty."""
+        self.assertEqual(models_config.load(os.path.join(self.tmp, "brak.json")).agent_program, "codex")
+        self.assertEqual(models_config.from_dict({}).agent_program, "codex")
+        self.assertEqual(models_config.from_dict({"agentProgram": None}).warnings, ())
+        cfg = models_config.from_dict({"agentProgram": "claude", "roles": {"agent": "qwen3-coder:30b"}})
+        self.assertEqual((cfg.agent_program, cfg.warnings), ("claude", ()))
+        for value, shown in (("Claude", "Claude"), ("opencode", "opencode"), (1, "1"), (["codex"], '["codex"]')):
+            with self.subTest(value=value):
+                cfg = models_config.from_dict({"agentProgram": value, "roles": {"agent": "qwen3-coder:30b"}})
+                self.assertEqual(cfg.agent_program, "codex")
+                self.assertEqual(cfg.warnings, (f"agentProgram: nieznany program „{shown}” (codex albo claude) — "
+                                                f"agent lokalny działa w Codexie",))
+                self.assertEqual(cfg.roles["agent"].model, "qwen3-coder:30b", "rola agent działa dalej")
+        state = status.pending(models_config.from_dict({"agentProgram": "claude"}))
+        self.assertEqual(state["agentProgram"], "claude")
+        self.assertEqual(status.pending(models_config.defaults())["agentProgram"], "codex")
+
     def test_config_path_from_environment(self):
         self.assertEqual(models_config.config_path({"XDG_CONFIG_HOME": "/x/conf", "HOME": "/h"}),
                          "/x/conf/tide/models.json")

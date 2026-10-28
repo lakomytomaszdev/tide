@@ -17,7 +17,10 @@ Przebieg (Planner.prepare → terminal → claim albo Planner.rollback):
 Model: `"model": "cloud"` (domyślnie — model narzędzia w chmurze) albo `"local"` — model z roli `agent`
 w models.json (tasks/local.py). Przy `local` usługa sprawdza serwer teraz (online, model pobrany), argv
 dostaje opcje modelu, plik zadania jawne zmienne (`env`) i zmienne z tokenem (`secretEnv`: nazwa →
-ścieżka tokenFile — sam token czyta dopiero launch.py), a tytuł karty dopisek „· lokalnie”.
+ścieżka tokenFile — sam token czyta dopiero launch.py), a tytuł karty dopisek „· lokalnie”. Program agenta
+(Codex albo Claude Code) przy `local` bierze się z `agentProgram` w models.json (ustawiony raz w Tide →
+Modele), a nie z `tool` prośby — program to nie model, a przełącznik Claude Code / Codex w oknie dotyczy
+chmury. Zapamiętany wybór chmury (`tool` w new-task.json) start lokalny zostawia bez zmian.
 
 Polecenie agenta nigdy nie przechodzi przez powłokę: argv to lista, a prompt jest jednym jej
 elementem, po `--` (myślnik na początku polecenia nie zostanie wzięty za opcję).
@@ -357,11 +360,13 @@ class Planner:
                 "newWorktree": data.get("newWorktree") is not False, "model": model}
 
     def remember(self, plan: Plan) -> None:
+        # `tool` to wybór przełącznika chmury: start lokalny (program z ustawień modeli) go nie nadpisuje.
+        tool = plan.tool if plan.model != "local" else self.last_choice()["tool"]
         try:
             os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
             tmp = self.state_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump({"repoPath": plan.repo_path, "tool": plan.tool, "newWorktree": bool(plan.worktree),
+                json.dump({"repoPath": plan.repo_path, "tool": tool, "newWorktree": bool(plan.worktree),
                            "model": plan.model}, fh)
             os.replace(tmp, self.state_path)
         except OSError as exc:  # zapamiętanie to wygoda — nie może zepsuć startu
@@ -418,7 +423,12 @@ class Planner:
         """Sprawdzenie prośby bez zmian na dysku. Zwraca uporządkowaną prośbę albo rzuca TaskError."""
         if not isinstance(request, dict):
             raise TaskError("bad-request")
-        tool = request.get("tool")
+        model = request.get("model", "cloud")
+        if model not in MODELS:
+            raise TaskError("bad-model")
+        # Model lokalny: program z ustawień modeli (agentProgram), nie z przełącznika chmury w oknie.
+        cfg = self.models_config() if model == "local" else None
+        tool = cfg.agent_program if cfg is not None else request.get("tool")
         if tool not in TOOLS:
             raise TaskError("bad-tool")
         prompt = request.get("prompt")
@@ -444,10 +454,7 @@ class Planner:
         add_dirs = self._add_dirs(request.get("addDirs") or [], repo)
         new_worktree = request.get("newWorktree") is not False
         branch = request.get("branch") if isinstance(request.get("branch"), str) else ""
-        model = request.get("model", "cloud")
-        if model not in MODELS:
-            raise TaskError("bad-model")
-        agent = self.local_agent() if model == "local" else None
+        agent = self.local_agent(cfg) if model == "local" else None
         return {"tool": tool, "prompt": prompt, "binary": binary, "repo": repo, "images": images,
                 "addDirs": add_dirs, "newWorktree": new_worktree, "branch": branch.strip(), "model": model,
                 "local": agent}
@@ -463,11 +470,12 @@ class Planner:
         from ..models import status as models_status
         return models_status.endpoint_status(endpoint)
 
-    def local_agent(self) -> "local_mod.LocalAgent":
+    def local_agent(self, cfg=None) -> "local_mod.LocalAgent":
         """Rola `agent` z models.json po sprawdzeniu serwera teraz: online i model pobrany.
-        Kontekst z roli, inaczej z serwera (model załadowany), inaczej nieznany."""
+        Kontekst z roli, inaczej z serwera (model załadowany), inaczej nieznany. `cfg` — ustawienia
+        przeczytane już przy tej prośbie (ten sam odczyt co program agenta)."""
         from ..models.status import model_key
-        cfg = self.models_config()
+        cfg = cfg if cfg is not None else self.models_config()
         role = cfg.roles.get("agent")
         if role is None:
             raise TaskError("local-unset")

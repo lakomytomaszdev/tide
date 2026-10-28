@@ -7,7 +7,8 @@ Kształt pliku (wszystko opcjonalne):
                    "mac": {"url": "http://mac-studio:11434", "kind": "ollama", "tokenFile": "~/.config/tide/mac.token"}},
      "roles": {"summary": "local:qwen3:8b",
                "describe": {"model": "local:qwen3:8b", "ctx": 8192},
-               "agent": "qwen3-coder:30b"}}
+               "agent": "qwen3-coder:30b"},
+     "agentProgram": "codex"}
 
 Rola to „punkt:model” albo obiekt {"model": "punkt:model", "ctx": N}. Nazwy modeli mają dwukropki
 (`qwen3:8b`, `hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M`), więc dzielimy tylko na pierwszym —
@@ -27,6 +28,11 @@ widocznym w stanie; od tego jest `tokenFile`). Rola z przedrostkiem pominiętego
 cicho na `default`: zostaje przy swoim punkcie jako niedostępna (`error`), wywołanie daje ModelError.
 Tak samo zły `default` (nieznany, pominięty, nie napis): role bez punktu są niedostępne, a `default`
 w stanie to zapasowy punkt (`local` albo pierwszy) — tylko po to, żeby było co odczytywać.
+
+`agentProgram` to program, w którym działa agent na modelu lokalnym (okno „Nowe zadanie”, tryb „Lokalny”):
+`codex` (domyślnie — Ollama obsługuje go wprost) albo `claude` (Claude Code). Program to nie model: model
+bierze się z roli `agent`, program — z tego klucza, jednego dla wszystkich serwerów (przełączenie na Maca
+go nie zmienia). Brak klucza — `codex`; nieznana wartość — ostrzeżenie i `codex`, reszta pliku działa.
 
 Token (`tokenFile`, z rozwinięciem `~`) czytamy przy każdym zapytaniu, tylko w pamięci, i wysyłamy
 jako `Authorization: Bearer`; nie trafia do dziennika, komunikatów błędów ani odpowiedzi D-Bus.
@@ -52,6 +58,9 @@ DEFAULT_ROLES = {"summary": DEFAULT_MODEL, "describe": DEFAULT_MODEL}
 ROLE_CTX = {"summary": DEFAULT_CTX, "describe": DEFAULT_CTX}
 MAX_CTX = 1 << 20
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,39}")
+# Program agenta na modelu lokalnym (`agentProgram`): id jak narzędzia „Nowego zadania” (tasks/core.py: TOOLS).
+AGENT_PROGRAMS = {"codex": "Codex", "claude": "Claude Code"}
+DEFAULT_AGENT_PROGRAM = "codex"
 
 
 @dataclass(frozen=True)
@@ -133,6 +142,7 @@ class ModelsConfig:
     exists: bool = False
     error: str = ""          # plik nie do użycia (wtedy wszystko domyślne)
     warnings: tuple = field(default_factory=tuple)
+    agent_program: str = DEFAULT_AGENT_PROGRAM   # `agentProgram`: codex albo claude
 
     def endpoint(self, name: str | None = None) -> Endpoint:
         name = name or self.default
@@ -247,6 +257,25 @@ def _role(name, value, endpoints, skipped, default, unreachable, warnings) -> Ro
     return Role(name, endpoint or default, model, ctx, pinned=endpoint is not None)
 
 
+def agent_program_problem(value) -> str:
+    """Powód po polsku, gdy `agentProgram` jest zły ("" — dobry); ten sam przy odczycie pliku i zapisie z D-Bus."""
+    if isinstance(value, str) and value in AGENT_PROGRAMS:
+        return ""
+    shown = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    return f"agentProgram: nieznany program „{str(shown)[:40]}” (codex albo claude)"
+
+
+def _agent_program(data: dict, warnings: list) -> str:
+    value = data.get("agentProgram")
+    if value is None:
+        return DEFAULT_AGENT_PROGRAM
+    problem = agent_program_problem(value)
+    if problem:
+        warnings.append(f"{problem} — agent lokalny działa w Codexie")
+        return DEFAULT_AGENT_PROGRAM
+    return value
+
+
 def bad_name(what: str, name) -> str:
     """Komunikat o złej nazwie punktu albo roli — ten sam przy odczycie pliku i przy zapisie z D-Bus."""
     return f"{what} „{str(name)[:40]}”: niepoprawna nazwa (litery, cyfry, _.-)"
@@ -345,7 +374,8 @@ def from_dict(data, path: str = "", exists: bool = True) -> ModelsConfig:
             roles.setdefault(name, Role(name, unreachable[0], model, ROLE_CTX.get(name), unreachable[1]))
         else:
             roles.setdefault(name, Role(name, default, model, ROLE_CTX.get(name)))
-    return ModelsConfig(default, endpoints, roles, path, exists, "", tuple(warnings))
+    program = _agent_program(data, warnings)
+    return ModelsConfig(default, endpoints, roles, path, exists, "", tuple(warnings), program)
 
 
 def load(path: str | None = None) -> ModelsConfig:
