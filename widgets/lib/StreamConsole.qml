@@ -10,6 +10,7 @@ ColumnLayout {
 
     property var view: null
     property bool coreUp: false
+    property string obsMemory: ""
     property string previewImage: ""
     property bool previewSupported: true
     property string status: ""
@@ -36,6 +37,7 @@ ColumnLayout {
         full: true
         view: deck.view
         coreUp: deck.coreUp
+        obsMemory: deck.obsMemory
         status: deck.status
         statusError: deck.statusError
         busy: deck.busy

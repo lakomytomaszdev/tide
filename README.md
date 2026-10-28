@@ -173,7 +173,7 @@ stan streamu należy do rdzenia, dane pracy dalej idą tylko z tide-daemon.
   scena Gra” i „● na żywo · ● nagrywa”. Kolor ostrzegawczy (`neutral` z palety) tylko przy wyciszonym mikrofonie na
   żywo („Stream · na żywo”, przekreślony mikrofon, „mikrofon wyciszony”), rozłączonym OBS w trakcie streamu
   i niedziałającym rdzeniu („rdzeń nie działa”, gdy usługi nie ma na szynie). Bez OBS i bez streamu kafelek mówi
-  spokojnie „Granie · Xbox” i „bez streamu” (PT-83). Popup: karta Stream — tryb i kto go ustawił (automat albo ty),
+  spokojnie „Granie · Xbox” (w Observer i Rozmowa „Stream · …”) i „bez streamu” (PT-83). Popup: karta Stream — tryb i kto go ustawił (automat albo ty),
   antena, nagrywanie, scena, OBS, moduły, „Wycisz mikrofon · Pause” (`mic.set` z docelowym stanem), „Panel streamera”
   (`http://127.0.0.1:8765/app/`) i dopisek, że start i koniec streamu są tylko w Panelu.
 - **Profil gracza** (`org.tide.stream.profile`): bieżący profil z „▾”, popup z listą `profiles` (`profile.set`).

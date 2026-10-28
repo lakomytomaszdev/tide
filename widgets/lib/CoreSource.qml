@@ -37,6 +37,13 @@ Item {
     readonly property bool coreUp: watcher.registered
     property var view: null
 
+    // Pamięć stanu OBS (PT-83, decyzja 82): ostatni klucz Stream.obsKey poza przerwą w rdzeniu. Dzięki niej rozłączony
+    // OBS zaraz po antenie to awaria w trakcie streamu („lost”), a bez historii — zwykłe granie („off”). Tylko
+    // w pamięci widżetu, przerwa w rdzeniu jej nie zmienia.
+    property string obsMemory: ""
+    readonly property string obsRawKey: Stream.obsKey(view, coreUp, "")
+    onObsRawKeyChanged: obsMemory = Stream.obsMemory(obsMemory, obsRawKey)
+
     property bool wantChat: false
     property int chatLimit: 200
     property bool chatAvailable: false

@@ -14,6 +14,7 @@ Card {
     property var view: null
     property bool coreUp: false
     property bool full: false
+    property string obsMemory: ""      // CoreSource.obsMemory: rozłączony OBS po antenie to ostrzeżenie
     property string status: ""
     property bool statusError: false
     property bool busy: false
@@ -26,7 +27,7 @@ Card {
     signal moduleRequested(string key, bool visible)
     signal profileRequested(string id)
 
-    readonly property var model: Stream.card(view, coreUp, full)
+    readonly property var model: Stream.card(view, coreUp, full, obsMemory)
     readonly property var profile: Stream.profileTile(view, coreUp)
     readonly property bool ready: model.notice === ""
 

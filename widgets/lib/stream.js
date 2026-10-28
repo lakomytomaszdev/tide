@@ -20,8 +20,8 @@ var TARGETS = { twitch: "Twitch", youtube: "YouTube", kick: "Kick", local: "tylk
 // tę samą nazwę wpisuje na sztywno aplikacja webowa. Gdy rdzeń zacznie podawać `obs.mic`, wygrywa ono.
 var MIC_INPUT = "Mikrofon"
 
-// Kolor ostrzegawczy: tylko wyciszony mikrofon na żywo, OBS rozłączony w trakcie streamu (core.session) i rdzeń
-// nie działa. OBS wyłączony bez streamu to zwykłe granie (PT-83).
+// Kolor ostrzegawczy: tylko wyciszony mikrofon na żywo, OBS rozłączony w trakcie streamu (stan „lost”, Stream.obsKey)
+// i rdzeń nie działa. OBS wyłączony bez streamu to zwykłe granie (PT-83, decyzja 82).
 var WARNING_TINT = "neutral"
 
 function obj(value) {
@@ -66,9 +66,7 @@ function status(view, coreUp) {
         scene: obs.connected === true && obs.scene ? String(obs.scene) : "",
         micMuted: obs.connected === true ? micMuted(view) : null,
         targets: (valueOf(core.broadcast_targets) || []).map(t => TARGETS[t] || String(t)),
-        profile: valueOf(core.player_profile) || "",
-        // Trwający stream według rdzenia (od stream.start do stream.stop) — przy rozłączonym OBS to awaria, nie granie.
-        session: !!core.session
+        profile: valueOf(core.player_profile) || ""
     }
 }
 
@@ -76,9 +74,14 @@ function part(word, tint, extra) {
     return Object.assign({ word: word, tint: tint, hollow: false, strong: false }, extra || {})
 }
 
+// Tryby, w których bez streamu po prostu się gra (kafelek „Granie · Xbox”); Observer i Rozmowa zostają „Stream”.
+var GAME_MODES = ["xbox", "pc"]
+
 // Kafelek Stream w docku: {label, parts: [{word, tint, hollow, strong}], summary, warning, tint, icon, toolTip}.
-function tile(view, coreUp) {
+// memory — poprzedni stan OBS z pamięci widżetu (CoreSource.obsMemory): bez niego rozłączony OBS to granie.
+function tile(view, coreUp, memory) {
     const s = status(view, coreUp)
+    s.lost = obsKey(view, coreUp, memory) === "lost"
     let label = "Stream"
     let parts = []
     let icon = ""
@@ -86,9 +89,9 @@ function tile(view, coreUp) {
         parts = [part("rdzeń nie działa", WARNING_TINT)]
     } else if (s.core === "loading") {
         parts = [part("czytam stan…", "textMuted", { hollow: true })]
-    } else if (!s.obsConnected && !s.session) {
+    } else if (!s.obsConnected && !s.lost) {
         // Bez OBS i bez streamu to zwykłe granie (PT-83, decyzja 82), nie ostrzeżenie.
-        label = "Granie · " + s.modeLabel
+        label = (GAME_MODES.indexOf(s.mode) >= 0 ? "Granie · " : "Stream · ") + s.modeLabel
         parts = [part("bez streamu", "textMuted")]
     } else if (!s.obsConnected) {
         label += " · " + s.modeLabel
@@ -113,7 +116,7 @@ function tile(view, coreUp) {
         parts: parts,
         summary: parts.map(p => p.word).join(" · "),
         warning: warning,
-        tint: warning ? WARNING_TINT : s.core === "up" && (s.obsConnected || s.session) ? "working" : "textMuted",
+        tint: warning ? WARNING_TINT : s.core === "up" && (s.obsConnected || s.lost) ? "working" : "textMuted",
         icon: icon,
         toolTip: toolTip(s)
     }
@@ -124,7 +127,7 @@ function toolTip(s) {
     if (s.core === "loading") return "Czytam stan rdzenia Streamer…"
     const origin = originText(s.modeOrigin)
     const parts = [s.modeLabel + (origin ? " (" + origin + ")" : "")]
-    if (!s.obsConnected && !s.session) parts.push("OBS wyłączony — bez streamu")
+    if (!s.obsConnected && !s.lost) parts.push("OBS wyłączony — bez streamu")
     else if (!s.obsConnected) parts.push("OBS rozłączony" + (s.obsError ? ": " + s.obsError : ""))
     else {
         parts.push(s.live ? "na żywo" + (s.targets.length ? " · " + s.targets.join(", ") : "") : "poza anteną")
@@ -156,14 +159,15 @@ function row(key, label, value, tint) {
 
 // Wiersz OBS bez połączenia: w trakcie streamu ostrzeżenie, bez streamu spokojne „wyłączony” (granie, PT-83).
 function obsOffRow(s) {
-    if (!s.session) return row("obs", "OBS", "wyłączony · bez streamu", "textMuted")
+    if (!s.lost) return row("obs", "OBS", "wyłączony · bez streamu", "textMuted")
     return row("obs", "OBS", "rozłączony" + (s.obsError ? " · " + s.obsError : ""), WARNING_TINT)
 }
 
 // Karta Stream (popup kafelka i konsola): {chip, rows, modules, mic, notice, note, panelUrl}. W konsoli (full)
 // scena jest w karcie Sceny, nagrywanie dochodzi do wiersza OBS, a moduły są przełącznikami zamiast wiersza.
-function card(view, coreUp, full) {
+function card(view, coreUp, full, memory) {
     const s = status(view, coreUp)
+    s.lost = obsKey(view, coreUp, memory) === "lost"
     const out = { chip: "", rows: [], modules: [], notice: "", note: CRITICAL_NOTE, panelUrl: PANEL_URL,
                   obsConnected: s.obsConnected === true,
                   mic: { label: "Wycisz mikrofon · Pause", enabled: false, muted: null, warning: false } }
@@ -396,13 +400,28 @@ var SHORTCUTS = [
 var DESK_VIEWS = { console: "Konsola streamu", gaming: "Granie" }
 
 // Stan OBS, którego zmiana kończy nadpisanie: down i loading (rdzeń), live (na żywo), on (połączony poza anteną),
-// lost (rozłączony, ale stream trwa według rdzenia — core.session), off (wyłączony, bez streamu).
-function obsKey(view, coreUp) {
+// lost (rozłączony zaraz po antenie albo po lost — awaria w trakcie streamu), off (wyłączony, bez streamu).
+// „lost” wynika z pamięci widżetu (memory: poprzedni stan bez przerw rdzenia, obsMemory), nie z core.session — rdzeń
+// czyści je tylko w stream.stop, więc po zatrzymaniu streamu w OBS albo po awarii OBS zostaje na zawsze, a stream
+// włączony w samym OBS go nie ma (review PT-83). Bez historii (start powłoki przy rozłączonym OBS) to „off”.
+function obsKey(view, coreUp, memory) {
     const s = status(view, coreUp)
     if (s.core !== "up") return s.core
     if (s.live) return "live"
     if (s.obsConnected) return "on"
-    return s.session ? "lost" : "off"
+    return memory === "live" || memory === "lost" ? "lost" : "off"
+}
+
+// Nowa pamięć widżetu po zmianie surowego klucza (obsKey bez pamięci: live, on, off, down, loading): przerwa w rdzeniu
+// jej nie zmienia, a rozłączony OBS po antenie zostaje „lost” aż do ponownego połączenia z OBS.
+function obsMemory(memory, key) {
+    if (key === "down" || key === "loading") return memory || ""
+    if ((key === "off" || key === "lost") && streamMemory(memory)) return "lost"
+    return key
+}
+
+function streamMemory(memory) {
+    return memory === "live" || memory === "lost"
 }
 
 var DESK_AUTO = {
@@ -410,22 +429,28 @@ var DESK_AUTO = {
     loading: { view: "gaming", reason: "czytam stan rdzenia…" },
     live: { view: "console", reason: "na żywo — konsola zawsze widoczna" },
     on: { view: "console", reason: "OBS połączony" },
-    lost: { view: "console", reason: "stream trwa, OBS rozłączony" },
+    lost: { view: "console", reason: "OBS rozłączony w trakcie streamu" },
     off: { view: "gaming", reason: "OBS wyłączony" }
 }
 
 // Nadpisanie, które jeszcze obowiązuje (ten sam stan OBS, nie na żywo), albo null.
-function deskOverride(override, view, coreUp) {
-    const key = obsKey(view, coreUp)
+function deskOverride(override, view, coreUp, memory) {
+    const key = obsKey(view, coreUp, memory)
     if (!override || key === "live" || override.key !== key || !(override.view in DESK_VIEWS)) return null
     return override
 }
 
-// Widok lewego monitora: {view, label, origin ("auto" | "user"), originText, forced, reason, key}.
-function desk(view, coreUp, override) {
-    const key = obsKey(view, coreUp)
+// Automat dla klucza; przerwa w rdzeniu po antenie zostawia konsolę (na żywo nie miga na Granie).
+function deskAuto(key, memory) {
     const auto = DESK_AUTO[key]
-    const mine = deskOverride(override, view, coreUp)
+    return (key === "down" || key === "loading") && streamMemory(memory) ? { view: "console", reason: auto.reason } : auto
+}
+
+// Widok lewego monitora: {view, label, origin ("auto" | "user"), originText, forced, reason, key}.
+function desk(view, coreUp, override, memory) {
+    const key = obsKey(view, coreUp, memory)
+    const auto = deskAuto(key, memory)
+    const mine = deskOverride(override, view, coreUp, memory)
     const chosen = mine && mine.view !== auto.view ? mine.view : auto.view
     const origin = chosen === auto.view ? "auto" : "user"
     return {
@@ -440,9 +465,9 @@ function desk(view, coreUp, override) {
 }
 
 // Nowe nadpisanie po wyborze widoku `target`: null, gdy to widok automatu (wraca „automat”) albo na żywo.
-function deskToggle(view, coreUp, override, target) {
-    const key = obsKey(view, coreUp)
-    if (key === "live" || !(target in DESK_VIEWS) || DESK_AUTO[key].view === target) return null
+function deskToggle(view, coreUp, override, target, memory) {
+    const key = obsKey(view, coreUp, memory)
+    if (key === "live" || !(target in DESK_VIEWS) || deskAuto(key, memory).view === target) return null
     return { view: target, key: key }
 }
 
@@ -454,7 +479,7 @@ function deskToggle(view, coreUp, override, target) {
 //   rating_change}]} — ostatnie mecze aktywnego profilu;
 // - `core.today` {date, games, wins, losses, rating_change: {profil: liczba}} — bilans dnia.
 var GAMING_UNAVAILABLE = {
-    stats: "Ranga, rating i forma kont: jeszcze niedostępne w rdzeniu",
+    stats: "Ranga, rating i forma profili graczy: jeszcze niedostępne w rdzeniu",
     recent: "Ostatnie mecze: jeszcze niedostępne w rdzeniu",
     today: "Bilans dnia: jeszcze niedostępny w rdzeniu",
     matchPc: "Mecz w trybie PC: jeszcze niedostępny w rdzeniu"
@@ -556,6 +581,8 @@ function matchNow(view, coreUp) {
         return out
     }
     out.state = m.state === "data" || m.state === "searching" ? m.state : "none"
+    // Mecz poprzedniego profilu (rdzeń jeszcze nie przeszukał nowego) to szukanie, nie cudze dane.
+    if (out.state === "data" && m.profile !== s.profile) out.state = "searching"
     if (out.state === "searching") {
         out.note = "Szukam meczu w AoE4 World…"
         return out
@@ -594,8 +621,8 @@ function recentMatches(view, coreUp) {
     }
     const games = recent.profile === s.profile && Array.isArray(recent.games) ? recent.games : []
     out.items = games.map(g => ({
-        result: g.result === "win" ? "W" : "L",
-        tint: g.result === "win" ? "positive" : "negative",
+        result: g.result === "win" ? "W" : g.result === "loss" ? "L" : "—",
+        tint: g.result === "win" ? "positive" : g.result === "loss" ? "negative" : "textMuted",
         civs: [g.civ_name, g.opponent_civ_name].filter(x => x).join(" vs "),
         opponent: String(g.opponent || ""),
         map: String(g.map || ""),
