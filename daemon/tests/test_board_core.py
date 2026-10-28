@@ -311,11 +311,11 @@ class ProjectAndTagTest(BoardCase):
                                             "mode": "spec", "description": "Rzeczy poza kodem."})
         self.assertEqual(result, {"ok": True, "slug": "dom-i-ogrod", "changed": True, "commitError": ""})
         project = self.store.snapshot()["projects"][0]
-        self.assertEqual((project["repo"], project["aiDocs"], project["tool"], project["mode"]),
-                         ("", "tide", "codex", "spec"))
+        self.assertEqual((project["repo"], project["aiDocs"], project["tool"], project["mode"], project["entry"]),
+                         ("", "tide", "codex", "full", "spec"), "dawne mode: spec to domyślne wejście Tylko specyfikacja (PT-77)")
         self.assertEqual(project["description"], "Rzeczy poza kodem.")
         self.assertEqual(self.store.upsert_project({"slug": "dom-i-ogrod", "mode": "spec"})["changed"], False)
-        self.store.upsert_project({"slug": "dom-i-ogrod", "mode": "full"})
+        self.store.upsert_project({"slug": "dom-i-ogrod", "mode": "light"})
         self.assertEqual(self.log()[-2:], ["project dom-i-ogrod: create", "project dom-i-ogrod: update"])
         with self.assertRaises(BoardError):
             self.store.upsert_project({"slug": "dom-i-ogrod", "aiDocs": "repo"})  # bez repozytorium

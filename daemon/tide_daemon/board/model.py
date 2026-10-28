@@ -28,7 +28,12 @@ DEFAULT_COLUMN = "backlog"
 
 AI_DOCS = ("repo", "tide")
 TOOLS = ("claude", "codex")
-MODES = ("full", "light", "spec")
+# Wejście to sposób rozpoczęcia zlecenia (CONTEXT.md), tryb — głębokość Planowania (Pełny, Lekki). Kolejne wejścia
+# (Mam plan, Od razu) dochodzą do ENTRIES i FLOW_KEYS (szablon `flows/<klucz>.md`) bez zmiany formatu plików.
+ENTRIES = ("planning", "spec")
+DEFAULT_ENTRY = "planning"
+MODES = ("full", "light")
+LEGACY_SPEC_MODE = "spec"   # dawniej „Tylko specyfikacja” było trybem: `mode: spec` czytamy jako wejście spec
 DEFAULT_TOOL = "claude"
 DEFAULT_MODE = "full"  # pełny przebieg (grilling, spec, plan, TDD, review), chyba że karta wybierze inaczej
 # Sprawdzenie po skończonej pracy agenta: `manual` — test ręczny użytkownika (karta czeka w „Do sprawdzenia”,
@@ -52,7 +57,7 @@ CARD_KEYS = ("id", "title", "project", "tags", "column", "order", "note", "creat
 RESERVED_CARD_KEYS = ("youtrack", "spec", "session", "branch")  # wypełnią PT-4, PT-5, PT-7
 # Ostatnie uruchomienie agenta z karty (PT-4): tryb, narzędzie, katalog worktree i chwila startu.
 # W nowych plikach tylko wtedy, gdy są ustawione (karta bez uruchomienia ich nie ma).
-LAUNCH_KEYS = ("mode", "tool", "worktree", "launched")
+LAUNCH_KEYS = ("entry", "mode", "tool", "worktree", "launched")
 # Dodatkowe projekty karty (PT-28): slugi po przecinku, główny zostaje w `project`. W nowych plikach
 # tylko wtedy, gdy są ustawione. Najwyżej PROJECTS_MAX (agent dostaje ich repozytoria przez --add-dir).
 PROJECTS_KEY = "projects"
@@ -63,7 +68,7 @@ MOVED_FROM_KEY = "moved-from"
 # kolejności w kolumnie jej nie stempluje — synchronizacja z YouTrackiem liczy tylko takie przeniesienia.
 COLUMN_MOVED_KEY = "column-moved"
 PROJECTS_MAX = 5
-PROJECT_KEYS = ("name", "repo", "tags", "ai-docs", "tool", "mode")
+PROJECT_KEYS = ("name", "repo", "tags", "ai-docs", "tool", "mode", "entry")
 # Synchronizacja z YouTrackiem (PT-7): klucz projektu YouTracka (LOG, LEGAL) i przełącznik. W pliku tylko,
 # gdy ustawione; projekt bez klucza nie synchronizuje niczego, z kluczem — domyślnie tak (`youtrack-sync: off`).
 PROJECT_YOUTRACK_KEY = "youtrack"
@@ -119,6 +124,7 @@ class Project:
     ai_docs_set: bool = True  # False: brak klucza w pliku — wartość domyślna z repozytorium
     tool: str = DEFAULT_TOOL
     mode: str = DEFAULT_MODE
+    entry: str = DEFAULT_ENTRY   # domyślne wejście projektu
     description: str = ""
     path: str = ""
     repo_missing: bool = False
@@ -146,7 +152,8 @@ class Card:
     session: str = ""
     branch: str = ""
     check: str = DEFAULT_CHECK
-    mode: str = ""
+    mode: str = ""            # tryb Planowania (full, light); przy wejściu spec pusty
+    entry: str = ""           # wejście ostatniego uruchomienia; pusty — karta nie była uruchamiana
     tool: str = ""
     worktree: str = ""
     launched: str = ""
@@ -253,7 +260,7 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     for key in RESERVED_CARD_KEYS:
         setattr(card, key, doc.get(key).strip())
     card.check = _choice(doc.get("check"), CHECKS, DEFAULT_CHECK, f"{name}: nieznane sprawdzenie", path, errors)
-    card.mode = _choice(doc.get("mode"), MODES, "", f"{name}: nieznany tryb uruchomienia", path, errors)
+    card.entry, card.mode = _entry_mode(doc, "", name, path, errors, mode_label="nieznany tryb uruchomienia")
     card.tool = _choice(doc.get("tool"), TOOLS, "", f"{name}: nieznane narzędzie uruchomienia", path, errors)
     card.worktree = doc.get("worktree").strip()
     card.launched = doc.get("launched").strip()
@@ -288,7 +295,7 @@ def parse_project(doc: Document, path: str, slug: str, errors: list) -> Project:
         errors.append(_err(path, f"{name}: ai-docs „repo” bez repozytorium — dokumenty w tablicy"))
         project.ai_docs = "tide"
     project.tool = _choice(doc.get("tool"), TOOLS, DEFAULT_TOOL, f"{name}: nieznane narzędzie", path, errors)
-    project.mode = _choice(doc.get("mode"), MODES, DEFAULT_MODE, f"{name}: nieznany tryb", path, errors)
+    project.entry, project.mode = _entry_mode(doc, DEFAULT_ENTRY, name, path, errors, DEFAULT_MODE)
     key = doc.get(PROJECT_YOUTRACK_KEY).strip().upper()
     if key and not YOUTRACK_PROJECT_RE.match(key):
         errors.append(_err(path, f"{name}: niepoprawny klucz projektu YouTracka „{key}” (np. LOG) — bez synchronizacji"))
@@ -309,6 +316,18 @@ def parse_tag(doc: Document, path: str, slug: str, colors, errors: list) -> Tag:
             errors.append(_err(path, f"{os.path.basename(path)}: nieznany kolor „{color}” ({', '.join(colors)})"))
         color = fallback_color(name, colors)
     return Tag(name=name, color=color, description=doc.body.strip("\n"), slug=slug, path=path, doc=doc)
+
+
+def _entry_mode(doc: Document, default_entry: str, name: str, path: str, errors: list,
+                default_mode: str = "", mode_label: str = "nieznany tryb") -> tuple[str, str]:
+    """(wejście, tryb) z kluczy `entry` i `mode`. Dawne `mode: spec` to wejście Tylko specyfikacja (czytamy,
+    nie przepisujemy pliku); jawne `entry` ma pierwszeństwo. Karta z samym trybem to wejście Planowanie."""
+    entry = _choice(doc.get("entry"), ENTRIES, "", f"{name}: nieznane wejście", path, errors)
+    raw_mode = doc.get("mode").strip().lower()
+    if raw_mode == LEGACY_SPEC_MODE:
+        return entry or "spec", default_mode
+    mode = _choice(raw_mode, MODES, default_mode, f"{name}: {mode_label}", path, errors)
+    return entry or default_entry or (DEFAULT_ENTRY if mode else ""), mode
 
 
 def _choice(raw: str, allowed, default: str, label: str, path: str, errors: list) -> str:

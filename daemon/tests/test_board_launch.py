@@ -160,14 +160,14 @@ class MigrationTest(BoardCase):
         super().setUp()
         self.store.create_card({"title": "Grabie"})  # zakłada tablicę z obecnymi szablonami
         self.store.upsert_project({"name": "Dom"})
-        for mode in flows.MODES:
+        for mode in flows.FLOW_KEYS:
             self.write(f"flows/{mode}.md", old_seed(mode))
         self.write("flows/dom/full.md", old_seed("full"))  # nadpisanie projektu — własność użytkownika
         git_out(self.root, "add", "-A")
         git_out(self.root, "commit", "-qm", "stara tablica")
 
     def test_fixture_matches_known_seeds(self):
-        for mode in flows.MODES:
+        for mode in flows.FLOW_KEYS:
             self.assertTrue(flows.outdated(mode, old_seed(mode)), mode)
             self.assertFalse(flows.outdated(mode, flows.SEED_FLOWS[mode]), mode)
             self.assertFalse(flows.outdated(mode, old_seed(mode) + "\n"), "jeden bajt więcej — zmieniony")
@@ -226,7 +226,8 @@ class LaunchFieldsTest(BoardCase):
                 self.store.update_card("K-1", bad)
         self.store.update_card("K-1", {"branch": "", "worktree": "", "mode": "spec"})
         card = self.store.snapshot()["cards"][0]
-        self.assertEqual((card["branch"], card["worktree"], card["mode"]), ("", "", "spec"))
+        self.assertEqual((card["branch"], card["worktree"], card["entry"], card["mode"]), ("", "", "spec", ""),
+                         "dawne mode: spec w żądaniu to wejście Tylko specyfikacja (PT-77)")
         self.store.create_card({"title": "Z polami", "mode": "light", "tool": "codex"})
         self.assertIn("mode: light", self.card_text("K-2"))
         self.assertNotIn("worktree:", self.card_text("K-2"))

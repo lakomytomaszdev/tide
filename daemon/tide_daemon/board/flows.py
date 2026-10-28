@@ -1,6 +1,6 @@
-"""Szablony poleceń trybów uruchomienia (pełny, lekki, tylko spec) i ich wypełnianie.
+"""Szablony poleceń uruchomienia (Planowanie w trybie pełnym albo lekkim, Tylko specyfikacja) i ich wypełnianie.
 
-Szablon to `flows/<tryb>.md` w tablicy, a dla jednego projektu można go nadpisać plikiem
+Szablon to `flows/<klucz>.md` w tablicy (klucz: full i light — Planowanie, spec — Tylko specyfikacja; flow_key), a dla jednego projektu można go nadpisać plikiem
 `flows/<projekt>/<tryb>.md`. Frontmatter szablonu (opcjonalny) nie trafia do polecenia.
 Zastępujemy wyłącznie znane pola w klamrach (PLACEHOLDERS) — inne klamry, np. przykład JSON
 w szablonie, zostają bez zmian, a wartości pól (np. opis karty) nie są już szablonem.
@@ -23,10 +23,22 @@ Plik zastępujemy tylko wtedy, gdy jego treść jest bajt w bajt równa jednemu 
 zaczynów (PREVIOUS_SEEDS: skróty SHA-256) — szablonu zmienionego przez użytkownika nie ruszamy.
 """
 import hashlib
+import os
 import re
 
 from .frontmatter import Document, FrontmatterError
-from .model import MODES
+from .model import DEFAULT_ENTRY, ENTRIES, LEGACY_SPEC_MODE, MODES
+
+# Klucz szablonu `flows/<klucz>.md` z wejścia i trybu. Każde nowe wejście dostaje tu własny klucz (i własny
+# SEED_FLOWS), a Planowanie — klucz trybu. Plik szablonu zostaje pod starą nazwą, więc polecenie się nie zmienia.
+ENTRY_FLOWS = {"spec": "spec"}
+FLOW_KEYS = (*MODES, *ENTRY_FLOWS.values())
+
+
+def flow_key(entry: str, mode: str) -> str:
+    """Klucz szablonu: wejście z własnym szablonem (spec) albo tryb Planowania."""
+    return ENTRY_FLOWS.get(entry) or mode
+
 
 PLACEHOLDERS = ("card_id", "title", "description", "project", "repo", "docs_dir", "branch", "tool",
                 "docs_note", "spec", "spec_file", "check", "check_label", "finish", "spec_commit", "projects")
@@ -123,8 +135,8 @@ Istniejąca specyfikacja karty: {spec}
 5. Zakończenie (sprawdzenie: {check_label}): {finish}
 """,
     "spec": """---
-tide-flow: 3
-mode: spec
+tide-flow: 4
+entry: spec
 ---
 """ + _COMMON + """
 Tryb „Tylko specyfikacja”: dopytujesz i piszesz specyfikację — nic więcej. Bez zmian w kodzie, bez
@@ -153,14 +165,16 @@ Istniejąca specyfikacja karty: {spec}
 }
 
 # Dawne zaczyny z flows/ (PT-1) — skróty SHA-256 treści zapisanej przy zakładaniu tablicy.
-# Kolejne wersje: PT-1 (pierwszy zaczyn), PT-4 (`tide-flow: 2`, przed polem {projects} z PT-28).
+# Kolejne wersje: PT-1 (pierwszy zaczyn), PT-4 (`tide-flow: 2`, przed polem {projects} z PT-28), PT-77 (spec).
 PREVIOUS_SEEDS = {
     "full": {"50e7022ef834891b46ef499318146a3ee322b0ce11015f83474ffdae54666e7a",
              "dfc6241e85b5a4b99b8ac61b4ed576bb4c64fe4e775cb0b8d7f1ad568cb8fe19"},
     "light": {"6476221fe489d549b497b19cb77bba3c72590e904448e7b13eec2354228f4913",
               "5a695d2e37399a36ae1a460d1f663f110f46498a8450fc8403e361bb457df101"},
     "spec": {"7e01493f02a65ba87bc4bc944c85d3170452a1be96ebf8d745e95b548ddb15e3",
-             "916603ea5a4534eccdadcdb8098a9a8f5e3d46cb74bd1e069fe31b7e11348349"},
+             "916603ea5a4534eccdadcdb8098a9a8f5e3d46cb74bd1e069fe31b7e11348349",
+             # PT-77: zaczyn z `mode: spec` w nagłówku (przed wejściem „Tylko specyfikacja”)
+             "6ccad84fcb7f14ce65b086dab6d3d6cd2828b6e08cee03bf387be975d66b8b1a"},
 }
 
 
@@ -227,6 +241,22 @@ def outdated(mode: str, text: str | None) -> bool:
     return text is not None and digest(text) in PREVIOUS_SEEDS.get(mode, ())
 
 
+def legacy_mode_warning(rel: str, text: str | None) -> str:
+    """Ostrzeżenie o szablonie Tylko specyfikacja zmienionym przez użytkownika, który w nagłówku nadal ma
+    `mode: spec` (dawniej tryb, teraz wejście). Szablonu nie ruszamy — nagłówek nie wpływa na polecenie.
+    Pusty napis: brak szablonu, nietknięty dawny zaczyn (podmieni go migrate_flows) albo nagłówek bez dawnego zapisu."""
+    if text is None or outdated(os.path.basename(rel)[:-3], text) and rel == os.path.join("flows", "spec.md"):
+        return ""
+    try:
+        doc = Document.parse(text)
+    except FrontmatterError:
+        return ""
+    if doc.get("mode").strip().lower() != LEGACY_SPEC_MODE or doc.get("entry").strip():
+        return ""
+    return (f"{rel.replace(os.sep, '/')}: szablon zmieniony ręcznie zostaje bez zmian — „Tylko specyfikacja” to teraz "
+            "wejście, więc w nagłówku zamiast `mode: spec` wpisz `entry: spec` (polecenie agenta się nie zmienia)")
+
+
 def body_of(text: str) -> str:
     """Treść szablonu bez frontmattera (plik bez frontmattera to sama treść)."""
     try:
@@ -246,5 +276,6 @@ def render(template: str, values: dict) -> str:
     return text
 
 
-assert set(SEED_FLOWS) == set(MODES)
+assert set(SEED_FLOWS) == set(FLOW_KEYS)
+assert DEFAULT_ENTRY in ENTRIES
 assert not any(outdated(mode, text) for mode, text in SEED_FLOWS.items())
