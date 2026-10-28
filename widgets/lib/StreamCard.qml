@@ -1,6 +1,6 @@
 // Karta Stream (PT-37): stan streamu z rdzenia Streamer — popup kafelka Stream w docku i dolna karta konsoli
 // streamu na pulpicie (full). Nagłówek „Stream” z trybem i tym, kto go ustawił (automat albo ty), wiersze stanu
-// (antena, nagrywanie, scena, OBS, moduły), „Wycisz mikrofon · Pause”, link „Panel streamera” i dopisek, że start
+// (antena, nagrywanie, scena, OBS, moduły), „Wycisz mikrofon · Pause” (mic.set z docelowym stanem), link „Panel streamera” i dopisek, że start
 // i koniec streamu są tylko w Panelu. W konsoli dochodzą profil gracza z listą, przełączniki modułów i BRB.
 // Same dane i sygnały — komendy wysyła widżet przez CoreSource.execute (tylko komendy z Stream.ALLOWED).
 // Bez PlasmoidItem, więc da się ją załadować w podglądzie (widgets/preview_stream.py).
@@ -20,7 +20,7 @@ Card {
     property bool profilesOpen: false
     property real textPointSize: Tokens.fontSizePt
 
-    signal micRequested()
+    signal micRequested(bool muted)   // docelowy stan: mic.set {muted}, nie przełączanie
     signal brbRequested()
     signal panelRequested()
     signal moduleRequested(string key, bool visible)
@@ -103,7 +103,7 @@ Card {
                         anchors.verticalCenter: parent.verticalCenter
                         width: 8
                         height: 8
-                        radius: 4
+                        radius: width / 2
                         color: cell.row.tint !== "" ? Tokens[cell.row.tint] : "transparent"
                     }
                     Text {
@@ -230,7 +230,7 @@ Card {
                 border.color: Theme.alpha(tone, 0.80)
                 opacity: parent.enabled ? 1 : 0.45
             }
-            onClicked: card.micRequested()
+            onClicked: card.micRequested(card.model.mic.muted !== true)
         }
         TextButton {
             visible: card.full
@@ -263,7 +263,7 @@ Card {
         text: card.status
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
-        color: card.statusError ? Tokens.neutral : Tokens.textSecondary
+        color: Tokens.textSecondary
         font.family: Theme.uiFamily
         font.pointSize: Tokens.fontSizePt - 1
     }

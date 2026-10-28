@@ -35,7 +35,7 @@ ColumnLayout {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 8
                     height: 8
-                    radius: 4
+                    radius: width / 2
                     color: item.modelData.current ? Tokens.accent : "transparent"
                     border.width: item.modelData.current ? 0 : 1
                     border.color: Tokens.textMuted

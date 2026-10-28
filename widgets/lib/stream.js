@@ -247,9 +247,17 @@ var UNAVAILABLE = {
     chat: "Czat Twitcha: jeszcze niedostępny w rdzeniu"
 }
 
-// Sceny trybu do przycisków konsoli: {available, items: [{name, current}], current, live, note}.
-// Dane, których rdzeń jeszcze nie ma: `obs.scenes` (sceny w OBS, w kolejności OBS) i opcjonalnie
-// `core.mode_scenes` ({tryb: [nazwy scen]}) — wtedy tylko sceny trybu, które OBS naprawdę ma.
+// Domyślne nazwy scen rdzenia (core.py: start_scene, brb_scene) — rodzaj sceny, gdy `core.mode_scenes` poda
+// same nazwy. Sceny końca rdzeń nie nazywa, więc rozpoznajemy ją tylko po `kind: "ended"`.
+var CORE_SCENE_KINDS = { "Starting soon": "starting", "Be right back": "brb" }
+var FULL_SCREEN_KINDS = ["starting", "ended"]
+var LIVE_LOCK_REASON = "na żywo — tylko poza anteną"
+
+// Sceny trybu do przycisków konsoli: {available, items: [{name, kind, current, enabled, reason}], current, live, note}.
+// Dane, których rdzeń jeszcze nie ma: `core.mode_scenes` ({tryb: [nazwa albo {name, kind}]}, kind: starting, brb,
+// ended) i opcjonalnie `obs.scenes` (sceny w OBS) — wtedy tylko sceny trybu, które OBS naprawdę ma. Bez scen trybu
+// nie ma przycisków (same sceny OBS to też sceny innych trybów). BRB nie jest przyciskiem sceny, tylko osobnym
+// przyciskiem (brb.toggle pamięta scenę powrotu). Sceny pełnoekranowe (start, koniec) przełączamy tylko poza anteną.
 function scenes(view, coreUp) {
     const s = status(view, coreUp)
     const out = { available: false, items: [], current: s.scene || "", live: s.live === true, note: "" }
@@ -257,17 +265,36 @@ function scenes(view, coreUp) {
         out.note = s.core === "down" ? "Rdzeń nie działa" : "Czytam stan rdzenia…"
         return out
     }
-    const obs = obj(view.obs)
-    if (!Array.isArray(obs.scenes)) {
+    const byMode = obj(view.core.mode_scenes)[s.mode]
+    if (!Array.isArray(byMode)) {
         out.note = UNAVAILABLE.scenes
         return out
     }
-    let names = obs.scenes.map(String)
-    const byMode = obj(view.core.mode_scenes)[s.mode]
-    if (Array.isArray(byMode)) names = byMode.map(String).filter(n => names.indexOf(n) >= 0)
+    const inObs = obj(view.obs).scenes
+    let entries = byMode.map(e => typeof e === "string" ? { name: e, kind: CORE_SCENE_KINDS[e] || "" }
+                                  : { name: String(obj(e).name || ""), kind: String(obj(e).kind || "") })
+    entries = entries.filter(e => e.name !== "" && e.kind !== "brb")
+    if (Array.isArray(inObs)) entries = entries.filter(e => inObs.indexOf(e.name) >= 0)
     out.available = true
-    out.items = names.map(n => ({ name: n, current: n === s.scene }))
+    out.items = entries.map(e => {
+        const locked = s.live && FULL_SCREEN_KINDS.indexOf(e.kind) >= 0
+        return { name: e.name, kind: e.kind, current: e.name === s.scene, enabled: !locked,
+                 reason: locked ? LIVE_LOCK_REASON : "" }
+    })
+    if (out.items.some(i => !i.enabled))
+        out.note = "Na żywo sceny startu i końca są wyłączone — przełączysz je poza anteną."
     return out
+}
+
+// Tekst w miejscu podglądu sceny (pusty, gdy jest obraz). supported: rdzeń ma GetSceneScreenshot (do pierwszej
+// odpowiedzi UnknownMethod zakładamy, że ma).
+function previewNote(view, coreUp, supported, hasImage) {
+    if (!coreUp) return "Rdzeń nie działa"
+    if (!supported) return UNAVAILABLE.preview
+    if (hasImage) return ""
+    const s = status(view, coreUp)
+    if (s.core === "up" && !s.obsConnected) return "OBS rozłączony — brak podglądu"
+    return "Czekam na zrzut sceny…"
 }
 
 var ALERTS = { follow: "Follow", sub: "Sub", bits: "Bits", raid: "Raid" }
@@ -281,31 +308,39 @@ function alertText(alert) {
 }
 
 // Kolor nicku: pastel palety wybrany po nicku (ten sam widz — ten sam kolor). Kolor z Twitcha pomijamy,
-// bo bywa nieczytelny na ciemnym tle.
+// bo bywa nieczytelny na ciemnym tle. Kandydaci to role pasteli palety; nickTints odrzuca te, które paleta
+// daje kolorom ostrzeżenia i błędu (semantic neutral i negative), żeby nick nie wyglądał jak alarm.
 var NICK_TINTS = ["sky", "butter", "mint", "rose", "lavender", "peach", "teal"]
 
-function nickTint(user) {
-    let h = 0
-    for (let i = 0; i < user.length; i++) h = (h * 31 + user.charCodeAt(i)) % 1000003
-    return NICK_TINTS[h % NICK_TINTS.length]
+// colors: {rola: kolor} z Tokens, avoid: kolory do pominięcia (Tokens.neutral, Tokens.negative).
+function nickTints(colors, avoid) {
+    const skip = (avoid || []).map(c => String(c).toLowerCase())
+    const out = NICK_TINTS.filter(n => n in obj(colors) && skip.indexOf(String(colors[n]).toLowerCase()) < 0)
+    return out.length ? out : ["accent"]
 }
 
-// Wiersze czatu z komunikatów w kształcie WebSocketu rdzenia ({type: "chat", message} i {type: "alert", alert}),
-// najnowsze na końcu (na dole), najwyżej `limit`. Inne komunikaty pomijamy.
-function chatLines(events, limit) {
-    const out = []
-    for (const e of Array.isArray(events) ? events : []) {
-        if (!e || typeof e !== "object") continue
-        if (e.type === "chat" && e.message) {
-            const m = e.message
-            out.push({ kind: "chat", id: String(m.id || out.length), user: String(m.user || ""),
-                       text: String(m.text || ""), tint: nickTint(String(m.user || "")) })
-        } else if (e.type === "alert" && e.alert) {
-            out.push({ kind: "alert", id: "alert-" + out.length, user: String(e.alert.user || ""),
-                       text: alertText(e.alert), tint: "accent" })
-        }
+function nickTint(user, tints) {
+    const list = tints && tints.length ? tints : NICK_TINTS
+    let h = 0
+    for (let i = 0; i < user.length; i++) h = (h * 31 + user.charCodeAt(i)) % 1000003
+    return list[h % list.length]
+}
+
+// Wiersz czatu z komunikatu w kształcie WebSocketu rdzenia ({type: "chat", message} i {type: "alert", alert}):
+// płaski obiekt {kind, id, user, text} do ListModel; inny komunikat — null.
+var lineCounter = 0
+
+function chatLine(e) {
+    if (!e || typeof e !== "object") return null
+    lineCounter++
+    if (e.type === "chat" && e.message) {
+        const m = e.message
+        return { kind: "chat", id: String(m.id || "chat-" + lineCounter), user: String(m.user || ""),
+                 text: String(m.text || "") }
     }
-    return limit > 0 ? out.slice(-limit) : out
+    if (e.type === "alert" && e.alert)
+        return { kind: "alert", id: "alert-" + lineCounter, user: String(e.alert.user || ""), text: alertText(e.alert) }
+    return null
 }
 
 // Treść widza do Text.StyledText: wszystko escapowane, więc wiadomość nie wstawi obrazka ani znacznika.
@@ -322,7 +357,8 @@ function chatHtml(line, nickColor) {
 // Komendy, które widżety mogą wysłać do rdzenia. Akcji krytycznych (start i koniec streamu, koniec nagrania,
 // zmiana trybu na żywo, reset serii) nie ma w widżetach — są tylko w Panelu streamera (przytrzymanie).
 // mode.set zostaje poza listą w całości: rdzeń odrzuca ją na żywo, a poza anteną tryb wybiera Panel.
-var ALLOWED = ["mic.toggle", "profile.set", "module.set", "scene.set", "brb.toggle"]
+// Mikrofon przez mic.set {muted} (nie mic.toggle): podwójne kliknięcie albo spóźniony stan nie odwróci wyniku.
+var ALLOWED = ["mic.set", "profile.set", "module.set", "scene.set", "brb.toggle"]
 
 function allowed(name) {
     return ALLOWED.indexOf(name) >= 0

@@ -1,4 +1,4 @@
-// Źródło stanu streamu z rdzenia Streamer przez D-Bus (PT-37, decyzja 77 — wyjątek od „jednego demona”:
+// Źródło stanu streamu z rdzenia Streamer przez D-Bus (PT-37, decyzja 79 — wyjątek od „jednego demona”:
 // stan streamu należy do rdzenia, nie do tide-daemona). Usługa org.streamer.Core, obiekt /org/streamer/Core,
 // interfejs org.streamer.Core1: GetState() → JSON widoku, Execute(nazwa, argumenty JSON) → JSON wyniku
 // i sygnał Changed(zdarzenie JSON), który niesie cały nowy widok w polu `state`.
@@ -11,12 +11,15 @@
 // Komendy idą tylko przez execute(), które przepuszcza wyłącznie komendy z Stream.ALLOWED (bez akcji
 // krytycznych, te są tylko w Panelu streamera).
 //
-// Miejsce na to, czego rdzeń jeszcze nie daje (propozycja API w docs/decisions.md, decyzja 77):
+// Miejsce na to, czego rdzeń jeszcze nie daje (propozycja API w docs/decisions.md, decyzja 79):
 // - czat i alerty: GetChat() → {"events": [...]} i sygnał Chat(s) z komunikatem w kształcie WebSocketu
-//   ({type: "chat", message} albo {type: "alert", alert}); wantChat włącza próbę i nasłuch;
+//   ({type: "chat", message} albo {type: "alert", alert}); wantChat włącza próbę i nasłuch, wiersze trafiają
+//   do chatModel (append, najstarsze wypadają przez remove(0));
 // - podgląd sceny: GetSceneScreenshot(s scena) → s (data:image/jpeg;base64,…, ok. 640 px szerokości);
-//   wantPreview włącza próbę po pierwszym odczycie stanu i odświeżanie co previewInterval, tylko gdy rdzeń go ma.
-// Bez tych metod (błąd UnknownMethod) widżet pokazuje spokojne „jeszcze niedostępne w rdzeniu”.
+//   wantPreview włącza zrzut przy każdej zmianie połączenia OBS albo sceny i odświeżanie co previewInterval,
+//   tylko gdy widżet jest widoczny w bieżącej aktywności (previewActive).
+// Tylko odpowiedź UnknownMethod/UnknownInterface znaczy „rdzeń tego nie ma” (do ponownej rejestracji usługi);
+// inny błąd (OBS chwilowo nie odpowiedział) czyści tylko obraz, a następna próba idzie normalnie.
 import QtQuick
 import org.kde.plasma.workspace.dbus as DBus
 import "stream.js" as Stream
@@ -35,20 +38,36 @@ Item {
     property bool wantChat: false
     property int chatLimit: 200
     property bool chatAvailable: false
-    property var chatEvents: []
+    property ListModel chatModel: ListModel {}
 
     property bool wantPreview: false
+    property bool previewActive: true
     property int previewInterval: 2000
-    property bool previewAvailable: false
+    property bool previewSupported: true
     property string previewImage: ""
-    property bool previewTried: false
+    readonly property bool previewAvailable: previewSupported && previewImage !== ""
+    // Scena (przy połączonym OBS), dla której ostatnio prosiliśmy o zrzut — zmiana wyzwala nowy zrzut od razu.
+    property string previewKey: ""
+    readonly property string sceneForPreview: view && view.obs && view.obs.connected === true && view.obs.scene
+        ? String(view.obs.scene) : ""
 
     signal executed(string name, bool ok, string message)
 
+    function errorOf(error) {
+        return error && error.error ? error.error : error
+    }
+
     function errorText(error) {
-        const e = error && error.error ? error.error : error
+        const e = errorOf(error)
         if (e && e.message) return String(e.message)
         return "Rdzeń nie odpowiedział"
+    }
+
+    // „Rdzeń nie ma tej metody” — w odróżnieniu od chwilowego błędu (OBS, przekroczony czas).
+    function missingMethod(error) {
+        const e = errorOf(error)
+        const name = e && e.name ? String(e.name) : ""
+        return name === "org.freedesktop.DBus.Error.UnknownMethod" || name === "org.freedesktop.DBus.Error.UnknownInterface"
     }
 
     // Argument sygnału przychodzi z wtyczki D-Bus Plasmy jako obiekt {value: "…"} (typ STRING), nie jako napis.
@@ -68,13 +87,10 @@ Item {
         if (fromReply && view && typeof next.seq === "number" && typeof view.seq === "number" && next.seq < view.seq)
             return
         view = next
-        if (wantPreview && !previewTried) {
-            previewTried = true
-            refreshPreview()
-        }
     }
 
     function refresh() {
+        if (!coreUp) return
         DBus.SessionBus.asyncCall(message("GetState"), function (reply) {
             try { source.accept(JSON.parse(reply.value), true) } catch (e) {}
         }, function () {})
@@ -98,34 +114,51 @@ Item {
         })
     }
 
+    function appendChat(event) {
+        const line = Stream.chatLine(event)
+        if (!line) return
+        chatModel.append(line)
+        while (chatModel.count > chatLimit) chatModel.remove(0)
+    }
+
     function pushChat(json) {
         let event = null
         try { event = JSON.parse(text(json)) } catch (e) { return }
-        if (!event || typeof event !== "object") return
         chatAvailable = true
-        const next = chatEvents.concat([event])
-        chatEvents = next.length > chatLimit ? next.slice(next.length - chatLimit) : next
+        appendChat(event)
     }
 
     function probeChat() {
-        if (!wantChat) return
+        if (!wantChat || !coreUp) return
         DBus.SessionBus.asyncCall(message("GetChat"), function (reply) {
             let events = []
             try { events = JSON.parse(reply.value).events || [] } catch (e) {}
-            source.chatEvents = events.slice(-source.chatLimit)
+            source.chatModel.clear()
+            for (const e of events.slice(-source.chatLimit)) source.appendChat(e)
             source.chatAvailable = true
-        }, function () { source.chatAvailable = false })
+        }, function (error) { if (source.missingMethod(error)) source.chatAvailable = false })
     }
 
     function refreshPreview() {
-        const scene = view && view.obs && view.obs.connected ? view.obs.scene : ""
-        if (!wantPreview || !scene) return
-        DBus.SessionBus.asyncCall(message("GetSceneScreenshot", [String(scene)]),
-            function (reply) {
-                source.previewImage = String(reply.value)
-                source.previewAvailable = source.previewImage.indexOf("data:image/") === 0
-            }, function () { source.previewAvailable = false; source.previewImage = "" })
+        const scene = sceneForPreview
+        previewKey = scene
+        if (!wantPreview || !previewSupported || !previewActive || !coreUp) return
+        if (!scene) {
+            previewImage = ""
+            return
+        }
+        DBus.SessionBus.asyncCall(message("GetSceneScreenshot", [scene]), function (reply) {
+            const image = String(reply.value)
+            source.previewImage = image.indexOf("data:image/") === 0 ? image : ""
+        }, function (error) {
+            source.previewImage = ""
+            if (source.missingMethod(error)) source.previewSupported = false
+        })
     }
+
+    // Każda zmiana połączenia OBS albo sceny — zrzut od razu (OBS mógł połączyć się po rdzeniu).
+    onSceneForPreviewChanged: if (sceneForPreview !== previewKey) refreshPreview()
+    onPreviewActiveChanged: if (previewActive) refreshPreview()
 
     function connected() {
         refresh()
@@ -140,12 +173,14 @@ Item {
             if (registered) {
                 source.connected()
             } else {
-                // Rdzeń zniknął: żadnego starego stanu na ekranie; po powrocie wszystko od nowa.
+                // Rdzeń zniknął: żadnego starego stanu na ekranie; po powrocie wszystko od nowa (także próba,
+                // czy nowa wersja rdzenia ma podgląd i czat).
                 source.view = null
                 source.chatAvailable = false
-                source.previewAvailable = false
+                source.chatModel.clear()
                 source.previewImage = ""
-                source.previewTried = false
+                source.previewSupported = true
+                source.previewKey = ""
             }
         }
     }
@@ -173,7 +208,8 @@ Item {
 
     Timer {
         interval: source.previewInterval
-        running: source.coreUp && source.wantPreview && source.previewAvailable
+        running: source.coreUp && source.wantPreview && source.previewSupported && source.previewActive
+                 && source.sceneForPreview !== ""
         repeat: true
         onTriggered: source.refreshPreview()
     }
