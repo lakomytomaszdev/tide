@@ -12,13 +12,16 @@ dokładnie taka, jak z json.loads, więc generatory dają z niej te same pliki c
 wprowadzeniem nakładek.
 
 Generatory przyjmują ścieżkę do pliku (jak dotąd) albo nazwę wariantu („streamer”).
+Każdy błąd palety to wyjątek z rodziny ValueError (PaletteError, json.JSONDecodeError).
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-PALETTE_DIR = Path(__file__).resolve().parent
+# $TIDE_PALETTE_DIR podmienia katalog palet (testy instalatorów z zepsutym wariantem).
+PALETTE_DIR = Path(os.environ.get("TIDE_PALETTE_DIR") or Path(__file__).resolve().parent)
 BASE = "mist"
 
 

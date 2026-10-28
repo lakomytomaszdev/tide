@@ -12,6 +12,8 @@ import unittest
 import zipfile
 from pathlib import Path
 
+from scripts.tests.broken_palettes import BROKEN, broken_palette_dir  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 STUBS = ("plasma-apply-colorscheme", "plasma-apply-desktoptheme", "fc-cache", "dbus-send")
 
@@ -87,6 +89,25 @@ class AppearanceInstallTest(unittest.TestCase):
         self.assertNotIn("TideStreamer", "\n".join(self.calls()))
         self.appearance("uninstall")
         self.assertFalse(scheme.exists())
+
+    def test_broken_variant_does_not_stop_the_mist_install(self):
+        for kind in BROKEN:
+            with self.subTest(broken=kind):
+                self.env["TIDE_PALETTE_DIR"] = str(broken_palette_dir(Path(self.tmp.name), kind))
+                self.appearance("install")
+                self.assertTrue((self.data / "color-schemes/TideMist.colors").is_file())
+                self.assertIn("plasma-apply-colorscheme TideMist", self.calls())
+                self.assertTrue(self.read_config("kdeglobals", "General", "font").startswith("Geist,10,"))
+
+    def test_uninstall_removes_every_scheme_tide_wrote_and_only_those(self):
+        self.appearance("install")
+        schemes = self.data / "color-schemes"
+        old = schemes / "TideStary.colors"  # wariant usunięty z repozytorium po instalacji
+        old.write_text((schemes / "TideMist.colors").read_text())
+        foreign = schemes / "TideCudzy.colors"  # nie od Tide (brak nagłówka generatora)
+        foreign.write_text("[General]\nName=Cudzy\n")
+        self.appearance("uninstall")
+        self.assertEqual(sorted(p.name for p in schemes.iterdir()), ["TideCudzy.colors"])
 
     def test_uninstall_restores_previous_appearance(self):
         self.appearance("install")

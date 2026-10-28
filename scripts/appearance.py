@@ -57,14 +57,49 @@ FONT_DIR = DATA / "fonts" / "tide"
 PREVIOUS = STATE / "tide" / "appearance-previous.json"
 
 
+# Błędy wariantu palety (zła paleta, brak obrazów, plik nie do odczytu): instalacja Mist idzie dalej.
+VARIANT_ERRORS = (ValueError, KeyError, OSError)
+SCHEME_HEADER = render({}).splitlines()[0]  # pierwsza linia każdego schematu, który zapisał Tide
+
+
+def skipped(name: str, error: Exception) -> None:
+    print(f"Uwaga: wariant palety {name!r} pominięty ({type(error).__name__}: {error}); "
+          "wygląd Mist zainstalowany bez zmian.", file=sys.stderr)
+
+
 def variant_palettes() -> dict[str, dict]:
-    """Palety wariantów poza Mist (nazwa pliku → paleta), np. {"streamer": {...}}."""
-    return {name: palettes.load(name) for name in palettes.names() if name != palettes.BASE}
+    """Palety wariantów poza Mist (nazwa pliku → paleta), np. {"streamer": {...}}; zepsute pomija."""
+    result = {}
+    for name in palettes.names():
+        if name == palettes.BASE:
+            continue
+        try:
+            result[name] = palettes.load(name)
+        except VARIANT_ERRORS as error:
+            skipped(name, error)
+    return result
 
 
-def variant_scheme_files() -> dict[Path, dict]:
-    """Pliki schematów wariantów obok TideMist: color-schemes/Tide<Nazwa>.colors → paleta."""
-    return {SCHEME_DIR / f"Tide{p['name']}.colors": p for p in variant_palettes().values()}
+def for_each_variant(write) -> None:
+    """write(nazwa, paleta) dla każdego wariantu; błąd jednego nie przerywa pozostałych ani instalacji."""
+    for name, variant in variant_palettes().items():
+        try:
+            write(name, variant)
+        except VARIANT_ERRORS as error:
+            skipped(name, error)
+
+
+def tide_scheme_files() -> list[Path]:
+    """Schematy Tide*.colors zapisane przez Tide (z nagłówkiem generatora) — także po usuniętych wariantach."""
+    found = []
+    for path in sorted(SCHEME_DIR.glob("Tide*.colors")):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                if fh.readline().rstrip("\n") == SCHEME_HEADER:
+                    found.append(path)
+        except OSError:
+            pass
+    return found
 
 
 def run(*args: str) -> str:
@@ -124,8 +159,6 @@ def install() -> None:
 
     SCHEME_FILE.parent.mkdir(parents=True, exist_ok=True)
     SCHEME_FILE.write_text(render(scheme(json.loads(PALETTE.read_text()))))
-    for path, variant in variant_scheme_files().items():
-        path.write_text(render(scheme(variant)))
     install_fonts()
 
     palette = json.loads(PALETTE.read_text())
@@ -139,6 +172,8 @@ def install() -> None:
     run("plasma-apply-colorscheme", "TideMist")
     run("plasma-apply-desktoptheme", "default")
     notify_appearance_changed()
+    # Schematy pozostałych wariantów (np. TideStreamer) dopiero po nałożeniu Mist i tylko zapisane.
+    for_each_variant(lambda name, p: (SCHEME_DIR / f"Tide{p['name']}.colors").write_text(render(scheme(p))))
     print("Kolory Tide Mist i czcionki Geist zainstalowane.")
 
 
@@ -153,7 +188,7 @@ def uninstall() -> None:
     run("plasma-apply-desktoptheme", previous.get("plasmarc|Theme|name") or "default")
 
     SCHEME_FILE.unlink(missing_ok=True)
-    for path in variant_scheme_files():
+    for path in tide_scheme_files():
         path.unlink(missing_ok=True)
     if FONT_DIR.is_dir():
         shutil.rmtree(FONT_DIR)
