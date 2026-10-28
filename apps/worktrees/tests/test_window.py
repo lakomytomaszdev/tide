@@ -41,7 +41,7 @@ def item(path, repo, group, **extra):
     }
     base.update(extra)
     # Jak w usłudze: twarde blokady (main, protected, missing, locked, agent) wykluczają też RemoveForced.
-    hard = base["blocker"] if base["blocker"] in ("main", "protected", "missing", "locked", "agent") else ""
+    hard = base["blocker"] if base["blocker"] in ("main", "protected", "missing", "locked", "agent", "nested") else ""
     base.setdefault("forceBlocker", hard)
     base.setdefault("forceRemovable", hard == "")
     return base

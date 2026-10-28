@@ -115,6 +115,7 @@ function whyText(w) {
     if (w.dirty > 0) parts.push(count(w.dirty, "zmiana", "zmiany", "zmian"))
     if (w.dirty < 0) parts.push("stan nieznany")
     if (w.locked) parts.push("zablokowany")
+    if (w.blocker === "nested" || w.forceBlocker === "nested") parts.push("zawiera inne worktrees")
     if (!w.mainBranch) parts.push("brak gałęzi głównej")
     return parts.join(" · ")
 }
@@ -125,7 +126,7 @@ function isOld(w, nowTs) {
 
 // Czy worktree da się zaznaczyć do usunięcia. Sugerowane (removable) zawsze; pozostałe tylko wtedy,
 // gdy usługa mówi, że nie mają twardej blokady (forceRemovable: nie główny katalog, nie gałąź
-// główna, nie brakujący, nie zablokowany, bez działającego agenta). Usługa sprawdza to i tak sama —
+// główna, nie brakujący, nie zablokowany, bez działającego agenta i bez innych worktrees w środku). Usługa sprawdza to i tak sama —
 // tu tylko nie pokazujemy pola wyboru tam, gdzie i tak by odmówiła. Starsza usługa bez pola
 // forceRemovable — jak dawniej, tylko sugerowane.
 function selectable(w) {
@@ -147,7 +148,8 @@ function lockReason(w) {
         protected: "gałąź główna (master, main, develop) — nigdy jej nie usuwamy",
         missing: "katalogu już nie ma — porządkuje go git worktree prune",
         locked: "zablokowany (git worktree lock) — najpierw git worktree unlock",
-        agent: "pracuje w nim agent — zamknij sesję, żeby móc go usunąć"
+        agent: "pracuje w nim agent — zamknij sesję, żeby móc go usunąć",
+        nested: "zawiera inne worktrees — najpierw usuń te w środku, inaczej zniknęłyby razem z nim"
     }
     return texts[reason] || ""
 }
