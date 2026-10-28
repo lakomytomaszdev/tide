@@ -93,7 +93,8 @@ def desired_tabs(sessions: list[dict], bound_pids: dict, procs) -> dict[str, str
 
 
 def strip_marker(text: str) -> str:
-    """Tekst bez naszych prefiksów (także zdublowanych, np. po awarii usługi)."""
+    """Tekst bez naszych prefiksów (także zdublowanych, np. po awarii usługi) i bez dopisku
+    przejścia do okna (windows.MARKER), gdyby został po awarii w trakcie przejścia."""
     changed = True
     while changed:
         changed = False
@@ -101,6 +102,9 @@ def strip_marker(text: str) -> str:
             if text.startswith(prefix):
                 text = text[len(prefix):]
                 changed = True
+        if text.endswith(windows.MARKER):
+            text = text[:-len(windows.MARKER)]
+            changed = True
     return text
 
 

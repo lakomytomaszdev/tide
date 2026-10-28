@@ -8,8 +8,11 @@ zostaje aktywowane, a nie tekst skryptu. Cienki test kontraktu sprawdza metody o
 """
 import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 from .privatebus import PrivateBus, requires_dbus
 
@@ -92,10 +95,13 @@ class FakeKonsole:
 
 
 class FakeKWin:
-    def __init__(self):
+    def __init__(self, error=None):
         self.scripts = []
+        self.error = error
 
     def run(self, source):
+        if self.error:
+            raise self.error
         self.scripts.append(source)
         return True
 
@@ -111,6 +117,11 @@ class Later:
         queue, self.queue = self.queue, []
         for _ms, fn in queue:
             fn()
+
+    def fire_one(self, ms):
+        """Odpala najstarszy zegar o danym opóźnieniu (zegary kolejnych przejść osobno)."""
+        index = next(i for i, (delay, _fn) in enumerate(self.queue) if delay == ms)
+        self.queue.pop(index)[1]()
 
 
 class Guard:
@@ -142,23 +153,28 @@ function setCaption(id, caption) {
         if (w.id === id) { w.caption = caption; w.handlers.forEach(function (f) { f(); }); }
     });
 }
+var focused = null;
+function focus(id) { wins.forEach(function (w) { if (w.id === id) focused = w; }); }
 var workspace = {
     windowList: function () { return wins; },
-    get activeWindow() { return null; },
-    set activeWindow(w) { activated.push(w.id); }
+    get activeWindow() { return focused; },
+    set activeWindow(w) { focused = w; activated.push(w.id); }
 };
 """
 
 
 @unittest.skipIf(QJSEngine is None, "brak PyQt6.QtQml")
 class KWinScriptMixin:
-    def run_script(self, source: str, wins: list[tuple], changes: list[tuple] = ()) -> list[str]:
+    def run_script(self, source: str, wins: list[tuple], changes: list[tuple] = (), active=None) -> list[str]:
         """Wykonuje skrypt na oknach (id, pid, tytuł[, normalne]) i zwraca kolejne aktywowane okna.
-        changes: późniejsze zmiany tytułów (id, tytuł) — jak tytuł, który dociera do KWin po starcie."""
+        changes: późniejsze zmiany tytułów (id, tytuł) — jak tytuł, który dociera do KWin po starcie;
+        active: okno aktywne przed skryptem."""
         self.app = QCoreApplication.instance() or QCoreApplication([])
         engine = QJSEngine()
         setup = WORKSPACE + "".join(f"addWindow({json.dumps(w[0])}, {w[1]}, {json.dumps(w[2])}, "
                                     f"{json.dumps(w[3] if len(w) > 3 else True)});\n" for w in wins)
+        if active:
+            setup += f"focus({json.dumps(active)});\n"
         result = engine.evaluate(setup + source)
         self.assertFalse(result.isError(), result.toString())
         for wid, caption in changes:
@@ -220,8 +236,10 @@ class PickWindowTest(KWinScriptMixin, unittest.TestCase):
         self.kwin, self.later, self.guard = FakeKWin(), Later(), Guard()
 
     def jump(self, konsole, session, window="/Windows/1"):
-        activator = windows.Activator(konsole, self.kwin, self.later, self.guard)
-        self.assertTrue(activator.activate(konsole_target(session, window)))
+        # Jeden aktywator na test, jak w usłudze (windows.default_activator).
+        if getattr(self, "activator", None) is None:
+            self.activator = windows.Activator(konsole, self.kwin, self.later, self.guard)
+        self.assertTrue(self.activator.activate(konsole_target(session, window)))
         return self.kwin.scripts[-1]
 
     def kwin_windows(self, konsole, order=None, pid=700):
@@ -281,8 +299,27 @@ class PickWindowTest(KWinScriptMixin, unittest.TestCase):
         konsole = FakeKonsole({"/Windows/1": [1], "/Windows/2": [2]}, {1: "x", 2: "x"})
         script = self.jump(konsole, 2)
         wins = [("/Windows/1", 700, "x" + SUFFIX), ("/Windows/2", 700, "x" + SUFFIX)]
-        activated = self.run_script(script, wins, [("/Windows/2", "x" + windows.MARKER + SUFFIX)])
-        self.assertEqual(activated[-1], "/Windows/2")
+        # Okna o identycznym tytule czekają — żadne nie jest podnoszone na ślepo.
+        self.assertEqual(self.run_script(script, wins), [])
+        self.assertEqual(self.run_script(script, wins, [("/Windows/2", "x" + windows.MARKER + SUFFIX)]),
+                         ["/Windows/2"])
+
+    def test_marker_mode_raises_unknown_window_when_no_identical_one_is_visible(self):
+        script = windows.kwin_script([700], "x", [], "x" + windows.MARKER)
+        self.assertEqual(self.run_script(script, [("/Windows/2", 700, "stary" + SUFFIX)]), ["/Windows/2"])
+
+    def test_finish_raises_best_window_when_the_marker_never_arrived(self):
+        konsole = FakeKonsole({"/Windows/1": [1], "/Windows/2": [2]}, {1: "x", 2: "x"})
+        self.jump(konsole, 2)
+        self.assertEqual([ms for ms, _fn in self.later.queue], [windows.FINISH_MS, windows.RESTORE_MS])
+        self.later.fire_one(windows.FINISH_MS)
+        finish = self.kwin.scripts[-1]
+        wins = [("/Windows/1", 700, "x" + SUFFIX), ("/Windows/2", 700, "x" + SUFFIX)]
+        self.assertEqual(self.run_script(finish, wins, active="inne"), ["/Windows/1"])
+        # Okno ze znacznikiem już aktywne (skrypt główny je znalazł) — koniec czekania nic nie zmienia.
+        marked = [("/Windows/1", 700, "x" + SUFFIX), ("/Windows/2", 700, "x" + windows.MARKER + SUFFIX)]
+        self.assertEqual(self.run_script(finish, marked, active="/Windows/2"), [])
+        self.assertEqual(self.run_script(finish, marked, active="/Windows/1"), ["/Windows/2"])
 
     def test_user_title_change_during_marker_is_kept(self):
         konsole = FakeKonsole({"/Windows/1": [1], "/Windows/2": [2]}, {1: "x", 2: "x"})
@@ -298,6 +335,59 @@ class PickWindowTest(KWinScriptMixin, unittest.TestCase):
         self.jump(konsole, 2)
         self.later.fire()
         self.assertEqual(konsole.tabs[2]["title"], "x")
+
+    def test_timers_of_an_earlier_jump_do_not_cut_the_next_one_short(self):
+        konsole = FakeKonsole({"/Windows/1": [1], "/Windows/2": [2]}, {1: "x", 2: "x"})
+        self.jump(konsole, 2)
+        self.jump(konsole, 2)
+        scripts = len(self.kwin.scripts)
+        self.later.fire_one(windows.FINISH_MS)   # zegar pierwszego przejścia
+        self.later.fire_one(windows.RESTORE_MS)
+        self.assertEqual(len(self.kwin.scripts), scripts)
+        self.assertEqual(konsole.tabs[2]["title"], "x" + windows.MARKER)
+        self.later.fire_one(windows.FINISH_MS)   # zegary drugiego przejścia
+        self.assertEqual(len(self.kwin.scripts), scripts + 1)
+        self.later.fire_one(windows.RESTORE_MS)
+        self.assertEqual(konsole.tabs[2]["title"], "x")
+        key = f"{SERVICE} /Sessions/2"
+        self.assertEqual(self.guard.events, [("hold", key), ("release", key), ("hold", key), ("release", key)])
+
+    def test_failed_script_still_gives_the_tab_back(self):
+        konsole = FakeKonsole({"/Windows/1": [1], "/Windows/2": [2]}, {1: "x", 2: "x"})
+        self.kwin = FakeKWin(OSError("brak miejsca"))
+        activator = windows.Activator(konsole, self.kwin, self.later, self.guard)
+        with self.assertRaises(OSError):
+            activator.activate(konsole_target(2))
+        with mock.patch("builtins.print"):
+            self.later.fire()
+        self.assertEqual(konsole.tabs[2]["title"], "x")
+        self.assertEqual(self.guard.events[-1], ("release", f"{SERVICE} /Sessions/2"))
+
+    def test_errors_in_the_restore_timer_do_not_escape_and_release_the_tab(self):
+        konsole = FakeKonsole({"/Windows/1": [1], "/Windows/2": [2]}, {1: "x", 2: "x"})
+        self.jump(konsole, 2)
+        konsole.read = mock.Mock(side_effect=RuntimeError("Konsole zniknęła"))
+        with mock.patch("builtins.print"):
+            self.later.fire()
+        self.assertEqual(self.guard.events[-1], ("release", f"{SERVICE} /Sessions/2"))
+
+    def test_partial_marker_failure_restores_the_tab(self):
+        konsole = FakeKonsole({"/Windows/1": [1], "/Windows/2": [2]}, {1: "x", 2: "x"})
+        apply = konsole.apply
+
+        def flaky(key, title=None, **kw):
+            if title and title.endswith(windows.MARKER):
+                apply(key, title=title)   # setTitle przeszło (nadpisało formaty), formaty już nie
+                return False
+            return apply(key, title=title, **kw)
+        konsole.apply = flaky
+        script = self.jump(konsole, 2)
+        self.assertEqual(konsole.tabs[2], {"title": "x", "local": "%d : %n", "remote": "(%u) %H",
+                                           "color": "#000000"})
+        self.assertIn('const marked = ""', script)
+        key = f"{SERVICE} /Sessions/2"
+        self.assertEqual(self.guard.events, [("hold", key), ("release", key)])
+        self.assertEqual(self.later.queue, [])
 
     def test_other_konsole_processes_and_apps_are_not_candidates(self):
         konsole = FakeKonsole({"/Windows/1": [1]}, {1: "agent"})
@@ -349,6 +439,38 @@ class TabGuardTest(unittest.TestCase):
         activator.activate(konsole_target(2))
         activator.give_back_all()
         self.assertEqual(konsole.tabs[2]["title"], "x")
+
+
+class KWinScriptsTest(unittest.TestCase):
+    """Wczytanie skryptu przez /Scripting na atrapie magistrali: zegar starszego skryptu nie usuwa nowszego."""
+
+    class Bus:
+        def __init__(self):
+            self.members = []
+
+        def isConnected(self):
+            return True
+
+        def call(self, msg, *_args):
+            from PyQt6.QtDBus import QDBusMessage
+            self.members.append(msg.member())
+            return msg.createReply()  # ReplyMessage
+
+    def test_stale_unload_timer_keeps_the_newer_script(self):
+        tmp = tempfile.mkdtemp(prefix="tide-kwin-")
+        self.addCleanup(shutil.rmtree, tmp)
+        bus, later = self.Bus(), Later()
+        scripts = windows.KWinScripts(bus, later)
+        with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": tmp}):
+            self.assertTrue(scripts.run("// pierwszy"))
+            self.assertTrue(scripts.run("// drugi"))
+        with open(os.path.join(tmp, "tide", "activate-window.js"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "// drugi")
+        bus.members.clear()
+        later.fire_one(windows.UNLOAD_MS)
+        self.assertEqual(bus.members, [])
+        later.fire_one(windows.UNLOAD_MS)
+        self.assertEqual(bus.members, ["unloadScript"])
 
 
 class ShowsTest(unittest.TestCase):

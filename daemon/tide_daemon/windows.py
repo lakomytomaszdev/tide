@@ -62,6 +62,7 @@ WINDOW_OWNERS = {
 SCRIPT_NAME = "tide-activate-window"
 UNLOAD_MS = 2000   # skrypt wykonuje się od razu; sprzątamy go chwilę później
 RESTORE_MS = 1000  # jak długo karta nosi znacznik, gdy tytuł okna trzeba było odróżnić
+FINISH_MS = 600    # po tym czasie skrypt ze znacznikiem przestaje czekać na tytuł i wybiera sam
 MARKER = " ⌖"      # dopisek do tytułu karty: odróżnia okno od innego okna z identycznym tytułem
 CAPTION_SEPARATOR = " \u2014 "  # Qt dopisuje do tytułu okna „ — <nazwa aplikacji>”
 
@@ -113,15 +114,39 @@ def shows(caption: str, title: str) -> bool:
     return bool(title) and (caption == title or caption.startswith(title + CAPTION_SEPARATOR))
 
 
-def kwin_script(pids: list[int], want: str = "", avoid=(), marked: str = "") -> str:
+def kwin_script(pids: list[int], want: str = "", avoid=(), marked: str = "", finish: bool = False) -> str:
     """Skrypt KWin: aktywuje okno należące do najbliższego z podanych procesów.
 
     want — wyświetlany tytuł karty, którą okno ma pokazywać (Konsole, po setCurrentSession),
     avoid — tytuły pokazywane przez inne okna tego samego procesu: takiego okna nie wybieramy,
     marked — tytuł karty ze znacznikiem, gdy want nie wystarcza do odróżnienia okien.
     Gdy od razu nie widać jednoznacznego okna (KWin dostaje nowy tytuł asynchronicznie),
-    skrypt raz poprawia wybór, kiedy któreś okno procesu dostanie jednoznaczny tytuł.
+    skrypt raz poprawia wybór, kiedy któreś okno procesu dostanie jednoznaczny tytuł. Ze znacznikiem
+    nie podnosi od razu żadnego z okien o identycznym tytule, tylko czeka na tytuł ze znacznikiem.
+    finish — skrypt kończący czekanie (Activator uruchamia go po FINISH_MS, bo skrypty KWin nie mają
+    zegara): gdy aktywne okno nie jest jeszcze najlepszym kandydatem, podnosi najlepsze dostępne,
+    żeby kliknięcie nigdy nie kończyło się niczym.
     """
+    if finish:
+        ending = """const active = workspace.activeWindow;
+if (best && !(active && candidates.indexOf(active) >= 0 && kind(active) >= kind(best))) raise(best);
+"""
+    else:
+        ending = """// Ze znacznikiem okna o identycznym tytule (2) czekają na tytuł ze znacznikiem (3);
+// okno o nieznanym tytule (1) podnosimy od razu, bo żadnego lepszego nie ma.
+const raised = best && !(marked && kind(best) === 2) ? best : null;
+if (raised) raise(raised);
+if (want && !(raised && certain(raised))) {
+    let fixed = false;
+    for (const w of candidates) {
+        w.captionChanged.connect(function () {
+            if (fixed || !certain(w)) return;
+            fixed = true;
+            if (w !== raised) raise(w);
+        });
+    }
+}
+"""
     return f"""// Wygenerowane przez tide-daemon: przejście do okna sesji agenta.
 const pids = {json.dumps(pids)};
 const want = {json.dumps(want)};
@@ -160,18 +185,7 @@ for (const w of candidates) {{
     const score = k * 1000 + 100 - pids.indexOf(w.pid);
     if (score > bestScore) {{ best = w; bestScore = score; }}
 }}
-if (best) raise(best);
-if (want && !(best && certain(best))) {{
-    let fixed = false;
-    for (const w of candidates) {{
-        w.captionChanged.connect(function () {{
-            if (fixed || !certain(w)) return;
-            fixed = true;
-            if (w !== best) raise(w);
-        }});
-    }}
-}}
-"""
+""" + ending
 
 
 class KWinScripts:
@@ -182,6 +196,7 @@ class KWinScripts:
         from PyQt6.QtDBus import QDBusConnection
         self.bus = bus or QDBusConnection.sessionBus()
         self.later = later or QTimer.singleShot
+        self.generation = 0  # zegar starszego skryptu nie usuwa nowszego o tej samej nazwie
 
     def _call(self, member, *args):
         from PyQt6.QtDBus import QDBus, QDBusMessage
@@ -205,8 +220,18 @@ class KWinScripts:
         if reply.type() != QDBusMessage.MessageType.ReplyMessage:
             return False
         self._call("start")
-        self.later(UNLOAD_MS, lambda: self._call("unloadScript", SCRIPT_NAME))
+        self.generation += 1
+        generation = self.generation
+        self.later(UNLOAD_MS, lambda: self._unload(generation))
         return True
+
+    def _unload(self, generation: int) -> None:
+        if generation != self.generation:
+            return  # w międzyczasie wczytano nowszy skrypt — sprząta go jego własny zegar
+        try:
+            self._call("unloadScript", SCRIPT_NAME)
+        except Exception as exc:  # sprzątanie nie może położyć usługi
+            print(f"tide-daemon: nie udało się usunąć skryptu KWin: {exc!r}", flush=True)
 
 
 def session_number(path: str) -> int:
@@ -244,11 +269,15 @@ class Activator:
             want, avoid, ambiguous = self._show_session(konsole)
             if ambiguous:
                 marked = self._borrow(konsole, want)
-        ok = self.kwin.run(kwin_script(target["pids"], want, avoid, marked))
         if marked:
+            # Zegary przed skryptem: nieudane wczytanie skryptu (np. błąd zapisu pliku) nie może
+            # zostawić znacznika na karcie ani wstrzymanego znacznika stanu.
             key = f"{konsole['service']} {konsole['session']}"
-            self.later(RESTORE_MS, lambda: self._give_back(key))
-        return ok
+            token = self.pending[key]
+            finish = kwin_script(target["pids"], want, avoid, marked, finish=True)
+            self.later(FINISH_MS, lambda: self._finish(key, token, finish))
+            self.later(RESTORE_MS, lambda: self._give_back(key, token))
+        return self.kwin.run(kwin_script(target["pids"], want, avoid, marked))
 
     def window_of(self, service: str, number: int, windows: list[str], fallback: str = "") -> str:
         """Okno, w którym karta jest teraz; okno ze środowiska tylko, gdy żadne okno jej nie zgłosi."""
@@ -293,24 +322,51 @@ class Activator:
         # setTitle nadpisuje oba formaty, więc od razu przywracamy je w tym samym wywołaniu —
         # znacznik niesie tylko wyświetlany tytuł, a Konsole wróci do formatu przy aktywności.
         if not self.konsole.apply(key, title=marked, local=current["local"], remote=current["remote"]):
-            if self.guard is not None:
-                self.guard.release(key)
+            # Część zmian mogła przejść (setTitle tak, formaty nie) — wracamy do tego, co było.
+            self.konsole.apply(key, title=current["title"], local=current["local"], remote=current["remote"])
+            self._release(key)
             return ""
 
         def give_back():
-            now = self.konsole.read(key)
-            if now is not None and now["title"] == marked:
-                self.konsole.apply(key, title=current["title"], local=now["local"], remote=now["remote"])
-            if self.guard is not None:
-                self.guard.release(key)
+            try:
+                now = self.konsole.read(key)
+                if now is not None and now["title"] == marked:
+                    self.konsole.apply(key, title=current["title"], local=now["local"], remote=now["remote"])
+            finally:
+                self._release(key)
 
         self.pending[key] = give_back
         return marked
 
-    def _give_back(self, key: str) -> None:
-        restore = self.pending.pop(key, None)
-        if restore is not None:
+    def _release(self, key: str) -> None:
+        if self.guard is None:
+            return
+        try:
+            self.guard.release(key)
+        except Exception as exc:  # znacznik stanu karty nie może położyć usługi
+            print(f"tide-daemon: nie udało się oddać karty znacznikowi stanu: {exc!r}", flush=True)
+
+    def _give_back(self, key: str, token=None) -> None:
+        """Przywraca tytuł karty. token — przywrócenie z zegara konkretnego przejścia: zegar
+        wcześniejszego przejścia nie skraca znacznika nowszego."""
+        restore = self.pending.get(key)
+        if restore is None or (token is not None and restore is not token):
+            return
+        del self.pending[key]
+        try:
             restore()
+        except Exception as exc:  # wywołanie z zegara Qt — wyjątek położyłby usługę
+            print(f"tide-daemon: nie udało się przywrócić tytułu karty Konsole: {exc!r}", flush=True)
+
+    def _finish(self, key: str, token, source: str) -> None:
+        """Koniec czekania na tytuł ze znacznikiem: skrypt podnosi najlepsze okno, jeśli żadne
+        jednoznaczne nie zostało jeszcze aktywowane."""
+        if self.pending.get(key) is not token:
+            return  # karta już oddana albo przejęta przez nowsze przejście
+        try:
+            self.kwin.run(source)
+        except Exception as exc:
+            print(f"tide-daemon: nie udało się dokończyć przejścia do okna: {exc!r}", flush=True)
 
     def give_back_all(self) -> None:
         """Przywraca tytuły kart od razu (zamknięcie usługi przed upływem RESTORE_MS)."""
