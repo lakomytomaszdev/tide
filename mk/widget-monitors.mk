@@ -1,5 +1,5 @@
 # Widżet „Monitory” (org.tide.stream.monitors, PT-38): kafelek „Monitory · PC → Xbox” w docku Stream z popupem
-# potwierdzenia. Przełączenie (DDC/CI wejścia DP-2, kscreen-doctor) robi tide-daemon (/Monitors, install-daemon).
+# potwierdzenia. Przełączenie (wejście DP-2 przez DDC/CI, układ w KWin bez zmian) robi tide-daemon (/Monitors).
 # Cel tylko instaluje pakiet — miejsce w docku Stream należy do układu paneli Stream (PT-36). Testy w widgets/tests
 # (katalog dopisuje mk/widget-agents.mk). Podgląd: make preview-monitors (build/preview/stream-monitors-*.png).
 INSTALL_TARGETS += install-widget-monitors
@@ -19,6 +19,6 @@ MONITORS_PALETTE ?= streamer
 preview-monitors:
 	@/usr/bin/python3 widgets/preview_monitors.py build/preview --palette theme/palette/$(MONITORS_PALETTE).json
 
-# Bieżący układ monitorów i stan ostatniego przełączenia (tylko odczyt: kscreen-doctor -j).
+# Wejście prawego monitora według stanu usługi (tylko odczyt pliku stanu, bez DDC).
 monitors-status:
 	@/usr/bin/python3 daemon/tide_daemon/monitors.py status

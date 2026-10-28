@@ -1,4 +1,4 @@
-// Kafelek „Monitory” w docku Stream (PT-38): bieżący układ i strzałka do drugiego w kolorze akcentu
+// Kafelek „Monitory” w docku Stream (PT-38): bieżące wejście prawego monitora i strzałka do drugiego w kolorze akcentu
 // („PC → Xbox”, jak w mocku). Kliknięcie otwiera potwierdzenie (MonitorsPopup), samo nic nie przełącza.
 // Bez PlasmoidItem (podgląd: widgets/preview_monitors.py).
 import QtQuick

@@ -3,7 +3,7 @@
   "KPlugin": {
     "Id": "org.tide.stream.monitors",
     "Name": "Tide · Monitory PC ⇄ Xbox",
-    "Description": "Przełącza układ monitorów: prawy monitor na wejście Xboxa (HD60 X) i lewy jako główny, albo z powrotem na PC — po potwierdzeniu",
+    "Description": "Przełącza wejście prawego monitora na Xboxa (HD60 X) albo z powrotem na PC — po potwierdzeniu; układ ekranów bez zmian",
     "Icon": "video-display",
     "Category": "Multimedia",
     "License": "MIT",

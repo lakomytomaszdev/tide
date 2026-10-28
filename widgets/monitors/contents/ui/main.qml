@@ -1,7 +1,7 @@
-// Widżet „Monitory” (org.tide.stream.monitors, PT-38): kafelek w docku Stream z bieżącym układem monitorów
-// i popup z potwierdzeniem. Przełączenie robi tide-daemon (/Monitors SetLayout: DDC/CI wejścia DP-2
-// i kscreen-doctor, decyzja 81) — układ ekranów to stan pulpitu Tide, nie streamu, więc źródłem jest
-// usługa Tide, a nie rdzeń Streamer (decyzja 15; wyjątek z decyzji 79 dotyczy tylko stanu streamu).
+// Widżet „Monitory” (org.tide.stream.monitors, PT-38): kafelek w docku Stream z bieżącym wejściem prawego monitora
+// i popup z potwierdzeniem. Przełączenie robi tide-daemon (/Monitors SetLayout: wejście DP-2 przez DDC/CI, układ
+// w KWin bez zmian, decyzja 81) — monitory to stan pulpitu Tide, nie streamu, więc źródłem jest usługa Tide,
+// a nie rdzeń Streamer (decyzja 15; wyjątek z decyzji 79 dotyczy tylko stanu streamu).
 // Bez skrótu klawiszowego (plan PT-38).
 import QtQuick
 import QtQuick.Layouts

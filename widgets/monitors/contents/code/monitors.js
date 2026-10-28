@@ -1,8 +1,8 @@
-// Stan układu monitorów z tide-daemon (/Monitors Status, PT-38) na słowa kafelka i okna potwierdzenia.
-// Wejście: {layout, target, available, error, saved, savedAt, ddc, notices, monitor, primary, disableMonitor,
-// switching, result} (opis w daemon/tide_daemon/dbus_service.py) i to, czy usługa jest na magistrali.
-// Kolory to nazwy ról z palety (Tokens[nazwa] w QML). Czyste funkcje — testy liczą je w qml6
-// (widgets/tests/test_widget_monitors.py).
+// Stan wejścia prawego monitora z tide-daemon (/Monitors Status, PT-38) na słowa kafelka i okna potwierdzenia.
+// Wejście: {layout, target, available, error, interrupted, since, monitor, switching, result} (opis
+// w daemon/tide_daemon/dbus_service.py) i to, czy usługa jest na magistrali. „Xbox” zmienia tylko wejście monitora
+// przez DDC/CI, układ ekranów w KWin zostaje (decyzja 81). Kolory to nazwy ról z palety (Tokens[nazwa] w QML).
+// Czyste funkcje — testy liczą je w qml6 (widgets/tests/test_widget_monitors.py).
 .pragma library
 
 var LABELS = { pc: "PC", xbox: "Xbox" }
@@ -15,13 +15,7 @@ function label(layout) {
     return LABELS[layout] || ""
 }
 
-// „2026-10-28T21:14:05+01:00” → „28.10 21:14” (czas lokalny zapisany przez usługę, bez przeliczania strefy).
-function shortTime(iso) {
-    const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(iso || ""))
-    return m ? m[3] + "." + m[2] + " " + m[4] + ":" + m[5] : ""
-}
-
-// Kafelek w docku Stream: {label, from, to, busy, muted, toolTip}. „PC → Xbox” jak w mocku: bieżący układ
+// Kafelek w docku Stream: {label, from, to, busy, muted, toolTip}. „PC → Xbox” jak w mocku: bieżące wejście
 // i strzałka do drugiego w kolorze akcentu.
 function tile(status, up) {
     const s = obj(status)
@@ -29,69 +23,69 @@ function tile(status, up) {
     if (!up) {
         t.busy = "usługa nie działa"
         t.muted = true
-        t.toolTip = "tide-daemon nie działa — układu monitorów nie da się przełączyć"
+        t.toolTip = "tide-daemon nie działa — wejścia monitora nie da się przełączyć"
         return t
     }
     if (!s.layout) {
-        t.busy = "czytam układ…"
+        t.busy = "czytam stan…"
         t.muted = true
-        t.toolTip = "Czytam układ monitorów…"
+        t.toolTip = "Czytam stan monitorów…"
         return t
     }
     if (s.switching) {
         t.busy = "przełączam na " + label(s.switching) + "…"
         t.muted = true
-        t.toolTip = "Przełączam monitory na " + label(s.switching) + "…"
+        t.toolTip = "Przełączam prawy monitor na " + label(s.switching) + "…"
         return t
     }
     if (s.available === false) {
         t.busy = "niedostępne"
         t.muted = true
-        t.toolTip = "Układu monitorów nie da się przełączyć: " + (s.error || "brak kscreen-doctor")
+        t.toolTip = "Wejścia monitora nie da się przełączyć: " + (s.error || "brak ddcutil")
         return t
     }
+    const monitor = s.monitor || "DP-2"
     t.from = label(s.layout)
     t.to = "→ " + label(s.target)
-    const primary = s.layout === "xbox" ? s.primary : s.monitor
-    t.toolTip = "Teraz: " + t.from + (primary ? " (główny " + primary + ")" : "")
+    t.toolTip = "Teraz: " + t.from + " (" + monitor + (s.layout === "xbox" ? " na wejściu HDMI" : " na DisplayPort") + ")"
+        + (s.interrupted ? "\nPoprzednie przełączenie zostało przerwane" : "")
         + "\nKliknij, aby przełączyć na " + label(s.target)
     return t
 }
 
-// Okno potwierdzenia (popup kafelka): {title, lines, button, enabled, notices, error, target}.
+// Okno potwierdzenia (popup kafelka): {title, lines, button, enabled, note, error, target}.
 function confirm(status, up) {
     const s = obj(status)
-    const out = { title: "Monitory", lines: [], button: "", enabled: false, notices: [], error: "", target: "" }
+    const out = { title: "Monitory", lines: [], button: "", enabled: false, note: "", error: "", target: "" }
     if (!up) {
         out.lines = ["tide-daemon nie działa — przełączenie niedostępne."]
         return out
     }
     if (!s.layout) {
-        out.lines = ["Czytam układ monitorów…"]
+        out.lines = ["Czytam stan monitorów…"]
         return out
     }
     const monitor = s.monitor || "DP-2"
-    const primary = s.primary || "HDMI-A-1"
     out.target = s.target || ""
     if (s.target === "xbox") {
         out.title = "Przełączyć na Xbox?"
-        out.lines = [monitor + " przejdzie na wejście HDMI z Xboxem (HD60 X).", primary + " zostanie monitorem głównym."]
-        if (s.disableMonitor !== false)
-            out.lines.push(monitor + " zniknie z pulpitu, a jego okna przejdą na monitor główny.")
+        out.lines = [monitor + " przejdzie na wejście HDMI z Xboxem (HD60 X).",
+                     "Układ ekranów się nie zmienia: kursor i nowe okna mogą trafić na prawy ekran, którego wtedy nie widać.",
+                     "Po wyjściu ze Stream monitor sam wróci na PC."]
         out.button = "Przełącz na Xbox"
     } else {
         out.title = "Wrócić do PC?"
         out.lines = [monitor + " wróci na DisplayPort."]
-        const when = shortTime(s.savedAt)
-        out.lines.push(s.saved ? "Układ ekranów wróci do zapisanego" + (when ? " " + when : "") + "."
-                               : "Brak zapisanego układu — " + monitor + " wróci jako główny w preferowanym trybie.")
+        if (s.interrupted)
+            out.lines.push("Poprzednie przełączenie zostało przerwane — powrót do PC jest zawsze bezpieczny.")
         out.button = "Wróć do PC"
     }
     out.enabled = s.available !== false && !s.switching
     if (s.switching) out.button = "Przełączam…"
-    if (s.available === false) out.error = "Niedostępne: " + (s.error || "brak kscreen-doctor")
+    if (s.available === false) out.error = "Niedostępne: " + (s.error || "brak ddcutil")
     const result = obj(s.result)
     if (result.ok === false && result.error) out.error = "Ostatnie przełączenie: " + result.error
-    out.notices = (result.ok ? result.notices || [] : []).filter(n => n.indexOf("już jest") < 0)
+    if (result.ok && result.auto && result.changed)
+        out.note = "Po wyjściu ze Stream wejście wróciło na DisplayPort."
     return out
 }

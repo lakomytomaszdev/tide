@@ -1,7 +1,7 @@
-// Potwierdzenie przełączenia układu monitorów (PT-38): co się stanie, przycisk przełączenia i „Anuluj”.
-// Zmiana monitorów jest odczuwalna (prawy ekran pokazuje Xboxa, okna przechodzą na lewy), więc kafelek
-// nigdy nie przełącza od razu. Uwagi z ostatniego przełączenia („przełącz wejście przyciskiem na monitorze”)
-// i błąd — zwykłym textSecondary, bez koloru ostrzegawczego (ten jest zarezerwowany dla streamu, decyzja 79).
+// Potwierdzenie przełączenia wejścia prawego monitora (PT-38): co się stanie, przycisk przełączenia i „Anuluj”.
+// Zmiana jest odczuwalna (prawy ekran pokazuje Xboxa, a KWin dalej uważa go za pulpit), więc kafelek nigdy
+// nie przełącza od razu. Uwaga po automatycznym powrocie i błąd („przełącz wejście przyciskiem na monitorze”) —
+// zwykłym textSecondary, bez koloru ostrzegawczego (ten jest zarezerwowany dla streamu, decyzja 79).
 import QtQuick
 import QtQuick.Layouts
 import "tide" as Tide
@@ -46,11 +46,11 @@ Tide.Card {
     }
 
     Repeater {
-        model: card.model.notices
+        model: card.model.note !== "" ? [card.model.note] : []
         Text {
             required property string modelData
             Layout.fillWidth: true
-            text: "• " + modelData
+            text: modelData
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             color: Tide.Tokens.textSecondary
