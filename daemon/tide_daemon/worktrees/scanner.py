@@ -28,7 +28,7 @@ Sprzątanie (remove) usuwa wyłącznie `git worktree remove` bez --force, a gał
 Usuwanie wymuszone (remove z force=True, RemoveForced w D-Bus) to świadoma decyzja użytkownika po
 potwierdzeniu, co przepadnie: `git worktree remove --force`, gałąź `-d` tylko gdy scalona, `-D` tylko
 na wyraźną prośbę. Twarde blokady (HARD_BLOCKERS) obowiązują także wtedy: główny katalog, gałąź
-główna, brakujący katalog, blokada `git worktree lock` i działający w nim agent — dla nich nie ma
+główna, brakujący katalog, blokada `git worktree lock`, działający w nim agent i inne worktrees w jego katalogu — dla nich nie ma
 żadnej ścieżki wymuszenia.
 """
 import os
@@ -50,13 +50,16 @@ SKIP_DIRS = {"node_modules", "bower_components", "vendor", "bin", "obj", "target
              "out", "__pycache__", "venv", "env", "Pods", "DerivedData"}
 
 # Powody pominięcia przy sprzątaniu (kolejność = pierwszeństwo).
-BLOCKERS = ("main", "protected", "missing", "locked", "agent", "dirty", "no-main", "unmerged")
+BLOCKERS = ("main", "protected", "missing", "locked", "agent", "nested", "dirty", "no-main", "unmerged")
 # Twarde blokady: tych worktrees nie usuwamy nigdy, także po potwierdzeniu „Usuń mimo to”.
 # Główny katalog i gałąź główna (master, main, develop) — po tym, jak sprzątanie omal nie skasowało
 # master w LogViewer; brakujący katalog porządkuje tylko prune; blokadę zdejmuje się świadomie
 # (`git worktree unlock`); agent pracujący w katalogu — usunięcie katalogu spod działającego procesu
-# kończy się jego błędami albo odtworzeniem plików w pustym miejscu (decyzja 41).
-HARD_BLOCKERS = ("main", "protected", "missing", "locked", "agent")
+# kończy się jego błędami albo odtworzeniem plików w pustym miejscu (decyzja 41); worktree, w którego
+# katalogu leżą inne worktrees (np. ignorowane .claude/worktrees/) — `git worktree remove` bez --force
+# kończy się sukcesem i kasuje je razem z ich niezacommitowanymi plikami, a agent w środku nie blokuje
+# zewnętrznego (PT-30).
+HARD_BLOCKERS = ("main", "protected", "missing", "locked", "agent", "nested")
 
 # Grupy okna Worktrees. „W pracy”: agent albo aktywność w ostatniej dobie — z wyjątkiem scalonej
 # pracy (scalony, czysty, z własnymi commitami), która od razu idzie „Do sprzątnięcia”.
@@ -127,6 +130,7 @@ class Worktree:
             "missing": self.missing,
             "locked": self.locked,
             "agent": has_agent,
+            "nested": bool(self.nested),
             "dirty": self.dirty != 0,  # -1: statusu nie dało się odczytać — traktujemy jak zmiany
             "no-main": not self.main_branch,
             "unmerged": not self.merged,
@@ -142,6 +146,7 @@ class Worktree:
             "missing": self.missing,
             "locked": self.locked,
             "agent": has_agent,
+            "nested": bool(self.nested),
         }
         return next((name for name in HARD_BLOCKERS if checks[name]), "")
 
@@ -442,7 +447,10 @@ class WorktreeScanner:
         if not known:
             return _skip(result, "unknown")
         fresh_items = self.scan_repo(known.repo_path)
-        _mark_nested(fresh_items)
+        with self._lock:
+            others = [w for w in self.items if w.repo_path != known.repo_path]
+        # Zagnieżdżone liczymy ze świeżego stanu repozytorium i ze znanych worktrees innych repozytoriów.
+        _mark_nested(fresh_items + others)
         wt = next((w for w in fresh_items if w.path == path), None)
         if not wt:
             return _skip(result, "unknown")
@@ -528,6 +536,7 @@ MESSAGES = {
     "missing": "katalogu już nie ma (git worktree prune)",
     "locked": "zablokowany (git worktree lock)",
     "agent": "pracuje w nim agent",
+    "nested": "zawiera inne worktrees — usunięcie skasowałoby je razem z ich plikami",
     "dirty": "ma niezacommitowane zmiany",
     "no-main": "brak lokalnej gałęzi głównej (master, main, develop)",
     "unmerged": "nie jest scalony z lokalną gałęzią główną",
@@ -538,6 +547,7 @@ MESSAGES = {
 FORCE_MESSAGES = {
     "agent": "pracuje w nim agent — zamknij sesję, zanim usuniesz katalog",
     "locked": "zablokowany (git worktree lock) — najpierw git worktree unlock",
+    "nested": "zawiera inne worktrees — najpierw usuń te w środku",
 }
 
 

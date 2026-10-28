@@ -134,10 +134,12 @@ def worktree_gitdir(path: str) -> str:
     return os.path.normpath(gitdir if os.path.isabs(gitdir) else os.path.join(path, gitdir))
 
 
-# Wpisy, od których liczymy na nowo: gałąź założona albo przestawiona (`branch -f`, `checkout -B`)
-# i — w reflogu HEAD odłączonego worktree — przejście na inny commit (`checkout`).
-BRANCH_RESTARTS = ("branch: Created from", "branch: Reset to")
-HEAD_RESTARTS = ("checkout:",)
+# Wpisy, od których liczymy na nowo: gałąź założona albo przestawiona (`branch -f`, `checkout -B`),
+# cofnięta resetem (`reset --hard master` — dawne commity już nie są w gałęzi) i — w reflogu HEAD
+# odłączonego worktree — przejście na inny commit (`checkout`) albo reset (`reset --hard HEAD~1`).
+# Reset po commicie wraca do okna ACTIVE_WINDOW: ostrożnie, bo z tego widoku się usuwa.
+BRANCH_RESTARTS = ("branch: Created from", "branch: Reset to", "reset: moving to")
+HEAD_RESTARTS = ("checkout:", "reset: moving to")
 
 
 def reflog_has_own_commit(log_path: str, restarts: tuple = BRANCH_RESTARTS) -> bool | None:

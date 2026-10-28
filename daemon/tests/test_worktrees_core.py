@@ -265,6 +265,10 @@ class HelpersTest(unittest.TestCase):
         self.assertTrue(reflog_has_own_commit(log("e", "commit: x", "branch: Reset to master", "commit: y")))
         self.assertFalse(reflog_has_own_commit(log("f", "commit: x", "checkout: moving from a to b"), HEAD_RESTARTS))
         self.assertTrue(reflog_has_own_commit(log("g", "reset: moving to HEAD", "commit: x"), HEAD_RESTARTS))
+        self.assertFalse(reflog_has_own_commit(log("h", "branch: Created from master", "commit: wip",
+                                                   "reset: moving to master")))
+        self.assertFalse(reflog_has_own_commit(log("i", "reset: moving to HEAD", "commit: x",
+                                                   "reset: moving to HEAD~1"), HEAD_RESTARTS))
 
     def test_worktree_gitdir_from_dotgit_file(self):
         tmp = tempfile.mkdtemp(prefix="tide-gitdir-")
@@ -515,6 +519,20 @@ class MergedWorkGroupTest(WorktreeTestCase):
         gitrepos.git(self.p["merged"], "checkout", "-q", "-B", "feat/merged", "master")
         self.assertEqual(self.groups()["alpha-wt/merged"]["group"], "active")
 
+    def test_reset_after_own_commit_keeps_the_window(self):
+        # Created from / commit: wip / reset: moving to master — commitów już nie ma w gałęzi.
+        work = self.add("wip", "-b", "feat/wip")
+        gitrepos.commit(work, "wip.txt")
+        gitrepos.git(work, "reset", "-q", "--hard", "master")
+        w = self.groups()["alpha-wt/wip"]
+        self.assertEqual((w["merged"], w["removable"], w["group"]), (True, True, "active"))
+
+    def test_detached_reset_after_commit_keeps_the_window(self):
+        work = self.add("det3", "--detach", start=("master",))
+        gitrepos.commit(work, "d3.txt")
+        gitrepos.git(work, "reset", "-q", "--hard", "HEAD~1")
+        self.assertEqual(self.groups()["alpha-wt/det3"]["group"], "active")
+
     def test_without_reflog_falls_back_to_the_window(self):
         os.remove(os.path.join(self.p["alpha"], ".git", "logs", "refs", "heads", "feat", "merged"))
         self.assertEqual(self.groups()["alpha-wt/merged"]["group"], "active")
@@ -533,6 +551,68 @@ class MergedWorkGroupTest(WorktreeTestCase):
     def test_listing_reads_reflog_without_extra_git_calls(self):
         self.groups()
         self.assertFalse([c for c in self.git_calls() if "reflog" in c or c.startswith("log")])
+
+
+class NestedWorktreeTest(WorktreeTestCase):
+    """Worktree z innym worktree w ignorowanym katalogu (np. .claude/worktrees/) nie jest do usunięcia:
+    `git worktree remove` bez --force kończy się sukcesem i kasuje zagnieżdżony razem z jego plikami."""
+
+    def setUp(self):
+        super().setUp()
+        with open(os.path.join(self.p["alpha"], ".git", "info", "exclude"), "a", encoding="utf-8") as fh:
+            fh.write(".claude/\n")
+        self.outer = os.path.join(self.root, "alpha-wt", "outer")
+        gitrepos.git(self.p["alpha"], "worktree", "add", "-q", "-b", "feat/outer", self.outer)
+        self.inner = os.path.join(self.outer, ".claude", "worktrees", "inner")
+        self.precious = os.path.join(self.inner, "niezacommitowane.txt")
+
+    def add_inner(self):
+        gitrepos.git(self.p["alpha"], "worktree", "add", "-q", "-b", "feat/inner", self.inner)
+        with open(self.precious, "w", encoding="utf-8") as fh:
+            fh.write("praca agenta\n")
+
+    def test_outer_is_blocked_even_when_clean_and_merged(self):
+        self.add_inner()
+        w = self.listed()[self.outer]
+        self.assertEqual((w["dirty"], w["merged"]), (0, True), "na oko czysty i scalony")
+        self.assertEqual((w["removable"], w["blocker"], w["forceRemovable"], w["forceBlocker"]),
+                         (False, "nested", False, "nested"))
+        self.assertNotEqual(w["group"], "clean")
+
+    def test_remove_refuses_and_keeps_nested_files(self):
+        self.add_inner()
+        self.listed()
+        [res] = self.scanner.remove([self.outer], self.agent)
+        self.assertEqual((res["status"], res["reason"]), ("refused", "nested"))
+        self.assertIn("zawiera inne worktrees", res["message"])
+        [forced] = self.scanner.remove([self.outer], self.agent, force=True, delete_unmerged=True)
+        self.assertEqual((forced["status"], forced["reason"]), ("refused", "nested"))
+        self.assertTrue(os.path.isfile(self.precious))
+        self.assertFalse([c for c in self.git_calls() if "worktree remove" in c], "git worktree remove nie padło")
+
+    def test_remove_rereads_nesting_after_stale_listing(self):
+        self.assertEqual(self.listed()[self.outer]["blocker"], "")  # lista sprzed założenia zagnieżdżonego
+        self.add_inner()
+        [res] = self.scanner.remove([self.outer], self.agent)
+        self.assertEqual(res["reason"], "nested")
+        self.assertTrue(os.path.isfile(self.precious))
+
+    def test_agent_in_nested_does_not_unblock_outer(self):
+        self.add_inner()
+        items = self.listed(cwds=[self.inner])
+        self.assertEqual((items[self.inner]["hasAgent"], items[self.outer]["hasAgent"]), (True, False))
+        self.assertEqual(items[self.outer]["forceBlocker"], "nested")
+        [res] = self.scanner.remove([self.outer], [self.inner], force=True)
+        self.assertEqual(res["reason"], "nested")
+        self.assertTrue(os.path.isdir(self.inner))
+
+    def test_nested_worktree_of_another_repository_blocks_too(self):
+        other = os.path.join(self.outer, ".claude", "beta-copy")
+        gitrepos.git(self.p["beta"], "worktree", "add", "-q", "-b", "feat/elsewhere", other)
+        self.assertEqual(self.listed()[self.outer]["blocker"], "nested")
+        [res] = self.scanner.remove([self.outer], self.agent)
+        self.assertEqual(res["reason"], "nested")
+        self.assertTrue(os.path.isdir(other))
 
 
 class RemoveSubsetTest(WorktreeTestCase):

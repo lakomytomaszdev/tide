@@ -184,7 +184,7 @@ Pola worktree:
 | `size` | int | bajty na dysku jak `du -s` (bez zagnieżdżonych worktrees); `-1`, póki nie policzone |
 | `locked`, `missing` | bool | `git worktree lock` / katalogu już nie ma (`prunable`) |
 | `removable`, `blocker` | bool, string | czy sprzątanie go usunie; jeśli nie — pierwszy powód (niżej) |
-| `forceRemovable`, `forceBlocker` | bool, string | czy `RemoveForced` go usunie; jeśli nie — twarda blokada: `main`, `protected`, `missing`, `locked` albo `agent` |
+| `forceRemovable`, `forceBlocker` | bool, string | czy `RemoveForced` go usunie; jeśli nie — twarda blokada: `main`, `protected`, `missing`, `locked`, `agent` albo `nested` |
 | `group` | string | grupa w oknie Worktrees: `active`, `clean`, `decide`, `main`, `missing` (reguły niżej) |
 | `title`, `tag` | string | czytelny tytuł z nazwy gałęzi i wyciszony znacznik z prefiksu: `codex/summary-tabs-03-version-axis` → `summary-tabs 03 · version axis` i `codex`. Odłączony HEAD: `odłączony HEAD <skrót>` |
 | `subject` | string | temat ostatniego commita HEAD (do 120 znaków) |
@@ -204,11 +204,11 @@ Grupy (`group`, pierwsza pasująca reguła):
 | `clean` | `removable`: scalony z lokalną gałęzią główną, czysty, bez agenta, nie zablokowany | „Do sprzątnięcia”: jak wyżej |
 | `decide` | pozostałe: niescalone commity, zmiany, blokada, brak gałęzi głównej | „Do decyzji”, z powodem; otwieranie i pole wyboru (usuwanie wymuszone), zablokowane bez pola |
 
-Okno 24 h zostaje dla świeżych worktrees: taki bez własnych commitów też wygląda na scalony (0 commitów poza gałęzią główną), a to dopiero początek pracy. „Własny commit” to dowód z reflogu, czytanego wprost z plików (bez dodatkowego wywołania gita, tylko dla scalonych i czystych): `<.git>/logs/refs/heads/<gałąź>` ma wpis `commit…`, `cherry-pick`, `revert` albo `rebase (pick|reword|edit)` po ostatnim „branch: Created from” / „branch: Reset to”; odłączony HEAD — `logs/HEAD` z prywatnego katalogu worktree po ostatnim `checkout:`. Przewinięcie („merge master: Fast-forward”, `pull`) i reset się nie liczą. Bez reflogu (wyłączony, repozytorium bare, reftable, wygasły) obowiązuje samo okno 24 h.
+Okno 24 h zostaje dla świeżych worktrees: taki bez własnych commitów też wygląda na scalony (0 commitów poza gałęzią główną), a to dopiero początek pracy. „Własny commit” to dowód z reflogu, czytanego wprost z plików (bez dodatkowego wywołania gita, tylko dla scalonych i czystych): `<.git>/logs/refs/heads/<gałąź>` ma wpis `commit…`, `cherry-pick`, `revert` albo `rebase (pick|reword|edit)` po ostatnim „branch: Created from” / „branch: Reset to” / „reset: moving to”; odłączony HEAD — `logs/HEAD` z prywatnego katalogu worktree po ostatnim `checkout:` albo `reset: moving to`. Przewinięcie („merge master: Fast-forward”, `pull`) i reset się nie liczą, a reset (`reset: moving to`, np. `reset --hard master` po commicie) liczenie zeruje — taki worktree wraca do okna 24 h. Bez reflogu (wyłączony, repozytorium bare, reftable, wygasły) obowiązuje samo okno 24 h.
 
 Wynik `Remove` i `RemoveForced` dla każdej ścieżki: `path`, `removed`, `status` (`removed` — worktree i jego gałąź, jeśli była, zniknęły; `branch-kept` — worktree usunięty, gałąź została, powód w `branchMessage`; `refused` — nic nie usunięto, powód w `reason` i `message`), `reason` (pusty albo powód), `message` (po polsku), `branch`, `branchDeleted`, `branchMessage`, `freed` (bajty z ostatniego pomiaru), `forced` (czy to `RemoveForced`).
 
-Powody pominięcia (w tej kolejności): `main`, `protected`, `missing`, `locked`, `agent`, `dirty`, `no-main` (brak lokalnej gałęzi głównej), `unmerged`, a przy samym usuwaniu także `unknown` (ścieżka spoza listy), `git` (git odmówił — komunikat w `message`), `error` (wyjątek w usłudze), przy `RemoveForced` także `changed` (stan gorszy niż w potwierdzeniu) i `bad-request` (niepoprawne `confirmed`). `RemoveForced` pomija tylko twarde blokady: `main`, `protected`, `missing`, `locked`, `agent`.
+Powody pominięcia (w tej kolejności): `main`, `protected`, `missing`, `locked`, `agent`, `nested` (w katalogu leżą inne worktrees, np. ignorowane `.claude/worktrees/` — `git worktree remove` bez `--force` skasowałby je razem z ich niezacommitowanymi plikami), `dirty`, `no-main` (brak lokalnej gałęzi głównej), `unmerged`, a przy samym usuwaniu także `unknown` (ścieżka spoza listy), `git` (git odmówił — komunikat w `message`), `error` (wyjątek w usłudze), przy `RemoveForced` także `changed` (stan gorszy niż w potwierdzeniu) i `bad-request` (niepoprawne `confirmed`). `RemoveForced` pomija tylko twarde blokady: `main`, `protected`, `missing`, `locked`, `agent`, `nested`.
 
 Zasady sprzątania (`Remove`):
 
@@ -220,7 +220,7 @@ Zasady sprzątania (`Remove`):
 Usuwanie wymuszone (`RemoveForced`, decyzja 41):
 
 - **Tylko po potwierdzeniu.** Okno woła je wyłącznie po mocniejszym potwierdzeniu, które wymienia dla każdego worktree, co przepadnie, i ma czerwony przycisk „Usuń mimo to”.
-- **Twarde blokady bez wyjątków.** Główny katalog repozytorium, worktree na gałęzi głównej (`master`, `main`, `develop` albo lokalna główna), brakujący katalog, zablokowany (`git worktree lock`) i ten, w którym pracuje agent — odmowa niezależnie od flag. Gałęzi głównych nie kasuje ani `-d`, ani `-D` (druga linia obrony po nazwie gałęzi).
+- **Twarde blokady bez wyjątków.** Główny katalog repozytorium, worktree na gałęzi głównej (`master`, `main`, `develop` albo lokalna główna), brakujący katalog, zablokowany (`git worktree lock`), ten, w którym pracuje agent, i ten, w którego katalogu leżą inne worktrees (`nested`; stan zagnieżdżenia czytany na nowo tuż przed usunięciem) — odmowa niezależnie od flag. Gałęzi głównych nie kasuje ani `-d`, ani `-D` (druga linia obrony po nazwie gałęzi).
 - **Jedno `--force`.** `git worktree remove --force <ścieżka>`: zmiany i pliki nieśledzone idą razem z katalogiem; blokady (`-f -f`) nie zdejmujemy.
 - **Gałąź.** Scalona z lokalną gałęzią główną → `git branch -d`; niescalona albo bez gałęzi głównej → zostaje (`status: branch-kept`, `branchMessage` np. „gałąź feat/x zostaje (2 commity poza master)”), chyba że `deleteUnmergedBranches` → `git branch -D`.
 - **Świeży stan i potwierdzenie.** Repozytorium jest czytane na nowo jak przy sprzątaniu; jeśli od potwierdzenia przybyło zmian, niescalonych commitów albo commitów tylko tutaj, albo zmieniła się gałąź — odmowa `changed`, nic nie jest usuwane.
