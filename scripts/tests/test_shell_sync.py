@@ -367,6 +367,24 @@ class LockVariantTest(ShellSyncBase):
         out, _ = proc.communicate(timeout=30)
         self.assertEqual(out, "streamer\n")
 
+    def test_lock_held_too_long_gives_up_with_an_error(self):
+        import fcntl
+        self.sync("--force")
+        self.env["TIDE_SHELL_SYNC_LOCK_TIMEOUT"] = "1"
+        with open(self.state / "tide/shell-sync.lock", "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            start = time.monotonic()
+            failed = self.variant("streamer", check=False)
+            self.assertLess(time.monotonic() - start, 10)
+            self.assertEqual(failed.returncode, 1)
+            self.assertIn("zajęta", failed.stdout + failed.stderr)
+            self.assertNotIn("Traceback", failed.stdout + failed.stderr)
+            stuck = subprocess.run(["/usr/bin/python3", str(SCRIPT), "sync"], env=self.env, capture_output=True,
+                                   text=True, timeout=30)
+            self.assertEqual(stuck.returncode, 1)
+            self.assertNotIn("Traceback", stuck.stdout + stuck.stderr)
+        self.assertEqual(self.variant().stdout, "mist\n")
+
     def test_filesystem_error_is_reported_as_a_lock_variant_error(self):
         self.sync("--force")
         contents = self.copy / "contents"

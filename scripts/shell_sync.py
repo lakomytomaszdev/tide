@@ -101,12 +101,33 @@ class LockVariantError(RuntimeError):
     pass
 
 
+def lock_timeout() -> float:
+    """Ile sekund czekać na blokadę: składanie kopii z kilkoma wariantami trwa do kilkunastu s."""
+    try:
+        return float(os.environ.get("TIDE_SHELL_SYNC_LOCK_TIMEOUT") or 120)
+    except ValueError:
+        return 120.0
+
+
 @contextlib.contextmanager
 def locked():
-    """Wyłączny dostęp do kopii powłoki (fcntl.flock na LOCK_FILE); czeka, aż inny proces skończy."""
+    """Wyłączny dostęp do kopii powłoki (fcntl.flock na LOCK_FILE).
+
+    Czeka, aż inny proces skończy, ale najwyżej lock_timeout() s (odpytywanie LOCK_NB) — potem
+    LockVariantError, żeby zawieszony proces nie blokował logowania ani przełącznika aktywności.
+    """
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(LOCK_FILE, "a") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        deadline = time.monotonic() + lock_timeout()
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise LockVariantError(f"kopia powłoki zajęta przez inny proces dłużej niż "
+                                           f"{lock_timeout():g} s ({LOCK_FILE})") from None
+                time.sleep(0.1)
         try:
             yield
         finally:
@@ -578,7 +599,11 @@ def status() -> str:
 def main(argv: list[str]) -> int:
     command = argv[1] if len(argv) > 1 else "sync"
     if command == "sync":
-        result = sync(force="--force" in argv[2:])
+        try:
+            result = sync(force="--force" in argv[2:])
+        except LockVariantError as error:
+            log(str(error))
+            return 1
         if result not in ("up-to-date",):
             log(f"wynik: {result}")
         return 0
