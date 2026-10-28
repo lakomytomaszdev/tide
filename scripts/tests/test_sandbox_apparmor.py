@@ -4,6 +4,7 @@ Stan systemu jest udawany: TIDE_SANDBOX_ROOT to korzeń z /etc/apparmor.d i /pro
 uruchomienia bwrap i unshare idą przez atrapy (TIDE_SANDBOX_BWRAP, TIDE_SANDBOX_UNSHARE), które
 wypisują etykietę AppArmor procesu albo błąd jak prawdziwe programy.
 """
+import json
 import os
 import re
 import shutil
@@ -75,8 +76,8 @@ TIDE_LABEL = "bwrap (unconfined)"
 RESTRICTED = "unprivileged_userns (enforce)"
 
 
-class StateTest(unittest.TestCase):
-    """Stan na udawanym systemie: pliki profili, sysctl i wynik prób bwrap oraz unshare."""
+class FakeSystem(unittest.TestCase):
+    """Udawany system: pliki profili, sysctl i atrapy bwrap oraz unshare."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -103,8 +104,11 @@ class StateTest(unittest.TestCase):
 
     def state(self):
         result = run_check("--json", env=self.env)
-        import json
         return result.returncode, json.loads(result.stdout)
+
+
+class StateTest(FakeSystem):
+    """Stan odczytany przez check.py --json."""
 
     def test_before_install_bwrap_is_blocked_and_the_profile_is_missing(self):
         self.bwrap(DENIED, rc=1)
@@ -176,6 +180,66 @@ class StateTest(unittest.TestCase):
         result = run_check(env=self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn("sudo bash scripts/sandbox/install.sh", result.stdout)
+
+
+class DryRunTest(FakeSystem):
+    """install.sh i uninstall.sh z --dry-run na udawanym systemie: bez sudo, bez zmian, te same odmowy co naprawdę."""
+
+    def script(self, name, *args):
+        return subprocess.run(["bash", str(ROOT / "scripts" / "sandbox" / name), "--dry-run", *args],
+                              capture_output=True, text=True, env={**os.environ, **self.env}, timeout=60)
+
+    def files(self):
+        return sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file())
+
+    @unittest.skipUnless(shutil.which("apparmor_parser"), "brak apparmor_parser")
+    def test_install_dry_run_checks_the_profile_and_changes_nothing(self):
+        self.bwrap(DENIED, rc=1)
+        before = self.files()
+        result = self.script("install.sh")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("nic nie zmieniono", result.stdout)
+        self.assertEqual(self.files(), before)
+
+    def test_install_refuses_to_overwrite_a_foreign_profile(self):
+        (self.root / TARGET).write_text("profile bwrap /usr/bin/bwrap {\n}\n")
+        self.bwrap(DENIED, rc=1)
+        result = self.script("install.sh")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("nie nadpisuję", result.stderr)
+
+    def test_install_refuses_when_another_profile_claims_bwrap(self):
+        (self.root / "etc/apparmor.d/bwrap").write_text("profile bwrap /usr/bin/bwrap flags=(unconfined) {\n}\n")
+        self.bwrap("unconfined")
+        result = self.script("install.sh")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("/etc/apparmor.d/bwrap", result.stderr)
+
+    def test_install_stops_when_the_state_cannot_be_read(self):
+        self.env["TIDE_SANDBOX_CHECK"] = "/bin/false"
+        result = self.script("install.sh")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Nie udało się odczytać stanu", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_uninstall_refuses_a_profile_without_tides_marker(self):
+        (self.root / TARGET).write_text("profile bwrap /usr/bin/bwrap {\n}\n")
+        result = self.script("uninstall.sh")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("nie usuwam", result.stderr)
+        self.assertTrue((self.root / TARGET).exists())
+
+    def test_uninstall_dry_run_names_tides_profile_and_keeps_it(self):
+        (self.root / TARGET).write_text(profile_text())
+        result = self.script("uninstall.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Zostanie usunięty", result.stdout)
+        self.assertTrue((self.root / TARGET).exists())
+
+    def test_uninstall_without_profile_has_nothing_to_do(self):
+        result = self.script("uninstall.sh")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("nic do usunięcia", result.stdout)
 
 
 if __name__ == "__main__":

@@ -19,10 +19,12 @@
 #
 # Nie zmienia sysctl kernel.apparmor_restrict_unprivileged_userns ani profilu unprivileged_userns.
 # Cofnięcie: sudo bash scripts/sandbox/uninstall.sh
+#
+# Zmienne dla testów (działają tylko z --dry-run; sudo i tak czyści środowisko): TIDE_SANDBOX_ROOT — korzeń
+# udawanego systemu (jak w check.py), TIDE_SANDBOX_CHECK — program zamiast check.py.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-TARGET=/etc/apparmor.d/bwrap-userns-restrict
 BWRAP=/usr/bin/bwrap
 
 yes=0
@@ -35,10 +37,13 @@ for arg in "$@"; do
     esac
 done
 
+check="$here/check.py"
 if [[ $dry -eq 1 ]]; then
     user="$(id -un)"
     as_user() { "$@"; }
+    check="${TIDE_SANDBOX_CHECK:-$check}"
 else
+    unset TIDE_SANDBOX_ROOT
     if [[ $EUID -ne 0 ]]; then
         echo "Uruchom przez sudo: sudo bash $0  (podgląd bez zmian: bash $0 --dry-run)" >&2
         exit 1
@@ -65,7 +70,12 @@ if [[ ! -x $BWRAP ]]; then
     exit 1
 fi
 
-state=$(as_user /usr/bin/python3 "$here/check.py" --json) || true
+TARGET="${TIDE_SANDBOX_ROOT:-}/etc/apparmor.d/bwrap-userns-restrict"
+state=$(as_user /usr/bin/python3 "$check" --json 2>/dev/null) || true
+if ! /usr/bin/python3 -c 'import json, sys; json.loads(sys.argv[1])' "$state" 2>/dev/null; then
+    echo "Nie udało się odczytać stanu ($check --json) — przerywam, nic nie zmieniono." >&2
+    exit 1
+fi
 field() { /usr/bin/python3 -c 'import json,sys; v=json.loads(sys.argv[1]); [v:=v[k] for k in sys.argv[2:]]; print(v if not isinstance(v, list) else "\n".join(v))' "$state" "$@"; }
 
 if [[ "$(field profile)" == obcy ]]; then
@@ -82,7 +92,7 @@ if [[ -n "$conflicts" ]]; then
 fi
 if [[ "$(field restrict_userns)" != 1 ]]; then
     echo "kernel.apparmor_restrict_unprivileged_userns ≠ 1 — ograniczenia nie ma, profil niczego nie zmieni." >&2
-    as_user /usr/bin/python3 "$here/check.py" >&2 || true
+    as_user /usr/bin/python3 "$check" >&2 || true
     exit 1
 fi
 
@@ -99,7 +109,7 @@ fi
 # --- 3. pytanie -----------------------------------------------------------------------------------
 
 echo "Stan teraz:"
-as_user /usr/bin/python3 "$here/check.py" | sed 's/^/  /' || true
+as_user /usr/bin/python3 "$check" | sed 's/^/  /' || true
 echo
 if [[ "$(field profile)" == tide ]] && cmp -s "$work/bwrap-userns-restrict" "$TARGET"; then
     echo "Na dysku jest już ten sam profil Tide — zostanie tylko ponownie wczytany do jądra."
@@ -118,7 +128,11 @@ if [[ $dry -eq 1 ]]; then
     exit 0
 fi
 if [[ $yes -eq 0 ]]; then
-    read -r -p "Zainstalować? [t/N] " answer
+    if [[ ! -t 0 ]]; then
+        echo "Brak terminala do pytania — uruchom w terminalu albo z --yes. Nic nie zmieniono." >&2
+        exit 1
+    fi
+    read -r -p "Zainstalować? [t/N] " answer || answer=n
     if [[ "$answer" != [tTyY] ]]; then
         echo "Przerwano, nic nie zmieniono."
         exit 1
@@ -127,17 +141,26 @@ fi
 
 # --- 4. instalacja --------------------------------------------------------------------------------
 
-if [[ "$(field profile)" == tide ]]; then
-    # Profile ze starszej wersji pliku (np. unpriv_bwrap) — -r ich nie usuwa, a nowy plik ich nie ma.
-    apparmor_parser -R "$TARGET" 2>/dev/null || true
-fi
+# Profile ze starszej wersji pliku, których nowa nie ma (pierwsza wersja miała też unpriv_bwrap): -r ich nie
+# usuwa. Najpierw wczytujemy nowy plik (bwrap podmienia się bez przerwy), potem usuwamy tylko zbędne.
+old_names=""
+[[ -e "$TARGET" ]] && old_names=$(apparmor_parser -N "$TARGET" 2>/dev/null || true)
+new_names=$(apparmor_parser -N "$work/bwrap-userns-restrict")
+trap 'echo "Instalacja przerwana w połowie. Stan: python3 $here/check.py; naprawa: sudo bash $0 albo cofnięcie: sudo bash $here/uninstall.sh" >&2; rm -rf "$work"' ERR
 install -m 644 -o root -g root "$work/bwrap-userns-restrict" "$TARGET"
 apparmor_parser -r "$TARGET"
+for name in $old_names; do
+    if ! grep -qxF "$name" <<<"$new_names"; then
+        printf 'profile %s {}\n' "$name" >"$work/stale"
+        apparmor_parser -R "$work/stale" || echo "Nie udało się usunąć z jądra starego profilu $name (zniknie po restarcie)." >&2
+    fi
+done
+trap - ERR
 
 # --- 5. sprawdzenie -------------------------------------------------------------------------------
 
 echo
-if as_user /usr/bin/python3 "$here/check.py"; then
+if as_user /usr/bin/python3 "$check"; then
     echo
     echo "Gotowe. Cofnięcie: sudo bash $here/uninstall.sh"
 else
