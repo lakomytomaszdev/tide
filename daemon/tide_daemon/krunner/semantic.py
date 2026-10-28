@@ -24,9 +24,13 @@ pozycje, partiami po BATCH, z najniższym priorytetem kolejki modeli (queue.IDLE
 serwerze nic innego nie czeka, więc nie opóźnia raportu ani opisów kart. Jeden model naraz na karcie 8 GB:
 załadowanie bge-m3 wypycha z karty qwen3:8b, więc przebieg z czymś do policzenia czeka też na QUIET_S ciszy
 po ostatnim wywołaniu innym modelem (inaczej następny opis karty ładowałby swój model od nowa).
-Wyłączone w ustawieniach (`semanticSearch: false`) — nic nie jest liczone, a plik indeksu znika.
+Wyłączone w ustawieniach (`semanticSearch: false`) — nic nie jest liczone, partia czekająca w kolejce albo trwająca
+jest przerywana (Cancel przebiegu), a plik indeksu znika od razu (wake()). Przed każdą partią indeks sprawdza ciszę
+na serwerze jeszcze raz — gdy w międzyczasie pracował inny model, reszta czeka na następny przebieg.
 
-Zapytanie (`query_vector`): tylko od MIN_WORDS słów i MIN_CHARS znaków, po DEBOUNCE_S ciszy (KRunner pyta przy
+Zapytanie (`query_vector`): tylko od MIN_WORDS słów i MIN_CHARS znaków, nie polecenie powłoki, adres ani ścieżka
+(„://”, „/…”, „~/…”, „-flaga”, znaki powłoki), po strip_secrets — zapytanie z czymś, co wygląda na sekret, nie idzie
+do modelu wcale; po DEBOUNCE_S ciszy (KRunner pyta przy
 każdym naciśnięciu klawisza — nowsze zapytanie unieważnia starsze, zanim cokolwiek pójdzie do serwera), z pamięcią
 ostatnich wektorów. Wywołanie ma najwyższy priorytet kolejki, ale KRunner czeka na nie najwyżej QUERY_BUDGET_S:
 po tym czasie dostaje same wyniki słowne, a wywołanie kończy się w tle (zimny model się ładuje, wektor trafia
@@ -35,6 +39,7 @@ do pamięci). Serwer nie odpowiada — przez BACKOFF_S nie próbujemy wcale. Ża
 from __future__ import annotations
 
 import base64
+from array import array
 import hashlib
 import json
 import math
@@ -123,13 +128,31 @@ def document(entry: dict, tickets=(), home: str = "") -> str:
     return text[:DOC_LIMIT].strip()
 
 
+# Zapytanie, które wygląda na polecenie powłoki, adres albo ścieżkę, nie idzie do modelu: KRunner jest też
+# terminalem i paskiem adresu, a takie zapytania niosą najczęściej coś, czego nie chcemy wysyłać nawet lokalnie.
+_COMMANDLIKE = re.compile(r"://|(?:^|\s)(?:/|~/|\./)|(?:^|\s)--?[A-Za-z]|[|<>$`=]")
+
+
+def query_text(text: str, home: str = "") -> str:
+    """Tekst zapytania dla modelu albo "" — za krótki albo wygląda na polecenie, adres, ścieżkę lub sekret.
+    Przechodzi przez strip_secrets jak dokumenty sesji."""
+    text = " ".join(str(text or "").split())
+    if len(text.split()) < MIN_WORDS or len(text) < MIN_CHARS or _COMMANDLIKE.search(text):
+        return ""
+    clean = strip_secrets(text, home)
+    if clean != text:
+        return ""  # coś wyglądało na sekret albo ścieżkę domową — nie szukamy po znaczeniu wcale
+    return clean
+
+
 def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:20]
 
 
-def normalize(vector) -> tuple:
+def normalize(vector) -> array:
+    """Wektor długości 1 jako array('f') — 4 bajty na liczbę zamiast obiektu float (ok. 4 KB na sesję w pamięci)."""
     norm = math.sqrt(sum(x * x for x in vector))
-    return tuple(x / norm for x in vector) if norm > 0 else tuple(0.0 for _ in vector)
+    return array("f", (x / norm for x in vector) if norm > 0 else (0.0 for _ in vector))
 
 
 def dot(a, b) -> float:
@@ -140,14 +163,14 @@ def pack(vector) -> str:
     return base64.b64encode(struct.pack(f"<{len(vector)}e", *vector)).decode("ascii")
 
 
-def unpack(text: str, dims: int) -> tuple | None:
+def unpack(text: str, dims: int) -> array | None:
     try:
         raw = base64.b64decode(text.encode("ascii"), validate=True)
     except (ValueError, UnicodeEncodeError, AttributeError):
         return None
     if dims <= 0 or len(raw) != 2 * dims:
         return None
-    return struct.unpack(f"<{dims}e", raw)
+    return array("f", struct.unpack(f"<{dims}e", raw))
 
 
 def _iso(ts: float) -> str:
@@ -164,7 +187,7 @@ class Store:
         self.model = ""
         self.dims = 0
         self.updated = 0.0
-        self.items: dict[str, dict] = {}   # id → {"hash", "ts", "vec": tuple}
+        self.items: dict[str, dict] = {}   # id → {"hash", "ts", "vec": array('f')}
 
     def reset(self, model: str = "") -> None:
         self.model, self.dims, self.items = model, 0, {}
@@ -246,7 +269,9 @@ class SemanticSearch:
         # Kolejka modeli (cisza na serwerze przed indeksowaniem); None przy atrapie `embed` bez kolejki.
         self.queue = queue if queue is not None else (models_queue.shared() if embed is None else None)
         self._retry = False
-        self.cancel = Cancel()
+        self.cancel = Cancel()            # zamykanie usługi: zapytania i indeks
+        self._pass_cancel = Cancel()      # bieżący przebieg indeksu — przerywany też przy wyłączeniu
+        self._file_lock = threading.Lock()   # zapis i usuwanie pliku indeksu (wątek indeksu i wake())
         self._lock = threading.Lock()
         self._snapshot: tuple[str, int, dict] = ("", 0, {})   # (model, wymiary, {id: wektor}) dla zapytań
         self._state = {"state": "waiting", "items": 0, "pending": 0, "updated": "", "error": "", "model": "",
@@ -270,6 +295,11 @@ class SemanticSearch:
     def add_listener(self, listener) -> None:
         with self._lock:
             self._listeners.append(listener)
+
+    def remove_listener(self, listener) -> None:
+        with self._lock:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
 
     def _set(self, **changes) -> None:
         with self._lock:
@@ -300,10 +330,24 @@ class SemanticSearch:
         self._stop.set()
         self._wake.set()
         self.cancel.set()  # trwające i czekające wywołania modelu kończą się od razu
+        self._pass_cancel.set()
 
     def wake(self) -> None:
-        """Przebieg zaraz (zmiana ustawień modeli: włączenie, wyłączenie, inny model roli `embed`)."""
+        """Przebieg zaraz (zmiana ustawień modeli: włączenie, wyłączenie, inny model roli `embed`). Wyłączone —
+        partia czekająca w kolejce albo trwająca jest przerywana, a plik indeksu znika od razu (w wątku
+        wołającego, bez czekania na przebieg)."""
+        if not self._enabled():
+            self._pass_cancel.set()
+            self._turn_off()
         self._wake.set()
+
+    def _turn_off(self) -> None:
+        with self._file_lock:
+            self.store.remove()
+        self._publish()
+        with self._lock:
+            self._cache.clear()
+        self._set(state="off", items=0, pending=0, error="", updated="", dims=0)
 
     def _run(self) -> None:
         self._load()
@@ -342,11 +386,11 @@ class SemanticSearch:
         self._load()
         cfg = self.config()
         if not self._enabled(cfg):
-            if self.store.items or os.path.exists(self.store.path):
-                self.store.remove()
-                self._publish()
-            self._set(state="off", items=0, pending=0, error="", updated="", dims=0)
+            self._turn_off()
             return
+        if self._stop.is_set():
+            return
+        self._pass_cancel = Cancel()
         try:
             role = cfg.role("embed")
         except ModelError as exc:
@@ -385,10 +429,13 @@ class SemanticSearch:
         for start in range(0, len(todo), BATCH):
             if self._stop.is_set() or not self._enabled():
                 break
+            if start and self._busy_for(self.config(), role, identity):
+                self._retry = True   # serwer znowu pracuje innym modelem — reszta w następnym przebiegu
+                break
             keys = todo[start:start + BATCH]
             try:
                 result = self.embed([wanted[k][2] for k in keys], role="embed", priority=models_queue.IDLE,
-                                    wait=INDEX_WAIT_S, timeout=INDEX_TIMEOUT_S, cancel=self.cancel)
+                                    wait=INDEX_WAIT_S, timeout=INDEX_TIMEOUT_S, cancel=self._pass_cancel)
             except models_queue.Busy:
                 self._retry = True
                 break  # serwer zajęty dłużej niż INDEX_WAIT_S — reszta w następnym przebiegu
@@ -413,6 +460,9 @@ class SemanticSearch:
             if self.monotonic() - saved >= SAVE_EVERY_S:
                 self._save()
                 saved = self.monotonic()
+        if not self._enabled():
+            self._turn_off()  # wyłączone w trakcie: partia przerwana, nic nie wraca na dysk
+            return
         pending = sum(1 for k, (hash_, _ts, _text) in wanted.items()
                       if (self.store.items.get(k) or {}).get("hash") != hash_)
         if not pending:
@@ -440,10 +490,13 @@ class SemanticSearch:
         return "ready" if self.store.items or self.store.updated else "waiting"
 
     def _save(self) -> None:
-        try:
-            self.store.save()
-        except OSError as exc:
-            print(f"tide-daemon: wyszukiwanie: nie udało się zapisać indeksu ({type(exc).__name__})", flush=True)
+        with self._file_lock:
+            if not self._enabled():
+                return  # wyłączone w międzyczasie — plik został usunięty i ma nie wrócić
+            try:
+                self.store.save()
+            except OSError as exc:
+                print(f"tide-daemon: wyszukiwanie: nie udało się zapisać indeksu ({type(exc).__name__})", flush=True)
 
     def _documents(self) -> dict:
         """{id sesji: (skrót, czas, tekst)} — sesje z okna MAX_AGE, najwyżej MAX_ITEMS najświeższych."""
@@ -471,14 +524,16 @@ class SemanticSearch:
             return bool(self._snapshot[2])
 
     def wants(self, text: str) -> bool:
-        """Czy zapytanie nadaje się na wyszukiwanie po znaczeniu: dość słów i znaków, a indeks coś ma."""
-        text = " ".join(str(text or "").split())
-        return len(text.split()) >= MIN_WORDS and len(text) >= MIN_CHARS and self.ready()
+        """Czy zapytanie nadaje się na wyszukiwanie po znaczeniu: dość słów i znaków, nie polecenie, adres,
+        ścieżka ani sekret (query_text), a indeks coś ma."""
+        return bool(query_text(text, self.home)) and self.ready()
 
     def query_vector(self, text: str):
         """Wektor zapytania albo None (nowsze zapytanie, wyłączone, serwer nie odpowiada, minął budżet).
         Blokuje najwyżej debounce + budget — wołać poza wątkiem głównym."""
-        key = " ".join(str(text or "").casefold().split())
+        key = query_text(text, self.home).casefold()
+        if not key:
+            return None
         with self._lock:
             self._seq += 1
             seq = self._seq

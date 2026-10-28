@@ -10,8 +10,9 @@ const ROLE_INFO = {
     summary: { title: "Raport", hint: "„Na daily” w raporcie porannym" },
     describe: { title: "Opisy kart", hint: "Krótkie opisy kart na tablicy i w Sesjach" },
     agent: { title: "Agent", hint: "Sesje z opcją „Lokalny” w oknie Nowe zadanie: tu ich model i program" },
-    embed: { title: "Wyszukiwanie", hint: "KRunner (Alt+Spacja) znajduje sesje także po znaczeniu, nie tylko po słowach "
-                                         + "— z tytułów, gałęzi i ticketów, bez treści rozmów" }
+    embed: { title: "Wyszukiwanie", hint: "KRunner (Alt+Spacja) znajduje sesje także po znaczeniu, nie tylko po słowach. "
+                                         + "Do modelu idą tytuły sesji, projekty, gałęzie, tickety planu i początek pierwszej "
+                                         + "wiadomości — bez treści rozmów" }
 }
 // Domyślny kontekst ról raportu (decyzja 60: z 16k model 8B nie mieści się na karcie 8 GB).
 const ROLE_CTX = { summary: 8192, describe: 8192 }
@@ -372,7 +373,7 @@ function searchLine(status) {
     if (!s || typeof s.enabled !== "boolean")
         return { text: "Ta wersja usługi nie podaje stanu wyszukiwania — zaktualizuj usługę Tide (make install-daemon).",
                  tone: "warn" }
-    if (!s.enabled) return { text: "Wyłączone — sesje nie są indeksowane, zapisane wektory usunięte.", tone: "muted" }
+    if (!s.enabled) return { text: "Wyłączone — sesje nie są indeksowane, zapisany indeks usunięty.", tone: "muted" }
     if (s.state === "inactive") return { text: "Usługa działa bez wtyczki KRunnera — nic nie jest indeksowane.", tone: "muted" }
     const role = status.roles ? status.roles.embed : null
     if (role && role.installed === false)

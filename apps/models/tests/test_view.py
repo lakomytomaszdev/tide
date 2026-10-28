@@ -965,7 +965,7 @@ Item {
         lines = warned(log, "LINES").split(" ¦ ")
         self.assertEqual(lines, [
             "ok:Gotowe: 412 sesji w indeksie · 28.10, 10:02",
-            "muted:Wyłączone — sesje nie są indeksowane, zapisane wektory usunięte.",
+            "muted:Wyłączone — sesje nie są indeksowane, zapisany indeks usunięty.",
             "muted:Indeksuję: 120 z 412 sesji…",
             "muted:Zacznie działać po pobraniu modelu bge-m3.",
             "muted:Usługa działa bez wtyczki KRunnera — nic nie jest indeksowane.",

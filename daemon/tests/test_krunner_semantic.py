@@ -290,6 +290,54 @@ class IndexingTest(unittest.TestCase):
         self.assertEqual(s.state()["state"], "error")
         self.assertIn("chmurze Ollamy", s.state()["error"])
 
+    def test_turning_off_cancels_waiting_batch_and_deletes_file_at_once(self):
+        s = self.search()
+        s.sync()
+        self.assertTrue(os.path.exists(self.path))
+        self.index.items.append(entry("upload", "Ponawianie wysyłania", age=0.5))
+        waiting = threading.Event()
+
+        def blocked(texts, *, cancel=None, **kwargs):
+            # Partia czeka w kolejce (IDLE) — kończy się dopiero przerwaniem przebiegu, jak w models.queue.
+            waiting.set()
+            for _ in range(500):
+                if cancel is not None and cancel.is_set():
+                    raise ModelError("Model lokalny: wywołanie przerwane — usługa się zamyka (127.0.0.1:11434)")
+                time.sleep(0.01)
+            return self.embed(texts, **kwargs)
+
+        s.embed = blocked
+        worker = threading.Thread(target=s.sync)
+        worker.start()
+        self.assertTrue(waiting.wait(5))
+        self.settings = {"semanticSearch": False}
+        s.wake()  # tak budzi go zapis ustawień (models_monitor) — w wątku wołającego
+        self.assertFalse(os.path.exists(self.path), "plik znika od razu, nie po przebiegu")
+        worker.join(3)
+        self.assertFalse(worker.is_alive(), "czekająca partia przerwana")
+        self.assertFalse(os.path.exists(self.path), "przerwany przebieg nie zapisuje pliku z powrotem")
+        self.assertEqual((s.state()["state"], s.state()["items"], s.state()["error"]), ("off", 0, ""))
+        self.assertFalse(s.ready())
+
+    def test_quiet_is_checked_before_every_batch(self):
+        queue = models_queue.Queue()
+        lane = models_queue.lane_of(models_config.DEFAULT_URL)
+        self.index.items = [entry(f"s{n}", f"Sesja {n} o dockerze", age=1 + n / 100) for n in range(semantic.BATCH + 4)]
+        s = self.search(queue=queue)
+        original = self.embed
+
+        def embed_then_describe(texts, **kwargs):
+            result = original(texts, **kwargs)
+            # Między partiami raport albo opis karty użył qwen3:8b — bge-m3 nie powinien go zaraz wypchnąć.
+            queue.run(lambda: None, endpoint="local", lane=lane, role="describe", model="qwen3:8b")
+            return result
+
+        s.embed = embed_then_describe
+        s.sync()
+        self.assertEqual(len(self.embed.calls), 1, "druga partia odłożona")
+        self.assertEqual((s.state()["state"], s.state()["pending"]), ("waiting", 4))
+        self.assertTrue(s._retry)
+
     def test_waits_for_quiet_server_after_other_model(self):
         queue = models_queue.Queue()
         s = self.search(queue=queue)
@@ -334,6 +382,22 @@ class RankingAndQueryTest(unittest.TestCase):
         self.assertFalse(self.search.wants("docker"))
         self.assertFalse(self.search.wants("ab cd ef"), "trzy słowa, ale za krótko")
         self.assertTrue(self.search.wants("ta sesja o dockerze"))
+
+    def test_commands_paths_urls_and_secrets_are_not_embedded(self):
+        for query in ("git log --oneline -5 master", "otwórz https://example.com/strona teraz",
+                      "/home/ktos/projekt/plik.txt i coś", "cat ~/notatki/plan na jutro", "ls -la w katalogu domowym",
+                      "export TOKEN=abc123 dla serwera", "echo $HOME i reszta tekstu"):
+            with self.subTest(query=query):
+                self.assertEqual(semantic.query_text(query), "")
+                self.assertFalse(self.search.wants(query))
+                self.assertIsNone(self.search.query_vector(query))
+        secret = "klucz sk-ant-" + "A1b2C3d4" * 4 + " do serwera"
+        self.assertEqual(semantic.query_text(secret), "", "sekret w zapytaniu — nic nie idzie do modelu")
+        self.assertIsNone(self.search.query_vector(secret))
+        self.assertEqual(self.embed.calls, [])
+        self.assertEqual(semantic.query_text("ta sesja o dockerze i portach"), "ta sesja o dockerze i portach")
+        self.assertEqual(semantic.query_text("sesja o portach 5432 i 8080 dockera"), "sesja o portach 5432 i 8080 dockera",
+                         "zwykłe liczby to nie polecenie")
 
     def test_query_vector_uses_high_priority_and_cache(self):
         vector = self.search.query_vector("Sesja o dockerze i portach")

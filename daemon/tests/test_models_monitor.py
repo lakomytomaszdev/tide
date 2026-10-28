@@ -4,6 +4,7 @@ pole `queue` (kolejka modeli z wątków roboczych) i Changed z jej powodu najwy�
 
 Odczyt stanu jest atrapą (funkcja w teście) — żadnej sieci.
 """
+import os
 import threading
 import unittest
 from unittest import mock
@@ -276,6 +277,10 @@ class ModelsMonitorWritesTest(unittest.TestCase):
             def add_listener(self, listener):
                 self.listeners.append(listener)
 
+            def remove_listener(self, listener):
+                if listener in self.listeners:
+                    self.listeners.remove(listener)
+
             def wake(self):
                 self.woken += 1
 
@@ -296,8 +301,20 @@ class ModelsMonitorWritesTest(unittest.TestCase):
         self.assertEqual(search.woken, 2, "inny model roli embed — indeks od nowa")
         self.assertFalse(self.json.loads(monitor.set_semantic_search("może"))["ok"])
         self.assertEqual(search.woken, 2)
+        monitor.stop()
+        self.assertEqual(search.listeners, [], "stop() odłącza się od indeksu — bez Changed w trakcie zamykania")
         plain, _changes = self.monitor(lambda: None)
         self.assertEqual(self.json.loads(plain.status_json())["search"]["state"], "inactive")
+        # Usługa bez KRunnera (--no-krunner): wyłączenie usuwa plik indeksu z wcześniejszych uruchomień.
+        index = os.path.join(self.tmp, "search", "sessions.json")
+        os.makedirs(os.path.dirname(index))
+        with open(index, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        with mock.patch.dict(os.environ, {"TIDE_SEARCH_INDEX": index}):
+            self.assertEqual(self.json.loads(plain.set_semantic_search("on")), {"ok": True, "error": ""})
+            self.assertTrue(os.path.exists(index), "włączenie niczego nie usuwa")
+            self.assertEqual(self.json.loads(plain.set_semantic_search("off")), {"ok": True, "error": ""})
+        self.assertFalse(os.path.exists(index))
 
     def test_pull_changed_throttled_and_entry_cleared(self):
         import time

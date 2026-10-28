@@ -26,7 +26,8 @@ i jeden odłożony zapis — oba źródła razem dają Changed najwyżej raz na 
 Pole `search`: wyszukiwanie po znaczeniu w KRunnerze (PT-19) — `enabled` z models.json i stan indeksu
 (krunner/semantic.py: state, items, pending, updated, error, model, dims). Zmiany stanu indeksu przychodzą
 z jego wątku i idą tym samym dławieniem co kolejka; każdy udany zapis ustawień budzi indeks (włączenie,
-wyłączenie, inny model roli `embed`). Usługa bez KRunnera — `state: "inactive"`.
+wyłączenie, inny model roli `embed`). Usługa bez KRunnera — `state: "inactive"`, a SetSemanticSearch("off")
+usuwa plik indeksu sam.
 """
 from __future__ import annotations
 
@@ -154,6 +155,8 @@ class ModelsMonitor(QObject):
         self._timer.stop()
         self._throttle.stop()
         self.queue.remove_listener(self._listener)
+        if self.search is not None:
+            self.search.remove_listener(self._listener)  # bez Changed od indeksu w trakcie zamykania
         self._cancel.set()  # trwające pobierania i próby połączenia kończą się od razu
         self._pool.shutdown(wait=False, cancel_futures=True)
         self._tests.shutdown(wait=False, cancel_futures=True)
@@ -348,7 +351,16 @@ class ModelsMonitor(QObject):
         return self._write(models_settings.set_agent_program, program)
 
     def set_semantic_search(self, value: str) -> str:
-        return self._write(models_settings.set_semantic_search, value)
+        reply = self._write(models_settings.set_semantic_search, value)
+        if self.search is None and value == "off" and json.loads(reply).get("ok"):
+            # Usługa bez KRunnera (--no-krunner) nie ma indeksu w pamięci, ale plik z wcześniejszych uruchomień
+            # może leżeć na dysku — wyłączenie ma go usunąć tak samo.
+            from .krunner import semantic
+            try:
+                semantic.Store(semantic.store_path()).remove()
+            except OSError as exc:
+                print(f"tide-daemon: wyszukiwanie: nie udało się usunąć indeksu ({type(exc).__name__})", flush=True)
+        return reply
 
     def set_report_summary(self, mode: str) -> str:
         if self.report is None:
