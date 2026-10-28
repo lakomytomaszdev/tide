@@ -1,7 +1,8 @@
 // Źródło danych z tide-daemon przez D-Bus: wywołuje metodę zwracającą JSON i odświeża ją
 // po sygnale Changed, po pojawieniu się usługi i — na wszelki wypadek — co pollInterval.
 // Sygnał ActionFinished(job, json) obiektu (zadania /Docker: GroupAction, Prune) idzie dalej
-// jako actionFinished — obiekty bez tego sygnału po prostu go nie wysyłają.
+// jako actionFinished — obiekty bez tego sygnału po prostu go nie wysyłają. changedSignal wybiera sygnał
+// odświeżenia: domyślnie Changed, kafelek Praca — WorkChanged obiektu /Board (lista „Praca”, PT-40).
 import QtQuick
 import org.kde.plasma.workspace.dbus as DBus
 
@@ -13,6 +14,7 @@ Item {
     property string iface: "org.tide.Daemon.Agents"
     property string method: "Sessions"
     property int pollInterval: 15000
+    property string changedSignal: "Changed"   // "Changed" albo "WorkChanged"
 
     property var result: null            // ostatnia poprawna odpowiedź (sparsowany JSON)
     readonly property bool available: watcher.registered && !failed
@@ -63,7 +65,8 @@ Item {
         service: source.service
         path: source.path
         iface: source.iface
-        function dbusChanged() { source.refresh() }
+        function dbusChanged() { if (source.changedSignal === "Changed") source.refresh() }
+        function dbusWorkChanged() { if (source.changedSignal === "WorkChanged") source.refresh() }
         function dbusActionFinished(job, json) { source.actionFinished(String(job), String(json)) }
     }
 

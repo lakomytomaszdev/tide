@@ -1,6 +1,7 @@
 """Skrypty paneli (scripts/panels/*.js) na atrapie API plasmashell uruchamianej w qml6."""
 import json
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from scripts import panels
@@ -124,10 +125,12 @@ class DockScriptTest(unittest.TestCase):
     LEFT = ["org.tide.system"]
     WIDGETS = ["org.tide.agents", "org.tide.worktrees", "org.tide.limits"]
 
-    def install(self, state, widgets=None, left=None):
+    def install(self, state, widgets=None, left=None, retired=None):
+        from scripts import dock
         params = {**panels.screens(), "left": self.LEFT if left is None else left,
                   "widgets": self.WIDGETS if widgets is None else widgets,
                   "dockHeight": PALETTE["size"]["dock"]}
+        params["retired"] = dock.REMOVABLE if retired is None else retired
         out, state = fake.run(state, panels.script("dock", params))
         res = result(out)
         out, state = fake.run(state, panels.script("order", {**panels.screens(),
@@ -212,6 +215,47 @@ class DockScriptTest(unittest.TestCase):
         out, state = fake.run(state, panels.script("dock-uninstall", params))
         self.assertIn("org.tide.models", result(out)["removed"])
         self.assertEqual(types(find(state, 90)), ["icontasks"])
+
+    def test_work_tile_replaces_board_and_agents_on_reinstall(self):
+        """PT-40: dock z Tablicą i Agentami po ponownej instalacji ma w ich miejscu jeden kafelek Praca."""
+        from scripts import dock
+        _, state = self.install(fake.desktop_like_this_one(),
+                                widgets=["org.tide.board", "org.tide.agents", "org.tide.limits", "org.tide.models"])
+        self.assertEqual(types(find(state, 90))[-4:], ["board", "agents", "limits", "models"])
+        self.assertEqual(dock.DOCK_RIGHT, ["org.tide.work", "org.tide.limits"])
+        _, state = self.install(state, widgets=dock.DOCK_RIGHT)
+        self.assertEqual(types(find(state, 90)), ["system", "panelspacer", "icontasks", "panelspacer", "work", "limits"])
+        _, state = self.install(state, widgets=dock.DOCK_RIGHT)
+        self.assertEqual(types(find(state, 90)).count("work"), 1, "ponowna instalacja nie dubluje Pracy")
+        removed = [w["type"] for w in find(state, 90)["widgets"] if w["removed"]]
+        self.assertEqual(sorted(t for t in removed if t.startswith("org.tide.")),
+                         ["org.tide.agents", "org.tide.board", "org.tide.models"])
+
+    def test_rollback_brings_old_tiles_back_and_removes_the_work_applet(self):
+        """Wycofanie Pracy (bez pakietu installed_widgets daje Tablicę i Agentów): aplet Pracy bez pakietu znika."""
+        _, state = self.install(fake.desktop_like_this_one(), widgets=["org.tide.work", "org.tide.limits"])
+        _, state = self.install(state, widgets=["org.tide.board", "org.tide.agents", "org.tide.limits"])
+        self.assertEqual(types(find(state, 90)), ["system", "panelspacer", "icontasks", "panelspacer", "board", "agents",
+                                                  "limits"])
+
+    def test_installed_widgets_fall_back_to_replaced_tiles(self):
+        from scripts import dock
+        present = {"org.tide.board", "org.tide.agents", "org.tide.limits"}
+        with mock.patch.object(dock, "is_installed", lambda w: w in present):
+            self.assertEqual(dock.installed_widgets(dock.DOCK_RIGHT), ["org.tide.board", "org.tide.agents",
+                                                                       "org.tide.limits"])
+        with mock.patch.object(dock, "is_installed", lambda w: w in present | {"org.tide.work"}):
+            self.assertEqual(dock.installed_widgets(dock.DOCK_RIGHT), ["org.tide.work", "org.tide.limits"])
+        self.assertEqual(dock.params.__module__, "scripts.dock")
+        self.assertIn("org.tide.work", dock.REMOVABLE)
+
+    def test_uninstall_removes_board_and_agents_too(self):
+        from scripts import dock
+        res, state = self.install(fake.desktop_like_this_one(), widgets=["org.tide.board", "org.tide.agents"])
+        params = {**panels.screens(), "dock": res["dock"], "created": False, "previous": res["previous"],
+                  "widgets": dock.DOCK_WIDGETS + dock.DOCK_RETIRED}
+        out, state = fake.run(state, panels.script("dock-uninstall", params))
+        self.assertEqual(types(find(state, 90)), ["icontasks", "widget"])
 
 
 @unittest.skipUnless(fake.available(), "Brak qml6 do uruchomienia skryptów")
@@ -300,6 +344,22 @@ class SidebarScriptTest(unittest.TestCase):
         self.assertEqual(len(self.sidebars(state)), 1)
         self.assertEqual(types(find(state, res["sidebar"])), self.LAYOUT)
         self.assertEqual(res2["shortcut"], "Meta+S")
+
+    def test_reinstall_with_work_removes_agents_and_board(self):
+        """PT-40: pasek z Agentami i Tablicą po ponownej instalacji ma jeden kafelek Praca w trybie paska."""
+        from scripts import sidebar
+        old = ["org.tide.sidebar", "org.tide.agents", "org.tide.board", "org.tide.system", "org.tide.worktrees",
+               "org.tide.limits"]
+        res, state = self.install(fake.desktop_like_this_one(), widgets=old)
+        self.assertEqual(types(find(state, res["sidebar"]))[1:3], ["agents", "board"])
+        new = [sidebar.HEADER, *sidebar.WIDGETS]
+        res2, state = self.install(state, {"sidebar": res["sidebar"]}, widgets=new)
+        bar = find(state, res["sidebar"])
+        self.assertEqual(types(bar), ["sidebar", "work", "system", "worktrees", "limits", "panelspacer"])
+        self.assertEqual(sorted(res2["removed"]), ["org.tide.agents", "org.tide.board"])
+        self.assertEqual(config(bar, "org.tide.work", "/Configuration/General")["sidebarMode"], "true")
+        res3, state = self.install(state, {"sidebar": res["sidebar"]}, widgets=new)
+        self.assertEqual(types(find(state, res["sidebar"])).count("work"), 1)
 
     def test_reinstall_finds_the_panel_by_marker_and_adds_new_widgets(self):
         res, state = self.install(fake.desktop_like_this_one(), widgets=self.WIDGETS[:2])

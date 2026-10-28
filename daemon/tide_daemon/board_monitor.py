@@ -26,6 +26,13 @@
   projekt, tablica koordynatora z /Coordination) zbieramy w wątku głównym, pliki czytamy w jednym
   wątku roboczym, a odpowiedź D-Bus idzie później z wątku głównego (opóźniona odpowiedź jak w /Docker);
   kolejne prośby o tę samą kartę w czasie odczytu czekają na ten sam wynik (bez kolejki odczytów).
+- lista „Praca” (PT-40, board/work.py, Work()): aktywne karty i żywe sesje agentów bez karty liczone
+  w tym samym przeliczeniu i z tego samego kontekstu derive co kolumny kart — kafelek Praca i Tablica
+  nie mogą się rozjechać. Ma własny sygnał (work_changed → WorkChanged), więc Changed — i odczyt całej
+  migawki w oknie Tide i raporcie — idzie tylko przy zmianie migawki. WorkChanged idzie od razu, gdy zmieni
+  się lista bez pól zmiennych (grupa, pytanie, liczby — work.stable_key), a sama ostatnia czynność agenta
+  najwyżej co WORK_VOLATILE_MS. CreateCard z sesją, którą ma już aktywna karta (podwójne „+ karta”),
+  oddaje tę kartę zamiast zakładać drugą.
 - synchronizacja z YouTrackiem (PT-7, ytsync_monitor.py, board/ytsync.py): każde przeliczenie migawki
   przekazuje karty (z kolumną wyświetlaną) do `youtrack.observe`, a migawka dostaje stan synchronizacji przy
   kartach (`youtrackSync`), ogólny (`youtrack`) i konflikty w `errors`. Import zgłoszeń (ImportYouTrack)
@@ -39,6 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 
+from .board import work as work_list
 from .board.docs import CardDocs
 from .board.model import CARD_PREFIX, BoardError, card_num
 from .board import ytsync
@@ -50,11 +58,13 @@ DEBOUNCE_MS = 2_000
 POLL_MS = 60_000
 REDERIVE_MS = 500  # zmiany sesji przychodzą seriami (co 250 ms przy pracy agenta) — przeliczenie najwyżej tak często
 MAX_WATCHED_FILES = 2_000  # powyżej — tylko katalogi i odpytywanie co POLL_MS
+WORK_VOLATILE_MS = 10_000  # zmiana samej ostatniej czynności agenta na liście „Praca” — WorkChanged najwyżej tak często
 LINK_RETRY_S = 60.0  # nieudane utrwalenie sesji w karcie ponawiamy najwyżej tak często
 
 
 class BoardMonitor(QObject):
     changed = pyqtSignal()
+    work_changed = pyqtSignal()           # lista „Praca” (Work()) się zmieniła — sygnał WorkChanged
     _rederive_requested = pyqtSignal()   # z dowolnego wątku (np. wynik gita w tle) — kolejka Qt do wątku głównego
     _docs_ready = pyqtSignal(object, object)   # (ID karty, future) — wynik CardDocs z wątku roboczego
 
@@ -77,6 +87,10 @@ class BoardMonitor(QObject):
         # stan karty z pracy agentów (PT-5): board/derive.CardDeriver (z context()) albo funkcja(karta) → dict|None
         self.derive = derive
         self._json = ""
+        self._work_json = ""                              # lista „Praca” (Work()) z tego samego przeliczenia
+        self._work_key = ""                               # ta lista bez pól zmiennych (work.stable_key)
+        self._work_later = QTimer(self, singleShot=True, interval=WORK_VOLATILE_MS)
+        self._work_later.timeout.connect(self.work_changed)
         self._base: dict | None = None                    # migawka z plików bez stanu z pracy agentów
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._touched)
@@ -110,6 +124,7 @@ class BoardMonitor(QObject):
         self._poll.stop()
         self._debounce.stop()
         self._rederive.stop()
+        self._work_later.stop()
         if self._docs_pool is not None:
             self._docs_pool.shutdown(wait=False, cancel_futures=True)
             self._docs_pool = None
@@ -133,8 +148,37 @@ class BoardMonitor(QObject):
             self.publish()
         return self._json
 
+    def work_json(self) -> str:
+        """Work(): lista „Praca” (board/work.py) — {exists, items, counts}."""
+        if not self._work_json:
+            self.publish()
+        return self._work_json
+
     def create_card(self, request: str) -> str:
+        held = self._card_holding_session(request)
+        if held:
+            return json.dumps({"ok": True, "id": held, "existing": True, "commitError": ""}, ensure_ascii=False)
         return self._mutate(lambda: self.store.create_card(_object(request)))
+
+    def _card_holding_session(self, request: str) -> str:
+        """ID aktywnej karty (nie w Gotowych ani Archiwum), która ma już w polu `session` sesję z żądania —
+        drugie „+ karta” (podwójne kliknięcie, stara lista w kafelku) nie zakłada duplikatu."""
+        try:
+            wanted = str(json.loads(request or "").get("session") or "").strip()
+        except (ValueError, AttributeError):
+            return ""
+        if not wanted:
+            return ""
+        if self._current is None:
+            self.snapshot_json()
+        raw = wanted.partition(":")[2] if ":" in wanted else wanted
+        for card in (self._current or {}).get("cards") or []:
+            if not isinstance(card, dict) or (card.get("column") or "") in ("done", "archived"):
+                continue
+            held = str(card.get("session") or "").strip()
+            if held and (held == wanted or held == raw or held.partition(":")[2] == raw):
+                return str(card.get("id") or "")
+        return ""
 
     def update_card(self, card_id: str, request: str) -> str:
         return self._mutate(lambda: self.store.update_card(card_id, _object(request)))
@@ -328,7 +372,8 @@ class BoardMonitor(QObject):
         if self._base is None:
             self.publish()
             return
-        snapshot = self._derived(self._base)
+        snapshot, context = self._derived(self._base)
+        work = self._work(snapshot, context)
         if self.youtrack is not None:
             try:
                 self.youtrack.observe(snapshot)
@@ -340,10 +385,33 @@ class BoardMonitor(QObject):
         if text != self._json:
             self._json = text
             self.changed.emit()
+        work_text = json.dumps(work, ensure_ascii=False)
+        if work_text != self._work_json:
+            self._work_json = work_text
+            key = work_list.stable_key(work)
+            if key != self._work_key:
+                self._work_key = key
+                self._work_later.stop()
+                self.work_changed.emit()
+            elif not self._work_later.isActive():
+                self._work_later.start()   # tylko ostatnia czynność agenta — kafelek dowie się za chwilę
 
-    def _derived(self, base: dict) -> dict:
+    def _work(self, snapshot: dict, context) -> dict:
+        """Lista „Praca”; błąd nigdy nie psuje tablicy — wtedy same karty, a w ostateczności pusta lista."""
+        exists = snapshot.get("exists", False)
+        for ctx in (context, None):
+            try:
+                return work_list.build(snapshot.get("cards"), ctx, snapshot.get("projects"), exists)
+            except Exception as exc:  # lista „Praca” to dodatek — tablica działa bez niej
+                print(f"tide-daemon: tablica: lista Praca: {exc!r}", flush=True)
+        return {"exists": bool(exists), "items": [],
+                "counts": {**{g: 0 for g in work_list.GROUPS}, "total": 0, "sessions": 0}}
+
+    def _derived(self, base: dict) -> tuple[dict, object]:
+        """(migawka z `derived` i `boardColumn`, kontekst przeliczenia derive albo None) — kontekst dostaje
+        też lista „Praca” (board/work.py), więc sesje i połączenia są te same co w kolumnach kart."""
         if self.derive is None:
-            return base
+            return base, None
         snapshot = dict(base)
         snapshot["errors"] = list(base.get("errors") or [])
         claimed = [c.get("session") for c in base.get("cards") or [] if isinstance(c, dict) and c.get("session")]
@@ -351,7 +419,7 @@ class BoardMonitor(QObject):
             derive = self.derive.context(claimed) if hasattr(self.derive, "context") else self.derive
         except Exception as exc:  # stan z pracy agentów to dodatek — tablica działa bez niego
             print(f"tide-daemon: tablica: stan z pracy agentów: {exc!r}", flush=True)
-            return base
+            return base, None
         repos = {p.get("slug"): p.get("repo") or "" for p in base.get("projects") or [] if isinstance(p, dict)}
         cards = []
         links = []
@@ -373,7 +441,7 @@ class BoardMonitor(QObject):
             cards.append(card)
         snapshot["cards"] = cards
         self._queue_links(links)
-        return snapshot
+        return snapshot, (derive if hasattr(derive, "sessions") else None)
 
     def _queue_links(self, links: list) -> None:
         now = time.monotonic()

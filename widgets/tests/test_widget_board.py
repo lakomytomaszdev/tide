@@ -63,11 +63,13 @@ class PackageTest(unittest.TestCase):
             self.assertIn("textFormat: Text.PlainText", body, body[:80])
 
     def test_dock_and_sidebar_placement(self):
-        from scripts.dock import DOCK_LEFT, DOCK_RIGHT
-        from scripts.sidebar import WIDGETS
-        self.assertEqual(DOCK_RIGHT[:2], [WIDGET_ID, "org.tide.agents"], "w docku po prawej, przed Agentami")
-        self.assertNotIn(WIDGET_ID, DOCK_LEFT)
-        self.assertEqual(WIDGETS.index(WIDGET_ID), WIDGETS.index("org.tide.agents") + 1, "w pasku bocznym pod Agentami")
+        # PT-40: kafelek Praca (org.tide.work) zastąpił Tablicę w docku i w pasku bocznym; pakiet zostaje
+        # do wycofania i wraca na miejsce Pracy, gdy jej nie ma (scripts/dock.py, scripts/sidebar.py: REPLACES).
+        from scripts import dock, sidebar
+        self.assertNotIn(WIDGET_ID, dock.DOCK_WIDGETS)
+        self.assertNotIn(WIDGET_ID, sidebar.WIDGETS)
+        self.assertIn(WIDGET_ID, dock.REPLACES["org.tide.work"])
+        self.assertIn(WIDGET_ID, sidebar.REPLACES["org.tide.work"])
 
 
 @unittest.skipUnless(shutil.which("qml6"), "brak qml6")

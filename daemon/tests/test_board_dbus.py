@@ -134,10 +134,13 @@ class BoardDBusTest(unittest.TestCase):
     def test_1_introspection(self):
         xml = self.service.call(SERVICE, PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
         self.assertIn(f'<interface name="{IFACE}">', xml)
-        for member in ("Snapshot", "CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "RenderFlow",
-                       "Badge", "ShowWindow", "CardDocs"):
+        for member in ("Snapshot", "Work", "CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag",
+                       "RenderFlow", "Badge", "ShowWindow", "CardDocs"):
             self.assertIn(f'<method name="{member}">', xml)
+        work = self.call("Work")  # lista „Praca” (PT-40): bez tablicy — pusta, niczego nie zakłada
+        self.assertEqual((work["items"], work["counts"]["total"]), ([], 0))
         self.assertIn('<signal name="Changed"', xml)
+        self.assertIn('<signal name="WorkChanged"', xml)
         self.assertIn('<arg name="order" type="i" direction="in"/>', xml)
 
     def test_2_full_flow(self):

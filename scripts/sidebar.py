@@ -4,8 +4,8 @@ Użycie: python3 sidebar.py install|uninstall|show
 
 Pionowy panel przy lewej, zewnętrznej krawędzi lewego monitora (HDMI-A-1), chowany
 automatycznie (nie zabiera miejsca oknom) i pływający, szeroki na `size.sidebar` z palety.
-Od góry: nagłówek org.tide.sidebar ze skrótem, agenci, tablica, system, worktrees i Limity AI
-w widoku szczegółowym. Widżety Tide trafiają do paska tylko wtedy, gdy są zainstalowane,
+Od góry: nagłówek org.tide.sidebar ze skrótem, Praca (PT-40: karty tablicy i sesje agentów — zamiast
+kafelków Agenci i Tablica), system, worktrees i Limity AI w widoku szczegółowym. Widżety Tide trafiają do paska tylko wtedy, gdy są zainstalowane,
 więc cel idzie na koniec `make install` (LATE_INSTALL_TARGETS), po widżetach.
 
 Wysuwanie: Plasma sama wysuwa pasek, gdy mysz dotknie lewej krawędzi ekranu. Skrót Meta+S
@@ -32,7 +32,11 @@ HEADER = "org.tide.sidebar"
 # Kolejność od góry, jak na mocku „Sidebar” (lewy monitor).
 # Docker ma tryb paska, ale nie wchodzi do paska: z tablicą pasek miałby ok. 1080 px przy 1040 dostępnych
 # (limity AI ucięte na dole) — kafelek Dockera jest w docku zaraz po System.
-WIDGETS = ["org.tide.agents", "org.tide.board", "org.tide.system", "org.tide.worktrees", "org.tide.limits"]
+WIDGETS = ["org.tide.work", "org.tide.system", "org.tide.worktrees", "org.tide.limits"]
+# Kafelek, który zastąpił starsze (PT-40). sidebar.js zostawia w pasku tylko widżety z listy, więc ponowna
+# instalacja usuwa Agentów i Tablicę (pakiety zostają). Bez zainstalowanej Pracy stoją w jej miejscu stare —
+# wycofanie to `make uninstall-widget-work` i ponowne `make install-sidebar`.
+REPLACES = {"org.tide.work": ["org.tide.agents", "org.tide.board"]}
 SHORTCUT = "Meta+S"
 # Rozciągany odstęp z Plasmy na końcu paska: kafelki widżetów leżą od góry, wolne miejsce zostaje
 # na dole (bez niego panel rozdziela nadmiar wysokości między aplety).
@@ -42,8 +46,18 @@ SPACER = "org.kde.plasma.panelspacer"
 FLOATING_GAP = 8
 
 
+def is_installed(widget: str) -> bool:
+    return (DATA / "plasma" / "plasmoids" / widget).is_dir()
+
+
 def installed_widgets() -> list[str]:
-    return [w for w in [HEADER, *WIDGETS] if (DATA / "plasma" / "plasmoids" / w).is_dir()]
+    out = []
+    for widget in [HEADER, *WIDGETS]:
+        if is_installed(widget):
+            out.append(widget)
+        else:
+            out.extend(old for old in REPLACES.get(widget, []) if is_installed(old))
+    return out
 
 
 def action(header_id: int | None) -> str:

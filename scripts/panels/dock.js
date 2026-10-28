@@ -43,14 +43,10 @@ for (var tideJ = 0; tideJ < tideWidgets.length; ++tideJ) {
         tideW.remove();
         continue;
     }
-    // Osobny kafelek „＋ Zadanie” zastąpił przycisk „＋” na kafelku agentów.
-    if (tideW.type === "org.tide.newtask" && !tideWanted("org.tide.newtask")) {
-        tideW.remove();
-        continue;
-    }
-    // Kafelek Modele wszedł do kafelka „AI” (org.tide.limits, PT-41) — pakiet zostaje, ale z docka znika,
-    // także dodany ręcznie (ponowne make install-dock go zdejmuje).
-    if (tideW.type === "org.tide.models" && !tideWanted("org.tide.models")) {
+    // Kafelki wycofane z docka (P.retired: Modele — PT-41, Tablica i Agenci — PT-40, „＋ Zadanie”) i kafelek,
+    // który je zastąpił, gdy nie jest zainstalowany (wycofanie Pracy) — znikają, chyba że są na liście docka
+    // z lewej albo z prawej (np. Tablica i Agenci, gdy Praca nie jest zainstalowana). Pakiety zostają.
+    if ((P.retired || []).indexOf(tideW.type) >= 0 && !tideWanted(tideW.type)) {
         tideW.remove();
         continue;
     }
