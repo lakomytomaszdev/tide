@@ -37,6 +37,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `widgets/models/` | Kafelek „Modele” `org.tide.models` — od PT-41 poza dockiem (model lokalny jest w kafelku „AI”), pakiet zostaje na wypadek powrotu: czy serwer modeli lokalnych odpowiada, model w pamięci i ile na karcie, kolejka; popup z serwerami, rolami i trybem raportu |
 | `widgets/worktrees/` | Kafelek worktrees `org.tide.worktrees`: ile do sprzątnięcia (i ile GB), ile w pracy; kliknięcie otwiera okno |
 | `widgets/stream/` | Widżety aktywności Stream (PT-37) ze stanem z rdzenia Streamer przez D-Bus, nie z tide-daemon (decyzja 79): kafelki docka Stream — Stream `org.tide.stream`, Profil gracza `org.tide.stream.profile`, Observer `org.tide.stream.observer`, „?” `org.tide.stream.help` — i widżety pulpitu lewego monitora — konsola streamu `org.tide.stream.scenes` (Sceny i pełna karta Stream) i czat `org.tide.stream.chat`; wspólne w `widgets/lib/` (`CoreSource.qml`, `stream.js`, `StreamCard.qml`, `ProfileList.qml`) |
+| `widgets/monitors/` | Kafelek „Monitory · PC → Xbox” `org.tide.stream.monitors` (PT-38, dock Stream): przełącza układ monitorów po potwierdzeniu w popupie; przełączenie robi tide-daemon (`/Monitors`) |
 | `widgets/newtask/` | Kafelek „＋ Zadanie · nowe dla agenta” `org.tide.newtask`: otwiera okno nowego zadania |
 | `apps/newtask/` | Okno „Tide: nowe zadanie” (QML + PyQt6, plik `.desktop`, profil Konsoli): repozytorium, Claude Code albo Codex, polecenie, zrzuty ekranu, nowy worktree |
 | `apps/common/` | Wspólny Python aplikacji, kopiowany przez `widgets/stage.py` obok programu aplikacji i do widoków okna Tide: `taskimages.py` — zrzuty ekranu zadania (okno „Nowe zadanie” i okno uruchomienia na Tablicy) |
@@ -211,6 +212,30 @@ make install-widget-stream     # instalacja albo aktualizacja sześciu pakietów
 make uninstall-widget-stream   # usuwa tylko pakiety org.tide.stream*
 make preview-stream            # kafelki, popupy i konsola 1920×1080 na fałszywym stanie: build/preview/stream-*.png
 make preview-stream PALETTE=theme/palette/streamer.json   # z wariantem Streamer — plik palety dostarcza PT-34
+```
+
+## Monitory PC ⇄ Xbox i skróty Stream
+
+Dwie rzeczy z PT-38 (decyzja 81), obie w tide-daemon:
+
+- **Układ monitorów.** Kafelek „Monitory · PC → Xbox” (`org.tide.stream.monitors`, w docku Stream) otwiera
+  potwierdzenie. **Xbox:** prawy monitor DP-2 przechodzi przez DDC/CI na wejście HDMI z passthrough HD60 X
+  (`ddcutil setvcp 60 0x11`), lewy HDMI-A-1 staje się główny, a DP-2 jest wyłączany w KWin, więc okna przechodzą
+  na lewy monitor. **PC:** układ wraca dokładnie do stanu sprzed przełączenia (pozycje, tryby z częstotliwością,
+  skala, priorytety z kopii `kscreen-doctor -j`), a DP-2 — na DisplayPort. Bez `ddcutil` albo gdy monitor nie
+  odpowiada na DDC, zmienia się tylko KWin i widżet prosi o przełączenie wejścia przyciskiem na monitorze. Wartości
+  wejść są w `daemon/tide_daemon/monitors.toml`. Bez skrótu klawiszowego.
+- **Skróty tylko w Stream.** `Pause` — mikrofon (`kamp mic.toggle`), `Meta+Pause` — ekran prywatności
+  (`kamp privacy.toggle`), `Meta+B` — BRB i powrót (`kamp brb.toggle`). Usługa rejestruje je w KGlobalAccel dopiero
+  po wejściu do aktywności Stream i usuwa po wyjściu, więc w pracy klawisze działają jak dawniej. `Meta+B` jest na
+  czas Streamu zabierane „Przełącz profil zasilania”, a po powrocie oddawane dokładnie (zapis w
+  `$XDG_STATE_HOME/tide/stream-shortcuts.json`). `Meta+Shift+A` (Praca ⇄ Stream), `Meta+A` i `Meta+Q` bez zmian.
+
+```bash
+make install-widget-monitors   # pakiet kafelka (miejsce w docku Stream — układ paneli Stream)
+make preview-monitors          # kafelek i potwierdzenie: build/preview/stream-monitors-*.png (paleta Streamer)
+make monitors-status           # bieżący układ i wynik ostatniego przełączenia (tylko odczyt)
+qdbus6 org.tide.Daemon /Monitors org.tide.Daemon.Monitors.SetLayout xbox   # to samo co przycisk (pc | xbox)
 ```
 
 ## Styl Plasmy i górne paski
