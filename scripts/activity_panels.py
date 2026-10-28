@@ -163,13 +163,19 @@ def sidebar_record(sidebar: dict, saved: dict) -> dict | None:
 
 def sidebar_restore(sidebar: dict, saved: dict) -> dict:
     """Co z zapisu przywrócić przy powrocie do pracy. Tylko to, co dalej ma wartość Stream — zmiana zrobiona
-    przez użytkownika w Stream (inna długość, inne chowanie) zostaje."""
+    przez użytkownika w Stream (inna długość, inne chowanie lub grubość) zostaje."""
     if not saved or saved.get("sidebar", sidebar["id"]) != sidebar["id"]:
         return {}
     out = {}
     if sidebar_thin(sidebar):
-        out.update({k: saved[k] for k in ("maximumLength", "minimumLength", "height")
+        out.update({k: saved[k] for k in ("maximumLength", "minimumLength")
                     if k in saved and saved[k] != sidebar[k]})
+    if ("height" in saved and sidebar["height"] != saved["height"]
+            and (sidebar["height"] == saved.get("streamHeight")
+                 or ("streamHeight" not in saved and sidebar_thin(sidebar)))):
+        # Grubość wciąż jest nasza, nawet gdy użytkownik zmienił samą długość. Stary zapis bez
+        # streamHeight rozpoznajemy po zwężonej długości; po nowym zapisie zachowujemy ręczną grubość.
+        out["height"] = saved["height"]
     if sidebar["hiding"] == SIDEBAR_HIDING and saved.get("hiding") and saved["hiding"] != SIDEBAR_HIDING:
         out["hiding"] = saved["hiding"]
     return out
