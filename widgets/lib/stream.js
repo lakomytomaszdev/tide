@@ -151,6 +151,7 @@ function row(key, label, value, tint) {
 function card(view, coreUp, full) {
     const s = status(view, coreUp)
     const out = { chip: "", rows: [], modules: [], notice: "", note: CRITICAL_NOTE, panelUrl: PANEL_URL,
+                  obsConnected: s.obsConnected === true,
                   mic: { label: "Wycisz mikrofon · Pause", enabled: false, muted: null, warning: false } }
     if (s.core === "down") {
         out.notice = "Rdzeń Streamer nie działa (usługa streamer-core)."
@@ -305,6 +306,17 @@ function chatLines(events, limit) {
         }
     }
     return limit > 0 ? out.slice(-limit) : out
+}
+
+// Treść widza do Text.StyledText: wszystko escapowane, więc wiadomość nie wstawi obrazka ani znacznika.
+function escapeHtml(text) {
+    return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+}
+
+// Wiersz czatu: pogrubiony nick w kolorze (z palety) i wiadomość w jednym akapicie, który się zawija.
+function chatHtml(line, nickColor) {
+    return "<b><font color=\"" + escapeHtml(nickColor) + "\">" + escapeHtml(line.user) + "</font></b>&nbsp; "
+        + escapeHtml(line.text)
 }
 
 // Komendy, które widżety mogą wysłać do rdzenia. Akcji krytycznych (start i koniec streamu, koniec nagrania,

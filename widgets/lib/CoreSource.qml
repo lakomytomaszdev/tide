@@ -61,9 +61,12 @@ Item {
         return { service: service, path: path, iface: iface, member: member, arguments: args || [] }
     }
 
-    function accept(next) {
+    // Sygnały przychodzą po kolei, więc widok z Changed zawsze wygrywa (także po szybkim restarcie rdzenia, gdy seq
+    // liczy się od nowa). Odpowiedź GetState mogła się spóźnić za sygnałem — starszej od bieżącego widoku nie bierzemy.
+    function accept(next, fromReply) {
         if (!next || typeof next !== "object" || !next.core) return
-        if (view && typeof next.seq === "number" && typeof view.seq === "number" && next.seq < view.seq) return
+        if (fromReply && view && typeof next.seq === "number" && typeof view.seq === "number" && next.seq < view.seq)
+            return
         view = next
         if (wantPreview && !previewTried) {
             previewTried = true
@@ -73,7 +76,7 @@ Item {
 
     function refresh() {
         DBus.SessionBus.asyncCall(message("GetState"), function (reply) {
-            try { source.accept(JSON.parse(reply.value)) } catch (e) {}
+            try { source.accept(JSON.parse(reply.value), true) } catch (e) {}
         }, function () {})
     }
 
@@ -155,7 +158,7 @@ Item {
         function dbusChanged(eventJson) {
             let event = null
             try { event = JSON.parse(source.text(eventJson)) } catch (e) {}
-            if (event && event.state) source.accept(event.state)
+            if (event && event.state) source.accept(event.state, false)
             else source.refresh()
         }
         function dbusChat(eventJson) { if (source.wantChat) source.pushChat(eventJson) }

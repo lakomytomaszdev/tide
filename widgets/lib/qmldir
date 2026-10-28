@@ -21,3 +21,6 @@ ScreenshotStrip 1.0 ScreenshotStrip.qml
 PlainToolTip 1.0 PlainToolTip.qml
 ModelsState 1.0 ModelsState.qml
 TideWindow 1.0 TideWindow.qml
+StreamCard 1.0 StreamCard.qml
+ProfileList 1.0 ProfileList.qml
+MicOffIcon 1.0 MicOffIcon.qml
