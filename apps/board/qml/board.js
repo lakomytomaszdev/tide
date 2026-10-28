@@ -72,15 +72,24 @@ function confirmable(card) {
     return shown === "review" || (shown === "done" && card.column !== "done")
 }
 
-// Karta w kolumnie ręcznej (bez stanu z koordynatora) albo do potwierdzenia — tylko taką da się przeciągać.
+// Pracująca karta przepływu karty (PT-58, stan z dziennika: `derived.flow`) w W toku albo Czeka na mnie.
+function workingFlow(card) {
+    const shown = card ? displayColumn(card) : ""
+    return !!(card && card.derived && card.derived.flow) && (shown === "progress" || shown === "waiting")
+}
+
+// Karta w kolumnie ręcznej (bez stanu z koordynatora), do potwierdzenia albo pracująca karta z dziennikiem — tylko
+// taką da się przeciągać.
 function draggable(card) {
-    return !!card && ((isManual(displayColumn(card)) && isManual(card.column)) || confirmable(card))
+    return !!card && ((isManual(displayColumn(card)) && isManual(card.column)) || confirmable(card) || workingFlow(card))
 }
 
 // Dokąd wolno przenieść kartę: z kolumn ręcznych do każdej ręcznej, kartę do potwierdzenia — tylko do
-// Gotowych albo z powrotem do Do zrobienia. Do kolumn wyliczanych nigdy.
+// Gotowych albo z powrotem do Do zrobienia, pracującą kartę z dziennikiem — do Backlogu (wstrzymanie) albo do
+// Gotowych (koniec, zmiany zapisane). Do kolumn wyliczanych nigdy.
 function dropTargets(card) {
     if (confirmable(card)) return ["done", "todo"]
+    if (workingFlow(card)) return ["backlog", "done"]
     return draggable(card) ? MANUAL.slice() : []
 }
 
@@ -533,8 +542,38 @@ var LAUNCH_ENTRIES = [
     { id: "planning", title: "Planowanie", desc: "Agent planuje pracę: specyfikacja, tickety w planie, potem implementacja i review.",
       meta: "wybierasz tryb: Pełny albo Lekki", modes: true },
     { id: "spec", title: "Tylko specyfikacja", desc: "Agent dopytuje i pisze specyfikację. Bez kodu i bez worktree.",
-      meta: "karta wraca do Backlogu", modes: false, steps: ["Pytania", "Specyfikacja", "„specyfikacja gotowa” na karcie"] }
+      meta: "karta wraca do Backlogu", modes: false, steps: ["Pytania", "Specyfikacja", "„specyfikacja gotowa” na karcie"] },
+    // Przepływ karty (PT-58): jeden ticket w tle od razu, zlecenie przez /Board StartCard, bez Konsoli.
+    { id: "now", title: "Od razu", desc: "Jeden ticket w tle, bez planowania i bez terminala. Wynik na gałęzi karty.",
+      meta: "wybierasz wykonawcę", modes: false, flow: true, steps: ["Ticket w tle", "Gałąź karty", "Do sprawdzenia"] }
 ]
+
+// Wykonawcy kroku „Od razu” z katalogu (Status() /Models: executors.list) — dziś tylko Claude w chmurze; zanim
+// przyjdzie Status() (albo usługa go nie podaje), domyślni wykonawcy Claude z katalogu usługi.
+var NOW_EXECUTORS = ["Haiku", "Sonnet", "Opus"]
+var NOW_DEFAULT = "Sonnet"
+
+function launchExecutors(status) {
+    const list = status && status.executors && Array.isArray(status.executors.list) ? status.executors.list : null
+    const names = list ? list.filter(e => e && e.program === "claude" && e.provider === "anthropic" && !e.local && e.model)
+                             .map(e => String(e.name))
+                       : NOW_EXECUTORS
+    return names.map(name => ({ value: name, label: name }))
+}
+
+function defaultExecutor(options) {
+    const names = (options || []).map(o => o.value)
+    return names.indexOf(NOW_DEFAULT) >= 0 ? NOW_DEFAULT : (names[0] || "")
+}
+
+function isFlowEntry(id) {
+    return launchEntry(id).flow === true
+}
+
+// Prośba /Board StartCard z okna („Od razu”): wejście, wykonawca i zrzuty z katalogu zadań.
+function startCardRequest(state, images) {
+    return { entry: state.entry, executor: state.executor, images: (images || []).slice() }
+}
 
 // Tryby Planowania z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.
 var LAUNCH_MODES = [
@@ -630,6 +669,9 @@ function specDir(state) {
 
 // Zdanie „co się stanie” w stopce okna (z modelem lokalnym: „Codex na qwen3-coder:30b”).
 function launchFooter(state) {
+    if (state.entry === "now")
+        return "Krok w tle bez Konsoli: " + (state.executor || "wykonawca") + " robi jeden ticket we własnym worktree "
+            + "odgałęzionym od gałęzi karty. Potem ticket trafia na gałąź karty, a karta do „Do sprawdzenia”."
     const tool = launchToolName(state.tool) + (state.localModel ? " na " + state.localModel : "")
     const where = state.repoName ? "„" + state.repoName + " · " + (state.newWorktree ? state.branch : "bieżąca gałąź") + "”" : ""
     const check = extrasNote(state)

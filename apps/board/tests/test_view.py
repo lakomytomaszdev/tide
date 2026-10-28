@@ -193,7 +193,7 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js("shortPath('/home/tomasz/x', '/home/t')"), "/home/tomasz/x")
 
     def test_launch_entries_and_defaults(self):
-        self.assertEqual(self.js("LAUNCH_ENTRIES.map(e => e.id)"), ["planning", "spec"])
+        self.assertEqual(self.js("LAUNCH_ENTRIES.map(e => e.id)"), ["planning", "spec", "now"])
         self.assertEqual(self.js("LAUNCH_MODES.map(m => m.id)"), ["full", "light"], "Tylko specyfikacja nie jest już trybem")
         self.assertEqual(self.js("launchEntry('spec').title"), "Tylko specyfikacja")
         self.assertEqual(self.js("launchEntry('planning').title"), "Planowanie")
@@ -206,6 +206,27 @@ class LogicTest(unittest.TestCase):
             got = self.js(f"(function (d) {{ return [d.entry, d.mode] }})(launchDefaults({json.dumps(project)}))")
             self.assertEqual(got, want, project)
         self.assertEqual(self.js("launchDefaults(null).entry"), "planning")
+
+    def test_now_executors_and_flow_card_drop_targets(self):
+        status = json.dumps({"executors": EXECUTORS})
+        self.assertEqual(self.js(f"launchExecutors({status}).map(o => o.value)"), ["Haiku", "Sonnet", "Opus"])
+        self.assertEqual(self.js("launchExecutors(null).map(o => o.value)"), ["Haiku", "Sonnet", "Opus"],
+                         "zanim przyjdzie Status() — domyślni wykonawcy Claude")
+        self.assertEqual(self.js(f"defaultExecutor(launchExecutors({status}))"), "Sonnet")
+        self.assertEqual(self.js("launchSteps('now', 'full')"), ["Ticket w tle", "Gałąź karty", "Do sprawdzenia"])
+        self.assertEqual(self.js("[isFlowEntry('now'), isFlowEntry('planning'), entryHasModes('now')]"),
+                         [True, False, False])
+        self.assertEqual(self.js("startCardRequest({entry: 'now', executor: 'Opus'}, ['/t/1.png'])"),
+                         {"entry": "now", "executor": "Opus", "images": ["/t/1.png"]})
+        flow = "{id: 'K-1', column: 'todo', boardColumn: '%s', derived: {column: '%s', flow: {ticket: 'PT-1'}}}"
+        for shown in ("progress", "waiting"):
+            card = flow % (shown, shown)
+            self.assertTrue(self.js(f"draggable({card})"), shown)
+            self.assertEqual(self.js(f"dropTargets({card})"), ["backlog", "done"], shown)
+        self.assertEqual(self.js(f"dropTargets({flow % ('review', 'review')})"), ["done", "todo"])
+        legacy = "{id: 'K-2', column: 'todo', boardColumn: 'progress', derived: {column: 'progress', coordinator: 'c'}}"
+        self.assertFalse(self.js(f"draggable({legacy})"))
+        self.assertEqual(self.js(f"dropTargets({legacy})"), [])
 
     def test_launch_texts_and_requests(self):
         k9 = "S.cards.find(c => c.id === 'K-9')"
@@ -1494,6 +1515,97 @@ out["missing"] = [js(d + "canStart"), obj("launchFooter").property("text")]
         self.assertIn("na qwen3-coder:30b", out["toast"])
         self.assertFalse(out["missing"][0])
         self.assertIn("Nie znaleziono programu Claude Code", out["missing"][1])
+
+
+EXECUTORS = {"list": [
+    {"name": "Haiku", "program": "claude", "model": "haiku", "provider": "anthropic", "local": False},
+    {"name": "Sonnet", "program": "claude", "model": "sonnet", "provider": "anthropic", "local": False},
+    {"name": "Opus", "program": "claude", "model": "opus", "provider": "anthropic", "local": False},
+    {"name": "Codex standard", "program": "codex", "model": "gpt-6.1-sol", "provider": "openai", "local": False},
+    {"name": "Lokalny", "program": "codex", "model": "qwen3-coder:30b", "provider": "local", "local": True}]}
+
+
+@unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class LaunchNowTest(ProbeCase):
+    """PT-58: wejście „Od razu” — wykonawca Claude z katalogu wykonawców (Status() z /Models), zlecenie przez
+    /Board StartCard (bez RenderLaunch, /Tasks Start i Konsoli); pracującą kartę z dziennikiem da się przeciągnąć
+    do Backlogu (wstrzymanie) i do Gotowych (koniec)."""
+
+    def test_now_entry_picks_a_claude_executor_and_sends_start_card(self):
+        status = dict(models_status(), executors=EXECUTORS)
+        out = self.probe(FIND_PY + f"""
+backend._models = {json.dumps(status, ensure_ascii=False)!r}
+backend.modelsChanged.emit()
+wait(50)
+shown = lambda name: js(FIND + f"(page.launchDialog, '{{name}}').visible")
+choose = lambda name: click(at(FIND + f"(page.launchDialog, '{{name}}')"))
+js("page.openLaunch('K-15', false)")
+wait(100)
+out["entries"] = [shown("launchEntry-planning"), shown("launchEntry-spec"), shown("launchEntry-now")]
+out["planning"] = [shown("launchExecutor"), shown("launchModel")]
+choose("launchEntry-now")
+wait(50)
+out["now"] = [js("page.launchDialog.entry"), shown("launchExecutor"), shown("launchModes"), shown("launchModel"),
+              shown("launchWorktree"), shown("launchExtras")]
+out["options"] = js("page.launchDialog.executorOptions.map(o => o.value)")
+out["default"] = js("page.launchDialog.executor")
+choose("launchExecutor-Opus")
+out["footer"] = obj("launchFooter").property("text")
+replies.append({{"ok": False, "error": "flow-active", "message": "K-15: krok tej karty jeszcze trwa"}})
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(300)
+out["failed"] = [js("page.launchOpen"), js("page.launchDialog.busy"), js("page.launchDialog.error")]
+replies.extend([{{"ok": True, "id": "K-15", "ticket": "PT-7", "branch": "ticket/pt-7-tryb", "cardBranch": "card/k-15-tryb",
+                  "step": "K-15-PT-7-1", "executor": "Opus"}},
+                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}}])
+n = len(calls())
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(300)
+out["calls"] = calls()
+out["second"] = calls()[n:]
+out["closed"] = not js("page.launchOpen")
+out["toast"] = js("[page.toast, page.toastTone]")
+""")
+        self.assertEqual(out["entries"], [True, True, True])
+        self.assertEqual(out["planning"], [False, True], "wykonawca tylko przy „Od razu”")
+        self.assertEqual(out["now"], ["now", True, False, False, False, False],
+                         "„Od razu”: wykonawca zamiast trybu, modelu, worktree i dodatkowych projektów")
+        self.assertEqual(out["options"], ["Haiku", "Sonnet", "Opus"], "tylko Claude w chmurze z katalogu")
+        self.assertEqual(out["default"], "Sonnet")
+        self.assertIn("Opus", out["footer"])
+        self.assertIn("bez Konsoli", out["footer"])
+        self.assertEqual(out["failed"], [True, False, "K-15: krok tej karty jeszcze trwa"], "błąd zostaje w oknie")
+        self.assertNotIn("RenderLaunch", [c[0] for c in out["calls"]])
+        self.assertNotIn("Start", [c[0] for c in out["calls"]])
+        self.assertEqual([c[0] for c in out["second"]], ["StartCard", "MoveCard"])
+        self.assertEqual(out["second"][0][1], "K-15")
+        self.assertEqual(json.loads(out["second"][0][2]), {"entry": "now", "executor": "Opus", "images": []})
+        self.assertEqual(out["second"][1], ["MoveCard", "K-15", "todo", -1], "karta z Backlogu idzie do kolejki")
+        self.assertTrue(out["closed"])
+        self.assertEqual(out["toast"][1], "mint")
+        self.assertIn("PT-7", out["toast"][0])
+        self.assertIn("Opus", out["toast"][0])
+
+    def test_working_flow_card_drags_to_backlog_and_done_but_a_coordinator_card_does_not(self):
+        data = json.loads(json.dumps(self.data))
+        for c in data["cards"]:
+            if c["id"] == "K-6":
+                c["derived"] = dict(c.get("derived") or {}, column="progress", link="flow", coordinator="", session="",
+                                    flow={"ticket": "PT-7", "step": "K-6-PT-7-1", "executor": "Sonnet"})
+                c["boardColumn"] = "progress"
+        out = self.probe("""
+drag(card("K-6"), column("backlog", fy=0.8))
+out["paused"] = calls()[-1] if calls() else None
+set_snapshot(json.loads(backend.snapshotJson))
+drag(card("K-6"), column("done", fy=0.8))
+out["done"] = calls()[-1]
+n = len(calls())
+drag(card("K-5"), column("backlog", fy=0.8))
+out["legacy"] = len(calls()) - n
+""", data)
+        self.assertEqual(out["paused"][:3], ["MoveCard", "K-6", "backlog"], "pracująca karta z dziennikiem — wstrzymanie")
+        self.assertEqual(out["done"][:3], ["MoveCard", "K-6", "done"])
+        self.assertEqual(out["legacy"], 0, "karta dawnego przepływu jak dotąd")
 
 
 class LaunchReviewTest(ProbeCase):

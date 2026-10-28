@@ -73,6 +73,7 @@ Rectangle {
     signal launchRequested(string cardId)    // otwarto „Co ma zrobić agent?” dla karty
     signal renderRequested(string tag, string cardId, string request)   // /Board RenderLaunch
     signal startRequested(string tag, string request)                   // /Tasks Start
+    signal flowRequested(string tag, string cardId, string request)     // /Board StartCard (przepływ karty, „Od razu”)
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
     signal removeImageRequested(string path)
@@ -251,6 +252,18 @@ Rectangle {
             launchDialog.busyText = "Zapisuję zadanie w karcie…"
             updateRequested(nextTag("launch-desc:" + launchCardId), launchCardId, JSON.stringify(request))
         } else {
+            continueLaunch()
+        }
+    }
+
+    // Po zapisie opisu: „Od razu” — zlecenie w przepływie karty (/Board StartCard, krok w tle bez Konsoli),
+    // pozostałe wejścia — polecenie trybu i agent w Konsoli.
+    function continueLaunch() {
+        if (Logic.isFlowEntry(launchChoice.entry)) {
+            launchDialog.busyText = "Zakładam gałąź karty i startuję krok w tle…"
+            flowRequested(nextTag("launch-flow:" + launchCardId), launchCardId,
+                          JSON.stringify(Logic.startCardRequest(launchChoice, launchChoice.images)))
+        } else {
             renderLaunch()
         }
     }
@@ -281,7 +294,20 @@ Rectangle {
         if (tag.indexOf("launch-desc:") === 0) {
             if (error) return failLaunch("Nie zapisano zadania w karcie: " + error)
             launchDialog.loadedDescription = launchDescription   // ponowienie po błędzie nie zapisuje drugi raz
-            renderLaunch()
+            continueLaunch()
+        } else if (tag.indexOf("launch-flow:") === 0) {
+            if (error && (!reply || reply.error === "no-service")) launchUncertain = true
+            if (error) return failLaunch(error)
+            const flowCard = (snapshot && snapshot.cards || []).find(c => c.id === launchCardId)
+            if (flowCard && flowCard.column === "backlog" && !launchFromMove) {   // z popupu: karta z Backlogu idzie do kolejki
+                const moveTag = nextTag("move:" + launchCardId)
+                optimistic = optimistic.concat([{ id: launchCardId, column: "todo", before: "", tag: moveTag }])
+                moveRequested(moveTag, launchCardId, "todo", -1)
+            }
+            launchToast = "Ruszył krok w tle: " + (reply.ticket || "ticket") + " karty " + launchCardId
+                + " — " + (reply.executor || launchChoice.executor) + ", bez Konsoli"
+            closeLaunch(true)
+            showToast(launchToast, "mint")
         } else if (tag.indexOf("launch-render:") === 0) {
             if (error) return failLaunch("Nie przygotowano polecenia: " + error)
             launchFlow = reply

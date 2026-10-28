@@ -304,6 +304,7 @@ class ManualColumnsTest(FlowCase):
         pid = wait_until(lambda: flowfakes.unit_pid(self.runtime, started["unit"]), timeout=5)
         self.assertEqual(self.wait_column(card_id, "progress")["derived"]["flow"]["ticket"], "PT-1")
         self.assertTrue(self.call("MoveCard", card_id, "backlog", 0)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.paused"), timeout=5), self.events(card_id))
         card = self.wait_column(card_id, "backlog")
         self.assertIn("wstrzymana", card["derived"]["note"])
         self.assertEqual(len(self.of(card_id, "card.paused")), 1)

@@ -53,10 +53,16 @@ Rectangle {
     readonly property var localOption: AgentModel.localOption(modelsStatus)
     readonly property var localLine: AgentModel.localLine(localOption)
     readonly property string modelNote: AgentModel.modelNote(localOption, model)
-    // Program, który ruszy: przy „Lokalny” z Tide → Modele (agentProgram), w chmurze — przełącznik narzędzia.
-    readonly property string agentTool: AgentModel.agentTool(model, tool, localOption)
+    // Wejście przepływu karty („Od razu”, PT-58): krok w tle z wykonawcą z katalogu zamiast modelu i narzędzia.
+    readonly property bool flowEntry: Logic.isFlowEntry(entry)
+    property string executor: ""
+    readonly property var executorOptions: Logic.launchExecutors(modelsStatus)
+    // Program, który ruszy: przy „Lokalny” z Tide → Modele (agentProgram), w chmurze — przełącznik narzędzia;
+    // przy „Od razu” — Claude Code (wykonawcy kroku w tle to dziś tylko Claude).
+    readonly property string agentTool: flowEntry ? "claude" : AgentModel.agentTool(model, tool, localOption)
     readonly property var tools: taskDefaults && taskDefaults.tools ? taskDefaults.tools : ({})
     readonly property string modelBlocker: tools[agentTool] === false ? "Nie znaleziono programu " + Logic.launchToolName(agentTool) + " — zainstaluj go albo wybierz inny."
+        : flowEntry ? (executor === "" ? "Brak wykonawcy Claude w katalogu wykonawców (Tide → Modele)." : "")
         : model === "local" && !localOption.enabled
           ? (localOption.pending ? localOption.reason : "Model lokalny niedostępny: " + localOption.reason) : ""
     readonly property var card: cardId ? ((snapshot && snapshot.cards) || []).find(c => c.id === cardId) || null : null
@@ -67,6 +73,7 @@ Rectangle {
     readonly property string taskText: taskEdit.text
     readonly property var launchState: ({
         cardId: cardId, entry: entry, mode: mode, tool: agentTool, branch: branch, newWorktree: newWorktree,
+        executor: executor,
         model: model === "local" ? "local" : "cloud", localModel: model === "local" ? localOption.model : "",
         images: images,
         check: manualCheck ? "manual" : "auto", aiDocs: workProject ? workProject.aiDocs : "",
@@ -215,6 +222,12 @@ Rectangle {
     function pickTool(value) {
         tool = value
     }
+
+    // Katalog wykonawców przychodzi z Status() (/Models) także po otwarciu okna: wybór zostaje, gdy jest na liście.
+    onExecutorOptionsChanged: {
+        if (!executorOptions.some(o => o.value === executor)) executor = Logic.defaultExecutor(executorOptions)
+    }
+    Component.onCompleted: executor = Logic.defaultExecutor(executorOptions)
 
     // Odświeżone Defaults() (przy otwarciu okna) przychodzą po load(): zapamiętany model, dopóki nikt go tu nie zmienił.
     onTaskDefaultsChanged: {
@@ -496,9 +509,11 @@ Rectangle {
                     }
                 }
 
-                // Model i narzędzie (PT-43: jak w oknie „Nowe zadanie”) — najpierw model, potem program.
+                // Model i narzędzie (PT-43: jak w oknie „Nowe zadanie”) — najpierw model, potem program. Przy „Od razu”
+                // zamiast nich wykonawca (niżej, przy wejściach).
                 RowLayout {
                     Layout.fillWidth: true
+                    visible: !dialog.flowEntry
                     spacing: 10
                     FieldLabel { text: "Model"; color: Tide.Tokens.textSecondary }
                     Segmented {
@@ -580,7 +595,7 @@ Rectangle {
                     objectName: "launchModelNote"
                     Layout.fillWidth: true
                     Layout.topMargin: -8
-                    visible: dialog.modelNote !== "" && dialog.model === "local"
+                    visible: dialog.modelNote !== "" && dialog.model === "local" && !dialog.flowEntry
                     text: dialog.modelNote
                     textFormat: Text.PlainText
                     color: Tide.Tokens.textMuted
@@ -593,7 +608,7 @@ Rectangle {
                 RowLayout {
                     objectName: "launchExtras"
                     Layout.fillWidth: true
-                    visible: dialog.workProject !== null
+                    visible: dialog.workProject !== null && !dialog.flowEntry   // krok w tle: jeden worktree ticketu
                     spacing: 10
                     FieldLabel { text: "Dodatkowe projekty"; color: Tide.Tokens.textSecondary }
                     Flow {
@@ -774,6 +789,22 @@ Rectangle {
                             }
                         }
                     }
+                    // Wykonawca kroku „Od razu” (PT-58): Claude z katalogu wykonawców; recenzent dojdzie w PT-59.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: dialog.flowEntry
+                        spacing: 10
+                        FieldLabel { text: "Wykonawca"; color: Tide.Tokens.textSecondary }
+                        Segmented {
+                            objectName: "launchExecutor"
+                            options: dialog.executorOptions
+                            current: dialog.executor
+                            itemHeight: 30
+                            pixelSize: 13
+                            onPicked: value => dialog.executor = value
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
                     Flow {
                         objectName: "launchSteps"
                         Layout.fillWidth: true
@@ -832,6 +863,7 @@ Rectangle {
                     Rectangle {
                         objectName: "launchWorktree"
                         readonly property bool spec: dialog.entry === "spec"
+                        visible: !dialog.flowEntry   // gałęzie i worktree karty i ticketu zakłada usługa
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         implicitHeight: worktreeColumn.implicitHeight + 28
