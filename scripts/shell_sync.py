@@ -129,7 +129,7 @@ def variant_sources() -> dict[str, Path]:
     if VARIANTS.is_dir():
         for package in sorted(VARIANTS.iterdir()):
             lockscreen = package / "contents" / "lockscreen"
-            if package.name != DEFAULT_VARIANT and lockscreen.is_dir():
+            if package.name != DEFAULT_VARIANT and not package.name.startswith(".") and lockscreen.is_dir():
                 sources[package.name] = lockscreen
     return sources
 
