@@ -258,8 +258,9 @@ Rectangle {
     function renderLaunch() {
         const c = launchChoice
         launchDialog.busyText = "Przygotowuję polecenie trybu…"
-        const request = { mode: c.mode, tool: c.tool, check: c.check }
-        if (c.mode !== "spec" && c.newWorktree && c.branch) request.branch = c.branch
+        const request = { entry: c.entry, tool: c.tool, check: c.check }
+        if (c.entry !== "spec") request.mode = c.mode   // tryb dotyczy tylko Planowania
+        if (c.entry !== "spec" && c.newWorktree && c.branch) request.branch = c.branch
         renderRequested(nextTag("launch-render:" + launchCardId), launchCardId, JSON.stringify(request))
     }
 

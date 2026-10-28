@@ -3,11 +3,11 @@
 Układ (opis: docs/tide-daemon.md, Tablica):
 
   board.md                 znacznik `tide-board: 1` i licznik `next-card` (ID nie wracają)
-  projects/<slug>.md       name, repo, tags, ai-docs, tool, mode; treść — opis projektu
+  projects/<slug>.md       name, repo, tags, ai-docs, tool, entry, mode; treść — opis projektu
   tags/<slug>.md           name, color (nazwa pastelu z palety); treść — opis tagu
   cards/K-<n>.md           id, title, project, tags, column, order, note, created, updated, moved,
                            youtrack, spec, session, branch, check; treść — opis karty (Markdown)
-  flows/<tryb>.md          szablony poleceń trybów (flows.py), flows/<projekt>/<tryb>.md — nadpisanie
+  flows/<klucz>.md         szablony poleceń (flows.py), flows/<projekt>/<klucz>.md — nadpisanie
   docs/<projekt>/          plany i specyfikacje agentów projektów z `ai-docs: tide`
 
 Repozytorium powstaje przy pierwszym poprawnym zapisie. Każda nasza zmiana to osobny commit
@@ -67,7 +67,7 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 - `projects/<projekt>.md` — repozytorium, tagi, narzędzie, tryb i miejsce dokumentów AI,
 - `tags/<tag>.md` — nazwa i kolor tagu,
 - `cards/K-<numer>.md` — karty („rzeczy do zrobienia”), treść to opis,
-- `flows/<tryb>.md` — szablony poleceń trybów full, light i spec,
+- `flows/<klucz>.md` — szablony poleceń: full i light (Planowanie) oraz spec (Tylko specyfikacja),
 - `docs/<projekt>/` — plany i specyfikacje agentów projektów z `ai-docs: tide`.
 """
 CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "note", *RESERVED_CARD_KEYS, "check",

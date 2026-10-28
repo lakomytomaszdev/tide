@@ -16,7 +16,7 @@
   o okno „Co ma zrobić agent?” (`launch:K-12`, przycisk „Uruchom” w popupie kafelka),
 - przy starcie dawne zaczyny szablonów trybów w flows/ dostają nową treść (migrate_flows: tylko
   pliki nietknięte przez użytkownika), a każda synchronizacja sprawdza, czy karty uruchomione
-  w trybie „tylko spec” mają już gotową specyfikację (mark_ready_specs: karta wraca do Backlogu),
+  z wejściem „Tylko specyfikacja” mają już gotową specyfikację (mark_ready_specs: karta wraca do Backlogu),
 - trwałe połączenie karty z sesją (PT-28): karta bez `session`, którą przeliczenie połączyło z sesją
   uruchomioną z karty albo jednoznacznie po gałęzi (`Context.sticky`), dostaje tę sesję w pliku
   (store.link_session, commit „K-1: link session claude:…”) — później sesja może wejść do innego

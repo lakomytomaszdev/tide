@@ -118,7 +118,7 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
 - UpsertProject(s json) -> s nowy albo zmieniony projekt → {ok, slug, changed, commitError},
 - UpsertTag(s json) -> s     nowy albo zmieniony tag (także newName — zmiana nazwy w kartach) → {ok, name, changed, commitError},
 - RenderFlow(s id, s mode) -> s  polecenie trybu dla karty: {ok, text, mode, tool, branch, docsDir, …},
-- RenderLaunch(s id, s json) -> s  to samo z wyborem z okna „Co ma zrobić agent?”: {mode, tool, branch},
+- RenderLaunch(s id, s json) -> s  to samo z wyborem z okna „Co ma zrobić agent?”: {entry, mode, tool, branch},
 - Badge() -> s               plakietka widoku Tablica w oknie Tide: JSON {text, tone} („● N” czeka, inaczej
                              liczba kart w grze; pusty tekst — ukryta),
 - ShowWindow(s id) -> b      okno Tide na widoku Tablica, z ID karty (K-12) od razu na niej, z launch:K-12 — także

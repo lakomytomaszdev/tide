@@ -192,6 +192,21 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js("shortPath('/home/t/DevWorkspace/tide-board', '/home/t')"), "~/DevWorkspace/tide-board")
         self.assertEqual(self.js("shortPath('/home/tomasz/x', '/home/t')"), "/home/tomasz/x")
 
+    def test_launch_entries_and_defaults(self):
+        self.assertEqual(self.js("LAUNCH_ENTRIES.map(e => e.id)"), ["planning", "spec"])
+        self.assertEqual(self.js("LAUNCH_MODES.map(m => m.id)"), ["full", "light"], "Tylko specyfikacja nie jest już trybem")
+        self.assertEqual(self.js("launchEntry('spec').title"), "Tylko specyfikacja")
+        self.assertEqual(self.js("launchEntry('planning').title"), "Planowanie")
+        self.assertEqual(self.js("launchEntry('???').id"), "planning")
+        self.assertEqual(self.js("launchSteps('spec', 'full')"), self.js("launchEntry('spec').steps"))
+        self.assertEqual(self.js("launchSteps('planning', 'light')"), self.js("launchMode('light').steps"))
+        for project, want in (({}, ["planning", "full"]), ({"entry": "spec", "mode": "light"}, ["spec", "light"]),
+                              ({"mode": "spec"}, ["spec", "full"]), ({"mode": "light"}, ["planning", "light"]),
+                              ({"entry": "planning", "mode": "spec"}, ["planning", "full"])):
+            got = self.js(f"(function (d) {{ return [d.entry, d.mode] }})(launchDefaults({json.dumps(project)}))")
+            self.assertEqual(got, want, project)
+        self.assertEqual(self.js("launchDefaults(null).entry"), "planning")
+
     def test_launch_texts_and_requests(self):
         k9 = "S.cards.find(c => c.id === 'K-9')"
         self.assertEqual(self.js(f"launchBranch({k9}, 'codex')"), "codex/k-9-wlasne-okno-kafelek-dockera")
@@ -202,8 +217,8 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js(f"docsLabel(launchProject(S, {k9}))"), "w repozytorium · docs/agents/")
         self.assertEqual(self.js("docsLabel({aiDocs: 'tide', slug: 'mobileapp', docsDir: '/h/DevWorkspace/tide-board/docs/mobileapp'})"),
                          "w Tide · tide-board/docs/mobileapp/")
-        state = {"cardId": "K-16", "mode": "full", "tool": "claude", "branch": "claude/k-16-okno", "newWorktree": True,
-                 "check": "auto", "aiDocs": "repo", "slug": "plasma-tide", "repoName": "plasma-tide"}
+        state = {"cardId": "K-16", "entry": "planning", "mode": "full", "tool": "claude", "branch": "claude/k-16-okno",
+                 "newWorktree": True, "check": "auto", "aiDocs": "repo", "slug": "plasma-tide", "repoName": "plasma-tide"}
         js_state = json.dumps(state)
         self.assertEqual(self.js(f"launchFooter({js_state})"),
                          "Nowa karta Konsoli „plasma-tide · claude/k-16-okno”, Claude Code z szablonem „Pełny flow”. Agent "
@@ -212,7 +227,7 @@ class LogicTest(unittest.TestCase):
         light = self.js(f"launchFooter(Object.assign({js_state}, {{mode: 'light', tool: 'codex', check: 'manual'}}))")
         self.assertIn("Codex z szablonem „Lekki”", light)
         self.assertIn("„Co przetestować ręcznie i jak”", light)
-        spec = self.js(f"launchFooter(Object.assign({js_state}, {{mode: 'spec', aiDocs: 'tide', slug: 'mobileapp'}}))")
+        spec = self.js(f"launchFooter(Object.assign({js_state}, {{entry: 'spec', aiDocs: 'tide', slug: 'mobileapp'}}))")
         self.assertEqual(spec, "Claude Code w katalogu projektu, bez worktree: dopyta i zapisze specyfikację w "
                                "tide-board/docs/mobileapp/specs/. Potem karta wróci do Backlogu ze znacznikiem "
                                "„specyfikacja gotowa”.")
@@ -228,11 +243,14 @@ class LogicTest(unittest.TestCase):
         self.assertEqual((local_start["images"], local_start["model"], local_start["tool"]),
                          (local["images"], "local", "codex"))
         self.assertIn("Codex na qwen3-coder:30b z szablonem „Pełny flow”", self.js(f"launchFooter({json.dumps(local)})"))
-        spec_start = self.js(f"launchStartRequest({json.dumps(dict(flow, aiDocs='repo'))}, Object.assign({js_state}, {{mode: 'spec'}}))")
+        spec_start = self.js(f"launchStartRequest({json.dumps(dict(flow, aiDocs='repo'))}, Object.assign({js_state}, {{entry: 'spec'}}))")
         self.assertEqual((spec_start["newWorktree"], spec_start["branch"], spec_start["addDirs"]), (False, "", []))
         self.assertEqual(self.js(f"launchMarkRequest({{worktree: '/w/k-16', branch: 'claude/k-16-okno', tool: 'claude'}}, {js_state}, 'T')"),
-                         {"branch": "claude/k-16-okno", "worktree": "/w/k-16", "mode": "full", "tool": "claude",
-                          "check": "auto", "launched": "T", "session": ""})
+                         {"branch": "claude/k-16-okno", "worktree": "/w/k-16", "entry": "planning", "mode": "full",
+                          "tool": "claude", "check": "auto", "launched": "T", "session": ""})
+        self.assertEqual(self.js(f"launchMarkRequest({{worktree: '', branch: 'master'}}, Object.assign({js_state}, {{entry: 'spec', mode: 'light'}}), 'T')")
+                         ["entry"] + "/" + self.js(f"launchMarkRequest({{worktree: ''}}, Object.assign({js_state}, {{entry: 'spec', mode: 'light'}}), 'T')")["mode"],
+                         "spec/", "przy Tylko specyfikacja karta nie dostaje trybu")
         self.assertEqual(self.js(f"launchMarkRequest({{worktree: '', branch: 'master'}}, Object.assign({js_state}, {{check: 'manual'}}), 'T')")["branch"],
                          "", "bez worktree gałąź główna nie trafia do karty")
         self.assertRegex(self.js("isoNow(1793099040000)"), r"^2026-10-27T\d\d:\d\d:00[+-]\d\d:\d\d$")
@@ -907,6 +925,27 @@ out["closed"] = not js("page.panelOpen")
         self.assertTrue(out["ctrlN"])
         self.assertTrue(out["closed"])
 
+    def test_project_default_entry_in_manage_page(self):
+        data = json.loads(json.dumps(self.data))
+        data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]   # FIND bierze pierwszy wiersz
+        data["projects"][0].update(entry="spec", mode="light")
+        out = self.probe(FIND_PY + """
+find = lambda name: FIND + f"(page.managePage, '{name}')"
+js("page.managing = true")
+js("page.managePage.openProject = 'plasma-tide'")
+wait(100)
+out["spec"] = [js(find("projectEntry") + ".current"), js(find("projectMode") + ".visible")]
+js(find("projectEntry") + ".picked('planning')")
+wait(50)
+out["planning"] = [js(find("projectEntry") + ".current"), js(find("projectMode") + ".visible"), js(find("projectMode") + ".current")]
+click(at(find("projectSave")))
+wait(80)
+out["save"] = calls()[-1]
+""", data)
+        self.assertEqual(out["spec"], ["spec", False], "Tylko specyfikacja: bez wyboru trybu")
+        self.assertEqual(out["planning"], ["planning", True, "light"])
+        self.assertEqual(json.loads(out["save"][-1]), {"slug": "plasma-tide", "entry": "planning"})
+
     def test_tags_and_projects(self):
         out = self.probe("""
 click(named("addTagChip"))
@@ -959,9 +998,9 @@ class LaunchMarkStoreTest(unittest.TestCase):
         with open(os.path.join(APP_DIR, "qml", "board.js"), encoding="utf-8") as fh:
             engine.evaluate(fh.read().replace(".pragma library", ""))
         for result, choice in (({"worktree": "/w/k-1", "branch": "claude/k-1-grabie", "tool": "claude"},
-                                {"mode": "full", "tool": "claude", "check": "manual"}),
+                                {"entry": "planning", "mode": "full", "tool": "claude", "check": "manual"}),
                                ({"worktree": "", "branch": "master", "tool": "codex"},
-                                {"mode": "spec", "tool": "codex", "check": "auto"})):
+                                {"entry": "spec", "mode": "light", "tool": "codex", "check": "auto"})):
             value = engine.evaluate(f"JSON.stringify(launchMarkRequest({json.dumps(result)}, {json.dumps(choice)}, "
                                     f"isoNow(1793099040000)))")
             self.assertFalse(value.isError(), value.toString())
@@ -973,7 +1012,9 @@ class LaunchMarkStoreTest(unittest.TestCase):
                     board.create_card({"title": "Grabie", "column": "todo", "session": "claude:poprzednia"})
                     self.assertTrue(board.update_card("K-1", request)["ok"])
                     card = board.snapshot()["cards"][0]
-            self.assertEqual((card["mode"], card["tool"], card["worktree"]), (choice["mode"], choice["tool"], result["worktree"]))
+            self.assertEqual((card["entry"], card["mode"], card["tool"], card["worktree"]),
+                             (choice["entry"], choice["mode"] if choice["entry"] == "planning" else "", choice["tool"],
+                              result["worktree"]))
             self.assertEqual(card["branch"], result["branch"] if result["worktree"] else "")
             self.assertEqual(card.get("check"), choice["check"])
             self.assertEqual(card["session"], "", "poprzednia sesja odpięta — usługa przypnie nową")
@@ -1048,7 +1089,7 @@ out["toast"] = js("[page.toast, page.toastTone]")
                          "zmienione zadanie zapisane w karcie przed poleceniem")
         self.assertEqual(out["calls1"][2][1], "K-15")
         self.assertEqual(json.loads(out["calls1"][2][2]),
-                         {"mode": "full", "tool": "claude", "check": "auto",
+                         {"entry": "planning", "mode": "full", "tool": "claude", "check": "auto",
                           "branch": "claude/k-15-tryb-skupienia-wyciszone"})
         self.assertEqual(json.loads(out["calls1"][3][1]),
                          {"repoPath": "/home/user/DevWorkspace/plasma-tide", "tool": "claude", "prompt": "Karta K-15: polecenie",
@@ -1071,13 +1112,13 @@ out["toast"] = js("[page.toast, page.toastTone]")
         flow = json.dumps(dict(self.FLOW, id="K-14", tool="codex", mode="spec", aiDocs="tide",
                                docsDir="/home/user/DevWorkspace/tide-board/docs/mobileapp",
                                repo="/home/user/DevWorkspace/mobileapp"), ensure_ascii=False)
-        out = self.probe(f"""
+        out = self.probe(FIND_PY + f"""
 js("showItem('launch:k-14')")
 wait(150)
 out["open"] = js("[page.launchOpen, page.launchCardId, page.launchFromMove, page.selectedId]")
 out["moveOnlyVisible"] = obj("launchMoveOnly").property("visible")
 out["docs"] = obj("launchDocs").property("text")
-js("page.launchDialog.mode = 'spec'")
+click(at(FIND + "(page.launchDialog, 'launchEntry-spec')"))
 js("page.launchDialog.pickTool('codex')")
 js("page.launchDialog.manualCheck = true")
 wait(50)
@@ -1100,14 +1141,59 @@ out["calls"] = calls()
         self.assertFalse(out["worktreeEnabled"], "spec — bez worktree")
         self.assertIn("Codex w katalogu projektu, bez worktree", out["footer"])
         self.assertEqual([c[0] for c in out["calls"]], ["RenderLaunch", "Start", "UpdateCard", "MoveCard"])
-        self.assertEqual(json.loads(out["calls"][0][2]), {"mode": "spec", "tool": "codex", "check": "manual"})
+        self.assertEqual(json.loads(out["calls"][0][2]), {"entry": "spec", "tool": "codex", "check": "manual"})
         start = json.loads(out["calls"][1][1])
         self.assertEqual((start["newWorktree"], start["branch"], start["addDirs"], start["tool"]),
                          (False, "", ["/home/user/DevWorkspace/tide-board/docs/mobileapp"], "codex"))
         mark = json.loads(out["calls"][2][2])
         self.assertEqual({k: mark[k] for k in ("branch", "worktree", "mode", "tool", "check")},
-                         {"branch": "", "worktree": "", "mode": "spec", "tool": "codex", "check": "manual"})
+                         {"branch": "", "worktree": "", "mode": "", "tool": "codex", "check": "manual"})
+        self.assertEqual(mark["entry"], "spec")
         self.assertEqual(out["calls"][3], ["MoveCard", "K-14", "todo", -1], "karta z Backlogu idzie do kolejki")
+
+    def test_how_to_start_shows_the_mode_only_for_planning(self):
+        out = self.probe(FIND_PY + """
+shown = lambda name: js(FIND + f"(page.launchDialog, '{name}').visible")
+choose = lambda name: click(at(FIND + f"(page.launchDialog, '{name}')"))
+js("page.openLaunch('K-9', false)")
+wait(100)
+out["default"] = js("[page.launchDialog.entry, page.launchDialog.mode]")
+out["entries"] = [shown("launchEntry-planning"), shown("launchEntry-spec"),
+                  js(FIND + "(page.launchDialog, 'launchEntry-planning').Accessible.name")]
+out["planning"] = [shown("launchModes"), shown("launchMode-full"), shown("launchMode-light")]
+choose("launchMode-light")
+out["light"] = js("[page.launchDialog.entry, page.launchDialog.mode]")
+choose("launchEntry-spec")
+wait(50)
+out["spec"] = [js("page.launchDialog.entry"), shown("launchModes"), shown("launchMode-light"),
+               obj("launchWorktreeToggle").property("enabled")]
+choose("launchEntry-planning")
+wait(50)
+out["back"] = [js("page.launchDialog.entry"), js("page.launchDialog.mode"), shown("launchModes")]
+""")
+        self.assertEqual(out["default"], ["planning", "full"])
+        self.assertEqual(out["entries"][:2], [True, True])
+        self.assertIn("Planowanie", out["entries"][2])
+        self.assertEqual(out["planning"], [True, True, True])
+        self.assertEqual(out["light"], ["planning", "light"])
+        self.assertEqual(out["spec"], ["spec", False, False, False], "Tylko specyfikacja: bez wyboru trybu i bez worktree")
+        self.assertEqual(out["back"], ["planning", "light", True], "wybrany tryb wraca z Planowaniem")
+
+    def test_project_default_entry_and_legacy_mode_spec(self):
+        data = json.loads(json.dumps(self.data))
+        for p in data["projects"]:
+            if p["slug"] == "plasma-tide":
+                p["entry"], p["mode"] = "spec", "light"
+            if p["slug"] == "mobileapp":
+                p.pop("entry", None)
+                p["mode"] = "spec"   # usługa sprzed PT-77 / stary zapis: tryb spec to wejście Tylko specyfikacja
+        out = self.probe("""
+out["tide"] = js("page.openLaunch('K-9', false), [page.launchDialog.entry, page.launchDialog.mode]")
+click(named("launchCancel"))
+out["legacy"] = js("page.openLaunch('K-14', false), [page.launchDialog.entry, page.launchDialog.mode]")
+""", data)
+        self.assertEqual(out["tide"], ["spec", "light"], "domyślne wejście projektu, tryb zapamiętany na Planowanie")
+        self.assertEqual(out["legacy"], ["spec", "full"])
 
     def test_card_button_and_card_without_project(self):
         data = json.loads(json.dumps(self.data))
@@ -1684,12 +1770,13 @@ class BackendTest(unittest.TestCase):
         self.assertIn("dom", [p["name"] for p in json.loads(backend.snapshotJson)["projects"]])
         self.assertEqual(snap["boardDir"], self.board)
         # Uruchomienie z karty: RenderLaunch idzie do /Board, Start do /Tasks (z długim terminem).
-        backend.renderLaunch("launch-render:K-1", "K-1", json.dumps({"mode": "spec", "tool": "codex"}))
+        backend.renderLaunch("launch-render:K-1", "K-1", json.dumps({"entry": "spec", "tool": "codex"}))
         backend.startTask("launch-start:K-1", json.dumps({"repoPath": "/nie/ma", "tool": "gemini", "prompt": "a b"}))
         self.assertTrue(wait_until(lambda: len(replies) == 9, timeout=15))
         by_tag = dict(replies[7:])
-        self.assertEqual((by_tag["launch-render:K-1"]["ok"], by_tag["launch-render:K-1"]["mode"],
-                          by_tag["launch-render:K-1"]["tool"]), (True, "spec", "codex"))
+        self.assertEqual((by_tag["launch-render:K-1"]["ok"], by_tag["launch-render:K-1"]["entry"],
+                          by_tag["launch-render:K-1"]["mode"], by_tag["launch-render:K-1"]["tool"]),
+                         (True, "spec", "", "codex"))
         self.assertIn("Karta K-1: Pierwsza karta", by_tag["launch-render:K-1"]["text"])
         self.assertEqual(by_tag["launch-start:K-1"]["error"], "bad-tool", "odpowiedź z /Tasks")
         # PT-43: /Tasks Defaults (katalog zrzutów, programy) i stan modeli z /Models — jak w oknie „Nowe zadanie”.

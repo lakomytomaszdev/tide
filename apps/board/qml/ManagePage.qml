@@ -558,6 +558,7 @@ Rectangle {
         property string aiDocs: ""
         property string tool: ""
         property string mode: ""
+        property string entry: ""
         property bool youtrackSync: true
         property alias youtrackKey: youtrackField.text
         readonly property bool youtrackToggleEnabled: youtrackToggle.enabled
@@ -567,7 +568,9 @@ Rectangle {
             tags = (project.tags || []).slice()
             aiDocs = project.aiDocs || "tide"
             tool = project.tool || "claude"
-            mode = project.mode || "full"
+            const d = Logic.launchDefaults(project)   // dawne mode: spec to wejście Tylko specyfikacja
+            entry = d.entry
+            mode = d.mode
             nameField.text = project.name || ""
             descriptionField.text = project.description || ""
             youtrackField.text = project.youtrack || ""
@@ -581,7 +584,9 @@ Rectangle {
             if (tags.join(",") !== (project.tags || []).join(",")) request.tags = tags
             if (aiDocs !== project.aiDocs || project.aiDocsDefault) request.aiDocs = aiDocs
             if (tool !== project.tool) request.tool = tool
-            if (mode !== project.mode) request.mode = mode
+            const d = Logic.launchDefaults(project)
+            if (entry !== d.entry) request.entry = entry
+            if (mode !== d.mode) request.mode = mode
             if (descriptionField.text.trim() !== (project.description || "")) request.description = descriptionField.text.trim()
             const key = youtrackField.text.trim().toUpperCase()
             if (key !== (project.youtrack || "")) request.youtrack = key
@@ -669,7 +674,8 @@ Rectangle {
                     Text {
                         text: (row.project.aiDocs === "repo" ? "dokumenty AI w repozytorium" : "dokumenty AI w tablicy")
                               + " · " + Logic.toolName(row.project.tool) + " · "
-                              + ({ full: "pełny", light: "lekki", spec: "tylko spec" }[row.project.mode] || row.project.mode || "")
+                              + (Logic.launchDefaults(row.project).entry === "spec" ? "tylko specyfikacja"
+                                 : ({ full: "planowanie, pełny", light: "planowanie, lekki" }[Logic.launchDefaults(row.project).mode] || ""))
                         textFormat: Text.PlainText
                         color: Tide.Tokens.textSecondary
                         font.family: Tide.Theme.uiFamily
@@ -745,11 +751,20 @@ Rectangle {
                     current: row.tool
                     onPicked: value => row.tool = value
                 }
-                FieldLabel { text: "Tryb" }
+                FieldLabel { text: "Domyślne wejście" }
                 Segmented {
+                    objectName: "projectEntry"
                     itemHeight: 28
-                    options: [{ value: "full", label: "Pełny" }, { value: "light", label: "Lekki" },
-                              { value: "spec", label: "Tylko spec" }]
+                    options: [{ value: "planning", label: "Planowanie" }, { value: "spec", label: "Tylko specyfikacja" }]
+                    current: row.entry
+                    onPicked: value => row.entry = value
+                }
+                FieldLabel { text: "Tryb"; visible: Logic.entryHasModes(row.entry) }
+                Segmented {
+                    objectName: "projectMode"
+                    visible: Logic.entryHasModes(row.entry)
+                    itemHeight: 28
+                    options: [{ value: "full", label: "Pełny" }, { value: "light", label: "Lekki" }]
                     current: row.mode
                     onPicked: value => row.mode = value
                 }

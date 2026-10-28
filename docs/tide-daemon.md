@@ -839,8 +839,8 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
 | `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, mode, description, youtrack, youtrackSync}`: istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
-| `RenderFlow(s id, s mode)` | `→ s` | polecenie trybu dla karty (pusty `mode` — tryb projektu) → `{ok, text, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
-| `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{mode, tool, branch, check}` (wszystko opcjonalne; `check`: `auto` — domyślnie, albo `manual`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
+| `RenderFlow(s id, s mode)` | `→ s` | polecenie dla karty (pusty `mode` — domyślne wejście i tryb projektu; `spec` to dawny zapis wejścia Tylko specyfikacja) → `{ok, text, entry, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
+| `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{entry, mode, tool, branch, check}` (wszystko opcjonalne; `entry`: `planning` albo `spec` — Tylko specyfikacja, domyślne wejście projektu; `mode`: `full` albo `light`, dotyczy tylko Planowania i przy `spec` jest pomijany; `mode: spec` bez `entry` to stare żądanie wejścia Tylko specyfikacja; `check`: `auto` — domyślnie, albo `manual`); polecenie z każdego wejścia i trybu jest takie jak przed PT-77; odpowiedź ma `entry` i `mode` (pusty przy `spec`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
 | `Badge()` | `→ s` | plakietka widoku Tablica w oknie Tide: JSON `{text, tone}` — „● N” (`waiting`), gdy karty czekają na ciebie, inaczej liczba kart w grze bez Gotowych i Archiwum (`muted`); zero — pusty tekst (plakietka ukryta). Tylko odczyt, niczego nie zakłada; ta sama reguła co `badge()` w `apps/board/backend.py` |
 | `ShowWindow(s id)` | `→ b` | okno Tide na widoku Tablica (`tide.py --view board`), z ID karty (`K-12`, wielkość liter bez znaczenia) od razu na niej (`--select K-12`), z `launch:K-12` — na niej z oknem „Co ma zrobić agent?” (`--select launch:K-12`, „Uruchom” w popupie kafelka); napis, który nie jest ID karty, pomijamy (samo okno); `false`, gdy okna nie ma — kafelek tablicy w docku |
 | `CardDocs(s id)` | `→ s` | plan i specyfikacja karty do panelu karty (niżej, „Plan i specyfikacja na karcie”): `{ok, card, plan, spec, others, warnings}`; tylko odczyt, odpowiedź po odczycie plików w wątku roboczym |
@@ -885,8 +885,8 @@ tide-board/
   projects/<slug>.md         projekt
   tags/<slug>.md             tag z kolorem
   cards/K-<n>.md             karta
-  flows/full.md, light.md, spec.md     szablony poleceń trybów
-  flows/<projekt>/<tryb>.md  nadpisanie szablonu dla jednego projektu (opcjonalne)
+  flows/full.md, light.md, spec.md     szablony poleceń (full, light — Planowanie; spec — Tylko specyfikacja)
+  flows/<projekt>/<klucz>.md  nadpisanie szablonu dla jednego projektu (opcjonalne)
   docs/<projekt>/            plany i specyfikacje agentów projektów z `ai-docs: tide`
 ```
 
@@ -931,7 +931,7 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `session` | sesja albo koordynator, który prowadzi kartę — id jak w `/Agents` i `/Coordination` (`claude:<id>`, `codex:<id>`, samo `<id>` też działa); pierwsze źródło stanu karty |
 | `branch` | gałąź pracy w repozytorium projektu; zastępuje propozycję gałęzi w `RenderFlow`, łączy kartę z pracą na tej gałęzi i jest gałęzią do scalenia |
 | `check` | sprawdzenie po skończonej pracy agenta: `auto` (domyślnie — wystarczą testy i review AI) albo `manual` (test ręczny użytkownika: karta czeka w Do sprawdzenia, aż przeniesiesz ją do Gotowe). Zła wartość w pliku — błąd i `auto`; brak klucza — `auto`. Ustawia go m.in. przełącznik „Test ręczny po zakończeniu” przy uruchomieniu agenta (PT-4) |
-| `mode`, `tool`, `worktree`, `launched` | ostatnie uruchomienie agenta z karty: tryb, narzędzie, katalog worktree (bezwzględny albo pusty — praca w katalogu projektu) i chwila (ISO 8601); w pliku tylko po uruchomieniu |
+| `entry`, `mode`, `tool`, `worktree`, `launched` | ostatnie uruchomienie agenta z karty: wejście (`planning`, `spec`), tryb (`full`, `light`; przy `spec` pusty), narzędzie, katalog worktree (bezwzględny albo pusty — praca w katalogu projektu) i chwila (ISO 8601); w pliku tylko po uruchomieniu. Karta ze starym `mode: spec` to wejście `spec` (czytane, plik nietknięty); żądanie z `mode: spec` zapisuje `entry: spec` |
 | `projects` | dodatkowe projekty karty (PT-28) — slugi po przecinku, główny zostaje w `project`; zadanie zmienia kilka repozytoriów naraz. W pliku tylko, gdy ustawione. `CreateCard`/`UpdateCard` przyjmują listę (albo napis „a, b”) slugów istniejących projektów albo bezwzględnych ścieżek repozytoriów — repozytorium bez projektu dostaje projekt osobnym commitem (jak `repo`); główny projekt i powtórzenia wypadają, najwyżej 5, nieznany slug — `not-found`. Zmiana `project` na jeden z dodatkowych usuwa go z `projects`. Nieznany slug w pliku — wpis w `errors`, karta działa |
 
 Projekt — `projects/mobileapp.md`, treść to opcjonalny opis:
@@ -949,7 +949,7 @@ mode: full
 
 - `repo`: ścieżka bezwzględna do repozytorium albo pusty (projekt bez kodu). Repozytorium tablicy nie może być projektem.
 - `ai-docs`: `repo` (plany i specyfikacje agentów w `docs/agents/` repozytorium) albo `tide` (w `tide-board/docs/<projekt>/`, nic nie trafia do repozytorium projektu). Przy zakładaniu: `repo`, gdy repozytorium ma już `docs/agents/`, inaczej `tide`; bez klucza w pliku — to samo wyliczane przy odczycie (`aiDocsDefault: true`).
-- `tool`: `claude` albo `codex`, `mode`: `full`, `light` albo `spec` — domyślne dla uruchomień z kart projektu (domyślnie `claude` i `full`: pełny przebieg, chyba że przy karcie wybierzesz inny tryb).
+- `tool`: `claude` albo `codex`, `entry`: `planning` albo `spec` (Tylko specyfikacja), `mode`: `full` albo `light` — domyślne dla uruchomień z kart projektu (domyślnie `claude`, `planning` i `full`; tryb dotyczy tylko Planowania). PT-77: „Tylko specyfikacja” jest wejściem, nie trybem — projekt ze starym `mode: spec` czytamy jako `entry: spec` (tryb `full`), bez błędu i bez przepisywania pliku; stary zapis znika dopiero, gdy użytkownik zmieni wejście albo tryb projektu. Kolejne wejścia (Mam plan, Od razu) dojdą do `entry` bez zmiany formatu.
 - `youtrack`: klucz projektu YouTracka (`LOG`, `LEGAL`; wielkie litery i cyfry, unikalny na tablicy — drugi projekt z tym samym kluczem to `exists`), `youtrack-sync`: `on` (domyślnie, bez klucza w pliku) albo `off` — PT-7, „Synchronizacja z YouTrackiem” niżej. Projekt bez klucza nie synchronizuje niczego. Klucz z importu przypisuje też zaimportowane karty do projektu.
 - Projekty powstają jawnie (`UpsertProject`; ta sama nazwa drugi raz to ten sam projekt, nie `foo-2`) albo przy pierwszej karcie dla repozytorium (`CreateCard` z `repo`) — osobnym commitem. Usługa nie zakłada wpisów dla wszystkich repozytoriów z katalogu projektów; migawka podaje je w `repos` jako kandydatów.
 
@@ -962,7 +962,7 @@ kolorem wyliczonym z nazwy. Wielkość liter w nazwach tagów nie ma znaczenia p
 **Szablony trybów.** `RenderFlow` zakłada katalog dokumentów, jeśli leży w tablicy (`ai-docs: tide`,
 także `docs/_inbox` dla karty bez projektu) — agent dostanie go przez `--add-dir`; w repozytorium
 projektu (`ai-docs: repo`) niczego nie tworzy. Pusty katalog nie trafia do gita, pliki agenta zbierze
-synchronizacja. Szablon bierze `flows/<projekt>/<tryb>.md`, potem `flows/<tryb>.md`, a bez
+synchronizacja. Szablon bierze `flows/<projekt>/<klucz>.md`, potem `flows/<klucz>.md` (klucz to tryb Planowania albo `spec` przy wejściu Tylko specyfikacja; `flows.flow_key`), a bez
 tablicy — wbudowany szablon (`board/flows.py`, te same treści, które trafiają do nowej tablicy).
 Frontmatter szablonu nie trafia do polecenia. Zastępowane są wyłącznie pola `{card_id}`, `{title}`,
 `{description}`, `{project}`, `{repo}`, `{docs_dir}`, `{branch}`, `{tool}`, `{docs_note}`, `{spec}`,
@@ -973,9 +973,9 @@ głównego projektu, w każdym dodatkowym repozytorium, które agent zmienia, ga
 od lokalnej gałęzi głównej (worktree tylko, gdy wymagają tego zasady repozytorium; przy zmianach albo innej
 gałęzi w głównym katalogu — pytanie do użytkownika; bez push), pliki po ścieżkach bezwzględnych i git przez
 `git -C`, bez `cd`, osobne commity w każdym repozytorium, a w Uwagach planu przy tickecie — które repozytorium
-zmienia; w trybie spec repozytoria są tylko do odczytu. Własny szablon bez `{projects}` dostaje tę listę na
+zmienia; przy wejściu Tylko specyfikacja repozytoria są tylko do odczytu. Własny szablon bez `{projects}` dostaje tę listę na
 końcu polecenia. Gałąź: z okna, inaczej `branch` karty albo propozycja `<narzędzie>/k-12-<opis-z-tytułu>`
-(po ID karty w gałęzi daemon połączy kartę z koordynatorem; w trybie spec polecenie mówi „bez gałęzi”).
+(po ID karty w gałęzi daemon połączy kartę z koordynatorem; przy wejściu Tylko specyfikacja polecenie mówi „bez gałęzi”).
 `{docs_dir}` to `docs/agents` (względnie — katalog roboczy agenta, także worktree) przy `ai-docs: repo`
 i ścieżka bezwzględna w tablicy przy `ai-docs: tide`; `{docs_note}` mówi, kto commituje te pliki (w
 tablicy — tylko usługa), a w tablicy także: pliki po ścieżkach bezwzględnych, bez `cd` do katalogu
@@ -998,14 +998,14 @@ inaczej późniejszy start z nowym worktree dostałby odmowę `dirty-base`.
 
 **Migracja szablonów.** Tablica założona przed PT-4 ma w `flows/` dawne zaczyny (a sprzed PT-28 —
 `tide-flow: 2` bez `{projects}`; oba są w `flows.PREVIOUS_SEEDS`). Przy starcie usługi
-(`migrate_flows`) plik `flows/<tryb>.md`, który jest bajt w bajt dawnym zaczynem (skróty SHA-256
+(`migrate_flows`) plik `flows/<klucz>.md`, który jest bajt w bajt dawnym zaczynem (skróty SHA-256
 w `flows.PREVIOUS_SEEDS`), dostaje nową treść jednym commitem `flows: update templates`; plik zmieniony
-przez użytkownika, nadpisania projektów (`flows/<projekt>/…`) i brakujące pliki zostają. W trakcie
+przez użytkownika, nadpisania projektów (`flows/<projekt>/…`) i brakujące pliki zostają. PT-77: nagłówek zaczynu `spec` zmienił się z `mode: spec` na `entry: spec` (treść polecenia ta sama), więc dotychczasowy zaczyn jest w `PREVIOUS_SEEDS` i dostaje nowy nagłówek; szablon `spec` zmieniony przez użytkownika (także nadpisanie projektu), który w nagłówku ma jeszcze `mode: spec`, zostaje nietknięty, a migawka (`errors`) niesie ostrzeżenie z prośbą o `entry: spec`. W trakcie
 revertu albo merge'a migracja czeka, a `RenderFlow` i tak nigdy nie wstawia dawnego zaczynu do polecenia
 (bierze wtedy wbudowaną treść).
 
 **Gotowa specyfikacja** (`mark_ready_specs`, przy każdej synchronizacji — po zmianie w tablicy po 2 s,
-inaczej co 60 s, więc dla specyfikacji w repozytorium projektu do minuty): karta z `mode: spec`
+inaczej co 60 s, więc dla specyfikacji w repozytorium projektu do minuty): karta z wejściem Tylko specyfikacja (`entry: spec`, także dawne `mode: spec`)
 w Do zrobienia bez `spec`, której `<docs>/specs/` ma plik Markdown nazwany od ID karty (`k-12.md`,
 `k-12-…`) albo z `card: K-12` we frontmatterze i ze `status: gotowa` (także `gotowy`, `ready`, `done`),
 dostaje `spec: <ścieżka>` i wraca na górę Backlogu — commit `K-12: specification ready`. Na karcie
@@ -1061,10 +1061,10 @@ w raporcie porannym, gdziekolwiek leży.
 | `nextId` | ID, które dostanie następna karta |
 | `columns` | `[{id, label, manual, hidden?}]`: `backlog` „Backlog”, `todo` „Do zrobienia”, `progress` „W toku”, `waiting` „Czeka na mnie”, `review` „Do sprawdzenia”, `done` „Gotowe”, `archived` „Archiwum” (ukryta); `manual: false` — kolumny wyliczane z koordynatora |
 | `colors` | pastele z palety `{nazwa: "#rrggbb"}` |
-| `tools`, `modes` | dozwolone narzędzia i tryby |
+| `tools`, `entries`, `modes` | dozwolone narzędzia, wejścia (`planning`, `spec`) i tryby Planowania (`full`, `light`) |
 | `tags` | `[{name, slug, color, description, defined, cards}]` (`cards` — karty z tym tagiem po dziedziczeniu) |
-| `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, mode, description, docsDir, cards, path, youtrack, youtrackSync}]` (`youtrackSync` — klucz ustawiony i synchronizacja włączona) |
-| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, mode, tool, worktree, launched, launchedTs, branchSlug, projects, extraProjects, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia; `extraProjects` — dodatkowe projekty rozwiązane `[{slug, name, repo, repoMissing}]` (bez nieznanych slugów) |
+| `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, entry, mode, description, docsDir, cards, path, youtrack, youtrackSync}]` (`youtrackSync` — klucz ustawiony i synchronizacja włączona) |
+| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, entry, mode, tool, worktree, launched, launchedTs, branchSlug, projects, extraProjects, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia; `extraProjects` — dodatkowe projekty rozwiązane `[{slug, name, repo, repoMissing}]` (bez nieznanych slugów) |
 | `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
 | `errors` | `[{path, message}]` — złe pliki; także konflikty z YouTrackiem (PT-7, z pustym `path`) |
 | `youtrack` | stan synchronizacji (PT-7, tylko usługa z YouTrackiem — bez `--no-youtrack`): `{enabled, sync, url, available, error, pending, conflicts, conflictItems: [{issue, label, cards, youtrack, tide, url}], newIssues, importError, states}` |
@@ -1303,13 +1303,13 @@ z koordynatorem) i `/Agents ActivateSession(id)` (okno zwykłej sesji); podpięc
 (backend i `BoardView.qml`) czeka na scalenie z PT-4, który zmienia te pliki.
 
 **Uruchomienie z karty** (widok Tablica, `apps/board/qml/LaunchDialog.qml`). Okno „Co ma zrobić
-agent?” otwiera się po przeniesieniu karty z Backlogu do Do zrobienia (myszą albo Ctrl+→), z „Uruchom
+agent?” (PT-77) pyta „Jak zacząć?”: wejście Planowanie albo Tylko specyfikacja (kolejne dojdą jako nowe karty wyboru); tryb Pełny albo Lekki widać tylko przy Planowaniu. Otwiera się po przeniesieniu karty z Backlogu do Do zrobienia (myszą albo Ctrl+→), z „Uruchom
 agenta…” na karcie w Do zrobienia i z „Uruchom” w popupie kafelka (`ShowWindow("launch:K-12")`).
 „Uruchom agenta” (Ctrl+Enter) to kolejno: `UpdateCard {description}` — tylko gdy zadanie w oknie różni
-się od opisu karty, `RenderLaunch(id, {mode, tool, branch, check})`, `/Tasks Start {repoPath, tool,
-prompt: text, newWorktree, branch, images, addDirs, model}` (`newWorktree` i `branch` tylko poza trybem
-spec; `addDirs: [docsDir]` przy `ai-docs: tide`) i po udanym starcie `UpdateCard {branch, worktree,
-mode, tool, check, launched, session: ""}` (`branch` tylko z nowym worktree; pole `check` dodaje PT-5;
+się od opisu karty, `RenderLaunch(id, {entry, mode, tool, branch, check})` (`mode` tylko przy Planowaniu), `/Tasks Start {repoPath, tool,
+prompt: text, newWorktree, branch, images, addDirs, model}` (`newWorktree` i `branch` tylko poza wejściem
+Tylko specyfikacja; `addDirs: [docsDir]` przy `ai-docs: tide`) i po udanym starcie `UpdateCard {branch, worktree,
+entry, mode, tool, check, launched, session: ""}` (`branch` tylko z nowym worktree; pole `check` dodaje PT-5;
 pusty `session` — ponowne uruchomienie odpina poprzednią sesję, a usługa przypnie nową, PT-28). Karta
 uruchomiona z Backlogu bez przeniesienia (popup) idzie do Do zrobienia; dalej stoi tam, aż PT-5 wyliczy
 „W toku”. Błąd którejkolwiek odpowiedzi zostaje w oknie, a ponowienie nie zapisuje opisu drugi raz.

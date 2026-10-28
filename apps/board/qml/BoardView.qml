@@ -159,7 +159,8 @@ Item {
                 const parts = view.previewValue("launch").split(",")   // launch=K-9[,light|spec][,codex][,move][,manual]
                 openLaunch(parts[0], parts.indexOf("move") >= 0)
                 for (const part of parts.slice(1)) {
-                    if (part === "full" || part === "light" || part === "spec") launchDialog.mode = part
+                    if (part === "full" || part === "light") { launchDialog.entry = "planning"; launchDialog.mode = part }
+                    if (part === "spec") launchDialog.entry = "spec"
                     if (part === "claude" || part === "codex") launchDialog.pickTool(part)
                     if (part === "manual") launchDialog.manualCheck = true
                     if (part === "local") launchDialog.model = "local"

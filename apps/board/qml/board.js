@@ -272,7 +272,7 @@ function noteTint(card, text) {
 }
 
 // Linia na karcie: notatka z koordynatora, inaczej notatka karty.
-// Gotowa specyfikacja (`spec` karty, tryb „tylko spec”) w Backlogu — „✓ specyfikacja gotowa”
+// Gotowa specyfikacja (`spec` karty, wejście „Tylko specyfikacja”) w Backlogu — „✓ specyfikacja gotowa”
 // przed własną notatką karty, bo to wynik pracy agenta, na który czekasz.
 function cardNote(card) {
     const d = card && card.derived
@@ -527,19 +527,51 @@ function columnLabel(snapshot, id) {
 
 // --- „Co ma zrobić agent?” (uruchomienie z karty, PT-4) ------------------------------------------
 
-// Tryby z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.
+// Wejścia („Jak zacząć?”): sposób rozpoczęcia zlecenia. Kolejne (Mam plan, Od razu) dochodzą tu jako nowe pozycje;
+// `modes: true` — wejście ma wybór trybu (Pełny, Lekki), a bez niego kroki są własne wejścia (`steps`).
+var LAUNCH_ENTRIES = [
+    { id: "planning", title: "Planowanie", desc: "Agent planuje pracę: specyfikacja, tickety w planie, potem implementacja i review.",
+      meta: "wybierasz tryb: Pełny albo Lekki", modes: true },
+    { id: "spec", title: "Tylko specyfikacja", desc: "Agent dopytuje i pisze specyfikację. Bez kodu i bez worktree.",
+      meta: "karta wraca do Backlogu", modes: false, steps: ["Pytania", "Specyfikacja", "„specyfikacja gotowa” na karcie"] }
+]
+
+// Tryby Planowania z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.
 var LAUNCH_MODES = [
     { id: "full", title: "Pełny flow", desc: "Grilling, specyfikacja, tickety w planie, implementacja przez TDD i review.",
       meta: "na start zada ci pytania", steps: ["Grilling", "Specyfikacja", "Tickety w planie", "TDD", "Review"] },
     { id: "light", title: "Lekki", desc: "Krótka specyfikacja i 1–3 tickety w planie, potem od razu praca.",
-      meta: "pyta tylko przy wątpliwościach", steps: ["Krótka specyfikacja", "1–3 tickety w planie", "Praca", "Review"] },
-    { id: "spec", title: "Tylko specyfikacja", desc: "Agent dopytuje i pisze specyfikację. Bez kodu i bez worktree.",
-      meta: "karta wraca do Backlogu", steps: ["Pytania", "Specyfikacja", "„specyfikacja gotowa” na karcie"] }
+      meta: "pyta tylko przy wątpliwościach", steps: ["Krótka specyfikacja", "1–3 tickety w planie", "Praca", "Review"] }
 ]
 var LAUNCH_TOOLS = [{ value: "claude", label: "Claude Code" }, { value: "codex", label: "Codex" }]
 
 function launchMode(id) {
     return LAUNCH_MODES.find(m => m.id === id) || LAUNCH_MODES[0]
+}
+
+function launchEntry(id) {
+    return LAUNCH_ENTRIES.find(e => e.id === id) || LAUNCH_ENTRIES[0]
+}
+
+// Czy wejście ma wybór trybu (dziś tylko Planowanie).
+function entryHasModes(id) {
+    return launchEntry(id).modes === true
+}
+
+// Kroki paska pod wyborem: własne wejścia albo kroki wybranego trybu Planowania.
+function launchSteps(entry, mode) {
+    const e = launchEntry(entry)
+    return e.modes ? launchMode(mode).steps : e.steps
+}
+
+// Wejście i tryb z projektu przy otwarciu okna. Dawne `mode: spec` (stary zapis albo usługa sprzed PT-77) to wejście
+// Tylko specyfikacja; tryb zawsze Pełny albo Lekki — zapamiętany także wtedy, gdy projekt ma wejście spec.
+function launchDefaults(project) {
+    const p = project || {}
+    const legacySpec = p.mode === "spec"
+    const mode = p.mode === "light" ? "light" : "full"
+    const entry = p.entry && LAUNCH_ENTRIES.some(e => e.id === p.entry) ? p.entry : (legacySpec ? "spec" : "planning")
+    return { entry: entry, mode: mode }
 }
 
 function launchToolName(tool) {
@@ -586,7 +618,7 @@ function docsLabel(project) {
 // Katalog worktree jak w usłudze (tasks/core.py: worktree_path): `<repo>-worktrees/<nazwa>`, gdy taki
 // katalog już jest — tego okno nie wie, więc mówimy ogólnie o konwencji repozytorium.
 function worktreeNote(state) {
-    if (state.mode === "spec") return "Specyfikacja nie potrzebuje worktree: powstaje w " + specDir(state) + " w katalogu projektu."
+    if (state.entry === "spec") return "Specyfikacja nie potrzebuje worktree: powstaje w " + specDir(state) + " w katalogu projektu."
     if (!state.newWorktree) return "Agent pracuje w głównym katalogu repozytorium, na tym, co tam jest teraz."
     const name = String(state.branch || "").replace(/^(claude|codex)\//, "")
     return "Od lokalnej gałęzi głównej, katalog " + name + " obok repozytorium (konwencja projektu). Gałąź główna zostaje nietknięta."
@@ -602,7 +634,7 @@ function launchFooter(state) {
     const where = state.repoName ? "„" + state.repoName + " · " + (state.newWorktree ? state.branch : "bieżąca gałąź") + "”" : ""
     const check = extrasNote(state)
         + (state.check === "manual" ? " Na koniec zostawi listę „Co przetestować ręcznie i jak” i poczeka na twój test." : "")
-    if (state.mode === "spec")
+    if (state.entry === "spec")
         return tool + " w katalogu projektu, bez worktree: dopyta i zapisze specyfikację w " + specDir(state)
             + ". Potem karta wróci do Backlogu ze znacznikiem „specyfikacja gotowa”."
     const room = state.newWorktree ? "praca w nowym worktree" : "praca w głównym katalogu"
@@ -621,13 +653,13 @@ function extrasNote(state) {
     return " Pracuje też w: " + names.join(", ") + " (gałąź " + branch + " w każdym, które zmieni)."
 }
 
-// Prośba /Tasks Start z polecenia RenderLaunch: worktree tylko poza trybem spec, katalogi dla --add-dir
+// Prośba /Tasks Start z polecenia RenderLaunch: worktree tylko poza wejściem Tylko specyfikacja, katalogi dla --add-dir
 // z RenderLaunch (`addDirs`: dokumenty w tablicy przy ai-docs: tide i repozytoria dodatkowych projektów,
 // PT-28); usługa sprzed PT-28 — sam katalog dokumentów. Zrzuty ekranu i model jak z okna „Nowe zadanie”
 // (PT-43): `images` — pliki z katalogu zadań (imagesDir), `model` — cloud albo local (przy local usługa bierze
 // program z agentProgram w models.json; `tool` z okna to ten sam program).
 function launchStartRequest(flow, state) {
-    const worktree = state.mode !== "spec" && state.newWorktree
+    const worktree = state.entry !== "spec" && state.newWorktree
     const dirs = Array.isArray(flow.addDirs) ? flow.addDirs.slice()
                : (flow.aiDocs === "tide" && flow.docsDir ? [flow.docsDir] : [])
     return { repoPath: flow.repo, tool: flow.tool || state.tool, prompt: flow.text, newWorktree: worktree,
@@ -691,11 +723,11 @@ function pathTail(path) {
     return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : text
 }
 
-// UpdateCard po udanym starcie: gałąź i worktree (tylko nowy worktree), tryb, narzędzie, sprawdzenie, chwila,
+// UpdateCard po udanym starcie: gałąź i worktree (tylko nowy worktree), wejście i tryb (przy Tylko specyfikacja pusty), narzędzie, sprawdzenie, chwila,
 // a `session` pusty — ponowne uruchomienie odpina poprzednią sesję i usługa przypnie nową (PT-28).
 function launchMarkRequest(result, state, nowIso) {
-    return { branch: result.worktree ? result.branch || "" : "", worktree: result.worktree || "", mode: state.mode,
-             tool: result.tool || state.tool, check: state.check === "manual" ? "manual" : "auto", launched: nowIso,
+    return { branch: result.worktree ? result.branch || "" : "", worktree: result.worktree || "", entry: state.entry || "planning",
+             mode: state.entry === "spec" ? "" : state.mode, tool: result.tool || state.tool, check: state.check === "manual" ? "manual" : "auto", launched: nowIso,
              session: "" }
 }
 

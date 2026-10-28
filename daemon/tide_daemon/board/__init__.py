@@ -3,7 +3,7 @@
 - marker.py      — rozpoznanie repozytorium tablicy po `board.md` (skaner repozytoriów je pomija),
 - frontmatter.py — płaski frontmatter z zachowaniem nieznanych kluczy przy zapisie,
 - model.py       — kolumny, karty, projekty, tagi; odczyt z walidacją,
-- flows.py       — szablony poleceń trybów full, light i spec,
+- flows.py       — szablony poleceń: full i light (Planowanie) oraz spec (Tylko specyfikacja),
 - store.py       — odczyt, zapis z commitem każdej zmiany, migawka dla D-Bus,
 - derive.py      — stan karty z pracy agentów i trwałe połączenie karta ↔ sesja,
 - place.py       — katalog pracy sesji, która weszła do repozytorium tablicy (PT-28).
