@@ -724,26 +724,29 @@ class StopStepTest(unittest.TestCase):
         self.assertIn("commondir", " ".join(result.notes))
 
     def test_the_service_git_sandbox_hides_the_user_runtime_dir_and_its_sockets(self):
-        # Sonda: filtr w `.git/config` repozytorium (konfiguracja użytkownika, wykonuje się w piaskownicy; filtr
-        # z `config.worktree` jest odsunięty na czas gita, więc niczego by nie zbadał) zapisuje w worktree, co widzi.
+        # Sonda: filtr w `config.worktree` (konfiguracja agenta, tor ataku) wykonuje się w piaskownicy gita usługi i zapisuje
+        # w worktree, co widzi. Skrypt leży w worktree: /tmp i /run są w piaskownicy puste, a worktree jest do niej podpięty.
         uid = os.getuid()
-        script = os.path.join(self.root, "probe.sh")
+        gitrepos.git(self.repo, "config", "extensions.worktreeConfig", "true")
+        proc, cmd, _, _ = self.start()
+        script = os.path.join(self.worktree, "probe.sh")
+        out = os.path.join(self.worktree, "probe.out")
         paths = [f"/run/user/{uid}/bus", f"/run/user/{uid}/systemd/private", f"/run/user/{uid}"]
         with open(script, "w", encoding="utf-8") as fh:
-            fh.write(f"#!/bin/sh\necho ran > {self.worktree}/probe.out\n")
+            fh.write(f"#!/bin/sh\necho ran > {out}\n")
             for path in paths:
-                fh.write(f'[ -e {path} ] && echo "VISIBLE {path}" >> {self.worktree}/probe.out\n')
+                fh.write(f'[ -e {path} ] && echo "VISIBLE {path}" >> {out}\n')
             fh.write("cat\n")
         os.chmod(script, 0o755)
-        proc, cmd, _, _ = self.start()
-        gitrepos.git(self.repo, "config", "filter.probe.clean", script)
+        with open(os.path.join(self.gitdir, "config.worktree"), "a", encoding="utf-8") as fh:
+            fh.write(f'[filter "probe"]\n\tclean = {script}\n')
         with open(os.path.join(self.worktree, ".gitattributes"), "w", encoding="utf-8") as fh:
             fh.write("probe.txt filter=probe\n")
         with open(os.path.join(self.worktree, "probe.txt"), "w", encoding="utf-8") as fh:
             fh.write("x\n")
         result = self.stop(proc, cmd)
         self.assertTrue(result.committed, result.error)
-        with open(os.path.join(self.worktree, "probe.out"), encoding="utf-8") as fh:
+        with open(out, encoding="utf-8") as fh:
             seen = fh.read().split()
         self.assertEqual(seen[:1], ["ran"], "sonda nie wykonała się w piaskownicy")
         self.assertNotIn("VISIBLE", seen, "piaskownica gita usługi widzi /run/user/$UID: " + " ".join(seen))
