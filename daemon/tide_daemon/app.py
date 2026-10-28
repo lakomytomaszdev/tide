@@ -62,8 +62,8 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
 --no-activity-look bez nakładania wyglądu aktywności po CurrentActivityChanged i przy starcie (PT-35; silnik
                    z $XDG_DATA_HOME/tide/activity-look, make install-activity-look; pusty
                    $TIDE_ACTIVITY_LOOK_ENGINE też wyłącza).
---no-monitors      bez obiektu /Monitors (układ monitorów PC ⇄ Xbox, PT-38; kscreen-doctor i ddcutil szukane
-                   w $TIDE_MONITORS_BIN zamiast PATH, jeśli ustawione),
+--no-monitors      bez obiektu /Monitors (wejście prawego monitora PC ⇄ Xbox przez DDC/CI, PT-38; ddcutil szukany
+                   w $TIDE_MONITORS_BIN zamiast PATH, jeśli ustawione) i bez powrotu na PC po wyjściu ze Streamu,
 --no-stream-shortcuts  bez skrótów Stream (Pause, Meta+Pause, Meta+B tylko w aktywności Stream, PT-38; CLI rdzenia
                    z $TIDE_KAMP, pusty wyłącza).
 """
@@ -268,7 +268,7 @@ def main(argv=None) -> int:
     monitors = None
     if not args.no_monitors:
         from .monitors_service import MonitorsService
-        monitors = MonitorsService(parent=app)  # układ monitorów PC ⇄ Xbox (PT-38)
+        monitors = MonitorsService(parent=app)  # wejście prawego monitora PC ⇄ Xbox (PT-38)
     annotators = [a for a in (tasks.annotate if tasks is not None else None,
                               coordination.annotate if coordination is not None else None) if a]
     if annotators:
@@ -323,13 +323,24 @@ def main(argv=None) -> int:
         from .activity_look_monitor import ActivityLookMonitor, default_engine
         activity_look = ActivityLookMonitor(default_engine(), parent=app)
         activity_look.start()  # nasłuch zmiany aktywności i kontrola wyglądu bieżącej (logowanie)
-    if monitors is not None:
-        monitors.start()  # pierwszy odczyt układu z KWin w tle, po rejestracji na magistrali
     stream_keys = None
     if not args.no_stream_shortcuts:
         from .stream_shortcuts import KGlobalAccel, StreamShortcuts, StreamShortcutsMonitor
         stream_keys = StreamShortcutsMonitor(StreamShortcuts(KGlobalAccel()), parent=app)
-        stream_keys.start()  # skróty Stream tylko w aktywności Stream; przy starcie w pracy oddaje zaległe klawisze
+        stream_keys.start()  # naciśnięcia skrótów Stream; rejestracja według aktywności niżej
+    # Jedno źródło „czy Stream” (PT-38) dla skrótów i powrotu monitora na PC; po scaleniu z PT-36 do podmiany
+    # na sygnał wyglądu aktywności — odbiorcy biorą tylko stream: bool.
+    activity = None
+    if stream_keys is not None or monitors is not None:
+        from .current_activity import CurrentActivity
+        activity = CurrentActivity(parent=app)
+        if stream_keys is not None:
+            activity.changed.connect(lambda _activity, stream: stream_keys.stream_changed(stream))
+            activity.unknown.connect(stream_keys.activity_unknown)  # do odpowiedzi ActivityManagera — praca
+        if monitors is not None:
+            # Praca zawsze z obydwoma ekranami: wyjście ze Streamu (i start w pracy) z wejściem Xboxa → PC.
+            activity.changed.connect(lambda _activity, stream: monitors.stream_changed(stream))
+        activity.start()
 
     # Stan agentów według katalogu dla promptu powłoki (cwdstate.py) — plik, nie D-Bus, bo prompt
     # czyta go przy każdym znaku zachęty.
@@ -385,6 +396,8 @@ def main(argv=None) -> int:
         docker.stop()
     if activity_look is not None:
         activity_look.stop()
+    if activity is not None:
+        activity.stop()
     if stream_keys is not None:
         stream_keys.stop()  # klawisze wracają do pracy (Meta+B — profil zasilania)
     if monitors is not None:

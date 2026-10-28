@@ -12,10 +12,14 @@ pełna lista klawiszy tamtej akcji trafia do $XDG_STATE_HOME/tide/stream-shortcu
 zapisaną listę, jeśli tamta akcja ma dokładnie to, co jej zostawiliśmy; gdy ktoś zmienił ją w trakcie
 Streamu — tylko dopisuje odebrany klawisz. Plik znika po oddaniu wszystkiego, więc jego obecność przy starcie
 usługi (zabita w Stream, wylogowanie bez zatrzymania) oznacza „oddaj klawisze”, gdy bieżąca aktywność nie jest
-Streamem. W pracy usługa niczego w rejestrze nie zmienia, jeśli nie ma czego oddawać.
+Streamem. W pracy usługa niczego w rejestrze nie zmienia, jeśli nie ma czego oddawać. Gdy plik zginął,
+a nasze skróty dalej są w rejestrze, klawisz wraca do akcji, której domyślne skróty (defaultShortcut) go
+zawierają — kandydatów podaje kglobalshortcutsrc (tylko odczyt).
 
-Które aktywności są Streamem, mówią przypisania $XDG_CONFIG_HOME/tide/activities.json (`{"activities":
-{"<ID>": "stream"}}`, decyzja 78), te same, z których wygląd aktywności bierze opis.
+Czy bieżąca aktywność to Stream, mówi jeden sygnał (current_activity.CurrentActivity.changed, podpięty
+w app.py). Wywołania KGlobalAccel idą w jednym wątku roboczym, po kolei, więc nie zatrzymują pętli usługi;
+każde zadanie bierze ostatni żądany stan, więc kolejność zdarzeń nie ma znaczenia. Błąd KGlobalAccel
+(np. KWin jeszcze nie wstał) to ponowienie co retry_ms.
 """
 from __future__ import annotations
 
@@ -25,8 +29,10 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from PyQt6.QtCore import QMetaType, QObject, QProcess, QTimer, pyqtSlot
-from PyQt6.QtDBus import QDBusArgument, QDBusConnection, QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply
+from concurrent.futures import ThreadPoolExecutor
+
+from PyQt6.QtCore import QMetaType, QObject, QProcess, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtDBus import QDBusArgument, QDBusConnection, QDBusMessage
 
 COMPONENT = "tide_stream"
 COMPONENT_LABEL = "Tide · Stream"
@@ -39,10 +45,6 @@ ACCEL_SERVICE = "org.kde.kglobalaccel"
 ACCEL_PATH = "/kglobalaccel"
 ACCEL_IFACE = "org.kde.KGlobalAccel"
 COMPONENT_IFACE = "org.kde.kglobalaccel.Component"
-AM_SERVICE = "org.kde.ActivityManager"
-AM_PATH = "/ActivityManager/Activities"
-AM_IFACE = "org.kde.ActivityManager.Activities"
-STREAM_LOOK = "stream"
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,9 @@ class KGlobalAccel:
     def keys(self, action: list[str]) -> list[int]:
         return [int(k) for k in (self._call("shortcut", _strings(action)) or []) if int(k)]
 
+    def default_keys(self, action: list[str]) -> list[int]:
+        return [int(k) for k in (self._call("defaultShortcut", _strings(action)) or []) if int(k)]
+
     def set_foreign(self, action: list[str], keys: list[int]) -> None:
         self._call("setForeignShortcut", _strings(action), _ints(keys))
 
@@ -131,19 +136,32 @@ def default_state_path() -> Path:
     return Path(base) / "tide" / "stream-shortcuts.json"
 
 
-def default_bindings_path() -> Path:
+def default_shortcuts_file() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return Path(base) / "tide" / "activities.json"
+    return Path(base) / "kglobalshortcutsrc"
 
 
-def is_stream(activity: str, bindings: Path | None = None) -> bool:
-    """Aktywność przypisana do wyglądu „stream” (activity_look.py bind). Każda inna to praca."""
+def default_owners(keys: str, path: Path | None = None) -> list[list[str]]:
+    """Akcje, których domyślne skróty (drugie pole wpisu w kglobalshortcutsrc) zawierają `keys` — kandydaci
+    do oddania klawisza po utracie pliku stanu. Tylko odczyt."""
+    found, group = [], ""
     try:
-        data = json.loads((bindings or default_bindings_path()).read_text())
-    except (OSError, ValueError):
-        return False
-    items = data.get("activities") if isinstance(data, dict) else None
-    return bool(activity) and isinstance(items, dict) and items.get(activity) == STREAM_LOOK
+        lines = (path or default_shortcuts_file()).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            group = line[1:-1]
+            continue
+        name, sep, value = line.partition("=")
+        if not sep or name.startswith("_k_") or group == COMPONENT:
+            continue
+        fields = value.split(",")
+        defaults = [k.strip() for k in fields[1].split("\t")] if len(fields) > 1 else []
+        if keys in defaults:
+            found.append([group, name, "", ""])
+    return found
 
 
 def key_text(key: int) -> str:
@@ -156,9 +174,10 @@ def key_text(key: int) -> str:
 class StreamShortcuts:
     """Rejestracja skrótów Stream w KGlobalAccel i oddawanie zajętych klawiszy (bez Qt — testy na atrapie)."""
 
-    def __init__(self, accel, state_path: Path | None = None):
+    def __init__(self, accel, state_path: Path | None = None, owners=default_owners):
         self.accel = accel
         self.state_path = Path(state_path) if state_path is not None else default_state_path()
+        self.owners = owners      # klawisz (zapis „Meta+B”) → akcje z nim w domyślnych skrótach
         self.active = False
 
     # stan na dysku --------------------------------------------------------------------------
@@ -215,10 +234,16 @@ class StreamShortcuts:
     def leave(self) -> list[str]:
         """Powrót do pracy: usuwa skróty Stream i oddaje odebrane klawisze."""
         notes = []
+        ours = [s for s in SHORTCUTS if self._ours(self.accel.owner(s.key))]
         for shortcut in SHORTCUTS:
             self.accel.unregister(COMPONENT, shortcut.name)
         left = []
-        for item in self.taken():
+        taken = self.taken()
+        recorded = {t.get("key") for t in taken}
+        for shortcut in ours:
+            if shortcut.key not in recorded:
+                notes += self._give_back_default(shortcut)
+        for item in taken:
             key, action, saved = item.get("key"), item.get("action") or [], list(item.get("keys") or [])
             current = self.accel.keys(action)
             if key in current:
@@ -240,6 +265,17 @@ class StreamShortcuts:
         self._save(left)
         self.active = False
         return notes
+
+    def _give_back_default(self, shortcut: Shortcut) -> list[str]:
+        """Plik stanu zginął, a nasz skrót był w rejestrze: klawisz wraca do akcji, która ma go w domyślnych."""
+        if self.accel.owner(shortcut.key):
+            return []
+        for action in self.owners(shortcut.keys):
+            current = self.accel.keys(action)
+            if shortcut.key in self.accel.default_keys(action) and shortcut.key not in current:
+                self.accel.set_foreign(action, current + [shortcut.key])
+                return [f"{shortcut.keys}: bez zapisu stanu — oddany akcji „{action[1]}” (ma go w domyślnych)"]
+        return []
 
     def command(self, name: str) -> str | None:
         return next((s.command for s in SHORTCUTS if s.name == name), None)
@@ -292,53 +328,69 @@ def log(message: str) -> None:
 
 
 class StreamShortcutsMonitor(QObject):
-    """Nasłuch zmiany aktywności (CurrentActivityChanged) i naciśnięć skrótów (globalShortcutPressed)."""
+    """Skróty według sygnału „czy Stream” (stream_changed) i naciśnięcia (globalShortcutPressed).
 
-    def __init__(self, shortcuts: StreamShortcuts, stream=is_stream, runner=None, bus: QDBusConnection | None = None,
+    Rejestr KGlobalAccel zmienia jeden wątek roboczy, po kolei; zadanie bierze ostatni żądany stan."""
+
+    _done = pyqtSignal(object)   # lista uwag albo wyjątek — z wątku roboczego do głównego
+
+    def __init__(self, shortcuts: StreamShortcuts, runner=None, bus: QDBusConnection | None = None,
                  subscribe: bool = True, retry_ms: int = 5000, retries: int = 12, parent=None):
         super().__init__(parent)
         self.shortcuts = shortcuts
-        self.stream = stream
         self.runner = runner or KampRunner(default_kamp(), parent=self)
         self.bus = bus or QDBusConnection.sessionBus()
         self.subscribe = subscribe
         self.retries = retries
+        self._want: bool | None = None      # None — jeszcze nic nie wiadomo o aktywności
         self._tries = 0
         self._stopped = False
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-stream-keys")
         self._retry = QTimer(self, singleShot=True, interval=retry_ms)
-        self._retry.timeout.connect(self._ask_current)
-        self._watcher = None
+        self._retry.timeout.connect(self._submit)
+        self._done.connect(self._on_done)
 
     def start(self) -> None:
-        if self.subscribe:
-            if not self.bus.connect(AM_SERVICE, AM_PATH, AM_IFACE, "CurrentActivityChanged", self.activity_changed):
-                log("nie da się słuchać CurrentActivityChanged")
-            if not self.bus.connect(ACCEL_SERVICE, component_path(), COMPONENT_IFACE, "globalShortcutPressed",
-                                    self.pressed):
-                log("nie da się słuchać naciśnięć skrótów")
-        self._ask_current()
+        if self.subscribe and not self.bus.connect(ACCEL_SERVICE, component_path(), COMPONENT_IFACE,
+                                                   "globalShortcutPressed", self.pressed):
+            log("nie da się słuchać naciśnięć skrótów")
 
-    def stop(self) -> None:
-        self._stopped = True
+    def stop(self, timeout: float = 10.0) -> None:
+        """Wylogowanie albo restart usługi: klawisze wracają do pracy (czeka na wątek najwyżej timeout s)."""
         self._retry.stop()
         if self.subscribe:
-            self.bus.disconnect(AM_SERVICE, AM_PATH, AM_IFACE, "CurrentActivityChanged", self.activity_changed)
             self.bus.disconnect(ACCEL_SERVICE, component_path(), COMPONENT_IFACE, "globalShortcutPressed",
                                 self.pressed)
-        self._apply(None)  # wylogowanie albo restart usługi: klawisze wracają do pracy
+        self._want = False
+        self._stopped = True
+        try:
+            self._pool.submit(self._work).result(timeout)
+        except Exception as exc:  # KGlobalAccel niedostępny przy zamykaniu — plik stanu odda klawisze później
+            log(f"przy zatrzymaniu: {exc}")
+        self._pool.shutdown(wait=False, cancel_futures=True)
 
     # zdarzenia ----------------------------------------------------------------------------------
 
-    @pyqtSlot(str)
-    def activity_changed(self, activity: str) -> None:
-        if not self._stopped:
-            self._retry.stop()
-            self._apply(activity)
+    @pyqtSlot(bool)
+    def stream_changed(self, stream: bool) -> None:
+        if self._stopped:
+            return
+        self._want = bool(stream)
+        self._tries = 0
+        self._retry.stop()
+        self._submit()
+
+    @pyqtSlot()
+    def activity_unknown(self) -> None:
+        """ActivityManager nie odpowiada: do czasu odpowiedzi praca (oddaj klawisze, jeśli coś zostało)."""
+        if self._want is None:
+            self.stream_changed(False)
+            self._want = None   # pierwsza odpowiedź ActivityManagera rozstrzygnie
 
     @pyqtSlot(str, str, "qlonglong")
     def pressed(self, component: str, name: str, _timestamp: int = 0) -> None:
         command = self.shortcuts.command(name)
-        if component != COMPONENT or command is None or not self.shortcuts.active:
+        if component != COMPONENT or command is None or not self.shortcuts.active or self._want is not True:
             return
 
         def done(code: int, output: str) -> None:
@@ -351,38 +403,32 @@ class StreamShortcutsMonitor(QObject):
 
     # wnętrze -----------------------------------------------------------------------------------
 
-    def _apply(self, activity: str | None) -> None:
-        try:
-            if activity is not None and self.stream(activity):
-                notes = self.shortcuts.enter()
-            elif self.shortcuts.needs_leave():
-                notes = self.shortcuts.leave()
-            else:
-                return  # praca: rejestr skrótów bez zmian
-        except AccelError as exc:
-            log(str(exc))
+    def _submit(self) -> None:
+        if self._stopped:
             return
-        for note in notes:
+        def run():
+            try:
+                result = self._work()
+            except Exception as exc:
+                result = exc
+            self._done.emit(result)
+        self._pool.submit(run)
+
+    def _work(self) -> list[str]:
+        want = self._want
+        if want:
+            return self.shortcuts.enter()
+        if self.shortcuts.needs_leave():
+            return self.shortcuts.leave()
+        return []  # praca: rejestr skrótów bez zmian
+
+    @pyqtSlot(object)
+    def _on_done(self, result) -> None:
+        if isinstance(result, Exception):
+            log(str(result))
+            self._tries += 1
+            if not self._stopped and self._tries < self.retries:
+                self._retry.start()
+            return
+        for note in result:
             log(note)
-
-    def _ask_current(self) -> None:
-        if self._stopped:
-            return
-        msg = QDBusMessage.createMethodCall(AM_SERVICE, AM_PATH, AM_IFACE, "CurrentActivity")
-        self._watcher = QDBusPendingCallWatcher(self.bus.asyncCall(msg, 5000), self)
-        self._watcher.finished.connect(self._current_reply)
-
-    def _current_reply(self, watcher: QDBusPendingCallWatcher) -> None:
-        reply = QDBusPendingReply(watcher).reply()
-        watcher.deleteLater()
-        self._watcher = None
-        if self._stopped:
-            return
-        if reply.type() == QDBusMessage.MessageType.ReplyMessage and reply.arguments():
-            self._apply(str(reply.arguments()[0]))
-            return
-        # ActivityManager jeszcze nie wstał: do tego czasu praca (oddaj klawisze, jeśli coś zostało).
-        self._apply(None)
-        self._tries += 1
-        if self._tries < self.retries:
-            self._retry.start()

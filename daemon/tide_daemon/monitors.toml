@@ -1,30 +1,24 @@
-# Układ monitorów PC ⇄ Xbox (PT-38, decyzja 81). Czyta go tide_daemon/monitors.py.
+# Wejście prawego monitora PC ⇄ Xbox (PT-38, decyzja 81). Czyta go tide_daemon/monitors.py.
+#
+# „Xbox” zmienia tylko wejście DP-2 przez DDC/CI — układ ekranów w KWin zostaje bez zmian (priorytety,
+# włączenie i pozycje), bo numeracja ekranów w Plasmie idzie za priorytetem, a zmiana chowałaby dock Stream
+# i konsolę z lewego monitora (decyzja użytkownika 29.10.2026).
 #
 # Sprawdzone tylko odczytem 28.10.2026:
-#   kscreen-doctor -o: DP-2 (Gigabyte G32QC) 2560×1440@164.80 na 1920,0, priorytet 1 (główny);
-#                      HDMI-A-1 (Philips 221V8) 1920×1080@74.97 na 0,0, priorytet 2.
 #   ddcutil detect:    HDMI-A-1 → /dev/i2c-2, DP-2 → /dev/i2c-4 (numer magistrali ustalamy przy każdym
 #                      przełączeniu z `ddcutil detect`, bo po restarcie może być inny).
 #   ddcutil -b 4 capabilities, VCP 60 (Input Source): 0x0f DisplayPort-1, 0x11 HDMI-1, 0x12 HDMI-2;
 #   ddcutil -b 4 getvcp 60: DisplayPort-1 (sl=0x0f).
 
-[xbox]
-# Monitor, który w trybie Xbox pokazuje obraz z HD60 X (passthrough) zamiast pulpitu.
-monitor = "DP-2"
-# Monitor główny w trybie Xbox (panele, nowe okna, powiadomienia).
-primary = "HDMI-A-1"
-# DP-2 wyłączony w KWin na czas Xboxa: okna przechodzą na lewy monitor, a kursor nie ucieka na ekran,
-# którego nie widać (decyzja 81). false — DP-2 zostaje włączony, tylko traci priorytet główny.
-disable_monitor = true
-
 [ddc]
-# Wejście DP-2 dla pulpitu: DisplayPort-1.
+# Monitor (złącze DRM), którego wejście przełączamy: Gigabyte G32QC, prawy.
+monitor = "DP-2"
+# Wejście dla pulpitu: DisplayPort-1.
 input_pc = 0x0f
-# Wejście DP-2 dla Xboxa: HDMI-1. Do sprawdzenia na sprzęcie, do którego gniazda HDMI monitora jest wpięty
-# HD60 X — przy HDMI-2 wpisz 0x12.
+# Wejście dla Xboxa: HDMI-1. Do sprawdzenia na sprzęcie, do którego gniazda HDMI monitora jest wpięty
+# passthrough HD60 X — przy HDMI-2 wpisz 0x12.
 input_xbox = 0x11
-# Po zmianie wejścia i po włączeniu DP-2 monitor potrzebuje chwili (łącze DP, DDC/CI); tyle prób, co tyle sekund.
+# Monitor po zmianie wejścia albo przy równoczesnym użyciu DDC przez KWin (jasność) potrzebuje chwili:
+# tyle prób, co tyle sekund.
 attempts = 3
 retry_s = 1.0
-# Przerwa między zmianą wejścia a odczytem układu w KWin (monitor może zgłosić odłączenie przy zmianie wejścia).
-settle_s = 1.5

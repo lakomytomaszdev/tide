@@ -32,12 +32,19 @@ class FakeRegistry:
     def __init__(self):
         # (komponent, akcja) → {"id": [4 napisy], "keys": [kody], "present": bool}
         self.actions: dict[tuple[str, str], dict] = {}
-        self.add(POWER_PROFILE, [BATTERY, META | 0x42])
-        self.add(PREVIOUS_ACTIVITY, [META | 0x02000000 | 0x41])  # Meta+Shift+A
+        self.defaults: dict[tuple[str, str], list[int]] = {}   # domyślne skróty (defaultShortcut)
+        self.add(POWER_PROFILE, [BATTERY, META | 0x42], default=True)
+        self.add(PREVIOUS_ACTIVITY, [META | 0x02000000 | 0x41])  # Meta+Shift+A, domyślnie brak
         self.calls: list[tuple] = []
 
-    def add(self, action: list[str], keys: list[int]) -> None:
+    def add(self, action: list[str], keys: list[int], default: bool = False) -> None:
         self.actions[(action[0], action[1])] = {"id": list(action), "keys": list(keys), "present": True}
+        if default:
+            self.defaults[(action[0], action[1])] = list(keys)
+
+    def default_keys(self, action: list[str]) -> list[int]:
+        self.calls.append(("defaultShortcut", tuple(action[:2])))
+        return list(self.defaults.get((action[0], action[1]), []))
 
     def snapshot(self) -> dict:
         """Zawartość rejestru do porównania „dokładnie jak przed Streamem”."""
@@ -95,6 +102,7 @@ IFACE = "org.kde.KGlobalAccel"
 XML = """<interface name="org.kde.KGlobalAccel">
   <method name="action"><arg type="i" direction="in"/><arg type="as" direction="out"/></method>
   <method name="shortcut"><arg type="as" direction="in"/><arg type="ai" direction="out"/></method>
+  <method name="defaultShortcut"><arg type="as" direction="in"/><arg type="ai" direction="out"/></method>
   <method name="setForeignShortcut"><arg type="as" direction="in"/><arg type="ai" direction="in"/></method>
   <method name="doRegister"><arg type="as" direction="in"/></method>
   <method name="setShortcut"><arg type="as" direction="in"/><arg type="ai" direction="in"/>
@@ -124,6 +132,10 @@ class _Adaptor(QDBusAbstractAdaptor):
     @pyqtSlot("QStringList", result="QList<int>")
     def shortcut(self, action):
         return self.registry.keys(list(action))
+
+    @pyqtSlot("QStringList", result="QList<int>")
+    def defaultShortcut(self, action):
+        return self.registry.default_keys(list(action))
 
     @pyqtSlot("QStringList", "QList<int>")
     def setForeignShortcut(self, action, keys):

@@ -157,14 +157,15 @@ Obiekt /Docker, interfejs org.tide.Daemon.Docker (kontenery przez Docker Engine 
 - sygnał Changed()           migawka kontenerów się zmieniła,
 - sygnał ActionFinished(s job, s json)  koniec zadania Prune albo GroupAction.
 
-Obiekt /Monitors, interfejs org.tide.Daemon.Monitors (układ monitorów PC ⇄ Xbox, PT-38, monitors.py):
-- Status() -> s              JSON {layout ("pc" | "xbox"), target, available, error, since, saved, savedAt, ddc
-                             ("ok" | "missing" | "unreachable" | ""), notices, monitor, primary, disableMonitor,
-                             switching ("" albo układ w toku), result (ostatnie przełączenie: {ok, layout, changed,
-                             notices, error, at} albo null)},
+Obiekt /Monitors, interfejs org.tide.Daemon.Monitors (wejście prawego monitora PC ⇄ Xbox przez DDC/CI, PT-38,
+monitors.py; układ ekranów w KWin bez zmian):
+- Status() -> s              JSON {layout ("pc" | "xbox"; przerwane przełączenie liczy się jak "xbox"), target,
+                             available (jest ddcutil), error, interrupted, since, monitor, switching ("" albo układ
+                             w toku), result (ostatnie przełączenie: {ok, layout, changed, error, auto, at} albo null;
+                             auto — powrót na PC po wyjściu ze Streamu)}; tylko plik stanu, bez DDC,
 - SetLayout(s layout) -> s   przełączenie w tle na "pc" albo "xbox"; od razu {accepted, error} (odmowa: nieznany
                              układ, przełączenie już trwa), koniec — sygnałem Changed i w Status().result,
-- sygnał Changed()           układ, przełączenie w toku albo jego wynik się zmienił.
+- sygnał Changed()           przełączenie w toku albo jego wynik się zmienił.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage

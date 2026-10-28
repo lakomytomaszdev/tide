@@ -1,17 +1,17 @@
-"""Układ monitorów PC ⇄ Xbox w usłudze: obiekt /Monitors dla widżetu org.tide.stream.monitors (PT-38).
+"""Wejście prawego monitora PC ⇄ Xbox w usłudze: obiekt /Monitors dla widżetu org.tide.stream.monitors (PT-38).
 
-Przełączenie (monitors.Switcher) trwa kilka sekund — DDC/CI, przerwa na ustalenie wejścia, kscreen-doctor —
-więc idzie w wątku roboczym, a SetLayout odpowiada od razu: {"accepted": true} albo powód odmowy.
-Koniec przełączenia to sygnał Changed; wynik (błąd, uwagi „przełącz wejście ręcznie”) jest w Status().
+Przełączenie (monitors.Switcher: `ddcutil detect`, odczyt i zapis VCP 0x60 z ponowieniami) trwa sekundy, więc idzie
+w wątku roboczym, a SetLayout odpowiada od razu: {"accepted": true} albo powód odmowy. Koniec przełączenia to
+sygnał Changed; wynik (błąd „przełącz wejście przyciskiem”) jest w Status().result. Status() czyta tylko plik
+stanu — bez DDC i bez KWin.
 
-Status() oddaje ostatni odczyt; odczyt układu z KWin (kscreen-doctor -j, tylko odczyt) idzie w tym samym
-wątku przy starcie, po każdym przełączeniu i przy Status() starszym niż refresh_s — zmiana układu
-w Ustawieniach systemowych dociera do widżetu bez osobnego nasłuchu KScreen.
+Praca zawsze ma oba ekrany jak dziś: wyjście z aktywności Stream (i start usługi w pracy), gdy prawy monitor jest
+na wejściu Xboxa albo przełączenie zostało przerwane, przełącza go z powrotem na PC (stream_changed(False)).
+Źródłem „czy Stream” jest jeden sygnał (current_activity.CurrentActivity.changed), podpinany w app.py.
 """
 from __future__ import annotations
 
 import json
-import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -19,29 +19,24 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
 from . import monitors
 
-REFRESH_S = 30.0
+
+def log(message: str) -> None:
+    print(f"tide-daemon: monitory: {message}", flush=True)
 
 
 class MonitorsService(QObject):
     changed = pyqtSignal()
-    _finished = pyqtSignal(str, object)  # (co: "status" | "switch", wynik) — z wątku roboczego do głównego
+    _finished = pyqtSignal(str, object)  # (układ docelowy, wynik) — z wątku roboczego do głównego
 
-    def __init__(self, switcher=None, refresh_s: float = REFRESH_S, clock=time.monotonic, parent=None):
+    def __init__(self, switcher=None, parent=None):
         super().__init__(parent)
         self.switcher = switcher or monitors.Switcher()
-        self.refresh_s = refresh_s
-        self.clock = clock
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-monitors")
-        self._status: dict = {"layout": "", "target": "", "available": False, "error": "", "notices": []}
-        self._read_at: float | None = None
-        self._reading = False
         self._switching = ""
+        self._auto = False
         self._result: dict | None = None
         self._stopped = False
         self._finished.connect(self._on_finished)
-
-    def start(self) -> None:
-        self.refresh()
 
     def stop(self) -> None:
         self._stopped = True
@@ -49,63 +44,52 @@ class MonitorsService(QObject):
 
     # --- D-Bus ------------------------------------------------------------------------------
 
-    def status_json(self) -> str:
-        if not self._busy() and (self._read_at is None or self.clock() - self._read_at > self.refresh_s):
-            self.refresh()
-        return json.dumps({**self._status, "switching": self._switching, "result": self._result},
-                          ensure_ascii=False)
+    def status(self) -> dict:
+        return {**self.switcher.status(), "switching": self._switching, "result": self._result}
 
-    def set_layout(self, layout: str) -> str:
+    def status_json(self) -> str:
+        return json.dumps(self.status(), ensure_ascii=False)
+
+    def set_layout(self, layout: str, auto: bool = False) -> str:
         if layout not in monitors.LAYOUTS:
             return json.dumps({"accepted": False, "error": f"nieznany układ „{layout}” (pc albo xbox)"},
                               ensure_ascii=False)
         if self._switching:
             return json.dumps({"accepted": False, "error": "przełączenie już trwa"}, ensure_ascii=False)
-        self._switching = layout
-        self._submit("switch", lambda: self.switcher.switch(layout))
-        self.changed.emit()
-        return json.dumps({"accepted": True, "error": ""})
+        self._switching, self._auto = layout, auto
 
-    def refresh(self) -> None:
-        if self._reading or self._stopped:
-            return
-        self._reading = True
-        self._submit("status", self.switcher.status)
-
-    # --- wnętrze ------------------------------------------------------------------------------
-
-    def _busy(self) -> bool:
-        return self._reading or bool(self._switching)
-
-    def _submit(self, kind: str, work) -> None:
         def run():
             try:
-                result = work()
+                result = self.switcher.switch(layout)
             except Exception as exc:  # błąd przełącznika nie może położyć usługi
-                result = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "notices": []}
-            self._finished.emit(kind, result)
+                result = {"ok": False, "layout": "", "changed": False, "error": f"{type(exc).__name__}: {exc}"}
+            self._finished.emit(layout, result)
         try:
             self._pool.submit(run)
         except RuntimeError:  # pula zamknięta (stop)
-            self._reading = False
             self._switching = ""
+            return json.dumps({"accepted": False, "error": "usługa się zatrzymuje"}, ensure_ascii=False)
+        self.changed.emit()
+        return json.dumps({"accepted": True, "error": ""})
+
+    # --- aktywność ------------------------------------------------------------------------------
+
+    @pyqtSlot(bool)
+    def stream_changed(self, stream: bool) -> None:
+        """Praca (wyjście ze Streamu albo start usługi w pracy) z prawym monitorem na Xboxie → z powrotem PC."""
+        if stream or self._stopped or self._switching == "pc":
+            return
+        if self.switcher.layout() == "xbox":
+            log("praca — wejście prawego monitora wraca na DisplayPort")
+            self.set_layout("pc", auto=True)
+
+    # --- wnętrze ------------------------------------------------------------------------------
 
     @pyqtSlot(str, object)
-    def _on_finished(self, kind: str, result: dict) -> None:
-        if kind == "status":
-            self._reading = False
-            self._read_at = self.clock()
-            if "layout" in result:
-                if result != self._status:
-                    self._status = result
-                    self.changed.emit()
-            return
+    def _on_finished(self, layout: str, result: dict) -> None:
         self._switching = ""
-        self._result = {**result, "at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")}
+        self._result = {**result, "auto": self._auto,
+                        "at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")}
         if not result.get("ok"):
-            print(f"tide-daemon: monitory: {result.get('error')}", flush=True)
-        for notice in result.get("notices") or []:
-            print(f"tide-daemon: monitory: {notice}", flush=True)
+            log(str(result.get("error")))
         self.changed.emit()
-        self._read_at = None
-        self.refresh()  # układ po przełączeniu

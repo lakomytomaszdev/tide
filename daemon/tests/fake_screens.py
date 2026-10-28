@@ -1,4 +1,5 @@
-"""Atrapy `kscreen-doctor` i `ddcutil` dla testów układu monitorów (PT-38).
+"""Atrapy `kscreen-doctor` i `ddcutil` dla testów wejścia monitora (PT-38). Przełącznik woła tylko ddcutil —
+atrapa kscreen-doctor zapisuje wywołania, żeby test mógł sprawdzić, że układu w KWin nikt nie zmienia.
 
 Jeden skrypt udaje oba programy; nazwę programu dostaje jako pierwszy argument (opakowania w katalogu
 atrap: `exec python3 fake_screens.py kscreen-doctor "$@"`). Stan „sprzętu” leży w pliku JSON
@@ -7,7 +8,8 @@ Prawdziwe monitory, KWin i magistrale I²C nie są dotykane.
 
 Stan:
   kscreen   — wynik `kscreen-doctor -j` (outputs z modes, currentModeId, pos, priority, enabled, connected…);
-  ddc       — {"buses": {"DP-2": 4}, "input": {"4": 15}, "reachable": {"4": true},
+  ddc       — {"buses": {"DP-2": 4}, "invalid": {"DP-2": 9} (blok „Invalid display”), "input": {"4": 15},
+               "reachable": {"4": true},
                "only_active": {"4": 15}  (monitor odpowiada na DDC tylko, gdy pokazuje to wejście),
                "hpd_drop": {"4": "DP-2"} (po zmianie wejścia z 15 monitor znika z KWin jak odłączony)};
   fail      — {"kscreen-set": "komunikat"} wymusza błąd zmiany układu.
@@ -130,6 +132,10 @@ def kscreen(state: dict, args: list[str]) -> int:
 def ddcutil(state: dict, args: list[str]) -> int:
     ddc = state["ddc"]
     if args[:1] == ["detect"]:
+        for name, bus in sorted(ddc.get("invalid", {}).items(), key=lambda kv: kv[1]):
+            # Monitor bez DDC/CI: ddcutil wypisuje go osobnym blokiem, też ze złączem i magistralą.
+            print(f"Invalid display\n   I2C bus:  /dev/i2c-{bus}\n   DRM connector:           card1-{name}\n"
+                  f"   DDC communication failed\n")
         for index, (name, bus) in enumerate(sorted(ddc["buses"].items(), key=lambda kv: kv[1]), 1):
             print(f"Display {index}\n   I2C bus:  /dev/i2c-{bus}\n   DRM connector:           card1-{name}\n"
                   f"   VCP version:         2.2\n")
