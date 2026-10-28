@@ -191,7 +191,14 @@ function currentActivity() {
 function __desktop(data) {
     var desktop = {id: data.id, screen: data.screen, type: data.type || "org.kde.plasma.folder", __data: data};
     desktop.widgets = function () {
-        return data.widgets.map(function (w) { return {id: w.id, type: w.type, geometry: w.geometry}; });
+        // Widget.remove() zdejmuje aplet z pulpitu (state.removedFromDesktops: [{desktop, id, type}]).
+        return data.widgets.map(function (w) {
+            return {id: w.id, type: w.type, geometry: w.geometry, remove: function () {
+                data.widgets = data.widgets.filter(function (x) { return x.id !== w.id; });
+                __state.removedFromDesktops = (__state.removedFromDesktops || []).concat(
+                    [{desktop: data.id, id: w.id, type: w.type}]);
+            }};
+        });
     };
     desktop.addWidget = function (type, x, y, w, h) {
         var widget = {id: __state.nextId++, type: type, geometry: [x, y, w, h]};

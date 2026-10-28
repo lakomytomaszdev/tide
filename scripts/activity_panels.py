@@ -10,8 +10,9 @@ dokłada swoje i chowa cudze:
 - pasek boczny pracy dostaje w Stream chowanie automatyczne (pusty, bo jego kafelki są ukryte, a nagłówek
   nie reaguje na Meta+S); wartość sprzed Stream leży w $XDG_STATE_HOME/tide/stream-panels.json
   i wraca przy wyjściu,
-- konsola streamu (Sceny i czat) na pulpicie aktywności Stream na lewym monitorze — pulpity są osobne
-  dla każdej aktywności, więc praca jej nie widzi; dokładana tylko, gdy jej brakuje.
+- konsola streamu na pulpicie aktywności Stream na lewym monitorze — jeden aplet „Lewy monitor Stream”
+  (org.tide.stream.desk, decyzja 82), a bez jego pakietu Sceny i czat; pulpity są osobne dla każdej aktywności,
+  więc praca jej nie widzi; dokładana tylko, gdy jej brakuje, a stawiając desk, zdejmuje z tego pulpitu starą parę.
 
 Moduł nie importuje activity_look (silnik importuje ten moduł) — dostaje funkcję odczytu i zapisu.
 """
@@ -38,12 +39,14 @@ STREAM_RIGHT = ["org.tide.stream.camera", "org.tide.stream.help"]
 STREAM_FUTURE = {"org.tide.stream.monitors": "PT-38"}
 TASKS = "org.kde.plasma.icontasks"
 SPACER = "org.kde.plasma.panelspacer"
-# Konsola streamu na pulpicie lewego monitora (mock „Konsola streamu”): Sceny w kolumnie ok. 1/3
-# szerokości, czat w reszcie. Pulpit Plasmy układa aplety w siatce 16 px i dokłada do podanego rozmiaru
-# ramkę kontenera apletu, a nachodzących na siebie prostokątów nie przyjmuje (czat dostawał wtedy swój
-# domyślny rozmiar) — stąd wielokrotności 16 i odstęp z zapasem na ramki; widać go jako ok. 26 px z mocka.
-CONSOLE = {"scenes": "org.tide.stream.scenes", "chat": "org.tide.stream.chat", "margin": 32, "gap": 48,
-           "scenesFraction": 1 / 3}
+# Konsola streamu na pulpicie lewego monitora. Od PT-83 (decyzja 82) to jeden aplet „Lewy monitor Stream”
+# (desk: konsola streamu albo Granie) na całym pulpicie: margines 32, cała szerokość i wysokość nad dockiem Stream.
+# Bez jego pakietu zostaje para z PT-36 (mock „Konsola streamu”): Sceny w kolumnie ok. 1/3 szerokości, czat
+# w reszcie. Pulpit Plasmy układa aplety w siatce 16 px i dokłada do podanego rozmiaru ramkę kontenera apletu,
+# a nachodzących na siebie prostokątów nie przyjmuje (czat dostawał wtedy swój domyślny rozmiar) — stąd
+# wielokrotności 16 i odstęp z zapasem na ramki; widać go jako ok. 26 px z mocka.
+CONSOLE = {"desk": "org.tide.stream.desk", "scenes": "org.tide.stream.scenes", "chat": "org.tide.stream.chat",
+           "margin": 32, "gap": 48, "scenesFraction": 1 / 3}
 SIDEBAR_HIDING = "autohide"
 # Typ pulpitu (kontenera) aktywności: Plasma daje nowej aktywności ten sam co pracy (na tym komputerze
 # org.kde.plasma.folder na obu monitorach, 28.10.2026); skrypt plasmashell typu zmienić nie może.
@@ -84,10 +87,14 @@ def installed(data: Path, types: list[str]) -> list[str]:
 
 
 def stream_layout(data: Path) -> dict:
-    """Oczekiwany dock i konsola Stream — tylko z zainstalowanych widżetów."""
-    console = installed(data, [CONSOLE["scenes"], CONSOLE["chat"]])
+    """Oczekiwany dock i konsola Stream — tylko z zainstalowanych widżetów.
+
+    Konsola to desk, a gdy go nie ma — para Sceny i czat (zgodność wstecz). Z deskiem para jest „retired”:
+    zdejmuje ją z pulpitu Stream wejście, które stawia desk (migracja instalacji sprzed PT-83)."""
+    desk = installed(data, [CONSOLE["desk"]])
+    pair = [CONSOLE["scenes"], CONSOLE["chat"]]
     return {"left": installed(data, STREAM_LEFT), "right": installed(data, STREAM_RIGHT),
-            "console": console}
+            "console": desk or installed(data, pair), "retired": pair if desk else []}
 
 
 def expected_dock(layout: dict) -> list[str]:
@@ -116,8 +123,13 @@ def stream_differences(state: dict, layout: dict, desktop: bool) -> list[str]:
         if sidebar["hiding"] != SIDEBAR_HIDING:
             out.append(f"pasek boczny pracy widoczny ({sidebar['hiding']})")
     if desktop:
-        missing = [t for t in layout["console"] if t not in (state.get("desktop") or [])]
-        if missing:
+        on_desktop = state.get("desktop") or []
+        missing = [t for t in layout["console"] if t not in on_desktop]
+        retired = [t for t in layout.get("retired", []) if t in on_desktop]
+        if missing and retired:
+            out.append("konsola streamu na pulpicie lewego monitora do wymiany: "
+                       + ", ".join(_short(t) for t in retired) + " → " + ", ".join(_short(t) for t in missing))
+        elif missing:
             out.append("brak na pulpicie lewego monitora: " + ", ".join(_short(t) for t in missing))
     return out
 
@@ -171,11 +183,11 @@ def _short(widget_type: str) -> str:
 
 
 def stream_params(layout: dict, dock_height: int, console: bool) -> dict:
+    # Z typów konsoli skrypt dostaje tylko zainstalowane (pusty napis — brak); desk wyklucza parę.
+    placed = {key: CONSOLE[key] if CONSOLE[key] in layout["console"] else "" for key in ("desk", "scenes", "chat")}
     return {**screens(), "left": layout["left"], "right": layout["right"], "tasks": TASKS, "spacer": SPACER,
             "dockHeight": dock_height, "floatingGap": FLOATING_GAP, "sidebarHiding": SIDEBAR_HIDING,
-            "console": {**CONSOLE, "scenes": CONSOLE["scenes"] if CONSOLE["scenes"] in layout["console"] else "",
-                        "chat": CONSOLE["chat"] if CONSOLE["chat"] in layout["console"] else ""}
-            if console and layout["console"] else None}
+            "console": {**CONSOLE, **placed, "retired": layout["retired"]} if console and layout["console"] else None}
 
 
 def order_params(dock: int, order: list[int]) -> dict:

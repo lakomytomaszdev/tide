@@ -186,12 +186,12 @@ stan streamu należy do rdzenia, dane pracy dalej idą tylko z tide-daemon.
   widoczność trybu. Bez koloru ostrzegawczego: przy rozłączonym OBS „bez OBS” (rdzeń zapamiętuje zmianę i ustawia
   OBS po połączeniu), bez rdzenia „rdzeń nie działa”, błąd komendy na chwilę zamiast wartości w `textSecondary`.
 - **„?”** (`org.tide.stream.help`): ściąga ze skrótami Stream w popupie, nigdy stale na ekranie.
-- **Konsola streamu** (`org.tide.stream.scenes`, pulpit lewego monitora): Sceny — podgląd bieżącej sceny z „NA ŻYWO”
+- **Konsola streamu** (`org.tide.stream.scenes`, pulpit lewego monitora, gdy nie ma desku): Sceny — podgląd bieżącej sceny z „NA ŻYWO”
   i przyciski scen trybu (`scene.set`; BRB tylko osobnym przyciskiem, sceny startu i końca na żywo wyłączone
   z powodem) — i pełna karta Stream: antena, OBS z nagrywaniem, profil gracza z listą, przełączniki modułów
   (`module.set`), „Wycisz mikrofon”, BRB (`brb.toggle`) i Panel streamera. Zrzut sceny odświeża się tylko w bieżącej
   aktywności i przy widocznym widżecie.
-- **Czat Twitcha** (`org.tide.stream.chat`, pulpit lewego monitora): duża czcionka (1,5 × rozmiar z palety, ok.
+- **Czat Twitcha** (`org.tide.stream.chat`, pulpit lewego monitora, gdy nie ma desku): duża czcionka (1,5 × rozmiar z palety, ok.
   20 px), najnowsze na dole, alerty w linii, tylko do czytania; nick w pastelu palety innym niż kolory ostrzeżenia
   i błędu (`semantic.neutral`, `semantic.negative`).
 - **Lewy monitor Stream** (`org.tide.stream.desk`, PT-83, decyzja 82): jeden widżet na cały pulpit lewego monitora
@@ -219,12 +219,12 @@ pól w decyzji 82: `core.player_stats`, `core.recent_matches`, `core.today`). Ko
 bieżącą scenę. Testy sprawdzają obie wersje na atrapie rdzenia (`widgets/tests/fake_kamp_core.py`, zawsze na
 prywatnej szynie `dbus-run-session`).
 
-**Instalacja.** `make install-widget-stream` instaluje siedem pakietów (też w `make install`), ale niczego nie stawia
+**Instalacja.** `make install-widget-stream` instaluje osiem pakietów (też w `make install`), ale niczego nie stawia
 na panelach ani pulpicie — rozmieszczenie robi wejście do aktywności Stream (niżej: „Aktywność Stream”). Kolory z palety, więc widżety działają
 z Mist i z wariantem Streamer.
 
 ```bash
-make install-widget-stream     # instalacja albo aktualizacja siedmiu pakietów Stream
+make install-widget-stream     # instalacja albo aktualizacja ośmiu pakietów Stream
 make uninstall-widget-stream   # usuwa tylko pakiety org.tide.stream*
 make preview-stream            # kafelki, popupy, konsola i Granie 1920×1080 na fałszywym stanie: build/preview/stream-*.png
 make preview-stream PALETTE=theme/palette/streamer.json   # z wariantem Streamer — plik palety dostarcza PT-34
@@ -454,9 +454,12 @@ przypisanie i usuwa aktywność, ale nie wtedy, gdy jest bieżąca. Oba cele są
 
 W Stream (panele Plasmy są wspólne dla aktywności, więc praca nic nie traci):
 
-- **lewy monitor**: dock Stream na dole — Stream, Profil gracza, Observer (tylko w trybie Observer) · zadania · „?”
-  (miejsca na Kamerę z PT-82 i PC ⇄ Xbox z PT-38 przed „?”); na pulpicie konsola streamu: Sceny w kolumnie ok. 1/3
-  szerokości z lewej i czat w reszcie (dokładane tylko wtedy, gdy ich brakuje — własnego ułożenia nie ruszamy);
+- **lewy monitor**: dock Stream na dole — Stream, Profil gracza, Observer (tylko w trybie Observer) · zadania · Kamera,
+  „?” (miejsce na PC ⇄ Xbox z PT-38 przed „?”); na pulpicie jeden widżet „Lewy monitor Stream” (`org.tide.stream.desk`:
+  konsola streamu albo Granie) na całą szerokość i wysokość nad dockiem, z marginesem 32 px (dokładany tylko wtedy,
+  gdy go brakuje — własnego ułożenia nie ruszamy). Sceny i czat z wcześniejszej instalacji pierwsze wejście z deskiem
+  zdejmuje z pulpitu Stream (tylko te dwa widżety i tylko tam); bez pakietu desku zostaje para Sceny (ok. 1/3
+  szerokości) i czat;
 - **DP-2**: dock bez kafelków pracy — zostaje System i zadania; kafelki pracy same się chowają
   (`widgets/lib/ActivityLook.qml` pyta tide-daemon), ich ustawienia i miejsca zostają;
 - **pasek boczny pracy**: schowany (chowanie automatyczne, bez kafelków), `Meta+S` nic nie robi;
