@@ -11,6 +11,8 @@ PT-22). Dlatego nowy numer lokalny daje `reserve()` (tools/next_id.py, `make nex
 - największy numer = max(rezerwacje repozytorium z tym prefiksem, numery z tym prefiksem we wszystkich
   planach ze wszystkich worktree i gałęzi — repoplans.py); pusty rejestr zasiewa się więc z planów,
 - prefiks z YouTracka (plan albo deklaracja `tracker: youtrack`) — odmowa: numer nadaje YouTrack.
+- `request_key` (opcjonalny) zapisuje tożsamość żądania przy numerach; ponowienie tego samego żądania
+  zwraca wcześniejsze numery nawet po awarii przed zapisem wyniku w dzienniku karty.
 
 `load(repo)` czyta rezerwacje repozytorium bez blokady (tylko odczyt) — dla kontroli numerów
 (numbering.py: numer w planie zarezerwowany dla innego tytułu).
@@ -52,12 +54,19 @@ def load(repo: str, path: str | None = None, git=None) -> list[dict]:
 
 
 def reserve(repo: str, prefix: str = "", count: int = 1, title: str = "", dry_run: bool = False,
-            path: str | None = None, repo_plans=None, clock=time.time) -> dict:
+            path: str | None = None, repo_plans=None, clock=time.time, request_key: str = "") -> dict:
     """{"repo", "prefix", "ids", "numbers", "seed"} — kolejne `count` numerów; dry_run nic nie zapisuje.
 
-    `seed`: skąd największy dotychczasowy numer („rejestr”, „plany” albo „brak” — pierwszy numer to 1)."""
+    `seed`: skąd największy dotychczasowy numer („rejestr”, „plany” albo „brak” — pierwszy numer to 1).
+    `request_key`: niepusty klucz oznacza jedno żądanie w obrębie repozytorium i prefiksu.
+    Ponowienie wymaga tego samego tytułu i liczby numerów; pusty klucz zachowuje dawne działanie."""
     if not 1 <= int(count) <= MAX_COUNT:
         raise ReservationError(f"liczba numerów od 1 do {MAX_COUNT}")
+    if not isinstance(request_key, str) or (request_key and
+            (len(request_key) > 128 or not request_key.isprintable() or
+             request_key.strip() != request_key or any(c.isspace() for c in request_key))):
+        raise ReservationError("niepoprawny klucz rezerwacji")
+    normalized_title = " ".join((title or "").split())
     if not repo or not os.path.isdir(repo):
         raise ReservationError(f"nie ma katalogu repozytorium {repo}")
     reader = repo_plans or RepoPlans(ttl=0)
@@ -74,11 +83,13 @@ def reserve(repo: str, prefix: str = "", count: int = 1, title: str = "", dry_ru
             fh = None
         if fh is None:
             numbers, from_registry, from_plans, prefix = _next(reader, repo, key, prefix, count, {"reservations": []})
+            existing = None
         else:
             with fh:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
-                numbers, from_registry, from_plans, prefix = _next(reader, repo, key, prefix, count,
-                                                                   _parse(fh.read()))
+                data = _parse(fh.read())
+                numbers, from_registry, from_plans, prefix = _next(reader, repo, key, prefix, count, data)
+                existing = _existing_request(data, key, prefix, request_key, int(count), normalized_title)
     else:
         os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
         fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -87,22 +98,50 @@ def reserve(repo: str, prefix: str = "", count: int = 1, title: str = "", dry_ru
             data = _parse(fh.read())
             # Plany czytamy pod blokadą: sesja przed nami jest już w rejestrze albo w swoim planie.
             numbers, from_registry, from_plans, prefix = _next(reader, repo, key, prefix, count, data)
-            stamp = datetime.fromtimestamp(clock(), timezone.utc).astimezone().isoformat(timespec="seconds")
-            for n in numbers:
-                data["reservations"].append({"repo": key, "prefix": prefix, "number": n,
-                                             "title": " ".join((title or "").split())[:200], "ts": stamp})
-            fh.seek(0)
-            fh.truncate()
-            json.dump(data, fh, ensure_ascii=False, indent=1)
-            fh.write("\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-    seed = "rejestr" if from_registry >= from_plans and from_registry else "plany" if from_plans else "brak"
+            existing = _existing_request(data, key, prefix, request_key, int(count), normalized_title)
+            if existing is None:
+                seed = "rejestr" if from_registry >= from_plans and from_registry else "plany" if from_plans else "brak"
+                stamp = datetime.fromtimestamp(clock(), timezone.utc).astimezone().isoformat(timespec="seconds")
+                for n in numbers:
+                    entry = {"repo": key, "prefix": prefix, "number": n,
+                             "title": normalized_title[:200], "ts": stamp}
+                    if request_key:
+                        entry.update({"request_key": request_key, "request_count": int(count),
+                                      "request_title": normalized_title, "request_seed": seed})
+                    data["reservations"].append(entry)
+                fh.seek(0)
+                fh.truncate()
+                json.dump(data, fh, ensure_ascii=False, indent=1)
+                fh.write("\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+    if existing is None:
+        seed = "rejestr" if from_registry >= from_plans and from_registry else "plany" if from_plans else "brak"
+    else:
+        numbers, seed = existing
     return {"repo": key, "prefix": prefix, "numbers": numbers, "ids": [f"{prefix}-{n}" for n in numbers],
             "seed": seed, "dryRun": bool(dry_run)}
 
 
 # --- wnętrze -----------------------------------------------------------------------------------
+
+def _existing_request(data, repo, prefix, request_key, count, title):
+    if not request_key:
+        return None
+    entries = [r for r in data["reservations"] if r.get("repo") == repo and
+               r.get("prefix") == prefix and r.get("request_key") == request_key]
+    if not entries:
+        return None
+    if (len(entries) != count or any(r.get("request_count") != count or
+                                     r.get("request_title") != title for r in entries)):
+        raise ReservationError("klucz rezerwacji użyty dla innego żądania albo niepełny zapis")
+    numbers = sorted(_int(r.get("number")) for r in entries)
+    if numbers[0] < 1 or numbers != list(range(numbers[0], numbers[0] + count)):
+        raise ReservationError("rezerwacja dla klucza ma niepoprawne numery")
+    seed = entries[0].get("request_seed")
+    if seed not in ("rejestr", "plany", "brak") or any(r.get("request_seed") != seed for r in entries):
+        raise ReservationError("rezerwacja dla klucza ma niepoprawne źródło")
+    return numbers, seed
 
 def _next(reader, repo, key, prefix, count, data) -> tuple[list, int, int, str]:
     """(kolejne numery, największy z rejestru, największy z planów, prefiks)."""
