@@ -137,6 +137,9 @@ class DesiredTabsTest(unittest.TestCase):
         self.assertEqual(tabmarks.strip_marker("◆ ◐ ● ○ ◆ tide : bash"), "tide : bash")
         self.assertEqual(tabmarks.strip_marker("◆tide"), "◆tide")
         self.assertEqual(tabmarks.strip_marker("tide ◆ bash"), "tide ◆ bash")
+        # Dopisek przejścia do okna (PT-33) nie trafia do zapisanego oryginału.
+        self.assertEqual(tabmarks.strip_marker("● tide · master ⌖ ⌖"), "tide · master")
+        self.assertEqual(tabmarks.strip_marker("tide⌖"), "tide⌖")
 
 
 class TabMarkerTest(unittest.TestCase):
