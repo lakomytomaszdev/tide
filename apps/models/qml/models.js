@@ -115,11 +115,13 @@ function loadedLines(s) {
     if (!loaded) return []
     return loaded.map(m => {
         const gpu = typeof m.gpuPercent === "number" ? m.gpuPercent : null
+        // Model chmurowy Ollamy ma 0% na karcie, ale nie jest wolnym modelem lokalnym (PT-41: jak kafelek AI).
+        const cloud = isCloudModel(m)
         return {
             name: m.name,
             gpu: gpu,
-            slow: gpu !== null && gpu < 100,
-            text: gpu === null ? "w pamięci"
+            slow: !cloud && gpu !== null && gpu < 100,
+            text: cloud ? "w chmurze Ollamy" : gpu === null ? "w pamięci"
                 : gpu >= 100 ? gpu + "% na karcie"
                 : gpu + "% na karcie — reszta na procesorze, pisze wolniej"
         }
@@ -417,8 +419,8 @@ function serverModels(status, endpointName) {
             detail: [m.parameterSize || "", m.quantization || "", cloud ? "w chmurze Ollamy" : ""].filter(x => x).join(" · "),
             size: cloud ? "" : bytes(m.size),   // pobrany „model” chmurowy to tylko odnośnik (kilkaset bajtów)
             loaded: !!l,
-            loadedText: !l ? "" : gpu === null ? "w pamięci" : "w pamięci · " + gpu + "% na karcie",
-            slow: gpu !== null && gpu < 100,
+            loadedText: !l ? "" : gpu === null || cloud ? "w pamięci" : "w pamięci · " + gpu + "% na karcie",
+            slow: !cloud && gpu !== null && gpu < 100,
             usedBy: usedBy(status, endpointName, m.name)
         }
     })

@@ -29,10 +29,10 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `scripts/panels/` | Skrypty plasmashell górnych pasków, docka i paska bocznego (zrzut, instalacja, kolejność, odinstalowanie) |
 | `tools/` | Narzędzia do ikon: `make_tile.py` (kafelek z oryginalnej ikony), `make_tint.py` (eksperyment z przefarbowaniem, odrzucony) |
 | `daemon/` | Usługa `tide-daemon`: sesje agentów, worktrees, raport poranny, bezczynność, prognoza Limitów AI i modele lokalne (`/Models`: stan serwerów, ustawienia punktów, ról i programu agenta lokalnego z okna Tide, test połączenia, pobieranie modeli; `~/.config/tide/models.json`) przez D-Bus ([opis i kontrakt](docs/tide-daemon.md)) |
-| `widgets/lib/` | Wspólna biblioteka QML widżetów: karta, kafelek docka, teksty kafelków, miernik, pierścień, wykres słupkowy z historią próbek, kropka i licznik stanu, źródło danych z usługi |
+| `widgets/lib/` | Wspólna biblioteka QML widżetów: karta, kafelek docka, teksty kafelków, miernik, pierścień, wykres słupkowy z historią próbek, kropka i licznik stanu, źródło danych z usługi, stan i słowa modeli lokalnych (`models.js`, `ModelsState.qml`) i otwieranie okna Tide na widoku (`TideWindow.qml`) |
 | `widgets/agents/` | Widżet agentów `org.tide.agents`: kafelek „Agenci · 2 pracują · 1 czeka · 2 gotowe”, lista sesji w popupie |
-| `widgets/limits/` | Widżet `org.tide.limits`: pozostałe limity ChatGPT i Claude z usługi QuotaApp |
-| `widgets/models/` | Kafelek „Modele” `org.tide.models` (w docku za Limitami AI): czy serwer modeli lokalnych odpowiada, model w pamięci i ile na karcie, kolejka; popup z serwerami, rolami i trybem raportu, link do widoku Modele w oknie Tide |
+| `widgets/limits/` | Kafelek „AI” `org.tide.limits` (w docku po prawej): pozostałe limity ChatGPT i Claude z usługi QuotaApp i kropka modelu lokalnego z tide-daemon; popup z kartami usług i sekcją „Modele lokalne” z linkiem do widoku Modele w oknie Tide |
+| `widgets/models/` | Kafelek „Modele” `org.tide.models` — od PT-41 poza dockiem (model lokalny jest w kafelku „AI”), pakiet zostaje na wypadek powrotu: czy serwer modeli lokalnych odpowiada, model w pamięci i ile na karcie, kolejka; popup z serwerami, rolami i trybem raportu |
 | `widgets/worktrees/` | Kafelek worktrees `org.tide.worktrees`: ile do sprzątnięcia (i ile GB), ile w pracy; kliknięcie otwiera okno |
 | `widgets/newtask/` | Kafelek „＋ Zadanie · nowe dla agenta” `org.tide.newtask`: otwiera okno nowego zadania |
 | `apps/newtask/` | Okno „Tide: nowe zadanie” (QML + PyQt6, plik `.desktop`, profil Konsoli): repozytorium, Claude Code albo Codex, polecenie, zrzuty ekranu, nowy worktree |
@@ -57,7 +57,7 @@ make install-daemon install-widget-agents   # usługa i widżet (bez kopii zapas
 make install-agent-jump                     # skrót Meta+A: przejście do agenta, który czeka najdłużej
 make install                                # wszystko, najpierw kopia zapasowa
 make test                                   # testy wszystkich komponentów
-make preview-widgets                        # kafelki na tle docka, popup agentów, pasek boczny i popup limitów: build/preview/dock-tiles-*.png, agents-popup.png, sidebar-*.png, limits-popup-*.png
+make preview-widgets                        # kafelki na tle docka, popup agentów, pasek boczny i popup limitów, kafelek „AI” z modelem lokalnym: build/preview/dock-tiles-*.png, agents-popup.png, sidebar-*.png, limits-popup-*.png, ai-*.png
 ```
 
 Gdy agent zaczyna czekać — prosi o zgodę albo zadaje pytanie — przychodzi powiadomienie „Agent czeka: <projekt>” z przyciskiem „Przejdź” (raz na każde wejście w czekanie). Zwykły koniec tury to „skończył” (w kafelku „gotowe”): bez powiadomienia i bez Meta+A, także w wątkach Codex Desktop prowadzonych przez zaplanowane zadanie („zaplanowane”). Meta+A przenosi do okna sesji, która czeka najdłużej (sesja z Codex Desktop otwiera w aplikacji swój wątek — u podagenta wątek główny — przez `codex://threads/<id>`); gdy nikt nie czeka, nic się nie dzieje. Jeśli Meta+A jest już zajęty (instalator to wypisze), trzeba go zwolnić w Ustawieniach systemowych → Skróty i przypisać akcji „Tide: przejdź do agenta, który czeka najdłużej”.
@@ -96,9 +96,19 @@ make preview-tide-window SANITIZE=1   # zrzut każdego widoku na danych z tego k
 
 Widżet „Tide · Agenci” dodaje się do panelu z listy widżetów. Po aktualizacji już dodanego widżetu Plasma wczyta nowy kod dopiero po `systemctl --user restart plasma-plasmashell`. Kolory biblioteki QML są generowane z palety przy składaniu pakietu (`widgets/stage.py` → `Tokens.qml`).
 
-## Limity AI
+## Limity AI i model lokalny (kafelek „AI”)
 
-Widżet „Tide · Limity AI” (`org.tide.limits`) pokazuje w kafelku „Limity AI” pozostały procent ChatGPT i Claude (niższy z limitów sesji i tygodniowego), a w popupie oba limity z resetami. Dane bierze wprost z lokalnego API usługi [QuotaApp](https://github.com/julia-lakomy/QuotaApp) (`limity-ai-widget.service`) — usługa musi być zainstalowana i działać.
+Widżet „Tide · AI” (`org.tide.limits`, do PT-41 „Limity AI”) pokazuje w kafelku „AI” pozostały procent ChatGPT i Claude (niższy z limitów sesji i tygodniowego) i kropkę modelu lokalnego, a w popupie oba limity z resetami i sekcję „Modele lokalne”.
+
+```
+┌ AI · Claude do jutra 14:30 ───────┐
+│ GPT 100%  Claude 30%  ● lokalny   │
+└───────────────────────────────────┘
+```
+
+**Model lokalny.** Kropka i krótkie słowo w linii procentów, ze stanu domyślnego serwera modeli z tide-daemon (`/Models`, te same słowa i kolejność stanów co dawny kafelek Modele, decyzja 68): „● lokalny” — działa (mięta), pracuje albo pobiera (teal); kolor ostrzegawczy tylko wtedy, gdy serwer nie odpowiada („● lokalny nie działa”, róż), model nie mieści się na karcie („● lokalny na CPU”, masło) albo brakuje modelu roli raportu czy opisów kart („● lokalny bez modelu”, masło). Bez tide-daemon, przed pierwszym odczytem i bez serwera w ustawieniach kropki nie ma; gdy jest, kafelek ma stałą szerokość (miejsce na najdłuższe słowo). Model chmurowy Ollamy w pamięci nie zmienia stanu — Tide go nie używa. Popup: sekcja „Modele lokalne” — serwer z kropką stanu, powód niedostępności, model w pamięci i ile z niego jest na karcie (z terminem zwolnienia), kolejka i pobieranie, problemy ról i pliku ustawień — oraz „Otwórz Modele ↗” (widok Modele w oknie Tide, tam są wszystkie serwery, role i tryb raportu). W pasku bocznym pod limitami wiersz „Lokalny ● qwen3:8b · na karcie 100%” z „Modele ↗”. Podgląd: `/usr/bin/python3 widgets/preview_ai.py` (`build/preview/ai-*.png`).
+
+Dane limitów kafelek bierze wprost z lokalnego API usługi [QuotaApp](https://github.com/julia-lakomy/QuotaApp) (`limity-ai-widget.service`) — usługa musi być zainstalowana i działać.
 
 **Prognoza i powiadomienia** pochodzą z tide-daemon: co 2 min czyta on `/status` QuotaApp (bez wczytywania stron), zapisuje historię odczytów (`~/.local/state/tide/limits-history.jsonl`, 14 dni) i z tempa w bieżącym oknie liczy, kiedy limit się skończy. Popup pod resetem każdego limitu pisze „wyczerpie się ok. 17:40” (brzoskwinia) albo „starczy do resetu”, pasek boczny dopisuje „· koniec ok. 17:40” / „· starczy do resetu”, a kafelek w docku dostaje krótkie „· Claude do 17:40” tylko wtedy, gdy limit skończy się przed resetem. Przy za małej liczbie odczytów prognozy nie ma. Powiadomienie „Claude: zużyto 82% limitu sesji” przychodzi raz na okno przy 80% i 95%, a „… skończy się przed resetem” — raz, gdy prognoza mówi o więcej niż 30 min przed resetem; restart usługi ich nie powtarza. Progi są w palecie (`limits` w `theme/palette/mist.json`). Bez tide-daemon widżet działa jak dotąd, tylko bez prognoz. Szczegóły: [docs/tide-daemon.md](docs/tide-daemon.md#limity-ai).
 
@@ -119,7 +129,7 @@ make uninstall-widget-limits   # usuwa tylko org.tide.limits
 
 ## Modele
 
-Kafelek „Tide · Modele” (`org.tide.models`) stoi w docku po prawej, zaraz za Limitami AI. Pokazuje stan domyślnego serwera modeli lokalnych z tide-daemon (`/Models`, `Status()` po sygnale `Changed`, [opis](docs/tide-daemon.md#modele-lokalne)): „● qwen3:8b · na karcie 100%” (model w pamięci; masło, gdy część jest na procesorze), „● gotowe”, „● pracuje: opis kart · 2 w kolejce” (teal), „● serwer nie odpowiada” (róż), bez usługi wyciszone „usługa nie działa”. Popup: karta na każdy serwer („Ten komputer” dla adresu lokalnego, adres, wersja, powód niedostępności, kolejka — także wywołania, które trwają jeszcze na starym adresie punktu po jego zmianie („Na starym adresie …: pracuje: raport”, pole `queue.<punkt>.other`), pobieranie, modele chmurowe Ollamy oznaczone „w chmurze Ollamy” („Pobrane: 6 modeli, w tym 1 w chmurze Ollamy”), modele w pamięci z udziałem karty i terminem zwolnienia, liczba pobranych), role z modelem i dostępnością, tryb raportu, „Odśwież” (`Refresh()`) i „Otwórz w Tide ↗”. Pola `report`, `pulls` (pobieranie po kluczu `"<punkt>/<model>"`) i `queue` są opcjonalne — bez nich kafelek ich nie pokazuje.
+Od PT-41 model lokalny pokazuje kafelek „AI” (wyżej), a kafelek „Tide · Modele” (`org.tide.models`) nie stoi już w docku: `make install` dalej instaluje pakiet (powrót to dopisanie go do `DOCK_RIGHT` w `scripts/dock.py`), a ponowna instalacja docka zdejmuje go z panelu — także wtedy, gdy dodasz go do docka ręcznie (`make install-dock` usuwa kafelki wycofane z docka, dopóki nie ma ich w `DOCK_LEFT` ani `DOCK_RIGHT`). Kafelek pokazuje stan domyślnego serwera modeli lokalnych z tide-daemon (`/Models`, `Status()` po sygnale `Changed`, [opis](docs/tide-daemon.md#modele-lokalne)): „● qwen3:8b · na karcie 100%” (model w pamięci; masło, gdy część jest na procesorze), „● gotowe”, „● pracuje: opis kart · 2 w kolejce” (teal), „● serwer nie odpowiada” (róż), bez usługi wyciszone „usługa nie działa”. Popup: karta na każdy serwer („Ten komputer” dla adresu lokalnego, adres, wersja, powód niedostępności, kolejka — także wywołania, które trwają jeszcze na starym adresie punktu po jego zmianie („Na starym adresie …: pracuje: raport”, pole `queue.<punkt>.other`), pobieranie, modele chmurowe Ollamy oznaczone „w chmurze Ollamy” („Pobrane: 6 modeli, w tym 1 w chmurze Ollamy”), modele w pamięci z udziałem karty i terminem zwolnienia, liczba pobranych), role z modelem i dostępnością, tryb raportu, „Odśwież” (`Refresh()`) i „Otwórz w Tide ↗”. Pola `report`, `pulls` (pobieranie po kluczu `"<punkt>/<model>"`) i `queue` są opcjonalne — bez nich kafelek ich nie pokazuje.
 
 „Otwórz w Tide” woła wprost okno: `org.tide.Window /Window Show("models", "")`; gdy okno nie działa, uruchamia je jak menu (`kstart --application tide`) i ponawia `Show`. Dopóki okno nie ma widoku Modele, `Show` zwraca `false` — okno wychodzi na wierzch na swoim widoku (`Show("", "")`), a popup mówi, że widok przyjdzie z nową wersją okna.
 

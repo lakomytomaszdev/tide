@@ -1,16 +1,18 @@
-// Widżet Modele: kafelek w docku po prawej, zaraz za Limitami AI („Modele”, „● qwen3:8b · na karcie 100%”;
-// CompactModels), popup z serwerami, modelami w pamięci, kolejką, rolami i trybem raportu (ModelsPopup).
+// Widżet Modele: kafelek („Modele”, „● qwen3:8b · na karcie 100%”; CompactModels) — od PT-41 poza dockiem,
+// bo model lokalny pokazuje kafelek „AI” (org.tide.limits); pakiet zostaje na wypadek powrotu.
+// Popup z serwerami, modelami w pamięci, kolejką, rolami i trybem raportu (ModelsPopup).
 // Dane: tide-daemon przez D-Bus (org.tide.Daemon /Models, docs/tide-daemon.md#modele-lokalne): Status()
 // po sygnale Changed i co minutę na wszelki wypadek; „Odśwież” woła Refresh() — wynik przychodzi sygnałem
-// Changed, a gdy nic się nie zmieniło, po chwili czytamy Status() sami (ModelsState.qml, tam też „teraz”
+// Changed, a gdy nic się nie zmieniło, po chwili czytamy Status() sami (tide/ModelsState.qml, tam też „teraz”
 // do czasów w podpowiedzi — przesuwane przy każdym odczycie i najechaniu).
-// „Otwórz w Tide” otwiera okno Tide na widoku Modele przez org.tide.Window Show("models", "") (TideWindow.qml).
+// „Otwórz w Tide” otwiera okno Tide na widoku Modele przez org.tide.Window Show("models", "")
+// (tide/TideWindow.qml).
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.plasmoid
 import org.kde.plasma.core as PlasmaCore
-import "../code/models.js" as Logic
+import "tide/models.js" as Logic
 import "tide" as Tide
 
 PlasmoidItem {
@@ -36,7 +38,7 @@ PlasmoidItem {
         pollInterval: 60000
     }
 
-    ModelsState {
+    Tide.ModelsState {
         id: models
         source: daemon
     }
@@ -55,7 +57,7 @@ PlasmoidItem {
         onTriggered: root.windowNote = ""
     }
 
-    TideWindow {
+    Tide.TideWindow {
         id: tideWindow
         onOpened: {
             root.windowNote = ""

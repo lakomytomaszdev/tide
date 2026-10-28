@@ -2,8 +2,8 @@
   "KPackageStructure": "Plasma/Applet",
   "KPlugin": {
     "Id": "org.tide.limits",
-    "Name": "Tide · Limity AI",
-    "Description": "Pozostałe limity ChatGPT i Claude z usługi Limity AI (QuotaApp)",
+    "Name": "Tide · AI",
+    "Description": "Kafelek AI: pozostałe limity ChatGPT i Claude z usługi Limity AI (QuotaApp) i stan modelu lokalnego z tide-daemon; popup z limitami, modelami lokalnymi i linkiem do widoku Modele w oknie Tide",
     "Icon": "view-statistics",
     "Category": "System Information",
     "License": "MIT",

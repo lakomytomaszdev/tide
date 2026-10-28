@@ -1,5 +1,5 @@
-"""Kafelek Modele (org.tide.models): pakiet, miejsce w docku, teksty kafelka we wszystkich stanach (także z
-opcjonalnymi polami report, queue i pulls), logika słów i liczby mnogiej, popup (serwery, modele w pamięci,
+"""Kafelek Modele (org.tide.models): pakiet, poza dockiem od PT-41 (model lokalny jest w kafelku „AI”), teksty
+kafelka we wszystkich stanach (także z opcjonalnymi polami report, queue i pulls), logika słów i liczby mnogiej, popup (serwery, modele w pamięci,
 kolejka, pobieranie, role, tryb raportu, brak usługi), „Otwórz w Tide” z atrapą okna, instalacja
 i odinstalowanie z atrapą kpackagetool6.
 
@@ -20,6 +20,8 @@ from widgets import preview_models
 
 WIDGET_ID = "org.tide.models"
 WIDGET_DIR = os.path.join(WIDGETS_DIR, "models")
+# Stan, słowa i otwieranie okna są od PT-41 w bibliotece „tide” — mówi nimi też kafelek „AI” (org.tide.limits).
+LIB_DIR = os.path.join(WIDGETS_DIR, "lib")
 
 
 def run_qml(directory: str, name: str, source: str) -> str:
@@ -41,15 +43,15 @@ class PackageTest(unittest.TestCase):
         self.pkg = os.path.join(self.tmp, "pkg")
         subprocess.run(["/usr/bin/python3", os.path.join(WIDGETS_DIR, "stage.py"), WIDGET_DIR, self.pkg], check=True)
 
-    def read(self, name):
-        with open(os.path.join(WIDGET_DIR, name), encoding="utf-8") as fh:
+    def read(self, name, base=WIDGET_DIR):
+        with open(os.path.join(base, name), encoding="utf-8") as fh:
             return fh.read()
 
     def test_package_contains_widget_and_library(self):
         files = files_under(self.pkg)
         for name in ("metadata.json", "contents/ui/main.qml", "contents/ui/CompactModels.qml",
-                     "contents/ui/ModelsPopup.qml", "contents/ui/TideWindow.qml", "contents/ui/ModelsState.qml", "contents/code/models.js",
-                     "contents/ui/tide/Tokens.qml", "contents/ui/tide/DaemonSource.qml"):
+                     "contents/ui/ModelsPopup.qml", "contents/ui/tide/TideWindow.qml", "contents/ui/tide/ModelsState.qml",
+                     "contents/ui/tide/models.js", "contents/ui/tide/Tokens.qml", "contents/ui/tide/DaemonSource.qml"):
             self.assertIn(name, files)
         with open(os.path.join(self.pkg, "metadata.json"), encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)["KPlugin"]["Id"], WIDGET_ID)
@@ -59,15 +61,15 @@ class PackageTest(unittest.TestCase):
         self.assertIn('path: "/Models"', text)
         self.assertIn('iface: "org.tide.Daemon.Models"', text)
         self.assertIn('method: "Status"', text)
-        self.assertIn("ModelsState {", text)
+        self.assertIn("Tide.ModelsState {", text)
         self.assertIn("toolTipSubText: models.toolTip", text, "podpowiedź z ModelsState — z czasem z odczytu")
-        text += self.read("contents/ui/ModelsState.qml")
+        text += self.read("ModelsState.qml", LIB_DIR)
         self.assertIn('source.call("Refresh"', text)
         calls_made = set(re.findall(r'source\.call\("(\w+)"', text))
         self.assertEqual(calls_made, {"Refresh"}, "kafelek tylko czyta stan i prosi o odczyt — ustawienia są w oknie")
 
     def test_open_in_tide_uses_window_contract(self):
-        text = self.read("contents/ui/TideWindow.qml")
+        text = self.read("TideWindow.qml", LIB_DIR)
         self.assertIn('property string view: "models"', text)
         self.assertIn('service: "org.tide.Window", path: "/Window", iface: "org.tide.Window"', text)
         self.assertIn('member: "Show", arguments: [target, ""]', text)
@@ -84,11 +86,13 @@ class PackageTest(unittest.TestCase):
                     if "text:" in body:
                         self.assertIn("textFormat: Text.PlainText", body, f"{name}: {body[:80]}")
 
-    def test_dock_placement_right_after_limits(self):
+    def test_not_in_the_dock_since_the_ai_tile(self):
+        """PT-41: model lokalny pokazuje kafelek „AI”; pakiet Modele zostaje, ale dock go zdejmuje."""
         from scripts import dock, sidebar
-        self.assertEqual(dock.DOCK_RIGHT[-2:], ["org.tide.limits", WIDGET_ID], "po prawej, zaraz za Limitami AI")
-        self.assertNotIn(WIDGET_ID, dock.DOCK_LEFT)
-        self.assertNotIn(WIDGET_ID, sidebar.WIDGETS, "tylko dock")
+        self.assertNotIn(WIDGET_ID, dock.DOCK_RIGHT + dock.DOCK_LEFT)
+        self.assertIn("org.tide.limits", dock.DOCK_RIGHT)
+        self.assertIn(WIDGET_ID, dock.DOCK_RETIRED, "odinstalowanie docka zdejmuje też stary kafelek")
+        self.assertNotIn(WIDGET_ID, sidebar.WIDGETS)
 
 
 @unittest.skipUnless(shutil.which("qml6"), "brak qml6")
@@ -132,12 +136,11 @@ class LogicTest(unittest.TestCase):
     def test_words(self):
         root = tempfile.mkdtemp(prefix="tide-models-js-")
         self.addCleanup(shutil.rmtree, root)
-        # Jak w pakiecie: contents/code/models.js importuje ../ui/tide/modelnames.js (biblioteka „tide”).
-        tmp = os.path.join(root, "code")
+        # Jak w pakiecie: contents/ui/tide/models.js importuje modelnames.js z tego samego katalogu (biblioteka „tide”).
+        tmp = os.path.join(root, "tide")
         os.makedirs(tmp)
-        os.makedirs(os.path.join(root, "ui", "tide"))
-        shutil.copy(os.path.join(WIDGET_DIR, "contents/code/models.js"), tmp)
-        shutil.copy(os.path.join(WIDGETS_DIR, "lib", "modelnames.js"), os.path.join(root, "ui", "tide"))
+        shutil.copy(os.path.join(LIB_DIR, "models.js"), tmp)
+        shutil.copy(os.path.join(LIB_DIR, "modelnames.js"), tmp)
         snap = json.dumps(preview_models.snapshot_variant("loaded"), ensure_ascii=False)
         log = run_qml(tmp, "Logic.qml", """import QtQuick
 import "models.js" as Logic
@@ -345,6 +348,7 @@ class ModelsStateTest(unittest.TestCase):
         subprocess.run(["/usr/bin/python3", os.path.join(WIDGETS_DIR, "stage.py"), WIDGET_DIR, pkg], check=True)
         snap = json.dumps(preview_models.snapshot_variant("loaded"), ensure_ascii=False)
         log = run_qml(os.path.join(pkg, "contents/ui"), "StateSmoke.qml", """import QtQuick
+import "tide"
 Item {
     id: test
     property real now: %(now)d - 31 * 60000      // kafelek stoi od pół godziny bez otwierania popupu
@@ -399,6 +403,7 @@ class TideWindowTest(unittest.TestCase):
         pkg = os.path.join(tmp, "pkg")
         subprocess.run(["/usr/bin/python3", os.path.join(WIDGETS_DIR, "stage.py"), WIDGET_DIR, pkg], check=True)
         log = run_qml(os.path.join(pkg, "contents/ui"), "WindowSmoke.qml", """import QtQuick
+import "tide"
 Item {
     id: test
     // Atrapa okna: answers — kolejne odpowiedzi Show (true, false albo "error" — nazwa niezajęta).

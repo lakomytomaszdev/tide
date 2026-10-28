@@ -264,6 +264,12 @@ Item {
                      + "|" + Logic.modelOptions(d.busy, "local", "").length
                      + "|" + Logic.serverModels(d.busy, "local").filter(m => m.cloud).map(m => m.name + ":" + m.detail).join(",")
                      + "|" + Logic.pullWarning(" kimi-k2:cloud ") + "|" + Logic.pullWarning("qwen3:8b"))
+        // Model chmurowy w pamięci (0% na karcie) nie jest „wolnym” modelem lokalnym — jak kafelek AI (PT-41).
+        const cl = JSON.parse(JSON.stringify(d.local))
+        cl.endpoints.local.models = (cl.endpoints.local.models || []).concat([{ name: "gpt-oss:120b-cloud", cloud: true }])
+        cl.endpoints.local.loaded = [{ name: "gpt-oss:120b-cloud", cloud: true, size: 384, gpuPercent: 0 }]
+        console.warn("CLOUDMEM " + Logic.loadedLines(Logic.server(cl, "local")).map(l => l.slow + ":" + l.text).join(",")
+                     + "|" + Logic.serverModels(cl, "local").filter(m => m.cloud).map(m => m.slow + ":" + m.loadedText).join(","))
         console.warn("PROBLEM " + Logic.problem(d.local, false).title + "|" + Logic.problem({ endpoints: {} }, true).title + "|" + Logic.problem(d.local, true))
         Qt.quit()
     }
@@ -314,6 +320,7 @@ Item {
         self.assertEqual(warned(log, "TEST"), "Połączenie działa · Ollama 0.40.11 · 3 modele|Połączenie działa · 1 model|"
                                               "!serwer nie odpowiada|!brak odpowiedzi usługi")
         self.assertEqual(warned(log, "BYTES"), "5,2 GB|65,3 GB|567 MB|1,2 GB|")
+        self.assertEqual(warned(log, "CLOUDMEM"), "false:w chmurze Ollamy|false:w pamięci")
         self.assertEqual(warned(log, "PROBLEM"), "Usługa tide-daemon nie odpowiada|Brak serwerów modeli|null")
         self.assertEqual(warned(log, "CLOUD"), "true,true,false,false,false,true,false,false,false,false,true|-1|5|gpt-oss:120b-cloud:116.8B · MXFP4 · "
                                                "w chmurze Ollamy|To model w chmurze Ollamy — Tide nie użyje go w raporcie "
