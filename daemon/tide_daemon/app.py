@@ -297,6 +297,8 @@ def main(argv=None) -> int:
         search.start()  # indeks po znaczeniu w tle, po --search-delay, z najniższym priorytetem kolejki modeli
     if board is not None:
         board.start()  # zmiany z czasu, gdy usługa nie działała, i obserwacja katalogu tablicy
+        if board.flow is not None:
+            board.flow.start()  # kroki w tle z dziennika kart: podpięcie po restarcie, koniec, strażnik
     if coordination is not None:
         # Żywy raport i notki „Skończone dziś”: każda nowa wersja tablic koordynacji.
         coordination.changed.connect(lambda: report.coordination_changed(coordination.boards))
@@ -628,6 +630,7 @@ def start_board(app, args, trees, monitor=None, coordination=None, clock=time.ti
                          coordinators=(lambda: coordination.boards) if coordination is not None else None,
                          youtrack=youtrack, parent=app)
     trees.changed.connect(board.publish)  # nowe repozytorium w katalogu projektów
+    board.flow = start_card_flow(app, args, board, monitor)
     # Git (czy gałąź scalona) idzie w wątku roboczym; nowy wynik przelicza karty w wątku głównym.
     deriver.branches.on_result = board.rederive_later
     if monitor is not None:
@@ -635,6 +638,28 @@ def start_board(app, args, trees, monitor=None, coordination=None, clock=time.ti
     if coordination is not None:
         coordination.changed.connect(board.rederive)  # tickety, plan, pytania koordynatora
     return board
+
+
+def start_card_flow(app, args, board, monitor=None):
+    """Przepływ karty (PT-58, cardflow/, cardflow_monitor.py): StartCard, kroki w tle, dziennik kart. Sesje kroków
+    znikają z /Agents (monitor.hidden). $TIDE_SYSTEMD_RUN i $TIDE_FLOW_POLL_MS — tylko testy usługi (atrapa
+    systemd-run, krótszy zegar)."""
+    from .cardflow.engine import FlowEngine
+    from .cardflow_monitor import POLL_MS, CardFlowMonitor
+    from .models import config as models_config
+    try:
+        poll_ms = int(os.environ.get("TIDE_FLOW_POLL_MS") or POLL_MS)
+    except ValueError:
+        poll_ms = POLL_MS
+    claude_dir = getattr(args, "claude_dir", None) or default_claude_dir()   # testy podają częściowe argumenty
+    engine = FlowEngine(board.store, claude_projects=os.path.join(claude_dir, "projects"),
+                        systemd_run=os.environ.get("TIDE_SYSTEMD_RUN", ""),
+                        catalog=lambda: models_config.load().catalog)
+    if monitor is not None:
+        monitor.hidden = engine.is_hidden
+    return CardFlowMonitor(engine, board, poll_ms=max(100, poll_ms), parent=app)
+
+
 def docker_once(args, clock) -> dict:
     """--print-docker: migawka kontenerów i miejsce na dysku — wyłącznie zapytania GET do Engine API."""
     from .docker import DockerEngine

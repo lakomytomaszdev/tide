@@ -156,21 +156,21 @@ class Background:
         return {"unit": self.unit, "worktree": self.cwd, "step_dir": self.step_dir, "repo": self.repo,
                 "git_dir": self.git_dir, "tool": self.tool, "session_id": self.session_id}
 
-    def start(self, stdout=None, stderr=subprocess.STDOUT) -> subprocess.Popen:
+    def start(self, stdout=None, stderr=subprocess.STDOUT, systemd_run: str = "") -> subprocess.Popen:
         """Uruchamia program w osobnej jednostce `systemd-run --user --scope` (wzór z „Odporności” w specyfikacji):
         restart albo śmierć usługi nie zabija kroku, a zatrzymanie jednostki zabija całą jej cgroup (także wnuki po
         `setsid`). `--scope` daje programowi środowisko procesu — token punktu nie trafia do właściwości jednostki
         ani do argv. systemd-run potrzebuje tylko `XDG_RUNTIME_DIR` (gniazdo menedżera; D-Bus niepotrzebny, w kroku
         jest martwy); `env -u` zdejmuje tę zmienną (i INVOCATION_ID) przed programem.
         stdout: domyślnie plik `<krok>/out/step.log` — rura do usługi zabiłaby krok przez SIGPIPE, gdy usługa padnie.
-        Polecenie idzie z pliku kroku jako stdin."""
+        Polecenie idzie z pliku kroku jako stdin. `systemd_run` — inny plik wykonywalny (atrapa w testach usługi)."""
         env = dict(self.env)
         for path in self.token_files:
             launch.read_token(path)
         for name, path in self.secret_env.items():
             env[name] = launch.read_token(path)
         env["XDG_RUNTIME_DIR"] = self.runtime_dir or f"/run/user/{os.getuid()}"
-        argv = [SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet", f"--unit={self.unit}", "--",
+        argv = [systemd_run or SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet", f"--unit={self.unit}", "--",
                 "/usr/bin/env", "-u", "XDG_RUNTIME_DIR", "-u", "INVOCATION_ID", *self.argv]
         log = None
         if stdout is None:

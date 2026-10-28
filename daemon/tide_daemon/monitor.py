@@ -32,6 +32,9 @@ class AgentMonitor(QObject):
         self._dirty: set[str] = set()
         # funkcja(sessions) dopisująca pola od innych obszarów (np. newTask z /Tasks) albo None
         self.annotate = None
+        # funkcja(sesja) → True dla sesji, której nie pokazujemy jako agenta (krok w tle przepływu karty, PT-58):
+        # nie ma jej w Sessions(), w kafelku Praca ani w powiadomieniach; KRunner ma własny indeks i ją znajduje.
+        self.hidden = None
         self._discover = False
 
         self.watcher = QFileSystemWatcher(self)
@@ -62,6 +65,11 @@ class AgentMonitor(QObject):
     def recompute(self) -> None:
         procs = self._probe()
         sessions = self.scanner.sessions(self.clock(), procs)
+        if self.hidden is not None:
+            try:
+                sessions = [s for s in sessions if not self.hidden(s)]
+            except Exception as exc:  # filtr nie może zatrzymać listy sesji
+                print(f"tide-daemon: ukrywanie sesji kroków: {exc!r}", flush=True)
         if self.annotate is not None:
             try:
                 self.annotate(sessions)

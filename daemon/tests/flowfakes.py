@@ -1,0 +1,147 @@
+"""Atrapy dla testów przepływu karty (PT-58): `claude -p`, `systemd-run --user --scope` i `systemctl --user`.
+
+- `claude` czyta kartkę ze stdin (polecenie kroku), zapisuje ją z argv w `<katalog wyjściowy>/fake-call.json`, dopisuje
+  dziennik sesji w `$HOME/.claude/projects/<katalog>/<id>.jsonl` (jak prawdziwy program) i robi to, co każe linia
+  „ATRAPA: …” w opisie karty: `gotowe` (plik, commit, plik wyniku i notka), `bez-wyniku` (commit bez pliku wyniku),
+  `czekaj` (plik bez commita i sen — żyje, ale nic nie robi), `powoli N` (N sekund dopisywania, potem jak `gotowe`),
+  `pytanie` (wynik „pytanie”). Ścieżkę pliku wyniku bierze z kartki (linia „Plik wyniku: …”), nie z ustawień.
+- `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
+  `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
+- `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
+  procesu jednostki) według tego katalogu.
+Prawdziwy menedżer systemd nie jest dotykany.
+"""
+import os
+import stat
+
+CLAUDE = r'''#!/usr/bin/python3
+import json, os, re, subprocess, sys, time
+args = sys.argv[1:]
+def opt(name):
+    return args[args.index(name) + 1] if name in args else ""
+sid = opt("--session-id") or opt("--resume")
+prompt = sys.stdin.read()
+cwd = os.getcwd()
+result = re.search(r"Plik wyniku: (\S+)", prompt)
+result = result.group(1) if result else ""
+out = os.path.dirname(result) if result else os.path.join(os.path.dirname(cwd), "missing-out")
+os.makedirs(out, exist_ok=True)
+with open(os.path.join(out, "fake-call.json"), "w", encoding="utf-8") as fh:
+    json.dump({"argv": args, "prompt": prompt, "cwd": cwd, "pid": os.getpid(), "env": dict(os.environ)}, fh)
+logs = os.path.join(os.environ["HOME"], ".claude", "projects", re.sub(r"[/.]", "-", cwd))
+os.makedirs(logs, exist_ok=True)
+with open(os.path.join(logs, sid + ".jsonl"), "a", encoding="utf-8") as fh:
+    fh.write(json.dumps({"type": "user", "sessionId": sid, "cwd": cwd, "timestamp": "2026-10-28T12:00:00Z",
+                         "message": {"role": "user", "content": "kartka"}}) + "\n")
+    fh.write(json.dumps({"type": "assistant", "sessionId": sid, "cwd": cwd, "timestamp": "2026-10-28T12:00:01Z",
+                         "message": {"role": "assistant", "content": [{"type": "text", "text": "Robię ticket."}]}}) + "\n")
+mode = re.search(r"ATRAPA: ([a-z-]+)(?: (\d+))?", prompt)
+word, count = (mode.group(1), int(mode.group(2) or 0)) if mode else ("gotowe", 0)
+work = os.path.join(cwd, "ATRAPA.md")
+
+def write(text):
+    with open(work, "a", encoding="utf-8") as fh:
+        fh.write(text + "\n")
+
+def commit():
+    subprocess.run(["git", "add", "-A"], check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feat: atrapa robi ticket"], check=True)
+
+def finish(kind, **extra):
+    with open(os.path.join(out, "note.md"), "w", encoding="utf-8") as fh:
+        fh.write("# Notka wyniku\n\nAtrapa zrobiła ticket.\n")
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": kind, "notes": ["note.md"], **extra}, fh)
+
+write("start")
+if word == "czekaj":
+    time.sleep(3600)
+elif word == "powoli":
+    for i in range(count * 4):
+        write(f"krok {i}")
+        time.sleep(0.25)
+commit()
+if word == "bez-wyniku":
+    sys.exit(0)
+if word == "pytanie":
+    finish("question", question="Który format daty?")
+else:
+    finish("done")
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "session_id": sid}))
+'''
+
+SYSTEMD_RUN = r'''#!/usr/bin/python3
+import os, sys
+args = sys.argv[1:]
+unit = next(a.split("=", 1)[1] for a in args if a.startswith("--unit="))
+argv = args[args.index("--") + 1:]
+folder = os.path.join(os.environ["XDG_RUNTIME_DIR"], "fake-units")
+os.makedirs(folder, exist_ok=True)
+with open(os.path.join(folder, unit + ".pid"), "w") as fh:
+    fh.write(str(os.getpid()))
+os.execvp(argv[0], argv)
+'''
+
+SYSTEMCTL = r'''#!/usr/bin/python3
+import os, signal, sys
+args = [a for a in sys.argv[1:] if a not in ("--user", "--quiet") and not a.startswith("--kill-whom")]
+unit = args[-1][:-len(".scope")] if args[-1].endswith(".scope") else args[-1]
+path = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/nonexistent"), "fake-units", unit + ".pid")
+try:
+    pid = int(open(path).read())
+except (OSError, ValueError):
+    pid = 0
+
+def alive():
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().rpartition(")")[2].split()[0] != "Z"
+    except (OSError, IndexError):
+        return False
+
+if args[0] == "is-active":
+    sys.exit(0 if pid and alive() else 3)
+if args[0] == "kill":
+    name = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--signal=")), "SIGTERM")
+    if pid and alive():
+        try:
+            os.killpg(pid, getattr(signal, name))
+        except ProcessLookupError:
+            pass
+    sys.exit(0)
+sys.exit(0)
+'''
+
+KONSOLE = """#!/bin/bash
+echo "konsole $*" >> "$TIDE_FAKE_LOG"
+"""
+
+
+def install(folder: str) -> dict:
+    """Atrapy w `folder`; zwraca {nazwa: ścieżka}."""
+    os.makedirs(folder, exist_ok=True)
+    out = {}
+    for name, body in (("claude", CLAUDE), ("systemd-run", SYSTEMD_RUN), ("systemctl", SYSTEMCTL),
+                       ("konsole", KONSOLE)):
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+        out[name] = path
+    return out
+
+
+def unit_pid(runtime_dir: str, unit: str) -> int:
+    try:
+        with open(os.path.join(runtime_dir, "fake-units", unit + ".pid"), encoding="utf-8") as fh:
+            return int(fh.read())
+    except (OSError, ValueError):
+        return 0
+
+
+def alive(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            return fh.read().rpartition(")")[2].split()[0] != "Z"
+    except (OSError, IndexError):
+        return False

@@ -138,6 +138,11 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
 - ImportYouTrack(s json) -> s    karty w Backlogu z listy {issues: ["LOG-1", …]} → {ok, created, skipped, commitError},
 - ResolveYouTrack(s id, s choice) -> s  konflikt ze zmianą ręczną w YouTracku (karta K-16 albo klucz zgłoszenia;
                              choice: youtrack — przyjmij stan z YouTracka, tide — nadpisz stanem Tide) → {ok, issue, choice},
+- StartCard(s id, s json) -> s  zlecenie karty w przepływie karty (PT-58), dziś wejście „Od razu”:
+                             {entry: "now", executor: <nazwa wykonawcy Claude z katalogu>, images?} → {ok, ticket, branch,
+                             worktree, cardBranch, cardWorktree, step, session, executor} albo {ok: false, error, message};
+                             rezerwacja numeru, gałąź i worktree karty i ticketu, krok ticketu w tle (bez Konsoli); stan
+                             karty z dziennika `flow/<id>/journal.jsonl` (odpowiedź po starcie kroku),
 - sygnał Changed()           migawka tablicy się zmieniła (nasz zapis, zmiana z zewnątrz, stan kart z pracy agentów),
 - sygnał WorkChanged()       lista „Praca” się zmieniła (sama ostatnia czynność agenta — najwyżej co 10 s).
 Każda zmiana to commit w repozytorium tablicy (nieudany commit: ok z opisem w commitError, commit
@@ -431,6 +436,11 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
   <method name="ResolveYouTrack">
     <arg name="id" type="s" direction="in"/>
     <arg name="choice" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="StartCard">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
   <signal name="Changed"/>
@@ -835,6 +845,19 @@ class BoardAdaptor(QDBusAbstractAdaptor):
                 print("tide-daemon: nie udało się odesłać wyniku Board.YouTrackIssues", flush=True)
 
         self.monitor.youtrack_issues(refresh, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def StartCard(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        # Zlecenie zakłada gałęzie i worktree i startuje krok w wątku roboczym (cardflow_monitor.py) — odpowiedź później.
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.StartCard", flush=True)
+
+        self.monitor.start_card(card_id, request, reply)
         return ""
 
     @pyqtSlot(str, result=str)

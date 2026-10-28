@@ -38,6 +38,7 @@
   kartach (`youtrackSync`), ogólny (`youtrack`) i konflikty w `errors`. Import zgłoszeń (ImportYouTrack)
   zakłada karty w Backlogu tą samą drogą co CreateCard, bez duplikatów (po polu `youtrack`).
 """
+import contextlib
 import copy
 import json
 import os
@@ -104,6 +105,9 @@ class BoardMonitor(QObject):
         self._rederive_requested.connect(self.rederive)
         self._links: list[tuple[str, str, str, str]] = []  # (karta, sesja, sposób, gałąź) do utrwalenia
         self._link_tried: dict[tuple[str, str], float] = {}
+        # Przepływ karty (PT-58, cardflow_monitor.CardFlowMonitor) albo None: karta z dziennikiem dostaje stan
+        # z dziennika, nie z pracy agentów (derive); MoveCard takiej karty wstrzymuje ją albo kończy.
+        self.flow = None
         if youtrack is not None:
             youtrack.changed.connect(self._apply)  # wynik zapisu albo konflikt — nowy stan przy kartach
 
@@ -184,7 +188,22 @@ class BoardMonitor(QObject):
         return self._mutate(lambda: self.store.update_card(card_id, _object(request)))
 
     def move_card(self, card_id: str, column: str, order: int) -> str:
-        return self._mutate(lambda: self.store.move_card(card_id, column, order, self._shown_column(card_id)))
+        text = self._mutate(lambda: self.store.move_card(card_id, column, order, self._shown_column(card_id)))
+        if self.flow is not None:
+            try:
+                reply = json.loads(text)
+            except ValueError:
+                reply = {}
+            if reply.get("ok") and reply.get("id") and self.flow.has_journal(reply["id"]):
+                self.flow.moved(reply["id"], column.strip().lower())   # Backlog wstrzymuje, Gotowe i Archiwum kończą
+        return text
+
+    def start_card(self, card_id: str, request: str, reply) -> None:
+        """StartCard(id, json): zlecenie karty w przepływie karty (wejście „Od razu”) — reply(json) później."""
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.start_card(card_id, request, reply)
 
     def _shown_column(self, card_id: str) -> str:
         """Kolumna, w której karta jest teraz wyświetlana (boardColumn z ostatniej migawki) — do `moved-from`."""
@@ -410,16 +429,24 @@ class BoardMonitor(QObject):
     def _derived(self, base: dict) -> tuple[dict, object]:
         """(migawka z `derived` i `boardColumn`, kontekst przeliczenia derive albo None) — kontekst dostaje
         też lista „Praca” (board/work.py), więc sesje i połączenia są te same co w kolumnach kart."""
-        if self.derive is None:
+        if self.derive is None and self.flow is None:
             return base, None
         snapshot = dict(base)
         snapshot["errors"] = list(base.get("errors") or [])
         claimed = [c.get("session") for c in base.get("cards") or [] if isinstance(c, dict) and c.get("session")]
-        try:
-            derive = self.derive.context(claimed) if hasattr(self.derive, "context") else self.derive
-        except Exception as exc:  # stan z pracy agentów to dodatek — tablica działa bez niego
-            print(f"tide-daemon: tablica: stan z pracy agentów: {exc!r}", flush=True)
-            return base, None
+        derive = None
+        if self.derive is not None:
+            try:
+                derive = self.derive.context(claimed) if hasattr(self.derive, "context") else self.derive
+            except Exception as exc:  # stan z pracy agentów to dodatek — tablica działa bez niego
+                print(f"tide-daemon: tablica: stan z pracy agentów: {exc!r}", flush=True)
+                if self.flow is None:
+                    return base, None
+        if self.flow is not None:
+            try:
+                snapshot["errors"].extend(self.flow.warnings())   # dziennik karty odtworzony z kopii usługi
+            except Exception as exc:
+                print(f"tide-daemon: tablica: przepływ karty: {exc!r}", flush=True)
         repos = {p.get("slug"): p.get("repo") or "" for p in base.get("projects") or [] if isinstance(p, dict)}
         cards = []
         links = []
@@ -427,12 +454,16 @@ class BoardMonitor(QObject):
             card = copy.copy(card)
             derived = None
             try:
-                given = {**card, "repo": repos.get(card.get("project"), ""),
-                         "extraRepos": [repos.get(slug) for slug in card.get("projects") or [] if repos.get(slug)]}
-                derived = derive(given)
-                sticky = derive.sticky(given) if hasattr(derive, "sticky") else None
-                if sticky:
-                    links.append((card.get("id", ""), *sticky))
+                if self.flow is not None and self.flow.has_journal(card.get("id") or ""):
+                    # Karta w przepływie karty: stan tylko z dziennika (dziennik wygrywa z planem i sesjami).
+                    derived = self.flow.derived(card)
+                elif derive is not None:
+                    given = {**card, "repo": repos.get(card.get("project"), ""),
+                             "extraRepos": [repos.get(slug) for slug in card.get("projects") or [] if repos.get(slug)]}
+                    derived = derive(given)
+                    sticky = derive.sticky(given) if hasattr(derive, "sticky") else None
+                    if sticky:
+                        links.append((card.get("id", ""), *sticky))
             except Exception as exc:
                 snapshot["errors"].append({"path": card.get("path", ""),
                                            "message": f"{card.get('id', '')}: stan z pracy agentów: {exc}"})
@@ -477,10 +508,14 @@ class BoardMonitor(QObject):
             self.publish()
 
     def sync(self) -> None:
-        """Commit zmian z zewnątrz, nowe ścieżki do obserwacji i świeża migawka."""
+        """Commit zmian z zewnątrz, nowe ścieżki do obserwacji i świeża migawka. Zmiany dziennika kart (przepływ
+        karty) najpierw własnym commitem, pod blokadą dziennika — nie trafiają do „sync external changes”."""
         try:
-            if self.store.sync():
-                print("tide-daemon: tablica: zapisano zmiany z zewnątrz", flush=True)
+            with self.flow.lock if self.flow is not None else contextlib.nullcontext():
+                if self.flow is not None:
+                    self.flow.commit()
+                if self.store.sync():
+                    print("tide-daemon: tablica: zapisano zmiany z zewnątrz", flush=True)
         except Exception as exc:  # np. zablokowany indeks — spróbujemy przy następnej okazji
             print(f"tide-daemon: tablica: commit zmian z zewnątrz: {exc}", flush=True)
         try:
