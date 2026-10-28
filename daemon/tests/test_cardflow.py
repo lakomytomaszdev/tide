@@ -343,6 +343,10 @@ class ManualColumnsInProcessTest(FlowInProcess):
         working = self.wait_column(card_id, "progress")
         self.assertEqual((working["derived"]["flow"]["ticket"], working["derived"]["note"]),
                          ("PT-1", "PT-1 · krok w tle (Sonnet)"))
+        # Okno Worktrees: worktree kroku i karty zajęte jak katalog agenta (sesja kroku nie jest wierszem agenta).
+        engine = self.flow.engine
+        self.assertTrue(wait_until(lambda: set(engine.busy_places()) == {step["worktree"], reply["cardWorktree"]},
+                                   timeout=5), engine.busy_places())
         self.assertTrue(json.loads(self.board.move_card(card_id, "backlog", 0))["ok"])
         self.assertTrue(wait_until(lambda: self.of(card_id, "card.paused"), timeout=10))
         card = self.wait_column(card_id, "backlog")
@@ -357,6 +361,7 @@ class ManualColumnsInProcessTest(FlowInProcess):
         self.assertEqual([f["result"] for f in finished], ["stopped"])
         self.assertEqual([e["ticket"] for e in self.of(card_id, "ticket.rejected")], ["PT-1"])
         self.assert_changes_kept(finished[0], step, reply["branch"])
+        self.assertTrue(wait_until(lambda: engine.busy_places() == [], timeout=5), "zakończona karta niczego nie trzyma")
         count = len(self.events(card_id))
         wait_until(lambda: False, timeout=1.0)
         self.assertEqual(len(self.events(card_id)), count, "kolejne przeliczenia nic nie dopisują")

@@ -227,9 +227,13 @@ def main(argv=None) -> int:
     # Osobny, mały indeks sesji dla worktrees (KRunner ma własny, pełniejszy — krunner/index.py).
     worktree_sessions = worktrees.SessionIndex(args.claude_dir, args.codex_dir)
     launchers = worktrees.Launchers()
+    # Worktree kroków w tle i kart w toku (przepływ karty, PT-58) — zajęte jak katalog agenta; sesje kroków nie są
+    # wierszami agentów, więc bez tego wyglądałyby na wolne. Źródło dochodzi po starcie Tablicy.
+    flow_places = []
     trees = WorktreeMonitor(worktrees.WorktreeScanner(args.workspace, args.worktree_depth, clock=clock,
                                                       sessions=worktree_sessions),
-                            lambda: worktrees.agent_cwds(monitor.sessions, monitor.procs),
+                            lambda: worktrees.agent_cwds(monitor.sessions, monitor.procs)
+                            + [place for source in flow_places for place in source()],
                             launchers, refresh_agents=monitor.recompute,
                             live_source=lambda: worktrees.live_sessions(monitor.sessions))
     monitor.changed.connect(trees.publish)  # nowy albo zakończony agent zmienia flagę „aktywny agent”
@@ -298,6 +302,7 @@ def main(argv=None) -> int:
     if board is not None:
         board.start()  # zmiany z czasu, gdy usługa nie działała, i obserwacja katalogu tablicy
         if board.flow is not None:
+            flow_places.append(board.flow.engine.busy_places)
             board.flow.start()  # kroki w tle z dziennika kart: podpięcie po restarcie, koniec, strażnik
     if coordination is not None:
         # Żywy raport i notki „Skończone dziś”: każda nowa wersja tablic koordynacji.

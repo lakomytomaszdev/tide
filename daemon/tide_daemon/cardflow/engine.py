@@ -93,6 +93,7 @@ class FlowEngine:
         self.watch: dict[str, tuple] = {}          # krok → (odcisk postępu, od kiedy bez zmian, ostatnie sprawdzenie)
         self._warnings: dict[str, str] = {}
         self._hidden: tuple = (frozenset(), ())
+        self._busy: tuple = ()
 
     # --- odczyt (wątek główny) -------------------------------------------------------------------
 
@@ -104,6 +105,11 @@ class FlowEngine:
 
     def warnings(self) -> list[dict]:
         return [{"path": self.journal.path(card), "message": text} for card, text in sorted(self._warnings.items())]
+
+    def busy_places(self) -> list[str]:
+        """Worktree trwających kroków i worktree kart w toku — dla okna Worktrees zajęte jak katalog agenta (bez
+        usuwania). Sesja kroku nie jest wierszem agenta, więc bez tego worktree kroku wyglądałby na wolny."""
+        return list(self._busy)
 
     def is_hidden(self, session: dict) -> bool:
         """Sesja kroku w tle: nie jest wierszem agenta (kafelek Praca, lista agentów, powiadomienia)."""
@@ -279,7 +285,7 @@ class FlowEngine:
     # --- co chwilę -------------------------------------------------------------------------------
 
     def tick(self) -> None:
-        hidden_ids, hidden_places = set(), set()
+        hidden_ids, hidden_places, busy = set(), set(), set()
         for card in self.journal.cards():
             warning = self.journal.check(card)
             if warning:
@@ -294,7 +300,12 @@ class FlowEngine:
                 self._tick_card(card, st)
             except Exception as exc:  # jedna karta nie zatrzymuje pozostałych
                 print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
+            st = fold(self.journal.read(card))
+            busy |= {s["worktree"] for s in st.running() if s.get("worktree")}
+            if st.started is not None and not st.card_finished and ticket_of(st)["cardWorktree"]:
+                busy.add(ticket_of(st)["cardWorktree"])
         self._hidden = (frozenset(hidden_ids - {""}), tuple(sorted(hidden_places)))
+        self._busy = tuple(sorted(busy))
 
     def _tick_card(self, card: str, st: FlowState) -> None:
         for intent in st.open_intents():

@@ -303,6 +303,12 @@ class ManualColumnsTest(FlowCase):
         started = wait_until(lambda: self.of(card_id, "step.started"), timeout=10)[0]
         pid = wait_until(lambda: flowfakes.unit_pid(self.runtime, started["unit"]), timeout=5)
         self.assertEqual(self.wait_column(card_id, "progress")["derived"]["flow"]["ticket"], "PT-1")
+        # Okno Worktrees: worktree trwającego kroku zajęty jak katalog agenta, choć sesja kroku nie jest wierszem agenta.
+        busy = lambda: [w for w in self.call("List", path="/Worktrees", iface="org.tide.Daemon.Worktrees")
+                        if os.path.realpath(w.get("path", "")) == os.path.realpath(started["worktree"])
+                        and w.get("hasAgent")]
+        self.service.call(SERVICE, "/Worktrees", "org.tide.Daemon.Worktrees", "Refresh")
+        self.assertTrue(wait_until(busy, timeout=15), "worktree kroku zajęty w oknie Worktrees")
         self.assertTrue(self.call("MoveCard", card_id, "backlog", 0)["ok"])
         self.assertTrue(wait_until(lambda: self.of(card_id, "card.paused"), timeout=5), self.events(card_id))
         card = self.wait_column(card_id, "backlog")
