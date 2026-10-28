@@ -12,7 +12,7 @@ import unittest
 
 from . import gitrepos
 from tide_daemon.agents.claude import escape_cwd
-from tide_daemon.worktrees import SessionIndex, WorktreeScanner, guess_tool, humanize_branch
+from tide_daemon.worktrees import SessionIndex, WorktreeScanner, guess_tool, humanize_branch, live_sessions
 from tide_daemon.worktrees import sessions as sessions_mod
 
 NOW = 1_793_000_000.0  # 2026-10-26
@@ -113,7 +113,64 @@ class LogFixture(unittest.TestCase):
         return self.write(path, records, mtime if mtime is not None else ts)
 
 
+    def imported_codex(self, sid: str, cwd: str, ts: float, imported_at: float, continued: bool = False) -> str:
+        """Wątek zaimportowany przez Codex Desktop z Claude Code: tury external-import-turn-*, czasy
+        wpisów z chwili importu (imported_at), bez turn_context — chyba że kontynuowany w Codexie."""
+        day = time.strftime("%Y/%m/%d", time.gmtime(ts))
+        stamp = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime(ts))
+        records = [
+            {"timestamp": iso(imported_at), "type": "session_meta",
+             "payload": {"id": sid, "cwd": cwd, "source": "vscode", "originator": "Codex Desktop"}},
+            {"timestamp": iso(imported_at), "type": "event_msg",
+             "payload": {"type": "task_started", "turn_id": "external-import-turn-1"}},
+            {"timestamp": iso(imported_at), "type": "event_msg",
+             "payload": {"type": "user_message", "message": "zaimportowane polecenie"}},
+            {"timestamp": iso(imported_at), "type": "event_msg",
+             "payload": {"type": "task_complete", "turn_id": "external-import-turn-1"}},
+        ]
+        if continued:
+            records += [
+                {"timestamp": iso(imported_at + 60), "type": "turn_context", "payload": {"cwd": cwd}},
+                {"timestamp": iso(imported_at + 120), "type": "event_msg",
+                 "payload": {"type": "task_complete", "turn_id": "t-2"}},
+            ]
+        path = os.path.join(self.codex, "sessions", day, f"rollout-{stamp}-{sid}.jsonl")
+        return self.write(path, records, imported_at)
+
+
 class SessionIndexTest(LogFixture):
+    def test_codex_import_of_claude_session_does_not_steal_the_worktree(self):
+        wt = "/srv/twitch/.claude/worktrees/oprawa"
+        self.claude_session("1233d658", wt + "/brand", NOW - DAY, title="Oprawa streamu")
+        # Import jest późniejszy niż ostatni wpis Claude — dawniej wygrywał jako „najświeższy”.
+        self.imported_codex("01a17ecf-bbfc-7872-b219-22d41e0e8c29", wt, NOW - 2 * DAY, imported_at=NOW - 3600)
+        index = SessionIndex(self.claude, self.codex)
+        self.assertEqual([s.session_id for s in index.refresh(NOW)], ["1233d658"])
+        linked = index.link([(wt, "")])
+        self.assertEqual((linked[wt].tool, linked[wt].session_id), ("claude", "1233d658"))
+
+    def test_imported_thread_continued_in_codex_counts(self):
+        sid = "01a17ecf-0000-4000-8000-0000000000ee"
+        self.imported_codex(sid, "/srv/a", NOW - 2 * DAY, imported_at=NOW - 3600, continued=True)
+        [session] = SessionIndex(self.claude, self.codex).refresh(NOW)
+        self.assertEqual((session.tool, session.session_id, session.cwds), ("codex", sid, ("/srv/a",)))
+
+    def test_live_session_wins_over_newer_ended_one(self):
+        wt = "/srv/work/app-wt/logvalue"
+        self.claude_session("a650a246", wt, NOW - 2 * DAY, title="Żywa sesja Claude")
+        self.codex_session("0000000a-0000-4000-8000-0000000000ff", wt, NOW - 600, prompt="zakończony Codex")
+        index = SessionIndex(self.claude, self.codex)
+        index.refresh(NOW)
+        self.assertEqual(index.link([(wt, "")])[wt].tool, "codex", "bez żywych: najświeższa")
+        live = live_sessions([
+            {"tool": "claude", "sessionId": "a650a246", "state": "idle"},
+            {"tool": "codex", "sessionId": "0000000a-0000-4000-8000-0000000000ff", "state": "ended"},
+        ])
+        self.assertEqual(live, {("claude", "a650a246")})
+        linked = index.link([(wt, "")], live)
+        self.assertEqual((linked[wt].tool, linked[wt].title), ("claude", "Żywa sesja Claude"))
+
+
     def test_links_most_recent_session_in_deepest_worktree(self):
         wt = "/srv/work/app-wt/feature"
         nested = "/srv/work/app-wt/feature/sub-wt"
@@ -218,6 +275,18 @@ class ScannerLinkTest(LogFixture):
         self.assertEqual((dirty["tool"], dirty["sessionTitle"], dirty["group"]), ("codex", "napraw Y", "active"),
                          "sesja sprzed godziny to aktywność z ostatniej doby")
         self.assertEqual(items["merged"]["sessionTitle"], "")
+
+    def test_badge_comes_from_live_session(self):
+        root = os.path.join(self.tmp, "work")
+        p = gitrepos.build(root)
+        now = gitrepos.COMMIT_TS + 10 * DAY
+        self.claude_session("c-live", p["unmerged"], now - 2 * DAY, title="Claude pracuje", mtime=now - 2 * DAY)
+        self.codex_session("0000000a-0000-4000-8000-0000000000ab", p["unmerged"], now - 3600, mtime=now - 3600)
+        scanner = WorktreeScanner(root, clock=lambda: now, sessions=SessionIndex(self.claude, self.codex))
+        scanner.refresh()
+        live = live_sessions([{"tool": "claude", "sessionId": "c-live", "state": "waiting"}])
+        items = {os.path.basename(w["path"]): w for w in scanner.snapshot([], live=live)}
+        self.assertEqual((items["unmerged"]["tool"], items["unmerged"]["sessionId"]), ("claude", "c-live"))
 
 
 if __name__ == "__main__":

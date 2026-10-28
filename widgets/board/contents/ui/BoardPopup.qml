@@ -22,6 +22,7 @@ ColumnLayout {
     property bool busy: false
     signal openRequested(string cardId)  // pusty — samo okno Tide na widoku Tablica
     signal launchRequested(string cardId)  // „Uruchom” w wierszu do zrobienia
+    signal agentRequested(string sessionId, string cardId)  // „Przejdź” — okno agenta czekającej karty
     signal addRequested(string title, string project)
     signal projectChosen(string slug)
 
@@ -187,8 +188,10 @@ ColumnLayout {
                         variant: "filled"
                         accent: Tide.Tokens.peach
                         text: "Przejdź"
-                        Accessible.name: "Przejdź do karty " + row.modelData.id
-                        onClicked: popup.openRequested(row.modelData.id)
+                        Accessible.name: (row.modelData.session ? "Przejdź do agenta karty " : "Przejdź do karty ") + row.modelData.id
+                        // Do agenta, który czeka (Konsola albo wątek Codexa); bez sesji — karta w oknie Tide.
+                        onClicked: row.modelData.session ? popup.agentRequested(row.modelData.session, row.modelData.id)
+                                                         : popup.openRequested(row.modelData.id)
                     }
                     Text {
                         visible: !row.waiting && row.modelData.progress !== ""

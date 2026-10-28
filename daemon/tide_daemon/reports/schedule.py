@@ -9,9 +9,16 @@ jeszcze do poprzedniego dnia, więc logowanie o 01:00 nie zabiera porannego rapo
 - o `at` (domyślnie 07:00), jeśli użytkownik jest zalogowany — sprawdzane co minutę według zegara
   ściennego, więc wybudzenie po uśpieniu też go złapie.
 
-Okres: od końca poprzedniego raportu do teraz, najwyżej MAX_PERIOD (7 dni); pierwszy raport —
-ostatnia doba. Ponowne wygenerowanie w tej samej dobie (Generate() z D-Bus) zachowuje początek
-okresu i tylko przesuwa koniec, więc nie gubi niczego z porannego raportu.
+Okres: od kotwicy poprzedniego raportu do teraz, najwyżej MAX_PERIOD (7 dni); pierwszy raport —
+ostatnia doba. Kotwica raportu to jego godzina z terminu (doba + `at`, np. wt. 07:00), a gdy powstał
+wcześniej (logowanie o 05:30) — koniec jego okresu; nigdy później niż godzina z terminu. Dzięki temu
+ponowne wygenerowanie wieczorem (Generate() z D-Bus o 23:54) nie przesuwa granicy następnej doby:
+raport środy obejmuje wt. 07:00 → śr. 07:00, a nie pustą noc 23:54 → 07:00. Weekend i kilka dni przerwy
+są nadal w całości — od kotwicy ostatniego raportu. Ponowne wygenerowanie w tej samej dobie zachowuje
+początek okresu i tylko przesuwa koniec, więc nie gubi niczego z porannego raportu.
+Początek okresu doby D nigdy nie wypada później niż godzina z terminu doby D-1 — tak poprawia się też
+stan zapisany przed tą zasadą (raport 28.10 z początkiem 27.10 23:54 po ponownym wygenerowaniu
+obejmuje 27.10 07:00 → teraz).
 
 Przeczytanie: raport doby jest „nieprzeczytany”, dopóki w stanie nie ma tej doby w `opened`
 (otwarcie z widżetu, powiadomienia albo KRunnera). Nowa doba to nowy, nieprzeczytany raport;
@@ -22,7 +29,7 @@ import os
 import re
 import shutil
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 DEFAULT_AT = "07:00"
 DEFAULT_DAY_START = "04:00"
@@ -56,7 +63,7 @@ class State:
     end: float = 0.0          # koniec okresu ostatniego raportu (chwila wygenerowania)
     notified: str = ""        # doba, dla której poszło już powiadomienie
     opened: str = ""          # doba raportu, który użytkownik już otworzył
-    projects: int | None = None   # projekty z ruchem w ostatnim raporcie (None — nieznane)
+    projects: int | None = None   # projekty w ostatnim raporcie (None — nieznane)
     waiting: int | None = None    # „czeka na ciebie” w ostatnim raporcie (None — nieznane)
 
 
@@ -185,14 +192,41 @@ def due(now: float, state: State, settings: Settings, at_login: bool) -> bool:
     return minutes >= settings.at - settings.day_start
 
 
-def period(now: float, state: State, day: str) -> tuple[float, float]:
+def scheduled_ts(day, settings: Settings) -> float:
+    """Godzina z terminu raportu doby `day` (data albo RRRR-MM-DD): doba + `at`, lokalnie (także w dniu
+    zmiany czasu — 07:00 na zegarku)."""
+    if isinstance(day, str):
+        day = date.fromisoformat(day)
+    return datetime.combine(day, time(settings.at // 60, settings.at % 60)).astimezone().timestamp()
+
+
+def anchor(state: State, settings: Settings) -> float:
+    """Kotwica ostatniego raportu — skąd zaczyna się raport następnej doby: godzina z terminu jego doby,
+    a gdy powstał wcześniej — koniec jego okresu. Ponowne wygenerowanie wieczorem (koniec 23:54) nie
+    przesuwa jej dalej niż godzina z terminu. 0 — nie było raportu."""
+    if not state.end:
+        return 0.0
+    try:
+        return min(state.end, scheduled_ts(state.day, settings))
+    except ValueError:      # stan bez doby (albo z uszkodzoną) — sam koniec okresu
+        return state.end
+
+
+def period(now: float, state: State, day: str, settings: Settings | None = None) -> tuple[float, float]:
     """(początek, koniec) okresu raportu doby `day` wygenerowanego teraz."""
+    settings = settings or Settings()
     if state.day == day and state.start:
         start = state.start                 # ponowne wygenerowanie tej samej doby
     elif state.end:
-        start = state.end                   # od poprzedniego raportu
+        start = anchor(state, settings)     # od kotwicy poprzedniego raportu
     else:
         start = now - FIRST_PERIOD          # pierwszy raport
+    try:
+        # Doba D zaczyna się najpóźniej o godzinie z terminu doby D-1 — także stan sprzed tej zasady
+        # (początek 23:54 po wieczornym Generate()) przy ponownym wygenerowaniu wraca do tej granicy.
+        start = min(start, scheduled_ts(date.fromisoformat(day) - timedelta(days=1), settings))
+    except ValueError:
+        pass
     start = max(start, now - MAX_PERIOD)
     return min(start, now), now
 

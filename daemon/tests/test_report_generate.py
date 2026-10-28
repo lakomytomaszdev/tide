@@ -19,6 +19,7 @@ import unittest
 
 from . import reportfix
 from .reportfix import INJECTION, NOW, START
+from tide_daemon.agents.timeutil import iso
 from tide_daemon import reports
 from tide_daemon.report_monitor import notification_text
 from tide_daemon.reports import collect, limits, render, sessions
@@ -233,9 +234,15 @@ class RegenerateTest(ReportWorld):
     def test_same_day_regeneration_replaces_whole_directory(self):
         index, report = self.generate(start=NOW - 30 * 60)
         self.assertEqual(index, self.index)
-        self.assertEqual([p.name for p in report.active], ["alpha"])
-        self.assertEqual(sorted(os.listdir(os.path.dirname(index))), ["alpha.html", "index.html", "report.json"],
-                         "strona projektu bez ruchu znika")
+        # beta bez ruchu w ostatnich 30 min, ale z niescaloną gałęzią Codexa — praca w toku zostaje w raporcie;
+        # gamma (scalony worktree, nic w toku) nie ma strony.
+        self.assertEqual([p.name for p in report.active], ["alpha", "beta"])
+        beta = next(p for p in report.active if p.name == "beta")
+        self.assertEqual((beta.commits, len(beta.sessions)), (0, 0))
+        self.assertEqual([w["branch"] for w in beta.open_branches], ["codex/fix-upload"])
+        self.assertEqual(sorted(os.listdir(os.path.dirname(index))),
+                         ["alpha.html", "beta.html", "index.html", "report.json"],
+                         "strona projektu bez ruchu i bez pracy w toku znika")
         self.assertEqual([n for n in os.listdir(self.p["reports"]) if n.startswith(".")], [], "bez katalogów roboczych")
 
     def test_limits_unavailable(self):
@@ -244,6 +251,134 @@ class RegenerateTest(ReportWorld):
                                limits_result={"ok": False, "error": "usługa Limity AI nie odpowiada"})
         page = render.render_index(report, self.palette)
         self.assertIn("usługa Limity AI nie odpowiada", page)
+
+
+class StandingWorkTest(ReportWorld):
+    """Stan prac na dzień: cicha noc (okres bez commitów i bez wpisów agentów) nie robi pustego raportu,
+    gdy praca trwa — sesja czeka na odpowiedź, gałąź czeka na scalenie, karta tablicy jest w toku."""
+
+    BOARD = {"projects": [{"slug": "gamma", "name": "Gamma"}],
+             "cards": [{"id": "K-3", "title": "Eksport CSV", "project": "gamma", "column": "todo",
+                        "boardColumn": "progress",
+                        "derived": {"column": "progress", "note": "agent skończył i stoi od wczoraj",
+                                    "session": "", "coordinator": ""}},
+                       {"id": "K-4", "title": "Stara karta", "project": "gamma", "column": "done",
+                        "boardColumn": "done", "derived": None}]}
+
+    def quiet(self, root, live, board=None, workspace=None, claude_root=None):
+        return reports.generate(root, reportfix.DAY, NOW - 15 * 60, NOW, palette=self.palette,
+                                workspace=workspace or self.p["work"], claude_root=claude_root or self.p["claude"],
+                                codex_root=self.p["codex"], live=live, board=board,
+                                limits_result={"ok": False, "error": "brak"}, home=self.p["home"])
+
+    def test_quiet_night_with_standing_work_is_not_empty(self):
+        board = json.loads(json.dumps(self.BOARD))
+        board["projects"][0]["repo"] = self.p["gamma"]
+        root = tempfile.mkdtemp(dir=self.tmp)
+        index, report = self.quiet(root, reportfix.live_sessions(self.p), board)
+        self.assertEqual(sum(p.commits for p in report.active), 0, "w okresie nic nowego")
+        self.assertEqual([p.name for p in report.active], ["alpha", "beta", "gamma"])
+        alpha = next(p for p in report.active if p.name == "alpha")
+        # c-ask czeka od 30 min (przed okresem) — jest w raporcie z obszaru Agents; c-search jest bezczynna — nie.
+        self.assertEqual([(s.id, s.state, s.standing) for s in alpha.sessions], [("claude:c-ask", "waiting", True)])
+        summary = report.standup["projects"]
+        waiting = summary["alpha"]["waiting"]
+        self.assertEqual([(w["sessionId"], reportfix.ASK_QUESTION in w["text"]) for w in waiting], [("claude:c-ask", True)])
+        self.assertIn("Search — zmiany czekają na scalenie", [i["text"] for i in summary["alpha"]["doing"]])
+        self.assertTrue(any("czekają na scalenie" in i["text"] for i in summary["beta"]["doing"]))
+        self.assertEqual([i["text"] for i in summary["gamma"]["doing"]], ["K-3 Eksport CSV"])
+        self.assertIn("stoi od wczoraj", summary["gamma"]["doing"][0].get("about", ""))
+        with open(os.path.join(os.path.dirname(index), "report.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+        self.assertEqual(data["counts"]["projects"], 3)
+        self.assertEqual([p["label"] for p in data["projects"]], ["alpha", "beta", "Gamma"])
+        self.assertTrue(all(p["counts"]["doing"] or p["counts"]["waiting"] for p in data["projects"]),
+                        "każdy projekt mówi, co trwa albo co czeka")
+        self.assertTrue(data["brief"], "„Dziś w skrócie” nie jest puste")
+        with open(index, encoding="utf-8") as fh:
+            page = fh.read()
+        self.assertNotIn(render.NOTHING, page)
+        self.assertIn("projekty w raporcie", page)
+        self.assertNotIn("z ruchem", page)
+
+    def test_truly_nothing_going_on_says_so(self):
+        work = os.path.join(tempfile.mkdtemp(dir=self.tmp), "work")
+        repo = os.path.join(work, "calm")
+        os.makedirs(repo)
+        reportfix.git(repo, "init", "-q", "-b", "master")
+        reportfix.commit(repo, "a.txt", NOW - 20 * 86400, "initial commit")
+        claude_root = tempfile.mkdtemp(dir=self.tmp)
+        root = tempfile.mkdtemp(dir=self.tmp)
+        index, report = self.quiet(root, [], workspace=work, claude_root=claude_root)
+        self.assertEqual(report.active, [])
+        self.assertEqual([p.name for p in report.quiet], ["calm"])
+        with open(index, encoding="utf-8") as fh:
+            page = fh.read()
+        self.assertIn(render.NOTHING, page)
+        with open(os.path.join(os.path.dirname(index), "report.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+        self.assertEqual((data["counts"]["projects"], data["projects"]), (0, []))
+        self.assertEqual(notification_text(report)[0], "Raport poranny gotowy — bez ruchu w projektach")
+
+    def worktrees(self, **ages):
+        from tide_daemon.worktrees.scanner import WorktreeScanner
+        scanner = WorktreeScanner(self.p["work"], 3, clock=lambda: NOW)
+        scanner.refresh()
+        items = scanner.snapshot([], now=NOW)
+        for item in items:
+            if item.get("branch") in ages:
+                item["lastChangeTs"] = NOW - ages[item["branch"]]
+        return items
+
+    def test_old_unmerged_branch_is_not_standing_work(self):
+        # Ta sama niescalona gałąź Codexa: zmieniona 2 h temu — beta w raporcie; 30 dni temu — porzucona, beta cicha.
+        for age, expected in ((2 * 3600, ["beta"]), (30 * 86400, [])):
+            report = collect.build(reportfix.DAY, NOW - 15 * 60, NOW, workspace=self.p["work"],
+                                   claude_root=self.p["claude"], codex_root=self.p["codex"], live=[],
+                                   worktrees=self.worktrees(**{"codex/fix-upload": age}),
+                                   limits_result={"ok": False, "error": "brak"})
+            self.assertEqual([p.name for p in report.active if p.name == "beta"], expected, age)
+
+    def test_old_active_plan_is_not_standing_work(self):
+        work = os.path.join(tempfile.mkdtemp(dir=self.tmp), "work")
+        repo = os.path.join(work, "plans")
+        os.makedirs(os.path.join(repo, "docs", "agents", "plans"))
+        reportfix.git(repo, "init", "-q", "-b", "master")
+        reportfix.commit(repo, "a.txt", NOW - 40 * 86400, "initial commit")
+        claude_root = tempfile.mkdtemp(dir=self.tmp)
+        plan = os.path.join(repo, "docs", "agents", "plans", "2026-09-20-old.md")
+        for updated, expected in ((NOW - 30 * 86400, []), (NOW - 86400, ["plans"])):
+            with open(plan, "w", encoding="utf-8") as fh:
+                fh.write("---\ntide-plan: 1\ntitle: Stary plan\ntracker: local\nticket-prefix: PT\n"
+                         f"status: active\nupdated: {iso(updated)}\n---\n\n"
+                         "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |\n| --- | --- | --- | --- | --- | --- |\n"
+                         "| PT-1 | Eksport | gotowe | | | |\n| PT-2 | Import | w-toku | | | |\n")
+            report = collect.build(reportfix.DAY, NOW - 15 * 60, NOW, workspace=work, claude_root=claude_root,
+                                   codex_root=self.p["codex"], live=[], limits_result={"ok": False, "error": "brak"})
+            self.assertEqual(len(next(p for p in report.projects if p.name == "plans").plans), 1, "plan jest widziany")
+            self.assertEqual([p.name for p in report.active], expected, updated)
+
+    def test_plan_in_progress(self):
+        self.assertTrue(collect.plan_in_progress({"live": True}))
+        self.assertTrue(collect.plan_in_progress({"counts": {"review": 1}}))
+        self.assertTrue(collect.plan_in_progress({"status": "active", "done": 2, "total": 5, "counts": {"todo": 3}}))
+        self.assertFalse(collect.plan_in_progress({"status": "active", "done": 0, "total": 5, "counts": {"todo": 5}}),
+                         "plan, którego nikt nie zaczął, to „Dalej”, nie praca w toku")
+        self.assertFalse(collect.plan_in_progress({"status": "done", "done": 5, "total": 5, "counts": {"gotowe": 5}}))
+        old = {"status": "active", "done": 2, "total": 5, "counts": {"w-toku": 1}, "last": NOW - 30 * 86400}
+        self.assertFalse(collect.plan_in_progress(old, NOW - collect.STANDING_MAX),
+                         "plan porzucony z ticketem „w toku” sprzed miesiąca to nie praca w toku")
+        self.assertTrue(collect.plan_in_progress(dict(old, last=NOW - 86400), NOW - collect.STANDING_MAX))
+        self.assertTrue(collect.plan_in_progress(dict(old, live=True), NOW - collect.STANDING_MAX),
+                        "pracujący koordynator — zawsze")
+
+    def test_standing_session_from_agents_state(self):
+        s = sessions.standing_session({"id": "codex:t1", "cwd": "/tmp/x", "state": "waiting", "reason": "approval",
+                                       "sinceTs": 10, "lastActivityTs": 9, "waitingText": "Bash · make install",
+                                       "title": "Wydanie"})
+        self.assertEqual((s.id, s.state, s.waiting_text, s.title, s.live, s.standing),
+                         ("codex:t1", "waiting", "Bash · make install", "Wydanie", True, True))
+        self.assertIsNone(sessions.standing_session({"id": "claude:x", "state": "working"}), "bez katalogu — pomijamy")
 
 
 class UnitTest(unittest.TestCase):

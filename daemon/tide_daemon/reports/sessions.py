@@ -42,6 +42,7 @@ MESSAGE_LIMIT = 8000       # tyle znaków ostatniej wiadomości trafia do raport
 PROMPT_LIMIT = 1500        # pierwsze polecenie użytkownika (zadanie sesji)
 RUN_LIMIT = 2000           # wynik jednego przebiegu zaplanowanego zadania
 SEEK_SLACK = 64 * 1024
+STANDING = ("working", WAITING)   # stany z obszaru Agents, z którymi sesja jest w raporcie i bez ruchu w okresie
 TS_RE = re.compile(rb'"timestamp"\s*:\s*"([^"]+)"')
 TURN_MARKERS = (b'"task_started"', b'"task_complete"', b'"turn_aborted"', b'user.heartbeat')
 
@@ -78,6 +79,7 @@ class SessionReport:
     last_user_ts: float = 0.0  # ostatnia wiadomość wpisana przez użytkownika (odpowiedź na pytanie z tekstu)
     live: bool = False         # stan z obszaru Agents (sesja z ostatniej doby)
     turn_ended: bool = False   # ostatnia tura skończyła się zwyczajnie (albo ją przerwano)
+    standing: bool = False     # bez wpisu w okresie — w raporcie, bo teraz pracuje albo czeka (stan prac na dzień)
     runs: list = field(default_factory=list)
     automation: dict = field(default_factory=dict)  # name, status, rrule (gdy wątek ma automatyzację)
 
@@ -92,7 +94,8 @@ class SessionReport:
 
 def collect(claude_root: str, codex_root, start: float, end: float,
             live: list[dict] | None = None) -> list[SessionReport]:
-    """Sesje z wpisem w [start, end], od najświeższej. codex_root: katalog danych Codexa albo lista."""
+    """Sesje z wpisem w [start, end] i te, które według obszaru Agents teraz pracują albo czekają
+    (standing_session), od najświeższej. codex_root: katalog danych Codexa albo lista."""
     live_by_id = {s.get("id"): s for s in live or ()}
     titles = codex_titles(codex_root)
     automations = read_automations(codex_root)
@@ -111,6 +114,14 @@ def collect(claude_root: str, codex_root, start: float, end: float,
             if report:
                 if not report.title:
                     report.title = titles.get(report.session_id, "")
+                out.append(report)
+    # Stan prac na dzień: sesja, która teraz pracuje albo czeka na użytkownika, jest w raporcie także wtedy,
+    # gdy w okresie nic nie zapisała (np. czeka na odpowiedź od wczoraj wieczorem, a noc była cicha).
+    known = {r.id for r in out}
+    for entry in live or ():
+        if isinstance(entry, dict) and entry.get("id") not in known and entry.get("state") in STANDING:
+            report = standing_session(entry)
+            if report is not None:
                 out.append(report)
     places: dict[str, gitinfo.Location] = {}
     for report in out:
@@ -137,9 +148,28 @@ def collect(claude_root: str, codex_root, start: float, end: float,
     return out
 
 
+def standing_session(entry: dict) -> SessionReport | None:
+    """Sesja z obszaru Agents (pracuje albo czeka), której dziennik nie ma wpisu w okresie — z samego stanu
+    obszaru Agents: tytuł, katalog, gałąź, stan, na co czeka. Bez katalogu roboczego — None."""
+    cwd = str(entry.get("cwd") or "")
+    ident = str(entry.get("id") or "")
+    tool = str(entry.get("tool") or ident.partition(":")[0])
+    sid = str(entry.get("sessionId") or ident.partition(":")[2])
+    if not cwd or not tool or not sid:
+        return None
+    last = float(entry.get("lastActivityTs") or 0)
+    title = short_title(str(entry.get("title") or ""))
+    return SessionReport(tool=tool, session_id=sid, path="", cwd=cwd, branch=str(entry.get("branch") or ""),
+                         title=title, first_ts=float(entry.get("startedTs") or last), last_ts=last,
+                         state=str(entry.get("state") or ""), reason=str(entry.get("reason") or ""),
+                         since=float(entry.get("sinceTs") or last), last_action=str(entry.get("lastAction") or ""),
+                         waiting_text=str(entry.get("waitingText") or "") if entry.get("state") == WAITING else "",
+                         live=True, standing=True)
+
+
 def read_session(path: str, cls, start: float, end: float, automations: dict | None = None) -> SessionReport | None:
     log = cls(path)
-    tail = JsonlTail(path, TAIL_BYTES)
+    tail = JsonlTail(path, TAIL_BYTES, enough=getattr(cls, "tail_enough", None))
     records = tail.read_new()
     head = read_head(path, HEAD_BYTES)
     final, final_ts = "", 0.0

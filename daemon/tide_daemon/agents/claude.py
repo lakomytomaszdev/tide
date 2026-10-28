@@ -11,7 +11,13 @@ Co wiemy o strukturze (z obserwacji, format nie jest publiczny):
 - ai-title niesie krótki tytuł rozmowy (dopisywany wielokrotnie, liczy się ostatni), a custom-title
   tytuł nadany przez użytkownika,
 - sessions/<pid>.json opisuje działający proces: sessionId, cwd i status (busy, waiting, idle,
-  shell — tura skończona, ale w tle działa uruchomione przez agenta zadanie, do którego on wróci).
+  shell — tura skończona, ale w tle działa uruchomione przez agenta zadanie, do którego on wróci),
+- kompaktowanie (także samo, „Compacted while idle”) dopisuje system/compact_boundary, potem wpis
+  „user” ze streszczeniem (isCompactSummary, isVisibleInTranscriptOnly), załączniki i system/informational.
+  To nie odpowiedź użytkownika: pytanie z końca ostatniej tury (PT-29) dalej czeka,
+- polecenie lokalne (/model, /compact…) to wpis isMeta z <local-command-caveat>, echo
+  <command-name>/…</command-name> jako „user” i <local-command-stdout> — też nie odpowiedź. Skill
+  wywołany poleceniem („<command-message>…”) jest zwykłą wiadomością użytkownika.
 """
 import json
 import os
@@ -26,6 +32,29 @@ ASKS_USER = {"AskUserQuestion", "ExitPlanMode"}
 LONG_RUNNING = {"Agent", "Task"}
 LOCAL_COMMAND_PREFIXES = ("<local-command-stdout>", "<local-command-stderr>")
 INJECTED_PREFIXES = ("<task-notification", "<system-reminder")  # wiadomości „user” dopisane przez Claude Code
+LOCAL_COMMAND_CAVEAT = "<local-command-caveat>"  # wpis isMeta tuż przed echem polecenia lokalnego
+COMMAND_ECHO = "<command-name>"
+
+
+def synthetic_user(record: dict) -> bool:
+    """Wpis „user”, którego nie napisał użytkownik: wstawka isMeta (treść skilla, zastrzeżenie polecenia
+    lokalnego) albo streszczenie po kompaktowaniu (isCompactSummary, isVisibleInTranscriptOnly)."""
+    return bool(record.get("isMeta") or record.get("isCompactSummary") or record.get("isVisibleInTranscriptOnly"))
+
+
+def tail_has_turn(records: list[dict]) -> bool:
+    """Czy ogon dziennika sięga ostatniej prawdziwej tury (wpis agenta albo wiadomość użytkownika sesji
+    głównej) — inaczej JsonlTail cofa się dalej, np. za streszczenie i załączniki po kompaktowaniu."""
+    for record in records:
+        if record.get("isSidechain"):
+            continue
+        if record.get("type") == "assistant":
+            return True
+        if record.get("type") == "user" and not synthetic_user(record):
+            text = _text((record.get("message") or {}).get("content"))
+            if text and not text.startswith("<"):
+                return True
+    return False
 
 
 def escape_cwd(cwd: str) -> str:
@@ -35,12 +64,14 @@ def escape_cwd(cwd: str) -> str:
 
 class ClaudeLog(SessionLog):
     tool = "claude"
+    tail_enough = staticmethod(tail_has_turn)  # JsonlTail: ogon musi sięgać ostatniej tury
 
     def __init__(self, path: str):
         super().__init__(path)
         self.session_id = os.path.splitext(os.path.basename(path))[0]
         self.project_dir = os.path.basename(os.path.dirname(path))
         self.custom_title = False
+        self._local_command = False  # był <local-command-caveat> — następne echo polecenia nie jest odpowiedzią
 
     def feed(self, record: dict) -> None:
         kind = record.get("type")
@@ -76,8 +107,13 @@ class ClaudeLog(SessionLog):
             if record.get("subtype") in TURN_END_SYSTEM:
                 self.set_phase(TURN_END, ts)
         elif kind == "assistant":
+            self._local_command = False
             self._assistant(record, ts)
-        elif not record.get("isMeta"):
+        elif synthetic_user(record):
+            # Streszczenie po kompaktowaniu i wstawki isMeta nie zmieniają fazy ani nie kasują pytania.
+            if _text((record.get("message") or {}).get("content")).startswith(LOCAL_COMMAND_CAVEAT):
+                self._local_command = True
+        else:
             self._user(record, ts)
 
     def _assistant(self, record: dict, ts: float) -> None:
@@ -112,6 +148,7 @@ class ClaudeLog(SessionLog):
 
     def _user(self, record: dict, ts: float) -> None:
         content = (record.get("message") or {}).get("content")
+        local, self._local_command = self._local_command, False
         if isinstance(content, list):
             results = [c for c in content if isinstance(c, dict) and c.get("type") == "tool_result"]
             for result in results:
@@ -121,6 +158,8 @@ class ClaudeLog(SessionLog):
                     self.set_phase(MID_TURN, ts)
                 return
         text = _text(content)
+        if local and text.startswith(COMMAND_ECHO):
+            return  # echo polecenia lokalnego (/model, /compact…) — użytkownik nie odpisał agentowi
         if text.startswith("[Request interrupted by user"):
             self.set_phase(TURN_END, ts)
             self.last_action = "Przerwano"

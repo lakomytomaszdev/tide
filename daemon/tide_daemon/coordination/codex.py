@@ -9,7 +9,9 @@ Co wiemy o strukturze (z obserwacji prawdziwych dzienników, format nie jest pub
   message), a kontynuacje to `followup_task` i `send_message`; `request_user_input` bez wyniku
   to pytanie do użytkownika,
 - każda tura wątku (także podagenta) to event_msg task_started → task_complete
-  (`last_agent_message` to raport) albo turn_aborted.
+  (`last_agent_message` to raport) albo turn_aborted,
+- zapis pliku to łatka apply_patch („*** Update File: <ścieżka>”) — jako custom_tool_call albo wklejona
+  w kod narzędzia `exec`; łatka pliku planu wątku głównego trafia do Coordinator.plan_writes (plan.pick).
 
 Koordynator to wątek główny (bez `source.subagent`), który ma co najmniej jednego podagenta
 (dowolnej głębokości — wnuki należą do tego samego koordynatora). Przebieg (Run) to wątek
@@ -21,10 +23,12 @@ import re
 
 from ..agents.codex import describe_call
 from ..agents.timeutil import parse_ts
-from .model import COMPLETED, KILLED, PROMPT_HEAD, Coordinator, Question, Run
+from . import plan as plan_mod
+from .model import COMPLETED, KILLED, PROMPT_HEAD, Coordinator, Question, Run, add_plan_write
 
 LINE_MARKERS = (b'"task_started"', b'"task_complete"', b'"turn_aborted"', b'"spawn_agent"',
                 b'"request_user_input"', b'"function_call_output"', b'"user_message"', b'"turn_context"')
+PATCH_MARKERS = (b"*** Update File: ", b"*** Add File: ")   # łatka apply_patch, też wklejona w kod `exec`
 TIMESTAMP = re.compile(rb'"timestamp":\s*"([^"]+)"')
 CALL_ID = re.compile(rb'"call_id":\s*"([^"]+)"')
 CHUNK = 8 * 1024 * 1024
@@ -55,6 +59,7 @@ class CodexThreadLog:
         self.spawns: dict[str, dict] = {}        # task_name → {ts, agent_type, model, message}
         self._calls: dict[str, dict] = {}        # call_id → wywołanie request_user_input
         self.questions: dict[str, Question] = {}
+        self.plan_writes: dict[str, tuple] = {}  # plik planu zapisany łatką → (liczba, czas) (Coordinator.plan_writes)
 
     def read_meta(self) -> bool:
         """Sama pierwsza linia (session_meta) — tanio, do zbudowania drzewa wątków."""
@@ -117,7 +122,8 @@ class CodexThreadLog:
                 self._meta(record.get("payload") or {})
                 self.meta_read = True
                 return
-        if not any(marker in line for marker in LINE_MARKERS):
+        if not any(marker in line for marker in LINE_MARKERS) \
+                and not (b"plans/" in line and any(m in line for m in PATCH_MARKERS) and b'"response_item"' in line):
             return
         if b'"function_call_output"' in line and not (self._calls and any(
                 m.group(1).decode("ascii", "replace") in self._calls for m in CALL_ID.finditer(line))):
@@ -163,6 +169,10 @@ class CodexThreadLog:
                     self.first_message = message[:PROMPT_HEAD]
         elif kind == "response_item":
             item = payload.get("type")
+            if item in ("function_call", "custom_tool_call"):
+                raw = payload.get("input") if item == "custom_tool_call" else payload.get("arguments")
+                for name in plan_mod.patch_plan_files(raw if isinstance(raw, str) else ""):
+                    add_plan_write(self.plan_writes, name, ts)
             if item == "function_call":
                 name = payload.get("name")
                 args = _args(payload.get("arguments"))
@@ -251,6 +261,7 @@ def build(root: CodexThreadLog, children: list[CodexThreadLog], title: str = "")
         coord.runs[run.id] = run
         coord.last_ts = max(coord.last_ts, child.last_ts)
     coord.questions = dict(root.questions)
+    coord.plan_writes = dict(root.plan_writes)   # tylko wątek główny: plan pisze koordynator
     return coord
 
 

@@ -88,10 +88,48 @@ class PeriodTest(unittest.TestCase):
         self.assertEqual(schedule.period(now, State(), "2026-10-26"), (now - 86400, now))
 
     def test_since_previous_report(self):
+        # Poprzedni raport powstał po godzinie z terminu (logowanie o 08:15) — następny zaczyna się od 07:00 jego doby.
         now = at("2026-10-26T07:00")
         prev = at("2026-10-24T08:15")
         self.assertEqual(schedule.period(now, State(day="2026-10-24", start=prev - 86400, end=prev), "2026-10-26"),
+                         (at("2026-10-24T07:00"), now))
+
+    def test_previous_report_before_its_time_anchors_at_its_end(self):
+        now = at("2026-10-27T07:00")
+        prev = at("2026-10-26T05:30")
+        self.assertEqual(schedule.period(now, State(day="2026-10-26", start=prev - 86400, end=prev), "2026-10-27"),
                          (prev, now))
+
+    def test_evening_regeneration_does_not_move_next_day(self):
+        # Prawdziwy przypadek 28.10: raport 27.10 wygenerowany ponownie o 23:54 (jeszcze doba 27.10) —
+        # raport 28.10 o 07:00 obejmuje cały wtorek od 07:00, a nie pustą noc 23:54 → 07:00.
+        state = State(day="2026-10-27", start=at("2026-10-26T07:00"), end=at("2026-10-27T23:54"))
+        now = at("2026-10-28T07:00")
+        self.assertEqual(schedule.anchor(state, Settings()), at("2026-10-27T07:00"))
+        self.assertEqual(schedule.period(now, state, "2026-10-28", Settings()), (at("2026-10-27T07:00"), now))
+
+    def test_state_from_before_the_rule_is_clamped_on_regeneration(self):
+        # Stan zapisany przez stary kod (28.10: początek 27.10 23:54) — ponowne wygenerowanie tej samej doby
+        # wraca do granicy doby: 27.10 07:00 → teraz.
+        state = State(day="2026-10-28", start=at("2026-10-27T23:54"), end=at("2026-10-28T07:00"))
+        now = at("2026-10-28T10:00")
+        self.assertEqual(schedule.period(now, state, "2026-10-28", Settings()), (at("2026-10-27T07:00"), now))
+
+    def test_weekend_after_friday_evening_regeneration(self):
+        state = State(day="2026-10-23", start=at("2026-10-22T07:00"), end=at("2026-10-23T22:10"))
+        now = at("2026-10-26T07:00")   # poniedziałek
+        self.assertEqual(schedule.period(now, state, "2026-10-26", Settings()), (at("2026-10-23T07:00"), now))
+
+    def test_custom_time_anchor(self):
+        settings = Settings(at=schedule.parse_hhmm("08:30"))
+        state = State(day="2026-10-27", start=at("2026-10-26T08:30"), end=at("2026-10-27T19:00"))
+        now = at("2026-10-28T08:30")
+        self.assertEqual(schedule.period(now, state, "2026-10-28", settings), (at("2026-10-27T08:30"), now))
+
+    def test_state_without_day_anchors_at_end(self):
+        end = at("2026-10-27T06:00")
+        self.assertEqual(schedule.anchor(State(end=end), Settings()), end)
+        self.assertEqual(schedule.anchor(State(), Settings()), 0.0)
 
     def test_at_most_seven_days(self):
         now = at("2026-10-26T07:00")

@@ -90,7 +90,7 @@ function summaryParts(report) {
     const parts = []
     if (report.since) parts.push({ text: String(report.since), tone: "" })
     if (typeof counts.projects === "number")
-        parts.push({ text: count(counts.projects, "projekt", "projekty", "projektów") + " z ruchem", tone: "" })
+        parts.push({ text: count(counts.projects, "projekt", "projekty", "projektów") + " w raporcie", tone: "" })
     if (report.legacy) {
         parts.push({ text: "raport sprzed widoku w oknie — szczegóły w przeglądarce", tone: "" })
         return parts
@@ -172,8 +172,18 @@ function nowItems(report) {
         const asks = w.reason === "question" || (w.reason !== "approval" && String(w.text || "").endsWith("?"))
         const what = asks ? (w.text ? "pyta: „" + w.text + "”" : "czeka na odpowiedź")
                           : "czeka na zgodę" + (w.text ? " (" + w.text + ")" : "")
-        return { project: String(w.project || w.title || "agent"), text: what, id: String(w.id || "") }
+        return { project: String(w.label || w.project || w.title || "agent"), text: what, id: String(w.id || "") }
     })
+}
+
+// Nazwa projektu do pokazania: z tablicy pracy (label w report.json), inaczej nazwa katalogu.
+function projectLabel(project) {
+    return project ? String(project.label || project.name || "") : ""
+}
+
+// Nazwa katalogu jako mały dopisek obok nazwy z tablicy — tylko gdy się różnią (pole folder z usługi).
+function projectFolder(project) {
+    return project && project.folder ? String(project.folder) : ""
 }
 
 // Projekty z samymi porządkami — jedna zwinięta linia „Porządki: QuotaApp, BO, dev-dashboard…”.
@@ -182,7 +192,7 @@ function choreProjects(report) {
 }
 
 function choreLine(report, limit) {
-    const names = choreProjects(report).map(p => String(p.name))
+    const names = choreProjects(report).map(p => projectLabel(p))
     if (names.length === 0) return ""
     const shown = names.slice(0, limit || 4)
     return "Porządki: " + shown.join(", ") + (names.length > shown.length ? "…" : "")

@@ -1,4 +1,4 @@
-"""Raport poranny: strona HTML na każdy projekt-repozytorium z ruchem (z własnym „Na daily”) i indeks
+"""Raport poranny: strona HTML na każdy projekt-repozytorium z ruchem albo z pracą w toku (z własnym „Na daily”) i indeks
 — przegląd z kartą na projekt i zwiniętą sekcją „Poza projektami”.
 
 - schedule.py — kiedy (pierwsze logowanie w dobie albo o 07:00), za jaki okres, retencja, stan,
@@ -9,6 +9,7 @@
 - standup.py  — „Na daily”: fakty o projektach, podsumowanie z reguł, walidacja odpowiedzi modelu,
 - summarize.py — opis „Na daily” modelem przez lokalny `claude -p` albo model lokalny (z regułami jako zapasem),
 - collect.py  — model raportu, render.py — HTML,
+- cards.py    — tablica pracy w raporcie: nazwy projektów z tablicy i karty, do których należy praca,
 - data.py     — report.json dla widoku „Raporty” w oknie Tide i odczyt dni (D-Bus Days(), Day()) z „czeka”
                 przeliczanym na żywo dla bieżącej doby,
 - live.py     — żywy raport w ciągu dnia: kiedy złożyć go ponownie (zdarzenia, odstęp, bez modelu co chwilę),
@@ -47,12 +48,15 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
              codex_root: str | list[str], live=None, worktrees=None, limits_result=None, fetch_limits: bool = True,
              git=None, max_depth: int = 3, home: str | None = None,
              coordination_cache: str | None = None, summary: str = "rules", summary_model: str = "sonnet",
-             env=None, tracker=None, notes: dict | None = None, cancel=None) -> tuple[str, "collect.Report"]:
+             env=None, tracker=None, notes: dict | None = None, cancel=None,
+             board=None) -> tuple[str, "collect.Report"]:
     """Zapisuje <root>/<day>/index.html, <projekt>.html i report.json (widok „Raporty”). Zwraca (ścieżka index.html, raport).
 
     summary: "claude" — opis „Na daily” modelem przez `claude -p` (summarize.py), "local" — model lokalny
     z roli `summary` w models.json (summary_model pomijany, nigdy Claude), "rules" — same reguły.
     tracker: YouTrackCache — opisy ticketów z planów w repozytoriach (plans.py, tylko GET) albo None.
+    board: migawka tablicy pracy (/Board Snapshot()) albo None — nazwy projektów z tablicy i karty, do których
+    należy praca (reports/cards.py).
     notes: „Skończone dziś” tej doby — {projekt: [notka]} z reports/notes.py (żywy raport) albo None.
     cancel: models.Cancel — zamykanie usługi przerywa wywołania modelu lokalnego (summarize.summarize);
     raport przerwany w ten sposób kończy się Cancelled bez zapisu, żeby strona z samych reguł nie zastąpiła
@@ -64,7 +68,7 @@ def generate(root: str, day: str, start: float, end: float, *, palette: dict, wo
     report = collect.build(day, start, end, workspace=workspace, claude_root=claude_root, codex_root=codex_root,
                            live=live, worktrees=worktrees, limits_result=limits_result, git=git,
                            max_depth=max_depth, previous_day=days[-1] if days else "",
-                           coordination_cache=coordination_cache, tracker=tracker)
+                           coordination_cache=coordination_cache, tracker=tracker, board=board)
     report.notes = dict(notes or {})
     home = os.path.expanduser("~") if home is None else home
     target = os.path.join(root, day)

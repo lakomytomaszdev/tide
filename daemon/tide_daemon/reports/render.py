@@ -65,6 +65,11 @@ CSP = (f"default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-{SCRI
 
 # --- tekst ------------------------------------------------------------------------------------
 
+# Pusty raport tylko wtedy, gdy naprawdę nic się nie dzieje: projekty z pracą w toku są w raporcie i bez ruchu
+# w okresie (collect.Project.standing), więc to zdanie mówi także, że nic nie trwa.
+NOTHING = "W projektach nic się nie dzieje — nie ma nowej pracy ani pracy w toku."
+
+
 def esc(value) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
@@ -232,6 +237,7 @@ a:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var
 .wrap{max-width:1480px;margin:0 auto;padding:44px 40px 72px}
 .mono,code{font-family:var(--mono);font-size:.92em}
 .muted{color:var(--muted)}
+.folder{font-family:var(--mono);font-size:12px;font-weight:400;color:var(--muted);margin-left:8px}
 .top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:20px 32px;margin-bottom:28px}
 .brand{display:flex;align-items:center;gap:12px;color:var(--text2);font-weight:500;font-size:14px;margin-bottom:14px}
 .brand svg{width:30px;height:30px;flex:none}
@@ -514,7 +520,7 @@ def render_index(report, palette: dict, home: str = "") -> str:
         '<section class="stats">',
         _stat(len(waiting), plural(len(waiting), "czeka na ciebie", "czekają na ciebie", "czeka na ciebie"),
               hot=bool(waiting)),
-        _stat(len(repos), plural(len(repos), "projekt z ruchem", "projekty z ruchem", "projektów z ruchem")),
+        _stat(len(repos), plural(len(repos), "projekt w raporcie", "projekty w raporcie", "projektów w raporcie")),
         _stat(commits, plural(commits, "commit", "commity", "commitów"),
               f'<small><span class="add">+{added}</span> <span class="del">−{deleted}</span></small>' if commits else ""),
         _stat(sessions, plural(sessions, "sesja agenta", "sesje agentów", "sesji agentów")),
@@ -531,7 +537,7 @@ def render_index(report, palette: dict, home: str = "") -> str:
             parts.append(
                 f'<a class="waitrow" href="{esc(target)}">'
                 f'<span class="dot waiting"></span><span class="what"><span class="row">'
-                f'<b>{esc(project.name)}</b>{tool_chip(s.tool)}<span class="state waiting">{esc(state_of(s)[1])}</span>'
+                f'<b>{esc(project_label(project))}</b>{tool_chip(s.tool)}<span class="state waiting">{esc(state_of(s)[1])}</span>'
                 f'</span><span class="title">{esc(s.title)}</span></span>'
                 f'<span class="when">od {esc(clock(s.since) or "?")} · {esc(duration(report.end - s.since)) if s.since else ""}</span></a>')
         parts.append("</div>")
@@ -542,13 +548,24 @@ def render_index(report, palette: dict, home: str = "") -> str:
         parts.append(f'<h2>Bez ruchu <span class="n">{len(quiet)}</span></h2>'
                      f'<details class="quiet"><summary>Pokaż projekty bez ruchu ({len(quiet)})</summary><ul>')
         for p in quiet:
-            parts.append(f'<li><span>{esc(p.name)}</span><span>{esc(_standing(p))}</span></li>')
+            parts.append(f'<li><span>{esc(project_label(p))}</span><span>{esc(_standing(p))}</span></li>')
         parts.append("</ul></details>")
 
     parts.append(_limits(report))
     parts.append("</details>")
     parts.append(_footer(report, home, index=True))
     return page(f"Raport poranny · {short_date(report.day)}", "".join(parts), palette)
+
+
+def project_label(project) -> str:
+    """Nazwa projektu do pokazania: z tablicy pracy („LegalApp”), inaczej nazwa katalogu."""
+    return getattr(project, "label", "") or project.name
+
+
+def folder_note(project) -> str:
+    """Mała, szara nazwa katalogu obok nazwy z tablicy — tylko gdy się różnią."""
+    shown = project_label(project)
+    return f' <span class="folder">{esc(project.name)}</span>' if shown != project.name and project.name not in shown else ""
 
 
 def _repos(report) -> list:
@@ -615,8 +632,7 @@ def overview(report, projects) -> str:
            f'{len(projects)}</span></h2><span class="dsrc">{esc(_source(summary))}</span><span class="sp"></span>'
            + (copy_button(text, "Kopiuj wszystko jako tekst") if text else "") + "</div>"]
     if not projects:
-        out.append('<div class="calm"><span class="dot"></span>W tym okresie nie ma nic do opowiedzenia — '
-                   'ani commitów, ani sesji agentów w projektach.</div></section>')
+        out.append(f'<div class="calm"><span class="dot"></span>{esc(NOTHING)}</div></section>')
         return "".join(out)
     cards = []
     chores = []
@@ -633,10 +649,10 @@ def overview(report, projects) -> str:
         cards.append((not hot, chores_only, i, _overview_card(p, s, waits, hot)))
     out.append('<div class="ovgrid">' + "".join(card for *_key, card in sorted(cards)) + "</div>")
     if chores:
-        rows = "".join(f'<li><a href="{esc(p.slug)}.html">{esc(p.name)}</a><span>'
+        rows = "".join(f'<li><a href="{esc(p.slug)}.html">{esc(project_label(p))}</a><span>'
                        f'{esc("; ".join(i["text"] for i in (by_name.get(p.name) or {}).get("chores") or [] if not i.get("more")))}'
                        '</span></li>' for p in chores)
-        out.append(f'<details class="quiet chores-only"><summary>Porządki: {esc(", ".join(p.name for p in chores))}'
+        out.append(f'<details class="quiet chores-only"><summary>Porządki: {esc(", ".join(project_label(p) for p in chores))}'
                    f'</summary><ul>{rows}</ul></details>')
     out.append("</section>")
     return "".join(out)
@@ -651,7 +667,7 @@ def _overview_card(p, s: dict, waits: list, hot: bool) -> str:
             chips.append(f'<span class="chip{" " + tone if tone else ""}">{esc(word)} {n[key]}</span>')
     headline = s.get("headline") or s.get("theme") or ""
     body = [f'<article class="card ov{" wait" if hot else ""}">',
-            f'<div class="row"><h3><a href="{esc(p.slug)}.html">{esc(p.name)}</a></h3>'
+            f'<div class="row"><h3><a href="{esc(p.slug)}.html">{esc(project_label(p))}</a>{folder_note(p)}</h3>'
             f'{"".join(tool_chip(t) for t in sorted({x.tool for x in p.sessions}))}</div>']
     if headline:
         body.append(f'<p class="headline">{esc(headline)}</p>')
@@ -692,7 +708,7 @@ def daily(report, projects, index: bool = False) -> str:
         shown += 1
         out.append('<article class="card standup">')
         if index:
-            out.append(f'<div class="row"><h3><a href="{esc(p.slug)}.html">{esc(p.name)}</a></h3></div>')
+            out.append(f'<div class="row"><h3><a href="{esc(p.slug)}.html">{esc(project_label(p))}</a>{folder_note(p)}</h3></div>')
         if s.get("theme"):
             out.append(f'<p class="theme"><b>Na czym polega</b>{esc(s["theme"])}</p>')
         groups = [_finished((getattr(report, "notes", None) or {}).get(p.name))] \
@@ -718,8 +734,8 @@ def daily(report, projects, index: bool = False) -> str:
                        f'<div class="sg chores"><ul>{rows}</ul></div></details>')
         out.append("</article>")
     if not shown:
-        out.append('<div class="calm"><span class="dot"></span>W tym okresie nie ma nic do opowiedzenia — '
-                   'ani skończonej pracy, ani pracy w toku.</div>')
+        quiet = NOTHING if index else "W tym okresie nie ma nic do opowiedzenia — ani skończonej pracy, ani pracy w toku."
+        out.append(f'<div class="calm"><span class="dot"></span>{esc(quiet)}</div>')
     out.append("</section>")
     return "".join(out)
 
@@ -749,7 +765,7 @@ def _outside_section(report, projects) -> str:
         state, word = state_of(s)
         # Sesja, która czeka: o co pyta według obszaru Agents (waitingText), nigdy stare pytanie z tekstu.
         said = standup_mod.clean(getattr(s, "waiting_text", "") or "", 320) if state == "waiting" else \
-            standup_mod.first_sentences(s.final_message, 2, 320)
+            standup_mod.first_sentences(s.final_message, 2, 320, whole=True)
         task = standup_mod.clean(getattr(s, "prompt", "") or "", 300)
         resume = resume_command(s)
         out.append(f'<article class="osession" id="{esc(session_anchor(s))}"><div class="head">'
@@ -853,7 +869,7 @@ def render_project(report, project, palette: dict, home: str = "") -> str:
         f'<a class="back" href="index.html">← Raport · {esc(short_date(report.day))}</a>',
         '<header class="top"><div>',
         f'<div class="brand" style="margin-top:14px">{LOGO}<span>{esc(period_text(report))}</span></div>',
-        f'<h1>{esc(p.name)}</h1>',
+        f'<h1>{esc(project_label(p))}{folder_note(p)}</h1>',
         _pathbar(p.path, p.is_repo),
         '</div></header>',
         daily(report, [p], index=False),
@@ -889,7 +905,7 @@ def render_project(report, project, palette: dict, home: str = "") -> str:
 
     body = "".join(head) + f'<div class="cols"><div>{"".join(left)}</div><div>{"".join(right)}</div></div>' \
         + "</details>" + _footer(report, home, index=False)
-    return page(f"{p.name} · raport {short_date(report.day)}", body, palette)
+    return page(f"{project_label(p)} · raport {short_date(report.day)}", body, palette)
 
 
 def _plans(p) -> str:

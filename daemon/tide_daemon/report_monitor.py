@@ -41,7 +41,7 @@ class ReportMonitor(QObject):
                  fetch_limits: bool = True, coordination_cache: str | None = None, opener=None,
                  summary: str | None = None, tracker=None, notes_file: str | None = None, note_notifier=None,
                  card_check=None, live_interval: float = live_mod.INTERVAL, live_settle: float = live_mod.SETTLE,
-                 note_settle: float = notes_mod.NOTE_SETTLE,
+                 note_settle: float = notes_mod.NOTE_SETTLE, board=None,
                  parent=None):
         super().__init__(parent)
         self.settings = settings
@@ -76,6 +76,10 @@ class ReportMonitor(QObject):
         # board/ticket to tablica koordynacji i jej ticket (D-Bus Board()); wynik czyta notes.manual_check.
         # Podpinany w app.main po starcie tablicy pracy (app.board_card_check); bez niej — tylko plan.
         self.card_check = card_check
+        # Migawka tablicy pracy: funkcja() → /Board Snapshot() albo None — nazwy projektów z tablicy i karty,
+        # do których należy praca (reports/cards.py). Podpinana w app.main po starcie tablicy; bez niej —
+        # nazwy katalogów i tytuły z nazw gałęzi.
+        self.board = board
         self._ticket_states: dict | None = None
         self._session_states: dict | None = None
         self._waiting_sig: tuple | None = None
@@ -174,7 +178,31 @@ class ReportMonitor(QObject):
             self.mark_dirty("zmiana ticketu")
         self._ticket_states = states
         self._boards = boards
+        if self._fix_notes():
+            self.changed.emit()
         self._check_notes()
+
+    def _fix_notes(self, save: bool = True) -> int:
+        """Notki przypisane do repozytorium tablicy pracy (sprzed PT-28) → projekt koordynatora z bieżących
+        tablic koordynacji albo z karty tablicy pracy; poprawka trafia do pliku notek raz."""
+        if self.notes is None:
+            return 0
+        snapshot = None
+
+        def resolve(note):
+            nonlocal snapshot
+            if snapshot is None:
+                snapshot = self._board_snapshot() or {}
+            return notes_mod.owner_of(note, self._boards, snapshot)
+        fixed = self.notes.reattribute(resolve)
+        if fixed:
+            print(f"tide-daemon: raport: {fixed} notek przeniesionych z repozytorium tablicy do projektów", flush=True)
+            if save:
+                try:
+                    self.notes.save()
+                except OSError as exc:
+                    print(f"tide-daemon: raport: nie zapisano notek: {exc}", flush=True)
+        return fixed
 
     def _check_notes(self) -> None:
         if self.note_tracker is None:
@@ -260,11 +288,16 @@ class ReportMonitor(QObject):
         written = self.notes.add(day, written)   # tylko dodane albo zmienione — raport i powiadomienie zgodne
         if not written:
             return
+        self._fix_notes(save=False)              # zapis niżej
         self.notes.prune(self.clock(), schedule.report_days(self.root) + [day])
         try:
             self.notes.save()
         except OSError as exc:
             print(f"tide-daemon: raport: nie zapisano notek: {exc}", flush=True)
+        # Notka, której projektu nie dało się ustalić (repozytorium tablicy), nie idzie do raportu ani powiadomień.
+        written = [n for n in written if n.get("project") and not self.notes.is_board(n)]
+        if not written:
+            return
         print(f"tide-daemon: raport {day}: {len(written)} skończonych ticketów", flush=True)
         self.changed.emit()
         if self.note_notifier is None:
@@ -350,10 +383,12 @@ class ReportMonitor(QObject):
         now = self.clock()
         state = schedule.load_state(self.state_file)
         day = schedule.report_day(now, self.settings).isoformat()
-        start, end = schedule.period(now, state, day)
+        start, end = schedule.period(now, state, day, self.settings)
         sessions = list(self.sessions() or [])
         trees = self.worktrees()
+        self._fix_notes()
         notes = self._notes_of(day)
+        board = self._board_snapshot()
         context = {"scheduled": scheduled, "day": day, "start": start, "end": end, "live": live}
         self.running = True
 
@@ -365,12 +400,23 @@ class ReportMonitor(QObject):
                 fetch_limits=self.fetch_limits, max_depth=self.max_depth,
                 coordination_cache=self.coordination_cache, summary=self.summary,
                 summary_model=self.settings.summary_model, tracker=self.tracker, notes=notes,
-                cancel=self._cancel)
+                cancel=self._cancel, board=board)
             schedule.apply_retention(self.root, schedule.report_day(end, self.settings), self.settings.keep_days)
             return index, report
 
         future = self._pool.submit(work)
         future.add_done_callback(lambda f: self._finished.emit(context, f))
+
+    def _board_snapshot(self):
+        """Migawka tablicy pracy w wątku głównym (wątek raportu dostaje gotowy słownik) albo None."""
+        if self.board is None:
+            return None
+        try:
+            snapshot = self.board()
+        except Exception as exc:  # tablica to dodatek — raport powstaje i bez niej
+            print(f"tide-daemon: raport: tablica pracy niedostępna: {exc!r}", flush=True)
+            return None
+        return snapshot if isinstance(snapshot, dict) else None
 
     def _deliver(self, context: dict, future) -> None:
         self.running = False
@@ -395,7 +441,7 @@ class ReportMonitor(QObject):
                 print(f"tide-daemon: raport: nie zapisano stanu: {exc}", flush=True)
             calls = (getattr(report, "standup", None) or {}).get("calls", 0)
             print(f"tide-daemon: raport {context['day']}{' (na żywo)' if context.get('live') else ''}: {index} "
-                  f"({len(report.active)} z ruchem, wywołań modelu: {calls})", flush=True)
+                  f"({len(report.active)} w raporcie, wywołań modelu: {calls})", flush=True)
             if notify and self.notifier is not None:
                 self.notifier.notify(*notification_text(report), index)
             self.ready.emit(index)

@@ -252,10 +252,10 @@ Item {
         self.assertEqual(warned(log, "SUB"), "07:00 · 5 projektów|07:00 · 1 projekt|07:00 · 22 projekty|07:00")
         self.assertEqual(warned(log, "TITLE"), "Wtorek, 27 października|Środa, 30 grudnia 2025")
         self.assertEqual(warned(log, "SUMMARY"),
-                         "Od poniedziałku 07:00 · 5 projektów z ruchem · 2 rzeczy czekają na ciebie! ¦ "
-                         "Od 05:00 · 1 projekt z ruchem · nic na ciebie nie czeka ¦ "
-                         "12 projektów z ruchem · 5 rzeczy czeka na ciebie! ¦ "
-                         "2 projekty z ruchem · raport sprzed widoku w oknie — szczegóły w przeglądarce ¦")
+                         "Od poniedziałku 07:00 · 5 projektów w raporcie · 2 rzeczy czekają na ciebie! ¦ "
+                         "Od 05:00 · 1 projekt w raporcie · nic na ciebie nie czeka ¦ "
+                         "12 projektów w raporcie · 5 rzeczy czeka na ciebie! ¦ "
+                         "2 projekty w raporcie · raport sprzed widoku w oknie — szczegóły w przeglądarce ¦")
         self.assertEqual(warned(log, "WAIT"), "TOM-1: a? · b · i 1 więcej||")
         self.assertEqual(warned(log, "SECTIONS"),
                          "Zrobione:1:mint,W toku:0:teal,Czeka na mnie:0:peach,Uwaga:0:butter,Dalej:2:textMuted")

@@ -96,7 +96,8 @@ var KIND = {
 }
 
 // Wiersze popupu: najpierw to, co czeka na ciebie, potem w toku, do sprawdzenia, do zrobienia;
-// gdy tego mało — kilka kart z góry Backlogu. [{id, project, line, kind, word, tint, hollow, progress}].
+// gdy tego mało — kilka kart z góry Backlogu. [{id, project, line, kind, word, tint, hollow, progress, session}];
+// session — sesja agenta karty do „Przejdź” (/Agents ActivateSession), jak „Przejdź do agenta” w oknie.
 function rows(snapshot, limit) {
     const max = limit || MAX_ROWS
     const all = (snapshot && snapshot.cards) || []
@@ -109,7 +110,8 @@ function rows(snapshot, limit) {
             const progress = d.total > 0 ? Math.min(d.total, d.done || 0) + "/" + d.total : ""
             const line = kind === "waiting" && d.note ? d.note : d.note ? card.title + " · " + d.note : card.title
             out.push(Object.assign({ id: card.id, project: card.projectName || card.project || "", line: line,
-                                     kind: kind, progress: progress }, KIND[kind]))
+                                     kind: kind, progress: progress,
+                                     session: String(d.session || d.coordinator || "") }, KIND[kind]))
         }
     }
     return { rows: out.slice(0, max), more: Math.max(0, out.length - max) }

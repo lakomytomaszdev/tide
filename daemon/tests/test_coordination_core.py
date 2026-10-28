@@ -17,7 +17,7 @@ from tide_daemon.coordination import actions, board as board_mod, describe, ids,
 from tide_daemon.coordination.claude import ClaudeCoordinatorLog, excerpt, final_report
 from tide_daemon.coordination.codex import first_message_title
 from tide_daemon.coordination.model import Coordinator, Question, Run
-from tide_daemon.coordination.scanner import CoordinationScanner, repo_roots
+from tide_daemon.coordination.scanner import CoordinationScanner, plan_owners, repo_roots
 
 LIVE_CLAUDE = {"id": "claude:" + F.CLAUDE_COORD, "state": "working", "reason": "", "canActivate": True}
 LIVE_CODEX = {"id": "codex:" + F.CODEX_ROOT, "state": "waiting", "reason": "question", "canActivate": True}
@@ -197,6 +197,157 @@ updated: wczoraj
         self.assertIs(plan_mod.pick([a, b, c, d], "s2", "claude"), b)
         self.assertIs(plan_mod.pick([a, b, c, d], "s2", "codex"), c)
         self.assertIsNone(plan_mod.pick([a, d], "s2", "claude"))
+
+    def test_pick_two_sessionless_plans_by_who_wrote_them(self):
+        # PT-24: dwa aktywne plany bez `session` w jednym repozytorium i dwóch koordynatorów Claude —
+        # dawniej obaj dostawali najświeższy plan, a raport podpisywał pytanie jednego tytułem planu drugiego.
+        older = plan_mod.Plan(path="/r/docs/agents/plans/2026-10-27-local-models.md", title="Lokalne modele",
+                              updated_ts=100)
+        fresher = plan_mod.Plan(path="/r/docs/agents/plans/2026-10-27-board-and-docker.md",
+                                title="Tablica pracy i Docker", updated_ts=200)
+        plans = [fresher, older]
+        self.assertIs(plan_mod.pick(plans, "a", "claude"), fresher, "bez dowodów — jak dotąd najświeższy")
+        mine_a, mine_b = {"2026-10-27-local-models.md": (1, 50.0)}, {"2026-10-27-board-and-docker.md": (1, 40.0)}
+        self.assertIs(plan_mod.pick(plans, "a", "claude", written=mine_a, taken=set(mine_b)), older,
+                      "plan, który koordynator sam zapisał, wygrywa ze świeższym planem innego")
+        self.assertIs(plan_mod.pick(plans, "b", "claude", written=mine_b, taken=set(mine_a)), fresher)
+        self.assertIs(plan_mod.pick(plans, "c", "claude", taken=set(mine_a) | set(mine_b)), None,
+                      "trzeci koordynator bez planu nie dostaje cudzego")
+        self.assertIs(plan_mod.pick(plans, "c", "claude", taken=set(mine_b)), older)
+        claimed = plan_mod.Plan(path=older.path, title="Lokalne modele", session="b", updated_ts=100)
+        self.assertIs(plan_mod.pick([fresher, claimed], "b", "claude", written=mine_b), claimed,
+                      "`session` w planie wygrywa ze wszystkim")
+
+    def test_plan_file_names_from_writes_and_patches(self):
+        self.assertEqual(plan_mod.plan_file_name("/r/docs/agents/plans/2026-10-27-local-models.md"),
+                         "2026-10-27-local-models.md")
+        self.assertEqual(plan_mod.plan_file_name("/board/docs/demo/plans/2026-10-27-x.md"), "2026-10-27-x.md")
+        self.assertEqual(plan_mod.plan_file_name("/r/docs/agents/plans/README.md"), "")
+        self.assertEqual(plan_mod.plan_file_name("/r/src/plans.py"), "")
+        # Łatka apply_patch jako napis JS w kodzie narzędzia `exec` (nowe wiersze jako `\n`) i zwykła.
+        js = 'const patch = "*** Begin Patch\\n*** Update File: /r/docs/agents/plans/2026-10-27-a.md\\n@@\\n' \
+             '*** Add File: src/x.py\\n*** End Patch";'
+        self.assertEqual(plan_mod.patch_plan_files(js), ["2026-10-27-a.md"])
+        self.assertEqual(plan_mod.patch_plan_files("*** Begin Patch\n*** Add File: docs/agents/plans/2026-10-28-b.md\n+x\n"),
+                         ["2026-10-28-b.md"])
+
+
+class PlanWritesTest(World):
+    """Kto zapisał plan: Coordinator.plan_writes z dziennika Claude (Write/Edit) i Codexa (apply_patch)."""
+
+    def test_claude_write_and_edit_of_plan_files(self):
+        repo = os.path.join(self.tmp, "repo")
+        log = F.ClaudeLog(os.path.join(self.tmp, "claude"), F.CLAUDE_COORD, repo, "master")
+        log.spawn("toolu_a", "aimpl0000000000001", "PT-1: implement", "implementer", 50)
+        plan_path = os.path.join(repo, "docs", "agents", "plans", "2026-10-27-local-models.md")
+        log.tool_use("toolu_w", "Write", {"file_path": plan_path, "content": "---\ntide-plan: 1\n---\n"}, 40)
+        log.tool_use("toolu_e", "Edit", {"file_path": plan_path, "old_string": "a", "new_string": "b"}, 20)
+        log.tool_use("toolu_x", "Edit", {"file_path": os.path.join(repo, "src", "plans.py"), "old_string": "a",
+                                         "new_string": "b"}, 10)
+        log.lines.append({"isSidechain": True, "type": "assistant", "timestamp": F.at(5), "message": {"content": [
+            {"type": "tool_use", "id": "s", "name": "Write",
+             "input": {"file_path": os.path.join(repo, "docs/agents/plans/2026-10-28-cudzy.md")}}]}})
+        log.write()
+        reader = ClaudeCoordinatorLog(log.path)
+        reader.update()
+        self.assertEqual(reader.coord.plan_writes, {"2026-10-27-local-models.md": (2, F.NOW - 20 * 60)},
+                         "dwa zapisy planu, czas ostatniego; zwykły plik i wpis podagenta się nie liczą")
+
+    def test_codex_patch_in_exec_tool(self):
+        from tide_daemon.coordination.codex import CodexThreadLog
+        repo = os.path.join(self.tmp, "repo")
+        code = ('const patch = "*** Begin Patch\\n*** Update File: ' + repo
+                + '/docs/agents/plans/2026-10-27-board.md\\n@@\\n-a\\n+b\\n*** End Patch";')
+        path = F.codex_thread(os.path.join(self.tmp, "codex"), F.CODEX_ROOT, repo, "master", 30, events=[
+            F.ev(20, "response_item", {"type": "custom_tool_call", "call_id": "c1", "name": "exec", "input": code}),
+            F.ev(15, "response_item", {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "*** Update File: docs/agents/plans/2026-10-28-x.md"}]})])
+        log = CodexThreadLog(path)
+        log.read_meta()
+        log.update()
+        self.assertEqual(log.plan_writes, {"2026-10-27-board.md": (1, F.NOW - 20 * 60)}, "tylko wywołanie narzędzia")
+
+
+SESSIONLESS_PLAN = """---
+tide-plan: 1
+title: {title}
+tracker: local
+ticket-prefix: PT
+coordinator: claude
+status: active
+updated: {updated}
+---
+
+| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |
+| --- | --- | --- | --- | --- | --- |
+| PT-1 | {title} | w-toku | | implementer | |
+"""
+
+
+class PlanOwnersTest(World):
+    """Czyj jest plan bez `session` (scanner.plan_owners + plan.pick): kto zapisywał go najczęściej, potem
+    kto ostatni; plan, który koordynator sam zapisał, nigdy nie jest dla niego cudzy, a cudzym czyni go tylko
+    działający koordynator. X — plan starszy, Y — świeższy (bez dowodów wygrywałby u wszystkich)."""
+
+    X, Y = "2026-10-27-local-models.md", "2026-10-27-board-and-docker.md"
+
+    def world(self, writes: dict, live: set, plans=("X", "Y")) -> dict:
+        """writes: {sesja: [(„X”|„Y”, minut temu), …]}; live: sesje działające → {sesja: tytuł planu albo None}."""
+        repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(repo, ".git"), exist_ok=True)
+        with open(os.path.join(repo, ".git", "HEAD"), "w", encoding="utf-8") as fh:
+            fh.write("ref: refs/heads/master\n")
+        folder = os.path.join(repo, "docs", "agents", "plans")
+        os.makedirs(folder, exist_ok=True)
+        paths = {"X": os.path.join(folder, self.X), "Y": os.path.join(folder, self.Y)}
+        for key, title, ago in (("X", "Plan X", 300), ("Y", "Plan Y", 5)):
+            if key in plans:
+                with open(paths[key], "w", encoding="utf-8") as fh:
+                    fh.write(SESSIONLESS_PLAN.format(title=title, updated=F.at(ago)))
+        claude = os.path.join(self.tmp, "claude")
+        ids = {}
+        for n, (name, items) in enumerate(writes.items()):
+            sid = f"c0000000-0000-4000-8000-0000000001{n:02d}"
+            ids[name] = sid
+            log = F.ClaudeLog(claude, sid, repo, "master")
+            log.user_text("Poprowadź plan.", 400)
+            log.spawn(f"s{n}", f"a{n:017d}", "PT-1: implement", "implementer", 390)
+            log.subagent(f"a{n:017d}", "implementer", "PT-1: implement", f"s{n}", "master", minutes_ago=2)
+            for i, (key, ago) in enumerate(items):
+                log.tool_use(f"w{n}-{i}", "Edit" if i else "Write", {"file_path": paths[key]}, ago)
+            log.write()
+        sessions = [{"id": "claude:" + ids[name], "state": "working"} for name in live]
+        scanner = CoordinationScanner(claude, os.path.join(self.tmp, "codex"), clock=lambda: F.NOW,
+                                      registry=os.path.join(self.tmp, "ids.json"))
+        boards = {b["id"]: b for b in scanner.refresh(sessions)}
+        return {name: (boards["claude:" + sid]["plan"] or {}).get("title") for name, sid in ids.items()}
+
+    def test_one_edit_of_anothers_plan_does_not_steal_it(self):
+        # B poprawił raz plan A (ostatni zapis X jest B), ale A pisał X trzy razy, a B swój Y trzy razy.
+        got = self.world({"A": [("X", 200), ("X", 150), ("X", 100)],
+                          "B": [("Y", 190), ("Y", 140), ("Y", 90), ("X", 10)]}, live={"A", "B"})
+        self.assertEqual(got, {"A": "Plan X", "B": "Plan Y"})
+
+    def test_handoff_goes_to_the_coordinator_that_wrote_more(self):
+        coords = [Coordinator(id="claude:a", tool="claude", session_id="a", path="", plan_writes={self.X: (1, 50.0)}),
+                  Coordinator(id="claude:c", tool="claude", session_id="c", path="", plan_writes={self.X: (2, 40.0)})]
+        owners = plan_owners(coords, {"claude:a": "/r", "claude:c": "/r"})
+        self.assertEqual(owners[("/r", self.X)], ((2, 40.0), "claude:c"))
+        coords[0].plan_writes[self.X] = (2, 60.0)
+        self.assertEqual(plan_owners(coords, {"claude:a": "/r", "claude:c": "/r"})[("/r", self.X)][1], "claude:a",
+                         "remis liczby zapisów — ostatni")
+        # Następca przejął plan (zapisał go więcej razy) — trzeci koordynator go nie dostaje, następca tak.
+        got = self.world({"A": [("X", 200)], "C": [("X", 100), ("X", 50)], "D": []}, live={"A", "C", "D"},
+                         plans=("X",))
+        self.assertEqual(got, {"A": "Plan X", "C": "Plan X", "D": None})
+
+    def test_only_a_running_coordinator_makes_a_plan_taken(self):
+        writes = {"A": [("X", 200), ("X", 100)], "N": []}
+        self.assertEqual(self.world(writes, live={"N"}, plans=("X",)), {"A": "Plan X", "N": "Plan X"},
+                         "zakończony koordynator nie blokuje planu nowemu")
+        shutil.rmtree(self.tmp)
+        os.makedirs(self.tmp)
+        self.assertEqual(self.world(writes, live={"A", "N"}, plans=("X",)), {"A": "Plan X", "N": None})
 
 
 class IdsTest(World):

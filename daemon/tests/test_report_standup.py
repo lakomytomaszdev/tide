@@ -309,7 +309,7 @@ class RulesTest(StandupWorld):
              "sessions": [], "ticket": ""} for i in range(6)]}
         r = standup.rules(fact)
         self.assertEqual(len(r["doing"]), 1)
-        self.assertTrue(r["doing"][0]["text"].startswith("6 rozpoczętych zmian czeka na przejrzenie: b0, b1"))
+        self.assertTrue(r["doing"][0]["text"].startswith("6 rozpoczętych zmian czeka na przejrzenie: B0, B1"))
         many = {"project": "y", "plans": [], "questions": [], "units": [], "tickets": [
             {"id": f"Y-{i}", "key": f"Y-{i}", "title": f"t{i}", "state": "gotowe", "note": "", "result": "",
              "question": "", "branch": "", "review": ""} for i in range(20)]}
@@ -421,15 +421,20 @@ class ValidateTest(StandupWorld):
 
     def test_lengths_capped_and_control_chars(self):
         facts = standup.facts(self.report)
-        out = standup.validate({"projects": [{"name": "alpha", "theme": "a\x00b" + "t" * 5000,
-                                              "done": [{"text": f"Pozycja {i} " + "x" * 5000, "why": "y‮" * 2000}
+        long = " ".join(f"Zdanie numer {n} mówi o postępie pracy." for n in range(300))
+        out = standup.validate({"projects": [{"name": "alpha", "theme": "a\x00b. " + long,
+                                              "done": [{"text": f"Pozycja {i}. " + long, "why": "Krótko‮. " + long}
                                                        for i in range(30)]}]}, facts)
         alpha = out["alpha"]
         self.assertLessEqual(len(alpha["theme"]), standup.THEME_MAX)
         self.assertNotIn("\x00", alpha["theme"])
+        self.assertTrue(alpha["theme"].endswith("."), "całe zdania, bez „…”")
         self.assertEqual(len(alpha["done"]), standup.ITEMS_MAX)
         self.assertLessEqual(len(alpha["done"][0]["text"]), standup.TEXT_MAX)
+        self.assertTrue(alpha["done"][0]["text"].endswith("."), alpha["done"][0]["text"])
         self.assertNotIn("‮", alpha["done"][0]["about"], "stare pole „why” czytane jako „about”")
+        for item in alpha["done"]:
+            self.assertNotIn("…", item["text"] + item.get("about", ""))
 
     def test_parse_answer_forms(self):
         self.assertEqual(summarize.parse_answer('```json\n{"projects": []}\n```'), {"projects": []})
@@ -617,7 +622,56 @@ class RenderTest(StandupWorld):
         root = tempfile.mkdtemp(dir=self.tmp)
         index, report = self.generate(root, )
         empty = render.daily(type("R", (), {"standup": {"projects": {}}, "day": report.day})(), [], index=True)
-        self.assertIn("nie ma nic do opowiedzenia", empty)
+        self.assertIn(render.NOTHING, empty)
+
+
+class StandingCardsTest(unittest.TestCase):
+    """Karty tablicy w toku w „Na daily” (stan prac na dzień): bez powtórki, gdy kartę opisuje już praca z raportu."""
+
+    def fact(self, cards, sessions=()):
+        from tide_daemon.reports import collect
+        from tide_daemon.reports.sessions import SessionReport
+        project = collect.Project(key="/r/demo", name="demo", path="/r/demo", main_branch="master", slug="demo")
+        project.sessions = list(sessions)
+        project.cards = cards
+        report = types.SimpleNamespace(start=NOW - 86400, board=None)
+        return standup.project_facts(report, project)
+
+    @staticmethod
+    def card(ident, column, **derived):
+        return {"id": ident, "title": f"Karta {ident}", "boardColumn": column,
+                "derived": dict({"column": column, "note": "", "session": "", "coordinator": ""}, **derived)}
+
+    def test_columns_in_doing_never_waiting_without_agent(self):
+        fact = self.fact([self.card("K-1", "progress", note="agent pracuje"), self.card("K-2", "waiting"),
+                          self.card("K-3", "review", nextStep="przetestować ręcznie")])
+        out = standup.rules(fact)
+        self.assertEqual([(i["text"], i.get("next", "")) for i in out["doing"]],
+                         [("K-1 Karta K-1", ""), ("K-2 Karta K-2 — czeka na ciebie", ""),
+                          ("K-3 Karta K-3 — do sprawdzenia", "przetestować ręcznie")])
+        self.assertEqual(out["waiting"], [], "bez agenta, który stoi teraz, nic nie trafia do plakietek (decyzja 36)")
+        self.assertEqual(out["headline"], "W toku: K-1 Karta K-1.")
+
+    def test_card_described_in_another_project_is_not_repeated(self):
+        fact = self.fact([self.card("K-1", "progress")])
+        other = {"units": [{"card": {"id": "K-1", "label": "K-1 Karta K-1"}}], "cards": []}
+        report = types.SimpleNamespace(active=[], board=None)
+        with mock.patch.object(standup, "project_facts", side_effect=[fact, other]), \
+                mock.patch.object(standup, "link_cards"):
+            report.active = [types.SimpleNamespace(is_repo=True), types.SimpleNamespace(is_repo=True)]
+            out = standup.facts(report)
+        self.assertEqual(out[0]["cards"], [], "karta ma opis przy pracy w drugim projekcie")
+
+    def test_card_described_by_waiting_session_is_not_repeated(self):
+        from tide_daemon.reports.sessions import SessionReport
+        waiting = SessionReport(tool="claude", session_id="s1", path="", cwd="/r/demo", title="Eksport",
+                                state="waiting", reason="question", waiting_text="Który format?", live=True,
+                                standing=True)
+        fact = self.fact([self.card("K-1", "waiting", session="claude:s1")], [waiting])
+        self.assertEqual(fact["cards"], [])
+        out = standup.rules(fact)
+        self.assertEqual([i["text"] for i in out["waiting"]], ["Eksport: agent pyta: „Który format?”"])
+        self.assertEqual(out["doing"], [])
 
 
 class CategoryTest(StandupWorld):
@@ -649,7 +703,8 @@ class CategoryTest(StandupWorld):
         self.assertEqual(search["category"], "work")
         self.assertEqual(search["areas"], [["search.py", 1], ["search_test.py", 1]])
         r = standup.rules(fact)
-        title = standup._unit_title(plan)
+        title = standup._display_title(plan)[0]
+        self.assertEqual(title, "Agent-plan", "tytuł z nazwy gałęzi bez „docs ·” i z wielkiej litery")
         self.assertIn(title, [i["text"] for i in r["chores"]])
         for key in standup.GROUP_KEYS:
             self.assertNotIn(title, [i["text"] for i in r[key]], key)
@@ -788,6 +843,99 @@ class PlanYouTrackTest(unittest.TestCase):
         self.assertEqual(asked, [("http://yt.local", "LEGAL")])
         plans.attach([project], START, NOW, None, None)
         self.assertEqual(project.plans[0]["all"][0]["description"], "", "bez YouTracka — bez opisu")
+
+
+PLAN_NO_SESSION = """---
+tide-plan: 1
+title: {title}
+tracker: local
+ticket-prefix: PT
+coordinator: claude
+session:
+status: active
+updated: {updated}
+---
+
+| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |
+| --- | --- | --- | --- | --- | --- |
+| {ticket} | {title} | w-toku | | implementer | |
+"""
+
+
+class TwoPlansOneRepoTest(unittest.TestCase):
+    """PT-24: dwa aktywne plany bez `session` w jednym repozytorium i dwóch koordynatorów Claude. Pytanie
+    koordynatora planu „Lokalne modele” było w „Czeka na mnie” podpisane tytułem świeższego planu
+    „Tablica pracy i Docker” drugiego koordynatora — tablica koordynacji dawała obu ten sam plan
+    (plan.pick: najświeższy aktywny), a raport bierze tytuł z tablicy o id koordynatora."""
+
+    def setUp(self):
+        from . import coordfix as F
+        self.F = F
+        self.tmp = tempfile.mkdtemp(prefix="tide-two-plans-")
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def test_waiting_line_carries_the_plan_of_its_own_coordinator(self):
+        from tide_daemon.coordination.scanner import CoordinationScanner
+        F = self.F
+        repo = os.path.join(self.tmp, "workspace", "demo")
+        os.makedirs(os.path.join(repo, ".git"))
+        with open(os.path.join(repo, ".git", "HEAD"), "w", encoding="utf-8") as fh:
+            fh.write("ref: refs/heads/master\n")
+        plans_dir = os.path.join(repo, "docs", "agents", "plans")
+        os.makedirs(plans_dir)
+        local = os.path.join(plans_dir, "2026-10-27-local-models.md")
+        board = os.path.join(plans_dir, "2026-10-27-board-and-docker.md")
+        # Plan drugiego koordynatora jest świeższy — dawniej wygrywał u obu.
+        for path, title, ticket, ago in ((local, "Lokalne modele", "PT-31", 90), (board, "Tablica pracy i Docker",
+                                                                                 "PT-29", 10)):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(PLAN_NO_SESSION.format(title=title, ticket=ticket, updated=F.at(ago)))
+        claude_root = os.path.join(self.tmp, "claude")
+        ids = {"local": "c0000000-0000-4000-8000-0000000000a1", "board": "c0000000-0000-4000-8000-0000000000b2"}
+        for key, plan_path, ticket in (("local", local, "PT-31"), ("board", board, "PT-29")):
+            log = F.ClaudeLog(claude_root, ids[key], repo, "master")
+            log.user_text("Poprowadź plan.", 120)
+            log.tool_use(f"w-{key}", "Write", {"file_path": plan_path, "content": "…"}, 110)
+            log.spawn(f"s-{key}", f"a{key}00000000001", f"{ticket}: implement", "implementer", 100)
+            log.subagent(f"a{key}00000000001", "implementer", f"{ticket}: implement", f"s-{key}", "master",
+                         minutes_ago=5)
+            if key == "local":
+                log.tool_use("ask", "AskUserQuestion", {"questions": [{"question": "Mogę scalić i zainstalować?"}]}, 3)
+            else:
+                log.tool_use(f"e-{key}", "Edit", {"file_path": plan_path, "old_string": "a", "new_string": "b"}, 8)
+            log.write()
+        coord_local, coord_board = "claude:" + ids["local"], "claude:" + ids["board"]
+        live = [{"id": coord_local, "state": "waiting", "reason": "question"}, {"id": coord_board, "state": "working"}]
+        scanner = CoordinationScanner(claude_root, os.path.join(self.tmp, "codex"), clock=lambda: F.NOW,
+                                      registry=os.path.join(self.tmp, "ticket-ids.json"))
+        boards = {b["id"]: b for b in scanner.refresh(live)}
+        self.assertEqual(boards[coord_local]["title"], "Lokalne modele")
+        self.assertEqual(boards[coord_board]["title"], "Tablica pracy i Docker")
+        self.assertEqual(boards[coord_local]["plan"]["path"], local)
+
+        cache = os.path.join(self.tmp, "coordination.json")
+        with open(cache, "w", encoding="utf-8") as fh:
+            json.dump(actions.cache_payload(list(boards.values()), F.NOW), fh)
+
+        def session(sid, title, state, waiting=""):
+            return types.SimpleNamespace(
+                id=sid, tool="claude", title=title, prompt=title, state=state, reason="question" if waiting else "",
+                interrupted=False, final_message="", final_ts=0, last_user_ts=0, waiting_text=waiting,
+                since=F.NOW - 180, first_ts=F.NOW - 7200, last_ts=F.NOW - 60, last_action="", runs=[], automation={},
+                branch="master", cwd=repo)
+        project = types.SimpleNamespace(
+            name="demo", label="", path=repo, key=repo, slug="demo", is_repo=True, plans=[], to_clean=[],
+            unpushed=[], main_dirty_count=0, main_branch="master", branches=[], active=True, conflicts=[],
+            sessions=[session(coord_local, "Mac Studio na lokalne modele", "waiting", "Mogę scalić i zainstalować?"),
+                      session(coord_board, "Własny backlog", "working")])
+        plans.attach([project], F.NOW - 86400, F.NOW, cache, None)
+        self.assertEqual({e["id"]: e["title"] for e in project.plans},
+                         {coord_local: "Lokalne modele", coord_board: "Tablica pracy i Docker"},
+                         "każdy plan raz, przy swoim koordynatorze — bez osobnego wpisu z pliku")
+        report = types.SimpleNamespace(start=F.NOW - 86400, board=None)
+        waiting = standup.rules(standup.project_facts(report, project))["waiting"]
+        self.assertEqual([(i["text"], i.get("sessionId")) for i in waiting],
+                         [("Lokalne modele: agent pyta: „Mogę scalić i zainstalować?”", coord_local)])
 
 
 class CachePayloadTest(unittest.TestCase):

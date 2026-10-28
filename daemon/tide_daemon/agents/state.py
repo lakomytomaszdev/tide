@@ -12,7 +12,9 @@ pytanie (AskUserQuestion, ExitPlanMode, request_user_input), status „waiting�
 Claude Code albo (PT-29) skończona tura, której ostatnia wiadomość pyta użytkownika (agents/question.py:
 „Pytanie 10: …?”), a użytkownik jeszcze nie odpisał — powód `reply`. Zwykły koniec tury to „skończył”
 (done) — agent oddał głos, ale niczego nie blokuje; tura zaczęta przez zaplanowane zadanie Codexa nie
-czeka nawet z pytaniem (zadanie samo wyśle następną wiadomość).
+czeka nawet z pytaniem (zadanie samo wyśle następną wiadomość). Pytanie wygrywa też ze statusem „shell”
+(zadanie agenta w tle): „pracuje w tle” tylko wtedy, gdy tura nie skończyła się pytaniem, i najwyżej
+BACKGROUND_STALE bez wpisu w dzienniku.
 """
 from dataclasses import dataclass
 
@@ -23,6 +25,7 @@ IDLE_AFTER = 30 * 60        # skończona albo czekająca sesja bez ruchu tyle cz
 STALL_AFTER = 30 * 60       # tura bez żadnego wpisu tyle czasu — agent raczej nie pracuje
 APPROVAL_GRACE = 10         # tyle czekamy na wynik narzędzia, zanim uznamy, że czeka na zgodę
 MAX_AGE = 24 * 60 * 60      # sesje nieruszane dłużej są pomijane
+BACKGROUND_STALE = 2 * 60 * 60  # status „shell” bez żadnego wpisu w dzienniku tyle czasu — zadanie w tle zawisło
 
 TURN_END = "turn_end"
 MID_TURN = "mid_turn"
@@ -173,7 +176,19 @@ def derive_state(log: SessionLog, now: float, alive: bool | None, status: Status
         if status.status == "busy":
             return WORKING, "", status.since
         if status.status == "shell":
-            # Agent czeka na własne zadanie w tle, nie na użytkownika — wróci sam, gdy się skończy.
+            # Tura skończona, w tle działa zadanie agenta (Bash w tle, podagent). Pytanie do użytkownika
+            # na końcu tury albo oczekujące AskUserQuestion wygrywa: agent i tak nie ruszy bez odpowiedzi.
+            asked = _asks_user(log)
+            if asked is not None:
+                return WAITING, REASON_QUESTION, asked.since
+            if reply_question(log):
+                return WAITING, REASON_REPLY, log.last_text_ts or status.since
+            # Bez pytania — wróci sam, gdy zadanie się skończy. Zadanie, które od BACKGROUND_STALE nie dało
+            # znaku w dzienniku (powiadomienie o końcu, nowa tura), uznajemy za zawieszone (np. pętla
+            # `until … pgrep`, która znajduje samą siebie) — dalej jak zwykły koniec tury.
+            last = max(status.since, log.last_activity)
+            if now - last > BACKGROUND_STALE:
+                return finished(log, now, last)
             return WORKING, REASON_BACKGROUND, status.since
         if status.status == "waiting":
             return WAITING, status.detail or REASON_APPROVAL, status.since
@@ -205,6 +220,14 @@ def derive_state(log: SessionLog, now: float, alive: bool | None, status: Status
     if age > STALL_AFTER and not work_evidence(log.last_activity):
         return IDLE, "", log.last_activity
     return WORKING, "", log.phase_since or log.last_activity
+
+
+def _asks_user(log: SessionLog) -> Pending | None:
+    """Najnowsze oczekujące wywołanie, które z natury czeka na użytkownika (AskUserQuestion, ExitPlanMode)."""
+    if log.phase != TOOL_PENDING:
+        return None
+    asks = [p for p in log.pending.values() if p.asks_user]
+    return max(asks, key=lambda p: p.since) if asks else None
 
 
 def waits_for_user(session: dict) -> bool:

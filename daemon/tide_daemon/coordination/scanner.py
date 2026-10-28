@@ -152,15 +152,46 @@ class CoordinationScanner:
         coords = self.read()
         live = {s.get("id"): s for s in live_sessions or ()}
         now = self.clock()
+        places = {cid: self._place(coord) for cid, coord in coords.items()}
+        # Plan staje się „cudzy” tylko przez działającego koordynatora — zakończony albo taki, który poszedł
+        # dalej, nie blokuje planu następcy.
+        running = {cid for cid, session in live.items() if session and session.get("state") not in ("ended", None)}
+        owners = plan_owners([c for c in coords.values() if c.id in running],
+                             {cid: (place[3] or [""])[-1] for cid, place in places.items()})
         boards = []
         for coord in coords.values():
-            boards.append(self.board(coord, live.get(coord.id), now, force_tracker))
+            boards.append(self.board(coord, live.get(coord.id), now, force_tracker, owners=owners,
+                                     place=places[coord.id]))
         boards.sort(key=lambda b: (not b["live"], -b["lastActivityTs"]))
         return boards
 
-    def board(self, coord, live, now: float, force_tracker: bool = False) -> dict:
-        # Koordynator, który wszedł do repozytorium tablicy Tide (pisze plan w <tablica>/docs/<projekt>/),
-        # nadal pracuje w swoim katalogu startu — tam szukamy repozytorium i planu (PT-28).
+    def board(self, coord, live, now: float, force_tracker: bool = False, owners=None, place=None) -> dict:
+        """Tablica koordynatora. `owners`: plan_owners() działających koordynatorów — plan bez `session`,
+        którego właścicielem jest inny koordynator tego repozytorium, nie jest planem tego (plan.pick), chyba
+        że ten sam go zapisywał."""
+        cwd, where, branch, roots = place or self._place(coord)
+        plans = [self._plan(path) for path in _plan_files(roots)]
+        repo = roots[-1] if roots else ""
+        mine = dict(getattr(coord, "plan_writes", None) or {})
+        taken = {name for (root, name), (_rank, owner) in (owners or {}).items() if root == repo and owner != coord.id}
+        plan = plan_mod.pick([p for p in plans if p is not None], coord.session_id, coord.tool, branch or "",
+                             written=mine, taken=taken - set(mine))
+        aliases = ids.load_aliases(roots)
+        backlog = self._backlog_entries(roots, aliases)
+        issues, tracker = None, None
+        if plan is not None:
+            tracker = {"kind": plan.tracker, "url": plan.tracker_url, "project": plan.tracker_project}
+            if plan.tracker == "youtrack" and self.tracker is not None:
+                issues, tracker = self.tracker.get(plan.tracker_url, plan.tracker_project, force=force_tracker)
+        return board_mod.build(coord, plan=plan, aliases=aliases, issues=issues, tracker=tracker, live=live,
+                               now=now, info=self._info, project=where.project or os.path.basename(cwd or ""),
+                               repo_path=repo, backlog=backlog,
+                               warnings=self.warnings(roots, aliases), cwd=cwd, work_branch=branch)
+
+    def _place(self, coord) -> tuple:
+        """(katalog pracy, gitinfo.Location, gałąź, katalogi repozytorium [worktree…, główne]) koordynatora.
+        Koordynator, który wszedł do repozytorium tablicy Tide (pisze plan w <tablica>/docs/<projekt>/),
+        nadal pracuje w swoim katalogu startu — tam szukamy repozytorium i planu (PT-28)."""
         cwd = work_cwd(coord.cwd, getattr(coord, "launch_cwd", ""))
         where = gitinfo.describe(cwd) if cwd else gitinfo.Location("", "", "")
         branch = coord.branch if cwd == coord.cwd else (where.branch or coord.branch)
@@ -179,19 +210,7 @@ class CoordinationScanner:
                     break
         if not roots:
             roots = repo_roots(cwd)
-        plans = [self._plan(path) for path in _plan_files(roots)]
-        plan = plan_mod.pick([p for p in plans if p is not None], coord.session_id, coord.tool, branch or "")
-        aliases = ids.load_aliases(roots)
-        backlog = self._backlog_entries(roots, aliases)
-        issues, tracker = None, None
-        if plan is not None:
-            tracker = {"kind": plan.tracker, "url": plan.tracker_url, "project": plan.tracker_project}
-            if plan.tracker == "youtrack" and self.tracker is not None:
-                issues, tracker = self.tracker.get(plan.tracker_url, plan.tracker_project, force=force_tracker)
-        return board_mod.build(coord, plan=plan, aliases=aliases, issues=issues, tracker=tracker, live=live,
-                               now=now, info=self._info, project=where.project or os.path.basename(cwd or ""),
-                               repo_path=roots[-1] if roots else "", backlog=backlog,
-                               warnings=self.warnings(roots, aliases), cwd=cwd, work_branch=branch)
+        return cwd, where, branch, roots
 
     def warnings(self, roots, aliases=None) -> list[dict]:
         """Ostrzeżenia o numerach ticketów w repozytorium (numbering.conflicts); błąd — pusta lista."""
@@ -305,6 +324,22 @@ class CoordinationScanner:
             except Exception:  # tytuły to tylko ozdoba
                 return {}
         return {}
+
+
+def plan_owners(coords, repos: dict) -> dict:
+    """{(główne repozytorium, nazwa pliku planu): ((liczba zapisów, czas ostatniego), id koordynatora)} —
+    właściciel planu w danym repozytorium wśród podanych (działających) koordynatorów
+    (Coordinator.plan_writes): kto zapisywał go najczęściej, przy remisie — kto ostatni. Jedna poprawka
+    w cudzym planie go nie przejmuje; przy przekazaniu plan przechodzi na następcę, gdy ten zapisze go więcej razy.
+    `repos`: {id koordynatora: główne repozytorium}."""
+    out: dict = {}
+    for coord in coords:
+        repo = repos.get(coord.id) or ""
+        for name, rank in (getattr(coord, "plan_writes", None) or {}).items():
+            key, rank = (repo, name), tuple(rank)
+            if key not in out or rank > out[key][0]:
+                out[key] = (rank, coord.id)
+    return out
 
 
 def repo_roots(cwd: str) -> list[str]:

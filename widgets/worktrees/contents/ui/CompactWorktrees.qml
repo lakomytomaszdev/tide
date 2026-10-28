@@ -23,7 +23,7 @@ Tide.DockTile {
     Row {
         spacing: 4
 
-        // W pracy: agent albo zmiany z ostatniej doby.
+        // W pracy: agent albo zmiany z ostatniej doby (scalona praca od razu jest do sprzątnięcia).
         Tide.StateDot {
             visible: activeNumber.visible
             anchors.verticalCenter: parent.verticalCenter
