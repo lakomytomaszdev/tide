@@ -39,8 +39,10 @@ STREAM_FUTURE = {"org.tide.stream.camera": "PT-82", "org.tide.stream.display": "
 TASKS = "org.kde.plasma.icontasks"
 SPACER = "org.kde.plasma.panelspacer"
 # Konsola streamu na pulpicie lewego monitora (mock „Konsola streamu”): Sceny w kolumnie ok. 1/3
-# szerokości, czat w reszcie. Marginesy jak na mocku (18 px przy skali 0,7).
-CONSOLE = {"scenes": "org.tide.stream.scenes", "chat": "org.tide.stream.chat", "margin": 26, "gap": 26,
+# szerokości, czat w reszcie. Pulpit Plasmy układa aplety w siatce 16 px i dokłada do podanego rozmiaru
+# ramkę kontenera apletu, a nachodzących na siebie prostokątów nie przyjmuje (czat dostawał wtedy swój
+# domyślny rozmiar) — stąd wielokrotności 16 i odstęp z zapasem na ramki; widać go jako ok. 26 px z mocka.
+CONSOLE = {"scenes": "org.tide.stream.scenes", "chat": "org.tide.stream.chat", "margin": 32, "gap": 48,
            "scenesFraction": 1 / 3}
 SIDEBAR_HIDING = "autohide"
 # Odstęp pływającego panelu od krawędzi ekranu (jak FLOATING_GAP w scripts/sidebar.py).

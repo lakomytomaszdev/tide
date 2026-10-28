@@ -1673,7 +1673,7 @@ qdbus6 org.tide.Daemon /Models org.tide.Daemon.Models.SetSemanticSearch off     
 
 ## Wygląd aktywności
 
-Po każdej zmianie aktywności usługa nakłada cały wygląd docelowej aktywności (PT-35, decyzja 78). Nie ma obiektu D-Bus — usługa sama słucha:
+Po każdej zmianie aktywności usługa nakłada cały wygląd docelowej aktywności (PT-35, decyzja 78), publikuje wygląd bieżącej aktywności dla widżetów i w Stream filtruje powiadomienia (PT-36, decyzja 80). Usługa sama słucha:
 
 | Element | Wartość |
 | --- | --- |
@@ -1694,6 +1694,44 @@ Każda droga przełączenia (skrót, `Meta+Q`, widżet, KDE Connect) kończy si�
 make activity-look-check     # pulpit vs opis bieżącej aktywności, tylko odczyt (kod 1 przy różnicach)
 make activity-look-status    # przypisania aktywności, dostępne wyglądy, dziennik ostatniego przełączenia
 ```
+
+### Wygląd bieżącej aktywności dla widżetów (/ActivityLook)
+
+Panele Plasmy są wspólne dla wszystkich aktywności, więc kafelki pracy w Stream chowają się same
+(`Plasmoid.status = HiddenStatus`, `widgets/lib/ActivityLook.qml`). Skąd wiedzą, że jest Stream, mówi usługa
+(`tide_daemon/activity_state.py`): bieżąca aktywność z `CurrentActivity()` przy starcie i z sygnału
+`CurrentActivityChanged`, jej wygląd z `$XDG_CONFIG_HOME/tide/activities.json` (czytane przy każdej zmianie, więc
+`make install-stream-activity` działa bez restartu usługi), opis z `$TIDE_ACTIVITY_LOOKS` (domyślnie
+`$XDG_DATA_HOME/tide/activity-look/theme/activities`, kopia silnika). Bez opisu albo przypisania — praca.
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/ActivityLook` |
+| Interfejs | `org.tide.Daemon.ActivityLook` |
+| `State() -> s` | JSON `{"activity", "look", "workPanels", "notificationsFiltered"}`; `workPanels` fałszywe, gdy opis wyglądu ma `"panels"` inne niż `"work"` (Stream) |
+| sygnał `Changed()` | zmieniła się bieżąca aktywność albo jej wygląd |
+
+Bez usługi (albo przed pierwszą odpowiedzią) widżety zostają przy pracy — kafelki pracy widać.
+
+### Filtr powiadomień Stream
+
+Gdy opis wyglądu ma `notifications.allow` (`stream.json`: aplikacje `org.kde.kdeconnect.daemon`, usługi `kdeconnect`
+i `streamer`), usługa:
+
+1. wywołuje `org.freedesktop.Notifications.Inhibit("tide", "Aktywność Stream", {})` i trzyma ciasteczko — to ten sam
+   stan „Nie przeszkadzać”, co z apletu powiadomień: wyskakują tylko krytyczne (`CriticalInDndMode`, domyślnie
+   włączone) i dozwolone, reszta trafia do historii;
+2. ustawia w `plasmanotifyrc` `ShowPopupsInDndMode=true` w `[Applications][<desktop entry>]` i
+   `[Services][<x-kde-appname>]` dozwolonych (`kwriteconfig6 --notify`, Plasma czyta zmianę od razu). Poprzednie
+   wartości — także „brak klucza” — zapisuje przedtem w `$XDG_STATE_HOME/tide/stream-notifications.json`.
+
+Przy wyjściu ze Stream i przy zatrzymaniu usługi wartości wracają dokładnie (brakujący klucz jest usuwany, plik
+wraca co do bajtu), potem `UnInhibit(cookie)`. Gdy usługa zginie, Plasma zwalnia inhibicję sama (pilnuje nazwy
+wołającego na magistrali), a ustawienia przywraca następny start usługi, jeśli bieżąca aktywność nie jest Stream.
+Klucz `ShowPopupsInDndMode` jest globalny — działa przy każdym „Nie przeszkadzać”, także włączonym w pracy — więc
+trzymamy go tylko na czas Stream (decyzja 80). Rdzeń Streamer wysyła dziś `notify-send -a Streamer` bez wskazówek,
+więc Plasma liczy go do „@other” (razem z powiadomieniami agentów) — do przepuszczenia potrzebuje
+`-h string:x-kde-appname:streamer` (zgłoszone do repozytorium streamer).
 
 ## Uruchamianie
 

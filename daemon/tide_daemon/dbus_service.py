@@ -156,6 +156,11 @@ Obiekt /Docker, interfejs org.tide.Daemon.Docker (kontenery przez Docker Engine 
 - ShowWindow(s id) -> b      okno Tide na widoku Docker, opcjonalnie od razu na kontenerze albo grupie,
 - sygnał Changed()           migawka kontenerów się zmieniła,
 - sygnał ActionFinished(s job, s json)  koniec zadania Prune albo GroupAction.
+
+Obiekt /ActivityLook, interfejs org.tide.Daemon.ActivityLook (wygląd bieżącej aktywności, PT-36):
+- State() -> s               JSON {activity, look, workPanels, notificationsFiltered} — kafelki pracy chowają się,
+                             gdy workPanels jest fałszem (aktywność Stream); bez przypisania wygląd pracy,
+- sygnał Changed()           zmieniła się bieżąca aktywność albo jej wygląd.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage

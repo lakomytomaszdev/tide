@@ -203,7 +203,7 @@ bieżącą scenę. Testy sprawdzają obie wersje na atrapie rdzenia (`widgets/te
 prywatnej szynie `dbus-run-session`).
 
 **Instalacja.** `make install-widget-stream` instaluje sześć pakietów (też w `make install`), ale niczego nie stawia
-na panelach ani pulpicie — rozmieszczenie w aktywności Stream to PT-36. Kolory z palety, więc widżety działają
+na panelach ani pulpicie — rozmieszczenie robi wejście do aktywności Stream (niżej: „Aktywność Stream”). Kolory z palety, więc widżety działają
 z Mist i z wariantem Streamer.
 
 ```bash
@@ -425,6 +425,37 @@ Po każdej zmianie aktywności (skrót, `Meta+Q`, widżet, KDE Connect) `tide-da
 make activity-look-check     # czy pulpit zgadza się z opisem bieżącej aktywności — tylko odczyt
 make activity-look-status    # przypisania, dostępne wyglądy, dziennik ostatniego przełączenia
 make install-activity-look   # kopia silnika dla usługi w ~/.local/share/tide/activity-look (część make install)
+```
+
+### Aktywność Stream
+
+`make install-stream-activity` tworzy aktywność „Stream” (ikona `tide-stream`: znak pada z marki Streamer w złocie
+z palety) i przypisuje jej wygląd Stream; powtórzone nic nie dubluje, a bieżąca aktywność się nie zmienia. Panele,
+konsola i filtr powiadomień nakładają się przy pierwszym wejściu (`Meta+Q`). `make uninstall-stream-activity` zdejmuje
+przypisanie i usuwa aktywność, ale nie wtedy, gdy jest bieżąca. Oba cele są poza `make install` i `make uninstall`
+(decyzja 80).
+
+W Stream (panele Plasmy są wspólne dla aktywności, więc praca nic nie traci):
+
+- **lewy monitor**: dock Stream na dole — Stream, Profil gracza, Observer (tylko w trybie Observer) · zadania · „?”
+  (miejsca na Kamerę z PT-82 i PC ⇄ Xbox z PT-38 przed „?”); na pulpicie konsola streamu: Sceny w kolumnie ok. 1/3
+  szerokości z lewej i czat w reszcie (dokładane tylko wtedy, gdy ich brakuje — własnego ułożenia nie ruszamy);
+- **DP-2**: dock bez kafelków pracy — zostaje System i zadania; kafelki pracy same się chowają
+  (`widgets/lib/ActivityLook.qml` pyta tide-daemon), ich ustawienia i miejsca zostają;
+- **pasek boczny pracy**: schowany (chowanie automatyczne, bez kafelków), `Meta+S` nic nie robi;
+- **powiadomienia**: wyskakują tylko KDE Connect, rdzeń Streamer (gdy wysyła `x-kde-appname=streamer`) i krytyczne;
+  reszta, także Discord i Telegram, czeka w historii. Usługa trzyma „Nie przeszkadzać” na czas Stream i zwalnia je
+  przy wyjściu; ustawienia powiadomień pracy wracają co do bajtu;
+- **ekran blokady**: wariant Streamer bez linii „N agentów pracuje”.
+
+Po powrocie do pracy panele są dokładnie jak przed wejściem (`panels.py dump` bez różnic — sprawdzane w zagnieżdżonej
+sesji: `make stream-activity-preview`, wyniki w `build/stream-activity/`).
+
+```bash
+make install-stream-activity     # aktywność Stream z ikoną i przypisanym wyglądem
+make uninstall-stream-activity   # usuwa ją (odmawia, gdy Stream jest bieżąca)
+make stream-activity-status      # przypisane aktywności Stream — tylko odczyt
+make stream-activity-preview     # zagnieżdżona sesja: praca → Stream → praca, zrzuty i porównanie paneli
 ```
 
 ## Ikony
