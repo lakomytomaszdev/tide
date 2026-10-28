@@ -9,7 +9,7 @@ const ROLE_ORDER = ["summary", "describe", "agent"]
 const ROLE_INFO = {
     summary: { title: "Raport", hint: "„Na daily” w raporcie porannym" },
     describe: { title: "Opisy kart", hint: "Krótkie opisy kart na tablicy i w Sesjach" },
-    agent: { title: "Agent", hint: "Sesje z opcją „Lokalny” w oknie Nowe zadanie" }
+    agent: { title: "Agent", hint: "Sesje z opcją „Lokalny” w oknie Nowe zadanie: tu ich model i program" }
 }
 // Domyślny kontekst ról raportu (decyzja 60: z 16k model 8B nie mieści się na karcie 8 GB).
 const ROLE_CTX = { summary: 8192, describe: 8192 }
@@ -319,6 +319,29 @@ function roleRequest(id, model, endpoint, ctx) {
 // Przypięcie roli: opcje przełącznika „za serwerem domyślnym” + każdy serwer.
 function pinOptions(status) {
     return [{ value: "", label: "Za domyślnym" }].concat(servers(status).map(s => ({ value: s.name, label: s.label })))
+}
+
+// Program agenta na modelu lokalnym (Status().agentProgram, PT-39): wybierany raz tutaj, okno „Nowe zadanie”
+// w trybie „Lokalny” go tylko pokazuje. Przełącznik Claude Code / Codex w tamtym oknie dotyczy chmury.
+const AGENT_PROGRAMS = [
+    { value: "codex", label: "Codex", hint: "Codex — Ollama obsługuje go wprost." },
+    { value: "claude", label: "Claude Code",
+      hint: "Claude Code — bez konektorów claude.ai i gorzej znosi mały kontekst." }
+]
+
+function agentPrograms() {
+    return AGENT_PROGRAMS.map(p => ({ value: p.value, label: p.label }))
+}
+
+// Program ze stanu: "" — usługa go nie podaje (starsza wersja), inna wartość — Codex, jak w usłudze.
+function agentProgram(status) {
+    if (!status || typeof status.agentProgram !== "string") return ""
+    return AGENT_PROGRAMS.some(p => p.value === status.agentProgram) ? status.agentProgram : "codex"
+}
+
+function agentProgramHint(program) {
+    const p = AGENT_PROGRAMS.find(x => x.value === program)
+    return p ? p.hint : "Ta wersja usługi nie podaje programu agenta — zaktualizuj usługę Tide (make install-daemon)."
 }
 
 // Które role używają modelu na serwerze (znaczniki przy liście modeli).

@@ -239,11 +239,13 @@ class LauncherEnvTest(unittest.TestCase):
                          ["/bin/sh", "-c", '"$0" "$@"; exec "${SHELL:-/bin/sh}"', "claude", "--", "x"])
 
 
-def config(roles=None, endpoints=None):
+def config(roles=None, endpoints=None, program=None):
     data = {"endpoints": endpoints or {"local": {"url": "http://127.0.0.1:11434", "kind": "ollama"},
                                        "mac": {"url": "http://mac-studio:11434", "kind": "ollama",
                                                "tokenFile": "/k/mac.token"}},
             "roles": roles if roles is not None else {"agent": "local:qwen3-coder:30b"}}
+    if program is not None:
+        data["agentProgram"] = program
     return lambda: models_config.from_dict(data, "/x/models.json")
 
 
@@ -285,7 +287,7 @@ class PlannerLocalTest(unittest.TestCase):
 
     def test_local_claude_plan(self):
         check = probe(loaded=[("qwen3-coder:30b", 65536)])
-        plan = self.planner(model_probe=check).prepare(self.request())
+        plan = self.planner(config(program="claude"), model_probe=check).prepare(self.request())
         self.assertEqual(check.calls, ["local"], "serwer sprawdzony teraz")
         self.assertEqual(plan.title, "alpha · claude/popraw-naglowek-listy · lokalnie")
         self.assertEqual(plan.argv[1:2], ["--model=qwen3-coder:30b"])
@@ -308,6 +310,48 @@ class PlannerLocalTest(unittest.TestCase):
         self.assertEqual(payload["secretEnv"], {"TIDE_MODEL_TOKEN": "/k/mac.token"})
         self.assertEqual(payload["tokenFiles"], ["/k/mac.token"])
         self.assertNotIn("env", payload)
+
+    def test_local_program_comes_from_models_json_not_from_the_request(self):
+        """PT-39: w trybie lokalnym program to `agentProgram` (domyślnie Codex), przełącznik chmury w prośbie
+        nie ma znaczenia; argv i środowisko obu programów jak w PT-17."""
+        plan = self.planner().prepare(self.request(tool="claude"))
+        self.assertEqual(plan.tool, "codex", "bez agentProgram — Codex")
+        self.assertEqual(plan.argv[:5], [os.path.join(self.bin, "codex"), "--oss", "--local-provider", "ollama",
+                                         "--model=qwen3-coder:30b"])
+        self.assertEqual(plan.env, {"CODEX_OSS_BASE_URL": "http://127.0.0.1:11434/v1"})
+        self.assertEqual(plan.title, "alpha · codex/popraw-naglowek-listy · lokalnie")
+        self.assertEqual(plan.result("tab")["tool"], "codex")
+
+        plan = self.planner(config(program="claude")).prepare(self.request(tool="codex", branch="fix/inna"))
+        self.assertEqual(plan.tool, "claude")
+        self.assertEqual(plan.argv[:2], [os.path.join(self.bin, "claude"), "--model=qwen3-coder:30b"])
+        self.assertEqual(plan.env["ANTHROPIC_BASE_URL"], "http://127.0.0.1:11434")
+
+        plan = self.planner(config(program="opencode")).prepare(self.request(tool="claude", branch="fix/trzecia"))
+        self.assertEqual(plan.tool, "codex", "nieznany program w pliku — Codex, jak w Status()")
+
+        # Chmura: dalej przełącznik z prośby, bez względu na agentProgram.
+        plan = self.planner(config(program="codex")).prepare(self.request(model="cloud", branch="fix/chmura"))
+        self.assertEqual(plan.tool, "claude")
+        self.assertEqual(plan.argv, [os.path.join(self.bin, "claude"), "--", "Popraw nagłówek listy"])
+
+    def test_local_start_keeps_the_remembered_cloud_choice(self):
+        planner = self.planner(config(program="claude"))
+        planner.remember(planner.prepare(self.request(model="cloud", tool="codex", newWorktree=False)))
+        self.assertEqual((planner.last_choice()["tool"], planner.last_choice()["model"]), ("codex", "cloud"))
+        plan = planner.prepare(self.request(tool="codex", newWorktree=False))
+        self.assertEqual(plan.tool, "claude")
+        planner.remember(plan)
+        self.assertEqual((planner.last_choice()["tool"], planner.last_choice()["model"]), ("codex", "local"),
+                         "start lokalny pamięta „Lokalny”, ale nie nadpisuje wyboru Claude Code / Codex chmury")
+        # Bez zapamiętanego wyboru chmury — domyślny Claude Code, a nie program lokalny.
+        os.remove(planner.state_path)
+        planner.remember(plan)
+        self.assertEqual(planner.last_choice()["tool"], "claude")
+        planner = self.planner(config(program="codex"))
+        os.remove(planner.state_path)
+        planner.remember(planner.prepare(self.request(tool="claude", newWorktree=False)))
+        self.assertEqual(planner.last_choice()["tool"], "claude")
 
     def test_cloud_is_the_default_and_unchanged(self):
         check = probe()

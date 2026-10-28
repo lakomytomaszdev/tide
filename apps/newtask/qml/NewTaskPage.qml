@@ -1,6 +1,7 @@
 // Zawartość okna „Nowe zadanie” (układ z mocka #22): „Co ma zrobić agent?” ze skrótem, repozytorium
-// (lista rozwijana od ostatnio aktywnych, z szukaniem po wpisaniu) i agent (Claude Code / Codex),
-// model (chmura albo lokalny z roli `agent` w /Models), zadanie z licznikiem znaków, zrzuty ekranu (miniatury, „Zrób zrzut”, przeciąganie, Ctrl+V),
+// (lista rozwijana od ostatnio aktywnych, z szukaniem po wpisaniu) i model (chmura albo lokalny z roli `agent`
+// w /Models), agent (w chmurze przełącznik Claude Code / Codex, przy modelu lokalnym linia „Codex na … · Ten
+// komputer” z programem z Tide → Modele), zadanie z licznikiem znaków, zrzuty ekranu (miniatury, „Zrób zrzut”, przeciąganie, Ctrl+V),
 // karta „Nowy worktree” z gałęzią do zmiany, błąd w miejscu i „Uruchom agenta”.
 // Sam nie rozmawia z usługą — dostaje dane i zgłasza prośby sygnałami, dzięki czemu da się go
 // załadować w teście z przykładowymi danymi.
@@ -58,7 +59,11 @@ Rectangle {
     readonly property var repo: Logic.findRepo(repos, repoPath)
     readonly property var tools: defaults && defaults.tools ? defaults.tools : ({})
     readonly property var localOption: Logic.localOption(modelsStatus)
-    readonly property string modelNote: Logic.modelNote(localOption, model, tool)
+    // Program, który ruszy: w trybie „Lokalny” z Tide → Modele (agentProgram), w chmurze — przełącznik `tool`
+    // (tylko on jest zapamiętywany; start lokalny go nie zmienia).
+    readonly property string agentTool: Logic.agentTool(model, tool, localOption)
+    readonly property var localLine: Logic.localLine(localOption)
+    readonly property string modelNote: Logic.modelNote(localOption, model)
     readonly property var formState: ({
         available: available, repo: repo, tool: tool, tools: tools, prompt: prompt, newWorktree: newWorktree,
         branch: branch, images: images, model: model, local: localOption
@@ -116,14 +121,14 @@ Rectangle {
     // Propozycja gałęzi z polecenia — z opóźnieniem, żeby nie pytać usługi przy każdym znaku.
     function askSuggestion() { if (newWorktree && repoPath !== "") suggestTimer.restart() }
     onRepoPathChanged: askSuggestion()
-    onToolChanged: askSuggestion()
+    onAgentToolChanged: askSuggestion()
     onNewWorktreeChanged: askSuggestion()
     onPromptChanged: askSuggestion()
     onSuggestionChanged: if (!branchEdited && suggestion && suggestion.branch) branch = suggestion.branch
     Timer {
         id: suggestTimer
         interval: 300
-        onTriggered: page.suggestRequested(page.repoPath, page.tool, page.prompt)
+        onTriggered: page.suggestRequested(page.repoPath, page.agentTool, page.prompt)
     }
 
     color: Tide.Tokens.backgroundWindow
@@ -196,7 +201,7 @@ Rectangle {
             }
         }
 
-        // Repozytorium i agent.
+        // Repozytorium i model.
         RowLayout {
             Layout.fillWidth: true
             spacing: 16
@@ -385,11 +390,12 @@ Rectangle {
                     }
                 }
             }
+            // Model: chmura narzędzia albo model lokalny z roli `agent` — najpierw model, potem program.
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.preferredWidth: 2
                 spacing: 6
-                Label { text: "Agent" }
+                Label { text: "Model" }
                 Field {
                     Layout.fillWidth: true
                     implicitHeight: 50
@@ -398,41 +404,46 @@ Rectangle {
                         anchors.margins: 4
                         spacing: 4
                         Repeater {
-                            model: Logic.TOOLS
+                            model: Logic.MODELS
                             delegate: Rectangle {
-                                id: segment
+                                id: modelSegment
                                 required property var modelData
-                                readonly property bool chosen: page.tool === modelData.id
-                                readonly property bool missing: page.tools[modelData.id] === false
+                                readonly property bool isLocal: modelData.id === "local"
+                                readonly property bool chosen: page.model === modelData.id
+                                readonly property bool disabled: isLocal && !page.localOption.enabled
+                                objectName: "model-" + modelData.id
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 radius: Tide.Tokens.radiusFrame
                                 color: chosen ? Tide.Theme.alpha(Tide.Tokens.accent, 0.16)
-                                     : segArea.containsMouse ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.05)
+                                     : modelArea.containsMouse && !disabled ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.05)
                                      : "transparent"
                                 border.width: chosen || activeFocus ? 1 : 0
                                 border.color: activeFocus ? Tide.Tokens.textPrimary : Tide.Theme.alpha(Tide.Tokens.accent, 0.55)
-                                activeFocusOnTab: true
+                                activeFocusOnTab: !disabled
                                 Accessible.role: Accessible.RadioButton
-                                Accessible.name: modelData.label
+                                Accessible.name: isLocal ? page.localOption.label : "Chmura"
                                 Accessible.checked: chosen
-                                Keys.onSpacePressed: page.tool = modelData.id
+                                Accessible.description: disabled ? page.localOption.reason : ""
+                                Keys.onSpacePressed: if (!disabled) page.model = modelData.id
+                                QQC2.ToolTip.visible: modelArea.containsMouse && modelSegment.isLocal
+                                QQC2.ToolTip.text: modelSegment.disabled ? page.localOption.reason : page.localOption.label
+                                QQC2.ToolTip.delay: 300
                                 Text {
                                     anchors.centerIn: parent
-                                    text: (segment.modelData.id === "codex" ? "◎ " : "✻ ") + segment.modelData.label
-                                          + (segment.missing ? " · brak" : "")
-                                    color: segment.missing ? Tide.Tokens.textMuted
-                                         : segment.chosen ? Tide.Tokens.accent : Tide.Tokens.textSecondary
+                                    text: (modelSegment.isLocal ? "⌂ " : "☁ ") + modelSegment.modelData.label
+                                    color: modelSegment.disabled ? Tide.Tokens.textMuted
+                                         : modelSegment.chosen ? Tide.Tokens.accent : Tide.Tokens.textSecondary
                                     font.family: Tide.Theme.uiFamily
                                     font.pixelSize: 14
-                                    font.weight: segment.chosen ? Font.DemiBold : Font.Medium
+                                    font.weight: modelSegment.chosen ? Font.DemiBold : Font.Medium
                                 }
                                 MouseArea {
-                                    id: segArea
+                                    id: modelArea
                                     anchors.fill: parent
                                     hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: page.tool = segment.modelData.id
+                                    cursorShape: modelSegment.disabled ? Qt.ArrowCursor : Qt.PointingHandCursor
+                                    onClicked: if (!modelSegment.disabled) page.model = modelSegment.modelData.id
                                 }
                             }
                         }
@@ -441,60 +452,110 @@ Rectangle {
             }
         }
 
-        // Model: chmura narzędzia albo model lokalny z roli `agent`.
-        Label { text: "Model"; Layout.topMargin: 10 }
+        // Agent: w chmurze przełącznik Claude Code / Codex (zapamiętany), przy modelu lokalnym — jedna linia
+        // z programem ustawionym w Tide → Modele (program to nie model; tu tylko go widać).
+        Label { text: "Agent"; Layout.topMargin: 10 }
         Field {
+            objectName: "toolSwitch"
             Layout.fillWidth: true
             implicitHeight: 44
+            visible: page.model !== "local"
             RowLayout {
                 anchors.fill: parent
                 anchors.margins: 4
                 spacing: 4
                 Repeater {
-                    model: Logic.MODELS
+                    model: Logic.TOOLS
                     delegate: Rectangle {
-                        id: modelSegment
+                        id: segment
                         required property var modelData
-                        readonly property bool isLocal: modelData.id === "local"
-                        readonly property bool chosen: page.model === modelData.id
-                        readonly property bool disabled: isLocal && !page.localOption.enabled
-                        objectName: "model-" + modelData.id
+                        readonly property bool chosen: page.tool === modelData.id
+                        readonly property bool missing: page.tools[modelData.id] === false
                         Layout.fillWidth: true
-                        Layout.preferredWidth: isLocal ? 3 : 1
                         Layout.fillHeight: true
                         radius: Tide.Tokens.radiusFrame
                         color: chosen ? Tide.Theme.alpha(Tide.Tokens.accent, 0.16)
-                             : modelArea.containsMouse && !disabled ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.05)
+                             : segArea.containsMouse ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.05)
                              : "transparent"
                         border.width: chosen || activeFocus ? 1 : 0
                         border.color: activeFocus ? Tide.Tokens.textPrimary : Tide.Theme.alpha(Tide.Tokens.accent, 0.55)
-                        activeFocusOnTab: !disabled
+                        activeFocusOnTab: true
                         Accessible.role: Accessible.RadioButton
-                        Accessible.name: isLocal ? page.localOption.label : "Chmura"
+                        Accessible.name: modelData.label
                         Accessible.checked: chosen
-                        Accessible.description: disabled ? page.localOption.reason : ""
-                        Keys.onSpacePressed: if (!disabled) page.model = modelData.id
-                        QQC2.ToolTip.visible: modelArea.containsMouse && disabled
-                        QQC2.ToolTip.text: page.localOption.reason
-                        QQC2.ToolTip.delay: 300
+                        Keys.onSpacePressed: page.tool = modelData.id
                         Text {
                             anchors.centerIn: parent
-                            width: Math.min(implicitWidth, parent.width - 16)
-                            elide: Text.ElideRight
-                            text: (modelSegment.isLocal ? "⌂ " + page.localOption.label : "☁ Chmura")
-                            color: modelSegment.disabled ? Tide.Tokens.textMuted
-                                 : modelSegment.chosen ? Tide.Tokens.accent : Tide.Tokens.textSecondary
+                            text: (segment.modelData.id === "codex" ? "◎ " : "✻ ") + segment.modelData.label
+                                  + (segment.missing ? " · brak" : "")
+                            color: segment.missing ? Tide.Tokens.textMuted
+                                 : segment.chosen ? Tide.Tokens.accent : Tide.Tokens.textSecondary
                             font.family: Tide.Theme.uiFamily
                             font.pixelSize: 14
-                            font.weight: modelSegment.chosen ? Font.DemiBold : Font.Medium
+                            font.weight: segment.chosen ? Font.DemiBold : Font.Medium
                         }
                         MouseArea {
-                            id: modelArea
+                            id: segArea
                             anchors.fill: parent
                             hoverEnabled: true
-                            cursorShape: modelSegment.disabled ? Qt.ArrowCursor : Qt.PointingHandCursor
-                            onClicked: if (!modelSegment.disabled) page.model = modelSegment.modelData.id
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.tool = segment.modelData.id
                         }
+                    }
+                }
+            }
+        }
+        Field {
+            objectName: "localAgent"
+            Layout.fillWidth: true
+            implicitHeight: 44
+            visible: page.model === "local"
+            Accessible.role: Accessible.StaticText
+            Accessible.name: "Agent: " + page.localLine.program + page.localLine.detail
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                spacing: 0
+                Text {
+                    objectName: "localProgram"
+                    text: (page.localOption.program === "codex" ? "◎ " : "✻ ") + page.localLine.program
+                          + (page.tools[page.localOption.program] === false ? " · brak" : "")
+                    color: page.localOption.enabled ? Tide.Tokens.accent : Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 14
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    objectName: "localDetail"
+                    Layout.fillWidth: true
+                    text: page.localLine.detail
+                    textFormat: Text.PlainText
+                    color: page.localOption.enabled ? Tide.Tokens.textSecondary : Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 14
+                    elide: Text.ElideRight
+                }
+                Text {
+                    objectName: "programLink"
+                    Layout.leftMargin: 12
+                    text: page.localLine.link
+                    color: programArea.containsMouse || activeFocus ? Tide.Tokens.accent : Tide.Tokens.textSecondary
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 12
+                    font.underline: programArea.containsMouse
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.Link
+                    Accessible.name: page.localLine.link === Logic.PROGRAM_HINT ? "Zmień program agenta w Tide → Modele"
+                                                                                : "Ustaw model agenta w Tide → Modele"
+                    Keys.onSpacePressed: page.modelsRequested()
+                    Keys.onReturnPressed: page.modelsRequested()
+                    MouseArea {
+                        id: programArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: page.modelsRequested()
                     }
                 }
             }
@@ -505,16 +566,19 @@ Rectangle {
             spacing: 6
             Text {
                 objectName: "modelNote"
-                Layout.fillWidth: !page.localOption.hint || page.localOption.enabled
-                text: page.localOption.enabled ? page.modelNote : page.localOption.reason
+                Layout.fillWidth: !modelsLink.visible
+                text: page.localOption.enabled || page.model === "local" ? page.modelNote
+                                                                         : Logic.LOCAL_PREFIX + page.localOption.reason
                 color: Tide.Tokens.textMuted
                 font.family: Tide.Theme.uiFamily
                 font.pixelSize: 12
                 elide: Text.ElideRight
             }
+            // W trybie „Lokalny” link do Tide → Modele jest już w linii agenta — tu tylko w chmurze.
             Text {
+                id: modelsLink
                 objectName: "modelsLink"
-                visible: !page.localOption.enabled && page.localOption.hint
+                visible: !page.localOption.enabled && page.localOption.hint && page.model !== "local"
                 Layout.fillWidth: true
                 text: "— " + Logic.MODELS_HINT
                 color: linkArea.containsMouse ? Tide.Tokens.accent : Tide.Tokens.textSecondary
@@ -905,7 +969,7 @@ Rectangle {
                 objectName: "outcome"
                 Layout.fillWidth: true
                 text: page.busy ? "Zakładam worktree i otwieram Konsolę…"
-                    : page.blocker !== "" ? page.blocker : Logic.outcome(page.repo, page.tool, page.newWorktree,
+                    : page.blocker !== "" ? page.blocker : Logic.outcome(page.repo, page.agentTool, page.newWorktree,
                                                                                 page.model === "local" ? page.localOption : null)
                 color: page.blocker !== "" && !page.busy ? Tide.Tokens.textMuted : Tide.Tokens.textSecondary
                 font.family: Tide.Theme.uiFamily

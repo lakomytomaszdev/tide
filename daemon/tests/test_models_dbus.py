@@ -221,6 +221,15 @@ class ModelsSettingsDBusTest(unittest.TestCase):
         bad = self.call("SetEndpoint", json.dumps({"name": "lm", "url": "http://lm:1234", "kind": "llamacpp"}))
         self.assertEqual(bad, {"ok": False, "error": "serwer „lm”: nieznany rodzaj „llamacpp” (ollama albo openai)"})
 
+        self.assertEqual(state["agentProgram"], "codex", "program agenta lokalnego: domyślnie Codex")
+        self.assertEqual(self.call("SetAgentProgram", "claude"), {"ok": True, "error": ""})
+        self.assertEqual(self.status()["agentProgram"], "claude", "stan od razu po zapisie")
+        with open(self.models, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["agentProgram"], "claude")
+        self.assertEqual(self.call("SetAgentProgram", "opencode"),
+                         {"ok": False, "error": "agentProgram: nieznany program „opencode” (codex albo claude)"})
+        self.assertEqual(self.status()["agentProgram"], "claude")
+
         self.assertEqual(self.call("SetReportSummary", "local"), {"ok": True, "error": ""})
         with open(self.report, encoding="utf-8") as fh:
             self.assertEqual(json.load(fh), {"at": "06:45", "summaryModel": "opus", "summary": "local"})
@@ -231,8 +240,8 @@ class ModelsSettingsDBusTest(unittest.TestCase):
         self.assertIn("claude, local, rules", wrong["error"])
 
         xml = self.bus.call(SERVICE, MODELS_PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
-        for member in ("SetEndpoint", "RemoveEndpoint", "SetDefault", "SetRole", "SetReportSummary", "TestEndpoint",
-                       "PullModel"):
+        for member in ("SetEndpoint", "RemoveEndpoint", "SetDefault", "SetRole", "SetAgentProgram",
+                       "SetReportSummary", "TestEndpoint", "PullModel"):
             self.assertIn(f'<method name="{member}">', xml)
 
     def test_pinned_report_summary_changes_only_the_file(self):

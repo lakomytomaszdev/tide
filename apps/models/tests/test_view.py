@@ -821,6 +821,76 @@ Item {
         self.assertEqual(old[4], "na: Mac-Studio")
         self.assertEqual(warned(log, "OLDCALLS"), "0")
 
+    def test_agent_program_choice(self):
+        """PT-39: program agenta na modelu lokalnym wybiera się raz, w wierszu „Agent” (Codex / Claude Code,
+        SetAgentProgram); jedno zdanie o wybranym; stara usługa bez `agentProgram` — przełącznik wyłączony."""
+        log = self.harness("ProgramSmoke.qml", """import QtQuick
+import "models.js" as Logic
+Item {
+    id: top
+    width: 1500; height: 1100
+    readonly property var d: %DATA%
+    property var calls: []
+    ModelsPage {
+        id: page
+        anchors.fill: parent
+        status: top.d.mac
+        onRequested: (member, argument, tag) => top.calls.push(member + "(" + argument + ")@" + tag)
+    }
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children) {
+            const hit = find(child, name)
+            if (hit) return hit
+        }
+        return null
+    }
+    Timer {
+        interval: 100
+        running: true
+        onTriggered: top.steps()
+    }
+    function steps() {
+        const agent = find(page, "role_agent"), summary = find(page, "role_summary")
+        const sw = find(agent, "programSwitch")
+        console.warn("SHOWN " + find(agent, "agentProgram").visible + "|" + find(summary, "agentProgram").visible)
+        console.warn("MAC " + sw.current + "|" + sw.enabled + "|" + find(agent, "programHint").text + "|"
+                     + sw.options.map(o => o.value + ":" + o.label).join(","))
+        sw.picked("claude")
+        sw.picked("codex")
+        console.warn("CALLS " + top.calls.join(","))
+        page.finish("role:agent:program", "SetAgentProgram", { ok: false, error: "agentProgram: nieznany program" })
+        console.warn("REFUSED " + find(agent, "programNote").text)
+        page.status = top.d.local
+        Qt.callLater(() => {
+            console.warn("LOCAL " + sw.current + "|" + find(agent, "programHint").text)
+            const old = JSON.parse(JSON.stringify(top.d.local))
+            delete old.agentProgram
+            page.status = old
+            Qt.callLater(() => {
+                console.warn("OLD " + sw.current + "|" + sw.enabled + "|" + find(agent, "programHint").text)
+                const odd = JSON.parse(JSON.stringify(top.d.local))
+                odd.agentProgram = "opencode"
+                console.warn("ODD " + Logic.agentProgram(odd) + "|" + Logic.agentProgram(null))
+                Qt.quit()
+            })
+        })
+    }
+}
+""")
+        self.assertEqual(problems(log), [])
+        self.assertEqual(warned(log, "SHOWN"), "true|false", "program tylko w wierszu Agent")
+        self.assertEqual(warned(log, "MAC"), "claude|true|Claude Code — bez konektorów claude.ai i gorzej znosi mały "
+                                             "kontekst.|codex:Codex,claude:Claude Code")
+        self.assertEqual(warned(log, "CALLS"), "SetAgentProgram(codex)@role:agent:program",
+                         "wybór bieżącego programu niczego nie wysyła")
+        self.assertEqual(warned(log, "REFUSED"), "agentProgram: nieznany program")
+        self.assertEqual(warned(log, "LOCAL"), "codex|Codex — Ollama obsługuje go wprost.")
+        old = warned(log, "OLD").split("|")
+        self.assertEqual(old[:2], ["", "false"])
+        self.assertIn("zaktualizuj usługę Tide", old[2])
+        self.assertEqual(warned(log, "ODD"), "codex|")
+
     def test_view_routes_backend_and_preview(self):
         """ModelsView z atrapą backendu: prośby strony idą do backend.request, replied wraca do strony, railInfo,
         element sprzed pierwszego stanu, opcje podglądu."""

@@ -16,9 +16,10 @@ Okno działa w jednym egzemplarzu: rejestruje nazwę org.tide.NewTaskWindow, a k
 aplikacji (tide-new-task) odpowiada plikowi tide-new-task.desktop.
 
 Model lokalny: okno czyta Status() obiektu /Models (rola `agent`: serwer, model, dostępność) i odświeża
-go po sygnale Changed — opcja „Lokalny” gaśnie z powodem, gdy serwer przestanie odpowiadać. „Ustaw
-w Tide → Modele” otwiera okno Tide na widoku `models` (drugie uruchomienie tide.py prosi działające okno
-o Show("models", "")).
+go po sygnale Changed — opcja „Lokalny” gaśnie z powodem, gdy serwer przestanie odpowiadać. Przy „Lokalny”
+program agenta (Codex albo Claude Code) też pochodzi z /Models (`agentProgram`, ustawiany w Tide → Modele):
+okno pokazuje go w jednej linii zamiast przełącznika chmury. „Ustaw” i „zmień w Tide → Modele” otwierają okno
+Tide na widoku `models` (drugie uruchomienie tide.py prosi działające okno o Show("models", "")).
 
 Zrzuty ekranu (wklejone, przeciągnięte, „Zrób zrzut” przez Spectacle) trafiają do własnego katalogu
 zadania w $XDG_DATA_HOME/tide/tasks/<czas>-<los>/ (katalog podaje usługa). Okno zamknięte bez startu

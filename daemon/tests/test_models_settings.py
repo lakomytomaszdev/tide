@@ -278,6 +278,30 @@ class ModelsJsonTest(SettingsTestCase):
         settings.set_role({"role": "polish", "model": bielik, "endpoint": "local"}, self.path)
         self.assertEqual((self.cfg().roles["polish"].endpoint, self.cfg().roles["polish"].model), ("local", bielik))
 
+    def test_agent_program_round_trip(self):
+        """PT-39: `agentProgram` — jeden klucz najwyższego poziomu; zapis nie rusza ról ani serwerów."""
+        self.assertEqual(self.cfg().agent_program, "codex", "bez pliku — Codex")
+        settings.set_agent_program("claude", self.path)
+        self.assertEqual(self.data(), {**settings.defaults(), "agentProgram": "claude"},
+                         "pierwszy zapis zaczyna od wartości domyślnych")
+        self.assertEqual(self.cfg().agent_program, "claude")
+        settings.set_role({"role": "agent", "model": "qwen3-coder:30b"}, self.path)
+        settings.set_default("local", self.path)
+        self.assertEqual(self.data()["agentProgram"], "claude", "inne zapisy go zostawiają")
+        settings.set_agent_program("codex", self.path)
+        self.assertEqual((self.data()["agentProgram"], self.data()["roles"]["agent"]), ("codex", "qwen3-coder:30b"))
+        for value in ("Codex", "opencode", "", None, 1):
+            with self.subTest(value=value):
+                message = self.refused(settings.set_agent_program, value, self.path)
+                self.assertIn("(codex albo claude)", message)
+                self.assertEqual(message, models_config.agent_program_problem(value))
+        self.assertEqual(self.data()["agentProgram"], "codex", "odmowa niczego nie zapisuje")
+        # Ręcznie wpisana zła wartość: ostrzeżenie, Codex; poprawny zapis z okna ją naprawia.
+        self.write({"agentProgram": "Claude"})
+        self.assertEqual((self.cfg().agent_program, len(self.cfg().warnings)), ("codex", 1))
+        settings.set_agent_program("claude", self.path)
+        self.assertEqual((self.cfg().agent_program, self.cfg().warnings), ("claude", ()))
+
     def test_handwritten_warnings_do_not_block_but_new_ones_do(self):
         self.write({"endpoints": {"local": {"url": "http://127.0.0.1:11434"}, "zly": {"url": "ftp://x"}},
                     "roles": {"agent": "zly:model"}})

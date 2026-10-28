@@ -82,7 +82,8 @@ Obiekt /Limits, interfejs org.tide.Daemon.Limits (prognoza Limitów AI z histori
 - sygnał Changed()           prognoza albo dostępność usługi Limity AI się zmieniła.
 
 Obiekt /Models, interfejs org.tide.Daemon.Models (modele lokalne: serwery z models.json i role):
-- Status() -> s              JSON {checked, default, config, endpoints: {nazwa: stan}, roles: {rola: …}} — bez tokenów,
+- Status() -> s              JSON {checked, default, config, endpoints: {nazwa: stan}, roles: {rola: …},
+                             agentProgram} — bez tokenów,
                              oraz report (tryb „Na daily”), pulls (pobierania modeli) i queue (kolejka wywołań
                              modeli na punkt: {running, waiting[, other]}, bez treści poleceń),
 - Refresh()                  odczyt stanu teraz (wynik przyjdzie sygnałem Changed, jeśli coś się zmieniło),
@@ -91,6 +92,8 @@ Obiekt /Models, interfejs org.tide.Daemon.Models (modele lokalne: serwery z mode
 - RemoveEndpoint(s name) -> s  usunięcie punktu; odmowa dla domyślnego, ostatniego i z przypiętymi rolami,
 - SetDefault(s name) -> s    domyślny punkt (przełącznik „ten komputer / Mac”: role bez punktu idą za nim),
 - SetRole(s json) -> s       rola {role, model, endpoint? ("" — za domyślnym), ctx? (null — domyślny)} → {ok, error},
+- SetAgentProgram(s program) -> s  program agenta na modelu lokalnym (codex albo claude, `agentProgram`
+                             w models.json; Status().agentProgram) → {ok, error},
 - SetReportSummary(s mode) -> s  `summary` w report.json (claude, local, rules), działa od razu → {ok, error},
 - TestEndpoint(s json) -> s  próba połączenia bez zapisu ({name} albo {url, kind, token?}) → {ok, error, version,
                              models} (odpowiedź po odczycie),
@@ -305,7 +308,7 @@ MODELS_XML = f"""<interface name="{MODELS_IFACE}">
   <method name="Refresh"/>
 {chr(10).join(_JSON_CALL.format(name=n, arg=a) for n, a in (
     ("SetEndpoint", "request"), ("RemoveEndpoint", "name"), ("SetDefault", "name"), ("SetRole", "request"),
-    ("SetReportSummary", "mode"), ("TestEndpoint", "request"), ("PullModel", "request")))}
+    ("SetAgentProgram", "program"), ("SetReportSummary", "mode"), ("TestEndpoint", "request"), ("PullModel", "request")))}
   <signal name="Changed"/>
 </interface>"""
 
@@ -674,6 +677,10 @@ class ModelsAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(str, result=str)
     def SetRole(self, request: str) -> str:
         return self.monitor.set_role(request)
+
+    @pyqtSlot(str, result=str)
+    def SetAgentProgram(self, program: str) -> str:
+        return self.monitor.set_agent_program(program)
 
     @pyqtSlot(str, result=str)
     def SetReportSummary(self, mode: str) -> str:

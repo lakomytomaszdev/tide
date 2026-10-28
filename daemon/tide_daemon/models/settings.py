@@ -19,6 +19,8 @@ Ten moduł nie zna Qt — wywołuje go models_monitor.py w wątku głównym (zap
   plik 0600), w models.json jako `tokenFile`. Nigdy w odpowiedzi, komunikacie ani dzienniku.
 - Role zapisujemy bez punktu („qwen3:8b”), chyba że wywołujący wskaże punkt — wtedy idą za `default`,
   więc przełączenie domyślnego punktu przenosi je na Maca, a przypięte zostają.
+- Program agenta na modelu lokalnym (`agentProgram`: codex albo claude) — jeden klucz najwyższego poziomu,
+  niezależny od roli `agent` i od serwera (przełączenie na Maca go nie zmienia).
 - Zapisy są szeregowane blokadą (D-Bus i ewentualne wątki), a piszemy tylko na wyraźne wywołanie.
 """
 from __future__ import annotations
@@ -343,6 +345,19 @@ def set_role(req: dict, path: str | None = None) -> None:
         if error:
             raise SettingsError(error)
         draft.roles[role] = stored
+        draft.commit()
+
+
+def set_agent_program(program, path: str | None = None) -> None:
+    """Program agenta na modelu lokalnym: `agentProgram` w models.json (codex albo claude). Okno „Nowe zadanie”
+    bierze go stąd w trybie „Lokalny”; zapamiętany wybór chmury (Claude Code / Codex) zostaje osobno."""
+    path = path or config_mod.config_path()
+    problem = config_mod.agent_program_problem(program)
+    if problem:
+        raise SettingsError(problem)
+    with LOCK:
+        draft = _Draft(path)
+        draft.data["agentProgram"] = program
         draft.commit()
 
 
