@@ -383,7 +383,7 @@ class ReportMonitor(QObject):
         now = self.clock()
         state = schedule.load_state(self.state_file)
         day = schedule.report_day(now, self.settings).isoformat()
-        start, end = schedule.period(now, state, day)
+        start, end = schedule.period(now, state, day, self.settings)
         sessions = list(self.sessions() or [])
         trees = self.worktrees()
         self._fix_notes()
