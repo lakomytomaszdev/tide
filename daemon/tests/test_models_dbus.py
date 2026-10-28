@@ -261,7 +261,8 @@ class ModelsSettingsDBusTest(unittest.TestCase):
         self.spawn()
         state = self.status()
         self.assertEqual([e["name"] for e in state["executors"]],
-                         ["Haiku", "Sonnet", "Opus", "Codex lekki", "Codex standard", "Codex mocny", "Lokalny"])
+                         ["Haiku", "Sonnet", "Opus", "Codex lekki", "Codex standard", "Codex mocny", "Codex Astra",
+                          "Lokalny"])
         self.assertEqual(state["catalog"], {"stored": False, "warnings": []})
         self.assertEqual(set(state["providers"]), {"anthropic", "openai", "local"})
         seen = self.changes()
