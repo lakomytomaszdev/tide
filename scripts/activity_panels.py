@@ -46,6 +46,13 @@ SPACER = "org.kde.plasma.panelspacer"
 CONSOLE = {"desk": "org.tide.stream.desk", "scenes": "org.tide.stream.scenes", "chat": "org.tide.stream.chat",
            "margin": 32, "gap": 48, "scenesFraction": 1 / 3}
 SIDEBAR_HIDING = "autohide"
+# Do tego pasek zwężony do minimum (decyzja 80, zgłoszenie po pierwszej instalacji: „autohide” sam wysuwał pusty
+# pasek 420 px przy każdym dotknięciu lewej krawędzi). Chowany panel wysuwa się tylko przy swoim odcinku krawędzi,
+# więc długość 1 px praktycznie wyłącza wysuwanie, a grubość 1 Plasma podnosi do swojego minimum. Długość i grubość
+# sprzed Stream trafiają do tego samego zapisu co chowanie (stream-panels.json) i wracają przy wyjściu.
+THIN_LENGTH = 1
+THIN_THICKNESS = 1
+SIDEBAR_KEYS = ("hiding", "height", "minimumLength", "maximumLength")
 # Typ pulpitu (kontenera) aktywności: Plasma daje nowej aktywności ten sam co pracy (na tym komputerze
 # org.kde.plasma.folder na obu monitorach, 28.10.2026); skrypt plasmashell typu zmienić nie może.
 DESKTOP_TYPE = "org.kde.plasma.folder"
@@ -103,7 +110,7 @@ def by_role(state: dict, role: str) -> list[dict]:
     return [p for p in state.get("panels", []) if p.get("role") == role]
 
 
-def stream_differences(state: dict, layout: dict, desktop: bool) -> list[str]:
+def stream_differences(state: dict, layout: dict, desktop: bool, saved: dict | None = None) -> list[str]:
     side = state.get("screens", {}).get("side", -1)
     if side < 0:
         return []
@@ -120,6 +127,11 @@ def stream_differences(state: dict, layout: dict, desktop: bool) -> list[str]:
     for sidebar in by_role(state, "sidebar"):
         if sidebar["hiding"] != SIDEBAR_HIDING:
             out.append(f"pasek boczny pracy widoczny ({sidebar['hiding']})")
+        if not sidebar_thin(sidebar):
+            out.append(f"pasek boczny pracy niezwężony (długość {sidebar.get('maximumLength')})")
+        elif (saved or {}).get("height") and sidebar["height"] >= saved["height"] > THIN_THICKNESS:
+            # Grubości skryptem Plasma nie utrwala: po ponownym zalogowaniu w Stream wraca grubość sprzed Stream.
+            out.append(f"pasek boczny pracy z grubością sprzed Stream ({sidebar['height']})")
     if desktop:
         on_desktop = state.get("desktop") or []
         missing = [t for t in layout["console"] if t not in on_desktop]
@@ -132,28 +144,69 @@ def stream_differences(state: dict, layout: dict, desktop: bool) -> list[str]:
     return out
 
 
-def work_plan(state: dict, saved: dict) -> tuple[list[str], str | None]:
-    """Różnice paneli pracy i chowanie paska bocznego do przywrócenia (None — nic do przywrócenia).
+def sidebar_thin(sidebar: dict) -> bool:
+    return int(sidebar.get("maximumLength") or 0) <= THIN_LENGTH
 
-    Zapis sprzed Stream przywracamy tylko wtedy, gdy pasek ma nasze „autohide”. Inna wartość (a docka Stream
-    już nie ma) to wybór użytkownika po Stream — zapis jest nieaktualny i znika, a pasek zostaje, jak jest."""
+
+def _stream_valued(sidebar: dict, key: str) -> bool:
+    """Czy ta wartość paska to wartość Stream (wtedy nie może trafić do zapisu „sprzed Stream”). Grubości
+    skryptem Plasma nie utrwala — po ponownym zalogowaniu w Stream wraca stara, choć długość dalej jest Stream —
+    więc grubość i długości liczą się razem: pasek zwężony to wartości Stream."""
+    if key == "hiding":
+        return sidebar["hiding"] == SIDEBAR_HIDING
+    return sidebar_thin(sidebar)
+
+
+def sidebar_record(sidebar: dict, saved: dict) -> dict | None:
+    """Zapis paska sprzed Stream przed nałożeniem Stream; None — zapis bez zmian.
+
+    Nigdy nie zapisuje wartości Stream. Pasek całkiem „pracowy” (inne chowanie i pełna długość) mimo zapisu to
+    pasek odbudowany po wejściu do Stream — jego wartości zastępują zapis. Inaczej zapis tylko się uzupełnia
+    (np. zapis z pierwszej wersji, z samym chowaniem, dostaje długości i grubość)."""
+    fresh = {key: sidebar[key] for key in SIDEBAR_KEYS if not _stream_valued(sidebar, key)}
+    rebuilt = sidebar["hiding"] != SIDEBAR_HIDING and not sidebar_thin(sidebar)
+    if saved and saved.get("sidebar", sidebar["id"]) == sidebar["id"] and not rebuilt:
+        merged = {**{k: v for k, v in fresh.items() if k not in saved}, **saved, "sidebar": sidebar["id"]}
+        return merged if merged != saved else None
+    return {"sidebar": sidebar["id"], **fresh} if fresh else None
+
+
+def sidebar_restore(sidebar: dict, saved: dict) -> dict:
+    """Co z zapisu przywrócić przy powrocie do pracy. Tylko to, co dalej ma wartość Stream — zmiana zrobiona
+    przez użytkownika w Stream (inna długość, inne chowanie lub grubość) zostaje."""
+    if not saved or saved.get("sidebar", sidebar["id"]) != sidebar["id"]:
+        return {}
+    out = {}
+    if sidebar_thin(sidebar):
+        out.update({k: saved[k] for k in ("maximumLength", "minimumLength")
+                    if k in saved and saved[k] != sidebar[k]})
+    if ("height" in saved and sidebar["height"] != saved["height"]
+            and (sidebar["height"] == saved.get("streamHeight")
+                 or ("streamHeight" not in saved and sidebar_thin(sidebar)))):
+        # Grubość wciąż jest nasza, nawet gdy użytkownik zmienił samą długość. Stary zapis bez
+        # streamHeight rozpoznajemy po zwężonej długości; po nowym zapisie zachowujemy ręczną grubość.
+        out["height"] = saved["height"]
+    if sidebar["hiding"] == SIDEBAR_HIDING and saved.get("hiding") and saved["hiding"] != SIDEBAR_HIDING:
+        out["hiding"] = saved["hiding"]
+    return out
+
+
+def work_plan(state: dict, saved: dict) -> tuple[list[str], dict]:
+    """Różnice paneli pracy i wartości paska bocznego do przywrócenia z zapisu sprzed Stream ({} — nic).
+    Zapis, z którego nie ma czego przywracać, jest nieaktualny (wybór użytkownika po Stream) i znika."""
     out = [f"dock Stream (panel {p['id']}) do usunięcia" for p in by_role(state, "stream-dock")]
-    hiding = saved.get("hiding")
-    restore = None
+    restore = {}
     for sidebar in by_role(state, "sidebar"):
-        if hiding and sidebar["hiding"] != hiding:
-            if sidebar["hiding"] == SIDEBAR_HIDING:
-                restore = hiding
-                out.append(f"pasek boczny pracy: chowanie {sidebar['hiding']}, było {hiding}")
-            else:
-                out.append(f"nieaktualny zapis chowania paska ({hiding}; pasek ma {sidebar['hiding']}) — do usunięcia")
+        restore = sidebar_restore(sidebar, saved)
+        if restore:
+            out.append("pasek boczny pracy do przywrócenia: " + ", ".join(f"{k} {v}" for k, v in restore.items()))
     if saved and not out:
-        out.append("zapis chowania paska sprzed Stream bez potrzeby — do usunięcia")
+        out.append("nieaktualny zapis paska bocznego sprzed Stream — do usunięcia")
     return out, restore
 
 
-def leave_params(restore: str | None) -> dict:
-    return {**screens(), "sidebarHiding": restore}
+def leave_params(restore: dict | None) -> dict:
+    return {**screens(), "sidebar": restore or None}
 
 
 def desktop_type_note(state: dict) -> str:
@@ -184,7 +237,7 @@ def stream_params(layout: dict, dock_height: int, console: bool) -> dict:
     # Z typów konsoli skrypt dostaje tylko zainstalowane (pusty napis — brak); desk wyklucza parę.
     placed = {key: CONSOLE[key] if CONSOLE[key] in layout["console"] else "" for key in ("desk", "scenes", "chat")}
     return {**screens(), "left": layout["left"], "right": layout["right"], "tasks": TASKS, "spacer": SPACER,
-            "dockHeight": dock_height, "floatingGap": FLOATING_GAP, "sidebarHiding": SIDEBAR_HIDING,
+            "dockHeight": dock_height, "floatingGap": FLOATING_GAP, "sidebar": {"hiding": SIDEBAR_HIDING, "length": THIN_LENGTH, "thickness": THIN_THICKNESS},
             "console": {**CONSOLE, **placed, "retired": layout["retired"]} if console and layout["console"] else None}
 
 

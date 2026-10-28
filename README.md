@@ -488,7 +488,9 @@ W Stream (panele Plasmy są wspólne dla aktywności, więc praca nic nie traci)
   szerokości) i czat;
 - **DP-2**: dock bez kafelków pracy — zostaje System i zadania; kafelki pracy same się chowają
   (`widgets/lib/ActivityLook.qml` pyta tide-daemon), ich ustawienia i miejsca zostają;
-- **pasek boczny pracy**: schowany (chowanie automatyczne, bez kafelków), `Meta+S` nic nie robi;
+- **pasek boczny pracy**: schowany i zwężony do minimum (bez kafelków); dotknięcie środka lewej krawędzi
+  nie wysuwa paska, a przy górnym końcu pozostaje tylko mały cień panelu (ok. 64 × 16 px w podglądzie);
+  `Meta+S` nic nie robi; po powrocie do pracy wraca dokładnie taki, jaki był;
 - **powiadomienia**: wyskakują tylko KDE Connect, rdzeń Streamer (gdy wysyła `x-kde-appname=streamer`) i krytyczne;
   reszta, także Discord i Telegram, czeka w historii. Usługa trzyma „Nie przeszkadzać” na czas Stream i zwalnia je
   przy wyjściu; ustawienia powiadomień pracy wracają co do bajtu;
