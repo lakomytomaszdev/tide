@@ -40,7 +40,8 @@ def card(num, title, project, column, tags=(), derived=None, note=""):
 # Tablica z mocka (stan z koordynatora symulowany — PT-5).
 MOCK_CARDS = [
     card(13, "Wartość w logu: warunki na kolumnach przebiegu", "LogViewer", "todo", ["Firma"],
-         {"column": "waiting", "done": 5, "total": 9, "note": "TOM-146: warunek też na archiwalnych logach?"}),
+         {"column": "waiting", "done": 5, "total": 9, "note": "TOM-146: warunek też na archiwalnych logach?",
+          "session": "claude:k13-session"}),
     card(15, "Tablica pracy", "plasma-tide", "todo", ["własne"],
          {"column": "progress", "done": 3, "total": 10, "note": "PT-2 w trakcie"}),
     card(11, "Biblioteka kazusów", "agent-team", "todo", ["własne"],
