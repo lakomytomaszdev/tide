@@ -439,7 +439,8 @@ def public_state(cfg, endpoints_state: dict | None, checked: bool) -> dict:
         info["available"] = (not reason) if info["local"] else None   # chmura: nie sprawdzamy
         info["error"] = reason
         info["builtin"] = e.name in {d.name for d in DEFAULT_EXECUTORS}
-        info["follows"] = bool(info["local"] and (not e.model or not e.program or not e.endpoint))
+        # Zapisane pola (okno edytuje je, nie rozwiązane wartości agenta lokalnego).
+        info["modelSet"], info["programSet"], info["endpointSet"] = bool(e.model), bool(e.program), bool(e.endpoint)
         executors.append(info)
     providers = {name: {"label": label, "url": "", "api": api, "auth": False, "builtin": True}
                  for name, label, api in (("anthropic", "Anthropic", "anthropic"), ("openai", "OpenAI", "openai"),

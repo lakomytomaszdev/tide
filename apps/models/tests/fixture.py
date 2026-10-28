@@ -79,6 +79,36 @@ def _search(state="ready", enabled=True, items=412, pending=0, error="", updated
             "dims": 1024 if items else 0}
 
 
+def _executors(endpoints, roles, default, program="codex", extra=(), stored=False) -> dict:
+    """Katalog wykonawców (PT-60) jak ze Status(): domyślni plus `extra`; lokalny idzie za rolą `agent`."""
+    cloud = [("Haiku", "claude", "haiku", "anthropic", ["lekki"]), ("Sonnet", "claude", "sonnet", "anthropic", ["standard"]),
+             ("Opus", "claude", "opus", "anthropic", ["mocny"]),
+             ("Codex lekki", "codex", "gpt-5.1-codex-mini", "openai", ["lekki"]),
+             ("Codex standard", "codex", "gpt-5.2-codex", "openai", ["standard"]),
+             ("Codex mocny", "codex", "gpt-5.3-codex", "openai", ["mocny"])]
+    rows = [{"name": n, "program": pr, "model": m, "provider": pv, "endpoint": "", "url": "", "classes": c,
+             "local": False, "where": "cloud", "available": None, "error": "", "builtin": True,
+             "modelSet": True, "programSet": True, "endpointSet": False} for n, pr, m, pv, c in cloud]
+    agent = roles.get("agent") or {}
+    point = agent.get("endpoint") or default
+    state = endpoints.get(point) or {}
+    model = agent.get("model", "")
+    error = ""
+    if not model:
+        error = "wykonawca „Lokalny”: brak modelu — ustaw rolę agent albo model wykonawcy"
+    elif not state.get("online") and state.get("error"):
+        error = f"wykonawca „Lokalny”: serwer „{point}” nie odpowiada"
+    rows.append({"name": "Lokalny", "program": program, "model": model, "provider": "local", "endpoint": point,
+                 "url": state.get("url", ""), "classes": ["lokalny"], "local": True, "where": "local",
+                 "available": not error, "error": error, "builtin": True, "modelSet": False, "programSet": False,
+                 "endpointSet": False})
+    rows.extend(extra)
+    providers = {"anthropic": {"label": "Anthropic", "url": "", "api": "anthropic", "auth": False, "builtin": True},
+                 "openai": {"label": "OpenAI", "url": "", "api": "openai", "auth": False, "builtin": True},
+                 "local": {"label": "Lokalny", "url": "", "api": "", "auth": False, "builtin": True}}
+    return {"executors": rows, "providers": providers, "catalog": {"stored": stored, "warnings": []}}
+
+
 def _status(default, endpoints: dict, roles: dict, report=None, pulls=None, checked=True, warnings=(),
             exists=True, agent_program="codex", search=None) -> dict:
     if "embed" not in roles:
@@ -86,7 +116,8 @@ def _status(default, endpoints: dict, roles: dict, report=None, pulls=None, chec
     return {"checked": checked, "default": default,
             "config": {"path": CONFIG_PATH, "exists": exists, "error": "", "warnings": list(warnings)},
             "endpoints": endpoints, "roles": roles, "report": report if report is not None else _report(),
-            "pulls": pulls or {}, "agentProgram": agent_program, "search": search or _search()}
+            "pulls": pulls or {}, "agentProgram": agent_program, "search": search or _search(),
+            **_executors(endpoints, roles, default, agent_program)}
 
 
 LOCAL_MODELS = (QWEN8, GPTOSS20, BGE, BIELIK, CODER30)
@@ -180,7 +211,22 @@ def busy() -> dict:
     return status
 
 
-VARIANTS = {"local": local, "mac-offline": mac_offline, "mac": mac, "pulling": pulling, "errors": errors,
+def catalog() -> dict:
+    """Katalog z innym dostawcą (Groq, API OpenAI, token zapisany) i raportem w chmurze; agent na tym komputerze."""
+    status = local()
+    status["roles"]["agent"] = _role("local", "qwen3-coder:30b", None, status["endpoints"], pinned=True)
+    status["report"] = _report("claude")
+    extra = [{"name": "Groq mały", "program": "codex", "model": "llama-3.1-8b", "provider": "groq", "endpoint": "",
+              "url": "https://api.groq.example", "classes": ["lekki", "standard"], "local": False, "where": "cloud",
+              "available": None, "error": "", "builtin": False, "modelSet": True, "programSet": True,
+              "endpointSet": False}]
+    status.update(_executors(status["endpoints"], status["roles"], "local", "codex", extra, stored=True))
+    status["providers"]["groq"] = {"label": "Groq", "url": "https://api.groq.example", "api": "openai", "auth": True,
+                                   "builtin": False}
+    return status
+
+
+VARIANTS = {"catalog": catalog, "local": local, "mac-offline": mac_offline, "mac": mac, "pulling": pulling, "errors": errors,
             "checking": checking, "busy": busy}
 
 
