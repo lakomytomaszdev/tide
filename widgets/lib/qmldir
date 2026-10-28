@@ -24,3 +24,6 @@ TideWindow 1.0 TideWindow.qml
 StreamCard 1.0 StreamCard.qml
 ProfileList 1.0 ProfileList.qml
 MicOffIcon 1.0 MicOffIcon.qml
+ScenesCard 1.0 ScenesCard.qml
+StreamConsole 1.0 StreamConsole.qml
+ChatView 1.0 ChatView.qml
