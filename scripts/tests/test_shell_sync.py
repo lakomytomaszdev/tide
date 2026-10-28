@@ -31,7 +31,7 @@ exec sleep 30
 """
 
 
-class ShellSyncTest(unittest.TestCase):
+class ShellSyncBase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="tide-shell-sync-"))
         self.addCleanup(shutil.rmtree, self.tmp)
@@ -81,6 +81,9 @@ class ShellSyncTest(unittest.TestCase):
     def stamp_result(self):
         return json.loads(self.stamp.read_text())["result"]
 
+
+
+class ShellSyncTest(ShellSyncBase):
     def test_copy_is_system_package_with_tide_lockscreen(self):
         out = self.sync()
         self.assertIn("wynik: ok", out.stdout)
@@ -90,8 +93,10 @@ class ShellSyncTest(unittest.TestCase):
             if not name.startswith("contents/lockscreen/"):
                 self.assertEqual(copied[name], text, name)
         lockscreen = {k for k in copied if k.startswith("contents/lockscreen/")}
+        # Znacznik wariantu (decyzja 77) jedzie z katalogiem ekranu przy przełączaniu wariantów.
         self.assertEqual(lockscreen, {"contents/lockscreen/LockScreen.qml", "contents/lockscreen/tide/Tokens.qml",
-                                      "contents/lockscreen/NOTICE"})
+                                      "contents/lockscreen/NOTICE", "contents/lockscreen/.tide-lock-variant"})
+        self.assertEqual(copied["contents/lockscreen/.tide-lock-variant"], "mist\n")
         self.assertEqual(copied["contents/lockscreen/LockScreen.qml"], "// ekran Tide\n")
         marker = json.loads(copied["tide-shell-copy.json"])
         self.assertEqual(set(copied) - set(system) - lockscreen, {"tide-shell-copy.json"})
@@ -205,6 +210,125 @@ class ShellSyncTest(unittest.TestCase):
                              capture_output=True, text=True).stdout
         self.assertIn("(Tide)", out)
         self.assertIn("ok", out)
+
+
+class LockVariantTest(ShellSyncBase):
+    """Warianty ekranu blokady (Tide i Stream) w jednej kopii powłoki i tanie przełączanie między nimi."""
+
+    def setUp(self):
+        super().setUp()
+        self.stream = self.data / "tide/lockscreens/streamer"
+        self.put(self.stream / "contents/lockscreen/LockScreen.qml", "// ekran Stream\n")
+        self.put(self.stream / "contents/lockscreen/tide/Tokens.qml", "// tokeny Stream\n")
+        self.put(self.stream / "NOTICE", "GPL-2.0-or-later\n")
+        self.active = self.copy / "contents/lockscreen"
+
+    def variant(self, *args, check=True):
+        return subprocess.run(["/usr/bin/python3", str(SCRIPT), "variant", *args], env=self.env,
+                              capture_output=True, text=True, check=check, timeout=30)
+
+    def test_copy_holds_every_variant_and_mist_is_active(self):
+        self.sync("--force")
+        self.assertEqual((self.active / "LockScreen.qml").read_text(), "// ekran Tide\n")
+        inactive = self.copy / "contents/lockscreen-variants/streamer"
+        self.assertEqual((inactive / "LockScreen.qml").read_text(), "// ekran Stream\n")
+        self.assertEqual((inactive / ".tide-lock-variant").read_text(), "streamer\n")
+        self.assertTrue((inactive / "NOTICE").is_file())
+        # Greeter sprawdził oba warianty w kopii roboczej.
+        self.assertEqual(len(self.greeter_calls()), 2)
+        self.assertEqual(self.variant().stdout, "mist\n")
+
+    def test_switch_is_cheap_atomic_and_idempotent(self):
+        self.sync("--force")
+        inode = self.copy.stat().st_ino
+        start = time.monotonic()
+        self.variant("streamer")
+        self.assertLess(time.monotonic() - start, 1.0)
+        self.assertEqual((self.active / "LockScreen.qml").read_text(), "// ekran Stream\n")
+        self.assertEqual((self.copy / "contents/lockscreen-variants/mist/LockScreen.qml").read_text(), "// ekran Tide\n")
+        self.assertEqual(self.variant().stdout, "streamer\n")
+        self.variant("streamer")  # drugi raz: bez zmian
+        self.assertEqual(self.variant().stdout, "streamer\n")
+        self.assertEqual(sorted(p.name for p in (self.copy / "contents/lockscreen-variants").iterdir()), ["mist"])
+        self.variant("mist")
+        self.assertEqual((self.active / "LockScreen.qml").read_text(), "// ekran Tide\n")
+        # Bez przebudowy: ta sama kopia, żadnego sprawdzania w greeterze.
+        self.assertEqual(self.copy.stat().st_ino, inode)
+        self.assertEqual(len(self.greeter_calls()), 2)
+        self.assertEqual(self.sync().stdout, "")  # odcisk źródeł bez zmian
+
+    def test_selection_survives_a_rebuild(self):
+        self.sync("--force")
+        self.variant("streamer")
+        self.put(self.system / "contents/views/Desktop.qml", "// pulpit 6.9.0\n")  # aktualizacja Plasmy
+        self.sync()
+        self.assertEqual((self.copy / "contents/views/Desktop.qml").read_text(), "// pulpit 6.9.0\n")
+        self.assertEqual(self.variant().stdout, "streamer\n")
+        self.sync("--force")  # make install
+        self.assertEqual(self.variant().stdout, "streamer\n")
+
+    def test_new_variant_source_resyncs_the_copy(self):
+        self.sync("--force")
+        self.put(self.stream / "contents/lockscreen/tide/Tokens.qml", "// tokeny Stream v2\n")
+        self.sync()
+        self.assertEqual((self.copy / "contents/lockscreen-variants/streamer/tide/Tokens.qml").read_text(),
+                         "// tokeny Stream v2\n")
+
+    def test_broken_variant_is_left_out_and_mist_stays(self):
+        self.put(self.stream / "contents/lockscreen/LockScreen.qml", "// ZEPSUTE\n")
+        out = self.sync("--force")
+        self.assertIn("wynik: ok", out.stdout)
+        self.assertEqual((self.active / "LockScreen.qml").read_text(), "// ekran Tide\n")
+        self.assertFalse((self.copy / "contents/lockscreen-variants/streamer").exists())
+        failed = self.variant("streamer", check=False)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(self.variant().stdout, "mist\n")
+
+    def test_active_variant_that_breaks_falls_back_to_mist(self):
+        self.sync("--force")
+        self.variant("streamer")
+        self.put(self.stream / "contents/lockscreen/LockScreen.qml", "// ZEPSUTE\n")
+        self.sync()
+        self.assertEqual(self.variant().stdout, "mist\n")
+        self.assertEqual((self.active / "LockScreen.qml").read_text(), "// ekran Tide\n")
+
+    def test_removed_variant_source_drops_it_from_the_copy(self):
+        self.sync("--force")
+        self.variant("streamer")
+        shutil.rmtree(self.stream)
+        self.sync()
+        self.assertEqual(self.variant().stdout, "mist\n")
+        self.assertFalse((self.copy / "contents/lockscreen-variants").exists())
+
+    def test_without_a_copy_only_mist_can_be_applied(self):
+        self.assertEqual(self.variant().stdout, "mist\n")
+        self.variant("mist")
+        self.assertNotEqual(self.variant("streamer", check=False).returncode, 0)
+        self.assertFalse(self.copy.exists())
+
+    def test_interrupted_switch_is_read_and_repaired(self):
+        # Przerwa między atomową zamianą a uporządkowaniem nazw: katalog „streamer” ma w sobie Mist.
+        self.sync("--force")
+        variants = self.copy / "contents/lockscreen-variants"
+        self.active.rename(self.tmp / "swap")
+        (variants / "streamer").rename(self.active)
+        (self.tmp / "swap").rename(variants / "streamer")
+        self.assertEqual(self.variant().stdout, "streamer\n")
+        self.variant("mist")
+        self.assertEqual((self.active / "LockScreen.qml").read_text(), "// ekran Tide\n")
+        self.assertEqual(sorted(p.name for p in variants.iterdir()), ["streamer"])
+        self.assertEqual((variants / "streamer/.tide-lock-variant").read_text(), "streamer\n")
+
+    def test_differing_files_get_distinct_modification_times(self):
+        # Pamięć podręczna QML greetera rozpoznaje plik po ścieżce i czasie modyfikacji, a po
+        # przełączeniu ta sama ścieżka (tide/Tokens.qml) ma inną treść.
+        stamp = 1_700_000_000
+        for root in (self.tide, self.stream):
+            os.utime(root / "contents/lockscreen/tide/Tokens.qml", (stamp, stamp))
+        self.sync("--force")
+        mist = (self.active / "tide/Tokens.qml").stat().st_mtime_ns
+        stream = (self.copy / "contents/lockscreen-variants/streamer/tide/Tokens.qml").stat().st_mtime_ns
+        self.assertNotEqual(mist // 1_000_000, stream // 1_000_000)
 
 
 @unittest.skipUnless(REAL_GREETER and REAL_SYSTEM_SHELL.is_dir(), "brak kscreenlocker_greet albo pakietu powłoki")
