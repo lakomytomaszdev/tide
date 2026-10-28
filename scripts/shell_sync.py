@@ -356,10 +356,36 @@ def switch_variant(copy: Path, name: str) -> bool:
 
 
 def lock_variant() -> str:
-    """Bieżący wariant ekranu blokady: „mist”, „streamer”…; bez kopii Tide — „mist”."""
+    """Bieżący wariant ekranu blokady: „mist”, „streamer”…; "" bez kopii Tide (ekran Plasmy z systemu)."""
     if not COPY.is_dir() or not is_ours(COPY):
-        return DEFAULT_VARIANT
+        return ""
     return active_variant(COPY)
+
+
+def _complete(lockscreen: Path) -> bool:
+    """Ekran wariantu ma QML i wszystkie obrazy tła wymienione w tide/Backdrop.qml."""
+    backdrop = lockscreen / "tide" / "Backdrop.qml"
+    if not (lockscreen / "LockScreen.qml").is_file() or not backdrop.is_file():
+        return False
+    prefix = "readonly property var outputs: "
+    for line in backdrop.read_text().splitlines():
+        line = line.strip()
+        if line.startswith(prefix):
+            try:
+                entries = json.loads(line[len(prefix):])
+            except ValueError:
+                return False
+            files = [e.get(k) for e in entries for k in ("awake", "sleep") if e.get(k)]
+            return all((lockscreen / "tide" / f).is_file() for f in files)
+    return False
+
+
+def lock_variants() -> set[str]:
+    """Warianty gotowe do nałożenia: w kopii Tide, z QML i obrazami tła; bez kopii — pusty zbiór."""
+    if not COPY.is_dir() or not is_ours(COPY):
+        return set()
+    found = {active_variant(COPY)} if _complete(ACTIVE) else set()
+    return found | {name for name, path in _inactive(COPY).items() if _complete(path)}
 
 
 def apply_lock_variant(name: str) -> None:
@@ -369,10 +395,10 @@ def apply_lock_variant(name: str) -> None:
     Gdy wariantu nie ma (kopii Tide nie ma, wariant nie jest zainstalowany albo nie przeszedł
     sprawdzenia), zgłasza LockVariantError i niczego nie zmienia.
     """
-    if lock_variant() == name:
-        return
     if not COPY.is_dir() or not is_ours(COPY):
         raise LockVariantError(f"brak kopii powłoki Tide ({COPY}) — wariant {name!r} niedostępny")
+    if active_variant(COPY) == name:
+        return
     if not switch_variant(COPY, name):
         raise LockVariantError(f"wariantu {name!r} nie ma w kopii powłoki (są: "
                                f"{', '.join([active_variant(COPY), *_inactive(COPY)])})")
@@ -448,7 +474,7 @@ def sync(force: bool = False) -> str:
         if ok:
             check_variants(new)
             # Wybór wariantu przeżywa przebudowę; wariant, którego już nie ma, oddaje miejsce Mist.
-            selected = lock_variant()
+            selected = lock_variant() or DEFAULT_VARIANT
             if selected != DEFAULT_VARIANT and not switch_variant(new, selected):
                 log(f"wariantu ekranu blokady {selected!r} nie ma w nowej kopii — aktywny: {DEFAULT_VARIANT}.")
             replace_copy(new)
@@ -483,7 +509,7 @@ def status() -> str:
         state = f"kopia powłoki: {COPY} ({owner})"
     else:
         state = "kopia powłoki: brak (ekran blokady Plasmy)"
-    return (f"{state}\nwariant ekranu blokady: {lock_variant()}\n"
+    return (f"{state}\nwariant ekranu blokady: {lock_variant() or '— (ekran Plasmy)'}\n"
             f"ostatnia synchronizacja: {stamp.get('result', '—')} {stamp.get('time', '')}").rstrip()
 
 

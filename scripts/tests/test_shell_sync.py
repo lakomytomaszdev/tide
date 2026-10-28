@@ -300,9 +300,10 @@ class LockVariantTest(ShellSyncBase):
         self.assertEqual(self.variant().stdout, "mist\n")
         self.assertFalse((self.copy / "contents/lockscreen-variants").exists())
 
-    def test_without_a_copy_only_mist_can_be_applied(self):
-        self.assertEqual(self.variant().stdout, "mist\n")
-        self.variant("mist")
+    def test_without_a_copy_there_is_no_tide_variant(self):
+        # Bez kopii Tide blokada to ekran Plasmy z systemu — żaden wariant Tide.
+        self.assertEqual(self.variant().stdout, "\n")
+        self.assertNotEqual(self.variant("mist", check=False).returncode, 0)
         self.assertNotEqual(self.variant("streamer", check=False).returncode, 0)
         self.assertFalse(self.copy.exists())
 
