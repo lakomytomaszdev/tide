@@ -21,6 +21,7 @@ help:
 	@echo "make uninstall             usunięcie wszystkiego, co zainstalował Tide"
 	@echo "make test                  testy wszystkich komponentów"
 	@echo "make activity-look-check   czy wygląd pulpitu zgadza się z opisem bieżącej aktywności (tylko odczyt)"
+	@echo "make activity-look-status  przypisania aktywności, wyglądy, dziennik przełączenia, stan kopii silnika"
 	@echo "make check-plans           kontrola numerów ticketów w planach agentów (~/DevWorkspace)"
 	@echo "make next-id REPO=katalog  następny lokalny numer ticketu z rezerwacją [PREFIX= COUNT= TITLE= DRY_RUN=1]"
 	@echo "make backup [NAME=nazwa]   kopia obecnego wyglądu Plasmy"

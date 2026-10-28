@@ -14,7 +14,9 @@ albo ActivityManager jeszcze nie odpowiada) to ponowienie z rosnącą przerwą; 
 na następne zdarzenie.
 
 Silnik działa w osobnym procesie: plasma-apply-* trwają chwilę i nie mogą blokować pętli usługi,
-a błąd w nim nie kładzie usługi.
+a błąd w nim nie kładzie usługi. Istnienie kopii silnika jest sprawdzane przy każdym uruchomieniu
+(make install-activity-look i uninstall-activity-look w trakcie działania usługi). Zatrzymanie
+usługi zabija trwające nałożenie — dziennik zostaje w stanie „applying”, a dokończy je następny start.
 """
 from __future__ import annotations
 
@@ -31,6 +33,12 @@ TEMPFAIL = 75
 DEBOUNCE_MS = 400
 RETRY_MS = (2_000, 60_000)  # pierwsza i najdłuższa przerwa przed ponowieniem
 CURRENT = None  # „bieżąca aktywność” — silnik pyta sam
+
+
+def qt_timer(parent: QObject, interval_ms: int, callback) -> QTimer:
+    timer = QTimer(parent, singleShot=True, interval=interval_ms)
+    timer.timeout.connect(callback)
+    return timer
 
 
 def default_engine() -> str | None:
@@ -80,30 +88,26 @@ class EngineProcess(QObject):
 class ActivityLookMonitor(QObject):
     def __init__(self, engine: str | None, launcher=None, bus: QDBusConnection | None = None,
                  debounce_ms: int = DEBOUNCE_MS, retry_ms: tuple[int, int] = RETRY_MS, subscribe: bool = True,
-                 parent=None):
+                 exists=os.path.isfile, timer=qt_timer, parent=None):
         super().__init__(parent)
         self.engine = engine
         self.launcher = launcher or EngineProcess(parent=self)
         self.bus = bus
         self.subscribe = subscribe
+        self.exists = exists
+        self._missing_reported = False
         self.retry_first, self.retry_max = retry_ms
         self._retry = self.retry_first
         self._pending: tuple[str | None] | None = None  # ostatnie żądanie, jeszcze nieuruchomione
         self._last: tuple[str | None] | None = None     # żądanie w toku (do ponowienia)
         self._running = False
         self._stopped = False
-        self._debounce = QTimer(self, singleShot=True, interval=debounce_ms)
-        self._debounce.timeout.connect(self._launch)
-        self._retry_timer = QTimer(self, singleShot=True)
-        self._retry_timer.timeout.connect(self._launch)
+        self._debounce = timer(self, debounce_ms, self._launch)
+        self._retry_timer = timer(self, self.retry_first, self._launch)
 
     def start(self) -> None:
         if not self.engine:
             print("tide-daemon: wygląd aktywności wyłączony (brak silnika — make install-activity-look)", flush=True)
-            return
-        if not os.path.isfile(self.engine) and isinstance(self.launcher, EngineProcess):
-            print(f"tide-daemon: wygląd aktywności: brak {self.engine} (make install-activity-look)", flush=True)
-            self.engine = None
             return
         if self.subscribe:
             bus = self.bus or QDBusConnection.sessionBus()
@@ -115,6 +119,9 @@ class ActivityLookMonitor(QObject):
         self._stopped = True
         self._debounce.stop()
         self._retry_timer.stop()
+        kill = getattr(self.launcher, "kill", None)
+        if self._running and kill is not None:
+            kill()
         if self.subscribe and self.engine:
             bus = self.bus or QDBusConnection.sessionBus()
             bus.disconnect(SERVICE, PATH, IFACE, "CurrentActivityChanged", self.activity_changed)
@@ -136,6 +143,14 @@ class ActivityLookMonitor(QObject):
     def _launch(self) -> None:
         if self._running or self._pending is None or self._stopped:
             return  # w toku: żądanie czeka i ruszy po zakończeniu (wygrywa ostatnie)
+        if not self.exists(self.engine):
+            # Kopii silnika nie ma (jeszcze albo już) — żądanie przepada, następne zdarzenie spróbuje znowu.
+            if not self._missing_reported:
+                print(f"tide-daemon: wygląd aktywności: brak {self.engine} (make install-activity-look)", flush=True)
+                self._missing_reported = True
+            self._pending = None
+            return
+        self._missing_reported = False
         self._last, self._pending = self._pending, None
         (activity,) = self._last
         args = ["-s", self.engine, "apply", "--source", "daemon"]
@@ -156,7 +171,8 @@ class ActivityLookMonitor(QObject):
             return
         if code == TEMPFAIL:
             self._pending = self._last
-            self._retry_timer.start(self._retry)
+            self._retry_timer.setInterval(self._retry)
+            self._retry_timer.start()
             self._retry = min(self._retry * 2, self.retry_max)
             return
         self._retry = self.retry_first

@@ -79,7 +79,7 @@ class AppearanceInstallTest(unittest.TestCase):
         self.assertTrue((self.data / "fonts/tide/GeistMono-Regular.ttf").is_file())
         self.assertTrue(self.read_config("kdeglobals", "General", "font").startswith("Geist,10,"))
         self.assertIn("plasma-apply-colorscheme TideMist", self.calls())
-        # Styl Plasmy nakłada install-plasma-style według wyglądu aktywności (decyzja 77).
+        # Styl Plasmy nakłada install-plasma-style według wyglądu aktywności (decyzja 78).
         self.assertFalse([c for c in self.calls() if c.startswith("plasma-apply-desktoptheme")])
 
     def test_uninstall_restores_previous_appearance(self):
@@ -117,6 +117,17 @@ class AppearanceInstallTest(unittest.TestCase):
         self.assertIn("plasma-apply-colorscheme TideStreamer", self.calls())
         self.assertNotIn("plasma-apply-colorscheme TideMist", self.calls())
         self.assertTrue((self.data / "color-schemes/TideMist.colors").is_file())  # pliki pracy są
+
+    def test_install_refreshes_a_stale_engine_copy_for_the_service(self):
+        engine = self.data / "tide/activity-look"
+        (engine / "scripts").mkdir(parents=True)
+        (engine / "scripts/activity_look.py").write_text("# stara kopia\n")
+        (engine / ".tide-engine.json").write_text(json.dumps({"hash": "stara"}))
+        out = subprocess.run(["/usr/bin/python3", str(ROOT / "scripts/appearance.py"), "install"],
+                             env=self.env, check=True, capture_output=True, text=True).stdout
+        self.assertIn("odświeżono kopię silnika", out)
+        self.assertEqual((engine / "scripts/activity_look.py").read_text(),
+                         (ROOT / "scripts/activity_look.py").read_text())
 
     def test_wrong_font_checksum_stops_install(self):
         self.env["TIDE_GEIST_SHA256"] = "0" * 64
