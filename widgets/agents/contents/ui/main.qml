@@ -63,13 +63,17 @@ PlasmoidItem {
     // W pasku bocznym (sidebarMode) bez NeedsAttention: chowany panel nie chowa się, dopóki
     // któryś aplet wymaga uwagi, więc czekający agent trzymałby pasek na ekranie. Otwarte
     // okienko z pełną listą trzyma pasek celowo, tak jak popup apletu (CompactApplet.qml).
-    Plasmoid.status: waitingCount > 0 && !Plasmoid.configuration.sidebarMode
+    Plasmoid.status: activityLook.workHidden ? PlasmaCore.Types.HiddenStatus
+        : waitingCount > 0 && !Plasmoid.configuration.sidebarMode
         ? PlasmaCore.Types.NeedsAttentionStatus
         : morePopupOpen ? PlasmaCore.Types.RequiresAttentionStatus : PlasmaCore.Types.ActiveStatus
     toolTipMainText: "Sesje agentów"
     toolTipSubText: Tide.Texts.agentsToolTip(source.available, workingCount, waitingCount, doneCount)
     // Pasek boczny Tide pokazuje widok szczegółowy na stałe (scripts/panels/sidebar.js).
     preferredRepresentation: Plasmoid.configuration.sidebarMode ? fullRepresentation : compactRepresentation
+
+    // W aktywności Stream kafelek pracy znika z panelu (widgets/lib/ActivityLook.qml, decyzja 80).
+    Tide.ActivityLook { id: activityLook }
 
     Tide.DaemonSource {
         id: source

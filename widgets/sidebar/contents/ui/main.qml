@@ -39,7 +39,9 @@ PlasmoidItem {
 
     Plasmoid.title: "Pasek boczny Tide"
     Plasmoid.icon: "view-left-new"
-    Plasmoid.status: revealed ? PlasmaCore.Types.RequiresAttentionStatus : PlasmaCore.Types.ActiveStatus
+    // W aktywności Stream pasek pracy jest pusty i schowany (decyzja 80): nagłówek znika, a skrót nic nie wysuwa.
+    Plasmoid.status: activityLook.workHidden ? PlasmaCore.Types.HiddenStatus
+        : revealed ? PlasmaCore.Types.RequiresAttentionStatus : PlasmaCore.Types.ActiveStatus
     Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
     // Aktywacja (skrót) nie ma niczego rozwijać — widżet nie ma popupu.
     activationTogglesExpanded: false
@@ -51,7 +53,17 @@ PlasmoidItem {
     Connections {
         target: Plasmoid
         function onActivated() {
-            root.toggle()
+            if (!activityLook.workHidden) {
+                root.toggle()
+            }
+        }
+    }
+
+    Tide.ActivityLook {
+        id: activityLook
+        onWorkHiddenChanged: if (workHidden) {
+            root.revealed = false
+            hideTimer.stop()
         }
     }
 

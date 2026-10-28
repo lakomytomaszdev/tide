@@ -70,6 +70,10 @@ PlasmoidItem {
 
     // Prognoza z historii odczytów (tide-daemon). Usługa sama daje znać sygnałem Changed,
     // więc rzadkie odpytywanie jest tylko zabezpieczeniem.
+    Plasmoid.status: activityLook.workHidden ? PlasmaCore.Types.HiddenStatus : PlasmaCore.Types.ActiveStatus
+    // W aktywności Stream kafelek pracy znika z panelu (widgets/lib/ActivityLook.qml, decyzja 80).
+    Tide.ActivityLook { id: activityLook }
+
     Tide.DaemonSource {
         id: forecastSource
         path: "/Limits"
