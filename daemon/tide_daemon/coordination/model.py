@@ -138,6 +138,9 @@ class Coordinator:
     last_ts: float = 0.0
     runs: dict = field(default_factory=dict)        # id → Run (kolejność dodania)
     questions: dict = field(default_factory=dict)   # id → Question (bez odpowiedzi)
+    # Pliki planów, które koordynator sam zapisał (Write/Edit, apply_patch): nazwa pliku → czas ostatniego
+    # zapisu. Dowód, czyj jest plan bez `session` (plan.pick) — dwa plany w jednym repozytorium.
+    plan_writes: dict = field(default_factory=dict)
 
     @property
     def spawned(self) -> int:

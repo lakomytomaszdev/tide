@@ -845,6 +845,99 @@ class PlanYouTrackTest(unittest.TestCase):
         self.assertEqual(project.plans[0]["all"][0]["description"], "", "bez YouTracka — bez opisu")
 
 
+PLAN_NO_SESSION = """---
+tide-plan: 1
+title: {title}
+tracker: local
+ticket-prefix: PT
+coordinator: claude
+session:
+status: active
+updated: {updated}
+---
+
+| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |
+| --- | --- | --- | --- | --- | --- |
+| {ticket} | {title} | w-toku | | implementer | |
+"""
+
+
+class TwoPlansOneRepoTest(unittest.TestCase):
+    """PT-24: dwa aktywne plany bez `session` w jednym repozytorium i dwóch koordynatorów Claude. Pytanie
+    koordynatora planu „Lokalne modele” było w „Czeka na mnie” podpisane tytułem świeższego planu
+    „Tablica pracy i Docker” drugiego koordynatora — tablica koordynacji dawała obu ten sam plan
+    (plan.pick: najświeższy aktywny), a raport bierze tytuł z tablicy o id koordynatora."""
+
+    def setUp(self):
+        from . import coordfix as F
+        self.F = F
+        self.tmp = tempfile.mkdtemp(prefix="tide-two-plans-")
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def test_waiting_line_carries_the_plan_of_its_own_coordinator(self):
+        from tide_daemon.coordination.scanner import CoordinationScanner
+        F = self.F
+        repo = os.path.join(self.tmp, "workspace", "demo")
+        os.makedirs(os.path.join(repo, ".git"))
+        with open(os.path.join(repo, ".git", "HEAD"), "w", encoding="utf-8") as fh:
+            fh.write("ref: refs/heads/master\n")
+        plans_dir = os.path.join(repo, "docs", "agents", "plans")
+        os.makedirs(plans_dir)
+        local = os.path.join(plans_dir, "2026-10-27-local-models.md")
+        board = os.path.join(plans_dir, "2026-10-27-board-and-docker.md")
+        # Plan drugiego koordynatora jest świeższy — dawniej wygrywał u obu.
+        for path, title, ticket, ago in ((local, "Lokalne modele", "PT-31", 90), (board, "Tablica pracy i Docker",
+                                                                                 "PT-29", 10)):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(PLAN_NO_SESSION.format(title=title, ticket=ticket, updated=F.at(ago)))
+        claude_root = os.path.join(self.tmp, "claude")
+        ids = {"local": "c0000000-0000-4000-8000-0000000000a1", "board": "c0000000-0000-4000-8000-0000000000b2"}
+        for key, plan_path, ticket in (("local", local, "PT-31"), ("board", board, "PT-29")):
+            log = F.ClaudeLog(claude_root, ids[key], repo, "master")
+            log.user_text("Poprowadź plan.", 120)
+            log.tool_use(f"w-{key}", "Write", {"file_path": plan_path, "content": "…"}, 110)
+            log.spawn(f"s-{key}", f"a{key}00000000001", f"{ticket}: implement", "implementer", 100)
+            log.subagent(f"a{key}00000000001", "implementer", f"{ticket}: implement", f"s-{key}", "master",
+                         minutes_ago=5)
+            if key == "local":
+                log.tool_use("ask", "AskUserQuestion", {"questions": [{"question": "Mogę scalić i zainstalować?"}]}, 3)
+            else:
+                log.tool_use(f"e-{key}", "Edit", {"file_path": plan_path, "old_string": "a", "new_string": "b"}, 8)
+            log.write()
+        coord_local, coord_board = "claude:" + ids["local"], "claude:" + ids["board"]
+        live = [{"id": coord_local, "state": "waiting", "reason": "question"}, {"id": coord_board, "state": "working"}]
+        scanner = CoordinationScanner(claude_root, os.path.join(self.tmp, "codex"), clock=lambda: F.NOW,
+                                      registry=os.path.join(self.tmp, "ticket-ids.json"))
+        boards = {b["id"]: b for b in scanner.refresh(live)}
+        self.assertEqual(boards[coord_local]["title"], "Lokalne modele")
+        self.assertEqual(boards[coord_board]["title"], "Tablica pracy i Docker")
+        self.assertEqual(boards[coord_local]["plan"]["path"], local)
+
+        cache = os.path.join(self.tmp, "coordination.json")
+        with open(cache, "w", encoding="utf-8") as fh:
+            json.dump(actions.cache_payload(list(boards.values()), F.NOW), fh)
+
+        def session(sid, title, state, waiting=""):
+            return types.SimpleNamespace(
+                id=sid, tool="claude", title=title, prompt=title, state=state, reason="question" if waiting else "",
+                interrupted=False, final_message="", final_ts=0, last_user_ts=0, waiting_text=waiting,
+                since=F.NOW - 180, first_ts=F.NOW - 7200, last_ts=F.NOW - 60, last_action="", runs=[], automation={},
+                branch="master", cwd=repo)
+        project = types.SimpleNamespace(
+            name="demo", label="", path=repo, key=repo, slug="demo", is_repo=True, plans=[], to_clean=[],
+            unpushed=[], main_dirty_count=0, main_branch="master", branches=[], active=True, conflicts=[],
+            sessions=[session(coord_local, "Mac Studio na lokalne modele", "waiting", "Mogę scalić i zainstalować?"),
+                      session(coord_board, "Własny backlog", "working")])
+        plans.attach([project], F.NOW - 86400, F.NOW, cache, None)
+        self.assertEqual({e["id"]: e["title"] for e in project.plans},
+                         {coord_local: "Lokalne modele", coord_board: "Tablica pracy i Docker"},
+                         "każdy plan raz, przy swoim koordynatorze — bez osobnego wpisu z pliku")
+        report = types.SimpleNamespace(start=F.NOW - 86400, board=None)
+        waiting = standup.rules(standup.project_facts(report, project))["waiting"]
+        self.assertEqual([(i["text"], i.get("sessionId")) for i in waiting],
+                         [("Lokalne modele: agent pyta: „Mogę scalić i zainstalować?”", coord_local)])
+
+
 class CachePayloadTest(unittest.TestCase):
     def test_ticket_fields_for_daily(self):
         board = {"id": "claude:x", "tool": "claude", "question": {"text": "Czy scalić?", "ts": 1},

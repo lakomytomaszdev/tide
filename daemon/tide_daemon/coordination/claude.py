@@ -15,6 +15,8 @@ Co wiemy o strukturze (z obserwacji prawdziwych dzienników, format nie jest pub
 - `SendMessage` {to: agentId} wznawia podagenta (`toolUseResult.resumedAgentId`) — kolejna runda,
   zakończona kolejnym powiadomieniem; `TaskStop` {task_id} go zatrzymuje,
 - `AskUserQuestion` bez tool_result to pytanie, na które koordynator czeka,
+- `Write`/`Edit`/`MultiEdit` z `file_path` w katalogu planów to plan zapisany przez samego koordynatora
+  (Coordinator.plan_writes — czyj jest plan bez `session`, plan.pick),
 - subagents/agent-<id>.meta.json: agentType, description, toolUseId, model, spawnDepth,
   requestShape (background…), a w nowszych wersjach `finished`.
 
@@ -29,11 +31,15 @@ from ..agents.claude import describe_tool
 from ..agents.jsonl import read_head
 from ..agents.timeutil import parse_ts
 from .model import (COMPLETED, FAILED, KILLED, PROMPT_HEAD, Coordinator, Question, Run)
+from .plan import plan_file_name
 
 SPAWN_TOOLS = ("Agent", "Task")
 WATCHED_TOOLS = SPAWN_TOOLS + ("SendMessage", "AskUserQuestion", "TaskStop")
 LINE_MARKERS = (b"task-notification", b'"peer"', b'"custom-title"', b'"ai-title"')
 TOOL_NAME = re.compile(rb'"name":\s*"(?:Agent|Task|SendMessage|AskUserQuestion|TaskStop)"')
+# Zapis pliku planu przez samego koordynatora (dowód, czyj jest plan bez `session`, plan.pick).
+WRITE_TOOLS = ("Write", "Edit", "MultiEdit")
+WRITE_NAME = re.compile(rb'"name":\s*"(?:Write|Edit|MultiEdit)"')
 TOOL_USE_ID = re.compile(rb'"tool_use_id":\s*"([^"]+)"')
 TIMESTAMP = re.compile(rb'"timestamp":\s*"([^"]+)"')
 SIDECHAIN = re.compile(rb'"isSidechain":\s*true')
@@ -114,7 +120,8 @@ class ClaudeCoordinatorLog:
             ts = parse_ts(stamp.group(1).decode("ascii", "replace"))
             if ts > self.coord.last_ts:
                 self.coord.last_ts = ts
-        interesting = any(marker in line for marker in LINE_MARKERS) or bool(TOOL_NAME.search(line))
+        interesting = any(marker in line for marker in LINE_MARKERS) or bool(TOOL_NAME.search(line)) \
+            or (b"plans/" in line and bool(WRITE_NAME.search(line)))
         if not interesting and b'"tool_result"' in line and self._uses:
             interesting = any(m.group(1).decode("ascii", "replace") in self._uses for m in TOOL_USE_ID.finditer(line))
         if not interesting:
@@ -144,8 +151,12 @@ class ClaudeCoordinatorLog:
             if message.get("model") and not str(message.get("model")).startswith("<"):
                 self.coord.model = str(message["model"])
             for block in _blocks(message.get("content")):
-                if block.get("type") == "tool_use" and block.get("name") in WATCHED_TOOLS:
+                if block.get("type") != "tool_use":
+                    continue
+                if block.get("name") in WATCHED_TOOLS:
                     self._use(block, ts)
+                elif block.get("name") in WRITE_TOOLS:
+                    self._plan_write(block, ts)
         elif kind == "user":
             self._where(record)
             content = (record.get("message") or {}).get("content")
@@ -192,6 +203,12 @@ class ClaudeCoordinatorLog:
             self._spawns[use_id] = {"_note": " ".join(str(note).split())[:120]}
         elif name == "AskUserQuestion":
             self.coord.questions[use_id] = Question(use_id, ts, _questions(args))
+
+    def _plan_write(self, block: dict, ts: float) -> None:
+        args = block.get("input") if isinstance(block.get("input"), dict) else {}
+        name = plan_file_name(args.get("file_path") or "")
+        if name:
+            self.coord.plan_writes[name] = max(ts, self.coord.plan_writes.get(name, 0.0))
 
     def _result(self, block: dict, extra, ts: float) -> None:
         use_id = str(block.get("tool_use_id") or "")

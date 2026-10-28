@@ -198,6 +198,75 @@ updated: wczoraj
         self.assertIs(plan_mod.pick([a, b, c, d], "s2", "codex"), c)
         self.assertIsNone(plan_mod.pick([a, d], "s2", "claude"))
 
+    def test_pick_two_sessionless_plans_by_who_wrote_them(self):
+        # PT-24: dwa aktywne plany bez `session` w jednym repozytorium i dwóch koordynatorów Claude —
+        # dawniej obaj dostawali najświeższy plan, a raport podpisywał pytanie jednego tytułem planu drugiego.
+        older = plan_mod.Plan(path="/r/docs/agents/plans/2026-10-27-local-models.md", title="Lokalne modele",
+                              updated_ts=100)
+        fresher = plan_mod.Plan(path="/r/docs/agents/plans/2026-10-27-board-and-docker.md",
+                                title="Tablica pracy i Docker", updated_ts=200)
+        plans = [fresher, older]
+        self.assertIs(plan_mod.pick(plans, "a", "claude"), fresher, "bez dowodów — jak dotąd najświeższy")
+        mine_a, mine_b = {"2026-10-27-local-models.md": 50.0}, {"2026-10-27-board-and-docker.md": 40.0}
+        self.assertIs(plan_mod.pick(plans, "a", "claude", written=mine_a, taken=set(mine_b)), older,
+                      "plan, który koordynator sam zapisał, wygrywa ze świeższym planem innego")
+        self.assertIs(plan_mod.pick(plans, "b", "claude", written=mine_b, taken=set(mine_a)), fresher)
+        self.assertIs(plan_mod.pick(plans, "c", "claude", taken=set(mine_a) | set(mine_b)), None,
+                      "trzeci koordynator bez planu nie dostaje cudzego")
+        self.assertIs(plan_mod.pick(plans, "c", "claude", taken=set(mine_b)), older)
+        claimed = plan_mod.Plan(path=older.path, title="Lokalne modele", session="b", updated_ts=100)
+        self.assertIs(plan_mod.pick([fresher, claimed], "b", "claude", written=mine_b), claimed,
+                      "`session` w planie wygrywa ze wszystkim")
+
+    def test_plan_file_names_from_writes_and_patches(self):
+        self.assertEqual(plan_mod.plan_file_name("/r/docs/agents/plans/2026-10-27-local-models.md"),
+                         "2026-10-27-local-models.md")
+        self.assertEqual(plan_mod.plan_file_name("/board/docs/demo/plans/2026-10-27-x.md"), "2026-10-27-x.md")
+        self.assertEqual(plan_mod.plan_file_name("/r/docs/agents/plans/README.md"), "")
+        self.assertEqual(plan_mod.plan_file_name("/r/src/plans.py"), "")
+        # Łatka apply_patch jako napis JS w kodzie narzędzia `exec` (nowe wiersze jako `\n`) i zwykła.
+        js = 'const patch = "*** Begin Patch\\n*** Update File: /r/docs/agents/plans/2026-10-27-a.md\\n@@\\n' \
+             '*** Add File: src/x.py\\n*** End Patch";'
+        self.assertEqual(plan_mod.patch_plan_files(js), ["2026-10-27-a.md"])
+        self.assertEqual(plan_mod.patch_plan_files("*** Begin Patch\n*** Add File: docs/agents/plans/2026-10-28-b.md\n+x\n"),
+                         ["2026-10-28-b.md"])
+
+
+class PlanWritesTest(World):
+    """Kto zapisał plan: Coordinator.plan_writes z dziennika Claude (Write/Edit) i Codexa (apply_patch)."""
+
+    def test_claude_write_and_edit_of_plan_files(self):
+        repo = os.path.join(self.tmp, "repo")
+        log = F.ClaudeLog(os.path.join(self.tmp, "claude"), F.CLAUDE_COORD, repo, "master")
+        log.spawn("toolu_a", "aimpl0000000000001", "PT-1: implement", "implementer", 50)
+        plan_path = os.path.join(repo, "docs", "agents", "plans", "2026-10-27-local-models.md")
+        log.tool_use("toolu_w", "Write", {"file_path": plan_path, "content": "---\ntide-plan: 1\n---\n"}, 40)
+        log.tool_use("toolu_e", "Edit", {"file_path": plan_path, "old_string": "a", "new_string": "b"}, 20)
+        log.tool_use("toolu_x", "Edit", {"file_path": os.path.join(repo, "src", "plans.py"), "old_string": "a",
+                                         "new_string": "b"}, 10)
+        log.lines.append({"isSidechain": True, "type": "assistant", "timestamp": F.at(5), "message": {"content": [
+            {"type": "tool_use", "id": "s", "name": "Write",
+             "input": {"file_path": os.path.join(repo, "docs/agents/plans/2026-10-28-cudzy.md")}}]}})
+        log.write()
+        reader = ClaudeCoordinatorLog(log.path)
+        reader.update()
+        self.assertEqual(reader.coord.plan_writes, {"2026-10-27-local-models.md": F.NOW - 20 * 60},
+                         "ostatni zapis planu; zwykły plik i wpis podagenta się nie liczą")
+
+    def test_codex_patch_in_exec_tool(self):
+        from tide_daemon.coordination.codex import CodexThreadLog
+        repo = os.path.join(self.tmp, "repo")
+        code = ('const patch = "*** Begin Patch\\n*** Update File: ' + repo
+                + '/docs/agents/plans/2026-10-27-board.md\\n@@\\n-a\\n+b\\n*** End Patch";')
+        path = F.codex_thread(os.path.join(self.tmp, "codex"), F.CODEX_ROOT, repo, "master", 30, events=[
+            F.ev(20, "response_item", {"type": "custom_tool_call", "call_id": "c1", "name": "exec", "input": code}),
+            F.ev(15, "response_item", {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "*** Update File: docs/agents/plans/2026-10-28-x.md"}]})])
+        log = CodexThreadLog(path)
+        log.read_meta()
+        log.update()
+        self.assertEqual(log.plan_writes, {"2026-10-27-board.md": F.NOW - 20 * 60}, "tylko wywołanie narzędzia")
+
 
 class IdsTest(World):
     def test_prefix_generic_hash_and_ignore(self):

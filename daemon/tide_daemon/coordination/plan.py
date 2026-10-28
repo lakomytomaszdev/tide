@@ -31,6 +31,11 @@ STATE_ALIASES = {"w toku": "w-toku", "wtoku": "w-toku", "in-progress": "w-toku",
 MAX_BYTES = 512 * 1024
 CARD_RE = re.compile(r"^K-([1-9][0-9]{0,8})$", re.IGNORECASE)
 CARD_IN_BRANCH = re.compile(r"(?:^|[/_-])k-([1-9][0-9]{0,8})(?=$|[-_/.])", re.IGNORECASE)
+# Plik planu w ścieżce zapisu koordynatora (docs/agents/plans/… albo <tablica>/docs/<projekt>/plans/…).
+PLAN_FILE = re.compile(r"(?:^|/)plans/(\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+\.md)$")
+# Pliki w łatce apply_patch (Codex): „*** Add File: …” / „*** Update File: …”. Łatka bywa wklejona w kod
+# narzędzia `exec` jako napis JS — wtedy nowe wiersze to `\n`, więc ścieżka kończy się też na `\` i `"`.
+PATCH_FILE = re.compile(r"\*\*\* (?:Add|Update) File: ([^\n\\\"]+)")
 
 
 @dataclass
@@ -164,21 +169,51 @@ def find_plans(roots) -> list[Plan]:
     return out
 
 
-def pick(plans: list[Plan], session_id: str, tool: str, branch: str = "") -> Plan | None:
-    """Plan koordynatora: wskazany przez `session`, inaczej najświeższy aktywny tego narzędzia.
+def plan_file_name(path: str) -> str:
+    """Nazwa pliku planu (`2026-10-27-local-models.md`) ze ścieżki zapisu albo pusty napis, gdy to nie plan.
+    Po samej nazwie, jak find_plans: ten sam plan leży w worktree koordynatora i w głównym katalogu."""
+    match = PLAN_FILE.search(str(path or "").strip().replace("\\", "/"))
+    return match.group(1) if match else ""
+
+
+def patch_plan_files(text: str) -> list[str]:
+    """Nazwy plików planów dodanych albo zmienionych łatką apply_patch."""
+    names = (plan_file_name(m.group(1)) for m in PATCH_FILE.finditer(str(text or "")))
+    return [name for name in names if name]
+
+
+def pick(plans: list[Plan], session_id: str, tool: str, branch: str = "", written=None, taken=()) -> Plan | None:
+    """Plan koordynatora: wskazany przez `session`, inaczej ten, który sam zapisał, inaczej najświeższy
+    aktywny tego narzędzia, którego nie zapisał inny koordynator.
 
     Gałąź z ID karty (`claude/k-12-…`, uruchomienie z tablicy): najpierw plan z `card: K-12`
     (też zakończony — to wciąż plan tej karty), a plany innych kart odpadają — w katalogu projektu
-    w tablicy leżą plany wielu kart naraz."""
+    w tablicy leżą plany wielu kart naraz.
+
+    `written`: {nazwa pliku planu: czas ostatniego zapisu} — plany zapisane przez tego koordynatora
+    (Coordinator.plan_writes), `taken`: nazwy planów zapisanych przez innych koordynatorów tego repozytorium.
+    Bez nich dwa aktywne plany bez `session` w jednym repozytorium dostawały ten sam (najświeższy) plan
+    u obu koordynatorów — i raport podpisywał pytanie jednego tytułem planu drugiego."""
+    written = written or {}
+    taken = set(taken or ())
+
+    def name(p):
+        return os.path.basename(p.path)
+
     for plan in plans:
         if plan.session and session_id and plan.session == session_id:
             return plan
     card = card_of_branch(branch)
     if card:
-        mine = [p for p in plans if p.card == card and (not p.session or p.session == session_id)]
+        mine = [p for p in plans if p.card == card
+                and (p.session == session_id or not p.session and name(p) not in taken)]
         if mine:
             return max(mine, key=lambda p: (p.status != "done", p.updated_ts))
-    candidates = [p for p in plans if not p.session and p.status != "done"
+    own = [p for p in plans if not p.session and p.status != "done" and name(p) in written
+           and name(p) not in taken and not (card and p.card)]
+    if own:
+        return max(own, key=lambda p: (written[name(p)], p.updated_ts))
+    candidates = [p for p in plans if not p.session and p.status != "done" and name(p) not in taken
                   and (not p.coordinator or p.coordinator == tool) and not (card and p.card)]
     return max(candidates, key=lambda p: p.updated_ts) if candidates else None
 
