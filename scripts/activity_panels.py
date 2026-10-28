@@ -31,11 +31,11 @@ SIDE_OUTPUT = os.environ.get("TIDE_SIDE_OUTPUT", "HDMI-A-1")
 
 # Dock Stream na lewym monitorze (decyzja użytkownika 28.10: w trybie Xbox prawy monitor pokazuje Xboxa).
 # Z lewej stan streamu, profil gracza i Observer (ten pokazuje się sam tylko w trybie Observer).
-# Z prawej — przyszłe pozycje przed „?”: Kamera (org.tide.stream.camera, PT-82) i PC ⇄ Xbox
-# (org.tide.stream.display, PT-38); wejdą do STREAM_RIGHT, gdy powstaną ich pakiety.
+# Z prawej Kamera (PT-82) i „?”; PC ⇄ Xbox (org.tide.stream.monitors, PT-38) wejdzie przed „?”,
+# gdy jego pakiet trafi do repozytorium.
 STREAM_LEFT = ["org.tide.stream", "org.tide.stream.profile", "org.tide.stream.observer"]
-STREAM_RIGHT = ["org.tide.stream.help"]
-STREAM_FUTURE = {"org.tide.stream.camera": "PT-82", "org.tide.stream.display": "PT-38"}
+STREAM_RIGHT = ["org.tide.stream.camera", "org.tide.stream.help"]
+STREAM_FUTURE = {"org.tide.stream.monitors": "PT-38"}
 TASKS = "org.kde.plasma.icontasks"
 SPACER = "org.kde.plasma.panelspacer"
 # Konsola streamu na pulpicie lewego monitora (mock „Konsola streamu”): Sceny w kolumnie ok. 1/3
