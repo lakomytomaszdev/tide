@@ -30,6 +30,8 @@ PREVIEWS = [
     ("checking", "checking", [], (1380, 900)),
     ("busy", "busy", [], (1380, 900)),             # kolejka modeli pracuje (PT-16)
     ("min", "mac", ["edit=Mac-Studio", "advanced=agent"], (1380, 620)),   # najmniejsze okno Tide
+    ("search", "local", [], (1380, 1700)),         # wiersz „Wyszukiwanie” (PT-19): indeks gotowy
+    ("search-pull", "pulling", [], (1380, 1700)),  # bez modelu bge-m3 na serwerze: „Pobierz teraz”
 ]
 
 

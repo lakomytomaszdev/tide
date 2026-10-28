@@ -277,9 +277,10 @@ Item {
                                                 "nic nie jest teraz załadowane|serwer nie mówi, co ma w pamięci")
         self.assertEqual(warned(log, "SUMMARY"), "Używany serwer: Mac-Studio · działa · Ollama 0.41.2 · 5 modeli")
         self.assertEqual(warned(log, "ROLES"), "summary:qwen3:8b@local:5,describe:qwen3:8b@local:5,"
-                                               "agent:qwen3-coder:30b@Mac-Studio!:0")
-        self.assertEqual(warned(log, "WARN"), "||Serwer „Mac-Studio” nie odpowiada — rola niedostępna|"
-                                              "Modelu gpt-oss:20b nie ma na serwerze „Ten komputer”")
+                                               "agent:qwen3-coder:30b@Mac-Studio!:0,embed:bge-m3@local:5")
+        self.assertEqual(warned(log, "WARN"), "||Serwer „Mac-Studio” nie odpowiada — rola niedostępna||"
+                                              "Modelu gpt-oss:20b nie ma na serwerze „Ten komputer”",
+                         "wyłączone wyszukiwanie (mac-offline) — bez ostrzeżenia")
         self.assertEqual(warned(log, "AGENT"), "false:local")
         self.assertEqual(warned(log, "PIN"), "false|true|null|false|true|=Za domyślnym,local=Ten komputer,Mac-Studio=Mac-Studio")
         self.assertEqual(warned(log, "CTX"), "|32768||domyślny (8192)|domyślny (kontekst serwera)|null|16384|undefined|undefined")
@@ -297,7 +298,7 @@ Item {
         self.assertTrue(notes.endswith(" ¦ 1"), "bez `report` (np. --print-models) — jedna uwaga")
         self.assertEqual(warned(log, "MODELS"), "gpt-oss:120b:65,3 GB:w pamięci · 100% na karcie:Raport,qwen3:32b:20,2 GB::,"
                                                 "qwen3-coder:30b:18,6 GB::Agent,qwen3:8b:5,2 GB:w pamięci · 100% na karcie:"
-                                                "Opisy kart,bge-m3:1,2 GB::")
+                                                "Opisy kart,bge-m3:1,2 GB::Wyszukiwanie")
         self.assertEqual(warned(log, "HINTS"), "qwen3:8b✓,gpt-oss:20b✓,bge-m3✓|gpt-oss:120b✓,qwen3:32b✓,qwen3-coder:30b✓,qwen3:8b✓")
         self.assertEqual(warned(log, "PULLS"), "gpt-oss:20b:true:5,5 GB z 13,8 GB · 39%:0.40 ¦ llama-nie-ma:7b:false:"
                                                "Model lokalny: serwer odpowiedział 500: pull model manifest: file does not "
@@ -890,6 +891,99 @@ Item {
         self.assertEqual(old[:2], ["", "false"])
         self.assertIn("zaktualizuj usługę Tide", old[2])
         self.assertEqual(warned(log, "ODD"), "codex|")
+
+    def test_search_row(self):
+        """PT-19: wiersz „Wyszukiwanie” (rola embed): Włączone / Wyłączone (SetSemanticSearch), jedna linia stanu
+        indeksu KRunnera, przy braku modelu — „Pobierz teraz” jak w innych rolach; wyłączone — bez ostrzeżeń."""
+        log = self.harness("SearchSmoke.qml", """import QtQuick
+import "models.js" as Logic
+Item {
+    id: top
+    width: 1500; height: 1300
+    readonly property var d: %DATA%
+    property var calls: []
+    ModelsPage {
+        id: page
+        anchors.fill: parent
+        status: top.d.local
+        onRequested: (member, argument, tag) => top.calls.push(member + "(" + argument + ")@" + tag)
+    }
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children) {
+            const hit = find(child, name)
+            if (hit) return hit
+        }
+        return null
+    }
+    Timer {
+        interval: 100
+        running: true
+        onTriggered: top.steps()
+    }
+    function steps() {
+        console.warn("LINES " + ["local", "mac-offline", "mac", "pulling", "errors", "checking", "busy"]
+                     .map(v => Logic.searchLine(top.d[v]).tone + ":" + Logic.searchLine(top.d[v]).text).join(" ¦ "))
+        const old = JSON.parse(JSON.stringify(top.d.local))
+        delete old.search
+        const waiting = JSON.parse(JSON.stringify(top.d.local))
+        waiting.search.state = "waiting"
+        waiting.search.pending = 3
+        console.warn("OLD " + Logic.searchEnabled(old) + "|" + Logic.searchLine(old).text + "|" + Logic.searchLine(waiting).text
+                     + "|" + Logic.stampText("2026-10-28T09:05:00+01:00") + "|" + Logic.stampText(""))
+        const embed = find(page, "role_embed"), agent = find(page, "role_agent")
+        const sw = find(embed, "searchSwitch")
+        console.warn("SHOWN " + find(embed, "search").visible + "|" + find(agent, "search").visible + "|"
+                     + find(embed, "searchState").text + "|" + sw.current + "|" + sw.enabled)
+        sw.picked("on")
+        sw.picked("off")
+        console.warn("CALLS " + top.calls.join(","))
+        page.finish("role:embed:search", "SetSemanticSearch", { ok: false, error: "models.json: nie udało się zapisać" })
+        console.warn("REFUSED " + find(embed, "searchNote").text)
+        page.status = top.d.pulling
+        Qt.callLater(() => {
+            console.warn("PULLING " + find(embed, "roleWarning").text + "|" + find(embed, "pullNow").visible + "|"
+                         + find(embed, "searchState").text)
+            find(embed, "pullNow").clicked()
+            console.warn("PULL " + top.calls[top.calls.length - 1])
+            const off = JSON.parse(JSON.stringify(top.d.pulling))
+            off.search.enabled = false
+            page.status = off
+            Qt.callLater(() => {
+                console.warn("OFF " + find(embed, "roleWarning").text + "|" + find(embed, "pullNow").visible + "|" + sw.current)
+                page.status = old
+                Qt.callLater(() => {
+                    console.warn("NOFIELD " + sw.current + "|" + sw.enabled)
+                    Qt.quit()
+                })
+            })
+        })
+    }
+}
+""")
+        self.assertEqual(problems(log), [])
+        lines = warned(log, "LINES").split(" ¦ ")
+        self.assertEqual(lines, [
+            "ok:Gotowe: 412 sesji w indeksie · 28.10, 10:02",
+            "muted:Wyłączone — sesje nie są indeksowane, zapisane wektory usunięte.",
+            "muted:Indeksuję: 120 z 412 sesji…",
+            "muted:Zacznie działać po pobraniu modelu bge-m3.",
+            "muted:Usługa działa bez wtyczki KRunnera — nic nie jest indeksowane.",
+            "muted:Czekam na pierwsze indeksowanie — gdy serwer modeli będzie wolny.",
+            "error:Indeks: Model lokalny nie odpowiedział w 120 s (127.0.0.1:11434) · w indeksie 380 sesji"])
+        old = warned(log, "OLD").split("|")
+        self.assertEqual(old[0], "null")
+        self.assertIn("zaktualizuj usługę Tide", old[1])
+        self.assertEqual(old[2:], ["W indeksie 412 sesji · 3 nowe czekają, aż serwer modeli będzie wolny", "28.10, 09:05", ""])
+        self.assertEqual(warned(log, "SHOWN"), "true|false|Gotowe: 412 sesji w indeksie · 28.10, 10:02|on|true",
+                         "przełącznik tylko w wierszu Wyszukiwanie")
+        self.assertEqual(warned(log, "CALLS"), "SetSemanticSearch(off)@role:embed:search", "bieżący stan niczego nie wysyła")
+        self.assertEqual(warned(log, "REFUSED"), "models.json: nie udało się zapisać")
+        self.assertEqual(warned(log, "PULLING"), "⚠ Modelu bge-m3 nie ma na serwerze „Ten komputer”|true|"
+                                                 "Zacznie działać po pobraniu modelu bge-m3.")
+        self.assertEqual(warned(log, "PULL"), 'PullModel({"endpoint":"local","model":"bge-m3"})@role:embed:pull')
+        self.assertEqual(warned(log, "OFF"), "|false|off", "wyłączone — bez ostrzeżenia i „Pobierz teraz”")
+        self.assertEqual(warned(log, "NOFIELD"), "|false", "starsza usługa — przełącznik wyłączony")
 
     def test_view_routes_backend_and_preview(self):
         """ModelsView z atrapą backendu: prośby strony idą do backend.request, replied wraca do strony, railInfo,

@@ -5,11 +5,13 @@
 .pragma library
 .import "tide/modelnames.js" as ModelNames
 
-const ROLE_ORDER = ["summary", "describe", "agent"]
+const ROLE_ORDER = ["summary", "describe", "agent", "embed"]
 const ROLE_INFO = {
     summary: { title: "Raport", hint: "„Na daily” w raporcie porannym" },
     describe: { title: "Opisy kart", hint: "Krótkie opisy kart na tablicy i w Sesjach" },
-    agent: { title: "Agent", hint: "Sesje z opcją „Lokalny” w oknie Nowe zadanie: tu ich model i program" }
+    agent: { title: "Agent", hint: "Sesje z opcją „Lokalny” w oknie Nowe zadanie: tu ich model i program" },
+    embed: { title: "Wyszukiwanie", hint: "KRunner (Alt+Spacja) znajduje sesje także po znaczeniu, nie tylko po słowach "
+                                         + "— z tytułów, gałęzi i ticketów, bez treści rozmów" }
 }
 // Domyślny kontekst ról raportu (decyzja 60: z 16k model 8B nie mieści się na karcie 8 GB).
 const ROLE_CTX = { summary: 8192, describe: 8192 }
@@ -243,6 +245,7 @@ function roleRows(status) {
             available: role ? role.available === true : false,
             error: role && role.error ? role.error : "",
             ctx: role ? role.ctx : null,
+            searchOff: id === "embed" && !!status && !!status.search && status.search.enabled === false,
             models: modelOptions(status, endpointName, role ? role.model : "")
         }
     })
@@ -275,9 +278,10 @@ function modelOptions(status, endpointName, current) {
     }))
 }
 
-// Ostrzeżenie pod wyborem modelu (albo "").
+// Ostrzeżenie pod wyborem modelu (albo ""). Wyłączone wyszukiwanie niczego nie potrzebuje — bez ostrzeżeń.
 function roleWarning(row) {
     if (!row.exists) return ""
+    if (row.id === "embed" && row.searchOff) return ""
     if (row.error) return row.error
     if (row.serverState.kind === "offline") return "Serwer „" + row.serverLabel + "” nie odpowiada — rola niedostępna"
     if (row.installed === false) return "Modelu " + row.model + " nie ma na serwerze „" + row.serverLabel + "”"
@@ -342,6 +346,50 @@ function agentProgram(status) {
 function agentProgramHint(program) {
     const p = AGENT_PROGRAMS.find(x => x.value === program)
     return p ? p.hint : "Ta wersja usługi nie podaje programu agenta — zaktualizuj usługę Tide (make install-daemon)."
+}
+
+// --- wyszukiwanie po znaczeniu (PT-19) -----------------------------------------------------------
+
+// Włączone? Status().search.enabled; null — usługa go nie podaje (starsza wersja).
+function searchEnabled(status) {
+    const s = status && status.search && typeof status.search === "object" ? status.search : null
+    return s && typeof s.enabled === "boolean" ? s.enabled : null
+}
+
+function searchOptions() {
+    return [{ value: "on", label: "Włączone" }, { value: "off", label: "Wyłączone" }]
+}
+
+// „2026-10-28T10:02:00+01:00” → „28.10, 10:02” (czas lokalny usługi, bez przeliczania).
+function stampText(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(iso || ""))
+    return m ? parseInt(m[3], 10) + "." + m[2] + ", " + m[4] + ":" + m[5] : ""
+}
+
+// Jedna linia stanu indeksu w wierszu „Wyszukiwanie”: {text, tone}.
+function searchLine(status) {
+    const s = status && status.search && typeof status.search === "object" ? status.search : null
+    if (!s || typeof s.enabled !== "boolean")
+        return { text: "Ta wersja usługi nie podaje stanu wyszukiwania — zaktualizuj usługę Tide (make install-daemon).",
+                 tone: "warn" }
+    if (!s.enabled) return { text: "Wyłączone — sesje nie są indeksowane, zapisane wektory usunięte.", tone: "muted" }
+    if (s.state === "inactive") return { text: "Usługa działa bez wtyczki KRunnera — nic nie jest indeksowane.", tone: "muted" }
+    const role = status.roles ? status.roles.embed : null
+    if (role && role.installed === false)
+        return { text: "Zacznie działać po pobraniu modelu " + role.model + ".", tone: "muted" }
+    const items = typeof s.items === "number" ? s.items : 0
+    const pending = typeof s.pending === "number" ? s.pending : 0
+    const sessions = n => count(n, "sesja", "sesje", "sesji")
+    if (s.state === "indexing") return { text: "Indeksuję: " + items + " z " + sessions(items + pending) + "…", tone: "muted" }
+    if (s.state === "error") return { text: "Indeks: " + (s.error || "błąd") + (items ? " · w indeksie " + sessions(items) : ""),
+                                      tone: "error" }
+    if (s.state === "waiting")
+        return { text: !items ? "Czekam na pierwsze indeksowanie — gdy serwer modeli będzie wolny."
+                       : "W indeksie " + sessions(items) + " · " + (pending ? count(pending, "nowa czeka", "nowe czekają",
+                                                                                     "nowych czeka") : "czekam")
+                         + ", aż serwer modeli będzie wolny", tone: "muted" }
+    const when = stampText(s.updated)
+    return { text: "Gotowe: " + sessions(items) + " w indeksie" + (when ? " · " + when : ""), tone: "ok" }
 }
 
 // Które role używają modelu na serwerze (znaczniki przy liście modeli).

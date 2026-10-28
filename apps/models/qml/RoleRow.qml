@@ -1,10 +1,12 @@
-// Rola modelu (Raport, Opisy kart, Agent): wybór modelu z zainstalowanych na serwerze roli, ostrzeżenie,
+// Rola modelu (Raport, Opisy kart, Agent, Wyszukiwanie): wybór modelu z zainstalowanych na serwerze roli, ostrzeżenie,
 // gdy wybranego modelu tam nie ma (z „Pobierz teraz”), i „Zaawansowane”: przypięcie do serwera albo
 // „za domyślnym” oraz kontekst (puste — domyślny). Każda zmiana to SetRole z serwerem przypięcia (bez niego
 // usługa odpina rolę); wynik obok kontrolki. readOnly — usługa nie podaje roles.*.pinned: bez zgadywania,
 // wiersz tylko do odczytu. Wpisany, niezapisany kontekst nie wraca do zapisu przy nowym Status().
 // Wiersz „Agent” ma też program agenta na modelu lokalnym (Codex / Claude Code, SetAgentProgram) — jeden
 // dla wszystkich serwerów; okno „Nowe zadanie” w trybie „Lokalny” bierze go stąd.
+// Wiersz „Wyszukiwanie” (rola `embed`, PT-19) ma przełącznik Włączone / Wyłączone (SetSemanticSearch) i jedną
+// linię stanu indeksu KRunnera (Status().search).
 import QtQuick
 import QtQuick.Layouts
 import "tide" as Tide
@@ -45,6 +47,10 @@ ColumnLayout {
     function setPin(endpoint) {
         if (readOnly || !row.model) return
         page.send("SetRole", Logic.roleRequest(row.id, row.model, endpoint, undefined), tag + ":pin")
+    }
+    function setSearch(value) {
+        if (!page || value === (Logic.searchEnabled(status) ? "on" : "off")) return
+        page.send("SetSemanticSearch", value, tag + ":search")
     }
     function setProgram(value) {
         if (!page || value === Logic.agentProgram(status)) return
@@ -108,6 +114,35 @@ ColumnLayout {
         font.family: Tide.Theme.uiFamily
         font.pixelSize: 12
         wrapMode: Text.WordWrap
+    }
+    // Wyszukiwanie po znaczeniu (tylko wiersz „Wyszukiwanie”): włączone / wyłączone i stan indeksu.
+    ColumnLayout {
+        objectName: "search"
+        Layout.fillWidth: true
+        visible: !!role.row && role.row.id === "embed"
+        spacing: 6
+        readonly property var enabledNow: Logic.searchEnabled(role.status)
+        readonly property var line: Logic.searchLine(role.status)
+        Segmented {
+            objectName: "searchSwitch"
+            options: Logic.searchOptions()
+            current: parent.enabledNow === null ? "" : parent.enabledNow ? "on" : "off"
+            enabled: parent.enabledNow !== null && !role.busy("search")
+            itemHeight: 26
+            onPicked: value => role.setSearch(value)
+        }
+        Note {
+            objectName: "searchState"
+            Layout.fillWidth: true
+            tone: parent.line.tone
+            text: parent.line.text
+        }
+        Note {
+            objectName: "searchNote"
+            Layout.fillWidth: true
+            tone: "error"
+            text: role.note("search") && role.note("search").error ? role.note("search").text : ""
+        }
     }
     ModelPicker {
         objectName: "modelPicker"

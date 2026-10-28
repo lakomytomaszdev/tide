@@ -15,6 +15,10 @@ Warianty (nazwa → Status):
                  a na starym adresie serwera (adres zmieniony w trakcie) trwa jeszcze jedno wywołanie (`other`);
                  na serwerze jest też pobrany model chmurowy Ollamy (`cloud: true`) — nie do wybrania w rolach.
 
+Rola `embed` i pole `search` (wyszukiwanie po znaczeniu w KRunnerze, PT-19): local — indeks gotowy,
+mac-offline — wyłączone, mac — indeksuje (bge-m3 na Macu), pulling — modelu bge-m3 nie ma na serwerze,
+errors — usługa bez KRunnera, checking — czeka na pierwsze indeksowanie, busy — błąd indeksu.
+
 Role mają `pinned` (PT-25 po review: przypięta do serwera czy za domyślnym); stara usługa go nie podaje
 — test usuwa pole i sprawdza, że widok pokazuje role tylko do odczytu.
 
@@ -69,12 +73,20 @@ def _report(summary="local", configured=None, pinned=False, warnings=()) -> dict
             "pinned": pinned, "path": REPORT_PATH, "warnings": list(warnings)}
 
 
+def _search(state="ready", enabled=True, items=412, pending=0, error="", updated="2026-10-28T10:02:41+01:00") -> dict:
+    return {"enabled": enabled, "state": state, "items": items, "pending": pending,
+            "updated": updated if state == "ready" else "", "error": error, "model": "bge-m3:latest",
+            "dims": 1024 if items else 0}
+
+
 def _status(default, endpoints: dict, roles: dict, report=None, pulls=None, checked=True, warnings=(),
-            exists=True, agent_program="codex") -> dict:
+            exists=True, agent_program="codex", search=None) -> dict:
+    if "embed" not in roles:
+        roles = dict(roles, embed=_role(default, "bge-m3", None, endpoints))
     return {"checked": checked, "default": default,
             "config": {"path": CONFIG_PATH, "exists": exists, "error": "", "warnings": list(warnings)},
             "endpoints": endpoints, "roles": roles, "report": report if report is not None else _report(),
-            "pulls": pulls or {}, "agentProgram": agent_program}
+            "pulls": pulls or {}, "agentProgram": agent_program, "search": search or _search()}
 
 
 LOCAL_MODELS = (QWEN8, GPTOSS20, BGE, BIELIK, CODER30)
@@ -96,7 +108,7 @@ def mac_offline() -> dict:
     roles = {"summary": _role("local", "qwen3:8b", 8192, endpoints),
              "describe": _role("local", "qwen3:8b", 8192, endpoints),
              "agent": _role("Mac-Studio", "qwen3-coder:30b", None, endpoints, pinned=True)}
-    return _status("local", endpoints, roles, report=_report("claude"))
+    return _status("local", endpoints, roles, report=_report("claude"), search=_search(enabled=False, state="off", items=0))
 
 
 def mac() -> dict:
@@ -109,7 +121,8 @@ def mac() -> dict:
     roles = {"summary": _role("Mac-Studio", "gpt-oss:120b", 8192, endpoints),
              "describe": _role("Mac-Studio", "qwen3:8b", 8192, endpoints),
              "agent": _role("Mac-Studio", "qwen3-coder:30b", 32768, endpoints, pinned=True)}
-    return _status("Mac-Studio", endpoints, roles, agent_program="claude")
+    return _status("Mac-Studio", endpoints, roles, agent_program="claude",
+                   search=_search("indexing", items=120, pending=292))
 
 
 def pulling() -> dict:
@@ -117,6 +130,10 @@ def pulling() -> dict:
     status["endpoints"]["local"]["models"] = [dict(QWEN8), dict(BGE)]
     endpoints = status["endpoints"]
     status["roles"]["describe"] = _role("local", "gpt-oss:20b", 8192, endpoints)
+    status["endpoints"]["local"]["models"] = [dict(QWEN8)]
+    status["roles"]["embed"] = _role("local", "bge-m3", None, endpoints)
+    status["search"] = _search("error", items=0, error="Model lokalny: serwer odpowiedział 404: model \"bge-m3\" not "
+                                                       "found, try pulling it first (127.0.0.1:11434)")
     status["pulls"] = {
         "local/gpt-oss:20b": {"endpoint": "local", "model": "gpt-oss:20b", "status": "pulling b112e727c6f1",
                               "completed": 5512069535, "total": 13780173839, "running": True, "error": ""},
@@ -135,14 +152,14 @@ def errors() -> dict:
              "describe": _role("local", "qwen3:8b", 8192, endpoints)}
     warnings = ["serwer „lm”: nieznany rodzaj „llamacpp” (ollama albo openai) — pominięty"]
     return _status("local", endpoints, roles, report=_report("local", configured="claude", pinned=True),
-                   warnings=warnings)
+                   warnings=warnings, search=_search("inactive", items=0))
 
 
 def checking() -> dict:
     endpoints = {"local": _endpoint("local", "http://127.0.0.1:11434", online=False)}
     roles = {"summary": _role("local", "qwen3:8b", 8192, endpoints),
              "describe": _role("local", "qwen3:8b", 8192, endpoints)}
-    return _status("local", endpoints, roles, checked=False, exists=False)
+    return _status("local", endpoints, roles, checked=False, exists=False, search=_search("waiting", items=0))
 
 
 CLOUD120 = {"name": "gpt-oss:120b-cloud", "size": 384, "family": "gptoss", "parameterSize": "116.8B",
@@ -152,6 +169,7 @@ CLOUD120 = {"name": "gpt-oss:120b-cloud", "size": 384, "family": "gptoss", "para
 def busy() -> dict:
     status = local()
     status["endpoints"]["local"]["models"].append(dict(CLOUD120))
+    status["search"] = _search("error", items=380, error="Model lokalny nie odpowiedział w 120 s (127.0.0.1:11434)")
     status["queue"] = {"local": {
         "running": {"endpoint": "local", "role": "summary", "model": "qwen3:8b", "since": "2026-10-27T16:58:00+01:00"},
         "waiting": [{"endpoint": "local", "role": "describe", "model": "qwen3:8b", "since": "2026-10-27T16:59:00+01:00"},

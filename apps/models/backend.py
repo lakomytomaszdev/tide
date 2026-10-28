@@ -24,15 +24,16 @@ from PyQt6.QtDBus import (QDBusConnection, QDBusMessage, QDBusPendingCallWatcher
 
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Models", "org.tide.Daemon.Models"
 # Metody zapisu i próby, które widok może wywołać (jeden argument: nazwa albo JSON).
-WRITES = ("SetEndpoint", "RemoveEndpoint", "SetDefault", "SetRole", "SetAgentProgram", "SetReportSummary", "TestEndpoint",
-          "PullModel")
+WRITES = ("SetEndpoint", "RemoveEndpoint", "SetDefault", "SetRole", "SetAgentProgram", "SetSemanticSearch",
+          "SetReportSummary", "TestEndpoint", "PullModel")
 WRITE_TIMEOUT_MS = 10_000
 TEST_TIMEOUT_MS = 15_000          # TestEndpoint czyta serwer do 2 × 3 s, odpowiedź przychodzi po odczycie
 PREVIEW_ERROR = "podgląd bez usługi — nic nie zmieniono"
 LOST_ERROR = "usługa tide-daemon nie odpowiedziała — sprawdź stan po odświeżeniu"
 THIS_PC = "Ten komputer"
 # Role, których używa Tide, w kolejności widoku; summary i describe liczą się tylko w trybie raportu „local”.
-ROLE_TITLES = {"summary": "Raport", "describe": "Opisy kart", "agent": "Agent"}
+# Wyszukiwanie (embed, PT-19) jest opcjonalne: brak jego modelu nie zapala plakietki (tylko wiersz roli).
+ROLE_TITLES = {"summary": "Raport", "describe": "Opisy kart", "agent": "Agent", "embed": "Wyszukiwanie"}
 
 
 def is_local_url(url: str) -> bool:
