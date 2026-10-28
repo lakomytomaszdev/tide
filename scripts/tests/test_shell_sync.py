@@ -362,6 +362,22 @@ class RealGreeterSyncTest(unittest.TestCase):
         self.assertIn("wynik: fallback", self.sync())
         self.assertFalse(self.copy.exists())
 
+    def test_real_stream_variant_loads_after_the_switch(self):
+        # Ekran Stream z palety Streamer obok Tide: oba sprawdzone przy składaniu kopii, a po
+        # przełączeniu prawdziwy greeter wczytuje z kopii ekran Stream (tokeny Streamer).
+        subprocess.run(["/usr/bin/python3", str(ROOT / "theme/lockscreen/generate.py"), "streamer",
+                        str(self.data / "tide/lockscreens/streamer")], check=True, capture_output=True)
+        self.assertIn("wynik: ok", self.sync("--force"))
+        self.assertTrue((self.copy / "contents/lockscreen-variants/streamer/TideClock.qml").is_file())
+        subprocess.run(["/usr/bin/python3", str(SCRIPT), "variant", "streamer"], env=self.env, check=True,
+                       capture_output=True)
+        self.assertIn('"Streamer"', (self.copy / "contents/lockscreen/tide/Tokens.qml").read_text())
+        code = "import sys; sys.path.insert(0, sys.argv[1]); from scripts import shell_sync as s; " \
+               "ok, out = s.check(s.COPY); print('OK' if ok else out)"
+        result = subprocess.run(["/usr/bin/python3", "-c", code, str(ROOT)], env=self.env, check=True,
+                                capture_output=True, text=True, timeout=60).stdout
+        self.assertEqual(result.strip(), "OK")
+
 
 if __name__ == "__main__":
     unittest.main()
