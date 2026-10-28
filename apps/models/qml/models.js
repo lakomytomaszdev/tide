@@ -20,6 +20,9 @@ const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/
 
 // Lista z danych: dane z delegata (modelData) bywają sekwencją Qt, dla której Array.isArray daje false.
+// Ten sam próg co widgets/lib/models.js: poniżej tylu procent na karcie model jest „wolniej” (28.10).
+var CPU_WARN_PERCENT = 80
+
 function list(value) {
     if (value === null || value === undefined || typeof value !== "object" || typeof value.length !== "number") return null
     return Array.prototype.slice.call(value)
@@ -123,9 +126,10 @@ function loadedLines(s) {
         return {
             name: m.name,
             gpu: gpu,
-            slow: !cloud && gpu !== null && gpu < 100,
+            slow: !cloud && gpu !== null && gpu < CPU_WARN_PERCENT,
             text: cloud ? "w chmurze Ollamy" : gpu === null ? "w pamięci"
                 : gpu >= 100 ? gpu + "% na karcie"
+                : gpu >= CPU_WARN_PERCENT ? gpu + "% na karcie, reszta na procesorze"
                 : gpu + "% na karcie — reszta na procesorze, pisze wolniej"
         }
     })
@@ -469,7 +473,7 @@ function serverModels(status, endpointName) {
             size: cloud ? "" : bytes(m.size),   // pobrany „model” chmurowy to tylko odnośnik (kilkaset bajtów)
             loaded: !!l,
             loadedText: !l ? "" : gpu === null || cloud ? "w pamięci" : "w pamięci · " + gpu + "% na karcie",
-            slow: !cloud && gpu !== null && gpu < 100,
+            slow: !cloud && gpu !== null && gpu < CPU_WARN_PERCENT,
             usedBy: usedBy(status, endpointName, m.name)
         }
     })

@@ -130,8 +130,8 @@ class TileTest(unittest.TestCase):
             "pulling": ("lokalny", "working", False, color["working"]),
             "agent-missing": ("lokalny", "ok", False, color["positive"]),
             "mac": ("lokalny", "ok", False, color["positive"]),
-            "partial": ("lokalny na CPU", "partial", True, color["neutral"]),
-            "missing": ("lokalny bez modelu", "warning", True, color["neutral"]),
+            "partial": ("lokalny", "partial", True, color["neutral"]),
+            "missing": ("lokalny", "warning", True, color["neutral"]),
             "offline": ("lokalny nie działa", "offline", True, color["negative"]),
         }
         widths = set()
@@ -142,13 +142,13 @@ class TileTest(unittest.TestCase):
                 self.assertEqual((result["word"], result["local"]["tone"], result["local"]["warning"]),
                                  (word, tone, warning))
                 self.assertEqual(result["dot"].lower(), dot.lower(), "kropka w kolorze stanu z palety")
-                self.assertEqual(result["wordColor"].lower(), (dot if warning else calm).lower(),
-                                 "spokojnie, gdy działa; kolor ostrzegawczy tylko przy problemie")
+                self.assertEqual(result["wordColor"].lower(), calm.lower(),
+                                 "słowo zawsze kolorem podpisów; stan niesie kropka (28.10)")
                 self.assertEqual(result["wordTop"], result["meterTop"], "słowo w linii procentów")
                 self.assertTrue(result["fits"], "dwie linie w 48 px kafelka")
                 self.assertLess(result["width"], 300, "kafelek nie spycha reszty docka")
                 self.assertIn(", model lokalny: ", result["accessible"])
-        self.assertEqual(len(widths), 1, f"zmiana stanu modelu nie zmienia szerokości kafelka: {widths}")
+        self.assertLessEqual(len(widths), 2, f"szerokość zmienia tylko „lokalny nie działa”: {widths}")
 
     def test_nothing_local_without_service_server_or_first_read(self):
         bare = preview_ai.render_tile("calm", "none")
@@ -187,7 +187,8 @@ Item {
         const t = Logic.tile(cloudMissing, true)
         console.warn("CLOUDMISSING " + show(Logic.indicator(cloudMissing, true)) + " | " + t.value + "/" + t.tone)
         console.warn("ONCARD " + [Logic.onCard(cloud.endpoints.local.loaded[0]), Logic.partlyOnCpu(cloud.endpoints.local.loaded[0]),
-                                  Logic.partlyOnCpu({ name: "gpt-oss:20b", gpuPercent: 83 })].join(","))
+                                  Logic.partlyOnCpu({ name: "gpt-oss:20b", gpuPercent: 55 }),
+                                  Logic.partlyOnCpu({ name: "qwen3:8b", gpuPercent: 92 })].join(","))
         console.warn("EMPTY " + show(Logic.indicator(empty, true)))
         console.warn("NULL " + show(Logic.indicator(null, true)) + " | " + show(Logic.indicator(snap, false)))
         Qt.quit()
@@ -198,10 +199,10 @@ Item {
         got = tags(log)
         self.assertEqual(got["CLOUD"], "true/lokalny/ok/false/gotowe",
                          "model chmurowy w pamięci nie jest stanem modelu lokalnego (Tide go nie używa)")
-        self.assertEqual(got["CLOUDMISSING"], "true/lokalny bez modelu/warning/true/brak modelu qwen3:14b | "
+        self.assertEqual(got["CLOUDMISSING"], "true/lokalny/warning/true/brak modelu qwen3:14b | "
                                               "brak modelu qwen3:14b/warning",
                          "kafelek AI i kafelek Modele mówią to samo, co widok Modele (apps/models: slow tylko lokalny)")
-        self.assertEqual(got["ONCARD"], "false,false,true")
+        self.assertEqual(got["ONCARD"], "false,false,true,false", "92% na karcie to nie ostrzeżenie (28.10)")
         self.assertEqual(got["EMPTY"], "false//muted/false/", "bez serwera w ustawieniach — nic")
         self.assertEqual(got["NULL"], "false//muted/false/ | false//muted/false/")
 
@@ -300,7 +301,7 @@ class PopupTest(unittest.TestCase):
         self.assertEqual(result["queue"], "Pracuje: raport (gpt-oss:20b) od 3 min · 1 w kolejce")
         self.assertEqual(result["pulls"], ["Pobieram qwen3:14b · 42%", "Pobrano bge-m3",
                                            "Nie udało się pobrać llama3.3:70b: brak miejsca na dysku"])
-        self.assertEqual(result["gpu"], ["na karcie 83%"])
+        self.assertEqual(result["gpu"], ["na karcie 55%"])
         self.assertEqual(result["roleProblems"], ["Agent (qwen3-coder:30b): serwer nie odpowiada"])
         self.assertEqual(result["config"], "Ustawienia: rola „vision”: nieznany punkt „lm” — pominięta")
         self.assertEqual(result["overflow"], [])

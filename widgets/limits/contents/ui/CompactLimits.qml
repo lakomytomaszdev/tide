@@ -2,10 +2,9 @@
 // „GPT 91%  Claude 86%” z cienkim paskiem pod każdym — ile zostało, niższy z limitów (sesja, tydzień) —
 // i na końcu „● lokalny”: kropka modelu lokalnego z tide-daemon (/Models) w tej samej linii co procenty.
 // Kolor paska według poziomu (mięta, masło, róż), brak danych = „—”. Kafelek zabarwia poziom niższego
-// z limitów. Model lokalny jest spokojny, gdy działa (wyciszone słowo, kropka mięta albo teal przy pracy);
-// kolor ostrzegawczy i dłuższe słowo tylko wtedy, gdy domyślny serwer nie odpowiada („lokalny nie działa”,
-// róż), model nie mieści się na karcie („lokalny na CPU”, masło) albo brakuje modelu roli („lokalny bez
-// modelu”, masło). Bez usługi, przed pierwszym odczytem i bez serwera w ustawieniach kropki nie ma.
+// z limitów. Model lokalny to „● lokalny” kolorem podpisów; stan niesie kropka: mięta albo teal przy pracy,
+// masło — model wyraźnie nie mieści się na karcie (poniżej 80%) albo brakuje modelu roli, róż i słowa
+// „lokalny nie działa” — serwer nie odpowiada. Bez usługi, przed pierwszym odczytem i bez serwera kropki nie ma.
 // Gdy tide-daemon prognozuje wyczerpanie przed resetem, przy etykiecie pojawia się krótko
 // „· Claude do 17:40” w brzoskwini (najwcześniejsze z limitów); „starczy” nic nie dokłada,
 // żeby kafelek nie rósł — pełne prognozy i stan modeli są w popupie i podpowiedzi.
@@ -81,36 +80,15 @@ Tide.DockTile {
             }
         }
 
-        // „● lokalny” w linii procentów: słowo krojem podpisów mierników („GPT”) i na tej samej wysokości
-        // (TileMeter stawia podpis u góry, a procent na jego linii bazowej). Szerokość na najdłuższe słowo
-        // (indicatorWords()), więc kafelek zmienia szerokość tylko wtedy, gdy kropka się pojawia albo znika,
-        // a nie przy każdej zmianie stanu modelu.
+        // „● lokalny” w linii procentów: słowo krojem i kolorem podpisów mierników („GPT”), na tej samej wysokości
+        // (TileMeter stawia podpis u góry, a procent na jego linii bazowej). Stan niesie kropka; słowo zmienia się
+        // tylko przy niedziałającym serwerze („lokalny nie działa”).
         Item {
             id: localItem
             objectName: "localIndicator"
             visible: tile.local.visible
-            readonly property real widestWord: {
-                let widest = 0
-                for (let i = 0; i < wordProbes.count; i++) {
-                    const probe = wordProbes.itemAt(i)
-                    if (probe) widest = Math.max(widest, probe.implicitWidth)
-                }
-                return Math.ceil(widest)
-            }
-            implicitWidth: localWord.x + Math.max(widestWord, localWord.implicitWidth)
+            implicitWidth: localWord.x + localWord.implicitWidth
             implicitHeight: localWord.implicitHeight
-
-            Repeater {
-                id: wordProbes
-                model: ModelsLogic.indicatorWords()
-                Text {
-                    required property string modelData
-                    visible: false
-                    text: modelData
-                    textFormat: Text.PlainText
-                    font: localWord.font
-                }
-            }
 
             LocalDot {
                 id: localDot
@@ -124,7 +102,7 @@ Tide.DockTile {
                 x: localDot.width + 5
                 text: tile.local.word
                 textFormat: Text.PlainText
-                color: tile.local.warning ? localDot.toneColor : Tide.Tokens.textSecondary
+                color: Tide.Tokens.textSecondary
                 font.family: Tide.Theme.uiFamily
                 font.pointSize: Tide.Tokens.fontSizePt - 1
                 font.weight: Font.Medium

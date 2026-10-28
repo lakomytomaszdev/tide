@@ -306,7 +306,7 @@ ColumnLayout {
                                 objectName: "loadedGpu"
                                 text: Logic.gpuText(memRow.modelData)
                                 textFormat: Text.PlainText
-                                color: Logic.onCard(memRow.modelData) ? Tide.Tokens.positive : Tide.Tokens.neutral
+                                color: Logic.partlyOnCpu(memRow.modelData) ? Tide.Tokens.neutral : Tide.Tokens.positive
                                 font.family: Tide.Theme.uiFamily
                                 font.pointSize: Tide.Tokens.fontSizePt - 1
                             }
@@ -316,7 +316,7 @@ ColumnLayout {
                             visible: typeof memRow.modelData.gpuPercent === "number"
                             implicitHeight: 4
                             value: typeof memRow.modelData.gpuPercent === "number" ? memRow.modelData.gpuPercent / 100 : null
-                            color: Logic.onCard(memRow.modelData) ? Tide.Tokens.positive : Tide.Tokens.neutral
+                            color: Logic.partlyOnCpu(memRow.modelData) ? Tide.Tokens.neutral : Tide.Tokens.positive
                         }
                         Line {
                             objectName: "loadedDetail"

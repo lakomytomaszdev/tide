@@ -45,7 +45,7 @@ MODELS = [
 ]
 QWEN_LOADED = {"name": "qwen3:8b", "size": 6 * GB, "sizeVram": 6 * GB, "gpuPercent": 100, "contextLength": 8192,
                "expiresAt": "2026-10-27T17:04:00+01:00"}
-GPT_OSS_LOADED = {"name": "gpt-oss:20b", "size": 15 * GB, "sizeVram": 12_450_000_000, "gpuPercent": 83,
+GPT_OSS_LOADED = {"name": "gpt-oss:20b", "size": 15 * GB, "sizeVram": 8_250_000_000, "gpuPercent": 55,
                   "contextLength": 8192, "expiresAt": "2026-10-27T17:25:00+01:00"}
 
 

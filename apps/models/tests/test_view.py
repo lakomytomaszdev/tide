@@ -279,7 +279,7 @@ Item {
         self.assertEqual(warned(log, "SERVERS"), "Ten komputer:online,Mac-Studio:online*,lm-studio:online")
         self.assertEqual(warned(log, "STATES"), "nie odpowiada|sprawdzam…|sprawdzam…|działa")
         self.assertEqual(warned(log, "FACTS"), "Ollama 0.41.2 · 5 modeli|zgodny z OpenAI · 2 modele|Ollama")
-        self.assertEqual(warned(log, "LOADED"), "gpt-oss:20b:true:83% na karcie — reszta na procesorze, pisze wolniej|"
+        self.assertEqual(warned(log, "LOADED"), "gpt-oss:20b:false:83% na karcie, reszta na procesorze|"
                                                 "nic nie jest teraz załadowane|serwer nie mówi, co ma w pamięci")
         self.assertEqual(warned(log, "SUMMARY"), "Używany serwer: Mac-Studio · działa · Ollama 0.41.2 · 5 modeli")
         self.assertEqual(warned(log, "ROLES"), "summary:qwen3:8b@local:5,describe:qwen3:8b@local:5,"
