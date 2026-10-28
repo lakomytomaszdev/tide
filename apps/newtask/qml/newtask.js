@@ -15,6 +15,8 @@ var MODELS = [
 ]
 var MODELS_HINT = "ustaw w Tide → Modele"
 var PROGRAM_HINT = "zmień w Tide → Modele"
+// Przy chmurze powód niedostępności „Lokalnego” stoi pod przełącznikiem agenta — przedrostek mówi, czego dotyczy.
+var LOCAL_PREFIX = "⌂ Lokalny: "
 // Program agenta na modelu lokalnym (Status().agentProgram, PT-39) — ustawiany raz w Tide → Modele; bez pola
 // (starsza usługa) Codex, jak domyślnie w usłudze.
 var DEFAULT_PROGRAM = "codex"
@@ -62,9 +64,12 @@ function agentTool(model, tool, local) {
 
 // Linia zamiast przełącznika Claude Code / Codex w trybie „Lokalny”: {program: "Codex", detail: " na qwen3-coder:30b
 // · Ten komputer"}. Bez modelu (rola nieustawiona, usługa nie podaje stanu) — sam program; powód jest w uwadze.
+// link: „ustaw w Tide → Modele”, gdy kłopot jest z modelem (rola nieustawiona, serwer nie odpowiada, modelu nie
+// ma), inaczej „zmień w Tide → Modele” (program).
 function localLine(option) {
     var detail = option && option.model ? " na " + option.model + (option.server ? " · " + option.server : "") : ""
-    return { program: toolLabel(option && option.program ? option.program : DEFAULT_PROGRAM), detail: detail }
+    return { program: toolLabel(option && option.program ? option.program : DEFAULT_PROGRAM), detail: detail,
+             link: option && !option.enabled && option.hint ? MODELS_HINT : PROGRAM_HINT }
 }
 
 // Opcja „Lokalny” z Status() obiektu /Models: {enabled, label, reason, hint, model, server}.
@@ -100,10 +105,12 @@ function localOption(status) {
              thisComputer: thisComputer, pending: false, program: program }
 }
 
-// Linia pod agentem: powód wyłączenia albo uczciwa uwaga o jakości (i konektorach Claude Code, gdy program
+// Linia pod agentem: powód wyłączenia „Lokalnego” albo uczciwa uwaga o jakości (i konektorach Claude Code, gdy program
 // agenta lokalnego to Claude Code). Przy chmurze i dostępnym modelu lokalnym — nic (okno zostaje ciche).
 function modelNote(option, model) {
-    if (!option.enabled) return option.reason + (option.hint ? " — " + MODELS_HINT : "")
+    // Przy „Lokalny” odnośnik do Tide → Modele jest w linii agenta, w chmurze — w tej uwadze (z przedrostkiem).
+    if (!option.enabled) return model === "local" ? option.reason
+                                                 : LOCAL_PREFIX + option.reason + (option.hint ? " — " + MODELS_HINT : "")
     if (model !== "local") return ""
     var note = option.thisComputer ? LOCAL_NOTE : "Agent pracuje na serwerze " + option.server + "."
     return note + (option.program === "claude" ? " " + CLAUDE_LOCAL_NOTE : "")

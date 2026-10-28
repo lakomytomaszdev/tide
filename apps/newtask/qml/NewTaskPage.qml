@@ -539,14 +539,15 @@ Rectangle {
                 Text {
                     objectName: "programLink"
                     Layout.leftMargin: 12
-                    text: Logic.PROGRAM_HINT
+                    text: page.localLine.link
                     color: programArea.containsMouse || activeFocus ? Tide.Tokens.accent : Tide.Tokens.textSecondary
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: 12
                     font.underline: programArea.containsMouse
                     activeFocusOnTab: true
                     Accessible.role: Accessible.Link
-                    Accessible.name: "Zmień program agenta w Tide → Modele"
+                    Accessible.name: page.localLine.link === Logic.PROGRAM_HINT ? "Zmień program agenta w Tide → Modele"
+                                                                                : "Ustaw model agenta w Tide → Modele"
                     Keys.onSpacePressed: page.modelsRequested()
                     Keys.onReturnPressed: page.modelsRequested()
                     MouseArea {
@@ -566,7 +567,8 @@ Rectangle {
             Text {
                 objectName: "modelNote"
                 Layout.fillWidth: !modelsLink.visible
-                text: page.localOption.enabled ? page.modelNote : page.localOption.reason
+                text: page.localOption.enabled || page.model === "local" ? page.modelNote
+                                                                         : Logic.LOCAL_PREFIX + page.localOption.reason
                 color: Tide.Tokens.textMuted
                 font.family: Tide.Theme.uiFamily
                 font.pixelSize: 12

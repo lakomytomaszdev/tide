@@ -312,8 +312,10 @@ Item {
                          "Otworzy się nowa karta Konsoli z Claude Code na qwen3-coder:30b w tym worktree.")
         self.assertEqual(warned(log, "BLOCKED"), "local|Model lokalny niedostępny: Modelu qwen3-coder:30b nie ma "
                                                  "na serwerze|false", "wybrany „Lokalny” nie przechodzi po cichu na chmurę")
-        self.assertEqual(warned(log, "NOTEOFF"), "Modelu qwen3-coder:30b nie ma na serwerze — ustaw w Tide → Modele")
-        self.assertEqual(warned(log, "CLOUD"), "|true|Modelu qwen3-coder:30b nie ma na serwerze — ustaw w Tide → Modele")
+        self.assertEqual(warned(log, "NOTEOFF"), "Modelu qwen3-coder:30b nie ma na serwerze",
+                         "przy „Lokalny” odnośnik jest w linii agenta")
+        self.assertEqual(warned(log, "CLOUD"), "|true|⌂ Lokalny: Modelu qwen3-coder:30b nie ma na serwerze — ustaw w "
+                                               "Tide → Modele", "w chmurze uwaga mówi, że dotyczy „Lokalnego”")
         self.assertEqual(warned(log, "ASKED"), "1")
 
     def test_local_mode_shows_the_program_line_instead_of_the_switch(self):
@@ -338,6 +340,8 @@ Item {
     readonly property var ok: %(ok)s
     readonly property var mac: %(mac)s
     readonly property var missing: %(missing)s
+    readonly property var unset: %(unset)s
+    readonly property var offline: %(offline)s
     NewTaskPage {
         id: page
         anchors.fill: parent
@@ -362,6 +366,10 @@ Item {
         return find(page, "toolSwitch").visible + "|" + find(page, "localAgent").visible + "|"
              + find(page, "localProgram").text + find(page, "localDetail").text
     }
+    function line() {
+        return find(page, "localProgram").text + find(page, "localDetail").text + "|" + find(page, "programLink").text
+               + "|" + find(page, "modelNote").text + "|" + find(page, "modelsLink").visible + "|" + page.blocker
+    }
     Timer {
         interval: 400; running: true
         onTriggered: {
@@ -370,6 +378,7 @@ Item {
             page.start()
             page.model = "local"
             console.warn("LOCAL " + root.shown() + "|" + page.tool + "|" + page.agentTool)
+            console.warn("LINEOK " + root.line())
             page.start()
             console.warn("TOOLS " + root.requests.map(r => r.model + ":" + r.tool).join(","))
             localSuggestion.start()
@@ -387,6 +396,16 @@ Item {
             page.modelsStatus = root.missing
             console.warn("MISSING " + root.shown() + "|" + find(page, "modelNote").text + "|"
                          + find(page, "modelsLink").visible + "|" + page.canStart)
+            console.warn("LINEMISSING " + root.line())
+            page.modelsStatus = root.unset
+            console.warn("LINEUNSET " + root.line())
+            page.modelsStatus = root.offline
+            console.warn("LINEOFFLINE " + root.line())
+            page.model = "cloud"
+            console.warn("CLOUDNOTE " + find(page, "modelNote").text + "|" + find(page, "modelsLink").visible + "|"
+                         + find(page, "modelsLink").text)
+            page.model = "local"
+            page.modelsStatus = root.missing
             find(page, "programLink").Keys.spacePressed(null)
             page.modelsRequested()
             console.warn("ASKED " + root.modelsAsked)
@@ -407,7 +426,9 @@ Item {
 """ % {"data": json.dumps(data, ensure_ascii=False), "now": NOW, "ok": json.dumps(models_status()),
        "mac": json.dumps({**models_status(endpoint="mac"), "agentProgram": "codex",
                           "endpoints": {"mac": {"url": "http://mac-studio:11434", "online": True}}}),
-       "missing": json.dumps(models_status(installed=False, available=False))})
+       "missing": json.dumps(models_status(installed=False, available=False)),
+       "unset": json.dumps({**models_status(), "roles": {}}),
+       "offline": json.dumps(models_status(endpoint="mac", available=False, installed=None))})
             log = run_qml(harness)
         self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
         self.assertEqual(warned(log, "CLOUD"), "true|false|◎ Codex na qwen3-coder:30b · Ten komputer|claude|claude",
@@ -422,6 +443,20 @@ Item {
         self.assertEqual(warned(log, "MISSING"), "false|true|◎ Codex na qwen3-coder:30b · Ten komputer|"
                                                  "Modelu qwen3-coder:30b nie ma na serwerze|false|false",
                          "ostrzeżenie zostaje, link do Modeli tylko w linii agenta")
+        self.assertEqual(warned(log, "LINEOK"), "◎ Codex na qwen3-coder:30b · Ten komputer|zmień w Tide → Modele|"
+                                                "Na tym komputerze (8 GB) agent lokalny jest wolny i słaby — opcja "
+                                                "głównie na Maca.|false|", "dostępny model — link zmienia program")
+        self.assertEqual(warned(log, "LINEMISSING"), "◎ Codex na qwen3-coder:30b · Ten komputer|ustaw w Tide → Modele|"
+                                                     "Modelu qwen3-coder:30b nie ma na serwerze|false|Model lokalny "
+                                                     "niedostępny: Modelu qwen3-coder:30b nie ma na serwerze")
+        self.assertEqual(warned(log, "LINEUNSET"), "◎ Codex|ustaw w Tide → Modele|Model agenta nie jest ustawiony|"
+                                                   "false|Model lokalny niedostępny: Model agenta nie jest ustawiony",
+                         "rola nieustawiona — sam program, kłopot z modelem, więc „ustaw”")
+        self.assertEqual(warned(log, "LINEOFFLINE"), "◎ Codex na qwen3-coder:30b · mac|ustaw w Tide → Modele|"
+                                                     "Serwer mac nie odpowiada|false|Model lokalny niedostępny: "
+                                                     "Serwer mac nie odpowiada")
+        self.assertEqual(warned(log, "CLOUDNOTE"), "⌂ Lokalny: Serwer mac nie odpowiada|true|— ustaw w Tide → Modele",
+                         "w chmurze uwaga z przedrostkiem i odnośnikiem")
         self.assertEqual(warned(log, "ASKED"), "2")
         self.assertEqual(warned(log, "NOBIN"), "Nie znaleziono programu codex|◎ Codex · brak")
         self.assertEqual(warned(log, "BACK"), "true|false|claude|")
