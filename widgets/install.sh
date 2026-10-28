@@ -4,6 +4,7 @@
 # Pakiet jest najpierw składany w $BUILD_DIR (domyślnie build/) razem z biblioteką i paletą.
 # Plik z tokenem (klucz "X-Tide-LimityConfig" w metadata.json) zostaje tylko w zainstalowanym
 # pakiecie z trybem 0600 — ze złożonej kopii w $BUILD_DIR jest usuwany zaraz po instalacji.
+# Po instalacji widgets/stale.py wypisuje widżety, których nowego kodu Plasma jeszcze nie wczytała.
 set -euo pipefail
 
 action="$1"
@@ -26,7 +27,7 @@ case "$action" in
         /usr/bin/python3 "$root/widgets/stage.py" "$widget" "$staged"
         if [[ -d "$installed" ]]; then
             kpackagetool6 -t Plasma/Applet -u "$staged"
-            echo "Zaktualizowano widżet $id. Nowy kod Plasma wczyta po: systemctl --user restart plasma-plasmashell"
+            echo "Zaktualizowano widżet $id."
         else
             kpackagetool6 -t Plasma/Applet -i "$staged"
             echo "Zainstalowano widżet $id — dodaj go do panelu z listy widżetów."
@@ -35,6 +36,8 @@ case "$action" in
         if [[ -n "$secret" && -f "$installed/$secret" ]]; then
             chmod 600 "$installed/$secret"
         fi
+        # Wszystkie widżety Tide nowsze od działającej powłoki, nie tylko ten (PT-32).
+        /usr/bin/python3 "$root/widgets/stale.py"
         ;;
     uninstall)
         if [[ -d "$installed" ]]; then
