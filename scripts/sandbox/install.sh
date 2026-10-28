@@ -43,7 +43,8 @@ if [[ $dry -eq 1 ]]; then
     as_user() { "$@"; }
     check="${TIDE_SANDBOX_CHECK:-$check}"
 else
-    unset TIDE_SANDBOX_ROOT
+    # Zmienne testów nie mogą sterować prawdziwą instalacją (atrapy prób, inny korzeń, inny check.py).
+    unset TIDE_SANDBOX_ROOT TIDE_SANDBOX_BWRAP TIDE_SANDBOX_UNSHARE TIDE_SANDBOX_CHECK
     if [[ $EUID -ne 0 ]]; then
         echo "Uruchom przez sudo: sudo bash $0  (podgląd bez zmian: bash $0 --dry-run)" >&2
         exit 1
