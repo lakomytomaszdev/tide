@@ -11,12 +11,12 @@
     "graphite": "#181d22"
   },
   "background": {
-    "desktop": "#14262e",
+    "desktop": "#0f282c",
     "window": "#102e38",
-    "titlebar": "#1b3740",
-    "view": "#122931",
-    "card": "#214547",
-    "panel": "#1e3941"
+    "titlebar": "#113136",
+    "view": "#0f2b31",
+    "card": "#123536",
+    "panel": "#113337"
   },
   "text": {
     "primary": "#f1e9d3",
@@ -25,13 +25,13 @@
   },
   "accent": "#c5a463",
   "pastel": {
-    "teal": "#84cdc3",
-    "lavender": "#c7aed5",
-    "peach": "#e2ae92",
-    "butter": "#dbc394",
-    "rose": "#df9690",
-    "mint": "#94d195",
-    "sky": "#97c8d8"
+    "teal": "#6bc8bf",
+    "lavender": "#c8afdc",
+    "peach": "#eda679",
+    "butter": "#f1d493",
+    "rose": "#e47a74",
+    "mint": "#93d08d",
+    "sky": "#79bee9"
   },
   "wallpaper": {
     "variant": "pictures",

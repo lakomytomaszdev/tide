@@ -21,6 +21,15 @@ def mix(a: Rgb, b: Rgb, amount: float) -> Rgb:
     return tuple(round(x + (y - x) * amount) for x, y in zip(a, b))
 
 
+def contrast(a: Rgb, b: Rgb) -> float:
+    """Kontrast WCAG 2 dwóch kolorów."""
+    def luminance(rgb: Rgb) -> float:
+        lin = [(c / 255) / 12.92 if c / 255 <= 0.04045 else ((c / 255 + 0.055) / 1.055) ** 2.4 for c in rgb]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+    high, low = sorted((luminance(a), luminance(b)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
 def fmt(color: Rgb) -> str:
     return ",".join(str(c) for c in color)
 
@@ -29,9 +38,16 @@ def foregrounds(palette: dict, normal: Rgb, inactive: Rgb, on_accent: bool = Fal
     p = {k: hex_rgb(v) for k, v in palette["pastel"].items()}
     accent = hex_rgb(palette["accent"])
     if on_accent:
-        # Na tealowym zaznaczeniu pastele byłyby nieczytelne — używamy ich przyciemnionych wersji.
+        # Na zaznaczeniu w kolorze akcentu pastele byłyby nieczytelne — używamy ich przyciemnionych
+        # wersji: 72% w stronę tła pulpitu, a gdy to za mało na 4,5:1 (np. na złotym akcencie
+        # Streamer), tyle więcej, ile trzeba. W Mist 72% wystarcza, więc schemat się nie zmienia.
         dark = hex_rgb(palette["background"]["desktop"])
-        tone = lambda c: mix(c, dark, 0.72)  # noqa: E731
+
+        def tone(c: Rgb) -> Rgb:
+            amount = 0.72
+            while contrast(mix(c, dark, amount), accent) < 4.5 and amount < 1:
+                amount = min(1.0, amount + 0.01)
+            return mix(c, dark, amount)
         return {
             "ForegroundNormal": normal, "ForegroundInactive": inactive, "ForegroundActive": normal,
             "ForegroundLink": tone(p["sky"]), "ForegroundVisited": tone(p["lavender"]),

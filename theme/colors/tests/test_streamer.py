@@ -20,15 +20,19 @@ class StreamerSchemeTest(unittest.TestCase):
             text = out.read_text()
         self.assertIn("ColorScheme=TideStreamer\n", text)
         self.assertIn("Name=Tide Streamer\n", text)
-        self.assertIn("[Colors:Window]\nBackgroundAlternate=27,55,64\nBackgroundNormal=16,46,56\n", text)
+        self.assertIn("[Colors:Window]\nBackgroundAlternate=17,49,54\nBackgroundNormal=16,46,56\n", text)
 
-    def test_text_is_readable_on_every_background(self):
+    def test_every_foreground_is_readable_on_its_backgrounds(self):
+        # Wszystkie pary Foreground*/Background* schematu ≥ 4,5:1, poza ForegroundInactive (tekst
+        # celowo przygaszony) i tłem nieaktywnego zaznaczenia — w Mist też są niżej.
         for name, values in scheme(load("streamer")).items():
             if not name.startswith("Colors:"):
                 continue
-            with self.subTest(group=name):
-                self.assertGreaterEqual(contrast(parse(values["ForegroundNormal"]), parse(values["BackgroundNormal"])), 4.5)
-
+            backgrounds = ["BackgroundNormal"] + ([] if name == "Colors:Selection" else ["BackgroundAlternate"])
+            for bg in backgrounds:
+                for fg in (k for k in values if k.startswith("Foreground") and k != "ForegroundInactive"):
+                    with self.subTest(group=name, background=bg, foreground=fg):
+                        self.assertGreaterEqual(contrast(parse(values[fg]), parse(values[bg])), 4.5)
 
 if __name__ == "__main__":
     unittest.main()

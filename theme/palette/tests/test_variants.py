@@ -1,5 +1,7 @@
 """Warianty palety: Mist i nakładki na nią (Streamer) wczytywane przez theme.palette.load."""
+import itertools
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +34,17 @@ def luminance(color: str) -> float:
     channels = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
     linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
     return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def lab(color: str) -> tuple[float, float, float]:
+    """CIE L*a*b* (D65) koloru sRGB."""
+    channels = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    r, g, b = (c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels)
+    xyz = (0.4124 * r + 0.3576 * g + 0.1805 * b, 0.2126 * r + 0.7152 * g + 0.0722 * b,
+           0.0193 * r + 0.1192 * g + 0.9505 * b)
+    f = [t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116
+         for t in (xyz[0] / 0.95047, xyz[1], xyz[2] / 1.08883)]
+    return 116 * f[1] - 16, 500 * (f[0] - f[1]), 200 * (f[1] - f[2])
 
 
 def contrast(a: str, b: str) -> float:
@@ -113,10 +126,23 @@ class StreamerTest(unittest.TestCase):
                 self.assertGreaterEqual(contrast(self.k["text"]["primary"], background), 4.5)
 
     def test_status_pastels_are_readable_on_cards(self):
-        # Pastele są kolorem tekstu stanów (np. „czeka”) na kartach i w popupach.
+        # Pastele są kolorem tekstu stanów (np. „czeka”) na kartach i w popupach (karta to najjaśniejsze tło).
         for name, color in self.k["pastel"].items():
             with self.subTest(pastel=name):
-                self.assertGreaterEqual(contrast(color, self.k["background"]["card"]), 4.0)
+                self.assertGreaterEqual(contrast(color, self.k["background"]["card"]), 4.5)
+
+    def test_semantic_roles_are_told_apart(self):
+        # Stany (pracuje, czeka, gotowe, błąd…) rozróżniamy kolorem kropki i tekstu: każda para ról
+        # o różnym znaczeniu ΔE76 ≥ 20, a „negatywne” dodatkowo jaśnością (ΔL* ≥ 8) — także dla
+        # osób słabiej rozróżniających barwy. runout to „czeka” w Limitach AI (ten sam pastel).
+        semantic = self.k["semantic"]
+        roles = ("positive", "neutral", "negative", "waiting", "working", "done")
+        colors = {role: lab(self.k["pastel"][semantic[role]]) for role in roles}
+        for a, b in itertools.combinations(roles, 2):
+            with self.subTest(pair=(a, b)):
+                self.assertGreaterEqual(math.dist(colors[a], colors[b]), 20)
+                if "negative" in (a, b):
+                    self.assertGreaterEqual(abs(colors[a][0] - colors[b][0]), 8)
 
     def test_selection_text_is_readable_on_the_accent(self):
         # Schemat kolorów: zaznaczenie ma tło akcentu i tekst w kolorze pulpitu.
