@@ -96,9 +96,10 @@ class StreamerTest(unittest.TestCase):
                 self.assertEqual(set(self.k[group]), set(self.mist[group]))
 
     def test_extra_keys_are_only_variant_specific(self):
-        extra = {p.split(".")[0] + ("." + p.split(".")[1] if p.startswith("wallpaper.") else "")
+        extra = {p.split(".")[0] + ("." + p.split(".")[1] if p.startswith(("wallpaper.", "lockscreen.")) else "")
                  for p in key_paths(self.k) - key_paths(self.mist)}
-        self.assertLessEqual(extra, {"brand", "wallpaper.map", "wallpaper.pictures", "lockscreenAgents"})
+        # lockscreen.agents: ekran blokady Stream bez linii agentów (decyzja 80).
+        self.assertLessEqual(extra, {"brand", "wallpaper.map", "wallpaper.pictures", "lockscreen.agents"})
 
     def test_shapes_and_timings_come_from_mist(self):
         for group in ("radius", "size", "opacity", "shadow", "fonts", "limits", "splash", "plymouth", "terminal"):

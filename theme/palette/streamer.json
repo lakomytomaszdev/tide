@@ -24,7 +24,9 @@
     "muted": "#aeb1a4"
   },
   "accent": "#c5a463",
-  "lockscreenAgents": false,
+  "lockscreen": {
+    "agents": false
+  },
   "pastel": {
     "teal": "#6bc8bf",
     "lavender": "#c8afdc",
