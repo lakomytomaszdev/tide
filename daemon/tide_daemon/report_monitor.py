@@ -383,7 +383,7 @@ class ReportMonitor(QObject):
         now = self.clock()
         state = schedule.load_state(self.state_file)
         day = schedule.report_day(now, self.settings).isoformat()
-        start, end = schedule.period(now, state, day)
+        start, end = schedule.period(now, state, day, self.settings)
         sessions = list(self.sessions() or [])
         trees = self.worktrees()
         self._fix_notes()
@@ -441,7 +441,7 @@ class ReportMonitor(QObject):
                 print(f"tide-daemon: raport: nie zapisano stanu: {exc}", flush=True)
             calls = (getattr(report, "standup", None) or {}).get("calls", 0)
             print(f"tide-daemon: raport {context['day']}{' (na żywo)' if context.get('live') else ''}: {index} "
-                  f"({len(report.active)} z ruchem, wywołań modelu: {calls})", flush=True)
+                  f"({len(report.active)} w raporcie, wywołań modelu: {calls})", flush=True)
             if notify and self.notifier is not None:
                 self.notifier.notify(*notification_text(report), index)
             self.ready.emit(index)

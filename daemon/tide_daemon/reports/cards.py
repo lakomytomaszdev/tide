@@ -9,7 +9,9 @@ dawniej (nazwa katalogu, tytuł z nazwy gałęzi). Z migawki bierzemy:
   `card:` planu, a na końcu token `k-12` w nazwie gałęzi — ten tylko w repozytorium projektu karty
   (główny albo dodatkowy, PT-28), żeby obca gałąź „k-1-…” nie udawała karty,
 - projekty karty (główny i dodatkowe) — praca nad jedną kartą w kilku repozytoriach jest opisana raz,
-  w projekcie głównym („pracuje też w: …”), a w pozostałych krótką wzmianką.
+  w projekcie głównym („pracuje też w: …”), a w pozostałych krótką wzmianką,
+- karty w toku („W toku”, „Czeka na mnie”, „Do sprawdzenia”) — stan prac na dzień w projekcie głównym karty,
+  także gdy w okresie nie było ruchu (collect.assign_cards, standup.card_items).
 
 Bez I/O: tylko słowniki z migawki.
 """
@@ -18,6 +20,8 @@ import re
 
 from ..board.model import CARD_PREFIX
 
+# Kolumny tablicy, w których karta to praca w toku (stan prac na dzień): „W toku”, „Czeka na mnie”, „Do sprawdzenia”.
+OPEN_COLUMNS = ("progress", "waiting", "review")
 CARD_TOKEN = re.compile(r"(?i)(?<![a-z0-9])" + re.escape(CARD_PREFIX) + r"(\d{1,6})(?![a-z0-9])")
 
 
@@ -60,6 +64,10 @@ class BoardInfo:
     def label(self, path: str) -> str:
         """Nazwa projektu z tablicy dla repozytorium albo pusty napis."""
         return self.names.get(_real(path), "")
+
+    def open_cards(self) -> list[dict]:
+        """Karty w toku — kolumna do wyświetlenia (`boardColumn`, z pracy agentów) w OPEN_COLUMNS."""
+        return [c for c in self.cards.values() if column_of(c) in OPEN_COLUMNS]
 
     def card_repos(self, card: dict) -> list[str]:
         """Repozytoria projektów karty (realpath): najpierw główny, potem dodatkowe (PT-28)."""
@@ -104,6 +112,12 @@ class BoardInfo:
                 if not repos or (real and real in repos):
                     return card
         return None
+
+
+def column_of(card: dict) -> str:
+    """Kolumna karty tak jak na tablicy: wyprowadzona z pracy agentów albo zapisana ręcznie."""
+    derived = card.get("derived") if isinstance(card.get("derived"), dict) else {}
+    return str(derived.get("column") or card.get("boardColumn") or card.get("column") or "")
 
 
 def card_label(card: dict) -> str:

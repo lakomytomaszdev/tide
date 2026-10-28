@@ -64,6 +64,11 @@ CSP = (f"default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-{SCRI
 
 # --- tekst ------------------------------------------------------------------------------------
 
+# Pusty raport tylko wtedy, gdy naprawdę nic się nie dzieje: projekty z pracą w toku są w raporcie i bez ruchu
+# w okresie (collect.Project.standing), więc to zdanie mówi także, że nic nie trwa.
+NOTHING = "W projektach nic się nie dzieje — nie ma nowej pracy ani pracy w toku."
+
+
 def esc(value) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
@@ -514,7 +519,7 @@ def render_index(report, palette: dict, home: str = "") -> str:
         '<section class="stats">',
         _stat(len(waiting), plural(len(waiting), "czeka na ciebie", "czekają na ciebie", "czeka na ciebie"),
               hot=bool(waiting)),
-        _stat(len(repos), plural(len(repos), "projekt z ruchem", "projekty z ruchem", "projektów z ruchem")),
+        _stat(len(repos), plural(len(repos), "projekt w raporcie", "projekty w raporcie", "projektów w raporcie")),
         _stat(commits, plural(commits, "commit", "commity", "commitów"),
               f'<small><span class="add">+{added}</span> <span class="del">−{deleted}</span></small>' if commits else ""),
         _stat(sessions, plural(sessions, "sesja agenta", "sesje agentów", "sesji agentów")),
@@ -626,8 +631,7 @@ def overview(report, projects) -> str:
            f'{len(projects)}</span></h2><span class="dsrc">{esc(_source(summary))}</span><span class="sp"></span>'
            + (copy_button(text, "Kopiuj wszystko jako tekst") if text else "") + "</div>"]
     if not projects:
-        out.append('<div class="calm"><span class="dot"></span>W tym okresie nie ma nic do opowiedzenia — '
-                   'ani commitów, ani sesji agentów w projektach.</div></section>')
+        out.append(f'<div class="calm"><span class="dot"></span>{esc(NOTHING)}</div></section>')
         return "".join(out)
     cards = []
     chores = []
@@ -729,8 +733,8 @@ def daily(report, projects, index: bool = False) -> str:
                        f'<div class="sg chores"><ul>{rows}</ul></div></details>')
         out.append("</article>")
     if not shown:
-        out.append('<div class="calm"><span class="dot"></span>W tym okresie nie ma nic do opowiedzenia — '
-                   'ani skończonej pracy, ani pracy w toku.</div>')
+        quiet = NOTHING if index else "W tym okresie nie ma nic do opowiedzenia — ani skończonej pracy, ani pracy w toku."
+        out.append(f'<div class="calm"><span class="dot"></span>{esc(quiet)}</div>')
     out.append("</section>")
     return "".join(out)
 

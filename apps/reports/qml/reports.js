@@ -90,7 +90,7 @@ function summaryParts(report) {
     const parts = []
     if (report.since) parts.push({ text: String(report.since), tone: "" })
     if (typeof counts.projects === "number")
-        parts.push({ text: count(counts.projects, "projekt", "projekty", "projektów") + " z ruchem", tone: "" })
+        parts.push({ text: count(counts.projects, "projekt", "projekty", "projektów") + " w raporcie", tone: "" })
     if (report.legacy) {
         parts.push({ text: "raport sprzed widoku w oknie — szczegóły w przeglądarce", tone: "" })
         return parts

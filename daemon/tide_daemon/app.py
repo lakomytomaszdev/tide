@@ -360,7 +360,7 @@ def print_report(args, clock, scanner, settings) -> int:
         print(f"tide-daemon: raport: {exc}", file=sys.stderr)
         return 1
     print(index)
-    print(f"{len(report.repos)} projektów z ruchem, {len(report.quiet)} bez ruchu", file=sys.stderr)
+    print(f"{len(report.repos)} projektów w raporcie, {len(report.quiet)} bez ruchu", file=sys.stderr)
     return 0
 
 

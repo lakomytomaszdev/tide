@@ -622,7 +622,56 @@ class RenderTest(StandupWorld):
         root = tempfile.mkdtemp(dir=self.tmp)
         index, report = self.generate(root, )
         empty = render.daily(type("R", (), {"standup": {"projects": {}}, "day": report.day})(), [], index=True)
-        self.assertIn("nie ma nic do opowiedzenia", empty)
+        self.assertIn(render.NOTHING, empty)
+
+
+class StandingCardsTest(unittest.TestCase):
+    """Karty tablicy w toku w „Na daily” (stan prac na dzień): bez powtórki, gdy kartę opisuje już praca z raportu."""
+
+    def fact(self, cards, sessions=()):
+        from tide_daemon.reports import collect
+        from tide_daemon.reports.sessions import SessionReport
+        project = collect.Project(key="/r/demo", name="demo", path="/r/demo", main_branch="master", slug="demo")
+        project.sessions = list(sessions)
+        project.cards = cards
+        report = types.SimpleNamespace(start=NOW - 86400, board=None)
+        return standup.project_facts(report, project)
+
+    @staticmethod
+    def card(ident, column, **derived):
+        return {"id": ident, "title": f"Karta {ident}", "boardColumn": column,
+                "derived": dict({"column": column, "note": "", "session": "", "coordinator": ""}, **derived)}
+
+    def test_columns_in_doing_never_waiting_without_agent(self):
+        fact = self.fact([self.card("K-1", "progress", note="agent pracuje"), self.card("K-2", "waiting"),
+                          self.card("K-3", "review", nextStep="przetestować ręcznie")])
+        out = standup.rules(fact)
+        self.assertEqual([(i["text"], i.get("next", "")) for i in out["doing"]],
+                         [("K-1 Karta K-1", ""), ("K-2 Karta K-2 — czeka na ciebie", ""),
+                          ("K-3 Karta K-3 — do sprawdzenia", "przetestować ręcznie")])
+        self.assertEqual(out["waiting"], [], "bez agenta, który stoi teraz, nic nie trafia do plakietek (decyzja 36)")
+        self.assertEqual(out["headline"], "W toku: K-1 Karta K-1.")
+
+    def test_card_described_in_another_project_is_not_repeated(self):
+        fact = self.fact([self.card("K-1", "progress")])
+        other = {"units": [{"card": {"id": "K-1", "label": "K-1 Karta K-1"}}], "cards": []}
+        report = types.SimpleNamespace(active=[], board=None)
+        with mock.patch.object(standup, "project_facts", side_effect=[fact, other]), \
+                mock.patch.object(standup, "link_cards"):
+            report.active = [types.SimpleNamespace(is_repo=True), types.SimpleNamespace(is_repo=True)]
+            out = standup.facts(report)
+        self.assertEqual(out[0]["cards"], [], "karta ma opis przy pracy w drugim projekcie")
+
+    def test_card_described_by_waiting_session_is_not_repeated(self):
+        from tide_daemon.reports.sessions import SessionReport
+        waiting = SessionReport(tool="claude", session_id="s1", path="", cwd="/r/demo", title="Eksport",
+                                state="waiting", reason="question", waiting_text="Który format?", live=True,
+                                standing=True)
+        fact = self.fact([self.card("K-1", "waiting", session="claude:s1")], [waiting])
+        self.assertEqual(fact["cards"], [])
+        out = standup.rules(fact)
+        self.assertEqual([i["text"] for i in out["waiting"]], ["Eksport: agent pyta: „Który format?”"])
+        self.assertEqual(out["doing"], [])
 
 
 class CategoryTest(StandupWorld):

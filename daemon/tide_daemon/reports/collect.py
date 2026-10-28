@@ -4,9 +4,12 @@ Projekt to repozytorium z katalogu projektów (z wszystkimi swoimi worktrees). S
 należy do projektu, w którego worktree (najgłębszym) leży jej katalog roboczy; sesja spoza
 repozytoriów tworzy „projekt” po nazwie katalogu (np. korzeń przestrzeni roboczej) — to nie jest
 prawdziwy projekt: bez strony i bez „Na daily”, jego sesje są w indeksie w zwiniętej sekcji „Poza
-projektami”. Repozytorium „z ruchem” ma w okresie commit, sesję albo przebieg zaplanowanego zadania
-— tylko takie dostaje własną stronę; reszta trafia na zwiniętą listę w indeksie (z tym, co w nich
-czeka: worktrees do sprzątnięcia, zmiany).
+projektami”. Repozytorium jest w raporcie, gdy ma w okresie commit, sesję albo przebieg zaplanowanego
+zadania — albo pracę, która trwa teraz, nawet bez ruchu w okresie (stan prac na dzień, `standing`):
+sesję, która pracuje albo czeka na użytkownika, świeżą niescaloną gałąź z commitami (worktree), świeży plan z ticketami
+w toku albo kartę tablicy pracy w „W toku”, „Czeka na mnie” lub „Do sprawdzenia”. Tylko takie dostaje
+własną stronę; reszta trafia na zwiniętą listę w indeksie (z tym, co w nich czeka: worktrees do
+sprzątnięcia, zmiany). Cicha noc nie robi więc pustego raportu, gdy praca stoi w toku.
 """
 import os
 import re
@@ -19,6 +22,12 @@ from . import cards as cards_mod, gitlog, limits, plans as plans_mod, sessions a
 
 SLUG_RE = re.compile(r"[^a-z0-9._-]+")
 RESERVED = {"index", ""}
+MAIN_BRANCHES = ("master", "main", "develop")
+PLAN_ACTIVE = ("w-toku", "review", "czeka")      # tickety, z którymi plan jest „w toku”
+# Praca w toku bez ruchu w okresie liczy się tylko świeża: gałąź zmieniona albo plan zaktualizowany w ostatnich
+# 7 dniach (jak najdłuższy okres raportu). Porzucona gałąź sprzed miesięcy nie wisi w „W toku” codziennie.
+STANDING_MAX = 7 * 86400
+STANDING_BRANCHES = 5                             # najwięcej niescalonych gałęzi na projekt (najświeższe)
 
 
 @dataclass
@@ -37,6 +46,9 @@ class Project:
     main_dirty_count: int = 0
     plans: list = field(default_factory=list)          # plans.attach: plany i tickety (opcjonalny dodatek)
     label: str = ""                                    # nazwa projektu z tablicy pracy (pusta — nazwa katalogu)
+    open_branches: list = field(default_factory=list)  # świeże worktrees z niescalonymi commitami (czekają na scalenie)
+    standing_plans: list = field(default_factory=list)  # plany w toku z pracą w ostatnich STANDING_MAX (plan_in_progress)
+    cards: list = field(default_factory=list)          # karty tablicy pracy w toku (cards.BoardInfo.open_cards)
 
     @property
     def display(self) -> str:
@@ -60,8 +72,15 @@ class Project:
         return [s for s in self.sessions if s.state == "working"]
 
     @property
+    def standing(self) -> bool:
+        """Praca, która trwa teraz, także bez ruchu w okresie: niescalona gałąź, plan w toku, karta tablicy
+        w toku (sesje, które pracują albo czekają, są już w `sessions` — sessions.standing_session)."""
+        return bool(self.open_branches or self.cards or self.standing_plans)
+
+    @property
     def active(self) -> bool:
-        return bool(self.commits or self.sessions)
+        """W raporcie: ruch w okresie albo praca w toku (stan prac na dzień)."""
+        return bool(self.commits or self.sessions or self.standing)
 
     @property
     def last_ts(self) -> float:
@@ -89,7 +108,7 @@ class Report:
 
     @property
     def repos(self) -> list:
-        """Projekty-repozytoria z ruchem — każdy ma własną stronę z „Na daily”."""
+        """Projekty-repozytoria w raporcie (ruch w okresie albo praca w toku) — każdy ma własną stronę z „Na daily”."""
         return [p for p in self.active if p.is_repo]
 
     @property
@@ -138,6 +157,11 @@ def build(day: str, start: float, end: float, *, workspace: str, claude_root: st
             continue
         if item.get("missing"):
             continue
+        branch = item.get("branch") or ""
+        if branch and not item.get("detached") and branch not in MAIN_BRANCHES and not branch.startswith("worktree-agent-") \
+                and isinstance(item.get("unmerged"), int) and not isinstance(item.get("unmerged"), bool) \
+                and item["unmerged"] > 0 and float(item.get("lastChangeTs") or 0) >= end - STANDING_MAX:
+            project.open_branches.append(item)
         if item.get("removable"):
             project.to_clean.append(item)
         elif not item.get("isMain") and item.get("branch") not in ("master", "main", "develop") \
@@ -177,13 +201,50 @@ def build(day: str, start: float, end: float, *, workspace: str, claude_root: st
                                                repo_items, project.sessions)
 
     plans_mod.attach(list(projects.values()), start, end, coordination_cache, tracker)
+    for project in projects.values():
+        project.open_branches = sorted(project.open_branches, key=lambda w: -float(w.get("lastChangeTs") or 0)
+                                       )[:STANDING_BRANCHES]
+        project.standing_plans = [e for e in project.plans or () if plan_in_progress(e, end - STANDING_MAX)]
+    info = board if isinstance(board, cards_mod.BoardInfo) else cards_mod.BoardInfo(board)
+    assign_cards(list(projects.values()), info)
     ordered = sorted(projects.values(), key=lambda p: (not p.waiting, not p.active, -p.last_ts, p.name.lower()))
     assign_slugs(ordered)
-    info = board if isinstance(board, cards_mod.BoardInfo) else cards_mod.BoardInfo(board)
     assign_labels(ordered, info)
     snap = limits.snapshot(limits_result)
     return Report(day=day, generated=end, start=start, end=end, projects=ordered, limits=snap,
                   forecast=limits.forecast(snap), previous_day=previous_day, board=info)
+
+
+def plan_in_progress(entry: dict, since: float = 0.0) -> bool:
+    """Plan „w toku”: koordynator pracuje teraz albo — gdy ostatnia praca przy planie (`last`) jest nie starsza
+    niż `since` — ticket w toku, w review albo czeka, albo plan aktywny zaczęty i nieskończony (część ticketów
+    gotowa, część nie). Plan porzucony z ticketem „w toku” sprzed tygodni nie jest pracą w toku."""
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("live"):
+        return True
+    if float(entry.get("last") or 0) < since:
+        return False
+    counts = entry.get("counts") or {}
+    if any(counts.get(state) for state in PLAN_ACTIVE):
+        return True
+    done, total = entry.get("done") or 0, entry.get("total") or 0
+    return entry.get("status") == "active" and 0 < done < total
+
+
+def assign_cards(projects: list[Project], info: "cards_mod.BoardInfo") -> None:
+    """Karty tablicy pracy w toku do projektów-repozytoriów raportu — po repozytorium projektu głównego karty."""
+    by_path: dict[str, Project] = {}
+    for project in projects:
+        if project.is_repo:
+            for path in (project.key, project.path):
+                if path:
+                    by_path.setdefault(os.path.realpath(path), project)
+    for card in info.open_cards():
+        repos = info.card_repos(card)
+        project = by_path.get(repos[0]) if repos else None
+        if project is not None:
+            project.cards.append(card)
 
 
 def assign_labels(projects: list[Project], info: "cards_mod.BoardInfo") -> None:

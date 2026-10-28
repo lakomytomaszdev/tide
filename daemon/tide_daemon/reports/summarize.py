@@ -89,6 +89,7 @@ Co napisać:
   - "next": zaplanowane tickety ze stanem todo (najwyżej 5),
   - "chores": porządki bez zmian w produkcie — tracker zadań, plany i instrukcje agentów, konfiguracja narzędzi. Pole "category" w faktach to podpowiedź ("chores" = porządki). Jedno zdanie na pozycję; nie powtarzaj ich w "done" ani "doing".
 - Ticket w stanie "gotowe" jest skończony; stan "review" to praca w toku.
+- To stan prac na dzień, nie tylko to, co nowe: praca z "noNewChanges" (czeka na scalenie, bez nowych zmian) i karty z "board" (karty z tablicy programisty: "progress" — w toku, "waiting" — czeka na niego, "review" — do sprawdzenia) opisz w "doing", krótko, co to za praca i co dalej.
 - Najwyżej 6 pozycji w grupie; "text" — jedno zdanie do 160 znaków, "about" i "next" — po jednym zdaniu do 200 znaków.
 
 Odpowiedz WYŁĄCZNIE jednym obiektem JSON, bez komentarza i bez bloku kodu:
@@ -251,6 +252,8 @@ def _compact(fact: dict, level: tuple, home: str) -> dict:
             item["mergedInto"] = s(unit["mergedInto"], 120)
         if unit.get("branch"):
             item["branch"] = s(unit["branch"], 120)
+        if unit.get("standing"):
+            item["noNewChanges"] = True   # gałąź czeka na scalenie, w okresie nic nowego (stan prac na dzień)
         if unit.get("ticket"):
             item["ticket"] = unit["ticket"]
         card = unit.get("card") or {}
@@ -301,6 +304,14 @@ def _compact(fact: dict, level: tuple, home: str) -> dict:
             coordinator.append(entry)
     if coordinator:
         out["coordinator"] = coordinator
+    board = []
+    for card in (fact.get("cards") or [])[:6]:
+        entry = {"card": s(card["label"], 160), "column": card["column"]}
+        if card.get("note"):
+            entry["note"] = s(card["note"], min(message, 300))
+        board.append(entry)
+    if board:
+        out["board"] = board
     return out
 
 
