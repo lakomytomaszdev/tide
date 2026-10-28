@@ -61,6 +61,14 @@ class EndingQuestionTest(unittest.TestCase):
             "Którą wolisz? Mogę też przygotować obie.": "Którą wolisz?",
             "Spec gotowa. Czekam na Twoją odpowiedź.": "Spec gotowa. Czekam na Twoją odpowiedź.",
             "Wszystko gotowe. Daj znać, czy scalić.": "Wszystko gotowe. Daj znać, czy scalić.",
+            # Sesja Twitcha z 28.10: dwa pytania i dłuższe zdanie o tym, co wyniknie z odpowiedzi.
+            "Czy taki podział Wydarzenie → Seria → wynik pasuje? Czy bywa u Ciebie castowanie bez wydarzenia, np. luźne "
+            "mecze znajomych? Wtedy Wydarzenie byłoby opcjonalne, a płytka pokazywałaby tylko graczy i wynik.":
+                "Czy taki podział Wydarzenie → Seria → wynik pasuje? Czy bywa u Ciebie castowanie bez wydarzenia, "
+                "np. luźne mecze znajomych?",
+            "Zrobiłem A. Który wariant wolisz, np. jasny czy ciemny?": "Który wariant wolisz, np. jasny czy ciemny?",
+            "Scalić od razu? Jeśli tak, po scaleniu zainstaluję daemon i zrestartuję usługę razem z widżetami.":
+                "Scalić od razu?",
         }
         for text, expected in cases.items():
             self.assertEqual(ending_question(text), expected, text)
@@ -83,7 +91,8 @@ class EndingQuestionTest(unittest.TestCase):
                      "Co się zmieniło? Dodałem pole daty. Testy przechodzą, review APPROVE.",
                      "Wynik:\n\n```\nczy działa?\n```",
                      "Zmiany:\n\n| Plik | Czy zmieniony? |\n| --- | --- |\n| a.py | tak |",
-                     "Czy to było trudne? Trochę. Ale ostatecznie wszystkie testy przechodzą i jest scalone."):
+                     "Czy to było trudne? Trochę. Ale ostatecznie wszystkie testy przechodzą i jest scalone.",
+                     "Co się zmieniło? Dodałem pole daty i filtr wygasłych wiadomości w obu aplikacjach."):
             self.assertEqual(ending_question(text), "", text)
         self.assertTrue(ending_question("x? " + "a" * 400 + "?").endswith("…"), "przycięte")
 

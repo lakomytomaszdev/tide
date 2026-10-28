@@ -7,7 +7,9 @@ Agent prowadzący grilling kończy turę zwykłym tekstem („Pytanie 10: skąd 
 Heurystyka (`ending_question`): z tekstu usuwamy bloki kodu i tabele, bierzemy ostatni akapit,
 który nie jest listą (lista odpowiedzi do wyboru pod pytaniem go nie zasłania), i jego ostatnie
 zdania (najwyżej QUESTION_SENTENCES). Pytanie to zdanie kończące się „?” (także przed `**`, `)`,
-cudzysłowem albo emoji), po którym jest najwyżej jedno krótkie zdanie, albo linia w stylu „Pytanie 10: …”,
+cudzysłowem albo emoji), po którym jest najwyżej jedno zdanie — krótkie, albo dłuższe, gdy mówi, co wyniknie
+z odpowiedzi („Wtedy…”, „Jeśli tak…”), albo gdy przed nim padły co najmniej dwa pytania (sesja Twitcha z 28.10:
+„Czy taki podział pasuje? Czy bywa u Ciebie castowanie bez wydarzenia…? Wtedy Wydarzenie byłoby opcjonalne…”) — albo linia w stylu „Pytanie 10: …”,
 „Czekam na twoją odpowiedź”, „Daj znać, czy…”, albo lista pytań pod zdaniem z dwukropkiem. Pytanie
 retoryczne w środku podsumowania nie liczy się — patrzymy tylko na koniec wiadomości.
 
@@ -35,6 +37,10 @@ _WAITS = re.compile(r"\b(?:czekam na (?:twoj\w* |twoją |twoich |)(?:odpowied\w*
 _INVITES = re.compile(r"\b(?:jeśli|jeżeli|gdy|kiedy)\s+(?:mi\s+)?(?:napiszesz|odpiszesz|potwierdzisz|dasz\s+znać)\b|"
                       r"\b(?:napisz|odpisz)\s+[„\"«']|\bif you (?:reply|confirm|say)\b", re.I)
 _HEADING = re.compile(r"^\s*#")
+_ABBREVIATION = re.compile(r"(?:^|[\s(„])(?:np|m\.in|tj|tzn|itp|itd|ok|wg|ew|por|e\.g|i\.e|cf)\.$", re.I)
+# Zdanie po pytaniu, które mówi, co wyniknie z odpowiedzi — pytania nie unieważnia.
+_CONSEQUENCE = re.compile(r"^(?:\*\*)?\s*(?:wtedy|wówczas|w takim razie|w przeciwnym razie|inaczej|jeśli|jeżeli|gdyby|"
+                          r"then|if|otherwise)\b", re.I)
 
 
 def ending_question(text: str, limit: int = QUESTION_MAX) -> str:
@@ -68,7 +74,18 @@ def ending_question(text: str, limit: int = QUESTION_MAX) -> str:
 
 
 def _sentences(paragraph: str) -> list:
-    return [s.strip() for line in paragraph.splitlines() for s in _SENTENCE.split(line) if s.strip()]
+    out = []
+    for line in paragraph.splitlines():
+        for part in _SENTENCE.split(line):
+            part = part.strip()
+            if not part:
+                continue
+            # „np.”, „m.in.”, „tj.” nie kończą zdania — fragment wraca do poprzedniego.
+            if out and _ABBREVIATION.search(out[-1]):
+                out[-1] += " " + part
+            else:
+                out.append(part)
+    return out
 
 
 def _paragraph_question(paragraph: str, limit: int) -> str:
@@ -79,7 +96,9 @@ def _paragraph_question(paragraph: str, limit: int) -> str:
     # w środku podsumowania („Co się zmieniło? Dodałem pole. Wszystko działa.”).
     after = window[asked[-1] + 1:] if asked else []
     if asked and (len(after) > 1 or any(len(a) > CLOSING_MAX for a in after)):
-        asked = []
+        # Jedno dłuższe zdanie zostaje, gdy mówi, co wyniknie z odpowiedzi, albo pod co najmniej dwoma pytaniami.
+        if not (len(after) == 1 and (_CONSEQUENCE.match(after[0]) or len(asked) > 1)):
+            asked = []
     if asked:
         start = asked[0]
         # „Pytanie 10:” w osobnej linii albo zdaniu tuż przed pytaniem — razem z nim.
