@@ -727,6 +727,8 @@ class StopStepTest(unittest.TestCase):
         # Sonda: filtr w `config.worktree` (konfiguracja agenta, tor ataku) wykonuje się w piaskownicy gita usługi i zapisuje
         # w worktree, co widzi. Skrypt leży w worktree: /tmp i /run są w piaskownicy puste, a worktree jest do niej podpięty.
         uid = os.getuid()
+        # Bez tego katalogu sonda przeszłaby także bez `--tmpfs /run`, więc brak hosta ma kończyć test czerwono.
+        self.assertTrue(os.path.isdir(f"/run/user/{uid}"), f"host nie ma /run/user/{uid}, sonda nic by nie dowiodła")
         gitrepos.git(self.repo, "config", "extensions.worktreeConfig", "true")
         proc, cmd, _, _ = self.start()
         script = os.path.join(self.worktree, "probe.sh")

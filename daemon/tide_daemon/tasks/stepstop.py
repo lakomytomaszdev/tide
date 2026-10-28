@@ -246,7 +246,7 @@ def _restore_commondir(git_dir: str, notes: list) -> None:
         fd, tmp = tempfile.mkstemp(prefix="commondir.", dir=git_dir)     # O_EXCL: nie podąża za podłożonym dowiązaniem
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write("../..\n")
-        os.chmod(tmp, 0o644)
+            os.fchmod(fh.fileno(), 0o644)                                # po deskryptorze, nie po ścieżce
         os.replace(tmp, path)
         tmp = None
         notes.append("przywrócono plik commondir katalogu worktree (krok go zmienił)")
