@@ -101,7 +101,7 @@ Obiekt /Models, interfejs org.tide.Daemon.Models (modele lokalne: serwery z mode
                              oldName?} w katalogu wykonawców (PT-60) → {ok, error},
 - RemoveExecutor(s name) -> s  usunięcie wykonawcy z katalogu → {ok, error},
 - SetProvider(s json) -> s   inny dostawca {name, label?, url, api ("openai"|"anthropic"), token?, clearToken?};
-                             token do tokens/provider-<nazwa> (0600), nigdy w odpowiedzi → {ok, error},
+                             token do tokens/providers/<nazwa> (0600), nigdy w odpowiedzi → {ok, error},
 - RemoveProvider(s name) -> s  usunięcie innego dostawcy (odmowa, gdy ma wykonawców) → {ok, error},
 - ResolveExecutor(s json) -> s  klasa na wykonawcę {provider, class[, author]} → {ok, error, executor, local,
                              suggested, candidates}; z `author` — recenzent innego modelu niż autor,

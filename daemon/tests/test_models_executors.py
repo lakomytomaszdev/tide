@@ -5,6 +5,7 @@ i z innym dostawcą. Wszystko w katalogu tymczasowym, bez sieci; token innego do
 """
 import json
 import os
+import pathlib
 import secrets
 import shutil
 import stat
@@ -162,13 +163,124 @@ class ResolveTest(unittest.TestCase):
         self.assertNotIn("tokens/", state)
 
 
+class ReviewRulesTest(unittest.TestCase):
+    ctx = ResolveTest.ctx
+    """Reguły recenzenta i klasy z review PT-60 (każda zabija konkretny mutant)."""
+
+    def test_defaults_codex_models_and_effort(self):
+        by = {e.name: e for e in ex.DEFAULT_EXECUTORS}
+        self.assertEqual([(by[n].model, by[n].effort, by[n].classes) for n in
+                          ("Codex lekki", "Codex standard", "Codex mocny", "Codex Astra")],
+                         [("gpt-6-luna", "", ("lekki",)), ("gpt-6.1-sol", "medium", ("standard",)),
+                          ("gpt-6.1-sol", "high", ("mocny",)), ("gpt-6-astra", "high", ())])
+        ctx = self.ctx()
+        self.assertEqual(ex.resolve(ctx, "openai", "mocny").executor["name"], "Codex mocny")
+        self.assertEqual(ex.resolve(ctx, "openai", "mocny").executor["effort"], "high")
+        self.assertNotIn("Codex Astra", [ex.resolve(ctx, "openai", k).executor["name"] for k in ex.CLASS_ORDER])
+        self.assertEqual(ex.resolve(ctx, "mixed", "mocny").executor["name"], "Opus")
+        self.assertIn("Codex Astra", ex.resolve(ctx, "mixed", "mocny").candidates)
+
+    def test_same_model_other_effort_is_not_another_reviewer(self):
+        ctx = self.ctx()
+        for author, bad in (("Codex standard", "Codex mocny"), ("Codex mocny", "Codex standard")):
+            review = ex.reviewer(ctx, "openai", "standard", author)
+            self.assertTrue(review.ok)
+            self.assertNotEqual(review.executor["name"], bad)
+            self.assertNotEqual(review.executor["model"], "gpt-6.1-sol")
+            self.assertNotIn(bad, review.candidates)
+
+    def test_mixed_reviewer_excludes_the_author_provider(self):
+        data = {"executors": [dict(ex.executor_to_dict(e)) for e in ex.DEFAULT_EXECUTORS]
+                + [{"name": "Codex mocny 2", "program": "codex", "model": "gpt-x", "provider": "openai",
+                    "classes": ["mocny"]}]}
+        ctx = self.ctx(data)
+        review = ex.reviewer(ctx, "mixed", "mocny", "Codex mocny")
+        self.assertEqual(review.executor["name"], "Opus", "wykonawca OpenAI tej samej klasy nie może wygrać")
+        self.assertTrue(all(ctx.catalog.get(n).provider == "anthropic" for n in review.candidates))
+
+    def test_same_model_under_another_name_is_the_same_model(self):
+        data = {"executors": [dict(ex.executor_to_dict(e)) for e in ex.DEFAULT_EXECUTORS]
+                + [{"name": "Opus 2", "program": "claude", "model": "OPUS", "provider": "anthropic",
+                    "classes": ["mocny"]}]}
+        ctx = self.ctx(data)
+        review = ex.reviewer(ctx, "anthropic", "mocny", "Opus")
+        self.assertEqual(review.executor["name"], "Sonnet")
+        self.assertNotIn("Opus 2", review.candidates)
+
+    def test_reviewer_prefers_stronger_before_weaker(self):
+        review = ex.reviewer(self.ctx(), "anthropic", "standard", "Sonnet")
+        self.assertEqual(review.candidates, ["Opus", "Haiku"])
+        self.assertEqual(review.executor["name"], "Opus")
+
+    def test_mixed_suggestion_never_picks_local(self):
+        data = {"executors": [{"name": "Lokalny", "provider": "local", "classes": ["lokalny", "mocny"]}]}
+        result = ex.resolve(self.ctx(data), "mixed", "mocny")
+        self.assertFalse(result.ok, "klasa mocny ma tylko wykonawcę lokalnego — podpowiedź nie schodzi na lokalnego")
+        self.assertIn("Lokalny", result.candidates)
+
+    def test_no_model_message(self):
+        result = ex.resolve(self.ctx(agent=""), "local", "lekki")
+        self.assertFalse(result.ok)
+        self.assertIn("brak modelu — ustaw rolę agent albo model wykonawcy", result.error)
+
+    def test_non_string_requests_are_refused_clearly(self):
+        ctx = self.ctx()
+        for provider, klass in ((["x"], "lekki"), ("anthropic", {"a": 1}), (None, None)):
+            for result in (ex.resolve(ctx, provider, klass), ex.reviewer(ctx, provider, klass, "Opus")):
+                self.assertFalse(result.ok)
+                self.assertIn("muszą być napisami", result.error)
+
+    def test_cloud_ollama_model_never_counts_as_local(self):
+        for model in ("gpt-oss:120b-cloud", "qwen3-coder:480b-cloud", "x:cloud"):
+            ctx = self.ctx(agent=model, state="up")
+            for provider, klass in (("local", "mocny"), ("anthropic", "lokalny"), ("mixed", "lokalny")):
+                result = ex.resolve(ctx, provider, klass)
+                self.assertFalse(result.ok, (model, provider, klass))
+                self.assertIn("agent niedostępna", result.error)
+            unchecked = self.ctx(agent=model, state=None)
+            self.assertFalse(ex.resolve(unchecked, "local", "mocny").ok, "także bez znanego stanu serwera")
+            row = ex.public_state(models_config.from_dict({"roles": {"agent": model}}), {"local": online()},
+                                  True)["list"][-1]
+            self.assertEqual((row["name"], row["available"]), ("Lokalny", False))
+        explicit = models_config.from_dict({"executors": [
+            {"name": "Chmurowy", "program": "codex", "model": "qwen3-coder:480b-cloud", "provider": "local",
+             "classes": ["lokalny"]}]})
+        self.assertEqual(explicit.catalog.executors, ())
+        self.assertIn("w chmurze Ollamy", explicit.catalog.warnings[0])
+
+
 class CatalogFileTest(unittest.TestCase):
     def test_backward_compatible_without_keys(self):
         cfg = models_config.from_dict({"endpoints": {"local": {"url": "http://127.0.0.1:11434"}}})
         self.assertEqual([e.name for e in cfg.catalog.executors],
-                         ["Haiku", "Sonnet", "Opus", "Codex lekki", "Codex standard", "Codex mocny", "Lokalny"])
+                         ["Haiku", "Sonnet", "Opus", "Codex lekki", "Codex standard", "Codex mocny", "Codex Astra",
+                          "Lokalny"])
         self.assertFalse(cfg.catalog.stored)
         self.assertEqual(cfg.warnings, ())
+
+    def test_relative_provider_token_file_is_refused(self):
+        cfg = models_config.from_dict({"providers": {"p": {"url": "https://a.example", "api": "openai",
+                                                           "tokenFile": "tokens/p"}}})
+        self.assertEqual(cfg.catalog.providers, {})
+        self.assertIn("tokenFile musi być ścieżką bezwzględną", cfg.catalog.warnings[0])
+        ok = models_config.from_dict({"providers": {"p": {"url": "https://a.example", "api": "openai",
+                                                           "tokenFile": "~/t"}}})
+        self.assertTrue(ex.public_state(ok, {}, True)["providers"]["p"]["auth"])
+
+    def test_provider_without_token_has_no_auth(self):
+        cfg = models_config.from_dict({"providers": {"p": {"url": "https://a.example", "api": "openai"}}})
+        self.assertFalse(ex.public_state(cfg, {}, True)["providers"]["p"]["auth"])
+
+    def test_effort_is_validated_and_compatible(self):
+        old = models_config.from_dict({"executors": [{"name": "C", "program": "codex", "model": "m",
+                                                      "provider": "openai"}]})
+        self.assertEqual(old.catalog.executors[0].effort, "")
+        bad = models_config.from_dict({"executors": [
+            {"name": "A", "program": "codex", "model": "m", "provider": "openai", "effort": "max"},
+            {"name": "B", "program": "claude", "model": "m", "provider": "anthropic", "effort": "high"}]})
+        self.assertEqual(bad.catalog.executors, ())
+        self.assertIn("wysiłek to low", bad.catalog.warnings[0])
+        self.assertIn("tylko Codexa", bad.catalog.warnings[1])
 
     def test_bad_entries_are_skipped_with_warnings(self):
         cfg = models_config.from_dict({"providers": {"x": {"url": "ftp://x", "api": "openai"},
@@ -197,7 +309,7 @@ class CatalogSettingsTest(SettingsTestCase):
                                "classes": ["lekki"]}, self.path)
         names = [e["name"] for e in self.data()["executors"]]
         self.assertEqual(names, ["Haiku", "Sonnet", "Opus", "Codex lekki", "Codex standard", "Codex mocny",
-                                 "Lokalny", "Mini"])
+                                 "Codex Astra", "Lokalny", "Mini"])
         cfg = self.cfg()
         self.assertTrue(cfg.catalog.stored)
         self.assertEqual(ex.resolve(ex.context_from(cfg), "openai", "lekki").executor["name"], "Codex lekki",
@@ -236,7 +348,7 @@ class CatalogSettingsTest(SettingsTestCase):
         token = "tok-" + secrets.token_hex(12)
         settings.set_provider({"name": "groq", "label": "Groq", "url": "https://api.groq.example/", "api": "openai",
                                "token": token}, self.path)
-        token_file = os.path.join(os.path.dirname(self.path), "tokens", "provider-groq")
+        token_file = os.path.join(os.path.dirname(self.path), "tokens", "providers", "groq")
         with open(token_file, encoding="utf-8") as fh:
             self.assertEqual(fh.read().strip(), token)
         self.assertEqual(stat.S_IMODE(os.stat(token_file).st_mode), 0o600)
@@ -273,6 +385,60 @@ class CatalogSettingsTest(SettingsTestCase):
         settings.remove_provider("groq", self.path)
         self.assertNotIn("providers", self.data())
         self.assertIn("nieznany dostawca", self.refused(settings.remove_provider, "groq", self.path))
+
+    def test_effort_is_saved(self):
+        settings.set_executor({"name": "X", "program": "codex", "model": "m", "provider": "openai",
+                               "effort": "xhigh", "classes": ["mocny"]}, self.path)
+        self.assertEqual([e["effort"] for e in self.data()["executors"] if e["name"] == "X"], ["xhigh"])
+        self.assertIn("wysiłek to", self.refused(settings.set_executor, {
+            "name": "Y", "program": "codex", "model": "m", "provider": "openai", "effort": "ultra"}, self.path))
+
+    def test_cloud_ollama_model_is_refused_for_local(self):
+        msg = self.refused(settings.set_executor, {"name": "L", "program": "codex", "model": "qwen3-coder:480b-cloud",
+                                                   "provider": "local", "classes": ["lokalny"]}, self.path)
+        self.assertIn("w chmurze Ollamy", msg)
+
+    def test_provider_and_endpoint_tokens_never_collide(self):
+        settings.set_provider({"name": "groq", "url": "https://api.groq.example", "api": "openai",
+                               "token": "PROVTOKEN"}, self.path)
+        settings.set_endpoint({"name": "provider-groq", "url": "http://10.0.0.5:11434", "kind": "ollama",
+                               "token": "ENDPOINTTOKEN"}, self.path)
+        cfg = self.cfg()
+        prov = cfg.catalog.providers["groq"].token_file
+        self.assertEqual(self.text(prov).strip(), "PROVTOKEN")
+        self.assertEqual(cfg.endpoints["provider-groq"].headers()["Authorization"], "Bearer ENDPOINTTOKEN")
+        self.assertNotEqual(prov, cfg.endpoints["provider-groq"].token_file)
+        # Usunięcie jednego nie rusza tokenu drugiego — w obie strony.
+        settings.set_provider({"name": "groq", "url": "https://api.groq.example", "api": "openai",
+                               "clearToken": True}, self.path)
+        self.assertEqual(self.cfg().endpoints["provider-groq"].headers()["Authorization"], "Bearer ENDPOINTTOKEN")
+        settings.set_provider({"name": "groq", "url": "https://api.groq.example", "api": "openai",
+                               "token": "PROVTOKEN"}, self.path)
+        settings.remove_endpoint("provider-groq", self.path)
+        self.assertEqual(self.text(prov).strip(), "PROVTOKEN")
+        settings.set_endpoint({"name": "provider-groq", "url": "http://10.0.0.5:11434", "kind": "ollama",
+                               "token": "ENDPOINTTOKEN"}, self.path)
+        settings.remove_provider("groq", self.path)
+        self.assertEqual(self.cfg().endpoints["provider-groq"].headers()["Authorization"], "Bearer ENDPOINTTOKEN")
+        tokens = os.path.join(os.path.dirname(self.path), "tokens")
+        self.assertEqual(stat.S_IMODE(os.stat(tokens).st_mode), 0o700)
+        self.assertIn("zarezerwowana", self.refused(settings.set_endpoint, {
+            "name": "providers", "url": "http://10.0.0.5:11434", "kind": "ollama"}, self.path))
+
+    def test_refusals_leave_an_existing_file_byte_for_byte(self):
+        self.write({"endpoints": {"local": {"url": "http://127.0.0.1:11434"}}, "roles": {"agent": "qwen3:8b"}})
+        before = pathlib.Path(self.path).read_bytes()
+        mtime = os.stat(self.path).st_mtime_ns
+        bad = {"name": "X", "program": "claude", "model": "m", "provider": "openai"}
+        for call in (lambda: settings.set_executor(bad, self.path),
+                     lambda: settings.set_executor({**bad, "provider": "local", "model": "a:cloud"}, self.path),
+                     lambda: settings.remove_executor("Nie ma", self.path),
+                     lambda: settings.set_provider({"name": "openai", "url": "https://a", "api": "openai"}, self.path),
+                     lambda: settings.remove_provider("brak", self.path)):
+            with self.assertRaises(SettingsError):
+                call()
+        self.assertEqual(pathlib.Path(self.path).read_bytes(), before)
+        self.assertEqual(os.stat(self.path).st_mtime_ns, mtime)
 
     def test_unknown_keys_and_roles_are_kept(self):
         self.write({"endpoints": {"local": {"url": "http://127.0.0.1:11434"}}, "roles": {"agent": "qwen3:8b"},

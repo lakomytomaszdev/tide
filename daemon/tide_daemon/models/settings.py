@@ -25,7 +25,7 @@ Ten moduł nie zna Qt — wywołuje go models_monitor.py w wątku głównym (zap
   jak `agentProgram`; model daje rola `embed`.
 - Katalog wykonawców (PT-60): klucze `executors` (lista) i `providers` w models.json. Bez klucza `executors`
   działa katalog domyślny; pierwszy zapis wykonawcy zapisuje cały katalog (domyślny plus zmiana). Token innego
-  dostawcy: plik `tokens/provider-<nazwa>` (0600), w models.json tylko `tokenFile`.
+  dostawcy: plik `tokens/providers/<nazwa>` (0600, katalog 0700), w models.json tylko `tokenFile`.
 - Zapisy są szeregowane blokadą (D-Bus i ewentualne wątki), a piszemy tylko na wyraźne wywołanie.
 """
 from __future__ import annotations
@@ -196,7 +196,8 @@ def _write_token(path: str, token: str):
     """Zapisuje token (0600, katalog 0700); zwraca funkcję przywracającą poprzedni stan pliku."""
     folder = os.path.dirname(path)
     os.makedirs(folder, mode=0o700, exist_ok=True)
-    os.chmod(folder, 0o700)
+    for d in {folder, os.path.dirname(folder)} if os.path.basename(folder) == executors_mod.TOKEN_SUBDIR else {folder}:
+        os.chmod(d, 0o700)
     try:
         with open(path, "rb") as fh:
             previous = fh.read()
@@ -236,6 +237,8 @@ def set_endpoint(req: dict, path: str | None = None) -> None:
         raise SettingsError("podaj nowy token albo clearToken, nie oba naraz")
     if token and not config_mod.valid_token(token):
         raise SettingsError("token: tylko drukowalne znaki ASCII, bez spacji")
+    if name == executors_mod.TOKEN_SUBDIR:
+        raise SettingsError(f"serwer „{name}”: nazwa zarezerwowana na tokeny dostawców — wybierz inną")
     with LOCK:
         draft = _Draft(path)
         existing = draft.endpoints.get(name) if isinstance(name, str) else None
@@ -514,7 +517,7 @@ def set_executor(req: dict, path: str | None = None) -> None:
         draft = _Draft(path)
         listing = _catalog_list(draft)
         catalog = executors_mod.parse({"providers": draft.data.get("providers"), "executors": []})
-        value = {k: req.get(k) for k in ("name", "program", "model", "provider", "endpoint", "classes")}
+        value = {k: req.get(k) for k in ("name", "program", "model", "provider", "endpoint", "classes", "effort")}
         if value["classes"] is None:
             value["classes"] = []
         executor, error = executors_mod.executor_problem(value, catalog.providers, draft.cfg.endpoints)
@@ -551,12 +554,14 @@ def remove_executor(name, path: str | None = None) -> None:
 
 
 def provider_token_path(name: str, path: str | None = None) -> str:
-    return token_path(executors_mod.TOKEN_FILE_PREFIX + name, path)
+    """Token dostawcy: tokens/providers/<nazwa> — osobny podkatalog, więc nazwa dostawcy nigdy nie zderza się
+    z plikiem tokenu punktu (tokens/<punkt>)."""
+    return os.path.join(tokens_dir(path), executors_mod.TOKEN_SUBDIR, name)
 
 
 def set_provider(req: dict, path: str | None = None) -> None:
     """Inny dostawca: {name, label?, url, api ("openai"|"anthropic"), token?, clearToken?}. Token tylko do pliku
-    `tokens/provider-<nazwa>` (0600); puste albo brak `token` zostawia obecny, `clearToken: true` usuwa."""
+    `tokens/providers/<nazwa>` (0600, katalog 0700); puste albo brak `token` zostawia obecny, `clearToken: true` usuwa."""
     path = path or config_mod.config_path()
     if not isinstance(req, dict):
         raise SettingsError("niepoprawne żądanie: oczekiwano obiektu JSON")

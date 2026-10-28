@@ -8,7 +8,7 @@ na wykonawcę. Zapis: models/settings.py (SetExecutor, SetProvider…), D-Bus: /
 
 Dostawca (`provider`): `anthropic`, `openai`, `local` (wbudowani) albo nazwa innego dostawcy z `providers`
 ({"label", "url", "api": "openai"|"anthropic", "tokenFile"}). Token innego dostawcy leży w pliku
-`tokens/provider-<nazwa>` (0600) obok models.json — w katalogu i w odpowiedziach D-Bus jest tylko ścieżka
+`tokens/providers/<nazwa>` (0600) obok models.json — w katalogu i w odpowiedziach D-Bus jest tylko ścieżka
 pliku i znacznik „ma token”, nigdy sam token (decyzja 70).
 
 Wykonawca lokalny: `endpoint` to punkt z models.json (pusty — punkt roli `agent`), a pusty `model` i `program`
@@ -33,6 +33,8 @@ import re
 import urllib.parse
 from dataclasses import dataclass, field
 
+from ..modelnames import is_cloud_model
+
 CLASSES = ("lekki", "standard", "mocny", "lokalny")
 CLASS_ORDER = ("lekki", "standard", "mocny")          # siła rosnąco
 PROGRAMS = ("claude", "codex")
@@ -44,7 +46,8 @@ MIXED = "mixed"
 RESERVED = set(BUILTIN_PROVIDERS) | {MIXED}
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,39}")
 EXECUTOR_NAME_MAX = 60
-TOKEN_FILE_PREFIX = "provider-"       # tokens/provider-<nazwa>
+TOKEN_SUBDIR = "providers"        # tokens/providers/<nazwa> — osobno od tokenów punktów (tokens/<punkt>)
+EFFORTS = ("low", "medium", "high", "xhigh")
 
 
 @dataclass(frozen=True)
@@ -64,15 +67,19 @@ class Executor:
     provider: str
     endpoint: str = ""        # lokalny: punkt z models.json (pusty — punkt roli agent)
     classes: tuple = ()
+    effort: str = ""          # wysiłek rozumowania Codexa: low|medium|high|xhigh (pusty — domyślny programu)
 
 
 DEFAULT_EXECUTORS = (
     Executor("Haiku", "claude", "haiku", "anthropic", classes=("lekki",)),
     Executor("Sonnet", "claude", "sonnet", "anthropic", classes=("standard",)),
     Executor("Opus", "claude", "opus", "anthropic", classes=("mocny",)),
-    Executor("Codex lekki", "codex", "gpt-5.1-codex-mini", "openai", classes=("lekki",)),
-    Executor("Codex standard", "codex", "gpt-5.2-codex", "openai", classes=("standard",)),
-    Executor("Codex mocny", "codex", "gpt-5.3-codex", "openai", classes=("mocny",)),
+    Executor("Codex lekki", "codex", "gpt-6-luna", "openai", classes=("lekki",)),
+    Executor("Codex standard", "codex", "gpt-6.1-sol", "openai", classes=("standard",), effort="medium"),
+    Executor("Codex mocny", "codex", "gpt-6.1-sol", "openai", classes=("mocny",), effort="high"),
+    # Do planowania trudnych kart; bez klas, więc żadna klasa nie zamienia się na niego (tylko wybór ręczny
+    # i podpowiedzi trybu mieszanego).
+    Executor("Codex Astra", "codex", "gpt-6-astra", "openai", effort="high"),
     Executor("Lokalny", "", "", LOCAL, classes=("lokalny",)),
 )
 
@@ -180,6 +187,13 @@ def executor_problem(value, providers: dict, endpoints=None) -> tuple[Executor |
         return None, f"wykonawca „{name}”: niepoprawny model"
     if not model and provider != LOCAL:
         return None, f"wykonawca „{name}”: podaj model"
+    if model and provider == LOCAL and is_cloud_model(model):
+        return None, f"wykonawca „{name}”: model „{model[:60]}” działa w chmurze Ollamy, nie lokalnie"
+    effort = value.get("effort") or ""
+    if effort not in EFFORTS and effort != "":
+        return None, f"wykonawca „{name}”: wysiłek to low, medium, high albo xhigh"
+    if effort and program == "claude":
+        return None, f"wykonawca „{name}”: wysiłek rozumowania dotyczy tylko Codexa"
     api = "anthropic" if provider == "anthropic" else "openai" if provider == "openai" else \
         providers[provider].api if provider in providers else ""
     if program:
@@ -197,7 +211,7 @@ def executor_problem(value, providers: dict, endpoints=None) -> tuple[Executor |
     if not isinstance(classes, (list, tuple)) or any(c not in CLASSES for c in classes):
         return None, f"wykonawca „{name}”: klasy to lekki, standard, mocny, lokalny"
     ordered = tuple(c for c in CLASSES if c in classes)
-    return Executor(name, program, model, provider, endpoint, ordered), ""
+    return Executor(name, program, model, provider, endpoint, ordered, effort), ""
 
 
 def parse(data, endpoints=None) -> Catalog:
@@ -238,7 +252,7 @@ def parse(data, endpoints=None) -> Catalog:
 
 def executor_to_dict(e: Executor) -> dict:
     return {"name": e.name, "program": e.program, "model": e.model, "provider": e.provider,
-            "endpoint": e.endpoint, "classes": list(e.classes)}
+            "endpoint": e.endpoint, "classes": list(e.classes), "effort": e.effort}
 
 
 def catalog_to_data(catalog: Catalog) -> list:
@@ -253,7 +267,8 @@ class Context:
     catalog: Catalog
     agent_program: str = "codex"
     agent_endpoint: str = ""          # punkt roli `agent`
-    agent_model: str = ""             # model roli `agent`
+    agent_model: str = ""             # model roli `agent` (pusty, gdy rola jest niedostępna)
+    agent_error: str = ""             # powód niedostępności roli `agent` (np. model chmurowy Ollamy)
     endpoint_urls: dict = field(default_factory=dict)    # punkt → adres (bez danych logowania)
     status: dict | None = None        # Status().endpoints / checked; None — dostępność nieznana
 
@@ -271,16 +286,22 @@ class Context:
         else:
             url = ""
         return {"name": e.name, "program": program, "model": model, "provider": e.provider,
-                "endpoint": endpoint, "url": url, "classes": list(e.classes), "local": local}
+                "endpoint": endpoint, "url": url, "classes": list(e.classes), "local": local, "effort": e.effort}
 
     def unavailable(self, e: Executor) -> str:
         """Powód, dla którego wykonawca lokalny nie zadziała teraz ("" — działa albo nie wiadomo).
         Chmura: nieznane, więc ""."""
-        if e.provider != LOCAL or not isinstance(self.status, dict) or not self.status.get("checked", True):
+        if e.provider != LOCAL:
             return ""
         info = self.resolved(e)
         if not info["model"]:
+            if self.agent_error and not e.model:
+                return f"wykonawca „{e.name}”: rola agent niedostępna — {self.agent_error}"
             return f"wykonawca „{e.name}”: brak modelu — ustaw rolę agent albo model wykonawcy"
+        if is_cloud_model(info["model"]):
+            return f"wykonawca „{e.name}”: model „{info['model'][:60]}” działa w chmurze Ollamy, nie lokalnie"
+        if not isinstance(self.status, dict) or not self.status.get("checked", True):
+            return ""
         endpoints = self.status.get("endpoints")
         state = endpoints.get(info["endpoint"]) if isinstance(endpoints, dict) else None
         if not isinstance(state, dict):
@@ -356,6 +377,8 @@ def _local_pool(ctx: Context) -> list:
 
 
 def _check_request(ctx: Context, provider, klass) -> str:
+    if not isinstance(klass, str) or not isinstance(provider, str):
+        return "preferowany dostawca i klasa muszą być napisami"
     if klass not in CLASSES:
         return f"nieznana klasa „{str(klass)[:40]}” (lekki, standard, mocny, lokalny)"
     if provider != MIXED and not ctx.catalog.known_provider(provider):
@@ -424,7 +447,7 @@ def context_from(cfg, status: dict | None = None) -> Context:
     """Kontekst z konfiguracji (config.ModelsConfig) i, jeśli jest, ze Status() (online, modele)."""
     agent = cfg.roles.get("agent")
     return Context(cfg.catalog, cfg.agent_program, agent.endpoint if agent else cfg.default,
-                   agent.model if agent else "",
+                   agent.model if agent and not agent.error else "", agent.error if agent else "",
                    {name: e.public_url() for name, e in cfg.endpoints.items()}, status)
 
 

@@ -281,7 +281,7 @@ class ModelsSettingsDBusTest(unittest.TestCase):
         self.assertEqual(state["executors"][-1]["name"], "Groq mały")
         self.assertEqual(state["executors"][-1]["where"], "cloud")
         self.assertTrue(state["catalog"]["stored"])
-        token_file = os.path.join(self.config_home, "tide", "tokens", "provider-groq")
+        token_file = os.path.join(self.config_home, "tide", "tokens", "providers", "groq")
         with open(token_file, encoding="utf-8") as fh:
             self.assertEqual(fh.read().strip(), token)
         self.assertEqual(oct(os.stat(token_file).st_mode & 0o777), oct(0o600))

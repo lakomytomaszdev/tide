@@ -633,9 +633,14 @@ function programFor(status, provider) {
     return p.api === "anthropic" ? "claude" : p.api === "openai" ? "codex" : ""
 }
 
+function efforts() {
+    return [{ value: "", label: "domyślny" }, { value: "low", label: "low" }, { value: "medium", label: "medium" },
+            { value: "high", label: "high" }, { value: "xhigh", label: "xhigh" }]
+}
+
 function executorLine(e) {
     const model = e.model || (e.local ? "model agenta lokalnego" : "")
-    return [e.program || "program agenta", model].filter(x => x).join(" · ")
+    return [e.program || "program agenta", model, e.effort ? "wysiłek " + e.effort : ""].filter(x => x).join(" · ")
 }
 
 function classesText(e) {
@@ -655,7 +660,7 @@ function executorProblem(form, status, adding) {
 function executorRequest(form, oldName) {
     const req = { name: form.name.trim(), program: form.program, model: (form.model || "").trim(),
                   provider: form.provider, endpoint: form.provider === "local" ? (form.endpoint || "") : "",
-                  classes: form.classes }
+                  classes: form.classes, effort: form.program === "codex" ? (form.effort || "") : "" }
     if (oldName) req.oldName = oldName
     return JSON.stringify(req)
 }

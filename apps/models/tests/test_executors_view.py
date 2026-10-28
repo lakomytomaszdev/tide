@@ -128,7 +128,7 @@ Item {
         const panel = find(page, "executorsPanel")
         console.warn("NAMES " + texts(panel, [], "executorName").join(","))
         console.warn("PLACE " + findAll(panel, "placementWhere", []).map(t => t.text).join(","))
-        console.warn("LINE " + texts(find(panel, "executor_Groq mały"), [], "executorLine").join(""))
+        console.warn("LINE " + texts(find(panel, "executor_Groq mały"), [], "executorLine").join("") + "|" + texts(find(panel, "executor_Codex Astra"), [], "executorLine").join(""))
         // Zmiana klas istniejącego wykonawcy.
         panel.openExecutor("Sonnet")
         console.warn("OPENED " + find(panel, "exName").text + "|" + find(panel, "exModel").text + "|" + panel.exProvider + "|" + panel.classes.join("+"))
@@ -152,6 +152,7 @@ Item {
         find(panel, "exModel").text = "llama-70b"
         panel.exProvider = "groq"
         panel.exProgram = "codex"
+        panel.exEffort = "high"
         panel.classes = ["mocny"]
         panel.saveExecutor()
         console.warn("NEWOK " + top.calls.join(","))
@@ -198,24 +199,24 @@ Item {
 }
 """)
         self.assertEqual(problems(log), [])
-        self.assertEqual(warned(log, "NAMES"), "Haiku,Sonnet,Opus,Codex lekki,Codex standard,Codex mocny,Lokalny,Groq mały")
-        self.assertEqual(warned(log, "PLACE"), ",".join(["Chmura"] * 8 + ["Lokalnie", "Chmura"]))
-        self.assertEqual(warned(log, "LINE"), "codex · llama-3.1-8b · chmura")
+        self.assertEqual(warned(log, "NAMES"), "Haiku,Sonnet,Opus,Codex lekki,Codex standard,Codex mocny,Codex Astra,Lokalny,Groq mały")
+        self.assertEqual(warned(log, "PLACE"), ",".join(["Chmura"] * 9 + ["Lokalnie", "Chmura"]))
+        self.assertEqual(warned(log, "LINE"), "codex · llama-3.1-8b · chmura|codex · gpt-6-astra · wysiłek high · chmura")
         self.assertEqual(warned(log, "OPENED"), "Sonnet|sonnet|anthropic|standard")
         self.assertEqual(warned(log, "SAVE1"),
                          'SetExecutor({"name":"Sonnet","program":"claude","model":"sonnet","provider":"anthropic",'
-                         '"endpoint":"","classes":["standard","mocny"],"oldName":"Sonnet"})@executor:save')
+                         '"endpoint":"","classes":["standard","mocny"],"effort":"","oldName":"Sonnet"})@executor:save')
         self.assertEqual(warned(log, "SAVEERR"), "wykonawca „Sonnet”: boom|Sonnet")
         self.assertEqual(warned(log, "SAVEOK"), "|undefined")
         self.assertEqual(warned(log, "NEWBAD"),
                          "0|Podaj nazwę wykonawcy.|0|Wykonawca „Opus” już jest w katalogu.")
         self.assertEqual(warned(log, "NEWOK"),
                          'SetExecutor({"name":"Groq duży","program":"codex","model":"llama-70b","provider":"groq",'
-                         '"endpoint":"","classes":["mocny"]})@executor:save')
+                         '"endpoint":"","classes":["mocny"],"effort":"high"})@executor:save')
         self.assertEqual(warned(log, "LOCALFORM"), '""||true')
         self.assertEqual(warned(log, "LOCALSAVE"),
                          'SetExecutor({"name":"Lokalny","program":"","model":"","provider":"local","endpoint":"",'
-                         '"classes":["lokalny"],"oldName":"Lokalny"})@executor:save')
+                         '"classes":["lokalny"],"effort":"","oldName":"Lokalny"})@executor:save')
         self.assertEqual(warned(log, "CONFIRM"), "true|0")
         self.assertEqual(warned(log, "REMOVED"), "RemoveExecutor(Haiku)@executor:Haiku:remove|")
         self.assertEqual(warned(log, "PROV"),

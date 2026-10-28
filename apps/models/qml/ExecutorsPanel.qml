@@ -20,6 +20,7 @@ ColumnLayout {
     property string exProvider: "anthropic"
     property string exProgram: "claude"
     property string exEndpoint: ""
+    property string exEffort: ""
     property string apiKind: "openai"
     property bool clearToken: false
     property bool providerAuth: false
@@ -42,6 +43,7 @@ ColumnLayout {
         exProvider = e ? e.provider : "anthropic"
         exProgram = e ? (e.programSet ? e.program : "") : "claude"
         exEndpoint = e && e.endpointSet ? e.endpoint : ""
+        exEffort = e && e.effort ? e.effort : ""
         classes = e ? e.classes.slice() : []
         editingExecutor = name
     }
@@ -56,7 +58,7 @@ ColumnLayout {
 
     function saveExecutor() {
         const form = { name: exName.text, model: exModel.text, provider: exProvider, program: exProgram,
-                       endpoint: exEndpoint, classes: classes }
+                       endpoint: exEndpoint, classes: classes, effort: exEffort }
         problem = Logic.executorProblem(form, status, editingExecutor === "+")
         if (problem === null)
             page.send("SetExecutor", Logic.executorRequest(form, editingExecutor === "+" ? "" : editingExecutor),
@@ -277,6 +279,15 @@ ColumnLayout {
             itemHeight: 26
             enabled: Logic.programFor(panel.status, panel.exProvider) === ""
             onPicked: value => panel.exProgram = value
+        }
+        FieldLabel { visible: panel.exProgram === "codex"; text: "Wysiłek rozumowania (Codex)" }
+        Segmented {
+            objectName: "exEffort"
+            visible: panel.exProgram === "codex"
+            options: Logic.efforts()
+            current: panel.exEffort
+            itemHeight: 26
+            onPicked: value => panel.exEffort = value
         }
         FieldLabel { text: panel.exProvider === "local" ? "Model (puste — model agenta lokalnego)" : "Model" }
         LineInput {
