@@ -33,6 +33,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 
+from . import agentcmd
 from . import local as local_mod
 from ..modelnames import is_cloud_model
 from ..worktrees.git import MAIN_CANDIDATES, Git, pick_main_branch
@@ -148,33 +149,11 @@ def failure(error: TaskError) -> dict:
 
 def agent_argv(tool: str, binary: str, prompt: str, images: list[str] = (), add_dirs: list[str] = (),
                model_options: list[str] = ()) -> list[str]:
-    """argv sesji interaktywnej z poleceniem na start; prompt to jeden element listy.
-
-    Codex: `codex [--add-dir D] --image A --image B -- <prompt>` (zrzuty dołączone do pierwszej wiadomości).
-    Claude Code nie ma opcji na obrazy: ścieżki trafiają na koniec polecenia, a katalogi zrzutów
-    do `--add-dir`, żeby agent mógł je przeczytać narzędziem Read bez pytania o zgodę.
-    add_dirs (oba narzędzia: `--add-dir`) — katalogi poza katalogiem roboczym, w których agent
-    pisze (dokumenty AI karty w repozytorium tablicy).
-    model_options — opcje modelu lokalnego zaraz po programie (tasks/local.py), np. `--model qwen3-coder:30b`.
-    `--` kończy opcje — polecenie zaczynające się od „-” nie zostanie wzięte za opcję."""
-    images = list(images)
-    extra = list(model_options)
-    for folder in add_dirs:
-        extra += ["--add-dir", folder]
-    if tool == "codex":
-        argv = [binary] + extra
-        for path in images:
-            argv += ["--image", path]
-        return argv + ["--", prompt]
-    if tool == "claude":
-        argv = [binary] + extra
-        for folder in sorted({os.path.dirname(p) for p in images} - set(add_dirs)):
-            argv += ["--add-dir", folder]
-        text = prompt
-        if images:
-            text += "\n\nZałączone zrzuty ekranu (przeczytaj je narzędziem Read):\n" + "\n".join(images)
-        return argv + ["--", text]
-    raise TaskError("bad-tool")
+    """argv sesji interaktywnej z poleceniem na start — składa je agentcmd.py (jedno miejsce dla Konsoli i tła)."""
+    try:
+        return agentcmd.agent_argv(tool, binary, prompt, images, add_dirs, model_options)
+    except agentcmd.UnknownTool:
+        raise TaskError("bad-tool") from None
 
 
 def task_title(project: str, branch: str, local: bool = False) -> str:
@@ -601,8 +580,12 @@ class Planner:
             cwd = repo
             branch = self.repo_state(repo)["branch"]
         agent = req["local"]
-        command = local_mod.options(req["tool"], agent) if agent is not None else local_mod.Command([])
-        argv = agent_argv(req["tool"], req["binary"], req["prompt"], req["images"], req["addDirs"], command.argv)
+        try:
+            command = agentcmd.interactive(req["tool"], req["binary"], req["prompt"], req["images"],
+                                           req["addDirs"], agent)
+        except agentcmd.UnknownTool:
+            raise TaskError("bad-tool") from None
+        argv = command.argv
         plan = Plan(repo_path=repo, repo_name=name, tool=req["tool"], prompt=req["prompt"], cwd=cwd, branch=branch,
                     title=task_title(name, branch or "odłączony HEAD", agent is not None), argv=argv,
                     worktree=plan_worktree, base=base, base_sha=base_sha, images=req["images"], model=req["model"],
