@@ -34,7 +34,7 @@ import re
 from collections import Counter
 
 from ..worktrees.naming import TYPE_WORDS, humanize_branch
-from .cards import BoardInfo, card_label
+from .cards import BoardInfo, card_label, column_of
 
 GROUPS = (("done", "Zrobione"), ("doing", "W toku"), ("waiting", "Czeka na mnie"), ("next", "Dalej"))
 GROUP_KEYS = tuple(k for k, _ in GROUPS)
@@ -342,10 +342,14 @@ def project_label(project) -> str:
 
 
 def facts(report) -> list[dict]:
-    """Fakty projektów-repozytoriów z ruchem (sesje spoza repozytoriów to nie projekty). Karta tablicy
+    """Fakty projektów-repozytoriów w raporcie (sesje spoza repozytoriów to nie projekty). Karta tablicy
     pracy z jednostkami w kilku projektach jest opisana raz — w projekcie głównym (link_cards)."""
     out = [project_facts(report, p) for p in report.active if getattr(p, "is_repo", True)]
     link_cards(out, _board(report))
+    # Karta w toku opisana pracą w którymkolwiek projekcie (np. tylko w dodatkowym) nie dostaje osobnej pozycji.
+    described = {str((u.get("card") or {}).get("id") or "").upper() for f in out for u in f["units"]} - {""}
+    for fact in out:
+        fact["cards"] = [c for c in fact.get("cards") or [] if c["id"] not in described]
     return out
 
 
@@ -443,6 +447,18 @@ def project_facts(report, project) -> dict:
             out["tickets"].append(item)
 
     units = _units(project)
+    # Niescalone gałęzie bez commitów w okresie — praca stoi w toku (stan prac na dzień, collect.open_branches).
+    known_branches = {u["branch"] for u in units if u.get("branch")}
+    for w in getattr(project, "open_branches", None) or ():
+        branch = w.get("branch") or ""
+        if not branch or branch in known_branches or AGENT_BRANCH.match(branch):
+            continue
+        known_branches.add(branch)
+        _tag, title = humanize_branch(branch)
+        unit = _unit("branch", branch, title or branch, worktree=w.get("path") or "", tool=w.get("tool") or "",
+                     mergedInto="", standing=True)
+        unit["areas"] = areas(unit.pop("paths"))
+        units.append(unit)
     sessions = [s for s in project.sessions if s.id not in coordinators]
     out["coordinatorSessions"] = [_session_fact(s) for s in project.sessions if s.id in coordinators]
     by_branch = {u["branch"]: u for u in units if u.get("branch")}
@@ -494,6 +510,21 @@ def project_facts(report, project) -> dict:
                                   plan_card=plan_card, repo=path)
             if card is not None:
                 unit["card"] = {"id": str(card.get("id") or ""), "label": card_label(card)}
+
+    # Karty tablicy w toku, których nie opisuje już żadna jednostka, ticket ani sesja z raportu.
+    seen_cards = {(u.get("card") or {}).get("id") for u in units} | {t["card"].upper() for t in out["tickets"] if t["card"]}
+    session_ids = {x.get("id") for u in units for x in u["sessions"]} | coordinators \
+        | {c.get("id") for c in out["coordinatorSessions"]}
+    out["cards"] = []
+    for card in getattr(project, "cards", None) or ():
+        ident = str(card.get("id") or "").upper()
+        derived = card.get("derived") if isinstance(card.get("derived"), dict) else {}
+        linked = {str(derived.get("session") or ""), str(derived.get("coordinator") or "")} - {""}
+        if not ident or ident in seen_cards or linked & session_ids:
+            continue
+        seen_cards.add(ident)
+        out["cards"].append({"id": ident, "label": card_label(card), "column": column_of(card),
+                             "note": clean(derived.get("note"), 300), "nextStep": clean(derived.get("nextStep"), 200)})
 
     # Ticket, którego cała praca w okresie to porządki, sam też jest porządkiem.
     for t in out["tickets"]:
@@ -730,6 +761,8 @@ def rules(fact: dict) -> dict:
         for unit in loose:
             _unit_items(unit, fact, groups)
 
+    groups["doing"] += card_items(fact)
+
     asked = {_same(t["question"]) for t in tickets if t["question"] and t["state"] == "czeka"}
     for q in fact["questions"]:
         if _same(q["text"]) in asked:
@@ -776,6 +809,23 @@ def _waiting_item(title: str, s: dict, ref: str) -> dict:
     else:
         line = f"{title}: agent czeka na ciebie"
     return _item(ref, line, sessionId=s.get("id") or "", since=s.get("since") or 0, kind="blocked")
+
+
+CARD_STATE = {"waiting": "czeka na ciebie", "review": "do sprawdzenia"}   # „W toku” — sam tytuł karty (to już grupa)
+
+
+def card_items(fact: dict) -> list[dict]:
+    """„W toku” z kart tablicy pracy, których nie opisuje żadna praca z raportu (stan prac na dzień: karta
+    stoi w toku, choć w okresie nic się przy niej nie działo). Karta w „Czeka na mnie” bez sesji, która stoi
+    teraz, nie trafia do „Czeka na mnie” raportu — tak jak ticket z pytaniem bez czekającego agenta
+    (decyzja 36): to praca w toku z dopiskiem, na co czeka."""
+    out = []
+    for card in fact.get("cards") or []:
+        state = CARD_STATE.get(card["column"], "")
+        next_ = card.get("nextStep") or ("sprawdzić i przenieść do Gotowe" if card["column"] == "review" else "")
+        out.append(_item("", f"{card['label']} — {state}" if state else card["label"], about=card.get("note") or "",
+                         next_=next_))
+    return out
 
 
 def conflict_items(fact: dict) -> list[dict]:

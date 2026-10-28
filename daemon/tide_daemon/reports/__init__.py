@@ -1,4 +1,4 @@
-"""Raport poranny: strona HTML na każdy projekt-repozytorium z ruchem (z własnym „Na daily”) i indeks
+"""Raport poranny: strona HTML na każdy projekt-repozytorium z ruchem albo z pracą w toku (z własnym „Na daily”) i indeks
 — przegląd z kartą na projekt i zwiniętą sekcją „Poza projektami”.
 
 - schedule.py — kiedy (pierwsze logowanie w dobie albo o 07:00), za jaki okres, retencja, stan,

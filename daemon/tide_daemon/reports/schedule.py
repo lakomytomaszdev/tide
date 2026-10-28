@@ -63,7 +63,7 @@ class State:
     end: float = 0.0          # koniec okresu ostatniego raportu (chwila wygenerowania)
     notified: str = ""        # doba, dla której poszło już powiadomienie
     opened: str = ""          # doba raportu, który użytkownik już otworzył
-    projects: int | None = None   # projekty z ruchem w ostatnim raporcie (None — nieznane)
+    projects: int | None = None   # projekty w ostatnim raporcie (None — nieznane)
     waiting: int | None = None    # „czeka na ciebie” w ostatnim raporcie (None — nieznane)
 
 

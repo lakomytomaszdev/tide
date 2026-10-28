@@ -408,7 +408,7 @@ Rectangle {
                             objectName: "noProjects"
                             Layout.fillWidth: true
                             visible: view.hasReport && view.projects.length === 0
-                            text: "W tym okresie nie ma nic do opowiedzenia — ani commitów, ani sesji agentów w projektach."
+                            text: "W projektach nic się nie dzieje — nie ma nowej pracy ani pracy w toku."
                             textFormat: Text.PlainText
                             color: Tide.Tokens.textMuted
                             font.family: Tide.Theme.uiFamily
