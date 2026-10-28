@@ -190,8 +190,14 @@ function gpuText(m) {
 }
 
 // Model w całości na karcie pisze szybko; część na procesorze — kilkanaście razy wolniej (PT-13).
+// Model chmurowy Ollamy nie jest ani na karcie, ani na procesorze — Tide go nie używa.
 function onCard(m) {
-    return typeof m.gpuPercent === "number" && m.gpuPercent >= 100
+    return !isCloudModel(m) && typeof m.gpuPercent === "number" && m.gpuPercent >= 100
+}
+
+// Model lokalny, który nie mieści się na karcie (część na procesorze); chmurowy się nie liczy, choć ma 0%.
+function partlyOnCpu(m) {
+    return !isCloudModel(m) && typeof m.gpuPercent === "number" && m.gpuPercent < 100
 }
 
 // Druga linia wiersza modelu: „5,6 GB · kontekst 8192 · zwolni pamięć za 4 min”.
@@ -407,10 +413,13 @@ function tile(snap, serviceUp) {
         return { label: label, value: "pobieram " + p.model + (p.percent !== null ? " " + Math.floor(p.percent) + "%" : "…"),
                  tone: "working", pulse: true }
     }
-    var mem = loaded(ep)
+    // Model chmurowy w pamięci nie jest stanem modelu lokalnego (Tide go nie używa) — kafelek idzie dalej,
+    // do braku modelu roli i „gotowe”.
+    var mem = loaded(ep).filter(function (m) { return !isCloudModel(m) })
     if (mem.length) {
         var m = mem[0]
-        return { label: label, value: shortModel(m.name) + " · " + gpuText(m), tone: onCard(m) ? "ok" : "partial", pulse: false }
+        return { label: label, value: shortModel(m.name) + " · " + gpuText(m), tone: partlyOnCpu(m) ? "partial" : "ok",
+                 pulse: false }
     }
     var missing = missingModel(snap)
     if (missing) return { label: label, value: "brak modelu " + missing, tone: "warning", pulse: false }
@@ -424,21 +433,25 @@ var NO_SERVER_SHORT = "brak serwera"
 // Krótkie słowa kropki modelu lokalnego w kafelku „AI” dla stanów, które ostrzegają.
 var INDICATOR_WORDS = { offline: "lokalny nie działa", partial: "lokalny na CPU", warning: "lokalny bez modelu" }
 
+// Wszystkie słowa kropki — kafelek rezerwuje miejsce na najdłuższe, żeby zmiana stanu nie zmieniała jego szerokości.
+function indicatorWords() {
+    var words = ["lokalny"]
+    for (var key in INDICATOR_WORDS) words.push(INDICATOR_WORDS[key])
+    return words
+}
+
 // Model lokalny w kafelku „AI”: {visible, word, tone, warning, text}. Stan bierze się z tile() — ta sama
 // kolejność co w kafelku Modele — a słowo jest krótkie, bo kafelek dzieli miejsce z limitami: „lokalny”, gdy
 // działa, pracuje albo czeka. Ostrzeżenie (warning) tylko wtedy, gdy domyślny serwer nie odpowiada, model nie
-// mieści się na karcie (część na procesorze; model chmurowy Ollamy się nie liczy) albo brakuje modelu roli
-// pracy w tle. Bez usługi, przed pierwszym odczytem i bez serwera w ustawieniach — nic (visible: false),
-// żeby kafelek nie dokładał szumu. text — pełniej, słowami kafelka Modele („qwen3:8b · na karcie 100%”).
+// mieści się na karcie (część na procesorze) albo brakuje modelu roli pracy w tle (model chmurowy w pamięci
+// nie zmienia stanu — tile() go pomija). Bez usługi, przed pierwszym odczytem i bez serwera w ustawieniach —
+// nic (visible: false), żeby kafelek nie dokładał szumu. text — pełniej, słowami kafelka Modele („qwen3:8b · na karcie 100%”).
 function indicator(snap, serviceUp) {
     var t = tile(snap, serviceUp)
     var ep = defaultEndpoint(snap)
     if (t.tone === "muted" || !ep) return { visible: false, word: "", tone: "muted", warning: false, text: "" }
-    var tone = t.tone
-    var mem = loaded(ep)
-    if (tone === "partial" && mem.length && isCloudModel(mem[0])) tone = "ok"
-    var warning = INDICATOR_WORDS.hasOwnProperty(tone)
-    return { visible: true, word: warning ? INDICATOR_WORDS[tone] : "lokalny", tone: tone, warning: warning,
+    var warning = INDICATOR_WORDS.hasOwnProperty(t.tone)
+    return { visible: true, word: warning ? INDICATOR_WORDS[t.tone] : "lokalny", tone: t.tone, warning: warning,
              text: t.value }
 }
 var CLICK_HINT = "Kliknij, aby zobaczyć serwery i role"

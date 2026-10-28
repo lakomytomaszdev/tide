@@ -28,6 +28,11 @@ tideDock.lengthMode = "fill";
 tideDock.floating = true;
 tideDock.height = P.dockHeight;
 
+// Kafelek, który ma stać w docku — z lewej albo z prawej strony.
+function tideWanted(type) {
+    return P.widgets.indexOf(type) >= 0 || (P.left || []).indexOf(type) >= 0;
+}
+
 // Stary widżet Limity AI z QuotaApp zastępuje org.tide.limits.
 var tideWidgets = tideSorted(tideDock);
 var tideByType = {};
@@ -39,12 +44,13 @@ for (var tideJ = 0; tideJ < tideWidgets.length; ++tideJ) {
         continue;
     }
     // Osobny kafelek „＋ Zadanie” zastąpił przycisk „＋” na kafelku agentów.
-    if (tideW.type === "org.tide.newtask" && P.widgets.indexOf("org.tide.newtask") < 0) {
+    if (tideW.type === "org.tide.newtask" && !tideWanted("org.tide.newtask")) {
         tideW.remove();
         continue;
     }
-    // Kafelek Modele wszedł do kafelka „AI” (org.tide.limits, PT-41) — pakiet zostaje, ale z docka znika.
-    if (tideW.type === "org.tide.models" && P.widgets.indexOf("org.tide.models") < 0) {
+    // Kafelek Modele wszedł do kafelka „AI” (org.tide.limits, PT-41) — pakiet zostaje, ale z docka znika,
+    // także dodany ręcznie (ponowne make install-dock go zdejmuje).
+    if (tideW.type === "org.tide.models" && !tideWanted("org.tide.models")) {
         tideW.remove();
         continue;
     }

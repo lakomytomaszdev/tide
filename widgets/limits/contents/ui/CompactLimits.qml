@@ -82,13 +82,35 @@ Tide.DockTile {
         }
 
         // „● lokalny” w linii procentów: słowo krojem podpisów mierników („GPT”) i na tej samej wysokości
-        // (TileMeter stawia podpis u góry, a procent na jego linii bazowej).
+        // (TileMeter stawia podpis u góry, a procent na jego linii bazowej). Szerokość na najdłuższe słowo
+        // (indicatorWords()), więc kafelek zmienia szerokość tylko wtedy, gdy kropka się pojawia albo znika,
+        // a nie przy każdej zmianie stanu modelu.
         Item {
             id: localItem
             objectName: "localIndicator"
             visible: tile.local.visible
-            implicitWidth: localWord.x + localWord.implicitWidth
+            readonly property real widestWord: {
+                let widest = 0
+                for (let i = 0; i < wordProbes.count; i++) {
+                    const probe = wordProbes.itemAt(i)
+                    if (probe) widest = Math.max(widest, probe.implicitWidth)
+                }
+                return Math.ceil(widest)
+            }
+            implicitWidth: localWord.x + Math.max(widestWord, localWord.implicitWidth)
             implicitHeight: localWord.implicitHeight
+
+            Repeater {
+                id: wordProbes
+                model: ModelsLogic.indicatorWords()
+                Text {
+                    required property string modelData
+                    visible: false
+                    text: modelData
+                    textFormat: Text.PlainText
+                    font: localWord.font
+                }
+            }
 
             LocalDot {
                 id: localDot

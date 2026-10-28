@@ -78,13 +78,14 @@ PlasmoidItem {
         pollInterval: 120000
     }
 
-    // Modele lokalne (tide-daemon /Models): Status() po sygnale Changed i co minutę na wszelki wypadek.
+    // Modele lokalne (tide-daemon /Models): Status() po sygnale Changed, a na wszelki wypadek co minutę —
+    // w pasku bocznym co 5 min (pasek wisi cały dzień, zmiany i tak przychodzą sygnałem).
     Tide.DaemonSource {
         id: modelsSource
         path: "/Models"
         iface: "org.tide.Daemon.Models"
         method: "Status"
-        pollInterval: 60000
+        pollInterval: Plasmoid.configuration.sidebarMode ? 300000 : 60000
     }
 
     Tide.ModelsState {
@@ -204,10 +205,13 @@ PlasmoidItem {
                         icon.name: "view-refresh"
                         text: "Odśwież"
                         display: QQC2.AbstractButton.IconOnly
-                        enabled: limitsSource.available && !limitsSource.busy
+                        // Odświeża te usługi, które działają — przycisk działa, gdy da się odświeżyć choć jedną.
+                        readonly property bool limitsReady: limitsSource.available && !limitsSource.busy
+                        readonly property bool modelsReady: modelsState.serviceUp && !modelsState.refreshing
+                        enabled: limitsReady || modelsReady
                         onClicked: {
-                            limitsSource.refresh()
-                            if (root.localInfo.visible) modelsState.refresh()
+                            if (limitsReady) limitsSource.refresh()
+                            if (modelsReady) modelsState.refresh()
                         }
                         PlasmaComponents3.ToolTip.text: text
                         PlasmaComponents3.ToolTip.visible: hovered

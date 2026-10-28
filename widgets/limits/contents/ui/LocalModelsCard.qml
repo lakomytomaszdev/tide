@@ -120,8 +120,8 @@ Tide.Card {
                     objectName: "localGpu"
                     text: Logic.gpuText(memRow.modelData)
                     textFormat: Text.PlainText
-                    color: Logic.onCard(memRow.modelData) || Logic.isCloudModel(memRow.modelData)
-                        ? Tide.Tokens.positive : Tide.Tokens.neutral
+                    color: Logic.isCloudModel(memRow.modelData) ? Tide.Tokens.textMuted
+                        : Logic.partlyOnCpu(memRow.modelData) ? Tide.Tokens.neutral : Tide.Tokens.positive
                     font.family: Tide.Theme.uiFamily
                     font.pointSize: Tide.Tokens.fontSizePt - 1
                 }

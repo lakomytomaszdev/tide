@@ -87,6 +87,12 @@ class PackageTest(unittest.TestCase):
         self.assertIn("LocalModelsCard {", main)
         self.assertEqual(main.count("tideWindow.open()"), 2, "„Otwórz Modele” w popupie i „Modele ↗” w pasku")
         self.assertIn("ModelsLogic.toolTipHead(modelsState.snapshot, modelsState.serviceUp, modelsState.nowMs)", main)
+        # „Odśwież” w popupie: działa, gdy da się odświeżyć choć jedną usługę, i odświeża tylko działające.
+        self.assertIn("enabled: limitsReady || modelsReady", main)
+        self.assertIn("if (limitsReady) limitsSource.refresh()", main)
+        self.assertIn("if (modelsReady) modelsState.refresh()", main)
+        # Pasek boczny wisi cały dzień: rzadkie odpytywanie, zmiany przychodzą sygnałem Changed.
+        self.assertIn("pollInterval: Plasmoid.configuration.sidebarMode ? 300000 : 60000", main)
         # Widżet tylko czyta stan modeli i prosi o odczyt — ustawienia są w oknie Tide.
         state = read(LIB_DIR, "ModelsState.qml")
         self.assertEqual(set(re.findall(r'source\.call\("(\w+)"', main + state)), {"Refresh"})
@@ -128,9 +134,11 @@ class TileTest(unittest.TestCase):
             "missing": ("lokalny bez modelu", "warning", True, color["neutral"]),
             "offline": ("lokalny nie działa", "offline", True, color["negative"]),
         }
+        widths = set()
         for scenario, (word, tone, warning, dot) in cases.items():
             with self.subTest(scenario):
                 result = preview_ai.render_tile("calm", scenario)
+                widths.add(result["width"])
                 self.assertEqual((result["word"], result["local"]["tone"], result["local"]["warning"]),
                                  (word, tone, warning))
                 self.assertEqual(result["dot"].lower(), dot.lower(), "kropka w kolorze stanu z palety")
@@ -140,6 +148,7 @@ class TileTest(unittest.TestCase):
                 self.assertTrue(result["fits"], "dwie linie w 48 px kafelka")
                 self.assertLess(result["width"], 300, "kafelek nie spycha reszty docka")
                 self.assertIn(", model lokalny: ", result["accessible"])
+        self.assertEqual(len(widths), 1, f"zmiana stanu modelu nie zmienia szerokości kafelka: {widths}")
 
     def test_nothing_local_without_service_server_or_first_read(self):
         bare = preview_ai.render_tile("calm", "none")
@@ -172,6 +181,13 @@ Item {
         const empty = { checked: true, default: "local", endpoints: {}, roles: {} }
         const show = i => [i.visible, i.word, i.tone, i.warning, i.text].join("/")
         console.warn("CLOUD " + show(Logic.indicator(cloud, true)))
+        // Model chmurowy w pamięci i brak modelu roli raportu: ostrzeżenie o roli, jak bez modelu w pamięci.
+        const cloudMissing = JSON.parse(JSON.stringify(cloud))
+        cloudMissing.roles.summary = { endpoint: "local", model: "qwen3:14b", installed: false, available: false }
+        const t = Logic.tile(cloudMissing, true)
+        console.warn("CLOUDMISSING " + show(Logic.indicator(cloudMissing, true)) + " | " + t.value + "/" + t.tone)
+        console.warn("ONCARD " + [Logic.onCard(cloud.endpoints.local.loaded[0]), Logic.partlyOnCpu(cloud.endpoints.local.loaded[0]),
+                                  Logic.partlyOnCpu({ name: "gpt-oss:20b", gpuPercent: 83 })].join(","))
         console.warn("EMPTY " + show(Logic.indicator(empty, true)))
         console.warn("NULL " + show(Logic.indicator(null, true)) + " | " + show(Logic.indicator(snap, false)))
         Qt.quit()
@@ -180,8 +196,12 @@ Item {
 """ % snap)
         self.assertEqual(problems, [], log)
         got = tags(log)
-        self.assertEqual(got["CLOUD"], "true/lokalny/ok/false/gpt-oss:120b-cloud · w chmurze Ollamy",
-                         "model chmurowy nie udaje modelu, który nie mieści się na karcie")
+        self.assertEqual(got["CLOUD"], "true/lokalny/ok/false/gotowe",
+                         "model chmurowy w pamięci nie jest stanem modelu lokalnego (Tide go nie używa)")
+        self.assertEqual(got["CLOUDMISSING"], "true/lokalny bez modelu/warning/true/brak modelu qwen3:14b | "
+                                              "brak modelu qwen3:14b/warning",
+                         "kafelek AI i kafelek Modele mówią to samo, co widok Modele (apps/models: slow tylko lokalny)")
+        self.assertEqual(got["ONCARD"], "false,false,true")
         self.assertEqual(got["EMPTY"], "false//muted/false/", "bez serwera w ustawieniach — nic")
         self.assertEqual(got["NULL"], "false//muted/false/ | false//muted/false/")
 
@@ -202,6 +222,38 @@ Item {
         self.assertEqual(problems, [], log)
         self.assertEqual(tags(log)["UNTIL"], "Claude do 17:40 | Claude do jutra 14:30 | Claude do czwartku 11:00 | "
                                              "Claude do niedzieli 09:05 | Claude do środy 8:00")
+
+
+@unittest.skipUnless(shutil.which("qml6"), "brak qml6")
+class DockBudgetTest(unittest.TestCase):
+    """Wszystkie kafelki docka (DOCK_LEFT i DOCK_RIGHT) w najszerszych wariantach mieszczą się na głównym
+    monitorze obok aplikacji. Kafelek AI w najszerszej postaci: najdłuższy dopisek prognozy i najdłuższe
+    słowo modelu lokalnego (miejsce na nie i tak jest zarezerwowane)."""
+
+    SCREEN = 2560         # główny monitor (DP-2), dock na pełną szerokość
+    APPS = 900            # miejsce na aplikacje pośrodku (ok. 18 ikon) i dwa odstępy
+    PADDING = 2 * 16      # margines pływającego panelu
+
+    def test_widest_tiles_fit_next_to_the_apps(self):
+        from scripts import dock
+        from widgets import preview, preview_board, preview_docker
+        busy = preview.render(preview.SCENARIOS["busy"])["widths"]   # agenci, worktrees, system, Limity AI
+        ai = max(preview_ai.render_tile("widest", models)["width"] for models in ("missing", "offline"))
+        widths = {
+            "org.tide.system": busy[2],
+            "org.tide.docker": max(preview_docker.render_tile(s)["width"] for s in preview_docker.TILE_SCENARIOS),
+            "org.tide.worktrees": busy[1],
+            "org.tide.board": max(preview_board.render_tile(v)["width"] for v in preview_board.TILE_SCENARIOS.values()),
+            "org.tide.agents": busy[0],
+            "org.tide.limits": ai,
+        }
+        tiles = dock.DOCK_LEFT + dock.DOCK_RIGHT
+        unknown = [t for t in tiles if t not in widths]
+        self.assertEqual(unknown, [], "nowy kafelek w docku — dopisz jego najszerszy wariant do tego testu")
+        gap = 12                                                  # DockTile.dockGap
+        total = sum(widths[t] + gap for t in tiles)
+        self.assertLessEqual(total, self.SCREEN - self.APPS - self.PADDING,
+                             f"kafelki docka zajmują {total} px: {widths}")
 
 
 @unittest.skipUnless(shutil.which("qml6"), "brak qml6")

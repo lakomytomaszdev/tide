@@ -49,6 +49,10 @@ LIMITS = {
              "forecast": None},
     "offline": {"available": False},
 }
+# Najszerszy kafelek: najdłuższy dopisek prognozy („Claude do niedzieli 23:30”) i 100% w GPT.
+LIMITS["widest"] = {**LIMITS["normal"], "forecast": {"claude": {"session": {
+    "state": "runs-out", "text": "wyczerpie się ok. niedziela 23:30", "short": "koniec ok. niedziela 23:30",
+    "whenText": "niedziela 23:30", "exhaustTs": 1793116800 + 3600}}}}
 
 # Scenariusze podglądu: (limity, model lokalny).
 TILE_SCENARIOS = {

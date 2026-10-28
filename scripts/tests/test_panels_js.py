@@ -193,6 +193,15 @@ class DockScriptTest(unittest.TestCase):
         self.assertEqual(dock_types.count("limits"), 1)
         self.assertEqual([w["type"] for w in find(state, 90)["widgets"] if w["removed"]].count("org.tide.models"), 1)
 
+    def test_retired_tiles_stay_when_wanted_on_either_side(self):
+        """Wycofany kafelek zostaje, jeśli jest na liście docka — także z lewej (P.left), nie tylko z prawej."""
+        _, state = self.install(fake.desktop_like_this_one(),
+                                widgets=["org.tide.agents", "org.tide.limits", "org.tide.models", "org.tide.newtask"])
+        _, state = self.install(state, left=["org.tide.system", "org.tide.models", "org.tide.newtask"],
+                                widgets=["org.tide.agents", "org.tide.limits"])
+        self.assertEqual(types(find(state, 90)), ["system", "models", "newtask", "panelspacer", "icontasks",
+                                                  "panelspacer", "agents", "limits"])
+
     def test_dock_uninstall_also_removes_a_leftover_models_tile(self):
         """Dock sprzed PT-41 odinstalowany bez ponownej instalacji: stary kafelek Modele też znika (DOCK_RETIRED)."""
         from scripts import dock
