@@ -397,9 +397,10 @@ def project_facts(report, project) -> dict:
            "unpushed": [b for b in (w.get("branch") or w.get("name") or "" for w in project.unpushed)
                         if not AGENT_BRANCH.match(b)],
            "mainDirty": max(0, project.main_dirty_count),
-           # Konflikty numerów ticketów (reports/plans.py, coordination/numbering.py) — do „Uwaga”.
+           # Konflikty numerów ticketów (reports/plans.py, coordination/numbering.py) — do „Uwaga”; tylko twarde,
+           # łagodne uwagi o numeracji to sprawa koordynatora (make check-plans), nie raportu dla ludzi.
            "conflicts": [clean(w.get("text"), TEXT_MAX - len(CONFLICT)) for w in getattr(project, "conflicts", None) or []
-                         if isinstance(w, dict) and w.get("text")]}
+                         if isinstance(w, dict) and w.get("text") and w.get("severity", "hard") == "hard"]}
 
     seen_tickets: dict[str, dict] = {}
     for entry in plans:

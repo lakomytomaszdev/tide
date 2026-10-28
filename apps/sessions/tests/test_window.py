@@ -207,8 +207,12 @@ class LogicTest(unittest.TestCase):
                                             {"severity": "soft", "text": "Plan x zaczyna od PT-1"},
                                             {"severity": "hard", "text": "a"}, {"severity": "hard", "text": "b"}]})
         self.assertEqual(self.js(f"warningLines({warnings})"),
-                         ["Konflikt numerów: PT-13 ma różne tytuły", "Numeracja: Plan x zaczyna od PT-1",
-                          "Konflikt numerów: a", "i 1 więcej — wszystkie pokaże make check-plans"])
+                         ["Konflikt numerów: PT-13 ma różne tytuły", "Konflikt numerów: a", "Konflikt numerów: b",
+                          "Numeracja: 1 uwaga — make check-plans"])
+        soft = json.dumps({"warnings": [{"severity": "soft", "text": str(n)} for n in range(15)]})
+        self.assertEqual(self.js(f"warningLines({soft})"), ["Numeracja: 15 uwag — make check-plans"])
+        soft = json.dumps({"warnings": [{"severity": "soft", "text": str(n)} for n in range(3)]})
+        self.assertEqual(self.js(f"warningLines({soft})"), ["Numeracja: 3 uwagi — make check-plans"])
         self.assertEqual(self.js("warningLines({warnings: []})"), [])
         self.assertEqual(self.js("warningLines(null)"), [])
         self.assertEqual(self.js("singleSessions([{id: 'a', state: 'working'}, {id: 'b', state: 'ended'},"
