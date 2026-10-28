@@ -63,9 +63,11 @@ Item {
         return error && error.error ? error.error : error
     }
 
+    // Opis tylko z błędów komend rdzenia (iface.Error.*, po polsku). Błędy szyny (rdzeń padł albo nie odpowiada)
+    // mają angielski opis dbus-daemona — wtedy „Rdzeń nie odpowiedział”.
     function errorText(error) {
         const e = errorOf(error)
-        if (e && e.message) return String(e.message)
+        if (e && e.message && String(e.name || "").indexOf(iface + ".Error.") === 0) return String(e.message)
         return "Rdzeń nie odpowiedział"
     }
 
