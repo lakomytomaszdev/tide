@@ -132,7 +132,7 @@ def collect(claude_root: str, codex_root: str, start: float, end: float,
 
 def read_session(path: str, cls, start: float, end: float, automations: dict | None = None) -> SessionReport | None:
     log = cls(path)
-    tail = JsonlTail(path, TAIL_BYTES)
+    tail = JsonlTail(path, TAIL_BYTES, enough=getattr(cls, "tail_enough", None))
     records = tail.read_new()
     head = read_head(path, HEAD_BYTES)
     final, final_ts = "", 0.0

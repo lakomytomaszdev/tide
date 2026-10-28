@@ -8,6 +8,12 @@ mówił `done` — tablica, widżet i raport nie pokazywały, że agent czeka. T
 Do tego karta K-20 założona i połączona (`session`) ze skończoną już sesją nie może od razu dostać
 „przeniesiona ręcznie po skończonej pracy” — to reguła tylko dla przeniesienia z Do sprawdzenia albo Gotowe.
 
+Kompaktowanie (przegląd PT-29): sesja Twitch skończyła turę pytaniem („…Zgadzasz się?”), a godzinę później
+Claude Code sam ją skompaktował („Compacted while idle”): compact_boundary, wpis „user” ze streszczeniem
+(isCompactSummary), załączniki. Streszczenie liczyło się jako odpowiedź użytkownika — sesja `idle`,
+`waitingText` pusty, a karta K-20 spadła do „gotowe” (koordynacja 1/1 scalona). Teraz kompaktowanie, echo
+poleceń lokalnych i wstawki isMeta to nie odpowiedź; pytanie czeka, dopóki użytkownik naprawdę nie napisze.
+
 Dzienniki syntetyczne, tablica w katalogu tymczasowym.
 """
 import json
@@ -21,10 +27,13 @@ from unittest import mock
 
 from tide_daemon import attention
 from tide_daemon.agents import AgentScanner
-from tide_daemon.agents.claude import escape_cwd
+from tide_daemon.agents.claude import ClaudeLog, escape_cwd, tail_has_turn
+from tide_daemon.agents.jsonl import TAIL_BYTES, JsonlTail
 from tide_daemon.agents.question import ending_question
+from tide_daemon.agents.state import Status, derive_state
 from tide_daemon.board.derive import CardDeriver
 from tide_daemon.board.store import BoardStore
+from . import test_board_derive as bd
 from .test_board_derive import FakeBranches, board, ticket
 
 QUESTION = ("Zapisałem odpowiedź w specyfikacji.\n\nPytanie 10: skąd biorą się czat i alerty? "
@@ -129,6 +138,118 @@ class ClaudeTurnTest(unittest.TestCase):
         self.write(self.user(self.now - 100, "Start"), self.said(self.now - 90, "Pushować?"),
                    self.user(self.now - 80, "[Request interrupted by user]"))
         self.assertEqual(self.session()["state"], "done")
+
+
+class CompactionTest(ClaudeTurnTest):
+    """Kompaktowanie po pytaniu na końcu tury nie jest odpowiedzią (sesja Twitch, 27.10, 20:09)."""
+
+    ASK = ("Zapisane w `mocks/scenes-v1/DECISIONS.md`. Zamówienia grafik w `asset-requests.md`.\n\n"
+           "Proponuję zostać przy wariancie B na start i dopiero potem dorobić sceny przerw. Zgadzasz się?")
+
+    def compaction(self, ts, attachments=3, attachment_size=50_000):
+        """Wpisy dopisywane przez Claude Code przy kompaktowaniu bezczynnej sesji — w kolejności z dziennika."""
+        out = [{"type": "system", "subtype": "away_summary", "timestamp": iso(ts - 3000), "content": "Byłeś z dala…"},
+               {"type": "last-prompt", "lastPrompt": "x"}, {"type": "permission-mode", "permissionMode": "default"},
+               {"type": "frame-link", "timestamp": iso(ts)},
+               {"type": "system", "subtype": "compact_boundary", "timestamp": iso(ts), "content": "Conversation compacted",
+                "level": "info", "isMeta": False, "compactMetadata": {"trigger": "auto", "preTokens": 330857}},
+               {"type": "user", "timestamp": iso(ts), "isVisibleInTranscriptOnly": True, "isCompactSummary": True,
+                "message": {"role": "user", "content": "This session is being continued from a previous conversation "
+                                                       "that ran out of context.\n\n" + "Streszczenie. " * 3000}}]
+        out += [{"type": "attachment", "timestamp": iso(ts + 0.2),
+                 "attachment": {"type": "file", "content": "x" * attachment_size}} for _ in range(attachments)]
+        out += [{"type": "system", "subtype": "informational", "timestamp": iso(ts + 0.3), "level": "notice",
+                 "content": "Compacted while idle, before the prompt cache expired"},
+                {"type": "artifact-autoreact-ledger", "entries": []}, {"type": "mode", "mode": "normal"}]
+        return out
+
+    def scanned(self):
+        scanner = AgentScanner(os.path.join(self.tmp, "claude"), os.path.join(self.tmp, "codex"))
+        scanner.discover(self.now)
+        scanner.update()
+        return scanner.sessions(self.now)[0], next(log for log, _ in scanner.logs.values())
+
+    def test_question_survives_idle_compaction(self):
+        asked = self.now - 3 * 3600
+        self.write(self.user(asked - 600, "Zrób sceny"), self.said(asked, self.ASK), self.end(asked + 0.05),
+                   *self.compaction(asked + 3300))
+        s, log = self.scanned()
+        self.assertEqual((s["state"], s["reason"], s["waitingText"]),
+                         ("waiting", "reply", "Zgadzasz się?"))
+        self.assertAlmostEqual(s["sinceTs"], asked, places=0)
+        # Claude Code zgłasza w sessions/<pid>.json „idle” — pytanie i tak wygrywa.
+        self.assertEqual(derive_state(log, self.now, True, Status("idle", asked + 3300), lambda _ts: False)[:2],
+                         ("waiting", "reply"))
+
+    def test_question_survives_compaction_bigger_than_tail(self):
+        asked = self.now - 3 * 3600
+        self.write(self.user(asked - 600, "Zrób sceny"), self.said(asked, self.ASK), self.end(asked + 0.05),
+                   *self.compaction(asked + 3300, attachments=30))
+        self.assertGreater(os.path.getsize(self.path), TAIL_BYTES + 400_000, "streszczenie i załączniki > ogon")
+        s, _ = self.scanned()
+        self.assertEqual((s["state"], s["reason"]), ("waiting", "reply"))
+
+    def test_real_user_message_after_compaction_clears_the_wait(self):
+        asked = self.now - 3 * 3600
+        self.write(self.user(asked - 600, "Zrób sceny"), self.said(asked, self.ASK), self.end(asked + 0.05),
+                   *self.compaction(asked + 3300), self.user(self.now - 20, "Tak, zostańmy przy B."))
+        s, _ = self.scanned()
+        self.assertEqual((s["state"], s["waitingText"]), ("working", ""))
+
+    def test_local_command_echo_is_not_a_reply_but_skill_command_is(self):
+        asked = self.now - 3 * 3600
+        caveat = {"type": "user", "timestamp": iso(asked + 100), "isMeta": True,
+                  "message": {"role": "user", "content": "<local-command-caveat>Caveat: The messages below were "
+                                                         "generated by the user while running local commands."
+                                                         "</local-command-caveat>"}}
+        self.write(self.user(asked - 600, "Zrób sceny"), self.said(asked, self.ASK), self.end(asked + 0.05), caveat,
+                   self.user(asked + 101, "<command-name>/model</command-name>\n<command-message>model"
+                                          "</command-message>\n<command-args></command-args>"),
+                   self.user(asked + 102, "<local-command-stdout>Set model to Opus</local-command-stdout>"))
+        self.assertEqual((self.session()["state"], self.session()["reason"]), ("waiting", "reply"))
+        self.write(self.user(self.now - 20, "<command-message>grilling</command-message>\n"
+                                            "<command-name>/grilling</command-name>"),
+                   {"type": "user", "timestamp": iso(self.now - 19), "isMeta": True,
+                    "message": {"role": "user", "content": [{"type": "text", "text": "Base directory for this skill"}]}})
+        self.assertEqual(self.session()["state"], "working", "skill wywołany poleceniem to wiadomość użytkownika")
+
+    def test_ask_user_question_survives_compaction(self):
+        asked = self.now - 3 * 3600
+        ask = {"type": "assistant", "timestamp": iso(asked),
+               "message": {"role": "assistant", "content": [
+                   {"type": "tool_use", "id": "q1", "name": "AskUserQuestion",
+                    "input": {"questions": [{"question": "Który wariant scen?"}]}}]}}
+        self.write(self.user(asked - 600, "Zrób sceny"), ask, *self.compaction(asked + 3300))
+        s, _ = self.scanned()
+        self.assertEqual((s["state"], s["reason"], s["waitingText"]), ("waiting", "question", "Który wariant scen?"))
+
+    def test_tail_grows_until_it_reaches_the_last_turn(self):
+        records = [self.user(1, "Start"), self.said(2, "Pushować?")] + \
+                  [{"type": "attachment", "timestamp": iso(3), "attachment": {"content": "x" * 1000}}] * 3000
+        self.write(*records)
+        plain = [r.get("type") for r in JsonlTail(self.path, 64 * 1024).read_new()]
+        self.assertNotIn("assistant", plain, "bez warunku ogon nie sięga pytania")
+        grown = JsonlTail(self.path, 64 * 1024, enough=tail_has_turn).read_new()
+        self.assertEqual(sum(r.get("type") == "assistant" for r in grown), 1)
+        self.assertEqual(sum(r.get("type") == "user" for r in grown), 1, "nagłówek tylko raz")
+        self.assertIs(ClaudeLog.tail_enough, tail_has_turn)
+        capped = JsonlTail(self.path, 64 * 1024, enough=lambda _r: False, max_tail_bytes=256 * 1024).read_new()
+        self.assertLess(len(capped), 300, "okno ma górną granicę")
+
+
+class CompactedCoordinatorCardTest(unittest.TestCase):
+    """K-20: koordynacja 1/1 scalona, a sesja koordynatora czeka na odpowiedź — „Czeka na mnie”, nie Gotowe."""
+
+    def test_waiting_session_beats_merged_coordination(self):
+        coord = bd.board("claude:koord", [bd.ticket("TW-1", "gotowe", branch="feat/scenes")], state="idle",
+                         branch="feat/scenes")
+        card = bd.card(20, session="claude:koord")
+        merged = FakeBranches(merged={"feat/scenes": True})
+        idle = bd.session("claude:koord", state="idle", branch="feat/scenes", since=bd.NOW - 3600)
+        self.assertEqual(bd.derive(card, [idle], [coord], merged)["column"], "done")
+        asked = dict(idle, state="waiting", reason="reply", waitingText="Zgadzasz się?")
+        out = bd.derive(card, [asked], [coord], FakeBranches(merged={"feat/scenes": True}))
+        self.assertEqual((out["column"], out["note"]), ("waiting", "czeka na odpowiedź: „Zgadzasz się?”"))
 
 
 class CodexTurnTest(unittest.TestCase):

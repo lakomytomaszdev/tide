@@ -59,7 +59,7 @@ class AgentScanner:
                 changed = True
         for path, cls in found.items():
             if path not in self.logs:
-                self.logs[path] = (cls(path), JsonlTail(path))
+                self.logs[path] = (cls(path), JsonlTail(path, enough=getattr(cls, "tail_enough", None)))
                 changed = True
         return changed
 
