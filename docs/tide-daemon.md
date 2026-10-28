@@ -760,6 +760,18 @@ D-Bus ani plików. Token idzie wyłącznie do serwera z ustawień (`url`, domyś
 Ten sam plik niesie ustawienia synchronizacji tablicy (opisane w „Tablica” — „Synchronizacja z YouTrackiem”):
 `sync`, `states`, `stateField`, `projects`, `importQueries`, `importCheckMinutes`.
 
+**Zapis dla przepływu karty** (PT-72, część 1; klient bez podłączenia do zatwierdzania planu — to część 2). Trzy operacje
+w `coordination/youtrack.py`, z tym samym tokenem, bez pośrednika i z limitem 4 s co reszta:
+`create_issue` (`POST /api/issues`), `link_issues` (`POST /api/commands`, np. `relates to DEMO-1`) i `add_comment`
+(`POST /api/issues/{id}/comments`). Założenie jest idempotentne: opis kończy znacznik `[//]: # (tide-ref card=<karta> n=<numer>)`
+(linia definicji odnośnika Markdowna — niewidoczna po wyrenderowaniu, odporna na przepisanie opisu, bo to osobna linia
+szukana w całym opisie z tolerancją odstępów); przed założeniem klient szuka zgłoszenia projektu z tym znacznikiem
+(zapytanie pełnotekstowe plus dokładne sprawdzenie karty i numeru po swojej stronie) i zwraca istniejące
+(`created: false`). Komentarz z notką wyniku niesie `[//]: # (tide-note card=… ticket=… event=…)` i przed dodaniem
+sprawdza komentarze zgłoszenia — dokładnie jeden na (karta, ticket, zdarzenie). Błąd ma `transient` (serwer
+nieosiągalny, 5xx, 401/403/408/429 — ponów) albo `permanent` (400/404/422 z walidacji, zła wartość sprawdzona przed
+wysłaniem — nie ponawiaj). Nazwy karty, ticketu i zdarzenia w znaczniku muszą pasować do `[A-Za-z0-9._-]`.
+
 **Kontrola numerów ticketów** (`coordination/numbering.py`, decyzja 56; reguły: standard planu, „Numery
 ticketów: jedno źródło”). Plany ze wszystkich miejsc repozytorium (`coordination/repoplans.py`): główny
 katalog i każdy worktree (`git worktree list`, także niezacommitowane pliki) oraz każda gałąź lokalna

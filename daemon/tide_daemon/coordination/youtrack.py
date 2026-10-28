@@ -10,6 +10,12 @@ Zapis (PT-7, zmiana decyzji „YouTrack tylko do odczytu”) robi wyłącznie sy
 (`POST /api/issues/{id}` z `customFields: [{name, $type, value: {name}}]`). Przed zapisem synchronizacja
 czyta zgłoszenie (`fetch_issue`), a import kart bierze zgłoszenia użytkownika (`fetch_mine`, GET).
 
+Zapis dla przepływu karty (PT-72): `create_issue` (założenie zgłoszenia), `link_issues` (powiązanie)
+i `add_comment` (komentarz). Założenie i komentarz są idempotentne — znacznik w treści (`issue_marker`,
+`note_marker`) i sprawdzenie przed zapisem, więc ponowienie po zgubionej odpowiedzi nie daje duplikatu.
+Błąd ma `transient` (serwer nieosiągalny, przeciążony, brak dostępu — ponów) albo `permanent` (odmowa
+z walidacji, zły klucz — nie ponawiaj).
+
 Token (decyzja użytkownika: ten sam co serwer MCP YouTracka w LogViewerze) czytamy z pliku przy
 każdym zapytaniu, tylko w pamięci. Nie trafia do dziennika, komunikatów błędów, pamięci podręcznej,
 odpowiedzi D-Bus ani plików. Ustawienia (opcjonalne) w `$XDG_CONFIG_HOME/tide/youtrack.json`:
@@ -27,6 +33,7 @@ shortName` z serwera z ustawień, odświeżana raz na godzinę (po błędzie —
 Wyniki trzymamy 5 min; gdy serwer (w sieci lokalnej) nie odpowiada, tablica działa dalej na
 ostatnich danych albo bez nich, z krótkim komunikatem.
 """
+import http.client
 import json
 import os
 import re
@@ -219,16 +226,28 @@ def _token_from(path: str, var: str) -> str:
 
 class YouTrackError(Exception):
     """Błąd zapytania — komunikat po polsku, nigdy z tokenem. `status`: kod HTTP (0 — brak odpowiedzi,
-    brak tokenu albo nieznana odpowiedź)."""
+    brak tokenu albo nieznana odpowiedź). `permanent`: błąd po naszej stronie (zła wartość, sprawdzona
+    przed wysłaniem) — ponawianie nic nie da."""
 
-    def __init__(self, message: str, status: int = 0):
+    def __init__(self, message: str, status: int = 0, permanent: bool = False):
         super().__init__(message)
         self.status = status
+        self._permanent = permanent
 
     @property
     def offline(self) -> bool:
         """Serwer nieosiągalny, przeciążony albo bez dostępu (token) — ponawiamy później, to nie odmowa zmiany."""
-        return self.status == 0 or self.status >= 500 or self.status in (401, 403, 408, 429)
+        return not self._permanent and (self.status == 0 or self.status >= 500 or self.status in (401, 403, 408, 429))
+
+    @property
+    def transient(self) -> bool:
+        """Błąd przejściowy — ponów później (to samo co `offline`)."""
+        return self.offline
+
+    @property
+    def permanent(self) -> bool:
+        """Odmowa (np. 400/404/422 z walidacji) albo zła wartość — ponowienie da to samo."""
+        return not self.offline
 
 
 def same_server(a: str, b: str) -> bool:
@@ -308,10 +327,131 @@ def fetch_mine(url: str, token: str, queries=DEFAULT_IMPORT_QUERIES, timeout: fl
     return sorted(out.values(), key=lambda i: (-i["updated"], i["id"]))
 
 
-def _checked(ident: str) -> str:
+# --- zapis dla przepływu karty (PT-72) ---------------------------------------------------------------
+
+SUMMARY_MAX = 255            # limit tytułu zgłoszenia w YouTracku
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")     # nazwa karty, ticketu, zdarzenia w znaczniku
+LINK_TYPE_RE = re.compile(r"^[a-z][a-z ]{0,39}$")
+# Znacznik karty w opisie to linia definicji odnośnika Markdowna `[//]: # (…)`: nie wyświetla się, a gdy człowiek
+# przepisze opis, zwykle zostaje (to osobna linia). Szukamy go gdziekolwiek w opisie, tolerując odstępy.
+ISSUE_MARKER_RE = re.compile(r"\[//\]:\s*#\s*\(\s*tide-ref\s+card=([A-Za-z0-9][A-Za-z0-9._-]*)\s+n=(\d{1,9})\s*\)")
+NOTE_MARKER_RE = re.compile(r"\[//\]:\s*#\s*\(\s*tide-note\s+card=([A-Za-z0-9][A-Za-z0-9._-]*)\s+"
+                            r"ticket=([A-Za-z0-9][A-Za-z0-9._-]*)\s+event=([A-Za-z0-9][A-Za-z0-9._-]*)\s*\)")
+
+
+def _name(value, what: str) -> str:
+    value = str(value)
+    if not NAME_RE.match(value):
+        raise YouTrackError(f"niepoprawna nazwa ({what}) w znaczniku", permanent=True)
+    return value
+
+
+def _number(value) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 < value < 10**9:
+        raise YouTrackError("niepoprawny numer roboczy w znaczniku", permanent=True)
+    return value
+
+
+def issue_marker(card: str, number: int) -> str:
+    """Znacznik zgłoszenia zakładanego dla numeru roboczego `number` karty `card`:
+    `[//]: # (tide-ref card=<karta> n=<numer>)`."""
+    return f"[//]: # (tide-ref card={_name(card, 'karta')} n={_number(number)})"
+
+
+def marker_of(description: str):
+    """(karta, numer) z pierwszego znacznika w opisie albo None."""
+    found = ISSUE_MARKER_RE.search(description or "")
+    return (found.group(1), int(found.group(2))) if found else None
+
+
+def note_marker(card: str, ticket: str, event: str) -> str:
+    """Znacznik komentarza: `[//]: # (tide-note card=<karta> ticket=<ticket> event=<zdarzenie>)`."""
+    return f"[//]: # (tide-note card={_name(card, 'karta')} ticket={_name(ticket, 'ticket')} event={_name(event, 'zdarzenie')})"
+
+
+def find_issue(url: str, project: str, card: str, number: int, token: str, timeout: float = TIMEOUT,
+               opener=None) -> dict | None:
+    """Zgłoszenie projektu ze znacznikiem (karta, numer) w opisie albo None. GET; wynik wyszukiwania pełnotekstowego
+    sprawdzamy jeszcze po stronie klienta, więc zgłoszenie z podobnym tekstem (inny numer, karta o dłuższej nazwie)
+    nie pasuje."""
+    if not PROJECT_RE.match(project or ""):
+        raise YouTrackError("niepoprawny klucz projektu", permanent=True)
+    phrase = f"tide-ref card={_name(card, 'karta')} n={_number(number)}"
+    query = urllib.parse.urlencode({"query": f'project: {project} "{phrase}"',
+                                    "fields": "idReadable,summary,description", "$top": "50"})
+    for item in _get_list(f"{url}/api/issues?{query}", token, timeout, opener):
+        if isinstance(item, dict) and issue_key(str(item.get("idReadable") or "")):
+            if any((m.group(1), int(m.group(2))) == (card, number)
+                   for m in ISSUE_MARKER_RE.finditer(str(item.get("description") or ""))):
+                ident = issue_key(str(item["idReadable"]))
+                return {"id": ident, "summary": str(item.get("summary") or "")[:500], "url": f"{url}/issue/{ident}"}
+    return None
+
+
+def create_issue(url: str, project: str, summary: str, description: str, card: str, number: int, token: str,
+                 timeout: float = TIMEOUT, opener=None) -> dict:
+    """Zgłoszenie dla numeru roboczego `number` karty `card` w projekcie `project`: {"id", "summary", "url",
+    "created"}. Idempotentne: opis dostaje znacznik `issue_marker`, a przed założeniem szukamy zgłoszenia z tym
+    znacznikiem — jest: zwracamy je (`created: False`), nie ma: zakładamy (POST /api/issues). Ponowienie po
+    zgubionej odpowiedzi znajduje więc to, co serwer już założył."""
+    summary = " ".join(str(summary or "").split())
+    if not summary:
+        raise YouTrackError("brak tytułu zgłoszenia", permanent=True)
+    marker = issue_marker(card, number)
+    if not PROJECT_RE.match(project or ""):
+        raise YouTrackError("niepoprawny klucz projektu", permanent=True)
+    existing = find_issue(url, project, card, number, token, timeout, opener)
+    if existing:
+        return {**existing, "created": False}
+    body = {"project": {"shortName": project}, "summary": summary[:SUMMARY_MAX],
+            "description": (str(description or "").rstrip() + "\n\n" + marker).lstrip()}
+    data = _request("POST", f"{url}/api/issues?" + urllib.parse.urlencode({"fields": "idReadable,summary"}),
+                    token, timeout, opener, body)
+    ident = issue_key(str(data.get("idReadable") or "")) if isinstance(data, dict) else ""
+    if not ident:
+        raise YouTrackError("nieznana odpowiedź YouTracka")
+    return {"id": ident, "summary": str(data.get("summary") or summary)[:500], "url": f"{url}/issue/{ident}",
+            "created": True}
+
+
+def link_issues(url: str, ident: str, target: str, token: str, link_type: str = "relates to",
+                timeout: float = TIMEOUT, opener=None) -> dict:
+    """Powiązanie zgłoszenia `ident` ze zgłoszeniem `target` poleceniem YouTracka (`POST /api/commands`, np.
+    „relates to DEMO-1”, „subtask of DEMO-1”). Powtórzenie niczego nie zmienia (YouTrack nie dubluje powiązań)."""
+    ident, target = _checked(ident, True), _checked(target, True)
+    link_type = " ".join(str(link_type or "").lower().split())
+    if not LINK_TYPE_RE.match(link_type):
+        raise YouTrackError("niepoprawny rodzaj powiązania", permanent=True)
+    _request("POST", f"{url}/api/commands", token, timeout, opener,
+             {"query": f"{link_type} {target}", "issues": [{"idReadable": ident}]})
+    return {"id": ident, "target": target, "linkType": link_type}
+
+
+def add_comment(url: str, ident: str, text: str, card: str, ticket: str, event: str, token: str,
+                timeout: float = TIMEOUT, opener=None) -> dict:
+    """Komentarz do zgłoszenia `ident` z notką wyniku ticketu `ticket` karty `card` (zdarzenie `event`, np.
+    „merged”): {"commentId", "created"}. Idempotentny: komentarz niesie `note_marker`, a przed dodaniem czytamy
+    komentarze zgłoszenia (GET) — jest taki ze znacznikiem: zwracamy go (`created: False`)."""
+    ident = _checked(ident, True)
+    text = str(text or "").strip()
+    if not text:
+        raise YouTrackError("pusty komentarz", permanent=True)
+    marker = note_marker(card, ticket, event)
+    path = f"{url}/api/issues/{urllib.parse.quote(ident)}/comments"
+    comments = _get_list(path + "?" + urllib.parse.urlencode({"fields": "id,text", "$top": "500"}),
+                         token, timeout, opener)
+    for item in comments:
+        if isinstance(item, dict) and marker in str(item.get("text") or ""):
+            return {"commentId": str(item.get("id") or ""), "created": False}
+    data = _request("POST", path + "?" + urllib.parse.urlencode({"fields": "id"}), token, timeout, opener,
+                    {"text": f"{text}\n\n{marker}"})
+    return {"commentId": str(data.get("id") or "") if isinstance(data, dict) else "", "created": True}
+
+
+def _checked(ident: str, permanent: bool = False) -> str:
     key = issue_key(ident)
     if not key:
-        raise YouTrackError("niepoprawny klucz zgłoszenia")
+        raise YouTrackError("niepoprawny klucz zgłoszenia", permanent=permanent)
     return key
 
 
@@ -367,7 +507,7 @@ def _request(method: str, address: str, token: str, timeout: float, opener, body
             return json.loads(response.read(MAX_BYTES).decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raise YouTrackError(f"YouTrack odpowiedział {exc.code}{_hint(exc)}", exc.code) from None
-    except (urllib.error.URLError, OSError, TimeoutError):
+    except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException):
         raise YouTrackError("YouTrack nie odpowiada") from None
     except (ValueError, UnicodeDecodeError):
         raise YouTrackError("nieznana odpowiedź YouTracka") from None
