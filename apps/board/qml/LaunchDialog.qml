@@ -5,13 +5,19 @@
 // z projektów tablicy oraz repozytoriów — agent dostaje je przez --add-dir), „Nowy worktree” z gałęzią (w trybie spec
 // wyłączony), „Test ręczny po zakończeniu”, zdanie „co się stanie” i przyciski Anuluj, Tylko przenieś,
 // Uruchom agenta (Ctrl+Enter). Karta bez projektu z repozytorium — wyjaśnienie i wybór projektu.
+// To, co ma okno „Nowe zadanie” (PT-43): zrzuty ekranu pod zadaniem (Tide.ScreenshotStrip z widgets/lib —
+// miniatury, „Zrób zrzut”, przeciąganie plików na okno, Ctrl+V z obrazem w schowku) i model obok narzędzia
+// (☁ Chmura / ⌂ Lokalny z roli `agent` w /Models — logika w widgets/lib/agentmodel.js; przy „Lokalny” zamiast
+// przełącznika narzędzia linia „Codex na … · Ten komputer” z programem z Tide → Modele, uwaga pod spodem;
+// brak programu albo niedostępny model blokuje start z powodem w stopce).
 // Sam nie rozmawia z usługą: zgłasza sygnały, a stronę tablicy (BoardPage) prowadzi przebieg
-// UpdateCard (opis, dodatkowe projekty) → RenderLaunch → /Tasks Start → UpdateCard. Teksty z danych —
-// zawsze PlainText.
+// UpdateCard (opis, dodatkowe projekty) → RenderLaunch → /Tasks Start (z `images` i `model`) → UpdateCard.
+// Teksty z danych — zawsze PlainText.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "tide" as Tide
+import "tide/agentmodel.js" as AgentModel
 import "board.js" as Logic
 
 Rectangle {
@@ -34,14 +40,33 @@ Rectangle {
     property bool manualCheck: false
     property var extras: []                // dodatkowe projekty: [{kind: "project"|"repo", key, name}]
     property string loadedDescription: ""
+    // Jak w oknie „Nowe zadanie” (PT-43): zrzuty (ścieżki z backendu), model i dane /Tasks.
+    property string model: "cloud"         // "cloud" | "local"
+    property var images: []
+    property bool canCapture: false
+    property var modelsStatus: null        // Status() z /Models; {pending: true} — czekam; null — usługa nie podaje
+    property var taskDefaults: ({})        // /Tasks Defaults: tools, model (zapamiętany), imagesDir
+    // Ctrl+V: funkcja() → true, gdy schowek miał obraz (albo pliki obrazów) i trafił do zrzutów.
+    property var pasteImage: function () { return false }
+    readonly property var localOption: AgentModel.localOption(modelsStatus)
+    readonly property var localLine: AgentModel.localLine(localOption)
+    readonly property string modelNote: AgentModel.modelNote(localOption, model)
+    // Program, który ruszy: przy „Lokalny” z Tide → Modele (agentProgram), w chmurze — przełącznik narzędzia.
+    readonly property string agentTool: AgentModel.agentTool(model, tool, localOption)
+    readonly property var tools: taskDefaults && taskDefaults.tools ? taskDefaults.tools : ({})
+    readonly property string modelBlocker: tools[agentTool] === false ? "Nie znaleziono programu " + Logic.launchToolName(agentTool) + " — zainstaluj go albo wybierz inny."
+        : model === "local" && !localOption.enabled
+          ? (localOption.pending ? localOption.reason : "Model lokalny niedostępny: " + localOption.reason) : ""
     readonly property var card: cardId ? ((snapshot && snapshot.cards) || []).find(c => c.id === cardId) || null : null
     readonly property var project: card && card.project ? Logic.projectBySlug(snapshot, card.project) : null
     readonly property var workProject: Logic.launchProject(snapshot, card)
     readonly property string blocker: Logic.launchBlocker(snapshot, card)
-    readonly property bool canStart: blocker === "" && !busy && taskText.trim() !== ""
+    readonly property bool canStart: blocker === "" && modelBlocker === "" && !busy && taskText.trim() !== ""
     readonly property string taskText: taskEdit.text
     readonly property var launchState: ({
-        cardId: cardId, mode: mode, tool: tool, branch: branch, newWorktree: newWorktree,
+        cardId: cardId, mode: mode, tool: agentTool, branch: branch, newWorktree: newWorktree,
+        model: model === "local" ? "local" : "cloud", localModel: model === "local" ? localOption.model : "",
+        images: images,
         check: manualCheck ? "manual" : "auto", aiDocs: workProject ? workProject.aiDocs : "",
         slug: workProject ? workProject.slug : "",
         repoName: workProject ? String(workProject.repo).split("/").filter(x => x).pop() : "",
@@ -54,6 +79,10 @@ Rectangle {
     signal moveOnlyRequested()
     signal projectChosen(string kind, string key)
     signal manageRequested(string slug)
+    signal captureRequested()
+    signal removeImageRequested(string path)
+    signal filesDropped(var urls)
+    signal modelsRequested()   // „ustaw/zmień w Tide → Modele”: widok Modele okna Tide
 
     function tone(name) {
         return tagTone ? tagTone(name) : Tide.Tokens.textMuted
@@ -63,11 +92,13 @@ Rectangle {
     function load() {
         const c = card
         const p = Logic.launchProject(snapshot, c)
-        mode = p ? p.mode || "full" : "full"
-        tool = p ? p.tool || "claude" : "claude"
-        branch = Logic.launchBranch(c, tool)
         branchEdited = false
         editingBranch = false
+        mode = p ? p.mode || "full" : "full"
+        // Model jak w oknie „Nowe zadanie”: zapamiętany wybór z ostatniego startu (Defaults().model).
+        model = taskDefaults && taskDefaults.model === "local" ? "local" : "cloud"
+        tool = p ? p.tool || "claude" : "claude"
+        branch = Logic.launchBranch(c, agentTool)
         newWorktree = true
         manualCheck = false
         extras = Logic.cardExtras(snapshot, c)
@@ -84,13 +115,18 @@ Rectangle {
         if (!p) return
         mode = p.mode || "full"
         tool = p.tool || "claude"
-        if (!branchEdited) branch = Logic.launchBranch(card, tool)
+        if (!branchEdited) branch = Logic.launchBranch(card, agentTool)
     }
 
     function pickTool(value) {
         tool = value
-        if (!branchEdited) branch = Logic.launchBranch(card, value)
-        else branch = Logic.retoolBranch(branch, value)
+    }
+
+    // Prefiks gałęzi idzie za programem, który ruszy (przełącznik narzędzia albo program agenta lokalnego).
+    onAgentToolChanged: {
+        if (!card) return
+        if (!branchEdited) branch = Logic.launchBranch(card, agentTool)
+        else branch = Logic.retoolBranch(branch, agentTool)
     }
 
     function start() {
@@ -113,6 +149,8 @@ Rectangle {
         } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
             start()
             event.accepted = true
+        } else if (event.matches(StandardKey.Paste) && !busy && pasteImage()) {
+            event.accepted = true   // obraz ze schowka trafił do zrzutów (fokus poza polem tekstowym)
         }
     }
 
@@ -135,6 +173,18 @@ Rectangle {
         clip: true
 
         MouseArea { anchors.fill: parent }
+
+        // Pliki obrazów przeciągnięte na okno — zrzuty zadania.
+        DropArea {
+            id: drop
+            anchors.fill: parent
+            keys: ["text/uri-list"]
+            enabled: !dialog.busy
+            onDropped: event => {
+                dialog.filesDropped(event.urls.map(u => u.toString()))
+                event.accept()
+            }
+        }
 
         Flickable {
             id: bodyFlick
@@ -312,7 +362,11 @@ Rectangle {
                                     font.family: Tide.Theme.uiFamily
                                     font.pixelSize: 13
                                     activeFocusOnTab: true
-                                    Keys.onTabPressed: event => { toolSwitch.forceActiveFocus(); event.accepted = true }
+                                    Keys.onTabPressed: event => { modelSwitch.forceActiveFocus(); event.accepted = true }
+                                    Keys.onPressed: event => {
+                                        if (event.matches(StandardKey.Paste) && !dialog.busy && dialog.pasteImage())
+                                            event.accepted = true   // obraz ze schowka trafił do zrzutów
+                                    }
                                     onCursorRectangleChanged: {
                                         if (cursorRectangle.y < taskFlick.contentY) taskFlick.contentY = cursorRectangle.y
                                         else if (cursorRectangle.y + cursorRectangle.height > taskFlick.contentY + taskFlick.height)
@@ -325,71 +379,143 @@ Rectangle {
                         }
                         Text {
                             Layout.fillWidth: true
-                            text: "Opis z karty. Zmiany tutaj zapiszą się też w karcie."
+                            text: "Opis z karty. Zmiany tutaj zapiszą się też w karcie. Ctrl+V wkleja zrzut ze schowka."
                             textFormat: Text.PlainText
                             color: Tide.Tokens.textMuted
                             font.family: Tide.Theme.uiFamily
                             font.pixelSize: 11
                         }
+
+                        // Zrzuty ekranu (wspólny pasek z oknem „Nowe zadanie”) — trafiają do agenta razem z poleceniem.
+                        FieldLabel { text: "Zrzuty ekranu"; color: Tide.Tokens.textSecondary; Layout.topMargin: 2 }
+                        Tide.ScreenshotStrip {
+                            objectName: "launchShots"
+                            Layout.fillWidth: true
+                            images: dialog.images
+                            canCapture: dialog.canCapture
+                            busy: dialog.busy
+                            dropHover: drop.containsDrag
+                            thumbWidth: 128
+                            thumbHeight: 78
+                            onCaptureRequested: dialog.captureRequested()
+                            onRemoveRequested: path => dialog.removeImageRequested(path)
+                        }
                     }
                 }
 
-                // Narzędzie i dokumenty AI.
+                // Model i narzędzie (PT-43: jak w oknie „Nowe zadanie”) — najpierw model, potem program.
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 24
-                    RowLayout {
-                        spacing: 10
-                        FieldLabel { text: "Narzędzie"; color: Tide.Tokens.textSecondary }
-                        Segmented {
-                            id: toolSwitch
-                            objectName: "launchTool"
-                            options: Logic.LAUNCH_TOOLS
-                            current: dialog.tool
-                            itemHeight: 30
-                            pixelSize: 13
-                            onPicked: value => dialog.pickTool(value)
+                    spacing: 10
+                    FieldLabel { text: "Model"; color: Tide.Tokens.textSecondary }
+                    Segmented {
+                        id: modelSwitch
+                        objectName: "launchModel"
+                        options: [{ value: "cloud", label: "☁ Chmura" },
+                                  { value: "local", label: "⌂ Lokalny", disabled: !dialog.localOption.enabled,
+                                    hint: dialog.localOption.enabled ? dialog.localOption.label : dialog.localOption.reason }]
+                        current: dialog.model
+                        itemHeight: 30
+                        pixelSize: 13
+                        onPicked: value => dialog.model = value
+                    }
+                    FieldLabel { text: "Narzędzie"; color: Tide.Tokens.textSecondary; Layout.leftMargin: 14 }
+                    Segmented {
+                        id: toolSwitch
+                        objectName: "launchTool"
+                        visible: dialog.model !== "local"
+                        options: Logic.LAUNCH_TOOLS.map(t => ({ value: t.value, label: t.label + (dialog.tools[t.value] === false ? " · brak" : "") }))
+                        current: dialog.tool
+                        itemHeight: 30
+                        pixelSize: 13
+                        onPicked: value => dialog.pickTool(value)
+                    }
+                    // Przy „Lokalny”: program z Tide → Modele, model i serwer (program to nie model — tu tylko go widać).
+                    Text {
+                        objectName: "launchLocalProgram"
+                        visible: dialog.model === "local"
+                        text: (dialog.localOption.program === "codex" ? "◎ " : "✻ ") + dialog.localLine.program
+                              + (dialog.tools[dialog.localOption.program] === false ? " · brak" : "")
+                        textFormat: Text.PlainText
+                        color: dialog.localOption.enabled ? Tide.Tokens.accent : Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                    }
+                    Text {
+                        objectName: "launchLocalDetail"
+                        Layout.fillWidth: true
+                        Layout.leftMargin: -6
+                        visible: dialog.model === "local"
+                        text: dialog.localLine.detail
+                        textFormat: Text.PlainText
+                        color: dialog.localOption.enabled ? Tide.Tokens.textSecondary : Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 13
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        objectName: "launchProgramLink"
+                        visible: dialog.model === "local"
+                        text: dialog.localLine.link
+                        textFormat: Text.PlainText
+                        color: programArea.containsMouse ? Tide.Theme.alpha(Tide.Tokens.accent, 0.8) : Tide.Tokens.accent
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        Accessible.role: Accessible.Link
+                        Accessible.name: dialog.localLine.link === AgentModel.PROGRAM_HINT ? "Zmień program agenta w Tide → Modele"
+                                                                                           : "Ustaw model agenta w Tide → Modele"
+                        Accessible.onPressAction: dialog.modelsRequested()
+                        MouseArea {
+                            id: programArea
+                            anchors.fill: parent
+                            anchors.margins: -4
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: dialog.modelsRequested()
                         }
                     }
-                    Item { Layout.fillWidth: true }
-                    RowLayout {
-                        spacing: 8
-                        visible: dialog.workProject !== null
-                        FieldLabel { text: "Dokumenty AI"; color: Tide.Tokens.textSecondary }
-                        Rectangle {
-                            implicitWidth: docsText.implicitWidth + 16
-                            implicitHeight: docsText.implicitHeight + 8
-                            radius: 7
-                            color: Tide.Tokens.backgroundCard
-                            Text {
-                                id: docsText
-                                objectName: "launchDocs"
-                                anchors.centerIn: parent
-                                text: Logic.docsLabel(dialog.workProject)
-                                textFormat: Text.PlainText
-                                color: Tide.Tokens.textSecondary
-                                font.family: Tide.Theme.monoFamily
-                                font.pixelSize: 12
-                            }
-                        }
-                        Text {
-                            objectName: "launchManageLink"
-                            text: "zmień w projekcie"
-                            textFormat: Text.PlainText
-                            color: manageArea.containsMouse ? Tide.Theme.alpha(Tide.Tokens.accent, 0.8) : Tide.Tokens.accent
-                            font.family: Tide.Theme.uiFamily
-                            font.pixelSize: 12
-                            Accessible.role: Accessible.Link
-                            Accessible.name: "Zmień dokumenty AI w ustawieniach projektu"
-                            Accessible.onPressAction: dialog.manageRequested(dialog.workProject.slug)
-                            MouseArea {
-                                id: manageArea
-                                anchors.fill: parent
-                                anchors.margins: -4
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: dialog.manageRequested(dialog.workProject.slug)
-                            }
+                    Item { Layout.fillWidth: true; visible: dialog.model !== "local" }
+                }
+                // Uwaga o modelu przy „Lokalny”: powód niedostępności albo uczciwa uwaga o jakości (jak w „Nowe zadanie”).
+                // W chmurze okno zostaje ciche (tablica jest gęstsza): powód wyłączenia „Lokalnego” jest w jego podpowiedzi.
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: -8
+                    visible: dialog.modelNote !== "" && dialog.model === "local"
+                    spacing: 6
+                    Text {
+                        objectName: "launchModelNote"
+                        Layout.fillWidth: !modelsLink.visible
+                        text: dialog.localOption.enabled || dialog.model === "local" ? dialog.modelNote
+                                                                                     : AgentModel.LOCAL_PREFIX + dialog.localOption.reason
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        id: modelsLink
+                        objectName: "launchModelsLink"
+                        visible: !dialog.localOption.enabled && dialog.localOption.hint && dialog.model !== "local"
+                        Layout.fillWidth: true
+                        text: "— " + AgentModel.MODELS_HINT
+                        textFormat: Text.PlainText
+                        color: linkArea.containsMouse ? Tide.Tokens.accent : Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        font.underline: linkArea.containsMouse
+                        elide: Text.ElideRight
+                        Accessible.role: Accessible.Link
+                        Accessible.name: "Otwórz Tide → Modele"
+                        Accessible.onPressAction: dialog.modelsRequested()
+                        MouseArea {
+                            id: linkArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: dialog.modelsRequested()
                         }
                     }
                 }
@@ -485,7 +611,54 @@ Rectangle {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 8
-                    FieldLabel { text: "Tryb pracy"; color: Tide.Tokens.textSecondary }
+                    // Nagłówek trybu z miejscem dokumentów AI (tam agent pisze specyfikację i plan).
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        FieldLabel { text: "Tryb pracy"; color: Tide.Tokens.textSecondary }
+                        Item { Layout.fillWidth: true }
+                        RowLayout {
+                            objectName: "launchDocsRow"
+                            spacing: 8
+                            visible: dialog.workProject !== null
+                            FieldLabel { text: "Dokumenty AI"; color: Tide.Tokens.textSecondary }
+                            Rectangle {
+                                implicitWidth: docsText.implicitWidth + 16
+                                implicitHeight: docsText.implicitHeight + 8
+                                radius: 7
+                                color: Tide.Tokens.backgroundCard
+                                Text {
+                                    id: docsText
+                                    objectName: "launchDocs"
+                                    anchors.centerIn: parent
+                                    text: Logic.docsLabel(dialog.workProject)
+                                    textFormat: Text.PlainText
+                                    color: Tide.Tokens.textSecondary
+                                    font.family: Tide.Theme.monoFamily
+                                    font.pixelSize: 12
+                                }
+                            }
+                            Text {
+                                objectName: "launchManageLink"
+                                text: "zmień w projekcie"
+                                textFormat: Text.PlainText
+                                color: manageArea.containsMouse ? Tide.Theme.alpha(Tide.Tokens.accent, 0.8) : Tide.Tokens.accent
+                                font.family: Tide.Theme.uiFamily
+                                font.pixelSize: 12
+                                Accessible.role: Accessible.Link
+                                Accessible.name: "Zmień dokumenty AI w ustawieniach projektu"
+                                Accessible.onPressAction: dialog.manageRequested(dialog.workProject.slug)
+                                MouseArea {
+                                    id: manageArea
+                                    anchors.fill: parent
+                                    anchors.margins: -4
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: dialog.manageRequested(dialog.workProject.slug)
+                                }
+                            }
+                        }
+                    }
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 10
@@ -832,6 +1005,7 @@ Rectangle {
                         Layout.fillWidth: true
                         text: dialog.busy ? dialog.busyText
                             : dialog.blocker !== "" ? "Najpierw projekt z repozytorium — wtedy agent będzie wiedział, gdzie pracować."
+                            : dialog.modelBlocker !== "" ? dialog.modelBlocker
                             : Logic.launchFooter(dialog.launchState)
                         textFormat: Text.PlainText
                         color: Tide.Tokens.textMuted

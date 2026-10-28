@@ -23,15 +23,14 @@ Tide na widoku `models` (drugie uruchomienie tide.py prosi działające okno o S
 
 Zrzuty ekranu (wklejone, przeciągnięte, „Zrób zrzut” przez Spectacle) trafiają do własnego katalogu
 zadania w $XDG_DATA_HOME/tide/tasks/<czas>-<los>/ (katalog podaje usługa). Okno zamknięte bez startu
-usuwa ten katalog; po starcie zostaje — agent czyta z niego obrazy.
+usuwa ten katalog; po starcie zostaje — agent czyta z niego obrazy. Obsługę zrzutów (ImageTray) dzieli
+z oknem „Co ma zrobić agent?” na Tablicy: apps/common/taskimages.py (w pakiecie obok tego pliku).
 """
 import argparse
+import importlib.util
 import json
 import os
-import secrets
-import shutil
 import sys
-import time
 
 from PyQt6.QtCore import QObject, QProcess, QUrl, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import (QDBus, QDBusConnection, QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply,
@@ -51,13 +50,24 @@ WINDOW_SERVICE, WINDOW_PATH, WINDOW_IFACE = "org.tide.NewTaskWindow", "/Window",
 SHORTCUT_ACTION = ("kwin", "TideNewAgentTask")
 DEFAULT_SHORTCUT = "Meta+Alt+A"
 START_TIMEOUT_MS = 10 * 60 * 1000   # worktree dużego repozytorium potrafi się zakładać długo
-IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
-IMAGE_LIMIT = 10
-IMAGE_BYTES = 20 * 1024 * 1024
 
 
-def data_home() -> str:
-    return os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+def load_common(name: str):
+    """Moduł z apps/common: w pakiecie (widgets/stage.py) leży obok tego pliku, w repozytorium — w apps/common."""
+    for folder in (HERE, os.path.join(os.path.dirname(HERE), "common")):
+        path = os.path.join(folder, name + ".py")
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location(f"tide_common_{name}", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise ImportError(f"brak wspólnego modułu {name} (apps/common)")
+
+
+taskimages = load_common("taskimages")
+Images = taskimages.Images
+IMAGE_SUFFIXES, IMAGE_LIMIT, IMAGE_BYTES = taskimages.IMAGE_SUFFIXES, taskimages.IMAGE_LIMIT, taskimages.IMAGE_BYTES
+data_home = taskimages.data_home
 
 
 def tide_window_script() -> str:
@@ -82,73 +92,6 @@ def shortcut_text(path: str | None = None) -> str:
     except OSError:
         pass
     return DEFAULT_SHORTCUT
-
-
-class Images:
-    """Zrzuty zadania w jednym katalogu: kopie przeciągniętych plików, obrazy ze schowka, Spectacle."""
-
-    def __init__(self, root: str):
-        self.root = root
-        self.folder = ""
-        self.paths: list[str] = []
-        self.kept = False
-
-    def ensure_folder(self) -> str:
-        if not self.folder:
-            os.makedirs(self.root, exist_ok=True)
-            name = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
-            self.folder = os.path.join(self.root, name)
-            os.makedirs(self.folder, mode=0o700)
-        return self.folder
-
-    def next_path(self, suffix: str = ".png") -> str:
-        folder = self.ensure_folder()
-        n = 1
-        while True:
-            path = os.path.join(folder, f"zrzut-{n}{suffix}")
-            if not os.path.exists(path):
-                return path
-            n += 1
-
-    def room(self) -> bool:
-        return len(self.paths) < IMAGE_LIMIT
-
-    def add_file(self, source: str) -> str:
-        """Kopiuje obraz do katalogu zadania. Zwraca opis problemu albo pusty napis."""
-        name = os.path.basename(source)
-        if not source.lower().endswith(IMAGE_SUFFIXES):
-            return f"{name} to nie obraz (PNG, JPG, WEBP, GIF)"
-        if not os.path.isfile(source):
-            return f"nie ma pliku {name}"
-        if os.path.getsize(source) > IMAGE_BYTES:
-            return f"{name} jest większy niż 20 MB"
-        if not self.room():
-            return f"najwyżej {IMAGE_LIMIT} zrzutów"
-        target = self.next_path(os.path.splitext(source)[1].lower())
-        shutil.copyfile(source, target)
-        self.paths.append(target)
-        return ""
-
-    def add_existing(self, path: str) -> None:
-        if path not in self.paths:
-            self.paths.append(path)
-
-    def remove(self, path: str) -> None:
-        if path in self.paths:
-            self.paths.remove(path)
-            if self.folder and os.path.dirname(path) == self.folder:
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
-
-    def discard(self) -> None:
-        """Okno zamknięte bez startu: katalog zadania znika (tylko nasz, świeżo założony)."""
-        if self.kept or not self.folder:
-            return
-        if os.path.dirname(self.folder) == os.path.normpath(self.root):
-            shutil.rmtree(self.folder, ignore_errors=True)
-        self.folder, self.paths = "", []
 
 
 class Backend(QObject):
@@ -178,9 +121,10 @@ class Backend(QObject):
         self._available = False
         self._busy = False
         self._pending: set = set()
-        self._capture = None
-        self.spectacle = shutil.which("spectacle") if spectacle is None else spectacle
-        self.images = Images(os.path.join(data_home(), "tide", "tasks"))
+        self.tray = taskimages.ImageTray(spectacle, parent=self)
+        self.tray.imagesChanged.connect(self.imagesChanged)
+        self.tray.imageProblem.connect(self.imageProblem)
+        self.tray.captureFinished.connect(self.captureFinished)
         self.shortcut = shortcut_text()
         if data is not None:
             self._repos = json.dumps(data.get("repos") or [], ensure_ascii=False)
@@ -219,9 +163,18 @@ class Backend(QObject):
         go nie podaje."""
         return self._models
 
+    @property
+    def images(self):
+        """Zrzuty zadania (taskimages.Images) — testy ustawiają `images.root`."""
+        return self.tray.images
+
+    @property
+    def spectacle(self) -> str:
+        return self.tray.spectacle
+
     @pyqtProperty(str, notify=imagesChanged)
     def imagesJson(self) -> str:
-        return json.dumps(self.images.paths, ensure_ascii=False)
+        return self.tray.paths_json()
 
     @pyqtProperty(bool, notify=availableChanged)
     def available(self) -> bool:
@@ -277,8 +230,7 @@ class Backend(QObject):
             root = json.loads(value).get("imagesDir")
         except (ValueError, AttributeError):
             root = None
-        if root and not self.images.folder:
-            self.images.root = root
+        self.tray.set_root(root)
         self._defaults = value
         self.defaultsChanged.emit()
         self._set_available(True)
@@ -333,90 +285,31 @@ class Backend(QObject):
     @pyqtSlot()
     def finish(self) -> None:
         """Zadanie wystartowało — katalog ze zrzutami zostaje dla agenta."""
-        self.images.kept = True
+        self.tray.keep()
 
     @pyqtSlot()
     def discard(self) -> None:
-        self.images.discard()
+        self.tray.discard()
 
     # --- zrzuty ekranu ------------------------------------------------------------------------
 
     @pyqtSlot(result=bool)
     def pasteImage(self) -> bool:
         """Obraz ze schowka (albo skopiowane pliki obrazów) → zrzut zadania. False: zwykły tekst."""
-        clipboard = QGuiApplication.clipboard()
-        mime = clipboard.mimeData()
-        if mime is None:
-            return False
-        if mime.hasImage():
-            image = clipboard.image()
-            if image.isNull():
-                return False
-            if not self.images.room():
-                self.imageProblem.emit(f"Najwyżej {IMAGE_LIMIT} zrzutów")
-                return True
-            path = self.images.next_path(".png")
-            if not image.save(path, "PNG"):
-                self.imageProblem.emit("Nie udało się zapisać obrazu ze schowka")
-                return True
-            self.images.add_existing(path)
-            self.imagesChanged.emit()
-            return True
-        if mime.hasUrls():
-            files = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()]
-            if files and all(f.lower().endswith(IMAGE_SUFFIXES) for f in files):
-                self.addFiles([QUrl.fromLocalFile(f).toString() for f in files])
-                return True
-        return False
+        return self.tray.paste()
 
     @pyqtSlot("QVariantList")
     def addFiles(self, urls) -> None:
-        problems = []
-        for raw in urls:
-            url = QUrl(str(raw))
-            path = url.toLocalFile() if url.isLocalFile() else str(raw)
-            problem = self.images.add_file(path)
-            if problem:
-                problems.append(problem)
-        self.imagesChanged.emit()
-        if problems:
-            self.imageProblem.emit("Pominięto: " + "; ".join(problems))
+        self.tray.add_files(urls)
 
     @pyqtSlot(str)
     def removeImage(self, path: str) -> None:
-        self.images.remove(path)
-        self.imagesChanged.emit()
+        self.tray.remove(path)
 
     @pyqtSlot()
     def capture(self) -> None:
         """Zrzut zaznaczonego obszaru: `spectacle -b -n -r -o PLIK` (okno jest wtedy schowane)."""
-        if not self.spectacle or self._capture is not None:
-            self.captureFinished.emit("" if self.spectacle else "Brak programu Spectacle")
-            return
-        if not self.images.room():
-            self.captureFinished.emit(f"Najwyżej {IMAGE_LIMIT} zrzutów")
-            return
-        target = self.images.next_path(".png")
-        proc = QProcess(self)
-        self._capture = proc
-
-        def finished(*_args):
-            self._capture = None
-            proc.deleteLater()
-            if os.path.isfile(target) and os.path.getsize(target) > 0:
-                self.images.add_existing(target)
-                self.imagesChanged.emit()
-            self.captureFinished.emit("")  # bez pliku: zaznaczanie anulowane — to nie błąd
-
-        def failed(error):
-            if error == QProcess.ProcessError.FailedToStart:
-                self._capture = None
-                proc.deleteLater()
-                self.captureFinished.emit("Nie udało się uruchomić Spectacle")
-
-        proc.finished.connect(finished)
-        proc.errorOccurred.connect(failed)
-        proc.start(self.spectacle, ["-b", "-n", "-r", "-o", target])
+        self.tray.capture()
 
     # --- wnętrze ------------------------------------------------------------------------------
 

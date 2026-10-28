@@ -8,6 +8,18 @@ i stroną „Projekty i tagi”).
 Uruchomienie agenta z karty: RenderLaunch (/Board) i Start (/Tasks, odpowiedź po starcie agenta —
 do 2 min) idą tą samą drogą co zapisy, z tagiem i sygnałem replied.
 
+To, co okno „Co ma zrobić agent?” ma wspólnego z oknem „Nowe zadanie” (PT-43):
+- zrzuty ekranu — ImageTray z apps/common/taskimages.py (w pakiecie obok tego pliku): wklejanie Ctrl+V
+  (schowek tego procesu, okna Tide), przeciąganie plików, „Zrób zrzut” przez Spectacle, usuwanie; katalog
+  zadania w `imagesDir` z /Tasks Defaults, ścieżki idą w `images` prośby Start. keepImages() po udanym
+  starcie zostawia katalog agentowi (następne okno zaczyna od nowego), discardImages() — zamknięte bez
+  startu — usuwa go; to samo przy zamykaniu okna Tide,
+- model — modelsJson: Status() z /Models (rola `agent`, agentProgram), odświeżany po Changed, przed pierwszą
+  odpowiedzią {"pending": true}, "null" — usługa go nie podaje; tasksJson: /Tasks Defaults (dostępne programy
+  `tools`, zapamiętany `model`, `imagesDir`); openModels() — okno Tide na widoku Modele.
+W podglądzie z pliku: klucze „models” i „tasks” danych (bez nich: null i {}), previewImages(ścieżki) — miniatury
+bez kopiowania (tylko podgląd).
+
 Zapisy (CreateCard, UpdateCard, MoveCard, UpsertProject, UpsertTag) idą asynchronicznie; wynik
 wraca sygnałem replied(tag, json) z tagiem nadanym przez QML (np. "move:K-12"), żeby błąd pokazać
 tam, gdzie powstał. Po udanym zapisie od razu pobieramy nową migawkę (usługa ma ją gotową
@@ -37,16 +49,18 @@ zamienia na „(obraz: opis)”, link inny niż http(s) — na zwykły tekst, a 
 i kolor linków z palety. QML pokazuje gotowy HTML (RichText) bez obrazów i bez obcych linków; okno
 dodatkowo nie wpuszcza żadnych żądań sieciowych (apps/tide/tide.py: guard_network).
 """
+import importlib.util
 import json
 import os
 import re
 from collections import OrderedDict
 
-from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QCoreApplication, QObject, QProcess, QTimer, QUrl, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import (QDBusConnection, QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply,
                           QDBusServiceWatcher)
 from PyQt6.QtGui import QColor, QDesktopServices, QTextCharFormat, QTextCursor, QTextDocument, QTextFormat
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Board", "org.tide.Daemon.Board"
 PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku — zmiany są wyłączone."}
 NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
@@ -56,6 +70,9 @@ YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w si
 TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
 COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
 AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
+MODELS_PATH, MODELS_IFACE = "/Models", "org.tide.Daemon.Models"
+MODELS_VIEW = "models"
+PENDING_MODELS = '{"pending": true}'   # przed pierwszą odpowiedzią Status() — jak w oknie „Nowe zadanie”
 START_TIMEOUT_MS = 120_000  # worktree, Konsola i przejęcie zadania (usługa czeka na nie do 15 s)
 DOCS_TIMEOUT_MS = 20_000    # CardDocs odpowiada po odczycie plików w wątku roboczym usługi
 FM_SERVICE, FM_PATH, FM_IFACE = "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1", \
@@ -66,6 +83,29 @@ MARKDOWN = QTextDocument.MarkdownFeature.MarkdownDialectGitHub | QTextDocument.M
 RENDER_CACHE = 24   # tyle ostatnich dokumentów trzymamy wyrenderowanych (odświeżanie co 5 s nie renderuje od nowa)
 _BODY_STYLE = re.compile(r'<body style="[^"]*">')
 _IMG_TAG = re.compile(r"<img[^>]*>")
+
+
+def load_common(name: str):
+    """Moduł z apps/common: w pakiecie (widgets/stage.py) leży obok tego pliku, w repozytorium — w apps/common."""
+    for folder in (HERE, os.path.join(os.path.dirname(HERE), "common")):
+        path = os.path.join(folder, name + ".py")
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location(f"tide_common_{name}", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise ImportError(f"brak wspólnego modułu {name} (apps/common)")
+
+
+taskimages = load_common("taskimages")
+
+
+def tide_window_script() -> str:
+    """tide.py okna, w którym działa widok (pakiet: views/board/ → ../../tide.py), inaczej zainstalowany."""
+    packaged = os.path.join(os.path.dirname(os.path.dirname(HERE)), "tide.py")
+    if os.path.isfile(packaged):
+        return packaged
+    return os.environ.get("TIDE_WINDOW") or os.path.join(taskimages.data_home(), "tide", "tide-window", "tide.py")
 
 
 def render_markdown(markdown: str, link: QColor | None = None) -> str:
@@ -154,9 +194,24 @@ class Backend(QObject):
     callsChanged = pyqtSignal()
     replied = pyqtSignal(str, str)  # tag z QML, odpowiedź usługi (JSON)
     docsReplied = pyqtSignal(str, str)  # ID karty, odpowiedź CardDocs (JSON)
+    imagesChanged = pyqtSignal()
+    imageProblem = pyqtSignal(str)
+    captureFinished = pyqtSignal(str)
+    modelsChanged = pyqtSignal()
+    tasksChanged = pyqtSignal()
 
-    def __init__(self, bus: QDBusConnection | None, data: dict | None = None, parent=None):
+    def __init__(self, bus: QDBusConnection | None, data: dict | None = None, parent=None,
+                 spectacle: str | None = None):
         super().__init__(parent)
+        self.tray = taskimages.ImageTray(spectacle, parent=self)
+        self.tray.imagesChanged.connect(self.imagesChanged)
+        self.tray.imageProblem.connect(self.imageProblem)
+        self.tray.captureFinished.connect(self.captureFinished)
+        self._models = "null"
+        self._tasks = "{}"
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.discardImages)   # okno Tide zamknięte z otwartym oknem uruchomienia
         self.bus = bus
         self._snapshot = "{}"
         self._available = False
@@ -178,6 +233,8 @@ class Backend(QObject):
             docs = data.pop("cardDocs", None)
             self._docs_data = docs if isinstance(docs, dict) else {}
             self._issues_data = data.pop("youtrackIssues", None)
+            self._models = json.dumps(data.pop("models", None), ensure_ascii=False)
+            self._tasks = json.dumps(data.pop("tasks", None) or {}, ensure_ascii=False)
             self._snapshot = json.dumps(data, ensure_ascii=False)
             self._available = True
             self._update_badge()
@@ -187,9 +244,12 @@ class Backend(QObject):
         bus.connect(SERVICE, PATH, IFACE, "Changed", self._changed)
         self._watcher = QDBusServiceWatcher(SERVICE, bus, QDBusServiceWatcher.WatchModeFlag.WatchForRegistration
                                             | QDBusServiceWatcher.WatchModeFlag.WatchForUnregistration, self)
-        self._watcher.serviceRegistered.connect(lambda _name: self.reload())
+        self._watcher.serviceRegistered.connect(lambda _name: (self.reload(), self._refresh_tasks()))
         self._watcher.serviceUnregistered.connect(lambda _name: self._set_available(False))
+        self._models = PENDING_MODELS
+        bus.connect(SERVICE, MODELS_PATH, MODELS_IFACE, "Changed", self._models_changed)
         self.reload()
+        self._refresh_tasks()
 
     # --- właściwości dla QML ------------------------------------------------------------------
 
@@ -223,6 +283,23 @@ class Backend(QObject):
     @pyqtProperty(int, notify=callsChanged)
     def docsRequests(self) -> int:
         return self._docs_requests
+
+    # Okno „Co ma zrobić agent?” (PT-43): zrzuty, model i to, co /Tasks podaje oknu „Nowe zadanie”.
+    @pyqtProperty(str, notify=imagesChanged)
+    def imagesJson(self) -> str:
+        return self.tray.paths_json()
+
+    @pyqtProperty(bool, constant=True)
+    def canCapture(self) -> bool:
+        return self.tray.can_capture
+
+    @pyqtProperty(str, notify=modelsChanged)
+    def modelsJson(self) -> str:
+        return self._models
+
+    @pyqtProperty(str, notify=tasksChanged)
+    def tasksJson(self) -> str:
+        return self._tasks
 
     # Plakietka w pasku widoków okna Tide; pusta — ukryta.
     @pyqtProperty(str, notify=badgeChanged)
@@ -268,6 +345,58 @@ class Backend(QObject):
     @pyqtSlot(str, str)
     def startTask(self, tag: str, request: str) -> None:
         self._write(tag, "Start", [request])
+
+    # --- zrzuty ekranu i model w oknie uruchomienia (PT-43) ------------------------------------
+
+    @pyqtSlot(result=bool)
+    def pasteImage(self) -> bool:
+        """Ctrl+V w oknie uruchomienia: obraz ze schowka (albo pliki obrazów) → zrzut. False: zwykły tekst."""
+        return self.tray.paste()
+
+    @pyqtSlot("QVariantList")
+    def addFiles(self, urls) -> None:
+        self.tray.add_files(urls)
+
+    @pyqtSlot(str)
+    def removeImage(self, path: str) -> None:
+        self.tray.remove(path)
+
+    @pyqtSlot()
+    def capture(self) -> None:
+        """„Zrób zrzut” (spectacle -b -n -r -o PLIK); okno Tide chowa QML na czas zaznaczania."""
+        self.tray.capture()
+
+    @pyqtSlot()
+    def keepImages(self) -> None:
+        """Agent ruszył: katalog zrzutów zostaje dla niego, następne okno zaczyna od pustej listy."""
+        self.tray.release()
+
+    @pyqtSlot()
+    def discardImages(self) -> None:
+        """Okno zamknięte bez startu: katalog zrzutów znika."""
+        self.tray.discard()
+
+    @pyqtSlot("QVariantList")
+    def previewImages(self, paths) -> None:
+        """Podgląd z pliku: miniatury z podanych plików, bez kopiowania (poza podglądem nic nie robi)."""
+        if not self._preview:
+            return
+        for path in paths:
+            self.tray.images.add_existing(os.path.abspath(str(path)))
+        self.imagesChanged.emit()
+
+    @pyqtSlot(result=str)
+    def openModels(self) -> str:
+        """Okno Tide na widoku Modele (drugie uruchomienie tide.py prosi to okno o Show). Zwraca problem albo ""."""
+        if self._preview or self.bus is None:
+            self._record("openModels")
+            return ""
+        script = tide_window_script()
+        if not os.path.isfile(script):
+            return "Okno Tide nie jest zainstalowane (make install-tide-window)"
+        ok = QProcess.startDetached("/usr/bin/python3", ["-s", script, "--view", MODELS_VIEW])
+        ok = ok[0] if isinstance(ok, tuple) else ok
+        return "" if ok else "Nie udało się otworzyć widoku Modele"
 
     # YouTrack (PT-7): lista zgłoszeń do importu, import i rozstrzygnięcie konfliktu — odpowiedź sygnałem replied.
     @pyqtSlot(str, bool)
@@ -423,6 +552,37 @@ class Backend(QObject):
     @pyqtSlot()
     def _changed(self) -> None:
         self.reload()
+
+    def _refresh_tasks(self) -> None:
+        """/Tasks Defaults (programy, zapamiętany model, katalog zrzutów) i stan modeli — przy starcie i po
+        powrocie usługi; modele też po /Models Changed."""
+        if self.bus is None:
+            return
+        self._call("Defaults", [], self._got_tasks, path=TASKS_PATH, iface=TASKS_IFACE)
+        self._models_changed()
+
+    @pyqtSlot()
+    def _models_changed(self) -> None:
+        if self.bus is not None:
+            self._call("Status", [], self._got_models, path=MODELS_PATH, iface=MODELS_IFACE)
+
+    def _got_models(self, ok: bool, value) -> None:
+        text = value if ok and isinstance(value, str) else "null"
+        if text != self._models:
+            self._models = text
+            self.modelsChanged.emit()
+
+    def _got_tasks(self, ok: bool, value) -> None:
+        if not ok or not isinstance(value, str):
+            return
+        try:
+            root = json.loads(value).get("imagesDir")
+        except (ValueError, AttributeError):
+            root = None
+        self.tray.set_root(root)
+        if value != self._tasks:
+            self._tasks = value
+            self.tasksChanged.emit()
 
     def _got_snapshot(self, ok: bool, value) -> None:
         if not ok or not isinstance(value, str):

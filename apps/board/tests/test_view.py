@@ -14,7 +14,11 @@
 - plan i specyfikacja w panelu karty (PT-5): logika zakładek (cardDocs.js), zakładki tylko przy
   dokumentach, tabela ticketów, Markdown, „Co przetestować ręcznie”, szerszy panel i „Rozwiń”,
   odświeżenie po Changed, „Otwórz plik” / „Pokaż w katalogu” / linki tylko http(s), CardDocs na
-  prywatnej magistrali.
+  prywatnej magistrali,
+- okno uruchomienia jak „Nowe zadanie” (PT-43): zrzuty ekranu (przeciągnięte, Ctrl+V z obrazem i z tekstem,
+  „×”, atrapa Spectacle z chowaniem okna, Anuluj sprząta katalog) w `images` prośby Start, model chmura/lokalny
+  z roli `agent` (wyłączony z powodem, linia agenta, gałąź za programem, blokada przy niedostępnym modelu
+  i braku programu), Defaults i /Models z prawdziwej usługi.
 """
 import json
 import os
@@ -52,8 +56,9 @@ class PackageTest(unittest.TestCase):
             files = files_under(os.path.join(stage(os.path.join(tmp, "pkg")), "views", "board"))
         for name in ("backend.py", "qml/BoardView.qml", "qml/BoardPage.qml", "qml/BoardColumn.qml", "qml/BoardCard.qml",
                      "qml/CardPanel.qml", "qml/ManagePage.qml", "qml/board.js", "qml/tide/Tokens.qml",
-                     "qml/tide/Theme.qml", "qml/CardDocView.qml", "qml/MarkdownBlock.qml", "qml/cardDocs.js"):
-            self.assertIn(name, files)
+                     "qml/tide/Theme.qml", "qml/CardDocView.qml", "qml/MarkdownBlock.qml", "qml/cardDocs.js",
+                     "taskimages.py", "qml/tide/ScreenshotStrip.qml", "qml/tide/agentmodel.js"):
+            self.assertIn(name, files)   # PT-43: zrzuty i model wspólne z oknem „Nowe zadanie”
         self.assertFalse([f for f in files if f.startswith("tests/") or f.endswith(("__init__.py", "install.sh"))])
 
     def test_no_hardcoded_colors_and_plain_texts(self):
@@ -215,7 +220,14 @@ class LogicTest(unittest.TestCase):
                 "docsDir": "/b/docs/mobileapp", "aiDocs": "tide"}
         self.assertEqual(self.js(f"launchStartRequest({json.dumps(flow)}, {js_state})"),
                          {"repoPath": "/r/plasma-tide", "tool": "claude", "prompt": "Karta K-16…", "newWorktree": True,
-                          "branch": "claude/k-16-okno", "images": [], "addDirs": ["/b/docs/mobileapp"]})
+                          "branch": "claude/k-16-okno", "images": [], "addDirs": ["/b/docs/mobileapp"], "model": "cloud"})
+        # PT-43: zrzuty i model lokalny jak z okna „Nowe zadanie”.
+        local = dict(state, tool="codex", model="local", localModel="qwen3-coder:30b",
+                     images=["/d/tasks/x/zrzut-1.png", "/d/tasks/x/zrzut-2.png"])
+        local_start = self.js(f"launchStartRequest({json.dumps(dict(flow, tool='codex'))}, {json.dumps(local)})")
+        self.assertEqual((local_start["images"], local_start["model"], local_start["tool"]),
+                         (local["images"], "local", "codex"))
+        self.assertIn("Codex na qwen3-coder:30b z szablonem „Pełny flow”", self.js(f"launchFooter({json.dumps(local)})"))
         spec_start = self.js(f"launchStartRequest({json.dumps(dict(flow, aiDocs='repo'))}, Object.assign({js_state}, {{mode: 'spec'}}))")
         self.assertEqual((spec_start["newWorktree"], spec_start["branch"], spec_start["addDirs"]), (False, "", []))
         self.assertEqual(self.js(f"launchMarkRequest({{worktree: '/w/k-16', branch: 'claude/k-16-okno', tool: 'claude'}}, {js_state}, 'T')"),
@@ -1040,7 +1052,8 @@ out["toast"] = js("[page.toast, page.toastTone]")
                           "branch": "claude/k-15-tryb-skupienia-wyciszone"})
         self.assertEqual(json.loads(out["calls1"][3][1]),
                          {"repoPath": "/home/user/DevWorkspace/plasma-tide", "tool": "claude", "prompt": "Karta K-15: polecenie",
-                          "newWorktree": True, "branch": "claude/k-15-tryb-skupienia", "images": [], "addDirs": []})
+                          "newWorktree": True, "branch": "claude/k-15-tryb-skupienia", "images": [], "addDirs": [],
+                          "model": "cloud"})
         self.assertEqual([c[0] for c in out["calls2"]], ["RenderLaunch", "Start", "UpdateCard"],
                          "ponowienie bez drugiego zapisu opisu")
         mark = json.loads(out["calls2"][2][2])
@@ -1200,6 +1213,203 @@ out["dialog"] = js("page.openLaunch('K-9', false); page.launchDialog.extras.map(
         self.assertEqual(out["dialog"], ["mobileapp"], "okno startuje z projektami zapisanymi w karcie")
 
 
+def models_status(**role) -> dict:
+    """Status() z /Models z rolą `agent` (domyślnie dostępny qwen3-coder:30b na tym komputerze)."""
+    agent = {"endpoint": "local", "model": "qwen3-coder:30b", "ctx": None, "installed": True, "available": True,
+             "error": ""}
+    agent.update(role)
+    return {"checked": True, "default": "local", "agentProgram": "codex",
+            "endpoints": {"local": {"url": "http://127.0.0.1:11434", "kind": "ollama", "online": True}},
+            "roles": {"agent": agent}}
+
+
+# Wspólne dla scenariuszy PT-43: katalog zadań w katalogu tymczasowym testu i obrazy PNG.
+SHOTS_PY = FIND_PY + """
+import os
+from PyQt6.QtGui import QColor, QImage
+backend.tray.images.root = os.path.join(TMP, "tasks")
+
+
+def png(name, color="#6fd6c6"):
+    image = QImage(40, 30, QImage.Format.Format_RGB32)
+    image.fill(QColor(color))
+    path = os.path.join(TMP, name)
+    image.save(path, "PNG")
+    return path
+
+
+def shots():
+    return json.loads(backend.imagesJson)
+"""
+
+
+class LaunchShotsTest(ProbeCase):
+    """PT-43: okno uruchomienia ma to, co okno „Nowe zadanie”: zrzuty ekranu (przeciąganie, Ctrl+V, „Zrób zrzut”,
+    usuwanie) trafiające do /Tasks Start i model chmura/lokalny z roli `agent` w /Models."""
+
+    def scenario(self, body: str) -> str:
+        return f"TMP = {self.tmp!r}\n" + SHOTS_PY + body
+
+    def test_drop_paste_remove_and_start_with_images(self):
+        start = {"ok": True, "cwd": "/w/k-9", "branch": "claude/k-9-x", "worktree": "/w/k-9", "title": "plasma-tide · k-9",
+                 "tool": "claude", "mode": "tab", "local": None}
+        flow = dict(LaunchTest.FLOW, id="K-9", branch="claude/k-9-x")
+        out = self.probe(self.scenario(f"""
+js("page.openLaunch('K-9', false)")
+wait(100)
+out["strip"] = [obj("launchShots").property("visible"), js(FIND + "(page.launchDialog, 'shotHint').text")]
+# Przeciągnięte pliki (DropArea okna zgłasza filesDropped): obraz kopiowany do katalogu zadania, tekst pominięty.
+notes = os.path.join(TMP, "notatki.txt")
+open(notes, "w").close()
+js("page.launchDialog.filesDropped(['file://" + png("ekran.png") + "', 'file://" + notes + "'])")
+wait(100)
+out["dropped"] = shots()
+out["problem"] = obj("launchError").property("text")
+# Ctrl+V z obrazem w schowku w polu zadania: zrzut, tekst zadania bez zmian.
+QGuiApplication.clipboard().setImage(QImage(png("schowek.png", "#f5b99a")))
+js("page.launchDialog.taskEdit.forceActiveFocus()")
+before = js("page.launchDialog.taskEdit.text")
+key(Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+wait(100)
+out["pasted"] = [len(shots()), js("page.launchDialog.taskEdit.text") == before]
+# Ctrl+V z tekstem — zwykłe wklejenie do pola.
+QGuiApplication.clipboard().setText(" i jeszcze to")
+js("page.launchDialog.taskEdit.cursorPosition = page.launchDialog.taskEdit.length")
+key(Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+wait(100)
+out["text"] = [len(shots()), js("page.launchDialog.taskEdit.text").endswith(" i jeszcze to")]
+out["thumbs"] = js("page.launchDialog.images.length")
+# „×” na pierwszej miniaturze usuwa plik.
+first = shots()[0]
+name = os.path.basename(first)
+click(at(FIND + "(page.launchDialog, 'shotRemove-" + name + "')"))
+out["removed"] = [os.path.exists(first), shots()]
+kept = shots()
+folder = os.path.dirname(kept[0])
+replies.extend([{{"ok": True, "id": "K-9", "changed": True, "commitError": ""}},   # UpdateCard (opis)
+                json.loads({json.dumps(flow, ensure_ascii=False)!r}),
+                json.loads({json.dumps(start, ensure_ascii=False)!r}),
+                {{"ok": True, "id": "K-9", "changed": True, "commitError": ""}}])
+click(named("launchStart"))
+wait(400)
+out["calls"] = calls()
+out["closed"] = not js("page.launchOpen")
+out["after"] = [os.path.isfile(kept[0]), shots(), js("page.launchDialog.images.length")]
+"""))
+        self.assertEqual(out["strip"], [True, "albo przeciągnij plik\nalbo wklej Ctrl+V"])
+        self.assertEqual(len(out["dropped"]), 1)
+        self.assertTrue(out["dropped"][0].startswith(os.path.join(self.tmp, "tasks") + os.sep), out["dropped"])
+        self.assertIn("notatki.txt to nie obraz", out["problem"])
+        self.assertEqual(out["pasted"], [2, True], "obraz ze schowka trafia do zrzutów, nie do pola")
+        self.assertEqual(out["text"], [2, True], "tekst ze schowka wkleja pole zadania")
+        self.assertEqual(out["thumbs"], 2)
+        self.assertEqual(out["removed"][0], False)
+        self.assertEqual(len(out["removed"][1]), 1)
+        self.assertEqual([c[0] for c in out["calls"]], ["UpdateCard", "RenderLaunch", "Start", "UpdateCard"])
+        request = json.loads(out["calls"][2][1])
+        self.assertEqual((request["images"], request["model"]), (out["removed"][1], "cloud"),
+                         "Start dostaje zrzuty z katalogu zadania, jak z okna „Nowe zadanie”")
+        self.assertTrue(out["closed"])
+        self.assertEqual(out["after"], [True, [], 0], "po starcie katalog zostaje agentowi, następne okno zaczyna od zera")
+
+    def test_cancel_discards_images_and_capture_with_fake_spectacle(self):
+        fake = os.path.join(self.tmp, "spectacle")
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/bash\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && cp \"$TIDE_FAKE_SHOT\" \"$2\"; shift; done\n")
+        os.chmod(fake, 0o755)
+        out = self.probe(self.scenario(f"""
+os.environ["TIDE_FAKE_SHOT"] = png("obszar.png")
+backend.tray.spectacle = {fake!r}
+js("page.canCapture = true")
+js("page.openLaunch('K-9', false)")
+wait(100)
+out["tile"] = js(FIND + "(page.launchDialog, 'captureTile').visible")
+click(at(FIND + "(page.launchDialog, 'captureTile')"))
+out["hidden"] = not window.isVisible()
+until(lambda: len(shots()) == 1, 5000)
+until(lambda: window.isVisible(), 2000)
+out["captured"] = [len(shots()), window.isVisible()]
+folder = os.path.dirname(shots()[0])
+click(named("launchCancel"))
+wait(100)
+out["cancel"] = [os.path.exists(folder), shots(), calls()]
+"""))
+        self.assertTrue(out["tile"])
+        self.assertTrue(out["hidden"], "okno Tide chowa się na czas zaznaczania obszaru")
+        self.assertEqual(out["captured"], [1, True])
+        self.assertEqual(out["cancel"], [False, [], []], "Anuluj — katalog zadania znika, nic nie wysłane")
+
+    def test_local_model_from_models_status(self):
+        flow = dict(LaunchTest.FLOW, id="K-9", tool="codex", branch="codex/k-9-wlasne-okno-kafelek-dockera")
+        start = {"ok": True, "cwd": "/w/k-9", "branch": flow["branch"], "worktree": "/w/k-9", "tool": "codex",
+                 "title": "plasma-tide · k-9 · lokalnie", "mode": "tab",
+                 "local": {"endpoint": "local", "model": "qwen3-coder:30b", "server": "Ten komputer"}}
+        data = json.loads(json.dumps(self.data))
+        data["models"] = {**models_status(), "roles": {}}
+        data["tasks"] = {"tools": {"claude": True, "codex": True}, "model": "cloud"}
+        ok, down = json.dumps(models_status()), json.dumps(models_status(available=False, installed=False))
+        out = self.probe(self.scenario(f"""
+OK, DOWN = {ok!r}, {down!r}
+
+
+def models(text):
+    backend._models = text
+    backend.modelsChanged.emit()
+    wait(50)
+
+
+js("page.openLaunch('K-9', false)")
+wait(100)
+d = "page.launchDialog."
+# Rola `agent` nie ustawiona: „Lokalny” wyłączony z powodem w podpowiedzi, kliknięcie nic nie zmienia.
+out["unset"] = js("[" + d + "localOption.enabled, " + d + "localOption.reason]")
+click(at(FIND + "(page.launchDialog, 'launchModel-local')"))
+out["unsetModel"] = js(d + "model")
+models(OK)
+click(at(FIND + "(page.launchDialog, 'launchModel-local')"))
+out["local"] = [js(d + "model"), obj("launchTool").property("visible"), obj("launchLocalProgram").property("text"),
+                obj("launchLocalDetail").property("text"), js(d + "branch"), obj("launchModelNote").property("text"),
+                obj("launchFooter").property("text")]
+click(named("launchProgramLink"))
+out["openModels"] = calls()[-1]
+# Serwer padł przy wybranym „Lokalny”: okno nie przechodzi samo na chmurę, start czeka z powodem.
+models(DOWN)
+out["blocked"] = [js(d + "model"), js(d + "canStart"), obj("launchFooter").property("text")]
+models(OK)
+replies.extend([json.loads({json.dumps(flow, ensure_ascii=False)!r}), json.loads({json.dumps(start, ensure_ascii=False)!r}),
+                {{"ok": True, "id": "K-9", "changed": True, "commitError": ""}}])
+n = len(calls())
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(400)
+out["calls"] = calls()[n:]
+out["toast"] = js("page.toast")
+# Brak programu: start zablokowany z powodem.
+js("page.openLaunch('K-9', false)")
+js("page.taskDefaults = ({{tools: {{claude: false, codex: true}}, model: 'cloud'}})")
+js(d + "model = 'cloud'; " + d + "pickTool('claude')")
+wait(50)
+out["missing"] = [js(d + "canStart"), obj("launchFooter").property("text")]
+"""), data)
+        self.assertEqual(out["unset"], [False, "Model agenta nie jest ustawiony"])
+        self.assertEqual(out["unsetModel"], "cloud", "wyłączony „Lokalny” nie daje się wybrać")
+        model, tool_visible, program, detail, branch, note, footer = out["local"]
+        self.assertEqual((model, tool_visible), ("local", False), "przy „Lokalny” zamiast przełącznika linia agenta")
+        self.assertEqual((program, detail), ("◎ Codex", " na qwen3-coder:30b · Ten komputer"))
+        self.assertEqual(branch, "codex/k-9-wlasne-okno-kafelek-dockera", "prefiks gałęzi idzie za programem agenta lokalnego")
+        self.assertIn("agent lokalny jest wolny i słaby", note)
+        self.assertIn("Codex na qwen3-coder:30b", footer)
+        self.assertEqual(out["openModels"], ["openModels"])
+        self.assertEqual(out["blocked"][:2], ["local", False])
+        self.assertIn("Model lokalny niedostępny", out["blocked"][2])
+        self.assertEqual([c[0] for c in out["calls"]], ["RenderLaunch", "Start", "UpdateCard"])
+        self.assertEqual(json.loads(out["calls"][0][2])["tool"], "codex", "polecenie trybu dla programu, który ruszy")
+        request = json.loads(out["calls"][1][1])
+        self.assertEqual((request["model"], request["tool"]), ("local", "codex"))
+        self.assertIn("na qwen3-coder:30b", out["toast"])
+        self.assertFalse(out["missing"][0])
+        self.assertIn("Nie znaleziono programu Claude Code", out["missing"][1])
+
+
 class GrabTest(ProbeCase):
     def grab(self, name, *argv, data=None) -> str:
         data_path = os.path.join(self.tmp, name + ".json")
@@ -1233,6 +1443,9 @@ class GrabTest(ProbeCase):
                             ("launch-spec", "K-14,spec,move"), ("launch-spec-codex", "K-14,spec,codex")):
             self.grab(name, "--preview", "launch=" + value)
         self.grab("launch-min", "--preview", "launch=K-9,move", "--width", "1380", "--height", "620")
+        shot = os.path.join(self.tmp, "board.png")
+        data = dict(self.data, models=models_status(), tasks={"tools": {"claude": True, "codex": True}, "model": "local"})
+        self.grab("launch-shots-local", "--preview", "launch=K-9,move", "--preview", f"shots={shot},{shot}", data=data)
         with tempfile.TemporaryDirectory(prefix="tide-board-empty-") as tmp:
             self.grab("empty", data=empty_snapshot(tmp))
 
@@ -1303,6 +1516,12 @@ class BackendTest(unittest.TestCase):
                           by_tag["launch-render:K-1"]["tool"]), (True, "spec", "codex"))
         self.assertIn("Karta K-1: Pierwsza karta", by_tag["launch-render:K-1"]["text"])
         self.assertEqual(by_tag["launch-start:K-1"]["error"], "bad-tool", "odpowiedź z /Tasks")
+        # PT-43: /Tasks Defaults (katalog zrzutów, programy) i stan modeli z /Models — jak w oknie „Nowe zadanie”.
+        self.assertTrue(wait_until(lambda: json.loads(backend.tasksJson).get("imagesDir"), timeout=10))
+        self.assertEqual(backend.tray.images.root, json.loads(backend.tasksJson)["imagesDir"],
+                         "zrzuty w katalogu, z którego /Tasks Start je przyjmie")
+        self.assertIn("tools", json.loads(backend.tasksJson))
+        self.assertTrue(wait_until(lambda: (json.loads(backend.modelsJson) or {}).get("roles") is not None, timeout=10))
 
     def test_card_docs_over_bus(self):
         repo = os.path.join(self.tmp, "ws", "dom")
@@ -1348,6 +1567,40 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(json.loads(backend.callsJson), [["openFile", "/b/docs/x/plans/p.md"],
                                                          ["showInFolder", "/b/docs/x/plans/p.md"],
                                                          ["openLink", "https://example.com"]])
+
+    def test_preview_mode_images_and_models(self):
+        """PT-43: zrzuty (przeciąganie, usuwanie, po starcie i po anulowaniu) i dane modeli w podglądzie; schowek
+        sprawdza sonda w prawdziwym oknie (LaunchShotsTest)."""
+        from PyQt6.QtGui import QColor, QImage
+        status = models_status()
+        backend = self.module.create(None, {"exists": True, "cards": [], "models": status,
+                                            "tasks": {"tools": {"claude": True, "codex": False}, "model": "local"}})
+        self.assertEqual(json.loads(backend.modelsJson), status)
+        self.assertEqual(json.loads(backend.tasksJson)["model"], "local")
+        self.assertNotIn("models", json.loads(backend.snapshotJson), "dane modeli nie trafiają do migawki")
+        self.assertEqual(json.loads(self.module.create(None, {"exists": True}).modelsJson), None)
+        backend.tray.images.root = os.path.join(self.tmp, "tasks")
+        image = QImage(20, 10, QImage.Format.Format_RGB32)
+        image.fill(QColor("#6fd6c6"))
+        source = os.path.join(self.tmp, "a.png")
+        image.save(source, "PNG")
+        backend.addFiles([f"file://{source}", f"file://{source}"])
+        paths = json.loads(backend.imagesJson)
+        self.assertEqual(len(paths), 2)
+        backend.removeImage(paths[0])
+        self.assertFalse(os.path.exists(paths[0]))
+        backend.keepImages()
+        self.assertTrue(os.path.isfile(paths[1]), "po starcie zrzut zostaje agentowi")
+        self.assertEqual(json.loads(backend.imagesJson), [])
+        backend.addFiles([f"file://{source}"])
+        folder = os.path.dirname(json.loads(backend.imagesJson)[0])
+        self.assertNotEqual(folder, os.path.dirname(paths[1]), "następne zadanie — nowy katalog")
+        backend.discardImages()
+        self.assertFalse(os.path.exists(folder))
+        backend.previewImages([source])
+        self.assertEqual(json.loads(backend.imagesJson), [source], "podgląd: miniatury bez kopiowania")
+        self.assertEqual(backend.openModels(), "")
+        self.assertEqual(json.loads(backend.callsJson)[-1], ["openModels"])
 
     def test_preview_mode_records_writes(self):
         backend = self.module.create(None, {"exists": True, "cards": [{"id": "K-1", "column": "backlog"}]})

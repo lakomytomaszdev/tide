@@ -54,6 +54,12 @@ Rectangle {
     property var launchFlow: null
     property string launchToast: ""
     property string launchDescription: ""
+    // Zrzuty i model w oknie uruchomienia (PT-43, jak w oknie „Nowe zadanie”) — dane z backendu widoku.
+    property var launchImages: []
+    property bool canCapture: false
+    property var modelsStatus: null
+    property var taskDefaults: ({})
+    property var pasteImage: function () { return false }
 
     signal createRequested(string tag, string request)
     signal updateRequested(string tag, string cardId, string request)
@@ -65,6 +71,11 @@ Rectangle {
     signal launchRequested(string cardId)    // otwarto „Co ma zrobić agent?” dla karty
     signal renderRequested(string tag, string cardId, string request)   // /Board RenderLaunch
     signal startRequested(string tag, string request)                   // /Tasks Start
+    signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
+    signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
+    signal removeImageRequested(string path)
+    signal filesDropped(var urls)            // pliki obrazów przeciągnięte na okno uruchomienia
+    signal modelsRequested()                 // widok Modele (rola `agent`, program agenta lokalnego)
     signal docsRequested(string cardId)      // /Board CardDocs — plan i specyfikacja w panelu karty
     signal fileRequested(string path, string how)   // dokument karty: "open" — edytor, "folder" — menedżer plików
     signal linkRequested(string url)         // link http(s) z planu albo specyfikacji
@@ -185,6 +196,7 @@ Rectangle {
     function openLaunch(id, fromMove, origin, originBefore) {
         const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
         if (!card) return
+        if (launchOpen && launchCardId !== id) launchClosed(false)   // zrzuty poprzedniej karty nie przechodzą dalej
         panelOpen = false
         managing = false
         selectedId = id
@@ -200,9 +212,11 @@ Rectangle {
         launchRequested(id)
     }
 
-    function closeLaunch() {
+    // started: agent ruszył — zrzuty zostają w katalogu zadania dla niego; inaczej katalog znika.
+    function closeLaunch(started) {
         launchOpen = false
         launchDialog.busy = false
+        launchClosed(!!started)
         const item = findCard(launchCardId)
         if (item) item.forceActiveFocus()
         else page.forceActiveFocus()
@@ -279,8 +293,9 @@ Rectangle {
                 moveRequested(tag2, launchCardId, "todo", -1)
             }
             launchToast = "Agent ruszył: " + (reply.title || launchCardId) + " — " + Logic.launchToolName(reply.tool)
+                + (reply.local && reply.local.model ? " na " + reply.local.model : "")
                 + (reply.worktree ? ", worktree " + reply.branch : ", katalog projektu")
-            closeLaunch()
+            closeLaunch(true)
             showToast(launchToast, "mint")
         } else if (tag.indexOf("launch-mark:") === 0) {
             if (error) showToast("Agent ruszył, ale karta " + id + " nie zapamiętała uruchomienia: " + error, "rose")
@@ -1250,6 +1265,15 @@ Rectangle {
         cardId: page.launchCardId
         fromMove: page.launchFromMove
         tagTone: page.tagTone
+        images: page.launchImages
+        canCapture: page.canCapture
+        modelsStatus: page.modelsStatus
+        taskDefaults: page.taskDefaults
+        pasteImage: page.pasteImage
+        onCaptureRequested: page.captureRequested()
+        onRemoveImageRequested: path => page.removeImageRequested(path)
+        onFilesDropped: urls => page.filesDropped(urls)
+        onModelsRequested: page.modelsRequested()
         onLaunchRequested: (choice, description, changed) => page.startLaunch(choice, description, changed)
         onCancelRequested: page.cancelLaunch()
         onMoveOnlyRequested: page.closeLaunch()

@@ -11,6 +11,8 @@ Aplikacja QML (--app, np. apps/newtask) dostaje bibliotekę w qml/tide/, bez kat
 Aplikacja z plikiem views.json (okno Tide, apps/tide) dostaje też moduły widoków: katalog z kluczem
 "module" (np. apps/sessions) trafia do views/<id>/ z własną kopią biblioteki w views/<id>/qml/tide/,
 więc strony widoków importują "tide" tak samo jak w swoim katalogu.
+Wspólne moduły Pythona aplikacji (apps/common/*.py, np. taskimages.py — zrzuty ekranu zadania) trafiają obok
+programu aplikacji i do katalogu każdego widoku (views/<id>/), skąd ładuje je backend.
 
 Widżet z kluczem "X-Tide-LimityConfig" w metadata.json dostaje dodatkowo plik JS (ścieżka
 z wartości klucza) z portem i tokenem usługi Limity AI (QuotaApp), przepisanymi z jej
@@ -24,6 +26,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_PALETTE = os.path.join(ROOT, "theme", "palette", "mist.json")
 LIB = os.path.join(ROOT, "widgets", "lib")
+COMMON = os.path.join(ROOT, "apps", "common")
 LIMITY_KEY = "X-Tide-LimityConfig"
 LIMITY_DEFAULT_PORT = 41817  # domyślny port QuotaApp (scripts/install.sh w tamtym repo)
 
@@ -128,6 +131,13 @@ def copy_lib(lib_out: str, palette: dict) -> None:
 APP_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "tests", "__init__.py", "install.sh")
 
 
+def copy_common(out: str) -> None:
+    """Wspólne moduły Pythona (apps/common, bez __init__.py) obok programu aplikacji albo backendu widoku."""
+    for name in sorted(os.listdir(COMMON)):
+        if name.endswith(".py") and name != "__init__.py":
+            shutil.copyfile(os.path.join(COMMON, name), os.path.join(out, name))
+
+
 def app_views(app_dir: str) -> list[dict]:
     """Widoki z views.json aplikacji (okno Tide) albo pusta lista."""
     path = os.path.join(app_dir, "views.json")
@@ -144,12 +154,14 @@ def stage_app(app_dir: str, out_dir: str, palette_path: str = DEFAULT_PALETTE) -
         shutil.rmtree(out_dir)
     shutil.copytree(app_dir, out_dir, ignore=APP_IGNORE)
     copy_lib(os.path.join(out_dir, "qml", "tide"), palette)
+    copy_common(out_dir)
     for view in app_views(app_dir):
         if not view.get("module"):
             continue
         view_out = os.path.join(out_dir, "views", view["id"])
         shutil.copytree(os.path.join(ROOT, view["module"]), view_out, ignore=APP_IGNORE)
         copy_lib(os.path.join(view_out, "qml", "tide"), palette)
+        copy_common(view_out)
     return out_dir
 
 
