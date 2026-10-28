@@ -496,7 +496,7 @@ class StopStepTest(unittest.TestCase):
 
     def test_the_step_survives_the_death_of_the_process_that_started_it(self):
         spec = self.spec(binary=self.dummy())
-        launcher = subprocess.Popen([sys.executable, "-c", LAUNCHER, os.path.dirname(os.path.dirname(stepstop.__file__)),
+        launcher = subprocess.Popen([sys.executable, "-c", LAUNCHER, os.path.dirname(os.path.dirname(os.path.dirname(stepstop.__file__))),
                                      json.dumps(dict(spec, ready=self.ready))], stdout=subprocess.PIPE, text=True,
                                     start_new_session=True)
         self.addCleanup(lambda: launcher.poll() is None and launcher.kill())
