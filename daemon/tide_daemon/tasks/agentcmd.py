@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import uuid
 from dataclasses import dataclass, field, replace
@@ -107,6 +108,7 @@ class Step:
     git_email: str = "krok@tide.invalid"
     base_env: dict | None = None    # skąd HOME, USER, PATH, LANG (domyślnie środowisko usługi)
     tmp_root: str = "/tmp"          # poza ~; tu Claude Code dostaje katalog tymczasowy kroku
+    codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
 
 
 @dataclass
@@ -120,6 +122,8 @@ class Background:
     cwd: str
     step_dir: str
     session_id: str = ""
+    repo: str = ""
+    git_dir: str = ""                              # <repo>/.git/worktrees/<wt>, ustalony przez usługę (resolve_git_dir)
     secret_env: dict = field(default_factory=dict)
     token_files: list = field(default_factory=list)
     files: dict = field(default_factory=dict)      # ścieżka → treść
@@ -167,6 +171,8 @@ def _check(step: Step, home: str) -> None:
             raise StepError(f"{what}: ścieżka musi być bezwzględna: {path}")
     if _within(step.step_dir, step.tmp_root) or _within(step.step_dir, os.path.join(home, ".local", "share")):
         raise StepError(f"katalog kroku nie może leżeć w {step.tmp_root} ani w ~/.local/share: {step.step_dir}")
+    if _within(step.step_dir, step.worktree) or _within(step.worktree, step.step_dir):
+        raise StepError(f"katalog kroku nie może leżeć w worktree (ani odwrotnie): {step.step_dir}")
     if _within(step.worktree, f"/tmp/claude-{os.getuid()}"):
         raise StepError(f"worktree kroku nie może leżeć pod /tmp/claude-{os.getuid()}: {step.worktree}")
     if step.tool == "claude" and _within(step.tmp_root, home):
@@ -177,16 +183,48 @@ def _check(step: Step, home: str) -> None:
             raise StepError(f"Codex ze snapa nie widzi ukrytych katalogów domowych: {step.step_dir}")
 
 
-def _git_dir_of(step: Step) -> str:
-    """Katalog worktree we wspólnym `.git` (`<repo>/.git/worktrees/<nazwa>`) z pliku `.git` worktree."""
+def resolve_git_dir(repo: str, worktree: str) -> str:
+    """Katalog worktree we wspólnym `.git` ustalony przez usługę z repozytorium (`<repo>/.git/worktrees/*/gitdir`
+    wskazuje `<worktree>/.git`), nie z pliku `.git` w worktree — ten agent może nadpisać (PT-76, review). Wynik
+    zawsze leży w `<repo>/.git/worktrees/`; brak wpisu albo niejednoznaczność to StepError. Wołać przed
+    startem kroku: potem agent (Codex pisze w `.git/worktrees/<wt>`) mógłby podmienić plik `gitdir`."""
+    base = os.path.join(os.path.realpath(repo), ".git", "worktrees")
+    want = os.path.join(os.path.realpath(worktree), ".git")
+    found = []
     try:
-        with open(os.path.join(step.worktree, ".git"), encoding="utf-8") as fh:
-            first = fh.readline().strip()
+        names = sorted(os.listdir(base))
     except OSError:
-        first = ""
-    if first.startswith("gitdir:"):
-        return os.path.normpath(first.partition(":")[2].strip())
-    return os.path.join(step.repo, ".git", "worktrees", os.path.basename(os.path.normpath(step.worktree)))
+        names = []
+    for name in names:
+        try:
+            with open(os.path.join(base, name, "gitdir"), encoding="utf-8") as fh:
+                pointer = fh.read().strip()
+        except OSError:
+            continue
+        if os.path.join(os.path.realpath(os.path.dirname(pointer)), os.path.basename(pointer)) == want:
+            found.append(os.path.join(os.path.join(repo, ".git", "worktrees"), name))
+    if len(found) != 1:
+        raise StepError(f"repozytorium {repo} nie zna worktree {worktree} (albo zna go dwukrotnie)")
+    return found[0]
+
+
+def list_codex_mcp(binary: str, timeout: float = 20.0) -> tuple:
+    """Nazwy serwerów MCP z `codex mcp list --json`. Kroku Codexa nie startujemy bez tej listy: serwer MCP działa
+    poza piaskownicą Codexa, więc każdy z konfiguracji użytkownika jest kanałem sieciowym (wyłączamy je wszystkie)."""
+    try:
+        run = subprocess.run([binary, "mcp", "list", "--json"], capture_output=True, text=True, timeout=timeout,
+                             stdin=subprocess.DEVNULL)
+        data = json.loads(run.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise StepError(f"nie da się odczytać serwerów MCP Codexa ({type(exc).__name__})") from None
+    if run.returncode != 0 or not isinstance(data, list) or not all(isinstance(i, dict) and isinstance(i.get("name"), str)
+                                                                    for i in data):
+        raise StepError("nie da się odczytać serwerów MCP Codexa (`codex mcp list --json`)")
+    return tuple(item["name"] for item in data)
+
+
+def _toml_key(name: str) -> str:
+    return name if re.fullmatch(r"[A-Za-z0-9_-]+", name) else json.dumps(name, ensure_ascii=False)
 
 
 def _env(step: Step, home_env: dict, inp: str) -> dict:
@@ -207,7 +245,7 @@ def _env(step: Step, home_env: dict, inp: str) -> dict:
     return env
 
 
-def _claude(step: Step, inp: str, out: str, env: dict) -> tuple[list, dict, dict]:
+def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list, dict, dict]:
     """argv, pliki (ustawienia piaskownicy dla `--settings`) i pliki tokenów do sprawdzenia przed startem."""
     settings = {"sandbox": {
         "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
@@ -217,6 +255,10 @@ def _claude(step: Step, inp: str, out: str, env: dict) -> tuple[list, dict, dict
         "network": {"allowedDomains": []}}}
     if step.local is not None:
         opts = local_mod.options("claude", step.local)
+        token = step.local.token_file
+        if token and not _within(token, home):
+            # Plik tokenu poza ~ nie jest objęty `denyRead: ["~"]` — polecenia agenta nie mają go czytać.
+            settings["sandbox"]["filesystem"]["denyRead"].append(token)
         argv = list(opts.argv)
         while "--settings" in argv:                 # apiKeyHelper z --settings wchodzi do pliku ustawień kroku
             at = argv.index("--settings")
@@ -243,9 +285,9 @@ def _claude(step: Step, inp: str, out: str, env: dict) -> tuple[list, dict, dict
     return argv, {settings_path: json.dumps(settings, indent=2, ensure_ascii=False) + "\n"}, secret
 
 
-def _codex(step: Step, out: str, env: dict) -> tuple[list, dict]:
+def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
     git = os.path.join(step.repo, ".git")
-    roots = [_git_dir_of(step), *(os.path.join(git, name) for name in CODEX_GIT_DIRS), out]
+    roots = [git_dir, *(os.path.join(git, name) for name in CODEX_GIT_DIRS), out]
     secret = {"secret_env": {}, "token_files": []}
     if step.local is not None:
         opts = local_mod.options("codex", step.local)
@@ -254,10 +296,13 @@ def _codex(step: Step, out: str, env: dict) -> tuple[list, dict]:
         secret = {"secret_env": dict(opts.secret_env), "token_files": list(opts.token_files)}
     else:
         model = [f"--model={step.model}"] if step.model else []
-    argv = [step.binary, "exec", *(["resume", step.session_id] if step.resume else []), *model,
-            "--json", "--cd", step.worktree, "--sandbox", "workspace-write",
+    servers = list_codex_mcp(step.binary) if step.codex_mcp is None else step.codex_mcp
+    mcp = [arg for name in servers for arg in ("-c", f"mcp_servers.{_toml_key(name)}.enabled=false")]
+    # Opcje przed podpoleceniem: `codex exec resume <id> --cd …` kończy się „unexpected argument” (sprawdzone).
+    argv = [step.binary, "exec", *model, "--json", "--cd", step.worktree, "--sandbox", "workspace-write",
             "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots, ensure_ascii=False),
-            "-c", 'approval_policy="never"', "-"]
+            "-c", 'approval_policy="never"', *mcp,
+            *(["resume", step.session_id] if step.resume else []), "-"]
     return argv, secret
 
 
@@ -272,18 +317,19 @@ def background(step: Step) -> Background:
     _check(step, home)
     inp, out = os.path.join(step.step_dir, "in"), os.path.join(step.step_dir, "out")
     env = _env(step, base, inp)
+    git_dir = resolve_git_dir(step.repo, step.worktree)
     if step.tool == "claude":
         step = replace(step, session_id=step.session_id or str(uuid.uuid4()))
-        argv, files, extra = _claude(step, inp, out, env)
+        argv, files, extra = _claude(step, inp, out, env, home)
         session = step.session_id
     else:
-        argv, extra = _codex(step, out, env)
+        argv, extra = _codex(step, out, env, git_dir)
         files, session = {}, step.session_id if step.resume else ""
     files[os.path.join(inp, "gitconfig")] = (f"[user]\n\tname = {step.git_name}\n\temail = {step.git_email}\n"
                                               f"[core]\n\texcludesFile = {os.path.join(inp, 'ignore')}\n")
     files[os.path.join(inp, "ignore")] = "\n".join(SANDBOX_DUMMIES) + "\n"
     dirs = [inp, out, env["GH_CONFIG_DIR"]] + ([env["CLAUDE_CODE_TMPDIR"]] if step.tool == "claude" else [])
-    return Background(argv, env, step.prompt, step.worktree, step.step_dir, session,
+    return Background(argv, env, step.prompt, step.worktree, step.step_dir, session, repo=step.repo, git_dir=git_dir,
                       secret_env=extra.get("secret_env", {}), token_files=extra.get("token_files", []),
                       files=files, dirs=dirs)
 

@@ -65,16 +65,22 @@ class BackgroundBase(unittest.TestCase):
         self.worktree = os.path.join(self.home, "proj-wt", "pt-1")
         self.step_dir = os.path.join(self.home, "proj-wt", "pt-1.step")
         self.tmp_root = os.path.join(self.root, "tmp")
-        for folder in (self.repo, self.worktree, self.tmp_root):
-            os.makedirs(folder)
+        os.makedirs(self.tmp_root)
+        os.makedirs(self.repo)
+        gitrepos.git(self.repo, "init", "-q", "-b", "master")
+        gitrepos.commit(self.repo, "a.txt")
+        gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "feat/pt-1", self.worktree)
+        self.gitdir = os.path.join(self.repo, ".git", "worktrees", "pt-1")
         self.token_file = os.path.join(self.root, "token")
         with open(self.token_file, "w", encoding="utf-8") as fh:
             fh.write(SECRET + "\n")
 
+    sid = "s1"
+
     def step(self, tool="claude", **kw):
         base = dict(DIRTY_ENV, HOME=self.home)
         args = dict(tool=tool, binary="/bin/" + tool, prompt="Zrób ticket", worktree=self.worktree, repo=self.repo,
-                    step_dir=self.step_dir, step_id="s1", session_id="11111111-2222-3333-4444-555555555555",
+                    step_dir=self.step_dir, step_id=self.sid, session_id="11111111-2222-3333-4444-555555555555",
                     base_env=base, tmp_root=self.tmp_root)
         args.update(kw)
         return agentcmd.Step(**args)
@@ -145,6 +151,19 @@ class BackgroundClaudeTest(BackgroundBase):
         self.assertTrue(out.startswith(self.worktree + "\nZrób ticket"))
         self.assertNotIn("SSH_AUTH_SOCK", out)
 
+    def test_step_dir_must_not_be_inside_the_worktree(self):
+        with self.assertRaises(agentcmd.StepError):
+            agentcmd.background(self.step(step_dir=os.path.join(self.worktree, ".step")))
+
+    def test_a_token_file_outside_home_is_denied_to_the_sandbox_commands(self):
+        agent = local.LocalAgent("mac", "http://mac.lan:11434", "ollama", "m", None, self.token_file)
+        deny = self.settings(agentcmd.background(self.step(local=agent)))["sandbox"]["filesystem"]["denyRead"]
+        self.assertEqual(deny, ["~", self.token_file])
+        home_token = os.path.join(self.home, ".config", "tok")
+        agent = local.LocalAgent("mac", "http://mac.lan:11434", "ollama", "m", None, home_token)
+        self.assertEqual(self.settings(agentcmd.background(self.step(local=agent)))["sandbox"]["filesystem"]["denyRead"],
+                         ["~"])
+
     def test_directories_must_stay_out_of_tmp_and_the_temp_dir_out_of_home(self):
         with self.assertRaises(agentcmd.StepError):
             agentcmd.background(self.step(step_dir=os.path.join(self.tmp_root, "step")))
@@ -178,16 +197,16 @@ class BackgroundEnvironmentTest(BackgroundBase):
         self.assertEqual(cmd.env["CLAUDE_CODE_TMPDIR"], os.path.join(self.tmp_root, "tide-step-s1"))
 
     def test_codex_environment_is_clean(self):
-        self.check_clean(agentcmd.background(self.step("codex")), "codex")
+        self.check_clean(agentcmd.background(self.step("codex", codex_mcp=())), "codex")
 
     def test_other_endpoint_token_stays_out_of_argv_and_environment(self):
         for tool in ("claude", "codex"):
-            cmd = agentcmd.background(self.step(tool, local=local.LocalAgent("mac", "http://mac.lan:11434", "ollama",
+            cmd = agentcmd.background(self.step(tool, codex_mcp=(), local=local.LocalAgent("mac", "http://mac.lan:11434", "ollama",
                                                                            "qwen3-coder:30b", 65536, self.token_file)))
             blob = json.dumps([cmd.argv, cmd.env, cmd.stdin, cmd.files])
             self.assertNotIn(SECRET, blob, tool)
             self.assertIn(self.token_file, blob if tool == "claude" else json.dumps(cmd.secret_env))
-        codex = agentcmd.background(self.step("codex", local=local.LocalAgent("mac", "http://mac.lan:11434", "ollama",
+        codex = agentcmd.background(self.step("codex", codex_mcp=(), local=local.LocalAgent("mac", "http://mac.lan:11434", "ollama",
                                                                             "m", None, self.token_file)))
         self.assertEqual(codex.secret_env, {local.TOKEN_ENV: self.token_file})
         self.assertIn(f'shell_environment_policy.exclude=["{local.TOKEN_ENV}"]', codex.argv)
@@ -202,7 +221,7 @@ class BackgroundEnvironmentTest(BackgroundBase):
         self.assertIn("--model=qwen3-coder:30b", cmd.argv)
 
     def test_start_gives_codex_the_token_only_in_its_own_environment(self):
-        cmd = agentcmd.background(self.step("codex", local=local.LocalAgent(
+        cmd = agentcmd.background(self.step("codex", codex_mcp=(), local=local.LocalAgent(
             "mac", "http://mac.lan:11434", "ollama", "m", None, self.token_file)))
         cmd.argv = ["/bin/sh", "-c", "echo $TIDE_MODEL_TOKEN"]
         cmd.prepare()
@@ -212,15 +231,10 @@ class BackgroundEnvironmentTest(BackgroundBase):
 
 
 class BackgroundCodexTest(BackgroundBase):
-    def setUp(self):
-        super().setUp()
-        self.gitdir = os.path.join(self.repo, ".git", "worktrees", "pt-1")
-        os.makedirs(self.gitdir)
-        with open(os.path.join(self.worktree, ".git"), "w", encoding="utf-8") as fh:
-            fh.write(f"gitdir: {self.gitdir}\n")
+    mcp = ()
 
     def test_codex_exec_writes_only_to_the_worktree_git_dir_objects_refs_logs_and_out(self):
-        cmd = agentcmd.background(self.step("codex", model="gpt-5-codex"))
+        cmd = agentcmd.background(self.step("codex", model="gpt-5-codex", codex_mcp=()))
         git = os.path.join(self.repo, ".git")
         roots = [self.gitdir, git + "/objects", git + "/refs", git + "/logs", os.path.join(self.step_dir, "out")]
         self.assertEqual(cmd.argv, ["/bin/codex", "exec", "--model=gpt-5-codex", "--json", "--cd", self.worktree,
@@ -234,18 +248,62 @@ class BackgroundCodexTest(BackgroundBase):
 
     def test_codex_local_model_options_come_right_after_exec(self):
         agent = local.LocalAgent("local", "http://127.0.0.1:11434", "ollama", "qwen3-coder:30b", 65536)
-        cmd = agentcmd.background(self.step("codex", local=agent))
+        cmd = agentcmd.background(self.step("codex", local=agent, codex_mcp=()))
         self.assertEqual(cmd.argv[:3 + len(local.options("codex", agent).argv)],
                          ["/bin/codex", "exec"] + local.options("codex", agent).argv + ["--json"])
         self.assertEqual(cmd.env["CODEX_OSS_BASE_URL"], "http://127.0.0.1:11434/v1")
 
-    def test_resume(self):
-        cmd = agentcmd.background(self.step("codex", resume=True, session_id="abc"))
-        self.assertEqual(cmd.argv[:4], ["/bin/codex", "exec", "resume", "abc"])
+    def test_resume_puts_the_options_before_the_subcommand(self):
+        cmd = agentcmd.background(self.step("codex", resume=True, session_id="abc", codex_mcp=()))
+        plain = agentcmd.background(self.step("codex", codex_mcp=()))
+        self.assertEqual(cmd.argv[:-3], plain.argv[:-1])           # te same opcje przed „resume”
+        self.assertEqual(cmd.argv[-3:], ["resume", "abc", "-"])
+
+    def test_the_git_dir_comes_from_the_repository_not_from_a_file_the_agent_can_rewrite(self):
+        for forged in (self.repo + "/.git", os.path.dirname(self.home), "/etc"):
+            with open(os.path.join(self.worktree, ".git"), "w", encoding="utf-8") as fh:
+                fh.write(f"gitdir: {forged}\n")
+            cmd = agentcmd.background(self.step("codex", codex_mcp=()))
+            roots = json.loads(next(a for a in cmd.argv if a.startswith("sandbox_workspace_write")).partition("=")[2])
+            self.assertEqual(roots[0], self.gitdir)
+            self.assertEqual(cmd.git_dir, self.gitdir)
+            self.assertNotIn(forged, roots)
+
+    def test_a_worktree_that_the_repository_does_not_know_is_refused(self):
+        stray = os.path.join(self.home, "stray")
+        os.makedirs(stray)
+        with self.assertRaises(agentcmd.StepError):
+            agentcmd.background(self.step("codex", worktree=stray, codex_mcp=()))
+        # wpis worktree przestawiony na cudzy katalog (agent poprzedniego kroku pisał do .git/worktrees/<wt>)
+        with open(os.path.join(self.gitdir, "gitdir"), "w", encoding="utf-8") as fh:
+            fh.write("/home/ktos/.git\n")
+        with self.assertRaises(agentcmd.StepError):
+            agentcmd.background(self.step("claude"))
+
+    def test_every_mcp_server_of_the_user_is_disabled_for_the_step(self):
+        cmd = agentcmd.background(self.step("codex", codex_mcp=("linear", "my server")))
+        self.assertIn("mcp_servers.linear.enabled=false", cmd.argv)
+        self.assertIn('mcp_servers."my server".enabled=false', cmd.argv)
+        self.assertEqual(cmd.argv[cmd.argv.index("mcp_servers.linear.enabled=false") - 1], "-c")
+
+    def test_mcp_servers_are_listed_by_the_program_and_a_failure_refuses_the_start(self):
+        def program(body):
+            path = os.path.join(self.root, "fake-codex")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n" + body + "\n")
+            os.chmod(path, 0o755)
+            return path
+        ok = program('[ "$1 $2 $3" = "mcp list --json" ] && echo \'[{"name":"linear","enabled":true},{"name":"b"}]\'')
+        self.assertEqual(agentcmd.list_codex_mcp(ok), ("linear", "b"))
+        cmd = agentcmd.background(self.step("codex", binary=ok))
+        self.assertIn("mcp_servers.b.enabled=false", cmd.argv)
+        for body in ("exit 3", "echo nie-json", "echo '{}'", "sleep 30"):
+            with self.assertRaises(agentcmd.StepError, msg=body):
+                agentcmd.list_codex_mcp(program(body), timeout=0.5)
 
     def test_codex_step_dir_must_not_be_hidden_to_the_snap(self):
         with self.assertRaises(agentcmd.StepError):
-            agentcmd.background(self.step("codex", step_dir=os.path.join(self.home, ".cache", "step")))
+            agentcmd.background(self.step("codex", codex_mcp=(), step_dir=os.path.join(self.home, ".cache", "step")))
 
 
 # Atrapa programu agenta: pisze pliki w worktree (zmieniony śledzony, nowe nieśledzone, atrapa piaskownicy),
