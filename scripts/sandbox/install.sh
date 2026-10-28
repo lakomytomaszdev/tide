@@ -6,11 +6,14 @@
 # 1. Sprawdza warunki: /usr/bin/bwrap, apparmor_parser, brak obcego pliku w miejscu docelowym i brak
 #    innego profilu dla /usr/bin/bwrap w /etc/apparmor.d (np. /etc/apparmor.d/bwrap z dokumentacji
 #    Claude Code) — dwa profile dla jednej ścieżki to niejasne, który wygra, więc wtedy przerywa.
-# 2. Składa profil (python3 scripts/sandbox/check.py profile — bwrap-userns-restrict z pakietu Ubuntu
-#    apparmor-profiles) i sprawdza go apparmor_parser bez wczytywania do jądra.
+# 2. Składa profil (python3 scripts/sandbox/check.py profile — profil z dokumentacji Claude Code:
+#    `profile bwrap /usr/bin/bwrap flags=(unconfined) { userns, }`, uzasadnienie w check.py) i sprawdza go
+#    apparmor_parser bez wczytywania do jądra.
 # 3. Pokazuje, co zmieni, i czeka na potwierdzenie (--yes pomija pytanie).
-# 4. Zapisuje /etc/apparmor.d/bwrap-userns-restrict (root, 644) i wczytuje tylko ten plik
-#    (apparmor_parser -r). Przy starcie systemu wczyta go zwykła usługa apparmor.
+# 4. Zapisuje /etc/apparmor.d/bwrap-userns-restrict (root, 644; nazwa pliku z pierwszej wersji profilu)
+#    i wczytuje tylko ten plik (apparmor_parser -r). Przy podmianie starszego profilu Tide najpierw usuwa
+#    z jądra jego profile (pierwsza wersja miała też unpriv_bwrap). Przy starcie systemu plik wczyta
+#    zwykła usługa apparmor.
 # 5. Sprawdza jako użytkownik, który wywołał sudo: bwrap działa, a zwykły `unshare -U` nadal trafia
 #    do profilu unprivileged_userns (ograniczenie dla reszty systemu zostaje).
 #
@@ -105,7 +108,8 @@ elif [[ "$(field profile)" == tide ]]; then
     diff -u "$TARGET" "$work/bwrap-userns-restrict" | sed 's/^/  /' || true
 fi
 echo "Zostanie zapisany $TARGET (root, 644) i wczytany: apparmor_parser -r $TARGET"
-echo "Profile: bwrap (tylko $BWRAP) i unpriv_bwrap (dzieci bwrap, bez uprawnień w przestrzeni użytkownika)."
+echo "Profil: bwrap, tylko dla $BWRAP — może zakładać przestrzenie użytkownika (także zagnieżdżone, których"
+echo "potrzebuje piaskownica Claude Code). Dzieci bwrap mają uprawnienia w swojej przestrzeni."
 echo "Bez zmian: sysctl kernel.apparmor_restrict_unprivileged_userns=1 i profil unprivileged_userns."
 if [[ $dry -eq 1 ]]; then
     echo
@@ -123,6 +127,10 @@ fi
 
 # --- 4. instalacja --------------------------------------------------------------------------------
 
+if [[ "$(field profile)" == tide ]]; then
+    # Profile ze starszej wersji pliku (np. unpriv_bwrap) — -r ich nie usuwa, a nowy plik ich nie ma.
+    apparmor_parser -R "$TARGET" 2>/dev/null || true
+fi
 install -m 644 -o root -g root "$work/bwrap-userns-restrict" "$TARGET"
 apparmor_parser -r "$TARGET"
 

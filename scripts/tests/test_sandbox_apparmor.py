@@ -31,22 +31,20 @@ def profile_text() -> str:
 
 class ProfileTextTest(unittest.TestCase):
     def test_profile_attaches_only_to_usr_bin_bwrap(self):
-        # Nagłówki profili: „profile <nazwa> [<ścieżka>] [flags=…] {”. Ścieżkę ma tylko bwrap.
+        # Nagłówki profili: „profile <nazwa> [<ścieżka>] [flags=…] {”. Jeden profil, tylko dla /usr/bin/bwrap.
         headers = re.findall(r"^\s*profile\s+(\S+)(?:\s+(/\S*))?", profile_text(), re.M)
-        self.assertEqual(headers, [("bwrap", "/usr/bin/bwrap"), ("unpriv_bwrap", "")])
+        self.assertEqual(headers, [("bwrap", "/usr/bin/bwrap")])
 
-    def test_children_of_bwrap_lose_capabilities(self):
+    def test_children_of_bwrap_may_create_their_own_user_namespace(self):
+        # Pomocnik piaskownicy Claude Code (apply-seccomp) zakłada w bwrap zagnieżdżoną przestrzeń użytkownika
+        # i potrzebuje w niej CAP_SYS_ADMIN — profil Ubuntu z unpriv_bwrap (dzieci bez uprawnień) go blokował.
         text = profile_text()
-        # Dzieci bwrap dostają stos z unpriv_bwrap, który odbiera uprawnienia w przestrzeni użytkownika —
-        # bez tego bwrap byłby furtką do obejścia ograniczenia dla całego systemu.
-        self.assertIn("px /** -> bwrap//&unpriv_bwrap,", text)
-        unpriv = text[text.index("profile unpriv_bwrap"):]
-        self.assertIn("audit deny capability,", unpriv)
+        self.assertRegex(text, r"profile bwrap /usr/bin/bwrap flags=\(unconfined\) \{\n\s*userns,")
+        self.assertNotIn("unpriv_bwrap", text)
 
     def test_profile_leaves_the_rest_of_the_system_alone(self):
         text = profile_text()
         self.assertNotIn("unprivileged_userns", text)
-        self.assertNotIn("flags=(unconfined)", text)
         self.assertNotIn("sysctl", text)
 
     def test_profile_is_marked_as_tides(self):
@@ -64,11 +62,16 @@ class ProfileTextTest(unittest.TestCase):
 
 FAKE = """#!/bin/sh
 # Atrapa {name}: wypisuje zadaną etykietę albo błąd i kończy się zadanym kodem.
+# bwrap z „unshare -U -r” w poleceniu to próba zagnieżdżonej przestrzeni (FAKE_NESTED_RC).
+case "$*" in
+  *"unshare -U -r"*) [ "${{FAKE_NESTED_RC:-0}}" = 0 ] || echo "unshare: write /proc/self/uid_map failed" >&2
+                     exit "${{FAKE_NESTED_RC:-0}}" ;;
+esac
 printf '%s\\n' "$FAKE_{var}_OUT" >&{fd}
 exit "${{FAKE_{var}_RC:-0}}"
 """
 DENIED = "bwrap: setting up uid map: Permission denied"
-TIDE_LABEL = "bwrap//&unpriv_bwrap (enforce)"
+TIDE_LABEL = "bwrap (unconfined)"
 RESTRICTED = "unprivileged_userns (enforce)"
 
 
@@ -114,7 +117,7 @@ class StateTest(unittest.TestCase):
         self.assertIn("uid map", state["bwrap"]["error"])
         self.assertTrue(state["others_restricted"])
 
-    def test_after_install_bwrap_runs_children_under_unpriv_bwrap_and_the_rest_stays_restricted(self):
+    def test_after_install_bwrap_runs_children_under_its_profile_and_the_rest_stays_restricted(self):
         (self.root / TARGET).write_text(profile_text())
         self.bwrap(TIDE_LABEL)
         code, state = self.state()
@@ -124,6 +127,19 @@ class StateTest(unittest.TestCase):
         self.assertEqual(state["bwrap"]["label"], TIDE_LABEL)
         self.assertTrue(state["others_restricted"])
         self.assertEqual(state["conflicts"], [])
+
+    def test_bwrap_whose_children_cannot_nest_a_user_namespace_is_not_enough(self):
+        # Profil Ubuntu bwrap-userns-restrict: bwrap działa, ale dzieci bez uprawnień nie założą zagnieżdżonej
+        # przestrzeni, a tego potrzebuje apply-seccomp z piaskownicy Claude Code.
+        (self.root / TARGET).write_text(profile_text())
+        self.bwrap("bwrap//&unpriv_bwrap (enforce)")
+        self.env["FAKE_NESTED_RC"] = "1"
+        code, state = self.state()
+        self.assertEqual(code, 1)
+        self.assertTrue(state["bwrap"]["works"])
+        self.assertFalse(state["bwrap"]["nested"])
+        self.assertIn("uid_map", state["bwrap"]["nested_error"])
+        self.assertIn("zagnieżdżon", run_check(env=self.env).stdout)
 
     def test_a_profile_file_without_tides_marker_is_foreign(self):
         # np. kopia z /usr/share/apparmor/extra-profiles albo profil z pakietu w nowszym systemie

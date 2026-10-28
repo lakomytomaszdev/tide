@@ -2,7 +2,7 @@
 # Usuwa profil AppArmor dla bwrap zainstalowany przez scripts/sandbox/install.sh (PT-75).
 # Użycie: sudo bash scripts/sandbox/uninstall.sh
 #
-# Usuwa z jądra profile bwrap i unpriv_bwrap (apparmor_parser -R) i plik
+# Usuwa z jądra profile z tego pliku (apparmor_parser -R) i plik
 # /etc/apparmor.d/bwrap-userns-restrict — tylko jeśli ma znacznik Tide. Po usunięciu bwrap znów
 # kończy się „setting up uid map: Permission denied”, a piaskownica Claude Code się wyłącza.
 set -euo pipefail
@@ -24,7 +24,7 @@ if ! head -1 "$TARGET" | grep -qF "$MARKER"; then
     exit 1
 fi
 
-echo "Zostanie usunięty z jądra i z dysku: $TARGET (profile bwrap i unpriv_bwrap)."
+echo "Zostanie usunięty z jądra i z dysku: $TARGET (profil bwrap)."
 echo "Piaskownica Claude Code przestanie działać (bwrap znów zablokowany przez AppArmor)."
 read -r -p "Kontynuować? [t/N] " answer
 if [[ "$answer" != [tTyY] ]]; then
