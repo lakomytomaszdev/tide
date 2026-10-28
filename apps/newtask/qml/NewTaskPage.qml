@@ -1,7 +1,8 @@
 // Zawartość okna „Nowe zadanie” (układ z mocka #22): „Co ma zrobić agent?” ze skrótem, repozytorium
 // (lista rozwijana od ostatnio aktywnych, z szukaniem po wpisaniu) i model (chmura albo lokalny z roli `agent`
 // w /Models), agent (w chmurze przełącznik Claude Code / Codex, przy modelu lokalnym linia „Codex na … · Ten
-// komputer” z programem z Tide → Modele), zadanie z licznikiem znaków, zrzuty ekranu (miniatury, „Zrób zrzut”, przeciąganie, Ctrl+V),
+// komputer” z programem z Tide → Modele), zadanie z licznikiem znaków, zrzuty ekranu (Tide.ScreenshotStrip z widgets/lib:
+// miniatury, „Zrób zrzut”; przeciąganie i Ctrl+V łapie strona),
 // karta „Nowy worktree” z gałęzią do zmiany, błąd w miejscu i „Uruchom agenta”.
 // Sam nie rozmawia z usługą — dostaje dane i zgłasza prośby sygnałami, dzięki czemu da się go
 // załadować w teście z przykładowymi danymi.
@@ -27,7 +28,7 @@ Rectangle {
     property real nowTs: Date.now() / 1000
     // Wklejenie obrazu ze schowka: funkcja() → true, gdy schowek miał obraz (albo pliki obrazów)
     // i trafił do zrzutów; wtedy pole tekstowe już nic nie wkleja.
-    property var pasteImage: function () { return false }
+    property var pasteImage: function (inTextField) { return false }
     // Stan modeli lokalnych: Status() obiektu /Models, {pending: true} przed pierwszą odpowiedzią,
     // null — usługa go nie podaje.
     property var modelsStatus: null
@@ -150,16 +151,6 @@ Rectangle {
         color: Tide.Tokens.backgroundView
         border.width: 1
         border.color: focused ? Tide.Theme.alpha(Tide.Tokens.accent, 0.75) : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.09)
-    }
-
-    DropArea {
-        id: drop
-        anchors.fill: parent
-        keys: ["text/uri-list"]
-        onDropped: event => {
-            page.filesDropped(event.urls.map(u => u.toString()))
-            event.accept()
-        }
     }
 
     ColumnLayout {
@@ -426,9 +417,10 @@ Rectangle {
                                 Accessible.checked: chosen
                                 Accessible.description: disabled ? page.localOption.reason : ""
                                 Keys.onSpacePressed: if (!disabled) page.model = modelData.id
-                                QQC2.ToolTip.visible: modelArea.containsMouse && modelSegment.isLocal
-                                QQC2.ToolTip.text: modelSegment.disabled ? page.localOption.reason : page.localOption.label
-                                QQC2.ToolTip.delay: 300
+                                Tide.PlainToolTip {   // nazwa modelu i powód z usługi — zwykły tekst
+                                    visible: modelArea.containsMouse && modelSegment.isLocal
+                                    text: modelSegment.disabled ? page.localOption.reason : page.localOption.label
+                                }
                                 Text {
                                     anchors.centerIn: parent
                                     text: (modelSegment.isLocal ? "⌂ " : "☁ ") + modelSegment.modelData.label
@@ -637,7 +629,8 @@ Rectangle {
                                 && (event.modifiers & Qt.ControlModifier)) {
                             page.start()
                             event.accepted = true
-                        } else if (event.matches(StandardKey.Paste) && page.pasteImage()) {
+                        } else if (event.matches(StandardKey.Paste) && page.pasteImage(true)) {
+                            // W polu schowek z tekstem i obrazem (komórki LibreOffice) wkleja tekst.
                             event.accepted = true  // obraz ze schowka trafił do zrzutów
                         }
                     }
@@ -657,142 +650,16 @@ Rectangle {
             Muted { text: Logic.charCount(page.prompt) }
         }
 
-        // Zrzuty ekranu.
+        // Zrzuty ekranu (wspólny pasek z biblioteki — ten sam w oknie „Co ma zrobić agent?” na Tablicy).
         Label { text: "Zrzuty ekranu"; Layout.topMargin: 8 }
-        RowLayout {
+        Tide.ScreenshotStrip {
             Layout.fillWidth: true
-            spacing: 12
-            Repeater {
-                model: page.images
-                delegate: Rectangle {
-                    id: thumb
-                    required property string modelData
-                    implicitWidth: 150
-                    implicitHeight: 92
-                    radius: 10
-                    color: Tide.Tokens.backgroundCard
-                    border.width: 1
-                    border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.12)
-                    clip: true
-                    Accessible.role: Accessible.Graphic
-                    Accessible.name: "Zrzut " + Logic.imageName(modelData)
-                    Image {
-                        anchors.fill: parent
-                        anchors.margins: 1
-                        source: "file://" + thumb.modelData
-                        sourceSize.width: 300
-                        fillMode: Image.PreserveAspectCrop
-                        asynchronous: true
-                        cache: false
-                    }
-                    Rectangle {
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        anchors.margins: 1
-                        height: 22
-                        color: Tide.Theme.alpha(Tide.Tokens.backgroundDesktop, 0.82)
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            x: 8
-                            width: parent.width - 16
-                            text: Logic.imageName(thumb.modelData)
-                            color: Tide.Tokens.textSecondary
-                            font.family: Tide.Theme.monoFamily
-                            font.pixelSize: 11
-                            elide: Text.ElideMiddle
-                        }
-                    }
-                    Rectangle {
-                        anchors.top: parent.top
-                        anchors.right: parent.right
-                        anchors.margins: 6
-                        width: 18
-                        height: 18
-                        radius: 9
-                        color: Tide.Theme.alpha(Tide.Tokens.backgroundDesktop, 0.85)
-                        Accessible.role: Accessible.Button
-                        Accessible.name: "Usuń zrzut " + Logic.imageName(thumb.modelData)
-                        Text {
-                            anchors.centerIn: parent
-                            text: "×"
-                            color: Tide.Tokens.textPrimary
-                            font.pixelSize: 13
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            anchors.margins: -4
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: page.removeImageRequested(thumb.modelData)
-                        }
-                    }
-                }
-            }
-            // „Zrób zrzut”: przerywana ramka, okno chowa się na czas zaznaczania obszaru.
-            Item {
-                id: captureTile
-                visible: page.canCapture && page.images.length < 10
-                implicitWidth: 150
-                implicitHeight: 92
-                activeFocusOnTab: true
-                Accessible.role: Accessible.Button
-                Accessible.name: "Zrób zrzut zaznaczonego obszaru ekranu"
-                Keys.onSpacePressed: if (!page.busy) page.captureRequested()
-                Keys.onReturnPressed: if (!page.busy) page.captureRequested()
-                Canvas {
-                    id: dashes
-                    anchors.fill: parent
-                    property color stroke: captureArea.containsMouse || captureTile.activeFocus
-                                           ? Tide.Tokens.accent : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.28)
-                    onStrokeChanged: requestPaint()
-                    onPaint: {
-                        const ctx = getContext("2d")
-                        ctx.reset()
-                        ctx.strokeStyle = stroke
-                        ctx.lineWidth = 1
-                        ctx.setLineDash([4, 4])
-                        const r = 10, w = width - 1, h = height - 1
-                        ctx.beginPath()
-                        ctx.moveTo(r + 0.5, 0.5)
-                        ctx.arcTo(w + 0.5, 0.5, w + 0.5, h + 0.5, r)
-                        ctx.arcTo(w + 0.5, h + 0.5, 0.5, h + 0.5, r)
-                        ctx.arcTo(0.5, h + 0.5, 0.5, 0.5, r)
-                        ctx.arcTo(0.5, 0.5, w + 0.5, 0.5, r)
-                        ctx.closePath()
-                        ctx.stroke()
-                    }
-                }
-                Column {
-                    anchors.centerIn: parent
-                    spacing: 6
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "⌖"
-                        color: Tide.Tokens.accent
-                        font.pixelSize: 16
-                    }
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "Zrób zrzut"
-                        color: Tide.Tokens.textSecondary
-                        font.family: Tide.Theme.uiFamily
-                        font.pixelSize: 13
-                    }
-                }
-                MouseArea {
-                    id: captureArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: if (!page.busy) page.captureRequested()
-                }
-            }
-            Muted {
-                Layout.fillWidth: true
-                text: drop.containsDrag ? "Upuść, aby dołączyć" : "albo przeciągnij plik\nalbo wklej Ctrl+V"
-                color: drop.containsDrag ? Tide.Tokens.accent : Tide.Tokens.textMuted
-                lineHeight: 1.3
-            }
+            images: page.images
+            canCapture: page.canCapture
+            busy: page.busy
+            dropHover: drop.containsDrag
+            onCaptureRequested: page.captureRequested()
+            onRemoveRequested: path => page.removeImageRequested(path)
         }
 
         // Nowy worktree.
@@ -1033,6 +900,18 @@ Rectangle {
                     onClicked: page.start()
                 }
             }
+        }
+    }
+
+    // Pliki przeciągnięte na okno — zrzuty. Na wierzchu (także nad polem zadania, żeby upuszczony plik nie
+    // wkleił się jako ścieżka); DropArea nie zabiera myszy ani klawiatury.
+    DropArea {
+        id: drop
+        anchors.fill: parent
+        keys: ["text/uri-list"]
+        onDropped: event => {
+            page.filesDropped(event.urls.map(u => u.toString()))
+            event.accept()
         }
     }
 }

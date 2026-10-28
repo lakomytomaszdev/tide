@@ -1,6 +1,6 @@
-// „Otwórz w Tide”: okno Tide na widoku Modele przez org.tide.Window /Window Show("models", "") — wspólna umowa
-// planu modeli lokalnych (widok przychodzi w PT-26). Usługa /Models nie ma ShowWindow, więc kafelek mówi
-// z oknem wprost:
+// „Otwórz w Tide” (kafelek Modele) i „Otwórz Modele” (kafelek „AI”, PT-41): okno Tide na widoku Modele przez
+// org.tide.Window /Window Show("models", "") — wspólna umowa planu modeli lokalnych (widok przychodzi w PT-26).
+// Usługa /Models nie ma ShowWindow, więc kafelek mówi z oknem wprost:
 //   - okno działa i zna widok → Show zwraca true, popup się zamyka (opened),
 //   - okno działa, ale widoku jeszcze nie ma → Show zwraca false; wtedy Show("", "") wyciąga okno na wierzch
 //     na jego bieżącym widoku, a popup pokazuje notatkę (failed("noview")),

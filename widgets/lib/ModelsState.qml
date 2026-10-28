@@ -1,9 +1,10 @@
-// Stan kafelka Modele bez wyglądu i bez PlasmoidItem (da się go załadować w teście z atrapą źródła):
-// migawka Status(), czy usługa odpowiada, „teraz” do czasów w podpowiedzi i popupie, „Odśwież”.
+// Stan modeli lokalnych bez wyglądu i bez PlasmoidItem (da się go załadować w teście z atrapą źródła) — dla
+// kafelka Modele i kafelka „AI” (biblioteka „tide”, PT-41): migawka Status(), czy usługa odpowiada, „teraz”
+// do czasów w podpowiedzi i popupie, „Odśwież”.
 // nowMs idzie do przodu przy każdym odczycie (refreshed źródła) i przy najechaniu (touch()), więc
 // podpowiedź kafelka mówi „zwolni pamięć za 4 min” od chwili odczytu, a nie od ostatniego otwarcia popupu.
 import QtQuick
-import "../code/models.js" as Logic
+import "models.js" as Logic
 
 Item {
     id: models

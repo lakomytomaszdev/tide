@@ -1,5 +1,6 @@
-# Widżet Modele (org.tide.models): kafelek w docku po prawej, zaraz za Limitami AI — stan serwera modeli
-# lokalnych, model w pamięci, kolejka; popup z serwerami i rolami, link do widoku Modele w oknie Tide.
+# Widżet Modele (org.tide.models): stan serwera modeli lokalnych, model w pamięci, kolejka; popup z serwerami
+# i rolami, link do widoku Modele w oknie Tide. Od PT-41 poza dockiem (model lokalny jest w kafelku „AI”,
+# org.tide.limits) — pakiet instaluje się dalej, żeby dało się wrócić jedną linią w scripts/dock.py.
 # Dane daje tide-daemon (obszar /Models), który instaluje się przez install-daemon. Testy w widgets/tests
 # (katalog dopisuje mk/widget-agents.mk), podgląd: make preview-widgets.
 INSTALL_TARGETS += install-widget-models

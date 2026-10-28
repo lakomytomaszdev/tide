@@ -7,7 +7,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Shapes
-import "../code/models.js" as Logic
+import "tide/models.js" as Logic
 import "tide" as Tide
 
 ColumnLayout {

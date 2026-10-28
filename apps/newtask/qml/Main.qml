@@ -47,7 +47,7 @@ Window {
         shortcutText: win.backend ? win.backend.shortcutText : ""
         nowTs: win.backend && win.backend.previewNow > 0 ? win.backend.previewNow : Date.now() / 1000
         error: win.error
-        pasteImage: function () { return win.backend ? win.backend.pasteImage() : false }
+        pasteImage: function (inTextField) { return win.backend ? win.backend.pasteImage(!!inTextField) : false }
         onStartRequested: request => {
             win.error = ""
             win.backend.start(request)
@@ -57,6 +57,7 @@ Window {
             // Okno chowa się na czas zaznaczania obszaru; pokazuje się po zakończeniu Spectacle.
             win.visible = false
             captureDelay.start()
+            captureGuard.restart()
         }
         onRemoveImageRequested: path => win.backend.removeImage(path)
         onFilesDropped: urls => win.backend.addFiles(urls)
@@ -76,6 +77,12 @@ Window {
         interval: 250
         onTriggered: win.backend.capture()
     }
+    // Zabezpieczenie: gdyby captureFinished nie przyszło (Spectacle wisi), okno wraca samo po 2 min.
+    Timer {
+        id: captureGuard
+        interval: 120000
+        onTriggered: if (!win.visible) { win.visible = true; win.raise(); win.requestActivate() }
+    }
 
     Connections {
         target: win.backend
@@ -89,6 +96,7 @@ Window {
             win.error = result ? (result.message || "Nie udało się uruchomić zadania") : "Brak odpowiedzi usługi tide-daemon"
         }
         function onCaptureFinished(problem) {
+            captureGuard.stop()
             win.visible = true
             win.raise()
             win.requestActivate()

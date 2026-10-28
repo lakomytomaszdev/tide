@@ -357,7 +357,7 @@ Indeks powstaje leniwie: pierwsze `Match` po starcie usługi czeka na zbudowanie
 
 **Prywatność.** Indeks sesji żyje wyłącznie w pamięci usługi: nie ma pliku pamięci podręcznej, a z rozmów zostaje tylko skrócony tytuł i początek pierwszej wiadomości (100 znaków). Wyszukiwanie po znaczeniu (niżej) wysyła te metadane — tytuł, początek pierwszej wiadomości, projekt, gałąź, tytuły ticketów planu — i dłuższe zapytania KRunnera do serwera roli `embed`: domyślnie Ollamy na tym komputerze, ale po przełączeniu na Maca (albo przypięciu roli do innego serwera) idą do tamtego serwera w sieci; do chmury nigdy (model chmurowy Ollamy jest odrzucany). Na dysku zostają tylko wektory, bez tekstu; wyłączenie w Tide → Modele usuwa je i niczego już nie wysyła. Testy używają wyłącznie syntetycznych dzienników (`daemon/tests/fixtures/history`).
 
-**Wyszukiwanie po znaczeniu** (PT-19, `krunner/semantic.py`, decyzja 74). Zapytanie od 3 słów i 12 znaków (bez `ai `) dostaje oprócz trafień słownych sesje podobne znaczeniowo: „ta sesja o dockerze i portach” znajdzie „Kontenery i mapowanie portów”, choć słowa się nie pokrywają.
+**Wyszukiwanie po znaczeniu** (PT-19, `krunner/semantic.py`, decyzja 75). Zapytanie od 3 słów i 12 znaków (bez `ai `) dostaje oprócz trafień słownych sesje podobne znaczeniowo: „ta sesja o dockerze i portach” znajdzie „Kontenery i mapowanie portów”, choć słowa się nie pokrywają.
 
 - **Model**: rola `embed` w `models.json` (domyślnie `bge-m3` bez punktu — idzie za `default`, więc przełączenie na Maca ją przenosi), wywołanie `models.embed` (Ollama `POST /api/embed` z `truncate` i `keep_alive: 2m`, serwer zgodny z OpenAI `POST /v1/embeddings`) przez tę samą kolejkę co raport i karty; model chmurowy Ollamy odrzucony jak wszędzie.
 - **Co trafia do modelu**: tylko metadane z indeksu KRunnera — tytuł, początek pierwszej wiadomości (gdy inny niż tytuł), projekt, gałąź słowami, a dla sesji koordynatora tytuły ticketów jego planu (tablica „Tide Sesje”, najwyżej 12). Nigdy treść rozmowy. Tekst przechodzi przez `strip_secrets` z raportu porannego (klucze, tokeny, linie `.env`, hasła w adresach, katalog domowy → `~`) i jest przycinany do 700 znaków.
@@ -1247,7 +1247,7 @@ agent?” otwiera się po przeniesieniu karty z Backlogu do Do zrobienia (myszą
 agenta…” na karcie w Do zrobienia i z „Uruchom” w popupie kafelka (`ShowWindow("launch:K-12")`).
 „Uruchom agenta” (Ctrl+Enter) to kolejno: `UpdateCard {description}` — tylko gdy zadanie w oknie różni
 się od opisu karty, `RenderLaunch(id, {mode, tool, branch, check})`, `/Tasks Start {repoPath, tool,
-prompt: text, newWorktree, branch, images: [], addDirs}` (`newWorktree` i `branch` tylko poza trybem
+prompt: text, newWorktree, branch, images, addDirs, model}` (`newWorktree` i `branch` tylko poza trybem
 spec; `addDirs: [docsDir]` przy `ai-docs: tide`) i po udanym starcie `UpdateCard {branch, worktree,
 mode, tool, check, launched, session: ""}` (`branch` tylko z nowym worktree; pole `check` dodaje PT-5;
 pusty `session` — ponowne uruchomienie odpina poprzednią sesję, a usługa przypnie nową, PT-28). Karta
@@ -1256,6 +1256,19 @@ uruchomiona z Backlogu bez przeniesienia (popup) idzie do Do zrobienia; dalej st
 „Anuluj” po przeniesieniu oddaje kartę na jej miejsce w Backlogu (`MoveCard`), „Tylko przenieś”
 zostawia ją w Do zrobienia bez agenta. Karta bez projektu z repozytorium — wyjaśnienie i wybór projektu
 (`UpdateCard {project}` albo `{repo}`, który zakłada projekt).
+
+**Zrzuty ekranu i model w oknie uruchomienia** (PT-43, decyzja 73) — to samo co w oknie „Nowe zadanie”.
+Pod zadaniem pasek zrzutów (`Tide.ScreenshotStrip` z `widgets/lib`): obraz ze schowka (Ctrl+V w polu
+zadania albo poza polami tekstowymi okna), pliki przeciągnięte na okno, „Zrób zrzut” (Spectacle; okno Tide
+chowa się na czas zaznaczania), „×” usuwa. Backend widoku (`apps/board/backend.py`, `ImageTray`
+z `apps/common/taskimages.py`) zapisuje je w katalogu zadania w `imagesDir` z `/Tasks Defaults`, a ścieżki idą
+w `images` prośby `Start` — usługa przyjmuje je jak z okna „Nowe zadanie” (najwyżej 10, tylko z katalogu zadań).
+Udany start zostawia katalog agentowi; Anuluj, „Tylko przenieś” i zamknięcie okna Tide go usuwają. Obok
+narzędzia wybór „☁ Chmura / ⌂ Lokalny” ze `Status()` obiektu `/Models` (odświeżany po `Changed`; domyślnie
+zapamiętany `model` z `Defaults()`): przy „Lokalny” zamiast przełącznika narzędzia linia „Codex na
+qwen3-coder:30b · Ten komputer” z odnośnikiem do widoku Modele, `RenderLaunch` dostaje program agenta
+lokalnego jako `tool` (gałąź `codex/…`), a `Start` — `model: "local"`. Niedostępny model albo brak programu
+(`tools` z `Defaults()`) blokuje start z powodem w stopce. Zrzuty nie są zapisywane w karcie.
 
 **Dodatkowe projekty** (PT-28). Wiersz „Dodatkowe projekty” w oknie: chipy wybranych (✕ usuwa) i pole
 „+ dodaj projekt albo repozytorium” z listą projektów tablicy z istniejącym repozytorium (bez głównego
@@ -1586,7 +1599,7 @@ Poza kolejką: odczyt stanu (`/api/version`, `/api/tags`, `/api/ps` — krótkie
 
 **Gdy serwer nie działa.** Każdy błąd — serwer nie odpowiada, nie ma takiej nazwy, limit czasu, błąd HTTP (z treścią błędu serwera, np. „model 'x' not found”), nieczytelna albo pusta odpowiedź, przekierowanie, nieczytelny plik tokenu (token musi być drukowalnym ASCII), rola na pominiętym punkcie — to jeden wyjątek `ModelError` z krótkim komunikatem po polsku do pokazania użytkownikowi. Tryb lokalny nigdy nie przechodzi do chmury: klient nie zna Claude ani żadnego zapasowego wywołania, a wywołujący pokazuje informację zamiast opisu (decyzja z 27.10 w planie). Zapytania idą bez pośredników z `$http_proxy`. Limit czasu (`timeout` wywołania, 3 s dla stanu) obejmuje całe zapytanie: szukanie nazwy, łączenie, wysłanie i cały odczyt odpowiedzi — po terminie połączenie jest zamykane. Przekierowań (3xx) nie śledzimy: „Model lokalny: serwer odpowiedział 302 — przekierowanie nie jest obsługiwane”, bo przekierowanie zabrałoby token do innego hosta, a POST po 302 stałby się GET-em.
 
-Logika bez Qt jest w `tide_daemon/models/` (`config.py`, `transport.py`, `client.py`, `queue.py` — kolejka wywołań, `status.py`, `settings.py` — zapis ustawień, `pull.py` — pobieranie), odpytywanie, zapis, pobieranie i pole `queue` w wątkach — w `models_monitor.py`. Embeddingi (`models.embed`, PT-19) — w `client.py` obok `chat()`, z tą samą kolejką. Uzasadnienie: decyzje 60, 66, 67, 72 i 74 w `docs/decisions.md`.
+Logika bez Qt jest w `tide_daemon/models/` (`config.py`, `transport.py`, `client.py`, `queue.py` — kolejka wywołań, `status.py`, `settings.py` — zapis ustawień, `pull.py` — pobieranie), odpytywanie, zapis, pobieranie i pole `queue` w wątkach — w `models_monitor.py`. Embeddingi (`models.embed`, PT-19) — w `client.py` obok `chat()`, z tą samą kolejką. Uzasadnienie: decyzje 60, 66, 67, 72 i 75 w `docs/decisions.md`.
 
 ```bash
 qdbus6 org.tide.Daemon /Models org.tide.Daemon.Models.Status
@@ -1652,6 +1665,7 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_krunner_dbus.py` — `Match`, `Actions`, `Run` przez prywatną magistralę z sygnaturami KRunnera 6; programy to atrapy (`fakebin.py`: `systemd-run`, `konsole`, `rider`, `claude`, `codex` tylko zapisują wywołanie),
 - `daemon/tests/test_krunner_semantic.py` — wyszukiwanie po znaczeniu (PT-19) z atrapą modelu („pojęcia” zamiast bge-m3): tekst sesji (metadane, tickety, `strip_secrets`, przycięcie), plik indeksu (0600/0700, bez tekstów, zepsuty albo obcy — od nowa), indeksowanie przyrostowe, okno 30 dni i limit pozycji, przebudowa po zmianie modelu i wymiarów, wyłączenie (plik znika od razu, czekająca partia przerwana), błędy jako stan, `queue.IDLE` i cisza po innym modelu przed każdą partią, ranking, zapytanie (bez poleceń, adresów, ścieżek i sekretów, `HIGH`, pamięć, nowsze unieważnia starsze, serwer nie odpowiada, budżet czasu), łączenie w `KRunnerCore` (słowa pierwsze, bez powtórzeń, dopisek) oraz `models.embed` na atrapie serwera HTTP (Ollama, OpenAI, złe odpowiedzi, chmura, rola za `default`); w `test_krunner_dbus.py` — usługa z atrapą Ollamy (`--search-delay 0`): indeks na dysku, wynik znaczeniowy w `Match`, a po wyłączeniu serwera same słowa w mniej niż 3 s.
 - `apps/newtask/tests/` — okno nowego zadania: logika formularza w `qml6`, zrzuty okna z `--data --grab`, zrzuty ekranu (przeciągnięte, ze schowka, atrapa Spectacle, sprzątanie), backend na prywatnej magistrali z prawdziwą usługą, drugie uruchomienie, instalacja z profilem Konsoli; `kwin/tests/test_new_task_shortcut.py` — skrót Meta+Alt+A,
+- `apps/board/tests/test_view.py` (PT-43) — okno uruchomienia z karty z tym, co okno nowego zadania: zrzuty ekranu (przeciąganie, Ctrl+V, „Zrób zrzut” z atrapą Spectacle, usuwanie, sprzątanie po Anuluj, katalog zostaje po starcie) w `images` prośby `Start`, model chmura/lokalny z `/Models` (wyłączony z powodem, linia agenta, gałąź i `tool` za programem agenta lokalnego, blokady), `imagesDir` i stan modeli z prawdziwej usługi,
 - `apps/worktrees/tests/` — okno: QML na przykładowych danych (`qml6`, offscreen), launcher z `--data --grab`, backend okna na prywatnej magistrali z prawdziwą usługą (Remove tylko dla zaznaczonych), drugie uruchomienie, instalacja z atrapami `update-desktop-database` i `kbuildsycoca6`,
 - `daemon/tests/test_idle.py` — bezczynność na atrapie kompozytora Wayland (`fake_wayland.py`: prawdziwe gniazdo i format wiadomości, zamrożony zegar): próg, wejście liczy czas od nowa, wybór protokołu (v2, v1, `org_kde_kwin_idle`), brak protokołu, błąd protokołu, zerwane połączenie i ponowne połączenie; `IdleState` na zamrożonym zegarze; obiekt `/Idle` usługi na prywatnej magistrali (właściwości, `IsIdle`, sygnał `IdleChanged`, próg z palety, brak kompozytora, `--no-idle`). Usługi w testach dostają nieistniejące gniazdo Wayland, więc nigdy nie łączą się z kompozytorem pulpitu,
 - `daemon/tests/test_report_schedule.py` — termin raportu (pierwsze logowanie w dobie, 07:00, praca po północy, zmiana czasu, wyłączenie), okres (pierwszy, od kotwicy poprzedniego — godzina z terminu albo wcześniejszy koniec, wieczorne `Generate()` o 23:54 nie przesuwa następnej doby, weekend, inna godzina `at`, najwyżej 7 dni, ponowne wygenerowanie, naprawa stanu sprzed tej zasady), jedno powiadomienie na dobę, ustawienia z pliku i opcji, stan, retencja 30 dni (tylko katalogi raportów, bez dowiązań),

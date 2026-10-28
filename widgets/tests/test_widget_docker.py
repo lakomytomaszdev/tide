@@ -64,7 +64,7 @@ class PackageTest(unittest.TestCase):
 
     def test_dock_and_sidebar_placement(self):
         from scripts import dock, sidebar
-        self.assertEqual(dock.DOCK_LEFT, ["org.tide.system", WIDGET_ID], "z lewej, zaraz po System")
+        self.assertEqual(dock.DOCK_LEFT[:2], ["org.tide.system", WIDGET_ID], "z lewej, zaraz po System")
         self.assertNotIn(WIDGET_ID, sidebar.WIDGETS, "w pasku bocznym brak miejsca obok tablicy — tylko dock")
 
 

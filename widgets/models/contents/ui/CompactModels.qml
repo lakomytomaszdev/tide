@@ -4,7 +4,7 @@
 // (teal, pulsuje), „● serwer nie odpowiada” (róż). Model częściowo na procesorze — masło. Bez usługi
 // wyciszone słowa. Bez PlasmoidItem, więc da się go załadować w teście.
 import QtQuick
-import "../code/models.js" as Logic
+import "tide/models.js" as Logic
 import "tide" as Tide
 
 Tide.DockTile {

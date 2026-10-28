@@ -8,8 +8,12 @@
 // okno „Co ma zrobić agent?”, przycisk „Uruchom” w popupie kafelka), takeFocus(), tab=plan|spec
 // i expand=1 — zakładka dokumentu w otwartym panelu karty (z card=K-12),
 // railInfo — ramka „Dane tablicy” i link „Projekty i tagi” na dole paska; import=1 — strona „Projekty i tagi”
-// z otwartym importem z YouTracka (PT-7).
+// z otwartym importem z YouTracka (PT-7). Okno uruchomienia (PT-43): launch=K-9[,light|spec][,codex][,local][,move][,manual],
+// shots=/a.png,/b.png — miniatury zrzutów w oknie (tylko podgląd).
+// Zrzuty ekranu i model okna „Co ma zrobić agent?” idą przez backend (imagesJson, modelsJson, tasksJson,
+// pasteImage, addFiles, capture…); na czas „Zrób zrzut” widok chowa całe okno Tide i przywraca je po Spectacle.
 import QtQuick
+import QtQuick.Window
 import "board.js" as Logic
 
 Item {
@@ -20,6 +24,7 @@ Item {
     property var preview: ({})
     property string pendingItem: ""
     property real nowTs: Date.now() / 1000
+    property int captureVisibility: Window.Windowed   // stan okna sprzed schowania na „Zrób zrzut”
     readonly property alias page: page
     readonly property var snapshot: backend ? Logic.parse(backend.snapshotJson, null) : null
     readonly property bool available: backend ? backend.available : false
@@ -90,6 +95,40 @@ Item {
         onTagRequested: (tag, request) => view.backend.upsertTag(tag, request)
         onRenderRequested: (tag, id, request) => view.backend.renderLaunch(tag, id, request)
         onStartRequested: (tag, request) => view.backend.startTask(tag, request)
+        // Zrzuty ekranu i model w oknie uruchomienia (PT-43).
+        launchImages: view.backend ? Logic.parse(view.backend.imagesJson, []) : []
+        canCapture: view.backend ? view.backend.canCapture : false
+        modelsStatus: view.backend ? Logic.parse(view.backend.modelsJson, null) : null
+        taskDefaults: view.backend ? Logic.parse(view.backend.tasksJson, {}) : ({})
+        pasteImage: function (inTextField) { return view.backend ? view.backend.pasteImage(!!inTextField) : false }
+        // Zapamiętany model i programy w PATH mogły się zmienić od startu widoku (okno „Nowe zadanie”, instalacja).
+        onLaunchRequested: cardId => { if (view.backend) view.backend.refreshTasks() }
+        onLaunchClosed: started => {
+            if (!view.backend) return
+            if (started) {
+                view.backend.keepImages()
+                view.backend.refreshTasks()
+            } else {
+                view.backend.discardImages()
+            }
+        }
+        onRemoveImageRequested: path => { if (view.backend) view.backend.removeImage(path) }
+        onFilesDropped: urls => { if (view.backend) view.backend.addFiles(urls) }
+        onCaptureRequested: {
+            if (!view.backend) return
+            // Okno chowa się na czas zaznaczania obszaru (Spectacle robi zrzut ekranu przy starcie).
+            const w = view.Window.window
+            if (w) {
+                view.captureVisibility = w.visibility
+                w.visible = false
+            }
+            captureDelay.start()
+            captureGuard.restart()
+        }
+        onModelsRequested: {
+            const problem = view.backend ? view.backend.openModels() : ""
+            if (problem !== "") page.launchDialog.error = problem
+        }
         // „Otwórz w Sesjach” — koordynator w widoku Sesje okna Tide; „Przejdź do agenta” — okno agenta
         // (karta Konsoli albo wątek Codexa), bez przełączania okna Tide.
         onSessionRequested: target => view.backend.showCoordinator(target)
@@ -123,8 +162,10 @@ Item {
                     if (part === "full" || part === "light" || part === "spec") launchDialog.mode = part
                     if (part === "claude" || part === "codex") launchDialog.pickTool(part)
                     if (part === "manual") launchDialog.manualCheck = true
+                    if (part === "local") launchDialog.model = "local"
                 }
             }
+            if (view.previewValue("shots") && view.backend) view.backend.previewImages(view.previewValue("shots").split(","))
             if (view.previewValue("manage")) {
                 managing = true
                 managePage.openProject = view.previewValue("manage") === "1" ? "" : view.previewValue("manage")
@@ -141,6 +182,36 @@ Item {
         function onDocsReplied(cardId, text) {
             page.cardPanel.applyDocs(cardId, text)
         }
+        function onCaptureFinished(problem) {
+            captureGuard.stop()
+            view.restoreWindow()
+            if (problem !== "") page.launchDialog.error = problem
+            if (page.launchOpen) page.launchDialog.forceActiveFocus()
+        }
+        function onImageProblem(problem) {
+            page.launchDialog.error = problem
+        }
+    }
+
+    Timer {
+        id: captureDelay
+        interval: 250
+        onTriggered: if (view.backend) view.backend.capture()
+    }
+    // Zabezpieczenie: gdyby captureFinished nie przyszło (Spectacle wisi), okno Tide wraca samo po 2 min.
+    Timer {
+        id: captureGuard
+        interval: 120000
+        onTriggered: view.restoreWindow()
+    }
+
+    // Okno Tide po „Zrób zrzut” wraca w stanie sprzed schowania (np. zmaksymalizowane).
+    function restoreWindow() {
+        const w = view.Window.window
+        if (!w || w.visible) return
+        w.visibility = view.captureVisibility === Window.Hidden ? Window.Windowed : view.captureVisibility
+        w.raise()
+        w.requestActivate()
     }
 
     // Zegar dla „zapisano 12:04” i czasów w panelu karty.

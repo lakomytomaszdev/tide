@@ -596,9 +596,9 @@ function specDir(state) {
     return state.aiDocs === "repo" ? "docs/agents/specs/" : "tide-board/docs/" + (state.slug || "…") + "/specs/"
 }
 
-// Zdanie „co się stanie” w stopce okna.
+// Zdanie „co się stanie” w stopce okna (z modelem lokalnym: „Codex na qwen3-coder:30b”).
 function launchFooter(state) {
-    const tool = launchToolName(state.tool)
+    const tool = launchToolName(state.tool) + (state.localModel ? " na " + state.localModel : "")
     const where = state.repoName ? "„" + state.repoName + " · " + (state.newWorktree ? state.branch : "bieżąca gałąź") + "”" : ""
     const check = extrasNote(state)
         + (state.check === "manual" ? " Na koniec zostawi listę „Co przetestować ręcznie i jak” i poczeka na twój test." : "")
@@ -623,13 +623,16 @@ function extrasNote(state) {
 
 // Prośba /Tasks Start z polecenia RenderLaunch: worktree tylko poza trybem spec, katalogi dla --add-dir
 // z RenderLaunch (`addDirs`: dokumenty w tablicy przy ai-docs: tide i repozytoria dodatkowych projektów,
-// PT-28); usługa sprzed PT-28 — sam katalog dokumentów.
+// PT-28); usługa sprzed PT-28 — sam katalog dokumentów. Zrzuty ekranu i model jak z okna „Nowe zadanie”
+// (PT-43): `images` — pliki z katalogu zadań (imagesDir), `model` — cloud albo local (przy local usługa bierze
+// program z agentProgram w models.json; `tool` z okna to ten sam program).
 function launchStartRequest(flow, state) {
     const worktree = state.mode !== "spec" && state.newWorktree
     const dirs = Array.isArray(flow.addDirs) ? flow.addDirs.slice()
                : (flow.aiDocs === "tide" && flow.docsDir ? [flow.docsDir] : [])
     return { repoPath: flow.repo, tool: flow.tool || state.tool, prompt: flow.text, newWorktree: worktree,
-             branch: worktree ? (flow.branch || state.branch) : "", images: [], addDirs: dirs }
+             branch: worktree ? (flow.branch || state.branch) : "", images: (state.images || []).slice(), addDirs: dirs,
+             model: state.model === "local" ? "local" : "cloud" }
 }
 
 // --- dodatkowe projekty karty (PT-28) -------------------------------------------------------------

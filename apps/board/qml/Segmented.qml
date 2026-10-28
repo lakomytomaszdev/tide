@@ -1,5 +1,6 @@
 // Przełącznik kilku wartości w pastylce (mock: „Razem | Wiersz na projekt”): wybrana — tło akcentu
-// ~0,16 i tekst w akcencie. options: [{value, label}].
+// ~0,16 i tekst w akcencie. options: [{value, label, disabled?, hint?}] — disabled: wyszarzona, bez wyboru
+// (np. „⌂ Lokalny” bez dostępnego modelu), hint: podpowiedź po najechaniu (powód wyłączenia).
 import QtQuick
 import "tide" as Tide
 
@@ -28,26 +29,33 @@ Rectangle {
                 id: option
                 required property var modelData
                 readonly property bool on: modelData.value === segmented.current
+                readonly property bool off: modelData.disabled === true
+                objectName: segmented.objectName ? segmented.objectName + "-" + modelData.value : ""
                 implicitWidth: label.implicitWidth + 20
                 implicitHeight: segmented.itemHeight
                 radius: height / 2
                 color: on ? Tide.Theme.alpha(Tide.Tokens.accent, 0.16)
-                     : area.containsMouse ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.05) : "transparent"
+                     : area.containsMouse && !off ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.05) : "transparent"
                 border.width: activeFocus ? 1 : 0
                 border.color: Tide.Tokens.accent
-                activeFocusOnTab: true
+                activeFocusOnTab: !off
                 Accessible.role: Accessible.PageTab
                 Accessible.name: modelData.label
+                Accessible.description: off && modelData.hint ? modelData.hint : ""
                 Accessible.selected: on
-                Accessible.onPressAction: segmented.picked(modelData.value)
-                Keys.onSpacePressed: segmented.picked(modelData.value)
-                Keys.onReturnPressed: segmented.picked(modelData.value)
+                Accessible.onPressAction: if (!off) segmented.picked(modelData.value)
+                Keys.onSpacePressed: if (!off) segmented.picked(modelData.value)
+                Keys.onReturnPressed: if (!off) segmented.picked(modelData.value)
+                Tide.PlainToolTip {   // podpowiedź może nieść dane z usługi (powód, nazwa modelu) — zwykły tekst
+                    visible: area.containsMouse && !!option.modelData.hint
+                    text: option.modelData.hint || ""
+                }
                 Text {
                     id: label
                     anchors.centerIn: parent
                     text: option.modelData.label
                     textFormat: Text.PlainText
-                    color: option.on ? Tide.Tokens.accent : Tide.Tokens.textSecondary
+                    color: option.off ? Tide.Tokens.textMuted : option.on ? Tide.Tokens.accent : Tide.Tokens.textSecondary
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: segmented.pixelSize
                     font.weight: option.on ? Font.DemiBold : Font.Normal
@@ -56,8 +64,8 @@ Rectangle {
                     id: area
                     anchors.fill: parent
                     hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: segmented.picked(option.modelData.value)
+                    cursorShape: option.off ? Qt.ArrowCursor : Qt.PointingHandCursor
+                    onClicked: if (!option.off) segmented.picked(option.modelData.value)
                 }
             }
         }

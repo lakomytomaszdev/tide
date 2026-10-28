@@ -127,9 +127,23 @@ QtObject {
         return forecast && (forecast.state === "runs-out" || forecast.state === "lasts") ? forecast.short || "" : ""
     }
 
-    // Dopisek kafelka w docku, tylko gdy limit skończy się przed resetem: „Claude do 17:40”.
+    // Dopisek kafelka w docku, tylko gdy limit skończy się przed resetem: „Claude do 17:40”,
+    // „Claude do jutra 14:30”, „GPT do czwartku 11:00” — tide-daemon pisze dzień w mianowniku
+    // („jutro 14:30”, „czwartek 11:00”), a po „do” idzie dopełniacz.
     function limitsRunoutDetail(label, forecast) {
-        return forecast && forecast.state === "runs-out" && forecast.whenText ? label + " do " + forecast.whenText : ""
+        return forecast && forecast.state === "runs-out" && forecast.whenText
+            ? label + " do " + untilWhen(forecast.whenText) : ""
+    }
+
+    readonly property var whenGenitive: ({ "jutro": "jutra", "poniedziałek": "poniedziałku", "wtorek": "wtorku",
+                                           "środa": "środy", "czwartek": "czwartku", "piątek": "piątku",
+                                           "sobota": "soboty", "niedziela": "niedzieli" })
+
+    function untilWhen(when) {
+        const text = String(when)
+        const space = text.indexOf(" ")
+        const head = space < 0 ? text : text.slice(0, space)
+        return whenGenitive.hasOwnProperty(head) ? whenGenitive[head] + text.slice(head.length) : text
     }
 
     // Pierwsza linia podpowiedzi Limitów AI: ile zostało, niższy z limitów sesji i tygodnia.
