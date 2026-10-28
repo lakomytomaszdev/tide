@@ -80,6 +80,14 @@ class AppearanceInstallTest(unittest.TestCase):
         self.assertIn("plasma-apply-colorscheme TideMist", self.calls())
         self.assertIn("plasma-apply-desktoptheme default", self.calls())
 
+    def test_install_writes_the_streamer_scheme_beside_mist_but_applies_only_mist(self):
+        self.appearance("install")
+        scheme = self.data / "color-schemes/TideStreamer.colors"
+        self.assertIn("ColorScheme=TideStreamer", scheme.read_text())
+        self.assertNotIn("TideStreamer", "\n".join(self.calls()))
+        self.appearance("uninstall")
+        self.assertFalse(scheme.exists())
+
     def test_uninstall_restores_previous_appearance(self):
         self.appearance("install")
         self.appearance("uninstall")

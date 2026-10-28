@@ -2,6 +2,10 @@
 
 Użycie: python3 appearance.py install|uninstall
 
+Schematy pozostałych wariantów palety (np. TideStreamer dla aktywności Stream) trafiają
+obok TideMist, ale nakładany jest wyłącznie TideMist — wybór wariantu należy do przełącznika
+wyglądu aktywności.
+
 Poprzednie ustawienia zapisujemy przy pierwszej instalacji, więc odinstalowanie
 przywraca stan sprzed Tide, nawet po kilku kolejnych instalacjach.
 """
@@ -21,6 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from theme.colors.generate import render, scheme  # noqa: E402
+from theme import palette as palettes  # noqa: E402
 
 PALETTE = ROOT / "theme" / "palette" / "mist.json"
 GEIST_VERSION = "1.7.2"
@@ -47,8 +52,19 @@ DATA = xdg("XDG_DATA_HOME", ".local/share")
 STATE = xdg("XDG_STATE_HOME", ".local/state")
 CACHE = xdg("XDG_CACHE_HOME", ".cache")
 SCHEME_FILE = DATA / "color-schemes" / "TideMist.colors"
+SCHEME_DIR = SCHEME_FILE.parent
 FONT_DIR = DATA / "fonts" / "tide"
 PREVIOUS = STATE / "tide" / "appearance-previous.json"
+
+
+def variant_palettes() -> dict[str, dict]:
+    """Palety wariantów poza Mist (nazwa pliku → paleta), np. {"streamer": {...}}."""
+    return {name: palettes.load(name) for name in palettes.names() if name != palettes.BASE}
+
+
+def variant_scheme_files() -> dict[Path, dict]:
+    """Pliki schematów wariantów obok TideMist: color-schemes/Tide<Nazwa>.colors → paleta."""
+    return {SCHEME_DIR / f"Tide{p['name']}.colors": p for p in variant_palettes().values()}
 
 
 def run(*args: str) -> str:
@@ -108,6 +124,8 @@ def install() -> None:
 
     SCHEME_FILE.parent.mkdir(parents=True, exist_ok=True)
     SCHEME_FILE.write_text(render(scheme(json.loads(PALETTE.read_text()))))
+    for path, variant in variant_scheme_files().items():
+        path.write_text(render(scheme(variant)))
     install_fonts()
 
     palette = json.loads(PALETTE.read_text())
@@ -135,6 +153,8 @@ def uninstall() -> None:
     run("plasma-apply-desktoptheme", previous.get("plasmarc|Theme|name") or "default")
 
     SCHEME_FILE.unlink(missing_ok=True)
+    for path in variant_scheme_files():
+        path.unlink(missing_ok=True)
     if FONT_DIR.is_dir():
         shutil.rmtree(FONT_DIR)
         run("fc-cache", "-f")
