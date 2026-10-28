@@ -6,7 +6,7 @@ create(bus, data). Strona QML to qml/BoardView.qml (BoardPage z kolumnami, panel
 i stroną „Projekty i tagi”).
 
 Uruchomienie agenta z karty: RenderLaunch (/Board) i Start (/Tasks, odpowiedź po starcie agenta —
-do 2 min) idą tą samą drogą co zapisy, z tagiem i sygnałem replied.
+do 10 min, jak w oknie „Nowe zadanie”) idą tą samą drogą co zapisy, z tagiem i sygnałem replied.
 
 To, co okno „Co ma zrobić agent?” ma wspólnego z oknem „Nowe zadanie” (PT-43):
 - zrzuty ekranu — ImageTray z apps/common/taskimages.py (w pakiecie obok tego pliku): wklejanie Ctrl+V
@@ -16,7 +16,8 @@ To, co okno „Co ma zrobić agent?” ma wspólnego z oknem „Nowe zadanie” 
   startu — usuwa go; to samo przy zamykaniu okna Tide,
 - model — modelsJson: Status() z /Models (rola `agent`, agentProgram), odświeżany po Changed, przed pierwszą
   odpowiedzią {"pending": true}, "null" — usługa go nie podaje; tasksJson: /Tasks Defaults (dostępne programy
-  `tools`, zapamiętany `model`, `imagesDir`); openModels() — okno Tide na widoku Modele.
+  `tools`, zapamiętany `model`, `imagesDir`; od nowa przy otwarciu okna i po starcie — refreshTasks());
+  openModels() — okno Tide na widoku Modele.
 W podglądzie z pliku: klucze „models” i „tasks” danych (bez nich: null i {}), previewImages(ścieżki) — miniatury
 bez kopiowania (tylko podgląd).
 
@@ -73,7 +74,7 @@ AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
 MODELS_PATH, MODELS_IFACE = "/Models", "org.tide.Daemon.Models"
 MODELS_VIEW = "models"
 PENDING_MODELS = '{"pending": true}'   # przed pierwszą odpowiedzią Status() — jak w oknie „Nowe zadanie”
-START_TIMEOUT_MS = 120_000  # worktree, Konsola i przejęcie zadania (usługa czeka na nie do 15 s)
+START_TIMEOUT_MS = 10 * 60 * 1000  # jak w oknie „Nowe zadanie”: worktree dużego repozytorium zakłada się długo
 DOCS_TIMEOUT_MS = 20_000    # CardDocs odpowiada po odczycie plików w wątku roboczym usługi
 FM_SERVICE, FM_PATH, FM_IFACE = "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1", \
     "org.freedesktop.FileManager1"
@@ -349,9 +350,11 @@ class Backend(QObject):
     # --- zrzuty ekranu i model w oknie uruchomienia (PT-43) ------------------------------------
 
     @pyqtSlot(result=bool)
-    def pasteImage(self) -> bool:
-        """Ctrl+V w oknie uruchomienia: obraz ze schowka (albo pliki obrazów) → zrzut. False: zwykły tekst."""
-        return self.tray.paste()
+    @pyqtSlot(bool, result=bool)
+    def pasteImage(self, in_text_field: bool = False) -> bool:
+        """Ctrl+V w oknie uruchomienia: obraz ze schowka (albo pliki obrazów) → zrzut. False: zwykły tekst.
+        in_text_field: Ctrl+V w polu tekstowym — schowek z tekstem i obrazem wkleja wtedy tekst."""
+        return self.tray.paste(bool(in_text_field))
 
     @pyqtSlot("QVariantList")
     def addFiles(self, urls) -> None:
@@ -365,6 +368,12 @@ class Backend(QObject):
     def capture(self) -> None:
         """„Zrób zrzut” (spectacle -b -n -r -o PLIK); okno Tide chowa QML na czas zaznaczania."""
         self.tray.capture()
+
+    @pyqtSlot()
+    def refreshTasks(self) -> None:
+        """/Tasks Defaults i stan modeli od nowa — przy otwarciu okna uruchomienia i po udanym starcie
+        (zapamiętany model, programy w PATH)."""
+        self._refresh_tasks()
 
     @pyqtSlot()
     def keepImages(self) -> None:

@@ -59,7 +59,9 @@ Rectangle {
     property bool canCapture: false
     property var modelsStatus: null
     property var taskDefaults: ({})
-    property var pasteImage: function () { return false }
+    property var pasteImage: function (inTextField) { return false }
+    // Start bez pewnej odpowiedzi (termin minął, usługa zniknęła): agent mógł ruszyć, więc zrzuty zostają.
+    property bool launchUncertain: false
 
     signal createRequested(string tag, string request)
     signal updateRequested(string tag, string cardId, string request)
@@ -196,7 +198,9 @@ Rectangle {
     function openLaunch(id, fromMove, origin, originBefore) {
         const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
         if (!card) return
-        if (launchOpen && launchCardId !== id) launchClosed(false)   // zrzuty poprzedniej karty nie przechodzą dalej
+        if (launchOpen && launchDialog.busy) return   // trwa uruchomienie — nie ruszamy jego okna ani zrzutów
+        if (launchOpen && launchCardId !== id) launchClosed(launchUncertain)   // zrzuty poprzedniej karty nie przechodzą dalej
+        if (!launchOpen || launchCardId !== id) launchUncertain = false
         panelOpen = false
         managing = false
         selectedId = id
@@ -216,7 +220,7 @@ Rectangle {
     function closeLaunch(started) {
         launchOpen = false
         launchDialog.busy = false
-        launchClosed(!!started)
+        launchClosed(!!started || launchUncertain)
         const item = findCard(launchCardId)
         if (item) item.forceActiveFocus()
         else page.forceActiveFocus()
@@ -283,6 +287,7 @@ Rectangle {
             launchDialog.busyText = "Zakładam worktree i otwieram kartę Konsoli z agentem…"
             startRequested(nextTag("launch-start:" + launchCardId), JSON.stringify(Logic.launchStartRequest(reply, launchChoice)))
         } else if (tag.indexOf("launch-start:") === 0) {
+            if (error && (!reply || reply.error === "no-service")) launchUncertain = true
             if (error) return failLaunch(error)
             updateRequested(nextTag("launch-mark:" + launchCardId), launchCardId,
                             JSON.stringify(Logic.launchMarkRequest(reply, launchChoice, Logic.isoNow(Date.now()))))

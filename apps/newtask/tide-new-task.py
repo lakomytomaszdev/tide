@@ -294,9 +294,11 @@ class Backend(QObject):
     # --- zrzuty ekranu ------------------------------------------------------------------------
 
     @pyqtSlot(result=bool)
-    def pasteImage(self) -> bool:
-        """Obraz ze schowka (albo skopiowane pliki obrazów) → zrzut zadania. False: zwykły tekst."""
-        return self.tray.paste()
+    @pyqtSlot(bool, result=bool)
+    def pasteImage(self, in_text_field: bool = False) -> bool:
+        """Obraz ze schowka (albo skopiowane pliki obrazów) → zrzut zadania. False: zwykły tekst.
+        in_text_field: Ctrl+V w polu tekstowym — schowek z tekstem i obrazem wkleja wtedy tekst."""
+        return self.tray.paste(bool(in_text_field))
 
     @pyqtSlot("QVariantList")
     def addFiles(self, urls) -> None:

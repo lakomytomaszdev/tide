@@ -17,7 +17,7 @@ import shutil
 import time
 
 from PyQt6.QtCore import QObject, QProcess, QUrl, pyqtSignal
-from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtGui import QGuiApplication, QImageReader
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 IMAGE_LIMIT = 10
@@ -71,10 +71,21 @@ class Images:
             return f"nie ma pliku {name}"
         if os.path.getsize(source) > IMAGE_BYTES:
             return f"{name} jest większy niż 20 MB"
+        if not QImageReader(source).canRead():
+            return f"{name} nie daje się odczytać jako obraz"
         if not self.room():
             return f"najwyżej {IMAGE_LIMIT} zrzutów"
-        target = self.next_path(os.path.splitext(source)[1].lower())
-        shutil.copyfile(source, target)
+        target = ""
+        try:
+            target = self.next_path(os.path.splitext(source)[1].lower())
+            shutil.copyfile(source, target)
+        except OSError as error:
+            if target:
+                try:
+                    os.unlink(target)   # bez pustego zrzut-N po nieudanej kopii
+                except OSError:
+                    pass
+            return f"nie udało się skopiować {name}: {error.strerror or error}"
         self.paths.append(target)
         return ""
 
@@ -129,31 +140,40 @@ class ImageTray(QObject):
         if root and not self.images.folder:
             self.images.root = root
 
-    def paste(self) -> bool:
-        """Obraz ze schowka (albo skopiowane pliki obrazów) → zrzut zadania. False: zwykły tekst."""
+    def paste(self, in_text_field: bool = False) -> bool:
+        """Obraz ze schowka (albo skopiowane pliki obrazów) → zrzut zadania. False: zwykły tekst — wkleja go pole.
+
+        in_text_field: Ctrl+V w polu tekstowym. Schowek z tekstem i obrazem naraz (komórki LibreOffice, tabela
+        z przeglądarki) wkleja wtedy tekst; poza polem albo bez tekstu — obraz."""
         clipboard = QGuiApplication.clipboard()
         mime = clipboard.mimeData()
         if mime is None:
             return False
-        if mime.hasImage():
+        files = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()] if mime.hasUrls() else []
+        image_files = bool(files) and all(f.lower().endswith(IMAGE_SUFFIXES) for f in files)
+        if mime.hasImage() and not image_files:
+            if in_text_field and mime.hasText() and mime.text().strip():
+                return False
             image = clipboard.image()
             if image.isNull():
                 return False
             if not self.images.room():
                 self.imageProblem.emit(f"Najwyżej {IMAGE_LIMIT} zrzutów")
                 return True
-            path = self.images.next_path(".png")
+            try:
+                path = self.images.next_path(".png")
+            except OSError as error:
+                self.imageProblem.emit(f"Nie udało się zapisać obrazu ze schowka: {error.strerror or error}")
+                return True
             if not image.save(path, "PNG"):
                 self.imageProblem.emit("Nie udało się zapisać obrazu ze schowka")
                 return True
             self.images.add_existing(path)
             self.imagesChanged.emit()
             return True
-        if mime.hasUrls():
-            files = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()]
-            if files and all(f.lower().endswith(IMAGE_SUFFIXES) for f in files):
-                self.add_files([QUrl.fromLocalFile(f).toString() for f in files])
-                return True
+        if image_files:
+            self.add_files([QUrl.fromLocalFile(f).toString() for f in files])
+            return True
         return False
 
     def add_files(self, urls) -> None:
@@ -180,16 +200,27 @@ class ImageTray(QObject):
         if not self.images.room():
             self.captureFinished.emit(f"Najwyżej {IMAGE_LIMIT} zrzutów")
             return
-        target = self.images.next_path(".png")
+        try:
+            target = self.images.next_path(".png")
+        except OSError as error:   # katalog zadań nie do założenia — okno musi wrócić z komunikatem
+            self.captureFinished.emit(f"Nie udało się zapisać zrzutu: {error.strerror or error}")
+            return
+        images = self.images   # zadanie, dla którego robimy zrzut (po discard/release przychodzi nowe)
         proc = QProcess(self)
         self._capture = proc
 
         def finished(*_args):
             self._capture = None
             proc.deleteLater()
-            if os.path.isfile(target) and os.path.getsize(target) > 0:
-                self.images.add_existing(target)
+            made = os.path.isfile(target) and os.path.getsize(target) > 0
+            if made and images is self.images and images.folder == os.path.dirname(target):
+                images.add_existing(target)
                 self.imagesChanged.emit()
+            elif made:
+                try:
+                    os.unlink(target)   # zadanie zamknięte w trakcie — zrzut nie przechodzi do następnego
+                except OSError:
+                    pass
             self.captureFinished.emit("")  # bez pliku: zaznaczanie anulowane — to nie błąd
 
         def failed(error):

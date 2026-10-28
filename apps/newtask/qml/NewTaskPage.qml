@@ -28,7 +28,7 @@ Rectangle {
     property real nowTs: Date.now() / 1000
     // Wklejenie obrazu ze schowka: funkcja() → true, gdy schowek miał obraz (albo pliki obrazów)
     // i trafił do zrzutów; wtedy pole tekstowe już nic nie wkleja.
-    property var pasteImage: function () { return false }
+    property var pasteImage: function (inTextField) { return false }
     // Stan modeli lokalnych: Status() obiektu /Models, {pending: true} przed pierwszą odpowiedzią,
     // null — usługa go nie podaje.
     property var modelsStatus: null
@@ -151,16 +151,6 @@ Rectangle {
         color: Tide.Tokens.backgroundView
         border.width: 1
         border.color: focused ? Tide.Theme.alpha(Tide.Tokens.accent, 0.75) : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.09)
-    }
-
-    DropArea {
-        id: drop
-        anchors.fill: parent
-        keys: ["text/uri-list"]
-        onDropped: event => {
-            page.filesDropped(event.urls.map(u => u.toString()))
-            event.accept()
-        }
     }
 
     ColumnLayout {
@@ -427,9 +417,10 @@ Rectangle {
                                 Accessible.checked: chosen
                                 Accessible.description: disabled ? page.localOption.reason : ""
                                 Keys.onSpacePressed: if (!disabled) page.model = modelData.id
-                                QQC2.ToolTip.visible: modelArea.containsMouse && modelSegment.isLocal
-                                QQC2.ToolTip.text: modelSegment.disabled ? page.localOption.reason : page.localOption.label
-                                QQC2.ToolTip.delay: 300
+                                Tide.PlainToolTip {   // nazwa modelu i powód z usługi — zwykły tekst
+                                    visible: modelArea.containsMouse && modelSegment.isLocal
+                                    text: modelSegment.disabled ? page.localOption.reason : page.localOption.label
+                                }
                                 Text {
                                     anchors.centerIn: parent
                                     text: (modelSegment.isLocal ? "⌂ " : "☁ ") + modelSegment.modelData.label
@@ -638,7 +629,8 @@ Rectangle {
                                 && (event.modifiers & Qt.ControlModifier)) {
                             page.start()
                             event.accepted = true
-                        } else if (event.matches(StandardKey.Paste) && page.pasteImage()) {
+                        } else if (event.matches(StandardKey.Paste) && page.pasteImage(true)) {
+                            // W polu schowek z tekstem i obrazem (komórki LibreOffice) wkleja tekst.
                             event.accepted = true  // obraz ze schowka trafił do zrzutów
                         }
                     }
@@ -908,6 +900,18 @@ Rectangle {
                     onClicked: page.start()
                 }
             }
+        }
+    }
+
+    // Pliki przeciągnięte na okno — zrzuty. Na wierzchu (także nad polem zadania, żeby upuszczony plik nie
+    // wkleił się jako ścieżka); DropArea nie zabiera myszy ani klawiatury.
+    DropArea {
+        id: drop
+        anchors.fill: parent
+        keys: ["text/uri-list"]
+        onDropped: event => {
+            page.filesDropped(event.urls.map(u => u.toString()))
+            event.accept()
         }
     }
 }

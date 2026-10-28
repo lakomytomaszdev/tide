@@ -1410,6 +1410,182 @@ out["missing"] = [js(d + "canStart"), obj("launchFooter").property("text")]
         self.assertIn("Nie znaleziono programu Claude Code", out["missing"][1])
 
 
+class LaunchReviewTest(ProbeCase):
+    """PT-43 po review: upuszczenie pliku na pole zadania, Tab do „Zrób zrzut”, schowek z tekstem i obrazem,
+    otwarcie okna w trakcie startu, Start bez odpowiedzi, Defaults po otwarciu okna."""
+
+    def scenario(self, body: str) -> str:
+        return f"TMP = {self.tmp!r}\n" + SHOTS_PY + body
+
+    def test_drop_on_task_field_tab_and_mixed_clipboard(self):
+        out = self.probe(self.scenario("""
+from PyQt6.QtCore import QMimeData, QPointF, QUrl
+from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
+js("page.canCapture = true")
+js("page.openLaunch('K-9', false)")
+wait(100)
+before = js("page.launchDialog.taskEdit.text")
+# Plik upuszczony na pole zadania: zrzut, nie ścieżka w tekście.
+mime = QMimeData()
+mime.setUrls([QUrl.fromLocalFile(png("upuszczony.png"))])
+point = QPointF(at("page.launchDialog.taskEdit"))
+copy = Qt.DropAction.CopyAction
+for event in (QDragEnterEvent(point.toPoint(), copy, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier),
+              QDragMoveEvent(point.toPoint(), copy, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier),
+              QDropEvent(point, copy, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)):
+    QGuiApplication.sendEvent(window, event)
+    wait(30)
+wait(100)
+out["dropped"] = [len(shots()), js("page.launchDialog.taskEdit.text") == before]
+# Tab z pola zadania — „Zrób zrzut”.
+js("page.launchDialog.taskEdit.forceActiveFocus()")
+key(Qt.Key.Key_Tab)
+out["tab"] = js(FIND + "(page.launchDialog, 'captureTile').activeFocus")
+# Schowek z tekstem i obrazem (komórki LibreOffice): w polu wkleja się tekst, poza polem — obraz.
+both = QMimeData()
+both.setText("A1\tB1")
+both.setImageData(QImage(png("komorki.png", "#f5b99a")))
+QGuiApplication.clipboard().setMimeData(both)
+js("page.launchDialog.taskEdit.forceActiveFocus(); page.launchDialog.taskEdit.cursorPosition = page.launchDialog.taskEdit.length")
+key(Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+out["inField"] = [len(shots()), js("page.launchDialog.taskEdit.text").endswith("A1\tB1")]
+js("page.launchDialog.forceActiveFocus()")
+key(Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+out["outside"] = len(shots())
+"""))
+        self.assertEqual(out["dropped"], [1, True], "upuszczony plik to zrzut, tekst zadania bez zmian")
+        self.assertTrue(out["tab"], "Tab z pola zadania prowadzi do „Zrób zrzut”")
+        self.assertEqual(out["inField"], [1, True], "w polu tekst wygrywa z obrazem")
+        self.assertEqual(out["outside"], 2, "poza polem — obraz")
+
+    def test_busy_start_without_reply_keeps_images_and_defaults_after_open(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = models_status()
+        data["tasks"] = {"tools": {"claude": True, "codex": True}, "model": "cloud"}
+        flow = dict(LaunchTest.FLOW, id="K-9", branch="claude/k-9-x")
+        out = self.probe(self.scenario(f"""
+js("page.openLaunch('K-9', false)")
+wait(100)
+d = "page.launchDialog."
+# Odświeżone Defaults() po otwarciu: zapamiętany „Lokalny”, póki nikt nie ruszał modelu.
+js("page.taskDefaults = ({{tools: {{claude: true, codex: true}}, model: 'local'}})")
+out["defaults"] = js(d + "model")
+wait(300)   # wiersz modelu układa się na nowo po zmianie na „Lokalny”
+click(at(FIND + "(page.launchDialog, 'launchModel-cloud')"))
+out["clicked"] = [js(d + "model"), js(d + "modelTouched")]
+js("page.taskDefaults = ({{tools: {{claude: true, codex: true}}, model: 'local', x: 1}})")
+out["touched"] = js(d + "model")
+js("page.launchDialog.filesDropped(['file://" + png("a.png") + "'])")
+wait(100)
+folder = os.path.dirname(shots()[0])
+# Start w drodze: otwarcie okna innej karty (popup kafelka) niczego nie rusza.
+replies.extend([json.loads({json.dumps(flow, ensure_ascii=False)!r}),
+                {{"ok": False, "error": "no-service", "message": "Usługa tide-daemon nie odpowiada"}}])
+backend._write_orig = backend._write
+held = []
+def slow(tag, member, args):
+    if member == "Start":
+        held.append((tag, member, args))
+        return
+    backend._write_orig(tag, member, args)
+backend._write = slow
+click(named("launchStart"))
+wait(200)
+js("showItem('launch:K-14')")
+wait(100)
+out["busy"] = [js("page.launchCardId"), js(d + "busy"), len(shots())]
+backend._write = backend._write_orig
+backend._write_orig(*held[0])
+wait(200)
+out["launchError"] = obj("launchError").property("text")
+click(named("launchCancel"))
+wait(100)
+out["kept"] = [os.path.isdir(folder), shots()]
+"""), data)
+        self.assertEqual(out["defaults"], "local")
+        self.assertEqual(out["clicked"], ["cloud", True], out)
+        self.assertEqual(out["touched"], "cloud", "wybór użytkownika wygrywa z odświeżonymi Defaults()")
+        self.assertEqual(out["busy"], ["K-9", True, 1], "w trakcie startu inne okno się nie otwiera, zrzuty zostają")
+        self.assertIn("nie odpowiada", out["launchError"])
+        self.assertEqual(out["kept"], [True, []], "Start bez odpowiedzi mógł ruszyć agenta — katalog zostaje")
+
+
+class TaskImagesTest(unittest.TestCase):
+    """apps/common/taskimages.py (wspólne z oknem „Nowe zadanie”): błędy zapisu bez zawieszonego okna,
+    nieudana kopia w środku listy, plik, który nie jest obrazem, zrzut Spectacle po zamknięciu zadania."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt6.QtCore import QCoreApplication
+        cls.app = QCoreApplication.instance() or QCoreApplication([])
+        from apps.common import taskimages
+        cls.mod = taskimages
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="tide-taskimages-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def png(self, name):
+        from PyQt6.QtGui import QColor, QImage
+        image = QImage(20, 10, QImage.Format.Format_RGB32)
+        image.fill(QColor("#6fd6c6"))
+        path = os.path.join(self.tmp, name)
+        image.save(path, "PNG")
+        return path
+
+    def spectacle(self, delay="0"):
+        fake = os.path.join(self.tmp, "spectacle")
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write(f"#!/bin/bash\nsleep {delay}\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && cp \"{self.png('shot.png')}\" \"$2\"; "
+                     "shift; done\n")
+        os.chmod(fake, 0o755)
+        return fake
+
+    def test_failed_copy_mid_batch_and_unreadable_image(self):
+        tray = self.mod.ImageTray("", os.path.join(self.tmp, "tasks"))
+        changed, problems = [], []
+        tray.imagesChanged.connect(lambda: changed.append(1))
+        tray.imageProblem.connect(problems.append)
+        fake = os.path.join(self.tmp, "udaje.png")
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write("to nie png")
+        tray.add_files([f"file://{self.png('a.png')}", f"file://{fake}"])
+        self.assertEqual(len(json.loads(tray.paths_json())), 1)
+        self.assertIn("udaje.png nie daje się odczytać jako obraz", problems[-1])
+        folder = tray.images.folder
+        os.chmod(folder, 0o500)
+        self.addCleanup(os.chmod, folder, 0o700)
+        n = len(changed)
+        tray.add_files([f"file://{self.png('b.png')}", f"file://{self.png('c.png')}"])
+        self.assertGreater(len(changed), n, "lista odświeżona mimo błędu")
+        self.assertEqual(problems[-1].count("nie udało się skopiować"), 2, "każdy plik osobno, bez przerwania")
+        self.assertEqual(sorted(os.listdir(folder)), ["zrzut-1.png"], "bez pustych zrzut-N")
+
+    def test_capture_without_folder_reports_problem(self):
+        blocker = os.path.join(self.tmp, "plik")
+        open(blocker, "w").close()
+        tray = self.mod.ImageTray(self.spectacle(), os.path.join(blocker, "tasks"))
+        finished, problems = [], []
+        tray.captureFinished.connect(finished.append)
+        tray.imageProblem.connect(problems.append)
+        tray.capture()
+        self.assertEqual(len(finished), 1)
+        self.assertIn("Nie udało się zapisać zrzutu", finished[0], "okno wraca z komunikatem, nie zostaje schowane")
+
+    def test_capture_result_after_discard_is_dropped(self):
+        tray = self.mod.ImageTray(self.spectacle("0.4"), os.path.join(self.tmp, "tasks"))
+        tray.add_files([f"file://{self.png('a.png')}"])
+        finished = []
+        tray.captureFinished.connect(finished.append)
+        tray.capture()
+        tray.discard()
+        tray.add_files([f"file://{self.png('b.png')}"])
+        self.assertTrue(wait_until(lambda: finished, timeout=10))
+        paths = json.loads(tray.paths_json())
+        self.assertEqual([os.path.basename(p) for p in paths], ["zrzut-1.png"], "zrzut starego zadania nie trafia do nowego")
+        tray.discard()
+
+
 class GrabTest(ProbeCase):
     def grab(self, name, *argv, data=None) -> str:
         data_path = os.path.join(self.tmp, name + ".json")

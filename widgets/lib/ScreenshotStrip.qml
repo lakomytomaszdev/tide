@@ -21,6 +21,13 @@ Flow {
     signal captureRequested()
     signal removeRequested(string path)
 
+    // Fokus na „Zrób zrzut” (Tab z pola zadania); false — kafelka nie ma.
+    function focusCapture() {
+        if (!captureTile.visible) return false
+        captureTile.forceActiveFocus(Qt.TabFocusReason)
+        return true
+    }
+
     function imageName(path) {
         const parts = String(path || "").split("/")
         return parts[parts.length - 1]

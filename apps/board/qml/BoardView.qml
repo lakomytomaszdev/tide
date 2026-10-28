@@ -100,11 +100,17 @@ Item {
         canCapture: view.backend ? view.backend.canCapture : false
         modelsStatus: view.backend ? Logic.parse(view.backend.modelsJson, null) : null
         taskDefaults: view.backend ? Logic.parse(view.backend.tasksJson, {}) : ({})
-        pasteImage: function () { return view.backend ? view.backend.pasteImage() : false }
+        pasteImage: function (inTextField) { return view.backend ? view.backend.pasteImage(!!inTextField) : false }
+        // Zapamiętany model i programy w PATH mogły się zmienić od startu widoku (okno „Nowe zadanie”, instalacja).
+        onLaunchRequested: cardId => { if (view.backend) view.backend.refreshTasks() }
         onLaunchClosed: started => {
             if (!view.backend) return
-            if (started) view.backend.keepImages()
-            else view.backend.discardImages()
+            if (started) {
+                view.backend.keepImages()
+                view.backend.refreshTasks()
+            } else {
+                view.backend.discardImages()
+            }
         }
         onRemoveImageRequested: path => { if (view.backend) view.backend.removeImage(path) }
         onFilesDropped: urls => { if (view.backend) view.backend.addFiles(urls) }
@@ -117,6 +123,7 @@ Item {
                 w.visible = false
             }
             captureDelay.start()
+            captureGuard.restart()
         }
         onModelsRequested: {
             const problem = view.backend ? view.backend.openModels() : ""
@@ -176,12 +183,8 @@ Item {
             page.cardPanel.applyDocs(cardId, text)
         }
         function onCaptureFinished(problem) {
-            const w = view.Window.window
-            if (w && !w.visible) {
-                w.visibility = view.captureVisibility === Window.Hidden ? Window.Windowed : view.captureVisibility
-                w.raise()
-                w.requestActivate()
-            }
+            captureGuard.stop()
+            view.restoreWindow()
             if (problem !== "") page.launchDialog.error = problem
             if (page.launchOpen) page.launchDialog.forceActiveFocus()
         }
@@ -194,6 +197,21 @@ Item {
         id: captureDelay
         interval: 250
         onTriggered: if (view.backend) view.backend.capture()
+    }
+    // Zabezpieczenie: gdyby captureFinished nie przyszło (Spectacle wisi), okno Tide wraca samo po 2 min.
+    Timer {
+        id: captureGuard
+        interval: 120000
+        onTriggered: view.restoreWindow()
+    }
+
+    // Okno Tide po „Zrób zrzut” wraca w stanie sprzed schowania (np. zmaksymalizowane).
+    function restoreWindow() {
+        const w = view.Window.window
+        if (!w || w.visible) return
+        w.visibility = view.captureVisibility === Window.Hidden ? Window.Windowed : view.captureVisibility
+        w.raise()
+        w.requestActivate()
     }
 
     // Zegar dla „zapisano 12:04” i czasów w panelu karty.

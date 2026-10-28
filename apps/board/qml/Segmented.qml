@@ -2,7 +2,6 @@
 // ~0,16 i tekst w akcencie. options: [{value, label, disabled?, hint?}] — disabled: wyszarzona, bez wyboru
 // (np. „⌂ Lokalny” bez dostępnego modelu), hint: podpowiedź po najechaniu (powód wyłączenia).
 import QtQuick
-import QtQuick.Controls as QQC2
 import "tide" as Tide
 
 Rectangle {
@@ -47,9 +46,10 @@ Rectangle {
                 Accessible.onPressAction: if (!off) segmented.picked(modelData.value)
                 Keys.onSpacePressed: if (!off) segmented.picked(modelData.value)
                 Keys.onReturnPressed: if (!off) segmented.picked(modelData.value)
-                QQC2.ToolTip.visible: area.containsMouse && !!option.modelData.hint
-                QQC2.ToolTip.text: option.modelData.hint || ""
-                QQC2.ToolTip.delay: 300
+                Tide.PlainToolTip {   // podpowiedź może nieść dane z usługi (powód, nazwa modelu) — zwykły tekst
+                    visible: area.containsMouse && !!option.modelData.hint
+                    text: option.modelData.hint || ""
+                }
                 Text {
                     id: label
                     anchors.centerIn: parent

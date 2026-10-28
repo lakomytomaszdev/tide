@@ -46,8 +46,9 @@ Rectangle {
     property bool canCapture: false
     property var modelsStatus: null        // Status() z /Models; {pending: true} — czekam; null — usługa nie podaje
     property var taskDefaults: ({})        // /Tasks Defaults: tools, model (zapamiętany), imagesDir
+    property bool modelTouched: false      // użytkownik wybrał model w tym oknie — Defaults() już go nie zmienia
     // Ctrl+V: funkcja() → true, gdy schowek miał obraz (albo pliki obrazów) i trafił do zrzutów.
-    property var pasteImage: function () { return false }
+    property var pasteImage: function (inTextField) { return false }
     readonly property var localOption: AgentModel.localOption(modelsStatus)
     readonly property var localLine: AgentModel.localLine(localOption)
     readonly property string modelNote: AgentModel.modelNote(localOption, model)
@@ -96,6 +97,7 @@ Rectangle {
         editingBranch = false
         mode = p ? p.mode || "full" : "full"
         // Model jak w oknie „Nowe zadanie”: zapamiętany wybór z ostatniego startu (Defaults().model).
+        modelTouched = false
         model = taskDefaults && taskDefaults.model === "local" ? "local" : "cloud"
         tool = p ? p.tool || "claude" : "claude"
         branch = Logic.launchBranch(c, agentTool)
@@ -120,6 +122,11 @@ Rectangle {
 
     function pickTool(value) {
         tool = value
+    }
+
+    // Odświeżone Defaults() (przy otwarciu okna) przychodzą po load(): zapamiętany model, dopóki nikt go tu nie zmienił.
+    onTaskDefaultsChanged: {
+        if (!modelTouched && !busy) model = taskDefaults && taskDefaults.model === "local" ? "local" : "cloud"
     }
 
     // Prefiks gałęzi idzie za programem, który ruszy (przełącznik narzędzia albo program agenta lokalnego).
@@ -149,7 +156,7 @@ Rectangle {
         } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
             start()
             event.accepted = true
-        } else if (event.matches(StandardKey.Paste) && !busy && pasteImage()) {
+        } else if (event.matches(StandardKey.Paste) && !busy && pasteImage(false)) {
             event.accepted = true   // obraz ze schowka trafił do zrzutów (fokus poza polem tekstowym)
         }
     }
@@ -173,18 +180,6 @@ Rectangle {
         clip: true
 
         MouseArea { anchors.fill: parent }
-
-        // Pliki obrazów przeciągnięte na okno — zrzuty zadania.
-        DropArea {
-            id: drop
-            anchors.fill: parent
-            keys: ["text/uri-list"]
-            enabled: !dialog.busy
-            onDropped: event => {
-                dialog.filesDropped(event.urls.map(u => u.toString()))
-                event.accept()
-            }
-        }
 
         Flickable {
             id: bodyFlick
@@ -362,9 +357,14 @@ Rectangle {
                                     font.family: Tide.Theme.uiFamily
                                     font.pixelSize: 13
                                     activeFocusOnTab: true
-                                    Keys.onTabPressed: event => { modelSwitch.forceActiveFocus(); event.accepted = true }
+                                    // Tab: „Zrób zrzut” (gdy jest), potem model i dalej.
+                                    Keys.onTabPressed: event => {
+                                        if (!shots.focusCapture()) modelSwitch.forceActiveFocus()
+                                        event.accepted = true
+                                    }
                                     Keys.onPressed: event => {
-                                        if (event.matches(StandardKey.Paste) && !dialog.busy && dialog.pasteImage())
+                                        // W polu: schowek z tekstem i obrazem (komórki LibreOffice) wkleja tekst.
+                                        if (event.matches(StandardKey.Paste) && !dialog.busy && dialog.pasteImage(true))
                                             event.accepted = true   // obraz ze schowka trafił do zrzutów
                                     }
                                     onCursorRectangleChanged: {
@@ -389,6 +389,7 @@ Rectangle {
                         // Zrzuty ekranu (wspólny pasek z oknem „Nowe zadanie”) — trafiają do agenta razem z poleceniem.
                         FieldLabel { text: "Zrzuty ekranu"; color: Tide.Tokens.textSecondary; Layout.topMargin: 2 }
                         Tide.ScreenshotStrip {
+                            id: shots
                             objectName: "launchShots"
                             Layout.fillWidth: true
                             images: dialog.images
@@ -417,7 +418,10 @@ Rectangle {
                         current: dialog.model
                         itemHeight: 30
                         pixelSize: 13
-                        onPicked: value => dialog.model = value
+                        onPicked: value => {
+                            dialog.modelTouched = true
+                            dialog.model = value
+                        }
                     }
                     FieldLabel { text: "Narzędzie"; color: Tide.Tokens.textSecondary; Layout.leftMargin: 14 }
                     Segmented {
@@ -478,46 +482,19 @@ Rectangle {
                     Item { Layout.fillWidth: true; visible: dialog.model !== "local" }
                 }
                 // Uwaga o modelu przy „Lokalny”: powód niedostępności albo uczciwa uwaga o jakości (jak w „Nowe zadanie”).
-                // W chmurze okno zostaje ciche (tablica jest gęstsza): powód wyłączenia „Lokalnego” jest w jego podpowiedzi.
-                RowLayout {
+                // W chmurze okno zostaje ciche (tablica jest gęstsza): powód wyłączenia „Lokalnego” jest w jego podpowiedzi,
+                // a odnośnik do Tide → Modele — w linii agenta.
+                Text {
+                    objectName: "launchModelNote"
                     Layout.fillWidth: true
                     Layout.topMargin: -8
                     visible: dialog.modelNote !== "" && dialog.model === "local"
-                    spacing: 6
-                    Text {
-                        objectName: "launchModelNote"
-                        Layout.fillWidth: !modelsLink.visible
-                        text: dialog.localOption.enabled || dialog.model === "local" ? dialog.modelNote
-                                                                                     : AgentModel.LOCAL_PREFIX + dialog.localOption.reason
-                        textFormat: Text.PlainText
-                        color: Tide.Tokens.textMuted
-                        font.family: Tide.Theme.uiFamily
-                        font.pixelSize: 12
-                        elide: Text.ElideRight
-                    }
-                    Text {
-                        id: modelsLink
-                        objectName: "launchModelsLink"
-                        visible: !dialog.localOption.enabled && dialog.localOption.hint && dialog.model !== "local"
-                        Layout.fillWidth: true
-                        text: "— " + AgentModel.MODELS_HINT
-                        textFormat: Text.PlainText
-                        color: linkArea.containsMouse ? Tide.Tokens.accent : Tide.Tokens.textSecondary
-                        font.family: Tide.Theme.uiFamily
-                        font.pixelSize: 12
-                        font.underline: linkArea.containsMouse
-                        elide: Text.ElideRight
-                        Accessible.role: Accessible.Link
-                        Accessible.name: "Otwórz Tide → Modele"
-                        Accessible.onPressAction: dialog.modelsRequested()
-                        MouseArea {
-                            id: linkArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: dialog.modelsRequested()
-                        }
-                    }
+                    text: dialog.modelNote
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 12
+                    elide: Text.ElideRight
                 }
 
                 // Dodatkowe projekty (PT-28): zadanie, które zmienia kilka repozytoriów.
@@ -1043,6 +1020,19 @@ Rectangle {
                         onClicked: dialog.start()
                     }
                 }
+            }
+        }
+
+        // Pliki obrazów przeciągnięte na okno — zrzuty zadania. Na wierzchu (także nad polem zadania, żeby
+        // upuszczony plik nie wkleił się jako ścieżka); DropArea nie zabiera myszy ani klawiatury.
+        DropArea {
+            id: drop
+            anchors.fill: parent
+            keys: ["text/uri-list"]
+            enabled: !dialog.busy
+            onDropped: event => {
+                dialog.filesDropped(event.urls.map(u => u.toString()))
+                event.accept()
             }
         }
     }
