@@ -209,6 +209,8 @@ class ModeMeansPlanningTest(BoardCase):
         self.assertEqual(self.store.render_launch("K-1", {"entry": "spec", "mode": "full"})["entry"], "spec")
 
     def test_upsert_project(self):
+        self.store.upsert_project({"slug": "dom", "entry": "spec"})   # jawne entry: spec, stare mode: spec znika
+        self.assertEqual(self.store.snapshot()["projects"][0]["entry"], "spec")
         self.assertTrue(self.store.upsert_project({"slug": "dom", "mode": "full"})["changed"])
         project = self.store.snapshot()["projects"][0]
         self.assertEqual((project["entry"], project["mode"]), ("planning", "full"))
