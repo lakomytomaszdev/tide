@@ -14,7 +14,8 @@ import unittest
 from . import gitrepos
 from tide_daemon.processes import ProcessInfo, ProcessTable
 from tide_daemon.worktrees import Launchers, WorktreeScanner, agent_cwds, find_repositories, scan
-from tide_daemon.worktrees.git import Git, parse_status, pick_main_branch
+from tide_daemon.worktrees.git import (HEAD_RESTARTS, Git, parse_status, pick_main_branch, reflog_has_own_commit,
+                                      worktree_gitdir)
 from tide_daemon.worktrees.disk import disk_usage
 
 LOGGING_GIT = """#!/bin/bash
@@ -240,6 +241,39 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(pick_main_branch({"main", "develop"}, ""), "main")
         self.assertEqual(pick_main_branch({"trunk"}, "trunk"), "")
 
+    def test_reflog_own_commit_evidence(self):
+        tmp = tempfile.mkdtemp(prefix="tide-reflog-")
+        self.addCleanup(shutil.rmtree, tmp)
+        z = "0" * 40
+
+        def log(name, *messages):
+            path = os.path.join(tmp, name)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(f"{z} {'1' * 40} t <t@t> 1790000000 +0000\n")  # wpis bez komunikatu
+                for message in messages:
+                    fh.write(f"{z} {'1' * 40} t <t@t> 1790000000 +0000\t{message}\n")
+            return path
+
+        self.assertIsNone(reflog_has_own_commit(os.path.join(tmp, "nie-ma")))
+        self.assertFalse(reflog_has_own_commit(log("a", "branch: Created from master")))
+        self.assertFalse(reflog_has_own_commit(log("b", "branch: Created from HEAD", "merge master: Fast-forward",
+                                                   "pull: Fast-forward", "reset: moving to master")))
+        for message in ("commit: x", "commit (amend): x", "commit (merge): x", "cherry-pick: x", "revert: x",
+                        "rebase (pick): x", "rebase -i (pick): x"):
+            self.assertTrue(reflog_has_own_commit(log("c", "branch: Created from master", message)), message)
+        self.assertFalse(reflog_has_own_commit(log("d", "commit: stara praca", "branch: Reset to master")))
+        self.assertTrue(reflog_has_own_commit(log("e", "commit: x", "branch: Reset to master", "commit: y")))
+        self.assertFalse(reflog_has_own_commit(log("f", "commit: x", "checkout: moving from a to b"), HEAD_RESTARTS))
+        self.assertTrue(reflog_has_own_commit(log("g", "reset: moving to HEAD", "commit: x"), HEAD_RESTARTS))
+
+    def test_worktree_gitdir_from_dotgit_file(self):
+        tmp = tempfile.mkdtemp(prefix="tide-gitdir-")
+        self.addCleanup(shutil.rmtree, tmp)
+        self.assertEqual(worktree_gitdir(tmp), "")
+        with open(os.path.join(tmp, ".git"), "w", encoding="utf-8") as fh:
+            fh.write("gitdir: ../repo/.git/worktrees/x\n")
+        self.assertEqual(worktree_gitdir(tmp), os.path.normpath(os.path.join(tmp, "../repo/.git/worktrees/x")))
+
     def test_status_parsing_with_renames(self):
         text = " M a.txt\0R  new.txt\0old.txt\0?? dir/\0"
         self.assertEqual(parse_status(text), ["a.txt", "new.txt", "dir/"])
@@ -413,6 +447,92 @@ class GroupingTest(WorktreeTestCase):
         detached = items["alpha-wt/detached"]
         self.assertEqual(detached["title"], f"odłączony HEAD {detached['head']}")
         self.assertEqual(items["alpha"]["subject"], "merge feat/merged")
+
+
+class MergedWorkGroupTest(WorktreeTestCase):
+    """Scalona praca idzie „Do sprzątnięcia” od razu, a nie po dobie (PT-30). Zegar: godzina po
+    commitach z fixtures, więc każdy worktree mieści się w oknie ACTIVE_WINDOW."""
+
+    NOW = gitrepos.COMMIT_TS + 3600
+
+    def groups(self, cwds=None):
+        self.scanner.refresh()
+        return {os.path.relpath(w["path"], self.root): w
+                for w in self.scanner.snapshot(self.agent if cwds is None else cwds, now=self.NOW)}
+
+    def add(self, name, *args, start=()):
+        path = os.path.join(self.root, "alpha-wt", name)
+        gitrepos.git(self.p["alpha"], "worktree", "add", "-q", *args, path, *start)
+        return path
+
+    def test_merged_with_own_commits_is_clean_right_away(self):
+        got = {name: w["group"] for name, w in self.groups().items()}
+        self.assertEqual(got, {
+            "alpha": "main",
+            "alpha-wt/merged": "clean",         # własny commit, scalony, czysty — od razu
+            "alpha-wt/detached": "active",      # bez własnych commitów — okno doby
+            "alpha-wt/dirty": "active",         # zmiany — jak dotąd
+            "alpha-wt/unmerged": "active",      # niescalone — jak dotąd
+            "alpha-wt/agent": "active",         # agent — zawsze w pracy
+            "group/beta": "main",
+            "group/beta-wt/topic": "active",    # brak gałęzi głównej — jak dotąd
+        })
+
+    def test_agent_keeps_merged_work_active(self):
+        w = self.groups(cwds=[self.p["merged"]])["alpha-wt/merged"]
+        self.assertEqual((w["group"], w["hasAgent"]), ("active", True))
+
+    def test_fresh_empty_branch_keeps_the_window(self):
+        fresh = self.add("fresh", "-b", "feat/fresh")
+        w = self.groups()["alpha-wt/fresh"]
+        self.assertEqual((w["group"], w["merged"], w["removable"]), ("active", True, True))
+        old = gitrepos.COMMIT_TS + 10 * 86400
+        self.scanner.refresh()
+        late = by_path(self.scanner.snapshot(self.agent, now=old + 86400))[fresh]
+        self.assertEqual(late["group"], "clean", "po dobie świeży i pusty też idzie do sprzątnięcia")
+
+    def test_fast_forward_to_main_is_not_own_work(self):
+        fresh = self.add("ff", "-b", "feat/ff")
+        gitrepos.commit(self.p["alpha"], "later.txt")
+        gitrepos.git(fresh, "merge", "-q", "--ff-only", "master")
+        self.assertEqual(self.groups()["alpha-wt/ff"]["group"], "active")
+
+    def test_commit_merged_by_fast_forward_counts(self):
+        work = self.add("ffwork", "-b", "feat/ffwork")
+        gitrepos.commit(work, "w.txt")
+        gitrepos.git(self.p["alpha"], "merge", "-q", "--ff-only", "feat/ffwork")
+        w = self.groups()["alpha-wt/ffwork"]
+        self.assertEqual((w["merged"], w["group"]), (True, "clean"))
+
+    def test_detached_head_with_merged_commit_is_clean(self):
+        work = self.add("det2", "--detach", start=("master",))
+        gitrepos.commit(work, "d.txt")
+        sha = gitrepos.git(work, "rev-parse", "HEAD").strip()
+        gitrepos.git(self.p["alpha"], "merge", "-q", "--ff-only", sha)
+        self.assertEqual(self.groups()["alpha-wt/det2"]["group"], "clean")
+
+    def test_branch_recreated_without_new_commits_keeps_the_window(self):
+        gitrepos.git(self.p["merged"], "checkout", "-q", "-B", "feat/merged", "master")
+        self.assertEqual(self.groups()["alpha-wt/merged"]["group"], "active")
+
+    def test_without_reflog_falls_back_to_the_window(self):
+        os.remove(os.path.join(self.p["alpha"], ".git", "logs", "refs", "heads", "feat", "merged"))
+        self.assertEqual(self.groups()["alpha-wt/merged"]["group"], "active")
+        self.scanner.refresh()
+        late = by_path(self.scanner.snapshot(self.agent, now=gitrepos.COMMIT_TS + 2 * 86400))[self.p["merged"]]
+        self.assertEqual(late["group"], "clean")
+
+    def test_clean_group_stays_a_subset_of_removable(self):
+        items = self.groups()
+        clean = sorted(name for name, w in items.items() if w["group"] == "clean")
+        self.assertEqual(clean, ["alpha-wt/merged"])
+        self.assertTrue(all(items[name]["removable"] for name in clean))
+        # Kafelek i nagłówek liczą „w pracy” z pola group (bez głównych katalogów) — merged już nie.
+        self.assertEqual(sum(1 for w in items.values() if not w["isMain"] and w["group"] == "active"), 5)
+
+    def test_listing_reads_reflog_without_extra_git_calls(self):
+        self.groups()
+        self.assertFalse([c for c in self.git_calls() if "reflog" in c or c.startswith("log")])
 
 
 class RemoveSubsetTest(WorktreeTestCase):

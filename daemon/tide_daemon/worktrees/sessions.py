@@ -11,7 +11,14 @@ zagnieżdżonych worktrees liczy się najgłębszy). Bierzemy sesje z ostatnich 
 - Codex: <codex>/sessions/RRRR/MM/DD/rollout-*.jsonl, katalog z `session_meta.payload.cwd`
   i `turn_context.payload.cwd` (worktrees Codexa leżą zwykle w ~/.codex/worktrees). Tytuł wątku
   z <codex>/session_index.jsonl (`thread_name`), inaczej pierwsze polecenie użytkownika
-  (`event_msg/user_message`). Wątki podagentów pomijamy.
+  (`event_msg/user_message`). Wątki podagentów pomijamy. Pomijamy też wątki zaimportowane przez
+  Codex Desktop z Claude Code (tury `external-import-turn-*`, bez żadnego `turn_context`): to kopia
+  sesji Claude ze sztucznymi czasami z chwili importu, więc „najświeższa” wygrywałaby z prawdziwą
+  sesją Claude i worktree dostawał znaczek Codexa. Wątek zaimportowany i kontynuowany w Codexie
+  (ma własne `turn_context`) liczy się normalnie.
+
+Gdy w worktree pasuje kilka sesji, wygrywa żywa (podana przez obszar Agents), a dopiero potem
+najświeższa.
 
 Z każdego pliku czytamy tylko początek i koniec (HEAD_BYTES, TAIL_BYTES), a JSON parsujemy tylko
 w liniach, które mogą nieść potrzebne pola. Wynik pliku jest w pamięci do zmiany jego rozmiaru
@@ -34,6 +41,9 @@ MAX_AGE = 30 * 86400
 HEAD_BYTES = 192 * 1024
 TAIL_BYTES = 192 * 1024
 TITLE_LIMIT = 80
+
+# Znacznik tur wątku zaimportowanego przez Codex Desktop z innego narzędzia (Claude Code).
+IMPORTED_TURN = "external-import-turn-"
 
 CLAUDE_TITLES = {"custom-title": ("customTitle", 3), "ai-title": ("aiTitle", 2), "summary": ("summary", 1)}
 
@@ -99,21 +109,26 @@ class SessionIndex:
             self.sessions = sessions
         return sessions
 
-    def link(self, worktrees) -> dict[str, SessionInfo]:
-        """Ścieżka worktree → najświeższa sesja w nim. worktrees: pary (ścieżka, ścieżka bez dowiązań)."""
+    def link(self, worktrees, live=()) -> dict[str, SessionInfo]:
+        """Ścieżka worktree → sesja w nim: żywa przed zakończoną, potem najświeższa.
+        worktrees: pary (ścieżka, ścieżka bez dowiązań); live: pary (narzędzie, identyfikator sesji)
+        żywych sesji z obszaru Agents."""
         with self._lock:
             sessions = list(self.sessions)
+        live = set(live or ())
         bases = [(path, (real or path).rstrip("/")) for path, real in worktrees]
         out: dict[str, SessionInfo] = {}
+        rank: dict[str, tuple] = {}
         for session in sessions:
             hit = set()
             for real in session.real_cwds or session.cwds:
                 best = _deepest(bases, real)
                 if best:
                     hit.add(best)
+            key = ((session.tool, session.session_id) in live, session.last_ts)
             for path in hit:
-                if path not in out or session.last_ts > out[path].last_ts:
-                    out[path] = session
+                if path not in out or key > rank[path]:
+                    out[path], rank[path] = session, key
         return out
 
     def _read_codex_titles(self) -> dict[str, str]:
@@ -245,6 +260,12 @@ def read_claude(path: str) -> _Parsed | None:
     return _Parsed("claude", session_id, title, prompt, tuple(cwds), _last_ts(tail))
 
 
+def _imported_turn(record) -> bool:
+    """Czy wpis to tura wątku zaimportowanego (payload.turn_id = external-import-turn-N)."""
+    payload = record.get("payload") if record else None
+    return isinstance(payload, dict) and str(payload.get("turn_id") or "").startswith(IMPORTED_TURN)
+
+
 def _prompt_text(content) -> str:
     """Pierwsze polecenie użytkownika, bez znaczników poleceń i wyników narzędzi."""
     text = ""
@@ -267,8 +288,11 @@ def read_codex(path: str) -> _Parsed | None:
     head, tail = head_and_tail(path)
     cwds: list[str] = []
     session_id, prompt = "", ""
+    imported, own_turns = False, False
     for part in (head, tail) if head is not tail else (head,):
         for line in part:
+            if not imported and IMPORTED_TURN.encode() in line:
+                imported = _imported_turn(_loads(line))
             if not (b'"session_meta"' in line or b'"turn_context"' in line
                     or (not prompt and b'"user_message"' in line)):
                 continue
@@ -288,9 +312,13 @@ def read_codex(path: str) -> _Parsed | None:
                 continue
             elif kind != "turn_context":
                 continue
+            else:
+                own_turns = True
             cwd = payload.get("cwd")
             if isinstance(cwd, str) and cwd and cwd not in cwds:
                 cwds.append(cwd)
+    if imported and not own_turns:
+        return None  # kopia sesji Claude Code zaimportowana przez Codex Desktop — liczy się oryginał
     if not session_id:
         name = os.path.basename(path)[:-len(".jsonl")]
         session_id = name[-36:]

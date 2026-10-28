@@ -391,7 +391,8 @@ Rectangle {
                         tint: Tide.Tokens.working
                         title: "W pracy"
                         count: page.active.length
-                        description: "agent działa (tych nie usuniesz, póki pracuje) albo coś zmieniło się w ostatniej dobie"
+                        description: "agent działa (tych nie usuniesz, póki pracuje) albo coś zmieniło się w ostatniej dobie, "
+                                     + "a praca nie jest jeszcze scalona"
                     }
                     Repeater {
                         model: page.active
@@ -421,7 +422,8 @@ Rectangle {
                         tint: Tide.Tokens.positive
                         title: "Do sprzątnięcia"
                         count: page.clean.length
-                        description: "scalone z lokalną gałęzią główną (bez łączenia z serwerem), bez zmian, nikt w nich nie pracuje"
+                        description: "scalone z lokalną gałęzią główną (bez łączenia z serwerem), bez zmian, nikt w nich nie pracuje; "
+                                     + "scalona praca trafia tu od razu"
                         actionText: page.clean.length === 0 || page.removing ? ""
                                   : page.allShownPicked ? "Odznacz wszystkie"
                                   : "Zaznacz wszystkie (" + page.clean.length + ")"

@@ -17,8 +17,10 @@ Co liczymy i skąd:
 - aktywny agent: katalog roboczy żywej sesji agenta (albo procesu claude/codex) leży w worktree;
   przy zagnieżdżonych worktrees liczy się najgłębszy,
 - tytuł i narzędzie: z nazwy gałęzi (naming.py), opis z tematu ostatniego commita albo z tytułu
-  powiązanej sesji agenta z ostatnich 30 dni (sessions.py),
+  powiązanej sesji agenta z ostatnich 30 dni (sessions.py; żywa sesja przed najświeższą),
 - ostatnia aktywność: najnowsze z ostatniej zmiany i ostatniego wpisu powiązanej sesji,
+- własne commity (own_commits): reflog gałęzi (albo HEAD odłączonego worktree) czytany wprost
+  z plików — tylko dla scalonych i czystych, bez dodatkowego wywołania gita,
 - grupa dla okna Worktrees (group_of): w pracy, do sprzątnięcia, do decyzji, gałęzie główne,
   brakujące katalogi.
 
@@ -37,7 +39,8 @@ from dataclasses import dataclass, field
 from ..agents.timeutil import iso
 from ..board.marker import is_board_repo
 from .disk import disk_usage
-from .git import MAIN_CANDIDATES, Git, parse_status, parse_worktree_list, pick_main_branch
+from .git import (HEAD_RESTARTS, MAIN_CANDIDATES, Git, common_dir, parse_status, parse_worktree_list,
+                  pick_main_branch, reflog_has_own_commit, worktree_gitdir)
 from .naming import guess_tool, humanize_branch
 
 MAX_DEPTH = 3
@@ -55,7 +58,8 @@ BLOCKERS = ("main", "protected", "missing", "locked", "agent", "dirty", "no-main
 # kończy się jego błędami albo odtworzeniem plików w pustym miejscu (decyzja 41).
 HARD_BLOCKERS = ("main", "protected", "missing", "locked", "agent")
 
-# Grupy okna Worktrees. „W pracy”: agent albo jakakolwiek aktywność w ostatniej dobie.
+# Grupy okna Worktrees. „W pracy”: agent albo aktywność w ostatniej dobie — z wyjątkiem scalonej
+# pracy (scalony, czysty, z własnymi commitami), która od razu idzie „Do sprzątnięcia”.
 ACTIVE_WINDOW = 24 * 3600
 GROUPS = ("active", "clean", "decide", "main", "missing")
 SUBJECT_LIMIT = 120
@@ -64,13 +68,22 @@ SUBJECT_LIMIT = 120
 def group_of(wt: "Worktree", blocker: str, has_agent: bool, last_activity: float, now: float) -> str:
     """Grupa worktree w oknie. Kolejność reguł ma znaczenie:
     brakujący katalog → missing; główny katalog i gałąź główna → main (nigdy do sprzątania);
-    agent albo aktywność krótsza niż ACTIVE_WINDOW → active; da się bezpiecznie usunąć → clean;
-    reszta (niescalone commity, zmiany, blokada, brak gałęzi głównej) → decide."""
+    agent → active; da się bezpiecznie usunąć i ma własne commity (praca skończona i scalona)
+    → clean od razu; aktywność krótsza niż ACTIVE_WINDOW → active; da się bezpiecznie usunąć
+    → clean; reszta (niescalone commity, zmiany, blokada, brak gałęzi głównej) → decide.
+
+    Okno ACTIVE_WINDOW zostaje dla świeżych worktrees bez własnych commitów: taki też wygląda na
+    scalony (0 commitów poza gałęzią główną), a to dopiero początek pracy. Gdy nie wiadomo, czy
+    były własne commity (own_commits None: brak reflogu), obowiązuje okno jak dotąd."""
     if wt.missing:
         return "missing"
     if wt.is_main or wt.protected:
         return "main"
-    if has_agent or now - last_activity < ACTIVE_WINDOW:
+    if has_agent:
+        return "active"
+    if blocker == "" and wt.own_commits:
+        return "clean"
+    if now - last_activity < ACTIVE_WINDOW:
         return "active"
     return "clean" if blocker == "" else "decide"
 
@@ -92,6 +105,7 @@ class Worktree:
     unpushed: int = 0             # commity tylko w tym worktree (bez innej gałęzi i gałęzi zdalnej); -1: nie wiadomo
     last_change: float = 0.0
     subject: str = ""             # temat ostatniego commita HEAD
+    own_commits: bool | None = None  # czy w gałęzi powstał własny commit (reflog); None: nie wiadomo
     nested: tuple = ()            # inne worktrees wewnątrz tego katalogu
     real: str = ""                # ścieżka bez dowiązań — do porównań z katalogami agentów
 
@@ -130,6 +144,17 @@ class Worktree:
             "agent": has_agent,
         }
         return next((name for name in HARD_BLOCKERS if checks[name]), "")
+
+
+def own_commits(repo_path: str, wt: Worktree) -> bool | None:
+    """Czy w worktree powstał własny commit — dowód z reflogu, czytany wprost z plików (bez gita):
+    gałąź → <wspólny>/logs/refs/heads/<gałąź> (commity po jej założeniu); odłączony HEAD →
+    logs/HEAD z prywatnego katalogu worktree (commity po ostatnim checkout). None, gdy reflogu
+    nie ma (wyłączony, repozytorium bare, reftable) — wtedy grupę wyznacza okno ACTIVE_WINDOW."""
+    if wt.branch:
+        return reflog_has_own_commit(os.path.join(common_dir(repo_path), "logs", "refs", "heads", wt.branch))
+    gitdir = worktree_gitdir(wt.path)
+    return reflog_has_own_commit(os.path.join(gitdir, "logs", "HEAD"), HEAD_RESTARTS) if gitdir else None
 
 
 def find_repositories(root: str, max_depth: int = MAX_DEPTH) -> list[str]:
@@ -176,6 +201,13 @@ def agent_cwds(sessions: list[dict], procs=None) -> list[str]:
         for tool in ("claude", "codex"):
             cwds += [p.cwd for p in procs.agents(tool)]
     return sorted({c for c in cwds if c})
+
+
+def live_sessions(sessions: list[dict]) -> set[tuple[str, str]]:
+    """Żywe sesje z obszaru Agents jako pary (narzędzie, identyfikator) — przy kilku sesjach
+    w jednym worktree znaczek narzędzia bierzemy z tej, która tam teraz pracuje."""
+    return {(s.get("tool", ""), s.get("sessionId", "")) for s in sessions
+            if s.get("state") != "ended" and s.get("tool") and s.get("sessionId")}
 
 
 class WorktreeScanner:
@@ -247,6 +279,8 @@ class WorktreeScanner:
                     wt.unmerged = int(count.out)
             if entry.head and not wt.missing and not wt.is_main and not wt.protected and wt.unmerged != 0:
                 wt.unpushed = self._only_here(repo_path, entry.head, entry.branch)
+            if wt.merged and wt.dirty == 0 and not wt.missing and not wt.is_main and not wt.protected:
+                wt.own_commits = own_commits(repo_path, wt)
             out.append(wt)
         return out
 
@@ -313,12 +347,14 @@ class WorktreeScanner:
 
     # --- wynik -----------------------------------------------------------------------------
 
-    def snapshot(self, cwds: list[str] = (), now: float | None = None) -> list[dict]:
-        """Lista dla D-Bus z bieżących danych — tania, bez wołania gita."""
+    def snapshot(self, cwds: list[str] = (), now: float | None = None, live=()) -> list[dict]:
+        """Lista dla D-Bus z bieżących danych — tania, bez wołania gita. live: żywe sesje
+        (live_sessions) — mają pierwszeństwo przy powiązaniu worktree z sesją."""
         with self._lock:
             items = list(self.items)
         agents = _agents_by_worktree(items, cwds)
-        linked = self.sessions.link([(w.path, w.real) for w in items]) if self.sessions is not None else {}
+        linked = (self.sessions.link([(w.path, w.real) for w in items], live)
+                  if self.sessions is not None else {})
         now = self.clock() if now is None else now
         out = [self._describe(w, w.path in agents, linked.get(w.path), now) for w in items]
         out.sort(key=lambda d: (d["repo"].lower(), d["repoPath"], not d["isMain"], -d["lastChangeTs"]))
@@ -597,11 +633,11 @@ def _agents_by_worktree(items: list[Worktree], cwds) -> set[str]:
 
 
 def scan(root: str, cwds: list[str] = (), max_depth: int = MAX_DEPTH, measure: bool = True,
-         now: float | None = None, sessions=None) -> list[dict]:
+         now: float | None = None, sessions=None, live=()) -> list[dict]:
     """Jednorazowy przebieg dla testów i trybu --print: katalog projektów → lista worktrees."""
     scanner = WorktreeScanner(root, max_depth, sessions=sessions,
                               clock=(lambda: now) if now is not None else time.time)
     scanner.refresh()
     if measure:
         scanner.measure_stale()
-    return scanner.snapshot(cwds)
+    return scanner.snapshot(cwds, live=live)

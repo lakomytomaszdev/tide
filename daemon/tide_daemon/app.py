@@ -153,9 +153,11 @@ def main(argv=None) -> int:
         scanner.discover(now)
         scanner.update()
         procs = None if args.no_processes else processes.probe(log_roots=(scanner.codex_sessions,))
-        cwds = worktrees.agent_cwds(scanner.sessions(now, procs), procs)
+        agents = scanner.sessions(now, procs)
+        cwds = worktrees.agent_cwds(agents, procs)
         index = worktrees.SessionIndex(args.claude_dir, args.codex_dir)
-        print(json.dumps(worktrees.scan(args.workspace, cwds, args.worktree_depth, now=now, sessions=index),
+        print(json.dumps(worktrees.scan(args.workspace, cwds, args.worktree_depth, now=now, sessions=index,
+                                        live=worktrees.live_sessions(agents)),
                          ensure_ascii=False, indent=2))
         return 0
 
@@ -216,7 +218,8 @@ def main(argv=None) -> int:
     trees = WorktreeMonitor(worktrees.WorktreeScanner(args.workspace, args.worktree_depth, clock=clock,
                                                       sessions=worktree_sessions),
                             lambda: worktrees.agent_cwds(monitor.sessions, monitor.procs),
-                            launchers, refresh_agents=monitor.recompute)
+                            launchers, refresh_agents=monitor.recompute,
+                            live_source=lambda: worktrees.live_sessions(monitor.sessions))
     monitor.changed.connect(trees.publish)  # nowy albo zakończony agent zmienia flagę „aktywny agent”
     # KRunner przed główną nazwą: gdy org.tide.Daemon jest już na magistrali, wtyczka też.
     coordination = None if args.no_coordination else start_coordination(app, args, clock, monitor, trees,
