@@ -336,16 +336,21 @@ function titleSources(ticket) {
 }
 
 // Pasek ostrzeżeń nad kolumnami: kontrola numerów ticketów w planach repozytorium (board.warnings,
-// coordination/numbering.py). Najpierw kolizje twarde, najwyżej `limit` linii, reszta jako „i N więcej”.
+// coordination/numbering.py). Kolizje twarde, najwyżej `limit` linii, reszta jako „i N więcej”. Łagodne
+// uwagi (np. numer zarezerwowany pod tytułem w innym języku) tylko jedną linią z liczbą — 28.10 piętnaście
+// takich linii zasłaniało tablicę.
 var WARNINGS_SHOWN = 3
 
 function warningLines(board, limit) {
     var list = (board && board.warnings) || []
     limit = limit || WARNINGS_SHOWN
-    var out = list.slice(0, limit).map(function (w) {
-        return (w.severity === "hard" ? "Konflikt numerów: " : "Numeracja: ") + (w.text || "")
-    })
-    if (list.length > limit)
-        out.push("i " + (list.length - limit) + " więcej — wszystkie pokaże make check-plans")
+    var hard = list.filter(function (w) { return w.severity === "hard" })
+    var soft = list.length - hard.length
+    var out = hard.slice(0, limit).map(function (w) { return "Konflikt numerów: " + (w.text || "") })
+    if (hard.length > limit)
+        out.push("i " + (hard.length - limit) + " więcej — wszystkie pokaże make check-plans")
+    if (soft > 0)
+        out.push("Numeracja: " + soft + (soft === 1 ? " uwaga" : soft % 10 >= 2 && soft % 10 <= 4 && (soft % 100 < 12 || soft % 100 > 14) ? " uwagi" : " uwag")
+                 + " — make check-plans")
     return out
 }
