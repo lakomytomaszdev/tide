@@ -259,6 +259,46 @@ class ModelsMonitorWritesTest(unittest.TestCase):
         self.assertEqual(self.json.loads(monitor.set_role("[]"))["error"], "niepoprawne żądanie: oczekiwano obiektu JSON")
         self.assertIn("raport poranny jest wyłączony", self.json.loads(monitor.set_report_summary("local"))["error"])
 
+    def test_search_state_in_status_and_writes_wake_the_index(self):
+        """PT-19: pole `search` — `enabled` z models.json i stan indeksu KRunnera; zmiana stanu indeksu z jego
+        wątku daje Changed; SetSemanticSearch zapisuje plik i budzi indeks; bez KRunnera — „inactive”."""
+        from tide_daemon.models import status as models_status
+
+        class Search:
+            def __init__(self):
+                self.listeners, self.woken = [], 0
+                self.current = {"state": "waiting", "items": 0, "pending": 0, "updated": "", "error": "",
+                                "model": "", "dims": 0}
+
+            def state(self):
+                return dict(self.current)
+
+            def add_listener(self, listener):
+                self.listeners.append(listener)
+
+            def wake(self):
+                self.woken += 1
+
+        search = Search()
+        monitor, changes = self.monitor(lambda: models_status.assemble(models_config.load(), {}), search=search,
+                                        queue_gap_ms=0)
+        self.assertEqual(self.json.loads(monitor.status_json())["search"]["state"], "waiting")
+        search.current.update(state="ready", items=12, model="bge-m3:latest", dims=1024)
+        threading.Thread(target=lambda: [listener() for listener in search.listeners]).start()
+        self.assertTrue(wait_until(lambda: changes and changes[-1]["search"]["items"] == 12, timeout=5))
+        self.assertEqual(changes[-1]["search"], {"enabled": True, "state": "ready", "items": 12, "pending": 0,
+                                                 "updated": "", "error": "", "model": "bge-m3:latest", "dims": 1024})
+        self.assertEqual(self.json.loads(monitor.set_semantic_search("off")), {"ok": True, "error": ""})
+        self.assertEqual(search.woken, 1, "wyłączenie budzi indeks — plik znika od razu")
+        self.assertEqual(changes[-1]["search"]["enabled"], False)
+        self.assertEqual(self.json.loads(monitor.set_role(self.json.dumps({"role": "embed", "model": "nomic-embed-text"}))),
+                         {"ok": True, "error": ""})
+        self.assertEqual(search.woken, 2, "inny model roli embed — indeks od nowa")
+        self.assertFalse(self.json.loads(monitor.set_semantic_search("może"))["ok"])
+        self.assertEqual(search.woken, 2)
+        plain, _changes = self.monitor(lambda: None)
+        self.assertEqual(self.json.loads(plain.status_json())["search"]["state"], "inactive")
+
     def test_pull_changed_throttled_and_entry_cleared(self):
         import time
         from .test_models_core import start_server

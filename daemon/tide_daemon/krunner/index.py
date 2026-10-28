@@ -22,7 +22,9 @@ nazwy wątków i bazy stanu czytamy ze wszystkich, kopię tego samego pliku z dr
 pomijamy, a segmenty jednego wątku (to samo id) są jedną pozycją z najnowszego segmentu. Pole `source` to plik dziennika: wznowienie sesji ze snapa
 uruchamia Codexa ze snapa (worktrees/launchers.py), bo tylko on widzi swój katalog.
 
-Indeks żyje wyłącznie w pamięci usługi — nic nie trafia na dysk ani poza komputer.
+Indeks żyje wyłącznie w pamięci usługi — nic nie trafia na dysk ani poza komputer. Wyszukiwanie po
+znaczeniu (semantic.py, PT-19) zapisuje na dysku tylko wektory tych metadanych (bez tekstu), liczone
+modelem lokalnym.
 """
 import glob
 import os
@@ -147,6 +149,8 @@ class SessionIndex:
         self._places: dict[str, gitinfo.Location] = {}
         self._entries: list[dict] = []
         self._lock = threading.Lock()
+        # refresh() woła LazyIndex (zapytania KRunnera) i indeks znaczeniowy (semantic.py) z różnych wątków.
+        self._refresh_lock = threading.Lock()
         self.built = False
         self.last_refresh = 0.0
 
@@ -157,6 +161,10 @@ class SessionIndex:
 
     def refresh(self) -> int:
         """Szuka plików z ostatnich max_age i doczytuje tylko zmienione. Zwraca liczbę odczytanych."""
+        with self._refresh_lock:
+            return self._refresh()
+
+    def _refresh(self) -> int:
         now = self.clock()
         cutoff = now - self.max_age
         found = {}
@@ -228,6 +236,8 @@ class SessionIndex:
             # Gałąź z chwili sesji (z dziennika), a dopiero bez niej bieżąca z katalogu.
             "branch": (where.branch if moved else "") or log.branch or where.branch,
             "title": short_title(title) or entry.prompt,
+            # Początek pierwszej wiadomości (do TITLE_LIMIT znaków) — tylko dla wyszukiwania po znaczeniu (semantic.py).
+            "prompt": entry.prompt,
             "lastActivity": log.last_activity or entry.stamp[1],
             # Wątek z Codex Desktop — Uruchom otwiera go w aplikacji zamiast `codex resume` w Konsoli.
             "desktop": log.tool == "codex" and is_desktop(getattr(log, "originator", "")),

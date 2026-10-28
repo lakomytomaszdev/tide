@@ -7,8 +7,10 @@ Kształt pliku (wszystko opcjonalne):
                    "mac": {"url": "http://mac-studio:11434", "kind": "ollama", "tokenFile": "~/.config/tide/mac.token"}},
      "roles": {"summary": "local:qwen3:8b",
                "describe": {"model": "local:qwen3:8b", "ctx": 8192},
-               "agent": "qwen3-coder:30b"},
-     "agentProgram": "codex"}
+               "agent": "qwen3-coder:30b",
+               "embed": "bge-m3"},
+     "agentProgram": "codex",
+     "semanticSearch": true}
 
 Rola to „punkt:model” albo obiekt {"model": "punkt:model", "ctx": N}. Nazwy modeli mają dwukropki
 (`qwen3:8b`, `hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M`), więc dzielimy tylko na pierwszym —
@@ -19,7 +21,8 @@ i tylko wtedy, gdy przed nim stoi nazwa znanego punktu. Inaczej cały napis to m
 8 GB model 8B z kontekstem 16k nie mieści się w całości i pisze kilkanaście razy wolniej (PT-13);
 pozostałe role bez `ctx` — kontekst serwera. `ctx: 0` też znaczy „kontekst serwera”.
 
-Bez pliku: punkt `local` (http://127.0.0.1:11434, ollama) i role `summary`, `describe` → qwen3:8b.
+Bez pliku: punkt `local` (http://127.0.0.1:11434, ollama), role `summary`, `describe` → qwen3:8b i `embed` →
+bge-m3 (embeddingi do wyszukiwania po znaczeniu w KRunnerze, PT-19).
 Zepsuty plik (nie JSON, nie obiekt) → wartości domyślne i `error`; zły punkt albo rola są pomijane
 z ostrzeżeniem w `warnings`, reszta działa. Brakujące role domyślne dochodzą na punkcie `default`.
 Punkt jest zły także wtedy, gdy adresu nie da się rozebrać na host i port (port spoza 1…65535,
@@ -33,6 +36,10 @@ w stanie to zapasowy punkt (`local` albo pierwszy) — tylko po to, żeby było 
 `codex` (domyślnie — Ollama obsługuje go wprost) albo `claude` (Claude Code). Program to nie model: model
 bierze się z roli `agent`, program — z tego klucza, jednego dla wszystkich serwerów (przełączenie na Maca
 go nie zmienia). Brak klucza — `codex`; nieznana wartość — ostrzeżenie i `codex`, reszta pliku działa.
+
+`semanticSearch` włącza wyszukiwanie po znaczeniu w KRunnerze (PT-19): `true` albo `false`, brak klucza — włączone
+(działa dopiero wtedy, gdy model roli `embed` jest na serwerze); zła wartość — ostrzeżenie i włączone. Wyłączone
+— usługa niczego nie indeksuje i usuwa zapisane wektory.
 
 Token (`tokenFile`, z rozwinięciem `~`) czytamy przy każdym zapytaniu, tylko w pamięci, i wysyłamy
 jako `Authorization: Bearer`; nie trafia do dziennika, komunikatów błędów ani odpowiedzi D-Bus.
@@ -54,7 +61,9 @@ DEFAULT_URL = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen3:8b"
 DEFAULT_CTX = 8192
 # Role domyślne (bez punktu — idą na `default`) i kontekst, który dostają, gdy plik go nie podaje.
-DEFAULT_ROLES = {"summary": DEFAULT_MODEL, "describe": DEFAULT_MODEL}
+# `embed` — embeddingi do wyszukiwania po znaczeniu w KRunnerze (PT-19); mały model, dobry dla polskiego.
+DEFAULT_EMBED_MODEL = "bge-m3"
+DEFAULT_ROLES = {"summary": DEFAULT_MODEL, "describe": DEFAULT_MODEL, "embed": DEFAULT_EMBED_MODEL}
 ROLE_CTX = {"summary": DEFAULT_CTX, "describe": DEFAULT_CTX}
 MAX_CTX = 1 << 20
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,39}")
@@ -143,6 +152,7 @@ class ModelsConfig:
     error: str = ""          # plik nie do użycia (wtedy wszystko domyślne)
     warnings: tuple = field(default_factory=tuple)
     agent_program: str = DEFAULT_AGENT_PROGRAM   # `agentProgram`: codex albo claude
+    semantic_search: bool = True                 # `semanticSearch`: wyszukiwanie po znaczeniu w KRunnerze
 
     def endpoint(self, name: str | None = None) -> Endpoint:
         name = name or self.default
@@ -276,6 +286,25 @@ def _agent_program(data: dict, warnings: list) -> str:
     return value
 
 
+def semantic_search_problem(value) -> str:
+    """Powód po polsku, gdy `semanticSearch` jest zły ("" — dobry); ten sam przy odczycie pliku i zapisie z D-Bus."""
+    if isinstance(value, bool):
+        return ""
+    shown = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    return f"semanticSearch: oczekiwano true albo false, jest „{str(shown)[:40]}”"
+
+
+def _semantic_search(data: dict, warnings: list) -> bool:
+    value = data.get("semanticSearch")
+    if value is None:
+        return True
+    problem = semantic_search_problem(value)
+    if problem:
+        warnings.append(f"{problem} — wyszukiwanie po znaczeniu włączone")
+        return True
+    return value
+
+
 def bad_name(what: str, name) -> str:
     """Komunikat o złej nazwie punktu albo roli — ten sam przy odczycie pliku i przy zapisie z D-Bus."""
     return f"{what} „{str(name)[:40]}”: niepoprawna nazwa (litery, cyfry, _.-)"
@@ -375,7 +404,8 @@ def from_dict(data, path: str = "", exists: bool = True) -> ModelsConfig:
         else:
             roles.setdefault(name, Role(name, default, model, ROLE_CTX.get(name)))
     program = _agent_program(data, warnings)
-    return ModelsConfig(default, endpoints, roles, path, exists, "", tuple(warnings), program)
+    search = _semantic_search(data, warnings)
+    return ModelsConfig(default, endpoints, roles, path, exists, "", tuple(warnings), program, search)
 
 
 def load(path: str | None = None) -> ModelsConfig:

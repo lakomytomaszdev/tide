@@ -35,6 +35,8 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(e, {
             "id": "claude:h-titled", "tool": "claude", "sessionId": "h-titled", "cwd": self.p["alpha"],
             "project": "alpha", "branch": "feat/login", "title": "Login form fix",
+            # Początek pierwszej wiadomości (do 100 znaków) — dla wyszukiwania po znaczeniu (PT-19).
+            "prompt": "Please fix the login form validation",
             "lastActivity": history.NOW - 3 * 86400 + 60 - 2 * 3600,  # 2026-10-23T10:01Z
             "desktop": False,
             "source": os.path.join(self.p["claude"], "projects", "-ROOT-work-alpha", "h-titled.jsonl"),

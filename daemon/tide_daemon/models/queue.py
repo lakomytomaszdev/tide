@@ -10,9 +10,9 @@ przechodzi — także przyszłe (PT-17, PT-19) — bez pamiętania o tym w każd
 więc dwie nazwy punktu na ten sam serwer dzielą jedno miejsce:
 
 - na torze działa najwyżej `slots` wywołań naraz (domyślnie 1; więcej np. dla Maca — później),
-- kolejność: najpierw priorytet (HIGH — krótkie rzeczy, na które użytkownik patrzy: opisy kart; LOW —
-  ciężka praca wsadowa: raport), w obrębie priorytetu kolejność przyjścia; trwającego wywołania nic
-  nie przerywa,
+- kolejność: najpierw priorytet (HIGH — krótkie rzeczy, na które użytkownik patrzy: opisy kart, zapytanie
+  KRunnera; LOW — ciężka praca wsadowa: raport; IDLE — praca w tle: indeks wyszukiwania), w obrębie
+  priorytetu kolejność przyjścia; trwającego wywołania nic nie przerywa,
 - grupowanie modeli: w obrębie tego samego priorytetu pierwszeństwo ma wywołanie tym samym modelem,
   którym serwer pracował ostatnio (bez przerzucania modeli między kartą a pamięcią), ale tylko dopóki
   najstarsze czekające nie czeka dłużej niż GROUP_HOLD_S — potem zwykła kolejność przyjścia,
@@ -46,14 +46,19 @@ from datetime import datetime
 
 from .transport import ModelError
 
-HIGH = 0        # krótkie rzeczy, na które użytkownik patrzy (opisy kart)
+HIGH = 0        # krótkie rzeczy, na które użytkownik patrzy (opisy kart, zapytanie KRunnera)
 NORMAL = 5      # domyślnie
 LOW = 10        # ciężka praca wsadowa (raport poranny)
+IDLE = 20       # praca w tle, gdy nic innego nie czeka (indeks wyszukiwania po znaczeniu, PT-19)
 ROLE_PRIORITY = {"describe": HIGH, "summary": LOW}
-ROLE_WORDS = {"describe": "opisy kart", "summary": "raport poranny"}
+ROLE_WORDS = {"describe": "opisy kart", "summary": "raport poranny", "embed": "wyszukiwanie"}
 DEFAULT_SLOTS = 1
 DEFAULT_WAIT_S = 600.0
 GROUP_HOLD_S = 60.0
+
+
+class Busy(ModelError):
+    """Limit czekania w kolejce minął — serwer był zajęty, a nie niedostępny (wywołujący może spróbować później)."""
 
 
 def priority_of(role: str | None) -> int:
@@ -115,6 +120,7 @@ class Queue:
         self._running: dict[str, list[_Item]] = {}
         self._chosen: dict[str, _Item] = {}
         self._last_model: dict[str, str] = {}
+        self._last_end: dict[str, float] = {}     # tor → koniec ostatniego wywołania (zegar kolejki)
         self._seq = itertools.count()
         self._listeners: list = []
 
@@ -191,11 +197,11 @@ class Queue:
         if error is not None:
             raise error
 
-    def _expired(self, item: _Item, now: float) -> ModelError:
+    def _expired(self, item: _Item, now: float) -> Busy:
         busy = ", ".join(dict.fromkeys(ROLE_WORDS.get(r.role, r.role or "inne wywołanie")
                                        for r in self._running.get(item.lane) or ()))
         reason = f"serwer zajęty: {busy}" if busy else "przed nim inne wywołania w kolejce"
-        return ModelError(f"Model lokalny: kolejka: czekał {seconds(now - item.queued)} s — {reason} ({item.host})")
+        return Busy(f"Model lokalny: kolejka: czekał {seconds(now - item.queued)} s — {reason} ({item.host})")
 
     # --- stan pod blokadą -----------------------------------------------------------------------
 
@@ -214,6 +220,8 @@ class Queue:
             self._remove(self._running, item)
             if ran and item.model:
                 self._last_model[item.lane] = item.model
+            if ran:
+                self._last_end[item.lane] = self._now()
             self._choose(item.lane)
         self._notify()
 
@@ -304,6 +312,16 @@ class Queue:
                 out[lane] = {"running": running[0].public(running=True) if running else None,
                              "waiting": [i.public() for i in waiting]}
             return out
+
+    def quiet(self, lane: str) -> tuple[float | None, str]:
+        """(ile sekund tor stoi bez pracy, model ostatniego wywołania): None — coś trwa albo czeka,
+        float("inf") — od startu nic tu nie było. Praca w tle (indeks wyszukiwania) czeka na dłuższą ciszę,
+        żeby nie wypychać z karty modelu, którego raport albo opisy kart zaraz znowu użyją."""
+        with self._cond:
+            if self._waiting.get(lane) or self._running.get(lane):
+                return None, self._last_model.get(lane, "")
+            end = self._last_end.get(lane)
+            return (float("inf") if end is None else max(0.0, self._now() - end)), self._last_model.get(lane, "")
 
     def busy(self) -> bool:
         with self._cond:

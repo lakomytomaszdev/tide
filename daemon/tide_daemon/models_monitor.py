@@ -6,7 +6,8 @@ D-Bus. Wynik wraca sygnałem Qt; Changed tylko wtedy, gdy JSON stanu się zmieni
 odczytu zleca jeszcze jeden zaraz po nim — żeby po zmianie models.json albo załadowaniu modelu wynik
 był świeży, a nie sprzed chwili.
 
-Zapis (SetEndpoint, RemoveEndpoint, SetDefault, SetRole, SetAgentProgram, SetReportSummary; models/settings.py) idzie
+Zapis (SetEndpoint, RemoveEndpoint, SetDefault, SetRole, SetAgentProgram, SetSemanticSearch, SetReportSummary;
+models/settings.py) idzie
 w wątku głównym — to zapis małego pliku. Po udanym zapisie stan składamy od razu z nowych ustawień
 i ostatnich stanów punktów (punkt nowy albo ze zmienionym adresem jest „nie sprawdzony”: online false
 bez błędu), wysyłamy Changed i zlecamy odczyt. Odczyt, który trwał w chwili zapisu, jest odrzucany
@@ -21,6 +22,11 @@ Pole `queue` w stanie: kolejka wywołań modeli (models/queue.py) na każdy punk
 opisy kart) i trafiają do wątku głównego sygnałem Qt; Changed z ich powodu najwyżej co QUEUE_GAP_MS.
 Postęp pobierania i kolejka dzielą jedno dławienie (`_publish_soon`): jeden zegar ostatniej publikacji
 i jeden odłożony zapis — oba źródła razem dają Changed najwyżej raz na odstęp.
+
+Pole `search`: wyszukiwanie po znaczeniu w KRunnerze (PT-19) — `enabled` z models.json i stan indeksu
+(krunner/semantic.py: state, items, pending, updated, error, model, dims). Zmiany stanu indeksu przychodzą
+z jego wątku i idą tym samym dławieniem co kolejka; każdy udany zapis ustawień budzi indeks (włączenie,
+wyłączenie, inny model roli `embed`). Usługa bez KRunnera — `state: "inactive"`.
 """
 from __future__ import annotations
 
@@ -91,14 +97,15 @@ class ModelsMonitor(QObject):
     _fetched = pyqtSignal(object, object, int)   # (stan z models/status.py, stan raportu, pokolenie) — z wątku
     _tested = pyqtSignal(object, object)         # (odpowiedź D-Bus, wynik próby) — z puli prób
     _pulled = pyqtSignal(str, int, object)       # (klucz, numer pobierania, stan) — z wątku pobierania
-    _queued = pyqtSignal()                       # zmiana w kolejce modeli — z dowolnego wątku
+    _queued = pyqtSignal()                       # zmiana w kolejce modeli albo w indeksie wyszukiwania — z wątków
 
     def __init__(self, read=models_status.read, poll_ms: int | None = None, report: ReportLink | None = None,
                  pull_keep_ms: int = PULL_KEEP_MS, pull_error_keep_ms: int = PULL_ERROR_KEEP_MS, queue=None,
-                 queue_gap_ms: int = QUEUE_GAP_MS, parent=None):
+                 queue_gap_ms: int = QUEUE_GAP_MS, search=None, parent=None):
         super().__init__(parent)
         self.read = read
         self.report = report
+        self.search = search      # krunner.semantic.SemanticSearch albo None (usługa bez KRunnera)
         self.queue = queue if queue is not None else models_queue.shared()
         self._queue_gap_ms = max(0, queue_gap_ms)
         try:
@@ -115,6 +122,7 @@ class ModelsMonitor(QObject):
         self._json = _dump(self._compose())
         self._busy = False
         self._again = False
+        self._stopped = False
         self._generation = 0
         self._cancel = Cancel()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-models")
@@ -134,12 +142,15 @@ class ModelsMonitor(QObject):
         self._queued.connect(lambda: self._publish_soon(self._queue_gap_ms))
         self._listener = self._queued.emit  # ten sam obiekt do remove_listener w stop()
         self.queue.add_listener(self._listener)
+        if self.search is not None:
+            self.search.add_listener(self._listener)
 
     def start(self) -> None:
         QTimer.singleShot(min(FIRST_POLL_MS, self._timer.interval()), self.poll)
         self._timer.start()
 
     def stop(self) -> None:
+        self._stopped = True
         self._timer.stop()
         self._throttle.stop()
         self.queue.remove_listener(self._listener)
@@ -163,8 +174,8 @@ class ModelsMonitor(QObject):
         self.poll()
 
     def poll(self) -> None:
-        if self._busy:
-            return
+        if self._busy or self._stopped:
+            return  # po stop() odczyt, który właśnie wrócił, nie zleca kolejnego do zamkniętej puli
         self._busy = True
         self._pool.submit(self._work, self._generation)
 
@@ -206,7 +217,19 @@ class ModelsMonitor(QObject):
             state["report"] = self._report
         state["pulls"] = {key: dict(entry) for key, entry in self._pulls.items()}
         state["queue"] = self._queue_view()
+        state["search"] = self._search_view()
         return state
+
+    def _search_view(self) -> dict:
+        enabled = (self._base.get("search") or {}).get("enabled", True)
+        if self.search is None:
+            return {"enabled": enabled, "state": "inactive", "items": 0, "pending": 0, "updated": "",
+                    "error": "", "model": "", "dims": 0}
+        try:
+            index = self.search.state()
+        except Exception as exc:  # stan indeksu nie może zepsuć Status()
+            index = {"state": "error", "error": f"błąd stanu indeksu ({type(exc).__name__})"}
+        return {"enabled": enabled, **index}
 
     def _queue_view(self) -> dict:
         """Kolejka po nazwie punktu. Kolejka ma tory po serwerach (`queue.lane_of(url)`), więc punkty z tym
@@ -282,6 +305,8 @@ class ModelsMonitor(QObject):
             self._report = report
         self._publish(force=True)
         self.refresh()
+        if self.search is not None:
+            self.search.wake()  # włączenie, wyłączenie albo inny model roli `embed` — indeks zaraz
         return _reply(True)
 
     def _pulling(self, name) -> str:
@@ -321,6 +346,9 @@ class ModelsMonitor(QObject):
 
     def set_agent_program(self, program: str) -> str:
         return self._write(models_settings.set_agent_program, program)
+
+    def set_semantic_search(self, value: str) -> str:
+        return self._write(models_settings.set_semantic_search, value)
 
     def set_report_summary(self, mode: str) -> str:
         if self.report is None:

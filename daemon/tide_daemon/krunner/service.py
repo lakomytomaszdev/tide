@@ -18,7 +18,14 @@ główny. Gdy Qt działa bez GLib (QT_NO_GLIB), pętlę GLib popychamy timerem.
 Osobne połączenie z magistralą oznacza osobną nazwę: org.tide.Daemon należy do połączenia
 QtDBus, a KRunner dostaje org.tide.Daemon.KRunner (plik .desktop wtyczki wskazuje tę nazwę,
 a plik aktywacji D-Bus uruchamia tę samą usługę systemd).
+
+Wyszukiwanie po znaczeniu (PT-19): Match odpowiada od razu wynikami słownymi, chyba że zapytanie nadaje
+się na wyszukiwanie po znaczeniu (KRunnerCore.meaning_query) — wtedy wektor zapytania liczy wątek
+(semantic.py: najwyżej ok. 0,3 s ciszy i 1,5 s na model), a odpowiedź przychodzi z dopisanymi sesjami
+podobnymi znaczeniowo albo z samymi słowami, gdy modelu nie ma albo nie zdążył.
 """
+import threading
+
 SERVICE = "org.tide.Daemon.KRunner"
 PATH = "/KRunner"
 IFACE = "org.kde.krunner1"
@@ -59,12 +66,37 @@ def register(core, lazy_index_factory, app=None, address: str | None = None):
         @dbus.service.method(IFACE, in_signature="s", out_signature="a(sssida{sv})",
                              async_callbacks=("reply", "error"))
         def Match(self, query, reply, error):
-            def respond():
+            def send(matches):
                 try:
-                    reply(dbus.Array([_struct(m) for m in core.match(str(query))], signature="(sssida{sv})"))
+                    reply(dbus.Array([_struct(m) for m in matches], signature="(sssida{sv})"))
                 except Exception as exc:  # błąd w jednym zapytaniu nie może położyć usługi
                     print(f"tide-daemon: krunner: Match: {exc!r}", flush=True)
                     error(exc)
+
+            def respond():
+                text = str(query)
+                try:
+                    matches = core.match(text)
+                    meaning = core.meaning_query(text)
+                except Exception as exc:
+                    print(f"tide-daemon: krunner: Match: {exc!r}", flush=True)
+                    error(exc)
+                    return
+                if not meaning:
+                    send(matches)
+                    return
+
+                # Po znaczeniu (PT-19): wektor zapytania w wątku (najwyżej ok. 2 s, potem same słowa),
+                # łączenie wyników znowu w wątku głównym — tam, gdzie reszta wtyczki.
+                def work():
+                    try:
+                        vector = core.semantic.query_vector(meaning)
+                    except Exception as exc:
+                        print(f"tide-daemon: krunner: po znaczeniu: {exc!r}", flush=True)
+                        vector = None
+                    post(lambda: send(core.with_meaning(text, matches, vector)))
+
+                threading.Thread(target=work, name="tide-krunner-meaning", daemon=True).start()
             lazy.request(respond)
 
         @dbus.service.method(IFACE, in_signature="", out_signature="a(sss)")

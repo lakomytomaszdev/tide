@@ -230,6 +230,18 @@ class ModelsSettingsDBusTest(unittest.TestCase):
                          {"ok": False, "error": "agentProgram: nieznany program „opencode” (codex albo claude)"})
         self.assertEqual(self.status()["agentProgram"], "claude")
 
+        # PT-19: wyszukiwanie po znaczeniu w KRunnerze — włączone domyślnie, usługa bez KRunnera (--no-krunner).
+        self.assertEqual(self.status()["search"]["enabled"], True)
+        self.assertEqual(self.status()["search"]["state"], "inactive")
+        self.assertEqual(self.call("SetSemanticSearch", "off"), {"ok": True, "error": ""})
+        self.assertEqual(self.status()["search"]["enabled"], False, "stan od razu po zapisie")
+        with open(self.models, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["semanticSearch"], False)
+        self.assertEqual(self.call("SetSemanticSearch", "tak"),
+                         {"ok": False, "error": "semanticSearch: oczekiwano on albo off, jest „tak”"})
+        self.assertEqual(self.call("SetSemanticSearch", "on"), {"ok": True, "error": ""})
+        self.assertEqual(self.status()["search"]["enabled"], True)
+
         self.assertEqual(self.call("SetReportSummary", "local"), {"ok": True, "error": ""})
         with open(self.report, encoding="utf-8") as fh:
             self.assertEqual(json.load(fh), {"at": "06:45", "summaryModel": "opus", "summary": "local"})
@@ -241,7 +253,7 @@ class ModelsSettingsDBusTest(unittest.TestCase):
 
         xml = self.bus.call(SERVICE, MODELS_PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
         for member in ("SetEndpoint", "RemoveEndpoint", "SetDefault", "SetRole", "SetAgentProgram",
-                       "SetReportSummary", "TestEndpoint", "PullModel"):
+                       "SetSemanticSearch", "SetReportSummary", "TestEndpoint", "PullModel"):
             self.assertIn(f'<method name="{member}">', xml)
 
     def test_pinned_report_summary_changes_only_the_file(self):

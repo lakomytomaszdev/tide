@@ -21,6 +21,8 @@ Ten moduł nie zna Qt — wywołuje go models_monitor.py w wątku głównym (zap
   więc przełączenie domyślnego punktu przenosi je na Maca, a przypięte zostają.
 - Program agenta na modelu lokalnym (`agentProgram`: codex albo claude) — jeden klucz najwyższego poziomu,
   niezależny od roli `agent` i od serwera (przełączenie na Maca go nie zmienia).
+- Wyszukiwanie po znaczeniu w KRunnerze (`semanticSearch`: true albo false, PT-19) — klucz najwyższego poziomu,
+  jak `agentProgram`; model daje rola `embed`.
 - Zapisy są szeregowane blokadą (D-Bus i ewentualne wątki), a piszemy tylko na wyraźne wywołanie.
 """
 from __future__ import annotations
@@ -358,6 +360,20 @@ def set_agent_program(program, path: str | None = None) -> None:
     with LOCK:
         draft = _Draft(path)
         draft.data["agentProgram"] = program
+        draft.commit()
+
+
+def set_semantic_search(value, path: str | None = None) -> None:
+    """Wyszukiwanie po znaczeniu w KRunnerze (PT-19): `semanticSearch` w models.json — "on"/"off" z D-Bus albo
+    true/false. Wyłączone — usługa niczego nie indeksuje i usuwa zapisane wektory (krunner/semantic.py)."""
+    path = path or config_mod.config_path()
+    value = {"on": True, "off": False}.get(value, value) if isinstance(value, str) else value
+    problem = config_mod.semantic_search_problem(value)
+    if problem:
+        raise SettingsError(problem.replace("true albo false", "on albo off") if isinstance(value, str) else problem)
+    with LOCK:
+        draft = _Draft(path)
+        draft.data["semanticSearch"] = value
         draft.commit()
 
 

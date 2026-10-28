@@ -83,7 +83,8 @@ Obiekt /Limits, interfejs org.tide.Daemon.Limits (prognoza Limitów AI z histori
 
 Obiekt /Models, interfejs org.tide.Daemon.Models (modele lokalne: serwery z models.json i role):
 - Status() -> s              JSON {checked, default, config, endpoints: {nazwa: stan}, roles: {rola: …},
-                             agentProgram} — bez tokenów,
+                             agentProgram, search} — bez tokenów (search: wyszukiwanie po znaczeniu w KRunnerze
+                             — enabled i stan indeksu),
                              oraz report (tryb „Na daily”), pulls (pobierania modeli) i queue (kolejka wywołań
                              modeli na punkt: {running, waiting[, other]}, bez treści poleceń),
 - Refresh()                  odczyt stanu teraz (wynik przyjdzie sygnałem Changed, jeśli coś się zmieniło),
@@ -94,6 +95,8 @@ Obiekt /Models, interfejs org.tide.Daemon.Models (modele lokalne: serwery z mode
 - SetRole(s json) -> s       rola {role, model, endpoint? ("" — za domyślnym), ctx? (null — domyślny)} → {ok, error},
 - SetAgentProgram(s program) -> s  program agenta na modelu lokalnym (codex albo claude, `agentProgram`
                              w models.json; Status().agentProgram) → {ok, error},
+- SetSemanticSearch(s state) -> s  wyszukiwanie po znaczeniu w KRunnerze: "on" albo "off" (`semanticSearch`
+                             w models.json; wyłączone — indeks usunięty) → {ok, error},
 - SetReportSummary(s mode) -> s  `summary` w report.json (claude, local, rules), działa od razu → {ok, error},
 - TestEndpoint(s json) -> s  próba połączenia bez zapisu ({name} albo {url, kind, token?}) → {ok, error, version,
                              models} (odpowiedź po odczycie),
@@ -308,7 +311,8 @@ MODELS_XML = f"""<interface name="{MODELS_IFACE}">
   <method name="Refresh"/>
 {chr(10).join(_JSON_CALL.format(name=n, arg=a) for n, a in (
     ("SetEndpoint", "request"), ("RemoveEndpoint", "name"), ("SetDefault", "name"), ("SetRole", "request"),
-    ("SetAgentProgram", "program"), ("SetReportSummary", "mode"), ("TestEndpoint", "request"), ("PullModel", "request")))}
+    ("SetAgentProgram", "program"), ("SetSemanticSearch", "state"), ("SetReportSummary", "mode"),
+    ("TestEndpoint", "request"), ("PullModel", "request")))}
   <signal name="Changed"/>
 </interface>"""
 
@@ -681,6 +685,10 @@ class ModelsAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(str, result=str)
     def SetAgentProgram(self, program: str) -> str:
         return self.monitor.set_agent_program(program)
+
+    @pyqtSlot(str, result=str)
+    def SetSemanticSearch(self, state: str) -> str:
+        return self.monitor.set_semantic_search(state)
 
     @pyqtSlot(str, result=str)
     def SetReportSummary(self, mode: str) -> str:

@@ -87,7 +87,7 @@ class ModelsJsonTest(SettingsTestCase):
         self.assertEqual(data["default"], "local")
         self.assertEqual(data["endpoints"]["local"], {"url": "http://127.0.0.1:11434", "kind": "ollama"})
         self.assertEqual(data["endpoints"]["mac"], {"url": "http://mac-studio:11434", "kind": "ollama"})
-        self.assertEqual(data["roles"], {"summary": "qwen3:8b", "describe": "qwen3:8b"})
+        self.assertEqual(data["roles"], {"summary": "qwen3:8b", "describe": "qwen3:8b", "embed": "bge-m3"})
         after = self.cfg()
         self.assertEqual(after.warnings, ())
         self.assertEqual(after.roles, before.roles, "role działają jak bez pliku (ten sam punkt, model i ctx)")
@@ -277,6 +277,28 @@ class ModelsJsonTest(SettingsTestCase):
         bielik = "hf.co/speakleash/Bielik-11B-v3.0-Instruct-GGUF:Q4_K_M"
         settings.set_role({"role": "polish", "model": bielik, "endpoint": "local"}, self.path)
         self.assertEqual((self.cfg().roles["polish"].endpoint, self.cfg().roles["polish"].model), ("local", bielik))
+
+    def test_semantic_search_round_trip(self):
+        """PT-19: `semanticSearch` — klucz najwyższego poziomu, domyślnie włączone; z D-Bus "on"/"off"."""
+        self.assertTrue(self.cfg().semantic_search, "bez pliku — włączone")
+        settings.set_semantic_search("off", self.path)
+        self.assertEqual(self.data(), {**settings.defaults(), "semanticSearch": False})
+        self.assertFalse(self.cfg().semantic_search)
+        settings.set_role({"role": "embed", "model": "nomic-embed-text"}, self.path)
+        self.assertEqual((self.data()["semanticSearch"], self.data()["roles"]["embed"]), (False, "nomic-embed-text"))
+        settings.set_semantic_search(True, self.path)
+        self.assertIs(self.data()["semanticSearch"], True)
+        for value, message in (("tak", "semanticSearch: oczekiwano on albo off, jest „tak”"),
+                               (1, "semanticSearch: oczekiwano true albo false, jest „1”"),
+                               (None, "semanticSearch: oczekiwano true albo false, jest „null”")):
+            with self.subTest(value=value):
+                self.assertEqual(self.refused(settings.set_semantic_search, value, self.path), message)
+        self.assertIs(self.data()["semanticSearch"], True, "odmowa niczego nie zapisuje")
+        self.write({"semanticSearch": "nie"})
+        cfg = self.cfg()
+        self.assertTrue(cfg.semantic_search)
+        self.assertEqual(cfg.warnings, ("semanticSearch: oczekiwano true albo false, jest „nie” — wyszukiwanie po "
+                                        "znaczeniu włączone",))
 
     def test_agent_program_round_trip(self):
         """PT-39: `agentProgram` — jeden klucz najwyższego poziomu; zapis nie rusza ról ani serwerów."""

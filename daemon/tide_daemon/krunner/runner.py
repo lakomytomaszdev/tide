@@ -23,6 +23,11 @@ Akcje dodatkowe: `terminal` (sam katalog w Konsoli, dla sesji) i `rider` (katalo
 
 Zapytanie zaczynające się od „ai ” pokazuje tylko sesje. Zwykłe zapytanie ma co najmniej
 MIN_QUERY znaków (tak samo ogranicza je plik .desktop wtyczki).
+
+Wyszukiwanie po znaczeniu (PT-19, semantic.py; `semantic` w konstruktorze albo None): dłuższe zapytanie
+(meaning_query) dostaje dodatkowo sesje podobne znaczeniowo (with_meaning). Słowa mają pierwszeństwo: sesja
+znaleziona słowami nie powtarza się, a znaczeniowe mają kategorię LOW, trafność poniżej najsłabszej sesji ze słów
+i dopisek „podobne znaczeniowo” w podpisie. Bez wektora zapytania (serwer nie odpowiada, minął czas) — same słowa.
 """
 import os
 import threading
@@ -31,12 +36,16 @@ import time
 from ..worktrees.launchers import RIDER, TERMINAL
 from . import search
 from .index import HISTORY_AGE
+from .semantic import LIMIT as MEANING_LIMIT
 
 MIN_QUERY = 3
 SESSIONS_PREFIX = "ai "
 LIMITS = {"session": 8, "project": 5, "worktree": 6}
 SESSIONS_ONLY_LIMIT = 20
 REFRESH_AFTER = 10.0  # s — częściej indeks nie jest odświeżany, nawet przy każdym naciśnięciu klawisza
+MEANING_NOTE = "podobne znaczeniowo"
+MEANING_TOP = 0.5     # trafność najlepszej sesji znaczeniowej (słowa zwykle mają więcej)
+MEANING_FLOOR = 0.05
 
 TOOL_NAMES = {"claude": "Claude", "codex": "Codex"}
 TOOL_ICONS = {"claude": "utilities-terminal", "codex": "openai"}
@@ -63,12 +72,13 @@ HIGH, MODERATE, LOW = 70, 50, 30
 class KRunnerCore:
     def __init__(self, index, worktrees, launchers, live=None, activate=None, clock=time.time,
                  exists=os.path.isdir, home: str | None = None, report=None, codex=None, coordination=None,
-                 open_report=None):
+                 open_report=None, semantic=None):
         self.report = report or (lambda: "")  # funkcja() → index.html najnowszego raportu porannego
         # funkcja() → bool: otwarcie najnowszego raportu z oznaczeniem przeczytania (ReportMonitor.open);
         # bez niej samo xdg-open przez launchers
         self.open_report = open_report
         self.coordination = coordination      # funkcja() → koordynatorzy (/Coordination Coordinators()) albo None
+        self.semantic = semantic              # semantic.SemanticSearch albo None (bez wyszukiwania po znaczeniu)
         self.index = index
         self.worktrees = worktrees
         self.launchers = launchers
@@ -177,19 +187,69 @@ class KRunnerCore:
                 continue
             scored.append((0.75 * value + 0.25 * fresh, best, entry))
         scored.sort(key=lambda s: (-s[0], -s[2]["lastActivity"]))
-        out = []
-        for relevance, best, entry in scored[:limit]:
-            tool = TOOL_NAMES.get(entry["tool"], entry["tool"])
-            text = " · ".join(p for p in (tool, entry["project"], entry["title"]) if p)
-            sub = [entry["branch"], search.ago_text(entry["lastActivity"], now)]
-            if entry.get("desktop") and app:
-                sub.append("otwórz w Codex")
-            elif entry["id"] in live:
-                sub.append("przejdź do okna")
-            out.append(_match(f"session:{entry['id']}", text, TOOL_ICONS.get(entry["tool"], "utilities-terminal"),
-                              _category_relevance(best), relevance, " · ".join(p for p in sub if p),
-                              CATEGORIES["session"], actions))
-        return out
+        return [self._session_match(entry, _category_relevance(best), relevance, now, live, actions, app)
+                for relevance, best, entry in scored[:limit]]
+
+    def _session_match(self, entry, category_relevance, relevance, now, live, actions, app, note="") -> dict:
+        tool = TOOL_NAMES.get(entry["tool"], entry["tool"])
+        text = " · ".join(p for p in (tool, entry["project"], entry["title"]) if p)
+        sub = [entry["branch"], search.ago_text(entry["lastActivity"], now)]
+        if entry.get("desktop") and app:
+            sub.append("otwórz w Codex")
+        elif entry["id"] in live:
+            sub.append("przejdź do okna")
+        sub.append(note)
+        return _match(f"session:{entry['id']}", text, TOOL_ICONS.get(entry["tool"], "utilities-terminal"),
+                      category_relevance, relevance, " · ".join(p for p in sub if p), CATEGORIES["session"], actions)
+
+    # --- po znaczeniu (PT-19) ---------------------------------------------------------------------
+
+    def meaning_query(self, query: str) -> str:
+        """Tekst do wyszukiwania po znaczeniu („ai ” zdjęte) albo "" — za krótkie, wyłączone, indeks pusty."""
+        if self.semantic is None:
+            return ""
+        words = (query or "").split()
+        if words and search.fold(words[0]) == SESSIONS_PREFIX.strip():
+            words = words[1:]
+        text = " ".join(words)
+        try:
+            return text if self.semantic.wants(text) else ""
+        except Exception:  # indeks znaczeniowy nie może zepsuć KRunnera
+            return ""
+
+    def with_meaning(self, query: str, matches: list[dict], vector) -> list[dict]:
+        """Wyniki słowne i dopisane sesje podobne znaczeniowo (bez powtórzeń). Bez wektora — same słowa."""
+        if self.semantic is None or not vector:
+            return matches
+        try:
+            words = search.tokens(query)
+            sessions_only = bool(words) and words[0] == SESSIONS_PREFIX.strip()
+            limit = SESSIONS_ONLY_LIMIT if sessions_only else LIMITS["session"]
+            taken = {m["id"] for m in matches}
+            word_sessions = [m for m in matches if m["id"].startswith("session:")]
+            room = limit - len(word_sessions)
+            if room <= 0:
+                return matches
+            entries = [e for e in self.index.entries()
+                       if f"session:{e['id']}" not in taken and self.exists(e["cwd"])]
+            hits = self.semantic.similar(vector, entries, limit=min(room, MEANING_LIMIT))
+            if not hits:
+                return matches
+            ceiling = min([m["relevance"] for m in word_sessions] + [MEANING_TOP + 0.01]) - 0.01
+            now = self.clock()
+            live = {s.get("id"): s for s in self.live() if s.get("canActivate") and s.get("state") != "ended"}
+            actions = [a for a, _t, _i in self.actions()]
+            app = self._app_ready()
+            best = hits[0][0]
+            out = list(matches)
+            for similarity, entry in hits:
+                # Najbardziej podobna dostaje sufit, kolejne mniej — kolejność jak podobieństwo, zawsze pod słowami.
+                relevance = max(MEANING_FLOOR, ceiling - (best - similarity))
+                out.append(self._session_match(entry, LOW, relevance, now, live, actions, app, MEANING_NOTE))
+            return out
+        except Exception as exc:  # błąd w części znaczeniowej — wyniki słowne zostają
+            print(f"tide-daemon: krunner: po znaczeniu: {exc!r}", flush=True)
+            return matches
 
     def _projects(self, words) -> list[dict]:
         items = [w for w in self.worktrees() if w.get("isMain") and not w.get("missing")]

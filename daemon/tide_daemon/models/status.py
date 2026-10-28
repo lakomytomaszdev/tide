@@ -121,7 +121,8 @@ def probe(endpoint, timeout: float = STATUS_TIMEOUT_S, cancel=None) -> dict:
 
 def snapshot(cfg, timeout: float = STATUS_TIMEOUT_S) -> dict:
     """Stan wszystkich punktów i ról z konfiguracji. Role: {endpoint, model, ctx, installed, available, error};
-    `agentProgram` — program agenta na modelu lokalnym (codex albo claude)."""
+    `agentProgram` — program agenta na modelu lokalnym (codex albo claude); `search` — wyszukiwanie po znaczeniu
+    w KRunnerze: tu tylko `enabled` z ustawień, stan indeksu dokłada models_monitor.py."""
     endpoints = {name: endpoint_status(endpoint, timeout) for name, endpoint in cfg.endpoints.items()}
     return assemble(cfg, endpoints)
 
@@ -151,7 +152,7 @@ def assemble(cfg, endpoints: dict, checked: bool = True) -> dict:
                        "available": bool(state.get("online") and installed and not role.error), "error": role.error,
                        "pinned": role.pinned}
     return {"checked": checked, "default": cfg.default, "config": cfg.public(), "endpoints": endpoints, "roles": roles,
-            "agentProgram": cfg.agent_program}
+            "agentProgram": cfg.agent_program, "search": {"enabled": cfg.semantic_search}}
 
 
 def pending(cfg) -> dict:

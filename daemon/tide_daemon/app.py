@@ -12,6 +12,7 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
                                [--no-youtrack] [--print-board] [--print-card-docs K-12] [--board-dir DIR]
                                [--no-board]
                                [--print-docker | --no-docker]
+                               [--search-delay SEKUNDY]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
@@ -24,7 +25,9 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
 --worktree-depth   jak głęboko pod katalogiem projektów szukać repozytoriów (domyślnie 3),
 --no-processes     nie czyta /proc (stan bez wiedzy o procesach, bez przechodzenia do okien),
 --no-notifications bez powiadomień „Agent czeka”,
---no-krunner       bez wtyczki KRunnera (org.tide.Daemon.KRunner),
+--no-krunner       bez wtyczki KRunnera (org.tide.Daemon.KRunner) i bez jej wyszukiwania po znaczeniu,
+--search-delay     ile sekund po starcie usługi zacząć indeks wyszukiwania po znaczeniu w KRunnerze (domyślnie 60;
+                   plik $XDG_DATA_HOME/tide/search/sessions.json, włączanie w Tide → Modele),
 --no-tab-marks     bez znacznika stanu na kartach Konsole („● projekt · gałąź” i kolor karty),
 --now              zamrożony zegar (ISO 8601) — dla testów i diagnostyki,
 --idle-after       próg bezczynności w sekundach dla /Idle (domyślnie wallpaper.dozeAfterS z palety),
@@ -90,6 +93,7 @@ def parse_args(argv):
     parser.add_argument("--no-processes", action="store_true")
     parser.add_argument("--no-notifications", action="store_true")
     parser.add_argument("--no-krunner", action="store_true")
+    parser.add_argument("--search-delay", type=float, help="opóźnienie pierwszego indeksu wyszukiwania po znaczeniu")
     parser.add_argument("--no-tab-marks", action="store_true")
     parser.add_argument("--now", help="zamrożony zegar, np. 2026-10-26T12:00:00Z")
     parser.add_argument("--workspace", default=default_workspace())
@@ -238,7 +242,8 @@ def main(argv=None) -> int:
                                                          coordination, report)
     idle = None if args.no_idle else start_idle(app, args)
     limits = None if args.no_limits else start_limits(app, args, clock)
-    models = None if args.no_models else start_models(app, args, report, coordination)
+    search = getattr(krunner, "semantic", None)  # wyszukiwanie po znaczeniu w KRunnerze (PT-19)
+    models = None if args.no_models else start_models(app, args, report, coordination, search)
     if models is not None:
         scanner.known_local_models = models.known_models  # role i modele na serwerach ze stanu /Models
     tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
@@ -288,6 +293,8 @@ def main(argv=None) -> int:
         limits.start()  # pierwszy odczyt /status po rejestracji i po podłączeniu powiadomień
     if models is not None:
         models.start()  # pierwszy odczyt stanu serwerów modeli w tle, po rejestracji na magistrali
+    if search is not None:
+        search.start()  # indeks po znaczeniu w tle, po --search-delay, z najniższym priorytetem kolejki modeli
     if board is not None:
         board.start()  # zmiany z czasu, gdy usługa nie działała, i obserwacja katalogu tablicy
     if coordination is not None:
@@ -341,6 +348,8 @@ def main(argv=None) -> int:
         limits.stop()
     if models is not None:
         models.stop()
+    if search is not None:
+        search.stop()
     if coordination is not None:
         coordination.stop()
     if board is not None:
@@ -686,7 +695,7 @@ def limits_once(clock) -> dict:
     return tracker.snapshot()
 
 
-def start_models(app, args, report=None, coordination=None):
+def start_models(app, args, report=None, coordination=None, search=None):
     """Modele lokalne (models/, models_monitor.py): stan serwerów (models.json czytany przy każdym odczycie)
     i zapis ustawień z okna Tide. SetReportSummary przełącza od razu raport i opisy kart (bez restartu),
     chyba że tryb wymusza --report-summary."""
@@ -704,7 +713,7 @@ def start_models(app, args, report=None, coordination=None):
             describer.set_mode(mode)
 
     link = ReportLink(live=live, apply=apply, pinned=bool(args.report_summary))
-    return ModelsMonitor(poll_ms=poll_ms, report=link, parent=app)
+    return ModelsMonitor(poll_ms=poll_ms, report=link, search=search, parent=app)
 
 
 def start_krunner(app, args, clock, monitor, trees, coordination=None, report=None):
@@ -720,14 +729,35 @@ def start_krunner(app, args, clock, monitor, trees, coordination=None, report=No
     from .report_monitor import report_root
     from .reports.schedule import latest_index
     reports_dir = report_root(args.report_dir)
-    core = KRunnerCore(index, lambda: trees.scanner.snapshot(), trees.launchers,
+    from .krunner.semantic import FIRST_DELAY_S, SemanticSearch
+    semantic = SemanticSearch(index, tickets=coordination_tickets(coordination), clock=clock,
+                              first_delay=args.search_delay if args.search_delay is not None else FIRST_DELAY_S)
+    core = KRunnerCore(index, lambda: trees.scanner.snapshot(), trees.launchers, semantic=semantic,
                        report=lambda: latest_index(reports_dir),
                        open_report=report.open if report is not None else None,
                        live=lambda: monitor.sessions, activate=monitor.activate, clock=clock,
                        codex=monitor.codex_threads(),
                        coordination=(lambda: json.loads(coordination.coordinators_json())) if coordination else None)
     try:
-        return service.register(core, lambda post: LazyIndex(index, post), app)
+        holder = service.register(core, lambda post: LazyIndex(index, post), app)
     except Exception as exc:  # np. nazwa zajęta — reszta usługi działa dalej
         print(f"tide-daemon: wtyczka KRunnera niedostępna: {exc}", flush=True)
         return None
+    holder.semantic = semantic
+    return holder
+
+
+def coordination_tickets(coordination):
+    """Funkcja() → {id sesji koordynatora: [„PT-19 tytuł”, …]} z tablic koordynacji (do indeksu po znaczeniu)."""
+    if coordination is None:
+        return None
+
+    def tickets():
+        out = {}
+        for board in list(getattr(coordination, "boards", None) or ()):
+            items = [f"{t.get('id', '')} {t.get('title', '')}".strip() for t in board.get("tickets") or ()
+                     if isinstance(t, dict)]
+            if board.get("id") and items:
+                out[board["id"]] = items
+        return out
+    return tickets

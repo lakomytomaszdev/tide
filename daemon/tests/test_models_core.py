@@ -176,10 +176,14 @@ class ConfigTest(unittest.TestCase):
         local = cfg.endpoint()
         self.assertEqual((local.name, local.url, local.kind, local.token_file),
                          ("local", "http://127.0.0.1:11434", "ollama", ""))
-        self.assertEqual(sorted(cfg.roles), ["describe", "summary"])
+        self.assertEqual(sorted(cfg.roles), ["describe", "embed", "summary"])
         for name in ("summary", "describe"):
             role = cfg.role(name)
             self.assertEqual((role.endpoint, role.model, role.ctx), ("local", "qwen3:8b", 8192))
+        # PT-19: embeddingi do wyszukiwania po znaczeniu — bge-m3 za domyślnym serwerem, kontekst serwera.
+        embed = cfg.role("embed")
+        self.assertEqual((embed.endpoint, embed.model, embed.ctx, embed.pinned), ("local", "bge-m3", None, False))
+        self.assertTrue(cfg.semantic_search)
 
     def test_agent_program_defaults_to_codex_and_bad_value_warns(self):
         """PT-39: program agenta na modelu lokalnym — `agentProgram`, domyślnie Codex; zła wartość nie psuje reszty."""
@@ -240,7 +244,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg.endpoint().name, "mac")
         self.assertEqual({n: (r.endpoint, r.model) for n, r in cfg.roles.items()},
                          {"agent": ("mac", "qwen3-coder:30b"), "summary": ("mac", "qwen3:8b"),
-                          "describe": ("mac", "qwen3:8b")})
+                          "describe": ("mac", "qwen3:8b"), "embed": ("mac", "bge-m3")})
         self.assertEqual(cfg.endpoint("local").kind, "ollama")  # rodzaj domyślny
 
     def test_broken_file_falls_back_to_defaults_with_error(self):
@@ -334,13 +338,13 @@ class ConfigTest(unittest.TestCase):
         cfg = models_config.from_dict({"endpoints": {"mac": {"url": "mac-studio"}}, "roles": "nie"})
         self.assertEqual(list(cfg.endpoints), ["local"])
         self.assertEqual(len(cfg.warnings), 3, cfg.warnings)
-        self.assertEqual(sorted(cfg.roles), ["describe", "summary"])
+        self.assertEqual(sorted(cfg.roles), ["describe", "embed", "summary"])
 
     def test_unknown_role_and_endpoint_raise_model_error(self):
         cfg = models_config.from_dict({})
         with self.assertRaises(ModelError) as caught:
-            cfg.role("embed")
-        self.assertIn("nieznana rola „embed”", str(caught.exception))
+            cfg.role("polish")
+        self.assertIn("nieznana rola „polish”", str(caught.exception))
         with self.assertRaises(ModelError):
             cfg.endpoint("mac")
 
