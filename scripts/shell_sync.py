@@ -44,8 +44,10 @@ $XDG_DATA_HOME/tide/shell-sync.py i pulpit nie zależy od katalogu z repozytoriu
 """
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -90,11 +92,25 @@ VARIANTS = DATA / "tide" / "lockscreens"
 DEFAULT_VARIANT = "mist"
 VARIANT_FILE = ".tide-lock-variant"  # w katalogu ekranu; QML i KPackage go nie czytają
 ACTIVE = COPY / "contents" / "lockscreen"
-INACTIVE = COPY / "contents" / "lockscreen-variants"
+SWAP_SUFFIX = ".tide-swap"  # nazwa tymczasowa przy zamianie bez RENAME_EXCHANGE
+# Jedna blokada dla składania kopii i przełączania wariantu (dwa procesy naraz: logowanie i przełącznik).
+LOCK_FILE = STATE / "tide" / "shell-sync.lock"
 
 
 class LockVariantError(RuntimeError):
     pass
+
+
+@contextlib.contextmanager
+def locked():
+    """Wyłączny dostęp do kopii powłoki (fcntl.flock na LOCK_FILE); czeka, aż inny proces skończy."""
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOCK_FILE, "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def log(message: str) -> None:
@@ -180,9 +196,10 @@ def copy_variant(source: Path, target: Path, name: str) -> None:
 def distinct_mtimes(directories: list[Path]) -> None:
     """Pliki o tej samej ścieżce i innej treści w różnych wariantach dostają różne czasy modyfikacji.
 
-    Pamięć podręczna QML greetera (qmlcache) rozpoznaje skompilowany plik po ścieżce i czasie
-    modyfikacji źródła (z dokładnością do ms). Po przełączeniu wariantu pod tą samą ścieżką
-    (np. lockscreen/tide/Tokens.qml) jest inna treść — równy czas oznaczałby stare tokeny.
+    Zabezpieczenie na wypadek pamięci podręcznej QML (qmlcache), która rozpoznaje skompilowany
+    plik po ścieżce i czasie modyfikacji źródła (z dokładnością do ms) — po przełączeniu wariantu
+    pod tą samą ścieżką (np. lockscreen/tide/Tokens.qml) jest inna treść. Greeter Plasmy 6.8
+    na Qt 6.11 dziś nie zapisuje qmlcache, ale to zachowanie Qt, a nie umowa; koszt jest zerowy.
     """
     seen: dict[str, list[tuple[bytes, int]]] = {}
     for directory in directories:
@@ -291,8 +308,34 @@ def _variant_name(directory: Path) -> str | None:
 
 
 def active_variant(copy: Path) -> str:
-    """Wariant aktywny w kopii; kopia sprzed wariantów (bez znacznika) ma ekran Tide, czyli „mist”."""
-    return _variant_name(copy / "contents" / "lockscreen") or DEFAULT_VARIANT
+    """Wariant aktywny w kopii; kopia sprzed wariantów (bez znacznika) ma ekran Tide, czyli „mist”.
+
+    "" — kopia nie ma aktywnego ekranu (np. przerwana zamiana; naprawia ją recover_swap).
+    """
+    active = copy / "contents" / "lockscreen"
+    if not active.is_dir():
+        return ""
+    return _variant_name(active) or DEFAULT_VARIANT
+
+
+def recover_swap(copy: Path) -> None:
+    """Dokańcza przerwaną zamianę przez nazwę tymczasową (exchange bez RENAME_EXCHANGE)."""
+    active = copy / "contents" / "lockscreen"
+    spare = active.with_name(active.name + SWAP_SUFFIX)
+    if not spare.is_dir():
+        return
+    if not active.exists():
+        spare.rename(active)  # przerwa po pierwszym rename(): wracamy do stanu sprzed zamiany
+        log("przywrócono ekran blokady po przerwanym przełączeniu wariantu.")
+        return
+    # Przerwa po drugim rename(): aktywny jest już nowy wariant, poprzedni czeka pod nazwą tymczasową.
+    target = copy / "contents" / "lockscreen-variants" / (_variant_name(spare) or "nieznany")
+    if target.exists():
+        shutil.rmtree(spare)
+    else:
+        target.parent.mkdir(exist_ok=True)
+        spare.rename(target)
+    log("dokończono przerwane przełączenie wariantu ekranu blokady.")
 
 
 def _inactive(copy: Path) -> dict[str, Path]:
@@ -339,6 +382,7 @@ def exchange(a: Path, b: Path) -> None:
 
 def switch_variant(copy: Path, name: str) -> bool:
     """Ustawia wariant aktywny w kopii. False, gdy takiego wariantu w niej nie ma."""
+    recover_swap(copy)
     active = copy / "contents" / "lockscreen"
     if active_variant(copy) == name:
         return True
@@ -362,11 +406,16 @@ def lock_variant() -> str:
     return active_variant(COPY)
 
 
-def _complete(lockscreen: Path) -> bool:
-    """Ekran wariantu ma QML i wszystkie obrazy tła wymienione w tide/Backdrop.qml."""
+def _complete(lockscreen: Path, strict: bool = True) -> bool:
+    """Ekran wariantu ma QML i wszystkie obrazy tła wymienione w tide/Backdrop.qml.
+
+    strict=False: wystarczy LockScreen.qml, a obrazy sprawdzamy tylko, gdy jest Backdrop.qml.
+    """
     backdrop = lockscreen / "tide" / "Backdrop.qml"
-    if not (lockscreen / "LockScreen.qml").is_file() or not backdrop.is_file():
+    if not (lockscreen / "LockScreen.qml").is_file():
         return False
+    if not backdrop.is_file():
+        return not strict
     prefix = "readonly property var outputs: "
     for line in backdrop.read_text().splitlines():
         line = line.strip()
@@ -392,16 +441,20 @@ def apply_lock_variant(name: str) -> None:
     """Przełącza ekran blokady na wariant `name` (od następnej blokady). Idempotentne.
 
     Nie przebudowuje kopii i nie uruchamia greetera — warianty są w kopii gotowe i sprawdzone.
-    Gdy wariantu nie ma (kopii Tide nie ma, wariant nie jest zainstalowany albo nie przeszedł
-    sprawdzenia), zgłasza LockVariantError i niczego nie zmienia.
+    Czeka, gdy właśnie trwa składanie kopii (wspólna blokada z sync). Gdy wariantu nie ma
+    (kopii Tide nie ma, wariant nie jest zainstalowany albo nie przeszedł sprawdzenia) albo
+    system plików odmówi, zgłasza LockVariantError i niczego nie zmienia.
     """
-    if not COPY.is_dir() or not is_ours(COPY):
-        raise LockVariantError(f"brak kopii powłoki Tide ({COPY}) — wariant {name!r} niedostępny")
-    if active_variant(COPY) == name:
-        return
-    if not switch_variant(COPY, name):
+    with locked():
+        if not COPY.is_dir() or not is_ours(COPY):
+            raise LockVariantError(f"brak kopii powłoki Tide ({COPY}) — wariant {name!r} niedostępny")
+        try:
+            if switch_variant(COPY, name):
+                return
+        except OSError as error:
+            raise LockVariantError(f"nie udało się przełączyć ekranu blokady na {name!r}: {error}") from error
         raise LockVariantError(f"wariantu {name!r} nie ma w kopii powłoki (są: "
-                               f"{', '.join([active_variant(COPY), *_inactive(COPY)])})")
+                               f"{', '.join(filter(None, [active_variant(COPY), *_inactive(COPY)]))})")
 
 
 def check_variants(new: Path) -> None:
@@ -434,6 +487,11 @@ def replace_copy(new: Path) -> None:
 
 def sync(force: bool = False) -> str:
     """Doprowadza kopię do stanu zgodnego z systemem. Zwraca wynik: ok, fallback, removed, …"""
+    with locked():
+        return _sync(force)
+
+
+def _sync(force: bool) -> str:
     if not SYSTEM_SHELL.is_dir():
         remove_copy()
         log(f"brak pakietu systemowego {SYSTEM_SHELL} — kopia usunięta.")
@@ -450,8 +508,11 @@ def sync(force: bool = False) -> str:
     if copy_exists and not is_ours(COPY):
         log(f"{COPY} nie pochodzi od Tide — nic nie zmieniam.")
         return "foreign"
+    if copy_exists:
+        recover_swap(COPY)
     if not force:
-        if copy_exists and read_json(COPY / MARKER).get("fingerprint") == current:
+        if copy_exists and read_json(COPY / MARKER).get("fingerprint") == current \
+                and _complete(ACTIVE, strict=False):
             return "up-to-date"
         if stamp.get("result") == "removed":
             return "removed"
@@ -474,6 +535,7 @@ def sync(force: bool = False) -> str:
         if ok:
             check_variants(new)
             # Wybór wariantu przeżywa przebudowę; wariant, którego już nie ma, oddaje miejsce Mist.
+            # Odczyt tuż przed podmianą, pod wspólną blokadą — przełącznik nie wejdzie w środek.
             selected = lock_variant() or DEFAULT_VARIANT
             if selected != DEFAULT_VARIANT and not switch_variant(new, selected):
                 log(f"wariantu ekranu blokady {selected!r} nie ma w nowej kopii — aktywny: {DEFAULT_VARIANT}.")

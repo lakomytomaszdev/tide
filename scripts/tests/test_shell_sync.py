@@ -320,6 +320,64 @@ class LockVariantTest(ShellSyncBase):
         self.assertEqual(sorted(p.name for p in variants.iterdir()), ["streamer"])
         self.assertEqual((variants / "streamer/.tide-lock-variant").read_text(), "streamer\n")
 
+    def test_swap_interrupted_after_the_first_rename_is_restored(self):
+        # Zamiana przez nazwę tymczasową (system plików bez RENAME_EXCHANGE) przerwana po
+        # pierwszym rename(): aktywnego katalogu nie ma, jest lockscreen.tide-swap.
+        self.sync("--force")
+        self.active.rename(self.active.with_name("lockscreen.tide-swap"))
+        self.assertEqual(self.variant().stdout, "\n")  # bez aktywnego ekranu — żaden wariant
+        self.variant("streamer")
+        self.assertEqual((self.active / "LockScreen.qml").read_text(), "// ekran Stream\n")
+        self.assertEqual((self.copy / "contents/lockscreen-variants/mist/LockScreen.qml").read_text(),
+                         "// ekran Tide\n")
+        self.assertFalse(self.active.with_name("lockscreen.tide-swap").exists())
+
+    def test_swap_interrupted_after_the_second_rename_is_restored_by_sync(self):
+        self.sync("--force")
+        variants = self.copy / "contents/lockscreen-variants"
+        self.active.rename(self.active.with_name("lockscreen.tide-swap"))
+        (variants / "streamer").rename(self.active)
+        out = self.sync()
+        # Bez przebudowy: tylko dokończona zamiana (jedna linia w dzienniku).
+        self.assertEqual(out.stdout, "tide-shell-sync: dokończono przerwane przełączenie wariantu ekranu blokady.\n")
+        self.assertEqual(len(self.greeter_calls()), 2)
+        self.assertEqual(self.variant().stdout, "streamer\n")
+        self.assertEqual((variants / "mist/.tide-lock-variant").read_text(), "mist\n")
+        self.assertFalse(self.active.with_name("lockscreen.tide-swap").exists())
+
+    def test_missing_active_lockscreen_is_rebuilt(self):
+        self.sync("--force")
+        shutil.rmtree(self.active)
+        self.sync()
+        self.assertEqual((self.active / "LockScreen.qml").read_text(), "// ekran Tide\n")
+        self.assertEqual(len(self.greeter_calls()), 4)
+
+    def test_switch_waits_for_a_running_sync(self):
+        import fcntl
+        self.sync("--force")
+        lock = self.state / "tide/shell-sync.lock"
+        with open(lock, "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            proc = subprocess.Popen(["/usr/bin/python3", str(SCRIPT), "variant", "streamer"], env=self.env,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            time.sleep(1.0)
+            self.assertIsNone(proc.poll())  # czeka na blokadę
+            self.assertEqual((self.active / "LockScreen.qml").read_text(), "// ekran Tide\n")
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        out, _ = proc.communicate(timeout=30)
+        self.assertEqual(out, "streamer\n")
+
+    def test_filesystem_error_is_reported_as_a_lock_variant_error(self):
+        self.sync("--force")
+        contents = self.copy / "contents"
+        contents.chmod(0o555)
+        self.addCleanup(contents.chmod, 0o755)
+        failed = self.variant("streamer", check=False)
+        self.assertEqual(failed.returncode, 1)
+        self.assertNotIn("Traceback", failed.stderr + failed.stdout)
+        contents.chmod(0o755)
+        self.assertEqual(self.variant().stdout, "mist\n")
+
     def test_differing_files_get_distinct_modification_times(self):
         # Pamięć podręczna QML greetera rozpoznaje plik po ścieżce i czasie modyfikacji, a po
         # przełączeniu ta sama ścieżka (tide/Tokens.qml) ma inną treść.
