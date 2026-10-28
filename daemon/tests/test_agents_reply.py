@@ -14,6 +14,11 @@ Claude Code sam ją skompaktował („Compacted while idle”): compact_boundary
 `waitingText` pusty, a karta K-20 spadła do „gotowe” (koordynacja 1/1 scalona). Teraz kompaktowanie, echo
 poleceń lokalnych i wstawki isMeta to nie odpowiedź; pytanie czeka, dopóki użytkownik naprawdę nie napisze.
 
+Pytanie a zadanie w tle (przegląd PT-29, sesja koordynatora Tide 27.10, 21:36): tura skończona „**Mogę scalić
+i zainstalować?**” z dopiskiem „…jeśli napiszesz „przywróć”.”, a w tle dwie zawieszone pętle Bash — Claude Code
+zgłaszał status `shell`, usługa `working/background` przez 12 h, karta K-19 „W toku”. Teraz pytanie (także pod
+dopiskiem) wygrywa ze statusem `shell`, a `shell` bez wpisu w dzienniku przez BACKGROUND_STALE to zwykły koniec tury.
+
 Dzienniki syntetyczne, tablica w katalogu tymczasowym.
 """
 import json
@@ -30,7 +35,7 @@ from tide_daemon.agents import AgentScanner
 from tide_daemon.agents.claude import ClaudeLog, escape_cwd, tail_has_turn
 from tide_daemon.agents.jsonl import TAIL_BYTES, JsonlTail
 from tide_daemon.agents.question import ending_question
-from tide_daemon.agents.state import Status, derive_state
+from tide_daemon.agents.state import BACKGROUND_STALE, Status, derive_state, waiting_text
 from tide_daemon.board.derive import CardDeriver
 from tide_daemon.board.store import BoardStore
 from . import test_board_derive as bd
@@ -59,6 +64,19 @@ class EndingQuestionTest(unittest.TestCase):
         }
         for text, expected in cases.items():
             self.assertEqual(ending_question(text), expected, text)
+
+    def test_note_under_the_question_does_not_hide_it(self):
+        merge = ("Wszystkie sześć zadań jest gotowe.\n\n**Proponowana instalacja:**\n1. Scalenie.\n2. `make install`.\n\n"
+                 "**Mogę scalić i zainstalować?**\n\nPrzy sprzątaniu worktree czeka jeszcze plik testowy w starym "
+                 "worktree PT-16, który przez pomyłkę zmienił recenzent. Mogę go przywrócić razem z resztą, "
+                 "jeśli napiszesz „przywróć”.")
+        self.assertEqual(ending_question(merge), "Mogę scalić i zainstalować?")
+        self.assertEqual(ending_question("Zrobione.\n\nMogę usunąć stare pliki, jeśli napiszesz „usuń”."),
+                         "Mogę usunąć stare pliki, jeśli napiszesz „usuń”.", "sam dopisek też prosi o odpowiedź")
+        for text in ("Gotowe. Jeśli chcesz, mogę też dodać testy.",
+                     "Co się zmieniło?\n\nDodałem pole daty. Testy przechodzą.",
+                     "## Co dalej?\n\nNic, wszystko scalone i zainstalowane."):
+            self.assertEqual(ending_question(text), "", text)
 
     def test_not_questions(self):
         for text in ("Gotowe. Testy przechodzą.", "",
@@ -235,6 +253,57 @@ class CompactionTest(ClaudeTurnTest):
         self.assertIs(ClaudeLog.tail_enough, tail_has_turn)
         capped = JsonlTail(self.path, 64 * 1024, enough=lambda _r: False, max_tail_bytes=256 * 1024).read_new()
         self.assertLess(len(capped), 300, "okno ma górną granicę")
+
+
+class BackgroundShellQuestionTest(CompactionTest):
+    """Status „shell” (zadanie agenta w tle) a pytanie na końcu tury — sesja koordynatora Tide z 27.10."""
+
+    MERGE = ("Wszystkie sześć zadań jest gotowe i połączone na jednej gałęzi.\n\n**Mogę scalić i zainstalować?**\n\n"
+             "Przy sprzątaniu worktree czeka jeszcze plik testowy. Mogę go przywrócić razem z resztą, "
+             "jeśli napiszesz „przywróć”.")
+
+    def log(self, *records):
+        self.write(*records)
+        _, log = self.scanned()
+        return log
+
+    def test_question_beats_background_shell_after_compaction(self):
+        asked = self.now - 12 * 3600
+        log = self.log(self.user(asked - 600, "Scal PT-16…25"), self.said(asked, self.MERGE), self.end(asked + 0.03),
+                       *self.compaction(asked + 3300))
+        shell = Status("shell", asked + 3300)  # Claude Code przestawił status przy kompaktowaniu
+        self.assertEqual(derive_state(log, self.now, True, shell, lambda _ts: True),
+                         ("waiting", "reply", log.last_text_ts))
+        self.assertAlmostEqual(log.last_text_ts, asked, places=0)
+        self.assertEqual(waiting_text(log), "Mogę scalić i zainstalować?")
+        # Świeże pytanie i zadanie w tle — też czeka (pętla w tle nie odpowie za użytkownika).
+        self.assertEqual(derive_state(log, asked + 60, True, Status("shell", asked + 30), lambda _ts: True)[:2],
+                         ("waiting", "reply"))
+
+    def test_ask_user_question_beats_background_shell(self):
+        asked = self.now - 600
+        ask = {"type": "assistant", "timestamp": iso(asked),
+               "message": {"role": "assistant", "content": [
+                   {"type": "tool_use", "id": "q1", "name": "AskUserQuestion",
+                    "input": {"questions": [{"question": "Scalić teraz?"}]}}]}}
+        log = self.log(self.user(asked - 60, "Start"), ask)
+        state = derive_state(log, self.now, True, Status("shell", asked), lambda _ts: True)
+        self.assertEqual(state[:2], ("waiting", "question"))
+        self.assertAlmostEqual(state[2], asked, places=2)
+        self.assertEqual(waiting_text(log), "Scalić teraz?")
+
+    def test_background_without_question_works_until_it_goes_stale(self):
+        done_at = self.now - 600
+        log = self.log(self.user(done_at - 60, "Puść testy w tle"),
+                       self.said(done_at, "Testy idą w tle, wrócę z wynikiem."), self.end(done_at + 0.03))
+        self.assertEqual(derive_state(log, self.now, True, Status("shell", done_at), lambda _ts: True),
+                         ("working", "background", done_at))
+        later = done_at + BACKGROUND_STALE + 60
+        self.assertEqual(derive_state(log, later - 120, True, Status("shell", done_at), lambda _ts: True)[:2],
+                         ("working", "background"), "długie zadanie w tle — do BACKGROUND_STALE pracuje")
+        # Po BACKGROUND_STALE bez wpisu: zwykły koniec tury — a że to dłużej niż IDLE_AFTER, od razu „bezczynna”.
+        self.assertEqual(derive_state(log, later, True, Status("shell", done_at), lambda _ts: True)[:2],
+                         ("idle", ""), "zawieszone zadanie w tle nie trzyma „pracuje” w nieskończoność")
 
 
 class CompactedCoordinatorCardTest(unittest.TestCase):

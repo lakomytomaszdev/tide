@@ -10,6 +10,12 @@ zdania (najwyżej QUESTION_SENTENCES). Pytanie to zdanie kończące się „?”
 cudzysłowem albo emoji), po którym jest najwyżej jedno krótkie zdanie, albo linia w stylu „Pytanie 10: …”,
 „Czekam na twoją odpowiedź”, „Daj znać, czy…”, albo lista pytań pod zdaniem z dwukropkiem. Pytanie
 retoryczne w środku podsumowania nie liczy się — patrzymy tylko na koniec wiadomości.
+
+Dopisek pod pytaniem (sesja z 27.10: „**Mogę scalić i zainstalować?**”, a pod nim „…Mogę go przywrócić
+razem z resztą, jeśli napiszesz „przywróć”.”): ostatni akapit bez pytania, który prosi o słowo od
+użytkownika (`_INVITES`: „jeśli napiszesz / potwierdzisz / dasz znać”, „napisz „…””), nie zasłania pytania
+z akapitu tuż nad nim; bez takiego pytania liczy się sam dopisek. Zwykła propozycja („Jeśli chcesz, mogę
+też…”) prośbą o odpowiedź nie jest.
 """
 import re
 
@@ -26,6 +32,9 @@ _ASKS = re.compile(r"^(?:\*\*)?\s*pytanie(?:\s+(?:nr\s*)?\d+)?\s*[:.]", re.I)
 _WAITS = re.compile(r"\b(?:czekam na (?:twoj\w* |twoją |twoich |)(?:odpowied\w*|decyzj\w*|potwierdzeni\w*)|"
                     r"daj (?:mi )?znać, (?:czy|które|którą|jak)|"
                     r"waiting for your (?:answer|reply|decision))\b", re.I)
+_INVITES = re.compile(r"\b(?:jeśli|jeżeli|gdy|kiedy)\s+(?:mi\s+)?(?:napiszesz|odpiszesz|potwierdzisz|dasz\s+znać)\b|"
+                      r"\b(?:napisz|odpisz)\s+[„\"«']|\bif you (?:reply|confirm|say)\b", re.I)
+_HEADING = re.compile(r"^\s*#")
 
 
 def ending_question(text: str, limit: int = QUESTION_MAX) -> str:
@@ -46,8 +55,25 @@ def ending_question(text: str, limit: int = QUESTION_MAX) -> str:
     last = paragraphs[-1]
     if tail_lists and last.rstrip(_TRAILING).endswith(":"):
         return _from_list(tail_lists, limit)  # „Mam dwa pytania:” i lista pytań
-    sentences = [s.strip() for line in last.splitlines() for s in _SENTENCE.split(line) if s.strip()]
-    window = sentences[-QUESTION_SENTENCES:]
+    found = _paragraph_question(last, limit)
+    if found or tail_lists:
+        return found
+    window = _sentences(last)[-QUESTION_SENTENCES:]
+    if any(_INVITES.search(s) for s in window):
+        # Dopisek „…jeśli napiszesz „przywróć”.” pod pytaniem — pytanie z akapitu wyżej, inaczej sam dopisek.
+        above = paragraphs[-2] if len(paragraphs) > 1 else ""
+        earlier = _paragraph_question(above, limit) if above and not _HEADING.match(above) else ""
+        return earlier or _clip(" ".join(window[-2:]), limit)
+    return ""
+
+
+def _sentences(paragraph: str) -> list:
+    return [s.strip() for line in paragraph.splitlines() for s in _SENTENCE.split(line) if s.strip()]
+
+
+def _paragraph_question(paragraph: str, limit: int) -> str:
+    """Pytanie z końca akapitu (zdanie z „?”, „Pytanie N:”, „Czekam na odpowiedź”) albo pusty napis."""
+    window = _sentences(paragraph)[-QUESTION_SENTENCES:]
     asked = [i for i, s in enumerate(window) if _is_question(s)]
     # Po pytaniu najwyżej jedno krótkie zdanie („Mogę też zrobić obie.”) — inaczej to pytanie retoryczne
     # w środku podsumowania („Co się zmieniło? Dodałem pole. Wszystko działa.”).
@@ -60,7 +86,7 @@ def ending_question(text: str, limit: int = QUESTION_MAX) -> str:
         if start > 0 and _ASKS.match(window[start - 1]):
             start -= 1
         return _clip(" ".join(window[start:asked[-1] + 1]), limit)
-    marker = next((line.strip() for line in last.splitlines() if _ASKS.match(line.strip())), "")
+    marker = next((line.strip() for line in paragraph.splitlines() if _ASKS.match(line.strip())), "")
     if marker:
         return _clip(marker, limit)
     if any(_WAITS.search(s) for s in window):
