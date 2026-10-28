@@ -64,7 +64,7 @@ class ConfigTest(unittest.TestCase):
 class SwitchTest(MonitorsCase):
     def test_xbox_changes_only_the_right_monitor_input(self):
         result = self.switcher.switch("xbox")
-        self.assertEqual(result, {"ok": True, "layout": "xbox", "changed": True, "error": ""})
+        self.assertEqual(result, {"ok": True, "layout": "xbox", "changed": True, "error": "", "note": ""})
         self.assertEqual(self.dp_input(), HDMI)
         self.assertEqual(self.hardware()["ddc"]["input"]["2"], DP, "lewego monitora DDC nie rusza")
         self.assertKwinUntouched()
@@ -115,6 +115,8 @@ class IdempotenceTest(MonitorsCase):
         self.switcher.switch("xbox")
         again = self.switcher.switch("xbox")
         self.assertEqual((again["ok"], again["changed"]), (True, False))
+        self.assertEqual(again["note"], "wejścia DP-2 nie dało się odczytać przez DDC — bez zapisu, liczy się "
+                                        "ostatnio potwierdzone (Xbox)")
         self.assertEqual(len(self.writes()), 1)
 
     def test_pc_puts_the_input_back_even_when_the_state_says_pc(self):
@@ -205,7 +207,8 @@ class ServiceTest(MonitorsCase):
     def setUp(self):
         super().setUp()
         app()
-        self.service = MonitorsService(self.switcher)
+        self.notices = []
+        self.service = MonitorsService(self.switcher, notify=self.notices.append)
         self.addCleanup(self.service.stop)
 
     def status(self, service=None):
@@ -253,6 +256,32 @@ class ServiceTest(MonitorsCase):
         fresh.stream_changed(False)   # pierwsza odpowiedź ActivityManagera po starcie: praca
         self.assertTrue(self.settled("pc", fresh))
         self.assertEqual(self.dp_input(), DP)
+
+    def test_leaving_stream_during_a_switch_to_xbox_finishes_with_pc(self):
+        self.service.set_layout("xbox")
+        self.service.stream_changed(False)    # wyjście ze Streamu, zanim przełączenie na Xbox się skończyło
+        self.assertTrue(wait_until(lambda: self.status()["result"] is not None and self.status()["result"]["auto"]
+                                   and not self.status()["switching"], timeout=10))
+        self.assertEqual(self.status()["layout"], "pc")
+        self.assertEqual(self.dp_input(), DP)
+
+    def test_failed_return_to_pc_notifies_the_desktop(self):
+        self.service.set_layout("xbox")
+        self.assertTrue(self.settled("xbox"))
+        self.change_hardware(lambda s: s["ddc"]["reachable"].update({"4": False}))
+        self.service.stream_changed(False)
+        self.assertTrue(wait_until(lambda: self.notices, timeout=10))
+        (notice,) = self.notices
+        self.assertEqual((notice["id"], notice["icon"], notice["summary"]),
+                         ("monitors/auto-pc", "video-display", "Prawy monitor został na Xboxie"))
+        self.assertIn("przełącz wejście monitora DP-2 na DisplayPort przyciskiem na monitorze", notice["body"])
+        self.assertEqual(self.status()["layout"], "xbox", "widżet dalej proponuje „Wróć do PC”")
+
+    def test_manual_failure_does_not_notify(self):
+        self.change_hardware(lambda s: s["ddc"]["reachable"].update({"4": False}))
+        self.service.set_layout("xbox")
+        self.assertTrue(self.settled("pc"))
+        self.assertEqual(self.notices, [], "błąd ręcznego przełączenia jest w popupie")
 
     def test_work_with_pc_does_nothing(self):
         self.service.stream_changed(False)

@@ -12,9 +12,12 @@ pełna lista klawiszy tamtej akcji trafia do $XDG_STATE_HOME/tide/stream-shortcu
 zapisaną listę, jeśli tamta akcja ma dokładnie to, co jej zostawiliśmy; gdy ktoś zmienił ją w trakcie
 Streamu — tylko dopisuje odebrany klawisz. Plik znika po oddaniu wszystkiego, więc jego obecność przy starcie
 usługi (zabita w Stream, wylogowanie bez zatrzymania) oznacza „oddaj klawisze”, gdy bieżąca aktywność nie jest
-Streamem. W pracy usługa niczego w rejestrze nie zmienia, jeśli nie ma czego oddawać. Gdy plik zginął,
-a nasze skróty dalej są w rejestrze, klawisz wraca do akcji, której domyślne skróty (defaultShortcut) go
-zawierają — kandydatów podaje kglobalshortcutsrc (tylko odczyt).
+Streamem. Plik powstaje przy każdym wejściu do Streamu (także bez odebranych klawiszy — znacznik „entered”),
+więc „zapisane, że nic nie zabraliśmy” różni się od „pliku nie ma”. W pracy usługa niczego w rejestrze nie
+zmienia, jeśli nie ma czego oddawać. Tylko gdy pliku nie ma, a nasze skróty dalej są w rejestrze (plik zginął),
+klawisz wraca do akcji, której domyślne skróty (defaultShortcut) go zawierają — kandydatów daje sam KGlobalAccel
+(allMainComponents, allActionsForComponent). Klawisz świadomie zdjęty przez użytkownika przed Streamem zostaje
+zdjęty, bo plik stanu mówi, że niczego nie zabraliśmy.
 
 Czy bieżąca aktywność to Stream, mówi jeden sygnał (current_activity.CurrentActivity.changed, podpięty
 w app.py). Wywołania KGlobalAccel idą w jednym wątku roboczym, po kolei, więc nie zatrzymują pętli usługi;
@@ -27,6 +30,7 @@ import json
 import os
 import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from concurrent.futures import ThreadPoolExecutor
@@ -116,6 +120,17 @@ class KGlobalAccel:
     def default_keys(self, action: list[str]) -> list[int]:
         return [int(k) for k in (self._call("defaultShortcut", _strings(action)) or []) if int(k)]
 
+    def default_owners(self, key: int) -> list[list[str]]:
+        """Akcje (poza naszymi), które mają `key` w domyślnych skrótach — przegląd całego rejestru, więc
+        tylko w rzadkim przypadku zgubionego pliku stanu."""
+        found = []
+        for component in self._call("allMainComponents") or []:
+            for action in self._call("allActionsForComponent", _strings([str(c) for c in component])) or []:
+                action = [str(a) for a in action]
+                if action[:1] != [COMPONENT] and key in self.default_keys(action):
+                    found.append(action)
+        return found
+
     def set_foreign(self, action: list[str], keys: list[int]) -> None:
         self._call("setForeignShortcut", _strings(action), _ints(keys))
 
@@ -136,34 +151,6 @@ def default_state_path() -> Path:
     return Path(base) / "tide" / "stream-shortcuts.json"
 
 
-def default_shortcuts_file() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return Path(base) / "kglobalshortcutsrc"
-
-
-def default_owners(keys: str, path: Path | None = None) -> list[list[str]]:
-    """Akcje, których domyślne skróty (drugie pole wpisu w kglobalshortcutsrc) zawierają `keys` — kandydaci
-    do oddania klawisza po utracie pliku stanu. Tylko odczyt."""
-    found, group = [], ""
-    try:
-        lines = (path or default_shortcuts_file()).read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-    for line in lines:
-        line = line.strip()
-        if line.startswith("[") and line.endswith("]"):
-            group = line[1:-1]
-            continue
-        name, sep, value = line.partition("=")
-        if not sep or name.startswith("_k_") or group == COMPONENT:
-            continue
-        fields = value.split(",")
-        defaults = [k.strip() for k in fields[1].split("\t")] if len(fields) > 1 else []
-        if keys in defaults:
-            found.append([group, name, "", ""])
-    return found
-
-
 def key_text(key: int) -> str:
     for shortcut in SHORTCUTS:
         if shortcut.key == key:
@@ -174,10 +161,10 @@ def key_text(key: int) -> str:
 class StreamShortcuts:
     """Rejestracja skrótów Stream w KGlobalAccel i oddawanie zajętych klawiszy (bez Qt — testy na atrapie)."""
 
-    def __init__(self, accel, state_path: Path | None = None, owners=default_owners):
+    def __init__(self, accel, state_path: Path | None = None, owners=None):
         self.accel = accel
         self.state_path = Path(state_path) if state_path is not None else default_state_path()
-        self.owners = owners      # klawisz (zapis „Meta+B”) → akcje z nim w domyślnych skrótach
+        self.owners = owners or accel.default_owners   # kod klawisza → akcje z nim w domyślnych skrótach
         self.active = False
 
     # stan na dysku --------------------------------------------------------------------------
@@ -190,14 +177,25 @@ class StreamShortcuts:
         items = data.get("taken") if isinstance(data, dict) else None
         return [t for t in items if isinstance(t, dict)] if isinstance(items, list) else []
 
-    def _save(self, taken: list[dict]) -> None:
-        if not taken:
+    def has_state(self) -> bool:
+        return self.state_path.exists()
+
+    def _save(self, taken: list[dict], entered: str | None = None) -> None:
+        """Plik stanu: znacznik wejścia do Streamu i odebrane klawisze. Bez znacznika i bez klawiszy — usunięty."""
+        if not taken and not entered:
             self.state_path.unlink(missing_ok=True)
             return
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"taken": taken}, indent=2, ensure_ascii=False) + "\n")
+        tmp.write_text(json.dumps({"entered": entered or "", "taken": taken}, indent=2, ensure_ascii=False) + "\n")
         tmp.replace(self.state_path)
+
+    def _entered(self) -> str:
+        try:
+            data = json.loads(self.state_path.read_text())
+        except (OSError, ValueError):
+            return ""
+        return str(data.get("entered") or "") if isinstance(data, dict) else ""
 
     def _ours(self, owner: list[str]) -> bool:
         return len(owner) >= 2 and owner[0] == COMPONENT
@@ -208,6 +206,9 @@ class StreamShortcuts:
         """Wejście do Streamu: odbiera klawisze innym akcjom (z zapisem) i rejestruje skróty Stream."""
         notes = []
         taken = self.taken()
+        entered = self._entered() or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        # Plik stanu przed każdą zmianą rejestru — także gdy nic nie zabieramy: „nic nie zabraliśmy” ≠ „brak pliku”.
+        self._save(taken, entered)
         for shortcut in SHORTCUTS:
             owner = self.accel.owner(shortcut.key)
             if not owner or self._ours(owner):
@@ -215,7 +216,7 @@ class StreamShortcuts:
             if not any(t.get("key") == shortcut.key for t in taken):
                 taken.append({"key": shortcut.key, "keyText": shortcut.keys, "action": owner,
                               "keys": self.accel.keys(owner)})
-                self._save(taken)  # zapis przed zmianą — po awarii da się oddać dokładnie
+                self._save(taken, entered)  # zapis przed zmianą — po awarii da się oddać dokładnie
             self.accel.set_foreign(owner, [k for k in self.accel.keys(owner) if k != shortcut.key])
             notes.append(f"{shortcut.keys}: na czas Streamu zabrany akcji „{owner[3] if len(owner) > 3 else owner[1]}”")
         for shortcut in SHORTCUTS:
@@ -227,7 +228,7 @@ class StreamShortcuts:
 
     def needs_leave(self) -> bool:
         """Czy w pracy jest coś do sprzątnięcia: zapisane klawisze do oddania albo nasze skróty w rejestrze."""
-        if self.active or self.taken():
+        if self.active or self.has_state():
             return True
         return any(self._ours(self.accel.owner(s.key)) for s in SHORTCUTS)
 
@@ -239,9 +240,10 @@ class StreamShortcuts:
             self.accel.unregister(COMPONENT, shortcut.name)
         left = []
         taken = self.taken()
-        recorded = {t.get("key") for t in taken}
-        for shortcut in ours:
-            if shortcut.key not in recorded:
+        if not self.has_state():
+            # Plik zginął, a nasze skróty były w rejestrze: zapas z domyślnych skrótów. Z plikiem — tylko to,
+            # co plik mówi (klawisz zdjęty przez użytkownika przed Streamem zostaje zdjęty).
+            for shortcut in ours:
                 notes += self._give_back_default(shortcut)
         for item in taken:
             key, action, saved = item.get("key"), item.get("action") or [], list(item.get("keys") or [])
@@ -270,7 +272,7 @@ class StreamShortcuts:
         """Plik stanu zginął, a nasz skrót był w rejestrze: klawisz wraca do akcji, która ma go w domyślnych."""
         if self.accel.owner(shortcut.key):
             return []
-        for action in self.owners(shortcut.keys):
+        for action in self.owners(shortcut.key):
             current = self.accel.keys(action)
             if shortcut.key in self.accel.default_keys(action) and shortcut.key not in current:
                 self.accel.set_foreign(action, current + [shortcut.key])
@@ -356,7 +358,9 @@ class StreamShortcutsMonitor(QObject):
             log("nie da się słuchać naciśnięć skrótów")
 
     def stop(self, timeout: float = 10.0) -> None:
-        """Wylogowanie albo restart usługi: klawisze wracają do pracy (czeka na wątek najwyżej timeout s)."""
+        """Wylogowanie albo restart usługi: klawisze wracają do pracy. Czeka timeout s na zadanie oddania; gdy
+        przed nim w kolejce jest jeszcze zadanie w toku (np. wywołanie z 5-sekundowym limitem D-Bus), oddanie
+        może nie zdążyć — wtedy plik stanu odda klawisze przy następnym starcie."""
         self._retry.stop()
         if self.subscribe:
             self.bus.disconnect(ACCEL_SERVICE, component_path(), COMPONENT_IFACE, "globalShortcutPressed",

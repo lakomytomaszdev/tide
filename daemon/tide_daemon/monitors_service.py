@@ -7,6 +7,8 @@ stanu — bez DDC i bez KWin.
 
 Praca zawsze ma oba ekrany jak dziś: wyjście z aktywności Stream (i start usługi w pracy), gdy prawy monitor jest
 na wejściu Xboxa albo przełączenie zostało przerwane, przełącza go z powrotem na PC (stream_changed(False)).
+Wyjście ze Streamu w trakcie przełączania na Xbox jest zapamiętane i powrót rusza po jego końcu. Nieudany
+automatyczny powrót (monitor nie odpowiada na DDC) to powiadomienie z prośbą o przycisk na monitorze.
 Źródłem „czy Stream” jest jeden sygnał (current_activity.CurrentActivity.changed), podpinany w app.py.
 """
 from __future__ import annotations
@@ -28,9 +30,11 @@ class MonitorsService(QObject):
     changed = pyqtSignal()
     _finished = pyqtSignal(str, object)  # (układ docelowy, wynik) — z wątku roboczego do głównego
 
-    def __init__(self, switcher=None, parent=None):
+    def __init__(self, switcher=None, notify=None, parent=None):
         super().__init__(parent)
         self.switcher = switcher or monitors.Switcher()
+        self.notify = notify          # notify({id, icon, summary, body}) — powiadomienie pulpitu albo None
+        self._left_stream = False     # wyjście ze Streamu w trakcie przełączania — powrót po jego końcu
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-monitors")
         self._switching = ""
         self._auto = False
@@ -78,6 +82,10 @@ class MonitorsService(QObject):
     def stream_changed(self, stream: bool) -> None:
         """Praca (wyjście ze Streamu albo start usługi w pracy) z prawym monitorem na Xboxie → z powrotem PC."""
         if stream or self._stopped or self._switching == "pc":
+            self._left_stream = False if stream else self._left_stream
+            return
+        if self._switching:
+            self._left_stream = True   # SetLayout odmówiłby („przełączenie już trwa”) — dokończ po końcu
             return
         if self.switcher.layout() == "xbox":
             log("praca — wejście prawego monitora wraca na DisplayPort")
@@ -92,4 +100,11 @@ class MonitorsService(QObject):
                         "at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")}
         if not result.get("ok"):
             log(str(result.get("error")))
+            if self._auto and self.notify is not None:
+                self.notify({"id": "monitors/auto-pc", "icon": "video-display",
+                             "summary": "Prawy monitor został na Xboxie",
+                             "body": f"Po wyjściu ze Stream nie udało się wrócić na PC: {result.get('error')}"})
         self.changed.emit()
+        if self._left_stream:
+            self._left_stream = False
+            self.stream_changed(False)

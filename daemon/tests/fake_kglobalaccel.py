@@ -46,6 +46,21 @@ class FakeRegistry:
         self.calls.append(("defaultShortcut", tuple(action[:2])))
         return list(self.defaults.get((action[0], action[1]), []))
 
+    def components(self) -> list[list[str]]:
+        """allMainComponents: [unikalna nazwa, nazwa przyjazna, "", ""]."""
+        seen = {}
+        for item in self.actions.values():
+            seen.setdefault(item["id"][0], [item["id"][0], item["id"][2] if len(item["id"]) > 2 else "", "", ""])
+        return list(seen.values())
+
+    def component_actions(self, component: str) -> list[list[str]]:
+        return [list(item["id"]) for (comp, _name), item in self.actions.items() if comp == component]
+
+    def default_owners(self, key: int) -> list[list[str]]:
+        """To samo co klient KGlobalAccel.default_owners, na rejestrze w pamięci."""
+        return [a for c in self.components() for a in self.component_actions(c[0])
+                if a[0] != "tide_stream" and key in self.default_keys(a)]
+
     def snapshot(self) -> dict:
         """Zawartość rejestru do porównania „dokładnie jak przed Streamem”."""
         return copy.deepcopy({k: v["keys"] for k, v in self.actions.items()})
@@ -103,6 +118,8 @@ XML = """<interface name="org.kde.KGlobalAccel">
   <method name="action"><arg type="i" direction="in"/><arg type="as" direction="out"/></method>
   <method name="shortcut"><arg type="as" direction="in"/><arg type="ai" direction="out"/></method>
   <method name="defaultShortcut"><arg type="as" direction="in"/><arg type="ai" direction="out"/></method>
+  <method name="allMainComponents"><arg type="aas" direction="out"/></method>
+  <method name="allActionsForComponent"><arg type="as" direction="in"/><arg type="aas" direction="out"/></method>
   <method name="setForeignShortcut"><arg type="as" direction="in"/><arg type="ai" direction="in"/></method>
   <method name="doRegister"><arg type="as" direction="in"/></method>
   <method name="setShortcut"><arg type="as" direction="in"/><arg type="ai" direction="in"/>
@@ -132,6 +149,25 @@ class _Adaptor(QDBusAbstractAdaptor):
     @pyqtSlot("QStringList", result="QList<int>")
     def shortcut(self, action):
         return self.registry.keys(list(action))
+
+    def _reply_lists(self, message, lists) -> None:
+        """Odpowiedź `aas` złożona ręcznie (PyQt6 nie ma typu QList<QStringList> dla wyniku slotu)."""
+        arg = QDBusArgument()
+        arg.beginArray(QMetaType.Type.QStringList.value)
+        for item in lists:
+            arg.add([str(x) for x in item], QMetaType.Type.QStringList.value)
+        arg.endArray()
+        message.setDelayedReply(True)
+        QDBusConnection.connectToBus(os.environ["TIDE_FAKE_ACCEL_BUS"], "fake-kglobalaccel").send(
+            message.createReply([arg]))
+
+    @pyqtSlot(QDBusMessage)
+    def allMainComponents(self, message):
+        self._reply_lists(message, self.registry.components())
+
+    @pyqtSlot("QStringList", QDBusMessage)
+    def allActionsForComponent(self, component, message):
+        self._reply_lists(message, self.registry.component_actions(component[0]))
 
     @pyqtSlot("QStringList", result="QList<int>")
     def defaultShortcut(self, action):

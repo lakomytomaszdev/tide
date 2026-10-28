@@ -87,5 +87,7 @@ function confirm(status, up) {
     if (result.ok === false && result.error) out.error = "Ostatnie przełączenie: " + result.error
     if (result.ok && result.auto && result.changed)
         out.note = "Po wyjściu ze Stream wejście wróciło na DisplayPort."
+    else if (result.ok && result.note)
+        out.note = "Ostatnie przełączenie: " + result.note + "."
     return out
 }

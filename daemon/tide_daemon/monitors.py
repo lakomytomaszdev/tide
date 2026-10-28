@@ -182,14 +182,15 @@ class Switcher:
     # przełączenie ----------------------------------------------------------------------------
 
     def switch(self, target: str) -> dict:
-        """{ok, layout, changed, error}: layout to wejście według stanu po przełączeniu (także po błędzie)."""
+        """{ok, layout, changed, error, note}: layout to wejście według stanu po przełączeniu (także po błędzie);
+        note — np. że wejścia nie dało się odczytać i liczy się ostatnio potwierdzone."""
         if target not in LAYOUTS:
             raise ValueError(f"nieznany układ „{target}” (pc albo xbox)")
         with self._Lock(self.state_dir / "monitors.lock"):
             return self._switch(target)
 
-    def _result(self, ok: bool, changed: bool, error: str = "") -> dict:
-        return {"ok": ok, "layout": self.layout(), "changed": changed, "error": error}
+    def _result(self, ok: bool, changed: bool, error: str = "", note: str = "") -> dict:
+        return {"ok": ok, "layout": self.layout(), "changed": changed, "error": error, "note": note}
 
     def _switch(self, target: str) -> dict:
         state = self.load_state()
@@ -210,7 +211,9 @@ class Switcher:
             if current == value or (current is None and confirmed):
                 # Już jest (odczyt) albo nie da się odczytać, a ostatnio potwierdzone wejście to cel — bez zapisu.
                 self._write_state({**state, "layout": target, "pending": None, "since": state.get("since") or _now()})
-                return self._result(True, False)
+                note = "" if current == value else (f"wejścia {self.cfg.monitor} nie dało się odczytać przez DDC — "
+                                                    f"bez zapisu, liczy się ostatnio potwierdzone ({LABELS[target]})")
+                return self._result(True, False, note=note)
             # Bez sprawdzania po zapisie: po zmianie wejścia monitor może przestać odpowiadać przez DisplayPort.
             code, _out, _err = self.tools.run("ddcutil", "--bus", str(bus), "setvcp", VCP_INPUT, f"0x{value:02x}",
                                               "--noverify")
@@ -248,7 +251,8 @@ def main(argv: list[str] | None = None) -> int:
               + (" (przełączenie przerwane)" if result["interrupted"] else "")
               + (f" — {result['error']}" if result["error"] else ""))
     elif ok:
-        print(f"{LABELS[result['layout']]}" + ("" if result["changed"] else " — bez zmian"))
+        print(f"{LABELS[result['layout']]}" + ("" if result["changed"] else " — bez zmian")
+              + (f" ({result['note']})" if result.get("note") else ""))
     if not ok:
         print(f"Błąd: {result['error']}", file=sys.stderr)
     return 0 if ok else 1

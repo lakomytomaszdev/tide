@@ -161,7 +161,7 @@ Obiekt /Monitors, interfejs org.tide.Daemon.Monitors (wejście prawego monitora 
 monitors.py; układ ekranów w KWin bez zmian):
 - Status() -> s              JSON {layout ("pc" | "xbox"; przerwane przełączenie liczy się jak "xbox"), target,
                              available (jest ddcutil), error, interrupted, since, monitor, switching ("" albo układ
-                             w toku), result (ostatnie przełączenie: {ok, layout, changed, error, auto, at} albo null;
+                             w toku), result (ostatnie przełączenie: {ok, layout, changed, error, note, auto, at} albo null;
                              auto — powrót na PC po wyjściu ze Streamu)}; tylko plik stanu, bez DDC,
 - SetLayout(s layout) -> s   przełączenie w tle na "pc" albo "xbox"; od razu {accepted, error} (odmowa: nieznany
                              układ, przełączenie już trwa), koniec — sygnałem Changed i w Status().result,

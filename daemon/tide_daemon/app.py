@@ -268,7 +268,11 @@ def main(argv=None) -> int:
     monitors = None
     if not args.no_monitors:
         from .monitors_service import MonitorsService
-        monitors = MonitorsService(parent=app)  # wejście prawego monitora PC ⇄ Xbox (PT-38)
+        monitor_notifier = None
+        if not args.no_notifications:
+            from .notifications import LimitsNotifier
+            monitor_notifier = LimitsNotifier(parent=app).send  # nieudany powrót na PC po wyjściu ze Streamu
+        monitors = MonitorsService(notify=monitor_notifier, parent=app)  # wejście prawego monitora PC ⇄ Xbox
     annotators = [a for a in (tasks.annotate if tasks is not None else None,
                               coordination.annotate if coordination is not None else None) if a]
     if annotators:
