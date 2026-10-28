@@ -12,10 +12,14 @@ Prawdziwy model nigdy nie jest wywoływany.
 import json
 import os
 import shutil
+import signal
+import subprocess
 import tempfile
+import time
 import unittest
 
-from tide_daemon.tasks import agentcmd, local
+from . import gitrepos
+from tide_daemon.tasks import agentcmd, local, stepstop
 
 OLLAMA = local.LocalAgent("local", "http://127.0.0.1:11434", "ollama", "qwen3-coder:30b", 65536)
 MAC = local.LocalAgent("mac", "http://mac.lan:11434", "ollama", "qwen3-coder:30b", 65536, "/home/u/.tok")
@@ -242,6 +246,254 @@ class BackgroundCodexTest(BackgroundBase):
     def test_codex_step_dir_must_not_be_hidden_to_the_snap(self):
         with self.assertRaises(agentcmd.StepError):
             agentcmd.background(self.step("codex", step_dir=os.path.join(self.home, ".cache", "step")))
+
+
+# Atrapa programu agenta: pisze pliki w worktree (zmieniony śledzony, nowe nieśledzone, atrapa piaskownicy),
+# uruchamia dziecko (`sleep`), zgłasza gotowość i czeka.
+DUMMY = """#!/usr/bin/python3
+import os, signal, subprocess, sys, time
+if os.environ.get("DUMMY_IGNORE_TERM"):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with open("tracked.txt", "a") as fh:
+    fh.write("zmiana agenta\\n")
+with open("nowy.txt", "w") as fh:
+    fh.write("nieśledzony\\n")
+os.makedirs("src/glebokie", exist_ok=True)
+with open("src/glebokie/inny.py", "w") as fh:
+    fh.write("x = 1\\n")
+os.makedirs(".claude", exist_ok=True)
+with open(".claude/.cc-writes", "w") as fh:
+    fh.write("atrapa\\n")
+child = subprocess.Popen(["sleep", "300"])
+with open(os.environ["DUMMY_READY"], "w") as fh:
+    fh.write(str(child.pid))
+time.sleep(300)
+"""
+
+
+class StopStepTest(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="tide-stop-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.repo = os.path.join(self.root, "repo")
+        os.makedirs(self.repo)
+        gitrepos.git(self.repo, "init", "-q", "-b", "master")
+        gitrepos.commit(self.repo, "tracked.txt", "start\n")
+        self.hook_marker = os.path.join(self.root, "hook-ran")
+        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
+        with open(hook, "w", encoding="utf-8") as fh:
+            fh.write(f"#!/bin/sh\ntouch {self.hook_marker}\nexit 1\n")
+        os.chmod(hook, 0o755)
+        self.worktree = os.path.join(self.root, "repo-wt", "pt-1")
+        gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "feat/pt-1-x", self.worktree)
+        self.step_dir = os.path.join(self.root, "repo-wt", "pt-1.step")
+        self.ready = os.path.join(self.root, "ready")
+        self.tmp_root = os.path.join(self.root, "tmp")
+        os.makedirs(self.tmp_root)
+        self.session = "11111111-2222-3333-4444-555555555555"
+        self.projects = os.path.join(self.root, "claude", "projects")
+
+    def start(self, ignore_term=False):
+        dummy = os.path.join(self.root, "dummy.py")
+        with open(dummy, "w", encoding="utf-8") as fh:
+            fh.write(DUMMY)
+        os.chmod(dummy, 0o755)
+        cmd = agentcmd.background(agentcmd.Step(
+            "claude", dummy, "zrób", self.worktree, self.repo, self.step_dir, "s1", self.session,
+            base_env={"HOME": os.path.join(self.root, "home"), "PATH": os.environ["PATH"]}, tmp_root=self.tmp_root))
+        cmd.env["DUMMY_READY"] = self.ready
+        if ignore_term:
+            cmd.env["DUMMY_IGNORE_TERM"] = "1"
+        cmd.prepare()
+        proc = cmd.start()
+        self.addCleanup(lambda: proc.poll() is None and os.killpg(proc.pid, signal.SIGKILL))
+        self.addCleanup(lambda: proc.stdout.close())
+        deadline = time.time() + 10
+        while not self._ready():
+            self.assertLess(time.time(), deadline, "atrapa nie zgłosiła gotowości")
+            time.sleep(0.05)
+        return proc, int(self._ready())
+
+    def _ready(self) -> str:
+        try:
+            with open(self.ready, encoding="utf-8") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+
+    def write_claude_log(self, lines):
+        folder = os.path.join(self.projects, agentcmd_escape(self.worktree))
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, self.session + ".jsonl"), "w", encoding="utf-8") as fh:
+            for line in lines:
+                fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+
+    def stop(self, proc, **kw):
+        args = dict(worktree=self.worktree, step_dir=self.step_dir, tool="claude", session_id=self.session,
+                    claude_projects=self.projects, grace=5)
+        args.update(kw)
+        return stepstop.stop_step(proc, **args)
+
+    def test_stop_ends_the_process_and_its_children_and_commits_every_change(self):
+        self.write_claude_log([
+            {"type": "user", "message": {"role": "user", "content": "Zrób ticket"}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Zaczynam"}]}},
+            {"type": "user", "isMeta": True, "message": {"role": "user", "content": "meta"}},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {}}]}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Prawie gotowe, brakuje testu"}]}}])
+        proc, child = self.start()
+        result = self.stop(proc)
+        self.assertTrue(result.stopped)
+        self.assertIsNotNone(proc.poll())
+        deadline = time.time() + 5
+        while not _gone(child) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(_gone(child), "dziecko atrapy przeżyło zatrzymanie")
+        self.assertTrue(result.committed, result.error)
+        self.assertEqual(result.error, "")
+        # atrapa piaskownicy zostaje na dysku, ale nie w commicie
+        self.assertEqual(gitrepos.git(self.worktree, "status", "--porcelain"), "?? .claude/\n")
+        shown = gitrepos.git(self.worktree, "show", "--name-only", "--format=%s%n%an", "HEAD").splitlines()
+        self.assertEqual(shown[0], "WIP: step stopped before it finished")
+        self.assertEqual(shown[1], "Krok")
+        self.assertEqual(sorted(n for n in shown[2:] if n), ["nowy.txt", "src/glebokie/inny.py", "tracked.txt"])
+        self.assertEqual(result.commit, gitrepos.git(self.worktree, "rev-parse", "HEAD").strip())
+        self.assertEqual(result.files, 3)
+        self.assertEqual(gitrepos.git(self.worktree, "branch", "--show-current").strip(), "feat/pt-1-x")
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(),
+                         gitrepos.git(self.repo, "rev-parse", "HEAD").strip())
+        self.assertEqual([m["role"] for m in result.messages], ["user", "assistant", "assistant"])
+        self.assertEqual(result.messages[-1]["text"], "Prawie gotowe, brakuje testu")
+        self.assertNotIn("meta", [m["text"] for m in result.messages])
+
+    def test_the_service_git_runs_no_hooks(self):
+        proc, _ = self.start()
+        result = self.stop(proc)
+        self.assertTrue(result.committed, result.error)
+        self.assertFalse(os.path.exists(self.hook_marker))
+
+    def test_a_process_that_ignores_sigterm_is_killed_after_the_grace_period(self):
+        proc, _ = self.start(ignore_term=True)
+        started = time.time()
+        result = self.stop(proc, grace=0.5)
+        self.assertTrue(result.stopped)
+        self.assertLess(time.time() - started, 5)
+        self.assertEqual(proc.returncode, -signal.SIGKILL)
+        self.assertTrue(result.committed)
+
+    def test_stop_by_pid_and_nothing_to_commit(self):
+        proc, _ = self.start()
+        result_dirty = stepstop.git_snapshot(self.worktree, self.step_dir)
+        self.assertTrue(result_dirty.committed)
+        result = self.stop(proc.pid)
+        self.assertTrue(result.stopped)
+        self.assertFalse(result.committed)       # już zacommitowane wyżej, nic nowego
+        self.assertEqual(result.error, "")
+
+    def test_an_already_finished_step_is_still_snapshotted(self):
+        proc, _ = self.start()
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        result = self.stop(proc)
+        self.assertTrue(result.stopped)
+        self.assertTrue(result.committed)
+
+    def test_stale_index_lock_of_the_killed_step_does_not_lose_the_changes(self):
+        proc, _ = self.start()
+        gitdir = gitrepos.git(self.worktree, "rev-parse", "--git-dir").strip()
+        lock = os.path.join(self.worktree, gitdir, "index.lock")
+        with open(lock, "w"):
+            pass
+        result = self.stop(proc)
+        self.assertTrue(result.committed, result.error)
+        self.assertFalse(os.path.exists(lock))
+
+    def test_detached_head_and_main_branches_are_not_committed_to(self):
+        proc, _ = self.start()
+        gitrepos.git(self.worktree, "checkout", "-q", "--detach")
+        result = self.stop(proc)
+        self.assertFalse(result.committed)
+        self.assertEqual(result.error, "detached")
+        self.assertIn("nowy.txt", gitrepos.git(self.worktree, "status", "--porcelain"))
+        gitrepos.git(self.worktree, "checkout", "-q", "-B", "master-copy")
+        gitrepos.git(self.worktree, "branch", "-q", "-f", "main")
+        gitrepos.git(self.worktree, "checkout", "-q", "main")
+        self.assertEqual(stepstop.git_snapshot(self.worktree, self.step_dir).error, "protected-branch")
+
+    def test_last_messages_of_a_codex_session_log(self):
+        sessions = os.path.join(self.root, "codex", "sessions", "2026", "10", "28")
+        os.makedirs(sessions)
+        other = os.path.join(sessions, "rollout-2026-10-28T10-00-00-aaaa.jsonl")
+        mine = os.path.join(sessions, "rollout-2026-10-28T11-00-00-bbbb.jsonl")
+        meta = lambda cwd: {"type": "session_meta", "payload": {"id": "bbbb", "cwd": cwd}}
+        msg = lambda role, kind, text: {"type": "response_item", "payload": {
+            "type": "message", "role": role, "content": [{"type": kind, "text": text}]}}
+        for path, cwd in ((other, "/gdzie/indziej"), (mine, self.worktree)):
+            with open(path, "w", encoding="utf-8") as fh:
+                for record in (meta(cwd), msg("user", "input_text", "<environment_context>x"),
+                               msg("user", "input_text", "Zrób ticket"), msg("assistant", "output_text", "Czytam kod"),
+                               {"type": "event_msg", "payload": {"type": "agent_message", "message": "Czytam kod"}},
+                               msg("assistant", "output_text", "Piszę test")):
+                    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        proc, _ = self.start()
+        result = self.stop(proc, tool="codex", session_id="", claude_projects="",
+                           codex_roots=[os.path.join(self.root, "codex")], limit=2)
+        self.assertEqual(result.session_log, mine)
+        self.assertEqual([(m["role"], m["text"]) for m in result.messages],
+                         [("assistant", "Czytam kod"), ("assistant", "Piszę test")])
+
+    def test_no_session_log_means_no_messages_not_an_error(self):
+        proc, _ = self.start()
+        result = self.stop(proc)
+        self.assertEqual((result.messages, result.session_log, result.error), ([], "", ""))
+        self.assertTrue(result.committed)
+
+
+CODEX = shutil.which("codex") or "/snap/bin/codex"
+
+
+@unittest.skipUnless(os.access(CODEX, os.X_OK), "brak Codexa — test prawdziwej piaskownicy pominięty")
+class CodexSandboxIntegrationTest(unittest.TestCase):
+    """Katalogi zapisu ze złożonego kroku w prawdziwej piaskownicy Codexa (Landlock; `codex sandbox linux` nie
+    woła modelu ani nie wymaga logowania). Katalog w zwykłym katalogu domowym: snap nie widzi /tmp hosta."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="tide-pt76-", dir=os.path.expanduser("~"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.repo, self.wt = os.path.join(self.root, "repo"), os.path.join(self.root, "wt")
+        os.makedirs(self.repo)
+        gitrepos.git(self.repo, "init", "-q", "-b", "master")
+        gitrepos.commit(self.repo, "a.txt")
+        gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "step", self.wt)
+
+    def test_commit_from_the_worktree_works_but_hooks_and_config_stay_read_only(self):
+        step = agentcmd.Step("codex", CODEX, "x", self.wt, self.repo, os.path.join(self.root, "step"), "s1")
+        roots = next(a for a in agentcmd.background(step).argv if a.startswith("sandbox_workspace_write"))
+        with open(os.path.join(self.wt, "new.txt"), "w", encoding="utf-8") as fh:
+            fh.write("x")
+        script = ("git add -A && git commit -q -m s; echo commit=$?; touch %s/.git/hooks/evil; echo hook=$?; "
+                  "touch %s/.git/config.x; echo cfg=$?; touch %s/other; echo other=$?" % (self.repo, self.repo, self.root))
+        env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+        run = subprocess.run([CODEX, "sandbox", "linux", "--full-auto", "-c", roots, "--", "sh", "-c", script],
+                             cwd=self.wt, env=env, capture_output=True, text=True, timeout=60)
+        if "commit=" not in run.stdout:
+            self.skipTest("piaskownica Codexa niedostępna: " + (run.stderr.strip() or "brak wyniku")[:200])
+        self.assertEqual(run.stdout.split(), ["commit=0", "hook=1", "cfg=1", "other=1"])
+        self.assertEqual(gitrepos.git(self.wt, "log", "-1", "--format=%s").strip(), "s")
+
+
+def agentcmd_escape(path: str) -> str:
+    from tide_daemon.agents.claude import escape_cwd
+    return escape_cwd(path)
+
+
+def _gone(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            return fh.read().rpartition(")")[2].split()[0] == "Z"
+    except OSError:
+        return True
 
 
 if __name__ == "__main__":
