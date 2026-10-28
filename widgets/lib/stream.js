@@ -212,6 +212,45 @@ function profileTile(view, coreUp) {
     }
 }
 
+// Kafelek „Kamera · ● widoczna / ○ ukryta” (PT-82, decyzja 83): `core.modules.camera` ({value, origin}).
+// visible: true, false albo null (rdzeń nie działa, jeszcze bez odczytu albo bez modułu kamery). Kliknięcie to
+// module.set z odwróconą wartością. Rdzeń zmienia stan także bez OBS — scene_sync ustawia OBS po połączeniu, więc
+// przy rozłączonym OBS kafelek dalej przełącza. Bez koloru ostrzegawczego: o rdzeniu i OBS ostrzega kafelek Stream.
+function camera(view, coreUp) {
+    const s = status(view, coreUp)
+    const out = { label: "Kamera", detail: "", value: "—", visible: null, enabled: false, origin: "",
+                  obsConnected: s.obsConnected === true, dot: "textMuted", hollow: true, tint: "textMuted",
+                  toolTip: "" }
+    if (s.core === "down") {
+        out.value = "rdzeń nie działa"
+        out.toolTip = "Rdzeń Streamer nie działa (usługa streamer-core)"
+        return out
+    }
+    if (s.core === "loading") {
+        out.value = "czytam stan…"
+        out.toolTip = "Czytam stan rdzenia Streamer…"
+        return out
+    }
+    const mods = obj(view.core.modules)
+    if (!("camera" in mods)) {
+        out.toolTip = "Rdzeń nie podaje modułu kamery"
+        return out
+    }
+    const on = valueOf(mods.camera) === true
+    out.visible = on
+    out.enabled = true
+    out.origin = originText(obj(mods.camera).origin)
+    out.value = on ? "widoczna" : "ukryta"
+    out.dot = on ? "positive" : "textMuted"
+    out.hollow = !on
+    out.tint = "accent"
+    out.detail = out.obsConnected ? out.origin : "bez OBS"
+    out.toolTip = "Kamera " + out.value + (out.origin ? " (" + out.origin + ")" : "")
+        + (out.obsConnected ? "" : "\nOBS rozłączony — zmiana trafi do OBS po połączeniu")
+        + "\nKliknij, aby " + (on ? "ukryć" : "pokazać") + " kamerę"
+    return out
+}
+
 // Kafelek Observer: wydarzenie i wynik serii; widoczny tylko w trybie Observer.
 function observer(view, coreUp) {
     const s = status(view, coreUp)

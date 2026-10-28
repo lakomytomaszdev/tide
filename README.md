@@ -36,7 +36,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `widgets/limits/` | Kafelek „AI” `org.tide.limits` (w docku po prawej): pozostałe limity ChatGPT i Claude z usługi QuotaApp i kropka modelu lokalnego z tide-daemon; popup z kartami usług i sekcją „Modele lokalne” z linkiem do widoku Modele w oknie Tide |
 | `widgets/models/` | Kafelek „Modele” `org.tide.models` — od PT-41 poza dockiem (model lokalny jest w kafelku „AI”), pakiet zostaje na wypadek powrotu: czy serwer modeli lokalnych odpowiada, model w pamięci i ile na karcie, kolejka; popup z serwerami, rolami i trybem raportu |
 | `widgets/worktrees/` | Kafelek worktrees `org.tide.worktrees`: ile do sprzątnięcia (i ile GB), ile w pracy; kliknięcie otwiera okno |
-| `widgets/stream/` | Widżety aktywności Stream (PT-37) ze stanem z rdzenia Streamer przez D-Bus, nie z tide-daemon (decyzja 79): kafelki docka Stream — Stream `org.tide.stream`, Profil gracza `org.tide.stream.profile`, Observer `org.tide.stream.observer`, „?” `org.tide.stream.help` — i widżety pulpitu lewego monitora — konsola streamu `org.tide.stream.scenes` (Sceny i pełna karta Stream) i czat `org.tide.stream.chat`; wspólne w `widgets/lib/` (`CoreSource.qml`, `stream.js`, `StreamCard.qml`, `ProfileList.qml`) |
+| `widgets/stream/` | Widżety aktywności Stream (PT-37) ze stanem z rdzenia Streamer przez D-Bus, nie z tide-daemon (decyzja 79): kafelki docka Stream — Stream `org.tide.stream`, Profil gracza `org.tide.stream.profile`, Observer `org.tide.stream.observer`, Kamera `org.tide.stream.camera` (PT-82), „?” `org.tide.stream.help` — i widżety pulpitu lewego monitora — konsola streamu `org.tide.stream.scenes` (Sceny i pełna karta Stream) i czat `org.tide.stream.chat`; wspólne w `widgets/lib/` (`CoreSource.qml`, `stream.js`, `StreamCard.qml`, `ProfileList.qml`) |
 | `widgets/newtask/` | Kafelek „＋ Zadanie · nowe dla agenta” `org.tide.newtask`: otwiera okno nowego zadania |
 | `apps/newtask/` | Okno „Tide: nowe zadanie” (QML + PyQt6, plik `.desktop`, profil Konsoli): repozytorium, Claude Code albo Codex, polecenie, zrzuty ekranu, nowy worktree |
 | `apps/common/` | Wspólny Python aplikacji, kopiowany przez `widgets/stage.py` obok programu aplikacji i do widoków okna Tide: `taskimages.py` — zrzuty ekranu zadania (okno „Nowe zadanie” i okno uruchomienia na Tablicy) |
@@ -178,6 +178,12 @@ stan streamu należy do rdzenia, dane pracy dalej idą tylko z tide-daemon.
 - **Profil gracza** (`org.tide.stream.profile`): bieżący profil z „▾”, popup z listą `profiles` (`profile.set`).
 - **Observer** (`org.tide.stream.observer`): „Mascot Cup · BO3 · gra 2” i „A 1 : 0 B”; tylko w trybie Observer
   (w innym trybie i bez rdzenia `HiddenStatus`, panel go chowa). Kliknięcie otwiera Panel streamera.
+- **Kamera** (`org.tide.stream.camera`, PT-82, decyzja 83): „Kamera · automat” albo „Kamera · ustawiłeś ty”
+  i „● widoczna” albo „○ ukryta” (`core.modules.camera`). Kliknięcie od razu, bez popupu i potwierdzenia, wysyła
+  `module.set {module: "camera", visible: …}` z odwróconą wartością (docelowy stan, nie przełączanie w ciemno);
+  rdzeń chowa kamerę we wszystkich elementach scen zależnych od modułu, a zmiana trybu przywraca domyślną
+  widoczność trybu. Bez koloru ostrzegawczego: przy rozłączonym OBS „bez OBS” (rdzeń zapamiętuje zmianę i ustawia
+  OBS po połączeniu), bez rdzenia „rdzeń nie działa”, błąd komendy na chwilę zamiast wartości w `textSecondary`.
 - **„?”** (`org.tide.stream.help`): ściąga ze skrótami Stream w popupie, nigdy stale na ekranie.
 - **Konsola streamu** (`org.tide.stream.scenes`, pulpit lewego monitora): Sceny — podgląd bieżącej sceny z „NA ŻYWO”
   i przyciski scen trybu (`scene.set`; BRB tylko osobnym przyciskiem, sceny startu i końca na żywo wyłączone
@@ -202,12 +208,12 @@ i czat pokazują wtedy „jeszcze niedostępne w rdzeniu”, a `CoreSource` i `s
 bieżącą scenę. Testy sprawdzają obie wersje na atrapie rdzenia (`widgets/tests/fake_kamp_core.py`, zawsze na
 prywatnej szynie `dbus-run-session`).
 
-**Instalacja.** `make install-widget-stream` instaluje sześć pakietów (też w `make install`), ale niczego nie stawia
+**Instalacja.** `make install-widget-stream` instaluje siedem pakietów (też w `make install`), ale niczego nie stawia
 na panelach ani pulpicie — rozmieszczenie robi wejście do aktywności Stream (niżej: „Aktywność Stream”). Kolory z palety, więc widżety działają
 z Mist i z wariantem Streamer.
 
 ```bash
-make install-widget-stream     # instalacja albo aktualizacja sześciu pakietów Stream
+make install-widget-stream     # instalacja albo aktualizacja siedmiu pakietów Stream
 make uninstall-widget-stream   # usuwa tylko pakiety org.tide.stream*
 make preview-stream            # kafelki, popupy i konsola 1920×1080 na fałszywym stanie: build/preview/stream-*.png
 make preview-stream PALETTE=theme/palette/streamer.json   # z wariantem Streamer — plik palety dostarcza PT-34
