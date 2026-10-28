@@ -1709,6 +1709,7 @@ Panele Plasmy są wspólne dla wszystkich aktywności, więc kafelki pracy w Str
 | Obiekt | `/ActivityLook` |
 | Interfejs | `org.tide.Daemon.ActivityLook` |
 | `State() -> s` | JSON `{"activity", "look", "workPanels", "notificationsFiltered"}`; `workPanels` fałszywe, gdy opis wyglądu ma `"panels"` inne niż `"work"` (Stream) |
+| `Refresh()` | ponowne odczytanie przypisań i opisów (woła je `make uninstall-activity-look` po usunięciu kopii silnika — usługa wraca wtedy do pracy) |
 | sygnał `Changed()` | zmieniła się bieżąca aktywność albo jej wygląd |
 
 Bez usługi (albo przed pierwszą odpowiedzią) widżety zostają przy pracy — kafelki pracy widać.
@@ -1725,8 +1726,10 @@ i `streamer`), usługa:
    `[Services][<x-kde-appname>]` dozwolonych (`kwriteconfig6 --notify`, Plasma czyta zmianę od razu). Poprzednie
    wartości — także „brak klucza” — zapisuje przedtem w `$XDG_STATE_HOME/tide/stream-notifications.json`.
 
-Przy wyjściu ze Stream i przy zatrzymaniu usługi wartości wracają dokładnie (brakujący klucz jest usuwany, plik
-wraca co do bajtu), potem `UnInhibit(cookie)`. Gdy usługa zginie, Plasma zwalnia inhibicję sama (pilnuje nazwy
+Przy wyjściu ze Stream i przy zatrzymaniu usługi wartości wracają dokładnie (surowy napis sprzed Stream, brakujący
+klucz jest usuwany, plik wraca co do bajtu; zapis znika po odczycie kontrolnym), potem `UnInhibit(cookie)`.
+Inhibicja żyje tyle, co serwer powiadomień: usługa obserwuje nazwę `org.freedesktop.Notifications` — po restarcie
+plasmashell prosi o nową i sprawdza wyjątki, a nieudane `Inhibit` ponawia co 2 s, coraz rzadziej, do 60 s. Gdy usługa zginie, Plasma zwalnia inhibicję sama (pilnuje nazwy
 wołającego na magistrali), a ustawienia przywraca następny start usługi, jeśli bieżąca aktywność nie jest Stream.
 Klucz `ShowPopupsInDndMode` jest globalny — działa przy każdym „Nie przeszkadzać”, także włączonym w pracy — więc
 trzymamy go tylko na czas Stream (decyzja 80). Rdzeń Streamer wysyła dziś `notify-send -a Streamer` bez wskazówek,
