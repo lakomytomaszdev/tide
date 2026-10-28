@@ -313,9 +313,12 @@ def main(argv=None) -> int:
 
     marker = None
     if not args.no_tab_marks and not args.no_processes:
-        from . import tabmarks
+        from . import tabmarks, windows
         from .konsole import KonsoleTabs
         marker = tabmarks.TabMarker(KonsoleTabs(), tabmarks.load_state_colors(), tabmarks.default_store())
+        # Przejście do okna chwilowo dopisuje znacznik do tytułu karty (PT-33) — wtedy znacznik
+        # stanu tej karty czeka, żeby nie wziął cudzego tytułu za zmianę użytkownika.
+        windows.set_tab_guard(marker)
 
         def mark_tabs() -> None:
             try:
@@ -344,6 +347,8 @@ def main(argv=None) -> int:
         board.stop()
     if docker is not None:
         docker.stop()
+    from . import windows
+    windows.give_back_tabs()  # tytuł karty ze znacznikiem przejścia do okna, jeśli jeszcze nie wrócił
     if marker is not None:
         marker.clear()  # karty wracają do swoich tytułów i kolorów, gdy usługa się kończy
     cwd_state.clear()  # prompt nie pokazuje stanu agentów, których nikt już nie śledzi
