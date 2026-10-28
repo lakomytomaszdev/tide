@@ -1,7 +1,8 @@
 """Szablony poleceń uruchomienia (Planowanie w trybie pełnym albo lekkim, Tylko specyfikacja) i ich wypełnianie.
 
-Szablon to `flows/<klucz>.md` w tablicy (klucz: full i light — Planowanie, spec — Tylko specyfikacja; flow_key), a dla jednego projektu można go nadpisać plikiem
-`flows/<projekt>/<tryb>.md`. Frontmatter szablonu (opcjonalny) nie trafia do polecenia.
+Szablon to `flows/<klucz>.md` w tablicy (klucz: full i light — Planowanie, spec — Tylko
+specyfikacja; flow_key), a dla jednego projektu można go nadpisać plikiem
+`flows/<projekt>/<klucz>.md`. Frontmatter szablonu (opcjonalny) nie trafia do polecenia.
 Zastępujemy wyłącznie znane pola w klamrach (PLACEHOLDERS) — inne klamry, np. przykład JSON
 w szablonie, zostają bez zmian, a wartości pól (np. opis karty) nie są już szablonem.
 
@@ -245,7 +246,7 @@ def legacy_mode_warning(rel: str, text: str | None) -> str:
     """Ostrzeżenie o szablonie Tylko specyfikacja zmienionym przez użytkownika, który w nagłówku nadal ma
     `mode: spec` (dawniej tryb, teraz wejście). Szablonu nie ruszamy — nagłówek nie wpływa na polecenie.
     Pusty napis: brak szablonu, nietknięty dawny zaczyn (podmieni go migrate_flows) albo nagłówek bez dawnego zapisu."""
-    if text is None or outdated(os.path.basename(rel)[:-3], text) and rel == os.path.join("flows", "spec.md"):
+    if text is None or (rel == os.path.join("flows", "spec.md") and outdated("spec", text)):
         return ""
     try:
         doc = Document.parse(text)

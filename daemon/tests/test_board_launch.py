@@ -215,7 +215,7 @@ class LaunchFieldsTest(BoardCase):
                                                 "mode": "full", "tool": "claude",
                                                 "launched": "2026-10-27T12:00:00+01:00"})
         self.assertTrue(result["changed"])
-        self.assertEqual(self.log()[-1], "K-1: update branch, mode, tool, worktree, launched")
+        self.assertEqual(self.log()[-1], "K-1: update branch, entry, mode, tool, worktree, launched")
         card = self.store.snapshot()["cards"][0]
         self.assertEqual((card["branch"], card["worktree"], card["mode"], card["tool"], card["launched"]),
                          ("claude/k-1-grabie", "/r-worktrees/k-1-grabie", "full", "claude", "2026-10-27T12:00:00+01:00"))

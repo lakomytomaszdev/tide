@@ -18,7 +18,7 @@ import tempfile
 import unittest
 
 from . import FIXTURES
-from .privatebus import SERVICE, PrivateBus, requires_dbus
+from .privatebus import SERVICE, PrivateBus, requires_dbus, wait_until
 from .test_board_core import BoardCase, git_out
 from .test_board_dbus import NOW_TEXT, git_config
 from tide_daemon.board import flows
@@ -190,6 +190,41 @@ class WritingTest(BoardCase):
         self.assertEqual(self.store.mark_ready_specs(), ["K-1", "K-2"])
 
 
+class ModeMeansPlanningTest(BoardCase):
+    """Stare żądanie z samym trybem Pełny albo Lekki, bez `entry`, znaczy Planowanie — jedna zasada dla
+    RenderLaunch, RenderFlow, UpdateCard, CreateCard i UpsertProject, także gdy domyślne wejście to spec."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo_dir = self.repo("dom")
+        self.store.create_card({"title": "Zadanie", "column": "todo"})
+        self.write("projects/dom.md", LEGACY_SPEC_PROJECT.format(repo=self.repo_dir))
+        self.store.update_card("K-1", {"project": "dom"})
+
+    def test_render_launch_and_flow(self):
+        for mode in ("full", "light"):
+            for flow in (self.store.render_launch("K-1", {"mode": mode}), self.store.render_flow("K-1", mode)):
+                self.assertEqual((flow["entry"], flow["mode"]), ("planning", mode))
+        self.assertEqual(self.store.render_launch("K-1", {})["entry"], "spec")
+        self.assertEqual(self.store.render_launch("K-1", {"entry": "spec", "mode": "full"})["entry"], "spec")
+
+    def test_upsert_project(self):
+        self.assertTrue(self.store.upsert_project({"slug": "dom", "mode": "full"})["changed"])
+        project = self.store.snapshot()["projects"][0]
+        self.assertEqual((project["entry"], project["mode"]), ("planning", "full"))
+        self.assertNotIn("mode: spec", read(os.path.join(self.root, "projects", "dom.md")))
+
+    def test_update_and_create_card(self):
+        self.store.update_card("K-1", {"entry": "spec"})
+        self.store.update_card("K-1", {"mode": "full"})
+        card = self.cards()["K-1"]
+        self.assertEqual((card["entry"], card["mode"]), ("planning", "full"), "bez niespójnego entry: spec, mode: full")
+        self.store.update_card("K-1", {"entry": "spec", "mode": "full"})
+        self.assertEqual(self.cards()["K-1"]["entry"], "spec", "jawne entry wygrywa")
+        created = self.store.create_card({"title": "Druga", "mode": "light"})
+        self.assertEqual(self.cards()[created["id"]]["entry"], "planning")
+
+
 class TemplatesTest(BoardCase):
     def setUp(self):
         super().setUp()
@@ -236,6 +271,7 @@ class TemplatesTest(BoardCase):
 
 
 COMMANDS = os.path.join(FIXTURES, "launch-pt77", "commands.json")
+SPEC_PROJECT = os.path.join(FIXTURES, "launch-pt77", "spec-project.json")  # z kodu sprzed PT-77, projekt `mode: spec`
 
 
 @requires_dbus
@@ -290,6 +326,34 @@ class SameCommandDBusTest(unittest.TestCase):
                         self.assertTrue(reply["ok"], reply)
                         got = reply["text"].replace(self.ws, "{WS}")
                         self.assertEqual(got, want, (card, flow_key, check, request))
+
+    def normal(self, text: str, card: str) -> str:
+        """Tekst bez tymczasowej ścieżki i z numerem karty z fixture (K-1)."""
+        return text.replace(self.ws, "{WS}").replace(card, "K-1").replace(card.lower(), "k-1")
+
+    def test_project_defaulting_to_spec_keeps_old_requests_meaning(self):
+        # Projekt ze starym `mode: spec` i z nowym `entry: spec`: {} to spec, a sam tryb to Planowanie — jak przed zmianą.
+        repo = os.path.join(self.ws, "specdom")
+        os.makedirs(repo)
+        subprocess.run(["git", "-C", repo, "init", "-q"], check=True, env=dict(os.environ, **git_config(self.tmp)))
+        self.call("UpsertProject", {"repo": repo, "tool": "claude"})
+        project_file = os.path.join(self.ws, "tide-board", "projects", "specdom.md")
+        with open(project_file, encoding="utf-8") as fh:
+            base = fh.read()
+        self.call("CreateCard", {"title": "Zadanie domowe", "project": "specdom"})
+        with open(SPEC_PROJECT, encoding="utf-8") as fh:
+            golden = json.load(fh)
+        card = [c for c in self.call("Snapshot")["cards"] if c["title"] == "Zadanie domowe"][0]["id"]
+        for header in ("mode: spec", "entry: spec"):
+            with open(project_file, "w", encoding="utf-8") as fh:
+                fh.write(base.replace("mode: full", header))
+            self.assertTrue(wait_until(lambda: self.call("Snapshot")["projects"][-1]["entry"] == "spec", timeout=10))
+            for name, request in (("default", {}), ("full", {"mode": "full"}), ("light", {"mode": "light"})):
+                reply = self.call("RenderLaunch", card, request)
+                self.assertTrue(reply["ok"], reply)
+                self.assertEqual(self.normal(reply["text"], card), golden[f"specdom/{name}"], (header, name))
+            flow = self.call("RenderFlow", card, "full")
+            self.assertEqual(self.normal(flow["text"], card), golden["specdom/full"], header)
 
     def test_launch_is_recorded_as_entry(self):
         self.assertTrue(self.call("UpdateCard", "K-1", {"entry": "spec", "mode": "", "tool": "claude"})["ok"])

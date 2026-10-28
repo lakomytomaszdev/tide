@@ -1106,6 +1106,8 @@ def _entry_mode_values(data: dict, allow_empty: bool) -> dict:
                 out["mode"] = ""
         elif text in (*empty, *MODES):
             out["mode"] = text
+            if text and "entry" not in out:
+                out["entry"] = "planning"  # sam tryb Pełny/Lekki to Planowanie (jak przed PT-77)
         else:
             raise BoardError(f"nieznany tryb „{text}” ({', '.join(MODES)})")
     return out

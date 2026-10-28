@@ -43,7 +43,7 @@ Rectangle {
     readonly property alias ghost: ghost
     property int requestSerial: 0
     // Uruchomienie agenta z karty: okno „Co ma zrobić agent?” i przebieg UpdateCard (opis) →
-    // RenderLaunch → /Tasks Start → UpdateCard (gałąź, worktree, tryb, narzędzie, sprawdzenie, chwila).
+    // RenderLaunch → /Tasks Start → UpdateCard (gałąź, worktree, wejście, tryb, narzędzie, sprawdzenie, chwila).
     // Pierwszy UpdateCard niesie też dodatkowe projekty wybrane w oknie (PT-28).
     property bool launchOpen: false
     property string launchCardId: ""
@@ -257,7 +257,7 @@ Rectangle {
 
     function renderLaunch() {
         const c = launchChoice
-        launchDialog.busyText = "Przygotowuję polecenie trybu…"
+        launchDialog.busyText = "Przygotowuję polecenie…"
         const request = { entry: c.entry, tool: c.tool, check: c.check }
         if (c.entry !== "spec") request.mode = c.mode   // tryb dotyczy tylko Planowania
         if (c.entry !== "spec" && c.newWorktree && c.branch) request.branch = c.branch
