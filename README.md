@@ -36,7 +36,7 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `widgets/limits/` | Kafelek „AI” `org.tide.limits` (w docku po prawej): pozostałe limity ChatGPT i Claude z usługi QuotaApp i kropka modelu lokalnego z tide-daemon; popup z kartami usług i sekcją „Modele lokalne” z linkiem do widoku Modele w oknie Tide |
 | `widgets/models/` | Kafelek „Modele” `org.tide.models` — od PT-41 poza dockiem (model lokalny jest w kafelku „AI”), pakiet zostaje na wypadek powrotu: czy serwer modeli lokalnych odpowiada, model w pamięci i ile na karcie, kolejka; popup z serwerami, rolami i trybem raportu |
 | `widgets/worktrees/` | Kafelek worktrees `org.tide.worktrees`: ile do sprzątnięcia (i ile GB), ile w pracy; kliknięcie otwiera okno |
-| `widgets/stream/` | Widżety aktywności Stream (PT-37) ze stanem z rdzenia Streamer przez D-Bus, nie z tide-daemon (decyzja 79): kafelki docka Stream — Stream `org.tide.stream`, Profil gracza `org.tide.stream.profile`, Observer `org.tide.stream.observer`, Kamera `org.tide.stream.camera` (PT-82), „?” `org.tide.stream.help` — i widżety pulpitu lewego monitora — konsola streamu `org.tide.stream.scenes` (Sceny i pełna karta Stream) i czat `org.tide.stream.chat`; wspólne w `widgets/lib/` (`CoreSource.qml`, `stream.js`, `StreamCard.qml`, `ProfileList.qml`) |
+| `widgets/stream/` | Widżety aktywności Stream (PT-37) ze stanem z rdzenia Streamer przez D-Bus, nie z tide-daemon (decyzja 79): kafelki docka Stream — Stream `org.tide.stream`, Profil gracza `org.tide.stream.profile`, Observer `org.tide.stream.observer`, Kamera `org.tide.stream.camera` (PT-82), „?” `org.tide.stream.help` — i widżety pulpitu lewego monitora — konsola streamu `org.tide.stream.scenes` (Sceny i pełna karta Stream), czat `org.tide.stream.chat` i cały lewy monitor `org.tide.stream.desk` (konsola streamu albo widok Granie według OBS, PT-83); wspólne w `widgets/lib/` (`CoreSource.qml`, `stream.js`, `StreamCard.qml`, `ProfileList.qml`, `StreamConsole.qml`, `ScenesCard.qml`, `ChatView.qml`) |
 | `widgets/newtask/` | Kafelek „＋ Zadanie · nowe dla agenta” `org.tide.newtask`: otwiera okno nowego zadania |
 | `apps/newtask/` | Okno „Tide: nowe zadanie” (QML + PyQt6, plik `.desktop`, profil Konsoli): repozytorium, Claude Code albo Codex, polecenie, zrzuty ekranu, nowy worktree |
 | `apps/common/` | Wspólny Python aplikacji, kopiowany przez `widgets/stage.py` obok programu aplikacji i do widoków okna Tide: `taskimages.py` — zrzuty ekranu zadania (okno „Nowe zadanie” i okno uruchomienia na Tablicy) |
@@ -171,8 +171,9 @@ stan streamu należy do rdzenia, dane pracy dalej idą tylko z tide-daemon.
 
 - **Stream** (`org.tide.stream`, dock Stream): „Stream · Xbox” i „● poza anteną · ● OBS”, na żywo „Stream · Xbox ·
   scena Gra” i „● na żywo · ● nagrywa”. Kolor ostrzegawczy (`neutral` z palety) tylko przy wyciszonym mikrofonie na
-  żywo („Stream · na żywo”, przekreślony mikrofon, „mikrofon wyciszony”), rozłączonym OBS i niedziałającym rdzeniu
-  („rdzeń nie działa”, gdy usługi nie ma na szynie). Popup: karta Stream — tryb i kto go ustawił (automat albo ty),
+  żywo („Stream · na żywo”, przekreślony mikrofon, „mikrofon wyciszony”), rozłączonym OBS w trakcie streamu
+  i niedziałającym rdzeniu („rdzeń nie działa”, gdy usługi nie ma na szynie). Bez OBS i bez streamu kafelek mówi
+  spokojnie „Granie · Xbox” (w Observer i Rozmowa „Stream · …”) i „bez streamu” (PT-83). Popup: karta Stream — tryb i kto go ustawił (automat albo ty),
   antena, nagrywanie, scena, OBS, moduły, „Wycisz mikrofon · Pause” (`mic.set` z docelowym stanem), „Panel streamera”
   (`http://127.0.0.1:8765/app/`) i dopisek, że start i koniec streamu są tylko w Panelu.
 - **Profil gracza** (`org.tide.stream.profile`): bieżący profil z „▾”, popup z listą `profiles` (`profile.set`).
@@ -193,6 +194,14 @@ stan streamu należy do rdzenia, dane pracy dalej idą tylko z tide-daemon.
 - **Czat Twitcha** (`org.tide.stream.chat`, pulpit lewego monitora): duża czcionka (1,5 × rozmiar z palety, ok.
   20 px), najnowsze na dole, alerty w linii, tylko do czytania; nick w pastelu palety innym niż kolory ostrzeżenia
   i błędu (`semantic.neutral`, `semantic.negative`).
+- **Lewy monitor Stream** (`org.tide.stream.desk`, PT-83, decyzja 82): jeden widżet na cały pulpit lewego monitora
+  z dwoma widokami. **Konsola streamu** to Sceny z kartą Stream i czat (te same komponenty co wyżej), **Granie** —
+  profile graczy (aktywny wyróżniony, kliknięcie innego to `profile.set`; ranga, rating, forma, gdy rdzeń je ma),
+  bilans dnia, „Mecz teraz” z pola `core.match` (Ty i przeciwnik: cywilizacja, ranga, rating, procent wygranych,
+  forma) i ostatnie mecze aktywnego profilu. Widok wybiera automat: OBS połączony → konsola, OBS wyłączony →
+  Granie, na żywo zawsze konsola. Przełącznik „Konsola streamu | Granie” na górze pokazuje, kto wybrał widok
+  („automat · OBS wyłączony” albo „ustawiłeś ty · do zmiany OBS”); ręczny wybór obowiązuje do następnej zmiany stanu
+  OBS i nie chowa konsoli na żywo.
 
 **Rozmowa z rdzeniem.** Jedno `CoreSource` na widżet: `GetState()` przy starcie i po każdym pojawieniu się usługi na
 szynie, potem tylko sygnał `Changed` (niesie cały widok w `state`), do tego odczyt zapasowy co 5 min. Gdy rdzeń
@@ -201,8 +210,10 @@ znika, widżety od razu mówią „rdzeń nie działa”; po jego powrocie same 
 `brb.toggle`) — akcji krytycznych (start i koniec streamu, koniec nagrania, zmiana trybu na żywo, reset serii)
 w widżetach nie ma.
 
-**Czego rdzeń jeszcze nie daje.** Listy scen trybu, podglądu bieżącej sceny i czatu z alertami przez D-Bus. Konsola
-i czat pokazują wtedy „jeszcze niedostępne w rdzeniu”, a `CoreSource` i `stream.js` mają już miejsce na te dane
+**Czego rdzeń jeszcze nie daje.** Listy scen trybu, podglądu bieżącej sceny i czatu z alertami przez D-Bus,
+a dla widoku Granie przeglądu wszystkich kont, ostatnich meczów, bilansu dnia i danych meczu w trybie PC (propozycja
+pól w decyzji 82: `core.player_stats`, `core.recent_matches`, `core.today`). Konsola, czat i Granie pokazują wtedy
+„jeszcze niedostępne w rdzeniu”, a `CoreSource` i `stream.js` mają już miejsce na te dane
 (propozycja API w decyzji 79): `core.mode_scenes` (i opcjonalnie `obs.scenes`) w stanie, `GetSceneScreenshot(s)`,
 `GetChat()` i sygnał `Chat(s)`, a pilnie `obs.mic`. Bez scen trybu konsola nie pokazuje przycisków scen, tylko
 bieżącą scenę. Testy sprawdzają obie wersje na atrapie rdzenia (`widgets/tests/fake_kamp_core.py`, zawsze na
@@ -215,7 +226,7 @@ z Mist i z wariantem Streamer.
 ```bash
 make install-widget-stream     # instalacja albo aktualizacja siedmiu pakietów Stream
 make uninstall-widget-stream   # usuwa tylko pakiety org.tide.stream*
-make preview-stream            # kafelki, popupy i konsola 1920×1080 na fałszywym stanie: build/preview/stream-*.png
+make preview-stream            # kafelki, popupy, konsola i Granie 1920×1080 na fałszywym stanie: build/preview/stream-*.png
 make preview-stream PALETTE=theme/palette/streamer.json   # z wariantem Streamer — plik palety dostarcza PT-34
 ```
 
