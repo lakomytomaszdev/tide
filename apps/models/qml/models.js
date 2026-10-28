@@ -587,3 +587,99 @@ function problem(status, serviceUp) {
         return { title: "Brak serwerów modeli", text: "Usługa nie podała żadnego serwera — sprawdź ~/.config/tide/models.json." }
     return null
 }
+
+// --- wykonawcy i dostawcy (PT-60) ---------------------------------------------------------------
+
+const CLASS_LABELS = [{ value: "lekki", label: "lekki" }, { value: "standard", label: "standard" },
+                      { value: "mocny", label: "mocny" }, { value: "lokalny", label: "lokalny" }]
+const WHERE_LABELS = { local: "Lokalnie", cloud: "Chmura", off: "Nie używany", unknown: "Nieznane" }
+
+function classOptions() {
+    return CLASS_LABELS
+}
+
+function whereLabel(where) {
+    return WHERE_LABELS[where] || WHERE_LABELS.unknown
+}
+
+// Katalog wykonawców ze Status(); [] dla starszej usługi bez katalogu.
+function executors(status) {
+    return (list(status && status.executors) || []).filter(e => e && typeof e === "object")
+}
+
+function catalogAvailable(status) {
+    return !!status && Array.isArray(status.executors)
+}
+
+function executorByName(status, name) {
+    return executors(status).find(e => e.name === name) || null
+}
+
+// Dostawcy do wyboru przy wykonawcy: anthropic, openai, lokalny i inni — [{value, label}].
+function providerOptions(status) {
+    const p = status && status.providers && typeof status.providers === "object" ? status.providers : {}
+    return Object.keys(p).map(k => ({ value: k, label: p[k].label || k }))
+}
+
+function otherProviders(status) {
+    const p = status && status.providers && typeof status.providers === "object" ? status.providers : {}
+    return Object.keys(p).filter(k => !p[k].builtin).map(k => Object.assign({ name: k }, p[k]))
+}
+
+// Program, którego dostawca używa: API Anthropic — claude, OpenAI — codex, lokalny — oba (""), pierwszy z listy.
+function programFor(status, provider) {
+    const p = status && status.providers ? status.providers[provider] : null
+    if (!p) return "claude"
+    return p.api === "anthropic" ? "claude" : p.api === "openai" ? "codex" : ""
+}
+
+function efforts() {
+    return [{ value: "", label: "domyślny" }, { value: "low", label: "low" }, { value: "medium", label: "medium" },
+            { value: "high", label: "high" }, { value: "xhigh", label: "xhigh" }]
+}
+
+function executorLine(e) {
+    const model = e.model || (e.local ? "model agenta lokalnego" : "")
+    return [e.program || "program agenta", model, e.effort ? "wysiłek " + e.effort : ""].filter(x => x).join(" · ")
+}
+
+function classesText(e) {
+    return (list(e.classes) || []).length ? "klasy: " + list(e.classes).join(", ") : "bez klas — tylko ręczny wybór"
+}
+
+function executorProblem(form, status, adding) {
+    const name = (form.name || "").trim()
+    if (name === "") return { field: "name", text: "Podaj nazwę wykonawcy." }
+    if (name.length > 60) return { field: "name", text: "Nazwa wykonawcy: najwyżej 60 znaków." }
+    if (adding && executorByName(status, name)) return { field: "name", text: "Wykonawca „" + name + "” już jest w katalogu." }
+    const local = form.provider === "local"
+    if (!local && (form.model || "").trim() === "") return { field: "model", text: "Podaj model." }
+    return null
+}
+
+function executorRequest(form, oldName) {
+    const req = { name: form.name.trim(), program: form.program, model: (form.model || "").trim(),
+                  provider: form.provider, endpoint: form.provider === "local" ? (form.endpoint || "") : "",
+                  classes: form.classes, effort: form.program === "codex" ? (form.effort || "") : "" }
+    if (oldName) req.oldName = oldName
+    return JSON.stringify(req)
+}
+
+function providerProblem(form, status, adding) {
+    const name = (form.name || "").trim()
+    if (!NAME_RE.test(name)) return { field: "name", text: "Nazwa dostawcy: litery, cyfry i _.- (do 40 znaków)." }
+    if (["anthropic", "openai", "local", "mixed"].indexOf(name) >= 0)
+        return { field: "name", text: "Ta nazwa jest zarezerwowana." }
+    if (adding && status && status.providers && status.providers[name])
+        return { field: "name", text: "Dostawca „" + name + "” już jest." }
+    if (!/^https?:\/\/[^\s@/]+(\/\S*)?$/.test((form.url || "").trim()))
+        return { field: "url", text: "Adres: http(s)://host[:port], bez danych logowania." }
+    return null
+}
+
+function providerRequest(form) {
+    const req = { name: form.name.trim(), label: (form.label || "").trim(), url: form.url.trim(), api: form.api }
+    if (form.token) req.token = form.token
+    if (form.clearToken) req.clearToken = true
+    return JSON.stringify(req)
+}

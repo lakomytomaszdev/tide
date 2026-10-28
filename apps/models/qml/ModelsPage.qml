@@ -1,3 +1,4 @@
+// (PT-60: pod rolami panel wykonawców i dostawców — ExecutorsPanel.qml.)
 // Zawartość widoku „Modele”: nagłówek z używanym serwerem, to, co wymaga uwagi, po lewej „Serwery modeli”
 // (karty z przełącznikiem „Używaj tego serwera”, „Dodaj serwer”) i „Modele na serwerze”, po prawej „Do czego
 // używamy modeli” (tryb raportu i role). Sam nie rozmawia z usługą — dostaje Status() i zgłasza zapisy
@@ -107,6 +108,7 @@ Rectangle {
         else if (tag.endsWith(":ctx")) note = { text: "Zapisano", error: false }
         notes = setIn(notes, tag, note)
         finished(tag, ok)
+        executorsPanel.done(tag, ok)
         if (!ok) return
         if (tag === "add:save") {
             adding = false
@@ -592,6 +594,20 @@ Rectangle {
                                                            root.advanced = root.setIn(root.advanced, roleBlock.modelData, advanced)
                                 }
                             }
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 4
+                            implicitHeight: 1
+                            color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.07)
+                        }
+                        ExecutorsPanel {
+                            id: executorsPanel
+                            objectName: "executorsPanel"
+                            Layout.fillWidth: true
+                            status: root.status
+                            page: root
                         }
                     }
                 }

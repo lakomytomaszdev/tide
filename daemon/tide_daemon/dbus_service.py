@@ -97,6 +97,14 @@ Obiekt /Models, interfejs org.tide.Daemon.Models (modele lokalne: serwery z mode
                              w models.json; Status().agentProgram) → {ok, error},
 - SetSemanticSearch(s state) -> s  wyszukiwanie po znaczeniu w KRunnerze: "on" albo "off" (`semanticSearch`
                              w models.json; wyłączone — indeks usunięty) → {ok, error},
+- SetExecutor(s json) -> s   nowy albo zmieniony wykonawca {name, program, model, provider, endpoint?, classes,
+                             oldName?} w katalogu wykonawców (PT-60) → {ok, error},
+- RemoveExecutor(s name) -> s  usunięcie wykonawcy z katalogu → {ok, error},
+- SetProvider(s json) -> s   inny dostawca {name, label?, url, api ("openai"|"anthropic"), token?, clearToken?};
+                             token do tokens/providers/<nazwa> (0600), nigdy w odpowiedzi → {ok, error},
+- RemoveProvider(s name) -> s  usunięcie innego dostawcy (odmowa, gdy ma wykonawców) → {ok, error},
+- ResolveExecutor(s json) -> s  klasa na wykonawcę {provider, class[, author]} → {ok, error, executor, local,
+                             suggested, candidates}; z `author` — recenzent innego modelu niż autor,
 - SetReportSummary(s mode) -> s  `summary` w report.json (claude, local, rules), działa od razu → {ok, error},
 - TestEndpoint(s json) -> s  próba połączenia bez zapisu ({name} albo {url, kind, token?}) → {ok, error, version,
                              models} (odpowiedź po odczycie),
@@ -316,7 +324,8 @@ MODELS_XML = f"""<interface name="{MODELS_IFACE}">
 {chr(10).join(_JSON_CALL.format(name=n, arg=a) for n, a in (
     ("SetEndpoint", "request"), ("RemoveEndpoint", "name"), ("SetDefault", "name"), ("SetRole", "request"),
     ("SetAgentProgram", "program"), ("SetSemanticSearch", "state"), ("SetReportSummary", "mode"),
-    ("TestEndpoint", "request"), ("PullModel", "request")))}
+    ("SetExecutor", "request"), ("RemoveExecutor", "name"), ("SetProvider", "request"), ("RemoveProvider", "name"),
+    ("ResolveExecutor", "request"), ("TestEndpoint", "request"), ("PullModel", "request")))}
   <signal name="Changed"/>
 </interface>"""
 
@@ -699,6 +708,26 @@ class ModelsAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(str, result=str)
     def SetReportSummary(self, mode: str) -> str:
         return self.monitor.set_report_summary(mode)
+
+    @pyqtSlot(str, result=str)
+    def SetExecutor(self, request: str) -> str:
+        return self.monitor.set_executor(request)
+
+    @pyqtSlot(str, result=str)
+    def RemoveExecutor(self, name: str) -> str:
+        return self.monitor.remove_executor(name)
+
+    @pyqtSlot(str, result=str)
+    def SetProvider(self, request: str) -> str:
+        return self.monitor.set_provider(request)
+
+    @pyqtSlot(str, result=str)
+    def RemoveProvider(self, name: str) -> str:
+        return self.monitor.remove_provider(name)
+
+    @pyqtSlot(str, result=str)
+    def ResolveExecutor(self, request: str) -> str:
+        return self.monitor.resolve_executor(request)
 
     @pyqtSlot(str, QDBusMessage, result=str)
     def TestEndpoint(self, request: str, message: QDBusMessage) -> str:

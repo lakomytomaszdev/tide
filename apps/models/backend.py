@@ -25,7 +25,8 @@ from PyQt6.QtDBus import (QDBusConnection, QDBusMessage, QDBusPendingCallWatcher
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Models", "org.tide.Daemon.Models"
 # Metody zapisu i próby, które widok może wywołać (jeden argument: nazwa albo JSON).
 WRITES = ("SetEndpoint", "RemoveEndpoint", "SetDefault", "SetRole", "SetAgentProgram", "SetSemanticSearch",
-          "SetReportSummary", "TestEndpoint", "PullModel")
+          "SetReportSummary", "SetExecutor", "RemoveExecutor", "SetProvider", "RemoveProvider", "TestEndpoint",
+          "PullModel")
 WRITE_TIMEOUT_MS = 10_000
 TEST_TIMEOUT_MS = 15_000          # TestEndpoint czyta serwer do 2 × 3 s, odpowiedź przychodzi po odczycie
 PREVIEW_ERROR = "podgląd bez usługi — nic nie zmieniono"
@@ -124,6 +125,44 @@ def badge(status: dict) -> tuple[str, str]:
     return (f"● {count}", "waiting") if count else ("", "muted")
 
 
+def placement(status: dict) -> list[dict]:
+    """„Co idzie lokalnie, a co do chmury” w jednym miejscu (PT-60): wiersze {id, title, where, detail, ok} dla
+    ról modeli (raport, opisy kart — wg trybu raportu) i wykonawców z katalogu. `where`: local, cloud, off,
+    unknown. Wszystko ze Status() usługi: stanu serwerów i trybu raportu, który naprawdę działa. Rola do
+    rozpoznawania pytań jest poza zakresem."""
+    if not isinstance(status, dict) or not status:
+        return []
+    rows = []
+    roles = status.get("roles") if isinstance(status.get("roles"), dict) else {}
+    report = status.get("report") if isinstance(status.get("report"), dict) else None
+    mode = report.get("summary") if report else None
+    for role in ("summary", "describe"):
+        title = ROLE_TITLES[role]
+        info = roles.get(role) if isinstance(roles.get(role), dict) else {}
+        if mode == "claude":
+            row = {"where": "cloud", "detail": "Claude Code (chmura Anthropic)", "ok": True}
+        elif mode == "local":
+            where = f"{label_of(status, info.get('endpoint', ''))} · {info.get('model', '')}"
+            row = {"where": "local", "detail": where, "ok": bool(info.get("available")),
+                   "error": "" if info.get("available") else "serwer albo model niedostępny"}
+        elif mode == "rules":
+            row = {"where": "off", "detail": "bez modelu — same reguły", "ok": True}
+        else:
+            row = {"where": "unknown", "detail": "tryb raportu nieznany", "ok": True}
+        rows.append({"id": f"role:{role}", "title": title, "error": "", **row})
+    for e in status.get("executors") if isinstance(status.get("executors"), list) else []:
+        if not isinstance(e, dict):
+            continue
+        local = e.get("where") == "local"
+        point = label_of(status, e.get("endpoint", "")) if local else \
+            (e.get("url") or (status.get("providers", {}).get(e.get("provider"), {}) or {}).get("label", ""))
+        detail = " · ".join(x for x in (e.get("program"), e.get("model") or "model agenta", point) if x)
+        ok = e.get("available") is not False
+        rows.append({"id": f"executor:{e.get('name')}", "title": e.get("name", ""), "where": e.get("where", "cloud"),
+                     "detail": detail, "ok": ok, "error": e.get("error", "")})
+    return rows
+
+
 def decorate(status: dict) -> dict:
     """Status() dla QML: endpoints.*.label (nazwa dla użytkownika), endpoints.*.local i problems."""
     if not isinstance(status, dict):
@@ -133,6 +172,7 @@ def decorate(status: dict) -> dict:
     out["endpoints"] = {name: dict(e, label=server_label(name, e.get("url", ""), endpoints),
                                    local=is_local_url(e.get("url", ""))) for name, e in endpoints.items()}
     out["problems"] = problems(status)
+    out["placement"] = placement(status)
     return out
 
 

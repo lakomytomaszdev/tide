@@ -28,6 +28,7 @@ Użycie: /usr/bin/python3 apps/models/tests/fixture.py [wariant] > build/models-
 """
 import copy
 import json
+import os
 import sys
 
 CONFIG_PATH = "/home/user/.config/tide/models.json"
@@ -79,6 +80,31 @@ def _search(state="ready", enabled=True, items=412, pending=0, error="", updated
             "dims": 1024 if items else 0}
 
 
+def _executors(endpoints, roles, default, program="codex", extra=(), providers=None) -> dict:
+    """Katalog wykonawców (PT-60) dokładnie taki, jaki da usługa: fixture składa konfigurację i woła prawdziwe
+    `models.status.assemble` (nie odtwarza jego logiki). `extra` — dodatkowi wykonawcy (surowe obiekty
+    z models.json), `providers` — inni dostawcy; z nimi katalog jest „zapisany”."""
+    import sys
+    daemon = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))), "daemon")
+    if daemon not in sys.path:
+        sys.path.insert(0, daemon)
+    from tide_daemon.models import config as models_config
+    from tide_daemon.models import executors as models_executors
+    from tide_daemon.models import status as models_status
+    data = {"default": default, "agentProgram": program,
+            "endpoints": {n: dict({"url": e["url"], "kind": e["kind"]}, **({"tokenFile": f"/home/user/.config/tide/tokens/{n}"}
+                                                              if e.get("auth") else {}))
+                          for n, e in endpoints.items()},
+            "roles": {r: f"{v['endpoint']}:{v['model']}" for r, v in roles.items() if r == "agent"}}
+    if extra or providers:
+        data["executors"] = [models_executors.executor_to_dict(e) for e in models_executors.DEFAULT_EXECUTORS] + \
+            list(extra)
+        data["providers"] = providers or {}
+    state = models_status.assemble(models_config.from_dict(data), endpoints)
+    return {k: state[k] for k in ("executors", "providers", "catalog")}
+
+
 def _status(default, endpoints: dict, roles: dict, report=None, pulls=None, checked=True, warnings=(),
             exists=True, agent_program="codex", search=None) -> dict:
     if "embed" not in roles:
@@ -86,7 +112,8 @@ def _status(default, endpoints: dict, roles: dict, report=None, pulls=None, chec
     return {"checked": checked, "default": default,
             "config": {"path": CONFIG_PATH, "exists": exists, "error": "", "warnings": list(warnings)},
             "endpoints": endpoints, "roles": roles, "report": report if report is not None else _report(),
-            "pulls": pulls or {}, "agentProgram": agent_program, "search": search or _search()}
+            "pulls": pulls or {}, "agentProgram": agent_program, "search": search or _search(),
+            **_executors(endpoints, roles, default, agent_program)}
 
 
 LOCAL_MODELS = (QWEN8, GPTOSS20, BGE, BIELIK, CODER30)
@@ -180,7 +207,20 @@ def busy() -> dict:
     return status
 
 
-VARIANTS = {"local": local, "mac-offline": mac_offline, "mac": mac, "pulling": pulling, "errors": errors,
+def catalog() -> dict:
+    """Katalog z innym dostawcą (Groq, API OpenAI, token zapisany) i raportem w chmurze; agent na tym komputerze."""
+    status = local()
+    status["roles"]["agent"] = _role("local", "qwen3-coder:30b", None, status["endpoints"], pinned=True)
+    status["report"] = _report("claude")
+    extra = [{"name": "Groq mały", "program": "codex", "model": "llama-3.1-8b", "provider": "groq",
+              "classes": ["lekki", "standard"]}]
+    providers = {"groq": {"label": "Groq", "url": "https://api.groq.example", "api": "openai",
+                          "tokenFile": "/home/user/.config/tide/tokens/providers/groq"}}
+    status.update(_executors(status["endpoints"], status["roles"], "local", "codex", extra, providers))
+    return status
+
+
+VARIANTS = {"catalog": catalog, "local": local, "mac-offline": mac_offline, "mac": mac, "pulling": pulling, "errors": errors,
             "checking": checking, "busy": busy}
 
 
