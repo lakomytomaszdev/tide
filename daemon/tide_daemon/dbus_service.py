@@ -109,6 +109,9 @@ Obiekt /Models, interfejs org.tide.Daemon.Models (modele lokalne: serwery z mode
 Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git, board/):
 - Snapshot() -> s            JSON: kolumny, projekty, tagi, karty (z tagami projektu), katalog, ostatni
                              commit, błędy plików, repozytoria do dodania jako projekty,
+- Work() -> s                lista „Praca” (PT-40): {exists, items, counts} — aktywne karty (kolumna wyświetlana
+                             czeka, w toku, do sprawdzenia, do zrobienia) i żywe sesje agentów bez karty, z tego
+                             samego przeliczenia co kolumny kart (kafelek org.tide.work),
 - CreateCard(s json) -> s    nowa karta {title, description, project|repo, tags, column, note, …} → {ok, id, commitError},
 - UpdateCard(s id, s json) -> s  zmiana pól karty (bez kolumny i kolejności) → {ok, id, changed, commitError},
 - MoveCard(s id, s column, i order) -> s  ręczna kolumna i pozycja w niej (od 0, -1 = koniec),
@@ -127,7 +130,7 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
 - ImportYouTrack(s json) -> s    karty w Backlogu z listy {issues: ["LOG-1", …]} → {ok, created, skipped, commitError},
 - ResolveYouTrack(s id, s choice) -> s  konflikt ze zmianą ręczną w YouTracku (karta K-16 albo klucz zgłoszenia;
                              choice: youtrack — przyjmij stan z YouTracka, tide — nadpisz stanem Tide) → {ok, issue, choice},
-- sygnał Changed()           tablica się zmieniła (nasz zapis albo zmiana z zewnątrz).
+- sygnał Changed()           tablica albo lista „Praca” się zmieniła (nasz zapis, zmiana z zewnątrz, stan sesji).
 Każda zmiana to commit w repozytorium tablicy (nieudany commit: ok z opisem w commitError, commit
 czeka); błąd to JSON {ok: false, error: <kod>, message: <tekst po polsku>} jak w /Tasks — dane
 sprawdzamy przed zapisem, więc złe żądanie nie zostawia pliku ani commita.
@@ -364,6 +367,7 @@ DOCKER_XML = f"""<interface name="{DOCKER_IFACE}">
 
 BOARD_XML = f"""<interface name="{BOARD_IFACE}">
   <method name="Snapshot"><arg name="json" type="s" direction="out"/></method>
+  <method name="Work"><arg name="json" type="s" direction="out"/></method>
   <method name="CreateCard">
     <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
@@ -769,6 +773,10 @@ class BoardAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(result=str)
     def Snapshot(self) -> str:
         return self.monitor.snapshot_json()
+
+    @pyqtSlot(result=str)
+    def Work(self) -> str:
+        return self.monitor.work_json()
 
     @pyqtSlot(str, QDBusMessage, result=str)
     def CardDocs(self, card_id: str, message: QDBusMessage) -> str:

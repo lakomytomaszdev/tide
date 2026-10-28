@@ -18,29 +18,46 @@ from scripts.panels import evaluate, load, persist_thickness, save, screens, scr
 
 INSTALLED = STATE / "tide" / "dock-installed.json"
 # Kafelki, które wyszły z docka, ale mogą w nim jeszcze stać po starej instalacji: instalacja zdejmuje je
-# skryptem dock.js, a odinstalowanie usuwa razem z kafelkami Tide. Modele weszły do kafelka „AI”
-# (org.tide.limits, PT-41).
-DOCK_RETIRED = ["org.tide.models"]
+# skryptem dock.js (chyba że są na liście docka), a odinstalowanie usuwa razem z kafelkami Tide. Modele weszły
+# do kafelka „AI” (org.tide.limits, PT-41), Tablicę i Agentów zastąpiła Praca (PT-40), „＋ Zadanie” — przycisk
+# „＋” na kafelku (dawniej Agentów, dziś Pracy).
+DOCK_RETIRED = ["org.tide.models", "org.tide.board", "org.tide.agents", "org.tide.newtask"]
+# Kafelek, który zastąpił wycofane (PT-40: Praca — Tablicę i Agentów). Bez zainstalowanego nowego w jego miejscu
+# stoją stare, jeśli są zainstalowane: wycofanie to `make uninstall-widget-work` i ponowne `make install-dock`
+# (dock.js zdejmuje wtedy też aplet Pracy, którego pakietu już nie ma).
+REPLACES = {"org.tide.work": ["org.tide.board", "org.tide.agents"]}
 # Kafelki z lewej strony docka (przed aplikacjami): system, zaraz po nim Docker (mock „Kafelki Tablica
 # i Docker”). Prośba użytkownika: „ja go chciałem po lewej mieć od ikonek z paska” — po prawej zostają
 # sprawy AI. Worktrees za Dockerem (28.10: „Worktrees bym chciał mieć po lewej stronie, za ciasno się zrobiło
 # po prawej”).
 DOCK_LEFT = ["org.tide.system", "org.tide.docker", "org.tide.worktrees"]
-# Kafelki z prawej strony docka (za aplikacjami), w tej kolejności.
-# Tablica pracy przed Agentami (plan 2026-10-27-board-and-docker: „po prawej sprawy AI — Tablica,
-# Agenci z „+”, Limity AI”). Modele lokalne są w kafelku „AI” (org.tide.limits, PT-41).
-DOCK_RIGHT = ["org.tide.board", "org.tide.agents", "org.tide.limits"]
+# Kafelki z prawej strony docka (za aplikacjami), w tej kolejności: sprawy AI — Praca z „＋” (PT-40, zamiast
+# Tablicy i Agentów) i kafelek „AI” z limitami i modelem lokalnym (org.tide.limits, PT-41).
+DOCK_RIGHT = ["org.tide.work", "org.tide.limits"]
 DOCK_WIDGETS = DOCK_LEFT + DOCK_RIGHT
+# Typy, które dock.js zdejmuje z docka, gdy nie ma ich na liście (P.retired): wycofane i kafelki, które je
+# zastąpiły (gdy nowego nie ma — po wycofaniu — jego aplet bez pakietu też znika).
+REMOVABLE = DOCK_RETIRED + list(REPLACES)
+
+
+def is_installed(widget: str) -> bool:
+    return (DATA / "plasma" / "plasmoids" / widget).is_dir()
 
 
 def installed_widgets(names: list[str] = DOCK_WIDGETS) -> list[str]:
-    return [w for w in names if (DATA / "plasma" / "plasmoids" / w).is_dir()]
+    out = []
+    for widget in names:
+        if is_installed(widget):
+            out.append(widget)
+        else:
+            out.extend(old for old in REPLACES.get(widget, []) if is_installed(old))
+    return out
 
 
 def params() -> dict:
     palette = json.loads(PALETTE.read_text())
     return {**screens(), "left": installed_widgets(DOCK_LEFT), "widgets": installed_widgets(DOCK_RIGHT),
-            "dockHeight": palette["size"]["dock"]}
+            "retired": REMOVABLE, "dockHeight": palette["size"]["dock"]}
 
 
 def install() -> None:

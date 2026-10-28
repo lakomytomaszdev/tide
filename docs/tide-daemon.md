@@ -818,7 +818,8 @@ Osobisty backlog ze wszystkich projektów: karta to „rzecz do zrobienia” (fu
 nie ticket. Dane są w lokalnym repozytorium git, które usługa zakłada przy pierwszym poprawnym
 zapisie i commituje po każdej zmianie, więc historia i cofanie są za darmo. Bez remote — usługa nigdy nie
 wypycha ani nie dodaje zdalnego repozytorium. Widok Tablica w oknie Tide (`apps/board`) i kafelek
-`org.tide.board` (`widgets/board`) czytają `Snapshot()` i piszą wyłącznie przez metody niżej;
+`org.tide.board` (`widgets/board`) czytają `Snapshot()`, kafelek Praca `org.tide.work` (`widgets/work`, PT-40) —
+`Work()`; wszyscy piszą wyłącznie przez metody niżej;
 kolumny W toku, Czeka na mnie i Do sprawdzenia wynikają z prawdziwej pracy agentów (niżej, „Stan karty
 z pracy agentów”, PT-5), uruchamianie agenta z karty (PT-4) opisuje „Uruchomienie z karty” niżej, a stan
 zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTrackiem” (PT-7). Plan: `docs/agents/plans/2026-10-27-board-and-docker.md`.
@@ -832,6 +833,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | Składnik | Sygnatura | Opis |
 | --- | --- | --- |
 | `Snapshot()` | `→ s` | JSON całej tablicy (opis niżej); tylko odczyt — przed pierwszym zapisem niczego nie zakłada |
+| `Work()` | `→ s` | lista „Praca” (PT-40, niżej „Lista Praca”): `{exists, items, counts}` — aktywne karty i żywe sesje agentów bez karty, z tego samego przeliczenia co kolumny kart; tylko odczyt |
 | `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
@@ -845,7 +847,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `YouTrackIssues(b refresh)` | `→ s` | zgłoszenia użytkownika do importu (PT-7): `{ok, issues: [{id, summary, project, state, updated, url, card, boardProject, boardProjectName, new}], error}`; odpowiedź po pobraniu w wątku roboczym (`refresh: false` — ostatnia lista z pamięci); pokazane zgłoszenia liczą się jako przejrzane |
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
-| `Changed` | sygnał bez argumentów | tablica się zmieniła (zapis przez D-Bus albo zmiana z zewnątrz) — pobierz `Snapshot()` ponownie |
+| `Changed` | sygnał bez argumentów | tablica albo lista „Praca” się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan sesji) — pobierz `Snapshot()` albo `Work()` ponownie |
 
 Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt
 jak w `/Tasks`: sukces to `{"ok": true, …}`, błąd — `{"ok": false, "error": "<kod>", "message": "…"}`
@@ -1157,6 +1159,56 @@ gdy migawka się zmieniła. Indeksy (repozytoria bez dowiązań, `(repozytorium,
 karty z nazwy gałęzi) powstają raz na przeliczenie, więc karta to kilka wyszukań w słownikach (80 kart,
 60 koordynatorów po 15 ticketów i 40 sesji — kilka ms; test `SpeedTest`). Plakietka (`Badge()`) i kafelek liczą z `boardColumn`, więc idą za tym same.
 `--print-board` pokazuje migawkę bez stanu z pracy agentów (bez skanowania dzienników).
+
+**Lista „Praca”** (PT-40, `board/work.py`, `Work()`, decyzja 75). Jedna prawda dla kafelka Praca, który zastąpił
+kafelki Tablica i Agenci (wcześniej każdy liczył po swojemu — tablica „5 czeka”, agenci „1 czeka · 4 gotowe”).
+`BoardMonitor` liczy ją w tym samym przeliczeniu co `derived` i `boardColumn`, z tego samego kontekstu derive
+(te same sesje z `/Agents`, ci sami koordynatorzy), więc liczby nie mogą się rozjechać z Tablicą; `Changed`
+idzie także wtedy, gdy zmieni się tylko lista (np. sesja bez karty zaczęła czekać — migawka tablicy jest
+wtedy ta sama). Osobna metoda zamiast pola w `Snapshot()`: kafelek nie parsuje przy każdej zmianie sesji całej
+migawki z opisami kart, a okno Tide nie dostaje danych, których nie używa.
+
+- **Karty:** kolumna wyświetlana (`boardColumn`) `waiting`, `progress`, `review` albo `todo` — bez Backlogu, Gotowych
+  i Archiwum; grupa = ta kolumna. Połączenie z sesją wyłącznie z `derived` karty — `work.py` nie ma własnych reguł.
+- **Sesje bez karty:** żywa sesja (stan inny niż `ended`), której nie wskazuje żadna karta — ani `derived.session` /
+  `derived.coordinator`, ani pole `session` karty (także w Gotowych i Archiwum, którym derive stanu nie daje;
+  samo id sesji też się liczy). `waiting` → `waiting`, `working` → `progress`, `done` i `idle` → `finished`.
+  Jedna sesja prowadząca dwie karty to dwie pozycje-karty i żadnej pozycji-sesji; podagenci Codexa są już zwinięci.
+- **Kolejność:** grupy `waiting`, `progress`, `review`, `todo`, `finished`; w grupie najpierw karty (kolejność
+  tablicy), potem sesje — czekające od najdłużej czekającej (jak Meta+A), pozostałe od najświeższej aktywności.
+
+```json
+{"exists": true,
+ "counts": {"waiting": 2, "progress": 3, "review": 2, "todo": 3, "finished": 2, "total": 10, "sessions": 2},
+ "items": [
+  {"kind": "card", "id": "K-20", "card": "K-20", "title": "Twitch: czat i alerty", "project": "twitch",
+   "projectName": "twitch", "group": "waiting", "note": "czeka na odpowiedź: „Czy taki podział…?”",
+   "question": "Czy taki podział…?", "nextStep": "odpowiedz agentowi", "agentState": "waiting",
+   "session": "claude:6b1f…", "canActivate": true, "sinceTs": 1793191980, "activityTs": 1793191980,
+   "done": 0, "total": 0, "tool": "claude", "branch": "feat/k-20-moduly"},
+  {"kind": "session", "id": "codex:019a…", "card": "", "title": "pricingapp · feat/rabaty", "project": "",
+   "projectName": "pricingapp", "group": "waiting", "note": "shell · git push", "question": "Mogę zrobić push…?",
+   "nextStep": "odpowiedz agentowi", "agentState": "waiting", "reason": "reply", "session": "codex:019a…",
+   "canActivate": true, "sinceTs": 1793191500, "activityTs": 1793191500, "done": 0, "total": 0, "tool": "codex",
+   "branch": "feat/rabaty", "subagents": 0,
+   "cardRequest": {"title": "pricingapp · feat/rabaty", "column": "todo", "session": "codex:019a…",
+                   "repo": "/home/user/DevWorkspace/pricingapp"}}]}
+```
+
+| Pole pozycji | Opis |
+| --- | --- |
+| `kind`, `id`, `card` | `card` (ID karty) albo `session` (ID sesji z `/Agents`, `card` pusty) |
+| `group` | `waiting`, `progress`, `review`, `todo`, `finished` (tylko sesje bez karty, poza `counts.total`) |
+| `title`, `project`, `projectName` | tytuł karty albo tytuł sesji (Claude Code), inaczej „projekt · gałąź”; projekt tablicy (sesja: projekt jej repozytorium, jeśli jest na tablicy) |
+| `note`, `nextStep` | notatka i następny krok z `derived` (sesja: ostatnia czynność) |
+| `question` | tylko `waiting`: `waitingText` sesji, która czeka (karta z koordynatorem bez żywej sesji — pusty, pytanie jest w `note`) |
+| `agentState`, `sinceTs`, `activityTs` | stan agenta (`derived.agentState` albo stan sesji), od kiedy (sesja albo tablica koordynatora) i ostatnia aktywność |
+| `session`, `canActivate` | cel „Przejdź” (`/Agents ActivateSession`; karta — `derived.session` albo koordynator) i czy usługa zna okno |
+| `done`, `total`, `tool`, `branch` | postęp ticketów, narzędzie, gałąź |
+| `cardRequest` | tylko sesja bez karty (nie osierocony podagent): gotowe żądanie `CreateCard` dla „+ karta” — tytuł, kolumna Do zrobienia, `session` (derive łączy kartę od razu, reguła 1) i `repo` repozytorium sesji (bez dowiązań; store bierze istniejący projekt tego repozytorium albo zakłada nowy, jak szybkie dopisanie); sesja poza repozytorium — karta bez projektu |
+
+`counts.total` to wszystko w grze bez `finished` („Praca · 10”), `counts.sessions` — ile z tego to sesje bez karty.
+Bez tablicy (`exists: false`) lista ma tylko sesje bez karty; usługa bez `/Agents` — same karty.
 
 **Synchronizacja z YouTrackiem** (PT-7, `board/ytsync.py`, `ytsync_monitor.py`; zmienia dawne „YouTrack tylko do
 odczytu”). Użytkownik: „to ma się dynamicznie zmieniać, aktualizować youtracka”. Tide jest źródłem stanu,

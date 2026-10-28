@@ -1,7 +1,8 @@
 // Pasek boczny Tide: pionowy panel przy lewej, zewnętrznej krawędzi lewego monitora
 // (nie przy krawędzi między monitorami — tam mysz przechodzi na drugi ekran), chowany
-// automatycznie i pływający. Od góry: nagłówek ze skrótem (org.tide.sidebar), agenci, tablica,
-// system, worktrees i Limity AI — widżety w widoku szczegółowym (sidebarMode).
+// automatycznie i pływający. Od góry: nagłówek ze skrótem (org.tide.sidebar), Praca, system,
+// worktrees i Limity AI — widżety w widoku szczegółowym (sidebarMode). Widżety spoza P.widgets
+// znikają (np. Agenci i Tablica po przejściu na Pracę, PT-40).
 //
 // Panel rozpoznajemy po znaczniku [Tide] role=sidebar. Ponowna instalacja używa tego samego
 // panelu i tych samych widżetów (ten sam identyfikator nagłówka = ta sama akcja skrótu).

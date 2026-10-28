@@ -15,7 +15,7 @@ from scripts.tests import fake_plasmashell as fake
 
 ROOT = Path(__file__).resolve().parents[2]
 PALETTE = json.loads((ROOT / "theme/palette/mist.json").read_text())
-ALL = ["org.tide.sidebar", "org.tide.agents", "org.tide.board", "org.tide.system", "org.tide.worktrees", "org.tide.limits"]
+ALL = ["org.tide.sidebar", "org.tide.work", "org.tide.system", "org.tide.worktrees", "org.tide.limits"]
 SPACER = "org.kde.plasma.panelspacer"
 
 
@@ -96,19 +96,34 @@ class SidebarInstallTest(unittest.TestCase):
         self.assertIn("Meta+S", out)
 
     def test_only_installed_widgets_are_added(self):
-        for widget in ("org.tide.board", "org.tide.system", "org.tide.limits"):
+        for widget in ("org.tide.system", "org.tide.limits"):
             (self.data / "plasma/plasmoids" / widget).rmdir()
         self.sidebar("install")
         [bar] = self.sidebars()
-        self.assertEqual(self.layout(bar), ["org.tide.sidebar", "org.tide.agents", "org.tide.worktrees", SPACER])
+        self.assertEqual(self.layout(bar), ["org.tide.sidebar", "org.tide.work", "org.tide.worktrees", SPACER])
 
     def test_docker_tile_stays_out_of_the_sidebar(self):
-        # Z tablicą pasek nie zmieściłby Dockera w 1040 px — Docker jest tylko w docku.
+        # Docker jest tylko w docku (decyzja z PT-14: brak miejsca w 1040 px).
         self.plasmoids(["org.tide.docker"])
+        self.sidebar("install")
+        [bar] = self.sidebars()
+        self.assertEqual(self.layout(bar), [*ALL, SPACER])
+
+    def test_work_replaces_agents_and_board_and_they_return_without_it(self):
+        """PT-40: z Pracą pasek nie ma Agentów ani Tablicy (pakiety zostają); bez Pracy wracają na jej miejsce."""
+        self.plasmoids(["org.tide.agents", "org.tide.board"])
+        self.sidebar("install")
+        [bar] = self.sidebars()
+        self.assertEqual(self.layout(bar), [*ALL, SPACER])
+        (self.data / "plasma/plasmoids/org.tide.work").rmdir()   # wycofanie: make uninstall-widget-work
         self.sidebar("install")
         [bar] = self.sidebars()
         self.assertEqual(self.layout(bar), ["org.tide.sidebar", "org.tide.agents", "org.tide.board", "org.tide.system",
                                             "org.tide.worktrees", "org.tide.limits", SPACER])
+        self.plasmoids(["org.tide.work"])
+        self.sidebar("install")
+        [bar] = self.sidebars()
+        self.assertEqual(self.layout(bar), [*ALL, SPACER], "ponowna instalacja usuwa stare kafelki, bez duplikatu")
 
     def test_reinstall_is_idempotent(self):
         self.sidebar("install")

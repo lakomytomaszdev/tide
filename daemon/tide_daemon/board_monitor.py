@@ -26,6 +26,10 @@
   projekt, tablica koordynatora z /Coordination) zbieramy w wątku głównym, pliki czytamy w jednym
   wątku roboczym, a odpowiedź D-Bus idzie później z wątku głównego (opóźniona odpowiedź jak w /Docker);
   kolejne prośby o tę samą kartę w czasie odczytu czekają na ten sam wynik (bez kolejki odczytów).
+- lista „Praca” (PT-40, board/work.py, Work()): aktywne karty i żywe sesje agentów bez karty liczone
+  w tym samym przeliczeniu i z tego samego kontekstu derive co kolumny kart — kafelek Praca i Tablica
+  nie mogą się rozjechać. Changed idzie, gdy zmieni się migawka albo ta lista (np. sesja bez karty
+  zaczęła czekać — migawka tablicy jest wtedy taka sama).
 - synchronizacja z YouTrackiem (PT-7, ytsync_monitor.py, board/ytsync.py): każde przeliczenie migawki
   przekazuje karty (z kolumną wyświetlaną) do `youtrack.observe`, a migawka dostaje stan synchronizacji przy
   kartach (`youtrackSync`), ogólny (`youtrack`) i konflikty w `errors`. Import zgłoszeń (ImportYouTrack)
@@ -39,6 +43,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 
+from .board import work as work_list
 from .board.docs import CardDocs
 from .board.model import CARD_PREFIX, BoardError, card_num
 from .board import ytsync
@@ -77,6 +82,7 @@ class BoardMonitor(QObject):
         # stan karty z pracy agentów (PT-5): board/derive.CardDeriver (z context()) albo funkcja(karta) → dict|None
         self.derive = derive
         self._json = ""
+        self._work_json = ""                              # lista „Praca” (Work()) z tego samego przeliczenia
         self._base: dict | None = None                    # migawka z plików bez stanu z pracy agentów
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._touched)
@@ -132,6 +138,12 @@ class BoardMonitor(QObject):
         if not self._json:
             self.publish()
         return self._json
+
+    def work_json(self) -> str:
+        """Work(): lista „Praca” (board/work.py) — {exists, items, counts}."""
+        if not self._work_json:
+            self.publish()
+        return self._work_json
 
     def create_card(self, request: str) -> str:
         return self._mutate(lambda: self.store.create_card(_object(request)))
@@ -328,7 +340,12 @@ class BoardMonitor(QObject):
         if self._base is None:
             self.publish()
             return
-        snapshot = self._derived(self._base)
+        snapshot, context = self._derived(self._base)
+        try:
+            work = work_list.build(snapshot.get("cards"), context, snapshot.get("projects"), snapshot.get("exists", False))
+        except Exception as exc:  # lista „Praca” to dodatek — tablica działa bez niej
+            print(f"tide-daemon: tablica: lista Praca: {exc!r}", flush=True)
+            work = work_list.build(snapshot.get("cards"), None, snapshot.get("projects"), snapshot.get("exists", False))
         if self.youtrack is not None:
             try:
                 self.youtrack.observe(snapshot)
@@ -337,13 +354,17 @@ class BoardMonitor(QObject):
                 print(f"tide-daemon: tablica: YouTrack: {exc!r}", flush=True)
         self._current = snapshot
         text = json.dumps(snapshot, ensure_ascii=False)
-        if text != self._json:
+        work_text = json.dumps(work, ensure_ascii=False)
+        if text != self._json or work_text != self._work_json:
             self._json = text
+            self._work_json = work_text
             self.changed.emit()
 
-    def _derived(self, base: dict) -> dict:
+    def _derived(self, base: dict) -> tuple[dict, object]:
+        """(migawka z `derived` i `boardColumn`, kontekst przeliczenia derive albo None) — kontekst dostaje
+        też lista „Praca” (board/work.py), więc sesje i połączenia są te same co w kolumnach kart."""
         if self.derive is None:
-            return base
+            return base, None
         snapshot = dict(base)
         snapshot["errors"] = list(base.get("errors") or [])
         claimed = [c.get("session") for c in base.get("cards") or [] if isinstance(c, dict) and c.get("session")]
@@ -351,7 +372,7 @@ class BoardMonitor(QObject):
             derive = self.derive.context(claimed) if hasattr(self.derive, "context") else self.derive
         except Exception as exc:  # stan z pracy agentów to dodatek — tablica działa bez niego
             print(f"tide-daemon: tablica: stan z pracy agentów: {exc!r}", flush=True)
-            return base
+            return base, None
         repos = {p.get("slug"): p.get("repo") or "" for p in base.get("projects") or [] if isinstance(p, dict)}
         cards = []
         links = []
@@ -373,7 +394,7 @@ class BoardMonitor(QObject):
             cards.append(card)
         snapshot["cards"] = cards
         self._queue_links(links)
-        return snapshot
+        return snapshot, (derive if hasattr(derive, "sessions") else None)
 
     def _queue_links(self, links: list) -> None:
         now = time.monotonic()

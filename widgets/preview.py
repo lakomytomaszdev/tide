@@ -16,7 +16,9 @@ i agents-popup-report-<stan>.png. Widżet Tablica rysuje osobny moduł (widgets/
 board-tile-<scenariusz>.png, board-popup*.png, board-sidebar.png). Czas lokalny to Europe/Warsaw (powtarzalne „dziś 07:00”).
 Kafelek Docker rysuje osobno widgets/preview_docker.py (docker-tile-*.png, docker-popup.png, docker-sidebar.png),
 kafelek Modele — widgets/preview_models.py (models-tile-*.png, models-popup-*.png), a kafelek „AI” z modelem
-lokalnym — widgets/preview_ai.py (ai-tile-*.png, ai-sidebar-*.png, ai-popup-*.png).
+lokalnym — widgets/preview_ai.py (ai-tile-*.png, ai-sidebar-*.png, ai-popup-*.png), a kafelek Praca
+(PT-40, w docku i pasku bocznym zamiast Tablicy i Agentów) — widgets/preview_work.py (work-tile-*.png,
+work-popup*.png, work-sidebar*.png).
 Ten sam kod sprawdza teksty i wymiary w testach
 (widgets/tests/test_dock_tiles.py, widgets/tests/test_sidebar_tiles.py,
 widgets/tests/test_limits_forecast.py).
@@ -748,6 +750,9 @@ def main(argv: list[str]) -> int:
         print(f"{os.path.abspath(png)}: popup Limitów AI, {report['height']} px")
     from widgets import preview_board  # kafelek, popup i pasek boczny Tablicy (osobny moduł)
     preview_board.main([out_dir])
+    # Kafelek Praca (PT-40, zamiast Tablicy i Agentów): kafelek, popup, pasek boczny — widgets/preview_work.py.
+    from widgets import preview_work
+    preview_work.main([out_dir])
     # Kafelek Docker (kafelek obok System, popup, pasek boczny) — widgets/preview_docker.py.
     from widgets import preview_docker
     preview_docker.main([out_dir])

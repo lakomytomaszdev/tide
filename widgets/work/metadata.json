@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.tide.work",
+    "Name": "Tide · Praca",
+    "Description": "Praca z agentami w jednym miejscu: karty tablicy i sesje bez karty — co czeka na ciebie, co w toku i co do sprawdzenia",
+    "Icon": "view-task",
+    "Category": "System Information",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "Authors": [{ "Name": "Tomek" }]
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}
