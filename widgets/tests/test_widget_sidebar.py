@@ -64,7 +64,9 @@ class SidebarModeTest(unittest.TestCase):
 
     def test_waiting_agent_does_not_pin_the_sidebar(self):
         text = read("agents", "contents/ui/main.qml")
-        self.assertRegex(text, r"Plasmoid\.status: waitingCount > 0 && !Plasmoid\.configuration\.sidebarMode")
+        # Pierwsza gałąź to aktywność Stream (decyzja 80: kafelek pracy znika), potem reguła uwagi.
+        self.assertRegex(text, r"Plasmoid\.status: activityLook\.workHidden \? PlasmaCore\.Types\.HiddenStatus\s+"
+                               r": waitingCount > 0 && !Plasmoid\.configuration\.sidebarMode")
 
     def test_sidebar_mode_uses_the_sidebar_tiles(self):
         # Pasek ma własne, zwarte kafelki; popupy kafelków w docku zostają bez zmian.
