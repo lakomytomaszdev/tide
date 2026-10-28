@@ -19,6 +19,7 @@ import unittest
 
 from . import reportfix
 from .reportfix import INJECTION, NOW, START
+from tide_daemon.agents.timeutil import iso
 from tide_daemon import reports
 from tide_daemon.report_monitor import notification_text
 from tide_daemon.reports import collect, limits, render, sessions
@@ -319,6 +320,44 @@ class StandingWorkTest(ReportWorld):
         self.assertEqual((data["counts"]["projects"], data["projects"]), (0, []))
         self.assertEqual(notification_text(report)[0], "Raport poranny gotowy — bez ruchu w projektach")
 
+    def worktrees(self, **ages):
+        from tide_daemon.worktrees.scanner import WorktreeScanner
+        scanner = WorktreeScanner(self.p["work"], 3, clock=lambda: NOW)
+        scanner.refresh()
+        items = scanner.snapshot([], now=NOW)
+        for item in items:
+            if item.get("branch") in ages:
+                item["lastChangeTs"] = NOW - ages[item["branch"]]
+        return items
+
+    def test_old_unmerged_branch_is_not_standing_work(self):
+        # Ta sama niescalona gałąź Codexa: zmieniona 2 h temu — beta w raporcie; 30 dni temu — porzucona, beta cicha.
+        for age, expected in ((2 * 3600, ["beta"]), (30 * 86400, [])):
+            report = collect.build(reportfix.DAY, NOW - 15 * 60, NOW, workspace=self.p["work"],
+                                   claude_root=self.p["claude"], codex_root=self.p["codex"], live=[],
+                                   worktrees=self.worktrees(**{"codex/fix-upload": age}),
+                                   limits_result={"ok": False, "error": "brak"})
+            self.assertEqual([p.name for p in report.active if p.name == "beta"], expected, age)
+
+    def test_old_active_plan_is_not_standing_work(self):
+        work = os.path.join(tempfile.mkdtemp(dir=self.tmp), "work")
+        repo = os.path.join(work, "plans")
+        os.makedirs(os.path.join(repo, "docs", "agents", "plans"))
+        reportfix.git(repo, "init", "-q", "-b", "master")
+        reportfix.commit(repo, "a.txt", NOW - 40 * 86400, "initial commit")
+        claude_root = tempfile.mkdtemp(dir=self.tmp)
+        plan = os.path.join(repo, "docs", "agents", "plans", "2026-09-20-old.md")
+        for updated, expected in ((NOW - 30 * 86400, []), (NOW - 86400, ["plans"])):
+            with open(plan, "w", encoding="utf-8") as fh:
+                fh.write("---\ntide-plan: 1\ntitle: Stary plan\ntracker: local\nticket-prefix: PT\n"
+                         f"status: active\nupdated: {iso(updated)}\n---\n\n"
+                         "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |\n| --- | --- | --- | --- | --- | --- |\n"
+                         "| PT-1 | Eksport | gotowe | | | |\n| PT-2 | Import | w-toku | | | |\n")
+            report = collect.build(reportfix.DAY, NOW - 15 * 60, NOW, workspace=work, claude_root=claude_root,
+                                   codex_root=self.p["codex"], live=[], limits_result={"ok": False, "error": "brak"})
+            self.assertEqual(len(next(p for p in report.projects if p.name == "plans").plans), 1, "plan jest widziany")
+            self.assertEqual([p.name for p in report.active], expected, updated)
+
     def test_plan_in_progress(self):
         self.assertTrue(collect.plan_in_progress({"live": True}))
         self.assertTrue(collect.plan_in_progress({"counts": {"review": 1}}))
@@ -326,6 +365,12 @@ class StandingWorkTest(ReportWorld):
         self.assertFalse(collect.plan_in_progress({"status": "active", "done": 0, "total": 5, "counts": {"todo": 5}}),
                          "plan, którego nikt nie zaczął, to „Dalej”, nie praca w toku")
         self.assertFalse(collect.plan_in_progress({"status": "done", "done": 5, "total": 5, "counts": {"gotowe": 5}}))
+        old = {"status": "active", "done": 2, "total": 5, "counts": {"w-toku": 1}, "last": NOW - 30 * 86400}
+        self.assertFalse(collect.plan_in_progress(old, NOW - collect.STANDING_MAX),
+                         "plan porzucony z ticketem „w toku” sprzed miesiąca to nie praca w toku")
+        self.assertTrue(collect.plan_in_progress(dict(old, last=NOW - 86400), NOW - collect.STANDING_MAX))
+        self.assertTrue(collect.plan_in_progress(dict(old, live=True), NOW - collect.STANDING_MAX),
+                        "pracujący koordynator — zawsze")
 
     def test_standing_session_from_agents_state(self):
         s = sessions.standing_session({"id": "codex:t1", "cwd": "/tmp/x", "state": "waiting", "reason": "approval",
