@@ -7,7 +7,8 @@ Typy zdarzeń (schemat 1, PT-58):
 - `step.started` — krok w tle: step, kind (ticket), ticket, executor, unit, session, worktree, branch, stepDir, gitDir,
 - `step.finished` — wynik kroku: result (done, question, denied, error, stopped), reason (no-result, bad-result,
   no-progress, exit, start), question, command, notes, wip (commit WIP przy zatrzymaniu),
-- `card.moved` (to), `card.paused`, `card.finished` (column), `ticket.rejected` (ticket).
+- `card.moved` (to, from — kolumna, w której kartę widać), `card.paused`, `card.finished` (column),
+  `ticket.rejected` (ticket).
 
 Kolumna (ręczne kolumny wygrywają z dziennikiem):
 - Gotowe i Archiwum w pliku karty — bez stanu z dziennika (karta stoi tam, gdzie ją postawiono),
@@ -85,8 +86,11 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "card.finished":
             st.card_finished = True
         elif kind == "card.moved":
-            st.moved_to = e.get("to") or ""
-            if st.moved_to not in ("backlog",):
+            # „Do poprawy” to przeniesienie z kolumny wyliczonej (Do sprawdzenia, Czeka na mnie); z Backlogu do Do
+            # zrobienia to wznowienie albo kolejka po zleceniu z popupu — karta pokazuje dalej stan z dziennika.
+            if e.get("from") not in ("backlog", "todo"):
+                st.moved_to = e.get("to") or ""
+            if (e.get("to") or "") != "backlog":
                 st.paused = False
         elif kind == "ticket.rejected":
             st.rejected.add(e.get("ticket"))

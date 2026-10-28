@@ -188,14 +188,16 @@ class BoardMonitor(QObject):
         return self._mutate(lambda: self.store.update_card(card_id, _object(request)))
 
     def move_card(self, card_id: str, column: str, order: int) -> str:
-        text = self._mutate(lambda: self.store.move_card(card_id, column, order, self._shown_column(card_id)))
+        shown = self._shown_column(card_id)
+        text = self._mutate(lambda: self.store.move_card(card_id, column, order, shown))
         if self.flow is not None:
             try:
                 reply = json.loads(text)
             except ValueError:
                 reply = {}
             if reply.get("ok") and reply.get("id") and self.flow.has_journal(reply["id"]):
-                self.flow.moved(reply["id"], column.strip().lower())   # Backlog wstrzymuje, Gotowe i Archiwum kończą
+                # Backlog wstrzymuje, Gotowe i Archiwum kończą; skąd — „do poprawy” tylko z kolumn wyliczonych.
+                self.flow.moved(reply["id"], str(column).strip().lower(), shown)
         return text
 
     def start_card(self, card_id: str, request: str, reply) -> None:

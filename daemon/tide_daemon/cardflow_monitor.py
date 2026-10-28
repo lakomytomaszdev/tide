@@ -80,8 +80,8 @@ class CardFlowMonitor(QObject):
         if not self._submit(lambda: self.engine.start(card_id, data), answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
-    def moved(self, card_id: str, column: str) -> None:
-        self._submit(lambda: self.engine.moved(card_id, column), _report("MoveCard"))
+    def moved(self, card_id: str, column: str, shown: str = "") -> None:
+        self._submit(lambda: self.engine.moved(card_id, column, shown), _report("MoveCard"))
 
     def tick(self) -> None:
         if self._ticking:

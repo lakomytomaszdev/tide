@@ -261,15 +261,15 @@ class FlowEngine:
 
     # --- ręczne kolumny --------------------------------------------------------------------------
 
-    def moved(self, card_id: str, column: str) -> None:
-        """Karta przeniesiona ręcznie (MoveCard): Backlog wstrzymuje, Gotowe i Archiwum kończą (krok zatrzymany
-        z zapisem zmian, niescalony ticket odrzucony). Karta bez dziennika — nic."""
+    def moved(self, card_id: str, column: str, shown: str = "") -> None:
+        """Karta przeniesiona ręcznie (MoveCard; `shown` — kolumna, w której ją widać): Backlog wstrzymuje, Gotowe
+        i Archiwum kończą (krok zatrzymany z zapisem zmian, niescalony ticket odrzucony). Karta bez dziennika — nic."""
         if not self.journal.has(card_id):
             return
         st = fold(self.journal.read(card_id))
         if st.started is None or st.card_finished:
             return
-        self.journal.append(card_id, "card.moved", to=column)
+        self.journal.append(card_id, "card.moved", to=column, **({"from": shown} if shown else {}))
         if column == "backlog" and not st.paused:
             self.journal.append(card_id, "card.paused")
         if column in ("done", "archived"):

@@ -366,6 +366,18 @@ class ManualColumnsInProcessTest(FlowInProcess):
         wait_until(lambda: False, timeout=1.0)
         self.assertEqual(len(self.events(card_id)), count, "kolejne przeliczenia nic nie dopisują")
 
+    def test_started_from_backlog_reaches_review_and_back_to_todo_is_rework(self):
+        card_id = self.card(column="backlog")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.assertTrue(json.loads(self.board.move_card(card_id, "todo", -1))["ok"])   # jak okno po starcie z popupu
+        self.wait_column(card_id, "review")
+        self.assertTrue(json.loads(self.board.move_card(card_id, "todo", 0))["ok"])    # „do poprawy” z Do sprawdzenia
+        card = self.wait_column(card_id, "todo")
+        self.assertIsNone(card["derived"])
+        self.assertTrue(wait_until(lambda: len(self.of(card_id, "card.moved")) == 2, timeout=5))
+        self.assertEqual([(m["from"], m["to"]) for m in self.of(card_id, "card.moved")],
+                         [("backlog", "todo"), ("review", "todo")])
+
     def test_moving_a_card_without_journal_writes_no_journal(self):
         card_id = self.card(description="zwykła", column="backlog")
         self.assertTrue(json.loads(self.board.move_card(card_id, "todo", 0))["ok"])
