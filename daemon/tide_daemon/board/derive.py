@@ -480,9 +480,11 @@ class Context:
 
         asked = [t for t in tickets if t.get("state") == "czeka" and _question(t)]
         if asked:
-            return self._fill(out, "waiting", f"{_tid(asked[0])}: „{_clip(_question(asked[0]), QUESTION_MAX)}”")
+            out["question"] = _clip(_question(asked[0]), QUESTION_MAX)
+            return self._fill(out, "waiting", f"{_tid(asked[0])}: „{out['question']}”")
         agent = session if session is not None else {"state": board.get("state"), "reason": board.get("reason")}
         if waits_for_user(agent) and not self._question_elsewhere(board, tickets, whole):
+            out["question"] = self._waiting_question(agent, board)
             return self._fill(out, "waiting", self._waiting_note(agent, board))
         planned = [t for t in tickets if t.get("state") == "czeka"]
         if planned and state != "working":
@@ -561,6 +563,7 @@ class Context:
         state, since = session.get("state") or "ended", _ts(session.get("sinceTs"))
         out = self._shape(card, link, board=None, session=session, done=0, total=0, state=state, tickets=[])
         if waits_for_user(session):
+            out["question"] = self._waiting_question(session, None)
             return self._fill(out, "waiting", self._waiting_note(session, None))
         if state == "working":
             action = (session.get("lastAction") or "").strip()
@@ -586,6 +589,9 @@ class Context:
             "nextStep": "", "check": card.get("check") or DEFAULT_CHECK, "branch": branch,
             "session": source.get("id") or "", "coordinator": board.get("id") if board else "",
             "link": link.how, "agentState": state, "tickets": tickets,
+            # Pytanie, na które czeka ta karta (ticket karty, pytanie koordynatora albo sesji) — pusty, gdy czeka
+            # na zgodę na narzędzie, według planu albo nie czeka (lista „Praca”, PT-40).
+            "question": "",
         }
 
     @staticmethod
@@ -595,6 +601,16 @@ class Context:
         if column == "waiting" and not out["nextStep"]:
             out["nextStep"] = "odpowiedz agentowi"
         return out
+
+    @staticmethod
+    def _waiting_question(agent: dict, board: dict | None) -> str:
+        """Treść pytania z `_waiting_note` bez otoczki; zgoda na narzędzie i samo „czeka” — pusty napis."""
+        question = _question(board) if board else ""
+        if question:
+            return _clip(question, QUESTION_MAX)
+        if agent.get("reason") in ("question", "reply"):
+            return _clip(" ".join(str(agent.get("waitingText") or "").split()), QUESTION_MAX)
+        return ""
 
     @staticmethod
     def _waiting_note(agent: dict, board: dict | None) -> str:

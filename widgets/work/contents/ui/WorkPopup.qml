@@ -21,6 +21,7 @@ ColumnLayout {
     property string status: ""            // wynik „+ karta”: błąd albo „Założono K-31”
     property bool statusError: false
     property bool busy: false
+    property var pending: ({})            // sesje, dla których „+ karta” już poszło
     // Najnowszy raport poranny (/Reports Status()) albo null.
     property var report: null
     readonly property bool hasReport: !!report && !!report.path
@@ -36,10 +37,10 @@ ColumnLayout {
     signal finishedToggled()
 
     readonly property var counts: Texts.counts(work)
-    readonly property var groups: available ? Texts.groups(work, nowTs, showFinished) : []
+    readonly property var groups: available ? Texts.groups(work, nowTs, showFinished, pending) : []
 
     function open(row) {
-        if (row.loose) popup.goRequested(row.session, "")
+        if (row.kind === "session") popup.goRequested(row.session, row.card)
         else popup.openCardRequested(row.card)
     }
 

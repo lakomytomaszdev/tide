@@ -23,7 +23,7 @@ Rectangle {
     readonly property bool muted: row.group === "finished"
 
     implicitHeight: compact ? 28 : layout.implicitHeight + 12
-    radius: compact ? 8 : 10
+    radius: compact ? Tide.Tokens.radiusSmall : Tide.Tokens.radiusFrame
     color: waiting ? Tide.Theme.alpha(Tide.Tokens.peach, area.containsMouse ? 0.16 : 0.10)
          : area.containsMouse ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.05) : "transparent"
     Accessible.role: Accessible.Button
@@ -51,7 +51,7 @@ Rectangle {
         Rectangle {
             implicitWidth: 7
             implicitHeight: 7
-            radius: 3.5
+            radius: width / 2
             color: item.row.hollow ? "transparent" : Tide.Tokens[item.row.tint || "textMuted"]
             border.width: item.row.hollow ? 1.5 : 0
             border.color: Tide.Tokens[item.row.tint || "textMuted"]
@@ -95,7 +95,7 @@ Rectangle {
         }
 
         Text {
-            visible: text !== "" && !(item.compact && (item.row.go || item.row.launch))
+            visible: text !== "" && !(item.compact && (item.waiting || item.row.launch))
             text: item.row.word || ""
             textFormat: Text.PlainText
             color: item.row.tint === "textSecondary" || item.muted ? Tide.Tokens.textMuted
@@ -113,7 +113,7 @@ Rectangle {
         }
         Tide.TextButton {
             objectName: "goButton"
-            visible: !!item.row.go
+            visible: !!item.row.go && (!item.compact || item.waiting)
             variant: item.waiting ? "filled" : "link"
             accent: item.waiting ? Tide.Tokens.peach : Tide.Tokens.textMuted
             pointSize: Tide.Tokens.fontSizePt - (item.compact ? 2 : 1)

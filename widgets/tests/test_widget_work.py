@@ -50,6 +50,12 @@ class PackageTest(unittest.TestCase):
         self.assertIn('path: "/Board"', text)
         self.assertIn('method: "Work"', text, "jedna lista z usługi, nie Snapshot + Sessions")
         self.assertNotIn('method: "Sessions"', text)
+        self.assertIn('changedSignal: "WorkChanged"', text, "kafelek nie odświeża się na Changed całej migawki")
+        self.assertIn("pendingSessions[request.session]", text, "drugie „+ karta” nie idzie do usługi")
+        with open(os.path.join(WIDGETS_DIR, "lib/DaemonSource.qml"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn('function dbusWorkChanged() { if (source.changedSignal === "WorkChanged") source.refresh() }',
+                      source)
         # „Przejdź”: agent, a gdy się nie da — karta w oknie Tide albo (sesja bez karty) widok Sesje.
         self.assertIn('"ActivateSession", [sessionId]', text)
         self.assertIn("else if (cardId) root.showBoard(cardId)", text)
@@ -65,7 +71,8 @@ class PackageTest(unittest.TestCase):
 
     def test_attention_rule_matches_old_agents_tile(self):
         text = read("main.qml")
-        self.assertIn("Plasmoid.status: counts.waiting > 0 && !Plasmoid.configuration.sidebarMode", text)
+        self.assertIn("Plasmoid.status: source.available && counts.waiting > 0 && !Plasmoid.configuration.sidebarMode",
+                      text)
         self.assertIn("PlasmaCore.Types.NeedsAttentionStatus", text)
         self.assertIn("morePopupOpen ? PlasmaCore.Types.RequiresAttentionStatus", text)
         with open(os.path.join(WIDGETS_DIR, "agents/contents/ui/main.qml"), encoding="utf-8") as fh:
@@ -159,6 +166,25 @@ class PopupTest(unittest.TestCase):
         offline = preview.render_popup(None, available=False)
         self.assertEqual((offline["subtitle"], offline["groups"]), ("Usługa tide-daemon nie działa", []))
 
+    def test_go_on_live_cards_and_waiting_session_with_card(self):
+        """Review m5: „Przejdź” (link) przy kartach w toku i do sprawdzenia z żywą sesją; review M1: sesja, która
+        czeka, a jej karta jest w Gotowych — numer karty i notatka, bez „+ karta”."""
+        data = preview.work([
+            preview.loose("claude:stara", "dom", "waiting", "waiting", title="Eksport", question="Bash · git push",
+                          card="K-9", note="karta K-9 w Gotowych"),
+            preview.card(18, "Tablica i Docker", "plasma-tide", "progress", state="working", ago=30, session="claude:k18"),
+            preview.card(26, "Raport", "plasma-tide", "review", note="do scalenia: fix/x", state="ended", ago=60,
+                         session="claude:k26"),
+            preview.card(27, "Bez agenta", "plasma-tide", "progress", note="T-1 w toku"),
+        ])
+        rows = {r[0]: r for r in preview.render_popup(data, report=None)["rows"]}
+        self.assertEqual(rows["K-9"][1:], ["waiting", "", "„Bash · git push” · karta K-9 w Gotowych", True, False, False])
+        self.assertEqual((rows["K-18"][4], rows["K-26"][4], rows["K-27"][4]), (True, False, False),
+                         "„Przejdź” tylko przy żywej sesji, do której da się przejść")
+        side = preview.render_sidebar(data)
+        self.assertEqual(side["rows"][0], ["K-9", ""])
+        self.assertEqual(side["rows"][1], ["K-18", "pracuje"], "w pasku bocznym słowo stanu zostaje")
+
     def test_buttons_send_the_right_requests(self):
         qml = """import QtQuick
 import QtQuick.Window
@@ -176,7 +202,7 @@ Window {
         onGoRequested: (session, card) => log.push("go:" + session + "|" + card)
         onOpenCardRequested: card => log.push("open:" + card)
         onLaunchRequested: card => log.push("launch:" + card)
-        onAddCardRequested: request => log.push("add:" + [request.title, request.column, request.session, request.repo].join("|"))
+        onAddCardRequested: request => log.push("add:" + [request.title, request.column, request.session, request.project || ""].join("|"))
         onNewTaskRequested: log.push("new")
         onBoardRequested: log.push("board")
         onSessionsRequested: log.push("sessions")
@@ -210,6 +236,9 @@ Window {
             popup.busy = true
             add[0].clicked()
             popup.busy = false
+            popup.pending = { "codex:pricing": true }   // „+ karta” już poszło — przycisk znika (review m1)
+            log.push("add buttons after:" + find(popup, "addCardButton", []).length)
+            popup.pending = {}
             find(popup, "launchButton", [])[0].clicked()
             const all = rows(popup, [])
             all[2].openRequested()                     // K-18 — karta w oknie Tide
@@ -231,8 +260,8 @@ Window {
         match = re.search(r"POPUP (.*)$", log, re.M)
         self.assertIsNotNone(match, log[-3000:])
         self.assertEqual(json.loads(match.group(1)), [
-            "go buttons:2", "go:claude:k20|K-20", "go:codex:pricing|",
-            "add buttons:2", "add:pricingapp · feat/rabaty|todo|codex:pricing|/w/pricingapp",
+            "go buttons:6", "go:claude:k20|K-20", "go:codex:pricing|",
+            "add buttons:2", "add:pricingapp · feat/rabaty|todo|codex:pricing|", "add buttons after:1",
             "launch:K-30", "open:K-18", "go:claude:kazusy|", "new", "board", "sessions", "report", "finished",
             "rows after toggle:12"], "zapis w toku nie wysyła drugiego „+ karta”")
         self.assertIsNone(re.search(QML_PROBLEMS, log), log[-3000:])
@@ -258,7 +287,8 @@ Window {
                 preview.main([tmp])
             names = sorted(os.listdir(tmp))
             expected = ["work-popup-empty.png", "work-popup-finished.png", "work-popup.png", "work-sidebar.png",
-                        "work-tile-empty.png", "work-tile-mock.png", "work-tile-offline.png", "work-tile-todo.png"]
+                        "work-tile-empty.png", "work-tile-mock.png", "work-tile-offline.png", "work-tile-todo.png",
+                        "work-tile-widest.png"]
             self.assertEqual([n for n in names if n != "work-sidebar-whole.png"], expected)
             for name in names:
                 self.assertGreater(os.path.getsize(os.path.join(tmp, name)), 1500, name)

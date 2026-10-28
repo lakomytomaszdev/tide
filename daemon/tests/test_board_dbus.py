@@ -140,6 +140,7 @@ class BoardDBusTest(unittest.TestCase):
         work = self.call("Work")  # lista „Praca” (PT-40): bez tablicy — pusta, niczego nie zakłada
         self.assertEqual((work["items"], work["counts"]["total"]), ([], 0))
         self.assertIn('<signal name="Changed"', xml)
+        self.assertIn('<signal name="WorkChanged"', xml)
         self.assertIn('<arg name="order" type="i" direction="in"/>', xml)
 
     def test_2_full_flow(self):

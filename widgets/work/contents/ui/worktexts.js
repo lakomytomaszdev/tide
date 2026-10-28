@@ -131,38 +131,45 @@ function quoted(text) {
 }
 
 // Wiersz do narysowania: {key, group, kind, label, loose, title, line, word, tint, hollow, progress,
-// session, card, go, addCard, launch, request}. go — „Przejdź” (do agenta, który czeka), addCard —
-// „+ karta” (sesja bez karty), launch — „Uruchom” (karta do zrobienia).
-function row(item, nowTs) {
+// session, card, go, addCard, launch, request}. go — „Przejdź” (do agenta: wypełniony przy tym, co czeka,
+// zwykły link przy karcie w toku albo do sprawdzenia z żywą sesją, jak dawniej u Agentów), addCard —
+// „+ karta” (sesja bez karty; nie, gdy zakładanie już trwa — pending), launch — „Uruchom” (karta do zrobienia).
+// Sesja, która czeka, a jej karta nie stoi w „Czeka” (np. karta w Gotowych), ma numer karty i notatkę o niej.
+function row(item, nowTs, pending) {
     const group = GROUPS.find(g => g.key === item.group) || GROUPS[1]
-    const loose = item.kind === "session"
+    const session = item.kind === "session"
+    const loose = session && !item.card
     const out = {
         key: item.kind + ":" + item.id, group: item.group, kind: item.kind, loose: loose,
         label: loose ? "bez karty" : item.card || item.id,
-        title: loose ? (item.projectName || item.title || "sesja") : item.title || "",
-        line: "", word: "", tint: group.tint, hollow: loose || item.group === "todo" || item.group === "finished",
+        title: session ? (item.projectName || item.title || "sesja") : item.title || "",
+        line: "", word: "", tint: group.tint, hollow: session || item.group === "todo" || item.group === "finished",
         progress: item.total > 0 ? Math.min(item.total, item.done || 0) + "/" + item.total : "",
         session: item.session || "", card: item.card || "",
-        go: false, addCard: loose && !!item.cardRequest, launch: false,
+        go: false, addCard: loose && !!item.cardRequest && !(pending && pending[item.session]), launch: false,
         request: item.cardRequest || null
     }
     if (item.group === "waiting") {
         // Bez słowa „czeka” — mówi to nagłówek grupy i brzoskwiniowe tło, a miejsce bierze pytanie.
         out.word = ""
-        out.line = item.question ? quoted(item.question) : item.note || "czeka na ciebie"
+        const asked = item.question ? quoted(item.question) : ""
+        out.line = session && item.card ? [asked, item.note].filter(t => t).join(" · ")
+                                        : asked || item.note || "czeka na ciebie"
         out.go = true
     } else if (item.group === "progress") {
         out.word = agentWord(item, nowTs) || "w toku"
-        out.line = loose ? (item.note || item.title || "") : item.note || ""
-        if (loose && item.title && out.title !== item.title) out.line = item.title + (item.note ? " · " + item.note : "")
+        out.line = session ? (item.note || item.title || "") : item.note || ""
+        if (session && item.title && out.title !== item.title) out.line = item.title + (item.note ? " · " + item.note : "")
+        out.go = session ? !!item.session : !!item.canActivate
     } else if (item.group === "review") {
         out.word = reviewWord(item)
         out.line = item.note || ""
         out.progress = ""
+        out.go = !!item.canActivate
     } else if (item.group === "todo") {
         out.word = ""   // nagłówek grupy mówi „do zrobienia”, a obok jest „Uruchom”
         out.line = item.note || ""
-        out.launch = !loose
+        out.launch = !session
     } else {
         out.word = agentWord(item, nowTs) || "skończone"
         out.line = item.title && out.title !== item.title ? item.title : item.note || ""
@@ -172,8 +179,9 @@ function row(item, nowTs) {
 }
 
 // Grupy popupu: [{key, title, tint, count, rows, muted}]; puste grupy pomijamy. Skończone mają wiersze
-// tylko po rozwinięciu (showFinished), ale zawsze licznik w nagłówku grupy.
-function groups(work, nowTs, showFinished) {
+// tylko po rozwinięciu (showFinished), ale zawsze licznik w nagłówku grupy. pending — sesje, dla których
+// „+ karta” już poszło (bez przycisku, dopóki lista ich nie zgubi).
+function groups(work, nowTs, showFinished, pending) {
     const all = items(work)
     const out = []
     for (const g of GROUPS) {
@@ -181,8 +189,15 @@ function groups(work, nowTs, showFinished) {
         if (!members.length) continue
         const muted = g.key === "finished"
         out.push({ key: g.key, title: g.title, tint: g.tint, count: members.length, muted: muted,
-                   rows: muted && !showFinished ? [] : members.map(i => row(i, nowTs)) })
+                   rows: muted && !showFinished ? [] : members.map(i => row(i, nowTs, pending)) })
     }
+    return out
+}
+
+// Sesje bez karty, które jeszcze są na liście — po nich kafelek czyści „zakładanie w toku” (pending).
+function looseSessions(work) {
+    const out = {}
+    for (const item of items(work)) if (item.kind === "session" && !item.card) out[item.session] = true
     return out
 }
 

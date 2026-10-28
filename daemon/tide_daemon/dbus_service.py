@@ -130,7 +130,8 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
 - ImportYouTrack(s json) -> s    karty w Backlogu z listy {issues: ["LOG-1", …]} → {ok, created, skipped, commitError},
 - ResolveYouTrack(s id, s choice) -> s  konflikt ze zmianą ręczną w YouTracku (karta K-16 albo klucz zgłoszenia;
                              choice: youtrack — przyjmij stan z YouTracka, tide — nadpisz stanem Tide) → {ok, issue, choice},
-- sygnał Changed()           tablica albo lista „Praca” się zmieniła (nasz zapis, zmiana z zewnątrz, stan sesji).
+- sygnał Changed()           migawka tablicy się zmieniła (nasz zapis, zmiana z zewnątrz, stan kart z pracy agentów),
+- sygnał WorkChanged()       lista „Praca” się zmieniła (sama ostatnia czynność agenta — najwyżej co 10 s).
 Każda zmiana to commit w repozytorium tablicy (nieudany commit: ok z opisem w commitError, commit
 czeka); błąd to JSON {ok: false, error: <kod>, message: <tekst po polsku>} jak w /Tasks — dane
 sprawdzamy przed zapisem, więc złe żądanie nie zostawia pliku ani commita.
@@ -424,6 +425,7 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="json" type="s" direction="out"/>
   </method>
   <signal name="Changed"/>
+  <signal name="WorkChanged"/>
 </interface>"""
 
 
@@ -763,12 +765,14 @@ class CoordinationAdaptor(QDBusAbstractAdaptor):
 @pyqtClassInfo("D-Bus Introspection", BOARD_XML)
 class BoardAdaptor(QDBusAbstractAdaptor):
     Changed = pyqtSignal()
+    WorkChanged = pyqtSignal()
 
     def __init__(self, parent: QObject, monitor, bus: QDBusConnection | None = None):
         super().__init__(parent)
         self.monitor = monitor
         self.bus = bus
         monitor.changed.connect(self.Changed)
+        monitor.work_changed.connect(self.WorkChanged)
 
     @pyqtSlot(result=str)
     def Snapshot(self) -> str:

@@ -236,7 +236,7 @@ class DockBudgetTest(unittest.TestCase):
 
     def test_widest_tiles_fit_next_to_the_apps(self):
         from scripts import dock
-        from widgets import preview, preview_board, preview_docker
+        from widgets import preview, preview_board, preview_docker, preview_work
         busy = preview.render(preview.SCENARIOS["busy"])["widths"]   # agenci, worktrees, system, Limity AI
         ai = max(preview_ai.render_tile("widest", models)["width"] for models in ("missing", "offline"))
         widths = {
@@ -246,6 +246,8 @@ class DockBudgetTest(unittest.TestCase):
             "org.tide.board": max(preview_board.render_tile(v)["width"] for v in preview_board.TILE_SCENARIOS.values()),
             "org.tide.agents": busy[0],
             "org.tide.limits": ai,
+            # Praca (PT-40) zamiast Tablicy i Agentów: najszerszy wariant — dwucyfrowe liczby w każdej części.
+            "org.tide.work": max(preview_work.render_tile(v)["width"] for v in preview_work.TILE_SCENARIOS.values()),
         }
         tiles = dock.DOCK_LEFT + dock.DOCK_RIGHT
         unknown = [t for t in tiles if t not in widths]

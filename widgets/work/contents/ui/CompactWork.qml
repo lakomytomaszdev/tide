@@ -83,7 +83,7 @@ Tide.DockTile {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 7
                     height: 7
-                    radius: 3.5
+                    radius: width / 2
                     color: part.modelData.hollow ? "transparent" : Tide.Tokens[part.modelData.tint]
                     border.width: part.modelData.hollow ? 1.5 : 0
                     border.color: Tide.Tokens[part.modelData.tint]

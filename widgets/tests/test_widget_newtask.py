@@ -110,17 +110,21 @@ class InstallTest(unittest.TestCase):
             self.assertIn(f"kpackagetool6 -t Plasma/Applet -r {WIDGET_ID}", calls(env))
 
     def test_dock_uses_the_plus_on_the_agents_tile_instead_of_its_own_tile(self):
-        # Decyzja użytkownika: osobny kafelek jest zbędny — „＋” siedzi na kafelku agentów,
-        # a dock.js zdejmuje stary kafelek przy ponownej instalacji.
-        from scripts.dock import DOCK_WIDGETS
+        # Decyzja użytkownika: osobny kafelek jest zbędny — „＋” siedzi na kafelku w docku (od PT-40 na kafelku
+        # Praca, wcześniej Agentów), a dock.js zdejmuje stary kafelek przy ponownej instalacji (DOCK_RETIRED).
+        from scripts.dock import DOCK_RETIRED, DOCK_WIDGETS, REMOVABLE
         self.assertNotIn(WIDGET_ID, DOCK_WIDGETS)
-        tile = open(os.path.join(REPO, "widgets/agents/contents/ui/CompactAgents.qml"), encoding="utf-8").read()
-        self.assertIn('objectName: "newTaskButton"', tile)
-        self.assertIn("signal newTaskRequested()", tile)
-        main = open(os.path.join(REPO, "widgets/agents/contents/ui/main.qml"), encoding="utf-8").read()
-        self.assertIn("onNewTaskRequested: root.newTask()", main)
-        dock_js = open(os.path.join(REPO, "scripts/panels/dock.js"), encoding="utf-8").read()
-        self.assertIn('tideW.type === "org.tide.newtask"', dock_js)
+        self.assertIn(WIDGET_ID, DOCK_RETIRED)
+        self.assertIn(WIDGET_ID, REMOVABLE)
+        for widget, tile_name in (("agents", "CompactAgents.qml"), ("work", "CompactWork.qml")):
+            with open(os.path.join(REPO, f"widgets/{widget}/contents/ui/{tile_name}"), encoding="utf-8") as fh:
+                tile = fh.read()
+            self.assertIn('objectName: "newTaskButton"', tile)
+            self.assertIn("signal newTaskRequested()", tile)
+            with open(os.path.join(REPO, f"widgets/{widget}/contents/ui/main.qml"), encoding="utf-8") as fh:
+                self.assertIn("onNewTaskRequested: root.newTask()", fh.read())
+        with open(os.path.join(REPO, "scripts/panels/dock.js"), encoding="utf-8") as fh:
+            self.assertIn("(P.retired || []).indexOf(tideW.type) >= 0 && !tideWanted(tideW.type)", fh.read())
 
 
 if __name__ == "__main__":

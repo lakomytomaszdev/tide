@@ -37,21 +37,22 @@ PREVIEW_TZ = "Europe/Warsaw"
 def card(num, title, project, group, note="", question="", state="", ago=0, session="", done=0, total=0):
     return {"kind": "card", "id": f"K-{num}", "card": f"K-{num}", "title": title, "project": project.lower(),
             "projectName": project, "group": group, "note": note, "question": question, "nextStep": "",
-            "agentState": state, "session": session, "canActivate": bool(session),
-            "sinceTs": NOW_TS - ago if ago else 0, "activityTs": NOW_TS - ago if ago else 0,
+            "agentState": state, "session": session, "canActivate": bool(session) and state != "ended",
+            "sinceTs": NOW_TS - ago if ago else 0,
             "done": done, "total": total, "tool": "claude" if session else "", "branch": ""}
 
 
-def loose(sid, project, group, state, title="", note="", question="", ago=60, repo=""):
-    item = {"kind": "session", "id": sid, "card": "", "title": title or project, "project": "",
+def loose(sid, project, group, state, title="", note="", question="", ago=60, slug="", card=""):
+    item = {"kind": "session", "id": sid, "card": card, "title": title or project, "project": slug,
             "projectName": project, "group": group, "note": note, "question": question,
             "nextStep": "odpowiedz agentowi" if group == "waiting" else "", "agentState": state, "reason": "",
-            "session": sid, "canActivate": True, "sinceTs": NOW_TS - ago, "activityTs": NOW_TS - ago,
+            "session": sid, "canActivate": True, "sinceTs": NOW_TS - ago,
             "done": 0, "total": 0, "tool": sid.split(":")[0], "branch": "", "subagents": 0}
-    request = {"title": title or project, "column": "todo", "session": sid}
-    if repo:
-        request["repo"] = repo
-    item["cardRequest"] = request
+    if not card:
+        request = {"title": title or project, "column": "todo", "session": sid}
+        if slug:
+            request["project"] = slug   # repozytorium sesji jest projektem tablicy; bez tego — karta bez projektu
+        item["cardRequest"] = request
     return item
 
 
@@ -59,7 +60,7 @@ def work(items, exists=True):
     groups = ("waiting", "progress", "review", "todo", "finished")
     counts = {g: sum(1 for i in items if i["group"] == g) for g in groups}
     counts["total"] = sum(counts[g] for g in groups[:4])
-    counts["sessions"] = sum(1 for i in items if i["kind"] == "session" and i["group"] != "finished")
+    counts["sessions"] = sum(1 for i in items if i["kind"] == "session" and not i["card"] and i["group"] != "finished")
     return {"exists": exists, "items": items, "counts": counts}
 
 
@@ -70,14 +71,14 @@ MOCK_ITEMS = [
          question="Czy taki podział na moduły czatu i alertów ma sens?", state="waiting", ago=420,
          session="claude:k20"),
     loose("codex:pricing", "pricingapp", "waiting", "waiting", title="pricingapp · feat/rabaty",
-          question="Mogę zrobić push gałęzi feat/rabaty na serwer testowy?", ago=900, repo="/w/pricingapp"),
+          question="Mogę zrobić push gałęzi feat/rabaty na serwer testowy?", ago=900),
     card(18, "Tablica i Docker", "plasma-tide", "progress", note="PT-37: kafelek Dockera w docku",
          state="working", ago=30, session="claude:k18", done=3, total=5),
     card(17, "Wartość w logu: warunki na kolumnach", "LogViewer", "progress",
          note="agent bezczynny od 27.10 13:10, w toku: TOM-146", state="idle", ago=90_000, session="claude:k17",
          done=5, total=9),
     loose("claude:kazusy", "agent-team", "progress", "working", title="Biblioteka kazusów: import z PDF",
-          note="Edit · CaseImporter.cs", ago=20, repo="/w/agent-team"),
+          note="Edit · CaseImporter.cs", ago=20, slug="agent-team"),
     card(26, "Raport poranny: poprawka nagłówka", "plasma-tide", "review", note="do scalenia: fix/report-header",
          state="ended", ago=3600, session="claude:k26", done=4, total=4),
     card(24, "Tryb skupienia", "plasma-tide", "review", note="do sprawdzenia ręcznie", state="done", ago=1800,
@@ -86,16 +87,21 @@ MOCK_ITEMS = [
     card(31, "Eksport podsumowania przebiegu do PDF", "LogViewer", "todo"),
     card(29, "Import przepisu z linku", "CookApp", "todo"),
     loose("codex:legal", "legal-agents", "finished", "done", title="legal-agents · main", note="shell · pytest -q",
-          ago=300, repo="/w/legal-agents"),
+          ago=300),
     loose("claude:timetracker", "TimeTracker", "finished", "idle", title="Zestawienie godzin do faktury", ago=10_800,
-          repo="/w/timetracker"),
+          slug="timetracker"),
 ]
 MOCK = work(MOCK_ITEMS)
 TODO_ONLY = work([i for i in MOCK_ITEMS if i["group"] == "todo"])
 REPORT = {"path": "/tmp/raport/index.html", "generatedAt": NOW_TS - 7 * 3600, "unread": True, "waiting": 2}
 
+# Najszerszy kafelek (DockBudgetTest w widgets/tests/test_widget_ai.py): dwucyfrowe liczby w każdej części.
+WIDEST = {"exists": True, "items": [], "counts": {"waiting": 12, "progress": 15, "review": 11, "todo": 40,
+                                                  "finished": 9, "total": 78, "sessions": 6}}
+
 TILE_SCENARIOS = {
     "mock": {"work": MOCK, "available": True},
+    "widest": {"work": WIDEST, "available": True},
     "todo": {"work": TODO_ONLY, "available": True},
     "empty": {"work": work([], exists=False), "available": True},
     "offline": {"work": None, "available": False},

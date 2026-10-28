@@ -83,6 +83,64 @@ class WorkListTest(unittest.TestCase):
         bare = compute([card(9, column="archived", session="stara")], [session("claude:stara", state="idle")])
         self.assertEqual(bare["items"], [], "samo id sesji w karcie też przypina")
 
+    def test_waiting_session_of_a_done_card_stays_in_waiting(self):
+        """Review M1 (b): sesję karty z Gotowych wznowiono i prosi o zgodę — czeka, więc jest w „Czeka”."""
+        cards = [card(9, column="done", session="claude:stara")]
+        result = compute(cards, [session("claude:stara", state="waiting", reason="approval",
+                                         lastAction="Bash · git push", waitingText="Bash · git push")])
+        self.assertEqual(kinds(result), [("waiting", "claude:stara")])
+        item = result["items"][0]
+        self.assertEqual((item["card"], item["note"], item["question"]), ("K-9", "karta K-9 w Gotowych", "Bash · git push"))
+        self.assertNotIn("cardRequest", item, "ma kartę — bez „+ karta”")
+        self.assertEqual((result["counts"]["waiting"], result["counts"]["sessions"]), (1, 0))
+
+    def test_coordinator_asking_outside_its_card_stays_in_waiting(self):
+        """Review M1 (a): koordynator pyta o ticket bez karty — karta K-1 jest W toku, a sesja i tak „czeka”."""
+        koord = board("claude:koord", [ticket("A-1", branch="feat/a"), ticket("A-2", "czeka", branch="feat/b",
+                                                                          question="Który format?")], state="waiting")
+        cards = [card(1, branch="feat/a", session="claude:koord")]
+        sessions = [session("claude:koord", state="waiting", reason="question", branch="master",
+                            waitingText="Który format?")]
+        result = compute(cards, sessions, [koord])
+        self.assertEqual(kinds(result), [("waiting", "claude:koord"), ("progress", "K-1")])
+        self.assertEqual((result["items"][0]["card"], result["items"][0]["note"]), ("K-1", "karta K-1 w toku"))
+
+    def test_every_waiting_session_is_in_the_waiting_group(self):
+        """Niezmiennik: każda czekająca sesja z /Agents jest w grupie „Czeka” — kartą albo sama."""
+        koord = board("claude:koord", [ticket("A-1", branch="feat/a"), ticket("A-2", "czeka", branch="feat/b",
+                                                                          question="Który?")], state="waiting")
+        scenarios = [
+            ([card(1, session="claude:a")], [session("claude:a", state="waiting", reason="question")], []),
+            ([card(1, column="done", session="claude:a")], [session("claude:a", state="waiting", reason="approval")], []),
+            ([card(1, column="backlog", session="claude:a")], [session("claude:a", state="waiting", reason="reply")], []),
+            ([card(1, column="archived", session="a")], [session("claude:a", state="waiting", reason="reply")], []),
+            ([card(1, branch="feat/a", session="claude:koord"), card(2, branch="feat/b", session="claude:koord")],
+             [session("claude:koord", state="waiting", reason="question", branch="master")], [koord]),
+            ([card(1, branch="feat/a", session="claude:koord")],
+             [session("claude:koord", state="waiting", reason="question", branch="master")], [koord]),
+            ([], [session("codex:x", state="waiting", reason="approval", cwd=OTHER),
+                  session("claude:y", state="working", cwd=OTHER)], []),
+        ]
+        for cards, sessions, boards in scenarios:
+            with self.subTest(cards=[(c["id"], c["column"]) for c in cards]):
+                result = compute(cards, sessions, boards)
+                shown = {i["session"] for i in result["items"] if i["group"] == "waiting"}
+                waiting = {s["id"] for s in sessions if s["state"] == "waiting"}
+                self.assertLessEqual(waiting, shown)
+                self.assertGreaterEqual(result["counts"]["waiting"], len(waiting))
+
+    def test_question_belongs_to_the_card(self):
+        """Review m4: dwie karty jednego koordynatora — pytanie tylko przy karcie, której ticket pyta."""
+        koord = board("claude:koord", [ticket("A-1", "czeka", branch="feat/a", question="Format daty?"),
+                                       ticket("A-2", "czeka", branch="feat/b", planNote="decyzja o nazwie")],
+                      state="idle")
+        cards = [card(1, branch="feat/a", session="claude:koord"), card(2, branch="feat/b", session="claude:koord")]
+        result = compute(cards, [], [koord])
+        by_id = {i["id"]: i for i in result["items"]}
+        self.assertEqual((by_id["K-1"]["group"], by_id["K-1"]["question"]), ("waiting", "Format daty?"))
+        self.assertEqual((by_id["K-2"]["group"], by_id["K-2"]["question"]), ("waiting", ""))
+        self.assertIn("według planu", by_id["K-2"]["note"])
+
     def test_session_without_card_gets_a_card_request(self):
         projects = [{"slug": "sklep", "name": "Sklep", "repo": OTHER}]
         result = compute([], [session("claude:luzem", state="waiting", reason="question", cwd=OTHER,
@@ -90,7 +148,10 @@ class WorkListTest(unittest.TestCase):
         item = result["items"][0]
         self.assertEqual((item["kind"], item["project"], item["projectName"]), ("session", "sklep", "Sklep"))
         self.assertEqual(item["cardRequest"], {"title": "Pricing: rabaty progowe", "column": "todo",
-                                               "session": "claude:luzem", "repo": OTHER})
+                                               "session": "claude:luzem", "project": "sklep"})
+        unknown = compute([], [session("claude:luzem", state="working", cwd=OTHER, title="X")])["items"][0]
+        self.assertEqual(unknown["cardRequest"], {"title": "X", "column": "todo", "session": "claude:luzem"},
+                         "review m2: repozytorium bez projektu — karta bez projektu, bez cichego zakładania")
         codex = compute([], [session("codex:x", state="working", cwd=OTHER, branch="feat/pricing")])["items"][0]
         self.assertEqual(codex["cardRequest"]["title"], "sklep · feat/pricing", "bez tytułu — projekt i gałąź")
         main = compute([], [session("codex:y", state="working", cwd="/tmp/x", branch="master")])["items"][0]
@@ -176,26 +237,61 @@ class WorkLiveTest(unittest.TestCase):
 
     def test_loose_session_becomes_a_card_through_card_request(self):
         monitor = self.start()
+        monitor._work_later.setInterval(200)
         self.assertEqual(json.loads(monitor.work_json())["items"], [])
-        changes = []
+        changes, work_changes = [], []
         monitor.changed.connect(lambda: changes.append(True))
+        monitor.work_changed.connect(lambda: work_changes.append(True))
         self.agents.sessions = [session("claude:luzem", state="waiting", reason="question", cwd=self.repo,
                                         title="Pricing", waitingText="Mogę?")]
         self.agents.changed.emit()
-        self.assertTrue(wait_until(lambda: changes, timeout=3), "sesja bez karty zmienia listę — Changed")
+        self.assertTrue(wait_until(lambda: work_changes, timeout=3), "sesja bez karty zmienia listę — WorkChanged")
+        self.assertEqual(changes, [], "migawka tablicy się nie zmieniła — bez Changed (review M2)")
         listed = json.loads(monitor.work_json())
         self.assertEqual(kinds(listed), [("waiting", "claude:luzem")])
         request = listed["items"][0]["cardRequest"]
-        self.assertEqual(request["repo"], os.path.realpath(self.repo))
+        self.assertEqual(request, {"title": "Pricing", "column": "todo", "session": "claude:luzem"},
+                         "repozytorium nie jest projektem — karta bez projektu (review m2)")
 
         reply = json.loads(monitor.create_card(json.dumps(request)))
         self.assertTrue(reply["ok"], reply)
+        again = json.loads(monitor.create_card(json.dumps(request)))
+        self.assertEqual((again["id"], again.get("existing")), (reply["id"], True),
+                         "drugie „+ karta” oddaje istniejącą kartę (review m1)")
         listed = json.loads(monitor.work_json())
         self.assertEqual(kinds(listed), [("waiting", reply["id"])], "po „+ karta” sesja jest kartą, nie luzem")
         self.assertEqual(listed["items"][0]["question"], "Mogę?")
         snap = json.loads(monitor.snapshot_json())
-        self.assertEqual(snap["cards"][0]["boardColumn"], "waiting", "Tablica pokazuje to samo")
-        self.assertEqual(snap["projects"][0]["repo"], os.path.realpath(self.repo), "projekt z repozytorium sesji")
+        self.assertEqual(len(snap["cards"]), 1)
+        self.assertEqual((snap["cards"][0]["boardColumn"], snap["cards"][0]["project"]), ("waiting", ""))
+
+    def test_last_action_alone_is_signalled_later(self):
+        """Review M2: sama ostatnia czynność agenta nie daje WorkChanged od razu — najwyżej co WORK_VOLATILE_MS."""
+        monitor = self.start()
+        monitor._work_later.setInterval(1000)
+        self.agents.sessions = [session("claude:luzem", state="working", cwd=self.repo, lastAction="Edit · a.py")]
+        self.agents.changed.emit()
+        self.assertTrue(wait_until(lambda: kinds(json.loads(monitor.work_json())) == [("progress", "claude:luzem")],
+                                   timeout=3))
+        work_changes = []
+        monitor.work_changed.connect(lambda: work_changes.append(True))
+        for name in ("b.py", "c.py", "d.py"):
+            self.agents.sessions = [session("claude:luzem", state="working", cwd=self.repo, lastAction=f"Edit · {name}")]
+            self.agents.changed.emit()
+            wait_until(lambda: False, timeout=0.1)
+        self.assertEqual(work_changes, [], "w oknie zmian ostatniej czynności — bez sygnału")
+        self.assertTrue(wait_until(lambda: json.loads(monitor.work_json())["items"][0]["note"] == "Edit · d.py",
+                                   timeout=0.3), "Work() zawsze świeże, zanim przyjdzie sygnał")
+        self.assertTrue(wait_until(lambda: work_changes, timeout=3))
+        self.assertEqual(len(work_changes), 1, "jeden zbiorczy sygnał")
+
+    def test_work_failure_never_breaks_the_board(self):
+        """Review m3: wyjątek w liście „Praca” — tablica działa, Work() to pusta lista."""
+        monitor = self.start()
+        with mock.patch("tide_daemon.board.work.build", side_effect=RuntimeError("x")):
+            monitor.create_card(json.dumps({"title": "PDF", "column": "todo"}))
+            self.assertEqual(len(json.loads(monitor.snapshot_json())["cards"]), 1)
+            self.assertEqual(json.loads(monitor.work_json())["items"], [])
 
 
 if __name__ == "__main__":

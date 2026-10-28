@@ -67,7 +67,7 @@ Tide.SidebarTile {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 7
                     height: 7
-                    radius: 3.5
+                    radius: width / 2
                     color: part.modelData.hollow ? "transparent" : Tide.Tokens[part.modelData.tint]
                     border.width: part.modelData.hollow ? 1.5 : 0
                     border.color: Tide.Tokens[part.modelData.tint]
@@ -109,8 +109,8 @@ Tide.SidebarTile {
                 Layout.fillWidth: true
                 compact: true
                 row: modelData
-                onOpenRequested: modelData.loose ? tile.goRequested(modelData.session, "")
-                                                 : tile.openCardRequested(modelData.card)
+                onOpenRequested: modelData.kind === "session" ? tile.goRequested(modelData.session, modelData.card)
+                                                              : tile.openCardRequested(modelData.card)
                 onGoRequested: tile.goRequested(modelData.session, modelData.card)
                 onLaunchRequested: tile.launchRequested(modelData.card)
             }

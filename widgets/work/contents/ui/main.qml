@@ -25,6 +25,9 @@ PlasmoidItem {
     property string status: ""
     property bool statusError: false
     property bool busy: false
+    // Sesje, dla których „+ karta” już poszło: przycisk znika, dopóki Work() je zwraca (podwójne kliknięcie
+    // i stara lista nie zakładają drugiej karty; usługa i tak oddaje wtedy istniejącą).
+    property var pendingSessions: ({})
     // Okienko z pełną listą otwarte z paska bocznego („+N więcej”).
     property bool morePopupOpen: false
 
@@ -68,22 +71,29 @@ PlasmoidItem {
         })
     }
 
-    // „+ karta”: karta z sesji bez karty — żądanie CreateCard przygotowała usługa (tytuł, repozytorium,
+    // „+ karta”: karta z sesji bez karty — żądanie CreateCard przygotowała usługa (tytuł, projekt, jeśli jest,
     // sesja), więc nowa karta od razu łączy się z sesją i sesja znika z „bez karty”.
     function addCard(request) {
-        if (!request || busy) return
+        if (!request || busy || pendingSessions[request.session]) return
         busy = true
+        const pending = Object.assign({}, pendingSessions)
+        pending[request.session] = true
+        pendingSessions = pending
         source.call("CreateCard", [JSON.stringify(request)], function (value) {
             root.busy = false
             const error = value === undefined ? Texts.replyError("") : Texts.replyError(value)
             root.statusError = error !== ""
             if (error) {
+                const kept = Object.assign({}, root.pendingSessions)
+                delete kept[request.session]
+                root.pendingSessions = kept
                 root.status = error
                 return
             }
-            let id = ""
-            try { id = JSON.parse(value).id || "" } catch (e) {}
-            root.status = "Założono kartę " + id
+            let reply = {}
+            try { reply = JSON.parse(value) } catch (e) {}
+            // Usługa oddaje istniejącą kartę, gdy sesję ma już aktywna karta (drugie „+ karta”).
+            root.status = (reply.existing ? "Sesja ma już kartę " : "Założono kartę ") + (reply.id || "")
             statusTimer.restart()
             source.refresh()
         })
@@ -105,7 +115,7 @@ PlasmoidItem {
     // W pasku bocznym (sidebarMode) bez NeedsAttention: chowany panel nie chowa się, dopóki któryś aplet
     // wymaga uwagi, więc czekający agent trzymałby pasek na ekranie. Otwarte okienko z pełną listą trzyma
     // pasek celowo, tak jak popup apletu (CompactApplet.qml).
-    Plasmoid.status: counts.waiting > 0 && !Plasmoid.configuration.sidebarMode
+    Plasmoid.status: source.available && counts.waiting > 0 && !Plasmoid.configuration.sidebarMode
         ? PlasmaCore.Types.NeedsAttentionStatus
         : morePopupOpen ? PlasmaCore.Types.RequiresAttentionStatus : PlasmaCore.Types.ActiveStatus
     toolTipMainText: "Praca"
@@ -123,7 +133,15 @@ PlasmoidItem {
         path: "/Board"
         iface: "org.tide.Daemon.Board"
         method: "Work"
+        changedSignal: "WorkChanged"   // Changed to migawka całej tablicy — kafelek jej nie czyta
         pollInterval: 60000
+        // Sesja, która zniknęła z „bez karty” (ma już kartę albo się skończyła), nie jest już „w toku zakładania”.
+        onRefreshed: {
+            const still = Texts.looseSessions(root.work)
+            const kept = {}
+            for (const id in root.pendingSessions) if (still[id]) kept[id] = true
+            root.pendingSessions = kept
+        }
     }
 
     // Najnowszy raport poranny — tylko do stopki popupu w docku (w pasku bocznym jest w nagłówku paska).
@@ -240,6 +258,7 @@ PlasmoidItem {
                 status: root.status
                 statusError: root.statusError
                 busy: root.busy
+                pending: root.pendingSessions
                 report: reports.available ? reports.result : null
                 onGoRequested: (session, card) => root.activateAgent(session, card)
                 onOpenCardRequested: card => root.showBoard(card)
@@ -287,6 +306,7 @@ PlasmoidItem {
                         status: root.status
                         statusError: root.statusError
                         busy: root.busy
+                        pending: root.pendingSessions
                         // Przejście gdzie indziej zamyka okienko; „+ karta” i Skończone zostawiają je otwarte.
                         onGoRequested: (session, card) => { morePopup.visible = false; root.activateAgent(session, card) }
                         onOpenCardRequested: card => { morePopup.visible = false; root.showBoard(card) }
