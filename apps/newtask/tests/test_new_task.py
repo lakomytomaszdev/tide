@@ -260,8 +260,10 @@ Item {
             console.warn("REQUEST " + JSON.stringify(root.requests[0]))
             console.warn("NOTE " + page.modelNote)
             page.tool = "claude"
+            console.warn("NOTECLOUDSWITCH " + page.modelNote + "|" + page.agentTool)
+            page.modelsStatus = Object.assign({}, root.cases.OK, { agentProgram: "claude" })
             console.warn("NOTECLAUDE " + page.modelNote)
-            console.warn("OUTCOME " + Logic.outcome(page.repo, page.tool, true, page.localOption))
+            console.warn("OUTCOME " + Logic.outcome(page.repo, page.agentTool, true, page.localOption))
             page.modelsStatus = root.cases.MISSING
             console.warn("BLOCKED " + page.model + "|" + page.blocker + "|" + page.canStart)
             console.warn("NOTEOFF " + page.modelNote)
@@ -276,23 +278,24 @@ Item {
 """ % {"data": json.dumps(data, ensure_ascii=False), "cases": json.dumps(cases, ensure_ascii=False), "now": NOW})
             log = run_qml(harness)
         self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
-        self.assertEqual(warned(log, "OK"), "true|Lokalny: qwen3-coder:30b · ten komputer||false")
-        self.assertEqual(warned(log, "MAC"), "true|Lokalny: qwen3-coder:30b · mac-studio||false")
+        self.assertEqual(warned(log, "OK"), "true|Lokalny: qwen3-coder:30b · Ten komputer||false")
+        self.assertEqual(warned(log, "MAC"), "true|Lokalny: qwen3-coder:30b · mac||false",
+                         "serwer w sieci — nazwa z ustawień, jak w widoku Modele")
         self.assertEqual(warned(log, "UNSET"), "false|Lokalny|Model agenta nie jest ustawiony|true")
-        self.assertEqual(warned(log, "OFFLINE"), "false|Lokalny: qwen3-coder:30b · mac-studio|"
-                                                 "Serwer mac-studio nie odpowiada|true")
-        self.assertEqual(warned(log, "MISSING"), "false|Lokalny: qwen3-coder:30b · ten komputer|"
+        self.assertEqual(warned(log, "OFFLINE"), "false|Lokalny: qwen3-coder:30b · mac|"
+                                                 "Serwer mac nie odpowiada|true")
+        self.assertEqual(warned(log, "MISSING"), "false|Lokalny: qwen3-coder:30b · Ten komputer|"
                                                  "Modelu qwen3-coder:30b nie ma na serwerze|true")
-        self.assertEqual(warned(log, "ROLEERR"), "false|Lokalny: qwen3-coder:30b · ten komputer|"
+        self.assertEqual(warned(log, "ROLEERR"), "false|Lokalny: qwen3-coder:30b · Ten komputer|"
                                                  "rola „agent”: punkt „mac” jest pominięty w models.json|true")
-        self.assertEqual(warned(log, "PENDING"), "false|Lokalny: qwen3-coder:30b · ten komputer|"
+        self.assertEqual(warned(log, "PENDING"), "false|Lokalny: qwen3-coder:30b · Ten komputer|"
                                                  "Sprawdzam serwer modeli…|false")
         self.assertEqual(warned(log, "NOSERVICE"), "false|Lokalny|Usługa nie podaje stanu modeli lokalnych|false")
-        self.assertEqual(warned(log, "CLOUDROLE"), "false|Lokalny: gpt-oss:120b-cloud · ten komputer|"
+        self.assertEqual(warned(log, "CLOUDROLE"), "false|Lokalny: gpt-oss:120b-cloud · Ten komputer|"
                                                "Model gpt-oss:120b-cloud działa w chmurze Ollamy|true")
-        self.assertEqual(warned(log, "CLOUDFULL"), "false|Lokalny: gpt-oss:120b-cloud · ten komputer|"
+        self.assertEqual(warned(log, "CLOUDFULL"), "false|Lokalny: gpt-oss:120b-cloud · Ten komputer|"
                                                    "Model gpt-oss:120b-cloud działa w chmurze Ollamy|true")
-        self.assertEqual(warned(log, "PINNEDMAC"), "true|Lokalny: qwen3-coder:30b · mac-studio||false")
+        self.assertEqual(warned(log, "PINNEDMAC"), "true|Lokalny: qwen3-coder:30b · mac||false")
         self.assertEqual(warned(log, "CLOUDSPACES").split("|")[2], "Model  kimi-k2:cloud  działa w chmurze Ollamy",
                          "białe znaki obcinane jak w widoku i kafelku (widgets/lib/modelnames.js)")
         self.assertEqual(warned(log, "WAITING"), "local|Sprawdzam serwer modeli…|false",
@@ -301,6 +304,9 @@ Item {
         self.assertEqual(json.loads(warned(log, "REQUEST"))["model"], "local")
         self.assertEqual(warned(log, "NOTE"), "Na tym komputerze (8 GB) agent lokalny jest wolny i słaby — "
                                               "opcja głównie na Maca.")
+        self.assertEqual(warned(log, "NOTECLOUDSWITCH"), "Na tym komputerze (8 GB) agent lokalny jest wolny i słaby — "
+                                                         "opcja głównie na Maca.|codex",
+                         "przełącznik chmury nie zmienia programu agenta lokalnego")
         self.assertTrue(warned(log, "NOTECLAUDE").endswith("Konektory claude.ai będą wyłączone."))
         self.assertEqual(warned(log, "OUTCOME"),
                          "Otworzy się nowa karta Konsoli z Claude Code na qwen3-coder:30b w tym worktree.")
@@ -309,6 +315,118 @@ Item {
         self.assertEqual(warned(log, "NOTEOFF"), "Modelu qwen3-coder:30b nie ma na serwerze — ustaw w Tide → Modele")
         self.assertEqual(warned(log, "CLOUD"), "|true|Modelu qwen3-coder:30b nie ma na serwerze — ustaw w Tide → Modele")
         self.assertEqual(warned(log, "ASKED"), "1")
+
+    def test_local_mode_shows_the_program_line_instead_of_the_switch(self):
+        """PT-39: „Lokalny” — zamiast przełącznika Claude Code / Codex jedna linia z programem z Tide → Modele
+        (agentProgram) i linkiem; chmura bez zmian. Prośba i propozycja gałęzi idą z programem lokalnym, a
+        przełącznik chmury (zapamiętany wybór) zostaje nietknięty."""
+        data = sample()
+        data["defaults"]["tool"] = "claude"
+        with tempfile.TemporaryDirectory(prefix="tide-nt-line-") as tmp:
+            pkg = stage(os.path.join(tmp, "pkg"))
+            harness = os.path.join(pkg, "qml", "Line.qml")
+            with open(harness, "w", encoding="utf-8") as fh:
+                fh.write("""import QtQuick
+import "newtask.js" as Logic
+Item {
+    id: root
+    width: 860; height: 850
+    property var requests: []
+    property var suggested: []
+    property int modelsAsked: 0
+    readonly property var sample: %(data)s
+    readonly property var ok: %(ok)s
+    readonly property var mac: %(mac)s
+    readonly property var missing: %(missing)s
+    NewTaskPage {
+        id: page
+        anchors.fill: parent
+        nowTs: %(now)d
+        repos: root.sample.repos
+        defaults: root.sample.defaults
+        suggestion: root.sample.suggestion
+        modelsStatus: root.ok
+        onStartRequested: request => root.requests.push(JSON.parse(request))
+        onSuggestRequested: (repo, tool, prompt) => root.suggested.push(tool)
+        onModelsRequested: root.modelsAsked++
+    }
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children) {
+            const hit = find(child, name)
+            if (hit) return hit
+        }
+        return null
+    }
+    function shown() {
+        return find(page, "toolSwitch").visible + "|" + find(page, "localAgent").visible + "|"
+             + find(page, "localProgram").text + find(page, "localDetail").text
+    }
+    Timer {
+        interval: 400; running: true
+        onTriggered: {
+            page.prompt = "Popraw liczenie w raporcie"
+            console.warn("CLOUD " + root.shown() + "|" + page.tool + "|" + page.agentTool)
+            page.start()
+            page.model = "local"
+            console.warn("LOCAL " + root.shown() + "|" + page.tool + "|" + page.agentTool)
+            page.start()
+            console.warn("TOOLS " + root.requests.map(r => r.model + ":" + r.tool).join(","))
+            localSuggestion.start()
+        }
+    }
+    Timer {
+        id: localSuggestion
+        interval: 600
+        onTriggered: {
+            console.warn("SUGGESTLOCAL " + root.suggested[root.suggested.length - 1])
+            page.modelsStatus = Object.assign({}, root.ok, { agentProgram: "claude" })
+            console.warn("CLAUDE " + root.shown() + "|" + page.modelNote)
+            page.modelsStatus = root.mac
+            console.warn("MAC " + root.shown() + "|" + page.modelNote)
+            page.modelsStatus = root.missing
+            console.warn("MISSING " + root.shown() + "|" + find(page, "modelNote").text + "|"
+                         + find(page, "modelsLink").visible + "|" + page.canStart)
+            find(page, "programLink").Keys.spacePressed(null)
+            page.modelsRequested()
+            console.warn("ASKED " + root.modelsAsked)
+            page.modelsStatus = root.ok
+            page.defaults = Object.assign({}, root.sample.defaults, { tools: { claude: true, codex: false } })
+            console.warn("NOBIN " + page.blocker + "|" + find(page, "localProgram").text)
+            page.model = "cloud"
+            console.warn("BACK " + root.shown().split("|").slice(0, 2).join("|") + "|" + page.tool + "|" + page.blocker)
+            suggestions.start()
+        }
+    }
+    Timer {
+        id: suggestions
+        interval: 500
+        onTriggered: { console.warn("SUGGESTED " + root.suggested.join(",")); Qt.quit() }
+    }
+}
+""" % {"data": json.dumps(data, ensure_ascii=False), "now": NOW, "ok": json.dumps(models_status()),
+       "mac": json.dumps({**models_status(endpoint="mac"), "agentProgram": "codex",
+                          "endpoints": {"mac": {"url": "http://mac-studio:11434", "online": True}}}),
+       "missing": json.dumps(models_status(installed=False, available=False))})
+            log = run_qml(harness)
+        self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
+        self.assertEqual(warned(log, "CLOUD"), "true|false|◎ Codex na qwen3-coder:30b · Ten komputer|claude|claude",
+                         "w chmurze przełącznik, linia lokalna schowana")
+        self.assertEqual(warned(log, "LOCAL"), "false|true|◎ Codex na qwen3-coder:30b · Ten komputer|claude|codex",
+                         "bez agentProgram — Codex; przełącznik chmury zostaje przy Claude Code")
+        self.assertEqual(warned(log, "TOOLS"), "cloud:claude,local:codex")
+        self.assertEqual(warned(log, "CLAUDE"), "false|true|✻ Claude Code na qwen3-coder:30b · Ten komputer|"
+                                                "Na tym komputerze (8 GB) agent lokalny jest wolny i słaby — opcja "
+                                                "głównie na Maca. Konektory claude.ai będą wyłączone.")
+        self.assertEqual(warned(log, "MAC"), "false|true|◎ Codex na qwen3-coder:30b · mac|Agent pracuje na serwerze mac.")
+        self.assertEqual(warned(log, "MISSING"), "false|true|◎ Codex na qwen3-coder:30b · Ten komputer|"
+                                                 "Modelu qwen3-coder:30b nie ma na serwerze|false|false",
+                         "ostrzeżenie zostaje, link do Modeli tylko w linii agenta")
+        self.assertEqual(warned(log, "ASKED"), "2")
+        self.assertEqual(warned(log, "NOBIN"), "Nie znaleziono programu codex|◎ Codex · brak")
+        self.assertEqual(warned(log, "BACK"), "true|false|claude|")
+        self.assertEqual(warned(log, "SUGGESTLOCAL"), "codex", "propozycja gałęzi z programem lokalnym")
+        self.assertEqual(warned(log, "SUGGESTED").split(",")[-1], "claude")
 
     def remembered(self, initial, then="skip", status_first=False) -> str:
         """Zapamiętany „Lokalny”: stan modeli na starcie (`initial`), potem Defaults i Status (`then`) —

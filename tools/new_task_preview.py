@@ -4,7 +4,8 @@ Użycie: /usr/bin/python3 tools/new_task_preview.py worktrees.json "polecenie" [
 Tylko odczyt: repozytoria z `tide-daemon.py --print-worktrees`, propozycja gałęzi z naming.py
 (bez gita), więc nic nie powstaje w prawdziwych repozytoriach. models.json to stan z
 `tide-daemon.py --print-models` (Status() obiektu /Models); --local dokłada przykładową rolę `agent`
-(qwen3-coder:30b na pierwszym serwerze, gdy rola nie jest ustawiona) i wybiera „Lokalny”.
+(qwen3-coder:30b na pierwszym serwerze, gdy rola nie jest ustawiona) i wybiera „Lokalny”; propozycja gałęzi
+idzie wtedy z programem agenta lokalnego (`agentProgram`, domyślnie Codex), jak w oknie.
 """
 import json
 import os
@@ -36,7 +37,9 @@ def main(argv: list[str]) -> int:
                          "tools": {"claude": True, "codex": True}, "terminal": True,
                          "model": "local" if local else "cloud"}}
     if repos:
-        branch = branch_from_prompt(prompt, "claude")
+        program = (models or {}).get("agentProgram") if isinstance(models, dict) else None
+        tool = (program if program in ("claude", "codex") else "codex") if local else "claude"
+        branch = branch_from_prompt(prompt, tool)
         data["suggestion"] = {"ok": True, "branch": branch, "base": repos[0]["mainBranch"],
                               "path": worktree_path(repos[0]["path"], branch)}
     json.dump(data, sys.stdout, ensure_ascii=False)
