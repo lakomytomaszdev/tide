@@ -137,5 +137,12 @@ def show() -> None:
     print(script("sidebar", params(installed, "" if taken_by(installed) else SHORTCUT)))
 
 
+def install_in_activity() -> None:
+    """Instalacja i od razu panele z opisu bieżącej aktywności, pod blokadą nałożeń wyglądu (decyzja 80):
+    w aktywności Stream pasek boczny pracy nie zostaje w stanie pracy nad konsolą — silnik chowa go z powrotem."""
+    from scripts import activity_look
+    activity_look.apply_current(["panels"], before=install)
+
+
 if __name__ == "__main__":
-    {"install": install, "uninstall": uninstall, "show": show}[sys.argv[1]]()
+    {"install": install_in_activity, "uninstall": uninstall, "show": show}[sys.argv[1]]()

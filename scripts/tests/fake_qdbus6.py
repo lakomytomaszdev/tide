@@ -19,11 +19,22 @@ args = sys.argv[1:]
 
 if args[:3] == ["org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript"]:
     script = args[3]
-    tag = script.split("\n", 1)[0].replace("// tide:", "")
+    first = script.split("\n", 1)[0]
+    tag = "read" if first.startswith("/* tide:read */") else first.replace("// tide:", "")
     (calls / f"{len(list(calls.glob('*.js'))):03d}-{tag}.js").write_text(script)
     out, state = fake.run(json.loads((base / "plasma.json").read_text()), script)
     (base / "plasma.json").write_text(json.dumps(state))
     print(out)
+elif args[:2] == ["org.kde.ActivityManager", "/ActivityManager/Activities"]:
+    # Bieżąca aktywność z $TIDE_FAKE_DIR/activity (bez pliku — aktywność pracy).
+    current = base / "activity"
+    method = args[2].rsplit(".", 1)[-1]
+    if method == "CurrentActivity":
+        print(current.read_text().strip() if current.exists() else "work-activity")
+    elif method == "ActivityName":
+        print("")
+    else:
+        sys.exit(f"atrapa qdbus6: nieobsługiwane wywołanie {args}")
 elif args[:2] == ["org.kde.kded6", "/kded"]:
     kded = json.loads((base / "kded.json").read_text())
     with open(calls / "kded.log", "a") as log:

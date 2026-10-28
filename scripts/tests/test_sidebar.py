@@ -74,6 +74,23 @@ class SidebarInstallTest(unittest.TestCase):
         by_id = {w["id"]: w for w in panel["widgets"]}
         return [by_id[i]["type"] for i in panel["layout"]]
 
+    def test_install_in_stream_keeps_the_sidebar_hidden(self):
+        """make install w aktywności Stream: sidebar.py stawia pasek pracy, a silnik od razu nakłada panele
+        z opisu Stream (decyzja 80) — pasek zostaje schowany, nie wisi pusty nad konsolą."""
+        self.sidebar("install")
+        self.plasmoids(["org.tide.stream", "org.tide.stream.help"])
+        (self.config / "tide").mkdir(parents=True, exist_ok=True)
+        (self.config / "tide/activities.json").write_text(json.dumps({"activities": {"stream-activity": "stream"}}))
+        (self.fake_dir / "activity").write_text("stream-activity")
+        self.sidebar("install")
+        [sidebar] = self.sidebars()
+        self.assertEqual(sidebar["hiding"], "autohide")
+        self.assertEqual(json.loads((self.state / "tide/stream-panels.json").read_text())["hiding"], "dodgewindows")
+        (self.fake_dir / "activity").write_text("work-activity")
+        self.sidebar("install")
+        [sidebar] = self.sidebars()
+        self.assertEqual(sidebar["hiding"], "dodgewindows")
+
     @property
     def installed_file(self):
         return self.state / "tide/sidebar-installed.json"
