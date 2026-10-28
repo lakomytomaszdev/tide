@@ -866,6 +866,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `YouTrackIssues(b refresh)` | `→ s` | zgłoszenia użytkownika do importu (PT-7): `{ok, issues: [{id, summary, project, state, updated, url, card, boardProject, boardProjectName, new}], error}`; odpowiedź po pobraniu w wątku roboczym (`refresh: false` — ostatnia lista z pamięci); pokazane zgłoszenia liczą się jako przejrzane |
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
+| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty (PT-58), dziś wejście „Od razu”: `{entry: "now", executor, images?}` → `{ok, id, ticket, branch, worktree, cardBranch, cardWorktree, step, session, executor}` albo `{ok: false, error, message}` (`bad-request`, `not-found`, `no-project`, `no-repo`, `unsupported-tracker`, `unknown-executor`, `unsupported-executor`, `no-program`, `bad-image`, `flow-active`, `no-ticket-number`, `no-base`, błąd akcji); odpowiedź po starcie kroku — opis w „Przepływ karty: „Od razu”” |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
 
@@ -1439,6 +1440,61 @@ qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.CreateCard '{"title": "Ekspo
 /usr/bin/python3 daemon/tide-daemon.py --print-board --board-dir /tmp/tablica-testowa
 ```
 
+### Przepływ karty: „Od razu” (PT-58)
+
+Pierwszy plasterek przepływu karty (`docs/agents/specs/2026-10-28-przeplyw-kart.md`): wejście „Od razu” w oknie
+zlecenia, z wykonawcą Claude z katalogu wykonawców (Haiku, Sonnet, Opus albo własny Claude w chmurze). Okno woła
+`/Board StartCard(id, {"entry": "now", "executor": "Sonnet", "images": [...]})` zamiast RenderLaunch → /Tasks Start;
+odpowiedź przychodzi po starcie kroku (opóźniona, praca w wątku roboczym `cardflow_monitor.py`).
+
+Zlecenie (`cardflow/engine.py`): najpierw sprawdzenie bez zapisu (karta z projektem i repozytorium, wykonawca Claude,
+program `claude`, prefiks ticketów projektu przez `reserve(dry_run=True)`, gałąź główna, brak trwającego kroku karty
+— błąd tu nie zostawia niczego), potem zdarzenia w dzienniku: `card.started`, pary „zamiar → wynik” dla rezerwacji
+numeru (`coordination/reservations.py` — kontrola numerów widzi ticket), gałęzi i worktree karty
+(`card/k-12-<opis>` od gałęzi głównej), gałęzi i worktree ticketu (`ticket/pt-7-<opis>` od gałęzi karty), startu
+kroku, na końcu `step.started`. Worktree leżą w `<repo>-worktrees/`, katalog kroku obok worktree (`<worktree>.step`,
+`in` — kartka, ustawienia, gitconfig; `out` — plik wyniku i notki). Krok to `agentcmd.background()` +
+`Background.start()` (PT-76): `claude -p` w jednostce `systemd-run --user --scope` `tide-step-<K-12>-<PT-7>-<n>`,
+z piaskownicą, `--permission-mode acceptEdits`, kartką na stdin. Bez Konsoli.
+
+Kartka (`cardflow/handoff.py`): tytuł, opis i zrzuty karty, gałąź i katalog roboczy, zakazy (push, scalanie, zapis
+poza katalogiem roboczym i wyjściowym) i plik wyniku `<krok>/out/result.json`:
+`{"result": "done"|"question"|"denied"|"error", "question", "command", "reason", "notes": ["note.md"]}`.
+
+Co chwilę (5 s) `tick()`: jednostka kroku nieaktywna → koniec kroku z pliku wyniku (brak pliku → błąd `no-result`,
+zły → `bad-result`; usługa nie zgaduje wyniku z rozmowy), wynik i notki do `flow/<K-12>/steps/<krok>/` w tablicy;
+„gotowe” → scalenie ticketu do gałęzi karty (para „zamiar → wynik”, `cardflow/gitops.py`: `merge-tree --write-tree`,
+`commit-tree`, `update-ref` z porównaniem — bez wykonywania treści agenta; worktree karty dostaje nowe drzewo przez
+`read-tree -m -u`). Strażnik kroku: brak zmian plików w worktree (bez `.git`) i w dzienniku sesji przez
+`stepGuardMinutes` (domyślnie 15, `$XDG_CONFIG_HOME/tide/cardflow.json`) → `stepstop.stop_step` (commit WIP gitem
+w piaskownicy, a bez `bwrap` zmiany zostają w worktree) i błąd kroku `no-progress`.
+
+Dziennik karty (`cardflow/journal.py`): `flow/<K-12>/journal.jsonl` w repozytorium tablicy, linia na zdarzenie
+(`v` — wersja schematu, `seq`, `ts`, `card`, `type`), dopisuje wyłącznie usługa. Kopia w
+`$XDG_STATE_HOME/tide/cardflow/<skrót>/<K-12>.jsonl` zapisywana pierwsza: dziennik cofnięty revertem albo zmieniony
+z zewnątrz wraca z kopii z ostrzeżeniem w `errors` migawki. Zmiany z jednej chwili to jeden commit „K-12: card flow”;
+`BoardMonitor.sync()` commituje je przed „sync external changes”.
+
+Stan karty (`cardflow/state.py`): karta z dziennikiem dostaje `derived` tylko z dziennika (z polem `flow`: ticket,
+krok, wykonawca, wynik, gałąź karty), karta bez dziennika — jak dotąd z `board/derive.py`. Ręczne kolumny wygrywają:
+Gotowe i Archiwum bez stanu, Backlog — „wstrzymana”. W Do zrobienia: krok trwa albo scalanie czeka → W toku; pytanie,
+brak zgody, błąd kroku, nieudane scalenie → Czeka na mnie; ticket na gałęzi karty → Do sprawdzenia. MoveCard karty
+z dziennikiem: Backlog dopisuje `card.paused` (trwający krok się kończy), Gotowe i Archiwum zatrzymują krok z zapisem
+zmian, odrzucają niescalony ticket (`ticket.rejected`) i kończą kartę (`card.finished`). Widok pozwala przeciągnąć
+pracującą kartę z dziennikiem do Backlogu i Gotowych.
+
+Restart usługi: kroki żyją we własnych jednostkach; po starcie `tick()` czyta dziennik, sprawdza jednostki
+(`systemctl --user is-active`), kończy zaczęte akcje według par „zamiar → wynik” (scalenie — idempotentnie: ticket
+już w gałęzi karty to sukces bez drugiego scalenia) i nigdy nie dopisuje zdarzenia drugi raz.
+
+Sesja kroku nie jest wierszem agenta: `AgentMonitor.hidden` (`engine.is_hidden` — identyfikator sesji albo katalog
+w worktree kroku) usuwa ją z /Agents Sessions(), kafelka Praca i powiadomień; KRunner ma własny indeks i ją znajduje.
+Worktree trwających kroków i kart w toku są dla okna Worktrees „z agentem” (nie do usunięcia).
+
+```bash
+qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.StartCard K-12 '{"entry": "now", "executor": "Sonnet"}'
+```
+
 ## Docker
 
 Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Docker” w oknie Tide (`apps/docker`) i kafelka `org.tide.docker` w docku (`widgets/docker`). Usługa rozmawia z Docker Engine API przez lokalny socket (sama biblioteka standardowa, bez `docker` CLI i bez `docker compose`). Socket z `$DOCKER_HOST` (`unix:///ścieżka`), domyślnie `/var/run/docker.sock`; `tcp://`, `ssh://` i inne → stan `unsupported`, bez łączenia się przez sieć.
@@ -1772,6 +1828,8 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_board_core.py` — tablica bez Qt na tymczasowych repozytoriach z własną konfiguracją gita: frontmatter (nieznane klucze, komentarze i treść po zapisie, cudzysłowy, nowe linie), założenie przy pierwszym zapisie (znacznik, tagi, szablony, brak remote, autor z konfiguracji i „Tide” bez niej, cudzy katalog nietknięty), dokładny format pliku karty, ID (max + 1, bez ponownego użycia, zepsuty plik zajmuje numer), kolejność i przenoszenie z komunikatami commitów, odmowy kolumn wyliczanych, walidacja pól i ID (także `../`), projekty zakładane przy karcie z domyślnym `ai-docs`, tagi (dziedziczenie, kolory z palety, zmiana nazwy w kartach i projektach), szablony trybów (pola, nadpisanie projektu, nieznane klamry), commit zmian z zewnątrz osobno od naszych, złe pliki w `errors`, pomijanie repozytorium tablicy w skanerze po znaczniku,
 - `daemon/tests/test_board_robustness.py` — trudne przypadki: nieudany commit (karta zostaje, `commitError`, bez duplikatu, zaległy commit z własnym komunikatem), osierocona blokada indeksu (git zabity po czasie, stara blokada, blokada żywego gita na atrapie `/proc`), revert z konfliktem (bez commita „sync”, `git-busy`, wpisy w `errors`, znaczniki konfliktu jako błąd pliku), numery kart po revercie (licznik poza historią; historia gita tylko raz, gdy licznika brak, nigdy w migawce), znaczniki konfliktu w opisie jako zwykły tekst, zaległy commit usuniętego pliku i trwały błąd bez blokowania kolejki, błąd bez pliku, katalogu i commita (pusty katalog i istniejąca tablica), dowiązania poza tablicę, FIFO i `/dev/zero`, listy YAML i pliki z Windows, kolejność środkiem i przenumerowanie bez miejsca, brak hooków (także post-commit), projekt po nazwie bez `foo-2`, domyślny tryb `full`, zmiana nazwy tagu bez pliku, katalog dokumentów z `RenderFlow`,
 - `daemon/tests/test_board_dbus.py` — `BoardMonitor` w procesie (zmiana z zewnątrz → commit i `Changed`, nasz zapis bez drugiego commita, błędy jako JSON) i `/Board` na prywatnej magistrali: introspekcja, `Snapshot`, `CreateCard` z repozytorium, `UpsertProject`, `UpsertTag`, `UpdateCard`, `MoveCard`, `RenderFlow`, sygnał `Changed`, historia commitów, edycja pliku z zewnątrz, błędy `{ok: false, error, message}` z kodami i bez commita, `--no-board`, `--print-board` bez zapisu. Usługi w testach dostają tymczasowy `TIDE_BOARD_DIR` (`privatebus.py`), więc nigdy nie dotykają prawdziwej tablicy,
+- `daemon/tests/test_cardflow_dbus.py` — przepływ karty „Od razu” (PT-58) przez D-Bus na prywatnej magistrali z atrapami `claude -p`, `systemd-run` i `systemctl` (`tests/flowfakes.py`): StartCard → dziennik, gałęzie, kolumna W toku → Do sprawdzenia, brak pliku wyniku, pytanie, strażnik kroku, restart usługi w trakcie kroku, Backlog i Gotowe, dziennik usunięty z zewnątrz, sesja kroku poza /Agents i kafelkiem Praca, worktree kroku zajęty w /Worktrees; katalog testu poza `/tmp/claude-<uid>` (`TIDE_TEST_TMPDIR`, inaczej `build/test-tmp`),
+- `daemon/tests/test_cardflow.py` — ten sam przebieg w procesie (`BoardMonitor` + `CardFlowMonitor`, prawdziwy skaner dzienników dla listy agentów), także tam, gdzie prywatna magistrala nie startuje; dodatkowo scalenie zaczęte przed restartem kończy się raz, odmowy bez śladu (wykonawca, wejście, brak prefiksu) i karta bez dziennika bez zdarzeń,
 - `daemon/tests/test_board_launch.py` — uruchamianie z karty po stronie tablicy: `RenderLaunch` z prawdziwymi szablonami (pełny, lekki, spec; dokumenty w tablicy i w repozytorium; narzędzie, gałąź i test ręczny z okna; błędy), migracja szablonów (dawny zaczyn bajt w bajt z `fixtures/flows-pt1/` podmieniony, zmieniony przez użytkownika i nadpisanie projektu zostają, zajęte repozytorium), pola uruchomienia karty z walidacją, znacznik „specyfikacja gotowa” (szkic, inny tryb, inna karta, specyfikacja w repozytorium, klucz `card`), `BoardMonitor` (migracja przy starcie, znacznik przy synchronizacji, `ShowWindow("launch:K-12")`, `RenderLaunch` jako JSON),
 - `daemon/tests/test_board_multiproject.py` — PT-28 na tymczasowych repozytoriach (toolssuite z worktree karty, mobileapp, legacyinfra) i syntetycznych dziennikach: katalog pracy sesji w tablicy (`board/place.py`: katalog startu, `docs/<slug>/`, `docs/_inbox`), `/Agents` (Claude Code przed i po `cd` do katalogu planów tablicy, Claude Code bez wpisu z katalogiem startu, Codex z `session_meta`), KRunner, raport poranny i koordynator w tablicy (repozytorium, gałąź i plan karty), reguła „uruchomienie z karty” (okno czasu, narzędzie, katalog bez worktree, `launchKey`, najbliższy start, sesje innych kart, przypięta sesja po zmianie cwd/projektu/gałęzi, zakończona przypięta ustępuje nowej), utrwalanie (`sticky`: uruchomienie, jednoznaczna gałąź, dwa dopasowania — nie), `BoardMonitor` z odtworzeniem K-1 (commit „K-1: link session …”, karta w W toku po `cd`, usługa widząca sesję dopiero po `cd`, ręczny `session` bez nadpisania i commita), pole `projects` (zapis, projekt z repozytorium, migawka, walidacja, nieznany slug w pliku), `RenderLaunch` (zdanie o ścieżkach bezwzględnych, lista repozytoriów i zasady, tryb spec, brakujące repozytorium, własny szablon bez `{projects}`, migracja szablonów `tide-flow: 2`), `/Tasks` `addDirs` z repozytoriami projektów (oba narzędzia, dowiązanie, odmowy) i stan karty po gałęzi we wszystkich repozytoriach,
 - `daemon/tests/test_youtrack_sync.py` — synchronizacja z YouTrackiem bez Qt (PT-7) na atrapie REST API (`fake_youtrack.py`: GET i POST zgłoszenia z kształtem prawdziwego pola State, wyszukiwanie, dziennik wywołań): zapis przy każdym przejściu karty (kształt POST), bez zapisu i bez sieci bez przejścia, odliczanie 5 s, Archiwum i projekt bez synchronizacji, wyłącznik globalny, przyjęcie stanu przy pierwszym spotkaniu (zmiana po połączeniu, rozwiązane, `open`), plik stanu 0600 przez restart, konflikt (bez nadpisania, notka, `errors`, bez odpytywania w kółko, „weź z YouTracka”, „nadpisz z Tide”, samo wygaszenie), Reopened zamiast Open i brak cofnięcia po zniknięciu pracy, pierwszeństwo ticketu i ręcznego Gotowe bez ping-ponga, parasol, stan z YouTracka i plan lokalny pominięte, Verified z karty koordynatora, Won't fix, najświeższy koordynator, kolejka bez sieci z ponowieniem i przez restart, 503 i odmowa stanu, token nigdy w dzienniku, pliku, migawce i adresie, mapa stanów z ustawień i per projekt, klucze zgłoszeń, lista importu (przypisane, zgłoszone bez przypisania, rozwiązane i cudze poza listą, karta już jest, „nowe” przez restart, tytuł i opis karty),
