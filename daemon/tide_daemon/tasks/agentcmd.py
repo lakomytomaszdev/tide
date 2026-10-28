@@ -5,13 +5,18 @@ Odmiany:
   starcie i opcjami modelu lokalnego, środowisko i tokeny dla launch.py (tasks/local.py). Zachowanie
   jak przed wydzieleniem (PT-76), tylko w jednym miejscu,
 - `background()` — krok w tle (`claude -p`, `codex exec`) z piaskownicą i środowiskiem bez kluczy
-  (dalej w tym pliku),
+  (wzór z PT-75: docs/agents/specs/2026-10-28-przeplyw-kart.md, „Co jest twarde, a co nie”),
 - zatrzymanie kroku bez utraty zmian: tasks/stepstop.py.
 """
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import uuid
+from dataclasses import dataclass, field, replace
 
+from . import launch
 from . import local as local_mod
 
 
@@ -59,3 +64,226 @@ def interactive(tool: str, binary: str, prompt: str, images=(), add_dirs=(),
     model = local_mod.options(tool, agent) if agent is not None else local_mod.Command([])
     argv = agent_argv(tool, binary, prompt, images, add_dirs, model.argv)
     return local_mod.Command(argv, model.env, model.secret_env, model.unset_env, model.token_files)
+
+
+# --- krok w tle -------------------------------------------------------------------------------
+
+DEAD_BUS = "unix:path=/nonexistent/tide-step/bus"   # martwy D-Bus: gh i inni nie dosięgną portfela
+GIT_SSH = ("ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=none "
+           "-o BatchMode=yes")
+# Chronione pliki, które piaskownica Claude Code podmienia w katalogu roboczym na atrapy (urządzenia
+# znakowe) — `git add -A` bez wykluczenia kończy się błędem (PT-75). Zakotwiczone, w pliku kroku,
+# nie w repozytorium użytkownika.
+SANDBOX_DUMMIES = ("/.bash_profile", "/.bashrc", "/.claude", "/.gitconfig", "/.gitmodules", "/.idea",
+                   "/.mcp.json", "/.profile", "/.ripgreprc", "/.vscode", "/.zprofile", "/.zshrc")
+CODEX_GIT_DIRS = ("objects", "refs", "logs")        # reszta wspólnego .git (haki, config) zostaje tylko do odczytu
+
+
+class StepError(ValueError):
+    """Katalogi albo ustawienia kroku, z którymi nie wolno startować."""
+
+
+@dataclass
+class Step:
+    """Opis kroku w tle. `worktree` — katalog roboczy kroku, `repo` — główne repozytorium (wspólny `.git`),
+    `step_dir` — katalog kroku obok worktree (podkatalogi `in`: kartka, ustawienia, gitconfig — tylko do odczytu;
+    `out`: plik wyniku i notki), `step_id` — nazwa katalogu tymczasowego Claude Code. `model` — model
+    w chmurze, `local` — model lokalny albo inny punkt (tokena nigdy nie ma w poleceniu)."""
+    tool: str
+    binary: str
+    prompt: str
+    worktree: str
+    repo: str
+    step_dir: str
+    step_id: str
+    session_id: str = ""            # Claude Code: z góry (--session-id); Codex nadaje sam
+    resume: bool = False
+    model: str = ""
+    local: "local_mod.LocalAgent | None" = None
+    allowed_tools: tuple = ()
+    disallowed_tools: tuple = ()
+    permission_mode: str = ""       # np. "acceptEdits"; pusty — bez opcji
+    git_name: str = "Krok"
+    git_email: str = "krok@tide.invalid"
+    base_env: dict | None = None    # skąd HOME, USER, PATH, LANG (domyślnie środowisko usługi)
+    tmp_root: str = "/tmp"          # poza ~; tu Claude Code dostaje katalog tymczasowy kroku
+
+
+@dataclass
+class Background:
+    """Złożony krok w tle: argv, środowisko CAŁE (nic poza tym nie jest dziedziczone), polecenie dla stdin,
+    pliki i katalogi kroku do założenia przed startem. `secret_env` (zmienna → plik tokenu) czyta start()
+    dopiero w chwili startu, wyłącznie do środowiska programu — tokena nie ma tu ani w `env`."""
+    argv: list
+    env: dict
+    stdin: str
+    cwd: str
+    step_dir: str
+    session_id: str = ""
+    secret_env: dict = field(default_factory=dict)
+    token_files: list = field(default_factory=list)
+    files: dict = field(default_factory=dict)      # ścieżka → treść
+    dirs: list = field(default_factory=list)
+
+    @property
+    def prompt_file(self) -> str:
+        return os.path.join(self.step_dir, "in", "prompt.txt")
+
+    def prepare(self) -> None:
+        for folder in self.dirs:
+            os.makedirs(folder, exist_ok=True)
+        for path, text in self.files.items():
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        with open(self.prompt_file, "w", encoding="utf-8") as fh:
+            fh.write(self.stdin)
+
+    def start(self, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) -> subprocess.Popen:
+        """Uruchamia program we własnej sesji (zatrzymanie: stepstop.stop_step zabija całą grupę procesów).
+        Polecenie idzie z pliku kroku jako stdin, token z pliku punktu tylko do środowiska programu.
+        stdout: domyślnie rura — długi krok powinien dostać plik (np. dziennik w `out`), inaczej rura się zapcha."""
+        env = dict(self.env)
+        for path in self.token_files:
+            launch.read_token(path)
+        for name, path in self.secret_env.items():
+            env[name] = launch.read_token(path)
+        with open(self.prompt_file, "rb") as stdin:
+            return subprocess.Popen(self.argv, cwd=self.cwd, env=env, stdin=stdin, stdout=stdout, stderr=stderr,
+                                    text=True, start_new_session=True)
+
+
+def _within(path: str, folder: str) -> bool:
+    path, folder = os.path.normpath(path), os.path.normpath(folder)
+    return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
+
+
+def _check(step: Step, home: str) -> None:
+    """Katalogi kroku: nie w katalogu tymczasowym ani w `~/.local/share` (Codex ze snapa ich nie widzi), nie w ukrytym
+    katalogu domowym (też nie), katalog tymczasowy Claude Code poza `~` (pod `~` zapis do niego odrzucało
+    piaskownicę), worktree nie pod `/tmp/claude-<uid>` (to $TMPDIR piaskownicy: zapis tam jest zapisem obok worktree)."""
+    for what, path in (("worktree", step.worktree), ("repo", step.repo), ("step_dir", step.step_dir)):
+        if not os.path.isabs(path):
+            raise StepError(f"{what}: ścieżka musi być bezwzględna: {path}")
+    if _within(step.step_dir, step.tmp_root) or _within(step.step_dir, os.path.join(home, ".local", "share")):
+        raise StepError(f"katalog kroku nie może leżeć w {step.tmp_root} ani w ~/.local/share: {step.step_dir}")
+    if _within(step.worktree, f"/tmp/claude-{os.getuid()}"):
+        raise StepError(f"worktree kroku nie może leżeć pod /tmp/claude-{os.getuid()}: {step.worktree}")
+    if step.tool == "claude" and _within(step.tmp_root, home):
+        raise StepError(f"katalog tymczasowy kroku musi być poza ~: {step.tmp_root}")
+    if step.tool == "codex" and _within(step.step_dir, home):
+        hidden = os.path.relpath(step.step_dir, home).split(os.sep)
+        if any(part.startswith(".") for part in hidden):
+            raise StepError(f"Codex ze snapa nie widzi ukrytych katalogów domowych: {step.step_dir}")
+
+
+def _git_dir_of(step: Step) -> str:
+    """Katalog worktree we wspólnym `.git` (`<repo>/.git/worktrees/<nazwa>`) z pliku `.git` worktree."""
+    try:
+        with open(os.path.join(step.worktree, ".git"), encoding="utf-8") as fh:
+            first = fh.readline().strip()
+    except OSError:
+        first = ""
+    if first.startswith("gitdir:"):
+        return os.path.normpath(first.partition(":")[2].strip())
+    return os.path.join(step.repo, ".git", "worktrees", os.path.basename(os.path.normpath(step.worktree)))
+
+
+def _env(step: Step, home_env: dict, inp: str) -> dict:
+    """Środowisko kroku — drugą warstwą po piaskownicy (agent może je nadpisać własnym poleceniem). Nie
+    dziedziczymy niczego: agent SSH, tokeny GitHuba, askpass i D-Bus usługi zostają poza krokiem."""
+    env = {name: home_env[name] for name in ("HOME", "USER", "PATH", "LANG") if home_env.get(name)}
+    env.update({
+        "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/bin/false", "SSH_ASKPASS": "/bin/false",
+        "SSH_ASKPASS_REQUIRE": "never", "GIT_SSH_COMMAND": GIT_SSH,
+        "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
+        "GIT_CONFIG_KEY_1": "core.askPass", "GIT_CONFIG_VALUE_1": "",
+        "GIT_CONFIG_GLOBAL": os.path.join(inp, "gitconfig"),
+        "GH_CONFIG_DIR": os.path.join(inp, "gh"), "DBUS_SESSION_BUS_ADDRESS": DEAD_BUS})
+    if step.tool == "codex":
+        env["GIT_CONFIG_NOSYSTEM"] = "1"     # git w snapie nie czyta /etc/gitconfig (inaczej „unknown error”)
+    else:
+        env["CLAUDE_CODE_TMPDIR"] = os.path.join(step.tmp_root, f"tide-step-{step.step_id}")
+    return env
+
+
+def _claude(step: Step, inp: str, out: str, env: dict) -> tuple[list, dict, dict]:
+    """argv, pliki (ustawienia piaskownicy dla `--settings`) i pliki tokenów do sprawdzenia przed startem."""
+    settings = {"sandbox": {
+        "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
+        "autoAllowBashIfSandboxed": True,
+        "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out],
+                       "allowWrite": [out]},
+        "network": {"allowedDomains": []}}}
+    if step.local is not None:
+        opts = local_mod.options("claude", step.local)
+        argv = list(opts.argv)
+        while "--settings" in argv:                 # apiKeyHelper z --settings wchodzi do pliku ustawień kroku
+            at = argv.index("--settings")
+            settings.update(json.loads(argv[at + 1]))
+            del argv[at:at + 2]
+        model = argv
+        env.update(opts.env)
+        for name in opts.unset_env:
+            env.pop(name, None)
+        secret = {"token_files": list(opts.token_files)}
+    else:
+        model = [f"--model={step.model}"] if step.model else []
+        secret = {"token_files": []}
+    settings_path = os.path.join(inp, "settings.json")
+    argv = [step.binary, "-p", *model, "--setting-sources=", "--settings", settings_path,
+            "--permission-prompts", "none", "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
+            *(["--resume", step.session_id] if step.resume else ["--session-id", step.session_id])]
+    if step.permission_mode:
+        argv += ["--permission-mode", step.permission_mode]
+    if step.allowed_tools:
+        argv += ["--allowedTools", *step.allowed_tools]
+    if step.disallowed_tools:
+        argv += ["--disallowedTools", *step.disallowed_tools]
+    return argv, {settings_path: json.dumps(settings, indent=2, ensure_ascii=False) + "\n"}, secret
+
+
+def _codex(step: Step, out: str, env: dict) -> tuple[list, dict]:
+    git = os.path.join(step.repo, ".git")
+    roots = [_git_dir_of(step), *(os.path.join(git, name) for name in CODEX_GIT_DIRS), out]
+    secret = {"secret_env": {}, "token_files": []}
+    if step.local is not None:
+        opts = local_mod.options("codex", step.local)
+        model = list(opts.argv)
+        env.update(opts.env)
+        secret = {"secret_env": dict(opts.secret_env), "token_files": list(opts.token_files)}
+    else:
+        model = [f"--model={step.model}"] if step.model else []
+    argv = [step.binary, "exec", *(["resume", step.session_id] if step.resume else []), *model,
+            "--json", "--cd", step.worktree, "--sandbox", "workspace-write",
+            "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots, ensure_ascii=False),
+            "-c", 'approval_policy="never"', "-"]
+    return argv, secret
+
+
+def background(step: Step) -> Background:
+    """Krok w tle: `claude -p` albo `codex exec` z piaskownicą i środowiskiem bez kluczy (wzór PT-75)."""
+    if step.tool not in ("claude", "codex"):
+        raise UnknownTool(step.tool)
+    if step.resume and not step.session_id:
+        raise StepError("wznowienie kroku wymaga identyfikatora sesji")
+    base = dict(os.environ if step.base_env is None else step.base_env)
+    home = base.get("HOME") or os.path.expanduser("~")
+    _check(step, home)
+    inp, out = os.path.join(step.step_dir, "in"), os.path.join(step.step_dir, "out")
+    env = _env(step, base, inp)
+    if step.tool == "claude":
+        step = replace(step, session_id=step.session_id or str(uuid.uuid4()))
+        argv, files, extra = _claude(step, inp, out, env)
+        session = step.session_id
+    else:
+        argv, extra = _codex(step, out, env)
+        files, session = {}, step.session_id if step.resume else ""
+    files[os.path.join(inp, "gitconfig")] = (f"[user]\n\tname = {step.git_name}\n\temail = {step.git_email}\n"
+                                              f"[core]\n\texcludesFile = {os.path.join(inp, 'ignore')}\n")
+    files[os.path.join(inp, "ignore")] = "\n".join(SANDBOX_DUMMIES) + "\n"
+    dirs = [inp, out, env["GH_CONFIG_DIR"]] + ([env["CLAUDE_CODE_TMPDIR"]] if step.tool == "claude" else [])
+    return Background(argv, env, step.prompt, step.worktree, step.step_dir, session,
+                      secret_env=extra.get("secret_env", {}), token_files=extra.get("token_files", []),
+                      files=files, dirs=dirs)
+
