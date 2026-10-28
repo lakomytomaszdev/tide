@@ -32,6 +32,18 @@ PlasmoidItem {
         })
     }
 
+    // „Przejdź” przy czekającej karcie: okno agenta (/Agents ActivateSession), jak „Przejdź do agenta”
+    // w oknie Tide; gdy sesji nie da się aktywować — karta w oknie Tide.
+    function activateAgent(sessionId, cardId) {
+        source.callOn("/Agents", "org.tide.Daemon.Agents", "ActivateSession", [sessionId], function (ok) {
+            if (ok === true) {
+                if (!Plasmoid.configuration.sidebarMode) root.expanded = false
+            } else {
+                root.showWindow(cardId)
+            }
+        })
+    }
+
     // Szybkie dopisanie: karta trafia na górę Backlogu wybranego projektu.
     function addCard(title, project) {
         const request = Object.assign({ title: title, column: "backlog" }, Texts.projectRequest(project))
@@ -160,6 +172,7 @@ PlasmoidItem {
                 busy: root.busy
                 onOpenRequested: id => root.showWindow(id)
                 onLaunchRequested: id => root.showWindow("launch:" + id)
+                onAgentRequested: (session, id) => root.activateAgent(session, id)
                 onAddRequested: (title, project) => root.addCard(title, project)
                 onProjectChosen: slug => Plasmoid.configuration.quickProject = slug
                 Component.onCompleted: input.forceActiveFocus()

@@ -150,7 +150,15 @@ Window {
         onAddRequested: (title, project) => log.push("add:" + title + "|" + project)
         onOpenRequested: id => log.push("open:" + id)
         onLaunchRequested: id => log.push("launch:" + id)
+        onAgentRequested: (session, id) => log.push("agent:" + session + "|" + id)
         onProjectChosen: slug => { log.push("project:" + slug); quickProject = slug }
+    }
+    function goButtons(item, out) {
+        for (const child of item.children) {
+            if (child.text === "Przejdź" && child.visible) out.push(child)
+            goButtons(child, out)
+        }
+        return out
     }
     function launchRows(item, out) {
         for (const child of item.children) {
@@ -165,6 +173,7 @@ Window {
             const rows = launchRows(popup, [])
             log.push("launchRows:" + rows.length)
             rows[0].Accessible.pressAction()
+            goButtons(popup, [])[0].clicked()
             popup.input.text = "   "
             popup.submit()
             popup.input.text = "Eksport do CSV"
@@ -185,11 +194,20 @@ Window {
             log = subprocess.run(["qml6", harness], env=env, capture_output=True, text=True, timeout=60).stderr
         match = re.search(r"POPUP (.*)$", log, re.M)
         self.assertIsNotNone(match, log[-3000:])
-        self.assertEqual(json.loads(match.group(1)), ["launchRows:2", "launch:K-16",
+        self.assertEqual(json.loads(match.group(1)), ["launchRows:2", "launch:K-16", "agent:claude:k13-session|K-13",
                                                       "add:Eksport do CSV|plasma-tide", "project:",
                                                       "add:Bez projektu|", "open:K-13"],
                          "pusty tytuł i zapis w toku nic nie wysyłają")
         self.assertIsNone(re.search(QML_PROBLEMS, log), log[-3000:])
+
+    def test_go_without_agent_session_opens_the_card(self):
+        # „Przejdź” bez sesji agenta (karta bez koordynatora) — karta w oknie Tide, jak dotąd.
+        with open(os.path.join(WIDGET_DIR, "contents/ui/BoardPopup.qml"), encoding="utf-8") as fh:
+            self.assertIn(": popup.openRequested(row.modelData.id)", fh.read())
+        with open(os.path.join(WIDGET_DIR, "contents/ui/main.qml"), encoding="utf-8") as fh:
+            main = fh.read()
+        self.assertIn('"ActivateSession", [sessionId]', main)
+        self.assertIn("root.showWindow(cardId)", main, "sesji nie da się aktywować — karta w oknie Tide")
 
     def test_launch_from_popup_opens_tide_with_launch_intent(self):
         with open(os.path.join(WIDGET_DIR, "contents/ui/main.qml"), encoding="utf-8") as fh:
