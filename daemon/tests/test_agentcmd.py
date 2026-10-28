@@ -92,6 +92,37 @@ class BackgroundBase(unittest.TestCase):
 
 
 class BackgroundClaudeTest(BackgroundBase):
+    def test_step_exit_code_survives_a_service_restart(self):
+        """Kod zapisuje proces z jednostki; drugi silnik odczyta go już bez obiektu Popen."""
+        fake_run = os.path.join(self.root, "fake-systemd-run")
+        with open(fake_run, "w", encoding="utf-8") as fh:
+            fh.write('#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n')
+        os.chmod(fake_run, 0o755)
+        cmd = agentcmd.background(self.step())
+        cmd.argv = ["/bin/sh", "-c", "exit 7"]
+        cmd.prepare()
+        proc = cmd.start(systemd_run=fake_run)
+        self.assertEqual(proc.wait(timeout=10), 7)
+        self.assertEqual(stepstop.read_exit_code(self.step_dir), 7)
+
+    def test_exit_code_file_must_be_a_plain_integer(self):
+        path = os.path.join(self.step_dir, "in", "exit-code")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.assertIsNone(stepstop.read_exit_code(self.step_dir))
+        for bad in ("", "7 trailing", "-1", "1000", "abc", " 0"):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(bad)
+            self.assertIsNone(stepstop.read_exit_code(self.step_dir), bad)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("0\n")
+        self.assertEqual(stepstop.read_exit_code(self.step_dir), 0)
+        os.unlink(path)
+        outside = os.path.join(self.root, "outside")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("0\n")
+        os.symlink(outside, path)
+        self.assertIsNone(stepstop.read_exit_code(self.step_dir))
+
     def test_argv_follows_the_sandbox_pattern_and_prompt_goes_through_stdin(self):
         cmd = agentcmd.background(self.step(model="haiku"))
         settings = os.path.join(self.step_dir, "in", "settings.json")

@@ -32,6 +32,7 @@ import glob
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -41,6 +42,7 @@ from .. import codex_homes
 from ..agents.claude import synthetic_user
 from ..agents.jsonl import JsonlTail, read_head
 from ..worktrees.git import MAIN_CANDIDATES, Result
+from .agentcmd import EXIT_CODE_FILE
 
 WIP_MESSAGE = "WIP: step stopped before it finished"
 MESSAGE_LIMIT = 3          # ile ostatnich wiadomości zwracamy
@@ -94,6 +96,35 @@ def unit_state(unit: str) -> str:
     (błąd samego systemctl, np. brak magistrali, timeout) — z "unknown" nie wolno wnosić, że krok się zatrzymał."""
     code = _systemctl("is-active", "--quiet", unit + ".scope").returncode
     return "active" if code == 0 else "inactive" if code in (3, 4) else "unknown"
+
+
+def read_exit_code(step_dir: str) -> int | None:
+    """Kod zakończenia zapisany przez zaufany wrapper jednostki, dostępny także po restarcie usługi.
+
+    Brak, niepełny zapis lub dowiązanie nie dowodzą sukcesu kroku. Katalog `in` i sam plik otwieramy bez
+    podążania za dowiązaniami; agent ma tam tylko odczyt, a plik powstaje po jego zakończeniu.
+    """
+    folder = None
+    status = None
+    try:
+        folder = os.open(os.path.join(step_dir, "in"), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        status = os.open(EXIT_CODE_FILE, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=folder)
+        info = os.fstat(status)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 4:
+            return None
+        raw = os.read(status, 5)
+    except OSError:
+        return None
+    finally:
+        if status is not None:
+            os.close(status)
+        if folder is not None:
+            os.close(folder)
+    text = raw.decode("ascii", errors="replace")
+    if not text.endswith("\n") or not text[:-1].isdigit() or str(int(text[:-1])) != text[:-1]:
+        return None
+    code = int(text[:-1])
+    return code if code <= 255 else None
 
 
 def _wait(still_running, seconds: float) -> bool:

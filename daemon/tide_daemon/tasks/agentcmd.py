@@ -76,6 +76,11 @@ GIT_SSH = ("ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o Iden
 # znakowe) — `git add -A` bez wykluczenia kończy się błędem (PT-75). Zakotwiczone, w pliku kroku,
 # nie w repozytorium użytkownika.
 SYSTEMD_RUN = "/usr/bin/systemd-run"
+EXIT_CODE_FILE = "exit-code"
+# Stały skrypt powłoki, bez danych agenta jako kodu: kod zakończenia zostaje w katalogu wejściowym kroku,
+# do którego piaskownica agenta ma dostęp tylko do odczytu. Zapis atomowy pozwala odczytać go po restarcie usługi.
+EXIT_WRAPPER = ('umask 077; trap : TERM; status=$1; shift; "$@"; code=$?; '
+                'printf "%s\\n" "$code" > "$status.tmp" && mv -f -- "$status.tmp" "$status"; exit "$code"')
 SANDBOX_DUMMIES = ("/.bash_profile", "/.bashrc", "/.claude", "/.gitconfig", "/.gitmodules", "/.idea",
                    "/.mcp.json", "/.profile", "/.ripgreprc", "/.vscode", "/.zprofile", "/.zshrc")
 CODEX_GIT_DIRS = ("objects", "refs", "logs")        # reszta wspólnego .git (haki, config) zostaje tylko do odczytu
@@ -151,6 +156,10 @@ class Background:
     def log_file(self) -> str:
         return os.path.join(self.step_dir, "out", "step.log")
 
+    @property
+    def exit_file(self) -> str:
+        return os.path.join(self.step_dir, "in", EXIT_CODE_FILE)
+
     def stop_kwargs(self) -> dict:
         """Argumenty `stepstop.stop_step` wynikające z samego kroku (dochodzi `branch` i ścieżki dzienników sesji)."""
         return {"unit": self.unit, "worktree": self.cwd, "step_dir": self.step_dir, "repo": self.repo,
@@ -170,8 +179,14 @@ class Background:
         for name, path in self.secret_env.items():
             env[name] = launch.read_token(path)
         env["XDG_RUNTIME_DIR"] = self.runtime_dir or f"/run/user/{os.getuid()}"
+        for path in (self.exit_file, self.exit_file + ".tmp"):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
         argv = [systemd_run or SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet", f"--unit={self.unit}", "--",
-                "/usr/bin/env", "-u", "XDG_RUNTIME_DIR", "-u", "INVOCATION_ID", *self.argv]
+                "/usr/bin/env", "-u", "XDG_RUNTIME_DIR", "-u", "INVOCATION_ID",
+                "/bin/sh", "-c", EXIT_WRAPPER, "tide-step-runner", self.exit_file, *self.argv]
         log = None
         if stdout is None:
             os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
