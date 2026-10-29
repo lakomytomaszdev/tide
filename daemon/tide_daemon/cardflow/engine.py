@@ -586,7 +586,7 @@ class FlowEngine:
         for step in st.running():
             self._poll(card, step)
         st = fold(self.journal.read(card))
-        if not st.card_finished and not st.running():
+        if not st.card_finished and not st.running() and not st.open_consoles():
             try:
                 self._advance(card, st)
             except (FlowError, FlowGitError) as exc:

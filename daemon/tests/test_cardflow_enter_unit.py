@@ -125,6 +125,23 @@ class EnterStepTest(unittest.TestCase):
             self.engine.enter("K-1", self.step_id)
         self.assertEqual(err.exception.code, "console-open")
 
+    def test_next_background_step_waits_for_console_close_after_result(self):
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        with open(os.path.join(current["stepDir"], "out", "result.json"), "w", encoding="utf-8") as fh:
+            json.dump({"result": "done"}, fh)
+        with mock.patch.object(self.engine, "_advance") as advance:
+            self.engine.tick()
+            folded = state.fold(self.engine.journal.read("K-1"))
+            self.assertEqual(folded.finished[self.step_id]["result"], "done")
+            self.assertTrue(folded.open_consoles())
+            advance.assert_not_called()  # review nie rusza w worktree zajętym przez Konsolę
+            launch.write_closed(current["closeFile"])
+            self.engine.tick()
+            advance.assert_called_once()
+        self.assertFalse(state.fold(self.engine.journal.read("K-1")).open_consoles())
+
     def test_second_enter_cannot_start_another_session_in_same_worktree(self):
         with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
             self.engine.enter("K-1", self.step_id)
@@ -217,6 +234,8 @@ class EnterStepTest(unittest.TestCase):
             json.dump({"result": "done"}, fh)
         restarted.tick()
         self.assertNotIn(("merge", "PT-1"), state.fold(restarted.journal.read("K-1")).results)
+        launch.write_closed(current["closeFile"])
+        restarted.tick()
         visible = state.derived(state.fold(restarted.journal.read("K-1")), {"column": "todo"})
         self.assertEqual(visible["column"], "waiting")
         self.assertIn("review", visible["note"])

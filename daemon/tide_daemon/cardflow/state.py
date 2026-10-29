@@ -52,6 +52,10 @@ class FlowState:
     def running(self) -> list[dict]:
         return [s for name, s in self.steps.items() if name not in self.finished]
 
+    def open_consoles(self) -> list[dict]:
+        """Karty Konsoli jeszcze otwarte, również po zapisaniu pliku wyniku."""
+        return [s for s in self.steps.values() if s.get("mode") == "interactive" and not s.get("consoleClosed")]
+
     def open_intents(self) -> list[dict]:
         return [i for k, i in self.intents.items() if k not in self.results]
 
@@ -74,7 +78,8 @@ class FlowState:
                              (self.steps.get(name) or {}).get("ticket") not in self.rejected and
                              ("merge", (self.steps.get(name) or {}).get("ticket")) not in self.results
                              for name, done in self.finished.items())
-        return bool(self.running() or self.merge_pending() or self.open_intents() or pending_review)
+        return bool(self.running() or self.open_consoles() or self.merge_pending() or self.open_intents()
+                    or pending_review)
 
 
 def fold(events: list[dict]) -> FlowState:
@@ -202,6 +207,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
         return _fill(out, "waiting", f"{ident}: {st.flow_error}")
     result = done.get("result") or ""
     if result == "done":
+        if step.get("mode") == "interactive" and not step.get("consoleClosed"):
+            return _fill(out, "progress", f"{ident}: wynik zapisany — zamknij Konsolę przed następnym krokiem")
         if step.get("kind") == "interactive":
             return _fill(out, "waiting", f"{ident}: rozmowa po zakończeniu — potrzebne nowe review lub decyzja")
         if verdict and verdict.get("verdict") == "REQUEST_CHANGES":
