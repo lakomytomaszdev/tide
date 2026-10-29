@@ -81,6 +81,8 @@ Rectangle {
     signal pauseRequested(string tag, string cardId, bool paused)
     signal planEditRequested(string tag, string cardId, string request)
     signal planApproveRequested(string tag, string cardId)       // /Board ApproveCardPlan
+    signal branchDiffRequested(string tag, string cardId)
+    signal mergeMainRequested(string tag, string cardId)
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
     signal removeImageRequested(string path)
@@ -423,6 +425,13 @@ Rectangle {
             cardPanel.busy = false
             cardPanel.error = error
             if (!error) cardPanel.notice = "Plan zatwierdzony. Uruchamiam pierwszy gotowy ticket."
+        } else if (tag.indexOf("branch-diff:") === 0) {
+            cardPanel.error = error
+            if (!error) cardPanel.branchDiff = reply.diff || "(brak różnic)"
+        } else if (tag.indexOf("merge-main:") === 0) {
+            cardPanel.busy = false
+            cardPanel.error = error
+            if (!error) cardPanel.notice = "Karta scalona do gałęzi głównej."
         } else if (tag.indexOf("quicktag:") === 0) {
             tagEditorPopup.editorError = error
             if (!error) tagEditorPopup.close()
@@ -1342,6 +1351,10 @@ Rectangle {
             page.planEditRequested(page.nextTag("plan-edit:" + cardId), cardId, JSON.stringify(request))
         onPlanApproveRequested: cardId =>
             page.planApproveRequested(page.nextTag("plan-approve:" + cardId), cardId)
+        onBranchDiffRequested: cardId =>
+            page.branchDiffRequested(page.nextTag("branch-diff:" + cardId), cardId)
+        onMergeMainRequested: cardId =>
+            page.mergeMainRequested(page.nextTag("merge-main:" + cardId), cardId)
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))
             if (column === "archived") page.panelOpen = false

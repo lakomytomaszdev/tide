@@ -103,6 +103,8 @@ Item {
         onPauseRequested: (tag, id, paused) => view.backend.setCardPaused(tag, id, paused)
         onPlanEditRequested: (tag, id, request) => view.backend.editCardPlan(tag, id, request)
         onPlanApproveRequested: (tag, id) => view.backend.approveCardPlan(tag, id)
+        onBranchDiffRequested: (tag, id) => view.backend.cardBranchDiff(tag, id)
+        onMergeMainRequested: (tag, id) => view.backend.mergeCardToMain(tag, id)
         // Zrzuty ekranu i model w oknie uruchomienia (PT-43).
         launchImages: view.backend ? Logic.parse(view.backend.imagesJson, []) : []
         canCapture: view.backend ? view.backend.canCapture : false

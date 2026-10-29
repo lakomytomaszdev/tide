@@ -126,6 +126,36 @@ if prompt.startswith("Krok review "):
                    "blockers": 0, "majors": 1 if bad else 0, "nits": 0, "notes": ["review.md"]}, fh)
     sys.exit(0)
 
+if prompt.startswith("Domknij kartę "):
+    manual = "Dodaj sekcję „Co przetestować ręcznie i jak”" in prompt
+    with open(os.path.join(out, "summary.md"), "w", encoding="utf-8") as fh:
+        fh.write("# Podsumowanie karty\n\nTickety zakończone.\n")
+        if manual:
+            fh.write("\n## Co przetestować ręcznie i jak\n\n1. Otwórz widok i sprawdź wynik.\n")
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": "done", "notes": ["summary.md"]}, fh)
+    sys.exit(0)
+
+if prompt.startswith("Rozwiąż konflikt scalenia "):
+    if "ATRAPA: conflict-error" in prompt:
+        with open(result, "w", encoding="utf-8") as fh:
+            json.dump({"result": "error", "reason": "konflikt wymaga decyzji"}, fh)
+        sys.exit(0)
+    branch = re.search(r"Zatwierdzony ticket jest na gałęzi ([^;\s]+)", prompt).group(1)
+    merged = subprocess.run(["git", "merge", "--no-ff", "--no-edit", branch], capture_output=True, text=True)
+    if merged.returncode:
+        paths = subprocess.check_output(["git", "diff", "--name-only", "--diff-filter=U"], text=True).splitlines()
+        for path in paths:
+            with open(os.path.join(cwd, path), "w", encoding="utf-8") as fh:
+                fh.write("Konflikt rozwiązany w karcie.\n")
+        subprocess.run(["git", "add", "-A"], check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "Merge ticket into card"], check=True)
+    with open(os.path.join(out, "note.md"), "w", encoding="utf-8") as fh:
+        fh.write("# Scalenie\n\nKonflikt rozwiązany i sprawdzony.\n")
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": "done", "notes": ["note.md"]}, fh)
+    sys.exit(0)
+
 def write(text):
     with open(work, "a", encoding="utf-8") as fh:
         fh.write(text + "\n")

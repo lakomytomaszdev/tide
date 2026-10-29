@@ -148,7 +148,7 @@ class WaveFlowTest(FlowInProcess):
             self.restart()
             self.local_config()
             self.wait_column(card, "review", timeout=15)
-            self.assertEqual(len(self.of(card, "step.started")), 2)
+            self.assertEqual(len([s for s in self.of(card, "step.started") if s.get("kind") != "close"]), 2)
             self.assertFalse(isolated.busy())
 
     def test_question_on_one_ticket_can_be_answered_while_another_is_running(self):

@@ -133,8 +133,16 @@ class PlanEditing:
 
     def edit_plan(self, card, request):
         from .engine import FlowError
+        if request.get("action") == "return":
+            feedback = request.get("feedback")
+            if not isinstance(feedback, str) or not feedback.strip() or len(feedback) > 32000:
+                raise FlowError("bad-feedback", "wpisz uwagi do planu (do 32000 znaków)")
         st = fold(self.journal.read(card))
         proposal = st.plan_proposed
+        if request.get("action") == "return" and not proposal and st.closed and (st.started or {}).get("entry") == "now":
+            self._bootstrap_direct_plan(card, st)
+            st = fold(self.journal.read(card))
+            proposal = st.plan_proposed
         if not proposal or not st.plan_reviewed or st.card_finished:
             raise FlowError("no-plan", "brak planu do zmiany")
         if request.get("action") == "enter":
@@ -186,6 +194,32 @@ class PlanEditing:
             self.journal.append(card, "plan.ticket-edited", ticket=ident, changes=changes)
             self._sync_plan_cards(card, fold(self.journal.read(card)))
         return {"ok": True, "id": card}
+
+    def _bootstrap_direct_plan(self, card, st):
+        """Jednoticketowe wejście „Od razu” dostaje bazę planu dopiero przy żądaniu poprawek."""
+        from .engine import FlowError
+        item, _project = self._project(card)
+        source = next((s for s in st.steps.values() if s.get("kind") == "ticket"), None)
+        if not source:
+            raise FlowError("no-ticket", "nie ma ticketu do poprawy")
+        ticket = source["ticket"]
+        prefix = ticket.partition("-")[0]
+        body = (f"# {item.title}\n\n{item.description}\n\n- [ ] Poprawki zostały sprawdzone.\n\n"
+                "## Dla recenzenta\nSprawdź zgodność z uwagami do karty.\n")
+        row = {"id": ticket, "workId": ticket, "title": item.title,
+               "executor": (st.started or {}).get("executor") or "",
+               "reviewer": (st.started or {}).get("reviewer") or "", "class": "standard",
+               "note": "Pierwotny ticket wejścia Od razu", "blockers": [], "body": body}
+        from datetime import datetime
+        day = datetime.now().date().isoformat()
+        plan_file = f"docs/agents/plans/{day}-{card.lower()}-flow.md"
+        self.journal.append(card, "plan.proposed", title=f"Poprawki karty {card}", prefix=prefix,
+                            coordinator="codex", session="", planner=row["executor"],
+                            sourceStep=source["step"], sourceKind="now", specification=item.description,
+                            rows=[row], planPath="")
+        self.journal.append(card, "plan.reviewed", reviewer=row["reviewer"], verdict="APPROVE",
+                            findings="Pierwotny ticket przeszedł review.", corrected=False)
+        self.journal.append(card, "plan.approved", map={}, rows=[row], planFile=plan_file)
 
     def _sync_plan_cards(self, card, st):
         plan = st.plan_approved or st.plan_proposed or {}

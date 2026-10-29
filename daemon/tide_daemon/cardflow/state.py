@@ -60,6 +60,8 @@ class FlowState:
     last_step: str = ""
     paused: bool = False
     card_finished: bool = False
+    closed: dict | None = None
+    main_merged: dict | None = None
     moved_to: str = ""                              # kolumna z ostatniego card.moved po ostatnim wyniku kroku
     store_column: str = ""                          # kolumna ostatnio potwierdzona w dzienniku
     store_move_id: str = ""                         # ostatni ruch MoveCard potwierdzony w dzienniku
@@ -124,6 +126,7 @@ def fold(events: list[dict]) -> FlowState:
         st.last_seq = max(st.last_seq, int(e.get("seq") or 0))
         if kind == "card.started":
             st.started, st.paused, st.card_finished, st.moved_to = e, False, False, ""
+            st.closed = st.main_merged = None
             st.store_column = e.get("column") or ""
             st.store_move_id = e.get("moveId") or ""
             st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
@@ -189,6 +192,7 @@ def fold(events: list[dict]) -> FlowState:
             st.approval_requested = e
         elif kind == "plan.returned":
             st.plan_revision = e
+            st.closed = None
         elif kind == "plan.revision-discarded":
             st.plan_revision = None
             st.plan_checked = None
@@ -200,6 +204,7 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_approved = {**st.plan_approved, **e["plan"]} if st.plan_approved else None
             st.plan_revision = None
             st.plan_finished = False
+            st.closed = None
         elif kind == "plan.reviewed":
             st.plan_reviewed = e
         elif kind == "plan.ticket-edited":
@@ -222,6 +227,10 @@ def fold(events: list[dict]) -> FlowState:
             st.paused = False
         elif kind == "card.finished":
             st.card_finished = True
+        elif kind == "card.closed":
+            st.closed = e
+        elif kind == "card.main-merged":
+            st.main_merged = e
         elif kind == "card.moved":
             st.store_column = e.get("to") or ""
             st.store_move_id = e.get("moveId") or ""
@@ -329,6 +338,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
                     "reviewerProvider": reviewer.get("provider") or st.started.get("reviewerProvider") or "",
                     "reviewerModel": reviewer.get("model") or st.started.get("reviewerModel") or ""}}
     out["flow"].update({"paused": st.paused, "timeline": st.timeline,
+                        "closed": bool(st.closed), "summary": (st.closed or {}).get("summary") or "",
+                        "mainMerged": bool(st.main_merged),
                         "waiting": [{"ticket": ticket, "kind": kind, "reason": item["reason"]}
                                     for (ticket, kind), item in st.waiting.items()]})
     out['flow']['trackerQueue'] = [
@@ -429,14 +440,17 @@ def derived(st: FlowState, card: dict) -> dict | None:
         elif not st.plan_approved:
             out["question"] = "Zatwierdzić plan?"
             return _fill(out, "waiting", "plan do zatwierdzenia")
-        if st.plan_finished:
-            return _fill(out, "review", f"✓ plan karty: {len(finished_ids)}/{len(rows)} ticketów scalonych")
+        if st.plan_finished and not st.plan_revision:
+            return _fill(out, "review", f"✓ plan karty: {len(finished_ids)}/{len(rows)} ticketów scalonych — do sprawdzenia")
         if st.paused:
             return _fill(out, "backlog" if column == "backlog" else "progress", "wstrzymana — trwające kroki kończą się" if st.running() else "wstrzymana")
         if st.waiting and not st.running() and not attention:
             return _fill(out, "progress", out["flow"]["waveLabel"] + " · " + next(reversed(st.waiting.values()))["reason"])
         if st.plan_approved is not None and not st.last_step and not st.open_intents():
             return _fill(out, "progress", "uruchamiam pierwszy ticket planu")
+    if st.closed and not st.plan_approved:
+        out["done"] = 1
+        return _fill(out, "review", f"✓ {ident} na gałęzi karty — do sprawdzenia")
     if st.started.get('trackerProject') and st.started.get('entry') == 'now' and not st.steps:
         return _fill(out, 'backlog' if st.paused else 'progress',
                      tracker_reason or 'YouTrack: zlecenie czeka na zgłoszenie')

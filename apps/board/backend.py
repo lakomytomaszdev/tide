@@ -68,7 +68,7 @@ NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "ImportYouTrack", "ResolveYouTrack",
           "StartCard", "ResolveCardReview", "EnterStep", "AbandonStep", "ResolveCardStep", "ApproveCardPlan", "SetCardPaused",
-          "EditCardPlan")
+          "EditCardPlan", "MergeCardToMain")
 YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w sieci lokalnej (po 4 s) i zapas
 TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
 COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
@@ -382,6 +382,14 @@ class Backend(QObject):
     @pyqtSlot(str, str)
     def approveCardPlan(self, tag: str, card_id: str) -> None:
         self._write(tag, "ApproveCardPlan", [card_id])
+
+    @pyqtSlot(str, str)
+    def cardBranchDiff(self, tag: str, card_id: str) -> None:
+        self._write(tag, "CardBranchDiff", [card_id])
+
+    @pyqtSlot(str, str)
+    def mergeCardToMain(self, tag: str, card_id: str) -> None:
+        self._write(tag, "MergeCardToMain", [card_id])
 
     # --- zrzuty ekranu i model w oknie uruchomienia (PT-43) ------------------------------------
 

@@ -477,6 +477,14 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="id" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="CardBranchDiff">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="MergeCardToMain">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <signal name="Changed"/>
   <signal name="WorkChanged"/>
 </interface>"""
@@ -978,6 +986,20 @@ class BoardAdaptor(QDBusAbstractAdaptor):
                 print("tide-daemon: nie udało się odesłać wyniku Board.ApproveCardPlan", flush=True)
 
         self.monitor.approve_card_plan(card_id, reply)
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def CardBranchDiff(self, card_id: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.card_branch_diff(card_id, lambda value: self.bus.send(pending.createReply([value])))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def MergeCardToMain(self, card_id: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.merge_card_to_main(card_id, lambda value: self.bus.send(pending.createReply([value])))
         return ""
 
     @pyqtSlot(str, result=str)
