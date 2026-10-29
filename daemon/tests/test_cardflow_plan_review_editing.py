@@ -239,3 +239,34 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertTrue(json.loads(box[0])["ok"], box)
         self.assertTrue(wait_until(lambda: self.of(card, "plan.revision-ready"), timeout=5), self.events(card))
         self.assertFalse(any(e["step"] == working["step"] for e in self.of(card, "step.finished")))
+
+    def test_restart_after_checked_recovers_failed_revision_and_panel_decision(self):
+        from unittest import mock
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        journal = self.flow.engine.journal
+        append = journal.append
+
+        def crash_between_events(ident, event_type, **data):
+            if event_type == "plan.revision-failed":
+                raise OSError("restart po plan.checked")
+            return append(ident, event_type, **data)
+
+        with mock.patch.object(journal, "append", side_effect=crash_between_events):
+            box = []
+            self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "ATRAPA: invalid-amend"}), box.append)
+            self.assertTrue(wait_until(lambda: box, timeout=10))
+            self.assertTrue(wait_until(lambda: any(not e["valid"] for e in self.of(card, "plan.checked")), timeout=10))
+            self.flow.stop()
+        self.assertEqual(journal.read(card)[-1]["type"], "plan.checked")
+        self.assertEqual(self.of(card, "plan.revision-failed"), [])
+        self.restart()
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.revision-failed"), timeout=4), self.events(card))
+        shown = self.wait_column(card, "waiting")
+        self.assertTrue(shown["derived"]["flow"]["plan"]["revision"]["failed"])
+        box = []
+        self.flow.edit_plan(card, json.dumps({"action": "discard-revision"}), box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=5))
+        self.assertTrue(json.loads(box[0])["ok"], box)
+        self.assertEqual(len(self.of(card, "plan.revision-failed")), 1)
+        self.assertEqual(len([e for e in self.of(card, "plan.checked") if not e["valid"]]), 1)

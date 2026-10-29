@@ -243,6 +243,7 @@ class PlanEditing:
         if invalid:
             if (st.plan_checked or {}).get("step") != step["step"]:
                 self.journal.append(card, "plan.checked", step=step["step"], valid=False, errors=invalid)
+            if not revision.get("failed"):
                 self.journal.append(card, "plan.revision-failed", failed=True, pending=False, errors=invalid,
                                     baseline=revision["baseline"], feedback=revision["feedback"])
             return
