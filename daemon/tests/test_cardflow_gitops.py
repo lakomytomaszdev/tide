@@ -3,6 +3,8 @@ import os
 import shutil
 import subprocess
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from unittest import mock
 
 from tide_daemon.cardflow import gitops
@@ -56,7 +58,48 @@ class MergeTest(unittest.TestCase):
         git(self.ticket, "commit", "-qm", "ticket")
 
     def merge(self):
-        return self.flow.merge(self.repo, "card/test", "ticket/test", self.card, "Merge ticket")
+        return self.flow.merge(self.repo, "card/test", "ticket/test", self.card, "Merge ticket",
+                               expected_tip=git(self.repo, "rev-parse", "ticket/test"))
+
+    def test_two_ticket_merges_share_one_repo_lock(self):
+        self.ticket_commit()
+        second = os.path.join(self.base, "ticket-second")
+        git(self.repo, "worktree", "add", "-qb", "ticket/second", second)
+        self.write(second, "second.txt", "second\n")
+        git(second, "add", ".")
+        git(second, "commit", "-qm", "second")
+        barrier = Barrier(2)
+
+        def merge(branch):
+            barrier.wait(timeout=5)
+            return self.flow.merge(self.repo, "card/test", branch, self.card, f"Merge {branch}",
+                                   expected_tip=git(self.repo, "rev-parse", branch))
+
+        with mock.patch.object(gitops, "sandbox_available", return_value=True, create=True), \
+                mock.patch.object(gitops, "StepGit", LocalStepGit, create=True):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                one = pool.submit(merge, "ticket/test")
+                two = pool.submit(merge, "ticket/second")
+                self.assertTrue(one.result(timeout=20)["commit"])
+                self.assertTrue(two.result(timeout=20)["commit"])
+        self.assertEqual(git(self.card, "status", "--porcelain"), "")
+        self.assertTrue(os.path.isfile(os.path.join(self.card, "ticket.txt")))
+        self.assertTrue(os.path.isfile(os.path.join(self.card, "second.txt")))
+
+    def test_merge_rejects_tip_changed_after_approval_under_repo_lock(self):
+        self.ticket_commit()
+        approved = git(self.repo, "rev-parse", "ticket/test")
+        before = git(self.repo, "rev-parse", "card/test")
+        self.write(self.ticket, "later.txt", "późniejsza zmiana\n")
+        git(self.ticket, "add", "later.txt")
+        git(self.ticket, "commit", "-qm", "later change")
+        with mock.patch.object(gitops, "sandbox_available", return_value=True, create=True), \
+                mock.patch.object(gitops, "StepGit", LocalStepGit, create=True):
+            with self.assertRaisesRegex(gitops.FlowGitError, "po zatwierdzeniu review"):
+                self.flow.merge(self.repo, "card/test", "ticket/test", self.card, "Merge ticket",
+                                expected_tip=approved)
+        self.assertEqual(git(self.repo, "rev-parse", "card/test"), before)
+        self.assertFalse(os.path.exists(os.path.join(self.card, "later.txt")))
 
     def test_without_sandbox_does_not_run_ticket_filter_or_move_card_branch(self):
         marker = os.path.join(self.base, "filter-ran")

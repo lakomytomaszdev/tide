@@ -545,7 +545,8 @@ var LAUNCH_ENTRIES = [
       meta: "karta wraca do Backlogu", modes: false, steps: ["Pytania", "Specyfikacja", "„specyfikacja gotowa” na karcie"] },
     // Przepływ karty (PT-58): jeden ticket w tle od razu, zlecenie przez /Board StartCard, bez Konsoli.
     { id: "now", title: "Od razu", desc: "Jeden ticket w tle, bez planowania i bez terminala. Wynik na gałęzi karty.",
-      meta: "wybierasz wykonawcę", modes: false, flow: true, steps: ["Ticket w tle", "Gałąź karty", "Do sprawdzenia"] }
+      meta: "wybierasz wykonawcę i recenzenta", modes: false, flow: true,
+      steps: ["Ticket w tle", "Review", "Gałąź karty", "Do sprawdzenia"] }
 ]
 
 // Wykonawcy kroku „Od razu” z katalogu Status() /Models. Zanim przyjdzie stan usługi, pokazujemy
@@ -586,14 +587,34 @@ function defaultExecutor(options) {
     return names.indexOf(NOW_DEFAULT) >= 0 ? NOW_DEFAULT : (names[0] || "")
 }
 
+function reviewExecutors(status, author, provider) {
+    const current = launchExecutor(status, author)
+    if (!current) return []
+    return launchExecutorList(status).filter(e => e && e.name && e.model && e.program &&
+        e.name !== author && e.model.toLowerCase() !== String(current.model || "").toLowerCase() &&
+        (current.provider === "local" ? e.provider === "local" : e.provider !== "local") &&
+        (provider === "mixed" ? e.provider !== current.provider : e.provider === current.provider))
+        .map(e => ({ value: String(e.name), label: String(e.name), disabled: e.available === false,
+                     hint: e.error || "" }))
+}
+
+function defaultReviewer(author, options) {
+    const names = (options || []).map(o => o.value)
+    const preferred = author === "Opus" ? "Sonnet" : author === "Codex mocny" ? "Codex Astra" : "Opus"
+    return names.indexOf(preferred) >= 0 ? preferred : (names[0] || "")
+}
+
 function isFlowEntry(id) {
     return launchEntry(id).flow === true
 }
 
 // Prośba /Board StartCard z okna („Od razu”): wejście, wykonawca i zrzuty z katalogu zadań.
 function startCardRequest(state, images) {
-    return { entry: state.entry, executor: state.executor, preferredProvider: state.preferredProvider,
-             check: state.check, images: (images || []).slice() }
+    const request = { entry: state.entry, executor: state.executor,
+                      check: state.check, images: (images || []).slice() }
+    if (state.reviewer) request.reviewer = state.reviewer
+    if (state.preferredProvider) request.preferredProvider = state.preferredProvider
+    return request
 }
 
 // Tryby Planowania z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.

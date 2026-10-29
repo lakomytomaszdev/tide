@@ -161,7 +161,11 @@ class NowInProcessTest(FlowInProcess):
         from tide_daemon.models import config as models_config
         path = os.path.join(self.base, "config", "tide", "models.json")
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"roles": {"agent": "local:qwen3-coder:30b"}, "agentProgram": "codex"}, fh)
+            json.dump({"roles": {"agent": "local:qwen3-coder:30b"}, "agentProgram": "codex",
+                       "executors": [{"name": "Lokalny", "provider": "local", "classes": ["lokalny"]},
+                                     {"name": "Lokalny recenzent", "provider": "local", "program": "codex",
+                                      "model": "qwen2.5-coder:7b", "endpoint": "local",
+                                      "classes": ["lokalny"]}]}, fh)
         engine = self.flow.engine
         engine.models_config = lambda: models_config.load(path)
         card_id = self.card()
@@ -174,13 +178,17 @@ class NowInProcessTest(FlowInProcess):
         self.assertEqual((refused["ok"], refused["error"]), (False, "local-unavailable"), refused)
         self.assertEqual(self.events(card_id), [])
         engine.model_probe = lambda endpoint: {"online": True, "kind": "ollama",
-                                                "models": [{"name": "qwen3-coder:30b"}]}
+                                                "models": [{"name": "qwen3-coder:30b"},
+                                                           {"name": "qwen2.5-coder:7b"}]}
         reply = self.start(card_id, executor="Lokalny", preferredProvider="local")
         self.assertTrue(reply["ok"], reply)
         self.wait_column(card_id, "review")
         started = self.of(card_id, "step.started")[0]
         self.assertEqual((started["program"], started["provider"], started["local"]),
                          ("codex", "local", True))
+        reviewer = next(s for s in self.of(card_id, "step.started") if s["kind"] == "review")
+        self.assertEqual((reviewer["executor"], reviewer["provider"], reviewer["local"]),
+                         ("Lokalny recenzent", "local", True))
         with open(os.path.join(started["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             call = json.load(fh)
         self.assertIn("--oss", call["argv"])
@@ -198,7 +206,9 @@ class NowInProcessTest(FlowInProcess):
             json.dump({"providers": {"other": {"label": "Inny", "url": "https://example.test/v1",
                                                  "api": "openai", "tokenFile": token}},
                        "executors": [{"name": "Inny", "program": "codex", "model": "model-inny",
-                                      "provider": "other", "classes": ["standard"]}]}, fh)
+                                      "provider": "other", "classes": ["standard"]},
+                                     {"name": "Inny recenzent", "program": "codex", "model": "model-drugi",
+                                      "provider": "other", "classes": ["mocny"]}]}, fh)
         self.flow.engine.models_config = lambda: models_config.load(path)
         card_id = self.card()
         reply = self.start(card_id, executor="Inny", preferredProvider="other")
@@ -269,7 +279,8 @@ class NowInProcessTest(FlowInProcess):
         types = [e["type"] for e in self.events(card_id)]
         self.assertEqual(types[0], "card.started")
         for kind in ("step.started", "step.finished"):
-            self.assertEqual(types.count(kind), 1, types)
+            self.assertEqual(types.count(kind), 2, types)  # ticket i niezależny review
+        self.assertEqual(types.count("review.verdict"), 1, types)
         self.assertTrue(all(e["v"] == 1 and e["card"] == card_id for e in self.events(card_id)))
         self.assertEqual([e["seq"] for e in self.events(card_id)], list(range(1, len(types) + 1)))
         launched = self.of(card_id, "card.started")[0]
@@ -278,7 +289,8 @@ class NowInProcessTest(FlowInProcess):
         self.assertEqual((finished["result"], finished["ticket"]), ("done", "PT-1"))
         intents = {(e["action"], e["key"]) for e in self.of(card_id, "intent")}
         self.assertEqual(intents, {(e["action"], e["key"]) for e in self.of(card_id, "result")})
-        self.assertEqual({a for a, _k in intents}, {"reserve", "card-branch", "ticket-branch", "step-start", "merge"})
+        self.assertEqual({a for a, _k in intents},
+                         {"reserve", "card-branch", "ticket-branch", "step-start", "merge", "cleanup"})
         # Numer ticketu jest w rejestrze rezerwacji (kontrola numerów go widzi).
         from tide_daemon.coordination import reservations
         self.assertEqual([(r["prefix"], r["number"]) for r in reservations.load(self.repo)], [("PT", 1)])
@@ -522,7 +534,10 @@ class RestartInProcessTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: self.of(card_id, "step.started"), timeout=5), self.events(card_id))
         self.assertTrue(flowfakes.alive(pid), "krok nie wystartował drugi raz ani nie zginął")
         self.wait_column(card_id, "review", timeout=40)
-        self.assertEqual([e["type"] for e in self.events(card_id)].count("step.started"), 1)
+        recovered = [e for e in self.of(card_id, "step.started") if e["kind"] == "ticket"]
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual({k: v for k, v in recovered[0].items() if k != "ts"},
+                         {k: v for k, v in step.items() if k != "ts"})
         self.assertEqual(len(self.results(card_id, "merge")), 1)
 
     def test_restart_during_a_step_neither_loses_it_nor_duplicates_events(self):
@@ -535,7 +550,7 @@ class RestartInProcessTest(FlowInProcess):
         self.wait_column(card_id, "review", timeout=40)
         types = [e["type"] for e in self.events(card_id)]
         for kind in ("card.started", "step.started", "step.finished"):
-            self.assertEqual(types.count(kind), 1, types)
+            self.assertEqual(types.count(kind), 1 if kind == "card.started" else 2, types)
         self.assertEqual(len(self.results(card_id, "merge")), 1, types)
         self.assertEqual([e["seq"] for e in self.events(card_id)], list(range(1, len(types) + 1)))
         self.restart()

@@ -76,6 +76,7 @@ Rectangle {
     signal flowRequested(string tag, string cardId, string request)     // /Board StartCard (przepływ karty, „Od razu”)
     signal enterStepRequested(string tag, string cardId, string stepId) // /Board EnterStep
     signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
+    signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
     signal removeImageRequested(string path)
@@ -390,6 +391,11 @@ Rectangle {
             cardPanel.error = error
             if (!error) cardPanel.notice = tag.indexOf("enter-step:") === 0
                 ? "Krok otwarty w Konsoli." : "Krok porzucony."
+        } else if (tag.indexOf("review-resolve:") === 0) {
+            cardPanel.busy = false
+            cardPanel.error = error
+            if (!error) cardPanel.notice = reply.choice === "retry" ? "Uruchamiam kolejne poprawki."
+                                                                      : "Ticket odrzucony; gałąź i worktree zostały do wglądu."
         } else if (tag.indexOf("quicktag:") === 0) {
             tagEditorPopup.editorError = error
             if (!error) tagEditorPopup.close()
@@ -1296,6 +1302,8 @@ Rectangle {
             cardPanel.busy = true
             page.abandonStepRequested(page.nextTag("abandon-step:" + cardId), cardId, stepId)
         }
+        onReviewResolveRequested: (cardId, choice) =>
+            page.reviewResolveRequested(page.nextTag("review-resolve:" + cardId), cardId, choice)
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))
             if (column === "archived") page.panelOpen = false

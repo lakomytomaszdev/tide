@@ -102,6 +102,21 @@ class CardFlowMonitor(QObject):
     def moved(self, card_id: str, column: str, shown: str = "", move_id: str = "") -> None:
         self._submit(lambda: self.engine.moved(card_id, column, shown, move_id), _report("MoveCard"))
 
+    def resolve_review(self, card_id: str, choice: str, reply) -> None:
+        """Odpowiedź na pytanie po limicie rund review, zapisana w dzienniku."""
+        def answer(future):
+            try:
+                result = future.result()
+            except FlowError as exc:
+                result = _failure(exc.code, str(exc))
+            except Exception as exc:
+                print(f"tide-daemon: przepływ karty: ResolveCardReview: {exc!r}", flush=True)
+                result = _failure("internal", "błąd usługi — szczegóły w dzienniku")
+            reply(json.dumps(result, ensure_ascii=False))
+
+        if not self._submit(lambda: self.engine.resolve_review(card_id, choice), answer):
+            reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
+
     def tick(self) -> None:
         if self._ticking:
             return

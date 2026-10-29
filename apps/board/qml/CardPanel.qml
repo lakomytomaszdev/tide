@@ -68,6 +68,7 @@ Rectangle {
     signal youtrackResolveRequested(string cardId, string choice)   // konflikt: youtrack | tide
     signal enterStepRequested(string cardId, string stepId)
     signal abandonStepRequested(string cardId, string stepId)
+    signal reviewResolveRequested(string cardId, string choice)     // pytanie po limicie rund review
 
     function form() {
         const key = Logic.issueKey(youtrackField.text)
@@ -626,6 +627,53 @@ Rectangle {
                                 }
                             }
                         }
+                    }
+                    Text {
+                        objectName: "cardReviewVerdict"
+                        Layout.fillWidth: true
+                        visible: panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
+                                 && !!panel.card.derived.flow.verdict
+                        text: {
+                            const flow = panel.card && panel.card.derived ? panel.card.derived.flow : null
+                            return flow && flow.verdict
+                                ? "Review " + flow.verdict + " · BLOCKER " + flow.blockers
+                                  + " · MAJOR " + flow.majors + " · NIT " + flow.nits
+                                  + " · runda " + flow.round
+                                : ""
+                        }
+                        textFormat: Text.PlainText
+                        color: panel.card && panel.card.derived && panel.card.derived.flow
+                               && panel.card.derived.flow.verdict === "APPROVE" ? Tide.Tokens.mint : Tide.Tokens.peach
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    RowLayout {
+                        objectName: "cardReviewDecision"
+                        Layout.fillWidth: true
+                        visible: panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
+                                 && panel.card.derived.flow.reviewQuestion === true
+                        spacing: 8
+                        PillButton {
+                            objectName: "cardReviewRetry"
+                            text: "Ponów poprawki"
+                            enabled: !panel.busy
+                            onClicked: {
+                                panel.busy = true
+                                panel.reviewResolveRequested(panel.card.id, "retry")
+                            }
+                        }
+                        PillButton {
+                            objectName: "cardReviewReject"
+                            text: "Odrzuć ticket"
+                            outline: true
+                            enabled: !panel.busy
+                            onClicked: {
+                                panel.busy = true
+                                panel.reviewResolveRequested(panel.card.id, "reject")
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
                     }
                     Text {
                         Layout.fillWidth: true

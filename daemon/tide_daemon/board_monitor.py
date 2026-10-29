@@ -220,6 +220,12 @@ class BoardMonitor(QObject):
             return
         self.flow.abandon_step(card_id, step_id, reply)
 
+    def resolve_card_review(self, card_id: str, choice: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.resolve_review(card_id, choice, reply)
+
     def _shown_column(self, card_id: str) -> str:
         """Kolumna, w której karta jest teraz wyświetlana (boardColumn z ostatniej migawki) — do `moved-from`."""
         try:

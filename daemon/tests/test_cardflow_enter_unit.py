@@ -189,3 +189,34 @@ class EnterStepTest(unittest.TestCase):
                 self.engine.enter("K-1", self.step_id)
         self.assertEqual(err.exception.code, "no-session")
         stop.assert_not_called()
+
+    def test_approved_cleanup_can_reopen_after_restart_without_auto_merge(self):
+        self.engine.journal.append("K-1", "step.finished", step=self.step_id, ticket="PT-1", result="done")
+        self.engine.journal.append("K-1", "result", action="cleanup", key="PT-1", ok=True)
+        os.rmdir(self.worktree)
+        restarted = FlowEngine(self.engine.store,
+                               journal=Journal(self.engine.store.root, mirror=os.path.join(self.root, "mirror")),
+                               terminal=self.terminal,
+                               task_files=TaskFiles(os.path.join(self.root, "tasks")))
+        restarted.git = mock.Mock()
+        restarted.git.sha.return_value = "approved-tip"
+
+        def attach(*_):
+            os.makedirs(self.worktree)
+            return {"branch": "ticket/pt-1", "worktree": self.worktree}
+
+        restarted.git.branch_worktree.side_effect = attach
+        with mock.patch.object(agentcmd, "resolve_git_dir", return_value="/git/worktrees/pt-1"):
+            reply = restarted.enter("K-1", self.step_id)
+        self.assertTrue(os.path.isdir(self.worktree))
+        self.assertEqual(restarted.git.branch_worktree.call_count, 1)
+        self.assertEqual(reply["step"], self.step_id + "-enter-1")
+        current = state.fold(restarted.journal.read("K-1")).steps[reply["step"]]
+        self.assertEqual(current["kind"], "interactive")
+        with open(os.path.join(current["stepDir"], "out", "result.json"), "w", encoding="utf-8") as fh:
+            json.dump({"result": "done"}, fh)
+        restarted.tick()
+        self.assertNotIn(("merge", "PT-1"), state.fold(restarted.journal.read("K-1")).results)
+        visible = state.derived(state.fold(restarted.journal.read("K-1")), {"column": "todo"})
+        self.assertEqual(visible["column"], "waiting")
+        self.assertIn("review", visible["note"])

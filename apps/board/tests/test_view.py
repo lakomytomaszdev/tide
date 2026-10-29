@@ -213,7 +213,8 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js("launchExecutors(null).map(o => o.value)"), ["Haiku", "Sonnet", "Opus"],
                          "zanim przyjdzie Status() — domyślni wykonawcy Claude")
         self.assertEqual(self.js(f"defaultExecutor(launchExecutors({status}))"), "Sonnet")
-        self.assertEqual(self.js("launchSteps('now', 'full')"), ["Ticket w tle", "Gałąź karty", "Do sprawdzenia"])
+        self.assertEqual(self.js("launchSteps('now', 'full')"),
+                         ["Ticket w tle", "Review", "Gałąź karty", "Do sprawdzenia"])
         self.assertEqual(self.js("[isFlowEntry('now'), isFlowEntry('planning'), entryHasModes('now')]"),
                          [True, False, False])
         self.assertEqual(self.js("startCardRequest({entry: 'now', executor: 'Opus', check: 'manual'}, ['/t/1.png'])"),
@@ -222,6 +223,11 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js(f"launchExecutors({actual}, 'openai').map(o => o.value)"), ["Codex standard"])
         self.assertEqual(self.js(f"launchExecutors({actual}, 'local').map(o => o.value)"), ["Lokalny"])
         self.assertEqual(self.js(f"launchExecutors({actual}, 'mixed').length"), 5)
+        self.assertEqual(self.js(f"reviewExecutors({actual}, 'Opus', 'anthropic').map(o => o.value)"),
+                         ["Haiku", "Sonnet"])
+        self.assertEqual(self.js(f"reviewExecutors({actual}, 'Opus', 'mixed').map(o => o.value)"),
+                         ["Codex standard"])
+        self.assertEqual(self.js(f"reviewExecutors({actual}, 'Lokalny', 'local').map(o => o.value)"), [])
         self.assertIn("other", self.js(f"preferredProviders({actual}).map(o => o.value)"))
         self.assertEqual(self.js("startCardRequest({entry:'now', executor:'Codex standard', preferredProvider:'openai', check:'auto'}, [])"),
                          {"entry": "now", "executor": "Codex standard", "preferredProvider": "openai",
@@ -1619,6 +1625,8 @@ out["now"] = [js("page.launchDialog.entry"), shown("launchExecutor"), shown("lau
 out["options"] = js("page.launchDialog.executorOptions.map(o => o.value)")
 out["default"] = js("page.launchDialog.executor")
 choose("launchExecutor-Opus")
+out["reviewer"] = [shown("launchReviewer"), js("page.launchDialog.reviewer"),
+                    js("page.launchDialog.reviewerOptions.map(o => o.value)")]
 js("page.launchDialog.manualCheck = true")
 out["checkManual"] = obj("launchCheckNote").property("text")
 js("page.launchDialog.manualCheck = false")
@@ -1646,6 +1654,7 @@ out["toast"] = js("[page.toast, page.toastTone]")
                          "„Od razu”: wykonawca zamiast trybu, modelu, worktree i dodatkowych projektów")
         self.assertEqual(out["options"], ["Haiku", "Sonnet", "Opus"], "tylko Claude w chmurze z katalogu")
         self.assertEqual(out["default"], "Sonnet")
+        self.assertEqual(out["reviewer"], [True, "Sonnet", ["Haiku", "Sonnet"]])
         self.assertIn("poczeka na Twój test ręczny", out["checkManual"])
         self.assertIn("zostanie scalony z gałęzią karty", out["checkAuto"])
         self.assertNotIn("review AI", out["checkManual"] + out["checkAuto"])
@@ -1657,13 +1666,45 @@ out["toast"] = js("[page.toast, page.toastTone]")
         self.assertEqual([c[0] for c in out["second"]], ["StartCard", "MoveCard"])
         self.assertEqual(out["second"][0][1], "K-15")
         self.assertEqual(json.loads(out["second"][0][2]),
-                         {"entry": "now", "executor": "Opus", "preferredProvider": "anthropic",
-                          "check": "manual", "images": []})
+                         {"entry": "now", "executor": "Opus", "reviewer": "Sonnet",
+                          "preferredProvider": "anthropic", "check": "manual", "images": []})
         self.assertEqual(out["second"][1], ["MoveCard", "K-15", "todo", -1], "karta z Backlogu idzie do kolejki")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")
         self.assertIn("PT-7", out["toast"][0])
         self.assertIn("Opus", out["toast"][0])
+
+    def test_review_verdict_is_visible_in_card_panel(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "poprawki po review",
+                                   "flow": {"ticket": "PT-7", "verdict": "REQUEST_CHANGES",
+                                            "blockers": 1, "majors": 2, "nits": 3, "round": 2}}
+                card["boardColumn"] = "waiting"
+        out = self.probe('''
+click(card("K-6"))
+out["verdict"] = [obj("cardReviewVerdict").property("visible"), obj("cardReviewVerdict").property("text")]
+''', data=data)
+        self.assertEqual(out["verdict"], [True, "Review REQUEST_CHANGES · BLOCKER 1 · MAJOR 2 · NIT 3 · runda 2"])
+
+    def test_review_question_has_working_decision_button(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "po 3 rundach review",
+                                   "flow": {"ticket": "PT-7", "verdict": "REQUEST_CHANGES",
+                                            "blockers": 0, "majors": 1, "nits": 0, "round": 3,
+                                            "reviewQuestion": True}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["visible"] = [obj("cardReviewDecision").property("visible"), obj("cardReviewRetry").property("enabled")]
+click(at(FIND + "(page.cardPanel, 'cardReviewRetry')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["visible"], [True, True])
+        self.assertEqual(out["call"], ["ResolveCardReview", "K-6", "retry"])
 
     def test_working_flow_card_drags_to_backlog_and_done_but_a_coordinator_card_does_not(self):
         data = json.loads(json.dumps(self.data))

@@ -152,6 +152,17 @@ class FlowCase(unittest.TestCase):
 
 
 class NowTest(FlowCase):
+    def test_review_question_is_answered_through_board_dbus(self):
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 3")
+        self.assertTrue(self.start(card_id)["ok"])
+        shown = self.wait_column(card_id, "waiting", timeout=50)
+        self.assertTrue(shown["derived"]["flow"]["reviewQuestion"])
+        answer = self.call("ResolveCardReview", card_id, "reject")
+        self.assertEqual((answer["ok"], answer["choice"]), (True, "reject"))
+        self.assertTrue(wait_until(lambda: self.of(card_id, "ticket.rejected"), timeout=5))
+        self.assertEqual(self.call("ResolveCardReview", card_id, "retry")["error"], "no-review-question")
+        self.assertEqual(self.results(card_id, "merge"), [])
+
     def test_now_runs_one_background_ticket_from_launch_to_review(self):
         legacy = self.card("Dawna karta", "Bez dziennika.")
         card_id = self.card()
@@ -167,7 +178,8 @@ class NowTest(FlowCase):
         types = [e["type"] for e in self.events(card_id)]
         self.assertEqual(types[0], "card.started")
         for kind in ("step.started", "step.finished"):
-            self.assertEqual(types.count(kind), 1, types)
+            self.assertEqual(types.count(kind), 2, types)
+        self.assertEqual(types.count("review.verdict"), 1, types)
         self.assertTrue(all(e["v"] == 1 and e["card"] == card_id for e in self.events(card_id)))
         self.assertEqual(self.of(card_id, "card.started")[0]["entry"], "now")
         self.assertEqual(self.of(card_id, "card.started")[0]["executor"], "Sonnet")
@@ -302,7 +314,7 @@ class RestartTest(FlowCase):
         self.wait_column(card_id, "review", timeout=40)
         types = [e["type"] for e in self.events(card_id)]
         for kind in ("card.started", "step.started", "step.finished"):
-            self.assertEqual(types.count(kind), 1, types)
+            self.assertEqual(types.count(kind), 1 if kind == "card.started" else 2, types)
         self.assertEqual(len(self.results(card_id, "merge")), 1, types)
         seqs = [e["seq"] for e in self.events(card_id)]
         self.assertEqual(seqs, list(range(1, len(seqs) + 1)))
