@@ -743,10 +743,15 @@ class FlowEngine:
         st = fold(self.journal.read(card))
         if st.running():
             return False
-        ticket = ticket_of(st)["id"]
-        merged = st.results.get(("merge", ticket))
-        if ticket and not (merged and merged.get("ok")) and ticket not in st.rejected:
-            self.journal.append(card, "ticket.rejected", ticket=ticket)
+        tickets = dict.fromkeys([
+            *(row.get("id") for row in (st.plan_approved or {}).get("rows") or []),
+            *(step.get("ticket") for step in st.steps.values()),
+            ticket_of(st)["id"],
+        ])
+        for ticket in tickets:
+            merged = st.results.get(("merge", ticket)) or {}
+            if ticket and not merged.get("ok") and ticket not in st.rejected:
+                self.journal.append(card, "ticket.rejected", ticket=ticket)
         self.journal.append(card, "card.finished", column=column)
         return True
 

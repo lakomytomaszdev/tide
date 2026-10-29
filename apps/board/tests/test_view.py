@@ -1862,6 +1862,8 @@ class WavePanelTest(ProbeCase):
         out = self.probe(FIND_PY + """
 click(card("K-6"))
 out["wave"] = obj("cardWaveLabel").property("text")
+out["tileWave"] = js(FIND + "(page.findCard('K-6'), 'cardTileWaveLabel').text")
+out["tileWaveVisible"] = js(FIND + "(page.findCard('K-6'), 'cardTileWaveLabel').visible")
 out["timeline"] = obj("cardTimeline").property("count")
 out["tickets"] = obj("cardTicketStrip").property("count")
 out["gap"] = js(FIND + "(page.findCard('K-6'), 'cardTicketStrip').itemAt(2).gap")
@@ -1870,6 +1872,8 @@ click(at(FIND + "(page.cardPanel, 'cardPause')"))
 out["call"] = calls()[-1]
 """, data=data)
         self.assertEqual(out["wave"], "fala 1 z 2")
+        self.assertEqual(out["tileWave"], "fala 1 z 2")
+        self.assertTrue(out["tileWaveVisible"])
         self.assertEqual(out["timeline"], 2)
         self.assertEqual(out["tickets"], 3)
         self.assertTrue(out["gap"], "między falami mini-pasek ma przerwę")

@@ -227,3 +227,32 @@ class WaveFlowTest(FlowInProcess):
         attempts = [s for s in self.of(card, "step.started") if s["ticket"] == mapping["#1"]]
         self.assertEqual(attempts[0]["worktree"], attempts[1]["worktree"])
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=30))
+
+    def test_manual_finish_rejects_all_running_and_not_started_tickets(self):
+        card = self.card()
+        self.assertTrue(self.submit(card, self.wave_plan(card))["ok"])
+        mapping = self.approve(card)["map"]
+        self.assertTrue(wait_until(lambda: len(self.of(card, "step.started")) >= 2, timeout=5))
+        self.assertTrue(json.loads(self.board.move_card(card, "done", 0))["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "card.finished"), timeout=10))
+        self.assertEqual({event["ticket"] for event in self.of(card, "ticket.rejected")}, set(mapping.values()))
+        self.assertEqual(len(self.of(card, "step.finished")), 2)
+
+    def test_manual_finish_keeps_merged_ticket_and_rejects_remaining_plan(self):
+        card = self.card()
+        path = self.wave_plan(card)
+        for number, mode in ((1, "gotowe"), (2, "powoli 15")):
+            ticket_path = os.path.join(os.path.dirname(path), "tickets", f"{number}.md")
+            with open(ticket_path, encoding="utf-8") as fh:
+                source = fh.read()
+            with open(ticket_path, "w", encoding="utf-8") as fh:
+                fh.write(source.replace("powoli 2", mode))
+        self.assertTrue(self.submit(card, path)["ok"])
+        mapping = self.approve(card)["map"]
+        self.assertTrue(wait_until(lambda: any(event.get("key") == mapping["#1"] and event.get("ok")
+                        for event in self.results(card, "merge")), timeout=10))
+        self.assertTrue(json.loads(self.board.move_card(card, "archived", 0))["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "card.finished"), timeout=10))
+        self.assertEqual({event["ticket"] for event in self.of(card, "ticket.rejected")},
+                         {mapping["#2"], mapping["#3"]})
+        self.assertTrue(next(event for event in self.results(card, "merge") if event["key"] == mapping["#1"])["ok"])

@@ -265,6 +265,16 @@ Rectangle {
             }
         }
 
+        Text {
+            objectName: "cardTileWaveLabel"
+            Layout.fillWidth: true
+            visible: Boolean(root.derived && root.derived.flow && root.derived.flow.waveLabel)
+            text: root.derived && root.derived.flow ? root.derived.flow.waveLabel || "" : ""
+            textFormat: Text.PlainText
+            color: Tide.Tokens.textSecondary
+            font.family: Tide.Theme.uiFamily
+            font.pixelSize: 11
+        }
         RowLayout {
             Layout.fillWidth: true
             visible: Boolean(root.derived && root.derived.flow && root.derived.flow.waveLabel)
