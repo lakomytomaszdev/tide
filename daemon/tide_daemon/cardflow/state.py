@@ -20,6 +20,7 @@ Kolumna (ręczne kolumny wygrywają z dziennikiem):
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 
 RESULT_LABELS = {"done": "gotowe", "question": "pytanie", "denied": "brak zgody", "error": "błąd", "stopped": "zatrzymany"}
 REASON_LABELS = {"no-result": "brak pliku wyniku", "bad-result": "zły plik wyniku", "no-progress": "bez postępu",
@@ -43,6 +44,10 @@ class FlowState:
     step_retries: dict = field(default_factory=dict)  # źródłowy krok → automatyczne ponowienie
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
     step_notices: set = field(default_factory=set)
+    flow_notices: set = field(default_factory=set)
+    activity: dict = field(default_factory=dict)      # krok → ostatnia zmiana plików lub dziennika sesji
+    last_activity_ts: float = 0.0
+    stalled_since: str = ""
     tracker_retries: dict = field(default_factory=dict)
     plan_checked: dict | None = None
     plan_proposed: dict | None = None
@@ -115,7 +120,10 @@ def fold(events: list[dict]) -> FlowState:
     st = FlowState()
     for e in events:
         kind = e.get("type")
-        if kind in ("card.started", "step.started", "step.finished", "step.waiting", "review.verdict",
+        if kind != "card.stalled":
+            st.last_activity_ts = _epoch(e.get("ts")) or st.last_activity_ts
+            st.stalled_since = ""
+        if kind in ("card.started", "card.stalled", "step.started", "step.finished", "step.waiting", "review.verdict",
                     "plan.approved", "card.paused", "card.resumed", "plan.finished") or (
                     kind == "result" and e.get("action") == "merge"):
             st.timeline.append({key: e[key] for key in (
@@ -179,6 +187,12 @@ def fold(events: list[dict]) -> FlowState:
             st.step_decisions[e.get("step")] = e
         elif kind == "step.notice":
             st.step_notices.add(e.get("step"))
+        elif kind == "step.activity":
+            st.activity[e.get("step")] = e
+        elif kind == "flow.notice":
+            st.flow_notices.add(e.get("key"))
+        elif kind == "card.stalled":
+            st.stalled_since = e.get("ts") or ""
         elif kind == "plan.checked":
             st.plan_checked = e
         elif kind == "plan.proposed":
@@ -278,6 +292,45 @@ def attention_step(st: FlowState) -> str:
     return ""
 
 
+def _epoch(value) -> float:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() if value else 0.0
+    except (AttributeError, ValueError, OverflowError):
+        return 0.0
+
+
+def guard_reason(st: FlowState) -> str | None:
+    """None = praca lub koniec; napis = nazwany powód czekania; pusty napis = możliwy postój."""
+    if not st.started or st.card_finished or st.paused or st.running() or st.open_intents() or st.open_consoles():
+        return None
+    if attention_step(st):
+        return "pytanie, zgoda albo błąd kroku"
+    if (st.plan_revision or {}).get("failed"):
+        return "decyzja po nieudanej poprawie planu"
+    if (st.plan_revision or {}).get("pending") and st.plan_reviewed:
+        return "zatwierdzenie różnicy planu"
+    if st.plan_proposed and st.plan_reviewed and not st.plan_approved:
+        return "zatwierdzenie planu"
+    if st.plan_finished:
+        return "karta do sprawdzenia"
+    waiting = [event for (ticket, _kind), event in st.waiting.items() if ticket not in st.rejected and
+               not (st.results.get(("merge", ticket)) or {}).get("ok")]
+    if waiting:
+        return waiting[-1].get("reason") or "limit lub bloker"
+    if st.tracker_retries:
+        return "ponowienie synchronizacji z YouTrackiem"
+    if st.moved_to == "review":
+        return "karta do sprawdzenia"
+    rows = (st.plan_approved or {}).get("rows") or []
+    unfinished = [row for row in rows if row.get("id") not in st.rejected and
+                  not (st.results.get(("merge", row.get("id"))) or {}).get("ok")]
+    if unfinished and all(row.get("blockers") and any(
+            not (st.results.get(("merge", blocker)) or {}).get("ok") for blocker in row["blockers"])
+            for row in unfinished):
+        return "blokery ticketów"
+    return ""
+
+
 def decision_step(st: FlowState) -> str:
     """Krok planu czekający na decyzję ma pierwszeństwo nad równoległym ticketem."""
     for name, step in reversed(list(st.steps.items())):
@@ -329,6 +382,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
                     "reviewerProvider": reviewer.get("provider") or st.started.get("reviewerProvider") or "",
                     "reviewerModel": reviewer.get("model") or st.started.get("reviewerModel") or ""}}
     out["flow"].update({"paused": st.paused, "timeline": st.timeline,
+                        "stalledSince": st.stalled_since,
                         "waiting": [{"ticket": ticket, "kind": kind, "reason": item["reason"]}
                                     for (ticket, kind), item in st.waiting.items()]})
     out['flow']['trackerQueue'] = [
@@ -338,6 +392,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
         {"id": name, "ticket": item.get("ticket") or "", "mode": item.get("mode") or "background",
          "result": (st.finished.get(name) or {}).get("result") or "",
          "reason": (st.finished.get(name) or {}).get("reason") or "",
+         "startedTs": _epoch(item.get("ts")),
+         "lastActivityTs": _epoch((st.activity.get(name) or item).get("ts")),
          "kind": item.get("kind") or "", "executor": item.get("executor") or "",
          "canEnter": not any(other.get("worktree") == item.get("worktree") and other.get("step") != name
                              for other in st.running()) and
@@ -346,6 +402,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
         for name, item in st.steps.items()
     ]
     failures = [e for e in st.tracker_failures() if e.get('action') != 'youtrack-note']
+    if st.stalled_since:
+        return _fill(out, "waiting", "stoi — nie ma pracującego kroku ani nazwanego powodu czekania")
     if failures and not st.running():
         error = failures[-1].get('error') or 'odmowa operacji YouTracka'
         out['flow'].update(action='error', error=error, trackerError=True)

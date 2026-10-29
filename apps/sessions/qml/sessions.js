@@ -34,6 +34,14 @@ function parse(text, fallback) {
     }
 }
 
+function flowCardById(cards, id) {
+    if (!id) return null
+    for (var i = 0; i < (cards || []).length; i++) {
+        if (cards[i].id === id) return cards[i]
+    }
+    return null
+}
+
 // Tickety jednej kolumny: w toku i czekające od najświeższych, do zrobienia w kolejności planu,
 // gotowe od ostatnio skończonych.
 function column(tickets, key) {

@@ -17,6 +17,7 @@ from PyQt6.QtDBus import (QDBusConnection, QDBusMessage, QDBusPendingCallWatcher
 SERVICE = "org.tide.Daemon"
 PATH, IFACE = "/Coordination", "org.tide.Daemon.Coordination"
 AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
+BOARD_PATH, BOARD_IFACE = "/Board", "org.tide.Daemon.Board"
 
 
 def waiting_count(sessions_json: str) -> int:
@@ -31,12 +32,22 @@ def waiting_count(sessions_json: str) -> int:
     return sum(1 for s in sessions if isinstance(s, dict) and s.get("state") == "waiting")
 
 
+def flow_cards(snapshot: dict) -> list[dict]:
+    """Karty z aktywnym przepływem; ich tickety, kroki i oś są już w `derived` z usługi."""
+    if not isinstance(snapshot, dict):
+        return []
+    return [card for card in snapshot.get("cards") or []
+            if isinstance(card, dict) and isinstance(card.get("derived"), dict)
+            and isinstance(card["derived"].get("flow"), dict)]
+
+
 class Backend(QObject):
     """Most między QML a tide-daemon: JSON-y list i tablicy, akcje jako wywołania D-Bus."""
 
     coordinatorsChanged = pyqtSignal()
     boardChanged = pyqtSignal()
     sessionsChanged = pyqtSignal()
+    flowCardsChanged = pyqtSignal()
     detailChanged = pyqtSignal()
     availableChanged = pyqtSignal()
     selectedChanged = pyqtSignal()
@@ -48,6 +59,7 @@ class Backend(QObject):
         self._coordinators = "[]"
         self._board = "{}"
         self._sessions = "[]"
+        self._flow_cards = "[]"
         self._detail = "{}"
         self._available = False
         self._selected = select
@@ -58,6 +70,8 @@ class Backend(QObject):
         if data is not None:
             self._coordinators = json.dumps(data.get("coordinators") or [], ensure_ascii=False)
             self._sessions = json.dumps(data.get("sessions") or [], ensure_ascii=False)
+            self._flow_cards = json.dumps(flow_cards(data.get("boardSnapshot") or
+                                                      {"cards": data.get("flowCards") or []}), ensure_ascii=False)
             self._now = float(data.get("now") or 0)
             self._available = True
             if not self._selected and data.get("coordinators"):
@@ -69,6 +83,7 @@ class Backend(QObject):
             return
         bus.connect(SERVICE, PATH, IFACE, "Changed", self._changed)
         bus.connect(SERVICE, AGENTS_PATH, AGENTS_IFACE, "Changed", self._agents_changed)
+        bus.connect(SERVICE, BOARD_PATH, BOARD_IFACE, "Changed", self._board_changed)
         self._watcher = QDBusServiceWatcher(SERVICE, bus, QDBusServiceWatcher.WatchModeFlag.WatchForRegistration
                                             | QDBusServiceWatcher.WatchModeFlag.WatchForUnregistration, self)
         self._watcher.serviceRegistered.connect(lambda _name: self.reload())
@@ -88,6 +103,10 @@ class Backend(QObject):
     @pyqtProperty(str, notify=sessionsChanged)
     def sessionsJson(self) -> str:
         return self._sessions
+
+    @pyqtProperty(str, notify=flowCardsChanged)
+    def flowCardsJson(self) -> str:
+        return self._flow_cards
 
     @pyqtProperty(str, notify=detailChanged)
     def detailJson(self) -> str:
@@ -144,6 +163,7 @@ class Backend(QObject):
             return
         self._call(PATH, IFACE, "Coordinators", [], self._got_coordinators)
         self._call(AGENTS_PATH, AGENTS_IFACE, "Sessions", [], self._got_sessions)
+        self._load_flow_cards()
 
     @pyqtSlot(str)
     def activate(self, coordinator_id: str) -> None:
@@ -187,6 +207,23 @@ class Backend(QObject):
     @pyqtSlot()
     def _agents_changed(self) -> None:
         self._call(AGENTS_PATH, AGENTS_IFACE, "Sessions", [], self._got_sessions)
+
+    @pyqtSlot()
+    def _board_changed(self) -> None:
+        self._load_flow_cards()
+
+    def _load_flow_cards(self) -> None:
+        if self.bus is not None:
+            self._call(BOARD_PATH, BOARD_IFACE, "Snapshot", [], self._got_flow_cards)
+
+    def _got_flow_cards(self, ok: bool, value) -> None:
+        if not ok or not isinstance(value, str):
+            return
+        try:
+            cards = flow_cards(json.loads(value))
+        except ValueError:
+            cards = []
+        self._set("_flow_cards", json.dumps(cards, ensure_ascii=False), self.flowCardsChanged)
 
     def _got_coordinators(self, ok: bool, value) -> None:
         if not ok or not isinstance(value, str):

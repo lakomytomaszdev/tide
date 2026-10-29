@@ -1565,6 +1565,15 @@ Sesja kroku nie jest wierszem agenta: `AgentMonitor.hidden` (`engine.is_hidden` 
 w worktree kroku) usuwa ją z /Agents Sessions(), kafelka Praca i powiadomień; KRunner ma własny indeks i ją znajduje.
 Worktree trwających kroków i kart w toku są dla okna Worktrees „z agentem” (nie do usunięcia).
 
+Podgląd karty: kafelek Praca pokazuje liczbę trwających kroków, a Tide Sesje rozwija kartę do ticketów, kroków i osi
+zdarzeń. Panel karty podaje początek każdego trwającego kroku i ostatnią odnotowaną zmianę jego plików albo dziennika
+sesji (przy pracy najczęściej raz na minutę). Co pięć sekund usługa sprawdza karty; po trzech minutach bez kroku,
+otwartej akcji i nazwanego powodu czekania zapisuje `card.stalled`, pokazuje „stoi” i powiadamia raz. Pytanie, zgoda,
+limit, bloker, zatwierdzenie planu i karta do sprawdzenia są nazwanymi stanami czekania. Powiadomienia przepływu
+obejmują te decyzje oraz ponowiony błąd kroku; zakończone wcześniej pytanie nie powiadamia ponownie po restarcie.
+Raport poranny czyta dzienniki kart, także kart przeniesionych do Gotowych, i wymienia scalone w okresie tickety
+wraz z wykonawcą.
+
 ### Review i gałąź karty (PT-59)
 
 `StartCard` przyjmuje nazwę recenzenta z katalogu (`reviewer`); okno „Od razu” pokazuje wykonawców o innym modelu.

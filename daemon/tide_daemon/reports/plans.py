@@ -18,6 +18,8 @@ YouTracka, gdy repozytorium ma plany lokalne; każdy błąd tylko pomija dodatek
 """
 import os
 
+from ..cardflow.journal import Journal
+from ..cardflow.state import _epoch
 from ..coordination import actions, ids, repoplans
 from ..coordination import plan as plan_mod
 from ..coordination.board import STATE_WORDS
@@ -28,13 +30,19 @@ SHOWN = 12
 DESCRIPTION_MAX = 600
 
 
-def attach(projects: list, start: float, end: float, cache_file: str | None = None, tracker=None) -> None:
+def attach(projects: list, start: float, end: float, cache_file: str | None = None, tracker=None,
+           flow_root: str | None = None) -> None:
     try:
         _attach(projects, start, end, cache_file, tracker)
     except Exception as exc:  # dodatek nie może zepsuć raportu
         print(f"tide-daemon: raport: plany i tickety pominięte: {exc!r}", flush=True)
         for project in projects:
             project.plans = []
+    if flow_root:
+        try:
+            _attach_flow(projects, start, end, flow_root)
+        except Exception as exc:
+            print(f"tide-daemon: raport: dzienniki kart pominięte: {exc!r}", flush=True)
     for project in projects:
         project.conflicts = []
         if not getattr(project, "is_repo", False):
@@ -48,6 +56,45 @@ def attach(projects: list, start: float, end: float, cache_file: str | None = No
 def conflicts(path: str, tracker=None, repo_plans=None) -> list[dict]:
     """Ostrzeżenia o numerach ticketów w repozytorium (coordination/repoplans.check)."""
     return repoplans.check([path], repo_plans, tracker)
+
+
+def _attach_flow(projects: list, start: float, end: float, root: str) -> None:
+    """Zrobione tickety czyta z dziennika karty, także po przeniesieniu karty do Gotowe."""
+    by_repo = {os.path.realpath(p.path): p for p in projects if getattr(p, "is_repo", False)}
+    journal = Journal(root)
+    for card in journal.cards():
+        events = journal.read(card)
+        started = next((e for e in events if e.get("type") == "card.started"), {})
+        project = by_repo.get(os.path.realpath(started.get("repo") or "/"))
+        if project is None:
+            continue
+        rows = {}
+        for event in events:
+            if event.get("type") == "plan.approved":
+                rows.update({r.get("id"): r for r in event.get("rows") or [] if r.get("id")})
+            elif event.get("type") == "plan.revision-approved":
+                rows.update({r.get("id"): r for r in (event.get("plan") or {}).get("rows") or [] if r.get("id")})
+        steps = {e.get("ticket"): e for e in events if e.get("type") == "step.started" and
+                 e.get("kind") in ("ticket", "fix") and e.get("ticket")}
+        completed = []
+        for event in events:
+            if event.get("type") != "result" or event.get("action") != "merge" or not event.get("ok"):
+                continue
+            when = _epoch(event.get("ts"))
+            if not start <= when <= end:
+                continue
+            ident = event.get("key") or ""
+            executor = (steps.get(ident) or {}).get("executor") or "nieznany wykonawca"
+            completed.append({"id": ident, "title": (rows.get(ident) or {}).get("title") or ident,
+                              "state": "gotowe", "note": f"wykonał {executor}", "when": when})
+        if not completed:
+            continue
+        entry = _entry(f"{card} · Zrobione w okresie raportu", card, "card-flow", completed,
+                       last=max(r["when"] for r in completed))
+        entry["card"] = card
+        project.plans.append(entry)
+    for project in projects:
+        project.plans.sort(key=lambda e: (-e["active"], -e["last"]))
 
 
 def _attach(projects: list, start: float, end: float, cache_file: str | None, tracker=None) -> None:

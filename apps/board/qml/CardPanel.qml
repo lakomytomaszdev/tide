@@ -84,7 +84,7 @@ Rectangle {
         const words = {"card.started": "zlecenie", "plan.approved": "plan zatwierdzony", "step.started": "start kroku",
                        "step.finished": "koniec kroku", "step.waiting": "czeka", "review.verdict": "review",
                        "result": "scalenie", "card.paused": "karta wstrzymana", "card.resumed": "karta wznowiona",
-                       "plan.finished": "plan gotowy"}
+                       "plan.finished": "plan gotowy", "card.stalled": "karta stoi"}
         return [event.ts || "", event.ticket || event.key || "", words[event.type] || event.type,
                 event.executor || "", event.verdict || event.reason || ""].filter(x => x).join(" · ")
     }
@@ -800,14 +800,30 @@ Rectangle {
                                 Layout.fillWidth: true
                                 spacing: 8
                                 readonly property var flowStep: modelData
-                                Text {
+                                ColumnLayout {
                                     Layout.fillWidth: true
-                                    text: [flowStep.ticket, flowStep.kind === "review" ? "review" : flowStep.kind === "fix" ? "poprawki" : "ticket", flowStep.executor || "", flowStep.result || (flowStep.mode === "interactive" ? "w Konsoli" : "w toku")].join(" · ")
-                                    textFormat: Text.PlainText
-                                    color: Tide.Tokens.textMuted
-                                    font.family: Tide.Theme.uiFamily
-                                    font.pixelSize: 12
-                                    elide: Text.ElideRight
+                                    spacing: 1
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: [flowStep.ticket, flowStep.kind === "review" ? "review" : flowStep.kind === "fix" ? "poprawki" : "ticket", flowStep.executor || "", flowStep.result || (flowStep.mode === "interactive" ? "w Konsoli" : "w toku")].join(" · ")
+                                        textFormat: Text.PlainText
+                                        color: Tide.Tokens.textMuted
+                                        font.family: Tide.Theme.uiFamily
+                                        font.pixelSize: 12
+                                        elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        objectName: "flowStepTimes"
+                                        Layout.fillWidth: true
+                                        visible: !flowStep.result && Boolean(flowStep.startedTs)
+                                        text: "od " + Logic.when(flowStep.startedTs, panel.nowTs)
+                                              + " · ostatnia zmiana " + Logic.when(flowStep.lastActivityTs || flowStep.startedTs, panel.nowTs)
+                                        textFormat: Text.PlainText
+                                        color: Tide.Tokens.textMuted
+                                        font.family: Tide.Theme.uiFamily
+                                        font.pixelSize: 11
+                                        elide: Text.ElideRight
+                                    }
                                 }
                                 PillButton {
                                     objectName: "enterStep"

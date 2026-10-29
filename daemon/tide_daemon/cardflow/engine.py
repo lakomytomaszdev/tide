@@ -48,7 +48,7 @@ from .planediting import PlanEditing
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for
 from .journal import Journal
-from .state import FlowState, derived, fold, ticket_of, graph_waves, attention_step, decision_step
+from .state import FlowState, derived, fold, ticket_of, graph_waves, attention_step, decision_step, guard_reason, _epoch
 from .tracker import TrackerOutbox
 
 GUARD_MINUTES = 15.0
@@ -1037,6 +1037,11 @@ class FlowEngine(PlanEditing):
                 self._tick_card(card, st)
             except Exception as exc:  # jedna karta nie zatrzymuje pozostałych
                 print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
+            try:
+                self._guard_card(card)
+                self._queue_notices(card)
+            except Exception as exc:
+                print(f"tide-daemon: przepływ karty {card}: strażnik/powiadomienie: {exc!r}", flush=True)
             st = fold(self.journal.read(card))
             busy |= {s["worktree"] for s in st.running() if s.get("worktree")}
             busy |= {s["worktree"] for s in st.steps.values() if s.get("worktree") and
@@ -1893,8 +1898,14 @@ class FlowEngine(PlanEditing):
         if seen is not None and now - seen[2] < min(self.guard_every, limit / 10.0):
             return
         mark = self._progress_mark(step)
-        if seen is None or seen[0] != mark:
+        if seen is None:
             self.watch[name] = (mark, now, now)
+            return
+        if seen[0] != mark:
+            self.watch[name] = (mark, now, now)
+            activity = (fold(self.journal.read(card)).activity.get(name) or step).get("ts")
+            if self.clock() - _epoch(activity) >= 60:
+                self.journal.append(card, "step.activity", step=name, ticket=step.get("ticket") or "")
             return
         self.watch[name] = (mark, seen[1], now)
         if now - seen[1] >= limit:
@@ -1902,6 +1913,18 @@ class FlowEngine(PlanEditing):
                   flush=True)
             stalled = datetime.fromtimestamp(self.clock() - (now - seen[1]), timezone.utc).isoformat(timespec="seconds")
             self._stop(card, step, "error", "no-progress", stalled_since=stalled)
+
+    def _guard_card(self, card: str) -> None:
+        """Po trzech minutach bez pracy i bez nazwanego powodu czekania zapisuje pojedynczy alarm."""
+        st = fold(self.journal.read(card))
+        if guard_reason(st) != "" or st.stalled_since or not st.last_activity_ts:
+            return
+        item = self.store.load().cards.get(card_num(card))
+        if item is None or item.column in ("done", "archived") or self.clock() - st.last_activity_ts < 180:
+            return
+        event = self.journal.append(card, "card.stalled", reason=st.flow_error or "brak kroku i powodu czekania")
+        self._notices.append({"card": card, "step": f"stalled:{event['seq']}", "ticket": "", "result": "stalled",
+                              "detail": event["reason"]})
 
     def _progress_mark(self, step: dict) -> tuple:
         """Odcisk postępu: pliki worktree (bez .git) i dziennik sesji kroku."""
@@ -2012,6 +2035,30 @@ class FlowEngine(PlanEditing):
             st.step_notices.add(name)
             self._notices.append({"card": card, "step": name, "ticket": step.get("ticket") or "",
                                   "result": result, "detail": detail or ""})
+        st = fold(self.journal.read(card))
+
+        def once(key: str, result: str, detail: str = "") -> None:
+            if key in st.flow_notices:
+                return
+            self.journal.append(card, "flow.notice", key=key, result=result)
+            st.flow_notices.add(key)
+            self._notices.append({"card": card, "step": key, "ticket": "", "result": result,
+                                  "detail": detail})
+
+        if st.plan_revision and st.plan_revision.get("pending") and st.plan_reviewed:
+            once(f"revision:{st.plan_revision.get('seq')}", "plan", "Różnica planu czeka na zatwierdzenie")
+        elif st.plan_proposed and st.plan_reviewed and not st.plan_approved:
+            once(f"plan:{st.plan_proposed.get('seq')}", "plan", "Plan czeka na zatwierdzenie")
+        if st.plan_finished and not st.card_finished and not st.running():
+            once(f"review:{st.plan_approved.get('seq') if st.plan_approved else st.last_seq}",
+                 "review", "Karta czeka na sprawdzenie")
+        elif st.moved_to == "review" and not st.card_finished and not st.running():
+            moved = next((e for e in reversed(self.journal.read(card)) if e.get("type") == "card.moved" and
+                          e.get("to") == "review"), {})
+            once(f"review:{moved.get('seq') or st.last_seq}", "review", "Karta czeka na sprawdzenie")
+        for wait in st.waiting.values():
+            if "limit" in (wait.get("reason") or "").lower():
+                once(f"limit:{wait.get('seq')}", "limit", wait.get("reason") or "Limit dostawcy")
 
     @staticmethod
     def _result(path: str) -> dict:

@@ -24,6 +24,11 @@ Item {
         return value && value.id ? value : null
     }
     readonly property var sessions: backend ? Logic.parse(backend.sessionsJson, []) : []
+    readonly property var flowCards: backend ? Logic.parse(backend.flowCardsJson, []) : []
+    onFlowCardsChanged: {
+        if (page.selectedFlowId && Logic.flowCardById(flowCards, page.selectedFlowId)) return
+        page.selectedFlowId = !view.coordinators.length && flowCards.length ? flowCards[0].id : ""
+    }
     readonly property var detail: {
         if (!backend) return null
         const value = Logic.parse(backend.detailJson, null)
@@ -53,11 +58,15 @@ Item {
         coordinators: view.coordinators
         board: view.board
         sessions: view.sessions
+        flowCards: view.flowCards
         detail: view.detail
         available: view.backend ? view.backend.available : false
         selectedId: view.backend ? view.backend.selected : ""
         canDiff: view.backend ? view.backend.canDiff : false
-        onSelectRequested: id => view.backend.select(id)
+        onSelectRequested: id => {
+            page.selectedFlowId = ""
+            view.backend.select(id)
+        }
         onActivateRequested: id => view.backend.activate(id)
         onRefreshRequested: force => view.backend.refresh(force)
         onDiffRequested: (id, key) => view.backend.openDiff(id, key)
@@ -70,6 +79,7 @@ Item {
             const result = view.previewValue("result")
             if (ticket !== "") selectedKey = ticket
             if (result !== "") showResult(result)
+            if (!view.coordinators.length && view.flowCards.length) selectedFlowId = view.flowCards[0].id
         }
     }
 
