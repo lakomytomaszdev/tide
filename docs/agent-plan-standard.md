@@ -1,7 +1,7 @@
 # Standard planu pracy agentów (Tide)
 
-Wersja 1.1, 27.10.2026 (zgodna wstecz z wersją 1: klucz `card` i plany w repozytorium tablicy Tide
-są opcjonalne, a plan bez nich działa jak dotąd). Ten dokument jest wzorcem, do którego odsyłają pliki `CLAUDE.md` i `AGENTS.md`
+Wersja 1.2, 29.10.2026 (zgodna wstecz z wersjami 1 i 1.1: dodatkowe kolumny są opcjonalne,
+a plany z sześcioma kolumnami działają jak dotąd). Ten dokument jest wzorcem, do którego odsyłają pliki `CLAUDE.md` i `AGENTS.md`
 projektów. Plan czyta tide-daemon: tablica w oknie **Tide Sesje**, postęp koordynatora w widżecie
 agentów i sekcja „Plany i tickety” w raporcie porannym (opis: [tide-daemon.md](tide-daemon.md#koordynacja),
 uzasadnienie: decyzja 50 w [decisions.md](decisions.md)).
@@ -103,7 +103,7 @@ Jeden numer to zawsze jedno zadanie — w całym repozytorium i w trackerze. Dla
 
 ## Tabela
 
-Pod frontmatterem jedna tabela Markdown z dokładnie tym nagłówkiem:
+Pod frontmatterem jedna tabela Markdown z sześcioma wymaganymi kolumnami:
 
 ```markdown
 | Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |
@@ -120,6 +120,26 @@ Pod frontmatterem jedna tabela Markdown z dokładnie tym nagłówkiem:
 | `Gałąź` | gałąź pracy (może być w `` `…` ``), z ID ticketu małymi literami |
 | `Agent` | kto pracuje: typ podagenta (`implementer`, `code-reviewer`…) albo pusty |
 | `Uwagi` | jedno zdanie: powód czekania, wynik review, decyzja |
+
+**Wersja 1.2:** na końcu tabeli mogą dojść, w tej kolejności, kolumny `Klasa`, `Review`, `Blokery`.
+Można użyć pierwszej, pierwszych dwóch albo wszystkich trzech. Parser Sesji i raportu czyta oba warianty;
+plany sześciokolumnowe zachowują dotychczasowe znaczenie.
+
+| Kolumna 1.2 | Opis |
+| --- | --- |
+| `Klasa` | `lekki`, `standard`, `mocny` albo `lokalny`; bez kolumny domyślnie `standard` przy zatwierdzaniu karty |
+| `Review` | nazwa recenzenta z katalogu wykonawców; gdy pusta, Tide dobiera inny model tego samego dostawcy |
+| `Blokery` | ID ticketów z tego planu, oddzielone przecinkiem; przed zatwierdzeniem mogą mieć postać `#1`, `#2` |
+
+Propozycja planu karty ma numery robocze `#1`, `#2` itd. oraz plik Markdown `tickets/1.md`,
+`tickets/2.md` itd. obok pliku planu. Każda kartka zawiera co najmniej jeden punkt kryteriów
+`- [ ] …`; osobny nagłówek „Kryteria akceptacji” jest opcjonalny, zgodnie z formatem lokalnym
+`to-tickets`. Usługa sprawdza wykonawców, kartki, blokery, cykle i jedną tabelę przed
+pokazaniem planu do zatwierdzenia. Numery `PREFIKS-n` powstają dopiero po „Zatwierdź plan”. Dziennik
+karty zapisuje mapę `#n → ID`, a zatwierdzony plan i kartki z ID trafiają na gałąź karty. Plan w tym
+worktree czytają Sesje, raport i kontrola numerów razem z innymi planami repozytorium.
+Usługa aktualizuje `Stan` oraz `updated` w zatwierdzonym planie po delegowaniu, wyniku kroku,
+review i scaleniu ticketu.
 
 **Stany:**
 

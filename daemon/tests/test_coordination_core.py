@@ -130,6 +130,21 @@ class CodexTest(World):
 
 
 class PlanTest(unittest.TestCase):
+    def test_standard_12_columns_and_legacy_table(self):
+        head = "---\ntide-plan: 1\ntitle: X\ntracker: local\nticket-prefix: PT\n---\n"
+        modern = ("| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |\n"
+                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+                  "| #1 | Pierwszy | todo | | Sonnet | uzasadnienie | standard | Opus | |\n"
+                  "| #2 | Drugi | todo | | Opus | trudny | mocny | Sonnet | #1, PT-4 |\n")
+        parsed = plan_mod.parse(head + modern)
+        self.assertEqual(parsed.errors, [])
+        self.assertEqual(parsed.tables, 1)
+        self.assertEqual((parsed.rows[1].work_class, parsed.rows[1].reviewer, parsed.rows[1].blockers),
+                         ("mocny", "Sonnet", ("#1", "PT-4")))
+        legacy = plan_mod.parse(head + "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |\n"
+                                "| --- | --- | --- | --- | --- | --- |\n| PT-1 | Stary | todo | | | |\n")
+        self.assertEqual((legacy.errors, legacy.tables, legacy.rows[0].blockers), ([], 1, ()))
+
     def test_valid_plan(self):
         text = F.PLAN.format(url="http://10.20.1.159:8111/", session="abc", updated="2026-10-26T10:00:00Z")
         plan = plan_mod.parse(text, "/r/docs/agents/plans/2026-10-26-release.md")

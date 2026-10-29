@@ -1704,6 +1704,36 @@ out["legacy"] = len(calls()) - n
         self.assertEqual(out["legacy"], 0, "karta dawnego przepływu jak dotąd")
 
 
+class PlanPanelTest(ProbeCase):
+    def test_plan_from_snapshot_shows_waves_and_approval_calls_service(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "plan do zatwierdzenia",
+                                   "flow": {"entry": "plan", "plan": {
+                                       "status": "pending", "errors": [],
+                                       "waves": [["#1"], ["#2"]],
+                                       "rows": [
+                                           {"workId": "#1", "title": "Pierwszy", "executor": "Sonnet",
+                                            "reviewer": "Opus", "blockers": [], "note": "pilne",
+                                            "cardPath": "/board/flow/K-6/plan/tickets/1.md"},
+                                           {"workId": "#2", "title": "Drugi", "executor": "Codex mocny",
+                                            "reviewer": "Codex Astra", "blockers": ["#1"], "note": "po pierwszym",
+                                            "cardPath": "/board/flow/K-6/plan/tickets/2.md"}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["entries"] = js("page.cardPanel.planEntries().map(r => [r.wave, r.workId, r.executor, r.reviewer, r.blockers])")
+out["shown"] = [obj("cardPlanProposal").property("visible"), obj("cardPlanApprove").property("visible")]
+click(at(FIND + "(page.cardPanel, 'cardPlanApprove')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["entries"], [[1, "#1", "Sonnet", "Opus", []],
+                                          [2, "#2", "Codex mocny", "Codex Astra", ["#1"]]])
+        self.assertEqual(out["shown"], [True, True])
+        self.assertEqual(out["call"], ["ApproveCardPlan", "K-6"])
+
+
 class LaunchReviewTest(ProbeCase):
     """PT-43 po review: upuszczenie pliku na pole zadania, Tab do „Zrób zrzut”, schowek z tekstem i obrazem,
     otwarcie okna w trakcie startu, Start bez odpowiedzi, Defaults po otwarciu okna."""

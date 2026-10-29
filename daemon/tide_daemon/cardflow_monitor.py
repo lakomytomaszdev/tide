@@ -98,6 +98,21 @@ class CardFlowMonitor(QObject):
         if not self._submit(lambda: self.engine.resolve_review(card_id, choice), answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
+    def approve_plan(self, card_id: str, reply) -> None:
+        """Zatwierdzenie planu z panelu karty, w tym samym szeregowym wątku co kroki."""
+        def answer(future):
+            try:
+                result = future.result()
+            except FlowError as exc:
+                result = _failure(exc.code, str(exc))
+            except Exception as exc:
+                print(f"tide-daemon: przepływ karty: ApproveCardPlan: {exc!r}", flush=True)
+                result = _failure("internal", "błąd usługi — szczegóły w dzienniku")
+            reply(json.dumps(result, ensure_ascii=False))
+
+        if not self._submit(lambda: self.engine.approve_plan(card_id), answer):
+            reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
+
     def tick(self) -> None:
         if self._ticking:
             return

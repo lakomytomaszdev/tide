@@ -357,6 +357,10 @@ class Backend(QObject):
     def resolveCardReview(self, tag: str, card_id: str, choice: str) -> None:
         self._write(tag, "ResolveCardReview", [card_id, choice])
 
+    @pyqtSlot(str, str)
+    def approveCardPlan(self, tag: str, card_id: str) -> None:
+        self._write(tag, "ApproveCardPlan", [card_id])
+
     # --- zrzuty ekranu i model w oknie uruchomienia (PT-43) ------------------------------------
 
     @pyqtSlot(result=bool)

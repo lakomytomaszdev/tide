@@ -866,8 +866,9 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `YouTrackIssues(b refresh)` | `→ s` | zgłoszenia użytkownika do importu (PT-7): `{ok, issues: [{id, summary, project, state, updated, url, card, boardProject, boardProjectName, new}], error}`; odpowiedź po pobraniu w wątku roboczym (`refresh: false` — ostatnia lista z pamięci); pokazane zgłoszenia liczą się jako przejrzane |
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
-| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty (PT-58/59/60), wejście „Od razu”: `{entry: "now", executor, reviewer?, preferredProvider?, images?}` → `{ok, id, ticket, branch, worktree, cardBranch, cardWorktree, step, session, executor}` albo `{ok: false, error, message}`; waliduje katalog, trasę wykonania, dostawcę i inny model recenzenta — opis w „Przepływ karty: „Od razu”” |
+| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?}` albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
+| `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
 
@@ -1440,6 +1441,22 @@ qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.CreateCard '{"title": "Ekspo
 /usr/bin/python3 daemon/tide-daemon.py --print-board            # migawka bez D-Bus, niczego nie zakłada
 /usr/bin/python3 daemon/tide-daemon.py --print-board --board-dir /tmp/tablica-testowa
 ```
+
+### Zatwierdzanie planu karty (PT-78)
+
+`StartCard(K-12, {"entry":"plan","planPath":"/ścieżka/do/plan.md"})` przyjmuje propozycję
+z repozytorium projektu, dokumentów tablicy albo katalogu wyjściowego kroku tej karty. Kartki leżą
+w `tickets/1.md`, `tickets/2.md` obok planu. Usługa sprawdza standard 1.2, wykonawców, recenzentów,
+kartki z kryteriami, blokery i cykle. Zapisuje `plan.checked` z listą błędów albo `plan.proposed`
+z migawką w dzienniku karty; poprawny plan daje kolumnę „Czeka na mnie” i fale w panelu.
+Na tym etapie numery `PT-n` nie powstają.
+
+`ApproveCardPlan(K-12)` rezerwuje numery pod trwałymi kluczami żądania, zapisuje `plan.approved`
+z mapą `#n → PT-n` i zmienia nazwy kartek w migawce. Zatwierdzony plan 1.2 i kartki są commitowane
+na gałęzi karty pod blokadą repozytorium, przez piaskownicę gita. Dzięki temu istniejący odczyt
+planów ze wszystkich worktree widzi nowe ID w Sesjach, raporcie i kontroli numerów. Ticket startuje
+dopiero po scaleniu wszystkich swoich blokerów; każdy przechodzi review i scalenie z PT-59.
+Przerwanie między rezerwacją, wpisem mapy i commitem planu odtwarza ten sam plan i numery.
 
 ### Przepływ karty: „Od razu” (PT-58)
 

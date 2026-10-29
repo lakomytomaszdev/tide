@@ -39,6 +39,13 @@ class FlowState:
     verdicts: dict = field(default_factory=dict)    # (ticket, runda) → review.verdict
     review_questions: dict = field(default_factory=dict)
     review_decisions: dict = field(default_factory=dict)
+    plan_checked: dict | None = None
+    plan_proposed: dict | None = None
+    plan_approved: dict | None = None
+    plan_finished: bool = False
+    plan_change_seq: int = 0
+    plan_change_ts: str = ""
+    assignments: dict = field(default_factory=dict)  # ticket → autor i recenzent z planu
     last_step: str = ""
     paused: bool = False
     card_finished: bool = False
@@ -74,7 +81,8 @@ class FlowState:
                              (self.steps.get(name) or {}).get("ticket") not in self.rejected and
                              ("merge", (self.steps.get(name) or {}).get("ticket")) not in self.results
                              for name, done in self.finished.items())
-        return bool(self.running() or self.merge_pending() or self.open_intents() or pending_review)
+        plan_pending = self.plan_proposed is not None and not self.plan_finished
+        return bool(self.running() or self.merge_pending() or self.open_intents() or pending_review or plan_pending)
 
 
 def fold(events: list[dict]) -> FlowState:
@@ -86,6 +94,10 @@ def fold(events: list[dict]) -> FlowState:
             st.started, st.paused, st.card_finished, st.moved_to = e, False, False, ""
             st.store_column = e.get("column") or ""
             st.store_move_id = e.get("moveId") or ""
+            st.plan_checked = st.plan_proposed = st.plan_approved = None
+            st.plan_finished = False
+            st.plan_change_seq, st.plan_change_ts = 0, ""
+            st.assignments = {}
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
         elif kind == "result":
@@ -105,6 +117,16 @@ def fold(events: list[dict]) -> FlowState:
             st.review_questions[(e.get("ticket"), e.get("round"))] = e
         elif kind == "review.decision":
             st.review_decisions[(e.get("ticket"), e.get("round"))] = e
+        elif kind == "plan.checked":
+            st.plan_checked = e
+        elif kind == "plan.proposed":
+            st.plan_proposed = e
+        elif kind == "plan.approved":
+            st.plan_approved = e
+        elif kind == "plan.finished":
+            st.plan_finished = True
+        elif kind == "ticket.assigned":
+            st.assignments[e.get("ticket")] = e
         elif kind == "flow.error":
             st.flow_error = e.get("error") or ""
         elif kind == "card.paused":
@@ -122,20 +144,27 @@ def fold(events: list[dict]) -> FlowState:
                 st.paused = False
         elif kind == "ticket.rejected":
             st.rejected.add(e.get("ticket"))
+        if st.plan_approved is not None and (kind in (
+                "plan.approved", "ticket.assigned", "step.started", "step.finished", "review.verdict",
+                "review.question", "review.decision", "ticket.rejected") or
+                (kind == "result" and e.get("action") == "merge")):
+            st.plan_change_seq = int(e.get("seq") or 0)
+            st.plan_change_ts = e.get("ts") or ""
     return st
 
 
 def ticket_of(st: FlowState) -> dict:
     """Ostatni ticket karty: {id, title, branch, worktree, cardBranch, cardWorktree} z wyników akcji."""
     out = {"id": "", "title": "", "branch": "", "worktree": "", "cardBranch": "", "cardWorktree": ""}
+    wanted = (st.steps.get(st.last_step) or {}).get("ticket") or ""
     for (action, _key), res in st.results.items():
         if not res.get("ok"):
             continue
-        if action == "reserve":
+        if action == "reserve" and (not wanted or res.get("ticket") == wanted):
             out["id"], out["title"] = res.get("ticket") or "", res.get("title") or ""
         elif action == "card-branch":
             out["cardBranch"], out["cardWorktree"] = res.get("branch") or "", res.get("worktree") or ""
-        elif action == "ticket-branch" and res.get("ticket") == out["id"]:
+        elif action == "ticket-branch" and res.get("ticket") == (wanted or out["id"]):
             out["branch"], out["worktree"] = res.get("branch") or "", res.get("worktree") or ""
     return out
 
@@ -158,6 +187,27 @@ def derived(st: FlowState, card: dict) -> dict | None:
            "flow": {"ticket": ident, "step": st.last_step, "executor": executor, "entry": st.started.get("entry") or "",
                     "result": done.get("result") or "", "cardBranch": ticket["cardBranch"],
                     "branch": ticket["branch"] or step.get("branch") or ""}}
+    if st.started.get("entry") == "plan":
+        proposal = st.plan_proposed or {}
+        approved = st.plan_approved or {}
+        rows = approved.get("rows") or proposal.get("rows") or []
+        waves = approved.get("waves") or proposal.get("waves") or []
+        finished_ids = {row.get("id") for row in rows if ("merge", row.get("id")) in st.results and
+                        st.results[("merge", row.get("id"))].get("ok")}
+        out["total"], out["done"] = len(rows), len(finished_ids)
+        out["flow"]["plan"] = {"status": "done" if st.plan_finished else
+                             "approved" if st.plan_approved else "pending" if st.plan_proposed else "invalid",
+                             "rows": rows, "waves": waves,
+                             "errors": (st.plan_checked or {}).get("errors") or []}
+        if not st.plan_proposed:
+            return _fill(out, "waiting", "propozycja planu wymaga poprawy")
+        if not st.plan_approved:
+            out["question"] = "Zatwierdzić plan?"
+            return _fill(out, "waiting", "plan do zatwierdzenia")
+        if st.plan_finished:
+            return _fill(out, "review", f"✓ plan karty: {len(finished_ids)}/{len(rows)} ticketów scalonych")
+        if not st.last_step and not st.open_intents():
+            return _fill(out, "progress", "uruchamiam pierwszy ticket planu")
     verdict = next((v for (ticket_id, _round), v in reversed(list(st.verdicts.items())) if ticket_id == ident), None)
     if verdict:
         out["flow"].update({key: verdict[key] for key in ("verdict", "blockers", "majors", "nits", "round")})

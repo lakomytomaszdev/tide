@@ -151,6 +151,32 @@ class FlowCase(unittest.TestCase):
             return json.load(fh)
 
 
+class PlanDbusTest(FlowCase):
+    def test_plan_is_proposed_and_approved_through_private_board_bus(self):
+        card = self.card(description="Plan z pliku")
+        folder = os.path.join(self.repo, "docs", "agents", "plans")
+        os.makedirs(os.path.join(folder, "tickets"), exist_ok=True)
+        path = os.path.join(folder, "2026-10-29-card.md")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("---\ntide-plan: 1\ncard: " + card +
+                     "\ntracker: local\nticket-prefix: PT\n---\n"
+                     "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |\n"
+                     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+                     "| #1 | Pierwszy | todo | | Sonnet | | standard | Opus | |\n")
+        with open(os.path.join(folder, "tickets", "1.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Ticket\n\nATRAPA: gotowe\n\n## Kryteria akceptacji\n\n- [ ] Działa.\n")
+        proposed = self.call("StartCard", card, json.dumps({"entry": "plan", "planPath": path}))
+        self.assertTrue(proposed["ok"], proposed)
+        self.assertEqual(self.results(card, "reserve"), [])
+        self.assertEqual(self.wait_column(card, "waiting")["derived"]["flow"]["plan"]["waves"], [["#1"]])
+        approved = self.call("ApproveCardPlan", card)
+        self.assertTrue(approved["ok"], approved)
+        self.assertIn("#1", approved["map"])
+        self.assertEqual(self.call("ApproveCardPlan", card)["map"], approved["map"])
+        self.wait_column(card, "review", timeout=40)
+        self.assertEqual([r["ticket"] for r in self.results(card, "reserve")], [approved["map"]["#1"]])
+
+
 class NowTest(FlowCase):
     def test_review_question_is_answered_through_board_dbus(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 3")
