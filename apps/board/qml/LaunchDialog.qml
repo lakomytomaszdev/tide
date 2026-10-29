@@ -1001,9 +1001,15 @@ Rectangle {
                                 }
                             }
                             Text {
+                                objectName: "launchCheckNote"
                                 Layout.fillWidth: true
-                                text: dialog.manualCheck ? "Po review AI agent zostawi listę „Co przetestować ręcznie i jak” i nie scali gałęzi."
-                                                         : "Wystarczy review AI — agent kończy, gdy recenzent zatwierdzi."
+                                text: dialog.entry === "now"
+                                      ? (dialog.manualCheck
+                                         ? "Po scaleniu ticketu karta trafi do Do sprawdzenia i poczeka na Twój test ręczny."
+                                         : "Po zakończeniu ticket zostanie scalony z gałęzią karty i trafi do Do sprawdzenia.")
+                                      : (dialog.manualCheck
+                                         ? "Po review AI agent zostawi listę „Co przetestować ręcznie i jak” i nie scali gałęzi."
+                                         : "Wystarczy review AI — agent kończy, gdy recenzent zatwierdzi.")
                                 textFormat: Text.PlainText
                                 color: Tide.Tokens.textMuted
                                 font.family: Tide.Theme.uiFamily
