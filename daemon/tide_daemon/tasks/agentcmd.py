@@ -106,6 +106,7 @@ class Step:
     session_id: str = ""            # Claude Code: z góry (--session-id); Codex nadaje sam
     resume: bool = False
     model: str = ""
+    effort: str = ""               # wysiłek rozumowania tylko dla programu codex
     local: "local_mod.LocalAgent | None" = None
     allowed_tools: tuple = ()
     disallowed_tools: tuple = ()
@@ -209,6 +210,8 @@ def _check(step: Step, home: str) -> None:
     """Katalogi kroku: nie w katalogu tymczasowym ani w `~/.local/share` (Codex ze snapa ich nie widzi), nie w ukrytym
     katalogu domowym (też nie), katalog tymczasowy Claude Code poza `~` (pod `~` zapis do niego odrzucało
     piaskownicę), worktree nie pod `/tmp/claude-<uid>` (to $TMPDIR piaskownicy: zapis tam jest zapisem obok worktree)."""
+    if step.effort and (step.tool != "codex" or step.effort not in ("low", "medium", "high", "xhigh")):
+        raise StepError("wysiłek rozumowania: low, medium, high albo xhigh — tylko Codex")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", step.step_id):
         raise StepError(f"identyfikator kroku: 1–64 znaków [A-Za-z0-9_-], bez innych: {step.step_id!r}")
     for what, path in (("worktree", step.worktree), ("repo", step.repo), ("step_dir", step.step_dir)):
@@ -344,7 +347,8 @@ def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
     servers = list_codex_mcp(step.binary) if step.codex_mcp is None else step.codex_mcp
     mcp = [arg for name in servers for arg in ("-c", f"mcp_servers.{_toml_key(name)}.enabled=false")]
     # Opcje przed podpoleceniem: `codex exec resume <id> --cd …` kończy się „unexpected argument” (sprawdzone).
-    argv = [step.binary, "exec", *model, "--json", "--cd", step.worktree, "--sandbox", "workspace-write",
+    effort = ["-c", f'model_reasoning_effort="{step.effort}"'] if step.effort else []
+    argv = [step.binary, "exec", *model, *effort, "--json", "--cd", step.worktree, "--sandbox", "workspace-write",
             "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots, ensure_ascii=False),
             "-c", 'approval_policy="never"', *mcp,
             *(["resume", step.session_id] if step.resume else []), "-"]

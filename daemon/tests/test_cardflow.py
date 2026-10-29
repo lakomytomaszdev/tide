@@ -141,6 +141,87 @@ class FlowInProcess(unittest.TestCase):
 
 
 class NowInProcessTest(FlowInProcess):
+    def test_codex_executor_completes_from_start_to_review(self):
+        card_id = self.card()
+        reply = self.start(card_id, executor="Codex mocny", preferredProvider="openai")
+        self.assertTrue(reply["ok"], reply)
+        self.wait_column(card_id, "review")
+        started = self.of(card_id, "step.started")[0]
+        self.assertEqual((started["program"], started["model"], started["provider"]),
+                         ("codex", "gpt-6.1-sol", "openai"))
+        with open(os.path.join(started["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            call = json.load(fh)
+        self.assertEqual(call["argv"][0], "exec")
+        self.assertIn("--model=gpt-6.1-sol", call["argv"])
+        self.assertIn('model_reasoning_effort="high"', call["argv"])
+        self.assertEqual(self.of(card_id, "card.started")[0]["preferredProvider"], "openai")
+        self.assertEqual(self.of(card_id, "step.finished")[0]["result"], "done")
+
+    def test_local_executor_refuses_offline_then_runs_only_on_local_server(self):
+        from tide_daemon.models import config as models_config
+        path = os.path.join(self.base, "config", "tide", "models.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"roles": {"agent": "local:qwen3-coder:30b"}, "agentProgram": "codex",
+                       "executors": [{"name": "Lokalny", "provider": "local", "classes": ["lokalny"]},
+                                     {"name": "Lokalny recenzent", "provider": "local", "program": "codex",
+                                      "model": "qwen2.5-coder:7b", "endpoint": "local",
+                                      "classes": ["lokalny"]}]}, fh)
+        engine = self.flow.engine
+        engine.models_config = lambda: models_config.load(path)
+        card_id = self.card()
+        engine.model_probe = lambda endpoint: {"online": False, "error": "", "models": []}
+        refused_unchecked = self.start(card_id, executor="Lokalny", preferredProvider="local")
+        self.assertEqual((refused_unchecked["ok"], refused_unchecked["error"]),
+                         (False, "local-unavailable"), refused_unchecked)
+        engine.model_probe = lambda endpoint: {"online": False, "error": "serwer nie odpowiada", "models": []}
+        refused = self.start(card_id, executor="Lokalny", preferredProvider="local")
+        self.assertEqual((refused["ok"], refused["error"]), (False, "local-unavailable"), refused)
+        self.assertEqual(self.events(card_id), [])
+        engine.model_probe = lambda endpoint: {"online": True, "kind": "ollama",
+                                                "models": [{"name": "qwen3-coder:30b"},
+                                                           {"name": "qwen2.5-coder:7b"}]}
+        reply = self.start(card_id, executor="Lokalny", preferredProvider="local")
+        self.assertTrue(reply["ok"], reply)
+        self.wait_column(card_id, "review")
+        started = self.of(card_id, "step.started")[0]
+        self.assertEqual((started["program"], started["provider"], started["local"]),
+                         ("codex", "local", True))
+        reviewer = next(s for s in self.of(card_id, "step.started") if s["kind"] == "review")
+        self.assertEqual((reviewer["executor"], reviewer["provider"], reviewer["local"]),
+                         ("Lokalny recenzent", "local", True))
+        with open(os.path.join(started["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            call = json.load(fh)
+        self.assertIn("--oss", call["argv"])
+        self.assertEqual(call["env"]["CODEX_OSS_BASE_URL"], "http://127.0.0.1:11434/v1")
+        self.assertNotIn("OPENAI_API_KEY", call["env"])
+
+    def test_other_provider_uses_its_endpoint_without_putting_token_in_argv_or_journal(self):
+        from tide_daemon.models import config as models_config
+        token = os.path.join(self.base, "config", "tide", "other.token")
+        with open(token, "w", encoding="utf-8") as fh:
+            fh.write("sekret-testowy\n")
+        os.chmod(token, 0o600)
+        path = os.path.join(self.base, "config", "tide", "models.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"providers": {"other": {"label": "Inny", "url": "https://example.test/v1",
+                                                 "api": "openai", "tokenFile": token}},
+                       "executors": [{"name": "Inny", "program": "codex", "model": "model-inny",
+                                      "provider": "other", "classes": ["standard"]},
+                                     {"name": "Inny recenzent", "program": "codex", "model": "model-drugi",
+                                      "provider": "other", "classes": ["mocny"]}]}, fh)
+        self.flow.engine.models_config = lambda: models_config.load(path)
+        card_id = self.card()
+        reply = self.start(card_id, executor="Inny", preferredProvider="other")
+        self.assertTrue(reply["ok"], reply)
+        self.wait_column(card_id, "review")
+        step = self.of(card_id, "step.started")[0]
+        with open(os.path.join(step["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            call = json.load(fh)
+        self.assertIn('model_provider="tide-other"', call["argv"])
+        self.assertIn('model_providers.tide-other.base_url="https://example.test/v1"', call["argv"])
+        self.assertNotIn("sekret-testowy", json.dumps(call["argv"]))
+        self.assertNotIn("sekret-testowy", json.dumps(self.events(card_id)))
+
     def test_two_cards_in_one_repo_reserve_different_ticket_numbers(self):
         first = self.card(title="Ten sam tytuł")
         second = self.card(title="Ten sam tytuł")
@@ -272,12 +353,13 @@ class NowInProcessTest(FlowInProcess):
         self.board.move_card(card_id, "done", 0)
         self.assertTrue(wait_until(lambda: self.of(card_id, "card.finished"), timeout=20))
 
-    def test_only_claude_executors_from_the_catalog_and_nothing_left_behind(self):
+    def test_unknown_and_unavailable_executors_leave_no_artifacts(self):
         card_id = self.card()
-        for name, code in (("Nieznany", "unknown-executor"), ("Codex standard", "unsupported-executor"),
-                           ("Lokalny", "unsupported-executor")):
+        for name, code in (("Nieznany", "unknown-executor"), ("Lokalny", "local-unavailable")):
             reply = self.start(card_id, executor=name)
             self.assertEqual((reply["ok"], reply["error"]), (False, code), reply)
+        mismatch = self.start(card_id, executor="Sonnet", preferredProvider="openai")
+        self.assertEqual((mismatch["ok"], mismatch["error"]), (False, "provider-mismatch"), mismatch)
         reply = self.start(card_id, entry="planning")
         self.assertEqual((reply["ok"], reply["error"]), (False, "bad-request"), reply)
         self.assertEqual(self.events(card_id), [])
@@ -314,6 +396,28 @@ class NowInProcessTest(FlowInProcess):
 
 class GuardInProcessTest(FlowInProcess):
     guard_minutes = 0.05   # 3 s
+
+    def test_codex_guard_keeps_last_session_message(self):
+        root = os.path.join(self.base, "codex-data")
+        self.flow.engine.codex_roots = [root]
+        card_id = self.card(description="ATRAPA: czekaj")
+        self.start(card_id, executor="Codex mocny", preferredProvider="openai")
+        step = self.started(card_id)
+        sessions = os.path.join(root, "sessions", "2026", "10", "29")
+        os.makedirs(sessions)
+        log = os.path.join(sessions, "rollout-2026-10-29T12-00-00-codex-test.jsonl")
+        records = [
+            {"type": "session_meta", "payload": {"cwd": step["worktree"]}},
+            {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                                   "content": [{"type": "output_text", "text": "Sprawdzam testy."}]}}
+        ]
+        with open(log, "w", encoding="utf-8") as fh:
+            for record in records:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        self.wait_column(card_id, "waiting", timeout=30)
+        finished = self.of(card_id, "step.finished")[0]
+        self.assertEqual((finished["result"], finished["reason"]), ("error", "no-progress"))
+        self.assertEqual(finished["messages"], [{"role": "assistant", "text": "Sprawdzam testy."}])
 
     def test_guard_stops_a_step_without_progress_and_keeps_its_changes(self):
         card_id = self.card(description="ATRAPA: czekaj")
@@ -430,7 +534,10 @@ class RestartInProcessTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: self.of(card_id, "step.started"), timeout=5), self.events(card_id))
         self.assertTrue(flowfakes.alive(pid), "krok nie wystartował drugi raz ani nie zginął")
         self.wait_column(card_id, "review", timeout=40)
-        self.assertEqual([e for e in self.of(card_id, "step.started") if e["kind"] == "ticket"], [step])
+        recovered = [e for e in self.of(card_id, "step.started") if e["kind"] == "ticket"]
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual({k: v for k, v in recovered[0].items() if k != "ts"},
+                         {k: v for k, v in step.items() if k != "ts"})
         self.assertEqual(len(self.results(card_id, "merge")), 1)
 
     def test_restart_during_a_step_neither_loses_it_nor_duplicates_events(self):

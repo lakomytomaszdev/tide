@@ -608,6 +608,7 @@ Rectangle {
                                  && panel.card.derived.flow.reviewQuestion === true
                         spacing: 8
                         PillButton {
+                            objectName: "cardReviewRetry"
                             text: "Ponów poprawki"
                             enabled: !panel.busy
                             onClicked: {
@@ -616,6 +617,7 @@ Rectangle {
                             }
                         }
                         PillButton {
+                            objectName: "cardReviewReject"
                             text: "Odrzuć ticket"
                             outline: true
                             enabled: !panel.busy

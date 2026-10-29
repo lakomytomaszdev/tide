@@ -274,6 +274,13 @@ class BackgroundEnvironmentTest(BackgroundBase):
 class BackgroundCodexTest(BackgroundBase):
     mcp = ()
 
+    def test_reasoning_effort_is_configured_only_for_codex(self):
+        cmd = agentcmd.background(self.step("codex", model="gpt-6.1-sol", effort="high", codex_mcp=()))
+        self.assertIn('model_reasoning_effort="high"', cmd.argv)
+        self.assertEqual(cmd.argv[cmd.argv.index("-c") + 1], 'model_reasoning_effort="high"')
+        with self.assertRaises(agentcmd.StepError):
+            agentcmd.background(self.step("claude", effort="high"))
+
     def test_codex_exec_writes_only_to_the_worktree_git_dir_objects_refs_logs_and_out(self):
         cmd = agentcmd.background(self.step("codex", model="gpt-5-codex", codex_mcp=()))
         git = os.path.join(self.repo, ".git")

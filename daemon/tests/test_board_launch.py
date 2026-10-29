@@ -154,6 +154,13 @@ class TemplatesTest(BoardCase):
         with self.assertRaises(BoardError):
             self.store.render_launch("K-9", {})
 
+    def test_preferred_provider_is_passed_to_planning_prompt(self):
+        flow = self.store.render_launch("K-1", {"mode": "full", "preferredProvider": "openai"})
+        self.assertEqual(flow["preferredProvider"], "openai")
+        self.assertIn("Preferowany dostawca wykonawców: openai", flow["text"])
+        with self.assertRaises(BoardError):
+            self.store.render_launch("K-1", {"preferredProvider": "nieznany"})
+
 
 class MigrationTest(BoardCase):
     def setUp(self):

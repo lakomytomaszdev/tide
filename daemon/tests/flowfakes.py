@@ -17,6 +17,9 @@ import stat
 CLAUDE = r'''#!/usr/bin/python3
 import json, os, re, subprocess, sys, time
 args = sys.argv[1:]
+if args[:3] == ["mcp", "list", "--json"]:
+    print("[]")
+    sys.exit(0)
 def opt(name):
     return args[args.index(name) + 1] if name in args else ""
 sid = opt("--session-id") or opt("--resume")
@@ -136,7 +139,7 @@ def install(folder: str) -> dict:
     """Atrapy w `folder`; zwraca {nazwa: ścieżka}."""
     os.makedirs(folder, exist_ok=True)
     out = {}
-    for name, body in (("claude", CLAUDE), ("systemd-run", SYSTEMD_RUN), ("systemctl", SYSTEMCTL),
+    for name, body in (("claude", CLAUDE), ("codex", CLAUDE), ("systemd-run", SYSTEMD_RUN), ("systemctl", SYSTEMCTL),
                        ("konsole", KONSOLE)):
         path = os.path.join(folder, name)
         with open(path, "w", encoding="utf-8") as fh:

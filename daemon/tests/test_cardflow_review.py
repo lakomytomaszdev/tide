@@ -10,6 +10,30 @@ from .test_cardflow_dbus import git
 
 
 class ReviewFlowTest(FlowInProcess):
+    def test_mixed_provider_review_uses_other_provider_and_codex_route(self):
+        card = self.card()
+        reply = self.start(card, executor="Sonnet", preferredProvider="mixed", reviewer="Codex Astra")
+        self.assertTrue(reply["ok"], reply)
+        self.wait_column(card, "review")
+        review = next(s for s in self.of(card, "step.started") if s["kind"] == "review")
+        self.assertEqual((review["executor"], review["program"], review["provider"], review["model"]),
+                         ("Codex Astra", "codex", "openai", "gpt-6-astra"))
+        with open(os.path.join(review["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            self.assertIn('model_reasoning_effort="high"', json.load(fh)["argv"])
+
+    def test_local_author_without_second_local_model_is_refused_before_journal(self):
+        from tide_daemon.models import config as models_config
+        path = os.path.join(self.base, "config", "tide", "models.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"roles": {"agent": "local:qwen3-coder:30b"}, "agentProgram": "codex"}, fh)
+        self.flow.engine.models_config = lambda: models_config.load(path)
+        self.flow.engine.model_probe = lambda endpoint: {"online": True, "kind": "ollama",
+                                                         "models": [{"name": "qwen3-coder:30b"}]}
+        card = self.card()
+        reply = self.start(card, executor="Lokalny", preferredProvider="local")
+        self.assertEqual((reply["ok"], reply["error"]), (False, "bad-reviewer"), reply)
+        self.assertEqual(self.events(card), [])
+
     def test_catalog_change_before_review_cannot_replace_reviewer_with_authors_model(self):
         from tide_daemon.models.executors import Catalog, default_catalog
 

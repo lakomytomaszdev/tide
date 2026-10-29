@@ -549,17 +549,37 @@ var LAUNCH_ENTRIES = [
       steps: ["Ticket w tle", "Review", "Gałąź karty", "Do sprawdzenia"] }
 ]
 
-// Wykonawcy kroku „Od razu” z katalogu (Status() /Models: executors.list) — dziś tylko Claude w chmurze; zanim
-// przyjdzie Status() (albo usługa go nie podaje), domyślni wykonawcy Claude z katalogu usługi.
+// Wykonawcy kroku „Od razu” z katalogu Status() /Models. Zanim przyjdzie stan usługi, pokazujemy
+// domyślną grupę Anthropic; po odczycie wybór może obejmować Codex, lokalny i innych dostawców.
 var NOW_EXECUTORS = ["Haiku", "Sonnet", "Opus"]
 var NOW_DEFAULT = "Sonnet"
 
-function launchExecutors(status) {
-    const list = status && status.executors && Array.isArray(status.executors.list) ? status.executors.list : null
-    const names = list ? list.filter(e => e && e.program === "claude" && e.provider === "anthropic" && !e.local && e.model)
-                             .map(e => String(e.name))
-                       : NOW_EXECUTORS
-    return names.map(name => ({ value: name, label: name }))
+function launchExecutorList(status) {
+    if (status && Array.isArray(status.executors)) return status.executors
+    if (status && status.executors && Array.isArray(status.executors.list)) return status.executors.list
+    return NOW_EXECUTORS.map(name => ({ name: name, program: "claude", provider: "anthropic", model: name.toLowerCase() }))
+}
+
+function preferredProviders(status) {
+    const known = status && status.providers && typeof status.providers === "object" ? status.providers : ({})
+    const base = [
+        { value: "anthropic", label: "Anthropic" }, { value: "openai", label: "OpenAI" },
+        { value: "local", label: "Tylko lokalnie" }, { value: "mixed", label: "Mieszany" }
+    ]
+    return base.concat(Object.keys(known).filter(name => !["anthropic", "openai", "local", "mixed"].includes(name))
+        .map(name => ({ value: name, label: String(known[name].label || name) })))
+}
+
+function launchExecutors(status, provider) {
+    const wanted = provider || "anthropic"
+    return launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
+        (wanted === "mixed" || e.provider === wanted))
+        .map(e => ({ value: String(e.name), label: String(e.name), disabled: e.available === false,
+                      hint: e.error || "" }))
+}
+
+function launchExecutor(status, name) {
+    return launchExecutorList(status).find(e => e && e.name === name) || null
 }
 
 function defaultExecutor(options) {
@@ -567,16 +587,20 @@ function defaultExecutor(options) {
     return names.indexOf(NOW_DEFAULT) >= 0 ? NOW_DEFAULT : (names[0] || "")
 }
 
-function reviewExecutors(status, author) {
-    const list = status && status.executors && Array.isArray(status.executors.list) ? status.executors.list : null
-    const current = list ? list.find(e => e && e.name === author) : null
-    return launchExecutors(status).filter(o => o.value !== author &&
-        (!list || !current || !list.some(e => e && e.name === o.value && e.model === current.model)))
+function reviewExecutors(status, author, provider) {
+    const current = launchExecutor(status, author)
+    if (!current) return []
+    return launchExecutorList(status).filter(e => e && e.name && e.model && e.program &&
+        e.name !== author && e.model.toLowerCase() !== String(current.model || "").toLowerCase() &&
+        (current.provider === "local" ? e.provider === "local" : e.provider !== "local") &&
+        (provider === "mixed" ? e.provider !== current.provider : e.provider === current.provider))
+        .map(e => ({ value: String(e.name), label: String(e.name), disabled: e.available === false,
+                     hint: e.error || "" }))
 }
 
 function defaultReviewer(author, options) {
     const names = (options || []).map(o => o.value)
-    const preferred = author === "Opus" ? "Sonnet" : "Opus"
+    const preferred = author === "Opus" ? "Sonnet" : author === "Codex mocny" ? "Codex Astra" : "Opus"
     return names.indexOf(preferred) >= 0 ? preferred : (names[0] || "")
 }
 
@@ -586,8 +610,11 @@ function isFlowEntry(id) {
 
 // Prośba /Board StartCard z okna („Od razu”): wejście, wykonawca i zrzuty z katalogu zadań.
 function startCardRequest(state, images) {
-    return { entry: state.entry, executor: state.executor, reviewer: state.reviewer,
-             check: state.check, images: (images || []).slice() }
+    const request = { entry: state.entry, executor: state.executor,
+                      check: state.check, images: (images || []).slice() }
+    if (state.reviewer) request.reviewer = state.reviewer
+    if (state.preferredProvider) request.preferredProvider = state.preferredProvider
+    return request
 }
 
 // Tryby Planowania z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.
