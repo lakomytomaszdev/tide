@@ -74,6 +74,8 @@ Rectangle {
     signal renderRequested(string tag, string cardId, string request)   // /Board RenderLaunch
     signal startRequested(string tag, string request)                   // /Tasks Start
     signal flowRequested(string tag, string cardId, string request)     // /Board StartCard (przepływ karty, „Od razu”)
+    signal enterStepRequested(string tag, string cardId, string stepId) // /Board EnterStep
+    signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
     signal removeImageRequested(string path)
@@ -383,6 +385,11 @@ Rectangle {
             else if (!managing) cardPanel.notice = reply.choice === "tide" ? "Zapisuję stan karty w YouTracku…"
                                                                            : "Zostaje stan z YouTracka."
             if (managing) manage.handleReply(tag, reply)
+        } else if (tag.indexOf("enter-step:") === 0 || tag.indexOf("abandon-step:") === 0) {
+            cardPanel.busy = false
+            cardPanel.error = error
+            if (!error) cardPanel.notice = tag.indexOf("enter-step:") === 0
+                ? "Krok otwarty w Konsoli." : "Krok porzucony."
         } else if (tag.indexOf("quicktag:") === 0) {
             tagEditorPopup.editorError = error
             if (!error) tagEditorPopup.close()
@@ -1281,6 +1288,14 @@ Rectangle {
         onLinkRequested: url => page.linkRequested(url)
         onSaveRequested: request => page.saveCard(request)
         onYoutrackResolveRequested: (cardId, choice) => page.resolveRequested(page.nextTag("yt-resolve:" + cardId), cardId, choice)
+        onEnterStepRequested: (cardId, stepId) => {
+            cardPanel.busy = true
+            page.enterStepRequested(page.nextTag("enter-step:" + cardId), cardId, stepId)
+        }
+        onAbandonStepRequested: (cardId, stepId) => {
+            cardPanel.busy = true
+            page.abandonStepRequested(page.nextTag("abandon-step:" + cardId), cardId, stepId)
+        }
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))
             if (column === "archived") page.panelOpen = false

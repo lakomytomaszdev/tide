@@ -80,6 +80,25 @@ class CardFlowMonitor(QObject):
         if not self._submit(lambda: self.engine.start(card_id, data), answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
+    def enter_step(self, card_id: str, step_id: str, reply) -> None:
+        self._action("EnterStep", lambda: self.engine.enter(card_id, step_id), reply)
+
+    def abandon_step(self, card_id: str, step_id: str, reply) -> None:
+        self._action("AbandonStep", lambda: self.engine.abandon(card_id, step_id), reply)
+
+    def _action(self, name: str, work, reply) -> None:
+        def answer(future):
+            try:
+                result = future.result()
+            except FlowError as exc:
+                result = _failure(exc.code, str(exc))
+            except Exception as exc:
+                print(f"tide-daemon: przepływ karty: {name}: {exc!r}", flush=True)
+                result = _failure("internal", "błąd usługi — szczegóły w dzienniku (journalctl --user -u tide-daemon)")
+            reply(json.dumps(result, ensure_ascii=False))
+        if not self._submit(work, answer):
+            reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
+
     def moved(self, card_id: str, column: str, shown: str = "", move_id: str = "") -> None:
         self._submit(lambda: self.engine.moved(card_id, column, shown, move_id), _report("MoveCard"))
 

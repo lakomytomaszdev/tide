@@ -37,6 +37,21 @@ import os
 import re
 import sys
 
+
+def write_closed(path: str) -> None:
+    """Trwały znacznik zamknięcia karty kroku; zapis atomowy dla zegara usługi."""
+    if not path:
+        return
+    import time
+    folder = os.path.dirname(path)
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    temp = path + f".{os.getpid()}.tmp"
+    with open(temp, "w", encoding="utf-8") as fh:
+        json.dump({"closed": True, "ts": time.time()}, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temp, path)
+
 KEEP_SHELL = '"$0" "$@"; exec "${SHELL:-/bin/sh}"'
 ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
 MAX_AGE = 600  # s — starszych zadań nie uruchamiamy (usługa i tak już je wycofała)
@@ -183,6 +198,39 @@ def shell() -> list[str]:
     return [path]
 
 
+def run_flow(task: dict) -> int:
+    """Karta kroku zostaje otwarta po agencie; zamknięcie zostawia znacznik dla usługi."""
+    import signal
+    import subprocess
+
+    closed = task.get("closedFile") or ""
+    if not isinstance(closed, str) or not os.path.isabs(closed):
+        return 2
+
+    def hangup(*_):
+        write_closed(closed)
+        os._exit(129)
+
+    previous = signal.signal(signal.SIGHUP, hangup)
+    try:
+        try:
+            env = agent_env(task, os.environ) if has_env(task) else dict(os.environ)
+        except ValueError as exc:
+            print(f"Tide: model lokalny: {exc} — agent nie wystartował.", flush=True)
+        else:
+            run_agent(task["argv"], env)
+            del env
+        # Powłoka jest procesem potomnym: launch.py żyje do zamknięcia karty i zapisuje znacznik.
+        try:
+            subprocess.call(shell())
+        except OSError:
+            pass
+    finally:
+        signal.signal(signal.SIGHUP, previous)
+        write_closed(closed)
+    return 0
+
+
 def main(argv=None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) == 2 and args[0] == "--task":
@@ -201,9 +249,13 @@ def main(argv=None) -> int:
             os.chdir(workdir)
         except OSError as exc:
             print(f"Tide: nie da się wejść do {workdir}: {exc}", flush=True)
+            if task.get("closedFile"):
+                write_closed(task["closedFile"])
             argv_exec = shell()
         else:
             os.environ["TIDE_TASK"] = "1"
+            if task.get("closedFile"):
+                return run_flow(task)
             if not has_env(task):
                 argv_exec = command(task)
             else:

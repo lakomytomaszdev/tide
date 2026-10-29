@@ -6,6 +6,16 @@ RESULT_FILE = "result.json"
 NOTE_FILE = "note.md"
 
 
+def resume_step(card_id: str, ticket: str, out_dir: str) -> str:
+    """Nowa wiadomość w istniejącej sesji: wynik interaktywny ma własny katalog próby."""
+    return f"""Wracamy do kroku ticketu {ticket} karty {card_id}. Kontynuuj pracę w bieżącym worktree.
+Na koniec zapisz notkę w {out_dir}/{NOTE_FILE}, a jako ostatnią czynność plik {out_dir}/{RESULT_FILE}.
+Kontrakt wyniku jest taki sam jak wcześniej: JSON z result = done, question, denied albo error;
+dla question podaj question, dla denied command, dla error reason, dla done notes = [\"{NOTE_FILE}\"].
+Nie wykonuj push ani scalenia gałęzi.
+"""
+
+
 def ticket_card(*, card_id: str, title: str, description: str, project: str, ticket: str, branch: str,
                 card_branch: str, worktree: str, out_dir: str, images=()) -> str:
     shots = "".join(f"- {path}\n" for path in images)

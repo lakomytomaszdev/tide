@@ -53,6 +53,7 @@ Rectangle {
     readonly property bool reading: shownTab !== "opis"
     readonly property var docTabs: Docs.tabs(docs)
     readonly property alias docView: docView
+    readonly property alias flowRepeater: flowRepeater
     readonly property var inherited: projectKind === "project" ? Logic.inheritedTags(snapshot, project) : []
     readonly property var allTags: ((snapshot && snapshot.tags) || []).map(t => t.name)
     readonly property bool dirty: editing && base ? Object.keys(Logic.updateRequest(base, form())).length > 0
@@ -65,6 +66,8 @@ Rectangle {
     signal showInFolderRequested(string path)      // „Pokaż w katalogu”
     signal linkRequested(string url)               // link http(s) z Markdownu
     signal youtrackResolveRequested(string cardId, string choice)   // konflikt: youtrack | tide
+    signal enterStepRequested(string cardId, string stepId)
+    signal abandonStepRequested(string cardId, string stepId)
 
     function form() {
         const key = Logic.issueKey(youtrackField.text)
@@ -579,6 +582,50 @@ Rectangle {
                         font.family: Tide.Theme.uiFamily
                         font.pixelSize: 11
                         wrapMode: Text.Wrap
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 8
+                        spacing: 5
+                        visible: panel.editing && panel.card.derived && panel.card.derived.flow
+                        Repeater {
+                            id: flowRepeater
+                            model: panel.editing && panel.card.derived && panel.card.derived.flow
+                                   ? (panel.card.derived.flow.steps || []) : []
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                readonly property var flowStep: modelData
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: flowStep.ticket + " · " + (flowStep.result || (flowStep.mode === "interactive" ? "w Konsoli" : "w toku"))
+                                    textFormat: Text.PlainText
+                                    color: Tide.Tokens.textMuted
+                                    font.family: Tide.Theme.uiFamily
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                                PillButton {
+                                    objectName: "enterStep"
+                                    text: flowStep.reason === "interactive-closed" ? "Wznów" : "Wejdź"
+                                    implicitHeight: 28
+                                    pixelSize: 12
+                                    outline: true
+                                    enabled: !panel.busy && flowStep.canEnter
+                                    onClicked: panel.enterStepRequested(panel.card.id, flowStep.id)
+                                }
+                                PillButton {
+                                    objectName: "abandonStep"
+                                    visible: flowStep.reason === "interactive-closed" && flowStep.result === "stopped"
+                                    text: "Porzuć"
+                                    implicitHeight: 28
+                                    pixelSize: 12
+                                    flat: true
+                                    enabled: !panel.busy
+                                    onClicked: panel.abandonStepRequested(panel.card.id, flowStep.id)
+                                }
+                            }
+                        }
                     }
                     Text {
                         Layout.fillWidth: true

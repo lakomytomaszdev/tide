@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import json
+import uuid
 from dataclasses import dataclass
 
 from ..models import executors
@@ -12,6 +14,33 @@ class ExecutionError(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+def codex_session_id(path: str) -> str:
+    """ID sesji kroku z JSONL Codexa (`codex exec --json` albo dziennik sesji)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for _ in range(200):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if record.get("type") == "thread.started":
+                    value = record.get("thread_id") or ""
+                elif record.get("type") == "session_meta":
+                    value = (record.get("payload") or {}).get("id") or ""
+                else:
+                    continue
+                try:
+                    return str(uuid.UUID(str(value)))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return ""
 
 
 @dataclass(frozen=True)

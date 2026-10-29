@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 RESULT_LABELS = {"done": "gotowe", "question": "pytanie", "denied": "brak zgody", "error": "błąd", "stopped": "zatrzymany"}
 REASON_LABELS = {"no-result": "brak pliku wyniku", "bad-result": "zły plik wyniku", "no-progress": "bez postępu",
                  "exit": "program zakończył się błędem", "start": "krok nie wystartował",
-                 "lost": "krok zniknął (restart usługi)"}
+                 "lost": "krok zniknął (restart usługi)", "abandoned": "porzucony"}
 NOTE_MAX = 160
 
 
@@ -82,6 +82,13 @@ def fold(events: list[dict]) -> FlowState:
             st.steps[e.get("step")] = e
             st.last_step = e.get("step") or ""
             st.moved_to = ""
+        elif kind == "step.entered" and e.get("step") in st.steps:
+            st.steps[e["step"]] = {**st.steps[e["step"]], "mode": "interactive",
+                                   "session": e.get("session") or "", "closeFile": e.get("closeFile") or "",
+                                   "source": e.get("source") or "", "taskFile": e.get("taskFile") or "",
+                                   "consoleClosed": False}
+        elif kind == "step.console_closed" and e.get("step") in st.steps:
+            st.steps[e["step"]] = {**st.steps[e["step"]], "consoleClosed": True}
         elif kind == "step.finished":
             st.finished[e.get("step")] = e
             if st.moved_to not in ("done", "archived"):
@@ -135,8 +142,19 @@ def derived(st: FlowState, card: dict) -> dict | None:
            "check": st.started.get("check") or card.get("check") or "auto", "branch": ticket["cardBranch"], "session": "", "coordinator": "",
            "link": "flow", "agentState": "", "tickets": [], "question": "",
            "flow": {"ticket": ident, "step": st.last_step, "executor": executor, "entry": st.started.get("entry") or "",
-                    "result": done.get("result") or "", "cardBranch": ticket["cardBranch"],
+                    "result": done.get("result") or "", "reason": done.get("reason") or "",
+                    "cardBranch": ticket["cardBranch"],
                     "branch": ticket["branch"] or step.get("branch") or ""}}
+    out["flow"]["steps"] = [
+        {"id": name, "ticket": item.get("ticket") or "", "mode": item.get("mode") or "background",
+         "result": (st.finished.get(name) or {}).get("result") or "",
+         "reason": (st.finished.get(name) or {}).get("reason") or "",
+         "canEnter": not any(other.get("worktree") == item.get("worktree") and other.get("step") != name
+                             for other in st.running()) and
+                     not any(other.get("worktree") == item.get("worktree") and other.get("mode") == "interactive"
+                             and not other.get("consoleClosed") for other in st.steps.values())}
+        for name, item in st.steps.items()
+    ]
     if column == "backlog":
         if not st.paused:
             return None
@@ -146,7 +164,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
         return None
     failed = [r for (a, _k), r in st.results.items() if not r.get("ok") and a != "merge"]
     if st.running():
-        return _fill(out, "progress", f"{ident} · krok w tle ({executor})" if executor else f"{ident} · krok w tle")
+        mode = "w Konsoli" if step.get("mode") == "interactive" else "w tle"
+        return _fill(out, "progress", f"{ident} · krok {mode} ({executor})" if executor else f"{ident} · krok {mode}")
     if st.open_intents():
         return _fill(out, "progress", f"{ident} · {_intent_word(st.open_intents()[0])}")
     if failed and not done:
@@ -160,7 +179,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
             return _fill(out, "waiting", f"{ident}: nie scalono do gałęzi karty ({merge.get('error') or 'błąd'})")
         out["done"] = 1
         return _fill(out, "review", f"✓ {ident} na gałęzi karty — do sprawdzenia")
-    if result == "question":
+    if result == "question" or (result == "stopped" and done.get("reason") == "interactive-closed"):
         out["question"] = _clip(done.get("question") or "", 120)
         return _fill(out, "waiting", f"{ident} pyta: „{out['question']}”" if out["question"] else f"{ident} pyta")
     if result == "denied":

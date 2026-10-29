@@ -67,7 +67,7 @@ PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku �
 NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "ImportYouTrack", "ResolveYouTrack",
-          "StartCard")
+          "StartCard", "EnterStep", "AbandonStep")
 YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w sieci lokalnej (po 4 s) i zapas
 TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
 COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
@@ -353,6 +353,14 @@ class Backend(QObject):
         """Zlecenie w przepływie karty (/Board StartCard, wejście „Od razu”): krok w tle, bez Konsoli."""
         self._write(tag, "StartCard", [card_id, request])
 
+    @pyqtSlot(str, str, str)
+    def enterStep(self, tag: str, card_id: str, step_id: str) -> None:
+        self._write(tag, "EnterStep", [card_id, step_id])
+
+    @pyqtSlot(str, str, str)
+    def abandonStep(self, tag: str, card_id: str, step_id: str) -> None:
+        self._write(tag, "AbandonStep", [card_id, step_id])
+
     # --- zrzuty ekranu i model w oknie uruchomienia (PT-43) ------------------------------------
 
     @pyqtSlot(result=bool)
@@ -552,7 +560,7 @@ class Backend(QObject):
 
         if member == "Start":
             self._call(member, args, done, timeout=START_TIMEOUT_MS, path=TASKS_PATH, iface=TASKS_IFACE)
-        elif member == "StartCard":   # gałąź i worktree karty i ticketu — duże repozytorium zakłada je długo
+        elif member in ("StartCard", "EnterStep"):   # zatrzymanie kroku i karta Konsoli mogą potrwać
             self._call(member, args, done, timeout=START_TIMEOUT_MS)
         elif member == "YouTrackIssues":
             self._call(member, args, done, timeout=YOUTRACK_TIMEOUT_MS)

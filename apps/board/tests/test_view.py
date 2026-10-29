@@ -572,6 +572,30 @@ out["calls"] = calls()
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class PanelTest(ProbeCase):
+    def test_flow_step_buttons_route_enter_and_abandon(self):
+        data = json.loads(json.dumps(self.data))
+        card_data = next(card for card in data["cards"] if card["id"] == "K-12")
+        card_data["derived"] = {"column": "waiting", "flow": {"steps": [
+            {"id": "K-12-PT-67-1", "ticket": "PT-67", "mode": "interactive", "result": "stopped",
+             "reason": "interactive-closed", "canEnter": True}]}}
+        out = self.probe("""
+click(card('K-12'))
+out['flow'] = js('page.cardPanel.card.derived.flow')
+out['repeaterCount'] = js('page.cardPanel.flowRepeater.count')
+out['enterText'] = js('page.cardPanel.flowRepeater.itemAt(0).children[1].text')
+out['abandonVisible'] = js('page.cardPanel.flowRepeater.itemAt(0).children[2].visible')
+js("page.cardPanel.enterStepRequested('K-12', 'K-12-PT-67-1')")
+wait(80)
+out['enterCall'] = calls()[-1]
+js("page.cardPanel.abandonStepRequested('K-12', 'K-12-PT-67-1')")
+wait(80)
+out['abandonCall'] = calls()[-1]
+""", data)
+        self.assertEqual(out["enterText"], "Wznów", out)
+        self.assertTrue(out["abandonVisible"])
+        self.assertEqual(out["enterCall"], ["EnterStep", "K-12", "K-12-PT-67-1"])
+        self.assertEqual(out["abandonCall"], ["AbandonStep", "K-12", "K-12-PT-67-1"])
+
     def test_create_card_from_column_and_errors_in_place(self):
         out = self.probe("""
 js("page.columnItems()[1].addRequested('todo')")

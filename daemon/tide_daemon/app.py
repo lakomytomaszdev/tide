@@ -654,16 +654,22 @@ def start_card_flow(app, args, board, monitor=None):
     from .cardflow_monitor import POLL_MS, CardFlowMonitor
     from .models import config as models_config
     from .models import status as models_status
+    from .tasks.terminal import KonsoleWindows, TaskTerminal
     try:
         poll_ms = int(os.environ.get("TIDE_FLOW_POLL_MS") or POLL_MS)
     except ValueError:
         poll_ms = POLL_MS
     claude_dir = getattr(args, "claude_dir", None) or default_claude_dir()   # testy podają częściowe argumenty
+    probe = activate = None
+    if not getattr(args, "no_processes", False):
+        from . import processes, windows
+        probe, activate = processes.probe, windows.activate
+    terminal = TaskTerminal(board.launchers, KonsoleWindows(), probe=probe, activate=activate)
     engine = FlowEngine(board.store, claude_projects=os.path.join(claude_dir, "projects"),
                         systemd_run=os.environ.get("TIDE_SYSTEMD_RUN", ""),
                         catalog=lambda: models_config.load().catalog,
                         models_config=models_config.load, model_probe=models_status.endpoint_status,
-                        codex_roots=getattr(args, "codex_dir", None))
+                        codex_roots=getattr(args, "codex_dir", None), terminal=terminal)
     if monitor is not None:
         monitor.hidden = engine.is_hidden
     return CardFlowMonitor(engine, board, poll_ms=max(100, poll_ms), parent=app)

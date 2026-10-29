@@ -96,6 +96,8 @@ Item {
         onRenderRequested: (tag, id, request) => view.backend.renderLaunch(tag, id, request)
         onStartRequested: (tag, request) => view.backend.startTask(tag, request)
         onFlowRequested: (tag, id, request) => view.backend.startCard(tag, id, request)
+        onEnterStepRequested: (tag, id, step) => view.backend.enterStep(tag, id, step)
+        onAbandonStepRequested: (tag, id, step) => view.backend.abandonStep(tag, id, step)
         // Zrzuty ekranu i model w oknie uruchomienia (PT-43).
         launchImages: view.backend ? Logic.parse(view.backend.imagesJson, []) : []
         canCapture: view.backend ? view.backend.canCapture : false

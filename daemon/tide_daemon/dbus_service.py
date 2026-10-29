@@ -443,6 +443,16 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="EnterStep">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="step" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="AbandonStep">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="step" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <signal name="Changed"/>
   <signal name="WorkChanged"/>
 </interface>"""
@@ -858,6 +868,30 @@ class BoardAdaptor(QDBusAbstractAdaptor):
                 print("tide-daemon: nie udało się odesłać wyniku Board.StartCard", flush=True)
 
         self.monitor.start_card(card_id, request, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def EnterStep(self, card_id: str, step_id: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.EnterStep", flush=True)
+
+        self.monitor.enter_step(card_id, step_id, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def AbandonStep(self, card_id: str, step_id: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.AbandonStep", flush=True)
+
+        self.monitor.abandon_step(card_id, step_id, reply)
         return ""
 
     @pyqtSlot(str, result=str)

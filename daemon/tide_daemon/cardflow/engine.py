@@ -36,6 +36,7 @@ from .. import codex_homes
 from ..board.model import BoardError, card_num
 from ..coordination import reservations
 from ..tasks import agentcmd, stepstop
+from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import handoff
 from . import execution
@@ -80,7 +81,7 @@ class FlowEngine:
                  systemd_run: str = "", catalog=None, models_config=None, model_probe=None, codex_roots=None,
                  tmp_root: str | None = None, settings: str | None = None,
                  flow_git: FlowGit | None = None, clock=time.time, which=shutil.which, grace: float = 10.0,
-                 guard_every: float = 30.0):
+                 guard_every: float = 30.0, terminal=None, task_files: TaskFiles | None = None):
         self.store = store
         self.journal = journal or Journal(store.root)
         self.claude_projects = claude_projects
@@ -96,6 +97,8 @@ class FlowEngine:
         self.which = which
         self.grace = grace
         self.guard_every = guard_every
+        self.terminal = terminal
+        self.task_files = task_files or TaskFiles()
         self.procs: dict[str, object] = {}         # krok → Popen (tylko kroki uruchomione przez tę usługę)
         self.watch: dict[str, tuple] = {}          # krok → (odcisk postępu, od kiedy bez zmian, ostatnie sprawdzenie)
         self._warnings: dict[str, str] = {}
@@ -120,6 +123,8 @@ class FlowEngine:
         for card in self.journal.cards():
             st = fold(self.journal.read(card))
             busy.update(step["worktree"] for step in st.running() if step.get("worktree"))
+            busy.update(step["worktree"] for step in st.steps.values() if step.get("worktree") and
+                        step.get("mode") == "interactive" and not step.get("consoleClosed"))
             if st.started is not None and not st.card_finished:
                 worktree = ticket_of(st)["cardWorktree"]
                 if worktree:
@@ -222,6 +227,138 @@ class FlowEngine:
     def _reserve(self, repo: str, title: str, request_key: str) -> dict:
         got = reservations.reserve(repo, count=1, title=title, request_key=request_key)
         return {"ticket": got["ids"][0], "title": title}
+
+    def enter(self, card_id: str, step_id: str) -> dict:
+        """Przejmuje krok w karcie Konsoli. Dziennik oznacza zajęte worktree przed uruchomieniem karty."""
+        try:
+            num = card_num(card_id)
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        card_id = f"K-{num}"
+        st = fold(self.journal.read(card_id))
+        source_step = st.steps.get(step_id)
+        if source_step is None or st.card_finished:
+            raise FlowError("no-step", f"{card_id}: nie ma kroku {step_id} do wznowienia")
+        if self.terminal is None or not self.terminal.available():
+            raise FlowError("no-terminal", "nie znaleziono Konsoli")
+        worktree = source_step.get("worktree") or ""
+        if not os.path.isdir(worktree):
+            raise FlowError("no-worktree", "katalog kroku już nie istnieje")
+        for running in st.running():
+            if running.get("worktree") == worktree and running.get("step") != step_id:
+                raise FlowError("worktree-busy", "w katalogu kroku pracuje już inna sesja")
+        if source_step.get("mode") == "interactive" and step_id not in st.finished:
+            raise FlowError("already-entered", "karta Konsoli tego kroku jest już otwarta")
+        if any(item.get("worktree") == worktree and item.get("mode") == "interactive" and
+               not item.get("consoleClosed") and not os.path.isfile(item.get("closeFile") or "")
+               for item in st.steps.values()):
+            raise FlowError("console-open", "karta Konsoli tego worktree jest jeszcze otwarta")
+        session, source = self._session(source_step)
+        if not session:
+            raise FlowError("no-session", "nie znaleziono ID sesji kroku; spróbuj ponownie za chwilę")
+        if source_step.get("program") == "codex" and not source:
+            raise FlowError("no-session-source", "nie znaleziono dziennika sesji Codexa; nie można dobrać programu do wznowienia")
+        route = None
+        if (source_step.get("provider") or "") not in ("anthropic", "openai", ""):
+            cfg = self.models_config() if self.models_config else None
+            catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+            if catalog is None:
+                raise FlowError("executor-unavailable", "katalog wykonawców jest niedostępny")
+            try:
+                selected = execution.resolve(source_step.get("executor") or "", catalog, config=cfg,
+                                             probe=self.model_probe, which=self.which)
+            except execution.ExecutionError as exc:
+                raise FlowError(exc.code, str(exc)) from None
+            route = selected.route
+        if step_id not in st.finished:
+            if not self._stop_for_enter(card_id, source_step):
+                raise FlowError("not-stopped", "trwający krok nie zatrzymał się; Konsola nie została otwarta")
+            # Agent mógł właśnie zapisać wynik. Utrwalamy go, zanim powstanie następna próba.
+            result_path = os.path.join(source_step.get("stepDir") or "", "out", handoff.RESULT_FILE)
+            if os.path.isfile(result_path):
+                self._finish(card_id, source_step, exit_code=0)
+                st = fold(self.journal.read(card_id))
+        current = st.steps.get(step_id) or source_step
+        new_id = step_id
+        if step_id in st.finished:
+            index = 1
+            while f"{step_id}-enter-{index}" in st.steps:
+                index += 1
+            new_id = f"{step_id}-enter-{index}"
+        step_dir = (worktree + ".step") if new_id == step_id else (worktree + f".step-enter-{index}")
+        out = os.path.join(step_dir, "out")
+        os.makedirs(out, mode=0o700, exist_ok=True)
+        closed = os.path.join(step_dir, "in", "console-closed.json")
+        os.makedirs(os.path.dirname(closed), mode=0o700, exist_ok=True)
+        claim_dir = os.path.join(step_dir, "in", "console-claim")
+        os.makedirs(claim_dir, mode=0o700, exist_ok=True)
+        for path in (closed, os.path.join(out, handoff.RESULT_FILE)):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        tool = current.get("program") or "claude"
+        binary = self.terminal.launchers.agents.get(tool) or tool
+        if tool == "codex":
+            binary = self.terminal.launchers.codex_for(source)
+        prompt = handoff.resume_step(card_id, current.get("ticket") or "", out)
+        command = agentcmd.resume_interactive(tool, binary, session, prompt, route)
+        payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
+                   "title": f"{card_id} · {current.get('ticket') or 'krok'}", "closedFile": closed}
+        payload.update(command.task_fields())
+        task_file = self.task_files.write(payload)
+        if new_id != step_id:
+            self.journal.append(card_id, "step.started", step=new_id, kind="interactive",
+                                ticket=current.get("ticket") or "", executor=current.get("executor") or "",
+                                program=tool, provider=current.get("provider") or "", local=bool(current.get("local")),
+                                model=current.get("model") or "", unit="", session=session,
+                                worktree=worktree, branch=current.get("branch") or "", stepDir=step_dir,
+                                gitDir=current.get("gitDir") or "", repo=current.get("repo") or self._repo(card_id))
+        self.journal.append(card_id, "step.entered", step=new_id, session=session, source=source,
+                            closeFile=closed, taskFile=task_file)
+        plan = Plan(repo_path=current.get("repo") or self._repo(card_id), repo_name="", tool=tool,
+                    prompt=prompt, cwd=claim_dir, branch=current.get("branch") or "", title=payload["title"],
+                    argv=command.argv, task_file=task_file)
+        mode = self.terminal.open(plan)
+        if not mode:
+            self.task_files.cancel(task_file)
+            self._finish(card_id, fold(self.journal.read(card_id)).steps[new_id],
+                         forced={"result": "stopped", "reason": "interactive-closed",
+                                 "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
+            raise FlowError("no-terminal", "nie udało się otworzyć karty Konsoli")
+        return {"ok": True, "id": card_id, "step": new_id, "session": session, "mode": mode}
+
+    def abandon(self, card_id: str, step_id: str) -> dict:
+        """Rozstrzygnięcie pytania po zamknięciu Konsoli bez wyniku."""
+        st = fold(self.journal.read(card_id))
+        done = st.finished.get(step_id) or {}
+        if done.get("reason") != "interactive-closed" or done.get("result") != "stopped":
+            raise FlowError("not-waiting", "ten krok nie czeka na wybór „wznów / porzuć”")
+        self.journal.append(card_id, "step.finished", step=step_id, ticket=done.get("ticket") or "",
+                            result="stopped", reason="abandoned", question="", command="", notes=[], kept=[])
+        return {"ok": True, "id": card_id, "step": step_id, "result": "stopped"}
+
+    def _stop_for_enter(self, card: str, step: dict) -> bool:
+        stopped = stepstop.stop_step(self.procs.get(step.get("step") or ""), unit=step.get("unit") or "",
+                                     worktree=step.get("worktree") or "", step_dir=step.get("stepDir") or "",
+                                     repo=step.get("repo") or self._repo(card), git_dir=step.get("gitDir") or "",
+                                     branch=step.get("branch") or "", tool=step.get("program") or "claude",
+                                     session_id=step.get("session") or "", claude_projects=self.claude_projects,
+                                     codex_roots=self.codex_roots, grace=self.grace)
+        if not stopped.stopped:
+            return False
+        self.procs.pop(step.get("step") or "", None)
+        return True
+
+    def _session(self, step: dict) -> tuple[str, str]:
+        sid = step.get("session") or ""
+        source = step.get("source") or ""
+        if step.get("program") == "codex":
+            sid = sid or execution.codex_session_id(os.path.join(step.get("stepDir") or "", "out", "step.log"))
+            source = source or stepstop.find_codex_log(self.codex_roots, step.get("worktree") or "", sid)
+            if source and not sid:
+                sid = execution.codex_session_id(source)
+        return sid, source
 
     def _images(self, value) -> list[str]:
         if value in (None, ""):
@@ -351,6 +488,8 @@ class FlowEngine:
                 print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
             st = fold(self.journal.read(card))
             busy |= {s["worktree"] for s in st.running() if s.get("worktree")}
+            busy |= {s["worktree"] for s in st.steps.values() if s.get("worktree") and
+                     s.get("mode") == "interactive" and not s.get("consoleClosed")}
             if st.started is not None and not st.card_finished and ticket_of(st)["cardWorktree"]:
                 busy.add(ticket_of(st)["cardWorktree"])
         self._hidden = (frozenset(hidden_ids - {""}), tuple(sorted(hidden_places)))
@@ -367,6 +506,11 @@ class FlowEngine:
                 st = fold(self.journal.read(card))
         for intent in st.open_intents():
             self._reconcile(card, intent)
+        st = fold(self.journal.read(card))
+        for item in st.steps.values():
+            if item.get("mode") == "interactive" and not item.get("consoleClosed") and \
+                    os.path.isfile(item.get("closeFile") or ""):
+                self.journal.append(card, "step.console_closed", step=item.get("step"))
         st = fold(self.journal.read(card))
         if st.moved_to in ("done", "archived") and not st.card_finished:
             self._complete_manual_finish(card, st.moved_to)
@@ -443,6 +587,9 @@ class FlowEngine:
         return (st.started or {}).get("repo") or ""
 
     def _poll(self, card: str, step: dict) -> None:
+        if step.get("mode") == "interactive":
+            self._poll_interactive(card, step)
+            return
         name = step.get("step") or ""
         proc = self.procs.get(name)
         exit_code = proc.poll() if proc is not None else None
@@ -464,6 +611,28 @@ class FlowEngine:
             self._finish(card, step, exit_code=exit_code)
             return
         self._guard(card, step)
+
+    def _poll_interactive(self, card: str, step: dict) -> None:
+        """Plik wyniku kończy próbę; po zamknięciu bez pliku użytkownik wybiera dalszy ruch."""
+        out = os.path.join(step.get("stepDir") or "", "out", handoff.RESULT_FILE)
+        if os.path.isfile(out):
+            data = self._result(out)
+            if data.get("reason") != "bad-result":
+                self._finish(card, step, exit_code=0)
+                return
+        if os.path.isfile(step.get("closeFile") or ""):
+            self._finish(card, step, forced={"result": "stopped", "reason": "interactive-closed",
+                                             "question": "Karta Konsoli została zamknięta bez wyniku. Wznowić czy porzucić?"})
+            return
+        task_file = step.get("taskFile") or ""
+        try:
+            timed_out = bool(task_file) and time.time() - os.stat(task_file).st_mtime > 30
+        except OSError:
+            timed_out = False  # plik przejęty przez kartę; czekamy na wynik albo znacznik zamknięcia
+        if timed_out:
+            self.task_files.cancel(task_file)
+            self._finish(card, step, forced={"result": "stopped", "reason": "interactive-closed",
+                                             "question": "Konsola nie przejęła kroku. Wznowić czy porzucić?"})
 
     def _guard(self, card: str, step: dict) -> None:
         name = step.get("step") or ""

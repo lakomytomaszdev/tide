@@ -90,6 +90,32 @@ class StepError(ValueError):
     """Katalogi albo ustawienia kroku, z którymi nie wolno startować."""
 
 
+def resume_argv(tool: str, binary: str, session_id: str, prompt: str = "",
+                model_options: list[str] = ()) -> list[str]:
+    """Jedno polecenie wznowienia sesji dla Konsoli i kroku w tle."""
+    try:
+        valid = str(uuid.UUID(session_id)) == session_id.lower()
+    except (ValueError, AttributeError, TypeError):
+        valid = False
+    if not valid:
+        raise StepError("nie ma poprawnego ID sesji kroku")
+    if tool == "claude":
+        argv = [binary, *model_options, "--resume", session_id]
+    elif tool == "codex":
+        argv = [binary, *model_options, "resume", session_id]
+    else:
+        raise UnknownTool(tool)
+    return argv + (["--", prompt] if prompt else [])
+
+
+def resume_interactive(tool: str, binary: str, session_id: str, prompt: str,
+                       agent: "local_mod.LocalAgent | None" = None) -> "local_mod.Command":
+    """Wznowienie w Konsoli z tym samym środowiskiem modelu lokalnego co pierwszy krok."""
+    model = local_mod.options(tool, agent) if agent is not None else local_mod.Command([])
+    return local_mod.Command(resume_argv(tool, binary, session_id, prompt, model.argv), model.env,
+                             model.secret_env, model.unset_env, model.token_files)
+
+
 @dataclass
 class Step:
     """Opis kroku w tle. `worktree` — katalog roboczy kroku, `repo` — główne repozytorium (wspólny `.git`),
