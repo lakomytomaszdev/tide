@@ -21,6 +21,9 @@ Card {
     readonly property bool obsUp: !!(view && view.obs && view.obs.connected)
     readonly property bool privacy: !!(core.privacy && core.privacy.value)
     readonly property bool hidden: !!(core.overlays_hidden && core.overlays_hidden.value)
+    // „Wynik” jak w Panelu: przy istniejącej serii pokazuje albo chowa wynik u widzów (i kartę wyniku obok).
+    readonly property bool series: !!(core.observer && core.observer.series)
+    readonly property bool scoreShown: !!(view && view.situation && view.situation.score_shown)
 
     padding: 16
     spacing: 10
@@ -66,7 +69,8 @@ Card {
                 { key: "privacy", text: card.privacy ? "Zdejmij zasłonę" : "Ekran prywatności", cmd: "privacy.toggle", on: card.privacy },
                 { key: "overlays", text: card.hidden ? "Pokaż nakładki" : "Schowaj nakładki", cmd: "overlays.toggle", on: card.hidden },
                 { key: "panel", text: "Panel streamera", cmd: "", on: false }
-            ]
+            ].concat(card.series ? [{ key: "score", text: card.scoreShown ? "Wynik: widoczny" : "Wynik: ukryty",
+                                      cmd: "observer.overlay.set", args: { visible: !card.scoreShown }, on: card.scoreShown }] : [])
             TextButton {
                 required property var modelData
                 objectName: "always-" + modelData.key
@@ -85,7 +89,7 @@ Card {
                     border.color: Theme.alpha(Tokens.textPrimary, 0.14)
                     opacity: parent.enabled ? 1 : 0.45
                 }
-                onClicked: modelData.cmd === "" ? card.panelRequested() : card.commandRequested(modelData.cmd, {})
+                onClicked: modelData.cmd === "" ? card.panelRequested() : card.commandRequested(modelData.cmd, modelData.args || {})
             }
         }
     }
