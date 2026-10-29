@@ -193,10 +193,11 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js("shortPath('/home/tomasz/x', '/home/t')"), "/home/tomasz/x")
 
     def test_launch_entries_and_defaults(self):
-        self.assertEqual(self.js("LAUNCH_ENTRIES.map(e => e.id)"), ["planning", "spec", "now"])
+        self.assertEqual(self.js("LAUNCH_ENTRIES.map(e => e.id)"), ["planning", "plan", "spec", "now"])
         self.assertEqual(self.js("LAUNCH_MODES.map(m => m.id)"), ["full", "light"], "Tylko specyfikacja nie jest już trybem")
         self.assertEqual(self.js("launchEntry('spec').title"), "Tylko specyfikacja")
         self.assertEqual(self.js("launchEntry('planning').title"), "Planowanie")
+        self.assertEqual(self.js("launchEntry('plan').title"), "Mam plan")
         self.assertEqual(self.js("launchEntry('???').id"), "planning")
         self.assertEqual(self.js("launchSteps('spec', 'full')"), self.js("launchEntry('spec').steps"))
         self.assertEqual(self.js("launchSteps('planning', 'light')"), self.js("launchMode('light').steps"))
