@@ -47,6 +47,8 @@ Rectangle {
     property var images: []
     property bool canCapture: false
     property var modelsStatus: null        // Status() z /Models; {pending: true} — czekam; null — usługa nie podaje
+    property var limitsStatus: null        // Forecast() z /Limits; ostrzeżenie przy planowaniu w Konsoli
+    property int limitThresholdPercent: 10
     property var taskDefaults: ({})        // /Tasks Defaults: tools, model (zapamiętany), imagesDir
     property bool modelTouched: false      // użytkownik wybrał model w tym oknie — Defaults() już go nie zmienia
     // Ctrl+V: funkcja() → true, gdy schowek miał obraz (albo pliki obrazów) i trafił do zrzutów.
@@ -921,6 +923,19 @@ Rectangle {
                         text: "Codex działa w piaskownicy. Listy poleceń projektu są dla niego wskazówką, bez automatycznej blokady każdego polecenia."
                         textFormat: Text.PlainText
                         color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "launchPlanningLimitWarning"
+                        Layout.fillWidth: true
+                        visible: dialog.entry === "planning" && dialog.mode === "full" && text !== ""
+                        text: Logic.planningLimitWarning(dialog.limitsStatus,
+                                                         dialog.selectedExecutor ? dialog.selectedExecutor.provider : "",
+                                                         dialog.limitThresholdPercent)
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.peach
                         font.family: Tide.Theme.uiFamily
                         font.pixelSize: 12
                         wrapMode: Text.Wrap

@@ -17,6 +17,13 @@ Rectangle {
     property var snapshot: null
     property string homeDir: ""
     property var tagTone: null
+    property var modelsStatus: null
+    property var flowSettings: null
+    property string limitTransferMode: "ask"
+    property string limitTransferExecutor: ""
+    property bool flowSettingsDirty: false
+    property bool flowSettingsBusy: false
+    property string flowSettingsError: ""
     property string openProject: ""     // slug projektu z otwartym formularzem
     property string openTag: ""         // nazwa tagu z otwartym formularzem ("+" — nowy)
     property string projectError: ""
@@ -37,6 +44,17 @@ Rectangle {
     signal issuesRequested(string tag, bool refresh)       // /Board YouTrackIssues
     signal importRequested(string tag, var keys)           // /Board ImportYouTrack
     signal resolveRequested(string tag, string ident, string choice)   // /Board ResolveYouTrack
+    signal flowSettingsSaveRequested(string tag, var request) // /Board SetCardFlowSettings
+
+    function loadFlowSettings() {
+        const value = flowSettings && flowSettings.limitTransfer ? flowSettings.limitTransfer : {}
+        limitTransferMode = value.mode === "auto" ? "auto" : "ask"
+        limitTransferExecutor = value.executor || ""
+        flowSettingsDirty = false
+    }
+
+    onFlowSettingsChanged: if (!flowSettingsDirty && !flowSettingsBusy) loadFlowSettings()
+    onVisibleChanged: if (visible) { flowSettingsDirty = false; loadFlowSettings() }
 
     function nextTag(prefix) {
         serial++
@@ -101,6 +119,10 @@ Rectangle {
                 importPanel.picked = ({})
                 issuesRequested(nextTag("yt-issues"), false)
             }
+        } else if (tag.indexOf("flow-settings:") === 0) {
+            flowSettingsBusy = false
+            flowSettingsError = error
+            if (!error) flowSettingsDirty = false
         } else if (tag.indexOf("yt-resolve:") === 0) {
             youtrackError = error
         }
@@ -192,6 +214,73 @@ Rectangle {
                     id: projectsColumn
                     width: projectsFlick.width - 12
                     spacing: 8
+
+                    SectionTitle { text: "PRZEPŁYW KARTY · LIMITY" }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Po wyczerpaniu limitu zapytaj o przeniesienie kroku albo przenieś go automatycznie do wybranego wykonawcy."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        QQC2.ComboBox {
+                            objectName: "limitTransferMode"
+                            Layout.fillWidth: true
+                            model: [{value: "ask", label: "Zapytaj mnie"},
+                                    {value: "auto", label: "Przenieś automatycznie"}]
+                            textRole: "label"
+                            valueRole: "value"
+                            currentIndex: page.limitTransferMode === "auto" ? 1 : 0
+                            onActivated: index => {
+                                page.limitTransferMode = model[index].value
+                                page.flowSettingsDirty = true
+                            }
+                            Accessible.name: "Reakcja na wyczerpany limit"
+                        }
+                        QQC2.ComboBox {
+                            objectName: "limitTransferExecutor"
+                            Layout.fillWidth: true
+                            visible: page.limitTransferMode === "auto"
+                            model: Logic.transferSettingsExecutors(page.modelsStatus)
+                            textRole: "label"
+                            valueRole: "value"
+                            currentIndex: model.findIndex(option => option.value === page.limitTransferExecutor)
+                            onActivated: index => {
+                                page.limitTransferExecutor = model[index].value
+                                page.flowSettingsDirty = true
+                            }
+                            Accessible.name: "Wykonawca docelowy przy limicie"
+                        }
+                        PillButton {
+                            objectName: "limitTransferSave"
+                            text: "Zapisz"
+                            enabled: page.flowSettingsDirty && !page.flowSettingsBusy &&
+                                     (page.limitTransferMode !== "auto" || page.limitTransferExecutor !== "")
+                            onClicked: {
+                                page.flowSettingsBusy = true
+                                page.flowSettingsError = ""
+                                page.flowSettingsSaveRequested(page.nextTag("flow-settings"),
+                                    { limitTransfer: { mode: page.limitTransferMode,
+                                                       executor: page.limitTransferMode === "auto" ? page.limitTransferExecutor : "" } })
+                            }
+                        }
+                    }
+                    Text {
+                        objectName: "limitTransferError"
+                        Layout.fillWidth: true
+                        visible: page.flowSettingsError !== ""
+                        text: page.flowSettingsError
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.rose
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
 
                     SectionTitle { text: "ZASADY PRZYDZIAŁU · WSPÓLNE" }
                     QQC2.TextArea {

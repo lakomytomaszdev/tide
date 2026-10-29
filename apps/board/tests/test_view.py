@@ -604,12 +604,12 @@ class PanelTest(ProbeCase):
         card_data["derived"] = {"column": "waiting", "flow": {"steps": [
             {"id": "K-12-PT-67-1", "ticket": "PT-67", "mode": "interactive", "result": "stopped",
              "reason": "interactive-closed", "canEnter": True}]}}
-        out = self.probe("""
+        out = self.probe(FIND_PY + """
 click(card('K-12'))
 out['flow'] = js('page.cardPanel.card.derived.flow')
 out['repeaterCount'] = js('page.cardPanel.flowRepeater.count')
-out['enterText'] = js('page.cardPanel.flowRepeater.itemAt(0).children[1].text')
-out['abandonVisible'] = js('page.cardPanel.flowRepeater.itemAt(0).children[2].visible')
+out['enterText'] = js(FIND + "(page.cardPanel, 'enterStep').text")
+out['abandonVisible'] = js(FIND + "(page.cardPanel, 'abandonStep').visible")
 js("page.cardPanel.enterStepRequested('K-12', 'K-12-PT-67-1')")
 wait(80)
 out['enterCall'] = calls()[-1]
@@ -1559,6 +1559,27 @@ EXECUTORS = {"list": [
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class LaunchPlanTest(ProbeCase):
+    def test_full_planning_warns_when_selected_provider_has_low_limit(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        data["limits"] = {"available": True, "services": {
+            "claude": {"session": {"remaining": 8, "reason": "tooLittleData"},
+                       "weekly": {"remaining": None, "reason": "noData"}}}}
+        out = self.probe(FIND_PY + """
+js("page.openLaunch('K-15', false)")
+js("page.launchDialog.entry = 'planning'; page.launchDialog.mode = 'full'; page.launchDialog.executor = 'Sonnet'")
+wait(50)
+out["low"] = [obj("launchPlanningLimitWarning").property("visible"),
+              obj("launchPlanningLimitWarning").property("text")]
+backend._limits = '{"available":false,"services":{"claude":{"session":{"remaining":8}}}}'
+backend.limitsChanged.emit()
+wait(50)
+out["unavailable"] = obj("launchPlanningLimitWarning").property("visible")
+""", data=data)
+        self.assertTrue(out["low"][0])
+        self.assertIn("8%", out["low"][1])
+        self.assertFalse(out["unavailable"])
+
     def test_bound_plan_is_selected_but_cardless_plan_is_only_suggested(self):
         data = json.loads(json.dumps(self.data))
         exact = "/repo/docs/agents/plans/2026-10-28-exact.md"
@@ -1848,6 +1869,74 @@ out["call"] = calls()[-1]
         self.assertEqual(out["visible"], [True, False, False])
         self.assertEqual(out["call"][:2], ["ResolveCardStep", "K-6"])
         self.assertEqual(json.loads(out["call"][2]), {"choice": "retry"})
+
+    def test_exhausted_limit_offers_transfer_or_wait(self):
+        data = self.flow_card("limit", limit={"provider": "anthropic", "reset": "piątek 15:00",
+                                               "reason": "Limit Claude wyczerpany"}, provider="anthropic")
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["label"] = obj("cardStepDecision").property("visible")
+out["text"] = obj("cardStepDecisionText").property("text")
+out["before"] = [obj("cardLimitTransfer").property("enabled"), obj("cardLimitWait").property("enabled")]
+js("page.cardPanel.limitExecutor = 'Codex standard'")
+click(at(FIND + "(page.cardPanel, 'cardLimitTransfer')"))
+out["transfer"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["label"])
+        self.assertIn("piątek 15:00", out["text"])
+        self.assertEqual(out["before"], [False, True])
+        self.assertEqual(out["transfer"][:2], ["ResolveCardStep", "K-6"])
+        self.assertEqual(json.loads(out["transfer"][2]), {"choice": "transfer", "executor": "Codex standard"})
+
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardLimitWait')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "wait-limit"})
+
+    def test_running_step_can_be_transferred_to_another_provider(self):
+        data = self.flow_card("", steps=[{"id": "step-1", "ticket": "PT-7", "result": "", "kind": "ticket",
+                                              "executor": "Sonnet", "provider": "anthropic",
+                                              "canTransfer": True, "canEnter": False}])
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["before"] = js(FIND + "(page.cardPanel, 'cardStepTransfer') !== null")
+if out["before"]:
+    out["enabled"] = js(FIND + "(page.cardPanel, 'cardStepTransfer').enabled")
+    out["targets"] = js(FIND + "(page.cardPanel, 'cardStepTransferExecutor').model.map(o => o.value)")
+    js("page.cardPanel.flowRepeater.itemAt(0).transferExecutor = 'Codex standard'")
+    click(at(FIND + "(page.cardPanel, 'cardStepTransfer')"))
+    out["call"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["before"], out)
+        self.assertFalse(out["enabled"])
+        self.assertIn("Codex standard", out["targets"])
+        self.assertNotIn("Haiku", out["targets"])
+        self.assertEqual(json.loads(out["call"][2]),
+                         {"choice": "transfer", "step": "step-1", "executor": "Codex standard"})
+
+    def test_auto_transfer_setting_is_saved_from_manage_page(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        data["flowSettings"] = {"ok": True, "limitTransfer": {"mode": "ask", "executor": ""},
+                                "limitThresholdPercent": 10}
+        out = self.probe(FIND_PY + """
+js("page.managing = true")
+wait(50)
+out["initial"] = [js("page.managePage.limitTransferMode"), obj("limitTransferSave").property("enabled")]
+js("page.managePage.limitTransferMode = 'auto'; page.managePage.limitTransferExecutor = 'Codex standard'; page.managePage.flowSettingsDirty = true")
+out["targetVisible"] = obj("limitTransferExecutor").property("visible")
+click(at(FIND + "(page.managePage, 'limitTransferSave')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["initial"], ["ask", False])
+        self.assertTrue(out["targetVisible"])
+        self.assertEqual(out["call"][0], "SetCardFlowSettings")
+        self.assertEqual(json.loads(out["call"][1]),
+                         {"limitTransfer": {"mode": "auto", "executor": "Codex standard"}})
 
     def test_project_command_lists_are_editable_and_saved(self):
         data = json.loads(json.dumps(self.data))

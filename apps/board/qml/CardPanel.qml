@@ -34,6 +34,7 @@ Rectangle {
     property var modelsStatus: null
     property string stepAnswer: ""
     property string stepExecutor: ""
+    property string limitExecutor: ""
     property string branchDiff: ""
     property var tagTone: null
     // Formularz.
@@ -118,6 +119,7 @@ Rectangle {
         notice = ""
         stepAnswer = ""
         stepExecutor = ""
+        limitExecutor = ""
         branchDiff = ""
         closingFeedback.text = ""
         busy = false
@@ -876,53 +878,88 @@ Rectangle {
                             id: flowRepeater
                             model: panel.editing && panel.card.derived && panel.card.derived.flow
                                    ? (panel.card.derived.flow.steps || []) : []
-                            RowLayout {
+                            ColumnLayout {
+                                id: flowStepRow
                                 Layout.fillWidth: true
-                                spacing: 8
+                                spacing: 5
                                 readonly property var flowStep: modelData
-                                ColumnLayout {
+                                property string transferExecutor: ""
+                                RowLayout {
                                     Layout.fillWidth: true
-                                    spacing: 1
-                                    Text {
+                                    spacing: 8
+                                    ColumnLayout {
                                         Layout.fillWidth: true
-                                        text: [flowStep.ticket, flowStep.kind === "review" ? "review" : flowStep.kind === "fix" ? "poprawki" : "ticket", flowStep.executor || "", flowStep.result || (flowStep.mode === "interactive" ? "w Konsoli" : "w toku")].join(" · ")
-                                        textFormat: Text.PlainText
-                                        color: Tide.Tokens.textMuted
-                                        font.family: Tide.Theme.uiFamily
-                                        font.pixelSize: 12
-                                        elide: Text.ElideRight
+                                        spacing: 1
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: [flowStep.ticket, flowStep.kind === "review" ? "review" : flowStep.kind === "fix" ? "poprawki" : "ticket", flowStep.executor || "", flowStep.result || (flowStep.mode === "interactive" ? "w Konsoli" : "w toku")].join(" · ")
+                                            textFormat: Text.PlainText
+                                            color: Tide.Tokens.textMuted
+                                            font.family: Tide.Theme.uiFamily
+                                            font.pixelSize: 12
+                                            elide: Text.ElideRight
+                                        }
+                                        Text {
+                                            objectName: "flowStepTimes"
+                                            Layout.fillWidth: true
+                                            visible: !flowStep.result && Boolean(flowStep.startedTs)
+                                            text: "od " + Logic.when(flowStep.startedTs, panel.nowTs)
+                                                  + " · ostatnia zmiana " + Logic.when(flowStep.lastActivityTs || flowStep.startedTs, panel.nowTs)
+                                            textFormat: Text.PlainText
+                                            color: Tide.Tokens.textMuted
+                                            font.family: Tide.Theme.uiFamily
+                                            font.pixelSize: 11
+                                            elide: Text.ElideRight
+                                        }
                                     }
-                                    Text {
-                                        objectName: "flowStepTimes"
-                                        Layout.fillWidth: true
-                                        visible: !flowStep.result && Boolean(flowStep.startedTs)
-                                        text: "od " + Logic.when(flowStep.startedTs, panel.nowTs)
-                                              + " · ostatnia zmiana " + Logic.when(flowStep.lastActivityTs || flowStep.startedTs, panel.nowTs)
-                                        textFormat: Text.PlainText
-                                        color: Tide.Tokens.textMuted
-                                        font.family: Tide.Theme.uiFamily
-                                        font.pixelSize: 11
-                                        elide: Text.ElideRight
+                                    PillButton {
+                                        objectName: "enterStep"
+                                        text: flowStep.reason === "interactive-closed" ? "Wznów" : "Wejdź"
+                                        implicitHeight: 28
+                                        pixelSize: 12
+                                        outline: true
+                                        enabled: !panel.busy && flowStep.canEnter
+                                        onClicked: panel.enterStepRequested(panel.card.id, flowStep.id)
+                                    }
+                                    PillButton {
+                                        objectName: "abandonStep"
+                                        visible: flowStep.reason === "interactive-closed" && flowStep.result === "stopped"
+                                        text: "Porzuć"
+                                        implicitHeight: 28
+                                        pixelSize: 12
+                                        flat: true
+                                        enabled: !panel.busy
+                                        onClicked: panel.abandonStepRequested(panel.card.id, flowStep.id)
                                     }
                                 }
-                                PillButton {
-                                    objectName: "enterStep"
-                                    text: flowStep.reason === "interactive-closed" ? "Wznów" : "Wejdź"
-                                    implicitHeight: 28
-                                    pixelSize: 12
-                                    outline: true
-                                    enabled: !panel.busy && flowStep.canEnter
-                                    onClicked: panel.enterStepRequested(panel.card.id, flowStep.id)
-                                }
-                                PillButton {
-                                    objectName: "abandonStep"
-                                    visible: flowStep.reason === "interactive-closed" && flowStep.result === "stopped"
-                                    text: "Porzuć"
-                                    implicitHeight: 28
-                                    pixelSize: 12
-                                    flat: true
-                                    enabled: !panel.busy
-                                    onClicked: panel.abandonStepRequested(panel.card.id, flowStep.id)
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    visible: Boolean(flowStep.canTransfer)
+                                    spacing: 8
+                                    QQC2.ComboBox {
+                                        id: manualTransferPicker
+                                        objectName: "cardStepTransferExecutor"
+                                        Layout.fillWidth: true
+                                        model: Logic.transferExecutors(panel.modelsStatus, flowStep.provider ||
+                                                (Logic.launchExecutor(panel.modelsStatus, flowStep.executor) || {}).provider)
+                                        textRole: "label"
+                                        valueRole: "value"
+                                        currentIndex: -1
+                                        onActivated: index => flowStepRow.transferExecutor = model[index].value
+                                        Accessible.name: "Wykonawca do przekazania kroku"
+                                    }
+                                    PillButton {
+                                        objectName: "cardStepTransfer"
+                                        text: "Przekaż innemu dostawcy"
+                                        outline: true
+                                        enabled: !panel.busy && manualTransferPicker.model.some(
+                                                     option => option.value === flowStepRow.transferExecutor)
+                                        onClicked: {
+                                            panel.busy = true
+                                            panel.stepResolveRequested(panel.card.id,
+                                                                       { choice: "transfer", step: flowStep.id, executor: flowStepRow.transferExecutor })
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -983,6 +1020,7 @@ Rectangle {
                         spacing: 8
                         readonly property var flow: panel.card && panel.card.derived ? panel.card.derived.flow : null
                         Text {
+                            objectName: "cardStepDecisionText"
                             Layout.fillWidth: true
                             text: stepDecision.flow && stepDecision.flow.action === "answer" ? stepDecision.flow.question || ""
                                 : stepDecision.flow && stepDecision.flow.action === "permission"
@@ -991,12 +1029,55 @@ Rectangle {
                                   ? (stepDecision.flow.trackerError ? "Operacja YouTracka nie powiodła się: " : "Krok nie powiódł się: ")
                                     + (stepDecision.flow.error || "")
                                     + (stepDecision.flow.stalledSince ? " · bez postępu od " + stepDecision.flow.stalledSince : "")
+                                : stepDecision.flow && stepDecision.flow.action === "limit"
+                                  ? (stepDecision.flow.limit && stepDecision.flow.limit.reason
+                                      ? stepDecision.flow.limit.reason : "Limit dostawcy został wyczerpany.")
+                                    + (stepDecision.flow.limit && stepDecision.flow.limit.reset
+                                        ? " · odnowienie " + stepDecision.flow.limit.reset : "")
                                 : ""
                             textFormat: Text.PlainText
                             color: Tide.Tokens.textPrimary
                             font.family: Tide.Theme.uiFamily
                             font.pixelSize: 13
                             wrapMode: Text.Wrap
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: Boolean(stepDecision.flow && stepDecision.flow.action === "limit")
+                            spacing: 8
+                            QQC2.ComboBox {
+                                id: limitTransferPicker
+                                objectName: "cardLimitExecutor"
+                                Layout.fillWidth: true
+                                model: Logic.transferExecutors(panel.modelsStatus,
+                                    stepDecision.flow ? ((stepDecision.flow.limit || {}).provider || stepDecision.flow.provider) : "")
+                                textRole: "label"
+                                valueRole: "value"
+                                currentIndex: -1
+                                onActivated: index => panel.limitExecutor = model[index].value
+                                Accessible.name: "Wykonawca po wyczerpaniu limitu"
+                            }
+                            PillButton {
+                                objectName: "cardLimitTransfer"
+                                text: "Przenieś na…"
+                                enabled: !panel.busy && limitTransferPicker.model.some(
+                                             option => option.value === panel.limitExecutor)
+                                onClicked: {
+                                    panel.busy = true
+                                    panel.stepResolveRequested(panel.card.id,
+                                                               { choice: "transfer", executor: panel.limitExecutor })
+                                }
+                            }
+                            PillButton {
+                                objectName: "cardLimitWait"
+                                text: "Czekaj na odnowienie"
+                                outline: true
+                                enabled: !panel.busy
+                                onClicked: {
+                                    panel.busy = true
+                                    panel.stepResolveRequested(panel.card.id, { choice: "wait-limit" })
+                                }
+                            }
                         }
                         QQC2.TextArea {
                             id: stepAnswerField

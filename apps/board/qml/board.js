@@ -603,6 +603,32 @@ function retryExecutors(status, flow) {
         .map(e => ({ value: String(e.name), label: String(e.name) }))
 }
 
+function transferExecutors(status, provider) {
+    if (!provider) return []
+    return launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
+        e.available !== false && e.provider && e.provider !== provider)
+        .map(e => ({ value: String(e.name), label: String(e.name) }))
+}
+
+function transferSettingsExecutors(status) {
+    return launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
+        e.available !== false && e.provider)
+        .map(e => ({ value: String(e.name), label: String(e.name) + " · " + String(e.provider) }))
+}
+
+function planningLimitWarning(limits, provider, threshold) {
+    const service = provider === "anthropic" ? "claude" : provider === "openai" ? "chatgpt" : ""
+    if (!service || !limits || limits.available !== true || !limits.services) return ""
+    const values = limits.services[service] || {}
+    const low = [values.session, values.weekly].filter(window => window &&
+        typeof window.remaining === "number" && window.remaining <= threshold &&
+        window.reason !== "stale" && window.reason !== "resetPassed" && window.reason !== "noData")
+    if (!low.length) return ""
+    const remaining = Math.min(...low.map(window => window.remaining))
+    const name = service === "claude" ? "Claude" : "Codex"
+    return "Mało limitu " + name + ": pozostało " + remaining + "%. Planowanie w Konsoli może zostać przerwane; sprawdź Limity AI."
+}
+
 function launchExecutor(status, name) {
     return launchExecutorList(status).find(e => e && e.name === name) || null
 }

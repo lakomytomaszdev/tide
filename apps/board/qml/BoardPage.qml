@@ -58,6 +58,8 @@ Rectangle {
     property var launchImages: []
     property bool canCapture: false
     property var modelsStatus: null
+    property var limitsStatus: null
+    property var flowSettings: null
     property var taskDefaults: ({})
     property var pasteImage: function (inTextField) { return false }
     // Start bez pewnej odpowiedzi (termin minął, usługa zniknęła): agent mógł ruszyć, więc zrzuty zostają.
@@ -78,6 +80,8 @@ Rectangle {
     signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
     signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
     signal stepResolveRequested(string tag, string cardId, string request) // /Board ResolveCardStep
+    signal flowSettingsSaveRequested(string tag, string request) // /Board SetCardFlowSettings
+    signal flowSettingsRefreshRequested() // /Board GetCardFlowSettings
     signal pauseRequested(string tag, string cardId, bool paused)
     signal planEditRequested(string tag, string cardId, string request)
     signal planApproveRequested(string tag, string cardId)       // /Board ApproveCardPlan
@@ -376,6 +380,8 @@ Rectangle {
         toastTone = tone || "rose"
         toastTimer.restart()
     }
+
+    onManagingChanged: if (managing) flowSettingsRefreshRequested()
 
     // Odpowiedź usługi na zapis (tag nadany przy wysyłce).
     function handleReply(tag, reply) {
@@ -1308,11 +1314,14 @@ Rectangle {
         snapshot: page.snapshot
         homeDir: page.homeDir
         tagTone: page.tagTone
+        modelsStatus: page.modelsStatus
+        flowSettings: page.flowSettings
         onProjectRequested: (tag, request) => page.projectRequested(tag, JSON.stringify(request))
         onTagRequested: (tag, request) => page.tagRequested(tag, JSON.stringify(request))
         onIssuesRequested: (tag, refresh) => page.youtrackIssuesRequested(tag, refresh)
         onImportRequested: (tag, keys) => page.importRequested(tag, JSON.stringify({ issues: keys }))
         onResolveRequested: (tag, ident, choice) => page.resolveRequested(tag, ident, choice)
+        onFlowSettingsSaveRequested: (tag, request) => page.flowSettingsSaveRequested(tag, JSON.stringify(request))
         onBackRequested: {
             page.managing = false
             if (page.launchOpen) Qt.callLater(() => { page.launchDialog.reloadProject(); page.launchDialog.forceActiveFocus() })
@@ -1393,6 +1402,9 @@ Rectangle {
         images: page.launchImages
         canCapture: page.canCapture
         modelsStatus: page.modelsStatus
+        limitsStatus: page.limitsStatus
+        limitThresholdPercent: page.flowSettings && page.flowSettings.limitThresholdPercent !== undefined
+                               ? page.flowSettings.limitThresholdPercent : 10
         taskDefaults: page.taskDefaults
         pasteImage: page.pasteImage
         onCaptureRequested: page.captureRequested()

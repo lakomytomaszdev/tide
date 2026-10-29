@@ -68,12 +68,13 @@ NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "ImportYouTrack", "ResolveYouTrack",
           "StartCard", "ResolveCardReview", "EnterStep", "AbandonStep", "ResolveCardStep", "ApproveCardPlan", "SetCardPaused",
-          "EditCardPlan", "MergeCardToMain")
+          "EditCardPlan", "MergeCardToMain", "SetCardFlowSettings")
 YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w sieci lokalnej (po 4 s) i zapas
 TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
 COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
 AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
 MODELS_PATH, MODELS_IFACE = "/Models", "org.tide.Daemon.Models"
+LIMITS_PATH, LIMITS_IFACE = "/Limits", "org.tide.Daemon.Limits"
 MODELS_VIEW = "models"
 PENDING_MODELS = '{"pending": true}'   # przed pierwszą odpowiedzią Status() — jak w oknie „Nowe zadanie”
 START_TIMEOUT_MS = 10 * 60 * 1000  # jak w oknie „Nowe zadanie”: worktree dużego repozytorium zakłada się długo
@@ -202,6 +203,8 @@ class Backend(QObject):
     captureFinished = pyqtSignal(str)
     modelsChanged = pyqtSignal()
     tasksChanged = pyqtSignal()
+    limitsChanged = pyqtSignal()
+    flowSettingsChanged = pyqtSignal()
 
     def __init__(self, bus: QDBusConnection | None, data: dict | None = None, parent=None,
                  spectacle: str | None = None):
@@ -212,6 +215,8 @@ class Backend(QObject):
         self.tray.captureFinished.connect(self.captureFinished)
         self._models = "null"
         self._tasks = "{}"
+        self._limits = "{}"
+        self._flow_settings = "{}"
         app = QCoreApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self.discardImages)   # okno Tide zamknięte z otwartym oknem uruchomienia
@@ -239,6 +244,8 @@ class Backend(QObject):
             self._issues_data = data.pop("youtrackIssues", None)
             self._models = json.dumps(data.pop("models", None), ensure_ascii=False)
             self._tasks = json.dumps(data.pop("tasks", None) or {}, ensure_ascii=False)
+            self._limits = json.dumps(data.pop("limits", None) or {}, ensure_ascii=False)
+            self._flow_settings = json.dumps(data.pop("flowSettings", None) or {}, ensure_ascii=False)
             self._snapshot = json.dumps(data, ensure_ascii=False)
             self._available = True
             self._update_badge()
@@ -248,12 +255,16 @@ class Backend(QObject):
         bus.connect(SERVICE, PATH, IFACE, "Changed", self._changed)
         self._watcher = QDBusServiceWatcher(SERVICE, bus, QDBusServiceWatcher.WatchModeFlag.WatchForRegistration
                                             | QDBusServiceWatcher.WatchModeFlag.WatchForUnregistration, self)
-        self._watcher.serviceRegistered.connect(lambda _name: (self.reload(), self._refresh_tasks()))
+        self._watcher.serviceRegistered.connect(lambda _name: (self.reload(), self._refresh_tasks(),
+                                                                 self._refresh_limits(), self._refresh_flow_settings()))
         self._watcher.serviceUnregistered.connect(lambda _name: self._set_available(False))
         self._models = PENDING_MODELS
         bus.connect(SERVICE, MODELS_PATH, MODELS_IFACE, "Changed", self._models_changed)
+        bus.connect(SERVICE, LIMITS_PATH, LIMITS_IFACE, "Changed", self._refresh_limits)
         self.reload()
         self._refresh_tasks()
+        self._refresh_limits()
+        self._refresh_flow_settings()
 
     # --- właściwości dla QML ------------------------------------------------------------------
 
@@ -304,6 +315,14 @@ class Backend(QObject):
     @pyqtProperty(str, notify=tasksChanged)
     def tasksJson(self) -> str:
         return self._tasks
+
+    @pyqtProperty(str, notify=limitsChanged)
+    def limitsJson(self) -> str:
+        return self._limits
+
+    @pyqtProperty(str, notify=flowSettingsChanged)
+    def flowSettingsJson(self) -> str:
+        return self._flow_settings
 
     # Plakietka w pasku widoków okna Tide; pusta — ukryta.
     @pyqtProperty(str, notify=badgeChanged)
@@ -374,6 +393,14 @@ class Backend(QObject):
     @pyqtSlot(str, str, bool)
     def setCardPaused(self, tag: str, card_id: str, paused: bool) -> None:
         self._write(tag, "SetCardPaused", [card_id, paused])
+
+    @pyqtSlot(str, str)
+    def setCardFlowSettings(self, tag: str, request: str) -> None:
+        self._write(tag, "SetCardFlowSettings", [request])
+
+    @pyqtSlot()
+    def refreshCardFlowSettings(self) -> None:
+        self._refresh_flow_settings()
 
     @pyqtSlot(str, str, str)
     def editCardPlan(self, tag: str, card_id: str, request: str) -> None:
@@ -601,6 +628,8 @@ class Backend(QObject):
             self.replied.emit(tag, value)
             if member in WRITES:
                 self.reload()  # usługa ma nową migawkę od razu po zapisie
+            if member == "SetCardFlowSettings":
+                self._refresh_flow_settings()
 
         if member == "Start":
             self._call(member, args, done, timeout=START_TIMEOUT_MS, path=TASKS_PATH, iface=TASKS_IFACE)
@@ -640,6 +669,27 @@ class Backend(QObject):
         if text != self._models:
             self._models = text
             self.modelsChanged.emit()
+
+    @pyqtSlot()
+    def _refresh_limits(self) -> None:
+        if self.bus is not None:
+            self._call("Forecast", [], self._got_limits, path=LIMITS_PATH, iface=LIMITS_IFACE)
+
+    def _got_limits(self, ok: bool, value) -> None:
+        text = value if ok and isinstance(value, str) else "{}"
+        if text != self._limits:
+            self._limits = text
+            self.limitsChanged.emit()
+
+    def _refresh_flow_settings(self) -> None:
+        if self.bus is not None:
+            self._call("GetCardFlowSettings", [], self._got_flow_settings)
+
+    def _got_flow_settings(self, ok: bool, value) -> None:
+        text = value if ok and isinstance(value, str) else "{}"
+        if text != self._flow_settings:
+            self._flow_settings = text
+            self.flowSettingsChanged.emit()
 
     def _got_tasks(self, ok: bool, value) -> None:
         if not ok or not isinstance(value, str):

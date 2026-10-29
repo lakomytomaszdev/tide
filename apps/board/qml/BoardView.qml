@@ -100,6 +100,8 @@ Item {
         onAbandonStepRequested: (tag, id, step) => view.backend.abandonStep(tag, id, step)
         onReviewResolveRequested: (tag, id, choice) => view.backend.resolveCardReview(tag, id, choice)
         onStepResolveRequested: (tag, id, request) => view.backend.resolveCardStep(tag, id, request)
+        onFlowSettingsSaveRequested: (tag, request) => view.backend.setCardFlowSettings(tag, request)
+        onFlowSettingsRefreshRequested: view.backend.refreshCardFlowSettings()
         onPauseRequested: (tag, id, paused) => view.backend.setCardPaused(tag, id, paused)
         onPlanEditRequested: (tag, id, request) => view.backend.editCardPlan(tag, id, request)
         onPlanApproveRequested: (tag, id) => view.backend.approveCardPlan(tag, id)
@@ -109,6 +111,8 @@ Item {
         launchImages: view.backend ? Logic.parse(view.backend.imagesJson, []) : []
         canCapture: view.backend ? view.backend.canCapture : false
         modelsStatus: view.backend ? Logic.parse(view.backend.modelsJson, null) : null
+        limitsStatus: view.backend ? Logic.parse(view.backend.limitsJson, null) : null
+        flowSettings: view.backend ? Logic.parse(view.backend.flowSettingsJson, null) : null
         taskDefaults: view.backend ? Logic.parse(view.backend.tasksJson, {}) : ({})
         pasteImage: function (inTextField) { return view.backend ? view.backend.pasteImage(!!inTextField) : false }
         // Zapamiętany model i programy w PATH mogły się zmienić od startu widoku (okno „Nowe zadanie”, instalacja).
