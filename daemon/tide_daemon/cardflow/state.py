@@ -230,6 +230,11 @@ def fold(events: list[dict]) -> FlowState:
                     setattr(st, name, plan)
         elif kind == "plan.approved":
             st.plan_approved = e
+            for row in e.get("rows") or []:
+                if row.get("sourceState") == "gotowe":
+                    st.imported_done.add(row.get("id"))
+                elif row.get("sourceState") == "odrzucone":
+                    st.rejected.add(row.get("id"))
         elif kind == "plan.finished":
             st.plan_finished = True
         elif kind == "ticket.assigned":

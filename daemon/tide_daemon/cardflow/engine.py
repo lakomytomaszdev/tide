@@ -791,6 +791,14 @@ class FlowEngine(PlanEditing):
                                    existing_ids=[*source_states,
                                                  *[r["id"] for r in ((fold(self.journal.read(card_id)).plan_approved or {}).get("rows") or [])]],
                                    imported=bool(imported))
+        if imported:
+            original = {row["id"]: row["title"] for row in imported.get("rows") or []}
+            proposed = {row["workId"]: row["title"] for row in proposal.rows}
+            for ident, title in original.items():
+                if ident not in proposed:
+                    proposal.errors.append(f"{ident}: przejęty ticket musi pozostać w planie")
+                elif proposed[ident] != title:
+                    proposal.errors.append(f"{ident}: tytuł przejętego ticketu musi pozostać bez zmian")
         if proposal.plan is not None and proposal.plan.tracker == 'youtrack':
             config_url = yt.load_config()['url'].rstrip('/')
             if proposal.plan.tracker_project != project.youtrack:

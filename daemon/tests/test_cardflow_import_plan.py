@@ -87,6 +87,53 @@ class PlanImportTest(FlowInProcess):
         with open(path, "rb") as fh:
             self.assertEqual(fh.read(), before)
 
+    def test_restart_after_approval_keeps_imported_terminal_state(self):
+        card = self.card()
+        self.assertTrue(self.import_plan(card, self.source(card))["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20))
+        self.flow.stop()
+        journal = self.flow.engine.journal
+        original = journal.append
+
+        def interrupted(ident, kind, **data):
+            if kind == "ticket.imported":
+                raise OSError("restart przed zapisaniem pojedynczego ticketu")
+            return original(ident, kind, **data)
+
+        with mock.patch.object(journal, "append", side_effect=interrupted):
+            with self.assertRaises(OSError):
+                self.flow.engine.approve_plan(card)
+        from tide_daemon.cardflow.state import fold
+        state = fold(journal.read(card))
+        self.assertIn("PT-7", state.imported_done)
+        self.assertTrue(self.flow.engine.approve_plan(card)["already"])
+        self.restart()
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=40), self.events(card))
+        self.assertEqual([e["ticket"] for e in self.of(card, "step.started") if e["kind"] == "ticket"], ["PT-8"])
+
+    def test_completion_cannot_remove_or_rename_imported_ticket(self):
+        card = self.card()
+        path = self.source(card)
+        self.assertTrue(self.import_plan(card, path)["ok"])
+        self.flow.stop()
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+        changed = body.replace("| PT-7 | Gotowy plasterek | gotowe | | Sonnet | zachować wynik | standard | Opus | |\n", "") \
+                      .replace("| PT-8 | Dalszy plasterek |", "| #1 | Dalszy plasterek |")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(changed)
+        with open(os.path.join(os.path.dirname(path), "tickets", "1.md"), "w", encoding="utf-8") as fh:
+            fh.write("# #1\n\n- [ ] Wynik.\n")
+        result = self.flow.engine.propose_plan(card, path, import_source=True)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("PT-7" in error for error in result["errors"]))
+        self.assertTrue(any("PT-8" in error for error in result["errors"]))
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body.replace("Gotowy plasterek", "Nowy tytuł"))
+        result = self.flow.engine.propose_plan(card, path, import_source=True)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("tytuł" in error for error in result["errors"]))
+
     def test_old_six_column_plan_is_completed_in_background_then_reviewed(self):
         card = self.card()
         path = self.source(card, old=True, bound=False)
