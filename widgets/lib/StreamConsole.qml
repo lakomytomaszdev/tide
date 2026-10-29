@@ -46,6 +46,7 @@ Item {
         motionBaseUrl: deck.motionBaseUrl
         busy: deck.busy
         onSceneRequested: name => deck.commandRequested("scene.set", { scene: name })
+        onBrowserWindowRequested: deck.commandRequested("browser.window.choose", {})
     }
 
     AlwaysCard {

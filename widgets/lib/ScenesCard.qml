@@ -20,6 +20,7 @@ Card {
     property bool motionPlaying: false
     property bool busy: false
     signal sceneRequested(string name)
+    signal browserWindowRequested()
 
     function playMotionPreview(kind) {
         if (!motionBaseUrl || ["transition", "alert", "peek", "raid"].indexOf(kind) < 0) return
@@ -204,6 +205,15 @@ Card {
                 onClicked: if (!modelData.current) card.sceneRequested(modelData.name)
             }
         }
+    }
+    TextButton {
+        objectName: "browserWindowButton"
+        visible: card.model.available && card.model.items.some(item => item.name === "Browser")
+        enabled: !card.busy
+        variant: "link"
+        text: "Wybierz okno dla Browser w OBS"
+        Accessible.description: "Otwiera właściwości źródła przeglądarki w OBS"
+        onClicked: card.browserWindowRequested()
     }
     // Na żywo: dlaczego start i koniec są wyłączone.
     Text {
