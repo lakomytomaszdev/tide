@@ -867,6 +867,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
 | `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty (PT-58/59), dziś wejście „Od razu”: `{entry: "now", executor, reviewer?, images?, preferredProvider?}` → `{ok, id, ticket, branch, worktree, cardBranch, cardWorktree, step, session, executor}` albo `{ok: false, error, message}` (`bad-request`, `not-found`, `no-project`, `no-repo`, `unsupported-tracker`, `unknown-executor`, `unsupported-executor`, `bad-reviewer`, `bad-reviewer-provider`, `no-program`, `bad-image`, `flow-active`, `no-ticket-number`, `no-base`, błąd akcji); odpowiedź po starcie kroku — opis w „Przepływ karty: „Od razu”” |
+| `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
 
@@ -1505,7 +1506,10 @@ BLOCKER i MAJOR, ponownie sprawdza worktree i ref, a werdykt zapisuje jako `revi
 liczby widać w panelu karty.
 
 Przy REQUEST_CHANGES autor dostaje krok poprawek z uwagami i następuje ponowne review. Po trzeciej nieudanej rundzie
-karta czeka na decyzję użytkownika. APPROVE uruchamia scalenie pod blokadą gita repozytorium i usuwa worktree ticketu
+karta zapisuje `review.question` i czeka na decyzję użytkownika w panelu. `retry` zapisuje `review.decision` i pozwala
+na jedną dalszą rundę; następna nieudana runda ponownie pyta. `reject` zapisuje decyzję i `ticket.rejected`, bez scalenia.
+APPROVE uruchamia scalenie tylko zatwierdzonego commita ticketu (ref jest sprawdzany pod blokadą gita repozytorium)
+i usuwa worktree ticketu
 pod tą samą blokadą. Katalogi wejścia i wyniku kroków leżą obok worktree i zostają w repozytorium tablicy jako kopie
 wyniku. Błąd przygotowania kolejnego etapu jest zdarzeniem `flow.error` i pokazuje kartę jako oczekującą; usługa
 ponawia etap w kolejnych przebiegach.

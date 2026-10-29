@@ -199,7 +199,8 @@ class FlowEngine:
             raise FlowError("no-base", f"{project.repo}: nie ma gałęzi głównej (master, main, develop)")
 
         started = self.journal.append(card.id, "card.started", entry="now", executor=executor.name,
-                                      program="claude", model=executor.model, reviewer=reviewer.name,
+                                      program="claude", model=executor.model, executorProvider=executor.provider,
+                                      reviewer=reviewer.name, reviewerProvider=reviewer.provider,
                                       reviewerProgram=reviewer.program, reviewerModel=reviewer.model,
                                       preferredProvider=provider_preference, check=check,
                                       repo=project.repo, project=project.slug, column=card.column,
@@ -418,8 +419,12 @@ class FlowEngine:
         if verdict is None:
             return
         if verdict.get("verdict") == "REQUEST_CHANGES":
-            if int(step.get("round") or 0) < 3:
+            round_no = int(step.get("round") or 0)
+            if round_no < 3 or (st.review_decisions.get((ticket, round_no)) or {}).get("choice") == "retry":
                 self._fix(card, st, step)
+            elif (ticket, round_no) not in st.review_questions:
+                self.journal.append(card, "review.question", ticket=ticket, round=round_no,
+                                    question="Review nadal wykazuje BLOCKER lub MAJOR. Ponowić poprawki czy odrzucić ticket?")
             return
         if ("merge", ticket) not in st.results:
             source = next((s for s in st.steps.values() if s.get("ticket") == ticket and
@@ -432,6 +437,28 @@ class FlowEngine:
 
     def _next_step_id(self, card: str, ticket: str, st: FlowState) -> str:
         return f"{card}-{ticket}-{1 + sum(1 for s in st.steps.values() if s.get('ticket') == ticket)}"
+
+    def resolve_review(self, card_id: str, choice: str) -> dict:
+        """Jawna decyzja po trzecim i każdym następnym nieudanym review."""
+        try:
+            card = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        if choice not in ("retry", "reject"):
+            raise FlowError("bad-choice", "wybierz ponowne poprawki albo odrzucenie ticketu")
+        st = fold(self.journal.read(card))
+        step = st.steps.get(st.last_step) or {}
+        ticket, round_no = step.get("ticket") or "", int(step.get("round") or 0)
+        verdict = st.verdicts.get((ticket, round_no)) or {}
+        if st.card_finished or st.running() or step.get("kind") != "review" or round_no < 3 or \
+                verdict.get("verdict") != "REQUEST_CHANGES" or \
+                (ticket, round_no) not in st.review_questions or \
+                (ticket, round_no) in st.review_decisions:
+            raise FlowError("no-review-question", f"{card}: nie ma pytania o review do rozstrzygnięcia")
+        self.journal.append(card, "review.decision", ticket=ticket, round=round_no, choice=choice)
+        if choice == "reject":
+            self.journal.append(card, "ticket.rejected", ticket=ticket)
+        return {"ok": True, "id": card, "ticket": ticket, "round": round_no, "choice": choice}
 
     def _project(self, card: str):
         board = self.store.load()
@@ -468,6 +495,13 @@ class FlowEngine:
         reviewer = (self.catalog() if self.catalog else None).get(st.started.get("reviewer") or "")
         if reviewer is None:
             raise FlowError("unknown-reviewer", f"{card}: nie ma recenzenta")
+        if reviewer.program != st.started.get("reviewerProgram") or \
+                reviewer.model != st.started.get("reviewerModel") or \
+                reviewer.provider != st.started.get("reviewerProvider") or \
+                reviewer.model == st.started.get("model") or \
+                (st.started.get("preferredProvider") == "mixed" and
+                 reviewer.provider == st.started.get("executorProvider")):
+            raise FlowError("changed-reviewer", f"{card}: katalog zmienił recenzenta od startu ticketu")
         binary = self.which(reviewer.program)
         if not binary:
             raise FlowError("no-reviewer-program", f"nie znaleziono programu {reviewer.program}")
@@ -753,10 +787,16 @@ class FlowEngine:
         ticket = step.get("ticket") or ""
         info = ticket_of(st)
         repo = step.get("repo") or self._repo(card)
+        approved = next((v for (ticket_id, _round), v in reversed(list(st.verdicts.items()))
+                         if ticket_id == ticket and v.get("verdict") == "APPROVE"), None)
+        review_step = st.steps.get((approved or {}).get("step")) or {}
+        expected_tip = review_step.get("reviewTip") or ""
+        if not expected_tip:
+            raise FlowError("merge", "brak zatwierdzonego commita ticketu")
         try:
             self._act(card, "merge", ticket, lambda: self.git.merge(
                 repo, info["cardBranch"], step.get("branch") or info["branch"], info["cardWorktree"],
-                f"Merge ticket {ticket} into card {card}"), branch=step.get("branch") or info["branch"],
-                into=info["cardBranch"])
+                f"Merge ticket {ticket} into card {card}", expected_tip=expected_tip),
+                branch=step.get("branch") or info["branch"], into=info["cardBranch"], expectedTip=expected_tip)
         except FlowError as exc:
             print(f"tide-daemon: przepływ karty {card}: scalenie {ticket}: {exc}", flush=True)

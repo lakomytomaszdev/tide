@@ -37,6 +37,8 @@ class FlowState:
     steps: dict = field(default_factory=dict)       # step → step.started
     finished: dict = field(default_factory=dict)    # step → step.finished
     verdicts: dict = field(default_factory=dict)    # (ticket, runda) → review.verdict
+    review_questions: dict = field(default_factory=dict)
+    review_decisions: dict = field(default_factory=dict)
     last_step: str = ""
     paused: bool = False
     card_finished: bool = False
@@ -99,6 +101,10 @@ def fold(events: list[dict]) -> FlowState:
                 st.moved_to = ""
         elif kind == "review.verdict":
             st.verdicts[(e.get("ticket"), e.get("round"))] = e
+        elif kind == "review.question":
+            st.review_questions[(e.get("ticket"), e.get("round"))] = e
+        elif kind == "review.decision":
+            st.review_decisions[(e.get("ticket"), e.get("round"))] = e
         elif kind == "flow.error":
             st.flow_error = e.get("error") or ""
         elif kind == "card.paused":
@@ -155,6 +161,9 @@ def derived(st: FlowState, card: dict) -> dict | None:
     verdict = next((v for (ticket_id, _round), v in reversed(list(st.verdicts.items())) if ticket_id == ident), None)
     if verdict:
         out["flow"].update({key: verdict[key] for key in ("verdict", "blockers", "majors", "nits", "round")})
+        question_key = (ident, verdict.get("round"))
+        if question_key in st.review_questions and question_key not in st.review_decisions:
+            out["flow"]["reviewQuestion"] = True
     if column == "backlog":
         if not st.paused:
             return None
@@ -176,7 +185,13 @@ def derived(st: FlowState, card: dict) -> dict | None:
     if result == "done":
         if verdict and verdict.get("verdict") == "REQUEST_CHANGES":
             if int(verdict.get("round") or 0) >= 3:
-                return _fill(out, "waiting", f"{ident}: trzy rundy review — potrzebna decyzja")
+                decision = st.review_decisions.get((ident, verdict.get("round"))) or {}
+                if decision.get("choice") == "retry":
+                    return _fill(out, "progress", f"{ident} · poprawki po decyzji użytkownika")
+                if decision.get("choice") == "reject":
+                    return _fill(out, "waiting", f"{ident}: ticket odrzucony po review")
+                out["question"] = (st.review_questions.get((ident, verdict.get("round"))) or {}).get("question") or ""
+                return _fill(out, "waiting", f"{ident}: po {verdict.get('round')} rundach review — potrzebna decyzja")
             return _fill(out, "progress", f"{ident} · poprawki po review")
         merge = st.results.get(("merge", ident))
         if merge is None:

@@ -65,6 +65,7 @@ Rectangle {
     signal showInFolderRequested(string path)      // „Pokaż w katalogu”
     signal linkRequested(string url)               // link http(s) z Markdownu
     signal youtrackResolveRequested(string cardId, string choice)   // konflikt: youtrack | tide
+    signal reviewResolveRequested(string cardId, string choice)     // pytanie po limicie rund review
 
     function form() {
         const key = Logic.issueKey(youtrackField.text)
@@ -599,6 +600,31 @@ Rectangle {
                         font.family: Tide.Theme.uiFamily
                         font.pixelSize: 12
                         wrapMode: Text.Wrap
+                    }
+                    RowLayout {
+                        objectName: "cardReviewDecision"
+                        Layout.fillWidth: true
+                        visible: panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
+                                 && panel.card.derived.flow.reviewQuestion === true
+                        spacing: 8
+                        PillButton {
+                            text: "Ponów poprawki"
+                            enabled: !panel.busy
+                            onClicked: {
+                                panel.busy = true
+                                panel.reviewResolveRequested(panel.card.id, "retry")
+                            }
+                        }
+                        PillButton {
+                            text: "Odrzuć ticket"
+                            outline: true
+                            enabled: !panel.busy
+                            onClicked: {
+                                panel.busy = true
+                                panel.reviewResolveRequested(panel.card.id, "reject")
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
                     }
                     Text {
                         Layout.fillWidth: true

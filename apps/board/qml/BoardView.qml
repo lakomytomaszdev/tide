@@ -96,6 +96,7 @@ Item {
         onRenderRequested: (tag, id, request) => view.backend.renderLaunch(tag, id, request)
         onStartRequested: (tag, request) => view.backend.startTask(tag, request)
         onFlowRequested: (tag, id, request) => view.backend.startCard(tag, id, request)
+        onReviewResolveRequested: (tag, id, choice) => view.backend.resolveCardReview(tag, id, choice)
         // Zrzuty ekranu i model w oknie uruchomienia (PT-43).
         launchImages: view.backend ? Logic.parse(view.backend.imagesJson, []) : []
         canCapture: view.backend ? view.backend.canCapture : false

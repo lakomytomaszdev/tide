@@ -67,7 +67,7 @@ PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku �
 NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "ImportYouTrack", "ResolveYouTrack",
-          "StartCard")
+          "StartCard", "ResolveCardReview")
 YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w sieci lokalnej (po 4 s) i zapas
 TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
 COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
@@ -352,6 +352,10 @@ class Backend(QObject):
     def startCard(self, tag: str, card_id: str, request: str) -> None:
         """Zlecenie w przepływie karty (/Board StartCard, wejście „Od razu”): krok w tle, bez Konsoli."""
         self._write(tag, "StartCard", [card_id, request])
+
+    @pyqtSlot(str, str, str)
+    def resolveCardReview(self, tag: str, card_id: str, choice: str) -> None:
+        self._write(tag, "ResolveCardReview", [card_id, choice])
 
     # --- zrzuty ekranu i model w oknie uruchomienia (PT-43) ------------------------------------
 

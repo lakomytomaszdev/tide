@@ -58,7 +58,8 @@ class MergeTest(unittest.TestCase):
         git(self.ticket, "commit", "-qm", "ticket")
 
     def merge(self):
-        return self.flow.merge(self.repo, "card/test", "ticket/test", self.card, "Merge ticket")
+        return self.flow.merge(self.repo, "card/test", "ticket/test", self.card, "Merge ticket",
+                               expected_tip=git(self.repo, "rev-parse", "ticket/test"))
 
     def test_two_ticket_merges_share_one_repo_lock(self):
         self.ticket_commit()
@@ -71,7 +72,8 @@ class MergeTest(unittest.TestCase):
 
         def merge(branch):
             barrier.wait(timeout=5)
-            return self.flow.merge(self.repo, "card/test", branch, self.card, f"Merge {branch}")
+            return self.flow.merge(self.repo, "card/test", branch, self.card, f"Merge {branch}",
+                                   expected_tip=git(self.repo, "rev-parse", branch))
 
         with mock.patch.object(gitops, "sandbox_available", return_value=True, create=True), \
                 mock.patch.object(gitops, "StepGit", LocalStepGit, create=True):
@@ -83,6 +85,21 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(git(self.card, "status", "--porcelain"), "")
         self.assertTrue(os.path.isfile(os.path.join(self.card, "ticket.txt")))
         self.assertTrue(os.path.isfile(os.path.join(self.card, "second.txt")))
+
+    def test_merge_rejects_tip_changed_after_approval_under_repo_lock(self):
+        self.ticket_commit()
+        approved = git(self.repo, "rev-parse", "ticket/test")
+        before = git(self.repo, "rev-parse", "card/test")
+        self.write(self.ticket, "later.txt", "późniejsza zmiana\n")
+        git(self.ticket, "add", "later.txt")
+        git(self.ticket, "commit", "-qm", "later change")
+        with mock.patch.object(gitops, "sandbox_available", return_value=True, create=True), \
+                mock.patch.object(gitops, "StepGit", LocalStepGit, create=True):
+            with self.assertRaisesRegex(gitops.FlowGitError, "po zatwierdzeniu review"):
+                self.flow.merge(self.repo, "card/test", "ticket/test", self.card, "Merge ticket",
+                                expected_tip=approved)
+        self.assertEqual(git(self.repo, "rev-parse", "card/test"), before)
+        self.assertFalse(os.path.exists(os.path.join(self.card, "later.txt")))
 
     def test_without_sandbox_does_not_run_ticket_filter_or_move_card_branch(self):
         marker = os.path.join(self.base, "filter-ran")

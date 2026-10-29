@@ -148,13 +148,16 @@ class FlowGit:
                 raise FlowGitError("nie udało się usunąć worktree: " + (removed.err.splitlines() or ["błąd"])[0])
             return {"removed": True, "already": False}
 
-    def merge(self, repo: str, card_branch: str, ticket_branch: str, card_worktree: str, message: str) -> dict:
-        """Ticket do gałęzi karty: sukces oznacza zgodność refu, indeksu i plików worktree."""
+    def merge(self, repo: str, card_branch: str, ticket_branch: str, card_worktree: str, message: str,
+              *, expected_tip: str) -> dict:
+        """Scala dokładnie zatwierdzony commit; sukces oznacza zgodność refu, indeksu i plików worktree."""
         with lock_for(repo):
             old = self.sha(repo, f"refs/heads/{card_branch}")
             tip = self.sha(repo, f"refs/heads/{ticket_branch}")
             if not old or not tip:
                 raise FlowGitError(f"nie ma gałęzi {card_branch if not old else ticket_branch}")
+            if not expected_tip or tip != expected_tip:
+                raise FlowGitError("gałąź ticketu zmieniła się po zatwierdzeniu review")
             if not card_worktree or not os.path.isdir(card_worktree):
                 raise FlowGitError("nie ma worktree karty")
             listed = self.run(repo, "worktree", "list", "--porcelain")
