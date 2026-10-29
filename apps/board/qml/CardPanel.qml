@@ -631,8 +631,8 @@ Rectangle {
                     Text {
                         objectName: "cardReviewVerdict"
                         Layout.fillWidth: true
-                        visible: panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
-                                 && !!panel.card.derived.flow.verdict
+                        visible: !!(panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
+                                    && panel.card.derived.flow.verdict)
                         text: {
                             const flow = panel.card && panel.card.derived ? panel.card.derived.flow : null
                             return flow && flow.verdict
@@ -651,8 +651,8 @@ Rectangle {
                     RowLayout {
                         objectName: "cardReviewDecision"
                         Layout.fillWidth: true
-                        visible: panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
-                                 && panel.card.derived.flow.reviewQuestion === true
+                        visible: !!(panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
+                                    && panel.card.derived.flow.reviewQuestion === true)
                         spacing: 8
                         PillButton {
                             objectName: "cardReviewRetry"
