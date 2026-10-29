@@ -1707,6 +1707,17 @@ class FlowEngine(PlanEditing):
         st = fold(self.journal.read(card))
         st.last_step = attention_step(st) or st.last_step
         step = st.steps.get(st.last_step) or {}
+        if step.get("kind") != "review" and choice == "reject":
+            # Po odrzuceniu karta może już mieć nowszy krok domknięcia. Zachowaj
+            # idempotencję decyzji, gdy nie ma kolejnego pytania o review.
+            rejected = next((decision for decision in reversed(list(st.review_decisions.values()))
+                             if decision.get("choice") == "reject" and
+                             decision.get("ticket") in st.rejected), None)
+            if rejected and not attention_step(st):
+                step = next((candidate for candidate in reversed(list(st.steps.values()))
+                             if candidate.get("kind") == "review" and
+                             candidate.get("ticket") == rejected.get("ticket") and
+                             candidate.get("round") == rejected.get("round")), step)
         ticket, round_no = step.get("ticket") or "", int(step.get("round") or 0)
         verdict = st.verdicts.get((ticket, round_no)) or {}
         previous = st.review_decisions.get((ticket, round_no)) or {}

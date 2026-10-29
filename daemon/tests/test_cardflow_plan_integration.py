@@ -108,6 +108,7 @@ class PlanFlowTest(FlowInProcess):
         self.assertEqual(set(reply["map"]), {"#1", "#2"})
         self.assertEqual(len(set(reply["map"].values())), 2)
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=45), self.events(card))
+        self.wait_column(card, "review")
         steps = [s for s in self.of(card, "step.started") if s.get("kind") == "ticket"]
         self.assertEqual([s["ticket"] for s in steps], [reply["map"]["#1"], reply["map"]["#2"]])
         merge = self.results(card, "merge")

@@ -217,7 +217,9 @@ class NowTest(FlowCase):
         types = [e["type"] for e in self.events(card_id)]
         self.assertEqual(types[0], "card.started")
         for kind in ("step.started", "step.finished"):
-            self.assertEqual(types.count(kind), 2, types)
+            self.assertEqual(types.count(kind), 3, types)
+        self.assertEqual([s["kind"] for s in self.of(card_id, "step.started")],
+                         ["ticket", "review", "close"])
         self.assertEqual(types.count("review.verdict"), 1, types)
         self.assertTrue(all(e["v"] == 1 and e["card"] == card_id for e in self.events(card_id)))
         self.assertEqual(self.of(card_id, "card.started")[0]["entry"], "now")
@@ -355,7 +357,9 @@ class RestartTest(FlowCase):
         self.wait_column(card_id, "review", timeout=40)
         types = [e["type"] for e in self.events(card_id)]
         for kind in ("card.started", "step.started", "step.finished"):
-            self.assertEqual(types.count(kind), 1 if kind == "card.started" else 2, types)
+            self.assertEqual(types.count(kind), 1 if kind == "card.started" else 3, types)
+        self.assertEqual([s["kind"] for s in self.of(card_id, "step.started")],
+                         ["ticket", "review", "close"])
         self.assertEqual(len(self.results(card_id, "merge")), 1, types)
         seqs = [e["seq"] for e in self.events(card_id)]
         self.assertEqual(seqs, list(range(1, len(seqs) + 1)))
@@ -434,4 +438,5 @@ class PauseDbusTest(FlowCase):
         self.assertEqual(row["derived"]["note"], "wstrzymana")
         self.assertTrue(self.call("SetCardPaused", card, False)["ok"])
         self.wait_column(card, "review", timeout=15)
-        self.assertEqual(len(self.of(card, "step.started")), 2)
+        self.assertEqual([s["kind"] for s in self.of(card, "step.started")],
+                         ["ticket", "review", "close"])

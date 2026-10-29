@@ -110,7 +110,7 @@ class ReviewFlowTest(FlowInProcess):
         self.assertTrue(reply["ok"], reply)
         shown = self.wait_column(card, "review")
         steps = self.of(card, "step.started")
-        self.assertEqual([s["kind"] for s in steps], ["ticket", "review"])
+        self.assertEqual([s["kind"] for s in steps], ["ticket", "review", "close"])
         self.assertEqual((steps[0]["executor"], steps[1]["executor"]), ("Sonnet", "Opus"))
         self.assertNotEqual(steps[0]["model"], steps[1]["model"])
         with open(os.path.join(steps[1]["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
@@ -123,7 +123,8 @@ class ReviewFlowTest(FlowInProcess):
         verdict = self.of(card, "review.verdict")
         self.assertEqual([(v["verdict"], v["blockers"], v["majors"], v["nits"]) for v in verdict],
                          [("APPROVE", 0, 0, 0)])
-        self.assertEqual(shown["derived"]["flow"]["verdict"], "APPROVE")
+        self.assertTrue(shown["derived"]["flow"]["closed"])
+        self.assertIn("Podsumowanie karty", shown["derived"]["flow"]["summary"])
         self.assertEqual(len(self.results(card, "merge")), 1)
         self.assertEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
         self.assertFalse(os.path.exists(reply["worktree"]), "worktree ticketu po zatwierdzeniu")
@@ -137,7 +138,7 @@ class ReviewFlowTest(FlowInProcess):
         self.assertEqual([(v["round"], v["verdict"], v["majors"]) for v in verdicts],
                          [(1, "REQUEST_CHANGES", 1), (2, "REQUEST_CHANGES", 1), (3, "APPROVE", 0)])
         self.assertEqual([s["kind"] for s in self.of(card, "step.started")],
-                         ["ticket", "review", "fix", "review", "fix", "review"])
+                         ["ticket", "review", "fix", "review", "fix", "review", "close"])
         fixes = [s for s in self.of(card, "step.started") if s["kind"] == "fix"]
         with open(os.path.join(fixes[0]["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             prompt = json.load(fh)["prompt"]
@@ -212,6 +213,7 @@ class ReviewFlowTest(FlowInProcess):
 
         self.flow = self.make_flow()
         self.assertTrue(wait_until(lambda: self.of(card, "ticket.rejected"), timeout=10))
+        self.assertTrue(wait_until(lambda: self.of(card, "card.closed"), timeout=10), self.events(card))
         after = fold(self.flow.engine.journal.read(card))
         self.assertFalse(after.active())
         self.assertEqual(len(self.of(card, "ticket.rejected")), 1)

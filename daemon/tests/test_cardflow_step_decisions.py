@@ -184,7 +184,8 @@ class StepDecisionTest(FlowInProcess):
         steps = self.of(card_id, "step.started")
         self.assertEqual([(s["kind"], s["executor"]) for s in steps],
                          [("ticket", "Sonnet"), ("ticket", "Sonnet"), ("ticket", "Haiku"),
-                          ("review", "Opus"), ("fix", "Haiku"), ("review", "Opus")])
+                          ("review", "Opus"), ("fix", "Haiku"), ("review", "Opus"),
+                          ("close", "Sonnet")])
 
     def test_change_reviewer_keeps_author_model_separate_and_persists(self):
         card_id = self.card(description="Test.\n\nATRAPA: review-error\nATRAPA: review-requests 1")
@@ -196,7 +197,8 @@ class StepDecisionTest(FlowInProcess):
         self.wait_column(card_id, "review")
         self.assertEqual([(s["kind"], s["executor"]) for s in self.of(card_id, "step.started")],
                          [("ticket", "Sonnet"), ("review", "Opus"), ("review", "Opus"),
-                          ("review", "Haiku"), ("fix", "Sonnet"), ("review", "Haiku")])
+                          ("review", "Haiku"), ("fix", "Sonnet"), ("review", "Haiku"),
+                          ("close", "Sonnet")])
 
     def test_timeout_stops_both_attempts_and_preserves_worktree(self):
         with open(self.settings, "w", encoding="utf-8") as fh:

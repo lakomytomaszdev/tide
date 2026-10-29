@@ -283,7 +283,9 @@ class NowInProcessTest(FlowInProcess):
         types = [e["type"] for e in self.events(card_id)]
         self.assertEqual(types[0], "card.started")
         for kind in ("step.started", "step.finished"):
-            self.assertEqual(types.count(kind), 2, types)  # ticket i niezależny review
+            self.assertEqual(types.count(kind), 3, types)  # ticket, niezależny review i domknięcie
+        self.assertEqual([s["kind"] for s in self.of(card_id, "step.started")],
+                         ["ticket", "review", "close"])
         self.assertEqual(types.count("review.verdict"), 1, types)
         self.assertTrue(all(e["v"] == 1 and e["card"] == card_id for e in self.events(card_id)))
         self.assertEqual([e["seq"] for e in self.events(card_id)], list(range(1, len(types) + 1)))
@@ -333,8 +335,9 @@ class NowInProcessTest(FlowInProcess):
         self.assertEqual(old["boardColumn"], "todo")
         self.assertIsNone(old.get("derived"))
 
-        # Lista agentów: dziennik sesji kroku jest na dysku, skaner go widzi, ale usługa go nie pokazuje.
-        monitor = AgentMonitor(AgentScanner(os.path.join(self.base, "home", ".claude"), [os.path.join(self.base, "x")]),
+        # Lista agentów: stała data w atrapowym dzienniku nie może ukryć sesji przed sprawdzeniem filtra.
+        monitor = AgentMonitor(AgentScanner(os.path.join(self.base, "home", ".claude"),
+                                            [os.path.join(self.base, "x")], max_age=float("inf")),
                                use_processes=False)
         monitor.rescan()
         self.assertTrue([s for s in monitor.sessions if s.get("sessionId") == step["session"]],
@@ -558,7 +561,9 @@ class RestartInProcessTest(FlowInProcess):
         self.wait_column(card_id, "review", timeout=40)
         types = [e["type"] for e in self.events(card_id)]
         for kind in ("card.started", "step.started", "step.finished"):
-            self.assertEqual(types.count(kind), 1 if kind == "card.started" else 2, types)
+            self.assertEqual(types.count(kind), 1 if kind == "card.started" else 3, types)
+        self.assertEqual([s["kind"] for s in self.of(card_id, "step.started")],
+                         ["ticket", "review", "close"])
         self.assertEqual(len(self.results(card_id, "merge")), 1, types)
         self.assertEqual([e["seq"] for e in self.events(card_id)], list(range(1, len(types) + 1)))
         self.restart()
