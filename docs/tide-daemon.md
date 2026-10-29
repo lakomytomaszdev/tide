@@ -856,7 +856,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
-| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
+| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules}` albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie dla karty (pusty `mode` — domyślne wejście i tryb projektu; `spec` to dawny zapis wejścia Tylko specyfikacja) → `{ok, text, entry, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
 | `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{entry, mode, tool, branch, check, preferredProvider}` (wszystko opcjonalne; `entry`: `planning` albo `spec` — Tylko specyfikacja, domyślne wejście projektu; `mode`: `full` albo `light`, dotyczy tylko Planowania i przy `spec` jest pomijany; `mode: spec` bez `entry` to stare żądanie wejścia Tylko specyfikacja; `check`: `auto` — domyślnie, albo `manual`); polecenie z każdego wejścia i trybu jest takie jak przed PT-77; odpowiedź ma `entry` i `mode` (pusty przy `spec`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
@@ -866,7 +866,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `YouTrackIssues(b refresh)` | `→ s` | zgłoszenia użytkownika do importu (PT-7): `{ok, issues: [{id, summary, project, state, updated, url, card, boardProject, boardProjectName, new}], error}`; odpowiedź po pobraniu w wątku roboczym (`refresh: false` — ostatnia lista z pamięci); pokazane zgłoszenia liczą się jako przejrzane |
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
-| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?}` albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
+| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?}` albo Planowanie Lekkie `{entry: "planning", mode: "light", executor, preferredProvider?, images?, check?}`, albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
@@ -1457,6 +1457,34 @@ na gałęzi karty pod blokadą repozytorium, przez piaskownicę gita. Dzięki te
 planów ze wszystkich worktree widzi nowe ID w Sesjach, raporcie i kontroli numerów. Ticket startuje
 dopiero po scaleniu wszystkich swoich blokerów; każdy przechodzi review i scalenie z PT-59.
 Przerwanie między rezerwacją, wpisem mapy i commitem planu odtwarza ten sam plan i numery.
+
+### Planowanie Lekkie i zasady przydziału (PT-79)
+
+`StartCard(K-12, {"entry":"planning","mode":"light","executor":"Opus","preferredProvider":"mixed"})`
+uruchamia krok `planning` w tle. Okno zlecenia ma wybór planującego z katalogu, niezależny od preferowanego
+dostawcy przyszłych ticketów; przy „Tylko lokalnie” pokazuje wyłącznie lokalnych planujących. Krok korzysta
+z gałęzi i worktree karty, a wyniki zapisuje w swoim katalogu `out`. Nie otwiera Konsoli ani nie nadaje numerów.
+
+Wejście zawiera kartę, zrzuty, katalog wykonawców z klasami, preferencję dostawcy oraz migawkę zasad przydziału.
+Dodatkowe projekty są dostępne wyłącznie do odczytu; nie poszerzają katalogów zapisu piaskownicy. Szablon prowadzi
+przez pełne sekcje `to-spec` i pionowe plasterki `to-tickets`, z blokerami i osobną kartką „Dla recenzenta” na ticket.
+Nadpisuje publikację ze skilli: `spec.md`, `plan.md`, `tickets/1.md` itd. i `result.json` trafiają do `out`, bez GitHub
+Issues, trackera i lokalnego `.scratch`. Propozycję czyta ten sam walidator co PT-78, z dodatkowym ograniczeniem
+źródła do katalogu wyniku konkretnego kroku. Poprawny wynik daje plan do zatwierdzenia; zatwierdzenie prowadzi dalej
+przez istniejące rezerwacje, review ticketów i scalanie. Review samego planu przed pokazaniem dodaje PT-80.
+
+Błędny format zapisuje `plan.checked` i uruchamia `plan-fix` z błędami i poprzednią propozycją, najwyżej dwie poprawy.
+Po dwóch nieudanych poprawach karta czeka na użytkownika z błędami w panelu; można zlecić nowe planowanie. Awaria
+programu, pytanie i brak zgody korzystają z istniejącego kontraktu kroków (jedno ponowienie awarii, potem decyzja
+użytkownika). Zapisane `card.started` i pary „zamiar → wynik” pozwalają dokończyć start po restarcie bez duplikatów.
+
+Zasady przydziału są krótkim tekstem w klasach `lekki`, `standard`, `mocny`, `lokalny`. Wspólne mieszczą się w
+`board.md`, nadpisanie projektu w `projects/<slug>.md`, pod kluczem `assignment-rules` (napis JSON w płaskim
+frontmatterze, tak by zachować wiele wierszy). Nowa tablica dostaje zaczyn, starsza używa tego samego zaczynu,
+dopóki użytkownik go nie zapisze. `Snapshot.assignmentRules` podaje zasady wspólne, projektowe `assignmentRules`
+podaje samo nadpisanie; pusty tekst oznacza dziedziczenie. „Projekty i tagi” edytuje oba zakresy przez `UpsertProject`:
+`{globalAssignmentRules:"…"}` zapisuje wyłącznie wspólne, `{slug:"…",assignmentRules:"…"}` nadpisanie projektu.
+Limit tekstu wynosi 8000 znaków. Wyczyszczenie nadpisania przywraca dziedziczenie wspólnych zasad.
 
 ### Przepływ karty: „Od razu” (PT-58)
 

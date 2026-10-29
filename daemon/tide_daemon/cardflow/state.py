@@ -237,7 +237,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
                              and not other.get("consoleClosed") for other in st.steps.values())}
         for name, item in st.steps.items()
     ]
-    if st.started.get("entry") == "plan":
+    if st.started.get("entry") in ("plan", "planning"):
         proposal = st.plan_proposed or {}
         approved = st.plan_approved or {}
         rows = approved.get("rows") or proposal.get("rows") or []
@@ -250,13 +250,21 @@ def derived(st: FlowState, card: dict) -> dict | None:
                              "rows": rows, "waves": waves,
                              "errors": (st.plan_checked or {}).get("errors") or []}
         if not st.plan_proposed:
-            return _fill(out, "waiting", "propozycja planu wymaga poprawy")
-        if not st.plan_approved:
+            if st.started.get("entry") != "planning":
+                return _fill(out, "waiting", "propozycja planu wymaga poprawy")
+            if not st.flow_error and done.get("result") not in ("question", "denied", "error", "stopped"):
+                if st.running() or not st.plan_checked:
+                    return _fill(out, "progress", "planowanie w tle")
+                if int(step.get("round") or 0) < 2:
+                    return _fill(out, "progress", "poprawa formatu planu w tle")
+                out["question"] = "Plan nadal ma błędny format po dwóch poprawach. Uruchomić planowanie ponownie?"
+                return _fill(out, "waiting", "propozycja planu wymaga poprawy po dwóch próbach")
+        elif not st.plan_approved:
             out["question"] = "Zatwierdzić plan?"
             return _fill(out, "waiting", "plan do zatwierdzenia")
         if st.plan_finished:
             return _fill(out, "review", f"✓ plan karty: {len(finished_ids)}/{len(rows)} ticketów scalonych")
-        if not st.last_step and not st.open_intents():
+        if st.plan_approved is not None and not st.last_step and not st.open_intents():
             return _fill(out, "progress", "uruchamiam pierwszy ticket planu")
     verdict = next((v for (ticket_id, _round), v in reversed(list(st.verdicts.items())) if ticket_id == ident), None)
     if verdict:
@@ -308,7 +316,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
                           and not r.get("ok")]
         if failed_cleanup:
             return _fill(out, "waiting", f"{ident}: nie usunięto worktree ({failed_cleanup[-1].get('error') or 'błąd'})")
-        if st.started.get("entry") != "plan":
+        if st.started.get("entry") not in ("plan", "planning"):
             out["done"] = 1
         return _fill(out, "review", f"✓ {ident} na gałęzi karty — review APPROVE, do sprawdzenia")
     if result == "question" or (result == "stopped" and done.get("reason") == "interactive-closed"):

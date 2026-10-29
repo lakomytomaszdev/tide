@@ -31,8 +31,8 @@ from ..agents.timeutil import parse_ts
 from ..coordination.youtrack import issue_key
 from ..worktrees.git import Git
 from ..worktrees.naming import slug_from_prompt
-from . import flows, commands
-from .frontmatter import Document, FrontmatterError
+from . import flows, commands, assignment
+from .frontmatter import Document, FrontmatterError, dump
 from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
 from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUMNS, DEFAULT_CHECK, DEFAULT_COLUMN,
@@ -58,6 +58,7 @@ GITIGNORE = f"""# Pliki tymczasowe zapisu Tide i edytorów — nie trafiają do 
 BOARD_MD = f"""---
 {MARKER_KEY}: {FORMAT_VERSION}
 next-card: 1
+assignment-rules: {dump(json.dumps(assignment.DEFAULT_RULES, ensure_ascii=False))}
 ---
 # Tablica Tide
 
@@ -75,7 +76,7 @@ CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "n
                *LAUNCH_KEYS)
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack",
-                  "youtrackSync", "allowedCommands", "deniedCommands")
+                  "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules")
 TAG_FIELDS = ("name", "newName", "color", "description")
 
 
@@ -203,6 +204,7 @@ class BoardStore:
                                                                   f"commit ({self.repo.last_error})"})
         last = self.repo.last_commit() if exists else None
         return {
+            "assignmentRules": assignment.rules(board),
             "boardDir": self.root,
             "exists": exists,
             "lastCommit": {"hash": last[0], "short": last[0][:7], "ts": last[1],
@@ -598,6 +600,16 @@ class BoardStore:
         return change
 
     def _plan_project(self, board: Board, v: dict) -> Change:
+        if "globalAssignmentRules" in v:
+            if len(v) != 1:
+                raise BoardError("wspólne zasady zapisuje się oddzielnie od projektu")
+            doc = board.meta or Document.parse(BOARD_MD)
+            before = doc.text()
+            doc.set("assignment-rules", json.dumps(v["globalAssignmentRules"], ensure_ascii=False))
+            change = Change(result={"ok": True, "changed": doc.text() != before})
+            if doc.text() != before:
+                change.commits.append(("board: update assignment rules", [(MARKER_FILE, doc.text())]))
+            return change
         slug, repo, name = v.get("slug", ""), v.get("repo"), v.get("name")
         if slug:
             project = board.projects.get(slug)
@@ -650,6 +662,8 @@ class BoardStore:
                                 ("deniedCommands", commands.DENIED_KEY)):
             if field_name in v:
                 _doc_set(doc, key, json.dumps(v[field_name], ensure_ascii=False))
+        if "assignmentRules" in v:
+            _doc_set(doc, "assignment-rules", json.dumps(v["assignmentRules"], ensure_ascii=False))
         if "description" in v and v["description"].strip() != doc.body.strip():
             doc.body = v["description"]
         change.result = {"ok": True, "slug": slug, "changed": False}
@@ -1024,7 +1038,8 @@ def _project_json(project: Project, docs_dir: str, cards: int) -> dict:
             "description": project.description,
             "docsDir": docs_dir, "cards": cards, "path": project.path,
             "youtrack": project.youtrack, "youtrackSync": bool(project.youtrack) and project.youtrack_sync,
-            "allowedCommands": list(project.allowed_commands), "deniedCommands": list(project.denied_commands)}
+            "allowedCommands": list(project.allowed_commands), "deniedCommands": list(project.denied_commands),
+            "assignmentRules": project.assignment_rules}
 
 
 def _column_index(column: str) -> int:
@@ -1235,6 +1250,16 @@ def _projects(value) -> list[str]:
 
 def _project_values(data: dict, board_root: str) -> dict:
     out = {}
+    for key in ("assignmentRules", "globalAssignmentRules"):
+        if key in data:
+            value = _body(data[key]).strip()
+            if len(value) > 8000:
+                raise BoardError("zasady przydziału mogą mieć najwyżej 8000 znaków")
+            out[key] = value
+    if "globalAssignmentRules" in out:
+        if len(data) != 1:
+            raise BoardError("wspólne zasady zapisuje się oddzielnie od projektu")
+        return out
     if "slug" in data:
         slug = _text(data["slug"], "slug").strip()
         if slug and not SLUG_RE.match(slug):

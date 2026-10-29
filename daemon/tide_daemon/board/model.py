@@ -5,6 +5,7 @@ tablicy działa. Zapis (store.py) jest surowy — niepoprawne dane z D-Bus końc
 `BoardError` z komunikatem po polsku, zanim cokolwiek trafi na dysk.
 """
 import os
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -131,6 +132,7 @@ class Project:
     repo_missing: bool = False
     youtrack: str = ""        # klucz projektu YouTracka (PT-7), pusty — bez synchronizacji
     youtrack_sync: bool = True
+    assignment_rules: str = ""
     allowed_commands: list = field(default_factory=list)
     denied_commands: list = field(default_factory=list)
     doc: Document | None = None
@@ -315,6 +317,11 @@ def parse_project(doc: Document, path: str, slug: str, errors: list) -> Project:
                                              commands.ALLOWED_KEY, errors, path)
     project.denied_commands = commands.read(doc.get(commands.DENIED_KEY), default_denied,
                                             commands.DENIED_KEY, errors, path)
+    try:
+        value = json.loads(doc.get("assignment-rules") or '""')
+        project.assignment_rules = value if isinstance(value, str) else ""
+    except ValueError:
+        errors.append(_err(path, "niepoprawne zasady przydziału"))
     return project
 
 

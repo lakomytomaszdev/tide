@@ -68,7 +68,9 @@ Rectangle {
     function handleReply(tag, reply) {
         if (tag === busyTag) busyTag = ""
         const error = reply && reply.ok ? "" : Logic.errorText(reply)
-        if (tag.indexOf("project:") === 0) {
+        if (tag.indexOf("rules:") === 0) {
+            assignmentError = error
+        } else if (tag.indexOf("project:") === 0) {
             projectError = error
             if (!error) openProject = ""
         } else if (tag.indexOf("tag:") === 0) {
@@ -104,6 +106,7 @@ Rectangle {
         }
     }
     property string youtrackError: ""
+    property string assignmentError: ""
 
     function send(kind, key, request) {
         busyTag = kind + ":" + key
@@ -175,6 +178,7 @@ Rectangle {
             // --- projekty --------------------------------------------------------------------------
             Flickable {
                 id: projectsFlick
+                objectName: "manageProjectsFlick"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredWidth: 3
@@ -189,6 +193,34 @@ Rectangle {
                     width: projectsFlick.width - 12
                     spacing: 8
 
+                    SectionTitle { text: "ZASADY PRZYDZIAŁU · WSPÓLNE" }
+                    QQC2.TextArea {
+                        id: globalRules
+                        objectName: "globalAssignmentRules"
+                        Layout.fillWidth: true
+                        implicitHeight: 130
+                        text: (page.snapshot && page.snapshot.assignmentRules) || ""
+                        wrapMode: TextEdit.Wrap
+                        color: Tide.Tokens.textPrimary
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        Accessible.name: "Wspólne zasady przydziału"
+                        background: Rectangle { radius: Tide.Tokens.radiusTile; color: Tide.Tokens.backgroundPanel }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: page.assignmentError !== ""
+                        text: page.assignmentError
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.rose
+                        wrapMode: Text.Wrap
+                    }
+                    PillButton {
+                        objectName: "globalAssignmentRulesSave"
+                        text: "Zapisz wspólne zasady"
+                        enabled: page.busyTag === ""
+                        onClicked: page.send("rules", "global", { globalAssignmentRules: globalRules.text.trim() })
+                    }
                     // --- YouTrack (PT-7) -------------------------------------------------------------
                     RowLayout {
                         Layout.fillWidth: true
@@ -581,6 +613,7 @@ Rectangle {
             deniedCommands = (project.deniedCommands || []).join("\n")
             allowedCommandsArea.text = allowedCommands
             deniedCommandsArea.text = deniedCommands
+            assignmentRulesArea.text = project.assignmentRules || ""
         }
 
         function commandLines(value) {
@@ -605,6 +638,7 @@ Rectangle {
             const denied = commandLines(deniedCommands)
             if (JSON.stringify(allowed) !== JSON.stringify(project.allowedCommands || [])) request.allowedCommands = allowed
             if (JSON.stringify(denied) !== JSON.stringify(project.deniedCommands || [])) request.deniedCommands = denied
+            if (assignmentRulesArea.text.trim() !== (project.assignmentRules || "")) request.assignmentRules = assignmentRulesArea.text.trim()
             page.send("project", project.slug, request)
         }
 
@@ -823,6 +857,20 @@ Rectangle {
                     Layout.fillWidth: true
                     placeholder: "Krótko, czego dotyczy projekt"
                     onAccepted: row.save()
+                }
+                FieldLabel { text: "Zasady przydziału"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 6 }
+                QQC2.TextArea {
+                    id: assignmentRulesArea
+                    objectName: "projectAssignmentRules"
+                    Layout.fillWidth: true
+                    implicitHeight: 100
+                    placeholderText: "Puste pole: dziedzicz wspólne zasady. Klasy: lekki, standard, mocny, lokalny."
+                    wrapMode: TextEdit.Wrap
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 12
+                    Accessible.name: "Zasady przydziału projektu, puste dziedziczą wspólne"
+                    background: Rectangle { radius: Tide.Tokens.radiusTile; color: Tide.Tokens.backgroundPanel }
                 }
                 FieldLabel { text: "Dozwolone polecenia"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 6 }
                 QQC2.TextArea {

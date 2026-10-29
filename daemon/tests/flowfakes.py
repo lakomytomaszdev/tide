@@ -42,6 +42,33 @@ mode = re.search(r"ATRAPA: ([a-z-]+)(?: (\d+))?", prompt)
 word, count = (mode.group(1), int(mode.group(2) or 0)) if mode else ("gotowe", 0)
 work = os.path.join(cwd, "ATRAPA.md")
 
+if prompt.startswith("Krok planowania Lekkiego"):
+    card = re.search(r"Krok planowania Lekkiego karty (K-[0-9]+)", prompt).group(1)
+    if "ATRAPA: plan-question" in prompt and "Odpowiedź użytkownika:" not in prompt:
+        with open(result, "w", encoding="utf-8") as fh:
+            json.dump({"result": "question", "question": "Który wariant wybrać?"}, fh)
+        sys.exit(0)
+    if "ATRAPA: plan-error" in prompt:
+        with open(result, "w", encoding="utf-8") as fh:
+            json.dump({"result": "error", "reason": "awaria planującego"}, fh)
+        sys.exit(0)
+    os.makedirs(os.path.join(out, "tickets"), exist_ok=True)
+    bad = "ATRAPA: plan-bad" in prompt
+    repair = "ATRAPA: plan-repair" in prompt and ".plan-fix-" not in out
+    with open(os.path.join(out, "plan.md"), "w", encoding="utf-8") as fh:
+        fh.write("nie plan" if bad or repair else "---\ntide-plan: 1\ntitle: Eksport\ncard: " + card +
+                 "\ntracker: local\nticket-prefix: PT\ncoordinator: claude\n---\n"
+                 "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |\n"
+                 "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+                 "| #1 | Eksport | todo | | Sonnet | standardowa praca | standard | Opus | |\n")
+    with open(os.path.join(out, "tickets", "1.md"), "w", encoding="utf-8") as fh:
+        fh.write("# Eksport\n**Co zbudować:** eksport\n- [ ] Eksport działa.\n## Dla recenzenta\nSprawdź format.\n")
+    with open(os.path.join(out, "spec.md"), "w", encoding="utf-8") as fh:
+        fh.write("# Specyfikacja\nEksport działa.\n")
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": "done", "notes": ["plan.md", "spec.md"]}, fh)
+    sys.exit(0)
+
 if prompt.startswith("Krok review "):
     round_match = re.search(r"runda (\d+)", prompt)
     round_no = int(round_match.group(1)) if round_match else 1

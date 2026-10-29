@@ -578,8 +578,16 @@ function launchExecutors(status, provider) {
                       hint: e.error || "" }))
 }
 
+function planningExecutors(status, provider) {
+    return launchExecutors(status, provider === "local" ? "local" : "mixed")
+        .filter(option => provider === "local" || launchExecutor(status, option.value).provider !== "local")
+}
+
 function retryExecutors(status, flow) {
     if (!flow || !flow.provider) return []
+    if (flow.stepKind === "planning" || flow.stepKind === "plan-fix")
+        return planningExecutors(status, flow.provider === "local" ? "local" : "mixed")
+            .filter(option => option.value !== flow.executor && !option.disabled)
     const review = flow.stepKind === "review"
     const otherModel = String(review ? flow.authorModel || "" : flow.reviewerModel || "").toLowerCase()
     const otherProvider = String(review ? flow.authorProvider || "" : flow.reviewerProvider || "")
@@ -618,15 +626,16 @@ function defaultReviewer(author, options) {
     return names.indexOf(preferred) >= 0 ? preferred : (names[0] || "")
 }
 
-function isFlowEntry(id) {
-    return launchEntry(id).flow === true
+function isFlowEntry(id, mode) {
+    return launchEntry(id).flow === true || (id === "planning" && mode === "light")
 }
 
 // Prośba /Board StartCard z okna („Od razu”): wejście, wykonawca i zrzuty z katalogu zadań.
 function startCardRequest(state, images) {
     const request = { entry: state.entry, executor: state.executor,
                       check: state.check, images: (images || []).slice() }
-    if (state.reviewer) request.reviewer = state.reviewer
+    if (state.entry === "planning") request.mode = state.mode
+    if (state.reviewer && state.entry === "now") request.reviewer = state.reviewer
     if (state.preferredProvider) request.preferredProvider = state.preferredProvider
     return request
 }
@@ -635,8 +644,8 @@ function startCardRequest(state, images) {
 var LAUNCH_MODES = [
     { id: "full", title: "Pełny flow", desc: "Grilling, specyfikacja, tickety w planie, implementacja przez TDD i review.",
       meta: "na start zada ci pytania", steps: ["Grilling", "Specyfikacja", "Tickety w planie", "TDD", "Review"] },
-    { id: "light", title: "Lekki", desc: "Krótka specyfikacja i 1–3 tickety w planie, potem od razu praca.",
-      meta: "pyta tylko przy wątpliwościach", steps: ["Krótka specyfikacja", "1–3 tickety w planie", "Praca", "Review"] }
+    { id: "light", title: "Lekki", desc: "Specyfikacja i pionowe tickety w tle; plan czeka na Twoje zatwierdzenie.",
+      meta: "bez pytań i bez Konsoli", steps: ["Specyfikacja", "Tickety w planie", "Zatwierdzenie planu"] }
 ]
 var LAUNCH_TOOLS = [{ value: "claude", label: "Claude Code" }, { value: "codex", label: "Codex" }]
 
@@ -737,8 +746,9 @@ function launchFooter(state) {
             + ". Potem karta wróci do Backlogu ze znacznikiem „specyfikacja gotowa”."
     const room = state.newWorktree ? "praca w nowym worktree" : "praca w głównym katalogu"
     if (state.mode === "light")
-        return "Nowa karta Konsoli " + where + ", " + tool + " z szablonem „Lekki”: krótka specyfikacja i plan z 1–3 ticketami, potem "
-            + room + "." + check + " Karta przejdzie do „W toku”, gdy agent ruszy."
+        return "Planowanie w tle bez Konsoli: " + (state.executor || "planujący")
+            + " zapisze specyfikację i tickety. Plan poczeka w „Czeka na mnie” na Twoje zatwierdzenie."
+            + ((state.extras || []).length ? " Dodatkowe projekty do odczytu: " + state.extras.map(p => p.name).join(", ") + "." : "")
     return "Nowa karta Konsoli " + where + ", " + tool + " z szablonem „Pełny flow”. Agent najpierw zada ci pytania, potem założy plan z kluczem card: "
         + state.cardId + "." + check + " Karta przejdzie do „W toku”, gdy agent ruszy."
 }

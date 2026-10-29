@@ -54,11 +54,12 @@ Rectangle {
     readonly property var localLine: AgentModel.localLine(localOption)
     readonly property string modelNote: AgentModel.modelNote(localOption, model)
     // Wejście przepływu karty („Od razu”, PT-58): krok w tle z wykonawcą z katalogu zamiast modelu i narzędzia.
-    readonly property bool flowEntry: Logic.isFlowEntry(entry)
+    readonly property bool flowEntry: Logic.isFlowEntry(entry, mode)
     property string executor: ""
     property string preferredProvider: "anthropic"
     readonly property var providerOptions: Logic.preferredProviders(modelsStatus)
-    readonly property var executorOptions: Logic.launchExecutors(modelsStatus, preferredProvider)
+    readonly property var executorOptions: entry === "planning" ? Logic.planningExecutors(modelsStatus, preferredProvider)
+                                                                  : Logic.launchExecutors(modelsStatus, preferredProvider)
     readonly property var selectedExecutor: Logic.launchExecutor(modelsStatus, executor)
     property string reviewer: ""
     readonly property var reviewerOptions: Logic.reviewExecutors(modelsStatus, executor, preferredProvider)
@@ -71,7 +72,7 @@ Rectangle {
         : flowEntry && selectedExecutor && selectedExecutor.available === false
           ? (selectedExecutor.error || "Wykonawca lokalny jest niedostępny.")
         : tools[agentTool] === false ? "Nie znaleziono programu " + Logic.launchToolName(agentTool) + " — zainstaluj go albo wybierz inny."
-        : flowEntry && reviewer === "" ? "Brak recenzenta z innym modelem (Tide → Modele)."
+        : entry === "now" && reviewer === "" ? "Brak recenzenta z innym modelem (Tide → Modele)."
         : !flowEntry && model === "local" && !localOption.enabled
           ? (localOption.pending ? localOption.reason : "Model lokalny niedostępny: " + localOption.reason) : ""
     readonly property var card: cardId ? ((snapshot && snapshot.cards) || []).find(c => c.id === cardId) || null : null
@@ -623,7 +624,7 @@ Rectangle {
                 RowLayout {
                     objectName: "launchExtras"
                     Layout.fillWidth: true
-                    visible: dialog.workProject !== null && !dialog.flowEntry   // krok w tle: jeden worktree ticketu
+                    visible: dialog.workProject !== null && dialog.entry !== "now"   // krok w tle: jeden worktree ticketu
                     spacing: 10
                     FieldLabel { text: "Dodatkowe projekty"; color: Tide.Tokens.textSecondary }
                     Flow {
@@ -821,11 +822,26 @@ Rectangle {
                         }
                         Item { Layout.fillWidth: true }
                     }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: dialog.entry === "planning" && dialog.mode === "light"
+                        spacing: 10
+                        FieldLabel { text: "Planujący"; color: Tide.Tokens.textSecondary }
+                        Segmented {
+                            objectName: "launchPlanner"
+                            options: dialog.executorOptions
+                            current: dialog.executor
+                            itemHeight: 30
+                            pixelSize: 13
+                            onPicked: value => dialog.executor = value
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
                     // Wykonawca kroku „Od razu” z katalogu wybranego dostawcy.
                     // Wykonawca ticketu i niezależny recenzent z katalogu.
                     RowLayout {
                         Layout.fillWidth: true
-                        visible: dialog.flowEntry
+                        visible: dialog.entry === "now"
                         spacing: 10
                         FieldLabel { text: "Wykonawca"; color: Tide.Tokens.textSecondary }
                         Segmented {
@@ -840,7 +856,7 @@ Rectangle {
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        visible: dialog.flowEntry
+                        visible: dialog.entry === "now"
                         spacing: 10
                         FieldLabel { text: "Recenzent"; color: Tide.Tokens.textSecondary }
                         Segmented {

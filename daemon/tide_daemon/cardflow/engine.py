@@ -35,12 +35,14 @@ from datetime import datetime, timezone
 
 from .. import codex_homes
 from ..board.model import BoardError, card_num
+from ..board import assignment
 from ..coordination import reservations
 from ..tasks import agentcmd, launch, stepstop
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import handoff
 from . import execution
+from . import planning
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for
 from .journal import Journal
@@ -52,7 +54,7 @@ SETTINGS_FILE = "cardflow.json"
 RESULTS = ("done", "question", "denied", "error")
 OUTPUT_MAX = 256 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
-REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check", "planPath")
+REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check", "planPath", "mode")
 
 
 class FlowError(Exception):
@@ -167,6 +169,8 @@ class FlowEngine:
             raise FlowError("bad-request", f"nieznane pole „{unknown[0]}”; dozwolone: {', '.join(REQUEST_FIELDS)}")
         if request.get("entry") == "plan":
             return self.propose_plan(card_id, str(request.get("planPath") or ""))
+        if request.get("entry") == "planning" and request.get("mode") == "light":
+            return self.start_planning(card_id, request)
         if (request.get("entry") or "") != "now":
             raise FlowError("bad-request", "w przepływie karty działa na razie wejście „Od razu” (entry: now)")
         try:
@@ -288,6 +292,126 @@ class FlowEngine:
         return {"ok": True, "id": card.id, "ticket": ticket, "branch": made_ticket["branch"],
                 "worktree": made_ticket["worktree"], "cardBranch": made["branch"], "cardWorktree": made["worktree"],
                 "step": step_id, "session": step["session"], "executor": selected.name}
+
+    def start_planning(self, card_id: str, request: dict) -> dict:
+        card_id = f"K-{card_num(card_id)}"
+        item, project = self._project(card_id)
+        if item.column in ("done", "archived"):
+            raise FlowError("card-finished", "karta jest zakończona")
+        if not project.repo:
+            raise FlowError("no-project", "karta potrzebuje projektu z repozytorium")
+        if project.repo_missing or not os.path.isdir(project.repo):
+            raise FlowError("no-repo", "repozytorium projektu jest niedostępne")
+        if fold(self.journal.read(card_id)).active():
+            raise FlowError("flow-active", "karta już pracuje")
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None:
+            raise FlowError("unknown-executor", "katalog wykonawców jest niedostępny")
+        try:
+            selected = execution.resolve(str(request.get("executor") or ""), catalog, config=cfg,
+                                         probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        preferred = str(request.get("preferredProvider") or selected.provider)
+        if preferred not in ("mixed", "local") and not catalog.known_provider(preferred):
+            raise FlowError("unknown-provider", "nieznany preferowany dostawca")
+        if (preferred == "local") != selected.local:
+            raise FlowError("provider-mismatch", "planowanie lokalne wymaga lokalnego wykonawcy")
+        check = str(request.get("check") or item.check or "auto")
+        if check not in ("auto", "manual"):
+            raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
+        images = self._images(request.get("images"))
+        main = self.git.main_branch(project.repo)
+        if not main:
+            raise FlowError("no-base", "repozytorium nie ma gałęzi głównej")
+        try:
+            prefix = reservations.reserve(project.repo, dry_run=True)["prefix"]
+        except reservations.ReservationError as exc:
+            raise FlowError("no-ticket-number", str(exc)) from None
+        self.journal.append(card_id, "card.started", entry="planning", mode="light", repo=project.repo,
+                            project=project.slug, column=item.column, moveId=item.move_id,
+                            executor=selected.name, program=selected.tool, model=selected.model,
+                            provider=selected.provider, preferredProvider=preferred, prefix=prefix,
+                            check=check,
+                            assignmentRules=assignment.rules(self.store.load(), project), images=images,
+                            effort=selected.effort,
+                            routeUrl=selected.route.url if selected.route else "",
+                            routeKind=selected.route.kind if selected.route else "",
+                            routeTokenFile=selected.route.token_file if selected.route else "")
+        self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
+        st = fold(self.journal.read(card_id))
+        return {"ok": True, "id": card_id, "step": st.last_step, "executor": selected.name,
+                "cardBranch": ticket_of(st)["cardBranch"], "cardWorktree": ticket_of(st)["cardWorktree"]}
+
+    def _planning_launch(self, card, st, selected, catalog, *, errors=(), previous="", images=(), round_no=0):
+        item, project = self._project(card)
+        branch = ticket_of(st)["cardBranch"] or f"card/{card.lower()}-{slug_from_prompt(item.title, words=4, length=32)}"
+        worktree = worktree_for(project.repo, branch)
+        made = self._act(card, "card-branch", branch,
+                         lambda: self.git.branch_worktree(project.repo, branch, worktree, self.git.main_branch(project.repo)),
+                         repo=project.repo, branch=branch, worktree=worktree, base=self.git.main_branch(project.repo))
+        kind = "plan-fix" if round_no else "planning"
+        step_id = f"{card}-plan-{st.started['seq']}-{round_no}"
+        out = worktree + f".{kind}-{step_id}.step/out"
+        shots = [os.path.join(os.path.dirname(out), "in", "images", f"{i + 1}-{os.path.basename(p)}")
+                 for i, p in enumerate(images)]
+        text = planning.prompt(card=item, project=project, catalog=catalog,
+                               preferred=st.started["preferredProvider"], assignment_rules=st.started["assignmentRules"],
+                               prefix=st.started["prefix"], out_dir=out, errors=errors, previous=previous,
+                               tool=selected.tool, images=shots)
+        self._launch(item, project, selected, "", made, made, step_id, list(images), kind=kind,
+                     round_no=round_no, prompt_text=text)
+
+    def _advance_planning(self, card: str, st: FlowState) -> bool:
+        """Osobny etap karty; nie zakłada, że ostatni krok jest jedynym krokiem ticketów."""
+        if (st.started or {}).get("entry") != "planning" or st.plan_approved is not None:
+            return False
+        if st.paused or st.plan_proposed is not None:
+            return True
+        steps = [step for step in st.steps.values() if step.get("kind") in ("planning", "plan-fix")
+                 and step.get("seq", 0) > st.started["seq"]]
+        if not steps:
+            selected = self._resume_executor(card, st, st.started, st.started["executor"])
+            cfg = self.models_config() if self.models_config else None
+            catalog = cfg.catalog if cfg is not None else self.catalog()
+            self._planning_launch(card, st, selected, catalog, images=st.started.get("images") or [])
+            return True
+        step = steps[-1]
+        done = st.finished.get(step["step"]) or {}
+        result = done.get("result")
+        decision = st.step_decisions.get(step["step"])
+        if result in ("question", "denied", "error"):
+            if decision:
+                self._resume_step(card, st, step, decision)
+            elif result == "error" and int(step.get("attempt") or 0) == 0:
+                if step["step"] not in st.step_retries:
+                    self.journal.append(card, "step.retry", step=step["step"], ticket="",
+                                        reason=done.get("reason") or "")
+                self._resume_step(card, fold(self.journal.read(card)), step, {"choice": "auto"}, attempt=1)
+        elif result == "done":
+            self._planning_result(card, st, step)
+        return True
+
+    def _planning_result(self, card, st, step):
+        if st.plan_proposed is not None:
+            return
+        path = os.path.join(step["stepDir"], "out", "plan.md")
+        if (st.plan_checked or {}).get("step") != step["step"] or (st.plan_checked or {}).get("valid"):
+            self.propose_plan(card, path, continuation=True, step=step["step"])
+            st = fold(self.journal.read(card))
+        if st.plan_proposed is not None or int(step.get("round") or 0) >= 2:
+            return
+        selected = self._resume_executor(card, st, step, step["executor"])
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog()
+        try:
+            with open(path, encoding="utf-8") as fh:
+                previous = fh.read(OUTPUT_MAX)
+        except (OSError, UnicodeError):
+            previous = "(brak czytelnego pliku planu)"
+        self._planning_launch(card, st, selected, catalog, errors=st.plan_checked["errors"], previous=previous,
+                              round_no=int(step.get("round") or 0) + 1)
 
     def _reserve(self, repo: str, title: str, request_key: str, prefix: str = "") -> dict:
         got = reservations.reserve(repo, prefix=prefix, count=1, title=title, request_key=request_key)
@@ -452,7 +576,7 @@ class FlowEngine:
                 sid = execution.codex_session_id(source)
         return sid, source
 
-    def propose_plan(self, card_id: str, path: str) -> dict:
+    def propose_plan(self, card_id: str, path: str, *, continuation=False, step="") -> dict:
         """Przyjmuje propozycję z pliku; walidacja i migawka nie nadają numerów."""
         try:
             card_id = f"K-{card_num(card_id)}"
@@ -465,7 +589,7 @@ class FlowEngine:
             raise FlowError("no-project", f"{card_id}: karta potrzebuje projektu z repozytorium")
         if item.column in ("done", "archived"):
             raise FlowError("card-finished", f"{card_id}: karta jest zakończona")
-        if fold(self.journal.read(card_id)).active():
+        if not continuation and fold(self.journal.read(card_id)).active():
             raise FlowError("flow-active", f"{card_id}: karta już pracuje")
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
@@ -473,8 +597,9 @@ class FlowEngine:
             raise FlowError("unknown-executor", "katalog wykonawców jest niedostępny")
         step_roots = [os.path.join(s.get("stepDir") or "", "out") for s in
                       fold(self.journal.read(card_id)).steps.values() if s.get("stepDir")]
-        proposal = flow_plans.read(path, card_id, catalog,
-                                   allowed_roots=(project.repo, os.path.join(self.store.root, "docs"), *step_roots))
+        roots = ((project.repo, os.path.join(self.store.root, "docs"), *step_roots) if not continuation else
+                 (os.path.join(fold(self.journal.read(card_id)).steps[step]["stepDir"], "out"),))
+        proposal = flow_plans.read(path, card_id, catalog, allowed_roots=roots)
         if proposal.plan is not None:
             try:
                 established = reservations.reserve(project.repo, dry_run=True)["prefix"]
@@ -482,9 +607,12 @@ class FlowEngine:
                     proposal.errors.append(f"prefiks planu {proposal.plan.prefix} różni się od prefiksu repozytorium {established}")
             except reservations.ReservationError as exc:
                 proposal.errors.append(str(exc))
-        self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
-                            check=item.check or "auto", column=item.column, moveId=item.move_id)
-        self.journal.append(card_id, "plan.checked", valid=not proposal.errors, errors=proposal.errors)
+        if not continuation:
+            self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
+                                check=item.check or "auto", column=item.column, moveId=item.move_id)
+        checked = fold(self.journal.read(card_id)).plan_checked or {}
+        if not continuation or checked.get("step") != step or checked.get("errors") != proposal.errors:
+            self.journal.append(card_id, "plan.checked", valid=not proposal.errors, errors=proposal.errors, step=step)
         if proposal.errors:
             return {"ok": False, "id": card_id, "error": "invalid-plan", "errors": proposal.errors}
         with open(os.path.realpath(path), "rb") as fh:
@@ -566,13 +694,22 @@ class FlowEngine:
         worktree = made_ticket["worktree"]
         step_dir = worktree + (f".resume-{step_id}.step" if parent_step else
                                ".step" if kind == "ticket" else
-                               f".review-{round_no}.step" if kind == "review" else f".fix-{round_no}.step")
+                               f".review-{round_no}.step" if kind == "review" else
+                               f".{kind}-{step_id}.step" if kind in ("planning", "plan-fix") else f".fix-{round_no}.step")
         out = os.path.join(step_dir, "out")
         shots = [os.path.join(step_dir, "in", "images", f"{i + 1}-{os.path.basename(p)}") for i, p in enumerate(images)]
         prompt = prompt_text or handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
                                                      project=project.name, ticket=ticket, branch=made_ticket["branch"],
                                                      card_branch=made["branch"], worktree=worktree, out_dir=out,
                                                      images=shots)
+        read_dirs = []
+        if kind in ("planning", "plan-fix"):
+            board = self.store.load()
+            extras = [board.projects[slug] for slug in card.projects if slug in board.projects]
+            read_dirs = [p.repo for p in extras if p.repo and not p.repo_missing]
+            if extras:
+                prompt += "\nDodatkowe projekty karty (wyłącznie do odczytu):\n" + "\n".join(
+                    f"- {p.name}: {p.repo}" for p in extras)
         prompt += handoff.command_policy(project.allowed_commands, project.denied_commands)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
@@ -590,7 +727,7 @@ class FlowEngine:
                 allowed_tools=allowed_tools if selected.tool == "claude" else (),
                 disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
                 enforce_command_policy=selected.tool == "claude",
-                tmp_root=self.tmp_root))
+                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs)))
             bg.prepare()
             for source, target in zip(images, shots):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -760,6 +897,8 @@ class FlowEngine:
         """Jedna zmiana etapu na tick: ticket → review → poprawki/review → scalenie i sprzątanie."""
         if st.open_intents():
             return
+        if self._advance_planning(card, st):
+            return
         if not st.last_step:
             if st.plan_approved is not None:
                 self._plan_next(card, st)
@@ -784,6 +923,9 @@ class FlowEngine:
                 self._resume_step(card, st, step, {"choice": "auto"}, attempt=1)
             return
         if result != "done":
+            return
+        if step.get("kind") in ("planning", "plan-fix"):
+            self._plan_next(card, st)
             return
         ticket = step.get("ticket") or ""
         if not ticket:
@@ -1050,6 +1192,10 @@ class FlowEngine:
                             (selected.route.kind if selected.route else "") != step.get("routeKind", "") or
                             (selected.route.token_file if selected.route else "") != step.get("routeTokenFile", "")):
             raise FlowError("changed-executor", f"{card}: wykonawca zmienił się od startu kroku")
+        if changed and step.get("kind") in ("planning", "plan-fix"):
+            if selected.local != bool(step.get("local")):
+                raise FlowError("bad-executor-provider", "zachowaj lokalny albo chmurowy zakres planowania")
+            return selected
         if changed:
             opposite_kind = ("ticket", "fix") if step.get("kind") == "review" else ("review",)
             opposite = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == step.get("ticket")
@@ -1105,7 +1251,9 @@ class FlowEngine:
         except OSError:
             raise FlowError("missing-step-input", f"{card}: nie ma kartki poprzedniego kroku") from None
         old_out = os.path.join(step.get("stepDir") or "", "out")
-        new_out = info["worktree"] + f".resume-{step_id}.step/out"
+        resume_worktree = step.get("worktree") or info["worktree"]
+        resume_branch = step.get("branch") or info["branch"]
+        new_out = resume_worktree + f".resume-{step_id}.step/out"
         prompt = prompt.replace(old_out, new_out)
         prompt += handoff.resume_context(choice=choice, prior=st.finished.get(step.get("step")) or {},
                                          answer=decision.get("answer") or "", command=decision.get("command") or "",
@@ -1117,7 +1265,7 @@ class FlowEngine:
                 session = finder(os.path.join(old_out, "step.log"))
         self._launch(item, project, selected, step.get("ticket") or info["id"],
                      {"branch": info["cardBranch"]},
-                     {"branch": info["branch"], "worktree": info["worktree"]},
+                     {"branch": resume_branch, "worktree": resume_worktree},
                      step_id, [], kind=step.get("kind") or "ticket", round_no=int(step.get("round") or 0),
                      prompt_text=prompt, review_tip=step.get("reviewTip") or "",
                      parent_step=step.get("step") or "", attempt=attempt, resume_session=session)

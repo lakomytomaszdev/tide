@@ -264,7 +264,7 @@ Rectangle {
     // Po zapisie opisu: „Od razu” — zlecenie w przepływie karty (/Board StartCard, krok w tle bez Konsoli),
     // pozostałe wejścia — polecenie trybu i agent w Konsoli.
     function continueLaunch() {
-        if (Logic.isFlowEntry(launchChoice.entry)) {
+        if (Logic.isFlowEntry(launchChoice.entry, launchChoice.mode)) {
             launchDialog.busyText = "Zakładam gałąź karty i startuję krok w tle…"
             flowRequested(nextTag("launch-flow:" + launchCardId), launchCardId,
                           JSON.stringify(Logic.startCardRequest(launchChoice, launchChoice.images)))
@@ -310,7 +310,7 @@ Rectangle {
                 optimistic = optimistic.concat([{ id: launchCardId, column: "todo", before: "", tag: moveTag }])
                 moveRequested(moveTag, launchCardId, "todo", -1)
             }
-            launchToast = "Ruszył krok w tle: " + (reply.ticket || "ticket") + " karty " + launchCardId
+            launchToast = (launchChoice.entry === "planning" ? "Ruszyło planowanie w tle karty " : "Ruszył krok w tle: " + (reply.ticket || "ticket") + " karty ") + launchCardId
                 + " — " + (reply.executor || launchChoice.executor) + ", bez Konsoli"
             closeLaunch(true)
             showToast(launchToast, "mint")

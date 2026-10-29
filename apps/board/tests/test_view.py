@@ -272,8 +272,8 @@ class LogicTest(unittest.TestCase):
                          "najpierw zada ci pytania, potem założy plan z kluczem card: K-16. Karta przejdzie do „W toku”, "
                          "gdy agent ruszy.")
         light = self.js(f"launchFooter(Object.assign({js_state}, {{mode: 'light', tool: 'codex', check: 'manual'}}))")
-        self.assertIn("Codex z szablonem „Lekki”", light)
-        self.assertIn("„Co przetestować ręcznie i jak”", light)
+        self.assertIn("Planowanie w tle bez Konsoli", light)
+        self.assertIn("Twoje zatwierdzenie", light)
         spec = self.js(f"launchFooter(Object.assign({js_state}, {{entry: 'spec', aiDocs: 'tide', slug: 'mobileapp'}}))")
         self.assertEqual(spec, "Claude Code w katalogu projektu, bez worktree: dopyta i zapisze specyfikację w "
                                "tide-board/docs/mobileapp/specs/. Potem karta wróci do Backlogu ze znacznikiem "
@@ -328,7 +328,7 @@ class LogicTest(unittest.TestCase):
                           {"kind": "project", "key": "nie-ma", "name": "nie-ma"}])
         state = {"cardId": "K-16", "mode": "light", "tool": "claude", "branch": "claude/k-16-okno", "newWorktree": True,
                  "check": "auto", "aiDocs": "tide", "slug": "dp", "repoName": "dp", "extras": picked}
-        self.assertIn("Pracuje też w: mobileapp, legal (gałąź claude/k-16-okno w każdym, które zmieni).",
+        self.assertIn("Dodatkowe projekty do odczytu: mobileapp, legal.",
                       self.js(f"launchFooter({json.dumps(state)})"))
         flow = {"text": "x", "repo": "/r/dp", "tool": "claude", "branch": "claude/k-16-okno", "docsDir": "/b/docs/dp",
                 "aiDocs": "tide", "addDirs": ["/b/docs/dp", "/r/mobileapp"]}
@@ -380,6 +380,14 @@ class LogicTest(unittest.TestCase):
         self.assertEqual([o["kind"] for o in options].count("project"), 7)
         self.assertEqual(options[-1]["kind"], "repo")
         self.assertEqual([o["name"] for o in self.js("projectOptions(S, 'legal')")], ["Bez projektu", "legal-agents"])
+
+
+    def test_failed_planning_offers_other_planners_without_a_ticket_reviewer(self):
+        status = dict(models_status(), executors=EXECUTORS)
+        options = self.js(f"retryExecutors({json.dumps(status)}, {{stepKind: 'planning', provider: 'anthropic', executor: 'Sonnet', preferredProvider: 'anthropic'}}).map(o => o.value)")
+        self.assertIn("Opus", options)
+        self.assertNotIn("Sonnet", options)
+        self.assertNotIn("Lokalny", options)
 
 
 class DocsLogicTest(unittest.TestCase):
@@ -1009,6 +1017,8 @@ out["spec"] = [js(find("projectEntry") + ".current"), js(find("projectMode") + "
 js(find("projectEntry") + ".picked('planning')")
 wait(50)
 out["planning"] = [js(find("projectEntry") + ".current"), js(find("projectMode") + ".visible"), js(find("projectMode") + ".current")]
+js(find("manageProjectsFlick") + ".contentY = Math.max(0, " + find("manageProjectsFlick") + ".contentHeight - " + find("manageProjectsFlick") + ".height)")
+wait(60)
 click(at(find("projectSave")))
 wait(80)
 out["save"] = calls()[-1]
@@ -1804,6 +1814,8 @@ wait(100)
 out["initial"] = [js(find("projectAllowedCommands") + ".text"),
                   js(find("projectDeniedCommands") + ".text")]
 js(find("projectAllowedCommands") + ".text = 'git status\\ngit log\\ngit fetch origin'")
+js(find("manageProjectsFlick") + ".contentY = Math.max(0, " + find("manageProjectsFlick") + ".contentHeight - " + find("manageProjectsFlick") + ".height)")
+wait(60)
 click(at(find("projectSave")))
 wait(80)
 out["call"] = calls()[-1]
@@ -2254,3 +2266,53 @@ class BackendTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LightPlanningViewTest(ProbeCase):
+    def test_light_planning_selects_planner_and_sends_background_request(self):
+        status = dict(models_status(), executors=EXECUTORS)
+        out = self.probe(FIND_PY + f"""
+backend._models = {json.dumps(status, ensure_ascii=False)!r}
+backend.modelsChanged.emit()
+wait(50)
+js("page.openLaunch('K-15', false)")
+wait(100)
+js("page.launchDialog.mode = 'light'")
+wait(50)
+out["plannerVisible"] = js(FIND + "(page.launchDialog, 'launchPlanner').visible")
+js(FIND + "(page.launchDialog, 'launchPlanner').picked('Opus')")
+out["planner"] = js("page.launchDialog.executor")
+out["footer"] = obj("launchFooter").property("text")
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(200)
+out["calls"] = calls()
+""")
+        self.assertTrue(out["plannerVisible"])
+        self.assertEqual(out["planner"], "Opus")
+        self.assertIn("bez Konsoli", out["footer"])
+        start = next(c for c in out["calls"] if c[0] == "StartCard")
+        self.assertEqual(json.loads(start[-1])["mode"], "light")
+        self.assertEqual(json.loads(start[-1])["executor"], "Opus")
+        self.assertFalse(any(c[0] in ("RenderLaunch", "Start") for c in out["calls"]))
+
+    def test_assignment_rules_can_be_edited_globally_and_per_project(self):
+        data = json.loads(json.dumps(self.data))
+        data["assignmentRules"] = "standard: wspólne"
+        data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]
+        data["projects"][0]["assignmentRules"] = ""
+        out = self.probe(FIND_PY + """
+js("page.managing = true")
+wait(80)
+obj("globalAssignmentRules").setProperty("text", "mocny: wspólne")
+js(FIND + "(page.managePage, 'globalAssignmentRulesSave').clicked()")
+wait(80)
+out["global"] = calls()[-1]
+js("page.managePage.openProject = 'plasma-tide'")
+wait(80)
+js(FIND + "(page.managePage, 'projectAssignmentRules').text = 'lekki: projekt'")
+js(FIND + "(page.managePage, 'projectSave').clicked()")
+wait(80)
+out["project"] = calls()[-1]
+""", data)
+        self.assertEqual(json.loads(out["global"][-1]), {"globalAssignmentRules": "mocny: wspólne"})
+        self.assertEqual(json.loads(out["project"][-1]), {"slug": "plasma-tide", "assignmentRules": "lekki: projekt"})

@@ -142,6 +142,7 @@ class Step:
     git_email: str = "krok@tide.invalid"
     base_env: dict | None = None    # skąd HOME, USER, PATH, LANG (domyślnie środowisko usługi)
     tmp_root: str = "/tmp"          # poza ~; tu Claude Code dostaje katalog tymczasowy kroku
+    read_dirs: tuple = ()          # dodatkowe repozytoria karty, wyłącznie do odczytu
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
 
 
@@ -325,7 +326,7 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
     settings = {"sandbox": {
         "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
         "autoAllowBashIfSandboxed": not step.enforce_command_policy,
-        "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out],
+        "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs],
                        "allowWrite": [out]},
         "network": {"allowedDomains": []}}}
     if step.local is not None:
