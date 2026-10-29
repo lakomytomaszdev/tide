@@ -198,7 +198,8 @@ class NowInProcessTest(FlowInProcess):
         types = [e["type"] for e in self.events(card_id)]
         self.assertEqual(types[0], "card.started")
         for kind in ("step.started", "step.finished"):
-            self.assertEqual(types.count(kind), 1, types)
+            self.assertEqual(types.count(kind), 2, types)  # ticket i niezależny review
+        self.assertEqual(types.count("review.verdict"), 1, types)
         self.assertTrue(all(e["v"] == 1 and e["card"] == card_id for e in self.events(card_id)))
         self.assertEqual([e["seq"] for e in self.events(card_id)], list(range(1, len(types) + 1)))
         launched = self.of(card_id, "card.started")[0]
@@ -207,7 +208,8 @@ class NowInProcessTest(FlowInProcess):
         self.assertEqual((finished["result"], finished["ticket"]), ("done", "PT-1"))
         intents = {(e["action"], e["key"]) for e in self.of(card_id, "intent")}
         self.assertEqual(intents, {(e["action"], e["key"]) for e in self.of(card_id, "result")})
-        self.assertEqual({a for a, _k in intents}, {"reserve", "card-branch", "ticket-branch", "step-start", "merge"})
+        self.assertEqual({a for a, _k in intents},
+                         {"reserve", "card-branch", "ticket-branch", "step-start", "merge", "cleanup"})
         # Numer ticketu jest w rejestrze rezerwacji (kontrola numerów go widzi).
         from tide_daemon.coordination import reservations
         self.assertEqual([(r["prefix"], r["number"]) for r in reservations.load(self.repo)], [("PT", 1)])
@@ -428,7 +430,7 @@ class RestartInProcessTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: self.of(card_id, "step.started"), timeout=5), self.events(card_id))
         self.assertTrue(flowfakes.alive(pid), "krok nie wystartował drugi raz ani nie zginął")
         self.wait_column(card_id, "review", timeout=40)
-        self.assertEqual([e["type"] for e in self.events(card_id)].count("step.started"), 1)
+        self.assertEqual([e for e in self.of(card_id, "step.started") if e["kind"] == "ticket"], [step])
         self.assertEqual(len(self.results(card_id, "merge")), 1)
 
     def test_restart_during_a_step_neither_loses_it_nor_duplicates_events(self):
@@ -441,7 +443,7 @@ class RestartInProcessTest(FlowInProcess):
         self.wait_column(card_id, "review", timeout=40)
         types = [e["type"] for e in self.events(card_id)]
         for kind in ("card.started", "step.started", "step.finished"):
-            self.assertEqual(types.count(kind), 1, types)
+            self.assertEqual(types.count(kind), 1 if kind == "card.started" else 2, types)
         self.assertEqual(len(self.results(card_id, "merge")), 1, types)
         self.assertEqual([e["seq"] for e in self.events(card_id)], list(range(1, len(types) + 1)))
         self.restart()

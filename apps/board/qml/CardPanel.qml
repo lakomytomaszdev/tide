@@ -581,6 +581,26 @@ Rectangle {
                         wrapMode: Text.Wrap
                     }
                     Text {
+                        objectName: "cardReviewVerdict"
+                        Layout.fillWidth: true
+                        visible: panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
+                                 && !!panel.card.derived.flow.verdict
+                        text: {
+                            const flow = panel.card && panel.card.derived ? panel.card.derived.flow : null
+                            return flow && flow.verdict
+                                ? "Review " + flow.verdict + " · BLOCKER " + flow.blockers
+                                  + " · MAJOR " + flow.majors + " · NIT " + flow.nits
+                                  + " · runda " + flow.round
+                                : ""
+                        }
+                        textFormat: Text.PlainText
+                        color: panel.card && panel.card.derived && panel.card.derived.flow
+                               && panel.card.derived.flow.verdict === "APPROVE" ? Tide.Tokens.mint : Tide.Tokens.peach
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
                         Layout.fillWidth: true
                         Layout.topMargin: 6
                         text: panel.editing ? "utworzona " + Logic.when(panel.card.createdTs, panel.nowTs)

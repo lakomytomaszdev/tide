@@ -866,7 +866,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `YouTrackIssues(b refresh)` | `→ s` | zgłoszenia użytkownika do importu (PT-7): `{ok, issues: [{id, summary, project, state, updated, url, card, boardProject, boardProjectName, new}], error}`; odpowiedź po pobraniu w wątku roboczym (`refresh: false` — ostatnia lista z pamięci); pokazane zgłoszenia liczą się jako przejrzane |
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
-| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty (PT-58), dziś wejście „Od razu”: `{entry: "now", executor, images?}` → `{ok, id, ticket, branch, worktree, cardBranch, cardWorktree, step, session, executor}` albo `{ok: false, error, message}` (`bad-request`, `not-found`, `no-project`, `no-repo`, `unsupported-tracker`, `unknown-executor`, `unsupported-executor`, `no-program`, `bad-image`, `flow-active`, `no-ticket-number`, `no-base`, błąd akcji); odpowiedź po starcie kroku — opis w „Przepływ karty: „Od razu”” |
+| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty (PT-58/59), dziś wejście „Od razu”: `{entry: "now", executor, reviewer?, images?, preferredProvider?}` → `{ok, id, ticket, branch, worktree, cardBranch, cardWorktree, step, session, executor}` albo `{ok: false, error, message}` (`bad-request`, `not-found`, `no-project`, `no-repo`, `unsupported-tracker`, `unknown-executor`, `unsupported-executor`, `bad-reviewer`, `bad-reviewer-provider`, `no-program`, `bad-image`, `flow-active`, `no-ticket-number`, `no-base`, błąd akcji); odpowiedź po starcie kroku — opis w „Przepływ karty: „Od razu”” |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
 
@@ -1463,7 +1463,7 @@ poza katalogiem roboczym i wyjściowym) i plik wyniku `<krok>/out/result.json`:
 
 Co chwilę (5 s) `tick()`: jednostka kroku nieaktywna → koniec kroku z pliku wyniku (brak pliku → błąd `no-result`,
 zły → `bad-result`; usługa nie zgaduje wyniku z rozmowy), wynik i notki do `flow/<K-12>/steps/<krok>/` w tablicy;
-„gotowe” → scalenie ticketu do gałęzi karty (para „zamiar → wynik”, `cardflow/gitops.py`: `merge-tree --write-tree`,
+„gotowe” → automatyczny krok review u innego modelu (PT-59), a dopiero werdykt APPROVE → scalenie ticketu do gałęzi karty (para „zamiar → wynik”, `cardflow/gitops.py`: `merge-tree --write-tree`,
 `commit-tree`, `update-ref` z porównaniem — bez wykonywania treści agenta; worktree karty dostaje nowe drzewo przez
 `read-tree -m -u`). Strażnik kroku: brak zmian plików w worktree (bez `.git`) i w dzienniku sesji przez
 `stepGuardMinutes` (domyślnie 15, `$XDG_CONFIG_HOME/tide/cardflow.json`) → `stepstop.stop_step` (commit WIP gitem
@@ -1490,6 +1490,25 @@ już w gałęzi karty to sukces bez drugiego scalenia) i nigdy nie dopisuje zdar
 Sesja kroku nie jest wierszem agenta: `AgentMonitor.hidden` (`engine.is_hidden` — identyfikator sesji albo katalog
 w worktree kroku) usuwa ją z /Agents Sessions(), kafelka Praca i powiadomień; KRunner ma własny indeks i ją znajduje.
 Worktree trwających kroków i kart w toku są dla okna Worktrees „z agentem” (nie do usunięcia).
+
+### Review i gałąź karty (PT-59)
+
+`StartCard` przyjmuje nazwę recenzenta z katalogu (`reviewer`); okno „Od razu” pokazuje wykonawców o innym modelu.
+Bez wyboru usługa wybiera domyślnego recenzenta z katalogu. W trybie `preferredProvider: "mixed"` dostawca recenzenta
+musi być inny niż dostawca autora. Nazwa, program i model recenzenta trafiają do `card.started`.
+
+Po wyniku `done` kroku ticketu usługa sprawdza czystość jego worktree i niezmienność refu, oblicza diff względem
+gałęzi karty i uruchamia recenzenta w tym samym worktree pod nadzorem kroku. Kartka review zawiera opis karty,
+diff, notkę wyniku ticketu oraz AGENTS.md/CLAUDE.md z repozytorium. Recenzent zapisuje `review.md` i JSON z werdyktem
+`APPROVE` albo `REQUEST_CHANGES` oraz liczbami `blockers`, `majors`, `nits`. Usługa akceptuje APPROVE tylko przy zerze
+BLOCKER i MAJOR, ponownie sprawdza worktree i ref, a werdykt zapisuje jako `review.verdict` w dzienniku. Werdykt i
+liczby widać w panelu karty.
+
+Przy REQUEST_CHANGES autor dostaje krok poprawek z uwagami i następuje ponowne review. Po trzeciej nieudanej rundzie
+karta czeka na decyzję użytkownika. APPROVE uruchamia scalenie pod blokadą gita repozytorium i usuwa worktree ticketu
+pod tą samą blokadą. Katalogi wejścia i wyniku kroków leżą obok worktree i zostają w repozytorium tablicy jako kopie
+wyniku. Błąd przygotowania kolejnego etapu jest zdarzeniem `flow.error` i pokazuje kartę jako oczekującą; usługa
+ponawia etap w kolejnych przebiegach.
 
 ```bash
 qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.StartCard K-12 '{"entry": "now", "executor": "Sonnet"}'

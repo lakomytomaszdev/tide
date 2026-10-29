@@ -1550,6 +1550,8 @@ out["now"] = [js("page.launchDialog.entry"), shown("launchExecutor"), shown("lau
 out["options"] = js("page.launchDialog.executorOptions.map(o => o.value)")
 out["default"] = js("page.launchDialog.executor")
 choose("launchExecutor-Opus")
+out["reviewer"] = [shown("launchReviewer"), js("page.launchDialog.reviewer"),
+                    js("page.launchDialog.reviewerOptions.map(o => o.value)")]
 js("page.launchDialog.manualCheck = true")
 out["checkManual"] = obj("launchCheckNote").property("text")
 js("page.launchDialog.manualCheck = false")
@@ -1577,6 +1579,7 @@ out["toast"] = js("[page.toast, page.toastTone]")
                          "„Od razu”: wykonawca zamiast trybu, modelu, worktree i dodatkowych projektów")
         self.assertEqual(out["options"], ["Haiku", "Sonnet", "Opus"], "tylko Claude w chmurze z katalogu")
         self.assertEqual(out["default"], "Sonnet")
+        self.assertEqual(out["reviewer"], [True, "Sonnet", ["Haiku", "Sonnet"]])
         self.assertIn("poczeka na Twój test ręczny", out["checkManual"])
         self.assertIn("zostanie scalony z gałęzią karty", out["checkAuto"])
         self.assertNotIn("review AI", out["checkManual"] + out["checkAuto"])
@@ -1588,12 +1591,26 @@ out["toast"] = js("[page.toast, page.toastTone]")
         self.assertEqual([c[0] for c in out["second"]], ["StartCard", "MoveCard"])
         self.assertEqual(out["second"][0][1], "K-15")
         self.assertEqual(json.loads(out["second"][0][2]),
-                         {"entry": "now", "executor": "Opus", "check": "manual", "images": []})
+                         {"entry": "now", "executor": "Opus", "reviewer": "Sonnet", "check": "manual", "images": []})
         self.assertEqual(out["second"][1], ["MoveCard", "K-15", "todo", -1], "karta z Backlogu idzie do kolejki")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")
         self.assertIn("PT-7", out["toast"][0])
         self.assertIn("Opus", out["toast"][0])
+
+    def test_review_verdict_is_visible_in_card_panel(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "poprawki po review",
+                                   "flow": {"ticket": "PT-7", "verdict": "REQUEST_CHANGES",
+                                            "blockers": 1, "majors": 2, "nits": 3, "round": 2}}
+                card["boardColumn"] = "waiting"
+        out = self.probe('''
+click(card("K-6"))
+out["verdict"] = [obj("cardReviewVerdict").property("visible"), obj("cardReviewVerdict").property("text")]
+''', data=data)
+        self.assertEqual(out["verdict"], [True, "Review REQUEST_CHANGES · BLOCKER 1 · MAJOR 2 · NIT 3 · runda 2"])
 
     def test_working_flow_card_drags_to_backlog_and_done_but_a_coordinator_card_does_not(self):
         data = json.loads(json.dumps(self.data))

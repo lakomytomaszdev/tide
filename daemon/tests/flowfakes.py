@@ -39,6 +39,21 @@ mode = re.search(r"ATRAPA: ([a-z-]+)(?: (\d+))?", prompt)
 word, count = (mode.group(1), int(mode.group(2) or 0)) if mode else ("gotowe", 0)
 work = os.path.join(cwd, "ATRAPA.md")
 
+if prompt.startswith("Krok review "):
+    round_match = re.search(r"runda (\d+)", prompt)
+    round_no = int(round_match.group(1)) if round_match else 1
+    requests = re.search(r"ATRAPA: review-requests (\d+)", prompt)
+    bad = requests and round_no <= int(requests.group(1))
+    if "ATRAPA: review-modifies" in prompt:
+        with open(os.path.join(cwd, "review-modified.txt"), "w", encoding="utf-8") as fh:
+            fh.write("nieautoryzowana zmiana\n")
+    with open(os.path.join(out, "review.md"), "w", encoding="utf-8") as fh:
+        fh.write("# Review\n\n" + ("MAJOR: popraw ATRAPA.md\n" if bad else "APPROVE\n"))
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": "done", "verdict": "REQUEST_CHANGES" if bad else "APPROVE",
+                   "blockers": 0, "majors": 1 if bad else 0, "nits": 0, "notes": ["review.md"]}, fh)
+    sys.exit(0)
+
 def write(text):
     with open(work, "a", encoding="utf-8") as fh:
         fh.write(text + "\n")

@@ -57,12 +57,15 @@ Rectangle {
     readonly property bool flowEntry: Logic.isFlowEntry(entry)
     property string executor: ""
     readonly property var executorOptions: Logic.launchExecutors(modelsStatus)
+    property string reviewer: ""
+    readonly property var reviewerOptions: Logic.reviewExecutors(modelsStatus, executor)
     // Program, który ruszy: przy „Lokalny” z Tide → Modele (agentProgram), w chmurze — przełącznik narzędzia;
     // przy „Od razu” — Claude Code (wykonawcy kroku w tle to dziś tylko Claude).
     readonly property string agentTool: flowEntry ? "claude" : AgentModel.agentTool(model, tool, localOption)
     readonly property var tools: taskDefaults && taskDefaults.tools ? taskDefaults.tools : ({})
     readonly property string modelBlocker: tools[agentTool] === false ? "Nie znaleziono programu " + Logic.launchToolName(agentTool) + " — zainstaluj go albo wybierz inny."
-        : flowEntry ? (executor === "" ? "Brak wykonawcy Claude w katalogu wykonawców (Tide → Modele)." : "")
+        : flowEntry ? (executor === "" ? "Brak wykonawcy w katalogu (Tide → Modele)." :
+                       reviewer === "" ? "Brak recenzenta z innym modelem (Tide → Modele)." : "")
         : model === "local" && !localOption.enabled
           ? (localOption.pending ? localOption.reason : "Model lokalny niedostępny: " + localOption.reason) : ""
     readonly property var card: cardId ? ((snapshot && snapshot.cards) || []).find(c => c.id === cardId) || null : null
@@ -73,7 +76,7 @@ Rectangle {
     readonly property string taskText: taskEdit.text
     readonly property var launchState: ({
         cardId: cardId, entry: entry, mode: mode, tool: agentTool, branch: branch, newWorktree: newWorktree,
-        executor: executor,
+        executor: executor, reviewer: reviewer,
         model: model === "local" ? "local" : "cloud", localModel: model === "local" ? localOption.model : "",
         images: images,
         check: manualCheck ? "manual" : "auto", aiDocs: workProject ? workProject.aiDocs : "",
@@ -227,7 +230,13 @@ Rectangle {
     onExecutorOptionsChanged: {
         if (!executorOptions.some(o => o.value === executor)) executor = Logic.defaultExecutor(executorOptions)
     }
-    Component.onCompleted: executor = Logic.defaultExecutor(executorOptions)
+    onReviewerOptionsChanged: {
+        if (!reviewerOptions.some(o => o.value === reviewer)) reviewer = Logic.defaultReviewer(executor, reviewerOptions)
+    }
+    Component.onCompleted: {
+        executor = Logic.defaultExecutor(executorOptions)
+        reviewer = Logic.defaultReviewer(executor, reviewerOptions)
+    }
 
     // Odświeżone Defaults() (przy otwarciu okna) przychodzą po load(): zapamiętany model, dopóki nikt go tu nie zmienił.
     onTaskDefaultsChanged: {
@@ -789,7 +798,7 @@ Rectangle {
                             }
                         }
                     }
-                    // Wykonawca kroku „Od razu” (PT-58): Claude z katalogu wykonawców; recenzent dojdzie w PT-59.
+                    // Wykonawca ticketu i niezależny recenzent z katalogu.
                     RowLayout {
                         Layout.fillWidth: true
                         visible: dialog.flowEntry
@@ -802,6 +811,21 @@ Rectangle {
                             itemHeight: 30
                             pixelSize: 13
                             onPicked: value => dialog.executor = value
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: dialog.flowEntry
+                        spacing: 10
+                        FieldLabel { text: "Recenzent"; color: Tide.Tokens.textSecondary }
+                        Segmented {
+                            objectName: "launchReviewer"
+                            options: dialog.reviewerOptions
+                            current: dialog.reviewer
+                            itemHeight: 30
+                            pixelSize: 13
+                            onPicked: value => dialog.reviewer = value
                         }
                         Item { Layout.fillWidth: true }
                     }
@@ -1005,8 +1029,8 @@ Rectangle {
                                 Layout.fillWidth: true
                                 text: dialog.entry === "now"
                                       ? (dialog.manualCheck
-                                         ? "Po scaleniu ticketu karta trafi do Do sprawdzenia i poczeka na Twój test ręczny."
-                                         : "Po zakończeniu ticket zostanie scalony z gałęzią karty i trafi do Do sprawdzenia.")
+                                         ? "Po review u wybranego recenzenta i scaleniu ticketu karta trafi do Do sprawdzenia i poczeka na Twój test ręczny."
+                                         : "Po review u wybranego recenzenta ticket zostanie scalony z gałęzią karty i trafi do Do sprawdzenia.")
                                       : (dialog.manualCheck
                                          ? "Po review AI agent zostawi listę „Co przetestować ręcznie i jak” i nie scali gałęzi."
                                          : "Wystarczy review AI — agent kończy, gdy recenzent zatwierdzi.")

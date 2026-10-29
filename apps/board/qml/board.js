@@ -545,7 +545,8 @@ var LAUNCH_ENTRIES = [
       meta: "karta wraca do Backlogu", modes: false, steps: ["Pytania", "Specyfikacja", "„specyfikacja gotowa” na karcie"] },
     // Przepływ karty (PT-58): jeden ticket w tle od razu, zlecenie przez /Board StartCard, bez Konsoli.
     { id: "now", title: "Od razu", desc: "Jeden ticket w tle, bez planowania i bez terminala. Wynik na gałęzi karty.",
-      meta: "wybierasz wykonawcę", modes: false, flow: true, steps: ["Ticket w tle", "Gałąź karty", "Do sprawdzenia"] }
+      meta: "wybierasz wykonawcę i recenzenta", modes: false, flow: true,
+      steps: ["Ticket w tle", "Review", "Gałąź karty", "Do sprawdzenia"] }
 ]
 
 // Wykonawcy kroku „Od razu” z katalogu (Status() /Models: executors.list) — dziś tylko Claude w chmurze; zanim
@@ -566,13 +567,27 @@ function defaultExecutor(options) {
     return names.indexOf(NOW_DEFAULT) >= 0 ? NOW_DEFAULT : (names[0] || "")
 }
 
+function reviewExecutors(status, author) {
+    const list = status && status.executors && Array.isArray(status.executors.list) ? status.executors.list : null
+    const current = list ? list.find(e => e && e.name === author) : null
+    return launchExecutors(status).filter(o => o.value !== author &&
+        (!list || !current || !list.some(e => e && e.name === o.value && e.model === current.model)))
+}
+
+function defaultReviewer(author, options) {
+    const names = (options || []).map(o => o.value)
+    const preferred = author === "Opus" ? "Sonnet" : "Opus"
+    return names.indexOf(preferred) >= 0 ? preferred : (names[0] || "")
+}
+
 function isFlowEntry(id) {
     return launchEntry(id).flow === true
 }
 
 // Prośba /Board StartCard z okna („Od razu”): wejście, wykonawca i zrzuty z katalogu zadań.
 function startCardRequest(state, images) {
-    return { entry: state.entry, executor: state.executor, check: state.check, images: (images || []).slice() }
+    return { entry: state.entry, executor: state.executor, reviewer: state.reviewer,
+             check: state.check, images: (images || []).slice() }
 }
 
 // Tryby Planowania z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.

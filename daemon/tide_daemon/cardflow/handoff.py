@@ -4,6 +4,7 @@ from __future__ import annotations
 
 RESULT_FILE = "result.json"
 NOTE_FILE = "note.md"
+REVIEW_FILE = "review.md"
 
 
 def ticket_card(*, card_id: str, title: str, description: str, project: str, ticket: str, branch: str,
@@ -41,4 +42,60 @@ Plik wyniku: {out_dir}/{RESULT_FILE}
   {{"result": "error", "reason": "…"}}                          — nie da się zrobić ticketu.
 
 Bez pliku wyniku krok kończy się błędem, nawet gdy praca jest zrobiona.
+"""
+
+
+def review_card(*, card_id: str, title: str, description: str, ticket: str, round_no: int,
+                card_branch: str, ticket_branch: str, worktree: str, out_dir: str,
+                diff: str, note: str, rules: str) -> str:
+    """Pełne wejście niezależnego przeglądu, przekazane na stdin programu recenzenta."""
+    return f"""Krok review {ticket} karty {card_id}, runda {round_no}. Sprawdź wymagania i zmiany, nie edytuj kodu.
+
+Karta {card_id}: {title}
+Opis/specyfikacja karty:
+{description.strip() or '(brak opisu)'}
+
+Gałąź karty: {card_branch}
+Gałąź ticketu: {ticket_branch}
+Twój katalog: {worktree}
+
+Dla recenzenta:
+- sprawdź zgodność z opisem karty i zasadami projektu,
+- podaj konkretne BLOCKER, MAJOR, NIT z plikiem i linią,
+- BLOCKER lub MAJOR oznacza REQUEST_CHANGES.
+
+Zasady projektu:
+{rules or '(brak pliku zasad)'}
+
+Notka wyniku wykonawcy:
+{note or '(brak notki)'}
+
+Diff ticketu względem gałęzi karty:
+{diff}
+
+Zapisz raport w {out_dir}/{REVIEW_FILE}. Ostatnią czynnością zapisz plik wyniku:
+Plik wyniku: {out_dir}/{RESULT_FILE}
+{{"result":"done","verdict":"APPROVE","blockers":0,"majors":0,"nits":0,"notes":["{REVIEW_FILE}"]}}
+albo
+{{"result":"done","verdict":"REQUEST_CHANGES","blockers":1,"majors":0,"nits":0,"notes":["{REVIEW_FILE}"]}}
+Liczby mają odpowiadać raportowi. Nie rób push ani merge.
+"""
+
+
+def fix_card(*, card_id: str, title: str, description: str, ticket: str, round_no: int,
+             branch: str, worktree: str, out_dir: str, review: str) -> str:
+    return f"""Krok poprawek ticketu {ticket} karty {card_id} po review, runda {round_no}.
+
+Karta {card_id}: {title}
+Opis/specyfikacja karty:
+{description.strip() or '(brak opisu)'}
+Twój katalog: {worktree}, gałąź {branch}. Popraw BLOCKER i MAJOR z raportu; uruchom odpowiednie testy.
+
+Raport review:
+{review}
+
+Zapisz notkę poprawek w {out_dir}/{NOTE_FILE}; zrób commit na swojej gałęzi. Nie rób push ani merge.
+Ostatnią czynnością zapisz plik wyniku.
+Plik wyniku: {out_dir}/{RESULT_FILE}
+{{"result":"done","notes":["{NOTE_FILE}"]}}
 """

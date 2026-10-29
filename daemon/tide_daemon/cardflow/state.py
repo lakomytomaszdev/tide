@@ -24,7 +24,8 @@ from dataclasses import dataclass, field
 RESULT_LABELS = {"done": "gotowe", "question": "pytanie", "denied": "brak zgody", "error": "błąd", "stopped": "zatrzymany"}
 REASON_LABELS = {"no-result": "brak pliku wyniku", "bad-result": "zły plik wyniku", "no-progress": "bez postępu",
                  "exit": "program zakończył się błędem", "start": "krok nie wystartował",
-                 "lost": "krok zniknął (restart usługi)"}
+                 "lost": "krok zniknął (restart usługi)", "bad-review": "niepoprawny werdykt review",
+                 "review-changed-ticket": "recenzent zmienił gałąź albo pliki ticketu"}
 NOTE_MAX = 160
 
 
@@ -35,6 +36,7 @@ class FlowState:
     results: dict = field(default_factory=dict)     # (action, key) → result
     steps: dict = field(default_factory=dict)       # step → step.started
     finished: dict = field(default_factory=dict)    # step → step.finished
+    verdicts: dict = field(default_factory=dict)    # (ticket, runda) → review.verdict
     last_step: str = ""
     paused: bool = False
     card_finished: bool = False
@@ -42,6 +44,7 @@ class FlowState:
     store_column: str = ""                          # kolumna ostatnio potwierdzona w dzienniku
     store_move_id: str = ""                         # ostatni ruch MoveCard potwierdzony w dzienniku
     rejected: set = field(default_factory=set)
+    flow_error: str = ""
     last_seq: int = 0
 
     def running(self) -> list[dict]:
@@ -51,18 +54,25 @@ class FlowState:
         return [i for k, i in self.intents.items() if k not in self.results]
 
     def merge_pending(self) -> list[dict]:
-        """Kroki ticketu z wynikiem „gotowe”, których ticket nie ma jeszcze wyniku scalenia."""
+        """Tickety zatwierdzone w review, których jeszcze nie scalono."""
         out = []
-        for name, done in self.finished.items():
-            step = self.steps.get(name) or {}
-            if done.get("result") == "done" and step.get("ticket") and \
-                    ("merge", step["ticket"]) not in self.results and step["ticket"] not in self.rejected:
-                out.append(step)
+        for (ticket, _round), verdict in self.verdicts.items():
+            if verdict.get("verdict") == "APPROVE" and ("merge", ticket) not in self.results \
+                    and ticket not in self.rejected:
+                step = next((s for s in self.steps.values() if s.get("ticket") == ticket and
+                             s.get("kind") == "ticket"), None)
+                if step is not None:
+                    out.append(step)
         return out
 
     def active(self) -> bool:
         """Krok trwa, scalanie czeka albo akcja zaczęta i niedokończona — nowe zlecenie nie startuje."""
-        return bool(self.running() or self.merge_pending() or self.open_intents())
+        pending_review = any(done.get("result") == "done" and
+                             (self.steps.get(name) or {}).get("kind") in ("ticket", "fix", "review") and
+                             (self.steps.get(name) or {}).get("ticket") not in self.rejected and
+                             ("merge", (self.steps.get(name) or {}).get("ticket")) not in self.results
+                             for name, done in self.finished.items())
+        return bool(self.running() or self.merge_pending() or self.open_intents() or pending_review)
 
 
 def fold(events: list[dict]) -> FlowState:
@@ -82,10 +92,15 @@ def fold(events: list[dict]) -> FlowState:
             st.steps[e.get("step")] = e
             st.last_step = e.get("step") or ""
             st.moved_to = ""
+            st.flow_error = ""
         elif kind == "step.finished":
             st.finished[e.get("step")] = e
             if st.moved_to not in ("done", "archived"):
                 st.moved_to = ""
+        elif kind == "review.verdict":
+            st.verdicts[(e.get("ticket"), e.get("round"))] = e
+        elif kind == "flow.error":
+            st.flow_error = e.get("error") or ""
         elif kind == "card.paused":
             st.paused = True
         elif kind == "card.finished":
@@ -137,6 +152,9 @@ def derived(st: FlowState, card: dict) -> dict | None:
            "flow": {"ticket": ident, "step": st.last_step, "executor": executor, "entry": st.started.get("entry") or "",
                     "result": done.get("result") or "", "cardBranch": ticket["cardBranch"],
                     "branch": ticket["branch"] or step.get("branch") or ""}}
+    verdict = next((v for (ticket_id, _round), v in reversed(list(st.verdicts.items())) if ticket_id == ident), None)
+    if verdict:
+        out["flow"].update({key: verdict[key] for key in ("verdict", "blockers", "majors", "nits", "round")})
     if column == "backlog":
         if not st.paused:
             return None
@@ -146,20 +164,32 @@ def derived(st: FlowState, card: dict) -> dict | None:
         return None
     failed = [r for (a, _k), r in st.results.items() if not r.get("ok") and a != "merge"]
     if st.running():
-        return _fill(out, "progress", f"{ident} · krok w tle ({executor})" if executor else f"{ident} · krok w tle")
+        work = "review" if step.get("kind") == "review" else "poprawki" if step.get("kind") == "fix" else "krok w tle"
+        return _fill(out, "progress", f"{ident} · {work} ({step.get('executor') or executor})")
     if st.open_intents():
         return _fill(out, "progress", f"{ident} · {_intent_word(st.open_intents()[0])}")
     if failed and not done:
         return _fill(out, "waiting", f"błąd zlecenia: {failed[-1].get('error') or failed[-1].get('action')}")
+    if st.flow_error:
+        return _fill(out, "waiting", f"{ident}: {st.flow_error}")
     result = done.get("result") or ""
     if result == "done":
+        if verdict and verdict.get("verdict") == "REQUEST_CHANGES":
+            if int(verdict.get("round") or 0) >= 3:
+                return _fill(out, "waiting", f"{ident}: trzy rundy review — potrzebna decyzja")
+            return _fill(out, "progress", f"{ident} · poprawki po review")
         merge = st.results.get(("merge", ident))
         if merge is None:
-            return _fill(out, "progress", f"{ident} · scalanie do gałęzi karty")
+            return _fill(out, "progress", f"{ident} · review" if not verdict else f"{ident} · scalanie do gałęzi karty")
         if not merge.get("ok"):
             return _fill(out, "waiting", f"{ident}: nie scalono do gałęzi karty ({merge.get('error') or 'błąd'})")
+        failed_cleanup = [r for (action, key), r in st.results.items()
+                          if action == "cleanup" and (key == ident or str(key).startswith(ident + ":"))
+                          and not r.get("ok")]
+        if failed_cleanup:
+            return _fill(out, "waiting", f"{ident}: nie usunięto worktree ({failed_cleanup[-1].get('error') or 'błąd'})")
         out["done"] = 1
-        return _fill(out, "review", f"✓ {ident} na gałęzi karty — do sprawdzenia")
+        return _fill(out, "review", f"✓ {ident} na gałęzi karty — review APPROVE, do sprawdzenia")
     if result == "question":
         out["question"] = _clip(done.get("question") or "", 120)
         return _fill(out, "waiting", f"{ident} pyta: „{out['question']}”" if out["question"] else f"{ident} pyta")

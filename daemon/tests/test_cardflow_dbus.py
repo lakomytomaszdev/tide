@@ -167,7 +167,8 @@ class NowTest(FlowCase):
         types = [e["type"] for e in self.events(card_id)]
         self.assertEqual(types[0], "card.started")
         for kind in ("step.started", "step.finished"):
-            self.assertEqual(types.count(kind), 1, types)
+            self.assertEqual(types.count(kind), 2, types)
+        self.assertEqual(types.count("review.verdict"), 1, types)
         self.assertTrue(all(e["v"] == 1 and e["card"] == card_id for e in self.events(card_id)))
         self.assertEqual(self.of(card_id, "card.started")[0]["entry"], "now")
         self.assertEqual(self.of(card_id, "card.started")[0]["executor"], "Sonnet")
@@ -290,7 +291,7 @@ class RestartTest(FlowCase):
         self.wait_column(card_id, "review", timeout=40)
         types = [e["type"] for e in self.events(card_id)]
         for kind in ("card.started", "step.started", "step.finished"):
-            self.assertEqual(types.count(kind), 1, types)
+            self.assertEqual(types.count(kind), 1 if kind == "card.started" else 2, types)
         self.assertEqual(len(self.results(card_id, "merge")), 1, types)
         seqs = [e["seq"] for e in self.events(card_id)]
         self.assertEqual(seqs, list(range(1, len(seqs) + 1)))

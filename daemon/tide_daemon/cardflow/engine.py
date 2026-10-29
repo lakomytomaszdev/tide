@@ -46,7 +46,7 @@ SETTINGS_FILE = "cardflow.json"
 RESULTS = ("done", "question", "denied", "error")
 OUTPUT_MAX = 256 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
-REQUEST_FIELDS = ("entry", "executor", "images", "check")
+REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check")
 
 
 class FlowError(Exception):
@@ -165,6 +165,24 @@ class FlowEngine:
         binary = self.which("claude")
         if not binary:
             raise FlowError("no-program", "nie znaleziono programu claude")
+        provider_preference = str(request.get("preferredProvider") or "").strip().lower()
+        preferred = "Sonnet" if executor.name == "Opus" else "Opus"
+        default_reviewer = next((e.name for e in ((catalog.get(preferred), *catalog.executors) if catalog else ())
+                                 if e is not None and e.model and e.model != executor.model
+                                 and e.program in ("claude", "codex") and e.provider != "local"
+                                 and (provider_preference != "mixed" or e.provider != executor.provider)), "")
+        reviewer_name = str(request.get("reviewer") or default_reviewer).strip()
+        reviewer = catalog.get(reviewer_name) if catalog is not None else None
+        if reviewer is None:
+            raise FlowError("unknown-reviewer", f"nie ma recenzenta „{reviewer_name}” w katalogu")
+        if reviewer.model == executor.model or not reviewer.model or reviewer.program not in ("claude", "codex"):
+            raise FlowError("bad-reviewer", "recenzent musi mieć inny model i program obsługiwany w tle")
+        if reviewer.provider == "local":
+            raise FlowError("bad-reviewer", "recenzent lokalny wymaga lokalnego wykonawcy ticketu")
+        if provider_preference == "mixed" and reviewer.provider == executor.provider:
+            raise FlowError("bad-reviewer-provider", "w trybie mieszanym recenzent musi być u innego dostawcy")
+        if not self.which(reviewer.program):
+            raise FlowError("no-reviewer-program", f"nie znaleziono programu {reviewer.program}")
         check = str(request.get("check") or card.check or "auto").strip().lower()
         if check not in ("auto", "manual"):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
@@ -181,7 +199,9 @@ class FlowEngine:
             raise FlowError("no-base", f"{project.repo}: nie ma gałęzi głównej (master, main, develop)")
 
         started = self.journal.append(card.id, "card.started", entry="now", executor=executor.name,
-                                      program="claude", model=executor.model, check=check,
+                                      program="claude", model=executor.model, reviewer=reviewer.name,
+                                      reviewerProgram=reviewer.program, reviewerModel=reviewer.model,
+                                      preferredProvider=provider_preference, check=check,
                                       repo=project.repo, project=project.slug, column=card.column,
                                       moveId=card.move_id)
         launch = f"launch-{started['seq']}"
@@ -226,21 +246,24 @@ class FlowEngine:
             out.append(real)
         return out
 
-    def _launch(self, card, project, executor, binary, ticket, made, made_ticket, step_id, images) -> dict:
+    def _launch(self, card, project, executor, binary, ticket, made, made_ticket, step_id, images,
+                *, kind="ticket", round_no=0, prompt_text="", review_tip="") -> dict:
         worktree = made_ticket["worktree"]
-        step_dir = worktree + ".step"
+        step_dir = worktree + (".step" if kind == "ticket" else
+                               f".review-{round_no}.step" if kind == "review" else f".fix-{round_no}.step")
         out = os.path.join(step_dir, "out")
         shots = [os.path.join(step_dir, "in", "images", f"{i + 1}-{os.path.basename(p)}") for i, p in enumerate(images)]
-        prompt = handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
-                                     project=project.name, ticket=ticket, branch=made_ticket["branch"],
-                                     card_branch=made["branch"], worktree=worktree, out_dir=out, images=shots)
+        prompt = prompt_text or handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
+                                                     project=project.name, ticket=ticket, branch=made_ticket["branch"],
+                                                     card_branch=made["branch"], worktree=worktree, out_dir=out,
+                                                     images=shots)
         session = str(uuid.uuid4())
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
         self._hidden = (ids | {session}, tuple(sorted(set(places) | {os.path.realpath(worktree)})))
 
         def launch() -> dict:
             bg = agentcmd.background(agentcmd.Step(
-                tool="claude", binary=binary, prompt=prompt, worktree=worktree, repo=project.repo, step_dir=step_dir,
+                tool=executor.program, binary=binary, prompt=prompt, worktree=worktree, repo=project.repo, step_dir=step_dir,
                 step_id=step_id, session_id=session, model=executor.model, permission_mode="acceptEdits",
                 tmp_root=self.tmp_root))
             bg.prepare()
@@ -253,11 +276,15 @@ class FlowEngine:
 
         try:
             begun = self._act(card.id, "step-start", step_id, launch, unit=f"tide-step-{step_id}",
-                              session=session, stepDir=step_dir, worktree=worktree)
+                              session=session, stepDir=step_dir, worktree=worktree, kind=kind,
+                              ticket=ticket, round=round_no, executor=executor.name,
+                              program=executor.program, model=executor.model, branch=made_ticket["branch"],
+                              reviewTip=review_tip)
         except (agentcmd.StepError, OSError) as exc:
             raise FlowError("step", f"krok nie wystartował: {exc}") from None
-        return self.journal.append(card.id, "step.started", step=step_id, kind="ticket", ticket=ticket,
-                                   executor=executor.name, program="claude", model=executor.model,
+        return self.journal.append(card.id, "step.started", step=step_id, kind=kind, ticket=ticket,
+                                   round=round_no, executor=executor.name, program=executor.program, model=executor.model,
+                                   reviewTip=review_tip,
                                    unit=begun["unit"], session=session, worktree=worktree,
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
                                    repo=project.repo)
@@ -345,6 +372,7 @@ class FlowEngine:
 
     def _tick_card(self, card: str, st: FlowState) -> None:
         self._recover_started_steps(card, st)
+        self._recover_verdicts(card)
         st = fold(self.journal.read(card))
         if st.started is not None and not st.card_finished and st.store_column:
             stored = self.store.load().cards.get(card_num(card))
@@ -361,9 +389,144 @@ class FlowEngine:
         for step in st.running():
             self._poll(card, step)
         st = fold(self.journal.read(card))
-        if not st.card_finished:
-            for step in st.merge_pending():
-                self._merge(card, st, step)
+        if not st.card_finished and not st.running():
+            try:
+                self._advance(card, st)
+            except (FlowError, FlowGitError) as exc:
+                problem = f"{exc.__class__.__name__}: {exc}"
+                if st.flow_error != problem:
+                    self.journal.append(card, "flow.error", error=problem)
+
+    def _advance(self, card: str, st: FlowState) -> None:
+        """Jedna zmiana etapu na tick: ticket → review → poprawki/review → scalenie i sprzątanie."""
+        if not st.last_step or st.open_intents():
+            return
+        step = st.steps.get(st.last_step) or {}
+        done = st.finished.get(st.last_step) or {}
+        if done.get("result") != "done":
+            return
+        ticket = step.get("ticket") or ""
+        if not ticket or ticket in st.rejected:
+            return
+        if step.get("kind") in ("ticket", "fix"):
+            round_no = 1 if step.get("kind") == "ticket" else int(step.get("round") or 0) + 1
+            self._review(card, st, step, round_no)
+            return
+        if step.get("kind") != "review":
+            return
+        verdict = st.verdicts.get((ticket, step.get("round")))
+        if verdict is None:
+            return
+        if verdict.get("verdict") == "REQUEST_CHANGES":
+            if int(step.get("round") or 0) < 3:
+                self._fix(card, st, step)
+            return
+        if ("merge", ticket) not in st.results:
+            source = next((s for s in st.steps.values() if s.get("ticket") == ticket and
+                           s.get("kind") == "ticket"), None)
+            if source is not None:
+                self._merge(card, st, source)
+        merged = fold(self.journal.read(card)).results.get(("merge", ticket))
+        if merged and merged.get("ok"):
+            self._cleanup(card, fold(self.journal.read(card)), ticket, int(step.get("round") or 1))
+
+    def _next_step_id(self, card: str, ticket: str, st: FlowState) -> str:
+        return f"{card}-{ticket}-{1 + sum(1 for s in st.steps.values() if s.get('ticket') == ticket)}"
+
+    def _project(self, card: str):
+        board = self.store.load()
+        item = board.cards.get(card_num(card))
+        project = board.projects.get(item.project) if item else None
+        if item is None or project is None:
+            raise FlowError("no-project", f"{card}: nie ma karty albo projektu dla kroku")
+        return item, project
+
+    def _note(self, card: str, step: dict) -> str:
+        name = handoff.REVIEW_FILE if step.get("kind") == "review" else handoff.NOTE_FILE
+        path = os.path.join(self.store.root, self.journal.rel_dir(card), "steps", step.get("step") or "", name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return fh.read(OUTPUT_MAX)
+        except OSError:
+            return ""
+
+    def _rules(self, repo: str) -> str:
+        out = []
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            path = os.path.join(repo, name)
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    out.append(f"### {name}\n{fh.read(OUTPUT_MAX)}")
+            except OSError:
+                pass
+        return "\n\n".join(out)
+
+    def _review(self, card: str, st: FlowState, source: dict, round_no: int) -> None:
+        item, project = self._project(card)
+        ticket = source["ticket"]
+        info = ticket_of(st)
+        reviewer = (self.catalog() if self.catalog else None).get(st.started.get("reviewer") or "")
+        if reviewer is None:
+            raise FlowError("unknown-reviewer", f"{card}: nie ma recenzenta")
+        binary = self.which(reviewer.program)
+        if not binary:
+            raise FlowError("no-reviewer-program", f"nie znaleziono programu {reviewer.program}")
+        path = info["worktree"]
+        tip = self.git.clean_tip(project.repo, info["branch"], path)
+        diff = self.git.diff(project.repo, info["cardBranch"], info["branch"])
+        step_id = self._next_step_id(card, ticket, st)
+        out = path + f".review-{round_no}.step/out"
+        prompt = handoff.review_card(card_id=card, title=item.title, description=item.description, ticket=ticket,
+                                     round_no=round_no, card_branch=info["cardBranch"],
+                                     ticket_branch=info["branch"], worktree=path, out_dir=out,
+                                     diff=diff, note=self._note(card, source), rules=self._rules(project.repo))
+        self._launch(item, project, reviewer, binary, ticket,
+                     {"branch": info["cardBranch"]},
+                     {"branch": info["branch"], "worktree": path}, step_id, [],
+                     kind="review", round_no=round_no, prompt_text=prompt, review_tip=tip)
+
+    def _fix(self, card: str, st: FlowState, review_step: dict) -> None:
+        item, project = self._project(card)
+        ticket = review_step["ticket"]
+        info = ticket_of(st)
+        executor = (self.catalog() if self.catalog else None).get(st.started.get("executor") or "")
+        if executor is None or not self.which(executor.program):
+            raise FlowError("no-executor", f"{card}: wykonawca poprawek jest niedostępny")
+        round_no = int(review_step.get("round") or 1)
+        step_id = self._next_step_id(card, ticket, st)
+        out = info["worktree"] + f".fix-{round_no}.step/out"
+        prompt = handoff.fix_card(card_id=card, title=item.title, description=item.description, ticket=ticket,
+                                  round_no=round_no, branch=info["branch"], worktree=info["worktree"],
+                                  out_dir=out, review=self._note(card, review_step))
+        self._launch(item, project, executor, self.which(executor.program), ticket,
+                     {"branch": info["cardBranch"]},
+                     {"branch": info["branch"], "worktree": info["worktree"]},
+                     step_id, [], kind="fix", round_no=round_no, prompt_text=prompt)
+
+    def _cleanup(self, card: str, st: FlowState, ticket: str, rounds: int) -> None:
+        info = ticket_of(st)
+        repo = self._repo(card)
+        self._act(card, "cleanup", ticket,
+                  lambda: self.git.remove_worktree(repo, info["branch"], info["worktree"]),
+                  repo=repo, branch=info["branch"], worktree=info["worktree"])
+
+    def _recover_verdicts(self, card: str) -> None:
+        st = fold(self.journal.read(card))
+        for name, finished in st.finished.items():
+            step = st.steps.get(name) or {}
+            if step.get("kind") != "review" or finished.get("result") != "done" or \
+                    (step.get("ticket"), step.get("round")) in st.verdicts:
+                continue
+            path = os.path.join(step.get("stepDir") or "", "out", handoff.RESULT_FILE)
+            verdict = self._review_result(path)
+            try:
+                tip = self.git.clean_tip(step.get("repo") or self._repo(card),
+                                         step.get("branch") or "", step.get("worktree") or "")
+            except FlowGitError:
+                tip = ""
+            if verdict and tip and tip == step.get("reviewTip"):
+                self.journal.append(card, "review.verdict", step=name, ticket=step["ticket"],
+                                    round=step["round"], reviewer=step.get("executor") or "", **verdict)
 
     def _reconcile(self, card: str, intent: dict) -> None:
         """Akcja zaczęta przed restartem usługi, bez wyniku: dokończenie albo jawny błąd (nigdy druga kopia)."""
@@ -372,12 +535,16 @@ class FlowEngine:
             self._act(card, action, key,
                       lambda: self._reserve(intent["repo"], intent["title"], f"{card}:{key}"))
             return
-        if action in ("card-branch", "ticket-branch"):
+        if action in ("card-branch", "ticket-branch", "review-branch"):
             def make_branch():
                 made = self.git.branch_worktree(intent["repo"], intent["branch"],
                                                 intent["worktree"], intent["base"])
                 return {**made, **({"ticket": intent["ticket"]} if action == "ticket-branch" else {})}
             self._act(card, action, key, make_branch)
+            return
+        if action == "cleanup":
+            self._act(card, action, key,
+                      lambda: self.git.remove_worktree(intent["repo"], intent["branch"], intent["worktree"]))
             return
         if action == "merge":
             st = fold(self.journal.read(card))
@@ -415,12 +582,15 @@ class FlowEngine:
             if action != "step-start" or not result.get("ok") or key in st.steps:
                 continue
             intent = st.intents.get((action, key)) or {}
-            self.journal.append(card, "step.started", step=key, kind="ticket", ticket=ticket["id"],
-                                executor=(st.started or {}).get("executor") or "",
-                                program=(st.started or {}).get("program") or "claude",
-                                model=(st.started or {}).get("model") or "", unit=result.get("unit") or intent.get("unit") or "",
+            self.journal.append(card, "step.started", step=key, kind=intent.get("kind") or "ticket",
+                                ticket=intent.get("ticket") or ticket["id"], round=intent.get("round") or 0,
+                                executor=intent.get("executor") or (st.started or {}).get("executor") or "",
+                                program=intent.get("program") or (st.started or {}).get("program") or "claude",
+                                model=intent.get("model") or (st.started or {}).get("model") or "",
+                                unit=result.get("unit") or intent.get("unit") or "",
                                 session=intent.get("session") or "", worktree=intent.get("worktree") or "",
-                                branch=ticket["branch"], stepDir=intent.get("stepDir") or "",
+                                branch=intent.get("branch") or ticket["branch"], stepDir=intent.get("stepDir") or "",
+                                reviewTip=intent.get("reviewTip") or "",
                                 gitDir=result.get("gitDir") or "", repo=self._repo(card))
 
     def _repo(self, card: str) -> str:
@@ -489,7 +659,7 @@ class FlowEngine:
         stopped = stepstop.stop_step(self.procs.get(step.get("step") or ""), unit=step.get("unit") or "",
                                      worktree=step.get("worktree") or "", step_dir=step.get("stepDir") or "",
                                      repo=step.get("repo") or self._repo(card), git_dir=step.get("gitDir") or "",
-                                     branch=step.get("branch") or "", tool="claude",
+                                     branch=step.get("branch") or "", tool=step.get("program") or "claude",
                                      session_id=step.get("session") or "", claude_projects=self.claude_projects,
                                      grace=self.grace)
         wip = {"stopped": stopped.stopped, "committed": stopped.committed, "commit": stopped.commit,
@@ -510,6 +680,20 @@ class FlowEngine:
         data = forced or self._result(os.path.join(out, handoff.RESULT_FILE))
         if forced is None and exit_code != 0:
             data = {**data, "result": "error", "reason": "lost" if exit_code is None else "exit"}
+        verdict = None
+        if step.get("kind") == "review" and data.get("result") == "done":
+            verdict = self._review_result(os.path.join(out, handoff.RESULT_FILE))
+            if verdict is None:
+                data = {"result": "error", "reason": "bad-review"}
+            else:
+                try:
+                    tip = self.git.clean_tip(step.get("repo") or self._repo(card),
+                                             step.get("branch") or "", step.get("worktree") or "")
+                except FlowGitError:
+                    tip = ""
+                if not tip or tip != step.get("reviewTip"):
+                    verdict = None
+                    data = {"result": "error", "reason": "review-changed-ticket"}
         kept = []
         for entry in sorted(os.listdir(out)) if os.path.isdir(out) else []:
             path = os.path.join(out, entry)
@@ -524,6 +708,9 @@ class FlowEngine:
                             question=data.get("question") or "", command=data.get("command") or "",
                             notes=[n for n in data.get("notes") or [] if n in kept], kept=kept,
                             exit=exit_code, **extra)
+        if verdict is not None:
+            self.journal.append(card, "review.verdict", step=name, ticket=step.get("ticket") or "",
+                                round=step.get("round") or 1, reviewer=step.get("executor") or "", **verdict)
         self.procs.pop(name, None)
         self.watch.pop(name, None)
         shutil.rmtree(os.path.join(self.tmp_root, f"tide-step-{name}"), ignore_errors=True)
@@ -543,6 +730,24 @@ class FlowEngine:
         return {"result": data["result"], "reason": str(data.get("reason") or "")[:300],
                 "question": str(data.get("question") or "")[:2000], "command": str(data.get("command") or "")[:300],
                 "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
+
+    @staticmethod
+    def _review_result(path: str) -> dict | None:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or data.get("result") != "done":
+            return None
+        verdict = data.get("verdict")
+        counts = [data.get(key) for key in ("blockers", "majors", "nits")]
+        if verdict not in ("APPROVE", "REQUEST_CHANGES") or any(
+            isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= 999 for n in counts):
+            return None
+        if (verdict == "APPROVE") != (counts[0] == 0 and counts[1] == 0):
+            return None
+        return dict(verdict=verdict, blockers=counts[0], majors=counts[1], nits=counts[2])
 
     def _merge(self, card: str, st: FlowState, step: dict) -> None:
         ticket = step.get("ticket") or ""

@@ -94,6 +94,60 @@ class FlowGit:
                 raise FlowGitError("git worktree add: " + (added.err.splitlines() or ["błąd"])[0])
             return {"branch": branch, "worktree": path, "base": self.sha(repo, branch), "existing": False}
 
+    def diff(self, repo: str, card_branch: str, ticket_branch: str) -> str:
+        """Diff obiektów bez wywołań zewnętrznego diffa ani textconv."""
+        result = self.run(repo, "diff", "--no-ext-diff", "--no-textconv", "--binary",
+                          f"refs/heads/{card_branch}", f"refs/heads/{ticket_branch}", "--")
+        if not result.ok:
+            raise FlowGitError("nie można odczytać diffu ticketu: " + (result.err.splitlines() or ["błąd"])[0])
+        if len(result.out) > 300_000:
+            raise FlowGitError("diff ticketu przekracza 300 000 znaków — podziel pracę na mniejszy ticket")
+        return result.out
+
+    def clean_tip(self, repo: str, branch: str, path: str) -> str:
+        """Przed i po review potwierdza, że recenzent nie zmienił gałęzi ani plików ticketu."""
+        with lock_for(repo):
+            tip = self.sha(repo, f"refs/heads/{branch}")
+            if not tip or not sandbox_available():
+                raise FlowGitError("nie można bezpiecznie sprawdzić worktree ticketu")
+            try:
+                git_dir = resolve_git_dir(repo, path)
+            except StepError as exc:
+                raise FlowGitError(f"nie można ustalić katalogu gita worktree ticketu: {exc}") from exc
+            status = StepGit(repo, git_dir, path, path + ".step").run(
+                "status", "--porcelain", "--untracked-files=all")
+            if not status.ok or status.out.strip():
+                raise FlowGitError("worktree ticketu ma lokalne zmiany")
+            return tip
+
+    def remove_worktree(self, repo: str, branch: str, path: str) -> dict:
+        """Sprząta worktree po APPROVE pod tą samą blokadą co zakładanie i scalanie."""
+        with lock_for(repo):
+            listed = self.run(repo, "worktree", "list", "--porcelain")
+            if not listed.ok:
+                raise FlowGitError("nie można odczytać listy worktree")
+            found = next((dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
+                          for block in listed.out.split("\n\n")
+                          if any(line == f"worktree {os.path.realpath(path)}" for line in block.splitlines())), None)
+            if found is None:
+                return {"removed": True, "already": True}
+            if found.get("branch") != f"refs/heads/{branch}":
+                raise FlowGitError("worktree należy do innej gałęzi — nie usuwam")
+            if not sandbox_available():
+                raise FlowGitError("piaskownica gita ticketu jest niedostępna")
+            try:
+                git_dir = resolve_git_dir(repo, path)
+            except StepError as exc:
+                raise FlowGitError(f"nie można ustalić katalogu gita worktree ticketu: {exc}") from exc
+            status = StepGit(repo, git_dir, path, path + ".step").run(
+                "status", "--porcelain", "--untracked-files=all")
+            if not status.ok or status.out.strip():
+                raise FlowGitError("worktree ma lokalne zmiany — nie usuwam")
+            removed = self.run(repo, "worktree", "remove", path, timeout=600)
+            if not removed.ok:
+                raise FlowGitError("nie udało się usunąć worktree: " + (removed.err.splitlines() or ["błąd"])[0])
+            return {"removed": True, "already": False}
+
     def merge(self, repo: str, card_branch: str, ticket_branch: str, card_worktree: str, message: str) -> dict:
         """Ticket do gałęzi karty: sukces oznacza zgodność refu, indeksu i plików worktree."""
         with lock_for(repo):
