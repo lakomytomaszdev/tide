@@ -65,7 +65,7 @@ class ProposalTest(unittest.TestCase):
         self.assertEqual(got.rows[0]["reviewer"], "Codex Astra")
         self.assertTrue(any("jedną tabelę" in e for e in got.errors))
 
-    def test_card_identity_local_class_and_prefix_are_checked(self):
+    def test_card_identity_local_class_and_work_id_are_checked(self):
         self.write("| OTHER-1 | X | todo | | Sonnet | | lokalny | Opus | |\n",
                    {"OTHER-1": "## Kryteria akceptacji\n- [ ] Działa\n"})
         with open(self.path, encoding="utf-8") as fh:
@@ -73,7 +73,7 @@ class ProposalTest(unittest.TestCase):
         with open(self.path, "w", encoding="utf-8") as fh:
             fh.write(content)
         joined = " | ".join(self.check().errors)
-        for fragment in ("klucz card", "prefiks ID", "klasa lokalny"):
+        for fragment in ("klucz card", "numeru roboczego", "klasa lokalny"):
             self.assertIn(fragment, joined)
 
 

@@ -46,6 +46,18 @@ class PlanFlowTest(FlowInProcess):
         self.assertEqual(self.of(card, "plan.checked")[-1]["valid"], False)
         self.assertEqual(self.shown(card)["boardColumn"], "waiting")
 
+    def test_proposal_rejects_preassigned_ticket_id(self):
+        card = self.card()
+        path = self.proposal(card)
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(source.replace("| #1 |", "| PT-1 |"))
+        reply = self.submit(card, path)
+        self.assertFalse(reply["ok"])
+        self.assertTrue(any("numeru roboczego" in error for error in reply["errors"]))
+        self.assertEqual(self.results(card, "reserve"), [])
+
     def test_approval_assigns_ids_then_runs_blocked_ticket_after_merge(self):
         card = self.card(description="Plan z pliku")
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])

@@ -13,7 +13,6 @@ from ..coordination import plan as plan_mod
 from ..models.executors import CLASSES
 
 WORK_ID = re.compile(r"^#([1-9][0-9]{0,5})$")
-REAL_ID = re.compile(r"^[A-Z][A-Z0-9]{0,9}-[1-9][0-9]{0,8}$")
 CRITERION = re.compile(r"(?m)^\s*-\s*\[\s*\]\s*\S")
 
 
@@ -58,10 +57,8 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=()) -> Proposal:
     for row in plan.rows:
         ident = row.ticket
         work = WORK_ID.fullmatch(ident)
-        if not work and not REAL_ID.fullmatch(ident):
-            errors.append(f"{ident}: oczekiwano numeru roboczego #n albo ID ticketu")
-        if REAL_ID.fullmatch(ident) and plan.prefix and not ident.startswith(plan.prefix + "-"):
-            errors.append(f"{ident}: prefiks ID różni się od ticket-prefix {plan.prefix}")
+        if not work:
+            errors.append(f"{ident}: propozycja wymaga numeru roboczego #n; ID powstaje po zatwierdzeniu")
         if ident in seen:
             errors.append(f"{ident}: powtórzony ticket")
         seen.add(ident)
