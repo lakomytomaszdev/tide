@@ -127,6 +127,8 @@ if prompt.startswith("Krok planowania Lekkiego"):
     sys.exit(0)
 
 if prompt.startswith("Krok review "):
+    if "ATRAPA: czekaj-review" in prompt and "Notka techniczna przekazania" not in prompt:
+        time.sleep(3600)
     round_match = re.search(r"runda (\d+)", prompt)
     round_no = int(round_match.group(1)) if round_match else 1
     if "ATRAPA: review-error" in prompt and round_no == 1 and "Użytkownik wybrał innego wykonawcę" not in prompt:

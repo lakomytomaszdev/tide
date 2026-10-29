@@ -64,6 +64,7 @@ class FlowState:
     plan_change_ts: str = ""
     assignments: dict = field(default_factory=dict)  # ticket → autor i recenzent z planu
     reviewer_overrides: dict = field(default_factory=dict)  # ticket → recenzent po ręcznym transferze
+    transfer_requests: dict = field(default_factory=dict)  # krok → trwała intencja przekazania
     inputs: dict = field(default_factory=dict)
     waiting: dict = field(default_factory=dict)
     timeline: list = field(default_factory=list)
@@ -117,8 +118,11 @@ class FlowState:
         finished = self.finished.get(self.last_step) or {}
         pending_decision = finished.get("result") in ("question", "denied", "error") and \
             step.get("ticket") not in self.rejected and not self.card_finished
+        pending_transfer = not self.card_finished and any(
+            name not in self.step_decisions for name in self.transfer_requests)
         return bool(self.running() or self.open_consoles() or self.merge_pending() or self.open_intents()
-                    or pending_review or pending_decision or plan_pending or (self.waiting and not self.card_finished) or
+                    or pending_review or pending_decision or pending_transfer or plan_pending or
+                    (self.waiting and not self.card_finished) or
                     (self.started and self.started.get('trackerProject') and self.started.get('entry') == 'now'
                      and not self.steps and not self.card_finished))
 
@@ -131,7 +135,7 @@ def fold(events: list[dict]) -> FlowState:
             st.last_activity_ts = _epoch(e.get("ts")) or st.last_activity_ts
             st.stalled_since = ""
         if kind in ("card.started", "card.stalled", "step.started", "step.finished", "step.waiting", "review.verdict",
-                    "step.decision", "step.wip", "step.limit",
+                    "step.decision", "step.transfer_requested", "step.wip", "step.limit",
                     "plan.approved", "card.paused", "card.resumed", "plan.finished") or (
                     kind == "result" and e.get("action") == "merge"):
             st.timeline.append({key: e[key] for key in (
@@ -151,6 +155,7 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_change_seq, st.plan_change_ts = 0, ""
             st.assignments = {}
             st.reviewer_overrides = {}
+            st.transfer_requests = {}
             st.wip_retries = {}
             st.limits = {}
             st.waiting = {}
@@ -182,9 +187,13 @@ def fold(events: list[dict]) -> FlowState:
                                    "processFile": e.get("processFile") or "", "enteredAt": e.get("enteredAt") or 0,
                                    "consoleUnit": e.get("consoleUnit") or "",
                                    "source": e.get("source") or "", "taskFile": e.get("taskFile") or "",
-                                   "consoleClosed": False}
+                                   "consoleClosed": False, "consoleOpened": False}
+        elif kind == "step.console_opened" and e.get("step") in st.steps:
+            st.steps[e["step"]] = {**st.steps[e["step"]], "consoleOpened": True}
         elif kind == "step.console_closed" and e.get("step") in st.steps:
             st.steps[e["step"]] = {**st.steps[e["step"]], "consoleClosed": True}
+        elif kind == "step.transfer_requested":
+            st.transfer_requests[e.get("step")] = e
         elif kind == "step.finished":
             st.finished[e.get("step")] = e
             if st.moved_to not in ("done", "archived"):
