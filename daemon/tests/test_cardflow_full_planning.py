@@ -96,6 +96,14 @@ class FullPlanningTest(FlowInProcess):
         self.assertEqual([e["step"] for e in self.of(card, "step.started")], [step["step"]])
         self.assertEqual(len(terminal.opened), 1)
 
+    def test_explicit_question_result_waits_for_user(self):
+        card, step, _terminal = self._start_full()
+        with open(os.path.join(step["stepDir"], "out", "result.json"), "w", encoding="utf-8") as fh:
+            json.dump({"result": "question", "question": "Który wariant eksportu?"}, fh)
+        shown = self.wait_column(card, "waiting")
+        self.assertEqual(shown["derived"]["flow"]["question"], "Który wariant eksportu?")
+        self.assertEqual(self.of(card, "plan.proposed"), [])
+
     def test_without_terminal_does_not_start_card(self):
         from tide_daemon.cardflow.engine import FlowError
         card = self.card()
