@@ -146,6 +146,27 @@ class PlanFlowTest(FlowInProcess):
                              os.path.basename(p.path).endswith(f"{card.lower()}-flow.md"))
         self.assertEqual([r.ticket for r in approved_plan.rows], list(mapping.values()))
 
+    def test_failed_plan_commit_can_be_retried_without_new_ticket_numbers(self):
+        from tide_daemon.cardflow.engine import FlowError
+        from tide_daemon.cardflow.gitops import FlowGitError
+        from tide_daemon.cardflow.state import fold, ticket_of
+
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        self.flow.stop()
+        engine = self.flow.engine
+        engine.approve_plan(card)
+        reserved = [r["ticket"] for r in self.results(card, "reserve")]
+        with mock.patch.object(engine.git, "commit_plan", side_effect=FlowGitError("przejściowy błąd")):
+            with self.assertRaises(FlowError):
+                engine._plan_next(card, fold(engine.journal.read(card)))
+        self.assertFalse(self.results(card, "plan-commit")[-1]["ok"])
+        state = fold(engine.journal.read(card))
+        info = ticket_of(state)
+        engine._plan_commit(card, state, self.repo, info["cardBranch"], info["cardWorktree"])
+        self.assertTrue(self.results(card, "plan-commit")[-1]["ok"])
+        self.assertEqual([r["ticket"] for r in self.results(card, "reserve")], reserved)
+
 
 if __name__ == "__main__":
     import unittest

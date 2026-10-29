@@ -416,20 +416,22 @@ class FlowEngine:
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
                                    repo=project.repo)
 
-    def _act(self, card: str, action: str, key: str, work, **intent) -> dict:
+    def _act(self, card: str, action: str, key: str, work, *, retry_failed: bool = False, **intent) -> dict:
         """Para „zamiar → wynik”: wynik już jest — zwracamy go (powtórka nic nie robi); błąd — wynik ok: false i wyjątek."""
         st = fold(self.journal.read(card))
         done = st.results.get((action, key))
         if done is not None:
-            if not done.get("ok"):
+            if not done.get("ok") and not retry_failed:
                 raise FlowError(action, done.get("error") or action)
-            return done
+            if done.get("ok"):
+                return done
         if (action, key) not in st.intents:
             self.journal.append(card, "intent", action=action, key=key, **intent)
         try:
             data = work()
         except (FlowGitError, reservations.ReservationError, agentcmd.StepError, OSError, FlowError) as exc:
-            self.journal.append(card, "result", action=action, key=key, ok=False, error=str(exc))
+            if done is None or done.get("error") != str(exc):
+                self.journal.append(card, "result", action=action, key=key, ok=False, error=str(exc))
             if isinstance(exc, (agentcmd.StepError, OSError)):
                 raise
             raise FlowError(action, str(exc)) from None
@@ -530,7 +532,8 @@ class FlowEngine:
             if info["cardBranch"] and info["cardWorktree"]:
                 approved = st.plan_approved
                 key = f"{approved.get('seq')}:{st.plan_change_seq}"
-                if ("plan-commit", key) not in st.results:
+                previous = st.results.get(("plan-commit", key))
+                if previous is None or not previous.get("ok"):
                     try:
                         self._plan_commit(card, st, self._repo(card), info["cardBranch"], info["cardWorktree"])
                     except (FlowError, FlowGitError) as exc:
@@ -666,6 +669,7 @@ class FlowEngine:
         files = self._plan_files(card, st, merged)
         self._act(card, "plan-commit", key,
                   lambda: self.git.commit_plan(repo, branch, worktree, files),
+                  retry_failed=True,
                   repo=repo, branch=branch, worktree=worktree)
 
     def _plan_files(self, card: str, st: FlowState, merged: set[str]) -> dict[str, bytes]:
