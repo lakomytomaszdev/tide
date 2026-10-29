@@ -1935,6 +1935,33 @@ if out["before"]:
         self.assertEqual(json.loads(out["call"][2]),
                          {"choice": "transfer", "step": "step-1", "executor": "Codex standard"})
 
+    def test_open_full_planning_can_be_transferred_from_console(self):
+        data = self.flow_card("", entry="planning", mode="full",
+                              steps=[{"id": "K-6-plan-1-0", "ticket": "", "kind": "planning",
+                                      "mode": "interactive", "result": "", "executor": "Sonnet",
+                                      "provider": "anthropic", "canTransfer": True, "canEnter": True}])
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"]["column"] = "progress"
+                card["boardColumn"] = "progress"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["visible"] = js(FIND + "(page.cardPanel, 'cardStepTransfer').visible")
+out["before"] = js(FIND + "(page.cardPanel, 'cardStepTransfer').enabled")
+out["targets"] = js(FIND + "(page.cardPanel, 'cardStepTransferExecutor').model.map(o => o.value)")
+js("page.cardPanel.flowRepeater.itemAt(0).transferExecutor = 'Codex standard'")
+click(at(FIND + "(page.cardPanel, 'cardStepTransfer')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["visible"])
+        self.assertFalse(out["before"])
+        self.assertIn("Codex standard", out["targets"])
+        self.assertNotIn("Haiku", out["targets"])
+        self.assertEqual(out["call"][:2], ["ResolveCardStep", "K-6"])
+        self.assertEqual(json.loads(out["call"][2]),
+                         {"choice": "transfer", "step": "K-6-plan-1-0", "executor": "Codex standard"})
+
     def test_auto_transfer_setting_is_saved_from_manage_page(self):
         data = json.loads(json.dumps(self.data))
         data["models"] = dict(models_status(), executors=EXECUTORS)
