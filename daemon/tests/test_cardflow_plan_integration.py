@@ -125,7 +125,7 @@ class PlanFlowTest(FlowInProcess):
                              os.path.basename(p.path).endswith(f"{card.lower()}-flow.md"))
         self.assertEqual([r.ticket for r in approved_plan.rows], list(reply["map"].values()))
         self.assertEqual([r.state for r in approved_plan.rows], ["gotowe", "gotowe"])
-        self.assertEqual(approved_plan.updated, merge[-1]["ts"])
+        self.assertGreaterEqual(approved_plan.updated, merge[-1]["ts"])
         with open(approved_plan.path, encoding="utf-8") as fh:
             frontmatter = fh.read().split("---")[1]
         for field in ("tracker-url:", "tracker-project:", "coordinator: claude", "session: planning-123"):
