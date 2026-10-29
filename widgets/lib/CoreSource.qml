@@ -148,13 +148,18 @@ Item {
 
     function probeChat() {
         if (!wantChat || !coreUp) return
+        const generation = coreGeneration
         DBus.SessionBus.asyncCall(message("GetChat"), function (reply) {
+            if (generation !== source.coreGeneration || !source.coreUp) return
             let events = []
             try { events = JSON.parse(reply.value).events || [] } catch (e) {}
             source.chatModel.clear()
             for (const e of events.slice(-source.chatLimit)) source.appendChat(e)
             source.chatAvailable = true
-        }, function (error) { if (source.missingMethod(error)) source.chatAvailable = false })
+        }, function (error) {
+            if (generation === source.coreGeneration && source.coreUp && source.missingMethod(error))
+                source.chatAvailable = false
+        })
     }
 
     function refreshPreview() {

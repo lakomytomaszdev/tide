@@ -39,7 +39,8 @@ function modeLabel(mode) {
 // Wyciszenie mikrofonu: true, false albo null (OBS nie zna wejścia albo jest rozłączony).
 function micMuted(view) {
     const obs = obj(obj(view).obs)
-    if (obs.mic && typeof obs.mic.muted === "boolean") return obs.mic.muted
+    // Nowy rdzeń podaje pole także jako null: to brak skonfigurowanego wejścia, nie sygnał do odczytu innego.
+    if ("mic" in obs) return obs.mic && typeof obs.mic.muted === "boolean" ? obs.mic.muted : null
     const mutes = obj(obs.mutes)
     return typeof mutes[MIC_INPUT] === "boolean" ? mutes[MIC_INPUT] : null
 }
