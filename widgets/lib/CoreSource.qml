@@ -51,6 +51,9 @@ Item {
     property int chatLimit: 200
     property bool chatAvailable: false
     property ListModel chatModel: ListModel {}
+    property int chatProbeNext: 0
+    property int chatProbePending: 0
+    property var chatDuringProbe: []
 
     property bool wantPreview: false
     property bool previewActive: true
@@ -133,6 +136,19 @@ Item {
     }
 
     function appendChat(event) {
+        if (event && (event.type === "chat_delete" || event.type === "chat_clear")) {
+            const id = String(event.id || "")
+            const userId = String(event.user_id || "")
+            const user = String(event.user || "")
+            for (let i = chatModel.count - 1; i >= 0; i--) {
+                const line = chatModel.get(i)
+                if (line.kind !== "chat") continue
+                if (event.type === "chat_clear" || (id ? line.id === id
+                    : userId ? line.user_id === userId : user && line.user === user))
+                    chatModel.remove(i)
+            }
+            return
+        }
         const line = Stream.chatLine(event)
         if (!line) return
         chatModel.append(line)
@@ -143,22 +159,43 @@ Item {
         let event = null
         try { event = JSON.parse(text(json)) } catch (e) { return }
         chatAvailable = true
-        appendChat(event)
+        if (chatProbePending) chatDuringProbe = chatDuringProbe.concat([event])
+        else appendChat(event)
     }
 
     function probeChat() {
-        if (!wantChat || !coreUp) return
+        if (!wantChat || !coreUp || chatProbePending) return
         const generation = coreGeneration
+        const request = ++chatProbeNext
+        chatProbePending = request
+        chatDuringProbe = []
         DBus.SessionBus.asyncCall(message("GetChat"), function (reply) {
-            if (generation !== source.coreGeneration || !source.coreUp) return
+            if (generation !== source.coreGeneration || !source.coreUp || source.chatProbePending !== request) return
             let events = []
             try { events = JSON.parse(reply.value).events || [] } catch (e) {}
+            const pending = source.chatDuringProbe
+            source.chatDuringProbe = []
+            source.chatProbePending = 0
             source.chatModel.clear()
-            for (const e of events.slice(-source.chatLimit)) source.appendChat(e)
+            const seen = {}
+            for (const e of events.slice(-source.chatLimit)) {
+                if (e && e.event_id) seen[String(e.event_id)] = true
+                source.appendChat(e)
+            }
+            // Sygnał mógł dotrzeć po odczycie historii, ale przed odpowiedzią GetChat.
+            // Tylko ID zdarzenia z rdzenia odróżnia ten sam alert od nowego alertu o tej samej treści.
+            for (const e of pending) {
+                const id = e && e.event_id
+                if (!id || !seen[String(id)]) source.appendChat(e)
+            }
             source.chatAvailable = true
         }, function (error) {
-            if (generation === source.coreGeneration && source.coreUp && source.missingMethod(error))
-                source.chatAvailable = false
+            if (generation !== source.coreGeneration || !source.coreUp || source.chatProbePending !== request) return
+            const pending = source.chatDuringProbe
+            source.chatDuringProbe = []
+            source.chatProbePending = 0
+            for (const e of pending) source.appendChat(e)
+            if (source.missingMethod(error)) source.chatAvailable = false
         })
     }
 
@@ -226,6 +263,8 @@ Item {
                 source.view = null
                 source.chatAvailable = false
                 source.chatModel.clear()
+                source.chatDuringProbe = []
+                source.chatProbePending = 0
                 source.previewImage = ""
                 source.previewSupported = true
                 source.previewKey = ""

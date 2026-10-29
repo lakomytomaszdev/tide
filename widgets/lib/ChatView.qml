@@ -1,9 +1,8 @@
 // Czat Twitcha na pulpicie lewego monitora w aktywności Stream (PT-37): duża czcionka (ok. 20 px), najnowsze
 // na dole, tylko do czytania, alerty (follow, sub, bits, raid) w linii w ramce w kolorze akcentu. Nick w pastelu
 // palety wybranym po nicku (Stream.nickTint) spośród pasteli innych niż kolory ostrzeżenia i błędu palety.
-// Rdzeń nie daje jeszcze czatu przez D-Bus: wtedy spokojne „jeszcze niedostępny w rdzeniu”; wiersze to ListModel
-// z CoreSource (Stream.chatLine z komunikatów w kształcie WebSocketu rdzenia; append i remove(0), bez przebudowy
-// listy), więc po dodaniu GetChat i sygnału Chat widok się nie zmienia. Bez PlasmoidItem (podgląd w
+// Brak API D-Bus i brak połączenia Twitch mają osobne komunikaty; wiersze to ListModel
+// z CoreSource (Stream.chatLine z komunikatów w kształcie WebSocketu rdzenia; append i remove(0)). Bez PlasmoidItem (podgląd w
 // widgets/preview_stream.py).
 import QtQuick
 import QtQuick.Layouts
@@ -12,10 +11,13 @@ import "stream.js" as Stream
 Rectangle {
     id: chat
 
-    property var model: null              // ListModel {kind, id, user, text} z CoreSource.chatModel
+    property var model: null              // ListModel {kind, id, user, user_id, text} z CoreSource.chatModel
     property bool available: false
     property bool coreUp: false
+    property var twitch: null
     property real messagePointSize: Tokens.fontSizePt * 1.5
+    readonly property string twitchState: twitch && twitch.state ? String(twitch.state) : ""
+    readonly property string sourceNote: Stream.twitchNote(twitch, available, coreUp)
 
     // Pastele palety na nicki, bez kolorów ostrzeżenia i błędu (semantic neutral i negative).
     readonly property var nickTints: Stream.nickTints(
@@ -52,9 +54,21 @@ Rectangle {
             }
         }
 
+        Text {
+            objectName: "twitchConnectionNote"
+            visible: chat.available && chat.model && chat.model.count > 0 && chat.twitchState !== "connected"
+            Layout.fillWidth: true
+            text: chat.sourceNote
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: Tokens.textMuted
+            font.family: Theme.uiFamily
+            font.pointSize: Tokens.fontSizePt
+        }
+
         // Najnowsze na dole: krótka lista przylega do dołu, dłuższa trzyma się końca, dopóki nie przewiniesz jej w górę.
         Item {
-            visible: chat.available
+            visible: chat.available && chat.model && chat.model.count > 0
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
@@ -126,7 +140,7 @@ Rectangle {
         }
 
         Item {
-            visible: !chat.available
+            visible: !chat.available || !chat.model || chat.model.count === 0
             Layout.fillWidth: true
             Layout.fillHeight: true
             Column {
@@ -137,18 +151,18 @@ Rectangle {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.Wrap
-                    text: chat.coreUp ? Stream.UNAVAILABLE.chat : "Rdzeń Streamer nie działa"
+                    text: chat.sourceNote
                     textFormat: Text.PlainText
                     color: chat.coreUp ? Tokens.textMuted : Tokens.neutral
                     font.family: Theme.uiFamily
                     font.pointSize: Tokens.fontSizePt + 2
                 }
                 Text {
-                    visible: chat.coreUp
+                    visible: chat.coreUp && !chat.available
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.Wrap
-                    text: "Wiadomości i alerty pojawią się tutaj, gdy rdzeń zacznie je wysyłać przez D-Bus."
+                    text: "Wiadomości i alerty pojawią się tutaj po aktualizacji rdzenia."
                     textFormat: Text.PlainText
                     color: Tokens.textMuted
                     font.family: Theme.uiFamily

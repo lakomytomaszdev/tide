@@ -305,6 +305,22 @@ var UNAVAILABLE = {
     chat: "Czat Twitcha: jeszcze niedostępny w rdzeniu"
 }
 
+// Stan źródła czatu: GetChat oznacza tylko dostępne API D-Bus, nie połączenie z Twitchem.
+function twitchNote(twitch, available, coreUp) {
+    if (!coreUp) return "Rdzeń Streamer nie działa"
+    if (!available) return UNAVAILABLE.chat
+    const source = obj(twitch)
+    if (source.state === "connected") return "Czekam na wiadomości i alerty z Twitcha…"
+    if (source.reason) return String(source.reason)
+    switch (source.state) {
+    case "setup_required": return "Twitch nie jest skonfigurowany w rdzeniu"
+    case "authorization_required": return "Konto Twitch wymaga autoryzacji"
+    case "reconnecting": return "Łączę ponownie z Twitchem…"
+    case "partial": return "Część zdarzeń Twitch jest niedostępna"
+    default: return "Twitch nie jest jeszcze połączony"
+    }
+}
+
 // Sceny pełnoekranowe z generatora scen streamer (scenes/scenes.json, moduł `screen` w stylu starting, brb
 // i ended; start_scene i brb_scene w core.py mają te same nazwy) — rodzaj sceny, gdy `core.mode_scenes` poda
 // same nazwy. `kind` z rdzenia ma pierwszeństwo.
@@ -395,10 +411,12 @@ function chatLine(e) {
     if (e.type === "chat" && e.message) {
         const m = e.message
         return { kind: "chat", id: String(m.id || "chat-" + lineCounter), user: String(m.user || ""),
+                 user_id: String(m.user_id || ""),
                  text: String(m.text || "") }
     }
     if (e.type === "alert" && e.alert)
-        return { kind: "alert", id: "alert-" + lineCounter, user: String(e.alert.user || ""), text: alertText(e.alert) }
+        return { kind: "alert", id: "alert-" + lineCounter, user: String(e.alert.user || ""),
+                 user_id: "", text: alertText(e.alert) }
     return null
 }
 
@@ -539,16 +557,26 @@ function deskToggle(view, coreUp, override, target, memory) {
 // - `core.player_stats` {profil: {rank, rank_name, rating, win_rate, form, last_played (s)}} — przegląd kont;
 // - `core.recent_matches` {profile, games: [{game_id, result: win|loss, civ_name, opponent, opponent_civ_name, map,
 //   rating_change}]} — ostatnie mecze aktywnego profilu;
-// - `core.today` {date, games, wins, losses, rating_change: {profil: liczba}} — bilans dnia.
+// - `core.today` {date, profile, games, wins, losses, rating_change: {profil: liczba}} — bilans dnia.
 var GAMING_UNAVAILABLE = {
     stats: "Ranga, rating i forma profili graczy: jeszcze niedostępne w rdzeniu",
     recent: "Ostatnie mecze: jeszcze niedostępne w rdzeniu",
     today: "Bilans dnia: jeszcze niedostępny w rdzeniu",
-    matchPc: "Mecz w trybie PC: jeszcze niedostępny w rdzeniu"
+    matchPc: "Tryb PC służy do castowania — tu nie śledzimy meczu gracza"
 }
 
 function coreNote(s) {
     return s.core === "down" ? "Rdzeń nie działa" : "Czytam stan rdzenia…"
+}
+
+function gamingSource(view, key) {
+    const core = obj(obj(view).core)
+    if (!("gaming_data_error" in core)) return null
+    const errors = obj(core.gaming_data_error)
+    if (key === "profiles" && Array.isArray(errors.profiles) && errors.profiles.length)
+        return "Brak danych AoE4 World dla: " + errors.profiles.join(", ")
+    if (key === "history" && errors.history) return String(errors.history)
+    return "Pobieram dane z AoE4 World…"
 }
 
 function rankName(p) {
@@ -616,8 +644,10 @@ function accounts(view, coreUp, now) {
         const detail = p.detail.toLowerCase() === p.title.toLowerCase() ? "" : p.detail
         return Object.assign({}, p, { detail: detail, line: line, form: form })
     })
+    const source = gamingSource(view, "profiles")
     const note = items.length === 0 ? "Rdzeń nie podał profili graczy"
-        : stats && typeof stats === "object" ? "" : GAMING_UNAVAILABLE.stats
+        : source && source.indexOf("Brak danych") === 0 ? source
+        : stats && typeof stats === "object" ? "" : source || GAMING_UNAVAILABLE.stats
     return { items: items, note: note }
 }
 
@@ -678,10 +708,14 @@ function recentMatches(view, coreUp) {
     if (s.profile) out.title += " · " + s.profile
     const recent = view.core.recent_matches
     if (!recent || typeof recent !== "object") {
-        out.note = GAMING_UNAVAILABLE.recent
+        out.note = gamingSource(view, "history") || GAMING_UNAVAILABLE.recent
         return out
     }
-    const games = recent.profile === s.profile && Array.isArray(recent.games) ? recent.games : []
+    if (recent.profile !== s.profile) {
+        out.note = "Odświeżam ostatnie mecze aktywnego profilu…"
+        return out
+    }
+    const games = Array.isArray(recent.games) ? recent.games : []
     out.items = games.map(g => ({
         result: g.result === "win" ? "W" : g.result === "loss" ? "L" : "—",
         tint: g.result === "win" ? "positive" : g.result === "loss" ? "negative" : "textMuted",
@@ -701,8 +735,8 @@ function plural(n, one, few, many) {
     return d >= 2 && d <= 4 && (h < 12 || h > 14) ? few : many
 }
 
-// Bilans dnia: {available, games, wins, losses, rating, note}.
-function today(view, coreUp) {
+// Bilans dnia: {available, games, wins, losses, rating, note}; date — dzisiejsza data w Polsce do testów.
+function today(view, coreUp, date) {
     const s = status(view, coreUp)
     const out = { available: false, games: "", wins: "", losses: "", rating: "", note: "" }
     if (s.core !== "up") {
@@ -711,7 +745,19 @@ function today(view, coreUp) {
     }
     const t = view.core.today
     if (!t || typeof t !== "object") {
-        out.note = GAMING_UNAVAILABLE.today
+        out.note = gamingSource(view, "history") || GAMING_UNAVAILABLE.today
+        return out
+    }
+    if (t.profile !== s.profile) {
+        out.note = "Odświeżam bilans aktywnego profilu…"
+        return out
+    }
+    if (t.date !== (date || Qt.formatDate(new Date(), "yyyy-MM-dd"))) {
+        out.note = "Odświeżam bilans dzisiejszego dnia…"
+        return out
+    }
+    if (typeof t.games !== "number" || typeof t.wins !== "number" || typeof t.losses !== "number") {
+        out.note = "Bilans dnia chwilowo niedostępny"
         return out
     }
     const games = Number(t.games) || 0
