@@ -203,7 +203,7 @@ class FlowEngine(PlanEditing):
             return self.start_import(card_id, request)
         if request.get("entry") == "plan":
             return self.propose_plan(card_id, str(request.get("planPath") or ""))
-        if request.get("entry") == "planning" and request.get("mode") == "light":
+        if request.get("entry") == "planning" and request.get("mode") in ("full", "light"):
             return self.start_planning(card_id, request)
         if (request.get("entry") or "") != "now":
             raise FlowError("bad-request", "w przepływie karty działa na razie wejście „Od razu” (entry: now)")
@@ -441,6 +441,11 @@ class FlowEngine(PlanEditing):
                                          probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
+        mode = str(request.get("mode") or "")
+        if mode not in ("full", "light"):
+            raise FlowError("bad-request", "tryb planowania musi być Pełny albo Lekki")
+        if mode == "full" and (self.terminal is None or not self.terminal.available()):
+            raise FlowError("no-terminal", "nie znaleziono Konsoli")
         preferred = str(request.get("preferredProvider") or selected.provider)
         if preferred not in ("mixed", "local") and not catalog.known_provider(preferred):
             raise FlowError("unknown-provider", "nieznany preferowany dostawca")
@@ -460,7 +465,7 @@ class FlowEngine(PlanEditing):
                 prefix = reservations.reserve(project.repo, dry_run=True)["prefix"]
             except reservations.ReservationError as exc:
                 raise FlowError("no-ticket-number", str(exc)) from None
-        self.journal.append(card_id, "card.started", entry="planning", mode="light", repo=project.repo,
+        self.journal.append(card_id, "card.started", entry="planning", mode=mode, repo=project.repo,
                             project=project.slug, column=item.column, moveId=item.move_id,
                             executor=selected.name, program=selected.tool, model=selected.model,
                             provider=selected.provider, preferredProvider=preferred, prefix=prefix,
@@ -475,6 +480,7 @@ class FlowEngine(PlanEditing):
         self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
         st = fold(self.journal.read(card_id))
         return {"ok": True, "id": card_id, "step": st.last_step, "executor": selected.name,
+                "interactive": mode == "full",
                 "cardBranch": ticket_of(st)["cardBranch"], "cardWorktree": ticket_of(st)["cardWorktree"]}
 
     def _planning_launch(self, card, st, selected, catalog, *, errors=(), previous="", images=(), round_no=0):
@@ -500,15 +506,85 @@ class FlowEngine(PlanEditing):
                                           tracker_url=st.started.get("trackerUrl") or "",
                                           tracker_project=project.youtrack or "")
         else:
-            text = planning.prompt(card=item, project=project, catalog=catalog,
-                                   preferred=st.started["preferredProvider"], assignment_rules=st.started["assignmentRules"],
-                                   prefix=st.started["prefix"], out_dir=out, errors=errors, previous=previous,
-                                   tool=selected.tool, images=shots,
-                                   tracker="youtrack" if project.youtrack else "local",
-                                   tracker_url=st.started.get("trackerUrl") or "",
-                                   tracker_project=project.youtrack or "")
+            prompt_fn = planning.full_prompt if st.started.get("mode") == "full" and not round_no else planning.prompt
+            args = dict(card=item, project=project, catalog=catalog,
+                        preferred=st.started["preferredProvider"], assignment_rules=st.started["assignmentRules"],
+                        prefix=st.started["prefix"], out_dir=out, tool=selected.tool, images=shots,
+                        tracker="youtrack" if project.youtrack else "local",
+                        tracker_url=st.started.get("trackerUrl") or "",
+                        tracker_project=project.youtrack or "")
+            if prompt_fn is planning.prompt:
+                args.update(errors=errors, previous=previous)
+            text = prompt_fn(**args)
+        if st.started.get("mode") == "full" and kind == "planning":
+            self._launch_full_planning(item, project, selected, made, step_id, list(images), shots, text)
+            return
         self._launch(item, project, selected, "", made, made, step_id, list(images), kind=kind,
                      round_no=round_no, prompt_text=text)
+
+    def _launch_full_planning(self, item, project, selected, made, step_id, images, shots, prompt):
+        """Pierwsze planowanie Pełne: jedna karta Konsoli z plikiem wyniku obserwowanym przez silnik."""
+        worktree = made["worktree"]
+        step_dir = worktree + f".planning-{step_id}.step"
+        out = os.path.join(step_dir, "out")
+        inp = os.path.join(step_dir, "in")
+        os.makedirs(out, mode=0o700, exist_ok=True)
+        os.makedirs(inp, mode=0o700, exist_ok=True)
+        for source, target in zip(images, shots):
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copyfile(source, target)
+        board = self.store.load()
+        extra_repos = [board.projects[slug].repo for slug in item.projects
+                       if slug in board.projects and board.projects[slug].repo and
+                       not board.projects[slug].repo_missing]
+        if extra_repos:
+            prompt += "\nDodatkowe projekty karty (czytaj jako kontekst):\n" + "\n".join(extra_repos)
+        session = str(uuid.uuid4()) if selected.tool == "claude" else ""
+        command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots,
+                                       [out, *extra_repos], selected.route)
+        if selected.route is None:
+            options = ["--model", selected.model]
+            if selected.tool == "codex" and selected.effort:
+                options += ["-c", f'model_reasoning_effort="{selected.effort}"']
+            command.argv[1:1] = options
+        if session:
+            command.argv.insert(1, "--session-id")
+            command.argv.insert(2, session)
+        closed = os.path.join(inp, "console-closed.json")
+        process_file = os.path.join(inp, "console-process.json")
+        claim_dir = os.path.join(inp, "console-claim")
+        os.makedirs(claim_dir, mode=0o700, exist_ok=True)
+        console_unit = "tide-console-" + uuid.uuid4().hex
+        payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
+                   "title": f"{item.id} · planowanie Pełne", "closedFile": closed,
+                   "processFile": process_file, "consoleUnit": console_unit,
+                   "systemdRun": self.systemd_run or agentcmd.SYSTEMD_RUN,
+                   "systemctl": self.which("systemctl") or "/usr/bin/systemctl"}
+        payload.update(command.task_fields())
+        task_file = self.task_files.write(payload)
+        self.journal.append(item.id, "step.started", step=step_id, kind="planning", ticket="", round=0,
+                            executor=selected.name, program=selected.tool, model=selected.model,
+                            provider=selected.provider, local=selected.local, effort=selected.effort,
+                            unit="", session=session, worktree=worktree, branch=made["branch"],
+                            stepDir=step_dir, repo=project.repo)
+        self.journal.append(item.id, "step.entered", step=step_id, session=session, source="",
+                            closeFile=closed, processFile=process_file, consoleUnit=console_unit,
+                            taskFile=task_file, enteredAt=self.clock())
+        plan = Plan(repo_path=project.repo, repo_name=project.name, tool=selected.tool, prompt=prompt,
+                    cwd=claim_dir, branch=made["branch"], title=payload["title"],
+                    argv=command.argv, task_file=task_file)
+        try:
+            opened = self.terminal.open(plan)
+        except Exception as exc:
+            print(f"tide-daemon: planowanie {item.id}: Konsola: {exc!r}", flush=True)
+            opened = ""
+        if not opened:
+            if self.task_files.cancel(task_file):
+                self.journal.append(item.id, "step.console_closed", step=step_id)
+                self._finish(item.id, fold(self.journal.read(item.id)).steps[step_id],
+                             forced={"result": "stopped", "reason": "interactive-closed",
+                                     "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
+            raise FlowError("no-terminal", "nie udało się otworzyć karty Konsoli")
 
     def _advance_planning(self, card: str, st: FlowState) -> bool:
         """Osobny etap karty; nie zakłada, że ostatni krok jest jedynym krokiem ticketów."""
@@ -537,6 +613,8 @@ class FlowEngine(PlanEditing):
                                         reason=done.get("reason") or "")
                 self._resume_step(card, fold(self.journal.read(card)), step, {"choice": "auto"}, attempt=1)
         elif result == "done":
+            if step.get("mode") == "interactive" and not step.get("consoleClosed"):
+                return True
             self._planning_result(card, st, step)
         return True
 

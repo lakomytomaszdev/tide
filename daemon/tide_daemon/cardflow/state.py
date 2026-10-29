@@ -505,7 +505,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
                 return _fill(out, "waiting", "propozycja planu wymaga poprawy")
             if not st.flow_error and done.get("result") not in ("question", "denied", "error", "stopped"):
                 if st.running() or not st.plan_checked:
-                    return _fill(out, "progress", "planowanie w tle")
+                    return _fill(out, "progress", "planowanie w Konsoli" if st.started.get("mode") == "full"
+                                 and step.get("kind") == "planning" else "planowanie w tle")
                 if int(step.get("round") or 0) < 2:
                     return _fill(out, "progress", "poprawa formatu planu w tle")
                 out["question"] = "Plan nadal ma błędny format po dwóch poprawach. Uruchomić planowanie ponownie?"

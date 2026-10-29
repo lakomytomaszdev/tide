@@ -268,11 +268,11 @@ Rectangle {
         }
     }
 
-    // Po zapisie opisu: „Od razu” — zlecenie w przepływie karty (/Board StartCard, krok w tle bez Konsoli),
-    // pozostałe wejścia — polecenie trybu i agent w Konsoli.
+    // Po zapisie opisu przepływ karty dostaje zlecenie przez /Board StartCard.
     function continueLaunch() {
         if (Logic.isFlowEntry(launchChoice.entry, launchChoice.mode)) {
-            launchDialog.busyText = "Zakładam gałąź karty i startuję krok w tle…"
+            launchDialog.busyText = launchChoice.entry === "planning" && launchChoice.mode === "full"
+                ? "Zakładam gałąź karty i otwieram Konsolę…" : "Zakładam gałąź karty i startuję krok w tle…"
             flowRequested(nextTag("launch-flow:" + launchCardId), launchCardId,
                           JSON.stringify(Logic.startCardRequest(launchChoice, launchChoice.images)))
         } else {
@@ -320,13 +320,16 @@ Rectangle {
             if (launchChoice.entry === "plan") {
                 launchToast = "Plan przejęty do karty " + launchCardId + "; trwa sprawdzenie i przygotowanie do zatwierdzenia"
             } else if (launchChoice.entry === "planning") {
-                launchToast = (reply.queued ? "Planowanie czeka na wolne miejsce: karta "
-                                            : "Ruszyło planowanie w tle karty ") + launchCardId
+                launchToast = launchChoice.mode === "full"
+                    ? "Planowanie Pełne karty " + launchCardId + " ruszyło w Konsoli"
+                    : (reply.queued ? "Planowanie czeka na wolne miejsce: karta "
+                                    : "Ruszyło planowanie w tle karty ") + launchCardId
             } else {
                 launchToast = (reply.queued ? "Krok czeka na wolne miejsce: " : "Ruszył krok w tle: ")
                               + (reply.ticket || "ticket") + " karty " + launchCardId
             }
-            if (launchChoice.entry !== "plan") launchToast += " — " + (reply.executor || launchChoice.executor) + ", bez Konsoli"
+            if (launchChoice.entry !== "plan" && !(launchChoice.entry === "planning" && launchChoice.mode === "full"))
+                launchToast += " — " + (reply.executor || launchChoice.executor) + ", bez Konsoli"
             closeLaunch(true)
             showToast(launchToast, "mint")
         } else if (tag.indexOf("launch-render:") === 0) {
