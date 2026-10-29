@@ -228,13 +228,25 @@ class NowTest(FlowCase):
         self.assertEqual((again["ok"], again["error"]), (False, "flow-active"), again)
         self.assertEqual(len(self.of(card_id, "card.started")), 1)
 
-    def test_only_claude_executors_from_the_catalog(self):
+    def test_unknown_or_unconfigured_local_executor_is_refused(self):
         card_id = self.card()
-        for name, code in (("Nieznany", "unknown-executor"), ("Codex standard", "unsupported-executor")):
+        for name, code in (("Nieznany", "unknown-executor"), ("Lokalny", "local-unavailable")):
             reply = self.start(card_id, executor=name)
             self.assertEqual((reply["ok"], reply["error"]), (False, code), reply)
         self.assertEqual(self.events(card_id), [])
         self.assertEqual(git(self.repo, "branch", "--format=%(refname:short)").split(), ["master"])
+
+    def test_codex_executor_works_through_start_card(self):
+        card_id = self.card()
+        reply = self.start(card_id, executor="Codex standard", preferredProvider="openai")
+        self.assertTrue(reply["ok"], reply)
+        self.wait_column(card_id, "review")
+        step = self.of(card_id, "step.started")[0]
+        self.assertEqual((step["executor"], step["program"], step["model"]),
+                         ("Codex standard", "codex", "gpt-6.1-sol"))
+        with open(os.path.join(step["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            call = json.load(fh)
+        self.assertIn('model_reasoning_effort="medium"', call["argv"])
 
     def test_missing_result_file_is_a_step_error(self):
         card_id = self.card(description="ATRAPA: bez-wyniku")

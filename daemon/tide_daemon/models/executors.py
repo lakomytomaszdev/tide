@@ -368,7 +368,8 @@ def _pick_local(ctx: Context, pool: list, provider: str, klass: str, empty: str)
         if not reason:
             return Resolution(True, ctx.resolved(e), provider=provider, klass=klass, local=True)
         reasons.append(reason)
-    return Resolution(False, error=f"{reasons[0].capitalize()}. Praca lokalna nie przejdzie do chmury.",
+    reason = reasons[0]
+    return Resolution(False, error=f"{reason[:1].upper() + reason[1:]}. Praca lokalna nie przejdzie do chmury.",
                       provider=provider, klass=klass, local=True)
 
 
@@ -434,6 +435,10 @@ def reviewer(ctx: Context, provider: str, klass: str, author: str) -> Resolution
     else:
         pool = [e for e in others if e.provider == provider]
         label = f"u dostawcy {BUILTIN_PROVIDERS.get(provider) or ctx.catalog.providers[provider].label}"
+    if provider == "openai" and klass == "mocny" and who.name == "Codex mocny":
+        astra = next((e for e in pool if e.name == "Codex Astra"), None)
+        if astra is not None:
+            return Resolution(True, ctx.resolved(astra), provider=provider, klass=klass)
     pool.sort(key=lambda e: _strength(klass, e))
     if not pool:
         return Resolution(False, error=f"brak recenzenta innego niż autor {label}", provider=provider, klass=klass)

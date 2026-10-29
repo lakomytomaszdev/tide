@@ -255,7 +255,7 @@ class BoardStore:
         Katalog dokumentów w tablicy (`ai-docs: tide`) zakładamy od razu — agent dostaje go przez
         --add-dir. Szablon `flows/<tryb>.md`, który jest nietkniętym dawnym zaczynem, zastępuje
         wbudowana treść (migrate_flows podmieni plik przy najbliższej okazji)."""
-        data = _fields(request or {}, ("entry", "mode", "tool", "branch", "check"))
+        data = _fields(request or {}, ("entry", "mode", "tool", "branch", "check", "preferredProvider"))
         board = self.load()
         card = self._card(board, card_num(card_id))
         project = board.projects.get(card.project)
@@ -268,6 +268,10 @@ class BoardStore:
         check = _text(data.get("check"), "check").strip().lower() or "auto"
         if check not in flows.CHECKS:
             raise BoardError(f"nieznany sposób sprawdzenia „{check}” (auto, manual)")
+        preferred = _text(data.get("preferredProvider"), "preferredProvider").strip() or "anthropic"
+        from ..models import config as models_config
+        if preferred not in ("mixed", "local") and not models_config.load().catalog.known_provider(preferred):
+            raise BoardError(f"nieznany preferowany dostawca „{preferred}”")
         template, source = None, "builtin"
         candidates = ([os.path.join("flows", project.slug, f"{flow_key}.md")] if project else []) + \
             [os.path.join("flows", f"{flow_key}.md")]
@@ -309,11 +313,15 @@ class BoardStore:
                   "check_label": flows.CHECK_LABELS[check], "finish": flows.finish_text(check, docs_ref)}
         values["spec_commit"] = flows.spec_commit_text(in_board, card.id, values["spec_file"])
         values["projects"] = flows.projects_text(extra_repos, flow_key, branch, values["repo"], docs_ref)
+        rendered = flows.render(template, values)
+        if entry == "planning" and data.get("preferredProvider"):
+            rendered += f"\n\nPreferowany dostawca wykonawców: {preferred}. Dobieraj wykonawców według klas z katalogu Tide.\n"
         return {"ok": True, "id": card.id, "entry": entry, "mode": mode, "tool": tool, "branch": branch, "check": check,
+                "preferredProvider": preferred,
                 "docsDir": docs,
                 "aiDocs": ai_docs, "repo": values["repo"], "repoMissing": bool(project and project.repo_missing),
                 "project": card.project, "projectName": values["project"], "template": source,
-                "specFile": os.path.join(docs, "specs", spec_name(card)), "text": flows.render(template, values),
+                "specFile": os.path.join(docs, "specs", spec_name(card)), "text": rendered,
                 "projects": [p.slug for p in extra], "extraRepos": [repo for _name, repo in extra_repos],
                 "addDirs": add_dirs}
 

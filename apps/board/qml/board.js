@@ -548,17 +548,37 @@ var LAUNCH_ENTRIES = [
       meta: "wybierasz wykonawcę", modes: false, flow: true, steps: ["Ticket w tle", "Gałąź karty", "Do sprawdzenia"] }
 ]
 
-// Wykonawcy kroku „Od razu” z katalogu (Status() /Models: executors.list) — dziś tylko Claude w chmurze; zanim
-// przyjdzie Status() (albo usługa go nie podaje), domyślni wykonawcy Claude z katalogu usługi.
+// Wykonawcy kroku „Od razu” z katalogu Status() /Models. Zanim przyjdzie stan usługi, pokazujemy
+// domyślną grupę Anthropic; po odczycie wybór może obejmować Codex, lokalny i innych dostawców.
 var NOW_EXECUTORS = ["Haiku", "Sonnet", "Opus"]
 var NOW_DEFAULT = "Sonnet"
 
-function launchExecutors(status) {
-    const list = status && status.executors && Array.isArray(status.executors.list) ? status.executors.list : null
-    const names = list ? list.filter(e => e && e.program === "claude" && e.provider === "anthropic" && !e.local && e.model)
-                             .map(e => String(e.name))
-                       : NOW_EXECUTORS
-    return names.map(name => ({ value: name, label: name }))
+function launchExecutorList(status) {
+    if (status && Array.isArray(status.executors)) return status.executors
+    if (status && status.executors && Array.isArray(status.executors.list)) return status.executors.list
+    return NOW_EXECUTORS.map(name => ({ name: name, program: "claude", provider: "anthropic", model: name.toLowerCase() }))
+}
+
+function preferredProviders(status) {
+    const known = status && status.providers && typeof status.providers === "object" ? status.providers : ({})
+    const base = [
+        { value: "anthropic", label: "Anthropic" }, { value: "openai", label: "OpenAI" },
+        { value: "local", label: "Tylko lokalnie" }, { value: "mixed", label: "Mieszany" }
+    ]
+    return base.concat(Object.keys(known).filter(name => !["anthropic", "openai", "local", "mixed"].includes(name))
+        .map(name => ({ value: name, label: String(known[name].label || name) })))
+}
+
+function launchExecutors(status, provider) {
+    const wanted = provider || "anthropic"
+    return launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
+        (wanted === "mixed" || e.provider === wanted))
+        .map(e => ({ value: String(e.name), label: String(e.name), disabled: e.available === false,
+                      hint: e.error || "" }))
+}
+
+function launchExecutor(status, name) {
+    return launchExecutorList(status).find(e => e && e.name === name) || null
 }
 
 function defaultExecutor(options) {
@@ -572,7 +592,8 @@ function isFlowEntry(id) {
 
 // Prośba /Board StartCard z okna („Od razu”): wejście, wykonawca i zrzuty z katalogu zadań.
 function startCardRequest(state, images) {
-    return { entry: state.entry, executor: state.executor, check: state.check, images: (images || []).slice() }
+    return { entry: state.entry, executor: state.executor, preferredProvider: state.preferredProvider,
+             check: state.check, images: (images || []).slice() }
 }
 
 // Tryby Planowania z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.

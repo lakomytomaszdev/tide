@@ -121,6 +121,7 @@ class ResolveTest(unittest.TestCase):
                 self.assertNotEqual(review.executor["model"], ctx.resolved(ctx.catalog.get(author))["model"])
                 self.assertEqual(review.executor["provider"], provider)
         self.assertEqual(ex.reviewer(ctx, "anthropic", "mocny", "Opus").executor["name"], "Sonnet")
+        self.assertEqual(ex.reviewer(ctx, "openai", "mocny", "Codex mocny").executor["name"], "Codex Astra")
 
     def test_mixed_reviewer_is_from_another_provider(self):
         ctx = self.ctx()

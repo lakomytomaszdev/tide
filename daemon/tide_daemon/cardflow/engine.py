@@ -37,6 +37,7 @@ from ..coordination import reservations
 from ..tasks import agentcmd, stepstop
 from ..worktrees.naming import slug_from_prompt
 from . import handoff
+from . import execution
 from .gitops import FlowGit, FlowGitError, worktree_for
 from .journal import Journal
 from .state import FlowState, derived, fold, ticket_of
@@ -46,7 +47,7 @@ SETTINGS_FILE = "cardflow.json"
 RESULTS = ("done", "question", "denied", "error")
 OUTPUT_MAX = 256 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
-REQUEST_FIELDS = ("entry", "executor", "images", "check")
+REQUEST_FIELDS = ("entry", "executor", "images", "check", "preferredProvider")
 
 
 class FlowError(Exception):
@@ -75,7 +76,8 @@ def guard_seconds(path: str) -> float:
 
 class FlowEngine:
     def __init__(self, store, journal: Journal | None = None, *, claude_projects: str = "",
-                 systemd_run: str = "", catalog=None, tmp_root: str | None = None, settings: str | None = None,
+                 systemd_run: str = "", catalog=None, models_config=None, model_probe=None,
+                 tmp_root: str | None = None, settings: str | None = None,
                  flow_git: FlowGit | None = None, clock=time.time, which=shutil.which, grace: float = 10.0,
                  guard_every: float = 30.0):
         self.store = store
@@ -83,6 +85,8 @@ class FlowEngine:
         self.claude_projects = claude_projects
         self.systemd_run = systemd_run
         self.catalog = catalog            # funkcja() → models.executors.Catalog
+        self.models_config = models_config  # funkcja() → ModelsConfig (lokalny i inni dostawcy)
+        self.model_probe = model_probe      # funkcja(endpoint) → stan punktu lokalnego
         self.tmp_root = tmp_root or tempfile.gettempdir()
         self.settings = settings or settings_path()
         self.git = flow_git or FlowGit()
@@ -155,16 +159,19 @@ class FlowEngine:
             raise FlowError("unsupported-tracker", "„Od razu” w projekcie z YouTrackiem jeszcze nie działa "
                                                    "(zgłoszenia przy zleceniu — osobny ticket)")
         name = str(request.get("executor") or "").strip()
-        catalog = self.catalog() if self.catalog else None
-        executor = catalog.get(name) if catalog is not None else None
-        if executor is None:
-            raise FlowError("unknown-executor", f"nie ma wykonawcy „{name}” w katalogu wykonawców")
-        if executor.program != "claude" or executor.provider != "anthropic" or not executor.model:
-            raise FlowError("unsupported-executor", f"„{name}”: krok w tle umie na razie tylko Claude w chmurze "
-                                                    "(Codex i modele lokalne — osobny ticket)")
-        binary = self.which("claude")
-        if not binary:
-            raise FlowError("no-program", "nie znaleziono programu claude")
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None:
+            raise FlowError("unknown-executor", "katalog wykonawców jest niedostępny")
+        preferred = str(request.get("preferredProvider") or "").strip()
+        if preferred and preferred not in ("mixed", "local") and not catalog.known_provider(preferred):
+            raise FlowError("unknown-provider", f"nie ma dostawcy „{preferred}” w katalogu")
+        try:
+            selected = execution.resolve(name, catalog, config=cfg, probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        if preferred and preferred != "mixed" and selected.provider != preferred:
+            raise FlowError("provider-mismatch", f"„{name}” należy do dostawcy {selected.provider}, nie {preferred}")
         check = str(request.get("check") or card.check or "auto").strip().lower()
         if check not in ("auto", "manual"):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
@@ -180,8 +187,9 @@ class FlowEngine:
         if not main:
             raise FlowError("no-base", f"{project.repo}: nie ma gałęzi głównej (master, main, develop)")
 
-        started = self.journal.append(card.id, "card.started", entry="now", executor=executor.name,
-                                      program="claude", model=executor.model, check=check,
+        started = self.journal.append(card.id, "card.started", entry="now", executor=selected.name,
+                                      program=selected.tool, model=selected.model, provider=selected.provider,
+                                      preferredProvider=preferred or selected.provider, check=check,
                                       repo=project.repo, project=project.slug, column=card.column,
                                       moveId=card.move_id)
         launch = f"launch-{started['seq']}"
@@ -204,10 +212,10 @@ class FlowEngine:
             repo=project.repo, branch=ticket_branch, worktree=ticket_worktree,
             base=f"refs/heads/{card_branch}", ticket=ticket)
         step_id = f"{card.id}-{ticket}-{1 + sum(1 for s in st.steps.values() if s.get('ticket') == ticket)}"
-        step = self._launch(card, project, executor, binary, ticket, made, made_ticket, step_id, images)
+        step = self._launch(card, project, selected, ticket, made, made_ticket, step_id, images)
         return {"ok": True, "id": card.id, "ticket": ticket, "branch": made_ticket["branch"],
                 "worktree": made_ticket["worktree"], "cardBranch": made["branch"], "cardWorktree": made["worktree"],
-                "step": step_id, "session": step["session"], "executor": executor.name}
+                "step": step_id, "session": step["session"], "executor": selected.name}
 
     def _reserve(self, repo: str, title: str, request_key: str) -> dict:
         got = reservations.reserve(repo, count=1, title=title, request_key=request_key)
@@ -226,7 +234,7 @@ class FlowEngine:
             out.append(real)
         return out
 
-    def _launch(self, card, project, executor, binary, ticket, made, made_ticket, step_id, images) -> dict:
+    def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images) -> dict:
         worktree = made_ticket["worktree"]
         step_dir = worktree + ".step"
         out = os.path.join(step_dir, "out")
@@ -234,14 +242,16 @@ class FlowEngine:
         prompt = handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
                                      project=project.name, ticket=ticket, branch=made_ticket["branch"],
                                      card_branch=made["branch"], worktree=worktree, out_dir=out, images=shots)
-        session = str(uuid.uuid4())
+        session = str(uuid.uuid4()) if selected.tool == "claude" else ""
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
         self._hidden = (ids | {session}, tuple(sorted(set(places) | {os.path.realpath(worktree)})))
 
         def launch() -> dict:
             bg = agentcmd.background(agentcmd.Step(
-                tool="claude", binary=binary, prompt=prompt, worktree=worktree, repo=project.repo, step_dir=step_dir,
-                step_id=step_id, session_id=session, model=executor.model, permission_mode="acceptEdits",
+                tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
+                step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
+                local=selected.route, effort=selected.effort,
+                permission_mode="acceptEdits" if selected.tool == "claude" else "",
                 tmp_root=self.tmp_root))
             bg.prepare()
             for source, target in zip(images, shots):
@@ -257,7 +267,8 @@ class FlowEngine:
         except (agentcmd.StepError, OSError) as exc:
             raise FlowError("step", f"krok nie wystartował: {exc}") from None
         return self.journal.append(card.id, "step.started", step=step_id, kind="ticket", ticket=ticket,
-                                   executor=executor.name, program="claude", model=executor.model,
+                                   executor=selected.name, program=selected.tool, model=selected.model,
+                                   provider=selected.provider, local=selected.local,
                                    unit=begun["unit"], session=session, worktree=worktree,
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
                                    repo=project.repo)
@@ -418,6 +429,8 @@ class FlowEngine:
             self.journal.append(card, "step.started", step=key, kind="ticket", ticket=ticket["id"],
                                 executor=(st.started or {}).get("executor") or "",
                                 program=(st.started or {}).get("program") or "claude",
+                                provider=(st.started or {}).get("provider") or "anthropic",
+                                local=(st.started or {}).get("provider") == "local",
                                 model=(st.started or {}).get("model") or "", unit=result.get("unit") or intent.get("unit") or "",
                                 session=intent.get("session") or "", worktree=intent.get("worktree") or "",
                                 branch=ticket["branch"], stepDir=intent.get("stepDir") or "",
@@ -478,7 +491,8 @@ class FlowEngine:
                 except OSError:
                     continue
                 count, size, newest = count + 1, size + st.st_size, max(newest, st.st_mtime_ns)
-        log = stepstop.find_claude_log(self.claude_projects, step.get("session") or "")
+        log = (stepstop.find_claude_log(self.claude_projects, step.get("session") or "")
+               if step.get("program") == "claude" else os.path.join(step.get("stepDir") or "", "out", "step.log"))
         try:
             log_st = os.stat(log) if log else None
         except OSError:
@@ -489,7 +503,7 @@ class FlowEngine:
         stopped = stepstop.stop_step(self.procs.get(step.get("step") or ""), unit=step.get("unit") or "",
                                      worktree=step.get("worktree") or "", step_dir=step.get("stepDir") or "",
                                      repo=step.get("repo") or self._repo(card), git_dir=step.get("gitDir") or "",
-                                     branch=step.get("branch") or "", tool="claude",
+                                     branch=step.get("branch") or "", tool=step.get("program") or "claude",
                                      session_id=step.get("session") or "", claude_projects=self.claude_projects,
                                      grace=self.grace)
         wip = {"stopped": stopped.stopped, "committed": stopped.committed, "commit": stopped.commit,

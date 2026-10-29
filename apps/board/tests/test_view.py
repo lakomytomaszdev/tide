@@ -218,6 +218,14 @@ class LogicTest(unittest.TestCase):
                          [True, False, False])
         self.assertEqual(self.js("startCardRequest({entry: 'now', executor: 'Opus', check: 'manual'}, ['/t/1.png'])"),
                          {"entry": "now", "executor": "Opus", "check": "manual", "images": ["/t/1.png"]})
+        actual = json.dumps({"executors": EXECUTORS["list"], "providers": {"other": {"label": "Inny"}}})
+        self.assertEqual(self.js(f"launchExecutors({actual}, 'openai').map(o => o.value)"), ["Codex standard"])
+        self.assertEqual(self.js(f"launchExecutors({actual}, 'local').map(o => o.value)"), ["Lokalny"])
+        self.assertEqual(self.js(f"launchExecutors({actual}, 'mixed').length"), 5)
+        self.assertIn("other", self.js(f"preferredProviders({actual}).map(o => o.value)"))
+        self.assertEqual(self.js("startCardRequest({entry:'now', executor:'Codex standard', preferredProvider:'openai', check:'auto'}, [])"),
+                         {"entry": "now", "executor": "Codex standard", "preferredProvider": "openai",
+                          "check": "auto", "images": []})
         flow = "{id: 'K-1', column: 'todo', boardColumn: '%s', derived: {column: '%s', flow: {ticket: 'PT-1'}}}"
         for shown in ("progress", "waiting"):
             card = flow % (shown, shown)
@@ -1111,6 +1119,7 @@ out["toast"] = js("[page.toast, page.toastTone]")
         self.assertEqual(out["calls1"][2][1], "K-15")
         self.assertEqual(json.loads(out["calls1"][2][2]),
                          {"entry": "planning", "mode": "full", "tool": "claude", "check": "auto",
+                          "preferredProvider": "anthropic",
                           "branch": "claude/k-15-tryb-skupienia-wyciszone"})
         self.assertEqual(json.loads(out["calls1"][3][1]),
                          {"repoPath": "/home/user/DevWorkspace/plasma-tide", "tool": "claude", "prompt": "Karta K-15: polecenie",
@@ -1531,6 +1540,28 @@ class LaunchNowTest(ProbeCase):
     /Board StartCard (bez RenderLaunch, /Tasks Start i Konsoli); pracującą kartę z dziennikiem da się przeciągnąć
     do Backlogu (wstrzymanie) i do Gotowych (koniec)."""
 
+    def test_preferred_provider_filters_background_executors_in_dialog(self):
+        status = dict(models_status(), executors=EXECUTORS["list"])
+        out = self.probe(FIND_PY + f"""
+backend._models = {json.dumps(status, ensure_ascii=False)!r}
+backend.modelsChanged.emit()
+wait(50)
+js("page.openLaunch('K-15', false)")
+wait(100)
+out["providerVisible"] = js(FIND + "(page.launchDialog, 'launchPreferredProvider').visible")
+click(at(FIND + "(page.launchDialog, 'launchEntry-now')"))
+click(at(FIND + "(page.launchDialog, 'launchPreferredProvider-openai')"))
+wait(50)
+out["openai"] = [js("page.launchDialog.preferredProvider"),
+                 js("page.launchDialog.executorOptions.map(o => o.value)"), js("page.launchDialog.executor")]
+click(at(FIND + "(page.launchDialog, 'launchPreferredProvider-local')"))
+wait(50)
+out["local"] = [js("page.launchDialog.executorOptions.map(o => o.value)"), js("page.launchDialog.executor")]
+""")
+        self.assertTrue(out["providerVisible"])
+        self.assertEqual(out["openai"], ["openai", ["Codex standard"], "Codex standard"])
+        self.assertEqual(out["local"], [["Lokalny"], "Lokalny"])
+
     def test_now_entry_picks_a_claude_executor_and_sends_start_card(self):
         status = dict(models_status(), executors=EXECUTORS)
         out = self.probe(FIND_PY + f"""
@@ -1588,7 +1619,8 @@ out["toast"] = js("[page.toast, page.toastTone]")
         self.assertEqual([c[0] for c in out["second"]], ["StartCard", "MoveCard"])
         self.assertEqual(out["second"][0][1], "K-15")
         self.assertEqual(json.loads(out["second"][0][2]),
-                         {"entry": "now", "executor": "Opus", "check": "manual", "images": []})
+                         {"entry": "now", "executor": "Opus", "preferredProvider": "anthropic",
+                          "check": "manual", "images": []})
         self.assertEqual(out["second"][1], ["MoveCard", "K-15", "todo", -1], "karta z Backlogu idzie do kolejki")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")

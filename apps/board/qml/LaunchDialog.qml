@@ -56,13 +56,19 @@ Rectangle {
     // Wejście przepływu karty („Od razu”, PT-58): krok w tle z wykonawcą z katalogu zamiast modelu i narzędzia.
     readonly property bool flowEntry: Logic.isFlowEntry(entry)
     property string executor: ""
-    readonly property var executorOptions: Logic.launchExecutors(modelsStatus)
+    property string preferredProvider: "anthropic"
+    readonly property var providerOptions: Logic.preferredProviders(modelsStatus)
+    readonly property var executorOptions: Logic.launchExecutors(modelsStatus, preferredProvider)
+    readonly property var selectedExecutor: Logic.launchExecutor(modelsStatus, executor)
     // Program, który ruszy: przy „Lokalny” z Tide → Modele (agentProgram), w chmurze — przełącznik narzędzia;
-    // przy „Od razu” — Claude Code (wykonawcy kroku w tle to dziś tylko Claude).
-    readonly property string agentTool: flowEntry ? "claude" : AgentModel.agentTool(model, tool, localOption)
+    // przy „Od razu” — program wybranego wykonawcy z katalogu.
+    readonly property string agentTool: flowEntry ? (selectedExecutor ? selectedExecutor.program : "")
+                                                  : AgentModel.agentTool(model, tool, localOption)
     readonly property var tools: taskDefaults && taskDefaults.tools ? taskDefaults.tools : ({})
-    readonly property string modelBlocker: tools[agentTool] === false ? "Nie znaleziono programu " + Logic.launchToolName(agentTool) + " — zainstaluj go albo wybierz inny."
-        : flowEntry ? (executor === "" ? "Brak wykonawcy Claude w katalogu wykonawców (Tide → Modele)." : "")
+    readonly property string modelBlocker: flowEntry && executor === "" ? "Brak wykonawcy u wybranego dostawcy (Tide → Modele)."
+        : flowEntry && selectedExecutor && selectedExecutor.available === false
+          ? (selectedExecutor.error || "Wykonawca lokalny jest niedostępny.")
+        : tools[agentTool] === false ? "Nie znaleziono programu " + Logic.launchToolName(agentTool) + " — zainstaluj go albo wybierz inny."
         : model === "local" && !localOption.enabled
           ? (localOption.pending ? localOption.reason : "Model lokalny niedostępny: " + localOption.reason) : ""
     readonly property var card: cardId ? ((snapshot && snapshot.cards) || []).find(c => c.id === cardId) || null : null
@@ -73,7 +79,7 @@ Rectangle {
     readonly property string taskText: taskEdit.text
     readonly property var launchState: ({
         cardId: cardId, entry: entry, mode: mode, tool: agentTool, branch: branch, newWorktree: newWorktree,
-        executor: executor,
+        executor: executor, preferredProvider: preferredProvider,
         model: model === "local" ? "local" : "cloud", localModel: model === "local" ? localOption.model : "",
         images: images,
         check: manualCheck ? "manual" : "auto", aiDocs: workProject ? workProject.aiDocs : "",
@@ -789,7 +795,24 @@ Rectangle {
                             }
                         }
                     }
-                    // Wykonawca kroku „Od razu” (PT-58): Claude z katalogu wykonawców; recenzent dojdzie w PT-59.
+                    // Dostawca jest wspólnym wyborem dla planowania i kroku „Od razu”; wykonawcę wybiera się z
+                    // katalogu tego dostawcy. Tryb mieszany pokazuje cały katalog.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: dialog.entry !== "spec"
+                        spacing: 10
+                        FieldLabel { text: "Preferowany dostawca"; color: Tide.Tokens.textSecondary }
+                        Segmented {
+                            objectName: "launchPreferredProvider"
+                            options: dialog.providerOptions
+                            current: dialog.preferredProvider
+                            itemHeight: 30
+                            pixelSize: 12
+                            onPicked: value => dialog.preferredProvider = value
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    // Wykonawca kroku „Od razu” z katalogu wybranego dostawcy.
                     RowLayout {
                         Layout.fillWidth: true
                         visible: dialog.flowEntry
