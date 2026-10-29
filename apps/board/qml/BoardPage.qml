@@ -250,11 +250,14 @@ Rectangle {
         launchChoice = choice
         launchDialog.error = ""
         launchDialog.busy = true
-        if (descriptionChanged || choice.projectsChanged) {
+        const storedCard = (snapshot && snapshot.cards || []).find(c => c.id === launchCardId)
+        const planChanged = choice.entry === "plan" && choice.planPath !== ((storedCard || {}).planPath || "")
+        if (descriptionChanged || choice.projectsChanged || planChanged) {
             // Opis i dodatkowe projekty (PT-28; repozytorium spoza tablicy zakłada projekt) jednym zapisem.
             const request = {}
             if (descriptionChanged) request.description = description
             if (choice.projectsChanged) request.projects = choice.projects
+            if (planChanged) request.planPath = choice.planPath
             launchDescription = descriptionChanged ? description : launchDialog.loadedDescription
             launchDialog.busyText = "Zapisuję zadanie w karcie…"
             updateRequested(nextTag("launch-desc:" + launchCardId), launchCardId, JSON.stringify(request))
@@ -312,14 +315,16 @@ Rectangle {
                 optimistic = optimistic.concat([{ id: launchCardId, column: "todo", before: "", tag: moveTag }])
                 moveRequested(moveTag, launchCardId, "todo", -1)
             }
-            if (launchChoice.entry === "planning") {
+            if (launchChoice.entry === "plan") {
+                launchToast = "Plan przejęty do karty " + launchCardId + "; trwa sprawdzenie i przygotowanie do zatwierdzenia"
+            } else if (launchChoice.entry === "planning") {
                 launchToast = (reply.queued ? "Planowanie czeka na wolne miejsce: karta "
                                             : "Ruszyło planowanie w tle karty ") + launchCardId
             } else {
                 launchToast = (reply.queued ? "Krok czeka na wolne miejsce: " : "Ruszył krok w tle: ")
                               + (reply.ticket || "ticket") + " karty " + launchCardId
             }
-            launchToast += " — " + (reply.executor || launchChoice.executor) + ", bez Konsoli"
+            if (launchChoice.entry !== "plan") launchToast += " — " + (reply.executor || launchChoice.executor) + ", bez Konsoli"
             closeLaunch(true)
             showToast(launchToast, "mint")
         } else if (tag.indexOf("launch-render:") === 0) {
@@ -435,7 +440,17 @@ Rectangle {
     }
 
     // Nowa migawka: przeniesienie w locie już w niej jest (albo przepadło).
-    onSnapshotChanged: optimistic = []
+    onSnapshotChanged: {
+        optimistic = []
+        if (launchOpen && !launchDialog.busy) {
+            const c = (snapshot && snapshot.cards || []).find(card => card.id === launchCardId)
+            const exact = Logic.planCandidates(c).find(plan => plan.card === launchCardId)
+            if (exact && !launchDialog.planPath) {
+                launchDialog.planPath = exact.path
+                launchDialog.entry = "plan"
+            }
+        }
+    }
 
     // --- wyszukiwanie kart w kolumnach (fokus, przewijanie) ---------------------------------
 

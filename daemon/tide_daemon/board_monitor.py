@@ -83,6 +83,7 @@ class BoardMonitor(QObject):
         self._docs_waiting: dict[str, list] = {}     # ID karty → odpowiedzi czekające na trwający odczyt
         self._docs_ready.connect(self._deliver_docs)
         self._current: dict | None = None                 # migawka z `derived` (to, co oddaje Snapshot())
+        self._plans_mark = None
         self.launchers = launchers                        # worktrees.Launchers — okno Tide (ShowWindow)
         self.repos_source = repos_source or (lambda: [])  # funkcja() → ścieżki repozytoriów z katalogu projektów
         # stan karty z pracy agentów (PT-5): board/derive.CardDeriver (z context()) albo funkcja(karta) → dict|None
@@ -148,9 +149,31 @@ class BoardMonitor(QObject):
     # --- D-Bus ---------------------------------------------------------------------------------
 
     def snapshot_json(self) -> str:
-        if not self._json:
+        # Plany mogą powstać w repozytorium projektu poza tablicą; przy jawnym odświeżeniu
+        # odczytaj je ponownie, aby otwarte okno zlecenia dostało aktualnych kandydatów.
+        mark = self._plans_stamp()
+        if not self._json or mark != self._plans_mark:
             self.publish()
+            self._plans_mark = self._plans_stamp()
         return self._json
+
+    def _plans_stamp(self):
+        from .coordination import plan
+        stamps = []
+        for project in (self._base or {}).get("projects") or []:
+            if not project.get("repo"):
+                continue
+            for folder in plan.plan_folders([project["repo"]], self.store.root):
+                try:
+                    with os.scandir(folder) as entries:
+                        for entry in entries:
+                            if not plan.NAME_RE.fullmatch(entry.name):
+                                continue
+                            st = entry.stat(follow_symlinks=False)
+                            stamps.append((entry.path, st.st_size, st.st_mtime_ns))
+                except OSError:
+                    continue
+        return tuple(sorted(stamps))
 
     def work_json(self) -> str:
         """Work(): lista „Praca” (board/work.py) — {exists, items, counts}."""

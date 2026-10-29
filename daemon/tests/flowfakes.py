@@ -80,6 +80,25 @@ if prompt.startswith("Review propozycji planu"):
         json.dump({"result": "done", "notes": []}, fh)
     sys.exit(0)
 
+if prompt.startswith("Uzupełnij istniejący plan"):
+    card = re.search(r"karty (K-[0-9]+)", prompt).group(1)
+    rows = json.loads(re.search(r"Oryginalna tabela: (.+)", prompt).group(1))
+    os.makedirs(os.path.join(out, "tickets"), exist_ok=True)
+    with open(os.path.join(out, "plan.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\ntide-plan: 1\ntitle: Przejęty plan\ncard: " + card +
+                 "\ntracker: local\nticket-prefix: PT\ncoordinator: claude\n---\n"
+                 "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |\n"
+                 "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
+        for row in rows:
+            fh.write("| " + " | ".join([row["id"], row["title"], row["state"], "",
+                     row["agent"] or "Sonnet", row["note"] or "przekazanie", "standard", "Opus",
+                     ", ".join(row["blockers"])]) + " |\n")
+            with open(os.path.join(out, "tickets", row["id"].lstrip("#") + ".md"), "w", encoding="utf-8") as ticket:
+                ticket.write("# " + row["title"] + "\n\nATRAPA: gotowe\n\n- [ ] Wynik.\n\n## Dla recenzenta\nSprawdź wynik.\n")
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": "done", "notes": ["plan.md"]}, fh)
+    sys.exit(0)
+
 if prompt.startswith("Krok planowania Lekkiego"):
     card = re.search(r"Krok planowania Lekkiego karty (K-[0-9]+)", prompt).group(1)
     if "ATRAPA: plan-question" in prompt and "Odpowiedź użytkownika:" not in prompt:

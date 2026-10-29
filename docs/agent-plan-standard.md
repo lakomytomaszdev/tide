@@ -62,6 +62,10 @@ a gałąź koordynatora zawiera ID karty małymi literami (`claude/k-12-okno-doc
 łączy kartę z koordynatorem i jego planem: koordynator na gałęzi `…k-12…` dostaje plan z `card: K-12`
 (w katalogu projektu w tablicy leżą plany wielu kart naraz), a karta — stan z planu. Plan z innym `card`
 nie jest planem tego koordynatora. Klucz bez sensownej wartości (np. `card: 12`) to błąd planu.
+Każda sesja pisząca przekazanie dla konkretnej karty wpisuje `card` przed zapisaniem planu.
+Plan projektu bez `card` może być tylko podpowiedzią w wejściu „Mam plan”; użytkownik musi go wybrać.
+Ścieżkę wybranego planu zapisuje karta w tablicy. Przejęcie kopiuje tabelę do dziennika karty
+bez zmiany oryginalnego planu ani numerów istniejących ticketów.
 
 **Specyfikacja karty** (obok planu, w `specs/`): plik `k-12-<opis>.md` z frontmatterem `card: K-12`
 i `status: szkic`, zmienianym na `status: gotowa`, gdy użytkownik ją zaakceptuje. W trybie „tylko

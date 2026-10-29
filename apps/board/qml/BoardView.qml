@@ -110,7 +110,12 @@ Item {
         taskDefaults: view.backend ? Logic.parse(view.backend.tasksJson, {}) : ({})
         pasteImage: function (inTextField) { return view.backend ? view.backend.pasteImage(!!inTextField) : false }
         // Zapamiętany model i programy w PATH mogły się zmienić od startu widoku (okno „Nowe zadanie”, instalacja).
-        onLaunchRequested: cardId => { if (view.backend) view.backend.refreshTasks() }
+        onLaunchRequested: cardId => {
+            if (view.backend) {
+                view.backend.refreshTasks()
+                view.backend.reload()
+            }
+        }
         onLaunchClosed: started => {
             if (!view.backend) return
             if (started) {

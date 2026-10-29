@@ -25,7 +25,7 @@ class Proposal:
     errors: list[str]
 
 
-def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local", existing_ids=()) -> Proposal:
+def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local", existing_ids=(), imported=False) -> Proposal:
     """Czyta plan i kartki wyłącznie z dozwolonych katalogów; nie rezerwuje numerów."""
     errors: list[str] = []
     real = os.path.realpath(path)
@@ -42,7 +42,7 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
     if plan is None:
         return Proposal(None, [], {}, [], ["plik nie jest planem Tide (brak tide-plan: 1)"])
     errors.extend(plan.errors)
-    if plan.card != card_id:
+    if plan.card != card_id and not (imported and not plan.card):
         errors.append(f"plan musi wskazywać kartę {card_id} przez klucz card")
     if plan.tables != 1:
         errors.append(f"plan musi mieć jedną tabelę ticketów (ma {plan.tables})")
@@ -57,14 +57,15 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
     for row in plan.rows:
         ident = row.ticket
         work = WORK_ID.fullmatch(ident)
-        if not work and ident not in existing_ids:
+        already_numbered = imported and ident in existing_ids and re.fullmatch(rf"{re.escape(plan.prefix)}-[1-9][0-9]*", ident)
+        if not work and ident not in existing_ids and not already_numbered:
             errors.append(f"{ident}: propozycja wymaga numeru roboczego #n; ID powstaje po zatwierdzeniu")
         if ident in seen:
             errors.append(f"{ident}: powtórzony ticket")
         seen.add(ident)
         if not row.title:
             errors.append(f"{ident}: brak tytułu")
-        if row.state != "todo":
+        if row.state != "todo" and not imported:
             errors.append(f"{ident}: propozycja wymaga stanu todo")
         klass = row.work_class or "standard"
         if klass not in CLASSES:
@@ -101,7 +102,8 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
                 cards[ident] = body
             except (OSError, UnicodeError, ValueError):
                 errors.append(f"{ident}: brak czytelnej kartki tickets/{card_name}")
-        rows.append({"workId": ident, "title": row.title, "executor": row.agent,
+        rows.append({"workId": ident, "title": row.title, "sourceState": row.state if imported else "",
+                     "executor": row.agent,
                      "reviewer": reviewer.name if reviewer else row.reviewer, "class": klass,
                      "note": row.note, "blockers": list(row.blockers)})
     for row in rows:

@@ -1587,6 +1587,70 @@ EXECUTORS = {"list": [
 
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class LaunchPlanTest(ProbeCase):
+    def test_bound_plan_is_selected_but_cardless_plan_is_only_suggested(self):
+        data = json.loads(json.dumps(self.data))
+        exact = "/repo/docs/agents/plans/2026-10-28-exact.md"
+        hint = "/repo/docs/agents/plans/2026-10-29-hint.md"
+        for card in data["cards"]:
+            if card["id"] == "K-15":
+                card["planPath"] = ""
+                card["planCandidates"] = [
+                    {"path": hint, "title": "Podpowiedź", "card": "", "status": "active", "updated": "2026-10-29", "updatedTs": 2},
+                    {"path": exact, "title": "Plan karty", "card": "K-15", "status": "active", "updated": "2026-10-28", "updatedTs": 1}]
+        out = self.probe(FIND_PY + """
+js("page.openLaunch('K-15', false)")
+wait(100)
+out["auto"] = js("[page.launchDialog.entry, page.launchDialog.planPath, page.launchDialog.planCandidates.map(p => p.path)]")
+out["choice"] = js(FIND + "(page.launchDialog, 'launchPlanCandidates').visible")
+out["request"] = js("page.launchDialog.launchState.planPath")
+""", data)
+        self.assertEqual(out["auto"], ["plan", exact, [exact, hint]])
+        self.assertTrue(out["choice"])
+        self.assertEqual(out["request"], exact)
+
+        for card in data["cards"]:
+            if card["id"] == "K-15":
+                card["planCandidates"] = [card["planCandidates"][0]]
+        out = self.probe(FIND_PY + """
+js("page.openLaunch('K-15', false)")
+wait(100)
+out["hint"] = js("[page.launchDialog.entry, page.launchDialog.planPath, page.launchDialog.planCandidates.length]")
+click(at(FIND + "(page.launchDialog, 'launchEntry-plan')"))
+wait(50)
+out["before"] = js("page.launchDialog.canStart")
+js("page.launchDialog.planPath = page.launchDialog.planCandidates[0].path")
+out["after"] = js("[page.launchDialog.entry, page.launchDialog.canStart]")
+""", data)
+        self.assertEqual(out["hint"], ["planning", "", 1])
+        self.assertFalse(out["before"])
+        self.assertEqual(out["after"], ["plan", True])
+
+    def test_selected_plan_is_saved_on_card_before_start(self):
+        data = json.loads(json.dumps(self.data))
+        path = "/repo/docs/agents/plans/2026-10-29-import.md"
+        for card in data["cards"]:
+            if card["id"] == "K-15":
+                card["planPath"] = ""
+                card["planCandidates"] = [{"path": path, "title": "Plan karty", "card": "K-15",
+                                           "status": "active", "updated": "2026-10-29", "updatedTs": 1}]
+        out = self.probe("""
+js("page.openLaunch('K-15', false)")
+wait(100)
+replies.extend([{"ok": True, "id": "K-15", "changed": True, "commitError": ""},
+                {"ok": True, "id": "K-15", "imported": True, "needsCompletion": False}])
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(300)
+out["calls"] = calls()
+out["closed"] = not js("page.launchOpen")
+""", data)
+        self.assertEqual([call[0] for call in out["calls"][:2]], ["UpdateCard", "StartCard"])
+        self.assertEqual(json.loads(out["calls"][0][2]), {"planPath": path})
+        request = json.loads(out["calls"][1][2])
+        self.assertEqual((request["entry"], request["planPath"]), ("import", path))
+        self.assertTrue(out["closed"])
+
+
 class LaunchNowTest(ProbeCase):
     """PT-58: wejście „Od razu” — wykonawca Claude z katalogu wykonawców (Status() z /Models), zlecenie przez
     /Board StartCard (bez RenderLaunch, /Tasks Start i Konsoli); pracującą kartę z dziennikiem da się przeciągnąć
