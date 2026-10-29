@@ -10,6 +10,18 @@ from .test_cardflow_dbus import git
 
 
 class ReviewFlowTest(FlowInProcess):
+    def test_default_reviewer_stays_with_custom_authors_provider(self):
+        from tide_daemon.models import executors
+
+        catalog = executors.Catalog(
+            (executors.Executor("Inny", "codex", "model-inny", "other"),),
+            {"other": executors.Provider("other", "Inny", "https://example.test/v1", "openai")})
+        self.flow.engine.catalog = lambda: catalog
+        card = self.card()
+        reply = self.start(card, executor="Inny")
+        self.assertEqual((reply["ok"], reply["error"]), (False, "bad-reviewer"), reply)
+        self.assertEqual(self.events(card), [])
+
     def test_mixed_provider_review_uses_other_provider_and_codex_route(self):
         card = self.card()
         reply = self.start(card, executor="Sonnet", preferredProvider="mixed", reviewer="Codex Astra")

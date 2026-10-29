@@ -174,6 +174,7 @@ class FlowEngine:
             raise FlowError(exc.code, str(exc)) from None
         if preferred and preferred != "mixed" and selected.provider != preferred:
             raise FlowError("provider-mismatch", f"„{name}” należy do dostawcy {selected.provider}, nie {preferred}")
+        preferred = preferred or selected.provider
         preferred_name = "Sonnet" if name == "Opus" else "Codex Astra" if name == "Codex mocny" else "Opus"
         reviewer_name = str(request.get("reviewer") or "").strip()
 
