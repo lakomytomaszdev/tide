@@ -6,6 +6,7 @@
 // Bez PlasmoidItem, więc da się ją załadować w podglądzie (widgets/preview_stream.py).
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as QQC2
 import "stream.js" as Stream
 
 Card {
@@ -196,6 +197,9 @@ Card {
                 checkable: false
                 textColor: modelData.on ? Tokens.textPrimary : Tokens.textMuted
                 Accessible.name: modelData.label + (modelData.on ? ": widoczny, ukryj" : ": ukryty, pokaż")
+                QQC2.ToolTip.visible: hovered && modelData.hint !== ""
+                QQC2.ToolTip.text: modelData.hint
+                QQC2.ToolTip.delay: 500
                 background: Rectangle {
                     radius: Tokens.radiusSmall
                     color: modelData.on ? Theme.alpha(Tokens.accent, 0.16) : Theme.alpha(Tokens.textPrimary, 0.04)

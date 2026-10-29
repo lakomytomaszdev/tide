@@ -12,7 +12,8 @@ var MODULES = [
     { key: "chat", label: "Czat" },
     { key: "alerts", label: "Alerty" },
     { key: "opponent", label: "Przeciwnik" },
-    { key: "motion", label: "Żubry" }
+    { key: "motion", label: "Animacje żubra",
+      hint: "Żubr wbiegający z alertem i wychylający się zza zakładki kanału (co 20 min). Przejścia scen nie dotyczy." }
 ]
 var TARGETS = { twitch: "Twitch", youtube: "YouTube", kick: "Kick", local: "tylko nagranie" }
 
@@ -150,7 +151,7 @@ function originText(origin) {
 function modules(view) {
     const mods = obj(obj(obj(view).core).modules)
     return MODULES.filter(m => m.key in mods).map(m => ({
-        key: m.key, label: m.label, on: valueOf(mods[m.key]) === true, origin: obj(mods[m.key]).origin || ""
+        key: m.key, label: m.label, hint: m.hint || "", on: valueOf(mods[m.key]) === true, origin: obj(mods[m.key]).origin || ""
     }))
 }
 
