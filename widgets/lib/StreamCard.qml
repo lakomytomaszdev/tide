@@ -15,6 +15,7 @@ Card {
     property var view: null
     property bool coreUp: false
     property bool full: false
+    property bool actions: true    // false: mikrofon, BRB i Panel są w karcie „Zawsze” (lewy monitor, PT-91)
     property var obsMemory: ""      // CoreSource.obsMemory: rozłączony OBS po antenie to ostrzeżenie
     property string status: ""
     property bool statusError: false
@@ -212,7 +213,7 @@ Card {
     }
 
     RowLayout {
-        visible: card.ready
+        visible: card.ready && card.actions
         Layout.fillWidth: true
         Layout.topMargin: 4
         spacing: 8

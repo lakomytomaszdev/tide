@@ -27,6 +27,10 @@ Item {
     signal panelRequested()
 
     implicitHeight: deck.streamX < 0 ? scenes.implicitHeight + 14 + stream.implicitHeight : scenes.implicitHeight
+    // Kolumny (streamX ≥ 0): pod Scenami karta „Zawsze”, w prawej kolumnie wynik serii, gdy sytuacja go chce.
+    readonly property bool columns: deck.streamX >= 0
+    readonly property bool scoreWanted: columns && !!(view && view.situation && view.situation.cards
+                                                     && view.situation.cards.indexOf("score") >= 0)
 
     ScenesCard {
         id: scenes
@@ -39,11 +43,36 @@ Item {
         onSceneRequested: name => deck.commandRequested("scene.set", { scene: name })
     }
 
+    AlwaysCard {
+        objectName: "alwaysCard"
+        visible: deck.columns
+        y: scenes.height + 14
+        width: deck.width
+        view: deck.view
+        coreUp: deck.coreUp
+        obsMemory: deck.obsMemory
+        busy: deck.busy
+        onCommandRequested: (name, args) => deck.commandRequested(name, args)
+        onPanelRequested: deck.panelRequested()
+    }
+
+    ScoreCard {
+        id: score
+        objectName: "scoreCard"
+        visible: deck.scoreWanted
+        x: deck.streamX
+        width: deck.streamWidth
+        view: deck.view
+        busy: deck.busy
+        onCommandRequested: (name, args) => deck.commandRequested(name, args)
+    }
+
     StreamCard {
         id: stream
         x: deck.streamX < 0 ? 0 : deck.streamX
-        y: deck.streamX < 0 ? scenes.height + 14 : 0
+        y: deck.streamX < 0 ? scenes.height + 14 : (deck.scoreWanted ? score.height + 14 : 0)
         width: deck.streamX < 0 ? deck.width : deck.streamWidth
+        actions: !deck.columns
         full: true
         view: deck.view
         coreUp: deck.coreUp
