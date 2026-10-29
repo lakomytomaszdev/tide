@@ -290,6 +290,18 @@ def main(argv=None) -> int:
         notifier = Notifier(monitor.activate)
         notifier.update(monitor.sessions)  # stan wyjściowy: czekające już wcześniej nie dostają powiadomień
         monitor.changed.connect(lambda: notifier.update(monitor.sessions))
+        if board is not None and board.flow is not None:
+            from .notifications import NoteNotifier
+            flow_notifier = NoteNotifier(board.show_window, parent=app)
+
+            def notify_card_step(item):
+                labels = {"question": "pytanie", "denied": "potrzebna zgoda", "error": "błąd kroku"}
+                kind = labels.get(item["result"], "krok czeka")
+                flow_notifier.notify(f"flow:{item['card']}:{item['step']}",
+                                     f"{item['card']}: {kind} z {item['ticket']}",
+                                     str(item.get("detail") or "")[:300], item["card"])
+
+            board.flow.notifier = notify_card_step
         if limits is not None:
             from .notifications import LimitsNotifier
             limits_notifier = LimitsNotifier(parent=app)

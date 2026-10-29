@@ -23,10 +23,11 @@ POLL_MS = 5_000
 class CardFlowMonitor(QObject):
     _done = pyqtSignal(object, object)   # (dalszy ciąg w wątku głównym, future)
 
-    def __init__(self, engine, board=None, poll_ms: int = POLL_MS, parent=None):
+    def __init__(self, engine, board=None, poll_ms: int = POLL_MS, notifier=None, parent=None):
         super().__init__(parent)
         self.engine = engine
         self.board = board                 # BoardMonitor — publish() po zmianie dziennika
+        self.notifier = notifier           # funkcja({card, ticket, result, detail}) w wątku głównym
         self.lock = engine.journal.lock
         self._pool: ThreadPoolExecutor | None = None
         self._ticking = False
@@ -117,6 +118,29 @@ class CardFlowMonitor(QObject):
         if not self._submit(lambda: self.engine.resolve_review(card_id, choice), answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
+    def resolve_step(self, card_id: str, request: str, reply) -> None:
+        """Odpowiedź, zgoda albo ponowienie kroku karty przez dziennik."""
+        try:
+            data = json.loads(request or "")
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            reply(json.dumps(_failure("bad-request", "oczekiwano obiektu JSON"), ensure_ascii=False))
+            return
+
+        def answer(future):
+            try:
+                result = future.result()
+            except FlowError as exc:
+                result = _failure(exc.code, str(exc))
+            except Exception as exc:
+                print(f"tide-daemon: przepływ karty: ResolveCardStep: {exc!r}", flush=True)
+                result = _failure("internal", "błąd usługi — szczegóły w dzienniku")
+            reply(json.dumps(result, ensure_ascii=False))
+
+        if not self._submit(lambda: self.engine.resolve_step(card_id, data), answer):
+            reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
+
     def tick(self) -> None:
         if self._ticking:
             return
@@ -157,6 +181,12 @@ class CardFlowMonitor(QObject):
         # Najpierw commit i nowa migawka, potem odpowiedź: kto po StartCard pyta o Snapshot(), widzi już zlecenie.
         if self.commit() and self.board is not None:
             self.board.publish()
+        for notice in self.engine.take_notices():
+            if self.notifier is not None:
+                try:
+                    self.notifier(notice)
+                except Exception as exc:
+                    print(f"tide-daemon: przepływ karty: powiadomienie: {exc!r}", flush=True)
         if not future.cancelled():
             then(future)
 

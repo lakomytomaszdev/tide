@@ -1523,6 +1523,38 @@ ponawia etap w kolejnych przebiegach.
 qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.StartCard K-12 '{"entry": "now", "executor": "Sonnet"}'
 ```
 
+### Decyzje po kroku w tle (PT-65, PT-66, PT-68)
+
+Wynik `question` z `result.json` pokazuje pytanie w „Czeka na mnie”. Odpowiedź z panelu zapisuje zdarzenie
+`step.decision` i wznawia ticket w tym samym worktree oraz sesji. Krok dostaje kartkę z pytaniem, odpowiedzią i nową
+ścieżką wyniku. Powiadomienie powstaje raz na zakończony pytaniem krok (`step.notice` w dzienniku); kliknięcie otwiera
+tablicę. Po wznowieniu pozostają commity i zmiany z wcześniejszego podejścia.
+
+Wynik `denied` zawiera dokładne polecenie. „Zezwól i wznów” dopisuje tę postać polecenia do listy projektu i wznawia
+krok; „Odmów” wznawia go z informacją o odmowie. Listy `allowed-commands` i `denied-commands` są zapisane w nagłówku
+pliku projektu tablicy jako tablice JSON i edytowalne w „Projekty i tagi”. Claude dostaje z nich reguły
+`--allowedTools` i `--disallowedTools`, a odmowa Bash z końcowego wyniku CLI staje się `denied`, gdy brak własnego
+pliku wyniku. Codex działa w piaskownicy `workspace-write`, lecz listy poleceń dostaje tylko w kartce jako wskazówkę:
+CLI nie blokuje automatycznie każdej komendy spoza listy. Domyślna lista dopuszcza częste odczyty
+oraz pracę lokalną, a dla projektu Tide zabrania `make install`. Reguła zabroniona ma pierwszeństwo; panel nie może
+zatwierdzić takiego polecenia. Zgoda dotyczy pełnego polecenia, bez rozszerzenia na cały program; panel odmawia
+składni złożonej operatorami powłoki oraz poleceń dłuższych niż 300 znaków, które pokazuje bez skrócenia.
+
+Błąd kroku (`error`, brak wyniku, przekroczony czas lub brak postępu) zapisuje `step.retry` i powoduje jedno
+automatyczne ponowienie. Drugi błąd pokazuje „Ponów” i „Zmień wykonawcę”. Obie decyzje zachowują worktree;
+zmiana wykonawcy zakłada nową sesję i jest używana także w kolejnych poprawkach po review. Krok lokalny nie
+przełącza się sam do chmury. `stepTimeoutMinutes` w `$XDG_CONFIG_HOME/tide/cardflow.json` ogranicza jedną próbę
+(domyślnie 240 minut); po limicie usługa zatrzymuje jednostkę przez `stepstop.stop_step` i zachowuje zmiany.
+Strażnik braku postępu podaje w karcie czas, od którego krok stał.
+
+Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
+`deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`. Ponowione kroki dostają
+osobne katalogi `.resume-<step>.step` i pliki wyniku; dziennik pozwala odtworzyć decyzję po restarcie usługi.
+
+```bash
+qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.ResolveCardStep K-12 '{"choice": "answer", "answer": "ISO 8601"}'
+```
+
 ## Docker
 
 Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Docker” w oknie Tide (`apps/docker`) i kafelka `org.tide.docker` w docku (`widgets/docker`). Usługa rozmawia z Docker Engine API przez lokalny socket (sama biblioteka standardowa, bez `docker` CLI i bez `docker compose`). Socket z `$DOCKER_HOST` (`unix:///ścieżka`), domyślnie `/var/run/docker.sock`; `tcp://`, `ssh://` i inne → stan `unsupported`, bez łączenia się przez sieć.

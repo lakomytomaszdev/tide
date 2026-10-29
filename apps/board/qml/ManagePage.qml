@@ -560,6 +560,8 @@ Rectangle {
         property string mode: ""
         property string entry: ""
         property bool youtrackSync: true
+        property string allowedCommands: ""
+        property string deniedCommands: ""
         property alias youtrackKey: youtrackField.text
         readonly property bool youtrackToggleEnabled: youtrackToggle.enabled
         readonly property string youtrackSummary: youtrackLabel.visible ? youtrackLabel.text : ""
@@ -575,6 +577,14 @@ Rectangle {
             descriptionField.text = project.description || ""
             youtrackField.text = project.youtrack || ""
             youtrackSync = project.youtrack ? !!project.youtrackSync : true
+            allowedCommands = (project.allowedCommands || []).join("\n")
+            deniedCommands = (project.deniedCommands || []).join("\n")
+            allowedCommandsArea.text = allowedCommands
+            deniedCommandsArea.text = deniedCommands
+        }
+
+        function commandLines(value) {
+            return value.split("\n").map(s => s.trim()).filter(s => s.length > 0)
         }
 
         function save() {
@@ -591,6 +601,10 @@ Rectangle {
             const key = youtrackField.text.trim().toUpperCase()
             if (key !== (project.youtrack || "")) request.youtrack = key
             if (key && youtrackSync !== (project.youtrack ? !!project.youtrackSync : true)) request.youtrackSync = youtrackSync
+            const allowed = commandLines(allowedCommands)
+            const denied = commandLines(deniedCommands)
+            if (JSON.stringify(allowed) !== JSON.stringify(project.allowedCommands || [])) request.allowedCommands = allowed
+            if (JSON.stringify(denied) !== JSON.stringify(project.deniedCommands || [])) request.deniedCommands = denied
             page.send("project", project.slug, request)
         }
 
@@ -809,6 +823,46 @@ Rectangle {
                     Layout.fillWidth: true
                     placeholder: "Krótko, czego dotyczy projekt"
                     onAccepted: row.save()
+                }
+                FieldLabel { text: "Dozwolone polecenia"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 6 }
+                QQC2.TextArea {
+                    id: allowedCommandsArea
+                    objectName: "projectAllowedCommands"
+                    Layout.fillWidth: true
+                    implicitHeight: 116
+                    text: row.allowedCommands
+                    onTextChanged: row.allowedCommands = text
+                    wrapMode: TextEdit.NoWrap
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.monoFamily
+                    font.pixelSize: 12
+                    Accessible.name: "Dozwolone polecenia projektu, po jednym w wierszu"
+                    background: Rectangle { radius: 6; color: Tide.Tokens.backgroundPanel }
+                }
+                FieldLabel { text: "Zabronione polecenia"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 6 }
+                QQC2.TextArea {
+                    id: deniedCommandsArea
+                    objectName: "projectDeniedCommands"
+                    Layout.fillWidth: true
+                    implicitHeight: 68
+                    text: row.deniedCommands
+                    onTextChanged: row.deniedCommands = text
+                    wrapMode: TextEdit.NoWrap
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.monoFamily
+                    font.pixelSize: 12
+                    Accessible.name: "Zabronione polecenia projektu, po jednym w wierszu"
+                    background: Rectangle { radius: 6; color: Tide.Tokens.backgroundPanel }
+                }
+                Text {
+                    Layout.columnSpan: 2
+                    Layout.fillWidth: true
+                    text: "Claude stosuje listy poleceń w uprawnieniach CLI. Dla Codexa są wskazówką w kartce; jego piaskownica ogranicza zapis, ale nie blokuje każdego polecenia spoza listy."
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
                 }
                 Item { implicitWidth: 1 }
                 RowLayout {

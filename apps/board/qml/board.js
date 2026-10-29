@@ -578,6 +578,20 @@ function launchExecutors(status, provider) {
                       hint: e.error || "" }))
 }
 
+function retryExecutors(status, flow) {
+    if (!flow || !flow.provider) return []
+    const review = flow.stepKind === "review"
+    const otherModel = String(review ? flow.authorModel || "" : flow.reviewerModel || "").toLowerCase()
+    const otherProvider = String(review ? flow.authorProvider || "" : flow.reviewerProvider || "")
+    const mixed = flow.preferredProvider === "mixed"
+    return launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
+        e.available !== false && e.name !== flow.executor &&
+        String(e.model).toLowerCase() !== otherModel &&
+        (e.provider === "local") === (otherProvider === "local") &&
+        (mixed ? e.provider !== otherProvider : e.provider === otherProvider))
+        .map(e => ({ value: String(e.name), label: String(e.name) }))
+}
+
 function launchExecutor(status, name) {
     return launchExecutorList(status).find(e => e && e.name === name) || null
 }

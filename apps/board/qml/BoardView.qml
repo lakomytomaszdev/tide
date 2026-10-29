@@ -99,6 +99,7 @@ Item {
         onEnterStepRequested: (tag, id, step) => view.backend.enterStep(tag, id, step)
         onAbandonStepRequested: (tag, id, step) => view.backend.abandonStep(tag, id, step)
         onReviewResolveRequested: (tag, id, choice) => view.backend.resolveCardReview(tag, id, choice)
+        onStepResolveRequested: (tag, id, request) => view.backend.resolveCardStep(tag, id, request)
         // Zrzuty ekranu i model w oknie uruchomienia (PT-43).
         launchImages: view.backend ? Logic.parse(view.backend.imagesJson, []) : []
         canCapture: view.backend ? view.backend.canCapture : false

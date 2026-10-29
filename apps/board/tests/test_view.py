@@ -207,6 +207,18 @@ class LogicTest(unittest.TestCase):
             self.assertEqual(got, want, project)
         self.assertEqual(self.js("launchDefaults(null).entry"), "planning")
 
+    def test_retry_executor_filters_author_reviewer_and_provider(self):
+        status = json.dumps({"executors": EXECUTORS})
+        review = "{stepKind:'review', provider:'anthropic', executor:'Opus', authorModel:'sonnet', " \
+                 "authorProvider:'anthropic', preferredProvider:'anthropic'}"
+        self.assertEqual(self.js(f"retryExecutors({status}, {review}).map(o => o.value)"), ["Haiku"])
+        author = "{stepKind:'ticket', provider:'anthropic', executor:'Sonnet', reviewerModel:'opus', " \
+                 "reviewerProvider:'anthropic', preferredProvider:'anthropic'}"
+        self.assertEqual(self.js(f"retryExecutors({status}, {author}).map(o => o.value)"), ["Haiku"])
+        mixed = "{stepKind:'ticket', provider:'anthropic', executor:'Sonnet', reviewerModel:'gpt-6.1-sol', " \
+                "reviewerProvider:'openai', preferredProvider:'mixed'}"
+        self.assertEqual(self.js(f"retryExecutors({status}, {mixed}).map(o => o.value)"), ["Haiku", "Opus"])
+
     def test_now_executors_and_flow_card_drop_targets(self):
         status = json.dumps({"executors": EXECUTORS})
         self.assertEqual(self.js(f"launchExecutors({status}).map(o => o.value)"), ["Haiku", "Sonnet", "Opus"])
@@ -1594,16 +1606,22 @@ js("page.openLaunch('K-15', false)")
 wait(100)
 out["providerVisible"] = js(FIND + "(page.launchDialog, 'launchPreferredProvider').visible")
 click(at(FIND + "(page.launchDialog, 'launchEntry-now')"))
+out["claudePolicyNotice"] = js(FIND + "(page.launchDialog, 'launchCodexCommandPolicyNotice').visible")
 click(at(FIND + "(page.launchDialog, 'launchPreferredProvider-openai')"))
 wait(50)
 out["openai"] = [js("page.launchDialog.preferredProvider"),
                  js("page.launchDialog.executorOptions.map(o => o.value)"), js("page.launchDialog.executor")]
+out["codexPolicyNotice"] = [js(FIND + "(page.launchDialog, 'launchCodexCommandPolicyNotice').visible"),
+                            js(FIND + "(page.launchDialog, 'launchCodexCommandPolicyNotice').text")]
 click(at(FIND + "(page.launchDialog, 'launchPreferredProvider-local')"))
 wait(50)
 out["local"] = [js("page.launchDialog.executorOptions.map(o => o.value)"), js("page.launchDialog.executor")]
 """)
         self.assertTrue(out["providerVisible"])
+        self.assertFalse(out["claudePolicyNotice"])
         self.assertEqual(out["openai"], ["openai", ["Codex standard"], "Codex standard"])
+        self.assertTrue(out["codexPolicyNotice"][0])
+        self.assertIn("wskazówką", out["codexPolicyNotice"][1])
         self.assertEqual(out["local"], [["Lokalny"], "Lokalny"])
 
     def test_now_entry_picks_a_claude_executor_and_sends_start_card(self):
@@ -1726,6 +1744,73 @@ out["legacy"] = len(calls()) - n
         self.assertEqual(out["paused"][:3], ["MoveCard", "K-6", "backlog"], "pracująca karta z dziennikiem — wstrzymanie")
         self.assertEqual(out["done"][:3], ["MoveCard", "K-6", "done"])
         self.assertEqual(out["legacy"], 0, "karta dawnego przepływu jak dotąd")
+
+
+class StepDecisionPanelTest(ProbeCase):
+    def flow_card(self, action, **extra):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "krok czeka",
+                                   "flow": {"ticket": "PT-7", "action": action, **extra}}
+                card["boardColumn"] = "waiting"
+        return data
+
+    def test_question_is_visible_and_answer_goes_to_service(self):
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["visible"] = [obj("cardStepDecision").property("visible"), obj("cardStepAnswer").property("visible")]
+js("page.cardPanel.stepAnswer = 'ISO 8601'")
+out["enabled"] = obj("cardStepAnswerSend").property("enabled")
+js(FIND + "(page.cardPanel, 'cardStepAnswerSend').clicked()")
+out["call"] = calls()[-1]
+""", data=self.flow_card("answer", question="Który format daty?"))
+        self.assertEqual(out["visible"], [True, True])
+        self.assertTrue(out["enabled"])
+        self.assertEqual(out["call"][:2], ["ResolveCardStep", "K-6"])
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "answer", "answer": "ISO 8601"})
+
+    def test_permission_has_exact_command_and_forbidden_cannot_be_allowed(self):
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["buttons"] = [obj("cardStepAllow").property("enabled"), obj("cardStepDeny").property("enabled")]
+click(at(FIND + "(page.cardPanel, 'cardStepDeny')"))
+out["call"] = calls()[-1]
+""", data=self.flow_card("permission", command="make install", canAllow=False))
+        self.assertEqual(out["buttons"], [False, True])
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "deny"})
+
+    def test_error_shows_retry_and_change_executor(self):
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["visible"] = [obj("cardStepRetry").property("visible"), obj("cardStepChangeExecutor").property("visible")]
+js("page.cardPanel.stepExecutor = 'Haiku'")
+click(at(FIND + "(page.cardPanel, 'cardStepChangeExecutor')"))
+out["call"] = calls()[-1]
+""", data=self.flow_card("error", error="bez postępu", stalledSince="2026-10-29T01:00:00Z",
+                         provider="anthropic", executor="Sonnet", reviewerModel="opus"))
+        self.assertEqual(out["visible"], [True, True])
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "change-executor", "executor": "Haiku"})
+
+    def test_project_command_lists_are_editable_and_saved(self):
+        data = json.loads(json.dumps(self.data))
+        data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]
+        data["projects"][0].update(allowedCommands=["git status", "git log"], deniedCommands=["make install"])
+        out = self.probe(FIND_PY + """
+find = lambda name: FIND + f"(page.managePage, '{name}')"
+js("page.managing = true")
+js("page.managePage.openProject = 'plasma-tide'")
+wait(100)
+out["initial"] = [js(find("projectAllowedCommands") + ".text"),
+                  js(find("projectDeniedCommands") + ".text")]
+js(find("projectAllowedCommands") + ".text = 'git status\\ngit log\\ngit fetch origin'")
+click(at(find("projectSave")))
+wait(80)
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["initial"], ["git status\ngit log", "make install"])
+        self.assertEqual(json.loads(out["call"][-1]),
+                         {"slug": "plasma-tide", "allowedCommands": ["git status", "git log", "git fetch origin"]})
 
 
 class LaunchReviewTest(ProbeCase):

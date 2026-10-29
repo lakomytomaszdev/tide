@@ -853,6 +853,18 @@ Rectangle {
                         }
                         Item { Layout.fillWidth: true }
                     }
+                    Text {
+                        objectName: "launchCodexCommandPolicyNotice"
+                        Layout.fillWidth: true
+                        visible: Boolean(dialog.flowEntry && dialog.selectedExecutor
+                                         && dialog.selectedExecutor.program === "codex")
+                        text: "Codex działa w piaskownicy. Listy poleceń projektu są dla niego wskazówką, bez automatycznej blokady każdego polecenia."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
                     Flow {
                         objectName: "launchSteps"
                         Layout.fillWidth: true

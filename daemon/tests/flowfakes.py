@@ -45,6 +45,10 @@ work = os.path.join(cwd, "ATRAPA.md")
 if prompt.startswith("Krok review "):
     round_match = re.search(r"runda (\d+)", prompt)
     round_no = int(round_match.group(1)) if round_match else 1
+    if "ATRAPA: review-error" in prompt and round_no == 1 and "Użytkownik wybrał innego wykonawcę" not in prompt:
+        with open(result, "w", encoding="utf-8") as fh:
+            json.dump({"result": "error", "reason": "awaria review"}, fh)
+        sys.exit(0)
     requests = re.search(r"ATRAPA: review-requests (\d+)", prompt)
     bad = requests and round_no <= int(requests.group(1))
     if "ATRAPA: review-modifies" in prompt:
@@ -79,10 +83,45 @@ elif word == "powoli":
         write(f"krok {i}")
         time.sleep(0.25)
 commit()
+if word == "cli-zgoda":
+    print(json.dumps({"type": "result", "subtype": "success", "permission_denials": [
+        {"tool_name": "Bash", "tool_input": {"command": "git fetch origin"}}]}))
+    sys.exit(0)
 if word == "bez-wyniku":
     sys.exit(0)
 if word == "pytanie":
-    finish("question", question="Który format daty?")
+    if "Odpowiedź użytkownika:" in prompt:
+        finish("done")
+    else:
+        finish("question", question="Który format daty?")
+elif word == "zgoda":
+    if "- git fetch origin\n" in prompt or "Użytkownik odmówił zgody" in prompt:
+        finish("done")
+    else:
+        finish("denied", command="git fetch origin")
+elif word in ("zgoda-zabroniona", "zgoda-zabroniona-cytat", "zgoda-zabroniona-ukosnik", "zgoda-zabroniona-potok"):
+    if "Użytkownik odmówił zgody" in prompt:
+        finish("done")
+    else:
+        command = {"zgoda-zabroniona": "make install", "zgoda-zabroniona-cytat": 'make "install"',
+                   "zgoda-zabroniona-ukosnik": r"make \install",
+                   "zgoda-zabroniona-potok": "pwd |& make install"}[word]
+        finish("denied", command=command)
+elif word == "zgoda-dluga":
+    if "Użytkownik odmówił zgody" in prompt:
+        finish("done")
+    else:
+        finish("denied", command="git fetch origin " + "x" * 300)
+elif word == "blad-raz":
+    finish("done" if "Krok ponowiony automatycznie" in prompt else "error", reason="awaria testowa")
+elif word in ("blad-dwa", "blad-zmien"):
+    if prompt.startswith("Krok poprawek") or "Użytkownik polecił ponowić" in prompt or "Użytkownik wybrał innego wykonawcę" in prompt:
+        finish("done")
+    else:
+        finish("error", reason="awaria testowa")
+elif word == "blad-local":
+    time.sleep(0.5)
+    finish("error", reason="awaria testowa")
 else:
     finish("done")
 print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "session_id": sid}))

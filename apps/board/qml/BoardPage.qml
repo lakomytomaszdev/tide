@@ -77,6 +77,7 @@ Rectangle {
     signal enterStepRequested(string tag, string cardId, string stepId) // /Board EnterStep
     signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
     signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
+    signal stepResolveRequested(string tag, string cardId, string request) // /Board ResolveCardStep
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
     signal removeImageRequested(string path)
@@ -396,6 +397,10 @@ Rectangle {
             cardPanel.error = error
             if (!error) cardPanel.notice = reply.choice === "retry" ? "Uruchamiam kolejne poprawki."
                                                                       : "Ticket odrzucony; gałąź i worktree zostały do wglądu."
+        } else if (tag.indexOf("step-resolve:") === 0) {
+            cardPanel.busy = false
+            cardPanel.error = error
+            if (!error) cardPanel.notice = "Decyzja zapisana. Wznawiam krok w tle."
         } else if (tag.indexOf("quicktag:") === 0) {
             tagEditorPopup.editorError = error
             if (!error) tagEditorPopup.close()
@@ -1286,6 +1291,7 @@ Rectangle {
         homeDir: page.homeDir
         nowTs: page.nowTs
         tagTone: page.tagTone
+        modelsStatus: page.modelsStatus
         maxWidth: page.width - 24
         renderer: page.markdownRenderer
         onDocsRequested: cardId => page.docsRequested(cardId)
@@ -1304,6 +1310,8 @@ Rectangle {
         }
         onReviewResolveRequested: (cardId, choice) =>
             page.reviewResolveRequested(page.nextTag("review-resolve:" + cardId), cardId, choice)
+        onStepResolveRequested: (cardId, request) =>
+            page.stepResolveRequested(page.nextTag("step-resolve:" + cardId), cardId, JSON.stringify(request))
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))
             if (column === "archived") page.panelOpen = false

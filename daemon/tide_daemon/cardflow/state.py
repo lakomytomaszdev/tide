@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 RESULT_LABELS = {"done": "gotowe", "question": "pytanie", "denied": "brak zgody", "error": "błąd", "stopped": "zatrzymany"}
 REASON_LABELS = {"no-result": "brak pliku wyniku", "bad-result": "zły plik wyniku", "no-progress": "bez postępu",
                  "exit": "program zakończył się błędem", "start": "krok nie wystartował",
+                 "timeout": "przekroczony czas kroku", "local-unavailable": "serwer lokalny jest niedostępny",
                  "lost": "krok zniknął (restart usługi)", "bad-review": "niepoprawny werdykt review",
                  "review-changed-ticket": "recenzent zmienił gałąź albo pliki ticketu", "abandoned": "porzucony"}
 NOTE_MAX = 160
@@ -39,6 +40,9 @@ class FlowState:
     verdicts: dict = field(default_factory=dict)    # (ticket, runda) → review.verdict
     review_questions: dict = field(default_factory=dict)
     review_decisions: dict = field(default_factory=dict)
+    step_retries: dict = field(default_factory=dict)  # źródłowy krok → automatyczne ponowienie
+    step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
+    step_notices: set = field(default_factory=set)
     last_step: str = ""
     paused: bool = False
     card_finished: bool = False
@@ -78,8 +82,12 @@ class FlowState:
                              (self.steps.get(name) or {}).get("ticket") not in self.rejected and
                              ("merge", (self.steps.get(name) or {}).get("ticket")) not in self.results
                              for name, done in self.finished.items())
+        step = self.steps.get(self.last_step) or {}
+        finished = self.finished.get(self.last_step) or {}
+        pending_decision = finished.get("result") in ("question", "denied", "error") and \
+            step.get("ticket") not in self.rejected and not self.card_finished
         return bool(self.running() or self.open_consoles() or self.merge_pending() or self.open_intents()
-                    or pending_review)
+                    or pending_review or pending_decision)
 
 
 def fold(events: list[dict]) -> FlowState:
@@ -119,6 +127,12 @@ def fold(events: list[dict]) -> FlowState:
             st.review_questions[(e.get("ticket"), e.get("round"))] = e
         elif kind == "review.decision":
             st.review_decisions[(e.get("ticket"), e.get("round"))] = e
+        elif kind == "step.retry":
+            st.step_retries[e.get("step")] = e
+        elif kind == "step.decision":
+            st.step_decisions[e.get("step")] = e
+        elif kind == "step.notice":
+            st.step_notices.add(e.get("step"))
         elif kind == "flow.error":
             st.flow_error = e.get("error") or ""
         elif kind == "card.paused":
@@ -166,13 +180,24 @@ def derived(st: FlowState, card: dict) -> dict | None:
     done = st.finished.get(st.last_step) or {}
     ident = step.get("ticket") or ticket["id"] or "ticket"
     executor = st.started.get("executor") or ""
+    author = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ident and
+                   s.get("kind") in ("ticket", "fix")), {})
+    reviewer = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ident and
+                     s.get("kind") == "review"), {})
     out = {"column": "", "done": 0, "total": 1, "tool": st.started.get("program") or "", "note": "", "nextStep": "",
            "check": st.started.get("check") or card.get("check") or "auto", "branch": ticket["cardBranch"], "session": "", "coordinator": "",
            "link": "flow", "agentState": "", "tickets": [], "question": "",
-           "flow": {"ticket": ident, "step": st.last_step, "executor": executor, "entry": st.started.get("entry") or "",
+           "flow": {"ticket": ident, "step": st.last_step, "executor": step.get("executor") or executor,
+                    "entry": st.started.get("entry") or "",
                     "result": done.get("result") or "", "reason": done.get("reason") or "",
-                    "cardBranch": ticket["cardBranch"],
-                    "branch": ticket["branch"] or step.get("branch") or ""}}
+                    "cardBranch": ticket["cardBranch"], "branch": ticket["branch"] or step.get("branch") or "",
+                    "provider": step.get("provider") or st.started.get("provider") or "",
+                    "stepKind": step.get("kind") or "",
+                    "preferredProvider": st.started.get("preferredProvider") or "",
+                    "authorProvider": author.get("provider") or st.started.get("provider") or "",
+                    "authorModel": author.get("model") or st.started.get("model") or "",
+                    "reviewerProvider": reviewer.get("provider") or st.started.get("reviewerProvider") or "",
+                    "reviewerModel": reviewer.get("model") or st.started.get("reviewerModel") or ""}}
     out["flow"]["steps"] = [
         {"id": name, "ticket": item.get("ticket") or "", "mode": item.get("mode") or "background",
          "result": (st.finished.get(name) or {}).get("result") or "",
@@ -236,13 +261,29 @@ def derived(st: FlowState, card: dict) -> dict | None:
         out["done"] = 1
         return _fill(out, "review", f"✓ {ident} na gałęzi karty — review APPROVE, do sprawdzenia")
     if result == "question" or (result == "stopped" and done.get("reason") == "interactive-closed"):
+        if result == "question" and st.last_step in st.step_decisions:
+            return _fill(out, "progress", f"{ident} · wznawiam po odpowiedzi")
+        if result == "question":
+            out["flow"].update({"action": "answer", "question": done.get("question") or ""})
         out["question"] = _clip(done.get("question") or "", 120)
         return _fill(out, "waiting", f"{ident} pyta: „{out['question']}”" if out["question"] else f"{ident} pyta")
     if result == "denied":
+        if st.last_step in st.step_decisions:
+            return _fill(out, "progress", f"{ident} · wznawiam po decyzji o poleceniu")
+        out["flow"].update({"action": "permission", "command": done.get("command") or "",
+                            "canAllow": bool(done.get("canAllow", True))})
         return _fill(out, "waiting", f"{ident}: brak zgody na „{done.get('command') or '?'}”")
     if result in ("error", "stopped"):
         reason = REASON_LABELS.get(done.get("reason") or "", done.get("reason") or "")
-        return _fill(out, "waiting", f"błąd kroku {ident}: {reason}" if reason else f"błąd kroku {ident}")
+        if result == "error":
+            if int(step.get("attempt") or 0) == 0 and st.last_step not in st.step_decisions:
+                return _fill(out, "progress", f"{ident} · ponawiam krok po błędzie")
+            if st.last_step in st.step_decisions:
+                return _fill(out, "progress", f"{ident} · wznawiam po decyzji użytkownika")
+            out["flow"].update({"action": "error", "error": reason,
+                                "stalledSince": done.get("stalledSince") or ""})
+        since = f" od {done['stalledSince']}" if done.get("stalledSince") else ""
+        return _fill(out, "waiting", f"błąd kroku {ident}: {reason}{since}" if reason else f"błąd kroku {ident}")
     return _fill(out, "progress", f"{ident} · zlecenie")
 
 
