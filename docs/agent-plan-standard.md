@@ -141,6 +141,35 @@ worktree czytają Sesje, raport i kontrola numerów razem z innymi planami repoz
 Usługa aktualizuje `Stan` oraz `updated` w zatwierdzonym planie po delegowaniu, wyniku kroku,
 review i scaleniu ticketu.
 
+## Przepływ karty prowadzony przez Tide (1.2)
+
+Karta na Tablicy uruchamia planowanie albo pojedynczy ticket. Tide prowadzi dziennik karty, zakłada gałąź karty
+i osobne gałęzie ticketów, uruchamia kroki oraz pokazuje decyzje w panelu karty. Planowanie Lekkie tworzy propozycję
+w tle z opisu i specyfikacji karty. Pełne planowanie odbywa się obecnie w Konsoli; włączenie go do tego przepływu
+jest drugim etapem. „Mam plan” przejmuje wskazany plan
+bez zapisywania zmian w jego repozytorium. Plan przekazywany dla konkretnej karty ma `card: K-<numer>`; plan bez
+tego pola może być podpowiedzią, a nie automatycznie wybranym planem karty.
+
+**Role.** Planujący przygotowuje tabelę i kartki. Inny wykonawca sprawdza plan przed pokazaniem go użytkownikowi;
+gdy znajdzie braki, planujący dostaje jedną poprawkę. Autor ticketu wykonuje pionowy wycinek w osobnym worktree,
+a recenzent używa innego modelu i zapisuje werdykt. Użytkownik zatwierdza plan albo różnicę po odesłaniu z uwagami;
+może też zmienić wykonawcę lub kartkę ticketu, który jeszcze nie wystartował. Tickety bez blokerów mogą biec
+równolegle, z limitem kroków dostawcy; bloker rusza po scaleniu poprzedników do gałęzi karty.
+
+**Kontrakt kroku.** Tide przekazuje kartkę z identyfikatorem karty i ticketu, gałęzią, katalogiem roboczym,
+ograniczeniami oraz ścieżką katalogu wyjściowego. Autor zapisuje tam notkę `note.md`, a na końcu `result.json`:
+`{"result":"done","notes":["note.md"]}`, `{"result":"question","question":"…"}`,
+`{"result":"denied","command":"…"}` albo `{"result":"error","reason":"…"}`. Recenzent oprócz tego
+zapisuje `review.md` i werdykt `APPROVE` lub `REQUEST_CHANGES` z liczbą usterek. Brak poprawnego wyniku jest błędem
+kroku. Pytanie, zgoda i ponowienie przechodzą przez dziennik karty; wznowienie zachowuje worktree i zmiany.
+Autor i recenzent nie wykonują push ani scalenia.
+
+**Domknięcie.** Tide scala zaakceptowane tickety do gałęzi karty. `check: manual` dodaje listę „Co przetestować
+ręcznie i jak”; `check: auto` oznacza brak tej listy. W obu przypadkach **scalenie gałęzi karty do głównej wymaga
+osobnego polecenia użytkownika**. Statusy i numeracja pochodzą z dziennika oraz zatwierdzonego planu; istniejące
+plany sześciokolumnowe i stare sesje koordynatora zachowują dotychczasowy odczyt. Plik planu w repozytorium projektu
+nie jest poprawiany przy samym wyborze „Mam plan”.
+
 **Stany:**
 
 | Stan | Znaczenie | Kolumna w Tide Sesje |
@@ -176,7 +205,8 @@ Tide łączy pracę podagentów z ticketami po ID, więc:
    (karta `check: manual`), koordynator po review dopisuje w planie, pod tabelą, sekcję
    „Co przetestować ręcznie i jak” — kroki i oczekiwany wynik każdego — nie scala gałęzi i w ostatniej
    wiadomości mówi, że praca czeka na test ręczny użytkownika. Bez testu ręcznego (`check: auto`,
-   domyślnie) praca kończy się po review; scalenie tylko wtedy, gdy pozwalają na nie zasady projektu.
+   domyślnie) praca kończy się po review. W przepływie prowadzonym przez Tide gałąź główną scala
+   wyłącznie użytkownik osobnym poleceniem, także przy `check: auto`.
 
 ## Jak Tide wyznacza stan
 
