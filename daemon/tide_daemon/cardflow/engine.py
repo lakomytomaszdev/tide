@@ -357,11 +357,14 @@ class FlowEngine:
             binary = self.terminal.launchers.codex_for(source)
         old_result = (st.finished.get(step_id) or {}).get("result") or ""
         kind = "interactive" if old_result == "done" else current.get("kind") or "ticket"
+        console_unit = "tide-console-" + uuid.uuid4().hex
         prompt = handoff.resume_step(card_id, current.get("ticket") or "", out, kind=kind)
         command = agentcmd.resume_interactive(tool, binary, session, prompt, route)
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
                    "title": f"{card_id} · {current.get('ticket') or 'krok'}", "closedFile": closed,
-                   "processFile": process_file}
+                   "processFile": process_file, "consoleUnit": console_unit,
+                   "systemdRun": self.systemd_run or agentcmd.SYSTEMD_RUN,
+                   "systemctl": self.which("systemctl") or "/usr/bin/systemctl"}
         payload.update(command.task_fields())
         task_file = self.task_files.write(payload)
         if new_id != step_id:
@@ -375,7 +378,8 @@ class FlowEngine:
                                 round=current.get("round") or 0, reviewTip=current.get("reviewTip") or "",
                                 repo=current.get("repo") or self._repo(card_id))
         self.journal.append(card_id, "step.entered", step=new_id, session=session, source=source,
-                            closeFile=closed, processFile=process_file, taskFile=task_file,
+                            closeFile=closed, processFile=process_file, consoleUnit=console_unit,
+                            taskFile=task_file,
                             enteredAt=self.clock())
         plan = Plan(repo_path=current.get("repo") or self._repo(card_id), repo_name="", tool=tool,
                     prompt=prompt, cwd=claim_dir, branch=current.get("branch") or "", title=payload["title"],
@@ -926,6 +930,9 @@ class FlowEngine:
 
     def _console_ended(self, step: dict) -> bool:
         """Znacznik lub trwała tożsamość procesu potwierdza koniec, również po restarcie usługi."""
+        unit = step.get("consoleUnit") or ""
+        if unit and stepstop.unit_state(unit) != "inactive":
+            return False  # także nieznany stan jednostki trzyma worktree
         alive = launch.process_alive(step.get("processFile") or "")
         if alive is True:
             return False

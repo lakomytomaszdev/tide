@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from unittest import mock
 
 from tide_daemon.cardflow import state, execution
@@ -57,47 +58,12 @@ class CloseMarkerTest(unittest.TestCase):
             with open(path, encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh)["closed"], True)
 
-    def test_launcher_marks_close_after_agent_and_shell(self):
-        with tempfile.TemporaryDirectory() as temp:
-            path = os.path.join(temp, "closed")
-            order = []
-            def popen(argv, **_):
-                order.append("agent" if argv[0] == "/bin/claude" else "shell")
-                return mock.Mock(pid=os.getpid(), returncode=0, poll=lambda: 0)
-            with mock.patch("subprocess.Popen", side_effect=popen):
-                launch.run_flow({"argv": ["/bin/claude", "--resume", "id"], "closedFile": path})
-            self.assertEqual(order, ["agent", "shell"])
-            self.assertTrue(os.path.isfile(path))
-
-    def test_hangup_waits_for_agent_before_marking_close(self):
-        with tempfile.TemporaryDirectory() as temp:
-            closed = os.path.join(temp, "closed")
-            process = os.path.join(temp, "process")
-            ready = os.path.join(temp, "ready")
-            agent = os.path.join(temp, "agent.py")
-            with open(agent, "w", encoding="utf-8") as fh:
-                fh.write("import os, signal, time\n"
-                         "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
-                         f"open({ready!r}, 'w').write(str(os.getpid()))\n"
-                         "time.sleep(30)\n")
-            task = {"argv": [sys.executable, agent], "closedFile": closed, "processFile": process}
-            runner = subprocess.Popen([sys.executable, "-c",
-                                       "import json,sys; from tide_daemon.tasks import launch; "
-                                       "sys.exit(launch.run_flow(json.loads(sys.argv[1])))", json.dumps(task)],
-                                      env={**os.environ, "SHELL": "/bin/true"})
-            self.addCleanup(lambda: runner.kill() if runner.poll() is None else None)
-            deadline = time.monotonic() + 5
-            while not os.path.isfile(ready) and time.monotonic() < deadline:
-                time.sleep(0.02)
-            self.assertTrue(os.path.isfile(ready))
-            with open(ready, encoding="utf-8") as fh:
-                child = int(fh.read())
-            os.kill(runner.pid, signal.SIGHUP)
-            time.sleep(0.3)
-            self.assertFalse(os.path.isfile(closed))
-            os.kill(child, signal.SIGKILL)
-            runner.wait(timeout=5)
-            self.assertTrue(os.path.isfile(closed))
+    def test_flow_child_runs_agent_then_shell(self):
+        order = []
+        with mock.patch.object(launch, "run_agent", side_effect=lambda *_: order.append("agent")), \
+                mock.patch("subprocess.call", side_effect=lambda *_: order.append("shell")):
+            launch.run_flow_child({"argv": ["/bin/claude", "--resume", "id"]})
+        self.assertEqual(order, ["agent", "shell"])
 
     def test_process_group_survives_killed_launcher_before_child_record(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -126,6 +92,83 @@ class CloseMarkerTest(unittest.TestCase):
             while launch.process_alive(process) and time.monotonic() < deadline:
                 time.sleep(0.02)
             self.assertFalse(launch.process_alive(process))
+
+    def test_scope_keeps_setsid_grandchild_and_shell_until_unit_stops(self):
+        unit = "tide-pt67-" + uuid.uuid4().hex
+        try:
+            probe = subprocess.run(["/usr/bin/systemd-run", "--user", "--scope", "--collect", "--quiet",
+                                    f"--unit={unit}-probe", "--", "/bin/true"], capture_output=True)
+        except OSError:
+            self.skipTest("brak systemd-run")
+        if probe.returncode:
+            self.skipTest("brak jednostek systemd użytkownika")
+        with tempfile.TemporaryDirectory() as temp:
+            closed = os.path.join(temp, "closed")
+            process = os.path.join(temp, "process")
+            ready = os.path.join(temp, "ready")
+            agent = os.path.join(temp, "agent.py")
+            with open(agent, "w", encoding="utf-8") as fh:
+                fh.write("import os,subprocess,sys\n"
+                         "child=subprocess.Popen([sys.executable,'-c',"
+                         "'import signal,time; signal.signal(signal.SIGHUP,signal.SIG_IGN); time.sleep(30)'],"
+                         "start_new_session=True)\n"
+                         f"open({ready!r},'w').write(f'{{child.pid}} {{os.getpid()}}')\n")
+            task = {"argv": [sys.executable, agent], "cwd": temp, "workdir": temp,
+                    "closedFile": closed, "processFile": process, "consoleUnit": unit,
+                    "systemdRun": "/usr/bin/systemd-run", "systemctl": "/usr/bin/systemctl"}
+            runner = subprocess.Popen([sys.executable, "-c",
+                                       "import json,sys; from tide_daemon.tasks import launch; "
+                                       "sys.exit(launch.run_flow(json.loads(sys.argv[1])))", json.dumps(task)],
+                                      env={**os.environ, "SHELL": "/bin/true",
+                                           "PYTHONPATH": os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))},
+                                      cwd=temp)
+            grandchild = 0
+            try:
+                deadline = time.monotonic() + 8
+                while not os.path.isfile(ready) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(os.path.isfile(ready))
+                with open(ready, encoding="utf-8") as fh:
+                    grandchild, agent_pid = map(int, fh.read().split())
+                # Agent i powłoka już wyszły; osierocony wnuk po setsid nadal trzyma scope.
+                deadline = time.monotonic() + 5
+                while os.path.exists(f"/proc/{agent_pid}") and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertFalse(os.path.exists(f"/proc/{agent_pid}"))
+                self.assertFalse(os.path.isfile(closed))
+                self.assertEqual(subprocess.run(["/usr/bin/systemctl", "--user", "is-active", "--quiet",
+                                                 unit + ".scope"]).returncode, 0)
+                store = mock.Mock(root=os.path.join(temp, "board"))
+                journal = Journal(store.root, mirror=os.path.join(temp, "mirror"))
+                step_id = "K-1-PT-1-1"
+                os.makedirs(os.path.join(temp, "out"))
+                journal.append("K-1", "card.started", executor="Sonnet", program="claude", repo=temp)
+                journal.append("K-1", "step.started", step=step_id, kind="ticket", ticket="PT-1",
+                               worktree=temp, stepDir=temp, repo=temp)
+                journal.append("K-1", "step.entered", step=step_id, closeFile=closed, processFile=process,
+                               consoleUnit=unit, taskFile=os.path.join(temp, "claimed.task"), enteredAt=time.time())
+                restarted = FlowEngine(store, journal=Journal(store.root, mirror=journal.mirror))
+                restarted.tick()
+                self.assertNotIn(step_id, state.fold(journal.read("K-1")).finished)
+                os.kill(runner.pid, signal.SIGHUP)
+                runner.wait(timeout=8)
+                self.assertTrue(os.path.isfile(closed))
+                self.assertNotEqual(subprocess.run(["/usr/bin/systemctl", "--user", "is-active", "--quiet",
+                                                    unit + ".scope"]).returncode, 0)
+                restarted = FlowEngine(store, journal=Journal(store.root, mirror=journal.mirror))
+                restarted.tick()
+                self.assertEqual(state.fold(journal.read("K-1")).finished[step_id]["reason"], "interactive-closed")
+            finally:
+                subprocess.run(["/usr/bin/systemctl", "--user", "kill", "--kill-whom=all", "--signal=SIGKILL",
+                                unit + ".scope"], capture_output=True)
+                if runner.poll() is None:
+                    runner.kill()
+                    runner.wait(timeout=5)
+                if grandchild:
+                    try:
+                        os.kill(grandchild, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
 
 class _Terminal:
@@ -157,6 +200,9 @@ class EnterStepTest(unittest.TestCase):
         os.makedirs(os.path.join(self.step_dir, "out"))
         self.order = []
         self.terminal = _Terminal(self.order)
+        unit_patch = mock.patch("tide_daemon.cardflow.engine.stepstop.unit_state", return_value="inactive")
+        unit_patch.start()
+        self.addCleanup(unit_patch.stop)
         store = mock.Mock(root=os.path.join(self.root, "board"))
         self.engine = FlowEngine(store, journal=Journal(store.root, mirror=os.path.join(self.root, "mirror")),
                                  terminal=self.terminal, task_files=TaskFiles(os.path.join(self.root, "tasks")))
@@ -286,6 +332,27 @@ class EnterStepTest(unittest.TestCase):
         folded = state.fold(self.engine.journal.read("K-1"))
         self.assertFalse(folded.steps[self.step_id]["consoleClosed"])
         self.assertNotIn(self.step_id, folded.finished)
+
+    def test_active_or_unknown_scope_blocks_reconciliation_after_restart(self):
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        self.assertTrue(current.get("consoleUnit"))
+        os.unlink(current["taskFile"])
+        launch.write_closed(current["closeFile"])
+        restarted = FlowEngine(self.engine.store, journal=self.engine.journal, terminal=self.terminal,
+                               task_files=self.engine.task_files)
+        with mock.patch("tide_daemon.cardflow.engine.stepstop.unit_state", return_value="active"):
+            restarted.tick()
+        self.assertNotIn(self.step_id, state.fold(self.engine.journal.read("K-1")).finished)
+        with mock.patch("tide_daemon.cardflow.engine.stepstop.unit_state", return_value="unknown"):
+            restarted.tick()
+        self.assertNotIn(self.step_id, state.fold(self.engine.journal.read("K-1")).finished)
+        with mock.patch("tide_daemon.cardflow.engine.stepstop.unit_state", return_value="inactive"):
+            restarted.tick()
+        folded = state.fold(self.engine.journal.read("K-1"))
+        self.assertTrue(folded.steps[self.step_id]["consoleClosed"])
+        self.assertEqual(folded.finished[self.step_id]["reason"], "interactive-closed")
 
     def test_corrupt_process_record_does_not_prove_console_closed(self):
         with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):

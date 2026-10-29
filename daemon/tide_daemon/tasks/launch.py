@@ -274,83 +274,128 @@ def shell() -> list[str]:
 
 
 def run_flow(task: dict) -> int:
-    """Karta kroku zostaje otwarta po agencie; zamknięcie zostawia znacznik dla usługi."""
+    """Agent i późniejsza powłoka pracują w jednej cgroup; znacznik wymaga jej nieaktywności."""
     import signal
     import subprocess
+    import time
 
     closed = task.get("closedFile") or ""
-    if not isinstance(closed, str) or not os.path.isabs(closed):
-        return 2
-
     process_file = task.get("processFile") or ""
-    child = None
+    unit = task.get("consoleUnit") or ""
+    if not all(isinstance(p, str) and os.path.isabs(p) for p in (closed, process_file)) or \
+            not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", unit):
+        return 2
+    systemd_run = task.get("systemdRun") or "/usr/bin/systemd-run"
+    systemctl = task.get("systemctl") or "/usr/bin/systemctl"
+    child_file = process_file + ".task"
+    temp = child_file + f".{os.getpid()}.tmp"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(task, fh, ensure_ascii=False)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temp, child_file)
     hung_up = False
 
     def hangup(*_):
         nonlocal hung_up
         hung_up = True
-        if child is not None and child.poll() is None:
-            try:
-                child.send_signal(signal.SIGHUP)
-            except ProcessLookupError:
-                pass
-
-    def run(argv, env=None):
-        nonlocal child
-        try:
-            child = subprocess.Popen(argv, env=env)
-            write_process(process_file, os.getpid(), child.pid)
-            deadline = None
-            while child.poll() is None:
-                if hung_up and deadline is None:
-                    deadline = time.monotonic() + 2.0
-                if deadline is not None and time.monotonic() >= deadline:
-                    child.kill()
-                try:
-                    child.wait(timeout=0.1)
-                except subprocess.TimeoutExpired:
-                    pass
-            return child.returncode
-        except OSError as exc:
-            print(f"Tide: nie udało się uruchomić {argv[0]}: {exc}", file=sys.stderr, flush=True)
-            return 127
-        finally:
-            if child is not None and child.poll() is None:
-                child.terminate()
-                try:
-                    child.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    child.wait()
-            if child is None or child.poll() is not None:
-                child = None
-                write_process(process_file, os.getpid())
-
-    previous = {signal.SIGHUP: signal.signal(signal.SIGHUP, hangup)}
+    previous = {sig: signal.signal(sig, hangup) for sig in (signal.SIGHUP, signal.SIGTERM)}
     for sig in (signal.SIGINT, signal.SIGQUIT):
         previous[sig] = signal.signal(sig, lambda *_: None)
+    proc = None
+    stopped = False
     try:
-        import time
         write_process(process_file, os.getpid())
         try:
-            env = agent_env(task, os.environ) if has_env(task) else dict(os.environ)
-        except ValueError as exc:
-            print(f"Tide: model lokalny: {exc} — agent nie wystartował.", flush=True)
-        else:
-            run(task["argv"], env)
-            del env
-        if not hung_up:
-            run(shell())
+            proc = subprocess.Popen([systemd_run, "--user", "--scope", "--collect", "--quiet",
+                                     f"--unit={unit}", "--", sys.executable, "-s", os.path.abspath(__file__),
+                                     "--flow-child", child_file], cwd=task.get("workdir") or task["cwd"])
+            write_process(process_file, os.getpid(), proc.pid)
+        except OSError as exc:
+            print(f"Tide: nie udało się uruchomić jednostki Konsoli: {exc}", file=sys.stderr, flush=True)
+        sent = False
+        deadline = None
+        while True:
+            if hung_up and not sent:
+                scope_kill(unit, systemctl, "SIGTERM")
+                sent = True
+                deadline = time.monotonic() + 2
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    pass
+            if proc is not None and proc.poll() is None and not sent:
+                continue
+            state = scope_state(unit, systemctl)
+            if sent and state == "active" and time.monotonic() >= deadline:
+                scope_kill(unit, systemctl, "SIGKILL")
+                deadline = time.monotonic() + 2
+            if state == "inactive" and (proc is None or proc.poll() is not None):
+                stopped = True
+                break
+            time.sleep(0.5)
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
-        if child is None or child.poll() is not None:
+        if stopped:
             write_closed(closed)
+            try:
+                os.unlink(child_file)
+            except FileNotFoundError:
+                pass
     return 129 if hung_up else 0
+
+
+def scope_state(unit: str, systemctl: str) -> str:
+    """Stan cgroup; błąd menedżera nie jest dowodem końca pracy."""
+    import subprocess
+    try:
+        code = subprocess.run([systemctl, "--user", "is-active", "--quiet", unit + ".scope"],
+                              capture_output=True, timeout=3).returncode
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    return "active" if code == 0 else "inactive" if code in (3, 4) else "unknown"
+
+
+def scope_kill(unit: str, systemctl: str, sig: str) -> None:
+    import subprocess
+    try:
+        subprocess.run([systemctl, "--user", "kill", "--kill-whom=all", f"--signal={sig}", unit + ".scope"],
+                       capture_output=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def run_flow_child(task: dict) -> int:
+    """Część w scope: agent i powłoka zachowują ten sam terminal i katalog roboczy."""
+    import subprocess
+    try:
+        env = agent_env(task, os.environ) if has_env(task) else dict(os.environ)
+    except ValueError as exc:
+        print(f"Tide: model lokalny: {exc} — agent nie wystartował.", flush=True)
+    else:
+        run_agent(task["argv"], env)
+        del env
+    try:
+        return subprocess.call(shell())
+    except OSError:
+        return 127
 
 
 def main(argv=None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    if len(args) == 2 and args[0] == "--flow-child":
+        task = _load(args[1])
+        if task is None or not task.get("consoleUnit"):
+            return 2
+        try:
+            os.chdir(task.get("workdir") or task["cwd"])
+        except OSError:
+            return 2
+        os.environ["TIDE_TASK"] = "1"
+        return run_flow_child(task)
     if len(args) == 2 and args[0] == "--task":
         task = claim(args[1])
     elif not args:

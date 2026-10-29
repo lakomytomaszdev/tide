@@ -588,7 +588,7 @@ Rectangle {
                         Layout.fillWidth: true
                         Layout.topMargin: 8
                         spacing: 5
-                        visible: panel.editing && panel.card.derived && panel.card.derived.flow
+                        visible: Boolean(panel.editing && panel.card.derived && panel.card.derived.flow)
                         Repeater {
                             id: flowRepeater
                             model: panel.editing && panel.card.derived && panel.card.derived.flow
