@@ -10,7 +10,7 @@
 
 // Role z models.json słowami: nazwa w popupie i to, co model robi („pracuje: opis kart”).
 var ROLE_NAMES = { summary: "Raport", describe: "Opisy kart", agent: "Agent", embed: "Wyszukiwanie", polish: "Polszczyzna" }
-var ROLE_WORK = { summary: "raport", describe: "opis kart", agent: "agent", embed: "wyszukiwanie", polish: "polszczyzna" }
+var ROLE_WORK = { "card-step": "krok karty", summary: "raport", describe: "opis kart", agent: "agent", embed: "wyszukiwanie", polish: "polszczyzna" }
 var ROLE_ORDER = ["summary", "describe", "agent", "embed"]
 // Role pracy w tle (raport, opisy kart): ich brakujący model to ostrzeżenie na kafelku. Opcjonalne role
 // (agent, wyszukiwanie…) widać tylko w popupie.

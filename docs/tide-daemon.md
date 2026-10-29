@@ -868,6 +868,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
 | `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?}` albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
+| `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
@@ -1457,6 +1458,29 @@ na gałęzi karty pod blokadą repozytorium, przez piaskownicę gita. Dzięki te
 planów ze wszystkich worktree widzi nowe ID w Sesjach, raporcie i kontroli numerów. Ticket startuje
 dopiero po scaleniu wszystkich swoich blokerów; każdy przechodzi review i scalenie z PT-59.
 Przerwanie między rezerwacją, wpisem mapy i commitem planu odtwarza ten sam plan i numery.
+
+### Fale i równoległość kroków (PT-62)
+
+Fala jest poziomem grafu blokerów i za każdym razem wynika z tabeli planu; dziennik nie zapisuje numeru fali.
+Gotowe do pracy tickety ruszają równolegle, kiedy **wszystkie ich blokery zostały scalone** do gałęzi karty.
+Review, poprawki i ponowienia też korzystają ze slotów dostawcy, wspólnych dla wszystkich kart.
+Operacje gita nadal wykonuje jedna blokada repozytorium z PT-59.
+
+Domyślnie Anthropic i OpenAI (oraz inni dostawcy) mają po trzy sloty. Opcjonalne pole
+`providerSlots` w `$XDG_CONFIG_HOME/tide/cardflow.json` pozwala nadpisać dodatnią liczbę slotów per dostawca,
+np. `{"providerSlots":{"anthropic":3,"openai":2}}`. Niepoprawne wartości zachowują domyślny limit.
+Lokalnie zawsze pracuje najwyżej jeden krok: zajmuje tor kolejki modeli na czas całej sesji.
+Czekające wywołania raportu i opisów kart ruszają przed kolejnym krokiem; trwającego kroku nie przerywamy.
+Po restarcie zajęty slot jest odtwarzany z dziennika.
+
+Brak slotu zapisuje `step.waiting` z nazwanym powodem; start kroku usuwa ten powód z projekcji.
+`derived.tickets` daje stany mini-paska i fale, `derived.flow.waveLabel` — znacznik „fala N z M”,
+`derived.flow.waiting` — powody czekania, `derived.flow.steps` — przebieg z wykonawcami,
+a `derived.flow.timeline` — uporządkowaną oś zdarzeń. Oś zawiera pola do prezentacji, bez konfiguracji punktu.
+Pytanie jednego ticketu jest widoczne i można na nie odpowiedzieć, gdy inne tickety pracują.
+
+Panel woła `/Board SetCardPaused(id, true)` dla „Wstrzymaj kartę” i tę samą metodę z `false` dla „Wznów”.
+Wstrzymanie nie zmienia ręcznej kolumny ani nie przerywa trwających kroków; blokuje start nowych kroków.
 
 ### Przepływ karty: „Od razu” (PT-58)
 

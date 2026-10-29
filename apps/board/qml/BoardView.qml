@@ -100,6 +100,7 @@ Item {
         onAbandonStepRequested: (tag, id, step) => view.backend.abandonStep(tag, id, step)
         onReviewResolveRequested: (tag, id, choice) => view.backend.resolveCardReview(tag, id, choice)
         onStepResolveRequested: (tag, id, request) => view.backend.resolveCardStep(tag, id, request)
+        onPauseRequested: (tag, id, paused) => view.backend.setCardPaused(tag, id, paused)
         onPlanApproveRequested: (tag, id) => view.backend.approveCardPlan(tag, id)
         // Zrzuty ekranu i model w oknie uruchomienia (PT-43).
         launchImages: view.backend ? Logic.parse(view.backend.imagesJson, []) : []
