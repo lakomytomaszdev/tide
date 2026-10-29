@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import threading
 
 from ..worktrees.git import MAIN_CANDIDATES, Git, pick_main_branch
@@ -119,6 +120,46 @@ class FlowGit:
             if not status.ok or status.out.strip():
                 raise FlowGitError("worktree ticketu ma lokalne zmiany")
             return tip
+
+    def commit_plan(self, repo: str, branch: str, worktree: str, files: dict[str, bytes]) -> dict:
+        """Zapisuje migawkę zatwierdzonego planu na gałęzi karty bez podążania za dowiązaniami."""
+        with lock_for(repo):
+            if not sandbox_available():
+                raise FlowGitError("piaskownica gita karty jest niedostępna")
+            listed = self.run(repo, "worktree", "list", "--porcelain")
+            if not listed.ok or not any(
+                os.path.realpath(part.get("worktree", "")) == os.path.realpath(worktree)
+                and part.get("branch") == f"refs/heads/{branch}"
+                for part in (dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
+                             for block in listed.out.split("\n\n"))
+            ):
+                raise FlowGitError("worktree karty nie należy do gałęzi planu")
+            try:
+                git_dir = resolve_git_dir(repo, worktree)
+            except StepError as exc:
+                raise FlowGitError(f"nie można ustalić katalogu gita worktree karty: {exc}") from exc
+            work_git = StepGit(repo, git_dir, worktree, worktree + ".step")
+            status = work_git.run("status", "--porcelain", "--untracked-files=all")
+            allowed = set(files)
+            if not status.ok or any(line[3:] not in allowed for line in status.out.splitlines() if len(line) >= 4):
+                raise FlowGitError("worktree karty ma obce lokalne zmiany")
+            for path, content in files.items():
+                try:
+                    _write_plan_file(worktree, path, content)
+                except OSError as exc:
+                    raise FlowGitError(f"nie można zapisać planu w worktree karty: {exc}") from exc
+            staged = work_git.run("add", "--", *files)
+            if not staged.ok:
+                raise FlowGitError("nie można dodać planu do indeksu karty: " + staged.err)
+            changed = work_git.run("diff", "--cached", "--quiet", "--", *files)
+            if changed.code == 0:
+                return {"commit": self.sha(repo, branch), "already": True}
+            if changed.code != 1:
+                raise FlowGitError("nie można sprawdzić zmian planu w indeksie karty")
+            made = work_git.run("commit", "-m", "docs(plan): update card ticket plan", "--", *files)
+            if not made.ok:
+                raise FlowGitError("nie można zapisać planu na gałęzi karty: " + made.err)
+            return {"commit": self.sha(repo, branch), "already": False}
 
     def remove_worktree(self, repo: str, branch: str, path: str) -> dict:
         """Sprząta worktree po APPROVE pod tą samą blokadą co zakładanie i scalanie."""
@@ -243,3 +284,36 @@ class FlowGit:
                     raise FlowGitError("nie udało się przesunąć gałęzi karty")
                 raise FlowGitError("gałąź karty zmieniła się w trakcie scalania")
             return {"commit": commit, "already": False}
+
+
+def _write_plan_file(worktree: str, rel: str, content: bytes) -> None:
+    """Otwiera każdy składnik ścieżki z O_NOFOLLOW; repo nie może przekierować zapisu dowiązaniem."""
+    parts = rel.split("/")
+    if not parts or any(not part or part in (".", "..") for part in parts) or not isinstance(content, bytes):
+        raise OSError("niepoprawna ścieżka planu")
+    folder = os.open(worktree, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in parts[:-1]:
+            try:
+                os.mkdir(part, 0o755, dir_fd=folder)
+            except FileExistsError:
+                pass
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=folder)
+            os.close(folder)
+            folder = child
+        target = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                         0o644, dir_fd=folder)
+        try:
+            if not stat.S_ISREG(os.fstat(target).st_mode):
+                raise OSError("plik planu nie jest zwykłym plikiem")
+            view = memoryview(content)
+            while view:
+                written = os.write(target, view)
+                if written <= 0:
+                    raise OSError("niepełny zapis planu")
+                view = view[written:]
+            os.fsync(target)
+        finally:
+            os.close(target)
+    finally:
+        os.close(folder)

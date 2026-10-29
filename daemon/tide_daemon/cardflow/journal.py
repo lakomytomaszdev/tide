@@ -118,6 +118,16 @@ class Journal:
             self._dirty.add(rel_path)
             return rel_path
 
+    def remove_file(self, card: str, rel: str) -> None:
+        """Usuwa plik migawki po zmianie numeru i zgłasza usunięcie do commita tablicy."""
+        with self.lock:
+            target = os.path.join(self.root, self.rel_dir(card), rel)
+            if not os.path.realpath(target).startswith(os.path.realpath(os.path.join(self.root, FLOW_DIR)) + os.sep):
+                raise ValueError(f"ścieżka poza katalogiem karty: {rel}")
+            if os.path.isfile(target):
+                os.unlink(target)
+                self._dirty.add(os.path.relpath(target, self.root))
+
     def check(self, card: str) -> str:
         """Plik w tablicy różny od kopii (revert, ręczna zmiana, usunięcie) — odtworzenie z kopii; ostrzeżenie albo ""."""
         with self.lock:

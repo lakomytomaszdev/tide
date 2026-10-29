@@ -463,6 +463,10 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="ApproveCardPlan">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <signal name="Changed"/>
   <signal name="WorkChanged"/>
 </interface>"""
@@ -927,6 +931,18 @@ class BoardAdaptor(QDBusAbstractAdaptor):
                 print("tide-daemon: nie udało się odesłać wyniku Board.ResolveCardStep", flush=True)
 
         self.monitor.resolve_card_step(card_id, request, reply)
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def ApproveCardPlan(self, card_id: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.ApproveCardPlan", flush=True)
+
+        self.monitor.approve_card_plan(card_id, reply)
         return ""
 
     @pyqtSlot(str, result=str)

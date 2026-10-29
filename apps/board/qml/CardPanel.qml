@@ -55,6 +55,8 @@ Rectangle {
     readonly property string shownTab: editing ? Docs.effectiveTab(docs, tab) : "opis"
     readonly property bool reading: shownTab !== "opis"
     readonly property var docTabs: Docs.tabs(docs)
+    readonly property var flowPlan: editing && card && card.derived && card.derived.flow
+                                    ? (card.derived.flow.plan || null) : null
     readonly property alias docView: docView
     readonly property alias flowRepeater: flowRepeater
     readonly property var inherited: projectKind === "project" ? Logic.inheritedTags(snapshot, project) : []
@@ -73,6 +75,20 @@ Rectangle {
     signal abandonStepRequested(string cardId, string stepId)
     signal reviewResolveRequested(string cardId, string choice)     // pytanie po limicie rund review
     signal stepResolveRequested(string cardId, var request)        // pytanie, zgoda albo błąd kroku
+    signal planApproveRequested(string cardId)                      // zatwierdzenie propozycji planu
+
+    function planEntries() {
+        const plan = flowPlan
+        if (!plan) return []
+        const out = []
+        for (let i = 0; i < (plan.waves || []).length; i++) {
+            for (const id of plan.waves[i]) {
+                const row = (plan.rows || []).find(r => (r.id || r.workId) === id)
+                if (row) out.push(Object.assign({wave: i + 1}, row))
+            }
+        }
+        return out
+    }
 
     function form() {
         const key = Logic.issueKey(youtrackField.text)
@@ -251,6 +267,90 @@ Rectangle {
             font.family: Tide.Theme.uiFamily
             font.pixelSize: 11
             wrapMode: Text.Wrap
+        }
+
+        ColumnLayout {
+            objectName: "cardPlanProposal"
+            Layout.fillWidth: true
+            visible: !!panel.flowPlan
+            spacing: 5
+            Text {
+                Layout.fillWidth: true
+                text: panel.flowPlan && panel.flowPlan.status === "pending" ? "Plan do zatwierdzenia"
+                      : panel.flowPlan && panel.flowPlan.status === "approved" ? "Zatwierdzony plan"
+                      : panel.flowPlan && panel.flowPlan.status === "done" ? "Plan wykonany"
+                      : "Błędy propozycji planu"
+                textFormat: Text.PlainText
+                color: Tide.Tokens.sky
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 15
+                font.bold: true
+            }
+            Text {
+                objectName: "cardPlanErrors"
+                Layout.fillWidth: true
+                visible: !!panel.flowPlan && (panel.flowPlan.errors || []).length > 0
+                text: panel.flowPlan ? (panel.flowPlan.errors || []).join(" · ") : ""
+                textFormat: Text.PlainText
+                color: Tide.Tokens.rose
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+            }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(planRows.implicitHeight, 180)
+                visible: panel.planEntries().length > 0
+                contentWidth: width
+                contentHeight: planRows.implicitHeight
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                ColumnLayout {
+                    id: planRows
+                    width: parent.width
+                    spacing: 4
+                    Repeater {
+                        model: panel.planEntries()
+                        delegate: RowLayout {
+                            required property var modelData
+                            required property int index
+                            property var ticket: modelData
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Fala " + ticket.wave + " · " + (ticket.id || ticket.workId) + " " + ticket.title
+                                      + " · robi " + ticket.executor + " · review " + ticket.reviewer
+                                      + (ticket.blockers.length ? " · blokery " + ticket.blockers.join(", ") : "")
+                                      + (ticket.note ? " · " + ticket.note : "")
+                                textFormat: Text.PlainText
+                                color: Tide.Tokens.textPrimary
+                                font.family: Tide.Theme.uiFamily
+                                font.pixelSize: 12
+                                wrapMode: Text.Wrap
+                            }
+                            PillButton {
+                                objectName: "cardPlanTicket-" + (index + 1)
+                                text: "Kartka"
+                                outline: true
+                                enabled: !!ticket.cardPath
+                                onClicked: panel.openFileRequested(ticket.cardPath)
+                            }
+                        }
+                    }
+                }
+            }
+            PillButton {
+                objectName: "cardPlanApprove"
+                text: "Zatwierdź plan"
+                visible: !!panel.flowPlan && panel.flowPlan.status === "pending"
+                enabled: !panel.busy
+                onClicked: {
+                    panel.busy = true
+                    panel.planApproveRequested(panel.card.id)
+                }
+            }
         }
 
         CardDocView {

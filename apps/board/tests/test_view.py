@@ -1812,6 +1812,38 @@ out["call"] = calls()[-1]
         self.assertEqual(json.loads(out["call"][-1]),
                          {"slug": "plasma-tide", "allowedCommands": ["git status", "git log", "git fetch origin"]})
 
+class PlanPanelTest(ProbeCase):
+    def test_plan_from_snapshot_shows_waves_and_approval_calls_service(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "plan do zatwierdzenia",
+                                   "flow": {"entry": "plan", "plan": {
+                                       "status": "pending", "errors": [],
+                                       "waves": [["#1"], ["#2"]],
+                                       "rows": [
+                                           {"workId": "#1", "title": "Pierwszy", "executor": "Sonnet",
+                                            "reviewer": "Opus", "blockers": [], "note": "pilne",
+                                            "cardPath": "/board/flow/K-6/plan/tickets/1.md"},
+                                           {"workId": "#2", "title": "Drugi", "executor": "Codex mocny",
+                                            "reviewer": "Codex Astra", "blockers": ["#1"], "note": "po pierwszym",
+                                            "cardPath": "/board/flow/K-6/plan/tickets/2.md"}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["entries"] = js("page.cardPanel.planEntries().map(r => [r.wave, r.workId, r.executor, r.reviewer, r.blockers])")
+out["shown"] = [obj("cardPlanProposal").property("visible"), obj("cardPlanApprove").property("visible")]
+click(at(FIND + "(page.cardPanel, 'cardPlanTicket-1')"))
+out["ticketCall"] = calls()[-1]
+click(at(FIND + "(page.cardPanel, 'cardPlanApprove')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["entries"], [[1, "#1", "Sonnet", "Opus", []],
+                                          [2, "#2", "Codex mocny", "Codex Astra", ["#1"]]])
+        self.assertEqual(out["shown"], [True, True])
+        self.assertEqual(out["ticketCall"], ["openFile", "/board/flow/K-6/plan/tickets/1.md"])
+        self.assertEqual(out["call"], ["ApproveCardPlan", "K-6"])
+
 
 class LaunchReviewTest(ProbeCase):
     """PT-43 po review: upuszczenie pliku na pole zadania, Tab do „Zrób zrzut”, schowek z tekstem i obrazem,
@@ -2031,6 +2063,20 @@ class GrabTest(ProbeCase):
 
 @requires_dbus
 class BackendTest(unittest.TestCase):
+    def test_plan_card_paths_require_current_card_and_current_snapshot(self):
+        path = "/board/flow/K-1/plan/tickets/1.md"
+        card = {"id": "K-1", "derived": {"flow": {"plan": {"rows": [{"cardPath": path}]}}}}
+        backend = self.module.create(None, {"exists": True, "cards": [card, {"id": "K-2"}]})
+        self.assertFalse(backend.openFile(path))
+        backend.cardDocs("K-1")
+        self.assertTrue(backend.openFile(path))
+        self.assertFalse(backend.openFile("/etc/passwd"))
+        backend.cardDocs("K-2")
+        self.assertFalse(backend.openFile(path))
+        backend.cardDocs("K-1")
+        backend._got_snapshot(True, json.dumps({"cards": [{"id": "K-1"}]}))
+        self.assertFalse(backend.openFile(path))
+
     """backend.py z prawdziwym tide-daemon na prywatnej magistrali i tymczasową tablicą."""
 
     def setUp(self):
