@@ -23,6 +23,7 @@ class FakeYouTrack:
         self.token = token
         self.issues: dict[str, dict] = {}
         self.calls: list = []
+        self.comment_status = 200
         self.status = 200            # inny kod — każda odpowiedź z tym kodem (np. 503)
         self.workflow = list(WORKFLOW)
         self.projects: set | None = None   # None — każdy klucz projektu istnieje; zbiór — inne dostają 400 przy zakładaniu
@@ -108,6 +109,8 @@ class FakeYouTrack:
             if parts.path == "/api/commands" and handler.command == "POST":
                 return self._command(handler, body)
             if parts.path.startswith("/api/issues/") and parts.path.endswith("/comments"):
+                if self.comment_status != 200:
+                    return self._send(handler, self.comment_status, {"error": "unavailable"})
                 ident = urllib.parse.unquote(parts.path[len("/api/issues/"):-len("/comments")])
                 if ident not in self.issues:
                     return self._send(handler, 404, {"error": "Not Found"})

@@ -795,7 +795,8 @@ Rectangle {
                                 : stepDecision.flow && stepDecision.flow.action === "permission"
                                   ? "Polecenie wymaga zgody: " + (stepDecision.flow.command || "")
                                 : stepDecision.flow && stepDecision.flow.action === "error"
-                                  ? "Krok nie powiódł się: " + (stepDecision.flow.error || "")
+                                  ? (stepDecision.flow.trackerError ? "Operacja YouTracka nie powiodła się: " : "Krok nie powiódł się: ")
+                                    + (stepDecision.flow.error || "")
                                     + (stepDecision.flow.stalledSince ? " · bez postępu od " + stepDecision.flow.stalledSince : "")
                                 : ""
                             textFormat: Text.PlainText
@@ -869,6 +870,7 @@ Rectangle {
                             }
                             QQC2.ComboBox {
                                 id: stepExecutorPicker
+                                visible: !stepDecision.flow || !stepDecision.flow.trackerError
                                 objectName: "cardStepExecutor"
                                 Layout.fillWidth: true
                                 model: Logic.retryExecutors(panel.modelsStatus, stepDecision.flow)
@@ -880,6 +882,7 @@ Rectangle {
                             }
                             PillButton {
                                 objectName: "cardStepChangeExecutor"
+                                visible: !stepDecision.flow || !stepDecision.flow.trackerError
                                 text: "Zmień wykonawcę"
                                 enabled: !panel.busy && panel.stepExecutor !== ""
                                 onClicked: {

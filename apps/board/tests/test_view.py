@@ -1792,6 +1792,18 @@ out["call"] = calls()[-1]
         self.assertEqual(out["visible"], [True, True])
         self.assertEqual(json.loads(out["call"][2]), {"choice": "change-executor", "executor": "Haiku"})
 
+    def test_tracker_error_has_retry_without_changing_executor(self):
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["visible"] = [obj("cardStepRetry").property("visible"), obj("cardStepExecutor").property("visible"),
+                  obj("cardStepChangeExecutor").property("visible")]
+click(at(FIND + "(page.cardPanel, 'cardStepRetry')"))
+out["call"] = calls()[-1]
+""", data=self.flow_card("error", error="YouTrack odpowiedział 400", trackerError=True))
+        self.assertEqual(out["visible"], [True, False, False])
+        self.assertEqual(out["call"][:2], ["ResolveCardStep", "K-6"])
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "retry"})
+
     def test_project_command_lists_are_editable_and_saved(self):
         data = json.loads(json.dumps(self.data))
         data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]

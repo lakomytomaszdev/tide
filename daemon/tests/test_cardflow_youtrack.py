@@ -1,6 +1,7 @@
 """PT-72: zewnętrzny przepływ karty na atrapie REST YouTracka."""
 import json
 import os
+import urllib.parse
 
 from .fake_youtrack import FakeYouTrack
 from .privatebus import wait_until
@@ -156,3 +157,96 @@ class YouTrackFlowTest(FlowInProcess):
         sync.process(sync.due())
         self.assertEqual(self.fake.state(issue), 'To be discussed')
         self.assertEqual(sync.status(issue)['status'], 'conflict')
+
+    def test_offline_result_comment_does_not_block_next_ticket(self):
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))['ok'])
+        self.flow.stop()
+        self.flow.engine.approve_plan(card)
+        # Wyłącznie komentarze są niedostępne; zgłoszenia i lokalna praca pozostają dostępne.
+        self.fake.comment_status = 503
+        self.flow = self.make_flow()
+        self.flow.engine.tracker.clock = lambda: 10**12
+        self.wait_column(card, 'review')
+        self.assertEqual({s['ticket'] for s in self.of(card, 'step.started') if s['kind'] == 'ticket'},
+                         {'LOG-1', 'LOG-2'})
+        self.assertTrue(self.of(card, 'youtrack.retry'))
+        self.fake.comment_status = 200
+        self.flow.engine.tracker.clock = lambda: 10**12 + 60
+        self.assertTrue(wait_until(lambda: len(self.fake.comments) == 2, timeout=10))
+        self.assertTrue(all(len(items) == 1 for items in self.fake.comments.values()))
+
+    def test_plan_tracker_project_and_server_must_match_card_project(self):
+        for tracker_project, tracker_url in (('LEGAL', self.fake.url), ('LOG', self.fake.url + '/other')):
+            with self.subTest(project=tracker_project, url=tracker_url):
+                card = self.card()
+                path = self.proposal(card)
+                with open(path, encoding='utf-8') as fh:
+                    text = fh.read().replace('tracker: local', 'tracker: youtrack\ntracker-project: ' +
+                                             tracker_project + '\ntracker-url: ' + tracker_url)
+                with open(path, 'w', encoding='utf-8') as fh:
+                    fh.write(text)
+                reply = self.submit(card, path)
+                self.assertFalse(reply['ok'], reply)
+                self.assertEqual(reply['error'], 'invalid-plan')
+                self.assertFalse(self.fake.issues)
+
+    def test_permanent_tracker_error_is_visible_and_retried_only_by_user(self):
+        for entry in ('now', 'plan'):
+            with self.subTest(entry=entry):
+                card = self.card()
+                if entry == 'plan':
+                    self.assertTrue(self.submit(card, self.proposal(card))['ok'])
+                self.fake.status = 400
+                reply = self.start(card) if entry == 'now' else self.approve(card)
+                self.assertFalse(reply['ok'], reply)
+                shown = self.shown(card)
+                self.assertEqual(shown['boardColumn'], 'waiting')
+                self.assertEqual(shown['derived']['flow']['action'], 'error')
+                self.assertTrue(shown['derived']['flow']['trackerError'])
+                # Komentarz poprzedniej karty może jeszcze ponawiać się w tle.
+                # Liczymy wyłącznie operacje z identyfikatorem aktualnej karty.
+                def card_calls():
+                    return sum(card in urllib.parse.unquote(path) or card in body
+                               for _method, path, _auth, body in self.fake.calls)
+                count = card_calls()
+                self.flow.stop()
+                for _ in range(3):
+                    self.flow.engine.tick()
+                self.assertEqual(card_calls(), count)
+                self.fake.status = 200
+                result = self.flow.engine.resolve_step(card, {'choice': 'retry'})
+                self.assertTrue(result['ok'], result)
+                self.flow = self.make_flow()
+                self.wait_column(card, 'review')
+
+    def test_retry_after_permanent_lookup_error_keeps_uncertain_create_read_only(self):
+        from tide_daemon.cardflow.engine import FlowError
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))['ok'])
+        self.flow.stop()
+        self.fake.lose_replies = 1
+        self.fake.search_delay_after_create = 100
+        self.assertTrue(self.flow.engine.approve_plan(card)['queued'])
+        self.assertEqual(len(self.fake.issues), 1)
+        self.fake.status = 400
+        self.flow.engine.tracker.clock = lambda: 10**12
+        with self.assertRaises(FlowError):
+            self.flow.engine.approve_plan(card)
+        self.assertTrue(self.flow.engine.resolve_step(card, {'choice': 'retry'})['ok'])
+        self.fake.status = 200
+        reply = self.flow.engine.approve_plan(card)
+        self.assertTrue(reply['queued'], reply)
+        self.assertEqual(len(self.fake.issues), 1)
+
+    def test_permanent_create_rejection_can_be_retried_after_project_is_fixed(self):
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))['ok'])
+        self.fake.projects = {'OTHER'}
+        self.assertFalse(self.approve(card)['ok'])
+        self.assertTrue(self.of(card, 'intent'))
+        self.assertFalse(self.fake.issues)
+        self.fake.projects = {'LOG'}
+        self.assertTrue(self.flow.engine.resolve_step(card, {'choice': 'retry'})['ok'])
+        self.wait_column(card, 'review')
+        self.assertEqual(len(self.fake.issues), 2)

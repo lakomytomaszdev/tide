@@ -69,8 +69,12 @@ class FlowState:
         """Karty Konsoli jeszcze otwarte, również po zapisaniu pliku wyniku."""
         return [s for s in self.steps.values() if s.get("mode") == "interactive" and not s.get("consoleClosed")]
 
-    def open_intents(self) -> list[dict]:
-        return [i for k, i in self.intents.items() if k not in self.results]
+    def open_intents(self, *, include_background=False) -> list[dict]:
+        return [i for k, i in self.intents.items() if k not in self.results and
+                (include_background or i.get('action') != 'youtrack-note')]
+
+    def tracker_failures(self):
+        return [e for e in self.results.values() if e.get('permanent') and not e.get('ok')]
 
     def merge_pending(self) -> list[dict]:
         """Tickety zatwierdzone w review, których jeszcze nie scalono."""
@@ -117,6 +121,9 @@ def fold(events: list[dict]) -> FlowState:
             st.assignments = {}
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
+        elif kind == 'youtrack.reset':
+            st.results.pop((e.get('action'), e.get('key')), None)
+            st.tracker_retries.pop((e.get('action'), e.get('key')), None)
         elif kind == 'youtrack.retry':
             st.tracker_retries[(e.get('action'), e.get('key'))] = e
         elif kind == "result":
@@ -249,6 +256,11 @@ def derived(st: FlowState, card: dict) -> dict | None:
                              and not other.get("consoleClosed") for other in st.steps.values())}
         for name, item in st.steps.items()
     ]
+    failures = st.tracker_failures()
+    if failures and not st.running():
+        error = failures[-1].get('error') or 'odmowa operacji YouTracka'
+        out['flow'].update(action='error', error=error, trackerError=True)
+        return _fill(out, 'waiting', 'Błąd YouTracka: ' + error + ' — popraw przyczynę i wybierz „Ponów”')
     if st.started.get("entry") == "plan":
         proposal = st.plan_proposed or {}
         approved = st.plan_approved or {}

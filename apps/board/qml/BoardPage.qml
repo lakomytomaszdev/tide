@@ -401,7 +401,8 @@ Rectangle {
         } else if (tag.indexOf("step-resolve:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
-            if (!error) cardPanel.notice = "Decyzja zapisana. Wznawiam krok w tle."
+            if (!error) cardPanel.notice = reply.tracker ? "Ponawiam operację YouTracka."
+                                                        : "Decyzja zapisana. Wznawiam krok w tle."
         } else if (tag.indexOf("plan-approve:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error

@@ -341,7 +341,7 @@ class FlowEngine:
         if not project.youtrack:
             return
         for (action, ticket), result in list(st.results.items()):
-            if action != 'merge' or not result.get('ok'):
+            if action != 'merge' or not result.get('ok') or ('youtrack-note', ticket) in st.results:
                 continue
             source = next((s for s in reversed(list(st.steps.values())) if s.get('ticket') == ticket
                            and s.get('kind') in ('ticket', 'fix')), None)
@@ -350,9 +350,13 @@ class FlowEngine:
             verdict = next((v for (t, _), v in reversed(list(st.verdicts.items())) if t == ticket), {})
             text = (self._note(card, source) + '\n\nGałąź: ' + source.get('branch', '') +
                     '\nReview: ' + verdict.get('verdict', '') + '\nWykonawca: ' + source.get('executor', ''))
-            self.tracker.run(card, 'youtrack-note', ticket,
-                             {'op': 'comment', 'url': st.started.get('trackerUrl') or yt.load_config()['url'], 'ticket': ticket,
-                              'event': str(result['seq']), 'text': text})
+            try:
+                self.tracker.run(card, 'youtrack-note', ticket,
+                                 {'op': 'comment', 'url': st.started.get('trackerUrl') or yt.load_config()['url'], 'ticket': ticket,
+                                  'event': str(result['seq']), 'text': text})
+            except yt.YouTrackError:
+                pass
+
 
     def _reserve(self, repo: str, title: str, request_key: str, prefix: str = "") -> dict:
         got = reservations.reserve(repo, prefix=prefix, count=1, title=title, request_key=request_key)
@@ -541,6 +545,12 @@ class FlowEngine:
         proposal = flow_plans.read(path, card_id, catalog,
                                    allowed_roots=(project.repo, os.path.join(self.store.root, "docs"), *step_roots),
                                    tracker='youtrack' if project.youtrack else 'local')
+        if proposal.plan is not None and proposal.plan.tracker == 'youtrack':
+            config_url = yt.load_config()['url'].rstrip('/')
+            if proposal.plan.tracker_project != project.youtrack:
+                proposal.errors.append('tracker-project planu różni się od projektu karty')
+            if proposal.plan.tracker_url.rstrip('/') != config_url:
+                proposal.errors.append('tracker-url planu różni się od serwera projektu karty')
         if proposal.plan is not None and not project.youtrack:
             try:
                 established = reservations.reserve(project.repo, dry_run=True)["prefix"]
@@ -806,13 +816,14 @@ class FlowEngine:
                                        (stored.move_id and stored.move_id != st.store_move_id)):
                 self.moved(card, stored.column, stored.moved_from or st.store_column, stored.move_id)
                 st = fold(self.journal.read(card))
+        blocking_tracker_error = any(e.get('action') != 'youtrack-note' for e in st.tracker_failures())
         try:
-            if st.started and not st.paused and not st.card_finished and st.started.get('entry') == 'now' \
+            if not blocking_tracker_error and st.started and not st.paused and not st.card_finished and st.started.get('entry') == 'now' \
                     and not st.steps and st.started.get('request'):
                 _, project = self._project(card)
                 if project.youtrack:
                     self.start(card, st.started['request'], _resume=True)
-            if st.plan_proposed and not st.plan_approved and any(
+            if not blocking_tracker_error and st.plan_proposed and not st.plan_approved and any(
                     e['type'] == 'plan.approval_requested' and e.get('proposal') == st.plan_proposed['seq']
                     for e in self.journal.read(card)):
                 self.approve_plan(card)
@@ -820,7 +831,7 @@ class FlowEngine:
         except yt.YouTrackError:
             pass
         st = fold(self.journal.read(card))
-        for intent in st.open_intents():
+        for intent in st.open_intents(include_background=True):
             self._reconcile(card, intent)
         st = fold(self.journal.read(card))
         for item in st.steps.values():
@@ -1092,6 +1103,9 @@ class FlowEngine:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         choice = str(request.get("choice") or "")
         st = fold(self.journal.read(card))
+        if choice == 'retry' and not st.card_finished and not st.running() and st.tracker_failures():
+            self.tracker.reset_failures(card)
+            return {'ok': True, 'id': card, 'choice': choice, 'tracker': True}
         step = st.steps.get(st.last_step) or {}
         done = st.finished.get(st.last_step) or {}
         result = done.get("result")
