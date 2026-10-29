@@ -2415,7 +2415,8 @@ class FlowEngine(PlanEditing):
 
     def _advance_close(self, card: str, st: FlowState) -> None:
         """Po ostatnim tickecie tworzy podsumowanie; nigdy nie scala do gałęzi głównej."""
-        if st.started is None or st.card_finished or st.closed or st.paused or st.plan_revision or st.open_intents():
+        if (st.started is None or st.card_finished or st.closed or st.paused or st.plan_revision or
+                st.moved_to == "todo" or st.open_intents()):
             return
         if st.plan_approved:
             rows = st.plan_approved.get("rows") or []

@@ -44,6 +44,17 @@ class CardClosingTest(FlowInProcess):
         self.assertEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
         self.assertEqual(self.shown(card)["boardColumn"], "review")
 
+    def test_return_to_todo_revokes_main_merge_until_new_close(self):
+        from tide_daemon.cardflow.engine import FlowError
+        card = self.card()
+        self.assertTrue(self.start(card)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "card.closed"), timeout=30), self.events(card))
+        self.flow.stop()
+        self.flow.engine.moved(card, "todo", shown="review", move_id="return-to-todo")
+        with self.assertRaises(FlowError) as failure:
+            self.flow.engine.merge_card_to_main(card)
+        self.assertEqual(failure.exception.code, "not-closed")
+
     def test_main_merge_refuses_dirty_checkout_without_losing_changes(self):
         card = self.card()
         self.assertTrue(self.start(card)["ok"])

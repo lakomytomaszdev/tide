@@ -263,6 +263,8 @@ def fold(events: list[dict]) -> FlowState:
             # zrobienia to wznowienie albo kolejka po zleceniu z popupu — karta pokazuje dalej stan z dziennika.
             if e.get("from") not in ("backlog", "todo"):
                 st.moved_to = e.get("to") or ""
+                if st.moved_to == "todo":
+                    st.closed = None
             if (e.get("to") or "") != "backlog":
                 st.paused = False
         elif kind == "ticket.rejected":
