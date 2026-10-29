@@ -123,12 +123,12 @@ class FullPlanningTest(FlowInProcess):
         self.assertEqual(self.of(card, "plan.proposed"), [])
         with open(os.path.join(step["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
             self.assertIn("Pełne planowanie", fh.read())
-        self.flow.engine.journal.append(card, "step.console_closed", step=step["step"])
         box = []
         self.flow.resolve_step(card, json.dumps({"choice": "answer", "answer": "Wariant CSV"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10), self.events(card))
         self.assertTrue(json.loads(box[0])["ok"], box)
         self.assertTrue(wait_until(lambda: len(self.of(card, "step.started")) > 1, timeout=10), self.events(card))
+        self.assertFalse(any(e["type"] == "step.console_closed" for e in self.events(card)))
         resumed = self.of(card, "step.started")[1]
         self.assertEqual(resumed["parentStep"], step["step"])
         with open(os.path.join(resumed["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
@@ -139,12 +139,12 @@ class FullPlanningTest(FlowInProcess):
         with open(os.path.join(step["stepDir"], "out", "result.json"), "w", encoding="utf-8") as fh:
             json.dump({"result": "denied", "command": "git status"}, fh)
         self.assertTrue(wait_until(lambda: self.of(card, "step.finished"), timeout=10), self.events(card))
-        self.flow.engine.journal.append(card, "step.console_closed", step=step["step"])
         box = []
         self.flow.resolve_step(card, json.dumps({"choice": "deny"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10), self.events(card))
         self.assertTrue(json.loads(box[0])["ok"], box)
         self.assertTrue(wait_until(lambda: len(self.of(card, "step.started")) > 1, timeout=10), self.events(card))
+        self.assertFalse(any(e["type"] == "step.console_closed" for e in self.events(card)))
         resumed = self.of(card, "step.started")[1]
         with open(os.path.join(resumed["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
             self.assertIn("Użytkownik odmówił zgody na polecenie: git status", fh.read())
@@ -154,8 +154,8 @@ class FullPlanningTest(FlowInProcess):
         with open(os.path.join(step["stepDir"], "out", "result.json"), "w", encoding="utf-8") as fh:
             json.dump({"result": "error", "reason": "przerwano"}, fh)
         self.assertTrue(wait_until(lambda: self.of(card, "step.finished"), timeout=10), self.events(card))
-        self.flow.engine.journal.append(card, "step.console_closed", step=step["step"])
         self.assertTrue(wait_until(lambda: len(self.of(card, "step.started")) > 1, timeout=10), self.events(card))
+        self.assertFalse(any(e["type"] == "step.console_closed" for e in self.events(card)))
         resumed = self.of(card, "step.started")[1]
         self.assertEqual(resumed["attempt"], 1)
         self.assertEqual(resumed["parentStep"], step["step"])
@@ -164,13 +164,17 @@ class FullPlanningTest(FlowInProcess):
         self.assertIn("Pełne planowanie", prompt)
         self.assertIn("Krok ponowiony automatycznie", prompt)
 
-    def test_extra_project_is_a_read_only_snapshot(self):
+    def test_extra_project_is_quoted_context_without_writable_path(self):
         extra = os.path.join(self.base, "ws", "extra")
         os.makedirs(extra)
         git(extra, "init", "-q")
         with open(os.path.join(extra, "README.md"), "w", encoding="utf-8") as fh:
             fh.write("Kontekst projektu")
-        git(extra, "add", "README.md")
+        with open(os.path.join(extra, "large.txt"), "w", encoding="utf-8") as fh:
+            fh.write("x" * 40_000)
+        with open(os.path.join(extra, "binary.dat"), "wb") as fh:
+            fh.write(b"sekret\0binarny")
+        git(extra, "add", "README.md", "large.txt", "binary.dat")
         git(extra, "commit", "-q", "-m", "Initial context")
         self.store.upsert_project({"slug": "extra", "name": "Dodatkowy", "repo": extra})
         card = self.card()
@@ -182,15 +186,19 @@ class FullPlanningTest(FlowInProcess):
         step = self.started(card)
         with open(terminal.opened[0].task_file, encoding="utf-8") as fh:
             task = json.load(fh)
-        snapshot = os.path.join(step["stepDir"], "in", "context", "project-1")
-        self.assertIn(snapshot, task["argv"])
+        self.assertEqual([task["argv"][i + 1] for i, arg in enumerate(task["argv"][:-1])
+                          if arg == "--add-dir"], [os.path.join(step["stepDir"], "out")])
         self.assertTrue(all(extra not in arg for arg in task["argv"]))
-        copied = os.path.join(snapshot, "README.md")
-        with open(copied, encoding="utf-8") as fh:
+        prompt = task["argv"][-1]
+        self.assertIn('"plik": "README.md", "treść": "Kontekst projektu"', prompt)
+        self.assertIn("pominięto 2 pozostałych plików", prompt)
+        self.assertNotIn("sekret", prompt)
+        self.assertNotIn("x" * 100, prompt)
+        self.assertLess(len(prompt.encode("utf-8")), 100 * 1024)
+        self.assertIn("nie są ścieżkami do otwarcia ani modyfikacji", prompt)
+        self.assertFalse(os.path.exists(os.path.join(step["stepDir"], "in", "context")))
+        with open(os.path.join(extra, "README.md"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "Kontekst projektu")
-        self.assertEqual(os.stat(copied).st_mode & 0o222, 0)
-        self.assertEqual(os.stat(snapshot).st_mode & 0o222, 0)
-        self.assertFalse(os.path.exists(os.path.join(snapshot, ".git")))
 
     def test_without_terminal_does_not_start_card(self):
         from tide_daemon.cardflow.engine import FlowError
