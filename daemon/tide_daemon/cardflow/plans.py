@@ -25,7 +25,7 @@ class Proposal:
     errors: list[str]
 
 
-def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local") -> Proposal:
+def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local", existing_ids=()) -> Proposal:
     """Czyta plan i kartki wyłącznie z dozwolonych katalogów; nie rezerwuje numerów."""
     errors: list[str] = []
     real = os.path.realpath(path)
@@ -57,7 +57,7 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local")
     for row in plan.rows:
         ident = row.ticket
         work = WORK_ID.fullmatch(ident)
-        if not work:
+        if not work and ident not in existing_ids:
             errors.append(f"{ident}: propozycja wymaga numeru roboczego #n; ID powstaje po zatwierdzeniu")
         if ident in seen:
             errors.append(f"{ident}: powtórzony ticket")

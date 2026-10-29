@@ -147,6 +147,29 @@ class CardFlowMonitor(QObject):
         if not self._submit(lambda: self.engine.resolve_step(card_id, data), answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
+    def edit_plan(self, card_id: str, request: str, reply) -> None:
+        def work():
+            try:
+                data = json.loads(request)
+            except (ValueError, TypeError):
+                raise FlowError("bad-request", "zmiana planu musi być obiektem JSON") from None
+            if not isinstance(data, dict):
+                raise FlowError("bad-request", "zmiana planu musi być obiektem JSON")
+            return self.engine.edit_plan(card_id, data)
+
+        def answer(future):
+            try:
+                result = future.result()
+            except FlowError as exc:
+                result = _failure(exc.code, str(exc))
+            except Exception as exc:
+                print(f"tide-daemon: EditCardPlan: {exc!r}", flush=True)
+                result = _failure("internal", "błąd usługi — szczegóły w dzienniku")
+            reply(json.dumps(result, ensure_ascii=False))
+
+        if not self._submit(work, answer):
+            reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
+
     def approve_plan(self, card_id: str, reply) -> None:
         """Zatwierdzenie planu z panelu karty, w tym samym szeregowym wątku co kroki."""
         def answer(future):

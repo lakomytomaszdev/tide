@@ -12,7 +12,7 @@ class LightPlanningTest(FlowInProcess):
         card = self.card(description="Dodaj eksport. ATRAPA: planowanie")
         reply = self.start(card, entry="planning", mode="light", executor="Opus", preferredProvider="mixed")
         self.assertTrue(reply["ok"], reply)
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.proposed"), timeout=20), self.events(card))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20), self.events(card))
         shown = self.wait_column(card, "waiting")
         self.assertEqual(shown["derived"]["flow"]["plan"]["status"], "pending")
         self.assertEqual(self.results(card, "reserve"), [])
@@ -28,9 +28,9 @@ class LightPlanningTest(FlowInProcess):
     def test_invalid_plan_is_repaired_in_background(self):
         card = self.card(description="ATRAPA: plan-repair")
         self.assertTrue(self.start(card, entry="planning", mode="light")["ok"])
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.proposed"), timeout=20), self.events(card))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20), self.events(card))
         self.assertEqual([e["valid"] for e in self.of(card, "plan.checked")], [False, True])
-        self.assertEqual([e["kind"] for e in self.of(card, "step.started")], ["planning", "plan-fix"])
+        self.assertEqual([e["kind"] for e in self.of(card, "step.started")], ["planning", "plan-fix", "plan-review"])
 
     def test_two_failed_repairs_wait_for_user_without_retry_loop(self):
         card = self.card(description="ATRAPA: plan-bad")
@@ -50,7 +50,7 @@ class LightPlanningTest(FlowInProcess):
         self.assertEqual(snap["assignmentRules"], "mocny: reguła wspólna")
         card = self.card(description="ATRAPA: planowanie")
         self.assertTrue(self.start(card, entry="planning", mode="light")["ok"])
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.proposed"), timeout=20))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20))
         first = self.of(card, "step.started")[0]
         with open(os.path.join(first["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             self.assertIn("mocny: reguła wspólna", json.load(fh)["prompt"])
@@ -58,7 +58,7 @@ class LightPlanningTest(FlowInProcess):
         self.assertEqual(self.store.snapshot()["projects"][0]["assignmentRules"], "lekki: reguła projektu")
         other = self.card(description="ATRAPA: planowanie")
         self.assertTrue(self.start(other, entry="planning", mode="light")["ok"])
-        self.assertTrue(wait_until(lambda: self.of(other, "plan.proposed"), timeout=20))
+        self.assertTrue(wait_until(lambda: self.of(other, "plan.reviewed"), timeout=20))
         second = self.of(other, "step.started")[0]
         with open(os.path.join(second["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             prompt = json.load(fh)["prompt"]
@@ -68,14 +68,14 @@ class LightPlanningTest(FlowInProcess):
     def test_approved_light_plan_runs_ticket_through_review_and_merge(self):
         card = self.card(description="ATRAPA: planowanie")
         self.assertTrue(self.start(card, entry="planning", mode="light")["ok"])
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.proposed"), timeout=20))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20))
         box = []
         self.flow.approve_plan(card, box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
         self.assertTrue(json.loads(box[0])["ok"], box)
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=30), self.events(card))
         self.wait_column(card, "review")
-        self.assertEqual([s["kind"] for s in self.of(card, "step.started")], ["planning", "ticket", "review"])
+        self.assertEqual([s["kind"] for s in self.of(card, "step.started")], ["planning", "plan-review", "ticket", "review"])
 
     def test_restart_after_request_before_launch_still_plans_once(self):
         from unittest import mock
@@ -85,8 +85,8 @@ class LightPlanningTest(FlowInProcess):
             with self.assertRaises(OSError):
                 self.flow.engine.start(card, {"entry": "planning", "mode": "light", "executor": "Sonnet"})
         self.restart()
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.proposed"), timeout=20), self.events(card))
-        self.assertEqual(len(self.of(card, "step.started")), 1)
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20), self.events(card))
+        self.assertEqual(len(self.of(card, "step.started")), 2)
 
     def test_planner_question_is_visible_and_answer_resumes_planning(self):
         card = self.card(description="ATRAPA: plan-question")
@@ -98,7 +98,7 @@ class LightPlanningTest(FlowInProcess):
         self.flow.resolve_step(card, json.dumps({"choice": "answer", "answer": "Pierwszy"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
         self.assertTrue(json.loads(box[0])["ok"], box)
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.proposed"), timeout=20), self.events(card))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20), self.events(card))
 
     def test_planner_crash_is_retried_once_then_waits_for_user(self):
         card = self.card(description="ATRAPA: plan-error")
@@ -131,7 +131,7 @@ class LightPlanningTest(FlowInProcess):
         with open(image, "wb") as fh:
             fh.write(b"PNG")
         self.assertTrue(self.start(card, entry="planning", mode="light", images=[image])["ok"])
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.proposed"), timeout=20))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20))
         step = self.of(card, "step.started")[0]
         with open(os.path.join(step["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             prompt = json.load(fh)["prompt"]
@@ -151,7 +151,7 @@ class LightPlanningTest(FlowInProcess):
         self.store.upsert_project({"slug": "proj", "assignmentRules": ""})
         card = self.card(description="ATRAPA: planowanie")
         self.assertTrue(self.start(card, entry="planning", mode="light")["ok"])
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.proposed"), timeout=20))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20))
         self.assertEqual(self.of(card, "card.started")[0]["assignmentRules"], "standard: wspólne\\nlekki: proste")
 
 

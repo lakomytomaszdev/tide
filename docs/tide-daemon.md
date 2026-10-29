@@ -869,6 +869,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?}` albo Planowanie Lekkie `{entry: "planning", mode: "light", executor, preferredProvider?, images?, check?}`, albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
+| `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
@@ -1975,3 +1976,35 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
 Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawierają prawdziwych rozmów.
+
+
+### Review i poprawianie propozycji planu (PT-80, PT-63)
+
+Po `plan.proposed` plan czeka na krok `plan-review` u innego wykonawcy i modelu niż planujący.
+Recenzent dostaje pełną zachowaną specyfikację, opis karty i kartki oraz kryteria pionowości,
+rozmiaru, mierzalności kryteriów, blokerów i przydziałów. Ocenia też treść części „Dla recenzenta”.
+Zapisuje `out/plan-review.json` z `verdict` (`APPROVE` albo `REQUEST_CHANGES`) i tekstem `findings`.
+Uwagi uruchamiają jedną rundę `plan-revise`; po niej plan jest pokazany z wynikiem review,
+bez kolejnego review w pętli. `ApproveCardPlan` przed końcem review zwraca `review-pending`.
+
+`EditCardPlan` zapisuje zmiany przydziału i treści kartki jako `plan.ticket-edited`.
+Nie przyjmuje zmian struktury planu tą drogą. Ticket z rozpoczętą gałęzią lub krokiem jest chroniony
+przed edycją również po restarcie. Taka zmiana zwraca `ticket-started`.
+Ponowienie identycznej edycji nie dopisuje drugiego zdarzenia.
+
+`action: return` zapisuje `plan.returned` z uwagami i bazą porównania. Krok `plan-amend` przygotowuje
+nową propozycję; usługa oblicza dodane, usunięte i zmienione tickety oraz pola zmian.
+`plan.revision-ready` przechowuje różnicę; panel pokazuje ją przed zatwierdzeniem. Nowa propozycja
+przechodzi review. `ApproveCardPlan` zatwierdza różnicę (`plan.revision-approved`), zachowuje
+istniejące ID i rezerwuje numery tylko dla dodanych ticketów. Usługa ponownie sprawdza ochronę
+rozpoczętych ticketów przy akceptacji. Trwające kroki nie są zatrzymywane.
+
+`derived.flow.plan` zawiera `review`, `revision`, `plannerStep` oraz `body` i `editable` dla wierszy.
+Stan `reviewing` ukrywa propozycję w panelu do zakończenia review i ewentualnej jednej poprawy.
+„Wejdź w planowanie” wykorzystuje istniejącą sesję planującego i wspólny mechanizm Konsoli.
+
+Błędna poprawka planu daje `plan.revision-failed`; panel udostępnia ponowne odesłanie z uwagami
+albo `EditCardPlan` z `action: discard-revision`. Odrzucenie zapisuje `plan.revision-discarded`
+i zachowuje aktywny plan. Pytanie, odmowa albo drugi błąd kroku poprawy/review pozostaje dostępny
+przez `ResolveCardStep`, także gdy w innym worktree pracuje ticket. Oczekująca różnica ma własne
+proponowane fale i utrzymuje kartę w „Czeka na mnie” również po zakończeniu starego planu.

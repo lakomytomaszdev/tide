@@ -44,10 +44,11 @@ from ..worktrees.naming import slug_from_prompt
 from . import handoff
 from . import execution
 from . import planning
+from .planediting import PlanEditing
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for
 from .journal import Journal
-from .state import FlowState, derived, fold, ticket_of, graph_waves, attention_step
+from .state import FlowState, derived, fold, ticket_of, graph_waves, attention_step, decision_step
 from .tracker import TrackerOutbox
 
 GUARD_MINUTES = 15.0
@@ -99,7 +100,7 @@ def timeout_seconds(path: str) -> float:
     return float(value) * 60.0
 
 
-class FlowEngine:
+class FlowEngine(PlanEditing):
     def __init__(self, store, journal: Journal | None = None, *, claude_projects: str = "",
                  systemd_run: str = "", catalog=None, models_config=None, model_probe=None, codex_roots=None,
                  tmp_root: str | None = None, settings: str | None = None,
@@ -691,7 +692,8 @@ class FlowEngine:
         roots = ((project.repo, os.path.join(self.store.root, "docs"), *step_roots) if not continuation else
                  (os.path.join(fold(self.journal.read(card_id)).steps[step]["stepDir"], "out"),))
         proposal = flow_plans.read(path, card_id, catalog, allowed_roots=roots,
-                                   tracker='youtrack' if project.youtrack else 'local')
+                                   tracker='youtrack' if project.youtrack else 'local',
+                                   existing_ids=[r["id"] for r in ((fold(self.journal.read(card_id)).plan_approved or {}).get("rows") or [])])
         if proposal.plan is not None and proposal.plan.tracker == 'youtrack':
             config_url = yt.load_config()['url'].rstrip('/')
             if proposal.plan.tracker_project != project.youtrack:
@@ -721,13 +723,15 @@ class FlowEngine:
         for ident, body in proposal.cards.items():
             self.journal.write_file(card_id, os.path.join("plan", "tickets", ident.lstrip("#") + ".md"),
                                     body.encode("utf-8"))
-        rows = [{**row, "cardPath": os.path.join(self.store.root, self.journal.rel_dir(card_id),
+        rows = [{**row, "body": proposal.cards[row["workId"]], "cardPath": os.path.join(self.store.root, self.journal.rel_dir(card_id),
                                                    "plan", "tickets", row["workId"].lstrip("#") + ".md")}
                 for row in proposal.rows]
         self.journal.append(card_id, "plan.proposed", title=proposal.plan.title,
                             prefix=project.youtrack or proposal.plan.prefix, coordinator=proposal.plan.coordinator,
                             session=proposal.plan.session, rows=rows,
-                            planPath=os.path.realpath(path))
+                            planner=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("executor") or proposal.rows[0]["executor"],
+                            sourceStep=step, sourceKind=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("kind") or "",
+                            specification=self._plan_spec(path) or (fold(self.journal.read(card_id)).plan_proposed or {}).get("specification") or item.description, planPath=os.path.realpath(path))
         return {"ok": True, "id": card_id, "rows": proposal.rows, "waves": proposal.waves}
 
     def approve_plan(self, card_id: str) -> dict:
@@ -737,6 +741,10 @@ class FlowEngine:
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         st = fold(self.journal.read(card_id))
+        if st.plan_revision and st.plan_revision.get("pending"):
+            return self._approve_revision(card_id, st)
+        if st.plan_proposed and not st.plan_reviewed and not st.plan_approved:
+            raise FlowError("review-pending", "plan czeka na review")
         if st.plan_approved is not None:
             return {"ok": True, "id": card_id, "map": st.plan_approved.get("map") or {}, "already": True}
         proposal = st.plan_proposed or {}
@@ -852,7 +860,7 @@ class FlowEngine:
         step_dir = worktree + (f".resume-{step_id}.step" if parent_step else
                                ".step" if kind == "ticket" else
                                f".review-{round_no}.step" if kind == "review" else
-                               f".{kind}-{step_id}.step" if kind in ("planning", "plan-fix") else f".fix-{round_no}.step")
+                               f".{kind}-{step_id}.step" if kind in ("planning", "plan-fix", "plan-review", "plan-revise", "plan-amend") else f".fix-{round_no}.step")
         out = os.path.join(step_dir, "out")
         shots = [os.path.join(step_dir, "in", "images", f"{i + 1}-{os.path.basename(p)}") for i, p in enumerate(images)]
         prompt = prompt_text or handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
@@ -1039,6 +1047,7 @@ class FlowEngine:
         self._busy = tuple(sorted(busy))
 
     def _tick_card(self, card: str, st: FlowState) -> None:
+        self._sync_plan_cards(card, st)
         self._recover_started_steps(card, st)
         self._recover_verdicts(card)
         self._recover_review_rejections(card)
@@ -1056,7 +1065,7 @@ class FlowEngine:
                 _, project = self._project(card)
                 if project.youtrack:
                     self.start(card, st.started['request'], _resume=True)
-            if not blocking_tracker_error and st.plan_proposed and not st.plan_approved and any(
+            if not blocking_tracker_error and st.plan_proposed and st.plan_reviewed and not st.plan_approved and any(
                     e['type'] == 'plan.approval_requested' and e.get('proposal') == st.plan_proposed['seq']
                     for e in self.journal.read(card)):
                 self.approve_plan(card)
@@ -1076,6 +1085,10 @@ class FlowEngine:
             return
         for step in st.running():
             self._poll(card, step)
+        self._advance_user_revision(card, fold(self.journal.read(card)))
+        current = fold(self.journal.read(card))
+        if current.running() and (current.plan_revision or {}).get("pending"):
+            self._advance_plan_review(card, current)
         self._queue_notices(card)
         st = fold(self.journal.read(card))
         if not st.card_finished:
@@ -1124,6 +1137,8 @@ class FlowEngine:
         """Jedna zmiana etapu na tick: ticket → review → poprawki/review → scalenie i sprzątanie."""
         if st.open_intents():
             return
+        if self._advance_plan_review(card, st):
+            return
         if self._advance_planning(card, st):
             return
         if not st.last_step:
@@ -1162,7 +1177,7 @@ class FlowEngine:
             return
         if result != "done":
             return
-        if step.get("kind") in ("planning", "plan-fix"):
+        if step.get("kind") in ("planning", "plan-fix", "plan-review", "plan-revise", "plan-amend"):
             self._plan_next(card, st)
             return
         ticket = step.get("ticket") or ""
@@ -1349,6 +1364,8 @@ class FlowEngine:
         return "review"
 
     def _plan_card(self, card: str, row: dict) -> str:
+        if "body" in row:
+            return row["body"]
         path = os.path.join(self.store.root, row.get("cardPath") or "")
         root = os.path.realpath(os.path.join(self.store.root, self.journal.rel_dir(card), "plan", "tickets"))
         if not os.path.realpath(path).startswith(root + os.sep):
@@ -1382,20 +1399,23 @@ class FlowEngine:
         if choice == 'retry' and not st.card_finished and not st.running() and st.tracker_failures():
             self.tracker.reset_failures(card)
             return {'ok': True, 'id': card, 'choice': choice, 'tracker': True}
-        st.last_step = attention_step(st) or st.last_step
-        step = st.steps.get(st.last_step) or {}
-        done = st.finished.get(st.last_step) or {}
+        focus = decision_step(st)
+        step = st.steps.get(focus) or {}
+        done = st.finished.get(focus) or {}
         result = done.get("result")
         valid = {"question": ("answer",), "denied": ("allow", "deny"),
                  "error": ("retry", "change-executor")}.get(result, ())
-        if st.card_finished or any(s.get("ticket") == step.get("ticket") for s in st.running()) or not step or choice not in valid or \
+        busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
+                    ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
+                   for s in st.running())
+        if st.card_finished or busy or not step or choice not in valid or \
                 (result == "error" and int(step.get("attempt") or 0) == 0):
             raise FlowError("no-step-question", f"{card}: ten krok nie czeka na taką decyzję")
-        previous = st.step_decisions.get(st.last_step)
+        previous = st.step_decisions.get(focus)
         if previous:
             if previous.get("choice") == choice and previous.get("answer", "") == str(request.get("answer") or "") and \
                     previous.get("executor", "") == str(request.get("executor") or ""):
-                return {"ok": True, "id": card, "step": st.last_step, "choice": choice, "already": True}
+                return {"ok": True, "id": card, "step": focus, "choice": choice, "already": True}
             raise FlowError("already-decided", f"{card}: odpowiedź na ten krok jest już zapisana")
         answer = str(request.get("answer") or "").strip()
         executor = str(request.get("executor") or "").strip()
@@ -1421,11 +1441,11 @@ class FlowEngine:
                                                "allowedCommands": [*project.allowed_commands, command]})
                 except BoardError as exc:
                     raise FlowError(exc.code, str(exc)) from None
-        event = self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
+        event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
                                     choice=choice, answer=answer if choice == "answer" else "",
                                     command=done.get("command") or "" if choice in ("allow", "deny") else "",
                                     executor=executor if choice == "change-executor" else "")
-        return {"ok": True, "id": card, "step": st.last_step, "choice": choice, "seq": event["seq"]}
+        return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
 
     def _resume_executor(self, card: str, st: FlowState, step: dict, name: str, *, changed=False):
         cfg = self.models_config() if self.models_config else None
@@ -1443,7 +1463,11 @@ class FlowEngine:
                             (selected.route.kind if selected.route else "") != step.get("routeKind", "") or
                             (selected.route.token_file if selected.route else "") != step.get("routeTokenFile", "")):
             raise FlowError("changed-executor", f"{card}: wykonawca zmienił się od startu kroku")
-        if changed and step.get("kind") in ("planning", "plan-fix"):
+        if changed and step.get("kind") == "plan-review":
+            planner = catalog.get((st.plan_proposed or {}).get("planner"))
+            if planner and (selected.name == planner.name or selected.model.lower() == planner.model.lower()):
+                raise FlowError("bad-executor", "review planu wymaga modelu innego niż planujący")
+        if changed and str(step.get("kind") or "").startswith("plan"):
             if selected.local != bool(step.get("local")):
                 raise FlowError("bad-executor-provider", "zachowaj lokalny albo chmurowy zakres planowania")
             return selected
@@ -1473,16 +1497,17 @@ class FlowEngine:
             return
         item, project = self._project(card)
         info = ticket_of(st, step.get("ticket") or "")
+        resume_ticket = step.get("ticket") or ("" if str(step.get("kind") or "").startswith("plan") else info["id"])
         choice = decision.get("choice") or ""
         name = decision.get("executor") if choice == "change-executor" else step.get("executor") or ""
-        step_id = self._next_step_id(card, step.get("ticket") or info["id"], st)
+        step_id = self._next_step_id(card, resume_ticket, st)
         try:
             selected = self._resume_executor(card, st, step, name, changed=choice == "change-executor")
         except FlowError as exc:
             if exc.code != "local-unavailable" or choice == "change-executor":
                 raise
             self.journal.append(card, "step.started", step=step_id, kind=step.get("kind") or "ticket",
-                                ticket=step.get("ticket") or info["id"], round=step.get("round") or 0,
+                                ticket=resume_ticket, round=step.get("round") or 0,
                                 executor=name, program=step.get("program") or "", model=step.get("model") or "",
                                 provider=step.get("provider") or "", local=True,
                                 effort=step.get("effort") or "", routeUrl=step.get("routeUrl") or "",
@@ -1491,7 +1516,7 @@ class FlowEngine:
                                 parentStep=step.get("step") or "", attempt=attempt, session=step.get("session") or "",
                                 worktree=step.get("worktree") or "", branch=step.get("branch") or "",
                                 stepDir=step.get("stepDir") or "", reviewTip=step.get("reviewTip") or "")
-            self.journal.append(card, "step.finished", step=step_id, ticket=step.get("ticket") or info["id"],
+            self.journal.append(card, "step.finished", step=step_id, ticket=resume_ticket,
                                 result="error", reason="local-unavailable", question="", command="", notes=[],
                                 kept=[], exit=None)
             return
@@ -1514,7 +1539,7 @@ class FlowEngine:
             finder = getattr(execution, "codex_session_id", None)
             if finder:
                 session = finder(os.path.join(old_out, "step.log"))
-        self._launch(item, project, selected, step.get("ticket") or info["id"],
+        self._launch(item, project, selected, resume_ticket,
                      {"branch": info["cardBranch"]},
                      {"branch": resume_branch, "worktree": resume_worktree},
                      step_id, [], kind=step.get("kind") or "ticket", round_no=int(step.get("round") or 0),

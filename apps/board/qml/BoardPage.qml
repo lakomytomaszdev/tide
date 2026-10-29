@@ -79,6 +79,7 @@ Rectangle {
     signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
     signal stepResolveRequested(string tag, string cardId, string request) // /Board ResolveCardStep
     signal pauseRequested(string tag, string cardId, bool paused)
+    signal planEditRequested(string tag, string cardId, string request)
     signal planApproveRequested(string tag, string cardId)       // /Board ApproveCardPlan
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
@@ -414,6 +415,10 @@ Rectangle {
             cardPanel.busy = false
             cardPanel.error = error
             if (!error) cardPanel.notice = reply.paused ? "Karta wstrzymana. Trwające kroki kończą się." : "Karta wznowiona."
+        } else if (tag.indexOf("plan-edit:") === 0) {
+            cardPanel.busy = false
+            cardPanel.error = error
+            if (!error) cardPanel.notice = "Zmiana planu zapisana."
         } else if (tag.indexOf("plan-approve:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
@@ -1333,6 +1338,8 @@ Rectangle {
             cardPanel.busy = true
             page.pauseRequested(page.nextTag("flow-pause:" + cardId), cardId, paused)
         }
+        onPlanEditRequested: (cardId, request) =>
+            page.planEditRequested(page.nextTag("plan-edit:" + cardId), cardId, JSON.stringify(request))
         onPlanApproveRequested: cardId =>
             page.planApproveRequested(page.nextTag("plan-approve:" + cardId), cardId)
         onMoveRequested: column => {

@@ -29,7 +29,10 @@ class PlanFlowTest(FlowInProcess):
         box = []
         self.flow.start_card(card_id, json.dumps({"entry": "plan", "planPath": path}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
-        return json.loads(box[0])
+        reply = json.loads(box[0])
+        if reply.get("ok"):
+            self.assertTrue(wait_until(lambda: self.of(card_id, "plan.reviewed"), timeout=20), self.events(card_id))
+        return reply
 
     def approve(self, card_id):
         box = []
