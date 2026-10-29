@@ -292,6 +292,13 @@ class FlowEngine:
                       fold(self.journal.read(card_id)).steps.values() if s.get("stepDir")]
         proposal = flow_plans.read(path, card_id, catalog,
                                    allowed_roots=(project.repo, os.path.join(self.store.root, "docs"), *step_roots))
+        if proposal.plan is not None:
+            try:
+                established = reservations.reserve(project.repo, dry_run=True)["prefix"]
+                if proposal.plan.prefix != established:
+                    proposal.errors.append(f"prefiks planu {proposal.plan.prefix} różni się od prefiksu repozytorium {established}")
+            except reservations.ReservationError as exc:
+                proposal.errors.append(str(exc))
         self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
                             check=item.check or "auto", column=item.column, moveId=item.move_id)
         self.journal.append(card_id, "plan.checked", valid=not proposal.errors, errors=proposal.errors)
@@ -307,7 +314,8 @@ class FlowEngine:
                                                    "plan", "tickets", row["workId"].lstrip("#") + ".md")}
                 for row in proposal.rows]
         self.journal.append(card_id, "plan.proposed", title=proposal.plan.title,
-                            prefix=proposal.plan.prefix, rows=rows, waves=proposal.waves,
+                            prefix=proposal.plan.prefix, coordinator=proposal.plan.coordinator,
+                            session=proposal.plan.session, rows=rows, waves=proposal.waves,
                             planPath=os.path.realpath(path))
         return {"ok": True, "id": card_id, "rows": proposal.rows, "waves": proposal.waves}
 
@@ -333,7 +341,7 @@ class FlowEngine:
                 result = self._act(card_id, "reserve", key,
                                    lambda row=row, key=key: self._reserve(repo, row["title"],
                                                                             f"{card_id}:{key}", prefix),
-                                   repo=repo, title=row["title"], prefix=prefix)
+                                   retry_failed=True, repo=repo, title=row["title"], prefix=prefix)
                 mapping[work_id] = result["ticket"]
             else:
                 mapping[work_id] = work_id
@@ -677,6 +685,9 @@ class FlowEngine:
         def cell(value):
             return " ".join(str(value or "").replace("|", "\\|").split())
         lines = ["---", "tide-plan: 1", f"title: Plan karty {card}", "tracker: local",
+                 "tracker-url:", "tracker-project:",
+                 f"coordinator: {proposed.get('coordinator') or 'claude'}",
+                 f"session: {cell(proposed.get('session'))}",
                  f"ticket-prefix: {proposed.get('prefix') or ''}", f"card: {card}",
                  "status: done" if len(merged) == len(approved.get("rows") or []) else "status: active",
                  f"updated: {st.plan_change_ts or approved.get('ts') or ''}", "---", "",

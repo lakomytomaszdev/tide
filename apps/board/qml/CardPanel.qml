@@ -305,6 +305,7 @@ Rectangle {
                         model: panel.planEntries()
                         delegate: RowLayout {
                             required property var modelData
+                            required property int index
                             property var ticket: modelData
                             Layout.fillWidth: true
                             spacing: 6
@@ -321,6 +322,7 @@ Rectangle {
                                 wrapMode: Text.Wrap
                             }
                             PillButton {
+                                objectName: "cardPlanTicket-" + (index + 1)
                                 text: "Kartka"
                                 outline: true
                                 enabled: !!ticket.cardPath

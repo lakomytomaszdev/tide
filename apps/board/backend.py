@@ -225,7 +225,8 @@ class Backend(QObject):
         self._home = ""
         self._docs_data: dict = {}      # podgląd: ID karty → odpowiedź CardDocs
         self._issues_data = None        # podgląd: odpowiedź YouTrackIssues
-        self._doc_paths: set = set()    # ścieżki z odpowiedzi CardDocs — tylko je wolno otworzyć
+        self._doc_paths: set = set()    # ścieżki dokumentów z odpowiedzi CardDocs
+        self._current_doc_card = ""
         self._docs_requests = 0
         self._rendered: OrderedDict = OrderedDict()   # (markdown, kolor linku) → HTML
         if data is not None:
@@ -452,6 +453,7 @@ class Backend(QObject):
     # Plan i specyfikacja karty: odpowiedź sygnałem docsReplied(id, json).
     @pyqtSlot(str)
     def cardDocs(self, card_id: str) -> None:
+        self._current_doc_card = card_id
         self._docs_requests += 1
         self.callsChanged.emit()
         if self._preview or self.bus is None:
@@ -471,13 +473,26 @@ class Backend(QObject):
 
     @pyqtSlot(str, result=bool)
     def openFile(self, path: str) -> bool:
-        """„Otwórz plik”: dokument karty w domyślnym programie (tylko ścieżka z odpowiedzi CardDocs)."""
-        if path not in self._doc_paths:
+        """„Otwórz plik”: dokument z CardDocs albo kartka bieżącej karty z migawki."""
+        if path not in self._doc_paths and not self._plan_card_path(path):
             return False
         if self._preview or self.bus is None:
             self._record("openFile", path)
             return True
         return QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _plan_card_path(self, path: str) -> bool:
+        """Kartka musi pochodzić z aktualnej migawki otwartej karty."""
+        try:
+            snapshot = json.loads(self._snapshot)
+            for card in snapshot.get("cards") or []:
+                if card.get("id") != self._current_doc_card:
+                    continue
+                rows = (((card.get("derived") or {}).get("flow") or {}).get("plan") or {}).get("rows") or []
+                return any(row.get("cardPath") == path and os.path.isabs(path) for row in rows)
+        except (ValueError, TypeError, AttributeError):
+            pass
+        return False
 
     @pyqtSlot(str, result=bool)
     def showInFolder(self, path: str) -> bool:

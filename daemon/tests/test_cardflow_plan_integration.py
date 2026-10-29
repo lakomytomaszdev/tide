@@ -14,7 +14,7 @@ class PlanFlowTest(FlowInProcess):
         path = os.path.join(folder, "2026-10-29-plan.md")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("---\ntide-plan: 1\ntitle: Plan karty\ncard: " + card_id +
-                     "\ntracker: local\nticket-prefix: PT\n---\n\n"
+                     "\ntracker: local\nticket-prefix: PT\ncoordinator: claude\nsession: planning-123\n---\n\n"
                      "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |\n"
                      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
                      "| #1 | Pierwszy plasterek | todo | | Sonnet | konieczny | standard | Opus | |\n"
@@ -36,6 +36,42 @@ class PlanFlowTest(FlowInProcess):
         self.flow.approve_plan(card_id, box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
         return json.loads(box[0])
+
+    def test_partial_reservation_failure_can_resume_without_duplicate_numbers(self):
+        from tide_daemon.cardflow.engine import FlowError
+        from tide_daemon.coordination import reservations
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        self.flow.stop()
+        original = reservations.reserve
+        calls = 0
+        def fail_second(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise reservations.ReservationError("przejściowy błąd zapisu")
+            return original(*args, **kwargs)
+        with mock.patch.object(reservations, "reserve", side_effect=fail_second):
+            with self.assertRaises(FlowError):
+                self.flow.engine.approve_plan(card)
+        first = reservations.load(self.repo)
+        self.assertEqual(len(first), 1)
+        reply = self.flow.engine.approve_plan(card)
+        self.assertEqual(reply["map"]["#1"], f"PT-{first[0]['number']}")
+        self.assertEqual(len(reservations.load(self.repo)), 2)
+
+    def test_proposal_rejects_different_repository_prefix_without_reservation(self):
+        card = self.card()
+        path = self.proposal(card)
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(source.replace("ticket-prefix: PT", "ticket-prefix: OTHER"))
+        reply = self.submit(card, path)
+        self.assertFalse(reply["ok"])
+        self.assertTrue(any("prefiks" in error for error in reply["errors"]))
+        self.assertEqual(self.of(card, "plan.proposed"), [])
+        self.assertEqual(self.results(card, "reserve"), [])
 
     def test_invalid_proposal_records_errors_without_reserving(self):
         card = self.card()
@@ -86,6 +122,10 @@ class PlanFlowTest(FlowInProcess):
         self.assertEqual([r.ticket for r in approved_plan.rows], list(reply["map"].values()))
         self.assertEqual([r.state for r in approved_plan.rows], ["gotowe", "gotowe"])
         self.assertEqual(approved_plan.updated, merge[-1]["ts"])
+        with open(approved_plan.path, encoding="utf-8") as fh:
+            frontmatter = fh.read().split("---")[1]
+        for field in ("tracker-url:", "tracker-project:", "coordinator: claude", "session: planning-123"):
+            self.assertIn(field, frontmatter)
         self.assertGreaterEqual(len(self.results(card, "plan-commit")), 3)
         self.assertTrue(all(os.path.isfile(os.path.join(os.path.dirname(approved_plan.path).replace("plans", "tickets"),
                                                         f"{card.lower()}-flow", r.ticket.lower() + ".md"))

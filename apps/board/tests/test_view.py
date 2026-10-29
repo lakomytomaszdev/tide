@@ -1725,12 +1725,15 @@ class PlanPanelTest(ProbeCase):
 click(card("K-6"))
 out["entries"] = js("page.cardPanel.planEntries().map(r => [r.wave, r.workId, r.executor, r.reviewer, r.blockers])")
 out["shown"] = [obj("cardPlanProposal").property("visible"), obj("cardPlanApprove").property("visible")]
+click(at(FIND + "(page.cardPanel, 'cardPlanTicket-1')"))
+out["ticketCall"] = calls()[-1]
 click(at(FIND + "(page.cardPanel, 'cardPlanApprove')"))
 out["call"] = calls()[-1]
 """, data=data)
         self.assertEqual(out["entries"], [[1, "#1", "Sonnet", "Opus", []],
                                           [2, "#2", "Codex mocny", "Codex Astra", ["#1"]]])
         self.assertEqual(out["shown"], [True, True])
+        self.assertEqual(out["ticketCall"], ["openFile", "/board/flow/K-6/plan/tickets/1.md"])
         self.assertEqual(out["call"], ["ApproveCardPlan", "K-6"])
 
 
@@ -1952,6 +1955,20 @@ class GrabTest(ProbeCase):
 
 @requires_dbus
 class BackendTest(unittest.TestCase):
+    def test_plan_card_paths_require_current_card_and_current_snapshot(self):
+        path = "/board/flow/K-1/plan/tickets/1.md"
+        card = {"id": "K-1", "derived": {"flow": {"plan": {"rows": [{"cardPath": path}]}}}}
+        backend = self.module.create(None, {"exists": True, "cards": [card, {"id": "K-2"}]})
+        self.assertFalse(backend.openFile(path))
+        backend.cardDocs("K-1")
+        self.assertTrue(backend.openFile(path))
+        self.assertFalse(backend.openFile("/etc/passwd"))
+        backend.cardDocs("K-2")
+        self.assertFalse(backend.openFile(path))
+        backend.cardDocs("K-1")
+        backend._got_snapshot(True, json.dumps({"cards": [{"id": "K-1"}]}))
+        self.assertFalse(backend.openFile(path))
+
     """backend.py z prawdziwym tide-daemon na prywatnej magistrali i tymczasową tablicą."""
 
     def setUp(self):
