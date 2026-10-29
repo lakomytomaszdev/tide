@@ -35,7 +35,7 @@ import uuid
 from .. import codex_homes
 from ..board.model import BoardError, card_num
 from ..coordination import reservations
-from ..tasks import agentcmd, stepstop
+from ..tasks import agentcmd, launch, stepstop
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import handoff
@@ -294,7 +294,7 @@ class FlowEngine:
         if source_step.get("mode") == "interactive" and step_id not in st.finished:
             raise FlowError("already-entered", "karta Konsoli tego kroku jest już otwarta")
         if any(item.get("worktree") == worktree and item.get("mode") == "interactive" and
-               not item.get("consoleClosed") and not os.path.isfile(item.get("closeFile") or "")
+               not item.get("consoleClosed")
                for item in st.steps.values()):
             raise FlowError("console-open", "karta Konsoli tego worktree jest jeszcze otwarta")
         session, source = self._session(source_step)
@@ -342,10 +342,11 @@ class FlowEngine:
         out = os.path.join(step_dir, "out")
         os.makedirs(out, mode=0o700, exist_ok=True)
         closed = os.path.join(step_dir, "in", "console-closed.json")
+        process_file = os.path.join(step_dir, "in", "console-process.json")
         os.makedirs(os.path.dirname(closed), mode=0o700, exist_ok=True)
         claim_dir = os.path.join(step_dir, "in", "console-claim")
         os.makedirs(claim_dir, mode=0o700, exist_ok=True)
-        for path in (closed, os.path.join(out, handoff.RESULT_FILE)):
+        for path in (closed, process_file, os.path.join(out, handoff.RESULT_FILE)):
             try:
                 os.unlink(path)
             except FileNotFoundError:
@@ -359,7 +360,8 @@ class FlowEngine:
         prompt = handoff.resume_step(card_id, current.get("ticket") or "", out, kind=kind)
         command = agentcmd.resume_interactive(tool, binary, session, prompt, route)
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
-                   "title": f"{card_id} · {current.get('ticket') or 'krok'}", "closedFile": closed}
+                   "title": f"{card_id} · {current.get('ticket') or 'krok'}", "closedFile": closed,
+                   "processFile": process_file}
         payload.update(command.task_fields())
         task_file = self.task_files.write(payload)
         if new_id != step_id:
@@ -373,16 +375,22 @@ class FlowEngine:
                                 round=current.get("round") or 0, reviewTip=current.get("reviewTip") or "",
                                 repo=current.get("repo") or self._repo(card_id))
         self.journal.append(card_id, "step.entered", step=new_id, session=session, source=source,
-                            closeFile=closed, taskFile=task_file)
+                            closeFile=closed, processFile=process_file, taskFile=task_file,
+                            enteredAt=self.clock())
         plan = Plan(repo_path=current.get("repo") or self._repo(card_id), repo_name="", tool=tool,
                     prompt=prompt, cwd=claim_dir, branch=current.get("branch") or "", title=payload["title"],
                     argv=command.argv, task_file=task_file)
-        mode = self.terminal.open(plan)
+        try:
+            mode = self.terminal.open(plan)
+        except Exception as exc:
+            print(f"tide-daemon: przepływ karty {card_id}: Konsola: {exc!r}", flush=True)
+            mode = ""
         if not mode:
-            self.task_files.cancel(task_file)
-            self._finish(card_id, fold(self.journal.read(card_id)).steps[new_id],
-                         forced={"result": "stopped", "reason": "interactive-closed",
-                                 "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
+            if self.task_files.cancel(task_file):
+                self.journal.append(card_id, "step.console_closed", step=new_id)
+                self._finish(card_id, fold(self.journal.read(card_id)).steps[new_id],
+                             forced={"result": "stopped", "reason": "interactive-closed",
+                                     "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
             raise FlowError("no-terminal", "nie udało się otworzyć karty Konsoli")
         return {"ok": True, "id": card_id, "step": new_id, "session": session, "mode": mode}
 
@@ -576,8 +584,7 @@ class FlowEngine:
             self._reconcile(card, intent)
         st = fold(self.journal.read(card))
         for item in st.steps.values():
-            if item.get("mode") == "interactive" and not item.get("consoleClosed") and \
-                    os.path.isfile(item.get("closeFile") or ""):
+            if item.get("mode") == "interactive" and not item.get("consoleClosed") and self._console_ended(item):
                 self.journal.append(card, "step.console_closed", step=item.get("step"))
         st = fold(self.journal.read(card))
         if st.moved_to in ("done", "archived") and not st.card_finished:
@@ -900,7 +907,9 @@ class FlowEngine:
             if data.get("reason") != "bad-result":
                 self._finish(card, step, exit_code=0)
                 return
-        if os.path.isfile(step.get("closeFile") or ""):
+        if step.get("consoleClosed") or self._console_ended(step):
+            if not step.get("consoleClosed"):
+                self.journal.append(card, "step.console_closed", step=step.get("step"))
             self._finish(card, step, forced={"result": "stopped", "reason": "interactive-closed",
                                              "question": "Karta Konsoli została zamknięta bez wyniku. Wznowić czy porzucić?"})
             return
@@ -910,9 +919,23 @@ class FlowEngine:
         except OSError:
             timed_out = False  # plik przejęty przez kartę; czekamy na wynik albo znacznik zamknięcia
         if timed_out:
-            self.task_files.cancel(task_file)
-            self._finish(card, step, forced={"result": "stopped", "reason": "interactive-closed",
-                                             "question": "Konsola nie przejęła kroku. Wznowić czy porzucić?"})
+            if self.task_files.cancel(task_file):
+                self.journal.append(card, "step.console_closed", step=step.get("step"))
+                self._finish(card, step, forced={"result": "stopped", "reason": "interactive-closed",
+                                                 "question": "Konsola nie przejęła kroku. Wznowić czy porzucić?"})
+
+    def _console_ended(self, step: dict) -> bool:
+        """Znacznik lub trwała tożsamość procesu potwierdza koniec, również po restarcie usługi."""
+        alive = launch.process_alive(step.get("processFile") or "")
+        if alive is True:
+            return False
+        if os.path.isfile(step.get("closeFile") or "") or alive is False:
+            return True
+        if os.path.exists(step.get("processFile") or ""):
+            return False  # nieczytelny zapis procesu nie dowodzi jego końca
+        task_file = step.get("taskFile") or ""
+        return bool(task_file and not os.path.exists(task_file) and
+                    self.clock() - float(step.get("enteredAt") or self.clock()) > 30)
 
     def _guard(self, card: str, step: dict) -> None:
         name = step.get("step") or ""

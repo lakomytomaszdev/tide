@@ -1,7 +1,11 @@
 """Kontrakt wejścia w krok: sesja, plik wyniku i zamknięcie Konsoli."""
 import json
 import os
+import signal
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -57,11 +61,71 @@ class CloseMarkerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = os.path.join(temp, "closed")
             order = []
-            with mock.patch.object(launch, "run_agent", side_effect=lambda *_: order.append("agent")), \
-                    mock.patch("subprocess.call", side_effect=lambda *_: order.append("shell")):
+            def popen(argv, **_):
+                order.append("agent" if argv[0] == "/bin/claude" else "shell")
+                return mock.Mock(pid=os.getpid(), returncode=0, poll=lambda: 0)
+            with mock.patch("subprocess.Popen", side_effect=popen):
                 launch.run_flow({"argv": ["/bin/claude", "--resume", "id"], "closedFile": path})
             self.assertEqual(order, ["agent", "shell"])
             self.assertTrue(os.path.isfile(path))
+
+    def test_hangup_waits_for_agent_before_marking_close(self):
+        with tempfile.TemporaryDirectory() as temp:
+            closed = os.path.join(temp, "closed")
+            process = os.path.join(temp, "process")
+            ready = os.path.join(temp, "ready")
+            agent = os.path.join(temp, "agent.py")
+            with open(agent, "w", encoding="utf-8") as fh:
+                fh.write("import os, signal, time\n"
+                         "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+                         f"open({ready!r}, 'w').write(str(os.getpid()))\n"
+                         "time.sleep(30)\n")
+            task = {"argv": [sys.executable, agent], "closedFile": closed, "processFile": process}
+            runner = subprocess.Popen([sys.executable, "-c",
+                                       "import json,sys; from tide_daemon.tasks import launch; "
+                                       "sys.exit(launch.run_flow(json.loads(sys.argv[1])))", json.dumps(task)],
+                                      env={**os.environ, "SHELL": "/bin/true"})
+            self.addCleanup(lambda: runner.kill() if runner.poll() is None else None)
+            deadline = time.monotonic() + 5
+            while not os.path.isfile(ready) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(os.path.isfile(ready))
+            with open(ready, encoding="utf-8") as fh:
+                child = int(fh.read())
+            os.kill(runner.pid, signal.SIGHUP)
+            time.sleep(0.3)
+            self.assertFalse(os.path.isfile(closed))
+            os.kill(child, signal.SIGKILL)
+            runner.wait(timeout=5)
+            self.assertTrue(os.path.isfile(closed))
+
+    def test_process_group_survives_killed_launcher_before_child_record(self):
+        with tempfile.TemporaryDirectory() as temp:
+            ready = os.path.join(temp, "ready")
+            process = os.path.join(temp, "process")
+            runner = subprocess.Popen([sys.executable, "-c",
+                                       "import os,subprocess,sys,time; "
+                                       "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+                                       "open(sys.argv[1],'w').write(str(child.pid)); time.sleep(30)", ready],
+                                      start_new_session=True)
+            self.addCleanup(lambda: runner.kill() if runner.poll() is None else None)
+            deadline = time.monotonic() + 5
+            while not os.path.isfile(ready) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(os.path.isfile(ready))
+            with open(ready, encoding="utf-8") as fh:
+                child = int(fh.read())
+            try:
+                launch.write_process(process, runner.pid)
+                runner.kill()
+                runner.wait(timeout=5)
+                self.assertTrue(launch.process_alive(process))
+            finally:
+                os.kill(child, signal.SIGKILL)
+            deadline = time.monotonic() + 5
+            while launch.process_alive(process) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertFalse(launch.process_alive(process))
 
 
 class _Terminal:
@@ -149,6 +213,91 @@ class EnterStepTest(unittest.TestCase):
             self.engine.enter("K-1", self.step_id)
         self.assertEqual(err.exception.code, "already-entered")
         self.assertEqual(self.order, ["open"])
+
+    def test_failed_terminal_open_closes_attempt_and_allows_retry(self):
+        self.terminal.open = lambda _: ""
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            with self.assertRaises(FlowError):
+                self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        self.assertTrue(current["consoleClosed"])
+        self.terminal.open = lambda _: "tab"
+        self.assertEqual(self.engine.enter("K-1", self.step_id)["step"], self.step_id + "-enter-1")
+
+    def test_terminal_exception_closes_unclaimed_attempt(self):
+        self.terminal.open = mock.Mock(side_effect=RuntimeError("D-Bus"))
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            with self.assertRaises(FlowError):
+                self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        self.assertTrue(current["consoleClosed"])
+        self.assertEqual(state.fold(self.engine.journal.read("K-1")).finished[self.step_id]["result"], "stopped")
+
+    def test_unclaimed_timeout_closes_attempt_but_failed_cancel_waits(self):
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        old = time.time() - 60
+        os.utime(current["taskFile"], (old, old))
+        with mock.patch.object(self.engine.task_files, "cancel", return_value=False):
+            self.engine.tick()
+        self.assertNotIn(self.step_id, state.fold(self.engine.journal.read("K-1")).finished)
+        self.engine.tick()
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        self.assertTrue(current["consoleClosed"])
+        self.assertEqual(state.fold(self.engine.journal.read("K-1")).finished[self.step_id]["result"], "stopped")
+
+    def test_claimed_launcher_killed_is_reconciled_after_restart(self):
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        os.unlink(current["taskFile"])
+        launch.write_process(current["processFile"], os.getpid())
+        restarted = FlowEngine(self.engine.store, journal=self.engine.journal, terminal=self.terminal,
+                               task_files=self.engine.task_files)
+        restarted.tick()
+        self.assertNotIn(self.step_id, state.fold(self.engine.journal.read("K-1")).finished)
+        with open(current["processFile"], "w", encoding="utf-8") as fh:
+            json.dump({"launcher": {"pid": 99999999, "start": "0", "boot": "dead"}}, fh)
+        restarted.tick()
+        folded = state.fold(self.engine.journal.read("K-1"))
+        self.assertTrue(folded.steps[self.step_id]["consoleClosed"])
+        self.assertEqual(folded.finished[self.step_id]["reason"], "interactive-closed")
+
+    def test_lost_claim_without_process_record_is_reconciled_after_timeout(self):
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        os.unlink(current["taskFile"])
+        restarted = FlowEngine(self.engine.store, journal=self.engine.journal, terminal=self.terminal,
+                               task_files=self.engine.task_files, clock=lambda: current["enteredAt"] + 31)
+        restarted.tick()
+        folded = state.fold(self.engine.journal.read("K-1"))
+        self.assertTrue(folded.steps[self.step_id]["consoleClosed"])
+        self.assertEqual(folded.finished[self.step_id]["reason"], "interactive-closed")
+
+    def test_close_marker_does_not_override_live_launcher(self):
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        launch.write_process(current["processFile"], os.getpid())
+        launch.write_closed(current["closeFile"])
+        self.engine.tick()
+        folded = state.fold(self.engine.journal.read("K-1"))
+        self.assertFalse(folded.steps[self.step_id]["consoleClosed"])
+        self.assertNotIn(self.step_id, folded.finished)
+
+    def test_corrupt_process_record_does_not_prove_console_closed(self):
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        os.unlink(current["taskFile"])
+        with open(current["processFile"], "w", encoding="utf-8") as fh:
+            fh.write("not json")
+        restarted = FlowEngine(self.engine.store, journal=self.engine.journal, terminal=self.terminal,
+                               task_files=self.engine.task_files, clock=lambda: current["enteredAt"] + 31)
+        restarted.tick()
+        self.assertNotIn(self.step_id, state.fold(self.engine.journal.read("K-1")).finished)
 
     def test_close_without_result_asks_and_new_attempt_can_resume(self):
         with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):

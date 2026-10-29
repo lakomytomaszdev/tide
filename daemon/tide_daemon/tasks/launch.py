@@ -38,6 +38,76 @@ import re
 import sys
 
 
+def _identity(pid: int) -> dict:
+    with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+        fields = fh.read().rpartition(")")[2].split()
+    with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as fh:
+        boot = fh.read().strip()
+    return {"pid": pid, "start": fields[19], "boot": boot,
+            "group": int(fields[2]), "session": int(fields[3])}
+
+
+def write_process(path: str, launcher_pid: int, child_pid: int = 0) -> None:
+    """Trwała tożsamość launchera i jego bieżącego potomka, bez pomyłki po ponownym użyciu PID."""
+    if not path:
+        return
+    data = {"launcher": _identity(launcher_pid)}
+    if child_pid:
+        data["child"] = _identity(child_pid)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    temp = path + f".{os.getpid()}.tmp"
+    with open(temp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temp, path)
+
+
+def process_alive(path: str) -> bool | None:
+    """True: proces żyje; False: wszystkie zapisane procesy zniknęły; None: brak wiarygodnego zapisu."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        records = [data["launcher"]] + ([data["child"]] if "child" in data else [])
+        if not all(isinstance(r.get("pid"), int) and r["pid"] > 0 and
+                   isinstance(r.get("start"), str) and isinstance(r.get("boot"), str) for r in records):
+            return None
+        with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as fh:
+            boot = fh.read().strip()
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    for record in records:
+        if record["boot"] != boot:
+            continue
+        try:
+            with open(f"/proc/{record['pid']}/stat", encoding="utf-8") as fh:
+                fields = fh.read().rpartition(")")[2].split()
+            if fields[19] == record["start"] and fields[0] != "Z":
+                return True
+        except (OSError, IndexError):
+            continue
+    # Gdy Konsole uruchomiło launcher jako lidera grupy, proces potomny może żyć nawet po
+    # SIGKILL launchera między fork() a utrwaleniem PID potomka. Grupa przeżywa lidera.
+    leader = records[0]
+    if leader.get("boot") == boot and leader.get("group") == leader["pid"]:
+        try:
+            names = os.listdir("/proc")
+        except OSError:
+            return None
+        for name in names:
+            if not name.isdecimal():
+                continue
+            try:
+                with open(f"/proc/{name}/stat", encoding="utf-8") as fh:
+                    fields = fh.read().rpartition(")")[2].split()
+                if fields[0] != "Z" and int(fields[2]) == leader["group"] and \
+                        int(fields[3]) == leader.get("session"):
+                    return True
+            except (OSError, ValueError, IndexError):
+                continue
+    return False
+
+
 def write_closed(path: str) -> None:
     """Trwały znacznik zamknięcia karty kroku; zapis atomowy dla zegara usługi."""
     if not path:
@@ -106,6 +176,11 @@ def claim(path: str):
     except OSError:
         return None  # usługa zdążyła je wycofać albo przejął je ktoś inny
     data = _load(claimed)
+    if data is not None and data.get("processFile"):
+        try:
+            write_process(data["processFile"], os.getpid())
+        except OSError:
+            data = None
     try:
         os.unlink(claimed)
     except OSError:
@@ -207,28 +282,71 @@ def run_flow(task: dict) -> int:
     if not isinstance(closed, str) or not os.path.isabs(closed):
         return 2
 
-    def hangup(*_):
-        write_closed(closed)
-        os._exit(129)
+    process_file = task.get("processFile") or ""
+    child = None
+    hung_up = False
 
-    previous = signal.signal(signal.SIGHUP, hangup)
+    def hangup(*_):
+        nonlocal hung_up
+        hung_up = True
+        if child is not None and child.poll() is None:
+            try:
+                child.send_signal(signal.SIGHUP)
+            except ProcessLookupError:
+                pass
+
+    def run(argv, env=None):
+        nonlocal child
+        try:
+            child = subprocess.Popen(argv, env=env)
+            write_process(process_file, os.getpid(), child.pid)
+            deadline = None
+            while child.poll() is None:
+                if hung_up and deadline is None:
+                    deadline = time.monotonic() + 2.0
+                if deadline is not None and time.monotonic() >= deadline:
+                    child.kill()
+                try:
+                    child.wait(timeout=0.1)
+                except subprocess.TimeoutExpired:
+                    pass
+            return child.returncode
+        except OSError as exc:
+            print(f"Tide: nie udało się uruchomić {argv[0]}: {exc}", file=sys.stderr, flush=True)
+            return 127
+        finally:
+            if child is not None and child.poll() is None:
+                child.terminate()
+                try:
+                    child.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait()
+            if child is None or child.poll() is not None:
+                child = None
+                write_process(process_file, os.getpid())
+
+    previous = {signal.SIGHUP: signal.signal(signal.SIGHUP, hangup)}
+    for sig in (signal.SIGINT, signal.SIGQUIT):
+        previous[sig] = signal.signal(sig, lambda *_: None)
     try:
+        import time
+        write_process(process_file, os.getpid())
         try:
             env = agent_env(task, os.environ) if has_env(task) else dict(os.environ)
         except ValueError as exc:
             print(f"Tide: model lokalny: {exc} — agent nie wystartował.", flush=True)
         else:
-            run_agent(task["argv"], env)
+            run(task["argv"], env)
             del env
-        # Powłoka jest procesem potomnym: launch.py żyje do zamknięcia karty i zapisuje znacznik.
-        try:
-            subprocess.call(shell())
-        except OSError:
-            pass
+        if not hung_up:
+            run(shell())
     finally:
-        signal.signal(signal.SIGHUP, previous)
-        write_closed(closed)
-    return 0
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        if child is None or child.poll() is not None:
+            write_closed(closed)
+    return 129 if hung_up else 0
 
 
 def main(argv=None) -> int:
