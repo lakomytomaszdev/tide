@@ -252,7 +252,7 @@ def main(argv=None) -> int:
     if models is not None:
         scanner.known_local_models = models.known_models  # role i modele na serwerach ze stanu /Models
     tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
-    board = None if args.no_board else start_board(app, args, trees, monitor, coordination, clock)
+    board = None if args.no_board else start_board(app, args, trees, monitor, coordination, clock, limits)
     if board is not None:
         # Notki „Skończone dziś”: ręczne sprawdzenie z karty tablicy pracy (check: manual, spec — PT-5).
         report.card_check = board_card_check(board)
@@ -623,7 +623,7 @@ def pastel_colors(paths) -> dict | None:
     return None
 
 
-def start_board(app, args, trees, monitor=None, coordination=None, clock=time.time):
+def start_board(app, args, trees, monitor=None, coordination=None, clock=time.time, limits=None):
     """Obszar /Board: tablica pracy w lokalnym repozytorium git (board/, board_monitor.py).
     Repozytoria do dodania jako projekty bierzemy z gotowej listy obszaru Worktrees, a stan kart
     (W toku, Czeka na mnie, Do sprawdzenia — board/derive.py) z sesji /Agents i tablic /Coordination."""
@@ -655,7 +655,7 @@ def start_board(app, args, trees, monitor=None, coordination=None, clock=time.ti
                          coordinators=(lambda: coordination.boards) if coordination is not None else None,
                          youtrack=youtrack, parent=app)
     trees.changed.connect(board.publish)  # nowe repozytorium w katalogu projektów
-    board.flow = start_card_flow(app, args, board, monitor)
+    board.flow = start_card_flow(app, args, board, monitor, limits)
     # Git (czy gałąź scalona) idzie w wątku roboczym; nowy wynik przelicza karty w wątku głównym.
     deriver.branches.on_result = board.rederive_later
     if monitor is not None:
@@ -665,7 +665,7 @@ def start_board(app, args, trees, monitor=None, coordination=None, clock=time.ti
     return board
 
 
-def start_card_flow(app, args, board, monitor=None):
+def start_card_flow(app, args, board, monitor=None, limits=None):
     """Przepływ karty (PT-58, cardflow/, cardflow_monitor.py): StartCard, kroki w tle, dziennik kart. Sesje kroków
     znikają z /Agents (monitor.hidden). $TIDE_SYSTEMD_RUN i $TIDE_FLOW_POLL_MS — tylko testy usługi (atrapa
     systemd-run, krótszy zegar)."""
@@ -688,7 +688,8 @@ def start_card_flow(app, args, board, monitor=None):
                         systemd_run=os.environ.get("TIDE_SYSTEMD_RUN", ""),
                         catalog=lambda: models_config.load().catalog,
                         models_config=models_config.load, model_probe=models_status.endpoint_status,
-                        codex_roots=getattr(args, "codex_dir", None), terminal=terminal)
+                        codex_roots=getattr(args, "codex_dir", None), terminal=terminal,
+                        limits_source=(lambda: json.loads(limits.forecast_json())) if limits is not None else None)
     if monitor is not None:
         monitor.hidden = engine.is_hidden
     return CardFlowMonitor(engine, board, poll_ms=max(100, poll_ms), parent=app)

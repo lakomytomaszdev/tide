@@ -43,6 +43,8 @@ class FlowState:
     review_decisions: dict = field(default_factory=dict)
     step_retries: dict = field(default_factory=dict)  # źródłowy krok → automatyczne ponowienie
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
+    wip_retries: dict = field(default_factory=dict)    # krok → ponowiony bezpieczny commit po błędzie
+    limits: dict = field(default_factory=dict)         # krok → odczyt limitu w chwili wyczerpania
     step_notices: set = field(default_factory=set)
     flow_notices: set = field(default_factory=set)
     activity: dict = field(default_factory=dict)      # krok → ostatnia zmiana plików lub dziennika sesji
@@ -128,6 +130,7 @@ def fold(events: list[dict]) -> FlowState:
             st.last_activity_ts = _epoch(e.get("ts")) or st.last_activity_ts
             st.stalled_since = ""
         if kind in ("card.started", "card.stalled", "step.started", "step.finished", "step.waiting", "review.verdict",
+                    "step.decision", "step.wip", "step.limit",
                     "plan.approved", "card.paused", "card.resumed", "plan.finished") or (
                     kind == "result" and e.get("action") == "merge"):
             st.timeline.append({key: e[key] for key in (
@@ -146,6 +149,8 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_finished = False
             st.plan_change_seq, st.plan_change_ts = 0, ""
             st.assignments = {}
+            st.wip_retries = {}
+            st.limits = {}
             st.waiting = {}
             st.inputs = {}
         elif kind == "intent":
@@ -192,6 +197,10 @@ def fold(events: list[dict]) -> FlowState:
             st.step_retries[e.get("step")] = e
         elif kind == "step.decision":
             st.step_decisions[e.get("step")] = e
+        elif kind == "step.wip":
+            st.wip_retries[e.get("step")] = e
+        elif kind == "step.limit":
+            st.limits[e.get("step")] = e
         elif kind == "step.notice":
             st.step_notices.add(e.get("step"))
         elif kind == "step.activity":
@@ -310,8 +319,8 @@ def attention_step(st: FlowState) -> str:
         if item.get("ticket") in st.rejected or name in st.step_decisions:
             continue
         if done.get("result") in ("question", "denied") or (done.get("result") == "error" and
-                int(item.get("attempt") or 0) >= 1) or (done.get("result") == "stopped" and
-                done.get("reason") == "interactive-closed"):
+                (int(item.get("attempt") or 0) >= 1 or done.get("reason") == "limit")) or (
+                done.get("result") == "stopped" and done.get("reason") in ("interactive-closed", "transfer")):
             return name
         key = (item.get("ticket"), item.get("round"))
         if key in st.review_questions and key not in st.review_decisions:
@@ -368,7 +377,7 @@ def decision_step(st: FlowState) -> str:
         done = st.finished.get(name) or {}
         if done.get("result") not in ("question", "denied", "error"):
             continue
-        if done.get("result") == "error" and int(step.get("attempt") or 0) == 0:
+        if done.get("result") == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "limit":
             continue
         if any(s.get("parentStep") == name for s in st.steps.values()):
             continue
@@ -426,12 +435,35 @@ def derived(st: FlowState, card: dict) -> dict | None:
          "startedTs": _epoch(item.get("ts")),
          "lastActivityTs": _epoch((st.activity.get(name) or item).get("ts")),
          "kind": item.get("kind") or "", "executor": item.get("executor") or "",
+         "provider": item.get("provider") or "",
+         "canTransfer": name not in st.finished and item.get("mode") != "interactive" and
+                        bool(item.get("provider")) and not st.card_finished,
          "canEnter": not any(other.get("worktree") == item.get("worktree") and other.get("step") != name
                              for other in st.running()) and
                      not any(other.get("worktree") == item.get("worktree") and other.get("mode") == "interactive"
                              and not other.get("consoleClosed") for other in st.steps.values())}
         for name, item in st.steps.items()
     ]
+    if done.get("reason") in ("limit", "transfer"):
+        decision = st.step_decisions.get(st.last_step) or {}
+        limit = st.limits.get(st.last_step) or {}
+        wip = (st.wip_retries.get(st.last_step) or {}).get("wip") or done.get("wip") or {}
+        label = {"anthropic": "Claude", "openai": "Codex"}.get(
+            step.get("provider"), step.get("provider") or "dostawcy")
+        reset = limit.get("reset") or ""
+        reason = f"Wyczerpany limit {label}" if done.get("reason") == "limit" else "Przekazanie kroku"
+        if reset:
+            reason += f" do {reset}"
+        if wip.get("error") or (wip.get("files") and not wip.get("committed")):
+            reason += f" — zapis zmian wymaga naprawy ({wip.get('error') or 'brak commita WIP'})"
+        out["flow"].update({"action": "limit" if not decision or decision.get("choice") == "wait-limit" else "",
+                            "limit": {"provider": step.get("provider") or "", "reset": reset,
+                                      "reason": reason, "wipError": wip.get("error") or ""},
+                            "question": reason})
+        out["question"] = reason
+        if decision.get("choice") == "transfer":
+            return _fill(out, "progress", f"{ident} · przekazuję krok")
+        return _fill(out, "waiting", reason)
     failures = [e for e in st.tracker_failures() if e.get('action') != 'youtrack-note']
     if failures and not st.running():
         error = failures[-1].get('error') or 'odmowa operacji YouTracka'
