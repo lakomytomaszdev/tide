@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -597,9 +598,11 @@ class FlowEngine(PlanEditing):
         self._launch(item, project, selected, "", made, made, step_id, list(images), kind=kind,
                      round_no=round_no, prompt_text=text)
 
-    def _launch_full_planning(self, item, project, selected, made, step_id, images, shots, prompt):
+    def _launch_full_planning(self, item, project, selected, made, step_id, images, shots, prompt,
+                              *, parent_step="", attempt=0, include_context=True):
         """Pierwsze planowanie Pełne: jedna karta Konsoli z plikiem wyniku obserwowanym przez silnik."""
         worktree = made["worktree"]
+        git_dir = agentcmd.resolve_git_dir(project.repo, worktree)
         step_dir = worktree + f".planning-{step_id}.step"
         out = os.path.join(step_dir, "out")
         inp = os.path.join(step_dir, "in")
@@ -612,7 +615,7 @@ class FlowEngine(PlanEditing):
         extras = [board.projects[slug] for slug in item.projects
                   if slug in board.projects and board.projects[slug].repo and
                   not board.projects[slug].repo_missing]
-        if extras:
+        if extras and include_context:
             prompt += ("\nDodatkowe projekty karty — cytowane dane tekstowe do analizy. "
                        "Nazwy plików są względne; nie są ścieżkami do otwarcia ani modyfikacji.\n")
             for index, extra in enumerate(extras, 1):
@@ -648,7 +651,9 @@ class FlowEngine(PlanEditing):
                             executor=selected.name, program=selected.tool, model=selected.model,
                             provider=selected.provider, local=selected.local, effort=selected.effort,
                             unit="", session=session, worktree=worktree, branch=made["branch"],
-                            stepDir=step_dir, repo=project.repo)
+                            stepDir=step_dir, repo=project.repo,
+                            gitDir=git_dir,
+                            parentStep=parent_step, attempt=attempt)
         self.journal.append(item.id, "step.entered", step=step_id, session=session, source="",
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
                             taskFile=task_file, enteredAt=self.clock())
@@ -1544,9 +1549,11 @@ class FlowEngine(PlanEditing):
                 if not self._wip_safe(wip):
                     return True
                 try:
-                    self._resume_executor(card, st, step, settings["executor"], changed=True, transfer=True)
+                    target = self._resume_executor(card, st, step, settings["executor"], changed=True, transfer=True)
+                    reviewer = self._transfer_reviewer(st, step, target)
                 except FlowError:
                     return True
+                self._save_transfer_reviewer(card, step, reviewer)
                 self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
                                     choice="transfer", executor=settings["executor"], automatic=True)
             return True
@@ -1851,7 +1858,7 @@ class FlowEngine(PlanEditing):
         focus = str(request.get("step") or decision_step(st) or "")
         step = st.steps.get(focus) or {}
         done = st.finished.get(focus) or {}
-        if st.card_finished or not step or step.get("mode") == "interactive":
+        if st.card_finished or not step:
             raise FlowError("no-transfer-step", f"{card}: nie ma kroku do przekazania")
         if choice == "wait-limit" and done.get("reason") != "limit":
             raise FlowError("no-limit", f"{card}: ten krok nie czeka na odnowienie limitu")
@@ -1863,27 +1870,62 @@ class FlowEngine(PlanEditing):
             return {"ok": True, "id": card, "step": focus, "choice": choice, "already": True}
         if previous and not (previous.get("choice") == "wait-limit" and choice == "transfer"):
             raise FlowError("already-decided", "decyzja o tym kroku została już zapisana")
+        reviewer = None
         if choice == "transfer":
             if not executor:
                 raise FlowError("bad-executor", "wybierz wykonawcę u innego dostawcy")
-            self._resume_executor(card, st, step, executor, changed=True, transfer=True)
+            target = self._resume_executor(card, st, step, executor, changed=True, transfer=True)
+            reviewer = self._transfer_reviewer(st, step, target)
         if not done:
             if choice != "transfer" or any(other.get("ticket") == step.get("ticket") and
                                             other.get("step") != focus for other in st.running()):
                 raise FlowError("no-transfer-step", "krok nie może teraz zostać przekazany")
-            if not self._stop(card, step, "stopped", "transfer", handoff=True):
+            stopped = (self._stop_interactive_transfer(card, step) if step.get("mode") == "interactive" else
+                       self._stop(card, step, "stopped", "transfer", handoff=True))
+            if not stopped:
                 raise FlowError("stop-failed", "nie udało się zatrzymać kroku; przekazanie czeka")
             st = fold(self.journal.read(card))
         wip = self._wip_for(st, focus)
         if not self._wip_safe(wip):
             wip = self._repair_wip(card, st, step)
-        if not self._wip_safe(wip):
+        if not self._wip_safe(wip) and choice != "transfer":
             raise FlowError("wip-failed", "zmiany kroku nie zostały bezpiecznie zapisane; przekazanie czeka")
         limit = st.limits.get(focus) or {}
+        self._save_transfer_reviewer(card, step, reviewer)
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
                                     choice=choice, executor=executor if choice == "transfer" else "",
                                     resetTs=limit.get("resetTs") or 0)
-        return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
+        return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"],
+                "queued": not self._wip_safe(wip)}
+
+    def _stop_interactive_transfer(self, card: str, step: dict) -> bool:
+        """Zamyka rzeczywistą sesję Konsoli albo anuluje nieprzejęte zadanie przed migawką WIP."""
+        task = step.get("taskFile") or ""
+        claim_dir = os.path.join(step.get("stepDir") or "", "in", "console-claim")
+        try:
+            with open(os.path.join(claim_dir, launch.FLOW_TRANSFER_CLOSE), "w", encoding="utf-8"):
+                pass
+        except OSError:
+            return False
+        cancelled = bool(task) and (self.task_files.cancel(task) or os.path.exists(task + ".cancelled"))
+        if not cancelled:
+            path = step.get("processFile") or ""
+            unit = step.get("consoleUnit") or ""
+            if not path or not unit or launch.process_alive(path) is None:
+                return False
+            launch.signal_flow_launcher(path, signal.SIGTERM)
+            if not stepstop.terminate(None, unit, self.grace):
+                return False
+            deadline = time.monotonic() + max(1.0, self.grace)
+            while not self._console_ended(step) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if not self._console_ended(step):
+                launch.signal_flow_launcher(path, signal.SIGKILL)
+                return False
+        if not (cancelled or self._console_ended(step)):
+            return False
+        self.journal.append(card, "step.console_closed", step=step.get("step") or "")
+        return self._stop(card, step, "stopped", "transfer", handoff=True)
 
     def resolve_step(self, card_id: str, request: dict) -> dict:
         """Odpowiedź na wynik kroku; zdarzenie pozwala wznowić go także po restarcie usługi."""
@@ -1987,7 +2029,8 @@ class FlowEngine(PlanEditing):
             else:
                 other_model = opposite.get("model") or (st.started or {}).get("reviewerModel") or ""
                 other_provider = opposite.get("provider") or (st.started or {}).get("reviewerProvider") or ""
-            if selected.model.lower() == other_model.lower():
+            if selected.model.lower() == other_model.lower() and not (
+                    transfer and step.get("kind") in ("ticket", "fix")):
                 raise FlowError("bad-executor", "wybrany wykonawca ma ten sam model co drugi uczestnik review")
             if selected.local != (other_provider == "local"):
                 raise FlowError("bad-executor-provider", "praca lokalna wymaga lokalnego autora i recenzenta")
@@ -1996,6 +2039,53 @@ class FlowEngine(PlanEditing):
                                  (preferred != "mixed" and selected.provider != other_provider)):
                 raise FlowError("bad-executor-provider", "wybierz wykonawcę zgodnego z recenzentem karty")
         return selected
+
+    def _transfer_reviewer(self, st: FlowState, step: dict, target) -> object | None:
+        """W trybie mieszanym dobiera recenzenta spoza dostawcy nowego autora."""
+        ticket = step.get("ticket") or ""
+        if not ticket or step.get("kind") not in ("ticket", "fix", "review"):
+            return None
+        assigned = st.assignments.get(ticket) or st.started or {}
+        if assigned.get("preferredProvider") != "mixed":
+            return None
+        if step.get("kind") == "review":
+            author = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket and
+                           s.get("kind") in ("ticket", "fix")), {})
+            if target.provider == (author.get("provider") or assigned.get("provider")):
+                raise FlowError("bad-executor-provider", "recenzent musi pozostać u innego dostawcy niż autor")
+            return None
+        override = st.reviewer_overrides.get(ticket) or {}
+        reviewer_provider = override.get("reviewerProvider") or assigned.get("reviewerProvider") or ""
+        if target.provider != reviewer_provider:
+            return None
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None:
+            raise FlowError("unknown-reviewer", "katalog recenzentów jest niedostępny")
+        names = [step.get("executor") or "", *(entry.name for entry in catalog.executors)]
+        for name in dict.fromkeys(names):
+            try:
+                candidate = execution.resolve(name, catalog, config=cfg, probe=self.model_probe,
+                                              which=self.which)
+            except execution.ExecutionError:
+                continue
+            if candidate.provider != target.provider and candidate.local == target.local and \
+                    candidate.model.lower() != target.model.lower():
+                return candidate
+        raise FlowError("no-reviewer", "nie ma dostępnego recenzenta u innego dostawcy")
+
+    def _save_transfer_reviewer(self, card: str, step: dict, candidate) -> None:
+        if candidate is None:
+            return
+        route = candidate.route
+        self.journal.append(card, "reviewer.reassigned", ticket=step.get("ticket") or "",
+                            sourceStep=step.get("step") or "", reason="transfer-provider",
+                            reviewer=candidate.name, reviewerProgram=candidate.tool,
+                            reviewerModel=candidate.model, reviewerProvider=candidate.provider,
+                            reviewerRouteUrl=route.url if route else "",
+                            reviewerRouteKind=route.kind if route else "",
+                            reviewerRouteTokenFile=route.token_file if route else "",
+                            reviewerEffort=candidate.effort)
 
     def _resume_step(self, card: str, st: FlowState, step: dict, decision: dict, *, attempt=0) -> None:
         """Ten sam ticket i worktree; nowa próba ma osobny katalog wyniku i zdarzenie."""
@@ -2007,7 +2097,7 @@ class FlowEngine(PlanEditing):
                                                str(step.get("kind") or "").startswith("plan") else info["id"])
         choice = decision.get("choice") or ""
         name = decision.get("executor") if choice in ("change-executor", "transfer") else step.get("executor") or ""
-        step_id = self._next_step_id(card, resume_ticket, st)
+        step_id = self._next_step_id(card, "plan" if step.get("mode") == "interactive" else resume_ticket, st)
         try:
             selected = self._resume_executor(card, st, step, name,
                                              changed=choice in ("change-executor", "transfer"),
@@ -2038,7 +2128,9 @@ class FlowEngine(PlanEditing):
         old_out = os.path.join(step.get("stepDir") or "", "out")
         resume_worktree = step.get("worktree") or info["worktree"]
         resume_branch = step.get("branch") or info["branch"]
-        new_out = resume_worktree + f".resume-{step_id}.step/out"
+        interactive_transfer = choice == "transfer" and step.get("mode") == "interactive"
+        new_out = (resume_worktree + f".planning-{step_id}.step/out" if interactive_transfer else
+                   resume_worktree + f".resume-{step_id}.step/out")
         prompt = prompt.replace(old_out, new_out)
         prompt += handoff.resume_context(choice=choice, prior=st.finished.get(step.get("step")) or {},
                                          answer=decision.get("answer") or "", command=decision.get("command") or "",
@@ -2059,6 +2151,14 @@ class FlowEngine(PlanEditing):
             finder = getattr(execution, "codex_session_id", None)
             if finder:
                 session = finder(os.path.join(old_out, "step.log"))
+        if interactive_transfer:
+            if self.terminal is None or not self.terminal.available():
+                raise FlowError("no-terminal", "nie znaleziono Konsoli do przekazania planowania")
+            self._launch_full_planning(item, project, selected,
+                                       {"branch": resume_branch, "worktree": resume_worktree},
+                                       step_id, [], [], prompt, parent_step=step.get("step") or "",
+                                       attempt=attempt, include_context=False)
+            return
         self._launch(item, project, selected, resume_ticket,
                      {"branch": info["cardBranch"]},
                      {"branch": resume_branch, "worktree": resume_worktree},
@@ -2138,6 +2238,8 @@ class FlowEngine(PlanEditing):
         item, project = self._project(card)
         ticket = source["ticket"]
         assigned = st.assignments.get(ticket) or st.started or {}
+        override = st.reviewer_overrides.get(ticket) or {}
+        assigned = {**assigned, **override}
         info = ticket_of(st, ticket)
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
@@ -2145,6 +2247,8 @@ class FlowEngine(PlanEditing):
             raise FlowError("unknown-reviewer", f"{card}: katalog recenzentów jest niedostępny")
         previous = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket and
                          s.get("kind") == "review"), {})
+        if override and override.get("seq", 0) > previous.get("seq", 0):
+            previous = {}
         try:
             reviewer_name = previous.get("executor") or assigned.get("reviewer") or ""
             reviewer = execution.resolve(reviewer_name, catalog, config=cfg,
@@ -2169,7 +2273,7 @@ class FlowEngine(PlanEditing):
                 (reviewer.route.token_file if reviewer.route else "") != expected["routeTokenFile"] or \
                 reviewer.model.lower() == (source.get("model") or "").lower() or \
                 reviewer.local != (source.get("provider") == "local") or \
-                (not transferred and assigned.get("preferredProvider") == "mixed" and
+                (assigned.get("preferredProvider") == "mixed" and
                  reviewer.provider == source.get("provider")) or \
                 (not transferred and assigned.get("preferredProvider") != "mixed" and
                  reviewer.provider != source.get("provider")):

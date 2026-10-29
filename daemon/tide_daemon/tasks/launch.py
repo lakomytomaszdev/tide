@@ -35,7 +35,10 @@ gdy usługa jest w trakcie aktualizacji.
 import json
 import os
 import re
+import signal
 import sys
+
+FLOW_TRANSFER_CLOSE = ".flow-transfer-close"
 
 
 def _identity(pid: int) -> dict:
@@ -106,6 +109,27 @@ def process_alive(path: str) -> bool | None:
             except (OSError, ValueError, IndexError):
                 continue
     return False
+
+
+def signal_flow_launcher(path: str, sig: int) -> bool:
+    """Sygnał do zapamiętanego launchera po ponownym sprawdzeniu tożsamości pod pidfd."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            record = json.load(fh)["launcher"]
+        pid = record["pid"]
+        if not isinstance(pid, int) or pid <= 0:
+            return False
+        handle = os.pidfd_open(pid)
+        try:
+            current = _identity(pid)
+            if current["start"] != record["start"] or current["boot"] != record["boot"]:
+                return False
+            signal.pidfd_send_signal(handle, sig)
+            return True
+        finally:
+            os.close(handle)
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return False
 
 
 def write_closed(path: str) -> None:
@@ -404,6 +428,8 @@ def main(argv=None) -> int:
         print("Użycie: launch.py [--task PLIK]", file=sys.stderr)
         return 2
     if task is None:
+        if os.path.isfile(os.path.join(os.getcwd(), FLOW_TRANSFER_CLOSE)):
+            return 0  # anulowane planowanie: zamknij starą kartę zamiast otwierać powłokę
         print("Tide: nie ma zadania do uruchomienia w tym katalogu (wycofane albo już uruchomione).", flush=True)
         argv_exec = shell()
     else:

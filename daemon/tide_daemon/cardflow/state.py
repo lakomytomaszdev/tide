@@ -63,6 +63,7 @@ class FlowState:
     plan_change_seq: int = 0
     plan_change_ts: str = ""
     assignments: dict = field(default_factory=dict)  # ticket → autor i recenzent z planu
+    reviewer_overrides: dict = field(default_factory=dict)  # ticket → recenzent po ręcznym transferze
     inputs: dict = field(default_factory=dict)
     waiting: dict = field(default_factory=dict)
     timeline: list = field(default_factory=list)
@@ -149,6 +150,7 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_finished = False
             st.plan_change_seq, st.plan_change_ts = 0, ""
             st.assignments = {}
+            st.reviewer_overrides = {}
             st.wip_retries = {}
             st.limits = {}
             st.waiting = {}
@@ -253,6 +255,8 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_finished = True
         elif kind == "ticket.assigned":
             st.assignments[e.get("ticket")] = e
+        elif kind == "reviewer.reassigned":
+            st.reviewer_overrides[e.get("ticket")] = e
         elif kind == "flow.error":
             st.flow_error = e.get("error") or ""
         elif kind == "card.paused":
@@ -436,7 +440,9 @@ def derived(st: FlowState, card: dict) -> dict | None:
          "lastActivityTs": _epoch((st.activity.get(name) or item).get("ts")),
          "kind": item.get("kind") or "", "executor": item.get("executor") or "",
          "provider": item.get("provider") or "",
-         "canTransfer": name not in st.finished and item.get("mode") != "interactive" and
+         "canTransfer": (name not in st.finished or
+                         ((st.finished.get(name) or {}).get("reason") == "transfer" and
+                          name not in st.step_decisions)) and
                         bool(item.get("provider")) and not st.card_finished,
          "canEnter": not any(other.get("worktree") == item.get("worktree") and other.get("step") != name
                              for other in st.running()) and
@@ -456,12 +462,16 @@ def derived(st: FlowState, card: dict) -> dict | None:
             reason += f" do {reset}"
         if wip.get("error") or (wip.get("files") and not wip.get("committed")):
             reason += f" — zapis zmian wymaga naprawy ({wip.get('error') or 'brak commita WIP'})"
-        out["flow"].update({"action": "limit" if not decision or decision.get("choice") == "wait-limit" else "",
+        out["flow"].update({"action": "limit" if done.get("reason") == "limit" and
+                             (not decision or decision.get("choice") == "wait-limit") else "",
                             "limit": {"provider": step.get("provider") or "", "reset": reset,
                                       "reason": reason, "wipError": wip.get("error") or ""},
                             "question": reason})
         out["question"] = reason
         if decision.get("choice") == "transfer":
+            if not (wip.get("stopped") and not wip.get("error") and
+                    (wip.get("committed") or wip.get("files") == 0)):
+                return _fill(out, "waiting", reason)
             return _fill(out, "progress", f"{ident} · przekazuję krok")
         return _fill(out, "waiting", reason)
     failures = [e for e in st.tracker_failures() if e.get('action') != 'youtrack-note']

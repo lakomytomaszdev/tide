@@ -9,9 +9,11 @@ from unittest import mock
 from tide_daemon.cardflow import limits
 from tide_daemon.cardflow.engine import FlowError
 from tide_daemon.cardflow.state import derived, fold
+from tide_daemon.tasks import launch
 
 from .test_cardflow import FlowInProcess
 from .test_cardflow_dbus import FlowCase
+from .test_cardflow_full_planning import FullPlanningTest, _Terminal
 from .privatebus import wait_until
 
 
@@ -82,6 +84,33 @@ class ExhaustionClassifierTest(unittest.TestCase):
                                     "claude"))
         self.assertFalse(self.check([{"type": "result", "is_error": False,
                                      "result": "You've hit your limit"}], "claude"))
+
+
+class ConsoleClosureTest(unittest.TestCase):
+    def test_launcher_signal_requires_recorded_process_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = os.path.join(temp, "process.json")
+            launch.write_process(path, os.getpid())
+            with mock.patch("tide_daemon.tasks.launch.signal.pidfd_send_signal") as send:
+                self.assertTrue(launch.signal_flow_launcher(path, 15))
+                send.assert_called_once()
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            data["launcher"]["start"] = "wrong-start"
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            with mock.patch("tide_daemon.tasks.launch.signal.pidfd_send_signal") as send:
+                self.assertFalse(launch.signal_flow_launcher(path, 15))
+                send.assert_not_called()
+
+    def test_cancelled_transfer_closes_old_tab_without_shell(self):
+        with tempfile.TemporaryDirectory() as claim_dir:
+            with open(os.path.join(claim_dir, launch.FLOW_TRANSFER_CLOSE), "w", encoding="utf-8"):
+                pass
+            with mock.patch("tide_daemon.tasks.launch.claim", return_value=None), \
+                 mock.patch("tide_daemon.tasks.launch.os.getcwd", return_value=claim_dir), \
+                 mock.patch("tide_daemon.tasks.launch.shell", side_effect=AssertionError("powłoka")):
+                self.assertEqual(launch.main(["--task", os.path.join(claim_dir, "cancelled.task")]), 0)
 
 
 class FlowQuotaContractTest(FlowInProcess):
@@ -194,6 +223,22 @@ class TransferFlowTest(FlowInProcess):
         self.assertEqual((decisions[0]["choice"], decisions[0]["automatic"]), ("transfer", True))
         self.wait_column(card, "review", timeout=50)
 
+    def test_mixed_transfer_reassigns_reviewer_to_other_provider(self):
+        card = self.card(description="Dodaj eksport.\n\nATRAPA: czekaj-pierwszy")
+        reply = self.start(card, preferredProvider="mixed", reviewer="Codex Astra")
+        self.assertTrue(reply["ok"], reply)
+        first = self.of(card, "step.started")[0]
+        self.assertTrue(wait_until(lambda: os.path.isfile(os.path.join(first["worktree"], "ATRAPA.md")), timeout=15))
+        changed = self.resolve(card, {"choice": "transfer", "step": first["step"],
+                                      "executor": "Codex mocny"})
+        self.assertTrue(changed["ok"], changed)
+        event = self.of(card, "reviewer.reassigned")[0]
+        self.assertEqual((event["ticket"], event["reviewerProvider"], event["reason"]),
+                         (first["ticket"], "anthropic", "transfer-provider"))
+        self.wait_column(card, "review", timeout=50)
+        reviewers = [step for step in self.of(card, "step.started") if step["kind"] == "review"]
+        self.assertEqual(reviewers[0]["provider"], "anthropic")
+
     def test_wait_for_reset_resumes_same_provider_after_known_reset(self):
         now = self.flow.engine.clock()
         metric = {"remaining": 25, "readTs": now, "resetTs": now + 1000}
@@ -224,16 +269,87 @@ class TransferFlowTest(FlowInProcess):
         first = self.of(card, "step.started")[0]
         self.assertTrue(wait_until(lambda: os.path.isfile(os.path.join(first["worktree"], "ATRAPA.md")), timeout=15))
         with mock.patch("tide_daemon.tasks.stepstop.git_snapshot", return_value=Snapshot(error="no-sandbox")):
-            refused = self.resolve(card, {"choice": "transfer", "step": first["step"], "executor": "Codex mocny"})
-        self.assertEqual((refused["ok"], refused["error"]), (False, "wip-failed"), refused)
+            queued = self.resolve(card, {"choice": "transfer", "step": first["step"], "executor": "Codex mocny"})
+        self.assertTrue(queued["ok"] and queued["queued"], queued)
         self.assertEqual(len(self.of(card, "step.started")), 1)
         self.assertEqual(self.of(card, "step.finished")[0]["wip"]["error"], "no-sandbox")
         self.assertEqual(self.results(card, "merge"), [])
-        repaired = self.resolve(card, {"choice": "transfer", "step": first["step"], "executor": "Codex mocny"})
-        self.assertTrue(repaired["ok"], repaired)
+        self.assertEqual(self.shown(card)["derived"]["flow"]["action"], "")
+        self.assertIn("zapis zmian wymaga naprawy", self.shown(card)["derived"]["note"])
+        now = self.flow.engine.clock()
+        self.flow.engine.clock = lambda: now + 61
         self.assertTrue(wait_until(lambda: len(self.of(card, "step.started")) >= 2, timeout=30), self.events(card))
         self.assertTrue(self.of(card, "step.wip")[-1]["wip"]["committed"])
         self.wait_column(card, "review", timeout=50)
+
+
+class InteractiveTransferTest(FlowInProcess):
+    resolve = TransferFlowTest.resolve
+
+    def full(self):
+        terminal = _Terminal()
+        self.flow.engine.terminal = terminal
+        card = self.card(description="Dodaj eksport pliku z podglądem wyniku.")
+        reply = self.start(card, entry="planning", mode="full", executor="Sonnet",
+                           preferredProvider="anthropic")
+        self.assertTrue(reply["ok"] and reply["interactive"], reply)
+        step_id = self.of(card, "step.started")[0]["step"]
+        step = fold(self.events(card)).steps[step_id]
+        return card, step, terminal
+
+    def test_pending_console_transfer_preserves_wip_and_continues_in_new_console(self):
+        card, first, terminal = self.full()
+        self.assertTrue(self.shown(card)["derived"]["flow"]["steps"][0]["canTransfer"])
+        with open(os.path.join(first["worktree"], "PLANNING-WIP.md"), "w", encoding="utf-8") as fh:
+            fh.write("Niedokończony plan\n")
+        reply = self.resolve(card, {"choice": "transfer", "step": first["step"], "executor": "Codex mocny"})
+        self.assertTrue(reply["ok"], reply)
+        self.assertTrue(wait_until(lambda: len(terminal.opened) == 2, timeout=30), self.events(card))
+        second = fold(self.events(card)).steps[self.of(card, "step.started")[1]["step"]]
+        self.assertEqual((second["parentStep"], second["worktree"], second["provider"]),
+                         (first["step"], first["worktree"], "openai"))
+        self.assertTrue(os.path.exists(first["taskFile"] + ".cancelled"))
+        done = self.of(card, "step.finished")[0]
+        self.assertTrue(done["wip"]["committed"])
+        with open(os.path.join(second["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
+            self.assertIn("Notka techniczna przekazania", fh.read())
+        self.assertEqual(second["mode"], "interactive")
+        FullPlanningTest._write_proposal(self, card, second)
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.proposed"), timeout=20), self.events(card))
+
+    def test_claimed_console_must_confirm_stop_before_new_executor(self):
+        card, first, terminal = self.full()
+        self.flow._timer.stop()
+        os.rename(first["taskFile"], first["taskFile"] + ".claimed")
+        live = {"alive": True}
+        def signal(*_args):
+            live["alive"] = False
+            return True
+        with mock.patch("tide_daemon.cardflow.engine.launch.process_alive", side_effect=lambda _: live["alive"]), \
+             mock.patch("tide_daemon.cardflow.engine.launch.signal_flow_launcher", side_effect=signal), \
+             mock.patch("tide_daemon.cardflow.engine.stepstop.unit_state", return_value="inactive"), \
+             mock.patch("tide_daemon.cardflow.engine.stepstop.terminate", side_effect=[False, True, True]):
+            refused = self.resolve(card, {"choice": "transfer", "step": first["step"],
+                                          "executor": "Codex mocny"})
+            self.assertEqual((refused["ok"], refused["error"]), (False, "stop-failed"), refused)
+            self.assertEqual(len(terminal.opened), 1)
+            self.assertEqual(self.of(card, "step.finished"), [])
+            accepted = self.resolve(card, {"choice": "transfer", "step": first["step"],
+                                           "executor": "Codex mocny"})
+        self.assertTrue(accepted["ok"], accepted)
+        self.flow._timer.start()
+        self.assertTrue(wait_until(lambda: len(terminal.opened) == 2, timeout=30), self.events(card))
+
+    def test_restart_after_interactive_transfer_decision_opens_one_console(self):
+        card, first, terminal = self.full()
+        self.flow._timer.stop()
+        reply = self.resolve(card, {"choice": "transfer", "step": first["step"], "executor": "Codex mocny"})
+        self.assertTrue(reply["ok"], reply)
+        self.assertEqual(len(terminal.opened), 1)
+        self.restart()
+        self.flow.engine.terminal = terminal
+        self.assertTrue(wait_until(lambda: len(terminal.opened) == 2, timeout=30), self.events(card))
+        self.assertEqual(len(self.of(card, "step.started")), 2)
 
     def test_restart_after_transfer_decision_starts_one_new_attempt(self):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: czekaj-pierwszy")
