@@ -13,7 +13,7 @@ var MODULES = [
     { key: "alerts", label: "Alerty" },
     { key: "opponent", label: "Przeciwnik" },
     { key: "motion", label: "Animacje żubra",
-      hint: "Żubr wbiegający z alertem i wychylający się zza zakładki kanału (co 20 min). Przejścia scen nie dotyczy." }
+      hint: "Otwórz ustawienia i testy przejścia, alertu, wychylenia i stada przy raidzie." }
 ]
 var TARGETS = { twitch: "Twitch", youtube: "YouTube", kick: "Kick", local: "tylko nagranie" }
 
@@ -451,7 +451,7 @@ function chatHtml(line, nickColor) {
 // mode.set zostaje poza listą w całości: rdzeń odrzuca ją na żywo, a poza anteną tryb wybiera Panel.
 // Mikrofon przez mic.set {muted} (nie mic.toggle): podwójne kliknięcie albo spóźniony stan nie odwróci wyniku.
 // Wynik serii na lewym monitorze (PT-91, decyzja 29.10): +1, cofnij, zamiana i ukrycie; zerowanie tylko w Panelu.
-var ALLOWED = ["mic.set", "profile.set", "module.set", "scene.set", "brb.toggle", "pairing.invite", "pairing.revoke",
+var ALLOWED = ["mic.set", "profile.set", "module.set", "motion.set", "motion.test", "scene.set", "brb.toggle", "pairing.invite", "pairing.revoke",
                "privacy.toggle", "overlays.toggle", "observer.point", "observer.undo", "observer.swap", "observer.overlay.set"]
 
 function allowed(name) {

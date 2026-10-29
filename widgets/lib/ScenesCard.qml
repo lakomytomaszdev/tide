@@ -15,8 +15,30 @@ Card {
     property bool coreUp: false
     property string previewImage: ""
     property bool previewSupported: true
+    property url motionBaseUrl: ""
+    property string motionKind: ""
+    property bool motionPlaying: false
     property bool busy: false
     signal sceneRequested(string name)
+
+    function playMotionPreview(kind) {
+        if (!motionBaseUrl || ["transition", "alert", "peek", "raid"].indexOf(kind) < 0) return
+        motionClip.playing = false
+        motionClip.source = ""
+        motionKind = kind
+        motionClip.source = String(motionBaseUrl) + kind + ".webp"
+        motionPlaying = true
+        motionClip.playing = true
+        motionTimer.interval = ({ transition: 900, alert: 2500, peek: 2700, raid: 3700 })[kind]
+        motionTimer.restart()
+    }
+
+    function stopMotionPreview() {
+        motionTimer.stop()
+        motionClip.playing = false
+        motionClip.source = ""
+        motionPlaying = false
+    }
 
     readonly property var model: Stream.scenes(view, coreUp)
     readonly property string previewNote: Stream.previewNote(view, coreUp, previewSupported, previewImage !== "")
@@ -64,8 +86,34 @@ Card {
             asynchronous: true
             cache: false
         }
+        // Małe, przezroczyste klipy z animacji nakładki, odtwarzane tylko lokalnie na zrzucie OBS.
+        // Na żywo rdzeń oznacza test jako preview; widzowie nie dostają tego zdarzenia na nakładce.
+        AnimatedImage {
+            id: motionClip
+            objectName: "motion-preview"
+            readonly property var placement: ({
+                transition: [0, 0, 1, 1],
+                alert: [0.64, 0.72, 0.283, 0.136],
+                peek: [0.75, 0.79, 0.136, 0.111],
+                raid: [0, 0.84, 1, 0.158]
+            })[card.motionKind] || [0, 0, 0, 0]
+            x: parent.width * placement[0]
+            y: parent.height * placement[1]
+            width: parent.width * placement[2]
+            height: parent.height * placement[3]
+            visible: card.motionPlaying && status === Image.Ready
+            fillMode: Image.Stretch
+            cache: false
+            playing: false
+            onStatusChanged: if (status === Image.Error) card.stopMotionPreview()
+        }
+        Timer {
+            id: motionTimer
+            repeat: false
+            onTriggered: card.stopMotionPreview()
+        }
         Text {
-            visible: card.previewNote !== ""
+            visible: card.previewNote !== "" && !card.motionPlaying
             anchors.centerIn: parent
             width: parent.width - 40
             horizontalAlignment: Text.AlignHCenter

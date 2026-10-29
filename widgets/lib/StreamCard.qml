@@ -28,6 +28,7 @@ Card {
     signal panelRequested()
     signal moduleRequested(string key, bool visible)
     signal profileRequested(string id)
+    signal commandRequested(string name, var args)
 
     readonly property var model: Stream.card(view, coreUp, full, obsMemory)
     readonly property var profile: Stream.profileTile(view, coreUp)
@@ -197,7 +198,8 @@ Card {
                 text: modelData.label
                 checkable: false
                 textColor: modelData.on ? Tokens.textPrimary : Tokens.textMuted
-                Accessible.name: modelData.label + (modelData.on ? ": widoczny, ukryj" : ": ukryty, pokaż")
+                Accessible.name: modelData.key === "motion" ? "Animacje żubra: ustawienia i testy"
+                                 : modelData.label + (modelData.on ? ": widoczny, ukryj" : ": ukryty, pokaż")
                 QQC2.ToolTip.visible: hovered && modelData.hint !== ""
                 QQC2.ToolTip.text: modelData.hint
                 QQC2.ToolTip.delay: 500
@@ -207,9 +209,22 @@ Card {
                     border.width: 1
                     border.color: modelData.on ? Theme.alpha(Tokens.accent, 0.75) : Theme.alpha(Tokens.textPrimary, 0.14)
                 }
-                onClicked: card.moduleRequested(modelData.key, !modelData.on)
+                onClicked: modelData.key === "motion" ? motionMenu.open()
+                           : card.moduleRequested(modelData.key, !modelData.on)
             }
         }
+    }
+
+    MotionMenu {
+        id: motionMenu
+        objectName: "motion-menu"
+        x: 0
+        y: 0
+        width: card.width
+        view: card.view
+        coreUp: card.coreUp
+        busy: card.busy
+        onCommandRequested: (name, args) => card.commandRequested(name, args)
     }
 
     RowLayout {

@@ -26,6 +26,9 @@ Item {
     signal commandRequested(string name, var args)
     signal panelRequested()
 
+    property url motionBaseUrl: ""
+    function playMotionPreview(kind) { scenes.playMotionPreview(kind) }
+
     implicitHeight: deck.streamX < 0 ? scenes.implicitHeight + 14 + stream.implicitHeight : scenes.implicitHeight
     // Kolumny (streamX ≥ 0): pod Scenami karta „Zawsze”, w prawej kolumnie wynik serii, gdy sytuacja go chce.
     readonly property bool columns: deck.streamX >= 0
@@ -39,6 +42,7 @@ Item {
         coreUp: deck.coreUp
         previewImage: deck.previewImage
         previewSupported: deck.previewSupported
+        motionBaseUrl: deck.motionBaseUrl
         busy: deck.busy
         onSceneRequested: name => deck.commandRequested("scene.set", { scene: name })
     }
@@ -85,5 +89,6 @@ Item {
         onModuleRequested: (key, visible) => deck.commandRequested("module.set", { module: key, visible: visible })
         onProfileRequested: id => deck.commandRequested("profile.set", { profile: id })
         onPanelRequested: deck.panelRequested()
+        onCommandRequested: (name, args) => deck.commandRequested(name, args)
     }
 }
