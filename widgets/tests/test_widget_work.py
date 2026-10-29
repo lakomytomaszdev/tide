@@ -71,12 +71,13 @@ class PackageTest(unittest.TestCase):
 
     def test_attention_rule_matches_old_agents_tile(self):
         text = read("main.qml")
-        self.assertIn("Plasmoid.status: source.available && counts.waiting > 0 && !Plasmoid.configuration.sidebarMode",
-                      text)
+        # Pierwsza gałąź to aktywność Stream (decyzja 80: kafelek pracy znika), potem reguła uwagi.
+        self.assertRegex(text, r"Plasmoid\.status: activityLook\.workHidden \? PlasmaCore\.Types\.HiddenStatus\s+"
+                               r": source\.available && counts\.waiting > 0 && !Plasmoid\.configuration\.sidebarMode")
         self.assertIn("PlasmaCore.Types.NeedsAttentionStatus", text)
         self.assertIn("morePopupOpen ? PlasmaCore.Types.RequiresAttentionStatus", text)
         with open(os.path.join(WIDGETS_DIR, "agents/contents/ui/main.qml"), encoding="utf-8") as fh:
-            self.assertIn("Plasmoid.status: waitingCount > 0 && !Plasmoid.configuration.sidebarMode", fh.read())
+            self.assertIn(": waitingCount > 0 && !Plasmoid.configuration.sidebarMode", fh.read())
 
     def test_qml_has_no_hardcoded_colors_and_data_is_plain(self):
         for dirpath, _dirs, names in os.walk(WIDGET_DIR):

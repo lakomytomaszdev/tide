@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.tide.stream.monitors",
+    "Name": "Tide · Monitory PC ⇄ Xbox",
+    "Description": "Przełącza wejście prawego monitora na Xboxa (HD60 X) albo z powrotem na PC — po potwierdzeniu; układ ekranów bez zmian",
+    "Icon": "video-display",
+    "Category": "Multimedia",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "Authors": [{ "Name": "Tomek" }]
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

@@ -169,6 +169,23 @@ Obiekt /Docker, interfejs org.tide.Daemon.Docker (kontenery przez Docker Engine 
 - ShowWindow(s id) -> b      okno Tide na widoku Docker, opcjonalnie od razu na kontenerze albo grupie,
 - sygnał Changed()           migawka kontenerów się zmieniła,
 - sygnał ActionFinished(s job, s json)  koniec zadania Prune albo GroupAction.
+
+Obiekt /ActivityLook, interfejs org.tide.Daemon.ActivityLook (wygląd bieżącej aktywności, PT-36):
+- State() -> s               JSON {activity, look, workPanels, notificationsFiltered} — kafelki pracy chowają się,
+                             gdy workPanels jest fałszem (aktywność Stream); bez przypisania wygląd pracy,
+- Refresh()                  ponowne odczytanie przypisań i opisów wyglądu (make uninstall-activity-look: bez
+                             kopii silnika każda aktywność ma wygląd pracy, więc tryb powiadomień Stream znika),
+- sygnał Changed()           zmieniła się bieżąca aktywność albo jej wygląd.
+
+Obiekt /Monitors, interfejs org.tide.Daemon.Monitors (wejście prawego monitora PC ⇄ Xbox przez DDC/CI, PT-38,
+monitors.py; układ ekranów w KWin bez zmian):
+- Status() -> s              JSON {layout ("pc" | "xbox"; przerwane przełączenie liczy się jak "xbox"), target,
+                             available (jest ddcutil), error, interrupted, since, monitor, switching ("" albo układ
+                             w toku), result (ostatnie przełączenie: {ok, layout, changed, error, note, auto, at} albo null;
+                             auto — powrót na PC po wyjściu ze Streamu)}; tylko plik stanu, bez DDC,
+- SetLayout(s layout) -> s   przełączenie w tle na "pc" albo "xbox"; od razu {accepted, error} (odmowa: nieznany
+                             układ, przełączenie już trwa), koniec — sygnałem Changed i w Status().result,
+- sygnał Changed()           przełączenie w toku albo jego wynik się zmienił.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
@@ -194,6 +211,17 @@ BOARD_PATH = "/Board"
 BOARD_IFACE = "org.tide.Daemon.Board"
 DOCKER_PATH = "/Docker"
 DOCKER_IFACE = "org.tide.Daemon.Docker"
+ACTIVITY_LOOK_PATH = "/ActivityLook"
+ACTIVITY_LOOK_IFACE = "org.tide.Daemon.ActivityLook"
+
+ACTIVITY_LOOK_XML = f"""<interface name="{ACTIVITY_LOOK_IFACE}">
+  <method name="State"><arg name="json" type="s" direction="out"/></method>
+  <method name="Refresh"/>
+  <signal name="Changed"/>
+</interface>"""
+
+MONITORS_PATH = "/Monitors"
+MONITORS_IFACE = "org.tide.Daemon.Monitors"
 
 AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
   <method name="Sessions"><arg name="json" type="s" direction="out"/></method>
@@ -331,6 +359,12 @@ MODELS_XML = f"""<interface name="{MODELS_IFACE}">
     ("SetAgentProgram", "program"), ("SetSemanticSearch", "state"), ("SetReportSummary", "mode"),
     ("SetExecutor", "request"), ("RemoveExecutor", "name"), ("SetProvider", "request"), ("RemoveProvider", "name"),
     ("ResolveExecutor", "request"), ("TestEndpoint", "request"), ("PullModel", "request")))}
+  <signal name="Changed"/>
+</interface>"""
+
+MONITORS_XML = f"""<interface name="{MONITORS_IFACE}">
+  <method name="Status"><arg name="json" type="s" direction="out"/></method>
+{_JSON_CALL.format(name="SetLayout", arg="layout")}
   <signal name="Changed"/>
 </interface>"""
 
@@ -1174,9 +1208,46 @@ class DockerAdaptor(QDBusAbstractAdaptor):
         return self.monitor.show_window(ident)
 
 
+@pyqtClassInfo("D-Bus Interface", ACTIVITY_LOOK_IFACE)
+@pyqtClassInfo("D-Bus Introspection", ACTIVITY_LOOK_XML)
+class ActivityLookAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, state):
+        super().__init__(parent)
+        self.state = state
+        state.changed.connect(self.Changed)
+
+    @pyqtSlot(result=str)
+    def State(self) -> str:
+        return self.state.state_json()
+
+    @pyqtSlot()
+    def Refresh(self) -> None:
+        self.state.set_activity(self.state.activity)
+
+@pyqtClassInfo("D-Bus Interface", MONITORS_IFACE)
+@pyqtClassInfo("D-Bus Introspection", MONITORS_XML)
+class MonitorsAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, service):
+        super().__init__(parent)
+        self.service = service
+        service.changed.connect(self.Changed)
+
+    @pyqtSlot(result=str)
+    def Status(self) -> str:
+        return self.service.status_json()
+
+    @pyqtSlot(str, result=str)
+    def SetLayout(self, layout: str) -> str:
+        return self.service.set_layout(layout)
+
+
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
              limits=None, tasks=None, coordination=None, board=None,
-             docker=None, models=None) -> QObject:
+             docker=None, models=None, activity_look=None, monitors=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -1231,6 +1302,16 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.docker.adaptor = DockerAdaptor(holder.docker, docker, bus)
         if not bus.registerObject(DOCKER_PATH, holder.docker):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {DOCKER_PATH}")
+    if activity_look is not None:
+        holder.activity_look = QObject(holder)
+        holder.activity_look.adaptor = ActivityLookAdaptor(holder.activity_look, activity_look)
+        if not bus.registerObject(ACTIVITY_LOOK_PATH, holder.activity_look):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {ACTIVITY_LOOK_PATH}")
+    if monitors is not None:
+        holder.monitors = QObject(holder)
+        holder.monitors.adaptor = MonitorsAdaptor(holder.monitors, monitors)
+        if not bus.registerObject(MONITORS_PATH, holder.monitors):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {MONITORS_PATH}")
     if not bus.registerService(SERVICE):
         raise RuntimeError(f"nazwa {SERVICE} jest już zajęta (działa inna kopia usługi?)")
     return holder

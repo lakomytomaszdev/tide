@@ -25,6 +25,12 @@ PlasmoidItem {
     // Pasek boczny Tide pokazuje widok szczegółowy na stałe (scripts/panels/sidebar.js).
     preferredRepresentation: Plasmoid.configuration.sidebarMode ? fullRepresentation : compactRepresentation
 
+    // W aktywności Stream znika tylko kafelek z paska bocznego (pasek pracy); w docku System zostaje
+    // (decyzja 80: dock DP-2 w Stream to System i zadania).
+    Plasmoid.status: activityLook.workHidden && Plasmoid.configuration.sidebarMode ? PlasmaCore.Types.HiddenStatus
+                                                                                  : PlasmaCore.Types.ActiveStatus
+    Tide.ActivityLook { id: activityLook }
+
     SystemSource {
         id: systemSource
         detailed: root.expanded || (root.fullRepresentationItem ? root.fullRepresentationItem.shown === true : false)

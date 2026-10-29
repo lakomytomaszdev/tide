@@ -234,7 +234,8 @@ class NoteNotifier(QObject):
 
 
 class LimitsNotifier(QObject):
-    """Powiadomienia Limitów AI: send({id, summary, body}) — tekst i decyzję daje limits/alerts.py."""
+    """Powiadomienia Limitów AI: send({id, summary, body}) — tekst i decyzję daje limits/alerts.py. Ten sam
+    kształt służy innym prostym powiadomieniom Tide (np. monitor PT-38) z własną ikoną w polu `icon`."""
 
     def __init__(self, bus: QDBusConnection | None = None, parent=None):
         super().__init__(parent)
@@ -248,7 +249,7 @@ class LimitsNotifier(QObject):
         msg.setArguments([
             APP_NAME,
             QDBusArgument(self.notice_of.get(key, 0), QMetaType.Type.UInt.value),
-            LIMITS_ICON,
+            alert.get("icon") or LIMITS_ICON,
             alert.get("summary", ""),
             html.escape(alert.get("body", ""), quote=False),
             QDBusArgument([], QMetaType.Type.QStringList.value),

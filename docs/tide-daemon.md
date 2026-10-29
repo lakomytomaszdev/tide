@@ -1897,6 +1897,133 @@ qdbus6 org.tide.Daemon /Models org.tide.Daemon.Models.SetSemanticSearch off     
 /usr/bin/python3 daemon/tide-daemon.py --print-models   # jeden odczyt stanu, tylko GET, niczego nie zapisuje
 ```
 
+## Wygląd aktywności
+
+Po każdej zmianie aktywności usługa nakłada cały wygląd docelowej aktywności (PT-35, decyzja 78), publikuje wygląd bieżącej aktywności dla widżetów i w Stream filtruje powiadomienia (PT-36, decyzja 80). Usługa sama słucha:
+
+| Element | Wartość |
+| --- | --- |
+| Usługa | `org.kde.ActivityManager` |
+| Obiekt | `/ActivityManager/Activities` |
+| Sygnał | `org.kde.ActivityManager.Activities.CurrentActivityChanged(s activity)` |
+
+Każda droga przełączenia (skrót, `Meta+Q`, widżet, KDE Connect) kończy się tym sygnałem. `tide_daemon/activity_look_monitor.py` uruchamia wtedy silnik w osobnym procesie: `python3 -s $XDG_DATA_HOME/tide/activity-look/scripts/activity_look.py apply --activity ID --source daemon` (kopia z `make install-activity-look`). Silnik porównuje schemat kolorów, styl Plasmy, tapetę pulpitów tej aktywności, wariant ekranu blokady i układ paneli z opisem `theme/activities/<wygląd>.json` i nakłada tylko różnice, w tej kolejności. Wygląd `stream` dostaje aktywność przypisana w `$XDG_CONFIG_HOME/tide/activities.json`, każda inna — `work`.
+
+- **Kolejka.** Jedno nałożenie naraz. Zdarzenia z okna 400 ms i te, które przyszły w trakcie nałożenia, zlewają się w jedno — wygrywa ostatnia aktywność, bez równoległych nałożeń. Instalatory (`make install-*`) czekają na usługę i odwrotnie (`flock` na `$XDG_STATE_HOME/tide/activity-look.lock`).
+- **Start usługi (logowanie).** `apply` bez aktywności: silnik pyta o bieżącą, porównuje i naprawia różnice. Tym samym dokańcza przełączenie przerwane przed wylogowaniem (dziennik `$XDG_STATE_HOME/tide/activity-look.json` ze stanem `applying`).
+- **Błędy.** Kod 75 — plasmashell albo ActivityManager jeszcze nie odpowiada — to ponowienie po 2 s, potem coraz rzadziej, do 60 s. Inny błąd (np. „wariant niezainstalowany”) trafia do dziennika usługi i czeka na następne zdarzenie. Wyjście silnika jest w `journalctl --user -u tide-daemon` z przedrostkiem „wygląd aktywności:”.
+- **Praca i Stream.** W wyglądzie pracy błąd jednego składnika nie blokuje pozostałych (błędy na końcu, kod 1); Stream jest sprawdzany w całości przed pierwszym zapisem. Spóźnione zdarzenie dla aktywności, która już nie jest bieżąca, zmienia tylko jej pulpity — składniki wspólne zostają przy bieżącej.
+- **Kopia silnika.** Obecność kopii usługa sprawdza przy każdym uruchomieniu (brak — komunikat raz, żądanie przepada do następnego zdarzenia). Instalatory odświeżają nieaktualną kopię same, `make activity-look-check` i `make activity-look-status` ją zgłaszają. Zatrzymanie usługi zabija trwające nałożenie; dokończy je następny start.
+- **Wyłączenie.** `--no-activity-look` albo pusty `$TIDE_ACTIVITY_LOOK_ENGINE` (tak robią testy usługi). Bez zainstalowanego silnika usługa tylko o tym informuje. Bez działającej usługi przełączenie aktywności nie zmienia wyglądu do jej następnego startu.
+
+```bash
+make activity-look-check     # pulpit vs opis bieżącej aktywności, tylko odczyt (kod 1 przy różnicach)
+make activity-look-status    # przypisania aktywności, dostępne wyglądy, dziennik ostatniego przełączenia
+```
+
+### Wygląd bieżącej aktywności dla widżetów (/ActivityLook)
+
+Panele Plasmy są wspólne dla wszystkich aktywności, więc kafelki pracy w Stream chowają się same
+(`Plasmoid.status = HiddenStatus`, `widgets/lib/ActivityLook.qml`). Skąd wiedzą, że jest Stream, mówi usługa
+(`tide_daemon/activity_state.py`): bieżąca aktywność z `CurrentActivity()` przy starcie i z sygnału
+`CurrentActivityChanged`, jej wygląd z `$XDG_CONFIG_HOME/tide/activities.json` (czytane przy każdej zmianie, więc
+`make install-stream-activity` działa bez restartu usługi), opis z `$TIDE_ACTIVITY_LOOKS` (domyślnie
+`$XDG_DATA_HOME/tide/activity-look/theme/activities`, kopia silnika). Bez opisu albo przypisania — praca.
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/ActivityLook` |
+| Interfejs | `org.tide.Daemon.ActivityLook` |
+| `State() -> s` | JSON `{"activity", "look", "workPanels", "notificationsFiltered"}`; `workPanels` fałszywe, gdy opis wyglądu ma `"panels"` inne niż `"work"` (Stream) |
+| `Refresh()` | ponowne odczytanie przypisań i opisów (woła je `make uninstall-activity-look` po usunięciu kopii silnika — usługa wraca wtedy do pracy) |
+| sygnał `Changed()` | zmieniła się bieżąca aktywność albo jej wygląd |
+
+Bez usługi (albo przed pierwszą odpowiedzią) widżety zostają przy pracy — kafelki pracy widać.
+
+### Filtr powiadomień Stream
+
+Gdy opis wyglądu ma `notifications.allow` (`stream.json`: aplikacje `org.kde.kdeconnect.daemon`, usługi `kdeconnect`
+i `streamer`), usługa:
+
+1. wywołuje `org.freedesktop.Notifications.Inhibit("tide", "Aktywność Stream", {})` i trzyma ciasteczko — to ten sam
+   stan „Nie przeszkadzać”, co z apletu powiadomień: wyskakują tylko krytyczne (`CriticalInDndMode`, domyślnie
+   włączone) i dozwolone, reszta trafia do historii;
+2. ustawia w `plasmanotifyrc` `ShowPopupsInDndMode=true` w `[Applications][<desktop entry>]` i
+   `[Services][<x-kde-appname>]` dozwolonych (`kwriteconfig6 --notify`, Plasma czyta zmianę od razu). Poprzednie
+   wartości — także „brak klucza” — zapisuje przedtem w `$XDG_STATE_HOME/tide/stream-notifications.json`.
+
+Przy wyjściu ze Stream i przy zatrzymaniu usługi wartości wracają dokładnie (surowy napis sprzed Stream, brakujący
+klucz jest usuwany, plik wraca co do bajtu; zapis znika po odczycie kontrolnym), potem `UnInhibit(cookie)`.
+Inhibicja żyje tyle, co serwer powiadomień: usługa obserwuje nazwę `org.freedesktop.Notifications` — po restarcie
+plasmashell prosi o nową i sprawdza wyjątki, a nieudane `Inhibit` ponawia co 2 s, coraz rzadziej, do 60 s. Gdy usługa zginie, Plasma zwalnia inhibicję sama (pilnuje nazwy
+wołającego na magistrali), a ustawienia przywraca następny start usługi, jeśli bieżąca aktywność nie jest Stream.
+Klucz `ShowPopupsInDndMode` jest globalny — działa przy każdym „Nie przeszkadzać”, także włączonym w pracy — więc
+trzymamy go tylko na czas Stream (decyzja 80). Rdzeń Streamer wysyła dziś `notify-send -a Streamer` bez wskazówek,
+więc Plasma liczy go do „@other” (razem z powiadomieniami agentów) — do przepuszczenia potrzebuje
+`-h string:x-kde-appname:streamer` (zgłoszone do repozytorium streamer).
+
+## Monitory PC ⇄ Xbox
+
+Wejście prawego monitora dla aktywności Stream (PT-38, decyzja 81): `tide_daemon/monitors.py` (logika i polecenie
+`monitors.py status|pc|xbox [--json]`, kody 0/1/2), `monitors.toml` (złącze i kody wejść VCP 0x60),
+`monitors_service.py` (obiekt D-Bus, wątek roboczy, powrót na PC po wyjściu ze Streamu). Układ ekranów w KWin
+się nie zmienia — numeracja ekranów w Plasmie idzie za priorytetem, a jego zmiana przenosiła dock Stream.
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/Monitors` |
+| Interfejs | `org.tide.Daemon.Monitors` |
+
+| Metoda / sygnał | Sygnatura | Opis |
+| --- | --- | --- |
+| `Status()` | `→ s` | `{layout, target, available, error, interrupted, since, monitor, switching, result}` z pliku stanu (bez DDC); `layout` — `pc` albo `xbox` (przerwane przełączenie liczy się jak `xbox`), `available` — jest `ddcutil`, `result` — ostatnie przełączenie `{ok, layout, changed, error, note, auto, at}` albo `null` (`auto`: powrót na PC po wyjściu ze Streamu) |
+| `SetLayout(s layout)` | `→ s` | `pc` albo `xbox`; od razu `{accepted, error}` (odmowa: nieznany układ, przełączenie już trwa), samo przełączenie w wątku roboczym |
+| sygnał `Changed()` | | przełączenie w toku albo jego wynik się zmienił |
+
+- **Przełączenie:** `ddcutil detect` (magistrala I²C po złączu DRM, bloki „Invalid display” pominięte), odczyt
+  `getvcp 60` i — gdy wejście jest inne — `setvcp 60 0x11|0x0f --noverify`, do trzech prób co 1 s. Przed zapisem
+  stan dostaje `pending`; stan na dysku (`$XDG_STATE_HOME/tide/monitors.json`) to ostatnie potwierdzone wejście,
+  bo na HDMI monitor zwykle nie odpowiada przez DisplayPort.
+- **Błędy:** brak `ddcutil` albo brak odpowiedzi DDC — błąd z prośbą o przełączenie wejścia przyciskiem na monitorze,
+  stan zostaje przy poprzednim wejściu. Przełączenia z usługi i z polecenia — po kolei pod `monitors.lock`.
+- **Praca:** wyjście ze Streamu i start usługi w pracy ze stanem `xbox` (albo przerwanym) przełączają na PC
+  (źródło „czy Stream” — [Skróty Stream](#skróty-stream)); wyjście w trakcie przełączania na Xbox — po jego końcu.
+  Nieudany automatyczny powrót to powiadomienie „Prawy monitor został na Xboxie” (bez `--no-notifications`).
+- **Wynik:** `{ok, layout, changed, error, note}`; `note`, gdy wejścia nie dało się odczytać i liczy się ostatnio
+  potwierdzone.
+- **Testy i wyłączenie:** `--no-monitors`; `$TIDE_MONITORS_BIN` wskazuje katalog z `ddcutil` zamiast PATH (testy:
+  atrapy z `tests/fake_screens.py`, usługa w testach — nieistniejący katalog).
+
+## Skróty Stream
+
+Pause, Meta+Pause i Meta+B działają tylko w aktywności Stream (PT-38, decyzja 81, `tide_daemon/stream_shortcuts.py`).
+Usługa nie wystawia obiektu. „Czy Stream” mówi `tide_daemon/current_activity.py`: słucha
+`org.kde.ActivityManager.Activities.CurrentActivityChanged`, przy starcie pyta o `CurrentActivity` (odpowiedź
+starsza niż ostatni sygnał przepada) i wysyła `changed(aktywność, stream)`; podpięcie odbiorców jest w `app.py`.
+Stream to aktywność przypisana do wyglądu `stream` w `$XDG_CONFIG_HOME/tide/activities.json`.
+
+- **Wejście do Streamu:** najpierw plik stanu ze znacznikiem `entered` (zawsze, także gdy nic nie zabieramy),
+  potem klawisz zajęty przez inną akcję (dziś Meta+B — `org_kde_powerdevil/powerProfile`) jest
+  jej odbierany `setForeignShortcut`, a pełna lista jej klawiszy trafia wcześniej do
+  `$XDG_STATE_HOME/tide/stream-shortcuts.json`; potem `doRegister` i `setShortcut(…, SetPresent|NoAutoloading)` dla
+  `tide_stream/mic` (Pause), `tide_stream/privacy` (Meta+Pause) i `tide_stream/brb` (Meta+B).
+- **Naciśnięcie:** sygnał `org.kde.kglobalaccel.Component.globalShortcutPressed` na `/component/tide_stream` →
+  `kamp mic.toggle`, `kamp privacy.toggle`, `kamp brb.toggle` w osobnym procesie (`$TIDE_KAMP`, PATH albo
+  `~/.local/bin/kamp`); kod 2 to „rdzeń Streamer nie działa” w dzienniku.
+- **Wyjście ze Streamu, zatrzymanie usługi, start w pracy z pozostałym plikiem:** `unregister` akcji `tide_stream`
+  i oddanie odebranych klawiszy (zapisana lista, a gdy akcja zmieniła się w trakcie — tylko dopisany klawisz). Tylko
+  gdy pliku nie ma, a nasze skróty są w rejestrze — klawisz wraca do akcji, która ma go w `defaultShortcut`
+  (kandydaci z `allMainComponents` i `allActionsForComponent`); z plikiem klawisz zdjęty przed Streamem zostaje zdjęty. W pracy bez niczego do oddania usługa tylko czyta rejestr.
+- **Wątek i ponowienia:** wywołania KGlobalAccel idą po kolei w jednym wątku roboczym (pętla usługi nie czeka),
+  każde zadanie bierze ostatni żądany stan; błąd KGlobalAccel to ponowienie co 5 s (najwyżej 12 razy na zdarzenie).
+- **Awaria w Stream:** gdy usługa padnie w aktywności Stream, Pause, Meta+Pause i Meta+B zostają przechwycone przez
+  `tide_stream` (bez reakcji) do jej restartu — systemd podnosi ją po 5 s, a start w pracy oddaje klawisze.
+- **Kopia zapasowa w trakcie Streamu:** `make install` (i `make backup`) kopiuje `kglobalshortcutsrc`; kopia
+  zrobiona w Stream ma Meta+B przy `tide_stream`, a profil zasilania tylko z Battery. Po przywróceniu takiej kopii
+  (`make restore`, działa od następnego logowania) usługa przy starcie w pracy widzi skróty `tide_stream` bez pliku
+  stanu: usuwa je i oddaje Meta+B akcji, która ma go w domyślnych. Bezpieczniej jednak robić kopie w pracy.
+- **Wyłączenie:** `--no-stream-shortcuts`; pusty `$TIDE_KAMP` — naciśnięcia nic nie wołają (tak robią testy).
+
 ## Uruchamianie
 
 ```bash
@@ -1921,7 +2048,7 @@ journalctl --user -u tide-daemon -f
 #                      --limits-poll 120, --no-limits, --print-limits, --no-tasks,
 #                      --coordination-days 7, --no-coordination, --no-youtrack (też bez synchronizacji tablicy),
 #                      --board-dir DIR, --no-board, --print-card-docs K-12, --no-docker,
-#                      --models-poll 15, --no-models
+#                      --models-poll 15, --no-models, --no-activity-look
 ```
 
 Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`, z której raport poranny bierze kolory i czcionki), `$XDG_CONFIG_HOME/systemd/user/tide-daemon.service`, `$XDG_DATA_HOME/dbus-1/services/org.tide.Daemon.service` (start na żądanie, gdy widżet zapyta, a usługa nie działa) i `org.tide.Daemon.KRunner.service` (to samo dla KRunnera). Usługa używa `/usr/bin/python3` z systemowym PyQt6 — `python3` z pyenv go nie ma.
@@ -1987,6 +2114,7 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_models_monitor.py` — `ModelsMonitor` w pętli Qt z atrapą odczytu: `Refresh()` w trakcie odczytu daje jeden odczyt zaraz po nim, `Changed` tylko przy zmianie, błąd odczytu zostawia ostatni stan, nieczytelne ustawienia przy starcie nie zatrzymują usługi; zapis: odczyt sprzed zapisu nie cofa widoku, odmowa bez `Changed`; pobieranie: `Changed` z postępem najwyżej raz na sekundę, wpis znika po chwili, `stop()` przerywa pobieranie; kolejka: pole `queue` (bezczynne punkty, trwające i czekające z wątków roboczych, bez treści poleceń) i `Changed` z powodu kolejki najwyżej raz na odstęp, odłączenie od kolejki przy `stop()`,
 - `daemon/tests/test_models_queue.py` — kolejka modeli: jedno wywołanie naraz na punkt i dwa punkty równolegle, więcej miejsc na punkt, priorytety i kolejność przyjścia bez przerywania trwającego, grupowanie modeli (i jego limit, i pierwszeństwo priorytetu), koniec okna grupowania między ocenami dwóch czekających (podmieniony zegar — nikt nie śpi przy wolnym miejscu), limit czekania osobno od limitu wywołania z powodem w komunikacie, błąd zwalnia punkt, `Cancel` zdejmuje czekające od razu i przerywa trwające, brak własnych wątków i haków w `Cancel`; `chat()` na atrapie obsługującej jedno zapytanie naraz (`timeout` od startu, `deadline` dla czekania i wywołania razem, `queueS`, dwie nazwy punktu na jednym serwerze dzielą miejsce, cel z `models.json` zmienionego w czasie czekania); raport i opisy kart naraz — karta czeka w kolejce zamiast w serwerze i dostaje opis modelu (bez kolejki ten test kończy się mylącym „nie odpowiedział”), karta przed resztą raportu, budżet raportu z czekaniem, uczciwa informacja na karcie po limicie czekania, `Describer.stop()` zdejmuje czekające,
 - `daemon/tests/test_models_dbus.py` — `/Models` na prywatnej magistrali z atrapą Ollamy i własnym `models.json`: `Status()` (punkt działający z tokenem i niedziałający), `Changed` tylko po zmianie (załadowany model), `Refresh()` po zmianie ustawień bez restartu, token tylko w nagłówku, introspekcja, `--no-models`, `--print-models` (tylko GET, niczego nie zapisuje); zapis z D-Bus we własnym `XDG_CONFIG_HOME` (start niczego nie zapisuje, `SetEndpoint` z tokenem i od razu sprawdzony punkt, `SetRole`, `SetDefault` przenosi role, odmowy `RemoveEndpoint`, `SetReportSummary` działa od razu i zachowuje inne klucze, `--report-summary` zmienia tylko plik), `TestEndpoint` (atrapa, zamknięty port, wolny serwer nie blokuje `Status()`), `PullModel` (postęp w `pulls`, jedno pobieranie na punkt, odmowa dla `openai`). Usługi w testach dostają `models.json` z zamkniętym portem (`privatebus.py`), więc nigdy nie pytają Ollamy z pulpitu,
+- `daemon/tests/test_activity_look.py` — wygląd aktywności (PT-35) z atrapą uruchamiania silnika i zegarami sterowanymi z testu (bez zależności od czasu): kontrola przy starcie bez aktywności, szybkie przełączenia (jedno nałożenie, ostatnia aktywność), przełączenia w trakcie nałożenia (czekają, nic równolegle), ponowienie po kodzie 75 z tą samą aktywnością i rosnącą przerwą, inne błędy czekają na zdarzenie, nowe przełączenie zastępuje ponowienie, obecność silnika przy każdym uruchomieniu, zabicie nałożenia przy zatrzymaniu, brak silnika; prawdziwy `QProcess` z atrapą silnika (kod i wyjście); `CurrentActivityChanged` od atrapy ActivityManagera na prywatnej magistrali. Silnik sam: `scripts/tests/test_activity_look.py`,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
 Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawierają prawdziwych rozmów.

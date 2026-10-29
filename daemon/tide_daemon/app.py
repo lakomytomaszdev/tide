@@ -13,6 +13,7 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
                                [--no-board]
                                [--print-docker | --no-docker]
                                [--search-delay SEKUNDY]
+                               [--no-activity-look] [--no-monitors] [--no-stream-shortcuts]
 
 --print            jednorazowy odczyt: wypisuje JSON sesji i kończy, bez D-Bus,
 --print-worktrees  jednorazowy odczyt worktrees (z rozmiarami) jako JSON, bez D-Bus,
@@ -58,6 +59,13 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
 --no-board         bez obiektu /Board (tablica pracy: karty, projekty, tagi).
 --print-docker     jednorazowo: migawka kontenerów i miejsce na dysku jako JSON (tylko odczyt Engine API), bez D-Bus,
 --no-docker        bez obiektu /Docker (kontenery, akcje, porządki; socket z $DOCKER_HOST albo /var/run/docker.sock).
+--no-activity-look bez nakładania wyglądu aktywności po CurrentActivityChanged i przy starcie (PT-35; silnik
+                   z $XDG_DATA_HOME/tide/activity-look, make install-activity-look; pusty
+                   $TIDE_ACTIVITY_LOOK_ENGINE też wyłącza).
+--no-monitors      bez obiektu /Monitors (wejście prawego monitora PC ⇄ Xbox przez DDC/CI, PT-38; ddcutil szukany
+                   w $TIDE_MONITORS_BIN zamiast PATH, jeśli ustawione) i bez powrotu na PC po wyjściu ze Streamu,
+--no-stream-shortcuts  bez skrótów Stream (Pause, Meta+Pause, Meta+B tylko w aktywności Stream, PT-38; CLI rdzenia
+                   z $TIDE_KAMP, pusty wyłącza).
 """
 import argparse
 import json
@@ -117,6 +125,9 @@ def parse_args(argv):
     parser.add_argument("--no-board", action="store_true")
     parser.add_argument("--print-docker", action="store_true")
     parser.add_argument("--no-docker", action="store_true")
+    parser.add_argument("--no-activity-look", action="store_true")
+    parser.add_argument("--no-monitors", action="store_true")
+    parser.add_argument("--no-stream-shortcuts", action="store_true")
     parser.add_argument("--print", dest="print_once", action="store_true")
     parser.add_argument("--print-worktrees", action="store_true")
     parser.add_argument("--report", action="store_true")
@@ -259,6 +270,14 @@ def main(argv=None) -> int:
         # Nazwy projektów z tablicy i karty, do których należy praca — w raporcie i jego tekście (reports/cards.py).
         report.board = board_snapshot(board)
     docker = None if args.no_docker else start_docker(app, args, clock, launchers)
+    monitors = None
+    if not args.no_monitors:
+        from .monitors_service import MonitorsService
+        monitor_notifier = None
+        if not args.no_notifications:
+            from .notifications import LimitsNotifier
+            monitor_notifier = LimitsNotifier(parent=app).send  # nieudany powrót na PC po wyjściu ze Streamu
+        monitors = MonitorsService(notify=monitor_notifier, parent=app)  # wejście prawego monitora PC ⇄ Xbox
     annotators = [a for a in (tasks.annotate if tasks is not None else None,
                               coordination.annotate if coordination is not None else None) if a]
     if annotators:
@@ -266,10 +285,17 @@ def main(argv=None) -> int:
             for annotator in annotators:
                 annotator(sessions)
         monitor.annotate = annotate  # znacznik „nowe” (/Tasks) i postęp koordynatora (/Coordination)
+    look_state = notification_filter = None
+    if not args.no_activity_look:
+        # Wygląd bieżącej aktywności dla widżetów (/ActivityLook) i filtr powiadomień Stream (PT-36).
+        from .activity_state import ActivityState, NotificationFilter
+        look_state = ActivityState(parent=app)
+        notification_filter = NotificationFilter(look_state, parent=app)
     try:
         holder = dbus_service.register(monitor, trees, idle=idle, reports=report,  # noqa: F841 — musi żyć do końca
                                        limits=limits, tasks=tasks, coordination=coordination, board=board,
-                                       docker=docker, models=models)
+                                       docker=docker, models=models, activity_look=look_state,
+                                       monitors=monitors)
     except RuntimeError as exc:
         print(f"tide-daemon: {exc}", file=sys.stderr, flush=True)
         return 1
@@ -325,6 +351,31 @@ def main(argv=None) -> int:
         coordination.start()  # pierwszy odczyt dzienników koordynatorów w tle, chwilę po starcie
     if docker is not None:
         docker.start()  # migawka i strumień zdarzeń w tle; brak Dockera to stan, nie błąd usługi
+    activity_look = None
+    if not args.no_activity_look:
+        from .activity_look_monitor import ActivityLookMonitor, default_engine
+        activity_look = ActivityLookMonitor(default_engine(), parent=app)
+        activity_look.start()  # nasłuch zmiany aktywności i kontrola wyglądu bieżącej (logowanie)
+    if look_state is not None:
+        look_state.start()  # bieżąca aktywność z ActivityManagera; filtr powiadomień idzie za jej wyglądem
+    stream_keys = None
+    if not args.no_stream_shortcuts:
+        from .stream_shortcuts import KGlobalAccel, StreamShortcuts, StreamShortcutsMonitor
+        stream_keys = StreamShortcutsMonitor(StreamShortcuts(KGlobalAccel()), parent=app)
+        stream_keys.start()  # naciśnięcia skrótów Stream; rejestracja według aktywności niżej
+    # Jedno źródło „czy Stream” (PT-38) dla skrótów i powrotu monitora na PC; po scaleniu z PT-36 do podmiany
+    # na sygnał wyglądu aktywności — odbiorcy biorą tylko stream: bool.
+    activity = None
+    if stream_keys is not None or monitors is not None:
+        from .current_activity import CurrentActivity
+        activity = CurrentActivity(parent=app)
+        if stream_keys is not None:
+            activity.changed.connect(lambda _activity, stream: stream_keys.stream_changed(stream))
+            activity.unknown.connect(stream_keys.activity_unknown)  # do odpowiedzi ActivityManagera — praca
+        if monitors is not None:
+            # Praca zawsze z obydwoma ekranami: wyjście ze Streamu (i start w pracy) z wejściem Xboxa → PC.
+            activity.changed.connect(lambda _activity, stream: monitors.stream_changed(stream))
+        activity.start()
 
     # Stan agentów według katalogu dla promptu powłoki (cwdstate.py) — plik, nie D-Bus, bo prompt
     # czyta go przy każdym znaku zachęty.
@@ -378,6 +429,17 @@ def main(argv=None) -> int:
         board.stop()
     if docker is not None:
         docker.stop()
+    if activity_look is not None:
+        activity_look.stop()
+    if look_state is not None:
+        look_state.stop()
+        notification_filter.stop()  # inhibicja i dozwolone aplikacje nie zostają po usłudze
+    if activity is not None:
+        activity.stop()
+    if stream_keys is not None:
+        stream_keys.stop()  # klawisze wracają do pracy (Meta+B — profil zasilania)
+    if monitors is not None:
+        monitors.stop()
     from . import windows
     windows.give_back_tabs()  # tytuł karty ze znacznikiem przejścia do okna, jeśli jeszcze nie wrócił
     if marker is not None:

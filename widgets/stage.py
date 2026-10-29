@@ -60,6 +60,8 @@ def palette_qml(palette: dict, singleton: bool = True) -> str:
     # (logo, pasek postępu, puls) — tylko z palety.
     for group, prefix in (("lockscreen", "lock"), ("splash", "splash")):
         for key, value in palette.get(group, {}).items():
+            if isinstance(value, bool):
+                continue  # przełącznik generatora (np. lockscreen.agents), nie wymiar — nie jest tokenem QML
             props.append(("real" if isinstance(value, float) else "int", prefix + key[0].upper() + key[1:], value))
     fonts = palette.get("fonts", {})
     props.append(("string", "fontUi", fonts.get("ui", "")))
@@ -117,8 +119,11 @@ def write_private(path: str, text: str) -> None:
 
 
 def load_palette(palette_path: str) -> dict:
-    with open(palette_path, encoding="utf-8") as fh:
-        return json.load(fh)
+    """Paleta wariantu z pliku albo po nazwie; nakładka (np. streamer.json) dostaje brakujące klucze z Mist."""
+    if ROOT not in sys.path:
+        sys.path.append(ROOT)  # na końcu, żeby nie przesłonić modułów aplikacji
+    from theme.palette import load
+    return load(palette_path)
 
 
 def copy_lib(lib_out: str, palette: dict) -> None:

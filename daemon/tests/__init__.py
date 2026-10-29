@@ -29,3 +29,19 @@ os.environ["TIDE_BOARD_DIR"] = "/nonexistent/tide-tests/board"
 # Testy nigdy nie czytają prawdziwych dzienników Codexa (~/.codex, ~/snap/codex): bez --codex-dir
 # usługa w teście dostaje nieistniejący $CODEX_HOME zamiast domyślnych katalogów (codex_homes.py).
 os.environ["CODEX_HOME"] = "/nonexistent/tide-tests/codex"
+# Testy nigdy nie nakładają wyglądu aktywności na pulpit (zainstalowany silnik w
+# $XDG_DATA_HOME/tide/activity-look zmieniałby kolory, styl i tapetę sesji): pusty
+# $TIDE_ACTIVITY_LOOK_ENGINE wyłącza nakładanie, usługi w testach dziedziczą tę zmienną.
+# Testy wyglądu aktywności podają atrapę uruchamiania silnika (test_activity_look.py).
+os.environ["TIDE_ACTIVITY_LOOK_ENGINE"] = ""
+# Wygląd aktywności dla widżetów i filtr powiadomień Stream (activity_state.py): bez opisów wyglądów każda
+# aktywność ma wygląd pracy, więc usługa w teście nigdy nie zmienia plasmanotifyrc — chyba że test poda
+# własny katalog opisów i tymczasowy XDG_CONFIG_HOME (test_stream_mode.py).
+os.environ["TIDE_ACTIVITY_LOOKS"] = "/nonexistent/tide-tests/activities"
+
+# Testy nigdy nie zmieniają prawdziwego układu monitorów ani wejścia monitora (PT-38): kscreen-doctor i ddcutil
+# usługa szuka w nieistniejącym katalogu, a testy układu podają katalog atrap (fake_screens.py). Skróty Stream
+# nie wołają prawdziwego `kamp` (rdzeń Streamer) — pusty $TIDE_KAMP; prawdziwy KGlobalAccel jest tylko
+# na magistrali pulpitu, której testy nie dotykają (privatebus.py).
+os.environ["TIDE_MONITORS_BIN"] = "/nonexistent/tide-tests/monitors-bin"
+os.environ["TIDE_KAMP"] = ""

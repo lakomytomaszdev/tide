@@ -27,8 +27,9 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 
 | Katalog | Zawartość |
 | --- | --- |
-| `theme/palette/` | Paleta wariantu w JSON, jedyne źródło kolorów, promieni, przezroczystości i rozmiarów pasków dla generatorów |
-| `theme/wallpaper/` | Tapeta: warianty `cat` (ilustracja kota w `assets/cat`, czuwający i śpiący) i `blobs` (plamy z palety), zawsze jedno płótno na oba monitory (`variant.py`, `generate.py`); wtyczka tapety „Tide: kot” z drzemiącym kotem (`plugin.py`, `org.tide.cat/`) i wspólny z ekranem blokady `qml/CatBackdrop.qml` |
+| `theme/palette/` | Palety wariantów w JSON, jedyne źródło kolorów, promieni, przezroczystości i rozmiarów pasków dla generatorów: `mist.json` (praca) i `streamer.json` (aktywność Stream, nakładka na Mist z kolorami marki Streamer; wczytuje `theme.palette.load`), sumy plików Mist do testu regresji (`outputs.py`, `make mist-golden`) i porównanie wariantów (`compare.py`, `make palette-compare`) |
+| `theme/wallpaper/` | Tapeta: warianty `cat` (ilustracja kota w `assets/cat`, czuwający i śpiący), `blobs` (plamy z palety), `pictures` (aktywność Stream: obrazy grafika na każdy monitor w `assets/streamer`, pulpit i blokada) i `map` (gradient z liniami mapy z palety, `map.py`, zapas), zawsze jedno płótno na oba monitory (`variant.py`, `generate.py`); wtyczka tapety „Tide: kot” z drzemiącym kotem (`plugin.py`, `org.tide.cat/`) i wspólny z ekranem blokady `qml/CatBackdrop.qml` |
+| `theme/activities/` | Opisy wyglądu aktywności (`work.json` — dzisiejszy Mist, `stream.json`): schemat kolorów, styl Plasmy, paleta tapety, wariant ekranu blokady, układ paneli; nakłada je `scripts/activity_look.py` |
 | `theme/plasma/` | Styl Plasmy „Tide” (desktoptheme): generator ramek, podgląd (`preview.py`) i sprawdzenie prawdziwym KSvg (`ksvg_check.py`) |
 | `theme/lookandfeel/` | Motyw globalny „Tide” (`org.tide.desktop`): wskazania na składniki Tide, podglądy i ekran ładowania (`splash/`, zrzuty z prawdziwego ksplashqml w `splash_shot.sh`) |
 | `theme/lockscreen/` | Ekran blokady Tide jako pakiet powłoki Plasmy (QML na bazie ekranu Plasmy 6.8), zrzuty z prawdziwego greetera, sprawdzenie kopii powłoki w zagnieżdżonej sesji (`shell_copy_check.sh`) |
@@ -48,6 +49,8 @@ KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). 
 | `widgets/limits/` | Kafelek „AI” `org.tide.limits` (w docku po prawej): pozostałe limity ChatGPT i Claude z usługi QuotaApp i kropka modelu lokalnego z tide-daemon; popup z kartami usług i sekcją „Modele lokalne” z linkiem do widoku Modele w oknie Tide |
 | `widgets/models/` | Kafelek „Modele” `org.tide.models` — od PT-41 poza dockiem (model lokalny jest w kafelku „AI”), pakiet zostaje na wypadek powrotu: czy serwer modeli lokalnych odpowiada, model w pamięci i ile na karcie, kolejka; popup z serwerami, rolami i trybem raportu |
 | `widgets/worktrees/` | Kafelek worktrees `org.tide.worktrees`: ile do sprzątnięcia (i ile GB), ile w pracy; kliknięcie otwiera okno |
+| `widgets/stream/` | Widżety aktywności Stream (PT-37) ze stanem z rdzenia Streamer przez D-Bus, nie z tide-daemon (decyzja 79): kafelki docka Stream — Stream `org.tide.stream`, Profil gracza `org.tide.stream.profile`, Observer `org.tide.stream.observer`, Kamera `org.tide.stream.camera` (PT-82), „?” `org.tide.stream.help` — i widżety pulpitu lewego monitora — konsola streamu `org.tide.stream.scenes` (Sceny i pełna karta Stream), czat `org.tide.stream.chat` i cały lewy monitor `org.tide.stream.desk` (konsola streamu albo widok Granie według OBS, PT-83); wspólne w `widgets/lib/` (`CoreSource.qml`, `stream.js`, `StreamCard.qml`, `ProfileList.qml`, `StreamConsole.qml`, `ScenesCard.qml`, `ChatView.qml`) |
+| `widgets/monitors/` | Kafelek „Monitory · PC → Xbox” `org.tide.stream.monitors` (PT-38, dock Stream): przełącza wejście prawego monitora po potwierdzeniu w popupie; przełączenie robi tide-daemon (`/Monitors`) |
 | `widgets/newtask/` | Kafelek „＋ Zadanie · nowe dla agenta” `org.tide.newtask`: otwiera okno nowego zadania |
 | `apps/newtask/` | Okno „Tide: nowe zadanie” (QML + PyQt6, plik `.desktop`, profil Konsoli): repozytorium, Claude Code albo Codex, polecenie, zrzuty ekranu, nowy worktree |
 | `apps/common/` | Wspólny Python aplikacji, kopiowany przez `widgets/stage.py` obok programu aplikacji i do widoków okna Tide: `taskimages.py` — zrzuty ekranu zadania (okno „Nowe zadanie” i okno uruchomienia na Tablicy) |
@@ -173,6 +176,99 @@ make uninstall-widget-system   # usuwa tylko org.tide.system
 
 **Przyciski.** „Monitor systemu” (plasma-systemmonitor, zapasowo KSysGuard) i „Analiza dysku” (Filelight, otwiera najpełniejszą partycję) pojawiają się tylko wtedy, gdy aplikacja jest zainstalowana; startują przez `kstart --application`.
 
+## Stream (widżety rdzenia Streamer)
+
+Widżety aktywności Stream (PT-37, mock zaakceptowany 28.10.2026) czytają stan streamu z rdzenia Streamer
+(`~/DevWorkspace/streamer/core`, usługa użytkownika `streamer-core`) przez D-Bus: usługa `org.streamer.Core`,
+obiekt `/org/streamer/Core`, interfejs `org.streamer.Core1`. To świadomy wyjątek od „jednego demona” (decyzja 79):
+stan streamu należy do rdzenia, dane pracy dalej idą tylko z tide-daemon.
+
+- **Stream** (`org.tide.stream`, dock Stream): „Stream · Xbox” i „● poza anteną · ● OBS”, na żywo „Stream · Xbox ·
+  scena Gra” i „● na żywo · ● nagrywa”. Kolor ostrzegawczy (`neutral` z palety) tylko przy wyciszonym mikrofonie na
+  żywo („Stream · na żywo”, przekreślony mikrofon, „mikrofon wyciszony”), rozłączonym OBS w trakcie streamu
+  i niedziałającym rdzeniu („rdzeń nie działa”, gdy usługi nie ma na szynie). Bez OBS i bez streamu kafelek mówi
+  spokojnie „Granie · Xbox” (w Observer i Rozmowa „Stream · …”) i „bez streamu” (PT-83). Popup: karta Stream — tryb i kto go ustawił (automat albo ty),
+  antena, nagrywanie, scena, OBS, moduły, „Wycisz mikrofon · Pause” (`mic.set` z docelowym stanem), „Panel streamera”
+  (`http://127.0.0.1:8765/app/`) i dopisek, że start i koniec streamu są tylko w Panelu.
+- **Profil gracza** (`org.tide.stream.profile`): bieżący profil z „▾”, popup z listą `profiles` (`profile.set`).
+- **Observer** (`org.tide.stream.observer`): „Mascot Cup · BO3 · gra 2” i „A 1 : 0 B”; tylko w trybie Observer
+  (w innym trybie i bez rdzenia `HiddenStatus`, panel go chowa). Kliknięcie otwiera Panel streamera.
+- **Kamera** (`org.tide.stream.camera`, PT-82, decyzja 83): „Kamera · automat” albo „Kamera · ustawiłeś ty”
+  i „● widoczna” albo „○ ukryta” (`core.modules.camera`). Kliknięcie od razu, bez popupu i potwierdzenia, wysyła
+  `module.set {module: "camera", visible: …}` z odwróconą wartością (docelowy stan, nie przełączanie w ciemno);
+  rdzeń chowa kamerę we wszystkich elementach scen zależnych od modułu, a zmiana trybu przywraca domyślną
+  widoczność trybu. Bez koloru ostrzegawczego: przy rozłączonym OBS „bez OBS” (rdzeń zapamiętuje zmianę i ustawia
+  OBS po połączeniu), bez rdzenia „rdzeń nie działa”, błąd komendy na chwilę zamiast wartości w `textSecondary`.
+- **„?”** (`org.tide.stream.help`): ściąga ze skrótami Stream w popupie, nigdy stale na ekranie.
+- **Konsola streamu** (`org.tide.stream.scenes`, pulpit lewego monitora, gdy nie ma desku): Sceny — podgląd bieżącej sceny z „NA ŻYWO”
+  i przyciski scen trybu (`scene.set`; BRB tylko osobnym przyciskiem, sceny startu i końca na żywo wyłączone
+  z powodem) — i pełna karta Stream: antena, OBS z nagrywaniem, profil gracza z listą, przełączniki modułów
+  (`module.set`), „Wycisz mikrofon”, BRB (`brb.toggle`) i Panel streamera. Zrzut sceny odświeża się tylko w bieżącej
+  aktywności i przy widocznym widżecie.
+- **Czat Twitcha** (`org.tide.stream.chat`, pulpit lewego monitora, gdy nie ma desku): duża czcionka (1,5 × rozmiar z palety, ok.
+  20 px), najnowsze na dole, alerty w linii, tylko do czytania; nick w pastelu palety innym niż kolory ostrzeżenia
+  i błędu (`semantic.neutral`, `semantic.negative`).
+- **Lewy monitor Stream** (`org.tide.stream.desk`, PT-83, decyzja 82): jeden widżet na cały pulpit lewego monitora
+  z dwoma widokami. **Konsola streamu** to Sceny z kartą Stream i czat (te same komponenty co wyżej), **Granie** —
+  profile graczy (aktywny wyróżniony, kliknięcie innego to `profile.set`; ranga, rating, forma, gdy rdzeń je ma),
+  bilans dnia, „Mecz teraz” z pola `core.match` (Ty i przeciwnik: cywilizacja, ranga, rating, procent wygranych,
+  forma) i ostatnie mecze aktywnego profilu. Widok wybiera automat: OBS połączony → konsola, OBS wyłączony →
+  Granie, na żywo zawsze konsola. Przełącznik „Konsola streamu | Granie” na górze pokazuje, kto wybrał widok
+  („automat · OBS wyłączony” albo „ustawiłeś ty · do zmiany OBS”); ręczny wybór obowiązuje do następnej zmiany stanu
+  OBS i nie chowa konsoli na żywo.
+
+**Rozmowa z rdzeniem.** Jedno `CoreSource` na widżet: `GetState()` przy starcie i po każdym pojawieniu się usługi na
+szynie, potem tylko sygnał `Changed` (niesie cały widok w `state`), do tego odczyt zapasowy co 5 min. Gdy rdzeń
+znika, widżety od razu mówią „rdzeń nie działa”; po jego powrocie same czytają stan od nowa. Komendy idą przez
+`Execute` wyłącznie z listy `Stream.ALLOWED` (`mic.set`, `profile.set`, `module.set`, `scene.set`,
+`brb.toggle`) — akcji krytycznych (start i koniec streamu, koniec nagrania, zmiana trybu na żywo, reset serii)
+w widżetach nie ma.
+
+**Czego rdzeń jeszcze nie daje.** Listy scen trybu, podglądu bieżącej sceny i czatu z alertami przez D-Bus,
+a dla widoku Granie przeglądu wszystkich kont, ostatnich meczów, bilansu dnia i danych meczu w trybie PC (propozycja
+pól w decyzji 82: `core.player_stats`, `core.recent_matches`, `core.today`). Konsola, czat i Granie pokazują wtedy
+„jeszcze niedostępne w rdzeniu”, a `CoreSource` i `stream.js` mają już miejsce na te dane
+(propozycja API w decyzji 79): `core.mode_scenes` (i opcjonalnie `obs.scenes`) w stanie, `GetSceneScreenshot(s)`,
+`GetChat()` i sygnał `Chat(s)`, a pilnie `obs.mic`. Bez scen trybu konsola nie pokazuje przycisków scen, tylko
+bieżącą scenę. Testy sprawdzają obie wersje na atrapie rdzenia (`widgets/tests/fake_kamp_core.py`, zawsze na
+prywatnej szynie `dbus-run-session`).
+
+**Instalacja.** `make install-widget-stream` instaluje osiem pakietów (też w `make install`), ale niczego nie stawia
+na panelach ani pulpicie — rozmieszczenie robi wejście do aktywności Stream (niżej: „Aktywność Stream”). Kolory z palety, więc widżety działają
+z Mist i z wariantem Streamer.
+
+```bash
+make install-widget-stream     # instalacja albo aktualizacja ośmiu pakietów Stream
+make uninstall-widget-stream   # usuwa tylko pakiety org.tide.stream*
+make preview-stream            # kafelki, popupy, konsola i Granie 1920×1080 na fałszywym stanie: build/preview/stream-*.png
+make preview-stream PALETTE=theme/palette/streamer.json   # z wariantem Streamer — plik palety dostarcza PT-34
+```
+
+## Monitory PC ⇄ Xbox i skróty Stream
+
+Dwie rzeczy z PT-38 (decyzja 81), obie w tide-daemon:
+
+- **Wejście prawego monitora.** Kafelek „Monitory · PC → Xbox” (`org.tide.stream.monitors`, w docku Stream) otwiera
+  potwierdzenie. **Xbox:** prawy monitor DP-2 przechodzi przez DDC/CI na wejście HDMI z passthrough HD60 X
+  (`ddcutil setvcp 60 0x11`). **PC:** wraca na DisplayPort (`0x0f`). Układ ekranów w KWin się nie zmienia, więc
+  dock Stream i konsola zostają na lewym monitorze. Skutek: w trybie Xbox kursor, nowe okno albo powiadomienie mogą
+  trafić na prawy ekran, którego wtedy nie widać — kursor wraca ruchem w lewo. Po wyjściu ze Streamu monitor sam
+  wraca na PC, więc praca zawsze ma oba ekrany. Bez `ddcutil` albo gdy monitor nie odpowiada na DDC, widżet prosi
+  o przełączenie wejścia przyciskiem na monitorze. Kody wejść są w `daemon/tide_daemon/monitors.toml` (gniazdo
+  HDMI z Xboxem do sprawdzenia: HDMI-1 to `0x11`, HDMI-2 to `0x12`). Bez skrótu klawiszowego.
+- **Skróty tylko w Stream.** `Pause` — mikrofon (`kamp mic.toggle`), `Meta+Pause` — ekran prywatności
+  (`kamp privacy.toggle`), `Meta+B` — BRB i powrót (`kamp brb.toggle`). Usługa rejestruje je w KGlobalAccel dopiero
+  po wejściu do aktywności Stream i usuwa po wyjściu, więc w pracy klawisze działają jak dawniej. `Meta+B` jest na
+  czas Streamu zabierane „Przełącz profil zasilania”, a po powrocie oddawane dokładnie (zapis w
+  `$XDG_STATE_HOME/tide/stream-shortcuts.json`). `Meta+Shift+A` (Praca ⇄ Stream), `Meta+A` i `Meta+Q` bez zmian.
+
+```bash
+make install-widget-monitors   # pakiet kafelka (miejsce w docku Stream — układ paneli Stream)
+make preview-monitors          # kafelek i potwierdzenie: build/preview/stream-monitors-*.png (paleta Streamer)
+make monitors-status           # wejście prawego monitora według stanu usługi (tylko odczyt, bez DDC)
+qdbus6 org.tide.Daemon /Monitors org.tide.Daemon.Monitors.SetLayout xbox   # to samo co przycisk (pc | xbox)
+```
+
 ## Styl Plasmy i górne paski
 
 Styl „Tide” zawiera tylko ramki o nowym kształcie: tło panelu (pasek z prefiksem `north` i promieniem paska, dock z prefiksem `south` i pasek boczny z prefiksem `west` z promieniem docka), wyskakujące okna z nagłówkiem i stopką oraz podpowiedzi — w wersjach zwykłej, `translucent/`, `solid/` i `opaque/`, jak w Breeze. Resztę Plasma bierze z Breeze, bo „default” jest zawsze ostatnim motywem zapasowym (dodatkowo `FallbackTheme=default` w `plasmarc`). Kolory nadal pochodzą ze schematu: styl nie ma pliku `colors`, a wypełnienia mają klasy `ColorScheme-*`. Licencja i pochodzenie: `NOTICE` w katalogu stylu (LGPL-2.0-or-later, jak Breeze).
@@ -271,6 +367,8 @@ Jeśli ekran jest zablokowany i nie da się odblokować: Ctrl+Alt+F3, zalogowani
 
 **Kot na ekranie blokady (wariant tapety `cat`).** Ekran Tide rysuje tło sam (`CatBackdrop.qml`), osobno na każdym monitorze, w jego kadrze (obrazy jadą w pakiecie: `tide/backdrop/awake|sleep/<złącze>.png`, kadry z układu monitorów w chwili `make install`). Kot śpi od chwili zablokowania i otwiera oczy tylko wtedy, gdy ktoś naprawdę używa ekranu: ruch myszy, kliknięcie, klawisz, pisanie albo kasowanie w polu hasła (zdarzenia samego ekranu blokady, bez globalnego przechwytywania klawiatury) budzą go przenikaniem w 650 ms (`lockscreen.wakeMs`). Po 3 s bez działania (`lockscreen.dozeAfterMs`) zasypia — wolniej i łagodniej, w 1100 ms (`lockscreen.sleepMs`) — nawet gdy formularz jest dalej widoczny albo w polu zostało hasło. Nie zasypia, póki trwa sprawdzanie hasła i póki widać komunikat o nieudanym odblokowaniu; gdy formularz zniknie (10 s bez działania, Escape), śpi od razu. Greeter ma jeden silnik QML dla wszystkich monitorów, więc kot budzi się na obu ekranach naraz. Przy wyłączonych animacjach zmiana jest natychmiastowa. Przyciemnienie jest jedno — nakładka `lockscreen.dim` na surowych obrazach — a kota nie rozmywamy. Wersja senna to ten sam obraz co czuwająca, z podmienionymi tylko okolicami oczu, więc przy przenikaniu zmieniają się wyłącznie oczy, a tło i sylwetka stoją w miejscu (`sleepRegistration` w `theme/wallpaper/assets/cat/manifest.json` wynosi [0, 0]; mechanizm korekty zostaje dla przyszłych, osobnych renderów). Pusty komunikat PAM, który greeter Plasmy dostaje zaraz po zablokowaniu, nie pokazuje formularza, więc kot nie budzi się sam na starcie.
 
+**Warianty ekranu blokady.** Kopia powłoki ma obok ekranu Tide ekran aktywności Stream (paleta Streamer, obrazy grafika; pakiet źródłowy w `~/.local/share/tide/lockscreens/streamer`): aktywny w `contents/lockscreen`, pozostałe w `contents/lockscreen-variants/`, każdy sprawdzony greeterem przy składaniu kopii. `make install` zostawia wybrany wariant (na nowym systemie Tide). Przełączenie to jedna atomowa zamiana katalogów, bez przebudowy, od następnej blokady: `scripts/lookandfeel.py` (`lock_variants()`, `lock_variant()`, `apply_lock_variant("streamer")`) albo `python3 ~/.local/share/tide/shell-sync.py variant [mist|streamer]` (decyzja 77). Składanie kopii trwa przez to dłużej o 2–3 s za każdy dodatkowy wariant, bo każdy przechodzi sprawdzenie w greeterze: jednorazowo przy pierwszym `make install` po scaleniu (nowy format kopii) i przy pierwszym logowaniu po aktualizacji Plasmy; zwykłe logowanie dalej kosztuje ok. 40 ms. Podgląd: `make lockscreen-screenshot PALETTE=streamer`.
+
 Wygląd z makiety: przyciemniona tapeta (przy plamach rozmyta, gdy widać pole hasła), zegar Geist 96 px i data („poniedziałek, 26 października”) w górnej części, logo „trzy fale”, nazwa użytkownika i pole hasła na karcie z tealową obwódką, na dole klawiatura, uśpienie i zmiana użytkownika jako same ikony. Linia „2 agenci pracują · 1 czeka” pochodzi z tide-daemon przez D-Bus sesji (greeter działa jako użytkownik i dziedziczy magistralę po KWin); pokazuje tylko liczby, bez nazw projektów, i znika, gdy usługi nie ma albo nikt nie pracuje. Gdy QML ekranu Tide się nie wczyta, greeter sam pokazuje awaryjny ekran KDE (sprawdzane w testach). Licencja i pochodzenie plików: `NOTICE` w pakiecie (GPL-2.0-or-later, jak ekran Plasmy).
 
 ## Ekran ładowania
@@ -348,9 +446,9 @@ Rodzaj tapety wybiera `wallpaper.variant` w `theme/palette/mist.json`:
 - **`cat`** (Mist, domyślnie): ilustracja kota z `theme/wallpaper/assets/cat` (opis, pochodzenie i sumy: `README.md` w tym katalogu). Na pulpicie kot zamyka oczy, gdy nikt nie używa komputera (niżej: „Kot na pulpicie”), na ekranie blokady śpi, dopóki ktoś nie używa ekranu. Dla układu, pod który przygotowano obrazy (HDMI-A-1 1920×1080 po lewej, DP-2 2560×1440 po prawej, wyrównane do góry), instalacja kopiuje gotowe pliki na monitor bez obróbki. Dla innego układu kadry są przeliczane z panoramy 4480×1440: jedna skala w obu osiach dla całego płótna wszystkich monitorów i przycięcie wokół kota, bez rozciągania pojedynczych ekranów. Powiększenie ponad 4480×1440 to zwykła interpolacja — szczegółów nie przybywa.
 - **`blobs`**: tapeta rysowana z palety (sekcja `wallpaper`: kolory plam, ich położenie, krycie, ziarno i stałe ziarno losowania). Generator rysuje jedno płótno obejmujące wszystkie monitory w ich prawdziwym położeniu i tnie je na ekrany, więc plamy przechodzą płynnie z lewego monitora na prawy. Delikatne ziarno z ditheringiem zapobiega pasmom na gradientach.
 
-Ten sam wariant (i te same kadry) dostają ekran blokady, ekran ładowania i ekran logowania. Ponowne `make install` z wariantem `cat` zostawia kota — plamy powstają tylko po zmianie wariantu na `blobs`.
+Ten sam wariant (i te same kadry) dostają ekran blokady, ekran ładowania i ekran logowania. Aktywność Stream ma paletę Streamer z wariantem `pictures`: osobny obraz grafika na każdy monitor (pulpit, blokada, blokada w bezczynności), bez wspólnego płótna; `make install` zapisuje te obrazy obok tapety Mist (`wallpapers/Tide/pictures/`), a nakłada tylko paletę z `$TIDE_PALETTE` (domyślnie Mist). Porównanie obu wariantów bez instalowania: `make palette-compare` (`build/compare/`), podgląd jednego: `make wallpaper-preview PALETTE=streamer` (decyzja 77). Ponowne `make install` z wariantem `cat` zostawia kota — plamy powstają tylko po zmianie wariantu na `blobs`.
 
-`make install` czyta układ monitorów z `kscreen-doctor -j` (gdy nie odpowiada, bierze znany układ), zapisuje po jednym obrazie na monitor w `~/.local/share/wallpapers/Tide/<wariant>/<złącze>.png` i ustawia je na pulpitach (przy kocie przez wtyczkę `org.tide.cat`, która ma w sobie oba stany kota dla tego układu). Każdy wariant ma osobny katalog, więc po zmianie wariantu zmienia się adres obrazu i Plasma na pewno wczyta nowy; obrazy poprzedniego wariantu (i starsze `wallpapers/Tide/<złącze>.png`) są usuwane, jeśli żaden pulpit już ich nie pokazuje. Po zmianie monitorów wystarczy ponowne `make install`. Potrzebne są numpy i Pillow, które w KDE neon ma systemowy `/usr/bin/python3`.
+`make install` czyta układ monitorów z `kscreen-doctor -j` (gdy nie odpowiada, bierze znany układ), zapisuje po jednym obrazie na monitor w `~/.local/share/wallpapers/Tide/<wariant>/<złącze>.png` i ustawia je na pulpitach bieżącej aktywności (przy kocie przez wtyczkę `org.tide.cat`, która ma w sobie oba stany kota dla tego układu); pulpity innych aktywności dostają swoją tapetę przy przełączeniu (niżej: „Wygląd aktywności”). Każdy wariant ma osobny katalog, więc po zmianie wariantu zmienia się adres obrazu i Plasma na pewno wczyta nowy; obrazy poprzedniego wariantu (i starsze `wallpapers/Tide/<złącze>.png`) są usuwane, jeśli żaden pulpit już ich nie pokazuje. Po zmianie monitorów wystarczy ponowne `make install`. Potrzebne są numpy i Pillow, które w KDE neon ma systemowy `/usr/bin/python3`.
 
 ```bash
 make wallpaper-preview          # same obrazy w build/wallpaper (przy kocie także build/wallpaper/sleep i wtyczka org.tide.cat), bez zmiany pulpitu
@@ -372,6 +470,54 @@ qdbus6 org.tide.Daemon /Idle org.tide.Daemon.Idle.State   # {"available": true, 
 Zwykłe obrazy w `wallpapers/Tide/cat/` zostają: wskazuje je konfiguracja „Obraz” każdego pulpitu (wybór „Obraz” w ustawieniach pulpitu daje tego samego, czuwającego kota) i tapeta ekranu blokady, a kopia zapasowa sprzed wtyczki po `make restore` wraca do nich. Po ponownej instalacji z innym układem monitorów nowe kadry wtyczki pojawią się po `systemctl --user restart plasma-plasmashell` albo ponownym zalogowaniu.
 
 **Własna tapeta.** Wystarczy ustawić inny obraz w Plasmie (prawy klik na pulpicie, Konfiguruj pulpit i tapetę). Kolejne `make install` nie ruszy pulpitu, na którym jest tapeta inna niż Tide albo ta sprzed Tide, chyba że podasz `FORCE=1`. `make uninstall` przywraca tapety sprzed Tide tylko tam, gdzie nadal jest tapeta Tide (obrazy albo wtyczka kota), i usuwa katalog `wallpapers/Tide` oraz wtyczkę `org.tide.cat`.
+
+## Wygląd aktywności
+
+Pulpit może mieć kilka aktywności KDE w jednej sesji. Każda ma wygląd z opisu w `theme/activities/`: **praca** (`work.json`, dzisiejszy Mist: `TideMist`, styl `Tide`, kot, ekran blokady Mist, obecne panele) i **Stream** (`stream.json`, paleta Streamer z PT-34, panele z PT-36). Wygląd `stream` dostaje aktywność przypisana do niego przy utworzeniu (`$XDG_CONFIG_HOME/tide/activities.json`, po ID aktywności); każda inna, także nowa, wygląda jak praca. Ikony, kursor, fonty, dekoracja okien, Konsole, Vivaldi i Claude są wspólne.
+
+Po każdej zmianie aktywności (skrót, `Meta+Q`, widżet, KDE Connect) `tide-daemon` nakłada cały wygląd docelowej aktywności, a przy logowaniu porównuje pulpit z opisem i naprawia różnice ([opis](docs/tide-daemon.md#wygląd-aktywności), decyzja 78). Przełączanie wyglądu zależy od usługi: bez działającego `tide-daemon` (albo bez `make install-activity-look`) zmiana aktywności zostawia poprzedni schemat, styl i blokadę, a nowa aktywność dostaje swój wygląd dopiero przy następnym starcie usługi albo po `python3 scripts/activity_look.py apply`. Nakładane są tylko różnice, narzędziami Plasmy, więc otwarte okna przerysowują się bez restartu. Instalatory też: `make install` w aktywności Stream nie przestawi jej na Mist, a tapeta trafia tylko na pulpity bieżącej aktywności.
+
+```bash
+make activity-look-check     # czy pulpit zgadza się z opisem bieżącej aktywności — tylko odczyt
+make activity-look-status    # przypisania, dostępne wyglądy, dziennik ostatniego przełączenia
+make install-activity-look   # kopia silnika dla usługi w ~/.local/share/tide/activity-look (część make install)
+```
+
+### Aktywność Stream
+
+`make install-stream-activity` tworzy aktywność „Stream” (ikona `tide-stream`: znak pada z marki Streamer w złocie
+z palety) i przypisuje jej wygląd Stream; powtórzone nic nie dubluje, a bieżąca aktywność się nie zmienia. Panele,
+konsola i filtr powiadomień nakładają się przy pierwszym wejściu (`Meta+Q`). `make uninstall-stream-activity` zdejmuje
+przypisanie i usuwa aktywność, ale nie wtedy, gdy jest bieżąca. Oba cele są poza `make install` i `make uninstall`
+(decyzja 80).
+
+W Stream (panele Plasmy są wspólne dla aktywności, więc praca nic nie traci):
+
+- **lewy monitor**: dock Stream na dole — Stream, Profil gracza, Observer (tylko w trybie Observer) · zadania · Kamera,
+  „?” (miejsce na PC ⇄ Xbox z PT-38 przed „?”); na pulpicie jeden widżet „Lewy monitor Stream” (`org.tide.stream.desk`:
+  konsola streamu albo Granie) na całą szerokość i wysokość nad dockiem, z marginesem 32 px (dokładany tylko wtedy,
+  gdy go brakuje — własnego ułożenia nie ruszamy). Sceny i czat z wcześniejszej instalacji pierwsze wejście z deskiem
+  zdejmuje z pulpitu Stream (tylko te dwa widżety i tylko tam); bez pakietu desku zostaje para Sceny (ok. 1/3
+  szerokości) i czat;
+- **DP-2**: dock bez kafelków pracy — zostaje System i zadania; kafelki pracy same się chowają
+  (`widgets/lib/ActivityLook.qml` pyta tide-daemon), ich ustawienia i miejsca zostają;
+- **pasek boczny pracy**: schowany i zwężony do minimum (bez kafelków); dotknięcie środka lewej krawędzi
+  nie wysuwa paska, a przy górnym końcu pozostaje tylko mały cień panelu (ok. 64 × 16 px w podglądzie);
+  `Meta+S` nic nie robi; po powrocie do pracy wraca dokładnie taki, jaki był;
+- **powiadomienia**: wyskakują tylko KDE Connect, rdzeń Streamer (gdy wysyła `x-kde-appname=streamer`) i krytyczne;
+  reszta, także Discord i Telegram, czeka w historii. Usługa trzyma „Nie przeszkadzać” na czas Stream i zwalnia je
+  przy wyjściu; ustawienia powiadomień pracy wracają co do bajtu;
+- **ekran blokady**: wariant Streamer bez linii „N agentów pracuje”.
+
+Po powrocie do pracy panele są dokładnie jak przed wejściem (`panels.py dump` bez różnic — sprawdzane w zagnieżdżonej
+sesji: `make stream-activity-preview`, wyniki w `build/stream-activity/`).
+
+```bash
+make install-stream-activity     # aktywność Stream z ikoną i przypisanym wyglądem
+make uninstall-stream-activity   # usuwa ją (odmawia, gdy Stream jest bieżąca)
+make stream-activity-status      # przypisane aktywności Stream — tylko odczyt
+make stream-activity-preview     # zagnieżdżona sesja: praca → Stream → praca, zrzuty i porównanie paneli
+```
 
 ## Ikony
 
