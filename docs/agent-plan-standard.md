@@ -154,6 +154,10 @@ jest drugim etapem. „Mam plan” przejmuje wskazany plan
 bez zapisywania zmian w jego repozytorium. Plan przekazywany dla konkretnej karty ma `card: K-<numer>`; plan bez
 tego pola może być podpowiedzią, a nie automatycznie wybranym planem karty.
 
+Pełne planowanie w Konsoli prowadzi rozmowę `grill-with-docs` (pytania i zapis decyzji), potem `to-spec`
+i `to-tickets`. Planowanie Lekkie w przepływie karty przygotowuje `spec.md`, `plan.md` i kartki bez
+pytań do użytkownika w trakcie kroku; po niezależnym review pokazuje plan do zatwierdzenia.
+
 **Role.** Planujący przygotowuje tabelę i kartki. Inny wykonawca sprawdza plan przed pokazaniem go użytkownikowi;
 gdy znajdzie braki, planujący dostaje jedną poprawkę. Autor ticketu wykonuje pionowy wycinek w osobnym worktree,
 a recenzent używa innego modelu i zapisuje werdykt. Użytkownik zatwierdza plan albo różnicę po odesłaniu z uwagami;
@@ -164,7 +168,9 @@ równolegle, z limitem kroków dostawcy; bloker rusza po scaleniu poprzedników 
 ograniczeniami oraz ścieżką katalogu wyjściowego. Autor zapisuje tam notkę `note.md`, a na końcu `result.json`:
 `{"result":"done","notes":["note.md"]}`, `{"result":"question","question":"…"}`,
 `{"result":"denied","command":"…"}` albo `{"result":"error","reason":"…"}`. Recenzent oprócz tego
-zapisuje `review.md` i werdykt `APPROVE` lub `REQUEST_CHANGES` z liczbą usterek. Brak poprawnego wyniku jest błędem
+zapisuje `review.md` i wynik, np. `{"result":"done","verdict":"APPROVE","blockers":0,
+"majors":0,"nits":0,"notes":["review.md"]}`; `REQUEST_CHANGES` wymaga dodatniej liczby `blockers`
+lub `majors`. Brak poprawnego wyniku jest błędem
 kroku. Pytanie, zgoda i ponowienie przechodzą przez dziennik karty; wznowienie zachowuje worktree i zmiany.
 Autor i recenzent nie wykonują push ani scalenia.
 

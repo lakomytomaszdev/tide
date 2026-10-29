@@ -1,7 +1,8 @@
 # Tracker pracy: pliki w repozytorium
 
-Specyfikacje, plany i tickety bieżących prac Tide są plikami w tym repozytorium. GitHub Issues nie są źródłem
-ticketów przepływu karty ani stanów planu. Dawne zgłoszenia GitHub można czytać jako materiał historyczny.
+Specyfikacje, plany i tickety przepływu karty są plikami w tym repozytorium. GitHub Issues w prywatnym
+repozytorium `lakomytomaszdev/plasma-tide` pozostają dostępne dla innych zgłoszeń (CLI `gh`), ale nie są
+źródłem ticketów przepływu karty ani stanów jego planu.
 
 | Rodzaj | Miejsce |
 | --- | --- |
@@ -17,6 +18,6 @@ Numeracja lokalna jest ciągła w całym repozytorium. Przed nowym numerem uruch
 zarezerwuj przez `make next-id REPO=/home/user/DevWorkspace/plasma-tide TITLE="…"`; nie obliczaj go ręcznie.
 Ticket w YouTracku zachowuje klucz nadany przez YouTrack, jeśli projekt na tablicy ma taki tracker.
 
-Gdy instrukcja narzędzia mówi „opublikuj w trackerze”, w tym projekcie oznacza to zapis właściwego pliku,
+Gdy instrukcja narzędzia mówi „opublikuj w trackerze” dla przepływu karty, oznacza to zapis właściwego pliku,
 aktualizację planu i commit na gałęzi pracy. Gdy mówi „pobierz ticket”, przeczytaj kartkę z katalogu
 `docs/agents/tickets/` oraz powiązany wiersz planu. Nie zakładaj GitHub Issue dla tej samej pracy.

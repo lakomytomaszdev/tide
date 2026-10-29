@@ -1323,22 +1323,23 @@ YouTrack (prywatny: użytkownik i domownik) dostaje stan kart i ticketów.
  "importQueries": ["for: me #Unresolved", "reporter: me Assignee: Unassigned #Unresolved"], "importCheckMinutes": 15}
 ```
 
-Przejście z karty do pracy: karta emituje `sessionRequested(derived.session)` („Otwórz w Sesjach →”,
-„Przejdź do agenta”). Usługa ma już oba cele: `/Coordination ShowWindow(id)` (okno Tide na widoku Sesje
-z koordynatorem) i `/Agents ActivateSession(id)` (okno zwykłej sesji); podpięcie w `apps/board`
-(backend i `BoardView.qml`) czeka na scalenie z PT-4, który zmienia te pliki.
+Przejście z karty do pracy: „Otwórz w Sesjach” wywołuje `/Coordination ShowWindow(id)`, a „Przejdź do agenta”
+wywołuje `/Agents ActivateSession(id)`. `BoardView.qml` i backend tablicy kierują te dwie akcje do usługi.
 
-**Uruchomienie z karty** (widok Tablica, `apps/board/qml/LaunchDialog.qml`). Okno „Co ma zrobić
-agent?” (PT-77) pyta „Jak zacząć?”: wejście Planowanie albo Tylko specyfikacja (kolejne dojdą jako nowe karty wyboru); tryb Pełny albo Lekki widać tylko przy Planowaniu. Otwiera się po przeniesieniu karty z Backlogu do Do zrobienia (myszą albo Ctrl+→), z „Uruchom
-agenta…” na karcie w Do zrobienia i z „Uruchom” w popupie kafelka (`ShowWindow("launch:K-12")`).
-„Uruchom agenta” (Ctrl+Enter) to kolejno: `UpdateCard {description}` — tylko gdy zadanie w oknie różni
-się od opisu karty, `RenderLaunch(id, {entry, mode, tool, branch, check})` (`mode` tylko przy Planowaniu), `/Tasks Start {repoPath, tool,
-prompt: text, newWorktree, branch, images, addDirs, model}` (`newWorktree` i `branch` tylko poza wejściem
-Tylko specyfikacja; `addDirs: [docsDir]` przy `ai-docs: tide`) i po udanym starcie `UpdateCard {branch, worktree,
-entry, mode, tool, check, launched, session: ""}` (`branch` tylko z nowym worktree; pole `check` dodaje PT-5;
-pusty `session` — ponowne uruchomienie odpina poprzednią sesję, a usługa przypnie nową, PT-28). Karta
-uruchomiona z Backlogu bez przeniesienia (popup) idzie do Do zrobienia; dalej stoi tam, aż PT-5 wyliczy
-„W toku”. Błąd którejkolwiek odpowiedzi zostaje w oknie, a ponowienie nie zapisuje opisu drugi raz.
+**Uruchomienie z karty** (widok Tablica, `apps/board/qml/LaunchDialog.qml`). Okno „Co ma zrobić agent?”
+pyta „Jak zacząć?”: Planowanie (Pełne albo Lekkie), Mam plan, Tylko specyfikacja albo Od razu.
+Otwiera się po przeniesieniu karty z Backlogu do Do zrobienia (myszą albo Ctrl+→), z „Uruchom agenta…”
+na karcie w Do zrobienia i z „Uruchom” w popupie kafelka (`ShowWindow("launch:K-12")`).
+
+„Uruchom agenta” (Ctrl+Enter) najpierw zapisuje zmieniony opis, dodatkowe projekty i wybrany plik planu
+przez `UpdateCard`, tylko jeśli dane różnią się od zapisanych. Następnie Planowanie Lekkie, Mam plan i Od razu
+wywołują `/Board StartCard`: krok biegnie w tle w przepływie karty, bez otwierania Konsoli. „Mam plan”
+przekazuje `entry: import` i `planPath`; usługa zapisuje migawkę źródła bez edycji pliku projektu, zachowuje
+istniejące ID i stany ticketów, uzupełnia niepełny plan w tle i kieruje propozycję do review oraz zatwierdzenia.
+Pełne planowanie i Tylko specyfikacja używają dotychczasowej ścieżki Konsoli: `RenderLaunch` → `/Tasks Start`
+→ zapis gałęzi, worktree i sesji na karcie przez `UpdateCard`. Pełny proces planowania w przepływie karty
+należy do drugiego etapu. Karta uruchomiona z Backlogu przez popup idzie do Do zrobienia; błąd odpowiedzi
+zostaje w oknie, a ponowienie nie zapisuje opisu drugi raz.
 „Anuluj” po przeniesieniu oddaje kartę na jej miejsce w Backlogu (`MoveCard`), „Tylko przenieś”
 zostawia ją w Do zrobienia bez agenta. Karta bez projektu z repozytorium — wyjaśnienie i wybór projektu
 (`UpdateCard {project}` albo `{repo}`, który zakłada projekt).
@@ -1348,22 +1349,24 @@ Pod zadaniem pasek zrzutów (`Tide.ScreenshotStrip` z `widgets/lib`): obraz ze s
 zadania albo poza polami tekstowymi okna), pliki przeciągnięte na okno, „Zrób zrzut” (Spectacle; okno Tide
 chowa się na czas zaznaczania), „×” usuwa. Backend widoku (`apps/board/backend.py`, `ImageTray`
 z `apps/common/taskimages.py`) zapisuje je w katalogu zadania w `imagesDir` z `/Tasks Defaults`, a ścieżki idą
-w `images` prośby `Start` — usługa przyjmuje je jak z okna „Nowe zadanie” (najwyżej 10, tylko z katalogu zadań).
+w `images` żądania `/Tasks Start` dla Konsoli albo `/Board StartCard` dla przepływu karty.
 Udany start zostawia katalog agentowi; Anuluj, „Tylko przenieś” i zamknięcie okna Tide go usuwają. Obok
 narzędzia wybór „☁ Chmura / ⌂ Lokalny” ze `Status()` obiektu `/Models` (odświeżany po `Changed`; domyślnie
 zapamiętany `model` z `Defaults()`): przy „Lokalny” zamiast przełącznika narzędzia linia „Codex na
 qwen3-coder:30b · Ten komputer” z odnośnikiem do widoku Modele, `RenderLaunch` dostaje program agenta
-lokalnego jako `tool` (gałąź `codex/…`), a `Start` — `model: "local"`. Niedostępny model albo brak programu
+lokalnego jako `tool` (gałąź `codex/…`), a `Start` — `model: "local"`; przy kroku karty `StartCard` dostaje
+wybranego wykonawcę z katalogu modeli. Niedostępny model albo brak programu
 (`tools` z `Defaults()`) blokuje start z powodem w stopce. Zrzuty nie są zapisywane w karcie.
 
 **Dodatkowe projekty** (PT-28). Wiersz „Dodatkowe projekty” w oknie: chipy wybranych (✕ usuwa) i pole
 „+ dodaj projekt albo repozytorium” z listą projektów tablicy z istniejącym repozytorium (bez głównego
 i już wybranych), potem repozytoriów z katalogu projektów, które nie są jeszcze projektami (wybranie
 założy projekt). Okno startuje z `projects` karty. Gdy wybór różni się od karty, pierwszy zapis to
-`UpdateCard {description?, projects}` (ścieżki repozytoriów zakładają projekty), a `Start` dostaje
-`addDirs` z odpowiedzi `RenderLaunch`. Stopka dopisuje „Pracuje też w: …”. Na karcie tablicy dodatkowe
-projekty to małe chipy „+ mobileapp” obok nazwy projektu. Agent pracuje w worktree głównego projektu,
-a w dodatkowych repozytoriach zakłada gałąź o tej samej nazwie (polecenie, `{projects}` wyżej).
+`UpdateCard {description?, projects}` (ścieżki repozytoriów zakładają projekty). Przy wejściach Konsoli `Start`
+dostaje `addDirs` z odpowiedzi `RenderLaunch`; w przepływie karty dodatkowe projekty są tylko do odczytu.
+Stopka dopisuje „Pracuje też w: …”. Na karcie tablicy dodatkowe
+projekty to małe chipy „+ mobileapp” obok nazwy projektu. W ścieżce Konsoli agent pracuje w worktree
+głównego projektu, a w dodatkowych repozytoriach zakłada gałąź o tej samej nazwie.
 
 **Plan i specyfikacja na karcie** (`CardDocs(id)`, `board/docs.py`, PT-5). Panel karty w widoku Tablica
 ma zakładki „Opis” | „Plan” | „Specyfikacja” — dwie ostatnie tylko wtedy, gdy usługa znalazła dokument.

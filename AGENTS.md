@@ -15,7 +15,9 @@ Własny motyw KDE Plasma 6 (KDE neon, Wayland, dwa monitory) z widżetami do pra
 
 ### Issue tracker
 
-Specyfikacje, plany i tickety są plikami w repozytorium; źródłem stanu jest plan. Zasady: `docs/agents/issue-tracker.md`.
+GitHub Issues w prywatnym repozytorium `lakomytomaszdev/plasma-tide` (CLI `gh`) pozostają dostępne dla
+ogólnych zgłoszeń. Specyfikacje, plany i tickety przepływu karty są plikami w repozytorium; źródłem ich stanu
+jest plan. Zasady: `docs/agents/issue-tracker.md`.
 
 ### Domain docs
 
@@ -29,7 +31,7 @@ Standard: `~/DevWorkspace/plasma-tide/docs/agent-plan-standard.md`.
 2. Frontmatter: `tide-plan: 1`, `title`, `tracker: local`, `tracker-url` i `tracker-project` puste, `ticket-prefix: PT`, `coordinator` (`claude`|`codex`), `session` (ID sesji, jeśli znane), `status` (`active`|`paused`|`done`), `updated` (czas ISO 8601).
 3. Tabela `| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |`; `Stan` ∈ `todo`, `w-toku`, `review`, `czeka`, `gotowe`, `odrzucone`. Tabelę i `updated` aktualizuj przy każdym delegowaniu, wyniku, review i pytaniu do użytkownika.
 4. Delegowanie: opis/tytuł subagenta zaczyna się od ID ticketu (`PT-7: implement …`, `PT-7: review`); subagent Codex ma ID ticketu w zadaniu i w nickname. Gałąź zawiera ID małymi literami (`feat/pt-7-…`). Pytanie do użytkownika wymienia ID ticketu.
-5. Projekt nie ma zewnętrznego trackera: ID ticketów nadaje plan (`PT-1`, `PT-2`, …), numeracja jest ciągła we wszystkich planach repozytorium (nowy numer = największy istniejący + 1, nowy plan nie zaczyna od 1), a plan jest źródłem stanu dla tablicy Tide i porannego raportu. Dawne GitHub Issues nie są źródłem planu.
+5. Plan przepływu karty nie korzysta z zewnętrznego trackera: ID ticketów nadaje plan (`PT-1`, `PT-2`, …), numeracja jest ciągła we wszystkich planach repozytorium (nowy numer = największy istniejący + 1, nowy plan nie zaczyna od 1), a plan jest źródłem stanu dla tablicy Tide i porannego raportu. GitHub Issues nie są źródłem planu.
 6. Projekt `TIDE` w YouTracku to wyłącznie archiwum zrobionej pracy (TIDE-1…31, 26–27.10.2026), nie źródło planu. Prefiksu `TIDE` nie używamy w planach — to klucz projektu w YouTracku (reguła „jedno źródło numerów” w standardzie).
 
 ## Przepływ karty
