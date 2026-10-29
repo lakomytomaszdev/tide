@@ -45,6 +45,10 @@ work = os.path.join(cwd, "ATRAPA.md")
 if prompt.startswith("Krok review "):
     round_match = re.search(r"runda (\d+)", prompt)
     round_no = int(round_match.group(1)) if round_match else 1
+    if "ATRAPA: review-error" in prompt and round_no == 1 and "Użytkownik wybrał innego wykonawcę" not in prompt:
+        with open(result, "w", encoding="utf-8") as fh:
+            json.dump({"result": "error", "reason": "awaria review"}, fh)
+        sys.exit(0)
     requests = re.search(r"ATRAPA: review-requests (\d+)", prompt)
     bad = requests and round_no <= int(requests.group(1))
     if "ATRAPA: review-modifies" in prompt:
@@ -100,6 +104,11 @@ elif word == "zgoda-zabroniona":
         finish("done")
     else:
         finish("denied", command="make install")
+elif word == "zgoda-dluga":
+    if "Użytkownik odmówił zgody" in prompt:
+        finish("done")
+    else:
+        finish("denied", command="git fetch origin " + "x" * 300)
 elif word == "blad-raz":
     finish("done" if "Krok ponowiony automatycznie" in prompt else "error", reason="awaria testowa")
 elif word in ("blad-dwa", "blad-zmien"):

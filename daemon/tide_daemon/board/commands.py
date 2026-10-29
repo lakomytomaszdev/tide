@@ -46,19 +46,31 @@ def read(raw: str, fallback: list[str], label: str, errors: list, path: str) -> 
 
 def is_forbidden(command: str, denied: list[str]) -> bool:
     text = " ".join(str(command or "").split())
+    if not single_command(command):
+        return True
     return any(text == rule or text.startswith(rule + " ") for rule in denied)
+
+
+def single_command(command: str) -> bool:
+    """Zgoda z panelu obejmuje jedno proste polecenie bez powłoki i złożonych operatorów."""
+    text = str(command or "")
+    if not text.strip() or any(c in text for c in "\n\r\0`") or "$(" in text:
+        return False
+    try:
+        parts = list(shlex.shlex(text, posix=True, punctuation_chars=";&|<>()"))
+    except ValueError:
+        return False
+    if any(part in (";", "&&", "||", "|", "&", ">", ">>", "<", "<<", "(", ")") for part in parts):
+        return False
+    return bool(parts) and parts[0] not in ("sh", "bash", "zsh", "fish", "eval", "exec")
 
 
 def is_allowed(command: str, allowed: list[str]) -> bool:
     text = " ".join(str(command or "").split())
+    if not single_command(command):
+        return False
     if text in allowed:
         return True
-    try:
-        parts = list(shlex.shlex(text, posix=True, punctuation_chars=";&|<>"))
-    except ValueError:
-        return False
-    if any(part in (";", "&&", "||", "|", "&", ">", ">>", "<", "<<") for part in parts):
-        return False
     return any(rule.endswith(" *") and (text == rule[:-2] or text.startswith(rule[:-2] + " "))
                for rule in allowed)
 

@@ -166,6 +166,10 @@ def derived(st: FlowState, card: dict) -> dict | None:
     done = st.finished.get(st.last_step) or {}
     ident = step.get("ticket") or ticket["id"] or "ticket"
     executor = st.started.get("executor") or ""
+    author = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ident and
+                   s.get("kind") in ("ticket", "fix")), {})
+    reviewer = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ident and
+                     s.get("kind") == "review"), {})
     out = {"column": "", "done": 0, "total": 1, "tool": st.started.get("program") or "", "note": "", "nextStep": "",
            "check": st.started.get("check") or card.get("check") or "auto", "branch": ticket["cardBranch"], "session": "", "coordinator": "",
            "link": "flow", "agentState": "", "tickets": [], "question": "",
@@ -174,8 +178,12 @@ def derived(st: FlowState, card: dict) -> dict | None:
                     "result": done.get("result") or "", "cardBranch": ticket["cardBranch"],
                     "branch": ticket["branch"] or step.get("branch") or "",
                     "provider": step.get("provider") or st.started.get("provider") or "",
-                    "reviewerProvider": st.started.get("reviewerProvider") or "",
-                    "reviewerModel": st.started.get("reviewerModel") or ""}}
+                    "stepKind": step.get("kind") or "",
+                    "preferredProvider": st.started.get("preferredProvider") or "",
+                    "authorProvider": author.get("provider") or st.started.get("provider") or "",
+                    "authorModel": author.get("model") or st.started.get("model") or "",
+                    "reviewerProvider": reviewer.get("provider") or st.started.get("reviewerProvider") or "",
+                    "reviewerModel": reviewer.get("model") or st.started.get("reviewerModel") or ""}}
     verdict = next((v for (ticket_id, _round), v in reversed(list(st.verdicts.items())) if ticket_id == ident), None)
     if verdict:
         out["flow"].update({key: verdict[key] for key in ("verdict", "blockers", "majors", "nits", "round")})

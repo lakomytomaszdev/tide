@@ -110,6 +110,7 @@ class Step:
     local: "local_mod.LocalAgent | None" = None
     allowed_tools: tuple = ()
     disallowed_tools: tuple = ()
+    enforce_command_policy: bool = False
     permission_mode: str = ""       # np. "acceptEdits"; pusty — bez opcji
     git_name: str = "Krok"
     git_email: str = "krok@tide.invalid"
@@ -297,7 +298,7 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
     """argv, pliki (ustawienia piaskownicy dla `--settings`) i pliki tokenów do sprawdzenia przed startem."""
     settings = {"sandbox": {
         "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
-        "autoAllowBashIfSandboxed": not bool(step.allowed_tools),
+        "autoAllowBashIfSandboxed": not step.enforce_command_policy,
         "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out],
                        "allowWrite": [out]},
         "network": {"allowedDomains": []}}}

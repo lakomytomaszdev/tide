@@ -1534,9 +1534,11 @@ Wynik `denied` zawiera dokładne polecenie. „Zezwól i wznów” dopisuje tę 
 krok; „Odmów” wznawia go z informacją o odmowie. Listy `allowed-commands` i `denied-commands` są zapisane w nagłówku
 pliku projektu tablicy jako tablice JSON i edytowalne w „Projekty i tagi”. Claude dostaje z nich reguły
 `--allowedTools` i `--disallowedTools`, a odmowa Bash z końcowego wyniku CLI staje się `denied`, gdy brak własnego
-pliku wyniku. Dla Codexa listy są przekazywane w kartce. Domyślna lista dopuszcza częste odczyty
+pliku wyniku. Codex działa w piaskownicy `workspace-write`, lecz listy poleceń dostaje tylko w kartce jako wskazówkę:
+CLI nie blokuje automatycznie każdej komendy spoza listy. Domyślna lista dopuszcza częste odczyty
 oraz pracę lokalną, a dla projektu Tide zabrania `make install`. Reguła zabroniona ma pierwszeństwo; panel nie może
-zatwierdzić takiego polecenia. Zgoda dotyczy pełnego polecenia, bez rozszerzenia na cały program.
+zatwierdzić takiego polecenia. Zgoda dotyczy pełnego polecenia, bez rozszerzenia na cały program; panel odmawia
+składni złożonej operatorami powłoki oraz poleceń dłuższych niż 300 znaków, które pokazuje bez skrócenia.
 
 Błąd kroku (`error`, brak wyniku, przekroczony czas lub brak postępu) zapisuje `step.retry` i powoduje jedno
 automatyczne ponowienie. Drugi błąd pokazuje „Ponów” i „Zmień wykonawcę”. Obie decyzje zachowują worktree;

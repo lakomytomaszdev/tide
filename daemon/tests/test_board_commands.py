@@ -11,6 +11,10 @@ class CommandRulesTest(unittest.TestCase):
         self.assertFalse(commands.is_forbidden("make test", denied))
         self.assertTrue(commands.is_forbidden("make install PREFIX=/tmp/x", denied))
         self.assertIn("make test", allowed)
+        self.assertTrue(commands.is_forbidden("pwd; make install", denied))
+        self.assertTrue(commands.is_forbidden("git status && make install", denied))
+        self.assertTrue(commands.is_forbidden("git status $(make install)", denied))
+        self.assertFalse(commands.is_allowed("git status && make install", list(commands.DEFAULT_ALLOWED)))
 
     def test_allowing_one_command_does_not_allow_whole_program_or_chain(self):
         allowed = ["git log --oneline"]

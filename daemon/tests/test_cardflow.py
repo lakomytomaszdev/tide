@@ -154,6 +154,10 @@ class NowInProcessTest(FlowInProcess):
         self.assertEqual(call["argv"][0], "exec")
         self.assertIn("--model=gpt-6.1-sol", call["argv"])
         self.assertIn('model_reasoning_effort="high"', call["argv"])
+        self.assertEqual(call["argv"][call["argv"].index("--sandbox") + 1], "workspace-write")
+        self.assertIn('approval_policy="never"', call["argv"])
+        self.assertIn("Dozwolone polecenia i wzorce", call["prompt"])
+        self.assertNotIn("--allowedTools", call["argv"])
         self.assertEqual(self.of(card_id, "card.started")[0]["preferredProvider"], "openai")
         self.assertEqual(self.of(card_id, "step.finished")[0]["result"], "done")
 

@@ -854,6 +854,16 @@ Rectangle {
                     Accessible.name: "Zabronione polecenia projektu, po jednym w wierszu"
                     background: Rectangle { radius: 6; color: Tide.Tokens.backgroundPanel }
                 }
+                Text {
+                    Layout.columnSpan: 2
+                    Layout.fillWidth: true
+                    text: "Claude stosuje listy poleceń w uprawnieniach CLI. Dla Codexa są wskazówką w kartce; jego piaskownica ogranicza zapis, ale nie blokuje każdego polecenia spoza listy."
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
+                }
                 Item { implicitWidth: 1 }
                 RowLayout {
                     Layout.fillWidth: true

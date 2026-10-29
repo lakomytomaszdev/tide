@@ -97,6 +97,28 @@ class StepDecisionTest(FlowInProcess):
         self.wait_column(card_id, "review")
         self.assertNotIn("make install", self.store.load().projects["proj"].allowed_commands)
 
+    def test_empty_allowlist_disables_claude_auto_allow(self):
+        changed = json.loads(self.board.upsert_project(json.dumps({"slug": "proj", "allowedCommands": []})))
+        self.assertTrue(changed["ok"], changed)
+        card_id = self.card(description="Test.\n\nATRAPA: zgoda")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "waiting")
+        step = self.of(card_id, "step.started")[0]
+        with open(os.path.join(step["stepDir"], "in", "settings.json"), encoding="utf-8") as fh:
+            settings = json.load(fh)
+        self.assertFalse(settings["sandbox"]["autoAllowBashIfSandboxed"])
+
+    def test_long_command_is_shown_in_full_but_cannot_be_granted(self):
+        card_id = self.card(description="Test.\n\nATRAPA: zgoda-dluga")
+        self.assertTrue(self.start(card_id)["ok"])
+        card = self.wait_column(card_id, "waiting")
+        command = "git fetch origin " + "x" * 300
+        self.assertEqual(card["derived"]["flow"]["command"], command)
+        self.assertFalse(card["derived"]["flow"]["canAllow"])
+        self.assertEqual(self.decide(card_id, choice="allow")["error"], "command-too-long")
+        self.assertTrue(self.decide(card_id, choice="deny")["ok"])
+        self.wait_column(card_id, "review")
+
     def test_cli_permission_denial_without_result_becomes_permission_question(self):
         card_id = self.card(description="Test.\n\nATRAPA: cli-zgoda")
         self.assertTrue(self.start(card_id)["ok"])
@@ -150,6 +172,18 @@ class StepDecisionTest(FlowInProcess):
         self.assertEqual([(s["kind"], s["executor"]) for s in steps],
                          [("ticket", "Sonnet"), ("ticket", "Sonnet"), ("ticket", "Haiku"),
                           ("review", "Opus"), ("fix", "Haiku"), ("review", "Opus")])
+
+    def test_change_reviewer_keeps_author_model_separate_and_persists(self):
+        card_id = self.card(description="Test.\n\nATRAPA: review-error\nATRAPA: review-requests 1")
+        self.assertTrue(self.start(card_id)["ok"])
+        card = self.wait_column(card_id, "waiting")
+        self.assertEqual(card["derived"]["flow"]["stepKind"], "review")
+        self.assertEqual(self.decide(card_id, choice="change-executor", executor="Sonnet")["error"], "bad-executor")
+        self.assertTrue(self.decide(card_id, choice="change-executor", executor="Haiku")["ok"])
+        self.wait_column(card_id, "review")
+        self.assertEqual([(s["kind"], s["executor"]) for s in self.of(card_id, "step.started")],
+                         [("ticket", "Sonnet"), ("review", "Opus"), ("review", "Opus"),
+                          ("review", "Haiku"), ("fix", "Sonnet"), ("review", "Haiku")])
 
     def test_timeout_stops_both_attempts_and_preserves_worktree(self):
         with open(self.settings, "w", encoding="utf-8") as fh:

@@ -207,6 +207,18 @@ class LogicTest(unittest.TestCase):
             self.assertEqual(got, want, project)
         self.assertEqual(self.js("launchDefaults(null).entry"), "planning")
 
+    def test_retry_executor_filters_author_reviewer_and_provider(self):
+        status = json.dumps({"executors": EXECUTORS})
+        review = "{stepKind:'review', provider:'anthropic', executor:'Opus', authorModel:'sonnet', " \
+                 "authorProvider:'anthropic', preferredProvider:'anthropic'}"
+        self.assertEqual(self.js(f"retryExecutors({status}, {review}).map(o => o.value)"), ["Haiku"])
+        author = "{stepKind:'ticket', provider:'anthropic', executor:'Sonnet', reviewerModel:'opus', " \
+                 "reviewerProvider:'anthropic', preferredProvider:'anthropic'}"
+        self.assertEqual(self.js(f"retryExecutors({status}, {author}).map(o => o.value)"), ["Haiku"])
+        mixed = "{stepKind:'ticket', provider:'anthropic', executor:'Sonnet', reviewerModel:'gpt-6.1-sol', " \
+                "reviewerProvider:'openai', preferredProvider:'mixed'}"
+        self.assertEqual(self.js(f"retryExecutors({status}, {mixed}).map(o => o.value)"), ["Haiku", "Opus"])
+
     def test_now_executors_and_flow_card_drop_targets(self):
         status = json.dumps({"executors": EXECUTORS})
         self.assertEqual(self.js(f"launchExecutors({status}).map(o => o.value)"), ["Haiku", "Sonnet", "Opus"])
@@ -1570,16 +1582,22 @@ js("page.openLaunch('K-15', false)")
 wait(100)
 out["providerVisible"] = js(FIND + "(page.launchDialog, 'launchPreferredProvider').visible")
 click(at(FIND + "(page.launchDialog, 'launchEntry-now')"))
+out["claudePolicyNotice"] = js(FIND + "(page.launchDialog, 'launchCodexCommandPolicyNotice').visible")
 click(at(FIND + "(page.launchDialog, 'launchPreferredProvider-openai')"))
 wait(50)
 out["openai"] = [js("page.launchDialog.preferredProvider"),
                  js("page.launchDialog.executorOptions.map(o => o.value)"), js("page.launchDialog.executor")]
+out["codexPolicyNotice"] = [js(FIND + "(page.launchDialog, 'launchCodexCommandPolicyNotice').visible"),
+                            js(FIND + "(page.launchDialog, 'launchCodexCommandPolicyNotice').text")]
 click(at(FIND + "(page.launchDialog, 'launchPreferredProvider-local')"))
 wait(50)
 out["local"] = [js("page.launchDialog.executorOptions.map(o => o.value)"), js("page.launchDialog.executor")]
 """)
         self.assertTrue(out["providerVisible"])
+        self.assertFalse(out["claudePolicyNotice"])
         self.assertEqual(out["openai"], ["openai", ["Codex standard"], "Codex standard"])
+        self.assertTrue(out["codexPolicyNotice"][0])
+        self.assertIn("wskazówką", out["codexPolicyNotice"][1])
         self.assertEqual(out["local"], [["Lokalny"], "Lokalny"])
 
     def test_now_entry_picks_a_claude_executor_and_sends_start_card(self):

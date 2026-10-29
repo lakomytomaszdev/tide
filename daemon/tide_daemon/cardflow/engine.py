@@ -327,6 +327,7 @@ class FlowEngine:
                 permission_mode="acceptEdits" if selected.tool == "claude" else "",
                 allowed_tools=allowed_tools if selected.tool == "claude" else (),
                 disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
+                enforce_command_policy=selected.tool == "claude",
                 tmp_root=self.tmp_root))
             bg.prepare()
             for source, target in zip(images, shots):
@@ -561,10 +562,12 @@ class FlowEngine:
                 raise FlowError("bad-executor", "wybierz wykonawcę")
             self._resume_executor(card, st, step, executor, changed=True)
         if choice == "allow":
-            from ..board.commands import is_forbidden
+            from ..board.commands import MAX_COMMAND, is_forbidden
             command = str(done.get("command") or "").strip()
             if not command:
                 raise FlowError("bad-command", "krok nie podał polecenia do zatwierdzenia")
+            if len(command) > MAX_COMMAND:
+                raise FlowError("command-too-long", f"polecenie przekracza {MAX_COMMAND} znaków i nie może być zatwierdzone")
             _, project = self._project(card)
             if is_forbidden(command, project.denied_commands):
                 raise FlowError("forbidden-command", f"polecenie „{command}” jest zabronione w projekcie")
@@ -596,14 +599,23 @@ class FlowEngine:
                             (selected.route.kind if selected.route else "") != step.get("routeKind", "") or
                             (selected.route.token_file if selected.route else "") != step.get("routeTokenFile", "")):
             raise FlowError("changed-executor", f"{card}: wykonawca zmienił się od startu kroku")
-        if changed and step.get("kind") in ("ticket", "fix"):
-            reviewer = (st.started or {}).get("reviewerModel") or ""
-            if selected.model.lower() == reviewer.lower():
-                raise FlowError("bad-executor", "wybrany wykonawca ma ten sam model co recenzent")
+        if changed:
+            opposite_kind = ("ticket", "fix") if step.get("kind") == "review" else ("review",)
+            opposite = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == step.get("ticket")
+                             and s.get("kind") in opposite_kind), None) or {}
+            if step.get("kind") == "review":
+                other_model = opposite.get("model") or (st.started or {}).get("model") or ""
+                other_provider = opposite.get("provider") or (st.started or {}).get("provider") or ""
+            else:
+                other_model = opposite.get("model") or (st.started or {}).get("reviewerModel") or ""
+                other_provider = opposite.get("provider") or (st.started or {}).get("reviewerProvider") or ""
+            if selected.model.lower() == other_model.lower():
+                raise FlowError("bad-executor", "wybrany wykonawca ma ten sam model co drugi uczestnik review")
+            if selected.local != (other_provider == "local"):
+                raise FlowError("bad-executor-provider", "praca lokalna wymaga lokalnego autora i recenzenta")
             preferred = (st.started or {}).get("preferredProvider") or ""
-            review_provider = (st.started or {}).get("reviewerProvider") or ""
-            if (preferred == "mixed" and selected.provider == review_provider) or \
-                    (preferred != "mixed" and selected.provider != review_provider):
+            if (preferred == "mixed" and selected.provider == other_provider) or \
+                    (preferred != "mixed" and selected.provider != other_provider):
                 raise FlowError("bad-executor-provider", "wybierz wykonawcę zgodnego z recenzentem karty")
         return selected
 
@@ -723,18 +735,20 @@ class FlowEngine:
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
             raise FlowError("unknown-reviewer", f"{card}: katalog recenzentów jest niedostępny")
+        previous = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket and
+                         s.get("kind") == "review"), {})
         try:
-            reviewer = execution.resolve(st.started.get("reviewer") or "", catalog, config=cfg,
+            reviewer = execution.resolve(previous.get("executor") or st.started.get("reviewer") or "", catalog, config=cfg,
                                          probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if reviewer.tool != st.started.get("reviewerProgram") or \
-                reviewer.model != st.started.get("reviewerModel") or \
-                reviewer.provider != st.started.get("reviewerProvider") or \
-                reviewer.effort != st.started.get("reviewerEffort", "") or \
-                (reviewer.route.url if reviewer.route else "") != st.started.get("reviewerRouteUrl", "") or \
-                (reviewer.route.kind if reviewer.route else "") != st.started.get("reviewerRouteKind", "") or \
-                (reviewer.route.token_file if reviewer.route else "") != st.started.get("reviewerRouteTokenFile", "") or \
+        if reviewer.tool != (previous.get("program") or st.started.get("reviewerProgram")) or \
+                reviewer.model != (previous.get("model") or st.started.get("reviewerModel")) or \
+                reviewer.provider != (previous.get("provider") or st.started.get("reviewerProvider")) or \
+                reviewer.effort != previous.get("effort", st.started.get("reviewerEffort", "")) or \
+                (reviewer.route.url if reviewer.route else "") != previous.get("routeUrl", st.started.get("reviewerRouteUrl", "")) or \
+                (reviewer.route.kind if reviewer.route else "") != previous.get("routeKind", st.started.get("reviewerRouteKind", "")) or \
+                (reviewer.route.token_file if reviewer.route else "") != previous.get("routeTokenFile", st.started.get("reviewerRouteTokenFile", "")) or \
                 reviewer.model.lower() == (source.get("model") or "").lower() or \
                 reviewer.local != (source.get("provider") == "local") or \
                 (st.started.get("preferredProvider") == "mixed" and
@@ -1020,9 +1034,10 @@ class FlowEngine:
                 kept.append(entry)
         extra = {k: v for k, v in (("wip", wip), ("messages", messages)) if v}
         if data.get("result") == "denied":
-            from ..board.commands import is_forbidden
+            from ..board.commands import MAX_COMMAND, is_forbidden
             _, project = self._project(card)
-            data["canAllow"] = not is_forbidden(data.get("command") or "", project.denied_commands)
+            command = data.get("command") or ""
+            data["canAllow"] = len(command) <= MAX_COMMAND and not is_forbidden(command, project.denied_commands)
         self.journal.append(card, "step.finished", step=name, ticket=step.get("ticket") or "",
                             result=data.get("result"), reason=data.get("reason") or "",
                             question=data.get("question") or "", command=data.get("command") or "",
@@ -1058,6 +1073,8 @@ class FlowEngine:
     @staticmethod
     def _result(path: str) -> dict:
         try:
+            if os.path.getsize(path) > OUTPUT_MAX:
+                return {"result": "error", "reason": "bad-result"}
             with open(path, encoding="utf-8") as fh:
                 data = json.load(fh)
         except FileNotFoundError:
@@ -1074,7 +1091,7 @@ class FlowEngine:
             return {"result": "error", "reason": "bad-result"}
         notes = data.get("notes") if isinstance(data.get("notes"), list) else []
         return {"result": data["result"], "reason": str(data.get("reason") or "")[:300],
-                "question": str(data.get("question") or "")[:2000], "command": str(data.get("command") or "")[:300],
+                "question": str(data.get("question") or "")[:2000], "command": str(data.get("command") or ""),
                 "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
 
     @staticmethod
@@ -1097,7 +1114,7 @@ class FlowEngine:
                         tool_input = denial.get("tool_input") or {}
                         command = tool_input.get("command") if isinstance(tool_input, dict) else ""
                         if isinstance(command, str) and command.strip() and not any(c in command for c in "\n\r\0"):
-                            return command.strip()[:300]
+                            return command.strip()
         except OSError:
             pass
         return ""
