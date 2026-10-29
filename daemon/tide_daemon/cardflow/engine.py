@@ -410,6 +410,7 @@ class FlowEngine:
     def _tick_card(self, card: str, st: FlowState) -> None:
         self._recover_started_steps(card, st)
         self._recover_verdicts(card)
+        self._recover_review_rejections(card)
         st = fold(self.journal.read(card))
         if st.started is not None and not st.card_finished and st.store_column:
             stored = self.store.load().cards.get(card_num(card))
@@ -486,10 +487,16 @@ class FlowEngine:
         step = st.steps.get(st.last_step) or {}
         ticket, round_no = step.get("ticket") or "", int(step.get("round") or 0)
         verdict = st.verdicts.get((ticket, round_no)) or {}
+        previous = st.review_decisions.get((ticket, round_no)) or {}
+        if previous.get("choice") == choice == "reject" and not st.card_finished:
+            if ticket not in st.rejected:
+                self.journal.append(card, "ticket.rejected", ticket=ticket)
+            return {"ok": True, "id": card, "ticket": ticket, "round": round_no, "choice": choice,
+                    "already": True}
         if st.card_finished or st.running() or step.get("kind") != "review" or round_no < 3 or \
                 verdict.get("verdict") != "REQUEST_CHANGES" or \
                 (ticket, round_no) not in st.review_questions or \
-                (ticket, round_no) in st.review_decisions:
+                previous:
             raise FlowError("no-review-question", f"{card}: nie ma pytania o review do rozstrzygnięcia")
         self.journal.append(card, "review.decision", ticket=ticket, round=round_no, choice=choice)
         if choice == "reject":
@@ -620,6 +627,14 @@ class FlowEngine:
             if verdict and tip and tip == step.get("reviewTip"):
                 self.journal.append(card, "review.verdict", step=name, ticket=step["ticket"],
                                     round=step["round"], reviewer=step.get("executor") or "", **verdict)
+
+    def _recover_review_rejections(self, card: str) -> None:
+        """Decyzja reject i zdarzenie odrzucenia mogą zostać rozdzielone restartem usługi."""
+        st = fold(self.journal.read(card))
+        for (ticket, _round), decision in st.review_decisions.items():
+            if decision.get("choice") == "reject" and ticket not in st.rejected:
+                self.journal.append(card, "ticket.rejected", ticket=ticket)
+                st.rejected.add(ticket)
 
     def _reconcile(self, card: str, intent: dict) -> None:
         """Akcja zaczęta przed restartem usługi, bez wyniku: dokończenie albo jawny błąd (nigdy druga kopia)."""

@@ -186,6 +186,40 @@ class ReviewFlowTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: replies, timeout=10))
         self.assertEqual(json.loads(replies[0])["error"], "no-review-question")
 
+    def test_restart_finishes_rejection_interrupted_after_decision(self):
+        from tide_daemon.cardflow.state import fold
+
+        card = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 3")
+        self.assertTrue(self.start(card)["ok"])
+        self.wait_column(card, "waiting", timeout=50)
+        self.flow.stop()
+        journal = self.flow.engine.journal
+        append = journal.append
+
+        def interrupted(card_id, kind, **data):
+            if kind == "ticket.rejected":
+                raise OSError("przerwano po zapisaniu decyzji")
+            return append(card_id, kind, **data)
+
+        with mock.patch.object(journal, "append", side_effect=interrupted):
+            with self.assertRaisesRegex(OSError, "przerwano po zapisaniu decyzji"):
+                self.flow.engine.resolve_review(card, "reject")
+        before = fold(journal.read(card))
+        self.assertEqual(len(before.review_decisions), 1)
+        self.assertTrue(before.active())
+        self.assertEqual(before.rejected, set())
+        self.assertEqual(self.of(card, "ticket.rejected"), [])
+
+        self.flow = self.make_flow()
+        self.assertTrue(wait_until(lambda: self.of(card, "ticket.rejected"), timeout=10))
+        after = fold(self.flow.engine.journal.read(card))
+        self.assertFalse(after.active())
+        self.assertEqual(len(self.of(card, "ticket.rejected")), 1)
+        self.assertEqual(self.results(card, "merge"), [])
+        wait_until(lambda: False, timeout=0.5)
+        self.assertEqual(len(self.of(card, "ticket.rejected")), 1)
+        self.assertTrue(self.flow.engine.resolve_review(card, "reject")["already"])
+
     def test_explicit_reviewer_and_same_model_validation(self):
         card = self.card()
         bad = self.start(card, reviewer="Sonnet")

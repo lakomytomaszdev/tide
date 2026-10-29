@@ -1511,6 +1511,8 @@ liczby widać w panelu karty.
 Przy REQUEST_CHANGES autor dostaje krok poprawek z uwagami i następuje ponowne review. Po trzeciej nieudanej rundzie
 karta zapisuje `review.question` i czeka na decyzję użytkownika w panelu. `retry` zapisuje `review.decision` i pozwala
 na jedną dalszą rundę; następna nieudana runda ponownie pyta. `reject` zapisuje decyzję i `ticket.rejected`, bez scalenia.
+Jeżeli restart rozdzieli te dwa zdarzenia, usługa dopisuje brakujące odrzucenie przy następnym przebiegu; ta sama
+odpowiedź `reject` może być bezpiecznie ponowiona.
 APPROVE uruchamia scalenie tylko zatwierdzonego commita ticketu (ref jest sprawdzany pod blokadą gita repozytorium)
 i usuwa worktree ticketu
 pod tą samą blokadą. Katalogi wejścia i wyniku kroków leżą obok worktree i zostają w repozytorium tablicy jako kopie
