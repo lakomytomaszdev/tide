@@ -833,7 +833,7 @@ Rectangle {
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        visible: (dialog.entry === "planning" && dialog.mode === "light") || dialog.entry === "plan"
+                        visible: dialog.entry === "planning" || dialog.entry === "plan"
                         spacing: 10
                         FieldLabel { text: "Planujący"; color: Tide.Tokens.textSecondary }
                         Segmented {

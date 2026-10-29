@@ -112,3 +112,83 @@ Po zapisaniu wszystkich plików zapisz wynik. Plik wyniku: {out_dir}/result.json
 Format: {{"result": "done", "notes": ["spec.md", "plan.md"]}}.
 Jeżeli krok wymaga zgody na polecenie, zapisz {{"result": "denied", "command": "pełne polecenie"}}.
 """
+
+
+def full_prompt(*, card, project, catalog, preferred, assignment_rules, prefix, out_dir, tool,
+                images=(), tracker="local", tracker_url="", tracker_project=""):
+    """Pełny proces w jednej rozmowie; artefakty pozostają w katalogu kroku do zatwierdzenia."""
+    executors = [{"name": e.name, "provider": e.provider, "program": e.program, "model": e.model,
+                  "classes": list(e.classes)} for e in catalog.executors]
+    discovery = ("Użyj skilli grill-with-docs oraz domain-modeling. Prowadź dociekliwą rozmowę z użytkownikiem: "
+                 "pytaj o cel, przypadki brzegowe, proces i decyzje. W trakcie rozmowy aktualizuj słownik "
+                 "domenowy i uzasadnienia decyzji projektu w artefaktach katalogu wyjściowego, "
+                 "bez zmieniania repozytorium projektu.") if tool == "claude" else (
+                 "Przeprowadź dociekliwy grilling z dokumentacją: pytaj użytkownika o cel, przypadki brzegowe, "
+                 "proces i decyzje, aż wymagania będą jednoznaczne. Na bieżąco buduj słownik domenowy i "
+                 "uzasadnienia decyzji projektu, zapisując je w artefaktach katalogu wyjściowego. "
+                 "Nie zmieniaj repozytorium projektu.")
+    return f"""Pełne planowanie karty {card.id} w jednej rozmowie w Konsoli.
+Jesteś planującym. Rozmawiaj z użytkownikiem i pokaż mu podział przed zapisem propozycji. Nie implementuj ticketów.
+Karta: {card.id} — {card.title}
+Projekt: {project.name}
+Opis karty:
+{card.description}
+Zrzuty ekranu (przeczytaj dołączone obrazy):
+{chr(10).join(images) or '(brak)'}
+Preferowany dostawca: {preferred} ({'mieszany' if preferred == 'mixed' else preferred}).
+Katalog wykonawców (nazwa, dostawca, program, model, klasy):
+{json.dumps(executors, ensure_ascii=False)}
+Zasady przydziału:
+{assignment_rules}
+
+Pracuj w tej kolejności:
+1. {discovery} Poznaj zasady AGENTS.md/CLAUDE.md, CONTEXT.md i decyzje ADR. Uzgadniaj terminy
+z użytkownikiem. Zapisuj ustalenia jako {out_dir}/discovery.md i w razie potrzeby {out_dir}/decisions.md.
+2. Użyj to-spec po zakończeniu rozmowy o wymaganiach. Utwórz {out_dir}/spec.md z pełną specyfikacją:
+Problem Statement, Solution, User Stories (każda z korzyścią i przypadkami brzegowymi), Implementation Decisions
+(moduły, interfejsy, schemat i kontrakty), Testing Decisions (testy przez najwyższy użyteczny interfejs),
+Out of Scope i Further Notes. Pokaż użytkownikowi nierozstrzygnięte decyzje i doprecyzuj je przed podziałem.
+3. Użyj to-tickets na podstawie tej specyfikacji. Zaproponuj pionowe plasterki: każdy ticket dostarcza
+działające, sprawdzalne zachowanie przez potrzebne warstwy i mieści się w jednym świeżym kontekście.
+Rozważ uproszczenie kodu; szerokie migracje dziel przez expand–contract z prawdziwymi blokerami.
+W rozmowie pokaż użytkownikowi każdy ticket, kryteria akceptacji, blokery i kolejność fal. Przyjmij poprawki
+użytkownika i pokaż poprawiony podział. Dopiero potem zapisz propozycję.
+Każdemu ticketowi przypisz klasę lekki/standard/mocny/lokalny, wykonawcę z katalogu i niezależnego recenzenta
+z innym modelem zgodnie z zasadami i preferowanym dostawcą. Jednym zdaniem uzasadnij każdy przydział.
+4. Zapisz {out_dir}/plan.md w standardzie 1.2:
+---
+tide-plan: 1
+title: "{card.title}"
+card: {card.id}
+tracker: {tracker}
+tracker-url: {tracker_url}
+tracker-project: {tracker_project}
+ticket-prefix: {prefix}
+coordinator: {tool}
+status: active
+updated: <czas ISO 8601>
+---
+| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| #1 | <działające zachowanie> | todo | | <wykonawca> | <jednozdaniowe uzasadnienie> | standard | <recenzent> | |
+Numery są robocze (#1, #2); blokery wskazują tylko robocze numery z planu i nie tworzą cykli.
+5. Dla każdego ticketu zapisz {out_dir}/tickets/<numer bez #>.md:
+# <numer>: <tytuł>
+**Co zbudować:** zachowanie dla użytkownika oraz odpowiedni fragment specyfikacji.
+**Blokery:** numery i tytuły lub brak.
+**Stan:** ready-for-agent
+- [ ] Oddzielne, mierzalne kryteria akceptacji.
+## Dla recenzenta
+Konkretne ryzyka, zakres kontroli i czego nie wolno było ruszać.
+
+Wszystkie pliki wyjściowe zapisz wyłącznie w {out_dir}. Instrukcje publikowania z wymienionych skilli
+są tutaj nadpisane: nie publikuj specyfikacji ani ticketów do GitHub Issues ani żadnego trackera, także
+lokalnego .scratch. Nie rezerwuj numerów i nie zmieniaj planów projektu. Nie rób push ani merge.
+Po zapisaniu wszystkich artefaktów zapisz jako ostatni plik:
+Plik wyniku: {out_dir}/result.json
+{{"result":"done","notes":["discovery.md","spec.md","plan.md"]}}.
+Jeśli potrzebujesz decyzji w trakcie rozmowy, pytaj w Konsoli. Jeżeli musisz zakończyć krok z pytaniem,
+zapisz {{"result":"question","question":"treść pytania"}}. Dla odmowy polecenia zapisz
+{{"result":"denied","command":"pełne polecenie"}}, a dla błędu {{"result":"error","reason":"powód"}}.
+Zapis result.json kończy ten krok; dalsze zmiany wymagają osobnego odesłania planu do poprawy.
+"""

@@ -630,7 +630,7 @@ function defaultReviewer(author, options) {
 }
 
 function isFlowEntry(id, mode) {
-    return launchEntry(id).flow === true || (id === "planning" && mode === "light")
+    return launchEntry(id).flow === true || id === "planning"
 }
 
 // Prośba /Board StartCard z okna („Od razu”): wejście, wykonawca i zrzuty z katalogu zadań.
@@ -652,8 +652,8 @@ function planCandidates(card) {
 
 // Tryby Planowania z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.
 var LAUNCH_MODES = [
-    { id: "full", title: "Pełny flow", desc: "Grilling, specyfikacja, tickety w planie, implementacja przez TDD i review.",
-      meta: "na start zada ci pytania", steps: ["Grilling", "Specyfikacja", "Tickety w planie", "TDD", "Review"] },
+    { id: "full", title: "Pełny", desc: "Rozmowa w Konsoli: grilling z dokumentacją, specyfikacja i podział na tickety. Potem review i zatwierdzenie planu.",
+      meta: "na start zada ci pytania", steps: ["Grilling", "Specyfikacja", "Tickety w planie", "Review planu", "Zatwierdzenie planu"] },
     { id: "light", title: "Lekki", desc: "Specyfikacja i pionowe tickety w tle; plan czeka na Twoje zatwierdzenie.",
       meta: "bez pytań i bez Konsoli", steps: ["Specyfikacja", "Tickety w planie", "Zatwierdzenie planu"] }
 ]
@@ -750,9 +750,6 @@ function launchFooter(state) {
         return "Krok w tle bez Konsoli: " + (state.executor || "wykonawca") + " robi jeden ticket we własnym worktree "
             + "odgałęzionym od gałęzi karty. Potem ticket trafia na gałąź karty, a karta do „Do sprawdzenia”."
     const tool = launchToolName(state.tool) + (state.localModel ? " na " + state.localModel : "")
-    const where = state.repoName ? "„" + state.repoName + " · " + (state.newWorktree ? state.branch : "bieżąca gałąź") + "”" : ""
-    const check = extrasNote(state)
-        + (state.check === "manual" ? " Na koniec zostawi listę „Co przetestować ręcznie i jak” i poczeka na twój test." : "")
     if (state.entry === "spec")
         return tool + " w katalogu projektu, bez worktree: dopyta i zapisze specyfikację w " + specDir(state)
             + ". Potem karta wróci do Backlogu ze znacznikiem „specyfikacja gotowa”."
@@ -761,8 +758,9 @@ function launchFooter(state) {
         return "Planowanie w tle bez Konsoli: " + (state.executor || "planujący")
             + " zapisze specyfikację i tickety. Plan poczeka w „Czeka na mnie” na Twoje zatwierdzenie."
             + ((state.extras || []).length ? " Dodatkowe projekty do odczytu: " + state.extras.map(p => p.name).join(", ") + "." : "")
-    return "Nowa karta Konsoli " + where + ", " + tool + " z szablonem „Pełny flow”. Agent najpierw zada ci pytania, potem założy plan z kluczem card: "
-        + state.cardId + "." + check + " Karta przejdzie do „W toku”, gdy agent ruszy."
+    return "Planowanie Pełne w jednej karcie Konsoli: " + (state.executor || "planujący")
+        + " dopyta, zapisze specyfikację i pokaże podział na tickety. Po review plan poczeka w „Czeka na mnie” na Twoje zatwierdzenie."
+        + ((state.extras || []).length ? " Dodatkowe projekty jako kontekst: " + state.extras.map(p => p.name).join(", ") + "." : "")
 }
 
 // Zdanie stopki o dodatkowych projektach (PT-28): „ Pracuje też w mobileapp, infra (gałąź … w każdym, które zmieni).”

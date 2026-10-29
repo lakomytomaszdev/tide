@@ -229,7 +229,7 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js("launchSteps('now', 'full')"),
                          ["Ticket w tle", "Review", "Gałąź karty", "Do sprawdzenia"])
         self.assertEqual(self.js("[isFlowEntry('now'), isFlowEntry('planning'), entryHasModes('now')]"),
-                         [True, False, False])
+                         [True, True, False])
         self.assertEqual(self.js("startCardRequest({entry: 'now', executor: 'Opus', check: 'manual'}, ['/t/1.png'])"),
                          {"entry": "now", "executor": "Opus", "check": "manual", "images": ["/t/1.png"]})
         actual = json.dumps({"executors": EXECUTORS["list"], "providers": {"other": {"label": "Inny"}}})
@@ -269,9 +269,8 @@ class LogicTest(unittest.TestCase):
                  "newWorktree": True, "check": "auto", "aiDocs": "repo", "slug": "plasma-tide", "repoName": "plasma-tide"}
         js_state = json.dumps(state)
         self.assertEqual(self.js(f"launchFooter({js_state})"),
-                         "Nowa karta Konsoli „plasma-tide · claude/k-16-okno”, Claude Code z szablonem „Pełny flow”. Agent "
-                         "najpierw zada ci pytania, potem założy plan z kluczem card: K-16. Karta przejdzie do „W toku”, "
-                         "gdy agent ruszy.")
+                         "Planowanie Pełne w jednej karcie Konsoli: planujący dopyta, zapisze specyfikację i pokaże "
+                         "podział na tickety. Po review plan poczeka w „Czeka na mnie” na Twoje zatwierdzenie.")
         light = self.js(f"launchFooter(Object.assign({js_state}, {{mode: 'light', tool: 'codex', check: 'manual'}}))")
         self.assertIn("Planowanie w tle bez Konsoli", light)
         self.assertIn("Twoje zatwierdzenie", light)
@@ -290,7 +289,7 @@ class LogicTest(unittest.TestCase):
         local_start = self.js(f"launchStartRequest({json.dumps(dict(flow, tool='codex'))}, {json.dumps(local)})")
         self.assertEqual((local_start["images"], local_start["model"], local_start["tool"]),
                          (local["images"], "local", "codex"))
-        self.assertIn("Codex na qwen3-coder:30b z szablonem „Pełny flow”", self.js(f"launchFooter({json.dumps(local)})"))
+        self.assertIn("Planowanie Pełne w jednej karcie Konsoli", self.js(f"launchFooter({json.dumps(local)})"))
         spec_start = self.js(f"launchStartRequest({json.dumps(dict(flow, aiDocs='repo'))}, Object.assign({js_state}, {{entry: 'spec'}}))")
         self.assertEqual((spec_start["newWorktree"], spec_start["branch"], spec_start["addDirs"]), (False, "", []))
         self.assertEqual(self.js(f"launchMarkRequest({{worktree: '/w/k-16', branch: 'claude/k-16-okno', tool: 'claude'}}, {js_state}, 'T')"),
@@ -1140,56 +1139,37 @@ out["closed2"] = not js("page.launchOpen")
         self.assertTrue(out["closed2"])
 
     def test_launch_full_flow_sends_requests_in_order(self):
-        flow = json.dumps(self.FLOW, ensure_ascii=False)
-        out = self.probe(f"""
-flow = json.loads({flow!r})
-replies.extend([{{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # MoveCard
-                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # UpdateCard (opis)
-                flow,                                                                     # RenderLaunch
-                {{"ok": False, "error": "branch-exists", "message": "gałąź claude/k-15-x już istnieje — zmień nazwę"}}])
+        out = self.probe("""
+replies.extend([{"ok": True, "id": "K-15", "changed": True, "commitError": ""},
+                {"ok": True, "id": "K-15", "changed": True, "commitError": ""},
+                {"ok": False, "error": "branch-exists", "message": "gałąź karty już istnieje"}])
 drag(card("K-15"), column("todo", fy=0.75))
 obj("launchTask").setProperty("text", "Tryb skupienia: wycisz powiadomienia na 25 min")
-js("page.launchDialog.pickTool('codex'); page.launchDialog.pickTool('claude')")
 key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
 wait(300)
 out["inPlace"] = js("[page.launchOpen, page.launchDialog.busy, page.launchDialog.error]")
 out["calls1"] = calls()
-replies.extend([flow,
-                {{"ok": True, "cwd": "/w/k-15", "branch": "claude/k-15-tryb-skupienia", "worktree": "/w/k-15",
-                  "title": "plasma-tide · claude/k-15-tryb-skupienia", "tool": "claude", "mode": "tab"}},
-                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}}])
+replies.append({"ok": True, "id": "K-15", "cardBranch": "card/k-15-tryb-skupienia",
+                "step": "K-15-plan-1-0", "executor": "Sonnet", "interactive": True})
 click(named("launchStart"))
 wait(300)
 out["calls2"] = calls()[len(out["calls1"]):]
 out["closed"] = not js("page.launchOpen")
 out["toast"] = js("[page.toast, page.toastTone]")
 """)
-        self.assertEqual(out["inPlace"], [True, False, "gałąź claude/k-15-x już istnieje — zmień nazwę"], "błąd w oknie")
+        self.assertEqual(out["inPlace"], [True, False, "gałąź karty już istnieje"], "błąd w oknie")
         members = [c[0] for c in out["calls1"]]
-        self.assertEqual(members, ["MoveCard", "UpdateCard", "RenderLaunch", "Start"])
+        self.assertEqual(members, ["MoveCard", "UpdateCard", "StartCard"])
         self.assertEqual(json.loads(out["calls1"][1][2]), {"description": "Tryb skupienia: wycisz powiadomienia na 25 min"},
                          "zmienione zadanie zapisane w karcie przed poleceniem")
-        self.assertEqual(out["calls1"][2][1], "K-15")
         self.assertEqual(json.loads(out["calls1"][2][2]),
-                         {"entry": "planning", "mode": "full", "tool": "claude", "check": "auto",
-                          "preferredProvider": "anthropic",
-                          "branch": "claude/k-15-tryb-skupienia-wyciszone"})
-        self.assertEqual(json.loads(out["calls1"][3][1]),
-                         {"repoPath": "/home/user/DevWorkspace/plasma-tide", "tool": "claude", "prompt": "Karta K-15: polecenie",
-                          "newWorktree": True, "branch": "claude/k-15-tryb-skupienia", "images": [], "addDirs": [],
-                          "model": "cloud"})
-        self.assertEqual([c[0] for c in out["calls2"]], ["RenderLaunch", "Start", "UpdateCard"],
+                         {"entry": "planning", "mode": "full", "executor": "Sonnet", "check": "auto",
+                          "preferredProvider": "anthropic", "images": []})
+        self.assertEqual([c[0] for c in out["calls2"]], ["StartCard"],
                          "ponowienie bez drugiego zapisu opisu")
-        mark = json.loads(out["calls2"][2][2])
-        self.assertEqual(out["calls2"][2][1], "K-15")
-        self.assertEqual({k: mark[k] for k in ("branch", "worktree", "mode", "tool", "check")},
-                         {"branch": "claude/k-15-tryb-skupienia", "worktree": "/w/k-15", "mode": "full", "tool": "claude",
-                          "check": "auto"})
-        self.assertEqual(mark["session"], "", "ponowne uruchomienie odpina poprzednią sesję (PT-28)")
-        self.assertRegex(mark["launched"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")
-        self.assertIn("Agent ruszył", out["toast"][0])
+        self.assertIn("ruszyło w Konsoli", out["toast"][0])
 
     def test_spec_mode_from_tile_intent_without_worktree(self):
         flow = json.dumps(dict(self.FLOW, id="K-14", tool="codex", mode="spec", aiDocs="tide",
@@ -1317,19 +1297,13 @@ FIND = "(function find(it, name) { if (!it) return null; if (it.objectName === n
 
 class ExtraProjectsTest(ProbeCase):
     """PT-28: „Dodatkowe projekty” w oknie uruchomienia (chipy, wybór z listy, repozytorium jako nowy
-    projekt) → UpdateCard {projects} przed RenderLaunch, Start z addDirs z polecenia; chipy na karcie."""
+    projekt) → UpdateCard {projects} przed StartCard; chipy na karcie."""
 
     def test_pick_extra_projects_then_launch(self):
-        flow = dict(LaunchTest.FLOW, addDirs=["/home/user/DevWorkspace/mobileapp", "/home/user/DevWorkspace/legal-agents"],
-                    projects=["mobileapp", "legal-agents"])
         out = self.probe(FIND_PY + f"""
-flow = json.loads({json.dumps(flow, ensure_ascii=False)!r})
 replies.extend([{{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # MoveCard
                 {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # UpdateCard (projekty)
-                flow,                                                                     # RenderLaunch
-                {{"ok": True, "cwd": "/w/k-15", "branch": "claude/k-15-tryb", "worktree": "/w/k-15",
-                  "title": "plasma-tide · claude/k-15-tryb", "tool": "claude", "mode": "tab"}},
-                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}}])         # UpdateCard (uruchomienie)
+                {{"ok": True, "id": "K-15", "executor": "Sonnet", "interactive": True}}]) # StartCard
 def type_text(text):
     for ch in text:
         QTest.keyClick(window, Qt.Key(ord(ch.upper())))
@@ -1359,13 +1333,13 @@ out["closed"] = not js("page.launchOpen")
         self.assertTrue(out["visible"])
         self.assertEqual(out["picked"], ["project:mobileapp", "repo:legal-agents", "project:LogViewer"])
         self.assertEqual(out["afterRemove"], ["mobileapp", "/home/user/DevWorkspace/legal-agents"])
-        self.assertIn("Pracuje też w: mobileapp, legal-agents", out["footer"])
-        self.assertEqual([c[0] for c in out["calls"]], ["MoveCard", "UpdateCard", "RenderLaunch", "Start", "UpdateCard"])
+        self.assertIn("Dodatkowe projekty jako kontekst: mobileapp, legal-agents", out["footer"])
+        self.assertEqual([c[0] for c in out["calls"]], ["MoveCard", "UpdateCard", "StartCard"])
         self.assertEqual(json.loads(out["calls"][1][2]),
                          {"projects": ["mobileapp", "/home/user/DevWorkspace/legal-agents"]},
                          "projekty (repozytorium zakłada projekt) zapisane przed poleceniem, opis bez zmian")
-        start = json.loads(out["calls"][3][1])
-        self.assertEqual(start["addDirs"], flow["addDirs"])
+        start = json.loads(out["calls"][2][2])
+        self.assertEqual((start["entry"], start["mode"]), ("planning", "full"))
         self.assertTrue(out["closed"])
 
     def test_card_shows_extra_projects_as_chips(self):
@@ -1420,9 +1394,6 @@ class LaunchShotsTest(ProbeCase):
         return f"TMP = {self.tmp!r}\n" + SHOTS_PY + body
 
     def test_drop_paste_remove_and_start_with_images(self):
-        start = {"ok": True, "cwd": "/w/k-9", "branch": "claude/k-9-x", "worktree": "/w/k-9", "title": "plasma-tide · k-9",
-                 "tool": "claude", "mode": "tab", "local": None}
-        flow = dict(LaunchTest.FLOW, id="K-9", branch="claude/k-9-x")
         out = self.probe(self.scenario(f"""
 js("page.openLaunch('K-9', false)")
 wait(100)
@@ -1456,9 +1427,7 @@ out["removed"] = [os.path.exists(first), shots()]
 kept = shots()
 folder = os.path.dirname(kept[0])
 replies.extend([{{"ok": True, "id": "K-9", "changed": True, "commitError": ""}},   # UpdateCard (opis)
-                json.loads({json.dumps(flow, ensure_ascii=False)!r}),
-                json.loads({json.dumps(start, ensure_ascii=False)!r}),
-                {{"ok": True, "id": "K-9", "changed": True, "commitError": ""}}])
+                {{"ok": True, "id": "K-9", "executor": "Sonnet", "interactive": True}}]) # StartCard
 click(named("launchStart"))
 wait(400)
 out["calls"] = calls()
@@ -1474,10 +1443,10 @@ out["after"] = [os.path.isfile(kept[0]), shots(), js("page.launchDialog.images.l
         self.assertEqual(out["thumbs"], 2)
         self.assertEqual(out["removed"][0], False)
         self.assertEqual(len(out["removed"][1]), 1)
-        self.assertEqual([c[0] for c in out["calls"]], ["UpdateCard", "RenderLaunch", "Start", "UpdateCard"])
-        request = json.loads(out["calls"][2][1])
-        self.assertEqual((request["images"], request["model"]), (out["removed"][1], "cloud"),
-                         "Start dostaje zrzuty z katalogu zadania, jak z okna „Nowe zadanie”")
+        self.assertEqual([c[0] for c in out["calls"]], ["UpdateCard", "StartCard"])
+        request = json.loads(out["calls"][1][2])
+        self.assertEqual((request["images"], request["mode"]), (out["removed"][1], "full"),
+                         "StartCard dostaje zrzuty z katalogu zadania")
         self.assertTrue(out["closed"])
         self.assertEqual(out["after"], [True, [], 0], "po starcie katalog zostaje agentowi, następne okno zaczyna od zera")
 
@@ -1529,6 +1498,7 @@ def models(text):
 
 js("page.openLaunch('K-9', false)")
 wait(100)
+click(at(FIND + "(page.launchDialog, 'launchEntry-spec')"))
 d = "page.launchDialog."
 # Rola `agent` nie ustawiona: „Lokalny” wyłączony z powodem w podpowiedzi, kliknięcie nic nie zmienia.
 out["unset"] = js("[" + d + "localOption.enabled, " + d + "localOption.reason]")
@@ -1742,7 +1712,7 @@ out["closed"] = not js("page.launchOpen")
 out["toast"] = js("[page.toast, page.toastTone]")
 """)
         self.assertEqual(out["entries"], [True, True, True])
-        self.assertEqual(out["planning"], [False, True], "wykonawca tylko przy „Od razu”")
+        self.assertEqual(out["planning"], [False, False], "w Planowaniu widać wybór planującego")
         self.assertEqual(out["now"], ["now", True, False, False, False, False],
                          "„Od razu”: wykonawca zamiast trybu, modelu, worktree i dodatkowych projektów")
         self.assertEqual(out["options"], ["Haiku", "Sonnet", "Opus"], "tylko Claude w chmurze z katalogu")
@@ -2115,6 +2085,7 @@ out["outside"] = len(shots())
         out = self.probe(self.scenario(f"""
 js("page.openLaunch('K-9', false)")
 wait(100)
+click(at(FIND + "(page.launchDialog, 'launchEntry-spec')"))
 d = "page.launchDialog."
 # Odświeżone Defaults() po otwarciu: zapamiętany „Lokalny”, póki nikt nie ruszał modelu.
 js("page.taskDefaults = ({{tools: {{claude: true, codex: true}}, model: 'local'}})")
