@@ -1983,6 +1983,35 @@ out["call"] = calls()[-1]
         self.assertEqual(out["call"], ["ApproveCardPlan", "K-6"])
 
 
+class ClosingPanelTest(ProbeCase):
+    def test_closed_card_exposes_diff_main_merge_and_return(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "review", "flow": {
+                    "closed": True, "summary": "Zrobiono eksport. Co przetestować ręcznie i jak: otwórz plik.",
+                    "mainMerged": False, "plan": {"status": "done", "rows": [], "waves": [], "revision": {}}}}
+                card["boardColumn"] = "review"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["shown"] = obj("cardFlowClosing").property("visible")
+out["summary"] = js("page.cardPanel.card.derived.flow.summary")
+click(at(FIND + "(page.cardPanel, 'cardBranchDiff')"))
+out["diffCall"] = calls()[-1]
+obj("cardClosingFeedback").setProperty("text", "Dopisz błąd eksportu")
+click(at(FIND + "(page.cardPanel, 'cardReturnForChanges')"))
+out["returnCall"] = calls()[-1]
+click(at(FIND + "(page.cardPanel, 'cardMergeMain')"))
+out["mergeCall"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["shown"])
+        self.assertIn("Zrobiono eksport", out["summary"])
+        self.assertEqual(out["diffCall"], ["CardBranchDiff", "K-6"])
+        self.assertEqual(out["mergeCall"], ["MergeCardToMain", "K-6"])
+        self.assertEqual(out["returnCall"][:2], ["EditCardPlan", "K-6"])
+        self.assertEqual(json.loads(out["returnCall"][2])["feedback"], "Dopisz błąd eksportu")
+
+
 class WavePanelTest(ProbeCase):
     def test_wave_tickets_timeline_and_pause_are_read_from_file_snapshot(self):
         data = json.loads(json.dumps(self.data))

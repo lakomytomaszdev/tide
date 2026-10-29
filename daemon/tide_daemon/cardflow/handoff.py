@@ -5,6 +5,39 @@ from __future__ import annotations
 RESULT_FILE = "result.json"
 NOTE_FILE = "note.md"
 REVIEW_FILE = "review.md"
+SUMMARY_FILE = "summary.md"
+
+
+def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
+                  ticket_branch: str, worktree: str, out_dir: str, error: str) -> str:
+    return f"""Rozwiąż konflikt scalenia ticketu {ticket} do karty {card_id}.
+Karta: {title}. Opis: {description}
+Pracuj wyłącznie w worktree karty {worktree} na gałęzi {card_branch}.
+Zatwierdzony ticket jest na gałęzi {ticket_branch}; przyczyna: {error}.
+Scal dokładnie tę gałąź do gałęzi karty, rozwiąż konflikty, uruchom potrzebne testy i zapisz commit
+scalenia z dwoma rodzicami. Nie zmieniaj gałęzi ticketu ani głównej. Nie rób push.
+Jeśli nie możesz bezpiecznie rozstrzygnąć konfliktu, zapisz pytanie do użytkownika zamiast zgadywać.
+Zapisz notkę w {out_dir}/{NOTE_FILE}; jako ostatnią czynność zapisz plik:
+Plik wyniku: {out_dir}/{RESULT_FILE}
+{{"result":"done","notes":["{NOTE_FILE}"]}} albo
+{{"result":"question","question":"…"}} albo {{"result":"error","reason":"…"}}.
+"""
+
+
+def close_card(*, card_id: str, title: str, description: str, worktree: str, out_dir: str,
+               tickets: list[dict], manual: bool) -> str:
+    instruction = ("Dodaj sekcję „Co przetestować ręcznie i jak” z konkretnymi krokami i oczekiwanym wynikiem."
+                   if manual else "Nie dodawaj listy testów ręcznych.")
+    return f"""Domknij kartę {card_id}: {title}. Pracuj w worktree karty {worktree}.
+Opis karty: {description}
+Wyniki ticketów: {tickets}
+Napisz zwięzłe podsumowanie tego, co faktycznie powstało i co nadal wymaga uwagi, w {out_dir}/{SUMMARY_FILE}.
+{instruction} Nie scalaj do gałęzi głównej, nie rób push i nie usuwaj worktree.
+Jako ostatnią czynność zapisz plik:
+Plik wyniku: {out_dir}/{RESULT_FILE}
+{{"result":"done","notes":["{SUMMARY_FILE}"]}} albo
+{{"result":"question","question":"…"}} albo {{"result":"error","reason":"…"}}.
+"""
 
 
 def resume_step(card_id: str, ticket: str, out_dir: str, *, kind: str = "ticket") -> str:

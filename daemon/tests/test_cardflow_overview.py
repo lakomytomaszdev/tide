@@ -61,6 +61,16 @@ class OverviewTest(unittest.TestCase):
         self.engine._queue_notices("K-1")
         self.assertEqual(self.engine.take_notices(), [])
 
+    def test_each_card_close_notifies_once(self):
+        self.journal.append("K-1", "card.closed", summary="Pierwsze podsumowanie")
+        self.engine._queue_notices("K-1")
+        self.engine._queue_notices("K-1")
+        self.assertEqual([notice["result"] for notice in self.engine.take_notices()], ["review"])
+        self.journal.append("K-1", "plan.returned", feedback="Dodaj poprawkę", baseline=[])
+        self.journal.append("K-1", "card.closed", summary="Nowe podsumowanie")
+        self.engine._queue_notices("K-1")
+        self.assertEqual([notice["result"] for notice in self.engine.take_notices()], ["review"])
+
     def test_interactive_step_updates_activity_without_stopping_for_inactivity(self):
         self.journal.append("K-1", "step.started", step="s1", ticket="", kind="planning",
                             mode="interactive", executor="Sonnet", stepDir=self.temp.name)

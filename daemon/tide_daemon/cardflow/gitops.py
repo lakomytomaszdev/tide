@@ -105,6 +105,37 @@ class FlowGit:
             raise FlowGitError("diff ticketu przekracza 300 000 znaków — podziel pracę na mniejszy ticket")
         return result.out
 
+    def merged_tip(self, repo: str, card_branch: str, ticket_branch: str, worktree: str,
+                   expected_tip: str, card_tip: str) -> str:
+        """Potwierdza rozwiązanie konfliktu: oba zatwierdzone tipy są przodkami czystej gałęzi karty."""
+        with lock_for(repo):
+            if not expected_tip or self.sha(repo, f"refs/heads/{ticket_branch}") != expected_tip:
+                raise FlowGitError("gałąź ticketu zmieniła się po review")
+            tip = self.sha(repo, f"refs/heads/{card_branch}")
+            if not card_tip or not tip or not self.run(repo, "merge-base", "--is-ancestor", expected_tip, tip).ok:
+                raise FlowGitError("rozwiązanie konfliktu nie scala zatwierdzonego commita ticketu")
+            if not self.run(repo, "merge-base", "--is-ancestor", card_tip, tip).ok:
+                raise FlowGitError("rozwiązanie konfliktu utraciło wcześniejsze zmiany karty")
+            listed = self.run(repo, "worktree", "list", "--porcelain")
+            if not listed.ok or not any(
+                os.path.realpath(block.get("worktree", "")) == os.path.realpath(worktree)
+                and block.get("branch") == f"refs/heads/{card_branch}"
+                for block in (dict(line.split(" ", 1) for line in part.splitlines() if " " in line)
+                              for part in listed.out.split("\n\n"))
+            ):
+                raise FlowGitError("worktree karty nie należy do jej gałęzi")
+            if not sandbox_available():
+                raise FlowGitError("piaskownica gita karty jest niedostępna")
+            try:
+                git_dir = resolve_git_dir(repo, worktree)
+            except StepError as exc:
+                raise FlowGitError(f"nie można ustalić katalogu gita karty: {exc}") from exc
+            status = StepGit(repo, git_dir, worktree, worktree + ".step").run(
+                "status", "--porcelain", "--untracked-files=all")
+            if not status.ok or status.out.strip():
+                raise FlowGitError("worktree karty ma lokalne zmiany po rozwiązywaniu konfliktu")
+            return tip
+
     def clean_tip(self, repo: str, branch: str, path: str) -> str:
         """Przed i po review potwierdza, że recenzent nie zmienił gałęzi ani plików ticketu."""
         with lock_for(repo):
@@ -212,7 +243,9 @@ class FlowGit:
             if not sandbox_available():
                 raise FlowGitError("piaskownica gita karty jest niedostępna")
             try:
-                git_dir = resolve_git_dir(repo, card_worktree)
+                git_dir = (os.path.join(os.path.realpath(repo), ".git")
+                           if os.path.realpath(card_worktree) == os.path.realpath(repo)
+                           else resolve_git_dir(repo, card_worktree))
             except StepError as exc:
                 raise FlowGitError(f"nie można ustalić katalogu gita worktree karty: {exc}") from exc
             work_git = StepGit(repo, git_dir, card_worktree, card_worktree + ".step")

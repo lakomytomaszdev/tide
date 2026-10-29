@@ -75,7 +75,8 @@ class LightPlanningTest(FlowInProcess):
         self.assertTrue(json.loads(box[0])["ok"], box)
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=30), self.events(card))
         self.wait_column(card, "review")
-        self.assertEqual([s["kind"] for s in self.of(card, "step.started")], ["planning", "plan-review", "ticket", "review"])
+        self.assertEqual([s["kind"] for s in self.of(card, "step.started")],
+                         ["planning", "plan-review", "ticket", "review", "close"])
 
     def test_restart_after_request_before_launch_still_plans_once(self):
         from unittest import mock

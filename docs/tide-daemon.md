@@ -871,6 +871,8 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
 | `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
+| `CardBranchDiff(s id)` | `→ s` | po domknięciu karty zwraca diff gałęzi karty względem głównej, wyłącznie do odczytu |
+| `MergeCardToMain(s id)` | `→ s` | wyłącznie na kliknięcie użytkownika scala domkniętą kartę do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych zmianach w głównym checkoutcie |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
 
@@ -2017,3 +2019,20 @@ albo `EditCardPlan` z `action: discard-revision`. Odrzucenie zapisuje `plan.revi
 i zachowuje aktywny plan. Pytanie, odmowa albo drugi błąd kroku poprawy/review pozostaje dostępny
 przez `ResolveCardStep`, także gdy w innym worktree pracuje ticket. Oczekująca różnica ma własne
 proponowane fale i utrzymuje kartę w „Czeka na mnie” również po zakończeniu starego planu.
+
+### Konflikty i domknięcie karty (PT-70)
+
+Konflikt `merge-tree` uruchamia krok `conflict` w worktree karty. Agent scala zatwierdzony commit
+ticketu i rozwiązuje pliki; usługa przyjmuje wynik tylko wtedy, gdy dokładny commit ticketu i wcześniejszy
+commit karty są przodkami czystej gałęzi karty. Pytanie albo błąd kroku trafia do panelu; nieudanej próby usługa nie
+zgaduje ani nie scala ponownie sama. Worktree z lokalnymi zmianami nie jest usuwany.
+
+Po scaleniu albo odrzuceniu wszystkich ticketów i sprzątnięciu worktree scalonych ticketów krok
+`close` zapisuje `summary.md`. Przy `check: manual` wymaga sekcji „Co przetestować ręcznie i jak”;
+przy `check: auto` pomija tę listę. Zdarzenie `card.closed` pokazuje podsumowanie w „Do sprawdzenia”.
+`check: auto` nie scala do gałęzi głównej. Panel daje jawne „Diff gałęzi”, „Do poprawy…” oraz
+„Scal do gałęzi głównej”. Odesłanie z uwagami uruchamia poprawę planu na tej samej gałęzi karty;
+dla wejścia „Od razu” usługa tworzy bazę jednoticketowego planu dopiero przy tym żądaniu.
+Scalenie do głównej działa w piaskownicy gita, sprawdza czystość checkoutu i zapisuje
+`card.main-merged`, a następnie przenosi kartę do Gotowych. Wcześniejsze kroki nie przesuwają
+gałęzi głównej.

@@ -34,6 +34,7 @@ Rectangle {
     property var modelsStatus: null
     property string stepAnswer: ""
     property string stepExecutor: ""
+    property string branchDiff: ""
     property var tagTone: null
     // Formularz.
     property string projectKind: ""
@@ -79,6 +80,8 @@ Rectangle {
     signal planEditRequested(string cardId, var request)
     property var planEditTicket: null
     signal planApproveRequested(string cardId)                      // zatwierdzenie propozycji planu
+    signal branchDiffRequested(string cardId)
+    signal mergeMainRequested(string cardId)
 
     function eventLabel(event) {
         const words = {"card.started": "zlecenie", "plan.approved": "plan zatwierdzony", "step.started": "start kroku",
@@ -115,6 +118,8 @@ Rectangle {
         notice = ""
         stepAnswer = ""
         stepExecutor = ""
+        branchDiff = ""
+        closingFeedback.text = ""
         busy = false
         base = card ? Object.assign({}, card, {tags: (card.tags || []).slice()}) : null
         titleField.text = card ? card.title : ""
@@ -412,7 +417,7 @@ Rectangle {
                 id: planFeedback
                 objectName: "cardPlanFeedback"
                 Layout.fillWidth: true
-                visible: !!panel.flowPlan && (panel.flowPlan.status === "pending" || panel.flowPlan.status === "approved" || (panel.flowPlan.revision && panel.flowPlan.revision.failed))
+                visible: !!panel.flowPlan && (panel.flowPlan.status === "pending" || panel.flowPlan.status === "approved" || Boolean(panel.flowPlan.revision && panel.flowPlan.revision.failed))
                 placeholderText: "Uwagi do poprawy planu"
                 wrapMode: TextEdit.Wrap
             }
@@ -446,6 +451,81 @@ Rectangle {
                 onClicked: {
                     panel.busy = true
                     panel.planApproveRequested(panel.card.id)
+                }
+            }
+        }
+
+        ColumnLayout {
+            objectName: "cardFlowClosing"
+            Layout.fillWidth: true
+            spacing: 6
+            visible: Boolean(panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
+                             && panel.card.derived.flow.closed)
+            Text {
+                Layout.fillWidth: true
+                text: "Karta do sprawdzenia"
+                textFormat: Text.PlainText
+                color: Tide.Tokens.sky
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 15
+                font.bold: true
+            }
+            Text {
+                Layout.fillWidth: true
+                text: panel.card && panel.card.derived && panel.card.derived.flow
+                      ? panel.card.derived.flow.summary || "" : ""
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textPrimary
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 7
+                PillButton {
+                    objectName: "cardBranchDiff"
+                    text: "Diff gałęzi"
+                    enabled: !panel.busy
+                    onClicked: panel.branchDiffRequested(panel.card.id)
+                }
+                PillButton {
+                    objectName: "cardMergeMain"
+                    text: "Scal do gałęzi głównej"
+                    enabled: !panel.busy && !(panel.card && panel.card.derived && panel.card.derived.flow
+                                                && panel.card.derived.flow.mainMerged)
+                    onClicked: {
+                        panel.busy = true
+                        panel.mergeMainRequested(panel.card.id)
+                    }
+                }
+            }
+            QQC2.TextArea {
+                objectName: "cardBranchDiffText"
+                Layout.fillWidth: true
+                Layout.preferredHeight: 180
+                visible: panel.branchDiff !== ""
+                readOnly: true
+                text: panel.branchDiff
+                wrapMode: TextEdit.NoWrap
+            }
+            QQC2.TextArea {
+                id: closingFeedback
+                objectName: "cardClosingFeedback"
+                Layout.fillWidth: true
+                Layout.preferredHeight: 70
+                visible: true
+                placeholderText: "Co poprawić?"
+                wrapMode: TextEdit.Wrap
+            }
+            PillButton {
+                objectName: "cardReturnForChanges"
+                text: "Do poprawy…"
+                visible: true
+                enabled: !panel.busy && closingFeedback.text.trim().length > 0
+                onClicked: {
+                    panel.busy = true
+                    panel.planEditRequested(panel.card.id, {action: "return", feedback: closingFeedback.text})
                 }
             }
         }

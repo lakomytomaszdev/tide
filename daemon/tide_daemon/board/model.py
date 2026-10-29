@@ -38,8 +38,8 @@ MODES = ("full", "light")
 LEGACY_SPEC_MODE = "spec"   # dawniej „Tylko specyfikacja” było trybem: `mode: spec` czytamy jako wejście spec
 DEFAULT_TOOL = "claude"
 DEFAULT_MODE = "full"  # pełny przebieg (grilling, spec, plan, TDD, review), chyba że karta wybierze inaczej
-# Sprawdzenie po skończonej pracy agenta: `manual` — test ręczny użytkownika (karta czeka w „Do sprawdzenia”,
-# aż przeniesie ją do Gotowe), `auto` — wystarczą testy i review AI (scalona praca od razu jako gotowa).
+# Sprawdzenie po skończonej pracy agenta: w starym RenderLaunch `auto` mogło oznaczać Gotowe po review.
+# W przepływie karty oba tryby kończą się w „Do sprawdzenia”; `manual` dodatkowo wymaga listy testów ręcznych.
 CHECKS = ("auto", "manual")
 DEFAULT_CHECK = "auto"
 
