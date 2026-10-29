@@ -78,6 +78,7 @@ Rectangle {
     signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
     signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
     signal stepResolveRequested(string tag, string cardId, string request) // /Board ResolveCardStep
+    signal planEditRequested(string tag, string cardId, string request)
     signal planApproveRequested(string tag, string cardId)       // /Board ApproveCardPlan
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
@@ -402,6 +403,10 @@ Rectangle {
             cardPanel.busy = false
             cardPanel.error = error
             if (!error) cardPanel.notice = "Decyzja zapisana. Wznawiam krok w tle."
+        } else if (tag.indexOf("plan-edit:") === 0) {
+            cardPanel.busy = false
+            cardPanel.error = error
+            if (!error) cardPanel.notice = "Zmiana planu zapisana."
         } else if (tag.indexOf("plan-approve:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
@@ -1317,6 +1322,8 @@ Rectangle {
             page.reviewResolveRequested(page.nextTag("review-resolve:" + cardId), cardId, choice)
         onStepResolveRequested: (cardId, request) =>
             page.stepResolveRequested(page.nextTag("step-resolve:" + cardId), cardId, JSON.stringify(request))
+        onPlanEditRequested: (cardId, request) =>
+            page.planEditRequested(page.nextTag("plan-edit:" + cardId), cardId, JSON.stringify(request))
         onPlanApproveRequested: cardId =>
             page.planApproveRequested(page.nextTag("plan-approve:" + cardId), cardId)
         onMoveRequested: column => {

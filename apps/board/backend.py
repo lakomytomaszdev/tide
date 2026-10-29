@@ -370,6 +370,10 @@ class Backend(QObject):
     def resolveCardStep(self, tag: str, card_id: str, request: str) -> None:
         self._write(tag, "ResolveCardStep", [card_id, request])
 
+    @pyqtSlot(str, str, str)
+    def editCardPlan(self, tag: str, card_id: str, request: str) -> None:
+        self._write(tag, "EditCardPlan", [card_id, request])
+
     @pyqtSlot(str, str)
     def approveCardPlan(self, tag: str, card_id: str) -> None:
         self._write(tag, "ApproveCardPlan", [card_id])

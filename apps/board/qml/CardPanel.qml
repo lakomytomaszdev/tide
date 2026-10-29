@@ -75,6 +75,8 @@ Rectangle {
     signal abandonStepRequested(string cardId, string stepId)
     signal reviewResolveRequested(string cardId, string choice)     // pytanie po limicie rund review
     signal stepResolveRequested(string cardId, var request)        // pytanie, zgoda albo błąd kroku
+    signal planEditRequested(string cardId, var request)
+    property var planEditTicket: null
     signal planApproveRequested(string cardId)                      // zatwierdzenie propozycji planu
 
     function planEntries() {
@@ -272,7 +274,7 @@ Rectangle {
         ColumnLayout {
             objectName: "cardPlanProposal"
             Layout.fillWidth: true
-            visible: !!panel.flowPlan
+            visible: !!panel.flowPlan && panel.flowPlan.status !== "reviewing"
             spacing: 5
             Text {
                 Layout.fillWidth: true
@@ -295,6 +297,34 @@ Rectangle {
                 color: Tide.Tokens.rose
                 font.family: Tide.Theme.uiFamily
                 font.pixelSize: 12
+                wrapMode: Text.Wrap
+            }
+            Text {
+                objectName: "cardPlanReview"
+                Layout.fillWidth: true
+                visible: !!panel.flowPlan && !!panel.flowPlan.review && !!panel.flowPlan.review.verdict
+                text: panel.flowPlan && panel.flowPlan.review ? "Review planu: " + (panel.flowPlan.review.verdict || "")
+                      + " · " + (panel.flowPlan.review.reviewer || "") + " · " + (panel.flowPlan.review.findings || "") : ""
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textPrimary
+                wrapMode: Text.Wrap
+            }
+            Text {
+                objectName: "cardPlanDifference"
+                Layout.fillWidth: true
+                visible: !!panel.flowPlan && !!panel.flowPlan.revision && !!panel.flowPlan.revision.pending
+                text: {
+                    if (!visible) return ""
+                    const d = panel.flowPlan.revision.difference || {}
+                    const fields = {title: "tytuł", executor: "wykonawca", reviewer: "recenzent", class: "klasa", blockers: "blokery", body: "kartka przekazania"}
+                    let lines = []
+                    if ((d.added || []).length) lines.push("Dodane tickety: " + d.added.join(", "))
+                    if ((d.removed || []).length) lines.push("Usunięte tickety: " + d.removed.join(", "))
+                    for (const change of (d.changed || [])) lines.push(change.ticket + ": " + change.fields.map(f => fields[f] || f).join(", "))
+                    return "Różnica planu: " + (lines.join(" · ") || "bez zmian")
+                }
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textPrimary
                 wrapMode: Text.Wrap
             }
             Flickable {
@@ -332,18 +362,68 @@ Rectangle {
                             }
                             PillButton {
                                 objectName: "cardPlanTicket-" + (index + 1)
-                                text: "Kartka"
+                                text: ticket.editable === false ? "Kartka" : "Popraw ticket"
                                 outline: true
                                 enabled: !!ticket.cardPath
-                                onClicked: panel.openFileRequested(ticket.cardPath)
+                                onClicked: {
+                                    if (ticket.editable !== true) panel.openFileRequested(ticket.cardPath)
+                                    else {
+                                        panel.planEditTicket = ticket
+                                        planClass.text = ticket.class || "standard"
+                                        planExecutor.text = ticket.executor
+                                        planReviewer.text = ticket.reviewer
+                                        planBody.text = ticket.body || ""
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: !!panel.planEditTicket
+                QQC2.TextField { id: planClass; objectName: "cardPlanClass"; Layout.fillWidth: true; placeholderText: "Klasa: lekki, standard, mocny, lokalny" }
+                QQC2.TextField { id: planExecutor; objectName: "cardPlanExecutor"; Layout.fillWidth: true; placeholderText: "Wykonawca" }
+                QQC2.TextField { id: planReviewer; objectName: "cardPlanReviewer"; Layout.fillWidth: true; placeholderText: "Recenzent" }
+                QQC2.TextArea { id: planBody; objectName: "cardPlanBody"; Layout.fillWidth: true; wrapMode: TextEdit.Wrap; placeholderText: "Kartka przekazania" }
+                PillButton {
+                    objectName: "cardPlanSaveTicket"
+                    text: "Zapisz zmiany ticketu"
+                    enabled: !panel.busy
+                    onClicked: {
+                        panel.planEditRequested(panel.card.id, {action: "edit", ticket: panel.planEditTicket.id || panel.planEditTicket.workId,
+                            class: planClass.text, executor: planExecutor.text, reviewer: planReviewer.text, body: planBody.text})
+                        panel.planEditTicket = null
+                    }
+                }
+            }
+            QQC2.TextArea {
+                id: planFeedback
+                objectName: "cardPlanFeedback"
+                Layout.fillWidth: true
+                visible: !!panel.flowPlan && (panel.flowPlan.status === "pending" || panel.flowPlan.status === "approved")
+                placeholderText: "Uwagi do poprawy planu"
+                wrapMode: TextEdit.Wrap
+            }
+            RowLayout {
+                visible: planFeedback.visible
+                PillButton {
+                    objectName: "cardPlanReturn"
+                    text: "Odeślij z uwagami"
+                    enabled: !panel.busy && planFeedback.text.trim().length > 0 && !(panel.flowPlan.revision && panel.flowPlan.revision.seq)
+                    onClicked: panel.planEditRequested(panel.card.id, {action: "return", feedback: planFeedback.text})
+                }
+                PillButton {
+                    objectName: "cardPlanEnter"
+                    text: "Wejdź w planowanie"
+                    enabled: !panel.busy && !!panel.flowPlan && !!panel.flowPlan.plannerStep
+                    onClicked: panel.planEditRequested(panel.card.id, {action: "enter"})
+                }
+            }
             PillButton {
                 objectName: "cardPlanApprove"
-                text: "Zatwierdź plan"
+                text: panel.flowPlan && panel.flowPlan.revision && panel.flowPlan.revision.pending ? "Zatwierdź różnicę" : "Zatwierdź plan"
                 visible: !!panel.flowPlan && panel.flowPlan.status === "pending"
                 enabled: !panel.busy
                 onClicked: {

@@ -42,6 +42,33 @@ mode = re.search(r"ATRAPA: ([a-z-]+)(?: (\d+))?", prompt)
 word, count = (mode.group(1), int(mode.group(2) or 0)) if mode else ("gotowe", 0)
 work = os.path.join(cwd, "ATRAPA.md")
 
+if prompt.startswith("Popraw propozycję planu karty"):
+    proposal = json.loads(re.search(r"Poprzednia propozycja: (.+)", prompt).group(1))
+    rows = proposal["rows"]
+    if "Dodaj ticket" in prompt:
+        rows.append({**rows[-1], "workId": "#3", "title": "Dodatkowy ticket", "blockers": []})
+    os.makedirs(os.path.join(out, "tickets"), exist_ok=True)
+    with open(os.path.join(out, "plan.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\ntide-plan: 1\ntitle: Poprawiony\ncard: " + re.search(r"karty (K-[0-9]+)", prompt).group(1) +
+                 "\ntracker: local\nticket-prefix: PT\ncoordinator: claude\n---\n"
+                 "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |\n"
+                 "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
+        for row in rows:
+            fh.write("| " + " | ".join([row["workId"], row["title"], "todo", "", row["executor"], row["note"], row["class"], row["reviewer"], ", ".join(row["blockers"])]) + " |\n")
+    for row in rows:
+        with open(os.path.join(out, "tickets", row["workId"].lstrip("#") + ".md"), "w", encoding="utf-8") as fh:
+            fh.write(row["body"] + ("" if row is rows[0] and row["workId"].startswith("PT-") else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": "done", "notes": ["plan.md"]}, fh)
+    sys.exit(0)
+
+if prompt.startswith("Review propozycji planu"):
+    with open(os.path.join(out, "plan-review.json"), "w", encoding="utf-8") as fh:
+        json.dump({"verdict": "REQUEST_CHANGES" if "ATRAPA: plan-review-changes" in prompt else "APPROVE", "findings": "Uzupełnij Dla recenzenta."}, fh)
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": "done", "notes": []}, fh)
+    sys.exit(0)
+
 if prompt.startswith("Krok planowania Lekkiego"):
     card = re.search(r"Krok planowania Lekkiego karty (K-[0-9]+)", prompt).group(1)
     if "ATRAPA: plan-question" in prompt and "Odpowiedź użytkownika:" not in prompt:

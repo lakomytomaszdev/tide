@@ -46,6 +46,8 @@ class FlowState:
     plan_checked: dict | None = None
     plan_proposed: dict | None = None
     plan_approved: dict | None = None
+    plan_reviewed: dict | None = None
+    plan_revision: dict | None = None
     plan_finished: bool = False
     plan_change_seq: int = 0
     plan_change_ts: str = ""
@@ -108,6 +110,7 @@ def fold(events: list[dict]) -> FlowState:
             st.store_column = e.get("column") or ""
             st.store_move_id = e.get("moveId") or ""
             st.plan_checked = st.plan_proposed = st.plan_approved = None
+            st.plan_reviewed = st.plan_revision = None
             st.plan_finished = False
             st.plan_change_seq, st.plan_change_ts = 0, ""
             st.assignments = {}
@@ -117,7 +120,8 @@ def fold(events: list[dict]) -> FlowState:
             st.results[(e.get("action"), e.get("key"))] = e
         elif kind == "step.started":
             st.steps[e.get("step")] = e
-            st.last_step = e.get("step") or ""
+            if not (st.plan_approved and e.get("kind") in ("plan-amend", "plan-review", "plan-revise")):
+                st.last_step = e.get("step") or ""
             st.moved_to = ""
             st.flow_error = ""
         elif kind == "step.entered" and e.get("step") in st.steps:
@@ -149,6 +153,23 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_checked = e
         elif kind == "plan.proposed":
             st.plan_proposed = e
+            st.plan_reviewed = None
+        elif kind == "plan.returned":
+            st.plan_revision = e
+        elif kind == "plan.revision-ready":
+            st.plan_revision = e
+        elif kind == "plan.revision-approved":
+            st.plan_approved = {**st.plan_approved, **e["plan"]} if st.plan_approved else None
+            st.plan_revision = None
+            st.plan_finished = False
+        elif kind == "plan.reviewed":
+            st.plan_reviewed = e
+        elif kind == "plan.ticket-edited":
+            for name in ("plan_proposed", "plan_approved"):
+                plan = getattr(st, name)
+                if plan:
+                    plan = {**plan, "rows": [{**r, **e["changes"]} if (r.get("id") or r["workId"]) == e["ticket"] else r for r in plan["rows"]]}
+                    setattr(st, name, plan)
         elif kind == "plan.approved":
             st.plan_approved = e
         elif kind == "plan.finished":
@@ -173,7 +194,7 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "ticket.rejected":
             st.rejected.add(e.get("ticket"))
         if st.plan_approved is not None and (kind in (
-                "plan.approved", "ticket.assigned", "step.started", "step.finished", "review.verdict",
+                "plan.approved", "plan.ticket-edited", "plan.revision-approved", "ticket.assigned", "step.started", "step.finished", "review.verdict",
                 "review.question", "review.decision", "ticket.rejected") or
                 (kind == "result" and e.get("action") == "merge")):
             st.plan_change_seq = int(e.get("seq") or 0)
@@ -240,12 +261,15 @@ def derived(st: FlowState, card: dict) -> dict | None:
     if st.started.get("entry") in ("plan", "planning"):
         proposal = st.plan_proposed or {}
         approved = st.plan_approved or {}
-        rows = approved.get("rows") or proposal.get("rows") or []
+        rows = (proposal.get("rows") if (st.plan_revision or {}).get("pending") else approved.get("rows")) or proposal.get("rows") or []
+        rows = [{**r, "editable": not st.plan_revision and (r.get("id") or r["workId"]) not in st.assignments and not any(s.get("ticket") == (r.get("id") or r["workId"]) for s in st.steps.values())} for r in rows]
         waves = approved.get("waves") or proposal.get("waves") or []
         finished_ids = {row.get("id") for row in rows if ("merge", row.get("id")) in st.results and
                         st.results[("merge", row.get("id"))].get("ok")}
         out["total"], out["done"] = len(rows), len(finished_ids)
-        out["flow"]["plan"] = {"status": "done" if st.plan_finished else
+        out["flow"]["plan"] = {"review": st.plan_reviewed or {}, "revision": st.plan_revision or {},
+                             "plannerStep": next((s["step"] for s in reversed(list(st.steps.values())) if s.get("executor") == proposal.get("planner")), ""),
+                             "status": "reviewing" if not st.plan_reviewed and (not st.plan_approved or (st.plan_revision or {}).get("pending")) else "pending" if (st.plan_revision or {}).get("pending") else "done" if st.plan_finished else
                              "approved" if st.plan_approved else "pending" if st.plan_proposed else "invalid",
                              "rows": rows, "waves": waves,
                              "errors": (st.plan_checked or {}).get("errors") or []}
@@ -259,6 +283,9 @@ def derived(st: FlowState, card: dict) -> dict | None:
                     return _fill(out, "progress", "poprawa formatu planu w tle")
                 out["question"] = "Plan nadal ma błędny format po dwóch poprawach. Uruchomić planowanie ponownie?"
                 return _fill(out, "waiting", "propozycja planu wymaga poprawy po dwóch próbach")
+        elif not st.plan_reviewed and not st.plan_approved:
+            if done.get("result") not in ("question", "denied", "error", "stopped"):
+                return _fill(out, "progress", "review planu w tle")
         elif not st.plan_approved:
             out["question"] = "Zatwierdzić plan?"
             return _fill(out, "waiting", "plan do zatwierdzenia")
