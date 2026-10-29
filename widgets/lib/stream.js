@@ -412,11 +412,11 @@ function chatLine(e) {
         const m = e.message
         return { kind: "chat", id: String(m.id || "chat-" + lineCounter), user: String(m.user || ""),
                  user_id: String(m.user_id || ""),
-                 text: String(m.text || "") }
+                 text: String(m.text || ""), rich_text: chatBody(m) }
     }
     if (e.type === "alert" && e.alert)
         return { kind: "alert", id: "alert-" + lineCounter, user: String(e.alert.user || ""),
-                 user_id: "", text: alertText(e.alert) }
+                 user_id: "", text: alertText(e.alert), rich_text: "" }
     return null
 }
 
@@ -425,10 +425,24 @@ function escapeHtml(text) {
     return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
 }
 
+// Fragmenty z EventSub: identyfikator emotki jest walidowany, URL powstaje wyłącznie z domeny Twitch CDN.
+function chatBody(message) {
+    const fragments = obj(message).fragments
+    if (!Array.isArray(fragments)) return escapeHtml(obj(message).text || "")
+    return fragments.map(f => {
+        const part = obj(f)
+        const fallback = escapeHtml(part.text || "")
+        const id = String(part.emote_id || "")
+        if (part.type !== "emote" || !/^[A-Za-z0-9_-]+$/.test(id)) return fallback
+        return '<img src="https://static-cdn.jtvnw.net/emoticons/v2/' + id
+            + '/static/light/1.0" width="28" height="28" align="middle" alt="' + fallback + '">'
+    }).join("")
+}
+
 // Wiersz czatu: pogrubiony nick w kolorze (z palety) i wiadomość w jednym akapicie, który się zawija.
 function chatHtml(line, nickColor) {
     return "<b><font color=\"" + escapeHtml(nickColor) + "\">" + escapeHtml(line.user) + "</font></b>&nbsp; "
-        + escapeHtml(line.text)
+        + (line.rich_text || escapeHtml(line.text))
 }
 
 // Komendy, które widżety mogą wysłać do rdzenia. Akcji krytycznych (start i koniec streamu, koniec nagrania,

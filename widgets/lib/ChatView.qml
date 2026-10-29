@@ -11,7 +11,7 @@ import "stream.js" as Stream
 Rectangle {
     id: chat
 
-    property var model: null              // ListModel {kind, id, user, user_id, text} z CoreSource.chatModel
+    property var model: null              // ListModel {kind, id, user, user_id, text, rich_text} z CoreSource.chatModel
     property bool available: false
     property bool coreUp: false
     property var twitch: null
@@ -94,7 +94,9 @@ Rectangle {
                     required property string kind
                     required property string user
                     required property string text
+                    required property string rich_text
                     readonly property var modelData: ({ kind: kind, user: user, text: text,
+                                                        rich_text: rich_text,
                                                         tint: Stream.nickTint(user, chat.nickTints) })
                     readonly property bool alert: kind === "alert"
                     width: ListView.view.width
