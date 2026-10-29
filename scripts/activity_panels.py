@@ -51,6 +51,8 @@ SIDEBAR_HIDING = "autohide"
 # więc długość 1 px praktycznie wyłącza wysuwanie, a grubość 1 Plasma podnosi do swojego minimum. Długość i grubość
 # sprzed Stream trafiają do tego samego zapisu co chowanie (stream-panels.json) i wracają przy wyjściu.
 THIN_LENGTH = 1
+# Plasma 6.8 po restarcie ogranicza zapisaną długość 1 px do 10 px.
+THIN_EFFECTIVE_LENGTH = 10
 THIN_THICKNESS = 1
 SIDEBAR_KEYS = ("hiding", "height", "minimumLength", "maximumLength")
 # Typ pulpitu (kontenera) aktywności: Plasma daje nowej aktywności ten sam co pracy (na tym komputerze
@@ -145,7 +147,7 @@ def stream_differences(state: dict, layout: dict, desktop: bool, saved: dict | N
 
 
 def sidebar_thin(sidebar: dict) -> bool:
-    return int(sidebar.get("maximumLength") or 0) <= THIN_LENGTH
+    return int(sidebar.get("maximumLength") or 0) <= THIN_EFFECTIVE_LENGTH
 
 
 def _stream_valued(sidebar: dict, key: str) -> bool:
@@ -200,6 +202,8 @@ def work_plan(state: dict, saved: dict) -> tuple[list[str], dict]:
         restore = sidebar_restore(sidebar, saved)
         if restore:
             out.append("pasek boczny pracy do przywrócenia: " + ", ".join(f"{k} {v}" for k, v in restore.items()))
+        if sidebar_thin(sidebar) and not any(key in restore for key in ("maximumLength", "minimumLength")):
+            out.append("pasek boczny pracy pozostał zwężony — ponownie zainstaluj Tide")
     if saved and not out:
         out.append("nieaktualny zapis paska bocznego sprzed Stream — do usunięcia")
     return out, restore
