@@ -380,7 +380,9 @@ class NowInProcessTest(FlowInProcess):
         reply = self.start(card_id)
         card = self.wait_column(card_id, "waiting")
         finished = self.of(card_id, "step.finished")
-        self.assertEqual([(f["result"], f["reason"]) for f in finished], [("error", "no-result")])
+        self.assertEqual([(f["result"], f["reason"]) for f in finished],
+                         [("error", "no-result"), ("error", "no-result")])
+        self.assertEqual(len(self.of(card_id, "step.retry")), 1)
         self.assertIn("brak pliku wyniku", card["derived"]["note"])
         self.assertEqual(self.results(card_id, "merge"), [], "praca bez pliku wyniku nie idzie na gałąź karty")
         self.assertNotIn("ATRAPA.md", git(self.repo, "ls-tree", "-r", "--name-only", reply["cardBranch"]).split())
@@ -427,7 +429,9 @@ class GuardInProcessTest(FlowInProcess):
         self.assertTrue(flowfakes.alive(pid))
         card = self.wait_column(card_id, "waiting", timeout=30)
         finished = self.of(card_id, "step.finished")
-        self.assertEqual([(f["result"], f["reason"]) for f in finished], [("error", "no-progress")])
+        self.assertEqual([(f["result"], f["reason"]) for f in finished],
+                         [("error", "no-progress"), ("error", "no-progress")])
+        self.assertEqual(len(self.of(card_id, "step.retry")), 1)
         self.assertIn("bez postępu", card["derived"]["note"])
         self.assertTrue(wait_until(lambda: not flowfakes.alive(pid), timeout=5), "krok zatrzymany")
         self.assertTrue(finished[0]["wip"]["stopped"])

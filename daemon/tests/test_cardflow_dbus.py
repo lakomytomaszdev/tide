@@ -152,6 +152,16 @@ class FlowCase(unittest.TestCase):
 
 
 class NowTest(FlowCase):
+    def test_step_question_is_answered_through_board_dbus(self):
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
+        self.assertTrue(self.start(card_id)["ok"])
+        shown = self.wait_column(card_id, "waiting")
+        self.assertEqual(shown["derived"]["flow"]["action"], "answer")
+        answer = self.call("ResolveCardStep", card_id, json.dumps({"choice": "answer", "answer": "ISO 8601"}))
+        self.assertEqual((answer["ok"], answer["choice"]), (True, "answer"))
+        self.wait_column(card_id, "review")
+        self.assertEqual([e["choice"] for e in self.of(card_id, "step.decision")], ["answer"])
+
     def test_review_question_is_answered_through_board_dbus(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 3")
         self.assertTrue(self.start(card_id)["ok"])
@@ -265,8 +275,9 @@ class NowTest(FlowCase):
         reply = self.start(card_id)
         card = self.wait_column(card_id, "waiting")
         finished = self.of(card_id, "step.finished")
-        self.assertEqual(len(finished), 1)
+        self.assertEqual(len(finished), 2)
         self.assertEqual((finished[0]["result"], finished[0]["reason"]), ("error", "no-result"))
+        self.assertEqual(len(self.of(card_id, "step.retry")), 1)
         self.assertIn("błąd", card["derived"]["note"])
         self.assertEqual(self.results(card_id, "merge"), [], "praca bez pliku wyniku nie idzie na gałąź karty")
         self.assertNotIn("ATRAPA.md", git(self.repo, "ls-tree", "-r", "--name-only", reply["cardBranch"]).split())
@@ -290,8 +301,9 @@ class GuardTest(FlowCase):
         self.assertTrue(flowfakes.alive(pid))
         card = self.wait_column(card_id, "waiting", timeout=30)
         finished = self.of(card_id, "step.finished")
-        self.assertEqual(len(finished), 1)
+        self.assertEqual(len(finished), 2)
         self.assertEqual((finished[0]["result"], finished[0]["reason"]), ("error", "no-progress"))
+        self.assertEqual(len(self.of(card_id, "step.retry")), 1)
         self.assertIn("bez postępu", card["derived"]["note"])
         self.assertTrue(wait_until(lambda: not flowfakes.alive(pid), timeout=5), "krok zatrzymany")
         # Bez utraty zmian: commit WIP (piaskownica gita usługi działa) albo plik dalej w worktree (nie działa).

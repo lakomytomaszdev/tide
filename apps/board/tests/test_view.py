@@ -1704,6 +1704,73 @@ out["legacy"] = len(calls()) - n
         self.assertEqual(out["legacy"], 0, "karta dawnego przepływu jak dotąd")
 
 
+class StepDecisionPanelTest(ProbeCase):
+    def flow_card(self, action, **extra):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "krok czeka",
+                                   "flow": {"ticket": "PT-7", "action": action, **extra}}
+                card["boardColumn"] = "waiting"
+        return data
+
+    def test_question_is_visible_and_answer_goes_to_service(self):
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["visible"] = [obj("cardStepDecision").property("visible"), obj("cardStepAnswer").property("visible")]
+js("page.cardPanel.stepAnswer = 'ISO 8601'")
+out["enabled"] = obj("cardStepAnswerSend").property("enabled")
+js(FIND + "(page.cardPanel, 'cardStepAnswerSend').clicked()")
+out["call"] = calls()[-1]
+""", data=self.flow_card("answer", question="Który format daty?"))
+        self.assertEqual(out["visible"], [True, True])
+        self.assertTrue(out["enabled"])
+        self.assertEqual(out["call"][:2], ["ResolveCardStep", "K-6"])
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "answer", "answer": "ISO 8601"})
+
+    def test_permission_has_exact_command_and_forbidden_cannot_be_allowed(self):
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["buttons"] = [obj("cardStepAllow").property("enabled"), obj("cardStepDeny").property("enabled")]
+click(at(FIND + "(page.cardPanel, 'cardStepDeny')"))
+out["call"] = calls()[-1]
+""", data=self.flow_card("permission", command="make install", canAllow=False))
+        self.assertEqual(out["buttons"], [False, True])
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "deny"})
+
+    def test_error_shows_retry_and_change_executor(self):
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["visible"] = [obj("cardStepRetry").property("visible"), obj("cardStepChangeExecutor").property("visible")]
+js("page.cardPanel.stepExecutor = 'Haiku'")
+click(at(FIND + "(page.cardPanel, 'cardStepChangeExecutor')"))
+out["call"] = calls()[-1]
+""", data=self.flow_card("error", error="bez postępu", stalledSince="2026-10-29T01:00:00Z",
+                         provider="anthropic", executor="Sonnet", reviewerModel="opus"))
+        self.assertEqual(out["visible"], [True, True])
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "change-executor", "executor": "Haiku"})
+
+    def test_project_command_lists_are_editable_and_saved(self):
+        data = json.loads(json.dumps(self.data))
+        data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]
+        data["projects"][0].update(allowedCommands=["git status", "git log"], deniedCommands=["make install"])
+        out = self.probe(FIND_PY + """
+find = lambda name: FIND + f"(page.managePage, '{name}')"
+js("page.managing = true")
+js("page.managePage.openProject = 'plasma-tide'")
+wait(100)
+out["initial"] = [js(find("projectAllowedCommands") + ".text"),
+                  js(find("projectDeniedCommands") + ".text")]
+js(find("projectAllowedCommands") + ".text = 'git status\\ngit log\\ngit fetch origin'")
+click(at(find("projectSave")))
+wait(80)
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["initial"], ["git status\ngit log", "make install"])
+        self.assertEqual(json.loads(out["call"][-1]),
+                         {"slug": "plasma-tide", "allowedCommands": ["git status", "git log", "git fetch origin"]})
+
+
 class LaunchReviewTest(ProbeCase):
     """PT-43 po review: upuszczenie pliku na pole zadania, Tab do „Zrób zrzut”, schowek z tekstem i obrazem,
     otwarcie okna w trakcie startu, Start bez odpowiedzi, Defaults po otwarciu okna."""

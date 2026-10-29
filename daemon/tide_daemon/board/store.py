@@ -20,6 +20,7 @@ Wszystkie ścieżki zapisu powstają z ID karty i slugów po walidacji, a dodatk
 że po rozwinięciu dowiązań leżą w katalogu tablicy.
 """
 import os
+import json
 import secrets
 import stat
 import time
@@ -30,7 +31,7 @@ from ..agents.timeutil import parse_ts
 from ..coordination.youtrack import issue_key
 from ..worktrees.git import Git
 from ..worktrees.naming import slug_from_prompt
-from . import flows
+from . import flows, commands
 from .frontmatter import Document, FrontmatterError
 from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
@@ -73,7 +74,8 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "note", *RESERVED_CARD_KEYS, "check",
                *LAUNCH_KEYS)
 CREATE_FIELDS = CARD_FIELDS + ("column",)
-PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack", "youtrackSync")
+PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack",
+                  "youtrackSync", "allowedCommands", "deniedCommands")
 TAG_FIELDS = ("name", "newName", "color", "description")
 
 
@@ -644,6 +646,10 @@ class BoardStore:
                 _doc_set(doc, PROJECT_YOUTRACK_KEY, v["youtrack"])
         if "youtrackSync" in v and (doc.has(PROJECT_SYNC_KEY) or not v["youtrackSync"]):
             _doc_set(doc, PROJECT_SYNC_KEY, "on" if v["youtrackSync"] else "off")
+        for field_name, key in (("allowedCommands", commands.ALLOWED_KEY),
+                                ("deniedCommands", commands.DENIED_KEY)):
+            if field_name in v:
+                _doc_set(doc, key, json.dumps(v[field_name], ensure_ascii=False))
         if "description" in v and v["description"].strip() != doc.body.strip():
             doc.body = v["description"]
         change.result = {"ok": True, "slug": slug, "changed": False}
@@ -1017,7 +1023,8 @@ def _project_json(project: Project, docs_dir: str, cards: int) -> dict:
             "tool": project.tool, "mode": project.mode, "entry": project.entry,
             "description": project.description,
             "docsDir": docs_dir, "cards": cards, "path": project.path,
-            "youtrack": project.youtrack, "youtrackSync": bool(project.youtrack) and project.youtrack_sync}
+            "youtrack": project.youtrack, "youtrackSync": bool(project.youtrack) and project.youtrack_sync,
+            "allowedCommands": list(project.allowed_commands), "deniedCommands": list(project.denied_commands)}
 
 
 def _column_index(column: str) -> int:
@@ -1258,6 +1265,13 @@ def _project_values(data: dict, board_root: str) -> dict:
         if not isinstance(data["youtrackSync"], bool):
             raise BoardError("youtrackSync to true albo false")
         out["youtrackSync"] = data["youtrackSync"]
+    for field_name, label in (("allowedCommands", commands.ALLOWED_KEY),
+                              ("deniedCommands", commands.DENIED_KEY)):
+        if field_name in data:
+            try:
+                out[field_name] = commands.validate(data[field_name], label)
+            except ValueError as exc:
+                raise BoardError(str(exc)) from None
     if not (out.get("slug") or out.get("name") or out.get("repo")):
         raise BoardError("projekt potrzebuje identyfikatora (slug), nazwy albo repozytorium")
     return out

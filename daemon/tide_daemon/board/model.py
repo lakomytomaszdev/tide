@@ -10,6 +10,7 @@ import unicodedata
 from dataclasses import dataclass, field
 
 from .frontmatter import Document
+from . import commands
 
 # Kolumny w kolejności tablicy. Ręcznie ustawiamy tylko `manual`; pozostałe wynikną ze stanu
 # koordynatora karty (PT-5) — w pliku karty ich nie zapisujemy (pole `derived` w migawce).
@@ -130,6 +131,8 @@ class Project:
     repo_missing: bool = False
     youtrack: str = ""        # klucz projektu YouTracka (PT-7), pusty — bez synchronizacji
     youtrack_sync: bool = True
+    allowed_commands: list = field(default_factory=list)
+    denied_commands: list = field(default_factory=list)
     doc: Document | None = None
 
 
@@ -307,6 +310,11 @@ def parse_project(doc: Document, path: str, slug: str, errors: list) -> Project:
     if sync and sync not in ON_WORDS + OFF_WORDS:
         errors.append(_err(path, f"{name}: nieznana wartość youtrack-sync „{sync}” (on, off) — włączona"))
     project.youtrack_sync = sync not in OFF_WORDS
+    default_allowed, default_denied = commands.defaults(slug, project.repo)
+    project.allowed_commands = commands.read(doc.get(commands.ALLOWED_KEY), default_allowed,
+                                             commands.ALLOWED_KEY, errors, path)
+    project.denied_commands = commands.read(doc.get(commands.DENIED_KEY), default_denied,
+                                            commands.DENIED_KEY, errors, path)
     return project
 
 

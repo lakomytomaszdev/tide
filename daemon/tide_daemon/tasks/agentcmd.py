@@ -297,7 +297,7 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
     """argv, pliki (ustawienia piaskownicy dla `--settings`) i pliki tokenów do sprawdzenia przed startem."""
     settings = {"sandbox": {
         "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
-        "autoAllowBashIfSandboxed": True,
+        "autoAllowBashIfSandboxed": not bool(step.allowed_tools),
         "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out],
                        "allowWrite": [out]},
         "network": {"allowedDomains": []}}}

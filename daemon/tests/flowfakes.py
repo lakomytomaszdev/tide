@@ -79,10 +79,37 @@ elif word == "powoli":
         write(f"krok {i}")
         time.sleep(0.25)
 commit()
+if word == "cli-zgoda":
+    print(json.dumps({"type": "result", "subtype": "success", "permission_denials": [
+        {"tool_name": "Bash", "tool_input": {"command": "git fetch origin"}}]}))
+    sys.exit(0)
 if word == "bez-wyniku":
     sys.exit(0)
 if word == "pytanie":
-    finish("question", question="Który format daty?")
+    if "Odpowiedź użytkownika:" in prompt:
+        finish("done")
+    else:
+        finish("question", question="Który format daty?")
+elif word == "zgoda":
+    if "- git fetch origin\n" in prompt or "Użytkownik odmówił zgody" in prompt:
+        finish("done")
+    else:
+        finish("denied", command="git fetch origin")
+elif word == "zgoda-zabroniona":
+    if "Użytkownik odmówił zgody" in prompt:
+        finish("done")
+    else:
+        finish("denied", command="make install")
+elif word == "blad-raz":
+    finish("done" if "Krok ponowiony automatycznie" in prompt else "error", reason="awaria testowa")
+elif word in ("blad-dwa", "blad-zmien"):
+    if prompt.startswith("Krok poprawek") or "Użytkownik polecił ponowić" in prompt or "Użytkownik wybrał innego wykonawcę" in prompt:
+        finish("done")
+    else:
+        finish("error", reason="awaria testowa")
+elif word == "blad-local":
+    time.sleep(0.5)
+    finish("error", reason="awaria testowa")
 else:
     finish("done")
 print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "session_id": sid}))

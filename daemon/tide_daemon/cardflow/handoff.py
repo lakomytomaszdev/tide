@@ -7,6 +7,47 @@ NOTE_FILE = "note.md"
 REVIEW_FILE = "review.md"
 
 
+def command_policy(allowed: list[str], denied: list[str]) -> str:
+    """Wskazówka dla kooperującego agenta; twardą granicą pozostaje piaskownica kroku."""
+    allow = "\n".join(f"- {cmd}" for cmd in allowed) or "- (brak)"
+    deny = "\n".join(f"- {cmd}" for cmd in denied) or "- (brak)"
+    return f"""
+
+Polecenia projektu w tym kroku (najnowsza lista):
+Dozwolone polecenia i wzorce (końcowe `*` oznacza argumenty jednego polecenia):
+{allow}
+Zabronione polecenia:
+{deny}
+Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.
+Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedno polecenie nie zezwala
+na cały program ani na łańcuch poleceń.
+"""
+
+
+def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_dir: str) -> str:
+    """Jawna decyzja do wznowionego kroku; kartka poprzedniej próby pozostaje wyżej w poleceniu."""
+    if choice == "answer":
+        detail = f"Pytanie z poprzedniej próby: {prior.get('question') or ''}\nOdpowiedź użytkownika: {answer}"
+    elif choice == "allow":
+        detail = f"Użytkownik zezwolił na dokładne polecenie: {command}"
+    elif choice == "deny":
+        detail = f"Użytkownik odmówił zgody na polecenie: {command}. Kontynuuj bez niego."
+    elif choice == "change-executor":
+        detail = "Użytkownik wybrał innego wykonawcę. Zachowaj zmiany z poprzednich prób w tym samym worktree."
+    elif choice == "auto":
+        detail = "Krok ponowiony automatycznie po pierwszym błędzie. Zachowaj zmiany z poprzedniej próby."
+    else:
+        detail = "Użytkownik polecił ponowić krok. Zachowaj zmiany z poprzednich prób."
+    return f"""
+
+Wznowienie tego samego kroku w tym samym worktree. Poprzedni wynik: {prior.get('result') or ''};
+powód: {prior.get('reason') or ''}.
+{detail}
+Nie powtarzaj już wykonanej pracy ani commitów. Na końcu zapisz nową notkę wyniku i jako ostatni plik:
+Plik wyniku: {out_dir}/{RESULT_FILE}
+"""
+
+
 def ticket_card(*, card_id: str, title: str, description: str, project: str, ticket: str, branch: str,
                 card_branch: str, worktree: str, out_dir: str, images=()) -> str:
     shots = "".join(f"- {path}\n" for path in images)
