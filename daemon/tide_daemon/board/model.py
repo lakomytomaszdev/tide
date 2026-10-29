@@ -155,6 +155,7 @@ class Card:
     column_moved: str = ""    # ostatnia prawdziwa zmiana kolumny (PT-7); pusta — nigdy (albo sprzed PT-7)
     youtrack: str = ""
     spec: str = ""
+    plan: str = ""          # wskazany plan przekazania; zapis po stronie karty
     session: str = ""
     branch: str = ""
     check: str = DEFAULT_CHECK
@@ -266,6 +267,7 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.column_moved = doc.get(COLUMN_MOVED_KEY).strip()
     for key in RESERVED_CARD_KEYS:
         setattr(card, key, doc.get(key).strip())
+    card.plan = doc.get("plan").strip()
     card.check = _choice(doc.get("check"), CHECKS, DEFAULT_CHECK, f"{name}: nieznane sprawdzenie", path, errors)
     card.entry, card.mode = _entry_mode(doc, "", name, path, errors, mode_label="nieznany tryb uruchomienia")
     card.tool = _choice(doc.get("tool"), TOOLS, "", f"{name}: nieznane narzędzie uruchomienia", path, errors)

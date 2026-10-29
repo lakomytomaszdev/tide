@@ -31,7 +31,8 @@ Rectangle {
     property string busyText: "Uruchamiam…"
     property var tagTone: null
     // Wybór w oknie.
-    property string entry: "planning"      // wejście („Jak zacząć?”): planning | spec
+    property string entry: "planning"      // wejście („Jak zacząć?”): planning | plan | spec | now
+    property string planPath: ""
     property string mode: "full"           // tryb Planowania: full | light (przy innym wejściu zapamiętany)
     property string tool: "claude"
     property string branch: ""
@@ -76,13 +77,15 @@ Rectangle {
         : !flowEntry && model === "local" && !localOption.enabled
           ? (localOption.pending ? localOption.reason : "Model lokalny niedostępny: " + localOption.reason) : ""
     readonly property var card: cardId ? ((snapshot && snapshot.cards) || []).find(c => c.id === cardId) || null : null
+    readonly property var planCandidates: Logic.planCandidates(card)
     readonly property var project: card && card.project ? Logic.projectBySlug(snapshot, card.project) : null
     readonly property var workProject: Logic.launchProject(snapshot, card)
     readonly property string blocker: Logic.launchBlocker(snapshot, card)
     readonly property bool canStart: blocker === "" && modelBlocker === "" && !busy && taskText.trim() !== ""
+                                      && (entry !== "plan" || planPath !== "")
     readonly property string taskText: taskEdit.text
     readonly property var launchState: ({
-        cardId: cardId, entry: entry, mode: mode, tool: agentTool, branch: branch, newWorktree: newWorktree,
+        cardId: cardId, entry: entry, mode: mode, planPath: planPath, tool: agentTool, branch: branch, newWorktree: newWorktree,
         executor: executor, reviewer: reviewer, preferredProvider: preferredProvider,
         model: model === "local" ? "local" : "cloud", localModel: model === "local" ? localOption.model : "",
         images: images,
@@ -205,6 +208,9 @@ Rectangle {
         branchEdited = false
         editingBranch = false
         applyProjectDefaults(p)
+        const exact = planCandidates.find(candidate => candidate.card === cardId)
+        planPath = exact ? exact.path : (c && c.planPath && planCandidates.some(candidate => candidate.path === c.planPath) ? c.planPath : "")
+        if (exact || planPath) entry = "plan"
         // Model jak w oknie „Nowe zadanie”: zapamiętany wybór z ostatniego startu (Defaults().model).
         modelTouched = false
         model = taskDefaults && taskDefaults.model === "local" ? "local" : "cloud"
@@ -225,6 +231,9 @@ Rectangle {
         const p = Logic.launchProject(snapshot, card)
         if (!p) return
         applyProjectDefaults(p)
+        const exact = planCandidates.find(candidate => candidate.card === cardId)
+        planPath = exact ? exact.path : ""
+        if (exact) entry = "plan"
         tool = p.tool || "claude"
         if (!branchEdited) branch = Logic.launchBranch(card, agentTool)
     }
@@ -824,7 +833,7 @@ Rectangle {
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        visible: dialog.entry === "planning" && dialog.mode === "light"
+                        visible: (dialog.entry === "planning" && dialog.mode === "light") || dialog.entry === "plan"
                         spacing: 10
                         FieldLabel { text: "Planujący"; color: Tide.Tokens.textSecondary }
                         Segmented {
@@ -836,6 +845,41 @@ Rectangle {
                             onPicked: value => dialog.executor = value
                         }
                         Item { Layout.fillWidth: true }
+                    }
+                    ColumnLayout {
+                        objectName: "launchPlanCandidates"
+                        Layout.fillWidth: true
+                        spacing: 4
+                        visible: dialog.entry === "plan"
+                        FieldLabel { text: "Plan do przejęcia"; color: Tide.Tokens.textSecondary }
+                        Text {
+                            Layout.fillWidth: true
+                            visible: dialog.planCandidates.length === 0
+                            text: "Nie znalazłem niedokończonych planów w tym projekcie."
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            wrapMode: Text.Wrap
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            visible: dialog.planCandidates.length > 0 && !dialog.planCandidates.some(p => p.card === dialog.cardId)
+                            text: "Plany bez przypisanej karty są podpowiedzią. Wybierz ten, który chcesz przejąć."
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            wrapMode: Text.Wrap
+                        }
+                        Repeater {
+                            model: dialog.planCandidates
+                            QQC2.RadioButton {
+                                required property var modelData
+                                objectName: "launchPlan-" + String(modelData.path).split("/").pop()
+                                text: modelData.title + " · " + (modelData.card || "bez karty") + " · " + modelData.updated
+                                      + (modelData.needsCompletion ? " · wymaga uzupełnienia" : "")
+                                checked: dialog.planPath === modelData.path
+                                onClicked: dialog.planPath = modelData.path
+                                Accessible.name: text
+                            }
+                        }
                     }
                     // Wykonawca kroku „Od razu” z katalogu wybranego dostawcy.
                     // Wykonawca ticketu i niezależny recenzent z katalogu.
@@ -1079,7 +1123,11 @@ Rectangle {
                             Text {
                                 objectName: "launchCheckNote"
                                 Layout.fillWidth: true
-                                text: dialog.entry === "now"
+                                text: dialog.entry === "plan"
+                                      ? (dialog.manualCheck
+                                         ? "Po uzupełnieniu i review plan poczeka na zatwierdzenie. Na końcu karta dostanie listę testów ręcznych."
+                                         : "Po uzupełnieniu i review plan poczeka na zatwierdzenie; tickety ruszą na gałęzi karty.")
+                                      : dialog.entry === "now"
                                       ? (dialog.manualCheck
                                          ? "Po review u wybranego recenzenta i scaleniu ticketu karta trafi do Do sprawdzenia i poczeka na Twój test ręczny."
                                          : "Po review u wybranego recenzenta ticket zostanie scalony z gałęzią karty i trafi do Do sprawdzenia.")

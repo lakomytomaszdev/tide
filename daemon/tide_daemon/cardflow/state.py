@@ -45,6 +45,8 @@ class FlowState:
     step_notices: set = field(default_factory=set)
     tracker_retries: dict = field(default_factory=dict)
     plan_checked: dict | None = None
+    imported: dict | None = None
+    imported_done: set = field(default_factory=set)
     plan_proposed: dict | None = None
     approval_requested: dict | None = None
     plan_approved: dict | None = None
@@ -127,6 +129,8 @@ def fold(events: list[dict]) -> FlowState:
             st.store_column = e.get("column") or ""
             st.store_move_id = e.get("moveId") or ""
             st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
+            st.imported = None
+            st.imported_done.clear()
             st.plan_reviewed = st.plan_revision = None
             st.plan_finished = False
             st.plan_change_seq, st.plan_change_ts = 0, ""
@@ -181,6 +185,8 @@ def fold(events: list[dict]) -> FlowState:
             st.step_notices.add(e.get("step"))
         elif kind == "plan.checked":
             st.plan_checked = e
+        elif kind == "plan.imported":
+            st.imported = e
         elif kind == "plan.proposed":
             st.plan_proposed = e
             st.plan_reviewed = None
@@ -233,10 +239,15 @@ def fold(events: list[dict]) -> FlowState:
                 st.paused = False
         elif kind == "ticket.rejected":
             st.rejected.add(e.get("ticket"))
+        elif kind == "ticket.imported":
+            if e.get("state") == "gotowe":
+                st.imported_done.add(e.get("ticket"))
+            elif e.get("state") == "odrzucone":
+                st.rejected.add(e.get("ticket"))
         if st.plan_approved is not None and (kind in (
                 "plan.approved", "plan.ticket-edited", "plan.revision-approved", "ticket.assigned",
                 "step.started", "step.finished", "step.waiting", "review.verdict",
-                "review.question", "review.decision", "ticket.rejected") or
+                "review.question", "review.decision", "ticket.rejected", "ticket.imported") or
                 (kind == "result" and e.get("action") == "merge")):
             st.plan_change_seq = int(e.get("seq") or 0)
             st.plan_change_ts = e.get("ts") or ""
@@ -359,7 +370,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
                  and not any(s.get("ticket") == (row.get("id") or row["workId"]) for s in st.steps.values())}
                 for row in rows]
         waves = graph_waves(rows)
-        finished_ids = {row.get("id") for row in rows if ("merge", row.get("id")) in st.results and
+        finished_ids = set(st.imported_done) | {row.get("id") or row.get("workId") for row in rows
+                        if not st.plan_approved and row.get("sourceState") == "gotowe"} | {row.get("id") for row in rows if ("merge", row.get("id")) in st.results and
                         st.results[("merge", row.get("id"))].get("ok")}
         out["total"], out["done"] = len(rows), len(finished_ids)
         wave_no = next((n for n, wave in enumerate(waves, 1) if set(wave) - finished_ids), len(waves))
@@ -372,7 +384,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
             outcome = (st.finished.get(latest.get("step")) or {}).get("result")
             if ident_row in finished_ids:
                 state = "gotowe"
-            elif ident_row in st.rejected:
+            elif ident_row in st.rejected or not st.plan_approved and row.get("sourceState") == "odrzucone":
                 state = "odrzucone"
             elif waits or outcome in ("question", "denied", "error", "stopped"):
                 state = "czeka"
@@ -411,7 +423,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
             out["question"] = "Zatwierdzić różnicę planu?"
             return _fill(out, "waiting", "różnica planu do zatwierdzenia")
         if not st.plan_proposed:
-            if st.started.get("entry") != "planning":
+            if st.started.get("entry") != "planning" and not st.imported:
                 return _fill(out, "waiting", "propozycja planu wymaga poprawy")
             if not st.flow_error and done.get("result") not in ("question", "denied", "error", "stopped"):
                 if st.running() or not st.plan_checked:
@@ -430,7 +442,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
             out["question"] = "Zatwierdzić plan?"
             return _fill(out, "waiting", "plan do zatwierdzenia")
         if st.plan_finished:
-            return _fill(out, "review", f"✓ plan karty: {len(finished_ids)}/{len(rows)} ticketów scalonych")
+            return _fill(out, "review", f"✓ plan karty: {len(finished_ids)}/{len(rows)} ticketów gotowych")
         if st.paused:
             return _fill(out, "backlog" if column == "backlog" else "progress", "wstrzymana — trwające kroki kończą się" if st.running() else "wstrzymana")
         if st.waiting and not st.running() and not attention:

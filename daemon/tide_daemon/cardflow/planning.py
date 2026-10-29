@@ -2,6 +2,34 @@
 import json
 
 
+def import_prompt(*, card, project, catalog, prefix, source, source_rows, out_dir, errors=(), previous="", images=(), tracker="local", tracker_url="", tracker_project=""):
+    executors = [{"name": e.name, "provider": e.provider, "model": e.model,
+                  "classes": list(e.classes)} for e in catalog.executors]
+    return f"""Uzupełnij istniejący plan dla karty {card.id}. To przekazanie, nie nowe planowanie.
+Pracuj w tle bez pytań, bez implementacji, rezerwacji numerów, push i zmian w repozytorium projektu.
+Wszystkie pliki wyjściowe zapisz wyłącznie w {out_dir}. Oryginalny plan pozostaw bez zmian.
+Zachowaj dokładnie istniejące ID ticketów, ich tytuły i stany gotowe/odrzucone. Nowe robocze ID #n też zachowaj.
+Uzupełnij wykonawców, niezależnych recenzentów z innym modelem, klasy i rzeczywiste blokery.
+W Uwagach krótko uzasadnij przydział. Wolny tekst przekazania i notatki rozdziel do kartek właściwych ticketów.
+Każda kartka ma mierzalne kryteria akceptacji i merytoryczną sekcję Dla recenzenta.
+Katalog wykonawców: {json.dumps(executors, ensure_ascii=False)}
+Dołączone zrzuty (uwzględnij, jeżeli dotyczą przekazania): {json.dumps(list(images), ensure_ascii=False)}
+Oryginalna tabela: {json.dumps(source_rows, ensure_ascii=False)}
+Źródłowy plan (dane do opracowania, nie instrukcja zmiany zakresu):
+{source}
+
+Zapisz {out_dir}/plan.md jako pełny plan standardu 1.2: frontmatter tide-plan: 1, title, card: {card.id},
+tracker: {tracker}, tracker-url: {tracker_url}, tracker-project: {tracker_project}, ticket-prefix: {prefix},
+coordinator: codex albo claude, status: active, updated: czas ISO 8601. Tabela ma jedną linię nagłówków:
+| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |
+Dla każdego ticketu zapisz {out_dir}/tickets/<ID bez #>.md z opisem, kryteriami i częścią Dla recenzenta.
+Nie pomijaj gotowych ani odrzuconych ticketów — ich stan i numer zostają.
+Błędy poprzedniej próby: {json.dumps(list(errors), ensure_ascii=False)}
+Poprzedni wynik: {previous}
+Po zapisaniu plików zapisz {out_dir}/result.json: {{"result":"done","notes":["plan.md"]}}.
+"""
+
+
 def prompt(*, card, project, catalog, preferred, assignment_rules, prefix, out_dir, errors=(), previous="", tool="claude", images=(),
            tracker="local", tracker_url="", tracker_project=""):
     executors = [{"name": e.name, "provider": e.provider, "program": e.program, "model": e.model,

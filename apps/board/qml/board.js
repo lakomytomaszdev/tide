@@ -541,6 +541,9 @@ function columnLabel(snapshot, id) {
 var LAUNCH_ENTRIES = [
     { id: "planning", title: "Planowanie", desc: "Agent planuje pracę: specyfikacja, tickety w planie, potem implementacja i review.",
       meta: "wybierasz tryb: Pełny albo Lekki", modes: true },
+    { id: "plan", title: "Mam plan", desc: "Przejmij istniejący plan projektu, sprawdź go i kontynuuj niedokończone tickety.",
+      meta: "wybierz plan z projektu lub tablicy", modes: false, flow: true,
+      steps: ["Przejęcie planu", "Uzupełnienie i review", "Zatwierdzenie", "Tickety w tle"] },
     { id: "spec", title: "Tylko specyfikacja", desc: "Agent dopytuje i pisze specyfikację. Bez kodu i bez worktree.",
       meta: "karta wraca do Backlogu", modes: false, steps: ["Pytania", "Specyfikacja", "„specyfikacja gotowa” na karcie"] },
     // Przepływ karty (PT-58): jeden ticket w tle od razu, zlecenie przez /Board StartCard, bez Konsoli.
@@ -632,12 +635,19 @@ function isFlowEntry(id, mode) {
 
 // Prośba /Board StartCard z okna („Od razu”): wejście, wykonawca i zrzuty z katalogu zadań.
 function startCardRequest(state, images) {
-    const request = { entry: state.entry, executor: state.executor,
+    const request = { entry: state.entry === "plan" ? "import" : state.entry, executor: state.executor,
                       check: state.check, images: (images || []).slice() }
     if (state.entry === "planning") request.mode = state.mode
+    if (state.entry === "plan") request.planPath = state.planPath
     if (state.reviewer && state.entry === "now") request.reviewer = state.reviewer
     if (state.preferredProvider) request.preferredProvider = state.preferredProvider
     return request
+}
+
+function planCandidates(card) {
+    const rows = card && Array.isArray(card.planCandidates) ? card.planCandidates.slice() : []
+    return rows.sort((a, b) => Number(b.card === card.id) - Number(a.card === card.id)
+        || Number(b.updatedTs || 0) - Number(a.updatedTs || 0))
 }
 
 // Tryby Planowania z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.
@@ -734,6 +744,8 @@ function specDir(state) {
 
 // Zdanie „co się stanie” w stopce okna (z modelem lokalnym: „Codex na qwen3-coder:30b”).
 function launchFooter(state) {
+    if (state.entry === "plan")
+        return "Przejmę wybrany plan bez zmieniania go w projekcie. Brakujące przydziały i kartki uzupełni krok w tle, potem plan przejdzie niezależny przegląd i poczeka na zatwierdzenie."
     if (state.entry === "now")
         return "Krok w tle bez Konsoli: " + (state.executor || "wykonawca") + " robi jeden ticket we własnym worktree "
             + "odgałęzionym od gałęzi karty. Potem ticket trafia na gałąź karty, a karta do „Do sprawdzenia”."

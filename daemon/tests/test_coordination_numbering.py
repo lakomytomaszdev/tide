@@ -387,6 +387,14 @@ class ReservationTest(unittest.TestCase):
         with open(self.registry, encoding="utf-8") as fh:
             self.assertEqual(len(json.load(fh)["reservations"]), 2)
 
+    def test_imported_floor_keeps_old_id_and_retry_is_idempotent(self):
+        first = reservations.reserve(self.repo, title="Nowy ticket", path=self.registry,
+                                     request_key="K-1:import:#1", at_least=30)
+        retried = reservations.reserve(self.repo, title="Nowy ticket", path=self.registry,
+                                       request_key="K-1:import:#1", at_least=30)
+        self.assertEqual(first["ids"], ["PT-31"])
+        self.assertEqual(retried["ids"], first["ids"])
+
     def test_parallel_retries_of_one_request_reserve_only_once(self):
         barrier = threading.Barrier(8)
 

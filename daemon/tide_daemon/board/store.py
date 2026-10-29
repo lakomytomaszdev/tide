@@ -72,7 +72,7 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 - `flows/<klucz>.md` — szablony poleceń: full i light (Planowanie) oraz spec (Tylko specyfikacja),
 - `docs/<projekt>/` — plany i specyfikacje agentów projektów z `ai-docs: tide`.
 """
-CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "note", *RESERVED_CARD_KEYS, "check",
+CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "note", "planPath", *RESERVED_CARD_KEYS, "check",
                *LAUNCH_KEYS)
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack",
@@ -162,6 +162,7 @@ class BoardStore:
         projects = sorted(board.projects.values(), key=lambda p: p.name.casefold())
         counts: dict[str, int] = {}
         cards_out = []
+        plan_cache = {}
         for card in sorted(board.cards.values(), key=lambda c: (_column_index(c.column), c.order, c.num)):
             project = board.projects.get(card.project)
             resolved = merge_tags(project.tags if project else [], card.tags)
@@ -176,7 +177,16 @@ class BoardStore:
                                       "extraRepos": [p.repo for p in extra if p.repo]})
                 except Exception as exc:  # stan z koordynatora to dodatek — nie może zepsuć tablicy
                     board.errors.append({"path": card.path, "message": f"{card.id}: stan koordynatora: {exc}"})
-            cards_out.append(_card_json(card, project, resolved, derived, extra))
+            card_data = _card_json(card, project, resolved, derived, extra)
+            if project and project.repo:
+                from .plan_candidates import candidates
+                key = project.repo
+                if key not in plan_cache:
+                    plan_cache[key] = candidates(project.repo, self.root)
+                card_data["planCandidates"] = [p for p in plan_cache[key] if p["card"] in ("", card.id) and p["status"] != "done"]
+            else:
+                card_data["planCandidates"] = []
+            cards_out.append(card_data)
         for name in board.used_tags():
             tags.setdefault(name.casefold(), Tag(name, fallback_color(name, self.colors), slug=slugify(name, "tag"),
                                                  defined=False))
@@ -483,6 +493,8 @@ class BoardStore:
         for key in LAUNCH_KEYS:  # tylko ustawione — karta bez uruchomienia ich nie ma
             if v.get(key):
                 doc.set(key, v[key])
+        if v.get("planPath"):
+            doc.set("plan", self._checked_plan_path(v["planPath"], board.projects.get(slug), f"K-{num}"))
         if extra:
             doc.set(PROJECTS_KEY, ", ".join(extra))
         doc.body = v.get("description", "")
@@ -512,6 +524,10 @@ class BoardStore:
         for key in ("title", "tags", "note", *RESERVED_CARD_KEYS, "check", *LAUNCH_KEYS):
             if key in v and (v[key] or card.doc.has(key) or key not in LAUNCH_KEYS):
                 changed += _doc_set(card.doc, key, ", ".join(v[key]) if key == "tags" else v[key])
+        if "planPath" in v:
+            project = board.projects.get(primary)
+            checked = self._checked_plan_path(v["planPath"], project, card.id) if v["planPath"] else ""
+            changed += _doc_set(card.doc, "plan", checked)
         if "description" in v and v["description"].strip() != card.doc.body.strip():
             card.doc.body = v["description"]
             changed.append("description")
@@ -522,6 +538,17 @@ class BoardStore:
                                                                            card.doc.text())]))
         change.result["changed"] = True
         return change
+
+    def _checked_plan_path(self, path: str, project: Project | None, card_id: str) -> str:
+        from .plan_candidates import candidates
+        if not project or not project.repo:
+            raise BoardError("wybierz projekt z repozytorium przed przejęciem planu", "no-project")
+        real = os.path.realpath(path)
+        allowed = candidates(project.repo, self.root)
+        if not any(item["path"] == real and item["card"] in ("", card_id) and item["status"] != "done"
+                   for item in allowed):
+            raise BoardError("wybrany plan nie należy do tej karty i projektu", "bad-plan")
+        return real
 
     def _plan_move(self, board: Board, num: int, column: str, index: int, shown: str = "") -> Change:
         """Nowa kolejność to środek między sąsiadami; całą kolumnę numerujemy co ORDER_STEP tylko
@@ -1019,7 +1046,7 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         # Ostatnia prawdziwa zmiana kolumny (PT-7, synchronizacja z YouTrackiem); 0 — nigdy.
         "columnMoved": card.column_moved, "columnMovedTs": parse_ts(card.column_moved),
         "youtrack": card.youtrack,
-        "spec": card.spec, "session": card.session, "branch": card.branch, "check": card.check,
+        "spec": card.spec, "planPath": card.plan, "session": card.session, "branch": card.branch, "check": card.check,
         "entry": card.entry, "mode": card.mode, "tool": card.tool, "worktree": card.worktree, "launched": card.launched,
         "launchedTs": parse_ts(card.launched), "branchSlug": branch_slug(card),
         # Dodatkowe projekty (PT-28): slugi z pliku i rozwiązane projekty (nieznane slugi pomijamy — błąd w errors).
@@ -1196,6 +1223,11 @@ def _card_values(data: dict, create: bool = False) -> dict:
         if not key:
             raise BoardError(f"pole youtrack to klucz zgłoszenia, np. LEGAL-35 („{out['youtrack']}”)")
         out["youtrack"] = key
+    if "planPath" in data:
+        path = _line(data["planPath"], PATH_MAX, "planPath")
+        if path and (not os.path.isabs(path) or not path.lower().endswith(".md")):
+            raise BoardError("planPath musi być bezwzględną ścieżką do pliku Markdown")
+        out["planPath"] = path
     if "check" in data:
         out["check"] = _enum(data["check"], CHECKS, "sprawdzenie")
     out.update(_entry_mode_values(data, allow_empty=True))

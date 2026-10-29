@@ -54,7 +54,8 @@ def load(repo: str, path: str | None = None, git=None) -> list[dict]:
 
 
 def reserve(repo: str, prefix: str = "", count: int = 1, title: str = "", dry_run: bool = False,
-            path: str | None = None, repo_plans=None, clock=time.time, request_key: str = "") -> dict:
+            path: str | None = None, repo_plans=None, clock=time.time, request_key: str = "",
+            at_least: int = 0) -> dict:
     """{"repo", "prefix", "ids", "numbers", "seed"} — kolejne `count` numerów; dry_run nic nie zapisuje.
 
     `seed`: skąd największy dotychczasowy numer („rejestr”, „plany” albo „brak” — pierwszy numer to 1).
@@ -62,6 +63,8 @@ def reserve(repo: str, prefix: str = "", count: int = 1, title: str = "", dry_ru
     Ponowienie wymaga tego samego tytułu i liczby numerów; pusty klucz zachowuje dawne działanie."""
     if not 1 <= int(count) <= MAX_COUNT:
         raise ReservationError(f"liczba numerów od 1 do {MAX_COUNT}")
+    if not isinstance(at_least, int) or at_least < 0:
+        raise ReservationError("minimalny numer musi być nieujemną liczbą całkowitą")
     if not isinstance(request_key, str) or (request_key and
             (len(request_key) > 128 or not request_key.isprintable() or
              request_key.strip() != request_key or any(c.isspace() for c in request_key))):
@@ -82,13 +85,13 @@ def reserve(repo: str, prefix: str = "", count: int = 1, title: str = "", dry_ru
         except FileNotFoundError:
             fh = None
         if fh is None:
-            numbers, from_registry, from_plans, prefix = _next(reader, repo, key, prefix, count, {"reservations": []})
+            numbers, from_registry, from_plans, prefix = _next(reader, repo, key, prefix, count, {"reservations": []}, at_least)
             existing = None
         else:
             with fh:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
                 data = _parse(fh.read())
-                numbers, from_registry, from_plans, prefix = _next(reader, repo, key, prefix, count, data)
+                numbers, from_registry, from_plans, prefix = _next(reader, repo, key, prefix, count, data, at_least)
                 existing = _existing_request(data, key, prefix, request_key, int(count), normalized_title)
     else:
         os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
@@ -97,7 +100,7 @@ def reserve(repo: str, prefix: str = "", count: int = 1, title: str = "", dry_ru
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)  # zwalnia ją zamknięcie pliku
             data = _parse(fh.read())
             # Plany czytamy pod blokadą: sesja przed nami jest już w rejestrze albo w swoim planie.
-            numbers, from_registry, from_plans, prefix = _next(reader, repo, key, prefix, count, data)
+            numbers, from_registry, from_plans, prefix = _next(reader, repo, key, prefix, count, data, at_least)
             existing = _existing_request(data, key, prefix, request_key, int(count), normalized_title)
             if existing is None:
                 seed = "rejestr" if from_registry >= from_plans and from_registry else "plany" if from_plans else "brak"
@@ -143,7 +146,7 @@ def _existing_request(data, repo, prefix, request_key, count, title):
         raise ReservationError("rezerwacja dla klucza ma niepoprawne źródło")
     return numbers, seed
 
-def _next(reader, repo, key, prefix, count, data) -> tuple[list, int, int, str]:
+def _next(reader, repo, key, prefix, count, data, at_least=0) -> tuple[list, int, int, str]:
     """(kolejne numery, największy z rejestru, największy z planów, prefiks)."""
     plans, declared = reader.read([repo])
     prefix = _prefix(prefix, plans, declared)
@@ -152,7 +155,7 @@ def _next(reader, repo, key, prefix, count, data) -> tuple[list, int, int, str]:
     from_registry = max((_int(r.get("number")) for r in mine), default=0)
     from_plans = max((numbering.ticket_number(k) for p in plans for k in numbering.plan_keys(p)
                       if k.split("-")[0] == prefix), default=0)
-    top = max(from_registry, from_plans)
+    top = max(from_registry, from_plans, at_least)
     return list(range(top + 1, top + 1 + int(count))), from_registry, from_plans, prefix
 
 

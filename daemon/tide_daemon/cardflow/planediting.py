@@ -233,7 +233,10 @@ class PlanEditing:
         catalog = cfg.catalog if cfg else self.catalog()
         path = os.path.join(step["stepDir"], "out", "plan.md")
         existing = [r["id"] for r in (st.plan_approved or {}).get("rows", [])]
-        proposal = plans.read(path, card, catalog, allowed_roots=[os.path.dirname(path)], existing_ids=existing)
+        existing += [r["id"] for r in (st.imported or {}).get("rows", [])]
+        proposal = plans.read(path, card, catalog, allowed_roots=[os.path.dirname(path)], existing_ids=existing,
+                              tracker="youtrack" if (st.started or {}).get("trackerProject") else "local",
+                              imported=bool(st.imported))
         rows = [{**r, "body": proposal.cards.get(r["workId"], "")} for r in proposal.rows]
         delta = self._difference(revision["baseline"], rows)
         started = {s.get("ticket") for s in st.steps.values() if s.get("ticket")}
@@ -268,13 +271,17 @@ class PlanEditing:
         if set(delta["removed"]) & started or any(c["ticket"] in started for c in delta["changed"]):
             raise FlowError("ticket-started", "różnica zmienia ticket, który już ruszył")
         mapping = {}
+        prefix = proposal["prefix"]
+        floor = max((int(row["id"][len(prefix) + 1:]) for row in current["rows"]
+                     if row["id"].startswith(prefix + "-") and row["id"][len(prefix) + 1:].isdigit()), default=0)
         for row in proposal["rows"]:
             ident = row["workId"]
             if ident.startswith("#"):
                 key = f"plan:{proposal['seq']}:{ident}"
                 reserved = self._act(card, "reserve", key,
-                                     lambda r=row, k=key: self._reserve(self._repo(card), r["title"], f"{card}:{k}", proposal["prefix"]),
-                                     retry_failed=True, repo=self._repo(card), title=row["title"], prefix=proposal["prefix"])
+                                     lambda r=row, k=key: self._reserve(self._repo(card), r["title"], f"{card}:{k}", proposal["prefix"], floor),
+                                     retry_failed=True, repo=self._repo(card), title=row["title"], prefix=proposal["prefix"],
+                                     minimumNumber=floor)
                 mapping[ident] = reserved["ticket"]
             else:
                 mapping[ident] = ident

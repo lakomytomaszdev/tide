@@ -38,6 +38,8 @@ from .. import codex_homes
 from ..board.model import BoardError, card_num
 from ..board import assignment
 from ..coordination import reservations, youtrack as yt
+from ..coordination import plan as source_plans
+from ..board.plan_candidates import candidates as plan_candidates
 from ..tasks import agentcmd, launch, stepstop
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
@@ -197,6 +199,8 @@ class FlowEngine(PlanEditing):
         unknown = [k for k in request if k not in REQUEST_FIELDS]
         if unknown:
             raise FlowError("bad-request", f"nieznane pole „{unknown[0]}”; dozwolone: {', '.join(REQUEST_FIELDS)}")
+        if request.get("entry") == "import":
+            return self.start_import(card_id, request)
         if request.get("entry") == "plan":
             return self.propose_plan(card_id, str(request.get("planPath") or ""))
         if request.get("entry") == "planning" and request.get("mode") == "light":
@@ -341,6 +345,82 @@ class FlowEngine(PlanEditing):
                 "step": step_id, "session": step["session"], "executor": selected.name,
                 "queued": "step" not in step, **({'map': {'#1': ticket}} if project.youtrack else {})}
 
+    def start_import(self, card_id: str, request: dict) -> dict:
+        """Przejmuje wskazany plan; źródło pozostaje w repozytorium bez zmian."""
+        card_id = f"K-{card_num(card_id)}"
+        item, project = self._project(card_id)
+        if item.column in ("done", "archived") or fold(self.journal.read(card_id)).active():
+            raise FlowError("flow-active", "karta jest zakończona albo już pracuje")
+        if not project.repo or project.repo_missing:
+            raise FlowError("no-project", "karta potrzebuje dostępnego repozytorium projektu")
+        path = os.path.realpath(str(request.get("planPath") or item.plan or ""))
+        if not any(p["path"] == path and p["card"] in ("", card_id) and p["status"] != "done"
+                   for p in plan_candidates(project.repo, self.store.root)):
+            raise FlowError("bad-plan", "wybrany plan nie należy do tej karty i projektu")
+        source = source_plans.read(path)
+        if source is None or source.errors or not source.rows:
+            raise FlowError("bad-plan", "plan jest niepoprawny albo nie ma ticketów")
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None:
+            raise FlowError("unknown-executor", "katalog wykonawców jest niedostępny")
+        name = str(request.get("executor") or source.rows[0].agent or "Sonnet")
+        try:
+            selected = execution.resolve(name, catalog, config=cfg, probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        if source.tracker not in ("local", "youtrack") or (source.tracker == "youtrack") != bool(project.youtrack):
+            raise FlowError("bad-plan", "tracker planu różni się od projektu karty")
+        if project.youtrack and (source.tracker_project != project.youtrack or
+                                 source.tracker_url.rstrip("/") != yt.load_config()["url"].rstrip("/")):
+            raise FlowError("bad-plan", "projekt albo adres YouTracka w planie różni się od projektu karty")
+        try:
+            prefix = project.youtrack or reservations.reserve(project.repo, dry_run=True)["prefix"]
+        except reservations.ReservationError as exc:
+            raise FlowError("no-ticket-number", str(exc)) from None
+        if source.prefix != prefix:
+            raise FlowError("bad-plan", "prefiks planu różni się od prefiksu projektu")
+        for row in source.rows:
+            number = row.ticket[len(prefix) + 1:] if row.ticket.startswith(prefix + "-") else ""
+            if not (flow_plans.WORK_ID.fullmatch(row.ticket) or
+                    number and number[0] in "123456789" and number.isdigit()):
+                raise FlowError("bad-plan", f"{row.ticket}: nie można zachować istniejącego numeru ticketu")
+        check = str(request.get("check") or item.check or "auto")
+        if check not in ("auto", "manual"):
+            raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
+        images = self._images(request.get("images"))
+        with open(path, "rb") as fh:
+            source_bytes = fh.read(source_plans.MAX_BYTES + 1)
+        if len(source_bytes) > source_plans.MAX_BYTES:
+            raise FlowError("bad-plan", "plan przekracza 512 KB")
+        import_rows = [{"id": row.ticket, "state": row.state, "title": row.title,
+                        "agent": row.agent, "blockers": list(row.blockers), "note": row.note}
+                       for row in source.rows]
+        proposal = flow_plans.read(path, card_id, catalog, allowed_roots=(project.repo, self.store.root),
+                                   tracker=source.tracker, imported=True,
+                                   existing_ids=[row["id"] for row in import_rows])
+        _meta, body = source_plans.split_frontmatter(source_bytes.decode("utf-8"))
+        loose_text = any(line.strip() and not line.lstrip().startswith("|") for line in body.splitlines())
+        complete = (not proposal.errors and b"| Blokery |" in source_bytes and
+                    not loose_text and all(row.agent and row.work_class and row.reviewer and row.note for row in source.rows))
+        self.store.update_card(card_id, {"planPath": path})
+        self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
+                            column=item.column, moveId=item.move_id, check=check, images=images,
+                            executor=selected.name, program=selected.tool, model=selected.model,
+                            provider=selected.provider, preferredProvider=request.get("preferredProvider") or selected.provider,
+                            prefix=prefix, trackerProject=project.youtrack,
+                            trackerUrl=yt.load_config()["url"] if project.youtrack else "")
+        self.journal.write_file(card_id, os.path.join("plan", "source.md"), source_bytes)
+        self.journal.append(card_id, "plan.imported", path=path, rows=import_rows,
+                            needsCompletion=not complete)
+        if complete:
+            result = self.propose_plan(card_id, path, import_source=True)
+            return {**result, "imported": True, "needsCompletion": False}
+        self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
+        st = fold(self.journal.read(card_id))
+        return {"ok": True, "id": card_id, "imported": True, "needsCompletion": True,
+                "step": st.last_step, "executor": selected.name}
+
     def start_planning(self, card_id: str, request: dict) -> dict:
         card_id = f"K-{card_num(card_id)}"
         item, project = self._project(card_id)
@@ -404,28 +484,39 @@ class FlowEngine(PlanEditing):
         made = self._act(card, "card-branch", branch,
                          lambda: self.git.branch_worktree(project.repo, branch, worktree, self.git.main_branch(project.repo)),
                          repo=project.repo, branch=branch, worktree=worktree, base=self.git.main_branch(project.repo))
-        kind = "plan-fix" if round_no else "planning"
+        importing = st.started.get("entry") == "plan"
+        kind = "plan-import" if importing else "plan-fix" if round_no else "planning"
         step_id = f"{card}-plan-{st.started['seq']}-{round_no}"
         out = worktree + f".{kind}-{step_id}.step/out"
         shots = [os.path.join(os.path.dirname(out), "in", "images", f"{i + 1}-{os.path.basename(p)}")
                  for i, p in enumerate(images)]
-        text = planning.prompt(card=item, project=project, catalog=catalog,
-                               preferred=st.started["preferredProvider"], assignment_rules=st.started["assignmentRules"],
-                               prefix=st.started["prefix"], out_dir=out, errors=errors, previous=previous,
-                               tool=selected.tool, images=shots,
-                               tracker="youtrack" if project.youtrack else "local",
-                               tracker_url=st.started.get("trackerUrl") or "",
-                               tracker_project=project.youtrack or "")
+        if importing:
+            with open(os.path.join(self.store.root, self.journal.rel_dir(card), "plan", "source.md"), encoding="utf-8") as fh:
+                source = fh.read(source_plans.MAX_BYTES)
+            text = planning.import_prompt(card=item, project=project, catalog=catalog, prefix=st.started["prefix"],
+                                          source=source, source_rows=st.imported["rows"], out_dir=out,
+                                          errors=errors, previous=previous, images=shots,
+                                          tracker="youtrack" if project.youtrack else "local",
+                                          tracker_url=st.started.get("trackerUrl") or "",
+                                          tracker_project=project.youtrack or "")
+        else:
+            text = planning.prompt(card=item, project=project, catalog=catalog,
+                                   preferred=st.started["preferredProvider"], assignment_rules=st.started["assignmentRules"],
+                                   prefix=st.started["prefix"], out_dir=out, errors=errors, previous=previous,
+                                   tool=selected.tool, images=shots,
+                                   tracker="youtrack" if project.youtrack else "local",
+                                   tracker_url=st.started.get("trackerUrl") or "",
+                                   tracker_project=project.youtrack or "")
         self._launch(item, project, selected, "", made, made, step_id, list(images), kind=kind,
                      round_no=round_no, prompt_text=text)
 
     def _advance_planning(self, card: str, st: FlowState) -> bool:
         """Osobny etap karty; nie zakłada, że ostatni krok jest jedynym krokiem ticketów."""
-        if (st.started or {}).get("entry") != "planning" or st.plan_approved is not None:
+        if (st.started or {}).get("entry") not in ("planning", "plan") or st.plan_approved is not None:
             return False
         if st.paused or st.plan_proposed is not None:
             return True
-        steps = [step for step in st.steps.values() if step.get("kind") in ("planning", "plan-fix")
+        steps = [step for step in st.steps.values() if step.get("kind") in ("planning", "plan-fix", "plan-import")
                  and step.get("seq", 0) > st.started["seq"]]
         if not steps:
             selected = self._resume_executor(card, st, st.started, st.started["executor"])
@@ -467,6 +558,7 @@ class FlowEngine(PlanEditing):
         except (OSError, UnicodeError):
             previous = "(brak czytelnego pliku planu)"
         self._planning_launch(card, st, selected, catalog, errors=st.plan_checked["errors"], previous=previous,
+                              images=st.started.get("images") or [],
                               round_no=int(step.get("round") or 0) + 1)
     def _tracker_reserve(self, card, key, number, title, description):
         item, project = self._project(card)
@@ -505,8 +597,9 @@ class FlowEngine(PlanEditing):
             except yt.YouTrackError:
                 pass
 
-    def _reserve(self, repo: str, title: str, request_key: str, prefix: str = "") -> dict:
-        got = reservations.reserve(repo, prefix=prefix, count=1, title=title, request_key=request_key)
+    def _reserve(self, repo: str, title: str, request_key: str, prefix: str = "", minimum_number: int = 0) -> dict:
+        got = reservations.reserve(repo, prefix=prefix, count=1, title=title, request_key=request_key,
+                                   at_least=minimum_number)
         return {"ticket": got["ids"][0], "title": title}
 
     def enter(self, card_id: str, step_id: str) -> dict:
@@ -668,7 +761,7 @@ class FlowEngine(PlanEditing):
                 sid = execution.codex_session_id(source)
         return sid, source
 
-    def propose_plan(self, card_id: str, path: str, *, continuation=False, step="") -> dict:
+    def propose_plan(self, card_id: str, path: str, *, continuation=False, step="", import_source=False) -> dict:
         """Przyjmuje propozycję z pliku; walidacja i migawka nie nadają numerów."""
         try:
             card_id = f"K-{card_num(card_id)}"
@@ -681,7 +774,7 @@ class FlowEngine(PlanEditing):
             raise FlowError("no-project", f"{card_id}: karta potrzebuje projektu z repozytorium")
         if item.column in ("done", "archived"):
             raise FlowError("card-finished", f"{card_id}: karta jest zakończona")
-        if not continuation and fold(self.journal.read(card_id)).active():
+        if not continuation and not import_source and fold(self.journal.read(card_id)).active():
             raise FlowError("flow-active", f"{card_id}: karta już pracuje")
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
@@ -691,9 +784,13 @@ class FlowEngine(PlanEditing):
                       fold(self.journal.read(card_id)).steps.values() if s.get("stepDir")]
         roots = ((project.repo, os.path.join(self.store.root, "docs"), *step_roots) if not continuation else
                  (os.path.join(fold(self.journal.read(card_id)).steps[step]["stepDir"], "out"),))
+        imported = fold(self.journal.read(card_id)).imported
+        source_states = {row["id"]: row["state"] for row in (imported or {}).get("rows", [])}
         proposal = flow_plans.read(path, card_id, catalog, allowed_roots=roots,
                                    tracker='youtrack' if project.youtrack else 'local',
-                                   existing_ids=[r["id"] for r in ((fold(self.journal.read(card_id)).plan_approved or {}).get("rows") or [])])
+                                   existing_ids=[*source_states,
+                                                 *[r["id"] for r in ((fold(self.journal.read(card_id)).plan_approved or {}).get("rows") or [])]],
+                                   imported=bool(imported))
         if proposal.plan is not None and proposal.plan.tracker == 'youtrack':
             config_url = yt.load_config()['url'].rstrip('/')
             if proposal.plan.tracker_project != project.youtrack:
@@ -707,7 +804,7 @@ class FlowEngine(PlanEditing):
                     proposal.errors.append(f"prefiks planu {proposal.plan.prefix} różni się od prefiksu repozytorium {established}")
             except reservations.ReservationError as exc:
                 proposal.errors.append(str(exc))
-        if not continuation:
+        if not continuation and not import_source:
             self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
                                 check=item.check or "auto", column=item.column, moveId=item.move_id,
                                 trackerProject=project.youtrack,
@@ -723,13 +820,15 @@ class FlowEngine(PlanEditing):
         for ident, body in proposal.cards.items():
             self.journal.write_file(card_id, os.path.join("plan", "tickets", ident.lstrip("#") + ".md"),
                                     body.encode("utf-8"))
-        rows = [{**row, "body": proposal.cards[row["workId"]], "cardPath": os.path.join(self.store.root, self.journal.rel_dir(card_id),
+        rows = [{**row, "sourceState": source_states.get(row["workId"], ""),
+                 "body": proposal.cards[row["workId"]], "cardPath": os.path.join(self.store.root, self.journal.rel_dir(card_id),
                                                    "plan", "tickets", row["workId"].lstrip("#") + ".md")}
                 for row in proposal.rows]
         self.journal.append(card_id, "plan.proposed", title=proposal.plan.title,
                             prefix=project.youtrack or proposal.plan.prefix, coordinator=proposal.plan.coordinator,
                             session=proposal.plan.session, rows=rows,
-                            planner=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("executor") or proposal.rows[0]["executor"],
+                            planner=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("executor") or
+                                    (fold(self.journal.read(card_id)).started or {}).get("executor") or proposal.rows[0]["executor"],
                             sourceStep=step, sourceKind=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("kind") or "",
                             specification=self._plan_spec(path) or (fold(self.journal.read(card_id)).plan_proposed or {}).get("specification") or item.description, planPath=os.path.realpath(path))
         return {"ok": True, "id": card_id, "rows": proposal.rows, "waves": proposal.waves}
@@ -755,6 +854,8 @@ class FlowEngine(PlanEditing):
             self.journal.append(card_id, 'plan.approval_requested', proposal=proposal['seq'])
         repo = (st.started or {}).get("repo") or ""
         prefix = proposal.get("prefix") or ""
+        imported_floor = max((int(row["id"][len(prefix) + 1:]) for row in (st.imported or {}).get("rows", [])
+                              if row["id"].startswith(prefix + "-") and row["id"][len(prefix) + 1:].isdigit()), default=0)
         _, project = self._project(card_id)
         mapping = {}
         for row in proposal.get("rows") or []:
@@ -777,8 +878,9 @@ class FlowEngine(PlanEditing):
                 else:
                     result = self._act(card_id, "reserve", key,
                                        lambda row=row, key=key: self._reserve(repo, row["title"],
-                                                                                f"{card_id}:{key}", prefix),
-                                       retry_failed=True, repo=repo, title=row["title"], prefix=prefix)
+                                                                                f"{card_id}:{key}", prefix, imported_floor),
+                                       retry_failed=True, repo=repo, title=row["title"], prefix=prefix,
+                                       minimumNumber=imported_floor)
                 mapping[work_id] = result["ticket"]
             else:
                 mapping[work_id] = work_id
@@ -799,6 +901,9 @@ class FlowEngine(PlanEditing):
         waves = graph_waves(rows)
         plan_file = f"docs/agents/plans/{proposal['ts'][:10]}-{card_id.lower()}-flow.md"
         self.journal.append(card_id, "plan.approved", map=mapping, rows=rows, planFile=plan_file)
+        for row in rows:
+            if row.get("sourceState") in ("gotowe", "odrzucone"):
+                self.journal.append(card_id, "ticket.imported", ticket=row["id"], state=row["sourceState"])
         return {"ok": True, "id": card_id, "map": mapping, "waves": waves}
 
     def _images(self, value) -> list[str]:
@@ -997,7 +1102,7 @@ class FlowEngine(PlanEditing):
         ])
         for ticket in tickets:
             merged = st.results.get(("merge", ticket)) or {}
-            if ticket and not merged.get("ok") and ticket not in st.rejected:
+            if ticket and not merged.get("ok") and ticket not in st.imported_done and ticket not in st.rejected:
                 self.journal.append(card, "ticket.rejected", ticket=ticket)
         self.journal.append(card, "card.finished", column=column)
         return True
@@ -1223,7 +1328,7 @@ class FlowEngine(PlanEditing):
         if not approved or st.plan_finished or st.paused or st.open_intents():
             return
         rows = approved.get("rows") or []
-        merged = {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
+        merged = set(st.imported_done) | {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
         item, project = self._project(card)
         card_branch = ticket_of(st)["cardBranch"] or f"card/{card.lower()}-{slug_from_prompt(item.title, words=4, length=32)}"
         main = self.git.main_branch(project.repo)
@@ -1234,7 +1339,7 @@ class FlowEngine(PlanEditing):
                          lambda: self.git.branch_worktree(project.repo, card_branch, card_worktree, main),
                          repo=project.repo, branch=card_branch, worktree=card_worktree, base=main)
         self._plan_commit(card, fold(self.journal.read(card)), project.repo, card_branch, card_worktree)
-        if len(merged) == len(rows):
+        if len(merged | st.rejected) == len(rows):
             self.journal.append(card, "plan.finished", merged=len(merged))
             return
         for row in rows:
@@ -1290,13 +1395,12 @@ class FlowEngine(PlanEditing):
             except FlowDeferred:
                 continue
             st = fold(self.journal.read(card))
-        if any(row["id"] in st.rejected for row in rows):
-            raise FlowError("blocked-plan", "odrzucony ticket blokuje dalszy plan")
+        # Odrzucony ticket nie blokuje niezależnych gałęzi grafu.
 
     def _plan_commit(self, card: str, st: FlowState, repo: str, branch: str, worktree: str) -> None:
         approved = st.plan_approved or {}
         rows = approved.get("rows") or []
-        merged = {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
+        merged = set(st.imported_done) | {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
         key = f"{approved.get('seq')}:{st.plan_change_seq}"
         files = self._plan_files(card, st, merged)
         self._act(card, "plan-commit", key,
@@ -1315,7 +1419,7 @@ class FlowEngine(PlanEditing):
                  f"coordinator: {proposed.get('coordinator') or 'claude'}",
                  f"session: {cell(proposed.get('session'))}",
                  f"ticket-prefix: {proposed.get('prefix') or ''}", f"card: {card}",
-                 "status: done" if len(merged) == len(approved.get("rows") or []) else "status: active",
+                 "status: done" if len(merged | st.rejected) == len(approved.get("rows") or []) else "status: active",
                  f"updated: {st.plan_change_ts or approved.get('ts') or ''}", "---", "",
                  "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |",
                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
@@ -1327,10 +1431,9 @@ class FlowEngine(PlanEditing):
             lines.append("| " + " | ".join(cell(value) for value in
                          (ticket, row["title"], state, branch, row["executor"], row.get("note") or "",
                           row.get("class") or "", row["reviewer"], ", ".join(row["blockers"]))) + " |")
-            if not merged:
-                ticket_dir = os.path.dirname(approved["planFile"]).replace("/plans", "/tickets")
-                ticket_path = f"{ticket_dir}/{card.lower()}-flow/{ticket.lower()}.md"
-                files[ticket_path] = self._plan_card(card, row).encode("utf-8")
+            ticket_dir = os.path.dirname(approved["planFile"]).replace("/plans", "/tickets")
+            ticket_path = f"{ticket_dir}/{card.lower()}-flow/{ticket.lower()}.md"
+            files[ticket_path] = self._plan_card(card, row).encode("utf-8")
         files[approved["planFile"]] = ("\n".join(lines) + "\n").encode("utf-8")
         return files
 
@@ -1737,7 +1840,7 @@ class FlowEngine(PlanEditing):
         if action == "reserve":
             self._act(card, action, key,
                       lambda: self._reserve(intent["repo"], intent["title"], f"{card}:{key}",
-                                            intent.get("prefix") or ""))
+                                            intent.get("prefix") or "", int(intent.get("minimumNumber") or 0)))
             return
         if action == "plan-commit":
             self._plan_commit(card, fold(self.journal.read(card)), intent["repo"],
