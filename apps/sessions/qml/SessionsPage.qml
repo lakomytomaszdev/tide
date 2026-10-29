@@ -15,10 +15,12 @@ Rectangle {
     property var coordinators: []
     property var board: null
     property var sessions: []
+    property var flowCards: []
     property var detail: null
     property bool available: true
     property real nowTs: Date.now() / 1000
     property string selectedId: ""
+    property string selectedFlowId: ""
     property string selectedKey: ""
     property bool showingResult: false
     property bool canDiff: true
@@ -33,6 +35,7 @@ Rectangle {
     signal sessionRequested(string id)
 
     readonly property var singles: Logic.singleSessions(sessions, coordinators)
+    readonly property var flowCard: Logic.flowCardById(flowCards, selectedFlowId)
     readonly property var ticket: Logic.ticketById(board, selectedKey)
     readonly property bool youtrack: board !== null && board.tracker && board.tracker.kind === "youtrack"
 
@@ -89,7 +92,7 @@ Rectangle {
                     Text {
                         Layout.fillWidth: true
                         Layout.leftMargin: 6
-                        visible: page.coordinators.length === 0
+                        visible: page.coordinators.length === 0 && page.flowCards.length === 0
                         text: !page.available ? "Usługa tide-daemon nie działa." : "Żadna sesja z ostatnich dni nie zlecała pracy podagentom."
                         color: Tide.Tokens.textMuted
                         font.family: Tide.Theme.uiFamily
@@ -105,6 +108,70 @@ Rectangle {
                             selected: modelData.id === page.selectedId
                             nowTs: page.nowTs
                             onClicked: page.selectRequested(modelData.id)
+                        }
+                    }
+
+                    Text {
+                        Layout.leftMargin: 6
+                        Layout.topMargin: 14
+                        visible: page.flowCards.length > 0
+                        text: "KARTY W PRZEPŁYWIE"
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        font.letterSpacing: 0.9
+                        font.weight: Font.DemiBold
+                        Accessible.role: Accessible.Heading
+                    }
+                    Repeater {
+                        model: page.flowCards
+                        Rectangle {
+                            id: flowEntry
+                            required property var modelData
+                            Layout.fillWidth: true
+                            implicitHeight: flowTitle.implicitHeight + flowNote.implicitHeight + 18
+                            radius: 10
+                            color: modelData.id === page.selectedFlowId ? Tide.Theme.alpha(Tide.Tokens.accent, 0.10)
+                                  : flowArea.containsMouse ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.04) : "transparent"
+                            Accessible.role: Accessible.Button
+                            Accessible.name: modelData.id + " " + modelData.title
+                            Accessible.onPressAction: { page.selectedFlowId = modelData.id; page.showingResult = false }
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                anchors.topMargin: 8
+                                anchors.bottomMargin: 8
+                                spacing: 2
+                                Text {
+                                    id: flowTitle
+                                    Layout.fillWidth: true
+                                    text: flowEntry.modelData.id + " · " + flowEntry.modelData.title
+                                    textFormat: Text.PlainText
+                                    color: Tide.Tokens.textPrimary
+                                    font.family: Tide.Theme.uiFamily
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    id: flowNote
+                                    Layout.fillWidth: true
+                                    text: flowEntry.modelData.derived.note || ""
+                                    textFormat: Text.PlainText
+                                    color: Tide.Tokens.textMuted
+                                    font.family: Tide.Theme.uiFamily
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                            }
+                            MouseArea {
+                                id: flowArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: { page.selectedFlowId = flowEntry.modelData.id; page.showingResult = false }
+                            }
                         }
                     }
 
@@ -181,7 +248,7 @@ Rectangle {
             RowLayout {
                 anchors.fill: parent
                 spacing: 0
-                visible: !page.showingResult
+                visible: !page.showingResult && page.flowCard === null
 
                 // Tablica.
                 ColumnLayout {
@@ -197,7 +264,8 @@ Rectangle {
                         visible: page.board === null
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
-                        text: page.coordinators.length > 0 ? "Wybierz koordynatora po lewej." : ""
+                        text: page.coordinators.length > 0 || page.flowCards.length > 0
+                              ? "Wybierz koordynatora lub kartę po lewej." : ""
                         color: Tide.Tokens.textMuted
                         font.family: Tide.Theme.uiFamily
                         font.pixelSize: 14
@@ -439,6 +507,12 @@ Rectangle {
                 detail: page.detail
                 nowTs: page.nowTs
                 onCloseRequested: page.showingResult = false
+            }
+
+            FlowCardPanel {
+                anchors.fill: parent
+                visible: page.flowCard !== null
+                card: page.flowCard
             }
         }
     }
