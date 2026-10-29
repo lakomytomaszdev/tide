@@ -21,12 +21,13 @@ class WorktreeMonitor(QObject):
     _finished = pyqtSignal(object, object)  # (co dalej, Future) — z wątku roboczego do głównego
 
     def __init__(self, scanner, cwds_source, launchers=None, refresh_agents=None, refresh_ms: int = REFRESH_MS,
-                 parent=None, live_source=None):
+                 parent=None, live_source=None, card_places_source=None):
         super().__init__(parent)
         self.refresh_agents = refresh_agents  # funkcja() odświeżająca stan agentów tuż przed sprzątaniem
         self.scanner = scanner
         self.cwds_source = cwds_source  # funkcja() -> katalogi robocze żywych agentów
         self.live_source = live_source  # funkcja() -> żywe sesje (narzędzie, identyfikator) albo None
+        self.card_places_source = card_places_source  # funkcja() -> worktree zajęte przez przepływ karty
         self.launchers = launchers
         self._json = "[]"
         self._refreshing = False
@@ -57,7 +58,8 @@ class WorktreeMonitor(QObject):
 
     def publish(self) -> None:
         live = self.live_source() if self.live_source else ()
-        text = json.dumps(self.scanner.snapshot(self.cwds_source(), live=live), ensure_ascii=False)
+        cards = self.card_places_source() if self.card_places_source else ()
+        text = json.dumps(self.scanner.snapshot(self.cwds_source(), live=live, card_paths=cards), ensure_ascii=False)
         if text != self._json:
             self._json = text
             self.changed.emit()

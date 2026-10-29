@@ -235,7 +235,8 @@ def main(argv=None) -> int:
                             lambda: worktrees.agent_cwds(monitor.sessions, monitor.procs)
                             + [place for source in flow_places for place in source()],
                             launchers, refresh_agents=monitor.recompute,
-                            live_source=lambda: worktrees.live_sessions(monitor.sessions))
+                            live_source=lambda: worktrees.live_sessions(monitor.sessions),
+                            card_places_source=lambda: [place for source in flow_places for place in source()])
     monitor.changed.connect(trees.publish)  # nowy albo zakończony agent zmienia flagę „aktywny agent”
     # KRunner przed główną nazwą: gdy org.tide.Daemon jest już na magistrali, wtyczka też.
     coordination = None if args.no_coordination else start_coordination(app, args, clock, monitor, trees,
