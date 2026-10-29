@@ -34,6 +34,7 @@ Item {
     readonly property bool columns: deck.streamX >= 0
     readonly property bool scoreWanted: columns && !!(view && view.situation && view.situation.cards
                                                      && view.situation.cards.indexOf("score") >= 0)
+    readonly property real streamBottom: stream.y + stream.height
 
     ScenesCard {
         id: scenes
