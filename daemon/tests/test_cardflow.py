@@ -563,8 +563,10 @@ class JournalInProcessTest(FlowInProcess):
         git(self.root, "rm", "-q", "-r", os.path.join("flow", card_id))
         git(self.root, "commit", "-q", "-m", "ręczne cofnięcie")
         self.assertTrue(wait_until(lambda: self.events(card_id) == before, timeout=15), "dziennik odtworzony")
-        errors = json.loads(self.board.snapshot_json())["errors"]
-        self.assertTrue([e for e in errors if "dziennik" in e["message"] and card_id in e["message"]], errors)
+        def warning():
+            errors = json.loads(self.board.snapshot_json())["errors"]
+            return [e for e in errors if "dziennik" in e["message"] and card_id in e["message"]]
+        self.assertTrue(wait_until(warning, timeout=5), json.loads(self.board.snapshot_json())["errors"])
         self.assertEqual(self.shown(card_id)["boardColumn"], "review")
         self.assertTrue(wait_until(lambda: git(self.root, "status", "--porcelain") == "", timeout=5))
         self.assertIn("journal.jsonl", git(self.root, "show", "--name-only", "--format=", "HEAD"))
