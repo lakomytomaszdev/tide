@@ -599,11 +599,13 @@ class FlowEngine(PlanEditing):
                      round_no=round_no, prompt_text=text)
 
     def _launch_full_planning(self, item, project, selected, made, step_id, images, shots, prompt,
-                              *, parent_step="", attempt=0, include_context=True):
-        """Pierwsze planowanie Pełne: jedna karta Konsoli z plikiem wyniku obserwowanym przez silnik."""
+                              *, parent_step="", attempt=0, include_context=True, kind="planning",
+                              ticket="", round_no=0, review_tip=""):
+        """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
         worktree = made["worktree"]
         git_dir = agentcmd.resolve_git_dir(project.repo, worktree)
-        step_dir = worktree + f".planning-{step_id}.step"
+        suffix = "planning" if kind == "planning" else "interactive"
+        step_dir = worktree + f".{suffix}-{step_id}.step"
         out = os.path.join(step_dir, "out")
         inp = os.path.join(step_dir, "in")
         os.makedirs(out, mode=0o700, exist_ok=True)
@@ -641,19 +643,19 @@ class FlowEngine(PlanEditing):
         os.makedirs(claim_dir, mode=0o700, exist_ok=True)
         console_unit = "tide-console-" + uuid.uuid4().hex
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
-                   "title": f"{item.id} · planowanie Pełne", "closedFile": closed,
+                   "title": f"{item.id} · {ticket or 'planowanie Pełne'}", "closedFile": closed,
                    "processFile": process_file, "consoleUnit": console_unit,
                    "systemdRun": self.systemd_run or agentcmd.SYSTEMD_RUN,
                    "systemctl": self.which("systemctl") or "/usr/bin/systemctl"}
         payload.update(command.task_fields())
         task_file = self.task_files.write(payload)
-        self.journal.append(item.id, "step.started", step=step_id, kind="planning", ticket="", round=0,
+        self.journal.append(item.id, "step.started", step=step_id, kind=kind, ticket=ticket, round=round_no,
                             executor=selected.name, program=selected.tool, model=selected.model,
                             provider=selected.provider, local=selected.local, effort=selected.effort,
                             unit="", session=session, worktree=worktree, branch=made["branch"],
                             stepDir=step_dir, repo=project.repo,
                             gitDir=git_dir,
-                            parentStep=parent_step, attempt=attempt)
+                            parentStep=parent_step, attempt=attempt, reviewTip=review_tip)
         self.journal.append(item.id, "step.entered", step=step_id, session=session, source="",
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
                             taskFile=task_file, enteredAt=self.clock())
@@ -672,6 +674,7 @@ class FlowEngine(PlanEditing):
                              forced={"result": "stopped", "reason": "interactive-closed",
                                      "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
             raise FlowError("no-terminal", "nie udało się otworzyć karty Konsoli")
+        self.journal.append(item.id, "step.console_opened", step=step_id)
 
     @staticmethod
     def _project_context(repo: str, budget: int) -> str:
@@ -949,6 +952,7 @@ class FlowEngine(PlanEditing):
                              forced={"result": "stopped", "reason": "interactive-closed",
                                      "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
             raise FlowError("no-terminal", "nie udało się otworzyć karty Konsoli")
+        self.journal.append(card_id, "step.console_opened", step=new_id)
         return {"ok": True, "id": card_id, "step": new_id, "session": session, "mode": mode}
 
     def abandon(self, card_id: str, step_id: str) -> dict:
@@ -1391,6 +1395,10 @@ class FlowEngine(PlanEditing):
         self._busy = tuple(sorted(busy))
 
     def _tick_card(self, card: str, st: FlowState) -> None:
+        self._recover_transfer_requests(card, st)
+        st = fold(self.journal.read(card))
+        self._recover_console_openings(card, st)
+        st = fold(self.journal.read(card))
         self._sync_plan_cards(card, st)
         self._recover_started_steps(card, st)
         self._recover_verdicts(card)
@@ -1421,6 +1429,8 @@ class FlowEngine(PlanEditing):
             self._reconcile(card, intent)
         st = fold(self.journal.read(card))
         for item in st.steps.values():
+            if item.get("step") in st.transfer_requests and item.get("step") not in st.step_decisions:
+                continue
             if item.get("mode") == "interactive" and not item.get("consoleClosed") and self._console_ended(item):
                 self.journal.append(card, "step.console_closed", step=item.get("step"))
         st = fold(self.journal.read(card))
@@ -1428,6 +1438,8 @@ class FlowEngine(PlanEditing):
             self._complete_manual_finish(card, st.moved_to)
             return
         for step in st.running():
+            if step.get("step") in st.transfer_requests and step.get("step") not in st.step_decisions:
+                continue
             self._poll(card, step)
         self._advance_user_revision(card, fold(self.journal.read(card)))
         current = fold(self.journal.read(card))
@@ -1866,6 +1878,9 @@ class FlowEngine(PlanEditing):
             raise FlowError("no-transfer-step", f"{card}: ten krok już się zakończył")
         previous = st.step_decisions.get(focus) or {}
         executor = str(request.get("executor") or "").strip()
+        intent = st.transfer_requests.get(focus) or {}
+        if choice == "transfer" and intent and intent.get("executor") != executor:
+            raise FlowError("already-decided", "przekazanie do innego wykonawcy już trwa")
         if previous.get("choice") == choice and (choice != "transfer" or previous.get("executor") == executor):
             return {"ok": True, "id": card, "step": focus, "choice": choice, "already": True}
         if previous and not (previous.get("choice") == "wait-limit" and choice == "transfer"):
@@ -1876,6 +1891,10 @@ class FlowEngine(PlanEditing):
                 raise FlowError("bad-executor", "wybierz wykonawcę u innego dostawcy")
             target = self._resume_executor(card, st, step, executor, changed=True, transfer=True)
             reviewer = self._transfer_reviewer(st, step, target)
+            if not intent:
+                self.journal.append(card, "step.transfer_requested", step=focus,
+                                    ticket=step.get("ticket") or "", executor=executor)
+                st = fold(self.journal.read(card))
         if not done:
             if choice != "transfer" or any(other.get("ticket") == step.get("ticket") and
                                             other.get("step") != focus for other in st.running()):
@@ -1924,8 +1943,52 @@ class FlowEngine(PlanEditing):
                 return False
         if not (cancelled or self._console_ended(step)):
             return False
-        self.journal.append(card, "step.console_closed", step=step.get("step") or "")
+        if not step.get("consoleClosed"):
+            self.journal.append(card, "step.console_closed", step=step.get("step") or "")
         return self._stop(card, step, "stopped", "transfer", handoff=True)
+
+    def _recover_transfer_requests(self, card: str, st: FlowState) -> None:
+        """Po restarcie dokańcza stop, WIP i decyzję przed zwykłym odpytywaniem Konsoli."""
+        for name, intent in st.transfer_requests.items():
+            current = fold(self.journal.read(card))
+            if current.card_finished or name in current.step_decisions:
+                continue
+            try:
+                self._resolve_transfer(card, current,
+                                       {"choice": "transfer", "step": name,
+                                        "executor": intent.get("executor") or ""})
+            except FlowError:
+                pass
+
+    def _recover_console_openings(self, card: str, st: FlowState) -> None:
+        """Otwiera oczekujące zadanie Konsoli po przerwaniu usługi między zapisem a terminal.open."""
+        if self.terminal is None or not self.terminal.available():
+            return
+        for step in st.steps.values():
+            name = step.get("step") or ""
+            if step.get("mode") != "interactive" or step.get("consoleOpened") or step.get("consoleClosed") or \
+                    name in st.finished or (name in st.transfer_requests and name not in st.step_decisions):
+                continue
+            task = step.get("taskFile") or ""
+            if not task:
+                continue
+            if not os.path.isfile(task):
+                if launch.process_alive(step.get("processFile") or "") is True:
+                    self.journal.append(card, "step.console_opened", step=name, recovered=True)
+                continue
+            try:
+                with open(task, encoding="utf-8") as fh:
+                    payload = json.load(fh)
+                plan = Plan(repo_path=step.get("repo") or self._repo(card), repo_name="",
+                            tool=step.get("program") or "", prompt="", cwd=payload["cwd"],
+                            branch=step.get("branch") or "", title=payload["title"],
+                            argv=payload["argv"], task_file=task)
+                opened = self.terminal.open(plan)
+            except Exception as exc:
+                print(f"tide-daemon: przepływ karty {card}: wznowienie Konsoli: {exc!r}", flush=True)
+                continue
+            if opened:
+                self.journal.append(card, "step.console_opened", step=name, recovered=True)
 
     def resolve_step(self, card_id: str, request: dict) -> dict:
         """Odpowiedź na wynik kroku; zdarzenie pozwala wznowić go także po restarcie usługi."""
@@ -2077,6 +2140,9 @@ class FlowEngine(PlanEditing):
     def _save_transfer_reviewer(self, card: str, step: dict, candidate) -> None:
         if candidate is None:
             return
+        prior = fold(self.journal.read(card)).reviewer_overrides.get(step.get("ticket") or "") or {}
+        if prior.get("sourceStep") == step.get("step") and prior.get("reviewer") == candidate.name:
+            return
         route = candidate.route
         self.journal.append(card, "reviewer.reassigned", ticket=step.get("ticket") or "",
                             sourceStep=step.get("step") or "", reason="transfer-provider",
@@ -2097,7 +2163,7 @@ class FlowEngine(PlanEditing):
                                                str(step.get("kind") or "").startswith("plan") else info["id"])
         choice = decision.get("choice") or ""
         name = decision.get("executor") if choice in ("change-executor", "transfer") else step.get("executor") or ""
-        step_id = self._next_step_id(card, "plan" if step.get("mode") == "interactive" else resume_ticket, st)
+        step_id = self._next_step_id(card, resume_ticket or "plan", st)
         try:
             selected = self._resume_executor(card, st, step, name,
                                              changed=choice in ("change-executor", "transfer"),
@@ -2129,7 +2195,8 @@ class FlowEngine(PlanEditing):
         resume_worktree = step.get("worktree") or info["worktree"]
         resume_branch = step.get("branch") or info["branch"]
         interactive_transfer = choice == "transfer" and step.get("mode") == "interactive"
-        new_out = (resume_worktree + f".planning-{step_id}.step/out" if interactive_transfer else
+        suffix = "planning" if step.get("kind") == "planning" else "interactive"
+        new_out = (resume_worktree + f".{suffix}-{step_id}.step/out" if interactive_transfer else
                    resume_worktree + f".resume-{step_id}.step/out")
         prompt = prompt.replace(old_out, new_out)
         prompt += handoff.resume_context(choice=choice, prior=st.finished.get(step.get("step")) or {},
@@ -2157,7 +2224,10 @@ class FlowEngine(PlanEditing):
             self._launch_full_planning(item, project, selected,
                                        {"branch": resume_branch, "worktree": resume_worktree},
                                        step_id, [], [], prompt, parent_step=step.get("step") or "",
-                                       attempt=attempt, include_context=False)
+                                       attempt=attempt, include_context=False,
+                                       kind=step.get("kind") or "ticket", ticket=resume_ticket,
+                                       round_no=int(step.get("round") or 0),
+                                       review_tip=step.get("reviewTip") or "")
             return
         self._launch(item, project, selected, resume_ticket,
                      {"branch": info["cardBranch"]},

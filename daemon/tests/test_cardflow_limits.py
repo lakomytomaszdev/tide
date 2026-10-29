@@ -297,6 +297,59 @@ class InteractiveTransferTest(FlowInProcess):
         step = fold(self.events(card)).steps[step_id]
         return card, step, terminal
 
+    def entered(self, card, step_id):
+        terminal = _Terminal()
+        terminal.launchers = SimpleNamespace(agents={"claude": "/bin/claude", "codex": "/bin/codex"},
+                                             codex_for=lambda _: "/bin/codex")
+        self.flow.engine.terminal = terminal
+        answers = []
+        with mock.patch.object(self.flow.engine, "_session", return_value=("00000000-0000-4000-8000-000000000069", "")):
+            self.board.enter_step(card, step_id, answers.append)
+            self.assertTrue(wait_until(lambda: answers, timeout=30), self.events(card))
+        reply = json.loads(answers[0])
+        self.assertTrue(reply["ok"], reply)
+        return fold(self.events(card)).steps[reply["step"]], terminal
+
+    def test_entered_ticket_transfer_keeps_ticket_kind_and_worktree(self):
+        card = self.card(description="Dodaj eksport.\n\nATRAPA: czekaj-pierwszy")
+        self.assertTrue(self.start(card)["ok"])
+        original = self.of(card, "step.started")[0]
+        self.assertTrue(wait_until(lambda: os.path.isfile(os.path.join(original["worktree"], "ATRAPA.md")), timeout=15))
+        entered, terminal = self.entered(card, original["step"])
+        self.assertEqual(entered["mode"], "interactive")
+        answer = self.resolve(card, {"choice": "transfer", "step": entered["step"],
+                                     "executor": "Codex mocny"})
+        self.assertTrue(answer["ok"], answer)
+        self.assertTrue(wait_until(lambda: len(terminal.opened) == 2, timeout=30), self.events(card))
+        resumed = fold(self.events(card)).steps[self.of(card, "step.started")[-1]["step"]]
+        self.assertEqual((resumed["kind"], resumed["ticket"], resumed["worktree"], resumed["parentStep"]),
+                         ("ticket", original["ticket"], original["worktree"], original["step"]))
+
+    def test_entered_review_transfer_preserves_review_verdict(self):
+        card = self.card(description="Dodaj eksport.\n\nATRAPA: czekaj-review")
+        self.assertTrue(self.start(card)["ok"])
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "review" for s in self.of(card, "step.started")),
+                                   timeout=30), self.events(card))
+        original = next(s for s in self.of(card, "step.started") if s["kind"] == "review")
+        self.assertTrue(wait_until(lambda: os.path.isfile(os.path.join(original["stepDir"], "out", "fake-call.json")),
+                                   timeout=15))
+        entered, terminal = self.entered(card, original["step"])
+        answer = self.resolve(card, {"choice": "transfer", "step": entered["step"],
+                                     "executor": "Codex mocny"})
+        self.assertTrue(answer["ok"], answer)
+        self.assertTrue(wait_until(lambda: len(terminal.opened) == 2, timeout=30), self.events(card))
+        resumed = fold(self.events(card)).steps[self.of(card, "step.started")[-1]["step"]]
+        self.assertEqual((resumed["kind"], resumed["ticket"], resumed["worktree"], resumed["reviewTip"]),
+                         ("review", original["ticket"], original["worktree"], original["reviewTip"]))
+        out = os.path.join(resumed["stepDir"], "out")
+        with open(os.path.join(out, "review.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Review\nAPPROVE\n")
+        with open(os.path.join(out, "result.json"), "w", encoding="utf-8") as fh:
+            json.dump({"result": "done", "verdict": "APPROVE", "blockers": 0, "majors": 0,
+                       "nits": 0, "notes": ["review.md"]}, fh)
+        self.assertTrue(wait_until(lambda: any(v["step"] == resumed["step"] for v in
+                                        self.of(card, "review.verdict")), timeout=20), self.events(card))
+
     def test_pending_console_transfer_preserves_wip_and_continues_in_new_console(self):
         card, first, terminal = self.full()
         self.assertTrue(self.shown(card)["derived"]["flow"]["steps"][0]["canTransfer"])
@@ -350,6 +403,57 @@ class InteractiveTransferTest(FlowInProcess):
         self.flow.engine.terminal = terminal
         self.assertTrue(wait_until(lambda: len(terminal.opened) == 2, timeout=30), self.events(card))
         self.assertEqual(len(self.of(card, "step.started")), 2)
+
+    def test_restart_after_first_transfer_event_finishes_stop_and_wip(self):
+        card, first, terminal = self.full()
+        self.flow._timer.stop()
+        self.flow.engine.journal.append(card, "step.transfer_requested", step=first["step"], ticket="",
+                                        executor="Codex mocny")
+        self.assertEqual(self.of(card, "step.finished"), [])
+        self.assertTrue(fold(self.events(card)).active())
+        self.restart()
+        self.flow.engine.terminal = terminal
+        self.assertTrue(wait_until(lambda: len(terminal.opened) == 2, timeout=30), self.events(card))
+        self.assertEqual(self.of(card, "step.finished")[0]["reason"], "transfer")
+        self.assertTrue(self.of(card, "step.finished")[0]["wip"]["stopped"])
+        self.assertEqual(len(self.of(card, "step.decision")), 1)
+        self.assertEqual(len(self.of(card, "step.started")), 2)
+
+    def test_restart_after_console_closed_before_wip_repairs_transfer(self):
+        card, first, terminal = self.full()
+        self.flow._timer.stop()
+        self.flow.engine.journal.append(card, "step.transfer_requested", step=first["step"], ticket="",
+                                        executor="Codex mocny")
+        self.assertTrue(self.flow.engine.task_files.cancel(first["taskFile"]))
+        self.flow.engine.journal.append(card, "step.console_closed", step=first["step"])
+        self.assertTrue(fold(self.events(card)).active())
+        self.restart()
+        self.flow.engine.terminal = terminal
+        self.assertTrue(wait_until(lambda: len(terminal.opened) == 2, timeout=30), self.events(card))
+        self.assertEqual(self.of(card, "step.finished")[0]["reason"], "transfer")
+        self.assertTrue(self.of(card, "step.finished")[0]["wip"]["stopped"])
+
+    def test_restart_opens_persisted_console_task_once(self):
+        terminal = _Terminal()
+        terminal.open = mock.Mock(side_effect=KeyboardInterrupt("crash before terminal.open"))
+        self.flow.engine.terminal = terminal
+        card = self.card(description="Plan po awarii.")
+        self.flow._timer.stop()
+        with self.assertRaises(KeyboardInterrupt):
+            self.flow.engine.start(card, {"entry": "planning", "mode": "full",
+                                          "executor": "Sonnet", "preferredProvider": "anthropic"})
+        step_id = self.of(card, "step.started")[0]["step"]
+        pending = fold(self.events(card)).steps[step_id]
+        self.assertFalse(pending["consoleOpened"])
+        self.assertTrue(os.path.isfile(pending["taskFile"]))
+        self.restart()
+        recovered = _Terminal()
+        self.flow.engine.terminal = recovered
+        self.assertTrue(wait_until(lambda: len(recovered.opened) == 1, timeout=20), self.events(card))
+        self.assertEqual(len(self.of(card, "step.console_opened")), 1)
+        self.assertTrue(self.of(card, "step.console_opened")[0]["recovered"])
+        wait_until(lambda: False, timeout=0.3)
+        self.assertEqual(len(recovered.opened), 1)
 
     def test_restart_after_transfer_decision_starts_one_new_attempt(self):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: czekaj-pierwszy")
