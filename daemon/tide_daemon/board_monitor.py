@@ -490,6 +490,8 @@ class BoardMonitor(QObject):
                 if self.flow is not None and self.flow.has_journal(card.get("id") or ""):
                     # Karta w przepływie karty: stan tylko z dziennika (dziennik wygrywa z planem i sesjami).
                     derived = self.flow.derived(card)
+                    if hasattr(self.flow, 'tracker_tickets'):
+                        card['flowTickets'] = self.flow.tracker_tickets(card)
                 elif derive is not None:
                     given = {**card, "repo": repos.get(card.get("project"), ""),
                              "extraRepos": [repos.get(slug) for slug in card.get("projects") or [] if repos.get(slug)]}

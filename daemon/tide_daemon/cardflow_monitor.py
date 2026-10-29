@@ -53,6 +53,9 @@ class CardFlowMonitor(QObject):
     def derived(self, card: dict):
         return self.engine.derived(card)
 
+    def tracker_tickets(self, card):
+        return self.engine.tracker_tickets(card)
+
     def warnings(self) -> list:
         return self.engine.warnings()
 

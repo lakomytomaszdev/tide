@@ -123,6 +123,23 @@ def compute_wants(snapshot: dict, boards: list, settings: dict, records: dict) -
     card_wants = {key: _card_want(key, cards, records.get(key)) for key, cards in cards_by_issue.items()}
     card_wants = {k: w for k, w in card_wants.items() if w is not None}
     ticket_wants = _ticket_wants(boards, enabled, snapshot)
+    # Tickety przejęte przez przepływ karty mają wyłącznie stan z dziennika, również w Gotowych.
+    for card in snapshot.get('cards') or []:
+        flow = card.get('flowTickets')
+        if flow is None:
+            continue
+        for ticket in flow.get('tickets') or []:
+            key = yt.issue_key(ticket.get('id') or '')
+            ticket_wants.pop(key, None)
+            wanted = TICKET_KEYS.get(ticket.get('state'))
+            if not wanted or project_of(key) not in enabled:
+                continue
+            if wanted == 'review' and card.get('column') == 'done':
+                wanted = 'done'
+            ticket_wants[key] = Want(issue=key, key=wanted, via='ticket', label=f'ticket {key}',
+                                     link_ts=ticket.get('linkedTs') or 0,
+                                     explicit_ts=ticket.get('activityTs') or 0,
+                                     slow=wanted in RESOLVED_KEYS + ('waiting',))
     out = {}
     for key in set(card_wants) | set(ticket_wants):
         card, ticket = card_wants.get(key), ticket_wants.get(key)
