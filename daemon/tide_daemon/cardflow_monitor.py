@@ -100,6 +100,9 @@ class CardFlowMonitor(QObject):
         if not self._submit(work, answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
+    def set_paused(self, card_id: str, paused: bool, reply) -> None:
+        self._action("SetCardPaused", lambda: self.engine.set_paused(card_id, paused), reply)
+
     def moved(self, card_id: str, column: str, shown: str = "", move_id: str = "") -> None:
         self._submit(lambda: self.engine.moved(card_id, column, shown, move_id), _report("MoveCard"))
 

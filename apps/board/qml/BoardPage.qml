@@ -78,6 +78,7 @@ Rectangle {
     signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
     signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
     signal stepResolveRequested(string tag, string cardId, string request) // /Board ResolveCardStep
+    signal pauseRequested(string tag, string cardId, bool paused)
     signal planApproveRequested(string tag, string cardId)       // /Board ApproveCardPlan
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
@@ -310,8 +311,14 @@ Rectangle {
                 optimistic = optimistic.concat([{ id: launchCardId, column: "todo", before: "", tag: moveTag }])
                 moveRequested(moveTag, launchCardId, "todo", -1)
             }
-            launchToast = (launchChoice.entry === "planning" ? "Ruszyło planowanie w tle karty " : "Ruszył krok w tle: " + (reply.ticket || "ticket") + " karty ") + launchCardId
-                + " — " + (reply.executor || launchChoice.executor) + ", bez Konsoli"
+            if (launchChoice.entry === "planning") {
+                launchToast = (reply.queued ? "Planowanie czeka na wolne miejsce: karta "
+                                            : "Ruszyło planowanie w tle karty ") + launchCardId
+            } else {
+                launchToast = (reply.queued ? "Krok czeka na wolne miejsce: " : "Ruszył krok w tle: ")
+                              + (reply.ticket || "ticket") + " karty " + launchCardId
+            }
+            launchToast += " — " + (reply.executor || launchChoice.executor) + ", bez Konsoli"
             closeLaunch(true)
             showToast(launchToast, "mint")
         } else if (tag.indexOf("launch-render:") === 0) {
@@ -402,6 +409,10 @@ Rectangle {
             cardPanel.busy = false
             cardPanel.error = error
             if (!error) cardPanel.notice = "Decyzja zapisana. Wznawiam krok w tle."
+        } else if (tag.indexOf("flow-pause:") === 0) {
+            cardPanel.busy = false
+            cardPanel.error = error
+            if (!error) cardPanel.notice = reply.paused ? "Karta wstrzymana. Trwające kroki kończą się." : "Karta wznowiona."
         } else if (tag.indexOf("plan-approve:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
@@ -1317,6 +1328,10 @@ Rectangle {
             page.reviewResolveRequested(page.nextTag("review-resolve:" + cardId), cardId, choice)
         onStepResolveRequested: (cardId, request) =>
             page.stepResolveRequested(page.nextTag("step-resolve:" + cardId), cardId, JSON.stringify(request))
+        onPauseRequested: (cardId, paused) => {
+            cardPanel.busy = true
+            page.pauseRequested(page.nextTag("flow-pause:" + cardId), cardId, paused)
+        }
         onPlanApproveRequested: cardId =>
             page.planApproveRequested(page.nextTag("plan-approve:" + cardId), cardId)
         onMoveRequested: column => {

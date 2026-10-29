@@ -19,7 +19,7 @@ Kolumna (ręczne kolumny wygrywają z dziennikiem):
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 RESULT_LABELS = {"done": "gotowe", "question": "pytanie", "denied": "brak zgody", "error": "błąd", "stopped": "zatrzymany"}
 REASON_LABELS = {"no-result": "brak pliku wyniku", "bad-result": "zły plik wyniku", "no-progress": "bez postępu",
@@ -50,6 +50,9 @@ class FlowState:
     plan_change_seq: int = 0
     plan_change_ts: str = ""
     assignments: dict = field(default_factory=dict)  # ticket → autor i recenzent z planu
+    inputs: dict = field(default_factory=dict)
+    waiting: dict = field(default_factory=dict)
+    timeline: list = field(default_factory=list)
     last_step: str = ""
     paused: bool = False
     card_finished: bool = False
@@ -95,13 +98,19 @@ class FlowState:
         pending_decision = finished.get("result") in ("question", "denied", "error") and \
             step.get("ticket") not in self.rejected and not self.card_finished
         return bool(self.running() or self.open_consoles() or self.merge_pending() or self.open_intents()
-                    or pending_review or pending_decision or plan_pending)
+                    or pending_review or pending_decision or plan_pending or (self.waiting and not self.card_finished))
 
 
 def fold(events: list[dict]) -> FlowState:
     st = FlowState()
     for e in events:
         kind = e.get("type")
+        if kind in ("card.started", "step.started", "step.finished", "step.waiting", "review.verdict",
+                    "plan.approved", "card.paused", "card.resumed", "plan.finished") or (
+                    kind == "result" and e.get("action") == "merge"):
+            st.timeline.append({key: e[key] for key in (
+                "seq", "ts", "type", "step", "ticket", "executor", "kind", "result", "reason", "verdict",
+                "action", "key", "ok") if key in e})
         st.last_seq = max(st.last_seq, int(e.get("seq") or 0))
         if kind == "card.started":
             st.started, st.paused, st.card_finished, st.moved_to = e, False, False, ""
@@ -111,11 +120,18 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_finished = False
             st.plan_change_seq, st.plan_change_ts = 0, ""
             st.assignments = {}
+            st.waiting = {}
+            st.inputs = {}
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
         elif kind == "result":
             st.results[(e.get("action"), e.get("key"))] = e
+        elif kind == "card.inputs":
+            st.inputs = e
+        elif kind == "step.waiting":
+            st.waiting[(e.get("ticket"), e.get("kind"))] = e
         elif kind == "step.started":
+            st.waiting.pop((e.get("ticket"), e.get("kind")), None)
             st.steps[e.get("step")] = e
             st.last_step = e.get("step") or ""
             st.moved_to = ""
@@ -159,6 +175,8 @@ def fold(events: list[dict]) -> FlowState:
             st.flow_error = e.get("error") or ""
         elif kind == "card.paused":
             st.paused = True
+        elif kind == "card.resumed":
+            st.paused = False
         elif kind == "card.finished":
             st.card_finished = True
         elif kind == "card.moved":
@@ -173,7 +191,7 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "ticket.rejected":
             st.rejected.add(e.get("ticket"))
         if st.plan_approved is not None and (kind in (
-                "plan.approved", "ticket.assigned", "step.started", "step.finished", "review.verdict",
+                "plan.approved", "ticket.assigned", "step.started", "step.finished", "step.waiting", "review.verdict",
                 "review.question", "review.decision", "ticket.rejected") or
                 (kind == "result" and e.get("action") == "merge")):
             st.plan_change_seq = int(e.get("seq") or 0)
@@ -181,10 +199,10 @@ def fold(events: list[dict]) -> FlowState:
     return st
 
 
-def ticket_of(st: FlowState) -> dict:
+def ticket_of(st: FlowState, ticket_id: str = "") -> dict:
     """Ostatni ticket karty: {id, title, branch, worktree, cardBranch, cardWorktree} z wyników akcji."""
     out = {"id": "", "title": "", "branch": "", "worktree": "", "cardBranch": "", "cardWorktree": ""}
-    wanted = (st.steps.get(st.last_step) or {}).get("ticket") or ""
+    wanted = ticket_id or (st.steps.get(st.last_step) or {}).get("ticket") or ""
     for (action, _key), res in st.results.items():
         if not res.get("ok"):
             continue
@@ -197,6 +215,25 @@ def ticket_of(st: FlowState) -> dict:
     return out
 
 
+def attention_step(st: FlowState) -> str:
+    """Najstarszy ostatni krok ticketu, który potrzebuje użytkownika; inne tickety pracują dalej."""
+    latest = {}
+    for name, item in st.steps.items():
+        latest[item.get("ticket")] = name
+    for name in latest.values():
+        item, done = st.steps[name], st.finished.get(name) or {}
+        if item.get("ticket") in st.rejected or name in st.step_decisions:
+            continue
+        if done.get("result") in ("question", "denied") or (done.get("result") == "error" and
+                int(item.get("attempt") or 0) >= 1) or (done.get("result") == "stopped" and
+                done.get("reason") == "interactive-closed"):
+            return name
+        key = (item.get("ticket"), item.get("round"))
+        if key in st.review_questions and key not in st.review_decisions:
+            return name
+    return ""
+
+
 def derived(st: FlowState, card: dict) -> dict | None:
     """Pole `derived` karty z dziennikiem (kształt jak board/derive.py, z `flow`) albo None — karta w swojej kolumnie."""
     if st.started is None:
@@ -204,6 +241,9 @@ def derived(st: FlowState, card: dict) -> dict | None:
     column = card.get("column") or "backlog"
     if column in ("done", "archived"):
         return None
+    attention = attention_step(st)
+    if attention:
+        st = replace(st, last_step=attention)
     ticket = ticket_of(st)
     step = st.steps.get(st.last_step) or {}
     done = st.finished.get(st.last_step) or {}
@@ -227,10 +267,14 @@ def derived(st: FlowState, card: dict) -> dict | None:
                     "authorModel": author.get("model") or st.started.get("model") or "",
                     "reviewerProvider": reviewer.get("provider") or st.started.get("reviewerProvider") or "",
                     "reviewerModel": reviewer.get("model") or st.started.get("reviewerModel") or ""}}
+    out["flow"].update({"paused": st.paused, "timeline": st.timeline,
+                        "waiting": [{"ticket": ticket, "kind": kind, "reason": item["reason"]}
+                                    for (ticket, kind), item in st.waiting.items()]})
     out["flow"]["steps"] = [
         {"id": name, "ticket": item.get("ticket") or "", "mode": item.get("mode") or "background",
          "result": (st.finished.get(name) or {}).get("result") or "",
          "reason": (st.finished.get(name) or {}).get("reason") or "",
+         "kind": item.get("kind") or "", "executor": item.get("executor") or "",
          "canEnter": not any(other.get("worktree") == item.get("worktree") and other.get("step") != name
                              for other in st.running()) and
                      not any(other.get("worktree") == item.get("worktree") and other.get("mode") == "interactive"
@@ -241,10 +285,33 @@ def derived(st: FlowState, card: dict) -> dict | None:
         proposal = st.plan_proposed or {}
         approved = st.plan_approved or {}
         rows = approved.get("rows") or proposal.get("rows") or []
-        waves = approved.get("waves") or proposal.get("waves") or []
+        waves = graph_waves(rows)
         finished_ids = {row.get("id") for row in rows if ("merge", row.get("id")) in st.results and
                         st.results[("merge", row.get("id"))].get("ok")}
         out["total"], out["done"] = len(rows), len(finished_ids)
+        wave_no = next((n for n, wave in enumerate(waves, 1) if set(wave) - finished_ids), len(waves))
+        out["flow"].update({"wave": wave_no, "waveTotal": len(waves), "paused": st.paused,
+                            "timeline": st.timeline})
+        for row in rows:
+            ident_row = row.get("id") or row.get("workId")
+            latest = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ident_row), {})
+            waits = [w for (ticket_id, _), w in st.waiting.items() if ticket_id == ident_row]
+            outcome = (st.finished.get(latest.get("step")) or {}).get("result")
+            if ident_row in finished_ids:
+                state = "gotowe"
+            elif ident_row in st.rejected:
+                state = "odrzucone"
+            elif waits or outcome in ("question", "denied", "error", "stopped"):
+                state = "czeka"
+            elif latest:
+                state = "review" if latest.get("kind") == "review" or outcome == "done" else "w-toku"
+            else:
+                state = "todo"
+            out["tickets"].append({"id": ident_row, "ticket": ident_row, "title": row.get("title") or "",
+                                   "state": state, "wave": next((n for n, w in enumerate(waves, 1) if ident_row in w), 0),
+                                   "waitReason": waits[-1]["reason"] if waits else ""})
+        out["tickets"].sort(key=lambda ticket: ticket["wave"])
+        out["flow"]["waveLabel"] = f"fala {wave_no} z {len(waves)}"
         out["flow"]["plan"] = {"status": "done" if st.plan_finished else
                              "approved" if st.plan_approved else "pending" if st.plan_proposed else "invalid",
                              "rows": rows, "waves": waves,
@@ -264,6 +331,10 @@ def derived(st: FlowState, card: dict) -> dict | None:
             return _fill(out, "waiting", "plan do zatwierdzenia")
         if st.plan_finished:
             return _fill(out, "review", f"✓ plan karty: {len(finished_ids)}/{len(rows)} ticketów scalonych")
+        if st.paused:
+            return _fill(out, "backlog" if column == "backlog" else "progress", "wstrzymana — trwające kroki kończą się" if st.running() else "wstrzymana")
+        if st.waiting and not st.running() and not attention:
+            return _fill(out, "progress", out["flow"]["waveLabel"] + " · " + next(reversed(st.waiting.values()))["reason"])
         if st.plan_approved is not None and not st.last_step and not st.open_intents():
             return _fill(out, "progress", "uruchamiam pierwszy ticket planu")
     verdict = next((v for (ticket_id, _round), v in reversed(list(st.verdicts.items())) if ticket_id == ident), None)
@@ -272,6 +343,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
         question_key = (ident, verdict.get("round"))
         if question_key in st.review_questions and question_key not in st.review_decisions:
             out["flow"]["reviewQuestion"] = True
+    if st.paused and column != "backlog":
+        return _fill(out, "progress", "wstrzymana — trwające kroki kończą się" if st.running() else "wstrzymana")
     if column == "backlog":
         if not st.paused:
             return None
@@ -280,10 +353,14 @@ def derived(st: FlowState, card: dict) -> dict | None:
     if st.moved_to == "todo" and not st.running():
         return None
     failed = [r for (a, _k), r in st.results.items() if not r.get("ok") and a != "merge"]
-    if st.running():
+    if st.waiting and not st.running() and not attention:
+        return _fill(out, "progress", f"{ident} · {next(reversed(st.waiting.values()))['reason']}")
+    if st.running() and not attention:
         work = ("krok w Konsoli" if step.get("mode") == "interactive" else
                 "review" if step.get("kind") == "review" else "poprawki" if step.get("kind") == "fix" else "krok w tle")
-        return _fill(out, "progress", f"{ident} · {work} ({step.get('executor') or executor})")
+        label = out["flow"].get("waveLabel")
+        return _fill(out, "progress", f"{label} · {len(st.running())} kroków w toku" if label else
+                     f"{ident} · {work} ({step.get('executor') or executor})")
     if st.open_intents():
         return _fill(out, "progress", f"{ident} · {_intent_word(st.open_intents()[0])}")
     if failed and not done:
@@ -362,3 +439,17 @@ def _fill(out: dict, column: str, note: str) -> dict:
 def _clip(text: str, limit: int) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def graph_waves(rows: list[dict]) -> list[list[str]]:
+    """Poziomy grafu blokerów; nigdy osobny zapis stanu fali."""
+    pending = {(r.get("id") or r.get("workId")): set(r.get("blockers") or []) for r in rows}
+    done, waves = set(), []
+    while pending:
+        wave = [ident for ident, blockers in pending.items() if blockers <= done]
+        if not wave:
+            return []
+        waves.append(wave)
+        done.update(wave)
+        pending = {ident: blockers for ident, blockers in pending.items() if ident not in done}
+    return waves

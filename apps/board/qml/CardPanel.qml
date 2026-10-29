@@ -75,7 +75,17 @@ Rectangle {
     signal abandonStepRequested(string cardId, string stepId)
     signal reviewResolveRequested(string cardId, string choice)     // pytanie po limicie rund review
     signal stepResolveRequested(string cardId, var request)        // pytanie, zgoda albo błąd kroku
+    signal pauseRequested(string cardId, bool paused)
     signal planApproveRequested(string cardId)                      // zatwierdzenie propozycji planu
+
+    function eventLabel(event) {
+        const words = {"card.started": "zlecenie", "plan.approved": "plan zatwierdzony", "step.started": "start kroku",
+                       "step.finished": "koniec kroku", "step.waiting": "czeka", "review.verdict": "review",
+                       "result": "scalenie", "card.paused": "karta wstrzymana", "card.resumed": "karta wznowiona",
+                       "plan.finished": "plan gotowy"}
+        return [event.ts || "", event.ticket || event.key || "", words[event.type] || event.type,
+                event.executor || "", event.verdict || event.reason || ""].filter(x => x).join(" · ")
+    }
 
     function planEntries() {
         const plan = flowPlan
@@ -705,7 +715,7 @@ Rectangle {
                                 readonly property var flowStep: modelData
                                 Text {
                                     Layout.fillWidth: true
-                                    text: flowStep.ticket + " · " + (flowStep.result || (flowStep.mode === "interactive" ? "w Konsoli" : "w toku"))
+                                    text: [flowStep.ticket, flowStep.kind === "review" ? "review" : flowStep.kind === "fix" ? "poprawki" : "ticket", flowStep.executor || "", flowStep.result || (flowStep.mode === "interactive" ? "w Konsoli" : "w toku")].join(" · ")
                                     textFormat: Text.PlainText
                                     color: Tide.Tokens.textMuted
                                     font.family: Tide.Theme.uiFamily
@@ -888,6 +898,54 @@ Rectangle {
                                                               { choice: "change-executor", executor: panel.stepExecutor })
                                 }
                             }
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: Boolean(panel.editing && panel.card.derived && panel.card.derived.flow)
+                        Text {
+                            objectName: "cardWaveLabel"
+                            Layout.fillWidth: true
+                            text: panel.card && panel.card.derived && panel.card.derived.flow ? panel.card.derived.flow.waveLabel || "Przebieg karty" : ""
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textPrimary
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 12
+                        }
+                        PillButton {
+                            objectName: "cardPause"
+                            readonly property bool paused: Boolean(panel.card && panel.card.derived && panel.card.derived.flow && panel.card.derived.flow.paused)
+                            visible: Boolean(panel.card && panel.card.derived && (!panel.flowPlan || panel.flowPlan.status !== "done") && panel.card.derived.column !== "review")
+                            text: paused ? "Wznów" : "Wstrzymaj kartę"
+                            outline: true
+                            enabled: !panel.busy
+                            onClicked: panel.pauseRequested(panel.card.id, !paused)
+                        }
+                    }
+                    Repeater {
+                        model: panel.card && panel.card.derived && panel.card.derived.flow ? panel.card.derived.flow.waiting || [] : []
+                        Text {
+                            Layout.fillWidth: true
+                            text: modelData.ticket + " · " + modelData.reason
+                            textFormat: Text.PlainText
+                            visible: Boolean(modelData.reason)
+                            color: Tide.Tokens.peach
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 12
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                    Repeater {
+                        objectName: "cardTimeline"
+                        model: panel.card && panel.card.derived && panel.card.derived.flow ? panel.card.derived.flow.timeline || [] : []
+                        Text {
+                            Layout.fillWidth: true
+                            text: panel.eventLabel(modelData)
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
                         }
                     }
                     Text {

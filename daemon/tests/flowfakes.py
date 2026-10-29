@@ -40,7 +40,8 @@ with open(os.path.join(logs, sid + ".jsonl"), "a", encoding="utf-8") as fh:
                          "message": {"role": "assistant", "content": [{"type": "text", "text": "Robię ticket."}]}}) + "\n")
 mode = re.search(r"ATRAPA: ([a-z-]+)(?: (\d+))?", prompt)
 word, count = (mode.group(1), int(mode.group(2) or 0)) if mode else ("gotowe", 0)
-work = os.path.join(cwd, "ATRAPA.md")
+file_match = re.search(r"ATRAPA-PLIK: ([a-zA-Z0-9_-]+)", prompt)
+work = os.path.join(cwd, "ATRAPA-" + file_match.group(1) + ".md" if file_match else "ATRAPA.md")
 
 if prompt.startswith("Krok planowania Lekkiego"):
     card = re.search(r"Krok planowania Lekkiego karty (K-[0-9]+)", prompt).group(1)

@@ -1857,6 +1857,52 @@ out["call"] = calls()[-1]
         self.assertEqual(out["call"], ["ApproveCardPlan", "K-6"])
 
 
+class WavePanelTest(ProbeCase):
+    def test_wave_tickets_timeline_and_pause_are_read_from_file_snapshot(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["boardColumn"] = "progress"
+                card["derived"] = {"column": "progress", "note": "fala 1 z 2", "done": 1, "total": 3,
+                    "tickets": [{"id": "PT-1", "state": "gotowe", "wave": 1, "waitReason": ""},
+                                {"id": "PT-2", "state": "czeka", "wave": 1, "waitReason": "limit kroków dostawcy anthropic: 3/3"},
+                                {"id": "PT-3", "state": "todo", "wave": 2, "waitReason": ""}],
+                    "flow": {"entry": "plan", "waveLabel": "fala 1 z 2", "paused": False,
+                        "timeline": [{"seq": 1, "ts": "2026-10-29T10:00:00Z", "type": "step.started", "ticket": "PT-1", "kind": "ticket", "executor": "Sonnet"},
+                                     {"seq": 2, "ts": "2026-10-29T10:01:00Z", "type": "step.waiting", "ticket": "PT-2", "reason": "limit kroków dostawcy anthropic: 3/3"}],
+                        "steps": [{"id": "K-6-PT-1-1", "ticket": "PT-1", "kind": "ticket", "executor": "Sonnet", "result": "done", "canEnter": True}]}}
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["wave"] = obj("cardWaveLabel").property("text")
+out["tileWave"] = js(FIND + "(page.findCard('K-6'), 'cardTileWaveLabel').text")
+out["tileWaveVisible"] = js(FIND + "(page.findCard('K-6'), 'cardTileWaveLabel').visible")
+out["timeline"] = obj("cardTimeline").property("count")
+out["tickets"] = obj("cardTicketStrip").property("count")
+out["gap"] = js(FIND + "(page.findCard('K-6'), 'cardTicketStrip').itemAt(2).gap")
+out["pause"] = obj("cardPause").property("text")
+click(at(FIND + "(page.cardPanel, 'cardPause')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["wave"], "fala 1 z 2")
+        self.assertEqual(out["tileWave"], "fala 1 z 2")
+        self.assertTrue(out["tileWaveVisible"])
+        self.assertEqual(out["timeline"], 2)
+        self.assertEqual(out["tickets"], 3)
+        self.assertTrue(out["gap"], "między falami mini-pasek ma przerwę")
+        self.assertEqual(out["pause"], "Wstrzymaj kartę")
+        self.assertEqual(out["call"], ["SetCardPaused", "K-6", True])
+        next(card for card in data["cards"] if card["id"] == "K-6")["derived"]["flow"]["paused"] = True
+        resumed = self.probe(FIND_PY + """
+click(card("K-6"))
+out["text"] = obj("cardPause").property("text")
+click(at(FIND + "(page.cardPanel, 'cardPause')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(resumed["text"], "Wznów")
+        self.assertEqual(resumed["call"], ["SetCardPaused", "K-6", False])
+
+
+
 class LaunchReviewTest(ProbeCase):
     """PT-43 po review: upuszczenie pliku na pole zadania, Tab do „Zrób zrzut”, schowek z tekstem i obrazem,
     otwarcie okna w trakcie startu, Start bez odpowiedzi, Defaults po otwarciu okna."""

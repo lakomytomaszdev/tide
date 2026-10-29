@@ -415,3 +415,20 @@ class JournalTest(FlowCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PauseDbusTest(FlowCase):
+    def test_pause_and_resume_are_available_on_private_board_bus(self):
+        card = self.card(description="ATRAPA: powoli 2")
+        self.assertTrue(self.call("StartCard", card, json.dumps({"entry": "now", "executor": "Sonnet"}))["ok"])
+        self.assertTrue(self.call("SetCardPaused", card, True)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "step.finished"), timeout=10))
+        wait_until(lambda: False, timeout=0.4)
+        self.assertEqual(len(self.of(card, "step.started")), 1)
+        shown = self.call("Snapshot")
+        row = next(c for c in shown["cards"] if c["id"] == card)
+        self.assertTrue(row["derived"]["flow"]["paused"])
+        self.assertEqual(row["derived"]["note"], "wstrzymana")
+        self.assertTrue(self.call("SetCardPaused", card, False)["ok"])
+        self.wait_column(card, "review", timeout=15)
+        self.assertEqual(len(self.of(card, "step.started")), 2)

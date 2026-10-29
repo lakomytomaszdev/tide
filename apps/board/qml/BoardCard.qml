@@ -265,6 +265,41 @@ Rectangle {
             }
         }
 
+        Text {
+            objectName: "cardTileWaveLabel"
+            Layout.fillWidth: true
+            visible: Boolean(root.derived && root.derived.flow && root.derived.flow.waveLabel)
+            text: root.derived && root.derived.flow ? root.derived.flow.waveLabel || "" : ""
+            textFormat: Text.PlainText
+            color: Tide.Tokens.textSecondary
+            font.family: Tide.Theme.uiFamily
+            font.pixelSize: 11
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            visible: Boolean(root.derived && root.derived.flow && root.derived.flow.waveLabel)
+            spacing: 3
+            Repeater {
+                objectName: "cardTicketStrip"
+                model: root.derived && root.derived.flow ? root.derived.tickets || [] : []
+                Item {
+                    Layout.fillWidth: true
+                    implicitHeight: 6
+                    readonly property int wave: modelData.wave || 0
+                    readonly property bool gap: index > 0 && root.derived.tickets[index - 1].wave !== wave
+                    Rectangle {
+                        anchors.fill: parent
+                        anchors.leftMargin: parent.gap ? 5 : 0
+                        radius: height / 2
+                        color: modelData.state === "gotowe" ? Tide.Tokens.mint
+                             : modelData.state === "review" ? Tide.Tokens.lavender
+                             : modelData.state === "w-toku" ? Tide.Tokens.sky
+                             : modelData.state === "czeka" ? Tide.Tokens.peach
+                             : Tide.Theme.alpha(Tide.Tokens.textMuted, 0.3)
+                    }
+                }
+            }
+        }
         // Postęp z koordynatora (PT-5).
         ColumnLayout {
             Layout.fillWidth: true

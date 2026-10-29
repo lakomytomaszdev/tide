@@ -232,6 +232,12 @@ class BoardMonitor(QObject):
             return
         self.flow.resolve_step(card_id, request, reply)
 
+    def set_card_paused(self, card_id: str, paused: bool, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.set_paused(card_id, paused, reply)
+
     def approve_card_plan(self, card_id: str, reply) -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))

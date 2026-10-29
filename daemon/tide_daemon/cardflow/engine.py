@@ -33,6 +33,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from ..models import queue as model_queue
 from .. import codex_homes
 from ..board.model import BoardError, card_num
 from ..board import assignment
@@ -46,7 +47,7 @@ from . import planning
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for
 from .journal import Journal
-from .state import FlowState, derived, fold, ticket_of
+from .state import FlowState, derived, fold, ticket_of, graph_waves, attention_step
 
 GUARD_MINUTES = 15.0
 TIMEOUT_MINUTES = 240.0
@@ -55,6 +56,10 @@ RESULTS = ("done", "question", "denied", "error")
 OUTPUT_MAX = 256 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check", "planPath", "mode")
+
+
+class FlowDeferred(Exception):
+    """Krok czeka na wolne miejsce; nie jest to błąd karty."""
 
 
 class FlowError(Exception):
@@ -122,6 +127,7 @@ class FlowEngine:
         self._hidden: tuple = (frozenset(), ())
         self._busy: tuple = ()
         self._notices: list[dict] = []
+        self._local_claims: dict[str, object] = {}
 
     # --- odczyt (wątek główny) -------------------------------------------------------------------
 
@@ -267,7 +273,7 @@ class FlowEngine:
                                       reviewerEffort=reviewer.effort,
                                       preferredProvider=preferred or selected.provider, check=check,
                                       repo=project.repo, project=project.slug, column=card.column,
-                                      moveId=card.move_id)
+                                      moveId=card.move_id, images=images)
         launch = f"launch-{started['seq']}"
         request_key = f"{card.id}:{launch}"
         reserved = self._act(card.id, "reserve", launch,
@@ -288,10 +294,20 @@ class FlowEngine:
             repo=project.repo, branch=ticket_branch, worktree=ticket_worktree,
             base=f"refs/heads/{card_branch}", ticket=ticket)
         step_id = f"{card.id}-{ticket}-{1 + sum(1 for s in st.steps.values() if s.get('ticket') == ticket)}"
-        step = self._launch(card, project, selected, ticket, made, made_ticket, step_id, images)
+        try:
+            step = self._launch(card, project, selected, ticket, made, made_ticket, step_id, images)
+        except FlowDeferred:
+            kept_images = []
+            for index, source in enumerate(images):
+                rel = os.path.join("queued-images", launch, str(index), os.path.basename(source))
+                with open(source, "rb") as fh:
+                    self.journal.write_file(card.id, rel, fh.read())
+                kept_images.append(os.path.join(self.store.root, self.journal.rel_dir(card.id), rel))
+            self.journal.append(card.id, "card.inputs", images=kept_images)
+            step = {"session": ""}
         return {"ok": True, "id": card.id, "ticket": ticket, "branch": made_ticket["branch"],
                 "worktree": made_ticket["worktree"], "cardBranch": made["branch"], "cardWorktree": made["worktree"],
-                "step": step_id, "session": step["session"], "executor": selected.name}
+                "step": step_id, "session": step["session"], "executor": selected.name, "queued": "step" not in step}
 
     def start_planning(self, card_id: str, request: dict) -> dict:
         card_id = f"K-{card_num(card_id)}"
@@ -626,7 +642,7 @@ class FlowEngine:
                 for row in proposal.rows]
         self.journal.append(card_id, "plan.proposed", title=proposal.plan.title,
                             prefix=proposal.plan.prefix, coordinator=proposal.plan.coordinator,
-                            session=proposal.plan.session, rows=rows, waves=proposal.waves,
+                            session=proposal.plan.session, rows=rows,
                             planPath=os.path.realpath(path))
         return {"ok": True, "id": card_id, "rows": proposal.rows, "waves": proposal.waves}
 
@@ -670,9 +686,9 @@ class FlowEngine:
             self.journal.write_file(card_id, os.path.join("plan", "tickets", row["id"] + ".md"), body)
             if old != row["id"]:
                 self.journal.remove_file(card_id, os.path.join("plan", "tickets", old + ".md"))
-        waves = [[mapping[work_id] for work_id in wave] for wave in proposal["waves"]]
+        waves = graph_waves(rows)
         plan_file = f"docs/agents/plans/{proposal['ts'][:10]}-{card_id.lower()}-flow.md"
-        self.journal.append(card_id, "plan.approved", map=mapping, rows=rows, waves=waves, planFile=plan_file)
+        self.journal.append(card_id, "plan.approved", map=mapping, rows=rows, planFile=plan_file)
         return {"ok": True, "id": card_id, "map": mapping, "waves": waves}
 
     def _images(self, value) -> list[str]:
@@ -688,9 +704,48 @@ class FlowEngine:
             out.append(real)
         return out
 
+    def _wait_reason(self, selected) -> str:
+        running = [step for card in self.journal.cards()
+                   for step in fold(self.journal.read(card)).running()]
+        provider = selected.provider
+        limit = 1 if selected.local else 3
+        if not selected.local:
+            try:
+                with open(self.settings, encoding="utf-8") as fh:
+                    value = json.load(fh).get("providerSlots", {}).get(provider, 3)
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    limit = value
+            except (OSError, ValueError, AttributeError):
+                pass
+        count = sum(bool(step.get("local") or step.get("provider") == "local") if selected.local
+                    else step.get("provider") == provider for step in running)
+        if count >= limit:
+            return f"limit kroków dostawcy {provider}: {count}/{limit}"
+        if selected.local and model_queue.shared().busy():
+            return "czeka na modele lokalne — raport i opisy kart mają pierwszeństwo"
+        return ""
+
+    def _admit(self, card: str, selected, ticket: str, kind: str, step_id: str) -> None:
+        st = fold(self.journal.read(card))
+        reason = "karta wstrzymana" if st.paused else self._wait_reason(selected)
+        if not reason and selected.local:
+            claim = model_queue.shared().claim_step(self.store.root + ":" + step_id, endpoint=selected.route.url,
+                                                   model=selected.model)
+            if claim is None:
+                reason = "czeka na modele lokalne — raport i opisy kart mają pierwszeństwo"
+            else:
+                self._local_claims[step_id] = claim
+        if reason:
+            previous = st.waiting.get((ticket, kind)) or {}
+            if previous.get("reason") != reason:
+                self.journal.append(card, "step.waiting", ticket=ticket, kind=kind,
+                                    provider=selected.provider, reason=reason)
+            raise FlowDeferred(reason)
+
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
                 *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
                 attempt=0, resume_session="") -> dict:
+        self._admit(card.id, selected, ticket, kind, step_id)
         worktree = made_ticket["worktree"]
         step_dir = worktree + (f".resume-{step_id}.step" if parent_step else
                                ".step" if kind == "ticket" else
@@ -748,6 +803,7 @@ class FlowEngine:
                               local=selected.local, branch=made_ticket["branch"],
                               reviewTip=review_tip, parentStep=parent_step, attempt=attempt)
         except (agentcmd.StepError, OSError) as exc:
+            self._release_local(step_id)
             raise FlowError("step", f"krok nie wystartował: {exc}") from None
         return self.journal.append(card.id, "step.started", step=step_id, kind=kind, ticket=ticket,
                                    round=round_no, executor=selected.name, program=selected.tool,
@@ -784,6 +840,18 @@ class FlowEngine:
 
     # --- ręczne kolumny --------------------------------------------------------------------------
 
+    def set_paused(self, card_id: str, paused: bool) -> dict:
+        try:
+            card_id = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        st = fold(self.journal.read(card_id))
+        if st.started is None or st.card_finished or st.plan_finished:
+            raise FlowError("no-flow", "karta nie ma trwającego przepływu")
+        if st.paused != paused:
+            self.journal.append(card_id, "card.paused" if paused else "card.resumed")
+        return {"ok": True, "id": card_id, "paused": paused}
+
     def moved(self, card_id: str, column: str, shown: str = "", move_id: str = "") -> None:
         """Karta przeniesiona ręcznie (MoveCard; `shown` — kolumna, w której ją widać): Backlog wstrzymuje, Gotowe
         i Archiwum kończą (krok zatrzymany z zapisem zmian, niescalony ticket odrzucony). Karta bez dziennika — nic."""
@@ -812,16 +880,38 @@ class FlowEngine:
         st = fold(self.journal.read(card))
         if st.running():
             return False
-        ticket = ticket_of(st)["id"]
-        merged = st.results.get(("merge", ticket))
-        if ticket and not (merged and merged.get("ok")) and ticket not in st.rejected:
-            self.journal.append(card, "ticket.rejected", ticket=ticket)
+        tickets = dict.fromkeys([
+            *(row.get("id") for row in (st.plan_approved or {}).get("rows") or []),
+            *(step.get("ticket") for step in st.steps.values()),
+            ticket_of(st)["id"],
+        ])
+        for ticket in tickets:
+            merged = st.results.get(("merge", ticket)) or {}
+            if ticket and not merged.get("ok") and ticket not in st.rejected:
+                self.journal.append(card, "ticket.rejected", ticket=ticket)
         self.journal.append(card, "card.finished", column=column)
         return True
 
     # --- co chwilę -------------------------------------------------------------------------------
 
+    def _release_local(self, step_id: str) -> None:
+        claim = self._local_claims.pop(step_id, None)
+        if claim is not None:
+            model_queue.shared().release_step(claim)
+
     def tick(self) -> None:
+        for card in self.journal.cards():
+            self._recover_started_steps(card, fold(self.journal.read(card)))
+        # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
+        running_local = {s["step"]: s for card in self.journal.cards()
+                         for s in fold(self.journal.read(card)).running() if s.get("local")}
+        for name in set(self._local_claims) - set(running_local):
+            self._release_local(name)
+        for name, step in running_local.items():
+            if name not in self._local_claims:
+                self._local_claims[name] = model_queue.shared().claim_step(
+                    self.store.root + ":" + name, endpoint=step.get("routeUrl") or "", model=step.get("model") or "",
+                    recovering=True)
         hidden_ids, hidden_places, busy = set(), set(), set()
         for card in self.journal.cards():
             warning = self.journal.check(card)
@@ -871,9 +961,29 @@ class FlowEngine:
             self._poll(card, step)
         self._queue_notices(card)
         st = fold(self.journal.read(card))
-        if not st.card_finished and not st.running() and not st.open_consoles():
+        if not st.card_finished:
             try:
-                self._advance(card, st)
+                latest = {}
+                for name, step in st.steps.items():
+                    latest[step.get("ticket")] = name
+                for name in latest.values():
+                    current = fold(self.journal.read(card))
+                    step = current.steps[name]
+                    if name not in current.finished or any(
+                            s.get("ticket") == step.get("ticket") for s in current.open_consoles()):
+                        continue
+                    current.last_step = name
+                    try:
+                        self._advance(card, current)
+                    except FlowDeferred:
+                        pass
+                current = fold(self.journal.read(card))
+                if current.plan_approved is not None:
+                    self._plan_next(card, current)
+                elif not latest:
+                    self._advance(card, current)
+            except FlowDeferred:
+                pass
             except (FlowError, FlowGitError) as exc:
                 problem = f"{exc.__class__.__name__}: {exc}"
                 if st.flow_error != problem:
@@ -902,6 +1012,17 @@ class FlowEngine:
         if not st.last_step:
             if st.plan_approved is not None:
                 self._plan_next(card, st)
+            if st.started and st.started.get("entry") == "now" and st.started.get("executor") and not st.paused:
+                item, project = self._project(card)
+                info = ticket_of(st)
+                cfg = self.models_config() if self.models_config else None
+                catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+                selected = execution.resolve(st.started["executor"], catalog, config=cfg,
+                                             probe=self.model_probe, which=self.which)
+                self._launch(item, project, selected, info["id"],
+                             {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
+                             {"branch": info["branch"], "worktree": info["worktree"]},
+                             self._next_step_id(card, info["id"], st), st.inputs.get("images", st.started.get("images") or []))
             return
         step = st.steps.get(st.last_step) or {}
         done = st.finished.get(st.last_step) or {}
@@ -929,6 +1050,8 @@ class FlowEngine:
             return
         ticket = step.get("ticket") or ""
         if not ticket:
+            return
+        if (st.results.get(("cleanup", ticket)) or {}).get("ok"):
             return
         if ticket in st.rejected:
             if st.plan_approved is not None:
@@ -963,9 +1086,9 @@ class FlowEngine:
                 self._plan_next(card, fold(self.journal.read(card)))
 
     def _plan_next(self, card: str, st: FlowState) -> None:
-        """Uruchamia pierwszy gotowy ticket planu po scaleniu wszystkich jego blokerów."""
+        """Uruchamia gotowe tickety w granicach slotów, po scaleniu wszystkich ich blokerów."""
         approved = st.plan_approved or {}
-        if not approved or st.plan_finished or st.running() or st.open_intents():
+        if not approved or st.plan_finished or st.paused or st.open_intents():
             return
         rows = approved.get("rows") or []
         merged = {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
@@ -987,7 +1110,7 @@ class FlowEngine:
             if ticket in merged or ticket in st.rejected:
                 continue
             if any(s.get("ticket") == ticket for s in st.steps.values()):
-                return  # ten ticket ma już krok: review, poprawki albo decyzja użytkownika
+                continue  # inne tickety mogą pracować mimo pytania tego ticketu
             if not set(row["blockers"]) <= merged:
                 continue
             cfg = self.models_config() if self.models_config else None
@@ -1030,8 +1153,11 @@ class FlowEngine:
                                          project=project.name, ticket=ticket, branch=branch,
                                          card_branch=card_branch, worktree=worktree, out_dir=out)
             step_id = self._next_step_id(card, ticket, st)
-            self._launch(item, project, selected, ticket, made, made_ticket, step_id, [], prompt_text=prompt)
-            return
+            try:
+                self._launch(item, project, selected, ticket, made, made_ticket, step_id, [], prompt_text=prompt)
+            except FlowDeferred:
+                continue
+            st = fold(self.journal.read(card))
         if any(row["id"] in st.rejected for row in rows):
             raise FlowError("blocked-plan", "odrzucony ticket blokuje dalszy plan")
 
@@ -1080,6 +1206,8 @@ class FlowEngine:
             return "gotowe"
         if ticket in st.rejected:
             return "odrzucone"
+        if any(waiting_ticket == ticket for waiting_ticket, _ in st.waiting):
+            return "czeka"
         if (st.results.get(("merge", ticket)) or {}).get("ok") is False:
             return "czeka"
         steps = [s for s in st.steps.values() if s.get("ticket") == ticket]
@@ -1132,12 +1260,13 @@ class FlowEngine:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         choice = str(request.get("choice") or "")
         st = fold(self.journal.read(card))
+        st.last_step = attention_step(st) or st.last_step
         step = st.steps.get(st.last_step) or {}
         done = st.finished.get(st.last_step) or {}
         result = done.get("result")
         valid = {"question": ("answer",), "denied": ("allow", "deny"),
                  "error": ("retry", "change-executor")}.get(result, ())
-        if st.card_finished or st.running() or not step or choice not in valid or \
+        if st.card_finished or any(s.get("ticket") == step.get("ticket") for s in st.running()) or not step or choice not in valid or \
                 (result == "error" and int(step.get("attempt") or 0) == 0):
             raise FlowError("no-step-question", f"{card}: ten krok nie czeka na taką decyzję")
         previous = st.step_decisions.get(st.last_step)
@@ -1221,7 +1350,7 @@ class FlowEngine:
         if any(s.get("parentStep") == step.get("step") for s in st.steps.values()):
             return
         item, project = self._project(card)
-        info = ticket_of(st)
+        info = ticket_of(st, step.get("ticket") or "")
         choice = decision.get("choice") or ""
         name = decision.get("executor") if choice == "change-executor" else step.get("executor") or ""
         step_id = self._next_step_id(card, step.get("ticket") or info["id"], st)
@@ -1279,6 +1408,7 @@ class FlowEngine:
         if choice not in ("retry", "reject"):
             raise FlowError("bad-choice", "wybierz ponowne poprawki albo odrzucenie ticketu")
         st = fold(self.journal.read(card))
+        st.last_step = attention_step(st) or st.last_step
         step = st.steps.get(st.last_step) or {}
         ticket, round_no = step.get("ticket") or "", int(step.get("round") or 0)
         verdict = st.verdicts.get((ticket, round_no)) or {}
@@ -1288,7 +1418,7 @@ class FlowEngine:
                 self.journal.append(card, "ticket.rejected", ticket=ticket)
             return {"ok": True, "id": card, "ticket": ticket, "round": round_no, "choice": choice,
                     "already": True}
-        if st.card_finished or st.running() or step.get("kind") != "review" or round_no < 3 or \
+        if st.card_finished or any(s.get("ticket") == ticket for s in st.running()) or step.get("kind") != "review" or round_no < 3 or \
                 verdict.get("verdict") != "REQUEST_CHANGES" or \
                 (ticket, round_no) not in st.review_questions or \
                 previous:
@@ -1330,7 +1460,7 @@ class FlowEngine:
         item, project = self._project(card)
         ticket = source["ticket"]
         assigned = st.assignments.get(ticket) or st.started or {}
-        info = ticket_of(st)
+        info = ticket_of(st, ticket)
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
@@ -1381,7 +1511,7 @@ class FlowEngine:
         item, project = self._project(card)
         ticket = review_step["ticket"]
         assigned = st.assignments.get(ticket) or st.started or {}
-        info = ticket_of(st)
+        info = ticket_of(st, ticket)
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
@@ -1416,7 +1546,7 @@ class FlowEngine:
                      step_id, [], kind="fix", round_no=round_no, prompt_text=prompt)
 
     def _cleanup(self, card: str, st: FlowState, ticket: str, rounds: int) -> None:
-        info = ticket_of(st)
+        info = ticket_of(st, ticket)
         repo = self._repo(card)
         self._act(card, "cleanup", ticket,
                   lambda: self.git.remove_worktree(repo, info["branch"], info["worktree"]),
@@ -1707,6 +1837,7 @@ class FlowEngine:
             self.journal.append(card, "review.verdict", step=name, ticket=step.get("ticket") or "",
                                 round=step.get("round") or 1, reviewer=step.get("executor") or "", **verdict)
         self._queue_notices(card)
+        self._release_local(name)
         self.procs.pop(name, None)
         self.watch.pop(name, None)
         shutil.rmtree(os.path.join(self.tmp_root, f"tide-step-{name}"), ignore_errors=True)
