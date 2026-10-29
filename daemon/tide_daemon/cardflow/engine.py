@@ -641,6 +641,8 @@ class FlowEngine(PlanEditing):
         process_file = os.path.join(inp, "console-process.json")
         claim_dir = os.path.join(inp, "console-claim")
         os.makedirs(claim_dir, mode=0o700, exist_ok=True)
+        with open(os.path.join(claim_dir, launch.FLOW_TRANSFER_CLOSE), "w", encoding="utf-8"):
+            pass  # spóźniona druga karta bez zadania zamknie się zamiast otworzyć powłokę
         console_unit = "tide-console-" + uuid.uuid4().hex
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
                    "title": f"{item.id} · {ticket or 'planowanie Pełne'}", "closedFile": closed,
@@ -902,6 +904,8 @@ class FlowEngine(PlanEditing):
         os.makedirs(os.path.dirname(closed), mode=0o700, exist_ok=True)
         claim_dir = os.path.join(step_dir, "in", "console-claim")
         os.makedirs(claim_dir, mode=0o700, exist_ok=True)
+        with open(os.path.join(claim_dir, launch.FLOW_TRANSFER_CLOSE), "w", encoding="utf-8"):
+            pass
         for path in (closed, process_file, os.path.join(out, handoff.RESULT_FILE)):
             try:
                 os.unlink(path)
@@ -1892,8 +1896,12 @@ class FlowEngine(PlanEditing):
             target = self._resume_executor(card, st, step, executor, changed=True, transfer=True)
             reviewer = self._transfer_reviewer(st, step, target)
             if not intent:
+                base_tip = self.git.sha(step.get("repo") or self._repo(card),
+                                        f"refs/heads/{step.get('branch') or ''}")
+                if not base_tip:
+                    raise FlowError("no-base", "nie można ustalić commita przed przekazaniem")
                 self.journal.append(card, "step.transfer_requested", step=focus,
-                                    ticket=step.get("ticket") or "", executor=executor)
+                                    ticket=step.get("ticket") or "", executor=executor, baseTip=base_tip)
                 st = fold(self.journal.read(card))
         if not done:
             if choice != "transfer" or any(other.get("ticket") == step.get("ticket") and
@@ -2529,10 +2537,12 @@ class FlowEngine(PlanEditing):
         if flow_limits.exhausted_log(log, step.get("program") or ""):
             if name not in fold(self.journal.read(card)).limits:
                 low = self._low_limit(step.get("provider") or "") or {}
+                base_tip = self.git.sha(step.get("repo") or self._repo(card),
+                                        f"refs/heads/{step.get('branch') or ''}")
                 self.journal.append(card, "step.limit", step=name, ticket=step.get("ticket") or "",
                                     provider=step.get("provider") or "", reset=low.get("reset") or "",
                                     resetTs=low.get("resetTs") or 0, remaining=low.get("remaining"),
-                                    window=low.get("window") or "")
+                                    window=low.get("window") or "", baseTip=base_tip)
             self._stop(card, step, "error", "limit", handoff=True)
             return
         proc = self.procs.get(name)
@@ -2688,15 +2698,50 @@ class FlowEngine(PlanEditing):
         self.journal.write_file(card, relative, "\n".join(lines).encode("utf-8")[:OUTPUT_MAX])
         return os.path.join(self.store.root, self.journal.rel_dir(card), relative)
 
+    def _recovered_wip_snapshot(self, card: str, step: dict) -> stepstop.Snapshot | None:
+        """Odtwarza commit WIP zapisany przed awarią, lecz jeszcze nieutrwalony w dzienniku."""
+        st = fold(self.journal.read(card))
+        name = step.get("step") or ""
+        signal_event = st.transfer_requests.get(name) or st.limits.get(name) or {}
+        base = signal_event.get("baseTip") or ""
+        if not base:
+            return None
+        repo = step.get("repo") or self._repo(card)
+        branch = step.get("branch") or ""
+        worktree = step.get("worktree") or ""
+        try:
+            tip = self.git.clean_tip(repo, branch, worktree)
+        except FlowGitError:
+            return None
+        if tip == base:
+            return None
+        trusted = stepstop.StepGit(repo, step.get("gitDir") or "", worktree,
+                                   step.get("stepDir") or "")
+        head = trusted.run("symbolic-ref", "--quiet", "HEAD")
+        message = self.git.run(repo, "show", "-s", "--format=%s", tip)
+        ancestor = self.git.run(repo, "merge-base", "--is-ancestor", base, tip)
+        files = self.git.run(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", tip)
+        if not head.ok or head.out.strip() != f"refs/heads/{branch}" or not message.ok or \
+                message.out.strip() != stepstop.WIP_MESSAGE or not ancestor.ok or not files.ok:
+            return None
+        count = len([path for path in files.out.split("\0") if path])
+        return (stepstop.Snapshot(committed=True, commit=tip, files=count,
+                                  notes=["odtworzono commit WIP po restarcie usługi"])
+                if count else None)
+
     def _stop(self, card: str, step: dict, result: str, reason: str, stalled_since: str = "",
               *, handoff: bool = False) -> bool:
+        if handoff and not stepstop.terminate(self.procs.get(step.get("step") or ""),
+                                              step.get("unit") or "", self.grace):
+            return False  # sprawdzenie czystości WIP dopiero po potwierdzonym końcu programu
+        recovered = self._recovered_wip_snapshot(card, step) if handoff else None
         stopped = stepstop.stop_step(self.procs.get(step.get("step") or ""), unit=step.get("unit") or "",
                                      worktree=step.get("worktree") or "", step_dir=step.get("stepDir") or "",
                                      repo=step.get("repo") or self._repo(card), git_dir=step.get("gitDir") or "",
                                      branch=step.get("branch") or "", tool=step.get("program") or "claude",
                                      session_id=step.get("session") or "", claude_projects=self.claude_projects,
                                      codex_roots=self.codex_roots,
-                                     grace=self.grace)
+                                     grace=self.grace, recovered_snapshot=recovered)
         wip = {"stopped": stopped.stopped, "committed": stopped.committed, "commit": stopped.commit,
                "files": stopped.files, "error": stopped.error, "notes": stopped.notes}
         if not stopped.stopped:

@@ -476,7 +476,8 @@ def last_messages(path: str, tool: str, limit: int = MESSAGE_LIMIT) -> list:
 
 def stop_step(proc=None, *, unit: str = "", worktree: str, step_dir: str, repo: str, git_dir: str, branch: str,
               tool: str, session_id: str = "", claude_projects: str = "", codex_roots=None,
-              grace: float = 10.0, limit: int = MESSAGE_LIMIT) -> StopResult:
+              grace: float = 10.0, limit: int = MESSAGE_LIMIT,
+              recovered_snapshot: Snapshot | None = None) -> StopResult:
     """Zatrzymuje krok, commituje WIP i czyta ostatnie wiadomości. `unit` (Background.unit) i/lub `proc` (Popen z
     Background.start() albo pid; None, gdy usługa się zrestartowała i zna tylko jednostkę). `git_dir` i `repo`
     z Background (ustalone przed krokiem), `branch` — gałąź kroku, na której ma wylądować commit.
@@ -486,7 +487,8 @@ def stop_step(proc=None, *, unit: str = "", worktree: str, step_dir: str, repo: 
     if not stopped:
         result.error = "not-stopped"        # nie dotykamy worktree, w którym program jeszcze pisze
         return result
-    snap = git_snapshot(repo, git_dir, worktree, step_dir, branch, stale_locks=True)
+    snap = recovered_snapshot if recovered_snapshot is not None else \
+        git_snapshot(repo, git_dir, worktree, step_dir, branch, stale_locks=True)
     result.committed, result.commit, result.files = snap.committed, snap.commit, snap.files
     result.error, result.notes = snap.error, snap.notes
     result.session_log = (find_claude_log(claude_projects, session_id) if tool == "claude"

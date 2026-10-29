@@ -381,7 +381,7 @@ class InteractiveTransferTest(FlowInProcess):
         with mock.patch("tide_daemon.cardflow.engine.launch.process_alive", side_effect=lambda _: live["alive"]), \
              mock.patch("tide_daemon.cardflow.engine.launch.signal_flow_launcher", side_effect=signal), \
              mock.patch("tide_daemon.cardflow.engine.stepstop.unit_state", return_value="inactive"), \
-             mock.patch("tide_daemon.cardflow.engine.stepstop.terminate", side_effect=[False, True, True]):
+             mock.patch("tide_daemon.cardflow.engine.stepstop.terminate", side_effect=[False, True, True, True]):
             refused = self.resolve(card, {"choice": "transfer", "step": first["step"],
                                           "executor": "Codex mocny"})
             self.assertEqual((refused["ok"], refused["error"]), (False, "stop-failed"), refused)
@@ -454,6 +454,64 @@ class InteractiveTransferTest(FlowInProcess):
         self.assertTrue(self.of(card, "step.console_opened")[0]["recovered"])
         wait_until(lambda: False, timeout=0.3)
         self.assertEqual(len(recovered.opened), 1)
+
+    def test_late_second_console_tab_closes_after_claim(self):
+        terminal = _Terminal()
+        self.flow.engine.terminal = terminal
+        card = self.card(description="Plan po awarii otwierania karty.")
+        self.flow._timer.stop()
+        journal = self.flow.engine.journal
+        append = journal.append
+        def crash_after_open(card_id, event_type, **data):
+            if event_type == "step.console_opened":
+                raise KeyboardInterrupt("crash after terminal.open")
+            return append(card_id, event_type, **data)
+        with mock.patch.object(journal, "append", side_effect=crash_after_open):
+            with self.assertRaises(KeyboardInterrupt):
+                self.flow.engine.start(card, {"entry": "planning", "mode": "full",
+                                              "executor": "Sonnet", "preferredProvider": "anthropic"})
+        self.assertEqual(len(terminal.opened), 1)
+        first = fold(self.events(card)).steps[self.of(card, "step.started")[0]["step"]]
+        self.assertFalse(first["consoleOpened"])
+        self.restart()
+        recovered = _Terminal()
+        self.flow.engine.terminal = recovered
+        self.assertTrue(wait_until(lambda: len(recovered.opened) == 1, timeout=20), self.events(card))
+        task = first["taskFile"]
+        os.rename(task, task + ".claimed")
+        claim_dir = os.path.join(first["stepDir"], "in", "console-claim")
+        self.assertTrue(os.path.isfile(os.path.join(claim_dir, launch.FLOW_TRANSFER_CLOSE)))
+        with mock.patch("tide_daemon.tasks.launch.os.getcwd", return_value=claim_dir), \
+             mock.patch("tide_daemon.tasks.launch.shell", side_effect=AssertionError("spóźniona powłoka")):
+            self.assertEqual(launch.main(["--task", task]), 0)
+            with mock.patch("tide_daemon.tasks.launch.claim_for_cwd", return_value=None):
+                self.assertEqual(launch.main([]), 0)
+        self.assertEqual(len(self.of(card, "step.console_opened")), 1)
+
+    def test_restart_after_wip_commit_recovers_sha_diff_without_second_commit(self):
+        card, first, terminal = self.full()
+        self.flow._timer.stop()
+        with open(os.path.join(first["worktree"], "PLANNING-WIP.md"), "w", encoding="utf-8") as fh:
+            fh.write("Niedokończony plan\n")
+        with mock.patch.object(self.flow.engine, "_handoff_note", side_effect=RuntimeError("crash after WIP")):
+            with self.assertRaises(RuntimeError):
+                self.flow.engine._resolve_transfer(card, fold(self.events(card)),
+                                                   {"choice": "transfer", "step": first["step"],
+                                                    "executor": "Codex mocny"})
+        tip = self.flow.engine.git.sha(first["repo"], f"refs/heads/{first['branch']}")
+        self.assertEqual(self.flow.engine.git.run(first["repo"], "show", "-s", "--format=%s", tip).out.strip(),
+                         "WIP: step stopped before it finished")
+        self.assertEqual(self.of(card, "step.finished"), [])
+        self.restart()
+        self.flow.engine.terminal = terminal
+        self.assertTrue(wait_until(lambda: len(terminal.opened) == 2, timeout=30), self.events(card))
+        finished = self.of(card, "step.finished")[0]
+        self.assertEqual(finished["wip"]["commit"], tip)
+        self.assertEqual(self.flow.engine.git.sha(first["repo"], f"refs/heads/{first['branch']}"), tip)
+        with open(finished["wip"]["handoff"], encoding="utf-8") as fh:
+            note = fh.read()
+        self.assertIn(tip, note)
+        self.assertIn("+Niedokończony plan", note)
 
     def test_restart_after_transfer_decision_starts_one_new_attempt(self):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: czekaj-pierwszy")
