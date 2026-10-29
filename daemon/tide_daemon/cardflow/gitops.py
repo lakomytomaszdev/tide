@@ -176,11 +176,13 @@ class FlowGit:
             moved = self.run(repo, "update-ref", "-m", message, f"refs/heads/{card_branch}", commit, old)
             if not moved.ok:
                 latest = self.sha(repo, f"refs/heads/{card_branch}")
-                if latest and latest != old:
-                    # Zewnętrzny git wygrał wyścig. Przywróć worktree do rzeczywistego refu
-                    # bez naruszania lokalnych zmian, o ile powstały od naszej materializacji.
-                    if index_tree() == target_tree:
-                        clean_files()
-                        sync(commit, latest)
+                if latest and index_tree() == target_tree:
+                    # Ref pozostał stary (np. błąd blokady): przed zapisaniem wyniku
+                    # ok:false przywróć stare pliki i indeks. Gdy wygrał obcy git,
+                    # wyrównaj worktree do jego refu. Obie operacje są w piaskownicy.
+                    clean_files()
+                    sync(commit, latest)
+                if latest == old:
+                    raise FlowGitError("nie udało się przesunąć gałęzi karty")
                 raise FlowGitError("gałąź karty zmieniła się w trakcie scalania")
             return {"commit": commit, "already": False}

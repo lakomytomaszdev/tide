@@ -71,9 +71,10 @@ class MergeTest(unittest.TestCase):
         self.assertFalse(os.path.exists(marker))
         self.assertFalse(os.path.exists(os.path.join(self.card, "ticket.txt")))
 
-    def test_failed_ref_update_is_completed_once_on_retry(self):
+    def test_failed_ref_update_restores_card_worktree_before_reporting_error(self):
         self.ticket_commit()
         before = git(self.repo, "rev-parse", "card/test")
+        before_tree = git(self.repo, "rev-parse", before + "^{tree}")
         original_run = self.flow.run
         failed = False
 
@@ -90,8 +91,9 @@ class MergeTest(unittest.TestCase):
                 with self.assertRaises(gitops.FlowGitError):
                     self.merge()
             self.assertEqual(git(self.repo, "rev-parse", "card/test"), before)
-            with open(os.path.join(self.card, "ticket.txt"), encoding="utf-8") as fh:
-                self.assertEqual(fh.read(), "ticket\n")
+            self.assertEqual(git(self.card, "write-tree"), before_tree)
+            self.assertFalse(os.path.exists(os.path.join(self.card, "ticket.txt")))
+            self.assertEqual(git(self.card, "status", "--porcelain"), "")
             merged = self.merge()
             again = self.merge()
         self.assertFalse(merged["already"])
