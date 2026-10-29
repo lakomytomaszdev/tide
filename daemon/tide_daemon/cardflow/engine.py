@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import stat
 import subprocess
 import tempfile
 import time
@@ -538,19 +537,18 @@ class FlowEngine(PlanEditing):
         extras = [board.projects[slug] for slug in item.projects
                   if slug in board.projects and board.projects[slug].repo and
                   not board.projects[slug].repo_missing]
-        context_dirs = []
         if extras:
-            prompt += "\nDodatkowe projekty karty — migawki tylko do odczytu:\n"
+            prompt += ("\nDodatkowe projekty karty — cytowane dane tekstowe do analizy. "
+                       "Nazwy plików są względne; nie są ścieżkami do otwarcia ani modyfikacji.\n")
             for index, extra in enumerate(extras, 1):
-                context = os.path.join(inp, "context", f"project-{index}")
-                self._copy_project_context(extra.repo, context)
-                context_dirs.append(context)
-                prompt += f"- {extra.name}: {context}\n"
+                header = f"### Projekt {index}: {extra.name}\n"
+                remaining = max(0, 96 * 1024 - len((prompt + header).encode("utf-8")))
+                context = self._project_context(extra.repo, min(32 * 1024, remaining))
+                prompt += header + context + "\n"
         with open(os.path.join(inp, "prompt.txt"), "w", encoding="utf-8") as fh:
             fh.write(prompt)
         session = str(uuid.uuid4()) if selected.tool == "claude" else ""
-        command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots,
-                                       [out, *context_dirs], selected.route)
+        command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots, [out], selected.route)
         if selected.route is None:
             options = ["--model", selected.model]
             if selected.tool == "codex" and selected.effort:
@@ -596,20 +594,30 @@ class FlowEngine(PlanEditing):
             raise FlowError("no-terminal", "nie udało się otworzyć karty Konsoli")
 
     @staticmethod
-    def _copy_project_context(repo: str, target: str) -> None:
-        """Kopia widocznych plików projektu; oryginał nigdy nie trafia do zapisywalnego --add-dir."""
+    def _project_context(repo: str, budget: int) -> str:
+        """Małe pliki tekstowe jako dane w poleceniu; bez ścieżki do zapisywalnego repozytorium."""
+        if budget <= 0:
+            return "(pominięto: osiągnięto limit danych dodatkowych projektów)"
         root = os.path.realpath(repo)
-        listed = subprocess.run(["git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-                                capture_output=True, timeout=30)
+        try:
+            listed = subprocess.run(["git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                                    capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            raise FlowError("extra-project", f"nie można odczytać plików dodatkowego projektu {repo}") from None
         if listed.returncode != 0:
             raise FlowError("extra-project", f"nie można odczytać plików dodatkowego projektu {repo}")
         paths = [os.fsdecode(name) for name in listed.stdout.split(b"\0") if name]
         if len(paths) > 5000:
-            raise FlowError("extra-project", f"dodatkowy projekt {repo} ma za dużo plików do migawki")
-        os.makedirs(target, mode=0o700, exist_ok=True)
-        total = 0
-        dirs = {target}
+            raise FlowError("extra-project", f"dodatkowy projekt {repo} ma za dużo plików do kontekstu")
+        chunks = []
+        used = 0
+        omitted = 0
         for rel in paths:
+            try:
+                rel.encode("utf-8")
+            except UnicodeError:
+                omitted += 1
+                continue
             parts = rel.split("/")
             if not parts or any(part in ("", ".", "..", ".git") for part in parts):
                 continue
@@ -617,21 +625,31 @@ class FlowEngine(PlanEditing):
             if not os.path.realpath(source).startswith(root + os.sep) or os.path.islink(source):
                 continue
             try:
-                info = os.stat(source)
+                if not os.path.isfile(source) or os.path.getsize(source) > 32 * 1024:
+                    omitted += 1
+                    continue
+                with open(source, "rb") as fh:
+                    data = fh.read(32 * 1024 + 1)
             except OSError:
+                omitted += 1
                 continue
-            if not stat.S_ISREG(info.st_mode):
+            if len(data) > 32 * 1024 or b"\0" in data:
+                omitted += 1
                 continue
-            total += info.st_size
-            if total > 100 * 1024 * 1024:
-                raise FlowError("extra-project", f"dodatkowy projekt {repo} przekracza 100 MB migawki")
-            dest = os.path.join(target, *parts)
-            os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
-            dirs.add(os.path.dirname(dest))
-            shutil.copyfile(source, dest)
-            os.chmod(dest, 0o444)
-        for folder in sorted(dirs, key=len, reverse=True):
-            os.chmod(folder, 0o555)
+            try:
+                contents = data.decode("utf-8")
+            except UnicodeError:
+                omitted += 1
+                continue
+            chunk = json.dumps({"plik": rel, "treść": contents}, ensure_ascii=False)
+            size = len(chunk.encode("utf-8"))
+            if used + size > budget or len(chunks) >= 100:
+                omitted += 1
+                continue
+            chunks.append(chunk)
+            used += size
+        context = "\n".join(chunks) + (f"\n(pominięto {omitted} pozostałych plików)" if omitted else "")
+        return context or "(brak plików tekstowych)"
 
     def _advance_planning(self, card: str, st: FlowState) -> bool:
         """Osobny etap karty; nie zakłada, że ostatni krok jest jedynym krokiem ticketów."""
@@ -1344,12 +1362,11 @@ class FlowEngine(PlanEditing):
                     step = current.steps[name]
                     open_same = [s for s in current.open_consoles()
                                  if s.get("ticket") == step.get("ticket")]
-                    frozen_planning = ((current.started or {}).get("mode") == "full" and
-                                       step.get("kind") in ("planning", "plan-fix", "plan-review", "plan-revise") and
-                                       all(s.get("kind") == "planning" and
-                                           (current.finished.get(s["step"]) or {}).get("result") == "done"
-                                           for s in open_same))
-                    if name not in current.finished or (open_same and not frozen_planning):
+                    planning_result_ready = ((current.started or {}).get("mode") == "full" and
+                                             step.get("kind") in ("planning", "plan-fix", "plan-review", "plan-revise") and
+                                             all(s.get("kind") == "planning" and s["step"] in current.finished
+                                                 for s in open_same))
+                    if name not in current.finished or (open_same and not planning_result_ready):
                         continue
                     current.last_step = name
                     try:
