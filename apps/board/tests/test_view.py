@@ -1802,6 +1802,18 @@ out["call"] = calls()[-1]
         self.assertEqual(out["visible"], [True, True])
         self.assertEqual(json.loads(out["call"][2]), {"choice": "change-executor", "executor": "Haiku"})
 
+    def test_tracker_error_has_retry_without_changing_executor(self):
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["visible"] = [obj("cardStepRetry").property("visible"), obj("cardStepExecutor").property("visible"),
+                  obj("cardStepChangeExecutor").property("visible")]
+click(at(FIND + "(page.cardPanel, 'cardStepRetry')"))
+out["call"] = calls()[-1]
+""", data=self.flow_card("error", error="YouTrack odpowiedział 400", trackerError=True))
+        self.assertEqual(out["visible"], [True, False, False])
+        self.assertEqual(out["call"][:2], ["ResolveCardStep", "K-6"])
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "retry"})
+
     def test_project_command_lists_are_editable_and_saved(self):
         data = json.loads(json.dumps(self.data))
         data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]
@@ -1825,6 +1837,56 @@ out["call"] = calls()[-1]
                          {"slug": "plasma-tide", "allowedCommands": ["git status", "git log", "git fetch origin"]})
 
 class PlanPanelTest(ProbeCase):
+    def test_failed_revision_can_be_returned_again_or_discarded(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "approved", "review": {"verdict": "APPROVE"}, "rows": [], "waves": [],
+                    "revision": {"seq": 12, "failed": True}, "errors": ["Nieprawidłowa poprawka"]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+obj("cardPlanFeedback").setProperty("text", "Popraw ponownie")
+wait(50)
+out["retryEnabled"] = obj("cardPlanReturn").property("enabled")
+click(at(FIND + "(page.cardPanel, 'cardPlanDiscardRevision')"))
+wait(50)
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["retryEnabled"])
+        self.assertEqual(out["call"][:2], ["EditCardPlan", "K-6"])
+        self.assertEqual(json.loads(out["call"][2])["action"], "discard-revision")
+
+
+    def test_plan_review_and_ticket_editor_send_changes_to_service(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "review": {"verdict": "REQUEST_CHANGES", "reviewer": "Opus", "findings": "Uzupełniono ryzyka."},
+                    "waves": [["#1"]], "rows": [{"workId": "#1", "title": "Eksport", "class": "standard",
+                        "executor": "Sonnet", "reviewer": "Opus", "blockers": [], "note": "", "editable": True,
+                        "body": "# Eksport\n- [ ] Eksport działa.", "cardPath": "/board/tickets/1.md"}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["review"] = obj("cardPlanReview").property("text")
+click(at(FIND + "(page.cardPanel, 'cardPlanTicket-1')"))
+js("page.cardPanel.planEditTicket = page.cardPanel.flowPlan.rows[0]")
+obj("cardPlanExecutor").setProperty("text", "Opus")
+obj("cardPlanReviewer").setProperty("text", "Sonnet")
+click(at(FIND + "(page.cardPanel, 'cardPlanSaveTicket')"))
+wait(80)
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertIn("Uzupełniono ryzyka.", out["review"])
+        self.assertEqual(out["call"][:2], ["EditCardPlan", "K-6"])
+        request = json.loads(out["call"][2])
+        self.assertEqual((request["action"], request["ticket"], request["executor"], request["reviewer"]),
+                         ("edit", "#1", "Opus", "Sonnet"))
+
+
     def test_plan_from_snapshot_shows_waves_and_approval_calls_service(self):
         data = json.loads(json.dumps(self.data))
         for card in data["cards"]:

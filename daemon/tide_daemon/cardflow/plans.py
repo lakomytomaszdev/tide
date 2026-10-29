@@ -25,7 +25,7 @@ class Proposal:
     errors: list[str]
 
 
-def read(path: str, card_id: str, catalog, *, allowed_roots=()) -> Proposal:
+def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local", existing_ids=()) -> Proposal:
     """Czyta plan i kartki wyłącznie z dozwolonych katalogów; nie rezerwuje numerów."""
     errors: list[str] = []
     real = os.path.realpath(path)
@@ -46,8 +46,8 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=()) -> Proposal:
         errors.append(f"plan musi wskazywać kartę {card_id} przez klucz card")
     if plan.tables != 1:
         errors.append(f"plan musi mieć jedną tabelę ticketów (ma {plan.tables})")
-    if plan.tracker != "local":
-        errors.append("ten etap zatwierdza plany z lokalnymi ticketami")
+    if plan.tracker not in ('local', tracker):
+        errors.append('tracker planu różni się od trackera projektu')
     if not plan.prefix:
         errors.append("plan nie ma ticket-prefix")
     if not plan.rows:
@@ -57,7 +57,7 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=()) -> Proposal:
     for row in plan.rows:
         ident = row.ticket
         work = WORK_ID.fullmatch(ident)
-        if not work:
+        if not work and ident not in existing_ids:
             errors.append(f"{ident}: propozycja wymaga numeru roboczego #n; ID powstaje po zatwierdzeniu")
         if ident in seen:
             errors.append(f"{ident}: powtórzony ticket")

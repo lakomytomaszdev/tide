@@ -11,6 +11,14 @@ class WaveFlowTest(FlowInProcess):
     proposal = plan_tests.PlanFlowTest.proposal
     submit = plan_tests.PlanFlowTest.submit
     approve = plan_tests.PlanFlowTest.approve
+
+    def ticket_starts(self, card):
+        return [step for step in self.of(card, "step.started") if step.get("ticket")]
+
+    def ticket_finishes(self, card):
+        tickets = {step["step"] for step in self.ticket_starts(card)}
+        return [step for step in self.of(card, "step.finished") if step["step"] in tickets]
+
     def wave_plan(self, card, count=2):
         path = self.proposal(card)
         with open(path, encoding="utf-8") as fh:
@@ -32,9 +40,9 @@ class WaveFlowTest(FlowInProcess):
         mapping = self.approve(card)["map"]
         self.assertNotIn("waves", self.of(card, "plan.proposed")[0])
         self.assertNotIn("waves", self.of(card, "plan.approved")[0])
-        self.assertTrue(wait_until(lambda: len(self.of(card, "step.started")) >= 2, timeout=15))
-        starts = self.of(card, "step.started")
-        first_finish = self.of(card, "step.finished")
+        self.assertTrue(wait_until(lambda: len(self.ticket_starts(card)) >= 2, timeout=15))
+        starts = self.ticket_starts(card)
+        first_finish = self.ticket_finishes(card)
         self.assertEqual([s["ticket"] for s in starts[:2]], [mapping["#1"], mapping["#2"]])
         self.assertFalse(first_finish, "niezależne tickety muszą wystartować przed końcem pierwszego")
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=40), self.events(card))
@@ -42,7 +50,7 @@ class WaveFlowTest(FlowInProcess):
         merges = [e for e in self.results(card, "merge") if e["key"] in (mapping["#1"], mapping["#2"])]
         self.assertEqual(len(merges), 2)
         self.assertTrue(all(e["ok"] and e["seq"] < blocked["seq"] for e in merges))
-        for started in self.of(card, "step.started"):
+        for started in self.ticket_starts(card):
             self.assertFalse(os.path.exists(started["worktree"]), "każdy scalony ticket sprząta własne worktree")
 
 
@@ -53,7 +61,7 @@ class WaveFlowTest(FlowInProcess):
         self.assertTrue(self.submit(card, self.wave_plan(card))["ok"])
         self.approve(card)
         self.assertTrue(wait_until(lambda: self.of(card, "step.waiting"), timeout=5))
-        self.assertEqual(len(self.of(card, "step.started")), 1)
+        self.assertEqual(len(self.ticket_starts(card)), 1)
         self.assertIn("limit", self.of(card, "step.waiting")[-1]["reason"])
         self.assertTrue(wait_until(lambda: any("limit" in t.get("waitReason", "")
                         for t in self.shown(card)["derived"]["tickets"]), timeout=5))
@@ -71,14 +79,14 @@ class WaveFlowTest(FlowInProcess):
         card = self.card()
         self.assertTrue(self.submit(card, self.wave_plan(card))["ok"])
         self.approve(card)
-        self.assertTrue(wait_until(lambda: len(self.of(card, "step.started")) == 2, timeout=5))
+        self.assertTrue(wait_until(lambda: len(self.ticket_starts(card)) == 2, timeout=5))
         box = []
         self.flow.set_paused(card, True, box.append)
         self.assertTrue(wait_until(lambda: box, timeout=5))
         self.assertTrue(json.loads(box[0])["ok"])
-        self.assertTrue(wait_until(lambda: len(self.of(card, "step.finished")) == 2, timeout=10))
+        self.assertTrue(wait_until(lambda: len(self.ticket_finishes(card)) == 2, timeout=10))
         wait_until(lambda: False, timeout=0.4)
-        self.assertEqual(len(self.of(card, "step.started")), 2)
+        self.assertEqual(len(self.ticket_starts(card)), 2)
         self.assertTrue(self.shown(card)["derived"]["flow"]["paused"])
         box = []
         self.flow.set_paused(card, False, box.append)
@@ -185,7 +193,7 @@ class WaveFlowTest(FlowInProcess):
         self.assertTrue(self.submit(card, self.wave_plan(card, count=4))["ok"])
         mapping = self.approve(card)["map"]
         self.assertTrue(wait_until(lambda: self.of(card, "step.waiting"), timeout=5))
-        self.assertEqual([s["ticket"] for s in self.of(card, "step.started")],
+        self.assertEqual([s["ticket"] for s in self.ticket_starts(card)],
                          [mapping["#1"], mapping["#2"], mapping["#3"]])
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=40))
         active = set()
@@ -232,11 +240,11 @@ class WaveFlowTest(FlowInProcess):
         card = self.card()
         self.assertTrue(self.submit(card, self.wave_plan(card))["ok"])
         mapping = self.approve(card)["map"]
-        self.assertTrue(wait_until(lambda: len(self.of(card, "step.started")) >= 2, timeout=5))
+        self.assertTrue(wait_until(lambda: len(self.ticket_starts(card)) >= 2, timeout=5))
         self.assertTrue(json.loads(self.board.move_card(card, "done", 0))["ok"])
         self.assertTrue(wait_until(lambda: self.of(card, "card.finished"), timeout=10))
         self.assertEqual({event["ticket"] for event in self.of(card, "ticket.rejected")}, set(mapping.values()))
-        self.assertEqual(len(self.of(card, "step.finished")), 2)
+        self.assertEqual(len(self.ticket_finishes(card)), 2)
 
     def test_manual_finish_keeps_merged_ticket_and_rejects_remaining_plan(self):
         card = self.card()

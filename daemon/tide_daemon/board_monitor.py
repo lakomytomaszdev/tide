@@ -238,6 +238,12 @@ class BoardMonitor(QObject):
             return
         self.flow.set_paused(card_id, paused, reply)
 
+    def edit_card_plan(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.edit_plan(card_id, request, reply)
+
     def approve_card_plan(self, card_id: str, reply) -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
@@ -496,6 +502,8 @@ class BoardMonitor(QObject):
                 if self.flow is not None and self.flow.has_journal(card.get("id") or ""):
                     # Karta w przepływie karty: stan tylko z dziennika (dziennik wygrywa z planem i sesjami).
                     derived = self.flow.derived(card)
+                    if hasattr(self.flow, 'tracker_tickets'):
+                        card['flowTickets'] = self.flow.tracker_tickets(card)
                 elif derive is not None:
                     given = {**card, "repo": repos.get(card.get("project"), ""),
                              "extraRepos": [repos.get(slug) for slug in card.get("projects") or [] if repos.get(slug)]}
