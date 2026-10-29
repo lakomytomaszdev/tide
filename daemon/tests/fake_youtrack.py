@@ -23,12 +23,16 @@ class FakeYouTrack:
         self.token = token
         self.issues: dict[str, dict] = {}
         self.calls: list = []
+        self.comment_status = 200
         self.status = 200            # inny kod — każda odpowiedź z tym kodem (np. 503)
         self.workflow = list(WORKFLOW)
         self.projects: set | None = None   # None — każdy klucz projektu istnieje; zbiór — inne dostają 400 przy zakładaniu
         self.comments: dict[str, list] = {}    # klucz → [{"id", "text"}]
         self.links: list = []                  # (zgłoszenie, polecenie) z POST /api/commands
         self.lose_replies = 0                  # tyle następnych POST-ów serwer wykona, ale odpowiedź zgubi (zerwane połączenie)
+        self.lose_comment_replies = 0
+        self.search_delay_after_create = 0
+        self.hidden_searches = 0
         self.clock_ms = BASE_MS
         self.lock = threading.Lock()
         fake = self
@@ -105,6 +109,8 @@ class FakeYouTrack:
             if parts.path == "/api/commands" and handler.command == "POST":
                 return self._command(handler, body)
             if parts.path.startswith("/api/issues/") and parts.path.endswith("/comments"):
+                if self.comment_status != 200:
+                    return self._send(handler, self.comment_status, {"error": "unavailable"})
                 ident = urllib.parse.unquote(parts.path[len("/api/issues/"):-len("/comments")])
                 if ident not in self.issues:
                     return self._send(handler, 404, {"error": "Not Found"})
@@ -145,6 +151,7 @@ class FakeYouTrack:
         stamp = self._tick()
         self.issues[ident] = {"state": "Submitted", "summary": summary, "description": data.get("description") or "",
                               "mine": "reporter", "created": stamp, "updated": stamp}
+        self.hidden_searches = self.search_delay_after_create
         return self._send(handler, 200, {"idReadable": ident, "summary": summary, "$type": "Issue"})
 
     def _command(self, handler, body) -> None:
@@ -180,6 +187,9 @@ class FakeYouTrack:
         return self._send(handler, 200, self._issue_json(ident, issue))
 
     def _search(self, text: str) -> list:
+        if self.hidden_searches:
+            self.hidden_searches -= 1
+            return []
         out = []
         phrases = re.findall(r'"([^"]+)"', text)
         project = re.search(r"project:\s*(\S+)", text)
@@ -212,6 +222,9 @@ class FakeYouTrack:
                 "$type": "Issue"}
 
     def _send(self, handler, code: int, payload) -> None:
+        if self.lose_comment_replies and handler.command == 'POST' and '/comments' in handler.path and code == 200:
+            self.lose_comment_replies -= 1
+            self.lose_replies += 1
         if self.lose_replies > 0 and handler.command == "POST" and code == 200:
             self.lose_replies -= 1      # zmiana już zapisana, ale klient dostaje zerwane połączenie
             handler.close_connection = True

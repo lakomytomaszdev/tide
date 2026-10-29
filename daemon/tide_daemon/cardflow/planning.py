@@ -2,7 +2,8 @@
 import json
 
 
-def prompt(*, card, project, catalog, preferred, assignment_rules, prefix, out_dir, errors=(), previous="", tool="claude", images=()):
+def prompt(*, card, project, catalog, preferred, assignment_rules, prefix, out_dir, errors=(), previous="", tool="claude", images=(),
+           tracker="local", tracker_url="", tracker_project=""):
     executors = [{"name": e.name, "provider": e.provider, "program": e.program, "model": e.model,
                   "classes": list(e.classes)} for e in catalog.executors]
     return f"""Krok planowania Lekkiego karty {card.id}.
@@ -53,9 +54,9 @@ Zapisz propozycję standardu 1.2 jako {out_dir}/plan.md:
 tide-plan: 1
 title: "{card.title}"
 card: {card.id}
-tracker: local
-tracker-url:
-tracker-project:
+tracker: {tracker}
+tracker-url: {tracker_url}
+tracker-project: {tracker_project}
 ticket-prefix: {prefix}
 coordinator: {tool}
 status: active

@@ -37,7 +37,7 @@ from ..models import queue as model_queue
 from .. import codex_homes
 from ..board.model import BoardError, card_num
 from ..board import assignment
-from ..coordination import reservations
+from ..coordination import reservations, youtrack as yt
 from ..tasks import agentcmd, launch, stepstop
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
@@ -48,6 +48,7 @@ from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for
 from .journal import Journal
 from .state import FlowState, derived, fold, ticket_of, graph_waves, attention_step
+from .tracker import TrackerOutbox
 
 GUARD_MINUTES = 15.0
 TIMEOUT_MINUTES = 240.0
@@ -116,6 +117,7 @@ class FlowEngine:
         self.settings = settings or settings_path()
         self.git = flow_git or FlowGit()
         self.clock = clock
+        self.tracker = TrackerOutbox(self.journal, clock)
         self.which = which
         self.grace = grace
         self.guard_every = guard_every
@@ -136,6 +138,27 @@ class FlowEngine:
 
     def derived(self, card: dict) -> dict | None:
         return derived(fold(self.journal.read(card.get("id") or "")), card)
+
+    def tracker_tickets(self, card):
+        st = fold(self.journal.read(card.get('id') or ''))
+        if not st.started:
+            return None
+        events = self.journal.read(card['id'])
+        merged = {key for (action, key), value in st.results.items() if action == 'merge' and value.get('ok')}
+        tickets = []
+        for (action, _), result in st.results.items():
+            if action != 'reserve' or not result.get('ok'):
+                continue
+            ticket = result['ticket']
+            if not any(i.get('youtrack') and i.get('action') == 'reserve' and
+                       i.get('key') == result.get('key') for i in st.intents.values()):
+                continue
+            related = [e for e in events if e.get('ticket') == ticket or e.get('key') == ticket]
+            stamp = lambda e: datetime.fromisoformat(e['ts']).timestamp()
+            tickets.append({'id': ticket, 'state': self._plan_row_state(st, ticket, merged),
+                            'linkedTs': stamp(result),
+                            'activityTs': max([stamp(e) for e in related] or [stamp(result)])})
+        return {'tickets': tickets}
 
     def warnings(self) -> list[dict]:
         return [{"path": self.journal.path(card), "message": text} for card, text in sorted(self._warnings.items())]
@@ -169,7 +192,7 @@ class FlowEngine:
 
     # --- zlecenie --------------------------------------------------------------------------------
 
-    def start(self, card_id: str, request: dict) -> dict:
+    def start(self, card_id: str, request: dict, *, _resume=False) -> dict:
         unknown = [k for k in request if k not in REQUEST_FIELDS]
         if unknown:
             raise FlowError("bad-request", f"nieznane pole „{unknown[0]}”; dozwolone: {', '.join(REQUEST_FIELDS)}")
@@ -194,9 +217,6 @@ class FlowEngine:
             raise FlowError("no-project", f"{card.id}: karta potrzebuje projektu z repozytorium")
         if project.repo_missing or not os.path.isdir(project.repo):
             raise FlowError("no-repo", f"nie ma repozytorium {project.repo}")
-        if project.youtrack:
-            raise FlowError("unsupported-tracker", "„Od razu” w projekcie z YouTrackiem jeszcze nie działa "
-                                                   "(zgłoszenia przy zleceniu — osobny ticket)")
         name = str(request.get("executor") or "").strip()
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
@@ -249,17 +269,18 @@ class FlowEngine:
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
         images = self._images(request.get("images"))
         st = fold(self.journal.read(card.id))
-        if st.active():
+        if st.active() and not _resume:
             raise FlowError("flow-active", f"{card.id}: krok tej karty jeszcze trwa")
         try:
-            reservations.reserve(project.repo, count=1, title=card.title, dry_run=True)
+            if not project.youtrack:
+                reservations.reserve(project.repo, count=1, title=card.title, dry_run=True)
         except reservations.ReservationError as exc:
             raise FlowError("no-ticket-number", f"numer ticketu: {exc}") from None
         main = self.git.main_branch(project.repo)
         if not main:
             raise FlowError("no-base", f"{project.repo}: nie ma gałęzi głównej (master, main, develop)")
 
-        started = self.journal.append(card.id, "card.started", entry="now", executor=selected.name,
+        started = st.started if _resume else self.journal.append(card.id, "card.started", entry="now", executor=selected.name,
                                       program=selected.tool, model=selected.model, provider=selected.provider,
                                       executorRouteUrl=selected.route.url if selected.route else "",
                                       executorRouteKind=selected.route.kind if selected.route else "",
@@ -273,12 +294,21 @@ class FlowEngine:
                                       reviewerEffort=reviewer.effort,
                                       preferredProvider=preferred or selected.provider, check=check,
                                       repo=project.repo, project=project.slug, column=card.column,
-                                      moveId=card.move_id, images=images)
+                                      moveId=card.move_id, request=request, trackerProject=project.youtrack,
+                                      trackerUrl=yt.load_config()["url"] if project.youtrack else "", images=images)
         launch = f"launch-{started['seq']}"
         request_key = f"{card.id}:{launch}"
-        reserved = self._act(card.id, "reserve", launch,
-                             lambda: self._reserve(project.repo, card.title, request_key),
-                             repo=project.repo, title=card.title)
+        if project.youtrack:
+            try:
+                reserved = self._tracker_reserve(card.id, launch, 1, card.title, card.description)
+            except yt.YouTrackError as exc:
+                if exc.permanent:
+                    raise FlowError('youtrack', str(exc)) from None
+                return {"ok": True, "id": card.id, "queued": True, "message": str(exc)}
+        else:
+            reserved = self._act(card.id, "reserve", launch,
+                                 lambda: self._reserve(project.repo, card.title, request_key),
+                                 repo=project.repo, title=card.title)
         ticket = reserved["ticket"]
         slug = slug_from_prompt(card.title, words=4, length=32)
         card_branch = ticket_of(st)["cardBranch"] or f"card/{card.id.lower()}-{slug}"
@@ -307,7 +337,8 @@ class FlowEngine:
             step = {"session": ""}
         return {"ok": True, "id": card.id, "ticket": ticket, "branch": made_ticket["branch"],
                 "worktree": made_ticket["worktree"], "cardBranch": made["branch"], "cardWorktree": made["worktree"],
-                "step": step_id, "session": step["session"], "executor": selected.name, "queued": "step" not in step}
+                "step": step_id, "session": step["session"], "executor": selected.name,
+                "queued": "step" not in step, **({'map': {'#1': ticket}} if project.youtrack else {})}
 
     def start_planning(self, card_id: str, request: dict) -> dict:
         card_id = f"K-{card_num(card_id)}"
@@ -341,10 +372,13 @@ class FlowEngine:
         main = self.git.main_branch(project.repo)
         if not main:
             raise FlowError("no-base", "repozytorium nie ma gałęzi głównej")
-        try:
-            prefix = reservations.reserve(project.repo, dry_run=True)["prefix"]
-        except reservations.ReservationError as exc:
-            raise FlowError("no-ticket-number", str(exc)) from None
+        if project.youtrack:
+            prefix = project.youtrack
+        else:
+            try:
+                prefix = reservations.reserve(project.repo, dry_run=True)["prefix"]
+            except reservations.ReservationError as exc:
+                raise FlowError("no-ticket-number", str(exc)) from None
         self.journal.append(card_id, "card.started", entry="planning", mode="light", repo=project.repo,
                             project=project.slug, column=item.column, moveId=item.move_id,
                             executor=selected.name, program=selected.tool, model=selected.model,
@@ -354,7 +388,9 @@ class FlowEngine:
                             effort=selected.effort,
                             routeUrl=selected.route.url if selected.route else "",
                             routeKind=selected.route.kind if selected.route else "",
-                            routeTokenFile=selected.route.token_file if selected.route else "")
+                            routeTokenFile=selected.route.token_file if selected.route else "",
+                            trackerProject=project.youtrack,
+                            trackerUrl=yt.load_config()['url'] if project.youtrack else '')
         self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
         st = fold(self.journal.read(card_id))
         return {"ok": True, "id": card_id, "step": st.last_step, "executor": selected.name,
@@ -375,7 +411,10 @@ class FlowEngine:
         text = planning.prompt(card=item, project=project, catalog=catalog,
                                preferred=st.started["preferredProvider"], assignment_rules=st.started["assignmentRules"],
                                prefix=st.started["prefix"], out_dir=out, errors=errors, previous=previous,
-                               tool=selected.tool, images=shots)
+                               tool=selected.tool, images=shots,
+                               tracker="youtrack" if project.youtrack else "local",
+                               tracker_url=st.started.get("trackerUrl") or "",
+                               tracker_project=project.youtrack or "")
         self._launch(item, project, selected, "", made, made, step_id, list(images), kind=kind,
                      round_no=round_no, prompt_text=text)
 
@@ -428,6 +467,42 @@ class FlowEngine:
             previous = "(brak czytelnego pliku planu)"
         self._planning_launch(card, st, selected, catalog, errors=st.plan_checked["errors"], previous=previous,
                               round_no=int(step.get("round") or 0) + 1)
+    def _tracker_reserve(self, card, key, number, title, description):
+        item, project = self._project(card)
+        started = fold(self.journal.read(card)).started or {}
+        payload = {'op': 'issue', 'url': started.get('trackerUrl') or yt.load_config()['url'],
+                   'project': started.get('trackerProject') or project.youtrack,
+                   'number': number, 'title': title, 'description': description}
+        result = self.tracker.run(card, 'reserve', key, payload)
+        if item.youtrack:
+            self.tracker.run(card, 'youtrack-link', result['ticket'],
+                             {'op': 'link', 'url': payload['url'], 'ticket': result['ticket'],
+                              'parent': item.youtrack})
+        return result
+
+    def _tracker_notes(self, card):
+        st = fold(self.journal.read(card))
+        if not st.started:
+            return
+        _, project = self._project(card)
+        if not project.youtrack:
+            return
+        for (action, ticket), result in list(st.results.items()):
+            if action != 'merge' or not result.get('ok') or ('youtrack-note', ticket) in st.results:
+                continue
+            source = next((s for s in reversed(list(st.steps.values())) if s.get('ticket') == ticket
+                           and s.get('kind') in ('ticket', 'fix')), None)
+            if source is None:
+                continue
+            verdict = next((v for (t, _), v in reversed(list(st.verdicts.items())) if t == ticket), {})
+            text = (self._note(card, source) + '\n\nGałąź: ' + source.get('branch', '') +
+                    '\nReview: ' + verdict.get('verdict', '') + '\nWykonawca: ' + source.get('executor', ''))
+            try:
+                self.tracker.run(card, 'youtrack-note', ticket,
+                                 {'op': 'comment', 'url': st.started.get('trackerUrl') or yt.load_config()['url'], 'ticket': ticket,
+                                  'event': str(result['seq']), 'text': text})
+            except yt.YouTrackError:
+                pass
 
     def _reserve(self, repo: str, title: str, request_key: str, prefix: str = "") -> dict:
         got = reservations.reserve(repo, prefix=prefix, count=1, title=title, request_key=request_key)
@@ -615,8 +690,15 @@ class FlowEngine:
                       fold(self.journal.read(card_id)).steps.values() if s.get("stepDir")]
         roots = ((project.repo, os.path.join(self.store.root, "docs"), *step_roots) if not continuation else
                  (os.path.join(fold(self.journal.read(card_id)).steps[step]["stepDir"], "out"),))
-        proposal = flow_plans.read(path, card_id, catalog, allowed_roots=roots)
-        if proposal.plan is not None:
+        proposal = flow_plans.read(path, card_id, catalog, allowed_roots=roots,
+                                   tracker='youtrack' if project.youtrack else 'local')
+        if proposal.plan is not None and proposal.plan.tracker == 'youtrack':
+            config_url = yt.load_config()['url'].rstrip('/')
+            if proposal.plan.tracker_project != project.youtrack:
+                proposal.errors.append('tracker-project planu różni się od projektu karty')
+            if proposal.plan.tracker_url.rstrip('/') != config_url:
+                proposal.errors.append('tracker-url planu różni się od serwera projektu karty')
+        if proposal.plan is not None and not project.youtrack:
             try:
                 established = reservations.reserve(project.repo, dry_run=True)["prefix"]
                 if proposal.plan.prefix != established:
@@ -625,7 +707,9 @@ class FlowEngine:
                 proposal.errors.append(str(exc))
         if not continuation:
             self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
-                                check=item.check or "auto", column=item.column, moveId=item.move_id)
+                                check=item.check or "auto", column=item.column, moveId=item.move_id,
+                                trackerProject=project.youtrack,
+                                trackerUrl=yt.load_config()['url'] if project.youtrack else '')
         checked = fold(self.journal.read(card_id)).plan_checked or {}
         if not continuation or checked.get("step") != step or checked.get("errors") != proposal.errors:
             self.journal.append(card_id, "plan.checked", valid=not proposal.errors, errors=proposal.errors, step=step)
@@ -641,7 +725,7 @@ class FlowEngine:
                                                    "plan", "tickets", row["workId"].lstrip("#") + ".md")}
                 for row in proposal.rows]
         self.journal.append(card_id, "plan.proposed", title=proposal.plan.title,
-                            prefix=proposal.plan.prefix, coordinator=proposal.plan.coordinator,
+                            prefix=project.youtrack or proposal.plan.prefix, coordinator=proposal.plan.coordinator,
                             session=proposal.plan.session, rows=rows,
                             planPath=os.path.realpath(path))
         return {"ok": True, "id": card_id, "rows": proposal.rows, "waves": proposal.waves}
@@ -658,17 +742,35 @@ class FlowEngine:
         proposal = st.plan_proposed or {}
         if not proposal or st.card_finished:
             raise FlowError("no-plan", f"{card_id}: nie ma planu do zatwierdzenia")
+        if not any(e['type'] == 'plan.approval_requested' and e.get('proposal') == proposal['seq']
+                   for e in self.journal.read(card_id)):
+            self.journal.append(card_id, 'plan.approval_requested', proposal=proposal['seq'])
         repo = (st.started or {}).get("repo") or ""
         prefix = proposal.get("prefix") or ""
+        _, project = self._project(card_id)
         mapping = {}
         for row in proposal.get("rows") or []:
             work_id = row["workId"]
             if work_id.startswith("#"):
                 key = f"plan:{proposal['seq']}:{work_id}"
-                result = self._act(card_id, "reserve", key,
-                                   lambda row=row, key=key: self._reserve(repo, row["title"],
-                                                                            f"{card_id}:{key}", prefix),
-                                   retry_failed=True, repo=repo, title=row["title"], prefix=prefix)
+                if project.youtrack:
+                    try:
+                        old = st.results.get(('reserve', key)) or {}
+                        source = row['cardPath']
+                        if not os.path.isfile(source) and old.get('ticket'):
+                            source = os.path.join(os.path.dirname(source), old['ticket'] + '.md')
+                        with open(source, encoding='utf-8') as fh:
+                            description = fh.read()
+                        result = self._tracker_reserve(card_id, key, int(work_id[1:]), row['title'], description)
+                    except yt.YouTrackError as exc:
+                        if exc.permanent:
+                            raise FlowError('youtrack', str(exc)) from None
+                        return {"ok": True, "id": card_id, "queued": True, "map": mapping, "message": str(exc)}
+                else:
+                    result = self._act(card_id, "reserve", key,
+                                       lambda row=row, key=key: self._reserve(repo, row["title"],
+                                                                                f"{card_id}:{key}", prefix),
+                                       retry_failed=True, repo=repo, title=row["title"], prefix=prefix)
                 mapping[work_id] = result["ticket"]
             else:
                 mapping[work_id] = work_id
@@ -947,7 +1049,22 @@ class FlowEngine:
                                        (stored.move_id and stored.move_id != st.store_move_id)):
                 self.moved(card, stored.column, stored.moved_from or st.store_column, stored.move_id)
                 st = fold(self.journal.read(card))
-        for intent in st.open_intents():
+        blocking_tracker_error = any(e.get('action') != 'youtrack-note' for e in st.tracker_failures())
+        try:
+            if not blocking_tracker_error and st.started and not st.paused and not st.card_finished and st.started.get('entry') == 'now' \
+                    and not st.steps and st.started.get('request'):
+                _, project = self._project(card)
+                if project.youtrack:
+                    self.start(card, st.started['request'], _resume=True)
+            if not blocking_tracker_error and st.plan_proposed and not st.plan_approved and any(
+                    e['type'] == 'plan.approval_requested' and e.get('proposal') == st.plan_proposed['seq']
+                    for e in self.journal.read(card)):
+                self.approve_plan(card)
+            self._tracker_notes(card)
+        except yt.YouTrackError:
+            pass
+        st = fold(self.journal.read(card))
+        for intent in st.open_intents(include_background=True):
             self._reconcile(card, intent)
         st = fold(self.journal.read(card))
         for item in st.steps.values():
@@ -1176,8 +1293,10 @@ class FlowEngine:
         approved, proposed = st.plan_approved or {}, st.plan_proposed or {}
         def cell(value):
             return " ".join(str(value or "").replace("|", "\\|").split())
-        lines = ["---", "tide-plan: 1", f"title: Plan karty {card}", "tracker: local",
-                 "tracker-url:", "tracker-project:",
+        tracker = (st.started or {}).get('trackerProject') or ''
+        lines = ["---", "tide-plan: 1", f"title: Plan karty {card}",
+                 'tracker: youtrack' if tracker else 'tracker: local',
+                 'tracker-url: ' + ((st.started or {}).get('trackerUrl') or ''), 'tracker-project: ' + tracker,
                  f"coordinator: {proposed.get('coordinator') or 'claude'}",
                  f"session: {cell(proposed.get('session'))}",
                  f"ticket-prefix: {proposed.get('prefix') or ''}", f"card: {card}",
@@ -1260,6 +1379,9 @@ class FlowEngine:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         choice = str(request.get("choice") or "")
         st = fold(self.journal.read(card))
+        if choice == 'retry' and not st.card_finished and not st.running() and st.tracker_failures():
+            self.tracker.reset_failures(card)
+            return {'ok': True, 'id': card, 'choice': choice, 'tracker': True}
         st.last_step = attention_step(st) or st.last_step
         step = st.steps.get(st.last_step) or {}
         done = st.finished.get(st.last_step) or {}
@@ -1581,6 +1703,12 @@ class FlowEngine:
     def _reconcile(self, card: str, intent: dict) -> None:
         """Akcja zaczęta przed restartem usługi, bez wyniku: dokończenie albo jawny błąd (nigdy druga kopia)."""
         action, key = intent.get("action"), intent.get("key")
+        if intent.get('youtrack'):
+            try:
+                self.tracker.run(card, action, key, intent['payload'])
+            except yt.YouTrackError:
+                pass
+            return
         if action == "reserve":
             self._act(card, action, key,
                       lambda: self._reserve(intent["repo"], intent["title"], f"{card}:{key}",

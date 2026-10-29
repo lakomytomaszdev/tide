@@ -43,8 +43,10 @@ class FlowState:
     step_retries: dict = field(default_factory=dict)  # źródłowy krok → automatyczne ponowienie
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
     step_notices: set = field(default_factory=set)
+    tracker_retries: dict = field(default_factory=dict)
     plan_checked: dict | None = None
     plan_proposed: dict | None = None
+    approval_requested: dict | None = None
     plan_approved: dict | None = None
     plan_finished: bool = False
     plan_change_seq: int = 0
@@ -70,8 +72,12 @@ class FlowState:
         """Karty Konsoli jeszcze otwarte, również po zapisaniu pliku wyniku."""
         return [s for s in self.steps.values() if s.get("mode") == "interactive" and not s.get("consoleClosed")]
 
-    def open_intents(self) -> list[dict]:
-        return [i for k, i in self.intents.items() if k not in self.results]
+    def open_intents(self, *, include_background=False) -> list[dict]:
+        return [i for k, i in self.intents.items() if k not in self.results and
+                (include_background or i.get('action') != 'youtrack-note')]
+
+    def tracker_failures(self):
+        return [e for e in self.results.values() if e.get('permanent') and not e.get('ok')]
 
     def merge_pending(self) -> list[dict]:
         """Tickety zatwierdzone w review, których jeszcze nie scalono."""
@@ -98,7 +104,9 @@ class FlowState:
         pending_decision = finished.get("result") in ("question", "denied", "error") and \
             step.get("ticket") not in self.rejected and not self.card_finished
         return bool(self.running() or self.open_consoles() or self.merge_pending() or self.open_intents()
-                    or pending_review or pending_decision or plan_pending or (self.waiting and not self.card_finished))
+                    or pending_review or pending_decision or plan_pending or (self.waiting and not self.card_finished) or
+                    (self.started and self.started.get('trackerProject') and self.started.get('entry') == 'now'
+                     and not self.steps and not self.card_finished))
 
 
 def fold(events: list[dict]) -> FlowState:
@@ -116,7 +124,7 @@ def fold(events: list[dict]) -> FlowState:
             st.started, st.paused, st.card_finished, st.moved_to = e, False, False, ""
             st.store_column = e.get("column") or ""
             st.store_move_id = e.get("moveId") or ""
-            st.plan_checked = st.plan_proposed = st.plan_approved = None
+            st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
             st.plan_finished = False
             st.plan_change_seq, st.plan_change_ts = 0, ""
             st.assignments = {}
@@ -124,8 +132,14 @@ def fold(events: list[dict]) -> FlowState:
             st.inputs = {}
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
+        elif kind == 'youtrack.reset':
+            st.results.pop((e.get('action'), e.get('key')), None)
+            st.tracker_retries.pop((e.get('action'), e.get('key')), None)
+        elif kind == 'youtrack.retry':
+            st.tracker_retries[(e.get('action'), e.get('key'))] = e
         elif kind == "result":
             st.results[(e.get("action"), e.get("key"))] = e
+            st.tracker_retries.pop((e.get('action'), e.get('key')), None)
         elif kind == "card.inputs":
             st.inputs = e
         elif kind == "step.waiting":
@@ -165,6 +179,8 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_checked = e
         elif kind == "plan.proposed":
             st.plan_proposed = e
+        elif kind == 'plan.approval_requested':
+            st.approval_requested = e
         elif kind == "plan.approved":
             st.plan_approved = e
         elif kind == "plan.finished":
@@ -270,6 +286,9 @@ def derived(st: FlowState, card: dict) -> dict | None:
     out["flow"].update({"paused": st.paused, "timeline": st.timeline,
                         "waiting": [{"ticket": ticket, "kind": kind, "reason": item["reason"]}
                                     for (ticket, kind), item in st.waiting.items()]})
+    out['flow']['trackerQueue'] = [
+        {key: e.get(key) for key in ('action', 'key', 'after', 'error')} for e in st.tracker_retries.values()]
+    tracker_reason = next(reversed(list(st.tracker_retries.values())), {}).get('error') or ''
     out["flow"]["steps"] = [
         {"id": name, "ticket": item.get("ticket") or "", "mode": item.get("mode") or "background",
          "result": (st.finished.get(name) or {}).get("result") or "",
@@ -281,6 +300,11 @@ def derived(st: FlowState, card: dict) -> dict | None:
                              and not other.get("consoleClosed") for other in st.steps.values())}
         for name, item in st.steps.items()
     ]
+    failures = [e for e in st.tracker_failures() if e.get('action') != 'youtrack-note']
+    if failures and not st.running():
+        error = failures[-1].get('error') or 'odmowa operacji YouTracka'
+        out['flow'].update(action='error', error=error, trackerError=True)
+        return _fill(out, 'waiting', 'Błąd YouTracka: ' + error + ' — popraw przyczynę i wybierz „Ponów”')
     if st.started.get("entry") in ("plan", "planning"):
         proposal = st.plan_proposed or {}
         approved = st.plan_approved or {}
@@ -326,6 +350,9 @@ def derived(st: FlowState, card: dict) -> dict | None:
                     return _fill(out, "progress", "poprawa formatu planu w tle")
                 out["question"] = "Plan nadal ma błędny format po dwóch poprawach. Uruchomić planowanie ponownie?"
                 return _fill(out, "waiting", "propozycja planu wymaga poprawy po dwóch próbach")
+        elif not st.plan_approved and st.approval_requested and st.started.get('trackerProject'):
+            return _fill(out, 'backlog' if st.paused else 'progress',
+                         tracker_reason or 'YouTrack: zatwierdzenie planu czeka na zgłoszenia')
         elif not st.plan_approved:
             out["question"] = "Zatwierdzić plan?"
             return _fill(out, "waiting", "plan do zatwierdzenia")
@@ -337,6 +364,9 @@ def derived(st: FlowState, card: dict) -> dict | None:
             return _fill(out, "progress", out["flow"]["waveLabel"] + " · " + next(reversed(st.waiting.values()))["reason"])
         if st.plan_approved is not None and not st.last_step and not st.open_intents():
             return _fill(out, "progress", "uruchamiam pierwszy ticket planu")
+    if st.started.get('trackerProject') and st.started.get('entry') == 'now' and not st.steps:
+        return _fill(out, 'backlog' if st.paused else 'progress',
+                     tracker_reason or 'YouTrack: zlecenie czeka na zgłoszenie')
     verdict = next((v for (ticket_id, _round), v in reversed(list(st.verdicts.items())) if ticket_id == ident), None)
     if verdict:
         out["flow"].update({key: verdict[key] for key in ("verdict", "blockers", "majors", "nits", "round")})
@@ -362,7 +392,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
         return _fill(out, "progress", f"{label} · {len(st.running())} kroków w toku" if label else
                      f"{ident} · {work} ({step.get('executor') or executor})")
     if st.open_intents():
-        return _fill(out, "progress", f"{ident} · {_intent_word(st.open_intents()[0])}")
+        return _fill(out, 'progress', tracker_reason or f"{ident} · {_intent_word(st.open_intents()[0])}")
     if failed and not done:
         return _fill(out, "waiting", f"błąd zlecenia: {failed[-1].get('error') or failed[-1].get('action')}")
     if st.flow_error:
