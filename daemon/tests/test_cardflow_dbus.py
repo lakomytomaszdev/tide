@@ -152,6 +152,17 @@ class FlowCase(unittest.TestCase):
 
 
 class NowTest(FlowCase):
+    def test_review_question_is_answered_through_board_dbus(self):
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 3")
+        self.assertTrue(self.start(card_id)["ok"])
+        shown = self.wait_column(card_id, "waiting", timeout=50)
+        self.assertTrue(shown["derived"]["flow"]["reviewQuestion"])
+        answer = self.call("ResolveCardReview", card_id, "reject")
+        self.assertEqual((answer["ok"], answer["choice"]), (True, "reject"))
+        self.assertTrue(wait_until(lambda: self.of(card_id, "ticket.rejected"), timeout=5))
+        self.assertEqual(self.call("ResolveCardReview", card_id, "retry")["error"], "no-review-question")
+        self.assertEqual(self.results(card_id, "merge"), [])
+
     def test_now_runs_one_background_ticket_from_launch_to_review(self):
         legacy = self.card("Dawna karta", "Bez dziennika.")
         card_id = self.card()
