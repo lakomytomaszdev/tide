@@ -662,7 +662,8 @@ def start_card_flow(app, args, board, monitor=None):
     engine = FlowEngine(board.store, claude_projects=os.path.join(claude_dir, "projects"),
                         systemd_run=os.environ.get("TIDE_SYSTEMD_RUN", ""),
                         catalog=lambda: models_config.load().catalog,
-                        models_config=models_config.load, model_probe=models_status.endpoint_status)
+                        models_config=models_config.load, model_probe=models_status.endpoint_status,
+                        codex_roots=getattr(args, "codex_dir", None))
     if monitor is not None:
         monitor.hidden = engine.is_hidden
     return CardFlowMonitor(engine, board, poll_ms=max(100, poll_ms), parent=app)

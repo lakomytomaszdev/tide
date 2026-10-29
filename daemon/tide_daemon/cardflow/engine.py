@@ -32,6 +32,7 @@ import tempfile
 import time
 import uuid
 
+from .. import codex_homes
 from ..board.model import BoardError, card_num
 from ..coordination import reservations
 from ..tasks import agentcmd, stepstop
@@ -76,7 +77,7 @@ def guard_seconds(path: str) -> float:
 
 class FlowEngine:
     def __init__(self, store, journal: Journal | None = None, *, claude_projects: str = "",
-                 systemd_run: str = "", catalog=None, models_config=None, model_probe=None,
+                 systemd_run: str = "", catalog=None, models_config=None, model_probe=None, codex_roots=None,
                  tmp_root: str | None = None, settings: str | None = None,
                  flow_git: FlowGit | None = None, clock=time.time, which=shutil.which, grace: float = 10.0,
                  guard_every: float = 30.0):
@@ -87,6 +88,7 @@ class FlowEngine:
         self.catalog = catalog            # funkcja() → models.executors.Catalog
         self.models_config = models_config  # funkcja() → ModelsConfig (lokalny i inni dostawcy)
         self.model_probe = model_probe      # funkcja(endpoint) → stan punktu lokalnego
+        self.codex_roots = codex_homes.default_homes() if codex_roots is None else codex_roots
         self.tmp_root = tmp_root or tempfile.gettempdir()
         self.settings = settings or settings_path()
         self.git = flow_git or FlowGit()
@@ -505,6 +507,7 @@ class FlowEngine:
                                      repo=step.get("repo") or self._repo(card), git_dir=step.get("gitDir") or "",
                                      branch=step.get("branch") or "", tool=step.get("program") or "claude",
                                      session_id=step.get("session") or "", claude_projects=self.claude_projects,
+                                     codex_roots=self.codex_roots,
                                      grace=self.grace)
         wip = {"stopped": stopped.stopped, "committed": stopped.committed, "commit": stopped.commit,
                "files": stopped.files, "error": stopped.error, "notes": stopped.notes}

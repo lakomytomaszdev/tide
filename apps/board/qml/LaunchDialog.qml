@@ -69,7 +69,7 @@ Rectangle {
         : flowEntry && selectedExecutor && selectedExecutor.available === false
           ? (selectedExecutor.error || "Wykonawca lokalny jest niedostępny.")
         : tools[agentTool] === false ? "Nie znaleziono programu " + Logic.launchToolName(agentTool) + " — zainstaluj go albo wybierz inny."
-        : model === "local" && !localOption.enabled
+        : !flowEntry && model === "local" && !localOption.enabled
           ? (localOption.pending ? localOption.reason : "Model lokalny niedostępny: " + localOption.reason) : ""
     readonly property var card: cardId ? ((snapshot && snapshot.cards) || []).find(c => c.id === cardId) || null : null
     readonly property var project: card && card.project ? Logic.projectBySlug(snapshot, card.project) : null

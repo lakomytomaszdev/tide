@@ -1540,6 +1540,20 @@ class LaunchNowTest(ProbeCase):
     /Board StartCard (bez RenderLaunch, /Tasks Start i Konsoli); pracującą kartę z dziennikiem da się przeciągnąć
     do Backlogu (wstrzymanie) i do Gotowych (koniec)."""
 
+    def test_cloud_executor_ignores_hidden_local_model_default(self):
+        data = json.loads(json.dumps(self.data))
+        data["tasks"] = {"tools": {"claude": True, "codex": True}, "model": "local"}
+        data["models"] = dict(models_status(available=False, installed=False,
+                                             error="Serwer lokalny nie odpowiada"), executors=EXECUTORS["list"])
+        out = self.probe(FIND_PY + """
+js("page.openLaunch('K-15', false)")
+wait(100)
+click(at(FIND + "(page.launchDialog, 'launchEntry-now')"))
+wait(50)
+out["state"] = js("[page.launchDialog.model, page.launchDialog.executor, page.launchDialog.modelBlocker, page.launchDialog.canStart]")
+""", data)
+        self.assertEqual(out["state"], ["local", "Sonnet", "", True])
+
     def test_preferred_provider_filters_background_executors_in_dialog(self):
         status = dict(models_status(), executors=EXECUTORS["list"])
         out = self.probe(FIND_PY + f"""

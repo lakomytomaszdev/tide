@@ -385,6 +385,28 @@ class NowInProcessTest(FlowInProcess):
 class GuardInProcessTest(FlowInProcess):
     guard_minutes = 0.05   # 3 s
 
+    def test_codex_guard_keeps_last_session_message(self):
+        root = os.path.join(self.base, "codex-data")
+        self.flow.engine.codex_roots = [root]
+        card_id = self.card(description="ATRAPA: czekaj")
+        self.start(card_id, executor="Codex mocny", preferredProvider="openai")
+        step = self.started(card_id)
+        sessions = os.path.join(root, "sessions", "2026", "10", "29")
+        os.makedirs(sessions)
+        log = os.path.join(sessions, "rollout-2026-10-29T12-00-00-codex-test.jsonl")
+        records = [
+            {"type": "session_meta", "payload": {"cwd": step["worktree"]}},
+            {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                                   "content": [{"type": "output_text", "text": "Sprawdzam testy."}]}}
+        ]
+        with open(log, "w", encoding="utf-8") as fh:
+            for record in records:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        self.wait_column(card_id, "waiting", timeout=30)
+        finished = self.of(card_id, "step.finished")[0]
+        self.assertEqual((finished["result"], finished["reason"]), ("error", "no-progress"))
+        self.assertEqual(finished["messages"], [{"role": "assistant", "text": "Sprawdzam testy."}])
+
     def test_guard_stops_a_step_without_progress_and_keeps_its_changes(self):
         card_id = self.card(description="ATRAPA: czekaj")
         reply = self.start(card_id)
