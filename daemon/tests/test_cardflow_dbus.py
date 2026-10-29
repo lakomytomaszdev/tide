@@ -152,6 +152,16 @@ class FlowCase(unittest.TestCase):
 
 
 class PlanDbusTest(FlowCase):
+    def test_full_planning_finds_claude_in_local_bin_without_service_path(self):
+        local_bin = os.path.join(self.env["HOME"], ".local", "bin")
+        os.makedirs(local_bin)
+        shutil.move(os.path.join(self.base, "fakebin", "claude"), os.path.join(local_bin, "claude"))
+        self.restart()
+
+        card = self.card(column="backlog")
+        reply = self.call("StartCard", card, json.dumps({"entry": "planning", "mode": "full", "executor": "Opus"}))
+        self.assertTrue(reply["ok"], reply)
+
     def test_plan_is_proposed_and_approved_through_private_board_bus(self):
         card = self.card(description="Plan z pliku")
         folder = os.path.join(self.repo, "docs", "agents", "plans")
