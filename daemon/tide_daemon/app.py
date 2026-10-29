@@ -295,10 +295,12 @@ def main(argv=None) -> int:
             flow_notifier = NoteNotifier(board.show_window, parent=app)
 
             def notify_card_step(item):
-                labels = {"question": "pytanie", "denied": "potrzebna zgoda", "error": "błąd kroku"}
+                labels = {"question": "pytanie", "denied": "potrzebna zgoda", "error": "błąd kroku",
+                          "plan": "plan do zatwierdzenia", "review": "karta do sprawdzenia",
+                          "limit": "limit dostawcy", "stalled": "karta stoi"}
                 kind = labels.get(item["result"], "krok czeka")
                 flow_notifier.notify(f"flow:{item['card']}:{item['step']}",
-                                     f"{item['card']}: {kind} z {item['ticket']}",
+                                     f"{item['card']}: {kind}" + (f" z {item['ticket']}" if item['ticket'] else ""),
                                      str(item.get("detail") or "")[:300], item["card"])
 
             board.flow.notifier = notify_card_step
@@ -468,7 +470,9 @@ def board_snapshot(board):
     """Funkcja() → migawka tablicy pracy (/Board Snapshot()) dla raportu albo None."""
     def snapshot():
         try:
-            return json.loads(board.snapshot_json())
+            data = json.loads(board.snapshot_json())
+            data["flowRoot"] = board.store.root
+            return data
         except ValueError:
             return None
     return snapshot
@@ -479,7 +483,10 @@ def report_board(args):
     if args.no_board:
         return None
     try:
-        return board_store(args).snapshot()
+        store = board_store(args)
+        data = store.snapshot()
+        data["flowRoot"] = store.root
+        return data
     except Exception as exc:  # tablica to dodatek
         print(f"tide-daemon: raport: tablica pracy pominięta: {exc!r}", file=sys.stderr)
         return None

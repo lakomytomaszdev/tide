@@ -37,7 +37,8 @@ Item {
         const kinds = { "card.started": "Karta ruszyła", "step.started": "Krok ruszył",
                         "step.finished": "Krok zakończony", "step.waiting": "Krok czeka",
                         "plan.approved": "Plan zatwierdzony", "plan.finished": "Plan wykonany",
-                        "card.paused": "Karta wstrzymana", "card.resumed": "Karta wznowiona" }
+                        "card.paused": "Karta wstrzymana", "card.resumed": "Karta wznowiona",
+                        "card.stalled": "Karta stoi" }
         return (kinds[event.type] || "Zmiana") + (event.ticket ? " · " + event.ticket : "")
                 + (event.executor ? " · " + event.executor : "")
                 + (event.reason ? " · " + event.reason : "")
