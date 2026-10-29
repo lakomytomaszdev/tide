@@ -450,7 +450,7 @@ function chatHtml(line, nickColor) {
 // zmiana trybu na żywo, reset serii) nie ma w widżetach — są tylko w Panelu streamera (przytrzymanie).
 // mode.set zostaje poza listą w całości: rdzeń odrzuca ją na żywo, a poza anteną tryb wybiera Panel.
 // Mikrofon przez mic.set {muted} (nie mic.toggle): podwójne kliknięcie albo spóźniony stan nie odwróci wyniku.
-var ALLOWED = ["mic.set", "profile.set", "module.set", "scene.set", "brb.toggle"]
+var ALLOWED = ["mic.set", "profile.set", "module.set", "scene.set", "brb.toggle", "pairing.invite", "pairing.revoke"]
 
 function allowed(name) {
     return ALLOWED.indexOf(name) >= 0
