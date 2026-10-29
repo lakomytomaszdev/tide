@@ -64,35 +64,31 @@ def _attach_flow(projects: list, start: float, end: float, root: str) -> None:
     journal = Journal(root)
     for card in journal.cards():
         events = journal.read(card)
-        started = next((e for e in events if e.get("type") == "card.started"), {})
-        project = by_repo.get(os.path.realpath(started.get("repo") or "/"))
-        if project is None:
-            continue
-        rows = {}
+        repo, rows, steps, completed = "", {}, {}, {}
         for event in events:
-            if event.get("type") == "plan.approved":
-                rows.update({r.get("id"): r for r in event.get("rows") or [] if r.get("id")})
+            kind = event.get("type")
+            if kind == "card.started":
+                repo, rows, steps = os.path.realpath(event.get("repo") or "/"), {}, {}
+            elif kind == "plan.approved":
+                rows = {r.get("id"): r for r in event.get("rows") or [] if r.get("id")}
             elif event.get("type") == "plan.revision-approved":
                 rows.update({r.get("id"): r for r in (event.get("plan") or {}).get("rows") or [] if r.get("id")})
-        steps = {e.get("ticket"): e for e in events if e.get("type") == "step.started" and
-                 e.get("kind") in ("ticket", "fix") and e.get("ticket")}
-        completed = []
-        for event in events:
-            if event.get("type") != "result" or event.get("action") != "merge" or not event.get("ok"):
+            elif kind == "step.started" and event.get("kind") in ("ticket", "fix") and event.get("ticket"):
+                steps[event["ticket"]] = event
+            if kind != "result" or event.get("action") != "merge" or not event.get("ok"):
                 continue
             when = _epoch(event.get("ts"))
-            if not start <= when <= end:
+            if not start <= when <= end or repo not in by_repo:
                 continue
             ident = event.get("key") or ""
             executor = (steps.get(ident) or {}).get("executor") or "nieznany wykonawca"
-            completed.append({"id": ident, "title": (rows.get(ident) or {}).get("title") or ident,
-                              "state": "gotowe", "note": f"wykonał {executor}", "when": when})
-        if not completed:
-            continue
-        entry = _entry(f"{card} · Zrobione w okresie raportu", card, "card-flow", completed,
-                       last=max(r["when"] for r in completed))
-        entry["card"] = card
-        project.plans.append(entry)
+            completed.setdefault(repo, []).append({"id": ident, "title": (rows.get(ident) or {}).get("title") or ident,
+                                                    "state": "gotowe", "note": f"wykonał {executor}", "when": when})
+        for project_repo, tickets in completed.items():
+            entry = _entry(f"{card} · Zrobione w okresie raportu", card, "card-flow", tickets,
+                           last=max(r["when"] for r in tickets))
+            entry["card"] = card
+            by_repo[project_repo].plans.append(entry)
     for project in projects:
         project.plans.sort(key=lambda e: (-e["active"], -e["last"]))
 
