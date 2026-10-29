@@ -99,11 +99,14 @@ elif word == "zgoda":
         finish("done")
     else:
         finish("denied", command="git fetch origin")
-elif word == "zgoda-zabroniona":
+elif word in ("zgoda-zabroniona", "zgoda-zabroniona-cytat", "zgoda-zabroniona-ukosnik", "zgoda-zabroniona-potok"):
     if "Użytkownik odmówił zgody" in prompt:
         finish("done")
     else:
-        finish("denied", command="make install")
+        command = {"zgoda-zabroniona": "make install", "zgoda-zabroniona-cytat": 'make "install"',
+                   "zgoda-zabroniona-ukosnik": r"make \install",
+                   "zgoda-zabroniona-potok": "pwd |& make install"}[word]
+        finish("denied", command=command)
 elif word == "zgoda-dluga":
     if "Użytkownik odmówił zgody" in prompt:
         finish("done")

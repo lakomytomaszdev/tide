@@ -97,6 +97,19 @@ class StepDecisionTest(FlowInProcess):
         self.wait_column(card_id, "review")
         self.assertNotIn("make install", self.store.load().projects["proj"].allowed_commands)
 
+    def test_quoted_escaped_and_piped_forbidden_commands_cannot_be_granted(self):
+        changed = json.loads(self.board.upsert_project(json.dumps({"slug": "proj", "deniedCommands": ["make install"]})))
+        self.assertTrue(changed["ok"], changed)
+        for mode in ("zgoda-zabroniona-cytat", "zgoda-zabroniona-ukosnik", "zgoda-zabroniona-potok"):
+            with self.subTest(mode=mode):
+                card_id = self.card(description=f"Test.\n\nATRAPA: {mode}")
+                self.assertTrue(self.start(card_id)["ok"])
+                card = self.wait_column(card_id, "waiting")
+                self.assertFalse(card["derived"]["flow"]["canAllow"])
+                self.assertEqual(self.decide(card_id, choice="allow")["error"], "forbidden-command")
+                self.assertTrue(self.decide(card_id, choice="deny")["ok"])
+                self.wait_column(card_id, "review")
+
     def test_empty_allowlist_disables_claude_auto_allow(self):
         changed = json.loads(self.board.upsert_project(json.dumps({"slug": "proj", "allowedCommands": []})))
         self.assertTrue(changed["ok"], changed)

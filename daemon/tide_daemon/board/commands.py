@@ -45,34 +45,58 @@ def read(raw: str, fallback: list[str], label: str, errors: list, path: str) -> 
 
 
 def is_forbidden(command: str, denied: list[str]) -> bool:
-    text = " ".join(str(command or "").split())
-    if not single_command(command):
+    argv = _argv(command)
+    if argv is None:
         return True
-    return any(text == rule or text.startswith(rule + " ") for rule in denied)
+    for rule in denied:
+        rule_argv = _argv(rule)
+        if rule_argv is None:
+            continue
+        prefix = rule_argv[:-1] if rule_argv[-1] == "*" else rule_argv
+        if argv[:len(prefix)] == prefix:
+            return True
+    return False
 
 
 def single_command(command: str) -> bool:
     """Zgoda z panelu obejmuje jedno proste polecenie bez powłoki i złożonych operatorów."""
+    return _argv(command) is not None
+
+
+def _argv(command: str) -> list[str] | None:
+    """Argumenty po interpretacji cytowania; None dla składni złożonej lub podpowłoki."""
     text = str(command or "")
-    if not text.strip() or any(c in text for c in "\n\r\0`") or "$(" in text:
-        return False
+    if not text.strip() or any(c in text for c in "\n\r\0`$"):
+        return None
     try:
-        parts = list(shlex.shlex(text, posix=True, punctuation_chars=";&|<>()"))
+        lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|<>()")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        parts = list(lexer)
     except ValueError:
-        return False
-    if any(part in (";", "&&", "||", "|", "&", ">", ">>", "<", "<<", "(", ")") for part in parts):
-        return False
-    return bool(parts) and parts[0] not in ("sh", "bash", "zsh", "fish", "eval", "exec")
+        return None
+    if not parts or any(part and set(part) <= set(";&|<>()") for part in parts):
+        return None
+    if parts[0] in ("sh", "bash", "zsh", "fish", "eval", "exec", "env", "command", "builtin", "sudo", "doas"):
+        return None
+    if "=" in parts[0] and parts[0].split("=", 1)[0].isidentifier():
+        return None
+    return parts
 
 
 def is_allowed(command: str, allowed: list[str]) -> bool:
-    text = " ".join(str(command or "").split())
-    if not single_command(command):
+    argv = _argv(command)
+    if argv is None:
         return False
-    if text in allowed:
-        return True
-    return any(rule.endswith(" *") and (text == rule[:-2] or text.startswith(rule[:-2] + " "))
-               for rule in allowed)
+    for rule in allowed:
+        rule_argv = _argv(rule)
+        if rule_argv is None:
+            continue
+        if rule_argv[-1] == "*" and argv[:len(rule_argv) - 1] == rule_argv[:-1]:
+            return True
+        if argv == rule_argv:
+            return True
+    return False
 
 
 def claude_tools(allowed: list[str], denied: list[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
