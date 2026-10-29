@@ -159,3 +159,83 @@ class PlanReviewEditingTest(FlowInProcess):
         approved = self.approve(card)
         self.assertTrue(approved["ok"], approved)
         self.assertEqual(len(approved["map"]), 3)
+
+    def test_plan_question_can_be_answered_while_ticket_is_running_after_restart(self):
+        from tide_daemon.cardflow.state import fold, derived
+        from tide_daemon.cardflow.engine import FlowEngine
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        self.flow.stop()
+        approved = self.flow.engine.approve_plan(card)
+        journal = self.flow.engine.journal
+        journal.append(card, "step.started", step="working", ticket=approved["map"]["#1"], kind="ticket", worktree="/tmp/ticket")
+        for kind in ("plan-amend", "plan-review", "plan-revise"):
+            for result, choice, action in (("question", "answer", "answer"), ("denied", "allow", "permission"), ("error", "retry", "error")):
+                with self.subTest(kind=kind, result=result):
+                    name = kind + result
+                    journal.append(card, "step.started", step=name, ticket="", kind=kind, worktree="/tmp/plan", executor="Sonnet", attempt=1)
+                    journal.append(card, "step.finished", step=name, result=result, question="Który wariant?", command="git status")
+                    state = fold(journal.read(card))
+                    shown = derived(state, {"column": "todo"})
+                    self.assertEqual(shown["flow"].get("action"), action)
+                    restarted = FlowEngine(self.store, journal=journal)
+                    reply = restarted.resolve_step(card, {"choice": choice, "answer": "Pierwszy"})
+                    self.assertEqual(reply["step"], name)
+                    self.assertEqual(state.last_step, "working")
+                    self.assertNotIn("working", fold(journal.read(card)).finished)
+
+
+    def test_pending_difference_uses_new_waves_and_waits_after_old_plan_finishes(self):
+        from tide_daemon.cardflow.state import fold, derived
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        self.flow.stop()
+        self.flow.engine.approve_plan(card)
+        j = self.flow.engine.journal
+        proposal = fold(j.read(card)).plan_proposed
+        proposal = {**proposal, "rows": [*proposal["rows"], {**proposal["rows"][-1], "workId": "#3", "blockers": ["#2"]}], "waves": [["#1"], ["#2"], ["#3"]]}
+        j.append(card, "plan.proposed", **{k: v for k, v in proposal.items() if k not in ("seq", "ts", "card", "type", "v")}, extra="revision")
+        j.append(card, "plan.revision-ready", pending=True, baseline=[], difference={}, feedback="Dodaj")
+        j.append(card, "plan.reviewed", verdict="APPROVE")
+        j.append(card, "plan.finished")
+        shown = derived(fold(j.read(card)), {"column": "todo"})
+        self.assertEqual(shown["flow"]["plan"]["waves"], [["#1"], ["#2"], ["#3"]])
+        self.assertEqual(shown["flow"]["plan"]["rows"][-1]["blockers"], ["#2"])
+        self.assertEqual(shown["column"], "waiting")
+
+    def test_invalid_amendment_can_be_discarded_and_returned_again(self):
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        box = []
+        self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "ATRAPA: invalid-amend"}), box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.revision-failed"), timeout=10), self.events(card))
+        self.flow.stop()
+        self.assertTrue(self.flow.engine.edit_plan(card, {"action": "discard-revision"})["ok"])
+        self.assertTrue(self.flow.engine.edit_plan(card, {"action": "return", "feedback": "Popraw ponownie"})["ok"])
+        self.assertEqual(len([s for s in self.of(card, "step.started") if s["kind"] == "plan-amend"]), 2)
+
+    def test_answer_after_restart_resumes_amendment_without_stopping_ticket(self):
+        card = self.card()
+        path = self.proposal(card)
+        ticket_path = os.path.join(os.path.dirname(path), "tickets", "1.md")
+        with open(ticket_path, encoding="utf-8") as fh:
+            body = fh.read()
+        with open(ticket_path, "w", encoding="utf-8") as fh:
+            fh.write(body.replace("ATRAPA: gotowe", "ATRAPA: powoli 8"))
+        self.assertTrue(self.submit(card, path)["ok"])
+        self.assertTrue(self.approve(card)["ok"])
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "ticket" for s in self.of(card, "step.started")), timeout=10))
+        working = next(s for s in self.of(card, "step.started") if s["kind"] == "ticket")
+        box = []
+        self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "ATRAPA: amend-question"}), box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(wait_until(lambda: self.shown(card)["derived"]["flow"].get("action") == "answer", timeout=5), self.events(card))
+        self.restart()
+        self.assertEqual(self.shown(card)["derived"]["flow"]["action"], "answer")
+        box = []
+        self.flow.resolve_step(card, json.dumps({"choice": "answer", "answer": "Pierwszy"}), box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=5))
+        self.assertTrue(json.loads(box[0])["ok"], box)
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.revision-ready"), timeout=5), self.events(card))
+        self.assertFalse(any(e["step"] == working["step"] for e in self.of(card, "step.finished")))

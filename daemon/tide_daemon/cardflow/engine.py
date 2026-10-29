@@ -47,7 +47,7 @@ from .planediting import PlanEditing
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for
 from .journal import Journal
-from .state import FlowState, derived, fold, ticket_of
+from .state import FlowState, derived, fold, ticket_of, decision_step
 
 GUARD_MINUTES = 15.0
 TIMEOUT_MINUTES = 240.0
@@ -1149,19 +1149,21 @@ class FlowEngine(PlanEditing):
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         choice = str(request.get("choice") or "")
         st = fold(self.journal.read(card))
-        step = st.steps.get(st.last_step) or {}
-        done = st.finished.get(st.last_step) or {}
+        focus = decision_step(st)
+        step = st.steps.get(focus) or {}
+        done = st.finished.get(focus) or {}
         result = done.get("result")
         valid = {"question": ("answer",), "denied": ("allow", "deny"),
                  "error": ("retry", "change-executor")}.get(result, ())
-        if st.card_finished or st.running() or not step or choice not in valid or \
+        busy = st.running() if step.get("kind") not in ("plan-amend", "plan-review", "plan-revise") else [s for s in st.running() if s.get("worktree") == step.get("worktree")]
+        if st.card_finished or busy or not step or choice not in valid or \
                 (result == "error" and int(step.get("attempt") or 0) == 0):
             raise FlowError("no-step-question", f"{card}: ten krok nie czeka na taką decyzję")
-        previous = st.step_decisions.get(st.last_step)
+        previous = st.step_decisions.get(focus)
         if previous:
             if previous.get("choice") == choice and previous.get("answer", "") == str(request.get("answer") or "") and \
                     previous.get("executor", "") == str(request.get("executor") or ""):
-                return {"ok": True, "id": card, "step": st.last_step, "choice": choice, "already": True}
+                return {"ok": True, "id": card, "step": focus, "choice": choice, "already": True}
             raise FlowError("already-decided", f"{card}: odpowiedź na ten krok jest już zapisana")
         answer = str(request.get("answer") or "").strip()
         executor = str(request.get("executor") or "").strip()
@@ -1187,11 +1189,11 @@ class FlowEngine(PlanEditing):
                                                "allowedCommands": [*project.allowed_commands, command]})
                 except BoardError as exc:
                     raise FlowError(exc.code, str(exc)) from None
-        event = self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
+        event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
                                     choice=choice, answer=answer if choice == "answer" else "",
                                     command=done.get("command") or "" if choice in ("allow", "deny") else "",
                                     executor=executor if choice == "change-executor" else "")
-        return {"ok": True, "id": card, "step": st.last_step, "choice": choice, "seq": event["seq"]}
+        return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
 
     def _resume_executor(self, card: str, st: FlowState, step: dict, name: str, *, changed=False):
         cfg = self.models_config() if self.models_config else None

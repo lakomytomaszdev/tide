@@ -402,7 +402,7 @@ Rectangle {
                 id: planFeedback
                 objectName: "cardPlanFeedback"
                 Layout.fillWidth: true
-                visible: !!panel.flowPlan && (panel.flowPlan.status === "pending" || panel.flowPlan.status === "approved")
+                visible: !!panel.flowPlan && (panel.flowPlan.status === "pending" || panel.flowPlan.status === "approved" || (panel.flowPlan.revision && panel.flowPlan.revision.failed))
                 placeholderText: "Uwagi do poprawy planu"
                 wrapMode: TextEdit.Wrap
             }
@@ -411,7 +411,7 @@ Rectangle {
                 PillButton {
                     objectName: "cardPlanReturn"
                     text: "Odeślij z uwagami"
-                    enabled: !panel.busy && planFeedback.text.trim().length > 0 && !(panel.flowPlan.revision && panel.flowPlan.revision.seq)
+                    enabled: !panel.busy && !!panel.flowPlan && planFeedback.text.trim().length > 0 && (!(panel.flowPlan.revision && panel.flowPlan.revision.seq) || panel.flowPlan.revision.failed)
                     onClicked: panel.planEditRequested(panel.card.id, {action: "return", feedback: planFeedback.text})
                 }
                 PillButton {
@@ -420,6 +420,13 @@ Rectangle {
                     enabled: !panel.busy && !!panel.flowPlan && !!panel.flowPlan.plannerStep
                     onClicked: panel.planEditRequested(panel.card.id, {action: "enter"})
                 }
+            }
+            PillButton {
+                objectName: "cardPlanDiscardRevision"
+                text: "Odrzuć błędną poprawkę"
+                visible: !!panel.flowPlan && !!panel.flowPlan.revision && !!panel.flowPlan.revision.failed
+                enabled: !panel.busy
+                onClicked: panel.planEditRequested(panel.card.id, {action: "discard-revision"})
             }
             PillButton {
                 objectName: "cardPlanApprove"

@@ -106,7 +106,8 @@ class PlanEditing:
         made = self._act(card, "card-branch", branch,
                          lambda: self.git.branch_worktree(project.repo, branch, worktree, self.git.main_branch(project.repo)),
                          repo=project.repo, branch=branch, worktree=worktree, base=self.git.main_branch(project.repo))
-        step_id = f"{card}-{kind}-{st.plan_proposed['seq']}"
+        generation = (st.plan_revision or {}).get("seq") if kind == "plan-amend" else st.plan_proposed["seq"]
+        step_id = f"{card}-{kind}-{generation}"
         out = worktree + f".{kind}-{step_id}.step/out"
         text += f"\nKatalog wyjściowy: {out}\nPlik wyniku: {out}/result.json\n"
         text += 'Po zapisaniu plików zapisz {"result":"done","notes":[]}.\n'
@@ -141,11 +142,16 @@ class PlanEditing:
             if not step:
                 raise FlowError("no-planner-session", "brak sesji planującego")
             return self.enter(card, step["step"])
+        if request.get("action") == "discard-revision":
+            if not (st.plan_revision or {}).get("failed"):
+                raise FlowError("no-failed-revision", "nie ma błędnej poprawki do odrzucenia")
+            self.journal.append(card, "plan.revision-discarded")
+            return {"ok": True, "id": card}
         if request.get("action") == "return":
             feedback = request.get("feedback")
             if not isinstance(feedback, str) or not feedback.strip() or len(feedback) > 32000:
                 raise FlowError("bad-feedback", "wpisz uwagi do planu (do 32000 znaków)")
-            if st.plan_revision:
+            if st.plan_revision and not st.plan_revision.get("failed"):
                 raise FlowError("revision-active", "poprawa planu już trwa")
             baseline = (st.plan_approved or proposal)["rows"]
             # Przy zatwierdzonym planie poprawa posługuje się już nadanymi ID.
@@ -209,7 +215,7 @@ class PlanEditing:
 
     def _advance_user_revision(self, card, st):
         revision = st.plan_revision
-        if not revision or revision.get("pending"):
+        if not revision or revision.get("pending") or revision.get("failed"):
             return
         steps = [s for s in st.steps.values() if s.get("kind") == "plan-amend" and s["seq"] > revision["seq"]]
         if not steps:
@@ -237,6 +243,8 @@ class PlanEditing:
         if invalid:
             if (st.plan_checked or {}).get("step") != step["step"]:
                 self.journal.append(card, "plan.checked", step=step["step"], valid=False, errors=invalid)
+                self.journal.append(card, "plan.revision-failed", failed=True, pending=False, errors=invalid,
+                                    baseline=revision["baseline"], feedback=revision["feedback"])
             return
         reply = ({"ok": True} if (st.plan_proposed or {}).get("sourceStep") == step["step"] else
                  self.propose_plan(card, path, continuation=True, step=step["step"]))

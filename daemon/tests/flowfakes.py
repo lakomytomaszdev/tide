@@ -43,7 +43,17 @@ word, count = (mode.group(1), int(mode.group(2) or 0)) if mode else ("gotowe", 0
 work = os.path.join(cwd, "ATRAPA.md")
 
 if prompt.startswith("Popraw propozycję planu karty"):
+    if "ATRAPA: amend-question" in prompt and "Odpowiedź użytkownika:" not in prompt:
+        with open(result, "w") as fh:
+            json.dump({"result": "question", "question": "Który wariant poprawki?"}, fh)
+        sys.exit(0)
     proposal = json.loads(re.search(r"Poprzednia propozycja: (.+)", prompt).group(1))
+    if "ATRAPA: invalid-amend" in prompt:
+        with open(os.path.join(out, "plan.md"), "w") as fh:
+            fh.write("błędny plan")
+        with open(result, "w") as fh:
+            json.dump({"result": "done", "notes": []}, fh)
+        sys.exit(0)
     rows = proposal["rows"]
     if "Dodaj ticket" in prompt:
         rows.append({**rows[-1], "workId": "#3", "title": "Dodatkowy ticket", "blockers": []})

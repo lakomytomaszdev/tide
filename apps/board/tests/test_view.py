@@ -1825,6 +1825,28 @@ out["call"] = calls()[-1]
                          {"slug": "plasma-tide", "allowedCommands": ["git status", "git log", "git fetch origin"]})
 
 class PlanPanelTest(ProbeCase):
+    def test_failed_revision_can_be_returned_again_or_discarded(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "approved", "review": {"verdict": "APPROVE"}, "rows": [], "waves": [],
+                    "revision": {"seq": 12, "failed": True}, "errors": ["Nieprawidłowa poprawka"]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+obj("cardPlanFeedback").setProperty("text", "Popraw ponownie")
+wait(50)
+out["retryEnabled"] = obj("cardPlanReturn").property("enabled")
+click(at(FIND + "(page.cardPanel, 'cardPlanDiscardRevision')"))
+wait(50)
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["retryEnabled"])
+        self.assertEqual(out["call"][:2], ["EditCardPlan", "K-6"])
+        self.assertEqual(json.loads(out["call"][2])["action"], "discard-revision")
+
+
     def test_plan_review_and_ticket_editor_send_changes_to_service(self):
         data = json.loads(json.dumps(self.data))
         for card in data["cards"]:

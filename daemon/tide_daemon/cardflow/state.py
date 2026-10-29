@@ -156,6 +156,11 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_reviewed = None
         elif kind == "plan.returned":
             st.plan_revision = e
+        elif kind == "plan.revision-discarded":
+            st.plan_revision = None
+            st.plan_checked = None
+        elif kind == "plan.revision-failed":
+            st.plan_revision = e
         elif kind == "plan.revision-ready":
             st.plan_revision = e
         elif kind == "plan.revision-approved":
@@ -218,6 +223,22 @@ def ticket_of(st: FlowState) -> dict:
     return out
 
 
+def decision_step(st: FlowState) -> str:
+    """Krok planu czekający na decyzję ma pierwszeństwo nad równoległym ticketem."""
+    for name, step in reversed(list(st.steps.items())):
+        if step.get("kind") not in ("plan-amend", "plan-review", "plan-revise"):
+            continue
+        done = st.finished.get(name) or {}
+        if done.get("result") not in ("question", "denied", "error"):
+            continue
+        if done.get("result") == "error" and int(step.get("attempt") or 0) == 0:
+            continue
+        if any(s.get("parentStep") == name for s in st.steps.values()):
+            continue
+        return name
+    return st.last_step
+
+
 def derived(st: FlowState, card: dict) -> dict | None:
     """Pole `derived` karty z dziennikiem (kształt jak board/derive.py, z `flow`) albo None — karta w swojej kolumnie."""
     if st.started is None:
@@ -263,7 +284,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
         approved = st.plan_approved or {}
         rows = (proposal.get("rows") if (st.plan_revision or {}).get("pending") else approved.get("rows")) or proposal.get("rows") or []
         rows = [{**r, "editable": not st.plan_revision and (r.get("id") or r["workId"]) not in st.assignments and not any(s.get("ticket") == (r.get("id") or r["workId"]) for s in st.steps.values())} for r in rows]
-        waves = approved.get("waves") or proposal.get("waves") or []
+        waves = (proposal.get("waves") if (st.plan_revision or {}).get("pending") else approved.get("waves")) or proposal.get("waves") or []
         finished_ids = {row.get("id") for row in rows if ("merge", row.get("id")) in st.results and
                         st.results[("merge", row.get("id"))].get("ok")}
         out["total"], out["done"] = len(rows), len(finished_ids)
@@ -273,6 +294,24 @@ def derived(st: FlowState, card: dict) -> dict | None:
                              "approved" if st.plan_approved else "pending" if st.plan_proposed else "invalid",
                              "rows": rows, "waves": waves,
                              "errors": (st.plan_checked or {}).get("errors") or []}
+        focus = decision_step(st)
+        focus_step = st.steps.get(focus) or {}
+        focus_done = st.finished.get(focus) or {}
+        if focus_step.get("kind") in ("plan-amend", "plan-review", "plan-revise") and focus_done.get("result") in ("question", "denied", "error") and focus not in st.step_decisions and (focus_done.get("result") != "error" or int(focus_step.get("attempt") or 0) > 0):
+            result = focus_done["result"]
+            out["flow"].update({"step": focus, "stepKind": focus_step["kind"], "result": result,
+                                "executor": focus_step.get("executor") or "", "provider": focus_step.get("provider") or "",
+                                "action": {"question": "answer", "denied": "permission", "error": "error"}[result],
+                                "question": focus_done.get("question") or "", "command": focus_done.get("command") or "",
+                                "canAllow": bool(focus_done.get("canAllow", True)), "error": focus_done.get("reason") or ""})
+            out["question"] = focus_done.get("question") or "Decyzja dotycząca poprawy planu"
+            return _fill(out, "waiting", "poprawa planu czeka na decyzję")
+        if (st.plan_revision or {}).get("failed"):
+            out["question"] = "Poprawa planu jest nieprawidłowa. Odesłać ponownie czy odrzucić poprawkę?"
+            return _fill(out, "waiting", "poprawa planu wymaga decyzji")
+        if (st.plan_revision or {}).get("pending") and st.plan_reviewed:
+            out["question"] = "Zatwierdzić różnicę planu?"
+            return _fill(out, "waiting", "różnica planu do zatwierdzenia")
         if not st.plan_proposed:
             if st.started.get("entry") != "planning":
                 return _fill(out, "waiting", "propozycja planu wymaga poprawy")

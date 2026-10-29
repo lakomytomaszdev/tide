@@ -1978,3 +1978,9 @@ rozpoczętych ticketów przy akceptacji. Trwające kroki nie są zatrzymywane.
 `derived.flow.plan` zawiera `review`, `revision`, `plannerStep` oraz `body` i `editable` dla wierszy.
 Stan `reviewing` ukrywa propozycję w panelu do zakończenia review i ewentualnej jednej poprawy.
 „Wejdź w planowanie” wykorzystuje istniejącą sesję planującego i wspólny mechanizm Konsoli.
+
+Błędna poprawka planu daje `plan.revision-failed`; panel udostępnia ponowne odesłanie z uwagami
+albo `EditCardPlan` z `action: discard-revision`. Odrzucenie zapisuje `plan.revision-discarded`
+i zachowuje aktywny plan. Pytanie, odmowa albo drugi błąd kroku poprawy/review pozostaje dostępny
+przez `ResolveCardStep`, także gdy w innym worktree pracuje ticket. Oczekująca różnica ma własne
+proponowane fale i utrzymuje kartę w „Czeka na mnie” również po zakończeniu starego planu.
