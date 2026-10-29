@@ -425,8 +425,13 @@ Rectangle {
         } else if (tag.indexOf("step-resolve:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
-            if (!error) cardPanel.notice = reply.tracker ? "Ponawiam operację YouTracka."
-                                                        : "Decyzja zapisana. Wznawiam krok w tle."
+            if (!error) {
+                cardPanel.notice = reply.tracker ? "Ponawiam operację YouTracka."
+                    : reply.choice === "wait-limit" ? "Krok czeka na odnowienie limitu."
+                    : reply.choice === "transfer" ? "Przekazuję krok innemu dostawcy."
+                    : reply.choice === "deny" ? "Odmowa zapisana. Krok zatrzymany."
+                    : "Decyzja zapisana. Wznawiam krok w tle."
+            }
         } else if (tag.indexOf("flow-pause:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error

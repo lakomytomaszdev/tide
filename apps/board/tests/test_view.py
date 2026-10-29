@@ -1880,21 +1880,38 @@ out["label"] = obj("cardStepDecision").property("visible")
 out["text"] = obj("cardStepDecisionText").property("text")
 out["before"] = [obj("cardLimitTransfer").property("enabled"), obj("cardLimitWait").property("enabled")]
 js("page.cardPanel.limitExecutor = 'Codex standard'")
+replies.append({"ok": True, "id": "K-6", "choice": "transfer"})
 click(at(FIND + "(page.cardPanel, 'cardLimitTransfer')"))
 out["transfer"] = calls()[-1]
+out["transferNotice"] = js("page.cardPanel.notice")
 """, data=data)
         self.assertTrue(out["label"])
         self.assertIn("piątek 15:00", out["text"])
         self.assertEqual(out["before"], [False, True])
         self.assertEqual(out["transfer"][:2], ["ResolveCardStep", "K-6"])
         self.assertEqual(json.loads(out["transfer"][2]), {"choice": "transfer", "executor": "Codex standard"})
+        self.assertEqual(out["transferNotice"], "Przekazuję krok innemu dostawcy.")
 
         out = self.probe(FIND_PY + """
 click(card("K-6"))
+replies.append({"ok": True, "id": "K-6", "choice": "wait-limit"})
 click(at(FIND + "(page.cardPanel, 'cardLimitWait')"))
 out["call"] = calls()[-1]
+out["notice"] = js("page.cardPanel.notice")
 """, data=data)
         self.assertEqual(json.loads(out["call"][2]), {"choice": "wait-limit"})
+        self.assertEqual(out["notice"], "Krok czeka na odnowienie limitu.")
+
+    def test_exhausted_limit_reset_appears_once_when_reason_includes_it(self):
+        data = self.flow_card("limit", limit={"provider": "anthropic", "reset": "piątek 15:00",
+                                               "reason": "Limit Claude wyczerpany do piątek 15:00"},
+                              provider="anthropic")
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["text"] = obj("cardStepDecisionText").property("text")
+""", data=data)
+        self.assertEqual(out["text"].count("piątek 15:00"), 1)
+        self.assertNotIn("· odnowienie", out["text"])
 
     def test_running_step_can_be_transferred_to_another_provider(self):
         data = self.flow_card("", steps=[{"id": "step-1", "ticket": "PT-7", "result": "", "kind": "ticket",

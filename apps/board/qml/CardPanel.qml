@@ -1033,6 +1033,8 @@ Rectangle {
                                   ? (stepDecision.flow.limit && stepDecision.flow.limit.reason
                                       ? stepDecision.flow.limit.reason : "Limit dostawcy został wyczerpany.")
                                     + (stepDecision.flow.limit && stepDecision.flow.limit.reset
+                                        && (!stepDecision.flow.limit.reason
+                                            || stepDecision.flow.limit.reason.indexOf(stepDecision.flow.limit.reset) < 0)
                                         ? " · odnowienie " + stepDecision.flow.limit.reset : "")
                                 : ""
                             textFormat: Text.PlainText
