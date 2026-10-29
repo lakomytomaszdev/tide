@@ -141,6 +141,24 @@ class FlowInProcess(unittest.TestCase):
 
 
 class NowInProcessTest(FlowInProcess):
+    def test_two_cards_in_one_repo_reserve_different_ticket_numbers(self):
+        first = self.card(title="Ten sam tytuł")
+        second = self.card(title="Ten sam tytuł")
+        one = self.start(first)
+        two = self.start(second)
+        self.assertTrue(one["ok"], one)
+        self.assertTrue(two["ok"], two)
+        self.assertEqual((one["ticket"], two["ticket"]), ("PT-1", "PT-2"))
+        self.wait_column(first, "review")
+        self.wait_column(second, "review")
+
+    def test_finished_card_cannot_start_an_invisible_step(self):
+        for column in ("done", "archived"):
+            card_id = self.card(column=column)
+            reply = self.start(card_id)
+            self.assertEqual((reply["ok"], reply["error"]), (False, "card-finished"), reply)
+            self.assertEqual(self.events(card_id), [])
+
     def test_manual_check_choice_is_kept_in_the_card_journal_and_marker(self):
         card_id = self.card()
         self.assertTrue(self.start(card_id, check="manual")["ok"])
@@ -341,7 +359,7 @@ class RestartInProcessTest(FlowInProcess):
         from tide_daemon.coordination import reservations
         card_id = self.card()
         key = "launch-1"
-        got = reservations.reserve(self.repo, count=1, title="Eksport CSV", request_key=key)
+        got = reservations.reserve(self.repo, count=1, title="Eksport CSV", request_key=f"{card_id}:{key}")
         journal = self.flow.engine.journal
         journal.append(card_id, "card.started", entry="now", repo=self.repo, column="todo")
         journal.append(card_id, "intent", action="reserve", key=key, repo=self.repo, title="Eksport CSV")
@@ -355,11 +373,12 @@ class RestartInProcessTest(FlowInProcess):
         self.start(card_id)
         self.wait_column(card_id, "review")
         self.flow.stop()
-        moved = self.store.move_card(card_id, "todo", 0, "review")
-        self.assertTrue(moved["moveId"])
+        self.store.move_card(card_id, "todo", 0, "review")
+        move_id = self.store.load().cards[int(card_id.partition("-")[2])].move_id
+        self.assertTrue(move_id)
         self.flow = self.make_flow()
         self.assertTrue(wait_until(lambda: len(self.of(card_id, "card.moved")) == 1, timeout=10), self.events(card_id))
-        self.assertEqual(self.of(card_id, "card.moved")[0]["moveId"], moved["moveId"])
+        self.assertEqual(self.of(card_id, "card.moved")[0]["moveId"], move_id)
         self.assertEqual(self.shown(card_id)["boardColumn"], "todo")
 
     def test_restart_after_store_move_to_backlog_pauses_the_card(self):

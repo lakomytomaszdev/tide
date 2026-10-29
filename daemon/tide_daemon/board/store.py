@@ -521,7 +521,7 @@ class BoardStore:
         (board/derive.py)."""
         card = self._card(board, num)
         move_id = secrets.token_hex(16)
-        change = Change(result={"ok": True, "id": card.id, "changed": False, "moveId": move_id})
+        change = Change(result={"ok": True, "id": card.id, "changed": False})
         card.doc.set("move-id", move_id)
         others = board.column_cards(column, skip=card.num)
         if index < 0 or index > len(others):

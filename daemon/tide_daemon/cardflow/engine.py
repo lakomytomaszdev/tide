@@ -144,6 +144,8 @@ class FlowEngine:
         card = board.cards.get(num)
         if card is None:
             raise FlowError("not-found", f"nie ma karty K-{num}")
+        if card.column in ("done", "archived"):
+            raise FlowError("card-finished", f"{card.id}: karta jest w Gotowych albo Archiwum")
         project = board.projects.get(card.project)
         if project is None or not project.repo:
             raise FlowError("no-project", f"{card.id}: karta potrzebuje projektu z repozytorium")
@@ -183,8 +185,9 @@ class FlowEngine:
                                       repo=project.repo, project=project.slug, column=card.column,
                                       moveId=card.move_id)
         launch = f"launch-{started['seq']}"
+        request_key = f"{card.id}:{launch}"
         reserved = self._act(card.id, "reserve", launch,
-                             lambda: self._reserve(project.repo, card.title, launch),
+                             lambda: self._reserve(project.repo, card.title, request_key),
                              repo=project.repo, title=card.title)
         ticket = reserved["ticket"]
         slug = slug_from_prompt(card.title, words=4, length=32)
@@ -366,7 +369,8 @@ class FlowEngine:
         """Akcja zaczęta przed restartem usługi, bez wyniku: dokończenie albo jawny błąd (nigdy druga kopia)."""
         action, key = intent.get("action"), intent.get("key")
         if action == "reserve":
-            self._act(card, action, key, lambda: self._reserve(intent["repo"], intent["title"], key))
+            self._act(card, action, key,
+                      lambda: self._reserve(intent["repo"], intent["title"], f"{card}:{key}"))
             return
         if action in ("card-branch", "ticket-branch"):
             def make_branch():
