@@ -6,6 +6,19 @@ Własny motyw KDE Plasma 6 z widżetami do pracy z agentami AI. Pierwszy wariant
 - Mocki: https://claude.ai/artifact/1h17Au71mmdEX5sNBSaAgC
 - Decyzje i ich uzasadnienia: [docs/decisions.md](docs/decisions.md)
 
+## Przepływ karty
+
+Karta na Tablicy może uruchomić jeden ticket od razu, przygotować lekki plan w tle albo przejąć istniejący
+plan. Tide zapisuje przebieg w dzienniku karty, uruchamia kroki w osobnych worktree, sprawdza plan i tickety
+u innych wykonawców, pokazuje pytania oraz zgody w panelu i scala zaakceptowane tickety do gałęzi karty.
+Kafelek Praca pokazuje liczbę trwających kroków, a Sesje — tickety i oś zdarzeń. Strażnik oznacza kartę,
+która stoi bez nazwanego powodu; raport poranny wymienia ukończone tickety z wykonawcą.
+
+`check: manual` oznacza listę „Co przetestować ręcznie i jak”, a `check: auto` jej brak. Scalenie gałęzi
+karty do głównej zawsze wymaga osobnej decyzji użytkownika. Planowanie Pełne w nowym przepływie oraz
+automatyczne przekazanie kroku między dostawcami należą do drugiego etapu. Szczegóły: [standard planu](docs/agent-plan-standard.md)
+i [opis usługi](docs/tide-daemon.md).
+
 ## Środowisko
 
 KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). Motyw instaluje się do katalogu domowego. Sudo wymagają tylko ekran logowania (SDDM) i ekran startowy systemu (Plymouth).
