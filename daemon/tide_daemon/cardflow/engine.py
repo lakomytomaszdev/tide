@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -534,14 +535,22 @@ class FlowEngine(PlanEditing):
             os.makedirs(os.path.dirname(target), exist_ok=True)
             shutil.copyfile(source, target)
         board = self.store.load()
-        extra_repos = [board.projects[slug].repo for slug in item.projects
-                       if slug in board.projects and board.projects[slug].repo and
-                       not board.projects[slug].repo_missing]
-        if extra_repos:
-            prompt += "\nDodatkowe projekty karty (czytaj jako kontekst):\n" + "\n".join(extra_repos)
+        extras = [board.projects[slug] for slug in item.projects
+                  if slug in board.projects and board.projects[slug].repo and
+                  not board.projects[slug].repo_missing]
+        context_dirs = []
+        if extras:
+            prompt += "\nDodatkowe projekty karty — migawki tylko do odczytu:\n"
+            for index, extra in enumerate(extras, 1):
+                context = os.path.join(inp, "context", f"project-{index}")
+                self._copy_project_context(extra.repo, context)
+                context_dirs.append(context)
+                prompt += f"- {extra.name}: {context}\n"
+        with open(os.path.join(inp, "prompt.txt"), "w", encoding="utf-8") as fh:
+            fh.write(prompt)
         session = str(uuid.uuid4()) if selected.tool == "claude" else ""
         command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots,
-                                       [out, *extra_repos], selected.route)
+                                       [out, *context_dirs], selected.route)
         if selected.route is None:
             options = ["--model", selected.model]
             if selected.tool == "codex" and selected.effort:
@@ -586,6 +595,44 @@ class FlowEngine(PlanEditing):
                                      "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
             raise FlowError("no-terminal", "nie udało się otworzyć karty Konsoli")
 
+    @staticmethod
+    def _copy_project_context(repo: str, target: str) -> None:
+        """Kopia widocznych plików projektu; oryginał nigdy nie trafia do zapisywalnego --add-dir."""
+        root = os.path.realpath(repo)
+        listed = subprocess.run(["git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                                capture_output=True, timeout=30)
+        if listed.returncode != 0:
+            raise FlowError("extra-project", f"nie można odczytać plików dodatkowego projektu {repo}")
+        paths = [os.fsdecode(name) for name in listed.stdout.split(b"\0") if name]
+        if len(paths) > 5000:
+            raise FlowError("extra-project", f"dodatkowy projekt {repo} ma za dużo plików do migawki")
+        os.makedirs(target, mode=0o700, exist_ok=True)
+        total = 0
+        dirs = {target}
+        for rel in paths:
+            parts = rel.split("/")
+            if not parts or any(part in ("", ".", "..", ".git") for part in parts):
+                continue
+            source = os.path.join(root, rel)
+            if not os.path.realpath(source).startswith(root + os.sep) or os.path.islink(source):
+                continue
+            try:
+                info = os.stat(source)
+            except OSError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            total += info.st_size
+            if total > 100 * 1024 * 1024:
+                raise FlowError("extra-project", f"dodatkowy projekt {repo} przekracza 100 MB migawki")
+            dest = os.path.join(target, *parts)
+            os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+            dirs.add(os.path.dirname(dest))
+            shutil.copyfile(source, dest)
+            os.chmod(dest, 0o444)
+        for folder in sorted(dirs, key=len, reverse=True):
+            os.chmod(folder, 0o555)
+
     def _advance_planning(self, card: str, st: FlowState) -> bool:
         """Osobny etap karty; nie zakłada, że ostatni krok jest jedynym krokiem ticketów."""
         if (st.started or {}).get("entry") not in ("planning", "plan") or st.plan_approved is not None:
@@ -613,15 +660,14 @@ class FlowEngine(PlanEditing):
                                         reason=done.get("reason") or "")
                 self._resume_step(card, fold(self.journal.read(card)), step, {"choice": "auto"}, attempt=1)
         elif result == "done":
-            if step.get("mode") == "interactive" and not step.get("consoleClosed"):
-                return True
             self._planning_result(card, st, step)
         return True
 
     def _planning_result(self, card, st, step):
         if st.plan_proposed is not None:
             return
-        path = os.path.join(step["stepDir"], "out", "plan.md")
+        frozen = (st.finished.get(step["step"]) or {}).get("snapshotDir") or ""
+        path = os.path.join(frozen or os.path.join(step["stepDir"], "out"), "plan.md")
         if (st.plan_checked or {}).get("step") != step["step"] or (st.plan_checked or {}).get("valid"):
             self.propose_plan(card, path, continuation=True, step=step["step"])
             st = fold(self.journal.read(card))
@@ -860,8 +906,9 @@ class FlowEngine(PlanEditing):
             raise FlowError("unknown-executor", "katalog wykonawców jest niedostępny")
         step_roots = [os.path.join(s.get("stepDir") or "", "out") for s in
                       fold(self.journal.read(card_id)).steps.values() if s.get("stepDir")]
+        finished = fold(self.journal.read(card_id)).finished.get(step) or {}
         roots = ((project.repo, os.path.join(self.store.root, "docs"), *step_roots) if not continuation else
-                 (os.path.join(fold(self.journal.read(card_id)).steps[step]["stepDir"], "out"),))
+                 (finished.get("snapshotDir") or os.path.join(fold(self.journal.read(card_id)).steps[step]["stepDir"], "out"),))
         imported = fold(self.journal.read(card_id)).imported
         source_states = {row["id"]: row["state"] for row in (imported or {}).get("rows", [])}
         proposal = flow_plans.read(path, card_id, catalog, allowed_roots=roots,
@@ -1295,8 +1342,14 @@ class FlowEngine(PlanEditing):
                 for name in latest.values():
                     current = fold(self.journal.read(card))
                     step = current.steps[name]
-                    if name not in current.finished or any(
-                            s.get("ticket") == step.get("ticket") for s in current.open_consoles()):
+                    open_same = [s for s in current.open_consoles()
+                                 if s.get("ticket") == step.get("ticket")]
+                    frozen_planning = ((current.started or {}).get("mode") == "full" and
+                                       step.get("kind") in ("planning", "plan-fix", "plan-review", "plan-revise") and
+                                       all(s.get("kind") == "planning" and
+                                           (current.finished.get(s["step"]) or {}).get("result") == "done"
+                                           for s in open_same))
+                    if name not in current.finished or (open_same and not frozen_planning):
                         continue
                     current.last_step = name
                     try:
@@ -2246,6 +2299,9 @@ class FlowEngine(PlanEditing):
                 with open(path, "rb") as fh:
                     self.journal.write_file(card, os.path.join("steps", name, entry), fh.read())
                 kept.append(entry)
+        snapshot_dir = ""
+        if data.get("result") == "done" and step.get("kind") == "planning" and step.get("mode") == "interactive":
+            snapshot_dir = self._freeze_planning_output(card, name, out)
         extra = {k: v for k, v in (("wip", wip), ("messages", messages)) if v}
         if data.get("result") == "denied":
             from ..board.commands import MAX_COMMAND, is_forbidden
@@ -2257,7 +2313,7 @@ class FlowEngine(PlanEditing):
                             question=data.get("question") or "", command=data.get("command") or "",
                             canAllow=data.get("canAllow", True), stalledSince=data.get("stalledSince") or "",
                             notes=[n for n in data.get("notes") or [] if n in kept], kept=kept,
-                            exit=exit_code, **extra)
+                            exit=exit_code, snapshotDir=snapshot_dir, **extra)
         if merged_tip:
             self.journal.append(card, "result", action="merge", key=step.get("ticket") or "",
                                 ok=True, commit=merged_tip, resolved=True)
@@ -2269,6 +2325,24 @@ class FlowEngine(PlanEditing):
         self.procs.pop(name, None)
         self.watch.pop(name, None)
         shutil.rmtree(os.path.join(self.tmp_root, f"tide-step-{name}"), ignore_errors=True)
+
+    def _freeze_planning_output(self, card: str, step: str, out: str) -> str:
+        """Migawka artefaktów z chwili wyniku, poza zapisywalnym katalogiem Konsoli."""
+        relative = os.path.join("steps", step, "proposal")
+        total = 0
+        for folder, prefix in ((out, ""), (os.path.join(out, "tickets"), "tickets")):
+            if not os.path.isdir(folder) or os.path.islink(folder):
+                continue
+            for entry in sorted(os.scandir(folder), key=lambda item: item.name):
+                if not entry.name.endswith(".md") or not entry.is_file(follow_symlinks=False):
+                    continue
+                size = entry.stat(follow_symlinks=False).st_size
+                total += size
+                if size > source_plans.MAX_BYTES or total > 16 * 1024 * 1024:
+                    raise FlowError("planning-output", "artefakty planowania przekraczają dopuszczalny rozmiar")
+                with open(entry.path, "rb") as fh:
+                    self.journal.write_file(card, os.path.join(relative, prefix, entry.name), fh.read())
+        return os.path.join(self.store.root, self.journal.rel_dir(card), relative)
 
     def _queue_notices(self, card: str) -> None:
         """Zdarzenie przed wysłaniem: po restarcie pytanie nie daje drugiego powiadomienia."""
