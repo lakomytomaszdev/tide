@@ -190,7 +190,10 @@ def finish(kind, **extra):
         json.dump({"result": kind, "notes": ["note.md"], **extra}, fh)
 
 write("start")
-if word == "czekaj":
+if word == "czekaj" or (word == "czekaj-pierwszy" and "Notka techniczna przekazania" not in prompt):
+    time.sleep(3600)
+elif word == "limit" and "Wznowienie tego samego kroku" not in prompt:
+    print(json.dumps({"type": "error", "message": "You've hit your limit"}), flush=True)
     time.sleep(3600)
 elif word == "powoli":
     for i in range(count * 4):

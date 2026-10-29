@@ -45,6 +45,7 @@ from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import handoff
 from . import execution
+from . import limits as flow_limits
 from . import planning
 from .planediting import PlanEditing
 from . import plans as flow_plans
@@ -58,6 +59,7 @@ TIMEOUT_MINUTES = 240.0
 SETTINGS_FILE = "cardflow.json"
 RESULTS = ("done", "question", "denied", "error")
 OUTPUT_MAX = 256 * 1024
+HANDOFF_DIFF_MAX = 64 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check", "planPath", "mode")
 
@@ -107,13 +109,15 @@ class FlowEngine(PlanEditing):
                  systemd_run: str = "", catalog=None, models_config=None, model_probe=None, codex_roots=None,
                  tmp_root: str | None = None, settings: str | None = None,
                  flow_git: FlowGit | None = None, clock=time.time, which=shutil.which, grace: float = 10.0,
-                 guard_every: float = 30.0, terminal=None, task_files: TaskFiles | None = None):
+                 guard_every: float = 30.0, terminal=None, task_files: TaskFiles | None = None,
+                 limits_source=None):
         self.store = store
         self.journal = journal or Journal(store.root)
         self.claude_projects = claude_projects
         self.systemd_run = systemd_run
         self.catalog = catalog            # funkcja() → models.executors.Catalog
         self.models_config = models_config  # funkcja() → ModelsConfig (lokalny i inni dostawcy)
+        self.limits_source = limits_source  # świeża migawka Limitów AI z wątku monitora; bez HTTP w kroku
         self.model_probe = model_probe      # funkcja(endpoint) → stan punktu lokalnego
         self.codex_roots = codex_homes.default_homes() if codex_roots is None else codex_roots
         self.tmp_root = tmp_root or tempfile.gettempdir()
@@ -138,6 +142,71 @@ class FlowEngine(PlanEditing):
 
     def has_journal(self, card_id: str) -> bool:
         return self.journal.has(card_id)
+
+    def _settings_data(self) -> dict:
+        try:
+            with open(self.settings, encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError, UnicodeError):
+            return {}
+
+    def get_flow_settings(self) -> dict:
+        data = self._settings_data()
+        transfer = data.get("limitTransfer") or {}
+        if not isinstance(transfer, dict):
+            transfer = {}
+        threshold = data.get("limitThresholdPercent", 10)
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0 < threshold <= 100:
+            threshold = 10
+        mode = transfer.get("mode") if transfer.get("mode") in ("ask", "auto") else "ask"
+        executor = transfer.get("executor") if isinstance(transfer.get("executor"), str) else ""
+        return {"ok": True, "limitTransfer": {"mode": mode, "executor": executor},
+                "limitThresholdPercent": threshold}
+
+    def set_flow_settings(self, request: dict) -> dict:
+        if not isinstance(request, dict) or set(request) - {"limitTransfer", "limitThresholdPercent"}:
+            raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
+        current = self.get_flow_settings()
+        transfer = request.get("limitTransfer", current["limitTransfer"])
+        if not isinstance(transfer, dict) or set(transfer) - {"mode", "executor"}:
+            raise FlowError("bad-settings", "niepoprawne ustawienia przekazania")
+        mode = transfer.get("mode", current["limitTransfer"]["mode"])
+        executor = transfer.get("executor", current["limitTransfer"]["executor"])
+        if mode not in ("ask", "auto") or not isinstance(executor, str) or len(executor) > 120 or \
+                (mode == "auto" and not executor.strip()):
+            raise FlowError("bad-settings", "automatyczne przekazanie wymaga wykonawcy")
+        threshold = request.get("limitThresholdPercent", current["limitThresholdPercent"])
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0 < threshold <= 100:
+            raise FlowError("bad-settings", "próg limitu musi być procentem od 0 do 100")
+        data = self._settings_data()
+        data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
+                    limitThresholdPercent=threshold)
+        folder = os.path.dirname(self.settings) or "."
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".cardflow-", dir=folder)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+                fh.write("\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self.settings)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return self.get_flow_settings()
+
+    def _low_limit(self, provider: str) -> dict | None:
+        if self.limits_source is None:
+            return None
+        try:
+            snapshot = self.limits_source()
+        except Exception:
+            return None
+        return flow_limits.low_limit(snapshot, provider, self.get_flow_settings()["limitThresholdPercent"],
+                                     self.clock())
 
     def derived(self, card: dict) -> dict | None:
         return derived(fold(self.journal.read(card.get("id") or "")), card)
@@ -479,8 +548,10 @@ class FlowEngine(PlanEditing):
                             trackerUrl=yt.load_config()['url'] if project.youtrack else '')
         self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
         st = fold(self.journal.read(card_id))
+        low = self._low_limit(selected.provider)
         return {"ok": True, "id": card_id, "step": st.last_step, "executor": selected.name,
                 "interactive": mode == "full",
+                "limitWarning": flow_limits.planning_warning(low) if low else "",
                 "cardBranch": ticket_of(st)["cardBranch"], "cardWorktree": ticket_of(st)["cardWorktree"]}
 
     def _planning_launch(self, card, st, selected, catalog, *, errors=(), previous="", images=(), round_no=0):
@@ -516,6 +587,10 @@ class FlowEngine(PlanEditing):
             if prompt_fn is planning.prompt:
                 args.update(errors=errors, previous=previous)
             text = prompt_fn(**args)
+        if st.started.get("mode") == "full":
+            low = self._low_limit(selected.provider)
+            if low:
+                text += "\n\nUwaga o limicie: " + flow_limits.planning_warning(low) + ". Możesz kontynuować rozmowę albo przekazać planowanie.\n"
         if st.started.get("mode") == "full" and kind == "planning":
             self._launch_full_planning(item, project, selected, made, step_id, list(images), shots, text)
             return
@@ -1071,6 +1146,9 @@ class FlowEngine(PlanEditing):
         return out
 
     def _wait_reason(self, selected) -> str:
+        quota = self._low_limit(selected.provider)
+        if quota:
+            return flow_limits.wait_reason(quota)
         running = [step for card in self.journal.cards()
                    for step in fold(self.journal.read(card)).running()]
         provider = selected.provider
@@ -1404,9 +1482,94 @@ class FlowEngine(PlanEditing):
                         if st.flow_error != problem:
                             self.journal.append(card, "flow.error", error=problem)
 
+    @staticmethod
+    def _wip_for(st: FlowState, step_id: str) -> dict:
+        return (st.wip_retries.get(step_id) or {}).get("wip") or \
+               (st.finished.get(step_id) or {}).get("wip") or {}
+
+    @staticmethod
+    def _wip_safe(wip: dict) -> bool:
+        return bool(wip.get("stopped") and not wip.get("error") and
+                    (wip.get("committed") or wip.get("files") == 0))
+
+    def _repair_wip(self, card: str, st: FlowState, step: dict) -> dict:
+        """Po błędzie piaskownicy ponów tylko commit; zatrzymanego programu nie wznawiaj przed zapisem."""
+        name = step.get("step") or ""
+        previous = self._wip_for(st, name)
+        if self._wip_safe(previous):
+            return previous
+        snap = stepstop.git_snapshot(step.get("repo") or self._repo(card), step.get("gitDir") or "",
+                                     step.get("worktree") or "", step.get("stepDir") or "",
+                                     step.get("branch") or "", stale_locks=True)
+        done = st.finished.get(name) or {}
+        stopped = stepstop.StopResult(stopped=True, committed=snap.committed, commit=snap.commit,
+                                     files=snap.files, error=snap.error, notes=snap.notes,
+                                     messages=done.get("messages") or [])
+        wip = {"stopped": True, "committed": snap.committed, "commit": snap.commit,
+               "files": snap.files, "error": snap.error, "notes": snap.notes,
+               "handoff": self._handoff_note(card, step, stopped, done.get("reason") or "transfer")}
+        self.journal.append(card, "step.wip", step=name, ticket=step.get("ticket") or "", wip=wip)
+        return wip
+
+    def _limit_recovered(self, provider: str, reset_ts: float, window: str = "") -> bool:
+        if reset_ts and self.clock() >= reset_ts:
+            return True
+        if self.limits_source is None:
+            return False
+        try:
+            snapshot = self.limits_source()
+        except Exception:
+            return False
+        return flow_limits.recovered(snapshot, provider, self.get_flow_settings()["limitThresholdPercent"],
+                                     self.clock(), window)
+
+    def _repair_wip_due(self, card: str, st: FlowState, step: dict) -> dict:
+        name = step.get("step") or ""
+        previous = self._wip_for(st, name)
+        retry = st.wip_retries.get(name) or {}
+        if self._wip_safe(previous) or self.clock() - _epoch(retry.get("ts")) < 60:
+            return previous
+        return self._repair_wip(card, st, step)
+
+    def _advance_limit(self, card: str, st: FlowState) -> bool:
+        step = st.steps.get(st.last_step) or {}
+        done = st.finished.get(st.last_step) or {}
+        if done.get("reason") not in ("limit", "transfer"):
+            return False
+        choice = st.step_decisions.get(st.last_step) or {}
+        if not choice and done.get("reason") == "limit":
+            settings = self.get_flow_settings()["limitTransfer"]
+            if settings["mode"] == "auto" and settings["executor"]:
+                wip = self._repair_wip_due(card, st, step)
+                if not self._wip_safe(wip):
+                    return True
+                try:
+                    self._resume_executor(card, st, step, settings["executor"], changed=True, transfer=True)
+                except FlowError:
+                    return True
+                self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
+                                    choice="transfer", executor=settings["executor"], automatic=True)
+            return True
+        if choice.get("choice") == "wait-limit":
+            limit = st.limits.get(st.last_step) or {}
+            reset_ts = choice.get("resetTs") or limit.get("resetTs") or 0
+            if not self._limit_recovered(step.get("provider") or "", reset_ts, limit.get("window") or ""):
+                return True
+            if not self._wip_safe(self._repair_wip_due(card, st, step)):
+                return True
+            self._resume_step(card, st, step, {"choice": "retry"})
+            return True
+        if choice.get("choice") == "transfer":
+            if not self._wip_safe(self._repair_wip_due(card, st, step)):
+                return True
+            self._resume_step(card, st, step, choice)
+        return True
+
     def _advance(self, card: str, st: FlowState) -> None:
         """Jedna zmiana etapu na tick: ticket → review → poprawki/review → scalenie i sprzątanie."""
         if st.open_intents():
+            return
+        if self._advance_limit(card, st):
             return
         if self._advance_plan_review(card, st):
             return
@@ -1683,16 +1846,57 @@ class FlowEngine(PlanEditing):
                    if name.startswith(prefix) and name[len(prefix):].isdigit()]
         return f"{prefix}{max(numbers, default=0) + 1}"
 
+    def _resolve_transfer(self, card: str, st: FlowState, request: dict) -> dict:
+        choice = request.get("choice") or ""
+        focus = str(request.get("step") or decision_step(st) or "")
+        step = st.steps.get(focus) or {}
+        done = st.finished.get(focus) or {}
+        if st.card_finished or not step or step.get("mode") == "interactive":
+            raise FlowError("no-transfer-step", f"{card}: nie ma kroku do przekazania")
+        if choice == "wait-limit" and done.get("reason") != "limit":
+            raise FlowError("no-limit", f"{card}: ten krok nie czeka na odnowienie limitu")
+        if done and done.get("reason") not in ("limit", "transfer"):
+            raise FlowError("no-transfer-step", f"{card}: ten krok już się zakończył")
+        previous = st.step_decisions.get(focus) or {}
+        executor = str(request.get("executor") or "").strip()
+        if previous.get("choice") == choice and (choice != "transfer" or previous.get("executor") == executor):
+            return {"ok": True, "id": card, "step": focus, "choice": choice, "already": True}
+        if previous and not (previous.get("choice") == "wait-limit" and choice == "transfer"):
+            raise FlowError("already-decided", "decyzja o tym kroku została już zapisana")
+        if choice == "transfer":
+            if not executor:
+                raise FlowError("bad-executor", "wybierz wykonawcę u innego dostawcy")
+            self._resume_executor(card, st, step, executor, changed=True, transfer=True)
+        if not done:
+            if choice != "transfer" or any(other.get("ticket") == step.get("ticket") and
+                                            other.get("step") != focus for other in st.running()):
+                raise FlowError("no-transfer-step", "krok nie może teraz zostać przekazany")
+            if not self._stop(card, step, "stopped", "transfer", handoff=True):
+                raise FlowError("stop-failed", "nie udało się zatrzymać kroku; przekazanie czeka")
+            st = fold(self.journal.read(card))
+        wip = self._wip_for(st, focus)
+        if not self._wip_safe(wip):
+            wip = self._repair_wip(card, st, step)
+        if not self._wip_safe(wip):
+            raise FlowError("wip-failed", "zmiany kroku nie zostały bezpiecznie zapisane; przekazanie czeka")
+        limit = st.limits.get(focus) or {}
+        event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
+                                    choice=choice, executor=executor if choice == "transfer" else "",
+                                    resetTs=limit.get("resetTs") or 0)
+        return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
+
     def resolve_step(self, card_id: str, request: dict) -> dict:
         """Odpowiedź na wynik kroku; zdarzenie pozwala wznowić go także po restarcie usługi."""
         try:
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor"}:
+        if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         choice = str(request.get("choice") or "")
         st = fold(self.journal.read(card))
+        if choice in ("transfer", "wait-limit"):
+            return self._resolve_transfer(card, st, request)
         if choice == 'retry' and not st.card_finished and not st.running() and st.tracker_failures():
             self.tracker.reset_failures(card)
             return {'ok': True, 'id': card, 'choice': choice, 'tracker': True}
@@ -1744,7 +1948,8 @@ class FlowEngine(PlanEditing):
                                     executor=executor if choice == "change-executor" else "")
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
 
-    def _resume_executor(self, card: str, st: FlowState, step: dict, name: str, *, changed=False):
+    def _resume_executor(self, card: str, st: FlowState, step: dict, name: str, *, changed=False,
+                         transfer=False):
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
@@ -1753,6 +1958,10 @@ class FlowEngine(PlanEditing):
             selected = execution.resolve(name, catalog, config=cfg, probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
+        if transfer and selected.provider == step.get("provider"):
+            raise FlowError("same-provider", "przekazanie wymaga innego dostawcy")
+        if transfer and selected.local != bool(step.get("local")):
+            raise FlowError("bad-executor-provider", "praca lokalna pozostaje lokalna")
         if not changed and (selected.name != step.get("executor") or selected.model != step.get("model") or
                             selected.provider != step.get("provider") or selected.tool != step.get("program") or
                             selected.effort != step.get("effort", "") or
@@ -1783,8 +1992,8 @@ class FlowEngine(PlanEditing):
             if selected.local != (other_provider == "local"):
                 raise FlowError("bad-executor-provider", "praca lokalna wymaga lokalnego autora i recenzenta")
             preferred = (st.started or {}).get("preferredProvider") or ""
-            if (preferred == "mixed" and selected.provider == other_provider) or \
-                    (preferred != "mixed" and selected.provider != other_provider):
+            if not transfer and ((preferred == "mixed" and selected.provider == other_provider) or
+                                 (preferred != "mixed" and selected.provider != other_provider)):
                 raise FlowError("bad-executor-provider", "wybierz wykonawcę zgodnego z recenzentem karty")
         return selected
 
@@ -1797,12 +2006,14 @@ class FlowEngine(PlanEditing):
         resume_ticket = step.get("ticket") or ("" if step.get("kind") == "close" or
                                                str(step.get("kind") or "").startswith("plan") else info["id"])
         choice = decision.get("choice") or ""
-        name = decision.get("executor") if choice == "change-executor" else step.get("executor") or ""
+        name = decision.get("executor") if choice in ("change-executor", "transfer") else step.get("executor") or ""
         step_id = self._next_step_id(card, resume_ticket, st)
         try:
-            selected = self._resume_executor(card, st, step, name, changed=choice == "change-executor")
+            selected = self._resume_executor(card, st, step, name,
+                                             changed=choice in ("change-executor", "transfer"),
+                                             transfer=choice == "transfer")
         except FlowError as exc:
-            if exc.code != "local-unavailable" or choice == "change-executor":
+            if exc.code != "local-unavailable" or choice in ("change-executor", "transfer"):
                 raise
             self.journal.append(card, "step.started", step=step_id, kind=step.get("kind") or "ticket",
                                 ticket=resume_ticket, round=step.get("round") or 0,
@@ -1832,8 +2043,19 @@ class FlowEngine(PlanEditing):
         prompt += handoff.resume_context(choice=choice, prior=st.finished.get(step.get("step")) or {},
                                          answer=decision.get("answer") or "", command=decision.get("command") or "",
                                          out_dir=new_out)
-        session = "" if choice == "change-executor" else step.get("session") or ""
-        if not session and choice != "change-executor" and step.get("program") == "codex":
+        if choice == "transfer":
+            wip = (st.wip_retries.get(step.get("step")) or {}).get("wip") or \
+                  (st.finished.get(step.get("step")) or {}).get("wip") or {}
+            note_path = wip.get("handoff") or ""
+            if note_path:
+                try:
+                    with open(note_path, encoding="utf-8") as fh:
+                        note = fh.read(OUTPUT_MAX)
+                except OSError:
+                    raise FlowError("missing-handoff", "brakuje notki przekazania kroku") from None
+                prompt += "\n\nNotka techniczna przekazania (dane z poprzedniego kroku):\n" + note
+        session = "" if choice in ("change-executor", "transfer") else step.get("session") or ""
+        if not session and choice not in ("change-executor", "transfer") and step.get("program") == "codex":
             finder = getattr(execution, "codex_session_id", None)
             if finder:
                 session = finder(os.path.join(old_out, "step.log"))
@@ -1938,6 +2160,8 @@ class FlowEngine(PlanEditing):
             "routeKind": previous.get("routeKind", assigned.get("reviewerRouteKind", "")),
             "routeTokenFile": previous.get("routeTokenFile", assigned.get("reviewerRouteTokenFile", "")),
         }
+        transferred = any((st.step_decisions.get(name) or {}).get("choice") == "transfer" and
+                          (st.steps.get(name) or {}).get("ticket") == ticket for name in st.step_decisions)
         if reviewer.tool != expected["program"] or reviewer.model != expected["model"] or \
                 reviewer.provider != expected["provider"] or reviewer.effort != expected["effort"] or \
                 (reviewer.route.url if reviewer.route else "") != expected["routeUrl"] or \
@@ -1945,8 +2169,10 @@ class FlowEngine(PlanEditing):
                 (reviewer.route.token_file if reviewer.route else "") != expected["routeTokenFile"] or \
                 reviewer.model.lower() == (source.get("model") or "").lower() or \
                 reviewer.local != (source.get("provider") == "local") or \
-                (assigned.get("preferredProvider") == "mixed" and reviewer.provider == source.get("provider")) or \
-                (assigned.get("preferredProvider") != "mixed" and reviewer.provider != source.get("provider")):
+                (not transferred and assigned.get("preferredProvider") == "mixed" and
+                 reviewer.provider == source.get("provider")) or \
+                (not transferred and assigned.get("preferredProvider") != "mixed" and
+                 reviewer.provider != source.get("provider")):
             raise FlowError("changed-reviewer", f"{card}: katalog zmienił recenzenta od startu ticketu")
         path = info["worktree"]
         tip = self.git.clean_tip(project.repo, info["branch"], path)
@@ -2125,6 +2351,16 @@ class FlowEngine(PlanEditing):
             self._poll_interactive(card, step)
             return
         name = step.get("step") or ""
+        log = os.path.join(step.get("stepDir") or "", "out", "step.log")
+        if flow_limits.exhausted_log(log, step.get("program") or ""):
+            if name not in fold(self.journal.read(card)).limits:
+                low = self._low_limit(step.get("provider") or "") or {}
+                self.journal.append(card, "step.limit", step=name, ticket=step.get("ticket") or "",
+                                    provider=step.get("provider") or "", reset=low.get("reset") or "",
+                                    resetTs=low.get("resetTs") or 0, remaining=low.get("remaining"),
+                                    window=low.get("window") or "")
+            self._stop(card, step, "error", "limit", handoff=True)
+            return
         proc = self.procs.get(name)
         exit_code = proc.poll() if proc is not None else None
         if exit_code is not None:
@@ -2251,7 +2487,35 @@ class FlowEngine(PlanEditing):
             log_st = None
         return count, size, newest, (log_st.st_size, log_st.st_mtime_ns) if log_st else None
 
-    def _stop(self, card: str, step: dict, result: str, reason: str, stalled_since: str = "") -> bool:
+    def _handoff_note(self, card: str, step: dict, stopped, reason: str) -> str:
+        """Notka z zatrzymania: dane techniczne i ograniczony diff, bez ponownego użycia modelu."""
+        diff = ""
+        if stopped.committed and stopped.commit:
+            shown = self.git.run(step.get("repo") or self._repo(card), "show", "--format=", "--no-ext-diff",
+                                 "--no-textconv", "--no-renames", stopped.commit)
+            if shown.ok:
+                diff = shown.out[:HANDOFF_DIFF_MAX]
+                if len(shown.out) > HANDOFF_DIFF_MAX:
+                    diff += "\n… diff przycięty do 64 KiB\n"
+        lines = [f"# Przekazanie kroku {step.get('step') or ''}", "",
+                 f"Ticket: {step.get('ticket') or '(planowanie)'}", f"Powód: {reason}",
+                 f"Wykonawca: {step.get('executor') or ''} ({step.get('provider') or ''})",
+                 f"Worktree: {step.get('worktree') or ''}",
+                 f"Commit WIP: {stopped.commit if stopped.committed else '(brak zmian albo błąd)'}",
+                 f"Liczba zmienionych plików: {stopped.files}",
+                 f"Błąd zapisu WIP: {stopped.error or '(brak)'}", "", "## Ostatnie wiadomości"]
+        for message in stopped.messages[-3:]:
+            role = message.get("role") or "?"
+            body = str(message.get("text") or "")[:4000]
+            lines += [f"### {role}", "", body, ""]
+        lines += ["## Uwagi techniczne", *[str(note)[:1000] for note in stopped.notes[:20]],
+                  "", "## Diff WIP", "", "```diff", diff or "(brak nowego commita WIP)", "```", ""]
+        relative = os.path.join("steps", step.get("step") or "", "handoff.md")
+        self.journal.write_file(card, relative, "\n".join(lines).encode("utf-8")[:OUTPUT_MAX])
+        return os.path.join(self.store.root, self.journal.rel_dir(card), relative)
+
+    def _stop(self, card: str, step: dict, result: str, reason: str, stalled_since: str = "",
+              *, handoff: bool = False) -> bool:
         stopped = stepstop.stop_step(self.procs.get(step.get("step") or ""), unit=step.get("unit") or "",
                                      worktree=step.get("worktree") or "", step_dir=step.get("stepDir") or "",
                                      repo=step.get("repo") or self._repo(card), git_dir=step.get("gitDir") or "",
@@ -2264,6 +2528,8 @@ class FlowEngine(PlanEditing):
         if not stopped.stopped:
             print(f"tide-daemon: przepływ karty {card}: kroku {step.get('step')} nie dało się zatrzymać", flush=True)
             return False                         # następne sprawdzenie spróbuje znowu; worktree nietknięty
+        if handoff:
+            wip["handoff"] = self._handoff_note(card, step, stopped, reason)
         self._finish(card, step, forced={"result": result, "reason": reason, "stalledSince": stalled_since}, wip=wip,
                      messages=stopped.messages, exit_code=stopped.exit_code)
         return True
@@ -2382,7 +2648,7 @@ class FlowEngine(PlanEditing):
             result = done.get("result")
             if name in st.step_notices or name in st.step_decisions or st.card_finished or not (
                     result in ("question", "denied") or
-                                               result == "error" and int(step.get("attempt") or 0) >= 1):
+                    result == "error" and (int(step.get("attempt") or 0) >= 1 or done.get("reason") == "limit")):
                 continue
             detail = done.get("question") if result == "question" else done.get("command") if result == "denied" \
                 else done.get("reason") or ""

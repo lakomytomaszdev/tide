@@ -106,6 +106,19 @@ class CardFlowMonitor(QObject):
     def set_paused(self, card_id: str, paused: bool, reply) -> None:
         self._action("SetCardPaused", lambda: self.engine.set_paused(card_id, paused), reply)
 
+    def get_settings(self, reply) -> None:
+        self._action("GetCardFlowSettings", self.engine.get_flow_settings, reply)
+
+    def set_settings(self, request: str, reply) -> None:
+        try:
+            data = json.loads(request or "")
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            reply(json.dumps(_failure("bad-request", "oczekiwano obiektu JSON"), ensure_ascii=False))
+            return
+        self._action("SetCardFlowSettings", lambda: self.engine.set_flow_settings(data), reply)
+
     def moved(self, card_id: str, column: str, shown: str = "", move_id: str = "") -> None:
         self._submit(lambda: self.engine.moved(card_id, column, shown, move_id), _report("MoveCard"))
 

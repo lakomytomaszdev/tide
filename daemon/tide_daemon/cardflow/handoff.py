@@ -82,6 +82,8 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
         detail = f"Użytkownik odmówił zgody na polecenie: {command}. Kontynuuj bez niego."
     elif choice == "change-executor":
         detail = "Użytkownik wybrał innego wykonawcę. Zachowaj zmiany z poprzednich prób w tym samym worktree."
+    elif choice == "transfer":
+        detail = "Krok przekazano od innego dostawcy. Kontynuuj w tym samym worktree z commita WIP; przeczytaj notkę techniczną niżej."
     elif choice == "auto":
         detail = "Krok ponowiony automatycznie po pierwszym błędzie. Zachowaj zmiany z poprzedniej próby."
     else:
