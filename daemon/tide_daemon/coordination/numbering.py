@@ -13,9 +13,11 @@ katalog, każdy worktree, każda gałąź lokalna — zbiera je repoplans.py) i 
   przy `tracker: local`) jest kluczem projektu w YouTracku. Bez listy projektów (None) — pomijamy.
 - `prefix-alias` (twarde) — plan `youtrack`, którego ticket-prefix ≠ tracker-project, a repozytorium
   nie ma mapy migracji (docs/agents/youtrack-migration/).
-- `reserved-elsewhere` (twarde) — numer w planie `local`, którego tytuł nie ma rezerwacji, a numer
-  jest zarezerwowany (tools/next_id.py, reservations.py) dla innego tytułu: wziął go ktoś inny.
-  Rezerwacja bez tytułu niczego nie rozstrzyga.
+- `reserved-elsewhere` (łagodne) — numer w planie `local`, którego tytuł nie ma rezerwacji, a numer
+  jest zarezerwowany (tools/next_id.py, reservations.py) dla innego tytułu. Rezerwacja bez tytułu niczego
+  nie rozstrzyga. Dawniej twarde, ale sam inny tytuł niczego nie dowodzi: koordynatorzy rezerwowali
+  po angielsku i pisali wiersz planu po polsku (28.10: 15 fałszywych kolizji PT-29…PT-43). Prawdziwe
+  zderzenie — ten sam numer z różnymi tytułami w dwóch planach — łapie twarde `duplicate-id`.
 - `numbering-restart` (łagodne) — niezakończony plan `local`, którego nowe numery (te, których nie
   ma we wcześniejszych planach) zaczynają się nie wyżej niż największy numer wcześniejszych planów
   z tym prefiksem — numeracja od 1 zamiast ciągłej. Kolejność planów: data z nazwy pliku, a w obrębie
@@ -291,7 +293,7 @@ def _reserved(groups, reservations) -> list[dict]:
             if group.tracker != "local" or not titles or set(titles) & reserved[key]:
                 continue
             text = (f"{key} („{next(iter(titles.values())) or '(bez tytułu)'}”, {group.name}) jest zarezerwowany "
-                    f"dla „{shown[key]}” — ten numer wziął ktoś inny; nowy numer daje "
-                    f"make -C ~/DevWorkspace/plasma-tide next-id.")
-            out.append(_warning("reserved-elsewhere", HARD, text, [group.name], ticket=key, prefix=key.split("-")[0]))
+                    f"dla „{shown[key]}” — jeśli to inny ticket, weź nowy numer z "
+                    f"make -C ~/DevWorkspace/plasma-tide next-id; jeśli ten sam (inny język albo słowa), nic nie rób.")
+            out.append(_warning("reserved-elsewhere", SOFT, text, [group.name], ticket=key, prefix=key.split("-")[0]))
     return out

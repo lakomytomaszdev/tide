@@ -102,7 +102,7 @@ class TileTest(unittest.TestCase):
         cases = {
             "loaded": ("Modele", "qwen3:8b · na karcie 100%", "ok", False),
             "ready": ("Modele", "gotowe", "ok", False),
-            "partial": ("Modele", "gpt-oss:20b · na karcie 83%", "partial", False),
+            "partial": ("Modele", "gpt-oss:20b · na karcie 55%", "partial", False),
             "working": ("Modele", "pracuje: opis kart · 2 w kolejce", "working", True),
             "pulling": ("Modele", "pobieram qwen3:14b 41%", "working", True),
             "pulled": ("Modele", "gotowe", "ok", False),
@@ -299,7 +299,7 @@ class PopupTest(unittest.TestCase):
         self.assertEqual(result["queue"], ["Pracuje: raport (gpt-oss:20b) od 3 min · 1 w kolejce"])
         self.assertEqual(result["pulls"], ["Pobieram qwen3:14b · 42%", "Pobrano bge-m3",
                                            "Nie udało się pobrać llama3.3:70b: brak miejsca na dysku"])
-        self.assertEqual(result["gpu"], ["na karcie 83%"])
+        self.assertEqual(result["gpu"], ["na karcie 55%"])
         self.assertIn("reszta na procesorze — wolniej", result["details"][0])
         self.assertEqual(result["report"], "Raport: Claude")
         self.assertEqual(result["roles"], ["Raport", "Opisy kart", "Agent", "Wyszukiwanie", "Polszczyzna"])

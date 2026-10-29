@@ -487,7 +487,7 @@ class ReservationTest(unittest.TestCase):
         vivaldi = plan("/r/docs/agents/plans/2026-10-27-vivaldi.md", "Vivaldi", [("PT-22", "Vivaldi w Tide"),
                                                                                ("PT-23", "Ikona")])
         (warning,) = numbering.conflicts([vivaldi], reservations=reservations)
-        self.assertEqual(kinds([warning]), [("reserved-elsewhere", "hard", "PT-22")])
+        self.assertEqual(kinds([warning]), [("reserved-elsewhere", "soft", "PT-22")])
         self.assertIn("zarezerwowany dla „Docker w tablicy”", warning["text"])
         docker = plan("/r/docs/agents/plans/2026-10-27-docker.md", "Docker", [("PT-22", "Docker w tablicy.")])
         self.assertEqual(numbering.conflicts([docker], reservations=reservations), [], "rezerwacja tego tytułu")
@@ -497,9 +497,11 @@ class ReservationTest(unittest.TestCase):
             fh.write(plan_text("Vivaldi", [("PT-22", "Vivaldi w Tide")]))
         out = subprocess.run(["/usr/bin/python3", os.path.join(REPO, "tools", "check_plans.py"), self.tmp,
                               "--no-youtrack"], env=self.env, capture_output=True, text=True, timeout=60)
-        self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
-        self.assertIn("[KOLIZJA] PT-22 („Vivaldi w Tide”, 2026-10-27-vivaldi) jest zarezerwowany dla „Docker w "
+        # Sam inny tytuł to ostrzeżenie łagodne (28.10: rezerwacja po angielsku, wiersz planu po polsku).
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn("PT-22 („Vivaldi w Tide”, 2026-10-27-vivaldi) jest zarezerwowany dla „Docker w "
                       "tablicy”", out.stdout)
+        self.assertNotIn("[KOLIZJA] PT-22", out.stdout)
 
 
 class CheckPlansToolTest(unittest.TestCase):

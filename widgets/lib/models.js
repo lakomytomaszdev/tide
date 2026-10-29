@@ -195,9 +195,13 @@ function onCard(m) {
     return !isCloudModel(m) && typeof m.gpuPercent === "number" && m.gpuPercent >= 100
 }
 
-// Model lokalny, który nie mieści się na karcie (część na procesorze); chmurowy się nie liczy, choć ma 0%.
+// Model lokalny, który wyraźnie nie mieści się na karcie: mniej niż CPU_WARN_PERCENT na karcie (chmurowy się nie
+// liczy, choć ma 0%). Kilka procent na procesorze to norma na karcie 8 GB, którą dzieli pulpit i przeglądarka
+// (28.10: qwen3:8b 5,5 z 6,0 GB na karcie, a kafelek straszył „lokalny na CPU”) — prawie nie zwalnia.
+var CPU_WARN_PERCENT = 80
+
 function partlyOnCpu(m) {
-    return !isCloudModel(m) && typeof m.gpuPercent === "number" && m.gpuPercent < 100
+    return !isCloudModel(m) && typeof m.gpuPercent === "number" && m.gpuPercent < CPU_WARN_PERCENT
 }
 
 // Druga linia wiersza modelu: „5,6 GB · kontekst 8192 · zwolni pamięć za 4 min”.
@@ -431,14 +435,10 @@ var NO_SERVER_SHORT = "brak serwera"
 // --- kafelek „AI” (PT-41) -------------------------------------------------------------------------------
 
 // Krótkie słowa kropki modelu lokalnego w kafelku „AI” dla stanów, które ostrzegają.
-var INDICATOR_WORDS = { offline: "lokalny nie działa", partial: "lokalny na CPU", warning: "lokalny bez modelu" }
-
-// Wszystkie słowa kropki — kafelek rezerwuje miejsce na najdłuższe, żeby zmiana stanu nie zmieniała jego szerokości.
-function indicatorWords() {
-    var words = ["lokalny"]
-    for (var key in INDICATOR_WORDS) words.push(INDICATOR_WORDS[key])
-    return words
-}
+// Słowo w kafelku: zawsze „lokalny”, tylko niedziałający serwer mówi to wprost. Model na procesorze i brak
+// modelu roli pokazuje sama kropka (masło), szczegóły są w podpowiedzi i popupie — 28.10 długie, kolorowe
+// „lokalny na CPU” odstawało od reszty docka (Docker też mówi kropką: „● 8 działa”).
+var INDICATOR_WORDS = { offline: "lokalny nie działa" }
 
 // Model lokalny w kafelku „AI”: {visible, word, tone, warning, text}. Stan bierze się z tile() — ta sama
 // kolejność co w kafelku Modele — a słowo jest krótkie, bo kafelek dzieli miejsce z limitami: „lokalny”, gdy
@@ -450,8 +450,8 @@ function indicator(snap, serviceUp) {
     var t = tile(snap, serviceUp)
     var ep = defaultEndpoint(snap)
     if (t.tone === "muted" || !ep) return { visible: false, word: "", tone: "muted", warning: false, text: "" }
-    var warning = INDICATOR_WORDS.hasOwnProperty(t.tone)
-    return { visible: true, word: warning ? INDICATOR_WORDS[t.tone] : "lokalny", tone: t.tone, warning: warning,
+    var warning = t.tone === "offline" || t.tone === "partial" || t.tone === "warning"
+    return { visible: true, word: INDICATOR_WORDS[t.tone] || "lokalny", tone: t.tone, warning: warning,
              text: t.value }
 }
 var CLICK_HINT = "Kliknij, aby zobaczyć serwery i role"
