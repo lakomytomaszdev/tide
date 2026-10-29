@@ -418,8 +418,6 @@ def derived(st: FlowState, card: dict) -> dict | None:
         for name, item in st.steps.items()
     ]
     failures = [e for e in st.tracker_failures() if e.get('action') != 'youtrack-note']
-    if st.stalled_since:
-        return _fill(out, "waiting", "stoi — nie ma pracującego kroku ani nazwanego powodu czekania")
     if failures and not st.running():
         error = failures[-1].get('error') or 'odmowa operacji YouTracka'
         out['flow'].update(action='error', error=error, trackerError=True)
@@ -467,6 +465,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
                              "approved" if st.plan_approved else "pending" if st.plan_proposed else "invalid",
                              "rows": rows, "waves": waves,
                              "errors": (st.plan_checked or {}).get("errors") or []}
+        if st.stalled_since:
+            return _fill(out, "waiting", "stoi — nie ma pracującego kroku ani nazwanego powodu czekania")
         focus = decision_step(st)
         focus_step = st.steps.get(focus) or {}
         focus_done = st.finished.get(focus) or {}
@@ -512,6 +512,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
             return _fill(out, "progress", out["flow"]["waveLabel"] + " · " + next(reversed(st.waiting.values()))["reason"])
         if st.plan_approved is not None and not st.last_step and not st.open_intents():
             return _fill(out, "progress", "uruchamiam pierwszy ticket planu")
+    if st.stalled_since:
+        return _fill(out, "waiting", "stoi — nie ma pracującego kroku ani nazwanego powodu czekania")
     if st.started.get('trackerProject') and st.started.get('entry') == 'now' and not st.steps:
         return _fill(out, 'backlog' if st.paused else 'progress',
                      tracker_reason or 'YouTrack: zlecenie czeka na zgłoszenie')

@@ -82,6 +82,29 @@ Item {
             }
             Text {
                 Layout.fillWidth: true
+                visible: panel.stepsFor("").length > 0
+                text: "Kroki karty"
+                color: Tide.Tokens.textSecondary
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 13
+                font.weight: Font.DemiBold
+                Accessible.role: Accessible.Heading
+            }
+            Repeater {
+                model: panel.stepsFor("")
+                Text {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    text: "↳ " + panel.stepText(modelData)
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textSecondary
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                }
+            }
+            Text {
+                Layout.fillWidth: true
                 text: "Tickety · " + (panel.derived.tickets || []).length
                 color: Tide.Tokens.textSecondary
                 font.family: Tide.Theme.uiFamily
@@ -96,7 +119,7 @@ Item {
                     required property var modelData
                     Layout.fillWidth: true
                     implicitHeight: ticketContent.implicitHeight + 20
-                    radius: 10
+                    radius: Tide.Tokens.radiusCard
                     color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.035)
                     ColumnLayout {
                         id: ticketContent

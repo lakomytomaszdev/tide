@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from tide_daemon.cardflow.engine import FlowEngine
 from tide_daemon.cardflow.journal import Journal
@@ -41,6 +42,42 @@ class OverviewTest(unittest.TestCase):
         shown = derived(fold(self.journal.read("K-1")), {"column": "todo"})
         self.assertEqual(shown["flow"]["stalledSince"], "")
         self.assertEqual(shown["flow"]["steps"][0]["startedTs"], self.now[0])
+
+    def test_stall_keeps_ticket_counts_visible(self):
+        self.journal.append("K-1", "plan.approved", rows=[{"id": "PT-1", "workId": "PT-1",
+                                                          "title": "Gotowy", "blockers": []}])
+        self.journal.append("K-1", "result", action="merge", key="PT-1", ok=True)
+        self.now[0] += 181
+        self.engine._guard_card("K-1")
+        shown = derived(fold(self.journal.read("K-1")), {"column": "todo"})
+        self.assertEqual(shown["done"], 1)
+        self.assertEqual([(row["id"], row["state"]) for row in shown["tickets"]], [("PT-1", "gotowe")])
+        self.assertTrue(shown["flow"]["stalledSince"])
+
+    def test_finished_card_does_not_queue_plan_notification(self):
+        self.journal.append("K-1", "plan.proposed", rows=[], title="Plan")
+        self.journal.append("K-1", "plan.reviewed", verdict="APPROVE")
+        self.journal.append("K-1", "card.finished")
+        self.engine._queue_notices("K-1")
+        self.assertEqual(self.engine.take_notices(), [])
+
+    def test_interactive_step_updates_activity_without_stopping_for_inactivity(self):
+        self.journal.append("K-1", "step.started", step="s1", ticket="", kind="planning",
+                            mode="interactive", executor="Sonnet", stepDir=self.temp.name)
+        step = fold(self.journal.read("K-1")).steps["s1"]
+        self.engine.guard_every = 0
+        with mock.patch.object(self.engine, "_console_ended", return_value=False), \
+             mock.patch.object(self.engine, "_progress_mark", side_effect=[(0,), (1,)]), \
+             mock.patch("tide_daemon.cardflow.engine.time.monotonic", side_effect=[10.0, 80.0]):
+            self.engine._poll_interactive("K-1", step)
+            self.now[0] += 70
+            self.engine._poll_interactive("K-1", step)
+        events = self.journal.read("K-1")
+        self.assertEqual(len([event for event in events if event["type"] == "step.activity"]), 1)
+        self.assertFalse([event for event in events if event["type"] == "step.finished"])
+        shown = derived(fold(events), {"column": "todo"})
+        self.assertGreater(shown["flow"]["steps"][0]["lastActivityTs"],
+                           shown["flow"]["steps"][0]["startedTs"])
 
     def test_named_limit_does_not_stall(self):
         self.journal.append("K-1", "step.waiting", ticket="PT-1", kind="ticket", reason="limit dostawcy")

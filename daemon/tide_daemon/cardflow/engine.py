@@ -1984,6 +1984,8 @@ class FlowEngine(PlanEditing):
                 self.journal.append(card, "step.console_closed", step=step.get("step"))
                 self._finish(card, step, forced={"result": "stopped", "reason": "interactive-closed",
                                                  "question": "Konsola nie przejęła kroku. Wznowić czy porzucić?"})
+                return
+        self._guard(card, step, stop_stalled=False)
 
     def _console_ended(self, step: dict) -> bool:
         """Znacznik lub trwała tożsamość procesu potwierdza koniec, również po restarcie usługi."""
@@ -2001,7 +2003,7 @@ class FlowEngine(PlanEditing):
         return bool(task_file and not os.path.exists(task_file) and
                     self.clock() - float(step.get("enteredAt") or self.clock()) > 30)
 
-    def _guard(self, card: str, step: dict) -> None:
+    def _guard(self, card: str, step: dict, *, stop_stalled: bool = True) -> None:
         name = step.get("step") or ""
         now = time.monotonic()
         limit = guard_seconds(self.settings)
@@ -2019,7 +2021,7 @@ class FlowEngine(PlanEditing):
                 self.journal.append(card, "step.activity", step=name, ticket=step.get("ticket") or "")
             return
         self.watch[name] = (mark, seen[1], now)
-        if now - seen[1] >= limit:
+        if stop_stalled and now - seen[1] >= limit:
             print(f"tide-daemon: przepływ karty {card}: krok {name} bez postępu od {int(now - seen[1])} s — zatrzymuję",
                   flush=True)
             stalled = datetime.fromtimestamp(self.clock() - (now - seen[1]), timezone.utc).isoformat(timespec="seconds")
@@ -2132,6 +2134,8 @@ class FlowEngine(PlanEditing):
     def _queue_notices(self, card: str) -> None:
         """Zdarzenie przed wysłaniem: po restarcie pytanie nie daje drugiego powiadomienia."""
         st = fold(self.journal.read(card))
+        if st.card_finished:
+            return
         for name, done in st.finished.items():
             step = st.steps.get(name) or {}
             result = done.get("result")
