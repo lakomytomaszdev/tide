@@ -21,4 +21,3 @@ def rules(board, project=None):
         except ValueError:
             pass
     return DEFAULT_RULES
-
