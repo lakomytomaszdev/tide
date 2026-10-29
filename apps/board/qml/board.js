@@ -610,6 +610,23 @@ function transferExecutors(status, provider) {
         .map(e => ({ value: String(e.name), label: String(e.name) }))
 }
 
+function planReviewerExecutors(status, planner, blockedProvider) {
+    const author = launchExecutor(status, planner)
+    if (!author) return []
+    const options = launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
+        e.available !== false && e.name !== author.name &&
+        String(e.model).toLowerCase() !== String(author.model).toLowerCase() &&
+        (e.provider === "local") === (author.provider === "local"))
+        .map(e => ({ value: String(e.name), label: String(e.name) + " · " + String(e.provider) }))
+    if (blockedProvider) options.sort((a, b) => {
+        const ae = launchExecutor(status, a.value), be = launchExecutor(status, b.value)
+        const ap = ae.provider === blockedProvider ? 1 : 0, bp = be.provider === blockedProvider ? 1 : 0
+        if (ap !== bp) return ap - bp
+        return (a.value === "Codex Astra" ? -1 : b.value === "Codex Astra" ? 1 : 0)
+    })
+    return options
+}
+
 function transferSettingsExecutors(status) {
     return launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
         e.available !== false && e.provider)

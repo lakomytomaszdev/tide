@@ -143,7 +143,7 @@ class BoardMonitor(QObject):
     def rederive(self) -> None:
         """Zmiana w /Agents albo /Coordination: przeliczenie stanu kart z migawki w pamięci, najwyżej
         co REDERIVE_MS (pierwsza zmiana z serii uruchamia odliczanie, kolejne tylko na nie czekają)."""
-        if self.derive is not None and not self._rederive.isActive():
+        if (self.derive is not None or self.flow is not None) and not self._rederive.isActive():
             self._rederive.start()
 
     # --- D-Bus ---------------------------------------------------------------------------------

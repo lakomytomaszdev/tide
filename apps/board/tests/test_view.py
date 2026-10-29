@@ -2005,6 +2005,91 @@ out["call"] = calls()[-1]
                          {"slug": "plasma-tide", "allowedCommands": ["git status", "git log", "git fetch origin"]})
 
 class PlanPanelTest(ProbeCase):
+    def test_running_plan_review_can_be_transferred_from_wide_view(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "progress", "flow": {"entry": "planning", "plan": {
+                    "status": "reviewing", "planner": "Sonnet", "reviewStep": "K-6-plan-review-1",
+                    "reviewProvider": "anthropic", "waves": [["#1"]],
+                    "rows": [{"workId": "#1", "title": "Eksport", "class": "standard",
+                              "executor": "Sonnet", "reviewer": "Opus", "blockers": [], "editable": True,
+                              "body": "# Eksport\n- [ ] Eksport działa.", "cardPath": "/board/tickets/1.md"}]}}}
+                card["boardColumn"] = "progress"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+obj("planManagerReviewExecutor").setProperty("currentIndex", 1)
+click(at(FIND + "(page, 'planManagerRunReview')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["call"][:2], ["ResolveCardStep", "K-6"])
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "transfer", "step": "K-6-plan-review-1",
+                                                   "executor": "Codex standard"})
+
+    def test_wide_plan_manager_edits_assignment_and_keeps_approval_explicit(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "planner": "Sonnet", "waves": [["#1"]],
+                    "rows": [{"workId": "#1", "title": "Eksport", "class": "standard",
+                              "executor": "Sonnet", "reviewer": "Opus", "blockers": [], "editable": True,
+                              "body": "# Eksport\n- [ ] Eksport działa.", "cardPath": "/board/tickets/1.md"}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+wait(80)
+out["visible"] = obj("planManager").property("visible")
+out["width"] = obj("planManager").property("width")
+out["pageWidth"] = js("page.width")
+out["status"] = obj("planManagerStatus").property("text")
+out["approveLabel"] = obj("planManagerApprove").property("text")
+out["selected"] = obj("planManager").property("selectedTicketId")
+obj("planManagerReviewer").setProperty("currentIndex", 2)
+click(at(FIND + "(page, 'planManagerSaveTicket')"))
+out["editCall"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["visible"])
+        self.assertGreater(out["width"], out["pageWidth"] * 0.8)
+        self.assertIn("Twojej decyzji", out["status"])
+        self.assertIn("rozpocznij implementację", out["approveLabel"])
+        self.assertEqual(out["selected"], "#1")
+        self.assertEqual(out["editCall"][:2], ["EditCardPlan", "K-6"])
+        self.assertEqual(json.loads(out["editCall"][2])["reviewer"], "Codex standard")
+
+    def test_blocked_plan_shows_assignments_and_review_choice(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "czeka na limit Claude", "flow": {
+                    "entry": "planning", "plan": {"status": "blocked", "planner": "Sonnet",
+                    "reviewWait": {"reason": "czeka na limit Claude do soboty", "provider": "anthropic"},
+                    "waves": [["#1"]], "rows": [{"workId": "#1", "title": "Eksport", "class": "standard",
+                        "executor": "Sonnet", "reviewer": "Opus", "blockers": [], "note": "", "editable": True,
+                        "body": "# Eksport\n- [ ] Eksport działa.", "cardPath": "/board/tickets/1.md"}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["shown"] = obj("cardPlanProposal").property("visible")
+out["entries"] = js("page.cardPanel.planEntries().map(r => [r.executor, r.reviewer])")
+out["reason"] = obj("cardPlanReviewWait").property("text")
+out["approve"] = obj("cardPlanApprove").property("visible")
+obj("cardPlanReviewExecutor").setProperty("currentIndex", 1)
+click(at(FIND + "(page.cardPanel, 'cardPlanRunReview')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["shown"])
+        self.assertEqual(out["entries"], [["Sonnet", "Opus"]])
+        self.assertIn("soboty", out["reason"])
+        self.assertFalse(out["approve"])
+        self.assertEqual(out["call"][:2], ["EditCardPlan", "K-6"])
+        self.assertEqual(json.loads(out["call"][2]), {"action": "review-executor", "executor": "Codex standard"})
+
     def test_failed_revision_can_be_returned_again_or_discarded(self):
         data = json.loads(json.dumps(self.data))
         for card in data["cards"]:

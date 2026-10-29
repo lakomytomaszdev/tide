@@ -5,6 +5,7 @@ from .test_cardflow_dbus import git
 
 from .privatebus import wait_until
 from .test_cardflow import FlowInProcess
+from tide_daemon.monitor import AgentMonitor
 
 
 class _Terminal:
@@ -49,6 +50,93 @@ class FullPlanningTest(FlowInProcess):
                      "- [ ] Plik można pobrać.\n## Dla recenzenta\nSprawdź pobieranie i podgląd.\n")
         with open(os.path.join(out, "result.json"), "w", encoding="utf-8") as fh:
             json.dump({"result": "done", "notes": ["spec.md", "plan.md"]}, fh)
+
+    def test_question_in_console_moves_card_to_waiting_until_reply(self):
+        card, step, _terminal = self._start_full()
+
+        class Scanner:
+            entries = []
+
+            def sessions(self, _now, _procs):
+                return self.entries
+
+        scanner = Scanner()
+        monitor = AgentMonitor(scanner, use_processes=False)
+        monitor.hidden = lambda _session: True
+        monitor.raw_changed.connect(self.board.rederive)
+        self.flow.engine.sessions_source = lambda: monitor.raw_sessions
+        self.assertEqual(self.shown(card)["boardColumn"], "progress")
+
+        scanner.entries = [{"id": f"claude:{step['session']}", "sessionId": step["session"],
+                            "tool": "claude", "state": "waiting", "reason": "reply",
+                            "waitingText": "Jaki format pliku wybrać?"}]
+        monitor.recompute()
+        self.assertEqual(monitor.sessions, [], "sesja karty pozostaje ukryta na liście agentów")
+        self.assertTrue(wait_until(lambda: self.shown(card)["boardColumn"] == "waiting", timeout=3))
+        shown = self.shown(card)["derived"]
+        self.assertEqual(shown["question"], "Jaki format pliku wybrać?")
+        self.assertEqual(shown["nextStep"], "odpowiedz w Konsoli")
+        self.assertFalse(shown["flow"].get("action"), "panel nie powinien wznawiać otwartej rozmowy")
+
+        scanner.entries = [{**scanner.entries[0], "state": "working", "reason": "", "waitingText": ""}]
+        monitor.recompute()
+        self.assertTrue(wait_until(lambda: self.shown(card)["boardColumn"] == "progress", timeout=3),
+                        self.shown(card)["derived"])
+
+    def test_review_blocked_by_limit_waits_for_user_and_allows_model_choice(self):
+        card, step, _terminal = self._start_full()
+        engine = self.flow.engine
+        engine._wait_reason = lambda selected: "czeka na limit Claude do soboty" if selected.provider == "anthropic" else ""
+        self._write_proposal(card, step)
+        self.assertTrue(wait_until(lambda: any(e.get("kind") == "plan-review" for e in self.of(card, "step.waiting")),
+                                   timeout=10), self.events(card))
+        shown = self.shown(card)
+        self.assertEqual(shown["boardColumn"], "waiting")
+        plan = shown["derived"]["flow"]["plan"]
+        self.assertEqual(plan["status"], "blocked")
+        self.assertEqual(len(plan["rows"]), 1)
+        self.assertIn("limit Claude", plan["reviewWait"]["reason"])
+
+        engine._wait_reason = lambda _selected: ""  # po restarcie migawka limitu może chwilowo zniknąć
+        engine.tick()
+        self.assertFalse(any(e.get("kind") == "plan-review" for e in self.of(card, "step.started")),
+                         "po wcześniejszej blokadzie recenzenta wybiera użytkownik")
+
+        edited = engine.edit_plan(card, {"action": "edit", "ticket": "#1", "reviewer": "Codex Astra"})
+        self.assertTrue(edited["ok"])
+        self.assertTrue(wait_until(lambda: self.shown(card)["derived"]["flow"]["plan"]["rows"][0]["reviewer"]
+                                   == "Codex Astra", timeout=3))
+        selected = engine.edit_plan(card, {"action": "review-executor", "executor": "Codex Astra"})
+        self.assertTrue(selected["ok"])
+        self.assertTrue(wait_until(lambda: any(e.get("kind") == "plan-review" for e in self.of(card, "step.started")),
+                                   timeout=10), self.events(card))
+        review = next(e for e in self.of(card, "step.started") if e.get("kind") == "plan-review")
+        self.assertEqual(review["executor"], "Codex Astra")
+
+    def test_review_limit_stays_actionable_after_failed_attempt(self):
+        card, step, _terminal = self._start_full()
+        engine = self.flow.engine
+        engine._wait_reason = lambda selected: "czeka na limit Claude do soboty" if selected.provider == "anthropic" else ""
+        self._write_proposal(card, step)
+        self.assertTrue(wait_until(lambda: any(e.get("kind") == "plan-review" for e in self.of(card, "step.waiting")),
+                                   timeout=10))
+        journal = engine.journal
+        journal.append(card, "step.started", step="K-1-review-failed", kind="plan-review", ticket="",
+                       executor="Haiku", program="claude", model="haiku", provider="anthropic",
+                       worktree=step["worktree"], branch=step["branch"], attempt=1)
+        journal.append(card, "step.finished", step="K-1-review-failed", result="error", reason="no-result")
+        engine._wait_reason = lambda _selected: ""
+        engine.tick()
+        self.assertFalse(any(e.get("kind") == "plan-review" and e.get("step") != "K-1-review-failed"
+                             for e in self.of(card, "step.started")))
+        shown = engine.derived({"id": card, "column": "todo"})
+        self.assertEqual((shown["column"], shown["flow"]["plan"]["status"]), ("waiting", "blocked"))
+        edited = engine.edit_plan(card, {"action": "edit", "ticket": "#1", "reviewer": "Codex Astra"})
+        self.assertTrue(edited["ok"])
+        reply = engine.edit_plan(card, {"action": "review-executor", "executor": "Codex Astra"})
+        self.assertTrue(reply["ok"])
+        decision = self.of(card, "step.decision")[-1]
+        self.assertEqual((decision["choice"], decision["executor"]), ("change-executor", "Codex Astra"))
 
     def test_one_console_result_then_existing_review_and_panel(self):
         card, step, terminal = self._start_full()

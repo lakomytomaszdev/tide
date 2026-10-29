@@ -58,6 +58,8 @@ class FlowState:
     approval_requested: dict | None = None
     plan_approved: dict | None = None
     plan_reviewed: dict | None = None
+    plan_reviewer: str = ""  # ręczny wybór modelu do niezależnego review planu
+    plan_review_wait: dict | None = None  # blokada limitu pozostaje po restarcie i próbie review
     plan_revision: dict | None = None
     plan_finished: bool = False
     plan_change_seq: int = 0
@@ -151,6 +153,8 @@ def fold(events: list[dict]) -> FlowState:
             st.imported = None
             st.imported_done.clear()
             st.plan_reviewed = st.plan_revision = None
+            st.plan_reviewer = ""
+            st.plan_review_wait = None
             st.plan_finished = False
             st.plan_change_seq, st.plan_change_ts = 0, ""
             st.assignments = {}
@@ -174,6 +178,8 @@ def fold(events: list[dict]) -> FlowState:
             st.inputs = e
         elif kind == "step.waiting":
             st.waiting[(e.get("ticket"), e.get("kind"))] = e
+            if e.get("kind") == "plan-review" and "limit" in str(e.get("reason") or ""):
+                st.plan_review_wait = e
         elif kind == "step.started":
             st.waiting.pop((e.get("ticket"), e.get("kind")), None)
             st.steps[e.get("step")] = e
@@ -227,7 +233,11 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "plan.proposed":
             st.plan_proposed = e
             st.plan_reviewed = None
+            st.plan_reviewer = ""
+            st.plan_review_wait = None
             st.approval_requested = None
+        elif kind == "plan.reviewer-selected":
+            st.plan_reviewer = e.get("executor") or ""
         elif kind == 'plan.approval_requested':
             st.approval_requested = e
         elif kind == "plan.returned":
@@ -247,6 +257,7 @@ def fold(events: list[dict]) -> FlowState:
             st.closed = None
         elif kind == "plan.reviewed":
             st.plan_reviewed = e
+            st.plan_review_wait = None
         elif kind == "plan.ticket-edited":
             for name in ("plan_proposed", "plan_approved"):
                 plan = getattr(st, name)
@@ -525,12 +536,29 @@ def derived(st: FlowState, card: dict) -> dict | None:
         out["tickets"].sort(key=lambda ticket: ticket["wave"])
         out["flow"]["waveLabel"] = f"fala {wave_no} z {len(waves)}"
         out["flow"]["plan"] = {"review": st.plan_reviewed or {}, "revision": st.plan_revision or {},
+                             "planner": proposal.get("planner") or "",
+                             "reviewStep": next((s.get("step") for s in reversed(list(st.steps.values()))
+                                                 if s.get("kind") == "plan-review" and s.get("step") not in st.finished), ""),
+                             "reviewProvider": next((s.get("provider") for s in reversed(list(st.steps.values()))
+                                                     if s.get("kind") == "plan-review" and s.get("step") not in st.finished), ""),
+                             "reviewExecutor": st.plan_reviewer,
                              "plannerStep": next((s["step"] for s in reversed(list(st.steps.values())) if s.get("executor") == proposal.get("planner")), ""),
                              "status": "reviewing" if not st.plan_reviewed and (not st.plan_approved or revision_pending)
                              else "pending" if revision_pending else "done" if st.plan_finished else
                              "approved" if st.plan_approved else "pending" if st.plan_proposed else "invalid",
                              "rows": rows, "waves": waves,
                              "errors": (st.plan_checked or {}).get("errors") or []}
+        waiting_review = st.plan_review_wait or st.waiting.get(("", "plan-review")) or {}
+        if st.plan_proposed and not st.plan_reviewed and not st.plan_reviewer and waiting_review and not any(
+                s.get("kind") == "plan-review" and s.get("step") not in st.finished
+                for s in st.steps.values()):
+            out["flow"]["plan"].update(status="blocked", reviewWait={
+                "reason": waiting_review.get("reason") or "review planu czeka",
+                "provider": waiting_review.get("provider") or ""})
+            out["question"] = "Wybierz recenzenta planu albo poczekaj na limit."
+            result = _fill(out, "waiting", waiting_review.get("reason") or "review planu czeka")
+            result["nextStep"] = "wybierz model do review planu"
+            return result
         if st.stalled_since:
             return _fill(out, "waiting", "stoi — nie ma pracującego kroku ani nazwanego powodu czekania")
         focus = decision_step(st)

@@ -20,6 +20,7 @@ RESCAN_MS = 30000
 
 class AgentMonitor(QObject):
     changed = pyqtSignal()
+    raw_changed = pyqtSignal()
 
     def __init__(self, scanner: AgentScanner, use_processes: bool = True, clock=time.time, parent=None):
         super().__init__(parent)
@@ -28,6 +29,8 @@ class AgentMonitor(QObject):
         self.clock = clock
         self._json = "[]"
         self.sessions: list[dict] = []   # ostatnia lista sesji (dla worktrees i powiadomień)
+        self.raw_sessions: list[dict] = []  # także sesje kroków karty ukryte na liście agentów
+        self._raw_state = ()
         self.procs = None                # ostatnia migawka procesów albo None
         self._dirty: set[str] = set()
         # funkcja(sessions) dopisująca pola od innych obszarów (np. newTask z /Tasks) albo None
@@ -65,6 +68,11 @@ class AgentMonitor(QObject):
     def recompute(self) -> None:
         procs = self._probe()
         sessions = self.scanner.sessions(self.clock(), procs)
+        self.raw_sessions = sessions
+        raw_state = tuple((s.get("id"), s.get("state"), s.get("reason"), s.get("waitingText"))
+                          for s in sessions)
+        raw_changed = raw_state != self._raw_state
+        self._raw_state = raw_state
         if self.hidden is not None:
             try:
                 sessions = [s for s in sessions if not self.hidden(s)]
@@ -80,6 +88,8 @@ class AgentMonitor(QObject):
         if text != self._json:
             self._json = text
             self.changed.emit()
+        if raw_changed:
+            self.raw_changed.emit()
 
     def activate(self, session_id: str) -> bool:
         procs = self._probe()

@@ -81,6 +81,7 @@ Rectangle {
     signal planEditRequested(string cardId, var request)
     property var planEditTicket: null
     signal planApproveRequested(string cardId)                      // zatwierdzenie propozycji planu
+    signal planManagerRequested()                                   // szeroki widok planu karty
     signal branchDiffRequested(string cardId)
     signal mergeMainRequested(string cardId)
 
@@ -291,11 +292,19 @@ Rectangle {
         ColumnLayout {
             objectName: "cardPlanProposal"
             Layout.fillWidth: true
-            visible: !!panel.flowPlan && panel.flowPlan.status !== "reviewing"
+            visible: !!panel.flowPlan && (panel.planEntries().length > 0 || panel.flowPlan.status !== "reviewing")
             spacing: 5
+            PillButton {
+                objectName: "cardOpenPlanManager"
+                text: "Otwórz plan na całym ekranie"
+                outline: true
+                onClicked: panel.planManagerRequested()
+            }
             Text {
                 Layout.fillWidth: true
-                text: panel.flowPlan && panel.flowPlan.status === "pending" ? "Plan do zatwierdzenia"
+                text: panel.flowPlan && panel.flowPlan.status === "blocked" ? "Plan czeka na wybór recenzenta"
+                      : panel.flowPlan && panel.flowPlan.status === "reviewing" ? "Przegląd planu w toku"
+                      : panel.flowPlan && panel.flowPlan.status === "pending" ? "Plan do zatwierdzenia"
                       : panel.flowPlan && panel.flowPlan.status === "approved" ? "Zatwierdzony plan"
                       : panel.flowPlan && panel.flowPlan.status === "done" ? "Plan wykonany"
                       : "Błędy propozycji planu"
@@ -315,6 +324,43 @@ Rectangle {
                 font.family: Tide.Theme.uiFamily
                 font.pixelSize: 12
                 wrapMode: Text.Wrap
+            }
+            Text {
+                objectName: "cardPlanReviewWait"
+                Layout.fillWidth: true
+                visible: !!panel.flowPlan && panel.flowPlan.status === "blocked"
+                text: panel.flowPlan && panel.flowPlan.reviewWait
+                      ? panel.flowPlan.reviewWait.reason + ". Możesz poprawić przydziały ticketów i wybrać inny model do przeglądu. Implementacja ruszy dopiero po Twoim zatwierdzeniu planu."
+                      : ""
+                textFormat: Text.PlainText
+                color: Tide.Tokens.butter
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                visible: !!panel.flowPlan && panel.flowPlan.status === "blocked"
+                spacing: 8
+                QQC2.ComboBox {
+                    id: planReviewPicker
+                    objectName: "cardPlanReviewExecutor"
+                    Layout.fillWidth: true
+                    model: [{value: "", label: "Wybierz recenzenta"}].concat(Logic.planReviewerExecutors(
+                        panel.modelsStatus, panel.flowPlan ? panel.flowPlan.planner : "",
+                        panel.flowPlan && panel.flowPlan.reviewWait ? panel.flowPlan.reviewWait.provider : ""))
+                    textRole: "label"
+                    valueRole: "value"
+                    currentIndex: -1
+                    Accessible.name: "Model do przeglądu planu"
+                }
+                PillButton {
+                    objectName: "cardPlanRunReview"
+                    text: "Uruchom przegląd"
+                    enabled: !panel.busy && !!planReviewPicker.currentValue
+                    onClicked: panel.planEditRequested(panel.card.id,
+                        {action: "review-executor", executor: planReviewPicker.currentValue})
+                }
             }
             Text {
                 objectName: "cardPlanReview"
@@ -379,11 +425,11 @@ Rectangle {
                             }
                             PillButton {
                                 objectName: "cardPlanTicket-" + (index + 1)
-                                text: ticket.editable === false ? "Kartka" : "Popraw ticket"
+                                text: ticket.editable === false || panel.flowPlan.status === "reviewing" ? "Kartka" : "Popraw ticket"
                                 outline: true
                                 enabled: !!ticket.cardPath
                                 onClicked: {
-                                    if (ticket.editable !== true) panel.openFileRequested(ticket.cardPath)
+                                    if (ticket.editable !== true || panel.flowPlan.status === "reviewing") panel.openFileRequested(ticket.cardPath)
                                     else {
                                         panel.planEditTicket = ticket
                                         planClass.text = ticket.class || "standard"
@@ -447,7 +493,8 @@ Rectangle {
             }
             PillButton {
                 objectName: "cardPlanApprove"
-                text: panel.flowPlan && panel.flowPlan.revision && panel.flowPlan.revision.pending ? "Zatwierdź różnicę" : "Zatwierdź plan"
+                text: panel.flowPlan && panel.flowPlan.revision && panel.flowPlan.revision.pending
+                      ? "Zatwierdź różnicę" : "Zatwierdź plan i rozpocznij implementację"
                 visible: !!panel.flowPlan && panel.flowPlan.status === "pending"
                 enabled: !panel.busy
                 onClicked: {

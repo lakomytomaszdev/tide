@@ -33,6 +33,7 @@ Rectangle {
     // Panele.
     property bool managing: false
     property bool panelOpen: false
+    property bool planManagerOpen: false
     property string panelCardId: ""          // "" — nowa karta
     property string panelColumn: "backlog"
     property string toast: ""
@@ -162,6 +163,13 @@ Rectangle {
         const item = findCard(selectedId)
         if (item) item.forceActiveFocus()
         else page.forceActiveFocus()
+    }
+
+    function openPlanManager() {
+        panelOpen = false
+        planManager.error = ""
+        planManager.notice = ""
+        planManagerOpen = true
     }
 
     // Przeniesienie karty (przeciągnięcie, klawiatura, przycisk): pozycja liczona wśród kart
@@ -425,12 +433,15 @@ Rectangle {
         } else if (tag.indexOf("step-resolve:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
+            planManager.busy = false
+            planManager.error = error
             if (!error) {
                 cardPanel.notice = reply.tracker ? "Ponawiam operację YouTracka."
                     : reply.choice === "wait-limit" ? "Krok czeka na odnowienie limitu."
                     : reply.choice === "transfer" ? "Przekazuję krok innemu dostawcy."
                     : reply.choice === "deny" ? "Odmowa zapisana. Krok zatrzymany."
                     : "Decyzja zapisana. Wznawiam krok w tle."
+                planManager.notice = reply.choice === "transfer" ? "Przenoszę przegląd do wybranego modelu." : "Decyzja zapisana."
             }
         } else if (tag.indexOf("flow-pause:") === 0) {
             cardPanel.busy = false
@@ -440,10 +451,16 @@ Rectangle {
             cardPanel.busy = false
             cardPanel.error = error
             if (!error) cardPanel.notice = "Zmiana planu zapisana."
+            planManager.busy = false
+            planManager.error = error
+            if (!error) planManager.notice = "Zmiana planu zapisana."
         } else if (tag.indexOf("plan-approve:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
             if (!error) cardPanel.notice = "Plan zatwierdzony. Uruchamiam pierwszy gotowy ticket."
+            planManager.busy = false
+            planManager.error = error
+            if (!error) planManager.notice = "Plan zatwierdzony. Uruchamiam pierwszy gotowy ticket."
         } else if (tag.indexOf("branch-diff:") === 0) {
             cardPanel.error = error
             if (!error) cardPanel.branchDiff = reply.diff || "(brak różnic)"
@@ -1383,6 +1400,7 @@ Rectangle {
             page.planEditRequested(page.nextTag("plan-edit:" + cardId), cardId, JSON.stringify(request))
         onPlanApproveRequested: cardId =>
             page.planApproveRequested(page.nextTag("plan-approve:" + cardId), cardId)
+        onPlanManagerRequested: page.openPlanManager()
         onBranchDiffRequested: cardId =>
             page.branchDiffRequested(page.nextTag("branch-diff:" + cardId), cardId)
         onMergeMainRequested: cardId =>
@@ -1392,6 +1410,45 @@ Rectangle {
             if (column === "archived") page.panelOpen = false
         }
         onCloseRequested: page.closePanel()
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        visible: page.planManagerOpen
+        z: 30
+        color: Tide.Theme.alpha(Tide.Tokens.backgroundPanel, 0.72)
+        MouseArea { anchors.fill: parent; onClicked: mouse => mouse.accepted = true }
+    }
+    PlanManager {
+        id: planManager
+        objectName: "planManager"
+        anchors.fill: parent
+        anchors.margins: 18
+        visible: page.planManagerOpen
+        z: 31
+        card: page.panelCard
+        modelsStatus: page.modelsStatus
+        onCloseRequested: {
+            page.planManagerOpen = false
+            page.forceActiveFocus()
+        }
+        onCardRequested: {
+            page.planManagerOpen = false
+            page.panelOpen = true
+            cardPanel.load()
+        }
+        onEditRequested: (cardId, request) => {
+            planManager.busy = true
+            page.planEditRequested(page.nextTag("plan-edit:" + cardId), cardId, JSON.stringify(request))
+        }
+        onTransferRequested: (cardId, request) => {
+            planManager.busy = true
+            page.stepResolveRequested(page.nextTag("step-resolve:" + cardId), cardId, JSON.stringify(request))
+        }
+        onApproveRequested: cardId => {
+            planManager.busy = true
+            page.planApproveRequested(page.nextTag("plan-approve:" + cardId), cardId)
+        }
     }
 
     // --- „Co ma zrobić agent?” -------------------------------------------------------------------

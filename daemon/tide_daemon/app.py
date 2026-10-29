@@ -754,6 +754,8 @@ def start_card_flow(app, args, board, monitor=None, limits=None):
                         limits_source=(lambda: json.loads(limits.forecast_json())) if limits is not None else None)
     if monitor is not None:
         monitor.hidden = engine.is_hidden
+        engine.sessions_source = lambda: monitor.raw_sessions
+        monitor.raw_changed.connect(board.rederive)
     return CardFlowMonitor(engine, board, poll_ms=max(100, poll_ms), parent=app)
 
 

@@ -119,6 +119,7 @@ class FlowEngine(PlanEditing):
         self.catalog = catalog            # funkcja() → models.executors.Catalog
         self.models_config = models_config  # funkcja() → ModelsConfig (lokalny i inni dostawcy)
         self.limits_source = limits_source  # świeża migawka Limitów AI z wątku monitora; bez HTTP w kroku
+        self.sessions_source = None  # migawka monitora także dla sesji ukrytych na liście agentów
         self.model_probe = model_probe      # funkcja(endpoint) → stan punktu lokalnego
         self.codex_roots = codex_homes.default_homes() if codex_roots is None else codex_roots
         self.tmp_root = tmp_root or tempfile.gettempdir()
@@ -210,7 +211,27 @@ class FlowEngine(PlanEditing):
                                      self.clock())
 
     def derived(self, card: dict) -> dict | None:
-        return derived(fold(self.journal.read(card.get("id") or "")), card)
+        st = fold(self.journal.read(card.get("id") or ""))
+        out = derived(st, card)
+        step = st.steps.get(st.last_step) or {}
+        if not out or out.get("column") != "progress" or step.get("mode") != "interactive" or \
+                st.last_step in st.finished or step.get("consoleClosed") or not step.get("session") or \
+                self.sessions_source is None:
+            return out
+        try:
+            sessions = self.sessions_source() or []
+        except Exception:
+            return out
+        sid = f"{step.get('program')}:{step['session']}"
+        waiting = next((s for s in sessions if s.get("id") == sid and s.get("state") == "waiting"), None)
+        if waiting is None:
+            return out
+        question = " ".join(str(waiting.get("waitingText") or "").split())[:120]
+        out.update(column="waiting", agentState="waiting", question=question,
+                   note=(f"pytanie w Konsoli: {question}" if question else "czeka na odpowiedź w Konsoli"),
+                   nextStep="odpowiedz w Konsoli")
+        out["flow"]["consoleWaiting"] = True
+        return out
 
     def tracker_tickets(self, card):
         st = fold(self.journal.read(card.get('id') or ''))

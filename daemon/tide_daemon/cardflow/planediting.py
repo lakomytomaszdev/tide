@@ -30,6 +30,12 @@ class PlanEditing:
             return True
         steps = [s for s in st.steps.values() if s.get("kind") in ("plan-review", "plan-revise")
                  and s.get("seq", 0) > proposal["seq"]]
+        latest_review = next((s for s in reversed(steps) if s.get("kind") == "plan-review"), {})
+        last_review_result = (st.finished.get(latest_review.get("step")) or {}).get("result")
+        if st.plan_review_wait and not st.plan_reviewer and not any(
+                s.get("kind") == "plan-review" and s.get("step") not in st.finished for s in steps
+        ) and last_review_result != "done":
+            return True
         if not steps:
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
@@ -39,7 +45,8 @@ class PlanEditing:
             if not options:
                 from .engine import FlowError
                 raise FlowError("no-plan-reviewer", "brak niezależnego recenzenta planu")
-            selected = execution.resolve(options[0].name, catalog, config=cfg, probe=self.model_probe, which=self.which)
+            selected_name = st.plan_reviewer or options[0].name
+            selected = execution.resolve(selected_name, catalog, config=cfg, probe=self.model_probe, which=self.which)
             self._plan_step(card, st, selected, "plan-review", self._review_prompt(card, proposal))
             return True
         step = steps[-1]
@@ -143,8 +150,38 @@ class PlanEditing:
             self._bootstrap_direct_plan(card, st)
             st = fold(self.journal.read(card))
             proposal = st.plan_proposed
-        if not proposal or not st.plan_reviewed or st.card_finished:
+        if not proposal or st.card_finished:
             raise FlowError("no-plan", "brak planu do zmiany")
+        review_steps = [s for s in st.steps.values() if s.get("kind") == "plan-review"
+                        and s.get("seq", 0) > proposal.get("seq", 0)]
+        if request.get("action") == "review-executor":
+            active_review = any(s.get("step") not in st.finished for s in review_steps)
+            if st.plan_reviewed or active_review:
+                raise FlowError("review-active", "przegląd planu już wystartował")
+            cfg = self.models_config() if self.models_config else None
+            catalog = cfg.catalog if cfg else self.catalog()
+            author = catalog.get(proposal.get("planner") or proposal["rows"][0]["executor"])
+            selected = catalog.get(str(request.get("executor") or ""))
+            if not author or not selected or author.name == selected.name or \
+                    author.model.lower() == selected.model.lower() or \
+                    (author.provider == "local") != (selected.provider == "local"):
+                raise FlowError("bad-reviewer", "wybierz niezależny model recenzenta planu")
+            execution.resolve(selected.name, catalog, config=cfg, probe=self.model_probe, which=self.which)
+            if review_steps:
+                previous = review_steps[-1]
+                done = st.finished.get(previous["step"]) or {}
+                if done.get("result") != "error":
+                    raise FlowError("review-active", "przegląd planu nie czeka na zmianę modelu")
+                if previous["step"] in st.step_decisions:
+                    raise FlowError("already-decided", "decyzja o tym przeglądzie już została zapisana")
+            self.journal.append(card, "plan.reviewer-selected", executor=selected.name)
+            if review_steps:
+                self.journal.append(card, "step.decision", step=previous["step"], ticket="",
+                                    choice="change-executor", executor=selected.name)
+            return {"ok": True, "id": card}
+        if not st.plan_reviewed and (request.get("action") != "edit" or
+                                    any(s.get("step") not in st.finished for s in review_steps)):
+            raise FlowError("review-pending", "zaczekaj na review planu przed tą zmianą")
         if request.get("action") == "enter":
             step = next((s for s in reversed(list(st.steps.values())) if s.get("executor") == proposal["planner"]), None)
             if not step:
