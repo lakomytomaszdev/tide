@@ -651,7 +651,10 @@ function accounts(view, coreUp, now) {
         let form = []
         if (p.current && me) {
             line = statsLine(me, false, true)
-            form = formOf(me)
+            // Migawka bieżącego meczu bywa krótsza od historii profilu; pokaż pełniejsze pięć wyników.
+            const matchForm = formOf(me)
+            const profileForm = formOf(st)
+            form = profileForm.length >= matchForm.length ? profileForm : matchForm
         } else if (st) {
             line = statsLine(st, false, true)
             if (!p.current && typeof st.last_played === "number") line += " · ostatnio " + ago(st.last_played, now)
