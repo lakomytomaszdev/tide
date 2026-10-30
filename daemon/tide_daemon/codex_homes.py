@@ -37,6 +37,7 @@ import os
 SESSIONS = "sessions"
 SNAP_DIR = os.path.join("snap", "codex")
 SNAP_CODEX = "/snap/bin/codex"  # program Codexa ze snapa (dowiązanie do /usr/bin/snap)
+DESKTOP_CODEX = "/usr/lib/chatgpt/resources/codex"
 
 
 def default_homes(env=None) -> list[str]:

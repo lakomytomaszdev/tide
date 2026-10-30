@@ -6,6 +6,7 @@ import json
 import uuid
 from dataclasses import dataclass
 
+from .. import codex_homes
 from ..models import executors
 from ..tasks.local import LocalAgent
 
@@ -102,6 +103,9 @@ def resolve(name: str, catalog: executors.Catalog, *, config=None, probe=None, w
     if tool not in executors.PROGRAMS or not model:
         raise ExecutionError("unsupported-executor", f"„{name}”: wykonawca nie ma programu albo modelu")
     binary = which(tool) if which else ""
+    if tool == "codex" and binary == codex_homes.SNAP_CODEX and \
+            os.path.isfile(codex_homes.DESKTOP_CODEX) and os.access(codex_homes.DESKTOP_CODEX, os.X_OK):
+        binary = codex_homes.DESKTOP_CODEX
     if not binary:
         raise ExecutionError("no-program", f"nie znaleziono programu {tool}")
     return Execution(name, tool, binary, model, selected.provider,

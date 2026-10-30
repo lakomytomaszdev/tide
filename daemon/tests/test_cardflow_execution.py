@@ -1,12 +1,25 @@
 """Rozwiązanie wykonawcy z katalogu dla kroku karty, bez Qt i bez prawdziwego serwera."""
 import os
+import tempfile
 import unittest
+from unittest import mock
 
 from tide_daemon.cardflow import execution
 from tide_daemon.models import executors
 
 
 class ExecutionTest(unittest.TestCase):
+    def test_snap_cli_falls_back_to_bundled_cli_for_current_models(self):
+        with tempfile.TemporaryDirectory() as temp:
+            bundled = os.path.join(temp, "codex")
+            with open(bundled, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(bundled, 0o755)
+            with mock.patch.object(execution.codex_homes, "DESKTOP_CODEX", bundled):
+                chosen = execution.resolve("Codex Astra", executors.default_catalog(),
+                                           which=lambda _name: "/snap/bin/codex")
+            self.assertEqual(chosen.binary, bundled)
+
     def test_codex_effort_is_kept_only_for_codex(self):
         catalog = executors.default_catalog()
         codex = execution.resolve("Codex mocny", catalog, which=lambda name: "/fake/" + name)

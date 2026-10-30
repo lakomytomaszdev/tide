@@ -617,10 +617,24 @@ js("page.cardPanel.abandonStepRequested('K-12', 'K-12-PT-67-1')")
 wait(80)
 out['abandonCall'] = calls()[-1]
 """, data)
-        self.assertEqual(out["enterText"], "Wznów", out)
+        self.assertEqual(out["enterText"], "Wznów rozmowę", out)
         self.assertTrue(out["abandonVisible"])
         self.assertEqual(out["enterCall"], ["EnterStep", "K-12", "K-12-PT-67-1"])
         self.assertEqual(out["abandonCall"], ["AbandonStep", "K-12", "K-12-PT-67-1"])
+
+    def test_question_step_shows_conversation_resume(self):
+        data = json.loads(json.dumps(self.data))
+        card_data = next(card for card in data["cards"] if card["id"] == "K-12")
+        card_data["derived"] = {"column": "waiting", "flow": {"steps": [
+            {"id": "K-12-plan-1", "ticket": "", "mode": "interactive", "result": "question",
+             "reason": "", "canEnter": True}]}}
+        out = self.probe(FIND_PY + """
+click(card('K-12'))
+out['enterText'] = js(FIND + "(page.cardPanel, 'enterStep').text")
+out['enterEnabled'] = js(FIND + "(page.cardPanel, 'enterStep').enabled")
+""", data)
+        self.assertEqual(out["enterText"], "Wznów rozmowę", out)
+        self.assertTrue(out["enterEnabled"], out)
 
     def test_create_card_from_column_and_errors_in_place(self):
         out = self.probe("""
