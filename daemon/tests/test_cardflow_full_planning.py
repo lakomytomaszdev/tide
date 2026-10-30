@@ -51,6 +51,15 @@ class FullPlanningTest(FlowInProcess):
         with open(os.path.join(out, "result.json"), "w", encoding="utf-8") as fh:
             json.dump({"result": "done", "notes": ["spec.md", "plan.md"]}, fh)
 
+    def test_codex_console_can_write_plan_result(self):
+        card, step, terminal = self._start_full(executor="Codex Astra", provider="openai")
+        with open(terminal.opened[0].task_file, encoding="utf-8") as fh:
+            task = json.load(fh)
+        argv = task["argv"]
+        self.assertEqual(argv[argv.index("--sandbox") + 1], "workspace-write")
+        self.assertEqual(argv[argv.index("--add-dir") + 1], os.path.join(step["stepDir"], "out"))
+        self.assertEqual(task["workdir"], step["worktree"])
+
     def test_question_in_console_moves_card_to_waiting_until_reply(self):
         card, step, _terminal = self._start_full()
 

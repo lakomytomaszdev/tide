@@ -650,6 +650,8 @@ class FlowEngine(PlanEditing):
             fh.write(prompt)
         session = str(uuid.uuid4()) if selected.tool == "claude" else ""
         command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots, [out], selected.route)
+        if selected.tool == "codex":
+            command.argv[1:1] = ["--sandbox", "workspace-write"]
         if selected.route is None:
             options = ["--model", selected.model]
             if selected.tool == "codex" and selected.effort:
