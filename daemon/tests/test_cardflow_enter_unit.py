@@ -65,6 +65,16 @@ class CloseMarkerTest(unittest.TestCase):
             launch.run_flow_child({"argv": ["/bin/claude", "--resume", "id"]})
         self.assertEqual(order, ["agent", "shell"])
 
+    def test_failed_agent_reports_error_while_shell_stays_open(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = os.path.join(temp, "result.json")
+            task = {"argv": ["/bin/false"], "resultFile": result}
+            with mock.patch.object(launch, "run_agent", return_value=1), \
+                    mock.patch("subprocess.call", return_value=0):
+                launch.run_flow_child(task)
+            with open(result, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), {"result": "error", "reason": "agent-exit-1"})
+
     def test_process_group_survives_killed_launcher_before_child_record(self):
         with tempfile.TemporaryDirectory() as temp:
             ready = os.path.join(temp, "ready")

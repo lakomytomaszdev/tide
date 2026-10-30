@@ -400,7 +400,21 @@ def run_flow_child(task: dict) -> int:
     except ValueError as exc:
         print(f"Tide: model lokalny: {exc} — agent nie wystartował.", flush=True)
     else:
-        run_agent(task["argv"], env)
+        exit_code = run_agent(task["argv"], env)
+        result_file = task.get("resultFile")
+        if exit_code and isinstance(result_file, str) and os.path.isabs(result_file) and \
+                not os.path.exists(result_file):
+            temporary = f"{result_file}.tmp-{os.getpid()}"
+            try:
+                with open(temporary, "x", encoding="utf-8") as fh:
+                    json.dump({"result": "error", "reason": f"agent-exit-{exit_code}"}, fh)
+                os.replace(temporary, result_file)
+            except OSError:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+            print(f"Tide: agent zakończył się z kodem {exit_code}; karta czeka na ponowienie.", flush=True)
         del env
     try:
         return subprocess.call(shell())

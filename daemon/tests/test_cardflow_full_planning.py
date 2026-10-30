@@ -154,6 +154,7 @@ class FullPlanningTest(FlowInProcess):
         prompt = task["argv"][-1]
         self.assertEqual(task["workdir"], step["worktree"])
         self.assertEqual(task["closedFile"], os.path.join(step["stepDir"], "in", "console-closed.json"))
+        self.assertEqual(task["resultFile"], os.path.join(step["stepDir"], "out", "result.json"))
         self.assertIn("--session-id", task["argv"])
         for phrase in ("grill-with-docs", "domain-modeling", "to-spec", "to-tickets", "pionowe plasterki",
                        "W rozmowie pokaż", "Dla recenzenta", "standardzie 1.2", "Nie rezerwuj numerów",

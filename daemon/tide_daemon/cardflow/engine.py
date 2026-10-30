@@ -669,7 +669,8 @@ class FlowEngine(PlanEditing):
         console_unit = "tide-console-" + uuid.uuid4().hex
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
                    "title": f"{item.id} · {ticket or 'planowanie Pełne'}", "closedFile": closed,
-                   "processFile": process_file, "consoleUnit": console_unit,
+                   "processFile": process_file, "resultFile": os.path.join(out, handoff.RESULT_FILE),
+                   "consoleUnit": console_unit,
                    "systemdRun": self.systemd_run or agentcmd.SYSTEMD_RUN,
                    "systemctl": self.which("systemctl") or "/usr/bin/systemctl"}
         payload.update(command.task_fields())
