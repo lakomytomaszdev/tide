@@ -40,6 +40,7 @@ from ..board.model import BoardError, card_num
 from ..board import assignment
 from ..coordination import reservations, youtrack as yt
 from ..coordination import plan as source_plans
+from ..coordination.repoplans import RepoPlans
 from ..board.plan_candidates import candidates as plan_candidates
 from ..tasks import agentcmd, launch, stepstop
 from ..tasks.core import Plan, TaskFiles
@@ -1019,6 +1020,27 @@ class FlowEngine(PlanEditing):
                 sid = execution.codex_session_id(source)
         return sid, source
 
+    def _other_plan_todos(self, repo: str, card_id: str) -> dict:
+        """Tickety `todo` z innych planów repozytorium: ID → {title, path} (ticket z innego planu, K-33 D2).
+
+        ID, który gdziekolwiek (inna gałąź, nowsza kopia planu) ma stan inny niż `todo`, się nie liczy.
+        """
+        reader = self.__dict__.setdefault("_repo_plans", RepoPlans())
+        try:
+            found, _ = reader.read([repo])
+        except Exception:  # noqa: BLE001 — brak gita albo uszkodzony plan nie może zablokować propozycji
+            return {}
+        todo, other_state = {}, set()
+        for item in found:
+            if getattr(item, "card", "") == card_id:
+                continue
+            for row in getattr(item, "rows", ()):
+                if row.state == "todo":
+                    todo.setdefault(row.ticket, {"title": row.title, "path": item.path})
+                else:
+                    other_state.add(row.ticket)
+        return {ident: info for ident, info in todo.items() if ident not in other_state}
+
     def propose_plan(self, card_id: str, path: str, *, continuation=False, step="", import_source=False) -> dict:
         """Przyjmuje propozycję z pliku; walidacja i migawka nie nadają numerów."""
         try:
@@ -1050,7 +1072,8 @@ class FlowEngine(PlanEditing):
                                    tracker='youtrack' if project.youtrack else 'local',
                                    existing_ids=[*source_states,
                                                  *[r["id"] for r in ((fold(self.journal.read(card_id)).plan_approved or {}).get("rows") or [])]],
-                                   imported=bool(imported))
+                                   imported=bool(imported),
+                                   other_plans=self._other_plan_todos(project.repo, card_id))
         if imported:
             original = {row["id"]: row["title"] for row in imported.get("rows") or []}
             proposed = {row["workId"]: row["title"] for row in proposal.rows}

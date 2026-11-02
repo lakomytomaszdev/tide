@@ -2,6 +2,10 @@
 
 Plik planu leży obok katalogu ``tickets``; kartka ``#2`` to ``tickets/2.md``.
 Wynik zawiera wyłącznie dane sprawdzone i teksty kartek, gotowe do migawki w dzienniku karty.
+
+Ticket z innego planu (K-33, decyzja D2): wiersz może mieć zamiast numeru roboczego ID istniejącego ticketu,
+który w innym planie tego repozytorium ma stan ``todo`` i ten sam tytuł (``other_plans``). Numer zostaje,
+a wiersz niesie ``fromPlan`` — ścieżkę planu, z którego go wzięto. Inny tytuł byłby twardą kolizją numerów.
 """
 from __future__ import annotations
 
@@ -25,7 +29,12 @@ class Proposal:
     errors: list[str]
 
 
-def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local", existing_ids=(), imported=False) -> Proposal:
+def _same_title(a: str, b: str) -> bool:
+    return " ".join((a or "").casefold().split()) == " ".join((b or "").casefold().split())
+
+
+def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local", existing_ids=(), imported=False,
+         other_plans=None) -> Proposal:
     """Czyta plan i kartki wyłącznie z dozwolonych katalogów; nie rezerwuje numerów."""
     errors: list[str] = []
     real = os.path.realpath(path)
@@ -58,8 +67,14 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
         ident = row.ticket
         work = WORK_ID.fullmatch(ident)
         already_numbered = imported and ident in existing_ids and re.fullmatch(rf"{re.escape(plan.prefix)}-[1-9][0-9]*", ident)
-        if not work and ident not in existing_ids and not already_numbered:
-            errors.append(f"{ident}: propozycja wymaga numeru roboczego #n; ID powstaje po zatwierdzeniu")
+        other = None if work or ident in existing_ids else (other_plans or {}).get(ident)
+        from_other = bool(other) and bool(re.fullmatch(rf"{re.escape(plan.prefix)}-[1-9][0-9]*", ident))
+        if from_other and not _same_title(other["title"], row.title):
+            errors.append(f"{ident}: ticket z innego planu musi mieć ten sam tytuł co w "
+                          f"{os.path.basename(other['path'])}: „{other['title']}”")
+        elif not work and ident not in existing_ids and not already_numbered and not from_other:
+            errors.append(f"{ident}: propozycja wymaga numeru roboczego #n; ID powstaje po zatwierdzeniu "
+                          f"(istniejący ticket z innego planu musi tam mieć stan todo)")
         if ident in seen:
             errors.append(f"{ident}: powtórzony ticket")
         seen.add(ident)
@@ -105,7 +120,8 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
         rows.append({"workId": ident, "title": row.title, "sourceState": row.state if imported else "",
                      "executor": row.agent,
                      "reviewer": reviewer.name if reviewer else row.reviewer, "class": klass,
-                     "note": row.note, "blockers": list(row.blockers)})
+                     "note": row.note, "blockers": list(row.blockers),
+                     **({"fromPlan": other["path"]} if from_other else {})})
     for row in rows:
         for blocker in row["blockers"]:
             if blocker not in seen:
