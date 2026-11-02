@@ -1,5 +1,5 @@
 // Prawa kolumna konsoli Stream, wariant A (PT-105, decyzje 1, 4 i 5 K-29): rząd siedmiu kategorii, nagłówek
-// „Teraz” (etap i tryb, karty schowane do przywrócenia, „Dodaj kartę”), karty „Teraz” z rdzenia
+// „Teraz” (etap i tryb, karty schowane do przywrócenia, „Dodaj kartę”) — razem na karcie nagłówka (PT-107), karty „Teraz” z rdzenia
 // (situation.cards) i na końcu karta Stream ze stanem streamu. Karta ma znacznik auto/przypięta, pinezkę
 // (panel.pin) i × (panel.hide). Rdzeń bez tych pól: karty z situation.cards bez znaczników i przycisków.
 // Kategorie otwierają popup nad kolumną (CategoryPopup), karty zostają pod spodem. Gdy karty się nie mieszczą,
@@ -125,19 +125,140 @@ Item {
         column.commandRequested(command.name, command.args)
     }
 
-    CategoryRow {
-        id: categoryRow
+    // Kategorie, nagłówek „Teraz” i schowane karty na wspólnym tle karty — gołe napisy ginęły na tapecie.
+    Card {
+        id: nowHeader
+        objectName: "nowHeader"
         width: column.width
-        view: column.view
-        coreUp: column.coreUp
-        current: column.currentCategory
-        onCategoryRequested: id => column.openCategory(id)
+        padding: 10
+        spacing: 8
+
+        CategoryRow {
+            id: categoryRow
+            Layout.fillWidth: true
+            view: column.view
+            coreUp: column.coreUp
+            current: column.currentCategory
+            onCategoryRequested: id => column.openCategory(id)
+        }
+
+        // Nagłówek „Teraz”.
+        RowLayout {
+            visible: column.coreUp
+            Layout.fillWidth: true
+            spacing: 8
+            Text {
+                text: "Teraz"
+                textFormat: Text.PlainText
+                color: Tokens.textPrimary
+                font.family: Theme.uiFamily
+                font.pointSize: Tokens.fontSizePt + 3
+                font.weight: Font.DemiBold
+            }
+            Text {
+                objectName: "nowStage"
+                Layout.fillWidth: true
+                text: column.model.stage
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                color: Tokens.textMuted
+                font.family: Theme.uiFamily
+                font.pointSize: Tokens.fontSizePt - 1
+            }
+            IconButton {
+                id: addButton
+                objectName: "nowAdd"
+                visible: column.model.controls && column.model.addable.length > 0
+                enabled: !column.busy
+                framed: true
+                iconName: "plus"
+                iconSize: 13
+                label: "Dodaj kartę"
+                tip: "Dodaj kartę na panel (przypięcie w tym trybie)"
+                onClicked: addMenu.opened ? addMenu.close() : addMenu.open()
+                QQC2.Popup {
+                    id: addMenu
+                    objectName: "nowAddMenu"
+                    y: addButton.height + 4
+                    x: addButton.width - width
+                    padding: 6
+                    closePolicy: QQC2.Popup.CloseOnEscape | QQC2.Popup.CloseOnPressOutsideParent
+                    background: Rectangle {
+                        radius: Tokens.radiusFrame
+                        color: Tokens.backgroundCard
+                        border.width: 1
+                        border.color: Theme.alpha(Tokens.accent, 0.55)
+                    }
+                    contentItem: ColumnLayout {
+                        spacing: 2
+                        Repeater {
+                            model: column.model.addable
+                            TextButton {
+                                required property var modelData
+                                objectName: "nowAdd-" + modelData.id
+                                Layout.fillWidth: true
+                                variant: "outline"
+                                topPadding: 6
+                                bottomPadding: 6
+                                text: modelData.title
+                                textColor: Tokens.textPrimary
+                                background: Rectangle {
+                                    radius: Tokens.radiusSmall
+                                    color: Theme.alpha(Tokens.textPrimary, parent.lit ? 0.10 : 0)
+                                }
+                                onClicked: {
+                                    addMenu.close()
+                                    column.run(Stream.pinCommand({ id: modelData.id, state: "auto" }))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Karty schowane do końca streamu — kliknięcie przywraca (panel.hide hidden=false).
+        Flow {
+            visible: column.model.hidden.length > 0
+            Layout.fillWidth: true
+            spacing: 6
+            Text {
+                height: 24
+                verticalAlignment: Text.AlignVCenter
+                text: "Schowane:"
+                textFormat: Text.PlainText
+                color: Tokens.textMuted
+                font.family: Theme.uiFamily
+                font.pointSize: Tokens.fontSizePt - 1
+            }
+            Repeater {
+                model: column.model.hidden
+                TextButton {
+                    required property var modelData
+                    objectName: "nowRestore-" + modelData.id
+                    variant: "outline"
+                    enabled: !column.busy
+                    topPadding: 4
+                    bottomPadding: 4
+                    text: modelData.title + " · przywróć"
+                    textColor: Tokens.textSecondary
+                    Accessible.name: "Przywróć kartę „" + modelData.title + "”"
+                    background: Rectangle {
+                        radius: height / 2
+                        color: Theme.alpha(Tokens.textPrimary, parent.lit ? 0.10 : 0)
+                        border.width: 1
+                        border.color: Theme.alpha(Tokens.textPrimary, 0.22)
+                    }
+                    onClicked: column.run(Stream.hideCommand(modelData.id, false))
+                }
+            }
+        }
     }
 
     Flickable {
         id: flick
         objectName: "nowFlick"
-        y: categoryRow.height + 8
+        y: nowHeader.height + 8
         width: column.width
         height: column.height - y
         contentWidth: width
@@ -151,118 +272,6 @@ Item {
             width: flick.width
             height: Math.max(implicitHeight, column.fillHeight)
             spacing: 8
-
-            // Nagłówek „Teraz”.
-            RowLayout {
-                visible: column.coreUp
-                Layout.fillWidth: true
-                spacing: 8
-                Text {
-                    text: "Teraz"
-                    textFormat: Text.PlainText
-                    color: Tokens.textPrimary
-                    font.family: Theme.uiFamily
-                    font.pointSize: Tokens.fontSizePt + 3
-                    font.weight: Font.DemiBold
-                }
-                Text {
-                    objectName: "nowStage"
-                    Layout.fillWidth: true
-                    text: column.model.stage
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    color: Tokens.textMuted
-                    font.family: Theme.uiFamily
-                    font.pointSize: Tokens.fontSizePt - 1
-                }
-                IconButton {
-                    id: addButton
-                    objectName: "nowAdd"
-                    visible: column.model.controls && column.model.addable.length > 0
-                    enabled: !column.busy
-                    framed: true
-                    iconName: "plus"
-                    iconSize: 13
-                    label: "Dodaj kartę"
-                    tip: "Dodaj kartę na panel (przypięcie w tym trybie)"
-                    onClicked: addMenu.opened ? addMenu.close() : addMenu.open()
-                    QQC2.Popup {
-                        id: addMenu
-                        objectName: "nowAddMenu"
-                        y: addButton.height + 4
-                        x: addButton.width - width
-                        padding: 6
-                        closePolicy: QQC2.Popup.CloseOnEscape | QQC2.Popup.CloseOnPressOutsideParent
-                        background: Rectangle {
-                            radius: Tokens.radiusFrame
-                            color: Tokens.backgroundCard
-                            border.width: 1
-                            border.color: Theme.alpha(Tokens.accent, 0.55)
-                        }
-                        contentItem: ColumnLayout {
-                            spacing: 2
-                            Repeater {
-                                model: column.model.addable
-                                TextButton {
-                                    required property var modelData
-                                    objectName: "nowAdd-" + modelData.id
-                                    Layout.fillWidth: true
-                                    variant: "outline"
-                                    topPadding: 6
-                                    bottomPadding: 6
-                                    text: modelData.title
-                                    textColor: Tokens.textPrimary
-                                    background: Rectangle {
-                                        radius: Tokens.radiusSmall
-                                        color: Theme.alpha(Tokens.textPrimary, parent.lit ? 0.10 : 0)
-                                    }
-                                    onClicked: {
-                                        addMenu.close()
-                                        column.run(Stream.pinCommand({ id: modelData.id, state: "auto" }))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Karty schowane do końca streamu — kliknięcie przywraca (panel.hide hidden=false).
-            Flow {
-                visible: column.model.hidden.length > 0
-                Layout.fillWidth: true
-                spacing: 6
-                Text {
-                    height: 24
-                    verticalAlignment: Text.AlignVCenter
-                    text: "Schowane:"
-                    textFormat: Text.PlainText
-                    color: Tokens.textMuted
-                    font.family: Theme.uiFamily
-                    font.pointSize: Tokens.fontSizePt - 1
-                }
-                Repeater {
-                    model: column.model.hidden
-                    TextButton {
-                        required property var modelData
-                        objectName: "nowRestore-" + modelData.id
-                        variant: "outline"
-                        enabled: !column.busy
-                        topPadding: 4
-                        bottomPadding: 4
-                        text: modelData.title + " · przywróć"
-                        textColor: Tokens.textSecondary
-                        Accessible.name: "Przywróć kartę „" + modelData.title + "”"
-                        background: Rectangle {
-                            radius: height / 2
-                            color: Theme.alpha(Tokens.textPrimary, parent.lit ? 0.10 : 0)
-                            border.width: 1
-                            border.color: Theme.alpha(Tokens.textPrimary, 0.22)
-                        }
-                        onClicked: column.run(Stream.hideCommand(modelData.id, false))
-                    }
-                }
-            }
 
             Repeater {
                 id: slots
@@ -411,7 +420,7 @@ Item {
     CategoryPopup {
         id: categoryPopup
         x: 0
-        y: categoryRow.height + 6
+        y: nowHeader.padding + categoryRow.y + categoryRow.height + 6
         width: column.width
         category: column.categories.filter(c => c.id === column.currentCategory)[0] || null
         onPanelRequested: column.panelRequested()
