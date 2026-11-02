@@ -351,7 +351,10 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
     settings_path = os.path.join(inp, "settings.json")
     argv = [step.binary, "-p", *model, "--setting-sources=", "--settings", settings_path,
             "--permission-prompts", "none", "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
-            *(["--resume", step.session_id] if step.resume else ["--session-id", step.session_id])]
+            *(["--resume", step.session_id] if step.resume else ["--session-id", step.session_id]),
+            # Katalog wyjściowy kroku musi być katalogiem roboczym sesji: `allowWrite` piaskownicy obejmuje tylko
+            # polecenia Bash, a narzędzia Write/Edit poza katalogami sesji pytają o zgodę, której krok nie dostanie.
+            "--add-dir", out]
     if step.permission_mode:
         argv += ["--permission-mode", step.permission_mode]
     if step.allowed_tools:

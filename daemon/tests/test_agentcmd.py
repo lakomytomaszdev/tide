@@ -129,7 +129,8 @@ class BackgroundClaudeTest(BackgroundBase):
         self.assertEqual(cmd.argv, ["/bin/claude", "-p", "--model=haiku", "--setting-sources=", "--settings", settings,
                                     "--permission-prompts", "none", "--strict-mcp-config",
                                     "--output-format", "stream-json", "--verbose",
-                                    "--session-id", "11111111-2222-3333-4444-555555555555"])
+                                    "--session-id", "11111111-2222-3333-4444-555555555555",
+                                    "--add-dir", os.path.join(self.step_dir, "out")])
         self.assertEqual(cmd.stdin, "Zrób ticket")
         self.assertNotIn("Zrób ticket", " ".join(cmd.argv))
         self.assertEqual(cmd.cwd, self.worktree)
@@ -140,6 +141,9 @@ class BackgroundClaudeTest(BackgroundBase):
                                             disallowed_tools=("Bash(make install*)",), permission_mode="acceptEdits"))
         self.assertIn("--resume", cmd.argv)
         self.assertNotIn("--session-id", cmd.argv)
+        # Wznowienie ma nowy katalog kroku; narzędzie Write musi móc w nim zapisać wynik (K-33: review planu
+        # trzy razy kończyło się no-result, bo katalog wyjściowy był tylko w piaskownicy poleceń).
+        self.assertEqual(cmd.argv[cmd.argv.index("--add-dir") + 1], os.path.join(self.step_dir, "out"))
         self.assertEqual(cmd.argv[cmd.argv.index("--allowedTools") + 1:cmd.argv.index("--allowedTools") + 3],
                          ["Bash(make test*)", "Bash(git status)"])
         self.assertEqual(cmd.argv[cmd.argv.index("--disallowedTools") + 1], "Bash(make install*)")
