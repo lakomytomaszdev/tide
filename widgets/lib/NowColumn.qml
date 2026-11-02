@@ -41,8 +41,19 @@ Item {
     readonly property bool scoreSeries: !!Stream.scoreCard(view, coreUp).series
     readonly property string growId: {
         const ids = column.model.items.map(i => i.id)
-        const order = (column.scoreSeries ? ["score"] : []).concat(["alerts", "match"])
+        const order = (column.scoreSeries ? ["score"] : []).concat(column.manyAlerts ? ["alerts"] : [], ["match"])
         return order.filter(id => ids.indexOf(id) >= 0)[0] || ""
+    }
+    // Alerty rosną dopiero, gdy jest co pokazać (co najmniej 4) — inaczej pusta karta zamiast przerwy.
+    readonly property bool manyAlerts: {
+        const m = column.chatModel
+        if (!m || m.count === undefined) return false
+        let n = 0
+        for (let i = m.count - 1; i >= 0 && n < 4; i--) {
+            const line = m.get(i)
+            if (line && line.kind === "alert") n++
+        }
+        return n >= 4
     }
     readonly property int alertLimit: growId === "alerts" ? 12 : 3
     // Teksty ostatnich alertów z czatu (karta „Ostatnie alerty”), najnowsze pierwsze.
