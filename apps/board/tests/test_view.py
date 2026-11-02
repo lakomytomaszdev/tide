@@ -2088,6 +2088,37 @@ out["editCall"] = calls()[-1]
         self.assertEqual(out["editCall"][:2], ["EditCardPlan", "K-6"])
         self.assertEqual(json.loads(out["editCall"][2])["reviewer"], "Codex standard")
 
+    def test_long_review_findings_scroll_and_keep_approval_on_screen(self):
+        # K-33: 23 punkty uwag review zepchnęły listę ticketów i „Zatwierdź plan” poza okno bez przewijania.
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        findings = "\n".join(f"{n}. Uwaga numer {n}: " + "dłuższe uzasadnienie zmiany w planie " * 6
+                             for n in range(1, 24))
+        rows = [{"workId": f"#{n}", "title": f"Ticket {n}", "class": "standard", "executor": "Sonnet",
+                 "reviewer": "Opus", "blockers": [], "editable": True, "body": "# T", "cardPath": f"/b/{n}.md"}
+                for n in range(1, 16)]
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "planner": "Opus", "waves": [[r["workId"] for r in rows]], "rows": rows,
+                    "review": {"verdict": "REQUEST_CHANGES", "reviewer": "Sonnet", "findings": findings}}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+wait(80)
+out["managerHeight"] = obj("planManager").property("height")
+out["approveBottom"] = js("(function(){ const m = " + FIND + "(page, 'planManager'); const b = " + FIND +
+                         "(page, 'planManagerApprove'); return b.mapToItem(m, 0, b.height).y })()")
+review = obj("planManagerReview")
+out["reviewHeight"] = review.property("height") if review else None
+toggle = obj("planManagerReviewToggle")
+out["toggle"] = toggle.property("visible") if toggle else None
+""", data=data)
+        self.assertLessEqual(out["approveBottom"], out["managerHeight"])
+        self.assertLessEqual(out["reviewHeight"], 100)
+        self.assertTrue(out["toggle"])
+
     def test_blocked_plan_shows_assignments_and_review_choice(self):
         data = json.loads(json.dumps(self.data))
         data["models"] = dict(models_status(), executors=EXECUTORS)

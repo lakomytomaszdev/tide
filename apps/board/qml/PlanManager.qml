@@ -87,16 +87,45 @@ Rectangle {
             font.pixelSize: 14
             wrapMode: Text.Wrap
         }
-        Text {
+        // Uwagi review bywają długie (K-33: 23 punkty) — mają własne przewijanie i limit wysokości, żeby lista
+        // ticketów i „Zatwierdź plan” zawsze mieściły się w oknie.
+        QQC2.ScrollView {
+            id: reviewScroll
+            objectName: "planManagerReview"
+            property bool expanded: false
             Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(reviewText.implicitHeight,
+                                             expanded ? manager.height * 0.45 : 96)
             visible: !!manager.plan && !!manager.plan.review && !!manager.plan.review.verdict
-            text: manager.plan && manager.plan.review
-                  ? "Review: " + (manager.plan.review.verdict || "") + " · " + (manager.plan.review.reviewer || "")
-                    + " · " + (manager.plan.review.findings || "") : ""
+            clip: true
+            contentWidth: availableWidth
+            Text {
+                id: reviewText
+                width: reviewScroll.availableWidth
+                text: manager.plan && manager.plan.review
+                      ? "Review: " + (manager.plan.review.verdict || "") + " · " + (manager.plan.review.reviewer || "")
+                        + " · " + (manager.plan.review.findings || "") : ""
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.uiFamily
+                wrapMode: Text.Wrap
+            }
+        }
+        Text {
+            objectName: "planManagerReviewToggle"
+            visible: reviewScroll.visible && reviewText.implicitHeight > 96
+            text: reviewScroll.expanded ? "Zwiń uwagi review" : "Pokaż więcej uwag review"
             textFormat: Text.PlainText
-            color: Tide.Tokens.textMuted
+            color: Tide.Tokens.sky
             font.family: Tide.Theme.uiFamily
-            wrapMode: Text.Wrap
+            font.pixelSize: 13
+            Accessible.role: Accessible.Button
+            Accessible.name: text
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: reviewScroll.expanded = !reviewScroll.expanded
+            }
         }
         RowLayout {
             Layout.fillWidth: true
