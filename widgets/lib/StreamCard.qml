@@ -289,6 +289,8 @@ Card {
         font.pointSize: Tokens.fontSizePt - 1
     }
 
+    Item { Layout.fillHeight: true }    // treść u góry, gdy karta zabiera wolne miejsce kolumny (PT-105)
+
     Text {
         Layout.fillWidth: true
         text: card.model.note

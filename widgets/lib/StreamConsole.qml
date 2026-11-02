@@ -1,8 +1,10 @@
 // Konsola streamu na pulpicie lewego monitora w aktywności Stream (PT-37): karta Sceny (podgląd i przyciski scen)
 // i pełna karta Stream (StreamCard.qml, full): tryb i kto go ustawił, antena, OBS i nagrywanie,
 // profil gracza z listą, przełączniki modułów, „Wycisz mikrofon”, BRB i Panel streamera.
-// PT-91: Sceny w lewej kolumnie, karta Stream w prawej (streamX/streamWidth od lewej krawędzi konsoli);
-// środkowa kolumna (czat) należy do StreamDesk. Bez streamX karta Stream stoi pod Scenami jak wcześniej.
+// PT-91: trzy kolumny — środkowa (czat) należy do StreamDesk, prawa stoi w streamX/streamWidth od lewej krawędzi
+// konsoli. Bez streamX karta Stream stoi pod Scenami jak wcześniej (widżet org.tide.stream.scenes).
+// PT-105 (wariant A K-29): lewa kolumna to karta Zawsze nad Scenami w grupach, prawa to rząd kategorii i karty
+// „Teraz” (NowColumn.qml) z kartą Stream na końcu.
 // Same dane i sygnały — bez PlasmoidItem (podgląd: widgets/preview_stream.py).
 import QtQuick
 import QtQuick.Layouts
@@ -19,26 +21,44 @@ Item {
     property var obsMemory: ""
     property string previewImage: ""
     property bool previewSupported: true
+    property var chatModel: null
     property string status: ""
     property bool statusError: false
     property bool busy: false
+    property real reserveBottom: 0     // miejsce pod kartami prawej kolumny (skrócony plan gry)
 
     signal commandRequested(string name, var args)
     signal panelRequested()
+    signal categoryOpened(string id)
 
     property url motionBaseUrl: ""
     function playMotionPreview(kind) { scenes.playMotionPreview(kind) }
 
-    implicitHeight: deck.streamX < 0 ? scenes.implicitHeight + 14 + stream.implicitHeight : scenes.implicitHeight
-    // Kolumny (streamX ≥ 0): pod Scenami karta „Zawsze”, w prawej kolumnie wynik serii, gdy sytuacja go chce.
     readonly property bool columns: deck.streamX >= 0
-    readonly property bool scoreWanted: columns && !!(view && view.situation && view.situation.cards
-                                                     && view.situation.cards.indexOf("score") >= 0)
-    readonly property real streamBottom: stream.y + stream.height
+    implicitHeight: columns ? always.height + 14 + scenes.implicitHeight
+                            : scenes.implicitHeight + 14 + stream.implicitHeight
+    // Dół prawej kolumny (pod nim StreamDesk stawia skrócony plan gry).
+    readonly property real streamBottom: columns ? now.contentBottom : stream.y + stream.height
+
+    AlwaysCard {
+        id: always
+        objectName: "alwaysCard"
+        visible: deck.columns
+        width: deck.width
+        height: visible ? implicitHeight : 0
+        view: deck.view
+        coreUp: deck.coreUp
+        obsMemory: deck.obsMemory
+        busy: deck.busy
+        onCommandRequested: (name, args) => deck.commandRequested(name, args)
+    }
 
     ScenesCard {
         id: scenes
+        y: deck.columns ? always.height + 14 : 0
         width: deck.width
+        // Kolumny: Sceny sięgają dołu kolumny (jak czat i karty „Teraz”), bez pustego pasa nad dockiem.
+        height: deck.columns ? Math.max(implicitHeight, deck.height - y) : implicitHeight
         view: deck.view
         coreUp: deck.coreUp
         previewImage: deck.previewImage
@@ -49,36 +69,32 @@ Item {
         onBrowserWindowRequested: deck.commandRequested("browser.window.choose", {})
     }
 
-    AlwaysCard {
-        objectName: "alwaysCard"
+    NowColumn {
+        id: now
+        objectName: "nowColumn"
         visible: deck.columns
-        y: scenes.height + 14
-        width: deck.width
+        x: deck.streamX
+        width: deck.streamWidth
+        height: deck.height
         view: deck.view
         coreUp: deck.coreUp
         obsMemory: deck.obsMemory
+        chatModel: deck.chatModel
+        reserveBottom: deck.reserveBottom
+        status: deck.status
+        statusError: deck.statusError
         busy: deck.busy
         onCommandRequested: (name, args) => deck.commandRequested(name, args)
         onPanelRequested: deck.panelRequested()
+        onCategoryOpened: id => deck.categoryOpened(id)
     }
 
-    ScoreCard {
-        id: score
-        objectName: "scoreCard"
-        visible: deck.scoreWanted
-        x: deck.streamX
-        width: deck.streamWidth
-        view: deck.view
-        busy: deck.busy
-        onCommandRequested: (name, args) => deck.commandRequested(name, args)
-    }
-
+    // Jedna kolumna (stary widżet Sceny): karta Stream pod Scenami, z mikrofonem, BRB i Panelem.
     StreamCard {
         id: stream
-        x: deck.streamX < 0 ? 0 : deck.streamX
-        y: deck.streamX < 0 ? scenes.height + 14 : (deck.scoreWanted ? score.height + 14 : 0)
-        width: deck.streamX < 0 ? deck.width : deck.streamWidth
-        actions: !deck.columns
+        visible: !deck.columns
+        y: scenes.height + 14
+        width: deck.width
         full: true
         view: deck.view
         coreUp: deck.coreUp

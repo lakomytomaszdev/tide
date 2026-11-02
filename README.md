@@ -203,6 +203,13 @@ stan streamu należy do rdzenia, dane pracy dalej idą tylko z tide-daemon.
   Granie, na żywo zawsze konsola. Przełącznik „Konsola streamu | Granie” na górze pokazuje, kto wybrał widok
   („automat · OBS wyłączony” albo „ustawiłeś ty · do zmiany OBS”); ręczny wybór obowiązuje do następnej zmiany stanu
   OBS i nie chowa konsoli na żywo.
+  Konsola w desku ma układ wariantu A (PT-105, `docs/agents/specs/k-29-panel-categories.md`): lewa kolumna to karta
+  **Zawsze** (mikrofon, BRB, prywatność, schowanie grafik i „Wynik u widzów” — `observer.overlay.set`) nad Scenami
+  w grupach z `situation.scene_groups` (kłódka przy grupie z zablokowaną sceną), prawa to rząd siedmiu kategorii
+  (popup nad kolumną; treść kategorii w PT-106) i karty **Teraz** z `situation.cards`: znacznik auto/przypięta,
+  pinezka (`panel.pin`), × (`panel.hide`), przywracanie schowanych z nagłówka i „Dodaj kartę” z `situation.addable`.
+  Karta wyniku bez serii ma pola „Nowa seria” (`observer.series.start`). Rdzeń bez tych pól daje płaskie sceny
+  i karty bez przypinania.
 
 **Rozmowa z rdzeniem.** Jedno `CoreSource` na widżet: `GetState()` przy starcie i po każdym pojawieniu się usługi na
 szynie, potem tylko sygnał `Changed` (niesie cały widok w `state`), do tego odczyt zapasowy co 5 min. Gdy rdzeń

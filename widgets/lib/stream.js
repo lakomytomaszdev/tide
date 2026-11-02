@@ -373,6 +373,280 @@ function previewNote(view, coreUp, supported, hasImage) {
     return "Czekam na zrzut sceny…"
 }
 
+// --- Konsola na lewym monitorze, wariant A (PT-105, K-29 decyzje 1, 2 i 4–7) ---
+// Lewa kolumna: karta Zawsze nad Scenami w grupach. Prawa: rząd siedmiu kategorii i karty „Teraz” z rdzenia
+// (situation.cards, auto/pinned/hidden/addable z PT-103). Rdzeń bez tych pól (przed wdrożeniem PT-103) daje to
+// samo co wcześniej: płaskie sceny, karty z situation.cards i bez przypinania.
+
+// Sceny w grupach z `situation.scene_groups` ([{id, label, locked, scenes: [{name, kind, locked}]}]). Przycisk
+// Rdzeń (od 7533a56) podaje sceny wszystkich trybów, sceny bieżącego trybu pierwsze, a tryb ustala kolejność grup.
+// BRB zostaje w karcie Zawsze (brb.toggle pamięta scenę powrotu), więc grupa Ekrany nie ma sceny BRB. Sceny,
+// których nie ma w OBS (`obs.scenes`), pomijamy jak wcześniej. Bez grup w rdzeniu: jedna grupa bez nazwy.
+// {available, grouped, groups: [{id, label, locked, items: [{name, kind, current, enabled, reason}]}], current,
+//  live, note}
+function sceneGroups(view, coreUp) {
+    const flat = scenes(view, coreUp)
+    const out = { available: flat.available, grouped: false, groups: [], current: flat.current, live: flat.live,
+                  note: flat.note }
+    if (status(view, coreUp).core !== "up") return out
+    const groups = obj(view.situation).scene_groups
+    if (!Array.isArray(groups)) {
+        if (flat.available) out.groups = [{ id: "all", label: "", locked: false, items: flat.items }]
+        return out
+    }
+    const inObs = obj(view.obs).scenes
+    out.available = true
+    out.grouped = true
+    out.note = ""
+    groups.forEach(g => {
+        const items = (Array.isArray(obj(g).scenes) ? g.scenes : [])
+            .map(e => typeof e === "string" ? { name: e, kind: CORE_SCENE_KINDS[e] || "", locked: false }
+                                            : { name: String(obj(e).name || ""), kind: String(obj(e).kind || ""),
+                                                locked: obj(e).locked === true })
+            .filter(e => e.name !== "" && e.kind !== "brb" && (!Array.isArray(inObs) || inObs.indexOf(e.name) >= 0))
+            .map(e => ({ name: e.name, kind: e.kind, current: e.name === flat.current, enabled: !e.locked,
+                         reason: e.locked ? LIVE_LOCK_REASON : "" }))
+        if (items.length === 0) return
+        out.groups.push({ id: String(g.id || ""), label: String(g.label || ""),
+                          locked: typeof g.locked === "boolean" ? g.locked : items.some(i => !i.enabled),
+                          items: items })
+    })
+    // Bez dopisku pod scenami: kłódka przy grupie mówi to samo, a lewa kolumna mieści wtedy sceny wszystkich trybów.
+    return out
+}
+
+// Siedem kategorii ustawień w kolejności cyklu streamu (decyzja 2). Rząd w prawej kolumnie otwiera popup
+// kategorii (PT-106; do tego czasu popup z odesłaniem do Panelu streamera). `warning` to powód kropki
+// ostrzeżenia przy ikonie, pusty, gdy wszystko w porządku.
+var CATEGORIES = [
+    { id: "prep", label: "Przygotowanie", short: "Przygot.", icon: "prep" },
+    { id: "screens", label: "Sceny i ekrany", short: "Ekrany", icon: "scenes" },
+    { id: "score", label: "Wynik i seria", short: "Wynik", icon: "score" },
+    { id: "modules", label: "Na ekranie", short: "Na ekranie", icon: "layers" },
+    { id: "alerts", label: "Alerty", short: "Alerty", icon: "bell" },
+    { id: "motion", label: "Animacje żubra", short: "Animacje", icon: "spark" },
+    { id: "devices", label: "Urządzenia", short: "Urządz.", icon: "device" }
+]
+var MOTION_KEYS = ["transition", "alert", "peek", "raid"]
+
+function categoryWarnings(view, coreUp) {
+    const out = {}
+    if (status(view, coreUp).core !== "up") return out
+    const core = obj(view.core)
+    const devices = []
+    const offline = (Array.isArray(view.devices) ? view.devices : []).filter(d => obj(d).online === false)
+    if (offline.length) devices.push("offline: " + offline.map(d => String(d.name || d.id)).join(", "))
+    const twitch = obj(core.twitch).state
+    if (twitch === "authorization_required" || twitch === "setup_required") devices.push("Twitch wymaga zgody")
+    if (devices.length) out.devices = devices.join(" · ")
+    const motion = obj(core.motion)
+    if (MOTION_KEYS.every(k => k in motion) && MOTION_KEYS.every(k => motion[k] === false))
+        out.motion = "wszystkie animacje wyłączone"
+    return out
+}
+
+function categories(view, coreUp) {
+    const warnings = categoryWarnings(view, coreUp)
+    return CATEGORIES.map(c => Object.assign({}, c, { warning: warnings[c.id] || "" }))
+}
+
+// Karty z rdzenia (core/src/kamp/situation.py): auto według etapu i trybu, z katalogu PINNABLE do przypięcia.
+var NOW_CARDS = {
+    score: "Wynik", match: "Mecz teraz", event: "Wydarzenie", alerts: "Ostatnie alerty",
+    topic: "Temat w scenie Browser", countdown: "Odliczanie", camera: "Kamera", prep: "Przygotowanie",
+    preflight: "Kontrola przed startem", start_screen: "Ekran startowy", go_live: "Start streamu",
+    obs_offline: "OBS wyłączony", brb_screen: "Ekran przerwy", brb_return: "Powrót z przerwy",
+    end_screen: "Ekran końcowy", go_off: "Koniec streamu", summary: "Podsumowanie"
+}
+var PINNABLE = ["score", "match", "event", "alerts", "topic", "countdown", "camera"]
+var STAGES = { offline: "OBS wyłączony", before: "przed streamem", live: "na żywo", brb: "przerwa", ended: "koniec" }
+
+function cardTitle(id) {
+    return NOW_CARDS[id] || String(id)
+}
+
+// Kolumna „Teraz”: {controls, stage, items: [{id, title, state, pinnable, hideable}], hidden: [{id, title}],
+// addable: [{id, title}]}. state: "auto", "pinned" albo "" (rdzeń bez przypinania: bez znacznika i przycisków).
+// Karta auto i przypięta naraz to „przypięta” — zostanie po zmianie etapu.
+function now(view, coreUp) {
+    const out = { controls: false, stage: "", items: [], hidden: [], addable: [] }
+    if (status(view, coreUp).core !== "up") return out
+    const sit = obj(view.situation)
+    const cards = Array.isArray(sit.cards) ? sit.cards.map(String) : []
+    out.controls = Array.isArray(sit.pinned) && Array.isArray(sit.hidden) && Array.isArray(sit.addable)
+    out.stage = [STAGES[sit.stage] || "", modeLabel(sit.mode)].filter(x => x).join(" · ")
+    const pinned = out.controls ? sit.pinned.map(String) : []
+    out.items = cards.map(id => ({
+        id: id, title: cardTitle(id),
+        state: !out.controls ? "" : pinned.indexOf(id) >= 0 ? "pinned" : "auto",
+        pinnable: out.controls && PINNABLE.indexOf(id) >= 0,
+        hideable: out.controls && id !== "obs_offline"
+    }))
+    if (!out.controls) return out
+    out.hidden = sit.hidden.map(String).map(id => ({ id: id, title: cardTitle(id) }))
+    out.addable = sit.addable.map(String).filter(id => PINNABLE.indexOf(id) >= 0)
+        .map(id => ({ id: id, title: cardTitle(id) }))
+    return out
+}
+
+// Komendy kart (core/README.md, „Komendy”): przypięcie w bieżącym trybie, schowanie do następnego streamu.
+function pinCommand(item) {
+    return { name: "panel.pin", args: { card: item.id, pinned: item.state !== "pinned" } }
+}
+
+function hideCommand(id, hidden) {
+    return { name: "panel.hide", args: { card: id, hidden: hidden } }
+}
+
+// „Wynik u widzów” w karcie Zawsze (decyzja 6): nakładka wyniku, niezależna od karty wyniku na panelu.
+function scoreOverlay(view, coreUp) {
+    if (status(view, coreUp).core !== "up")
+        return { on: false, series: false, enabled: false, label: "Wynik u widzów", args: { visible: true } }
+    const o = obj(view.core.observer)
+    const on = valueOf(o.overlay) !== false
+    const series = !!(o.series && typeof o.series === "object")
+    return { on: on, series: series, enabled: true,
+             label: "Wynik u widzów: " + (on ? "tak" : "nie") + (series ? "" : " · brak serii"),
+             args: { visible: !on } }
+}
+
+// Karta wyniku: seria albo formularz nowej serii (decyzja 6: bez serii pola „Nowa seria” na karcie).
+// chip: kto widzi wynik — „u widzów” albo „tylko ty” (karta przypięta przy schowanej nakładce).
+var SERIES_FORMATS = [1, 3, 5, 7]
+
+function scoreCard(view, coreUp) {
+    const o = obj(obj(obj(view).core).observer)
+    const series = coreUp && o.series && typeof o.series === "object" ? o.series : null
+    const history = Array.isArray(o.player_history) ? o.player_history.map(String) : []
+    const chip = !series ? "" : valueOf(o.overlay) !== false ? "u widzów" : "tylko ty"
+    return { series: series, chip: chip, left: history[0] || "", right: history[1] || "", format: 3 }
+}
+
+function seriesStart(left, right, format) {
+    const l = String(left || "").trim()
+    const r = String(right || "").trim()
+    if (l === "" || r === "" || SERIES_FORMATS.indexOf(format) < 0) return null
+    return { name: "observer.series.start", args: { left: l, right: r, format: format } }
+}
+
+function clock(seconds) {
+    const d = new Date(seconds * 1000)
+    return Qt.formatTime(d, "HH:mm")
+}
+
+function duration(seconds) {
+    const min = Math.max(0, Math.round(seconds / 60))
+    return Math.floor(min / 60) + ":" + String(min % 60).padStart(2, "0")
+}
+
+function screenLine(core, key) {
+    const sc = obj(obj(core.screens)[key])
+    return [sc.title, sc.subtitle].filter(x => x).map(String).join(" — ")
+}
+
+// Treść kart „Teraz” bez osobnego komponentu: {lines: [{text, tone}], action: {text, name, args} | null, panel}.
+// tone: rola z palety (textPrimary, textSecondary, textMuted). panel: odesłanie do Panelu streamera (akcje
+// krytyczne i ustawienia, których Plasma jeszcze nie ma — PT-106). alerts — teksty ostatnich alertów z czatu.
+function nowBody(view, coreUp, id, alerts) {
+    const out = { lines: [], action: null, panel: false }
+    const s = status(view, coreUp)
+    if (s.core !== "up") return out
+    const core = obj(view.core)
+    const line = (text, tone) => out.lines.push({ text: String(text), tone: tone || "textPrimary" })
+    switch (id) {
+    case "match": {
+        const m = matchNow(view, coreUp)
+        if (m.me) {
+            line(m.me.name + " · " + m.me.line)
+            m.opponents.forEach(p => line("vs " + p.name + " · " + p.line, "textSecondary"))
+            line(m.source, "textMuted")
+        } else line(m.note, "textMuted")
+        break
+    }
+    case "event": {
+        const e = obj(obj(core.observer).event)
+        if (e.name) line(e.name + (e.logo ? " · z logo" : ""))
+        else line("Bez wydarzenia — castujesz bez nazwy.", "textMuted")
+        break
+    }
+    case "alerts":
+        if (Array.isArray(alerts) && alerts.length) alerts.forEach(a => line(a))
+        else line("Jeszcze bez alertów w tym streamie.", "textMuted")
+        break
+    case "topic": {
+        const t = obj(core.topic)
+        if (t.text) line((t.label ? t.label + ": " : "") + t.text)
+        else line("Bez tematu — płytka w scenie Browser jest schowana.", "textMuted")
+        break
+    }
+    case "countdown": {
+        const ends = obj(core.countdown).ends_at
+        if (typeof ends === "number") line("Ekrany pełne odliczają do " + clock(ends))
+        else line("Odliczanie wyłączone.", "textMuted")
+        break
+    }
+    case "camera": {
+        const c = camera(view, coreUp)
+        line("Kamera " + c.value + (c.origin ? " · " + c.origin : ""))
+        if (c.enabled) out.action = { text: c.visible ? "Ukryj kamerę" : "Pokaż kamerę", name: "module.set",
+                                      args: { module: "camera", visible: !c.visible } }
+        break
+    }
+    case "prep": {
+        const origin = originText(s.modeOrigin)
+        line("Tryb " + s.modeLabel + (origin ? " (" + origin + ")" : "") + " · cel "
+             + (s.targets.length ? s.targets.join(", ") : "—"))
+        line("Nagrywanie " + (s.recordingPlanned ? "włączy się ze startem" : "wyłączone") + " · profil "
+             + (s.profile || "—"), "textSecondary")
+        out.panel = true
+        break
+    }
+    case "preflight":
+        line("Sprawdza OBS, mikrofon, Twitch i nagrywanie — uruchomisz ją w Panelu streamera.", "textSecondary")
+        out.panel = true
+        break
+    case "start_screen":
+        line(screenLine(core, "starting"))
+        if (typeof obj(core.countdown).ends_at === "number") line("Odliczanie do " + clock(core.countdown.ends_at),
+                                                                   "textSecondary")
+        break
+    case "go_live":
+    case "go_off":
+        line((id === "go_live" ? "Start" : "Koniec") + " streamu tylko w Panelu streamera (przytrzymanie).",
+             "textSecondary")
+        out.panel = true
+        break
+    case "obs_offline":
+        line("Uruchom OBS — bez niego sceny, mikrofon i podgląd są niedostępne.", "textSecondary")
+        break
+    case "brb_screen":
+        line(screenLine(core, "brb"))
+        break
+    case "brb_return": {
+        const back = valueOf(core.brb_return)
+        if (back && typeof back === "string") line("Powrót do sceny " + back, "textSecondary")
+        out.action = { text: "Wróć z przerwy", name: "brb.toggle", args: {} }
+        break
+    }
+    case "end_screen":
+        line(screenLine(core, "ended"))
+        break
+    case "summary": {
+        const sum = core.last_summary
+        if (sum && typeof sum === "object") {
+            if (typeof sum.duration_s === "number") line("Czas streamu " + duration(sum.duration_s))
+            if (typeof sum.new_followers === "number") line("Nowi obserwujący: " + sum.new_followers, "textSecondary")
+            if (sum.recording) line("Nagranie zapisane", "textSecondary")
+        } else line("Podsumowanie pojawi się po końcu streamu.", "textMuted")
+        break
+    }
+    default:
+        line("Ta karta jest na razie tylko w Panelu streamera.", "textMuted")
+        out.panel = true
+    }
+    return out
+}
+
 var ALERTS = { follow: "Follow", sub: "Sub", bits: "Bits", raid: "Raid" }
 
 function alertText(alert) {
@@ -451,8 +725,10 @@ function chatHtml(line, nickColor) {
 // mode.set zostaje poza listą w całości: rdzeń odrzuca ją na żywo, a poza anteną tryb wybiera Panel.
 // Mikrofon przez mic.set {muted} (nie mic.toggle): podwójne kliknięcie albo spóźniony stan nie odwróci wyniku.
 // Wynik serii na lewym monitorze (PT-91, decyzja 29.10): +1, cofnij, zamiana i ukrycie; zerowanie tylko w Panelu.
+// PT-105: nowa seria z karty wyniku bez serii (decyzja 6 K-29) oraz przypinanie i chowanie kart „Teraz”.
 var ALLOWED = ["mic.set", "profile.set", "module.set", "motion.set", "motion.test", "scene.set", "brb.toggle", "pairing.invite", "pairing.revoke",
-               "privacy.toggle", "overlays.toggle", "observer.point", "observer.undo", "observer.swap", "observer.overlay.set"]
+               "privacy.toggle", "overlays.toggle", "observer.point", "observer.undo", "observer.swap", "observer.overlay.set",
+               "observer.series.start", "panel.pin", "panel.hide"]
 
 function allowed(name) {
     return ALLOWED.indexOf(name) >= 0
