@@ -22,7 +22,9 @@ Card {
     property bool busy: false
     property bool profilesOpen: false
     property real textPointSize: Tokens.fontSizePt
-    // Skrócona forma w kolumnie „Teraz”, gdy karty się nie mieszczą: sam stan w jednej linii (PT-105).
+    // Skrócona forma w kolumnie „Teraz”, gdy karty się nie mieszczą: sam stan w jednej linii (PT-105). Wybór profilu
+    // zostaje wtedy w kafelku „Profil gracza” w docku, a przełączniki modułów przechodzą do kategorii „Na ekranie”
+    // (PT-106).
     property bool compact: false
 
     signal micRequested(bool muted)   // docelowy stan: mic.set {muted}, nie przełączanie
@@ -189,6 +191,7 @@ Card {
     }
 
     ProfileList {
+        objectName: "profileList"
         visible: card.full && card.profilesOpen && card.ready && !card.compact
         Layout.fillWidth: true
         view: card.view

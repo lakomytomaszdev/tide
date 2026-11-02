@@ -35,15 +35,37 @@ Item {
     readonly property bool categoryOpen: categoryPopup.opened
     readonly property bool addMenuOpen: addMenu.opened
 
-    // Wysokości kart w pełnej formie, zapamiętane, gdy karty są pełne — z nich liczymy, czy kolumna się mieści,
-    // więc przejście w formę skróconą nie zmienia decyzji (bez pętli wiązań).
-    property real streamFullHeight: 0
-    property real scoreFullHeight: 0
-    property real scoreHeight: 0
+    // Czy kolumna mieści karty w pełnej formie: wysokości pełnych kart Stream i wyniku mierzą niewidoczne
+    // bliźniaki (zawsze świeże, niezależne od bieżącej formy), a lista profili do decyzji się nie liczy —
+    // otwarta lista może przewinąć kolumnę, ale nie chowa karty, w której ją otwarto.
+    readonly property real streamFullHeight: streamTwin.implicitHeight
+    readonly property real scoreFullHeight: scoreTwin.active ? scoreTwin.implicitHeight : 0
+    // Bieżąca wysokość karty wyniku prosto z jej slotu (Repeater tworzy delegaty od nowa przy zmianie kart).
+    readonly property real scoreHeight: {
+        for (let i = 0; i < slots.count; i++) {
+            const slot = slots.itemAt(i)
+            if (slot && slot.entry && slot.entry.id === "score" && slot.item) return slot.item.implicitHeight
+        }
+        return 0
+    }
     readonly property real naturalFull: cards.implicitHeight - streamCard.implicitHeight + streamFullHeight
                                         - scoreHeight + scoreFullHeight
-    readonly property bool streamCompact: streamFullHeight > 0 && naturalFull > flick.height
+    // Decyzja zapada chwilę po zmianie (wysokości kolumny liczą się po polerowaniu układu), a z formy skróconej
+    // wracamy dopiero z zapasem 16 px — bez migotania na granicy.
+    property bool streamCompact: false
     readonly property bool scoreCompact: streamCompact && !(view && view.situation && view.situation.stage === "live")
+    function evaluateCompact() {
+        const room = flick.height
+        if (streamFullHeight <= 0 || room <= 0) { streamCompact = false; return }
+        if (streamCompact) { if (naturalFull < room - 16) streamCompact = false }
+        else if (naturalFull > room) streamCompact = true
+    }
+    onNaturalFullChanged: compactTimer.restart()
+    Timer {
+        id: compactTimer
+        interval: 60
+        onTriggered: column.evaluateCompact()
+    }
     readonly property var categories: Stream.categories(view, coreUp)
     // Dół zawartości (kart i karty Stream) w kolumnie — pod nim StreamDesk stawia skrócony plan gry.
     readonly property real contentBottom: flick.y + Math.min(flick.contentHeight, flick.height)
@@ -90,6 +112,7 @@ Item {
     // Popupy nie mogą zostać nad Graniem, schowaną nakładką ani pełnym planem gry.
     onVisibleChanged: if (!visible) closePopups()
     onActiveChanged: if (!active) closePopups()
+    onHeightChanged: compactTimer.restart()
 
     function openCategory(id) {
         currentCategory = currentCategory === id ? "" : id
@@ -242,6 +265,7 @@ Item {
             }
 
             Repeater {
+                id: slots
                 model: column.model.items
                 Loader {
                     id: slot
@@ -267,8 +291,7 @@ Item {
                 objectName: "nowStreamCard"
                 Layout.fillWidth: true
                 compact: column.streamCompact
-                onImplicitHeightChanged: if (!compact) column.streamFullHeight = implicitHeight
-                Component.onCompleted: if (!compact) column.streamFullHeight = implicitHeight
+                onCompactChanged: if (compact) profilesOpen = false
                 actions: false
                 full: true
                 view: column.view
@@ -284,6 +307,38 @@ Item {
                 onPanelRequested: column.panelRequested()
                 onCommandRequested: (name, args) => column.commandRequested(name, args)
             }
+        }
+    }
+
+    // Niewidoczne bliźniaki do pomiaru pełnej formy (przezroczyste, wyłączone, poza czytnikiem ekranu).
+    Item {
+        objectName: "nowTwins"
+        width: column.width
+        height: 0
+        clip: true
+        opacity: 0
+        enabled: false
+        Accessible.ignored: true
+        StreamCard {
+            id: streamTwin
+            width: parent.width
+            actions: false
+            full: true
+            view: column.view
+            coreUp: column.coreUp
+            obsMemory: column.obsMemory
+            status: column.status
+            statusError: column.statusError
+        }
+        ScoreCard {
+            id: scoreTwin
+            readonly property bool active: column.model.items.some(i => i.id === "score")
+            visible: active
+            width: parent.width
+            item: column.model.items.filter(i => i.id === "score")[0]
+                  || ({ id: "score", title: "Wynik", state: "", pinnable: false, hideable: false })
+            view: column.view
+            coreUp: column.coreUp
         }
     }
 
@@ -304,13 +359,6 @@ Item {
         ScoreCard {
             item: parent ? parent.entry : ({})
             compact: column.scoreCompact
-            function remember() {
-                column.scoreHeight = implicitHeight
-                if (!compact) column.scoreFullHeight = implicitHeight
-            }
-            onImplicitHeightChanged: remember()
-            Component.onCompleted: remember()
-            Component.onDestruction: { column.scoreHeight = 0; column.scoreFullHeight = 0 }
             view: column.view
             coreUp: column.coreUp
             busy: column.busy
