@@ -106,9 +106,9 @@ Card {
         Accessible.name: card.overlay.label + (card.overlay.on ? ", schowaj wynik widzom" : ", pokaż wynik widzom")
         background: Rectangle {
             radius: Tokens.radiusSmall
-            color: card.overlay.on && card.overlay.series ? Theme.alpha(Tokens.accent, 0.16) : Theme.alpha(Tokens.textPrimary, 0.04)
+            color: card.overlay.shown ? Theme.alpha(Tokens.accent, 0.16) : Theme.alpha(Tokens.textPrimary, 0.04)
             border.width: 1
-            border.color: card.overlay.on && card.overlay.series ? Theme.alpha(Tokens.accent, 0.70) : Theme.alpha(Tokens.textPrimary, 0.14)
+            border.color: card.overlay.shown ? Theme.alpha(Tokens.accent, 0.70) : Theme.alpha(Tokens.textPrimary, 0.14)
             opacity: parent.enabled ? 1 : 0.45
         }
         onClicked: card.commandRequested("observer.overlay.set", card.overlay.args)

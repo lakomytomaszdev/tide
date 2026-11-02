@@ -35,14 +35,14 @@ Item {
     // Wysokość kart: cała kolumna (bez martwego pasa na dole), a gdy zmieści się plan gry — kolumna bez niego.
     readonly property real fillHeight: cards.implicitHeight + reserveBottom <= flick.height
                                        ? flick.height - reserveBottom : flick.height
-    // Karta, która rośnie i zabiera wolne miejsce: wynik z serią (rosną cyfry), potem ostatnie alerty (więcej
-    // alertów), potem pozostałe według ważności; bez kart „Teraz” — karta Stream.
+    // Karta, która rośnie i zabiera wolne miejsce — tylko taka, której wysokość coś daje: wynik z serią (rosną
+    // cyfry), ostatnie alerty (więcej wierszy), mecz. Karty z samym tekstem nigdy nie rosną; bez karty do
+    // wzrostu wolne miejsce zostaje jedną przerwą nad kartą Stream przyklejoną do dołu.
     readonly property bool scoreSeries: !!Stream.scoreCard(view, coreUp).series
     readonly property string growId: {
         const ids = column.model.items.map(i => i.id)
-        const order = (column.scoreSeries ? ["score"] : []).concat(["alerts", "match", "topic", "event", "camera",
-                                                                    "countdown", "score"])
-        return order.filter(id => ids.indexOf(id) >= 0)[0] || ids[0] || ""
+        const order = (column.scoreSeries ? ["score"] : []).concat(["alerts", "match"])
+        return order.filter(id => ids.indexOf(id) >= 0)[0] || ""
     }
     readonly property int alertLimit: growId === "alerts" ? 12 : 3
     // Teksty ostatnich alertów z czatu (karta „Ostatnie alerty”), najnowsze pierwsze.
@@ -221,10 +221,16 @@ Item {
                 }
             }
 
+            // Bez karty do wzrostu: jedna przerwa nad kartą Stream (przyklejoną do dołu kolumny).
+            Item {
+                objectName: "nowGap"
+                visible: column.growId === ""
+                Layout.fillHeight: true
+            }
+
             StreamCard {
                 id: streamCard
                 Layout.fillWidth: true
-                Layout.fillHeight: column.growId === ""
                 actions: false
                 full: true
                 view: column.view

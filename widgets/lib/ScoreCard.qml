@@ -91,7 +91,8 @@ NowCard {
                     bottomPadding: 9
                     pointSize: Tokens.fontSizePt + 1
                     enabled: !card.busy && !card.series.finished
-                    text: "+1"
+                    // Nick w przycisku (z wielokropkiem), żeby było jasne, kto dostaje punkt.
+                    text: "+1 " + (modelData === 0 ? card.series.left : card.series.right)
                     textColor: Tokens.textPrimary
                     opacity: enabled ? 1 : 0.45
                     Accessible.name: "+1 dla " + (modelData === 0 ? card.series.left : card.series.right)

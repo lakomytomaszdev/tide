@@ -434,10 +434,12 @@ function categoryWarnings(view, coreUp) {
     if (status(view, coreUp).core !== "up") return out
     const core = obj(view.core)
     const devices = []
-    const offline = (Array.isArray(view.devices) ? view.devices : []).filter(d => obj(d).online === false)
-    if (offline.length) devices.push("offline: " + offline.map(d => String(d.name || d.id)).join(", "))
+    // Decyzja użytkownika (2.11): tylko OBS i Twitch. Sparowane urządzenie offline (np. iPhone z Pilotem) to
+    // zwykły stan, nie ostrzeżenie; ostrzeżenia z kontroli przed startem Plasma nie ma (brak jej wyniku w stanie).
+    if (obj(view.obs).connected !== true) devices.push("OBS rozłączony")
     const twitch = obj(core.twitch).state
-    if (twitch === "authorization_required" || twitch === "setup_required") devices.push("Twitch wymaga zgody")
+    if (twitch === "setup_required") devices.push("Twitch wymaga konfiguracji")
+    if (twitch === "authorization_required") devices.push("Twitch wymaga zgody")
     if (devices.length) out.devices = devices.join(" · ")
     const motion = obj(core.motion)
     if (MOTION_KEYS.every(k => k in motion) && MOTION_KEYS.every(k => motion[k] === false))
@@ -502,11 +504,15 @@ function hideCommand(id, hidden) {
 function scoreOverlay(view, coreUp) {
     if (status(view, coreUp).core !== "up")
         return { on: false, series: false, enabled: false, label: "Wynik u widzów", args: { visible: true } }
+    // Słowa jak na tablecie: „tak” tylko wtedy, gdy widzowie naprawdę widzą wynik (situation.score_shown,
+    // u starszego rdzenia seria i włączona nakładka); bez serii nakładka nie ma czego pokazać.
     const o = obj(view.core.observer)
     const on = valueOf(o.overlay) !== false
     const series = !!(o.series && typeof o.series === "object")
-    return { on: on, series: series, enabled: true,
-             label: "Wynik u widzów: " + (on ? "tak" : "nie") + (series ? "" : " · brak serii"),
+    const sit = obj(view.situation)
+    const shown = typeof sit.score_shown === "boolean" ? sit.score_shown : series && on
+    const label = shown ? "tak" : series ? "nie" : on ? "po założeniu serii" : "nie · brak serii"
+    return { on: on, shown: shown, series: series, enabled: true, label: "Wynik u widzów: " + label,
              args: { visible: !on } }
 }
 
