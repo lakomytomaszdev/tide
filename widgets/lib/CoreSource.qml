@@ -9,7 +9,7 @@
 // nic nie woła rdzenia, którego nie ma na szynie.
 //
 // Komendy idą tylko przez execute(), które przepuszcza wyłącznie komendy z Stream.ALLOWED (bez akcji
-// krytycznych, te są tylko w Panelu streamera).
+// krytycznych, te są tylko w Panelu streamera), a zmianę trybu tylko poza anteną (Stream.allowedNow).
 //
 // Miejsce na to, czego rdzeń jeszcze nie daje (propozycja API w docs/decisions.md, decyzja 79):
 // - czat i alerty: GetChat() → {"events": [...]} i sygnał Chat(s) z komunikatem w kształcie WebSocketu
@@ -117,9 +117,10 @@ Item {
         }, function () {})
     }
 
-    // Komenda rdzenia; done(ok, wynik JSON albo opis błędu po polsku). Komendy spoza Stream.ALLOWED nie wychodzą.
+    // Komenda rdzenia; done(ok, wynik JSON albo opis błędu po polsku). Komendy spoza Stream.ALLOWED i zmiana
+    // trybu na żywo nie wychodzą.
     function execute(name, args, done) {
-        if (!Stream.allowed(name)) {
+        if (!Stream.allowedNow(name, view, coreUp)) {
             const why = name + ": tylko w Panelu streamera"
             source.executed(name, false, why)
             if (done) done(false, why)

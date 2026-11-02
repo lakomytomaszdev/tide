@@ -2,7 +2,7 @@
 // i ekrany, Wynik i seria, Na ekranie, Alerty, Animacje żubra, Urządzenia — w stałej kolejności, każda jednym
 // kliknięciem. Ikona z podpowiedzią, otwarta kategoria dostaje podpis. Kropka ostrzeżenia, gdy w środku coś
 // wymaga uwagi (Stream.categoryWarnings). Rząd tylko zgłasza wybór: popup kategorii otwiera NowColumn.
-// API dla PT-106: `current` (id otwartej kategorii albo ""), sygnał categoryRequested(id) z id z Stream.CATEGORIES.
+// API: `current` (id otwartej kategorii albo ""), sygnał categoryRequested(id) z id z Stream.CATEGORIES.
 import QtQuick
 import QtQuick.Layouts
 import "stream.js" as Stream

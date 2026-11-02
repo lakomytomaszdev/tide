@@ -22,10 +22,11 @@ Card {
     property bool busy: false
     property bool profilesOpen: false
     property real textPointSize: Tokens.fontSizePt
-    // Skrócona forma w kolumnie „Teraz”, gdy karty się nie mieszczą: sam stan w jednej linii (PT-105). Wybór profilu
-    // zostaje wtedy w kafelku „Profil gracza” w docku, a przełączniki modułów przechodzą do kategorii „Na ekranie”
-    // (PT-106).
+    // Skrócona forma w kolumnie „Teraz”, gdy karty się nie mieszczą: sam stan w jednej linii (PT-105).
     property bool compact: false
+    // false: bez profilu gracza i przełączników modułów — w kolumnie „Teraz” są w kategoriach Przygotowanie
+    // i Na ekranie (PT-106), a karta Stream pokazuje sam stan.
+    property bool controls: true
 
     signal micRequested(bool muted)   // docelowy stan: mic.set {muted}, nie przełączanie
     signal brbRequested()
@@ -142,7 +143,7 @@ Card {
 
         // Konsola: profil gracza z listą do wyboru (profile.set).
         Text {
-            visible: card.full
+            visible: card.full && card.controls
             Layout.fillWidth: true
             Layout.preferredWidth: 1
             Layout.alignment: Qt.AlignVCenter
@@ -153,7 +154,7 @@ Card {
             font.pointSize: card.textPointSize
         }
         TextButton {
-            visible: card.full
+            visible: card.full && card.controls
             objectName: "profileButton"
             Layout.alignment: Qt.AlignVCenter
             Layout.fillWidth: true
@@ -192,7 +193,7 @@ Card {
 
     ProfileList {
         objectName: "profileList"
-        visible: card.full && card.profilesOpen && card.ready && !card.compact
+        visible: card.full && card.controls && card.profilesOpen && card.ready && !card.compact
         Layout.fillWidth: true
         view: card.view
         onPicked: id => { card.profilesOpen = false; card.profileRequested(id) }
@@ -200,7 +201,8 @@ Card {
 
     // Konsola: przełączniki modułów (module.set).
     Flow {
-        visible: card.full && card.ready && !card.compact
+        objectName: "streamModules"
+        visible: card.full && card.controls && card.ready && !card.compact
         Layout.fillWidth: true
         spacing: 6
         Repeater {

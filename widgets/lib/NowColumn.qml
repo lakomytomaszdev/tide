@@ -2,7 +2,9 @@
 // „Teraz” (etap i tryb, karty schowane do przywrócenia, „Dodaj kartę”) — razem na karcie nagłówka (PT-107), karty „Teraz” z rdzenia
 // (situation.cards) i na końcu karta Stream ze stanem streamu. Karta ma znacznik auto/przypięta, pinezkę
 // (panel.pin) i × (panel.hide). Rdzeń bez tych pól: karty z situation.cards bez znaczników i przycisków.
-// Kategorie otwierają popup nad kolumną (CategoryPopup), karty zostają pod spodem. Gdy karty się nie mieszczą,
+// Kategorie otwierają popup nad kolumną (CategoryPopup) z ustawieniami kategorii (PT-106): sięga od rzędu kategorii
+// do dołu kolumny, karty zostają pod spodem. Karta Stream ma tu same wiersze stanu — profil gracza jest w kategorii
+// Przygotowanie, a przełączniki modułów w kategorii Na ekranie. Gdy karty się nie mieszczą,
 // karta Stream przechodzi w jedną linię stanu, a przed streamem także karta wyniku w formę skróconą; dopiero
 // potem karty się przewijają. Same sygnały — komendy wysyła StreamDesk/main.qml.
 import QtQuick
@@ -28,8 +30,17 @@ Item {
 
     signal commandRequested(string name, var args)
     signal panelRequested()
-    // Hak dla PT-106: każda zmiana otwartej kategorii (id albo "" po zamknięciu).
+    // Każda zmiana otwartej kategorii (id albo "" po zamknięciu).
     signal categoryOpened(string id)
+
+    // Wynik ostatniej kontroli przed startem (kategoria Przygotowanie) — trzyma go konsola, jak tablet, do restartu.
+    property var preflight: null
+    property bool preflightRunning: false
+    // Odpowiedź rdzenia na preflight.run (StreamDesk.commandDone); result — obiekt wyniku albo null przy błędzie.
+    function preflightDone(ok, result) {
+        preflightRunning = false
+        if (ok && result && typeof result === "object") preflight = Object.assign({ at: Date.now() }, result)
+    }
 
     readonly property var model: Stream.now(view, coreUp)
     readonly property bool categoryOpen: categoryPopup.opened
@@ -302,6 +313,7 @@ Item {
                 compact: column.streamCompact
                 onCompactChanged: if (compact) profilesOpen = false
                 actions: false
+                controls: false
                 full: true
                 view: column.view
                 coreUp: column.coreUp
@@ -332,6 +344,7 @@ Item {
             id: streamTwin
             width: parent.width
             actions: false
+            controls: false
             full: true
             view: column.view
             coreUp: column.coreUp
@@ -384,8 +397,13 @@ Item {
             item: parent ? parent.entry : ({})
             busy: column.busy
             readonly property var body: Stream.nowBody(column.view, column.coreUp, item.id, column.alerts)
-            linkText: body.panel ? "Panel streamera" : ""
-            onLinkClicked: column.panelRequested()
+            readonly property var linked: column.categories.filter(c => c.id === body.category)[0] || null
+            // Karta z ustawieniami w kategorii otwiera jej popup (PT-106); akcje krytyczne — Panel streamera.
+            linkText: linked ? linked.label : body.panel ? "Panel streamera" : ""
+            onLinkClicked: {
+                if (!linked) column.panelRequested()
+                else if (column.currentCategory !== linked.id) column.openCategory(linked.id)
+            }
             onPinRequested: column.run(Stream.pinCommand(item))
             onHideRequested: column.run(Stream.hideCommand(item.id, true))
 
@@ -417,12 +435,24 @@ Item {
         }
     }
 
+    // Od rzędu kategorii do dołu kolumny: nieprzezroczysty i bez do połowy zasłoniętej karty pod spodem.
     CategoryPopup {
         id: categoryPopup
         x: 0
         y: nowHeader.padding + categoryRow.y + categoryRow.height + 6
         width: column.width
+        height: Math.max(160, column.height - y)
         category: column.categories.filter(c => c.id === column.currentCategory)[0] || null
+        view: column.view
+        coreUp: column.coreUp
+        busy: column.busy
+        status: column.status
+        preflight: column.preflight
+        preflightRunning: column.preflightRunning
+        onCommandRequested: (name, args) => {
+            if (name === "preflight.run") column.preflightRunning = true
+            column.commandRequested(name, args)
+        }
         onPanelRequested: column.panelRequested()
         onClosed: if (column.currentCategory !== "") { column.currentCategory = ""; column.categoryOpened("") }
     }
