@@ -22,7 +22,7 @@ Card {
     readonly property bool pinned: item.state === "pinned"
 
     objectName: "now-" + item.id
-    padding: 12
+    padding: 10
     spacing: 6
     border.color: pinned ? Theme.alpha(Tokens.accent, 0.45) : Theme.alpha(Tokens.textPrimary, 0.06)
 

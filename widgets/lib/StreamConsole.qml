@@ -26,6 +26,7 @@ Item {
     property bool statusError: false
     property bool busy: false
     property real reserveBottom: 0     // miejsce pod kartami prawej kolumny (skrócony plan gry)
+    property bool nowActive: true      // false: prawa kolumna zasłonięta (pełny plan gry) — popupy się zamykają
 
     signal commandRequested(string name, var args)
     signal panelRequested()
@@ -59,6 +60,7 @@ Item {
         width: deck.width
         // Kolumny: Sceny sięgają dołu kolumny (jak czat i karty „Teraz”), bez pustego pasa nad dockiem.
         height: deck.columns ? Math.max(implicitHeight, deck.height - y) : implicitHeight
+        fill: deck.columns
         view: deck.view
         coreUp: deck.coreUp
         previewImage: deck.previewImage
@@ -81,6 +83,7 @@ Item {
         obsMemory: deck.obsMemory
         chatModel: deck.chatModel
         reserveBottom: deck.reserveBottom
+        active: deck.nowActive
         status: deck.status
         statusError: deck.statusError
         busy: deck.busy

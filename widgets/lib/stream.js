@@ -378,8 +378,8 @@ function previewNote(view, coreUp, supported, hasImage) {
 // (situation.cards, auto/pinned/hidden/addable z PT-103). Rdzeń bez tych pól (przed wdrożeniem PT-103) daje to
 // samo co wcześniej: płaskie sceny, karty z situation.cards i bez przypinania.
 
-// Sceny w grupach z `situation.scene_groups` ([{id, label, locked, scenes: [{name, kind, locked}]}]). Przycisk
-// Rdzeń (od 7533a56) podaje sceny wszystkich trybów, sceny bieżącego trybu pierwsze, a tryb ustala kolejność grup.
+// Sceny w grupach z `situation.scene_groups` ([{id, label, locked, scenes: [{name, kind, locked}]}]). Rdzeń (od
+// 7533a56) podaje sceny wszystkich trybów, sceny bieżącego trybu pierwsze, a tryb ustala kolejność grup. Przycisk
 // BRB zostaje w karcie Zawsze (brb.toggle pamięta scenę powrotu), więc grupa Ekrany nie ma sceny BRB. Sceny,
 // których nie ma w OBS (`obs.scenes`), pomijamy jak wcześniej. Bez grup w rdzeniu: jedna grupa bez nazwy.
 // {available, grouped, groups: [{id, label, locked, items: [{name, kind, current, enabled, reason}]}], current,
@@ -486,7 +486,9 @@ function now(view, coreUp) {
     }))
     if (!out.controls) return out
     out.hidden = sit.hidden.map(String).map(id => ({ id: id, title: cardTitle(id) }))
-    out.addable = sit.addable.map(String).filter(id => PINNABLE.indexOf(id) >= 0)
+    // Schowana karta wraca chipem w nagłówku, nie z „Dodaj kartę” — jedna droga zamiast dwóch.
+    const hidden = sit.hidden.map(String)
+    out.addable = sit.addable.map(String).filter(id => PINNABLE.indexOf(id) >= 0 && hidden.indexOf(id) < 0)
         .map(id => ({ id: id, title: cardTitle(id) }))
     return out
 }
@@ -559,6 +561,11 @@ function nowBody(view, coreUp, id, alerts) {
     if (s.core !== "up") return out
     const core = obj(view.core)
     const line = (text, tone) => out.lines.push({ text: String(text), tone: tone || "textPrimary" })
+    const screen = key => {
+        const text = screenLine(core, key)
+        if (text) line(text)
+        else line("Bez tekstu — ustawisz go w Panelu streamera.", "textMuted")
+    }
     switch (id) {
     case "match": {
         const m = matchNow(view, coreUp)
@@ -612,7 +619,7 @@ function nowBody(view, coreUp, id, alerts) {
         out.panel = true
         break
     case "start_screen":
-        line(screenLine(core, "starting"))
+        screen("starting")
         if (typeof obj(core.countdown).ends_at === "number") line("Odliczanie do " + clock(core.countdown.ends_at),
                                                                    "textSecondary")
         break
@@ -626,7 +633,7 @@ function nowBody(view, coreUp, id, alerts) {
         line("Uruchom OBS — bez niego sceny, mikrofon i podgląd są niedostępne.", "textSecondary")
         break
     case "brb_screen":
-        line(screenLine(core, "brb"))
+        screen("brb")
         break
     case "brb_return": {
         const back = valueOf(core.brb_return)
@@ -635,7 +642,7 @@ function nowBody(view, coreUp, id, alerts) {
         break
     }
     case "end_screen":
-        line(screenLine(core, "ended"))
+        screen("ended")
         break
     case "summary": {
         const sum = core.last_summary

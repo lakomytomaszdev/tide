@@ -2,8 +2,9 @@
 // „Teraz” (etap i tryb, karty schowane do przywrócenia, „Dodaj kartę”), karty „Teraz” z rdzenia
 // (situation.cards) i na końcu karta Stream ze stanem streamu. Karta ma znacznik auto/przypięta, pinezkę
 // (panel.pin) i × (panel.hide). Rdzeń bez tych pól: karty z situation.cards bez znaczników i przycisków.
-// Kategorie otwierają popup nad kolumną (CategoryPopup), karty zostają pod spodem. Karty przewijają się, gdy
-// nie mieszczą się w kolumnie. Same sygnały — komendy wysyła StreamDesk/main.qml.
+// Kategorie otwierają popup nad kolumną (CategoryPopup), karty zostają pod spodem. Gdy karty się nie mieszczą,
+// karta Stream przechodzi w jedną linię stanu, a przed streamem także karta wyniku w formę skróconą; dopiero
+// potem karty się przewijają. Same sygnały — komendy wysyła StreamDesk/main.qml.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -22,6 +23,8 @@ Item {
     property string currentCategory: ""
     // Miejsce zostawiane pod kartami (skrócony plan gry w StreamDesk), gdy karty i tak się mieszczą.
     property real reserveBottom: 0
+    // false: konsola zasłonięta (np. pełny plan gry) — popupy kolumny się zamykają.
+    property bool active: true
 
     signal commandRequested(string name, var args)
     signal panelRequested()
@@ -29,6 +32,18 @@ Item {
     signal categoryOpened(string id)
 
     readonly property var model: Stream.now(view, coreUp)
+    readonly property bool categoryOpen: categoryPopup.opened
+    readonly property bool addMenuOpen: addMenu.opened
+
+    // Wysokości kart w pełnej formie, zapamiętane, gdy karty są pełne — z nich liczymy, czy kolumna się mieści,
+    // więc przejście w formę skróconą nie zmienia decyzji (bez pętli wiązań).
+    property real streamFullHeight: 0
+    property real scoreFullHeight: 0
+    property real scoreHeight: 0
+    readonly property real naturalFull: cards.implicitHeight - streamCard.implicitHeight + streamFullHeight
+                                        - scoreHeight + scoreFullHeight
+    readonly property bool streamCompact: streamFullHeight > 0 && naturalFull > flick.height
+    readonly property bool scoreCompact: streamCompact && !(view && view.situation && view.situation.stage === "live")
     readonly property var categories: Stream.categories(view, coreUp)
     // Dół zawartości (kart i karty Stream) w kolumnie — pod nim StreamDesk stawia skrócony plan gry.
     readonly property real contentBottom: flick.y + Math.min(flick.contentHeight, flick.height)
@@ -68,6 +83,14 @@ Item {
         return out
     }
 
+    function closePopups() {
+        categoryPopup.close()
+        addMenu.close()
+    }
+    // Popupy nie mogą zostać nad Graniem, schowaną nakładką ani pełnym planem gry.
+    onVisibleChanged: if (!visible) closePopups()
+    onActiveChanged: if (!active) closePopups()
+
     function openCategory(id) {
         currentCategory = currentCategory === id ? "" : id
         if (currentCategory === "") categoryPopup.close()
@@ -91,7 +114,7 @@ Item {
     Flickable {
         id: flick
         objectName: "nowFlick"
-        y: categoryRow.height + 12
+        y: categoryRow.height + 8
         width: column.width
         height: column.height - y
         contentWidth: width
@@ -104,7 +127,7 @@ Item {
             id: cards
             width: flick.width
             height: Math.max(implicitHeight, column.fillHeight)
-            spacing: 12
+            spacing: 8
 
             // Nagłówek „Teraz”.
             RowLayout {
@@ -241,7 +264,11 @@ Item {
 
             StreamCard {
                 id: streamCard
+                objectName: "nowStreamCard"
                 Layout.fillWidth: true
+                compact: column.streamCompact
+                onImplicitHeightChanged: if (!compact) column.streamFullHeight = implicitHeight
+                Component.onCompleted: if (!compact) column.streamFullHeight = implicitHeight
                 actions: false
                 full: true
                 view: column.view
@@ -276,6 +303,14 @@ Item {
         id: scoreCard
         ScoreCard {
             item: parent ? parent.entry : ({})
+            compact: column.scoreCompact
+            function remember() {
+                column.scoreHeight = implicitHeight
+                if (!compact) column.scoreFullHeight = implicitHeight
+            }
+            onImplicitHeightChanged: remember()
+            Component.onCompleted: remember()
+            Component.onDestruction: { column.scoreHeight = 0; column.scoreFullHeight = 0 }
             view: column.view
             coreUp: column.coreUp
             busy: column.busy

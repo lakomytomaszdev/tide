@@ -18,6 +18,8 @@ NowCard {
     readonly property var model: Stream.scoreCard(view, coreUp)
     readonly property var series: model.series
     property int format: 3
+    // Forma skrócona (przed streamem, gdy kolumna się nie mieści): nicki tylko na przyciskach +1, niższe przyciski.
+    property bool compact: false
 
     chip: model.chip
 
@@ -54,6 +56,7 @@ NowCard {
                 spacing: 4
                 Text {
                     objectName: modelData === 0 ? "scoreNameLeft" : "scoreNameRight"
+                    visible: !card.compact
                     Layout.alignment: Qt.AlignHCenter
                     Layout.maximumWidth: card.width / 2 - 24
                     text: modelData === 0 ? card.series.left : card.series.right
@@ -87,8 +90,8 @@ NowCard {
                     objectName: modelData === 0 ? "scoreLeft" : "scoreRight"
                     Layout.fillWidth: true
                     variant: "outline"
-                    topPadding: 9
-                    bottomPadding: 9
+                    topPadding: card.compact ? 5 : 9
+                    bottomPadding: card.compact ? 5 : 9
                     pointSize: Tokens.fontSizePt + 1
                     enabled: !card.busy && !card.series.finished
                     // Nick w przycisku (z wielokropkiem), żeby było jasne, kto dostaje punkt.
@@ -116,8 +119,8 @@ NowCard {
                 objectName: "score-" + modelData.key
                 Layout.fillWidth: true
                 variant: "outline"
-                topPadding: 7
-                bottomPadding: 7
+                topPadding: card.compact ? 4 : 7
+                bottomPadding: card.compact ? 4 : 7
                 pointSize: Tokens.fontSizePt - 1
                 enabled: !card.busy
                 text: modelData.text

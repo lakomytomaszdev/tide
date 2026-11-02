@@ -22,6 +22,8 @@ Card {
     property bool busy: false
     property bool profilesOpen: false
     property real textPointSize: Tokens.fontSizePt
+    // Skrócona forma w kolumnie „Teraz”, gdy karty się nie mieszczą: sam stan w jednej linii (PT-105).
+    property bool compact: false
 
     signal micRequested(bool muted)   // docelowy stan: mic.set {muted}, nie przełączanie
     signal brbRequested()
@@ -81,8 +83,20 @@ Card {
         font.pointSize: card.textPointSize
     }
 
+    Text {
+        objectName: "streamCompactLine"
+        visible: card.ready && card.compact
+        Layout.fillWidth: true
+        text: card.model.rows.map(r => r.value).join(" · ")
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        color: Tokens.textSecondary
+        font.family: Theme.uiFamily
+        font.pointSize: card.textPointSize
+    }
+
     GridLayout {
-        visible: card.ready
+        visible: card.ready && !card.compact
         Layout.fillWidth: true
         columns: 2
         columnSpacing: 12
@@ -175,7 +189,7 @@ Card {
     }
 
     ProfileList {
-        visible: card.full && card.profilesOpen && card.ready
+        visible: card.full && card.profilesOpen && card.ready && !card.compact
         Layout.fillWidth: true
         view: card.view
         onPicked: id => { card.profilesOpen = false; card.profileRequested(id) }
@@ -183,7 +197,7 @@ Card {
 
     // Konsola: przełączniki modułów (module.set).
     Flow {
-        visible: card.full && card.ready
+        visible: card.full && card.ready && !card.compact
         Layout.fillWidth: true
         spacing: 6
         Repeater {
@@ -289,9 +303,8 @@ Card {
         font.pointSize: Tokens.fontSizePt - 1
     }
 
-    Item { Layout.fillHeight: true }    // treść u góry, gdy karta zabiera wolne miejsce kolumny (PT-105)
-
     Text {
+        visible: !card.compact
         Layout.fillWidth: true
         text: card.model.note
         textFormat: Text.PlainText

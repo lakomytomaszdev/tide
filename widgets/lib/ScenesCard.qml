@@ -21,6 +21,8 @@ Card {
     property string motionKind: ""
     property bool motionPlaying: false
     property bool busy: false
+    // Karta sięga dołu kolumny (konsola w kolumnach): reszta miejsca pod treścią. Poza tym bez odstępu.
+    property bool fill: false
     signal sceneRequested(string name)
     signal browserWindowRequested()
 
@@ -244,6 +246,7 @@ Card {
     }
     // Reszta miejsca (gdy przyciski osiągną największą wysokość albo ich nie ma) zostaje pod treścią, na dole.
     Item {
+        visible: card.fill
         Layout.fillHeight: true
         Layout.verticalStretchFactor: 1
     }
