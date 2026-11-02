@@ -43,6 +43,7 @@ class FlowState:
     review_decisions: dict = field(default_factory=dict)
     step_retries: dict = field(default_factory=dict)  # źródłowy krok → automatyczne ponowienie
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
+    superseded: set = field(default_factory=set)      # kroki sprzed ostatniego card.started — nie czekają na decyzję
     wip_retries: dict = field(default_factory=dict)    # krok → ponowiony bezpieczny commit po błędzie
     limits: dict = field(default_factory=dict)         # krok → odczyt limitu w chwili wyczerpania
     step_notices: set = field(default_factory=set)
@@ -110,23 +111,52 @@ class FlowState:
 
     def active(self) -> bool:
         """Krok trwa, scalanie czeka albo akcja zaczęta i niedokończona — nowe zlecenie nie startuje."""
+        return bool(self.busy_reason())
+
+    def busy_reason(self) -> str:
+        """Dlaczego nowe zlecenie nie wystartuje; pusty napis — może wystartować.
+
+        Karta przeniesiona ręcznie do Do zrobienia po ostatnim wyniku stoi na Tablicy bez stanu (`derived`), więc
+        stare pytanie, błąd, review albo plan nie blokują nowego zlecenia — blokuje tylko to, co naprawdę trwa."""
+        if self.running():
+            return "krok tej karty jeszcze trwa"
+        if self.open_consoles():
+            return "Konsola kroku tej karty jest jeszcze otwarta"
+        if self.merge_pending():
+            return "zatwierdzony ticket czeka na scalenie"
+        if self.open_intents():
+            return "akcja karty jest zaczęta i niedokończona"
+        if self.moved_to == "todo":
+            return ""
         pending_review = any(done.get("result") == "done" and
                              (self.steps.get(name) or {}).get("kind") in ("ticket", "fix", "review") and
                              (self.steps.get(name) or {}).get("ticket") not in self.rejected and
                              ("merge", (self.steps.get(name) or {}).get("ticket")) not in self.results
+                             and name not in self.superseded
                              for name, done in self.finished.items())
         plan_pending = self.plan_proposed is not None and not self.plan_finished
         step = self.steps.get(self.last_step) or {}
         finished = self.finished.get(self.last_step) or {}
         pending_decision = finished.get("result") in ("question", "denied", "error") and \
-            step.get("ticket") not in self.rejected and not self.card_finished
+            step.get("ticket") not in self.rejected and not self.card_finished and \
+            self.last_step not in self.superseded
         pending_transfer = not self.card_finished and any(
             name not in self.step_decisions for name in self.transfer_requests)
-        return bool(self.running() or self.open_consoles() or self.merge_pending() or self.open_intents()
-                    or pending_review or pending_decision or pending_transfer or plan_pending or
-                    (self.waiting and not self.card_finished) or
-                    (self.started and self.started.get('trackerProject') and self.started.get('entry') == 'now'
-                     and not self.steps and not self.card_finished))
+        if pending_decision:
+            label = {"question": "pytanie", "denied": "brak zgody", "error": "błąd kroku"}[finished["result"]]
+            return f"karta czeka na Twoją decyzję ({label}) — odpowiedz w panelu karty albo przenieś ją do Do zrobienia"
+        if pending_review:
+            return "ticket czeka na review albo scalenie"
+        if plan_pending:
+            return "plan czeka na zatwierdzenie"
+        if pending_transfer:
+            return "przekazanie kroku czeka na decyzję"
+        if self.waiting and not self.card_finished:
+            return "karta czeka na limit albo bloker"
+        if (self.started and self.started.get('trackerProject') and self.started.get('entry') == 'now'
+                and not self.steps and not self.card_finished):
+            return "zlecenie z YouTracka jeszcze się zaczyna"
+        return ""
 
 
 def fold(events: list[dict]) -> FlowState:
@@ -145,6 +175,9 @@ def fold(events: list[dict]) -> FlowState:
                 "action", "key", "ok") if key in e})
         st.last_seq = max(st.last_seq, int(e.get("seq") or 0))
         if kind == "card.started":
+            # Nowe zlecenie startuje tylko, gdy nic nie trwa (`busy_reason`), więc pytania, błędy i review
+            # poprzedniego przepływu (np. porzuconego przeniesieniem do Do zrobienia) już na nikogo nie czekają.
+            st.superseded.update(st.steps)
             st.started, st.paused, st.card_finished, st.moved_to = e, False, False, ""
             st.closed = st.main_merged = None
             st.store_column = e.get("column") or ""
@@ -340,7 +373,7 @@ def attention_step(st: FlowState) -> str:
         latest[item.get("ticket")] = name
     for name in latest.values():
         item, done = st.steps[name], st.finished.get(name) or {}
-        if item.get("ticket") in st.rejected or name in st.step_decisions:
+        if item.get("ticket") in st.rejected or name in st.step_decisions or name in st.superseded:
             continue
         if done.get("result") in ("question", "denied") or (done.get("result") == "error" and
                 (int(item.get("attempt") or 0) >= 1 or done.get("reason") == "limit")) or (
@@ -396,7 +429,7 @@ def guard_reason(st: FlowState) -> str | None:
 def decision_step(st: FlowState) -> str:
     """Krok planu czekający na decyzję ma pierwszeństwo nad równoległym ticketem."""
     for name, step in reversed(list(st.steps.items())):
-        if step.get("kind") not in ("plan-amend", "plan-review", "plan-revise"):
+        if step.get("kind") not in ("plan-amend", "plan-review", "plan-revise") or name in st.superseded:
             continue
         done = st.finished.get(name) or {}
         if done.get("result") not in ("question", "denied", "error"):

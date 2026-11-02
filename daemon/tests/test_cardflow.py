@@ -667,6 +667,25 @@ class ManualColumnsInProcessTest(FlowInProcess):
         self.assertEqual(second["cardWorktree"], first["cardWorktree"])
         self.wait_column(card_id, "review")
 
+    def test_question_moved_to_todo_can_be_started_again(self):
+        # K-34: karta z pytaniem przeniesiona ręcznie z Czeka na mnie do Do zrobienia stoi bez stanu,
+        # więc nowe zlecenie startuje; przed przeniesieniem odmowa mówi, na co karta czeka.
+        card_id = self.card(description="ATRAPA: pytanie")
+        first = self.start(card_id)
+        self.wait_column(card_id, "waiting")
+        refused = self.start(card_id)
+        self.assertEqual((refused["ok"], refused["error"]), (False, "flow-active"), refused)
+        self.assertIn("decyzję (pytanie)", refused["message"])
+        self.assertTrue(json.loads(self.board.move_card(card_id, "todo", 0))["ok"])
+        card = self.wait_column(card_id, "todo")
+        self.assertIsNone(card["derived"])
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.moved"), timeout=5))
+        self.assertTrue(json.loads(self.board.update_card(card_id, json.dumps({"description": "zwykła"})))["ok"])
+        second = self.start(card_id)
+        self.assertTrue(second["ok"], second)
+        self.assertEqual(second["cardBranch"], first["cardBranch"])
+        self.wait_column(card_id, "review")
+
     def test_moving_a_card_without_journal_writes_no_journal(self):
         card_id = self.card(description="zwykła", column="backlog")
         self.assertTrue(json.loads(self.board.move_card(card_id, "todo", 0))["ok"])

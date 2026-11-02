@@ -70,8 +70,6 @@ MESSAGES = {
     "protected-branch": "{branch} to gałąź główna — nowy worktree potrzebuje własnej gałęzi",
     "branch-exists": "gałąź {branch} już istnieje — zmień nazwę",
     "path-exists": "katalog {path} już istnieje — zmień nazwę gałęzi",
-    "dirty-base": "główny katalog ma niezacommitowane zmiany na {base} ({count}) — nowy worktree by ich nie "
-                  "zawierał; zacommituj je albo wyłącz „Nowy worktree”",
     "git": "git odmówił: {detail}",
     "launch": "Konsola nie uruchomiła zadania{detail} — nic nie zostało utworzone",
     "bad-model": "nieznany model (cloud albo local)",
@@ -564,8 +562,8 @@ class Planner:
             path = self._path_for(repo, branch)
             if os.path.exists(path):
                 raise TaskError("path-exists", path=path)
-            if state["branch"] == base and state["dirty"] != 0:
-                raise TaskError("dirty-base", base=base, count=state["dirty"] if state["dirty"] > 0 else "?")
+            # Zmiany w głównym katalogu nie blokują (K-34): worktree wychodzi z commita gałęzi głównej, a okno
+            # Nowego zadania ostrzega, że tych zmian w nim nie będzie.
             sha = self.git.run(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{base}^{{commit}}")
             if not sha.ok:
                 raise TaskError("no-base")

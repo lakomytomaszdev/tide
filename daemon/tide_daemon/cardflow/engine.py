@@ -366,7 +366,7 @@ class FlowEngine(PlanEditing):
         images = self._images(request.get("images"))
         st = fold(self.journal.read(card.id))
         if st.active() and not _resume:
-            raise FlowError("flow-active", f"{card.id}: krok tej karty jeszcze trwa")
+            raise FlowError("flow-active", f"{card.id}: {st.busy_reason()}")
         try:
             if not project.youtrack:
                 reservations.reserve(project.repo, count=1, title=card.title, dry_run=True)
@@ -440,8 +440,11 @@ class FlowEngine(PlanEditing):
         """Przejmuje wskazany plan; źródło pozostaje w repozytorium bez zmian."""
         card_id = f"K-{card_num(card_id)}"
         item, project = self._project(card_id)
-        if item.column in ("done", "archived") or fold(self.journal.read(card_id)).active():
-            raise FlowError("flow-active", "karta jest zakończona albo już pracuje")
+        if item.column in ("done", "archived"):
+            raise FlowError("card-finished", "karta jest zakończona")
+        busy = fold(self.journal.read(card_id)).busy_reason()
+        if busy:
+            raise FlowError("flow-active", f"{card_id}: {busy}")
         if not project.repo or project.repo_missing:
             raise FlowError("no-project", "karta potrzebuje dostępnego repozytorium projektu")
         path = os.path.realpath(str(request.get("planPath") or item.plan or ""))
@@ -521,8 +524,9 @@ class FlowEngine(PlanEditing):
             raise FlowError("no-project", "karta potrzebuje projektu z repozytorium")
         if project.repo_missing or not os.path.isdir(project.repo):
             raise FlowError("no-repo", "repozytorium projektu jest niedostępne")
-        if fold(self.journal.read(card_id)).active():
-            raise FlowError("flow-active", "karta już pracuje")
+        busy = fold(self.journal.read(card_id)).busy_reason()
+        if busy:
+            raise FlowError("flow-active", f"{card_id}: {busy}")
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
@@ -1028,8 +1032,9 @@ class FlowEngine(PlanEditing):
             raise FlowError("no-project", f"{card_id}: karta potrzebuje projektu z repozytorium")
         if item.column in ("done", "archived"):
             raise FlowError("card-finished", f"{card_id}: karta jest zakończona")
-        if not continuation and not import_source and fold(self.journal.read(card_id)).active():
-            raise FlowError("flow-active", f"{card_id}: karta już pracuje")
+        busy = "" if continuation or import_source else fold(self.journal.read(card_id)).busy_reason()
+        if busy:
+            raise FlowError("flow-active", f"{card_id}: {busy}")
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:

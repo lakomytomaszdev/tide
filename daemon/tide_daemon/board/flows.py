@@ -199,7 +199,7 @@ def finish_text(check: str, docs_dir: str) -> str:
 
 def spec_commit_text(in_board: bool, card_id: str, spec_file: str) -> str:
     """Tryb spec: w tablicy nic nie commitujemy (robi to usługa); w repozytorium projektu — wyłącznie plik
-    specyfikacji na bieżącej gałęzi, żeby późniejszy start z nowym worktree nie trafił na „dirty-base”."""
+    specyfikacji na bieżącej gałęzi, żeby nowy worktree (wychodzi z commita) ją zawierał."""
     if in_board:
         return "niczego nie commitujesz — plik specyfikacji w tablicy commituje usługa Tide."
     return (f"gdy specyfikacja ma `status: gotowa`, zacommituj wyłącznie jej plik na bieżącej gałęzi repozytorium: "
