@@ -36,10 +36,14 @@ Item {
     // Wynik ostatniej kontroli przed startem (kategoria Przygotowanie) — trzyma go konsola, jak tablet, do restartu.
     property var preflight: null
     property bool preflightRunning: false
-    // Odpowiedź rdzenia na preflight.run (StreamDesk.commandDone); result — obiekt wyniku albo null przy błędzie.
-    function preflightDone(ok, result) {
-        preflightRunning = false
-        if (ok && result && typeof result === "object") preflight = Object.assign({ at: Date.now() }, result)
+    // Odpowiedź rdzenia na komendę (StreamDesk.commandDone): wynik kontroli przed startem (result — obiekt wyniku
+    // albo null) i potwierdzenie zapisu formularza w popupie kategorii.
+    function commandDone(name, ok, result) {
+        if (name === "preflight.run") {
+            preflightRunning = false
+            if (ok && result && typeof result === "object") preflight = Object.assign({ at: Date.now() }, result)
+        }
+        categoryPopup.commandDone(name, ok)
     }
 
     readonly property var model: Stream.now(view, coreUp)
@@ -77,7 +81,7 @@ Item {
         interval: 60
         onTriggered: column.evaluateCompact()
     }
-    readonly property var categories: Stream.categories(view, coreUp)
+    readonly property var categories: Stream.categories(view, coreUp, preflight)
     // Dół zawartości (kart i karty Stream) w kolumnie — pod nim StreamDesk stawia skrócony plan gry.
     readonly property real contentBottom: flick.y + Math.min(flick.contentHeight, flick.height)
     // Wysokość kart: cała kolumna (bez martwego pasa na dole), a gdy zmieści się plan gry — kolumna bez niego.
@@ -150,6 +154,7 @@ Item {
             view: column.view
             coreUp: column.coreUp
             current: column.currentCategory
+            preflight: column.preflight
             onCategoryRequested: id => column.openCategory(id)
         }
 

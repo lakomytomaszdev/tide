@@ -429,26 +429,36 @@ var CATEGORIES = [
 ]
 var MOTION_KEYS = ["transition", "alert", "peek", "raid"]
 
-function categoryWarnings(view, coreUp) {
+// Kropki ostrzeżeń jak na tablecie (web/app.js, catWarning). Urządzenia: OBS rozłączony, Twitch wymaga zgody albo
+// konfiguracji, albo kamera (iPhone) nie odpowiada — tylko przy widocznym module kamery i według ostatniej kontroli
+// przed startem (preflight: wynik preflight.run z konsoli albo null). Sparowane urządzenie offline (np. iPhone
+// z Pilotem) to zwykły stan, nie ostrzeżenie. Animacje żubra: moduł ruchu schowany albo wszystkie cztery wyłączone.
+function categoryWarnings(view, coreUp, preflight) {
     const out = {}
     if (status(view, coreUp).core !== "up") return out
     const core = obj(view.core)
     const devices = []
-    // Decyzja użytkownika (2.11): tylko OBS i Twitch. Sparowane urządzenie offline (np. iPhone z Pilotem) to
-    // zwykły stan, nie ostrzeżenie; ostrzeżenia z kontroli przed startem Plasma nie ma (brak jej wyniku w stanie).
     if (obj(view.obs).connected !== true) devices.push("OBS rozłączony")
     const twitch = obj(core.twitch).state
     if (twitch === "setup_required") devices.push("Twitch wymaga konfiguracji")
     if (twitch === "authorization_required") devices.push("Twitch wymaga zgody")
+    if (cameraProblem(view, preflight)) devices.push("kamera nie odpowiada")
     if (devices.length) out.devices = devices.join(" · ")
     const motion = obj(core.motion)
-    if (MOTION_KEYS.every(k => k in motion) && MOTION_KEYS.every(k => motion[k] === false))
-        out.motion = "wszystkie animacje wyłączone"
+    if (valueOf(obj(core.modules).motion) === false) out.motion = "animacje schowane w kategorii Na ekranie"
+    else if (MOTION_KEYS.every(k => motion[k] === false)) out.motion = "wszystkie animacje wyłączone"
     return out
 }
 
-function categories(view, coreUp) {
-    const warnings = categoryWarnings(view, coreUp)
+// Niezaliczone sprawdzenie kamery z ostatniej kontroli przed startem, gdy moduł kamery jest widoczny, albo null.
+function cameraProblem(view, preflight) {
+    if (valueOf(obj(obj(obj(view).core).modules).camera) !== true) return null
+    const checks = preflight && Array.isArray(preflight.checks) ? preflight.checks.map(obj) : []
+    return checks.filter(c => c.id === "camera" && c.status !== "ok")[0] || null
+}
+
+function categories(view, coreUp, preflight) {
+    const warnings = categoryWarnings(view, coreUp, preflight)
     return CATEGORIES.map(c => Object.assign({}, c, { warning: warnings[c.id] || "" }))
 }
 
@@ -458,9 +468,10 @@ function categories(view, coreUp) {
 // Rodzaje pozycji (kind):
 // - heading {text} — podtytuł sekcji;
 // - note {text, tone} — dopisek (tone: rola z palety);
-// - row {label, detail, tint, on, button: {text, enabled, command, confirm} | null, test: {text, enabled, command} | null}
-//   — przełącznik (on: true/false) albo sam wiersz stanu (on: null); confirm — napis przycisku po pierwszym
-//   kliknięciu, komenda idzie dopiero po drugim (odłączenie urządzenia);
+// - row {label, detail, tint, on, button: {text, enabled, command, confirm, warning} | null,
+//   test: {text, enabled, command} | null} — przełącznik (on: true/false) albo sam wiersz stanu (on: null); confirm —
+//   napis przycisku po pierwszym kliknięciu, komenda idzie dopiero po drugim (odłączenie urządzenia), a warning
+//   zastępuje wtedy dopisek wiersza;
 // - choice {label, detail, options: [{key, text, tip, on, enabled, command}]} — przyciski wyboru;
 // - actions {label, detail, buttons: [{key, text, tip, enabled, command}]} — rząd przycisków;
 // - form {label, detail, fields: [{key, placeholder, value}], formats, format, save, empty, command} — pola tekstowe
@@ -524,7 +535,8 @@ function button(key, text, cmd, enabled, tip) {
 }
 
 // {items, panel}: panel — odesłanie do Panelu streamera pod treścią (rzeczy, które są tylko na tablecie).
-// extra: {preflight: wynik preflight.run z chwilą `at` (ms) albo null, preflightRunning}.
+// extra: {preflight: wynik preflight.run z chwilą `at` (ms) albo null, preflightRunning, now: czas w ms (koniec
+// odliczania; domyślnie teraz)}.
 function categoryContent(id, view, coreUp, extra) {
     const s = status(view, coreUp)
     if (s.core !== "up")
@@ -533,7 +545,7 @@ function categoryContent(id, view, coreUp, extra) {
     const ex = obj(extra)
     switch (id) {
     case "prep": return prepContent(view, s, ex)
-    case "screens": return screensContent(view)
+    case "screens": return screensContent(view, typeof ex.now === "number" ? ex.now : Date.now())
     case "score": return scoreContent(view, coreUp, s)
     case "modules": return modulesContent(view)
     case "alerts": return alertsContent(view, s)
@@ -571,8 +583,9 @@ function prepContent(view, s, ex) {
                               on: on, enabled: next.length > 0, command: command("target.set", { targets: next }) }
                  }) })
     const recording = obj(core.recording)[s.mode] === true
+    // Tryb, który widziałeś przy kliknięciu — nagrywanie nie trafi do innego trybu, gdy tryb zmieni się w międzyczasie.
     items.push(switchRow("recording", "Nagrywanie", "zapamiętane dla trybu " + s.modeLabel, recording,
-                         command("recording.set", { enabled: !recording })))
+                         command("recording.set", { enabled: !recording, mode: s.mode })))
     const cocaster = valueOf(core.cocaster) === true
     items.push(switchRow("cocaster", "Współkomentator",
                          joinDetail(["suwak Rozmowa (Discord) na streamie", originText(obj(core.cocaster).origin)]),
@@ -599,7 +612,7 @@ function preflightChecks(result) {
              at: typeof result.at === "number" ? Qt.formatTime(new Date(result.at), "HH:mm") : "" }
 }
 
-function screensContent(view) {
+function screensContent(view, now) {
     const core = obj(view.core)
     const items = [heading("screensHead", "Teksty ekranów pełnych")]
     Object.keys(SCREEN_NAMES).forEach(k => {
@@ -612,10 +625,13 @@ function screensContent(view) {
     })
     items.push(note("screensNote", "Pusty tytuł albo podtytuł wraca do domyślnego."))
     const ends = obj(core.countdown).ends_at
-    const running = typeof ends === "number"
+    // Odliczanie, które już minęło, nie ma czego wyłączać (rdzeń zostawia ends_at do następnej zmiany).
+    const running = typeof ends === "number" && ends * 1000 > now
     items.push(heading("countdownHead", "Odliczanie"))
     items.push({ kind: "actions", key: "countdown", label: "",
-                 detail: running ? "Ekrany pełne odliczają do " + clock(ends) + "." : "Odliczanie wyłączone.",
+                 detail: running ? "Ekrany pełne odliczają do " + clock(ends) + "."
+                         : typeof ends === "number" ? "Odliczanie skończyło się o " + clock(ends) + "."
+                         : "Odliczanie wyłączone.",
                  buttons: [button("5", "5 min", command("countdown.start", { minutes: 5 })),
                            button("10", "10 min", command("countdown.start", { minutes: 10 })),
                            button("clear", "Wyłącz", command("countdown.clear"), running)] })
@@ -643,10 +659,11 @@ function scoreContent(view, coreUp, s) {
             button("right", "+1 " + right, command("observer.point", { side: "right" }), !series.finished,
                    "+1 dla " + right)] })
         items.push({ kind: "actions", key: "fix", label: "", detail: "", buttons: [
-            button("minusLeft", "−1 L", command("observer.point", { side: "left", delta: -1 }), true, "−1 dla " + left),
+            button("minusLeft", "−1 L", command("observer.point", { side: "left", delta: -1 }), score[0] > 0,
+                   "−1 dla " + left),
             button("undo", "Cofnij", command("observer.undo")),
             button("swap", "Zamień", command("observer.swap"), true, "Zamień strony"),
-            button("minusRight", "−1 P", command("observer.point", { side: "right", delta: -1 }), true,
+            button("minusRight", "−1 P", command("observer.point", { side: "right", delta: -1 }), score[1] > 0,
                    "−1 dla " + right)] })
         items.push(note("reset", "Zerowanie wyniku: tylko w Panelu streamera (przytrzymanie)."))
     }
@@ -764,9 +781,8 @@ function devicesContent(view, s, ex) {
     const core = obj(view.core)
     const items = []
     // Kamera (iPhone) jak na tablecie: ostatnia kontrola przed startem zgłosiła problem przy widocznym module kamery.
-    const checks = ex.preflight && Array.isArray(ex.preflight.checks) ? ex.preflight.checks.map(obj) : []
-    const camera = checks.filter(c => c.id === "camera" && c.status !== "ok")[0]
-    if (camera && valueOf(obj(core.modules).camera) === true)
+    const camera = cameraProblem(view, ex.preflight)
+    if (camera)
         items.push(note("cameraProblem", "Kamera (iPhone) nie odpowiada" + (camera.message ? ": " + camera.message : "."),
                         "neutral"))
     items.push(heading("devicesHead", "Sparowane urządzenia"))
@@ -774,10 +790,13 @@ function devicesContent(view, s, ex) {
     const list = Array.isArray(view.devices) ? view.devices.map(obj) : []
     list.forEach(d => {
         const id = String(d.id || "")
+        // Na żywo odłączenie połączonego urządzenia od razu zamyka na nim Panel albo Pilota — mówi to potwierdzenie.
         items.push({ kind: "row", key: "device-" + id, label: String(d.name || id),
                      detail: d.online === true ? "połączony" : "offline", tint: d.online === true ? "positive" : "",
                      on: null, test: null,
                      button: { text: "Odłącz", confirm: "Na pewno odłączyć?", enabled: id !== "",
+                               warning: d.online === true && s.live
+                                        ? "Na żywo: Panel streamera albo Pilot na tym urządzeniu od razu się rozłączy." : "",
                                command: command("pairing.revoke", { device: id }) } })
     })
     if (!list.length) items.push(note("noDevices", "Brak sparowanych urządzeń."))

@@ -84,6 +84,18 @@ Item {
         return "Rdzeń nie odpowiedział"
     }
 
+    // Opis błędu komendy. Kontrola przed startem bywa dłuższa niż czas odpowiedzi D-Bus (ok. 25 s, wtyczka Plasmy
+    // nie pozwala go wydłużyć) — wtedy mówimy wprost, że trwała za długo, zamiast „Rdzeń nie odpowiedział”.
+    function commandError(name, error) {
+        const e = errorOf(error)
+        const kind = e && e.name ? String(e.name) : ""
+        if (name === "preflight.run" && (kind === "org.freedesktop.DBus.Error.NoReply"
+                                         || kind === "org.freedesktop.DBus.Error.Timeout"
+                                         || kind === "org.freedesktop.DBus.Error.TimedOut"))
+            return "Kontrola przed startem trwała za długo — spróbuj ponownie."
+        return errorText(error)
+    }
+
     // „Rdzeń nie ma tej metody” — w odróżnieniu od chwilowego błędu (OBS, przekroczony czas).
     function missingMethod(error) {
         const e = errorOf(error)
@@ -130,7 +142,7 @@ Item {
             source.executed(name, true, String(reply.value))
             if (done) done(true, String(reply.value))
         }, function (error) {
-            const why = source.errorText(error)
+            const why = source.commandError(name, error)
             source.executed(name, false, why)
             if (done) done(false, why)
         })

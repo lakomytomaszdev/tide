@@ -13,9 +13,11 @@ RowLayout {
     property var view: null
     property bool coreUp: false
     property string current: ""
+    // Wynik ostatniej kontroli przed startem — kropka Urządzeń przy problemie z kamerą (jak na tablecie).
+    property var preflight: null
     signal categoryRequested(string id)
 
-    readonly property var model: Stream.categories(view, coreUp)
+    readonly property var model: Stream.categories(view, coreUp, preflight)
 
     objectName: "categoryRow"
     spacing: 5

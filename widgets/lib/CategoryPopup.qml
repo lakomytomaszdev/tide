@@ -5,7 +5,10 @@
 // Treść liczy Stream.categoryContent (te same komendy rdzenia i blokady co kategorie na tablecie), popup tylko ją
 // rysuje: nagłówki, dopiski, przełączniki z testem, przyciski wyboru, rzędy przycisków, formularze, wynik serii
 // i wynik kontroli przed startem. Pola tekstowe zapisują się dopiero Enterem albo przyciskiem, a stan z rdzenia
-// nie nadpisuje pola, w którym coś wpisano. Komendę wysyła tylko wtedy, gdy przepuszcza ją Stream.allowedNow.
+// nie nadpisuje pola, w którym coś wpisano. Wpisany, niezapisany tekst (i fokus pola) trzyma popup w `drafts`, więc
+// przetrwa też przebudowę treści (np. koniec serii dokłada formularz następnej) — znika po udanym zapisie albo po
+// zamknięciu popupu. Pole zostaje oznaczone jako zmienione, dopóki rdzeń nie potwierdzi zapisu (commandDone).
+// Komendę wysyła tylko wtedy, gdy przepuszcza ją Stream.allowedNow.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -26,17 +29,57 @@ QQC2.Popup {
     property string status: ""
     signal panelRequested()
     signal commandRequested(string name, var args)
+    // Wynik zapisu formularza (klucz pozycji): ok — rdzeń przyjął komendę.
+    signal formSettled(string key, bool ok)
+
+    // Niezapisane wpisy pól: {"<kategoria>/<pozycja>/<pole>": tekst}, także wybrane BO („…/format”).
+    property var drafts: ({})
+    // Pole, które miało fokus (klucz jak w drafts) — wraca do niego po przebudowie treści.
+    property string focusKey: ""
+    // Zapis formularza czekający na odpowiedź rdzenia: {name, key} albo null.
+    property var pendingForm: null
+    // Zegar dla końca odliczania (przycisk „Wyłącz” gaśnie, gdy odliczanie minie).
+    property real now: Date.now()
+    Timer {
+        interval: 5000
+        repeat: true
+        running: popup.opened
+        onTriggered: popup.now = Date.now()
+    }
 
     readonly property var content: Stream.categoryContent(category ? category.id : "", view, coreUp,
-                                                          { preflight: preflight, preflightRunning: preflightRunning })
+                                                          { preflight: preflight, preflightRunning: preflightRunning,
+                                                            now: now })
+
+    function draftKey(item, field) {
+        return (category ? category.id : "") + "/" + item + "/" + field
+    }
+    function dropDrafts(item) {
+        const prefix = draftKey(item, "")
+        const next = {}
+        for (const k in drafts) if (k.indexOf(prefix) !== 0) next[k] = drafts[k]
+        drafts = next
+    }
+    // Odpowiedź rdzenia na komendę (NowColumn.commandDone). Udany zapis formularza czyści jego wpisy.
+    function commandDone(name, ok) {
+        if (!pendingForm || pendingForm.name !== name) return
+        const key = pendingForm.key
+        pendingForm = null
+        if (ok) dropDrafts(key)
+        formSettled(key, ok)
+    }
+    onOpened: { now = Date.now(); flick.contentY = 0 }
+    onClosed: { drafts = ({}); focusKey = ""; pendingForm = null }
     // Delegaty powstają od nowa tylko przy zmianie układu (rodzaj i klucz pozycji), nie przy każdej zmianie stanu —
     // wpisany tekst, fokus i potwierdzenie odłączenia przetrwają odświeżenie z rdzenia.
     readonly property string layoutKey: (category ? category.id + "/" : "")
                                         + content.items.map(i => i.kind + ":" + i.key).join("|")
 
+    // true, gdy komenda poszła (z listy ALLOWED, zmiana trybu tylko poza anteną).
     function send(command) {
-        if (!command || !Stream.allowedNow(command.name, view, coreUp)) return
+        if (!command || !Stream.allowedNow(command.name, view, coreUp)) return false
         commandRequested(command.name, command.args)
+        return true
     }
 
     objectName: "categoryPopup"
@@ -44,7 +87,6 @@ QQC2.Popup {
     modal: false
     focus: true
     closePolicy: QQC2.Popup.CloseOnEscape
-    onOpened: flick.contentY = 0
     background: Rectangle {
         objectName: "categoryBackground"
         radius: Tokens.radiusCard
@@ -213,6 +255,7 @@ QQC2.Popup {
         // Zaznaczona, ale zablokowana opcja (ostatni cel transmisji, bieżący tryb na żywo) nie wygląda na wyłączoną.
         opacity: enabled || on ? 1 : 0.45
         Accessible.name: text + (on ? ", wybrane" : "")
+        onActiveFocusChanged: if (activeFocus) popup.focusKey = ""
         background: Rectangle {
             radius: Tokens.radiusSmall
             color: parent.on ? Theme.alpha(Tokens.accent, parent.lit ? 0.26 : 0.18)
@@ -226,8 +269,10 @@ QQC2.Popup {
     // Pole tekstowe z zapisem na żądanie: tekst z rdzenia wchodzi tylko wtedy, gdy w polu nic nie zmieniono
     // (dirty), więc odświeżenie stanu nie zabiera tego, co właśnie wpisujesz.
     component SettingField: QQC2.TextField {
+        id: settingField
         property string stateValue: ""
         property bool dirty: false
+        property string draft: ""          // klucz w popup.drafts
         signal commit()
         Layout.fillWidth: true
         Layout.preferredWidth: 1
@@ -241,9 +286,21 @@ QQC2.Popup {
         Accessible.name: placeholderText
         // Tekst z rdzenia pokazuje się od początku (długi podtytuł nie jest przewinięty do końca).
         function showState() { text = stateValue; cursorPosition = 0 }
-        Component.onCompleted: showState()
+        // Niezapisany wpis sprzed przebudowy treści wraca razem z fokusem.
+        Component.onCompleted: {
+            if (draft in popup.drafts) {
+                text = popup.drafts[draft]
+                dirty = true
+                if (popup.focusKey === draft) { forceActiveFocus(); cursorPosition = length }
+            } else showState()
+        }
         onStateValueChanged: if (!dirty) showState()
-        onTextEdited: dirty = true
+        onTextEdited: { dirty = true; popup.drafts[draft] = text }
+        onActiveFocusChanged: if (activeFocus) popup.focusKey = draft
+        Connections {
+            target: popup
+            function onClosed() { settingField.dirty = false; settingField.showState() }
+        }
         onAccepted: commit()
         background: Rectangle {
             implicitHeight: 32
@@ -314,8 +371,9 @@ QQC2.Popup {
                     }
                     Detail {
                         objectName: "cat-" + row.entry.key + "-detail"
-                        text: row.entry.detail
-                        color: row.entry.tint === Stream.WARNING_TINT ? Tokens.neutral : Tokens.textMuted
+                        readonly property string warning: row.armed && row.entry.button ? row.entry.button.warning || "" : ""
+                        text: warning !== "" ? warning : row.entry.detail
+                        color: warning !== "" || row.entry.tint === Stream.WARNING_TINT ? Tokens.neutral : Tokens.textMuted
                     }
                 }
             }
@@ -436,9 +494,22 @@ QQC2.Popup {
             id: form
             readonly property var entry: parent.entry
             readonly property bool series: Array.isArray(entry.formats)
-            property int format: entry.format || 0
+            readonly property string formatKey: popup.draftKey(entry.key, "format")
+            property int format: formatKey in popup.drafts ? popup.drafts[formatKey] : entry.format || 0
             objectName: "cat-" + entry.key + "-form"
             spacing: 5
+
+            // Pola zostają oznaczone jako zmienione, dopóki rdzeń nie przyjmie zapisu; po odmowie dalej są.
+            Connections {
+                target: popup
+                function onFormSettled(key, ok) {
+                    if (key !== form.entry.key || !ok) return
+                    for (let i = 0; i < fields.count; i++) {
+                        const f = fields.itemAt(i)
+                        if (f) { f.dirty = false; f.showState() }
+                    }
+                }
+            }
 
             function values() {
                 const out = {}
@@ -453,8 +524,8 @@ QQC2.Popup {
             function save() {
                 const cmd = Stream.formCommand(entry, values(), format)
                 if (!cmd || popup.busy) return
-                for (let i = 0; i < fields.count; i++) { const f = fields.itemAt(i); if (f) f.dirty = false }
-                popup.send(cmd)
+                popup.pendingForm = { name: cmd.name, key: entry.key }
+                if (!popup.send(cmd)) popup.pendingForm = null
             }
 
             Label {
@@ -476,6 +547,7 @@ QQC2.Popup {
                         readonly property var field: form.entry.fields[index] || ({ key: "", placeholder: "", value: "" })
                         readonly property string key: field.key
                         objectName: "cat-" + form.entry.key + "-" + field.key
+                        draft: popup.draftKey(form.entry.key, field.key)
                         placeholderText: field.placeholder
                         stateValue: field.value
                         onCommit: form.save()
@@ -502,7 +574,7 @@ QQC2.Popup {
                         on: form.format === modelData
                         text: "BO" + modelData
                         Accessible.name: "Format BO" + modelData + (on ? ", wybrany" : "")
-                        onClicked: form.format = modelData
+                        onClicked: { form.format = modelData; popup.drafts[form.formatKey] = modelData }
                     }
                 }
                 Item { Layout.fillWidth: true }
