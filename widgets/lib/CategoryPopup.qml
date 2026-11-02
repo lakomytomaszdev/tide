@@ -10,6 +10,7 @@
 // zamknięciu popupu. Pole zostaje oznaczone jako zmienione, dopóki rdzeń nie potwierdzi zapisu (commandDone).
 // Komendę wysyła tylko wtedy, gdy przepuszcza ją Stream.allowedNow.
 import QtQuick
+import QtQuick.Window
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "stream.js" as Stream
@@ -70,6 +71,17 @@ QQC2.Popup {
     }
     onOpened: { now = Date.now(); flick.contentY = 0 }
     onClosed: { drafts = ({}); focusKey = ""; pendingForm = null }
+    // Fokus wraca do pola po przebudowie tylko wtedy, gdy nie odszedł poza popup (np. na ikonę kategorii) —
+    // przebudowa nie może zabrać fokusu z innego miejsca.
+    Connections {
+        target: popup.contentItem ? popup.contentItem.Window.window : null
+        function onActiveFocusItemChanged() {
+            const item = target.activeFocusItem
+            if (!item || popup.focusKey === "") return
+            for (let it = item; it; it = it.parent) if (it === popup.contentItem || it === popup.contentItem.parent) return
+            popup.focusKey = ""
+        }
+    }
     // Delegaty powstają od nowa tylko przy zmianie układu (rodzaj i klucz pozycji), nie przy każdej zmianie stanu —
     // wpisany tekst, fokus i potwierdzenie odłączenia przetrwają odświeżenie z rdzenia.
     readonly property string layoutKey: (category ? category.id + "/" : "")
