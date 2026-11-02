@@ -36,12 +36,12 @@ Item {
     readonly property real fillHeight: cards.implicitHeight + reserveBottom <= flick.height
                                        ? flick.height - reserveBottom : flick.height
     // Karta, która rośnie i zabiera wolne miejsce — tylko taka, której wysokość coś daje: wynik z serią (rosną
-    // cyfry), ostatnie alerty (więcej wierszy), mecz. Karty z samym tekstem nigdy nie rosną; bez karty do
+    // cyfry) i ostatnie alerty (więcej wierszy). Mecz i karty z samym tekstem nigdy nie rosną; bez karty do
     // wzrostu wolne miejsce zostaje jedną przerwą nad kartą Stream przyklejoną do dołu.
     readonly property bool scoreSeries: !!Stream.scoreCard(view, coreUp).series
     readonly property string growId: {
         const ids = column.model.items.map(i => i.id)
-        const order = (column.scoreSeries ? ["score"] : []).concat(column.manyAlerts ? ["alerts"] : [], ["match"])
+        const order = (column.scoreSeries ? ["score"] : []).concat(column.manyAlerts ? ["alerts"] : [])
         return order.filter(id => ids.indexOf(id) >= 0)[0] || ""
     }
     // Alerty rosną dopiero, gdy jest co pokazać (co najmniej 4) — inaczej pusta karta zamiast przerwy.
