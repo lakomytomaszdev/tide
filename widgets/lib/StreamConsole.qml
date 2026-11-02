@@ -34,6 +34,8 @@ Item {
 
     property url motionBaseUrl: ""
     function playMotionPreview(kind) { scenes.playMotionPreview(kind) }
+    // Odpowiedź rdzenia na komendę (prawa kolumna: wynik kontroli przed startem i zapis formularzy kategorii).
+    function commandDone(name, ok, result) { now.commandDone(name, ok, result) }
 
     readonly property bool columns: deck.streamX >= 0
     implicitHeight: columns ? always.height + 14 + scenes.implicitHeight

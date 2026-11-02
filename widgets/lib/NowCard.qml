@@ -104,6 +104,7 @@ Card {
         }
         Item { Layout.fillWidth: true }
         TextButton {
+            objectName: "now-link-" + card.item.id
             visible: card.linkText !== ""
             variant: "link"
             text: card.linkText

@@ -2,7 +2,7 @@
 // i ekrany, Wynik i seria, Na ekranie, Alerty, Animacje żubra, Urządzenia — w stałej kolejności, każda jednym
 // kliknięciem. Ikona z podpowiedzią, otwarta kategoria dostaje podpis. Kropka ostrzeżenia, gdy w środku coś
 // wymaga uwagi (Stream.categoryWarnings). Rząd tylko zgłasza wybór: popup kategorii otwiera NowColumn.
-// API dla PT-106: `current` (id otwartej kategorii albo ""), sygnał categoryRequested(id) z id z Stream.CATEGORIES.
+// API: `current` (id otwartej kategorii albo ""), sygnał categoryRequested(id) z id z Stream.CATEGORIES.
 import QtQuick
 import QtQuick.Layouts
 import "stream.js" as Stream
@@ -13,9 +13,11 @@ RowLayout {
     property var view: null
     property bool coreUp: false
     property string current: ""
+    // Wynik ostatniej kontroli przed startem — kropka Urządzeń przy problemie z kamerą (jak na tablecie).
+    property var preflight: null
     signal categoryRequested(string id)
 
-    readonly property var model: Stream.categories(view, coreUp)
+    readonly property var model: Stream.categories(view, coreUp, preflight)
 
     objectName: "categoryRow"
     spacing: 5

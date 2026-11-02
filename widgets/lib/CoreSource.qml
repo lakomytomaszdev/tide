@@ -9,7 +9,7 @@
 // nic nie woła rdzenia, którego nie ma na szynie.
 //
 // Komendy idą tylko przez execute(), które przepuszcza wyłącznie komendy z Stream.ALLOWED (bez akcji
-// krytycznych, te są tylko w Panelu streamera).
+// krytycznych, te są tylko w Panelu streamera), a zmianę trybu tylko poza anteną (Stream.allowedNow).
 //
 // Miejsce na to, czego rdzeń jeszcze nie daje (propozycja API w docs/decisions.md, decyzja 79):
 // - czat i alerty: GetChat() → {"events": [...]} i sygnał Chat(s) z komunikatem w kształcie WebSocketu
@@ -84,6 +84,18 @@ Item {
         return "Rdzeń nie odpowiedział"
     }
 
+    // Opis błędu komendy. Kontrola przed startem bywa dłuższa niż czas odpowiedzi D-Bus (ok. 25 s, wtyczka Plasmy
+    // nie pozwala go wydłużyć) — wtedy mówimy wprost, że trwała za długo, zamiast „Rdzeń nie odpowiedział”.
+    function commandError(name, error) {
+        const e = errorOf(error)
+        const kind = e && e.name ? String(e.name) : ""
+        if (name === "preflight.run" && (kind === "org.freedesktop.DBus.Error.NoReply"
+                                         || kind === "org.freedesktop.DBus.Error.Timeout"
+                                         || kind === "org.freedesktop.DBus.Error.TimedOut"))
+            return "Kontrola przed startem trwała za długo — spróbuj ponownie."
+        return errorText(error)
+    }
+
     // „Rdzeń nie ma tej metody” — w odróżnieniu od chwilowego błędu (OBS, przekroczony czas).
     function missingMethod(error) {
         const e = errorOf(error)
@@ -117,9 +129,10 @@ Item {
         }, function () {})
     }
 
-    // Komenda rdzenia; done(ok, wynik JSON albo opis błędu po polsku). Komendy spoza Stream.ALLOWED nie wychodzą.
+    // Komenda rdzenia; done(ok, wynik JSON albo opis błędu po polsku). Komendy spoza Stream.ALLOWED i zmiana
+    // trybu na żywo nie wychodzą.
     function execute(name, args, done) {
-        if (!Stream.allowed(name)) {
+        if (!Stream.allowedNow(name, view, coreUp)) {
             const why = name + ": tylko w Panelu streamera"
             source.executed(name, false, why)
             if (done) done(false, why)
@@ -129,7 +142,7 @@ Item {
             source.executed(name, true, String(reply.value))
             if (done) done(true, String(reply.value))
         }, function (error) {
-            const why = source.errorText(error)
+            const why = source.commandError(name, error)
             source.executed(name, false, why)
             if (done) done(false, why)
         })

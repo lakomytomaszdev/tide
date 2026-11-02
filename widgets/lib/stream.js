@@ -416,8 +416,8 @@ function sceneGroups(view, coreUp) {
 }
 
 // Siedem kategorii ustawień w kolejności cyklu streamu (decyzja 2). Rząd w prawej kolumnie otwiera popup
-// kategorii (PT-106; do tego czasu popup z odesłaniem do Panelu streamera). `warning` to powód kropki
-// ostrzeżenia przy ikonie, pusty, gdy wszystko w porządku.
+// kategorii z jej ustawieniami (PT-106, categoryContent niżej). `warning` to powód kropki ostrzeżenia przy ikonie,
+// pusty, gdy wszystko w porządku.
 var CATEGORIES = [
     { id: "prep", label: "Przygotowanie", short: "Przygot.", icon: "prep" },
     { id: "screens", label: "Sceny i ekrany", short: "Ekrany", icon: "scenes" },
@@ -429,27 +429,407 @@ var CATEGORIES = [
 ]
 var MOTION_KEYS = ["transition", "alert", "peek", "raid"]
 
-function categoryWarnings(view, coreUp) {
+// Kropki ostrzeżeń jak na tablecie (web/app.js, catWarning). Urządzenia: OBS rozłączony, Twitch wymaga zgody albo
+// konfiguracji, albo kamera (iPhone) nie odpowiada — tylko przy widocznym module kamery i według ostatniej kontroli
+// przed startem (preflight: wynik preflight.run z konsoli albo null). Sparowane urządzenie offline (np. iPhone
+// z Pilotem) to zwykły stan, nie ostrzeżenie. Animacje żubra: moduł ruchu schowany albo wszystkie cztery wyłączone.
+function categoryWarnings(view, coreUp, preflight) {
     const out = {}
     if (status(view, coreUp).core !== "up") return out
     const core = obj(view.core)
     const devices = []
-    // Decyzja użytkownika (2.11): tylko OBS i Twitch. Sparowane urządzenie offline (np. iPhone z Pilotem) to
-    // zwykły stan, nie ostrzeżenie; ostrzeżenia z kontroli przed startem Plasma nie ma (brak jej wyniku w stanie).
     if (obj(view.obs).connected !== true) devices.push("OBS rozłączony")
     const twitch = obj(core.twitch).state
     if (twitch === "setup_required") devices.push("Twitch wymaga konfiguracji")
     if (twitch === "authorization_required") devices.push("Twitch wymaga zgody")
+    if (cameraProblem(view, preflight)) devices.push("kamera nie odpowiada")
     if (devices.length) out.devices = devices.join(" · ")
     const motion = obj(core.motion)
-    if (MOTION_KEYS.every(k => k in motion) && MOTION_KEYS.every(k => motion[k] === false))
-        out.motion = "wszystkie animacje wyłączone"
+    if (valueOf(obj(core.modules).motion) === false) out.motion = "animacje schowane w kategorii Na ekranie"
+    else if (MOTION_KEYS.every(k => motion[k] === false)) out.motion = "wszystkie animacje wyłączone"
     return out
 }
 
-function categories(view, coreUp) {
-    const warnings = categoryWarnings(view, coreUp)
+// Niezaliczone sprawdzenie kamery z ostatniej kontroli przed startem, gdy moduł kamery jest widoczny, albo null.
+function cameraProblem(view, preflight) {
+    if (valueOf(obj(obj(obj(view).core).modules).camera) !== true) return null
+    const checks = preflight && Array.isArray(preflight.checks) ? preflight.checks.map(obj) : []
+    return checks.filter(c => c.id === "camera" && c.status !== "ok")[0] || null
+}
+
+function categories(view, coreUp, preflight) {
+    const warnings = categoryWarnings(view, coreUp, preflight)
     return CATEGORIES.map(c => Object.assign({}, c, { warning: warnings[c.id] || "" }))
+}
+
+// --- Treść kategorii ustawień (PT-106): te same komendy rdzenia i te same blokady co kategorie na tablecie
+// (web/app.js: CARDS.setup, preflight, screens, observer, modules, alerts, motion, devices). Popup kategorii
+// (CategoryPopup.qml) rysuje listę pozycji, a każda pozycja niesie gotową komendę {name, args} albo null.
+// Rodzaje pozycji (kind):
+// - heading {text} — podtytuł sekcji;
+// - note {text, tone} — dopisek (tone: rola z palety);
+// - row {label, detail, tint, on, button: {text, enabled, command, confirm, warning} | null,
+//   test: {text, enabled, command} | null} — przełącznik (on: true/false) albo sam wiersz stanu (on: null); confirm —
+//   napis przycisku po pierwszym kliknięciu, komenda idzie dopiero po drugim (odłączenie urządzenia), a warning
+//   zastępuje wtedy dopisek wiersza;
+// - choice {label, detail, options: [{key, text, tip, on, enabled, command}]} — przyciski wyboru;
+// - actions {label, detail, buttons: [{key, text, tip, enabled, command}]} — rząd przycisków;
+// - form {label, detail, fields: [{key, placeholder, value}], formats, format, save, empty, command} — pola tekstowe
+//   zapisywane świadomie (Enter albo przycisk), komendę składa formCommand(); formats — wybór BO (nowa seria);
+// - score {left, right, score, line, winner} — wynik serii;
+// - checks {bad: [{id, label, message, fix}], ok: [nazwa], at} — wynik kontroli przed startem.
+// Każda pozycja ma `key` (objectName „cat-<key>…” w popupie). Akcje krytyczne (start i koniec streamu, zmiana
+// trybu na żywo, zerowanie wyniku, koniec nagrania) zostają w Panelu streamera (decyzja z PT-37).
+var MODULE_LABELS = { camera: "Kamera", chat: "Czat", alerts: "Alerty", opponent: "Dane przeciwnika",
+                      motion: "Animacje żubra" }
+var SCREEN_NAMES = { starting: "Starting soon", brb: "Be right back", ended: "Thanks for watching" }
+var TARGET_ORDER = ["twitch", "youtube", "kick", "local"]
+var MOTION_KINDS = [
+    { key: "transition", label: "Przejście scen", about: "żubr i złota linia przy każdej zmianie sceny" },
+    { key: "alert", label: "Żubr przy alercie", about: "wbiega z follow, sub, bits i raid" },
+    { key: "peek", label: "Wychylenie żubra", about: "" },
+    { key: "raid", label: "Stado przy raidzie", about: "przebiega dołem ekranu" }
+]
+var PEEK_MINUTES = [5, 10, 20, 40, 60]
+var PEEK_PLACES = [
+    { key: "tab", text: "zza zakładki kanału" }, { key: "frame", text: "zza paska ramy" },
+    { key: "edge", text: "zza boku ekranu" }, { key: "camera", text: "zza kamery" }
+]
+var TWITCH_STATES = { connected: "połączony", partial: "częściowo połączony", reconnecting: "łączy ponownie",
+                      authorization_required: "wymaga zgody", setup_required: "wymaga konfiguracji" }
+// Testowy alert jak na tablecie: te same pola dla każdego typu (rdzeń bierze te, które go dotyczą).
+var ALERT_TEST = { user: "test_viewer", months: 3, amount: 100, viewers: 12 }
+
+function command(name, args) {
+    return { name: name, args: args || {} }
+}
+
+// Przełącznik: napis przycisku „Włączone”/„Wyłączone”, chyba że extra.text mówi inaczej.
+function switchRow(key, label, detail, on, cmd, extra) {
+    const ex = obj(extra)
+    return { kind: "row", key: key, label: label, detail: detail || "", tint: "", on: on === true,
+             button: { text: ex.text || (on === true ? "Włączone" : "Wyłączone"), enabled: true, command: cmd,
+                       confirm: "" },
+             test: ex.test || null }
+}
+
+function stateRow(key, label, detail, tint) {
+    return { kind: "row", key: key, label: label, detail: detail || "", tint: tint || "", on: null, button: null,
+             test: null }
+}
+
+function heading(key, text) {
+    return { kind: "heading", key: key, text: text }
+}
+
+function note(key, text, tone) {
+    return { kind: "note", key: key, text: text, tone: tone || "textMuted" }
+}
+
+function joinDetail(parts) {
+    return parts.filter(p => p).join(" · ")
+}
+
+function button(key, text, cmd, enabled, tip) {
+    return { key: key, text: text, tip: tip || "", enabled: enabled !== false, command: cmd }
+}
+
+// {items, panel}: panel — odesłanie do Panelu streamera pod treścią (rzeczy, które są tylko na tablecie).
+// extra: {preflight: wynik preflight.run z chwilą `at` (ms) albo null, preflightRunning, now: czas w ms (koniec
+// odliczania; domyślnie teraz)}.
+function categoryContent(id, view, coreUp, extra) {
+    const s = status(view, coreUp)
+    if (s.core !== "up")
+        return { items: [note("core", s.core === "down" ? "Rdzeń Streamer nie działa (usługa streamer-core)."
+                                                        : "Czytam stan rdzenia…", "textSecondary")], panel: false }
+    const ex = obj(extra)
+    switch (id) {
+    case "prep": return prepContent(view, s, ex)
+    case "screens": return screensContent(view, typeof ex.now === "number" ? ex.now : Date.now())
+    case "score": return scoreContent(view, coreUp, s)
+    case "modules": return modulesContent(view)
+    case "alerts": return alertsContent(view, s)
+    case "motion": return motionContent(view, s)
+    case "devices": return devicesContent(view, s, ex)
+    }
+    return { items: [], panel: false }
+}
+
+function prepContent(view, s, ex) {
+    const core = obj(view.core)
+    const items = []
+    // Na żywo zmiana trybu to akcja krytyczna: na tablecie przytrzymanie, a rdzeń odrzuca ją spoza aplikacji webowej.
+    items.push({ kind: "choice", key: "mode", label: "Tryb",
+                 detail: joinDetail([originText(obj(core.mode).origin),
+                                     s.live ? "na żywo zmienisz go tylko w Panelu streamera (przytrzymanie)" : ""]),
+                 options: Object.keys(MODES).map(k => ({
+                     key: k, text: MODES[k], tip: "", on: s.mode === k, enabled: s.mode === k || !s.live,
+                     command: s.mode === k || s.live ? null : command("mode.set", { mode: k })
+                 })) })
+    const list = profiles(view)
+    if (list.length)
+        items.push({ kind: "choice", key: "profile", label: "Profil gracza",
+                     detail: originText(obj(core.player_profile).origin),
+                     options: list.map(p => ({ key: p.id, text: p.title, tip: p.detail, on: p.current, enabled: true,
+                                               command: p.current ? null : command("profile.set", { profile: p.id }) })) })
+    const targets = (valueOf(core.broadcast_targets) || []).map(String)
+    items.push({ kind: "choice", key: "targets", label: "Cel transmisji",
+                 detail: originText(obj(core.broadcast_targets).origin),
+                 options: TARGET_ORDER.map(k => {
+                     const on = targets.indexOf(k) >= 0
+                     const next = on ? targets.filter(t => t !== k) : targets.concat([k])
+                     // Ostatniego celu nie da się odznaczyć (rdzeń chce niepustej listy), jak na tablecie.
+                     return { key: k, text: k === "local" ? "Lokalnie" : TARGETS[k], tip: k === "local" ? "Tylko nagranie" : "",
+                              on: on, enabled: next.length > 0, command: command("target.set", { targets: next }) }
+                 }) })
+    const recording = obj(core.recording)[s.mode] === true
+    // Tryb, który widziałeś przy kliknięciu — nagrywanie nie trafi do innego trybu, gdy tryb zmieni się w międzyczasie.
+    items.push(switchRow("recording", "Nagrywanie", "zapamiętane dla trybu " + s.modeLabel, recording,
+                         command("recording.set", { enabled: !recording, mode: s.mode })))
+    const cocaster = valueOf(core.cocaster) === true
+    items.push(switchRow("cocaster", "Współkomentator",
+                         joinDetail(["suwak Rozmowa (Discord) na streamie", originText(obj(core.cocaster).origin)]),
+                         cocaster, command("cocaster.set", { on: !cocaster })))
+    items.push(heading("preflightHead", "Kontrola przed startem"))
+    const result = ex.preflight && typeof ex.preflight === "object" ? ex.preflight : null
+    items.push({ kind: "actions", key: "preflight", label: "",
+                 detail: "Sprawdza OBS, obraz, dźwięk, kamerę, dysk i łącze. Ostrzega, nie blokuje.",
+                 buttons: [button("run", ex.preflightRunning ? "Sprawdzam…" : result ? "Sprawdź ponownie"
+                                                                                     : "Sprawdź przed startem",
+                                  command("preflight.run"), !ex.preflightRunning)] })
+    if (result) items.push(preflightChecks(result))
+    items.push(note("start", CRITICAL_NOTE))
+    return { items: items, panel: true }
+}
+
+function preflightChecks(result) {
+    const checks = Array.isArray(result.checks) ? result.checks.map(obj) : []
+    return { kind: "checks", key: "preflightResult",
+             bad: checks.filter(c => c.status !== "ok").map(c => ({
+                 id: String(c.id || ""), label: String(c.label || ""), message: String(c.message || ""),
+                 fix: String(c.fix || "") })),
+             ok: checks.filter(c => c.status === "ok").map(c => String(c.label || "")),
+             at: typeof result.at === "number" ? Qt.formatTime(new Date(result.at), "HH:mm") : "" }
+}
+
+function screensContent(view, now) {
+    const core = obj(view.core)
+    const items = [heading("screensHead", "Teksty ekranów pełnych")]
+    Object.keys(SCREEN_NAMES).forEach(k => {
+        const sc = obj(obj(core.screens)[k])
+        items.push({ kind: "form", key: "screen-" + k, label: SCREEN_NAMES[k], detail: "",
+                     fields: [{ key: "title", placeholder: "Tytuł", value: String(sc.title || "") },
+                              { key: "subtitle", placeholder: "Podtytuł", value: String(sc.subtitle || "") }],
+                     formats: null, format: 0, save: "Zapisz", empty: true,
+                     command: command("screen.set", { screen: k }) })
+    })
+    items.push(note("screensNote", "Pusty tytuł albo podtytuł wraca do domyślnego."))
+    const ends = obj(core.countdown).ends_at
+    // Odliczanie, które już minęło, nie ma czego wyłączać (rdzeń zostawia ends_at do następnej zmiany).
+    const running = typeof ends === "number" && ends * 1000 > now
+    items.push(heading("countdownHead", "Odliczanie"))
+    items.push({ kind: "actions", key: "countdown", label: "",
+                 detail: running ? "Ekrany pełne odliczają do " + clock(ends) + "."
+                         : typeof ends === "number" ? "Odliczanie skończyło się o " + clock(ends) + "."
+                         : "Odliczanie wyłączone.",
+                 buttons: [button("5", "5 min", command("countdown.start", { minutes: 5 })),
+                           button("10", "10 min", command("countdown.start", { minutes: 10 })),
+                           button("clear", "Wyłącz", command("countdown.clear"), running)] })
+    const topic = obj(core.topic)
+    items.push(heading("topicHead", "Temat w scenie Browser"))
+    items.push({ kind: "form", key: "topic", label: "",
+                 detail: topic.text ? "" : "Bez tematu płytka w scenie Browser jest schowana.",
+                 fields: [{ key: "text", placeholder: "Pusty chowa płytkę", value: String(topic.text || "") }],
+                 formats: null, format: 0, save: "Zapisz", empty: true, command: command("topic.set", {}) })
+    return { items: items, panel: false }
+}
+
+function scoreContent(view, coreUp, s) {
+    const o = obj(obj(view.core).observer)
+    const series = o.series && typeof o.series === "object" ? o.series : null
+    const items = []
+    if (series) {
+        const score = Array.isArray(series.score) ? series.score : [0, 0]
+        const left = String(series.left), right = String(series.right)
+        items.push({ kind: "score", key: "series", left: left, right: right, score: score[0] + " : " + score[1],
+                     line: "BO" + series.format + (series.finished ? " · koniec" : " · gra " + series.game),
+                     winner: series.finished && series.winner ? String(series.winner) : "" })
+        items.push({ kind: "actions", key: "points", label: "", detail: "", buttons: [
+            button("left", "+1 " + left, command("observer.point", { side: "left" }), !series.finished, "+1 dla " + left),
+            button("right", "+1 " + right, command("observer.point", { side: "right" }), !series.finished,
+                   "+1 dla " + right)] })
+        items.push({ kind: "actions", key: "fix", label: "", detail: "", buttons: [
+            button("minusLeft", "−1 L", command("observer.point", { side: "left", delta: -1 }), score[0] > 0,
+                   "−1 dla " + left),
+            button("undo", "Cofnij", command("observer.undo")),
+            button("swap", "Zamień", command("observer.swap"), true, "Zamień strony"),
+            button("minusRight", "−1 P", command("observer.point", { side: "right", delta: -1 }), score[1] > 0,
+                   "−1 dla " + right)] })
+        items.push(note("reset", "Zerowanie wyniku: tylko w Panelu streamera (przytrzymanie)."))
+    }
+    // Nowa seria tylko bez serii albo po jej końcu — trwającej serii nie da się tu przypadkiem zastąpić.
+    if (!series || series.finished) {
+        const card = scoreCard(view, coreUp)
+        items.push(heading("seriesHead", series ? "Następna seria" : "Nowa seria"))
+        items.push({ kind: "form", key: "newSeries", label: "",
+                     detail: series ? "" : "Brak serii. Wpisz graczy i wybierz BO.",
+                     fields: [{ key: "left", placeholder: "Gracz lewy", value: card.left },
+                              { key: "right", placeholder: "Gracz prawy", value: card.right }],
+                     formats: SERIES_FORMATS, format: 3, save: "Nowa seria", empty: false,
+                     command: command("observer.series.start", {}) })
+    }
+    items.push(heading("visibility", "Widoczność"))
+    // Dwa niezależne przełączniki (decyzja 6): karta na panelu (przypięcie w bieżącym trybie) i nakładka u widzów.
+    const sit = obj(view.situation)
+    if (Array.isArray(sit.pinned) && Array.isArray(sit.hidden)) {
+        const pinned = sit.pinned.map(String).indexOf("score") >= 0
+        const auto = Array.isArray(sit.auto) && sit.auto.map(String).indexOf("score") >= 0
+        items.push(switchRow("card", "Karta wyniku na panelu",
+                             pinned ? "przypięta w trybie " + s.modeLabel : auto ? "auto — teraz pokazuje ją rdzeń" : "",
+                             pinned, command("panel.pin", { card: "score", pinned: !pinned }),
+                             { text: pinned ? "Przypięta" : "Nieprzypięta" }))
+    }
+    const overlay = scoreOverlay(view, coreUp)
+    const word = overlay.label.replace("Wynik u widzów: ", "")
+    items.push(switchRow("overlay", "Wynik u widzów", originText(obj(o.overlay).origin), overlay.shown,
+                         command("observer.overlay.set", overlay.args),
+                         { text: word.charAt(0).toUpperCase() + word.slice(1) }))
+    items.push(heading("eventHead", "Wydarzenie"))
+    const event = o.event && typeof o.event === "object" ? o.event : null
+    items.push({ kind: "form", key: "event", label: "",
+                 detail: event ? (event.logo ? "Z logo." : "Bez logo.") : "Castujesz bez wydarzenia.",
+                 fields: [{ key: "name", placeholder: "Nazwa wydarzenia (opcjonalnie)",
+                            value: event ? String(event.name || "") : "" }],
+                 formats: null, format: 0, save: "Zapisz", empty: true,
+                 command: command("observer.event.set", { logo: event && event.logo ? event.logo : null }) })
+    if (event) {
+        const buttons = []
+        if (event.logo) buttons.push(button("dropLogo", "Bez logo",
+                                            command("observer.event.set", { name: String(event.name || ""), logo: null })))
+        buttons.push(button("clear", "Bez wydarzenia", command("observer.event.clear")))
+        items.push({ kind: "actions", key: "eventActions", label: "", detail: "", buttons: buttons })
+    }
+    items.push(note("logo", "Logo wydarzenia (PNG, JPG albo WebP) wgrasz w Panelu streamera."))
+    return { items: items, panel: true }
+}
+
+function modulesContent(view) {
+    const core = obj(view.core)
+    const mods = obj(core.modules)
+    const items = Object.keys(MODULE_LABELS).filter(k => k in mods).map(k => {
+        const on = valueOf(mods[k]) === true
+        return switchRow("module-" + k, MODULE_LABELS[k],
+                         joinDetail([k === "motion" ? "wspólny wyłącznik wszystkich animacji" : "",
+                                     originText(obj(mods[k]).origin)]),
+                         on, command("module.set", { module: k, visible: !on }))
+    })
+    const warn = valueOf(core.mic_warning) === true
+    items.push(switchRow("micWarning", "Ostrzeżenie o wyciszonym mikrofonie",
+                         joinDetail(["gdy mówisz przy wyciszonym mikrofonie", originText(obj(core.mic_warning).origin)]),
+                         warn, command("mic.warning.set", { enabled: !warn })))
+    items.push(note("modulesNote", "Zmiana trybu przywraca domyślne moduły trybu."))
+    return { items: items, panel: false }
+}
+
+function alertsContent(view, s) {
+    const a = obj(obj(view.core).alerts)
+    const types = obj(a.types)
+    const items = Object.keys(ALERTS).map(k => switchRow("alert-" + k, ALERTS[k], "", types[k] === true,
+        command("alerts.set", { type: k, enabled: types[k] !== true }),
+        { test: button("test", "Test", command("alerts.test", Object.assign({ type: k }, ALERT_TEST)), true,
+                       "Testowy alert " + ALERTS[k]) }))
+    items.push(switchRow("sound", "Dźwięk sub i raid", "", a.sound === true,
+                         command("alerts.set", { type: "sound", enabled: a.sound !== true })))
+    items.push(note("alertsNote", s.live ? "Test pojawia się na nakładce — na żywo zobaczą go też widzowie."
+                                         : "Test pojawia się na nakładce w OBS."))
+    return { items: items, panel: false }
+}
+
+function motionContent(view, s) {
+    const core = obj(view.core)
+    const m = obj(core.motion)
+    const every = typeof m.peek_every_min === "number" ? m.peek_every_min : 20
+    const items = []
+    if (valueOf(obj(core.modules).motion) === false)
+        items.push(note("motionOff", "Wszystkie wyłączone przełącznikiem „Animacje żubra” w kategorii „Na ekranie”.",
+                        "neutral"))
+    MOTION_KINDS.forEach(k => {
+        items.push(switchRow("motion-" + k.key, k.label,
+                             k.key === "peek" ? "co " + every + " min, nie w trakcie alertu" : k.about,
+                             m[k.key] !== false, command("motion.set", { key: k.key, enabled: m[k.key] === false }),
+                             { test: button("test", "Test", command("motion.test", { kind: k.key }), true,
+                                            "Test: " + k.label) }))
+    })
+    items.push({ kind: "choice", key: "peek", label: "Wychylenie co", detail: "",
+                 options: PEEK_MINUTES.map(n => ({
+                     key: String(n), text: n + " min", tip: "", on: every === n, enabled: true,
+                     command: every === n ? null : command("motion.set", { key: "peek_every_min", value: n }) })) })
+    const chosen = Array.isArray(m.places) ? m.places.map(String) : PEEK_PLACES.map(p => p.key)
+    items.push({ kind: "choice", key: "places", label: "Skąd się wychyla", detail: "",
+                 options: PEEK_PLACES.map(p => {
+                     const on = chosen.indexOf(p.key) >= 0
+                     const next = on ? chosen.filter(x => x !== p.key) : chosen.concat([p.key])
+                     return { key: p.key, text: p.text, tip: "", on: on, enabled: true,
+                              command: command("motion.set", { key: "places", value: next }) }
+                 }) })
+    items.push(note("motionNote", s.live ? "Na żywo test zobaczysz tylko tutaj, na podglądzie sceny."
+                                         : "Poza anteną test gra na nakładce w OBS."))
+    return { items: items, panel: false }
+}
+
+function devicesContent(view, s, ex) {
+    const core = obj(view.core)
+    const items = []
+    // Kamera (iPhone) jak na tablecie: ostatnia kontrola przed startem zgłosiła problem przy widocznym module kamery.
+    const camera = cameraProblem(view, ex.preflight)
+    if (camera)
+        items.push(note("cameraProblem", "Kamera (iPhone) nie odpowiada" + (camera.message ? ": " + camera.message : "."),
+                        "neutral"))
+    items.push(heading("devicesHead", "Sparowane urządzenia"))
+    // Odłączanie jest tutaj, bo konsola działa na tym komputerze (pairing.revoke działa tylko lokalnie).
+    const list = Array.isArray(view.devices) ? view.devices.map(obj) : []
+    list.forEach(d => {
+        const id = String(d.id || "")
+        // Na żywo odłączenie połączonego urządzenia od razu zamyka na nim Panel albo Pilota — mówi to potwierdzenie.
+        items.push({ kind: "row", key: "device-" + id, label: String(d.name || id),
+                     detail: d.online === true ? "połączony" : "offline", tint: d.online === true ? "positive" : "",
+                     on: null, test: null,
+                     button: { text: "Odłącz", confirm: "Na pewno odłączyć?", enabled: id !== "",
+                               warning: d.online === true && s.live
+                                        ? "Na żywo: Panel streamera albo Pilot na tym urządzeniu od razu się rozłączy." : "",
+                               command: command("pairing.revoke", { device: id }) } })
+    })
+    if (!list.length) items.push(note("noDevices", "Brak sparowanych urządzeń."))
+    items.push(note("pairNote", "Nowe urządzenie sparujesz kafelkiem „Tablet” w docku Stream (kod QR). Odłączone "
+                                + "urządzenie musi sparować się od nowa."))
+    items.push(heading("linksHead", "Połączenia"))
+    const twitch = obj(core.twitch)
+    items.push(stateRow("twitch", "Twitch", joinDetail([TWITCH_STATES[twitch.state] || "niepołączony",
+                                                        twitch.reason ? String(twitch.reason) : ""]),
+                        twitch.state === "connected" ? "positive" : WARNING_TINT))
+    items.push(stateRow("obs", "OBS", s.obsConnected ? "połączony" : joinDetail(["rozłączony", s.obsError]),
+                        s.obsConnected ? "positive" : WARNING_TINT))
+    return { items: items, panel: false }
+}
+
+// Komenda formularza z wpisanych wartości ({klucz pola: tekst}) albo null, gdy formularz jest niepełny.
+// format — wybrane BO (nowa seria). Wydarzenie bez nazwy to observer.event.clear, jak na tablecie.
+function formCommand(item, values, format) {
+    const it = obj(item)
+    const vals = obj(values)
+    const base = obj(it.command)
+    if (!base.name) return null
+    if (base.name === "observer.series.start") return seriesStart(vals.left, vals.right, format)
+    const args = Object.assign({}, obj(base.args))
+    const fields = Array.isArray(it.fields) ? it.fields : []
+    for (let i = 0; i < fields.length; i++) {
+        const raw = fields[i].key in vals ? vals[fields[i].key] : fields[i].value
+        const text = String(raw === undefined || raw === null ? "" : raw).trim()
+        if (text === "" && !it.empty) return null
+        args[fields[i].key] = text
+    }
+    if (base.name === "observer.event.set" && args.name === "") return command("observer.event.clear")
+    return command(base.name, args)
 }
 
 // Karty z rdzenia (core/src/kamp/situation.py): auto według etapu i trybu, z katalogu PINNABLE do przypięcia.
@@ -552,11 +932,12 @@ function screenLine(core, key) {
     return [sc.title, sc.subtitle].filter(x => x).map(String).join(" — ")
 }
 
-// Treść kart „Teraz” bez osobnego komponentu: {lines: [{text, tone}], action: {text, name, args} | null, panel}.
-// tone: rola z palety (textPrimary, textSecondary, textMuted). panel: odesłanie do Panelu streamera (akcje
-// krytyczne i ustawienia, których Plasma jeszcze nie ma — PT-106). alerts — teksty ostatnich alertów z czatu.
+// Treść kart „Teraz” bez osobnego komponentu: {lines: [{text, tone}], action: {text, name, args} | null, panel,
+// category}. tone: rola z palety (textPrimary, textSecondary, textMuted). panel: odesłanie do Panelu streamera
+// (akcje krytyczne). category: id kategorii z ustawieniami tej karty (PT-106) — link w nagłówku otwiera jej popup.
+// alerts — teksty ostatnich alertów z czatu.
 function nowBody(view, coreUp, id, alerts) {
-    const out = { lines: [], action: null, panel: false }
+    const out = { lines: [], action: null, panel: false, category: "" }
     const s = status(view, coreUp)
     if (s.core !== "up") return out
     const core = obj(view.core)
@@ -564,7 +945,8 @@ function nowBody(view, coreUp, id, alerts) {
     const screen = key => {
         const text = screenLine(core, key)
         if (text) line(text)
-        else line("Bez tekstu — ustawisz go w Panelu streamera.", "textMuted")
+        else line("Bez tekstu — ustawisz go w kategorii Sceny i ekrany.", "textMuted")
+        out.category = "screens"
     }
     switch (id) {
     case "match": {
@@ -580,6 +962,7 @@ function nowBody(view, coreUp, id, alerts) {
         const e = obj(obj(core.observer).event)
         if (e.name) line(e.name + (e.logo ? " · z logo" : ""))
         else line("Bez wydarzenia — castujesz bez nazwy.", "textMuted")
+        out.category = "score"
         break
     }
     case "alerts":
@@ -590,12 +973,14 @@ function nowBody(view, coreUp, id, alerts) {
         const t = obj(core.topic)
         if (t.text) line((t.label ? t.label + ": " : "") + t.text)
         else line("Bez tematu — płytka w scenie Browser jest schowana.", "textMuted")
+        out.category = "screens"
         break
     }
     case "countdown": {
         const ends = obj(core.countdown).ends_at
         if (typeof ends === "number") line("Ekrany pełne odliczają do " + clock(ends))
         else line("Odliczanie wyłączone.", "textMuted")
+        out.category = "screens"
         break
     }
     case "camera": {
@@ -611,12 +996,13 @@ function nowBody(view, coreUp, id, alerts) {
              + (s.targets.length ? s.targets.join(", ") : "—"))
         line("Nagrywanie " + (s.recordingPlanned ? "włączy się ze startem" : "wyłączone") + " · profil "
              + (s.profile || "—"), "textSecondary")
-        out.panel = true
+        out.category = "prep"
         break
     }
     case "preflight":
-        line("Sprawdza OBS, mikrofon, Twitch i nagrywanie — uruchomisz ją w Panelu streamera.", "textSecondary")
-        out.panel = true
+        line("Sprawdza OBS, obraz, dźwięk, kamerę, dysk i łącze — uruchomisz ją w kategorii Przygotowanie.",
+             "textSecondary")
+        out.category = "prep"
         break
     case "start_screen":
         screen("starting")
@@ -735,16 +1121,28 @@ function chatHtml(line, nickColor) {
 
 // Komendy, które widżety mogą wysłać do rdzenia. Akcji krytycznych (start i koniec streamu, koniec nagrania,
 // zmiana trybu na żywo, reset serii) nie ma w widżetach — są tylko w Panelu streamera (przytrzymanie).
-// mode.set zostaje poza listą w całości: rdzeń odrzuca ją na żywo, a poza anteną tryb wybiera Panel.
 // Mikrofon przez mic.set {muted} (nie mic.toggle): podwójne kliknięcie albo spóźniony stan nie odwróci wyniku.
-// Wynik serii na lewym monitorze (PT-91, decyzja 29.10): +1, cofnij, zamiana i ukrycie; zerowanie tylko w Panelu.
+// Wynik serii na lewym monitorze (PT-91, decyzja 29.10): +1, cofnij, zamiana i ukrycie; zerowanie tylko w Panelu
+// (observer.reset jest w rdzeniu krytyczna, więc i tak odrzuciłby ją z D-Bus).
 // PT-105: nowa seria z karty wyniku bez serii (decyzja 6 K-29) oraz przypinanie i chowanie kart „Teraz”.
+// PT-106: ustawienia siedmiu kategorii (K-29 decyzja 2) — te same komendy co kategorie na tablecie. mode.set
+// tylko poza anteną: na żywo to akcja krytyczna, przyciski trybu są wtedy wyłączone, allowedNow() jej nie
+// przepuszcza, a rdzeń i tak odrzuca ją spoza aplikacji webowej.
 var ALLOWED = ["mic.set", "profile.set", "module.set", "motion.set", "motion.test", "scene.set", "brb.toggle", "pairing.invite", "pairing.revoke",
                "privacy.toggle", "overlays.toggle", "observer.point", "observer.undo", "observer.swap", "observer.overlay.set",
-               "observer.series.start", "panel.pin", "panel.hide"]
+               "observer.series.start", "panel.pin", "panel.hide",
+               "mode.set", "target.set", "recording.set", "cocaster.set", "preflight.run", "screen.set",
+               "countdown.start", "countdown.clear", "topic.set", "observer.event.set", "observer.event.clear",
+               "mic.warning.set", "alerts.set", "alerts.test"]
 
 function allowed(name) {
     return ALLOWED.indexOf(name) >= 0
+}
+
+// Czy komendę wolno wysłać teraz: z listy ALLOWED, a zmiana trybu tylko poza anteną.
+function allowedNow(name, view, coreUp) {
+    if (!allowed(name)) return false
+    return !(name === "mode.set" && status(view, coreUp).live === true)
 }
 
 // Ściąga ze skrótami aktywności Stream (plan PT-38). Skróty Stream działają tylko w aktywności Stream.

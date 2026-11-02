@@ -206,17 +206,28 @@ stan streamu należy do rdzenia, dane pracy dalej idą tylko z tide-daemon.
   Konsola w desku ma układ wariantu A (PT-105, `docs/agents/specs/k-29-panel-categories.md`): lewa kolumna to karta
   **Zawsze** (mikrofon, BRB, prywatność, schowanie grafik i „Wynik u widzów” — `observer.overlay.set`) nad Scenami
   w grupach z `situation.scene_groups` (kłódka przy grupie z zablokowaną sceną), prawa to rząd siedmiu kategorii
-  (popup nad kolumną; treść kategorii w PT-106) i karty **Teraz** z `situation.cards`: znacznik auto/przypięta,
-  pinezka (`panel.pin`), × (`panel.hide`), przywracanie schowanych z nagłówka i „Dodaj kartę” z `situation.addable`.
-  Karta wyniku bez serii ma pola „Nowa seria” (`observer.series.start`). Rdzeń bez tych pól daje płaskie sceny
+  i karty **Teraz** z `situation.cards`: znacznik auto/przypięta, pinezka (`panel.pin`), × (`panel.hide`),
+  przywracanie schowanych z nagłówka i „Dodaj kartę” z `situation.addable`. Karta wyniku bez serii ma pola
+  „Nowa seria” (`observer.series.start`), karta Stream — sam stan. Rdzeń bez tych pól daje płaskie sceny
   i karty bez przypinania.
+  Kategoria otwiera nieprzezroczysty popup od rzędu kategorii do dołu kolumny (PT-106; Esc, × albo ta sama ikona
+  zamyka, dłuższa treść przewija się w środku) z tymi samymi ustawieniami i blokadami co na tablecie:
+  **Przygotowanie** (tryb — na żywo tylko w Panelu, profil gracza, cel transmisji, nagrywanie, współkomentator,
+  kontrola przed startem z wynikiem), **Sceny i ekrany** (teksty Starting soon, Be right back i Thanks for watching,
+  odliczanie, temat w scenie Browser), **Wynik i seria** (+1, −1, cofnij, zamiana, nowa seria tylko bez serii albo po
+  jej końcu, karta na panelu, wynik u widzów, wydarzenie), **Na ekranie** (moduły i ostrzeżenie o wyciszonym
+  mikrofonie), **Alerty** (typy, dźwięk, testy), **Animacje żubra** (przejście, alert, wychylenie, stado,
+  częstotliwość, miejsca, testy) i **Urządzenia** (sparowane urządzenia z odłączaniem po potwierdzeniu, stan Twitcha
+  i OBS). Pola tekstowe zapisuje Enter albo „Zapisz”, a stan z rdzenia nie nadpisuje pola, w którym coś wpisano.
+  Treść liczy `Stream.categoryContent`, popup (`CategoryPopup.qml`) tylko ją rysuje. W Panelu streamera zostają
+  start i koniec streamu, zmiana trybu na żywo, zerowanie wyniku i wgrywanie logo wydarzenia.
 
 **Rozmowa z rdzeniem.** Jedno `CoreSource` na widżet: `GetState()` przy starcie i po każdym pojawieniu się usługi na
 szynie, potem tylko sygnał `Changed` (niesie cały widok w `state`), do tego odczyt zapasowy co 5 min. Gdy rdzeń
 znika, widżety od razu mówią „rdzeń nie działa”; po jego powrocie same czytają stan od nowa. Komendy idą przez
-`Execute` wyłącznie z listy `Stream.ALLOWED` (`mic.set`, `profile.set`, `module.set`, `scene.set`,
-`brb.toggle`) — akcji krytycznych (start i koniec streamu, koniec nagrania, zmiana trybu na żywo, reset serii)
-w widżetach nie ma.
+`Execute` wyłącznie z listy `Stream.ALLOWED` (m.in. `mic.set`, `profile.set`, `module.set`, `scene.set`,
+`brb.toggle` i ustawienia kategorii konsoli) — akcji krytycznych (start i koniec streamu, koniec nagrania, zmiana
+trybu na żywo, reset serii) w widżetach nie ma; `mode.set` przechodzi tylko poza anteną (`Stream.allowedNow`).
 
 **Czego rdzeń jeszcze nie daje.** Listy scen trybu, podglądu bieżącej sceny i czatu z alertami przez D-Bus,
 a dla widoku Granie przeglądu wszystkich kont, ostatnich meczów, bilansu dnia i danych meczu w trybie PC (propozycja
