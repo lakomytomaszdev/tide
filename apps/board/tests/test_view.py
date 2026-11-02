@@ -389,6 +389,19 @@ class LogicTest(unittest.TestCase):
         self.assertNotIn("Sonnet", options)
         self.assertNotIn("Lokalny", options)
 
+    def test_failed_plan_review_offers_other_reviewers_than_the_planner(self):
+        # K-33: review planu (Haiku) skończyło się błędem, a lista „Zmień wykonawcę” była pusta.
+        status = json.dumps(dict(models_status(), executors=EXECUTORS))
+        flow = "{stepKind: 'plan-review', provider: 'anthropic', executor: 'Haiku', planner: 'Opus'}"
+        options = self.js(f"retryExecutors({status}, {flow}).map(o => o.value)")
+        self.assertIn("Sonnet", options)
+        self.assertNotIn("Haiku", options, "obecny wykonawca")
+        self.assertNotIn("Opus", options, "review planu wymaga modelu innego niż planujący")
+        self.assertNotIn("Lokalny", options)
+        for kind in ("plan-amend", "plan-revise"):
+            flow = f"{{stepKind: '{kind}', provider: 'anthropic', executor: 'Haiku'}}"
+            self.assertIn("Sonnet", self.js(f"retryExecutors({status}, {flow}).map(o => o.value)"), kind)
+
 
 class DocsLogicTest(unittest.TestCase):
     """cardDocs.js w QJSEngine: zakładki, postęp, stany ticketów, statusy, linki."""

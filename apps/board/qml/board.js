@@ -591,6 +591,15 @@ function retryExecutors(status, flow) {
     if (flow.stepKind === "planning" || flow.stepKind === "plan-fix")
         return planningExecutors(status, flow.provider === "local" ? "local" : "mixed")
             .filter(option => option.value !== flow.executor && !option.disabled)
+    if (["plan-review", "plan-amend", "plan-revise"].indexOf(flow.stepKind) >= 0) {
+        // Kroki wokół planu: zakres lokalny/chmura jak przy planowaniu; review planu innym modelem niż planujący
+        // (ta sama reguła co w usłudze, `engine._resume_executor`).
+        const planner = flow.stepKind === "plan-review" && flow.planner ? launchExecutor(status, flow.planner) : null
+        const plannerModel = planner ? String(planner.model || "").toLowerCase() : ""
+        return planningExecutors(status, flow.provider === "local" ? "local" : "mixed")
+            .filter(option => option.value !== flow.executor && !option.disabled && option.value !== flow.planner &&
+                    (!plannerModel || String(launchExecutor(status, option.value).model || "").toLowerCase() !== plannerModel))
+    }
     const review = flow.stepKind === "review"
     const otherModel = String(review ? flow.authorModel || "" : flow.reviewerModel || "").toLowerCase()
     const otherProvider = String(review ? flow.authorProvider || "" : flow.reviewerProvider || "")

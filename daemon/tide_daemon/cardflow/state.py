@@ -601,6 +601,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
             result = focus_done["result"]
             out["flow"].update({"step": focus, "stepKind": focus_step["kind"], "result": result,
                                 "executor": focus_step.get("executor") or "", "provider": focus_step.get("provider") or "",
+                                "planner": (st.plan_proposed or {}).get("planner") or "",
                                 "action": {"question": "answer", "denied": "permission", "error": "error"}[result],
                                 "question": focus_done.get("question") or "", "command": focus_done.get("command") or "",
                                 "canAllow": bool(focus_done.get("canAllow", True)), "error": focus_done.get("reason") or ""})
