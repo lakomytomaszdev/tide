@@ -55,6 +55,8 @@ Item {
             return
         }
         pendingItem = ""
+        // Powiadomienie o karcie czekającej na decyzję otwiera ją tak jak klik — wg ustawienia okna (PT-133).
+        if (!launch) page.openFromNotification(id)
         if (launch) {
             const card = snapshot.cards.find(c => c.id.toLowerCase() === id.toLowerCase())
             if (card) page.openLaunch(card.id, false)
@@ -114,6 +116,12 @@ Item {
         modelsStatus: view.backend ? Logic.parse(view.backend.modelsJson, null) : null
         limitsStatus: view.backend ? Logic.parse(view.backend.limitsJson, null) : null
         flowSettings: view.backend ? Logic.parse(view.backend.flowSettingsJson, null) : null
+        // Ustawienie otwierania karty (PT-133): wartość i zapis w backendzie (window.json), strona tylko je pokazuje.
+        cardOpen: view.backend ? view.backend.cardOpen : "decision"
+        onCardOpenRequested: value => {
+            const problem = view.backend ? view.backend.setCardOpen(value) : ""
+            if (problem !== "") page.showToast(problem, "rose")
+        }
         taskDefaults: view.backend ? Logic.parse(view.backend.tasksJson, {}) : ({})
         pasteImage: function (inTextField) { return view.backend ? view.backend.pasteImage(!!inTextField) : false }
         // Zapamiętany model i programy w PATH mogły się zmienić od startu widoku (okno „Nowe zadanie”, instalacja).

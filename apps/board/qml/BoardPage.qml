@@ -40,6 +40,9 @@ Rectangle {
     property string toast: ""
     property string toastTone: "rose"        // rose — błąd, butter — commit czeka
     // Okno decyzji (PT-132, apps/common/qml/card): karta, której decyzje pokazuje, i tagi wysłanych odpowiedzi.
+    // Ustawienie okna Tide (PT-133, apps/common/windowconfig.py; wartość i zapis ma backend): "decision" | "full".
+    property string cardOpen: "decision"
+    signal cardOpenRequested(string value)
     property bool decisionOpen: false
     property string decisionCardId: ""
     property var decisionTags: ({})          // tag zapisu → [karta, id decyzji]
@@ -172,11 +175,24 @@ Rectangle {
         else page.forceActiveFocus()
     }
 
-    // Kliknięcie kafelka: karta z decyzjami w „Czeka na mnie” otwiera okno decyzji, inne — panel karty.
+    // Kliknięcie kafelka: karta z decyzjami w „Czeka na mnie” otwiera okno decyzji albo (ustawienie „Pełna karta”)
+    // panel karty, inne karty — zawsze panel karty.
     function activateCard(id) {
         const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
-        if (Logic.opensDecisions(card)) openDecisions(id)
+        if (Logic.opensDecisions(card, cardOpen)) openDecisions(id)
         else openCard(id)
+    }
+
+    // Powiadomienie o karcie (Show z ID karty): zaznacza ją, a gdy czeka na decyzję — otwiera ją tak samo
+    // jak klik (to samo ustawienie). Inne karty tylko zaznacza, jak dotąd.
+    function openFromNotification(id) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id.toLowerCase() === String(id).toLowerCase())
+        if (Logic.hasDecisions(card)) activateCard(card.id)
+    }
+
+    function setCardOpen(value) {
+        if (value === cardOpen) return
+        cardOpenRequested(value)
     }
 
     // --- okno decyzji (PT-132) ------------------------------------------------------------------
@@ -608,7 +624,8 @@ Rectangle {
         Qt.callLater(() => {
             revealCard(card.id)
             const item = findCard(card.id)
-            if (item) item.forceActiveFocus()
+            // Okno decyzji albo panel otwarte z powiadomienia trzymają fokus (PT-133).
+            if (item && !decisionOpen && !panelOpen) item.forceActiveFocus()
         })
         return true
     }
@@ -1053,6 +1070,40 @@ Rectangle {
                 options: [{ value: "together", label: "Razem" }, { value: "lanes", label: "Wiersz na projekt" }]
                 current: page.layoutMode
                 onPicked: value => page.layoutMode = value
+            }
+
+            // Menu „Widok” (PT-133): ustawienie otwierania karty z „Czeka na mnie” — to samo pole jest w stopce okna decyzji.
+            PillButton {
+                id: viewButton
+                objectName: "viewMenuButton"
+                implicitHeight: 28
+                pillRadius: 14
+                pixelSize: 12
+                horizontalPadding: 12
+                text: "Widok ▾"
+                textColor: Tide.Tokens.textSecondary
+                Accessible.name: "Widok"
+                onClicked: viewMenu.opened ? viewMenu.close() : viewMenu.open()
+
+                QQC2.Popup {
+                    id: viewMenu
+                    objectName: "viewMenu"
+                    y: parent.height + 6
+                    x: parent.width - width
+                    padding: 12
+                    closePolicy: QQC2.Popup.CloseOnEscape | QQC2.Popup.CloseOnPressOutsideParent
+                    background: Rectangle {
+                        radius: Tide.Tokens.radiusTile
+                        color: Tide.Tokens.backgroundCard
+                        border.width: 1
+                        border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.12)
+                    }
+                    contentItem: CardUi.CardOpenSwitch {
+                        objectName: "viewCardOpen"
+                        current: page.cardOpen
+                        onPicked: value => page.setCardOpen(value)
+                    }
+                }
             }
         }
 
@@ -1560,6 +1611,8 @@ Rectangle {
         visible: page.decisionOpen && !page.managing
         cardId: page.decisionCardId
         decisions: Logic.decisions(page.decisionCard)
+        cardOpen: page.cardOpen
+        onCardOpenRequested: value => page.setCardOpen(value)
         onAnswered: (decisionId, method, params) => page.sendDecision(page.decisionCardId, decisionId, method, params)
         onLaterRequested: {
             page.closeDecisions()
