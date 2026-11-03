@@ -535,3 +535,13 @@ class RepeatedErrorTest(unittest.TestCase):
         self.assertFalse(any(o["recommended"] for o in made["options"] if o["choice"] == "retry"))
         self.assertIn("Ten sam powód", made["why"])
         self.assertEqual(made["reply"]["label"], "Ponów z instrukcją")
+
+
+class RejectedTicketDecisionTest(unittest.TestCase):
+    def test_rejected_ticket_shows_no_decision(self):
+        # 03.11, K-16/LEGAL-75: przebieg odrzuconego ticketu skończył się pytaniem i karta wołała użytkownika.
+        from tide_daemon.cardflow.decisions import build_decisions
+        from tide_daemon.cardflow.state import fold
+        events = Events().step("s", ticket="PT-1", kind="ticket", result="question", question="Co dalej?")
+        events.add("ticket.rejected", ticket="PT-1")
+        self.assertEqual(build_decisions(fold(events.items)), [])

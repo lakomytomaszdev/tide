@@ -123,6 +123,39 @@ def _login_expired(log: str) -> bool:
 
 
 
+
+def worktree_guard(repo: str, memory: dict) -> list[str]:
+    """Strażnik worktree (03.11): w trakcie kroków agentów z `.git/worktrees/*/` repozytorium plasma-tide zniknęły pliki
+    `HEAD` i `gitdir` (19 worktree naraz, dwa razy), więc git przestał znać worktree kart i ticketów. Zapamiętuje oba
+    pliki z każdego zdrowego wpisu i odtwarza je, gdy znikną, a katalog worktree wciąż istnieje. Zwraca odtworzone wpisy."""
+    admin = os.path.join(repo, ".git", "worktrees")
+    restored = []
+    try:
+        names = os.listdir(admin)
+    except OSError:
+        return restored
+    for name in names:
+        folder = os.path.join(admin, name)
+        head, gitdir = os.path.join(folder, "HEAD"), os.path.join(folder, "gitdir")
+        try:
+            if os.path.isfile(head) and os.path.isfile(gitdir):
+                with open(head, encoding="utf-8") as fh_head, open(gitdir, encoding="utf-8") as fh_dir:
+                    memory[folder] = (fh_head.read(), fh_dir.read())
+                continue
+            saved = memory.get(folder)
+            if not saved or not os.path.isdir(os.path.dirname(saved[1].strip())):
+                continue
+            for path, text in ((head, saved[0]), (gitdir, saved[1])):
+                if not os.path.isfile(path):
+                    with open(path, "w", encoding="utf-8") as fh:
+                        fh.write(text)
+            restored.append(name)
+        except OSError:
+            continue
+    if restored:
+        print(f"tide-daemon: strażnik worktree odtworzył HEAD/gitdir w {repo}: {', '.join(restored)}", flush=True)
+    return restored
+
 def reviewer_changed(reviewer, expected: dict, source: dict, assigned: dict, transferred: bool) -> bool:
     """Recenzent rozwiązany dziś nie jest tym z planu (albo z poprzedniej rundy) lub łamie regułę niezależności."""
     return bool(reviewer.tool != expected["program"] or reviewer.model != expected["model"] or \
@@ -207,6 +240,7 @@ class FlowEngine(PlanEditing):
         self.store = store
         self.journal = journal or Journal(store.root)
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
+        self._worktree_heads: dict = {}  # katalog administracyjny worktree → (HEAD, gitdir) z ostatniego zdrowego odczytu
         self.claude_projects = claude_projects
         self.systemd_run = systemd_run
         self.catalog = catalog            # funkcja() → models.executors.Catalog
@@ -1599,6 +1633,7 @@ class FlowEngine(PlanEditing):
                     self.store.root + ":" + name, endpoint=step.get("routeUrl") or "", model=step.get("model") or "",
                     recovering=True)
         hidden_ids, hidden_places, busy = set(), set(), set()
+        guarded: set[str] = set()
         for card in self.journal.cards():
             warning = self.journal.check(card)
             if warning:
@@ -1609,6 +1644,13 @@ class FlowEngine(PlanEditing):
                 hidden_ids.add(str(step.get("session") or ""))
                 if step.get("worktree"):
                     hidden_places.add(os.path.realpath(step["worktree"]))
+            try:
+                repo = (st.started or {}).get("repo") or ""
+                if repo and repo not in guarded:
+                    guarded.add(repo)
+                    worktree_guard(repo, self._worktree_heads)
+            except Exception as exc:
+                print(f"tide-daemon: strażnik worktree: {exc!r}", flush=True)
             try:
                 self._tick_card(card, st)
             except Exception as exc:  # jedna karta nie zatrzymuje pozostałych

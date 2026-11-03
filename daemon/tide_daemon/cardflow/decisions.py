@@ -93,6 +93,8 @@ def build_decisions(st: FlowState) -> list[dict]:
         found.append((group, int(seq or 0), decision))
 
     for name in _latest_steps(st):
+        if (st.steps.get(name) or {}).get("ticket") in st.rejected:
+            continue        # odrzucony ticket nie czeka na nikogo (K-16/LEGAL-75, 03.11)
         made = _step_decision(st, name)
         if made:
             step = st.steps.get(name) or {}
