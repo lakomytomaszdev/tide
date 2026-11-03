@@ -580,6 +580,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
                              else "pending" if revision_pending else "done" if st.plan_finished else
                              "approved" if st.plan_approved else "pending" if st.plan_proposed else "invalid",
                              "rows": rows, "waves": waves,
+                             # Projekty zlecenia ze źródłem numerów (K-33 #4); pusta lista — jeden projekt.
+                             "projects": proposal.get("projects") or [],
                              "errors": (st.plan_checked or {}).get("errors") or []}
         waiting_review = st.plan_review_wait or st.waiting.get(("", "plan-review")) or {}
         if st.plan_proposed and not st.plan_reviewed and not st.plan_reviewer and waiting_review and not any(

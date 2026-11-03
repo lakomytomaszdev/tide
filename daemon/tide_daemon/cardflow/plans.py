@@ -6,6 +6,12 @@ Wynik zawiera wyłącznie dane sprawdzone i teksty kartek, gotowe do migawki w d
 Ticket z innego planu (K-33, decyzja D2): wiersz może mieć zamiast numeru roboczego ID istniejącego ticketu,
 który w innym planie tego repozytorium ma stan ``todo`` i ten sam tytuł (``other_plans``). Numer zostaje,
 a wiersz niesie ``fromPlan`` — ścieżkę planu, z którego go wzięto. Inny tytuł byłby twardą kolizją numerów.
+
+Projekty zlecenia (K-33 #4, standard 1.3): ``projects`` to {slug: {name, prefix, tracker, trackerProject,
+configured}} — projekty Tablicy, które użytkownik wybrał do zlecenia (pierwszy to projekt karty). Kolumna
+``Projekt`` wiersza musi wskazywać jeden z nich (pusta = projekt karty), gotowe ID wiersza musi mieć prefiks
+swojego projektu, a projekt z YouTrackiem wymaga skonfigurowanego trackera na Tablicy. Bez ``projects``
+sprawdzanie działa jak przed 1.3: każdy wiersz należy do projektu karty.
 """
 from __future__ import annotations
 
@@ -13,11 +19,22 @@ import os
 import re
 from dataclasses import dataclass
 
+from ..board.model import PROJECTS_MAX
 from ..coordination import plan as plan_mod
 from ..models.executors import CLASSES
 
 WORK_ID = re.compile(r"^#([1-9][0-9]{0,5})$")
 CRITERION = re.compile(r"(?m)^\s*-\s*\[\s*\]\s*\S")
+NUMBERED = re.compile(r"^([A-Za-z][A-Za-z0-9_]*)-[1-9][0-9]*$")
+# Projekty w jednym planie: projekt karty i najwyżej PROJECTS_MAX dodatkowych (jak `projects` karty).
+PLAN_PROJECTS_MAX = PROJECTS_MAX + 1
+
+
+def source_label(info: dict) -> str:
+    """Źródło numerów projektu: „lokalny PT” albo „YouTrack APP5”."""
+    if info.get("tracker") == "youtrack":
+        return f"YouTrack {info.get('trackerProject') or info.get('prefix') or ''}".strip()
+    return f"lokalny {info.get('prefix') or ''}".strip()
 
 
 @dataclass
@@ -34,8 +51,10 @@ def _same_title(a: str, b: str) -> bool:
 
 
 def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local", existing_ids=(), imported=False,
-         other_plans=None) -> Proposal:
+         other_plans=None, projects=None) -> Proposal:
     """Czyta plan i kartki wyłącznie z dozwolonych katalogów; nie rezerwuje numerów."""
+    projects = dict(projects or {})
+    main = next(iter(projects), "")
     errors: list[str] = []
     real = os.path.realpath(path)
     if not real.lower().endswith(".md") or not any(_inside(real, root) for root in allowed_roots):
@@ -62,14 +81,36 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
     if not plan.rows:
         errors.append("plan nie ma ticketów")
     seen, rows, cards = set(), [], {}
+    used: list[str] = []
     folder = os.path.join(os.path.dirname(real), "tickets")
     for row in plan.rows:
         ident = row.ticket
         work = WORK_ID.fullmatch(ident)
-        already_numbered = imported and ident in existing_ids and re.fullmatch(rf"{re.escape(plan.prefix)}-[1-9][0-9]*", ident)
+        slug = (row.project or main) if projects else ""
+        info = projects.get(slug)
+        if projects and slug not in used:
+            used.append(slug)
+            if len(used) == PLAN_PROJECTS_MAX + 1:
+                errors.append(f"{ident}: projekt „{slug}” to {len(used)}. projekt planu — plan może obejmować "
+                              f"najwyżej {PLAN_PROJECTS_MAX} projektów (projekt karty i {PROJECTS_MAX} dodatkowych)")
+        if projects and info is None:
+            errors.append(f"{ident}: projekt „{slug}” w kolumnie Projekt jest spoza projektów zlecenia "
+                          f"({', '.join(projects)})")
+        elif info is not None and info.get("tracker") == "youtrack" and not info.get("configured", True):
+            errors.append(f"{ident}: projekt „{info.get('name') or slug}” numeruje tickety w YouTracku "
+                          f"({info.get('trackerProject') or info.get('prefix')}), a na Tablicy nie skonfigurowano "
+                          f"trackera YouTrack")
+        prefix = (info or {}).get("prefix") or plan.prefix
+        numbered = NUMBERED.fullmatch(ident)
+        owners = [s for s, p in projects.items() if numbered and p.get("prefix") == numbered.group(1)]
+        foreign = bool(info) and bool(owners) and slug not in owners
+        already_numbered = imported and ident in existing_ids and re.fullmatch(rf"{re.escape(prefix)}-[1-9][0-9]*", ident)
         other = None if work or ident in existing_ids else (other_plans or {}).get(ident)
-        from_other = bool(other) and bool(re.fullmatch(rf"{re.escape(plan.prefix)}-[1-9][0-9]*", ident))
-        if from_other and not _same_title(other["title"], row.title):
+        from_other = bool(other) and bool(re.fullmatch(rf"{re.escape(prefix)}-[1-9][0-9]*", ident))
+        if foreign:
+            errors.append(f"{ident}: gotowe ID ma prefiks projektu „{owners[0]}”, a kolumna Projekt wskazuje "
+                          f"„{slug}” (prefiks {prefix})")
+        elif from_other and not _same_title(other["title"], row.title):
             errors.append(f"{ident}: ticket z innego planu musi mieć ten sam tytuł co w "
                           f"{os.path.basename(other['path'])}: „{other['title']}”")
         elif not work and ident not in existing_ids and not already_numbered and not from_other:
@@ -121,6 +162,7 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
                      "executor": row.agent,
                      "reviewer": reviewer.name if reviewer else row.reviewer, "class": klass,
                      "note": row.note, "blockers": list(row.blockers),
+                     **({"project": slug} if len(projects) > 1 else {}),
                      **({"fromPlan": other["path"]} if from_other else {})})
     for row in rows:
         for blocker in row["blockers"]:
@@ -128,8 +170,27 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
                 errors.append(f"{row['workId']}: bloker {blocker} jest spoza planu")
     waves = _waves(rows)
     if rows and not waves:
-        errors.append("plan zawiera cykl blokerów")
+        stuck = _cycle(rows)
+        through = sorted({r.get("project") or "" for r in rows if r["workId"] in stuck} - {""})
+        errors.append(f"{', '.join(stuck)}: plan zawiera cykl blokerów"
+                      + (f" przez projekty {', '.join(through)}" if len(through) > 1 else ""))
     return Proposal(plan, rows, cards, waves, errors)
+
+
+def _cycle(rows: list[dict]) -> list[str]:
+    """Wiersze, które tworzą cykl (albo leżą między cyklami): po odcięciu rozwiązywalnych i tych, na które nic
+    w reszcie nie czeka."""
+    pending = {r["workId"]: set(r["blockers"]) for r in rows}
+    changed = True
+    while changed:
+        changed = False
+        for ident in list(pending):
+            free = not (pending[ident] & set(pending))
+            needed = any(ident in blockers for blockers in pending.values())
+            if free or not needed:
+                del pending[ident]
+                changed = True
+    return [r["workId"] for r in rows if r["workId"] in pending]
 
 
 def _waves(rows: list[dict]) -> list[list[str]]:

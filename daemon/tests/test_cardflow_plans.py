@@ -116,6 +116,83 @@ class TicketFromOtherPlanTest(PlanFixture):
         self.assertTrue(any("numeru roboczego" in e for e in self.check_other(other).errors))
 
 
+class OrderProjectsTest(PlanFixture):
+    """K-33 #4: propozycja z kolumną Projekt (standard 1.3) sprawdzana względem projektów zlecenia."""
+
+    PROJECTS = {"plasma-tide": {"name": "plasma-tide", "prefix": "PT", "tracker": "local", "trackerProject": "",
+                                "configured": True},
+                "mobileapp": {"name": "mobileapp", "prefix": "APP5", "tracker": "youtrack", "trackerProject": "APP5",
+                            "configured": True}}
+    CARD = "## Kryteria akceptacji\n- [ ] Działa\n"
+
+    def write10(self, rows, names=("1", "2", "3")):
+        with open(self.path, "w", encoding="utf-8") as fh:
+            fh.write("---\ntide-plan: 1\ncard: K-2\ntracker: local\nticket-prefix: PT\n---\n"
+                     "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery | Projekt |\n"
+                     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n" + rows)
+        for name in names:
+            with open(os.path.join(self.tmp.name, "tickets", name + ".md"), "w", encoding="utf-8") as fh:
+                fh.write(self.CARD)
+
+    def check(self, projects=None):
+        return plans.read(self.path, "K-2", default_catalog(), allowed_roots=(self.tmp.name,),
+                          projects=self.PROJECTS if projects is None else projects)
+
+    def test_mixed_trackers_with_cross_project_blocker_pass(self):
+        self.write10("| #1 | API | todo | | Sonnet | | standard | Opus | | mobileapp |\n"
+                     "| #2 | Widok | todo | | Sonnet | | standard | Opus | | |\n"
+                     "| #3 | Klient | todo | | Sonnet | | standard | Opus | #1 | plasma-tide |\n")
+        got = self.check()
+        self.assertEqual(got.errors, [])
+        self.assertEqual([r["project"] for r in got.rows], ["mobileapp", "plasma-tide", "plasma-tide"])
+        self.assertEqual(got.waves, [["#1", "#2"], ["#3"]])
+        self.assertEqual(plans.source_label(self.PROJECTS["plasma-tide"]), "lokalny PT")
+        self.assertEqual(plans.source_label(self.PROJECTS["mobileapp"]), "YouTrack APP5")
+
+    def test_project_outside_order_is_rejected_with_row(self):
+        self.write10("| #1 | API | todo | | Sonnet | | standard | Opus | | legal |\n", names=("1",))
+        errors = self.check().errors
+        self.assertTrue(any(e.startswith("#1:") and "spoza projektów zlecenia" in e and "legal" in e
+                            for e in errors), errors)
+
+    def test_ready_id_with_prefix_of_other_project_is_rejected(self):
+        self.write10("| APP5-7 | API | todo | | Sonnet | | standard | Opus | | plasma-tide |\n", names=("APP5-7",))
+        errors = self.check().errors
+        self.assertTrue(any(e.startswith("APP5-7:") and "prefiks projektu „mobileapp”" in e for e in errors), errors)
+
+    def test_cycle_through_projects_names_rows_and_projects(self):
+        self.write10("| #1 | API | todo | | Sonnet | | standard | Opus | #3 | mobileapp |\n"
+                     "| #2 | Niezależny | todo | | Sonnet | | standard | Opus | | |\n"
+                     "| #3 | Klient | todo | | Sonnet | | standard | Opus | #1 | plasma-tide |\n")
+        errors = self.check().errors
+        self.assertIn("#1, #3: plan zawiera cykl blokerów przez projekty mobileapp, plasma-tide", errors)
+
+    def test_more_than_six_projects_is_rejected(self):
+        many = {f"p{i}": {"name": f"p{i}", "prefix": f"P{i}", "tracker": "local", "configured": True}
+                for i in range(1, 8)}
+        rows = "".join(f"| #{i} | T{i} | todo | | Sonnet | | standard | Opus | | p{i} |\n" for i in range(1, 8))
+        self.write10(rows, names=[str(i) for i in range(1, 8)])
+        errors = self.check(many).errors
+        self.assertTrue(any(e.startswith("#7:") and "najwyżej 6 projektów" in e for e in errors), errors)
+        self.assertEqual(plans.PLAN_PROJECTS_MAX, 6)
+
+    def test_youtrack_project_without_tracker_on_board_is_rejected(self):
+        projects = {**self.PROJECTS, "mobileapp": {**self.PROJECTS["mobileapp"], "configured": False}}
+        self.write10("| #1 | API | todo | | Sonnet | | standard | Opus | | mobileapp |\n", names=("1",))
+        errors = self.check(projects).errors
+        self.assertTrue(any(e.startswith("#1:") and "nie skonfigurowano trackera YouTrack" in e
+                            for e in errors), errors)
+
+    def test_single_project_order_rejects_foreign_project_and_keeps_rows(self):
+        self.write10("| #1 | API | todo | | Sonnet | | standard | Opus | | |\n", names=("1",))
+        single = {"plasma-tide": self.PROJECTS["plasma-tide"]}
+        got = self.check(single)
+        self.assertEqual(got.errors, [])
+        self.assertNotIn("project", got.rows[0], "plan jednoprojektowy zapisuje wiersze jak dotąd")
+        self.write10("| #1 | API | todo | | Sonnet | | standard | Opus | | mobileapp |\n", names=("1",))
+        self.assertTrue(any("spoza projektów zlecenia" in e for e in self.check(single).errors))
+
+
 class OtherPlanTodosFilterTest(unittest.TestCase):
     """Filtr silnika: ID ze stanem innym niż `todo` w którymkolwiek planie się nie liczy."""
 

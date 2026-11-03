@@ -328,12 +328,20 @@ class LogicTest(unittest.TestCase):
                           {"kind": "project", "key": "nie-ma", "name": "nie-ma"}])
         state = {"cardId": "K-16", "mode": "light", "tool": "claude", "branch": "claude/k-16-okno", "newWorktree": True,
                  "check": "auto", "aiDocs": "tide", "slug": "dp", "repoName": "dp", "extras": picked}
-        self.assertIn("Dodatkowe projekty do odczytu: mobileapp, legal.",
+        self.assertIn("Projekty zlecenia (jeden plan z kolumną Projekt, do odczytu): mobileapp, legal.",
                       self.js(f"launchFooter({json.dumps(state)})"))
         flow = {"text": "x", "repo": "/r/dp", "tool": "claude", "branch": "claude/k-16-okno", "docsDir": "/b/docs/dp",
                 "aiDocs": "tide", "addDirs": ["/b/docs/dp", "/r/mobileapp"]}
         self.assertEqual(self.js(f"launchStartRequest({json.dumps(flow)}, {json.dumps(state)})")["addDirs"],
                          ["/b/docs/dp", "/r/mobileapp"], "katalogi --add-dir z RenderLaunch")
+        # K-33 #4: żądanie StartCard niesie projekty zlecenia tylko przy Planowaniu.
+        order = {"entry": "planning", "mode": "light", "executor": "Sonnet", "projects": ["mobileapp"]}
+        self.assertEqual(self.js(f"startCardRequest({json.dumps(order)}, [])")["projects"], ["mobileapp"])
+        for entry in ("now", "plan"):
+            self.assertNotIn("projects", self.js(f"startCardRequest({json.dumps(dict(order, entry=entry))}, [])"))
+        self.assertEqual(self.js("singleProjectNote('planning', {name: 'dp'})"), "")
+        self.assertEqual(self.js("singleProjectNote('now', {name: 'dp'})"),
+                         "Od razu pracuje w jednym projekcie karty („dp”). Kilka projektów zlecenia — wybierz Planowanie.")
 
     def test_rail_note_errors_and_replies(self):
         now = 1793099040  # 12:04 w Warszawie
@@ -1178,7 +1186,7 @@ out["toast"] = js("[page.toast, page.toastTone]")
                          "zmienione zadanie zapisane w karcie przed poleceniem")
         self.assertEqual(json.loads(out["calls1"][2][2]),
                          {"entry": "planning", "mode": "full", "executor": "Sonnet", "check": "auto",
-                          "preferredProvider": "anthropic", "images": []})
+                          "preferredProvider": "anthropic", "images": [], "projects": []})
         self.assertEqual([c[0] for c in out["calls2"]], ["StartCard"],
                          "ponowienie bez drugiego zapisu opisu")
         self.assertTrue(out["closed"])
@@ -1347,13 +1355,16 @@ out["closed"] = not js("page.launchOpen")
         self.assertTrue(out["visible"])
         self.assertEqual(out["picked"], ["project:mobileapp", "repo:legal-agents", "project:LogViewer"])
         self.assertEqual(out["afterRemove"], ["mobileapp", "/home/user/DevWorkspace/legal-agents"])
-        self.assertIn("Dodatkowe projekty jako kontekst: mobileapp, legal-agents", out["footer"])
+        self.assertIn("Projekty zlecenia (jeden plan z kolumną Projekt, do odczytu): mobileapp, legal-agents",
+                      out["footer"])
         self.assertEqual([c[0] for c in out["calls"]], ["MoveCard", "UpdateCard", "StartCard"])
         self.assertEqual(json.loads(out["calls"][1][2]),
                          {"projects": ["mobileapp", "/home/user/DevWorkspace/legal-agents"]},
                          "projekty (repozytorium zakłada projekt) zapisane przed poleceniem, opis bez zmian")
         start = json.loads(out["calls"][2][2])
         self.assertEqual((start["entry"], start["mode"]), ("planning", "full"))
+        self.assertEqual(start["projects"], ["mobileapp", "/home/user/DevWorkspace/legal-agents"],
+                         "żądanie zlecenia niesie projekty zlecenia (K-33 #4)")
         self.assertTrue(out["closed"])
 
     def test_card_shows_extra_projects_as_chips(self):
@@ -2721,3 +2732,94 @@ out["project"] = calls()[-1]
 """, data)
         self.assertEqual(json.loads(out["global"][-1]), {"globalAssignmentRules": "mocny: wspólne"})
         self.assertEqual(json.loads(out["project"][-1]), {"slug": "plasma-tide", "assignmentRules": "lekki: projekt"})
+
+
+class MultiProjectViewTest(ProbeCase):
+    """K-33 #4: projekty zlecenia w oknie zlecenia i plan z kolumną Projekt w szerokim widoku planu (dane z pliku)."""
+
+    def test_launch_dialog_order_projects_and_single_project_sentence(self):
+        status = dict(models_status(), executors=EXECUTORS)
+        out = self.probe(FIND_PY + f"""
+backend._models = {json.dumps(status, ensure_ascii=False)!r}
+backend.modelsChanged.emit()
+wait(50)
+shown = lambda name: js(FIND + f"(page.launchDialog, '{{name}}').visible")
+text = lambda name: js(FIND + f"(page.launchDialog, '{{name}}').text")
+js("page.openLaunch('K-15', false)")
+wait(100)
+js("page.launchDialog.entry = 'planning'")
+wait(50)
+out["planning"] = [shown("launchExtras"), shown("launchMainProject"), shown("launchSingleProject")]
+for entry in ("now", "plan"):
+    js(f"page.launchDialog.entry = '{{entry}}'")
+    wait(50)
+    out[entry] = [shown("launchExtras"), shown("launchSingleProject"), text("launchSingleProject")]
+""")
+        self.assertEqual(out["planning"], [True, True, False])
+        for entry, word in (("now", "Od razu"), ("plan", "Mam plan")):
+            extras, note, sentence = out[entry]
+            self.assertFalse(extras, f"{entry}: bez wyboru projektów")
+            self.assertTrue(note)
+            self.assertIn(word + " pracuje w jednym projekcie karty", sentence)
+            self.assertIn("wybierz Planowanie", sentence)
+
+    def test_plan_manager_shows_project_column_and_number_sources(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "planner": "Sonnet", "waves": [["#1", "#2"], ["#3"]],
+                    "projects": [{"slug": "plasma-tide", "name": "plasma-tide", "prefix": "PT", "tracker": "local",
+                                  "source": "lokalny PT", "main": True},
+                                 {"slug": "mobileapp", "name": "mobileapp", "prefix": "APP5", "tracker": "youtrack",
+                                  "trackerProject": "APP5", "source": "YouTrack APP5", "main": False}],
+                    "rows": [{"workId": "#1", "title": "API", "class": "standard", "executor": "Sonnet",
+                              "reviewer": "Opus", "blockers": [], "project": "mobileapp", "editable": True,
+                              "body": "- [ ] API."},
+                             {"workId": "#2", "title": "Widok", "class": "standard", "executor": "Sonnet",
+                              "reviewer": "Opus", "blockers": [], "project": "plasma-tide", "editable": True,
+                              "body": "- [ ] Widok."},
+                             {"workId": "#3", "title": "Klient", "class": "standard", "executor": "Sonnet",
+                              "reviewer": "Opus", "blockers": ["#1"], "project": "plasma-tide", "editable": True,
+                              "body": "- [ ] Klient."}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+wait(80)
+out["sources"] = obj("planManagerProjects").property("text")
+out["group"] = obj("planManagerGroupNotice").property("visible")
+out["row1"] = js(FIND + "(page, 'planManagerRow-#1').text")
+out["row3"] = js(FIND + "(page, 'planManagerRow-#3').text")
+out["project"] = obj("planManagerTicketProject").property("text")
+click(at(FIND + "(page, 'planManagerApprove')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["sources"], "Źródło numerów: plasma-tide — lokalny PT · mobileapp — YouTrack APP5")
+        self.assertTrue(out["group"])
+        self.assertIn("#1 · ◆ mobileapp · API", out["row1"])
+        self.assertIn("#3 · ◆ plasma-tide · Klient", out["row3"])
+        self.assertEqual(out["project"], "Projekt: mobileapp")
+        self.assertEqual(out["call"], ["ApproveCardPlan", "K-6"], "odmowę zwraca usługa")
+
+    def test_single_project_plan_has_no_project_column(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "planner": "Sonnet", "waves": [["#1"]], "projects": [],
+                    "rows": [{"workId": "#1", "title": "Eksport", "class": "standard", "executor": "Sonnet",
+                              "reviewer": "Opus", "blockers": [], "editable": True, "body": "- [ ] Działa."}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+wait(80)
+out["sources"] = obj("planManagerProjects").property("visible")
+out["group"] = obj("planManagerGroupNotice").property("visible")
+out["row"] = js(FIND + "(page, 'planManagerRow-#1').text")
+""", data=data)
+        self.assertEqual((out["sources"], out["group"]), (False, False))
+        self.assertEqual(out["row"], "Fala 1 · #1 · Eksport")

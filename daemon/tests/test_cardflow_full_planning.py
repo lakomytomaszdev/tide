@@ -262,7 +262,9 @@ class FullPlanningTest(FlowInProcess):
         self.assertIn("Pełne planowanie", prompt)
         self.assertIn("Krok ponowiony automatycznie", prompt)
 
-    def test_extra_project_is_quoted_context_without_writable_path(self):
+    def test_extra_project_is_quoted_context_and_read_only_directory(self):
+        """PT-28 dawał tylko cytowany kontekst; K-33 #4: repozytorium projektu zlecenia przez --add-dir z zakazem
+        zapisu (reguła Edit) i na liście projektów w poleceniu."""
         extra = os.path.join(self.base, "ws", "extra")
         os.makedirs(extra)
         git(extra, "init", "-q")
@@ -285,9 +287,13 @@ class FullPlanningTest(FlowInProcess):
         with open(terminal.opened[0].task_file, encoding="utf-8") as fh:
             task = json.load(fh)
         self.assertEqual([task["argv"][i + 1] for i, arg in enumerate(task["argv"][:-1])
-                          if arg == "--add-dir"], [os.path.join(step["stepDir"], "out")])
-        self.assertTrue(all(extra not in arg for arg in task["argv"]))
+                          if arg == "--add-dir"], [os.path.join(step["stepDir"], "out"), extra])
+        denied = task["argv"][task["argv"].index("--disallowedTools") + 1]
+        self.assertEqual(denied, f"Edit(/{os.path.realpath(extra)}/**)")
         prompt = task["argv"][-1]
+        self.assertIn("Projekty zlecenia", prompt)
+        self.assertIn(f"extra — Dodatkowy: {extra} (repozytorium tylko do odczytu", prompt)
+        self.assertIn("| Blokery | Projekt |", prompt)
         self.assertIn('"plik": "README.md", "treść": "Kontekst projektu"', prompt)
         self.assertIn("pominięto 2 pozostałych plików", prompt)
         self.assertNotIn("sekret", prompt)

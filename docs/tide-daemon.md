@@ -868,7 +868,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `YouTrackIssues(b refresh)` | `→ s` | zgłoszenia użytkownika do importu (PT-7): `{ok, issues: [{id, summary, project, state, updated, url, card, boardProject, boardProjectName, new}], error}`; odpowiedź po pobraniu w wątku roboczym (`refresh: false` — ostatnia lista z pamięci); pokazane zgłoszenia liczą się jako przejrzane |
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
-| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?}` albo Planowanie Lekkie `{entry: "planning", mode: "light", executor, preferredProvider?, images?, check?}`, albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
+| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?}` albo Planowanie `{entry: "planning", mode: "light"|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
 | `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
@@ -1481,6 +1481,21 @@ Nadpisuje publikację ze skilli: `spec.md`, `plan.md`, `tickets/1.md` itd. i `re
 Issues, trackera i lokalnego `.scratch`. Propozycję czyta ten sam walidator co PT-78, z dodatkowym ograniczeniem
 źródła do katalogu wyniku konkretnego kroku. Poprawny wynik daje plan do zatwierdzenia; zatwierdzenie prowadzi dalej
 przez istniejące rezerwacje, review ticketów i scalanie. Review samego planu przed pokazaniem dodaje PT-80.
+
+**Projekty zlecenia (K-33 #4, PT-115, decyzja 91).** Żądanie Planowania (Lekkiego i Pełnego) może mieć
+`projects` — dodatkowe projekty zlecenia (slugi albo ścieżki repozytoriów, jak `projects` w UpdateCard); różniące się
+od karty trafiają do `projects` karty. Usługa sprawdza każdy projekt zlecenia przed pierwszym zdarzeniem: projekt bez
+repozytorium albo z niedostępnym kończy zlecenie błędem `no-repo` z nazwą projektu. `card.started` ma `projects`:
+`[{slug, name, repo, prefix, tracker, trackerProject, configured, source, main}]` (pierwszy to projekt karty;
+`configured: false` — repozytorium numeruje w YouTracku, a projekt Tablicy nie ma klucza YouTracka). Krok planowania
+pracuje w worktree karty, a repozytoria pozostałych projektów dostaje tylko do odczytu: Claude przez `--add-dir`
+z regułami `Edit(//repo/**)` w `--disallowedTools` (w tle także `allowRead` piaskownicy, `allowWrite` tylko `out`),
+Codex bez `--add-dir`. Polecenie wymienia projekty z repozytorium, prefiksem, trackerem i źródłem numerów i żąda
+planu standardu 1.3 z kolumną `Projekt`. Sprawdzanie propozycji odrzuca projekt spoza zlecenia, gotowe ID z prefiksem
+innego projektu, cykl blokerów, więcej niż 6 projektów i projekt YouTracka bez trackera na Tablicy; komunikat zaczyna
+się od ID wiersza. `plan.proposed` i `derived.flow.plan` mają wtedy `projects` (ze źródłem numerów), a wiersze pole
+`project`. `ApproveCardPlan` planu z ticketami w kilku projektach odpowiada `group-approval` („zatwierdzanie grupy kart
+— w następnej wersji”) bez zapisu w dzienniku. Wejścia `now` i `import` odrzucają niepuste `projects` (`single-project`).
 
 Błędny format zapisuje `plan.checked` i uruchamia `plan-fix` z błędami i poprzednią propozycją, najwyżej dwie poprawy.
 Po dwóch nieudanych poprawach karta czeka na użytkownika z błędami w panelu; można zlecić nowe planowanie. Awaria
