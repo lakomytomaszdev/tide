@@ -83,7 +83,13 @@ _IMPERATIVES = ("uruchom", "wklej", "wyślij", "prześlij", "podeślij", "sprawd
 _IMPERATIVE_START = re.compile(
     r"^(?:(?:krok|etap|step)\s*\d+\s*[:.)\-–]\s*)?(?:(?:proszę|teraz|następnie|potem|najpierw|wtedy|jeszcze)[\s,]+)?"
     r"(?:" + "|".join(_IMPERATIVES) + r")\b", re.I)
-_ASK_ANYWHERE = re.compile(r"\b(?:daj (?:mi )?znać|wklej|prześlij|podeślij|odpisz)\b", re.I)
+# Zwroty, które w dowolnym miejscu zdania oddają ruch użytkownikowi: prośba o wynik, decyzję albo wskazanie kroku
+# („wklej”, „to Twoja decyzja”, „czeka na Ciebie”, „kliknij”, „jeśli wolisz inaczej”). Samo „Jeśli chcesz, mogę…” i „dam
+# znać” tu nie należą — to propozycja opcjonalna i zapowiedź.
+_ASK_ANYWHERE = re.compile(
+    r"\b(?:daj (?:mi )?znać|wklej|prześlij|podeślij|odpisz|wolisz|wybierzesz|zdecydujesz|zdecyduj|wskaż|"
+    r"kliknij|wpisz|zatwierdź|potrzebuję|"
+    r"(?:twoja|twojej) (?:decyzj\w+|odpowiedź|odpowiedzi)|(?<!nie )czeka na (?:ciebie|twoją|twoje))\b", re.I)
 _MARKUP = re.compile(r"[*_`]+")
 
 

@@ -670,6 +670,21 @@ class RealCorpusTest(unittest.TestCase):
         self.approved_only()
         self.assertGreaterEqual(qc.rules_accuracy(self.corpus), RULES_ACCURACY_FLOOR)
 
+    def test_two_stage_with_oracle_model_is_not_worse_than_rules(self):
+        # Atrapa modelu zwraca oznaczenia z zestawu: dwustopniowe liczenie nie może wypaść gorzej niż same reguły.
+        rules = qc.score(self.corpus, [qc.rules_waits(m["text"]) for m in self.corpus])
+        oracle = qc.score(self.corpus, [qc.combined_waits(m["text"], m["waits"]) for m in self.corpus])
+        self.assertGreaterEqual(oracle["accuracy"], rules["accuracy"])
+        self.assertLessEqual(oracle["false_waits"], rules["false_waits"])
+        self.assertTrue(all(qc.combined_waits(m["text"], m["waits"]) for m in self.corpus
+                            if m["waits"] and qc.question.doubtful(m["text"])))
+
+    def test_doubtful_does_not_flag_obvious_cases(self):
+        # Do modelu idą tylko wątpliwe końcówki; wiadomość z pytaniem rozpoznanym przez reguły nigdy.
+        doubtful = [m for m in self.corpus if qc.question.doubtful(m["text"])]
+        self.assertFalse(any(qc.rules_waits(m["text"]) for m in doubtful))
+        self.assertLessEqual(len(doubtful), len(self.corpus) // 5)
+
 
 if __name__ == "__main__":
     unittest.main()

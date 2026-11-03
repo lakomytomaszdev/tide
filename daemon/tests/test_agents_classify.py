@@ -65,13 +65,19 @@ class DoubtfulTest(unittest.TestCase):
         for text in (SELECT, "Daj znać.", "Zrobiłem migrację. Dwie rzeczy: A i B. Daj znać.",
                      "Co się zmieniło? Dodałem pole daty. Testy przechodzą, review APPROVE.",
                      "Zrobione.\n\n1. Uruchom `make test`.\n2. Wklej wynik.",
-                     "Teraz uruchom ten skrypt, proszę."):
+                     "Teraz uruchom ten skrypt, proszę.",
+                     "Wdrożone na stagingu. Jeśli wolisz inny termin, powiedz.",
+                     "Dwie drogi, polecam pierwszą. To Twoja decyzja.",
+                     "Zmiana jest gotowa i czeka na Ciebie w zakładce zmian.",
+                     "Zrobione. Kliknij „Zatwierdź” w panelu."):
             self.assertTrue(doubtful(text), text)
 
     def test_not_doubtful(self):
         for text in ("Gotowe.", "Jeśli chcesz, mogę też dodać testy.", "Gotowe. Jeśli chcesz, mogę też dodać testy.",
                      "Agent PT-33 pracuje w tle. Dam znać, gdy skończę.", "dam znać, gdy skończę", "",
-                     "Scalone do mastera i zainstalowane. Testy przechodzą: 1071 OK."):
+                     "Scalone do mastera i zainstalowane. Testy przechodzą: 1071 OK.",
+                     "Stan kart: wszystko pracuje. Teraz nic nie czeka na Ciebie.",
+                     "Dwa warianty, wybrałem pierwszy. Przegląd zostaje Twoją decyzją, ale to już zrobione."):
             self.assertFalse(doubtful(text), text)
 
     def test_rule_yes_is_never_doubtful(self):
