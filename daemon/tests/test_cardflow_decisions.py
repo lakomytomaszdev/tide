@@ -545,3 +545,15 @@ class RejectedTicketDecisionTest(unittest.TestCase):
         events = Events().step("s", ticket="PT-1", kind="ticket", result="question", question="Co dalej?")
         events.add("ticket.rejected", ticket="PT-1")
         self.assertEqual(build_decisions(fold(events.items)), [])
+
+
+class OutsideRunGuardTest(unittest.TestCase):
+    def test_running_outside_command_is_work_not_a_stall(self):
+        # 03.11, K-31: „karta stoi: brak kroku i powodu czekania” w trakcie testów poza piaskownicą.
+        from tide_daemon.cardflow.state import fold, guard_reason
+        events = Events().step("s", ticket="PT-1", kind="ticket", result="denied", command="npm run e2e")
+        events.add("step.decision", step="s", ticket="PT-1", choice="run", command="npm run e2e")
+        events.add("outside.started", step="s", ticket="PT-1", command="npm run e2e")
+        self.assertIsNone(guard_reason(fold(events.items)))
+        events.add("outside.finished", step="s", ticket="PT-1", exit=0, tail="")
+        self.assertEqual(fold(events.items).outside_started, {})
