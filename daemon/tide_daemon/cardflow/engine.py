@@ -124,12 +124,51 @@ def _login_expired(log: str) -> bool:
 
 
 
+PLACEHOLDER_AGE = 60   # s; świeży plik może być w trakcie zapisu przez gita
+
+
+def _placeholder(path: str, now: float | None = None) -> bool:
+    """Pusty zwykły plik bez prawa zapisu, starszy niż minuta — punkt montowania zostawiony przez piaskownicę kroku
+    (bwrap tworzy brakujące ścieżki, które ma zasłonić). Git takich plików nie tworzy: jego pliki mają prawo zapisu."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    import stat
+    return (stat.S_ISREG(info.st_mode) and info.st_size == 0 and not info.st_mode & 0o222
+            and (now or time.time()) - info.st_mtime > PLACEHOLDER_AGE)
+
+
+def _ghost_entry(folder: str) -> bool:
+    """Wpis `.git/worktrees/<nazwa>` złożony wyłącznie z punktów montowania (bez HEAD i gitdir)."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return False
+    return bool(names) and "HEAD" not in names and "gitdir" not in names and all(
+        _placeholder(os.path.join(folder, name)) for name in names)
+
+
+def _remove_placeholder(path: str, found: list, label: str) -> None:
+    if _placeholder(path):
+        try:
+            os.chmod(path, 0o644)
+            os.remove(path)
+            found.append(label)
+        except OSError:
+            pass
+
+
 def worktree_guard(repo: str, memory: dict) -> list[str]:
     """Strażnik worktree (03.11): w trakcie kroków agentów z `.git/worktrees/*/` repozytorium plasma-tide zniknęły pliki
     `HEAD` i `gitdir` (19 worktree naraz, dwa razy), więc git przestał znać worktree kart i ticketów. Zapamiętuje oba
-    pliki z każdego zdrowego wpisu i odtwarza je, gdy znikną, a katalog worktree wciąż istnieje. Zwraca odtworzone wpisy."""
+    pliki z każdego zdrowego wpisu i odtwarza je, gdy znikną, a katalog worktree wciąż istnieje. 04.11: piaskownica
+    przy każdym poleceniu kroku tworzy puste pliki tylko do odczytu (punkty montowania) dla ścieżek usuniętych już
+    worktree — pusty `commondir` takiego „ducha” psuje `git worktree list` całego repozytorium, a pusty `config.lock`
+    blokuje zapis konfiguracji. Strażnik usuwa duchy i takie pliki. Zwraca naprawione wpisy."""
     admin = os.path.join(repo, ".git", "worktrees")
     restored = []
+    _remove_placeholder(os.path.join(repo, ".git", "config.lock"), restored, "config.lock")
     try:
         names = os.listdir(admin)
     except OSError:
@@ -138,6 +177,17 @@ def worktree_guard(repo: str, memory: dict) -> list[str]:
         folder = os.path.join(admin, name)
         head, gitdir = os.path.join(folder, "HEAD"), os.path.join(folder, "gitdir")
         try:
+            if _ghost_entry(folder):
+                # Duch: piaskownica kroku odtworzyła wpis usuniętego worktree jako punkty montowania (04.11).
+                shutil.rmtree(folder)
+                restored.append(f"{name} (duch usunięty)")
+                continue
+            commondir = os.path.join(folder, "commondir")
+            if _placeholder(commondir) and os.path.isfile(head) and os.path.isfile(gitdir):
+                os.chmod(commondir, 0o644)
+                with open(commondir, "w", encoding="utf-8") as fh:
+                    fh.write("../..\n")
+                restored.append(f"{name} (commondir)")
             if os.path.isfile(head) and os.path.isfile(gitdir):
                 with open(head, encoding="utf-8") as fh_head, open(gitdir, encoding="utf-8") as fh_dir:
                     memory[folder] = (fh_head.read(), fh_dir.read())
@@ -153,7 +203,7 @@ def worktree_guard(repo: str, memory: dict) -> list[str]:
         except OSError:
             continue
     if restored:
-        print(f"tide-daemon: strażnik worktree odtworzył HEAD/gitdir w {repo}: {', '.join(restored)}", flush=True)
+        print(f"tide-daemon: strażnik worktree naprawił {repo}: {', '.join(restored)}", flush=True)
     return restored
 
 def reviewer_changed(reviewer, expected: dict, source: dict, assigned: dict, transferred: bool) -> bool:

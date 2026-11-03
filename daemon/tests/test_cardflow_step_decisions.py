@@ -1,5 +1,6 @@
 """Decyzje użytkownika po kroku w tle i ponowienia na prawdziwych atrapach procesu."""
 import json
+import time
 import unittest
 import os
 from unittest import mock
@@ -709,3 +710,51 @@ class MergeRetryTest(FlowInProcess):
             engine.clock = lambda: __import__("time").time() + 120
             engine._advance(card, st)
             merge.assert_called_once()
+
+
+class WorktreeGhostTest(unittest.TestCase):
+    def test_sandbox_placeholders_are_cleaned_and_git_keeps_working(self):
+        # 04.11: piaskownica kroku odtworzyła wpisy usuniętych worktree jako puste pliki tylko do odczytu; pusty
+        # `commondir` ducha psuł `git worktree list` całego repozytorium (K-38: „worktree karty nie należy do gałęzi
+        # planu”), a pusty `config.lock` blokował zapis konfiguracji.
+        import shutil
+        import subprocess
+        import tempfile
+        from tide_daemon.cardflow.engine import worktree_guard
+        base = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, base, True)
+        repo = os.path.join(base, "repo")
+        run = lambda *a: subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True)
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start")
+        self.assertEqual(run("worktree", "add", "-q", os.path.join(base, "wt"), "-b", "ticket/a").returncode, 0)
+        old = time.time() - 3600
+
+        def placeholder(path):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").close()
+            os.chmod(path, 0o444)
+            os.utime(path, (old, old))
+        ghost = os.path.join(repo, ".git", "worktrees", "usuniety")
+        placeholder(os.path.join(ghost, "commondir"))
+        placeholder(os.path.join(ghost, "config.worktree"))
+        placeholder(os.path.join(repo, ".git", "config.lock"))
+        real_commondir = os.path.join(repo, ".git", "worktrees", "wt", "commondir")
+        os.remove(real_commondir)
+        placeholder(real_commondir)
+        self.assertNotEqual(run("worktree", "list").returncode, 0)
+        fresh = os.path.join(repo, ".git", "worktrees", "swiezy")
+        os.makedirs(fresh)
+        open(os.path.join(fresh, "commondir"), "w").close()
+        os.chmod(os.path.join(fresh, "commondir"), 0o444)     # świeży — może być w trakcie zapisu, zostaje
+        fixed = worktree_guard(repo, {})
+        self.assertIn("usuniety (duch usunięty)", fixed)
+        self.assertIn("config.lock", fixed)
+        self.assertIn("wt (commondir)", fixed)
+        self.assertFalse(os.path.exists(ghost))
+        self.assertTrue(os.path.exists(fresh))
+        shutil.rmtree(fresh)
+        listed = run("worktree", "list")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertIn(os.path.join(base, "wt"), listed.stdout)
+        self.assertEqual(run("config", "tide.test", "1").returncode, 0)
