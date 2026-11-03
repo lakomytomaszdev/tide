@@ -206,7 +206,17 @@ kroku: przed startem usługa zapisuje migawkę `git for-each-ref` repozytorium; 
 jakakolwiek gałąź poza `refs/heads/<gałąź ticketu>` (albo `HEAD` worktree nie jest tą gałęzią) → zdarzenie
 `refs.guard` w dzienniku, przywrócenie z migawki (`git update-ref`), krok kończy się `error` z powodem. To zastępuje
 dzisiejsze „pełnego zakazu zapisu poza worktree nie da się obiecać” (decyzja 86) czymś sprawdzalnym.
-**[decyzja D7]**: całe `.git` rw + strażnik (rekomendacja) czy ścisłe `objects/refs/logs` jak u Codexa.
+**[decyzja D7]**: całe `.git` rw + strażnik czy ścisłe `objects/refs/logs` jak u Codexa.
+
+**Poprawka po przeglądzie (03.11, koordynator):** samo „całe `.git` rw” otwiera ucieczkę z pudełka. Agent mógłby dopisać
+hak (`.git/hooks/*`) albo ustawienie (`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `include.path`,
+`filter.*` w `.git/config`, a także `.git/info/attributes`) — kod uruchomi się **na hoście, z prawami użytkownika**, gdy
+użytkownik albo Tide wywoła `git` w tym repozytorium. Strażnik refów tego nie widzi. Dlatego rekomendacja:
+`.git` rw **z wyjątkiem** `.git/hooks`, `.git/config`, `.git/info` (montowane tylko do odczytu albo nadpisane pustym
+katalogiem/plikiem tylko do odczytu), konfiguracja worktree (`.git/worktrees/<nazwa>/config.worktree`) też ro,
+a strażnik po kroku porównuje dodatkowo sumy kontrolne tych ścieżek; zmiana → przywrócenie i `error`. Tide po stronie
+hosta wywołuje `git` z `-c core.hooksPath=/dev/null -c core.fsmonitor=false`, żeby nawet przeoczona zmiana nie
+uruchomiła się automatycznie. Dopisać do ticketu #7 i do scenariuszy akceptacyjnych (S1: próba zapisu haka).
 
 ### 4.5 Sieć: proxy wyjściowe Tide z listą domen
 
@@ -560,7 +570,7 @@ zamknięta dla projektów z pudełkiem; po #11 granica jest jednolita. Szacunek 
 | D4 | Kontener czy VM jako domyślność? | **kontener**, `type: vm` dla repo o niskim zaufaniu | VM: silniejsza izolacja jądra, ale RAM na stałe, virtiofs, dłuższy start |
 | D5 | Profil w Tablicy czy w repozytorium projektu? | **Tablica** (`projects/<slug>/box.yaml`), `.tide/box.yaml` w repo jako opcjonalne źródło propozycji (nie w firma) | repo: wersjonowane z kodem, ale zgoda użytkownika mieszałaby się z kodem i trafiałaby do firmowych repozytoriów |
 | D6 | Sieć domyślna: lista domen z profilu czy pełna sieć w pudełku? | **lista domen przez proxy**; „pełna sieć” jako czerwona opcja profilu | pełna sieć w pudełku = wyciek możliwy wszędzie, ale zero problemów z nieznanymi CDN-ami; lista = czasem `denied` o domenę (raz na projekt) |
-| D7 | Zapis do wspólnego `.git`: całe rw + strażnik refów, czy tylko `objects/refs/logs` (jak Codex)? | **całe rw + strażnik** | ścisłe: bezpieczniej, ale haki/konfiguracja `.git` ro bywają problemem (`git worktree` operacje agenta); strażnik wykrywa, nie zapobiega |
+| D7 | Zapis do wspólnego `.git`: całe rw + strażnik refów, czy tylko `objects/refs/logs` (jak Codex)? | **rw bez `hooks`/`config`/`info` (te ro) + strażnik refów i sum tych ścieżek** (poprawka 03.11: haki i config to ucieczka na host) | ścisłe: bezpieczniej, ale haki/konfiguracja `.git` ro bywają problemem (`git worktree` operacje agenta); strażnik wykrywa, nie zapobiega |
 | D8 | Limity pudełka: 8 vCPU / 24 GiB / 60 GB, pula btrfs 200 GB na `/home`? | **tak** (host: 16 rdzeni, 78 GiB, 220 GB wolne) | mniejsze limity = wolniejsze e2e/`dotnet test`; większe = pulpit odczuje |
 | D9 | Uprawnienia usługi do Incusa: grupa `incus-admin` (root-equivalent) czy projekt ograniczony (`incus` + `incus-user`) z `restricted.containers.nesting=allow`? | **projekt ograniczony**, jeśli P-5 pozwoli na nesting; inaczej `incus-admin` z notatką w decyzjach | `incus-admin`: każdy proces użytkownika (także agent w Konsoli!) może stworzyć kontener uprzywilejowany = root hosta; to nowa powierzchnia |
 | D10 | Tryb przejściowy: zostawić `outsideAuto` włączone do etapu 1? Dla których projektów? | **tak**, jak dziś per projekt; po #6 `outside` idzie do pudełka i `outsideAuto` staje się bezpieczne | wyłączenie teraz = powrót pytań co 2 minuty |
