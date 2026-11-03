@@ -2562,15 +2562,11 @@ class FlowEngine(PlanEditing):
             else:
                 other_model = opposite.get("model") or (st.started or {}).get("reviewerModel") or ""
                 other_provider = opposite.get("provider") or (st.started or {}).get("reviewerProvider") or ""
-            if selected.model.lower() == other_model.lower() and not (
-                    transfer and step.get("kind") in ("ticket", "fix")):
-                raise FlowError("bad-executor", "wybrany wykonawca ma ten sam model co drugi uczestnik review")
-            if selected.local != (other_provider == "local"):
+            # 03.11 (decyzja użytkownika): niezależność autora i recenzenta to rekomendacja planu, nie blokada —
+            # wybór użytkownika albo eskalacja Tide wygrywa (K-31/DPT-5: „Ponów innym wykonawcą” kończył się błędem
+            # przepływu, bo recenzentem był ten sam model). Zostaje tylko rozdział pracy lokalnej i chmurowej.
+            if selected.local != (other_provider == "local") and other_provider:
                 raise FlowError("bad-executor-provider", "praca lokalna wymaga lokalnego autora i recenzenta")
-            preferred = (st.started or {}).get("preferredProvider") or ""
-            if not transfer and ((preferred == "mixed" and selected.provider == other_provider) or
-                                 (preferred != "mixed" and selected.provider != other_provider)):
-                raise FlowError("bad-executor-provider", "wybierz wykonawcę zgodnego z recenzentem karty")
         return selected
 
     def _transfer_reviewer(self, st: FlowState, step: dict, target) -> object | None:
@@ -3745,7 +3741,8 @@ class FlowEngine(PlanEditing):
     def _stronger_executor(self, step: dict, done: dict) -> str:
         """Następny mocniejszy wykonawca tego samego dostawcy (lekki → standard → mocny) po błędzie kroku, który nie
         jest winą użytkownika ani limitu; pusty — nie ma mocniejszego albo błąd tego nie uzasadnia."""
-        if done.get("reason") in ("login", "limit", "local-unavailable") or \
+        if self._settings_data().get("escalateErrors", True) is False or \
+                done.get("reason") in ("login", "limit", "local-unavailable") or \
                 faults.of_finished(done)["fault"] in ("user", "provider"):
             return ""
         cfg = self.models_config() if self.models_config else None

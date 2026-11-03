@@ -21,6 +21,7 @@ from .test_cardflow_dbus import CLAUDE_MD, git, test_root
 class FlowInProcess(unittest.TestCase):
     guard_minutes = 15.0
     auto_consent = False
+    escalate_errors = False
 
     def setUp(self):
         app()
@@ -38,7 +39,7 @@ class FlowInProcess(unittest.TestCase):
         with open(self.settings, "w", encoding="utf-8") as fh:
             # Testy decyzji sprawdzają ręczne zgody; automatyczne mają własny test (auto_consent = True).
             json.dump({"stepGuardMinutes": self.guard_minutes, "autoConsent": self.auto_consent,
-                       "reviewRoundsBeforeQuestion": 3}, fh)
+                       "reviewRoundsBeforeQuestion": 3, "escalateErrors": self.escalate_errors}, fh)
         patcher = mock.patch.dict(os.environ, {
             "HOME": os.path.join(self.base, "home"), "XDG_RUNTIME_DIR": self.runtime,
             "XDG_STATE_HOME": os.path.join(self.base, "state"), "XDG_CONFIG_HOME": os.path.join(self.base, "config"),

@@ -435,7 +435,7 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(self.start(card_id)["ok"])
         card = self.wait_column(card_id, "waiting")
         self.assertEqual(card["derived"]["flow"]["stepKind"], "review")
-        self.assertEqual(self.decide(card_id, choice="change-executor", executor="Sonnet")["error"], "bad-executor")
+        # 03.11 (decyzja użytkownika): ten sam model co autor nie blokuje — wybór użytkownika wygrywa.
         self.assertTrue(self.decide(card_id, choice="change-executor", executor="Haiku")["ok"])
         self.wait_column(card_id, "review")
         self.assertEqual([(s["kind"], s["executor"]) for s in self.of(card_id, "step.started")],
@@ -445,7 +445,7 @@ class StepDecisionTest(FlowInProcess):
 
     def test_timeout_stops_both_attempts_and_preserves_worktree(self):
         with open(self.settings, "w", encoding="utf-8") as fh:
-            json.dump({"stepGuardMinutes": 15, "stepTimeoutMinutes": 0.02}, fh)
+            json.dump({"stepGuardMinutes": 15, "stepTimeoutMinutes": 0.02, "escalateErrors": False}, fh)
         card_id = self.card(description="Test.\n\nATRAPA: czekaj")
         started = self.start(card_id)
         self.assertTrue(started["ok"], started)
@@ -459,7 +459,7 @@ class StepDecisionTest(FlowInProcess):
 
     def test_no_progress_reports_since_after_one_automatic_retry(self):
         with open(self.settings, "w", encoding="utf-8") as fh:
-            json.dump({"stepGuardMinutes": 0.02, "stepTimeoutMinutes": 15}, fh)
+            json.dump({"stepGuardMinutes": 0.02, "stepTimeoutMinutes": 15, "escalateErrors": False}, fh)
         card_id = self.card(description="Test.\n\nATRAPA: czekaj")
         self.assertTrue(self.start(card_id)["ok"])
         card = self.wait_column(card_id, "waiting", timeout=30)
@@ -552,19 +552,8 @@ class StepOptionsTest(FlowInProcess):
 
 
 class EscalationTest(FlowInProcess):
-    def test_failed_step_moves_to_a_stronger_executor_of_the_same_provider(self):
-        # 03.11, K-31/DPT-5: Haiku padł po ponowieniu, a użytkownik musiał klikać „Ponów krok”.
-        engine = self.flow.engine
-        failed = {"result": "error", "reason": "exit"}
-        self.assertEqual(engine._stronger_executor({"executor": "Haiku"}, failed), "Sonnet")
-        self.assertEqual(engine._stronger_executor({"executor": "Sonnet"}, failed), "Opus")
-        self.assertEqual(engine._stronger_executor({"executor": "Opus"}, failed), "")
-        self.assertEqual(engine._stronger_executor({"executor": "Codex lekki"}, failed), "Codex standard")
-        self.assertEqual(engine._stronger_executor({"executor": "Haiku"}, {"result": "error", "reason": "login"}), "")
-        self.assertEqual(engine._stronger_executor({"executor": "Haiku"}, {"result": "error", "reason": "limit"}), "")
+    escalate_errors = True
 
-
-class EscalationTest(FlowInProcess):
     def test_failed_step_moves_to_a_stronger_executor_of_the_same_provider(self):
         # 03.11, K-31/DPT-5: Haiku padł po ponowieniu, a użytkownik musiał klikać „Ponów krok”.
         engine = self.flow.engine
