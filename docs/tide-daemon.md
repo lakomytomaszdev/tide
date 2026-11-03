@@ -1631,8 +1631,23 @@ przełącza się sam do chmury. `stepTimeoutMinutes` w `$XDG_CONFIG_HOME/tide/ca
 (domyślnie 240 minut); po limicie usługa zatrzymuje jednostkę przez `stepstop.stop_step` i zachowuje zmiany.
 Strażnik braku postępu podaje w karcie czas, od którego krok stał.
 
+Zgoda na łańcuch poleceń (PT-124): przy wyniku `denied` usługa rozkłada polecenie (`board/chain.py`) na
+pojedyncze polecenia — po `&&`, `||`, `|`, `|&`, `;`, `&`, nowej linii, grupach `( … )` i `{ …; }`, z wnętrzem
+`$( … )`, odwrotnych apostrofów, `<( … )` (także w cudzysłowie podwójnym) i skryptu `sh -c`/`bash -c`/`eval` jako
+osobnymi poleceniami. Lista trafia do `step.finished.commands` i do decyzji `permission` w `flow.decisions[]` jako
+`commands[] = {text, readOnly, stepDir, forbidden, reason, canAllow, preselected}`. `forbidden` wynika wyłącznie
+z `is_forbidden` i listy `denied-commands` projektu (bez reguł wbudowanych), a `reason` podaje pasującą regułę albo
+powód, dla którego polecenia nie da się zatwierdzić. Odczyt własnego `<krok>/in` i `<krok>/out` jest zawsze dozwolony
+(Claude dostaje dokładne wzorce `ls`/`cat` tych katalogów) i nie trafia na listę. „Zezwól na wybrane i wznów”
+wysyła `allow: [indeksy]`; usługa liczy listę od nowa z bieżącymi zakazami i odrzuca indeks spoza zakresu
+(`bad-allow`) albo wskazujący polecenie zabronione (`forbidden-command`), dopisuje do listy projektu dokładnie
+wybrane polecenia, a wznowiony krok dostaje listę dozwolonych i pominiętych. „Kontynuuj bez tych poleceń” to `deny`,
+„Zrób zamiast tego…” — `deny` z `instead`. Łańcuch odrzucany jest automatycznie tylko wtedy, gdy na żadne z jego
+poleceń nie da się zezwolić.
+
 Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
-`deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`. Ponowione kroki dostają
+`deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`, a przy łańcuchu `allow`
+(z `choice=allow`) albo `instead` (z `choice=deny`). Ponowione kroki dostają
 osobne katalogi `.resume-<step>.step` i pliki wyniku; dziennik pozwala odtworzyć decyzję po restarcie usługi.
 
 ```bash

@@ -226,6 +226,19 @@ elif word in ("zgoda-zabroniona", "zgoda-zabroniona-cytat", "zgoda-zabroniona-uk
                    "zgoda-zabroniona-ukosnik": r"make \install",
                    "zgoda-zabroniona-potok": "pwd |& make install"}[word]
         finish("denied", command=command)
+elif word == "zgoda-lancuch":
+    if "Wznowienie tego samego kroku" in prompt:
+        finish("done")
+    else:
+        step_dir = os.path.dirname(out)
+        finish("denied", command=f"ls -la {step_dir}/in {step_dir}/out; git fetch origin && git push origin | head; "
+                                 "echo $(make install)")
+elif word == "zgoda-katalog-kroku":
+    if "Wznowienie tego samego kroku" in prompt:
+        finish("done")
+    else:
+        step_dir = os.path.dirname(out)
+        finish("denied", command=f"ls -la {step_dir}/in {step_dir}/out")
 elif word == "zgoda-dluga":
     if "Użytkownik odmówił zgody" in prompt:
         finish("done")

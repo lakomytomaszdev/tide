@@ -71,6 +71,8 @@ AUTO_DENY_NOTE = ("Tide nie może zezwolić na takie polecenie (łańcuch z &&, 
                   "albo polecenie zabronione). Uruchamiaj polecenia pojedynczo, bez łączenia i zmiennych; do czytania "
                   "plików używaj narzędzia Read. Jeśli pojedyncze polecenie spoza listy jest naprawdę potrzebne, "
                   "zapisz wynik denied z tym jednym poleceniem.")
+STEP_READ_NOTE = ("Odczyt własnego katalogu kroku (<krok>/in i <krok>/out) jest zawsze dozwolony i nie wymaga zgody. "
+                  "Uruchom te polecenia pojedynczo, bez łączenia, albo czytaj pliki narzędziem Read.")
 
 class FlowDeferred(Exception):
     """Krok czeka na wolne miejsce; nie jest to błąd karty."""
@@ -1280,7 +1282,7 @@ class FlowEngine(PlanEditing):
             if extras:
                 prompt += "\nDodatkowe projekty karty (wyłącznie do odczytu):\n" + "\n".join(
                     f"- {p.name}: {p.repo}" for p in extras)
-        prompt += handoff.command_policy(project.allowed_commands, project.denied_commands)
+        prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
         self._hidden = (ids | {session}, tuple(sorted(set(places) | {os.path.realpath(worktree)})))
@@ -1289,7 +1291,8 @@ class FlowEngine(PlanEditing):
             nonlocal prompt
             from ..board.commands import claude_tools
             from ..tasks import dotnet
-            allowed_tools, disallowed_tools = claude_tools(project.allowed_commands, project.denied_commands)
+            allowed_tools, disallowed_tools = claude_tools(project.allowed_commands, project.denied_commands,
+                                                           step_dir=step_dir)
             is_dotnet = kind in ("ticket", "fix", "review", "conflict", "close") and dotnet.is_dotnet(worktree)
             if is_dotnet:
                 ok, tail = dotnet.restore(worktree)
@@ -2068,8 +2071,11 @@ class FlowEngine(PlanEditing):
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step"}:
+        if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
+        if "allow" in request and request.get("choice") != "allow" or \
+                "instead" in request and request.get("choice") != "deny":
+            raise FlowError("bad-request", "`allow` idzie tylko z choice=allow, `instead` tylko z choice=deny")
         choice = str(request.get("choice") or "")
         st = fold(self.journal.read(card))
         if choice in ("transfer", "wait-limit"):
@@ -2102,40 +2108,77 @@ class FlowEngine(PlanEditing):
         previous = st.step_decisions.get(focus)
         if previous:
             if previous.get("choice") == choice and previous.get("answer", "") == str(request.get("answer") or "") and \
-                    previous.get("executor", "") == str(request.get("executor") or ""):
+                    previous.get("executor", "") == str(request.get("executor") or "") and \
+                    previous.get("allow") == request.get("allow") and \
+                    previous.get("instead", "") == str(request.get("instead") or "").strip():
                 return {"ok": True, "id": card, "step": focus, "choice": choice, "already": True}
             raise FlowError("already-decided", f"{card}: odpowiedź na ten krok jest już zapisana")
         answer = str(request.get("answer") or "").strip()
         executor = str(request.get("executor") or "").strip()
+        instead = str(request.get("instead") or "").strip()
         if choice == "answer" and (not answer or len(answer) > 4000):
             raise FlowError("bad-answer", "odpowiedź musi mieć od 1 do 4000 znaków")
-        if choice == "deny" and len(answer) > 4000:
+        if choice == "deny" and (len(answer) > 4000 or len(instead) > 4000):
             raise FlowError("bad-answer", "odpowiedź musi mieć do 4000 znaków")
         if choice == "change-executor":
             if not executor:
                 raise FlowError("bad-executor", "wybierz wykonawcę")
             self._resume_executor(card, st, step, executor, changed=True)
+        granted, skipped = [], []
         if choice == "allow":
-            from ..board.commands import MAX_COMMAND, is_forbidden
-            command = str(done.get("command") or "").strip()
-            if not command:
-                raise FlowError("bad-command", "krok nie podał polecenia do zatwierdzenia")
-            if len(command) > MAX_COMMAND:
-                raise FlowError("command-too-long", f"polecenie przekracza {MAX_COMMAND} znaków i nie może być zatwierdzone")
-            _, project = self._project(card)
-            if is_forbidden(command, project.denied_commands):
-                raise FlowError("forbidden-command", f"polecenie „{command}” jest zabronione w projekcie")
-            if command not in project.allowed_commands:
-                try:
-                    self.store.upsert_project({"slug": project.slug,
-                                               "allowedCommands": [*project.allowed_commands, command]})
-                except BoardError as exc:
-                    raise FlowError(exc.code, str(exc)) from None
+            granted, skipped = self._grant(card, step, done, request.get("allow"))
+        extra = {}
+        if choice == "allow" and "allow" in request:
+            extra = {"allow": request.get("allow"), "commands": granted, "skipped": skipped}
+        if choice == "deny" and instead:
+            extra = {"instead": instead}
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
                                     choice=choice, answer=answer if choice in ("answer", "deny") else "",
                                     command=done.get("command") or "" if choice in ("allow", "deny") else "",
-                                    executor=executor if choice == "change-executor" else "")
+                                    executor=executor if choice == "change-executor" else "", **extra)
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
+
+    def _grant(self, card: str, step: dict, done: dict, allow) -> tuple[list[str], list[str]]:
+        """Zgoda na polecenie kroku: dopisuje je do listy dozwolonych projektu. Bez `allow` — całe polecenie, jak
+        dotąd (pojedyncze, niezabronione, do MAX_COMMAND znaków). Z `allow` (PT-124) — dokładnie wybrane polecenia
+        z łańcucha, wskazane indeksami listy `commands[]` decyzji; lista liczona jest od nowa z bieżącymi zakazami
+        projektu, więc zakaz dopisany po zakończeniu kroku też wygrywa. Zwraca (dopisane, pominięte)."""
+        from ..board import chain
+        from ..board.commands import MAX_COMMAND, is_allowed, is_forbidden
+        command = str(done.get("command") or "").strip()
+        if not command:
+            raise FlowError("bad-command", "krok nie podał polecenia do zatwierdzenia")
+        _, project = self._project(card)
+        if allow is None:
+            if len(command) > MAX_COMMAND:
+                raise FlowError("command-too-long", f"polecenie przekracza {MAX_COMMAND} znaków i nie może być zatwierdzone")
+            if is_forbidden(command, project.denied_commands):
+                raise FlowError("forbidden-command", f"polecenie „{command}” jest zabronione w projekcie")
+            granted, skipped = [command], []
+        else:
+            if not isinstance(allow, list) or not allow or len(allow) > chain.MAX_PIECES or \
+                    any(type(i) is not int for i in allow) or len(set(allow)) != len(allow):
+                raise FlowError("bad-allow", "`allow` to niepusta lista różnych indeksów poleceń z decyzji")
+            items = chain.describe(command, denied=project.denied_commands, step_dir=step.get("stepDir") or "")
+            for index in allow:
+                if not 0 <= index < len(items):
+                    raise FlowError("bad-allow", f"nie ma polecenia o indeksie {index} (poleceń: {len(items)})")
+                item = items[index]
+                if item["forbidden"]:
+                    raise FlowError("forbidden-command", f"polecenie „{item['text']}” jest zabronione: {item['reason']}")
+                if not item["canAllow"]:
+                    raise FlowError("command-too-long" if len(item["text"]) > MAX_COMMAND else "cannot-allow",
+                                    f"na polecenie „{item['text']}” nie można zezwolić: {item['reason']}")
+            granted = [item["text"] for at, item in enumerate(items) if at in allow]
+            skipped = [item["text"] for at, item in enumerate(items) if at not in allow]
+        new = [text for text in granted if text not in project.allowed_commands and
+               (allow is None or not is_allowed(text, project.allowed_commands))]   # już dozwolone — bez dopisywania
+        if new:
+            try:
+                self.store.upsert_project({"slug": project.slug, "allowedCommands": [*project.allowed_commands, *new]})
+            except BoardError as exc:
+                raise FlowError(exc.code, str(exc)) from None
+        return granted, skipped
 
     def _resume_executor(self, card: str, st: FlowState, step: dict, name: str, *, changed=False,
                          transfer=False):
@@ -2285,7 +2328,8 @@ class FlowEngine(PlanEditing):
         prompt = prompt.replace(old_out, new_out)
         prompt += handoff.resume_context(choice=choice, prior=st.finished.get(step.get("step")) or {},
                                          answer=decision.get("answer") or "", command=decision.get("command") or "",
-                                         out_dir=new_out)
+                                         out_dir=new_out, allowed=decision.get("commands"),
+                                         skipped=decision.get("skipped") or (), instead=decision.get("instead") or "")
         if choice == "transfer":
             wip = (st.wip_retries.get(step.get("step")) or {}).get("wip") or \
                   (st.finished.get(step.get("step")) or {}).get("wip") or {}
@@ -2893,18 +2937,27 @@ class FlowEngine(PlanEditing):
             snapshot_dir = self._freeze_planning_output(card, name, out)
         extra = {k: v for k, v in (("wip", wip), ("messages", messages)) if v}
         if data.get("result") == "denied":
+            from ..board import chain
             from ..board.commands import MAX_COMMAND, is_forbidden
             _, project = self._project(card)
             command = data.get("command") or ""
             data["canAllow"] = len(command) <= MAX_COMMAND and not is_forbidden(command, project.denied_commands)
+            # PT-124: łańcuch rozłożony na pojedyncze polecenia z flagami i powodem blokady (dla okna decyzji).
+            extra["commands"] = chain.describe(command, denied=project.denied_commands,
+                                               step_dir=step.get("stepDir") or "") if str(command).strip() else []
         self.journal.append(card, "step.finished", step=name, ticket=step.get("ticket") or "",
                             result=data.get("result"), reason=data.get("reason") or "",
                             question=data.get("question") or "", command=data.get("command") or "",
                             canAllow=data.get("canAllow", True), stalledSince=data.get("stalledSince") or "",
                             notes=[n for n in data.get("notes") or [] if n in kept], kept=kept,
                             exit=exit_code, snapshotDir=snapshot_dir, **extra)
-        if data.get("result") == "denied" and not data.get("canAllow", True):
-            self._auto_deny(card, name, step, data.get("command") or "")
+        if data.get("result") == "denied":
+            listed = extra.get("commands") or []
+            if listed and not data.get("canAllow", True) and not any(item["canAllow"] for item in listed):
+                self._auto_deny(card, name, step, data.get("command") or "")
+            elif str(data.get("command") or "").strip() and not listed:
+                # Same odczyty własnego <krok>/in i <krok>/out — zawsze dozwolone, nie ma o co pytać użytkownika.
+                self._auto_deny(card, name, step, data.get("command") or "", note=STEP_READ_NOTE)
         if merged_tip:
             self.journal.append(card, "result", action="merge", key=step.get("ticket") or "",
                                 ok=True, commit=merged_tip, resolved=True)
@@ -3116,7 +3169,7 @@ class FlowEngine(PlanEditing):
 
     AUTO_DENY_LIMIT = 3
 
-    def _auto_deny(self, card, name, step, command):
+    def _auto_deny(self, card, name, step, command, *, note=None):
         """Na polecenie, na które nie da się zezwolić (łańcuch, przypisanie zmiennej, zabronione), użytkownik i tak
         może tylko odmówić — Tide robi to sam i wznawia krok z prośbą o pojedyncze polecenia (K-33/K-35/K-15:
         karty stały w „Czeka na mnie” z wyszarzonym „Zezwól”). Po AUTO_DENY_LIMIT odmowach w tym samym tickecie
@@ -3128,7 +3181,7 @@ class FlowEngine(PlanEditing):
         if used >= self.AUTO_DENY_LIMIT:
             return
         self.journal.append(card, "step.decision", step=name, ticket=ticket, kind=kind, choice="deny",
-                            answer=AUTO_DENY_NOTE, command=command, executor="", auto=True)
+                            answer=note or AUTO_DENY_NOTE, command=command, executor="", auto=True)
 
     def merge_card_to_main(self, card_id: str) -> dict:
         """Jawna akcja użytkownika po domknięciu; nigdy nie wywoływana przez tick."""

@@ -54,9 +54,15 @@ def read(raw: str, fallback: list[str], label: str, errors: list, path: str) -> 
 
 
 def is_forbidden(command: str, denied: list[str]) -> bool:
+    return forbidding_rule(command, denied) is not None
+
+
+def forbidding_rule(command: str, denied: list[str]) -> str | None:
+    """Powód zakazu z `is_forbidden`: reguła projektu, która pasuje, pusty napis dla składni złożonej (bez reguły,
+    ale też bez zgody), None — polecenie nie jest zabronione."""
     argv = _argv(command)
     if argv is None:
-        return True
+        return ""
     argv = _without_locale(argv)      # `LC_ALL=x make install` jest tym samym zakazanym `make install`
     for rule in denied:
         rule_argv = _argv(rule)
@@ -64,8 +70,8 @@ def is_forbidden(command: str, denied: list[str]) -> bool:
             continue
         prefix = rule_argv[:-1] if rule_argv[-1] == "*" else rule_argv
         if argv[:len(prefix)] == prefix:
-            return True
-    return False
+            return rule
+    return None
 
 
 def single_command(command: str) -> bool:
@@ -129,7 +135,24 @@ def is_allowed(command: str, allowed: list[str]) -> bool:
     return False
 
 
-def claude_tools(allowed: list[str], denied: list[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def step_reads(step_dir: str) -> tuple[str, ...]:
+    """Odczyt własnego `<krok>/in` i `<krok>/out` (PT-124): zawsze dozwolony, bez pytania o zgodę. Claude CLI
+    pyta o `ls`/`cat` poza katalogami sesji mimo `ls *`, więc krok dostaje dokładne wzorce dla swoich katalogów.
+    Granicą pozostaje piaskownica kroku (te katalogi i tak czyta); ścieżka z białym znakiem nie dostaje wzorca."""
+    if not step_dir or not os.path.isabs(step_dir) or any(c.isspace() or c in "()*" for c in step_dir):
+        return ()
+    inp, out = os.path.join(step_dir, "in"), os.path.join(step_dir, "out")
+    rules = []
+    for flags in ("", "-la "):
+        rules.extend((f"ls {flags}{inp}", f"ls {flags}{out}", f"ls {flags}{inp} {out}"))
+    for folder in (inp, out):
+        rules.append(f"ls {folder}/*")
+        rules.extend(f"{program} {folder}/*" for program in ("cat", "head", "tail", "wc"))
+    return tuple(f"Bash({rule})" for rule in rules)
+
+
+def claude_tools(allowed: list[str], denied: list[str],
+                 step_dir: str = "") -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Wzorce Bash dla Claude CLI; dokładna zgoda nie staje się zgodą na cały program."""
     grants = []
     for rule in dict.fromkeys((*ALWAYS_ALLOWED, *allowed)):
@@ -137,6 +160,7 @@ def claude_tools(allowed: list[str], denied: list[str]) -> tuple[tuple[str, ...]
             grants.extend((f"Bash({rule[:-2]})", f"Bash({rule})"))
         else:
             grants.append(f"Bash({rule})")
+    grants.extend(step_reads(step_dir))
     bans = []
     for rule in denied:
         bans.extend((f"Bash({rule})", f"Bash({rule} *)"))

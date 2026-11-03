@@ -15,7 +15,8 @@ import shutil
 import unittest
 
 from . import REPO
-from .decisionfix import Q2, Q3, decisions, journal, scenario_f, without_options
+from .decisionfix import (A1_STEP, A2_COMMAND, A2_STEP, Q2, Q3, a1_journal, a2_journal, decisions, journal,
+                          scenario_f, without_options)
 from .test_view import ProbeCase
 
 CARD_DIR = os.path.join(REPO, "apps", "common", "qml", "card")
@@ -58,6 +59,24 @@ def type_text(text):
 
 def option(i):
     return at("(" + ALL + ")(page.decisionDialog, 'decisionOption').sort((a, b) => a.y - b.y)[" + str(i) + "]")
+
+def commands():
+    """Polecenia łańcucha w oknie (PT-124): [tekst, zaznaczone, pole wyboru, powód, plakietki]."""
+    return json.loads(js("(function () { const d = page.decisionDialog; const all = " + ALL + "; "
+        "const y = it => it.mapToItem(d, 0, 0).y; "
+        "return JSON.stringify(all(d, 'decisionCommandRow').sort((a, b) => y(a) - y(b)).map(r => [r.text, r.checked, "
+        "  all(r, 'decisionCommandCheck').length === 1, all(r, 'decisionCommandReason').length ? r.reason : '', "
+        "  all(r, 'decisionCommandTag').map(t => t.label)])) })()"))
+
+def command(i):
+    return at("(" + ALL + ")(page.decisionDialog, 'decisionCommandRow').sort((a, b) => a.y - b.y)[" + str(i) + "]",
+              0.3, 0.5)
+
+def permission():
+    return json.loads(js("(function () { const d = page.decisionDialog; const all = " + ALL + "; "
+        "const one = n => all(d, n)[0] || null; "
+        "return JSON.stringify({ otherTitle: one('decisionOtherTitle') ? one('decisionOtherTitle').text : null, "
+        "  hint: !!one('decisionAllowHint'), list: !!one('decisionCommands') }) })()"))
 '''
 
 
@@ -246,6 +265,112 @@ click(card("K-8"))
 out["state"] = [js("page.decisionOpen"), js("page.panelOpen"), js("page.panelCardId")]
 """)
         self.assertEqual(out["state"], [False, True, "K-8"])
+
+
+@unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class PermissionDialogTest(ProbeCase):
+    """PT-124: zgoda na łańcuch (scenariusz A1) i na jedno polecenie (A2) — decyzje z usługi, nie wpisane ręcznie."""
+
+    def test_a1_chain_lists_commands_preselected_and_allows_exactly_the_checked(self):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["opened"] = state()
+out["perm"] = permission()
+out["commands"] = commands()
+click(option(1))
+out["picked"] = state()["choose"]
+click(command(1))
+out["unchecked"] = [c[1] for c in commands()]
+key(Qt.Key.Key_Return)
+out["sent"] = calls()
+""", scenario_f(self.data, decisions(a1_journal())))
+        opened = out["opened"]
+        self.assertEqual(opened["kind"], "Prośba o zgodę")
+        self.assertEqual(opened["who"], "K-8 · Haiku")
+        self.assertIn("naraz 4 polecenia spoza listy dozwolonych", opened["happened"])
+        self.assertIn("Tide zatwierdza polecenia pojedynczo", opened["why"])
+        self.assertEqual([o[0] for o in opened["options"]], ["Kontynuuj bez tych poleceń", "Zezwól na wybrane i wznów"])
+        self.assertEqual([o[3] for o in opened["options"]], [False, False], "żadna możliwość nie jest zaznaczona (D10)")
+        self.assertFalse(opened["choose"])
+        self.assertEqual(out["perm"], {"otherTitle": "Zrób zamiast tego…", "hint": False, "list": True})
+        self.assertEqual(out["commands"], [
+            ["ls docs", True, True, "", ["tylko czyta"]],
+            ["head -50", True, True, "", ["tylko czyta"]],
+            ["git log --oneline -3 -- docs/agent-plan-standard.md", True, True, "", ["tylko czyta"]],
+            ["git branch --list 'codex/k28*' 'claude/k-29*' 'fix/plan-ticket*'", True, True, "", ["tylko czyta"]],
+        ], "polecenia „tylko czyta” zaznaczone z góry; odczyt własnego katalogu kroku nie jest na liście")
+        self.assertTrue(out["picked"])
+        self.assertEqual(out["unchecked"], [True, False, True, True])
+        self.assertEqual(len(out["sent"]), 1)
+        self.assertEqual(out["sent"][0][:2], ["ResolveCardStep", "K-8"])
+        self.assertEqual(json.loads(out["sent"][0][2]),
+                         {"choice": "allow", "step": A1_STEP, "allow": [0, 2, 3]})
+
+    def test_a1_allow_without_checked_command_says_why(self):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+for i in range(4):
+    click(command(i))
+click(option(1))
+out["state"] = [state()["choose"], permission()["hint"], js("page.decisionDialog.checks.length")]
+key(Qt.Key.Key_Return)
+out["calls"] = len(calls())
+click(command(0))
+out["after"] = [state()["choose"], permission()["hint"]]
+""", scenario_f(self.data, decisions(a1_journal())))
+        self.assertEqual(out["state"], [False, True, 0], "„Wybierz” nieaktywne, ale z powodem")
+        self.assertEqual(out["calls"], 0)
+        self.assertEqual(out["after"], [True, False])
+
+    def test_a1_forbidden_command_has_reason_and_no_checkbox(self):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["commands"] = commands()
+click(command(4))
+out["after"] = commands()[4][1]
+""", scenario_f(self.data, decisions(a1_journal("; echo $(make install)"))))
+        rows = {c[0]: c for c in out["commands"]}
+        self.assertEqual(rows["make install"][1:], [False, False, "Zabronione w projekcie regułą „make install”.",
+                                                    ["zabronione"]])
+        self.assertFalse(rows["echo $(make install)"][2])
+        self.assertTrue(rows["echo $(make install)"][3], "zablokowane polecenie zawsze ma powód")
+        self.assertFalse(out["after"], "polecenia zabronionego nie da się zaznaczyć")
+
+    def test_a1_continue_without_and_do_instead(self):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+click(option(0))
+key(Qt.Key.Key_Return)
+out["deny"] = calls()
+""", scenario_f(self.data, decisions(a1_journal())))
+        self.assertEqual(json.loads(out["deny"][0][2]), {"choice": "deny", "step": A1_STEP})
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+click(named("decisionOther", 0.5, 0.2))
+type_text("przeczytaj tylko docs/agent-plan-standard.md")
+key(Qt.Key.Key_Return)
+out["instead"] = calls()
+""", scenario_f(self.data, decisions(a1_journal())))
+        self.assertEqual(json.loads(out["instead"][0][2]),
+                         {"choice": "deny", "step": A1_STEP, "instead": "przeczytaj tylko docs/agent-plan-standard.md"})
+
+    def test_a2_single_command_allow_and_resume(self):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["opened"] = state()
+out["perm"] = permission()
+click(option(0))
+key(Qt.Key.Key_Return)
+out["sent"] = calls()
+""", scenario_f(self.data, decisions(a2_journal())))
+        opened = out["opened"]
+        self.assertEqual(opened["who"], "K-8 · #3 · Sonnet")
+        self.assertIn(A2_COMMAND, opened["happened"])
+        self.assertEqual([(o[0], o[2]) for o in opened["options"]],
+                         [("Zezwól i wznów", True), ("Kontynuuj bez tego polecenia", False)])
+        self.assertEqual(out["perm"], {"otherTitle": "Zrób zamiast tego…", "hint": False, "list": False},
+                         "jedno polecenie — bez listy, polecenie jest na wierzchu")
+        self.assertEqual(json.loads(out["sent"][0][2]), {"choice": "allow", "step": A2_STEP})
 
 
 if __name__ == "__main__":

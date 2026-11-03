@@ -9,6 +9,11 @@
 // następnej decyzji (odpowiedziane czekają na nową migawkę ukryte); licznik „1 z N” tylko przy N > 1.
 // Esc zamyka bez wysyłania — decyzje zostają w „Czeka na mnie”.
 //
+// Zgoda na łańcuch poleceń (PT-124): lista `commands[]` z flagami (tylko czyta, katalog kroku, zabronione)
+// i powodem blokady; pole wyboru tylko przy poleceniach z `canAllow`, zaznaczenie początkowe z `preselected`
+// usługi (zaznaczenie poleceń, nie możliwości). Możliwość z `params.allow` wysyła indeksy zaznaczonych; bez
+// zaznaczenia „Wybierz” jest nieaktywne i okno mówi dlaczego. Pole własnej odpowiedzi ma podpis z `otherTitle`.
+//
 // Umowa: `cardId`, `decisions` (z migawki), `start()` — otwarcie od pierwszej decyzji, `failed(id, tekst)` —
 // błąd usługi przy odpowiedzi (decyzja wraca), sygnały `answered(decisionId, method, params)` — żądanie
 // gotowe do wysłania (metoda /Board i parametry z decyzji), `laterRequested()`, `fullCardRequested(notice)`
@@ -32,6 +37,7 @@ Rectangle {
     property string selected: ""
     property bool techOpen: false
     property string error: ""
+    property var checks: []
 
     readonly property var pending: (decisions || []).filter(d => answeredIds.indexOf(d.id) < 0)
     readonly property var current: pending.length > 0 ? pending[Math.min(index, pending.length - 1)] : null
@@ -40,7 +46,14 @@ Rectangle {
     readonly property bool freeText: !!current && current.freeText === true && !!current.reply
     readonly property bool onlyText: freeText && options.length === 0
     readonly property string choice: onlyText ? otherId : selected
-    readonly property bool canChoose: choice === otherId ? answer.text.trim() !== "" : choice !== ""
+    // Zgoda na polecenia z łańcucha (PT-124): lista `commands[]` z usługi, zaznaczenie poleceń w `checks`.
+    readonly property var commands: current && current.commands ? current.commands : []
+    readonly property bool showCommands: commands.length > 1 || (commands.length === 1 && commands[0].canAllow !== true)
+    readonly property var chosenOption: options.find(o => o.id === choice) || null
+    readonly property bool picksCommands: Decision.picksCommands(chosenOption)
+    readonly property string otherTitle: current && current.otherTitle ? current.otherTitle : "Inna odpowiedź…"
+    readonly property bool canChoose: choice === otherId ? answer.text.trim() !== ""
+                                                         : choice !== "" && (!picksCommands || checks.length > 0)
     readonly property string counter: pending.length > 1 ? (Math.min(index, pending.length - 1) + 1) + " z " + pending.length : ""
     readonly property alias answerField: answer
 
@@ -61,6 +74,11 @@ Rectangle {
         techOpen = false
         error = ""
         answer.text = ""
+        checks = Decision.preselectedIndexes(current)
+    }
+
+    function toggleCommand(at) {
+        checks = Decision.toggled(commands, checks, at)
     }
 
     function pick(id) {
@@ -87,7 +105,7 @@ Rectangle {
                 fullCardRequested("„" + option.title + "”: wybierz wykonawcę w panelu karty.")
                 return
             }
-            request = Decision.optionRequest(option)
+            request = Decision.optionRequest(option, checks)
         }
         if (!request || !request.method) return
         const id = current.id
@@ -281,6 +299,122 @@ Rectangle {
                     }
                 }
 
+                // Polecenia łańcucha (PT-124): pole wyboru tylko przy poleceniach, na które można zezwolić;
+                // przy pozostałych zawsze widać powód. Flagi i zaznaczenie początkowe — z usługi.
+                ColumnLayout {
+                    objectName: "decisionCommands"
+                    Layout.fillWidth: true
+                    visible: dialog.showCommands
+                    spacing: 6
+                    Accessible.role: Accessible.List
+                    Accessible.name: "Polecenia z łańcucha"
+
+                    Repeater {
+                        model: dialog.showCommands ? dialog.commands : []
+                        delegate: Rectangle {
+                            id: commandRow
+                            required property var modelData
+                            required property int index
+                            readonly property bool allowable: modelData.canAllow === true
+                            readonly property bool checked: dialog.checks.indexOf(index) >= 0
+                            readonly property string text: modelData.text
+                            readonly property string reason: modelData.reason || ""
+                            readonly property var tags: Decision.commandTags(modelData)
+                            objectName: "decisionCommandRow"
+                            Layout.fillWidth: true
+                            implicitHeight: commandColumn.implicitHeight + 16
+                            radius: Tide.Tokens.radiusFrame
+                            color: checked ? Tide.Theme.alpha(Tide.Tokens.accent, 0.09) : Tide.Tokens.backgroundView
+                            border.width: 1
+                            border.color: activeFocus ? Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
+                                                      : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
+                            activeFocusOnTab: allowable
+                            Accessible.role: allowable ? Accessible.CheckBox : Accessible.StaticText
+                            Accessible.name: text
+                            Accessible.description: reason
+                            Accessible.checkable: allowable
+                            Accessible.checked: checked
+                            Accessible.onToggleAction: dialog.toggleCommand(index)
+                            Keys.onSpacePressed: dialog.toggleCommand(index)
+
+                            MouseArea {
+                                anchors.fill: parent
+                                enabled: commandRow.allowable
+                                cursorShape: commandRow.allowable ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                onClicked: dialog.toggleCommand(commandRow.index)
+                            }
+
+                            RowLayout {
+                                id: commandColumn
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.margins: 10
+                                spacing: 9
+                                Rectangle {
+                                    objectName: "decisionCommandCheck"
+                                    visible: commandRow.allowable
+                                    Layout.alignment: Qt.AlignTop
+                                    implicitWidth: 14
+                                    implicitHeight: 14
+                                    radius: Tide.Tokens.radiusSmall / 3
+                                    color: commandRow.checked ? Tide.Tokens.accent : "transparent"
+                                    border.width: 1.5
+                                    border.color: commandRow.checked ? Tide.Tokens.accent : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.35)
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 3
+                                    Text {
+                                        objectName: "decisionCommandText"
+                                        Layout.fillWidth: true
+                                        text: commandRow.text
+                                        textFormat: Text.PlainText
+                                        color: Tide.Tokens.textPrimary
+                                        font.family: Tide.Theme.monoFamily
+                                        font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                                        wrapMode: Text.WrapAnywhere
+                                    }
+                                    Text {
+                                        objectName: "decisionCommandReason"
+                                        Layout.fillWidth: true
+                                        visible: commandRow.reason !== ""
+                                        text: commandRow.reason
+                                        textFormat: Text.PlainText
+                                        color: commandRow.modelData.forbidden === true ? Tide.Tokens.negative : Tide.Tokens.textSecondary
+                                        font.family: Tide.Theme.uiFamily
+                                        font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                                        wrapMode: Text.Wrap
+                                    }
+                                }
+                                Repeater {
+                                    model: commandRow.tags
+                                    delegate: Rectangle {
+                                        id: tag
+                                        required property string modelData
+                                        objectName: "decisionCommandTag"
+                                        readonly property string label: modelData
+                                        Layout.alignment: Qt.AlignTop
+                                        implicitWidth: tagText.implicitWidth + 12
+                                        implicitHeight: tagText.implicitHeight + 4
+                                        radius: Tide.Tokens.radiusSmall
+                                        color: Tide.Theme.alpha(modelData === "zabronione" ? Tide.Tokens.negative : Tide.Tokens.textPrimary, 0.08)
+                                        Text {
+                                            id: tagText
+                                            anchors.centerIn: parent
+                                            text: tag.modelData
+                                            textFormat: Text.PlainText
+                                            color: tag.modelData === "zabronione" ? Tide.Tokens.negative : Tide.Tokens.textMuted
+                                            font.family: Tide.Theme.uiFamily
+                                            font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Text {
                     objectName: "decisionError"
                     Layout.fillWidth: true
@@ -330,7 +464,7 @@ Rectangle {
                                                                                  : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
                         activeFocusOnTab: !dialog.onlyText
                         Accessible.role: Accessible.RadioButton
-                        Accessible.name: "Inna odpowiedź…"
+                        Accessible.name: dialog.otherTitle
                         Accessible.checked: checked
                         Accessible.onPressAction: dialog.pick(dialog.otherId)
                         Keys.onSpacePressed: dialog.pick(dialog.otherId)
@@ -361,7 +495,8 @@ Rectangle {
                                     border.color: other.checked ? Tide.Tokens.accent : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.35)
                                 }
                                 Text {
-                                    text: "Inna odpowiedź…"
+                                    objectName: "decisionOtherTitle"
+                                    text: dialog.otherTitle
                                     textFormat: Text.PlainText
                                     color: Tide.Tokens.textPrimary
                                     font.family: Tide.Theme.uiFamily
@@ -417,7 +552,8 @@ Rectangle {
                                     Text {
                                         anchors.fill: parent
                                         visible: answer.text === ""
-                                        text: "Odpowiedz własnymi słowami, jak w czacie z agentem."
+                                        text: dialog.current && dialog.current.otherHint ? dialog.current.otherHint
+                                                                                         : "Odpowiedz własnymi słowami, jak w czacie z agentem."
                                         textFormat: Text.PlainText
                                         color: Tide.Tokens.textMuted
                                         font: answer.font
@@ -427,6 +563,19 @@ Rectangle {
                             }
                         }
                     }
+                }
+
+                // „Zezwól na wybrane” bez zaznaczonego polecenia: „Wybierz” jest nieaktywne, więc mówimy dlaczego.
+                Text {
+                    objectName: "decisionAllowHint"
+                    Layout.fillWidth: true
+                    visible: dialog.picksCommands && dialog.checks.length === 0
+                    text: "Zaznacz co najmniej jedno polecenie powyżej, na które zezwalasz."
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.waiting
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt
+                    wrapMode: Text.Wrap
                 }
 
                 // Szczegóły techniczne — zwinięte.

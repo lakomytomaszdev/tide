@@ -16,6 +16,15 @@ Decyzja:
 - `fault` — dla błędów: `tide`, `step`, `provider`, `tracker`; pusty napis dla pozostałych rodzajów,
 - `technical{}` — szczegóły do zwiniętego bloku „Szczegóły techniczne”.
 
+Zgoda na polecenie (`permission`, PT-124) ma dodatkowo:
+- `commands[]` — polecenie kroku rozłożone na pojedyncze polecenia `{text, readOnly, stepDir, forbidden, reason,
+  canAllow, preselected}` (`board.chain.describe`, liczone przez usługę przy wyniku kroku; `forbidden` wyłącznie
+  z `is_forbidden` i reguł projektu, odczyt własnego `<krok>/in` i `<krok>/out` nie jest na liście),
+- przy łańcuchu możliwość „Zezwól na wybrane i wznów” z `params.allow = []` — okno wpisuje tam indeksy
+  zaznaczonych poleceń (domyślnie zaznaczone `preselected`; to zaznaczenie poleceń, nie możliwości — D10),
+- `otherTitle`, `otherHint` — podpis i podpowiedź pola własnej odpowiedzi („Zrób zamiast tego…”), która idzie
+  przez `reply` do `params.instead`.
+
 Możliwość: `{id, title, effect, recommended, choice, params, method}`. `method` to metoda /Board na D-Bus,
 a `params` — gotowe żądanie bez numeru karty: dla `ResolveCardStep` (StepResolve) JSON z `choice`, `step` i ewentualnie
 `answer`; dla `ResolveCardReview` sam `choice`. Pole o pustej wartości (`executor: ""`) uzupełnia okno wyborem
@@ -160,7 +169,64 @@ def _step_option(name: str, index: int, raw) -> dict | None:
                    recommended=raw.get("recommended") is True)
 
 
+OTHER_PERMISSION = ("Zrób zamiast tego…", "Napisz, co krok ma zrobić zamiast tego polecenia.")
+
+
 def _permission(st, name, step, done) -> dict:
+    commands = [_command(item) for item in done.get("commands") or [] if isinstance(item, dict)]
+    command = _text(done.get("command"))
+    if len(commands) > 1 or commands and commands[0]["text"] != str(done.get("command") or "").strip():
+        made = _chain_permission(st, name, step, done, commands)
+    else:
+        made = _single_permission(st, name, step, done)
+    made["commands"] = commands
+    made["otherTitle"], made["otherHint"] = OTHER_PERMISSION
+    if command and made["reply"]:
+        made["reply"] = {**made["reply"], "field": "instead"}
+    return made
+
+
+def _command(item: dict) -> dict:
+    """Polecenie z łańcucha (PT-124) w postaci zapisanej przez usługę przy wyniku kroku (`board.chain.describe`)."""
+    return {"text": str(item.get("text") or ""), "readOnly": item.get("readOnly") is True,
+            "stepDir": item.get("stepDir") is True, "forbidden": item.get("forbidden") is True,
+            "reason": _text(item.get("reason")), "canAllow": item.get("canAllow") is True,
+            "preselected": item.get("preselected") is True and item.get("canAllow") is True}
+
+
+def _chain_permission(st, name, step, done, commands) -> dict:
+    """Łańcuch poleceń: zgoda na wybrane polecenia (`allow` = indeksy `commands[]`, uzupełnia okno)."""
+    who = _who(step, True)
+    allowable = [item for item in commands if item["canAllow"]]
+    blocked = len(commands) - len(allowable)
+    happened = (f"{who} chce uruchomić naraz {_count(len(commands), 'polecenie', 'polecenia', 'poleceń')} "
+                "spoza listy dozwolonych.")
+    if allowable:
+        why = ("Tide zatwierdza polecenia pojedynczo, więc łańcucha nie da się przepuścić w całości. Zaznacz te, "
+               "na które zezwalasz, albo puść krok dalej bez nich.")
+        if blocked:
+            why += " Przy poleceniach, na które nie można zezwolić, jest powód."
+        options = [
+            _option("deny", "Kontynuuj bez tych poleceń",
+                    "Krok wznowi się bez nich; jeśli czegoś zabraknie, poprosi o pojedyncze polecenia.",
+                    RESOLVE_STEP, {"choice": "deny", "step": name}, recommended=True),
+            _option("allow", "Zezwól na wybrane i wznów",
+                    "Zaznaczone polecenia trafią na listę dozwolonych poleceń projektu; niezaznaczone nie zostaną "
+                    "dopuszczone.", RESOLVE_STEP, {"choice": "allow", "step": name, "allow": []}),
+        ]
+    else:
+        why = ("Na żadne z tych poleceń nie można zezwolić — powód jest przy każdym. Krok może pójść dalej bez nich "
+               "albo zrobić coś innego.")
+        options = [
+            _option("deny", "Kontynuuj bez tych poleceń",
+                    "Krok wznowi się bez nich; jeśli czegoś zabraknie, poprosi o pojedyncze polecenia.",
+                    RESOLVE_STEP, {"choice": "deny", "step": name}, recommended=True),
+        ]
+    reply = {"method": RESOLVE_STEP, "params": {"choice": "deny", "step": name}, "field": "instead"}
+    return _decision(st, name, step, "permission", happened, why, options, reply, "", _step_technical(step, done))
+
+
+def _single_permission(st, name, step, done) -> dict:
     command = _text(done.get("command"))
     can_allow = bool(done.get("canAllow", True))
     who = _who(step, True)

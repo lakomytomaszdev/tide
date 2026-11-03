@@ -11,6 +11,7 @@ from tide_daemon.cardflow.state import derived, fold
 
 DECISION_KEYS = {"id", "step", "stepKind", "ticket", "executor", "kind", "happened", "why", "options",
                  "freeText", "reply", "fault", "technical"}
+PERMISSION_KEYS = {"commands", "otherTitle", "otherHint"}       # PT-124: tylko przy zgodzie na polecenie
 OPTION_KEYS = {"id", "title", "effect", "recommended", "choice", "params", "method"}
 CARD = {"column": "todo"}
 
@@ -54,7 +55,7 @@ def plan_events(**reviewed):
 
 class ContractTest(unittest.TestCase):
     def assert_contract(self, decision):
-        self.assertEqual(set(decision), DECISION_KEYS)
+        self.assertEqual(set(decision), DECISION_KEYS | (PERMISSION_KEYS if decision["kind"] == "permission" else set()))
         self.assertIn(decision["kind"], KINDS)
         self.assertTrue(decision["happened"].strip())
         self.assertTrue(decision["why"].strip())
@@ -105,13 +106,48 @@ class ContractTest(unittest.TestCase):
                          [("allow", True), ("deny", False)])
         self.assertIn("git fetch origin", decision["happened"])
         self.assertEqual(decision["reply"]["params"], {"choice": "deny", "step": "K-1-PT-1-1"})
+        self.assertEqual((decision["reply"]["field"], decision["otherTitle"]), ("instead", "Zrób zamiast tego…"))
 
+        # Dziennik sprzed PT-124 (bez `commands`): łańcuch jak dotąd, tylko „Kontynuuj bez tego polecenia”.
         chain = Events().step("K-1-PT-1-1", result="denied", command="ls; git log | head", canAllow=False)
         [decision] = chain.decisions()
         self.assert_contract(decision)
         self.assertEqual([o["choice"] for o in decision["options"]], ["deny"])
         self.assertTrue(decision["options"][0]["recommended"])
         self.assertFalse(decision["technical"]["canAllow"])
+        self.assertEqual(decision["commands"], [])
+
+    def test_permission_chain_lists_commands_and_allows_selected(self):
+        from tide_daemon.board.chain import describe
+        command = "ls /wt/K-1-PT-1-1.step/in; git log -3 | head; rm -rf build; make install"
+        commands = describe(command, denied=["make install"], step_dir="/wt/K-1-PT-1-1.step")
+        [decision] = Events().step("K-1-PT-1-1", result="denied", command=command, canAllow=False,
+                                   commands=commands).decisions()
+        self.assert_contract(decision)
+        self.assertEqual([(c["text"], c["readOnly"], c["forbidden"], c["canAllow"], c["preselected"])
+                          for c in decision["commands"]],
+                         [("git log -3", True, False, True, True), ("head", True, False, True, True),
+                          ("rm -rf build", False, False, True, False), ("make install", False, True, False, False)])
+        self.assertEqual(decision["commands"][3]["reason"], "Zabronione w projekcie regułą „make install”.")
+        self.assertEqual([(o["title"], o["recommended"]) for o in decision["options"]],
+                         [("Kontynuuj bez tych poleceń", True), ("Zezwól na wybrane i wznów", False)])
+        self.assertEqual(decision["options"][1]["params"], {"choice": "allow", "step": "K-1-PT-1-1", "allow": []})
+        self.assertIn("4 polecenia", decision["happened"])
+        self.assertIn("jest powód", decision["why"])
+        self.assertEqual(decision["reply"], {"method": "ResolveCardStep", "field": "instead",
+                                             "params": {"choice": "deny", "step": "K-1-PT-1-1"}})
+        self.assertFalse({"selected", "default", "checked"} & {k for o in decision["options"] for k in o})
+
+    def test_permission_chain_without_allowable_command_has_reason_and_no_allow(self):
+        from tide_daemon.board.chain import describe
+        command = "make install; bash -c 'make install'"
+        commands = describe(command, denied=["make install"], step_dir="/wt/K-1-PT-1-1.step")
+        [decision] = Events().step("K-1-PT-1-1", result="denied", command=command, canAllow=False,
+                                   commands=commands).decisions()
+        self.assert_contract(decision)
+        self.assertEqual([o["choice"] for o in decision["options"]], ["deny"])
+        self.assertTrue(all(c["reason"] and not c["canAllow"] for c in decision["commands"]))
+        self.assertIn("powód jest przy każdym", decision["why"])
 
     def test_error_after_automatic_retry_names_fault_and_technical_details(self):
         events = (Events().step("K-1-PT-1-1", result="error", reason="start")
