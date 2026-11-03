@@ -4,6 +4,9 @@
 // opis, notatka. Istniejąca karta ma też przeniesienie między kolumnami ręcznymi i archiwizację.
 // Błąd z usługi pokazuje się w panelu (komunikat po polsku), commitError — dyskretnie pod nim.
 // Ctrl+Enter zapisuje, Esc zamyka. Teksty z karty to dane: zawsze zwykły tekst.
+// PT-134: dla karty z pełnym widokiem panel jest tylko szufladą szybkiej edycji opisu (`descriptionOnly`: pole „Opis”,
+// „Zapisz opis”, Esc anuluje bez zapisu) albo szufladą nowej karty; rzadkie ustawienia są w pełnej karcie
+// (CardFullView). Pełny formularz zostaje na razie dla kart bez dziennika — sprząta go PT-135.
 // YouTrack (PT-7): pole „Zgłoszenie w YouTracku” (klucz albo adres zgłoszenia), a przy połączonej karcie —
 // stan zgłoszenia, stan synchronizacji, „Otwórz w YouTracku” i przy konflikcie wybór „Weź z YouTracka” /
 // „Nadpisz z Tide” (/Board ResolveYouTrack).
@@ -54,7 +57,9 @@ Rectangle {
     property real maxWidth: 1200             // szerokość dostępna w oknie (ustawia BoardPage)
     property var renderer: null              // backend.renderMarkdown (przez BoardPage) albo null
     readonly property bool editing: card !== null
-    readonly property string shownTab: editing ? Docs.effectiveTab(docs, tab) : "opis"
+    // Szuflada szybkiej edycji opisu (PT-134): tylko pole „Opis” i „Zapisz opis” — rzadkie ustawienia są w pełnej karcie.
+    property bool descriptionOnly: false
+    readonly property string shownTab: editing && !descriptionOnly ? Docs.effectiveTab(docs, tab) : "opis"
     readonly property bool reading: shownTab !== "opis"
     readonly property var docTabs: Docs.tabs(docs)
     readonly property var flowPlan: editing && card && card.derived && card.derived.flow
@@ -137,7 +142,8 @@ Rectangle {
         docsText = ""
         docsPending = ""
         requestDocs()   // `tab` zostaje: ostatnio wybrana zakładka, póki działa okno Tide
-        titleField.focusInput()
+        if (descriptionOnly) descriptionEdit.forceActiveFocus()
+        else titleField.focusInput()
     }
 
     // Bez kolejki: póki odpowiedź dla tej karty nie wróciła, kolejne odświeżenie (5 s, Changed) czeka.
@@ -271,7 +277,7 @@ Rectangle {
         // Zakładki: Opis zawsze, Plan i Specyfikacja — gdy są.
         Segmented {
             objectName: "cardTabs"
-            visible: panel.editing && panel.docTabs.length > 1
+            visible: panel.editing && !panel.descriptionOnly && panel.docTabs.length > 1
             itemHeight: 28
             options: panel.docTabs
             current: panel.shownTab
@@ -292,7 +298,7 @@ Rectangle {
         ColumnLayout {
             objectName: "cardPlanProposal"
             Layout.fillWidth: true
-            visible: !!panel.flowPlan && (panel.planEntries().length > 0 || panel.flowPlan.status !== "reviewing")
+            visible: !panel.descriptionOnly && !!panel.flowPlan && (panel.planEntries().length > 0 || panel.flowPlan.status !== "reviewing")
             spacing: 5
             PillButton {
                 objectName: "cardOpenPlanManager"
@@ -520,8 +526,8 @@ Rectangle {
             objectName: "cardFlowClosing"
             Layout.fillWidth: true
             spacing: 6
-            visible: Boolean(panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
-                             && panel.card.derived.flow.closed)
+            visible: Boolean(panel.editing && !panel.descriptionOnly && panel.card && panel.card.derived
+                             && panel.card.derived.flow && panel.card.derived.flow.closed)
             Text {
                 Layout.fillWidth: true
                 text: "Karta do sprawdzenia"
@@ -624,10 +630,11 @@ Rectangle {
                 width: formFlick.width
                 spacing: 6
 
-                FieldLabel { text: "Tytuł" }
+                FieldLabel { text: "Tytuł"; visible: !panel.descriptionOnly }
                 LineInput {
                     id: titleField
                     objectName: "cardTitle"
+                    visible: !panel.descriptionOnly
                     Layout.fillWidth: true
                     placeholder: "Co jest do zrobienia?"
                     accessibleName: "Tytuł karty"
@@ -637,10 +644,11 @@ Rectangle {
                     onAccepted: panel.save()
                 }
 
-                FieldLabel { text: "Projekt"; Layout.topMargin: 8 }
+                FieldLabel { text: "Projekt"; Layout.topMargin: 8; visible: !panel.descriptionOnly }
                 ProjectPicker {
                     id: picker
                     objectName: "cardProject"
+                    visible: !panel.descriptionOnly
                     Layout.fillWidth: true
                     snapshot: panel.snapshot
                     kind: panel.projectKind
@@ -653,9 +661,10 @@ Rectangle {
                     }
                 }
 
-                FieldLabel { text: "Tagi"; Layout.topMargin: 8 }
+                FieldLabel { text: "Tagi"; Layout.topMargin: 8; visible: !panel.descriptionOnly }
                 Flow {
                     objectName: "cardTags"
+                    visible: !panel.descriptionOnly
                     Layout.fillWidth: true
                     spacing: 6
                     Repeater {
@@ -767,10 +776,11 @@ Rectangle {
                     }
                 }
 
-                FieldLabel { text: "Notatka na karcie"; Layout.topMargin: 8 }
+                FieldLabel { text: "Notatka na karcie"; Layout.topMargin: 8; visible: !panel.descriptionOnly }
                 LineInput {
                     id: noteField
                     objectName: "cardNote"
+                    visible: !panel.descriptionOnly
                     Layout.fillWidth: true
                     placeholder: "np. bez agenta, robię sam"
                     accessibleName: "Notatka na karcie"
@@ -778,10 +788,11 @@ Rectangle {
                     onAccepted: panel.save()
                 }
 
-                FieldLabel { text: "Zgłoszenie w YouTracku"; Layout.topMargin: 8 }
+                FieldLabel { text: "Zgłoszenie w YouTracku"; Layout.topMargin: 8; visible: !panel.descriptionOnly }
                 LineInput {
                     id: youtrackField
                     objectName: "cardYouTrackField"
+                    visible: !panel.descriptionOnly
                     Layout.fillWidth: true
                     placeholder: "np. LEGAL-35 — stan zgłoszenia pójdzie za kartą"
                     accessibleName: "Zgłoszenie w YouTracku"
@@ -798,7 +809,7 @@ Rectangle {
                     readonly property bool conflict: !!sync && sync.status === "conflict"
                     Layout.fillWidth: true
                     Layout.topMargin: 4
-                    visible: sync !== null
+                    visible: sync !== null && !panel.descriptionOnly
                     radius: Tide.Tokens.radiusSmall
                     color: conflict ? Tide.Theme.alpha(Tide.Tokens.rose, 0.10) : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.04)
                     border.width: conflict ? 1 : 0
@@ -889,7 +900,7 @@ Rectangle {
                 ColumnLayout {
                     Layout.fillWidth: true
                     Layout.topMargin: 14
-                    visible: panel.editing
+                    visible: panel.editing && !panel.descriptionOnly
                     spacing: 8
 
                     FieldLabel { text: "Kolumna" }
@@ -1358,7 +1369,7 @@ Rectangle {
             spacing: 8
             Text {
                 Layout.fillWidth: true
-                text: "Ctrl+Enter zapisuje"
+                text: panel.descriptionOnly ? "Ctrl+Enter zapisuje opis · Esc anuluje bez zapisu" : "Ctrl+Enter zapisuje"
                 textFormat: Text.PlainText
                 color: Tide.Theme.alpha(Tide.Tokens.textMuted, 0.8)
                 font.family: Tide.Theme.uiFamily
@@ -1375,7 +1386,7 @@ Rectangle {
                 implicitHeight: 34
                 strong: true
                 enabled: !panel.busy && (panel.dirty || !panel.editing)
-                text: panel.busy ? "Zapisuję…" : panel.editing ? "Zapisz" : "Dodaj kartę"
+                text: panel.busy ? "Zapisuję…" : panel.descriptionOnly ? "Zapisz opis" : panel.editing ? "Zapisz" : "Dodaj kartę"
                 fill: Tide.Tokens.accent
                 textColor: Tide.Tokens.backgroundDesktop
                 onClicked: panel.save()

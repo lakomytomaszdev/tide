@@ -48,6 +48,11 @@ Rectangle {
     // Pełna karta (PT-128, apps/common/qml/card/CardFullView.qml) na całą stronę.
     property bool fullOpen: false
     property string fullCardId: ""
+    // Szuflada opisu (PT-134): panel karty tylko z opisem i „Zapisz opis”, otwierany z pełnej karty.
+    property bool descriptionDrawer: false
+    // Zdania o skutku rzadkich ustawień czekające na odpowiedź usługi: tag zapisu → zdanie.
+    property var settingNotes: ({})
+    property string pendingMoveNote: ""
     property var decisionTags: ({})          // tag zapisu → [karta, id decyzji]
     // Przeciąganie.
     property bool dragging: false
@@ -167,7 +172,10 @@ Rectangle {
         cardPanel.load()
     }
 
+    onPanelOpenChanged: if (!panelOpen) descriptionDrawer = false
+
     function newCard(column) {
+        descriptionDrawer = false
         if (managing) managing = false
         panelCardId = ""
         panelColumn = column || "backlog"
@@ -212,7 +220,51 @@ Rectangle {
         else page.forceActiveFocus()
     }
 
-    // Panel karty z pełnej karty: ustawienia, akcje i wybór wykonawcy zostają tam (do PT-134).
+    // Szuflada szybkiej edycji opisu nad pełną kartą (PT-134): tylko opis, „Zapisz opis”, Esc anuluje bez zapisu.
+    function openDescription(id) {
+        descriptionDrawer = true
+        openCard(id)
+    }
+
+    // Rzadkie ustawienia z pełnej karty (PT-134) zapisują się od razu. Zdanie o skutku (`params.effect`) pokazuje
+    // się po odpowiedzi usługi — błąd usługi też, więc żadna zmiana nie przechodzi po cichu.
+    function applySetting(id, kind, params) {
+        if (kind === "move" || kind === "archive") {
+            // moveCard sam nadaje tag zapisu i może nic nie wysłać (karta już tam stoi) — notka czeka w pendingMoveNote.
+            pendingMoveNote = params.effect || ""
+            moveCard(id, kind === "archive" ? "archived" : params.column, kind === "archive" ? "" : topOf(params.column))
+            pendingMoveNote = ""
+            if (kind === "archive") closeFull()
+        } else if (kind === "pause") {
+            const tag = nextTag("flow-pause:" + id)
+            addSettingNote(tag, params.effect)
+            pauseRequested(tag, id, params.paused)
+        } else if (kind === "update") {
+            const tag = nextTag("setting:" + id)
+            addSettingNote(tag, params.effect)
+            const request = {}
+            request[params.field] = params.value
+            updateRequested(tag, id, JSON.stringify(request))
+        }
+    }
+
+    function addSettingNote(tag, text) {
+        const notes = Object.assign({}, settingNotes)
+        notes[tag] = text || ""
+        settingNotes = notes
+    }
+
+    // Zdanie o skutku zapisanego ustawienia (raz): wraca do użytkownika po odpowiedzi usługi.
+    function takeSettingNote(tag) {
+        if (!(tag in settingNotes)) return null
+        const notes = Object.assign({}, settingNotes)
+        const text = notes[tag]
+        delete notes[tag]
+        settingNotes = notes
+        return text
+    }
+
+    // Panel karty z pełnej karty: wybór wykonawcy (napis `notice`) zostaje tam.
     function panelFromFull(notice) {
         const id = fullCardId
         fullOpen = false
@@ -350,7 +402,8 @@ Rectangle {
         const at = backlogList.findIndex(c => c.id === id)
         const originBefore = at >= 0 && at + 1 < backlogList.length ? backlogList[at + 1].id : ""
         const tag = nextTag("move:" + id)
-        optimistic = optimistic.concat([{ id: id, column: column, before: before || "", tag: tag }])
+        if (pendingMoveNote) addSettingNote(tag, pendingMoveNote)
+        optimistic =optimistic.concat([{ id: id, column: column, before: before || "", tag: tag }])
         moveRequested(tag, id, column, index)
         if (fromBacklog) launchHook(id, origin, originBefore)
     }
@@ -547,8 +600,17 @@ Rectangle {
     function handleReply(tag, reply) {
         const error = reply && reply.ok ? "" : Logic.errorText(reply)
         const notice = Logic.commitNote(reply)
+        // Rzadkie ustawienia z pełnej karty (PT-134): widoczny skutek albo powód odmowy usługi. Błąd przeniesienia
+        // pokazuje niżej gałąź „move:”, więc tu go nie dublujemy.
+        const settingNote = takeSettingNote(tag)
+        if (settingNote !== null && settingNote !== "") {
+            if (!error) showToast(settingNote, "mint")
+            else if (tag.indexOf("move:") !== 0) showToast("Nie zapisano: " + error, "rose")
+        }
         if (tag.indexOf("launch-") === 0) {
             handleLaunchReply(tag, reply)
+        } else if (tag.indexOf("setting:") === 0) {
+            if (notice) showToast(notice, "butter")
         } else if (tag.indexOf("fault-preview:") === 0) {
             handleFaultPreviewReply(tag, reply)
         } else if (tag.indexOf("decision:") === 0) {
@@ -1545,12 +1607,15 @@ Rectangle {
     MouseArea {
         anchors.fill: parent
         visible: page.panelOpen
+        z: page.descriptionDrawer ? 36 : 0
         onClicked: page.closePanel()
         onWheel: wheel => wheel.accepted = false
     }
     CardPanel {
         id: cardPanel
         objectName: "cardPanel"
+        z: page.descriptionDrawer ? 37 : 0
+        descriptionOnly: page.descriptionDrawer
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
@@ -1719,6 +1784,8 @@ Rectangle {
         onPreviewRequested: (decisionId, method, params) => page.previewFault(page.fullCardId, decisionId, method, params)
         onDecisionsRequested: page.openDecisions(page.fullCardId)
         onPanelRequested: notice => page.panelFromFull(notice)
+        onDescriptionRequested: page.openDescription(page.fullCardId)
+        onSettingRequested: (kind, params) => page.applySetting(page.fullCardId, kind, params)
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)
     }
