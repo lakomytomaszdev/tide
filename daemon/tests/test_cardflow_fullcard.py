@@ -212,6 +212,13 @@ class BackgroundTest(unittest.TestCase):
                          [("K-1-PT-1-r1", "review", "Opus")], "zakończone kroki (planowanie, ticket) nie trafiają")
         self.assertIn("canEnter", running[0])
 
+    def test_finish_counts_running_steps_and_unmerged_tickets(self):
+        events = approved().step("K-1-PT-1-1", ticket="PT-1", result="done")
+        events.step("K-1-PT-1-r1", ticket="PT-1", kind="review", executor="Opus")
+        finish = view(events)["flow"]["finish"]
+        self.assertEqual(finish["steps"], 1)
+        self.assertGreaterEqual(finish["tickets"], 1, "ticket bez scalenia zostanie odrzucony przy zakończeniu karty")
+
     def test_headline_only_when_nothing_waits(self):
         running = Events().step("K-1-PT-1-1").step("K-1-PT-2-1", ticket="PT-2")
         self.assertEqual(view(running)["flow"]["headline"],

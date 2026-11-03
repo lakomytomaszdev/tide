@@ -80,7 +80,10 @@ Rectangle {
     // Gałąź karty z przepływu ustala Tide (silnik jej używa, `card.branch` tylko dopasowuje pracę), więc jej nie zmieniamy.
     readonly property bool branchLocked: !!(flow && flow.cardBranch)
     readonly property var actions: card ? Settings.actions(card.id, shownColumn, storedYoutrack, canPause, paused,
-                                                           moveTargets, canArchive, branchLocked) : []
+                                                           moveTargets, canArchive, branchLocked, finish) : []
+    // Skutek zakończenia karty z przepływu liczy usługa (`flow.finish`: trwające kroki, niescalone tickety).
+    readonly property var finish: flow && flow.finish ? flow.finish : null
+    readonly property string finishText: Settings.finishEffect(finish)
 
     // Podpisy przycisków z polem nazywają skutek tego, co wpisano; puste pole tylko daje fokus (odłączenie to osobna akcja).
     readonly property string youtrackButton: typedYoutrack === null || typedYoutrack === "" || typedYoutrack === storedYoutrack
@@ -105,8 +108,10 @@ Rectangle {
         if (!card || confirming) return
         if (id.indexOf("move:") === 0) {
             const column = id.slice(5)
-            settingRequested("move", { column: column,
-                                       effect: "Karta " + card.id + " przeniesiona do „" + Settings.columnName(columnLabels, column) + "”." })
+            const params = { column: column,
+                             effect: "Karta " + card.id + " przeniesiona do „" + Settings.columnName(columnLabels, column) + "”." }
+            if (column === "done" && finishText !== "") askFinish(params)
+            else settingRequested("move", params)
         } else if (id === "pause") {
             settingRequested("pause", { paused: !paused,
                                         effect: paused ? "Karta " + card.id + " wznowiona."
@@ -152,11 +157,18 @@ Rectangle {
             effect: "Karta " + card.id + " powiązana ze zgłoszeniem " + key + "." })
     }
 
+    function askFinish(params) {
+        confirming = { kind: "move", params: params,
+                       title: "Zakończyć kartę " + card.id + "?",
+                       effect: "Karta trafi do Gotowych, a przepływ się kończy: " + finishText + ".",
+                       yes: "Zakończ kartę" }
+    }
+
     function askArchive() {
         confirming = { kind: "archive", params: { effect: "Karta " + card.id + " zdjęta z tablicy." },
                        title: "Zarchiwizować kartę " + card.id + "?",
-                       effect: "Karta zniknie z tablicy. Plik karty i historia zostają, więc da się ją odtworzyć z archiwum; "
-                               + "trwające kroki nie są przerywane.",
+                       effect: "Karta zniknie z tablicy. Plik karty i historia zostają, więc da się ją odtworzyć z archiwum"
+                               + (finishText !== "" ? "; przepływ się kończy: " + finishText + "." : "."),
                        yes: "Archiwizuj kartę" }
     }
 

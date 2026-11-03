@@ -65,8 +65,9 @@ out["labels"] = json.loads(js("JSON.stringify((function all(it, out) { out = out
     "if (it.visible && typeof it.text === 'string') out.push(it.text); "
     "for (const c of it.children) all(c, out); return out })(" + V + "))"))
 """, full_d(self.data))
-        self.assertEqual(out["buttons"], ["Przenieś do Backlogu", "Przenieś do Do zrobienia", "Przenieś do Gotowych",
-                                          "Wstrzymaj kartę", "Archiwizuj kartę"])
+        self.assertEqual(out["buttons"], ["Przenieś do Backlogu", "Przenieś do Gotowych",
+                                          "Wstrzymaj kartę", "Archiwizuj kartę"],
+                         "pracująca karta dostaje tylko przeniesienia, na które pozwala Tablica (bez Do zrobienia)")
         self.assertEqual(out["yt"], ["Powiąż ze zgłoszeniem w YouTracku"])
         self.assertEqual(out["branch"], ["Zmień gałąź karty"])
         self.assertFalse([t for t in out["labels"] if re.fullmatch(r"(Zapisz|Anuluj)( .*)?", t)],
@@ -76,6 +77,7 @@ out["labels"] = json.loads(js("JSON.stringify((function all(it, out) { out = out
         out = self.probe(STATE_PY + """
 open_full()
 click(setting("Przenieś do Gotowych"))
+click(named("settingConfirmYes"))
 wait(80)
 out["move"] = calls()
 out["moveToast"] = js("page.toast")
@@ -88,6 +90,27 @@ out["pauseToast"] = js("page.toast")
         self.assertEqual(out["moveToast"], "Karta K-8 przeniesiona do „Gotowe”.")
         self.assertEqual(out["pause"], ["SetCardPaused", "K-8", True])
         self.assertEqual(out["pauseToast"], "Karta K-8 wstrzymana. Trwające kroki kończą się.")
+
+    def test_finishing_a_working_card_names_the_real_effect_and_refusal_sends_nothing(self):
+        out = self.probe(STATE_PY + """
+open_full()
+out["finish"] = json.loads(js("JSON.stringify(" + V + ".finish)"))
+click(setting("Przenieś do Gotowych"))
+out["asked"] = confirm()
+out["callsWhileAsking"] = len(calls())
+click(named("settingConfirmNo"))
+out["afterNo"] = [confirm()["open"], len(calls())]
+click(setting("Archiwizuj kartę"))
+out["archive"] = confirm()
+""", full_d(self.data))
+        self.assertGreater(out["finish"]["steps"] + out["finish"]["tickets"], 0)
+        self.assertEqual(out["asked"]["title"], "Zakończyć kartę K-8?")
+        self.assertIn("przepływ się kończy: zatrzyma", out["asked"]["effect"])
+        self.assertEqual(out["asked"]["yes"], "Zakończ kartę")
+        self.assertEqual(out["callsWhileAsking"], 0)
+        self.assertEqual(out["afterNo"], [False, 0], "odmowa: nic nie wysłano")
+        self.assertNotIn("nie są przerywane", out["archive"]["effect"])
+        self.assertIn("przepływ się kończy", out["archive"]["effect"])
 
     def test_youtrack_saves_at_once_names_the_key_and_rejects_a_bad_one(self):
         out = self.probe(STATE_PY + """

@@ -23,19 +23,30 @@ function issueKey(text) {
 // `targets` — kolumny, do których wolno przenieść kartę (Logic.settingTargets), `canArchive` — czy wolno ją
 // zarchiwizować, `branchLocked` — gałąź karty z przepływem ustala Tide, więc zmiany nie ma. Karta „Do sprawdzenia”
 // dostaje „Odeślij do poprawy” i „Oznacz jako sprawdzoną”.
-function actions(cardId, column, youtrack, canPause, paused, targets, canArchive, branchLocked) {
+// `finish` — skutek zakończenia karty z przepływem z usługi (`flow.finish`: {steps, tickets}) albo null.
+function finishEffect(finish) {
+    if (!finish) return ""
+    var parts = []
+    if (finish.steps > 0) parts.push("zatrzyma " + finish.steps + " " + (finish.steps === 1 ? "trwający krok" : "trwające kroki"))
+    if (finish.tickets > 0) parts.push("odrzuci " + finish.tickets + " " + (finish.tickets === 1 ? "niescalony ticket" : "niescalone tickety"))
+    return parts.join(" i ")
+}
+
+function actions(cardId, column, youtrack, canPause, paused, targets, canArchive, branchLocked, finish) {
     var out = []
+    var ending = finishEffect(finish)
     var review = column === "review"
     var allowed = targets || []
     if (column !== "backlog" && allowed.indexOf("backlog") >= 0)
         out.push({ id: "move:backlog", label: "Przenieś do Backlogu",
-                   effect: "Karta wraca do Backlogu; agent nie rusza jej, dopóki jej nie zlecisz." })
+                   effect: finish ? "Karta wraca do Backlogu i zostaje wstrzymana; trwające kroki się kończą."
+                                  : "Karta wraca do Backlogu; agent nie rusza jej, dopóki jej nie zlecisz." })
     if (column !== "todo" && allowed.indexOf("todo") >= 0)
         out.push({ id: "move:todo", label: review ? "Odeślij do poprawy" : "Przenieś do Do zrobienia",
                    effect: review ? "Karta wraca do Do zrobienia jako odesłana do poprawy." : "Karta trafia do Do zrobienia." })
     if (column !== "done" && allowed.indexOf("done") >= 0)
         out.push({ id: "move:done", label: review ? "Oznacz jako sprawdzoną" : "Przenieś do Gotowych",
-                   effect: "Karta trafia do Gotowych." })
+                   effect: ending ? "Kończy kartę: " + ending + ". Zapyta o potwierdzenie." : "Karta trafia do Gotowych." })
     out.push({ id: "youtrack", input: true,
                label: youtrack ? "Zmień zgłoszenie w YouTracku" : "Powiąż ze zgłoszeniem w YouTracku",
                effect: "Stan zgłoszenia pójdzie za kartą." })

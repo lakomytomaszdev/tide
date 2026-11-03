@@ -132,7 +132,7 @@ function dropTargets(card) {
 // Rzadkie ustawienia pełnej karty (PT-134): te same reguły co moveCard — kolumny ręczne, a karta do potwierdzenia
 // tylko do Gotowych / Do zrobienia i bez archiwizacji.
 function settingTargets(card) {
-    return confirmable(card) ? dropTargets(card) : MANUAL.slice()
+    return confirmable(card) || workingFlow(card) ? dropTargets(card) : MANUAL.slice()
 }
 
 function canArchive(card) {
