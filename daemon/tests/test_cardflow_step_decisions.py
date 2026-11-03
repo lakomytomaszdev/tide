@@ -646,3 +646,30 @@ class RejectFailedTicketTest(FlowInProcess):
             with self.assertRaises(Started):
                 engine._plan_next(card, st)
         self.assertEqual(started, ["PT-3"], "ticket czekający na odrzucony bloker rusza")
+
+
+class WorktreeGuardTest(unittest.TestCase):
+    def test_missing_head_and_gitdir_are_restored_for_existing_worktrees(self):
+        # 03.11: z `.git/worktrees/*/` zniknęły HEAD i gitdir w trakcie kroków — git przestał znać worktree kart.
+        import tempfile
+        from tide_daemon.cardflow.engine import worktree_guard
+        base = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, base, True)
+        repo, tree = os.path.join(base, "repo"), os.path.join(base, "repo-worktrees", "a")
+        admin = os.path.join(repo, ".git", "worktrees", "a")
+        os.makedirs(admin)
+        os.makedirs(tree)
+        with open(os.path.join(admin, "HEAD"), "w") as fh:
+            fh.write("ref: refs/heads/ticket/a\n")
+        with open(os.path.join(admin, "gitdir"), "w") as fh:
+            fh.write(os.path.join(tree, ".git") + "\n")
+        memory = {}
+        self.assertEqual(worktree_guard(repo, memory), [])
+        os.unlink(os.path.join(admin, "HEAD"))
+        os.unlink(os.path.join(admin, "gitdir"))
+        self.assertEqual(worktree_guard(repo, memory), ["a"])
+        with open(os.path.join(admin, "HEAD")) as fh:
+            self.assertEqual(fh.read(), "ref: refs/heads/ticket/a\n")
+        os.unlink(os.path.join(admin, "HEAD"))
+        __import__("shutil").rmtree(tree)
+        self.assertEqual(worktree_guard(repo, memory), [], "usunięty worktree nie wraca")
