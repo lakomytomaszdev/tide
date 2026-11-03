@@ -10,6 +10,7 @@ import os
 from unittest import mock
 
 from tide_daemon.tasks import agentcmd, local
+from tide_daemon.tasks.runner import HostRunner
 from .test_agentcmd import BackgroundBase
 
 GOLDEN = os.path.join(os.path.dirname(__file__), "fixtures", "runner", "host_argv.json")
@@ -17,9 +18,7 @@ GOLDEN = os.path.join(os.path.dirname(__file__), "fixtures", "runner", "host_arg
 
 def start_step(step, systemd_run=""):
     """Jedyne miejsce, które zna sposób uruchomienia kroku w tym teście."""
-    bg = agentcmd.background(step)
-    bg.prepare()
-    return bg, bg.start(systemd_run=systemd_run)
+    return HostRunner(systemd_run).start(step)
 
 
 class HostArgvTest(BackgroundBase):

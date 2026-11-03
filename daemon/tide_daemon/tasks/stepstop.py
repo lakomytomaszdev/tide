@@ -492,12 +492,13 @@ def last_messages(path: str, tool: str, limit: int = MESSAGE_LIMIT) -> list:
 def stop_step(proc=None, *, unit: str = "", worktree: str, step_dir: str, repo: str, git_dir: str, branch: str,
               tool: str, session_id: str = "", claude_projects: str = "", codex_roots=None,
               grace: float = 10.0, limit: int = MESSAGE_LIMIT,
-              recovered_snapshot: Snapshot | None = None) -> StopResult:
+              recovered_snapshot: Snapshot | None = None, kill=None) -> StopResult:
     """Zatrzymuje krok, commituje WIP i czyta ostatnie wiadomości. `unit` (Background.unit) i/lub `proc` (Popen z
     Background.start() albo pid; None, gdy usługa się zrestartowała i zna tylko jednostkę). `git_dir` i `repo`
     z Background (ustalone przed krokiem), `branch` — gałąź kroku, na której ma wylądować commit.
     Commit robimy także wtedy, gdy program już nie żył — zmiany w worktree nie mogą zostać bez śladu."""
-    stopped = terminate(proc, unit, grace)
+    # `kill` — funkcja() → bool od Runnera (PT-180); bez niej dotychczasowe zatrzymanie jednostki / procesu.
+    stopped = kill() if kill is not None else terminate(proc, unit, grace)
     result = StopResult(stopped=stopped, exit_code=getattr(proc, "returncode", None))
     if not stopped:
         result.error = "not-stopped"        # nie dotykamy worktree, w którym program jeszcze pisze

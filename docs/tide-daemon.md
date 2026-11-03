@@ -1530,11 +1530,22 @@ prefiks ticketów projektu przez `reserve(dry_run=True)`, gałąź główna, bra
 numeru (`coordination/reservations.py` — kontrola numerów widzi ticket), gałęzi i worktree karty
 (`card/k-12-<opis>` od gałęzi głównej), gałęzi i worktree ticketu (`ticket/pt-7-<opis>` od gałęzi karty), startu
 kroku, na końcu `step.started`. Worktree leżą w `<repo>-worktrees/`, katalog kroku obok worktree (`<worktree>.step`,
-`in` — kartka, ustawienia, gitconfig; `out` — plik wyniku i notki). Krok to `agentcmd.background()` +
+`in` — kartka, ustawienia, gitconfig; `out` — plik wyniku i notki). Krok to (przez `Runner`, niżej) `agentcmd.background()` +
 `Background.start()` (PT-76): `claude -p` albo `codex exec` w jednostce `systemd-run --user --scope`
 `tide-step-<K-12>-<PT-7>-<n>`, z piaskownicą i kartką na stdin. Claude dostaje
 `--permission-mode acceptEdits`, Codex opcjonalny `model_reasoning_effort`. Inny dostawca dostaje token
 z pliku poza argumentami programu i dziennikiem; lokalny nie przechodzi do chmury. Bez Konsoli.
+
+**Runner** (`tasks/runner.py`, PT-180). Silnik nie woła `agentcmd` ani `stepstop` do startu i zatrzymania kroku,
+tylko wstrzyknięty `Runner` (`FlowEngine(..., runner=)`, domyślnie `HostRunner(systemd_run)`): `start(step,
+before_start=)` składa krok (`agentcmd.background`), przygotowuje katalogi i pliki, woła `before_start` (kopiowanie
+zrzutów) i uruchamia program — zwraca `Started(background, proc)`, a `proc` (Popen) trafia do `procs` silnika;
+`kill(step, proc=, grace=)` zatrzymuje jednostkę z wpisu dziennika (`stop_step` dostaje go jako `kill=`, więc commit
+WIP i wiadomości zostają jak dotąd); `env(step)` zwraca środowisko programu kroku (`agentcmd.step_env`). `HostRunner`
+to dzisiejszy sposób bez zmian: argv i środowisko pilnuje złoty plik `tests/fixtures/runner/host_argv.json`
+(zapis sprzed refaktoru). Format wpisów kroku (`unit`, `gitDir`, `stepDir`) i odczyt stanu po restarcie usługi
+(`stepstop.unit_state`, `read_exit_code`) bez zmian, więc kroki uruchomione przed aktualizacją są dalej rozpoznawane.
+Wyboru runnera nie ma — to miejsce pod kolejny runner (pudełko karty).
 
 Kartka (`cardflow/handoff.py`): tytuł, opis i zrzuty karty, gałąź i katalog roboczy, zakazy (push, scalanie, zapis
 poza katalogiem roboczym i wyjściowym) i plik wyniku `<krok>/out/result.json`:

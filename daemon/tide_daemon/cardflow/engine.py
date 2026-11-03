@@ -5,8 +5,8 @@ roboczy (cardflow_monitor.py) — po kolei, więc dwie akcje jednej karty nigdy 
 Przebieg zlecenia (`start`): sprawdzenie (karta, projekt z repozytorium, wykonawca Claude z katalogu, program
 `claude`, prefiks ticketów — bez zapisu), potem zdarzenia: `card.started`, pary „zamiar → wynik” dla rezerwacji
 numeru (`coordination/reservations.py`), gałęzi i worktree karty (od gałęzi głównej), gałęzi i worktree ticketu (od
-gałęzi karty) i startu kroku (`agentcmd.background()` + `Background.start()` w jednostce `systemd-run --user
---scope`), na końcu `step.started`. Błąd sprawdzenia nie zostawia niczego — ani zdarzenia, ani gałęzi.
+gałęzi karty) i startu kroku (`Runner.start`; `HostRunner` to `agentcmd.background()` + `Background.start()` w jednostce
+`systemd-run --user --scope`), na końcu `step.started`. Błąd sprawdzenia nie zostawia niczego — ani zdarzenia, ani gałęzi.
 
 `tick()` (co chwilę): dziennik cofnięty z zewnątrz → odtworzenie z kopii i ostrzeżenie; zaczęte akcje bez wyniku
 (restart usługi) → dokończenie albo jawny błąd; trwający krok → koniec (jednostka nieaktywna) albo strażnik; ticket
@@ -44,6 +44,7 @@ from ..coordination import plan as source_plans
 from ..coordination.repoplans import RepoPlans
 from ..board.plan_candidates import candidates as plan_candidates
 from ..tasks import agentcmd, launch, stepstop
+from ..tasks.runner import HostRunner, Runner
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import handoff
@@ -236,8 +237,9 @@ class FlowEngine(PlanEditing):
                  tmp_root: str | None = None, settings: str | None = None,
                  flow_git: FlowGit | None = None, clock=time.time, which=shutil.which, grace: float = 10.0,
                  guard_every: float = 30.0, terminal=None, task_files: TaskFiles | None = None,
-                 limits_source=None):
+                 limits_source=None, runner: Runner | None = None):
         self.store = store
+        self.runner = runner or HostRunner(systemd_run)   # PT-180: jedyna droga uruchomienia i zatrzymania kroku
         self.journal = journal or Journal(store.root)
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
         self._worktree_heads: dict = {}  # katalog administracyjny worktree → (HEAD, gitdir) z ostatniego zdrowego odczytu
@@ -1176,13 +1178,19 @@ class FlowEngine(PlanEditing):
                             result="stopped", reason="abandoned", question="", command="", notes=[], kept=[])
         return {"ok": True, "id": card_id, "step": step_id, "result": "stopped"}
 
+    def _kill(self, step: dict) -> bool:
+        """Zatrzymanie kroku przez Runner; uchwyt procesu jest tylko dla kroków uruchomionych przez tę usługę
+        (po restarcie `proc` to None, a krok znamy po jednostce zapisanej w dzienniku)."""
+        return self.runner.kill(step, proc=self.procs.get(step.get("step") or ""), grace=self.grace)
+
     def _stop_for_enter(self, card: str, step: dict) -> bool:
         stopped = stepstop.stop_step(self.procs.get(step.get("step") or ""), unit=step.get("unit") or "",
                                      worktree=step.get("worktree") or "", step_dir=step.get("stepDir") or "",
                                      repo=step.get("repo") or self._repo(card), git_dir=step.get("gitDir") or "",
                                      branch=step.get("branch") or "", tool=step.get("program") or "claude",
                                      session_id=step.get("session") or "", claude_projects=self.claude_projects,
-                                     codex_roots=self.codex_roots, grace=self.grace)
+                                     codex_roots=self.codex_roots, grace=self.grace,
+                                     kill=lambda: self._kill(step))
         if not stopped.stopped:
             return False
         self.procs.pop(step.get("step") or "", None)
@@ -1491,7 +1499,12 @@ class FlowEngine(PlanEditing):
                 if kind in ("ticket", "fix", "conflict") and node_home:
                     ok, tail = node_mod.install(worktree, os.path.expanduser("~"))
                     prompt += node_mod.prompt_note(ok, tail, network=bool(domains))
-            bg = agentcmd.background(agentcmd.Step(
+            def copy_images(_bg):
+                for source, target in zip(images, shots):
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    shutil.copyfile(source, target)
+
+            bg, proc = self.runner.start(agentcmd.Step(
                 tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
                 step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
                 resume=bool(resume_session),
@@ -1502,12 +1515,8 @@ class FlowEngine(PlanEditing):
                 enforce_command_policy=selected.tool == "claude",
                 tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet, node_home=node_home,
                 codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains,
-                chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else ""))
-            bg.prepare()
-            for source, target in zip(images, shots):
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                shutil.copyfile(source, target)
-            proc = bg.start(systemd_run=self.systemd_run)
+                chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else ""),
+                before_start=copy_images)
             self.procs[step_id] = proc
             return {"unit": bg.unit, "gitDir": bg.git_dir}
 
@@ -3296,8 +3305,7 @@ class FlowEngine(PlanEditing):
 
     def _stop(self, card: str, step: dict, result: str, reason: str, stalled_since: str = "",
               *, handoff: bool = False) -> bool:
-        if handoff and not stepstop.terminate(self.procs.get(step.get("step") or ""),
-                                              step.get("unit") or "", self.grace):
+        if handoff and not self._kill(step):
             return False  # sprawdzenie czystości WIP dopiero po potwierdzonym końcu programu
         recovered = self._recovered_wip_snapshot(card, step) if handoff else None
         stopped = stepstop.stop_step(self.procs.get(step.get("step") or ""), unit=step.get("unit") or "",
@@ -3306,7 +3314,8 @@ class FlowEngine(PlanEditing):
                                      branch=step.get("branch") or "", tool=step.get("program") or "claude",
                                      session_id=step.get("session") or "", claude_projects=self.claude_projects,
                                      codex_roots=self.codex_roots,
-                                     grace=self.grace, recovered_snapshot=recovered)
+                                     grace=self.grace, recovered_snapshot=recovered,
+                                     kill=lambda: self._kill(step))
         wip = {"stopped": stopped.stopped, "committed": stopped.committed, "commit": stopped.commit,
                "files": stopped.files, "error": stopped.error, "notes": stopped.notes}
         if not stopped.stopped:
