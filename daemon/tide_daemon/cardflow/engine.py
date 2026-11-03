@@ -2315,7 +2315,7 @@ class FlowEngine(PlanEditing):
         instead = str(request.get("instead") or "").strip()
         if choice == "answer" and (not answer or len(answer) > 4000):
             raise FlowError("bad-answer", "odpowiedź musi mieć od 1 do 4000 znaków")
-        if choice == "deny" and (len(answer) > 4000 or len(instead) > 4000):
+        if choice in ("deny", "retry") and (len(answer) > 4000 or len(instead) > 4000):
             raise FlowError("bad-answer", "odpowiedź musi mieć do 4000 znaków")
         if choice == "change-executor":
             if not executor:
@@ -2346,7 +2346,7 @@ class FlowEngine(PlanEditing):
         if request.get("auto"):
             extra["auto"] = True
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
-                                    choice=choice, answer=answer if choice in ("answer", "deny") else "",
+                                    choice=choice, answer=answer if choice in ("answer", "deny", "retry") else "",
                                     command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always", "run-ticket")
                                     else "", executor=executor if choice == "change-executor" else "", **extra)
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}

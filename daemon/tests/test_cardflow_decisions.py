@@ -226,7 +226,7 @@ class ContractTest(unittest.TestCase):
         self.assertIn("dostawca odrzucił autoryzację", decision["happened"])
         self.assertIn("błąd dostawcy (Claude)", decision["why"])
         self.assertEqual(decision["options"][0]["choice"], "change-executor", "przy autoryzacji polecany inny wykonawca")
-        self.assertIsNone(decision["reply"], "błędu dostawcy nie zgłaszamy jako błędu Tide")
+        self.assertEqual(decision["reply"]["method"], "ResolveCardStep", "błędu dostawcy nie zgłaszamy jako błędu Tide")
         outage = (Events().step("K-1-PT-1-1", result="error", reason="exit", fault="provider", faultCause="outage")
                   .step("K-1-PT-1-2", attempt=1, parent="K-1-PT-1-1", result="error", reason="exit",
                         fault="provider", faultCause="outage"))
@@ -261,7 +261,7 @@ class ContractTest(unittest.TestCase):
         [decision] = events.decisions()
         self.assertEqual(decision["fault"], "unknown")
         self.assertTrue(decision["why"].startswith("Nie wiadomo, czyja to wina"))
-        self.assertEqual(decision["reply"]["method"], "ReportStepFault", "podejrzenie błędu Tide można zgłosić")
+        self.assertEqual(decision["reply"]["label"], "Ponów z instrukcją", "nieznana przyczyna: instrukcja dla wykonawcy")
 
     def test_model_fault_recommends_another_executor(self):
         events = (Events().step("K-1-PT-1-1", result="error", reason="bad-result")
@@ -269,7 +269,7 @@ class ContractTest(unittest.TestCase):
         [decision] = events.decisions()
         self.assertEqual(decision["fault"], "model", "stary dziennik bez pola fault — z samego powodu")
         self.assertEqual(decision["options"][0]["choice"], "change-executor")
-        self.assertIsNone(decision["reply"])
+        self.assertEqual(decision["reply"]["label"], "Ponów z instrukcją")  # 03.11: instrukcja dla wykonawcy
 
     def test_plan_approval_recommends_from_the_verdict(self):
         changes = plan_events(reviewer="Sonnet", verdict="REQUEST_CHANGES", findings="MAJOR: rozdziel fale.")

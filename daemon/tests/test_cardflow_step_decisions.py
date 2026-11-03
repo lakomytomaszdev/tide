@@ -562,3 +562,14 @@ class EscalationTest(FlowInProcess):
         self.assertEqual(engine._stronger_executor({"executor": "Sonnet"}, failed), "Opus")
         self.assertEqual(engine._stronger_executor({"executor": "Opus"}, failed), "")
         self.assertEqual(engine._stronger_executor({"executor": "Haiku"}, {"result": "error", "reason": "login"}), "")
+
+
+class RetryInstructionTest(unittest.TestCase):
+    def test_retry_with_instruction_reaches_the_resumed_step(self):
+        # 03.11, K-16/LEGAL-67: agent powtarzał ten sam błąd, a użytkownik nie mógł mu nic przekazać.
+        from tide_daemon.cardflow import handoff
+        text = handoff.resume_context(choice="retry", prior={"result": "error", "reason": "B1 otwarte"},
+                                      answer="B1 odroczone do nowego ticketu — zakończ z notką", command="",
+                                      out_dir="/tmp/x")
+        self.assertIn("B1 odroczone do nowego ticketu", text)
+        self.assertIn("ma pierwszeństwo", text)

@@ -377,8 +377,12 @@ def _error(st, name, step, done) -> dict:
                 RESOLVE_STEP, {"choice": "change-executor", "step": name, "executor": ""},
                 recommended=other_recommended),
     ]
-    reply = None
-    if fault in ("tide", "unknown"):
+    # „Ponów z instrukcją” (03.11, K-16/LEGAL-67): agent kręcił się na tym samym powodzie, a użytkownik nie miał jak
+    # mu powiedzieć, co zrobić inaczej. Tekst trafia do wznowionego kroku jako polecenie użytkownika.
+    reply = {"method": RESOLVE_STEP, "params": {"choice": "retry", "step": name}, "field": "answer",
+             "label": "Ponów z instrukcją", "hint": "Np. „B1 jest odroczone do nowego ticketu — zakończ krok z notką”.",
+             "effect": "Ten sam wykonawca wznowi krok z Twoją instrukcją."}
+    if fault == "tide":
         # „Opisz problem i ponów”: opis trafia do karty z błędem w Backlogu plasma-tide (z podglądem), krok rusza znowu.
         reply = {"method": REPORT_FAULT, "params": {"step": name}, "field": "description",
                  "preview": PREVIEW_FAULT, "label": "Opisz problem i ponów",

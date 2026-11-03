@@ -136,6 +136,9 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
         detail = "Krok przekazano od innego dostawcy. Kontynuuj w tym samym worktree z commita WIP; przeczytaj notkę techniczną niżej."
     elif choice == "auto":
         detail = "Krok ponowiony automatycznie po pierwszym błędzie. Zachowaj zmiany z poprzedniej próby."
+    elif choice == "retry" and answer:
+        detail = ("Użytkownik polecił ponowić krok z instrukcją (ma pierwszeństwo przed wcześniejszym planem kroku):\n"
+                  f"{answer}\nZachowaj zmiany z poprzednich prób.")
     else:
         detail = "Użytkownik polecił ponowić krok. Zachowaj zmiany z poprzednich prób."
     return f"""
