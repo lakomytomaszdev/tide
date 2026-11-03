@@ -163,7 +163,7 @@ class WaveFlowTest(FlowInProcess):
         mapping = self.approve(card)["map"]
         shown = self.wait_column(card, "waiting")
         self.assertEqual(shown["derived"]["flow"]["ticket"], mapping["#1"])
-        self.assertEqual(shown["derived"]["flow"]["action"], "answer")
+        self.assertEqual(shown["derived"]["flow"]["decisions"][0]["kind"], "question")
         self.assertTrue(any(s["ticket"] == mapping["#2"] for s in self.of(card, "step.started")))
         self.assertFalse(any(s["ticket"] == mapping["#2"] for s in self.of(card, "step.finished")))
         box = []

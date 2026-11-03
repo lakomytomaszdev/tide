@@ -56,7 +56,7 @@ class MultiProjectPlanning:
             call = json.load(fh)
         argv, prompt = call["argv"], call["prompt"]
         self.assertTrue(call["cwd"].startswith(self.repo + "-worktrees"), "główne repozytorium: worktree karty")
-        self.assertEqual(argv[argv.index("--add-dir") + 1], extra)
+        self.assertIn(extra, [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"])  # obok katalogu wyjściowego kroku
         self.assertIn(f"Edit(/{os.path.realpath(extra)}/**)", argv[argv.index("--disallowedTools"):])
         with open(os.path.join(step["stepDir"], "in", "settings.json"), encoding="utf-8") as fh:
             filesystem = json.load(fh)["sandbox"]["filesystem"]

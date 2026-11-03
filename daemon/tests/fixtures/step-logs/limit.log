@@ -1,0 +1,2 @@
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Robię ticket."}]}}
+{"type": "result", "subtype": "error_during_execution", "is_error": true, "api_error_status": 429, "result": "Too many requests"}

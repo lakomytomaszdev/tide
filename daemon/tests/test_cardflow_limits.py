@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from tide_daemon.cardflow import limits
-from tide_daemon.cardflow.engine import FlowError
+from tide_daemon.cardflow.engine import FlowDeferred, FlowError
 from tide_daemon.cardflow.state import derived, fold
 from tide_daemon.tasks import launch
 
@@ -127,6 +127,25 @@ class FlowQuotaContractTest(FlowInProcess):
         self.flow.engine.limits_source = lambda: {"available": False, "services": {}}
         self.assertEqual(self.flow.engine._wait_reason(selected), "")
 
+    def test_waiting_step_records_cause_and_reset_for_the_full_card(self):
+        engine = self.flow.engine
+        now = engine.clock()
+        engine.limits_source = lambda: {
+            "available": True, "services": {"chatgpt": {
+                "session": {"remaining": None, "readTs": now},
+                "weekly": {"remaining": 7, "readTs": now, "resetTs": now + 3600}}}}
+        selected = SimpleNamespace(provider="openai", local=False)
+        with self.assertRaises(FlowDeferred):
+            engine._admit("K-77", selected, "PT-1", "ticket", "K-77-PT-1-1")
+        wait = fold(engine.journal.read("K-77")).waiting[("PT-1", "ticket")]
+        self.assertEqual((wait["cause"], wait["until"]), ("quota", limits.reset_label(now + 3600, now)))
+        engine.limits_source = lambda: {"available": False, "services": {}}
+        engine._wait_reason = lambda _selected: "limit kroków dostawcy openai: 3/3"
+        with self.assertRaises(FlowDeferred):
+            engine._admit("K-77", selected, "PT-2", "ticket", "K-77-PT-2-1")
+        wait = fold(engine.journal.read("K-77")).waiting[("PT-2", "ticket")]
+        self.assertEqual((wait["cause"], wait["until"]), ("slots", ""))
+
     def test_flow_settings_persist_without_erasing_other_fields(self):
         engine = self.flow.engine
         self.assertEqual(engine.get_flow_settings()["limitTransfer"], {"mode": "ask", "executor": ""})
@@ -140,6 +159,18 @@ class FlowQuotaContractTest(FlowInProcess):
         with self.assertRaises(FlowError):
             engine.set_flow_settings({"limitTransfer": {"mode": "auto", "executor": ""}})
         self.assertEqual(engine.get_flow_settings(), reply)
+
+    def test_provider_slots_are_set_through_flow_settings(self):
+        # 03.11: użytkownik chciał więcej kroków naraz bez ręcznej edycji ~/.config.
+        engine = self.flow.engine
+        self.assertEqual(engine.get_flow_settings()["providerSlots"], {})
+        reply = engine.set_flow_settings({"providerSlots": {"anthropic": 6, "openai": 4}})
+        self.assertEqual(reply["providerSlots"], {"anthropic": 6, "openai": 4})
+        with open(self.settings, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["providerSlots"], {"anthropic": 6, "openai": 4})
+        for bad in ({"anthropic": 0}, {"anthropic": 13}, {"anthropic": True}, {"anthropic": "6"}, ["anthropic"]):
+            with self.assertRaises(FlowError, msg=repr(bad)):
+                engine.set_flow_settings({"providerSlots": bad})
 
     def test_low_limit_queues_card_then_starts_when_reading_recovers(self):
         now = self.flow.engine.clock()
@@ -172,8 +203,10 @@ class LimitProjectionTest(unittest.TestCase):
              "wip": {"stopped": True, "committed": True, "commit": "a" * 40, "files": 1}},
         ]
         card = derived(fold(events), {"id": "K-1", "column": "todo", "check": "auto"})
-        self.assertEqual((card["column"], card["flow"]["action"]), ("waiting", "limit"))
-        self.assertEqual(card["flow"]["limit"]["reset"], "piątek 18:00")
+        # PT-130: zamierzona zmiana reguły kolumn — limit to postój w „W toku”, nie „Czeka na mnie”.
+        self.assertEqual(card["column"], "progress")
+        self.assertIn("czeka na limit do piątek 18:00", card["note"])
+        self.assertEqual(card["flow"]["decisions"], [])
         self.assertEqual(card["flow"]["steps"][0]["provider"], "anthropic")
 
 
@@ -262,6 +295,26 @@ class TransferFlowTest(FlowInProcess):
                          ("anthropic", first["ticket"], first["worktree"]))
         self.wait_column(card, "review", timeout=50)
 
+    def test_limit_without_any_choice_resumes_by_itself_after_the_reset(self):
+        now = self.flow.engine.clock()
+        metric = {"remaining": 25, "readTs": now, "resetTs": now + 1000}
+        self.flow.engine.limits_source = lambda: {"available": True,
+                                                  "services": {"claude": {"session": metric}}}
+        card = self.card(description="Dodaj eksport.\n\nATRAPA: limit")
+        self.assertTrue(self.start(card)["ok"])
+        metric["remaining"] = 0
+        self.assertTrue(wait_until(lambda: any(e.get("reason") == "limit" for e in
+                                        self.of(card, "step.finished")), timeout=30), self.events(card))
+        first = self.of(card, "step.started")[0]
+        self.assertEqual(self.of(card, "step.decision"), [], "limit nie tworzy decyzji")
+        metric.update(remaining=40, readTs=now + 1001)
+        self.flow.engine.clock = lambda: now + 1001
+        self.assertTrue(wait_until(lambda: len(self.of(card, "step.started")) >= 2, timeout=30), self.events(card))
+        second = self.of(card, "step.started")[1]
+        self.assertEqual((second["provider"], second["ticket"], second["worktree"], second["parentStep"]),
+                         ("anthropic", first["ticket"], first["worktree"], first["step"]))
+        self.wait_column(card, "review", timeout=50)
+
     def test_failed_wip_never_starts_other_provider_and_can_be_repaired(self):
         from tide_daemon.tasks.stepstop import Snapshot
         card = self.card(description="Dodaj eksport.\n\nATRAPA: czekaj-pierwszy")
@@ -274,7 +327,6 @@ class TransferFlowTest(FlowInProcess):
         self.assertEqual(len(self.of(card, "step.started")), 1)
         self.assertEqual(self.of(card, "step.finished")[0]["wip"]["error"], "no-sandbox")
         self.assertEqual(self.results(card, "merge"), [])
-        self.assertEqual(self.shown(card)["derived"]["flow"]["action"], "")
         self.assertIn("zapis zmian wymaga naprawy", self.shown(card)["derived"]["note"])
         now = self.flow.engine.clock()
         self.flow.engine.clock = lambda: now + 61

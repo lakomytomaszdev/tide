@@ -52,6 +52,15 @@ class ProposalTest(PlanFixture):
         self.assertTrue(any("kartka nie ma kryteriów" in e for e in got.errors))
         self.assertTrue(any("cykl" in e for e in got.errors))
 
+    def test_wrong_format_version_names_the_value(self):
+        # K-35: poprawka planu wpisała `tide-plan: 1.2` (numer standardu) — komunikat mówi, co zmienić.
+        self.write("| #1 | X | todo | | Sonnet | | standard | Opus | |\n", {"1": "- [ ] Działa.\n"})
+        with open(self.path, encoding="utf-8") as fh:
+            text = fh.read().replace("tide-plan: 1\n", "tide-plan: 1.2\n")
+        with open(self.path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        self.assertEqual(self.check().errors, ["nagłówek ma tide-plan: 1.2, a powinien mieć tide-plan: 1"])
+
     def test_path_outside_project_is_rejected(self):
         self.write("| #1 | X | todo | | Sonnet | | standard | Opus | |\n", {})
         self.assertIn("repozytorium", plans.read(self.path, "K-2", default_catalog(),

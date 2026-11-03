@@ -33,6 +33,19 @@ function parse(text, fallback) {
     }
 }
 
+// Uwagi review planu (PT-127): `findings` to lista {severity, text, tickets}; stary napis też jest czytany.
+// Każda uwaga w osobnym wierszu z wagą i ticketami — nie same liczniki.
+var SEVERITY_NAMES = { "blocker": "blokująca", "major": "ważna", "nit": "drobna" }
+
+function reviewFindingsText(findings) {
+    if (!findings) return ""
+    if (typeof findings === "string") return findings
+    return findings.map(function (f) {
+        const tickets = f.tickets && f.tickets.length ? " (" + f.tickets.join(", ") + ")" : ""
+        return "• " + (SEVERITY_NAMES[f.severity] || "bez wagi") + ": " + f.text + tickets
+    }).join("\n")
+}
+
 // Polska liczba mnoga: plural(5, "karta", "karty", "kart") → "kart".
 function plural(n, one, few, many) {
     const abs = Math.abs(n)
@@ -78,6 +91,29 @@ function workingFlow(card) {
     return !!(card && card.derived && card.derived.flow) && (shown === "progress" || shown === "waiting")
 }
 
+// Decyzje karty dla okna decyzji (PT-123: `derived.flow.decisions[]`, kolejność i treść z usługi) albo [].
+function decisions(card) {
+    const flow = card && card.derived && card.derived.flow
+    return flow && Array.isArray(flow.decisions) ? flow.decisions : []
+}
+
+// Karta w „Czeka na mnie” z decyzjami (PT-132) — tylko taka może otworzyć okno decyzji.
+function hasDecisions(card) {
+    return !!card && displayColumn(card) === "waiting" && decisions(card).length > 0
+}
+
+// Klik i powiadomienie (PT-133): okno decyzji tylko dla takiej karty i gdy ustawienie okna Tide to "decision"
+// (domyślne; "full" — pełna karta); każda inna karta otwiera pełną kartę.
+function opensDecisions(card, cardOpen) {
+    return cardOpen !== "full" && hasDecisions(card)
+}
+
+// Pełna karta (PT-128) dla karty z przepływem: usługa liczy jej fazy (`derived.phases`). Karta bez dziennika
+// (np. w Backlogu przed zleceniem) nie ma czego pokazać w fazach i otwiera panel karty.
+function hasFullCard(card) {
+    return !!card && !!card.derived && Array.isArray(card.derived.phases) && card.derived.phases.length > 0
+}
+
 // Karta w kolumnie ręcznej (bez stanu z koordynatora), do potwierdzenia albo pracująca karta z dziennikiem — tylko
 // taką da się przeciągać.
 function draggable(card) {
@@ -91,6 +127,16 @@ function dropTargets(card) {
     if (confirmable(card)) return ["done", "todo"]
     if (workingFlow(card)) return ["backlog", "done"]
     return draggable(card) ? MANUAL.slice() : []
+}
+
+// Rzadkie ustawienia pełnej karty (PT-134): te same reguły co moveCard — kolumny ręczne, a karta do potwierdzenia
+// tylko do Gotowych / Do zrobienia i bez archiwizacji.
+function settingTargets(card) {
+    return confirmable(card) || workingFlow(card) ? dropTargets(card) : MANUAL.slice()
+}
+
+function canArchive(card) {
+    return !!card && !confirmable(card)
 }
 
 // Cel „Otwórz w Sesjach” / „Przejdź do agenta”: koordynator karty (/Coordination), inaczej jej sesja (/Agents).
@@ -584,23 +630,6 @@ function launchExecutors(status, provider) {
 function planningExecutors(status, provider) {
     return launchExecutors(status, provider === "local" ? "local" : "mixed")
         .filter(option => provider === "local" || launchExecutor(status, option.value).provider !== "local")
-}
-
-function retryExecutors(status, flow) {
-    if (!flow || !flow.provider) return []
-    if (flow.stepKind === "planning" || flow.stepKind === "plan-fix")
-        return planningExecutors(status, flow.provider === "local" ? "local" : "mixed")
-            .filter(option => option.value !== flow.executor && !option.disabled)
-    const review = flow.stepKind === "review"
-    const otherModel = String(review ? flow.authorModel || "" : flow.reviewerModel || "").toLowerCase()
-    const otherProvider = String(review ? flow.authorProvider || "" : flow.reviewerProvider || "")
-    const mixed = flow.preferredProvider === "mixed"
-    return launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
-        e.available !== false && e.name !== flow.executor &&
-        String(e.model).toLowerCase() !== otherModel &&
-        (e.provider === "local") === (otherProvider === "local") &&
-        (mixed ? e.provider !== otherProvider : e.provider === otherProvider))
-        .map(e => ({ value: String(e.name), label: String(e.name) }))
 }
 
 function transferExecutors(status, provider) {

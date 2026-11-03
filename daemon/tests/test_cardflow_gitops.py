@@ -61,6 +61,20 @@ class MergeTest(unittest.TestCase):
         return self.flow.merge(self.repo, "card/test", "ticket/test", self.card, "Merge ticket",
                                expected_tip=git(self.repo, "rev-parse", "ticket/test"))
 
+    @unittest.skipUnless(sandbox_available(), "brak bwrap")
+    def test_worktree_with_only_user_agent_tooling_is_removed(self):
+        os.makedirs(os.path.join(self.ticket, ".agents", "skills"))
+        self.write(os.path.join(self.ticket, ".agents", "skills"), "SKILL.md", "x\n")
+        self.assertTrue(self.flow.remove_worktree(self.repo, "ticket/test", self.ticket)["removed"])
+        self.assertFalse(os.path.exists(self.ticket))
+
+    @unittest.skipUnless(sandbox_available(), "brak bwrap")
+    def test_worktree_with_real_leftovers_is_kept(self):
+        self.write(self.ticket, "notatka.txt", "praca\n")
+        with self.assertRaises(gitops.FlowGitError):
+            self.flow.remove_worktree(self.repo, "ticket/test", self.ticket)
+        self.assertTrue(os.path.exists(os.path.join(self.ticket, "notatka.txt")))
+
     def test_two_ticket_merges_share_one_repo_lock(self):
         self.ticket_commit()
         second = os.path.join(self.base, "ticket-second")
@@ -224,3 +238,52 @@ class MergeTest(unittest.TestCase):
         self.assertTrue(os.path.exists(inside), "filtr smudge był faktycznie uruchomiony")
         self.assertFalse(os.path.exists(marker))
         self.assertEqual(git(self.card, "status", "--porcelain", "--untracked-files=no"), "")
+
+
+class ReviewDiffTest(unittest.TestCase):
+    """K-33/PT-108: ticket scalający gałęzie ma diff rzędu milionów znaków — review dostaje podsumowanie."""
+
+    def setUp(self):
+        self.base = test_root()
+        self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
+        self.repo = os.path.join(self.base, "project")
+        os.mkdir(self.repo)
+        git(self.repo, "init", "-q", "-b", "master")
+        git(self.repo, "config", "user.name", "Tester")
+        git(self.repo, "config", "user.email", "tester@example.invalid")
+        with open(os.path.join(self.repo, "a.txt"), "w") as fh:
+            fh.write("a\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "start")
+        git(self.repo, "branch", "card/k-1")
+        git(self.repo, "checkout", "-qb", "ticket/pt-1")
+
+    def commit(self, name, text):
+        with open(os.path.join(self.repo, name), "w") as fh:
+            fh.write(text)
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", name)
+
+    def test_small_diff_is_given_whole(self):
+        self.commit("b.txt", "mała zmiana\n")
+        out = gitops.FlowGit().review_diff(self.repo, "card/k-1", "ticket/pt-1")
+        self.assertIn("+mała zmiana", out)
+
+    def test_huge_diff_becomes_stat_with_read_only_commands(self):
+        self.commit("big.txt", "x" * 80 + "\n" * 1 + ("linia\n" * 70_000))
+        with self.assertRaises(gitops.FlowGitError):
+            gitops.FlowGit().diff(self.repo, "card/k-1", "ticket/pt-1")
+        out = gitops.FlowGit().review_diff(self.repo, "card/k-1", "ticket/pt-1")
+        self.assertLess(len(out), 300_000)
+        self.assertIn("big.txt", out)
+        self.assertIn("git diff refs/heads/card/k-1 refs/heads/ticket/pt-1 -- <ścieżka>", out)
+        self.assertNotIn("+linia", out)
+
+
+class ForeignChangesTest(unittest.TestCase):
+    def test_user_agent_tooling_is_not_a_ticket_change(self):
+        # K-15/LEGAL-60: zewnętrzna synchronizacja rozłożyła .agents/skills i .codex/agents w worktree ticketu.
+        porcelain = "?? .agents/skills/x/SKILL.md\n?? .codex/agents/a.toml\n"
+        self.assertEqual(gitops._foreign_changes(porcelain), [])
+        self.assertEqual(gitops._foreign_changes(porcelain + "?? debug.py\n"), ["?? debug.py"])
+        self.assertEqual(gitops._foreign_changes(" M .codex/agents/a.toml\n"), [" M .codex/agents/a.toml"])

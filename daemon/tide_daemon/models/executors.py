@@ -80,6 +80,8 @@ DEFAULT_EXECUTORS = (
     # Do planowania trudnych kart; bez klas, więc żadna klasa nie zamienia się na niego (tylko wybór ręczny
     # i podpowiedzi trybu mieszanego).
     Executor("Codex Astra", "codex", "gpt-6-astra", "openai", effort="high"),
+    # Najmocniejszy model Claude do planowania trudnych kart (03.11, K-38); jak Astra — bez klas, tylko wybór ręczny.
+    Executor("Fable", "claude", "claude-fable-5-1", "anthropic"),
     Executor("Lokalny", "", "", LOCAL, classes=("lokalny",)),
 )
 
@@ -439,6 +441,8 @@ def reviewer(ctx: Context, provider: str, klass: str, author: str) -> Resolution
         astra = next((e for e in pool if e.name == "Codex Astra"), None)
         if astra is not None:
             return Resolution(True, ctx.resolved(astra), provider=provider, klass=klass)
+    # Wykonawcy bez klas (Codex Astra, Fable) są tylko do wyboru ręcznego — nie trafiają do automatycznego doboru.
+    pool = [e for e in pool if e.classes]
     pool.sort(key=lambda e: _strength(klass, e))
     if not pool:
         return Resolution(False, error=f"brak recenzenta innego niż autor {label}", provider=provider, klass=klass)

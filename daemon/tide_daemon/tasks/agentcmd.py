@@ -90,6 +90,9 @@ EXIT_WRAPPER = ('umask 077; trap : TERM; status=$1; shift; "$@"; code=$?; '
                 'printf "%s\\n" "$code" > "$status.tmp" && mv -f -- "$status.tmp" "$status"; exit "$code"')
 SANDBOX_DUMMIES = ("/.bash_profile", "/.bashrc", "/.claude", "/.gitconfig", "/.gitmodules", "/.idea",
                    "/.mcp.json", "/.profile", "/.ripgreprc", "/.vscode", "/.zprofile", "/.zshrc")
+# Narzędzia agentów użytkownika rozkładane do worktree z zewnątrz (K-15: `.agents/skills`, `.codex/agents`) —
+# nigdy nie należą do ticketu: krok ich nie commituje, a kontrola czystości worktree je pomija.
+TOOLING_DIRS = ("/.agents/", "/.codex/")
 CODEX_GIT_DIRS = ("objects", "refs", "logs")        # reszta wspólnego .git (haki, config) zostaje tylko do odczytu
 
 
@@ -150,7 +153,13 @@ class Step:
     base_env: dict | None = None    # skąd HOME, USER, PATH, LANG (domyślnie środowisko usługi)
     tmp_root: str = "/tmp"          # poza ~; tu Claude Code dostaje katalog tymczasowy kroku
     read_dirs: tuple = ()          # dodatkowe repozytoria karty, wyłącznie do odczytu
+    context_dirs: tuple = ()       # katalogi wyniku poprzednich kroków ticketu (wznowienie): odczyt i narzędzie Read
+    dotnet: bool = False           # projekt .NET: pamięć pakietów NuGet do odczytu i środowisko bez serwerów buildu
+    node_home: str = ""            # projekt Node: instalacja Node (nvm) tylko do odczytu, jej bin na początku PATH
+    network_domains: tuple = ()    # P1 (03.11): domeny rejestrów paczek dostępne z piaskownicy kroku Claude
+    chrome_bin: str = ""           # Chromium Playwrighta tylko do odczytu, jako CHROME_BIN (Karma, 03.11)
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
+    codex_mcp_skip: tuple = ()      # serwery, których wyłączenie przez `-c` psuje konfigurację Codexa (03.11)
 
 
 @dataclass
@@ -220,7 +229,9 @@ class Background:
                 os.unlink(path)
             except FileNotFoundError:
                 pass
-        argv = [systemd_run or SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet", f"--unit={self.unit}", "--",
+        # Niższa waga procesora i dysku: kilka kroków naraz nie przymula pulpitu (03.11).
+        argv = [systemd_run or SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet", f"--unit={self.unit}",
+                "-p", "CPUWeight=40", "-p", "IOWeight=40", "--",
                 "/usr/bin/env", "-u", "XDG_RUNTIME_DIR", "-u", "INVOCATION_ID",
                 "/bin/sh", "-c", EXIT_WRAPPER, "tide-step-runner", self.exit_file, *self.argv]
         log = None
@@ -303,7 +314,14 @@ def list_codex_mcp(binary: str, timeout: float = 20.0) -> tuple:
     if run.returncode != 0 or not isinstance(data, list) or not all(isinstance(i, dict) and isinstance(i.get("name"), str)
                                                                     for i in data):
         raise StepError("nie da się odczytać serwerów MCP Codexa (`codex mcp list --json`)")
-    return tuple(item["name"] for item in data)
+    # Serwer bez rozpoznanego transportu (np. wbudowany `codex_app`) nie jest kanałem z konfiguracji użytkownika,
+    # a `-c mcp_servers.<nazwa>.enabled=false` tworzy dla niego wpis bez transportu i Codex nie startuje (03.11, K-16).
+    return tuple(item["name"] for item in data
+                 if isinstance(item.get("transport"), dict) and item["transport"].get("type") in KNOWN_MCP_TRANSPORTS)
+
+
+KNOWN_MCP_TRANSPORTS = ("stdio", "streamable_http", "sse", "http")
+CODEX_BROKEN_MCP = re.compile(r"invalid transport\s*in `mcp_servers\.([^`]+)`")
 
 
 def _toml_key(name: str) -> str:
@@ -325,7 +343,33 @@ def _env(step: Step, home_env: dict, inp: str) -> dict:
         env["GIT_CONFIG_NOSYSTEM"] = "1"     # git w snapie nie czyta /etc/gitconfig (inaczej „unknown error”)
     else:
         env["CLAUDE_CODE_TMPDIR"] = os.path.join(step.tmp_root, f"tide-step-{step.step_id}")
+    if step.node_home:
+        env["PATH"] = os.path.join(step.node_home, "bin") + os.pathsep + env.get("PATH", "")
+        # `npm install` w kroku (sieć do rejestru z P1) potrzebuje zapisywalnej pamięci podręcznej — `~` jest zakryty.
+        env["npm_config_cache"] = os.path.join(step.step_dir, "out", ".npm-cache")
+    if step.chrome_bin:
+        env["CHROME_BIN"] = step.chrome_bin
+    if step.dotnet:
+        from . import dotnet
+        # Katalog CLI w katalogu wyjściowym kroku — jedynym miejscu z zapisem w piaskownicy (K-15: katalog
+        # tymczasowy Claude Code `/tmp/tide-step-…` jest w kroku tylko do odczytu).
+        cli_home = os.path.join(os.path.dirname(inp), "out", ".dotnet-home")
+        env.update(dotnet.step_env(cli_home, dotnet.packages_dir(home_env.get("HOME") or os.path.expanduser("~"))))
     return env
+
+
+FONT_DIRS = (".local/share/fonts", ".fonts", ".config/fontconfig")
+
+
+def _font_dirs(home: str) -> list[str]:
+    """Czcionki użytkownika tylko do odczytu: bez nich testy widoków QML w kroku liczą układ innymi czcionkami
+    i klikają obok przycisków (K-33/PT-108: dwa testy panelu przechodziły tylko poza piaskownicą)."""
+    found = []
+    for rel in FONT_DIRS:
+        path = os.path.realpath(os.path.join(home, rel)) if home else ""
+        if path and os.path.isdir(path) and path not in found:
+            found.append(path)
+    return found
 
 
 def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list, dict, dict]:
@@ -333,9 +377,16 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
     settings = {"sandbox": {
         "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
         "autoAllowBashIfSandboxed": not step.enforce_command_policy,
-        "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs],
+        "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs, *step.context_dirs,
+                                                        *([env["NUGET_PACKAGES"]] if step.dotnet and env.get("NUGET_PACKAGES") else []),
+                                                        *_font_dirs(home),
+                                                        *([step.node_home] if step.node_home else []),
+                                                        *([os.path.dirname(step.chrome_bin)] if step.chrome_bin else [])],
                        "allowWrite": [out]},
-        "network": {"allowedDomains": []}}}
+        "network": {"allowedDomains": list(step.network_domains)}},
+        # Zasada projektów: commity bez podpisów i wzmianek o AI (K-33/PT-108: review odrzuciło stopkę
+        # Co-Authored-By, którą Claude Code dopisuje domyślnie).
+        "includeCoAuthoredBy": False, "attribution": {"commit": "", "pr": ""}}
     if step.local is not None:
         opts = local_mod.options("claude", step.local)
         token = step.local.token_file
@@ -358,7 +409,13 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
     settings_path = os.path.join(inp, "settings.json")
     argv = [step.binary, "-p", *model, "--setting-sources=", "--settings", settings_path,
             "--permission-prompts", "none", "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
-            *(["--resume", step.session_id] if step.resume else ["--session-id", step.session_id])]
+            *(["--resume", step.session_id] if step.resume else ["--session-id", step.session_id]),
+            # Katalog wyjściowy kroku musi być katalogiem roboczym sesji: `allowWrite` piaskownicy obejmuje tylko
+            # polecenia Bash, a narzędzia Write/Edit poza katalogami sesji pytają o zgodę, której krok nie dostanie.
+            "--add-dir", out]
+    for folder in step.context_dirs:
+        # Narzędzie Read poza katalogami sesji pyta o zgodę, której krok nie dostanie — stąd --add-dir.
+        argv += ["--add-dir", folder]
     if step.permission_mode:
         argv += ["--permission-mode", step.permission_mode]
     for folder in step.read_dirs:
@@ -383,7 +440,8 @@ def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
     else:
         model = [f"--model={step.model}"] if step.model else []
     servers = list_codex_mcp(step.binary) if step.codex_mcp is None else step.codex_mcp
-    mcp = [arg for name in servers for arg in ("-c", f"mcp_servers.{_toml_key(name)}.enabled=false")]
+    mcp = [arg for name in servers if name not in step.codex_mcp_skip
+           for arg in ("-c", f"mcp_servers.{_toml_key(name)}.enabled=false")]
     # Opcje przed podpoleceniem: `codex exec resume <id> --cd …` kończy się „unexpected argument” (sprawdzone).
     effort = ["-c", f'model_reasoning_effort="{step.effort}"'] if step.effort else []
     argv = [step.binary, "exec", *model, *effort, "--json", "--cd", step.worktree, "--sandbox", "workspace-write",
@@ -414,7 +472,7 @@ def background(step: Step) -> Background:
         files, session = {}, step.session_id if step.resume else ""
     files[os.path.join(inp, "gitconfig")] = (f"[user]\n\tname = {step.git_name}\n\temail = {step.git_email}\n"
                                               f"[core]\n\texcludesFile = {os.path.join(inp, 'ignore')}\n")
-    files[os.path.join(inp, "ignore")] = "\n".join(SANDBOX_DUMMIES) + "\n"
+    files[os.path.join(inp, "ignore")] = "\n".join(SANDBOX_DUMMIES + TOOLING_DIRS) + "\n"
     dirs = [inp, out, env["GH_CONFIG_DIR"]] + ([env["CLAUDE_CODE_TMPDIR"]] if step.tool == "claude" else [])
     return Background(argv, env, step.prompt, step.worktree, step.step_dir, session, step.tool, repo=step.repo,
                       git_dir=git_dir, unit="tide-step-" + step.step_id,

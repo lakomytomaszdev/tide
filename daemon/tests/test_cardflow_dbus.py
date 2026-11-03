@@ -74,7 +74,8 @@ class FlowCase(unittest.TestCase):
         git(self.repo, "commit", "-q", "-m", "init", env=self.git_env)
         self.master = git(self.repo, "rev-parse", "master").strip()
         with open(os.path.join(self.base, "config", "tide", "cardflow.json"), "w", encoding="utf-8") as fh:
-            json.dump({"stepGuardMinutes": self.guard_minutes}, fh)
+            json.dump({"stepGuardMinutes": self.guard_minutes, "autoConsent": False, "escalateErrors": False,
+                       "reviewRoundsBeforeQuestion": 3}, fh)
         fakebin = os.path.join(self.base, "fakebin")
         flowfakes.install(fakebin)
         self.board = os.path.join(self.base, "ws", "tide-board")
@@ -195,7 +196,7 @@ class NowTest(FlowCase):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
         self.assertTrue(self.start(card_id)["ok"])
         shown = self.wait_column(card_id, "waiting")
-        self.assertEqual(shown["derived"]["flow"]["action"], "answer")
+        self.assertEqual(shown["derived"]["flow"]["decisions"][0]["kind"], "question")
         answer = self.call("ResolveCardStep", card_id, json.dumps({"choice": "answer", "answer": "ISO 8601"}))
         self.assertEqual((answer["ok"], answer["choice"]), (True, "answer"))
         self.wait_column(card_id, "review")

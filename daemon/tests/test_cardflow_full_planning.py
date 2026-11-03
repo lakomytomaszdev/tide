@@ -85,7 +85,7 @@ class FullPlanningTest(FlowInProcess):
         shown = self.shown(card)["derived"]
         self.assertEqual(shown["question"], "Jaki format pliku wybrać?")
         self.assertEqual(shown["nextStep"], "odpowiedz w Konsoli")
-        self.assertFalse(shown["flow"].get("action"), "panel nie powinien wznawiać otwartej rozmowy")
+        self.assertEqual(shown["flow"]["decisions"], [], "panel nie powinien wznawiać otwartej rozmowy")
 
         scanner.entries = [{**scanner.entries[0], "state": "working", "reason": "", "waitingText": ""}]
         monitor.recompute()
@@ -139,10 +139,12 @@ class FullPlanningTest(FlowInProcess):
         self.assertFalse(any(e.get("kind") == "plan-review" and e.get("step") != "K-1-review-failed"
                              for e in self.of(card, "step.started")))
         shown = engine.derived({"id": card, "column": "todo"})
-        self.assertEqual((shown["column"], shown["flow"]["plan"]["status"]), ("waiting", "blocked"))
+        # K-31: po nieudanym review karta pokazuje tę porażkę z decyzją, a nie dawną (nieaktualną) blokadę limitu.
+        self.assertEqual((shown["column"], shown["flow"]["decisions"][0]["kind"]), ("waiting", "error"))
+        self.assertNotIn("limit", shown["note"])
         edited = engine.edit_plan(card, {"action": "edit", "ticket": "#1", "reviewer": "Codex Astra"})
         self.assertTrue(edited["ok"])
-        reply = engine.edit_plan(card, {"action": "review-executor", "executor": "Codex Astra"})
+        reply = engine.resolve_step(card, {"choice": "change-executor", "executor": "Codex Astra"})
         self.assertTrue(reply["ok"])
         decision = self.of(card, "step.decision")[-1]
         self.assertEqual((decision["choice"], decision["executor"]), ("change-executor", "Codex Astra"))
@@ -190,6 +192,21 @@ class FullPlanningTest(FlowInProcess):
         self.assertEqual([e["kind"] for e in self.of(card, "step.started")], ["planning", "plan-review"])
         self.assertEqual(len(terminal.opened), 1)
 
+    def test_plan_sent_back_is_reviewed_again_while_console_stays_open(self):
+        # 03.11, K-38: po „Odeślij uwagi” poprawka planu (plan-amend) skończyła się, ale review nie ruszyło,
+        # bo otwarta Konsola planowania wstrzymywała kroki, a plan-amend nie był na liście kroków planu.
+        card, step, terminal = self._start_full()
+        self._write_proposal(card, step)
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20), self.events(card))
+        box = []
+        self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "Doprecyzuj ryzyka."}), box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(json.loads(box[0])["ok"], box)
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.revision-ready"), timeout=20), self.events(card))
+        self.assertTrue(wait_until(lambda: [e for e in self.of(card, "step.started") if e["kind"] == "plan-review"][1:],
+                                   timeout=20), [e["kind"] for e in self.of(card, "step.started")])
+        self.assertFalse(any(e["type"] == "step.console_closed" for e in self.events(card)))
+
     def test_codex_receives_written_grilling_process_and_selected_model(self):
         card, step, terminal = self._start_full("Codex mocny", "openai")
         with open(terminal.opened[0].task_file, encoding="utf-8") as fh:
@@ -217,7 +234,7 @@ class FullPlanningTest(FlowInProcess):
         with open(os.path.join(step["stepDir"], "out", "result.json"), "w", encoding="utf-8") as fh:
             json.dump({"result": "question", "question": "Który wariant eksportu?"}, fh)
         shown = self.wait_column(card, "waiting")
-        self.assertEqual(shown["derived"]["flow"]["question"], "Który wariant eksportu?")
+        self.assertEqual(shown["derived"]["flow"]["decisions"][0]["technical"]["question"], "Który wariant eksportu?")
         self.assertEqual(self.of(card, "plan.proposed"), [])
         with open(os.path.join(step["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
             self.assertIn("Pełne planowanie", fh.read())

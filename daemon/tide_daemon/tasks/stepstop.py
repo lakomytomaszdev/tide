@@ -98,6 +98,21 @@ def unit_state(unit: str) -> str:
     return "active" if code == 0 else "inactive" if code in (3, 4) else "unknown"
 
 
+CPU_BUCKET_NS = 10_000_000_000
+
+
+def unit_cpu_bucket(unit: str) -> int | None:
+    """Czas procesora jednostki kroku w 10-sekundowych przedziałach (None — nie wiadomo). Długi test bez wyjścia
+    (K-35: `make test` w tle przez 25 min) zużywa procesor, a bezczynnie wiszący krok — prawie nic."""
+    if not unit:
+        return None
+    run = _systemctl("show", "-p", "CPUUsageNSec", "--value", unit + ".scope")
+    try:
+        return int(run.stdout.strip()) // CPU_BUCKET_NS if run.returncode == 0 else None
+    except (ValueError, AttributeError):
+        return None
+
+
 def read_exit_code(step_dir: str) -> int | None:
     """Kod zakończenia zapisany przez zaufany wrapper jednostki, dostępny także po restarcie usługi.
 

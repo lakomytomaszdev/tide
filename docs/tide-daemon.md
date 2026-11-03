@@ -71,7 +71,7 @@ Pomijamy sesje, w których dziennik nie ma wpisu od ponad **24 h**.
 
 **Pytanie na końcu tury to „czeka”** (PT-29, odwraca część decyzji 36). Agent, który kończy turę pytaniem w tekście — grilling („Pytanie 10: skąd biorą się czat i alerty? …”), „Pushować?” — stoi, dopóki użytkownik nie odpisze: stan `waiting`, powód `reply`, `waitingText` z tym pytaniem, `sinceTs` — chwila pytania. Heurystyka (`agents/question.py`): ostatnia wiadomość tekstowa agenta w turze (Claude Code — ostatni wpis `assistant` z tekstem, bez wywołania narzędzia po nim; Codex — `last_agent_message` z `task_complete` albo ostatnia wiadomość `assistant`), bez bloków kodu i tabel; ostatni akapit, który nie jest listą, i jego ostatnie zdania: zdanie z „?” (po nim najwyżej jedno krótkie zdanie — inaczej to pytanie retoryczne w podsumowaniu), linia „Pytanie N: …”, „Czekam na twoją odpowiedź”, „Daj znać, czy…” albo lista pytań pod zdaniem z dwukropkiem; dopisek pod pytaniem, który prosi o słowo od użytkownika („…jeśli napiszesz „przywróć”.”, „jeśli potwierdzisz”, „napisz „…””), nie zasłania pytania z akapitu wyżej (bez niego liczy się sam dopisek), a zwykła propozycja („Jeśli chcesz, mogę też…”) pytaniem nie jest. Czekanie kasuje wiadomość użytkownika po pytaniu (bez wyników narzędzi i wstawek `<task-notification>`), przerwanie tury i wywołanie narzędzia po tekście. Kompaktowanie Claude Code (także samo, „Compacted while idle”: `system/compact_boundary`, wpis `user` ze streszczeniem — `isCompactSummary`, `isVisibleInTranscriptOnly` — załączniki, `system/informational`), wstawki `isMeta` i echo polecenia lokalnego (`<local-command-caveat>`, potem `<command-name>/model…`, `<local-command-stdout>`) to nie odpowiedź — pytanie i oczekujące `AskUserQuestion` dalej czekają; skill wywołany poleceniem (`<command-message>…`) jest zwykłą wiadomością. Gdy streszczenie i załączniki nie mieszczą się w ogonie (1 MB), pierwszy odczyt dziennika cofa się (×4, najwyżej 16 MB), aż sięgnie ostatniego wpisu agenta albo wiadomości użytkownika (`agents/jsonl.py`, `enough`). Codex przy kompaktowaniu dopisuje rekord `compacted` (z `replacement_history`), którego czytnik nie traktuje jak wiadomości — nie kasuje pytania; liczy się tylko bieżąca tura, a sesja pracująca (status `busy`) nigdy nie „czeka na odpowiedź”. Tura zaczęta przez zaplanowane zadanie Codex Desktop nie czeka nawet z pytaniem (zadanie samo wyśle następną wiadomość) — zostaje `done` z `scheduled`. Podagent (wątek Codexa z rodzicem) nigdy nie czeka na odpowiedź — jego raport czyta koordynator — a zwinięty podagent nie przenosi `reply` na przodka. Wszystko idzie za stanem: widżet („czeka”), Meta+A, powiadomienie „Agent czeka: <projekt>” z „Zadał pytanie: <pytanie>” (raz na wejście w „czeka” — kolejne odświeżenia tego samego pytania nic nie wysyłają), ekran blokady, „Czeka na mnie” w raporcie (z `waitingText`), pytanie na tablicy koordynacji i kolumna „Czeka na mnie” na tablicy z „Przejdź do agenta”.
 
-**Drugi stopień: model ocenia wątpliwe końcówki** (PT-42, decyzja 90). Reguły przegapiają prośby bez „?” („**Krok 1:** uruchom ten select i wklej mi wynik”, „Daj znać.”), więc `question.doubtful(text)` wskazuje końcówki, w których reguły nie widzą pytania (`ending_question` puste), a w ostatnich trzech zdaniach (i punktach listy pod nimi) jest zdanie z „?”, zdanie zaczynające się czasownikiem w trybie rozkazującym z listy (`uruchom`, `wklej`, `sprawdź`, `podaj`, `potwierdź`… także po „Krok N:”, „Teraz”, „Proszę”) albo „daj znać”/`wklej`/`prześlij`/`odpisz`. „Dam znać”, „Jeśli chcesz, mogę też…”, „Gotowe.” i każda wiadomość z regułą „tak” nie są wątpliwe i modelu nie kosztują. Wątpliwą końcówkę ocenia `agents/classify.py`: `reply_question` pyta `Classifier.judge(klucz, tekst)`, który **nie czeka na model** — zwraca zapamiętany werdykt albo `None` (wtedy liczą same reguły) i planuje ocenę w osobnym wątku `tide-classify`; po wyniku `AgentMonitor.classified` przelicza stan w wątku Qt. Stan z werdyktu „tak” ma ten sam kształt co z reguł: `waiting`, `reason: reply`, `sinceTs` — chwila wiadomości, `waitingText` — dwa ostatnie zdania końcówki (najwyżej 240 znaków). Wywołanie: `models.chat(role="classify")` przez kolejkę modeli (priorytet jak opisy kart, przed raportem; jedno wywołanie naraz na serwer, ocena ustępuje czekającemu raportowi najwyżej 30 s), ostatnie 1200 znaków wiadomości, schemat `{"waits": bool}`, `think: false`, `temperature: 0`, limit 20 s od startu wywołania, 120 s czekania w kolejce. Werdykt pamiętany na uuid wpisu (Claude Code; Codex — sesja i skrót tekstu): w pamięci i w `$XDG_STATE_HOME/tide/classify.json` (`{"version": 1, "results": {klucz: {"waits": bool, "at": ts}}}`, 500 najnowszych, zapis atomowy), więc ta sama wiadomość jest oceniana najwyżej raz także po restarcie usługi. Błąd (brak serwera, zły JSON, zły kształt, limit czasu) → werdykt się nie zapisuje, liczą same reguły, przyczyna jest w dzienniku usługi, a ta sama wiadomość wraca do oceny najwcześniej po 5 min. Rola `classify` bez modelu, z punktem nieznanym albo pominiętym lub niedostępna (np. model chmurowy bez jawnego punktu) wyłącza ocenę: ostrzeżenie w dzienniku (raz na powód), ponowne sprawdzenie ustawień po minucie. Model chmurowy działa w tej roli tylko przy jawnym punkcie w `models.json` (`"classify": "punkt:gpt-oss:120b-cloud"`): wtedy ocena idzie tam i tylko tam, a przy jego błędzie liczą same reguły — bez zastępstwa innym punktem. Przy roli lokalnej punkt w chmurze nie jest wołany nigdy (decyzja 70). Z `--no-models` ocena nie działa (`--print-once` i `scan()` też liczą same reguły).
+**Drugi stopień: model ocenia wątpliwe końcówki** (PT-42, decyzja 93). Reguły przegapiają prośby bez „?” („**Krok 1:** uruchom ten select i wklej mi wynik”, „Daj znać.”), więc `question.doubtful(text)` wskazuje końcówki, w których reguły nie widzą pytania (`ending_question` puste), a w ostatnich trzech zdaniach (i punktach listy pod nimi) jest zdanie z „?”, zdanie zaczynające się czasownikiem w trybie rozkazującym z listy (`uruchom`, `wklej`, `sprawdź`, `podaj`, `potwierdź`… także po „Krok N:”, „Teraz”, „Proszę”) albo „daj znać”/`wklej`/`prześlij`/`odpisz`. „Dam znać”, „Jeśli chcesz, mogę też…”, „Gotowe.” i każda wiadomość z regułą „tak” nie są wątpliwe i modelu nie kosztują. Wątpliwą końcówkę ocenia `agents/classify.py`: `reply_question` pyta `Classifier.judge(klucz, tekst)`, który **nie czeka na model** — zwraca zapamiętany werdykt albo `None` (wtedy liczą same reguły) i planuje ocenę w osobnym wątku `tide-classify`; po wyniku `AgentMonitor.classified` przelicza stan w wątku Qt. Stan z werdyktu „tak” ma ten sam kształt co z reguł: `waiting`, `reason: reply`, `sinceTs` — chwila wiadomości, `waitingText` — dwa ostatnie zdania końcówki (najwyżej 240 znaków). Wywołanie: `models.chat(role="classify")` przez kolejkę modeli (priorytet jak opisy kart, przed raportem; jedno wywołanie naraz na serwer, ocena ustępuje czekającemu raportowi najwyżej 30 s), ostatnie 1200 znaków wiadomości, schemat `{"waits": bool}`, `think: false`, `temperature: 0`, limit 20 s od startu wywołania, 120 s czekania w kolejce. Werdykt pamiętany na uuid wpisu (Claude Code; Codex — sesja i skrót tekstu): w pamięci i w `$XDG_STATE_HOME/tide/classify.json` (`{"version": 1, "results": {klucz: {"waits": bool, "at": ts}}}`, 500 najnowszych, zapis atomowy), więc ta sama wiadomość jest oceniana najwyżej raz także po restarcie usługi. Błąd (brak serwera, zły JSON, zły kształt, limit czasu) → werdykt się nie zapisuje, liczą same reguły, przyczyna jest w dzienniku usługi, a ta sama wiadomość wraca do oceny najwcześniej po 5 min. Rola `classify` bez modelu, z punktem nieznanym albo pominiętym lub niedostępna (np. model chmurowy bez jawnego punktu) wyłącza ocenę: ostrzeżenie w dzienniku (raz na powód), ponowne sprawdzenie ustawień po minucie. Model chmurowy działa w tej roli tylko przy jawnym punkcie w `models.json` (`"classify": "punkt:gpt-oss:120b-cloud"`): wtedy ocena idzie tam i tylko tam, a przy jego błędzie liczą same reguły — bez zastępstwa innym punktem. Przy roli lokalnej punkt w chmurze nie jest wołany nigdy (decyzja 70). Z `--no-models` ocena nie działa (`--print-once` i `scan()` też liczą same reguły).
 
 Zwykły koniec tury bez pytania to nadal `done`: agent, który odpowiedział, niczego nie blokuje, a powiadomienie, brzoskwinia i Meta+A przy każdej skończonej turze uczyły ignorować „czeka”.
 
@@ -1482,7 +1482,7 @@ Issues, trackera i lokalnego `.scratch`. Propozycję czyta ten sam walidator co 
 źródła do katalogu wyniku konkretnego kroku. Poprawny wynik daje plan do zatwierdzenia; zatwierdzenie prowadzi dalej
 przez istniejące rezerwacje, review ticketów i scalanie. Review samego planu przed pokazaniem dodaje PT-80.
 
-**Projekty zlecenia (K-33 #4, PT-115, decyzja 91).** Żądanie Planowania (Lekkiego i Pełnego) może mieć
+**Projekty zlecenia (K-33 #4, PT-115, decyzja 94).** Żądanie Planowania (Lekkiego i Pełnego) może mieć
 `projects` — dodatkowe projekty zlecenia (slugi albo ścieżki repozytoriów, jak `projects` w UpdateCard); różniące się
 od karty trafiają do `projects` karty. Usługa sprawdza każdy projekt zlecenia przed pierwszym zdarzeniem: projekt bez
 repozytorium albo z niedostępnym kończy zlecenie błędem `no-repo` z nazwą projektu. `card.started` ma `projects`:
@@ -1648,13 +1648,108 @@ przełącza się sam do chmury. `stepTimeoutMinutes` w `$XDG_CONFIG_HOME/tide/ca
 (domyślnie 240 minut); po limicie usługa zatrzymuje jednostkę przez `stepstop.stop_step` i zachowuje zmiany.
 Strażnik braku postępu podaje w karcie czas, od którego krok stał.
 
+Zgoda na łańcuch poleceń (PT-124): przy wyniku `denied` usługa rozkłada polecenie (`board/chain.py`) na
+pojedyncze polecenia — po `&&`, `||`, `|`, `|&`, `;`, `&`, nowej linii, grupach `( … )` i `{ …; }`, z wnętrzem
+`$( … )`, odwrotnych apostrofów, `<( … )` (także w cudzysłowie podwójnym) i skryptu `sh -c`/`bash -c`/`eval` jako
+osobnymi poleceniami. Lista trafia do `step.finished.commands` i do decyzji `permission` w `flow.decisions[]` jako
+`commands[] = {text, readOnly, stepDir, forbidden, reason, canAllow, preselected}`. `forbidden` wynika wyłącznie
+z `is_forbidden` i listy `denied-commands` projektu (bez reguł wbudowanych), a `reason` podaje pasującą regułę albo
+powód, dla którego polecenia nie da się zatwierdzić. Odczyt własnego `<krok>/in` i `<krok>/out` jest zawsze dozwolony
+(Claude dostaje dokładne wzorce `ls`/`cat` tych katalogów) i nie trafia na listę. „Zezwól na wybrane i wznów”
+wysyła `allow: [indeksy]`; usługa liczy listę od nowa z bieżącymi zakazami i odrzuca indeks spoza zakresu
+(`bad-allow`) albo wskazujący polecenie zabronione (`forbidden-command`), dopisuje do listy projektu dokładnie
+wybrane polecenia, a wznowiony krok dostaje listę dozwolonych i pominiętych. „Kontynuuj bez tych poleceń” to `deny`,
+„Zrób zamiast tego…” — `deny` z `instead`. Łańcuch odrzucany jest automatycznie tylko wtedy, gdy na żadne z jego
+poleceń nie da się zezwolić.
+
 Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
-`deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`. Ponowione kroki dostają
+`deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`, a przy łańcuchu `allow`
+(z `choice=allow`) albo `instead` (z `choice=deny`). Ponowione kroki dostają
 osobne katalogi `.resume-<step>.step` i pliki wyniku; dziennik pozwala odtworzyć decyzję po restarcie usługi.
 
 ```bash
 qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.ResolveCardStep K-12 '{"choice": "answer", "answer": "ISO 8601"}'
 ```
+
+### Czyja wina błędu kroku i „Opisz problem i ponów” (PT-125)
+
+Zakończenie kroku z wynikiem `error` albo `stopped` ma w `step.finished` pola `fault` (`tide`, `model`, `user`,
+`provider`, `unknown`) i `faultCause`, liczone w chwili wyniku z powodu i z dziennika tego kroku (`out/step.log`,
+`cardflow/faults.py`). `tide` daje tylko twarda przesłanka: brak pliku wyniku (`no-result`) i odmowa zapisu w katalogu
+wyjściowym tego kroku w wyniku narzędzia albo polecenia (odmowa `Write`/`Edit` w `permission_denials`, „Read-only file
+system”, „Permission denied” przy tej ścieżce) — tekst pisany przez agenta nie jest dowodem — albo powody ustawiane
+przez Tide (`start`, `lost`). Kod limitu (429, zdarzenie limitu) daje `provider`/`limit`, jawny błąd API autoryzacji
+(401, 403) albo awarii (5xx, przeciążenie) — `provider`/`auth` albo `outage`, zły plik wyniku albo werdykt — `model`.
+Gdy dziennik nie rozstrzyga, `unknown`, a okno mówi wprost, że nie wiadomo, czyja to wina. Limit nigdy nie tworzy
+decyzji w `flow.decisions[]` (D3); starych pól panelu (`flow.action`, `flow.question`, `flow.command`,
+`flow.canAllow`, `flow.error`, `flow.limit`, `flow.fault`) już nie ma (PT-135) — `derived.flow` niesie decyzje
+wyłącznie w `decisions[]`; `derived.question` i `note` zostają na poziomie karty. Kafelek błędu z winy
+Tide pisze „błąd Tide w kroku X”.
+
+Błąd `tide` albo `unknown` ma w decyzji pole „Opisz problem i ponów” (`reply` z `method: "ReportStepFault"`,
+`preview: "PreviewStepFault"`, `field: "description"`). Okno najpierw pokazuje podgląd karty, potem zapisuje:
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `PreviewStepFault(s id, s request)` | `→ s` | `{"step", "description"}` → `{ok, preview: true, action: "create"\|"append", card, project, title, description, signature, fault}` bez żadnego zapisu |
+| `ReportStepFault(s id, s request)` | `→ s` | zakłada kartę w Backlogu projektu `plasma-tide` (`create_card`) albo dopisuje wystąpienie do otwartej karty o tym samym podpisie (`update_card`), zapisuje `step.reported` i ponawia krok przez `ResolveCardStep` (`retry`); odpowiedź jak `ResolveCardStep` z `reported`, `action`, `project` |
+
+Projekt docelowy jest stały (`plasma-tide`) — żądanie go nie podaje; bez tego projektu na tablicy zgłoszenie kończy
+się błędem `no-report-project`. Podpis błędu to rodzaj kroku, `fault` i przyczyna (`plan-review/tide/write-denied`),
+zapisany w treści karty linią „Podpis błędu: `…`”. Karta otwarta to karta nie zarchiwizowana i nie scalona (jej
+przepływ bez `card.main-merged`); dla zarchiwizowanej albo scalonej powstaje nowa. Wycinek pochodzi wyłącznie
+z dziennika kroku (ostatnie 30 zdarzeń po ludzku) i przed zapisem jest maskowany: wartości zmiennych środowiskowych
+(`NAZWA=…`), znane tokeny (`sk-…`, `ghp_…`, `github_pat_…`, `xox…`, `perm:…`, JWT, `Bearer …`), pary klucz–sekret
+i wartości sekretnych zmiennych środowiska usługi. Ten sam opis użytkownika też przechodzi maskowanie.
+
+### Pełna karta: fazy, powody czekania i trwające kroki (PT-128)
+
+Karta z dziennikiem dostaje w `derived` pola pełnej karty (`cardflow/fullcard.py`); widok
+`apps/common/qml/card/CardFullView.qml` tylko je wyświetla:
+
+- `phases[7]` — `{id, label, state, executor, ts, note}` w stałej kolejności: `order` (Zlecenie), `planning`,
+  `plan-review`, `plan-approval`, `tickets`, `closing` (Domknięcie), `main-merge` (Scalenie do master). `state`:
+  `done`, `now`, `you` (czeka na decyzję z `flow.decisions[]`), `hold` (czeka na limit, nie na użytkownika), `todo`,
+  `skipped` (planowanie przy wejściu „Od razu”, review planu zatwierdzonego bez review). `executor` to nazwa
+  wykonawcy albo `user` dla faz użytkownika, `ts` — chwila zdarzenia fazy (ISO 8601), `note` — dopisek
+  (np. „fala 2 z 4”, „prosi o zmiany”). Karta w „Czeka na mnie” bez decyzji w żadnej fazie ma `you` w bieżącej fazie.
+- `tickets[].waitingOn` — `{kind: "user"}`, `{kind: "blocker", ticket}` (pierwszy niescalony bloker) albo
+  `{kind: "limit", until}` (godzina odnowienia, gdy znana) albo `null`; przy kilku powodach naraz wygrywa użytkownik,
+  potem bloker, potem limit. Przed zatwierdzeniem planu zawsze `null`.
+- `tickets[].status` i `statusLabel` — ludzki stan (`w planie`, `w kolejce`, `pracuje`, `review`, `poprawki`,
+  `scalanie`, `czeka na Ciebie`, `czeka na limit do 16:30`, `czeka na PT-1`, `scalony`, `odrzucony`), do tego
+  `executor` i `reviewer` z przydziału albo z planu.
+- `flow.running[]` — tylko trwające kroki (`id`, `ticket`, `kind`, `kindLabel`, `executor`, `mode`, `startedTs`,
+  `lastActivityTs`, `canEnter`); `flow.headline` — jedno zdanie do „Twój ruch”, gdy `flow.decisions[]` jest puste.
+
+Zdarzenie `step.waiting` niesie `cause` (`quota` — okno limitu, `slots` — kroki dostawcy naraz, `local` — kolejka
+modeli lokalnych, `paused` — karta wstrzymana) i `until` (godzina odnowienia przy `quota`). Starsze zdarzenia bez
+`cause` rozpoznawane są po treści powodu. Tickety i fale planu liczą się także wtedy, gdy krok stoi na limicie.
+
+### Limit dostawcy: zatrzymane kroki i przeniesienie na Codex (PT-130)
+
+Limit nie jest decyzją (D3): nie ma go w `flow.decisions[]`. **Zmiana reguły kolumn** (jedyna w tym tickecie):
+karta z krokiem zatrzymanym przez limit (`step.finished` z `reason: limit`) stoi w „W toku” ze znacznikiem „czeka
+na limit do HH:MM”, nie w „Czeka na mnie”. Wyjątek: gdy zapis zmian (WIP) wymaga naprawy, karta zostaje w „Czeka na
+mnie” — to praca dla użytkownika, nie limit. Bez wyboru użytkownika Tide czeka na odnowienie sam: po odnowieniu
+wznawia krok tym samym dostawcą (jak po wyborze `wait-limit`), a kolumnę liczą dotychczasowe reguły. Tryb
+`auto` z ustawionym wykonawcą nadal przenosi krok sam.
+
+Pola w `derived.flow`:
+
+- `stoppedByLimit[]` — `{step, ticket, wipFiles, provider, until}` dla każdego zatrzymanego kroku; `wipFiles` to
+  liczba plików w commicie WIP.
+- `otherProviders[]` — `{provider, remaining}`: pozostały limit (%, najniższe świeże okno) innych dostawców
+  chmurowych z odczytu Limitów AI (`cardflow/limits.py`); dostawca bez świeżego odczytu nie trafia na listę.
+- `limitTransfer` — `null` bez zatrzymanych kroków, inaczej `{available, provider, label, text, executor, cost,
+  reason}`. Dostępne (`available: true`), gdy inny dostawca ma limit powyżej progu i wykonawcę w katalogu
+  (preferowany: wykonawca z ustawień przekazania, potem ta sama klasa co zatrzymany krok). `cost` to koszt
+  przeniesienia: „2 zatrzymane kroki i 17 plików WIP do przekazania; po przeniesieniu Codex ma jeszcze 91%
+  limitu.” — liczby kroków i plików WIP oraz pozostały limit docelowego dostawcy, bez przeliczeń w walucie.
+  Gdy nie ma dostawcy z wolnym limitem: `available: false` i jedno zdanie w `reason`.
+
+„Przenieś na Codex” w pełnej karcie wysyła istniejące `ResolveCardStep` (`choice: transfer`, `step`, `executor`)
+po jednym razie na zatrzymany krok; koszt jest widoczny nad przyciskiem przed kliknięciem.
 
 ## Docker
 
@@ -2145,9 +2240,30 @@ Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawi
 Po `plan.proposed` plan czeka na krok `plan-review` u innego wykonawcy i modelu niż planujący.
 Recenzent dostaje pełną zachowaną specyfikację, opis karty i kartki oraz kryteria pionowości,
 rozmiaru, mierzalności kryteriów, blokerów i przydziałów. Ocenia też treść części „Dla recenzenta”.
-Zapisuje `out/plan-review.json` z `verdict` (`APPROVE` albo `REQUEST_CHANGES`) i tekstem `findings`.
-Uwagi uruchamiają jedną rundę `plan-revise`; po niej plan jest pokazany z wynikiem review,
-bez kolejnego review w pętli. `ApproveCardPlan` przed końcem review zwraca `review-pending`.
+Zapisuje `out/plan-review.json` z `verdict` (`APPROVE` albo `REQUEST_CHANGES`) i `findings`:
+
+```json
+{"verdict": "REQUEST_CHANGES",
+ "findings": [{"severity": "major", "text": "#7 i #8 zmieniają to samo okno w jednej fali.", "tickets": ["#7", "#8"]}]}
+```
+
+`severity` ∈ `blocker` (plan nie może ruszyć bez poprawy), `major` (ważna zmiana przed startem), `nit`
+(drobiazg); `tickets` to numery ticketów z planu, których uwaga dotyczy (może być pusta). Walidator
+(`cardflow/findings.py`) przyjmuje też stary format — jeden napis w `findings` (karty w toku): staje się jedną
+uwagą bez wagi (`severity: ""`, bez ticketów). Format błędny (nieznana waga, uwaga bez tekstu, `tickets` nie
+będące listą napisów) kończy krok błędem `bad-plan-review` z powodem; review nie zostaje zapisane.
+`plan.reviewed` przechowuje listę uwag, a stan karty daje `flow.plan.review{verdict, reviewer, findings[]}`
+(`verdict` pusty, gdy go brak lub jest nieznany).
+
+Uwagi uruchamiają jedną rundę `plan-revise`; bez człowieka w pętli poprawka dostaje to, co okno zaznacza
+domyślnie (`blocker` i `major`, bez `nit`; gdy są same drobne — wszystkie). Po poprawce plan jest pokazany
+z wynikiem review, bez kolejnego review w pętli. `ApproveCardPlan` przed końcem review zwraca `review-pending`.
+
+Okno decyzji (`plan-approval`) pokazuje werdykt i `findings[]` (waga, tekst, tickety, `selected`).
+Polecona akcja zależy od werdyktu: brak uwag → „Zatwierdź plan”; blocker albo `REQUEST_CHANGES` → „Odeślij
+uwagi do poprawy”; nieznany werdykt → żadna nie jest polecona. Zatwierdzenie mimo uwag działa zawsze, a jego
+skutek jest opisany („Mimo N blokujących uwag … uwagi nie zostaną poprawione”). `EditCardPlan` z `action: return`
+przyjmuje `findings` (zaznaczone uwagi) i/lub `feedback` (własny tekst); do planującego trafia tylko to.
 
 `EditCardPlan` zapisuje zmiany przydziału i treści kartki jako `plan.ticket-edited`.
 Nie przyjmuje zmian struktury planu tą drogą. Ticket z rozpoczętą gałęzią lub krokiem jest chroniony

@@ -55,6 +55,20 @@ class CardClosingTest(FlowInProcess):
             self.flow.engine.merge_card_to_main(card)
         self.assertEqual(failure.exception.code, "not-closed")
 
+    def test_main_merge_opens_its_own_worktree_when_main_is_not_checked_out(self):
+        # 03.11, K-15: główny katalog stał na innej gałęzi, a „Scal do gałęzi głównej” odmawiało.
+        card = self.card()
+        self.assertTrue(self.start(card)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "card.closed"), timeout=30), self.events(card))
+        git(self.repo, "checkout", "-q", "-b", "feature/other")
+        box = []
+        self.flow.merge_card_to_main(card, box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(json.loads(box[0])["ok"], box[0])
+        self.assertNotEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
+        self.assertEqual(git(self.repo, "branch", "--show-current").strip(), "feature/other")
+        self.assertTrue(any(line.endswith("[master]") for line in git(self.repo, "worktree", "list").splitlines()))
+
     def test_main_merge_refuses_dirty_checkout_without_losing_changes(self):
         card = self.card()
         self.assertTrue(self.start(card)["ok"])
@@ -106,7 +120,7 @@ class CardClosingTest(FlowInProcess):
         self.assertTrue(self.approve(card)["ok"])
         self.assertTrue(wait_until(lambda: any(s.get("kind") == "conflict" for s in self.of(card, "step.started")),
                                    timeout=25), self.events(card))
-        self.assertTrue(wait_until(lambda: self.shown(card)["derived"]["flow"].get("action") == "error",
+        self.assertTrue(wait_until(lambda: any(d["kind"] == "error" for d in self.shown(card)["derived"]["flow"]["decisions"]),
                                    timeout=15), self.events(card))
         self.assertEqual(len([s for s in self.of(card, "step.started") if s.get("kind") == "conflict"]), 1)
         self.assertFalse(self.of(card, "card.closed"))

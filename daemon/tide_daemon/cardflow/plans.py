@@ -68,7 +68,9 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
         return Proposal(None, [], {}, [], [f"nie można przeczytać planu: {exc}"])
     plan = plan_mod.parse(content, real)
     if plan is None:
-        return Proposal(None, [], {}, [], ["plik nie jest planem Tide (brak tide-plan: 1)"])
+        found = re.search(r"^tide-plan:\s*(\S+)", content, re.M)
+        return Proposal(None, [], {}, [], [f"nagłówek ma tide-plan: {found.group(1)}, a powinien mieć tide-plan: 1"
+                                            if found else "plik nie jest planem Tide (brak tide-plan: 1)"])
     errors.extend(plan.errors)
     if plan.card != card_id and not (imported and not plan.card):
         errors.append(f"plan musi wskazywać kartę {card_id} przez klucz card")

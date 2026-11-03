@@ -4,6 +4,8 @@ import QtQuick.Controls as QQC2
 import "tide" as Tide
 
 QQC2.ComboBox {
+    // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+    wheelEnabled: false
     id: control
     implicitHeight: 34
     font.family: Tide.Theme.uiFamily

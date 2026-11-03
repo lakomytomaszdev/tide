@@ -93,8 +93,8 @@ class LightPlanningTest(FlowInProcess):
         card = self.card(description="ATRAPA: plan-question")
         self.assertTrue(self.start(card, entry="planning", mode="light")["ok"])
         shown = self.wait_column(card, "waiting")
-        self.assertEqual(shown["derived"]["flow"]["action"], "answer")
-        self.assertEqual(shown["derived"]["flow"]["question"], "Który wariant wybrać?")
+        self.assertEqual(shown["derived"]["flow"]["decisions"][0]["kind"], "question")
+        self.assertEqual(shown["derived"]["flow"]["decisions"][0]["technical"]["question"], "Który wariant wybrać?")
         box = []
         self.flow.resolve_step(card, json.dumps({"choice": "answer", "answer": "Pierwszy"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
@@ -105,7 +105,7 @@ class LightPlanningTest(FlowInProcess):
         card = self.card(description="ATRAPA: plan-error")
         self.assertTrue(self.start(card, entry="planning", mode="light")["ok"])
         shown = self.wait_column(card, "waiting")
-        self.assertEqual(shown["derived"]["flow"]["action"], "error")
+        self.assertEqual(shown["derived"]["flow"]["decisions"][0]["kind"], "error")
         self.assertEqual(len(self.of(card, "step.started")), 2)
         self.assertEqual(len(self.of(card, "step.retry")), 1)
         self.assertEqual(self.of(card, "plan.proposed"), [])
@@ -145,7 +145,7 @@ class LightPlanningTest(FlowInProcess):
         self.assertEqual(filesystem["denyRead"], ["~"])
         with open(os.path.join(step["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             argv = json.load(fh)["argv"]
-        self.assertEqual(argv[argv.index("--add-dir") + 1], extra)
+        self.assertIn(extra, [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"])  # obok katalogu wyjściowego kroku
         self.assertIn(f"Edit(/{os.path.realpath(extra)}/**)", argv[argv.index("--disallowedTools"):])
 
     def test_initial_board_persists_class_based_rules_and_clearing_override_restores_them(self):

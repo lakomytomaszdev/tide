@@ -1,8 +1,8 @@
 // Zawartość widoku „Tablica” (mock zatwierdzony 27.10.2026): nagłówek z podsumowaniem, szukaniem
 // i „＋ Karta”, pastylki tagów (filtr), filtr projektu i układ (Razem / Wiersz na projekt), kolumny
 // Backlog, Do zrobienia, W toku, Czeka na mnie, Do sprawdzenia i Gotowe (równe szerokości). Karty przeciąga się
-// między kolumnami ręcznymi (Backlog, Do zrobienia, Gotowe) i w obrębie kolumny; kliknięcie otwiera
-// panel karty, „Projekty i tagi” — osobną stronę. Sam nie rozmawia z usługą: dostaje migawkę
+// między kolumnami ręcznymi (Backlog, Do zrobienia, Gotowe) i w obrębie kolumny; kliknięcie otwiera okno decyzji,
+// pełną kartę (karta z dziennikiem, PT-128) albo panel karty (karta bez dziennika), „Projekty i tagi” — osobną stronę. Sam nie rozmawia z usługą: dostaje migawkę
 // i zgłasza zapisy sygnałami z tagiem, a odpowiedzi dostaje przez handleReply(tag, odpowiedź).
 // YouTrack (PT-7): przy nagłówku dyskretne notki z migawki (konflikty, „YouTrack niedostępny”, „N nowych
 // zgłoszeń w YouTracku” — ta otwiera import na stronie „Projekty i tagi”).
@@ -10,6 +10,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "tide" as Tide
+import "card" as CardUi
 import "board.js" as Logic
 
 Rectangle {
@@ -38,6 +39,28 @@ Rectangle {
     property string panelColumn: "backlog"
     property string toast: ""
     property string toastTone: "rose"        // rose — błąd, butter — commit czeka
+    // Okno decyzji (PT-132, apps/common/qml/card): karta, której decyzje pokazuje, i tagi wysłanych odpowiedzi.
+    // Ustawienie okna Tide (PT-133, apps/common/windowconfig.py; wartość i zapis ma backend): "decision" | "full".
+    property string cardOpen: "decision"
+    signal cardOpenRequested(string value)
+    property bool decisionOpen: false
+    property string decisionCardId: ""
+    // Pełna karta (PT-128, apps/common/qml/card/CardFullView.qml) na całą stronę.
+    property bool fullOpen: false
+    property string fullCardId: ""
+    // Szuflada opisu (PT-134): panel karty tylko z opisem i „Zapisz opis”, otwierany z pełnej karty.
+    property bool descriptionDrawer: false
+    // Zdania o skutku rzadkich ustawień czekające na odpowiedź usługi: tag zapisu → zdanie.
+    property var settingNotes: ({})
+    property string pendingMoveNote: ""
+    property bool movingFromFull: false
+    // Nazwy kolumn z migawki (id → etykieta) dla podpisów pełnej karty.
+    readonly property var columnLabelMap: {
+        const out = {}
+        for (const c of Logic.columns(snapshot)) out[c.id] = c.label
+        return out
+    }
+    property var decisionTags: ({})          // tag zapisu → [karta, id decyzji]
     // Przeciąganie.
     property bool dragging: false
     property string dragId: ""
@@ -81,6 +104,8 @@ Rectangle {
     signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
     signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
     signal stepResolveRequested(string tag, string cardId, string request) // /Board ResolveCardStep
+    signal faultPreviewRequested(string tag, string cardId, string request) // /Board PreviewStepFault (PT-125)
+    signal faultReportRequested(string tag, string cardId, string request)  // /Board ReportStepFault (PT-125)
     signal flowSettingsSaveRequested(string tag, string request) // /Board SetCardFlowSettings
     signal flowSettingsRefreshRequested() // /Board GetCardFlowSettings
     signal pauseRequested(string tag, string cardId, bool paused)
@@ -107,6 +132,8 @@ Rectangle {
     readonly property bool exists: !!snapshot && snapshot.exists === true
     readonly property bool filtered: tagFilter !== "" || projectFilter !== "" || query.trim() !== ""
     readonly property var panelCard: panelCardId ? (snapshot && snapshot.cards || []).find(c => c.id === panelCardId) || null : null
+    readonly property var decisionCard: decisionCardId ? (snapshot && snapshot.cards || []).find(c => c.id === decisionCardId) || null : null
+    readonly property var fullCard: fullCardId ? (snapshot && snapshot.cards || []).find(c => c.id === fullCardId) || null : null
     readonly property var errorLines: Logic.errorLines(snapshot, 3)
     readonly property var youtrackNotes: Logic.youtrackNotes(snapshot)
     readonly property var lanes: {
@@ -125,6 +152,8 @@ Rectangle {
     }
     readonly property alias cardPanel: cardPanel
     readonly property alias launchDialog: launchDialog
+    readonly property alias decisionDialog: decisionDialog
+    readonly property alias cardFullView: cardFullView
     readonly property alias managePage: manage
     readonly property alias columnsRow: columnsRow
 
@@ -150,7 +179,10 @@ Rectangle {
         cardPanel.load()
     }
 
+    onPanelOpenChanged: if (!panelOpen) descriptionDrawer = false
+
     function newCard(column) {
+        descriptionDrawer = false
         if (managing) managing = false
         panelCardId = ""
         panelColumn = column || "backlog"
@@ -165,6 +197,188 @@ Rectangle {
         else page.forceActiveFocus()
     }
 
+    // Kliknięcie kafelka: karta z decyzjami w „Czeka na mnie” otwiera okno decyzji albo (ustawienie „Pełna karta”)
+    // pełną kartę; inne karty z przepływem — zawsze pełną kartę (PT-128), karty bez dziennika — panel karty.
+    function activateCard(id) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
+        if (Logic.opensDecisions(card, cardOpen)) openDecisions(id)
+        else if (!openFull(id)) openCard(id)
+    }
+
+    // --- pełna karta (PT-128) -------------------------------------------------------------------
+
+    function openFull(id) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
+        if (!Logic.hasFullCard(card)) return false
+        panelOpen = false
+        decisionOpen = false
+        selectedId = id
+        fullCardId = id
+        fullOpen = true
+        cardFullView.start()
+        return true
+    }
+
+    function closeFull() {
+        if (!fullOpen) return
+        fullOpen = false
+        const item = findCard(fullCardId)
+        if (item) item.forceActiveFocus()
+        else page.forceActiveFocus()
+    }
+
+    // Szuflada szybkiej edycji opisu nad pełną kartą (PT-134): tylko opis, „Zapisz opis”, Esc anuluje bez zapisu.
+    function openDescription(id) {
+        descriptionDrawer = true
+        openCard(id)
+    }
+
+    // Rzadkie ustawienia z pełnej karty (PT-134) zapisują się od razu. Zdanie o skutku (`params.effect`) pokazuje
+    // się po odpowiedzi usługi — błąd usługi też, więc żadna zmiana nie przechodzi po cichu.
+    function applySetting(id, kind, params) {
+        if (kind === "move" || kind === "archive") {
+            // moveCard sam nadaje tag zapisu i może nic nie wysłać (karta już tam stoi) — notka czeka w pendingMoveNote.
+            pendingMoveNote = params.effect || ""
+            // Z pełnej karty przenosimy bez okna „Co ma zrobić agent?” (byłoby ukryte pod pełną kartą).
+            movingFromFull = true
+            const sent = moveCard(id, kind === "archive" ? "archived" : params.column, kind === "archive" ? "" : topOf(params.column))
+            movingFromFull = false
+            pendingMoveNote = ""
+            if (kind === "archive" && sent) closeFull()
+        } else if (kind === "pause") {
+            const tag = nextTag("flow-pause:" + id)
+            addSettingNote(tag, params.effect)
+            pauseRequested(tag, id, params.paused)
+        } else if (kind === "update") {
+            const tag = nextTag("setting:" + id)
+            addSettingNote(tag, params.effect)
+            const request = {}
+            request[params.field] = params.value
+            updateRequested(tag, id, JSON.stringify(request))
+        }
+    }
+
+    function addSettingNote(tag, text) {
+        const notes = Object.assign({}, settingNotes)
+        notes[tag] = text || ""
+        settingNotes = notes
+    }
+
+    // Zdanie o skutku zapisanego ustawienia (raz): wraca do użytkownika po odpowiedzi usługi.
+    function takeSettingNote(tag) {
+        if (!(tag in settingNotes)) return null
+        const notes = Object.assign({}, settingNotes)
+        const text = notes[tag]
+        delete notes[tag]
+        settingNotes = notes
+        return text
+    }
+
+    // Panel karty z pełnej karty: wybór wykonawcy (napis `notice`) zostaje tam.
+    function panelFromFull(notice) {
+        const id = fullCardId
+        fullOpen = false
+        openCard(id)
+        if (notice) cardPanel.notice = notice
+    }
+
+    // Powiadomienie o karcie (Show z ID karty): zaznacza ją, a gdy czeka na decyzję — otwiera ją tak samo
+    // jak klik (to samo ustawienie). Inne karty tylko zaznacza, jak dotąd.
+    function openFromNotification(id) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id.toLowerCase() === String(id).toLowerCase())
+        if (Logic.hasDecisions(card)) activateCard(card.id)
+    }
+
+    function setCardOpen(value) {
+        if (value === cardOpen) return
+        cardOpenRequested(value)
+    }
+
+    // --- okno decyzji (PT-132) ------------------------------------------------------------------
+
+    function openDecisions(id) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
+        if (!card || Logic.decisions(card).length === 0) return false
+        panelOpen = false
+        selectedId = id
+        decisionCardId = id
+        decisionOpen = true
+        decisionDialog.start()
+        return true
+    }
+
+    function closeDecisions() {
+        if (!decisionOpen) return
+        decisionOpen = false
+        // Okno otwarte z pełnej karty („wszystkie w oknie decyzji”) wraca do niej.
+        if (fullOpen && fullCardId === decisionCardId) {
+            cardFullView.start()
+            return
+        }
+        const item = findCard(decisionCardId)
+        if (item) item.forceActiveFocus()
+        else page.forceActiveFocus()
+    }
+
+    // Odpowiedź z okna: metoda /Board i parametry wprost z decyzji (bez liczenia na stronie).
+    function sendDecision(cardId, decisionId, method, params) {
+        const tag = nextTag("decision:" + cardId)
+        const tags = Object.assign({}, decisionTags)
+        tags[tag] = [cardId, decisionId]
+        decisionTags = tags
+        if (method === "ResolveCardStep") stepResolveRequested(tag, cardId, JSON.stringify(params))
+        else if (method === "ResolveCardReview") reviewResolveRequested(tag, cardId, params.choice || "")
+        else if (method === "ApproveCardPlan") planApproveRequested(tag, cardId)
+        else if (method === "EditCardPlan") planEditRequested(tag, cardId, JSON.stringify(params))
+        else if (method === "EnterStep") enterStepRequested(tag, cardId, params.step || "")
+        else if (method === "ReportStepFault") faultReportRequested(tag, cardId, JSON.stringify(params))
+        else handleReply(tag, { ok: false, error: "unknown-method", message: "Tablica nie zna metody " + method + "." })
+    }
+
+    // Podgląd karty z błędem przed zapisem (PT-125): odpowiedź usługi wraca do okna decyzji.
+    function previewFault(cardId, decisionId, method, params) {
+        const tag = nextTag("fault-preview:" + cardId)
+        const tags = Object.assign({}, decisionTags)
+        tags[tag] = [cardId, decisionId]
+        decisionTags = tags
+        if (method === "PreviewStepFault") faultPreviewRequested(tag, cardId, JSON.stringify(params))
+        else handleReply(tag, { ok: false, error: "unknown-method", message: "Tablica nie zna metody " + method + "." })
+    }
+
+    function handleFaultPreviewReply(tag, reply) {
+        const sent = decisionTags[tag]
+        const tags = Object.assign({}, decisionTags)
+        delete tags[tag]
+        decisionTags = tags
+        if (!sent) return
+        // Podgląd zamówiony w bloku „Twój ruch” pełnej karty wraca tam; z okna decyzji — do okna.
+        if (fullOpen && !decisionOpen && sent[0] === fullCardId) cardFullView.showPreview(sent[1], reply)
+        else if (sent[0] === decisionCardId) decisionDialog.showPreview(sent[1], reply)
+    }
+
+    function handleDecisionReply(tag, error, reply) {
+        const sent = decisionTags[tag]
+        const tags = Object.assign({}, decisionTags)
+        delete tags[tag]
+        decisionTags = tags
+        if (sent && !error && reply && reply.reported)
+            showToast((reply.action === "append" ? "Wystąpienie dopisane do " : "Karta z błędem ") + reply.reported
+                      + " w Backlogu " + (reply.project || "plasma-tide") + " — krok ponowiony.", "butter")
+        if (!sent || !error) return
+        // Odpowiedź z bloku „Twój ruch” pełnej karty: decyzja wraca tam z powodem.
+        if (fullOpen && !decisionOpen && sent[0] === fullCardId) {
+            cardFullView.failed(sent[1], error)
+            return
+        }
+        // Usługa odrzuciła odpowiedź: decyzja wraca do okna z powodem (okno otwiera się ponownie, jeśli zamknięte).
+        if (!decisionOpen && sent[0] === decisionCardId) {
+            decisionOpen = true
+            decisionDialog.forceActiveFocus()
+        }
+        if (sent[0] === decisionCardId) decisionDialog.failed(sent[1], error)
+        else showToast("Nie wysłano odpowiedzi dla " + sent[0] + ": " + error, "rose")
+    }
+
     function openPlanManager() {
         panelOpen = false
         planManager.error = ""
@@ -176,31 +390,33 @@ Rectangle {
     // zapisanych w kolumnie docelowej, karta od razu stoi w nowym miejscu (optimistic).
     function moveCard(id, column, before) {
         const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
-        if (!card) return
+        if (!card) return false
         if (column !== "archived" && !Logic.isManual(column)) {
             showToast("Do kolumny „" + Logic.columnLabel(snapshot, column) + "” karta trafia sama, gdy pracuje nad nią agent.", "rose")
-            return
+            return false
         }
         const confirming = Logic.confirmable(card)
         if (confirming && Logic.dropTargets(card).indexOf(column) < 0) {
             showToast("Kartę z „" + Logic.columnLabel(snapshot, Logic.displayColumn(card)) + "” przenosisz do Gotowych "
                       + "(sprawdzone) albo z powrotem do Do zrobienia (do poprawy).", "rose")
-            return
+            return false
         }
         const index = column === "archived" ? 0 : Logic.moveIndex(snapshot, id, column, before)
         // Bez zmiany tylko wtedy, gdy karta już stoi w tej kolumnie także na ekranie (kolumna wyliczana
         // z koordynatora przy zapisanym todo to nie „ta sama kolumna”).
         if (column === Logic.displayColumn(card) && column === card.column && Logic.storedIndex(snapshot, id) === (index < 0
-                ? snapshot.cards.filter(c => c.column === column).length - 1 : index)) return
+                ? snapshot.cards.filter(c => c.column === column).length - 1 : index)) return false
         const fromBacklog = column === "todo" && card.column === "backlog"
         const origin = fromBacklog ? Logic.storedIndex(snapshot, id) : -1
         const backlogList = fromBacklog ? Logic.column(allCards, "backlog") : []
         const at = backlogList.findIndex(c => c.id === id)
         const originBefore = at >= 0 && at + 1 < backlogList.length ? backlogList[at + 1].id : ""
         const tag = nextTag("move:" + id)
+        if (pendingMoveNote) addSettingNote(tag, pendingMoveNote)
         optimistic = optimistic.concat([{ id: id, column: column, before: before || "", tag: tag }])
         moveRequested(tag, id, column, index)
-        if (fromBacklog) launchHook(id, origin, originBefore)
+        if (fromBacklog && !movingFromFull) launchHook(id, origin, originBefore)
+        return true
     }
 
     // Gotowe dostają kartę na górę (najnowsze pierwsze), inne kolumny — na koniec.
@@ -395,8 +611,21 @@ Rectangle {
     function handleReply(tag, reply) {
         const error = reply && reply.ok ? "" : Logic.errorText(reply)
         const notice = Logic.commitNote(reply)
+        // Rzadkie ustawienia z pełnej karty (PT-134): widoczny skutek albo powód odmowy usługi. Błąd przeniesienia
+        // pokazuje niżej gałąź „move:”, więc tu go nie dublujemy.
+        const settingNote = takeSettingNote(tag)
+        if (settingNote !== null && settingNote !== "") {
+            if (!error) showToast(settingNote, "mint")
+            else if (tag.indexOf("move:") !== 0) showToast("Nie zapisano: " + error, "rose")
+        }
         if (tag.indexOf("launch-") === 0) {
             handleLaunchReply(tag, reply)
+        } else if (tag.indexOf("setting:") === 0) {
+            if (notice) showToast(notice, "butter")
+        } else if (tag.indexOf("fault-preview:") === 0) {
+            handleFaultPreviewReply(tag, reply)
+        } else if (tag.indexOf("decision:") === 0) {
+            handleDecisionReply(tag, error, reply)
         } else if (tag.indexOf("move:") === 0) {
             if (error) {
                 optimistic = optimistic.filter(m => m.tag !== tag)
@@ -468,6 +697,9 @@ Rectangle {
             cardPanel.busy = false
             cardPanel.error = error
             if (!error) cardPanel.notice = "Karta scalona do gałęzi głównej."
+            cardFullView.mergeBusy = false
+            showToast(error ? "Scalenie nie powiodło się: " + error : "Karta scalona do gałęzi głównej.",
+                      error ? "rose" : "mint")
         } else if (tag.indexOf("quicktag:") === 0) {
             tagEditorPopup.editorError = error
             if (!error) tagEditorPopup.close()
@@ -542,7 +774,8 @@ Rectangle {
         Qt.callLater(() => {
             revealCard(card.id)
             const item = findCard(card.id)
-            if (item) item.forceActiveFocus()
+            // Okno decyzji albo panel otwarte z powiadomienia trzymają fokus (PT-133).
+            if (item && !decisionOpen && !panelOpen) item.forceActiveFocus()
         })
         return true
     }
@@ -988,6 +1221,40 @@ Rectangle {
                 current: page.layoutMode
                 onPicked: value => page.layoutMode = value
             }
+
+            // Menu „Widok” (PT-133): ustawienie otwierania karty z „Czeka na mnie” — to samo pole jest w stopce okna decyzji.
+            PillButton {
+                id: viewButton
+                objectName: "viewMenuButton"
+                implicitHeight: 28
+                pillRadius: 14
+                pixelSize: 12
+                horizontalPadding: 12
+                text: "Widok ▾"
+                textColor: Tide.Tokens.textSecondary
+                Accessible.name: "Widok"
+                onClicked: viewMenu.opened ? viewMenu.close() : viewMenu.open()
+
+                QQC2.Popup {
+                    id: viewMenu
+                    objectName: "viewMenu"
+                    y: parent.height + 6
+                    x: parent.width - width
+                    padding: 12
+                    closePolicy: QQC2.Popup.CloseOnEscape | QQC2.Popup.CloseOnPressOutsideParent
+                    background: Rectangle {
+                        radius: Tide.Tokens.radiusTile
+                        color: Tide.Tokens.backgroundCard
+                        border.width: 1
+                        border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.12)
+                    }
+                    contentItem: CardUi.CardOpenSwitch {
+                        objectName: "viewCardOpen"
+                        current: page.cardOpen
+                        onPicked: value => page.setCardOpen(value)
+                    }
+                }
+            }
         }
 
         // Złe pliki i trwająca operacja gita (dyskretnie, nad kolumnami).
@@ -1106,7 +1373,7 @@ Rectangle {
                         canDiff: page.canDiff
                         tagTone: page.tagTone
                         dragHost: page
-                        onCardClicked: id => page.openCard(id)
+                        onCardClicked: id => page.activateCard(id)
                         onAddRequested: column => page.newCard(column)
                         onDropped: (id, before) => page.moveCard(id, modelData.id, before)
                         onMoveRequested: (id, column) => page.moveCard(id, column, page.topOf(column))
@@ -1221,7 +1488,7 @@ Rectangle {
                                             canDiff: page.canDiff
                                             tagTone: page.tagTone
                                             dragHost: page
-                                            onCardClicked: id => page.openCard(id)
+                                            onCardClicked: id => page.activateCard(id)
                                             onDropped: (id, before) => page.moveCard(id, modelData.id, before)
                                             onMoveRequested: (id, column) => page.moveCard(id, column, page.topOf(column))
                                             onSessionRequested: session => page.sessionRequested(session)
@@ -1354,12 +1621,15 @@ Rectangle {
     MouseArea {
         anchors.fill: parent
         visible: page.panelOpen
+        z: page.descriptionDrawer ? 36 : 0
         onClicked: page.closePanel()
         onWheel: wheel => wheel.accepted = false
     }
     CardPanel {
         id: cardPanel
         objectName: "cardPanel"
+        z: page.descriptionDrawer ? 37 : 0
+        descriptionOnly: page.descriptionDrawer
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
@@ -1485,6 +1755,60 @@ Rectangle {
         }
     }
 
+    // --- okno decyzji (PT-132) -------------------------------------------------------------------
+    CardUi.DecisionDialog {
+        id: decisionDialog
+        objectName: "decisionDialog"
+        anchors.fill: parent
+        z: 40
+        visible: page.decisionOpen && !page.managing
+        cardId: page.decisionCardId
+        decisions: Logic.decisions(page.decisionCard)
+        cardOpen: page.cardOpen
+        onCardOpenRequested: value => page.setCardOpen(value)
+        onAnswered: (decisionId, method, params) => page.sendDecision(page.decisionCardId, decisionId, method, params)
+        onPreviewRequested: (decisionId, method, params) => page.previewFault(page.decisionCardId, decisionId, method, params)
+        onLaterRequested: {
+            page.closeDecisions()
+            page.showToast("Karta zostaje w „Czeka na mnie” — wrócisz do niej z kafelka.", "butter")
+        }
+        onFinished: page.closeDecisions()
+        // „Otwórz całą kartę” — pełna karta (PT-128). Możliwość, która wymaga wyboru wykonawcy (napis `notice`),
+        // otwiera panel karty, bo wybór wykonawcy jest na razie tylko tam.
+        onFullCardRequested: notice => {
+            const id = page.decisionCardId
+            page.decisionOpen = false
+            if (!notice && page.openFull(id)) return
+            page.fullOpen = false
+            page.openCard(id)
+            if (notice) cardPanel.notice = notice
+        }
+    }
+
+    // --- pełna karta (PT-128) --------------------------------------------------------------------
+    CardUi.CardFullView {
+        id: cardFullView
+        objectName: "cardFullView"
+        anchors.fill: parent
+        z: 35
+        visible: page.fullOpen && !page.managing
+        card: page.fullOpen ? page.fullCard : null
+        moveTargets: page.fullCard ? Logic.settingTargets(page.fullCard) : []
+        canArchive: page.fullCard ? Logic.canArchive(page.fullCard) : false
+        columnLabels: page.columnLabelMap
+        onBackRequested: page.closeFull()
+        onAnswered: (decisionId, method, params) => page.sendDecision(page.fullCardId, decisionId, method, params)
+        onPreviewRequested: (decisionId, method, params) => page.previewFault(page.fullCardId, decisionId, method, params)
+        onDecisionsRequested: page.openDecisions(page.fullCardId)
+        onPanelRequested: notice => page.panelFromFull(notice)
+        onDescriptionRequested: page.openDescription(page.fullCardId)
+        onSettingRequested: (kind, params) => page.applySetting(page.fullCardId, kind, params)
+        onMergeMainRequested: page.mergeMainRequested(page.nextTag("merge-main:" + page.fullCardId), page.fullCardId)
+        onBranchDiffRequested: page.panelFromFull("Diff gałęzi: kliknij „Diff gałęzi” w panelu karty.")
+        onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
+                                                                page.fullCardId, stepId)
+    }
+
     // --- duch przeciąganej karty ----------------------------------------------------------------
     Item {
         id: dragLayer
@@ -1502,11 +1826,13 @@ Rectangle {
         }
     }
 
-    // Skróty: Ctrl+N nowa karta, Ctrl+F szukaj, Esc zamyka panel albo stronę.
+    // Skróty: Ctrl+N nowa karta, Ctrl+F szukaj, Esc zamyka okno decyzji, panel, pełną kartę albo stronę.
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape) {
-            if (page.launchOpen && !page.managing) page.cancelLaunch()
+            if (page.decisionOpen && !page.managing) page.closeDecisions()
+            else if (page.launchOpen && !page.managing) page.cancelLaunch()
             else if (page.panelOpen) page.closePanel()
+            else if (page.fullOpen && !page.managing) page.closeFull()
             else if (page.managing) page.managing = false
             else if (page.query !== "") { search.text = ""; page.query = "" }
             else return

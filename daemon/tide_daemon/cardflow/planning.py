@@ -227,7 +227,9 @@ Po zapisaniu wszystkich artefaktów zapisz jako ostatni plik:
 Plik wyniku: {out_dir}/result.json
 {{"result":"done","notes":["discovery.md","spec.md","plan.md"]}}.
 Jeśli potrzebujesz decyzji w trakcie rozmowy, pytaj w Konsoli. Jeżeli musisz zakończyć krok z pytaniem,
-zapisz {{"result":"question","question":"treść pytania"}}. Dla odmowy polecenia zapisz
+zapisz {{"result":"question","question":"treść pytania"}}; możesz dodać gotowe odpowiedzi
+`"options":[{{"title":"…","effect":"skutek","recommended":true}}]` (1–4, najwyżej jedna polecona;
+„Inną odpowiedź…” dokłada Tide). Dla odmowy polecenia zapisz
 {{"result":"denied","command":"pełne polecenie"}}, a dla błędu {{"result":"error","reason":"powód"}}.
 Zapis result.json kończy ten krok; dalsze zmiany wymagają osobnego odesłania planu do poprawy.
 """

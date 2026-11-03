@@ -64,6 +64,20 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20), self.events(card))
         self.assertEqual([s["kind"] for s in self.of(card, "step.started")], ["plan-review", "plan-revise"])
         self.assertTrue(self.of(card, "plan.reviewed")[0]["corrected"])
+        review, revise = self.of(card, "step.started")
+        # K-35: domyślny recenzent planu nie jest wykonawcą klasy wyłącznie „lekki”, a werdykt podpisuje
+        # krok, który go wydał.
+        self.assertNotEqual(review["executor"], "Haiku")
+        self.assertEqual(self.of(card, "plan.reviewed")[0]["reviewer"], review["executor"])
+        # K-35: krok poprawki nie widzi Tablicy — dostaje oryginalny plan.md i dokładny wzór nagłówka i tabeli.
+        with open(os.path.join(revise["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            prompt = json.load(fh)["prompt"]
+        with open(self.of(card, "plan.proposed")[0]["planPath"], encoding="utf-8") as fh:
+            original = fh.read()
+        self.assertIn(original.strip(), prompt)
+        self.assertIn("`tide-plan: 1`", prompt)
+        self.assertIn("dokładnie jedna tabela", prompt)
+        self.assertNotIn("standardu 1.2 i tickets", prompt)
         self.restart()
         wait_until(lambda: False, timeout=.3)
         self.assertEqual(len(self.of(card, "plan.reviewed")), 1)
@@ -123,6 +137,14 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: box, timeout=10))
         self.assertTrue(json.loads(box[0])["ok"], box)
         self.assertTrue(wait_until(lambda: len(self.of(card, "plan.reviewed")) == 2, timeout=6), self.events(card))
+        # 03.11, K-16: poprawka zatwierdzonego planu dostaje aktualną tabelę z numerami ticketów i listą tych, które
+        # ruszyły — nie pierwotny plan.md z `#1…`.
+        amend = next(s for s in self.of(card, "step.started") if s["kind"] == "plan-amend")
+        with open(os.path.join(amend["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
+            prompt = fh.read()
+        self.assertIn("ZATWIERDZONY plan", prompt)
+        self.assertIn(f"| {working['ticket']} |", prompt)
+        self.assertIn(f"Tickety, które już ruszyły ({working['ticket']}", prompt)
         self.assertTrue(self.approve(card)["ok"])
         self.assertFalse(any(e["step"] == working["step"] for e in self.of(card, "step.finished")), self.events(card))
         self.assertEqual(len(self.of(card, "plan.revision-approved")), 1)
@@ -170,14 +192,16 @@ class PlanReviewEditingTest(FlowInProcess):
         journal = self.flow.engine.journal
         journal.append(card, "step.started", step="working", ticket=approved["map"]["#1"], kind="ticket", worktree="/tmp/ticket")
         for kind in ("plan-amend", "plan-review", "plan-revise"):
-            for result, choice, action in (("question", "answer", "answer"), ("denied", "allow", "permission"), ("error", "retry", "error")):
+            for result, choice, action in (("question", "answer", "question"), ("denied", "allow", "permission"), ("error", "retry", "error")):
                 with self.subTest(kind=kind, result=result):
                     name = kind + result
                     journal.append(card, "step.started", step=name, ticket="", kind=kind, worktree="/tmp/plan", executor="Sonnet", attempt=1)
                     journal.append(card, "step.finished", step=name, result=result, question="Który wariant?", command="git status")
                     state = fold(journal.read(card))
                     shown = derived(state, {"column": "todo"})
-                    self.assertEqual(shown["flow"].get("action"), action)
+                    self.assertEqual(shown["flow"]["decisions"][0]["kind"], action)
+                    expected = {"plan-review": "review planu", "plan-amend": "poprawa planu", "plan-revise": "poprawa planu"}[kind]
+                    self.assertEqual(shown["note"], expected + " czeka na decyzję (" + {"question": "pytanie", "denied": "brak zgody", "error": "błąd"}[result] + ")")
                     restarted = FlowEngine(self.store, journal=journal)
                     reply = restarted.resolve_step(card, {"choice": choice, "answer": "Pierwszy"})
                     self.assertEqual(reply["step"], name)
@@ -230,9 +254,9 @@ class PlanReviewEditingTest(FlowInProcess):
         box = []
         self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "ATRAPA: amend-question"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
-        self.assertTrue(wait_until(lambda: self.shown(card)["derived"]["flow"].get("action") == "answer", timeout=5), self.events(card))
+        self.assertTrue(wait_until(lambda: self.shown(card)["derived"]["flow"]["decisions"][:1] and self.shown(card)["derived"]["flow"]["decisions"][0]["kind"] == "question", timeout=5), self.events(card))
         self.restart()
-        self.assertEqual(self.shown(card)["derived"]["flow"]["action"], "answer")
+        self.assertEqual(self.shown(card)["derived"]["flow"]["decisions"][0]["kind"], "question")
         box = []
         self.flow.resolve_step(card, json.dumps({"choice": "answer", "answer": "Pierwszy"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=5))

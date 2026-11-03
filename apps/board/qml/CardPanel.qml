@@ -4,6 +4,9 @@
 // opis, notatka. Istniejąca karta ma też przeniesienie między kolumnami ręcznymi i archiwizację.
 // Błąd z usługi pokazuje się w panelu (komunikat po polsku), commitError — dyskretnie pod nim.
 // Ctrl+Enter zapisuje, Esc zamyka. Teksty z karty to dane: zawsze zwykły tekst.
+// PT-134: dla karty z pełnym widokiem panel jest tylko szufladą szybkiej edycji opisu (`descriptionOnly`: pole „Opis”,
+// „Zapisz opis”, Esc anuluje bez zapisu) albo szufladą nowej karty; rzadkie ustawienia są w pełnej karcie
+// (CardFullView). Pełny formularz zostaje na razie dla kart bez dziennika — sprząta go PT-135.
 // YouTrack (PT-7): pole „Zgłoszenie w YouTracku” (klucz albo adres zgłoszenia), a przy połączonej karcie —
 // stan zgłoszenia, stan synchronizacji, „Otwórz w YouTracku” i przy konflikcie wybór „Weź z YouTracka” /
 // „Nadpisz z Tide” (/Board ResolveYouTrack).
@@ -32,9 +35,6 @@ Rectangle {
     property string notice: ""
     property bool busy: false
     property var modelsStatus: null
-    property string stepAnswer: ""
-    property string stepExecutor: ""
-    property string limitExecutor: ""
     property string branchDiff: ""
     property var tagTone: null
     // Formularz.
@@ -54,7 +54,9 @@ Rectangle {
     property real maxWidth: 1200             // szerokość dostępna w oknie (ustawia BoardPage)
     property var renderer: null              // backend.renderMarkdown (przez BoardPage) albo null
     readonly property bool editing: card !== null
-    readonly property string shownTab: editing ? Docs.effectiveTab(docs, tab) : "opis"
+    // Szuflada szybkiej edycji opisu (PT-134): tylko pole „Opis” i „Zapisz opis” — rzadkie ustawienia są w pełnej karcie.
+    property bool descriptionOnly: false
+    readonly property string shownTab: editing && !descriptionOnly ? Docs.effectiveTab(docs, tab) : "opis"
     readonly property bool reading: shownTab !== "opis"
     readonly property var docTabs: Docs.tabs(docs)
     readonly property var flowPlan: editing && card && card.derived && card.derived.flow
@@ -118,9 +120,6 @@ Rectangle {
     function load() {
         error = ""
         notice = ""
-        stepAnswer = ""
-        stepExecutor = ""
-        limitExecutor = ""
         branchDiff = ""
         closingFeedback.text = ""
         busy = false
@@ -137,7 +136,8 @@ Rectangle {
         docsText = ""
         docsPending = ""
         requestDocs()   // `tab` zostaje: ostatnio wybrana zakładka, póki działa okno Tide
-        titleField.focusInput()
+        if (descriptionOnly) descriptionEdit.forceActiveFocus()
+        else titleField.focusInput()
     }
 
     // Bez kolejki: póki odpowiedź dla tej karty nie wróciła, kolejne odświeżenie (5 s, Changed) czeka.
@@ -271,7 +271,7 @@ Rectangle {
         // Zakładki: Opis zawsze, Plan i Specyfikacja — gdy są.
         Segmented {
             objectName: "cardTabs"
-            visible: panel.editing && panel.docTabs.length > 1
+            visible: panel.editing && !panel.descriptionOnly && panel.docTabs.length > 1
             itemHeight: 28
             options: panel.docTabs
             current: panel.shownTab
@@ -292,7 +292,7 @@ Rectangle {
         ColumnLayout {
             objectName: "cardPlanProposal"
             Layout.fillWidth: true
-            visible: !!panel.flowPlan && (panel.planEntries().length > 0 || panel.flowPlan.status !== "reviewing")
+            visible: !panel.descriptionOnly && !!panel.flowPlan && (panel.planEntries().length > 0 || panel.flowPlan.status !== "reviewing")
             spacing: 5
             PillButton {
                 objectName: "cardOpenPlanManager"
@@ -343,6 +343,8 @@ Rectangle {
                 visible: !!panel.flowPlan && panel.flowPlan.status === "blocked"
                 spacing: 8
                 QQC2.ComboBox {
+                    // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                    wheelEnabled: false
                     id: planReviewPicker
                     objectName: "cardPlanReviewExecutor"
                     Layout.fillWidth: true
@@ -362,15 +364,27 @@ Rectangle {
                         {action: "review-executor", executor: planReviewPicker.currentValue})
                 }
             }
-            Text {
-                objectName: "cardPlanReview"
+            // Uwagi review bywają bardzo długie, a ten blok leży nad przewijaną częścią panelu — bez limitu
+            // wysokości decyzje kroków (Zezwól, Ponów) znikały pod krawędzią (K-33). Po zatwierdzeniu planu
+            // review jest historią i jest w widoku planu na całym ekranie.
+            QQC2.ScrollView {
+                id: planReviewScroll
                 Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(planReviewText.implicitHeight, 110)
                 visible: !!panel.flowPlan && !!panel.flowPlan.review && !!panel.flowPlan.review.verdict
-                text: panel.flowPlan && panel.flowPlan.review ? "Review planu: " + (panel.flowPlan.review.verdict || "")
-                      + " · " + (panel.flowPlan.review.reviewer || "") + " · " + (panel.flowPlan.review.findings || "") : ""
-                textFormat: Text.PlainText
-                color: Tide.Tokens.textPrimary
-                wrapMode: Text.Wrap
+                         && panel.flowPlan.status !== "approved" && panel.flowPlan.status !== "done"
+                clip: true
+                contentWidth: availableWidth
+                Text {
+                    id: planReviewText
+                    objectName: "cardPlanReview"
+                    width: planReviewScroll.availableWidth
+                    text: panel.flowPlan && panel.flowPlan.review ? "Review planu: " + (panel.flowPlan.review.verdict || "")
+                          + " · " + (panel.flowPlan.review.reviewer || "") + " · " + Logic.reviewFindingsText(panel.flowPlan.review.findings) : ""
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    wrapMode: Text.Wrap
+                }
             }
             Text {
                 objectName: "cardPlanDifference"
@@ -508,8 +522,8 @@ Rectangle {
             objectName: "cardFlowClosing"
             Layout.fillWidth: true
             spacing: 6
-            visible: Boolean(panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
-                             && panel.card.derived.flow.closed)
+            visible: Boolean(panel.editing && !panel.descriptionOnly && panel.card && panel.card.derived
+                             && panel.card.derived.flow && panel.card.derived.flow.closed)
             Text {
                 Layout.fillWidth: true
                 text: "Karta do sprawdzenia"
@@ -519,15 +533,26 @@ Rectangle {
                 font.pixelSize: 15
                 font.bold: true
             }
-            Text {
+            // Podsumowanie domknięcia bywa długie, a ta sekcja leży nad przewijaną częścią panelu — bez limitu
+            // przyciski Diff/Scal i ich wynik znikały pod krawędzią (03.11, K-15).
+            QQC2.ScrollView {
+                id: closingSummaryScroll
+                objectName: "cardClosingSummary"
                 Layout.fillWidth: true
-                text: panel.card && panel.card.derived && panel.card.derived.flow
-                      ? panel.card.derived.flow.summary || "" : ""
-                textFormat: Text.PlainText
-                color: Tide.Tokens.textPrimary
-                font.family: Tide.Theme.uiFamily
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
+                Layout.preferredHeight: Math.min(closingSummaryText.implicitHeight, 140)
+                clip: true
+                contentWidth: availableWidth
+                Text {
+                    id: closingSummaryText
+                    width: closingSummaryScroll.availableWidth
+                    text: panel.card && panel.card.derived && panel.card.derived.flow
+                          ? panel.card.derived.flow.summary || "" : ""
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                }
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -612,10 +637,11 @@ Rectangle {
                 width: formFlick.width
                 spacing: 6
 
-                FieldLabel { text: "Tytuł" }
+                FieldLabel { text: "Tytuł"; visible: !panel.descriptionOnly }
                 LineInput {
                     id: titleField
                     objectName: "cardTitle"
+                    visible: !panel.descriptionOnly
                     Layout.fillWidth: true
                     placeholder: "Co jest do zrobienia?"
                     accessibleName: "Tytuł karty"
@@ -625,10 +651,11 @@ Rectangle {
                     onAccepted: panel.save()
                 }
 
-                FieldLabel { text: "Projekt"; Layout.topMargin: 8 }
+                FieldLabel { text: "Projekt"; Layout.topMargin: 8; visible: !panel.descriptionOnly }
                 ProjectPicker {
                     id: picker
                     objectName: "cardProject"
+                    visible: !panel.descriptionOnly
                     Layout.fillWidth: true
                     snapshot: panel.snapshot
                     kind: panel.projectKind
@@ -641,9 +668,10 @@ Rectangle {
                     }
                 }
 
-                FieldLabel { text: "Tagi"; Layout.topMargin: 8 }
+                FieldLabel { text: "Tagi"; Layout.topMargin: 8; visible: !panel.descriptionOnly }
                 Flow {
                     objectName: "cardTags"
+                    visible: !panel.descriptionOnly
                     Layout.fillWidth: true
                     spacing: 6
                     Repeater {
@@ -755,10 +783,11 @@ Rectangle {
                     }
                 }
 
-                FieldLabel { text: "Notatka na karcie"; Layout.topMargin: 8 }
+                FieldLabel { text: "Notatka na karcie"; Layout.topMargin: 8; visible: !panel.descriptionOnly }
                 LineInput {
                     id: noteField
                     objectName: "cardNote"
+                    visible: !panel.descriptionOnly
                     Layout.fillWidth: true
                     placeholder: "np. bez agenta, robię sam"
                     accessibleName: "Notatka na karcie"
@@ -766,10 +795,11 @@ Rectangle {
                     onAccepted: panel.save()
                 }
 
-                FieldLabel { text: "Zgłoszenie w YouTracku"; Layout.topMargin: 8 }
+                FieldLabel { text: "Zgłoszenie w YouTracku"; Layout.topMargin: 8; visible: !panel.descriptionOnly }
                 LineInput {
                     id: youtrackField
                     objectName: "cardYouTrackField"
+                    visible: !panel.descriptionOnly
                     Layout.fillWidth: true
                     placeholder: "np. LEGAL-35 — stan zgłoszenia pójdzie za kartą"
                     accessibleName: "Zgłoszenie w YouTracku"
@@ -786,7 +816,7 @@ Rectangle {
                     readonly property bool conflict: !!sync && sync.status === "conflict"
                     Layout.fillWidth: true
                     Layout.topMargin: 4
-                    visible: sync !== null
+                    visible: sync !== null && !panel.descriptionOnly
                     radius: Tide.Tokens.radiusSmall
                     color: conflict ? Tide.Theme.alpha(Tide.Tokens.rose, 0.10) : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.04)
                     border.width: conflict ? 1 : 0
@@ -877,7 +907,7 @@ Rectangle {
                 ColumnLayout {
                     Layout.fillWidth: true
                     Layout.topMargin: 14
-                    visible: panel.editing
+                    visible: panel.editing && !panel.descriptionOnly
                     spacing: 8
 
                     FieldLabel { text: "Kolumna" }
@@ -961,7 +991,7 @@ Rectangle {
                                     }
                                     PillButton {
                                         objectName: "enterStep"
-                                        text: flowStep.result ? "Wznów rozmowę" : "Wejdź"
+                                        text: flowStep.result ? "Wznów rozmowę" : "Przejmij w Konsoli"
                                         toolTip: flowStep.result ? "Otwórz tę rozmowę w Konsoli, także po restarcie komputera" : "Otwórz krok w Konsoli"
                                         implicitHeight: 28
                                         pixelSize: 12
@@ -985,6 +1015,8 @@ Rectangle {
                                     visible: Boolean(flowStep.canTransfer)
                                     spacing: 8
                                     QQC2.ComboBox {
+                                        // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                                        wheelEnabled: false
                                         id: manualTransferPicker
                                         objectName: "cardStepTransferExecutor"
                                         Layout.fillWidth: true
@@ -1048,6 +1080,17 @@ Rectangle {
                             }
                         }
                         PillButton {
+                            // Gdy uwagi dotyczą środowiska, a nie kodu — scalenie zatwierdzonego przez Ciebie stanu.
+                            objectName: "cardReviewAccept"
+                            text: "Scal mimo uwag"
+                            outline: true
+                            enabled: !panel.busy
+                            onClicked: {
+                                panel.busy = true
+                                panel.reviewResolveRequested(panel.card.id, "accept")
+                            }
+                        }
+                        PillButton {
                             objectName: "cardReviewReject"
                             text: "Odrzuć ticket"
                             outline: true
@@ -1058,164 +1101,6 @@ Rectangle {
                             }
                         }
                         Item { Layout.fillWidth: true }
-                    }
-                    ColumnLayout {
-                        id: stepDecision
-                        objectName: "cardStepDecision"
-                        Layout.fillWidth: true
-                        visible: Boolean(panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
-                                         && panel.card.derived.flow.action)
-                        spacing: 8
-                        readonly property var flow: panel.card && panel.card.derived ? panel.card.derived.flow : null
-                        Text {
-                            objectName: "cardStepDecisionText"
-                            Layout.fillWidth: true
-                            text: stepDecision.flow && stepDecision.flow.action === "answer" ? stepDecision.flow.question || ""
-                                : stepDecision.flow && stepDecision.flow.action === "permission"
-                                  ? "Polecenie wymaga zgody: " + (stepDecision.flow.command || "")
-                                : stepDecision.flow && stepDecision.flow.action === "error"
-                                  ? (stepDecision.flow.trackerError ? "Operacja YouTracka nie powiodła się: " : "Krok nie powiódł się: ")
-                                    + (stepDecision.flow.error || "")
-                                    + (stepDecision.flow.stalledSince ? " · bez postępu od " + stepDecision.flow.stalledSince : "")
-                                : stepDecision.flow && stepDecision.flow.action === "limit"
-                                  ? (stepDecision.flow.limit && stepDecision.flow.limit.reason
-                                      ? stepDecision.flow.limit.reason : "Limit dostawcy został wyczerpany.")
-                                    + (stepDecision.flow.limit && stepDecision.flow.limit.reset
-                                        && (!stepDecision.flow.limit.reason
-                                            || stepDecision.flow.limit.reason.indexOf(stepDecision.flow.limit.reset) < 0)
-                                        ? " · odnowienie " + stepDecision.flow.limit.reset : "")
-                                : ""
-                            textFormat: Text.PlainText
-                            color: Tide.Tokens.textPrimary
-                            font.family: Tide.Theme.uiFamily
-                            font.pixelSize: 13
-                            wrapMode: Text.Wrap
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: Boolean(stepDecision.flow && stepDecision.flow.action === "limit")
-                            spacing: 8
-                            QQC2.ComboBox {
-                                id: limitTransferPicker
-                                objectName: "cardLimitExecutor"
-                                Layout.fillWidth: true
-                                model: Logic.transferExecutors(panel.modelsStatus,
-                                    stepDecision.flow ? ((stepDecision.flow.limit || {}).provider || stepDecision.flow.provider) : "")
-                                textRole: "label"
-                                valueRole: "value"
-                                currentIndex: -1
-                                onActivated: index => panel.limitExecutor = model[index].value
-                                Accessible.name: "Wykonawca po wyczerpaniu limitu"
-                            }
-                            PillButton {
-                                objectName: "cardLimitTransfer"
-                                text: "Przenieś na…"
-                                enabled: !panel.busy && limitTransferPicker.model.some(
-                                             option => option.value === panel.limitExecutor)
-                                onClicked: {
-                                    panel.busy = true
-                                    panel.stepResolveRequested(panel.card.id,
-                                                               { choice: "transfer", executor: panel.limitExecutor })
-                                }
-                            }
-                            PillButton {
-                                objectName: "cardLimitWait"
-                                text: "Czekaj na odnowienie"
-                                outline: true
-                                enabled: !panel.busy
-                                onClicked: {
-                                    panel.busy = true
-                                    panel.stepResolveRequested(panel.card.id, { choice: "wait-limit" })
-                                }
-                            }
-                        }
-                        QQC2.TextArea {
-                            id: stepAnswerField
-                            objectName: "cardStepAnswer"
-                            Layout.fillWidth: true
-                            implicitHeight: 76
-                            visible: Boolean(stepDecision.flow && stepDecision.flow.action === "answer")
-                            text: panel.stepAnswer
-                            onTextChanged: panel.stepAnswer = text
-                            placeholderText: "Twoja odpowiedź dla wykonawcy"
-                            wrapMode: TextEdit.Wrap
-                            color: Tide.Tokens.textPrimary
-                            font.family: Tide.Theme.uiFamily
-                            font.pixelSize: 13
-                            Accessible.name: "Odpowiedź na pytanie z kroku"
-                            background: Rectangle { radius: 6; color: Tide.Tokens.backgroundPanel }
-                        }
-                        PillButton {
-                            objectName: "cardStepAnswerSend"
-                            visible: Boolean(stepDecision.flow && stepDecision.flow.action === "answer")
-                            text: "Odpowiedz i wznów w tle"
-                            enabled: !panel.busy && panel.stepAnswer.trim().length > 0
-                            onClicked: {
-                                panel.busy = true
-                                panel.stepResolveRequested(panel.card.id, { choice: "answer", answer: panel.stepAnswer.trim() })
-                            }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: Boolean(stepDecision.flow && stepDecision.flow.action === "permission")
-                            spacing: 8
-                            PillButton {
-                                objectName: "cardStepAllow"
-                                text: "Zezwól i wznów"
-                                enabled: Boolean(!panel.busy && stepDecision.flow && stepDecision.flow.canAllow === true)
-                                onClicked: {
-                                    panel.busy = true
-                                    panel.stepResolveRequested(panel.card.id, { choice: "allow" })
-                                }
-                            }
-                            PillButton {
-                                objectName: "cardStepDeny"
-                                text: "Odmów"
-                                outline: true
-                                enabled: !panel.busy
-                                onClicked: {
-                                    panel.busy = true
-                                    panel.stepResolveRequested(panel.card.id, { choice: "deny" })
-                                }
-                            }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: Boolean(stepDecision.flow && stepDecision.flow.action === "error")
-                            spacing: 8
-                            PillButton {
-                                objectName: "cardStepRetry"
-                                text: "Ponów"
-                                enabled: !panel.busy
-                                onClicked: {
-                                    panel.busy = true
-                                    panel.stepResolveRequested(panel.card.id, { choice: "retry" })
-                                }
-                            }
-                            QQC2.ComboBox {
-                                id: stepExecutorPicker
-                                visible: !stepDecision.flow || !stepDecision.flow.trackerError
-                                objectName: "cardStepExecutor"
-                                Layout.fillWidth: true
-                                model: Logic.retryExecutors(panel.modelsStatus, stepDecision.flow)
-                                textRole: "label"
-                                valueRole: "value"
-                                currentIndex: -1
-                                onActivated: index => panel.stepExecutor = model[index].value
-                                Accessible.name: "Nowy wykonawca kroku"
-                            }
-                            PillButton {
-                                objectName: "cardStepChangeExecutor"
-                                visible: !stepDecision.flow || !stepDecision.flow.trackerError
-                                text: "Zmień wykonawcę"
-                                enabled: !panel.busy && panel.stepExecutor !== ""
-                                onClicked: {
-                                    panel.busy = true
-                                    panel.stepResolveRequested(panel.card.id,
-                                                              { choice: "change-executor", executor: panel.stepExecutor })
-                                }
-                            }
-                        }
                     }
                     RowLayout {
                         Layout.fillWidth: true
@@ -1332,7 +1217,7 @@ Rectangle {
             spacing: 8
             Text {
                 Layout.fillWidth: true
-                text: "Ctrl+Enter zapisuje"
+                text: panel.descriptionOnly ? "Ctrl+Enter zapisuje opis · Esc anuluje bez zapisu" : "Ctrl+Enter zapisuje"
                 textFormat: Text.PlainText
                 color: Tide.Theme.alpha(Tide.Tokens.textMuted, 0.8)
                 font.family: Tide.Theme.uiFamily
@@ -1349,7 +1234,7 @@ Rectangle {
                 implicitHeight: 34
                 strong: true
                 enabled: !panel.busy && (panel.dirty || !panel.editing)
-                text: panel.busy ? "Zapisuję…" : panel.editing ? "Zapisz" : "Dodaj kartę"
+                text: panel.busy ? "Zapisuję…" : panel.descriptionOnly ? "Zapisz opis" : panel.editing ? "Zapisz" : "Dodaj kartę"
                 fill: Tide.Tokens.accent
                 textColor: Tide.Tokens.backgroundDesktop
                 onClicked: panel.save()

@@ -35,6 +35,7 @@ Rectangle {
         selectedTicketId = row.id || row.workId
         classPicker.currentIndex = ["lekki", "standard", "mocny", "lokalny"].indexOf(row.class || "standard")
         executorPicker.currentIndex = optionIndex(executorPicker.model, row.executor)
+        reviewerPicker.wanted = row.reviewer || ""
         reviewerPicker.currentIndex = optionIndex(reviewerPicker.model, row.reviewer)
         bodyEdit.text = row.body || ""
     }
@@ -110,16 +111,45 @@ Rectangle {
             font.pixelSize: 13
             wrapMode: Text.Wrap
         }
-        Text {
+        // Uwagi review bywają długie (K-33: 23 punkty) — mają własne przewijanie i limit wysokości, żeby lista
+        // ticketów i „Zatwierdź plan” zawsze mieściły się w oknie.
+        QQC2.ScrollView {
+            id: reviewScroll
+            objectName: "planManagerReview"
+            property bool expanded: false
             Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(reviewText.implicitHeight,
+                                             expanded ? manager.height * 0.45 : 96)
             visible: !!manager.plan && !!manager.plan.review && !!manager.plan.review.verdict
-            text: manager.plan && manager.plan.review
-                  ? "Review: " + (manager.plan.review.verdict || "") + " · " + (manager.plan.review.reviewer || "")
-                    + " · " + (manager.plan.review.findings || "") : ""
+            clip: true
+            contentWidth: availableWidth
+            Text {
+                id: reviewText
+                width: reviewScroll.availableWidth
+                text: manager.plan && manager.plan.review
+                      ? "Review: " + (manager.plan.review.verdict || "") + " · " + (manager.plan.review.reviewer || "")
+                        + " · " + Logic.reviewFindingsText(manager.plan.review.findings) : ""
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.uiFamily
+                wrapMode: Text.Wrap
+            }
+        }
+        Text {
+            objectName: "planManagerReviewToggle"
+            visible: reviewScroll.visible && reviewText.implicitHeight > 96
+            text: reviewScroll.expanded ? "Zwiń uwagi review" : "Pokaż więcej uwag review"
             textFormat: Text.PlainText
-            color: Tide.Tokens.textMuted
+            color: Tide.Tokens.sky
             font.family: Tide.Theme.uiFamily
-            wrapMode: Text.Wrap
+            font.pixelSize: 13
+            Accessible.role: Accessible.Button
+            Accessible.name: text
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: reviewScroll.expanded = !reviewScroll.expanded
+            }
         }
         RowLayout {
             Layout.fillWidth: true
@@ -268,33 +298,49 @@ Rectangle {
                     font.family: Tide.Theme.uiFamily
                     wrapMode: Text.Wrap
                 }
-                PlanSelect {
-                    id: classPicker
-                    objectName: "planManagerClass"
+                GridLayout {
                     Layout.fillWidth: true
-                    model: ["lekki", "standard", "mocny", "lokalny"]
-                    enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
-                    Accessible.name: "Klasa ticketu"
-                }
-                PlanSelect {
-                    id: executorPicker
-                    objectName: "planManagerExecutor"
-                    Layout.fillWidth: true
-                    model: Logic.transferSettingsExecutors(manager.modelsStatus)
-                    textRole: "label"
-                    valueRole: "value"
-                    enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
-                    Accessible.name: "Wykonawca ticketu"
-                }
-                PlanSelect {
-                    id: reviewerPicker
-                    objectName: "planManagerReviewer"
-                    Layout.fillWidth: true
-                    model: Logic.planReviewerExecutors(manager.modelsStatus, executorPicker.currentValue || "")
-                    textRole: "label"
-                    valueRole: "value"
-                    enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
-                    Accessible.name: "Recenzent ticketu"
+                    columns: 2
+                    columnSpacing: 12
+                    rowSpacing: 8
+                    PlanFieldLabel { text: "Klasa"; hint: "jak trudny jest ticket" }
+                    PlanSelect {
+                        id: classPicker
+                        objectName: "planManagerClass"
+                        Layout.fillWidth: true
+                        model: ["lekki", "standard", "mocny", "lokalny"]
+                        enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
+                        Accessible.name: "Klasa ticketu"
+                    }
+                    PlanFieldLabel { text: "Wykonawca"; hint: "model, który pisze kod" }
+                    PlanSelect {
+                        id: executorPicker
+                        objectName: "planManagerExecutor"
+                        Layout.fillWidth: true
+                        model: Logic.transferSettingsExecutors(manager.modelsStatus)
+                        textRole: "label"
+                        valueRole: "value"
+                        enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
+                        Accessible.name: "Wykonawca ticketu"
+                    }
+                    PlanFieldLabel { text: "Recenzent"; hint: "inny model, który sprawdza zmiany" }
+                    PlanSelect {
+                        id: reviewerPicker
+                        objectName: "planManagerReviewer"
+                        // Wybrany recenzent przeżywa przeliczenie listy po zmianie wykonawcy (K-33: lista
+                        // wracała do pierwszej pozycji i „Zapisz” po cichu zmieniał recenzenta).
+                        property string wanted: ""
+                        Layout.fillWidth: true
+                        model: Logic.planReviewerExecutors(manager.modelsStatus, executorPicker.currentValue || "")
+                        textRole: "label"
+                        valueRole: "value"
+                        enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
+                        Accessible.name: "Recenzent ticketu"
+                        onActivated: index => wanted = model[index].value
+                        onModelChanged: Qt.callLater(() => {
+                            reviewerPicker.currentIndex = manager.optionIndex(reviewerPicker.model, reviewerPicker.wanted)
+                        })
+                    }
                 }
                 QQC2.ScrollView {
                     Layout.fillWidth: true

@@ -106,6 +106,14 @@ class PlanLinkTest(Fixture):
         out = self.read({"derived": {"coordinator": "claude:1", "tickets": ["PT-2"]}}, coordinator=coordinator)
         self.assertEqual((out["plan"]["title"], out["plan"]["link"]), ("Plan koordynatora", "coordinator"))
         self.assertEqual(out["plan"]["cardTickets"], ["PT-2"])
+
+    def test_flow_card_ticket_rows_are_not_a_coordinator_scope(self):
+        # 03.11: wiersze ticketów karty z przepływem trafiały do napisu jako „[object Object]”.
+        path = write(os.path.join(self.plans, "2026-10-27-koordynator.md"), plan_text("Plan koordynatora"))
+        coordinator = {"id": "claude:1", "cwd": self.repo, "plan": {"path": path}}
+        out = self.read({"derived": {"coordinator": "claude:1", "tickets": [{"id": "PT-2", "state": "done"}]}},
+                        coordinator=coordinator)
+        self.assertEqual(out["plan"]["cardTickets"], [])
         # plan koordynatora poza repozytorium projektu i tablicą — nie pokazujemy go
         outside = write(os.path.join(self.tmp, "gdzie-indziej", "2026-10-27-x.md"), plan_text("Obcy"))
         out = self.read(coordinator={"id": "claude:2", "cwd": self.repo, "plan": {"path": outside}})

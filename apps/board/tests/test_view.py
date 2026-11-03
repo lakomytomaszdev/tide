@@ -208,18 +208,6 @@ class LogicTest(unittest.TestCase):
             self.assertEqual(got, want, project)
         self.assertEqual(self.js("launchDefaults(null).entry"), "planning")
 
-    def test_retry_executor_filters_author_reviewer_and_provider(self):
-        status = json.dumps({"executors": EXECUTORS})
-        review = "{stepKind:'review', provider:'anthropic', executor:'Opus', authorModel:'sonnet', " \
-                 "authorProvider:'anthropic', preferredProvider:'anthropic'}"
-        self.assertEqual(self.js(f"retryExecutors({status}, {review}).map(o => o.value)"), ["Haiku"])
-        author = "{stepKind:'ticket', provider:'anthropic', executor:'Sonnet', reviewerModel:'opus', " \
-                 "reviewerProvider:'anthropic', preferredProvider:'anthropic'}"
-        self.assertEqual(self.js(f"retryExecutors({status}, {author}).map(o => o.value)"), ["Haiku"])
-        mixed = "{stepKind:'ticket', provider:'anthropic', executor:'Sonnet', reviewerModel:'gpt-6.1-sol', " \
-                "reviewerProvider:'openai', preferredProvider:'mixed'}"
-        self.assertEqual(self.js(f"retryExecutors({status}, {mixed}).map(o => o.value)"), ["Haiku", "Opus"])
-
     def test_now_executors_and_flow_card_drop_targets(self):
         status = json.dumps({"executors": EXECUTORS})
         self.assertEqual(self.js(f"launchExecutors({status}).map(o => o.value)"), ["Haiku", "Sonnet", "Opus"])
@@ -389,13 +377,6 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(options[-1]["kind"], "repo")
         self.assertEqual([o["name"] for o in self.js("projectOptions(S, 'legal')")], ["Bez projektu", "legal-agents"])
 
-
-    def test_failed_planning_offers_other_planners_without_a_ticket_reviewer(self):
-        status = dict(models_status(), executors=EXECUTORS)
-        options = self.js(f"retryExecutors({json.dumps(status)}, {{stepKind: 'planning', provider: 'anthropic', executor: 'Sonnet', preferredProvider: 'anthropic'}}).map(o => o.value)")
-        self.assertIn("Opus", options)
-        self.assertNotIn("Sonnet", options)
-        self.assertNotIn("Lokalny", options)
 
 
 class DocsLogicTest(unittest.TestCase):
@@ -1314,6 +1295,18 @@ out["project"] = calls()[-1]
 FIND_PY = """
 FIND = "(function find(it, name) { if (!it) return null; if (it.objectName === name) return it; " \\
        "for (const c of it.children) { const r = find(c, name); if (r) return r } return null })"
+
+def steady(expression, ms=3000):
+    # Punkt elementu, gdy panel skończy się układać: decyzja kroku przewija panel do siebie z opóźnieniem
+    # (revealTimer w CardPanel.qml, 60 ms), więc punkt bierzemy dopiero, gdy nie zmienia się przez 150 ms.
+    last = None
+    for _ in range(max(1, ms // 150)):
+        point = at(expression)
+        if point == last:
+            return point
+        last = point
+        wait(150)
+    return last
 """
 
 
@@ -1838,108 +1831,17 @@ out["legacy"] = len(calls()) - n
 
 
 class StepDecisionPanelTest(ProbeCase):
-    def flow_card(self, action, **extra):
+    def flow_card(self, **extra):
         data = json.loads(json.dumps(self.data))
         for card in data["cards"]:
             if card["id"] == "K-6":
                 card["derived"] = {"column": "waiting", "note": "krok czeka",
-                                   "flow": {"ticket": "PT-7", "action": action, **extra}}
+                                   "flow": {"ticket": "PT-7", **extra}}
                 card["boardColumn"] = "waiting"
         return data
 
-    def test_question_is_visible_and_answer_goes_to_service(self):
-        out = self.probe(FIND_PY + """
-click(card("K-6"))
-out["visible"] = [obj("cardStepDecision").property("visible"), obj("cardStepAnswer").property("visible")]
-js("page.cardPanel.stepAnswer = 'ISO 8601'")
-out["enabled"] = obj("cardStepAnswerSend").property("enabled")
-js(FIND + "(page.cardPanel, 'cardStepAnswerSend').clicked()")
-out["call"] = calls()[-1]
-""", data=self.flow_card("answer", question="Który format daty?"))
-        self.assertEqual(out["visible"], [True, True])
-        self.assertTrue(out["enabled"])
-        self.assertEqual(out["call"][:2], ["ResolveCardStep", "K-6"])
-        self.assertEqual(json.loads(out["call"][2]), {"choice": "answer", "answer": "ISO 8601"})
-
-    def test_permission_has_exact_command_and_forbidden_cannot_be_allowed(self):
-        out = self.probe(FIND_PY + """
-click(card("K-6"))
-out["buttons"] = [obj("cardStepAllow").property("enabled"), obj("cardStepDeny").property("enabled")]
-click(at(FIND + "(page.cardPanel, 'cardStepDeny')"))
-out["call"] = calls()[-1]
-""", data=self.flow_card("permission", command="make install", canAllow=False))
-        self.assertEqual(out["buttons"], [False, True])
-        self.assertEqual(json.loads(out["call"][2]), {"choice": "deny"})
-
-    def test_error_shows_retry_and_change_executor(self):
-        out = self.probe(FIND_PY + """
-click(card("K-6"))
-out["visible"] = [obj("cardStepRetry").property("visible"), obj("cardStepChangeExecutor").property("visible")]
-js("page.cardPanel.stepExecutor = 'Haiku'")
-click(at(FIND + "(page.cardPanel, 'cardStepChangeExecutor')"))
-out["call"] = calls()[-1]
-""", data=self.flow_card("error", error="bez postępu", stalledSince="2026-10-29T01:00:00Z",
-                         provider="anthropic", executor="Sonnet", reviewerModel="opus"))
-        self.assertEqual(out["visible"], [True, True])
-        self.assertEqual(json.loads(out["call"][2]), {"choice": "change-executor", "executor": "Haiku"})
-
-    def test_tracker_error_has_retry_without_changing_executor(self):
-        out = self.probe(FIND_PY + """
-click(card("K-6"))
-out["visible"] = [obj("cardStepRetry").property("visible"), obj("cardStepExecutor").property("visible"),
-                  obj("cardStepChangeExecutor").property("visible")]
-click(at(FIND + "(page.cardPanel, 'cardStepRetry')"))
-out["call"] = calls()[-1]
-""", data=self.flow_card("error", error="YouTrack odpowiedział 400", trackerError=True))
-        self.assertEqual(out["visible"], [True, False, False])
-        self.assertEqual(out["call"][:2], ["ResolveCardStep", "K-6"])
-        self.assertEqual(json.loads(out["call"][2]), {"choice": "retry"})
-
-    def test_exhausted_limit_offers_transfer_or_wait(self):
-        data = self.flow_card("limit", limit={"provider": "anthropic", "reset": "piątek 15:00",
-                                               "reason": "Limit Claude wyczerpany"}, provider="anthropic")
-        data["models"] = dict(models_status(), executors=EXECUTORS)
-        out = self.probe(FIND_PY + """
-click(card("K-6"))
-out["label"] = obj("cardStepDecision").property("visible")
-out["text"] = obj("cardStepDecisionText").property("text")
-out["before"] = [obj("cardLimitTransfer").property("enabled"), obj("cardLimitWait").property("enabled")]
-js("page.cardPanel.limitExecutor = 'Codex standard'")
-replies.append({"ok": True, "id": "K-6", "choice": "transfer"})
-click(at(FIND + "(page.cardPanel, 'cardLimitTransfer')"))
-out["transfer"] = calls()[-1]
-out["transferNotice"] = js("page.cardPanel.notice")
-""", data=data)
-        self.assertTrue(out["label"])
-        self.assertIn("piątek 15:00", out["text"])
-        self.assertEqual(out["before"], [False, True])
-        self.assertEqual(out["transfer"][:2], ["ResolveCardStep", "K-6"])
-        self.assertEqual(json.loads(out["transfer"][2]), {"choice": "transfer", "executor": "Codex standard"})
-        self.assertEqual(out["transferNotice"], "Przekazuję krok innemu dostawcy.")
-
-        out = self.probe(FIND_PY + """
-click(card("K-6"))
-replies.append({"ok": True, "id": "K-6", "choice": "wait-limit"})
-click(at(FIND + "(page.cardPanel, 'cardLimitWait')"))
-out["call"] = calls()[-1]
-out["notice"] = js("page.cardPanel.notice")
-""", data=data)
-        self.assertEqual(json.loads(out["call"][2]), {"choice": "wait-limit"})
-        self.assertEqual(out["notice"], "Krok czeka na odnowienie limitu.")
-
-    def test_exhausted_limit_reset_appears_once_when_reason_includes_it(self):
-        data = self.flow_card("limit", limit={"provider": "anthropic", "reset": "piątek 15:00",
-                                               "reason": "Limit Claude wyczerpany do piątek 15:00"},
-                              provider="anthropic")
-        out = self.probe(FIND_PY + """
-click(card("K-6"))
-out["text"] = obj("cardStepDecisionText").property("text")
-""", data=data)
-        self.assertEqual(out["text"].count("piątek 15:00"), 1)
-        self.assertNotIn("· odnowienie", out["text"])
-
     def test_running_step_can_be_transferred_to_another_provider(self):
-        data = self.flow_card("", steps=[{"id": "step-1", "ticket": "PT-7", "result": "", "kind": "ticket",
+        data = self.flow_card(steps=[{"id": "step-1", "ticket": "PT-7", "result": "", "kind": "ticket",
                                               "executor": "Sonnet", "provider": "anthropic",
                                               "canTransfer": True, "canEnter": False}])
         data["models"] = dict(models_status(), executors=EXECUTORS)
@@ -1961,7 +1863,7 @@ if out["before"]:
                          {"choice": "transfer", "step": "step-1", "executor": "Codex standard"})
 
     def test_open_full_planning_can_be_transferred_from_console(self):
-        data = self.flow_card("", entry="planning", mode="full",
+        data = self.flow_card(entry="planning", mode="full",
                               steps=[{"id": "K-6-plan-1-0", "ticket": "", "kind": "planning",
                                       "mode": "interactive", "result": "", "executor": "Sonnet",
                                       "provider": "anthropic", "canTransfer": True, "canEnter": True}])
@@ -2085,6 +1987,71 @@ out["editCall"] = calls()[-1]
         self.assertEqual(out["selected"], "#1")
         self.assertEqual(out["editCall"][:2], ["EditCardPlan", "K-6"])
         self.assertEqual(json.loads(out["editCall"][2])["reviewer"], "Codex standard")
+
+    def test_selected_ticket_shows_its_own_reviewer_after_the_list_recalculates(self):
+        # K-33: #1 miał recenzenta Opus, a pole pokazywało pierwszą pozycję listy (Codex) po przeliczeniu.
+        data = json.loads(json.dumps(self.data))
+        real = [{"name": n, "program": p, "model": m, "provider": v, "local": v == "local"} for n, p, m, v in (
+            ("Haiku", "claude", "haiku", "anthropic"), ("Sonnet", "claude", "sonnet", "anthropic"),
+            ("Opus", "claude", "opus", "anthropic"), ("Codex lekki", "codex", "gpt-6-luna", "openai"),
+            ("Codex standard", "codex", "gpt-6.1-sol", "openai"), ("Codex mocny", "codex", "gpt-6.1-sol", "openai"),
+            ("Codex Astra", "codex", "gpt-6-astra", "openai"), ("Lokalny", "codex", "qwen3-coder:30b", "local"))]
+        data["models"] = dict(models_status(), executors={"list": real})
+        rows = [{"workId": "#1", "title": "A", "class": "standard", "executor": "Sonnet", "reviewer": "Opus",
+                 "blockers": [], "editable": True, "body": "# A", "cardPath": "/b/1.md"},
+                {"workId": "#2", "title": "B", "class": "mocny", "executor": "Opus", "reviewer": "Codex mocny",
+                 "blockers": [], "editable": True, "body": "# B", "cardPath": "/b/2.md"}]
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "planner": "Opus", "waves": [["#1", "#2"]], "rows": rows}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+wait(120)
+out["first"] = [obj("planManagerExecutor").property("currentValue"), obj("planManagerReviewer").property("currentValue")]
+js(FIND + "(page, 'planManager').selectTicket(" + FIND + "(page, 'planManager').rows[1])")
+wait(120)
+out["second"] = [obj("planManagerExecutor").property("currentValue"), obj("planManagerReviewer").property("currentValue")]
+js("(function(){ const m = " + FIND + "(page, 'planManager'); m.modelsStatus = JSON.parse(JSON.stringify(m.modelsStatus)) })()")
+wait(120)
+out["refreshed"] = [obj("planManagerExecutor").property("currentValue"), obj("planManagerReviewer").property("currentValue")]
+""", data=data)
+        self.assertEqual(out["first"], ["Sonnet", "Opus"])
+        self.assertEqual(out["second"], ["Opus", "Codex mocny"])
+        self.assertEqual(out["refreshed"], ["Opus", "Codex mocny"], "odświeżenie stanu modeli nie zmienia wyboru")
+
+    def test_long_review_findings_scroll_and_keep_approval_on_screen(self):
+        # K-33: 23 punkty uwag review zepchnęły listę ticketów i „Zatwierdź plan” poza okno bez przewijania.
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        findings = "\n".join(f"{n}. Uwaga numer {n}: " + "dłuższe uzasadnienie zmiany w planie " * 6
+                             for n in range(1, 24))
+        rows = [{"workId": f"#{n}", "title": f"Ticket {n}", "class": "standard", "executor": "Sonnet",
+                 "reviewer": "Opus", "blockers": [], "editable": True, "body": "# T", "cardPath": f"/b/{n}.md"}
+                for n in range(1, 16)]
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "planner": "Opus", "waves": [[r["workId"] for r in rows]], "rows": rows,
+                    "review": {"verdict": "REQUEST_CHANGES", "reviewer": "Sonnet", "findings": findings}}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+wait(80)
+out["managerHeight"] = obj("planManager").property("height")
+out["approveBottom"] = js("(function(){ const m = " + FIND + "(page, 'planManager'); const b = " + FIND +
+                         "(page, 'planManagerApprove'); return b.mapToItem(m, 0, b.height).y })()")
+review = obj("planManagerReview")
+out["reviewHeight"] = review.property("height") if review else None
+toggle = obj("planManagerReviewToggle")
+out["toggle"] = toggle.property("visible") if toggle else None
+""", data=data)
+        self.assertLessEqual(out["approveBottom"], out["managerHeight"])
+        self.assertLessEqual(out["reviewHeight"], 100)
+        self.assertTrue(out["toggle"])
 
     def test_blocked_plan_shows_assignments_and_review_choice(self):
         data = json.loads(json.dumps(self.data))

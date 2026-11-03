@@ -46,7 +46,7 @@ class ReviewFlowTest(FlowInProcess):
         self.assertEqual((reply["ok"], reply["error"]), (False, "bad-reviewer"), reply)
         self.assertEqual(self.events(card), [])
 
-    def test_catalog_change_before_review_cannot_replace_reviewer_with_authors_model(self):
+    def test_catalog_change_before_review_is_noted_and_does_not_stop_the_card(self):
         from tide_daemon.models.executors import Catalog, default_catalog
 
         original = default_catalog()
@@ -62,10 +62,10 @@ class ReviewFlowTest(FlowInProcess):
         self.flow.engine.catalog = catalog
         card = self.card()
         self.assertTrue(self.start(card, reviewer="Opus")["ok"])
-        shown = self.wait_column(card, "waiting")
-        self.assertIn("katalog zmienił recenzenta", shown["derived"]["note"])
-        self.assertEqual([s["kind"] for s in self.of(card, "step.started")], ["ticket"])
-        self.assertEqual(self.results(card, "merge"), [])
+        # 03.11 (decyzja użytkownika): niezależny recenzent to rekomendacja, nie blokada — review rusza z notką.
+        self.wait_column(card, "review", timeout=30)
+        self.assertEqual(len(self.of(card, "review.reviewer-note")), 1)
+        self.assertIn("review", [s["kind"] for s in self.of(card, "step.started")])
 
     def test_ticket_ref_change_after_approval_cannot_merge_unreviewed_commit(self):
         card = self.card()
@@ -151,7 +151,8 @@ class ReviewFlowTest(FlowInProcess):
         shown = self.wait_column(card, "waiting", timeout=50)
         self.assertIn("po 3 rundach review", shown["derived"]["note"])
         self.assertTrue(shown["derived"]["flow"]["reviewQuestion"])
-        self.assertIn("Ponowić poprawki", shown["derived"]["question"])
+        self.assertIn("Ponów poprawki", shown["derived"]["question"])
+        self.assertIn("po 3 rundach review zostały uwagi", shown["derived"]["question"])
         self.assertEqual(len(self.of(card, "review.question")), 1)
         verdicts = self.of(card, "review.verdict")
         self.assertEqual([v["verdict"] for v in verdicts], ["REQUEST_CHANGES"] * 3)
@@ -168,6 +169,22 @@ class ReviewFlowTest(FlowInProcess):
         self.assertEqual([v["round"] for v in self.of(card, "review.verdict")], [1, 2, 3, 4])
         self.assertEqual([d["choice"] for d in self.of(card, "review.decision")], ["retry"])
         self.assertEqual(len(self.results(card, "merge")), 1)
+
+    def test_accept_after_three_rounds_merges_the_last_reviewed_commit(self):
+        # 03.11, K-33/PT-108: uwagi dotyczyły testów niewykonalnych w piaskownicy — użytkownik scala mimo uwag.
+        card = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 4")
+        self.assertTrue(self.start(card)["ok"])
+        self.wait_column(card, "waiting", timeout=50)
+        reviews = len([s for s in self.of(card, "step.started") if s["kind"] in ("fix", "review")])
+        replies = []
+        self.board.resolve_card_review(card, "accept", replies.append)
+        self.assertTrue(wait_until(lambda: replies, timeout=10))
+        self.assertTrue(json.loads(replies[0])["ok"])
+        self.assertTrue(wait_until(lambda: self.results(card, "merge"), timeout=30), self.events(card))
+        self.assertTrue(self.results(card, "merge")[0]["ok"])
+        self.assertEqual([d["choice"] for d in self.of(card, "review.decision")], ["accept"])
+        self.assertEqual(len([s for s in self.of(card, "step.started") if s["kind"] in ("fix", "review")]), reviews)
+        self.assertEqual(self.of(card, "ticket.rejected"), [])
 
     def test_reject_after_three_rounds_records_decision_without_merging(self):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 4")
