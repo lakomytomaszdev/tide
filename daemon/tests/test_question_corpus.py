@@ -422,6 +422,28 @@ class ReviewTest(unittest.TestCase):
                        "wiersz dpt-11-testy.fix-4.step/out/note.md", "id asst_sDfBnu0kDkEhKAFGftGCMiFi"):
             self.assertNotEqual(qc.privacy_problems(qc.redact("Treść. " + secret)), [], secret)
 
+    def test_drop_flagged_skips_messages_with_private_data_and_reports_ids_only(self):
+        data = candidates(20, 30)
+        data["items"][0]["text"] += "\nrepo infracore"
+        data["items"][1]["text"] += "\nkrok dpt-11.fix-4.step"
+        md = qc.render_review(data).replace("- przejrzane: nie", "- przejrzane: tak")
+        _, errors = qc.apply_review(md)
+        self.assertEqual(len(errors), 2)
+        dropped = []
+        records, errors = qc.apply_review(md, drop_flagged=True, dropped=dropped)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(records), 48)
+        self.assertEqual(dropped, [data["items"][0]["id"], data["items"][1]["id"]])
+        self.assertTrue(all(qc.privacy_problems(r["text"]) == [] for r in records))
+
+    def test_drop_flagged_still_enforces_class_minimums(self):
+        data = candidates(16, 30)
+        for item in data["items"][:3]:
+            item["text"] += "\nDPT-5"
+        md = qc.render_review(data).replace("- przejrzane: nie", "- przejrzane: tak")
+        records, errors = qc.apply_review(md, drop_flagged=True)
+        self.assertTrue(any("czeka 13" in e and "po 15" in e for e in errors))
+
     def test_result_file_names_alone_are_not_client_content(self):
         text = "Zapisałem `out/note.md` i `out/result.json` z wynikiem `done`."
         self.assertEqual(qc.privacy_problems(text), [])

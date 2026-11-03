@@ -492,11 +492,13 @@ def redact(text: str) -> str:
     return text
 
 
-def apply_review(markdown: str, redact_text: bool = False):
+def apply_review(markdown: str, redact_text: bool = False, drop_flagged: bool = False, dropped: list | None = None):
     """(rekordy zestawu, błędy). Rekordy: {id, text, waits, source}.
 
-    redact_text — przed kontrolą prywatności zastępuje ścieżki i nazwę firmy (`redact`). Plik musi być oznaczony
-    „- przejrzane: tak” przez użytkownika; innego obejścia nie ma."""
+    redact_text  — przed kontrolą prywatności zastępuje ścieżki i nazwę firmy (`redact`),
+    drop_flagged — wiadomości, w których po tym nadal jest cokolwiek z PRIVATE, pomija (nigdy ich nie zachowuje);
+                   ich id trafiają do `dropped`, a progi zestawu liczą się po pominięciu.
+    Plik musi być oznaczony „- przejrzane: tak” przez użytkownika; innego obejścia nie ma."""
     reviewed, items = parse_review(markdown)
     errors = []
     if not reviewed:
@@ -507,6 +509,10 @@ def apply_review(markdown: str, redact_text: bool = False):
             continue
         if redact_text:
             item["text"] = redact(item["text"])
+        if drop_flagged and privacy_problems(item["text"]):
+            if dropped is not None:
+                dropped.append(item["id"])
+            continue
         if item["waits"] is None:
             errors.append(f"{item['id']}: pole „czeka” musi mieć wartość tak albo nie")
         for number, kind in privacy_problems(item["text"]):
@@ -525,7 +531,11 @@ def apply_review(markdown: str, redact_text: bool = False):
 def cmd_review(args) -> int:
     if args.apply:
         with open(args.apply, encoding="utf-8") as fh:
-            records, errors = apply_review(fh.read(), args.redact_paths)
+            dropped = []
+            records, errors = apply_review(fh.read(), args.redact_paths, args.drop_flagged, dropped)
+        if dropped:
+            print(f"Pominięto {len(dropped)} wiadomości z danymi prywatnymi (--drop-flagged): {', '.join(dropped)}",
+                  file=sys.stderr)
         if errors:
             print("Zestaw nie został zapisany:", file=sys.stderr)
             for error in errors:
@@ -640,8 +650,10 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--apply", metavar="REVIEW.md")
     r.add_argument("--redact-paths", action="store_true",
                    help="z --apply: ścieżki → <ścieżka>, nazwa firmy (firma) → <firma>")
+    r.add_argument("--drop-flagged", action="store_true",
+                   help="z --apply: pomiń wiadomości, w których po zastąpieniach nadal są dane prywatne (wypisuje tylko id)")
     r.add_argument("--out", required=True)
-    b = sub.add_parser("bench", help="trafność reguł i modelu lokalnego na zestawie")
+    b =sub.add_parser("bench", help="trafność reguł i modelu lokalnego na zestawie")
     b.add_argument("corpus", nargs="?", default=DEFAULT_CORPUS)
     b.add_argument("--rules-only", action="store_true")
     b.add_argument("--json", action="store_true")
