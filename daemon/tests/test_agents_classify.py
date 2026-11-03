@@ -455,7 +455,11 @@ class ClassifyDBusTest(unittest.TestCase):
         self.bus.spawn_daemon("--claude-dir", os.path.join(self.tmp, "claude"), "--codex-dir", self.empty,
                               "--workspace", self.empty, "--no-processes", "--no-krunner", "--no-idle", "--no-limits",
                               "--now", self.NOW_TEXT, extra_env={"TIDE_MODELS_CONFIG": models})
-        self.assertTrue(wait_until(lambda: len(server.requests) >= 1, timeout=10), "ocena ruszyła")
+        def judged():
+            return [r for r in server.requests if r["path"] == "/api/chat" and r["body"]
+                    and r["body"]["messages"][-1]["content"].startswith(classify.PROMPT)]
+
+        self.assertTrue(wait_until(lambda: len(judged()) >= 1, timeout=10), "ocena ruszyła")
         started = time.monotonic()
         mid = self.sessions()      # model jeszcze odpowiada (opóźnienie atrapy) — odpowiedź D-Bus nie czeka
         self.assertLess(time.monotonic() - started, 1.0)
@@ -464,7 +468,9 @@ class ClassifyDBusTest(unittest.TestCase):
         self.assertTrue(final, "po wyniku modelu stan waiting")
         self.assertEqual((final[0]["reason"], final[0]["waitingText"]),
                          ("reply", "Krok 1: uruchom ten select i wklej mi wynik"))
-        self.assertEqual(len(server.requests), 1, "jedna ocena na wiadomość")
+        # Atrapa widzi też zapytania innych obszarów usługi (np. opisy kart) — liczą się tylko oceny.
+        self.assertEqual(len(judged()), 1, f"jedna ocena na wiadomość; zapytania: "
+                                           f"{[(r['method'], r['path'], str(r['body'])[:80]) for r in server.requests]}")
         saved = os.path.join(self.bus.tmp, "state", "tide", "classify.json")
         self.assertTrue(wait_until(lambda: os.path.exists(saved), timeout=5))
         self.assertTrue(json.load(open(saved, encoding="utf-8"))["results"]["claude:uuid-dbus-1"]["waits"])
