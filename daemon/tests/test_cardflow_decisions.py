@@ -522,3 +522,16 @@ class ResumeContextOptionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RepeatedErrorTest(unittest.TestCase):
+    def test_same_reason_twice_does_not_recommend_plain_retry(self):
+        # 03.11, K-16/LEGAL-67: ten sam powód w kolejnych próbach, a okno dalej polecało „Ponów krok”.
+        from tide_daemon.cardflow.decisions import build_decisions
+        from tide_daemon.cardflow.state import fold
+        events = (Events().step("s0", ticket="PT-1", kind="fix", result="error", reason="B1 nadal otwarte: brak wyniku osobnego ticketu T0/T1/R/V do zamknięcia AC3")
+                  .step("s", ticket="PT-1", kind="fix", attempt=1, parent="s0", result="error", reason="B1 nadal otwarte: brak wyniku osobnego ticketu T0/T1/R/V do zamknięcia AC3"))
+        made = build_decisions(fold(events.items))[0]
+        self.assertFalse(any(o["recommended"] for o in made["options"] if o["choice"] == "retry"))
+        self.assertIn("Ten sam powód", made["why"])
+        self.assertEqual(made["reply"]["label"], "Ponów z instrukcją")

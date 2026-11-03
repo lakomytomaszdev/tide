@@ -366,11 +366,20 @@ def _error(st, name, step, done) -> dict:
         why = ("Nie wiadomo, czyja to wina: dziennik kroku tego nie rozstrzyga. Zmiany kroku zostają w jego worktree; "
                "jeśli podejrzewasz Tide, opisz problem i ponów.") if label else ""
     other_recommended = fault == "model" or (fault == "provider" and cause == "auth")
+    # Ten sam powód co w poprzedniej próbie (K-16/LEGAL-67, 03.11: to samo menu po raz kolejny) — samo ponowienie nic
+    # nie zmieni, więc okno go nie poleca i mówi, co zadziała.
+    parent = st.finished.get(step.get("parentStep") or "") or {}
+    # Tylko opisowe powody wykonawcy (krótkie kody jak `exit` powtarzają się naturalnie).
+    repeated = len(reason) > 40 and fault in ("unknown", "model") and \
+        " ".join(str(parent.get("reason") or "").split())[:120] == " ".join(reason.split())[:120]
+    if repeated:
+        why = ("Ten sam powód co w poprzedniej próbie — samo ponowienie nic nie zmieni. Napisz wykonawcy, co ma zrobić "
+               "inaczej („Ponów z instrukcją”), albo zmień wykonawcę.")
     options = [
         _option("retry", "Ponów krok",
                 "Ten sam wykonawca spróbuje jeszcze raz od zmian zapisanych w worktree kroku." if fault == "tide" else
                 "Ten sam wykonawca zacznie od zmian zapisanych w worktree kroku.",
-                RESOLVE_STEP, {"choice": "retry", "step": name}, recommended=not other_recommended),
+                RESOLVE_STEP, {"choice": "retry", "step": name}, recommended=not other_recommended and not repeated),
         _option("change-executor", "Ponów innym wykonawcą…",
                 "Pomoże tylko wtedy, gdy przyczyną był model — tu nie był." if fault == "tide" else
                 "Wybierz model; nowy wykonawca zacznie od zmian zapisanych w worktree kroku.",
