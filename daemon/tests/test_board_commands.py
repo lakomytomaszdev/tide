@@ -17,11 +17,11 @@ class CommandRulesTest(unittest.TestCase):
         self.assertFalse(commands.is_allowed("git status && make install", list(commands.DEFAULT_ALLOWED)))
 
     def test_allowing_one_command_does_not_allow_whole_program_or_chain(self):
-        allowed = ["git log --oneline"]
-        self.assertTrue(commands.is_allowed("git log --oneline", allowed))
-        self.assertFalse(commands.is_allowed("git log", allowed))
-        self.assertFalse(commands.is_allowed("git status", allowed))
-        self.assertFalse(commands.is_allowed("git log --oneline && make install", allowed))
+        allowed = ["git fetch origin"]
+        self.assertTrue(commands.is_allowed("git fetch origin", allowed))
+        self.assertFalse(commands.is_allowed("git fetch", allowed))
+        self.assertFalse(commands.is_allowed("git push origin", allowed))
+        self.assertFalse(commands.is_allowed("git fetch origin && make install", allowed))
         self.assertFalse(commands.is_allowed("git status; rm -rf x", list(commands.DEFAULT_ALLOWED)))
         self.assertTrue(commands.is_allowed("git status", list(commands.DEFAULT_ALLOWED)))
         self.assertTrue(commands.is_allowed("git log --oneline", list(commands.DEFAULT_ALLOWED)))
@@ -51,6 +51,17 @@ class CommandRulesTest(unittest.TestCase):
                     "LC_ALL=$(id) make test"):
             self.assertFalse(commands.single_command(bad), bad)
             self.assertTrue(commands.is_forbidden(bad, []), bad)
+
+    def test_read_only_tools_are_allowed_in_every_project_but_denial_wins(self):
+        # K-35/K-15: kroki stawały na `cd … && ls … | head`, bo `cd` i `head` nie były na liście projektu.
+        allowed, denied = commands.claude_tools([], ["make install"])
+        for rule in ("Bash(cd *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)", "Bash(git log *)"):
+            self.assertIn(rule, allowed)
+        self.assertIn("Bash(make install)", denied)
+        self.assertNotIn("Bash(make *)", allowed)
+        self.assertTrue(commands.is_allowed("head -80 plik.py", []))
+        self.assertFalse(commands.is_allowed("make install", []))
+        self.assertTrue(commands.is_forbidden("make install", ["make install"]))
 
     def test_claude_rules_keep_exact_grant(self):
         allowed, denied = commands.claude_tools(["git status *", "git fetch origin"], ["make install"])

@@ -80,6 +80,8 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
         detail = f"Użytkownik zezwolił na dokładne polecenie: {command}"
     elif choice == "deny":
         detail = f"Użytkownik odmówił zgody na polecenie: {command}. Kontynuuj bez niego."
+        if answer:
+            detail = f"Polecenie nie zostało uruchomione: {command}\n{answer}"
     elif choice == "change-executor":
         detail = "Użytkownik wybrał innego wykonawcę. Zachowaj zmiany z poprzednich prób w tym samym worktree."
     elif choice == "transfer":

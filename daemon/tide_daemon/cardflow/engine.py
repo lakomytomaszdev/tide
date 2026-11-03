@@ -66,6 +66,12 @@ IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check", "planPath", "mode")
 
 
+
+AUTO_DENY_NOTE = ("Tide nie może zezwolić na takie polecenie (łańcuch z &&, ;, |, przypisanie zmiennej, podpowłoka "
+                  "albo polecenie zabronione). Uruchamiaj polecenia pojedynczo, bez łączenia i zmiennych; do czytania "
+                  "plików używaj narzędzia Read. Jeśli pojedyncze polecenie spoza listy jest naprawdę potrzebne, "
+                  "zapisz wynik denied z tym jednym poleceniem.")
+
 class FlowDeferred(Exception):
     """Krok czeka na wolne miejsce; nie jest to błąd karty."""
 
@@ -2879,6 +2885,8 @@ class FlowEngine(PlanEditing):
                             canAllow=data.get("canAllow", True), stalledSince=data.get("stalledSince") or "",
                             notes=[n for n in data.get("notes") or [] if n in kept], kept=kept,
                             exit=exit_code, snapshotDir=snapshot_dir, **extra)
+        if data.get("result") == "denied" and not data.get("canAllow", True):
+            self._auto_deny(card, name, step, data.get("command") or "")
         if merged_tip:
             self.journal.append(card, "result", action="merge", key=step.get("ticket") or "",
                                 ok=True, commit=merged_tip, resolved=True)
@@ -3087,6 +3095,22 @@ class FlowEngine(PlanEditing):
         except FlowGitError as exc:
             raise FlowError("diff", str(exc)) from None
         return {"ok": True, "id": card, "main": main, "branch": info["cardBranch"], "diff": diff}
+
+    AUTO_DENY_LIMIT = 3
+
+    def _auto_deny(self, card, name, step, command):
+        """Na polecenie, na które nie da się zezwolić (łańcuch, przypisanie zmiennej, zabronione), użytkownik i tak
+        może tylko odmówić — Tide robi to sam i wznawia krok z prośbą o pojedyncze polecenia (K-33/K-35/K-15:
+        karty stały w „Czeka na mnie” z wyszarzonym „Zezwól”). Po AUTO_DENY_LIMIT odmowach w tym samym tickecie
+        (albo kroku planu) decyzja wraca do użytkownika, żeby nie kręcić się w kółko."""
+        ticket = step.get("ticket") or ""
+        kind = step.get("kind") or ""
+        used = sum(1 for e in self.journal.read(card) if e.get("type") == "step.decision" and e.get("auto")
+                   and (e.get("ticket") or "") == ticket and (ticket or e.get("kind") == kind))
+        if used >= self.AUTO_DENY_LIMIT:
+            return
+        self.journal.append(card, "step.decision", step=name, ticket=ticket, kind=kind, choice="deny",
+                            answer=AUTO_DENY_NOTE, command=command, executor="", auto=True)
 
     def merge_card_to_main(self, card_id: str) -> dict:
         """Jawna akcja użytkownika po domknięciu; nigdy nie wywoływana przez tick."""

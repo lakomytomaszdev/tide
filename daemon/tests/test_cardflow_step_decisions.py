@@ -89,10 +89,16 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(changed["ok"], changed)
         card_id = self.card(description="Test.\n\nATRAPA: zgoda-zabroniona")
         self.assertTrue(self.start(card_id)["ok"])
+        # K-35: na polecenie, na które nie da się zezwolić, Tide sam odmawia i wznawia krok z prośbą o pojedyncze
+        # polecenia. Atrapa uparcie powtarza prośbę, więc po limicie automatycznych odmów decyzja wraca do użytkownika.
         card = self.wait_column(card_id, "waiting")
         self.assertFalse(card["derived"]["flow"]["canAllow"])
-        refused = self.decide(card_id, choice="allow")
-        self.assertEqual(refused["error"], "forbidden-command")
+        auto = [d for d in self.of(card_id, "step.decision") if d.get("auto")]
+        self.assertEqual([(d["choice"], d["auto"]) for d in auto], [("deny", True)] * 3)
+        resumed = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][1]
+        with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            self.assertIn("Uruchamiaj polecenia pojedynczo", json.load(fh)["prompt"])
+        self.assertEqual(self.decide(card_id, choice="allow")["error"], "forbidden-command")
         self.assertTrue(self.decide(card_id, choice="deny")["ok"])
         self.wait_column(card_id, "review")
         self.assertNotIn("make install", self.store.load().projects["proj"].allowed_commands)
@@ -106,6 +112,7 @@ class StepDecisionTest(FlowInProcess):
                 self.assertTrue(self.start(card_id)["ok"])
                 card = self.wait_column(card_id, "waiting")
                 self.assertFalse(card["derived"]["flow"]["canAllow"])
+                self.assertTrue(self.of(card_id, "step.decision")[0]["auto"])
                 self.assertEqual(self.decide(card_id, choice="allow")["error"], "forbidden-command")
                 self.assertTrue(self.decide(card_id, choice="deny")["ok"])
                 self.wait_column(card_id, "review")
@@ -128,6 +135,7 @@ class StepDecisionTest(FlowInProcess):
         command = "git fetch origin " + "x" * 300
         self.assertEqual(card["derived"]["flow"]["command"], command)
         self.assertFalse(card["derived"]["flow"]["canAllow"])
+        self.assertEqual(self.of(card_id, "step.decision")[0]["command"], command)
         self.assertEqual(self.decide(card_id, choice="allow")["error"], "command-too-long")
         self.assertTrue(self.decide(card_id, choice="deny")["ok"])
         self.wait_column(card_id, "review")

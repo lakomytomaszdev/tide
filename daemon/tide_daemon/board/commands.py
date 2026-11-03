@@ -12,6 +12,14 @@ DEFAULT_ALLOWED = ("git status *", "git diff *", "git log *", "git show *", "git
                    "python3 -m unittest *", "python3 -m pytest *", "pytest *", "make test", "make lint",
                    "npm test", "npm run build", "dotnet test *", "dotnet build *", "go test *", "cargo test *")
 TIDE_DENIED = ("make install",)
+# Polecenia tylko do czytania, dozwolone w każdym projekcie niezależnie od jego listy: krok i tak działa
+# w piaskownicy (bez sieci, bez katalogu domowego), a bez nich agenci stawali na `cd … && ls … | head`.
+# Zakazy projektu mają pierwszeństwo (Claude CLI stosuje reguły deny przed allow).
+ALWAYS_ALLOWED = ("cd *", "pwd", "ls *", "cat *", "head *", "tail *", "wc *", "sort *", "uniq *", "cut *",
+                  "tr *", "nl *", "diff *", "cmp *", "stat *", "file *", "tree *", "du *", "realpath *",
+                  "basename *", "dirname *", "which *", "echo *", "printf *", "true", "rg *", "grep *",
+                  "git status *", "git diff *", "git log *", "git show *", "git branch *", "git rev-parse *",
+                  "git ls-files *", "git merge-base *", "git blame *")
 MAX_COMMANDS = 100
 MAX_COMMAND = 300
 
@@ -110,7 +118,7 @@ def is_allowed(command: str, allowed: list[str]) -> bool:
     argv = _argv(command)
     if argv is None:
         return False
-    for rule in allowed:
+    for rule in (*ALWAYS_ALLOWED, *allowed):
         rule_argv = _argv(rule)
         if rule_argv is None:
             continue
@@ -124,7 +132,7 @@ def is_allowed(command: str, allowed: list[str]) -> bool:
 def claude_tools(allowed: list[str], denied: list[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Wzorce Bash dla Claude CLI; dokładna zgoda nie staje się zgodą na cały program."""
     grants = []
-    for rule in allowed:
+    for rule in dict.fromkeys((*ALWAYS_ALLOWED, *allowed)):
         if rule.endswith(" *"):
             grants.extend((f"Bash({rule[:-2]})", f"Bash({rule})"))
         else:
