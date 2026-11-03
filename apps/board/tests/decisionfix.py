@@ -69,6 +69,33 @@ def without_options(events: list[dict]) -> list[dict]:
     return [{k: v for k, v in e.items() if k != "options"} for e in events]
 
 
+def journal_b() -> list[dict]:
+    """Scenariusz B makiety (PT-125): review planu (Haiku) dwa razy bez wyniku — piaskownica odmówiła zapisu pliku
+    wyniku, Tide ponowił krok raz sam. `fault` i przyczyna jak w zakończeniu kroku liczonym z dziennika kroku."""
+    items = []
+
+    def add(event_type, ts, **data):
+        items.append({"v": 1, "seq": len(items) + 1, "ts": f"2026-11-03T{ts}+01:00", "card": CARD,
+                      "type": event_type, **data})
+
+    add("card.started", "14:00:00", entry="plan", executor="Opus", program="claude", provider="anthropic")
+    add("plan.proposed", "14:58:00", planner="Opus",
+        rows=[{"workId": f"#{n}", "title": f"Ticket {n}", "blockers": []} for n in range(1, 10)])
+    for attempt, (start, end) in enumerate((("23:00:40", "23:01:16"), ("23:01:16", "23:02:00"))):
+        name = f"{CARD}-plan-{attempt + 1}"
+        add("step.started", start, step=name, ticket="", kind="plan-review", executor="Haiku", provider="anthropic",
+            model="haiku", attempt=attempt, parentStep=f"{CARD}-plan-1" if attempt else "",
+            stepDir=f"/wt/{name}.step", worktree="/wt/k-8", branch="card/k-8")
+        add("step.finished", end, step=name, ticket="", result="error", reason="no-result", fault="tide",
+            faultCause="write-denied")
+    return items
+
+
+def scenario_b(data: dict) -> dict:
+    """Kopia danych podglądu z decyzją scenariusza B w karcie K-8 (decyzja z `build_decisions` usługi)."""
+    return scenario_f(data, decisions(journal_b()))
+
+
 def scenario_f(data: dict, items: list[dict] | None = None) -> dict:
     """Kopia danych podglądu z decyzjami scenariusza F w karcie K-8 (albo z podanymi `items`)."""
     data = json.loads(json.dumps(data))

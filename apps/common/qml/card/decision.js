@@ -19,7 +19,10 @@ var KIND_LABELS = {
     "plan-reviewer": "Review planu czeka",
     "tracker": "Błąd YouTracka"
 }
-var FAULT_LABELS = { "tide": "Błąd Tide", "provider": "Błąd dostawcy", "tracker": "Błąd YouTracka" }
+var FAULT_LABELS = {
+    "tide": "Błąd Tide", "provider": "Błąd dostawcy", "model": "Błąd wykonawcy", "user": "Przerwane",
+    "unknown": "Błąd kroku", "tracker": "Błąd YouTracka"
+}
 
 // Etykiety znanych pól `technical{}` w zwiniętych szczegółach; pozostałe klucze idą pod własną nazwą.
 var TECH_LABELS = {
@@ -33,7 +36,30 @@ var TECH_LABELS = {
     "wipError": "Błąd WIP", "planner": "Planujący", "reviewer": "Recenzent", "verdict": "Werdykt",
     "findings": "Uwagi recenzenta", "tickets": "Tickety", "errors": "Błędy formatu", "round": "Runda",
     "blockers": "Blokujące", "majors": "Ważne", "nits": "Drobne", "waitReason": "Powód czekania",
-    "difference": "Różnica planu", "action": "Operacja", "key": "Klucz", "error": "Błąd"
+    "difference": "Różnica planu", "action": "Operacja", "key": "Klucz", "error": "Błąd",
+    "fault": "Czyja wina (kod)", "faultCause": "Przyczyna (kod)", "faultLabel": "Czyja wina",
+    "signature": "Podpis błędu"
+}
+
+// Podpis pola własnej odpowiedzi: z usługi (`reply.label`, np. „Opisz problem i ponów”) albo „Inna odpowiedź…”.
+function replyLabel(decision) {
+    var reply = decision && decision.reply
+    return reply && reply.label ? String(reply.label) : "Inna odpowiedź…"
+}
+
+// Metoda podglądu przed zapisem odpowiedzi (`reply.preview`, PT-125); pusty napis — odpowiedź idzie od razu.
+function previewMethod(decision) {
+    var reply = decision && decision.reply
+    return reply && reply.preview ? String(reply.preview) : ""
+}
+
+// Zdanie nad podglądem: nowa karta w Backlogu projektu albo wystąpienie dopisane do otwartej karty.
+function previewWhere(preview) {
+    if (!preview) return ""
+    var project = preview.project || "plasma-tide"
+    if (preview.action === "append" && preview.card)
+        return "Ten sam błąd jest już w otwartej karcie " + preview.card + " (" + project + ") — dopiszę to wystąpienie:"
+    return "Nowa karta w Backlogu " + project + ":"
 }
 
 function kindLabel(decision) {

@@ -101,6 +101,8 @@ Item {
         onAbandonStepRequested: (tag, id, step) => view.backend.abandonStep(tag, id, step)
         onReviewResolveRequested: (tag, id, choice) => view.backend.resolveCardReview(tag, id, choice)
         onStepResolveRequested: (tag, id, request) => view.backend.resolveCardStep(tag, id, request)
+        onFaultPreviewRequested: (tag, id, request) => view.backend.previewStepFault(tag, id, request)
+        onFaultReportRequested: (tag, id, request) => view.backend.reportStepFault(tag, id, request)
         onFlowSettingsSaveRequested: (tag, request) => view.backend.setCardFlowSettings(tag, request)
         onFlowSettingsRefreshRequested: view.backend.refreshCardFlowSettings()
         onPauseRequested: (tag, id, paused) => view.backend.setCardPaused(tag, id, paused)

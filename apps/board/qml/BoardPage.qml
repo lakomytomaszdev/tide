@@ -86,6 +86,8 @@ Rectangle {
     signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
     signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
     signal stepResolveRequested(string tag, string cardId, string request) // /Board ResolveCardStep
+    signal faultPreviewRequested(string tag, string cardId, string request) // /Board PreviewStepFault (PT-125)
+    signal faultReportRequested(string tag, string cardId, string request)  // /Board ReportStepFault (PT-125)
     signal flowSettingsSaveRequested(string tag, string request) // /Board SetCardFlowSettings
     signal flowSettingsRefreshRequested() // /Board GetCardFlowSettings
     signal pauseRequested(string tag, string cardId, bool paused)
@@ -211,14 +213,36 @@ Rectangle {
         else if (method === "ApproveCardPlan") planApproveRequested(tag, cardId)
         else if (method === "EditCardPlan") planEditRequested(tag, cardId, JSON.stringify(params))
         else if (method === "EnterStep") enterStepRequested(tag, cardId, params.step || "")
+        else if (method === "ReportStepFault") faultReportRequested(tag, cardId, JSON.stringify(params))
         else handleReply(tag, { ok: false, error: "unknown-method", message: "Tablica nie zna metody " + method + "." })
     }
 
-    function handleDecisionReply(tag, error) {
+    // Podgląd karty z błędem przed zapisem (PT-125): odpowiedź usługi wraca do okna decyzji.
+    function previewFault(cardId, decisionId, method, params) {
+        const tag = nextTag("fault-preview:" + cardId)
+        const tags = Object.assign({}, decisionTags)
+        tags[tag] = [cardId, decisionId]
+        decisionTags = tags
+        if (method === "PreviewStepFault") faultPreviewRequested(tag, cardId, JSON.stringify(params))
+        else handleReply(tag, { ok: false, error: "unknown-method", message: "Tablica nie zna metody " + method + "." })
+    }
+
+    function handleFaultPreviewReply(tag, reply) {
         const sent = decisionTags[tag]
         const tags = Object.assign({}, decisionTags)
         delete tags[tag]
         decisionTags = tags
+        if (sent && sent[0] === decisionCardId) decisionDialog.showPreview(sent[1], reply)
+    }
+
+    function handleDecisionReply(tag, error, reply) {
+        const sent = decisionTags[tag]
+        const tags = Object.assign({}, decisionTags)
+        delete tags[tag]
+        decisionTags = tags
+        if (sent && !error && reply && reply.reported)
+            showToast((reply.action === "append" ? "Wystąpienie dopisane do " : "Karta z błędem ") + reply.reported
+                      + " w Backlogu " + (reply.project || "plasma-tide") + " — krok ponowiony.", "butter")
         if (!sent || !error) return
         // Usługa odrzuciła odpowiedź: decyzja wraca do okna z powodem (okno otwiera się ponownie, jeśli zamknięte).
         if (!decisionOpen && sent[0] === decisionCardId) {
@@ -461,8 +485,10 @@ Rectangle {
         const notice = Logic.commitNote(reply)
         if (tag.indexOf("launch-") === 0) {
             handleLaunchReply(tag, reply)
+        } else if (tag.indexOf("fault-preview:") === 0) {
+            handleFaultPreviewReply(tag, reply)
         } else if (tag.indexOf("decision:") === 0) {
-            handleDecisionReply(tag, error)
+            handleDecisionReply(tag, error, reply)
         } else if (tag.indexOf("move:") === 0) {
             if (error) {
                 optimistic = optimistic.filter(m => m.tag !== tag)
@@ -1561,6 +1587,7 @@ Rectangle {
         cardId: page.decisionCardId
         decisions: Logic.decisions(page.decisionCard)
         onAnswered: (decisionId, method, params) => page.sendDecision(page.decisionCardId, decisionId, method, params)
+        onPreviewRequested: (decisionId, method, params) => page.previewFault(page.decisionCardId, decisionId, method, params)
         onLaterRequested: {
             page.closeDecisions()
             page.showToast("Karta zostaje w „Czeka na mnie” — wrócisz do niej z kafelka.", "butter")
