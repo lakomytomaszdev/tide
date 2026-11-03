@@ -28,6 +28,7 @@ import json
 import os
 import signal
 import shutil
+import re
 import subprocess
 import tempfile
 import time
@@ -95,6 +96,30 @@ def _login_expired(log: str) -> bool:
     except OSError:
         return False
     return any(marker in tail for marker in LOGIN_MARKERS)
+
+
+REMARK = re.compile(r"^\s*(?:#{2,4}\s*)?(?:\*\*)?((?:BLOCKER|MAJOR|B|M)[- ]?\d*)[.:)]?\s*(?:\*\*)?\s*[—–:-]?\s*(.+)$")
+
+
+def review_question(ticket: str, round_no: int, review_md: str) -> str:
+    """Pytanie po kolejnej rundzie review z listą pozostałych uwag BLOCKER/MAJOR i podpowiedzią, co zwykle wybrać
+    (03.11: samo „ponowić, scalić czy odrzucić?” nie mówiło użytkownikowi, o co chodzi)."""
+    remarks = []
+    try:
+        with open(review_md, encoding="utf-8", errors="replace") as fh:
+            for line in fh.read(200_000).splitlines():
+                found = REMARK.match(line)
+                if found and found.group(1).upper().startswith(("B", "M")) and len(found.group(2)) > 8:
+                    label = found.group(1).replace(" ", "").upper()
+                    if label in ("BLOCKER", "MAJOR"):
+                        continue          # sam nagłówek sekcji
+                    remarks.append(f"{label}: {found.group(2).replace('**', '').strip(' *')[:160]}")
+    except OSError:
+        pass
+    listed = "\n".join(f"- {r}" for r in remarks[:6]) or "- (szczegóły w review.md kroku review)"
+    return (f"{ticket}: po {round_no} rundach review zostały uwagi:\n{listed}\n"
+            "Zwykle: „Ponów poprawki”, gdy uwagi dotyczą kodu. „Scal mimo uwag” tylko gdy dotyczą środowiska "
+            "(np. testów niewykonalnych w piaskownicy). „Odrzuć ticket”, gdy ticketu nie chcesz.")
 
 class FlowError(Exception):
     def __init__(self, code: str, message: str):
@@ -1776,7 +1801,8 @@ class FlowEngine(PlanEditing):
                 self._fix(card, st, step)
             elif (ticket, round_no) not in st.review_questions:
                 self.journal.append(card, "review.question", ticket=ticket, round=round_no,
-                                    question="Review nadal wykazuje BLOCKER lub MAJOR. Ponowić poprawki, scalić mimo uwag czy odrzucić ticket?")
+                                    question=review_question(ticket, round_no,
+                                                             os.path.join(step.get("stepDir") or "", "out", "review.md")))
             return
         if any(s.get("kind") == "conflict" and s.get("ticket") not in st.rejected and
                not (st.results.get(("merge", s.get("ticket"))) or {}).get("ok")
