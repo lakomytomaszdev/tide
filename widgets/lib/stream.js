@@ -1152,9 +1152,9 @@ var SHORTCUTS = [
     { keys: "Pause", action: "mikrofon" },
     { keys: "Meta+Pause", action: "ekran prywatności" },
     { keys: "Meta+B", action: "BRB i powrót" },
-    { keys: "Meta+F9", action: "plan gry: start/pauza" },
-    { keys: "Meta+F10", action: "plan gry: −5 s" },
-    { keys: "Meta+F11", action: "plan gry: +5 s" },
+    { keys: "Meta+F9", action: "game plan: start/pause" },
+    { keys: "Meta+F10", action: "game plan: −5 s" },
+    { keys: "Meta+F11", action: "game plan: +5 s" },
     { keys: "Meta+Shift+A", action: "Praca ⇄ Stream" },
     { keys: "Meta+A", action: "czekający agent" }
 ]
