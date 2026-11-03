@@ -321,8 +321,10 @@ def _env(step: Step, home_env: dict, inp: str) -> dict:
         env["CLAUDE_CODE_TMPDIR"] = os.path.join(step.tmp_root, f"tide-step-{step.step_id}")
     if step.dotnet:
         from . import dotnet
-        tmp = env.get("CLAUDE_CODE_TMPDIR") or os.path.join(step.tmp_root, f"tide-step-{step.step_id}")
-        env.update(dotnet.step_env(tmp, dotnet.packages_dir(home_env.get("HOME") or os.path.expanduser("~"))))
+        # Katalog CLI w katalogu wyjściowym kroku — jedynym miejscu z zapisem w piaskownicy (K-15: katalog
+        # tymczasowy Claude Code `/tmp/tide-step-…` jest w kroku tylko do odczytu).
+        cli_home = os.path.join(os.path.dirname(inp), "out", ".dotnet-home")
+        env.update(dotnet.step_env(cli_home, dotnet.packages_dir(home_env.get("HOME") or os.path.expanduser("~"))))
     return env
 
 
