@@ -857,14 +857,8 @@ class FlowEngine(PlanEditing):
         if result in ("question", "denied", "error"):
             if decision:
                 self._resume_step(card, st, step, decision)
-            elif result == "denied" and done.get("outside"):
-                self._outside_recheck(card, step, done)
-            elif result == "denied" and done.get("canAllow", True) and self._auto_consent():
-                # Prośba sprzed automatycznych zgód (albo po zmianie ustawień) — zatwierdzana jak nowa.
-                try:
-                    self.resolve_step(card, {"choice": "allow", "step": step["step"], "auto": True})
-                except FlowError:
-                    pass
+            elif result == "denied":
+                self._consent_recheck(card, step, done)
             elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
                 if step["step"] not in st.step_retries:
                     self.journal.append(card, "step.retry", step=step["step"], ticket="",
@@ -1764,6 +1758,8 @@ class FlowEngine(PlanEditing):
             decision = st.step_decisions.get(st.last_step)
             if decision:
                 self._resume_step(card, st, step, decision)
+            elif result == "denied":
+                self._consent_recheck(card, step, done)
             return
         if result == "error":
             decision = st.step_decisions.get(st.last_step)
@@ -3317,6 +3313,16 @@ class FlowEngine(PlanEditing):
     def _auto_consent(self) -> bool:
         """Automatyczne zgody (domyślnie włączone); `autoConsent: false` w ustawieniach przepływu je wyłącza."""
         return self._settings_data().get("autoConsent", True) is not False
+
+    def _consent_recheck(self, card: str, step: dict, done: dict) -> None:
+        """Prośba czekająca na zgodę sprzed zmiany reguł: zatwierdzana tak, jak zostałaby zgłoszona dziś."""
+        if done.get("outside"):
+            self._outside_recheck(card, step, done)
+        elif done.get("canAllow", True) and self._auto_consent():
+            try:
+                self.resolve_step(card, {"choice": "allow", "step": step.get("step") or "", "auto": True})
+            except FlowError:
+                pass
 
     def _outside_recheck(self, card: str, step: dict, done: dict) -> None:
         """Prośba sprzed zmiany reguł (np. `E2E_PORT=… npm run e2e` odrzucane jako łańcuch, rodziny zamiast dokładnych

@@ -90,10 +90,16 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(self.start(outside)["ok"])
         self.wait_column(outside, "review", timeout=40)
         self.assertEqual([(d["choice"], d.get("auto")) for d in self.of(outside, "step.decision")], [("run", True)])
-        sandboxed = self.card(description="Dodaj eksport.\n\nATRAPA: zgoda")
-        self.assertTrue(self.start(sandboxed)["ok"])
-        self.wait_column(sandboxed, "review", timeout=40)
-        self.assertEqual([(d["choice"], d.get("auto")) for d in self.of(sandboxed, "step.decision")], [("allow", True)])
+        # Prośba zgłoszona przy ręcznych zgodach zostaje zatwierdzona po ich włączeniu.
+        with open(self.settings, "w", encoding="utf-8") as fh:
+            json.dump({"stepGuardMinutes": 15.0, "autoConsent": False}, fh)
+        waiting = self.card(description="Dodaj eksport.\n\nATRAPA: zgoda")
+        self.assertTrue(self.start(waiting)["ok"])
+        self.wait_column(waiting, "waiting")
+        with open(self.settings, "w", encoding="utf-8") as fh:
+            json.dump({"stepGuardMinutes": 15.0, "autoConsent": True}, fh)
+        self.wait_column(waiting, "review", timeout=40)
+        self.assertEqual([(d["choice"], d.get("auto")) for d in self.of(waiting, "step.decision")], [("allow", True)])
 
     def test_declined_outside_command_resumes_without_it(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
