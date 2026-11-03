@@ -569,3 +569,19 @@ class PlanRevisionInProgressTest(unittest.TestCase):
         self.assertEqual([d["kind"] for d in build_decisions(fold(events.items))], ["plan-approval"])
         events.add("plan.returned", feedback="popraw", baseline=[])
         self.assertEqual(build_decisions(fold(events.items)), [])
+
+
+class CorrectedPlanReviewTest(unittest.TestCase):
+    def test_plan_revised_after_review_is_offered_for_approval_not_sent_back(self):
+        # 03.11, K-38: po automatycznej poprawce okno pisało „recenzent prosi o zmiany” i polecało odesłanie.
+        from tide_daemon.cardflow.decisions import build_decisions
+        from tide_daemon.cardflow.state import fold
+        findings = [{"severity": "blocker", "text": "graf blokerów"}]
+        events = (Events(entry="plan").add("plan.proposed", planner="Fable", rows=[{"workId": "#1"}])
+                  .add("plan.reviewed", verdict="REQUEST_CHANGES", reviewer="Sonnet", findings=findings, corrected=True))
+        decision = build_decisions(fold(events.items))[0]
+        self.assertIn("poprawił go po uwagach", decision["happened"])
+        recommended = [o["id"] for o in decision["options"] if o.get("recommended")]
+        self.assertEqual(recommended, ["approve"])
+        returned = next(o for o in decision["options"] if o["id"] == "return")
+        self.assertEqual(returned["params"]["findings"], [])
