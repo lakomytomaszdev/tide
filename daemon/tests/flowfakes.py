@@ -209,6 +209,10 @@ elif word == "powoli":
     for i in range(count * 4):
         write(f"krok {i}")
         time.sleep(0.25)
+if word == "login" and "Użytkownik polecił ponowić" not in prompt:
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": True,
+                      "result": "Failed to authenticate: OAuth session expired and could not be refreshed"}), flush=True)
+    sys.exit(1)
 commit()
 if word == "cli-zgoda":
     print(json.dumps({"type": "result", "subtype": "success", "permission_denials": [
@@ -279,6 +283,30 @@ elif word in ("blad-dwa", "blad-zmien"):
         finish("done")
     else:
         finish("error", reason="awaria testowa")
+elif word == "srodowisko":
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": "question",
+                   "question": "Czy możesz uruchomić testy z Dockerem/Testcontainers poza piaskownicą?"}, fh)
+elif word == "poza":
+    if "uruchomił poza piaskownicą" in prompt and "zewnetrzne-ok" in prompt:
+        finish("done")
+    elif "nie zgodził się uruchomić poza piaskownicą" in prompt:
+        finish("done")
+    else:
+        with open(result, "w", encoding="utf-8") as fh:
+            json.dump({"result": "outside", "command": "echo zewnetrzne-ok",
+                       "reason": "potrzebna sieć do instalacji"}, fh)
+elif word == "smieci":
+    junk = os.path.join(cwd, "debug_tmp.py")
+    if "worktree ticketu ma niezacommitowane" in prompt:
+        if os.path.exists(junk):
+            os.remove(junk)
+        subprocess.run(["git", "add", "-A"], check=True)
+        subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "chore: atrapa sprząta"], check=True)
+    elif not prompt.startswith("Krok review"):
+        with open(junk, "w") as fh:
+            fh.write("# diagnostyka\n")
+    finish("done")
 elif word == "blad-local":
     time.sleep(0.5)
     finish("error", reason="awaria testowa")

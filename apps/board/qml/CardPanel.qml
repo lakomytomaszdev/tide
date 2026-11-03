@@ -343,6 +343,8 @@ Rectangle {
                 visible: !!panel.flowPlan && panel.flowPlan.status === "blocked"
                 spacing: 8
                 QQC2.ComboBox {
+                    // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                    wheelEnabled: false
                     id: planReviewPicker
                     objectName: "cardPlanReviewExecutor"
                     Layout.fillWidth: true
@@ -531,15 +533,26 @@ Rectangle {
                 font.pixelSize: 15
                 font.bold: true
             }
-            Text {
+            // Podsumowanie domknięcia bywa długie, a ta sekcja leży nad przewijaną częścią panelu — bez limitu
+            // przyciski Diff/Scal i ich wynik znikały pod krawędzią (03.11, K-15).
+            QQC2.ScrollView {
+                id: closingSummaryScroll
+                objectName: "cardClosingSummary"
                 Layout.fillWidth: true
-                text: panel.card && panel.card.derived && panel.card.derived.flow
-                      ? panel.card.derived.flow.summary || "" : ""
-                textFormat: Text.PlainText
-                color: Tide.Tokens.textPrimary
-                font.family: Tide.Theme.uiFamily
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
+                Layout.preferredHeight: Math.min(closingSummaryText.implicitHeight, 140)
+                clip: true
+                contentWidth: availableWidth
+                Text {
+                    id: closingSummaryText
+                    width: closingSummaryScroll.availableWidth
+                    text: panel.card && panel.card.derived && panel.card.derived.flow
+                          ? panel.card.derived.flow.summary || "" : ""
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                }
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -978,7 +991,7 @@ Rectangle {
                                     }
                                     PillButton {
                                         objectName: "enterStep"
-                                        text: flowStep.result ? "Wznów rozmowę" : "Wejdź"
+                                        text: flowStep.result ? "Wznów rozmowę" : "Przejmij w Konsoli"
                                         toolTip: flowStep.result ? "Otwórz tę rozmowę w Konsoli, także po restarcie komputera" : "Otwórz krok w Konsoli"
                                         implicitHeight: 28
                                         pixelSize: 12
@@ -1002,6 +1015,8 @@ Rectangle {
                                     visible: Boolean(flowStep.canTransfer)
                                     spacing: 8
                                     QQC2.ComboBox {
+                                        // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                                        wheelEnabled: false
                                         id: manualTransferPicker
                                         objectName: "cardStepTransferExecutor"
                                         Layout.fillWidth: true
@@ -1062,6 +1077,17 @@ Rectangle {
                             onClicked: {
                                 panel.busy = true
                                 panel.reviewResolveRequested(panel.card.id, "retry")
+                            }
+                        }
+                        PillButton {
+                            // Gdy uwagi dotyczą środowiska, a nie kodu — scalenie zatwierdzonego przez Ciebie stanu.
+                            objectName: "cardReviewAccept"
+                            text: "Scal mimo uwag"
+                            outline: true
+                            enabled: !panel.busy
+                            onClicked: {
+                                panel.busy = true
+                                panel.reviewResolveRequested(panel.card.id, "accept")
                             }
                         }
                         PillButton {

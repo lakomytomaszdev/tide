@@ -36,6 +36,15 @@ def lock_for(repo: str) -> threading.Lock:
         return _locks.setdefault(key, threading.Lock())
 
 
+def _foreign_changes(porcelain: str) -> list[str]:
+    """Linie `git status --porcelain` bez nieśledzonych narzędzi agentów użytkownika (TOOLING_DIRS) — tych nie
+    wnosi krok, tylko zewnętrzna synchronizacja, więc nie blokują review ani scalenia."""
+    from ..tasks.agentcmd import TOOLING_DIRS
+    prefixes = tuple(d.strip("/") + "/" for d in TOOLING_DIRS)
+    return [line for line in porcelain.splitlines()
+            if line.strip() and not (line.startswith("?? ") and line[3:].strip('"').startswith(prefixes))]
+
+
 class FlowGitError(Exception):
     """Błąd gita z komunikatem po polsku."""
 
@@ -105,6 +114,30 @@ class FlowGit:
             raise FlowGitError("diff ticketu przekracza 300 000 znaków — podziel pracę na mniejszy ticket")
         return result.out
 
+    def review_diff(self, repo: str, card_branch: str, ticket_branch: str) -> str:
+        """Diff do review: pełny, gdy mieści się w limicie; większy (np. ticket scalający gałęzie, K-33/PT-108,
+        3,5 mln znaków) — podsumowanie `--stat` i polecenia, którymi recenzent przegląda go po ścieżkach."""
+        try:
+            return self.diff(repo, card_branch, ticket_branch)
+        except FlowGitError as exc:
+            if "przekracza" not in str(exc):
+                raise
+        stat = self.run(repo, "diff", "--no-ext-diff", "--no-textconv", "--stat=200,150",
+                        f"refs/heads/{card_branch}", f"refs/heads/{ticket_branch}", "--")
+        if not stat.ok:
+            raise FlowGitError("nie można odczytać podsumowania diffu ticketu: " + (stat.err.splitlines() or ["błąd"])[0])
+        lines = stat.out.splitlines()
+        shown = lines if len(lines) <= 400 else lines[:399] + [f"… ({len(lines) - 400} plików pominięto) …", lines[-1]]
+        merges = self.run(repo, "log", "--merges", "--format=%h %s", f"refs/heads/{card_branch}..refs/heads/{ticket_branch}")
+        return ("Diff jest za duży, żeby go wkleić (ponad 300 000 znaków). Poniżej podsumowanie; przeglądaj zmiany "
+                "poleceniami tylko do odczytu, ścieżka po ścieżce, np.\n"
+                f"  git diff refs/heads/{card_branch} refs/heads/{ticket_branch} -- <ścieżka>\n"
+                f"  git log --oneline refs/heads/{card_branch}..refs/heads/{ticket_branch}\n"
+                "Skup się na tym, co ticket zmienił sam (rozwiązania konfliktów, nowe pliki, testy), a nie na treści "
+                "scalanych gałęzi, które przeszły już własne review.\n\n"
+                + ("Commity scalające:\n" + merges.out.strip() + "\n\n" if merges.ok and merges.out.strip() else "")
+                + "\n".join(shown) + "\n")
+
     def merged_tip(self, repo: str, card_branch: str, ticket_branch: str, worktree: str,
                    expected_tip: str, card_tip: str) -> str:
         """Potwierdza rozwiązanie konfliktu: oba zatwierdzone tipy są przodkami czystej gałęzi karty."""
@@ -148,7 +181,7 @@ class FlowGit:
                 raise FlowGitError(f"nie można ustalić katalogu gita worktree ticketu: {exc}") from exc
             status = StepGit(repo, git_dir, path, path + ".step").run(
                 "status", "--porcelain", "--untracked-files=all")
-            if not status.ok or status.out.strip():
+            if not status.ok or _foreign_changes(status.out):
                 raise FlowGitError("worktree ticketu ma lokalne zmiany")
             return tip
 
@@ -213,9 +246,12 @@ class FlowGit:
                 raise FlowGitError(f"nie można ustalić katalogu gita worktree ticketu: {exc}") from exc
             status = StepGit(repo, git_dir, path, path + ".step").run(
                 "status", "--porcelain", "--untracked-files=all")
-            if not status.ok or status.out.strip():
+            if not status.ok or _foreign_changes(status.out):
                 raise FlowGitError("worktree ma lokalne zmiany — nie usuwam")
-            removed = self.run(repo, "worktree", "remove", path, timeout=600)
+            # Zostały wyłącznie nieśledzone narzędzia agentów użytkownika (kopie z zewnętrznej synchronizacji,
+            # K-15/LEGAL-60) — git bez --force nie usunie worktree z nieśledzonymi plikami.
+            force = ["--force"] if status.out.strip() else []
+            removed = self.run(repo, "worktree", "remove", *force, path, timeout=600)
             if not removed.ok:
                 raise FlowGitError("nie udało się usunąć worktree: " + (removed.err.splitlines() or ["błąd"])[0])
             return {"removed": True, "already": False}

@@ -172,7 +172,9 @@ class CardDocs:
                  [("spec", d) for d in ranked if d.path not in shown]
         others.sort(key=lambda kd: kd[1].mtime, reverse=True)
         place = lambda d: _where(d.path, main, board_docs)  # noqa: E731
-        scope = list((card.get("derived") or {}).get("tickets") or [])
+        # Zakres „koordynator prowadzi kilka kart” dotyczy kart sesji koordynatora (lista identyfikatorów);
+        # karta z przepływem w tle ma własny plan, a jej `tickets` to wiersze-obiekty (03.11: „[object Object]”).
+        scope = [t for t in (card.get("derived") or {}).get("tickets") or [] if isinstance(t, str)]
         return {
             "ok": True, "card": card_id,
             "plan": _plan_json(plan_doc, plan_link, place(plan_doc), main, scope) if plan_doc else None,

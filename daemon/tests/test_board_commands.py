@@ -60,6 +60,9 @@ class CommandRulesTest(unittest.TestCase):
         self.assertIn("Bash(make install)", denied)
         self.assertNotIn("Bash(make *)", allowed)
         self.assertTrue(commands.is_allowed("head -80 plik.py", []))
+        self.assertTrue(commands.is_allowed("git clean -f -- apps/board/tests/test_zz_debug.py", []))
+        self.assertFalse(commands.is_allowed("git clean -fdx", []))
+        self.assertFalse(commands.is_allowed("rm -rf apps", []))
         self.assertFalse(commands.is_allowed("make install", []))
         self.assertTrue(commands.is_forbidden("make install", ["make install"]))
 

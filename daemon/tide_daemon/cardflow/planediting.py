@@ -117,7 +117,7 @@ class PlanEditing:
         decision = st.step_decisions.get(step["step"])
         if decision:
             self._resume_step(card, st, step, decision)
-        elif result == "error" and int(step.get("attempt") or 0) == 0:
+        elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
             if step["step"] not in st.step_retries:
                 self.journal.append(card, "step.retry", step=step["step"], ticket="", reason=done.get("reason") or "")
             self._resume_step(card, fold(self.journal.read(card)), step, {"choice": "auto"}, attempt=1)
@@ -164,6 +164,11 @@ class PlanEditing:
         # (K-35: plik z `tide-plan: 1.2` i dwiema tabelami). Dlatego dostaje oryginalny plan.md i wzór wprost.
         original = ""
         path = proposal.get("planPath") or ""
+        rows = proposal.get("rows") or []
+        if any(not str(r.get("workId") or "").startswith("#") for r in rows):
+            # Plan już zatwierdzony (wiersze mają numery ticketów): pierwotny plan.md jest nieaktualny — planujący
+            # przepisywał z niego `#1…#8` i zmieniał tickety, które już ruszyły (K-16, 03.11). Dostaje aktualną tabelę.
+            return self._approved_revision_prompt(card, proposal, rows, findings)
         if path and os.path.isfile(path):
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -180,7 +185,50 @@ class PlanEditing:
                 "tracker-project, ticket-prefix, coordinator, status, updated;\n"
                 "- dokładnie jedna tabela: `| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |` "
                 "(Agent to wykonawca, Review to recenzent, Blokery to numery robocze z tej tabeli).\n"
+                "Recenzent ticketu musi być innym modelem niż jego wykonawca (np. Opus wykonuje → Sonnet albo Codex "
+                "recenzuje), a praca lokalna ma lokalnego recenzenta — inaczej poprawka zostanie odrzucona.\n"
                 "Zachowaj card, prefiks i numery robocze. Nie implementuj ticketów ani nie publikuj.")
+
+    def _approved_revision_prompt(self, card, proposal, rows, findings):
+        st = fold(self.journal.read(card))
+        started = {s.get("ticket") for s in st.steps.values() if s.get("ticket")}
+        merged = {t for (action, t), r in st.results.items() if action == "merge" and (r or {}).get("ok")}
+        def state(ident):
+            return "gotowe" if ident in merged else "w-toku" if ident in started else "todo"
+        table = ["| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |",
+                 "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+        for r in rows:
+            ident = r.get("workId") or ""
+            cells = [ident, r.get("title") or "", "todo", "", r.get("executor") or "",
+                     (r.get("note") or "").replace("|", "/"), r.get("class") or "", r.get("reviewer") or "",
+                     ", ".join(r.get("blockers") or [])]
+            table.append("| " + " | ".join(str(c).replace("\n", " ") for c in cells) + " |")
+        locked = sorted(i for i in (r.get("workId") for r in rows) if i in started)
+        started_event = st.started or {}
+        tracker = "youtrack" if started_event.get("trackerProject") else "local"
+        header = ("---\ntide-plan: 1\n"
+                  f"title: {proposal.get('title') or 'Plan karty ' + card}\ncard: {card}\ntracker: {tracker}\n"
+                  f"tracker-url: {started_event.get('trackerUrl') or ''}\n"
+                  f"tracker-project: {started_event.get('trackerProject') or ''}\n"
+                  f"ticket-prefix: {proposal.get('prefix') or ''}\ncoordinator: {proposal.get('coordinator') or 'claude'}\n"
+                  "status: active\nupdated: <czas ISO 8601>\n---")
+        return (f"Popraw propozycję planu karty {card} — to ZATWIERDZONY plan, który już jest w realizacji.\n"
+                f"Uwagi: {findings}\n\n"
+                "Aktualny plan (tabela do przepisania w plan.md):\n" + "\n".join(table) + "\n\n"
+                "Zasady poprawki zatwierdzonego planu:\n"
+                f"- Tickety, które już ruszyły ({', '.join(locked) or 'brak'}), przepisz BEZ ŻADNEJ ZMIANY (te same "
+                "kolumny, wykonawca, recenzent i blokery). Ich zmiana odrzuca całą poprawkę.\n"
+                "- Pozostałe istniejące tickety zachowują swoje numery (np. LEGAL-73); możesz zmienić ich blokery albo "
+                "opis, jeśli uwagi tego wymagają.\n"
+                "- Nowe tickety dopisz z numerami roboczymi #1, #2… i dla każdego zapisz kartkę tickets/<numer bez #>.md "
+                "(cel, kryteria akceptacji jako lista `- [ ]`, wskazówki dla recenzenta). Kartek istniejących ticketów "
+                "NIE pisz — Tide dołoży je sam.\n"
+                "- Kolumna Stan: wszędzie `todo` (faktyczny stan liczy Tide z dziennika; " +
+                ", ".join(f"{i}: {state(i)}" for i in (r.get("workId") for r in rows)) + ").\n"
+                "- W kolumnie Blokery używaj numerów ticketów (LEGAL-67) albo roboczych (#1).\n"
+                "Zapisz pełny plan.md w katalogu wyjściowym: dokładnie ten nagłówek, a pod nim jedna tabela:\n"
+                f"{header}\nNie implementuj ticketów ani nie publikuj.\n"
+                f"Poprzednia propozycja: {json.dumps(proposal, ensure_ascii=False)}\n")
 
     @staticmethod
     def _returned_feedback(request):
@@ -362,12 +410,25 @@ class PlanEditing:
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg else self.catalog()
         path = os.path.join(step["stepDir"], "out", "plan.md")
+        # Kartki istniejących ticketów zatwierdzonego planu dokłada Tide (z planu bazowego) — planujący pisze tylko
+        # kartki nowych ticketów, a walidator wymaga kartki dla każdego wiersza (K-16, 03.11).
+        running = {s.get("ticket") for s in st.steps.values() if s.get("ticket")}
+        for base in revision["baseline"]:
+            ident = base.get("id") or base.get("workId") or ""
+            if ident and not ident.startswith("#") and base.get("body"):
+                card_file = os.path.join(step["stepDir"], "out", "tickets", ident + ".md")
+                if ident in running or not os.path.exists(card_file):
+                    os.makedirs(os.path.dirname(card_file), exist_ok=True)
+                    with open(card_file, "w", encoding="utf-8") as fh:
+                        fh.write(base["body"])
         existing = [r["id"] for r in (st.plan_approved or {}).get("rows", [])]
         existing += [r["id"] for r in (st.imported or {}).get("rows", [])]
         proposal = plans.read(path, card, catalog, allowed_roots=[os.path.dirname(path)], existing_ids=existing,
                               tracker="youtrack" if (st.started or {}).get("trackerProject") else "local",
                               imported=bool(st.imported))
-        rows = [{**r, "body": proposal.cards.get(r["workId"], "")} for r in proposal.rows]
+        # Istniejący ticket zatwierdzonego planu nie dostaje nowej kartki — zostaje jego kartka z planu bazowego.
+        kept_bodies = {(r.get("id") or r["workId"]): r.get("body") or "" for r in revision["baseline"]}
+        rows = [{**r, "body": proposal.cards.get(r["workId"]) or kept_bodies.get(r["workId"], "")} for r in proposal.rows]
         delta = self._difference(revision["baseline"], rows)
         started = {s.get("ticket") for s in st.steps.values() if s.get("ticket")}
         invalid = list(proposal.errors)
@@ -404,14 +465,25 @@ class PlanEditing:
         prefix = proposal["prefix"]
         floor = max((int(row["id"][len(prefix) + 1:]) for row in current["rows"]
                      if row["id"].startswith(prefix + "-") and row["id"][len(prefix) + 1:].isdigit()), default=0)
+        _, project = self._project(card)
         for row in proposal["rows"]:
             ident = row["workId"]
             if ident.startswith("#"):
                 key = f"plan:{proposal['seq']}:{ident}"
-                reserved = self._act(card, "reserve", key,
-                                     lambda r=row, k=key: self._reserve(self._repo(card), r["title"], f"{card}:{k}", proposal["prefix"], floor),
-                                     retry_failed=True, repo=self._repo(card), title=row["title"], prefix=proposal["prefix"],
-                                     minimumNumber=floor)
+                if project.youtrack:
+                    # Karta z YouTrackiem: nowy ticket poprawki planu zakłada się w YouTracku, jak przy pierwszym
+                    # zatwierdzeniu (K-16, 03.11: lokalna rezerwacja dawała numer LEGAL spoza YouTracka).
+                    from ..coordination import youtrack as yt
+                    try:
+                        reserved = self._tracker_reserve(card, key, int(ident[1:]), row["title"], row.get("body") or "")
+                    except yt.YouTrackError as exc:
+                        raise FlowError("youtrack", str(exc)) from None
+                else:
+                    reserved = self._act(card, "reserve", key,
+                                         lambda r=row, k=key: self._reserve(self._repo(card), r["title"], f"{card}:{k}",
+                                                                            proposal["prefix"], floor),
+                                         retry_failed=True, repo=self._repo(card), title=row["title"],
+                                         prefix=proposal["prefix"], minimumNumber=floor)
                 mapping[ident] = reserved["ticket"]
             else:
                 mapping[ident] = ident

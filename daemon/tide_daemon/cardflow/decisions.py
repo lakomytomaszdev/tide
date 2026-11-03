@@ -142,7 +142,8 @@ def _step_decision(st: FlowState, name: str) -> dict | None:
         return _question(st, name, step, done)
     if result == "denied":
         return _permission(st, name, step, done)
-    if result == "error" and int(step.get("attempt") or 0) >= 1:
+    # Wygasłe logowanie Tide pyta od razu, bez automatycznego ponowienia (03.11) — decyzja też od razu.
+    if result == "error" and (int(step.get("attempt") or 0) >= 1 or reason == "login"):
         return _error(st, name, step, done)
     if result == "stopped" and reason == "interactive-closed":
         return _stopped(st, name, step, done)
@@ -193,6 +194,8 @@ OTHER_PERMISSION = ("Zrób zamiast tego…", "Napisz, co krok ma zrobić zamiast
 
 
 def _permission(st, name, step, done) -> dict:
+    if done.get("outside"):
+        return _outside(st, name, step, done)
     commands = [_command(item) for item in done.get("commands") or [] if isinstance(item, dict)]
     command = _text(done.get("command"))
     if len(commands) > 1 or commands and commands[0]["text"] != str(done.get("command") or "").strip():
@@ -203,6 +206,57 @@ def _permission(st, name, step, done) -> dict:
     made["otherTitle"], made["otherHint"] = OTHER_PERMISSION
     if command and made["reply"]:
         made["reply"] = {**made["reply"], "field": "instead"}
+    return made
+
+
+def _outside(st, name, step, done) -> dict:
+    """Prośba o uruchomienie poza piaskownicą (03.11): Tide wykonuje polecenie w worktree ticketu na koncie
+    użytkownika i oddaje krokowi kod wyjścia; „zawsze w projekcie” zapamiętuje rodzinę polecenia (`pattern`)."""
+    command = _text(done.get("command"))
+    pattern = _text(done.get("pattern"))
+    who = _who(step, True)
+    happened = f"{who} prosi o uruchomienie poza piaskownicą: {command}" if command else ""
+    reason = _text(done.get("reason"))
+    from ..board.commands import outside_risky
+    risk = outside_risky(command) if command else ""
+    if done.get("canAllow", True) and risk:
+        # Ryzykowne (wychodzi poza worktree, czyta `~`, zmienia system): tylko jednorazowo i z powodem na wierzchu.
+        why = (f"Uwaga: {risk}. Tide uruchomi je na Twoim koncie, w worktree ticketu, tylko raz."
+               + (f" Powód kroku: {reason}" if reason else ""))
+        options = [
+            _option("run", "Uruchom raz",
+                    "Tide uruchomi to jedno polecenie i wznowi krok z jego wynikiem; następnym razem zapyta znowu.",
+                    RESOLVE_STEP, {"choice": "run", "step": name}),
+            _option("run-ticket", "Uruchom i zezwalaj do końca ticketu",
+                    f"Tide uruchomi to polecenie i kolejne polecenia poza piaskownicą {step.get('ticket') or 'tego ticketu'} "
+                    "bez pytania; zakazy projektu i łańcuchy nadal są blokowane.",
+                    RESOLVE_STEP, {"choice": "run-ticket", "step": name}),
+            _option("deny", "Nie uruchamiaj",
+                    "Krok wznowi się bez tego polecenia.", RESOLVE_STEP, {"choice": "deny", "step": name}),
+        ]   # bez polecanej: to decyzja o Twoich danych i systemie, nie o środowisku
+    elif done.get("canAllow", True):
+        why = ("Piaskownica kroku nie ma sieci, Dockera ani pełnych testów. Tide uruchomi polecenie w worktree "
+               "ticketu na Twoim koncie i odda wynik krokowi." + (f" Powód kroku: {reason}" if reason else ""))
+        options = [
+            _option("run-always", f"Zawsze w projekcie: {pattern}" if pattern else "Uruchom i pamiętaj w projekcie",
+                    "Polecenie ruszy teraz, a ta rodzina poleceń w tym projekcie będzie uruchamiana bez pytania.",
+                    RESOLVE_STEP, {"choice": "run-always", "step": name}, recommended=True),
+            _option("run", "Uruchom raz",
+                    "Tide uruchomi to jedno polecenie i wznowi krok z jego wynikiem.",
+                    RESOLVE_STEP, {"choice": "run", "step": name}),
+            _option("deny", "Nie uruchamiaj",
+                    "Krok wznowi się bez tego polecenia.", RESOLVE_STEP, {"choice": "deny", "step": name}),
+        ]
+    else:
+        why = ("Tego polecenia Tide nie uruchomi poza piaskownicą: łańcuch, operator powłoki, niebezpieczna "
+               "zmienna albo zakaz projektu." + (f" Powód kroku: {reason}" if reason else ""))
+        options = [_option("deny", "Kontynuuj bez tego polecenia",
+                           "Krok wznowi się bez niego; jeśli czegoś zabraknie, zgłosi pojedyncze polecenie.",
+                           RESOLVE_STEP, {"choice": "deny", "step": name}, recommended=True)]
+    reply = {"method": RESOLVE_STEP, "params": {"choice": "deny", "step": name}, "field": "instead"}
+    made = _decision(st, name, step, "permission", happened, why, options, reply, "", _step_technical(step, done))
+    made["commands"] = []
+    made["otherTitle"], made["otherHint"] = OTHER_PERMISSION
     return made
 
 
@@ -312,19 +366,32 @@ def _error(st, name, step, done) -> dict:
         why = ("Nie wiadomo, czyja to wina: dziennik kroku tego nie rozstrzyga. Zmiany kroku zostają w jego worktree; "
                "jeśli podejrzewasz Tide, opisz problem i ponów.") if label else ""
     other_recommended = fault == "model" or (fault == "provider" and cause == "auth")
+    # Ten sam powód co w poprzedniej próbie (K-16/LEGAL-67, 03.11: to samo menu po raz kolejny) — samo ponowienie nic
+    # nie zmieni, więc okno go nie poleca i mówi, co zadziała.
+    parent = st.finished.get(step.get("parentStep") or "") or {}
+    # Tylko opisowe powody wykonawcy (krótkie kody jak `exit` powtarzają się naturalnie).
+    repeated = len(reason) > 40 and fault in ("unknown", "model") and \
+        " ".join(str(parent.get("reason") or "").split())[:120] == " ".join(reason.split())[:120]
+    if repeated:
+        why = ("Ten sam powód co w poprzedniej próbie — samo ponowienie nic nie zmieni. Napisz wykonawcy, co ma zrobić "
+               "inaczej („Ponów z instrukcją”), albo zmień wykonawcę.")
     options = [
         _option("retry", "Ponów krok",
                 "Ten sam wykonawca spróbuje jeszcze raz od zmian zapisanych w worktree kroku." if fault == "tide" else
                 "Ten sam wykonawca zacznie od zmian zapisanych w worktree kroku.",
-                RESOLVE_STEP, {"choice": "retry", "step": name}, recommended=not other_recommended),
+                RESOLVE_STEP, {"choice": "retry", "step": name}, recommended=not other_recommended and not repeated),
         _option("change-executor", "Ponów innym wykonawcą…",
                 "Pomoże tylko wtedy, gdy przyczyną był model — tu nie był." if fault == "tide" else
                 "Wybierz model; nowy wykonawca zacznie od zmian zapisanych w worktree kroku.",
                 RESOLVE_STEP, {"choice": "change-executor", "step": name, "executor": ""},
                 recommended=other_recommended),
     ]
-    reply = None
-    if fault in ("tide", "unknown"):
+    # „Ponów z instrukcją” (03.11, K-16/LEGAL-67): agent kręcił się na tym samym powodzie, a użytkownik nie miał jak
+    # mu powiedzieć, co zrobić inaczej. Tekst trafia do wznowionego kroku jako polecenie użytkownika.
+    reply = {"method": RESOLVE_STEP, "params": {"choice": "retry", "step": name}, "field": "answer",
+             "label": "Ponów z instrukcją", "hint": "Np. „B1 jest odroczone do nowego ticketu — zakończ krok z notką”.",
+             "effect": "Ten sam wykonawca wznowi krok z Twoją instrukcją."}
+    if fault == "tide":
         # „Opisz problem i ponów”: opis trafia do karty z błędem w Backlogu plasma-tide (z podglądem), krok rusza znowu.
         reply = {"method": REPORT_FAULT, "params": {"step": name}, "field": "description",
                  "preview": PREVIEW_FAULT, "label": "Opisz problem i ponów",
@@ -352,8 +419,10 @@ def _stopped(st, name, step, done) -> dict:
     happened = (f"{_who(step, True)}: rozmowa w Konsoli została zamknięta przed zapisaniem wyniku."
                 if step.get("kind") else "")
     options = [
+        _option("background", "Wznów w tle", "Krok wróci do pracy w tle w tej samej sesji, od miejsca przerwania.",
+                RESOLVE_STEP, {"choice": "background", "step": name}, recommended=True),
         _option("enter", "Wróć do rozmowy", "Krok otworzy się w Konsoli w tej samej sesji.",
-                ENTER_STEP, {"step": name}, recommended=True),
+                ENTER_STEP, {"step": name}),
     ]
     return _decision(st, name, step, "stopped", happened, "", options, None, "", _step_technical(step, done))
 

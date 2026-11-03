@@ -139,10 +139,12 @@ class FullPlanningTest(FlowInProcess):
         self.assertFalse(any(e.get("kind") == "plan-review" and e.get("step") != "K-1-review-failed"
                              for e in self.of(card, "step.started")))
         shown = engine.derived({"id": card, "column": "todo"})
-        self.assertEqual((shown["column"], shown["flow"]["plan"]["status"]), ("waiting", "blocked"))
+        # K-31: po nieudanym review karta pokazuje tę porażkę z decyzją, a nie dawną (nieaktualną) blokadę limitu.
+        self.assertEqual((shown["column"], shown["flow"]["decisions"][0]["kind"]), ("waiting", "error"))
+        self.assertNotIn("limit", shown["note"])
         edited = engine.edit_plan(card, {"action": "edit", "ticket": "#1", "reviewer": "Codex Astra"})
         self.assertTrue(edited["ok"])
-        reply = engine.edit_plan(card, {"action": "review-executor", "executor": "Codex Astra"})
+        reply = engine.resolve_step(card, {"choice": "change-executor", "executor": "Codex Astra"})
         self.assertTrue(reply["ok"])
         decision = self.of(card, "step.decision")[-1]
         self.assertEqual((decision["choice"], decision["executor"]), ("change-executor", "Codex Astra"))

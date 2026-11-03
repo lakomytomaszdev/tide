@@ -226,7 +226,7 @@ class ContractTest(unittest.TestCase):
         self.assertIn("dostawca odrzucił autoryzację", decision["happened"])
         self.assertIn("błąd dostawcy (Claude)", decision["why"])
         self.assertEqual(decision["options"][0]["choice"], "change-executor", "przy autoryzacji polecany inny wykonawca")
-        self.assertIsNone(decision["reply"], "błędu dostawcy nie zgłaszamy jako błędu Tide")
+        self.assertEqual(decision["reply"]["method"], "ResolveCardStep", "błędu dostawcy nie zgłaszamy jako błędu Tide")
         outage = (Events().step("K-1-PT-1-1", result="error", reason="exit", fault="provider", faultCause="outage")
                   .step("K-1-PT-1-2", attempt=1, parent="K-1-PT-1-1", result="error", reason="exit",
                         fault="provider", faultCause="outage"))
@@ -261,7 +261,7 @@ class ContractTest(unittest.TestCase):
         [decision] = events.decisions()
         self.assertEqual(decision["fault"], "unknown")
         self.assertTrue(decision["why"].startswith("Nie wiadomo, czyja to wina"))
-        self.assertEqual(decision["reply"]["method"], "ReportStepFault", "podejrzenie błędu Tide można zgłosić")
+        self.assertEqual(decision["reply"]["label"], "Ponów z instrukcją", "nieznana przyczyna: instrukcja dla wykonawcy")
 
     def test_model_fault_recommends_another_executor(self):
         events = (Events().step("K-1-PT-1-1", result="error", reason="bad-result")
@@ -269,7 +269,7 @@ class ContractTest(unittest.TestCase):
         [decision] = events.decisions()
         self.assertEqual(decision["fault"], "model", "stary dziennik bez pola fault — z samego powodu")
         self.assertEqual(decision["options"][0]["choice"], "change-executor")
-        self.assertIsNone(decision["reply"])
+        self.assertEqual(decision["reply"]["label"], "Ponów z instrukcją")  # 03.11: instrukcja dla wykonawcy
 
     def test_plan_approval_recommends_from_the_verdict(self):
         changes = plan_events(reviewer="Sonnet", verdict="REQUEST_CHANGES", findings="MAJOR: rozdziel fale.")
@@ -390,6 +390,14 @@ class GenericSentenceTest(unittest.TestCase):
                                                  .add("step.waiting", ticket="", kind="plan-review", reason=""),
             "tracker": tracker,
         }
+
+    def test_closed_console_recommends_resuming_in_the_background(self):
+        # 03.11, K-33/PT-109: po zamknięciu Konsoli jedyną opcją było „Wróć do rozmowy”.
+        from tide_daemon.cardflow.decisions import build_decisions
+        from tide_daemon.cardflow.state import fold
+        made = build_decisions(fold(self.empty_inputs()["stopped"].items))[0]
+        self.assertEqual([(o["choice"], o["recommended"]) for o in made["options"]],
+                         [("background", True), ("enter", False)])
 
     def test_every_kind_with_empty_input_gets_its_generic_sentences(self):
         inputs = self.empty_inputs()
@@ -514,3 +522,16 @@ class ResumeContextOptionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RepeatedErrorTest(unittest.TestCase):
+    def test_same_reason_twice_does_not_recommend_plain_retry(self):
+        # 03.11, K-16/LEGAL-67: ten sam powód w kolejnych próbach, a okno dalej polecało „Ponów krok”.
+        from tide_daemon.cardflow.decisions import build_decisions
+        from tide_daemon.cardflow.state import fold
+        events = (Events().step("s0", ticket="PT-1", kind="fix", result="error", reason="B1 nadal otwarte: brak wyniku osobnego ticketu T0/T1/R/V do zamknięcia AC3")
+                  .step("s", ticket="PT-1", kind="fix", attempt=1, parent="s0", result="error", reason="B1 nadal otwarte: brak wyniku osobnego ticketu T0/T1/R/V do zamknięcia AC3"))
+        made = build_decisions(fold(events.items))[0]
+        self.assertFalse(any(o["recommended"] for o in made["options"] if o["choice"] == "retry"))
+        self.assertIn("Ten sam powód", made["why"])
+        self.assertEqual(made["reply"]["label"], "Ponów z instrukcją")

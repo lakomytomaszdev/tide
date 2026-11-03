@@ -123,3 +123,74 @@ class OverviewTest(unittest.TestCase):
         _attach_flow([project, second], self.now[0] - 60, self.now[0] + 60, self.board)
         self.assertEqual(project.plans[0]["tickets"][0]["note"], "wykonał Astra")
         self.assertEqual(second.plans[0]["tickets"][0]["note"], "wykonał Sonnet")
+
+
+class StalePlanReviewWaitTest(unittest.TestCase):
+    """K-31: dawna blokada limitu nie może zasłaniać decyzji po nieudanym review planu."""
+
+    def test_started_review_clears_old_limit_wait_and_shows_the_decision(self):
+        events = [
+            {"seq": 1, "type": "card.started", "entry": "planning", "executor": "Opus"},
+            {"seq": 2, "type": "plan.proposed", "rows": [], "planner": "Opus", "title": "X"},
+            {"seq": 3, "type": "step.waiting", "ticket": "", "kind": "plan-review", "provider": "anthropic",
+             "reason": "czeka na limit Claude do sobota 18:00 (pozostało 7% w oknie tygodniowym)"},
+            {"seq": 4, "type": "step.started", "step": "K-1-plan-1", "kind": "plan-review", "ticket": "",
+             "executor": "Haiku", "provider": "anthropic", "attempt": 1},
+            {"seq": 5, "type": "step.finished", "step": "K-1-plan-1", "ticket": "", "result": "error",
+             "reason": "no-result"},
+        ]
+        st = fold(events)
+        self.assertIsNone(st.plan_review_wait)
+        out = derived(st, {"column": "todo"})
+        self.assertNotIn("limit", out["note"])
+        self.assertEqual(out["flow"]["decisions"][0]["kind"], "error")
+
+
+class QueuedPlanReviewTest(unittest.TestCase):
+    """03.11, K-31: kolejka miejsc u dostawcy to nie decyzja użytkownika i nie blokuje wznowienia review."""
+
+    def test_slot_queue_keeps_card_in_progress_and_does_not_block_review(self):
+        events = [
+            {"seq": 1, "type": "card.started", "entry": "planning", "executor": "Opus"},
+            {"seq": 2, "type": "plan.proposed", "rows": [], "planner": "Opus", "title": "X"},
+            {"seq": 3, "type": "step.waiting", "ticket": "", "kind": "plan-review", "provider": "anthropic",
+             "reason": "limit kroków dostawcy anthropic: 6/6"},
+        ]
+        st = fold(events)
+        self.assertIsNone(st.plan_review_wait)
+        out = derived(st, {"column": "todo"})
+        self.assertEqual(out["column"], "progress")
+        self.assertIn("w kolejce", out["note"])
+
+    def test_exhausted_limit_still_asks_for_a_reviewer(self):
+        events = [
+            {"seq": 1, "type": "card.started", "entry": "planning", "executor": "Opus"},
+            {"seq": 2, "type": "plan.proposed", "rows": [], "planner": "Opus", "title": "X"},
+            {"seq": 3, "type": "step.waiting", "ticket": "", "kind": "plan-review", "provider": "anthropic",
+             "reason": "czeka na limit Claude do sobota 18:00"},
+        ]
+        st = fold(events)
+        self.assertIsNotNone(st.plan_review_wait)
+        self.assertEqual(derived(st, {"column": "todo"})["column"], "waiting")
+
+
+class DiscardedRevisionErrorsTest(unittest.TestCase):
+    """K-31: błędy odrzuconej poprawki po review mówią, że obowiązuje poprzednia wersja, i znikają po zatwierdzeniu."""
+
+    def events(self):
+        return [
+            {"seq": 1, "type": "card.started", "entry": "planning", "executor": "Opus"},
+            {"seq": 2, "type": "plan.proposed", "rows": [], "planner": "Opus", "title": "X", "sourceStep": "K-1-plan-1-0"},
+            {"seq": 3, "type": "plan.checked", "valid": False, "step": "K-1-plan-revise-2",
+             "errors": ["#1: recenzent musi mieć inny model i zachować pracę lokalną"]},
+        ]
+
+    def test_errors_explain_the_discarded_revision(self):
+        errors = derived(fold(self.events()), {"column": "todo"})["flow"]["plan"]["errors"]
+        self.assertIn("odrzucona", errors[0])
+        self.assertIn("#1: recenzent", errors[1])
+
+    def test_errors_disappear_after_approval(self):
+        events = self.events() + [{"seq": 4, "type": "plan.approved", "rows": []}]
+        flow = derived(fold(events), {"column": "todo"})["flow"]
+        self.assertEqual(flow["plan"]["errors"], [])

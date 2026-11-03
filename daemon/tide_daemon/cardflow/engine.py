@@ -28,6 +28,7 @@ import json
 import os
 import signal
 import shutil
+import re
 import subprocess
 import tempfile
 import time
@@ -63,7 +64,26 @@ from .tracker import TrackerOutbox
 GUARD_MINUTES = 15.0
 TIMEOUT_MINUTES = 240.0
 SETTINGS_FILE = "cardflow.json"
-RESULTS = ("done", "question", "denied", "error")
+DEFAULT_PROVIDER_SLOTS = 3      # kroki naraz u jednego dostawcy chmurowego (providerSlots w ustawieniach)
+MAX_PROVIDER_SLOTS = 12
+RESULTS = ("done", "question", "denied", "error", "outside")
+OUTSIDE_TIMEOUT = 3600          # najdłużej działające polecenie uruchomione poza piaskownicą (s)
+OUTSIDE_TAIL = 12_000           # tyle końcowych znaków wyniku dostaje wznowiony krok
+ENV_QUESTION = re.compile(r"piaskownic|sandbox|docker|testcontainers|\boutside\b|ng serve|\bnpm\b|\bnpx\b|dotnet test|"
+                          r"playwright|\bport(?:u|y|em)?\b|:\d{4}\b|\bsieci\b|\bsieć\b|network|środowisk|"
+                          r"zainstalow|instalacj|uruchomi[ćeł]\w* (?:test|polecen|serwer)", re.IGNORECASE)
+ENV_ANSWER = ("Odpowiedź Tide (automatyczna — pytanie dotyczy środowiska, nie decyzji użytkownika): nie pytaj "
+              "użytkownika o środowisko. Tide uruchamia polecenia poza piaskownicą sam (sieć, Docker/Testcontainers, "
+              "serwery, pełne testy): zapisz {\"result\":\"outside\",\"command\":\"jedno pełne polecenie\","
+              "\"reason\":\"po co\"} i zakończ krok — przy wznowieniu dostaniesz kod wyjścia i koniec wyniku. Polecenie "
+              "może być długie i mieć zmienne w cudzysłowie, ale bez łączenia (&&, ;, |). Gdy polecenia nie da się "
+              "uruchomić, zakończ wynikiem error z przyczyną. Jeśli pytanie dotyczyło jednak zakresu albo decyzji "
+              "biznesowej, zadaj je ponownie: krótko, z opcjami i rekomendacją.")
+REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
+ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
+OUTSIDE_PER_PROJECT = 1         # polecenia poza piaskownicą naraz w jednym projekcie (porty, serwer e2e)
+OUTSIDE_TOTAL = 2               # … i łącznie (testy i budowanie obciążają całą maszynę)
+STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
 OUTPUT_MAX = 256 * 1024
 HANDOFF_DIFF_MAX = 64 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
@@ -76,12 +96,70 @@ AUTO_DENY_NOTE = ("Tide nie może zezwolić na takie polecenie (łańcuch z &&, 
                   "albo polecenie zabronione). Uruchamiaj polecenia pojedynczo, bez łączenia i zmiennych; do czytania "
                   "plików używaj narzędzia Read. Jeśli pojedyncze polecenie spoza listy jest naprawdę potrzebne, "
                   "zapisz wynik denied z tym jednym poleceniem.")
+AUTO_DENY_LONG = ("Tide nie może zezwolić na polecenie dłuższe niż {limit} znaków. Podziel je na kilka krótszych "
+                  "(np. jeden katalog albo kilka plików naraz, `git rm -r <katalog>`), każde jako osobny wynik denied.")
 STEP_READ_NOTE = ("Odczyt własnego katalogu kroku (<krok>/in i <krok>/out) jest zawsze dozwolony i nie wymaga zgody. "
                   "Uruchom te polecenia pojedynczo, bez łączenia, albo czytaj pliki narzędziem Read.")
 
 class FlowDeferred(Exception):
     """Krok czeka na wolne miejsce; nie jest to błąd karty."""
 
+
+
+LOGIN_MARKERS = ("failed to authenticate", "oauth session expired", "please run /login", "invalid api key",
+                 "authentication_error", "not logged in", "401 unauthorized")
+
+
+def _login_expired(log: str) -> bool:
+    """Koniec dziennika kroku mówi o wygasłym albo brakującym logowaniu programu agenta."""
+    try:
+        with open(log, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 20_000))
+            tail = fh.read().decode("utf-8", "replace").casefold()
+    except OSError:
+        return False
+    return any(marker in tail for marker in LOGIN_MARKERS)
+
+
+
+def reviewer_changed(reviewer, expected: dict, source: dict, assigned: dict, transferred: bool) -> bool:
+    """Recenzent rozwiązany dziś nie jest tym z planu (albo z poprzedniej rundy) lub łamie regułę niezależności."""
+    return bool(reviewer.tool != expected["program"] or reviewer.model != expected["model"] or \
+            reviewer.provider != expected["provider"] or reviewer.effort != expected["effort"] or \
+            (reviewer.route.url if reviewer.route else "") != expected["routeUrl"] or \
+            (reviewer.route.kind if reviewer.route else "") != expected["routeKind"] or \
+            (reviewer.route.token_file if reviewer.route else "") != expected["routeTokenFile"] or \
+            reviewer.model.lower() == (source.get("model") or "").lower() or \
+            reviewer.local != (source.get("provider") == "local") or \
+            (not transferred and assigned.get("preferredProvider") == "mixed" and
+             reviewer.provider == source.get("provider")) or \
+            (not transferred and assigned.get("preferredProvider") != "mixed" and
+             reviewer.provider != source.get("provider")))
+
+
+REMARK = re.compile(r"^\s*(?:#{2,4}\s*)?(?:\*\*)?((?:BLOCKER|MAJOR|B|M)[- ]?\d*)[.:)]?\s*(?:\*\*)?\s*[—–:-]?\s*(.+)$")
+
+
+def review_question(ticket: str, round_no: int, review_md: str) -> str:
+    """Pytanie po kolejnej rundzie review z listą pozostałych uwag BLOCKER/MAJOR i podpowiedzią, co zwykle wybrać
+    (03.11: samo „ponowić, scalić czy odrzucić?” nie mówiło użytkownikowi, o co chodzi)."""
+    remarks = []
+    try:
+        with open(review_md, encoding="utf-8", errors="replace") as fh:
+            for line in fh.read(200_000).splitlines():
+                found = REMARK.match(line)
+                if found and found.group(1).upper().startswith(("B", "M")) and len(found.group(2)) > 8:
+                    label = found.group(1).replace(" ", "").upper()
+                    if label in ("BLOCKER", "MAJOR"):
+                        continue          # sam nagłówek sekcji
+                    remarks.append(f"{label}: {found.group(2).replace('**', '').strip(' *')[:160]}")
+    except OSError:
+        pass
+    listed = "\n".join(f"- {r}" for r in remarks[:6]) or "- (szczegóły w review.md kroku review)"
+    return (f"{ticket}: po {round_no} rundach review zostały uwagi:\n{listed}\n"
+            "Zwykle: „Ponów poprawki”, gdy uwagi dotyczą kodu. „Scal mimo uwag” tylko gdy dotyczą środowiska "
+            "(np. testów niewykonalnych w piaskownicy). „Odrzuć ticket”, gdy ticketu nie chcesz.")
 
 class FlowError(Exception):
     def __init__(self, code: str, message: str):
@@ -128,6 +206,7 @@ class FlowEngine(PlanEditing):
                  limits_source=None):
         self.store = store
         self.journal = journal or Journal(store.root)
+        self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
         self.claude_projects = claude_projects
         self.systemd_run = systemd_run
         self.catalog = catalog            # funkcja() → models.executors.Catalog
@@ -144,6 +223,8 @@ class FlowEngine(PlanEditing):
         self.which = which
         self.grace = grace
         self.guard_every = guard_every
+        # Czas procesora jednostki kroku jako znak postępu strażnika (None w testach bez systemd).
+        self.unit_cpu = stepstop.unit_cpu_bucket
         self.terminal = terminal
         self.task_files = task_files or TaskFiles()
         self.procs: dict[str, object] = {}         # krok → Popen (tylko kroki uruchomione przez tę usługę)
@@ -177,11 +258,15 @@ class FlowEngine(PlanEditing):
             threshold = 10
         mode = transfer.get("mode") if transfer.get("mode") in ("ask", "auto") else "ask"
         executor = transfer.get("executor") if isinstance(transfer.get("executor"), str) else ""
+        slots = data.get("providerSlots") if isinstance(data.get("providerSlots"), dict) else {}
+        slots = {k: v for k, v in slots.items() if isinstance(k, str) and isinstance(v, int)
+                 and not isinstance(v, bool) and 1 <= v <= MAX_PROVIDER_SLOTS}
         return {"ok": True, "limitTransfer": {"mode": mode, "executor": executor},
-                "limitThresholdPercent": threshold}
+                "limitThresholdPercent": threshold, "providerSlots": slots,
+                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS}
 
     def set_flow_settings(self, request: dict) -> dict:
-        if not isinstance(request, dict) or set(request) - {"limitTransfer", "limitThresholdPercent"}:
+        if not isinstance(request, dict) or set(request) - {"limitTransfer", "limitThresholdPercent", "providerSlots"}:
             raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
         current = self.get_flow_settings()
         transfer = request.get("limitTransfer", current["limitTransfer"])
@@ -195,9 +280,18 @@ class FlowEngine(PlanEditing):
         threshold = request.get("limitThresholdPercent", current["limitThresholdPercent"])
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0 < threshold <= 100:
             raise FlowError("bad-settings", "próg limitu musi być procentem od 0 do 100")
+        slots = request.get("providerSlots", current["providerSlots"])
+        if not isinstance(slots, dict) or any(
+                not isinstance(k, str) or not k or len(k) > 40 or isinstance(v, bool) or not isinstance(v, int)
+                or not 1 <= v <= MAX_PROVIDER_SLOTS for k, v in slots.items()):
+            raise FlowError("bad-settings", f"liczba kroków naraz na dostawcę musi być od 1 do {MAX_PROVIDER_SLOTS}")
         data = self._settings_data()
         data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
-                    limitThresholdPercent=threshold)
+                    limitThresholdPercent=threshold, providerSlots=dict(slots))
+        self._write_settings(data)
+        return self.get_flow_settings()
+
+    def _write_settings(self, data: dict) -> None:
         folder = os.path.dirname(self.settings) or "."
         os.makedirs(folder, mode=0o700, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=".cardflow-", dir=folder)
@@ -212,7 +306,6 @@ class FlowEngine(PlanEditing):
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
-        return self.get_flow_settings()
 
     def _low_limit(self, provider: str) -> dict | None:
         if self.limits_source is None:
@@ -835,7 +928,9 @@ class FlowEngine(PlanEditing):
         if result in ("question", "denied", "error"):
             if decision:
                 self._resume_step(card, st, step, decision)
-            elif result == "error" and int(step.get("attempt") or 0) == 0:
+            elif result == "denied":
+                self._consent_recheck(card, step, done)
+            elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
                 if step["step"] not in st.step_retries:
                     self.journal.append(card, "step.retry", step=step["step"], ticket="",
                                         reason=done.get("reason") or "")
@@ -1275,11 +1370,11 @@ class FlowEngine(PlanEditing):
         running = [step for card in self.journal.cards()
                    for step in fold(self.journal.read(card)).running()]
         provider = selected.provider
-        limit = 1 if selected.local else 3
+        limit = 1 if selected.local else DEFAULT_PROVIDER_SLOTS
         if not selected.local:
             try:
                 with open(self.settings, encoding="utf-8") as fh:
-                    value = json.load(fh).get("providerSlots", {}).get(provider, 3)
+                    value = json.load(fh).get("providerSlots", {}).get(provider, DEFAULT_PROVIDER_SLOTS)
                 if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                     limit = value
             except (OSError, ValueError, AttributeError):
@@ -1348,6 +1443,20 @@ class FlowEngine(PlanEditing):
             if is_dotnet:
                 ok, tail = dotnet.restore(worktree)
                 prompt += dotnet.prompt_note(ok, tail)
+            from ..tasks import node as node_mod
+            # P1: sieć z piaskownicy kroku tylko do rejestrów paczek stosu (Claude Code `allowedDomains`); Codex
+            # ma własną piaskownicę bez listy domen, więc tam bez zmian. `networkDomains[projekt]` dopisuje domeny.
+            domains = ()
+            if selected.tool == "claude" and kind in ("ticket", "fix", "conflict"):
+                extra = (self._settings_data().get("networkDomains") or {}).get(project.slug) or []
+                domains = tuple(dict.fromkeys([*node_mod.registry_domains(worktree, dotnet=is_dotnet),
+                                               *[d for d in extra if isinstance(d, str)]]))
+            node_home = ""
+            if kind in ("ticket", "fix", "review", "conflict", "close") and node_mod.is_node(worktree):
+                node_home = node_mod.node_home(os.path.expanduser("~"))
+                if kind in ("ticket", "fix", "conflict") and node_home:
+                    ok, tail = node_mod.install(worktree, os.path.expanduser("~"))
+                    prompt += node_mod.prompt_note(ok, tail, network=bool(domains))
             bg = agentcmd.background(agentcmd.Step(
                 tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
                 step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
@@ -1357,7 +1466,9 @@ class FlowEngine(PlanEditing):
                 allowed_tools=allowed_tools if selected.tool == "claude" else (),
                 disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
                 enforce_command_policy=selected.tool == "claude",
-                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet))
+                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet, node_home=node_home,
+                codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains,
+                chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else ""))
             bg.prepare()
             for source, target in zip(images, shots):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -1590,11 +1701,20 @@ class FlowEngine(PlanEditing):
                         self._advance(card, current)
                     except FlowDeferred:
                         pass
+                    except Exception as exc:
+                        # Izolacja (03.11, „błędy koordynacji to rak”): błąd przy jednym tickecie zatrzymuje tylko
+                        # ten ticket — pozostałe tickety, start nowych i domknięcie karty idą dalej.
+                        self._isolated_fault(card, name, exc)
                 current = fold(self.journal.read(card))
-                if current.plan_approved is not None:
-                    self._plan_next(card, current)
-                elif not latest:
-                    self._advance(card, current)
+                try:
+                    if current.plan_approved is not None:
+                        self._plan_next(card, current)
+                    elif not latest:
+                        self._advance(card, current)
+                except FlowDeferred:
+                    pass
+                except Exception as exc:
+                    self._isolated_fault(card, "", exc)
                 self._advance_close(card, fold(self.journal.read(card)))
             except FlowDeferred:
                 pass
@@ -1620,6 +1740,18 @@ class FlowEngine(PlanEditing):
                         problem = f"{exc.__class__.__name__}: {exc}"
                         if st.flow_error != problem:
                             self.journal.append(card, "flow.error", error=problem)
+
+    def _isolated_fault(self, card: str, step_name: str, exc: Exception) -> None:
+        """Błąd koordynacji jednego kroku: zapis w dzienniku (raz dla tego samego tekstu) i ślad w dzienniku usługi."""
+        import traceback
+        problem = f"{exc.__class__.__name__}: {exc}"
+        st = fold(self.journal.read(card))
+        step = st.steps.get(step_name) or {}
+        if st.flow_error != problem:
+            self.journal.append(card, "flow.error", error=problem, step=step_name, ticket=step.get("ticket") or "")
+        if not isinstance(exc, (FlowError, FlowGitError)):
+            print(f"tide-daemon: przepływ karty {card}, krok {step_name or '-'}: "
+                  + "".join(traceback.format_exception_only(type(exc), exc)).strip(), flush=True)
 
     @staticmethod
     def _wip_for(st: FlowState, step_id: str) -> dict:
@@ -1742,17 +1874,39 @@ class FlowEngine(PlanEditing):
             decision = st.step_decisions.get(st.last_step)
             if decision:
                 self._resume_step(card, st, step, decision)
+            elif result == "denied":
+                self._consent_recheck(card, step, done)
+            else:
+                self._env_question(card, step, done)
+            return
+        if result == "stopped" and done.get("reason") == "interactive-closed":
+            # Konsola zamknięta bez wyniku: „Wznów w tle” oddaje krok pracy w tle w tej samej sesji (03.11).
+            decision = st.step_decisions.get(st.last_step)
+            if decision and decision.get("choice") == "background":
+                self._resume_step(card, st, step, decision)
             return
         if result == "error":
             decision = st.step_decisions.get(st.last_step)
             if decision:
                 self._resume_step(card, st, step, decision)
-            elif int(step.get("attempt") or 0) == 0:
+            elif self._codex_broken_mcp(step, dict(done)):
+                self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
+                                    kind=step.get("kind") or "", choice="retry", answer="", command="",
+                                    executor="", auto=True)
+            elif int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
                 if st.last_step not in st.step_retries:
                     self.journal.append(card, "step.retry", step=st.last_step, ticket=step.get("ticket") or "",
                                         reason=done.get("reason") or "")
                     st = fold(self.journal.read(card))
                 self._resume_step(card, st, step, {"choice": "auto"}, attempt=1)
+            else:
+                stronger = self._stronger_executor(step, done)
+                if stronger:
+                    # Po nieudanym ponowieniu ten sam wykonawca rzadko pomaga — Tide sam przekazuje krok mocniejszemu
+                    # modelowi tego dostawcy (03.11, K-31/DPT-5: „co mnie obchodzi, że Haiku czegoś nie umie”).
+                    self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
+                                        kind=step.get("kind") or "", choice="change-executor", answer="",
+                                        command="", executor=stronger, auto=True, escalated=True)
             return
         if result != "done":
             return
@@ -1786,13 +1940,21 @@ class FlowEngine(PlanEditing):
         verdict = st.verdicts.get((ticket, step.get("round")))
         if verdict is None:
             return
-        if verdict.get("verdict") == "REQUEST_CHANGES":
+        accepted = (st.review_decisions.get((ticket, step.get("round"))) or {}).get("choice") == "accept"
+        if verdict.get("verdict") == "REQUEST_CHANGES" and not accepted:
             round_no = int(step.get("round") or 0)
-            if round_no < 3 or (st.review_decisions.get((ticket, round_no)) or {}).get("choice") == "retry":
+            if round_no < self._review_rounds() or \
+                    (st.review_decisions.get((ticket, round_no)) or {}).get("choice") == "retry":
+                if (ticket, round_no) in st.review_questions and (ticket, round_no) not in st.review_decisions:
+                    # Pytanie zadane przy dawnym progu (3 rundy) — Tide sam wybiera „Ponów poprawki”.
+                    self.journal.append(card, "review.decision", ticket=ticket, round=round_no, choice="retry",
+                                        auto=True)
+                    st = fold(self.journal.read(card))
                 self._fix(card, st, step)
             elif (ticket, round_no) not in st.review_questions:
                 self.journal.append(card, "review.question", ticket=ticket, round=round_no,
-                                    question="Review nadal wykazuje BLOCKER lub MAJOR. Ponowić poprawki czy odrzucić ticket?")
+                                    question=review_question(ticket, round_no,
+                                                             os.path.join(step.get("stepDir") or "", "out", "review.md")))
             return
         if any(s.get("kind") == "conflict" and s.get("ticket") not in st.rejected and
                not (st.results.get(("merge", s.get("ticket"))) or {}).get("ok")
@@ -1957,9 +2119,9 @@ class FlowEngine(PlanEditing):
         if step.get("kind") in ("ticket", "fix"):
             return "review"
         verdict = st.verdicts.get((ticket, step.get("round"))) or {}
-        if verdict.get("verdict") == "REQUEST_CHANGES":
-            if int(step.get("round") or 0) >= 3 and (
-                    st.review_decisions.get((ticket, step.get("round"))) or {}).get("choice") != "retry":
+        choice = (st.review_decisions.get((ticket, step.get("round"))) or {}).get("choice")
+        if verdict.get("verdict") == "REQUEST_CHANGES" and choice != "accept":
+            if int(step.get("round") or 0) >= 3 and choice != "retry":
                 return "czeka"
             return "w-toku"
         return "review"
@@ -2126,7 +2288,7 @@ class FlowEngine(PlanEditing):
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead"}:
+        if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         if "allow" in request and request.get("choice") != "allow" or \
                 "instead" in request and request.get("choice") != "deny":
@@ -2152,13 +2314,14 @@ class FlowEngine(PlanEditing):
         step = st.steps.get(focus) or {}
         done = st.finished.get(focus) or {}
         result = done.get("result")
-        valid = {"question": ("answer",), "denied": ("allow", "deny"),
-                 "error": ("retry", "change-executor")}.get(result, ())
+        valid = {"question": ("answer",), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
+                 else ("allow", "deny"), "error": ("retry", "change-executor"),
+                 "stopped": ("background",) if done.get("reason") == "interactive-closed" else ()}.get(result, ())
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
                    for s in st.running())
         if st.card_finished or busy or not step or choice not in valid or \
-                (result == "error" and int(step.get("attempt") or 0) == 0):
+                (result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login"):
             raise FlowError("no-step-question", f"{card}: ten krok nie czeka na taką decyzję")
         previous = st.step_decisions.get(focus)
         if previous:
@@ -2173,7 +2336,7 @@ class FlowEngine(PlanEditing):
         instead = str(request.get("instead") or "").strip()
         if choice == "answer" and (not answer or len(answer) > 4000):
             raise FlowError("bad-answer", "odpowiedź musi mieć od 1 do 4000 znaków")
-        if choice == "deny" and (len(answer) > 4000 or len(instead) > 4000):
+        if choice in ("deny", "retry") and (len(answer) > 4000 or len(instead) > 4000):
             raise FlowError("bad-answer", "odpowiedź musi mieć do 4000 znaków")
         if choice == "change-executor":
             if not executor:
@@ -2182,15 +2345,31 @@ class FlowEngine(PlanEditing):
         granted, skipped = [], []
         if choice == "allow":
             granted, skipped = self._grant(card, step, done, request.get("allow"))
+        if choice in ("run", "run-always", "run-ticket"):
+            from ..board.commands import outside_allowed, outside_pattern
+            command = str(done.get("command") or "").strip()
+            _, project = self._project(card)
+            if not command or not outside_allowed(command, project.denied_commands):
+                raise FlowError("forbidden-command", f"polecenia „{command}” nie można uruchomić poza piaskownicą")
+            if choice == "run-ticket":
+                # Zgoda na polecenia poza piaskownicą do końca ticketu (03.11, K-33/PT-110: trzy kopie, trzy pytania).
+                self.journal.append(card, "outside.ticket-consent", ticket=step.get("ticket") or "", step=focus)
+            if choice == "run-always":
+                from ..board.commands import outside_risky
+                if outside_risky(command):
+                    raise FlowError("risky-command", "ryzykownego polecenia nie można zapamiętać — uruchom je raz")
+                self._remember_outside(project.slug, outside_pattern(command))
         extra = {}
         if choice == "allow" and "allow" in request:
             extra = {"allow": request.get("allow"), "commands": granted, "skipped": skipped}
         if choice == "deny" and instead:
             extra = {"instead": instead}
+        if request.get("auto"):
+            extra["auto"] = True
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
-                                    choice=choice, answer=answer if choice in ("answer", "deny") else "",
-                                    command=done.get("command") or "" if choice in ("allow", "deny") else "",
-                                    executor=executor if choice == "change-executor" else "", **extra)
+                                    choice=choice, answer=answer if choice in ("answer", "deny", "retry") else "",
+                                    command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always", "run-ticket")
+                                    else "", executor=executor if choice == "change-executor" else "", **extra)
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
 
     # --- zgłoszenie błędu kroku (PT-125) ----------------------------------------------------------
@@ -2326,11 +2505,13 @@ class FlowEngine(PlanEditing):
             raise FlowError("bad-command", "krok nie podał polecenia do zatwierdzenia")
         _, project = self._project(card)
         if allow is None:
-            if len(command) > MAX_COMMAND:
-                raise FlowError("command-too-long", f"polecenie przekracza {MAX_COMMAND} znaków i nie może być zatwierdzone")
             if is_forbidden(command, project.denied_commands):
                 raise FlowError("forbidden-command", f"polecenie „{command}” jest zabronione w projekcie")
-            granted, skipped = [command], []
+            from ..board.commands import sandbox_grant
+            grant = sandbox_grant(command, project.denied_commands)
+            if grant is None:
+                raise FlowError("command-too-long", f"polecenie przekracza {MAX_COMMAND} znaków i nie może być zatwierdzone")
+            granted, skipped = [grant], []
         else:
             if not isinstance(allow, list) or not allow or len(allow) > chain.MAX_PIECES or \
                     any(type(i) is not int for i in allow) or len(set(allow)) != len(allow):
@@ -2402,15 +2583,11 @@ class FlowEngine(PlanEditing):
             else:
                 other_model = opposite.get("model") or (st.started or {}).get("reviewerModel") or ""
                 other_provider = opposite.get("provider") or (st.started or {}).get("reviewerProvider") or ""
-            if selected.model.lower() == other_model.lower() and not (
-                    transfer and step.get("kind") in ("ticket", "fix")):
-                raise FlowError("bad-executor", "wybrany wykonawca ma ten sam model co drugi uczestnik review")
-            if selected.local != (other_provider == "local"):
+            # 03.11 (decyzja użytkownika): niezależność autora i recenzenta to rekomendacja planu, nie blokada —
+            # wybór użytkownika albo eskalacja Tide wygrywa (K-31/DPT-5: „Ponów innym wykonawcą” kończył się błędem
+            # przepływu, bo recenzentem był ten sam model). Zostaje tylko rozdział pracy lokalnej i chmurowej.
+            if selected.local != (other_provider == "local") and other_provider:
                 raise FlowError("bad-executor-provider", "praca lokalna wymaga lokalnego autora i recenzenta")
-            preferred = (st.started or {}).get("preferredProvider") or ""
-            if not transfer and ((preferred == "mixed" and selected.provider == other_provider) or
-                                 (preferred != "mixed" and selected.provider != other_provider)):
-                raise FlowError("bad-executor-provider", "wybierz wykonawcę zgodnego z recenzentem karty")
         return selected
 
     def _transfer_reviewer(self, st: FlowState, step: dict, target) -> object | None:
@@ -2467,6 +2644,12 @@ class FlowEngine(PlanEditing):
         """Ten sam ticket i worktree; nowa próba ma osobny katalog wyniku i zdarzenie."""
         if any(s.get("parentStep") == step.get("step") for s in st.steps.values()):
             return
+        done = st.finished.get(step.get("step")) or {}
+        if done.get("outside") and decision.get("choice") in ("run", "run-always", "run-ticket"):
+            decision = self._outside_ready(card, step, done, decision)
+            if decision is None:
+                return          # polecenie poza piaskownicą jeszcze trwa
+            st = fold(self.journal.read(card))
         item, project = self._project(card)
         info = ticket_of(st, step.get("ticket") or "")
         resume_ticket = step.get("ticket") or ("" if step.get("kind") == "close" or
@@ -2553,8 +2736,8 @@ class FlowEngine(PlanEditing):
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if choice not in ("retry", "reject"):
-            raise FlowError("bad-choice", "wybierz ponowne poprawki albo odrzucenie ticketu")
+        if choice not in ("retry", "reject", "accept"):
+            raise FlowError("bad-choice", "wybierz ponowne poprawki, scalenie mimo uwag albo odrzucenie ticketu")
         st = fold(self.journal.read(card))
         st.last_step = attention_step(st) or st.last_step
         step = st.steps.get(st.last_step) or {}
@@ -2645,23 +2828,31 @@ class FlowEngine(PlanEditing):
             "routeKind": previous.get("routeKind", assigned.get("reviewerRouteKind", "")),
             "routeTokenFile": previous.get("routeTokenFile", assigned.get("reviewerRouteTokenFile", "")),
         }
-        transferred = any((st.step_decisions.get(name) or {}).get("choice") == "transfer" and
+        # Przeniesienie przy limicie i ręczna zmiana wykonawcy (K-16/LEGAL-66: Codex padł, użytkownik wybrał Sonnet)
+        # zwalniają z reguły dostawców planu; recenzent nadal musi być innym modelem niż autor.
+        transferred = any((st.step_decisions.get(name) or {}).get("choice") in ("transfer", "change-executor") and
                           (st.steps.get(name) or {}).get("ticket") == ticket for name in st.step_decisions)
-        if reviewer.tool != expected["program"] or reviewer.model != expected["model"] or \
-                reviewer.provider != expected["provider"] or reviewer.effort != expected["effort"] or \
-                (reviewer.route.url if reviewer.route else "") != expected["routeUrl"] or \
-                (reviewer.route.kind if reviewer.route else "") != expected["routeKind"] or \
-                (reviewer.route.token_file if reviewer.route else "") != expected["routeTokenFile"] or \
-                reviewer.model.lower() == (source.get("model") or "").lower() or \
-                reviewer.local != (source.get("provider") == "local") or \
-                (assigned.get("preferredProvider") == "mixed" and
-                 reviewer.provider == source.get("provider")) or \
-                (not transferred and assigned.get("preferredProvider") != "mixed" and
-                 reviewer.provider != source.get("provider")):
-            raise FlowError("changed-reviewer", f"{card}: katalog zmienił recenzenta od startu ticketu")
+        if reviewer_changed(reviewer, expected, source, assigned, transferred) and \
+                not any(e.get("type") == "review.reviewer-note" and e.get("ticket") == ticket and
+                        e.get("round") == round_no for e in self.journal.read(card)):
+            # 03.11: niezależny recenzent to rekomendacja planu, nie blokada — karta stała na „katalog zmienił
+            # recenzenta”, a użytkownik nie miał czego wybrać. Review rusza, w historii zostaje notka.
+            self.journal.append(card, "review.reviewer-note", ticket=ticket, round=round_no,
+                                reviewer=reviewer_name, author=source.get("executor") or source.get("model") or "")
         path = info["worktree"]
-        tip = self.git.clean_tip(project.repo, info["branch"], path)
-        diff = self.git.diff(project.repo, info["cardBranch"], info["branch"])
+        try:
+            tip = self.git.clean_tip(project.repo, info["branch"], path)
+        except FlowGitError as exc:
+            # K-35/PT-132: autor skończył, ale zostawił nieśledzony plik diagnostyczny — zamiast stać, krok autora
+            # wraca raz z prośbą o porządek (commit potrzebnych zmian, usunięcie tymczasowych plików).
+            asked = sum(1 for e in self.journal.read(card) if e.get("type") == "step.cleanup" and e.get("ticket") == ticket)
+            if "lokalne zmiany" not in str(exc) or asked >= 1 or not source.get("step") or \
+                    any(s.get("parentStep") == source["step"] for s in st.steps.values()):
+                raise
+            self.journal.append(card, "step.cleanup", step=source["step"], ticket=ticket)
+            self._resume_step(card, fold(self.journal.read(card)), source, {"choice": "cleanup"})
+            return
+        diff = self.git.review_diff(project.repo, info["cardBranch"], info["branch"])
         step_id = self._next_step_id(card, ticket, st)
         out = path + f".review-{round_no}.step/out"
         title, description = self._ticket_text(card, st, ticket, item)
@@ -2687,12 +2878,17 @@ class FlowEngine(PlanEditing):
                        s.get("kind") in ("ticket", "fix")), None)
         if author is None:
             raise FlowError("no-executor", f"{card}: nie ma kroku autora do poprawienia")
+        round_no = int(review_step.get("round") or 1)
+        escalate = round_no >= ESCALATE_FIX_ROUND and bool(review_step.get("executor"))
         try:
-            executor = execution.resolve(author.get("executor") or assigned.get("executor") or "", catalog,
+            executor = execution.resolve((review_step.get("executor") if escalate else None) or
+                                         author.get("executor") or assigned.get("executor") or "", catalog,
                                          config=cfg, probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if executor.tool != (author.get("program") or assigned.get("program")) or \
+        if escalate:
+            pass        # 03.11: po dwóch nieudanych rundach poprawki przejmuje recenzent, który zna uwagi
+        elif executor.tool != (author.get("program") or assigned.get("program")) or \
                 executor.model != (author.get("model") or assigned.get("model")) or \
                 executor.provider != (author.get("provider") or assigned.get("provider")) or \
                 executor.effort != author.get("effort", assigned.get("executorEffort", "")) or \
@@ -2700,7 +2896,6 @@ class FlowEngine(PlanEditing):
                 (executor.route.kind if executor.route else "") != author.get("routeKind", assigned.get("executorRouteKind", "")) or \
                 (executor.route.token_file if executor.route else "") != author.get("routeTokenFile", assigned.get("executorRouteTokenFile", "")):
             raise FlowError("changed-executor", f"{card}: katalog zmienił wykonawcę poprawek")
-        round_no = int(review_step.get("round") or 1)
         step_id = self._next_step_id(card, ticket, st)
         out = info["worktree"] + f".fix-{round_no}.step/out"
         title, description = self._ticket_text(card, st, ticket, item)
@@ -2715,9 +2910,11 @@ class FlowEngine(PlanEditing):
     def _cleanup(self, card: str, st: FlowState, ticket: str, rounds: int) -> None:
         info = ticket_of(st, ticket)
         repo = self._repo(card)
+        # Sprzątanie jest powtarzalne: nieudane (np. pliki w worktree, K-15/LEGAL-60) ponawia się przy każdym
+        # przebiegu, zamiast na zawsze zatrzymać kartę.
         self._act(card, "cleanup", ticket,
                   lambda: self.git.remove_worktree(repo, info["branch"], info["worktree"]),
-                  repo=repo, branch=info["branch"], worktree=info["worktree"])
+                  retry_failed=True, repo=repo, branch=info["branch"], worktree=info["worktree"])
 
     def _recover_verdicts(self, card: str) -> None:
         st = fold(self.journal.read(card))
@@ -2772,7 +2969,8 @@ class FlowEngine(PlanEditing):
             return
         if action == "cleanup":
             self._act(card, action, key,
-                      lambda: self.git.remove_worktree(intent["repo"], intent["branch"], intent["worktree"]))
+                      lambda: self.git.remove_worktree(intent["repo"], intent["branch"], intent["worktree"]),
+                      retry_failed=True)
             return
         if action == "merge":
             st = fold(self.journal.read(card))
@@ -2972,7 +3170,8 @@ class FlowEngine(PlanEditing):
             log_st = os.stat(log) if log else None
         except OSError:
             log_st = None
-        return count, size, newest, (log_st.st_size, log_st.st_mtime_ns) if log_st else None
+        cpu = self.unit_cpu(step.get("unit") or "") if self.unit_cpu else None
+        return count, size, newest, (log_st.st_size, log_st.st_mtime_ns) if log_st else None, cpu
 
     def _handoff_note(self, card: str, step: dict, stopped, reason: str) -> str:
         """Notka z zatrzymania: dane techniczne i ograniczony diff, bez ponownego użycia modelu."""
@@ -3065,6 +3264,9 @@ class FlowEngine(PlanEditing):
         data = forced or self._result(os.path.join(out, handoff.RESULT_FILE))
         if forced is None and exit_code != 0:
             data = {**data, "result": "error", "reason": "lost" if exit_code is None else "exit"}
+        if forced is None and data.get("result") == "error" and _login_expired(os.path.join(out, "step.log")):
+            # K-35, 03.11 07:58: wygasłe logowanie wyglądało jak zwykły błąd „exit” i zużywało ponowienia.
+            data = {**data, "reason": "login"}
         if forced is None and step.get("program") == "claude" and data.get("result") == "error":
             denied = self._claude_denied_command(os.path.join(out, "step.log"))
             if denied:
@@ -3119,15 +3321,30 @@ class FlowEngine(PlanEditing):
         if data.get("result") == "done" and step.get("kind") == "planning" and step.get("mode") == "interactive":
             snapshot_dir = self._freeze_planning_output(card, name, out)
         extra = {k: v for k, v in (("wip", wip), ("messages", messages)) if v}
+        remembered = False
+        auto_allow = False
+        broken_mcp = self._codex_broken_mcp(step, data)
         if data.get("result") == "denied":
             from ..board import chain
-            from ..board.commands import MAX_COMMAND, is_forbidden
+            from ..board.commands import MAX_COMMAND, is_forbidden, outside_risky
             _, project = self._project(card)
             command = data.get("command") or ""
-            data["canAllow"] = len(command) <= MAX_COMMAND and not is_forbidden(command, project.denied_commands)
-            # PT-124: łańcuch rozłożony na pojedyncze polecenia z flagami i powodem blokady (dla okna decyzji).
-            extra["commands"] = chain.describe(command, denied=project.denied_commands,
-                                               step_dir=step.get("stepDir") or "") if str(command).strip() else []
+            from ..board.commands import sandbox_grant
+            data["canAllow"] = sandbox_grant(command, project.denied_commands) is not None
+            if data.get("outside"):
+                from ..board.commands import outside_allowed, outside_matches, outside_pattern
+                extra["outside"] = True
+                extra["pattern"] = outside_pattern(command)
+                data["canAllow"] = outside_allowed(command, project.denied_commands)
+                remembered = data["canAllow"] and (outside_matches(command, self._outside_remembered(project.slug))
+                                                   or self._ticket_consent(card, step.get("ticket") or "")
+                                                   or self._auto_outside(card) and not outside_risky(command))
+            else:
+                # PT-124: łańcuch rozłożony na pojedyncze polecenia z flagami i powodem blokady (dla okna decyzji).
+                extra["commands"] = chain.describe(command, denied=project.denied_commands,
+                                                   step_dir=step.get("stepDir") or "") if str(command).strip() else []
+                if data["canAllow"] and self._auto_consent():
+                    auto_allow = True   # w piaskownicy: zapisy tylko w worktree, bez sieci — wystarczy brak zakazu
         if data.get("result") in ("error", "stopped"):
             # Czyja wina (PT-125): z powodu wyniku i dziennika tego kroku, w chwili wyniku — fold() nie czyta dysku.
             log = os.path.join(out, "step.log")
@@ -3141,13 +3358,33 @@ class FlowEngine(PlanEditing):
                             canAllow=data.get("canAllow", True), stalledSince=data.get("stalledSince") or "",
                             notes=[n for n in data.get("notes") or [] if n in kept], kept=kept,
                             exit=exit_code, snapshotDir=snapshot_dir, **extra)
-        if data.get("result") == "denied":
+        if data.get("result") == "question":
+            self._env_question(card, step, data)
+        if broken_mcp:
+            # Błąd konfiguracji Codexa po stronie Tide: zapamiętany serwer jest odtąd pomijany, krok rusza sam.
+            self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
+                                kind=step.get("kind") or "", choice="retry", answer="", command="", executor="",
+                                auto=True)
+        if data.get("result") == "denied" and not data.get("outside"):
+            # Prośbie o uruchomienie poza piaskownicą Tide sam nie odmawia (K-16/LEGAL-66: odmowa bez wyjścia).
             listed = extra.get("commands") or []
             if listed and not data.get("canAllow", True) and not any(item["canAllow"] for item in listed):
                 self._auto_deny(card, name, step, data.get("command") or "")
             elif str(data.get("command") or "").strip() and not listed:
                 # Same odczyty własnego <krok>/in i <krok>/out — zawsze dozwolone, nie ma o co pytać użytkownika.
                 self._auto_deny(card, name, step, data.get("command") or "", note=STEP_READ_NOTE)
+            elif auto_allow:
+                # Automatyczna zgoda na pojedyncze, bezpieczne polecenie w piaskownicy (03.11: „nie mam ochoty co
+                # 2 minuty klikać zgody”). Piaskownica dalej chroni system; zgoda trafia do listy projektu.
+                try:
+                    self.resolve_step(card, {"choice": "allow", "step": name, "auto": True})
+                except FlowError:
+                    pass
+        elif remembered:
+            # Polecenie zapamiętane przez użytkownika albo bezpieczne przy automatycznych zgodach — bez pytania.
+            self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
+                                kind=step.get("kind") or "", choice="run", answer="",
+                                command=data.get("command") or "", executor="", auto=True)
         if merged_tip:
             self.journal.append(card, "result", action="merge", key=step.get("ticket") or "",
                                 ok=True, commit=merged_tip, resolved=True)
@@ -3239,11 +3476,17 @@ class FlowEngine(PlanEditing):
             return {"result": "error", "reason": "bad-result"}
         if (data["result"] == "question" and
                 (not isinstance(data.get("question"), str) or not data["question"].strip())) or \
-                (data["result"] == "denied" and
+                (data["result"] in ("denied", "outside") and
                  (not isinstance(data.get("command"), str) or not data["command"].strip() or
                   any(c in data["command"] for c in "\n\r\0"))):
             return {"result": "error", "reason": "bad-result"}
         notes = data.get("notes") if isinstance(data.get("notes"), list) else []
+        if data["result"] == "outside":
+            # Prośba o uruchomienie poza piaskownicą idzie ścieżką zgody na polecenie (dziennik, decyzja,
+            # wznowienie, restart), z flagą `outside` — wynik polecenia dostaje wznowiony krok (03.11).
+            return {"result": "denied", "outside": True, "reason": str(data.get("reason") or "")[:600],
+                    "question": "", "command": data["command"].strip(),
+                    "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
         return {"result": data["result"], "reason": str(data.get("reason") or "")[:300],
                 "question": str(data.get("question") or "")[:2000], "command": str(data.get("command") or ""),
                 "options": clean_options(data.get("options")) if data["result"] == "question" else [],
@@ -3296,8 +3539,12 @@ class FlowEngine(PlanEditing):
         ticket = step.get("ticket") or ""
         info = ticket_of(st)
         repo = step.get("repo") or self._repo(card)
-        approved = next((v for (ticket_id, _round), v in reversed(list(st.verdicts.items()))
-                         if ticket_id == ticket and v.get("verdict") == "APPROVE"), None)
+        # Zatwierdzony commit: APPROVE recenzenta albo świadoma decyzja użytkownika „scal mimo uwag” po 3. rundzie
+        # (03.11, K-33/PT-108: uwagi dotyczyły wyłącznie testów niewykonalnych w piaskownicy).
+        approved = next((v for (ticket_id, round_no), v in reversed(list(st.verdicts.items()))
+                         if ticket_id == ticket and (v.get("verdict") == "APPROVE" or
+                                                     (st.review_decisions.get((ticket, round_no)) or {}).get("choice")
+                                                     == "accept")), None)
         review_step = st.steps.get((approved or {}).get("step")) or {}
         expected_tip = review_step.get("reviewTip") or ""
         if not expected_tip:
@@ -3358,6 +3605,240 @@ class FlowEngine(PlanEditing):
             raise FlowError("diff", str(exc)) from None
         return {"ok": True, "id": card, "main": main, "branch": info["cardBranch"], "diff": diff}
 
+    # --- polecenia poza piaskownicą (03.11) --------------------------------------------------------
+
+    def _outside_remembered(self, slug: str) -> list:
+        from ..board.commands import outside_pattern
+        value = (self._settings_data().get("outsideCommands") or {}).get(slug) or []
+        # Wpisy sprzed rodzin (dokładne polecenia) liczą się jako ich rodzina — tak rozumiał to użytkownik.
+        return [c if c.endswith(" *") else outside_pattern(c) for c in value if isinstance(c, str)] \
+            if isinstance(value, list) else []
+
+    def _remember_outside(self, slug: str, command: str) -> None:
+        data = self._settings_data()
+        allowed = data.get("outsideCommands") if isinstance(data.get("outsideCommands"), dict) else {}
+        current = [c for c in (allowed.get(slug) or []) if isinstance(c, str)]
+        if command not in current:
+            allowed[slug] = current + [command]
+        data["outsideCommands"] = allowed
+        self._write_settings(data)
+
+    def _outside_ready(self, card: str, step: dict, done: dict, decision: dict):
+        """Zgoda na polecenie poza piaskownicą: uruchamia je raz (jednostka systemd, kod wyjścia w pliku) i zwraca
+        decyzję z wynikiem do wznowienia kroku, albo None, gdy polecenie jeszcze trwa."""
+        name = step.get("step") or ""
+        events = [e for e in self.journal.read(card) if e.get("step") == name and
+                  e.get("type") in ("outside.started", "outside.finished")]
+        finished = next((e for e in events if e["type"] == "outside.finished"), None)
+        if finished:
+            return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
+        started = next((e for e in events if e["type"] == "outside.started"), None)
+        if started is None:
+            if self._outside_busy(card):
+                return None     # kolejka: stan karty mówi „czeka na wolne miejsce poza piaskownicą”
+            self._start_outside(card, step, done.get("command") or "")
+            return None
+        self._outside_busy(card)            # buduje zbiór aktywnych po restarcie
+        self._outside_active[name] = (card, started["unit"])
+        code = stepstop.read_exit_code(os.path.dirname(os.path.dirname(started["exitFile"])))
+        if code is None and time.time() - _epoch(started.get("ts")) < OUTSIDE_TIMEOUT:
+            return None
+        if code is None:
+            stepstop._systemctl("stop", started["unit"] + ".scope")
+            code = "przekroczony czas"
+        tail = ""
+        try:
+            with open(started["log"], "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                fh.seek(max(0, fh.tell() - OUTSIDE_TAIL))
+                tail = fh.read().decode("utf-8", "replace")
+        except OSError:
+            tail = "(brak wyniku)"
+        self._outside_active.pop(name, None)
+        # Procesy zostawione przez polecenie (np. atrapy z testów, serwery w tle) nie trzymają jednostki w nieskończoność.
+        stepstop._systemctl("stop", started["unit"] + ".scope")
+        self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
+                            command=started.get("command") or "", exit=code, tail=tail)
+        return {**decision, "answer": f"Kod wyjścia: {code}\nKoniec wyniku:\n{tail}"}
+
+    def _review_rounds(self) -> int:
+        """Po tylu rundach REQUEST_CHANGES Tide pyta użytkownika (domyślnie 6; 03.11: po 3 karty stały co chwilę)."""
+        try:
+            return max(1, min(20, int(self._settings_data().get("reviewRoundsBeforeQuestion", REVIEW_ROUNDS))))
+        except (TypeError, ValueError):
+            return REVIEW_ROUNDS
+
+    def _codex_broken_mcp(self, step: dict, data: dict) -> str:
+        """Nazwa serwera MCP, na którym Codex nie wystartował („invalid transport”), gdy jest nowa — zapisana w
+        ustawieniach przepływu (`codexMcpSkip`); pusta, gdy to inny błąd albo serwer był już pomijany."""
+        if data.get("result") != "error" or step.get("program") != "codex":
+            return ""
+        try:
+            with open(os.path.join(step.get("stepDir") or "", "out", "step.log"), "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                fh.seek(max(0, fh.tell() - 4000))
+                found = agentcmd.CODEX_BROKEN_MCP.search(fh.read().decode("utf-8", "replace"))
+        except OSError:
+            return ""
+        if not found:
+            return ""
+        settings = self._settings_data()
+        skip = [n for n in settings.get("codexMcpSkip") or [] if isinstance(n, str)]
+        if found.group(1) in skip:
+            return ""
+        settings["codexMcpSkip"] = skip + [found.group(1)]
+        self._write_settings(settings)
+        data["reason"] = f"konfiguracja Codexa: serwer MCP {found.group(1)} — pomijam go i ponawiam krok"
+        return found.group(1)
+
+    def _auto_consent(self) -> bool:
+        """Automatyczne zgody (domyślnie włączone); `autoConsent: false` w ustawieniach przepływu je wyłącza."""
+        return self._settings_data().get("autoConsent", True) is not False
+
+    def _auto_outside(self, card: str) -> bool:
+        """Automatyczne uruchamianie poza piaskownicą — przełącznik na projekt (`outsideAuto: {"slug": false}`),
+        bo poza piaskownicą kod z repozytorium działa z prawami użytkownika (docs/sandbox-and-permissions.md)."""
+        if not self._auto_consent():
+            return False
+        slug = self._project(card)[1].slug
+        return (self._settings_data().get("outsideAuto") or {}).get(slug, True) is not False
+
+    def _env_question(self, card: str, step: dict, done: dict) -> None:
+        """Pytanie kroku o środowisko (piaskownica, Docker, porty, instalacje, testy) dostaje odpowiedź Tide zamiast
+        trafić do użytkownika (03.11: „to serio tak ma działać, że muszę odpalać sesję ratunkową?”). Raz na ticket
+        z rzędu: gdy agent zapyta ponownie zaraz po odpowiedzi Tide, pytanie idzie do użytkownika."""
+        question = str(done.get("question") or "")
+        name = step.get("step") or ""
+        if not ENV_QUESTION.search(question) or self.journal is None:
+            return
+        events = self.journal.read(card)
+        if any(e.get("type") == "step.decision" and e.get("step") == name for e in events):
+            return
+        parent = step.get("parentStep") or ""
+        if any(e.get("type") == "step.decision" and e.get("step") == parent and e.get("envAnswer") for e in events):
+            return      # Tide już odpowiedział w poprzedniej próbie — teraz decyduje użytkownik
+        self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
+                            kind=step.get("kind") or "", choice="answer", answer=ENV_ANSWER, command="",
+                            executor="", auto=True, envAnswer=True)
+
+    def _consent_recheck(self, card: str, step: dict, done: dict) -> None:
+        """Prośba czekająca na zgodę sprzed zmiany reguł: zatwierdzana tak, jak zostałaby zgłoszona dziś."""
+        if done.get("outside"):
+            self._outside_recheck(card, step, done)
+            return
+        from ..board.commands import sandbox_grant
+        allowed = sandbox_grant(done.get("command") or "", self._project(card)[1].denied_commands) is not None
+        if allowed != bool(done.get("canAllow", True)):
+            self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
+                                ticket=step.get("ticket") or "", canAllow=allowed)
+        if allowed and self._auto_consent():
+            try:
+                self.resolve_step(card, {"choice": "allow", "step": step.get("step") or "", "auto": True})
+            except FlowError:
+                pass
+
+    def _outside_recheck(self, card: str, step: dict, done: dict) -> None:
+        """Prośba sprzed zmiany reguł (np. `E2E_PORT=… npm run e2e` odrzucane jako łańcuch, rodziny zamiast dokładnych
+        poleceń): gdy dziś pasuje do zapamiętanej rodziny projektu, uruchamia się bez pytania."""
+        from ..board.commands import outside_allowed, outside_matches
+        command = done.get("command") or ""
+        _, project = self._project(card)
+        from ..board.commands import outside_risky
+        allowed = outside_allowed(command, project.denied_commands)
+        if allowed != bool(done.get("canAllow", True)):
+            # Reguły zmieniły się od wyniku kroku (K-33/PT-110: `find -exec … \;` uznane za łańcuch) — decyzja
+            # w oknie ma pokazać dzisiejszy stan, inaczej użytkownik nie ma czego wybrać.
+            self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
+                                ticket=step.get("ticket") or "", canAllow=allowed)
+        if allowed and (outside_matches(command, self._outside_remembered(project.slug)) or
+                        self._ticket_consent(card, step.get("ticket") or "") or
+                        self._auto_outside(card) and not outside_risky(command)):
+            self.journal.append(card, "step.decision", step=step.get("step") or "", ticket=step.get("ticket") or "",
+                                kind=step.get("kind") or "", choice="run", answer="", command=command,
+                                executor="", auto=True)
+
+    CLASS_RANK = {"lekki": 0, "standard": 1, "mocny": 2}
+
+    def _stronger_executor(self, step: dict, done: dict) -> str:
+        """Następny mocniejszy wykonawca tego samego dostawcy (lekki → standard → mocny) po błędzie kroku, który nie
+        jest winą użytkownika ani limitu; pusty — nie ma mocniejszego albo błąd tego nie uzasadnia."""
+        if self._settings_data().get("escalateErrors", True) is False or \
+                done.get("reason") in ("login", "limit", "local-unavailable") or \
+                faults.of_finished(done)["fault"] in ("user", "provider"):
+            return ""
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None:
+            return ""
+        current = next((e for e in catalog.executors if e.name == step.get("executor")), None)
+        if current is None:
+            return ""
+        rank = max((self.CLASS_RANK.get(c, -1) for c in current.classes), default=-1)
+        if rank < 0:
+            return ""
+        better = [e for e in catalog.executors if e.provider == current.provider and e.name != current.name and
+                  max((self.CLASS_RANK.get(c, -1) for c in e.classes), default=-1) > rank]
+        better.sort(key=lambda e: max(self.CLASS_RANK.get(c, -1) for c in e.classes))
+        return better[0].name if better else ""
+
+    def _ticket_consent(self, card: str, ticket: str) -> bool:
+        return bool(ticket) and any(e.get("type") == "outside.ticket-consent" and e.get("ticket") == ticket
+                                    for e in self.journal.read(card))
+
+    def _outside_busy(self, card: str) -> bool:
+        """Jedno polecenie poza piaskownicą naraz w projekcie i OUTSIDE_TOTAL łącznie (03.11, K-31: pięć przebiegów
+        e2e naraz na jednym porcie kończyło się kodem 1 i agenci prosili o kolejne)."""
+        if self._outside_active is None:
+            # Po restarcie usługi: polecenia rozpoczęte (bez zakończenia) we wszystkich kartach.
+            self._outside_active = {}
+            for other in self.journal.cards():
+                events = self.journal.read(other)
+                done = {e.get("step") for e in events if e.get("type") == "outside.finished"}
+                for e in events:
+                    if e.get("type") == "outside.started" and e.get("step") not in done:
+                        self._outside_active[e["step"]] = (other, e.get("unit") or "")
+        alive = {}
+        for name, (other, unit) in self._outside_active.items():
+            if stepstop.read_exit_code(os.path.dirname(os.path.dirname(self._outside_exit(other, name)))) is None:
+                alive[name] = (other, unit)
+        self._outside_active = alive
+        if len(alive) >= OUTSIDE_TOTAL:
+            return True
+        slug = self._project(card)[1].slug
+        return sum(1 for other, _ in alive.values() if self._project(other)[1].slug == slug) >= OUTSIDE_PER_PROJECT
+
+    def _outside_exit(self, card: str, name: str) -> str:
+        found = next((e for e in self.journal.read(card) if e.get("type") == "outside.started" and e.get("step") == name), {})
+        return found.get("exitFile") or "/nonexistent/in/exit-code"
+
+    def _start_outside(self, card: str, step: dict, command: str) -> None:
+        name = step.get("step") or ""
+        folder = os.path.join(step.get("stepDir") or "", "outside")
+        os.makedirs(os.path.join(folder, "in"), exist_ok=True)
+        exit_file = os.path.join(folder, "in", "exit-code")
+        log = os.path.join(folder, "outside.log")
+        unit = f"tide-outside-{name}"
+        env = dict(os.environ)
+        from ..tasks import node as node_mod
+        prefix = node_mod.node_home(os.path.expanduser("~"))
+        if prefix:
+            env["PATH"] = os.path.join(prefix, "bin") + os.pathsep + env.get("PATH", "")
+        chrome = node_mod.chrome_bin(os.path.expanduser("~"))
+        if chrome and not env.get("CHROME_BIN"):
+            env["CHROME_BIN"] = chrome
+        argv = [self.systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet", f"--unit={unit}",
+                "-p", f"CPUWeight={STEP_CPU_WEIGHT}", "-p", f"IOWeight={STEP_CPU_WEIGHT}", "--",
+                "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
+                exit_file, "/bin/sh", "-c", command]
+        with open(log, "ab") as out:
+            subprocess.Popen(argv, cwd=step.get("worktree") or None, env=env, stdin=subprocess.DEVNULL,
+                             stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+        self.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "", command=command,
+                            unit=unit, log=log, exitFile=exit_file)
+        if self._outside_active is None:
+            self._outside_active = {}
+        self._outside_active[name] = (card, unit)
+
     AUTO_DENY_LIMIT = 3
 
     def _auto_deny(self, card, name, step, command, *, note=None):
@@ -3368,11 +3849,15 @@ class FlowEngine(PlanEditing):
         ticket = step.get("ticket") or ""
         kind = step.get("kind") or ""
         used = sum(1 for e in self.journal.read(card) if e.get("type") == "step.decision" and e.get("auto")
+                   and e.get("choice") == "deny"
                    and (e.get("ticket") or "") == ticket and (ticket or e.get("kind") == kind))
         if used >= self.AUTO_DENY_LIMIT:
             return
+        from ..board.commands import MAX_COMMAND
+        if note is None:
+            note = AUTO_DENY_LONG.format(limit=MAX_COMMAND) if len(command) > MAX_COMMAND else AUTO_DENY_NOTE
         self.journal.append(card, "step.decision", step=name, ticket=ticket, kind=kind, choice="deny",
-                            answer=note or AUTO_DENY_NOTE, command=command, executor="", auto=True)
+                            answer=note, command=command, executor="", auto=True)
 
     def merge_card_to_main(self, card_id: str) -> dict:
         """Jawna akcja użytkownika po domknięciu; nigdy nie wywoływana przez tick."""
@@ -3395,7 +3880,17 @@ class FlowEngine(PlanEditing):
                                for block in listed.out.split("\n\n"))
                               if part.get("branch") == f"refs/heads/{main}"), "") if listed.ok else ""
             if not main_tree:
-                raise FlowError("no-main-worktree", "otwórz gałąź główną w worktree przed scaleniem")
+                # Gałąź główna nie jest nigdzie otwarta (K-15: główny katalog stał na innej gałęzi z lokalnymi
+                # zmianami) — Tide zakłada na nią własny worktree zamiast odsyłać użytkownika do terminala.
+                from .gitops import worktrees_dir
+                path = os.path.join(worktrees_dir(repo), f"{main}-main")
+                if os.path.exists(path):
+                    raise FlowError("no-main-worktree", f"katalog {path} już istnieje — otwórz w nim gałąź {main}")
+                added = self.git.run(repo, "worktree", "add", path, main, timeout=600)
+                if not added.ok:
+                    raise FlowError("no-main-worktree", "nie udało się otworzyć gałęzi głównej w worktree: "
+                                    + ((added.err or "").splitlines() or ["błąd gita"])[0])
+                main_tree = path
             try:
                 tip = self.git.clean_tip(repo, info["cardBranch"], info["cardWorktree"])
                 merged = self.git.merge(repo, main, info["cardBranch"], main_tree,

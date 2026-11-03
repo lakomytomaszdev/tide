@@ -19,7 +19,9 @@ ALWAYS_ALLOWED = ("cd *", "pwd", "ls *", "cat *", "head *", "tail *", "wc *", "s
                   "tr *", "nl *", "diff *", "cmp *", "stat *", "file *", "tree *", "du *", "realpath *",
                   "basename *", "dirname *", "which *", "echo *", "printf *", "true", "rg *", "grep *",
                   "git status *", "git diff *", "git log *", "git show *", "git branch *", "git rev-parse *",
-                  "git ls-files *", "git merge-base *", "git blame *")
+                  "git ls-files *", "git merge-base *", "git blame *",
+                  # usuwa tylko nieśledzone pliki w worktree kroku (K-35/PT-132: sprzątanie pliku diagnostycznego)
+                  "git clean -f -- *")
 MAX_COMMANDS = 100
 MAX_COMMAND = 300
 
@@ -167,3 +169,134 @@ def claude_tools(allowed: list[str], denied: list[str],
     for rule in denied:
         bans.extend((f"Bash({rule})", f"Bash({rule} *)"))
     return tuple(grants), tuple(bans)
+
+
+# --- polecenia poza piaskownicą (03.11) ------------------------------------------------------------
+
+OUTSIDE_ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+OUTSIDE_ENV_VALUE = re.compile(r"[A-Za-z0-9_.@:,/+-]{0,200}")
+OUTSIDE_ENV_DENIED = ("PATH", "HOME", "SHELL", "IFS", "ENV", "BASH_ENV", "PS4", "NODE_OPTIONS", "PYTHONPATH",
+                      "PYTHONSTARTUP", "PERL5OPT", "RUBYOPT", "GIT_DIR", "GIT_WORK_TREE")
+OUTSIDE_FAMILY = {"npm": 2, "pnpm": 2, "yarn": 2, "npx": 3, "dotnet": 2, "make": 2, "git": 2, "python3": 3}
+
+
+def outside_argv(command: str) -> list[str] | None:
+    """Polecenie poza piaskownicą bez początkowych zmiennych (`E2E_PORT=4311 npm run e2e`, także w cudzysłowie:
+    `DATABASE_CONNECTION="Host=…;Port=1" dotnet test`, K-16); None dla łańcucha, podpowłoki albo zmiennej, która
+    zmienia sposób uruchamiania (PATH, LD_*, NODE_OPTIONS…)."""
+    text = str(command or "").strip()
+    if not text or any(c in text for c in "\n\r\0`$"):
+        return None
+    try:
+        # Operatory powłoki poza cudzysłowem (`;`, `&&`, `|`, `>`…) — polecenie idzie do `/bin/sh -c`, więc odrzucamy.
+        # Znak poprzedzony ukośnikiem (`find … -exec … \;`) jest zwykłym argumentem, nie operatorem (K-33/PT-110).
+        lexer = shlex.shlex(re.sub(r"\\[;&|<>()]", "_", text), posix=True, punctuation_chars=";&|<>()")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        if any(token and set(token) <= set(";&|<>()") for token in lexer):
+            return None
+        parts = shlex.split(text)
+    except ValueError:
+        return None
+    at = 0
+    while at < len(parts) and "=" in parts[at]:
+        name, value = parts[at].split("=", 1)
+        if not OUTSIDE_ENV_NAME.fullmatch(name) or name in OUTSIDE_ENV_DENIED or name.startswith(("LD_", "DYLD_")) \
+                or len(value) > 500:
+            return None
+        at += 1
+    program = parts[at:]
+    # Operatory sprawdził lekser wyżej; tu tylko reguły programu jak w `_argv` (bez powłok, sudo, env i przypisań).
+    # `_argv` odrzuciłby argument `;` z `find -exec … \;`, choć powłoka dostaje go jako zwykły tekst.
+    if not program or program[0] in ("sh", "bash", "zsh", "fish", "eval", "exec", "env", "command", "builtin",
+                                     "sudo", "doas") or ("=" in program[0] and program[0].split("=", 1)[0].isidentifier()):
+        return None
+    return program
+
+
+OUTSIDE_MAX = 2000      # polecenia poza piaskownicą bywają długie (zmienne połączeń, filtry testów)
+
+
+def outside_allowed(command: str, denied: list[str]) -> bool:
+    argv = outside_argv(command)
+    if argv is None or len(command) > OUTSIDE_MAX:
+        return False
+    # Zakazy projektu porównujemy na gotowych argumentach (`is_forbidden` przepuszcza tekst przez `_argv`, który
+    # odrzuca np. argument `;` z `find -exec … \;` — i wtedy każde takie polecenie wyglądało na zakazane).
+    program = _without_locale(argv)
+    for rule in denied:
+        rule_argv = _argv(rule)
+        if rule_argv:
+            prefix = rule_argv[:-1] if rule_argv[-1] == "*" else rule_argv
+            if program[:len(prefix)] == prefix:
+                return False
+    return True
+
+
+def outside_pattern(command: str) -> str:
+    """Rodzina polecenia do zapamiętania („zawsze w tym projekcie”): `npm run e2e -- x` → `npm run e2e *`,
+    `npx playwright test a` → `npx playwright test *`, `npm install --save-dev x` → `npm install *`."""
+    argv = outside_argv(command) or []
+    if not argv:
+        return command
+    size = OUTSIDE_FAMILY.get(argv[0], 2)
+    if argv[0] in ("npm", "pnpm", "yarn") and len(argv) > 1 and argv[1] in ("run", "run-script", "exec"):
+        size = 3
+    head = [a for a in argv[:size] if not a.startswith("-")] or argv[:1]
+    return shlex.join(head) + " *"
+
+
+def outside_matches(command: str, remembered: list[str]) -> bool:
+    argv = outside_argv(command)
+    if argv is None:
+        return False
+    for rule in remembered:
+        if rule.endswith(" *"):
+            prefix = _argv(rule[:-2])
+            if prefix and argv[:len(prefix)] == prefix:
+                return True
+        elif rule == command:
+            return True
+    return False
+
+
+# Rodziny, których Tide nigdy nie uruchamia sam poza piaskownicą: wyjście na zewnątrz (push, publikacja,
+# wdrożenie, zdalne powłoki), zmiany systemu i usuwanie/przenoszenie plików bez granic worktree.
+OUTSIDE_RISKY = (
+    "git push", "git remote", "git config", "npm publish", "npm login", "npm adduser", "npm token", "pnpm publish",
+    "yarn publish", "yarn npm", "dotnet nuget", "docker push", "docker login", "docker system", "podman push",
+    "ssh", "scp", "rsync", "sftp", "curl", "wget", "kubectl", "helm", "terraform", "az", "aws", "gcloud", "gh", "glab",
+    "systemctl", "service", "make install", "rm", "mv", "cp", "chmod", "chown", "dd", "mkfs", "mount", "umount",
+    "kill", "pkill", "killall", "reboot", "shutdown", "crontab", "apt", "apt-get", "snap", "flatpak", "pip install",
+    "pip3 install", "python3 -m pip", "find", "xargs", "truncate", "shred", "ln", "tee", "open", "xdg-open")
+
+
+def outside_risky(command: str) -> str:
+    """Powód, dla którego polecenie wymaga decyzji użytkownika mimo automatycznych zgód; pusty = bezpieczne."""
+    argv = outside_argv(command)
+    if argv is None:
+        return "łańcuch, podpowłoka albo niebezpieczna zmienna"
+    for rule in OUTSIDE_RISKY:
+        prefix = rule.split()
+        if argv[:len(prefix)] == prefix:
+            return f"„{rule}” wychodzi poza worktree albo zmienia system"
+    for arg in argv[1:]:
+        value = arg.split("=", 1)[-1]
+        if value.startswith(("/", "~")) and not value.startswith("/tmp/") or "../" in value or value == "..":
+            return f"ścieżka spoza worktree: {arg}"
+    return ""
+
+
+def sandbox_grant(command: str, denied: list[str]) -> str | None:
+    """Co dopisać do listy dozwolonych przy zgodzie na polecenie w piaskownicy: samo polecenie (do MAX_COMMAND
+    znaków) albo — dla dłuższego pojedynczego polecenia — jego rodzinę (`git rm *`, 03.11 K-31/DPT-5: `git rm` czterech
+    plików miał 324 znaki i nie dało się go zatwierdzić). None: łańcuch, składnia złożona albo zakaz projektu."""
+    argv = _argv(command)
+    if argv is None or is_forbidden(command, denied):
+        return None
+    if len(command) <= MAX_COMMAND:
+        return command
+    program = _without_locale(argv)
+    head = [a for a in program[:2] if not a.startswith("-")] or program[:1]
+    family = shlex.join(head) + " *"
+    return None if is_forbidden(family[:-2], denied) else family

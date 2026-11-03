@@ -75,7 +75,16 @@ Zabronione polecenia:
 {deny}
 {own}Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.
 Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedno polecenie nie zezwala
-na cały program ani na łańcuch poleceń.
+na cały program ani na łańcuch poleceń. Zwykłe pojedyncze polecenia (testy, budowanie, lint, instalacja paczek)
+Tide zatwierdza i uruchamia automatycznie — zgłaszaj je śmiało, po jednym, bez łączenia.
+NIE zadawaj użytkownikowi pytań o środowisko (porty, serwery, instalacje, sieć, uruchomienie testów, „czy możesz
+uruchomić…”). Środowisko to zadanie Tide i Twoje: zgłoś polecenie (`denied` albo `outside`); gdy mimo to się nie da,
+zakończ wynikiem `error` z opisem przyczyny. Pytanie (`question`) jest tylko na decyzje o zakresie, wymaganiach
+i wyborach biznesowych — z krótkimi opcjami i Twoją rekomendacją.
+Jeśli potrzebujesz polecenia, którego piaskownica kroku nie wykona (sieć, np. `npm install <paczka>`; Docker/
+Testcontainers; pełne testy, które same uruchamiają piaskownicę), zapisz
+{{"result":"outside","command":"jedno pełne polecenie","reason":"po co i dlaczego nie w piaskownicy"}} i zakończ krok.
+Użytkownik może je uruchomić poza piaskownicą w tym worktree; przy wznowieniu dostaniesz kod wyjścia i koniec wyniku.
 """
 
 
@@ -101,6 +110,14 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
             detail += f"\nNa pozostałe polecenia zgody nie ma — nie uruchamiaj ich i kontynuuj bez nich:\n{rest}"
     elif choice == "allow":
         detail = f"Użytkownik zezwolił na dokładne polecenie: {command}"
+    elif choice == "background":
+        detail = ("Rozmowa z użytkownikiem w Konsoli została zamknięta przed zapisaniem wyniku. Kontynuuj pracę w tle od "
+                  "miejsca przerwania (sprawdź `git status` i ostatnie zmiany) i zakończ krok plikiem wyniku.")
+    elif choice in ("run", "run-always", "run-ticket"):
+        detail = (f"Użytkownik uruchomił poza piaskownicą, w tym worktree, polecenie: {command}\n{answer}\n"
+                  "Zmiany w plikach (np. package.json, package-lock.json) są już w worktree — sprawdź `git status`.")
+    elif choice == "deny" and prior.get("outside"):
+        detail = f"Użytkownik nie zgodził się uruchomić poza piaskownicą: {command}. Kontynuuj bez tego."
     elif choice == "deny" and instead:
         detail = (f"Polecenie nie zostało uruchomione: {command}\n"
                   f"Użytkownik odmówił zgody na nie i prosi, żebyś zamiast tego: {instead}")
@@ -108,12 +125,20 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
         detail = f"Użytkownik odmówił zgody na polecenie: {command}. Kontynuuj bez niego."
         if answer:
             detail = f"Polecenie nie zostało uruchomione: {command}\n{answer}"
+    elif choice == "cleanup":
+        detail = ("Krok zakończył się, ale worktree ticketu ma niezacommitowane albo nieśledzone pliki (sprawdź "
+                  "`git status`). Zacommituj zmiany potrzebne w tickecie, usuń nieśledzone pliki tymczasowe i "
+                  "diagnostyczne poleceniem `git clean -f -- <ścieżka>` (nie `rm`), "
+                  "a potem zakończ krok tym samym wynikiem co poprzednio.")
     elif choice == "change-executor":
         detail = "Użytkownik wybrał innego wykonawcę. Zachowaj zmiany z poprzednich prób w tym samym worktree."
     elif choice == "transfer":
         detail = "Krok przekazano od innego dostawcy. Kontynuuj w tym samym worktree z commita WIP; przeczytaj notkę techniczną niżej."
     elif choice == "auto":
         detail = "Krok ponowiony automatycznie po pierwszym błędzie. Zachowaj zmiany z poprzedniej próby."
+    elif choice == "retry" and answer:
+        detail = ("Użytkownik polecił ponowić krok z instrukcją (ma pierwszeństwo przed wcześniejszym planem kroku):\n"
+                  f"{answer}\nZachowaj zmiany z poprzednich prób.")
     else:
         detail = "Użytkownik polecił ponowić krok. Zachowaj zmiany z poprzednich prób."
     return f"""

@@ -161,6 +161,15 @@ class BackgroundClaudeTest(BackgroundBase):
         with self.assertRaises(agentcmd.StepError):
             agentcmd.background(self.step(resume=True, session_id=""))
 
+    def test_steps_read_user_fonts_and_commit_without_attribution(self):
+        fonts = os.path.join(self.home, ".local", "share", "fonts")
+        os.makedirs(fonts)
+        settings = self.settings(agentcmd.background(self.step()))
+        self.assertIn(os.path.realpath(fonts), settings["sandbox"]["filesystem"]["allowRead"])
+        self.assertNotIn(os.path.realpath(fonts), settings["sandbox"]["filesystem"]["allowWrite"])
+        self.assertIs(settings["includeCoAuthoredBy"], False)
+        self.assertEqual(settings["attribution"], {"commit": "", "pr": ""})
+
     def test_sandbox_settings_match_the_pt75_pattern(self):
         sandbox = self.settings(agentcmd.background(self.step()))["sandbox"]
         inp, out = os.path.join(self.step_dir, "in"), os.path.join(self.step_dir, "out")
@@ -178,7 +187,9 @@ class BackgroundClaudeTest(BackgroundBase):
         self.assertIn("name = Krok", config)
         self.assertIn(f"excludesFile = {inp}/ignore", config)
         patterns = cmd.files[os.path.join(inp, "ignore")].split()
-        self.assertEqual(len(patterns), 12)
+        self.assertEqual(len(patterns), 14)
+        self.assertIn("/.agents/", patterns)
+        self.assertIn("/.codex/", patterns)
         self.assertIn("/.bashrc", patterns)
         self.assertIn("/.mcp.json", patterns)
         self.assertEqual(cmd.env["GIT_CONFIG_GLOBAL"], os.path.join(inp, "gitconfig"))
@@ -345,7 +356,7 @@ class BackgroundCodexTest(BackgroundBase):
                 fh.write("#!/bin/sh\n" + body + "\n")
             os.chmod(path, 0o755)
             return path
-        ok = program('[ "$1 $2 $3" = "mcp list --json" ] && echo \'[{"name":"linear","enabled":true},{"name":"b"}]\'')
+        ok = program('[ "$1 $2 $3" = "mcp list --json" ] && echo \'[{"name":"linear","enabled":true,"transport":{"type":"streamable_http"}},{"name":"b","transport":{"type":"stdio"}}]\'')
         self.assertEqual(agentcmd.list_codex_mcp(ok), ("linear", "b"))
         cmd = agentcmd.background(self.step("codex", binary=ok))
         self.assertIn("mcp_servers.b.enabled=false", cmd.argv)
@@ -1054,3 +1065,73 @@ class DotnetRestoreTest(unittest.TestCase):
             self.assertIn("--no-restore -m:1 -nodeReuse:false --disable-build-servers", dotnet.prompt_note(True, ""))
         with tempfile.TemporaryDirectory() as empty:
             self.assertFalse(dotnet.is_dotnet(empty))
+
+
+class NodeStepTest(BackgroundBase):
+    """03.11, K-31: `node` z nvm w kroku tylko do odczytu, zależności instaluje usługa przed krokiem."""
+
+    def test_node_step_reads_the_installation_and_has_it_on_path(self):
+        prefix = os.path.join(self.home, ".nvm", "versions", "node", "v20.1.0")
+        os.makedirs(os.path.join(prefix, "bin"))
+        cmd = agentcmd.background(self.step(node_home=prefix))
+        self.assertTrue(cmd.env["PATH"].startswith(os.path.join(prefix, "bin") + os.pathsep))
+        fs = self.settings(cmd)["sandbox"]["filesystem"]
+        self.assertIn(prefix, fs["allowRead"])
+        self.assertNotIn(prefix, fs["allowWrite"])
+
+    def test_node_home_prefers_the_nvm_default_and_install_skips_current_modules(self):
+        from tide_daemon.tasks import node
+        versions = os.path.join(self.home, ".nvm", "versions", "node")
+        for version in ("v18.20.0", "v20.19.6", "v22.1.0"):
+            os.makedirs(os.path.join(versions, version, "bin"))
+            open(os.path.join(versions, version, "bin", "node"), "w").close()
+        os.makedirs(os.path.join(self.home, ".nvm", "alias"))
+        with open(os.path.join(self.home, ".nvm", "alias", "default"), "w") as fh:
+            fh.write("20\n")
+        self.assertEqual(node.node_home(self.home), os.path.realpath(os.path.join(versions, "v20.19.6")))
+        project = os.path.join(self.root, "front")
+        os.makedirs(os.path.join(project, "node_modules"))
+        open(os.path.join(project, "package.json"), "w").close()
+        open(os.path.join(project, "package-lock.json"), "w").close()
+        open(os.path.join(project, "node_modules", ".package-lock.json"), "w").close()
+        self.assertTrue(node.is_node(project))
+        calls = []
+        self.assertEqual(node.install(project, self.home, runner=lambda *a, **k: calls.append(a)),
+                         (True, "zależności aktualne"))
+        self.assertEqual(calls, [])
+
+
+class CodexMcpTest(unittest.TestCase):
+    def test_only_configured_transports_are_disabled_and_broken_ones_are_skipped(self):
+        # 03.11, K-16/LEGAL-71: `-c mcp_servers.codex_app.enabled=false` → „invalid transport”, Codex nie startował.
+        import json as _json
+        from unittest import mock as _mock
+        listing = [{"name": "linear", "transport": {"type": "streamable_http"}},
+                   {"name": "codex_app", "transport": None}, {"name": "repl", "transport": {"type": "stdio"}}]
+        run = _mock.Mock(returncode=0, stdout=_json.dumps(listing))
+        with _mock.patch("subprocess.run", return_value=run):
+            self.assertEqual(agentcmd.list_codex_mcp("codex"), ("linear", "repl"))
+        found = agentcmd.CODEX_BROKEN_MCP.search("Error loading config.toml: invalid transport\nin `mcp_servers.codex_app`")
+        self.assertEqual(found.group(1), "codex_app")
+
+
+class RegistryNetworkTest(BackgroundBase):
+    """03.11, P1 z docs/sandbox-and-permissions.md: sieć z piaskownicy kroku tylko do rejestrów paczek stosu."""
+
+    def test_step_gets_registry_domains_and_a_writable_npm_cache(self):
+        from tide_daemon.tasks import node
+        prefix = os.path.join(self.home, ".nvm", "versions", "node", "v20.1.0")
+        os.makedirs(os.path.join(prefix, "bin"))
+        cmd = agentcmd.background(self.step(node_home=prefix, network_domains=("registry.npmjs.org",)))
+        self.assertEqual(self.settings(cmd)["sandbox"]["network"]["allowedDomains"], ["registry.npmjs.org"])
+        self.assertTrue(cmd.env["npm_config_cache"].endswith(os.path.join("out", ".npm-cache")))
+        self.assertEqual(self.settings(agentcmd.background(self.step()))["sandbox"]["network"]["allowedDomains"], [])
+        project = os.path.join(self.root, "mix")
+        os.makedirs(project)
+        for name in ("package.json", "pyproject.toml"):
+            open(os.path.join(project, name), "w").close()
+        domains = node.registry_domains(project, dotnet=True)
+        self.assertIn("registry.npmjs.org", domains)
+        self.assertIn("api.nuget.org", domains)
+        self.assertIn("pypi.org", domains)
+        self.assertEqual(node.registry_domains(os.path.join(self.root, "pusty"), dotnet=False), ())

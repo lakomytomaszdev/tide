@@ -29,6 +29,7 @@ from .labels import result_label, tide_fault_text, waiting_text
 
 REASON_LABELS = {"no-result": "brak pliku wyniku", "bad-result": "zły plik wyniku", "no-progress": "bez postępu",
                  "exit": "program zakończył się błędem", "start": "krok nie wystartował",
+                 "login": "wygasło logowanie agenta — zaloguj się (np. `claude /login` w terminalu) i kliknij Ponów",
                  "timeout": "przekroczony czas kroku", "local-unavailable": "serwer lokalny jest niedostępny",
                  "lost": "krok zniknął (restart usługi)", "bad-review": "niepoprawny werdykt review",
                  "review-changed-ticket": "recenzent zmienił gałąź albo pliki ticketu", "abandoned": "porzucony"}
@@ -47,6 +48,7 @@ class FlowState:
     review_decisions: dict = field(default_factory=dict)
     step_retries: dict = field(default_factory=dict)  # źródłowy krok → automatyczne ponowienie
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
+    outside_started: dict = field(default_factory=dict)  # krok → outside.started (polecenie poza piaskownicą)
     superseded: set = field(default_factory=set)      # kroki sprzed ostatniego card.started — nie czekają na decyzję
     wip_retries: dict = field(default_factory=dict)    # krok → ponowiony bezpieczny commit po błędzie
     limits: dict = field(default_factory=dict)         # krok → odczyt limitu w chwili wyczerpania
@@ -218,10 +220,17 @@ def fold(events: list[dict]) -> FlowState:
             st.inputs = e
         elif kind == "step.waiting":
             st.waiting[(e.get("ticket"), e.get("kind"))] = e
-            if e.get("kind") == "plan-review" and "limit" in str(e.get("reason") or ""):
+            # Blokuje review planu do wyboru użytkownika tylko wyczerpany limit dostawcy; zwykła kolejka miejsc
+            # („limit kroków dostawcy”) rusza sama (03.11, K-31 utknął w kolejce na zawsze).
+            if e.get("kind") == "plan-review" and "limit" in str(e.get("reason") or "") and \
+                    not is_queue_wait(e.get("reason")):
                 st.plan_review_wait = e
         elif kind == "step.started":
             st.waiting.pop((e.get("ticket"), e.get("kind")), None)
+            if e.get("kind") == "plan-review":
+                # Review ruszyło, więc dawna blokada limitu nie obowiązuje (K-31: po nieudanym review karta
+                # na zawsze pokazywała „czeka na limit” i chowała decyzję Ponów / Zmień wykonawcę).
+                st.plan_review_wait = None
             st.steps[e.get("step")] = e
             if not (st.plan_approved and e.get("kind") in ("plan-amend", "plan-review", "plan-revise")):
                 st.last_step = e.get("step") or ""
@@ -254,6 +263,11 @@ def fold(events: list[dict]) -> FlowState:
             st.step_retries[e.get("step")] = e
         elif kind == "step.decision":
             st.step_decisions[e.get("step")] = e
+        elif kind == "permission.rechecked":
+            if e.get("step") in st.finished:
+                st.finished[e["step"]] = {**st.finished[e["step"]], "canAllow": bool(e.get("canAllow"))}
+        elif kind == "outside.started":
+            st.outside_started[e.get("step")] = e
         elif kind == "step.wip":
             st.wip_retries[e.get("step")] = e
         elif kind == "step.limit":
@@ -455,7 +469,8 @@ def decision_step(st: FlowState, user_only: bool = False) -> str:
         done = st.finished.get(name) or {}
         if done.get("result") not in ("question", "denied", "error"):
             continue
-        if done.get("result") == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "limit":
+        if done.get("result") == "error" and int(step.get("attempt") or 0) == 0 and \
+                done.get("reason") not in ("limit", "login"):
             continue
         if user_only and _limit_wait_only(st, name):
             continue
@@ -464,6 +479,48 @@ def decision_step(st: FlowState, user_only: bool = False) -> str:
         return name
     return attention_step(st, user_only) or st.last_step
 
+
+# Błąd przepływu (np. gita usługi) bez nazwy klasy i z tym, co użytkownik może zrobić sam; Tide ponawia akcję przy
+# każdym przebiegu, więc po usunięciu przyczyny karta rusza bez dalszych kliknięć (03.11: K-35, K-15).
+FLOW_ERROR_HINTS = (
+    ("lokalne zmiany", "W worktree ticketu są niezacommitowane pliki. Tide raz odsyła krok autorowi do sprzątnięcia; "
+                       "jeśli nadal są, otwórz worktree (Worktrees), zacommituj albo usuń te pliki — karta ruszy sama."),
+    ("przekracza 300 000", "Zmiany ticketu są za duże do review — podziel ticket w planie albo odeślij plan z uwagami."),
+    ("nie ma gałęzi", "Brakuje gałęzi ticketu albo karty — sprawdź Worktrees; jeśli ją usunięto, odrzuć ticket w planie."),
+    ("katalog recenzentów", "Brak modelu recenzenta — sprawdź widok Modele (logowanie, dostępność)."),
+)
+
+
+def flow_error_text(error: str) -> str:
+    return error.split(": ", 1)[1] if error.startswith(("FlowGitError: ", "FlowError: ")) else error
+
+
+def flow_error_hint(error: str) -> str:
+    low = error.casefold()
+    for needle, hint in FLOW_ERROR_HINTS:
+        if needle in low:
+            return hint
+    return "Tide ponawia tę akcję automatycznie; jeśli błąd się utrzymuje, otwórz kartę i sprawdź worktree ticketu."
+
+
+
+def is_queue_wait(reason) -> bool:
+    """Czekanie na wolne miejsce u dostawcy (`limit kroków dostawcy X: n/n`), nie na wyczerpany limit."""
+    return str(reason or "").startswith("limit kroków dostawcy")
+
+
+def plan_errors(st: FlowState) -> list[str]:
+    """Błędy sprawdzenia planu z wyjaśnieniem, której wersji dotyczą. Odrzucona poprawka (np. automatyczna po
+    review) zostawia poprzednią, poprawną propozycję — K-31: czerwone błędy wyglądały, jakby plan był zły."""
+    checked = st.plan_checked or {}
+    errors = list(checked.get("errors") or [])
+    if not errors or (st.plan_approved and not st.plan_revision):
+        return []          # zatwierdzony plan bez trwającej zmiany — stare błędy odrzuconej poprawki nie dotyczą
+    proposed = st.plan_proposed or {}
+    if proposed and checked.get("step") and checked.get("step") != proposed.get("sourceStep"):
+        return ["Poprawka planu nie przeszła sprawdzenia i została odrzucona — obowiązuje poprzednia, poprawna "
+                "wersja planu poniżej. Błędy odrzuconej poprawki:", *errors]
+    return errors
 
 def derived(st: FlowState, card: dict) -> dict | None:
     """Pole `derived` karty z dziennikiem (kształt jak board/derive.py, z `flow`) albo None — karta w swojej kolumnie.
@@ -574,8 +631,15 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             out["flow"]["plan"].update(status="blocked", reviewWait={
                 "reason": waiting_review.get("reason") or "review planu czeka",
                 "provider": waiting_review.get("provider") or ""})
+            reason = waiting_review.get("reason") or "review planu czeka"
+            if is_queue_wait(reason):
+                # Kolejka miejsc u dostawcy nie jest ruchem użytkownika: karta zostaje „W toku” i rusza sama;
+                # wybór innego recenzenta zostaje w panelu jako opcja (03.11, K-31).
+                result = _fill(out, "progress", f"review planu w kolejce — ruszy samo ({reason})")
+                result["nextStep"] = "ruszy samo; możesz wybrać innego recenzenta planu"
+                return result
             out["question"] = "Wybierz recenzenta planu albo poczekaj na limit."
-            result = _fill(out, "waiting", waiting_review.get("reason") or "review planu czeka")
+            result = _fill(out, "waiting", reason)
             result["nextStep"] = "wybierz model do review planu"
             return result
         if st.stalled_since:
@@ -583,7 +647,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         focus = decision_step(st)
         focus_step = st.steps.get(focus) or {}
         focus_done = st.finished.get(focus) or {}
-        if focus_step.get("kind") in ("plan-amend", "plan-review", "plan-revise") and focus_done.get("result") in ("question", "denied", "error") and focus not in st.step_decisions and (focus_done.get("result") != "error" or int(focus_step.get("attempt") or 0) > 0):
+        if focus_step.get("kind") in ("plan-amend", "plan-review", "plan-revise") and focus_done.get("result") in ("question", "denied", "error") and focus not in st.step_decisions and (focus_done.get("result") != "error" or int(focus_step.get("attempt") or 0) > 0 or focus_done.get("reason") == "login"):
             result = focus_done["result"]
             out["flow"].update({"step": focus, "stepKind": focus_step["kind"], "result": result,
                                 "executor": focus_step.get("executor") or "", "provider": focus_step.get("provider") or "",
@@ -670,7 +734,9 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     if failed and not done:
         return _fill(out, "waiting", f"błąd zlecenia: {failed[-1].get('error') or failed[-1].get('action')}")
     if st.flow_error:
-        return _fill(out, "waiting", f"{ident}: {st.flow_error}")
+        out["flow"]["flowError"] = st.flow_error
+        out["flow"]["flowErrorHint"] = flow_error_hint(st.flow_error)
+        return _fill(out, "waiting", f"{ident}: {flow_error_text(st.flow_error)}")
     result = done.get("result") or ""
     if result == "done":
         if step.get("mode") == "interactive" and not step.get("consoleClosed"):
@@ -682,6 +748,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                 decision = st.review_decisions.get((ident, verdict.get("round"))) or {}
                 if decision.get("choice") == "retry":
                     return _fill(out, "progress", f"{ident} · poprawki po decyzji użytkownika")
+                if decision.get("choice") == "accept":
+                    return _fill(out, "progress", f"{ident} · scalanie mimo uwag (decyzja użytkownika)")
                 if decision.get("choice") == "reject":
                     return _fill(out, "waiting", f"{ident}: ticket odrzucony po review")
                 out["question"] = (st.review_questions.get((ident, verdict.get("round"))) or {}).get("question") or ""
@@ -705,6 +773,19 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             return _fill(out, "progress", f"{ident} · wznawiam po odpowiedzi")
         out["question"] = _clip(done.get("question") or "", 120)
         return _fill(out, "waiting", f"{ident} pyta: „{out['question']}”" if out["question"] else f"{ident} pyta")
+    if result == "denied" and done.get("outside"):
+        decision = st.step_decisions.get(st.last_step) or {}
+        if decision.get("choice") in ("run", "run-always", "run-ticket"):
+            started = st.outside_started.get(st.last_step)
+            if started is None:
+                return _fill(out, "progress", f"{ident} · w kolejce poza piaskownicą (jedno polecenie naraz w projekcie): "
+                                              f"{_clip(done.get('command') or '', 80)}")
+            since = str(started.get("ts") or "")[11:16]
+            return _fill(out, "progress", f"{ident} · od {since} trwa poza piaskownicą: "
+                                          f"{_clip(done.get('command') or '', 80)} (wynik wróci do agenta)")
+        if decision:
+            return _fill(out, "progress", f"{ident} · wznawiam po decyzji o poleceniu")
+        return _fill(out, "waiting", f"{ident} prosi o uruchomienie poza piaskownicą: „{_clip(done.get('command') or '?', 80)}”")
     if result == "denied":
         if st.last_step in st.step_decisions:
             return _fill(out, "progress", f"{ident} · wznawiam po decyzji o poleceniu")
@@ -712,7 +793,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     if result in ("error", "stopped"):
         reason = REASON_LABELS.get(done.get("reason") or "", done.get("reason") or "")
         if result == "error":
-            if int(step.get("attempt") or 0) == 0 and st.last_step not in st.step_decisions:
+            if int(step.get("attempt") or 0) == 0 and st.last_step not in st.step_decisions and \
+                    done.get("reason") != "login":
                 return _fill(out, "progress", f"{ident} · ponawiam krok po błędzie")
             if st.last_step in st.step_decisions:
                 return _fill(out, "progress", f"{ident} · wznawiam po decyzji użytkownika")
@@ -776,7 +858,7 @@ def _plan_view(st: FlowState, out: dict) -> tuple[list, set]:
                            else "pending" if revision_pending else "done" if st.plan_finished else
                            "approved" if st.plan_approved else "pending" if st.plan_proposed else "invalid",
                            "rows": rows, "waves": waves,
-                           "errors": (st.plan_checked or {}).get("errors") or []}
+                           "errors": plan_errors(st)}
     return rows, finished_ids
 
 

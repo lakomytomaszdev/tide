@@ -52,6 +52,43 @@ class YouTrackFlowTest(FlowInProcess):
         for expected in ('tracker: youtrack', 'tracker-project: LOG', 'ticket-prefix: LOG'):
             self.assertIn(expected, saved)
 
+    def test_plan_revision_creates_the_new_ticket_in_youtrack(self):
+        # 03.11, K-16: nowy ticket z poprawki planu dostawał lokalny numer zamiast zgłoszenia w YouTracku.
+        card = self.card()
+        path = self.proposal(card)
+        with open(path, encoding='utf-8') as fh:
+            proposal = fh.read().replace('tracker: local',
+                                         'tracker: youtrack\ntracker-project: LOG\ntracker-url: ' + self.fake.url)
+            proposal = proposal.replace('ticket-prefix: PT', 'ticket-prefix: LOG')
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write(proposal)
+        self.assertTrue(self.submit(card, path)['ok'])
+        self.assertTrue(self.approve(card)['ok'])
+        box = []
+        self.flow.edit_plan(card, json.dumps({'action': 'return', 'feedback': 'Dodaj ticket z poprawką'}), box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(json.loads(box[0])['ok'], box)
+        self.assertTrue(wait_until(lambda: self.of(card, 'plan.revision-ready'), timeout=25), self.events(card))
+        self.assertTrue(wait_until(lambda: len(self.of(card, 'plan.reviewed')) >= 2, timeout=25), self.events(card))
+        reply = self.approve(card)
+        self.assertTrue(reply['ok'], reply)
+        approved = self.of(card, 'plan.revision-approved')[-1]
+        self.assertEqual(approved['plan']['map'].get('#3'), 'LOG-3')
+        self.assertIn('LOG-3', self.fake.issues)
+
+    def test_local_reservation_intent_does_not_block_youtrack_creation(self):
+        # 03.11, K-16: lokalna rezerwacja pod tym samym kluczem dawała wieczne „czekam na potwierdzenie”.
+        card = self.card()
+        journal = self.flow.engine.journal
+        journal.append(card, 'card.started', entry='plan', repo=self.repo, trackerProject='LOG', trackerUrl=self.fake.url)
+        journal.append(card, 'intent', action='reserve', key='plan:9:#1', repo=self.repo)
+        journal.append(card, 'result', action='reserve', key='plan:9:#1', ok=False, error='lokalnie odmówione')
+        result = self.flow.engine.tracker.run(card, 'reserve', 'plan:9:#1',
+                                              {'op': 'issue', 'url': self.fake.url, 'project': 'LOG', 'number': 1,
+                                               'title': 'Nowy', 'description': 'Opis'})
+        self.assertEqual(result['ticket'], 'LOG-1')
+        self.assertIn('LOG-1', self.fake.issues)
+
     def test_light_planning_uses_card_youtrack_metadata(self):
         card = self.card()
         reply = self.start(card, entry='planning', mode='light')
@@ -60,7 +97,10 @@ class YouTrackFlowTest(FlowInProcess):
         self.assertEqual((started['trackerProject'], started['trackerUrl'], started['prefix']),
                          ('LOG', self.fake.url, 'LOG'))
         step = self.started(card)
-        with open(os.path.join(step['stepDir'], 'out', 'fake-call.json'), encoding='utf-8') as fh:
+        call = os.path.join(step['stepDir'], 'out', 'fake-call.json')
+        # atrapa agenta zapisuje plik już po step.started — czekamy, zamiast liczyć na kolejność
+        self.assertTrue(wait_until(lambda: os.path.exists(call), timeout=15), self.events(card))
+        with open(call, encoding='utf-8') as fh:
             prompt = json.load(fh)['prompt']
         for expected in ('tracker: youtrack', 'tracker-project: LOG',
                          'tracker-url: ' + self.fake.url, 'ticket-prefix: LOG'):
@@ -218,7 +258,7 @@ class YouTrackFlowTest(FlowInProcess):
                 self.assertFalse(reply['ok'], reply)
                 shown = self.shown(card)
                 self.assertEqual(shown['boardColumn'], 'waiting')
-                self.assertEqual(shown['derived']['flow']['decisions'][0]['kind'], 'error')
+                self.assertEqual(shown['derived']['flow']['decisions'][0]['kind'], 'tracker')
                 self.assertTrue(shown['derived']['flow']['decisions'][0]['id'].startswith('tracker:'))
                 self.assertTrue(shown['derived']['flow']['decisions'][0]['technical']['error'])
                 # Komentarz poprzedniej karty może jeszcze ponawiać się w tle.

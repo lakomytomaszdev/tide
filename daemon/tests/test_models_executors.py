@@ -255,7 +255,7 @@ class CatalogFileTest(unittest.TestCase):
         cfg = models_config.from_dict({"endpoints": {"local": {"url": "http://127.0.0.1:11434"}}})
         self.assertEqual([e.name for e in cfg.catalog.executors],
                          ["Haiku", "Sonnet", "Opus", "Codex lekki", "Codex standard", "Codex mocny", "Codex Astra",
-                          "Lokalny"])
+                          "Fable", "Lokalny"])
         self.assertFalse(cfg.catalog.stored)
         self.assertEqual(cfg.warnings, ())
 
@@ -310,7 +310,7 @@ class CatalogSettingsTest(SettingsTestCase):
                                "classes": ["lekki"]}, self.path)
         names = [e["name"] for e in self.data()["executors"]]
         self.assertEqual(names, ["Haiku", "Sonnet", "Opus", "Codex lekki", "Codex standard", "Codex mocny",
-                                 "Codex Astra", "Lokalny", "Mini"])
+                                 "Codex Astra", "Fable", "Lokalny", "Mini"])
         cfg = self.cfg()
         self.assertTrue(cfg.catalog.stored)
         self.assertEqual(ex.resolve(ex.context_from(cfg), "openai", "lekki").executor["name"], "Codex lekki",

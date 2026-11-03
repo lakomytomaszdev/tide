@@ -160,6 +160,18 @@ class FlowQuotaContractTest(FlowInProcess):
             engine.set_flow_settings({"limitTransfer": {"mode": "auto", "executor": ""}})
         self.assertEqual(engine.get_flow_settings(), reply)
 
+    def test_provider_slots_are_set_through_flow_settings(self):
+        # 03.11: użytkownik chciał więcej kroków naraz bez ręcznej edycji ~/.config.
+        engine = self.flow.engine
+        self.assertEqual(engine.get_flow_settings()["providerSlots"], {})
+        reply = engine.set_flow_settings({"providerSlots": {"anthropic": 6, "openai": 4}})
+        self.assertEqual(reply["providerSlots"], {"anthropic": 6, "openai": 4})
+        with open(self.settings, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["providerSlots"], {"anthropic": 6, "openai": 4})
+        for bad in ({"anthropic": 0}, {"anthropic": 13}, {"anthropic": True}, {"anthropic": "6"}, ["anthropic"]):
+            with self.assertRaises(FlowError, msg=repr(bad)):
+                engine.set_flow_settings({"providerSlots": bad})
+
     def test_low_limit_queues_card_then_starts_when_reading_recovers(self):
         now = self.flow.engine.clock()
         metric = {"remaining": 7, "readTs": now, "resetTs": now + 1000}
