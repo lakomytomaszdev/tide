@@ -108,6 +108,12 @@ function opensDecisions(card, cardOpen) {
     return cardOpen !== "full" && hasDecisions(card)
 }
 
+// Pełna karta (PT-128) dla karty z przepływem: usługa liczy jej fazy (`derived.phases`). Karta bez dziennika
+// (np. w Backlogu przed zleceniem) nie ma czego pokazać w fazach i otwiera panel karty.
+function hasFullCard(card) {
+    return !!card && !!card.derived && Array.isArray(card.derived.phases) && card.derived.phases.length > 0
+}
+
 // Karta w kolumnie ręcznej (bez stanu z koordynatora), do potwierdzenia albo pracująca karta z dziennikiem — tylko
 // taką da się przeciągać.
 function draggable(card) {

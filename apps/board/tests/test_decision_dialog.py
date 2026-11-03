@@ -6,7 +6,8 @@
   możliwości z usługi, oznaczenie polecanej, nic nie zaznaczone, „Wybierz” nieaktywne, Enter bez zaznaczenia
   nic nie robi, Enter po wyborze wysyła ResolveCardStep i przechodzi do następnej decyzji, „1 z N” tylko przy
   N > 1, Esc zamyka bez wysyłania (karta zostaje w „Czeka na mnie”), stary format pytania (samo pole własnej
-  odpowiedzi), błąd usługi przywraca decyzję, „Otwórz całą kartę” otwiera obecny panel karty.
+  odpowiedzi), błąd usługi przywraca decyzję, „Otwórz całą kartę” otwiera pełną kartę (PT-128), a możliwość
+  z wyborem wykonawcy — panel karty.
 """
 import json
 import os
@@ -15,8 +16,8 @@ import shutil
 import unittest
 
 from . import REPO
-from .decisionfix import (FINDINGS_C, Q2, Q3, decisions, decisions_c, journal, journal_c, scenario_b, scenario_c,
-                          scenario_f, without_options)
+from .decisionfix import (FINDINGS_C, Q2, Q3, decisions, decisions_c, full_card, journal, journal_c, scenario_b,
+                          scenario_c, scenario_f, without_options)
 from .test_view import ProbeCase
 
 CARD_DIR = os.path.join(REPO, "apps", "common", "qml", "card")
@@ -73,6 +74,7 @@ class PackageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tide-decision-pkg-") as tmp:
             files = files_under(os.path.join(stage(os.path.join(tmp, "pkg")), "views", "board"))
         for name in ("qml/card/DecisionDialog.qml", "qml/card/DecisionOption.qml", "qml/card/DecisionFinding.qml",
+                     "qml/card/DecisionForm.qml", "qml/card/DecisionKind.qml", "qml/card/CardFullView.qml",
                      "qml/card/decision.js",
                      "qml/tide/Tokens.qml"):
             self.assertIn(name, files)
@@ -90,9 +92,13 @@ class PackageTest(unittest.TestCase):
                 self.assertIn("textFormat: Text.PlainText", body, f"{name}: {body[:80]}")
             # Okno niczego nie liczy: nie sortuje ani nie filtruje możliwości, nie wybiera polecanej ani domyślnej.
             self.assertNotIn(".sort(", source, name)
-            self.assertIsNone(re.search(r"selected\s*=(?!=)(?!\s*(?:id\b|dialog\.otherId|\"\"))", source),
+            self.assertIsNone(re.search(r"selected\s*=(?!=)(?!\s*(?:id\b|(?:dialog|form)\.otherId|\"\"))", source),
                               f"{name}: zaznaczenie tylko z wyboru użytkownika")
-        with open(os.path.join(CARD_DIR, "DecisionDialog.qml"), encoding="utf-8") as fh:
+        # Treść decyzji (możliwości) jest w DecisionForm.qml — wspólnej dla okna decyzji i pełnej karty (PT-128).
+        for name in ("DecisionDialog.qml", "CardFullView.qml"):
+            with open(os.path.join(CARD_DIR, name), encoding="utf-8") as fh:
+                self.assertNotIn("recommended", fh.read(), f"{name}: możliwości tylko przez DecisionForm")
+        with open(os.path.join(CARD_DIR, "DecisionForm.qml"), encoding="utf-8") as fh:
             uses = [line.strip() for line in fh if "recommended" in line]
         self.assertEqual(uses, ["recommended: modelData.recommended === true"], "polecana tylko przekazana do karty")
         with open(os.path.join(CARD_DIR, "decision.js"), encoding="utf-8") as fh:
@@ -321,14 +327,14 @@ out["state"] = state()
         self.assertIn("krok jeszcze się kończy", out["state"]["error"])
         self.assertEqual([o[3] for o in out["state"]["options"]], [False, False, False])
 
-    def test_open_full_card_opens_current_card_panel(self):
+    def test_open_full_card_opens_the_full_card_view(self):
         out = self.probe(STATE_PY + """
 click(card("K-8"))
 click(named("decisionFullCard"))
-out["state"] = [js("page.decisionOpen"), js("page.panelOpen"), js("page.panelCardId")]
+out["state"] = [js("page.decisionOpen"), js("page.fullOpen"), js("page.fullCardId"), js("page.panelOpen")]
 out["calls"] = len(calls())
-""", scenario_f(self.data))
-        self.assertEqual(out["state"], [False, True, "K-8"])
+""", full_card(self.data, journal()))
+        self.assertEqual(out["state"], [False, True, "K-8", False])
         self.assertEqual(out["calls"], 0)
 
     def test_scenario_b_tide_error_previews_the_card_then_reports_and_retries(self):
@@ -394,6 +400,23 @@ out["after"] = [js("page.decisionOpen"), js("page.toast")]
         self.assertEqual(out["sent"][1][:2], ["ReportStepFault", "K-8"])
         self.assertEqual(json.loads(out["sent"][1][2]), {"step": "K-8-plan-2", "description": "Po aktualizacji to samo."})
         self.assertFalse(out["after"][0], "jedyna decyzja odpowiedziana — okno się zamyka")
+
+    def test_option_that_needs_an_executor_opens_the_card_panel(self):
+        events = journal()[:3] + [
+            {"v": 1, "seq": 4, "ts": "2026-11-03T11:00:00+01:00", "card": "K-8", "type": "step.started",
+             "step": "K-8-ticket-2-1", "ticket": "#2", "kind": "ticket", "executor": "Opus", "provider": "anthropic",
+             "attempt": 1, "parentStep": "K-8-ticket-2-0"},
+            {"v": 1, "seq": 5, "ts": "2026-11-03T11:10:00+01:00", "card": "K-8", "type": "step.finished",
+             "step": "K-8-ticket-2-1", "ticket": "#2", "result": "error", "reason": "exit"}]
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+click(option(1))
+key(Qt.Key.Key_Return)
+out["state"] = [js("page.decisionOpen"), js("page.fullOpen"), js("page.panelOpen"), js("page.panelCardId"),
+                js("page.cardPanel.notice")]
+""", full_card(self.data, events))
+        self.assertEqual(out["state"][:4], [False, False, True, "K-8"], "wybór wykonawcy jest w panelu karty")
+        self.assertIn("wybierz wykonawcę", out["state"][4])
 
     def test_waiting_card_without_decisions_still_opens_panel(self):
         out = self.probe(STATE_PY + """

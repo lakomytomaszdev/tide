@@ -4,6 +4,9 @@ dwa tickety tej samej karty pytają naraz, z opcjami z result.json — #3 (Sonne
 Decyzje nie są wpisane ręcznie: dziennik karty z publicznymi zdarzeniami przechodzi przez `fold` i `build_decisions`
 usługi (PT-123), więc okno dostaje dokładnie kontrakt `derived.flow.decisions[]`. `scenario_f(data)` wkłada je
 do karty K-8 (kolumna „Czeka na mnie”) w kopii danych podglądu z boardfix.preview_data.
+
+Pełna karta (PT-128): `full_c(data)` i `full_d(data)` wkładają do K-8 całe `derived` policzone przez usługę
+(`fold` + `derived`) z dzienników scenariuszy C (plan do zatwierdzenia) i D (praca w toku, fala 2 z 4).
 """
 import json
 import os
@@ -13,7 +16,7 @@ from . import REPO
 
 sys.path.insert(0, os.path.join(REPO, "daemon"))
 from tide_daemon.cardflow.decisions import build_decisions  # noqa: E402
-from tide_daemon.cardflow.state import fold  # noqa: E402
+from tide_daemon.cardflow.state import derived, fold  # noqa: E402
 
 CARD = "K-8"
 
@@ -136,6 +139,86 @@ def journal_b() -> list[dict]:
 def scenario_b(data: dict) -> dict:
     """Kopia danych podglądu z decyzją scenariusza B w karcie K-8 (decyzja z `build_decisions` usługi)."""
     return scenario_f(data, decisions(journal_b()))
+
+
+# --- Pełna karta (PT-128): całe `derived` z usługi dla scenariuszy C i D -----------------------------
+
+# Tickety K-33 z makiety: (id, tytuł, autor, recenzent, blokery) — 9 ticketów w 4 falach.
+TICKETS_D = [
+    ("#1", "Integracja K-28 i K-29 na gałęzi karty", "Sonnet", "Opus", []),
+    ("#2", "Diagnoza „Do sprawdzenia” zamiast „Czeka na mnie”", "Opus", "Sonnet", ["#1"]),
+    ("#3", "Zestaw prawdziwych wiadomości agentów do rozpoznawania pytań", "Sonnet", "Opus", ["#1"]),
+    ("#4", "Planowanie w kilku projektach", "Opus", "Sonnet", ["#1"]),
+    ("PT-42", "Rozpoznawanie pytań: drugie zdanie modelu lokalnego", "Sonnet", "Opus", ["#1", "#3"]),
+    ("#5", "Zatwierdzenie planu grupy zakłada karty rodzeństwa", "Opus", "Sonnet", ["#4"]),
+    ("#7", "Podpowiedź projektu w oknie zlecenia", "Sonnet", "Opus", ["#4"]),
+    ("#8", "Propozycja dołączenia projektu od planującego", "Sonnet", "Opus", ["#4"]),
+    ("#6", "Bloker zewnętrzny: ticket startuje po tickecie innego projektu", "Opus", "Sonnet", ["#5"]),
+]
+
+
+def journal_d() -> list[dict]:
+    """Scenariusz D makiety („Praca w toku”): plan zatwierdzony, #1 scalony, fala 2 pracuje — #2 (Opus) pisze,
+    #3 jest w review (Opus), #4 dostaje poprawki po review (Opus); nic nie czeka na użytkownika."""
+    items = []
+
+    def add(event_type, ts, **data):
+        items.append({"v": 1, "seq": len(items) + 1, "ts": f"2026-11-03T{ts}+01:00", "card": CARD,
+                      "type": event_type, **data})
+
+    def step(name, ticket, kind, executor, ts, **extra):
+        add("step.started", ts, step=name, ticket=ticket, kind=kind, executor=executor, provider="anthropic",
+            model=executor.lower(), attempt=0, parentStep="", stepDir=f"/wt/{name}.step", worktree=f"/wt/{ticket}",
+            branch=f"ticket/{ticket.strip('#').lower()}", **extra)
+
+    rows = [{"id": i, "workId": i, "title": t, "executor": a, "reviewer": r, "blockers": b}
+            for i, t, a, r, b in TICKETS_D]
+    add("card.started", "00:40:00", entry="planning", executor="Opus", program="claude", provider="anthropic")
+    step("K-8-planning-1", "", "planning", "Opus", "01:19:00")
+    add("step.finished", "14:58:00", step="K-8-planning-1", ticket="", result="done")
+    add("plan.proposed", "14:58:00", planner="Opus", rows=[{k: v for k, v in r.items() if k != "id"} for r in rows])
+    add("plan.reviewed", "23:58:00", reviewer="Sonnet", verdict="APPROVE", findings=[], corrected=False)
+    add("plan.approved", "09:05:00", map={r["id"]: r["id"] for r in rows}, rows=rows)
+    step("K-8-ticket-1-0", "#1", "ticket", "Sonnet", "09:06:00")
+    add("step.finished", "09:50:00", step="K-8-ticket-1-0", ticket="#1", result="done")
+    step("K-8-review-1-1", "#1", "review", "Opus", "09:51:00", round=1)
+    add("step.finished", "10:02:00", step="K-8-review-1-1", ticket="#1", result="done")
+    add("review.verdict", "10:02:00", ticket="#1", round=1, step="K-8-review-1-1", verdict="APPROVE",
+        blockers=0, majors=0, nits=2)
+    add("result", "10:04:00", action="merge", key="#1", ok=True)
+    step("K-8-ticket-2-0", "#2", "ticket", "Opus", "10:05:00")
+    step("K-8-ticket-3-0", "#3", "ticket", "Sonnet", "10:05:00")
+    step("K-8-ticket-4-0", "#4", "ticket", "Opus", "10:05:00")
+    add("step.finished", "11:01:00", step="K-8-ticket-3-0", ticket="#3", result="done")
+    step("K-8-review-3-1", "#3", "review", "Opus", "11:02:00", round=1)
+    add("step.finished", "11:05:00", step="K-8-ticket-4-0", ticket="#4", result="done")
+    step("K-8-review-4-1", "#4", "review", "Sonnet", "11:06:00", round=1)
+    add("step.finished", "11:13:00", step="K-8-review-4-1", ticket="#4", result="done")
+    add("review.verdict", "11:13:00", ticket="#4", round=1, step="K-8-review-4-1", verdict="REQUEST_CHANGES",
+        blockers=0, majors=1, nits=0)
+    step("K-8-fix-4-1", "#4", "fix", "Opus", "11:14:00", round=1)
+    return items
+
+
+def full_card(data: dict, events: list[dict]) -> dict:
+    """Kopia danych podglądu, w której K-8 ma całe `derived` policzone przez usługę z dziennika `events`."""
+    data = json.loads(json.dumps(data))
+    computed = json.loads(json.dumps(derived(fold(events), {"column": "todo"})))
+    for card in data["cards"]:
+        if card["id"] == CARD:
+            card["derived"] = computed
+            card["boardColumn"] = computed["column"]
+    return data
+
+
+def full_c(data: dict) -> dict:
+    """Scenariusz C: plan do zatwierdzenia, recenzent prosi o zmiany (K-8 w „Czeka na mnie”)."""
+    return full_card(data, journal_c())
+
+
+def full_d(data: dict) -> dict:
+    """Scenariusz D: praca w toku, fala 2 z 4 (K-8 w „W toku”)."""
+    return full_card(data, journal_d())
 
 
 def scenario_f(data: dict, items: list[dict] | None = None) -> dict:

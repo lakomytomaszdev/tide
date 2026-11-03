@@ -1,8 +1,8 @@
 // Zawartość widoku „Tablica” (mock zatwierdzony 27.10.2026): nagłówek z podsumowaniem, szukaniem
 // i „＋ Karta”, pastylki tagów (filtr), filtr projektu i układ (Razem / Wiersz na projekt), kolumny
 // Backlog, Do zrobienia, W toku, Czeka na mnie, Do sprawdzenia i Gotowe (równe szerokości). Karty przeciąga się
-// między kolumnami ręcznymi (Backlog, Do zrobienia, Gotowe) i w obrębie kolumny; kliknięcie otwiera
-// panel karty, „Projekty i tagi” — osobną stronę. Sam nie rozmawia z usługą: dostaje migawkę
+// między kolumnami ręcznymi (Backlog, Do zrobienia, Gotowe) i w obrębie kolumny; kliknięcie otwiera okno decyzji,
+// pełną kartę (karta z dziennikiem, PT-128) albo panel karty (karta bez dziennika), „Projekty i tagi” — osobną stronę. Sam nie rozmawia z usługą: dostaje migawkę
 // i zgłasza zapisy sygnałami z tagiem, a odpowiedzi dostaje przez handleReply(tag, odpowiedź).
 // YouTrack (PT-7): przy nagłówku dyskretne notki z migawki (konflikty, „YouTrack niedostępny”, „N nowych
 // zgłoszeń w YouTracku” — ta otwiera import na stronie „Projekty i tagi”).
@@ -45,6 +45,9 @@ Rectangle {
     signal cardOpenRequested(string value)
     property bool decisionOpen: false
     property string decisionCardId: ""
+    // Pełna karta (PT-128, apps/common/qml/card/CardFullView.qml) na całą stronę.
+    property bool fullOpen: false
+    property string fullCardId: ""
     property var decisionTags: ({})          // tag zapisu → [karta, id decyzji]
     // Przeciąganie.
     property bool dragging: false
@@ -118,6 +121,7 @@ Rectangle {
     readonly property bool filtered: tagFilter !== "" || projectFilter !== "" || query.trim() !== ""
     readonly property var panelCard: panelCardId ? (snapshot && snapshot.cards || []).find(c => c.id === panelCardId) || null : null
     readonly property var decisionCard: decisionCardId ? (snapshot && snapshot.cards || []).find(c => c.id === decisionCardId) || null : null
+    readonly property var fullCard: fullCardId ? (snapshot && snapshot.cards || []).find(c => c.id === fullCardId) || null : null
     readonly property var errorLines: Logic.errorLines(snapshot, 3)
     readonly property var youtrackNotes: Logic.youtrackNotes(snapshot)
     readonly property var lanes: {
@@ -137,6 +141,7 @@ Rectangle {
     readonly property alias cardPanel: cardPanel
     readonly property alias launchDialog: launchDialog
     readonly property alias decisionDialog: decisionDialog
+    readonly property alias cardFullView: cardFullView
     readonly property alias managePage: manage
     readonly property alias columnsRow: columnsRow
 
@@ -178,11 +183,41 @@ Rectangle {
     }
 
     // Kliknięcie kafelka: karta z decyzjami w „Czeka na mnie” otwiera okno decyzji albo (ustawienie „Pełna karta”)
-    // panel karty, inne karty — zawsze panel karty.
+    // pełną kartę; inne karty z przepływem — zawsze pełną kartę (PT-128), karty bez dziennika — panel karty.
     function activateCard(id) {
         const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
         if (Logic.opensDecisions(card, cardOpen)) openDecisions(id)
-        else openCard(id)
+        else if (!openFull(id)) openCard(id)
+    }
+
+    // --- pełna karta (PT-128) -------------------------------------------------------------------
+
+    function openFull(id) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
+        if (!Logic.hasFullCard(card)) return false
+        panelOpen = false
+        decisionOpen = false
+        selectedId = id
+        fullCardId = id
+        fullOpen = true
+        cardFullView.start()
+        return true
+    }
+
+    function closeFull() {
+        if (!fullOpen) return
+        fullOpen = false
+        const item = findCard(fullCardId)
+        if (item) item.forceActiveFocus()
+        else page.forceActiveFocus()
+    }
+
+    // Panel karty z pełnej karty: ustawienia, akcje i wybór wykonawcy zostają tam (do PT-134).
+    function panelFromFull(notice) {
+        const id = fullCardId
+        fullOpen = false
+        openCard(id)
+        if (notice) cardPanel.notice = notice
     }
 
     // Powiadomienie o karcie (Show z ID karty): zaznacza ją, a gdy czeka na decyzję — otwiera ją tak samo
@@ -213,6 +248,11 @@ Rectangle {
     function closeDecisions() {
         if (!decisionOpen) return
         decisionOpen = false
+        // Okno otwarte z pełnej karty („wszystkie w oknie decyzji”) wraca do niej.
+        if (fullOpen && fullCardId === decisionCardId) {
+            cardFullView.start()
+            return
+        }
         const item = findCard(decisionCardId)
         if (item) item.forceActiveFocus()
         else page.forceActiveFocus()
@@ -248,7 +288,10 @@ Rectangle {
         const tags = Object.assign({}, decisionTags)
         delete tags[tag]
         decisionTags = tags
-        if (sent && sent[0] === decisionCardId) decisionDialog.showPreview(sent[1], reply)
+        if (!sent) return
+        // Podgląd zamówiony w bloku „Twój ruch” pełnej karty wraca tam; z okna decyzji — do okna.
+        if (fullOpen && !decisionOpen && sent[0] === fullCardId) cardFullView.showPreview(sent[1], reply)
+        else if (sent[0] === decisionCardId) decisionDialog.showPreview(sent[1], reply)
     }
 
     function handleDecisionReply(tag, error, reply) {
@@ -260,6 +303,11 @@ Rectangle {
             showToast((reply.action === "append" ? "Wystąpienie dopisane do " : "Karta z błędem ") + reply.reported
                       + " w Backlogu " + (reply.project || "plasma-tide") + " — krok ponowiony.", "butter")
         if (!sent || !error) return
+        // Odpowiedź z bloku „Twój ruch” pełnej karty: decyzja wraca tam z powodem.
+        if (fullOpen && !decisionOpen && sent[0] === fullCardId) {
+            cardFullView.failed(sent[1], error)
+            return
+        }
         // Usługa odrzuciła odpowiedź: decyzja wraca do okna z powodem (okno otwiera się ponownie, jeśli zamknięte).
         if (!decisionOpen && sent[0] === decisionCardId) {
             decisionOpen = true
@@ -1646,13 +1694,33 @@ Rectangle {
             page.showToast("Karta zostaje w „Czeka na mnie” — wrócisz do niej z kafelka.", "butter")
         }
         onFinished: page.closeDecisions()
-        // „Otwórz całą kartę” — na razie obecny panel karty (docelowy widok zmienia PT-128).
+        // „Otwórz całą kartę” — pełna karta (PT-128). Możliwość, która wymaga wyboru wykonawcy (napis `notice`),
+        // otwiera panel karty, bo wybór wykonawcy jest na razie tylko tam.
         onFullCardRequested: notice => {
             const id = page.decisionCardId
             page.decisionOpen = false
+            if (!notice && page.openFull(id)) return
+            page.fullOpen = false
             page.openCard(id)
             if (notice) cardPanel.notice = notice
         }
+    }
+
+    // --- pełna karta (PT-128) --------------------------------------------------------------------
+    CardUi.CardFullView {
+        id: cardFullView
+        objectName: "cardFullView"
+        anchors.fill: parent
+        z: 35
+        visible: page.fullOpen && !page.managing
+        card: page.fullOpen ? page.fullCard : null
+        onBackRequested: page.closeFull()
+        onAnswered: (decisionId, method, params) => page.sendDecision(page.fullCardId, decisionId, method, params)
+        onPreviewRequested: (decisionId, method, params) => page.previewFault(page.fullCardId, decisionId, method, params)
+        onDecisionsRequested: page.openDecisions(page.fullCardId)
+        onPanelRequested: notice => page.panelFromFull(notice)
+        onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
+                                                                page.fullCardId, stepId)
     }
 
     // --- duch przeciąganej karty ----------------------------------------------------------------
@@ -1672,12 +1740,13 @@ Rectangle {
         }
     }
 
-    // Skróty: Ctrl+N nowa karta, Ctrl+F szukaj, Esc zamyka panel albo stronę.
+    // Skróty: Ctrl+N nowa karta, Ctrl+F szukaj, Esc zamyka okno decyzji, panel, pełną kartę albo stronę.
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape) {
             if (page.decisionOpen && !page.managing) page.closeDecisions()
             else if (page.launchOpen && !page.managing) page.cancelLaunch()
             else if (page.panelOpen) page.closePanel()
+            else if (page.fullOpen && !page.managing) page.closeFull()
             else if (page.managing) page.managing = false
             else if (page.query !== "") { search.text = ""; page.query = "" }
             else return
