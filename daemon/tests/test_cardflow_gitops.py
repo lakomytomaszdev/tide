@@ -61,6 +61,20 @@ class MergeTest(unittest.TestCase):
         return self.flow.merge(self.repo, "card/test", "ticket/test", self.card, "Merge ticket",
                                expected_tip=git(self.repo, "rev-parse", "ticket/test"))
 
+    @unittest.skipUnless(sandbox_available(), "brak bwrap")
+    def test_worktree_with_only_user_agent_tooling_is_removed(self):
+        os.makedirs(os.path.join(self.ticket, ".agents", "skills"))
+        self.write(os.path.join(self.ticket, ".agents", "skills"), "SKILL.md", "x\n")
+        self.assertTrue(self.flow.remove_worktree(self.repo, "ticket/test", self.ticket)["removed"])
+        self.assertFalse(os.path.exists(self.ticket))
+
+    @unittest.skipUnless(sandbox_available(), "brak bwrap")
+    def test_worktree_with_real_leftovers_is_kept(self):
+        self.write(self.ticket, "notatka.txt", "praca\n")
+        with self.assertRaises(gitops.FlowGitError):
+            self.flow.remove_worktree(self.repo, "ticket/test", self.ticket)
+        self.assertTrue(os.path.exists(os.path.join(self.ticket, "notatka.txt")))
+
     def test_two_ticket_merges_share_one_repo_lock(self):
         self.ticket_commit()
         second = os.path.join(self.base, "ticket-second")

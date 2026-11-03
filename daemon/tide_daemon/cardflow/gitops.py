@@ -246,9 +246,12 @@ class FlowGit:
                 raise FlowGitError(f"nie można ustalić katalogu gita worktree ticketu: {exc}") from exc
             status = StepGit(repo, git_dir, path, path + ".step").run(
                 "status", "--porcelain", "--untracked-files=all")
-            if not status.ok or status.out.strip():
+            if not status.ok or _foreign_changes(status.out):
                 raise FlowGitError("worktree ma lokalne zmiany — nie usuwam")
-            removed = self.run(repo, "worktree", "remove", path, timeout=600)
+            # Zostały wyłącznie nieśledzone narzędzia agentów użytkownika (kopie z zewnętrznej synchronizacji,
+            # K-15/LEGAL-60) — git bez --force nie usunie worktree z nieśledzonymi plikami.
+            force = ["--force"] if status.out.strip() else []
+            removed = self.run(repo, "worktree", "remove", *force, path, timeout=600)
             if not removed.ok:
                 raise FlowGitError("nie udało się usunąć worktree: " + (removed.err.splitlines() or ["błąd"])[0])
             return {"removed": True, "already": False}
