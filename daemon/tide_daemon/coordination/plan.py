@@ -7,7 +7,8 @@ boardplans.py) — plan_folders(roots) daje oba miejsca dla repozytorium.
 Standard 1.3: opcjonalna kolumna `Projekt` (slug projektu Tablicy) po `Blokery`; pusta komórka = projekt karty.
 
 Plik ma frontmatter YAML (tylko płaskie pary `klucz: wartość`, więc czytamy go sami, bez
-biblioteki YAML) i tabelę Markdown `| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |`.
+biblioteki YAML) i tabelę Markdown `| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |`
+oraz opcjonalnymi kolumnami po `Uwagi`: `Klasa`, `Review` (1.2), `Blokery` (1.2), `Projekt` (1.3) — razem 6–10 kolumn.
 Sekcje pod tabelą to wolny tekst — nie czytamy ich.
 
 Błędy nie przerywają odczytu: zły wiersz trafia do `errors`, a reszta planu działa. Plik bez
