@@ -673,3 +673,33 @@ class WorktreeGuardTest(unittest.TestCase):
         os.unlink(os.path.join(admin, "HEAD"))
         __import__("shutil").rmtree(tree)
         self.assertEqual(worktree_guard(repo, memory), [], "usunięty worktree nie wraca")
+
+
+class MergeRetryTest(FlowInProcess):
+    def test_non_conflict_merge_failure_is_retried_after_a_minute(self):
+        # 03.11, K-33/PT-115: scalenie padło przez chwilowo uszkodzony worktree karty i nigdy nie było ponowione.
+        from unittest import mock as _mock
+        from tide_daemon.cardflow.state import fold
+        card = self.card()
+        self.flow.stop()
+        engine = self.flow.engine
+        journal = engine.journal
+        journal.append(card, "card.started", entry="plan", repo=self.repo)
+        journal.append(card, "plan.approved", rows=[{"id": "PT-2", "blockers": []}])
+        journal.append(card, "step.started", step="t", ticket="PT-2", kind="ticket")
+        journal.append(card, "step.finished", step="t", ticket="PT-2", result="done")
+        journal.append(card, "step.started", step="r", ticket="PT-2", kind="review", round=1)
+        journal.append(card, "step.finished", step="r", ticket="PT-2", result="done")
+        journal.append(card, "review.verdict", step="r", ticket="PT-2", round=1, verdict="APPROVE",
+                       blockers=0, majors=0, nits=0)
+        journal.append(card, "result", action="merge", key="PT-2", ok=False,
+                       error="worktree karty nie jest przypisany do jej gałęzi")
+        st = fold(journal.read(card))
+        st.last_step = "r"
+        with _mock.patch.object(engine, "_merge") as merge, _mock.patch.object(engine, "_cleanup"), \
+                _mock.patch.object(engine, "_plan_next"):
+            engine._advance(card, st)
+            merge.assert_not_called()          # za wcześnie
+            engine.clock = lambda: __import__("time").time() + 120
+            engine._advance(card, st)
+            merge.assert_called_once()
