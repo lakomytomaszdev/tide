@@ -12,7 +12,15 @@ trwające kroki i jedno zdanie, gdy nic nie czeka na użytkownika. Widok `CardFu
 - `derived.tickets[].status` i `statusLabel` — ludzki stan ticketu (`TICKET_STATUS`), `executor` i `reviewer`,
 - `derived.flow.running[]` — tylko trwające kroki (`{id, ticket, kind, kindLabel, executor, mode, startedTs,
   lastActivityTs, canEnter}`),
-- `derived.flow.headline` — jedno zdanie do bloku „Twój ruch”, gdy `flow.decisions[]` jest puste.
+- `derived.flow.headline` — jedno zdanie do bloku „Twój ruch”, gdy `flow.decisions[]` jest puste,
+- `derived.flow.stoppedByLimit[]` — `{step, ticket, wipFiles, provider, until}`: kroki zatrzymane przez limit dostawcy
+  (PT-130, „Teraz w tle”); `wipFiles` to liczba plików WIP do przekazania. Limit nie jest decyzją (D3): karta stoi
+  w „W toku”, a Tide wznawia krok po odnowieniu limitu,
+- `derived.flow.otherProviders[]` — `{provider, remaining}`: pozostały limit (%) innych dostawców z odczytu Limitów AI
+  (dokłada silnik; pusty bez zatrzymanych kroków albo bez odczytu),
+- `derived.flow.limitTransfer` — `{available, provider, label, text, executor, cost, reason}` albo None: akcja
+  „Przenieś na Codex” (`text` to napis przycisku, `executor` to wykonawca dla istniejącej ścieżki przekazania kroku, `cost` — koszt przeniesienia: liczba
+  kroków i plików WIP oraz pozostały limit docelowego dostawcy; `reason` — jedno zdanie, gdy akcja jest ukryta).
 """
 from __future__ import annotations
 
@@ -47,6 +55,9 @@ def enrich(st: FlowState, out: dict) -> dict:
         ticket["reviewer"] = override.get("reviewer") or assigned.get("reviewer") or row.get("reviewer") or ""
         ticket.update(ticket_status(st, ticket))
     flow["running"] = running_steps(flow.get("steps") or [], st)
+    flow["stoppedByLimit"] = stopped_by_limit(st)
+    flow["otherProviders"] = []
+    flow["limitTransfer"] = None
     out["phases"] = phases(st, out)
     flow["headline"] = headline(st, out)
     return out
@@ -176,7 +187,7 @@ def phases(st: FlowState, out: dict) -> list[dict]:
         result.append(phase("main-merge", "you" if st.closed else "todo", USER))
 
     # Karta w „Czeka na mnie” bez decyzji w żadnej fazie: czeka bieżąca faza (spójnie z kafelkiem). Postój na limicie
-    # (`hold`) zostaje — kolumnę „Czeka na mnie” dla limitu zmienia dopiero PT-130.
+    # (`hold`) zostaje; od PT-130 karta czekająca na limit jest w „W toku”, nie w „Czeka na mnie”.
     if out.get("column") == "waiting" and not any(p["state"] in ("you", "hold") for p in result):
         current = next((p for p in result if p["state"] in ("now", "hold", "todo")), None)
         if current:
@@ -209,6 +220,52 @@ def limit_stops(st: FlowState) -> list[dict]:
         found.append({"step": name, "ticket": step.get("ticket") or "", "stepKind": step.get("kind") or "",
                       "until": str((st.limits.get(name) or {}).get("reset") or "")})
     return found
+
+
+def _wip_files(wip: dict) -> int:
+    files = wip.get("files") if isinstance(wip, dict) else 0
+    if isinstance(files, (list, tuple)):
+        return len(files)
+    return files if isinstance(files, int) and not isinstance(files, bool) and files > 0 else 0
+
+
+def stopped_by_limit(st: FlowState) -> list[dict]:
+    """`flow.stoppedByLimit[]` (PT-130): `{step, ticket, wipFiles, provider, until}` dla każdego kroku z `limit_stops`."""
+    found = []
+    for stop in limit_stops(st):
+        wip = (st.wip_retries.get(stop["step"]) or {}).get("wip") or (st.finished.get(stop["step"]) or {}).get("wip")
+        found.append({"step": stop["step"], "ticket": stop["ticket"], "wipFiles": _wip_files(wip or {}),
+                      "provider": (st.steps.get(stop["step"]) or {}).get("provider") or "", "until": stop["until"]})
+    return found
+
+
+def transfer_cost(stopped: list[dict], label: str, remaining: float) -> str:
+    """Koszt przeniesienia: kroki i pliki WIP do przekazania oraz pozostały limit docelowego dostawcy (bez walut)."""
+    wip = sum(item["wipFiles"] for item in stopped)
+    return (f"{_count(len(stopped), 'zatrzymany krok', 'zatrzymane kroki', 'zatrzymanych kroków')} i "
+            f"{_count(wip, 'plik WIP', 'pliki WIP', 'plików WIP')} do przekazania; "
+            f"po przeniesieniu {label} ma jeszcze {remaining:g}% limitu.")
+
+
+PROVIDER_LABEL = {"anthropic": "Claude", "openai": "Codex"}
+NO_TRANSFER_TARGET = "Nie ma innego dostawcy z wolnym limitem, więc nie ma dokąd przenieść zatrzymanych kroków."
+
+
+def limit_transfer(stopped: list[dict], others: list[dict], threshold: float, pick) -> dict | None:
+    """`flow.limitTransfer` (PT-130): akcja „Przenieś na <dostawca>” z kosztem albo jedno zdanie powodu, gdy ukryta.
+    `others` — `flow.otherProviders[]`; `pick(provider)` zwraca nazwę wykonawcy tego dostawcy (pusty — brak).
+    Docelowy dostawca to ten z największym pozostałym limitem powyżej progu, który ma wykonawcę."""
+    if not stopped:
+        return None
+    for item in sorted(others, key=lambda other: -other["remaining"]):
+        executor = pick(item["provider"]) if item["remaining"] > threshold else ""
+        if executor:
+            label = PROVIDER_LABEL.get(item["provider"], item["provider"])
+            return {"available": True, "provider": item["provider"], "label": label, "executor": executor,
+                    "text": f"Przenieś na {label}", "reason": "",
+                    "cost": transfer_cost(stopped, label, item["remaining"])}
+    return {"available": False, "provider": "", "label": "", "executor": "", "text": "", "cost": "",
+            "reason": NO_TRANSFER_TARGET}
 
 
 def _limit_wait(wait: dict) -> bool:

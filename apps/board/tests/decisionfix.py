@@ -200,6 +200,53 @@ def journal_d() -> list[dict]:
     return items
 
 
+# --- Scenariusz E (PT-130): limit Claude, #2 i #4 zatrzymane, Codex ma 91% limitu ---------------------
+
+def journal_e() -> list[dict]:
+    """Scenariusz E makiety („Limit dostawcy”): jak D, ale o 13:52 skończył się limit Claude — #2 (Opus, 6 plików WIP)
+    i #4 (poprawki, Opus, 11 plików WIP) zatrzymane, odnowienie o 16:30; review #3 nie wystartowało."""
+    items = [e for e in journal_d() if e.get("step") != "K-8-review-3-1"]
+
+    def add(event_type, ts, **data):
+        items.append({"v": 1, "seq": len(items) + 1, "ts": f"2026-11-03T{ts}+01:00", "card": CARD,
+                      "type": event_type, **data})
+
+    for seq, item in enumerate(items, 1):
+        item["seq"] = seq
+    for name, ticket, files in (("K-8-ticket-2-0", "#2", 6), ("K-8-fix-4-1", "#4", 11)):
+        add("step.limit", "13:52:00", step=name, ticket=ticket, provider="anthropic", reset="16:30", window="session")
+        add("step.finished", "13:52:01", step=name, ticket=ticket, result="error", reason="limit",
+            wip={"stopped": True, "committed": True, "files": files})
+    return items
+
+
+def limits_snapshot(codex: float = 91, now: float = 1_800_000_000.0) -> dict:
+    """Odczyt Limitów AI w scenariuszu E: Claude wyczerpany, Codex ma `codex`% limitu tygodnia."""
+    def window(name, value):
+        return {name: {"remaining": value, "readTs": now, "resetTs": now + 8400}}
+    return {"available": True, "services": {"claude": window("session", 0), "chatgpt": window("weekly", codex)}}
+
+
+def full_e(data: dict, codex: float = 91) -> dict:
+    """Scenariusz E: limit Claude, K-8 w „W toku”; `otherProviders` i `limitTransfer` liczy silnik z odczytu limitów."""
+    from types import SimpleNamespace
+    from tide_daemon.cardflow.engine import FlowEngine
+    from tide_daemon.models.executors import default_catalog
+    state = fold(journal_e())
+    computed = derived(state, {"column": "todo"})
+    engine = SimpleNamespace(
+        limits_source=lambda: limits_snapshot(codex), clock=lambda: 1_800_000_000.0, models_config=None,
+        catalog=default_catalog,
+        get_flow_settings=lambda: {"limitTransfer": {"mode": "ask", "executor": ""}, "limitThresholdPercent": 10})
+    FlowEngine._limit_view(engine, state, computed)
+    data = json.loads(json.dumps(data))
+    for card in data["cards"]:
+        if card["id"] == CARD:
+            card["derived"] = json.loads(json.dumps(computed))
+            card["boardColumn"] = computed["column"]
+    return data
+
+
 def full_card(data: dict, events: list[dict]) -> dict:
     """Kopia danych podglądu, w której K-8 ma całe `derived` policzone przez usługę z dziennika `events`."""
     data = json.loads(json.dumps(data))

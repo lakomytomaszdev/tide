@@ -1692,6 +1692,31 @@ Zdarzenie `step.waiting` niesie `cause` (`quota` — okno limitu, `slots` — kr
 modeli lokalnych, `paused` — karta wstrzymana) i `until` (godzina odnowienia przy `quota`). Starsze zdarzenia bez
 `cause` rozpoznawane są po treści powodu. Tickety i fale planu liczą się także wtedy, gdy krok stoi na limicie.
 
+### Limit dostawcy: zatrzymane kroki i przeniesienie na Codex (PT-130)
+
+Limit nie jest decyzją (D3): nie ma go w `flow.decisions[]`. **Zmiana reguły kolumn** (jedyna w tym tickecie):
+karta z krokiem zatrzymanym przez limit (`step.finished` z `reason: limit`) stoi w „W toku” ze znacznikiem „czeka
+na limit do HH:MM”, nie w „Czeka na mnie”. Wyjątek: gdy zapis zmian (WIP) wymaga naprawy, karta zostaje w „Czeka na
+mnie” — to praca dla użytkownika, nie limit. Bez wyboru użytkownika Tide czeka na odnowienie sam: po odnowieniu
+wznawia krok tym samym dostawcą (jak po wyborze `wait-limit`), a kolumnę liczą dotychczasowe reguły. Tryb
+`auto` z ustawionym wykonawcą nadal przenosi krok sam.
+
+Pola w `derived.flow`:
+
+- `stoppedByLimit[]` — `{step, ticket, wipFiles, provider, until}` dla każdego zatrzymanego kroku; `wipFiles` to
+  liczba plików w commicie WIP.
+- `otherProviders[]` — `{provider, remaining}`: pozostały limit (%, najniższe świeże okno) innych dostawców
+  chmurowych z odczytu Limitów AI (`cardflow/limits.py`); dostawca bez świeżego odczytu nie trafia na listę.
+- `limitTransfer` — `null` bez zatrzymanych kroków, inaczej `{available, provider, label, text, executor, cost,
+  reason}`. Dostępne (`available: true`), gdy inny dostawca ma limit powyżej progu i wykonawcę w katalogu
+  (preferowany: wykonawca z ustawień przekazania, potem ta sama klasa co zatrzymany krok). `cost` to koszt
+  przeniesienia: „2 zatrzymane kroki i 17 plików WIP do przekazania; po przeniesieniu Codex ma jeszcze 91%
+  limitu.” — liczby kroków i plików WIP oraz pozostały limit docelowego dostawcy, bez przeliczeń w walucie.
+  Gdy nie ma dostawcy z wolnym limitem: `available: false` i jedno zdanie w `reason`.
+
+„Przenieś na Codex” w pełnej karcie wysyła istniejące `ResolveCardStep` (`choice: transfer`, `step`, `executor`)
+po jednym razie na zatrzymany krok; koszt jest widoczny nad przyciskiem przed kliknięciem.
+
 ## Docker
 
 Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Docker” w oknie Tide (`apps/docker`) i kafelka `org.tide.docker` w docku (`widgets/docker`). Usługa rozmawia z Docker Engine API przez lokalny socket (sama biblioteka standardowa, bez `docker` CLI i bez `docker compose`). Socket z `$DOCKER_HOST` (`unix:///ścieżka`), domyślnie `/var/run/docker.sock`; `tcp://`, `ssh://` i inne → stan `unsupported`, bez łączenia się przez sieć.

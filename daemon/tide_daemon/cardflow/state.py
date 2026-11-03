@@ -545,6 +545,13 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                     (wip.get("committed") or wip.get("files") == 0)):
                 return _fill(out, "waiting", reason)
             return _fill(out, "progress", f"{ident} · przekazuję krok")
+        if done.get("reason") == "limit" and not wip.get("error") and \
+                not (wip.get("files") and not wip.get("committed")):
+            # PT-130 (D3): limit nie jest decyzją. Karta czeka na odnowienie w „W toku”, nie w „Czeka na mnie”;
+            # po odnowieniu krok rusza od nowa i kolumnę liczą zwykłe reguły. Zapis zmian do naprawy zostaje
+            # w „Czeka na mnie” (to praca dla użytkownika, nie limit).
+            out["question"] = ""
+            return _fill(out, "progress", f"{ident} · czeka na limit" + (f" do {reset}" if reset else ""))
         return _fill(out, "waiting", reason)
     failures = [e for e in st.tracker_failures() if e.get('action') != 'youtrack-note']
     if failures and not st.running():
