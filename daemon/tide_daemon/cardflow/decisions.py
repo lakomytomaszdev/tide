@@ -217,7 +217,20 @@ def _outside(st, name, step, done) -> dict:
     who = _who(step, True)
     happened = f"{who} prosi o uruchomienie poza piaskownicą: {command}" if command else ""
     reason = _text(done.get("reason"))
-    if done.get("canAllow", True):
+    from ..board.commands import outside_risky
+    risk = outside_risky(command) if command else ""
+    if done.get("canAllow", True) and risk:
+        # Ryzykowne (wychodzi poza worktree, czyta `~`, zmienia system): tylko jednorazowo i z powodem na wierzchu.
+        why = (f"Uwaga: {risk}. Tide uruchomi je na Twoim koncie, w worktree ticketu, tylko raz."
+               + (f" Powód kroku: {reason}" if reason else ""))
+        options = [
+            _option("run", "Uruchom raz",
+                    "Tide uruchomi to jedno polecenie i wznowi krok z jego wynikiem; następnym razem zapyta znowu.",
+                    RESOLVE_STEP, {"choice": "run", "step": name}),
+            _option("deny", "Nie uruchamiaj",
+                    "Krok wznowi się bez tego polecenia.", RESOLVE_STEP, {"choice": "deny", "step": name}),
+        ]   # bez polecanej: to decyzja o Twoich danych i systemie, nie o środowisku
+    elif done.get("canAllow", True):
         why = ("Piaskownica kroku nie ma sieci, Dockera ani pełnych testów. Tide uruchomi polecenie w worktree "
                "ticketu na Twoim koncie i odda wynik krokowi." + (f" Powód kroku: {reason}" if reason else ""))
         options = [

@@ -67,6 +67,10 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(outside_allowed(found, []))
         self.assertTrue(outside_risky(found))
         self.assertFalse(outside_allowed("npm test; ls", []))
+        from tide_daemon.cardflow.decisions import _outside
+        made = _outside(None, "s1", {"step": "s1", "kind": "ticket", "ticket": "PT-1"},
+                        {"command": found, "canAllow": True, "pattern": "find *", "outside": True})
+        self.assertEqual([(o["choice"], o["recommended"]) for o in made["options"]], [("run", False), ("deny", False)])
         # K-16/LEGAL-66: długie polecenie ze zmienną w cudzysłowie (średniki w wartości) było odrzucane bez wyjścia.
         long_test = ('DATABASE_CONNECTION="Host=127.0.0.1;Port=1;Database=x;Username=none;Password=none" '
                      'ANTHROPIC_API_KEY=test VOYAGE_API_KEY=test dotnet test tests/LegalApp.Tests.Integration '

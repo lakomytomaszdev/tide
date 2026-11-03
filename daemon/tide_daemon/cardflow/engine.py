@@ -2315,6 +2315,9 @@ class FlowEngine(PlanEditing):
             if not command or not outside_allowed(command, project.denied_commands):
                 raise FlowError("forbidden-command", f"polecenia „{command}” nie można uruchomić poza piaskownicą")
             if choice == "run-always":
+                from ..board.commands import outside_risky
+                if outside_risky(command):
+                    raise FlowError("risky-command", "ryzykownego polecenia nie można zapamiętać — uruchom je raz")
                 self._remember_outside(project.slug, outside_pattern(command))
         extra = {}
         if choice == "allow" and "allow" in request:
