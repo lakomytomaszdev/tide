@@ -31,11 +31,32 @@ LEADING = ("{", "!", "if", "then", "else", "elif", "do", "while", "until", "time
 CLOSING = ("}", "fi", "done", "esac", "then", "else", "do")
 # Konstrukcje, które nie są poleceniem do zatwierdzenia (nie są też zakazem projektu).
 CONSTRUCTS = ("for", "case", "select", "function", "coproc", "[[", "((")
-# Flagi, z którymi narzędzia z listy „tylko do czytania” coś zmieniają.
-WRITE_FLAGS = {"git branch": ("-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy", "-f", "--force",
-                              "-u", "--set-upstream-to", "--unset-upstream", "--edit-description"),
-               "sort": ("-o", "--output")}
+# Flagi, z którymi narzędzia z listy „tylko do czytania” (`commands.ALWAYS_ALLOWED`) piszą albo uruchamiają inny
+# program: (litery krótkich flag — także w skupieniu `-ro plik`, `-oplik` — i długie flagi, także skrócone
+# `--out=` i z wartością `--output=`). To nie są zakazy: polecenie z taką flagą jest tylko bez plakietki
+# „tylko czyta” i bez domyślnego zaznaczenia.
+WRITE_FLAGS = {
+    "git branch": ("dDmMcCfu", ("--delete", "--move", "--copy", "--force", "--set-upstream-to", "--unset-upstream",
+                                "--edit-description", "--track", "--no-track", "--create-reflog")),
+    "git diff": ("", ("--output", "--ext-diff", "--textconv")),
+    "git log": ("", ("--output", "--ext-diff", "--textconv")),
+    "git show": ("", ("--output", "--ext-diff", "--textconv")),
+    "git blame": ("", ("--textconv",)),
+    "sort": ("o", ("--output", "--compress-program")),
+    "rg": ("", ("--pre", "--pre-glob", "--hostname-bin", "--search-zip")),
+    "tree": ("oR", ("--output",)),
+    "file": ("Cm", ("--compile", "--magic-file")),
+}
+# Polecenia, które piszą przy argumencie pozycyjnym: `git branch nowa` zakłada gałąź (czyta tylko z `--list`/`-l`
+# albo bez argumentów), `uniq wejście wyjście` zapisuje drugi argument.
+POSITIONAL_WRITE = {"git branch": 0, "uniq": 1}
 STEP_READERS = ("ls", "cat", "head", "tail", "wc", "stat", "file", "tree", "du", "realpath", "nl")
+# Opakowania uruchamiające inne polecenie (`nohup make install`) i ich flagi z wartością w osobnym argumencie;
+# liczba — argumenty pozycyjne przed poleceniem (`timeout 5 make install`).
+WRAPPERS = {"env": ("uCS", 0), "command": ("", 0), "builtin": ("", 0), "exec": ("a", 0),
+            "sudo": ("ugCDhprtU", 0), "doas": ("uC", 0), "nohup": ("", 0), "nice": ("n", 0),
+            "timeout": ("sk", 1), "stdbuf": ("ioe", 0), "ionice": ("cnpPu", 0), "setsid": ("", 0),
+            "xargs": ("InLPdEsa", 0), "time": ("fo", 0)}
 
 
 class _Unbalanced(ValueError):
@@ -68,8 +89,11 @@ def describe(command: str, *, denied: list[str], step_dir: str = "") -> list[dic
       (albo, bez reguły, że to nie jest pojedyncze proste polecenie),
     - `canAllow` — polecenie można dopisać do listy dozwolonych (niezabronione, do MAX_COMMAND znaków, nie jest
       konstrukcją powłoki); gdy nie — `reason` zawsze mówi dlaczego,
-    - `readOnly` — narzędzie z listy „tylko do czytania” (`commands.ALWAYS_ALLOWED`) bez flag zapisu,
-    - `stepDir` — wszystkie ścieżki polecenia leżą w katalogu kroku (`<krok>/in`, `<krok>/out`),
+    - `readOnly` — narzędzie z listy „tylko do czytania” (`commands.ALWAYS_ALLOWED`) bez flag zapisu albo
+      uruchamiania innego programu (`WRITE_FLAGS`, `POSITIONAL_WRITE`),
+    - `stepDir` — każdy argument polecenia (poza pojedynczą flagą) leży w katalogu kroku, co najmniej jeden,
+    - opakowanie (`nohup`, `timeout`, `env`…) zabronionego polecenia nie ma `canAllow`; samo wewnętrzne polecenie
+      jest na liście osobno jako `forbidden`,
     - `preselected` — domyślnie zaznaczone w oknie: `canAllow` oraz `readOnly` albo `stepDir` (to zaznaczenie
       poleceń, nie możliwości decyzji — D10 dotyczy możliwości).
     Odczyt własnego `<krok>/in` i `<krok>/out` jest zawsze dozwolony i nie trafia na listę. Lista zależy tylko
@@ -96,6 +120,12 @@ def describe(command: str, *, denied: list[str], step_dir: str = "") -> list[dic
             reason = (f"Zabronione w projekcie regułą „{rule}”." if rule else
                       "To nie jest pojedyncze proste polecenie (podpowłoka, zmienna, przekierowanie albo wywołanie "
                       "powłoki), a Tide zatwierdza tylko takie.")
+        elif (hidden := _wrapped_forbidden(piece, denied)) is not None:
+            # `nohup make install` — zakaz projektu dotyczy polecenia uruchamianego przez opakowanie; samo
+            # wewnętrzne polecenie jest na liście osobno jako zabronione.
+            inner, inner_rule = hidden
+            reason = (f"Uruchamia polecenie „{inner}”, zabronione w projekcie regułą „{inner_rule}”." if inner_rule
+                      else f"Uruchamia „{inner}”, które nie jest pojedynczym prostym poleceniem.")
         elif _construct(piece):
             reason = "To konstrukcja powłoki, nie polecenie — Tide zatwierdza tylko pojedyncze polecenia."
         elif piece == "*" or piece.endswith(" *"):
@@ -111,6 +141,17 @@ def describe(command: str, *, denied: list[str], step_dir: str = "") -> list[dic
     return items
 
 
+def _wrapped_forbidden(piece: str, denied: list[str]) -> tuple[str, str] | None:
+    """(polecenie wewnętrzne, reguła) — opakowanie uruchamia polecenie zabronione przez `is_forbidden`."""
+    for inner in _unwrap(piece, 0)[1:]:
+        if inner == piece:
+            continue
+        rule = commands.forbidding_rule(inner, denied)
+        if rule is not None:
+            return inner, rule
+    return None
+
+
 def own_step_read(command: str, step_dir: str) -> bool:
     """Polecenie tylko czyta własny `<krok>/in` albo `<krok>/out` (wszystkie ścieżki tam, co najmniej jedna)."""
     argv = _plain(command)
@@ -118,7 +159,8 @@ def own_step_read(command: str, step_dir: str) -> bool:
         return False
     roots = (os.path.join(step_dir, "in"), os.path.join(step_dir, "out"))
     paths = [a for a in argv[1:] if not a.startswith("-") and not a.isdigit()]
-    return bool(paths) and all(_within(p, roots, "") for p in paths)
+    # `tree -o …`, `file -C -m …` piszą — to nie jest odczyt, więc trafia na listę z flagami.
+    return bool(paths) and all(_within(p, roots, "") for p in paths) and _read_only(command)
 
 
 # --- podział ---------------------------------------------------------------------------------------------------
@@ -240,6 +282,63 @@ def _unwrap(piece: str, depth: int) -> list[str]:
             inner = [script]
         for raw in inner:
             found.extend(_unwrap(raw, depth + 1))
+    if depth < MAX_DEPTH:
+        for raw in _wrapped(piece):
+            found.extend(_unwrap(raw, depth + 1))
+    return found
+
+
+def _strip_wrappers(argv: list[str]) -> tuple[list[str], list[str]]:
+    """(polecenie bez opakowań `nohup`/`env`/`sudo`/`timeout`…, napisy z `env -S '…'` do osobnego podziału)."""
+    scripts: list[str] = []
+    argv = commands._without_locale(argv)
+    while argv and os.path.basename(argv[0]) in WRAPPERS:
+        valued, positional = WRAPPERS[os.path.basename(argv[0])]
+        wrapper, argv = os.path.basename(argv[0]), argv[1:]
+        while argv and (argv[0].startswith("-") or wrapper == "env" and "=" in argv[0]):
+            arg, argv = argv[0], argv[1:]
+            if arg == "--":
+                break
+            if arg.startswith("--") or "=" in arg and not arg.startswith("-"):
+                if arg.startswith("--split-string"):
+                    value = arg.split("=", 1)[1] if "=" in arg else (argv.pop(0) if argv else "")
+                    scripts.append(value)
+                elif arg.startswith("--") and "=" not in arg and argv:
+                    # Długa flaga może brać wartość z następnego argumentu (`sudo --user ja make install`) —
+                    # podział jest nadgorliwy, więc sprawdzane są oba odczyty.
+                    scripts.append(shlex.join(argv[1 + positional:]) if len(argv) > 1 + positional else "")
+                continue
+            letters = arg[1:]
+            if wrapper == "nice" and letters.isdigit():          # `nice -10 polecenie`
+                continue
+            for at, letter in enumerate(letters):
+                if letter in valued:
+                    value = letters[at + 1:] or (argv.pop(0) if argv else "")
+                    if wrapper == "env" and letter == "S":
+                        scripts.append(value)
+                    break
+        argv = argv[positional:]
+    return argv, scripts
+
+
+def _wrapped(piece: str) -> list[str]:
+    """Polecenia uruchamiane przez opakowanie (`nohup make install` → `make install`); pusto bez opakowania."""
+    try:
+        argv = shlex.split(piece, posix=True)
+    except ValueError:
+        return []
+    bare = commands._without_locale(argv)
+    if not bare or os.path.basename(bare[0]) not in WRAPPERS:
+        return []
+    inner, scripts = _strip_wrappers(argv)
+    found = [shlex.join(inner)] if inner else []
+    for script in scripts:
+        try:
+            pieces: list[str] = []
+            _level(script, 0, "", pieces, 1)
+        except _Unbalanced:
+            pieces = [script]
+        found.extend(pieces)
     return found
 
 
@@ -249,11 +348,7 @@ def _script(piece: str) -> str | None:
         argv = shlex.split(piece, posix=True)
     except ValueError:
         return None
-    argv = commands._without_locale(argv)
-    while argv and argv[0] in ("env", "command", "builtin", "exec", "sudo", "doas", "nohup", "nice"):
-        argv = [a for a in argv[1:]]
-        while argv and (argv[0].startswith("-") or "=" in argv[0]):
-            argv = argv[1:]
+    argv, _ = _strip_wrappers(argv)
     if not argv:
         return None
     program = os.path.basename(argv[0])
@@ -285,23 +380,80 @@ def _construct(piece: str) -> bool:
 
 
 def _read_only(piece: str) -> bool:
+    """Narzędzie z `commands.ALWAYS_ALLOWED` bez flag zapisu/uruchamiania z `WRITE_FLAGS` i bez argumentu
+    pozycyjnego, który by zapisywał (`POSITIONAL_WRITE`)."""
     argv = _plain(piece)
     if not argv or not commands.is_allowed(piece, []):
         return False
-    for program, flags in WRITE_FLAGS.items():
+    for program in {*WRITE_FLAGS, *POSITIONAL_WRITE}:
         words = program.split()
-        if argv[:len(words)] == words and any(a in flags or any(a.startswith(f + "=") for f in flags if
-                                                                 f.startswith("--")) for a in argv[len(words):]):
+        if argv[:len(words)] != words:
+            continue
+        args = argv[len(words):]
+        short, long = WRITE_FLAGS.get(program, ("", ()))
+        if any(_has_flag(a, short, long) for a in _options(args)):
             return False
+        if program in POSITIONAL_WRITE:
+            positional = [a for a in _positional(args)]
+            if program == "git branch" and any(a in ("-l", "--list") or a.startswith("--list=") for a in args):
+                continue
+            if len(positional) > POSITIONAL_WRITE[program]:
+                return False
     return True
 
 
+def _options(args: list[str]) -> list[str]:
+    out = []
+    for arg in args:
+        if arg == "--":
+            break
+        if arg.startswith("-") and arg != "-":
+            out.append(arg)
+    return out
+
+
+def _positional(args: list[str]) -> list[str]:
+    out, ended = [], False
+    for arg in args:
+        if not ended and arg == "--":
+            ended = True
+        elif ended or not arg.startswith("-") or arg == "-":
+            out.append(arg)
+    return out
+
+
+def _has_flag(arg: str, short: str, long: tuple) -> bool:
+    """Flaga z listy: długa także skrócona (`--out=…`, getopt przyjmuje jednoznaczny przedrostek), krótka także
+    w skupieniu (`-ro plik`, `-oplik`)."""
+    if arg.startswith("--"):
+        name = arg[2:].split("=", 1)[0]
+        return bool(name) and any(flag[2:].startswith(name) for flag in long)
+    return any(letter in short for letter in arg[1:])
+
+
 def _in_step_dir(piece: str, step_dir: str) -> bool:
+    """Każdy argument polecenia (poza flagą bez wartości) leży w katalogu kroku, co najmniej jeden.
+
+    Argument, którego nie da się uznać za ścieżkę w kroku (`build`, `wynik.txt`, wartość `-o plik`), odbiera flagę.
+    Krótka flaga liczy się tylko jako pojedyncza litera (`-p`, `-r`); skupienie (`-rf`, `-oplik`) może nieść
+    wartość, więc też odbiera flagę. Wartość długiej flagi (`--output=…`) musi leżeć w kroku."""
     argv = _plain(piece)
     if not argv or not step_dir:
         return False
-    paths = [a.split("=", 1)[1] if a.startswith("--") and "=" in a else a for a in argv[1:]]
-    paths = [p for p in paths if "/" in p or p.startswith(("~", "."))]
+    paths, ended = [], False
+    for arg in argv[1:]:
+        if not ended and arg == "--":
+            ended = True
+            continue
+        if not ended and arg.startswith("--"):
+            if "=" in arg:
+                paths.append(arg.split("=", 1)[1])
+            continue
+        if not ended and arg.startswith("-") and arg != "-":
+            if len(arg) == 2 and arg[1].isalpha():
+                continue
+            return False
+        paths.append(arg)
     return bool(paths) and all(_within(p, (step_dir,), "") for p in paths)
 
 

@@ -2141,8 +2141,9 @@ class FlowEngine(PlanEditing):
     def _grant(self, card: str, step: dict, done: dict, allow) -> tuple[list[str], list[str]]:
         """Zgoda na polecenie kroku: dopisuje je do listy dozwolonych projektu. Bez `allow` — całe polecenie, jak
         dotąd (pojedyncze, niezabronione, do MAX_COMMAND znaków). Z `allow` (PT-124) — dokładnie wybrane polecenia
-        z łańcucha, wskazane indeksami listy `commands[]` decyzji; lista liczona jest od nowa z bieżącymi zakazami
-        projektu, więc zakaz dopisany po zakończeniu kroku też wygrywa. Zwraca (dopisane, pominięte)."""
+        z łańcucha, wskazane indeksami listy `commands[]` decyzji; flagi liczone są od nowa z bieżącymi zakazami
+        projektu, więc zakaz dopisany po zakończeniu kroku też wygrywa, a lista musi być tą samą, którą pokazało
+        okno (zapisaną przy wyniku kroku). Zwraca (dopisane, pominięte)."""
         from ..board import chain
         from ..board.commands import MAX_COMMAND, is_allowed, is_forbidden
         command = str(done.get("command") or "").strip()
@@ -2160,6 +2161,13 @@ class FlowEngine(PlanEditing):
                     any(type(i) is not int for i in allow) or len(set(allow)) != len(allow):
                 raise FlowError("bad-allow", "`allow` to niepusta lista różnych indeksów poleceń z decyzji")
             items = chain.describe(command, denied=project.denied_commands, step_dir=step.get("stepDir") or "")
+            shown = done.get("commands")
+            if isinstance(shown, list) and shown and \
+                    [str(i.get("text") or "") if isinstance(i, dict) else None for i in shown] != \
+                    [item["text"] for item in items]:
+                # Okno pokazało listę zapisaną przy wyniku kroku; gdy podział liczy dziś inaczej (np. po
+                # aktualizacji usługi), indeks mógłby wskazać inne polecenie — lepiej odmówić niż zgadywać.
+                raise FlowError("stale-decision", "lista poleceń zmieniła się od wyniku kroku; uruchom krok ponownie")
             for index in allow:
                 if not 0 <= index < len(items):
                     raise FlowError("bad-allow", f"nie ma polecenia o indeksie {index} (poleceń: {len(items)})")

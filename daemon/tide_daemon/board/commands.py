@@ -137,8 +137,10 @@ def is_allowed(command: str, allowed: list[str]) -> bool:
 
 def step_reads(step_dir: str) -> tuple[str, ...]:
     """Odczyt własnego `<krok>/in` i `<krok>/out` (PT-124): zawsze dozwolony, bez pytania o zgodę. Claude CLI
-    pyta o `ls`/`cat` poza katalogami sesji mimo `ls *`, więc krok dostaje dokładne wzorce dla swoich katalogów.
-    Granicą pozostaje piaskownica kroku (te katalogi i tak czyta); ścieżka z białym znakiem nie dostaje wzorca."""
+    pyta o `ls`/`cat` poza katalogami sesji mimo `ls *`, więc krok dostaje wzorce nazwane katalogami kroku.
+    To nie są dokładne granice: `…/out/*` w Claude CLI to dopasowanie przedrostka (przejdzie też `…/out/../x` i
+    kolejne argumenty), więc wzorce nie dają więcej niż `ls *`/`cat *`/`head *`/`tail *`/`wc *` z ALWAYS_ALLOWED —
+    tylko omijają pytanie CLI. Granicą pozostaje piaskownica kroku; ścieżka z białym znakiem nie dostaje wzorca."""
     if not step_dir or not os.path.isabs(step_dir) or any(c.isspace() or c in "()*" for c in step_dir):
         return ()
     inp, out = os.path.join(step_dir, "in"), os.path.join(step_dir, "out")

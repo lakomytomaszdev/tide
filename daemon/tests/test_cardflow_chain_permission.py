@@ -177,6 +177,18 @@ class ChainPermissionRequestTest(FlowInProcess):
         self.assertTrue(changed["ok"], changed)
         self.assertEqual(self.refused({"choice": "allow", "allow": [1]}), "forbidden-command")
 
+    def test_list_shown_in_window_must_match_current_split(self):
+        """Review PT-124 r1 NIT-4: indeksy odnoszą się do listy zapisanej przy wyniku kroku (tej z okna)."""
+        from tide_daemon.board import chain
+        shown = chain.describe(CHAIN, denied=["make install"], step_dir="/wt/x.step")
+        self.engine.journal.append(self.card_id, "step.finished", step=self.step, ticket="PT-1", result="denied",
+                                   command=CHAIN, canAllow=False, commands=list(reversed(shown)))
+        self.assertEqual(self.refused({"choice": "allow", "allow": [0]}), "stale-decision")
+        self.engine.journal.append(self.card_id, "step.finished", step=self.step, ticket="PT-1", result="denied",
+                                   command=CHAIN, canAllow=False, commands=shown)
+        reply = self.engine.resolve_step(self.card_id, {"step": self.step, "choice": "allow", "allow": [0]})
+        self.assertTrue(reply["ok"], reply)
+
     def test_allow_writes_only_selected_and_repeated_request_is_idempotent(self):
         reply = self.engine.resolve_step(self.card_id, {"step": self.step, "choice": "allow", "allow": [0]})
         self.assertTrue(reply["ok"], reply)

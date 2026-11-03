@@ -121,6 +121,84 @@ class DescribeTest(unittest.TestCase):
             "cat /etc/hosts": (True, False, True),
         })
 
+    def test_step_dir_needs_every_argument_inside_the_step(self):
+        """Review PT-124 r1 MAJOR-1: jedna ścieżka w kroku obok argumentu spoza niego nie daje „katalog kroku"."""
+        cases = {
+            f"rm -rf {STEP}/out/a build": False,
+            f"cp {STEP}/out/a secrets.txt": False,
+            f"sort -o result.txt {STEP}/out/a": False,
+            f"sort -oresult.txt {STEP}/out/a": False,
+            f"cp --target-directory=build {STEP}/out/a": False,
+            f"cp --target-directory build {STEP}/out/a": False,
+            f"cp {STEP}/out/a ../poza": False,
+            f"cp {STEP}/out/a {STEP}/../poza": False,
+            f"cp {STEP}/out/a ~/x": False,
+            f"tee {STEP}/out/a -": False,
+            f"rm -r {STEP}/out/a {STEP}/out/b": True,
+            f"cp -- {STEP}/out/a {STEP}/out/b": True,
+            f"sort -o {STEP}/out/r {STEP}/out/a": True,
+            f"cp --target-directory={STEP}/out {STEP}/in/a": True,
+            "mkdir -p": False,
+        }
+        for command, in_step in cases.items():
+            with self.subTest(command=command.replace(STEP, "<krok>")):
+                item = chain.describe(f"pwd && {command}", denied=DENIED, step_dir=STEP)[1]
+                self.assertEqual(item["stepDir"], in_step)
+                self.assertEqual(item["preselected"], in_step, "bez „katalog kroku” i „tylko czyta” — bez zaznaczenia")
+
+    def test_read_only_excludes_write_and_exec_flags_of_always_allowed_tools(self):
+        """Review PT-124 r1 MAJOR-2: narzędzia z ALWAYS_ALLOWED z flagą zapisu/uruchamiania nie są „tylko czyta"."""
+        cases = {
+            "rg --pre ./run.sh x": False, "rg --pre=./run.sh x": False, "rg --hostname-bin=./h x": False,
+            "rg -n x src": True,
+            "git diff --output=patch.txt": False, "git log --output patch.txt": False,
+            "git show --out=patch.txt HEAD": False, "git diff --ext-diff": False, "git log -p --textconv": False,
+            "git log --oneline -3": True, "git diff --stat HEAD~1": True,
+            "git log --output-indicator-new=+ -p": True,
+            "tree -o out.txt": False, "tree -ao out.txt": False, "tree -R -H x": False, "tree -L 2": True,
+            "file -C -m magic": False, "file -m magic x": False, "file --compile": False, "file -b x": True,
+            "sort -o out.txt a": False, "sort -ro out.txt a": False, "sort --out=out.txt a": False,
+            "sort --compress-program=gzip a": False, "sort -n a": True,
+            "git branch nowa": False, "git branch -D old": False, "git branch --track x origin/x": False,
+            "git branch -a": True, "git branch": True, "git branch --list 'fix/*'": True,
+            "git branch -l 'fix/*'": True, "git branch --show-current": True,
+            "uniq a b": False, "uniq -c a": True,
+            "cat /etc/hosts": True, "make test": False,
+        }
+        for command, read_only in cases.items():
+            with self.subTest(command=command):
+                item = chain.describe(f"pwd && {command}", denied=DENIED, step_dir=STEP)[1]
+                self.assertEqual(item["text"], command)
+                self.assertEqual(item["readOnly"], read_only)
+                self.assertEqual(item["preselected"], read_only)
+
+    def test_own_step_read_with_write_flag_is_listed(self):
+        items = chain.describe(f"pwd && tree -o {STEP}/out/t {STEP}/in", denied=DENIED, step_dir=STEP)
+        self.assertEqual([i["text"] for i in items], ["pwd", f"tree -o {STEP}/out/t {STEP}/in"])
+        self.assertFalse(items[1]["readOnly"])
+
+    def test_wrapped_forbidden_command_is_shown_and_outer_cannot_be_allowed(self):
+        """Review PT-124 r1 NIT-1: `nohup make install` nie omija zakazu projektu `make install`."""
+        for command in ("nohup make install", "command make install", "nice -n 5 make install", "nice -10 make install",
+                        "timeout 5 make install", "timeout -s KILL 5m make install", "env FOO=1 make install",
+                        "env -S 'make install'", "sudo -u root make install", "sudo --user root make install",
+                        "xargs make install", "xargs -I {} make install", "stdbuf -oL make install",
+                        "setsid nohup make install", "LC_ALL=C nohup make install"):
+            with self.subTest(command=command):
+                items = {i["text"]: i for i in chain.describe(f"pwd && {command}", denied=DENIED, step_dir=STEP)}
+                outer = items[command]
+                self.assertFalse(outer["canAllow"])
+                self.assertFalse(outer["preselected"])
+                self.assertTrue(outer["reason"])
+                self.assertTrue(any(i["forbidden"] and "„make install”" in i["reason"] for i in items.values()),
+                                items)
+        items = chain.describe("pwd && nohup make test", denied=DENIED, step_dir=STEP)
+        self.assertEqual([(i["text"], i["canAllow"]) for i in items],
+                         [("pwd", True), ("nohup make test", True), ("make test", True)])
+        hidden = chain.describe("pwd && timeout 5 sh -c pwd", denied=DENIED, step_dir=STEP)[1]
+        self.assertFalse(hidden["canAllow"])
+        self.assertIn("nie jest pojedynczym prostym poleceniem", hidden["reason"])
+
     def test_long_piece_and_unsplittable_chain_have_reasons(self):
         long_piece = "git fetch origin " + "x" * 300
         items = chain.describe(f"pwd && {long_piece}", denied=DENIED, step_dir=STEP)
