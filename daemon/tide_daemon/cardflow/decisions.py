@@ -25,6 +25,7 @@ Kolejność: najpierw decyzje karty (plan, YouTrack, kroki bez ticketu), potem t
 """
 from __future__ import annotations
 
+from .labels import kind_label
 from .state import REASON_LABELS, FlowState
 
 KINDS = ("question", "permission", "error", "limit", "transfer", "stopped", "review",
@@ -61,11 +62,6 @@ GENERIC = {
                 "Karta czeka, aż przyczyna zostanie usunięta i ponowisz operację."),
 }
 
-# TODO PT-122: zastąpić wspólnymi etykietami rodzajów kroków, gdy PT-122 trafi na gałąź karty.
-STEP_WORDS = {"ticket": "ticket", "review": "review", "fix": "poprawki", "conflict": "konflikt",
-              "close": "domknięcie", "planning": "planowanie", "plan-fix": "poprawa formatu planu",
-              "plan-review": "review planu", "plan-revise": "poprawa planu", "plan-amend": "zmiana planu",
-              "interactive": "rozmowa"}
 PROVIDERS = {"anthropic": "Claude", "openai": "Codex", "local": "modelu lokalnego"}
 TIDE_REASONS = {"start", "lost"}
 PROVIDER_REASONS = {"limit", "local-unavailable"}
@@ -424,7 +420,7 @@ def _step_technical(step: dict, done: dict) -> dict:
 
 
 def _who(step: dict, capital: bool) -> str:
-    word = STEP_WORDS.get(step.get("kind") or "", "krok")
+    word = kind_label(step.get("kind"))
     ticket = step.get("ticket") or ""
     text = f"{word} {ticket}" if ticket and word not in ("ticket",) else ticket or word
     if step.get("executor"):
