@@ -165,6 +165,22 @@ class StepDecisionTest(FlowInProcess):
         self.assertEqual([e["result"] for e in self.of(next_card, "step.finished") if e["ticket"] != ""],
                          ["done", "done"])
 
+    def test_too_long_command_is_denied_with_advice_to_split_it(self):
+        # 03.11, K-31/DPT-5: `find` z 61 plikami odmówiony z mylącym powodem „łańcuch z &&”.
+        card_id = self.card()
+        self.flow.stop()
+        engine = self.flow.engine
+        engine.journal.append(card_id, "step.decision", step="s0", ticket="PT-1", kind="ticket", choice="run",
+                              command="echo x", auto=True)
+        engine._auto_deny(card_id, "s1", {"ticket": "PT-1", "kind": "ticket"}, "rm " + "plik.ts " * 60)
+        decision = self.of(card_id, "step.decision")[-1]
+        self.assertEqual((decision["choice"], decision["step"]), ("deny", "s1"))
+        self.assertIn("dłuższe niż 300 znaków", decision["answer"])
+        for n in (2, 3):
+            engine._auto_deny(card_id, f"s{n}", {"ticket": "PT-1", "kind": "ticket"}, "a && b")
+        self.assertEqual(len([d for d in self.of(card_id, "step.decision") if d.get("choice") == "deny"]), 3,
+                         "zapamiętane uruchomienie poza piaskownicą nie zużywa limitu odmów")
+
     def test_forbidden_command_cannot_be_granted_but_denial_resumes(self):
         changed = json.loads(self.board.upsert_project(json.dumps({"slug": "proj", "deniedCommands": ["make install"]})))
         self.assertTrue(changed["ok"], changed)

@@ -76,6 +76,8 @@ AUTO_DENY_NOTE = ("Tide nie może zezwolić na takie polecenie (łańcuch z &&, 
                   "albo polecenie zabronione). Uruchamiaj polecenia pojedynczo, bez łączenia i zmiennych; do czytania "
                   "plików używaj narzędzia Read. Jeśli pojedyncze polecenie spoza listy jest naprawdę potrzebne, "
                   "zapisz wynik denied z tym jednym poleceniem.")
+AUTO_DENY_LONG = ("Tide nie może zezwolić na polecenie dłuższe niż {limit} znaków. Podziel je na kilka krótszych "
+                  "(np. jeden katalog albo kilka plików naraz, `git rm -r <katalog>`), każde jako osobny wynik denied.")
 
 class FlowDeferred(Exception):
     """Krok czeka na wolne miejsce; nie jest to błąd karty."""
@@ -3308,11 +3310,14 @@ class FlowEngine(PlanEditing):
         ticket = step.get("ticket") or ""
         kind = step.get("kind") or ""
         used = sum(1 for e in self.journal.read(card) if e.get("type") == "step.decision" and e.get("auto")
+                   and e.get("choice") == "deny"
                    and (e.get("ticket") or "") == ticket and (ticket or e.get("kind") == kind))
         if used >= self.AUTO_DENY_LIMIT:
             return
+        from ..board.commands import MAX_COMMAND
+        note = AUTO_DENY_LONG.format(limit=MAX_COMMAND) if len(command) > MAX_COMMAND else AUTO_DENY_NOTE
         self.journal.append(card, "step.decision", step=name, ticket=ticket, kind=kind, choice="deny",
-                            answer=AUTO_DENY_NOTE, command=command, executor="", auto=True)
+                            answer=note, command=command, executor="", auto=True)
 
     def merge_card_to_main(self, card_id: str) -> dict:
         """Jawna akcja użytkownika po domknięciu; nigdy nie wywoływana przez tick."""
