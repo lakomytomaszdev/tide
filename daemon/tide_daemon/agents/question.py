@@ -73,6 +73,56 @@ def ending_question(text: str, limit: int = QUESTION_MAX) -> str:
     return ""
 
 
+# --- drugi stopień (PT-42): wątpliwe końcówki, które ocenia model (agents/classify.py) ---------------------------
+
+# Czasowniki w trybie rozkazującym, od których zaczyna się prośba do użytkownika („uruchom ten select i wklej mi wynik”).
+_IMPERATIVES = ("uruchom", "wklej", "wyślij", "prześlij", "podeślij", "sprawdź", "podaj", "napisz", "odpisz", "odpowiedz",
+                "potwierdź", "wybierz", "zdecyduj", "daj", "otwórz", "skopiuj", "wykonaj", "odpal", "pokaż", "zaakceptuj",
+                "zatwierdź", "przetestuj", "zrestartuj", "zainstaluj", "zrób", "przejrzyj", "przeczytaj", "powiedz",
+                "wskaż", "ustaw", "wpisz", "kliknij", "zaloguj", "dopisz", "przekaż", "uzupełnij", "wróć", "zadzwoń")
+_IMPERATIVE_START = re.compile(
+    r"^(?:(?:krok|etap|step)\s*\d+\s*[:.)\-–]\s*)?(?:(?:proszę|teraz|następnie|potem|najpierw|wtedy|jeszcze)[\s,]+)?"
+    r"(?:" + "|".join(_IMPERATIVES) + r")\b", re.I)
+_ASK_ANYWHERE = re.compile(r"\b(?:daj (?:mi )?znać|wklej|prześlij|podeślij|odpisz)\b", re.I)
+_MARKUP = re.compile(r"[*_`]+")
+
+
+def _end_window(text: str) -> list:
+    """Zdania z końcówki wiadomości (bez kodu i tabel): ostatnie QUESTION_SENTENCES zdania ostatniego akapitu
+    niebędącego listą oraz punkty listy pod nim (listy poleceń na końcu — „1. Uruchom X”)."""
+    body = _FENCE.sub("\n", str(text or ""))
+    lines = [line.rstrip() for line in body.splitlines() if not _TABLE_LINE.match(line)]
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", "\n".join(lines)) if p.strip()]
+    tail_lists = []
+    while paragraphs and all(_LIST_LINE.match(line) for line in paragraphs[-1].splitlines() if line.strip()):
+        tail_lists.insert(0, paragraphs.pop())
+    window = _sentences(paragraphs[-1])[-QUESTION_SENTENCES:] if paragraphs else []
+    for block in tail_lists[-2:]:
+        window += [_LIST_LINE.sub("", line).strip() for line in block.splitlines() if line.strip()]
+    return window
+
+
+def doubtful(text: str) -> bool:
+    """Czy końcówka wiadomości jest wątpliwa dla reguł: reguły nie widzą w niej pytania (`ending_question` puste),
+    a jest w niej „?” (pytanie retoryczne albo bez ostatniego miejsca), polecenie w trybie rozkazującym z listy
+    („uruchom ten select i wklej mi wynik”) albo „daj znać”. Wtedy decyduje model lokalny (agents/classify.py).
+    Wiadomość, w której reguły widzą pytanie, nie jest wątpliwa — model jej nie ocenia. „Dam znać”, „Jeśli chcesz,
+    mogę też…” i zwykły raport („Gotowe.”) też nie."""
+    if ending_question(text):
+        return False
+    for sentence in _end_window(text):
+        plain = " ".join(_MARKUP.sub("", sentence).split())
+        if _is_question(plain) or _IMPERATIVE_START.match(plain.lstrip(" -•–")) or _ASK_ANYWHERE.search(plain):
+            return True
+    return False
+
+
+def closing(text: str, limit: int = QUESTION_MAX) -> str:
+    """Końcówka wiadomości do `waitingText`, gdy pytanie wskazał model, a nie reguła: ostatnie dwa zdania."""
+    window = _end_window(text)
+    return _clip(" ".join(window[-2:]), limit) if window else ""
+
+
 def _sentences(paragraph: str) -> list:
     out = []
     for line in paragraph.splitlines():

@@ -50,8 +50,9 @@ HIGH = 0        # krótkie rzeczy, na które użytkownik patrzy (opisy kart, zap
 NORMAL = 5      # domyślnie
 LOW = 10        # ciężka praca wsadowa (raport poranny)
 IDLE = 20       # praca w tle, gdy nic innego nie czeka (indeks wyszukiwania po znaczeniu, PT-19)
-ROLE_PRIORITY = {"describe": HIGH, "summary": LOW}
-ROLE_WORDS = {"card-step": "krok karty", "describe": "opisy kart", "summary": "raport poranny", "embed": "wyszukiwanie w KRunnerze"}
+ROLE_PRIORITY = {"describe": HIGH, "classify": HIGH, "summary": LOW}
+ROLE_WORDS = {"card-step": "krok karty", "describe": "opisy kart", "summary": "raport poranny",
+              "classify": "rozpoznawanie pytań", "embed": "wyszukiwanie w KRunnerze"}
 DEFAULT_SLOTS = 1
 DEFAULT_WAIT_S = 600.0
 GROUP_HOLD_S = 60.0
