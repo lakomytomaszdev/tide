@@ -196,6 +196,9 @@ def commit():
 def finish(kind, **extra):
     with open(os.path.join(out, "note.md"), "w", encoding="utf-8") as fh:
         fh.write("# Notka wyniku\n\nAtrapa zrobiła ticket.\n")
+        if "ATRAPA: pulpit" in prompt:
+            fh.write("\n## Do sprawdzenia na pulpicie\n\n- Otwórz widżet na drugim monitorze\n"
+                     "- Przeciągnij okno\n  i sprawdź ramkę\n")
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": kind, "notes": ["note.md"], **extra}, fh)
 

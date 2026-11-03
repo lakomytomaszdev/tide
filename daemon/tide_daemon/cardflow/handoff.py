@@ -2,12 +2,57 @@
 kroku (gdzie pisać, czego nie robić, plik wyniku). Idzie do programu jako polecenie na stdin (agentcmd.Background)."""
 from __future__ import annotations
 
+import re
+
 RESULT_FILE = "result.json"
 NOTE_FILE = "note.md"
 REVIEW_FILE = "review.md"
 SUMMARY_FILE = "summary.md"
 OPTIONS_HINT = ('Do pytania możesz dodać "options": [{"title": "…", "effect": "…", "recommended": true}] — '
                 "1–4 gotowe odpowiedzi, najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”.")
+DESK_HEADING = "Do sprawdzenia na pulpicie"
+DESK_HINT = (f"Test wymagający prawdziwego pulpitu oznacz w notce w sekcji „{DESK_HEADING}” (nagłówek, pod nim lista "
+             "punktów: co zrobić i czego oczekiwać), nie proś o to użytkownika w trakcie. Tide zbierze te punkty "
+             "do listy ręcznych testów w domknięciu karty.")
+_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*(.*?)\s*#*\s*$")
+_BULLET = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.*\S)\s*$")
+
+
+def desk_items(note: str) -> list[str]:
+    """Pozycje sekcji „Do sprawdzenia na pulpicie” z notki kroku. Sekcja kończy się na następnym nagłówku;
+    pozycja może mieć kolejne wiersze (wcięte albo bez znacznika), pusta sekcja daje pustą listę."""
+    items: list[str] = []
+    inside = False
+    for line in (note or "").splitlines():
+        head = _HEADING.match(line)
+        if head:
+            inside = head.group(1).strip().strip("*_: ").casefold() == DESK_HEADING.casefold()
+            continue
+        if not inside:
+            continue
+        bullet = _BULLET.match(line)
+        if bullet:
+            items.append(bullet.group(1).strip())
+        elif line.strip() and items:
+            items[-1] += " " + line.strip()
+    return items
+
+
+def desk_section(found: list[tuple[str, str, list[str]]]) -> str:
+    """Lista do domknięcia: `found` to (krok, ticket, pozycje) w kolejności kroków. Ta sama pozycja
+    (bez względu na wielkość liter i odstępy) pojawia się raz, ze wszystkimi odwołaniami."""
+    merged: dict[str, tuple[str, list[str]]] = {}
+    for step, ticket, items in found:
+        ref = f"krok {step}, ticket {ticket}" if ticket else f"krok {step}"
+        for item in items:
+            key = " ".join(item.split()).casefold()
+            text, refs = merged.setdefault(key, (" ".join(item.split()), []))
+            if ref not in refs:
+                refs.append(ref)
+    if not merged:
+        return ""
+    lines = [f"- {text} ({'; '.join(refs)})" for text, refs in merged.values()]
+    return f"\n\n### {DESK_HEADING} (z notek kroków)\n" + "\n".join(lines) + "\n"
 
 
 def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
@@ -176,6 +221,7 @@ Co masz zrobić:
 - nikt nie odpowie ci w trakcie: gdy potrzebujesz decyzji albo zgody na polecenie, zakończ krok plikiem wyniku
   z pytaniem albo z brakiem zgody — Tide zapyta użytkownika i wznowi krok,
 - na koniec zapisz notkę wyniku w {out_dir}/{NOTE_FILE} (co zrobiono, jak sprawdzono, ograniczenia),
+- {DESK_HINT}
 - ostatnią czynnością zapisz plik wyniku (JSON):
 
 Plik wyniku: {out_dir}/{RESULT_FILE}
@@ -208,7 +254,8 @@ Twój katalog: {worktree}
 Dla recenzenta:
 - sprawdź zgodność z opisem karty i zasadami projektu,
 - podaj konkretne BLOCKER, MAJOR, NIT z plikiem i linią,
-- BLOCKER lub MAJOR oznacza REQUEST_CHANGES.
+- BLOCKER lub MAJOR oznacza REQUEST_CHANGES,
+- {DESK_HINT}
 
 Zasady projektu:
 {rules or '(brak pliku zasad)'}

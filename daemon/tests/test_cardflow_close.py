@@ -36,6 +36,22 @@ class CardClosingTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: self.shown(card)["boardColumn"] == "done", timeout=5))
         self.assertEqual(len(self.of(card, "card.main-merged")), 1)
 
+    def test_manual_close_collects_desk_items_from_step_notes(self):
+        card = self.card(description="Dodaj eksport.\n\nATRAPA: gotowe\nATRAPA: pulpit")
+        self.assertTrue(self.start(card, check="manual")["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "card.closed"), timeout=30), self.events(card))
+        summary = self.of(card, "card.closed")[-1]["summary"]
+        self.assertIn("Co przetestować ręcznie i jak", summary)
+        self.assertIn("Do sprawdzenia na pulpicie", summary)
+        self.assertRegex(summary, r"- Otwórz widżet na drugim monitorze \(krok [^,]+, ticket PT-\d+\)")
+        self.assertRegex(summary, r"- Przeciągnij okno i sprawdź ramkę \(krok [^,]+, ticket PT-\d+\)")
+
+    def test_manual_close_without_desk_section_is_unchanged(self):
+        card = self.card()
+        self.assertTrue(self.start(card, check="manual")["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "card.closed"), timeout=30), self.events(card))
+        self.assertNotIn("pulpicie", self.of(card, "card.closed")[-1]["summary"])
+
     def test_auto_check_closes_without_manual_list_and_leaves_main_untouched(self):
         card = self.card()
         self.assertTrue(self.start(card, check="auto")["ok"])

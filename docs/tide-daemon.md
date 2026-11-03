@@ -2276,7 +2276,14 @@ zgaduje ani nie scala ponownie sama. Worktree z lokalnymi zmianami nie jest usuw
 
 Po scaleniu albo odrzuceniu wszystkich ticketów i sprzątnięciu worktree scalonych ticketów krok
 `close` zapisuje `summary.md`. Przy `check: manual` wymaga sekcji „Co przetestować ręcznie i jak”;
-przy `check: auto` pomija tę listę. Zdarzenie `card.closed` pokazuje podsumowanie w „Do sprawdzenia”.
+przy `check: auto` pomija tę listę. **„Do sprawdzenia na pulpicie” (PT-183):** notka kroku (ticket, review,
+poprawki) może mieć nagłówek „Do sprawdzenia na pulpicie” z listą punktów (pozycje mogą zajmować kilka wierszy,
+pusta sekcja jest dozwolona). Przy `check: manual` usługa zbiera te punkty ze wszystkich kroków karty i dopisuje
+do podsumowania w `card.closed` podsekcję „Do sprawdzenia na pulpicie (z notek kroków)”; każda pozycja ma odwołanie
+„(krok …, ticket …)”, a ta sama pozycja z kilku notek (bez względu na wielkość liter i odstępy) pojawia się raz,
+ze wszystkimi odwołaniami. Bez takich sekcji podsumowanie jest bez zmian. Mechanizm nie zależy od projektu ani
+pudełka. Prompty ticketu i review mówią agentowi, by test wymagający prawdziwego pulpitu oznaczył w tej sekcji,
+a nie prosił o niego użytkownika w trakcie. Zdarzenie `card.closed` pokazuje podsumowanie w „Do sprawdzenia”.
 `check: auto` nie scala do gałęzi głównej. Panel daje jawne „Diff gałęzi”, „Do poprawy…” oraz
 „Scal do gałęzi głównej”. Odesłanie z uwagami uruchamia poprawę planu na tej samej gałęzi karty;
 dla wejścia „Od razu” usługa tworzy bazę jednoticketowego planu dopiero przy tym żądaniu.
