@@ -155,7 +155,8 @@ ColumnLayout {
         accessibleName: role.row ? "Model: " + role.row.title : "Model"
         onChosen: name => role.setModel(name)
     }
-    // Rozpoznawanie pytań: bez modelu ocena jest wyłączona (liczą reguły); model w chmurze ma znacznik chmury.
+    // Rozpoznawanie pytań: gdy punkt nie ma modelu (brak modelu, nieznany punkt, serwer offline) ocena jest
+    // wyłączona (liczą reguły); model w chmurze ma znacznik chmury.
     Note {
         objectName: "roleState"
         Layout.fillWidth: true

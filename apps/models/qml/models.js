@@ -255,13 +255,20 @@ function roleRows(status) {
             error: role && role.error ? role.error : "",
             ctx: role ? role.ctx : null,
             searchOff: id === "embed" && !!status && !!status.search && status.search.enabled === false,
-            // Rozpoznawanie pytań (PT-112): bez modelu ocena jest wyłączona, liczą reguły; model w chmurze
-            // (wybrany jawnie przez użytkownika) wysyła końcówkę wiadomości agenta poza ten komputer.
-            off: id === "classify" && (!role || String(role.model || "").trim() === ""),
+            // Rozpoznawanie pytań (PT-112): ocena jest wyłączona (liczą reguły), gdy punkt nie ma modelu: brak
+            // roli, pusty model, błąd roli (nieznany/pominięty punkt), modelu nie ma na serwerze albo serwer
+            // nie odpowiada. Model w chmurze (wybrany jawnie) wysyła końcówkę wiadomości agenta poza komputer.
+            off: id === "classify" && classifyOff(role, state),
             cloud: id === "classify" && !!role && isCloudModel(role.model),
             models: modelOptions(status, endpointName, role ? role.model : "", id === "classify")
         }
     })
+}
+
+function classifyOff(role, state) {
+    if (!role || String(role.model || "").trim() === "" || role.error) return true
+    if (state && state.kind === "offline") return true
+    return role.installed === false && !isCloudModel(role.model)
 }
 
 const CLASSIFY_OFF = "ocena wyłączona — liczą reguły"

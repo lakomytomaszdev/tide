@@ -764,9 +764,9 @@ Item {
             self.assertEqual(out.returncode, 0, out.stderr)
             return load_backend().decorate(json.loads(out.stdout))
 
-        data = {"old": printed({}), "cloud": printed({"classify": "local:gpt-oss:120b-cloud"})}
-        data["off"] = json.loads(json.dumps(data["old"]))
-        del data["off"]["roles"]["classify"]      # usługa bez roli (np. starsza) — punkt bez modelu
+        data = {"old": printed({}), "cloud": printed({"classify": "local:gpt-oss:120b-cloud"}),
+                "off": printed({"classify": "local:gemma3:4b"}),        # modelu nie ma na serwerze
+                "unknown": printed({"classify": "nieznany:qwen3:8b"})}  # nieznany punkt
         self.assertEqual(data["old"]["roles"]["classify"]["model"], "qwen3:8b")
         log = self.harness("ClassifySmoke.qml", """import QtQuick
 import "models.js" as Logic
@@ -821,7 +821,11 @@ Item {
             page.status = top.d.off
             Qt.callLater(() => {
                 console.warn("OFFSTATE " + state() + "|" + find(page, "role_classify").row.off)
-                Qt.quit()
+                page.status = top.d.unknown
+                Qt.callLater(() => {
+                    console.warn("UNKNOWNSTATE " + state() + "|" + find(page, "role_classify").row.off)
+                    Qt.quit()
+                })
             })
         })
     }
@@ -839,6 +843,7 @@ Item {
         self.assertTrue(warned(log, "CLOUDSTATE").startswith("☁ w chmurze"), warned(log, "CLOUDSTATE"))
         self.assertTrue(warned(log, "CLOUDSTATE").endswith("|true"))
         self.assertEqual(warned(log, "OFFSTATE"), "ocena wyłączona — liczą reguły|true")
+        self.assertEqual(warned(log, "UNKNOWNSTATE"), "ocena wyłączona — liczą reguły|true")
 
     def test_role_pinning(self):
         """Z `pinned` z usługi: przypięcie do używanego serwera widać, model i kontekst wysyłają serwer przypięcia,
