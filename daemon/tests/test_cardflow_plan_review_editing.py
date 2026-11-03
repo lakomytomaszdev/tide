@@ -192,6 +192,8 @@ class PlanReviewEditingTest(FlowInProcess):
                     state = fold(journal.read(card))
                     shown = derived(state, {"column": "todo"})
                     self.assertEqual(shown["flow"].get("action"), action)
+                    expected = {"plan-review": "review planu", "plan-amend": "poprawa planu", "plan-revise": "poprawa planu"}[kind]
+                    self.assertEqual(shown["note"], expected + " czeka na decyzję")
                     restarted = FlowEngine(self.store, journal=journal)
                     reply = restarted.resolve_step(card, {"choice": choice, "answer": "Pierwszy"})
                     self.assertEqual(reply["step"], name)
