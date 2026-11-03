@@ -165,6 +165,12 @@ Program z modelem i punktem pod jedną nazwą z katalogu, np. „Sonnet”, „C
 Ten sam wykonawca może pełnić różne role.
 _Avoid_: agent, implementer, model (model to część wykonawcy)
 
+**Rozpoznawanie pytania**:
+Ustalanie, czy agent na końcu tury prosi użytkownika o cokolwiek (także bez „?”: „uruchom i wklej mi wynik”, „Daj
+znać.”). Dwa stopnie: reguły na tekście, a w wątpliwych końcówkach model lokalny z roli `classify`; do wyniku modelu
+liczą reguły, a bez modelu same reguły. Treść idzie tylko do punktu tej roli.
+_Avoid_: wykrywanie pytań, klasyfikator pytań w tekstach dla użytkownika
+
 **Autor ticketu**:
 Rola wykonawcy, który robi ticket (krok ticketu i poprawki).
 _Avoid_: wykonawca ticketu, implementer
