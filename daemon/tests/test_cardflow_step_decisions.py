@@ -69,6 +69,12 @@ class StepDecisionTest(FlowInProcess):
             self.assertTrue(engine._outside_busy(card_id))
         engine._outside_active = {}
         self.assertFalse(engine._outside_busy(card_id))
+        # Po restarcie usługi polecenie w toku (outside.started bez zakończenia) nie może wywrócić przebiegu karty.
+        engine._outside_active = None
+        step = {"step": "K-1-PT-1-9", "ticket": "PT-1", "stepDir": self.base}
+        engine.journal.append(card_id, "outside.started", step="K-1-PT-1-9", ticket="PT-1", command="echo x",
+                              unit="tide-outside-K-1-PT-1-9", log="/nonexistent", exitFile=os.path.join(self.base, "in", "exit-code"))
+        self.assertIsNone(engine._outside_ready(card_id, step, {"command": "echo x"}, {"choice": "run"}))
 
     def test_auto_consent_runs_safe_commands_and_asks_only_for_risky_ones(self):
         # 03.11: „nie mam ochoty co 2 minuty klikać zgody” — zwykłe pojedyncze polecenia Tide zatwierdza sam.

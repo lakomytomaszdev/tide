@@ -171,6 +171,7 @@ class FlowEngine(PlanEditing):
                  limits_source=None):
         self.store = store
         self.journal = journal or Journal(store.root)
+        self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
         self.claude_projects = claude_projects
         self.systemd_run = systemd_run
         self.catalog = catalog            # funkcja() → models.executors.Catalog
@@ -3292,6 +3293,7 @@ class FlowEngine(PlanEditing):
                 return None     # kolejka: stan karty mówi „czeka na wolne miejsce poza piaskownicą”
             self._start_outside(card, step, done.get("command") or "")
             return None
+        self._outside_busy(card)            # buduje zbiór aktywnych po restarcie
         self._outside_active[name] = (card, started["unit"])
         code = stepstop.read_exit_code(os.path.dirname(os.path.dirname(started["exitFile"])))
         if code is None and time.time() - _epoch(started.get("ts")) < OUTSIDE_TIMEOUT:
@@ -3333,7 +3335,7 @@ class FlowEngine(PlanEditing):
     def _outside_busy(self, card: str) -> bool:
         """Jedno polecenie poza piaskownicą naraz w projekcie i OUTSIDE_TOTAL łącznie (03.11, K-31: pięć przebiegów
         e2e naraz na jednym porcie kończyło się kodem 1 i agenci prosili o kolejne)."""
-        if not hasattr(self, "_outside_active"):
+        if self._outside_active is None:
             # Po restarcie usługi: polecenia rozpoczęte (bez zakończenia) we wszystkich kartach.
             self._outside_active = {}
             for other in self.journal.cards():
@@ -3377,7 +3379,7 @@ class FlowEngine(PlanEditing):
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
         self.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "", command=command,
                             unit=unit, log=log, exitFile=exit_file)
-        if not hasattr(self, "_outside_active"):
+        if self._outside_active is None:
             self._outside_active = {}
         self._outside_active[name] = (card, unit)
 
