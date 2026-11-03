@@ -54,3 +54,20 @@ def set_card_open(value: str, path: str | None = None) -> None:
         except OSError:
             pass
         raise
+
+
+def watch(on_change, parent=None, path: str | None = None):
+    """Woła `on_change(wartość)` po każdej zmianie ustawienia w pliku (także z innego widoku w tym samym oknie).
+
+    Zapis jest atomowy (rename), więc obserwujemy katalog pliku, nie sam plik. Zwraca obserwatora (trzeba
+    go trzymać) albo None, gdy katalogu nie da się utworzyć."""
+    from PyQt6.QtCore import QFileSystemWatcher
+    path = path or config_path()
+    folder = os.path.dirname(path)
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError:
+        return None
+    watcher = QFileSystemWatcher([folder], parent)
+    watcher.directoryChanged.connect(lambda _dir: on_change(card_open(path)))
+    return watcher

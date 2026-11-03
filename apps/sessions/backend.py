@@ -96,6 +96,8 @@ class Backend(QObject):
         self._badge = ""
         self._calls: list = []
         self._card_open = windowconfig.CARD_OPEN_DEFAULT if data is not None else windowconfig.card_open()
+        # Tablica zapisuje to samo ustawienie w tym samym oknie — nadążamy za plikiem (PT-131).
+        self._card_open_watcher = windowconfig.watch(self._card_open_from_file, self) if data is None else None
         if data is not None:
             if data.get("cardOpen") in windowconfig.CARD_OPEN_VALUES:
                 self._card_open = data["cardOpen"]
@@ -180,6 +182,11 @@ class Backend(QObject):
         return json.dumps(self._calls, ensure_ascii=False)
 
     # --- akcje --------------------------------------------------------------------------------
+
+    def _card_open_from_file(self, value: str) -> None:
+        if value != self._card_open:
+            self._card_open = value
+            self.cardOpenChanged.emit()
 
     @pyqtSlot(str, result=str)
     def setCardOpen(self, value: str) -> str:

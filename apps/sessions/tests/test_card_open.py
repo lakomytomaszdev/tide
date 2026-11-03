@@ -149,6 +149,25 @@ class CardOpenTest(unittest.TestCase):
         self.assertEqual((out["cardOpen"], out["page"]), ("full", "full"))
 
 
+class SharedSettingTest(unittest.TestCase):
+    def test_setting_saved_by_one_view_reaches_the_other(self):
+        from PyQt6.QtCore import QCoreApplication, QElapsedTimer
+        from apps.common import windowconfig
+        app = QCoreApplication.instance() or QCoreApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tide", "window.json")
+            board, sessions = [], []
+            keep = [windowconfig.watch(board.append, None, path), windowconfig.watch(sessions.append, None, path)]
+            windowconfig.set_card_open("full", path)
+            timer = QElapsedTimer()
+            timer.start()
+            while not (board and sessions) and timer.elapsed() < 3000:
+                app.processEvents()
+            self.assertEqual(board[-1:], ["full"])
+            self.assertEqual(sessions[-1:], ["full"])
+            self.assertTrue(all(keep))
+
+
 class SharedComponentTest(unittest.TestCase):
     def test_sessions_do_not_import_flow_card_panel(self):
         folder = os.path.join(APP_DIR, "qml")
