@@ -87,9 +87,10 @@ _IMPERATIVE_START = re.compile(
 # („wklej”, „to Twoja decyzja”, „czeka na Ciebie”, „kliknij”, „jeśli wolisz inaczej”). Samo „Jeśli chcesz, mogę…” i „dam
 # znać” tu nie należą — to propozycja opcjonalna i zapowiedź.
 _ASK_ANYWHERE = re.compile(
-    r"\b(?:daj (?:mi )?znać|wklej|prześlij|podeślij|odpisz|wolisz|wybierzesz|zdecydujesz|zdecyduj|wskaż|"
-    r"kliknij|wpisz|zatwierdź|potrzebuję|"
-    r"(?:twoja|twojej) (?:decyzj\w+|odpowiedź|odpowiedzi)|(?<!nie )czeka na (?:ciebie|twoją|twoje))\b", re.I)
+    # „wolisz” bez dalszego „mogę/zrobię/dodam” (to propozycja opcjonalna), „potrzebuję” bez „nie” przed nim
+    r"\b(?:daj (?:mi )?znać|wklej|prześlij|podeślij|odpisz|wolisz(?!,? (?:mogę|zrobię|dodam|dopiszę))|wybierzesz|"
+    r"zdecydujesz|zdecyduj|wskaż|kliknij|wpisz|zatwierdź|(?<!nie )potrzebuję|"
+    r"(?:twoja|twoją|twojej) (?:decyzj\w+|odpowiedź|odpowiedzi)|(?<!nie )czeka na (?:ciebie|twoją|twoje))\b", re.I)
 _MARKUP = re.compile(r"[*_`]+")
 
 
@@ -111,7 +112,9 @@ def _end_window(text: str) -> list:
 def doubtful(text: str) -> bool:
     """Czy końcówka wiadomości jest wątpliwa dla reguł: reguły nie widzą w niej pytania (`ending_question` puste),
     a jest w niej „?” (pytanie retoryczne albo bez ostatniego miejsca), polecenie w trybie rozkazującym z listy
-    („uruchom ten select i wklej mi wynik”) albo „daj znać”. Wtedy decyduje model lokalny (agents/classify.py).
+    („uruchom ten select i wklej mi wynik”), „daj znać” albo zwrot oddający ruch użytkownikowi (`_ASK_ANYWHERE`:
+    „Twoja decyzja”, „czeka na Ciebie”, „kliknij”, „jeśli wolisz inaczej”, „potrzebuję”). Wtedy decyduje model
+    lokalny (agents/classify.py).
     Wiadomość, w której reguły widzą pytanie, nie jest wątpliwa — model jej nie ocenia. „Dam znać”, „Jeśli chcesz,
     mogę też…” i zwykły raport („Gotowe.”) też nie."""
     if ending_question(text):

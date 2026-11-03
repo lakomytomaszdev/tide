@@ -636,6 +636,12 @@ def bench(corpus: list, model: Ollama | None) -> dict:
         verdicts = [a[0] for a in answers]
         result[f"model_{variant}"] = score(corpus, verdicts, [a[1] for a in answers])
         result[f"combined_{variant}"] = score(corpus, [combined_waits(m["text"], v) for m, v in zip(corpus, verdicts)])
+        # każda wiadomość „czeka” z 28.10 osobno (kryterium: reguły + model wykrywają wszystkie)
+        probe = {text for text, waits in PROBE_CASES if waits}
+        result[f"probe_{variant}"] = [{"text": m["text"][:70], "rules": rules_waits(m["text"]),
+                                      "doubtful": bool(question.doubtful(m["text"])), "model": v,
+                                      "detected": combined_waits(m["text"], v)}
+                                     for m, v in zip(corpus, verdicts) if m["text"] in probe]
     return result
 
 
@@ -652,6 +658,13 @@ def format_bench(result: dict, model_name: str) -> str:
         longest = f"{r['max_s']:.2f} s" if "max_s" in r else "—"
         lines.append(f"{title:40} {r['accuracy']:8.1f}% {r['false_waits']:15d} {r['false_idle']:19d} {r['errors']:6d} "
                      f"{mean:>12} {longest:>11}")
+    for variant, title in (("tail", "końcówka"), ("full", "cała wiadomość")):
+        rows = result.get(f"probe_{variant}")
+        if rows:
+            lines.append(f"Wiadomości „czeka” z 28.10, reguły + model, {title}: "
+                         f"{sum(r['detected'] for r in rows)}/{len(rows)} wykrytych")
+            lines += [f"  {'wykryta' if r['detected'] else 'PRZEGAPIONA'} (reguły {r['rules']}, wątpliwa {r['doubtful']}, "
+                      f"model {r['model']}): {r['text']!r}" for r in rows]
     return "\n".join(lines)
 
 

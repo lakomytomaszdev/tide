@@ -594,6 +594,21 @@ class BenchTest(unittest.TestCase):
         self.assertIn("model qwen3:8b, końcówka", text)
         self.assertIn("cała wiadomość", text)
 
+    def test_bench_lists_each_probe_waits_case(self):
+        corpus = [{"id": str(i), "text": t, "waits": w, "source": "s"} for i, (t, w) in enumerate(qc.PROBE_CASES)]
+
+        class Silent(FakeModel):
+            def judge(self, text, full=False):
+                return False, 0.1   # model nigdy nie mówi „czeka”
+
+        result = qc.bench(corpus, Silent())
+        rows = result["probe_tail"]
+        self.assertEqual(len(rows), 5)
+        # przypadki z modelem w pętli, których model nie wykrył, są w wyniku jawnie przegapione
+        for row in rows:
+            self.assertEqual(row["detected"], row["rules"])
+        self.assertIn("PRZEGAPIONA", qc.format_bench(result, "qwen3:8b"))
+
     def test_model_tail_is_shorter_than_full_message(self):
         long_text = "z " * 3000 + "Który wariant wolisz?"
         with mock.patch.object(qc.Ollama, "_post", return_value={"response": '{"waits": true}'}) as post:
@@ -678,6 +693,21 @@ class RealCorpusTest(unittest.TestCase):
         self.assertLessEqual(oracle["false_waits"], rules["false_waits"])
         self.assertTrue(all(qc.combined_waits(m["text"], m["waits"]) for m in self.corpus
                             if m["waits"] and qc.question.doubtful(m["text"])))
+
+    def test_every_waits_probe_case_is_seen_by_rules_or_sent_to_model(self):
+        # Bez modelu: wiadomość „czeka” z 28.10 albo ma pytanie rozpoznane przez reguły, albo jest wątpliwa (idzie do
+        # modelu). Inaczej żaden model jej nie uratuje. Kandydaci z #2 w zestawie mają źródło „claude 2026-11-03”
+        # i nie da się ich odróżnić od reszty, więc to samo sprawdza ostatni test dla wszystkich „czeka” zestawu.
+        for text, waits in qc.PROBE_CASES:
+            if waits:
+                self.assertTrue(qc.rules_waits(text) or qc.question.doubtful(text), text[:60])
+
+    def test_every_waits_message_is_seen_by_rules_or_sent_to_model(self):
+        # Zmierzone przy PT-113: 38 z 58 wiadomości „czeka” w zestawie nie ma pytania dla reguł i nie jest wątpliwych,
+        # więc model ich nie zobaczy (sufit dwustopniowego liczenia). Test pilnuje, żeby ta liczba nie rosła.
+        missed = [m["id"] for m in self.corpus
+                  if m["waits"] and not (qc.rules_waits(m["text"]) or qc.question.doubtful(m["text"]))]
+        self.assertLessEqual(len(missed), 38, missed)
 
     def test_doubtful_does_not_flag_obvious_cases(self):
         # Do modelu idą tylko wątpliwe końcówki; wiadomość z pytaniem rozpoznanym przez reguły nigdy.

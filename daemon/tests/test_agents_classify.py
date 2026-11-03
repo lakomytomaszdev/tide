@@ -77,8 +77,14 @@ class DoubtfulTest(unittest.TestCase):
                      "Agent PT-33 pracuje w tle. Dam znać, gdy skończę.", "dam znać, gdy skończę", "",
                      "Scalone do mastera i zainstalowane. Testy przechodzą: 1071 OK.",
                      "Stan kart: wszystko pracuje. Teraz nic nie czeka na Ciebie.",
-                     "Dwa warianty, wybrałem pierwszy. Przegląd zostaje Twoją decyzją, ale to już zrobione."):
+                     "Nie potrzebuję nic więcej. Jeśli wolisz, mogę też dodać testy.",
+                     "Zrobione. Jeśli wolisz, dodam jeszcze testy."):
             self.assertFalse(doubtful(text), text)
+
+    def test_decision_phrase_is_doubtful_in_every_case_form(self):
+        for text in ("To Twoja decyzja.", "Przegląd zostaje Twoją decyzją.", "Wybór należy do Twojej decyzji.",
+                     "Potrzebuję Twojego potwierdzenia.", "Jeśli wolisz inny termin, powiedz."):
+            self.assertTrue(doubtful(text), text)
 
     def test_rule_yes_is_never_doubtful(self):
         # Reguła „tak” rozstrzyga sama — model nie jest pytany.
