@@ -22,7 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
-RESULT_LABELS = {"done": "gotowe", "question": "pytanie", "denied": "brak zgody", "error": "błąd", "stopped": "zatrzymany"}
+from .labels import result_label, waiting_text
+
 REASON_LABELS = {"no-result": "brak pliku wyniku", "bad-result": "zły plik wyniku", "no-progress": "bez postępu",
                  "exit": "program zakończył się błędem", "start": "krok nie wystartował",
                  "timeout": "przekroczony czas kroku", "local-unavailable": "serwer lokalny jest niedostępny",
@@ -143,7 +144,7 @@ class FlowState:
         pending_transfer = not self.card_finished and any(
             name not in self.step_decisions for name in self.transfer_requests)
         if pending_decision:
-            label = {"question": "pytanie", "denied": "brak zgody", "error": "błąd kroku"}[finished["result"]]
+            label = result_label(finished["result"])
             return f"karta czeka na Twoją decyzję ({label}) — odpowiedz w panelu karty albo przenieś ją do Do zrobienia"
         if pending_review:
             return "ticket czeka na review albo scalenie"
@@ -606,7 +607,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
                                 "question": focus_done.get("question") or "", "command": focus_done.get("command") or "",
                                 "canAllow": bool(focus_done.get("canAllow", True)), "error": focus_done.get("reason") or ""})
             out["question"] = focus_done.get("question") or "Decyzja dotycząca poprawy planu"
-            return _fill(out, "waiting", "poprawa planu czeka na decyzję")
+            return _fill(out, "waiting", waiting_text(focus_step["kind"], result))
         if (st.plan_revision or {}).get("failed"):
             out["question"] = "Poprawa planu jest nieprawidłowa. Odesłać ponownie czy odrzucić poprawkę?"
             return _fill(out, "waiting", "poprawa planu wymaga decyzji")
