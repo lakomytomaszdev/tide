@@ -192,6 +192,21 @@ class FullPlanningTest(FlowInProcess):
         self.assertEqual([e["kind"] for e in self.of(card, "step.started")], ["planning", "plan-review"])
         self.assertEqual(len(terminal.opened), 1)
 
+    def test_plan_sent_back_is_reviewed_again_while_console_stays_open(self):
+        # 03.11, K-38: po „Odeślij uwagi” poprawka planu (plan-amend) skończyła się, ale review nie ruszyło,
+        # bo otwarta Konsola planowania wstrzymywała kroki, a plan-amend nie był na liście kroków planu.
+        card, step, terminal = self._start_full()
+        self._write_proposal(card, step)
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20), self.events(card))
+        box = []
+        self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "Doprecyzuj ryzyka."}), box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(json.loads(box[0])["ok"], box)
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.revision-ready"), timeout=20), self.events(card))
+        self.assertTrue(wait_until(lambda: [e for e in self.of(card, "step.started") if e["kind"] == "plan-review"][1:],
+                                   timeout=20), [e["kind"] for e in self.of(card, "step.started")])
+        self.assertFalse(any(e["type"] == "step.console_closed" for e in self.events(card)))
+
     def test_codex_receives_written_grilling_process_and_selected_model(self):
         card, step, terminal = self._start_full("Codex mocny", "openai")
         with open(terminal.opened[0].task_file, encoding="utf-8") as fh:

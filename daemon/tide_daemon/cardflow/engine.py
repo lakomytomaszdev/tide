@@ -1733,7 +1733,8 @@ class FlowEngine(PlanEditing):
                     open_same = [s for s in current.open_consoles()
                                  if s.get("ticket") == step.get("ticket")]
                     planning_result_ready = ((current.started or {}).get("mode") == "full" and
-                                             step.get("kind") in ("planning", "plan-fix", "plan-review", "plan-revise") and
+                                             step.get("kind") in ("planning", "plan-fix", "plan-review", "plan-revise",
+                                                                  "plan-amend") and
                                              all(s.get("kind") == "planning" and s["step"] in current.finished
                                                  for s in open_same))
                     if name not in current.finished or (open_same and not planning_result_ready):
