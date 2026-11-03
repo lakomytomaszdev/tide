@@ -143,3 +143,59 @@ def claude_tools(allowed: list[str], denied: list[str]) -> tuple[tuple[str, ...]
     for rule in denied:
         bans.extend((f"Bash({rule})", f"Bash({rule} *)"))
     return tuple(grants), tuple(bans)
+
+
+# --- polecenia poza piaskownicą (03.11) ------------------------------------------------------------
+
+OUTSIDE_ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+OUTSIDE_ENV_VALUE = re.compile(r"[A-Za-z0-9_.@:,/+-]{0,200}")
+OUTSIDE_ENV_DENIED = ("PATH", "HOME", "SHELL", "IFS", "ENV", "BASH_ENV", "PS4", "NODE_OPTIONS", "PYTHONPATH",
+                      "PYTHONSTARTUP", "PERL5OPT", "RUBYOPT", "GIT_DIR", "GIT_WORK_TREE")
+OUTSIDE_FAMILY = {"npm": 2, "pnpm": 2, "yarn": 2, "npx": 3, "dotnet": 2, "make": 2, "git": 2, "python3": 3}
+
+
+def outside_argv(command: str) -> list[str] | None:
+    """Polecenie poza piaskownicą bez początkowych prostych zmiennych (`E2E_PORT=4311 npm run e2e`, K-31);
+    None dla łańcucha, podpowłoki albo zmiennej, która zmienia sposób uruchamiania (PATH, LD_*, NODE_OPTIONS…)."""
+    text = str(command or "").strip()
+    parts = text.split()
+    at = 0
+    while at < len(parts) and "=" in parts[at]:
+        name, value = parts[at].split("=", 1)
+        if not OUTSIDE_ENV_NAME.fullmatch(name) or name in OUTSIDE_ENV_DENIED or name.startswith(("LD_", "DYLD_")) \
+                or not OUTSIDE_ENV_VALUE.fullmatch(value):
+            return None
+        at += 1
+    return _argv(" ".join(parts[at:])) if at < len(parts) else None
+
+
+def outside_allowed(command: str, denied: list[str]) -> bool:
+    argv = outside_argv(command)
+    return argv is not None and len(command) <= MAX_COMMAND and not is_forbidden(shlex.join(argv), denied)
+
+
+def outside_pattern(command: str) -> str:
+    """Rodzina polecenia do zapamiętania („zawsze w tym projekcie”): `npm run e2e -- x` → `npm run e2e *`,
+    `npx playwright test a` → `npx playwright test *`, `npm install --save-dev x` → `npm install *`."""
+    argv = outside_argv(command) or []
+    if not argv:
+        return command
+    size = OUTSIDE_FAMILY.get(argv[0], 2)
+    if argv[0] in ("npm", "pnpm", "yarn") and len(argv) > 1 and argv[1] in ("run", "run-script", "exec"):
+        size = 3
+    head = [a for a in argv[:size] if not a.startswith("-")] or argv[:1]
+    return shlex.join(head) + " *"
+
+
+def outside_matches(command: str, remembered: list[str]) -> bool:
+    argv = outside_argv(command)
+    if argv is None:
+        return False
+    for rule in remembered:
+        if rule.endswith(" *"):
+            prefix = _argv(rule[:-2])
+            if prefix and argv[:len(prefix)] == prefix:
+                return True
+        elif rule == command:
+            return True
+    return False

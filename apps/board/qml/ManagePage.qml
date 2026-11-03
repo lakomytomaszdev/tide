@@ -229,6 +229,8 @@ Rectangle {
                         Layout.fillWidth: true
                         spacing: 8
                         QQC2.ComboBox {
+                            // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                            wheelEnabled: false
                             objectName: "limitTransferMode"
                             Layout.fillWidth: true
                             model: [{value: "ask", label: "Zapytaj mnie"},
@@ -243,6 +245,8 @@ Rectangle {
                             Accessible.name: "Reakcja na wyczerpany limit"
                         }
                         QQC2.ComboBox {
+                            // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                            wheelEnabled: false
                             objectName: "limitTransferExecutor"
                             Layout.fillWidth: true
                             visible: page.limitTransferMode === "auto"

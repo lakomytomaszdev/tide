@@ -44,6 +44,7 @@ class FlowState:
     review_decisions: dict = field(default_factory=dict)
     step_retries: dict = field(default_factory=dict)  # źródłowy krok → automatyczne ponowienie
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
+    outside_started: dict = field(default_factory=dict)  # krok → outside.started (polecenie poza piaskownicą)
     superseded: set = field(default_factory=set)      # kroki sprzed ostatniego card.started — nie czekają na decyzję
     wip_retries: dict = field(default_factory=dict)    # krok → ponowiony bezpieczny commit po błędzie
     limits: dict = field(default_factory=dict)         # krok → odczyt limitu w chwili wyczerpania
@@ -255,6 +256,8 @@ def fold(events: list[dict]) -> FlowState:
             st.step_retries[e.get("step")] = e
         elif kind == "step.decision":
             st.step_decisions[e.get("step")] = e
+        elif kind == "outside.started":
+            st.outside_started[e.get("step")] = e
         elif kind == "step.wip":
             st.wip_retries[e.get("step")] = e
         elif kind == "step.limit":
@@ -780,12 +783,16 @@ def derived(st: FlowState, card: dict) -> dict | None:
     if result == "denied" and done.get("outside"):
         decision = st.step_decisions.get(st.last_step) or {}
         if decision.get("choice") in ("run", "run-always"):
-            since = str(decision.get("ts") or "")[11:16]
+            started = st.outside_started.get(st.last_step)
+            if started is None:
+                return _fill(out, "progress", f"{ident} · w kolejce poza piaskownicą (jedno polecenie naraz w projekcie): "
+                                              f"{_clip(done.get('command') or '', 80)}")
+            since = str(started.get("ts") or "")[11:16]
             return _fill(out, "progress", f"{ident} · od {since} trwa poza piaskownicą: "
                                           f"{_clip(done.get('command') or '', 80)} (wynik wróci do agenta)")
         if decision:
             return _fill(out, "progress", f"{ident} · wznawiam po decyzji o poleceniu")
-        out["flow"].update({"action": "outside", "command": done.get("command") or "",
+        out["flow"].update({"action": "outside", "command": done.get("command") or "", "pattern": done.get("pattern") or "",
                             "reason": done.get("reason") or "", "canAllow": bool(done.get("canAllow", True))})
         out["question"] = done.get("reason") or ""
         return _fill(out, "waiting", f"{ident} prosi o uruchomienie poza piaskownicą: „{_clip(done.get('command') or '?', 80)}”")

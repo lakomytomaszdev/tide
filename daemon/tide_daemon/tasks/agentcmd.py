@@ -218,7 +218,9 @@ class Background:
                 os.unlink(path)
             except FileNotFoundError:
                 pass
-        argv = [systemd_run or SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet", f"--unit={self.unit}", "--",
+        # Niższa waga procesora i dysku: kilka kroków naraz nie przymula pulpitu (03.11).
+        argv = [systemd_run or SYSTEMD_RUN, "--user", "--scope", "--collect", "--quiet", f"--unit={self.unit}",
+                "-p", "CPUWeight=40", "-p", "IOWeight=40", "--",
                 "/usr/bin/env", "-u", "XDG_RUNTIME_DIR", "-u", "INVOCATION_ID",
                 "/bin/sh", "-c", EXIT_WRAPPER, "tide-step-runner", self.exit_file, *self.argv]
         log = None

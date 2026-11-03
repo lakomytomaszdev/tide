@@ -343,6 +343,8 @@ Rectangle {
                 visible: !!panel.flowPlan && panel.flowPlan.status === "blocked"
                 spacing: 8
                 QQC2.ComboBox {
+                    // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                    wheelEnabled: false
                     id: planReviewPicker
                     objectName: "cardPlanReviewExecutor"
                     Layout.fillWidth: true
@@ -1008,6 +1010,8 @@ Rectangle {
                                     visible: Boolean(flowStep.canTransfer)
                                     spacing: 8
                                     QQC2.ComboBox {
+                                        // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                                        wheelEnabled: false
                                         id: manualTransferPicker
                                         objectName: "cardStepTransferExecutor"
                                         Layout.fillWidth: true
@@ -1162,6 +1166,8 @@ Rectangle {
                             visible: Boolean(stepDecision.flow && stepDecision.flow.action === "limit")
                             spacing: 8
                             QQC2.ComboBox {
+                                // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                                wheelEnabled: false
                                 id: limitTransferPicker
                                 objectName: "cardLimitExecutor"
                                 Layout.fillWidth: true
@@ -1237,7 +1243,8 @@ Rectangle {
                             }
                             PillButton {
                                 objectName: "cardStepOutsideAlways"
-                                text: "Uruchom i pamiętaj w projekcie"
+                                text: stepDecision.flow && stepDecision.flow.pattern
+                                      ? "Zawsze w projekcie: " + stepDecision.flow.pattern : "Uruchom i pamiętaj w projekcie"
                                 outline: true
                                 enabled: Boolean(!panel.busy && stepDecision.flow && stepDecision.flow.canAllow !== false)
                                 onClicked: {
@@ -1295,6 +1302,8 @@ Rectangle {
                                 }
                             }
                             QQC2.ComboBox {
+                                // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                                wheelEnabled: false
                                 id: stepExecutorPicker
                                 visible: !stepDecision.flow || !stepDecision.flow.trackerError
                                 objectName: "cardStepExecutor"

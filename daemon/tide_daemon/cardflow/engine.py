@@ -65,6 +65,9 @@ MAX_PROVIDER_SLOTS = 12
 RESULTS = ("done", "question", "denied", "error", "outside")
 OUTSIDE_TIMEOUT = 3600          # najdłużej działające polecenie uruchomione poza piaskownicą (s)
 OUTSIDE_TAIL = 12_000           # tyle końcowych znaków wyniku dostaje wznowiony krok
+OUTSIDE_PER_PROJECT = 1         # polecenia poza piaskownicą naraz w jednym projekcie (porty, serwer e2e)
+OUTSIDE_TOTAL = 2               # … i łącznie (testy i budowanie obciążają całą maszynę)
+STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
 OUTPUT_MAX = 256 * 1024
 HANDOFF_DIFF_MAX = 64 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
@@ -853,6 +856,8 @@ class FlowEngine(PlanEditing):
         if result in ("question", "denied", "error"):
             if decision:
                 self._resume_step(card, st, step, decision)
+            elif result == "denied" and done.get("outside"):
+                self._outside_recheck(card, step, done)
             elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
                 if step["step"] not in st.step_retries:
                     self.journal.append(card, "step.retry", step=step["step"], ticket="",
@@ -2200,13 +2205,13 @@ class FlowEngine(PlanEditing):
                 except BoardError as exc:
                     raise FlowError(exc.code, str(exc)) from None
         if choice in ("run", "run-always"):
-            from ..board.commands import MAX_COMMAND, is_forbidden
+            from ..board.commands import outside_allowed, outside_pattern
             command = str(done.get("command") or "").strip()
             _, project = self._project(card)
-            if not command or len(command) > MAX_COMMAND or is_forbidden(command, project.denied_commands):
+            if not command or not outside_allowed(command, project.denied_commands):
                 raise FlowError("forbidden-command", f"polecenia „{command}” nie można uruchomić poza piaskownicą")
             if choice == "run-always":
-                self._remember_outside(project.slug, command)
+                self._remember_outside(project.slug, outside_pattern(command))
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
                                     choice=choice, answer=answer if choice == "answer" else "",
                                     command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always")
@@ -2999,8 +3004,11 @@ class FlowEngine(PlanEditing):
             command = data.get("command") or ""
             data["canAllow"] = len(command) <= MAX_COMMAND and not is_forbidden(command, project.denied_commands)
             if data.get("outside"):
+                from ..board.commands import outside_allowed, outside_matches, outside_pattern
                 extra["outside"] = True
-                remembered = data["canAllow"] and command in self._outside_remembered(project.slug)
+                extra["pattern"] = outside_pattern(command)
+                data["canAllow"] = outside_allowed(command, project.denied_commands)
+                remembered = data["canAllow"] and outside_matches(command, self._outside_remembered(project.slug))
         self.journal.append(card, "step.finished", step=name, ticket=step.get("ticket") or "",
                             result=data.get("result"), reason=data.get("reason") or "",
                             question=data.get("question") or "", command=data.get("command") or "",
@@ -3236,8 +3244,11 @@ class FlowEngine(PlanEditing):
     # --- polecenia poza piaskownicą (03.11) --------------------------------------------------------
 
     def _outside_remembered(self, slug: str) -> list:
+        from ..board.commands import outside_pattern
         value = (self._settings_data().get("outsideCommands") or {}).get(slug) or []
-        return [c for c in value if isinstance(c, str)] if isinstance(value, list) else []
+        # Wpisy sprzed rodzin (dokładne polecenia) liczą się jako ich rodzina — tak rozumiał to użytkownik.
+        return [c if c.endswith(" *") else outside_pattern(c) for c in value if isinstance(c, str)] \
+            if isinstance(value, list) else []
 
     def _remember_outside(self, slug: str, command: str) -> None:
         data = self._settings_data()
@@ -3259,8 +3270,11 @@ class FlowEngine(PlanEditing):
             return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
         started = next((e for e in events if e["type"] == "outside.started"), None)
         if started is None:
+            if self._outside_busy(card):
+                return None     # kolejka: stan karty mówi „czeka na wolne miejsce poza piaskownicą”
             self._start_outside(card, step, done.get("command") or "")
             return None
+        self._outside_active[name] = (card, started["unit"])
         code = stepstop.read_exit_code(os.path.dirname(os.path.dirname(started["exitFile"])))
         if code is None and time.time() - _epoch(started.get("ts")) < OUTSIDE_TIMEOUT:
             return None
@@ -3275,9 +3289,48 @@ class FlowEngine(PlanEditing):
                 tail = fh.read().decode("utf-8", "replace")
         except OSError:
             tail = "(brak wyniku)"
+        self._outside_active.pop(name, None)
         self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
                             command=started.get("command") or "", exit=code, tail=tail)
         return {**decision, "answer": f"Kod wyjścia: {code}\nKoniec wyniku:\n{tail}"}
+
+    def _outside_recheck(self, card: str, step: dict, done: dict) -> None:
+        """Prośba sprzed zmiany reguł (np. `E2E_PORT=… npm run e2e` odrzucane jako łańcuch, rodziny zamiast dokładnych
+        poleceń): gdy dziś pasuje do zapamiętanej rodziny projektu, uruchamia się bez pytania."""
+        from ..board.commands import outside_allowed, outside_matches
+        command = done.get("command") or ""
+        _, project = self._project(card)
+        if outside_allowed(command, project.denied_commands) and \
+                outside_matches(command, self._outside_remembered(project.slug)):
+            self.journal.append(card, "step.decision", step=step.get("step") or "", ticket=step.get("ticket") or "",
+                                kind=step.get("kind") or "", choice="run", answer="", command=command,
+                                executor="", auto=True)
+
+    def _outside_busy(self, card: str) -> bool:
+        """Jedno polecenie poza piaskownicą naraz w projekcie i OUTSIDE_TOTAL łącznie (03.11, K-31: pięć przebiegów
+        e2e naraz na jednym porcie kończyło się kodem 1 i agenci prosili o kolejne)."""
+        if not hasattr(self, "_outside_active"):
+            # Po restarcie usługi: polecenia rozpoczęte (bez zakończenia) we wszystkich kartach.
+            self._outside_active = {}
+            for other in self.journal.cards():
+                events = self.journal.read(other)
+                done = {e.get("step") for e in events if e.get("type") == "outside.finished"}
+                for e in events:
+                    if e.get("type") == "outside.started" and e.get("step") not in done:
+                        self._outside_active[e["step"]] = (other, e.get("unit") or "")
+        alive = {}
+        for name, (other, unit) in self._outside_active.items():
+            if stepstop.read_exit_code(os.path.dirname(os.path.dirname(self._outside_exit(other, name)))) is None:
+                alive[name] = (other, unit)
+        self._outside_active = alive
+        if len(alive) >= OUTSIDE_TOTAL:
+            return True
+        slug = self._project(card)[1].slug
+        return sum(1 for other, _ in alive.values() if self._project(other)[1].slug == slug) >= OUTSIDE_PER_PROJECT
+
+    def _outside_exit(self, card: str, name: str) -> str:
+        found = next((e for e in self.journal.read(card) if e.get("type") == "outside.started" and e.get("step") == name), {})
+        return found.get("exitFile") or "/nonexistent/in/exit-code"
 
     def _start_outside(self, card: str, step: dict, command: str) -> None:
         name = step.get("step") or ""
@@ -3291,7 +3344,8 @@ class FlowEngine(PlanEditing):
         prefix = node_mod.node_home(os.path.expanduser("~"))
         if prefix:
             env["PATH"] = os.path.join(prefix, "bin") + os.pathsep + env.get("PATH", "")
-        argv = [self.systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet", f"--unit={unit}", "--",
+        argv = [self.systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet", f"--unit={unit}",
+                "-p", f"CPUWeight={STEP_CPU_WEIGHT}", "-p", f"IOWeight={STEP_CPU_WEIGHT}", "--",
                 "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
                 exit_file, "/bin/sh", "-c", command]
         with open(log, "ab") as out:
@@ -3299,6 +3353,9 @@ class FlowEngine(PlanEditing):
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
         self.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "", command=command,
                             unit=unit, log=log, exitFile=exit_file)
+        if not hasattr(self, "_outside_active"):
+            self._outside_active = {}
+        self._outside_active[name] = (card, unit)
 
     AUTO_DENY_LIMIT = 3
 

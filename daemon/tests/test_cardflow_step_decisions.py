@@ -1,6 +1,7 @@
 """Decyzje użytkownika po kroku w tle i ponowienia na prawdziwych atrapach procesu."""
 import json
 import os
+from unittest import mock
 
 from .privatebus import wait_until
 from .test_cardflow import FlowInProcess
@@ -45,6 +46,29 @@ class StepDecisionTest(FlowInProcess):
         self.wait_column(second, "review", timeout=40)
         decision = self.of(second, "step.decision")[0]
         self.assertEqual((decision["choice"], decision["auto"]), ("run", True))
+
+    def test_remembered_family_and_one_outside_run_per_project(self):
+        # 03.11, K-31: „pamiętaj” pamiętało dokładne polecenie, a pięć przebiegów e2e szło naraz.
+        from tide_daemon.board.commands import outside_allowed, outside_matches, outside_pattern
+        self.assertEqual(outside_pattern("E2E_PORT=4311 npm run e2e -- tests/e2e/devices"), "npm run e2e *")
+        self.assertEqual(outside_pattern("npx playwright test tests/e2e/programs"), "npx playwright test *")
+        self.assertEqual(outside_pattern("npm install --save-dev eslint@^9"), "npm install *")
+        self.assertTrue(outside_matches("npm run e2e -- tests/e2e/x --workers=2", ["npm run e2e *"]))
+        self.assertFalse(outside_matches("npm run lint", ["npm run e2e *"]))
+        self.assertTrue(outside_allowed("E2E_PORT=4311 npm run e2e", []))
+        for bad in ("PATH=/tmp npm test", "NODE_OPTIONS=--require=x npm test", "npm test && rm -rf x", "make install"):
+            self.assertFalse(outside_allowed(bad, ["make install"]), bad)
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "waiting")
+        self.assertEqual(self.shown(card_id)["derived"]["flow"]["pattern"], "echo zewnetrzne-ok *")
+        self.flow.stop()
+        engine = self.flow.engine
+        engine._outside_active = {"K-99-PT-9-1": (card_id, "tide-outside-K-99-PT-9-1")}
+        with mock.patch.object(engine, "_outside_exit", return_value="/nonexistent/in/exit-code"):
+            self.assertTrue(engine._outside_busy(card_id))
+        engine._outside_active = {}
+        self.assertFalse(engine._outside_busy(card_id))
 
     def test_declined_outside_command_resumes_without_it(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
