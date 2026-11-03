@@ -43,7 +43,9 @@ var tideKickoff = tideEnsure("org.kde.plasma.kickoff");
 var tideMenu = tideEnsure("org.kde.plasma.appmenu");
 var tideClock = tideEnsure("org.kde.plasma.digitalclock");
 var tideTray = tideEnsure("org.kde.plasma.systemtray");
-var tideSpacerLeft = tideAdd(tideBar, "org.kde.plasma.panelspacer", ["General"], {expanding: true});
+// Lewy odstęp to „Środek” Tide: stawia zegar na środku paska także wtedy, gdy globalne menu się chowa
+// (odstęp Plasmy liczy z deklarowanej szerokości menu i zegar uciekał w lewo).
+var tideSpacerLeft = tideAdd(tideBar, "org.tide.centerspacer");
 var tideSpacerRight = tideAdd(tideBar, "org.kde.plasma.panelspacer", ["General"], {expanding: true});
 
 tideWrite(tideKickoff, ["General"], {icon: P.icon});
@@ -93,7 +95,7 @@ if (tideScreensNow.side >= 0) {
     }
     var tideSideMenu = tideAdd(tideSide, "org.kde.plasma.appmenu", ["Appearance"],
                                {compactView: false, allScreens: false});
-    var tideSideLeft = tideAdd(tideSide, "org.kde.plasma.panelspacer", ["General"], {expanding: true});
+    var tideSideLeft = tideAdd(tideSide, "org.tide.centerspacer");
     var tideSideClock = tideAdd(tideSide, "org.kde.plasma.digitalclock", ["Appearance"], {showDate: true, dateDisplayFormat: "BesideTime", dateFormat: "custom", customDateFormat: "ddd d MMM"});
     var tideSideRight = tideAdd(tideSide, "org.kde.plasma.panelspacer", ["General"], {expanding: true});
 
