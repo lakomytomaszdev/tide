@@ -123,3 +123,24 @@ class OverviewTest(unittest.TestCase):
         _attach_flow([project, second], self.now[0] - 60, self.now[0] + 60, self.board)
         self.assertEqual(project.plans[0]["tickets"][0]["note"], "wykonał Astra")
         self.assertEqual(second.plans[0]["tickets"][0]["note"], "wykonał Sonnet")
+
+
+class StalePlanReviewWaitTest(unittest.TestCase):
+    """K-31: dawna blokada limitu nie może zasłaniać decyzji po nieudanym review planu."""
+
+    def test_started_review_clears_old_limit_wait_and_shows_the_decision(self):
+        events = [
+            {"seq": 1, "type": "card.started", "entry": "planning", "executor": "Opus"},
+            {"seq": 2, "type": "plan.proposed", "rows": [], "planner": "Opus", "title": "X"},
+            {"seq": 3, "type": "step.waiting", "ticket": "", "kind": "plan-review", "provider": "anthropic",
+             "reason": "czeka na limit Claude do sobota 18:00 (pozostało 7% w oknie tygodniowym)"},
+            {"seq": 4, "type": "step.started", "step": "K-1-plan-1", "kind": "plan-review", "ticket": "",
+             "executor": "Haiku", "provider": "anthropic", "attempt": 1},
+            {"seq": 5, "type": "step.finished", "step": "K-1-plan-1", "ticket": "", "result": "error",
+             "reason": "no-result"},
+        ]
+        st = fold(events)
+        self.assertIsNone(st.plan_review_wait)
+        out = derived(st, {"column": "todo"})
+        self.assertNotIn("limit", out["note"])
+        self.assertEqual(out["flow"]["action"], "error")

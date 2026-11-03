@@ -216,6 +216,10 @@ def fold(events: list[dict]) -> FlowState:
                 st.plan_review_wait = e
         elif kind == "step.started":
             st.waiting.pop((e.get("ticket"), e.get("kind")), None)
+            if e.get("kind") == "plan-review":
+                # Review ruszyło, więc dawna blokada limitu nie obowiązuje (K-31: po nieudanym review karta
+                # na zawsze pokazywała „czeka na limit” i chowała decyzję Ponów / Zmień wykonawcę).
+                st.plan_review_wait = None
             st.steps[e.get("step")] = e
             if not (st.plan_approved and e.get("kind") in ("plan-amend", "plan-review", "plan-revise")):
                 st.last_step = e.get("step") or ""
