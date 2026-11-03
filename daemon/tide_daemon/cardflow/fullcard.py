@@ -12,10 +12,12 @@ trwające kroki i jedno zdanie, gdy nic nie czeka na użytkownika. Widok `CardFu
 - `derived.tickets[].status` i `statusLabel` — ludzki stan ticketu (`TICKET_STATUS`), `executor` i `reviewer`,
 - `derived.flow.running[]` — tylko trwające kroki (`{id, ticket, kind, kindLabel, executor, mode, startedTs,
   lastActivityTs, canEnter}`),
+- `derived.flow.history[]` — historia ludzkim językiem (`history.py`, PT-129),
 - `derived.flow.headline` — jedno zdanie do bloku „Twój ruch”, gdy `flow.decisions[]` jest puste.
 """
 from __future__ import annotations
 
+from . import history
 from .labels import kind_label
 from .state import FlowState
 
@@ -47,6 +49,7 @@ def enrich(st: FlowState, out: dict) -> dict:
         ticket["reviewer"] = override.get("reviewer") or assigned.get("reviewer") or row.get("reviewer") or ""
         ticket.update(ticket_status(st, ticket))
     flow["running"] = running_steps(flow.get("steps") or [], st)
+    flow["history"] = history.build(st, flow.get("steps") or [])
     out["phases"] = phases(st, out)
     flow["headline"] = headline(st, out)
     return out

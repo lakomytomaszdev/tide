@@ -10,8 +10,9 @@ import json
 import os
 import shutil
 import unittest
+from datetime import datetime, timedelta
 
-from .decisionfix import FINDINGS_C, derived, fold, full_c, full_d, journal_c, journal_d
+from .decisionfix import FINDINGS_C, derived, fold, full_c, full_card, full_d, journal_c, journal_d
 from .test_decision_dialog import STATE_PY as DIALOG_STATE_PY
 from .test_view import ProbeCase
 
@@ -186,6 +187,64 @@ out["calls"] = [c[0] for c in calls()]
         self.assertEqual(out["calls"], ["ApproveCardPlan"])
         self.assertEqual(out["state"]["kind"], "Plan do zatwierdzenia", "decyzja wraca")
         self.assertIn("plan jeszcze się zapisuje", out["state"]["error"])
+
+    def test_history_in_human_language_with_collapsed_old_orders_and_resume_only_for_current(self):
+        now = datetime.now().astimezone()
+        events = []
+
+        def add(etype, ago_hours, /, **data):
+            events.append({"v": 1, "seq": len(events) + 1, "ts": (now - timedelta(hours=ago_hours)).isoformat(),
+                           "card": "K-8", "type": etype, **data})
+
+        def step(name, ticket, ago, result=None, **extra):
+            add("step.started", ago, step=name, ticket=ticket, kind="ticket", executor="Sonnet", provider="anthropic",
+                model="sonnet", attempt=extra.pop("attempt", 0), parentStep=extra.pop("parent", ""),
+                stepDir=f"/wt/{name}.step", worktree=f"/wt/{name}", branch="ticket/x")
+            if result:
+                add("step.finished", ago - 0.1, step=name, ticket=ticket, result=result, **extra)
+
+        add("card.started", 60, entry="now", executor="Sonnet", program="claude", provider="anthropic")
+        step("OLD-0", "PT-1", 59, "question", question="Stare pytanie?")
+        add("card.started", 30, entry="now", executor="Opus", program="claude", provider="anthropic")
+        step("NEW-0", "PT-2", 29, "error", reason="exit")
+        step("NEW-1", "PT-2", 28, "error", reason="exit", attempt=1, parent="NEW-0")
+        step("NEW-2", "PT-2", 27, "question", question="Nowe pytanie?", attempt=2, parent="NEW-1")
+        step("NEW-3", "PT-3", 5, "done")
+        data = full_card(self.data, events)
+        data["cardOpen"] = "full"
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+HIST =("(function () { const v = page.cardFullView; const all = " + ALL + "; "
+        "return JSON.stringify(all(v, 'fullHistoryLine').sort((a, b) => a.mapToItem(v, 0, 0).y - b.mapToItem(v, 0, 0).y)"
+        ".map(l => [l.text, l.when, l.byUser, all(l, 'historyResume').filter(b => b.visible).length, l.modelData.old])) })()")
+out["collapsed"] = json.loads(js(HIST))
+out["oldButton"] = js("page.cardFullView.oldHistory.length")
+js("page.cardFullView.oldOpen = true")
+out["expanded"] = json.loads(js(HIST))
+out["enterBefore"] = len(calls())
+click(at("(" + ALL + ")(page.cardFullView, 'historyResume')[0]"))
+out["enter"] = calls()
+""", data)
+        collapsed = out["collapsed"]
+        self.assertTrue(all(not row[4] for row in collapsed), "zwinięte zlecenia nie są widoczne")
+        texts = [row[0] for row in collapsed]
+        self.assertIn("PT-2: Sonnet — 3 próby, ostatnia: pyta", texts, "próby w jednej linii")
+        self.assertEqual(len([t for t in texts if t.startswith("PT-2")]), 1)
+        self.assertEqual(out["oldButton"], 2, "Wcześniejsze zlecenia (N): pierwsze zlecenie i jego krok")
+        by_text = {row[0]: row for row in collapsed}
+        self.assertEqual(by_text["PT-2: Sonnet — 3 próby, ostatnia: pyta"][3], 1, "„Wznów rozmowę” przy pytaniu")
+        self.assertEqual(by_text["PT-3: Sonnet — gotowe"][3], 0, "gotowy krok bez „Wznów rozmowę”")
+        self.assertTrue(by_text["Zlecenie: karta wystartowała (Opus)"][2], "zdarzenie użytkownika oznaczone")
+        self.assertFalse(by_text["PT-3: Sonnet — gotowe"][2])
+        for row in collapsed:
+            self.assertRegex(row[1], r"^(dziś|wczoraj) \d\d:\d\d|^\d{1,2}\.\d\d \d\d:\d\d", row)
+            self.assertNotRegex(row[0] + row[1], r"\d{4}-\d\d-\d\d|T\d\d:", "brak znaczników ISO")
+        self.assertTrue(any(row[1].startswith("wczoraj") for row in collapsed), "czas względny po polsku")
+        expanded = {row[0]: row for row in out["expanded"]}
+        old_step = expanded["PT-1: Sonnet — pyta"]
+        self.assertTrue(old_step[4])
+        self.assertEqual(old_step[3], 0, "wcześniejsze zlecenia są bez „Wznów rozmowę”")
+        self.assertEqual(out["enter"][-1], ["EnterStep", "K-8", "NEW-2"])
 
     def test_panel_button_and_cards_without_journal(self):
         out = self.probe(STATE_PY + """

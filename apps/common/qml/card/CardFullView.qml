@@ -13,7 +13,8 @@
 // method, params)` — podgląd karty z błędem Tide przed zapisem (PT-125, DecisionForm.qml), sygnały
 // `backRequested()`, `answered(decisionId, method, params)`,
 // `decisionsRequested()` — wszystkie decyzje w oknie decyzji, `panelRequested(notice)` — panel karty (ustawienia,
-// akcje i wybór wykonawcy zostają tam do PT-134), `enterStepRequested(stepId)` — „Wejdź” przy trwającym kroku.
+// akcje i wybór wykonawcy zostają tam do PT-134), `enterStepRequested(stepId)` — „Wejdź” przy trwającym kroku i „Wznów rozmowę” w historii (PT-129: `flow.history[]`,
+// wcześniejsze zlecenia zwinięte i bez wznawiania).
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -36,6 +37,11 @@ Rectangle {
     readonly property var waves: flow && flow.plan && Array.isArray(flow.plan.waves) ? flow.plan.waves : []
     readonly property var running: flow && Array.isArray(flow.running) ? flow.running : []
     readonly property string headline: flow && flow.headline ? flow.headline : ""
+    readonly property var history: flow && Array.isArray(flow.history) ? flow.history : []
+    // Bieżące zlecenie od najnowszego wpisu; wcześniejsze (`old`) osobno, zwinięte.
+    readonly property var currentHistory: history.filter(h => !h.old).reverse()
+    readonly property var oldHistory: history.filter(h => h.old === true).reverse()
+    property bool oldOpen: false
     readonly property alias form: form
 
     signal backRequested()
@@ -85,10 +91,109 @@ Rectangle {
         return isNaN(when.getTime()) ? "" : Qt.formatDateTime(when, "d.MM HH:mm")
     }
 
+    // Czas po polsku bez znaczników ISO: „dziś 14:20”, „wczoraj 14:20”, starsze „24.10 14:20”.
+    function absoluteTime(ts) {
+        if (!ts) return ""
+        const d = new Date(ts * 1000)
+        if (isNaN(d.getTime())) return ""
+        const now = new Date()
+        const midnight = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+        const days = Math.round((midnight(now) - midnight(d)) / 86400000)
+        const time = Qt.formatDateTime(d, "HH:mm")
+        return days <= 0 ? "dziś " + time : days === 1 ? "wczoraj " + time : Qt.formatDateTime(d, "d.MM HH:mm")
+    }
+
+    function relativeTime(ts) {
+        if (!ts) return ""
+        const minutes = Math.floor((Date.now() / 1000 - ts) / 60)
+        if (minutes < 1) return "przed chwilą"
+        if (minutes < 60) return minutes + " min temu"
+        const hours = Math.floor(minutes / 60)
+        return hours < 24 ? hours + " godz. temu" : ""
+    }
+
+    function historyWhen(ts) {
+        return [absoluteTime(ts), relativeTime(ts)].filter(x => !!x).join(" · ")
+    }
+
     function phaseCaption(phase) {
         if (phase.state === "skipped") return "nie dotyczy"
         const who = phase.executor === "user" ? "ty" : phase.executor
         return [who, clock(phase.ts), phase.note].filter(x => !!x).join(" · ")
+    }
+
+    // Jedna linia historii: czas, rodzaj, zdanie, znacznik zdarzenia użytkownika i — tylko dla kroków bieżącego
+    // zlecenia z pytaniem albo zatrzymanych (`canResume` z usługi) — „Wznów rozmowę”.
+    component HistoryLine: Rectangle {
+        id: line
+        required property var modelData
+        property bool canResume: false
+        property bool dimmed: false
+        objectName: "fullHistoryLine"
+        readonly property string text: modelData.text
+        readonly property bool byUser: modelData.actor === "user"
+        readonly property string when: view.historyWhen(modelData.ts)
+        Layout.fillWidth: true
+        implicitHeight: lineRow.implicitHeight + 14
+        radius: Tide.Tokens.radiusTile
+        color: Tide.Tokens.backgroundCard
+        opacity: dimmed ? 0.7 : 1
+        Accessible.role: Accessible.ListItem
+        Accessible.name: [when, modelData.kindLabel, text, byUser ? "zdarzenie użytkownika" : ""].filter(x => !!x).join(", ")
+        RowLayout {
+            id: lineRow
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.margins: 10
+            spacing: 10
+            Text {
+                Layout.preferredWidth: 150
+                text: line.when
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                elide: Text.ElideRight
+            }
+            Text {
+                objectName: "historyKind"
+                Layout.preferredWidth: 70
+                text: line.modelData.kindLabel
+                textFormat: Text.PlainText
+                color: Tide.Tokens.lavender
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.85
+            }
+            Text {
+                objectName: "historyText"
+                Layout.fillWidth: true
+                text: line.text
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textPrimary
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                wrapMode: Text.Wrap
+            }
+            Text {
+                objectName: "historyUser"
+                visible: line.byUser
+                text: "Ty"
+                textFormat: Text.PlainText
+                color: Tide.Tokens.peach
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                font.weight: Font.DemiBold
+            }
+            Tide.TextButton {
+                objectName: "historyResume"
+                visible: line.canResume
+                text: "Wznów rozmowę"
+                variant: "outline"
+                Accessible.name: "Wznów rozmowę w kroku " + line.modelData.text
+                onClicked: view.enterStepRequested(line.modelData.step)
+            }
+        }
     }
 
     color: Tide.Tokens.backgroundWindow
@@ -572,6 +677,46 @@ Rectangle {
                             }
                         }
                     }
+                }
+            }
+
+            // Historia ludzkim językiem: bieżące zlecenie na wierzchu, wcześniejsze zwinięte i tylko do odczytu.
+            ColumnLayout {
+                objectName: "fullHistory"
+                Layout.fillWidth: true
+                spacing: 8
+                Text {
+                    text: "Historia"
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 1.1
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    objectName: "fullHistoryEmpty"
+                    visible: view.history.length === 0
+                    text: "Nic jeszcze się nie wydarzyło."
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt
+                }
+                Repeater {
+                    model: view.currentHistory
+                    delegate: HistoryLine { canResume: modelData.canResume === true }
+                }
+                Tide.TextButton {
+                    objectName: "fullHistoryOld"
+                    visible: view.oldHistory.length > 0
+                    text: (view.oldOpen ? "▾ " : "▸ ") + "Wcześniejsze zlecenia (" + view.oldHistory.length + ")"
+                    variant: "outline"
+                    Accessible.name: "Wcześniejsze zlecenia: " + view.oldHistory.length + (view.oldOpen ? ", rozwinięte" : ", zwinięte")
+                    onClicked: view.oldOpen = !view.oldOpen
+                }
+                Repeater {
+                    model: view.oldOpen ? view.oldHistory : []
+                    delegate: HistoryLine { canResume: false; dimmed: true }
                 }
             }
         }
