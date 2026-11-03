@@ -39,6 +39,7 @@ def result_label(result: object) -> str:
     return RESULT_LABELS.get(result, GENERIC_RESULT) if isinstance(result, str) else GENERIC_RESULT
 
 
-def waiting_text(kind: object) -> str:
-    """Tekst kafelka dla kroku, który czeka na decyzję użytkownika."""
-    return f"{kind_label(kind)} czeka na decyzję"
+def waiting_text(kind: object, result: object = None) -> str:
+    """Tekst kafelka dla kroku czekającego na decyzję; wynik (pytanie, brak zgody, błąd) dopisany w nawiasie."""
+    text = f"{kind_label(kind)} czeka na decyzję"
+    return text if result is None else f"{text} ({result_label(result)})"

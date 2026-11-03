@@ -37,6 +37,11 @@ class LabelsTest(unittest.TestCase):
         self.assertEqual(labels.waiting_text("plan-amend"), "poprawa planu czeka na decyzję")
         self.assertEqual(labels.waiting_text("nieznany"), "krok czeka na decyzję")
 
+    def test_waiting_text_follows_result(self):
+        for result, label in (("question", "pytanie"), ("denied", "brak zgody"), ("error", "błąd")):
+            self.assertEqual(labels.waiting_text("plan-review", result), f"review planu czeka na decyzję ({label})")
+        self.assertEqual(labels.waiting_text("plan-review", "dziwny"), "review planu czeka na decyzję (wynik kroku)")
+
 
 if __name__ == "__main__":
     unittest.main()
