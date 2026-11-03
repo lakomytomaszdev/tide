@@ -7,7 +7,7 @@ from daemon.tide_daemon.cardflow import plans
 from daemon.tide_daemon.models.executors import default_catalog
 
 
-class ProposalTest(unittest.TestCase):
+class PlanFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -26,6 +26,7 @@ class ProposalTest(unittest.TestCase):
     def check(self):
         return plans.read(self.path, "K-2", default_catalog(), allowed_roots=(self.tmp.name,))
 
+class ProposalTest(PlanFixture):
     def test_valid_plan_has_stable_waves_and_cards(self):
         self.write("| #1 | Pierwszy | todo | | Sonnet | prosty | standard | Opus | |\n"
                    "| #2 | Drugi | todo | | Codex mocny | trudny | mocny | Codex Astra | #1 |\n"
@@ -77,7 +78,7 @@ class ProposalTest(unittest.TestCase):
             self.assertIn(fragment, joined)
 
 
-class TicketFromOtherPlanTest(ProposalTest):
+class TicketFromOtherPlanTest(PlanFixture):
     """K-33 D2: istniejący ticket `todo` z innego planu repozytorium zachowuje numer w propozycji."""
 
     OTHER = {"PT-42": {"title": "Rozpoznawanie pytań: drugie zdanie modelu lokalnego",
@@ -113,6 +114,24 @@ class TicketFromOtherPlanTest(ProposalTest):
         self.write("| LOG-42 | X | todo | | Sonnet | | standard | Opus | |\n",
                    {"LOG-42": "## Kryteria akceptacji\n- [ ] Działa\n"})
         self.assertTrue(any("numeru roboczego" in e for e in self.check_other(other).errors))
+
+
+class OtherPlanTodosFilterTest(unittest.TestCase):
+    """Filtr silnika: ID ze stanem innym niż `todo` w którymkolwiek planie się nie liczy."""
+
+    def test_id_with_non_todo_state_elsewhere_is_dropped(self):
+        from types import SimpleNamespace
+        from daemon.tide_daemon.cardflow.engine import FlowEngine as Engine
+
+        def plan(path, card, rows):
+            return SimpleNamespace(path=path, card=card,
+                                   rows=[SimpleNamespace(ticket=t, title=t, state=st) for t, st in rows])
+
+        found = [plan("a.md", "K-1", [("PT-1", "todo"), ("PT-2", "todo")]),
+                 plan("b.md", "K-3", [("PT-2", "done")]),
+                 plan("c.md", "K-2", [("PT-9", "todo")])]
+        engine = SimpleNamespace(_repo_plans=SimpleNamespace(read=lambda repos: (found, None)))
+        self.assertEqual(sorted(Engine._other_plan_todos(engine, "/repo", "K-2")), ["PT-1"])
 
 
 class SavedPlanStateTest(unittest.TestCase):
