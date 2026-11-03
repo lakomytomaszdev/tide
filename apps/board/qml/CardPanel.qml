@@ -362,15 +362,27 @@ Rectangle {
                         {action: "review-executor", executor: planReviewPicker.currentValue})
                 }
             }
-            Text {
-                objectName: "cardPlanReview"
+            // Uwagi review bywają bardzo długie, a ten blok leży nad przewijaną częścią panelu — bez limitu
+            // wysokości decyzje kroków (Zezwól, Ponów) znikały pod krawędzią (K-33). Po zatwierdzeniu planu
+            // review jest historią i jest w widoku planu na całym ekranie.
+            QQC2.ScrollView {
+                id: planReviewScroll
                 Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(planReviewText.implicitHeight, 110)
                 visible: !!panel.flowPlan && !!panel.flowPlan.review && !!panel.flowPlan.review.verdict
-                text: panel.flowPlan && panel.flowPlan.review ? "Review planu: " + (panel.flowPlan.review.verdict || "")
-                      + " · " + (panel.flowPlan.review.reviewer || "") + " · " + (panel.flowPlan.review.findings || "") : ""
-                textFormat: Text.PlainText
-                color: Tide.Tokens.textPrimary
-                wrapMode: Text.Wrap
+                         && panel.flowPlan.status !== "approved" && panel.flowPlan.status !== "done"
+                clip: true
+                contentWidth: availableWidth
+                Text {
+                    id: planReviewText
+                    objectName: "cardPlanReview"
+                    width: planReviewScroll.availableWidth
+                    text: panel.flowPlan && panel.flowPlan.review ? "Review planu: " + (panel.flowPlan.review.verdict || "")
+                          + " · " + (panel.flowPlan.review.reviewer || "") + " · " + (panel.flowPlan.review.findings || "") : ""
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    wrapMode: Text.Wrap
+                }
             }
             Text {
                 objectName: "cardPlanDifference"
@@ -1067,6 +1079,20 @@ Rectangle {
                                          && panel.card.derived.flow.action)
                         spacing: 8
                         readonly property var flow: panel.card && panel.card.derived ? panel.card.derived.flow : null
+                        // Decyzja leży pod polami karty; gdy czeka, panel przewija się do niej sam (K-33).
+                        function reveal() {
+                            if (!visible) return
+                            const y = mapToItem(formColumn, 0, 0).y
+                            formFlick.contentY = Math.max(0, Math.min(y - 12, formFlick.contentHeight - formFlick.height))
+                        }
+                        // Po ułożeniu formularza (wysokość treści znana dopiero po chwili).
+                        Timer { id: revealTimer; interval: 60; onTriggered: stepDecision.reveal() }
+                        onVisibleChanged: revealTimer.restart()
+                        Connections {
+                            target: panel
+                            function onCardChanged() { revealTimer.restart() }
+                        }
+                        Component.onCompleted: revealTimer.restart()
                         Text {
                             objectName: "cardStepDecisionText"
                             Layout.fillWidth: true

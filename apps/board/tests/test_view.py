@@ -1873,6 +1873,24 @@ out["call"] = calls()[-1]
         self.assertEqual(out["buttons"], [False, True])
         self.assertEqual(json.loads(out["call"][2]), {"choice": "deny"})
 
+    def test_long_plan_review_does_not_push_step_decision_out_of_the_panel(self):
+        # K-33: zatwierdzony plan z 23 uwagami review zajmował cały panel; „Zezwól” było nieosiągalne.
+        data = self.flow_card("permission", command="LC_ALL=pl_PL.UTF-8 make test", canAllow=True,
+                              plan={"status": "approved", "rows": [], "waves": [],
+                                    "review": {"verdict": "REQUEST_CHANGES", "reviewer": "Sonnet",
+                                               "findings": "\n".join(f"{n}. uwaga " + "długa treść " * 30
+                                                                     for n in range(1, 24))}})
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+wait(80)
+out["reviewShown"] = obj("cardPlanReview").property("visible") if obj("cardPlanReview") else False
+wait(120)
+out["allowBottom"] = js("(function(){ const b = " + FIND + "(page.cardPanel, 'cardStepAllow'); "
+                        "return b.mapToItem(page.cardPanel, 0, b.height).y - page.cardPanel.height })()")
+""", data=data)
+        self.assertFalse(out["reviewShown"], "po zatwierdzeniu review jest w widoku planu")
+        self.assertLessEqual(out["allowBottom"], 0)
+
     def test_error_shows_retry_and_change_executor(self):
         out = self.probe(FIND_PY + """
 click(card("K-6"))

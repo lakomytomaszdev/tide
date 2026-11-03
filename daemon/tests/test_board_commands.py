@@ -38,6 +38,20 @@ class CommandRulesTest(unittest.TestCase):
         self.assertTrue(commands.is_forbidden("git push origin", ["git push *"]))
         self.assertTrue(commands.is_allowed("git 'log' --oneline", ["git log --oneline"]))
 
+    def test_locale_prefix_can_be_allowed_but_does_not_evade_denial(self):
+        # K-33/PT-108: plan wymaga `LC_ALL=pl_PL.UTF-8 make test`, a zgoda była niemożliwa (canAllow=false).
+        command = "LC_ALL=pl_PL.UTF-8 make test"
+        self.assertTrue(commands.single_command(command))
+        self.assertFalse(commands.is_forbidden(command, ["make install"]))
+        self.assertTrue(commands.is_allowed(command, [command]))
+        self.assertFalse(commands.is_allowed(command, ["make test"]), "zgoda dotyczy pełnego polecenia")
+        self.assertTrue(commands.is_forbidden("LC_ALL=pl_PL.UTF-8 make install", ["make install"]))
+        for bad in ("PATH=/tmp make test", "LD_PRELOAD=x.so make test", "LC_ALL=pl_PL.UTF-8",
+                    "LC_ALL=pl_PL.UTF-8 bash -c 'make test'", "LC_ALL=pl_PL.UTF-8 FOO=1 make test",
+                    "LC_ALL=$(id) make test"):
+            self.assertFalse(commands.single_command(bad), bad)
+            self.assertTrue(commands.is_forbidden(bad, []), bad)
+
     def test_claude_rules_keep_exact_grant(self):
         allowed, denied = commands.claude_tools(["git status *", "git fetch origin"], ["make install"])
         self.assertIn("Bash(git status)", allowed)

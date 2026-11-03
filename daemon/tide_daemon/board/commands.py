@@ -1,6 +1,7 @@
 """Listy poleceń projektu dla kroków w tle. Zgoda dotyczy pełnego polecenia, nie całego programu."""
 import json
 import os
+import re
 import shlex
 
 ALLOWED_KEY = "allowed-commands"
@@ -48,6 +49,7 @@ def is_forbidden(command: str, denied: list[str]) -> bool:
     argv = _argv(command)
     if argv is None:
         return True
+    argv = _without_locale(argv)      # `LC_ALL=x make install` jest tym samym zakazanym `make install`
     for rule in denied:
         rule_argv = _argv(rule)
         if rule_argv is None:
@@ -77,11 +79,31 @@ def _argv(command: str) -> list[str] | None:
         return None
     if not parts or any(part and set(part) <= set(";&|<>()") for part in parts):
         return None
-    if parts[0] in ("sh", "bash", "zsh", "fish", "eval", "exec", "env", "command", "builtin", "sudo", "doas"):
+    program = _without_locale(parts)
+    if not program:
         return None
-    if "=" in parts[0] and parts[0].split("=", 1)[0].isidentifier():
+    if program[0] in ("sh", "bash", "zsh", "fish", "eval", "exec", "env", "command", "builtin", "sudo", "doas"):
+        return None
+    if "=" in program[0] and program[0].split("=", 1)[0].isidentifier():
         return None
     return parts
+
+
+LOCALE_VARS = ("LANG", "LANGUAGE", "TZ")
+LOCALE_VALUE = re.compile(r"[A-Za-z0-9_.@:+-]{1,64}")
+
+
+def _without_locale(parts: list[str]) -> list[str]:
+    """Polecenie bez początkowych ustawień języka i strefy czasowej (`LC_ALL=pl_PL.UTF-8 make test`, K-33).
+    Inne zmienne (np. `PATH=`) zostają i odrzucają polecenie jako złożone."""
+    at = 0
+    while at < len(parts) and "=" in parts[at]:
+        name, value = parts[at].split("=", 1)
+        if not (name in LOCALE_VARS or (name.startswith("LC_") and name[3:].isalpha() and name.isupper())) \
+                or not LOCALE_VALUE.fullmatch(value):
+            break
+        at += 1
+    return parts[at:]
 
 
 def is_allowed(command: str, allowed: list[str]) -> bool:
