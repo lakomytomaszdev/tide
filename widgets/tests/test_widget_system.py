@@ -502,9 +502,10 @@ Window {
                         gpu: full.showGpu, disks: full.showDisks, monitor: full.showMonitorButton,
                         diskButton: full.showDiskButton, shown: full.shown },
                 historyCount: src.history.count, capacity: src.history.capacity }))
-            Qt.callLater(Qt.quit)
+            quitTimer.start()   // uruchomione polecenia startują asynchronicznie — nie zamykamy aplikacji od razu
         }
     }
+    Timer { id: quitTimer; interval: 1500; onTriggered: Qt.quit() }
 }
 """ % (helper, self.log, launcher))
         self.assertEqual(result["problem"], "missing")

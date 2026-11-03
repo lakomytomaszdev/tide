@@ -93,6 +93,10 @@ _Avoid_: sprawdzanie formatu
 Powiązanie istniejącego planu (np. z przekazania z innej sesji) z kartą przez wejście Mam plan.
 _Avoid_: import, handoff
 
+**Ticket z innego planu**:
+Ticket w stanie `todo` z innego planu tego samego repozytorium, który propozycja planu przyjmuje pod tym samym tytułem z zachowanym numerem i polem `fromPlan`; inny tytuł albo stan inny niż `todo` jest odrzucony z komunikatem.
+_Avoid_: duplikat, import ticketu
+
 **Fala**:
 Poziom w grafie blokerów karty: tickety, które dzieli od początku tyle samo blokerów; mogą iść równolegle.
 _Avoid_: etap, sprint
