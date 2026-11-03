@@ -2078,6 +2078,16 @@ class FlowEngine(PlanEditing):
             self.tracker.reset_failures(card)
             return {'ok': True, 'id': card, 'choice': choice, 'tracker': True}
         focus = decision_step(st)
+        wanted = str(request.get("step") or "")
+        if wanted and wanted != focus:
+            # Kilka decyzji naraz (K-15: pytanie LEGAL-60 i LEGAL-62): wskazany krok musi sam czekać na decyzję —
+            # zakończony pytaniem, odmową albo błędem, bez kroku-następcy i bez wcześniejszej decyzji.
+            done_wanted = st.finished.get(wanted) or {}
+            if wanted not in st.steps or wanted in st.step_decisions or \
+                    done_wanted.get("result") not in ("question", "denied", "error") or \
+                    any(s.get("parentStep") == wanted for s in st.steps.values()):
+                raise FlowError("not-waiting", f"krok {wanted} nie czeka na decyzję")
+            focus = wanted
         step = st.steps.get(focus) or {}
         done = st.finished.get(focus) or {}
         result = done.get("result")

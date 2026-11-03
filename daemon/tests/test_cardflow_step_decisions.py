@@ -13,6 +13,20 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: box, timeout=20), "ResolveCardStep bez odpowiedzi")
         return json.loads(box[0])
 
+    def test_decision_can_name_its_step_and_only_a_waiting_one(self):
+        # K-15: przy dwóch pytaniach naraz odpowiedź trafiała do najnowszego kroku, a nie do zamierzonego.
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "waiting")
+        asked = self.of(card_id, "step.finished")[0]["step"]
+        wrong = self.decide(card_id, choice="answer", answer="x", step="K-999-PT-1-1")
+        self.assertEqual(wrong["error"], "not-waiting")
+        self.assertEqual(self.of(card_id, "step.decision"), [])
+        right = self.decide(card_id, choice="answer", answer="ISO 8601", step=asked)
+        self.assertTrue(right["ok"], right)
+        self.assertEqual(right["step"], asked)
+        self.wait_column(card_id, "review")
+
     def test_question_answer_resumes_same_ticket_worktree_and_session(self):
         notices = []
         self.flow.notifier = notices.append
