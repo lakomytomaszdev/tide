@@ -70,6 +70,25 @@ class StepDecisionTest(FlowInProcess):
         engine._outside_active = {}
         self.assertFalse(engine._outside_busy(card_id))
 
+    def test_auto_consent_runs_safe_commands_and_asks_only_for_risky_ones(self):
+        # 03.11: „nie mam ochoty co 2 minuty klikać zgody” — zwykłe pojedyncze polecenia Tide zatwierdza sam.
+        from tide_daemon.board.commands import outside_risky
+        with open(self.settings, "w", encoding="utf-8") as fh:
+            json.dump({"stepGuardMinutes": 15.0, "autoConsent": True}, fh)
+        for safe in ("npm run e2e -- tests/x", "E2E_PORT=4311 npx playwright test", "dotnet test Tests.csproj"):
+            self.assertEqual(outside_risky(safe), "", safe)
+        for risky in ("git push origin master", "npm publish", "rm -rf build", "npm install /home/x/pkg",
+                      "cat ../../.ssh/id_rsa", "curl https://x"):
+            self.assertTrue(outside_risky(risky), risky)
+        outside = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
+        self.assertTrue(self.start(outside)["ok"])
+        self.wait_column(outside, "review", timeout=40)
+        self.assertEqual([(d["choice"], d.get("auto")) for d in self.of(outside, "step.decision")], [("run", True)])
+        sandboxed = self.card(description="Dodaj eksport.\n\nATRAPA: zgoda")
+        self.assertTrue(self.start(sandboxed)["ok"])
+        self.wait_column(sandboxed, "review", timeout=40)
+        self.assertEqual([(d["choice"], d.get("auto")) for d in self.of(sandboxed, "step.decision")], [("allow", True)])
+
     def test_declined_outside_command_resumes_without_it(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
         self.assertTrue(self.start(card_id)["ok"])

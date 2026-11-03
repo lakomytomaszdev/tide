@@ -199,3 +199,30 @@ def outside_matches(command: str, remembered: list[str]) -> bool:
         elif rule == command:
             return True
     return False
+
+
+# Rodziny, których Tide nigdy nie uruchamia sam poza piaskownicą: wyjście na zewnątrz (push, publikacja,
+# wdrożenie, zdalne powłoki), zmiany systemu i usuwanie/przenoszenie plików bez granic worktree.
+OUTSIDE_RISKY = (
+    "git push", "git remote", "git config", "npm publish", "npm login", "npm adduser", "npm token", "pnpm publish",
+    "yarn publish", "yarn npm", "dotnet nuget", "docker push", "docker login", "docker system", "podman push",
+    "ssh", "scp", "rsync", "sftp", "curl", "wget", "kubectl", "helm", "terraform", "az", "aws", "gcloud", "gh", "glab",
+    "systemctl", "service", "make install", "rm", "mv", "cp", "chmod", "chown", "dd", "mkfs", "mount", "umount",
+    "kill", "pkill", "killall", "reboot", "shutdown", "crontab", "apt", "apt-get", "snap", "flatpak", "pip install",
+    "pip3 install", "python3 -m pip", "find", "xargs", "truncate", "shred", "ln", "tee", "open", "xdg-open")
+
+
+def outside_risky(command: str) -> str:
+    """Powód, dla którego polecenie wymaga decyzji użytkownika mimo automatycznych zgód; pusty = bezpieczne."""
+    argv = outside_argv(command)
+    if argv is None:
+        return "łańcuch, podpowłoka albo niebezpieczna zmienna"
+    for rule in OUTSIDE_RISKY:
+        prefix = rule.split()
+        if argv[:len(prefix)] == prefix:
+            return f"„{rule}” wychodzi poza worktree albo zmienia system"
+    for arg in argv[1:]:
+        value = arg.split("=", 1)[-1]
+        if value.startswith(("/", "~")) and not value.startswith("/tmp/") or "../" in value or value == "..":
+            return f"ścieżka spoza worktree: {arg}"
+    return ""

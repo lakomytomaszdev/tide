@@ -68,7 +68,12 @@ Zabronione polecenia:
 {deny}
 Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.
 Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedno polecenie nie zezwala
-na cały program ani na łańcuch poleceń.
+na cały program ani na łańcuch poleceń. Zwykłe pojedyncze polecenia (testy, budowanie, lint, instalacja paczek)
+Tide zatwierdza i uruchamia automatycznie — zgłaszaj je śmiało, po jednym, bez łączenia.
+NIE zadawaj użytkownikowi pytań o środowisko (porty, serwery, instalacje, sieć, uruchomienie testów, „czy możesz
+uruchomić…”). Środowisko to zadanie Tide i Twoje: zgłoś polecenie (`denied` albo `outside`); gdy mimo to się nie da,
+zakończ wynikiem `error` z opisem przyczyny. Pytanie (`question`) jest tylko na decyzje o zakresie, wymaganiach
+i wyborach biznesowych — z krótkimi opcjami i Twoją rekomendacją.
 Jeśli potrzebujesz polecenia, którego piaskownica kroku nie wykona (sieć, np. `npm install <paczka>`; Docker/
 Testcontainers; pełne testy, które same uruchamiają piaskownicę), zapisz
 {{"result":"outside","command":"jedno pełne polecenie","reason":"po co i dlaczego nie w piaskownicy"}} i zakończ krok.

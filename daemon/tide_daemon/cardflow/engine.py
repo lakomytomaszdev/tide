@@ -2143,7 +2143,7 @@ class FlowEngine(PlanEditing):
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step"}:
+        if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "auto"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         choice = str(request.get("choice") or "")
         st = fold(self.journal.read(card))
@@ -2215,7 +2215,8 @@ class FlowEngine(PlanEditing):
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
                                     choice=choice, answer=answer if choice == "answer" else "",
                                     command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always")
-                                    else "", executor=executor if choice == "change-executor" else "")
+                                    else "", executor=executor if choice == "change-executor" else "",
+                                    **({"auto": True} if request.get("auto") else {}))
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
 
     def _resume_executor(self, card: str, st: FlowState, step: dict, name: str, *, changed=False,
@@ -2998,8 +2999,9 @@ class FlowEngine(PlanEditing):
             snapshot_dir = self._freeze_planning_output(card, name, out)
         extra = {k: v for k, v in (("wip", wip), ("messages", messages)) if v}
         remembered = False
+        auto_allow = False
         if data.get("result") == "denied":
-            from ..board.commands import MAX_COMMAND, is_forbidden
+            from ..board.commands import MAX_COMMAND, is_forbidden, outside_risky
             _, project = self._project(card)
             command = data.get("command") or ""
             data["canAllow"] = len(command) <= MAX_COMMAND and not is_forbidden(command, project.denied_commands)
@@ -3008,7 +3010,10 @@ class FlowEngine(PlanEditing):
                 extra["outside"] = True
                 extra["pattern"] = outside_pattern(command)
                 data["canAllow"] = outside_allowed(command, project.denied_commands)
-                remembered = data["canAllow"] and outside_matches(command, self._outside_remembered(project.slug))
+                remembered = data["canAllow"] and (outside_matches(command, self._outside_remembered(project.slug))
+                                                   or self._auto_consent() and not outside_risky(command))
+            elif data["canAllow"] and self._auto_consent():
+                auto_allow = True       # w piaskownicy: zapisy tylko w worktree, bez sieci — wystarczy brak zakazu
         self.journal.append(card, "step.finished", step=name, ticket=step.get("ticket") or "",
                             result=data.get("result"), reason=data.get("reason") or "",
                             question=data.get("question") or "", command=data.get("command") or "",
@@ -3017,6 +3022,13 @@ class FlowEngine(PlanEditing):
                             exit=exit_code, snapshotDir=snapshot_dir, **extra)
         if data.get("result") == "denied" and not data.get("canAllow", True):
             self._auto_deny(card, name, step, data.get("command") or "")
+        elif auto_allow:
+            # Automatyczna zgoda na pojedyncze, bezpieczne polecenie w piaskownicy (03.11: „nie mam ochoty co 2 minuty
+            # klikać zgody”). Piaskownica dalej chroni system; zgoda trafia do listy projektu jak kliknięta.
+            try:
+                self.resolve_step(card, {"choice": "allow", "step": name, "auto": True})
+            except FlowError:
+                pass
         elif remembered:
             # Polecenie zapamiętane przez użytkownika („zawsze w tym projekcie”) — bez pytania.
             self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
@@ -3294,14 +3306,20 @@ class FlowEngine(PlanEditing):
                             command=started.get("command") or "", exit=code, tail=tail)
         return {**decision, "answer": f"Kod wyjścia: {code}\nKoniec wyniku:\n{tail}"}
 
+    def _auto_consent(self) -> bool:
+        """Automatyczne zgody (domyślnie włączone); `autoConsent: false` w ustawieniach przepływu je wyłącza."""
+        return self._settings_data().get("autoConsent", True) is not False
+
     def _outside_recheck(self, card: str, step: dict, done: dict) -> None:
         """Prośba sprzed zmiany reguł (np. `E2E_PORT=… npm run e2e` odrzucane jako łańcuch, rodziny zamiast dokładnych
         poleceń): gdy dziś pasuje do zapamiętanej rodziny projektu, uruchamia się bez pytania."""
         from ..board.commands import outside_allowed, outside_matches
         command = done.get("command") or ""
         _, project = self._project(card)
+        from ..board.commands import outside_risky
         if outside_allowed(command, project.denied_commands) and \
-                outside_matches(command, self._outside_remembered(project.slug)):
+                (outside_matches(command, self._outside_remembered(project.slug)) or
+                 self._auto_consent() and not outside_risky(command)):
             self.journal.append(card, "step.decision", step=step.get("step") or "", ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="run", answer="", command=command,
                                 executor="", auto=True)
