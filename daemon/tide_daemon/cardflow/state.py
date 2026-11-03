@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from .faults import cause_label, of_finished
+from .history import LOGGED as HISTORY_LOGGED
 from .findings import review_view as plan_review_view
 from .labels import result_label, tide_fault_text, waiting_text
 
@@ -74,6 +75,7 @@ class FlowState:
     inputs: dict = field(default_factory=dict)
     waiting: dict = field(default_factory=dict)
     timeline: list = field(default_factory=list)
+    log: list = field(default_factory=list)            # zdarzenia do historii pełnej karty (history.LOGGED)
     last_step: str = ""
     paused: bool = False
     card_finished: bool = False
@@ -176,6 +178,8 @@ def fold(events: list[dict]) -> FlowState:
             st.timeline.append({key: e[key] for key in (
                 "seq", "ts", "type", "step", "ticket", "executor", "kind", "result", "reason", "verdict",
                 "action", "key", "ok") if key in e})
+        if kind in HISTORY_LOGGED:
+            st.log.append(e)
         st.last_seq = max(st.last_seq, int(e.get("seq") or 0))
         if kind == "card.started":
             # Nowe zlecenie startuje tylko, gdy nic nie trwa (`busy_reason`), więc pytania, błędy i review
