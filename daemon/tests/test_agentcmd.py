@@ -1010,3 +1010,45 @@ def _gone(pid: int) -> bool:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DotnetStepTest(BackgroundBase):
+    """K-15: krok .NET bez sieci — restore robi usługa, krok czyta tylko pamięć pakietów NuGet."""
+
+    def test_dotnet_step_reads_package_cache_and_runs_without_build_servers(self):
+        cmd = agentcmd.background(self.step(dotnet=True))
+        packages = os.path.realpath(os.path.join(self.home, ".nuget", "packages"))
+        fs = self.settings(cmd)["sandbox"]["filesystem"]
+        self.assertIn(packages, fs["allowRead"])
+        self.assertNotIn(packages, fs["allowWrite"])
+        self.assertEqual(cmd.env["NUGET_PACKAGES"], packages)
+        self.assertEqual(cmd.env["DOTNET_CLI_HOME"], cmd.env["CLAUDE_CODE_TMPDIR"])
+        self.assertEqual((cmd.env["DOTNET_CLI_USE_MSBUILD_SERVER"], cmd.env["UseSharedCompilation"]), ("0", "false"))
+        self.assertEqual(cmd.env["EnableSourceControlManagerQueries"], "false")
+        self.assertEqual(self.settings(cmd)["sandbox"]["network"]["allowedDomains"], [])
+
+    def test_non_dotnet_step_has_no_package_cache(self):
+        cmd = agentcmd.background(self.step())
+        self.assertNotIn("NUGET_PACKAGES", cmd.env)
+        self.assertFalse(any(".nuget" in p for p in self.settings(cmd)["sandbox"]["filesystem"]["allowRead"]))
+
+
+class DotnetRestoreTest(unittest.TestCase):
+    def test_restore_runs_on_the_single_solution_and_reports_tail(self):
+        from tide_daemon.tasks import dotnet
+        with tempfile.TemporaryDirectory() as root:
+            open(os.path.join(root, "App.sln"), "w").close()
+            self.assertTrue(dotnet.is_dotnet(root))
+            calls = []
+
+            def runner(argv, **kw):
+                calls.append((argv, kw["cwd"], kw["env"].get("DOTNET_NOLOGO")))
+                return subprocess.CompletedProcess(argv, 1, "Restoring...\nerror NU1101: brak pakietu", "")
+            ok, tail = dotnet.restore(root, runner=runner)
+            self.assertFalse(ok)
+            self.assertIn("NU1101", tail)
+            self.assertEqual(calls, [(["dotnet", "restore", os.path.join(root, "App.sln")], root, "1")])
+            self.assertIn("nie powiódł się", dotnet.prompt_note(ok, tail))
+            self.assertIn("--no-restore -m:1 -nodeReuse:false --disable-build-servers", dotnet.prompt_note(True, ""))
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertFalse(dotnet.is_dotnet(empty))
