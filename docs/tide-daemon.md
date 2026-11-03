@@ -1847,7 +1847,7 @@ Bez wykrywania stosu i szablonów (#30) i bez budowy pudełka (#4). YAML czyta w
 | `stacks` | lista | nazwy szablonów (lista szablonów należy do #30) |
 | `node.version`, `dotnet.sdk` | napis/liczba, lista dla `dotnet.sdk` | |
 | `apt`, `setup`, `verify` | listy napisów | |
-| `network.domains` | lista hostów | bez URL-i; adresy wewnętrzne (w każdym zapisie: IPv4 zmapowany w IPv6, `10.1`, liczbowe/szesnastkowe, loopback, link-local, `100.64/10`, prywatne IPv6, `localhost`) tylko w profilu karty; symbol `*.` wymaga co najmniej dwóch etykiet po nim (`*.com` odrzucone w profilu projektu) |
+| `network.domains` | lista hostów | bez URL-i; adresy wewnętrzne (w każdym zapisie: IPv4 zmapowany w IPv6, `10.1`, liczbowe/szesnastkowe, loopback, link-local, `100.64/10`, prywatne IPv6 także z osadzonym IPv4 — mapowanym, zgodnym wstecznie i NAT64, `localhost`, nazwy jednoetykietowe oraz sufiksy `.local`, `.lan`, `.internal`, `.home.arpa`, `.localdomain`, `.intranet`, `.corp`) tylko w profilu karty; symbol `*.` wymaga co najmniej dwóch etykiet po nim (`*.com` odrzucone w profilu projektu) |
 | `network.host-ollama` | bool | |
 | `network.full`, `network.full-consent` | bool | tylko profil karty; `full: true` wymaga `full-consent: true` |
 | `ports.pool` / `ports.env` | `[od, do]` (1024–65535) / lista nazw zmiennych | |
@@ -1864,8 +1864,8 @@ projektu oraz `type` spoza `container|vm` to `ProfileError` (lista wszystkich pr
 
 `classify(item, known)`; `known` to słownik domena → klasa z szablonów stosów (#30).
 
-- **czerwone**: `network.full`, `packs` (`pack:<nazwa>`), adresy `192.168.*`, `10.*`, `172.16–31.*`, `*.local`,
-  `*.firma.example`, `localhost`, loopback, link-local (`169.254.*`), `100.64/10`, prywatne IPv6 i inne zapisy
+- **czerwone**: `network.full`, `packs` (`pack:<nazwa>`), adresy `192.168.*`, `10.*`, `172.16–31.*`, `*.local`, `*.lan`, `*.internal`, `*.home.arpa`,
+  `*.localdomain`, `*.intranet`, `*.corp`, nazwy jednoetykietowe, `*.firma.example`, `localhost`, loopback, link-local (`169.254.*`), `100.64/10`, prywatne IPv6 i inne zapisy
   tych adresów, symbole `*.<jedna etykieta>` (np. `*.com`), zdalne repozytoria (`github.com`, `*.github.com`, host z etykietą `gitlab`),
 - **żółte**: `host-ollama`, domeny oznaczone jako żółte w szablonach, domeny spoza szablonów bez cech czerwonych,
 - **zielone**: domeny oznaczone jako zielone w szablonach, `box: per-card`.
@@ -1875,12 +1875,11 @@ zaostrzyć wpisem `red`).
 
 ### Scalanie
 
-`merge(project, card)` → `MergeResult(profile, dropped_red)`. Listy sumowane bez duplikatów (najpierw projekt; także `ports.env`),
+`merge(project, card)` → `MergeResult(profile, dropped_red, project_red)`. Listy sumowane bez duplikatów (najpierw projekt; także `ports.env`),
 skalary i pola map z karty wygrywają (w tym `box`); wyjątek: `ports.pool` to zakres `[od, do]` i karta go zastępuje.
 Pozycje domenowe w `accepted_red` i klucze `known` są normalizowane jak domeny (małe litery, bez końcowej kropki). Czerwone pozycje karty trafiają do wyniku tylko, gdy
 `accepted_red` karty je wymienia; pozostałe lądują w `dropped_red`. `accepted_red` z pozycją, której nie ma w
-profilu karty (albo nie jest czerwona), to błąd. Czerwone pozycje profilu projektu (np. `github.com`) są już
-zatwierdzone przy jego zapisie. Profil projektu nigdy nie zawiera `network.full` ani adresów wewnętrznych.
+profilu karty (albo nie jest czerwona), to błąd. Czerwone pozycje profilu projektu (np. `github.com`) przechodzą, ale trafiają do `project_red`, żeby pakiet zgód (#9) je pokazał. `project` w profilu musi zgadzać się ze slugiem (`save_project`/`load_project`). Profil projektu nigdy nie zawiera `network.full` ani adresów wewnętrznych.
 
 ### Hash przepisu
 

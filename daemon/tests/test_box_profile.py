@@ -117,10 +117,18 @@ class SchemaTest(unittest.TestCase):
     def test_internal_address_in_other_notations(self):
         for host in ("::ffff:10.20.1.10", "::ffff:10.0.0.5", "10.1", "3232235786", "0xc0a8010a",
                      "010.0.0.5", "fd00::1", "fe80::1", "::1", "127.0.0.1", "localhost",
-                     "169.254.169.254", "100.64.0.1", "x.localhost"):
+                     "169.254.169.254", "100.64.0.1", "x.localhost",
+                     "nuget", "intranet", "build.lan", "x.internal", "router.home.arpa", "a.localdomain",
+                     "x.corp", "*.lan", "::c0a8:10a", "64:ff9b::c0a8:10a"):
             self.assertRejected(project(network={"domains": [host]}), fragment="adres wewnętrzny")
             self.assertEqual(bp.classify(host), "red", host)
             self.assertEqual(bp.classify(host, {host: "green"}), "red", host)
+
+    def test_project_red_reported_and_slug_mismatch_rejected(self):
+        got = bp.merge(project(network={"domains": ["github.com"]}), card())
+        self.assertEqual(got.project_red, ["github.com"])
+        with self.assertRaises(bp.ProfileError):
+            bp.save_project("a", project(project="b"))
 
     def test_broad_wildcard_rejected_in_project_and_red(self):
         for host in ("*.com", "*.io"):

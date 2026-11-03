@@ -70,15 +70,24 @@ _INTERNAL_V4 = [ipaddress.ip_network(n) for n in (
     "172.16.0.0/12", "192.168.0.0/16")]
 
 
+_INTERNAL_SUFFIXES = ("local", "localhost", "localdomain", "lan", "internal", "home.arpa", "intranet",
+                      "corp", "firma.example")
+_V4_COMPAT = ipaddress.ip_network("::/96")
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
 def _bare(host: str) -> str:
     return host[2:] if host.startswith("*.") else host
 
 
 def _is_internal(host: str) -> bool:
     """Adres wewnętrzny (czerwony): 192.168.*, 10.*, 172.16–31.*, loopback, link-local, 100.64/10,
-    prywatne IPv6 (także IPv4 zmapowany), `localhost`, `*.local`, `*.firma.example` oraz nazwy
+    prywatne IPv6 (także IPv4 zmapowany), `localhost`, nazwy jednoetykietowe, sufiksy sieci lokalnych (`.local`, `.lan`, `.internal`,
+    `.home.arpa`, `.localdomain`, `.intranet`, `.corp`), `*.firma.example`, IPv4 w IPv6 (mapowany,
+    zgodny wstecznie, NAT64) oraz nazwy
     z liczbową/szesnastkową ostatnią etykietą (`10.1`, `3232235786`, `0xc0a8010a`) — resolver
     zamienia je na adres IPv4, więc nie traktujemy ich jako nazw."""
+    wildcard = host.startswith("*.")
     host = _bare(host)
     try:
         ip = ipaddress.ip_address(host)
@@ -86,11 +95,15 @@ def _is_internal(host: str) -> bool:
         last = host.rsplit(".", 1)[-1]
         if last.isdigit() or last.startswith("0x"):
             return True
-        return host in ("local", "localhost", "firma.example") or host.endswith(
-            (".local", ".localhost", ".firma.example"))
+        if "." not in host and not wildcard:
+            return True   # nazwa jednoetykietowa: resolver dopełnia ją domeną wyszukiwania hosta
+        return any(host == suf or host.endswith("." + suf) for suf in _INTERNAL_SUFFIXES)
     if ip.version == 6:
-        if ip.ipv4_mapped is not None:
-            ip = ip.ipv4_mapped
+        embedded = ip.ipv4_mapped
+        if embedded is None and (ip in _V4_COMPAT or ip in _NAT64) and ip.packed[12:] != b"\0\0\0\0":
+            embedded = ipaddress.IPv4Address(ip.packed[12:])
+        if embedded is not None:
+            ip = embedded
         else:
             return (ip.is_private or ip.is_link_local or ip.is_loopback or ip.is_site_local
                     or ip.is_unspecified)
@@ -403,6 +416,7 @@ def dump(profile: dict) -> str:
 class MergeResult:
     profile: dict
     dropped_red: list = field(default_factory=list)  # czerwone pozycje karty bez accepted_red
+    project_red: list = field(default_factory=list)  # czerwone pozycje profilu projektu (dla pakietu zgód)
 
 
 def _union(*lists):
@@ -421,7 +435,8 @@ def merge(project: dict, card: dict, known: dict | None = None) -> MergeResult:
     Czerwone pozycje karty (`network.full`, adresy wewnętrzne, zdalne repozytoria, `packs`) trafiają do
     wyniku tylko, gdy `accepted_red` karty je wymienia; pozostałe są pomijane i raportowane w
     `dropped_red`. `accepted_red` z pozycją, której nie ma w profilu karty, to `ProfileError`.
-    Czerwone pozycje profilu projektu są już zatwierdzone przy jego zapisie i przechodzą.
+    Czerwone pozycje profilu projektu przechodzą, ale są zwracane w `project_red`, żeby pakiet zgód
+    pokazał je użytkownikowi (np. `github.com` z `.tide/box.yaml` nie wejdzie niezauważenie).
     """
     project = validate(project, "project")
     card = validate(card, "card")
@@ -474,7 +489,7 @@ def merge(project: dict, card: dict, known: dict | None = None) -> MergeResult:
         out["packs"] = packs
     if accepted:
         out["accepted_red"] = list(accepted)
-    return MergeResult(out, dropped)
+    return MergeResult(out, dropped, red_items(project, known))
 
 
 # ------------------------------------------------------------ hash przepisu
@@ -588,14 +603,18 @@ def _read(path: str, scope: str):
 def save_project(slug: str, profile: dict) -> str:
     """Zapisuje profil projektu w Tablicy (po walidacji); zwraca ścieżkę."""
     clean = validate(profile, "project")
-    clean.setdefault("project", slug)
+    if clean.setdefault("project", slug) != slug:
+        raise ProfileError(f"project: {clean['project']!r} różni się od sluga {slug!r}")
     path = project_path(slug)
     _write_atomic(path, dump(clean))
     return path
 
 
 def load_project(slug: str):
-    return _read(project_path(slug), "project")
+    got = _read(project_path(slug), "project")
+    if got is not None and got.get("project", slug) != slug:
+        raise ProfileError(f"project: {got['project']!r} różni się od sluga {slug!r}")
+    return got
 
 
 def save_card(slug: str, card: str, profile: dict) -> str:
