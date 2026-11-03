@@ -4,6 +4,8 @@ Standard 1.1: opcjonalny klucz `card: K-12` (karta tablicy Tide, której służy
 z dokumentami AI „w Tide” leżą w repozytorium tablicy (`<tablica>/docs/<projekt>/plans/`,
 boardplans.py) — plan_folders(roots) daje oba miejsca dla repozytorium.
 
+Standard 1.3: opcjonalna kolumna `Projekt` (slug projektu Tablicy) po `Blokery`; pusta komórka = projekt karty.
+
 Plik ma frontmatter YAML (tylko płaskie pary `klucz: wartość`, więc czytamy go sami, bez
 biblioteki YAML) i tabelę Markdown `| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |`.
 Sekcje pod tabelą to wolny tekst — nie czytamy ich.
@@ -24,7 +26,7 @@ TRACKERS = ("youtrack", "local", "none")
 COORDINATORS = ("claude", "codex")
 STATUSES = ("active", "paused", "done")
 COLUMNS = ("ticket", "tytuł", "stan", "gałąź", "agent", "uwagi")
-OPTIONAL_COLUMNS = ("klasa", "review", "blokery")
+OPTIONAL_COLUMNS = ("klasa", "review", "blokery", "projekt")
 # Łagodność dla ręcznie pisanych planów: popularne warianty stanów.
 STATE_ALIASES = {"w toku": "w-toku", "wtoku": "w-toku", "in-progress": "w-toku", "doing": "w-toku",
                  "done": "gotowe", "todo": "todo", "to-do": "todo", "do zrobienia": "todo",
@@ -50,6 +52,7 @@ class PlanRow:
     work_class: str = ""
     reviewer: str = ""
     blockers: tuple[str, ...] = ()
+    project: str = ""           # slug projektu Tablicy (standard 1.3); pusty = projekt karty
 
 
 @dataclass
@@ -286,9 +289,9 @@ def _table(body: str, errors: list) -> tuple[list[PlanRow], int]:
         ticket_tables += 1
         if ticket_tables > 1:
             continue
-        if header not in [list(COLUMNS + OPTIONAL_COLUMNS[:n]) for n in range(4)]:
+        if header not in [list(COLUMNS + OPTIONAL_COLUMNS[:n]) for n in range(len(OPTIONAL_COLUMNS) + 1)]:
             errors.append("nagłówek tabeli: oczekiwano | Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |"
-                          " z opcjonalnymi kolumnami Klasa | Review | Blokery na końcu")
+                          " z opcjonalnymi kolumnami Klasa | Review | Blokery | Projekt na końcu")
         index = {name: header.index(name) for name in COLUMNS + OPTIONAL_COLUMNS if name in header}
         for raw in lines[i + 2:]:
             if not raw.strip().startswith("|"):
@@ -306,7 +309,8 @@ def _table(body: str, errors: list) -> tuple[list[PlanRow], int]:
             rows.append(PlanRow(ticket=ticket, title=_plain(get("tytuł")), state=state,
                                 branch=_plain(get("gałąź")), agent=_plain(get("agent")), note=_plain(get("uwagi")),
                                 work_class=_plain(get("klasa")).lower(), reviewer=_plain(get("review")),
-                                blockers=tuple(part for part in re.split(r"[,;\s]+", _plain(get("blokery"))) if part)))
+                                blockers=tuple(part for part in re.split(r"[,;\s]+", _plain(get("blokery"))) if part),
+                                project=_plain(get("projekt")).lower()))
     return rows, tables
 
 

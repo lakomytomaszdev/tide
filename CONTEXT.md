@@ -127,6 +127,10 @@ _Avoid_: wpis, event w tekstach dla użytkownika
 Jednostka pracy w planie karty z własnym ID (np. `PT-58`, `LOG-240`); przed zatwierdzeniem ma numer roboczy (`#1`).
 _Avoid_: zadanie, issue, karta
 
+**Projekt ticketu**:
+Slug projektu Tablicy, do którego należy ticket; plan zapisuje go w kolumnie `Projekt` (standard 1.3), a pusta komórka albo brak kolumny oznacza projekt karty.
+_Avoid_: repozytorium, workspace
+
 **Zgłoszenie**:
 Ticket albo karta w zewnętrznym trackerze (YouTrack), np. `LOG-240`.
 _Avoid_: issue, task
