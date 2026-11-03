@@ -69,6 +69,11 @@ Rectangle {
     // kind: move {column} | update {field, value} | pause {paused} | archive {}; params.effect — zdanie o skutku.
     signal settingRequested(string kind, var params)
     signal enterStepRequested(string stepId)
+    // Scalenie domkniętej karty do gałęzi głównej i podgląd zmian (03.11: po K-35 akcja była tylko w starym panelu).
+    signal mergeMainRequested()
+    signal branchDiffRequested()
+    property bool mergeBusy: false
+    readonly property var mainPhase: phases.find(p => p.id === "main-merge") || null
 
     // --- rzadkie ustawienia (PT-134) -----------------------------------------------------------------
     readonly property string storedBranch: card && card.branch ? card.branch : ""
@@ -536,6 +541,39 @@ Rectangle {
                             maximumLineCount: 2
                             elide: Text.ElideRight
                         }
+                    }
+                }
+            }
+
+            RowLayout {
+                objectName: "fullMainMerge"
+                Layout.fillWidth: true
+                visible: Boolean(view.mainPhase && view.mainPhase.state === "you")
+                spacing: 8
+                Text {
+                    Layout.fillWidth: true
+                    text: "Karta jest domknięta na swojej gałęzi. Scalenie do gałęzi głównej robisz Ty."
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                    wrapMode: Text.Wrap
+                }
+                Tide.TextButton {
+                    objectName: "fullBranchDiff"
+                    text: "Diff gałęzi"
+                    variant: "outline"
+                    Accessible.name: "Pokaż zmiany gałęzi karty względem gałęzi głównej"
+                    onClicked: view.branchDiffRequested()
+                }
+                Tide.TextButton {
+                    objectName: "fullMergeMain"
+                    text: view.mergeBusy ? "Scalam…" : "Scal do gałęzi głównej"
+                    enabled: !view.mergeBusy
+                    Accessible.name: "Scal kartę do gałęzi głównej"
+                    onClicked: {
+                        view.mergeBusy = true
+                        view.mergeMainRequested()
                     }
                 }
             }
