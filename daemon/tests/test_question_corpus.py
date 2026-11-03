@@ -191,6 +191,26 @@ class CollectTest(unittest.TestCase):
                         [c_user("1"), c_text("Z podagenta.")])
             self.assertEqual(qc.collect(os.path.join(tmp, "claude"), os.path.join(tmp, "codex"), "2026-01-01", "2026-12-31"), [])
 
+    def test_only_listed_projects_of_both_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            claude = os.path.join(tmp, "claude")
+            for project, text in (("-home-u-DevWorkspace-plasma-tide", "Własny?"),
+                                  ("-home-u-DevWorkspace-plasma-tide-worktrees-pt-1-x", "Z worktree?"),
+                                  ("-home-u-DevWorkspace-BO", "Z BO?"),
+                                  ("-home-u-DevWorkspace-ROBOT", "Nie ten?"),
+                                  ("-home-u-DevWorkspace-klient-repo", "Klienta?")):
+                write_jsonl(os.path.join(claude, "projects", project, "s.jsonl"), [c_user("1"), c_text(text)])
+            codex = os.path.join(tmp, "codex")
+            for name, cwd, text in (("a", "/home/u/DevWorkspace/LogTool", "Codex własny?"),
+                                    ("b", "/home/u/DevWorkspace/klient-repo", "Codex klienta?")):
+                write_jsonl(os.path.join(codex, "sessions", "2026", "10", "31", f"rollout-{name}.jsonl"),
+                            [{"type": "session_meta", "payload": {"cwd": cwd}}, x_event("task_started"),
+                             x_event("task_complete", last_agent_message=text)])
+            found = qc.collect(claude, codex, "2026-01-01", "2026-12-31", ["plasma-tide", "BO", "LogTool"])
+            self.assertEqual(sorted(m["text"] for m in found),
+                             ["Codex własny?", "Własny?", "Z BO?", "Z worktree?"])
+            self.assertEqual(len(qc.collect(claude, codex, "2026-01-01", "2026-12-31")), 7)   # bez filtra — wszystkie
+
 
 class LabelsTest(unittest.TestCase):
     def test_rules_label_follows_ending_question(self):
@@ -314,6 +334,27 @@ class ExtractTest(unittest.TestCase):
             self.assertEqual(items["Kandydat z notki: wybierz A albo B?"]["source"], "notka PT-110")
             self.assertTrue(items["Kandydat z notki: wybierz A albo B?"]["proposal"])
             self.assertIs(items["Inny kandydat."]["proposal"], False)
+
+    def test_drop_flagged_skips_client_content_without_using_the_quota(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = [(f"k{i}", [c_user("x"), c_text(f"Repo coretools{i}infrastructure: który wariant {i} wolisz?")])
+                      for i in range(10)]
+            path = [("p", [c_user("x"), c_text("Plik /home/u/DevWorkspace/plasma-tide/x.py poprawiony. Scalić?")])]
+            code, out, err = self.run_extract(tmp, client + path + log_set(20, 20), "--drop-flagged",
+                                              "--per-class", "20")
+            self.assertEqual(code, 0, err)
+            texts = [i["text"] for i in read_json(out)["items"]]
+            self.assertFalse(any("coretools" in t for t in texts))
+            self.assertTrue(any("x.py poprawiony" in t for t in texts))   # sama ścieżka da się zastąpić przy --apply
+            self.assertEqual(sum(1 for i in read_json(out)["items"] if not i["known"] and i["proposal"]), 20)
+
+    def test_separate_limit_for_waits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out, err = self.run_extract(tmp, log_set(40, 40), "--per-class", "15", "--per-waits", "30")
+            self.assertEqual(code, 0, err)
+            real = [i for i in read_json(out)["items"] if not i["known"]]
+            self.assertEqual(sum(1 for i in real if i["proposal"]), 30)
+            self.assertEqual(sum(1 for i in real if not i["proposal"]), 15)
 
     def test_without_ollama_proposals_come_from_rules_only(self):
         with tempfile.TemporaryDirectory() as tmp:

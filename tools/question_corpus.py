@@ -6,6 +6,7 @@ wchodzą do zestawu jako `PROBE_CASES`, a oprócz nich ostatnie wiadomości agen
 Użycie (każde polecenie osobno; `extract` czyta dzienniki, więc idzie poza piaskownicą):
     python3 tools/question_corpus.py extract --out KATALOG_POZA_REPO/candidates.json [--candidates NOTKA.json]
                                              [--since RRRR-MM-DD] [--until RRRR-MM-DD] [--per-class 30]
+                                             [--per-waits N] [--project NAZWA ...] [--drop-flagged]
                                              [--claude ~/.claude] [--codex ~/.codex] [--ollama URL] [--model qwen3:8b]
     python3 tools/question_corpus.py review candidates.json --out review.md
     (użytkownik przegląda review.md: „przejrzane: tak”, na każdej wiadomości „czeka”, „usuń”, w razie potrzeby tekst)
@@ -222,11 +223,37 @@ def log_files(root: str, kind: str, since: str):
     return sorted(found)
 
 
-def collect(claude_root: str, codex_root: str, since: str, until: str) -> list:
-    """Wszystkie wiadomości końcowe z dzienników w zakresie dat: [{text, source}], bez powtórzeń, najnowsze pierwsze."""
+def log_project(path: str, root: str, kind: str) -> str:
+    """Katalog projektu dziennika w postaci jak w Claude Code (`-home-u-DevWorkspace-plasma-tide`), małymi literami.
+    Claude Code: pierwszy katalog pod `projects/`; Codex: `cwd` z `session_meta`."""
+    if kind == "claude":
+        rel = os.path.relpath(path, os.path.join(root, "projects"))
+        return rel.split(os.sep)[0].lower()
+    for record in read_jsonl(path):
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        if record.get("type") == "session_meta":
+            return re.sub(r"[/.]", "-", str(payload.get("cwd") or "")).lower()
+    return ""
+
+
+def project_matches(project: str, names) -> bool:
+    """Czy katalog projektu to jeden z `names` (albo jego podkatalog/worktree, np. `plasma-tide-worktrees-…`).
+    Nazwa musi zaczynać człon ścieżki: `bo` pasuje do `-devworkspace-bo` i `-devworkspace-bo-x`, nie do `-robot`."""
+    for name in names:
+        name = re.sub(r"[/.]", "-", name.strip().lower())
+        if name and (project.endswith("-" + name) or ("-" + name + "-") in project):
+            return True
+    return False
+
+
+def collect(claude_root: str, codex_root: str, since: str, until: str, projects=None) -> list:
+    """Wszystkie wiadomości końcowe z dzienników w zakresie dat: [{text, source}], bez powtórzeń, najnowsze pierwsze.
+    `projects` — tylko dzienniki z tych projektów (nazwy katalogów, `project_matches`); None — wszystkie."""
     found, seen = [], set()
     for kind, root, reader in (("claude", claude_root, claude_messages), ("codex", codex_root, codex_messages)):
         for path in log_files(root, kind, since) if root else ():
+            if projects and not project_matches(log_project(path, root, kind), projects):
+                continue
             for item in reader(path):
                 if not item["text"] or not (since <= item["date"] <= until) or item["text"] in seen:
                     continue
@@ -315,12 +342,15 @@ def shortage(items: list) -> str:
             "Propozycja: szerszy zakres dat (--since wcześniejsza data) albo mniejszy zestaw (obniżenie progów w karcie).")
 
 
-def build_candidates(logs: list, extra: list, model: Ollama | None, per_class: int):
+def build_candidates(logs: list, extra: list, model: Ollama | None, per_class: int,
+                     per_waits: int | None = None, drop_flagged: bool = False):
     """Kandydaci do przeglądu: przypadki ze skryptu z 28.10, kandydaci z notki #2 i wiadomości z dzienników
-    (najnowsze, najwyżej `per_class` na klasę proponowaną, bez prawie identycznych). Model jest pytany tylko do
-    zapełnienia limitów. Zwraca (lista, powód braku zestawu albo "")."""
+    (najnowsze, najwyżej `per_class` na klasę proponowaną — dla „czeka” `per_waits`, gdy podane — bez prawie
+    identycznych). `drop_flagged` — wiadomości z dzienników, w których po zastąpieniu ścieżek i nazwy firmy nadal
+    są dane prywatne albo treść klienta, w ogóle nie trafiają do przeglądu (i tak nie przeszłyby `review --apply`).
+    Model jest pytany tylko do zapełnienia limitów. Zwraca (lista, powód braku zestawu albo "")."""
     fixed = [{"text": t, "source": PROBE_SOURCE, "waits": w} for t, w in PROBE_CASES] + extra
-    quota = {True: per_class, False: per_class}
+    quota = {True: per_class if per_waits is None else per_waits, False: per_class}
     seen, shapes, kept = set(), [], []
     judged = 0
     for entry in fixed + logs:
@@ -330,6 +360,8 @@ def build_candidates(logs: list, extra: list, model: Ollama | None, per_class: i
             continue
         if not known and not quota[True] and not quota[False]:
             break   # limity obu klas pełne — model nie jest pytany o resztę
+        if not known and drop_flagged and privacy_problems(redact(text)):
+            continue   # treść klienta albo dane prywatne — nie do zestawu, nie zajmuje miejsca w limicie
         shape = shape_of(text)
         if not known and any(near_duplicate(shape, other) for other in shapes):
             continue   # prawie to samo co już wybrana wiadomość (np. różni się numerem kroku)
@@ -403,9 +435,9 @@ def cmd_extract(args) -> int:
     if problem:
         print(f"Uwaga: {problem}; proponuję oznaczenia tylko z reguł.", file=sys.stderr)
         model = None
-    logs = collect(os.path.expanduser(args.claude), os.path.expanduser(args.codex), since, until)
+    logs = collect(os.path.expanduser(args.claude), os.path.expanduser(args.codex), since, until, args.project)
     extra = load_extra(args.candidates) if args.candidates else []
-    items, problem = build_candidates(logs, extra, model, args.per_class)
+    items, problem = build_candidates(logs, extra, model, args.per_class, args.per_waits, args.drop_flagged)
     count = classes(items)
     print(f"Dzienniki {since}…{until}: {len(logs)} wiadomości końcowych; do przeglądu {count['total']} "
           f"(czeka {count['waits']}, nie czeka {count['idle']}).", file=sys.stderr)
@@ -647,6 +679,11 @@ def parser() -> argparse.ArgumentParser:
     e.add_argument("--since")
     e.add_argument("--until")
     e.add_argument("--per-class", type=int, default=30)
+    e.add_argument("--per-waits", type=int, help="osobny limit dla „czeka” (domyślnie jak --per-class)")
+    e.add_argument("--project", action="append",
+                   help="tylko dzienniki tego projektu (nazwa katalogu, np. plasma-tide; można podać kilka razy)")
+    e.add_argument("--drop-flagged", action="store_true",
+                   help="pomiń wiadomości, w których po zastąpieniu ścieżek nadal są dane prywatne albo treść klienta")
     e.add_argument("--candidates", help="kandydaci z notki #2 (JSON/JSONL: text, waits, source)")
     e.add_argument("--ollama", default=DEFAULT_OLLAMA)
     e.add_argument("--model", default=DEFAULT_MODEL)
