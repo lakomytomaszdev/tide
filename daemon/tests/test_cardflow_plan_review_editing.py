@@ -64,6 +64,20 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20), self.events(card))
         self.assertEqual([s["kind"] for s in self.of(card, "step.started")], ["plan-review", "plan-revise"])
         self.assertTrue(self.of(card, "plan.reviewed")[0]["corrected"])
+        review, revise = self.of(card, "step.started")
+        # K-35: domyślny recenzent planu nie jest wykonawcą klasy wyłącznie „lekki”, a werdykt podpisuje
+        # krok, który go wydał.
+        self.assertNotEqual(review["executor"], "Haiku")
+        self.assertEqual(self.of(card, "plan.reviewed")[0]["reviewer"], review["executor"])
+        # K-35: krok poprawki nie widzi Tablicy — dostaje oryginalny plan.md i dokładny wzór nagłówka i tabeli.
+        with open(os.path.join(revise["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            prompt = json.load(fh)["prompt"]
+        with open(self.of(card, "plan.proposed")[0]["planPath"], encoding="utf-8") as fh:
+            original = fh.read()
+        self.assertIn(original.strip(), prompt)
+        self.assertIn("`tide-plan: 1`", prompt)
+        self.assertIn("dokładnie jedna tabela", prompt)
+        self.assertNotIn("standardu 1.2 i tickets", prompt)
         self.restart()
         wait_until(lambda: False, timeout=.3)
         self.assertEqual(len(self.of(card, "plan.reviewed")), 1)

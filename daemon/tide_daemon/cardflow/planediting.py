@@ -42,6 +42,9 @@ class PlanEditing:
             author = catalog.get(proposal.get("planner") or proposal["rows"][0]["executor"])
             options = [e for e in catalog.executors if e.name != author.name and e.model.lower() != author.model.lower()
                        and (e.provider == "local") == (author.provider == "local")]
+            # Review planu to ocena całości, nie lekka praca: wykonawcy wyłącznie klasy „lekki” idą na koniec
+            # (K-33, K-35: domyślnie brany Haiku łamał format wyniku i nie łapał rozmiaru ticketów).
+            options.sort(key=lambda e: tuple(e.classes) == ("lekki",))
             if not options:
                 from .engine import FlowError
                 raise FlowError("no-plan-reviewer", "brak niezależnego recenzenta planu")
@@ -59,10 +62,10 @@ class PlanEditing:
         if step["kind"] == "plan-revise":
             reply = self.propose_plan(card, os.path.join(step["stepDir"], "out", "plan.md"), continuation=True, step=step["step"])
             if reply["ok"]:
-                self._record_plan_review(card, verdict="REQUEST_CHANGES", reviewer=steps[0]["executor"],
+                self._record_plan_review(card, verdict="REQUEST_CHANGES", reviewer=latest_review.get("executor", ""),
                                     findings=step.get("reviewTip") or "", corrected=True)
             else:
-                self._record_plan_review(card, verdict="REQUEST_CHANGES", reviewer=steps[0]["executor"],
+                self._record_plan_review(card, verdict="REQUEST_CHANGES", reviewer=latest_review.get("executor", ""),
                                     findings="Poprawa nie przeszła sprawdzenia formatu: " + "; ".join(reply["errors"]), corrected=False)
             return True
         try:
@@ -132,10 +135,26 @@ class PlanEditing:
                 'Zapisz w katalogu wyjściowym plan-review.json: {"verdict":"APPROVE" albo "REQUEST_CHANGES","findings":"konkretne uwagi lub uzasadnienie"}.')
 
     def _revision_prompt(self, card, proposal, findings):
+        # Krok poprawki nie widzi Tablicy (piaskownica), a gałąź karty może nie mieć aktualnego standardu planu
+        # (K-35: plik z `tide-plan: 1.2` i dwiema tabelami). Dlatego dostaje oryginalny plan.md i wzór wprost.
+        original = ""
+        path = proposal.get("planPath") or ""
+        if path and os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    original = fh.read(200_000)
+            except OSError:
+                original = ""
         return (f"Popraw propozycję planu karty {card}. To jedyna runda poprawy po review.\n"
                 f"Specyfikacja: {proposal.get('specification', 'Sprawdź opis karty i kartki przekazania.')}\nUwagi: {findings}\n"
                 f"Poprzednia propozycja: {json.dumps(proposal, ensure_ascii=False)}\n"
-                "Zapisz pełny plan.md standardu 1.2 i tickets/<numer bez #>.md w katalogu wyjściowym. "
+                + (f"Poprzedni plan.md (zachowaj nagłówek i układ tabeli, zmieniaj wiersze):\n{original}\n" if original else "")
+                + "Zapisz pełny plan.md i tickets/<numer bez #>.md w katalogu wyjściowym. Format plan.md:\n"
+                "- nagłówek YAML między liniami `---` z dosłownym `tide-plan: 1` (wersja formatu pliku, zawsze 1; "
+                "„standard 1.2” to wersja dokumentu, nie wartość tego pola) i polami title, card, tracker, tracker-url, "
+                "tracker-project, ticket-prefix, coordinator, status, updated;\n"
+                "- dokładnie jedna tabela: `| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |` "
+                "(Agent to wykonawca, Review to recenzent, Blokery to numery robocze z tej tabeli).\n"
                 "Zachowaj card, prefiks i numery robocze. Nie implementuj ticketów ani nie publikuj.")
 
     def edit_plan(self, card, request):
