@@ -218,7 +218,7 @@ class YouTrackFlowTest(FlowInProcess):
                 self.assertFalse(reply['ok'], reply)
                 shown = self.shown(card)
                 self.assertEqual(shown['boardColumn'], 'waiting')
-                self.assertEqual(shown['derived']['flow']['decisions'][0]['kind'], 'error')
+                self.assertEqual(shown['derived']['flow']['decisions'][0]['kind'], 'tracker')
                 self.assertTrue(shown['derived']['flow']['decisions'][0]['id'].startswith('tracker:'))
                 self.assertTrue(shown['derived']['flow']['decisions'][0]['technical']['error'])
                 # Komentarz poprzedniej karty może jeszcze ponawiać się w tle.

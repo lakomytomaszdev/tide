@@ -143,7 +143,7 @@ class StalePlanReviewWaitTest(unittest.TestCase):
         self.assertIsNone(st.plan_review_wait)
         out = derived(st, {"column": "todo"})
         self.assertNotIn("limit", out["note"])
-        self.assertEqual(out["flow"]["action"], "error")
+        self.assertEqual(out["flow"]["decisions"][0]["kind"], "error")
 
 
 class QueuedPlanReviewTest(unittest.TestCase):

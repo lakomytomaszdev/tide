@@ -21,8 +21,10 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(self.start(card_id)["ok"])
         card = self.wait_column(card_id, "waiting")
         flow = card["derived"]["flow"]
-        self.assertEqual((flow["action"], flow["command"]), ("outside", "echo zewnetrzne-ok"))
-        self.assertIn("sieć", flow["reason"])
+        decision = flow["decisions"][0]
+        self.assertEqual((decision["kind"], decision["technical"]["command"]), ("permission", "echo zewnetrzne-ok"))
+        self.assertEqual([o["choice"] for o in decision["options"]], ["run-always", "run", "deny"])
+        self.assertIn("sieć", decision["technical"]["reason"])
         self.assertEqual(self.decide(card_id, choice="allow")["error"], "no-step-question")
         self.assertTrue(self.decide(card_id, choice="run")["ok"])
         self.assertTrue(wait_until(lambda: "poza piaskownicą" in str(self.shown(card_id)["derived"].get("text"))
@@ -70,7 +72,8 @@ class StepDecisionTest(FlowInProcess):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
         self.assertTrue(self.start(card_id)["ok"])
         self.wait_column(card_id, "waiting")
-        self.assertEqual(self.shown(card_id)["derived"]["flow"]["pattern"], "echo zewnetrzne-ok *")
+        self.assertEqual(self.shown(card_id)["derived"]["flow"]["decisions"][0]["options"][0]["title"],
+                         "Zawsze w projekcie: echo zewnetrzne-ok *")
         self.flow.stop()
         engine = self.flow.engine
         engine._outside_active = {"K-99-PT-9-1": (card_id, "tide-outside-K-99-PT-9-1")}
@@ -100,7 +103,8 @@ class StepDecisionTest(FlowInProcess):
             json.dump({"stepGuardMinutes": 15.0, "autoConsent": True, "outsideAuto": {"proj": False}}, fh)
         manual = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
         self.assertTrue(self.start(manual)["ok"])
-        self.assertEqual(self.wait_column(manual, "waiting")["derived"]["flow"]["action"], "outside")
+        self.assertEqual(self.wait_column(manual, "waiting")["derived"]["flow"]["decisions"][0]["options"][0]["choice"],
+                         "run-always")
         with open(self.settings, "w", encoding="utf-8") as fh:
             json.dump({"stepGuardMinutes": 15.0, "autoConsent": True}, fh)
         outside = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
@@ -123,7 +127,7 @@ class StepDecisionTest(FlowInProcess):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: srodowisko")
         self.assertTrue(self.start(card_id)["ok"])
         card = self.wait_column(card_id, "waiting")
-        self.assertIn("Docker", card["derived"]["flow"]["question"])
+        self.assertIn("Docker", card["derived"]["flow"]["decisions"][0]["technical"]["question"])
         answers = [d for d in self.of(card_id, "step.decision") if d.get("envAnswer")]
         self.assertEqual(len(answers), 1)
         resumed = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][1]
@@ -146,7 +150,7 @@ class StepDecisionTest(FlowInProcess):
         finished = self.of(card_id, "step.finished")
         self.assertEqual([(f["result"], f["reason"]) for f in finished], [("error", "login")])
         self.assertEqual(self.of(card_id, "step.retry"), [])
-        self.assertEqual(card["derived"]["flow"]["action"], "error")
+        self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "error")
         self.assertIn("zaloguj się", card["derived"]["note"])
         self.assertTrue(self.decide(card_id, choice="retry")["ok"])
         self.wait_column(card_id, "review")

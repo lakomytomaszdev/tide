@@ -142,7 +142,8 @@ def _step_decision(st: FlowState, name: str) -> dict | None:
         return _question(st, name, step, done)
     if result == "denied":
         return _permission(st, name, step, done)
-    if result == "error" and int(step.get("attempt") or 0) >= 1:
+    # Wygasłe logowanie Tide pyta od razu, bez automatycznego ponowienia (03.11) — decyzja też od razu.
+    if result == "error" and (int(step.get("attempt") or 0) >= 1 or reason == "login"):
         return _error(st, name, step, done)
     if result == "stopped" and reason == "interactive-closed":
         return _stopped(st, name, step, done)

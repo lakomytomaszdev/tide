@@ -140,7 +140,7 @@ class FullPlanningTest(FlowInProcess):
                              for e in self.of(card, "step.started")))
         shown = engine.derived({"id": card, "column": "todo"})
         # K-31: po nieudanym review karta pokazuje tę porażkę z decyzją, a nie dawną (nieaktualną) blokadę limitu.
-        self.assertEqual((shown["column"], shown["flow"]["action"]), ("waiting", "error"))
+        self.assertEqual((shown["column"], shown["flow"]["decisions"][0]["kind"]), ("waiting", "error"))
         self.assertNotIn("limit", shown["note"])
         edited = engine.edit_plan(card, {"action": "edit", "ticket": "#1", "reviewer": "Codex Astra"})
         self.assertTrue(edited["ok"])
