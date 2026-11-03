@@ -653,7 +653,7 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--drop-flagged", action="store_true",
                    help="z --apply: pomiń wiadomości, w których po zastąpieniach nadal są dane prywatne (wypisuje tylko id)")
     r.add_argument("--out", required=True)
-    b =sub.add_parser("bench", help="trafność reguł i modelu lokalnego na zestawie")
+    b = sub.add_parser("bench", help="trafność reguł i modelu lokalnego na zestawie")
     b.add_argument("corpus", nargs="?", default=DEFAULT_CORPUS)
     b.add_argument("--rules-only", action="store_true")
     b.add_argument("--json", action="store_true")
