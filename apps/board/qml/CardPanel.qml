@@ -378,7 +378,7 @@ Rectangle {
                     objectName: "cardPlanReview"
                     width: planReviewScroll.availableWidth
                     text: panel.flowPlan && panel.flowPlan.review ? "Review planu: " + (panel.flowPlan.review.verdict || "")
-                          + " · " + (panel.flowPlan.review.reviewer || "") + " · " + (panel.flowPlan.review.findings || "") : ""
+                          + " · " + (panel.flowPlan.review.reviewer || "") + " · " + Logic.reviewFindingsText(panel.flowPlan.review.findings) : ""
                     textFormat: Text.PlainText
                     color: Tide.Tokens.textPrimary
                     wrapMode: Text.Wrap

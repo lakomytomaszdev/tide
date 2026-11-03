@@ -32,6 +32,8 @@ Rectangle {
     property string selected: ""
     property bool techOpen: false
     property string error: ""
+    // Uwagi recenzenta zaznaczone do odesłania (id z `current.findings`); domyślne zaznaczenie daje usługa.
+    property var checkedIds: []
 
     readonly property var pending: (decisions || []).filter(d => answeredIds.indexOf(d.id) < 0)
     readonly property var current: pending.length > 0 ? pending[Math.min(index, pending.length - 1)] : null
@@ -61,6 +63,13 @@ Rectangle {
         techOpen = false
         error = ""
         answer.text = ""
+        checkedIds = Decision.defaultChecked(current)
+    }
+
+    function toggleFinding(id) {
+        const at = checkedIds.indexOf(id)
+        checkedIds = at >= 0 ? checkedIds.filter(x => x !== id) : checkedIds.concat([id])
+        error = ""
     }
 
     function pick(id) {
@@ -90,6 +99,13 @@ Rectangle {
             request = Decision.optionRequest(option)
         }
         if (!request || !request.method) return
+        // Odesłanie planu: do poprawy idą tylko zaznaczone uwagi i własny tekst (niezaznaczone nie).
+        request = Decision.applyFindings(current, request, checkedIds)
+        if (request.params && request.params.action === "return" && current.findings && current.findings.length > 0
+                && (request.params.findings || []).length === 0 && !request.params.feedback) {
+            error = "Zaznacz uwagi do odesłania albo dopisz własne."
+            return
+        }
         const id = current.id
         answeredIds = answeredIds.concat([id])
         answered(id, request.method, request.params)
@@ -291,6 +307,38 @@ Rectangle {
                     font.family: Tide.Theme.uiFamily
                     font.pointSize: Tide.Tokens.fontSizePt
                     wrapMode: Text.Wrap
+                }
+
+                // Uwagi recenzenta planu: waga, treść i tickety; do poprawy idą zaznaczone (nit domyślnie nie).
+                ColumnLayout {
+                    objectName: "decisionFindings"
+                    Layout.fillWidth: true
+                    visible: !!dialog.current && (dialog.current.findings || []).length > 0
+                    spacing: 6
+                    Accessible.role: Accessible.Grouping
+                    Accessible.name: "Uwagi recenzenta"
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Uwagi recenzenta — zaznaczone trafią do poprawy"
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt
+                        font.weight: Font.Medium
+                    }
+                    Repeater {
+                        model: dialog.current ? dialog.current.findings || [] : []
+                        delegate: DecisionFinding {
+                            objectName: "decisionFinding"
+                            required property var modelData
+                            Layout.fillWidth: true
+                            severity: modelData.severity
+                            text: modelData.text
+                            tickets: modelData.tickets
+                            checked: dialog.checkedIds.indexOf(modelData.id) >= 0
+                            onToggled: dialog.toggleFinding(modelData.id)
+                        }
+                    }
                 }
 
                 // Możliwości w kolejności z usługi; „Inna odpowiedź…” zawsze ostatnia.

@@ -69,6 +69,46 @@ def without_options(events: list[dict]) -> list[dict]:
     return [{k: v for k, v in e.items() if k != "options"} for e in events]
 
 
+# --- Scenariusz C: plan do zatwierdzenia (PT-127) -------------------------------------------------
+
+FINDINGS_C = [
+    {"severity": "major", "tickets": ["#5", "#7", "#8"],
+     "text": "#5, #7 i #8 zmieniają okno zlecenia i panel karty w tej samej fali. Przy scalaniu do gałęzi karty "
+             "grozi konflikt — daj #7 i #8 bloker #5 albo przenieś je do fali 4."},
+    {"severity": "major", "tickets": ["#3"],
+     "text": "#3 poprosi o zgodę na odczyt dzienników sesji poza piaskownicą, a kartka nie mówi, co zrobić "
+             "przy odmowie. Dopisz wariant „bez dzienników” z mniejszym pomiarem."},
+    {"severity": "nit", "tickets": ["PT-42"],
+     "text": "PT-42: uwagi mówią o roli classify, ale kryteria nie mają testu kolejki z pamięcią na wiadomość."},
+]
+
+
+def journal_c(findings=None, verdict="REQUEST_CHANGES") -> list[dict]:
+    """Dziennik karty: Opus zaproponował 9 ticketów, Sonnet prosi o zmiany (2 ważne, 1 drobna)."""
+    items = []
+
+    def add(event_type, ts, **data):
+        items.append({"v": 1, "seq": len(items) + 1, "ts": f"2026-11-03T{ts}+01:00", "card": CARD,
+                      "type": event_type, **data})
+
+    add("card.started", "09:05:00", entry="plan", executor="Opus", program="claude", provider="anthropic")
+    add("plan.proposed", "14:58:00", planner="Opus",
+        rows=[{"workId": f"#{n}", "title": f"Ticket {n}", "blockers": [] if n == 1 else ["#1"]} for n in range(1, 10)])
+    add("plan.reviewed", "23:40:00", reviewer="Sonnet", verdict=verdict,
+        findings=FINDINGS_C if findings is None else findings, corrected=False)
+    return items
+
+
+def decisions_c(events: list[dict] | None = None) -> list[dict]:
+    """Decyzja zatwierdzenia planu policzona przez usługę z dziennika scenariusza C."""
+    return build_decisions(fold(journal_c() if events is None else events))
+
+
+def scenario_c(data: dict, items: list[dict] | None = None) -> dict:
+    """Kopia danych podglądu z decyzją „Plan do zatwierdzenia” w karcie K-8 (kolumna „Czeka na mnie”)."""
+    return scenario_f(data, decisions_c() if items is None else items)
+
+
 def scenario_f(data: dict, items: list[dict] | None = None) -> dict:
     """Kopia danych podglądu z decyzjami scenariusza F w karcie K-8 (albo z podanymi `items`)."""
     data = json.loads(json.dumps(data))

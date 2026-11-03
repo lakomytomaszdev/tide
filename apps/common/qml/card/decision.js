@@ -78,6 +78,40 @@ function needsInput(option) {
     return false
 }
 
+// Podpis wagi uwagi recenzenta; stary tekst (bez wagi) dostaje „bez wagi”.
+var SEVERITY_LABELS = { "blocker": "blokująca", "major": "ważna", "nit": "drobna" }
+
+function severityLabel(severity) {
+    return SEVERITY_LABELS[severity] || "bez wagi"
+}
+
+// Id uwag zaznaczonych z góry przez usługę (`findings[].selected`).
+function defaultChecked(decision) {
+    var ids = []
+    var list = decision && decision.findings ? decision.findings : []
+    for (var i = 0; i < list.length; i++) if (list[i].selected === true) ids.push(list[i].id)
+    return ids
+}
+
+// Zaznaczone uwagi w kształcie żądania usługi `{severity, text, tickets}` (bez `id` i `selected`).
+function checkedFindings(decision, ids) {
+    var out = []
+    var list = decision && decision.findings ? decision.findings : []
+    for (var i = 0; i < list.length; i++) {
+        if (ids.indexOf(list[i].id) >= 0)
+            out.push({ severity: list[i].severity, text: list[i].text, tickets: list[i].tickets || [] })
+    }
+    return out
+}
+
+// Odesłanie planu niesie tylko zaznaczone uwagi (zamiast domyślnych z usługi); reszta żądań bez zmian.
+function applyFindings(decision, request, ids) {
+    if (!request || !request.params || request.params.action !== "return") return request
+    if (!decision || !decision.findings || decision.findings.length === 0) return request
+    request.params.findings = checkedFindings(decision, ids)
+    return request
+}
+
 function copy(params) {
     var out = {}
     for (var key in (params || {})) out[key] = params[key]
