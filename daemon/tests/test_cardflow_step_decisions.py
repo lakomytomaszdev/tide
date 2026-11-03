@@ -13,6 +13,19 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: box, timeout=20), "ResolveCardStep bez odpowiedzi")
         return json.loads(box[0])
 
+    def test_leftover_files_send_the_step_back_once_to_clean_up(self):
+        # K-35/PT-132: autor zostawił nieśledzony plik diagnostyczny i karta stała z flow.error.
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: smieci")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "review")
+        cleanup = self.of(card_id, "step.cleanup")
+        self.assertEqual(len(cleanup), 1)
+        tickets = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"]
+        self.assertEqual(tickets[1]["parentStep"], cleanup[0]["step"])
+        with open(os.path.join(tickets[1]["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            self.assertIn("worktree ticketu ma niezacommitowane", json.load(fh)["prompt"])
+        self.assertEqual(self.of(card_id, "flow.error"), [])
+
     def test_decision_can_name_its_step_and_only_a_waiting_one(self):
         # K-15: przy dwóch pytaniach naraz odpowiedź trafiała do najnowszego kroku, a nie do zamierzonego.
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")

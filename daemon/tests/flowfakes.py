@@ -238,6 +238,17 @@ elif word in ("blad-dwa", "blad-zmien"):
         finish("done")
     else:
         finish("error", reason="awaria testowa")
+elif word == "smieci":
+    junk = os.path.join(cwd, "debug_tmp.py")
+    if "worktree ticketu ma niezacommitowane" in prompt:
+        if os.path.exists(junk):
+            os.remove(junk)
+        subprocess.run(["git", "add", "-A"], check=True)
+        subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "chore: atrapa sprząta"], check=True)
+    elif not prompt.startswith("Krok review"):
+        with open(junk, "w") as fh:
+            fh.write("# diagnostyka\n")
+    finish("done")
 elif word == "blad-local":
     time.sleep(0.5)
     finish("error", reason="awaria testowa")
