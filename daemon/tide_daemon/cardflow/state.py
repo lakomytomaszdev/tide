@@ -449,6 +449,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
     column = card.get("column") or "backlog"
     if column in ("done", "archived"):
         return None
+    from .decisions import build_decisions
+    decisions = build_decisions(st)
     attention = attention_step(st)
     focus = decision_step(st)
     if focus:
@@ -475,7 +477,9 @@ def derived(st: FlowState, card: dict) -> dict | None:
                     "authorProvider": author.get("provider") or st.started.get("provider") or "",
                     "authorModel": author.get("model") or st.started.get("model") or "",
                     "reviewerProvider": reviewer.get("provider") or st.started.get("reviewerProvider") or "",
-                    "reviewerModel": reviewer.get("model") or st.started.get("reviewerModel") or ""}}
+                    "reviewerModel": reviewer.get("model") or st.started.get("reviewerModel") or "",
+                    # Nowy kontrakt okna decyzji (PT-123); stare pola wyżej i niżej zostają bez zmian.
+                    "decisions": decisions}}
     out["flow"].update({"paused": st.paused, "timeline": st.timeline,
                         "stalledSince": st.stalled_since,
                         "closed": bool(st.closed), "summary": (st.closed or {}).get("summary") or "",

@@ -54,6 +54,7 @@ from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for
 from .journal import Journal
 from .state import FlowState, derived, fold, ticket_of, graph_waves, attention_step, decision_step, guard_reason, _epoch
+from .decisions import build_decisions
 from .tracker import TrackerOutbox
 
 GUARD_MINUTES = 15.0
@@ -2072,6 +2073,13 @@ class FlowEngine(PlanEditing):
             self.tracker.reset_failures(card)
             return {'ok': True, 'id': card, 'choice': choice, 'tracker': True}
         focus = decision_step(st)
+        wanted = str(request.get("step") or "")
+        if wanted and wanted != focus:
+            # Okno decyzji odpowiada na wskazaną decyzję z `flow.decisions[]`, nie tylko na tę z przodu kolejki;
+            # tick wznawia ostatni krok każdego ticketu, więc odpowiedź trafi do właściwego kroku.
+            if wanted not in {d["step"] for d in build_decisions(st) if d["kind"] in ("question", "permission", "error")}:
+                raise FlowError("no-step-question", f"{card}: krok {wanted} nie czeka na decyzję")
+            focus = wanted
         step = st.steps.get(focus) or {}
         done = st.finished.get(focus) or {}
         result = done.get("result")
@@ -2093,6 +2101,8 @@ class FlowEngine(PlanEditing):
         executor = str(request.get("executor") or "").strip()
         if choice == "answer" and (not answer or len(answer) > 4000):
             raise FlowError("bad-answer", "odpowiedź musi mieć od 1 do 4000 znaków")
+        if choice == "deny" and len(answer) > 4000:
+            raise FlowError("bad-answer", "odpowiedź musi mieć do 4000 znaków")
         if choice == "change-executor":
             if not executor:
                 raise FlowError("bad-executor", "wybierz wykonawcę")
@@ -2114,7 +2124,7 @@ class FlowEngine(PlanEditing):
                 except BoardError as exc:
                     raise FlowError(exc.code, str(exc)) from None
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
-                                    choice=choice, answer=answer if choice == "answer" else "",
+                                    choice=choice, answer=answer if choice in ("answer", "deny") else "",
                                     command=done.get("command") or "" if choice in ("allow", "deny") else "",
                                     executor=executor if choice == "change-executor" else "")
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
