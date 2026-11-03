@@ -4,7 +4,7 @@
   dziennik sesji w `$HOME/.claude/projects/<katalog>/<id>.jsonl` (jak prawdziwy program) i robi to, co każe linia
   „ATRAPA: …” w opisie karty: `gotowe` (plik, commit, plik wyniku i notka), `bez-wyniku` (commit bez pliku wyniku),
   `czekaj` (plik bez commita i sen — żyje, ale nic nie robi), `powoli N` (N sekund dopisywania, potem jak `gotowe`),
-  `pytanie` (wynik „pytanie”). Ścieżkę pliku wyniku bierze z kartki (linia „Plik wyniku: …”), nie z ustawień.
+  `pytanie` (wynik „pytanie”), `pytanie-opcje` (pytanie z poprawnymi `options[]`), `pytanie-zle-opcje` (kilka poleconych). Ścieżkę pliku wyniku bierze z kartki (linia „Plik wyniku: …”), nie z ustawień.
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
 - `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
@@ -213,6 +213,16 @@ if word == "pytanie":
         finish("done")
     else:
         finish("question", question="Który format daty?")
+elif word in ("pytanie-opcje", "pytanie-zle-opcje"):
+    if "Odpowiedź użytkownika:" in prompt:
+        finish("done")
+    elif word == "pytanie-opcje":
+        finish("question", question="Który format daty?", options=[
+            {"title": "ISO 8601", "effect": "Daty w UTC, bez stref.", "recommended": True},
+            {"title": "Lokalny", "effect": "Daty jak w interfejsie."}])
+    else:
+        finish("question", question="Który format daty?", options=[
+            {"title": "A", "recommended": True}, {"title": "B", "recommended": True}])
 elif word == "zgoda":
     if "- git fetch origin\n" in prompt or "Użytkownik odmówił zgody" in prompt:
         finish("done")

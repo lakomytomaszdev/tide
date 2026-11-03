@@ -76,6 +76,11 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
     """Jawna decyzja do wznowionego kroku; kartka poprzedniej próby pozostaje wyżej w poleceniu."""
     if choice == "answer":
         detail = f"Pytanie z poprzedniej próby: {prior.get('question') or ''}\nOdpowiedź użytkownika: {answer}"
+        picked = next((o for o in prior.get("options") or [] if o.get("title") == answer), None)
+        if picked:
+            detail += f"\nUżytkownik wybrał jedną z podanych opcji. Tytuł: {picked['title']}"
+            if picked.get("effect"):
+                detail += f"\nSkutek opcji: {picked['effect']}"
     elif choice == "allow":
         detail = f"Użytkownik zezwolił na dokładne polecenie: {command}"
     elif choice == "deny":
@@ -130,7 +135,9 @@ Co masz zrobić:
 Plik wyniku: {out_dir}/{RESULT_FILE}
 
   {{"result": "done", "notes": ["{NOTE_FILE}"]}}                 — ticket gotowy,
-  {{"result": "question", "question": "…"}}                     — potrzebujesz decyzji użytkownika,
+  {{"result": "question", "question": "…"}}                     — potrzebujesz decyzji użytkownika
+     (opcjonalnie z "options": [{{"title": "…", "effect": "…", "recommended": true}}] — 1–4 gotowe odpowiedzi,
+     najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”),
   {{"result": "denied", "command": "…"}}                        — polecenie wymaga zgody,
   {{"result": "error", "reason": "…"}}                          — nie da się zrobić ticketu.
 

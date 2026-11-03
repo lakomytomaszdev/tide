@@ -84,7 +84,7 @@ class ContractTest(unittest.TestCase):
     def test_step_options_put_the_single_recommended_first_and_none_is_preselected(self):
         options = [{"title": "Tylko dzienniki Claude", "effect": "Jeden dostawca."},
                    {"title": "Tak, uruchom", "effect": "Pełny pomiar.", "recommended": True},
-                   {"title": "Nie, z testów", "effect": "Mniejszy pomiar.", "recommended": True}]
+                   {"title": "Nie, z testów", "effect": "Mniejszy pomiar."}]
         events = Events().step("K-1-PT-1-1", result="question", question="Czy mogę?", options=options)
         [decision] = events.decisions()
         self.assert_contract(decision)
@@ -96,6 +96,33 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(first["params"], {"choice": "answer", "step": "K-1-PT-1-1", "answer": "Tak, uruchom"})
         for option in decision["options"]:
             self.assertFalse({"selected", "default", "checked"} & set(option))
+
+    def test_invalid_step_options_give_only_free_text_without_recommendation(self):
+        good = {"title": "A", "effect": "x"}
+        invalid = {
+            "no title": [good, {"effect": "y"}],
+            "empty title": [good, {"title": "  "}],
+            "over four": [{"title": t} for t in "ABCDE"],
+            "two recommended": [{**good, "recommended": True}, {"title": "B", "recommended": True}],
+            "duplicate title": [good, {"title": "A"}],
+            "not a list": {"title": "A"},
+            "item not object": ["A", "B"],
+            "bad recommended": [{"title": "A", "recommended": "tak"}],
+            "empty list": [],
+        }
+        for label, options in invalid.items():
+            with self.subTest(label):
+                [decision] = Events().step("K-1-PT-1-1", result="question", question="Czy?",
+                                           options=options).decisions()
+                self.assertEqual(decision["options"], [])
+                self.assertTrue(decision["freeText"])
+                self.assertEqual(decision["reply"]["field"], "answer")
+
+    def test_four_options_without_recommendation_keep_order(self):
+        options = [{"title": t} for t in "ABCD"]
+        [decision] = Events().step("K-1-PT-1-1", result="question", question="Czy?", options=options).decisions()
+        self.assertEqual([(o["title"], o["recommended"]) for o in decision["options"]],
+                         [("A", False), ("B", False), ("C", False), ("D", False)])
 
     def test_permission_single_command_and_chain(self):
         single = Events().step("K-1-PT-1-1", result="denied", command="git fetch origin", canAllow=True)
@@ -254,6 +281,60 @@ class DerivedTest(unittest.TestCase):
     def test_working_card_has_empty_decisions(self):
         events = Events().step("K-1-PT-1-1")
         self.assertEqual(derived(events.state(), CARD)["flow"]["decisions"], [])
+
+
+class StepResultContractTest(unittest.TestCase):
+    """PT-126: `result.json` z `options[]` — poprawne przechodzą, zły format nie psuje wyniku, stary działa."""
+
+    def read(self, payload):
+        import json
+        import os
+        import tempfile
+        from tide_daemon.cardflow.engine import FlowEngine
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "result.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            return FlowEngine._result(path)
+
+    def test_valid_options_are_kept_with_question(self):
+        data = self.read({"result": "question", "question": "Czy?",
+                          "options": [{"title": "Tak", "effect": "Idziemy.", "recommended": True}, {"title": "Nie"}]})
+        self.assertEqual(data["result"], "question")
+        self.assertEqual(data["options"], [{"title": "Tak", "effect": "Idziemy.", "recommended": True},
+                                           {"title": "Nie", "effect": "", "recommended": False}])
+
+    def test_invalid_options_do_not_turn_the_result_into_an_error(self):
+        data = self.read({"result": "question", "question": "Czy?", "options": [{"effect": "brak tytułu"}]})
+        self.assertEqual((data["result"], data["options"]), ("question", []))
+
+    def test_old_format_question_has_no_options(self):
+        data = self.read({"result": "question", "question": "Czy?"})
+        self.assertEqual((data["result"], data["options"]), ("question", []))
+
+    def test_options_on_other_results_are_ignored(self):
+        self.assertEqual(self.read({"result": "denied", "command": "ls", "options": [{"title": "A"}]})["options"], [])
+
+
+class ResumeContextOptionTest(unittest.TestCase):
+    PRIOR = {"result": "question", "question": "Czy?", "options": [{"title": "Tak", "effect": "Idziemy."}]}
+
+    def test_chosen_option_brings_title_and_effect(self):
+        from tide_daemon.cardflow.handoff import resume_context
+        text = resume_context(choice="answer", prior=self.PRIOR, answer="Tak", command="", out_dir="/o")
+        self.assertIn("Odpowiedź użytkownika: Tak", text)
+        self.assertIn("Skutek opcji: Idziemy.", text)
+
+    def test_free_answer_has_no_option_lines(self):
+        from tide_daemon.cardflow.handoff import resume_context
+        text = resume_context(choice="answer", prior=self.PRIOR, answer="Własna", command="", out_dir="/o")
+        self.assertNotIn("Skutek opcji", text)
+
+    def test_step_card_describes_options(self):
+        from tide_daemon.cardflow.handoff import ticket_card
+        text = ticket_card(card_id="K-1", title="t", description="d", project="p", ticket="PT-1", branch="b",
+                           card_branch="c", worktree="/w", out_dir="/o")
+        self.assertIn('"options"', text)
 
 
 if __name__ == "__main__":

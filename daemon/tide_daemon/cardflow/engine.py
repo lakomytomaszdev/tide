@@ -46,6 +46,7 @@ from ..tasks import agentcmd, launch, stepstop
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import handoff
+from .decisions import clean_options
 from . import execution
 from . import limits as flow_limits
 from . import planning
@@ -2900,7 +2901,7 @@ class FlowEngine(PlanEditing):
         self.journal.append(card, "step.finished", step=name, ticket=step.get("ticket") or "",
                             result=data.get("result"), reason=data.get("reason") or "",
                             question=data.get("question") or "", command=data.get("command") or "",
-                            canAllow=data.get("canAllow", True), stalledSince=data.get("stalledSince") or "",
+                            options=data.get("options") or [], canAllow=data.get("canAllow", True), stalledSince=data.get("stalledSince") or "",
                             notes=[n for n in data.get("notes") or [] if n in kept], kept=kept,
                             exit=exit_code, snapshotDir=snapshot_dir, **extra)
         if data.get("result") == "denied" and not data.get("canAllow", True):
@@ -3003,6 +3004,7 @@ class FlowEngine(PlanEditing):
         notes = data.get("notes") if isinstance(data.get("notes"), list) else []
         return {"result": data["result"], "reason": str(data.get("reason") or "")[:300],
                 "question": str(data.get("question") or "")[:2000], "command": str(data.get("command") or ""),
+                "options": clean_options(data.get("options")) if data["result"] == "question" else [],
                 "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
 
     @staticmethod

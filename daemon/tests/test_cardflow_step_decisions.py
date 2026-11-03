@@ -268,3 +268,36 @@ class StepDecisionTest(FlowInProcess):
         self.assertEqual([s["provider"] for s in self.of(card_id, "step.started")], ["local", "local"])
         self.assertEqual([e["reason"] for e in self.of(card_id, "step.finished")],
                          ["awaria testowa", "local-unavailable"])
+
+
+class StepOptionsTest(FlowInProcess):
+    """PT-126: pytanie kroku z `options[]` — opcje w decyzji, wybór w `resume_context`, zły format bez błędu."""
+
+    decide = StepDecisionTest.decide
+
+    def ask(self, mode):
+        card_id = self.card(description=f"Dodaj eksport.\n\nATRAPA: {mode}")
+        self.assertTrue(self.start(card_id)["ok"])
+        card = self.wait_column(card_id, "waiting")
+        return card_id, card["derived"]["flow"]["decisions"][0]
+
+    def test_valid_options_reach_decision_and_choice_resumes_with_title_and_effect(self):
+        card_id, decision = self.ask("pytanie-opcje")
+        self.assertEqual([(o["title"], o["recommended"]) for o in decision["options"]],
+                         [("ISO 8601", True), ("Lokalny", False)])
+        self.assertTrue(decision["freeText"])
+        option = decision["options"][0]
+        answer = self.decide(card_id, **json.loads(json.dumps(option["params"])))
+        self.assertTrue(answer["ok"], answer)
+        self.wait_column(card_id, "review")
+        resumed = self.of(card_id, "step.started")[1]
+        with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            prompt = json.load(fh)["prompt"]
+        self.assertIn("Odpowiedź użytkownika: ISO 8601", prompt)
+        self.assertIn("Skutek opcji: Daty w UTC, bez stref.", prompt)
+
+    def test_invalid_options_leave_only_the_answer_field_and_no_step_error(self):
+        card_id, decision = self.ask("pytanie-zle-opcje")
+        self.assertEqual(decision["options"], [])
+        self.assertTrue(decision["freeText"])
+        self.assertEqual(self.of(card_id, "step.finished")[0]["result"], "question")

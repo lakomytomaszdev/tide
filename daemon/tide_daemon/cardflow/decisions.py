@@ -135,29 +135,41 @@ def _step_decision(st: FlowState, name: str) -> dict | None:
 def _question(st, name, step, done) -> dict:
     question = _text(done.get("question"))
     happened = f"{_who(step, True)} pyta: „{question}”" if question else ""
-    options = []
-    for index, raw in enumerate(done.get("options") or []):
-        option = _step_option(name, index, raw)
-        if option:
-            options.append(option)
+    options = [_option(f"answer-{index + 1}", raw["title"], raw["effect"], RESOLVE_STEP,
+                       {"choice": "answer", "step": name, "answer": raw["title"]}, recommended=raw["recommended"])
+               for index, raw in enumerate(clean_options(done.get("options")))]
     reply = {"method": RESOLVE_STEP, "params": {"choice": "answer", "step": name}, "field": "answer"}
     return _decision(st, name, step, "question", happened,
                      "Krok czeka na odpowiedź; bez niej nie pójdzie dalej." if question else "",
                      _recommended_first(options), reply, "", _step_technical(step, done))
 
 
-def _step_option(name: str, index: int, raw) -> dict | None:
-    """Możliwość podana przez krok w pliku wyniku (rozszerzenie formatu pytania); odpowiedzią jest jej tytuł."""
-    if isinstance(raw, str):
-        raw = {"title": raw}
-    if not isinstance(raw, dict):
-        return None
-    title = _text(raw.get("title") or raw.get("label"))
-    if not title:
-        return None
-    return _option(f"answer-{index + 1}", title, _text(raw.get("effect") or raw.get("description")),
-                   RESOLVE_STEP, {"choice": "answer", "step": name, "answer": title},
-                   recommended=raw.get("recommended") is True)
+MAX_STEP_OPTIONS = 4
+MAX_OPTION_TITLE = 120
+MAX_OPTION_EFFECT = 400
+
+
+def clean_options(raw) -> list[dict]:
+    """`options[]` z pliku wyniku pytania kroku → `[{title, effect, recommended}]`; niepoprawny zestaw → `[]`.
+
+    Zestaw jest poprawny, gdy ma od 1 do 4 pozycji, każda to obiekt z niepustym `title` (do 120 znaków),
+    opcjonalnym tekstowym `effect` (do 400) i opcjonalnym logicznym `recommended`, a polecona jest najwyżej jedna.
+    Cokolwiek innego daje pusty zestaw: okno pokazuje wtedy samo pole odpowiedzi, a krok nie kończy się błędem (D8)."""
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_STEP_OPTIONS:
+        return []
+    result = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return []
+        title, effect, recommended = item.get("title"), item.get("effect", ""), item.get("recommended", False)
+        if not isinstance(title, str) or not _text(title) or len(_text(title)) > MAX_OPTION_TITLE or \
+                not isinstance(effect, str) or len(_text(effect)) > MAX_OPTION_EFFECT or \
+                not isinstance(recommended, bool):
+            return []
+        result.append({"title": _text(title), "effect": _text(effect), "recommended": recommended})
+    if sum(o["recommended"] for o in result) > 1 or len({o["title"] for o in result}) != len(result):
+        return []
+    return result
 
 
 def _permission(st, name, step, done) -> dict:
