@@ -46,7 +46,7 @@ class PanelScriptsTest(unittest.TestCase):
         bar = find(state, 73)
         self.assertEqual(res["main"], 73)
         # Skrót użytkownika (widżet „Ikona”) zostaje, tuż przed zasobnikiem.
-        self.assertEqual(types(bar), ["kickoff", "appmenu", "panelspacer", "digitalclock", "panelspacer", "icon",
+        self.assertEqual(types(bar), ["kickoff", "appmenu", "centerspacer", "digitalclock", "panelspacer", "icon",
                                       "systemtray"])
         self.assertEqual(bar["height"], PALETTE["size"]["bar"])
         self.assertTrue(bar["floating"])
@@ -64,7 +64,7 @@ class PanelScriptsTest(unittest.TestCase):
         self.assertEqual(side["location"], "top")
         self.assertEqual(side["height"], PALETTE["size"]["barSlim"])
         self.assertEqual(side["config"]["/Tide"]["role"], "side-bar")
-        self.assertEqual(types(side), ["appmenu", "panelspacer", "digitalclock", "panelspacer"])
+        self.assertEqual(types(side), ["appmenu", "centerspacer", "digitalclock", "panelspacer"])
         self.assertEqual(config(side, "org.kde.plasma.digitalclock", "/Appearance")["showDate"], "true")
 
     def test_screens_are_found_by_connector_not_by_number(self):
@@ -77,7 +77,7 @@ class PanelScriptsTest(unittest.TestCase):
         res2, state = self.install(state, {"mainPanel": 73, "sidePanel": res["side"]})
         self.assertEqual(res2["side"], res["side"])
         self.assertEqual(len(live(state)), 3)
-        self.assertEqual(types(find(state, 73)), ["kickoff", "appmenu", "panelspacer", "digitalclock",
+        self.assertEqual(types(find(state, 73)), ["kickoff", "appmenu", "centerspacer", "digitalclock",
                                                   "panelspacer", "icon", "systemtray"])
 
     def test_single_monitor_gets_no_left_bar(self):
