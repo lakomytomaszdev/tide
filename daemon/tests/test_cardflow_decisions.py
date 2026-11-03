@@ -186,7 +186,7 @@ class ContractTest(unittest.TestCase):
         [decision] = events.decisions()
         self.assert_contract(decision)
         self.assertEqual((decision["kind"], decision["fault"], decision["step"]), ("error", "tide", "K-1-PT-1-2"))
-        self.assertEqual([o["choice"] for o in decision["options"]], ["retry", "change-executor"])
+        self.assertEqual([o["choice"] for o in decision["options"]], ["retry", "change-executor", "reject"])
         self.assertEqual(decision["options"][1]["params"]["executor"], "")
         technical = decision["technical"]
         self.assertEqual((technical["reason"], technical["reasonLabel"], technical["attempts"]),

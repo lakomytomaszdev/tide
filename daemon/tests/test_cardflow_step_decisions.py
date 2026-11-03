@@ -602,3 +602,42 @@ class IsolationTest(FlowInProcess):
         self.assertIn("s-PT-3", calls, "drugi ticket idzie dalej mimo błędu pierwszego")
         plan_next.assert_called()
         self.assertIn("zepsuty krok", self.of(card, "flow.error")[-1]["error"])
+
+
+class RejectFailedTicketTest(FlowInProcess):
+    def test_failed_ticket_can_be_rejected_and_its_dependants_start(self):
+        # 03.11, K-16/LEGAL-75: ticket zablokowany zmianą spoza karty — użytkownik wydziela go, zależne idą dalej.
+        from unittest import mock as _mock
+        from tide_daemon.cardflow.state import fold
+        card = self.card()
+        self.flow.stop()
+        engine = self.flow.engine
+        journal = engine.journal
+        journal.append(card, "card.started", entry="plan", repo=self.repo)
+        row = {"executor": "Sonnet", "reviewer": "Opus", "class": "standard", "note": ""}
+        journal.append(card, "plan.approved", rows=[{"id": "PT-2", "blockers": [], "title": "a", **row},
+                                                   {"id": "PT-3", "blockers": ["PT-2"], "title": "b", **row}])
+        journal.append(card, "step.started", step="s0", ticket="PT-2", kind="ticket")
+        journal.append(card, "step.finished", step="s0", ticket="PT-2", result="error", reason="exit")
+        journal.append(card, "step.started", step="s1", ticket="PT-2", kind="ticket", attempt=1, parentStep="s0")
+        journal.append(card, "step.finished", step="s1", ticket="PT-2", result="error", reason="exit")
+        reply = engine.resolve_step(card, {"choice": "reject", "step": "s1"})
+        self.assertTrue(reply["ok"], reply)
+        st = fold(journal.read(card))
+        self.assertIn("PT-2", st.rejected)
+        started = []
+
+        class Started(Exception):
+            pass
+
+        def reached(card_id, row):
+            started.append(row["id"])
+            raise Started()
+
+        with _mock.patch.object(engine, "_plan_card", side_effect=reached), \
+                _mock.patch.object(engine, "_plan_commit"), \
+                _mock.patch.object(engine.git, "branch_worktree", return_value={"created": True}), \
+                _mock.patch.object(engine.git, "main_branch", return_value="master"):
+            with self.assertRaises(Started):
+                engine._plan_next(card, st)
+        self.assertEqual(started, ["PT-3"], "ticket czekający na odrzucony bloker rusza")

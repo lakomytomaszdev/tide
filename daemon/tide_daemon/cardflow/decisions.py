@@ -385,6 +385,9 @@ def _error(st, name, step, done) -> dict:
                 "Wybierz model; nowy wykonawca zacznie od zmian zapisanych w worktree kroku.",
                 RESOLVE_STEP, {"choice": "change-executor", "step": name, "executor": ""},
                 recommended=other_recommended),
+        *([_option("reject", "Odrzuć ticket",
+                   "Ticket wypada z karty (zmiany zostają na jego gałęzi); tickety, które na niego czekały, ruszą dalej.",
+                   RESOLVE_STEP, {"choice": "reject", "step": name})] if step.get("ticket") else []),
     ]
     # „Ponów z instrukcją” (03.11, K-16/LEGAL-67): agent kręcił się na tym samym powodzie, a użytkownik nie miał jak
     # mu powiedzieć, co zrobić inaczej. Tekst trafia do wznowionego kroku jako polecenie użytkownika.
