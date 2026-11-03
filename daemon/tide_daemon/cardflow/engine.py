@@ -61,7 +61,9 @@ TIMEOUT_MINUTES = 240.0
 SETTINGS_FILE = "cardflow.json"
 DEFAULT_PROVIDER_SLOTS = 3      # kroki naraz u jednego dostawcy chmurowego (providerSlots w ustawieniach)
 MAX_PROVIDER_SLOTS = 12
-RESULTS = ("done", "question", "denied", "error")
+RESULTS = ("done", "question", "denied", "error", "outside")
+OUTSIDE_TIMEOUT = 3600          # najdłużej działające polecenie uruchomione poza piaskownicą (s)
+OUTSIDE_TAIL = 12_000           # tyle końcowych znaków wyniku dostaje wznowiony krok
 OUTPUT_MAX = 256 * 1024
 HANDOFF_DIFF_MAX = 64 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
@@ -220,6 +222,10 @@ class FlowEngine(PlanEditing):
         data = self._settings_data()
         data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
                     limitThresholdPercent=threshold, providerSlots=dict(slots))
+        self._write_settings(data)
+        return self.get_flow_settings()
+
+    def _write_settings(self, data: dict) -> None:
         folder = os.path.dirname(self.settings) or "."
         os.makedirs(folder, mode=0o700, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=".cardflow-", dir=folder)
@@ -234,7 +240,6 @@ class FlowEngine(PlanEditing):
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
-        return self.get_flow_settings()
 
     def _low_limit(self, provider: str) -> dict | None:
         if self.limits_source is None:
@@ -1323,6 +1328,13 @@ class FlowEngine(PlanEditing):
             if is_dotnet:
                 ok, tail = dotnet.restore(worktree)
                 prompt += dotnet.prompt_note(ok, tail)
+            from ..tasks import node as node_mod
+            node_home = ""
+            if kind in ("ticket", "fix", "review", "conflict", "close") and node_mod.is_node(worktree):
+                node_home = node_mod.node_home(os.path.expanduser("~"))
+                if kind in ("ticket", "fix", "conflict") and node_home:
+                    ok, tail = node_mod.install(worktree, os.path.expanduser("~"))
+                    prompt += node_mod.prompt_note(ok, tail)
             bg = agentcmd.background(agentcmd.Step(
                 tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
                 step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
@@ -1332,7 +1344,7 @@ class FlowEngine(PlanEditing):
                 allowed_tools=allowed_tools if selected.tool == "claude" else (),
                 disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
                 enforce_command_policy=selected.tool == "claude",
-                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet))
+                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet, node_home=node_home))
             bg.prepare()
             for source, target in zip(images, shots):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -2121,8 +2133,8 @@ class FlowEngine(PlanEditing):
         step = st.steps.get(focus) or {}
         done = st.finished.get(focus) or {}
         result = done.get("result")
-        valid = {"question": ("answer",), "denied": ("allow", "deny"),
-                 "error": ("retry", "change-executor")}.get(result, ())
+        valid = {"question": ("answer",), "denied": ("run", "run-always", "deny") if done.get("outside")
+                 else ("allow", "deny"), "error": ("retry", "change-executor")}.get(result, ())
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
                    for s in st.running())
@@ -2159,10 +2171,18 @@ class FlowEngine(PlanEditing):
                                                "allowedCommands": [*project.allowed_commands, command]})
                 except BoardError as exc:
                     raise FlowError(exc.code, str(exc)) from None
+        if choice in ("run", "run-always"):
+            from ..board.commands import MAX_COMMAND, is_forbidden
+            command = str(done.get("command") or "").strip()
+            _, project = self._project(card)
+            if not command or len(command) > MAX_COMMAND or is_forbidden(command, project.denied_commands):
+                raise FlowError("forbidden-command", f"polecenia „{command}” nie można uruchomić poza piaskownicą")
+            if choice == "run-always":
+                self._remember_outside(project.slug, command)
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
                                     choice=choice, answer=answer if choice == "answer" else "",
-                                    command=done.get("command") or "" if choice in ("allow", "deny") else "",
-                                    executor=executor if choice == "change-executor" else "")
+                                    command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always")
+                                    else "", executor=executor if choice == "change-executor" else "")
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
 
     def _resume_executor(self, card: str, st: FlowState, step: dict, name: str, *, changed=False,
@@ -2269,6 +2289,12 @@ class FlowEngine(PlanEditing):
         """Ten sam ticket i worktree; nowa próba ma osobny katalog wyniku i zdarzenie."""
         if any(s.get("parentStep") == step.get("step") for s in st.steps.values()):
             return
+        done = st.finished.get(step.get("step")) or {}
+        if done.get("outside") and decision.get("choice") in ("run", "run-always"):
+            decision = self._outside_ready(card, step, done, decision)
+            if decision is None:
+                return          # polecenie poza piaskownicą jeszcze trwa
+            st = fold(self.journal.read(card))
         item, project = self._project(card)
         info = ticket_of(st, step.get("ticket") or "")
         resume_ticket = step.get("ticket") or ("" if step.get("kind") == "close" or
@@ -2938,11 +2964,15 @@ class FlowEngine(PlanEditing):
         if data.get("result") == "done" and step.get("kind") == "planning" and step.get("mode") == "interactive":
             snapshot_dir = self._freeze_planning_output(card, name, out)
         extra = {k: v for k, v in (("wip", wip), ("messages", messages)) if v}
+        remembered = False
         if data.get("result") == "denied":
             from ..board.commands import MAX_COMMAND, is_forbidden
             _, project = self._project(card)
             command = data.get("command") or ""
             data["canAllow"] = len(command) <= MAX_COMMAND and not is_forbidden(command, project.denied_commands)
+            if data.get("outside"):
+                extra["outside"] = True
+                remembered = data["canAllow"] and command in self._outside_remembered(project.slug)
         self.journal.append(card, "step.finished", step=name, ticket=step.get("ticket") or "",
                             result=data.get("result"), reason=data.get("reason") or "",
                             question=data.get("question") or "", command=data.get("command") or "",
@@ -2951,6 +2981,11 @@ class FlowEngine(PlanEditing):
                             exit=exit_code, snapshotDir=snapshot_dir, **extra)
         if data.get("result") == "denied" and not data.get("canAllow", True):
             self._auto_deny(card, name, step, data.get("command") or "")
+        elif remembered:
+            # Polecenie zapamiętane przez użytkownika („zawsze w tym projekcie”) — bez pytania.
+            self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
+                                kind=step.get("kind") or "", choice="run", answer="",
+                                command=data.get("command") or "", executor="", auto=True)
         if merged_tip:
             self.journal.append(card, "result", action="merge", key=step.get("ticket") or "",
                                 ok=True, commit=merged_tip, resolved=True)
@@ -3042,11 +3077,17 @@ class FlowEngine(PlanEditing):
             return {"result": "error", "reason": "bad-result"}
         if (data["result"] == "question" and
                 (not isinstance(data.get("question"), str) or not data["question"].strip())) or \
-                (data["result"] == "denied" and
+                (data["result"] in ("denied", "outside") and
                  (not isinstance(data.get("command"), str) or not data["command"].strip() or
                   any(c in data["command"] for c in "\n\r\0"))):
             return {"result": "error", "reason": "bad-result"}
         notes = data.get("notes") if isinstance(data.get("notes"), list) else []
+        if data["result"] == "outside":
+            # Prośba o uruchomienie poza piaskownicą idzie ścieżką zgody na polecenie (dziennik, decyzja,
+            # wznowienie, restart), z flagą `outside` — wynik polecenia dostaje wznowiony krok (03.11).
+            return {"result": "denied", "outside": True, "reason": str(data.get("reason") or "")[:600],
+                    "question": "", "command": data["command"].strip(),
+                    "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
         return {"result": data["result"], "reason": str(data.get("reason") or "")[:300],
                 "question": str(data.get("question") or "")[:2000], "command": str(data.get("command") or ""),
                 "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
@@ -3163,6 +3204,73 @@ class FlowEngine(PlanEditing):
         except FlowGitError as exc:
             raise FlowError("diff", str(exc)) from None
         return {"ok": True, "id": card, "main": main, "branch": info["cardBranch"], "diff": diff}
+
+    # --- polecenia poza piaskownicą (03.11) --------------------------------------------------------
+
+    def _outside_remembered(self, slug: str) -> list:
+        value = (self._settings_data().get("outsideCommands") or {}).get(slug) or []
+        return [c for c in value if isinstance(c, str)] if isinstance(value, list) else []
+
+    def _remember_outside(self, slug: str, command: str) -> None:
+        data = self._settings_data()
+        allowed = data.get("outsideCommands") if isinstance(data.get("outsideCommands"), dict) else {}
+        current = [c for c in (allowed.get(slug) or []) if isinstance(c, str)]
+        if command not in current:
+            allowed[slug] = current + [command]
+        data["outsideCommands"] = allowed
+        self._write_settings(data)
+
+    def _outside_ready(self, card: str, step: dict, done: dict, decision: dict):
+        """Zgoda na polecenie poza piaskownicą: uruchamia je raz (jednostka systemd, kod wyjścia w pliku) i zwraca
+        decyzję z wynikiem do wznowienia kroku, albo None, gdy polecenie jeszcze trwa."""
+        name = step.get("step") or ""
+        events = [e for e in self.journal.read(card) if e.get("step") == name and
+                  e.get("type") in ("outside.started", "outside.finished")]
+        finished = next((e for e in events if e["type"] == "outside.finished"), None)
+        if finished:
+            return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
+        started = next((e for e in events if e["type"] == "outside.started"), None)
+        if started is None:
+            self._start_outside(card, step, done.get("command") or "")
+            return None
+        code = stepstop.read_exit_code(os.path.dirname(os.path.dirname(started["exitFile"])))
+        if code is None and time.time() - _epoch(started.get("ts")) < OUTSIDE_TIMEOUT:
+            return None
+        if code is None:
+            stepstop._systemctl("stop", started["unit"] + ".scope")
+            code = "przekroczony czas"
+        tail = ""
+        try:
+            with open(started["log"], "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                fh.seek(max(0, fh.tell() - OUTSIDE_TAIL))
+                tail = fh.read().decode("utf-8", "replace")
+        except OSError:
+            tail = "(brak wyniku)"
+        self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
+                            command=started.get("command") or "", exit=code, tail=tail)
+        return {**decision, "answer": f"Kod wyjścia: {code}\nKoniec wyniku:\n{tail}"}
+
+    def _start_outside(self, card: str, step: dict, command: str) -> None:
+        name = step.get("step") or ""
+        folder = os.path.join(step.get("stepDir") or "", "outside")
+        os.makedirs(os.path.join(folder, "in"), exist_ok=True)
+        exit_file = os.path.join(folder, "in", "exit-code")
+        log = os.path.join(folder, "outside.log")
+        unit = f"tide-outside-{name}"
+        env = dict(os.environ)
+        from ..tasks import node as node_mod
+        prefix = node_mod.node_home(os.path.expanduser("~"))
+        if prefix:
+            env["PATH"] = os.path.join(prefix, "bin") + os.pathsep + env.get("PATH", "")
+        argv = [self.systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet", f"--unit={unit}", "--",
+                "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
+                exit_file, "/bin/sh", "-c", command]
+        with open(log, "ab") as out:
+            subprocess.Popen(argv, cwd=step.get("worktree") or None, env=env, stdin=subprocess.DEVNULL,
+                             stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+        self.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "", command=command,
+                            unit=unit, log=log, exitFile=exit_file)
 
     AUTO_DENY_LIMIT = 3
 

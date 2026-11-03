@@ -242,6 +242,15 @@ elif word in ("blad-dwa", "blad-zmien"):
         finish("done")
     else:
         finish("error", reason="awaria testowa")
+elif word == "poza":
+    if "uruchomił poza piaskownicą" in prompt and "zewnetrzne-ok" in prompt:
+        finish("done")
+    elif "nie zgodził się uruchomić poza piaskownicą" in prompt:
+        finish("done")
+    else:
+        with open(result, "w", encoding="utf-8") as fh:
+            json.dump({"result": "outside", "command": "echo zewnetrzne-ok",
+                       "reason": "potrzebna sieć do instalacji"}, fh)
 elif word == "smieci":
     junk = os.path.join(cwd, "debug_tmp.py")
     if "worktree ticketu ma niezacommitowane" in prompt:

@@ -69,6 +69,10 @@ Zabronione polecenia:
 Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.
 Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedno polecenie nie zezwala
 na cały program ani na łańcuch poleceń.
+Jeśli potrzebujesz polecenia, którego piaskownica kroku nie wykona (sieć, np. `npm install <paczka>`; Docker/
+Testcontainers; pełne testy, które same uruchamiają piaskownicę), zapisz
+{{"result":"outside","command":"jedno pełne polecenie","reason":"po co i dlaczego nie w piaskownicy"}} i zakończ krok.
+Użytkownik może je uruchomić poza piaskownicą w tym worktree; przy wznowieniu dostaniesz kod wyjścia i koniec wyniku.
 """
 
 
@@ -78,6 +82,11 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
         detail = f"Pytanie z poprzedniej próby: {prior.get('question') or ''}\nOdpowiedź użytkownika: {answer}"
     elif choice == "allow":
         detail = f"Użytkownik zezwolił na dokładne polecenie: {command}"
+    elif choice in ("run", "run-always"):
+        detail = (f"Użytkownik uruchomił poza piaskownicą, w tym worktree, polecenie: {command}\n{answer}\n"
+                  "Zmiany w plikach (np. package.json, package-lock.json) są już w worktree — sprawdź `git status`.")
+    elif choice == "deny" and prior.get("outside"):
+        detail = f"Użytkownik nie zgodził się uruchomić poza piaskownicą: {command}. Kontynuuj bez tego."
     elif choice == "deny":
         detail = f"Użytkownik odmówił zgody na polecenie: {command}. Kontynuuj bez niego."
         if answer:

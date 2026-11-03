@@ -1065,3 +1065,37 @@ class DotnetRestoreTest(unittest.TestCase):
             self.assertIn("--no-restore -m:1 -nodeReuse:false --disable-build-servers", dotnet.prompt_note(True, ""))
         with tempfile.TemporaryDirectory() as empty:
             self.assertFalse(dotnet.is_dotnet(empty))
+
+
+class NodeStepTest(BackgroundBase):
+    """03.11, K-31: `node` z nvm w kroku tylko do odczytu, zależności instaluje usługa przed krokiem."""
+
+    def test_node_step_reads_the_installation_and_has_it_on_path(self):
+        prefix = os.path.join(self.home, ".nvm", "versions", "node", "v20.1.0")
+        os.makedirs(os.path.join(prefix, "bin"))
+        cmd = agentcmd.background(self.step(node_home=prefix))
+        self.assertTrue(cmd.env["PATH"].startswith(os.path.join(prefix, "bin") + os.pathsep))
+        fs = self.settings(cmd)["sandbox"]["filesystem"]
+        self.assertIn(prefix, fs["allowRead"])
+        self.assertNotIn(prefix, fs["allowWrite"])
+
+    def test_node_home_prefers_the_nvm_default_and_install_skips_current_modules(self):
+        from tide_daemon.tasks import node
+        versions = os.path.join(self.home, ".nvm", "versions", "node")
+        for version in ("v18.20.0", "v20.19.6", "v22.1.0"):
+            os.makedirs(os.path.join(versions, version, "bin"))
+            open(os.path.join(versions, version, "bin", "node"), "w").close()
+        os.makedirs(os.path.join(self.home, ".nvm", "alias"))
+        with open(os.path.join(self.home, ".nvm", "alias", "default"), "w") as fh:
+            fh.write("20\n")
+        self.assertEqual(node.node_home(self.home), os.path.realpath(os.path.join(versions, "v20.19.6")))
+        project = os.path.join(self.root, "front")
+        os.makedirs(os.path.join(project, "node_modules"))
+        open(os.path.join(project, "package.json"), "w").close()
+        open(os.path.join(project, "package-lock.json"), "w").close()
+        open(os.path.join(project, "node_modules", ".package-lock.json"), "w").close()
+        self.assertTrue(node.is_node(project))
+        calls = []
+        self.assertEqual(node.install(project, self.home, runner=lambda *a, **k: calls.append(a)),
+                         (True, "zależności aktualne"))
+        self.assertEqual(calls, [])

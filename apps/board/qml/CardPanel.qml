@@ -1134,6 +1134,11 @@ Rectangle {
                             text: stepDecision.flow && stepDecision.flow.action === "answer" ? stepDecision.flow.question || ""
                                 : stepDecision.flow && stepDecision.flow.action === "permission"
                                   ? "Polecenie wymaga zgody: " + (stepDecision.flow.command || "")
+                                : stepDecision.flow && stepDecision.flow.action === "outside"
+                                  ? "Krok prosi o uruchomienie poza piaskownicą (na Twoim koncie, z siecią), w worktree ticketu:\n"
+                                    + (stepDecision.flow.command || "")
+                                    + (stepDecision.flow.reason ? "\nPowód: " + stepDecision.flow.reason : "")
+                                    + (stepDecision.flow.canAllow === false ? "\nTego polecenia nie można uruchomić (łańcuch albo zakaz projektu)." : "")
                                 : stepDecision.flow && stepDecision.flow.action === "error"
                                   ? (stepDecision.flow.trackerError ? "Operacja YouTracka nie powiodła się: " : "Krok nie powiódł się: ")
                                     + (stepDecision.flow.error || "")
@@ -1215,6 +1220,42 @@ Rectangle {
                                 panel.busy = true
                                 panel.stepResolveRequested(panel.card.id, { choice: "answer", answer: panel.stepAnswer.trim() })
                             }
+                        }
+                        RowLayout {
+                            // Polecenie poza piaskownicą (03.11): Tide uruchamia je i oddaje wynik krokowi.
+                            Layout.fillWidth: true
+                            visible: Boolean(stepDecision.flow && stepDecision.flow.action === "outside")
+                            spacing: 8
+                            PillButton {
+                                objectName: "cardStepOutsideRun"
+                                text: "Uruchom poza piaskownicą"
+                                enabled: Boolean(!panel.busy && stepDecision.flow && stepDecision.flow.canAllow !== false)
+                                onClicked: {
+                                    panel.busy = true
+                                    panel.stepResolveRequested(panel.card.id, { choice: "run" })
+                                }
+                            }
+                            PillButton {
+                                objectName: "cardStepOutsideAlways"
+                                text: "Uruchom i pamiętaj w projekcie"
+                                outline: true
+                                enabled: Boolean(!panel.busy && stepDecision.flow && stepDecision.flow.canAllow !== false)
+                                onClicked: {
+                                    panel.busy = true
+                                    panel.stepResolveRequested(panel.card.id, { choice: "run-always" })
+                                }
+                            }
+                            PillButton {
+                                objectName: "cardStepOutsideDeny"
+                                text: "Nie uruchamiaj"
+                                outline: true
+                                enabled: !panel.busy
+                                onClicked: {
+                                    panel.busy = true
+                                    panel.stepResolveRequested(panel.card.id, { choice: "deny" })
+                                }
+                            }
+                            Item { Layout.fillWidth: true }
                         }
                         RowLayout {
                             Layout.fillWidth: true

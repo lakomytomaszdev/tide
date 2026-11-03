@@ -147,6 +147,7 @@ class Step:
     tmp_root: str = "/tmp"          # poza ~; tu Claude Code dostaje katalog tymczasowy kroku
     read_dirs: tuple = ()          # dodatkowe repozytoria karty, wyłącznie do odczytu
     dotnet: bool = False           # projekt .NET: pamięć pakietów NuGet do odczytu i środowisko bez serwerów buildu
+    node_home: str = ""            # projekt Node: instalacja Node (nvm) tylko do odczytu, jej bin na początku PATH
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
 
 
@@ -322,6 +323,8 @@ def _env(step: Step, home_env: dict, inp: str) -> dict:
         env["GIT_CONFIG_NOSYSTEM"] = "1"     # git w snapie nie czyta /etc/gitconfig (inaczej „unknown error”)
     else:
         env["CLAUDE_CODE_TMPDIR"] = os.path.join(step.tmp_root, f"tide-step-{step.step_id}")
+    if step.node_home:
+        env["PATH"] = os.path.join(step.node_home, "bin") + os.pathsep + env.get("PATH", "")
     if step.dotnet:
         from . import dotnet
         # Katalog CLI w katalogu wyjściowym kroku — jedynym miejscu z zapisem w piaskownicy (K-15: katalog
@@ -352,7 +355,8 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
         "autoAllowBashIfSandboxed": not step.enforce_command_policy,
         "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs,
                                                         *([env["NUGET_PACKAGES"]] if step.dotnet and env.get("NUGET_PACKAGES") else []),
-                                                        *_font_dirs(home)],
+                                                        *_font_dirs(home),
+                                                        *([step.node_home] if step.node_home else [])],
                        "allowWrite": [out]},
         "network": {"allowedDomains": []}},
         # Zasada projektów: commity bez podpisów i wzmianek o AI (K-33/PT-108: review odrzuciło stopkę

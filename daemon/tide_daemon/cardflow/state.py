@@ -777,6 +777,16 @@ def derived(st: FlowState, card: dict) -> dict | None:
             out["flow"].update({"action": "answer", "question": done.get("question") or ""})
         out["question"] = _clip(done.get("question") or "", 120)
         return _fill(out, "waiting", f"{ident} pyta: „{out['question']}”" if out["question"] else f"{ident} pyta")
+    if result == "denied" and done.get("outside"):
+        decision = st.step_decisions.get(st.last_step) or {}
+        if decision.get("choice") in ("run", "run-always"):
+            return _fill(out, "progress", f"{ident} · uruchamiam poza piaskownicą: {_clip(done.get('command') or '', 80)}")
+        if decision:
+            return _fill(out, "progress", f"{ident} · wznawiam po decyzji o poleceniu")
+        out["flow"].update({"action": "outside", "command": done.get("command") or "",
+                            "reason": done.get("reason") or "", "canAllow": bool(done.get("canAllow", True))})
+        out["question"] = done.get("reason") or ""
+        return _fill(out, "waiting", f"{ident} prosi o uruchomienie poza piaskownicą: „{_clip(done.get('command') or '?', 80)}”")
     if result == "denied":
         if st.last_step in st.step_decisions:
             return _fill(out, "progress", f"{ident} · wznawiam po decyzji o poleceniu")

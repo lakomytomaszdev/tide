@@ -13,6 +13,45 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: box, timeout=20), "ResolveCardStep bez odpowiedzi")
         return json.loads(box[0])
 
+    def test_outside_command_runs_on_consent_and_its_output_resumes_the_step(self):
+        # 03.11: krok prosi o polecenie, którego piaskownica nie wykona (sieć, Docker, pełne testy).
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
+        self.assertTrue(self.start(card_id)["ok"])
+        card = self.wait_column(card_id, "waiting")
+        flow = card["derived"]["flow"]
+        self.assertEqual((flow["action"], flow["command"]), ("outside", "echo zewnetrzne-ok"))
+        self.assertIn("sieć", flow["reason"])
+        self.assertEqual(self.decide(card_id, choice="allow")["error"], "no-step-question")
+        self.assertTrue(self.decide(card_id, choice="run")["ok"])
+        self.wait_column(card_id, "review", timeout=30)
+        finished = self.of(card_id, "outside.finished")
+        self.assertEqual((finished[0]["exit"], finished[0]["tail"].strip()), (0, "zewnetrzne-ok"))
+        resumed = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][1]
+        with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            prompt = json.load(fh)["prompt"]
+        self.assertIn("uruchomił poza piaskownicą", prompt)
+        self.assertIn("zewnetrzne-ok", prompt)
+
+    def test_remembered_outside_command_runs_without_asking_next_time(self):
+        first = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
+        self.assertTrue(self.start(first)["ok"])
+        self.wait_column(first, "waiting")
+        self.assertTrue(self.decide(first, choice="run-always")["ok"])
+        self.wait_column(first, "review", timeout=30)
+        second = self.card(description="Drugi eksport.\n\nATRAPA: poza")
+        self.assertTrue(self.start(second)["ok"])
+        self.wait_column(second, "review", timeout=40)
+        decision = self.of(second, "step.decision")[0]
+        self.assertEqual((decision["choice"], decision["auto"]), ("run", True))
+
+    def test_declined_outside_command_resumes_without_it(self):
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "waiting")
+        self.assertTrue(self.decide(card_id, choice="deny")["ok"])
+        self.wait_column(card_id, "review", timeout=30)
+        self.assertEqual(self.of(card_id, "outside.started"), [])
+
     def test_expired_login_asks_at_once_without_burning_the_retry(self):
         # 03.11 07:58: wygasłe logowanie Claude wyglądało jak „exit” i zużywało automatyczne ponowienie.
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: login")
