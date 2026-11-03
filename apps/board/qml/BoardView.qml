@@ -8,7 +8,7 @@
 // okno „Co ma zrobić agent?”, przycisk „Uruchom” w popupie kafelka), takeFocus(), tab=plan|spec
 // i expand=1 — zakładka dokumentu w otwartym panelu karty (z card=K-12),
 // railInfo — ramka „Dane tablicy” i link „Projekty i tagi” na dole paska; import=1 — strona „Projekty i tagi”
-// z otwartym importem z YouTracka (PT-7). Okno uruchomienia (PT-43): launch=K-9[,light|spec][,codex][,local][,move][,manual],
+// z otwartym importem z YouTracka (PT-7); decide=K-8 — okno decyzji karty (PT-132). Okno uruchomienia (PT-43): launch=K-9[,light|spec][,codex][,local][,move][,manual],
 // shots=/a.png,/b.png — miniatury zrzutów w oknie (tylko podgląd).
 // Zrzuty ekranu i model okna „Co ma zrobić agent?” idą przez backend (imagesJson, modelsJson, tasksJson,
 // pasteImage, addFiles, capture…); na czas „Zrób zrzut” widok chowa całe okno Tide i przywraca je po Spectacle.
@@ -62,7 +62,8 @@ Item {
     }
 
     function takeFocus() {
-        if (page.launchOpen) page.launchDialog.forceActiveFocus()
+        if (page.decisionOpen) page.decisionDialog.forceActiveFocus()
+        else if (page.launchOpen) page.launchDialog.forceActiveFocus()
         else if (page.panelOpen) page.cardPanel.forceActiveFocus()
         else page.forceActiveFocus()
     }
@@ -191,6 +192,7 @@ Item {
                 managePage.openProject = view.previewValue("manage") === "1" ? "" : view.previewValue("manage")
             }
             if (view.previewValue("import")) openImport()
+            if (view.previewValue("decide")) openDecisions(view.previewValue("decide"))
         }
     }
 

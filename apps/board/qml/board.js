@@ -78,6 +78,17 @@ function workingFlow(card) {
     return !!(card && card.derived && card.derived.flow) && (shown === "progress" || shown === "waiting")
 }
 
+// Decyzje karty dla okna decyzji (PT-123: `derived.flow.decisions[]`, kolejność i treść z usługi) albo [].
+function decisions(card) {
+    const flow = card && card.derived && card.derived.flow
+    return flow && Array.isArray(flow.decisions) ? flow.decisions : []
+}
+
+// Kafelek w „Czeka na mnie” z decyzjami otwiera okno decyzji (PT-132); wybór widoku w ustawieniach to PT-133.
+function opensDecisions(card) {
+    return !!card && displayColumn(card) === "waiting" && decisions(card).length > 0
+}
+
 // Karta w kolumnie ręcznej (bez stanu z koordynatora), do potwierdzenia albo pracująca karta z dziennikiem — tylko
 // taką da się przeciągać.
 function draggable(card) {

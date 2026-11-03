@@ -10,6 +10,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "tide" as Tide
+import "card" as CardUi
 import "board.js" as Logic
 
 Rectangle {
@@ -38,6 +39,10 @@ Rectangle {
     property string panelColumn: "backlog"
     property string toast: ""
     property string toastTone: "rose"        // rose — błąd, butter — commit czeka
+    // Okno decyzji (PT-132, apps/common/qml/card): karta, której decyzje pokazuje, i tagi wysłanych odpowiedzi.
+    property bool decisionOpen: false
+    property string decisionCardId: ""
+    property var decisionTags: ({})          // tag zapisu → [karta, id decyzji]
     // Przeciąganie.
     property bool dragging: false
     property string dragId: ""
@@ -107,6 +112,7 @@ Rectangle {
     readonly property bool exists: !!snapshot && snapshot.exists === true
     readonly property bool filtered: tagFilter !== "" || projectFilter !== "" || query.trim() !== ""
     readonly property var panelCard: panelCardId ? (snapshot && snapshot.cards || []).find(c => c.id === panelCardId) || null : null
+    readonly property var decisionCard: decisionCardId ? (snapshot && snapshot.cards || []).find(c => c.id === decisionCardId) || null : null
     readonly property var errorLines: Logic.errorLines(snapshot, 3)
     readonly property var youtrackNotes: Logic.youtrackNotes(snapshot)
     readonly property var lanes: {
@@ -125,6 +131,7 @@ Rectangle {
     }
     readonly property alias cardPanel: cardPanel
     readonly property alias launchDialog: launchDialog
+    readonly property alias decisionDialog: decisionDialog
     readonly property alias managePage: manage
     readonly property alias columnsRow: columnsRow
 
@@ -163,6 +170,63 @@ Rectangle {
         const item = findCard(selectedId)
         if (item) item.forceActiveFocus()
         else page.forceActiveFocus()
+    }
+
+    // Kliknięcie kafelka: karta z decyzjami w „Czeka na mnie” otwiera okno decyzji, inne — panel karty.
+    function activateCard(id) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
+        if (Logic.opensDecisions(card)) openDecisions(id)
+        else openCard(id)
+    }
+
+    // --- okno decyzji (PT-132) ------------------------------------------------------------------
+
+    function openDecisions(id) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
+        if (!card || Logic.decisions(card).length === 0) return false
+        panelOpen = false
+        selectedId = id
+        decisionCardId = id
+        decisionOpen = true
+        decisionDialog.start()
+        return true
+    }
+
+    function closeDecisions() {
+        if (!decisionOpen) return
+        decisionOpen = false
+        const item = findCard(decisionCardId)
+        if (item) item.forceActiveFocus()
+        else page.forceActiveFocus()
+    }
+
+    // Odpowiedź z okna: metoda /Board i parametry wprost z decyzji (bez liczenia na stronie).
+    function sendDecision(cardId, decisionId, method, params) {
+        const tag = nextTag("decision:" + cardId)
+        const tags = Object.assign({}, decisionTags)
+        tags[tag] = [cardId, decisionId]
+        decisionTags = tags
+        if (method === "ResolveCardStep") stepResolveRequested(tag, cardId, JSON.stringify(params))
+        else if (method === "ResolveCardReview") reviewResolveRequested(tag, cardId, params.choice || "")
+        else if (method === "ApproveCardPlan") planApproveRequested(tag, cardId)
+        else if (method === "EditCardPlan") planEditRequested(tag, cardId, JSON.stringify(params))
+        else if (method === "EnterStep") enterStepRequested(tag, cardId, params.step || "")
+        else handleReply(tag, { ok: false, error: "unknown-method", message: "Tablica nie zna metody " + method + "." })
+    }
+
+    function handleDecisionReply(tag, error) {
+        const sent = decisionTags[tag]
+        const tags = Object.assign({}, decisionTags)
+        delete tags[tag]
+        decisionTags = tags
+        if (!sent || !error) return
+        // Usługa odrzuciła odpowiedź: decyzja wraca do okna z powodem (okno otwiera się ponownie, jeśli zamknięte).
+        if (!decisionOpen && sent[0] === decisionCardId) {
+            decisionOpen = true
+            decisionDialog.forceActiveFocus()
+        }
+        if (sent[0] === decisionCardId) decisionDialog.failed(sent[1], error)
+        else showToast("Nie wysłano odpowiedzi dla " + sent[0] + ": " + error, "rose")
     }
 
     function openPlanManager() {
@@ -397,6 +461,8 @@ Rectangle {
         const notice = Logic.commitNote(reply)
         if (tag.indexOf("launch-") === 0) {
             handleLaunchReply(tag, reply)
+        } else if (tag.indexOf("decision:") === 0) {
+            handleDecisionReply(tag, error)
         } else if (tag.indexOf("move:") === 0) {
             if (error) {
                 optimistic = optimistic.filter(m => m.tag !== tag)
@@ -1106,7 +1172,7 @@ Rectangle {
                         canDiff: page.canDiff
                         tagTone: page.tagTone
                         dragHost: page
-                        onCardClicked: id => page.openCard(id)
+                        onCardClicked: id => page.activateCard(id)
                         onAddRequested: column => page.newCard(column)
                         onDropped: (id, before) => page.moveCard(id, modelData.id, before)
                         onMoveRequested: (id, column) => page.moveCard(id, column, page.topOf(column))
@@ -1221,7 +1287,7 @@ Rectangle {
                                             canDiff: page.canDiff
                                             tagTone: page.tagTone
                                             dragHost: page
-                                            onCardClicked: id => page.openCard(id)
+                                            onCardClicked: id => page.activateCard(id)
                                             onDropped: (id, before) => page.moveCard(id, modelData.id, before)
                                             onMoveRequested: (id, column) => page.moveCard(id, column, page.topOf(column))
                                             onSessionRequested: session => page.sessionRequested(session)
@@ -1485,6 +1551,30 @@ Rectangle {
         }
     }
 
+    // --- okno decyzji (PT-132) -------------------------------------------------------------------
+    CardUi.DecisionDialog {
+        id: decisionDialog
+        objectName: "decisionDialog"
+        anchors.fill: parent
+        z: 40
+        visible: page.decisionOpen && !page.managing
+        cardId: page.decisionCardId
+        decisions: Logic.decisions(page.decisionCard)
+        onAnswered: (decisionId, method, params) => page.sendDecision(page.decisionCardId, decisionId, method, params)
+        onLaterRequested: {
+            page.closeDecisions()
+            page.showToast("Karta zostaje w „Czeka na mnie” — wrócisz do niej z kafelka.", "butter")
+        }
+        onFinished: page.closeDecisions()
+        // „Otwórz całą kartę” — na razie obecny panel karty (docelowy widok zmienia PT-128).
+        onFullCardRequested: notice => {
+            const id = page.decisionCardId
+            page.decisionOpen = false
+            page.openCard(id)
+            if (notice) cardPanel.notice = notice
+        }
+    }
+
     // --- duch przeciąganej karty ----------------------------------------------------------------
     Item {
         id: dragLayer
@@ -1505,7 +1595,8 @@ Rectangle {
     // Skróty: Ctrl+N nowa karta, Ctrl+F szukaj, Esc zamyka panel albo stronę.
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape) {
-            if (page.launchOpen && !page.managing) page.cancelLaunch()
+            if (page.decisionOpen && !page.managing) page.closeDecisions()
+            else if (page.launchOpen && !page.managing) page.cancelLaunch()
             else if (page.panelOpen) page.closePanel()
             else if (page.managing) page.managing = false
             else if (page.query !== "") { search.text = ""; page.query = "" }
