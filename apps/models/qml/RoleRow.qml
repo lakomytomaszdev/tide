@@ -1,4 +1,4 @@
-// Rola modelu (Raport, Opisy kart, Agent, Wyszukiwanie): wybór modelu z zainstalowanych na serwerze roli, ostrzeżenie,
+// Rola modelu (Raport, Opisy kart, Rozpoznawanie pytań, Agent, Wyszukiwanie): wybór modelu z zainstalowanych na serwerze roli, ostrzeżenie,
 // gdy wybranego modelu tam nie ma (z „Pobierz teraz”), i „Zaawansowane”: przypięcie do serwera albo
 // „za domyślnym” oraz kontekst (puste — domyślny). Każda zmiana to SetRole z serwerem przypięcia (bez niego
 // usługa odpina rolę); wynik obok kontrolki. readOnly — usługa nie podaje roles.*.pinned: bez zgadywania,
@@ -42,7 +42,7 @@ ColumnLayout {
     }
     function setModel(name) {
         if (readOnly) return
-        page.send("SetRole", Logic.roleRequest(row.id, name, pinValue(), undefined), tag)
+        page.send("SetRole", Logic.roleRequest(row.id, name, Logic.rolePin(row, name, pinValue()), undefined), tag)
     }
     function setPin(endpoint) {
         if (readOnly || !row.model) return
@@ -154,6 +154,13 @@ ColumnLayout {
         emptyText: role.row && !role.row.exists ? "nie ustawiony — wybierz model" : "wybierz model"
         accessibleName: role.row ? "Model: " + role.row.title : "Model"
         onChosen: name => role.setModel(name)
+    }
+    // Rozpoznawanie pytań: bez modelu ocena jest wyłączona (liczą reguły); model w chmurze ma znacznik chmury.
+    Note {
+        objectName: "roleState"
+        Layout.fillWidth: true
+        tone: role.row && role.row.cloud ? "warn" : "muted"
+        text: role.row ? Logic.roleState(role.row) : ""
     }
     Note {
         objectName: "listNote"

@@ -109,6 +109,8 @@ def _status(default, endpoints: dict, roles: dict, report=None, pulls=None, chec
             exists=True, agent_program="codex", search=None) -> dict:
     if "embed" not in roles:
         roles = dict(roles, embed=_role(default, "bge-m3", None, endpoints))
+    if "classify" not in roles:   # usługa zawsze podaje rolę domyślną (DEFAULT_ROLES), także ze starego models.json
+        roles = dict(roles, classify=_role(default, "qwen3:8b", None, endpoints))
     return {"checked": checked, "default": default,
             "config": {"path": CONFIG_PATH, "exists": exists, "error": "", "warnings": list(warnings)},
             "endpoints": endpoints, "roles": roles, "report": report if report is not None else _report(),

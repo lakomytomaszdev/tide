@@ -218,7 +218,7 @@ Item {
         const rows = Logic.roleRows(mac)
         console.warn("ROLES " + rows.map(r => r.id + ":" + r.model + "@" + r.endpoint + (r.pinned ? "!" : "") + ":" + r.models.length).join(","))
         console.warn("WARN " + rows.map(r => Logic.roleWarning(r)).join("|") + "|" + Logic.roleWarning(Logic.roleRows(d.pulling)[1]))
-        console.warn("AGENT " + JSON.stringify(Logic.roleRows(d.local)[2].exists) + ":" + Logic.roleRows(d.local)[2].endpoint)
+        console.warn("AGENT " + JSON.stringify(Logic.roleRows(d.local)[3].exists) + ":" + Logic.roleRows(d.local)[3].endpoint)
         const explicit = JSON.parse(JSON.stringify(d.local))
         explicit.roles.summary.pinned = true
         const old = JSON.parse(JSON.stringify(d.local))
@@ -283,8 +283,8 @@ Item {
                                                 "nic nie jest teraz załadowane|serwer nie mówi, co ma w pamięci")
         self.assertEqual(warned(log, "SUMMARY"), "Używany serwer: Mac-Studio · działa · Ollama 0.41.2 · 5 modeli")
         self.assertEqual(warned(log, "ROLES"), "summary:qwen3:8b@local:5,describe:qwen3:8b@local:5,"
-                                               "agent:qwen3-coder:30b@Mac-Studio!:0,embed:bge-m3@local:5")
-        self.assertEqual(warned(log, "WARN"), "||Serwer „Mac-Studio” nie odpowiada — rola niedostępna||"
+                                               "classify:qwen3:8b@local:5,agent:qwen3-coder:30b@Mac-Studio!:0,embed:bge-m3@local:5")
+        self.assertEqual(warned(log, "WARN"), "|||Serwer „Mac-Studio” nie odpowiada — rola niedostępna||"
                                               "Modelu gpt-oss:20b nie ma na serwerze „Ten komputer”",
                          "wyłączone wyszukiwanie (mac-offline) — bez ostrzeżenia")
         self.assertEqual(warned(log, "AGENT"), "false:local")
@@ -304,7 +304,7 @@ Item {
         self.assertTrue(notes.endswith(" ¦ 1"), "bez `report` (np. --print-models) — jedna uwaga")
         self.assertEqual(warned(log, "MODELS"), "gpt-oss:120b:65,3 GB:w pamięci · 100% na karcie:Raport,qwen3:32b:20,2 GB::,"
                                                 "qwen3-coder:30b:18,6 GB::Agent,qwen3:8b:5,2 GB:w pamięci · 100% na karcie:"
-                                                "Opisy kart,bge-m3:1,2 GB::Wyszukiwanie")
+                                                "Opisy kart+Rozpoznawanie pytań,bge-m3:1,2 GB::Wyszukiwanie")
         self.assertEqual(warned(log, "HINTS"), "qwen3:8b✓,gpt-oss:20b✓,bge-m3✓|gpt-oss:120b✓,qwen3:32b✓,qwen3-coder:30b✓,qwen3:8b✓")
         self.assertEqual(warned(log, "PULLS"), "gpt-oss:20b:true:5,5 GB z 13,8 GB · 39%:0.40 ¦ llama-nie-ma:7b:false:"
                                                "Model lokalny: serwer odpowiedział 500: pull model manifest: file does not "
@@ -743,6 +743,102 @@ Item {
         self.assertEqual(warned(log, "GONE"), "|null")
         self.assertEqual(warned(log, "BACK"), "|null")
         self.assertEqual(warned(log, "REMOVING"), "")
+
+    def test_classify_role_from_print_models(self):
+        """PT-112: rola „Rozpoznawanie pytań” na danych z pliku (`tide-daemon.py --print-models`): stary models.json
+        bez klucza `classify` daje wartość domyślną (lokalną), bez modelu — „ocena wyłączona”, model w chmurze —
+        znacznik chmury i wybór z jawnym serwerem."""
+        from daemon.tests.test_models_core import OLLAMA_TAGS, ollama_routes, start_server, write_models
+        tags = {"models": OLLAMA_TAGS["models"] + [
+            {"name": "gpt-oss:120b-cloud", "model": "gpt-oss:120b-cloud", "size": 384, "details": {"family": "gptoss"}}]}
+        routes = {**ollama_routes(), ("GET", "/api/tags"): (200, tags)}
+        server = start_server(self, routes)
+
+        def printed(roles) -> dict:
+            folder = tempfile.mkdtemp(prefix="tide-models-classify-", dir=self.tmp)
+            path = write_models(folder, {"endpoints": {"local": {"url": server.url}}, "roles": roles})
+            env = dict(os.environ, TIDE_MODELS_CONFIG=path, DBUS_SESSION_BUS_ADDRESS="unix:path=/nonexistent/bus")
+            out = subprocess.run(["/usr/bin/python3", os.path.join(REPO, "daemon", "tide-daemon.py"), "--print-models",
+                                  "--claude-dir", folder, "--codex-dir", folder, "--workspace", folder],
+                                 capture_output=True, text=True, timeout=30, env=env)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            return load_backend().decorate(json.loads(out.stdout))
+
+        data = {"old": printed({}), "cloud": printed({"classify": "local:gpt-oss:120b-cloud"})}
+        data["off"] = json.loads(json.dumps(data["old"]))
+        del data["off"]["roles"]["classify"]      # usługa bez roli (np. starsza) — punkt bez modelu
+        self.assertEqual(data["old"]["roles"]["classify"]["model"], "qwen3:8b")
+        log = self.harness("ClassifySmoke.qml", """import QtQuick
+import "models.js" as Logic
+Item {
+    id: top
+    width: 1500; height: 1500
+    readonly property var d: %PRINTED%
+    property var calls: []
+    ModelsPage {
+        id: page
+        anchors.fill: parent
+        status: top.d.old
+        onRequested: (member, argument, tag) => top.calls.push(member + "(" + argument + ")@" + tag)
+    }
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children) {
+            const hit = find(child, name)
+            if (hit) return hit
+        }
+        return null
+    }
+    function texts(item, out, name) {
+        if (!item.visible) return out
+        if (typeof item.text === "string" && item.text !== "" && (!name || item.objectName === name)) out.push(item.text)
+        for (const child of item.children) texts(child, out, name)
+        return out
+    }
+    function state() {
+        const row = find(page, "role_classify")
+        return texts(row, [], "roleState").join("")
+    }
+    Timer {
+        interval: 100
+        running: true
+        onTriggered: top.steps()
+    }
+    function steps() {
+        console.warn("ORDER " + Logic.roleRows(top.d.old).map(r => r.id).join(","))
+        const row = find(page, "role_classify")
+        console.warn("TITLE " + texts(row, [], "").slice(0, 1).join("") + "|" + row.row.model + "|" + row.row.cloud + "|" + row.row.off)
+        console.warn("OLDSTATE " + state())
+        console.warn("OPTIONS " + row.row.models.map(m => m.name + (m.detail.indexOf("☁") >= 0 ? "☁" : "")).join(","))
+        console.warn("OTHEROPTIONS " + find(page, "role_summary").row.models.map(m => m.name).join(","))
+        row.setModel("bge-m3:latest")
+        page.finish("role:classify", "SetRole", { ok: true, error: "" })
+        row.setModel("gpt-oss:120b-cloud")
+        console.warn("CALLS " + top.calls.join(","))
+        page.status = top.d.cloud
+        Qt.callLater(() => {
+            console.warn("CLOUDSTATE " + state() + "|" + find(page, "role_classify").row.cloud)
+            page.status = top.d.off
+            Qt.callLater(() => {
+                console.warn("OFFSTATE " + state() + "|" + find(page, "role_classify").row.off)
+                Qt.quit()
+            })
+        })
+    }
+}
+""".replace("%PRINTED%", json.dumps(data, ensure_ascii=False)))
+        self.assertEqual(problems(log), [])
+        self.assertEqual(warned(log, "ORDER"), "summary,describe,classify,agent,embed")
+        self.assertEqual(warned(log, "TITLE"), "Rozpoznawanie pytań|qwen3:8b|false|false")
+        self.assertEqual(warned(log, "OLDSTATE"), "", "domyślna wartość: lokalna, bez znaczników")
+        self.assertIn("gpt-oss:120b-cloud☁", warned(log, "OPTIONS"))
+        self.assertNotIn("cloud", warned(log, "OTHEROPTIONS"), "inne role nie dostają modeli chmurowych")
+        self.assertEqual(warned(log, "CALLS"),
+                         'SetRole({"role":"classify","model":"bge-m3:latest","endpoint":""})@role:classify,'
+                         'SetRole({"role":"classify","model":"gpt-oss:120b-cloud","endpoint":"local"})@role:classify')
+        self.assertTrue(warned(log, "CLOUDSTATE").startswith("☁ w chmurze"), warned(log, "CLOUDSTATE"))
+        self.assertTrue(warned(log, "CLOUDSTATE").endswith("|true"))
+        self.assertEqual(warned(log, "OFFSTATE"), "ocena wyłączona — liczą reguły|true")
 
     def test_role_pinning(self):
         """Z `pinned` z usługi: przypięcie do używanego serwera widać, model i kontekst wysyłają serwer przypięcia,

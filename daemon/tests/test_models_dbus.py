@@ -14,6 +14,8 @@ import sys
 import tempfile
 import unittest
 
+from tide_daemon.modelnames import is_cloud_model
+
 from . import DAEMON_DIR
 from .privatebus import SERVICE, PrivateBus, requires_dbus, wait_until
 from .test_models_core import OLLAMA_PS, closed_port, ollama_routes, start_server, write_models
@@ -255,6 +257,36 @@ class ModelsSettingsDBusTest(unittest.TestCase):
         for member in ("SetEndpoint", "RemoveEndpoint", "SetDefault", "SetRole", "SetAgentProgram",
                        "SetSemanticSearch", "SetReportSummary", "TestEndpoint", "PullModel"):
             self.assertIn(f'<method name="{member}">', xml)
+
+    def test_classify_role_over_dbus(self):
+        """PT-112: rola `classify` (rozpoznawanie pytań) jak summary i describe; chmura tylko z jawnym punktem."""
+        os.makedirs(os.path.dirname(self.models))
+        with open(self.models, "w", encoding="utf-8") as fh:   # stary plik bez klucza `classify`
+            json.dump({"endpoints": {"local": {"url": self.server.url, "kind": "ollama"}}, "roles": {}}, fh)
+        self.spawn()
+        role = self.status()["roles"]["classify"]
+        self.assertEqual((role["endpoint"], role["model"], role["pinned"], role["error"]),
+                         ("local", "qwen3:8b", False, ""))
+        self.assertFalse(is_cloud_model(role["model"]), "domyślna wartość nigdy nie jest w chmurze")
+
+        self.assertEqual(self.call("SetRole", json.dumps({"role": "classify", "model": "gemma3:4b"})),
+                         {"ok": True, "error": ""})
+        with open(self.models, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["roles"]["classify"], "gemma3:4b")
+        self.assertEqual(self.status()["roles"]["classify"]["model"], "gemma3:4b", "stan od razu po zapisie")
+
+        # Model w chmurze Ollamy: bez jawnego serwera usługa odmawia i nic nie zmienia.
+        refused = self.call("SetRole", json.dumps({"role": "classify", "model": "gpt-oss:120b-cloud"}))
+        self.assertEqual(refused["ok"], False)
+        self.assertIn("chmurze", refused["error"])
+        self.assertEqual(self.status()["roles"]["classify"]["model"], "gemma3:4b")
+        # Z jawnym serwerem przechodzi i jest przypięty; rola summary nadal chmury nie przyjmie.
+        self.assertEqual(self.call("SetRole", json.dumps({"role": "classify", "model": "gpt-oss:120b-cloud",
+                                                          "endpoint": "local"})), {"ok": True, "error": ""})
+        role = self.status()["roles"]["classify"]
+        self.assertEqual((role["endpoint"], role["model"], role["pinned"]), ("local", "gpt-oss:120b-cloud", True))
+        self.assertEqual(self.call("SetRole", json.dumps({"role": "summary", "model": "gpt-oss:120b-cloud",
+                                                          "endpoint": "local"}))["ok"], False)
 
     def test_executor_catalog_over_dbus(self):
         """PT-60: katalog wykonawców zapisuje usługa; token innego dostawcy tylko w pliku; zamiana klasy z D-Bus."""
