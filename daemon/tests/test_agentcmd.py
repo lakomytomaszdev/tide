@@ -1099,3 +1099,17 @@ class NodeStepTest(BackgroundBase):
         self.assertEqual(node.install(project, self.home, runner=lambda *a, **k: calls.append(a)),
                          (True, "zależności aktualne"))
         self.assertEqual(calls, [])
+
+
+class CodexMcpTest(unittest.TestCase):
+    def test_only_configured_transports_are_disabled_and_broken_ones_are_skipped(self):
+        # 03.11, K-16/LEGAL-71: `-c mcp_servers.codex_app.enabled=false` → „invalid transport”, Codex nie startował.
+        import json as _json
+        from unittest import mock as _mock
+        listing = [{"name": "linear", "transport": {"type": "streamable_http"}},
+                   {"name": "codex_app", "transport": None}, {"name": "repl", "transport": {"type": "stdio"}}]
+        run = _mock.Mock(returncode=0, stdout=_json.dumps(listing))
+        with _mock.patch("subprocess.run", return_value=run):
+            self.assertEqual(agentcmd.list_codex_mcp("codex"), ("linear", "repl"))
+        found = agentcmd.CODEX_BROKEN_MCP.search("Error loading config.toml: invalid transport\nin `mcp_servers.codex_app`")
+        self.assertEqual(found.group(1), "codex_app")

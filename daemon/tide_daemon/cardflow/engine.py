@@ -1395,7 +1395,8 @@ class FlowEngine(PlanEditing):
                 allowed_tools=allowed_tools if selected.tool == "claude" else (),
                 disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
                 enforce_command_policy=selected.tool == "claude",
-                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet, node_home=node_home))
+                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet, node_home=node_home,
+                codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ())))
             bg.prepare()
             for source, target in zip(images, shots):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -1783,6 +1784,10 @@ class FlowEngine(PlanEditing):
             decision = st.step_decisions.get(st.last_step)
             if decision:
                 self._resume_step(card, st, step, decision)
+            elif self._codex_broken_mcp(step, dict(done)):
+                self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
+                                    kind=step.get("kind") or "", choice="retry", answer="", command="",
+                                    executor="", auto=True)
             elif int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
                 if st.last_step not in st.step_retries:
                     self.journal.append(card, "step.retry", step=st.last_step, ticket=step.get("ticket") or "",
@@ -3028,6 +3033,7 @@ class FlowEngine(PlanEditing):
         extra = {k: v for k, v in (("wip", wip), ("messages", messages)) if v}
         remembered = False
         auto_allow = False
+        broken_mcp = self._codex_broken_mcp(step, data)
         if data.get("result") == "denied":
             from ..board.commands import MAX_COMMAND, is_forbidden, outside_risky
             _, project = self._project(card)
@@ -3048,6 +3054,11 @@ class FlowEngine(PlanEditing):
                             canAllow=data.get("canAllow", True), stalledSince=data.get("stalledSince") or "",
                             notes=[n for n in data.get("notes") or [] if n in kept], kept=kept,
                             exit=exit_code, snapshotDir=snapshot_dir, **extra)
+        if broken_mcp:
+            # Błąd konfiguracji Codexa po stronie Tide: zapamiętany serwer jest odtąd pomijany, krok rusza sam.
+            self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
+                                kind=step.get("kind") or "", choice="retry", answer="", command="", executor="",
+                                auto=True)
         if data.get("result") == "denied" and not data.get("canAllow", True):
             self._auto_deny(card, name, step, data.get("command") or "")
         elif auto_allow:
@@ -3343,6 +3354,29 @@ class FlowEngine(PlanEditing):
             return max(1, min(20, int(self._settings_data().get("reviewRoundsBeforeQuestion", REVIEW_ROUNDS))))
         except (TypeError, ValueError):
             return REVIEW_ROUNDS
+
+    def _codex_broken_mcp(self, step: dict, data: dict) -> str:
+        """Nazwa serwera MCP, na którym Codex nie wystartował („invalid transport”), gdy jest nowa — zapisana w
+        ustawieniach przepływu (`codexMcpSkip`); pusta, gdy to inny błąd albo serwer był już pomijany."""
+        if data.get("result") != "error" or step.get("program") != "codex":
+            return ""
+        try:
+            with open(os.path.join(step.get("stepDir") or "", "out", "step.log"), "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                fh.seek(max(0, fh.tell() - 4000))
+                found = agentcmd.CODEX_BROKEN_MCP.search(fh.read().decode("utf-8", "replace"))
+        except OSError:
+            return ""
+        if not found:
+            return ""
+        settings = self._settings_data()
+        skip = [n for n in settings.get("codexMcpSkip") or [] if isinstance(n, str)]
+        if found.group(1) in skip:
+            return ""
+        settings["codexMcpSkip"] = skip + [found.group(1)]
+        self._write_settings(settings)
+        data["reason"] = f"konfiguracja Codexa: serwer MCP {found.group(1)} — pomijam go i ponawiam krok"
+        return found.group(1)
 
     def _auto_consent(self) -> bool:
         """Automatyczne zgody (domyślnie włączone); `autoConsent: false` w ustawieniach przepływu je wyłącza."""

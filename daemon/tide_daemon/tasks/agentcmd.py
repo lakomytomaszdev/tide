@@ -149,6 +149,7 @@ class Step:
     dotnet: bool = False           # projekt .NET: pamięć pakietów NuGet do odczytu i środowisko bez serwerów buildu
     node_home: str = ""            # projekt Node: instalacja Node (nvm) tylko do odczytu, jej bin na początku PATH
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
+    codex_mcp_skip: tuple = ()      # serwery, których wyłączenie przez `-c` psuje konfigurację Codexa (03.11)
 
 
 @dataclass
@@ -303,7 +304,14 @@ def list_codex_mcp(binary: str, timeout: float = 20.0) -> tuple:
     if run.returncode != 0 or not isinstance(data, list) or not all(isinstance(i, dict) and isinstance(i.get("name"), str)
                                                                     for i in data):
         raise StepError("nie da się odczytać serwerów MCP Codexa (`codex mcp list --json`)")
-    return tuple(item["name"] for item in data)
+    # Serwer bez rozpoznanego transportu (np. wbudowany `codex_app`) nie jest kanałem z konfiguracji użytkownika,
+    # a `-c mcp_servers.<nazwa>.enabled=false` tworzy dla niego wpis bez transportu i Codex nie startuje (03.11, K-16).
+    return tuple(item["name"] for item in data
+                 if isinstance(item.get("transport"), dict) and item["transport"].get("type") in KNOWN_MCP_TRANSPORTS)
+
+
+KNOWN_MCP_TRANSPORTS = ("stdio", "streamable_http", "sse", "http")
+CODEX_BROKEN_MCP = re.compile(r"invalid transport\s*in `mcp_servers\.([^`]+)`")
 
 
 def _toml_key(name: str) -> str:
@@ -411,7 +419,8 @@ def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
     else:
         model = [f"--model={step.model}"] if step.model else []
     servers = list_codex_mcp(step.binary) if step.codex_mcp is None else step.codex_mcp
-    mcp = [arg for name in servers for arg in ("-c", f"mcp_servers.{_toml_key(name)}.enabled=false")]
+    mcp = [arg for name in servers if name not in step.codex_mcp_skip
+           for arg in ("-c", f"mcp_servers.{_toml_key(name)}.enabled=false")]
     # Opcje przed podpoleceniem: `codex exec resume <id> --cd …` kończy się „unexpected argument” (sprawdzone).
     effort = ["-c", f'model_reasoning_effort="{step.effort}"'] if step.effort else []
     argv = [step.binary, "exec", *model, *effort, "--json", "--cd", step.worktree, "--sandbox", "workspace-write",
