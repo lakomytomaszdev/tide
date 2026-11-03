@@ -76,6 +76,19 @@ class YouTrackFlowTest(FlowInProcess):
         self.assertEqual(approved['plan']['map'].get('#3'), 'LOG-3')
         self.assertIn('LOG-3', self.fake.issues)
 
+    def test_local_reservation_intent_does_not_block_youtrack_creation(self):
+        # 03.11, K-16: lokalna rezerwacja pod tym samym kluczem dawała wieczne „czekam na potwierdzenie”.
+        card = self.card()
+        journal = self.flow.engine.journal
+        journal.append(card, 'card.started', entry='plan', repo=self.repo, trackerProject='LOG', trackerUrl=self.fake.url)
+        journal.append(card, 'intent', action='reserve', key='plan:9:#1', repo=self.repo)
+        journal.append(card, 'result', action='reserve', key='plan:9:#1', ok=False, error='lokalnie odmówione')
+        result = self.flow.engine.tracker.run(card, 'reserve', 'plan:9:#1',
+                                              {'op': 'issue', 'url': self.fake.url, 'project': 'LOG', 'number': 1,
+                                               'title': 'Nowy', 'description': 'Opis'})
+        self.assertEqual(result['ticket'], 'LOG-1')
+        self.assertIn('LOG-1', self.fake.issues)
+
     def test_light_planning_uses_card_youtrack_metadata(self):
         card = self.card()
         reply = self.start(card, entry='planning', mode='light')

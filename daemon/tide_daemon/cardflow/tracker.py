@@ -31,10 +31,13 @@ class TrackerOutbox:
                 return result
             if result.get('permanent'):
                 raise yt.YouTrackError(result['error'], permanent=True)
-        intent = next((e for e in reversed(events) if e['type'] == 'intent' and
+        # Tylko zamiary YouTracka: lokalna rezerwacja pod tym samym kluczem (K-16, 03.11 — poprawka planu przed
+        # przejściem na YouTrack) nie może udawać, że zgłoszenie mogło już powstać.
+        intent = next((e for e in reversed(events) if e['type'] == 'intent' and e.get('youtrack') and
                        e.get('action') == action and e.get('key') == key), None)
         retry = next((e for e in reversed(events) if e['type'] == 'youtrack.retry' and e['seq'] > reset_seq and
-                      e.get('action') == action and e.get('key') == key), None)
+                      e.get('action') == action and e.get('key') == key and
+                      (intent is None or e['seq'] > intent['seq'])), None)
         if retry and self.clock() < retry['after']:
             raise yt.YouTrackError('YouTrack: operacja czeka na ponowienie')
         payload = (intent or {}).get('payload') or payload
