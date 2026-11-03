@@ -1439,6 +1439,18 @@ class FlowEngine(PlanEditing):
                                     provider=selected.provider, reason=reason, cause=cause, until=until)
             raise FlowDeferred(reason)
 
+    def _ancestor_outs(self, card_id: str, parent_step: str, limit: int = 6) -> list[str]:
+        """Katalogi `out` kroku-rodzica i jego przodków (najbliższe pierwsze), tylko istniejące."""
+        steps = fold(self.journal.read(card_id)).steps
+        found, name = [], parent_step
+        while name and name in steps and len(found) < limit:
+            step = steps[name]
+            out = os.path.join(step.get("stepDir") or "", "out")
+            if step.get("stepDir") and os.path.isdir(out):
+                found.append(out)
+            name = step.get("parentStep") or ""
+        return found
+
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
                 *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
                 attempt=0, resume_session="") -> dict:
@@ -1454,7 +1466,7 @@ class FlowEngine(PlanEditing):
                                                      project=project.name, ticket=ticket, branch=made_ticket["branch"],
                                                      card_branch=made["branch"], worktree=worktree, out_dir=out,
                                                      images=shots)
-        read_dirs = []
+        read_dirs, context_dirs = [], []
         if kind in ("planning", "plan-fix"):
             board = self.store.load()
             extras = [board.projects[slug] for slug in card.projects if slug in board.projects]
@@ -1462,6 +1474,14 @@ class FlowEngine(PlanEditing):
             if extras:
                 prompt += "\nDodatkowe projekty karty (wyłącznie do odczytu):\n" + "\n".join(
                     f"- {p.name}: {p.repo}" for p in extras)
+        if parent_step:
+            # Wznowienie widzi katalogi wyniku poprzednich kroków tego ticketu: polecenie poza piaskownicą zapisuje
+            # raport (np. TRX testów) tam, gdzie wskazał je poprzedni krok (K-40/LEGAL-78, 04.11: trzy wznowienia
+            # z rzędu nie mogły przeczytać raportu z poprzedniego `out`).
+            context_dirs = self._ancestor_outs(card.id, parent_step)
+            if context_dirs:
+                prompt += ("\nKatalogi wyniku poprzednich kroków tego ticketu (możesz je czytać; tam trafiły m.in. raporty "
+                           "poleceń uruchomionych poza piaskownicą):\n" + "\n".join(f"- {d}" for d in context_dirs))
         prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
@@ -1500,7 +1520,7 @@ class FlowEngine(PlanEditing):
                 allowed_tools=allowed_tools if selected.tool == "claude" else (),
                 disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
                 enforce_command_policy=selected.tool == "claude",
-                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet, node_home=node_home,
+                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), context_dirs=tuple(context_dirs), dotnet=is_dotnet, node_home=node_home,
                 codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains,
                 chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else ""))
             bg.prepare()

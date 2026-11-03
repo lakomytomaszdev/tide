@@ -37,6 +37,12 @@ class StepDecisionTest(FlowInProcess):
             prompt = json.load(fh)["prompt"]
         self.assertIn("uruchomił poza piaskownicą", prompt)
         self.assertIn("zewnetrzne-ok", prompt)
+        # 04.11, K-40/LEGAL-78: raport polecenia trafia do `out` poprzedniego kroku — wznowienie musi go czytać.
+        first = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][0]
+        previous_out = os.path.join(first["stepDir"], "out")
+        self.assertIn(previous_out, prompt)
+        with open(os.path.join(resumed["stepDir"], "in", "settings.json"), encoding="utf-8") as fh:
+            self.assertIn(previous_out, json.load(fh)["sandbox"]["filesystem"]["allowRead"])
 
     def test_remembered_outside_command_runs_without_asking_next_time(self):
         first = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
