@@ -3331,6 +3331,8 @@ class FlowEngine(PlanEditing):
         except OSError:
             tail = "(brak wyniku)"
         self._outside_active.pop(name, None)
+        # Procesy zostawione przez polecenie (np. atrapy z testów, serwery w tle) nie trzymają jednostki w nieskończoność.
+        stepstop._systemctl("stop", started["unit"] + ".scope")
         self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
                             command=started.get("command") or "", exit=code, tail=tail)
         return {**decision, "answer": f"Kod wyjścia: {code}\nKoniec wyniku:\n{tail}"}
