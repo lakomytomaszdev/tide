@@ -10,11 +10,12 @@ import tempfile
 import threading
 import types
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import coordfix as F
 from .gitrepos import git
-from tide_daemon.coordination import board as board_mod, numbering, plan as plan_mod, youtrack
+from tide_daemon.coordination import board as board_mod, numbering, plan as plan_mod, reservations, youtrack
 from tide_daemon.coordination.model import Coordinator
 from tide_daemon.coordination.repoplans import RepoPlans
 from tide_daemon.coordination.scanner import CoordinationScanner
@@ -374,6 +375,66 @@ class ReservationTest(unittest.TestCase):
     def next_id(self, *args, repo=None):
         return subprocess.run(["/usr/bin/python3", os.path.join(REPO, "tools", "next_id.py"), repo or self.repo, *args],
                               env=self.env, capture_output=True, text=True, timeout=60)
+
+    def test_retry_after_registry_write_returns_original_reservation(self):
+        first = reservations.reserve(self.repo, count=2, title="Raport", path=self.registry,
+                                     request_key="card-K-12-reserve")
+        retried = reservations.reserve(self.worktree, count=2, title="Raport", path=self.registry,
+                                       request_key="card-K-12-reserve")
+        self.assertEqual(first["ids"], ["PT-22", "PT-23"])
+        self.assertEqual(retried["ids"], first["ids"])
+        self.assertEqual(retried["numbers"], first["numbers"])
+        with open(self.registry, encoding="utf-8") as fh:
+            self.assertEqual(len(json.load(fh)["reservations"]), 2)
+
+    def test_imported_floor_keeps_old_id_and_retry_is_idempotent(self):
+        first = reservations.reserve(self.repo, title="Nowy ticket", path=self.registry,
+                                     request_key="K-1:import:#1", at_least=30)
+        retried = reservations.reserve(self.repo, title="Nowy ticket", path=self.registry,
+                                       request_key="K-1:import:#1", at_least=30)
+        self.assertEqual(first["ids"], ["PT-31"])
+        self.assertEqual(retried["ids"], first["ids"])
+
+    def test_parallel_retries_of_one_request_reserve_only_once(self):
+        barrier = threading.Barrier(8)
+
+        def reserve_once(_):
+            barrier.wait(timeout=30)
+            return reservations.reserve(self.repo, title="Karta", path=self.registry,
+                                        request_key="K-1:launch-1")
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(reserve_once, range(8)))
+        self.assertEqual([item["ids"] for item in results], [["PT-22"]] * 8)
+        with open(self.registry, encoding="utf-8") as fh:
+            self.assertEqual(len(json.load(fh)["reservations"]), 1)
+
+    def test_key_reuse_for_different_title_or_count_is_refused(self):
+        first = reservations.reserve(self.repo, title="A" * 200 + "X", path=self.registry,
+                                     request_key="K-1:launch-1")
+        for title, count in (("A" * 200 + "Y", 1), ("A" * 200 + "X", 2)):
+            with self.subTest(title=title[-1], count=count):
+                with self.assertRaises(reservations.ReservationError):
+                    reservations.reserve(self.repo, title=title, count=count, path=self.registry,
+                                         request_key="K-1:launch-1")
+        self.assertEqual(reservations.reserve(self.repo, title="Nowa", path=self.registry)["ids"], ["PT-23"])
+        self.assertEqual(first["ids"], ["PT-22"])
+
+    def test_invalid_request_keys_do_not_write_registry(self):
+        for key in (" K-1", "K-1 ", "K 1", "K\n1", "X" * 129, 123):
+            with self.subTest(key=key):
+                with self.assertRaises(reservations.ReservationError):
+                    reservations.reserve(self.repo, path=self.registry, request_key=key)
+        self.assertFalse(os.path.exists(self.registry))
+
+    def test_calls_without_key_keep_allocating_new_numbers(self):
+        first = reservations.reserve(self.repo, title="Karta", path=self.registry)
+        second = reservations.reserve(self.repo, title="Karta", path=self.registry)
+        keyed = reservations.reserve(self.repo, title="Karta", path=self.registry, request_key="K-1:launch-1")
+        self.assertEqual([first["ids"], second["ids"], keyed["ids"]],
+                         [["PT-22"], ["PT-23"], ["PT-24"]])
+        self.assertEqual(reservations.reserve(self.repo, title="Karta", path=self.registry,
+                                              request_key="K-1:launch-1")["ids"], ["PT-24"])
 
     def test_empty_registry_is_seeded_from_plans_and_reservations_continue(self):
         dry = self.next_id("--dry-run")

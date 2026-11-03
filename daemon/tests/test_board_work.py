@@ -188,6 +188,20 @@ class WorkListTest(unittest.TestCase):
         todo = compute([card(3, column="todo")])["items"][0]
         self.assertEqual((todo["session"], todo["agentState"], todo["canActivate"]), ("", "", False))
 
+    def test_flow_card_is_one_row_with_running_step_count(self):
+        shown = dict(card(12, column="progress"), boardColumn="progress", derived={
+            "column": "progress", "note": "PT-12 · sprawdzanie zmian", "total": 2, "done": 0,
+            "flow": {"steps": [
+                {"id": "a", "result": "", "mode": "background"},
+                {"id": "b", "result": "", "mode": "background"},
+                {"id": "c", "result": "done", "mode": "background"},
+            ]},
+        })
+        result = work.build([shown])
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["items"][0]["runningSteps"], 2)
+        self.assertIn("2 kroki w toku", result["items"][0]["note"])
+
     def test_without_context_cards_only(self):
         shown = [dict(card(1), boardColumn="todo", derived=None), dict(card(2), boardColumn="backlog", derived=None)]
         result = work.build(shown, None)

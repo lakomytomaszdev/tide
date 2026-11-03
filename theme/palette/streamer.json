@@ -1,0 +1,69 @@
+{
+  "base": "mist",
+  "name": "Streamer",
+  "description": "Wariant aktywności Stream w kolorach marki Streamer (brand/assets/brand/STYLE.md). Nakładka na Mist: kolory i tapeta, reszta z Mist. Odcienie spoza marki wyprowadzone z jej kolorów (docs/decisions.md, 77).",
+  "brand": {
+    "night": "#102e38",
+    "forest": "#0b4c43",
+    "gold": "#c5a463",
+    "ivory": "#f1e9d3",
+    "crimson": "#a52e29",
+    "graphite": "#181d22"
+  },
+  "background": {
+    "desktop": "#0f282c",
+    "window": "#102e38",
+    "titlebar": "#113136",
+    "view": "#0f2b31",
+    "card": "#123536",
+    "panel": "#113337"
+  },
+  "text": {
+    "primary": "#f1e9d3",
+    "secondary": "#cfcdbc",
+    "muted": "#aeb1a4"
+  },
+  "accent": "#c5a463",
+  "lockscreen": {
+    "agents": false
+  },
+  "pastel": {
+    "teal": "#6bc8bf",
+    "lavender": "#c8afdc",
+    "peach": "#eda679",
+    "butter": "#f1d493",
+    "rose": "#e47a74",
+    "mint": "#93d08d",
+    "sky": "#79bee9"
+  },
+  "wallpaper": {
+    "variant": "pictures",
+    "background": "window",
+    "pictures": {
+      "assets": "streamer",
+      "desktop": "desktop",
+      "lock": "lock",
+      "lockIdle": "lock-idle",
+      "fallback": "DP-2",
+      "focus": [0.55, 0.15, 1.0, 0.85],
+      "lockScrim": {"color": "desktop", "x": 0.5, "y": 0.2, "width": 0.4, "height": 0.26, "opacity": 0.72}
+    },
+    "map": {
+      "from": "forest",
+      "to": "night",
+      "glow": {"color": ["forest", "ivory", 0.2], "x": 0.9, "y": 0.22, "radius": 0.8, "opacity": 0.22},
+      "shade": {"color": "graphite", "top": 0.02, "bottom": 0.5},
+      "lines": {
+        "color": "gold",
+        "width": 1.4,
+        "opacity": 0.17,
+        "spacing": 0.089,
+        "offset": 0.1,
+        "waves": [
+          {"amplitude": 0.032, "length": 1.1, "phase": 0.0},
+          {"amplitude": 0.012, "length": 0.47, "phase": 1.3}
+        ]
+      }
+    }
+  }
+}

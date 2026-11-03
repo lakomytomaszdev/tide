@@ -131,6 +131,33 @@ class QmlTest(unittest.TestCase):
             fh.write(body)
         return run_qml(path)
 
+    def test_card_worktree_shows_its_own_activity_label(self):
+        card = item("/w/alpha/card", "alpha", "active", hasAgent=True, hasCard=True, blocker="agent")
+        log = self.harness("CardActivitySmoke.qml", """import QtQuick
+Item {
+    width: 760; height: 90
+    WorktreeItem {
+        id: row
+        anchors.fill: parent
+        worktree: %(card)s
+    }
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children) {
+            const hit = find(child, name)
+            if (hit) return hit
+        }
+        return null
+    }
+    Component.onCompleted: {
+        console.warn("CARD_ACTIVITY " + find(row, "worktreeActivity").text)
+        Qt.quit()
+    }
+}
+""" % {"card": json.dumps(card, ensure_ascii=False)})
+        self.assertEqual(warned(log, "CARD_ACTIVITY"), "zajęty przez kartę")
+        self.assertEqual([line for line in log.splitlines() if re.search(QML_PROBLEMS, line)], [])
+
     def test_page_groups_filters_selection_and_removal(self):
         log = self.harness("PageSmoke.qml", """import QtQuick
 import "tide" as Tide

@@ -1,6 +1,6 @@
 """Kopia powłoki Plasmy z ekranem blokady Tide i jej synchronizacja z pakietem systemowym.
 
-Użycie: python3 shell_sync.py sync [--force] | remove | status
+Użycie: python3 shell_sync.py sync [--force] | remove | status | variant [<nazwa>]
 
 W Plasmie 6.8 greeter bierze ekran blokady wyłącznie z pakietu powłoki wskazanego
 w plasmashellrc [Shell] ShellPackage (domyślnie org.kde.plasma.desktop). Żeby ekran Tide
@@ -26,11 +26,28 @@ Stan ostatniej decyzji jest w $XDG_STATE_HOME/tide/shell-sync.json:
   dopóki nie zrobi tego make install (sync --force).
 Kopię, której nie zrobił Tide (brak pliku MARKER), zostawiamy w spokoju.
 
+Warianty ekranu blokady (decyzja 77): obok ekranu Tide (wariant „mist”, pakiet org.tide.desktop)
+mogą być zainstalowane inne, np. ekran aktywności Stream w $XDG_DATA_HOME/tide/lockscreens/streamer
+(pakiet powłoki z samym lockscreen/, jak org.tide.desktop). Kopia ma wtedy wszystkie warianty,
+każdy sprawdzony greeterem przy składaniu:
+- contents/lockscreen — wariant aktywny (ten czyta greeter przy blokadzie),
+- contents/lockscreen-variants/<nazwa> — pozostałe.
+Każdy katalog wariantu ma plik VARIANT_FILE z nazwą. `variant <nazwa>` zamienia katalog aktywny
+z wybranym jednym wywołaniem renameat2(RENAME_EXCHANGE) — atomowo, bez przebudowy i bez greetera
+(ułamek milisekundy), a powtórzenie nic nie zmienia. Greeter startuje przy każdej blokadzie,
+więc wybór działa od następnej. Ponowne składanie kopii (aktualizacja Plasmy, make install)
+zachowuje wybrany wariant; wariant, który nie przeszedł sprawdzenia albo zniknął, wypada,
+a aktywny wraca wtedy do „mist”.
+
 Skrypt jest samodzielny (bez importów z repozytorium), bo instalacja kopiuje go do
 $XDG_DATA_HOME/tide/shell-sync.py i pulpit nie zależy od katalogu z repozytorium.
 """
 from __future__ import annotations
 
+import contextlib
+import ctypes
+import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -47,7 +64,7 @@ from pathlib import Path
 SHELL_ID = "org.kde.plasma.desktop"
 TIDE_SHELL_ID = "org.tide.desktop"
 MARKER = "tide-shell-copy.json"  # w katalogu głównym kopii; KPackage ignoruje nieznane pliki
-FORMAT = 1  # zmiana sposobu składania kopii wymusza jej odtworzenie
+FORMAT = 2  # zmiana sposobu składania kopii wymusza jej odtworzenie (2: warianty ekranu blokady)
 UNIT = "tide-shell-sync.service"
 
 LOADED = "Tide: ekran blokady wczytany"  # console.log z LockScreen.qml ekranu Tide
@@ -70,6 +87,51 @@ TIDE_LOCKSCREEN = DATA / "plasma" / "shells" / TIDE_SHELL_ID / "contents" / "loc
 # plików co kopia, więc podmiana to dwa rename().
 STAGING = DATA / "plasma" / ".tide-shell-staging"
 STAMP = STATE / "tide" / "shell-sync.json"
+# Warianty ekranu blokady poza Tide (Mist): <nazwa>/contents/lockscreen, poza plasma/shells/.
+VARIANTS = DATA / "tide" / "lockscreens"
+DEFAULT_VARIANT = "mist"
+VARIANT_FILE = ".tide-lock-variant"  # w katalogu ekranu; QML i KPackage go nie czytają
+ACTIVE = COPY / "contents" / "lockscreen"
+SWAP_SUFFIX = ".tide-swap"  # nazwa tymczasowa przy zamianie bez RENAME_EXCHANGE
+# Jedna blokada dla składania kopii i przełączania wariantu (dwa procesy naraz: logowanie i przełącznik).
+LOCK_FILE = STATE / "tide" / "shell-sync.lock"
+
+
+class LockVariantError(RuntimeError):
+    pass
+
+
+def lock_timeout() -> float:
+    """Ile sekund czekać na blokadę: składanie kopii z kilkoma wariantami trwa do kilkunastu s."""
+    try:
+        return float(os.environ.get("TIDE_SHELL_SYNC_LOCK_TIMEOUT") or 120)
+    except ValueError:
+        return 120.0
+
+
+@contextlib.contextmanager
+def locked():
+    """Wyłączny dostęp do kopii powłoki (fcntl.flock na LOCK_FILE).
+
+    Czeka, aż inny proces skończy, ale najwyżej lock_timeout() s (odpytywanie LOCK_NB) — potem
+    LockVariantError, żeby zawieszony proces nie blokował logowania ani przełącznika aktywności.
+    """
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOCK_FILE, "a") as fh:
+        deadline = time.monotonic() + lock_timeout()
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise LockVariantError(f"kopia powłoki zajęta przez inny proces dłużej niż "
+                                           f"{lock_timeout():g} s ({LOCK_FILE})") from None
+                time.sleep(0.1)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def log(message: str) -> None:
@@ -87,7 +149,8 @@ def fingerprint(*directories: Path) -> str:
     """Odcisk treści katalogów: ścieżki względne, cele dowiązań i zawartość plików."""
     digest = hashlib.sha256(f"tide-shell-copy {FORMAT}\n".encode())
     for directory in directories:
-        digest.update(f"[{directory.name}]\n".encode())
+        name = directory.parents[1].name if directory.name == "lockscreen" else directory.name
+        digest.update(f"[{name}/{directory.name}]\n".encode())
         for path in sorted(directory.rglob("*")):
             rel = path.relative_to(directory).as_posix()
             if path.is_symlink():
@@ -95,6 +158,23 @@ def fingerprint(*directories: Path) -> str:
             elif path.is_file():
                 digest.update(f"F {rel} {hashlib.sha256(path.read_bytes()).hexdigest()}\n".encode())
     return digest.hexdigest()
+
+
+def variant_sources() -> dict[str, Path]:
+    """Katalogi lockscreen/ wszystkich zainstalowanych wariantów: {"mist": …, "streamer": …}."""
+    sources = {DEFAULT_VARIANT: TIDE_LOCKSCREEN}
+    if VARIANTS.is_dir():
+        for package in sorted(VARIANTS.iterdir()):
+            lockscreen = package / "contents" / "lockscreen"
+            if package.name != DEFAULT_VARIANT and not package.name.startswith(".") and lockscreen.is_dir():
+                sources[package.name] = lockscreen
+    return sources
+
+
+def sources_fingerprint() -> str:
+    sources = variant_sources()
+    others = [sources[name] for name in sources if name != DEFAULT_VARIANT]
+    return fingerprint(SYSTEM_SHELL, TIDE_LOCKSCREEN, *others)
 
 
 def read_json(path: Path) -> dict:
@@ -125,21 +205,58 @@ def remove_copy() -> bool:
     return True
 
 
+def copy_variant(source: Path, target: Path, name: str) -> None:
+    """Katalog lockscreen/ wariantu z licencją pakietu i znacznikiem nazwy."""
+    shutil.copytree(source, target, symlinks=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    notice = source.parents[1] / "NOTICE"  # licencja i pochodzenie ekranu
+    if notice.is_file():
+        shutil.copy2(notice, target / "NOTICE")
+    (target / VARIANT_FILE).write_text(f"{name}\n")
+
+
+def distinct_mtimes(directories: list[Path]) -> None:
+    """Pliki o tej samej ścieżce i innej treści w różnych wariantach dostają różne czasy modyfikacji.
+
+    Zabezpieczenie na wypadek pamięci podręcznej QML (qmlcache), która rozpoznaje skompilowany
+    plik po ścieżce i czasie modyfikacji źródła (z dokładnością do ms) — po przełączeniu wariantu
+    pod tą samą ścieżką (np. lockscreen/tide/Tokens.qml) jest inna treść. Greeter Plasmy 6.8
+    na Qt 6.11 dziś nie zapisuje qmlcache, ale to zachowanie Qt, a nie umowa; koszt jest zerowy.
+    """
+    seen: dict[str, list[tuple[bytes, int]]] = {}
+    for directory in directories:
+        for path in sorted(directory.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            rel = path.relative_to(directory).as_posix()
+            content = hashlib.sha256(path.read_bytes()).digest()
+            mtime = path.stat().st_mtime_ns // 1_000_000
+            taken = seen.setdefault(rel, [])
+            while any(ms == mtime and digest != content for digest, ms in taken):
+                mtime += 1000  # o sekundę później, aż czas będzie wolny
+            if mtime != path.stat().st_mtime_ns // 1_000_000:
+                os.utime(path, ns=(path.stat().st_atime_ns, mtime * 1_000_000))
+            taken.append((content, mtime))
+
+
 def build(target: Path, fingerprint_: str) -> None:
-    """Pełna kopia pakietu systemowego z contents/lockscreen z ekranu Tide."""
+    """Pełna kopia pakietu systemowego z contents/lockscreen z ekranu Tide i pozostałymi wariantami obok."""
     shutil.copytree(SYSTEM_SHELL, target, symlinks=True)
     lockscreen = target / "contents" / "lockscreen"
     if lockscreen.exists():
         shutil.rmtree(lockscreen)
-    shutil.copytree(TIDE_LOCKSCREEN, lockscreen, symlinks=True,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    notice = TIDE_LOCKSCREEN.parents[1] / "NOTICE"  # licencja i pochodzenie ekranu Tide
-    if notice.is_file():
-        shutil.copy2(notice, lockscreen / "NOTICE")
+    sources = variant_sources()
+    copy_variant(TIDE_LOCKSCREEN, lockscreen, DEFAULT_VARIANT)
+    copied = [lockscreen]
+    for name, source in sources.items():
+        if name != DEFAULT_VARIANT:
+            copy_variant(source, target / "contents" / "lockscreen-variants" / name, name)
+            copied.append(target / "contents" / "lockscreen-variants" / name)
+    distinct_mtimes(copied)
     (target / MARKER).write_text(json.dumps({
         "fingerprint": fingerprint_,
         "system": str(SYSTEM_SHELL),
         "lockscreen": str(TIDE_LOCKSCREEN),
+        "variants": {name: str(path) for name, path in sources.items()},
         "note": "Kopia robiona przez Tide (scripts/shell_sync.py). Usunięcie katalogu przywraca ekran Plasmy.",
     }, indent=2, ensure_ascii=False) + "\n")
 
@@ -204,6 +321,179 @@ def check(package: Path) -> tuple[bool, str]:
     return LOADED in text and FALLBACK not in text, text
 
 
+def _variant_name(directory: Path) -> str | None:
+    try:
+        return (directory / VARIANT_FILE).read_text().strip() or None
+    except OSError:
+        return None
+
+
+def active_variant(copy: Path) -> str:
+    """Wariant aktywny w kopii; kopia sprzed wariantów (bez znacznika) ma ekran Tide, czyli „mist”.
+
+    "" — kopia nie ma aktywnego ekranu (np. przerwana zamiana; naprawia ją recover_swap).
+    """
+    active = copy / "contents" / "lockscreen"
+    if not active.is_dir():
+        return ""
+    return _variant_name(active) or DEFAULT_VARIANT
+
+
+def recover_swap(copy: Path) -> None:
+    """Dokańcza przerwaną zamianę przez nazwę tymczasową (exchange bez RENAME_EXCHANGE)."""
+    active = copy / "contents" / "lockscreen"
+    spare = active.with_name(active.name + SWAP_SUFFIX)
+    if not spare.is_dir():
+        return
+    if not active.exists():
+        spare.rename(active)  # przerwa po pierwszym rename(): wracamy do stanu sprzed zamiany
+        log("przywrócono ekran blokady po przerwanym przełączeniu wariantu.")
+        return
+    # Przerwa po drugim rename(): aktywny jest już nowy wariant, poprzedni czeka pod nazwą tymczasową.
+    target = copy / "contents" / "lockscreen-variants" / (_variant_name(spare) or "nieznany")
+    if target.exists():
+        shutil.rmtree(spare)
+    else:
+        target.parent.mkdir(exist_ok=True)
+        spare.rename(target)
+    log("dokończono przerwane przełączenie wariantu ekranu blokady.")
+
+
+def _inactive(copy: Path) -> dict[str, Path]:
+    """Nieaktywne warianty po nazwie ze znacznika (nie z nazwy katalogu — ta może być stara)."""
+    directory = copy / "contents" / "lockscreen-variants"
+    found = {}
+    if directory.is_dir():
+        for path in sorted(directory.iterdir()):
+            name = _variant_name(path)
+            if name:
+                found[name] = path
+    return found
+
+
+_libc = None
+
+
+def exchange(a: Path, b: Path) -> None:
+    """Atomowa zamiana dwóch katalogów (renameat2 z RENAME_EXCHANGE, Linux ≥ 3.15).
+
+    Gdy system plików tego nie umie, zamiana przez nazwę tymczasową: przez chwilę (dwa
+    rename()) aktywnego katalogu nie ma — greeter uruchomiony dokładnie wtedy pokazałby
+    awaryjny ekran KDE, który też odblokowuje.
+    """
+    global _libc
+    try:
+        if _libc is None:
+            _libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = _libc.renameat2
+    except (OSError, AttributeError):
+        renameat2 = None
+    if renameat2 is not None:
+        at_fdcwd, rename_exchange = -100, 2
+        if renameat2(at_fdcwd, os.fsencode(a), at_fdcwd, os.fsencode(b), rename_exchange) == 0:
+            return
+        err = ctypes.get_errno()
+        if err not in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP):
+            raise OSError(err, os.strerror(err), str(a), None, str(b))
+    spare = a.with_name(a.name + ".tide-swap")
+    a.rename(spare)
+    b.rename(a)
+    spare.rename(b)
+
+
+def switch_variant(copy: Path, name: str) -> bool:
+    """Ustawia wariant aktywny w kopii. False, gdy takiego wariantu w niej nie ma."""
+    recover_swap(copy)
+    active = copy / "contents" / "lockscreen"
+    if active_variant(copy) == name:
+        return True
+    candidates = _inactive(copy)
+    if name not in candidates:
+        return False
+    previous = active_variant(copy)
+    exchange(active, candidates[name])
+    # Katalog, w którym był wybrany wariant, ma teraz poprzedni — porządkujemy nazwę.
+    holder = candidates[name]
+    wanted = holder.with_name(previous)
+    if holder != wanted and not wanted.exists():
+        holder.rename(wanted)
+    return True
+
+
+def lock_variant() -> str:
+    """Bieżący wariant ekranu blokady: „mist”, „streamer”…; "" bez kopii Tide (ekran Plasmy z systemu)."""
+    if not COPY.is_dir() or not is_ours(COPY):
+        return ""
+    return active_variant(COPY)
+
+
+def _complete(lockscreen: Path, strict: bool = True) -> bool:
+    """Ekran wariantu ma QML i wszystkie obrazy tła wymienione w tide/Backdrop.qml.
+
+    strict=False: wystarczy LockScreen.qml, a obrazy sprawdzamy tylko, gdy jest Backdrop.qml.
+    """
+    backdrop = lockscreen / "tide" / "Backdrop.qml"
+    if not (lockscreen / "LockScreen.qml").is_file():
+        return False
+    if not backdrop.is_file():
+        return not strict
+    prefix = "readonly property var outputs: "
+    for line in backdrop.read_text().splitlines():
+        line = line.strip()
+        if line.startswith(prefix):
+            try:
+                entries = json.loads(line[len(prefix):])
+            except ValueError:
+                return False
+            files = [e.get(k) for e in entries for k in ("awake", "sleep") if e.get(k)]
+            return all((lockscreen / "tide" / f).is_file() for f in files)
+    return False
+
+
+def lock_variants() -> set[str]:
+    """Warianty gotowe do nałożenia: w kopii Tide, z QML i obrazami tła; bez kopii — pusty zbiór."""
+    if not COPY.is_dir() or not is_ours(COPY):
+        return set()
+    found = {active_variant(COPY)} if _complete(ACTIVE) else set()
+    return found | {name for name, path in _inactive(COPY).items() if _complete(path)}
+
+
+def apply_lock_variant(name: str) -> None:
+    """Przełącza ekran blokady na wariant `name` (od następnej blokady). Idempotentne.
+
+    Nie przebudowuje kopii i nie uruchamia greetera — warianty są w kopii gotowe i sprawdzone.
+    Czeka, gdy właśnie trwa składanie kopii (wspólna blokada z sync). Gdy wariantu nie ma
+    (kopii Tide nie ma, wariant nie jest zainstalowany albo nie przeszedł sprawdzenia) albo
+    system plików odmówi, zgłasza LockVariantError i niczego nie zmienia.
+    """
+    with locked():
+        if not COPY.is_dir() or not is_ours(COPY):
+            raise LockVariantError(f"brak kopii powłoki Tide ({COPY}) — wariant {name!r} niedostępny")
+        try:
+            if switch_variant(COPY, name):
+                return
+        except OSError as error:
+            raise LockVariantError(f"nie udało się przełączyć ekranu blokady na {name!r}: {error}") from error
+        raise LockVariantError(f"wariantu {name!r} nie ma w kopii powłoki (są: "
+                               f"{', '.join(filter(None, [active_variant(COPY), *_inactive(COPY)]))})")
+
+
+def check_variants(new: Path) -> None:
+    """Sprawdza greeterem każdy wariant poza „mist” w kopii roboczej; niedziałający usuwa z kopii."""
+    for name, path in _inactive(new).items():
+        switch_variant(new, name)
+        ok, output = check(new)
+        switch_variant(new, DEFAULT_VARIANT)
+        if not ok:
+            shutil.rmtree(_inactive(new)[name])
+            log(f"wariant ekranu blokady {name!r} nie przeszedł sprawdzenia w greeterze — pominięty.")
+            for line in output.strip().splitlines()[-5:]:
+                log(f"  greeter: {line}")
+    variants = new / "contents" / "lockscreen-variants"
+    if variants.is_dir() and not any(variants.iterdir()):
+        variants.rmdir()
+
+
 def replace_copy(new: Path) -> None:
     old = STAGING / "old"
     if old.exists():
@@ -218,6 +508,11 @@ def replace_copy(new: Path) -> None:
 
 def sync(force: bool = False) -> str:
     """Doprowadza kopię do stanu zgodnego z systemem. Zwraca wynik: ok, fallback, removed, …"""
+    with locked():
+        return _sync(force)
+
+
+def _sync(force: bool) -> str:
     if not SYSTEM_SHELL.is_dir():
         remove_copy()
         log(f"brak pakietu systemowego {SYSTEM_SHELL} — kopia usunięta.")
@@ -227,15 +522,18 @@ def sync(force: bool = False) -> str:
         log(f"brak ekranu Tide w {TIDE_LOCKSCREEN} — kopia usunięta.")
         return "no-tide"
 
-    current = fingerprint(SYSTEM_SHELL, TIDE_LOCKSCREEN)
+    current = sources_fingerprint()
     stamp = read_json(STAMP)
     copy_exists = COPY.exists()
 
     if copy_exists and not is_ours(COPY):
         log(f"{COPY} nie pochodzi od Tide — nic nie zmieniam.")
         return "foreign"
+    if copy_exists:
+        recover_swap(COPY)
     if not force:
-        if copy_exists and read_json(COPY / MARKER).get("fingerprint") == current:
+        if copy_exists and read_json(COPY / MARKER).get("fingerprint") == current \
+                and _complete(ACTIVE, strict=False):
             return "up-to-date"
         if stamp.get("result") == "removed":
             return "removed"
@@ -256,6 +554,12 @@ def sync(force: bool = False) -> str:
         build(new, current)
         ok, output = check(new)
         if ok:
+            check_variants(new)
+            # Wybór wariantu przeżywa przebudowę; wariant, którego już nie ma, oddaje miejsce Mist.
+            # Odczyt tuż przed podmianą, pod wspólną blokadą — przełącznik nie wejdzie w środek.
+            selected = lock_variant() or DEFAULT_VARIANT
+            if selected != DEFAULT_VARIANT and not switch_variant(new, selected):
+                log(f"wariantu ekranu blokady {selected!r} nie ma w nowej kopii — aktywny: {DEFAULT_VARIANT}.")
             replace_copy(new)
             write_stamp(current, "ok")
             log(f"kopia powłoki z ekranem blokady Tide gotowa: {COPY}")
@@ -288,13 +592,18 @@ def status() -> str:
         state = f"kopia powłoki: {COPY} ({owner})"
     else:
         state = "kopia powłoki: brak (ekran blokady Plasmy)"
-    return f"{state}\nostatnia synchronizacja: {stamp.get('result', '—')} {stamp.get('time', '')}".rstrip()
+    return (f"{state}\nwariant ekranu blokady: {lock_variant() or '— (ekran Plasmy)'}\n"
+            f"ostatnia synchronizacja: {stamp.get('result', '—')} {stamp.get('time', '')}").rstrip()
 
 
 def main(argv: list[str]) -> int:
     command = argv[1] if len(argv) > 1 else "sync"
     if command == "sync":
-        result = sync(force="--force" in argv[2:])
+        try:
+            result = sync(force="--force" in argv[2:])
+        except LockVariantError as error:
+            log(str(error))
+            return 1
         if result not in ("up-to-date",):
             log(f"wynik: {result}")
         return 0
@@ -303,6 +612,15 @@ def main(argv: list[str]) -> int:
         return 0
     if command == "status":
         print(status())
+        return 0
+    if command == "variant":
+        if len(argv) > 2:
+            try:
+                apply_lock_variant(argv[2])
+            except LockVariantError as error:
+                log(str(error))
+                return 1
+        print(lock_variant())
         return 0
     print(__doc__.splitlines()[2], file=sys.stderr)
     return 2

@@ -200,7 +200,8 @@ def build(day: str, start: float, end: float, *, workspace: str, claude_root: st
         project.branches = gitlog.repo_commits(git, project.key, project.main_branch, start, end,
                                                repo_items, project.sessions)
 
-    plans_mod.attach(list(projects.values()), start, end, coordination_cache, tracker)
+    plans_mod.attach(list(projects.values()), start, end, coordination_cache, tracker,
+                     flow_root=board.get("flowRoot") if isinstance(board, dict) else None)
     for project in projects.values():
         project.open_branches = sorted(project.open_branches, key=lambda w: -float(w.get("lastChangeTs") or 0)
                                        )[:STANDING_BRANCHES]

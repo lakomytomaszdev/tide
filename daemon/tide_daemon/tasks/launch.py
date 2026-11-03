@@ -35,7 +35,116 @@ gdy usługa jest w trakcie aktualizacji.
 import json
 import os
 import re
+import signal
 import sys
+
+FLOW_TRANSFER_CLOSE = ".flow-transfer-close"
+
+
+def _identity(pid: int) -> dict:
+    with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+        fields = fh.read().rpartition(")")[2].split()
+    with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as fh:
+        boot = fh.read().strip()
+    return {"pid": pid, "start": fields[19], "boot": boot,
+            "group": int(fields[2]), "session": int(fields[3])}
+
+
+def write_process(path: str, launcher_pid: int, child_pid: int = 0) -> None:
+    """Trwała tożsamość launchera i jego bieżącego potomka, bez pomyłki po ponownym użyciu PID."""
+    if not path:
+        return
+    data = {"launcher": _identity(launcher_pid)}
+    if child_pid:
+        data["child"] = _identity(child_pid)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    temp = path + f".{os.getpid()}.tmp"
+    with open(temp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temp, path)
+
+
+def process_alive(path: str) -> bool | None:
+    """True: proces żyje; False: wszystkie zapisane procesy zniknęły; None: brak wiarygodnego zapisu."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        records = [data["launcher"]] + ([data["child"]] if "child" in data else [])
+        if not all(isinstance(r.get("pid"), int) and r["pid"] > 0 and
+                   isinstance(r.get("start"), str) and isinstance(r.get("boot"), str) for r in records):
+            return None
+        with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as fh:
+            boot = fh.read().strip()
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    for record in records:
+        if record["boot"] != boot:
+            continue
+        try:
+            with open(f"/proc/{record['pid']}/stat", encoding="utf-8") as fh:
+                fields = fh.read().rpartition(")")[2].split()
+            if fields[19] == record["start"] and fields[0] != "Z":
+                return True
+        except (OSError, IndexError):
+            continue
+    # Gdy Konsole uruchomiło launcher jako lidera grupy, proces potomny może żyć nawet po
+    # SIGKILL launchera między fork() a utrwaleniem PID potomka. Grupa przeżywa lidera.
+    leader = records[0]
+    if leader.get("boot") == boot and leader.get("group") == leader["pid"]:
+        try:
+            names = os.listdir("/proc")
+        except OSError:
+            return None
+        for name in names:
+            if not name.isdecimal():
+                continue
+            try:
+                with open(f"/proc/{name}/stat", encoding="utf-8") as fh:
+                    fields = fh.read().rpartition(")")[2].split()
+                if fields[0] != "Z" and int(fields[2]) == leader["group"] and \
+                        int(fields[3]) == leader.get("session"):
+                    return True
+            except (OSError, ValueError, IndexError):
+                continue
+    return False
+
+
+def signal_flow_launcher(path: str, sig: int) -> bool:
+    """Sygnał do zapamiętanego launchera po ponownym sprawdzeniu tożsamości pod pidfd."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            record = json.load(fh)["launcher"]
+        pid = record["pid"]
+        if not isinstance(pid, int) or pid <= 0:
+            return False
+        handle = os.pidfd_open(pid)
+        try:
+            current = _identity(pid)
+            if current["start"] != record["start"] or current["boot"] != record["boot"]:
+                return False
+            signal.pidfd_send_signal(handle, sig)
+            return True
+        finally:
+            os.close(handle)
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return False
+
+
+def write_closed(path: str) -> None:
+    """Trwały znacznik zamknięcia karty kroku; zapis atomowy dla zegara usługi."""
+    if not path:
+        return
+    import time
+    folder = os.path.dirname(path)
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    temp = path + f".{os.getpid()}.tmp"
+    with open(temp, "w", encoding="utf-8") as fh:
+        json.dump({"closed": True, "ts": time.time()}, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temp, path)
 
 KEEP_SHELL = '"$0" "$@"; exec "${SHELL:-/bin/sh}"'
 ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
@@ -91,6 +200,11 @@ def claim(path: str):
     except OSError:
         return None  # usługa zdążyła je wycofać albo przejął je ktoś inny
     data = _load(claimed)
+    if data is not None and data.get("processFile"):
+        try:
+            write_process(data["processFile"], os.getpid())
+        except OSError:
+            data = None
     try:
         os.unlink(claimed)
     except OSError:
@@ -183,8 +297,143 @@ def shell() -> list[str]:
     return [path]
 
 
+def run_flow(task: dict) -> int:
+    """Agent i późniejsza powłoka pracują w jednej cgroup; znacznik wymaga jej nieaktywności."""
+    import signal
+    import subprocess
+    import time
+
+    closed = task.get("closedFile") or ""
+    process_file = task.get("processFile") or ""
+    unit = task.get("consoleUnit") or ""
+    if not all(isinstance(p, str) and os.path.isabs(p) for p in (closed, process_file)) or \
+            not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", unit):
+        return 2
+    systemd_run = task.get("systemdRun") or "/usr/bin/systemd-run"
+    systemctl = task.get("systemctl") or "/usr/bin/systemctl"
+    child_file = process_file + ".task"
+    temp = child_file + f".{os.getpid()}.tmp"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(task, fh, ensure_ascii=False)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temp, child_file)
+    hung_up = False
+
+    def hangup(*_):
+        nonlocal hung_up
+        hung_up = True
+    previous = {sig: signal.signal(sig, hangup) for sig in (signal.SIGHUP, signal.SIGTERM)}
+    for sig in (signal.SIGINT, signal.SIGQUIT):
+        previous[sig] = signal.signal(sig, lambda *_: None)
+    proc = None
+    stopped = False
+    try:
+        write_process(process_file, os.getpid())
+        try:
+            proc = subprocess.Popen([systemd_run, "--user", "--scope", "--collect", "--quiet",
+                                     f"--unit={unit}", "--", sys.executable, "-s", os.path.abspath(__file__),
+                                     "--flow-child", child_file], cwd=task.get("workdir") or task["cwd"])
+            write_process(process_file, os.getpid(), proc.pid)
+        except OSError as exc:
+            print(f"Tide: nie udało się uruchomić jednostki Konsoli: {exc}", file=sys.stderr, flush=True)
+        sent = False
+        deadline = None
+        while True:
+            if hung_up and not sent:
+                scope_kill(unit, systemctl, "SIGTERM")
+                sent = True
+                deadline = time.monotonic() + 2
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    pass
+            if proc is not None and proc.poll() is None and not sent:
+                continue
+            state = scope_state(unit, systemctl)
+            if sent and state == "active" and time.monotonic() >= deadline:
+                scope_kill(unit, systemctl, "SIGKILL")
+                deadline = time.monotonic() + 2
+            if state == "inactive" and (proc is None or proc.poll() is not None):
+                stopped = True
+                break
+            time.sleep(0.5)
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        if stopped:
+            write_closed(closed)
+            try:
+                os.unlink(child_file)
+            except FileNotFoundError:
+                pass
+    return 129 if hung_up else 0
+
+
+def scope_state(unit: str, systemctl: str) -> str:
+    """Stan cgroup; błąd menedżera nie jest dowodem końca pracy."""
+    import subprocess
+    try:
+        code = subprocess.run([systemctl, "--user", "is-active", "--quiet", unit + ".scope"],
+                              capture_output=True, timeout=3).returncode
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    return "active" if code == 0 else "inactive" if code in (3, 4) else "unknown"
+
+
+def scope_kill(unit: str, systemctl: str, sig: str) -> None:
+    import subprocess
+    try:
+        subprocess.run([systemctl, "--user", "kill", "--kill-whom=all", f"--signal={sig}", unit + ".scope"],
+                       capture_output=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def run_flow_child(task: dict) -> int:
+    """Część w scope: agent i powłoka zachowują ten sam terminal i katalog roboczy."""
+    import subprocess
+    try:
+        env = agent_env(task, os.environ) if has_env(task) else dict(os.environ)
+    except ValueError as exc:
+        print(f"Tide: model lokalny: {exc} — agent nie wystartował.", flush=True)
+    else:
+        exit_code = run_agent(task["argv"], env)
+        result_file = task.get("resultFile")
+        if exit_code and isinstance(result_file, str) and os.path.isabs(result_file) and \
+                not os.path.exists(result_file):
+            temporary = f"{result_file}.tmp-{os.getpid()}"
+            try:
+                with open(temporary, "x", encoding="utf-8") as fh:
+                    json.dump({"result": "error", "reason": f"agent-exit-{exit_code}"}, fh)
+                os.replace(temporary, result_file)
+            except OSError:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+            print(f"Tide: agent zakończył się z kodem {exit_code}; karta czeka na ponowienie.", flush=True)
+        del env
+    try:
+        return subprocess.call(shell())
+    except OSError:
+        return 127
+
+
 def main(argv=None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    if len(args) == 2 and args[0] == "--flow-child":
+        task = _load(args[1])
+        if task is None or not task.get("consoleUnit"):
+            return 2
+        try:
+            os.chdir(task.get("workdir") or task["cwd"])
+        except OSError:
+            return 2
+        os.environ["TIDE_TASK"] = "1"
+        return run_flow_child(task)
     if len(args) == 2 and args[0] == "--task":
         task = claim(args[1])
     elif not args:
@@ -193,6 +442,8 @@ def main(argv=None) -> int:
         print("Użycie: launch.py [--task PLIK]", file=sys.stderr)
         return 2
     if task is None:
+        if os.path.isfile(os.path.join(os.getcwd(), FLOW_TRANSFER_CLOSE)):
+            return 0  # anulowane planowanie: zamknij starą kartę zamiast otwierać powłokę
         print("Tide: nie ma zadania do uruchomienia w tym katalogu (wycofane albo już uruchomione).", flush=True)
         argv_exec = shell()
     else:
@@ -201,9 +452,13 @@ def main(argv=None) -> int:
             os.chdir(workdir)
         except OSError as exc:
             print(f"Tide: nie da się wejść do {workdir}: {exc}", flush=True)
+            if task.get("closedFile"):
+                write_closed(task["closedFile"])
             argv_exec = shell()
         else:
             os.environ["TIDE_TASK"] = "1"
+            if task.get("closedFile"):
+                return run_flow(task)
             if not has_env(task):
                 argv_exec = command(task)
             else:

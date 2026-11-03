@@ -241,6 +241,19 @@ class GrabTest(unittest.TestCase):
         png = os.path.join(self.tmp, "result.png")
         self.assert_png(png, grab(self.pkg, self.path, png, "--ticket", "TOM-140", "--result", "a140rev00000000001"))
 
+    def test_flow_card_renders_tickets_steps_and_timeline(self):
+        self.data.update({"coordinators": [], "boards": {}, "sessions": [], "boardSnapshot": {"cards": [{
+            "id": "K-28", "title": "Przepływ karty", "derived": {
+                "note": "Dwa kroki w toku", "tickets": [{"id": "PT-1", "title": "Widok postępu",
+                                                            "state": "w-toku", "wave": 1}],
+                "flow": {"steps": [{"id": "K-28-PT-1-1", "ticket": "PT-1", "kind": "ticket",
+                                    "executor": "Sonnet", "result": ""}],
+                         "timeline": [{"type": "step.started", "ticket": "PT-1", "executor": "Sonnet"}]}}}]}})
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(self.data, fh)
+        png = os.path.join(self.tmp, "flow.png")
+        self.assert_png(png, grab(self.pkg, self.path, png))
+
     def test_numbering_warnings_bar_above_columns(self):
         board_id = "claude:" + F.CLAUDE_COORD
         self.assertEqual(probe(self.pkg, self.path, board_id)["visible"], False, "bez ostrzeżeń — bez paska")

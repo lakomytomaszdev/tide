@@ -12,6 +12,7 @@ ten sam stan serwera daje ten sam JSON — usługa wysyła Changed tylko przy pr
 from __future__ import annotations
 
 from . import config as config_mod
+from . import executors as executors_mod
 from .transport import ModelError, request
 
 STATUS_TIMEOUT_S = 3.0
@@ -151,8 +152,11 @@ def assemble(cfg, endpoints: dict, checked: bool = True) -> dict:
         roles[name] = {"endpoint": role.endpoint, "model": role.model, "ctx": role.ctx, "installed": installed,
                        "available": bool(state.get("online") and installed and not role.error), "error": role.error,
                        "pinned": role.pinned}
+    catalog = executors_mod.public_state(cfg, endpoints, checked)
     return {"checked": checked, "default": cfg.default, "config": cfg.public(), "endpoints": endpoints, "roles": roles,
-            "agentProgram": cfg.agent_program, "search": {"enabled": cfg.semantic_search}}
+            "agentProgram": cfg.agent_program, "search": {"enabled": cfg.semantic_search},
+            "executors": catalog["list"], "providers": catalog["providers"],
+            "catalog": {"stored": catalog["stored"], "warnings": catalog["warnings"]}}
 
 
 def pending(cfg) -> dict:

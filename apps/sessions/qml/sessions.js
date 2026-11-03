@@ -34,6 +34,32 @@ function parse(text, fallback) {
     }
 }
 
+function flowCardById(cards, id) {
+    if (!id) return null
+    for (var i = 0; i < (cards || []).length; i++) {
+        if (cards[i].id === id) return cards[i]
+    }
+    return null
+}
+
+// Decyzje karty z usługi (`derived.flow.decisions[]`) albo [] — widok niczego nie wylicza.
+function cardDecisions(card) {
+    var flow = card && card.derived && card.derived.flow
+    return flow && Array.isArray(flow.decisions) ? flow.decisions : []
+}
+
+// Karta w „Czeka na mnie” z decyzjami — tylko taka może otworzyć okno decyzji (reguła jak w Tablicy).
+function hasDecisions(card) {
+    if (!card) return false
+    return (card.boardColumn || card.column || "backlog") === "waiting" && cardDecisions(card).length > 0
+}
+
+// Klik w kartę z listy „Karty w przepływie”: okno decyzji tylko dla takiej karty i gdy ustawienie okna Tide
+// to "decision" (domyślne); każda inna karta przepływu otwiera pełną kartę.
+function opensDecisions(card, cardOpen) {
+    return cardOpen !== "full" && hasDecisions(card)
+}
+
 // Tickety jednej kolumny: w toku i czekające od najświeższych, do zrobienia w kolejności planu,
 // gotowe od ostatnio skończonych.
 function column(tickets, key) {

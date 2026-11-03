@@ -1,6 +1,13 @@
-"""Instaluje i odinstalowuje podstawę wyglądu Tide: schemat kolorów, styl Plasmy i czcionki Geist.
+"""Instaluje i odinstalowuje podstawę wyglądu Tide: schemat kolorów i czcionki Geist.
+
+Nakładany jest schemat z opisu wyglądu bieżącej aktywności (scripts/activity_look.py), więc
+instalacja w aktywności Stream nie przestawia jej na Mist. Styl Plasmy nakłada plasma_style.py.
 
 Użycie: python3 appearance.py install|uninstall
+
+Schematy pozostałych wariantów palety (np. TideStreamer dla aktywności Stream) trafiają
+obok TideMist, ale nakładany jest wyłącznie TideMist — wybór wariantu należy do przełącznika
+wyglądu aktywności.
 
 Poprzednie ustawienia zapisujemy przy pierwszej instalacji, więc odinstalowanie
 przywraca stan sprzed Tide, nawet po kilku kolejnych instalacjach.
@@ -21,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from theme.colors.generate import render, scheme  # noqa: E402
+from theme import palette as palettes  # noqa: E402
 
 PALETTE = ROOT / "theme" / "palette" / "mist.json"
 GEIST_VERSION = "1.7.2"
@@ -47,8 +55,54 @@ DATA = xdg("XDG_DATA_HOME", ".local/share")
 STATE = xdg("XDG_STATE_HOME", ".local/state")
 CACHE = xdg("XDG_CACHE_HOME", ".cache")
 SCHEME_FILE = DATA / "color-schemes" / "TideMist.colors"
+SCHEME_DIR = SCHEME_FILE.parent
 FONT_DIR = DATA / "fonts" / "tide"
 PREVIOUS = STATE / "tide" / "appearance-previous.json"
+
+
+# Błędy wariantu palety (zła paleta, brak obrazów, plik nie do odczytu): instalacja Mist idzie dalej.
+VARIANT_ERRORS = (ValueError, KeyError, OSError)
+SCHEME_HEADER = render({}).splitlines()[0]  # pierwsza linia każdego schematu, który zapisał Tide
+
+
+def skipped(name: str, error: Exception) -> None:
+    print(f"Uwaga: wariant palety {name!r} pominięty ({type(error).__name__}: {error}); "
+          "wygląd Mist zainstalowany bez zmian.", file=sys.stderr)
+
+
+def variant_palettes() -> dict[str, dict]:
+    """Palety wariantów poza Mist (nazwa pliku → paleta), np. {"streamer": {...}}; zepsute pomija."""
+    result = {}
+    for name in palettes.names():
+        if name == palettes.BASE:
+            continue
+        try:
+            result[name] = palettes.load(name)
+        except VARIANT_ERRORS as error:
+            skipped(name, error)
+    return result
+
+
+def for_each_variant(write) -> None:
+    """write(nazwa, paleta) dla każdego wariantu; błąd jednego nie przerywa pozostałych ani instalacji."""
+    for name, variant in variant_palettes().items():
+        try:
+            write(name, variant)
+        except VARIANT_ERRORS as error:
+            skipped(name, error)
+
+
+def tide_scheme_files() -> list[Path]:
+    """Schematy Tide*.colors zapisane przez Tide (z nagłówkiem generatora) — także po usuniętych wariantach."""
+    found = []
+    for path in sorted(SCHEME_DIR.glob("Tide*.colors")):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                if fh.readline().rstrip("\n") == SCHEME_HEADER:
+                    found.append(path)
+        except OSError:
+            pass
+    return found
 
 
 def run(*args: str) -> str:
@@ -118,10 +172,16 @@ def install() -> None:
     write_setting("kdeglobals", "General", "smallestReadableFont", qfont(family, size - 2))
     write_setting("kdeglobals", "WM", "activeFont", qfont(family, size, 500))
 
-    run("plasma-apply-colorscheme", "TideMist")
-    run("plasma-apply-desktoptheme", "default")
+    # Schematy pozostałych wariantów (np. TideStreamer) tylko zapisane, przed nałożeniem — w Stream
+    # nałożenie potrzebuje już pliku jej schematu. Zepsuty wariant jest pomijany i nie blokuje Mist.
+    for_each_variant(lambda name, p: (SCHEME_DIR / f"Tide{p['name']}.colors").write_text(render(scheme(p))))
+
+    # Nałożenie: schemat z opisu wyglądu bieżącej aktywności (w Stream nie nakładamy Mist).
+    # Stylu Plasmy ta instalacja nie zmienia — ustawia go install-plasma-style według tego samego opisu.
+    from scripts import activity_look
+    report = activity_look.apply_current(["colorScheme"])
     notify_appearance_changed()
-    print("Kolory Tide Mist i czcionki Geist zainstalowane.")
+    print(f"Czcionki Geist i schemat kolorów TideMist zainstalowane (nałożony: {report.steps[0].target}).")
 
 
 def uninstall() -> None:
@@ -135,6 +195,8 @@ def uninstall() -> None:
     run("plasma-apply-desktoptheme", previous.get("plasmarc|Theme|name") or "default")
 
     SCHEME_FILE.unlink(missing_ok=True)
+    for path in tide_scheme_files():
+        path.unlink(missing_ok=True)
     if FONT_DIR.is_dir():
         shutil.rmtree(FONT_DIR)
         run("fc-cache", "-f")

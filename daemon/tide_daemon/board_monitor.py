@@ -16,7 +16,7 @@
   o okno „Co ma zrobić agent?” (`launch:K-12`, przycisk „Uruchom” w popupie kafelka),
 - przy starcie dawne zaczyny szablonów trybów w flows/ dostają nową treść (migrate_flows: tylko
   pliki nietknięte przez użytkownika), a każda synchronizacja sprawdza, czy karty uruchomione
-  w trybie „tylko spec” mają już gotową specyfikację (mark_ready_specs: karta wraca do Backlogu),
+  z wejściem „Tylko specyfikacja” mają już gotową specyfikację (mark_ready_specs: karta wraca do Backlogu),
 - trwałe połączenie karty z sesją (PT-28): karta bez `session`, którą przeliczenie połączyło z sesją
   uruchomioną z karty albo jednoznacznie po gałęzi (`Context.sticky`), dostaje tę sesję w pliku
   (store.link_session, commit „K-1: link session claude:…”) — później sesja może wejść do innego
@@ -38,6 +38,7 @@
   kartach (`youtrackSync`), ogólny (`youtrack`) i konflikty w `errors`. Import zgłoszeń (ImportYouTrack)
   zakłada karty w Backlogu tą samą drogą co CreateCard, bez duplikatów (po polu `youtrack`).
 """
+import contextlib
 import copy
 import json
 import os
@@ -82,6 +83,7 @@ class BoardMonitor(QObject):
         self._docs_waiting: dict[str, list] = {}     # ID karty → odpowiedzi czekające na trwający odczyt
         self._docs_ready.connect(self._deliver_docs)
         self._current: dict | None = None                 # migawka z `derived` (to, co oddaje Snapshot())
+        self._plans_mark = None
         self.launchers = launchers                        # worktrees.Launchers — okno Tide (ShowWindow)
         self.repos_source = repos_source or (lambda: [])  # funkcja() → ścieżki repozytoriów z katalogu projektów
         # stan karty z pracy agentów (PT-5): board/derive.CardDeriver (z context()) albo funkcja(karta) → dict|None
@@ -104,6 +106,9 @@ class BoardMonitor(QObject):
         self._rederive_requested.connect(self.rederive)
         self._links: list[tuple[str, str, str, str]] = []  # (karta, sesja, sposób, gałąź) do utrwalenia
         self._link_tried: dict[tuple[str, str], float] = {}
+        # Przepływ karty (PT-58, cardflow_monitor.CardFlowMonitor) albo None: karta z dziennikiem dostaje stan
+        # z dziennika, nie z pracy agentów (derive); MoveCard takiej karty wstrzymuje ją albo kończy.
+        self.flow = None
         if youtrack is not None:
             youtrack.changed.connect(self._apply)  # wynik zapisu albo konflikt — nowy stan przy kartach
 
@@ -138,15 +143,37 @@ class BoardMonitor(QObject):
     def rederive(self) -> None:
         """Zmiana w /Agents albo /Coordination: przeliczenie stanu kart z migawki w pamięci, najwyżej
         co REDERIVE_MS (pierwsza zmiana z serii uruchamia odliczanie, kolejne tylko na nie czekają)."""
-        if self.derive is not None and not self._rederive.isActive():
+        if (self.derive is not None or self.flow is not None) and not self._rederive.isActive():
             self._rederive.start()
 
     # --- D-Bus ---------------------------------------------------------------------------------
 
     def snapshot_json(self) -> str:
-        if not self._json:
+        # Plany mogą powstać w repozytorium projektu poza tablicą; przy jawnym odświeżeniu
+        # odczytaj je ponownie, aby otwarte okno zlecenia dostało aktualnych kandydatów.
+        mark = self._plans_stamp()
+        if not self._json or mark != self._plans_mark:
             self.publish()
+            self._plans_mark = self._plans_stamp()
         return self._json
+
+    def _plans_stamp(self):
+        from .coordination import plan
+        stamps = []
+        for project in (self._base or {}).get("projects") or []:
+            if not project.get("repo"):
+                continue
+            for folder in plan.plan_folders([project["repo"]], self.store.root):
+                try:
+                    with os.scandir(folder) as entries:
+                        for entry in entries:
+                            if not plan.NAME_RE.fullmatch(entry.name):
+                                continue
+                            st = entry.stat(follow_symlinks=False)
+                            stamps.append((entry.path, st.st_size, st.st_mtime_ns))
+                except OSError:
+                    continue
+        return tuple(sorted(stamps))
 
     def work_json(self) -> str:
         """Work(): lista „Praca” (board/work.py) — {exists, items, counts}."""
@@ -184,7 +211,103 @@ class BoardMonitor(QObject):
         return self._mutate(lambda: self.store.update_card(card_id, _object(request)))
 
     def move_card(self, card_id: str, column: str, order: int) -> str:
-        return self._mutate(lambda: self.store.move_card(card_id, column, order, self._shown_column(card_id)))
+        shown = self._shown_column(card_id)
+        text = self._mutate(lambda: self.store.move_card(card_id, column, order, shown))
+        if self.flow is not None:
+            try:
+                reply = json.loads(text)
+            except ValueError:
+                reply = {}
+            if reply.get("ok") and reply.get("id") and self.flow.has_journal(reply["id"]):
+                # Backlog wstrzymuje, Gotowe i Archiwum kończą; skąd — „do poprawy” tylko z kolumn wyliczonych.
+                card = self.store.load().cards.get(card_num(reply["id"]))
+                self.flow.moved(reply["id"], str(column).strip().lower(), shown, card.move_id if card else "")
+        return text
+
+    def start_card(self, card_id: str, request: str, reply) -> None:
+        """StartCard(id, json): zlecenie karty w przepływie karty (wejście „Od razu”) — reply(json) później."""
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.start_card(card_id, request, reply)
+
+    def enter_step(self, card_id: str, step_id: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.enter_step(card_id, step_id, reply)
+
+    def abandon_step(self, card_id: str, step_id: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.abandon_step(card_id, step_id, reply)
+
+    def resolve_card_review(self, card_id: str, choice: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.resolve_review(card_id, choice, reply)
+
+    def resolve_card_step(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.resolve_step(card_id, request, reply)
+
+    def preview_step_fault(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.preview_step_fault(card_id, request, reply)
+
+    def report_step_fault(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.report_step_fault(card_id, request, reply)
+
+    def set_card_paused(self, card_id: str, paused: bool, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.set_paused(card_id, paused, reply)
+
+    def get_card_flow_settings(self, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.get_settings(reply)
+
+    def set_card_flow_settings(self, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.set_settings(request, reply)
+
+    def edit_card_plan(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.edit_plan(card_id, request, reply)
+
+    def approve_card_plan(self, card_id: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.approve_plan(card_id, reply)
+
+    def card_branch_diff(self, card_id: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.card_diff(card_id, reply)
+
+    def merge_card_to_main(self, card_id: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.merge_card_to_main(card_id, reply)
 
     def _shown_column(self, card_id: str) -> str:
         """Kolumna, w której karta jest teraz wyświetlana (boardColumn z ostatniej migawki) — do `moved-from`."""
@@ -410,16 +533,24 @@ class BoardMonitor(QObject):
     def _derived(self, base: dict) -> tuple[dict, object]:
         """(migawka z `derived` i `boardColumn`, kontekst przeliczenia derive albo None) — kontekst dostaje
         też lista „Praca” (board/work.py), więc sesje i połączenia są te same co w kolumnach kart."""
-        if self.derive is None:
+        if self.derive is None and self.flow is None:
             return base, None
         snapshot = dict(base)
         snapshot["errors"] = list(base.get("errors") or [])
         claimed = [c.get("session") for c in base.get("cards") or [] if isinstance(c, dict) and c.get("session")]
-        try:
-            derive = self.derive.context(claimed) if hasattr(self.derive, "context") else self.derive
-        except Exception as exc:  # stan z pracy agentów to dodatek — tablica działa bez niego
-            print(f"tide-daemon: tablica: stan z pracy agentów: {exc!r}", flush=True)
-            return base, None
+        derive = None
+        if self.derive is not None:
+            try:
+                derive = self.derive.context(claimed) if hasattr(self.derive, "context") else self.derive
+            except Exception as exc:  # stan z pracy agentów to dodatek — tablica działa bez niego
+                print(f"tide-daemon: tablica: stan z pracy agentów: {exc!r}", flush=True)
+                if self.flow is None:
+                    return base, None
+        if self.flow is not None:
+            try:
+                snapshot["errors"].extend(self.flow.warnings())   # dziennik karty odtworzony z kopii usługi
+            except Exception as exc:
+                print(f"tide-daemon: tablica: przepływ karty: {exc!r}", flush=True)
         repos = {p.get("slug"): p.get("repo") or "" for p in base.get("projects") or [] if isinstance(p, dict)}
         cards = []
         links = []
@@ -427,12 +558,18 @@ class BoardMonitor(QObject):
             card = copy.copy(card)
             derived = None
             try:
-                given = {**card, "repo": repos.get(card.get("project"), ""),
-                         "extraRepos": [repos.get(slug) for slug in card.get("projects") or [] if repos.get(slug)]}
-                derived = derive(given)
-                sticky = derive.sticky(given) if hasattr(derive, "sticky") else None
-                if sticky:
-                    links.append((card.get("id", ""), *sticky))
+                if self.flow is not None and self.flow.has_journal(card.get("id") or ""):
+                    # Karta w przepływie karty: stan tylko z dziennika (dziennik wygrywa z planem i sesjami).
+                    derived = self.flow.derived(card)
+                    if hasattr(self.flow, 'tracker_tickets'):
+                        card['flowTickets'] = self.flow.tracker_tickets(card)
+                elif derive is not None:
+                    given = {**card, "repo": repos.get(card.get("project"), ""),
+                             "extraRepos": [repos.get(slug) for slug in card.get("projects") or [] if repos.get(slug)]}
+                    derived = derive(given)
+                    sticky = derive.sticky(given) if hasattr(derive, "sticky") else None
+                    if sticky:
+                        links.append((card.get("id", ""), *sticky))
             except Exception as exc:
                 snapshot["errors"].append({"path": card.get("path", ""),
                                            "message": f"{card.get('id', '')}: stan z pracy agentów: {exc}"})
@@ -477,10 +614,14 @@ class BoardMonitor(QObject):
             self.publish()
 
     def sync(self) -> None:
-        """Commit zmian z zewnątrz, nowe ścieżki do obserwacji i świeża migawka."""
+        """Commit zmian z zewnątrz, nowe ścieżki do obserwacji i świeża migawka. Zmiany dziennika kart (przepływ
+        karty) najpierw własnym commitem, pod blokadą dziennika — nie trafiają do „sync external changes”."""
         try:
-            if self.store.sync():
-                print("tide-daemon: tablica: zapisano zmiany z zewnątrz", flush=True)
+            with self.flow.lock if self.flow is not None else contextlib.nullcontext():
+                if self.flow is not None:
+                    self.flow.commit()
+                if self.store.sync():
+                    print("tide-daemon: tablica: zapisano zmiany z zewnątrz", flush=True)
         except Exception as exc:  # np. zablokowany indeks — spróbujemy przy następnej okazji
             print(f"tide-daemon: tablica: commit zmian z zewnątrz: {exc}", flush=True)
         try:

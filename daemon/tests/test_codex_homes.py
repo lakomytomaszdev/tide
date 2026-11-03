@@ -455,12 +455,25 @@ class KRunnerTest(unittest.TestCase):
     def test_without_matching_program_resume_uses_codex_from_path(self):
         self.index.refresh()
         snap_bin = fake_program(os.path.join(self.h.tmp, "root", "snap", "bin"))
-        core, launchers = self.core([os.path.dirname(snap_bin)])
+        with mock.patch.object(codex_homes, "DESKTOP_CODEX", os.path.join(self.h.tmp, "missing-codex")):
+            core, launchers = self.core([os.path.dirname(snap_bin)])
         self.assertTrue(core.run(f"session:codex:{uid(20)}"))
         self.assertEqual(launchers.spawned[-1][0][-3:], [snap_bin, "resume", uid(20)])
 
 
 class LaunchersTest(unittest.TestCase):
+    def test_desktop_binary_handles_regular_sessions_when_path_has_only_snap(self):
+        tmp = tempfile.mkdtemp(prefix="tide-codex-desktop-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        snap = fake_program(os.path.join(tmp, "snap", "bin"))
+        desktop = fake_program(os.path.join(tmp, "desktop", "bin"))
+        home = os.path.join(tmp, "home")
+        with mock.patch.object(codex_homes, "DESKTOP_CODEX", desktop):
+            launchers = Launchers(env={"HOME": home, "PATH": os.path.dirname(snap)})
+        self.assertEqual(launchers.agents["codex"], desktop)
+        self.assertEqual(launchers.codex_for(os.path.join(home, ".codex", "sessions", "x.jsonl")), desktop)
+        self.assertEqual(launchers.codex_for(os.path.join(home, "snap", "codex", "34", "sessions", "x.jsonl")), snap)
+
     def test_codex_binaries_split_snap_and_other(self):
         tmp = tempfile.mkdtemp(prefix="tide-codex-bins-")
         self.addCleanup(shutil.rmtree, tmp, True)

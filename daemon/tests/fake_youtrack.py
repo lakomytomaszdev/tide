@@ -6,6 +6,8 @@ Kształty odpowiedzi skopiowane z odczytu (GET) prawdziwego zgłoszenia — test
 serwera: usługa testowa dostaje adres tej atrapy albo zamknięty port (fixtures/youtrack-closed.json).
 """
 import json
+import re
+import socket
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,8 +23,16 @@ class FakeYouTrack:
         self.token = token
         self.issues: dict[str, dict] = {}
         self.calls: list = []
+        self.comment_status = 200
         self.status = 200            # inny kod — każda odpowiedź z tym kodem (np. 503)
         self.workflow = list(WORKFLOW)
+        self.projects: set | None = None   # None — każdy klucz projektu istnieje; zbiór — inne dostają 400 przy zakładaniu
+        self.comments: dict[str, list] = {}    # klucz → [{"id", "text"}]
+        self.links: list = []                  # (zgłoszenie, polecenie) z POST /api/commands
+        self.lose_replies = 0                  # tyle następnych POST-ów serwer wykona, ale odpowiedź zgubi (zerwane połączenie)
+        self.lose_comment_replies = 0
+        self.search_delay_after_create = 0
+        self.hidden_searches = 0
         self.clock_ms = BASE_MS
         self.lock = threading.Lock()
         fake = self
@@ -64,6 +74,10 @@ class FakeYouTrack:
             self.issues[ident]["state"] = state
             self.issues[ident]["updated"] = self._tick()
 
+    def issue_with(self, marker: str) -> list:
+        """Klucze zgłoszeń, których opis zawiera napis (np. znacznik karty)."""
+        return [i for i, issue in sorted(self.issues.items()) if marker in issue["description"]]
+
     def state(self, ident: str) -> str:
         return self.issues[ident]["state"]
 
@@ -90,6 +104,27 @@ class FakeYouTrack:
             query = urllib.parse.parse_qs(parts.query)
             if parts.path == "/api/issues" and handler.command == "GET":
                 return self._send(handler, 200, self._search(query.get("query", [""])[0]))
+            if parts.path == "/api/issues" and handler.command == "POST":
+                return self._create(handler, body)
+            if parts.path == "/api/commands" and handler.command == "POST":
+                return self._command(handler, body)
+            if parts.path.startswith("/api/issues/") and parts.path.endswith("/comments"):
+                if self.comment_status != 200:
+                    return self._send(handler, self.comment_status, {"error": "unavailable"})
+                ident = urllib.parse.unquote(parts.path[len("/api/issues/"):-len("/comments")])
+                if ident not in self.issues:
+                    return self._send(handler, 404, {"error": "Not Found"})
+                if handler.command == "POST":
+                    try:
+                        text = json.loads(body or "{}")["text"]
+                    except (ValueError, KeyError, TypeError):
+                        return self._send(handler, 400, {"error": "bad_request"})
+                    if not isinstance(text, str) or not text.strip():
+                        return self._send(handler, 400, {"error": "bad_request", "error_description": "Empty comment"})
+                    items = self.comments.setdefault(ident, [])
+                    items.append({"id": f"{len(items) + 1}-0", "text": text})
+                    return self._send(handler, 200, items[-1])
+                return self._send(handler, 200, list(self.comments.get(ident, [])))
             if parts.path.startswith("/api/issues/"):
                 ident = urllib.parse.unquote(parts.path[len("/api/issues/"):])
                 issue = self.issues.get(ident)
@@ -99,6 +134,41 @@ class FakeYouTrack:
                     return self._post(handler, ident, issue, body)
                 return self._send(handler, 200, self._issue_json(ident, issue))
             return self._send(handler, 404, {"error": "Not Found"})
+
+    def _create(self, handler, body) -> None:
+        try:
+            data = json.loads(body or "{}")
+            project = data["project"]["shortName"]
+            summary = data["summary"]
+        except (ValueError, KeyError, TypeError):
+            return self._send(handler, 400, {"error": "bad_request", "error_description": "Bad body"})
+        if not isinstance(summary, str) or not summary.strip():
+            return self._send(handler, 400, {"error": "bad_request", "error_description": "Summary required"})
+        if self.projects is not None and project not in self.projects:
+            return self._send(handler, 400, {"error": "bad_request", "error_description": f"Unknown project {project}"})
+        number = 1 + max([int(i.rsplit("-", 1)[1]) for i in self.issues if i.rsplit("-", 1)[0] == project] or [0])
+        ident = f"{project}-{number}"
+        stamp = self._tick()
+        self.issues[ident] = {"state": "Submitted", "summary": summary, "description": data.get("description") or "",
+                              "mine": "reporter", "created": stamp, "updated": stamp}
+        self.hidden_searches = self.search_delay_after_create
+        return self._send(handler, 200, {"idReadable": ident, "summary": summary, "$type": "Issue"})
+
+    def _command(self, handler, body) -> None:
+        try:
+            data = json.loads(body or "{}")
+            command = data["query"]
+            idents = [i["idReadable"] for i in data["issues"]]
+        except (ValueError, KeyError, TypeError):
+            return self._send(handler, 400, {"error": "bad_request", "error_description": "Bad body"})
+        words = command.split()
+        target = words[-1] if words else ""
+        if any(i not in self.issues for i in idents) or target not in self.issues:
+            return self._send(handler, 400, {"error": "bad_request", "error_description": "Unknown issue"})
+        for ident in idents:
+            if (ident, command) not in self.links:     # ponowienie polecenia niczego nie zmienia, jak w YouTracku
+                self.links.append((ident, command))
+        return self._send(handler, 200, {})
 
     def _post(self, handler, ident, issue, body) -> None:
         try:
@@ -117,8 +187,17 @@ class FakeYouTrack:
         return self._send(handler, 200, self._issue_json(ident, issue))
 
     def _search(self, text: str) -> list:
+        if self.hidden_searches:
+            self.hidden_searches -= 1
+            return []
         out = []
+        phrases = re.findall(r'"([^"]+)"', text)
+        project = re.search(r"project:\s*(\S+)", text)
         for ident, issue in sorted(self.issues.items()):
+            if project and ident.rsplit("-", 1)[0] != project.group(1):
+                continue
+            if any(p not in issue["description"] for p in phrases):
+                continue
             if "#Unresolved" in text and issue["state"] in RESOLVED:
                 continue
             if "for: me" in text and issue["mine"] != "assignee":
@@ -142,8 +221,15 @@ class FakeYouTrack:
                     {"value": None, "name": "Assignee", "$type": "SingleUserIssueCustomField"}],
                 "$type": "Issue"}
 
-    @staticmethod
-    def _send(handler, code: int, payload) -> None:
+    def _send(self, handler, code: int, payload) -> None:
+        if self.lose_comment_replies and handler.command == 'POST' and '/comments' in handler.path and code == 200:
+            self.lose_comment_replies -= 1
+            self.lose_replies += 1
+        if self.lose_replies > 0 and handler.command == "POST" and code == 200:
+            self.lose_replies -= 1      # zmiana już zapisana, ale klient dostaje zerwane połączenie
+            handler.close_connection = True
+            handler.connection.shutdown(socket.SHUT_RDWR)
+            return
         body = json.dumps(payload).encode()
         handler.send_response(code)
         handler.send_header("Content-Type", "application/json")

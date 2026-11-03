@@ -51,7 +51,7 @@ NORMAL = 5      # domyślnie
 LOW = 10        # ciężka praca wsadowa (raport poranny)
 IDLE = 20       # praca w tle, gdy nic innego nie czeka (indeks wyszukiwania po znaczeniu, PT-19)
 ROLE_PRIORITY = {"describe": HIGH, "summary": LOW}
-ROLE_WORDS = {"describe": "opisy kart", "summary": "raport poranny", "embed": "wyszukiwanie w KRunnerze"}
+ROLE_WORDS = {"card-step": "krok karty", "describe": "opisy kart", "summary": "raport poranny", "embed": "wyszukiwanie w KRunnerze"}
 DEFAULT_SLOTS = 1
 DEFAULT_WAIT_S = 600.0
 GROUP_HOLD_S = 60.0
@@ -119,6 +119,7 @@ class Queue:
         self._waiting: dict[str, list[_Item]] = {}
         self._running: dict[str, list[_Item]] = {}
         self._chosen: dict[str, _Item] = {}
+        self._step_claims: dict[str, _Item] = {}
         self._last_model: dict[str, str] = {}
         self._last_end: dict[str, float] = {}     # tor → koniec ostatniego wywołania (zegar kolejki)
         self._seq = itertools.count()
@@ -128,6 +129,28 @@ class Queue:
         return self._clock() if self._clock is not None else time.monotonic()
 
     # --- wywołanie ------------------------------------------------------------------------------
+
+    def claim_step(self, key: str, *, endpoint: str, model: str = "", recovering: bool = False):
+        """Nieblokujące zajęcie toru przez krok lokalny. Raport i opisy już czekające mają pierwszeństwo.
+        Zwrócony uchwyt zwalnia usługa dopiero po końcu kroku, także przy błędzie."""
+        lane = lane_of(endpoint)
+        with self._cond:
+            if key in self._step_claims:
+                return self._step_claims[key]
+            if not recovering and (self._running.get(lane) or self._waiting.get(lane)):
+                return None
+            item = _Item(next(self._seq), lane, endpoint, "card-step", model, endpoint,
+                         IDLE, self._now(), self._wall())
+            self._running.setdefault(lane, []).append(item)
+            self._step_claims[key] = item
+            self._choose(lane)
+        self._notify()
+        return item
+
+    def release_step(self, claim) -> None:
+        with self._cond:
+            self._step_claims = {key: item for key, item in self._step_claims.items() if item is not claim}
+        self._finish(claim, ran=True)
 
     def run(self, fn, *, endpoint: str, lane: str | None = None, role: str = "", model: str = "",
             priority: int | None = None, wait: float | None = DEFAULT_WAIT_S, cancel=None, host: str = "",

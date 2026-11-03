@@ -26,6 +26,13 @@ XML = f"""<interface name="{IFACE}">
   </method>
   <method name="CloseNotification"><arg name="id" type="u" direction="in"/></method>
   <method name="GetCapabilities"><arg name="caps" type="as" direction="out"/></method>
+  <method name="Inhibit">
+    <arg name="desktop_entry" type="s" direction="in"/>
+    <arg name="reason" type="s" direction="in"/>
+    <arg name="hints" type="a{{sv}}" direction="in"/>
+    <arg name="cookie" type="u" direction="out"/>
+  </method>
+  <method name="UnInhibit"><arg name="cookie" type="u" direction="in"/></method>
   <method name="Calls"><arg name="json" type="s" direction="out"/></method>
   <method name="Invoke">
     <arg name="id" type="u" direction="in"/>
@@ -62,6 +69,18 @@ class FakeNotifications(QDBusAbstractAdaptor):
     @pyqtSlot(result="QStringList")
     def GetCapabilities(self):
         return ["actions", "body"]
+
+    # Rozszerzenie Plasmy: „Nie przeszkadzać” na prośbę aplikacji, aż do UnInhibit albo zniknięcia wołającego.
+    @pyqtSlot(str, str, "QVariantMap", result="uint")
+    def Inhibit(self, desktop_entry, reason, hints):
+        self.next_id += 1
+        self.calls.append({"method": "Inhibit", "cookie": self.next_id, "desktopEntry": desktop_entry,
+                           "reason": reason})
+        return self.next_id
+
+    @pyqtSlot("uint")
+    def UnInhibit(self, cookie):
+        self.calls.append({"method": "UnInhibit", "cookie": cookie})
 
     @pyqtSlot(result=str)
     def Calls(self):

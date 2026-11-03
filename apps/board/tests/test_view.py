@@ -192,6 +192,57 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js("shortPath('/home/t/DevWorkspace/tide-board', '/home/t')"), "~/DevWorkspace/tide-board")
         self.assertEqual(self.js("shortPath('/home/tomasz/x', '/home/t')"), "/home/tomasz/x")
 
+    def test_launch_entries_and_defaults(self):
+        self.assertEqual(self.js("LAUNCH_ENTRIES.map(e => e.id)"), ["planning", "plan", "spec", "now"])
+        self.assertEqual(self.js("LAUNCH_MODES.map(m => m.id)"), ["full", "light"], "Tylko specyfikacja nie jest już trybem")
+        self.assertEqual(self.js("launchEntry('spec').title"), "Tylko specyfikacja")
+        self.assertEqual(self.js("launchEntry('planning').title"), "Planowanie")
+        self.assertEqual(self.js("launchEntry('plan').title"), "Mam plan")
+        self.assertEqual(self.js("launchEntry('???').id"), "planning")
+        self.assertEqual(self.js("launchSteps('spec', 'full')"), self.js("launchEntry('spec').steps"))
+        self.assertEqual(self.js("launchSteps('planning', 'light')"), self.js("launchMode('light').steps"))
+        for project, want in (({}, ["planning", "full"]), ({"entry": "spec", "mode": "light"}, ["spec", "light"]),
+                              ({"mode": "spec"}, ["spec", "full"]), ({"mode": "light"}, ["planning", "light"]),
+                              ({"entry": "planning", "mode": "spec"}, ["planning", "full"])):
+            got = self.js(f"(function (d) {{ return [d.entry, d.mode] }})(launchDefaults({json.dumps(project)}))")
+            self.assertEqual(got, want, project)
+        self.assertEqual(self.js("launchDefaults(null).entry"), "planning")
+
+    def test_now_executors_and_flow_card_drop_targets(self):
+        status = json.dumps({"executors": EXECUTORS})
+        self.assertEqual(self.js(f"launchExecutors({status}).map(o => o.value)"), ["Haiku", "Sonnet", "Opus"])
+        self.assertEqual(self.js("launchExecutors(null).map(o => o.value)"), ["Haiku", "Sonnet", "Opus"],
+                         "zanim przyjdzie Status() — domyślni wykonawcy Claude")
+        self.assertEqual(self.js(f"defaultExecutor(launchExecutors({status}))"), "Sonnet")
+        self.assertEqual(self.js("launchSteps('now', 'full')"),
+                         ["Ticket w tle", "Review", "Gałąź karty", "Do sprawdzenia"])
+        self.assertEqual(self.js("[isFlowEntry('now'), isFlowEntry('planning'), entryHasModes('now')]"),
+                         [True, True, False])
+        self.assertEqual(self.js("startCardRequest({entry: 'now', executor: 'Opus', check: 'manual'}, ['/t/1.png'])"),
+                         {"entry": "now", "executor": "Opus", "check": "manual", "images": ["/t/1.png"]})
+        actual = json.dumps({"executors": EXECUTORS["list"], "providers": {"other": {"label": "Inny"}}})
+        self.assertEqual(self.js(f"launchExecutors({actual}, 'openai').map(o => o.value)"), ["Codex standard"])
+        self.assertEqual(self.js(f"launchExecutors({actual}, 'local').map(o => o.value)"), ["Lokalny"])
+        self.assertEqual(self.js(f"launchExecutors({actual}, 'mixed').length"), 5)
+        self.assertEqual(self.js(f"reviewExecutors({actual}, 'Opus', 'anthropic').map(o => o.value)"),
+                         ["Haiku", "Sonnet"])
+        self.assertEqual(self.js(f"reviewExecutors({actual}, 'Opus', 'mixed').map(o => o.value)"),
+                         ["Codex standard"])
+        self.assertEqual(self.js(f"reviewExecutors({actual}, 'Lokalny', 'local').map(o => o.value)"), [])
+        self.assertIn("other", self.js(f"preferredProviders({actual}).map(o => o.value)"))
+        self.assertEqual(self.js("startCardRequest({entry:'now', executor:'Codex standard', preferredProvider:'openai', check:'auto'}, [])"),
+                         {"entry": "now", "executor": "Codex standard", "preferredProvider": "openai",
+                          "check": "auto", "images": []})
+        flow = "{id: 'K-1', column: 'todo', boardColumn: '%s', derived: {column: '%s', flow: {ticket: 'PT-1'}}}"
+        for shown in ("progress", "waiting"):
+            card = flow % (shown, shown)
+            self.assertTrue(self.js(f"draggable({card})"), shown)
+            self.assertEqual(self.js(f"dropTargets({card})"), ["backlog", "done"], shown)
+        self.assertEqual(self.js(f"dropTargets({flow % ('review', 'review')})"), ["done", "todo"])
+        legacy = "{id: 'K-2', column: 'todo', boardColumn: 'progress', derived: {column: 'progress', coordinator: 'c'}}"
+        self.assertFalse(self.js(f"draggable({legacy})"))
+        self.assertEqual(self.js(f"dropTargets({legacy})"), [])
+
     def test_launch_texts_and_requests(self):
         k9 = "S.cards.find(c => c.id === 'K-9')"
         self.assertEqual(self.js(f"launchBranch({k9}, 'codex')"), "codex/k-9-wlasne-okno-kafelek-dockera")
@@ -202,17 +253,16 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(self.js(f"docsLabel(launchProject(S, {k9}))"), "w repozytorium · docs/agents/")
         self.assertEqual(self.js("docsLabel({aiDocs: 'tide', slug: 'mobileapp', docsDir: '/h/DevWorkspace/tide-board/docs/mobileapp'})"),
                          "w Tide · tide-board/docs/mobileapp/")
-        state = {"cardId": "K-16", "mode": "full", "tool": "claude", "branch": "claude/k-16-okno", "newWorktree": True,
-                 "check": "auto", "aiDocs": "repo", "slug": "plasma-tide", "repoName": "plasma-tide"}
+        state = {"cardId": "K-16", "entry": "planning", "mode": "full", "tool": "claude", "branch": "claude/k-16-okno",
+                 "newWorktree": True, "check": "auto", "aiDocs": "repo", "slug": "plasma-tide", "repoName": "plasma-tide"}
         js_state = json.dumps(state)
         self.assertEqual(self.js(f"launchFooter({js_state})"),
-                         "Nowa karta Konsoli „plasma-tide · claude/k-16-okno”, Claude Code z szablonem „Pełny flow”. Agent "
-                         "najpierw zada ci pytania, potem założy plan z kluczem card: K-16. Karta przejdzie do „W toku”, "
-                         "gdy agent ruszy.")
+                         "Planowanie Pełne w jednej karcie Konsoli: planujący dopyta, zapisze specyfikację i pokaże "
+                         "podział na tickety. Po review plan poczeka w „Czeka na mnie” na Twoje zatwierdzenie.")
         light = self.js(f"launchFooter(Object.assign({js_state}, {{mode: 'light', tool: 'codex', check: 'manual'}}))")
-        self.assertIn("Codex z szablonem „Lekki”", light)
-        self.assertIn("„Co przetestować ręcznie i jak”", light)
-        spec = self.js(f"launchFooter(Object.assign({js_state}, {{mode: 'spec', aiDocs: 'tide', slug: 'mobileapp'}}))")
+        self.assertIn("Planowanie w tle bez Konsoli", light)
+        self.assertIn("Twoje zatwierdzenie", light)
+        spec = self.js(f"launchFooter(Object.assign({js_state}, {{entry: 'spec', aiDocs: 'tide', slug: 'mobileapp'}}))")
         self.assertEqual(spec, "Claude Code w katalogu projektu, bez worktree: dopyta i zapisze specyfikację w "
                                "tide-board/docs/mobileapp/specs/. Potem karta wróci do Backlogu ze znacznikiem "
                                "„specyfikacja gotowa”.")
@@ -227,12 +277,15 @@ class LogicTest(unittest.TestCase):
         local_start = self.js(f"launchStartRequest({json.dumps(dict(flow, tool='codex'))}, {json.dumps(local)})")
         self.assertEqual((local_start["images"], local_start["model"], local_start["tool"]),
                          (local["images"], "local", "codex"))
-        self.assertIn("Codex na qwen3-coder:30b z szablonem „Pełny flow”", self.js(f"launchFooter({json.dumps(local)})"))
-        spec_start = self.js(f"launchStartRequest({json.dumps(dict(flow, aiDocs='repo'))}, Object.assign({js_state}, {{mode: 'spec'}}))")
+        self.assertIn("Planowanie Pełne w jednej karcie Konsoli", self.js(f"launchFooter({json.dumps(local)})"))
+        spec_start = self.js(f"launchStartRequest({json.dumps(dict(flow, aiDocs='repo'))}, Object.assign({js_state}, {{entry: 'spec'}}))")
         self.assertEqual((spec_start["newWorktree"], spec_start["branch"], spec_start["addDirs"]), (False, "", []))
         self.assertEqual(self.js(f"launchMarkRequest({{worktree: '/w/k-16', branch: 'claude/k-16-okno', tool: 'claude'}}, {js_state}, 'T')"),
-                         {"branch": "claude/k-16-okno", "worktree": "/w/k-16", "mode": "full", "tool": "claude",
-                          "check": "auto", "launched": "T", "session": ""})
+                         {"branch": "claude/k-16-okno", "worktree": "/w/k-16", "entry": "planning", "mode": "full",
+                          "tool": "claude", "check": "auto", "launched": "T", "session": ""})
+        self.assertEqual(self.js(f"launchMarkRequest({{worktree: '', branch: 'master'}}, Object.assign({js_state}, {{entry: 'spec', mode: 'light'}}), 'T')")
+                         ["entry"] + "/" + self.js(f"launchMarkRequest({{worktree: ''}}, Object.assign({js_state}, {{entry: 'spec', mode: 'light'}}), 'T')")["mode"],
+                         "spec/", "przy Tylko specyfikacja karta nie dostaje trybu")
         self.assertEqual(self.js(f"launchMarkRequest({{worktree: '', branch: 'master'}}, Object.assign({js_state}, {{check: 'manual'}}), 'T')")["branch"],
                          "", "bez worktree gałąź główna nie trafia do karty")
         self.assertRegex(self.js("isoNow(1793099040000)"), r"^2026-10-27T\d\d:\d\d:00[+-]\d\d:\d\d$")
@@ -263,7 +316,7 @@ class LogicTest(unittest.TestCase):
                           {"kind": "project", "key": "nie-ma", "name": "nie-ma"}])
         state = {"cardId": "K-16", "mode": "light", "tool": "claude", "branch": "claude/k-16-okno", "newWorktree": True,
                  "check": "auto", "aiDocs": "tide", "slug": "dp", "repoName": "dp", "extras": picked}
-        self.assertIn("Pracuje też w: mobileapp, legal (gałąź claude/k-16-okno w każdym, które zmieni).",
+        self.assertIn("Dodatkowe projekty do odczytu: mobileapp, legal.",
                       self.js(f"launchFooter({json.dumps(state)})"))
         flow = {"text": "x", "repo": "/r/dp", "tool": "claude", "branch": "claude/k-16-okno", "docsDir": "/b/docs/dp",
                 "aiDocs": "tide", "addDirs": ["/b/docs/dp", "/r/mobileapp"]}
@@ -315,6 +368,7 @@ class LogicTest(unittest.TestCase):
         self.assertEqual([o["kind"] for o in options].count("project"), 7)
         self.assertEqual(options[-1]["kind"], "repo")
         self.assertEqual([o["name"] for o in self.js("projectOptions(S, 'legal')")], ["Bez projektu", "legal-agents"])
+
 
 
 class DocsLogicTest(unittest.TestCase):
@@ -525,6 +579,44 @@ out["calls"] = calls()
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class PanelTest(ProbeCase):
+    def test_flow_step_buttons_route_enter_and_abandon(self):
+        data = json.loads(json.dumps(self.data))
+        card_data = next(card for card in data["cards"] if card["id"] == "K-12")
+        card_data["derived"] = {"column": "waiting", "flow": {"steps": [
+            {"id": "K-12-PT-67-1", "ticket": "PT-67", "mode": "interactive", "result": "stopped",
+             "reason": "interactive-closed", "canEnter": True}]}}
+        out = self.probe(FIND_PY + """
+click(card('K-12'))
+out['flow'] = js('page.cardPanel.card.derived.flow')
+out['repeaterCount'] = js('page.cardPanel.flowRepeater.count')
+out['enterText'] = js(FIND + "(page.cardPanel, 'enterStep').text")
+out['abandonVisible'] = js(FIND + "(page.cardPanel, 'abandonStep').visible")
+js("page.cardPanel.enterStepRequested('K-12', 'K-12-PT-67-1')")
+wait(80)
+out['enterCall'] = calls()[-1]
+js("page.cardPanel.abandonStepRequested('K-12', 'K-12-PT-67-1')")
+wait(80)
+out['abandonCall'] = calls()[-1]
+""", data)
+        self.assertEqual(out["enterText"], "Wznów rozmowę", out)
+        self.assertTrue(out["abandonVisible"])
+        self.assertEqual(out["enterCall"], ["EnterStep", "K-12", "K-12-PT-67-1"])
+        self.assertEqual(out["abandonCall"], ["AbandonStep", "K-12", "K-12-PT-67-1"])
+
+    def test_question_step_shows_conversation_resume(self):
+        data = json.loads(json.dumps(self.data))
+        card_data = next(card for card in data["cards"] if card["id"] == "K-12")
+        card_data["derived"] = {"column": "waiting", "flow": {"steps": [
+            {"id": "K-12-plan-1", "ticket": "", "mode": "interactive", "result": "question",
+             "reason": "", "canEnter": True}]}}
+        out = self.probe(FIND_PY + """
+click(card('K-12'))
+out['enterText'] = js(FIND + "(page.cardPanel, 'enterStep').text")
+out['enterEnabled'] = js(FIND + "(page.cardPanel, 'enterStep').enabled")
+""", data)
+        self.assertEqual(out["enterText"], "Wznów rozmowę", out)
+        self.assertTrue(out["enterEnabled"], out)
+
     def test_create_card_from_column_and_errors_in_place(self):
         out = self.probe("""
 js("page.columnItems()[1].addRequested('todo')")
@@ -907,6 +999,29 @@ out["closed"] = not js("page.panelOpen")
         self.assertTrue(out["ctrlN"])
         self.assertTrue(out["closed"])
 
+    def test_project_default_entry_in_manage_page(self):
+        data = json.loads(json.dumps(self.data))
+        data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]   # FIND bierze pierwszy wiersz
+        data["projects"][0].update(entry="spec", mode="light")
+        out = self.probe(FIND_PY + """
+find = lambda name: FIND + f"(page.managePage, '{name}')"
+js("page.managing = true")
+js("page.managePage.openProject = 'plasma-tide'")
+wait(100)
+out["spec"] = [js(find("projectEntry") + ".current"), js(find("projectMode") + ".visible")]
+js(find("projectEntry") + ".picked('planning')")
+wait(50)
+out["planning"] = [js(find("projectEntry") + ".current"), js(find("projectMode") + ".visible"), js(find("projectMode") + ".current")]
+js(find("manageProjectsFlick") + ".contentY = Math.max(0, " + find("manageProjectsFlick") + ".contentHeight - " + find("manageProjectsFlick") + ".height)")
+wait(60)
+click(at(find("projectSave")))
+wait(80)
+out["save"] = calls()[-1]
+""", data)
+        self.assertEqual(out["spec"], ["spec", False], "Tylko specyfikacja: bez wyboru trybu")
+        self.assertEqual(out["planning"], ["planning", True, "light"])
+        self.assertEqual(json.loads(out["save"][-1]), {"slug": "plasma-tide", "entry": "planning"})
+
     def test_tags_and_projects(self):
         out = self.probe("""
 click(named("addTagChip"))
@@ -959,9 +1074,9 @@ class LaunchMarkStoreTest(unittest.TestCase):
         with open(os.path.join(APP_DIR, "qml", "board.js"), encoding="utf-8") as fh:
             engine.evaluate(fh.read().replace(".pragma library", ""))
         for result, choice in (({"worktree": "/w/k-1", "branch": "claude/k-1-grabie", "tool": "claude"},
-                                {"mode": "full", "tool": "claude", "check": "manual"}),
+                                {"entry": "planning", "mode": "full", "tool": "claude", "check": "manual"}),
                                ({"worktree": "", "branch": "master", "tool": "codex"},
-                                {"mode": "spec", "tool": "codex", "check": "auto"})):
+                                {"entry": "spec", "mode": "light", "tool": "codex", "check": "auto"})):
             value = engine.evaluate(f"JSON.stringify(launchMarkRequest({json.dumps(result)}, {json.dumps(choice)}, "
                                     f"isoNow(1793099040000)))")
             self.assertFalse(value.isError(), value.toString())
@@ -973,7 +1088,9 @@ class LaunchMarkStoreTest(unittest.TestCase):
                     board.create_card({"title": "Grabie", "column": "todo", "session": "claude:poprzednia"})
                     self.assertTrue(board.update_card("K-1", request)["ok"])
                     card = board.snapshot()["cards"][0]
-            self.assertEqual((card["mode"], card["tool"], card["worktree"]), (choice["mode"], choice["tool"], result["worktree"]))
+            self.assertEqual((card["entry"], card["mode"], card["tool"], card["worktree"]),
+                             (choice["entry"], choice["mode"] if choice["entry"] == "planning" else "", choice["tool"],
+                              result["worktree"]))
             self.assertEqual(card["branch"], result["branch"] if result["worktree"] else "")
             self.assertEqual(card.get("check"), choice["check"])
             self.assertEqual(card["session"], "", "poprzednia sesja odpięta — usługa przypnie nową")
@@ -1017,67 +1134,49 @@ out["closed2"] = not js("page.launchOpen")
         self.assertTrue(out["closed2"])
 
     def test_launch_full_flow_sends_requests_in_order(self):
-        flow = json.dumps(self.FLOW, ensure_ascii=False)
-        out = self.probe(f"""
-flow = json.loads({flow!r})
-replies.extend([{{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # MoveCard
-                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # UpdateCard (opis)
-                flow,                                                                     # RenderLaunch
-                {{"ok": False, "error": "branch-exists", "message": "gałąź claude/k-15-x już istnieje — zmień nazwę"}}])
+        out = self.probe("""
+replies.extend([{"ok": True, "id": "K-15", "changed": True, "commitError": ""},
+                {"ok": True, "id": "K-15", "changed": True, "commitError": ""},
+                {"ok": False, "error": "branch-exists", "message": "gałąź karty już istnieje"}])
 drag(card("K-15"), column("todo", fy=0.75))
 obj("launchTask").setProperty("text", "Tryb skupienia: wycisz powiadomienia na 25 min")
-js("page.launchDialog.pickTool('codex'); page.launchDialog.pickTool('claude')")
 key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
 wait(300)
 out["inPlace"] = js("[page.launchOpen, page.launchDialog.busy, page.launchDialog.error]")
 out["calls1"] = calls()
-replies.extend([flow,
-                {{"ok": True, "cwd": "/w/k-15", "branch": "claude/k-15-tryb-skupienia", "worktree": "/w/k-15",
-                  "title": "plasma-tide · claude/k-15-tryb-skupienia", "tool": "claude", "mode": "tab"}},
-                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}}])
+replies.append({"ok": True, "id": "K-15", "cardBranch": "card/k-15-tryb-skupienia",
+                "step": "K-15-plan-1-0", "executor": "Sonnet", "interactive": True})
 click(named("launchStart"))
 wait(300)
 out["calls2"] = calls()[len(out["calls1"]):]
 out["closed"] = not js("page.launchOpen")
 out["toast"] = js("[page.toast, page.toastTone]")
 """)
-        self.assertEqual(out["inPlace"], [True, False, "gałąź claude/k-15-x już istnieje — zmień nazwę"], "błąd w oknie")
+        self.assertEqual(out["inPlace"], [True, False, "gałąź karty już istnieje"], "błąd w oknie")
         members = [c[0] for c in out["calls1"]]
-        self.assertEqual(members, ["MoveCard", "UpdateCard", "RenderLaunch", "Start"])
+        self.assertEqual(members, ["MoveCard", "UpdateCard", "StartCard"])
         self.assertEqual(json.loads(out["calls1"][1][2]), {"description": "Tryb skupienia: wycisz powiadomienia na 25 min"},
                          "zmienione zadanie zapisane w karcie przed poleceniem")
-        self.assertEqual(out["calls1"][2][1], "K-15")
         self.assertEqual(json.loads(out["calls1"][2][2]),
-                         {"mode": "full", "tool": "claude", "check": "auto",
-                          "branch": "claude/k-15-tryb-skupienia-wyciszone"})
-        self.assertEqual(json.loads(out["calls1"][3][1]),
-                         {"repoPath": "/home/user/DevWorkspace/plasma-tide", "tool": "claude", "prompt": "Karta K-15: polecenie",
-                          "newWorktree": True, "branch": "claude/k-15-tryb-skupienia", "images": [], "addDirs": [],
-                          "model": "cloud"})
-        self.assertEqual([c[0] for c in out["calls2"]], ["RenderLaunch", "Start", "UpdateCard"],
+                         {"entry": "planning", "mode": "full", "executor": "Sonnet", "check": "auto",
+                          "preferredProvider": "anthropic", "images": []})
+        self.assertEqual([c[0] for c in out["calls2"]], ["StartCard"],
                          "ponowienie bez drugiego zapisu opisu")
-        mark = json.loads(out["calls2"][2][2])
-        self.assertEqual(out["calls2"][2][1], "K-15")
-        self.assertEqual({k: mark[k] for k in ("branch", "worktree", "mode", "tool", "check")},
-                         {"branch": "claude/k-15-tryb-skupienia", "worktree": "/w/k-15", "mode": "full", "tool": "claude",
-                          "check": "auto"})
-        self.assertEqual(mark["session"], "", "ponowne uruchomienie odpina poprzednią sesję (PT-28)")
-        self.assertRegex(mark["launched"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")
-        self.assertIn("Agent ruszył", out["toast"][0])
+        self.assertIn("ruszyło w Konsoli", out["toast"][0])
 
     def test_spec_mode_from_tile_intent_without_worktree(self):
         flow = json.dumps(dict(self.FLOW, id="K-14", tool="codex", mode="spec", aiDocs="tide",
                                docsDir="/home/user/DevWorkspace/tide-board/docs/mobileapp",
                                repo="/home/user/DevWorkspace/mobileapp"), ensure_ascii=False)
-        out = self.probe(f"""
+        out = self.probe(FIND_PY + f"""
 js("showItem('launch:k-14')")
 wait(150)
 out["open"] = js("[page.launchOpen, page.launchCardId, page.launchFromMove, page.selectedId]")
 out["moveOnlyVisible"] = obj("launchMoveOnly").property("visible")
 out["docs"] = obj("launchDocs").property("text")
-js("page.launchDialog.mode = 'spec'")
+click(at(FIND + "(page.launchDialog, 'launchEntry-spec')"))
 js("page.launchDialog.pickTool('codex')")
 js("page.launchDialog.manualCheck = true")
 wait(50)
@@ -1100,14 +1199,59 @@ out["calls"] = calls()
         self.assertFalse(out["worktreeEnabled"], "spec — bez worktree")
         self.assertIn("Codex w katalogu projektu, bez worktree", out["footer"])
         self.assertEqual([c[0] for c in out["calls"]], ["RenderLaunch", "Start", "UpdateCard", "MoveCard"])
-        self.assertEqual(json.loads(out["calls"][0][2]), {"mode": "spec", "tool": "codex", "check": "manual"})
+        self.assertEqual(json.loads(out["calls"][0][2]), {"entry": "spec", "tool": "codex", "check": "manual"})
         start = json.loads(out["calls"][1][1])
         self.assertEqual((start["newWorktree"], start["branch"], start["addDirs"], start["tool"]),
                          (False, "", ["/home/user/DevWorkspace/tide-board/docs/mobileapp"], "codex"))
         mark = json.loads(out["calls"][2][2])
         self.assertEqual({k: mark[k] for k in ("branch", "worktree", "mode", "tool", "check")},
-                         {"branch": "", "worktree": "", "mode": "spec", "tool": "codex", "check": "manual"})
+                         {"branch": "", "worktree": "", "mode": "", "tool": "codex", "check": "manual"})
+        self.assertEqual(mark["entry"], "spec")
         self.assertEqual(out["calls"][3], ["MoveCard", "K-14", "todo", -1], "karta z Backlogu idzie do kolejki")
+
+    def test_how_to_start_shows_the_mode_only_for_planning(self):
+        out = self.probe(FIND_PY + """
+shown = lambda name: js(FIND + f"(page.launchDialog, '{name}').visible")
+choose = lambda name: click(at(FIND + f"(page.launchDialog, '{name}')"))
+js("page.openLaunch('K-9', false)")
+wait(100)
+out["default"] = js("[page.launchDialog.entry, page.launchDialog.mode]")
+out["entries"] = [shown("launchEntry-planning"), shown("launchEntry-spec"),
+                  js(FIND + "(page.launchDialog, 'launchEntry-planning').Accessible.name")]
+out["planning"] = [shown("launchModes"), shown("launchMode-full"), shown("launchMode-light")]
+choose("launchMode-light")
+out["light"] = js("[page.launchDialog.entry, page.launchDialog.mode]")
+choose("launchEntry-spec")
+wait(50)
+out["spec"] = [js("page.launchDialog.entry"), shown("launchModes"), shown("launchMode-light"),
+               obj("launchWorktreeToggle").property("enabled")]
+choose("launchEntry-planning")
+wait(50)
+out["back"] = [js("page.launchDialog.entry"), js("page.launchDialog.mode"), shown("launchModes")]
+""")
+        self.assertEqual(out["default"], ["planning", "full"])
+        self.assertEqual(out["entries"][:2], [True, True])
+        self.assertIn("Planowanie", out["entries"][2])
+        self.assertEqual(out["planning"], [True, True, True])
+        self.assertEqual(out["light"], ["planning", "light"])
+        self.assertEqual(out["spec"], ["spec", False, False, False], "Tylko specyfikacja: bez wyboru trybu i bez worktree")
+        self.assertEqual(out["back"], ["planning", "light", True], "wybrany tryb wraca z Planowaniem")
+
+    def test_project_default_entry_and_legacy_mode_spec(self):
+        data = json.loads(json.dumps(self.data))
+        for p in data["projects"]:
+            if p["slug"] == "plasma-tide":
+                p["entry"], p["mode"] = "spec", "light"
+            if p["slug"] == "mobileapp":
+                p.pop("entry", None)
+                p["mode"] = "spec"   # usługa sprzed PT-77 / stary zapis: tryb spec to wejście Tylko specyfikacja
+        out = self.probe("""
+out["tide"] = js("page.openLaunch('K-9', false), [page.launchDialog.entry, page.launchDialog.mode]")
+click(named("launchCancel"))
+out["legacy"] = js("page.openLaunch('K-14', false), [page.launchDialog.entry, page.launchDialog.mode]")
+""", data)
+        self.assertEqual(out["tide"], ["spec", "light"], "domyślne wejście projektu, tryb zapamiętany na Planowanie")
+        self.assertEqual(out["legacy"], ["spec", "full"])
 
     def test_card_button_and_card_without_project(self):
         data = json.loads(json.dumps(self.data))
@@ -1143,24 +1287,30 @@ out["project"] = calls()[-1]
 FIND_PY = """
 FIND = "(function find(it, name) { if (!it) return null; if (it.objectName === name) return it; " \\
        "for (const c of it.children) { const r = find(c, name); if (r) return r } return null })"
+
+def steady(expression, ms=3000):
+    # Punkt elementu, gdy panel skończy się układać: decyzja kroku przewija panel do siebie z opóźnieniem
+    # (revealTimer w CardPanel.qml, 60 ms), więc punkt bierzemy dopiero, gdy nie zmienia się przez 150 ms.
+    last = None
+    for _ in range(max(1, ms // 150)):
+        point = at(expression)
+        if point == last:
+            return point
+        last = point
+        wait(150)
+    return last
 """
 
 
 class ExtraProjectsTest(ProbeCase):
     """PT-28: „Dodatkowe projekty” w oknie uruchomienia (chipy, wybór z listy, repozytorium jako nowy
-    projekt) → UpdateCard {projects} przed RenderLaunch, Start z addDirs z polecenia; chipy na karcie."""
+    projekt) → UpdateCard {projects} przed StartCard; chipy na karcie."""
 
     def test_pick_extra_projects_then_launch(self):
-        flow = dict(LaunchTest.FLOW, addDirs=["/home/user/DevWorkspace/mobileapp", "/home/user/DevWorkspace/legal-agents"],
-                    projects=["mobileapp", "legal-agents"])
         out = self.probe(FIND_PY + f"""
-flow = json.loads({json.dumps(flow, ensure_ascii=False)!r})
 replies.extend([{{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # MoveCard
                 {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}},          # UpdateCard (projekty)
-                flow,                                                                     # RenderLaunch
-                {{"ok": True, "cwd": "/w/k-15", "branch": "claude/k-15-tryb", "worktree": "/w/k-15",
-                  "title": "plasma-tide · claude/k-15-tryb", "tool": "claude", "mode": "tab"}},
-                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}}])         # UpdateCard (uruchomienie)
+                {{"ok": True, "id": "K-15", "executor": "Sonnet", "interactive": True}}]) # StartCard
 def type_text(text):
     for ch in text:
         QTest.keyClick(window, Qt.Key(ord(ch.upper())))
@@ -1190,13 +1340,13 @@ out["closed"] = not js("page.launchOpen")
         self.assertTrue(out["visible"])
         self.assertEqual(out["picked"], ["project:mobileapp", "repo:legal-agents", "project:LogViewer"])
         self.assertEqual(out["afterRemove"], ["mobileapp", "/home/user/DevWorkspace/legal-agents"])
-        self.assertIn("Pracuje też w: mobileapp, legal-agents", out["footer"])
-        self.assertEqual([c[0] for c in out["calls"]], ["MoveCard", "UpdateCard", "RenderLaunch", "Start", "UpdateCard"])
+        self.assertIn("Dodatkowe projekty jako kontekst: mobileapp, legal-agents", out["footer"])
+        self.assertEqual([c[0] for c in out["calls"]], ["MoveCard", "UpdateCard", "StartCard"])
         self.assertEqual(json.loads(out["calls"][1][2]),
                          {"projects": ["mobileapp", "/home/user/DevWorkspace/legal-agents"]},
                          "projekty (repozytorium zakłada projekt) zapisane przed poleceniem, opis bez zmian")
-        start = json.loads(out["calls"][3][1])
-        self.assertEqual(start["addDirs"], flow["addDirs"])
+        start = json.loads(out["calls"][2][2])
+        self.assertEqual((start["entry"], start["mode"]), ("planning", "full"))
         self.assertTrue(out["closed"])
 
     def test_card_shows_extra_projects_as_chips(self):
@@ -1251,9 +1401,6 @@ class LaunchShotsTest(ProbeCase):
         return f"TMP = {self.tmp!r}\n" + SHOTS_PY + body
 
     def test_drop_paste_remove_and_start_with_images(self):
-        start = {"ok": True, "cwd": "/w/k-9", "branch": "claude/k-9-x", "worktree": "/w/k-9", "title": "plasma-tide · k-9",
-                 "tool": "claude", "mode": "tab", "local": None}
-        flow = dict(LaunchTest.FLOW, id="K-9", branch="claude/k-9-x")
         out = self.probe(self.scenario(f"""
 js("page.openLaunch('K-9', false)")
 wait(100)
@@ -1287,9 +1434,7 @@ out["removed"] = [os.path.exists(first), shots()]
 kept = shots()
 folder = os.path.dirname(kept[0])
 replies.extend([{{"ok": True, "id": "K-9", "changed": True, "commitError": ""}},   # UpdateCard (opis)
-                json.loads({json.dumps(flow, ensure_ascii=False)!r}),
-                json.loads({json.dumps(start, ensure_ascii=False)!r}),
-                {{"ok": True, "id": "K-9", "changed": True, "commitError": ""}}])
+                {{"ok": True, "id": "K-9", "executor": "Sonnet", "interactive": True}}]) # StartCard
 click(named("launchStart"))
 wait(400)
 out["calls"] = calls()
@@ -1305,10 +1450,10 @@ out["after"] = [os.path.isfile(kept[0]), shots(), js("page.launchDialog.images.l
         self.assertEqual(out["thumbs"], 2)
         self.assertEqual(out["removed"][0], False)
         self.assertEqual(len(out["removed"][1]), 1)
-        self.assertEqual([c[0] for c in out["calls"]], ["UpdateCard", "RenderLaunch", "Start", "UpdateCard"])
-        request = json.loads(out["calls"][2][1])
-        self.assertEqual((request["images"], request["model"]), (out["removed"][1], "cloud"),
-                         "Start dostaje zrzuty z katalogu zadania, jak z okna „Nowe zadanie”")
+        self.assertEqual([c[0] for c in out["calls"]], ["UpdateCard", "StartCard"])
+        request = json.loads(out["calls"][1][2])
+        self.assertEqual((request["images"], request["mode"]), (out["removed"][1], "full"),
+                         "StartCard dostaje zrzuty z katalogu zadania")
         self.assertTrue(out["closed"])
         self.assertEqual(out["after"], [True, [], 0], "po starcie katalog zostaje agentowi, następne okno zaczyna od zera")
 
@@ -1360,6 +1505,7 @@ def models(text):
 
 js("page.openLaunch('K-9', false)")
 wait(100)
+click(at(FIND + "(page.launchDialog, 'launchEntry-spec')"))
 d = "page.launchDialog."
 # Rola `agent` nie ustawiona: „Lokalny” wyłączony z powodem w podpowiedzi, kliknięcie nic nie zmienia.
 out["unset"] = js("[" + d + "localOption.enabled, " + d + "localOption.reason]")
@@ -1408,6 +1554,678 @@ out["missing"] = [js(d + "canStart"), obj("launchFooter").property("text")]
         self.assertIn("na qwen3-coder:30b", out["toast"])
         self.assertFalse(out["missing"][0])
         self.assertIn("Nie znaleziono programu Claude Code", out["missing"][1])
+
+
+EXECUTORS = {"list": [
+    {"name": "Haiku", "program": "claude", "model": "haiku", "provider": "anthropic", "local": False},
+    {"name": "Sonnet", "program": "claude", "model": "sonnet", "provider": "anthropic", "local": False},
+    {"name": "Opus", "program": "claude", "model": "opus", "provider": "anthropic", "local": False},
+    {"name": "Codex standard", "program": "codex", "model": "gpt-6.1-sol", "provider": "openai", "local": False},
+    {"name": "Lokalny", "program": "codex", "model": "qwen3-coder:30b", "provider": "local", "local": True}]}
+
+
+@unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class LaunchPlanTest(ProbeCase):
+    def test_full_planning_warns_when_selected_provider_has_low_limit(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        data["limits"] = {"available": True, "services": {
+            "claude": {"session": {"remaining": 8, "reason": "tooLittleData"},
+                       "weekly": {"remaining": None, "reason": "noData"}}}}
+        out = self.probe(FIND_PY + """
+js("page.openLaunch('K-15', false)")
+js("page.launchDialog.entry = 'planning'; page.launchDialog.mode = 'full'; page.launchDialog.executor = 'Sonnet'")
+wait(50)
+out["low"] = [obj("launchPlanningLimitWarning").property("visible"),
+              obj("launchPlanningLimitWarning").property("text")]
+backend._limits = '{"available":false,"services":{"claude":{"session":{"remaining":8}}}}'
+backend.limitsChanged.emit()
+wait(50)
+out["unavailable"] = obj("launchPlanningLimitWarning").property("visible")
+""", data=data)
+        self.assertTrue(out["low"][0])
+        self.assertIn("8%", out["low"][1])
+        self.assertFalse(out["unavailable"])
+
+    def test_bound_plan_is_selected_but_cardless_plan_is_only_suggested(self):
+        data = json.loads(json.dumps(self.data))
+        exact = "/repo/docs/agents/plans/2026-10-28-exact.md"
+        hint = "/repo/docs/agents/plans/2026-10-29-hint.md"
+        for card in data["cards"]:
+            if card["id"] == "K-15":
+                card["planPath"] = ""
+                card["planCandidates"] = [
+                    {"path": hint, "title": "Podpowiedź", "card": "", "status": "active", "updated": "2026-10-29", "updatedTs": 2},
+                    {"path": exact, "title": "Plan karty", "card": "K-15", "status": "active", "updated": "2026-10-28", "updatedTs": 1}]
+        out = self.probe(FIND_PY + """
+js("page.openLaunch('K-15', false)")
+wait(100)
+out["auto"] = js("[page.launchDialog.entry, page.launchDialog.planPath, page.launchDialog.planCandidates.map(p => p.path)]")
+out["choice"] = js(FIND + "(page.launchDialog, 'launchPlanCandidates').visible")
+out["request"] = js("page.launchDialog.launchState.planPath")
+""", data)
+        self.assertEqual(out["auto"], ["plan", exact, [exact, hint]])
+        self.assertTrue(out["choice"])
+        self.assertEqual(out["request"], exact)
+
+        for card in data["cards"]:
+            if card["id"] == "K-15":
+                card["planCandidates"] = [card["planCandidates"][0]]
+        out = self.probe(FIND_PY + """
+js("page.openLaunch('K-15', false)")
+wait(100)
+out["hint"] = js("[page.launchDialog.entry, page.launchDialog.planPath, page.launchDialog.planCandidates.length]")
+click(at(FIND + "(page.launchDialog, 'launchEntry-plan')"))
+wait(50)
+out["before"] = js("page.launchDialog.canStart")
+js("page.launchDialog.planPath = page.launchDialog.planCandidates[0].path")
+out["after"] = js("[page.launchDialog.entry, page.launchDialog.canStart]")
+""", data)
+        self.assertEqual(out["hint"], ["planning", "", 1])
+        self.assertFalse(out["before"])
+        self.assertEqual(out["after"], ["plan", True])
+
+    def test_selected_plan_is_saved_on_card_before_start(self):
+        data = json.loads(json.dumps(self.data))
+        path = "/repo/docs/agents/plans/2026-10-29-import.md"
+        for card in data["cards"]:
+            if card["id"] == "K-15":
+                card["planPath"] = ""
+                card["planCandidates"] = [{"path": path, "title": "Plan karty", "card": "K-15",
+                                           "status": "active", "updated": "2026-10-29", "updatedTs": 1}]
+        out = self.probe("""
+js("page.openLaunch('K-15', false)")
+wait(100)
+replies.extend([{"ok": True, "id": "K-15", "changed": True, "commitError": ""},
+                {"ok": True, "id": "K-15", "imported": True, "needsCompletion": False}])
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(300)
+out["calls"] = calls()
+out["closed"] = not js("page.launchOpen")
+""", data)
+        self.assertEqual([call[0] for call in out["calls"][:2]], ["UpdateCard", "StartCard"])
+        self.assertEqual(json.loads(out["calls"][0][2]), {"planPath": path})
+        request = json.loads(out["calls"][1][2])
+        self.assertEqual((request["entry"], request["planPath"]), ("import", path))
+        self.assertTrue(out["closed"])
+
+
+class LaunchNowTest(ProbeCase):
+    """PT-58: wejście „Od razu” — wykonawca Claude z katalogu wykonawców (Status() z /Models), zlecenie przez
+    /Board StartCard (bez RenderLaunch, /Tasks Start i Konsoli); pracującą kartę z dziennikiem da się przeciągnąć
+    do Backlogu (wstrzymanie) i do Gotowych (koniec)."""
+
+    def test_cloud_executor_ignores_hidden_local_model_default(self):
+        data = json.loads(json.dumps(self.data))
+        data["tasks"] = {"tools": {"claude": True, "codex": True}, "model": "local"}
+        data["models"] = dict(models_status(available=False, installed=False,
+                                             error="Serwer lokalny nie odpowiada"), executors=EXECUTORS["list"])
+        out = self.probe(FIND_PY + """
+js("page.openLaunch('K-15', false)")
+wait(100)
+click(at(FIND + "(page.launchDialog, 'launchEntry-now')"))
+wait(50)
+out["state"] = js("[page.launchDialog.model, page.launchDialog.executor, page.launchDialog.modelBlocker, page.launchDialog.canStart]")
+""", data)
+        self.assertEqual(out["state"], ["local", "Sonnet", "", True])
+
+    def test_preferred_provider_filters_background_executors_in_dialog(self):
+        status = dict(models_status(), executors=EXECUTORS["list"])
+        out = self.probe(FIND_PY + f"""
+backend._models = {json.dumps(status, ensure_ascii=False)!r}
+backend.modelsChanged.emit()
+wait(50)
+js("page.openLaunch('K-15', false)")
+wait(100)
+out["providerVisible"] = js(FIND + "(page.launchDialog, 'launchPreferredProvider').visible")
+click(at(FIND + "(page.launchDialog, 'launchEntry-now')"))
+out["claudePolicyNotice"] = js(FIND + "(page.launchDialog, 'launchCodexCommandPolicyNotice').visible")
+click(at(FIND + "(page.launchDialog, 'launchPreferredProvider-openai')"))
+wait(50)
+out["openai"] = [js("page.launchDialog.preferredProvider"),
+                 js("page.launchDialog.executorOptions.map(o => o.value)"), js("page.launchDialog.executor")]
+out["codexPolicyNotice"] = [js(FIND + "(page.launchDialog, 'launchCodexCommandPolicyNotice').visible"),
+                            js(FIND + "(page.launchDialog, 'launchCodexCommandPolicyNotice').text")]
+click(at(FIND + "(page.launchDialog, 'launchPreferredProvider-local')"))
+wait(50)
+out["local"] = [js("page.launchDialog.executorOptions.map(o => o.value)"), js("page.launchDialog.executor")]
+""")
+        self.assertTrue(out["providerVisible"])
+        self.assertFalse(out["claudePolicyNotice"])
+        self.assertEqual(out["openai"], ["openai", ["Codex standard"], "Codex standard"])
+        self.assertTrue(out["codexPolicyNotice"][0])
+        self.assertIn("wskazówką", out["codexPolicyNotice"][1])
+        self.assertEqual(out["local"], [["Lokalny"], "Lokalny"])
+
+    def test_now_entry_picks_a_claude_executor_and_sends_start_card(self):
+        status = dict(models_status(), executors=EXECUTORS)
+        out = self.probe(FIND_PY + f"""
+backend._models = {json.dumps(status, ensure_ascii=False)!r}
+backend.modelsChanged.emit()
+wait(50)
+shown = lambda name: js(FIND + f"(page.launchDialog, '{{name}}').visible")
+choose = lambda name: click(at(FIND + f"(page.launchDialog, '{{name}}')"))
+js("page.openLaunch('K-15', false)")
+wait(100)
+out["entries"] = [shown("launchEntry-planning"), shown("launchEntry-spec"), shown("launchEntry-now")]
+out["planning"] = [shown("launchExecutor"), shown("launchModel")]
+choose("launchEntry-now")
+wait(50)
+out["now"] = [js("page.launchDialog.entry"), shown("launchExecutor"), shown("launchModes"), shown("launchModel"),
+              shown("launchWorktree"), shown("launchExtras")]
+out["options"] = js("page.launchDialog.executorOptions.map(o => o.value)")
+out["default"] = js("page.launchDialog.executor")
+choose("launchExecutor-Opus")
+out["reviewer"] = [shown("launchReviewer"), js("page.launchDialog.reviewer"),
+                    js("page.launchDialog.reviewerOptions.map(o => o.value)")]
+js("page.launchDialog.manualCheck = true")
+out["checkManual"] = obj("launchCheckNote").property("text")
+js("page.launchDialog.manualCheck = false")
+out["checkAuto"] = obj("launchCheckNote").property("text")
+js("page.launchDialog.manualCheck = true")
+out["footer"] = obj("launchFooter").property("text")
+replies.append({{"ok": False, "error": "flow-active", "message": "K-15: krok tej karty jeszcze trwa"}})
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(300)
+out["failed"] = [js("page.launchOpen"), js("page.launchDialog.busy"), js("page.launchDialog.error")]
+replies.extend([{{"ok": True, "id": "K-15", "ticket": "PT-7", "branch": "ticket/pt-7-tryb", "cardBranch": "card/k-15-tryb",
+                  "step": "K-15-PT-7-1", "executor": "Opus"}},
+                {{"ok": True, "id": "K-15", "changed": True, "commitError": ""}}])
+n = len(calls())
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(300)
+out["calls"] = calls()
+out["second"] = calls()[n:]
+out["closed"] = not js("page.launchOpen")
+out["toast"] = js("[page.toast, page.toastTone]")
+""")
+        self.assertEqual(out["entries"], [True, True, True])
+        self.assertEqual(out["planning"], [False, False], "w Planowaniu widać wybór planującego")
+        self.assertEqual(out["now"], ["now", True, False, False, False, False],
+                         "„Od razu”: wykonawca zamiast trybu, modelu, worktree i dodatkowych projektów")
+        self.assertEqual(out["options"], ["Haiku", "Sonnet", "Opus"], "tylko Claude w chmurze z katalogu")
+        self.assertEqual(out["default"], "Sonnet")
+        self.assertEqual(out["reviewer"], [True, "Sonnet", ["Haiku", "Sonnet"]])
+        self.assertIn("poczeka na Twój test ręczny", out["checkManual"])
+        self.assertIn("zostanie scalony z gałęzią karty", out["checkAuto"])
+        self.assertNotIn("review AI", out["checkManual"] + out["checkAuto"])
+        self.assertIn("Opus", out["footer"])
+        self.assertIn("bez Konsoli", out["footer"])
+        self.assertEqual(out["failed"], [True, False, "K-15: krok tej karty jeszcze trwa"], "błąd zostaje w oknie")
+        self.assertNotIn("RenderLaunch", [c[0] for c in out["calls"]])
+        self.assertNotIn("Start", [c[0] for c in out["calls"]])
+        self.assertEqual([c[0] for c in out["second"]], ["StartCard", "MoveCard"])
+        self.assertEqual(out["second"][0][1], "K-15")
+        self.assertEqual(json.loads(out["second"][0][2]),
+                         {"entry": "now", "executor": "Opus", "reviewer": "Sonnet",
+                          "preferredProvider": "anthropic", "check": "manual", "images": []})
+        self.assertEqual(out["second"][1], ["MoveCard", "K-15", "todo", -1], "karta z Backlogu idzie do kolejki")
+        self.assertTrue(out["closed"])
+        self.assertEqual(out["toast"][1], "mint")
+        self.assertIn("PT-7", out["toast"][0])
+        self.assertIn("Opus", out["toast"][0])
+
+    def test_review_verdict_is_visible_in_card_panel(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "poprawki po review",
+                                   "flow": {"ticket": "PT-7", "verdict": "REQUEST_CHANGES",
+                                            "blockers": 1, "majors": 2, "nits": 3, "round": 2}}
+                card["boardColumn"] = "waiting"
+        out = self.probe('''
+click(card("K-6"))
+out["verdict"] = [obj("cardReviewVerdict").property("visible"), obj("cardReviewVerdict").property("text")]
+''', data=data)
+        self.assertEqual(out["verdict"], [True, "Review REQUEST_CHANGES · BLOCKER 1 · MAJOR 2 · NIT 3 · runda 2"])
+
+    def test_review_question_has_working_decision_button(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "po 3 rundach review",
+                                   "flow": {"ticket": "PT-7", "verdict": "REQUEST_CHANGES",
+                                            "blockers": 0, "majors": 1, "nits": 0, "round": 3,
+                                            "reviewQuestion": True}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["visible"] = [obj("cardReviewDecision").property("visible"), obj("cardReviewRetry").property("enabled")]
+click(at(FIND + "(page.cardPanel, 'cardReviewRetry')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["visible"], [True, True])
+        self.assertEqual(out["call"], ["ResolveCardReview", "K-6", "retry"])
+
+    def test_working_flow_card_drags_to_backlog_and_done_but_a_coordinator_card_does_not(self):
+        data = json.loads(json.dumps(self.data))
+        for c in data["cards"]:
+            if c["id"] == "K-6":
+                c["derived"] = dict(c.get("derived") or {}, column="progress", link="flow", coordinator="", session="",
+                                    flow={"ticket": "PT-7", "step": "K-6-PT-7-1", "executor": "Sonnet"})
+                c["boardColumn"] = "progress"
+        out = self.probe("""
+drag(card("K-6"), column("backlog", fy=0.8))
+out["paused"] = calls()[-1] if calls() else None
+set_snapshot(json.loads(backend.snapshotJson))
+drag(card("K-6"), column("done", fy=0.8))
+out["done"] = calls()[-1]
+n = len(calls())
+drag(card("K-5"), column("backlog", fy=0.8))
+out["legacy"] = len(calls()) - n
+""", data)
+        self.assertEqual(out["paused"][:3], ["MoveCard", "K-6", "backlog"], "pracująca karta z dziennikiem — wstrzymanie")
+        self.assertEqual(out["done"][:3], ["MoveCard", "K-6", "done"])
+        self.assertEqual(out["legacy"], 0, "karta dawnego przepływu jak dotąd")
+
+
+class StepDecisionPanelTest(ProbeCase):
+    def flow_card(self, **extra):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "krok czeka",
+                                   "flow": {"ticket": "PT-7", **extra}}
+                card["boardColumn"] = "waiting"
+        return data
+
+    def test_running_step_can_be_transferred_to_another_provider(self):
+        data = self.flow_card(steps=[{"id": "step-1", "ticket": "PT-7", "result": "", "kind": "ticket",
+                                              "executor": "Sonnet", "provider": "anthropic",
+                                              "canTransfer": True, "canEnter": False}])
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["before"] = js(FIND + "(page.cardPanel, 'cardStepTransfer') !== null")
+if out["before"]:
+    out["enabled"] = js(FIND + "(page.cardPanel, 'cardStepTransfer').enabled")
+    out["targets"] = js(FIND + "(page.cardPanel, 'cardStepTransferExecutor').model.map(o => o.value)")
+    js("page.cardPanel.flowRepeater.itemAt(0).transferExecutor = 'Codex standard'")
+    click(at(FIND + "(page.cardPanel, 'cardStepTransfer')"))
+    out["call"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["before"], out)
+        self.assertFalse(out["enabled"])
+        self.assertIn("Codex standard", out["targets"])
+        self.assertNotIn("Haiku", out["targets"])
+        self.assertEqual(json.loads(out["call"][2]),
+                         {"choice": "transfer", "step": "step-1", "executor": "Codex standard"})
+
+    def test_open_full_planning_can_be_transferred_from_console(self):
+        data = self.flow_card(entry="planning", mode="full",
+                              steps=[{"id": "K-6-plan-1-0", "ticket": "", "kind": "planning",
+                                      "mode": "interactive", "result": "", "executor": "Sonnet",
+                                      "provider": "anthropic", "canTransfer": True, "canEnter": True}])
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"]["column"] = "progress"
+                card["boardColumn"] = "progress"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["visible"] = js(FIND + "(page.cardPanel, 'cardStepTransfer').visible")
+out["before"] = js(FIND + "(page.cardPanel, 'cardStepTransfer').enabled")
+out["targets"] = js(FIND + "(page.cardPanel, 'cardStepTransferExecutor').model.map(o => o.value)")
+js("page.cardPanel.flowRepeater.itemAt(0).transferExecutor = 'Codex standard'")
+click(at(FIND + "(page.cardPanel, 'cardStepTransfer')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["visible"])
+        self.assertFalse(out["before"])
+        self.assertIn("Codex standard", out["targets"])
+        self.assertNotIn("Haiku", out["targets"])
+        self.assertEqual(out["call"][:2], ["ResolveCardStep", "K-6"])
+        self.assertEqual(json.loads(out["call"][2]),
+                         {"choice": "transfer", "step": "K-6-plan-1-0", "executor": "Codex standard"})
+
+    def test_auto_transfer_setting_is_saved_from_manage_page(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        data["flowSettings"] = {"ok": True, "limitTransfer": {"mode": "ask", "executor": ""},
+                                "limitThresholdPercent": 10}
+        out = self.probe(FIND_PY + """
+js("page.managing = true")
+wait(50)
+out["initial"] = [js("page.managePage.limitTransferMode"), obj("limitTransferSave").property("enabled")]
+js("page.managePage.limitTransferMode = 'auto'; page.managePage.limitTransferExecutor = 'Codex standard'; page.managePage.flowSettingsDirty = true")
+out["targetVisible"] = obj("limitTransferExecutor").property("visible")
+click(at(FIND + "(page.managePage, 'limitTransferSave')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["initial"], ["ask", False])
+        self.assertTrue(out["targetVisible"])
+        self.assertEqual(out["call"][0], "SetCardFlowSettings")
+        self.assertEqual(json.loads(out["call"][1]),
+                         {"limitTransfer": {"mode": "auto", "executor": "Codex standard"}})
+
+    def test_project_command_lists_are_editable_and_saved(self):
+        data = json.loads(json.dumps(self.data))
+        data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]
+        data["projects"][0].update(allowedCommands=["git status", "git log"], deniedCommands=["make install"])
+        out = self.probe(FIND_PY + """
+find = lambda name: FIND + f"(page.managePage, '{name}')"
+js("page.managing = true")
+js("page.managePage.openProject = 'plasma-tide'")
+wait(100)
+out["initial"] = [js(find("projectAllowedCommands") + ".text"),
+                  js(find("projectDeniedCommands") + ".text")]
+js(find("projectAllowedCommands") + ".text = 'git status\\ngit log\\ngit fetch origin'")
+js(find("manageProjectsFlick") + ".contentY = Math.max(0, " + find("manageProjectsFlick") + ".contentHeight - " + find("manageProjectsFlick") + ".height)")
+wait(60)
+click(at(find("projectSave")))
+wait(80)
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["initial"], ["git status\ngit log", "make install"])
+        self.assertEqual(json.loads(out["call"][-1]),
+                         {"slug": "plasma-tide", "allowedCommands": ["git status", "git log", "git fetch origin"]})
+
+class PlanPanelTest(ProbeCase):
+    def test_running_plan_review_can_be_transferred_from_wide_view(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "progress", "flow": {"entry": "planning", "plan": {
+                    "status": "reviewing", "planner": "Sonnet", "reviewStep": "K-6-plan-review-1",
+                    "reviewProvider": "anthropic", "waves": [["#1"]],
+                    "rows": [{"workId": "#1", "title": "Eksport", "class": "standard",
+                              "executor": "Sonnet", "reviewer": "Opus", "blockers": [], "editable": True,
+                              "body": "# Eksport\n- [ ] Eksport działa.", "cardPath": "/board/tickets/1.md"}]}}}
+                card["boardColumn"] = "progress"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+obj("planManagerReviewExecutor").setProperty("currentIndex", 1)
+click(at(FIND + "(page, 'planManagerRunReview')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["call"][:2], ["ResolveCardStep", "K-6"])
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "transfer", "step": "K-6-plan-review-1",
+                                                   "executor": "Codex standard"})
+
+    def test_wide_plan_manager_edits_assignment_and_keeps_approval_explicit(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "planner": "Sonnet", "waves": [["#1"]],
+                    "rows": [{"workId": "#1", "title": "Eksport", "class": "standard",
+                              "executor": "Sonnet", "reviewer": "Opus", "blockers": [], "editable": True,
+                              "body": "# Eksport\n- [ ] Eksport działa.", "cardPath": "/board/tickets/1.md"}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+wait(80)
+out["visible"] = obj("planManager").property("visible")
+out["width"] = obj("planManager").property("width")
+out["pageWidth"] = js("page.width")
+out["status"] = obj("planManagerStatus").property("text")
+out["approveLabel"] = obj("planManagerApprove").property("text")
+out["selected"] = obj("planManager").property("selectedTicketId")
+obj("planManagerReviewer").setProperty("currentIndex", 2)
+click(at(FIND + "(page, 'planManagerSaveTicket')"))
+out["editCall"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["visible"])
+        self.assertGreater(out["width"], out["pageWidth"] * 0.8)
+        self.assertIn("Twojej decyzji", out["status"])
+        self.assertIn("rozpocznij implementację", out["approveLabel"])
+        self.assertEqual(out["selected"], "#1")
+        self.assertEqual(out["editCall"][:2], ["EditCardPlan", "K-6"])
+        self.assertEqual(json.loads(out["editCall"][2])["reviewer"], "Codex standard")
+
+    def test_selected_ticket_shows_its_own_reviewer_after_the_list_recalculates(self):
+        # K-33: #1 miał recenzenta Opus, a pole pokazywało pierwszą pozycję listy (Codex) po przeliczeniu.
+        data = json.loads(json.dumps(self.data))
+        real = [{"name": n, "program": p, "model": m, "provider": v, "local": v == "local"} for n, p, m, v in (
+            ("Haiku", "claude", "haiku", "anthropic"), ("Sonnet", "claude", "sonnet", "anthropic"),
+            ("Opus", "claude", "opus", "anthropic"), ("Codex lekki", "codex", "gpt-6-luna", "openai"),
+            ("Codex standard", "codex", "gpt-6.1-sol", "openai"), ("Codex mocny", "codex", "gpt-6.1-sol", "openai"),
+            ("Codex Astra", "codex", "gpt-6-astra", "openai"), ("Lokalny", "codex", "qwen3-coder:30b", "local"))]
+        data["models"] = dict(models_status(), executors={"list": real})
+        rows = [{"workId": "#1", "title": "A", "class": "standard", "executor": "Sonnet", "reviewer": "Opus",
+                 "blockers": [], "editable": True, "body": "# A", "cardPath": "/b/1.md"},
+                {"workId": "#2", "title": "B", "class": "mocny", "executor": "Opus", "reviewer": "Codex mocny",
+                 "blockers": [], "editable": True, "body": "# B", "cardPath": "/b/2.md"}]
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "planner": "Opus", "waves": [["#1", "#2"]], "rows": rows}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+wait(120)
+out["first"] = [obj("planManagerExecutor").property("currentValue"), obj("planManagerReviewer").property("currentValue")]
+js(FIND + "(page, 'planManager').selectTicket(" + FIND + "(page, 'planManager').rows[1])")
+wait(120)
+out["second"] = [obj("planManagerExecutor").property("currentValue"), obj("planManagerReviewer").property("currentValue")]
+js("(function(){ const m = " + FIND + "(page, 'planManager'); m.modelsStatus = JSON.parse(JSON.stringify(m.modelsStatus)) })()")
+wait(120)
+out["refreshed"] = [obj("planManagerExecutor").property("currentValue"), obj("planManagerReviewer").property("currentValue")]
+""", data=data)
+        self.assertEqual(out["first"], ["Sonnet", "Opus"])
+        self.assertEqual(out["second"], ["Opus", "Codex mocny"])
+        self.assertEqual(out["refreshed"], ["Opus", "Codex mocny"], "odświeżenie stanu modeli nie zmienia wyboru")
+
+    def test_long_review_findings_scroll_and_keep_approval_on_screen(self):
+        # K-33: 23 punkty uwag review zepchnęły listę ticketów i „Zatwierdź plan” poza okno bez przewijania.
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        findings = "\n".join(f"{n}. Uwaga numer {n}: " + "dłuższe uzasadnienie zmiany w planie " * 6
+                             for n in range(1, 24))
+        rows = [{"workId": f"#{n}", "title": f"Ticket {n}", "class": "standard", "executor": "Sonnet",
+                 "reviewer": "Opus", "blockers": [], "editable": True, "body": "# T", "cardPath": f"/b/{n}.md"}
+                for n in range(1, 16)]
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "planner": "Opus", "waves": [[r["workId"] for r in rows]], "rows": rows,
+                    "review": {"verdict": "REQUEST_CHANGES", "reviewer": "Sonnet", "findings": findings}}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+wait(80)
+out["managerHeight"] = obj("planManager").property("height")
+out["approveBottom"] = js("(function(){ const m = " + FIND + "(page, 'planManager'); const b = " + FIND +
+                         "(page, 'planManagerApprove'); return b.mapToItem(m, 0, b.height).y })()")
+review = obj("planManagerReview")
+out["reviewHeight"] = review.property("height") if review else None
+toggle = obj("planManagerReviewToggle")
+out["toggle"] = toggle.property("visible") if toggle else None
+""", data=data)
+        self.assertLessEqual(out["approveBottom"], out["managerHeight"])
+        self.assertLessEqual(out["reviewHeight"], 100)
+        self.assertTrue(out["toggle"])
+
+    def test_blocked_plan_shows_assignments_and_review_choice(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "czeka na limit Claude", "flow": {
+                    "entry": "planning", "plan": {"status": "blocked", "planner": "Sonnet",
+                    "reviewWait": {"reason": "czeka na limit Claude do soboty", "provider": "anthropic"},
+                    "waves": [["#1"]], "rows": [{"workId": "#1", "title": "Eksport", "class": "standard",
+                        "executor": "Sonnet", "reviewer": "Opus", "blockers": [], "note": "", "editable": True,
+                        "body": "# Eksport\n- [ ] Eksport działa.", "cardPath": "/board/tickets/1.md"}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["shown"] = obj("cardPlanProposal").property("visible")
+out["entries"] = js("page.cardPanel.planEntries().map(r => [r.executor, r.reviewer])")
+out["reason"] = obj("cardPlanReviewWait").property("text")
+out["approve"] = obj("cardPlanApprove").property("visible")
+obj("cardPlanReviewExecutor").setProperty("currentIndex", 1)
+click(at(FIND + "(page.cardPanel, 'cardPlanRunReview')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["shown"])
+        self.assertEqual(out["entries"], [["Sonnet", "Opus"]])
+        self.assertIn("soboty", out["reason"])
+        self.assertFalse(out["approve"])
+        self.assertEqual(out["call"][:2], ["EditCardPlan", "K-6"])
+        self.assertEqual(json.loads(out["call"][2]), {"action": "review-executor", "executor": "Codex standard"})
+
+    def test_failed_revision_can_be_returned_again_or_discarded(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "approved", "review": {"verdict": "APPROVE"}, "rows": [], "waves": [],
+                    "revision": {"seq": 12, "failed": True}, "errors": ["Nieprawidłowa poprawka"]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+obj("cardPlanFeedback").setProperty("text", "Popraw ponownie")
+wait(50)
+out["retryEnabled"] = obj("cardPlanReturn").property("enabled")
+click(at(FIND + "(page.cardPanel, 'cardPlanDiscardRevision')"))
+wait(50)
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["retryEnabled"])
+        self.assertEqual(out["call"][:2], ["EditCardPlan", "K-6"])
+        self.assertEqual(json.loads(out["call"][2])["action"], "discard-revision")
+
+
+    def test_plan_review_and_ticket_editor_send_changes_to_service(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "review": {"verdict": "REQUEST_CHANGES", "reviewer": "Opus", "findings": "Uzupełniono ryzyka."},
+                    "waves": [["#1"]], "rows": [{"workId": "#1", "title": "Eksport", "class": "standard",
+                        "executor": "Sonnet", "reviewer": "Opus", "blockers": [], "note": "", "editable": True,
+                        "body": "# Eksport\n- [ ] Eksport działa.", "cardPath": "/board/tickets/1.md"}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["review"] = obj("cardPlanReview").property("text")
+click(at(FIND + "(page.cardPanel, 'cardPlanTicket-1')"))
+js("page.cardPanel.planEditTicket = page.cardPanel.flowPlan.rows[0]")
+obj("cardPlanExecutor").setProperty("text", "Opus")
+obj("cardPlanReviewer").setProperty("text", "Sonnet")
+click(at(FIND + "(page.cardPanel, 'cardPlanSaveTicket')"))
+wait(80)
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertIn("Uzupełniono ryzyka.", out["review"])
+        self.assertEqual(out["call"][:2], ["EditCardPlan", "K-6"])
+        request = json.loads(out["call"][2])
+        self.assertEqual((request["action"], request["ticket"], request["executor"], request["reviewer"]),
+                         ("edit", "#1", "Opus", "Sonnet"))
+
+
+    def test_plan_from_snapshot_shows_waves_and_approval_calls_service(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "note": "plan do zatwierdzenia",
+                                   "flow": {"entry": "plan", "plan": {
+                                       "status": "pending", "errors": [],
+                                       "waves": [["#1"], ["#2"]],
+                                       "rows": [
+                                           {"workId": "#1", "title": "Pierwszy", "executor": "Sonnet",
+                                            "reviewer": "Opus", "blockers": [], "note": "pilne",
+                                            "cardPath": "/board/flow/K-6/plan/tickets/1.md"},
+                                           {"workId": "#2", "title": "Drugi", "executor": "Codex mocny",
+                                            "reviewer": "Codex Astra", "blockers": ["#1"], "note": "po pierwszym",
+                                            "cardPath": "/board/flow/K-6/plan/tickets/2.md"}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["entries"] = js("page.cardPanel.planEntries().map(r => [r.wave, r.workId, r.executor, r.reviewer, r.blockers])")
+out["shown"] = [obj("cardPlanProposal").property("visible"), obj("cardPlanApprove").property("visible")]
+click(at(FIND + "(page.cardPanel, 'cardPlanTicket-1')"))
+out["ticketCall"] = calls()[-1]
+click(at(FIND + "(page.cardPanel, 'cardPlanApprove')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["entries"], [[1, "#1", "Sonnet", "Opus", []],
+                                          [2, "#2", "Codex mocny", "Codex Astra", ["#1"]]])
+        self.assertEqual(out["shown"], [True, True])
+        self.assertEqual(out["ticketCall"], ["openFile", "/board/flow/K-6/plan/tickets/1.md"])
+        self.assertEqual(out["call"], ["ApproveCardPlan", "K-6"])
+
+
+class ClosingPanelTest(ProbeCase):
+    def test_closed_card_exposes_diff_main_merge_and_return(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "review", "flow": {
+                    "closed": True, "summary": "Zrobiono eksport. Co przetestować ręcznie i jak: otwórz plik.",
+                    "mainMerged": False, "plan": {"status": "done", "rows": [], "waves": [], "revision": {}}}}
+                card["boardColumn"] = "review"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["shown"] = obj("cardFlowClosing").property("visible")
+out["summary"] = js("page.cardPanel.card.derived.flow.summary")
+click(at(FIND + "(page.cardPanel, 'cardBranchDiff')"))
+out["diffCall"] = calls()[-1]
+obj("cardClosingFeedback").setProperty("text", "Dopisz błąd eksportu")
+click(at(FIND + "(page.cardPanel, 'cardReturnForChanges')"))
+out["returnCall"] = calls()[-1]
+click(at(FIND + "(page.cardPanel, 'cardMergeMain')"))
+out["mergeCall"] = calls()[-1]
+""", data=data)
+        self.assertTrue(out["shown"])
+        self.assertIn("Zrobiono eksport", out["summary"])
+        self.assertEqual(out["diffCall"], ["CardBranchDiff", "K-6"])
+        self.assertEqual(out["mergeCall"], ["MergeCardToMain", "K-6"])
+        self.assertEqual(out["returnCall"][:2], ["EditCardPlan", "K-6"])
+        self.assertEqual(json.loads(out["returnCall"][2])["feedback"], "Dopisz błąd eksportu")
+
+
+class WavePanelTest(ProbeCase):
+    def test_wave_tickets_timeline_and_pause_are_read_from_file_snapshot(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["boardColumn"] = "progress"
+                card["derived"] = {"column": "progress", "note": "fala 1 z 2", "done": 1, "total": 3,
+                    "tickets": [{"id": "PT-1", "state": "gotowe", "wave": 1, "waitReason": ""},
+                                {"id": "PT-2", "state": "czeka", "wave": 1, "waitReason": "limit kroków dostawcy anthropic: 3/3"},
+                                {"id": "PT-3", "state": "todo", "wave": 2, "waitReason": ""}],
+                    "flow": {"entry": "plan", "waveLabel": "fala 1 z 2", "paused": False,
+                        "timeline": [{"seq": 1, "ts": "2026-10-29T10:00:00Z", "type": "step.started", "ticket": "PT-1", "kind": "ticket", "executor": "Sonnet"},
+                                     {"seq": 2, "ts": "2026-10-29T10:01:00Z", "type": "step.waiting", "ticket": "PT-2", "reason": "limit kroków dostawcy anthropic: 3/3"}],
+                        "steps": [{"id": "K-6-PT-1-1", "ticket": "PT-1", "kind": "ticket", "executor": "Sonnet", "result": "done", "canEnter": True}]}}
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["wave"] = obj("cardWaveLabel").property("text")
+out["tileWave"] = js(FIND + "(page.findCard('K-6'), 'cardTileWaveLabel').text")
+out["tileWaveVisible"] = js(FIND + "(page.findCard('K-6'), 'cardTileWaveLabel').visible")
+out["timeline"] = obj("cardTimeline").property("count")
+out["tickets"] = obj("cardTicketStrip").property("count")
+out["gap"] = js(FIND + "(page.findCard('K-6'), 'cardTicketStrip').itemAt(2).gap")
+out["pause"] = obj("cardPause").property("text")
+click(at(FIND + "(page.cardPanel, 'cardPause')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["wave"], "fala 1 z 2")
+        self.assertEqual(out["tileWave"], "fala 1 z 2")
+        self.assertTrue(out["tileWaveVisible"])
+        self.assertEqual(out["timeline"], 2)
+        self.assertEqual(out["tickets"], 3)
+        self.assertTrue(out["gap"], "między falami mini-pasek ma przerwę")
+        self.assertEqual(out["pause"], "Wstrzymaj kartę")
+        self.assertEqual(out["call"], ["SetCardPaused", "K-6", True])
+        next(card for card in data["cards"] if card["id"] == "K-6")["derived"]["flow"]["paused"] = True
+        resumed = self.probe(FIND_PY + """
+click(card("K-6"))
+out["text"] = obj("cardPause").property("text")
+click(at(FIND + "(page.cardPanel, 'cardPause')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(resumed["text"], "Wznów")
+        self.assertEqual(resumed["call"], ["SetCardPaused", "K-6", False])
+
 
 
 class LaunchReviewTest(ProbeCase):
@@ -1466,6 +2284,7 @@ out["outside"] = len(shots())
         out = self.probe(self.scenario(f"""
 js("page.openLaunch('K-9', false)")
 wait(100)
+click(at(FIND + "(page.launchDialog, 'launchEntry-spec')"))
 d = "page.launchDialog."
 # Odświeżone Defaults() po otwarciu: zapamiętany „Lokalny”, póki nikt nie ruszał modelu.
 js("page.taskDefaults = ({{tools: {{claude: true, codex: true}}, model: 'local'}})")
@@ -1628,6 +2447,20 @@ class GrabTest(ProbeCase):
 
 @requires_dbus
 class BackendTest(unittest.TestCase):
+    def test_plan_card_paths_require_current_card_and_current_snapshot(self):
+        path = "/board/flow/K-1/plan/tickets/1.md"
+        card = {"id": "K-1", "derived": {"flow": {"plan": {"rows": [{"cardPath": path}]}}}}
+        backend = self.module.create(None, {"exists": True, "cards": [card, {"id": "K-2"}]})
+        self.assertFalse(backend.openFile(path))
+        backend.cardDocs("K-1")
+        self.assertTrue(backend.openFile(path))
+        self.assertFalse(backend.openFile("/etc/passwd"))
+        backend.cardDocs("K-2")
+        self.assertFalse(backend.openFile(path))
+        backend.cardDocs("K-1")
+        backend._got_snapshot(True, json.dumps({"cards": [{"id": "K-1"}]}))
+        self.assertFalse(backend.openFile(path))
+
     """backend.py z prawdziwym tide-daemon na prywatnej magistrali i tymczasową tablicą."""
 
     def setUp(self):
@@ -1684,12 +2517,13 @@ class BackendTest(unittest.TestCase):
         self.assertIn("dom", [p["name"] for p in json.loads(backend.snapshotJson)["projects"]])
         self.assertEqual(snap["boardDir"], self.board)
         # Uruchomienie z karty: RenderLaunch idzie do /Board, Start do /Tasks (z długim terminem).
-        backend.renderLaunch("launch-render:K-1", "K-1", json.dumps({"mode": "spec", "tool": "codex"}))
+        backend.renderLaunch("launch-render:K-1", "K-1", json.dumps({"entry": "spec", "tool": "codex"}))
         backend.startTask("launch-start:K-1", json.dumps({"repoPath": "/nie/ma", "tool": "gemini", "prompt": "a b"}))
         self.assertTrue(wait_until(lambda: len(replies) == 9, timeout=15))
         by_tag = dict(replies[7:])
-        self.assertEqual((by_tag["launch-render:K-1"]["ok"], by_tag["launch-render:K-1"]["mode"],
-                          by_tag["launch-render:K-1"]["tool"]), (True, "spec", "codex"))
+        self.assertEqual((by_tag["launch-render:K-1"]["ok"], by_tag["launch-render:K-1"]["entry"],
+                          by_tag["launch-render:K-1"]["mode"], by_tag["launch-render:K-1"]["tool"]),
+                         (True, "spec", "", "codex"))
         self.assertIn("Karta K-1: Pierwsza karta", by_tag["launch-render:K-1"]["text"])
         self.assertEqual(by_tag["launch-start:K-1"]["error"], "bad-tool", "odpowiedź z /Tasks")
         # PT-43: /Tasks Defaults (katalog zrzutów, programy) i stan modeli z /Models — jak w oknie „Nowe zadanie”.
@@ -1804,3 +2638,53 @@ class BackendTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LightPlanningViewTest(ProbeCase):
+    def test_light_planning_selects_planner_and_sends_background_request(self):
+        status = dict(models_status(), executors=EXECUTORS)
+        out = self.probe(FIND_PY + f"""
+backend._models = {json.dumps(status, ensure_ascii=False)!r}
+backend.modelsChanged.emit()
+wait(50)
+js("page.openLaunch('K-15', false)")
+wait(100)
+js("page.launchDialog.mode = 'light'")
+wait(50)
+out["plannerVisible"] = js(FIND + "(page.launchDialog, 'launchPlanner').visible")
+js(FIND + "(page.launchDialog, 'launchPlanner').picked('Opus')")
+out["planner"] = js("page.launchDialog.executor")
+out["footer"] = obj("launchFooter").property("text")
+key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+wait(200)
+out["calls"] = calls()
+""")
+        self.assertTrue(out["plannerVisible"])
+        self.assertEqual(out["planner"], "Opus")
+        self.assertIn("bez Konsoli", out["footer"])
+        start = next(c for c in out["calls"] if c[0] == "StartCard")
+        self.assertEqual(json.loads(start[-1])["mode"], "light")
+        self.assertEqual(json.loads(start[-1])["executor"], "Opus")
+        self.assertFalse(any(c[0] in ("RenderLaunch", "Start") for c in out["calls"]))
+
+    def test_assignment_rules_can_be_edited_globally_and_per_project(self):
+        data = json.loads(json.dumps(self.data))
+        data["assignmentRules"] = "standard: wspólne"
+        data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]
+        data["projects"][0]["assignmentRules"] = ""
+        out = self.probe(FIND_PY + """
+js("page.managing = true")
+wait(80)
+obj("globalAssignmentRules").setProperty("text", "mocny: wspólne")
+js(FIND + "(page.managePage, 'globalAssignmentRulesSave').clicked()")
+wait(80)
+out["global"] = calls()[-1]
+js("page.managePage.openProject = 'plasma-tide'")
+wait(80)
+js(FIND + "(page.managePage, 'projectAssignmentRules').text = 'lekki: projekt'")
+js(FIND + "(page.managePage, 'projectSave').clicked()")
+wait(80)
+out["project"] = calls()[-1]
+""", data)
+        self.assertEqual(json.loads(out["global"][-1]), {"globalAssignmentRules": "mocny: wspólne"})
+        self.assertEqual(json.loads(out["project"][-1]), {"slug": "plasma-tide", "assignmentRules": "lekki: projekt"})

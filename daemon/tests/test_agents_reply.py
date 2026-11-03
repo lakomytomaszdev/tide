@@ -399,6 +399,63 @@ class CodexSubagentTest(CodexTurnTest):
         from tide_daemon.agents.state import reply_question
         self.assertEqual(reply_question(log), "")
 
+    def test_forked_subagent_ignores_copied_parent_question(self):
+        parent, child = "0000000a-0000-4000-8000-000000000111", "0000000a-0000-4000-8000-000000000112"
+        self.session([{"type": "event_msg", "timestamp": iso(self.now - 30),
+                       "payload": {"type": "task_started"}},
+                      {"type": "response_item", "timestamp": iso(self.now - 10),
+                       "payload": {"type": "message", "role": "user",
+                                   "content": [{"type": "input_text", "text": "Tak, przenieś planowanie."}]}}], tid=parent)
+        meta = {"type": "session_meta", "timestamp": iso(self.now - 20),
+                "payload": {"id": child, "cwd": self.tmp, "originator": "Codex Desktop",
+                            "timestamp": iso(self.now - 20),
+                            "source": {"subagent": {"thread_spawn": {"parent_thread_id": parent}}}}}
+        parent_meta = {"type": "session_meta", "timestamp": iso(self.now - 20),
+                       "payload": {"id": parent, "cwd": self.tmp, "timestamp": iso(self.now - 20)}}
+        copied_question = {"type": "response_item", "timestamp": iso(self.now - 20),
+                           "payload": {"type": "function_call", "name": "request_user_input_async",
+                                       "call_id": "call-copied", "arguments": "{}"}}
+        started = {"type": "event_msg", "timestamp": iso(self.now - 19),
+                   "payload": {"type": "task_started"}}
+        working = {"type": "response_item", "timestamp": iso(self.now - 5),
+                   "payload": {"type": "function_call", "name": "shell", "call_id": "real",
+                               "arguments": "{}"}}
+        path = os.path.join(self.folder, f"rollout-2026-10-27T10-00-01-{child}.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(json.dumps(r, ensure_ascii=False) for r in
+                               [meta, parent_meta, copied_question, started, working]) + "\n")
+        scanner = AgentScanner(os.path.join(self.tmp, "claude"), os.path.join(self.tmp, "codex"))
+        scanner.discover(self.now)
+        scanner.update()
+        sessions = scanner.sessions(self.now)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["id"], f"codex:{parent}")
+        self.assertEqual((sessions[0]["state"], sessions[0]["reason"], sessions[0]["subagents"]),
+                         ("working", "", 1))
+        child_log = next(log for log, _ in scanner.logs.values() if log.path == path)
+        self.assertEqual(child_log.session_id, child)
+        self.assertEqual(child_log.open_questions, {})
+
+    def test_forked_subagent_ignores_copied_question_when_parent_meta_is_outside_tail(self):
+        from tide_daemon.agents.codex import CodexLog
+        parent, child = "0000000a-0000-4000-8000-000000000121", "0000000a-0000-4000-8000-000000000122"
+        log = CodexLog(os.path.join(self.folder, f"rollout-2026-10-27T10-00-02-{child}.jsonl"))
+        for record in (
+            {"type": "session_meta", "timestamp": iso(self.now - 20),
+             "payload": {"id": child, "cwd": self.tmp, "timestamp": iso(self.now - 20),
+                         "source": {"subagent": {"thread_spawn": {"parent_thread_id": parent}}}}},
+            {"type": "response_item", "timestamp": iso(self.now - 20),
+             "payload": {"type": "function_call", "name": "request_user_input_async",
+                         "call_id": "call-copied", "arguments": "{}"}},
+            {"type": "event_msg", "timestamp": iso(self.now - 19), "payload": {"type": "task_started"}},
+            {"type": "response_item", "timestamp": iso(self.now - 5),
+             "payload": {"type": "function_call", "name": "shell", "call_id": "real", "arguments": "{}"}},
+        ):
+            log.feed(record)
+        self.assertEqual(log.session_id, child)
+        self.assertEqual(log.open_questions, {})
+        self.assertEqual(list(log.pending), ["real"])
+
     def test_aggregate_never_promotes_a_reply(self):
         from tide_daemon.agents.scanner import _aggregate
         entry = {"state": "working", "reason": "", "since": "", "sinceTs": 1.0, "lastActivityTs": 1.0,

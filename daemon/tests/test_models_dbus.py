@@ -256,6 +256,68 @@ class ModelsSettingsDBusTest(unittest.TestCase):
                        "SetSemanticSearch", "SetReportSummary", "TestEndpoint", "PullModel"):
             self.assertIn(f'<method name="{member}">', xml)
 
+    def test_executor_catalog_over_dbus(self):
+        """PT-60: katalog wykonawców zapisuje usługa; token innego dostawcy tylko w pliku; zamiana klasy z D-Bus."""
+        self.spawn()
+        state = self.status()
+        self.assertEqual([e["name"] for e in state["executors"]],
+                         ["Haiku", "Sonnet", "Opus", "Codex lekki", "Codex standard", "Codex mocny", "Codex Astra",
+                          "Lokalny"])
+        self.assertEqual(state["catalog"], {"stored": False, "warnings": []})
+        self.assertEqual(set(state["providers"]), {"anthropic", "openai", "local"})
+        seen = self.changes()
+
+        token = "tok-" + secrets.token_hex(12)
+        provider = {"name": "groq", "label": "Groq", "url": "https://api.groq.example", "api": "openai",
+                    "token": token}
+        self.assertEqual(self.call("SetProvider", json.dumps(provider)), {"ok": True, "error": ""})
+        self.assertTrue(wait_until(lambda: seen, timeout=5), "Changed po zapisie")
+        executor = {"name": "Groq mały", "program": "codex", "model": "llama-8b", "provider": "groq",
+                    "classes": ["lekki", "standard"]}
+        self.assertEqual(self.call("SetExecutor", json.dumps(executor)), {"ok": True, "error": ""})
+        state = self.status()
+        self.assertEqual(state["providers"]["groq"],
+                         {"label": "Groq", "url": "https://api.groq.example", "api": "openai", "auth": True,
+                          "builtin": False})
+        self.assertEqual(state["executors"][-1]["name"], "Groq mały")
+        self.assertEqual(state["executors"][-1]["where"], "cloud")
+        self.assertTrue(state["catalog"]["stored"])
+        token_file = os.path.join(self.config_home, "tide", "tokens", "providers", "groq")
+        with open(token_file, encoding="utf-8") as fh:
+            self.assertEqual(fh.read().strip(), token)
+        self.assertEqual(oct(os.stat(token_file).st_mode & 0o777), oct(0o600))
+        with open(self.models, encoding="utf-8") as fh:
+            self.assertNotIn(token, fh.read())
+        self.assertNotIn(token, json.dumps(state))
+
+        resolved = self.call("ResolveExecutor", json.dumps({"provider": "groq", "class": "standard"}))
+        self.assertEqual((resolved["ok"], resolved["executor"]["name"], resolved["local"]), (True, "Groq mały", False))
+        self.assertNotIn(token, json.dumps(resolved))
+        self.assertNotIn("tokenFile", json.dumps(resolved))
+        anth = self.call("ResolveExecutor", json.dumps({"provider": "anthropic", "class": "mocny"}))
+        self.assertEqual(anth["executor"]["name"], "Opus")
+        review = self.call("ResolveExecutor", json.dumps({"provider": "anthropic", "class": "mocny",
+                                                          "author": "Opus"}))
+        self.assertEqual(review["executor"]["name"], "Sonnet")
+        self.assertEqual(self.call("ResolveExecutor", "nie json")["ok"], False)
+
+        # Lokalny nigdy do chmury: serwer z atrapy odpowiada, ale brak modelu agenta — odmowa, nie Opus.
+        self.assertTrue(wait_until(lambda: self.status()["executors"][-2]["available"] is not None, timeout=5))
+        local = self.call("ResolveExecutor", json.dumps({"provider": "local", "class": "mocny"}))
+        self.assertEqual(local["local"], True)
+        self.assertNotEqual((local.get("executor") or {}).get("name"), "Opus")
+
+        refused = self.call("RemoveProvider", "groq")
+        self.assertEqual(refused["ok"], False)
+        self.assertIn("Groq mały", refused["error"])
+        self.assertEqual(self.call("RemoveExecutor", "Groq mały"), {"ok": True, "error": ""})
+        self.assertEqual(self.call("RemoveProvider", "groq"), {"ok": True, "error": ""})
+        self.assertFalse(os.path.exists(token_file), "plik tokenu znika razem z dostawcą")
+        self.assertEqual(self.call("SetExecutor", json.dumps({**executor, "name": "Opus"}))["ok"], False)
+        xml = self.bus.call(SERVICE, MODELS_PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
+        for member in ("SetExecutor", "RemoveExecutor", "SetProvider", "RemoveProvider", "ResolveExecutor"):
+            self.assertIn(f'<method name="{member}">', xml)
+
     def test_pinned_report_summary_changes_only_the_file(self):
         self.spawn("--report-summary", "rules")
         self.assertEqual(self.call("SetReportSummary", "local"), {"ok": True, "error": ""})

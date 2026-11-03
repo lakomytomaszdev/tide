@@ -12,7 +12,9 @@ Aplikacja z plikiem views.json (okno Tide, apps/tide) dostaje też moduły widok
 "module" (np. apps/sessions) trafia do views/<id>/ z własną kopią biblioteki w views/<id>/qml/tide/,
 więc strony widoków importują "tide" tak samo jak w swoim katalogu.
 Wspólne moduły Pythona aplikacji (apps/common/*.py, np. taskimages.py — zrzuty ekranu zadania) trafiają obok
-programu aplikacji i do katalogu każdego widoku (views/<id>/), skąd ładuje je backend.
+programu aplikacji i do katalogu każdego widoku (views/<id>/), skąd ładuje je backend. Wspólne komponenty QML
+(apps/common/qml/<katalog>/, np. card/ — okno decyzji karty) trafiają do qml/<katalog>/ aplikacji i każdego widoku,
+obok biblioteki qml/tide/, więc strony importują je jako "card", a komponenty — bibliotekę jako "../tide".
 
 Widżet z kluczem "X-Tide-LimityConfig" w metadata.json dostaje dodatkowo plik JS (ścieżka
 z wartości klucza) z portem i tokenem usługi Limity AI (QuotaApp), przepisanymi z jej
@@ -60,6 +62,8 @@ def palette_qml(palette: dict, singleton: bool = True) -> str:
     # (logo, pasek postępu, puls) — tylko z palety.
     for group, prefix in (("lockscreen", "lock"), ("splash", "splash")):
         for key, value in palette.get(group, {}).items():
+            if isinstance(value, bool):
+                continue  # przełącznik generatora (np. lockscreen.agents), nie wymiar — nie jest tokenem QML
             props.append(("real" if isinstance(value, float) else "int", prefix + key[0].upper() + key[1:], value))
     fonts = palette.get("fonts", {})
     props.append(("string", "fontUi", fonts.get("ui", "")))
@@ -117,8 +121,11 @@ def write_private(path: str, text: str) -> None:
 
 
 def load_palette(palette_path: str) -> dict:
-    with open(palette_path, encoding="utf-8") as fh:
-        return json.load(fh)
+    """Paleta wariantu z pliku albo po nazwie; nakładka (np. streamer.json) dostaje brakujące klucze z Mist."""
+    if ROOT not in sys.path:
+        sys.path.append(ROOT)  # na końcu, żeby nie przesłonić modułów aplikacji
+    from theme.palette import load
+    return load(palette_path)
 
 
 def copy_lib(lib_out: str, palette: dict) -> None:
@@ -132,10 +139,17 @@ APP_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "tests", "__init__.p
 
 
 def copy_common(out: str) -> None:
-    """Wspólne moduły Pythona (apps/common, bez __init__.py) obok programu aplikacji albo backendu widoku."""
+    """Wspólne moduły Pythona (apps/common, bez __init__.py) obok programu aplikacji albo backendu widoku
+    i wspólne komponenty QML (apps/common/qml/<katalog>) w jego qml/<katalog>."""
     for name in sorted(os.listdir(COMMON)):
         if name.endswith(".py") and name != "__init__.py":
             shutil.copyfile(os.path.join(COMMON, name), os.path.join(out, name))
+    qml = os.path.join(COMMON, "qml")
+    if os.path.isdir(qml):
+        for name in sorted(os.listdir(qml)):
+            if os.path.isdir(os.path.join(qml, name)):
+                shutil.copytree(os.path.join(qml, name), os.path.join(out, "qml", name), dirs_exist_ok=True,
+                                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.py"))
 
 
 def app_views(app_dir: str) -> list[dict]:

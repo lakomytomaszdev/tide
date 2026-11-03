@@ -97,6 +97,14 @@ Obiekt /Models, interfejs org.tide.Daemon.Models (modele lokalne: serwery z mode
                              w models.json; Status().agentProgram) → {ok, error},
 - SetSemanticSearch(s state) -> s  wyszukiwanie po znaczeniu w KRunnerze: "on" albo "off" (`semanticSearch`
                              w models.json; wyłączone — indeks usunięty) → {ok, error},
+- SetExecutor(s json) -> s   nowy albo zmieniony wykonawca {name, program, model, provider, endpoint?, classes,
+                             oldName?} w katalogu wykonawców (PT-60) → {ok, error},
+- RemoveExecutor(s name) -> s  usunięcie wykonawcy z katalogu → {ok, error},
+- SetProvider(s json) -> s   inny dostawca {name, label?, url, api ("openai"|"anthropic"), token?, clearToken?};
+                             token do tokens/providers/<nazwa> (0600), nigdy w odpowiedzi → {ok, error},
+- RemoveProvider(s name) -> s  usunięcie innego dostawcy (odmowa, gdy ma wykonawców) → {ok, error},
+- ResolveExecutor(s json) -> s  klasa na wykonawcę {provider, class[, author]} → {ok, error, executor, local,
+                             suggested, candidates}; z `author` — recenzent innego modelu niż autor,
 - SetReportSummary(s mode) -> s  `summary` w report.json (claude, local, rules), działa od razu → {ok, error},
 - TestEndpoint(s json) -> s  próba połączenia bez zapisu ({name} albo {url, kind, token?}) → {ok, error, version,
                              models} (odpowiedź po odczycie),
@@ -117,8 +125,8 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
 - MoveCard(s id, s column, i order) -> s  ręczna kolumna i pozycja w niej (od 0, -1 = koniec),
 - UpsertProject(s json) -> s nowy albo zmieniony projekt → {ok, slug, changed, commitError},
 - UpsertTag(s json) -> s     nowy albo zmieniony tag (także newName — zmiana nazwy w kartach) → {ok, name, changed, commitError},
-- RenderFlow(s id, s mode) -> s  polecenie trybu dla karty: {ok, text, mode, tool, branch, docsDir, …},
-- RenderLaunch(s id, s json) -> s  to samo z wyborem z okna „Co ma zrobić agent?”: {mode, tool, branch},
+- RenderFlow(s id, s mode) -> s  polecenie dla karty: {ok, text, entry, mode, tool, branch, docsDir, …},
+- RenderLaunch(s id, s json) -> s  to samo z wyborem z okna „Co ma zrobić agent?”: {entry, mode, tool, branch},
 - Badge() -> s               plakietka widoku Tablica w oknie Tide: JSON {text, tone} („● N” czeka, inaczej
                              liczba kart w grze; pusty tekst — ukryta),
 - ShowWindow(s id) -> b      okno Tide na widoku Tablica, z ID karty (K-12) od razu na niej, z launch:K-12 — także
@@ -130,6 +138,11 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
 - ImportYouTrack(s json) -> s    karty w Backlogu z listy {issues: ["LOG-1", …]} → {ok, created, skipped, commitError},
 - ResolveYouTrack(s id, s choice) -> s  konflikt ze zmianą ręczną w YouTracku (karta K-16 albo klucz zgłoszenia;
                              choice: youtrack — przyjmij stan z YouTracka, tide — nadpisz stanem Tide) → {ok, issue, choice},
+- StartCard(s id, s json) -> s  zlecenie karty w przepływie karty (PT-58), dziś wejście „Od razu”:
+                             {entry: "now", executor: <nazwa wykonawcy Claude z katalogu>, images?} → {ok, ticket, branch,
+                             worktree, cardBranch, cardWorktree, step, session, executor} albo {ok: false, error, message};
+                             rezerwacja numeru, gałąź i worktree karty i ticketu, krok ticketu w tle (bez Konsoli); stan
+                             karty z dziennika `flow/<id>/journal.jsonl` (odpowiedź po starcie kroku),
 - sygnał Changed()           migawka tablicy się zmieniła (nasz zapis, zmiana z zewnątrz, stan kart z pracy agentów),
 - sygnał WorkChanged()       lista „Praca” się zmieniła (sama ostatnia czynność agenta — najwyżej co 10 s).
 Każda zmiana to commit w repozytorium tablicy (nieudany commit: ok z opisem w commitError, commit
@@ -156,6 +169,23 @@ Obiekt /Docker, interfejs org.tide.Daemon.Docker (kontenery przez Docker Engine 
 - ShowWindow(s id) -> b      okno Tide na widoku Docker, opcjonalnie od razu na kontenerze albo grupie,
 - sygnał Changed()           migawka kontenerów się zmieniła,
 - sygnał ActionFinished(s job, s json)  koniec zadania Prune albo GroupAction.
+
+Obiekt /ActivityLook, interfejs org.tide.Daemon.ActivityLook (wygląd bieżącej aktywności, PT-36):
+- State() -> s               JSON {activity, look, workPanels, notificationsFiltered} — kafelki pracy chowają się,
+                             gdy workPanels jest fałszem (aktywność Stream); bez przypisania wygląd pracy,
+- Refresh()                  ponowne odczytanie przypisań i opisów wyglądu (make uninstall-activity-look: bez
+                             kopii silnika każda aktywność ma wygląd pracy, więc tryb powiadomień Stream znika),
+- sygnał Changed()           zmieniła się bieżąca aktywność albo jej wygląd.
+
+Obiekt /Monitors, interfejs org.tide.Daemon.Monitors (wejście prawego monitora PC ⇄ Xbox przez DDC/CI, PT-38,
+monitors.py; układ ekranów w KWin bez zmian):
+- Status() -> s              JSON {layout ("pc" | "xbox"; przerwane przełączenie liczy się jak "xbox"), target,
+                             available (jest ddcutil), error, interrupted, since, monitor, switching ("" albo układ
+                             w toku), result (ostatnie przełączenie: {ok, layout, changed, error, note, auto, at} albo null;
+                             auto — powrót na PC po wyjściu ze Streamu)}; tylko plik stanu, bez DDC,
+- SetLayout(s layout) -> s   przełączenie w tle na "pc" albo "xbox"; od razu {accepted, error} (odmowa: nieznany
+                             układ, przełączenie już trwa), koniec — sygnałem Changed i w Status().result,
+- sygnał Changed()           przełączenie w toku albo jego wynik się zmienił.
 """
 from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
@@ -181,6 +211,17 @@ BOARD_PATH = "/Board"
 BOARD_IFACE = "org.tide.Daemon.Board"
 DOCKER_PATH = "/Docker"
 DOCKER_IFACE = "org.tide.Daemon.Docker"
+ACTIVITY_LOOK_PATH = "/ActivityLook"
+ACTIVITY_LOOK_IFACE = "org.tide.Daemon.ActivityLook"
+
+ACTIVITY_LOOK_XML = f"""<interface name="{ACTIVITY_LOOK_IFACE}">
+  <method name="State"><arg name="json" type="s" direction="out"/></method>
+  <method name="Refresh"/>
+  <signal name="Changed"/>
+</interface>"""
+
+MONITORS_PATH = "/Monitors"
+MONITORS_IFACE = "org.tide.Daemon.Monitors"
 
 AGENTS_XML = f"""<interface name="{AGENTS_IFACE}">
   <method name="Sessions"><arg name="json" type="s" direction="out"/></method>
@@ -316,7 +357,14 @@ MODELS_XML = f"""<interface name="{MODELS_IFACE}">
 {chr(10).join(_JSON_CALL.format(name=n, arg=a) for n, a in (
     ("SetEndpoint", "request"), ("RemoveEndpoint", "name"), ("SetDefault", "name"), ("SetRole", "request"),
     ("SetAgentProgram", "program"), ("SetSemanticSearch", "state"), ("SetReportSummary", "mode"),
-    ("TestEndpoint", "request"), ("PullModel", "request")))}
+    ("SetExecutor", "request"), ("RemoveExecutor", "name"), ("SetProvider", "request"), ("RemoveProvider", "name"),
+    ("ResolveExecutor", "request"), ("TestEndpoint", "request"), ("PullModel", "request")))}
+  <signal name="Changed"/>
+</interface>"""
+
+MONITORS_XML = f"""<interface name="{MONITORS_IFACE}">
+  <method name="Status"><arg name="json" type="s" direction="out"/></method>
+{_JSON_CALL.format(name="SetLayout", arg="layout")}
   <signal name="Changed"/>
 </interface>"""
 
@@ -422,6 +470,70 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
   <method name="ResolveYouTrack">
     <arg name="id" type="s" direction="in"/>
     <arg name="choice" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="StartCard">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="EnterStep">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="step" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="AbandonStep">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="step" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="ResolveCardReview">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="choice" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="ResolveCardStep">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="PreviewStepFault">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="ReportStepFault">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="SetCardPaused">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="paused" type="b" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="GetCardFlowSettings">
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="SetCardFlowSettings">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="EditCardPlan">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="ApproveCardPlan">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="CardBranchDiff">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="MergeCardToMain">
+    <arg name="id" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
   <signal name="Changed"/>
@@ -700,6 +812,26 @@ class ModelsAdaptor(QDBusAbstractAdaptor):
     def SetReportSummary(self, mode: str) -> str:
         return self.monitor.set_report_summary(mode)
 
+    @pyqtSlot(str, result=str)
+    def SetExecutor(self, request: str) -> str:
+        return self.monitor.set_executor(request)
+
+    @pyqtSlot(str, result=str)
+    def RemoveExecutor(self, name: str) -> str:
+        return self.monitor.remove_executor(name)
+
+    @pyqtSlot(str, result=str)
+    def SetProvider(self, request: str) -> str:
+        return self.monitor.set_provider(request)
+
+    @pyqtSlot(str, result=str)
+    def RemoveProvider(self, name: str) -> str:
+        return self.monitor.remove_provider(name)
+
+    @pyqtSlot(str, result=str)
+    def ResolveExecutor(self, request: str) -> str:
+        return self.monitor.resolve_executor(request)
+
     @pyqtSlot(str, QDBusMessage, result=str)
     def TestEndpoint(self, request: str, message: QDBusMessage) -> str:
         # Odczyt z serwera (do 2 × 3 s) w puli monitora — odpowiedź D-Bus później, pętla Qt nie czeka.
@@ -806,6 +938,167 @@ class BoardAdaptor(QDBusAbstractAdaptor):
                 print("tide-daemon: nie udało się odesłać wyniku Board.YouTrackIssues", flush=True)
 
         self.monitor.youtrack_issues(refresh, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def StartCard(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        # Zlecenie zakłada gałęzie i worktree i startuje krok w wątku roboczym (cardflow_monitor.py) — odpowiedź później.
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.StartCard", flush=True)
+
+        self.monitor.start_card(card_id, request, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def EnterStep(self, card_id: str, step_id: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.EnterStep", flush=True)
+
+        self.monitor.enter_step(card_id, step_id, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def AbandonStep(self, card_id: str, step_id: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.AbandonStep", flush=True)
+
+        self.monitor.abandon_step(card_id, step_id, reply)
+
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def ResolveCardReview(self, card_id: str, choice: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.ResolveCardReview", flush=True)
+
+        self.monitor.resolve_card_review(card_id, choice, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def ResolveCardStep(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.ResolveCardStep", flush=True)
+
+        self.monitor.resolve_card_step(card_id, request, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def PreviewStepFault(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.PreviewStepFault", flush=True)
+
+        self.monitor.preview_step_fault(card_id, request, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def ReportStepFault(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.ReportStepFault", flush=True)
+
+        self.monitor.report_step_fault(card_id, request, reply)
+        return ""
+
+    @pyqtSlot(str, bool, QDBusMessage, result=str)
+    def SetCardPaused(self, card_id: str, paused: bool, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.SetCardPaused", flush=True)
+
+        self.monitor.set_card_paused(card_id, paused, reply)
+
+        return ""
+
+    @pyqtSlot(QDBusMessage, result=str)
+    def GetCardFlowSettings(self, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.GetCardFlowSettings", flush=True)
+
+        self.monitor.get_card_flow_settings(reply)
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def SetCardFlowSettings(self, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.SetCardFlowSettings", flush=True)
+
+        self.monitor.set_card_flow_settings(request, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def EditCardPlan(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: brak odpowiedzi EditCardPlan", flush=True)
+
+        self.monitor.edit_card_plan(card_id, request, reply)
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def ApproveCardPlan(self, card_id: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.ApproveCardPlan", flush=True)
+
+        self.monitor.approve_card_plan(card_id, reply)
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def CardBranchDiff(self, card_id: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.card_branch_diff(card_id, lambda value: self.bus.send(pending.createReply([value])))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def MergeCardToMain(self, card_id: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.merge_card_to_main(card_id, lambda value: self.bus.send(pending.createReply([value])))
         return ""
 
     @pyqtSlot(str, result=str)
@@ -949,9 +1242,46 @@ class DockerAdaptor(QDBusAbstractAdaptor):
         return self.monitor.show_window(ident)
 
 
+@pyqtClassInfo("D-Bus Interface", ACTIVITY_LOOK_IFACE)
+@pyqtClassInfo("D-Bus Introspection", ACTIVITY_LOOK_XML)
+class ActivityLookAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, state):
+        super().__init__(parent)
+        self.state = state
+        state.changed.connect(self.Changed)
+
+    @pyqtSlot(result=str)
+    def State(self) -> str:
+        return self.state.state_json()
+
+    @pyqtSlot()
+    def Refresh(self) -> None:
+        self.state.set_activity(self.state.activity)
+
+@pyqtClassInfo("D-Bus Interface", MONITORS_IFACE)
+@pyqtClassInfo("D-Bus Introspection", MONITORS_XML)
+class MonitorsAdaptor(QDBusAbstractAdaptor):
+    Changed = pyqtSignal()
+
+    def __init__(self, parent: QObject, service):
+        super().__init__(parent)
+        self.service = service
+        service.changed.connect(self.Changed)
+
+    @pyqtSlot(result=str)
+    def Status(self) -> str:
+        return self.service.status_json()
+
+    @pyqtSlot(str, result=str)
+    def SetLayout(self, layout: str) -> str:
+        return self.service.set_layout(layout)
+
+
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
              limits=None, tasks=None, coordination=None, board=None,
-             docker=None, models=None) -> QObject:
+             docker=None, models=None, activity_look=None, monitors=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -1006,6 +1336,16 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.docker.adaptor = DockerAdaptor(holder.docker, docker, bus)
         if not bus.registerObject(DOCKER_PATH, holder.docker):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {DOCKER_PATH}")
+    if activity_look is not None:
+        holder.activity_look = QObject(holder)
+        holder.activity_look.adaptor = ActivityLookAdaptor(holder.activity_look, activity_look)
+        if not bus.registerObject(ACTIVITY_LOOK_PATH, holder.activity_look):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {ACTIVITY_LOOK_PATH}")
+    if monitors is not None:
+        holder.monitors = QObject(holder)
+        holder.monitors.adaptor = MonitorsAdaptor(holder.monitors, monitors)
+        if not bus.registerObject(MONITORS_PATH, holder.monitors):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {MONITORS_PATH}")
     if not bus.registerService(SERVICE):
         raise RuntimeError(f"nazwa {SERVICE} jest już zajęta (działa inna kopia usługi?)")
     return holder

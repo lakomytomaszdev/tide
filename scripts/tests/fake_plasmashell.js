@@ -181,6 +181,51 @@ function panelById(id) {
     return found.length ? __panel(found[0]) : null;
 }
 
+// Aktywności i pulpity (state.currentActivity, state.desktops: [{id, screen, activity, widgets}]).
+// desktopsForActivity zakłada pulpity aktywności, która ich jeszcze nie ma (jak w Plasmie 6.8) —
+// state.createdDesktopsFor zapisuje, dla kogo.
+function currentActivity() {
+    return __state.currentActivity || "";
+}
+
+function __desktop(data) {
+    var desktop = {id: data.id, screen: data.screen, type: data.type || "org.kde.plasma.folder", __data: data};
+    desktop.widgets = function () {
+        // Widget.remove() zdejmuje aplet z pulpitu (state.removedFromDesktops: [{desktop, id, type}]).
+        return data.widgets.map(function (w) {
+            return {id: w.id, type: w.type, geometry: w.geometry, remove: function () {
+                data.widgets = data.widgets.filter(function (x) { return x.id !== w.id; });
+                __state.removedFromDesktops = (__state.removedFromDesktops || []).concat(
+                    [{desktop: data.id, id: w.id, type: w.type}]);
+            }};
+        });
+    };
+    desktop.addWidget = function (type, x, y, w, h) {
+        var widget = {id: __state.nextId++, type: type, geometry: [x, y, w, h]};
+        data.widgets.push(widget);
+        return {id: widget.id, type: type};
+    };
+    return desktop;
+}
+
+function desktops() {
+    return (__state.desktops || []).map(__desktop);
+}
+
+function desktopsForActivity(activity) {
+    __state.desktops = __state.desktops || [];
+    var mine = __state.desktops.filter(function (d) { return d.activity === activity; });
+    if (!mine.length) {
+        __state.createdDesktopsFor = (__state.createdDesktopsFor || []).concat([activity]);
+        for (var s = 0; s < __state.screens.length; ++s) {
+            var data = {id: __state.nextId++, screen: s, activity: activity, widgets: []};
+            __state.desktops.push(data);
+            mine.push(data);
+        }
+    }
+    return mine.map(__desktop);
+}
+
 function Panel(plugin) {
     // ShellCorona::addPanel: aktywny monitor (tu 0) i pierwsza wolna krawędź.
     var used = __state.panels.filter(function (p) { return !p.removed && p.screen === 0; })
