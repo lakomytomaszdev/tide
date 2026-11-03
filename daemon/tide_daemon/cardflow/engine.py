@@ -1757,13 +1757,14 @@ class FlowEngine(PlanEditing):
         verdict = st.verdicts.get((ticket, step.get("round")))
         if verdict is None:
             return
-        if verdict.get("verdict") == "REQUEST_CHANGES":
+        accepted = (st.review_decisions.get((ticket, step.get("round"))) or {}).get("choice") == "accept"
+        if verdict.get("verdict") == "REQUEST_CHANGES" and not accepted:
             round_no = int(step.get("round") or 0)
             if round_no < 3 or (st.review_decisions.get((ticket, round_no)) or {}).get("choice") == "retry":
                 self._fix(card, st, step)
             elif (ticket, round_no) not in st.review_questions:
                 self.journal.append(card, "review.question", ticket=ticket, round=round_no,
-                                    question="Review nadal wykazuje BLOCKER lub MAJOR. Ponowić poprawki czy odrzucić ticket?")
+                                    question="Review nadal wykazuje BLOCKER lub MAJOR. Ponowić poprawki, scalić mimo uwag czy odrzucić ticket?")
             return
         if any(s.get("kind") == "conflict" and s.get("ticket") not in st.rejected and
                not (st.results.get(("merge", s.get("ticket"))) or {}).get("ok")
@@ -1928,9 +1929,9 @@ class FlowEngine(PlanEditing):
         if step.get("kind") in ("ticket", "fix"):
             return "review"
         verdict = st.verdicts.get((ticket, step.get("round"))) or {}
-        if verdict.get("verdict") == "REQUEST_CHANGES":
-            if int(step.get("round") or 0) >= 3 and (
-                    st.review_decisions.get((ticket, step.get("round"))) or {}).get("choice") != "retry":
+        choice = (st.review_decisions.get((ticket, step.get("round"))) or {}).get("choice")
+        if verdict.get("verdict") == "REQUEST_CHANGES" and choice != "accept":
+            if int(step.get("round") or 0) >= 3 and choice != "retry":
                 return "czeka"
             return "w-toku"
         return "review"
@@ -2353,8 +2354,8 @@ class FlowEngine(PlanEditing):
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if choice not in ("retry", "reject"):
-            raise FlowError("bad-choice", "wybierz ponowne poprawki albo odrzucenie ticketu")
+        if choice not in ("retry", "reject", "accept"):
+            raise FlowError("bad-choice", "wybierz ponowne poprawki, scalenie mimo uwag albo odrzucenie ticketu")
         st = fold(self.journal.read(card))
         st.last_step = attention_step(st) or st.last_step
         step = st.steps.get(st.last_step) or {}
@@ -3097,8 +3098,12 @@ class FlowEngine(PlanEditing):
         ticket = step.get("ticket") or ""
         info = ticket_of(st)
         repo = step.get("repo") or self._repo(card)
-        approved = next((v for (ticket_id, _round), v in reversed(list(st.verdicts.items()))
-                         if ticket_id == ticket and v.get("verdict") == "APPROVE"), None)
+        # Zatwierdzony commit: APPROVE recenzenta albo świadoma decyzja użytkownika „scal mimo uwag” po 3. rundzie
+        # (03.11, K-33/PT-108: uwagi dotyczyły wyłącznie testów niewykonalnych w piaskownicy).
+        approved = next((v for (ticket_id, round_no), v in reversed(list(st.verdicts.items()))
+                         if ticket_id == ticket and (v.get("verdict") == "APPROVE" or
+                                                     (st.review_decisions.get((ticket, round_no)) or {}).get("choice")
+                                                     == "accept")), None)
         review_step = st.steps.get((approved or {}).get("step")) or {}
         expected_tip = review_step.get("reviewTip") or ""
         if not expected_tip:

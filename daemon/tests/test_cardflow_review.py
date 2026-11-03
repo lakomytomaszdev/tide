@@ -169,6 +169,22 @@ class ReviewFlowTest(FlowInProcess):
         self.assertEqual([d["choice"] for d in self.of(card, "review.decision")], ["retry"])
         self.assertEqual(len(self.results(card, "merge")), 1)
 
+    def test_accept_after_three_rounds_merges_the_last_reviewed_commit(self):
+        # 03.11, K-33/PT-108: uwagi dotyczyły testów niewykonalnych w piaskownicy — użytkownik scala mimo uwag.
+        card = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 4")
+        self.assertTrue(self.start(card)["ok"])
+        self.wait_column(card, "waiting", timeout=50)
+        reviews = len([s for s in self.of(card, "step.started") if s["kind"] in ("fix", "review")])
+        replies = []
+        self.board.resolve_card_review(card, "accept", replies.append)
+        self.assertTrue(wait_until(lambda: replies, timeout=10))
+        self.assertTrue(json.loads(replies[0])["ok"])
+        self.assertTrue(wait_until(lambda: self.results(card, "merge"), timeout=30), self.events(card))
+        self.assertTrue(self.results(card, "merge")[0]["ok"])
+        self.assertEqual([d["choice"] for d in self.of(card, "review.decision")], ["accept"])
+        self.assertEqual(len([s for s in self.of(card, "step.started") if s["kind"] in ("fix", "review")]), reviews)
+        self.assertEqual(self.of(card, "ticket.rejected"), [])
+
     def test_reject_after_three_rounds_records_decision_without_merging(self):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 4")
         self.assertTrue(self.start(card)["ok"])

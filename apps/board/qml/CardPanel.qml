@@ -1060,6 +1060,17 @@ Rectangle {
                             }
                         }
                         PillButton {
+                            // Gdy uwagi dotyczą środowiska, a nie kodu — scalenie zatwierdzonego przez Ciebie stanu.
+                            objectName: "cardReviewAccept"
+                            text: "Scal mimo uwag"
+                            outline: true
+                            enabled: !panel.busy
+                            onClicked: {
+                                panel.busy = true
+                                panel.reviewResolveRequested(panel.card.id, "accept")
+                            }
+                        }
+                        PillButton {
                             objectName: "cardReviewReject"
                             text: "Odrzuć ticket"
                             outline: true

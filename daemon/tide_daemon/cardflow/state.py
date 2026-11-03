@@ -736,6 +736,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
                 decision = st.review_decisions.get((ident, verdict.get("round"))) or {}
                 if decision.get("choice") == "retry":
                     return _fill(out, "progress", f"{ident} · poprawki po decyzji użytkownika")
+                if decision.get("choice") == "accept":
+                    return _fill(out, "progress", f"{ident} · scalanie mimo uwag (decyzja użytkownika)")
                 if decision.get("choice") == "reject":
                     return _fill(out, "waiting", f"{ident}: ticket odrzucony po review")
                 out["question"] = (st.review_questions.get((ident, verdict.get("round"))) or {}).get("question") or ""
