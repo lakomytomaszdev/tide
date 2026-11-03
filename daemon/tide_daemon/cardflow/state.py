@@ -453,6 +453,8 @@ def decision_step(st: FlowState, user_only: bool = False) -> str:
             continue
         if done.get("result") == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "limit":
             continue
+        if user_only and _limit_wait_only(st, name):
+            continue
         if any(s.get("parentStep") == name for s in st.steps.values()):
             continue
         return name
@@ -479,6 +481,9 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     decisions = build_decisions(st)
     attention = attention_step(st, True)
     focus = decision_step(st, True)
+    if not attention and not st.running():
+        # Nic nie czeka na użytkownika: zatrzymany limitem krok nadal wyznacza kolumnę („czeka na limit”).
+        focus = attention_step(st) or focus
     if focus:
         st = replace(st, last_step=focus)
     ticket = ticket_of(st)
@@ -670,8 +675,12 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         work = ("krok w Konsoli" if step.get("mode") == "interactive" else
                 "review" if step.get("kind") == "review" else "poprawki" if step.get("kind") == "fix" else "krok w tle")
         label = out["flow"].get("waveLabel")
-        return _fill(out, "progress", f"{label} · {len(st.running())} kroków w toku" if label else
-                     f"{ident} · {work} ({step.get('executor') or executor})")
+        from .fullcard import limit_stops
+        held = limit_stops(st)
+        until = next((i["until"] for i in held if i.get("until")), "")
+        tail = (" · czeka na limit" + (f" do {until}" if until else "")) if held else ""
+        return _fill(out, "progress", f"{label} · {len(st.running())} kroków w toku{tail}" if label else
+                     f"{ident} · {work} ({step.get('executor') or executor}){tail}")
     if st.open_intents():
         return _fill(out, 'progress', tracker_reason or f"{ident} · {_intent_word(st.open_intents()[0])}")
     if failed and not done:

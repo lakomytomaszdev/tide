@@ -92,6 +92,36 @@ class ColumnRuleTest(unittest.TestCase):
                 self.assertNotIn("limit", out["note"])
                 self.assertEqual(out["flow"]["question"], "Którą wersję zostawić?")
 
+    def test_limit_stays_in_progress_when_another_ticket_finished_last(self):
+        events = stopped(name="K-1-PT-2-1", ticket="PT-2")
+        events.step("K-1-PT-1-1", ticket="PT-1", result="done")
+        out = view(events)
+        self.assertEqual(out["column"], "progress")
+        self.assertIn("czeka na limit do 16:30", out["note"])
+        events.step("K-1-PT-1-2", ticket="PT-1", kind="review", result="done", verdict="APPROVE")
+        events.add("merge.finished", ticket="PT-1", ok=True)
+        out = view(events)
+        self.assertEqual(out["column"], "progress", "limit PT-2 nie znika po scaleniu PT-1")
+        self.assertIn("czeka na limit do 16:30", out["note"])
+
+    def test_running_step_note_keeps_the_limit_marker(self):
+        events = stopped(name="K-1-PT-2-1", ticket="PT-2")
+        events.step("K-1-PT-1-1", ticket="PT-1")
+        out = view(events)
+        self.assertEqual(out["column"], "progress")
+        self.assertIn("czeka na limit do 16:30", out["note"])
+
+    def test_plan_step_limit_does_not_hide_ticket_question(self):
+        events = Events()
+        events.step("K-1-plan-amend-1", ticket="", kind="plan-amend")
+        events.add("step.limit", step="K-1-plan-amend-1", provider="anthropic", reset="16:30", window="session")
+        events.add("step.finished", step="K-1-plan-amend-1", result="error", reason="limit",
+                   wip={"stopped": True, "committed": True, "files": 0})
+        events.step("K-1-PT-1-1", ticket="PT-1", result="question", question="Którą wersję zostawić?")
+        out = view(events)
+        self.assertEqual(out["column"], "waiting")
+        self.assertEqual(out["flow"]["question"], "Którą wersję zostawić?")
+
     def test_limit_does_not_leave_a_question_in_the_flow(self):
         self.assertEqual(view(stopped())["flow"]["question"], "")
 
