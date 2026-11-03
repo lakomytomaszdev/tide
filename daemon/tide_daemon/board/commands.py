@@ -285,3 +285,18 @@ def outside_risky(command: str) -> str:
         if value.startswith(("/", "~")) and not value.startswith("/tmp/") or "../" in value or value == "..":
             return f"ścieżka spoza worktree: {arg}"
     return ""
+
+
+def sandbox_grant(command: str, denied: list[str]) -> str | None:
+    """Co dopisać do listy dozwolonych przy zgodzie na polecenie w piaskownicy: samo polecenie (do MAX_COMMAND
+    znaków) albo — dla dłuższego pojedynczego polecenia — jego rodzinę (`git rm *`, 03.11 K-31/DPT-5: `git rm` czterech
+    plików miał 324 znaki i nie dało się go zatwierdzić). None: łańcuch, składnia złożona albo zakaz projektu."""
+    argv = _argv(command)
+    if argv is None or is_forbidden(command, denied):
+        return None
+    if len(command) <= MAX_COMMAND:
+        return command
+    program = _without_locale(argv)
+    head = [a for a in program[:2] if not a.startswith("-")] or program[:1]
+    family = shlex.join(head) + " *"
+    return None if is_forbidden(family[:-2], denied) else family

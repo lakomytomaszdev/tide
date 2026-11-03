@@ -143,6 +143,16 @@ class StepDecisionTest(FlowInProcess):
         with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             self.assertIn('"result":"outside"', json.load(fh)["prompt"])
 
+    def test_long_single_sandbox_command_is_granted_as_its_family(self):
+        # 03.11, K-31/DPT-5: `git rm` czterech plików (324 znaki) nie dało się zatwierdzić — okno miało tylko „Kontynuuj bez”.
+        from tide_daemon.board.commands import sandbox_grant
+        long_rm = "git rm -q " + " ".join(f"src/app/feature-{n}/feature-{n}.component.spec.ts" for n in range(8))
+        self.assertGreater(len(long_rm), 300)
+        self.assertEqual(sandbox_grant(long_rm, []), "git rm *")
+        self.assertEqual(sandbox_grant("git status", []), "git status")
+        self.assertIsNone(sandbox_grant(long_rm, ["git rm"]))
+        self.assertIsNone(sandbox_grant("a && b", []))
+
     def test_declined_outside_command_resumes_without_it(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
         self.assertTrue(self.start(card_id)["ok"])
@@ -340,17 +350,17 @@ class StepDecisionTest(FlowInProcess):
             settings = json.load(fh)
         self.assertFalse(settings["sandbox"]["autoAllowBashIfSandboxed"])
 
-    def test_long_command_is_shown_in_full_but_cannot_be_granted(self):
+    def test_long_command_is_shown_in_full_and_granted_as_its_family(self):
+        # 03.11: długie pojedyncze polecenie w piaskownicy zatwierdza się jako rodzina (`git fetch *`).
         card_id = self.card(description="Test.\n\nATRAPA: zgoda-dluga")
         self.assertTrue(self.start(card_id)["ok"])
         card = self.wait_column(card_id, "waiting")
         command = "git fetch origin " + "x" * 300
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["technical"]["command"], command)
-        self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
-        self.assertEqual(self.of(card_id, "step.decision")[0]["command"], command)
-        self.assertEqual(self.decide(card_id, choice="allow")["error"], "command-too-long")
-        self.assertTrue(self.decide(card_id, choice="deny")["ok"])
-        self.wait_column(card_id, "review")
+        self.assertTrue(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
+        self.assertTrue(self.decide(card_id, choice="allow")["ok"])
+        self.assertIn("git fetch *", self.store.load().projects["proj"].allowed_commands)
+        self.assertNotIn(command, self.store.load().projects["proj"].allowed_commands)
 
     def test_cli_permission_denial_without_result_becomes_permission_question(self):
         card_id = self.card(description="Test.\n\nATRAPA: cli-zgoda")

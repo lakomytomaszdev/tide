@@ -2465,11 +2465,13 @@ class FlowEngine(PlanEditing):
             raise FlowError("bad-command", "krok nie podał polecenia do zatwierdzenia")
         _, project = self._project(card)
         if allow is None:
-            if len(command) > MAX_COMMAND:
-                raise FlowError("command-too-long", f"polecenie przekracza {MAX_COMMAND} znaków i nie może być zatwierdzone")
             if is_forbidden(command, project.denied_commands):
                 raise FlowError("forbidden-command", f"polecenie „{command}” jest zabronione w projekcie")
-            granted, skipped = [command], []
+            from ..board.commands import sandbox_grant
+            grant = sandbox_grant(command, project.denied_commands)
+            if grant is None:
+                raise FlowError("command-too-long", f"polecenie przekracza {MAX_COMMAND} znaków i nie może być zatwierdzone")
+            granted, skipped = [grant], []
         else:
             if not isinstance(allow, list) or not allow or len(allow) > chain.MAX_PIECES or \
                     any(type(i) is not int for i in allow) or len(set(allow)) != len(allow):
@@ -3291,7 +3293,8 @@ class FlowEngine(PlanEditing):
             from ..board.commands import MAX_COMMAND, is_forbidden, outside_risky
             _, project = self._project(card)
             command = data.get("command") or ""
-            data["canAllow"] = len(command) <= MAX_COMMAND and not is_forbidden(command, project.denied_commands)
+            from ..board.commands import sandbox_grant
+            data["canAllow"] = sandbox_grant(command, project.denied_commands) is not None
             if data.get("outside"):
                 from ..board.commands import outside_allowed, outside_matches, outside_pattern
                 extra["outside"] = True
@@ -3685,7 +3688,13 @@ class FlowEngine(PlanEditing):
         """Prośba czekająca na zgodę sprzed zmiany reguł: zatwierdzana tak, jak zostałaby zgłoszona dziś."""
         if done.get("outside"):
             self._outside_recheck(card, step, done)
-        elif done.get("canAllow", True) and self._auto_consent():
+            return
+        from ..board.commands import sandbox_grant
+        allowed = sandbox_grant(done.get("command") or "", self._project(card)[1].denied_commands) is not None
+        if allowed != bool(done.get("canAllow", True)):
+            self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
+                                ticket=step.get("ticket") or "", canAllow=allowed)
+        if allowed and self._auto_consent():
             try:
                 self.resolve_step(card, {"choice": "allow", "step": step.get("step") or "", "auto": True})
             except FlowError:
