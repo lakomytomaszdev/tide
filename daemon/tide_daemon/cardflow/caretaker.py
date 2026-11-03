@@ -446,7 +446,8 @@ def working(st) -> list[dict]:
         started = st.caretakers.get(name) or {}
         out.append({"problem": run.get("problem") or "", "step": name, "target": run.get("target") or "",
                     "ticket": run.get("ticket") or "",
-                    "label": f"opiekun sprawdza {step_name(target.get('kind'), target.get('ticket'))}",
+                    "label": "opiekun sprawdza " + (step_name(target.get("kind"), target.get("ticket")) if target
+                                                     else run.get("ticket") or "kartę"),
                     "startedTs": _epoch(started.get("ts") or run.get("ts"))})
     return out
 

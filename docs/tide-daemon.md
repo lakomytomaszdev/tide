@@ -1790,6 +1790,9 @@ z dopiskiem „opiekun niedostępny dla pracy tylko lokalnej”, `flow.caretaker
 ### Wyzwalacze
 
 `TRIGGERS` to lista funkcji `(st) -> [kandydat]`, kandydat `{trigger, step?, ticket?, stage?, cause?, decision?}`.
+Do startu opiekuna wystarcza wpis w rejestrze, także dla problemu bez kroku (`flow-error:<etap>`, `stalled:card`):
+`caretaker.started` ma wtedy pusty `target`, a krok opiekuna pracuje w worktree ticketu (gdy kandydat ma `ticket`)
+albo w katalogu roboczym karty (`card-branch`); aktualność problemu przed startem sprawdza zawsze `problems()`.
 
 #### Błąd kroku ticketu (`error`, PT-143)
 
@@ -1836,7 +1839,9 @@ Opiekun jest włączony na stałe, wykonawca to najmocniejsza klasa preferowaneg
 dozwolonych poleceń (`agentcmd.Step.write_out_only`: Claude — `--disallowedTools Bash` i zakaz edycji worktree
 i repozytorium, bez `--allowedTools`; Codex — katalog roboczy i jedyny zapisywalny katalog to `<krok>/out`, a
 narzędzia poleceń i kodu są wyłączone: `-c features.shell_tool=false`, `unified_exec`, `code_mode`, `js_repl`
-— `agentcmd.CODEX_NO_COMMANDS`; plik wyniku Codex zapisuje łatką `apply_patch`), zapis tylko do własnego `out`
+— `agentcmd.CODEX_NO_COMMANDS`; plik wyniku Codex zapisuje łatką `apply_patch`; `/tmp` i `$TMPDIR` są jawnie
+wykluczone z zapisu: `-c sandbox_workspace_write.exclude_slash_tmp=true`, `exclude_tmpdir_env_var=true`, bo
+`writable_roots` tylko dopisuje katalogi do domyślnych), zapis tylko do własnego `out`
 (`allowWrite` piaskownicy kroku). Opiekun czekający na slot dostawcy (`step.waiting` rodzaju `caretaker`) nie daje
 powiadomienia o limicie — problem nadal należy do opiekuna, powiadamia dopiero eskalacja.
 

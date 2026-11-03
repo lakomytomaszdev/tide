@@ -447,7 +447,12 @@ def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
     # zabrania uruchomienia np. interpretera w `out`.
     no_commands = [arg for name in CODEX_NO_COMMANDS for arg in ("-c", f"features.{name}=false")] \
         if step.write_out_only else []
-    argv = [step.binary, "exec", *model, *effort, "--json", "--cd", cwd, "--sandbox", "workspace-write",
+    # PT-143/S2: `writable_roots` tylko dopisuje katalogi; `/tmp` i `$TMPDIR` są zapisywalne domyślnie (i według
+    # ustawień użytkownika), więc dla zapisu wyłącznie do `out` wykluczamy je jawnie — także łatką `apply_patch`.
+    if step.write_out_only:
+        no_commands += ["-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+                        "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"]
+    argv =[step.binary, "exec", *model, *effort, "--json", "--cd", cwd, "--sandbox", "workspace-write",
             "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots, ensure_ascii=False),
             "-c", 'approval_policy="never"', *no_commands, *mcp,
             *(["resume", step.session_id] if step.resume else []), "-"]

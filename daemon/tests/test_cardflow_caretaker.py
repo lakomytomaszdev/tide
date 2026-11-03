@@ -428,6 +428,33 @@ class CaretakerFlowTest(FlowInProcess):
         self.assertIn(f"Edit(/{step['worktree']}/**)", banned)
         self.assertEqual(argv[argv.index("--add-dir") + 1], out)
 
+    def test_problem_without_a_step_starts_the_caretaker_from_a_registry_entry_alone(self):
+        """Review PT-143/A1: wyzwalacz bez kroku (`stalled:card`) dopisany tylko do `TRIGGERS` uruchamia opiekuna
+        w katalogu roboczym karty — bez zmian we wspólnej ścieżce silnika."""
+        def stalled(st):
+            branched = any(action == "card-branch" and res.get("ok") for (action, _), res in st.results.items())
+            return [{"trigger": "stalled", "stage": "card"}] if branched else []
+
+        def section(problem, st):       # escalate bez `optionId`: problem bez kroku nie ma możliwości decyzji
+            return "## Problem: karta stoi\n\nATRAPA-OPIEKUN: akcja-escalate"
+
+        with mock.patch.object(caretaker, "TRIGGERS", [*caretaker.TRIGGERS, stalled]), \
+                mock.patch.dict(caretaker.BRIEF_SECTIONS, {"stalled": section}):
+            card_id = self.card(description="Eksport.\n\nATRAPA: czekaj")
+            self.assertTrue(self.start(card_id)["ok"])
+            self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=40),
+                            self.events(card_id))
+            started = self.of(card_id, "caretaker.started")
+            self.assertEqual([(s["problem"], s["target"], s["ticket"]) for s in started], [("stalled:card", "", "")])
+            escalated = self.of(card_id, "caretaker.escalated")
+            self.assertEqual([(e["failed"], e["code"], e["problem"]) for e in escalated], [(False, "", "stalled:card")])
+            step = self.caretaker_steps(card_id)[0]
+            branch = next(r for r in self.results(card_id, "card-branch") if r["ok"])
+            self.assertEqual(step["worktree"], branch["worktree"])
+            self.assertTrue(step["stepDir"].startswith(branch["worktree"] + ".caretaker-"))
+            wait_until(lambda: False, timeout=1.0)
+            self.assertEqual(len(self.caretaker_steps(card_id)), 1, "oddany problem nie uruchamia opiekuna znowu")
+
     def test_login_error_gives_todays_decision_without_caretaker(self):
         card_id = self.card(description="Eksport.\n\nATRAPA: login")
         self.assertTrue(self.start(card_id)["ok"])

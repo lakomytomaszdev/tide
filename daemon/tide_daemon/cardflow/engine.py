@@ -3582,7 +3582,10 @@ class FlowEngine(PlanEditing):
             self._caretaker_fail(card, run, caretaker.NOT_STARTED,
                                  f"krok opiekuna nie wystartował: {started.get('error') or 'błąd startu'}")
             return
-        if not target or not any(p["id"] == run.get("problem") for p in caretaker.problems(st)):
+        # Problem bez kroku źródłowego (`flow-error:<etap>`, `stalled:card`) jest pełnoprawny: wystarcza wpis
+        # w `TRIGGERS`; aktualność zawsze rozstrzyga `problems()`, a brakujący krok — tylko gdy problem go ma.
+        if (run.get("target") and not target) or \
+                not any(p["id"] == run.get("problem") for p in caretaker.problems(st)):
             self._caretaker_fail(card, run, caretaker.NOT_STARTED, "problem już nie czeka na decyzję")
             return
         cfg = self.models_config() if self.models_config else None
@@ -3597,11 +3600,16 @@ class FlowEngine(PlanEditing):
                 raise FlowError(exc.code, str(exc)) from None
             item, project = self._project(card)
             info = ticket_of(st, run.get("ticket") or "")
-            worktree = target.get("worktree") or info["worktree"]
+            # Bez kroku i bez ticketu — katalog roboczy i gałąź karty.
+            card_level = not target and not run.get("ticket")
+            worktree = target.get("worktree") or (info["cardWorktree"] if card_level else info["worktree"])
+            branch = target.get("branch") or (info["cardBranch"] if card_level else info["branch"])
+            if not worktree:
+                raise FlowError("no-worktree", "brak katalogu roboczego karty dla opiekuna")
             out = worktree + f".{caretaker.KIND}-{name}.step/out"
             prompt = caretaker.brief(self._caretaker_problem(st, run), st, card=card, out_dir=out, worktree=worktree)
             self._launch(item, project, selected, run.get("ticket") or "", {"branch": info["cardBranch"]},
-                         {"branch": target.get("branch") or info["branch"], "worktree": worktree}, name, [],
+                         {"branch": branch, "worktree": worktree}, name, [],
                          kind=caretaker.KIND, prompt_text=prompt)
         except FlowDeferred:
             return              # czeka na miejsce u dostawcy; `caretaker.started` zostaje, start w kolejnym przebiegu

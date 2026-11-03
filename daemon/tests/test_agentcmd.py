@@ -321,8 +321,14 @@ class BackgroundCodexTest(BackgroundBase):
             at = codex.argv.index(f"features.{feature}=false")
             self.assertEqual(codex.argv[at - 1], "-c")
             self.assertLess(at, codex.argv.index("-"))
+        # `/tmp` i `$TMPDIR` nie są zapisywalne mimo domyślnych i użytkownika ustawień (review PT-143/S2).
+        for option in ("exclude_slash_tmp", "exclude_tmpdir_env_var"):
+            at = codex.argv.index(f"sandbox_workspace_write.{option}=true")
+            self.assertEqual(codex.argv[at - 1], "-c")
+            self.assertLess(at, codex.argv.index("-"))
         plain = agentcmd.background(self.step("codex", model="gpt-5-codex", codex_mcp=()))
         self.assertFalse([arg for arg in plain.argv if arg.startswith("features.")], "zwykły krok bez zmian")
+        self.assertFalse([arg for arg in plain.argv if "exclude_" in arg], "zwykły krok bez zmian")
         claude =agentcmd.background(self.step("claude", allowed_tools=("Bash(git status *)",),
                                                disallowed_tools=("Bash(make install)",), write_out_only=True))
         self.assertNotIn("--allowedTools", claude.argv)
