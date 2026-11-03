@@ -1,0 +1,29 @@
+stack: docker
+description: Docker w pudełku (Testcontainers)
+apt: [docker.io]
+domains:
+  - name: registry-1.docker.io
+    risk: yellow
+    note: Docker Hub; obrazy publiczne, ale każdy może tam wystawić obraz
+  - name: auth.docker.io
+    risk: yellow
+    note: logowanie do Docker Hub
+  - name: index.docker.io
+    risk: yellow
+    note: indeks Docker Hub
+  - name: production.cloudflare.docker.com
+    risk: yellow
+    note: warstwy obrazów Docker Hub
+  - name: ghcr.io
+    risk: yellow
+    note: obrazy GitHub Container Registry
+  - name: pkg-containers.githubusercontent.com
+    risk: yellow
+    note: warstwy obrazów ghcr.io
+images:
+  - testcontainers/ryuk:0.11.0
+# Opis pozycji obrazu; treść ryzyka K1 do uzgodnienia z #8.
+image_notes:
+  - image: testcontainers/ryuk:0.11.0
+    risk: yellow
+    note: "Ryzyko K1: Ryuk sprząta kontenery Testcontainers przez gniazdo Dockera pudełka; kod testów ma dostęp do Dockera pudełka, nie hosta"

@@ -7,6 +7,8 @@ import re
 import shutil
 import subprocess
 
+from ..box import templates
+
 INSTALL_TIMEOUT = 1200
 
 
@@ -77,10 +79,11 @@ def prompt_note(ok: bool, tail: str, network: bool = False) -> str:
             f"{tail}\nJeśli potrzebujesz instalacji, poproś o uruchomienie polecenia poza piaskownicą (wynik `outside`).\n")
 
 
+# Domeny rejestrów pochodzą z szablonów stosów (box/stacks/*.yaml, pozycje `registry: true`, #30).
 REGISTRY_DOMAINS = {
-    "node": ("registry.npmjs.org", "registry.yarnpkg.com", "fonts.googleapis.com", "fonts.gstatic.com"),
-    "dotnet": ("api.nuget.org", "globalcdn.nuget.org"),
-    "python": ("pypi.org", "files.pythonhosted.org"),
+    "node": templates.registry_domains("node"),
+    "dotnet": templates.registry_domains("dotnet"),
+    "python": templates.registry_domains("python-qt"),
 }
 
 

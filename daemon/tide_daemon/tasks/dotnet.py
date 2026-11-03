@@ -5,6 +5,10 @@ import glob
 import os
 import subprocess
 
+from ..box import templates
+
+# Domeny rejestru NuGet z szablonu stosu (box/stacks/dotnet.yaml, pozycje `registry: true`, #30).
+REGISTRY_DOMAINS = templates.registry_domains("dotnet")
 RESTORE_TIMEOUT = 900
 MARKERS = ("*.sln", "*.slnx", "*.csproj", "*/*.csproj", "src/*/*.csproj")
 
