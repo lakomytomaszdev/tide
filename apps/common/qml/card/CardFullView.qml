@@ -33,6 +33,10 @@ Rectangle {
 
     property var card: null
     property var answeredIds: []
+    // Reguły przenoszenia z Tablicy (PT-134): dokąd wolno przenieść kartę, czy wolno ją zarchiwizować, nazwy kolumn.
+    property var moveTargets: ["backlog", "todo", "done"]
+    property bool canArchive: true
+    property var columnLabels: ({})
 
     readonly property var derived: card && card.derived ? card.derived : null
     readonly property var flow: derived && derived.flow ? derived.flow : null
@@ -73,12 +77,14 @@ Rectangle {
     readonly property var typedYoutrack: Settings.issueKey(youtrackField.text)
 
     // Jedna lista akcji dla sekcji ustawień i menu „Karta ▾”: {id, label, effect, danger, input}.
-    readonly property var actions: card ? Settings.actions(card.id, shownColumn, storedYoutrack, canPause, paused) : []
+    // Gałąź karty z przepływu ustala Tide (silnik jej używa, `card.branch` tylko dopasowuje pracę), więc jej nie zmieniamy.
+    readonly property bool branchLocked: !!(flow && flow.cardBranch)
+    readonly property var actions: card ? Settings.actions(card.id, shownColumn, storedYoutrack, canPause, paused,
+                                                           moveTargets, canArchive, branchLocked) : []
 
-    // Podpisy przycisków z polem nazywają skutek tego, co wpisano („Odłącz od zgłoszenia LEGAL-35”).
-    readonly property string youtrackButton: typedYoutrack === null || typedYoutrack === storedYoutrack
+    // Podpisy przycisków z polem nazywają skutek tego, co wpisano; puste pole tylko daje fokus (odłączenie to osobna akcja).
+    readonly property string youtrackButton: typedYoutrack === null || typedYoutrack === "" || typedYoutrack === storedYoutrack
         ? actionLabel("youtrack")
-        : typedYoutrack === "" ? "Odłącz od zgłoszenia " + storedYoutrack
         : (storedYoutrack ? "Zmień zgłoszenie na " : "Powiąż ze zgłoszeniem ") + typedYoutrack
     readonly property string branchButton: typedBranch === "" || typedBranch === shownBranch
         ? actionLabel("branch") : "Zmień gałąź na " + typedBranch
@@ -100,7 +106,7 @@ Rectangle {
         if (id.indexOf("move:") === 0) {
             const column = id.slice(5)
             settingRequested("move", { column: column,
-                                       effect: "Karta " + card.id + " przeniesiona do „" + Settings.columnName(column) + "”." })
+                                       effect: "Karta " + card.id + " przeniesiona do „" + Settings.columnName(columnLabels, column) + "”." })
         } else if (id === "pause") {
             settingRequested("pause", { paused: !paused,
                                         effect: paused ? "Karta " + card.id + " wznowiona."
@@ -108,8 +114,12 @@ Rectangle {
         } else if (id === "archive") {
             askArchive()
         } else if (id === "youtrack") {
-            if (typedYoutrack === "" && storedYoutrack === "") focusField(youtrackField)
+            // Puste pole albo to samo zgłoszenie: tylko fokus. Odłączenie jest osobną, jawną akcją.
+            if (typedYoutrack === "" || typedYoutrack === storedYoutrack) focusField(youtrackField)
             else applyYoutrack()
+        } else if (id === "youtrack-clear") {
+            settingRequested("update", { field: "youtrack", value: "",
+                effect: "Karta " + card.id + " odłączona od zgłoszenia " + storedYoutrack + "." })
         } else if (id === "branch") {
             if (typedBranch === "" || typedBranch === shownBranch) focusField(branchField)
             else askBranch()
@@ -137,10 +147,9 @@ Rectangle {
             return
         }
         settingError = ""
-        if (key === storedYoutrack) return
+        if (key === storedYoutrack || key === "") return
         settingRequested("update", { field: "youtrack", value: key,
-            effect: key === "" ? "Karta " + card.id + " odłączona od zgłoszenia " + storedYoutrack + "."
-                               : "Karta " + card.id + " powiązana ze zgłoszeniem " + key + "." })
+            effect: "Karta " + card.id + " powiązana ze zgłoszeniem " + key + "." })
     }
 
     function askArchive() {
@@ -299,6 +308,7 @@ Rectangle {
                     onClicked: view.descriptionRequested()
                 }
                 Tide.TextButton {
+                    id: menuButton
                     objectName: "fullMenu"
                     text: "Karta ▾"
                     variant: "outline"
@@ -770,7 +780,7 @@ Rectangle {
                         wrapMode: Text.Wrap
                     }
 
-                    // Akcje bez pola (kolumna, wstrzymanie, archiwizacja) — z tej samej listy co menu „Karta ▾”.
+                    // Akcje bez pola (kolumna, odłączenie od zgłoszenia, wstrzymanie, archiwizacja) — z tej samej listy co menu „Karta ▾”.
                     Repeater {
                         model: view.actions.filter(a => !a.input)
                         delegate: RowLayout {
@@ -823,7 +833,7 @@ Rectangle {
                         }
                         Text {
                             Layout.fillWidth: true
-                            text: "Teraz: " + (view.storedYoutrack || "brak") + ". Puste pole odłącza kartę od zgłoszenia."
+                            text: "Teraz: " + (view.storedYoutrack || "brak") + "."
                             textFormat: Text.PlainText
                             color: Tide.Tokens.textMuted
                             font.family: Tide.Theme.uiFamily
@@ -832,8 +842,22 @@ Rectangle {
                         }
                     }
 
+                    // Gałąź karty z przepływu ustala Tide: zmiany nie oferujemy, żeby nie obiecywać skutku, którego nie ma.
+                    Text {
+                        objectName: "settingBranchLocked"
+                        Layout.fillWidth: true
+                        visible: view.branchLocked
+                        text: "Gałąź karty: " + view.shownBranch + ". Ustala ją Tide dla przepływu karty, więc nie da się jej tu zmienić."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                        wrapMode: Text.Wrap
+                    }
+
                     // Gałąź karty: zmiana pyta o potwierdzenie ze skutkiem.
                     RowLayout {
+                        visible: !view.branchLocked
                         Layout.fillWidth: true
                         spacing: 12
                         QQC2.TextField {
@@ -867,14 +891,26 @@ Rectangle {
         }
     }
 
-    // Menu „Karta ▾”: te same akcje co sekcja ustawień.
+    // Kliknięcie poza menu „Karta ▾” zamyka je.
+    MouseArea {
+        anchors.fill: parent
+        visible: view.menuOpen
+        z: 4
+        onClicked: view.menuOpen = false
+    }
+
+    // Menu „Karta ▾”: te same akcje co sekcja ustawień, zakotwiczone pod przyciskiem.
     Rectangle {
         id: cardMenu
         objectName: "fullMenuList"
         visible: view.menuOpen
         z: 5
-        x: view.width - width - 24
-        y: 24 + 44
+        // Pozycja liczona przy każdym otwarciu (przycisk przewija się razem z treścią).
+        onVisibleChanged: if (visible) {
+            const p = menuButton.mapToItem(view, menuButton.width, menuButton.height)
+            x = Math.max(8, p.x - width)
+            y = p.y + 4
+        }
         width: 300
         implicitHeight: menuColumn.implicitHeight + 16
         height: implicitHeight

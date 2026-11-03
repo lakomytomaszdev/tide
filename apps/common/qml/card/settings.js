@@ -3,10 +3,9 @@
 // wstrzymanie i gałąź podaje usługa w migawce.
 .pragma library
 
-var COLUMN_NAMES = { "backlog": "Backlog", "todo": "Do zrobienia", "done": "Gotowe" }
-
-function columnName(id) {
-    return COLUMN_NAMES[id] || id
+// Nazwa kolumny z etykiet migawki Tablicy (`labels`: id → nazwa), bez własnej kopii nazw.
+function columnName(labels, id) {
+    return (labels && labels[id]) || id
 }
 
 // Klucz zgłoszenia z klucza albo adresu (jak Logic.issueKey w Tablicy): "" — bez zgłoszenia, null — błędny zapis.
@@ -20,29 +19,37 @@ function issueKey(text) {
 }
 
 // Akcje karty: {id, label, effect, danger, input}. `label` nazywa skutek, `effect` to zdanie pod przyciskiem;
-// `input` — akcja z polem (YouTrack, gałąź), `danger` — archiwizacja. Kolumny: bez bieżącej; karta „Do sprawdzenia”
+// `input` — akcja z polem (YouTrack, gałąź), `danger` — archiwizacja. Reguły przenoszenia podaje Tablica:
+// `targets` — kolumny, do których wolno przenieść kartę (Logic.settingTargets), `canArchive` — czy wolno ją
+// zarchiwizować, `branchLocked` — gałąź karty z przepływem ustala Tide, więc zmiany nie ma. Karta „Do sprawdzenia”
 // dostaje „Odeślij do poprawy” i „Oznacz jako sprawdzoną”.
-function actions(cardId, column, youtrack, canPause, paused) {
+function actions(cardId, column, youtrack, canPause, paused, targets, canArchive, branchLocked) {
     var out = []
     var review = column === "review"
-    if (column !== "backlog")
+    var allowed = targets || []
+    if (column !== "backlog" && allowed.indexOf("backlog") >= 0)
         out.push({ id: "move:backlog", label: "Przenieś do Backlogu",
                    effect: "Karta wraca do Backlogu; agent nie rusza jej, dopóki jej nie zlecisz." })
-    if (column !== "todo")
+    if (column !== "todo" && allowed.indexOf("todo") >= 0)
         out.push({ id: "move:todo", label: review ? "Odeślij do poprawy" : "Przenieś do Do zrobienia",
                    effect: review ? "Karta wraca do Do zrobienia jako odesłana do poprawy." : "Karta trafia do Do zrobienia." })
-    if (column !== "done")
+    if (column !== "done" && allowed.indexOf("done") >= 0)
         out.push({ id: "move:done", label: review ? "Oznacz jako sprawdzoną" : "Przenieś do Gotowych",
                    effect: "Karta trafia do Gotowych." })
     out.push({ id: "youtrack", input: true,
                label: youtrack ? "Zmień zgłoszenie w YouTracku" : "Powiąż ze zgłoszeniem w YouTracku",
-               effect: "Stan zgłoszenia pójdzie za kartą. Puste pole odłącza kartę od zgłoszenia." })
-    out.push({ id: "branch", input: true, label: "Zmień gałąź karty",
-               effect: "Zapyta o potwierdzenie. Gałęzie w repozytorium zostają bez zmian." })
+               effect: "Stan zgłoszenia pójdzie za kartą." })
+    if (youtrack)
+        out.push({ id: "youtrack-clear", label: "Odłącz od zgłoszenia " + youtrack,
+                   effect: "Stan zgłoszenia przestaje iść za kartą." })
+    if (!branchLocked)
+        out.push({ id: "branch", input: true, label: "Zmień gałąź karty",
+                   effect: "Zapyta o potwierdzenie. Gałęzie w repozytorium zostają bez zmian." })
     if (canPause)
         out.push({ id: "pause", label: paused ? "Wznów kartę" : "Wstrzymaj kartę",
                    effect: paused ? "Karta rusza dalej." : "Trwające kroki kończą się, nowe nie startują." })
-    out.push({ id: "archive", danger: true, label: "Archiwizuj kartę",
-               effect: "Zapyta o potwierdzenie. Plik karty i historia zostają." })
+    if (canArchive)
+        out.push({ id: "archive", danger: true, label: "Archiwizuj kartę",
+                   effect: "Zapyta o potwierdzenie. Plik karty i historia zostają." })
     return out
 }

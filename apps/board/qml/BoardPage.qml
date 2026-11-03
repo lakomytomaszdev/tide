@@ -53,6 +53,13 @@ Rectangle {
     // Zdania o skutku rzadkich ustawień czekające na odpowiedź usługi: tag zapisu → zdanie.
     property var settingNotes: ({})
     property string pendingMoveNote: ""
+    property bool movingFromFull: false
+    // Nazwy kolumn z migawki (id → etykieta) dla podpisów pełnej karty.
+    readonly property var columnLabelMap: {
+        const out = {}
+        for (const c of Logic.columns(snapshot)) out[c.id] = c.label
+        return out
+    }
     property var decisionTags: ({})          // tag zapisu → [karta, id decyzji]
     // Przeciąganie.
     property bool dragging: false
@@ -232,9 +239,12 @@ Rectangle {
         if (kind === "move" || kind === "archive") {
             // moveCard sam nadaje tag zapisu i może nic nie wysłać (karta już tam stoi) — notka czeka w pendingMoveNote.
             pendingMoveNote = params.effect || ""
-            moveCard(id, kind === "archive" ? "archived" : params.column, kind === "archive" ? "" : topOf(params.column))
+            // Z pełnej karty przenosimy bez okna „Co ma zrobić agent?” (byłoby ukryte pod pełną kartą).
+            movingFromFull = true
+            const sent = moveCard(id, kind === "archive" ? "archived" : params.column, kind === "archive" ? "" : topOf(params.column))
+            movingFromFull = false
             pendingMoveNote = ""
-            if (kind === "archive") closeFull()
+            if (kind === "archive" && sent) closeFull()
         } else if (kind === "pause") {
             const tag = nextTag("flow-pause:" + id)
             addSettingNote(tag, params.effect)
@@ -380,22 +390,22 @@ Rectangle {
     // zapisanych w kolumnie docelowej, karta od razu stoi w nowym miejscu (optimistic).
     function moveCard(id, column, before) {
         const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
-        if (!card) return
+        if (!card) return false
         if (column !== "archived" && !Logic.isManual(column)) {
             showToast("Do kolumny „" + Logic.columnLabel(snapshot, column) + "” karta trafia sama, gdy pracuje nad nią agent.", "rose")
-            return
+            return false
         }
         const confirming = Logic.confirmable(card)
         if (confirming && Logic.dropTargets(card).indexOf(column) < 0) {
             showToast("Kartę z „" + Logic.columnLabel(snapshot, Logic.displayColumn(card)) + "” przenosisz do Gotowych "
                       + "(sprawdzone) albo z powrotem do Do zrobienia (do poprawy).", "rose")
-            return
+            return false
         }
         const index = column === "archived" ? 0 : Logic.moveIndex(snapshot, id, column, before)
         // Bez zmiany tylko wtedy, gdy karta już stoi w tej kolumnie także na ekranie (kolumna wyliczana
         // z koordynatora przy zapisanym todo to nie „ta sama kolumna”).
         if (column === Logic.displayColumn(card) && column === card.column && Logic.storedIndex(snapshot, id) === (index < 0
-                ? snapshot.cards.filter(c => c.column === column).length - 1 : index)) return
+                ? snapshot.cards.filter(c => c.column === column).length - 1 : index)) return false
         const fromBacklog = column === "todo" && card.column === "backlog"
         const origin = fromBacklog ? Logic.storedIndex(snapshot, id) : -1
         const backlogList = fromBacklog ? Logic.column(allCards, "backlog") : []
@@ -403,9 +413,10 @@ Rectangle {
         const originBefore = at >= 0 && at + 1 < backlogList.length ? backlogList[at + 1].id : ""
         const tag = nextTag("move:" + id)
         if (pendingMoveNote) addSettingNote(tag, pendingMoveNote)
-        optimistic =optimistic.concat([{ id: id, column: column, before: before || "", tag: tag }])
+        optimistic = optimistic.concat([{ id: id, column: column, before: before || "", tag: tag }])
         moveRequested(tag, id, column, index)
-        if (fromBacklog) launchHook(id, origin, originBefore)
+        if (fromBacklog && !movingFromFull) launchHook(id, origin, originBefore)
+        return true
     }
 
     // Gotowe dostają kartę na górę (najnowsze pierwsze), inne kolumny — na koniec.
@@ -1779,6 +1790,9 @@ Rectangle {
         z: 35
         visible: page.fullOpen && !page.managing
         card: page.fullOpen ? page.fullCard : null
+        moveTargets: page.fullCard ? Logic.settingTargets(page.fullCard) : []
+        canArchive: page.fullCard ? Logic.canArchive(page.fullCard) : false
+        columnLabels: page.columnLabelMap
         onBackRequested: page.closeFull()
         onAnswered: (decisionId, method, params) => page.sendDecision(page.fullCardId, decisionId, method, params)
         onPreviewRequested: (decisionId, method, params) => page.previewFault(page.fullCardId, decisionId, method, params)

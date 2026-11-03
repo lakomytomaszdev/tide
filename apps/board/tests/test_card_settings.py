@@ -109,6 +109,62 @@ out["toast"] = js("page.toast")
         self.assertEqual(out["calls"], [["UpdateCard", "K-8", '{"youtrack":"TOM-142"}']])
         self.assertEqual(out["toast"], "Karta K-8 powiązana ze zgłoszeniem TOM-142.")
 
+    def test_linked_card_empty_field_only_focuses_and_unlink_is_explicit(self):
+        data = full_d(self.data)
+        for card in data["cards"]:
+            if card["id"] == "K-8":
+                card["youtrack"] = "LEGAL-35"
+        out = self.probe(STATE_PY + """
+open_full()
+out["yt"] = texts("settingYoutrackButton")
+click(at(items("settingYoutrackButton") + "[0]"))
+wait(60)
+out["afterEmptyClick"] = len(calls())
+js(V + ".showTop()")
+wait(60)
+click(named("fullMenu"))
+out["menu"] = texts("fullMenuItem")
+out["section"] = texts("settingButton") + texts("settingYoutrackButton") + texts("settingBranchButton")
+key(Qt.Key.Key_Escape)
+scroll()
+click(setting("Odłącz od zgłoszenia LEGAL-35"))
+wait(80)
+out["calls"] = calls()
+out["toast"] = js("page.toast")
+""", data)
+        self.assertEqual(out["yt"], ["Zmień zgłoszenie w YouTracku"], "puste pole nie nazywa odłączenia")
+        self.assertEqual(out["afterEmptyClick"], 0, "puste pole niczego nie odłącza")
+        self.assertEqual(sorted(t.rstrip("…") for t in out["menu"]), sorted(out["section"]),
+                         "menu i sekcja mają te same akcje także przy powiązanej karcie")
+        self.assertEqual(out["calls"], [["UpdateCard", "K-8", '{"youtrack":""}']])
+        self.assertEqual(out["toast"], "Karta K-8 odłączona od zgłoszenia LEGAL-35.")
+
+    def test_flow_branch_is_not_offered_for_change(self):
+        data = full_d(self.data)
+        for card in data["cards"]:
+            if card["id"] == "K-8":
+                card["derived"]["flow"] = dict(card["derived"].get("flow") or {}, cardBranch="card/k-8-x")
+        out = self.probe(STATE_PY + """
+open_full()
+out["locked"] = js(V + ".branchLocked")
+out["menu"] = js("JSON.stringify(" + V + ".actions.map(a => a.id))")
+""", data)
+        self.assertTrue(out["locked"], "gałąź karty z przepływu ustala Tide")
+        self.assertNotIn("branch", json.loads(out["menu"]), "zmiany gałęzi nie ma ani w sekcji, ani w menu")
+
+    def test_card_to_review_offers_only_actions_the_board_allows(self):
+        data = full_d(self.data)
+        for card in data["cards"]:
+            if card["id"] == "K-8":
+                card["boardColumn"] = "review"
+                card["derived"] = dict(card["derived"], column="review")
+        out = self.probe(STATE_PY + """
+open_full()
+out["buttons"] = texts("settingButton")
+""", data)
+        self.assertEqual(out["buttons"], ["Odeślij do poprawy", "Oznacz jako sprawdzoną"],
+                         "bez Backlogu i archiwizacji, których Tablica odmawia")
+
     def test_service_refusal_is_visible(self):
         out = self.probe(STATE_PY + """
 replies.append({"ok": False, "error": "busy", "message": "tablica się zapisuje"})
