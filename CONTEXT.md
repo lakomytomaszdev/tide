@@ -131,6 +131,17 @@ _Avoid_: zadanie, issue, karta
 Slug projektu Tablicy, do którego należy ticket; plan zapisuje go w kolumnie `Projekt` (standard 1.3), a pusta komórka albo brak kolumny oznacza projekt karty.
 _Avoid_: repozytorium, workspace
 
+**Projekty zlecenia**:
+Projekty Tablicy, w których ma powstać praca jednego zlecenia: projekt karty i dodatkowe projekty wybrane w oknie
+zlecenia (`projects` karty, razem najwyżej 6). Planowanie widzi ich repozytoria (projekt karty z zapisem, pozostałe
+tylko do odczytu) i daje jeden plan z kolumną `Projekt`; Od razu i Mam plan pracują w jednym projekcie.
+_Avoid_: dodatkowe repozytoria, workspace, multi-repo
+
+**Grupa kart**:
+Karty powstałe z jednego planu wielu projektów: karta zlecenia i po jednej karcie na każdy inny projekt zlecenia
+z ticketami; każda ma własny dziennik, gałąź karty i numery, a blokery mogą wskazywać tickety innej karty grupy.
+_Avoid_: epik, karta zbiorcza, projekt nadrzędny
+
 **Zgłoszenie**:
 Ticket albo karta w zewnętrznym trackerze (YouTrack), np. `LOG-240`.
 _Avoid_: issue, task

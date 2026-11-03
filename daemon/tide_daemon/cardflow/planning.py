@@ -1,6 +1,35 @@
 """Wejście planującego: pełne szablony specyfikacji i pionowych ticketów, bez publikacji."""
 import json
 
+HEADER = "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |"
+HEADER_PROJECTS = HEADER + " Projekt |"
+
+
+def _multi(projects) -> bool:
+    return len(projects or ()) > 1
+
+
+def projects_section(projects) -> str:
+    """Projekty zlecenia (K-33 #4) w poleceniu planowania: repozytoria, źródło numerów i zasady kolumny Projekt.
+    Pusty napis, gdy zlecenie ma jeden projekt."""
+    if not _multi(projects):
+        return ""
+    lines = ["Projekty zlecenia (jeden wspólny plan; każdy ticket należy do jednego projektu):"]
+    for p in projects:
+        role = ("projekt karty — tu pracujesz i piszesz" if p.get("main") else
+                "repozytorium tylko do odczytu — nie zmieniaj w nim plików")
+        source = p.get("source") or (f"YouTrack {p.get('prefix')}" if p.get("tracker") == "youtrack"
+                                     else f"lokalny {p.get('prefix')}")
+        lines.append(f"- {p['slug']} — {p.get('name') or p['slug']}: {p.get('repo') or ''} ({role}); "
+                     f"prefiks {p.get('prefix') or '(nieustalony)'}, tracker {p.get('tracker') or 'local'}, "
+                     f"numery: {source}")
+    lines += ["Poznaj kod i zasady każdego z tych repozytoriów (AGENTS.md/CLAUDE.md, CONTEXT.md, ADR).",
+              "Plan ma kolumnę Projekt (standard 1.3) ze slugiem projektu z tej listy; pusta komórka = projekt "
+              "karty. Nie używaj projektów spoza listy. Numery robocze #n są wspólne dla całego planu, a blokery "
+              "#n mogą wskazywać ticket z innego projektu (bez cykli). Nie wpisuj gotowych ID ani prefiksów — "
+              "numery w każdym projekcie nada Tide po zatwierdzeniu."]
+    return "\n".join(lines) + "\n"
+
 
 def import_prompt(*, card, project, catalog, prefix, source, source_rows, out_dir, errors=(), previous="", images=(), tracker="local", tracker_url="", tracker_project=""):
     executors = [{"name": e.name, "provider": e.provider, "model": e.model,
@@ -31,9 +60,13 @@ Po zapisaniu plików zapisz {out_dir}/result.json: {{"result":"done","notes":["p
 
 
 def prompt(*, card, project, catalog, preferred, assignment_rules, prefix, out_dir, errors=(), previous="", tool="claude", images=(),
-           tracker="local", tracker_url="", tracker_project=""):
+           tracker="local", tracker_url="", tracker_project="", projects=()):
     executors = [{"name": e.name, "provider": e.provider, "program": e.program, "model": e.model,
                   "classes": list(e.classes)} for e in catalog.executors]
+    multi = _multi(projects)
+    header = HEADER_PROJECTS if multi else HEADER
+    sample = ("| #1 | <zachowanie> | todo | | <wykonawca> | <uzasadnienie> | standard | <recenzent> | | <projekt> |"
+              if multi else "| #1 | <zachowanie> | todo | | <wykonawca> | <uzasadnienie> | standard | <recenzent> | |")
     return f"""Krok planowania Lekkiego karty {card.id}.
 Pracuj bez pytań. Rozsądne założenia zapisz w specyfikacji. Tylko przygotuj propozycję, nie wykonuj ticketów.
 Nie publikuj do GitHub Issues ani do trackera. To nadpisuje kroki publikacji skilli to-spec i to-tickets,
@@ -42,7 +75,7 @@ Nie rezerwuj numerów, nie zakładaj zgłoszeń ani nie zmieniaj planów projekt
 
 Karta: {card.id} — {card.title}
 Projekt: {project.name}
-Opis karty:
+{projects_section(projects)}Opis karty:
 {card.description}
 
 Zrzuty ekranu (przeczytaj dołączone obrazy):
@@ -77,7 +110,7 @@ przez expand–contract: nowe API, migracja odbiorców, usunięcie starego API; 
 Sprawdź sam wielkość, kompletność i graf blokerów, bez pytania o zatwierdzenie podziału w rozmowie.
 Nie uruchamiaj implementacji. Zaproponuj klasę lekki/standard/mocny/lokalny, konkretnego wykonawcę z katalogu
 oraz recenzenta z innym modelem według zasad i preferowanego dostawcy; uzasadnij przydział w Uwagi.
-Zapisz propozycję standardu 1.2 jako {out_dir}/plan.md:
+Zapisz propozycję standardu {'1.3' if multi else '1.2'} jako {out_dir}/plan.md:
 ---
 tide-plan: 1
 title: "{card.title}"
@@ -90,9 +123,9 @@ coordinator: {tool}
 status: active
 updated: <czas ISO 8601>
 ---
-| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| #1 | <zachowanie> | todo | | <wykonawca> | <uzasadnienie> | standard | <recenzent> | |
+{header}
+{'| --- ' * (header.count('|') - 1)}|
+{sample}
 Każdy numer jest roboczy (#1, #2); blokery to numery robocze w tej samej tabeli, bez cykli.
 4. Dla każdego ticketu zapisz osobną kartkę przekazania {out_dir}/tickets/<numer bez #>.md:
 # <numer>: <tytuł>
@@ -115,10 +148,16 @@ Jeżeli krok wymaga zgody na polecenie, zapisz {{"result": "denied", "command": 
 
 
 def full_prompt(*, card, project, catalog, preferred, assignment_rules, prefix, out_dir, tool,
-                images=(), tracker="local", tracker_url="", tracker_project=""):
+                images=(), tracker="local", tracker_url="", tracker_project="", projects=()):
     """Pełny proces w jednej rozmowie; artefakty pozostają w katalogu kroku do zatwierdzenia."""
     executors = [{"name": e.name, "provider": e.provider, "program": e.program, "model": e.model,
                   "classes": list(e.classes)} for e in catalog.executors]
+    multi = _multi(projects)
+    header = HEADER_PROJECTS if multi else HEADER
+    sample = ("| #1 | <działające zachowanie> | todo | | <wykonawca> | <jednozdaniowe uzasadnienie> | standard | "
+              "<recenzent> | | <projekt> |" if multi else
+              "| #1 | <działające zachowanie> | todo | | <wykonawca> | <jednozdaniowe uzasadnienie> | standard | "
+              "<recenzent> | |")
     discovery = ("Użyj skilli grill-with-docs oraz domain-modeling. Prowadź dociekliwą rozmowę z użytkownikiem: "
                  "pytaj o cel, przypadki brzegowe, proces i decyzje. W trakcie rozmowy aktualizuj słownik "
                  "domenowy i uzasadnienia decyzji projektu w artefaktach katalogu wyjściowego, "
@@ -131,7 +170,7 @@ def full_prompt(*, card, project, catalog, preferred, assignment_rules, prefix, 
 Jesteś planującym. Rozmawiaj z użytkownikiem i pokaż mu podział przed zapisem propozycji. Nie implementuj ticketów.
 Karta: {card.id} — {card.title}
 Projekt: {project.name}
-Opis karty:
+{projects_section(projects)}Opis karty:
 {card.description}
 Zrzuty ekranu (przeczytaj dołączone obrazy):
 {chr(10).join(images) or '(brak)'}
@@ -155,7 +194,7 @@ W rozmowie pokaż użytkownikowi każdy ticket, kryteria akceptacji, blokery i k
 użytkownika i pokaż poprawiony podział. Dopiero potem zapisz propozycję.
 Każdemu ticketowi przypisz klasę lekki/standard/mocny/lokalny, wykonawcę z katalogu i niezależnego recenzenta
 z innym modelem zgodnie z zasadami i preferowanym dostawcą. Jednym zdaniem uzasadnij każdy przydział.
-4. Zapisz {out_dir}/plan.md w standardzie 1.2:
+4. Zapisz {out_dir}/plan.md w standardzie {'1.3' if multi else '1.2'}:
 ---
 tide-plan: 1
 title: "{card.title}"
@@ -168,9 +207,9 @@ coordinator: {tool}
 status: active
 updated: <czas ISO 8601>
 ---
-| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| #1 | <działające zachowanie> | todo | | <wykonawca> | <jednozdaniowe uzasadnienie> | standard | <recenzent> | |
+{header}
+{'| --- ' * (header.count('|') - 1)}|
+{sample}
 Numery są robocze (#1, #2); blokery wskazują tylko robocze numery z planu i nie tworzą cykli.
 5. Dla każdego ticketu zapisz {out_dir}/tickets/<numer bez #>.md:
 # <numer>: <tytuł>

@@ -110,6 +110,23 @@ if prompt.startswith("Krok planowania Lekkiego"):
             json.dump({"result": "error", "reason": "awaria planującego"}, fh)
         sys.exit(0)
     os.makedirs(os.path.join(out, "tickets"), exist_ok=True)
+    if "ATRAPA: plan-multi" in prompt:
+        # Projekty zlecenia z polecenia: #1 w drugim projekcie, #3 w projekcie karty czeka na #1.
+        other = re.findall(r"(?m)^- (\S+) — .*\(repozytorium tylko do odczytu", prompt)[0]
+        with open(os.path.join(out, "plan.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\ntide-plan: 1\ntitle: Grupa\ncard: " + card +
+                     "\ntracker: local\nticket-prefix: PT\ncoordinator: claude\n---\n"
+                     "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery | Projekt |\n"
+                     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+                     "| #1 | API w drugim projekcie | todo | | Sonnet | api | standard | Opus | | " + other + " |\n"
+                     "| #2 | Niezależny widok | todo | | Sonnet | widok | standard | Opus | | |\n"
+                     "| #3 | Klient API | todo | | Sonnet | klient | standard | Opus | #1 | |\n")
+        for number in ("1", "2", "3"):
+            with open(os.path.join(out, "tickets", number + ".md"), "w", encoding="utf-8") as fh:
+                fh.write("# #" + number + "\n- [ ] Działa.\n## Dla recenzenta\nSprawdź.\n")
+        with open(result, "w", encoding="utf-8") as fh:
+            json.dump({"result": "done", "notes": ["plan.md"]}, fh)
+        sys.exit(0)
     bad = "ATRAPA: plan-bad" in prompt
     repair = "ATRAPA: plan-repair" in prompt and ".plan-fix-" not in out
     with open(os.path.join(out, "plan.md"), "w", encoding="utf-8") as fh:
