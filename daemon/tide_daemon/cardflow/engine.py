@@ -2526,9 +2526,11 @@ class FlowEngine(PlanEditing):
     def _cleanup(self, card: str, st: FlowState, ticket: str, rounds: int) -> None:
         info = ticket_of(st, ticket)
         repo = self._repo(card)
+        # Sprzątanie jest powtarzalne: nieudane (np. pliki w worktree, K-15/LEGAL-60) ponawia się przy każdym
+        # przebiegu, zamiast na zawsze zatrzymać kartę.
         self._act(card, "cleanup", ticket,
                   lambda: self.git.remove_worktree(repo, info["branch"], info["worktree"]),
-                  repo=repo, branch=info["branch"], worktree=info["worktree"])
+                  retry_failed=True, repo=repo, branch=info["branch"], worktree=info["worktree"])
 
     def _recover_verdicts(self, card: str) -> None:
         st = fold(self.journal.read(card))
@@ -2583,7 +2585,8 @@ class FlowEngine(PlanEditing):
             return
         if action == "cleanup":
             self._act(card, action, key,
-                      lambda: self.git.remove_worktree(intent["repo"], intent["branch"], intent["worktree"]))
+                      lambda: self.git.remove_worktree(intent["repo"], intent["branch"], intent["worktree"]),
+                      retry_failed=True)
             return
         if action == "merge":
             st = fold(self.journal.read(card))
