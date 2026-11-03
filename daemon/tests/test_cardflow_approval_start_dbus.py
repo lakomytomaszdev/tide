@@ -213,6 +213,9 @@ class ApprovalStartBusTest(FlowCase):
             return tickets.get(first) if "limit kroków dostawcy" in (tickets.get(first) or {}).get("waitReason", "") else None
         self.assertTrue(wait_until(queued, timeout=10), "powód kolejki widoczny w panelu karty")
         self.assertNotEqual(queued()["state"], "odrzucone")
+        # BIEŻĄCE ZACHOWANIE (nie docelowe): kolejka na slot daje stan `czeka`, a kartka mówi `todo`.
+        # Rozbieżność czeka na decyzję użytkownika (pytanie kroku PT-109, M1); zmiana stanu musi tu zawieść.
+        self.assertEqual(queued()["state"], "czeka")
         self.restart()
         self.settle()
         self.assertEqual(self.of(card, "ticket.rejected"), [])
@@ -220,6 +223,7 @@ class ApprovalStartBusTest(FlowCase):
         tickets = {t["id"]: t for t in self.shown(card)["derived"]["tickets"]}
         self.assertEqual(sorted(tickets), sorted([first, second]), "ticket nie znika z panelu")
         self.assertNotEqual(tickets[first]["state"], "odrzucone")
+        self.assertEqual(tickets[first]["state"], "czeka", "bieżące zachowanie, patrz komentarz wyżej")
         self.assertIn("limit kroków dostawcy", tickets[first]["waitReason"])
         # Zwolnienie slotu: krok drugiej karty kończy się sam, a ticket startuje bez działania użytkownika.
         self.wait_start(card, first, timeout=90)

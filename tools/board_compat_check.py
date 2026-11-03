@@ -125,6 +125,7 @@ def worker(tree: str, board: str, out_path: str) -> int:
 def plan_boards(store) -> list:
     """Tablice koordynatorów dawnych kart (jak `coordination.boards` w usłudze), liczone z planów w repozytoriach
     projektów: dla karty z `session` albo planem — `coordination.board.build` na koordynatorze bez dziennika.
+    Obsługiwane są refy `--before-ref`, w których `board.build` ma tę samą sygnaturę co po integracji.
     Tylko odczyt planów; stan żywej sesji i podagenci z dzienników nie są znani (tablica z kopii ich nie ma)."""
     from tide_daemon.coordination import board as board_mod, plan as plan_mod
     from tide_daemon.coordination.model import Coordinator
@@ -136,7 +137,9 @@ def plan_boards(store) -> list:
         plan = plan_mod.read(path) if path and os.path.isfile(path) else None
         if plan is None and not sid:
             continue
-        coord = Coordinator(id=sid or f"plan:{card['id']}", tool="claude", session_id=sid, path="",
+        tool = (card.get("tool") or (sid.split(":", 1)[0] if ":" in sid else "") or "claude").strip()
+        coord_id = sid if ":" in sid else (f"{tool}:{sid}" if sid else f"plan:{card['id']}")  # id jak w usłudze
+        coord = Coordinator(id=coord_id, tool=tool, session_id=sid.split(":", 1)[-1], path="",
                             cwd=card.get("repo") or "", branch=card.get("branch") or "")
         boards.append(board_mod.build(coord, plan=plan, now=0.0, project=card.get("project") or "",
                                       repo_path=card.get("repo") or "", cwd=coord.cwd, work_branch=coord.branch))
