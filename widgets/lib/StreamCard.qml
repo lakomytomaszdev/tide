@@ -6,6 +6,7 @@
 // Bez PlasmoidItem, więc da się ją załadować w podglądzie (widgets/preview_stream.py).
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as QQC2
 import "stream.js" as Stream
 
 Card {
@@ -14,18 +15,25 @@ Card {
     property var view: null
     property bool coreUp: false
     property bool full: false
+    property bool actions: true    // false: mikrofon, BRB i Panel są w karcie „Zawsze” (lewy monitor, PT-91)
     property var obsMemory: ""      // CoreSource.obsMemory: rozłączony OBS po antenie to ostrzeżenie
     property string status: ""
     property bool statusError: false
     property bool busy: false
     property bool profilesOpen: false
     property real textPointSize: Tokens.fontSizePt
+    // Skrócona forma w kolumnie „Teraz”, gdy karty się nie mieszczą: sam stan w jednej linii (PT-105).
+    property bool compact: false
+    // false: bez profilu gracza i przełączników modułów — w kolumnie „Teraz” są w kategoriach Przygotowanie
+    // i Na ekranie (PT-106), a karta Stream pokazuje sam stan.
+    property bool controls: true
 
     signal micRequested(bool muted)   // docelowy stan: mic.set {muted}, nie przełączanie
     signal brbRequested()
     signal panelRequested()
     signal moduleRequested(string key, bool visible)
     signal profileRequested(string id)
+    signal commandRequested(string name, var args)
 
     readonly property var model: Stream.card(view, coreUp, full, obsMemory)
     readonly property var profile: Stream.profileTile(view, coreUp)
@@ -78,8 +86,20 @@ Card {
         font.pointSize: card.textPointSize
     }
 
+    Text {
+        objectName: "streamCompactLine"
+        visible: card.ready && card.compact
+        Layout.fillWidth: true
+        text: card.model.rows.map(r => r.value).join(" · ")
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        color: Tokens.textSecondary
+        font.family: Theme.uiFamily
+        font.pointSize: card.textPointSize
+    }
+
     GridLayout {
-        visible: card.ready
+        visible: card.ready && !card.compact
         Layout.fillWidth: true
         columns: 2
         columnSpacing: 12
@@ -123,7 +143,7 @@ Card {
 
         // Konsola: profil gracza z listą do wyboru (profile.set).
         Text {
-            visible: card.full
+            visible: card.full && card.controls
             Layout.fillWidth: true
             Layout.preferredWidth: 1
             Layout.alignment: Qt.AlignVCenter
@@ -134,7 +154,7 @@ Card {
             font.pointSize: card.textPointSize
         }
         TextButton {
-            visible: card.full
+            visible: card.full && card.controls
             objectName: "profileButton"
             Layout.alignment: Qt.AlignVCenter
             Layout.fillWidth: true
@@ -172,7 +192,8 @@ Card {
     }
 
     ProfileList {
-        visible: card.full && card.profilesOpen && card.ready
+        objectName: "profileList"
+        visible: card.full && card.controls && card.profilesOpen && card.ready && !card.compact
         Layout.fillWidth: true
         view: card.view
         onPicked: id => { card.profilesOpen = false; card.profileRequested(id) }
@@ -180,7 +201,8 @@ Card {
 
     // Konsola: przełączniki modułów (module.set).
     Flow {
-        visible: card.full && card.ready
+        objectName: "streamModules"
+        visible: card.full && card.controls && card.ready && !card.compact
         Layout.fillWidth: true
         spacing: 6
         Repeater {
@@ -195,20 +217,37 @@ Card {
                 text: modelData.label
                 checkable: false
                 textColor: modelData.on ? Tokens.textPrimary : Tokens.textMuted
-                Accessible.name: modelData.label + (modelData.on ? ": widoczny, ukryj" : ": ukryty, pokaż")
+                Accessible.name: modelData.key === "motion" ? "Animacje żubra: ustawienia i testy"
+                                 : modelData.label + (modelData.on ? ": widoczny, ukryj" : ": ukryty, pokaż")
+                QQC2.ToolTip.visible: hovered && modelData.hint !== ""
+                QQC2.ToolTip.text: modelData.hint
+                QQC2.ToolTip.delay: 500
                 background: Rectangle {
                     radius: Tokens.radiusSmall
                     color: modelData.on ? Theme.alpha(Tokens.accent, 0.16) : Theme.alpha(Tokens.textPrimary, 0.04)
                     border.width: 1
                     border.color: modelData.on ? Theme.alpha(Tokens.accent, 0.75) : Theme.alpha(Tokens.textPrimary, 0.14)
                 }
-                onClicked: card.moduleRequested(modelData.key, !modelData.on)
+                onClicked: modelData.key === "motion" ? motionMenu.open()
+                           : card.moduleRequested(modelData.key, !modelData.on)
             }
         }
     }
 
+    MotionMenu {
+        id: motionMenu
+        objectName: "motion-menu"
+        x: 0
+        y: 0
+        width: card.width
+        view: card.view
+        coreUp: card.coreUp
+        busy: card.busy
+        onCommandRequested: (name, args) => card.commandRequested(name, args)
+    }
+
     RowLayout {
-        visible: card.ready
+        visible: card.ready && card.actions
         Layout.fillWidth: true
         Layout.topMargin: 4
         spacing: 8
@@ -270,6 +309,7 @@ Card {
     }
 
     Text {
+        visible: !card.compact
         Layout.fillWidth: true
         text: card.model.note
         textFormat: Text.PlainText

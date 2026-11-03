@@ -34,7 +34,7 @@ SIDE_OUTPUT = os.environ.get("TIDE_SIDE_OUTPUT", "HDMI-A-1")
 # Z lewej stan streamu, profil gracza i Observer (ten pokazuje się sam tylko w trybie Observer).
 # Z prawej Kamera (PT-82), PC ⇄ Xbox (PT-38, pakiet w widgets/monitors — czyta tide-daemon) i „?”.
 STREAM_LEFT = ["org.tide.stream", "org.tide.stream.profile", "org.tide.stream.observer"]
-STREAM_RIGHT = ["org.tide.stream.camera", "org.tide.stream.monitors", "org.tide.stream.help"]
+STREAM_RIGHT = ["org.tide.stream.camera", "org.tide.stream.tablet", "org.tide.stream.monitors", "org.tide.stream.help"]
 TASKS = "org.kde.plasma.icontasks"
 SPACER = "org.kde.plasma.panelspacer"
 # Konsola streamu na pulpicie lewego monitora. Od PT-83 (decyzja 82) to jeden aplet „Lewy monitor Stream”

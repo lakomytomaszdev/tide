@@ -176,9 +176,10 @@ PlasmoidItem {
 
         readonly property bool vertical: Plasmoid.formFactor === PlasmaCore.Types.Vertical
 
-        Layout.minimumWidth: vertical ? -1 : tile.implicitWidth + tile.dockGap
+        Layout.minimumWidth: activityLook.workHidden ? 0 : vertical ? -1 : tile.implicitWidth + tile.dockGap
         Layout.preferredWidth: Layout.minimumWidth
-        Layout.minimumHeight: vertical ? pills.implicitHeight + Kirigami.Units.smallSpacing * 2 : -1
+        Layout.minimumHeight: activityLook.workHidden ? 0 : vertical ? pills.implicitHeight + Kirigami.Units.smallSpacing * 2 : -1
+        enabled: !activityLook.workHidden
         hoverEnabled: true
         onClicked: root.expanded = !root.expanded
         Accessible.role: Accessible.Button
@@ -186,7 +187,7 @@ PlasmoidItem {
 
         CompactWork {
             id: tile
-            visible: !compact.vertical
+            visible: !activityLook.workHidden && !compact.vertical
             anchors.centerIn: parent
             height: Math.min(parent.height, Math.max(implicitHeight, dockHeight))
             counts: root.counts
@@ -196,7 +197,7 @@ PlasmoidItem {
         }
 
         Rectangle {
-            visible: compact.vertical
+            visible: !activityLook.workHidden && compact.vertical
             anchors.fill: parent
             anchors.margins: Kirigami.Units.smallSpacing / 2
             radius: Tide.Tokens.radiusSmall
@@ -209,7 +210,7 @@ PlasmoidItem {
         Column {
             id: pills
             anchors.centerIn: parent
-            visible: compact.vertical
+            visible: !activityLook.workHidden && compact.vertical
             spacing: Kirigami.Units.smallSpacing
             opacity: source.available ? 1 : 0.45
             Tide.CountPill {

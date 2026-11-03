@@ -22,6 +22,7 @@ PlainToolTip 1.0 PlainToolTip.qml
 ModelsState 1.0 ModelsState.qml
 TideWindow 1.0 TideWindow.qml
 StreamCard 1.0 StreamCard.qml
+MotionMenu 1.0 MotionMenu.qml
 ProfileList 1.0 ProfileList.qml
 MicOffIcon 1.0 MicOffIcon.qml
 ActivityLook 1.0 ActivityLook.qml

@@ -4,6 +4,8 @@
 // Rdzeń nie daje jeszcze scen trybu ani zrzutu sceny: wtedy spokojne „jeszcze niedostępne w rdzeniu”, a model
 // (Stream.scenes, Stream.previewNote, previewImage z CoreSource) jest gotowy na te dane. Bez PlasmoidItem
 // (podgląd w preview_stream.py).
+// PT-105 (decyzja 7 K-29): przyciski w grupach z `situation.scene_groups` rdzenia (Gra, Rozmowa i komentarz,
+// Ekrany; grupa trybu pierwsza), kłódka przy grupie z zablokowaną sceną. Starszy rdzeń: jedna grupa bez nazwy.
 import QtQuick
 import QtQuick.Layouts
 import "stream.js" as Stream
@@ -15,10 +17,35 @@ Card {
     property bool coreUp: false
     property string previewImage: ""
     property bool previewSupported: true
+    property url motionBaseUrl: ""
+    property string motionKind: ""
+    property bool motionPlaying: false
     property bool busy: false
+    // Karta sięga dołu kolumny (konsola w kolumnach): reszta miejsca pod treścią. Poza tym bez odstępu.
+    property bool fill: false
     signal sceneRequested(string name)
+    signal browserWindowRequested()
 
-    readonly property var model: Stream.scenes(view, coreUp)
+    function playMotionPreview(kind) {
+        if (!motionBaseUrl || ["transition", "alert", "peek", "raid"].indexOf(kind) < 0) return
+        motionClip.playing = false
+        motionClip.source = ""
+        motionKind = kind
+        motionClip.source = String(motionBaseUrl) + kind + ".webp"
+        motionPlaying = true
+        motionClip.playing = true
+        motionTimer.interval = ({ transition: 900, alert: 2500, peek: 2700, raid: 3700 })[kind]
+        motionTimer.restart()
+    }
+
+    function stopMotionPreview() {
+        motionTimer.stop()
+        motionClip.playing = false
+        motionClip.source = ""
+        motionPlaying = false
+    }
+
+    readonly property var model: Stream.sceneGroups(view, coreUp)
     readonly property string previewNote: Stream.previewNote(view, coreUp, previewSupported, previewImage !== "")
 
     padding: 16
@@ -64,8 +91,34 @@ Card {
             asynchronous: true
             cache: false
         }
+        // Małe, przezroczyste klipy z animacji nakładki, odtwarzane tylko lokalnie na zrzucie OBS.
+        // Na żywo rdzeń oznacza test jako preview; widzowie nie dostają tego zdarzenia na nakładce.
+        AnimatedImage {
+            id: motionClip
+            objectName: "motion-preview"
+            readonly property var placement: ({
+                transition: [0, 0, 1, 1],
+                alert: [0.64, 0.72, 0.283, 0.136],
+                peek: [0.75, 0.79, 0.136, 0.111],
+                raid: [0, 0.84, 1, 0.158]
+            })[card.motionKind] || [0, 0, 0, 0]
+            x: parent.width * placement[0]
+            y: parent.height * placement[1]
+            width: parent.width * placement[2]
+            height: parent.height * placement[3]
+            visible: card.motionPlaying && status === Image.Ready
+            fillMode: Image.Stretch
+            cache: false
+            playing: false
+            onStatusChanged: if (status === Image.Error) card.stopMotionPreview()
+        }
+        Timer {
+            id: motionTimer
+            repeat: false
+            onTriggered: card.stopMotionPreview()
+        }
         Text {
-            visible: card.previewNote !== ""
+            visible: card.previewNote !== "" && !card.motionPlaying
             anchors.centerIn: parent
             width: parent.width - 40
             horizontalAlignment: Text.AlignHCenter
@@ -119,43 +172,92 @@ Card {
         }
     }
 
-    // Przyciski scen trybu albo spokojna informacja, że rdzeń ich jeszcze nie podaje.
-    GridLayout {
-        visible: card.model.available
-        Layout.fillWidth: true
-        columns: 3
-        columnSpacing: 8
-        rowSpacing: 8
-        Repeater {
-            model: card.model.items
-            TextButton {
-                id: sceneButton
-                required property var modelData
-                objectName: "scene-" + modelData.name
-                Layout.fillWidth: true
-                Layout.preferredWidth: 1
-                variant: "outline"
-                topPadding: 12
-                bottomPadding: 12
-                pointSize: Tokens.fontSizePt
-                enabled: !card.busy && modelData.enabled
-                text: modelData.name
-                textColor: modelData.enabled ? Tokens.textPrimary : Tokens.textMuted
-                Accessible.name: "Scena " + modelData.name + (modelData.current ? ", bieżąca" : "")
-                                 + (modelData.reason ? ", " + modelData.reason : "")
-                Accessible.description: modelData.reason
-                opacity: modelData.enabled ? 1 : 0.55
-                background: Rectangle {
-                    radius: Tokens.radiusFrame
-                    color: sceneButton.modelData.current ? Theme.alpha(Tokens.accent, 0.16)
-                         : Theme.alpha(Tokens.textPrimary, sceneButton.lit ? 0.10 : 0.04)
-                    border.width: sceneButton.modelData.current ? 1.5 : 1
-                    border.color: sceneButton.modelData.current ? Tokens.accent
-                                : Theme.alpha(Tokens.textPrimary, 0.14)
+    // Przyciski scen trybu w grupach albo spokojna informacja, że rdzeń ich jeszcze nie podaje.
+    Repeater {
+        model: card.model.available ? card.model.groups : []
+        ColumnLayout {
+            id: group
+            required property var modelData
+            objectName: "sceneGroup-" + modelData.id
+            Layout.fillWidth: true
+            Layout.fillHeight: true     // wolne miejsce kolumny idzie w wyższe przyciski scen, nie w pusty pas
+            Layout.verticalStretchFactor: 100
+            spacing: 6
+            RowLayout {
+                visible: group.modelData.label !== ""
+                spacing: 6
+                Text {
+                    text: group.modelData.label.toUpperCase()
+                    textFormat: Text.PlainText
+                    color: Tokens.textMuted
+                    font.family: Theme.uiFamily
+                    font.pointSize: Tokens.fontSizePt - 2
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: 1.2
                 }
-                onClicked: if (!modelData.current) card.sceneRequested(modelData.name)
+                LineIcon {
+                    objectName: "sceneGroupLock-" + group.modelData.id
+                    visible: group.modelData.locked
+                    name: "lock"
+                    size: 12
+                    color: Tokens.textMuted
+                }
+            }
+            GridLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                columns: 3
+                columnSpacing: 8
+                rowSpacing: 8
+                Repeater {
+                    model: group.modelData.items
+                    TextButton {
+                        id: sceneButton
+                        required property var modelData
+                        objectName: "scene-" + modelData.name
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.maximumHeight: implicitHeight + 18
+                        Layout.preferredWidth: 1
+                        variant: "outline"
+                        topPadding: card.model.grouped ? 9 : 12
+                        bottomPadding: card.model.grouped ? 9 : 12
+                        pointSize: Tokens.fontSizePt
+                        enabled: !card.busy && modelData.enabled
+                        text: modelData.name
+                        textColor: modelData.enabled ? Tokens.textPrimary : Tokens.textMuted
+                        Accessible.name: "Scena " + modelData.name + (modelData.current ? ", bieżąca" : "")
+                                         + (modelData.reason ? ", " + modelData.reason : "")
+                        Accessible.description: modelData.reason
+                        opacity: modelData.enabled ? 1 : 0.55
+                        background: Rectangle {
+                            radius: Tokens.radiusFrame
+                            color: sceneButton.modelData.current ? Theme.alpha(Tokens.accent, 0.16)
+                                 : Theme.alpha(Tokens.textPrimary, sceneButton.lit ? 0.10 : 0.04)
+                            border.width: sceneButton.modelData.current ? 1.5 : 1
+                            border.color: sceneButton.modelData.current ? Tokens.accent
+                                        : Theme.alpha(Tokens.textPrimary, 0.14)
+                        }
+                        onClicked: if (!modelData.current) card.sceneRequested(modelData.name)
+                    }
+                }
             }
         }
+    }
+    // Reszta miejsca (gdy przyciski osiągną największą wysokość albo ich nie ma) zostaje pod treścią, na dole.
+    Item {
+        visible: card.fill
+        Layout.fillHeight: true
+        Layout.verticalStretchFactor: 1
+    }
+    TextButton {
+        objectName: "browserWindowButton"
+        visible: card.model.available && card.model.groups.some(g => g.items.some(item => item.name === "Browser"))
+        enabled: !card.busy
+        variant: "link"
+        text: "Wybierz okno dla Browser w OBS"
+        Accessible.description: "Otwiera właściwości źródła przeglądarki w OBS"
+        onClicked: card.browserWindowRequested()
     }
     // Na żywo: dlaczego start i koniec są wyłączone.
     Text {

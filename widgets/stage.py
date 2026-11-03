@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import sys
+from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_PALETTE = os.path.join(ROOT, "theme", "palette", "mist.json")
@@ -177,7 +178,12 @@ def stage(widget_dir: str, out_dir: str, palette_path: str = DEFAULT_PALETTE) ->
     shutil.copytree(widget_dir, out_dir, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     copy_lib(os.path.join(out_dir, "contents", "ui", "tide"), palette)
     with open(os.path.join(widget_dir, "metadata.json"), encoding="utf-8") as fh:
-        secret = json.load(fh).get(LIMITY_KEY)
+        metadata = json.load(fh)
+    secret = metadata.get(LIMITY_KEY)
+    build_orders = metadata.get("X-Tide-BuildOrders")
+    if build_orders:
+        from widgets.build_orders import generate
+        generate(Path(widget_dir) / build_orders, Path(out_dir) / "contents/ui/BuildOrderCatalog.js")
     if secret:
         write_private(os.path.join(out_dir, secret), limity_config_js(limity_config_path()))
     return out_dir
