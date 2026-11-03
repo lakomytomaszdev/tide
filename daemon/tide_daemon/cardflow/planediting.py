@@ -199,11 +199,19 @@ class PlanEditing:
                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
         for r in rows:
             ident = r.get("workId") or ""
-            cells = [ident, r.get("title") or "", state(ident), "", r.get("executor") or "",
+            cells = [ident, r.get("title") or "", "todo", "", r.get("executor") or "",
                      (r.get("note") or "").replace("|", "/"), r.get("class") or "", r.get("reviewer") or "",
                      ", ".join(r.get("blockers") or [])]
             table.append("| " + " | ".join(str(c).replace("\n", " ") for c in cells) + " |")
         locked = sorted(i for i in (r.get("workId") for r in rows) if i in started)
+        started_event = st.started or {}
+        tracker = "youtrack" if started_event.get("trackerProject") else "local"
+        header = ("---\ntide-plan: 1\n"
+                  f"title: {proposal.get('title') or 'Plan karty ' + card}\ncard: {card}\ntracker: {tracker}\n"
+                  f"tracker-url: {started_event.get('trackerUrl') or ''}\n"
+                  f"tracker-project: {started_event.get('trackerProject') or ''}\n"
+                  f"ticket-prefix: {proposal.get('prefix') or ''}\ncoordinator: {proposal.get('coordinator') or 'claude'}\n"
+                  "status: active\nupdated: <czas ISO 8601>\n---")
         return (f"Popraw propozycję planu karty {card} — to ZATWIERDZONY plan, który już jest w realizacji.\n"
                 f"Uwagi: {findings}\n\n"
                 "Aktualny plan (tabela do przepisania w plan.md):\n" + "\n".join(table) + "\n\n"
@@ -213,12 +221,13 @@ class PlanEditing:
                 "- Pozostałe istniejące tickety zachowują swoje numery (np. LEGAL-73); możesz zmienić ich blokery albo "
                 "opis, jeśli uwagi tego wymagają.\n"
                 "- Nowe tickety dopisz z numerami roboczymi #1, #2… i dla każdego zapisz kartkę tickets/<numer bez #>.md "
-                "(cel, kryteria akceptacji jako lista `- [ ]`, wskazówki dla recenzenta). Istniejące tickety nie potrzebują "
-                "kartek.\n"
+                "(cel, kryteria akceptacji jako lista `- [ ]`, wskazówki dla recenzenta). Kartek istniejących ticketów "
+                "NIE pisz — Tide dołoży je sam.\n"
+                "- Kolumna Stan: wszędzie `todo` (faktyczny stan liczy Tide z dziennika; " +
+                ", ".join(f"{i}: {state(i)}" for i in (r.get("workId") for r in rows)) + ").\n"
                 "- W kolumnie Blokery używaj numerów ticketów (LEGAL-67) albo roboczych (#1).\n"
-                "Zapisz pełny plan.md w katalogu wyjściowym: nagłówek YAML między liniami `---` z dosłownym "
-                "`tide-plan: 1` i polami title, card, tracker, tracker-url, tracker-project, ticket-prefix, coordinator, "
-                "status, updated, a pod nim dokładnie tę jedną tabelę. Nie implementuj ticketów ani nie publikuj.\n"
+                "Zapisz pełny plan.md w katalogu wyjściowym: dokładnie ten nagłówek, a pod nim jedna tabela:\n"
+                f"{header}\nNie implementuj ticketów ani nie publikuj.\n"
                 f"Poprzednia propozycja: {json.dumps(proposal, ensure_ascii=False)}\n")
 
     @staticmethod
@@ -401,6 +410,17 @@ class PlanEditing:
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg else self.catalog()
         path = os.path.join(step["stepDir"], "out", "plan.md")
+        # Kartki istniejących ticketów zatwierdzonego planu dokłada Tide (z planu bazowego) — planujący pisze tylko
+        # kartki nowych ticketów, a walidator wymaga kartki dla każdego wiersza (K-16, 03.11).
+        running = {s.get("ticket") for s in st.steps.values() if s.get("ticket")}
+        for base in revision["baseline"]:
+            ident = base.get("id") or base.get("workId") or ""
+            if ident and not ident.startswith("#") and base.get("body"):
+                card_file = os.path.join(step["stepDir"], "out", "tickets", ident + ".md")
+                if ident in running or not os.path.exists(card_file):
+                    os.makedirs(os.path.dirname(card_file), exist_ok=True)
+                    with open(card_file, "w", encoding="utf-8") as fh:
+                        fh.write(base["body"])
         existing = [r["id"] for r in (st.plan_approved or {}).get("rows", [])]
         existing += [r["id"] for r in (st.imported or {}).get("rows", [])]
         proposal = plans.read(path, card, catalog, allowed_roots=[os.path.dirname(path)], existing_ids=existing,
