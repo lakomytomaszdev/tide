@@ -164,6 +164,11 @@ class PlanEditing:
         # (K-35: plik z `tide-plan: 1.2` i dwiema tabelami). Dlatego dostaje oryginalny plan.md i wzór wprost.
         original = ""
         path = proposal.get("planPath") or ""
+        rows = proposal.get("rows") or []
+        if any(not str(r.get("workId") or "").startswith("#") for r in rows):
+            # Plan już zatwierdzony (wiersze mają numery ticketów): pierwotny plan.md jest nieaktualny — planujący
+            # przepisywał z niego `#1…#8` i zmieniał tickety, które już ruszyły (K-16, 03.11). Dostaje aktualną tabelę.
+            return self._approved_revision_prompt(card, proposal, rows, findings)
         if path and os.path.isfile(path):
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -183,6 +188,38 @@ class PlanEditing:
                 "Recenzent ticketu musi być innym modelem niż jego wykonawca (np. Opus wykonuje → Sonnet albo Codex "
                 "recenzuje), a praca lokalna ma lokalnego recenzenta — inaczej poprawka zostanie odrzucona.\n"
                 "Zachowaj card, prefiks i numery robocze. Nie implementuj ticketów ani nie publikuj.")
+
+    def _approved_revision_prompt(self, card, proposal, rows, findings):
+        st = fold(self.journal.read(card))
+        started = {s.get("ticket") for s in st.steps.values() if s.get("ticket")}
+        merged = {t for (action, t), r in st.results.items() if action == "merge" and (r or {}).get("ok")}
+        def state(ident):
+            return "gotowe" if ident in merged else "w-toku" if ident in started else "todo"
+        table = ["| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |",
+                 "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+        for r in rows:
+            ident = r.get("workId") or ""
+            cells = [ident, r.get("title") or "", state(ident), "", r.get("executor") or "",
+                     (r.get("note") or "").replace("|", "/"), r.get("class") or "", r.get("reviewer") or "",
+                     ", ".join(r.get("blockers") or [])]
+            table.append("| " + " | ".join(str(c).replace("\n", " ") for c in cells) + " |")
+        locked = sorted(i for i in (r.get("workId") for r in rows) if i in started)
+        return (f"Popraw propozycję planu karty {card} — to ZATWIERDZONY plan, który już jest w realizacji.\n"
+                f"Uwagi: {findings}\n\n"
+                "Aktualny plan (tabela do przepisania w plan.md):\n" + "\n".join(table) + "\n\n"
+                "Zasady poprawki zatwierdzonego planu:\n"
+                f"- Tickety, które już ruszyły ({', '.join(locked) or 'brak'}), przepisz BEZ ŻADNEJ ZMIANY (te same "
+                "kolumny, wykonawca, recenzent i blokery). Ich zmiana odrzuca całą poprawkę.\n"
+                "- Pozostałe istniejące tickety zachowują swoje numery (np. LEGAL-73); możesz zmienić ich blokery albo "
+                "opis, jeśli uwagi tego wymagają.\n"
+                "- Nowe tickety dopisz z numerami roboczymi #1, #2… i dla każdego zapisz kartkę tickets/<numer bez #>.md "
+                "(cel, kryteria akceptacji jako lista `- [ ]`, wskazówki dla recenzenta). Istniejące tickety nie potrzebują "
+                "kartek.\n"
+                "- W kolumnie Blokery używaj numerów ticketów (LEGAL-67) albo roboczych (#1).\n"
+                "Zapisz pełny plan.md w katalogu wyjściowym: nagłówek YAML między liniami `---` z dosłownym "
+                "`tide-plan: 1` i polami title, card, tracker, tracker-url, tracker-project, ticket-prefix, coordinator, "
+                "status, updated, a pod nim dokładnie tę jedną tabelę. Nie implementuj ticketów ani nie publikuj.\n"
+                f"Poprzednia propozycja: {json.dumps(proposal, ensure_ascii=False)}\n")
 
     @staticmethod
     def _returned_feedback(request):
@@ -369,7 +406,9 @@ class PlanEditing:
         proposal = plans.read(path, card, catalog, allowed_roots=[os.path.dirname(path)], existing_ids=existing,
                               tracker="youtrack" if (st.started or {}).get("trackerProject") else "local",
                               imported=bool(st.imported))
-        rows = [{**r, "body": proposal.cards.get(r["workId"], "")} for r in proposal.rows]
+        # Istniejący ticket zatwierdzonego planu nie dostaje nowej kartki — zostaje jego kartka z planu bazowego.
+        kept_bodies = {(r.get("id") or r["workId"]): r.get("body") or "" for r in revision["baseline"]}
+        rows = [{**r, "body": proposal.cards.get(r["workId"]) or kept_bodies.get(r["workId"], "")} for r in proposal.rows]
         delta = self._difference(revision["baseline"], rows)
         started = {s.get("ticket") for s in st.steps.values() if s.get("ticket")}
         invalid = list(proposal.errors)

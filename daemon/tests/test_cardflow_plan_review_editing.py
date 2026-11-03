@@ -137,6 +137,14 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: box, timeout=10))
         self.assertTrue(json.loads(box[0])["ok"], box)
         self.assertTrue(wait_until(lambda: len(self.of(card, "plan.reviewed")) == 2, timeout=6), self.events(card))
+        # 03.11, K-16: poprawka zatwierdzonego planu dostaje aktualną tabelę z numerami ticketów i listą tych, które
+        # ruszyły — nie pierwotny plan.md z `#1…`.
+        amend = next(s for s in self.of(card, "step.started") if s["kind"] == "plan-amend")
+        with open(os.path.join(amend["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
+            prompt = fh.read()
+        self.assertIn("ZATWIERDZONY plan", prompt)
+        self.assertIn(f"| {working['ticket']} |", prompt)
+        self.assertIn(f"Tickety, które już ruszyły ({working['ticket']}", prompt)
         self.assertTrue(self.approve(card)["ok"])
         self.assertFalse(any(e["step"] == working["step"] for e in self.of(card, "step.finished")), self.events(card))
         self.assertEqual(len(self.of(card, "plan.revision-approved")), 1)
