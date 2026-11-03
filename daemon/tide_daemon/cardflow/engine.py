@@ -2007,11 +2007,17 @@ class FlowEngine(PlanEditing):
                not (st.results.get(("merge", s.get("ticket"))) or {}).get("ok")
                for s in st.steps.values()):
             return  # wszystkie scalenia używają jednego worktree karty
-        if ("merge", ticket) not in st.results:
+        previous_merge = st.results.get(("merge", ticket))
+        # Scalenie, które padło nie przez konflikt (np. chwilowo uszkodzony worktree karty, 03.11 K-33/PT-115), jest
+        # ponawiane; konflikt idzie swoją ścieżką niżej.
+        retry_merge = bool(previous_merge) and not previous_merge.get("ok") and \
+            "konflikt" not in (previous_merge.get("error") or "").lower() and \
+            self.clock() - _epoch(previous_merge.get("ts")) >= 60
+        if previous_merge is None or retry_merge:
             source = next((s for s in st.steps.values() if s.get("ticket") == ticket and
                            s.get("kind") == "ticket"), None)
             if source is not None:
-                self._merge(card, st, source)
+                self._merge(card, st, source, retry=retry_merge)
         merged = fold(self.journal.read(card)).results.get(("merge", ticket))
         if merged and not merged.get("ok") and "konflikt" in (merged.get("error") or "").lower():
             current = fold(self.journal.read(card))
@@ -3592,7 +3598,7 @@ class FlowEngine(PlanEditing):
             return None
         return dict(verdict=verdict, blockers=counts[0], majors=counts[1], nits=counts[2])
 
-    def _merge(self, card: str, st: FlowState, step: dict) -> None:
+    def _merge(self, card: str, st: FlowState, step: dict, retry: bool = False) -> None:
         ticket = step.get("ticket") or ""
         info = ticket_of(st)
         repo = step.get("repo") or self._repo(card)
@@ -3611,7 +3617,7 @@ class FlowEngine(PlanEditing):
                 repo, info["cardBranch"], step.get("branch") or info["branch"], info["cardWorktree"],
                 f"Merge ticket {ticket} into card {card}", expected_tip=expected_tip),
                 branch=step.get("branch") or info["branch"], into=info["cardBranch"], expectedTip=expected_tip,
-                cardTip=self.git.sha(repo, f"refs/heads/{info['cardBranch']}"))
+                cardTip=self.git.sha(repo, f"refs/heads/{info['cardBranch']}"), retry_failed=retry)
         except FlowError as exc:
             print(f"tide-daemon: przepływ karty {card}: scalenie {ticket}: {exc}", flush=True)
 
