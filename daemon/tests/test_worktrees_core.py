@@ -102,6 +102,15 @@ class ListTest(WorktreeTestCase):
         self.assertEqual((w["hasAgent"], w["blocker"]), (True, "agent"))
         self.assertFalse(self.items[self.p["alpha"]]["hasAgent"], "agent liczy się tylko w najgłębszym worktree")
 
+    def test_card_worktree_has_its_own_activity_label_and_remains_protected(self):
+        path = self.p["merged"]
+        items = by_path(self.scanner.snapshot([path], card_paths=[path]))
+        self.assertTrue(items[path]["hasCard"])
+        self.assertTrue(items[path]["hasAgent"], "zajęty worktree nadal blokuje usuwanie")
+        self.assertFalse(items[path]["removable"])
+        self.assertFalse(items[self.p["alpha"]]["hasCard"])
+        self.assertFalse(items[self.p["agent"]]["hasCard"])
+
     def test_detached_head(self):
         w = self.items[self.p["detached"]]
         self.assertEqual((w["branch"], w["detached"], w["merged"], w["removable"]), ("", True, True, True))

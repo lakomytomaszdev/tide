@@ -296,12 +296,19 @@ Model idzie jednym argumentem (`--model=<model>`), więc nazwa z „-” na pocz
 
 **Token** (`tokenFile` punktu) nie trafia do argv, tytułu karty, dziennika, pliku zadania ani do poleceń, które agent uruchamia (sprawdzone: `env` w sesji obu narzędzi nie pokazuje tokenu, a serwer dostaje `Authorization: Bearer`). Plik zadania (0600) ma tylko ścieżki: `secretEnv` (`{"TIDE_MODEL_TOKEN": "<tokenFile>"}` — `launch.py` czyta token w chwili startu i wstawia go do środowiska Codexa), `tokenFiles` (sprawdzane przed startem) i `unsetEnv` (zmienne usuwane ze środowiska agenta). Codex wyklucza token z poleceń przez `shell_environment_policy.exclude` (ta opcja z `-c` zastępuje listę `exclude` z `config.toml` użytkownika na czas tej sesji), a migawka powłoki (`shell_snapshot`) jest wyłączona, bo bez tego `env` w sesji 0.114 pokazywał token mimo wykluczenia. Claude Code dostaje token z `apiKeyHelper`, więc nie jest on zmienną środowiska; `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` odpada — na tym komputerze uruchamia Bash przez `bwrap` z przestrzenią użytkownika, której zabrania AppArmor (`kernel.apparmor_restrict_unprivileged_userns=1`), i każde polecenie kończy się „bwrap: setting up uid map: Permission denied” (do tego wymusza tryb uprawnień `default`). Nieczytelny albo pusty plik tokenu albo ścieżka względna — agent nie startuje, w karcie zostaje powłoka z komunikatem bez treści tokenu. Zadanie z modelem lokalnym `launch.py` uruchamia sam (proces potomny ze środowiskiem agenta), a potem zamienia się w powłokę z pierwotnym środowiskiem karty: zmienne dodane dla agenta znikają, a te, które użytkownik miał wcześniej, wracają z jego wartościami — `claude` wpisany później w tej karcie nie pójdzie po cichu na serwer lokalny.
 
-**Odmowy** (pole `error`, po polsku w `message`; nic nie zostaje utworzone): `bad-model` (inny model niż `cloud`/`local`), `local-unset` (brak roli `agent` — „ustaw go w Tide → Modele”), `local-cloud` (rola `agent` z modelem Ollama Cloud — „model … działa w chmurze Ollamy — wybierz model lokalny w Tide → Modele”), `local-unavailable` (rola z błędem, serwer nie odpowiada, modelu nie ma na serwerze), `bad-request`, `bad-tool`, `missing-cli` (programu nie ma w PATH usługi ani w `~/.local/bin`), `no-terminal`, `unknown-repo` (tylko repozytoria z katalogu projektów, bez bare), `empty-prompt`, `one-word` (jedno słowo mogłoby zostać wzięte za podpolecenie, np. `claude doctor`), `prompt-too-long` (32 000 znaków), `bad-prompt` (NUL), `bad-image`, `bad-add-dir`, `no-base` (brak master/main/develop), `bad-branch` (`git check-ref-format --branch`), `protected-branch` (master, main, develop, gałąź główna, HEAD), `branch-exists`, `path-exists`, `dirty-base` (główny katalog stoi na gałęzi głównej i ma niezacommitowane zmiany — nowy worktree by ich nie zawierał), `git`, `launch` (Konsola nie uruchomiła zadania — worktree i gałąź wycofane).
+**Odmowy** (pole `error`, po polsku w `message`; nic nie zostaje utworzone): `bad-model` (inny model niż `cloud`/`local`), `local-unset` (brak roli `agent` — „ustaw go w Tide → Modele”), `local-cloud` (rola `agent` z modelem Ollama Cloud — „model … działa w chmurze Ollamy — wybierz model lokalny w Tide → Modele”), `local-unavailable` (rola z błędem, serwer nie odpowiada, modelu nie ma na serwerze), `bad-request`, `bad-tool`, `missing-cli` (programu nie ma w PATH usługi ani w `~/.local/bin`), `no-terminal`, `unknown-repo` (tylko repozytoria z katalogu projektów, bez bare), `empty-prompt`, `one-word` (jedno słowo mogłoby zostać wzięte za podpolecenie, np. `claude doctor`), `prompt-too-long` (32 000 znaków), `bad-prompt` (NUL), `bad-image`, `bad-add-dir`, `no-base` (brak master/main/develop), `bad-branch` (`git check-ref-format --branch`), `protected-branch` (master, main, develop, gałąź główna, HEAD), `branch-exists`, `path-exists`, `git`, `launch` (Konsola nie uruchomiła zadania — worktree i gałąź wycofane).
 
-**Polecenie agenta** (`tasks/core.py`, `agent_argv`) — lista argumentów, nigdy napis dla powłoki; polecenie to jeden element, po `--`:
+**Polecenie agenta** (`tasks/agentcmd.py`: `interactive()` i `agent_argv()`; `tasks/core.py` tylko je woła) — lista argumentów, nigdy napis dla powłoki; polecenie to jeden element, po `--`:
 
 - Claude Code: `claude [--add-dir <katalog z addDirs>] [--add-dir <katalog zrzutów>] -- "<polecenie>[\n\nZałączone zrzuty ekranu (przeczytaj je narzędziem Read):\n<ścieżki>]"` — Claude Code nie ma opcji na obrazy, więc ścieżki idą na koniec polecenia, a `--add-dir` pozwala je przeczytać bez pytania o zgodę,
 - Codex: `codex [--add-dir <katalog z addDirs>] --image <plik> … -- "<polecenie>"` (`-i/--image` dołącza obrazy do pierwszej wiadomości, `--add-dir` daje prawo zapisu w katalogu poza katalogiem roboczym).
+
+**Jedno miejsce, dwie odmiany** (`tasks/agentcmd.py`, PT-76). Polecenie i środowisko Claude Code i Codexa (chmura, model lokalny, inny punkt) składa jeden moduł: `interactive()` — sesja w Konsoli, opisana wyżej (okno „Nowe zadanie” i zlecenie z Tablicy idą tą samą drogą, `Planner.prepare`), oraz `background()` — krok w tle, `claude -p` albo `codex exec`, według wzoru z PT-75 (specyfikacja przepływu kart, „Wzór ustawień piaskownicy Claude Code dla kroku w tle”). Krok w tle:
+
+- polecenie idzie przez stdin (plik `<krok>/in/prompt.txt` otwarty jako stdin programu), nigdy w argv; Claude Code: `-p --setting-sources= --settings <krok>/in/settings.json --permission-prompts none --strict-mcp-config --output-format stream-json --verbose --session-id <uuid>` (albo `--resume`), ustawienia piaskownicy (`failIfUnavailable`, `allowUnsandboxedCommands: false`, `denyRead: ["~"]` z `allowRead` dla worktree, wspólnego `.git`, `in` i `out`, `allowWrite` tylko `out`, `allowedDomains: []`); Codex: `exec --json --cd <worktree> --sandbox workspace-write -c sandbox_workspace_write.writable_roots=[<.git/worktrees/wt>, objects, refs, logs, <krok>/out] -c approval_policy="never" -`,
+- środowisko budowane od zera (nic się nie dziedziczy): `HOME`, `USER`, `PATH`, `LANG`, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS` i `SSH_ASKPASS` na `/bin/false`, `GIT_SSH_COMMAND` bez agenta i kluczy, pusty `credential.helper` i `core.askPass`, `GH_CONFIG_DIR` na pusty katalog, martwy `DBUS_SESSION_BUS_ADDRESS`, `GIT_CONFIG_GLOBAL=<krok>/in/gitconfig` (autor „Krok”, `core.excludesFile` z atrapami piaskownicy), Claude: `CLAUDE_CODE_TMPDIR` poza `~`, Codex: `GIT_CONFIG_NOSYSTEM=1`. Katalog kroku nie leży w `/tmp` ani w `~/.local/share` (Codex ze snapa ich nie widzi), Codex: ani w ukrytym katalogu domowym; worktree nie pod `/tmp/claude-<uid>`. To druga warstwa — twardą granicą jest piaskownica,
+- token punktu (decyzja 70) jak w oknie zadań: Claude Code przez `apiKeyHelper` dopisany do pliku ustawień kroku, Codex przez `secret_env` (zmienna → plik), który `Background.start()` czyta dopiero przy starcie i wstawia wyłącznie do środowiska programu; w złożonym poleceniu (`argv`, `env`, pliki) tokena nie ma,
+- `Background.prepare()` zakłada katalogi i pliki kroku, `start()` uruchamia program w jednostce `systemd-run --user --scope --unit=tide-step-<id>` (`/usr/bin/env -u XDG_RUNTIME_DIR -u INVOCATION_ID <program>`; `XDG_RUNTIME_DIR` tylko dla `systemd-run`, D-Bus niepotrzebny): krok przeżywa restart usługi, token zostaje w środowisku procesu (nie we właściwościach jednostki), wyjście idzie do `<krok>/out/step.log`, nie do rury usługi. `tasks/stepstop.py`: `stop_step()` zatrzymuje jednostkę (`systemctl --user kill` SIGTERM, po `grace` SIGKILL całej cgroup — także wnuki po `setsid`), robi commit WIP na gałęzi kroku i zwraca ostatnie wiadomości z dziennika sesji (Claude Code `projects/*/<id>.jsonl`, Codex najnowszy `rollout-*.jsonl` z `cwd` kroku). Git usługi działa na treści napisanej przez agenta, więc **w piaskownicy `bwrap`** (decyzja 8): `--ro-bind / /`, pusty `tmpfs` na `$HOME` i `/tmp`, zapis tylko w worktree i w `.git/worktrees/<wt>`, `objects`, `refs`, `logs` (katalog gita worktree ustala usługa przed krokiem z repozytorium, nie z pliku `.git` w worktree), reszta `<repo>/.git` do odczytu, bez sieci, IPC i cudzych procesów, czyste środowisko; bez `bwrap` `git_snapshot` odmawia (`no-sandbox`) i zmiany zostają w worktree. Dodatkowo `--git-dir`/`--work-tree`/`GIT_COMMON_DIR`, `core.hooksPath=/dev/null`, bez atrybutów systemu i użytkownika, przywrócony plik `commondir` worktree (git bierze z niego ścieżkę refów mimo `GIT_COMMON_DIR`); odmawia też, gdy HEAD nie jest gałęzią kroku (`wrong-branch`), jest odłączony albo to gałąź główna. Zagnieżdżone repozytoria w worktree są pomijane z notatką, bity `assume-unchanged`/`skip-worktree` na istniejących plikach zdejmowane, po zabitym kroku usuwane są jego blokady (`index.lock`, `HEAD.lock`, `refs/heads/<gałąź>.lock`), pliki z `.gitignore` trafiają do `notes`. Zatrzymanie bez pewności (`systemctl` nie odpowiada) to `not-stopped`, bez ruszania worktree. `step_id`: `[A-Za-z0-9_-]{1,64}`. Krok Codexa: wszystkie serwery MCP z `codex mcp list --json` wyłączone (`-c mcp_servers.<nazwa>.enabled=false`; błąd odczytu listy odmawia startu), opcje przed `resume <id>`. Bez D-Bus i bez Tablicy — to podłączy PT-58.
 
 Program to bezwzględna ścieżka z PATH usługi (bez rozwiązywania dowiązań: `/snap/bin/codex` wskazuje na `/usr/bin/snap`, który rozpoznaje program po nazwie). Codex ze snapa zapisuje sesję w `~/snap/codex/<rewizja>`, nie w `~/.codex` — usługa czyta oba katalogi (Agents, „Katalogi danych Codexa”), więc zadanie z tego okna ma stan w widżecie, powiadomienia i Meta+A.
 
@@ -760,6 +767,18 @@ D-Bus ani plików. Token idzie wyłącznie do serwera z ustawień (`url`, domyś
 Ten sam plik niesie ustawienia synchronizacji tablicy (opisane w „Tablica” — „Synchronizacja z YouTrackiem”):
 `sync`, `states`, `stateField`, `projects`, `importQueries`, `importCheckMinutes`.
 
+**Zapis dla przepływu karty** (PT-72, część 1; klient bez podłączenia do zatwierdzania planu — to część 2). Trzy operacje
+w `coordination/youtrack.py`, z tym samym tokenem, bez pośrednika i z limitem 4 s co reszta:
+`create_issue` (`POST /api/issues`), `link_issues` (`POST /api/commands`, np. `relates to DEMO-1`) i `add_comment`
+(`POST /api/issues/{id}/comments`). Założenie jest idempotentne: opis kończy znacznik `[//]: # (tide-ref card=<karta> n=<numer>)`
+(linia definicji odnośnika Markdowna — niewidoczna po wyrenderowaniu, odporna na przepisanie opisu, bo to osobna linia
+szukana w całym opisie z tolerancją odstępów); przed założeniem klient szuka zgłoszenia projektu z tym znacznikiem
+(zapytanie pełnotekstowe plus dokładne sprawdzenie karty i numeru po swojej stronie) i zwraca istniejące
+(`created: false`). Komentarz z notką wyniku niesie `[//]: # (tide-note card=… ticket=… event=…)` i przed dodaniem
+sprawdza komentarze zgłoszenia — dokładnie jeden na (karta, ticket, zdarzenie). Błąd ma `transient` (serwer
+nieosiągalny, 5xx, 401/403/408/429 — ponów) albo `permanent` (400/404/422 z walidacji, zła wartość sprawdzona przed
+wysłaniem — nie ponawiaj). Nazwy karty, ticketu i zdarzenia w znaczniku muszą pasować do `[A-Za-z0-9._-]`.
+
 **Kontrola numerów ticketów** (`coordination/numbering.py`, decyzja 56; reguły: standard planu, „Numery
 ticketów: jedno źródło”). Plany ze wszystkich miejsc repozytorium (`coordination/repoplans.py`): główny
 katalog i każdy worktree (`git worktree list`, także niezacommitowane pliki) oraz każda gałąź lokalna
@@ -837,16 +856,23 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
-| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, mode, description, youtrack, youtrackSync}`: istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
+| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules}` albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
-| `RenderFlow(s id, s mode)` | `→ s` | polecenie trybu dla karty (pusty `mode` — tryb projektu) → `{ok, text, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
-| `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{mode, tool, branch, check}` (wszystko opcjonalne; `check`: `auto` — domyślnie, albo `manual`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
+| `RenderFlow(s id, s mode)` | `→ s` | polecenie dla karty (pusty `mode` — domyślne wejście i tryb projektu; `spec` to dawny zapis wejścia Tylko specyfikacja) → `{ok, text, entry, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
+| `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{entry, mode, tool, branch, check, preferredProvider}` (wszystko opcjonalne; `entry`: `planning` albo `spec` — Tylko specyfikacja, domyślne wejście projektu; `mode`: `full` albo `light`, dotyczy tylko Planowania i przy `spec` jest pomijany; `mode: spec` bez `entry` to stare żądanie wejścia Tylko specyfikacja; `check`: `auto` — domyślnie, albo `manual`); polecenie z każdego wejścia i trybu jest takie jak przed PT-77; odpowiedź ma `entry` i `mode` (pusty przy `spec`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
 | `Badge()` | `→ s` | plakietka widoku Tablica w oknie Tide: JSON `{text, tone}` — „● N” (`waiting`), gdy karty czekają na ciebie, inaczej liczba kart w grze bez Gotowych i Archiwum (`muted`); zero — pusty tekst (plakietka ukryta). Tylko odczyt, niczego nie zakłada; ta sama reguła co `badge()` w `apps/board/backend.py` |
 | `ShowWindow(s id)` | `→ b` | okno Tide na widoku Tablica (`tide.py --view board`), z ID karty (`K-12`, wielkość liter bez znaczenia) od razu na niej (`--select K-12`), z `launch:K-12` — na niej z oknem „Co ma zrobić agent?” (`--select launch:K-12`, „Uruchom” w popupie kafelka); napis, który nie jest ID karty, pomijamy (samo okno); `false`, gdy okna nie ma — kafelek tablicy w docku |
 | `CardDocs(s id)` | `→ s` | plan i specyfikacja karty do panelu karty (niżej, „Plan i specyfikacja na karcie”): `{ok, card, plan, spec, others, warnings}`; tylko odczyt, odpowiedź po odczycie plików w wątku roboczym |
 | `YouTrackIssues(b refresh)` | `→ s` | zgłoszenia użytkownika do importu (PT-7): `{ok, issues: [{id, summary, project, state, updated, url, card, boardProject, boardProjectName, new}], error}`; odpowiedź po pobraniu w wątku roboczym (`refresh: false` — ostatnia lista z pamięci); pokazane zgłoszenia liczą się jako przejrzane |
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
+| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?}` albo Planowanie Lekkie `{entry: "planning", mode: "light", executor, preferredProvider?, images?, check?}`, albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
+| `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
+| `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
+| `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
+| `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
+| `CardBranchDiff(s id)` | `→ s` | po domknięciu karty zwraca diff gałęzi karty względem głównej, wyłącznie do odczytu |
+| `MergeCardToMain(s id)` | `→ s` | wyłącznie na kliknięcie użytkownika scala domkniętą kartę do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych zmianach w głównym checkoutcie |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
 
@@ -885,8 +911,8 @@ tide-board/
   projects/<slug>.md         projekt
   tags/<slug>.md             tag z kolorem
   cards/K-<n>.md             karta
-  flows/full.md, light.md, spec.md     szablony poleceń trybów
-  flows/<projekt>/<tryb>.md  nadpisanie szablonu dla jednego projektu (opcjonalne)
+  flows/full.md, light.md, spec.md     szablony poleceń (full, light — Planowanie; spec — Tylko specyfikacja)
+  flows/<projekt>/<klucz>.md  nadpisanie szablonu dla jednego projektu (opcjonalne)
   docs/<projekt>/            plany i specyfikacje agentów projektów z `ai-docs: tide`
 ```
 
@@ -931,7 +957,7 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `session` | sesja albo koordynator, który prowadzi kartę — id jak w `/Agents` i `/Coordination` (`claude:<id>`, `codex:<id>`, samo `<id>` też działa); pierwsze źródło stanu karty |
 | `branch` | gałąź pracy w repozytorium projektu; zastępuje propozycję gałęzi w `RenderFlow`, łączy kartę z pracą na tej gałęzi i jest gałęzią do scalenia |
 | `check` | sprawdzenie po skończonej pracy agenta: `auto` (domyślnie — wystarczą testy i review AI) albo `manual` (test ręczny użytkownika: karta czeka w Do sprawdzenia, aż przeniesiesz ją do Gotowe). Zła wartość w pliku — błąd i `auto`; brak klucza — `auto`. Ustawia go m.in. przełącznik „Test ręczny po zakończeniu” przy uruchomieniu agenta (PT-4) |
-| `mode`, `tool`, `worktree`, `launched` | ostatnie uruchomienie agenta z karty: tryb, narzędzie, katalog worktree (bezwzględny albo pusty — praca w katalogu projektu) i chwila (ISO 8601); w pliku tylko po uruchomieniu |
+| `entry`, `mode`, `tool`, `worktree`, `launched` | ostatnie uruchomienie agenta z karty: wejście (`planning`, `spec`), tryb (`full`, `light`; przy `spec` pusty), narzędzie, katalog worktree (bezwzględny albo pusty — praca w katalogu projektu) i chwila (ISO 8601); w pliku tylko po uruchomieniu. Karta ze starym `mode: spec` to wejście `spec` (czytane, plik nietknięty); żądanie z `mode: spec` zapisuje `entry: spec` |
 | `projects` | dodatkowe projekty karty (PT-28) — slugi po przecinku, główny zostaje w `project`; zadanie zmienia kilka repozytoriów naraz. W pliku tylko, gdy ustawione. `CreateCard`/`UpdateCard` przyjmują listę (albo napis „a, b”) slugów istniejących projektów albo bezwzględnych ścieżek repozytoriów — repozytorium bez projektu dostaje projekt osobnym commitem (jak `repo`); główny projekt i powtórzenia wypadają, najwyżej 5, nieznany slug — `not-found`. Zmiana `project` na jeden z dodatkowych usuwa go z `projects`. Nieznany slug w pliku — wpis w `errors`, karta działa |
 
 Projekt — `projects/mobileapp.md`, treść to opcjonalny opis:
@@ -949,7 +975,7 @@ mode: full
 
 - `repo`: ścieżka bezwzględna do repozytorium albo pusty (projekt bez kodu). Repozytorium tablicy nie może być projektem.
 - `ai-docs`: `repo` (plany i specyfikacje agentów w `docs/agents/` repozytorium) albo `tide` (w `tide-board/docs/<projekt>/`, nic nie trafia do repozytorium projektu). Przy zakładaniu: `repo`, gdy repozytorium ma już `docs/agents/`, inaczej `tide`; bez klucza w pliku — to samo wyliczane przy odczycie (`aiDocsDefault: true`).
-- `tool`: `claude` albo `codex`, `mode`: `full`, `light` albo `spec` — domyślne dla uruchomień z kart projektu (domyślnie `claude` i `full`: pełny przebieg, chyba że przy karcie wybierzesz inny tryb).
+- `tool`: `claude` albo `codex`, `entry`: `planning` albo `spec` (Tylko specyfikacja), `mode`: `full` albo `light` — domyślne dla uruchomień z kart projektu (domyślnie `claude`, `planning` i `full`; tryb dotyczy tylko Planowania). PT-77: „Tylko specyfikacja” jest wejściem, nie trybem — projekt ze starym `mode: spec` czytamy jako `entry: spec` (tryb `full`), bez błędu i bez przepisywania pliku; stary zapis znika dopiero, gdy użytkownik zmieni wejście albo tryb projektu. Kolejne wejścia (Mam plan, Od razu) dojdą do `entry` bez zmiany formatu.
 - `youtrack`: klucz projektu YouTracka (`LOG`, `LEGAL`; wielkie litery i cyfry, unikalny na tablicy — drugi projekt z tym samym kluczem to `exists`), `youtrack-sync`: `on` (domyślnie, bez klucza w pliku) albo `off` — PT-7, „Synchronizacja z YouTrackiem” niżej. Projekt bez klucza nie synchronizuje niczego. Klucz z importu przypisuje też zaimportowane karty do projektu.
 - Projekty powstają jawnie (`UpsertProject`; ta sama nazwa drugi raz to ten sam projekt, nie `foo-2`) albo przy pierwszej karcie dla repozytorium (`CreateCard` z `repo`) — osobnym commitem. Usługa nie zakłada wpisów dla wszystkich repozytoriów z katalogu projektów; migawka podaje je w `repos` jako kandydatów.
 
@@ -962,7 +988,7 @@ kolorem wyliczonym z nazwy. Wielkość liter w nazwach tagów nie ma znaczenia p
 **Szablony trybów.** `RenderFlow` zakłada katalog dokumentów, jeśli leży w tablicy (`ai-docs: tide`,
 także `docs/_inbox` dla karty bez projektu) — agent dostanie go przez `--add-dir`; w repozytorium
 projektu (`ai-docs: repo`) niczego nie tworzy. Pusty katalog nie trafia do gita, pliki agenta zbierze
-synchronizacja. Szablon bierze `flows/<projekt>/<tryb>.md`, potem `flows/<tryb>.md`, a bez
+synchronizacja. Szablon bierze `flows/<projekt>/<klucz>.md`, potem `flows/<klucz>.md` (klucz to tryb Planowania albo `spec` przy wejściu Tylko specyfikacja; `flows.flow_key`), a bez
 tablicy — wbudowany szablon (`board/flows.py`, te same treści, które trafiają do nowej tablicy).
 Frontmatter szablonu nie trafia do polecenia. Zastępowane są wyłącznie pola `{card_id}`, `{title}`,
 `{description}`, `{project}`, `{repo}`, `{docs_dir}`, `{branch}`, `{tool}`, `{docs_note}`, `{spec}`,
@@ -973,9 +999,9 @@ głównego projektu, w każdym dodatkowym repozytorium, które agent zmienia, ga
 od lokalnej gałęzi głównej (worktree tylko, gdy wymagają tego zasady repozytorium; przy zmianach albo innej
 gałęzi w głównym katalogu — pytanie do użytkownika; bez push), pliki po ścieżkach bezwzględnych i git przez
 `git -C`, bez `cd`, osobne commity w każdym repozytorium, a w Uwagach planu przy tickecie — które repozytorium
-zmienia; w trybie spec repozytoria są tylko do odczytu. Własny szablon bez `{projects}` dostaje tę listę na
+zmienia; przy wejściu Tylko specyfikacja repozytoria są tylko do odczytu. Własny szablon bez `{projects}` dostaje tę listę na
 końcu polecenia. Gałąź: z okna, inaczej `branch` karty albo propozycja `<narzędzie>/k-12-<opis-z-tytułu>`
-(po ID karty w gałęzi daemon połączy kartę z koordynatorem; w trybie spec polecenie mówi „bez gałęzi”).
+(po ID karty w gałęzi daemon połączy kartę z koordynatorem; przy wejściu Tylko specyfikacja polecenie mówi „bez gałęzi”).
 `{docs_dir}` to `docs/agents` (względnie — katalog roboczy agenta, także worktree) przy `ai-docs: repo`
 i ścieżka bezwzględna w tablicy przy `ai-docs: tide`; `{docs_note}` mówi, kto commituje te pliki (w
 tablicy — tylko usługa), a w tablicy także: pliki po ścieżkach bezwzględnych, bez `cd` do katalogu
@@ -994,18 +1020,18 @@ specyfikacja, plan z 1–3 ticketami, TDD, review AI; **tylko specyfikacja** —
 z review AI, bez kodu, gałęzi i planu, na koniec `status: gotowa`; `{spec_commit}`: w tablicy nic nie
 commituje (robi to usługa), a przy `ai-docs: repo` commituje wyłącznie plik specyfikacji na bieżącej
 gałęzi (`docs(spec): K-12 <short English title>`, po angielsku, bez podpisów i wzmianek o AI, bez push) —
-inaczej późniejszy start z nowym worktree dostałby odmowę `dirty-base`.
+inaczej nowy worktree, który wychodzi z commita, nie zawierałby specyfikacji.
 
 **Migracja szablonów.** Tablica założona przed PT-4 ma w `flows/` dawne zaczyny (a sprzed PT-28 —
 `tide-flow: 2` bez `{projects}`; oba są w `flows.PREVIOUS_SEEDS`). Przy starcie usługi
-(`migrate_flows`) plik `flows/<tryb>.md`, który jest bajt w bajt dawnym zaczynem (skróty SHA-256
+(`migrate_flows`) plik `flows/<klucz>.md`, który jest bajt w bajt dawnym zaczynem (skróty SHA-256
 w `flows.PREVIOUS_SEEDS`), dostaje nową treść jednym commitem `flows: update templates`; plik zmieniony
-przez użytkownika, nadpisania projektów (`flows/<projekt>/…`) i brakujące pliki zostają. W trakcie
+przez użytkownika, nadpisania projektów (`flows/<projekt>/…`) i brakujące pliki zostają. PT-77: nagłówek zaczynu `spec` zmienił się z `mode: spec` na `entry: spec` (treść polecenia ta sama), więc dotychczasowy zaczyn jest w `PREVIOUS_SEEDS` i dostaje nowy nagłówek; szablon `spec` zmieniony przez użytkownika (także nadpisanie projektu), który w nagłówku ma jeszcze `mode: spec`, zostaje nietknięty, a migawka (`errors`) niesie ostrzeżenie z prośbą o `entry: spec`. W trakcie
 revertu albo merge'a migracja czeka, a `RenderFlow` i tak nigdy nie wstawia dawnego zaczynu do polecenia
 (bierze wtedy wbudowaną treść).
 
 **Gotowa specyfikacja** (`mark_ready_specs`, przy każdej synchronizacji — po zmianie w tablicy po 2 s,
-inaczej co 60 s, więc dla specyfikacji w repozytorium projektu do minuty): karta z `mode: spec`
+inaczej co 60 s, więc dla specyfikacji w repozytorium projektu do minuty): karta z wejściem Tylko specyfikacja (`entry: spec`, także dawne `mode: spec`)
 w Do zrobienia bez `spec`, której `<docs>/specs/` ma plik Markdown nazwany od ID karty (`k-12.md`,
 `k-12-…`) albo z `card: K-12` we frontmatterze i ze `status: gotowa` (także `gotowy`, `ready`, `done`),
 dostaje `spec: <ścieżka>` i wraca na górę Backlogu — commit `K-12: specification ready`. Na karcie
@@ -1061,10 +1087,10 @@ w raporcie porannym, gdziekolwiek leży.
 | `nextId` | ID, które dostanie następna karta |
 | `columns` | `[{id, label, manual, hidden?}]`: `backlog` „Backlog”, `todo` „Do zrobienia”, `progress` „W toku”, `waiting` „Czeka na mnie”, `review` „Do sprawdzenia”, `done` „Gotowe”, `archived` „Archiwum” (ukryta); `manual: false` — kolumny wyliczane z koordynatora |
 | `colors` | pastele z palety `{nazwa: "#rrggbb"}` |
-| `tools`, `modes` | dozwolone narzędzia i tryby |
+| `tools`, `entries`, `modes` | dozwolone narzędzia, wejścia (`planning`, `spec`) i tryby Planowania (`full`, `light`) |
 | `tags` | `[{name, slug, color, description, defined, cards}]` (`cards` — karty z tym tagiem po dziedziczeniu) |
-| `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, mode, description, docsDir, cards, path, youtrack, youtrackSync}]` (`youtrackSync` — klucz ustawiony i synchronizacja włączona) |
-| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, mode, tool, worktree, launched, launchedTs, branchSlug, projects, extraProjects, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia; `extraProjects` — dodatkowe projekty rozwiązane `[{slug, name, repo, repoMissing}]` (bez nieznanych slugów) |
+| `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, entry, mode, description, docsDir, cards, path, youtrack, youtrackSync}]` (`youtrackSync` — klucz ustawiony i synchronizacja włączona) |
+| `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, entry, mode, tool, worktree, launched, launchedTs, branchSlug, projects, extraProjects, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia; `extraProjects` — dodatkowe projekty rozwiązane `[{slug, name, repo, repoMissing}]` (bez nieznanych slugów) |
 | `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
 | `errors` | `[{path, message}]` — złe pliki; także konflikty z YouTrackiem (PT-7, z pustym `path`) |
 | `youtrack` | stan synchronizacji (PT-7, tylko usługa z YouTrackiem — bez `--no-youtrack`): `{enabled, sync, url, available, error, pending, conflicts, conflictItems: [{issue, label, cards, youtrack, tide, url}], newIssues, importError, states}` |
@@ -1297,22 +1323,23 @@ YouTrack (prywatny: użytkownik i domownik) dostaje stan kart i ticketów.
  "importQueries": ["for: me #Unresolved", "reporter: me Assignee: Unassigned #Unresolved"], "importCheckMinutes": 15}
 ```
 
-Przejście z karty do pracy: karta emituje `sessionRequested(derived.session)` („Otwórz w Sesjach →”,
-„Przejdź do agenta”). Usługa ma już oba cele: `/Coordination ShowWindow(id)` (okno Tide na widoku Sesje
-z koordynatorem) i `/Agents ActivateSession(id)` (okno zwykłej sesji); podpięcie w `apps/board`
-(backend i `BoardView.qml`) czeka na scalenie z PT-4, który zmienia te pliki.
+Przejście z karty do pracy: „Otwórz w Sesjach” wywołuje `/Coordination ShowWindow(id)`, a „Przejdź do agenta”
+wywołuje `/Agents ActivateSession(id)`. `BoardView.qml` i backend tablicy kierują te dwie akcje do usługi.
 
-**Uruchomienie z karty** (widok Tablica, `apps/board/qml/LaunchDialog.qml`). Okno „Co ma zrobić
-agent?” otwiera się po przeniesieniu karty z Backlogu do Do zrobienia (myszą albo Ctrl+→), z „Uruchom
-agenta…” na karcie w Do zrobienia i z „Uruchom” w popupie kafelka (`ShowWindow("launch:K-12")`).
-„Uruchom agenta” (Ctrl+Enter) to kolejno: `UpdateCard {description}` — tylko gdy zadanie w oknie różni
-się od opisu karty, `RenderLaunch(id, {mode, tool, branch, check})`, `/Tasks Start {repoPath, tool,
-prompt: text, newWorktree, branch, images, addDirs, model}` (`newWorktree` i `branch` tylko poza trybem
-spec; `addDirs: [docsDir]` przy `ai-docs: tide`) i po udanym starcie `UpdateCard {branch, worktree,
-mode, tool, check, launched, session: ""}` (`branch` tylko z nowym worktree; pole `check` dodaje PT-5;
-pusty `session` — ponowne uruchomienie odpina poprzednią sesję, a usługa przypnie nową, PT-28). Karta
-uruchomiona z Backlogu bez przeniesienia (popup) idzie do Do zrobienia; dalej stoi tam, aż PT-5 wyliczy
-„W toku”. Błąd którejkolwiek odpowiedzi zostaje w oknie, a ponowienie nie zapisuje opisu drugi raz.
+**Uruchomienie z karty** (widok Tablica, `apps/board/qml/LaunchDialog.qml`). Okno „Co ma zrobić agent?”
+pyta „Jak zacząć?”: Planowanie (Pełne albo Lekkie), Mam plan, Tylko specyfikacja albo Od razu.
+Otwiera się po przeniesieniu karty z Backlogu do Do zrobienia (myszą albo Ctrl+→), z „Uruchom agenta…”
+na karcie w Do zrobienia i z „Uruchom” w popupie kafelka (`ShowWindow("launch:K-12")`).
+
+„Uruchom agenta” (Ctrl+Enter) najpierw zapisuje zmieniony opis, dodatkowe projekty i wybrany plik planu
+przez `UpdateCard`, tylko jeśli dane różnią się od zapisanych. Następnie Planowanie Lekkie, Mam plan i Od razu
+wywołują `/Board StartCard`: krok biegnie w tle w przepływie karty, bez otwierania Konsoli. „Mam plan”
+przekazuje `entry: import` i `planPath`; usługa zapisuje migawkę źródła bez edycji pliku projektu, zachowuje
+istniejące ID i stany ticketów, uzupełnia niepełny plan w tle i kieruje propozycję do review oraz zatwierdzenia.
+Pełne planowanie i Tylko specyfikacja używają dotychczasowej ścieżki Konsoli: `RenderLaunch` → `/Tasks Start`
+→ zapis gałęzi, worktree i sesji na karcie przez `UpdateCard`. Pełny proces planowania w przepływie karty
+należy do drugiego etapu. Karta uruchomiona z Backlogu przez popup idzie do Do zrobienia; błąd odpowiedzi
+zostaje w oknie, a ponowienie nie zapisuje opisu drugi raz.
 „Anuluj” po przeniesieniu oddaje kartę na jej miejsce w Backlogu (`MoveCard`), „Tylko przenieś”
 zostawia ją w Do zrobienia bez agenta. Karta bez projektu z repozytorium — wyjaśnienie i wybór projektu
 (`UpdateCard {project}` albo `{repo}`, który zakłada projekt).
@@ -1322,22 +1349,24 @@ Pod zadaniem pasek zrzutów (`Tide.ScreenshotStrip` z `widgets/lib`): obraz ze s
 zadania albo poza polami tekstowymi okna), pliki przeciągnięte na okno, „Zrób zrzut” (Spectacle; okno Tide
 chowa się na czas zaznaczania), „×” usuwa. Backend widoku (`apps/board/backend.py`, `ImageTray`
 z `apps/common/taskimages.py`) zapisuje je w katalogu zadania w `imagesDir` z `/Tasks Defaults`, a ścieżki idą
-w `images` prośby `Start` — usługa przyjmuje je jak z okna „Nowe zadanie” (najwyżej 10, tylko z katalogu zadań).
+w `images` żądania `/Tasks Start` dla Konsoli albo `/Board StartCard` dla przepływu karty.
 Udany start zostawia katalog agentowi; Anuluj, „Tylko przenieś” i zamknięcie okna Tide go usuwają. Obok
 narzędzia wybór „☁ Chmura / ⌂ Lokalny” ze `Status()` obiektu `/Models` (odświeżany po `Changed`; domyślnie
 zapamiętany `model` z `Defaults()`): przy „Lokalny” zamiast przełącznika narzędzia linia „Codex na
 qwen3-coder:30b · Ten komputer” z odnośnikiem do widoku Modele, `RenderLaunch` dostaje program agenta
-lokalnego jako `tool` (gałąź `codex/…`), a `Start` — `model: "local"`. Niedostępny model albo brak programu
+lokalnego jako `tool` (gałąź `codex/…`), a `Start` — `model: "local"`; przy kroku karty `StartCard` dostaje
+wybranego wykonawcę z katalogu modeli. Niedostępny model albo brak programu
 (`tools` z `Defaults()`) blokuje start z powodem w stopce. Zrzuty nie są zapisywane w karcie.
 
 **Dodatkowe projekty** (PT-28). Wiersz „Dodatkowe projekty” w oknie: chipy wybranych (✕ usuwa) i pole
 „+ dodaj projekt albo repozytorium” z listą projektów tablicy z istniejącym repozytorium (bez głównego
 i już wybranych), potem repozytoriów z katalogu projektów, które nie są jeszcze projektami (wybranie
 założy projekt). Okno startuje z `projects` karty. Gdy wybór różni się od karty, pierwszy zapis to
-`UpdateCard {description?, projects}` (ścieżki repozytoriów zakładają projekty), a `Start` dostaje
-`addDirs` z odpowiedzi `RenderLaunch`. Stopka dopisuje „Pracuje też w: …”. Na karcie tablicy dodatkowe
-projekty to małe chipy „+ mobileapp” obok nazwy projektu. Agent pracuje w worktree głównego projektu,
-a w dodatkowych repozytoriach zakłada gałąź o tej samej nazwie (polecenie, `{projects}` wyżej).
+`UpdateCard {description?, projects}` (ścieżki repozytoriów zakładają projekty). Przy wejściach Konsoli `Start`
+dostaje `addDirs` z odpowiedzi `RenderLaunch`; w przepływie karty dodatkowe projekty są tylko do odczytu.
+Stopka dopisuje „Pracuje też w: …”. Na karcie tablicy dodatkowe
+projekty to małe chipy „+ mobileapp” obok nazwy projektu. W ścieżce Konsoli agent pracuje w worktree
+głównego projektu, a w dodatkowych repozytoriach zakłada gałąź o tej samej nazwie.
 
 **Plan i specyfikacja na karcie** (`CardDocs(id)`, `board/docs.py`, PT-5). Panel karty w widoku Tablica
 ma zakładki „Opis” | „Plan” | „Specyfikacja” — dwie ostatnie tylko wtedy, gdy usługa znalazła dokument.
@@ -1419,6 +1448,291 @@ qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.CreateCard '{"title": "Ekspo
 /usr/bin/python3 daemon/tide-daemon.py --print-board            # migawka bez D-Bus, niczego nie zakłada
 /usr/bin/python3 daemon/tide-daemon.py --print-board --board-dir /tmp/tablica-testowa
 ```
+
+### Zatwierdzanie planu karty (PT-78)
+
+`StartCard(K-12, {"entry":"plan","planPath":"/ścieżka/do/plan.md"})` przyjmuje propozycję
+z repozytorium projektu, dokumentów tablicy albo katalogu wyjściowego kroku tej karty. Kartki leżą
+w `tickets/1.md`, `tickets/2.md` obok planu. Usługa sprawdza standard 1.2, wykonawców, recenzentów,
+kartki z kryteriami, blokery i cykle. Zapisuje `plan.checked` z listą błędów albo `plan.proposed`
+z migawką w dzienniku karty; poprawny plan daje kolumnę „Czeka na mnie” i fale w panelu.
+Na tym etapie numery `PT-n` nie powstają.
+
+`ApproveCardPlan(K-12)` rezerwuje numery pod trwałymi kluczami żądania, zapisuje `plan.approved`
+z mapą `#n → PT-n` i zmienia nazwy kartek w migawce. Zatwierdzony plan 1.2 i kartki są commitowane
+na gałęzi karty pod blokadą repozytorium, przez piaskownicę gita. Dzięki temu istniejący odczyt
+planów ze wszystkich worktree widzi nowe ID w Sesjach, raporcie i kontroli numerów. Ticket startuje
+dopiero po scaleniu wszystkich swoich blokerów; każdy przechodzi review i scalenie z PT-59.
+Przerwanie między rezerwacją, wpisem mapy i commitem planu odtwarza ten sam plan i numery.
+
+### Planowanie Lekkie i zasady przydziału (PT-79)
+
+`StartCard(K-12, {"entry":"planning","mode":"light","executor":"Opus","preferredProvider":"mixed"})`
+uruchamia krok `planning` w tle. Okno zlecenia ma wybór planującego z katalogu, niezależny od preferowanego
+dostawcy przyszłych ticketów; przy „Tylko lokalnie” pokazuje wyłącznie lokalnych planujących. Krok korzysta
+z gałęzi i worktree karty, a wyniki zapisuje w swoim katalogu `out`. Nie otwiera Konsoli ani nie nadaje numerów.
+
+Wejście zawiera kartę, zrzuty, katalog wykonawców z klasami, preferencję dostawcy oraz migawkę zasad przydziału.
+Dodatkowe projekty są dostępne wyłącznie do odczytu; nie poszerzają katalogów zapisu piaskownicy. Szablon prowadzi
+przez pełne sekcje `to-spec` i pionowe plasterki `to-tickets`, z blokerami i osobną kartką „Dla recenzenta” na ticket.
+Nadpisuje publikację ze skilli: `spec.md`, `plan.md`, `tickets/1.md` itd. i `result.json` trafiają do `out`, bez GitHub
+Issues, trackera i lokalnego `.scratch`. Propozycję czyta ten sam walidator co PT-78, z dodatkowym ograniczeniem
+źródła do katalogu wyniku konkretnego kroku. Poprawny wynik daje plan do zatwierdzenia; zatwierdzenie prowadzi dalej
+przez istniejące rezerwacje, review ticketów i scalanie. Review samego planu przed pokazaniem dodaje PT-80.
+
+Błędny format zapisuje `plan.checked` i uruchamia `plan-fix` z błędami i poprzednią propozycją, najwyżej dwie poprawy.
+Po dwóch nieudanych poprawach karta czeka na użytkownika z błędami w panelu; można zlecić nowe planowanie. Awaria
+programu, pytanie i brak zgody korzystają z istniejącego kontraktu kroków (jedno ponowienie awarii, potem decyzja
+użytkownika). Zapisane `card.started` i pary „zamiar → wynik” pozwalają dokończyć start po restarcie bez duplikatów.
+
+Zasady przydziału są krótkim tekstem w klasach `lekki`, `standard`, `mocny`, `lokalny`. Wspólne mieszczą się w
+`board.md`, nadpisanie projektu w `projects/<slug>.md`, pod kluczem `assignment-rules` (napis JSON w płaskim
+frontmatterze, tak by zachować wiele wierszy). Nowa tablica dostaje zaczyn, starsza używa tego samego zaczynu,
+dopóki użytkownik go nie zapisze. `Snapshot.assignmentRules` podaje zasady wspólne, projektowe `assignmentRules`
+podaje samo nadpisanie; pusty tekst oznacza dziedziczenie. „Projekty i tagi” edytuje oba zakresy przez `UpsertProject`:
+`{globalAssignmentRules:"…"}` zapisuje wyłącznie wspólne, `{slug:"…",assignmentRules:"…"}` nadpisanie projektu.
+Limit tekstu wynosi 8000 znaków. Wyczyszczenie nadpisania przywraca dziedziczenie wspólnych zasad.
+
+### Fale i równoległość kroków (PT-62)
+
+Fala jest poziomem grafu blokerów i za każdym razem wynika z tabeli planu; dziennik nie zapisuje numeru fali.
+Gotowe do pracy tickety ruszają równolegle, kiedy **wszystkie ich blokery zostały scalone** do gałęzi karty.
+Review, poprawki i ponowienia też korzystają ze slotów dostawcy, wspólnych dla wszystkich kart.
+Operacje gita nadal wykonuje jedna blokada repozytorium z PT-59.
+
+Domyślnie Anthropic i OpenAI (oraz inni dostawcy) mają po trzy sloty. Opcjonalne pole
+`providerSlots` w `$XDG_CONFIG_HOME/tide/cardflow.json` pozwala nadpisać dodatnią liczbę slotów per dostawca,
+np. `{"providerSlots":{"anthropic":3,"openai":2}}`. Niepoprawne wartości zachowują domyślny limit.
+Lokalnie zawsze pracuje najwyżej jeden krok: zajmuje tor kolejki modeli na czas całej sesji.
+Czekające wywołania raportu i opisów kart ruszają przed kolejnym krokiem; trwającego kroku nie przerywamy.
+Po restarcie zajęty slot jest odtwarzany z dziennika.
+
+Brak slotu zapisuje `step.waiting` z nazwanym powodem; start kroku usuwa ten powód z projekcji.
+`derived.tickets` daje stany mini-paska i fale, `derived.flow.waveLabel` — znacznik „fala N z M”,
+`derived.flow.waiting` — powody czekania, `derived.flow.steps` — przebieg z wykonawcami,
+a `derived.flow.timeline` — uporządkowaną oś zdarzeń. Oś zawiera pola do prezentacji, bez konfiguracji punktu.
+Pytanie jednego ticketu jest widoczne i można na nie odpowiedzieć, gdy inne tickety pracują.
+
+Panel woła `/Board SetCardPaused(id, true)` dla „Wstrzymaj kartę” i tę samą metodę z `false` dla „Wznów”.
+Wstrzymanie nie zmienia ręcznej kolumny ani nie przerywa trwających kroków; blokuje start nowych kroków.
+
+### Przepływ karty: „Od razu” (PT-58)
+
+Pierwszy plasterek przepływu karty (`docs/agents/specs/2026-10-28-przeplyw-kart.md`): wejście „Od razu” w oknie
+zlecenia z wykonawcą z katalogu (Claude, Codex, lokalny albo inny dostawca). Okno woła
+`/Board StartCard(id, {"entry": "now", "executor": "Sonnet", "preferredProvider": "anthropic", "images": [...]})` zamiast RenderLaunch → /Tasks Start;
+odpowiedź przychodzi po starcie kroku (opóźniona, praca w wątku roboczym `cardflow_monitor.py`).
+
+Zlecenie (`cardflow/engine.py`): najpierw sprawdzenie bez zapisu (karta z projektem i repozytorium, wykonawca
+z katalogu, dostępny program i model, dla lokalnego także bieżący stan serwera i obecność modelu,
+prefiks ticketów projektu przez `reserve(dry_run=True)`, gałąź główna, brak trwającego kroku karty
+— błąd tu nie zostawia niczego), potem zdarzenia w dzienniku: `card.started`, pary „zamiar → wynik” dla rezerwacji
+numeru (`coordination/reservations.py` — kontrola numerów widzi ticket), gałęzi i worktree karty
+(`card/k-12-<opis>` od gałęzi głównej), gałęzi i worktree ticketu (`ticket/pt-7-<opis>` od gałęzi karty), startu
+kroku, na końcu `step.started`. Worktree leżą w `<repo>-worktrees/`, katalog kroku obok worktree (`<worktree>.step`,
+`in` — kartka, ustawienia, gitconfig; `out` — plik wyniku i notki). Krok to `agentcmd.background()` +
+`Background.start()` (PT-76): `claude -p` albo `codex exec` w jednostce `systemd-run --user --scope`
+`tide-step-<K-12>-<PT-7>-<n>`, z piaskownicą i kartką na stdin. Claude dostaje
+`--permission-mode acceptEdits`, Codex opcjonalny `model_reasoning_effort`. Inny dostawca dostaje token
+z pliku poza argumentami programu i dziennikiem; lokalny nie przechodzi do chmury. Bez Konsoli.
+
+Kartka (`cardflow/handoff.py`): tytuł, opis i zrzuty karty, gałąź i katalog roboczy, zakazy (push, scalanie, zapis
+poza katalogiem roboczym i wyjściowym) i plik wyniku `<krok>/out/result.json`:
+`{"result": "done"|"question"|"denied"|"error", "question", "command", "reason", "notes": ["note.md"]}`.
+
+Co chwilę (5 s) `tick()`: jednostka kroku nieaktywna → koniec kroku z pliku wyniku (brak pliku → błąd `no-result`,
+zły → `bad-result`; usługa nie zgaduje wyniku z rozmowy), wynik i notki do `flow/<K-12>/steps/<krok>/` w tablicy;
+„gotowe” → automatyczny krok review u innego modelu (PT-59), a dopiero werdykt APPROVE → scalenie ticketu do gałęzi karty (para „zamiar → wynik”, `cardflow/gitops.py`: `merge-tree --write-tree`,
+`commit-tree`, `update-ref` z porównaniem — bez wykonywania treści agenta; worktree karty dostaje nowe drzewo przez
+`read-tree -m -u`). Strażnik kroku: brak zmian plików w worktree (bez `.git`) i w dzienniku sesji przez
+`stepGuardMinutes` (domyślnie 15, `$XDG_CONFIG_HOME/tide/cardflow.json`) → `stepstop.stop_step` (commit WIP gitem
+w piaskownicy, a bez `bwrap` zmiany zostają w worktree) i błąd kroku `no-progress`.
+
+Dziennik karty (`cardflow/journal.py`): `flow/<K-12>/journal.jsonl` w repozytorium tablicy, linia na zdarzenie
+(`v` — wersja schematu, `seq`, `ts`, `card`, `type`), dopisuje wyłącznie usługa. Kopia w
+`$XDG_STATE_HOME/tide/cardflow/<skrót>/<K-12>.jsonl` zapisywana pierwsza: dziennik cofnięty revertem albo zmieniony
+z zewnątrz wraca z kopii z ostrzeżeniem w `errors` migawki. Zmiany z jednej chwili to jeden commit „K-12: card flow”;
+`BoardMonitor.sync()` commituje je przed „sync external changes”.
+
+Stan karty (`cardflow/state.py`): karta z dziennikiem dostaje `derived` tylko z dziennika (z polem `flow`: ticket,
+krok, wykonawca, wynik, gałąź karty), karta bez dziennika — jak dotąd z `board/derive.py`. Ręczne kolumny wygrywają:
+Gotowe i Archiwum bez stanu, Backlog — „wstrzymana”. W Do zrobienia: krok trwa albo scalanie czeka → W toku; pytanie,
+brak zgody, błąd kroku, nieudane scalenie → Czeka na mnie; ticket na gałęzi karty → Do sprawdzenia. MoveCard karty
+z dziennikiem: Backlog dopisuje `card.paused` (trwający krok się kończy), Gotowe i Archiwum zatrzymują krok z zapisem
+zmian, odrzucają niescalony ticket (`ticket.rejected`) i kończą kartę (`card.finished`). Widok pozwala przeciągnąć
+pracującą kartę z dziennikiem do Backlogu i Gotowych.
+
+Restart usługi: kroki żyją we własnych jednostkach; po starcie `tick()` czyta dziennik, sprawdza jednostki
+(`systemctl --user is-active`), kończy zaczęte akcje według par „zamiar → wynik” (scalenie — idempotentnie: ticket
+już w gałęzi karty to sukces bez drugiego scalenia) i nigdy nie dopisuje zdarzenia drugi raz.
+
+Sesja kroku nie jest wierszem agenta: `AgentMonitor.hidden` (`engine.is_hidden` — identyfikator sesji albo katalog
+w worktree kroku) usuwa ją z /Agents Sessions(), kafelka Praca i powiadomień; KRunner ma własny indeks i ją znajduje.
+Worktree trwających kroków i kart w toku są dla okna Worktrees „z agentem” (nie do usunięcia).
+
+Podgląd karty: kafelek Praca pokazuje liczbę trwających kroków, a Tide Sesje rozwija kartę do ticketów, kroków i osi
+zdarzeń. Panel karty podaje początek każdego trwającego kroku i ostatnią odnotowaną zmianę jego plików albo dziennika
+sesji (przy pracy najczęściej raz na minutę). Co pięć sekund usługa sprawdza karty; po trzech minutach bez kroku,
+otwartej akcji i nazwanego powodu czekania zapisuje `card.stalled`, pokazuje „stoi” i powiadamia raz. Pytanie, zgoda,
+limit, bloker, zatwierdzenie planu i karta do sprawdzenia są nazwanymi stanami czekania. Powiadomienia przepływu
+obejmują te decyzje oraz ponowiony błąd kroku; zakończone wcześniej pytanie nie powiadamia ponownie po restarcie.
+Raport poranny czyta dzienniki kart, także kart przeniesionych do Gotowych, i wymienia scalone w okresie tickety
+wraz z wykonawcą.
+
+### Review i gałąź karty (PT-59)
+
+`StartCard` przyjmuje nazwę recenzenta z katalogu (`reviewer`); okno „Od razu” pokazuje wykonawców o innym modelu.
+Bez wyboru usługa wybiera domyślnego recenzenta z katalogu. W trybie `preferredProvider: "mixed"` dostawca recenzenta
+musi być inny niż dostawca autora. Nazwa, program i model recenzenta trafiają do `card.started`.
+
+Po wyniku `done` kroku ticketu usługa sprawdza czystość jego worktree i niezmienność refu, oblicza diff względem
+gałęzi karty i uruchamia recenzenta w tym samym worktree pod nadzorem kroku. Kartka review zawiera opis karty,
+diff, notkę wyniku ticketu oraz AGENTS.md/CLAUDE.md z repozytorium. Recenzent zapisuje `review.md` i JSON z werdyktem
+`APPROVE` albo `REQUEST_CHANGES` oraz liczbami `blockers`, `majors`, `nits`. Usługa akceptuje APPROVE tylko przy zerze
+BLOCKER i MAJOR, ponownie sprawdza worktree i ref, a werdykt zapisuje jako `review.verdict` w dzienniku. Werdykt i
+liczby widać w panelu karty.
+
+Przy REQUEST_CHANGES autor dostaje krok poprawek z uwagami i następuje ponowne review. Po trzeciej nieudanej rundzie
+karta zapisuje `review.question` i czeka na decyzję użytkownika w panelu. `retry` zapisuje `review.decision` i pozwala
+na jedną dalszą rundę; następna nieudana runda ponownie pyta. `reject` zapisuje decyzję i `ticket.rejected`, bez scalenia.
+Jeżeli restart rozdzieli te dwa zdarzenia, usługa dopisuje brakujące odrzucenie przy następnym przebiegu; ta sama
+odpowiedź `reject` może być bezpiecznie ponowiona.
+APPROVE uruchamia scalenie tylko zatwierdzonego commita ticketu (ref jest sprawdzany pod blokadą gita repozytorium)
+i usuwa worktree ticketu
+pod tą samą blokadą. Katalogi wejścia i wyniku kroków leżą obok worktree i zostają w repozytorium tablicy jako kopie
+wyniku. Błąd przygotowania kolejnego etapu jest zdarzeniem `flow.error` i pokazuje kartę jako oczekującą; usługa
+ponawia etap w kolejnych przebiegach.
+
+```bash
+qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.StartCard K-12 '{"entry": "now", "executor": "Sonnet"}'
+```
+
+### Decyzje po kroku w tle (PT-65, PT-66, PT-68)
+
+Wynik `question` z `result.json` pokazuje pytanie w „Czeka na mnie”. Odpowiedź z panelu zapisuje zdarzenie
+`step.decision` i wznawia ticket w tym samym worktree oraz sesji. Krok dostaje kartkę z pytaniem, odpowiedzią i nową
+ścieżką wyniku. Powiadomienie powstaje raz na zakończony pytaniem krok (`step.notice` w dzienniku); kliknięcie otwiera
+tablicę. Po wznowieniu pozostają commity i zmiany z wcześniejszego podejścia.
+
+Wynik `denied` zawiera dokładne polecenie. „Zezwól i wznów” dopisuje tę postać polecenia do listy projektu i wznawia
+krok; „Odmów” wznawia go z informacją o odmowie. Listy `allowed-commands` i `denied-commands` są zapisane w nagłówku
+pliku projektu tablicy jako tablice JSON i edytowalne w „Projekty i tagi”. Claude dostaje z nich reguły
+`--allowedTools` i `--disallowedTools`, a odmowa Bash z końcowego wyniku CLI staje się `denied`, gdy brak własnego
+pliku wyniku. Codex działa w piaskownicy `workspace-write`, lecz listy poleceń dostaje tylko w kartce jako wskazówkę:
+CLI nie blokuje automatycznie każdej komendy spoza listy. Domyślna lista dopuszcza częste odczyty
+oraz pracę lokalną, a dla projektu Tide zabrania `make install`. Reguła zabroniona ma pierwszeństwo; panel nie może
+zatwierdzić takiego polecenia. Zgoda dotyczy pełnego polecenia, bez rozszerzenia na cały program; panel odmawia
+składni złożonej operatorami powłoki oraz poleceń dłuższych niż 300 znaków, które pokazuje bez skrócenia.
+
+Błąd kroku (`error`, brak wyniku, przekroczony czas lub brak postępu) zapisuje `step.retry` i powoduje jedno
+automatyczne ponowienie. Drugi błąd pokazuje „Ponów” i „Zmień wykonawcę”. Obie decyzje zachowują worktree;
+zmiana wykonawcy zakłada nową sesję i jest używana także w kolejnych poprawkach po review. Krok lokalny nie
+przełącza się sam do chmury. `stepTimeoutMinutes` w `$XDG_CONFIG_HOME/tide/cardflow.json` ogranicza jedną próbę
+(domyślnie 240 minut); po limicie usługa zatrzymuje jednostkę przez `stepstop.stop_step` i zachowuje zmiany.
+Strażnik braku postępu podaje w karcie czas, od którego krok stał.
+
+Zgoda na łańcuch poleceń (PT-124): przy wyniku `denied` usługa rozkłada polecenie (`board/chain.py`) na
+pojedyncze polecenia — po `&&`, `||`, `|`, `|&`, `;`, `&`, nowej linii, grupach `( … )` i `{ …; }`, z wnętrzem
+`$( … )`, odwrotnych apostrofów, `<( … )` (także w cudzysłowie podwójnym) i skryptu `sh -c`/`bash -c`/`eval` jako
+osobnymi poleceniami. Lista trafia do `step.finished.commands` i do decyzji `permission` w `flow.decisions[]` jako
+`commands[] = {text, readOnly, stepDir, forbidden, reason, canAllow, preselected}`. `forbidden` wynika wyłącznie
+z `is_forbidden` i listy `denied-commands` projektu (bez reguł wbudowanych), a `reason` podaje pasującą regułę albo
+powód, dla którego polecenia nie da się zatwierdzić. Odczyt własnego `<krok>/in` i `<krok>/out` jest zawsze dozwolony
+(Claude dostaje dokładne wzorce `ls`/`cat` tych katalogów) i nie trafia na listę. „Zezwól na wybrane i wznów”
+wysyła `allow: [indeksy]`; usługa liczy listę od nowa z bieżącymi zakazami i odrzuca indeks spoza zakresu
+(`bad-allow`) albo wskazujący polecenie zabronione (`forbidden-command`), dopisuje do listy projektu dokładnie
+wybrane polecenia, a wznowiony krok dostaje listę dozwolonych i pominiętych. „Kontynuuj bez tych poleceń” to `deny`,
+„Zrób zamiast tego…” — `deny` z `instead`. Łańcuch odrzucany jest automatycznie tylko wtedy, gdy na żadne z jego
+poleceń nie da się zezwolić.
+
+Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
+`deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`, a przy łańcuchu `allow`
+(z `choice=allow`) albo `instead` (z `choice=deny`). Ponowione kroki dostają
+osobne katalogi `.resume-<step>.step` i pliki wyniku; dziennik pozwala odtworzyć decyzję po restarcie usługi.
+
+```bash
+qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.ResolveCardStep K-12 '{"choice": "answer", "answer": "ISO 8601"}'
+```
+
+### Czyja wina błędu kroku i „Opisz problem i ponów” (PT-125)
+
+Zakończenie kroku z wynikiem `error` albo `stopped` ma w `step.finished` pola `fault` (`tide`, `model`, `user`,
+`provider`, `unknown`) i `faultCause`, liczone w chwili wyniku z powodu i z dziennika tego kroku (`out/step.log`,
+`cardflow/faults.py`). `tide` daje tylko twarda przesłanka: brak pliku wyniku (`no-result`) i odmowa zapisu w katalogu
+wyjściowym tego kroku w wyniku narzędzia albo polecenia (odmowa `Write`/`Edit` w `permission_denials`, „Read-only file
+system”, „Permission denied” przy tej ścieżce) — tekst pisany przez agenta nie jest dowodem — albo powody ustawiane
+przez Tide (`start`, `lost`). Kod limitu (429, zdarzenie limitu) daje `provider`/`limit`, jawny błąd API autoryzacji
+(401, 403) albo awarii (5xx, przeciążenie) — `provider`/`auth` albo `outage`, zły plik wyniku albo werdykt — `model`.
+Gdy dziennik nie rozstrzyga, `unknown`, a okno mówi wprost, że nie wiadomo, czyja to wina. Limit nigdy nie tworzy
+decyzji w `flow.decisions[]` (D3); starych pól panelu (`flow.action`, `flow.question`, `flow.command`,
+`flow.canAllow`, `flow.error`, `flow.limit`, `flow.fault`) już nie ma (PT-135) — `derived.flow` niesie decyzje
+wyłącznie w `decisions[]`; `derived.question` i `note` zostają na poziomie karty. Kafelek błędu z winy
+Tide pisze „błąd Tide w kroku X”.
+
+Błąd `tide` albo `unknown` ma w decyzji pole „Opisz problem i ponów” (`reply` z `method: "ReportStepFault"`,
+`preview: "PreviewStepFault"`, `field: "description"`). Okno najpierw pokazuje podgląd karty, potem zapisuje:
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `PreviewStepFault(s id, s request)` | `→ s` | `{"step", "description"}` → `{ok, preview: true, action: "create"\|"append", card, project, title, description, signature, fault}` bez żadnego zapisu |
+| `ReportStepFault(s id, s request)` | `→ s` | zakłada kartę w Backlogu projektu `plasma-tide` (`create_card`) albo dopisuje wystąpienie do otwartej karty o tym samym podpisie (`update_card`), zapisuje `step.reported` i ponawia krok przez `ResolveCardStep` (`retry`); odpowiedź jak `ResolveCardStep` z `reported`, `action`, `project` |
+
+Projekt docelowy jest stały (`plasma-tide`) — żądanie go nie podaje; bez tego projektu na tablicy zgłoszenie kończy
+się błędem `no-report-project`. Podpis błędu to rodzaj kroku, `fault` i przyczyna (`plan-review/tide/write-denied`),
+zapisany w treści karty linią „Podpis błędu: `…`”. Karta otwarta to karta nie zarchiwizowana i nie scalona (jej
+przepływ bez `card.main-merged`); dla zarchiwizowanej albo scalonej powstaje nowa. Wycinek pochodzi wyłącznie
+z dziennika kroku (ostatnie 30 zdarzeń po ludzku) i przed zapisem jest maskowany: wartości zmiennych środowiskowych
+(`NAZWA=…`), znane tokeny (`sk-…`, `ghp_…`, `github_pat_…`, `xox…`, `perm:…`, JWT, `Bearer …`), pary klucz–sekret
+i wartości sekretnych zmiennych środowiska usługi. Ten sam opis użytkownika też przechodzi maskowanie.
+
+### Pełna karta: fazy, powody czekania i trwające kroki (PT-128)
+
+Karta z dziennikiem dostaje w `derived` pola pełnej karty (`cardflow/fullcard.py`); widok
+`apps/common/qml/card/CardFullView.qml` tylko je wyświetla:
+
+- `phases[7]` — `{id, label, state, executor, ts, note}` w stałej kolejności: `order` (Zlecenie), `planning`,
+  `plan-review`, `plan-approval`, `tickets`, `closing` (Domknięcie), `main-merge` (Scalenie do master). `state`:
+  `done`, `now`, `you` (czeka na decyzję z `flow.decisions[]`), `hold` (czeka na limit, nie na użytkownika), `todo`,
+  `skipped` (planowanie przy wejściu „Od razu”, review planu zatwierdzonego bez review). `executor` to nazwa
+  wykonawcy albo `user` dla faz użytkownika, `ts` — chwila zdarzenia fazy (ISO 8601), `note` — dopisek
+  (np. „fala 2 z 4”, „prosi o zmiany”). Karta w „Czeka na mnie” bez decyzji w żadnej fazie ma `you` w bieżącej fazie.
+- `tickets[].waitingOn` — `{kind: "user"}`, `{kind: "blocker", ticket}` (pierwszy niescalony bloker) albo
+  `{kind: "limit", until}` (godzina odnowienia, gdy znana) albo `null`; przy kilku powodach naraz wygrywa użytkownik,
+  potem bloker, potem limit. Przed zatwierdzeniem planu zawsze `null`.
+- `tickets[].status` i `statusLabel` — ludzki stan (`w planie`, `w kolejce`, `pracuje`, `review`, `poprawki`,
+  `scalanie`, `czeka na Ciebie`, `czeka na limit do 16:30`, `czeka na PT-1`, `scalony`, `odrzucony`), do tego
+  `executor` i `reviewer` z przydziału albo z planu.
+- `flow.running[]` — tylko trwające kroki (`id`, `ticket`, `kind`, `kindLabel`, `executor`, `mode`, `startedTs`,
+  `lastActivityTs`, `canEnter`); `flow.headline` — jedno zdanie do „Twój ruch”, gdy `flow.decisions[]` jest puste.
+
+Zdarzenie `step.waiting` niesie `cause` (`quota` — okno limitu, `slots` — kroki dostawcy naraz, `local` — kolejka
+modeli lokalnych, `paused` — karta wstrzymana) i `until` (godzina odnowienia przy `quota`). Starsze zdarzenia bez
+`cause` rozpoznawane są po treści powodu. Tickety i fale planu liczą się także wtedy, gdy krok stoi na limicie.
+
+### Limit dostawcy: zatrzymane kroki i przeniesienie na Codex (PT-130)
+
+Limit nie jest decyzją (D3): nie ma go w `flow.decisions[]`. **Zmiana reguły kolumn** (jedyna w tym tickecie):
+karta z krokiem zatrzymanym przez limit (`step.finished` z `reason: limit`) stoi w „W toku” ze znacznikiem „czeka
+na limit do HH:MM”, nie w „Czeka na mnie”. Wyjątek: gdy zapis zmian (WIP) wymaga naprawy, karta zostaje w „Czeka na
+mnie” — to praca dla użytkownika, nie limit. Bez wyboru użytkownika Tide czeka na odnowienie sam: po odnowieniu
+wznawia krok tym samym dostawcą (jak po wyborze `wait-limit`), a kolumnę liczą dotychczasowe reguły. Tryb
+`auto` z ustawionym wykonawcą nadal przenosi krok sam.
+
+Pola w `derived.flow`:
+
+- `stoppedByLimit[]` — `{step, ticket, wipFiles, provider, until}` dla każdego zatrzymanego kroku; `wipFiles` to
+  liczba plików w commicie WIP.
+- `otherProviders[]` — `{provider, remaining}`: pozostały limit (%, najniższe świeże okno) innych dostawców
+  chmurowych z odczytu Limitów AI (`cardflow/limits.py`); dostawca bez świeżego odczytu nie trafia na listę.
+- `limitTransfer` — `null` bez zatrzymanych kroków, inaczej `{available, provider, label, text, executor, cost,
+  reason}`. Dostępne (`available: true`), gdy inny dostawca ma limit powyżej progu i wykonawcę w katalogu
+  (preferowany: wykonawca z ustawień przekazania, potem ta sama klasa co zatrzymany krok). `cost` to koszt
+  przeniesienia: „2 zatrzymane kroki i 17 plików WIP do przekazania; po przeniesieniu Codex ma jeszcze 91%
+  limitu.” — liczby kroków i plików WIP oraz pozostały limit docelowego dostawcy, bez przeliczeń w walucie.
+  Gdy nie ma dostawcy z wolnym limitem: `available: false` i jedno zdanie w `reason`.
+
+„Przenieś na Codex” w pełnej karcie wysyła istniejące `ResolveCardStep` (`choice: transfer`, `step`, `executor`)
+po jednym razie na zatrzymany krok; koszt jest widoczny nad przyciskiem przed kliknięciem.
 
 ## Docker
 
@@ -1535,6 +1849,11 @@ Jedno miejsce w usłudze, przez które Tide rozmawia z serwerem modeli lokalnych
 | `SetAgentProgram(s program)` | `→ s` | program agenta na modelu lokalnym: `codex` albo `claude` (`agentProgram` w `models.json`) → `{ok, error}` |
 | `SetSemanticSearch(s state)` | `→ s` | wyszukiwanie po znaczeniu w KRunnerze: `on` albo `off` (`semanticSearch` w `models.json`; wyłączone — indeks usunięty) → `{ok, error}` |
 | `SetReportSummary(s mode)` | `→ s` | `summary` w `report.json` (`claude`, `local`, `rules`), działa od razu w usłudze → `{ok, error}` |
+| `SetExecutor(s json)` | `→ s` | wykonawca w katalogu `{name, program, model, provider, endpoint?, classes, effort?, oldName?}` → `{ok, error}` (katalog wykonawców niżej) |
+| `RemoveExecutor(s name)` | `→ s` | usunięcie wykonawcy → `{ok, error}` |
+| `SetProvider(s json)` | `→ s` | inny dostawca `{name, label?, url, api, token?, clearToken?}`, `api` to `openai` albo `anthropic`; token do `tokens/providers/<nazwa>` (0600), nigdy w odpowiedzi → `{ok, error}` |
+| `RemoveProvider(s name)` | `→ s` | usunięcie dostawcy i jego pliku tokenu; odmowa, gdy ma wykonawców → `{ok, error}` |
+| `ResolveExecutor(s json)` | `→ s` | klasa na wykonawcę `{provider, class[, author]}` → `{ok, error, executor, provider, class, local, suggested, candidates}`; z `author` — recenzent |
 | `TestEndpoint(s json)` | `→ s` | próba połączenia bez zapisu: `{name}` albo `{url, kind, token?}` → `{ok, error, version, models}`; odpowiedź po odczycie (do 2 × 3 s), pętla usługi nie czeka |
 | `PullModel(s json)` | `→ s` | pobieranie modelu na punkt Ollamy `{endpoint, model}` → od razu `{ok, error, key}`; postęp w `Status().pulls[key]` |
 | `Changed` | sygnał bez argumentów | stan serwerów, modeli, ustawień, pobierania albo kolejki się zmienił — pobierz `Status()` ponownie; przychodzi też po każdym udanym zapisie (z powodu postępu pobierania i kolejki razem najwyżej raz na sekundę) |
@@ -1634,6 +1953,8 @@ Jedno miejsce w usłudze, przez które Tide rozmawia z serwerem modeli lokalnych
 - **`SetReportSummary`** zapisuje `summary` w `$XDG_CONFIG_HOME/tide/report.json` (pozostałe klucze i prawa pliku zostają; bez pliku — nowy z samym `summary`) i od razu przełącza raport oraz opisy kart w działającej usłudze, bez restartu. Wyjątek: usługa uruchomiona z `--report-summary` — wtedy zmienia się tylko plik, a `report.pinned` jest `true`. Nieznany tryb — odmowa z komunikatem jak przy odczycie („raport: summary musi być jednym z claude, local, rules, jest 'Local'”).
 - **`TestEndpoint`** — jeden odczyt bez zapisu: Ollama `GET /api/version` i `/api/tags`, serwer `openai` — `GET /v1/models`, 3 s na zapytanie. `{name}` sprawdza zapisany punkt; `{name, url?, kind?, token?}` — zapisany punkt z podmienionymi polami (edycja przed zapisem; bez nowego tokenu idzie zapisany); `{url, kind?, token?}` — nowy punkt. Token podany tutaj jest tylko w pamięci tej próby. Najwyżej 4 próby naraz — kolejna dostaje od razu „za dużo prób połączenia naraz — spróbuj za chwilę”. Odpowiedź D-Bus przychodzi po odczycie (osobna pula, pętla usługi nie czeka); wynik `{ok, error, version, models}` — `models` to liczba modeli na serwerze, `version` `null` dla `openai`, przy błędzie `error` to komunikat `ModelError`, a `version` i `models` `null`.
 - **`PullModel`** — tylko punkt `ollama` (serwer zgodny z OpenAI pobiera modele sam), nazwa modelu z liter, cyfr i `._:/@+-`. Od razu `{ok, error, key}` (`key` = `"<punkt>/<model>"`), samo pobieranie (`POST /api/pull` ze `stream: true`) idzie w osobnym wątku. Jedno pobieranie naraz na punkt („na serwerze „local” trwa już pobieranie qwen3:8b — poczekaj, aż się skończy”). Postęp w `Status().pulls`, `Changed` najwyżej raz na sekundę (koniec — od razu). Bez terminu całości (duży model to nawet godzina), za to z limitem ciszy 300 s i jednym terminem 10 s na połączenie i nagłówki odpowiedzi; zamknięcie usługi przerywa pobieranie od razu (`models.Cancel`). Po sukcesie odczyt stanu (nowy model na liście). `DeleteModel` nie ma.
+
+**Katalog wykonawców (PT-60).** Wykonawca to program (`claude` albo `codex`) z modelem i punktem pod jedną nazwą; katalog żyje w `models.json` (klucze `executors` — lista `{name, program, model, provider, endpoint, classes, effort}` — `effort` to opcjonalny wysiłek rozumowania Codexa (`low`, `medium`, `high`, `xhigh`; dla Claude pusty) — i `providers` — `{label, url, api, tokenFile}`), zgodnie wstecz: bez `executors` działa katalog domyślny (Haiku, Sonnet, Opus, Codex lekki / standard / mocny, Codex Astra bez klas, Lokalny), a pierwszy zapis z okna zapisuje cały katalog. Dostawca to `anthropic`, `openai`, `local` albo inny z `providers`; API Anthropic obsługuje tylko program `claude`, API OpenAI tylko `codex`, lokalny oba. Wykonawca lokalny z pustym `model`, `program` i `endpoint` idzie za rolą `agent` i `agentProgram`. Token innego dostawcy leży w `tokens/providers/<nazwa>` (0600, osobny podkatalog, więc nie zderza się z tokenem punktu; nazwa punktu `providers` jest zarezerwowana); w `models.json` jest tylko ścieżka, w `Status()` tylko `auth`, nigdy w odpowiedziach D-Bus, dziennikach ani poleceniach agenta (decyzja 70). `Status()` ma dodatkowo `executors` (lista z `where` = `local`/`cloud`, `available` dla lokalnych, `error`), `providers` i `catalog` (`stored`, `warnings`). Moduł `models/executors.py` (bez Qt i sieci): `resolve(ctx, provider, class)` zamienia preferowanego dostawcę (`anthropic`, `openai`, `local` — tylko lokalnie, `mixed` albo nazwę innego dostawcy) i klasę (`lekki`, `standard`, `mocny`, `lokalny`) na wykonawcę według tabeli ze specyfikacji; w trybie mieszanym wynik to podpowiedź (`suggested`) z listą `candidates` z całego katalogu. `reviewer(ctx, provider, class, author)` daje recenzenta innego modelu niż autor (ten sam model z innym wysiłkiem to ten sam model), w trybie mieszanym u innego dostawcy. Praca lokalna nigdy nie przechodzi do chmury: klasa `lokalny`, „tylko lokalnie” i autor lokalny dają wykonawcę lokalnego, a gdy jego serwer nie odpowiada albo nie ma na nim modelu, wynik to `ok: false, local: true` z komunikatem „… Praca lokalna nie przejdzie do chmury.” — bez zastępstwa. `StartCard` rozwiązuje wykonawcę z katalogu przed zapisem dziennika, a okno zlecenia filtruje listę „Od razu” według wybranego dostawcy. `RenderLaunch` przekazuje preferencję planującemu. Zamiana klasy na wykonawcę i dobór recenzenta pozostają dostępnymi funkcjami katalogu oraz metodą `ResolveExecutor`.
 
 **Stan.** Co 15 s (`--models-poll`) w wątku roboczym, z limitem 3 s na całe zapytanie, więc serwer, który wisi, sączy bajty albo nie istnieje, nie blokuje D-Bus ani kolejnych odczytów. Przeoczony błąd w jednym punkcie daje ten punkt `online: false` („błąd odczytu stanu”), pozostałe odczytują się normalnie. Dla Ollamy `GET /api/version`, `/api/tags` i `/api/ps` (żadne nie ładuje modelu ani nie przedłuża jego trzymania w pamięci), dla `openai` — `GET /v1/models`. Punkt, który nie odpowiada na pierwsze zapytanie, nie dostaje kolejnych. JSON nie ma czasu odczytu, więc `Changed` przychodzi tylko przy prawdziwej zmianie (serwer wstał albo padł, model załadowany albo zwolniony, nowy model, zmiana ustawień). Do dziennika usługi trafiają tylko zmiany: „Modele lokalne: local: odpowiada (wersja 0.40.11)”, powód niedostępności, błąd i ostrzeżenia z `models.json`.
 
@@ -1873,6 +2194,8 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_board_core.py` — tablica bez Qt na tymczasowych repozytoriach z własną konfiguracją gita: frontmatter (nieznane klucze, komentarze i treść po zapisie, cudzysłowy, nowe linie), założenie przy pierwszym zapisie (znacznik, tagi, szablony, brak remote, autor z konfiguracji i „Tide” bez niej, cudzy katalog nietknięty), dokładny format pliku karty, ID (max + 1, bez ponownego użycia, zepsuty plik zajmuje numer), kolejność i przenoszenie z komunikatami commitów, odmowy kolumn wyliczanych, walidacja pól i ID (także `../`), projekty zakładane przy karcie z domyślnym `ai-docs`, tagi (dziedziczenie, kolory z palety, zmiana nazwy w kartach i projektach), szablony trybów (pola, nadpisanie projektu, nieznane klamry), commit zmian z zewnątrz osobno od naszych, złe pliki w `errors`, pomijanie repozytorium tablicy w skanerze po znaczniku,
 - `daemon/tests/test_board_robustness.py` — trudne przypadki: nieudany commit (karta zostaje, `commitError`, bez duplikatu, zaległy commit z własnym komunikatem), osierocona blokada indeksu (git zabity po czasie, stara blokada, blokada żywego gita na atrapie `/proc`), revert z konfliktem (bez commita „sync”, `git-busy`, wpisy w `errors`, znaczniki konfliktu jako błąd pliku), numery kart po revercie (licznik poza historią; historia gita tylko raz, gdy licznika brak, nigdy w migawce), znaczniki konfliktu w opisie jako zwykły tekst, zaległy commit usuniętego pliku i trwały błąd bez blokowania kolejki, błąd bez pliku, katalogu i commita (pusty katalog i istniejąca tablica), dowiązania poza tablicę, FIFO i `/dev/zero`, listy YAML i pliki z Windows, kolejność środkiem i przenumerowanie bez miejsca, brak hooków (także post-commit), projekt po nazwie bez `foo-2`, domyślny tryb `full`, zmiana nazwy tagu bez pliku, katalog dokumentów z `RenderFlow`,
 - `daemon/tests/test_board_dbus.py` — `BoardMonitor` w procesie (zmiana z zewnątrz → commit i `Changed`, nasz zapis bez drugiego commita, błędy jako JSON) i `/Board` na prywatnej magistrali: introspekcja, `Snapshot`, `CreateCard` z repozytorium, `UpsertProject`, `UpsertTag`, `UpdateCard`, `MoveCard`, `RenderFlow`, sygnał `Changed`, historia commitów, edycja pliku z zewnątrz, błędy `{ok: false, error, message}` z kodami i bez commita, `--no-board`, `--print-board` bez zapisu. Usługi w testach dostają tymczasowy `TIDE_BOARD_DIR` (`privatebus.py`), więc nigdy nie dotykają prawdziwej tablicy,
+- `daemon/tests/test_cardflow_dbus.py` — przepływ karty „Od razu” (PT-58) przez D-Bus na prywatnej magistrali z atrapami `claude -p`, `systemd-run` i `systemctl` (`tests/flowfakes.py`): StartCard → dziennik, gałęzie, kolumna W toku → Do sprawdzenia, brak pliku wyniku, pytanie, strażnik kroku, restart usługi w trakcie kroku, Backlog i Gotowe, dziennik usunięty z zewnątrz, sesja kroku poza /Agents i kafelkiem Praca, worktree kroku zajęty w /Worktrees; katalog testu poza `/tmp/claude-<uid>` (`TIDE_TEST_TMPDIR`, inaczej `build/test-tmp`),
+- `daemon/tests/test_cardflow.py` — ten sam przebieg w procesie (`BoardMonitor` + `CardFlowMonitor`, prawdziwy skaner dzienników dla listy agentów), także tam, gdzie prywatna magistrala nie startuje; dodatkowo scalenie zaczęte przed restartem kończy się raz, odmowy bez śladu (wykonawca, wejście, brak prefiksu) i karta bez dziennika bez zdarzeń,
 - `daemon/tests/test_board_launch.py` — uruchamianie z karty po stronie tablicy: `RenderLaunch` z prawdziwymi szablonami (pełny, lekki, spec; dokumenty w tablicy i w repozytorium; narzędzie, gałąź i test ręczny z okna; błędy), migracja szablonów (dawny zaczyn bajt w bajt z `fixtures/flows-pt1/` podmieniony, zmieniony przez użytkownika i nadpisanie projektu zostają, zajęte repozytorium), pola uruchomienia karty z walidacją, znacznik „specyfikacja gotowa” (szkic, inny tryb, inna karta, specyfikacja w repozytorium, klucz `card`), `BoardMonitor` (migracja przy starcie, znacznik przy synchronizacji, `ShowWindow("launch:K-12")`, `RenderLaunch` jako JSON),
 - `daemon/tests/test_board_multiproject.py` — PT-28 na tymczasowych repozytoriach (toolssuite z worktree karty, mobileapp, legacyinfra) i syntetycznych dziennikach: katalog pracy sesji w tablicy (`board/place.py`: katalog startu, `docs/<slug>/`, `docs/_inbox`), `/Agents` (Claude Code przed i po `cd` do katalogu planów tablicy, Claude Code bez wpisu z katalogiem startu, Codex z `session_meta`), KRunner, raport poranny i koordynator w tablicy (repozytorium, gałąź i plan karty), reguła „uruchomienie z karty” (okno czasu, narzędzie, katalog bez worktree, `launchKey`, najbliższy start, sesje innych kart, przypięta sesja po zmianie cwd/projektu/gałęzi, zakończona przypięta ustępuje nowej), utrwalanie (`sticky`: uruchomienie, jednoznaczna gałąź, dwa dopasowania — nie), `BoardMonitor` z odtworzeniem K-1 (commit „K-1: link session …”, karta w W toku po `cd`, usługa widząca sesję dopiero po `cd`, ręczny `session` bez nadpisania i commita), pole `projects` (zapis, projekt z repozytorium, migawka, walidacja, nieznany slug w pliku), `RenderLaunch` (zdanie o ścieżkach bezwzględnych, lista repozytoriów i zasady, tryb spec, brakujące repozytorium, własny szablon bez `{projects}`, migracja szablonów `tide-flow: 2`), `/Tasks` `addDirs` z repozytoriami projektów (oba narzędzia, dowiązanie, odmowy) i stan karty po gałęzi we wszystkich repozytoriach,
 - `daemon/tests/test_youtrack_sync.py` — synchronizacja z YouTrackiem bez Qt (PT-7) na atrapie REST API (`fake_youtrack.py`: GET i POST zgłoszenia z kształtem prawdziwego pola State, wyszukiwanie, dziennik wywołań): zapis przy każdym przejściu karty (kształt POST), bez zapisu i bez sieci bez przejścia, odliczanie 5 s, Archiwum i projekt bez synchronizacji, wyłącznik globalny, przyjęcie stanu przy pierwszym spotkaniu (zmiana po połączeniu, rozwiązane, `open`), plik stanu 0600 przez restart, konflikt (bez nadpisania, notka, `errors`, bez odpytywania w kółko, „weź z YouTracka”, „nadpisz z Tide”, samo wygaszenie), Reopened zamiast Open i brak cofnięcia po zniknięciu pracy, pierwszeństwo ticketu i ręcznego Gotowe bez ping-ponga, parasol, stan z YouTracka i plan lokalny pominięte, Verified z karty koordynatora, Won't fix, najświeższy koordynator, kolejka bez sieci z ponowieniem i przez restart, 503 i odmowa stanu, token nigdy w dzienniku, pliku, migawce i adresie, mapa stanów z ustawień i per projekt, klucze zgłoszeń, lista importu (przypisane, zgłoszone bez przypisania, rozwiązane i cudze poza listą, karta już jest, „nowe” przez restart, tytuł i opis karty),
@@ -1890,3 +2213,73 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
 Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawierają prawdziwych rozmów.
+
+
+### Review i poprawianie propozycji planu (PT-80, PT-63)
+
+Po `plan.proposed` plan czeka na krok `plan-review` u innego wykonawcy i modelu niż planujący.
+Recenzent dostaje pełną zachowaną specyfikację, opis karty i kartki oraz kryteria pionowości,
+rozmiaru, mierzalności kryteriów, blokerów i przydziałów. Ocenia też treść części „Dla recenzenta”.
+Zapisuje `out/plan-review.json` z `verdict` (`APPROVE` albo `REQUEST_CHANGES`) i `findings`:
+
+```json
+{"verdict": "REQUEST_CHANGES",
+ "findings": [{"severity": "major", "text": "#7 i #8 zmieniają to samo okno w jednej fali.", "tickets": ["#7", "#8"]}]}
+```
+
+`severity` ∈ `blocker` (plan nie może ruszyć bez poprawy), `major` (ważna zmiana przed startem), `nit`
+(drobiazg); `tickets` to numery ticketów z planu, których uwaga dotyczy (może być pusta). Walidator
+(`cardflow/findings.py`) przyjmuje też stary format — jeden napis w `findings` (karty w toku): staje się jedną
+uwagą bez wagi (`severity: ""`, bez ticketów). Format błędny (nieznana waga, uwaga bez tekstu, `tickets` nie
+będące listą napisów) kończy krok błędem `bad-plan-review` z powodem; review nie zostaje zapisane.
+`plan.reviewed` przechowuje listę uwag, a stan karty daje `flow.plan.review{verdict, reviewer, findings[]}`
+(`verdict` pusty, gdy go brak lub jest nieznany).
+
+Uwagi uruchamiają jedną rundę `plan-revise`; bez człowieka w pętli poprawka dostaje to, co okno zaznacza
+domyślnie (`blocker` i `major`, bez `nit`; gdy są same drobne — wszystkie). Po poprawce plan jest pokazany
+z wynikiem review, bez kolejnego review w pętli. `ApproveCardPlan` przed końcem review zwraca `review-pending`.
+
+Okno decyzji (`plan-approval`) pokazuje werdykt i `findings[]` (waga, tekst, tickety, `selected`).
+Polecona akcja zależy od werdyktu: brak uwag → „Zatwierdź plan”; blocker albo `REQUEST_CHANGES` → „Odeślij
+uwagi do poprawy”; nieznany werdykt → żadna nie jest polecona. Zatwierdzenie mimo uwag działa zawsze, a jego
+skutek jest opisany („Mimo N blokujących uwag … uwagi nie zostaną poprawione”). `EditCardPlan` z `action: return`
+przyjmuje `findings` (zaznaczone uwagi) i/lub `feedback` (własny tekst); do planującego trafia tylko to.
+
+`EditCardPlan` zapisuje zmiany przydziału i treści kartki jako `plan.ticket-edited`.
+Nie przyjmuje zmian struktury planu tą drogą. Ticket z rozpoczętą gałęzią lub krokiem jest chroniony
+przed edycją również po restarcie. Taka zmiana zwraca `ticket-started`.
+Ponowienie identycznej edycji nie dopisuje drugiego zdarzenia.
+
+`action: return` zapisuje `plan.returned` z uwagami i bazą porównania. Krok `plan-amend` przygotowuje
+nową propozycję; usługa oblicza dodane, usunięte i zmienione tickety oraz pola zmian.
+`plan.revision-ready` przechowuje różnicę; panel pokazuje ją przed zatwierdzeniem. Nowa propozycja
+przechodzi review. `ApproveCardPlan` zatwierdza różnicę (`plan.revision-approved`), zachowuje
+istniejące ID i rezerwuje numery tylko dla dodanych ticketów. Usługa ponownie sprawdza ochronę
+rozpoczętych ticketów przy akceptacji. Trwające kroki nie są zatrzymywane.
+
+`derived.flow.plan` zawiera `review`, `revision`, `plannerStep` oraz `body` i `editable` dla wierszy.
+Stan `reviewing` ukrywa propozycję w panelu do zakończenia review i ewentualnej jednej poprawy.
+„Wejdź w planowanie” wykorzystuje istniejącą sesję planującego i wspólny mechanizm Konsoli.
+
+Błędna poprawka planu daje `plan.revision-failed`; panel udostępnia ponowne odesłanie z uwagami
+albo `EditCardPlan` z `action: discard-revision`. Odrzucenie zapisuje `plan.revision-discarded`
+i zachowuje aktywny plan. Pytanie, odmowa albo drugi błąd kroku poprawy/review pozostaje dostępny
+przez `ResolveCardStep`, także gdy w innym worktree pracuje ticket. Oczekująca różnica ma własne
+proponowane fale i utrzymuje kartę w „Czeka na mnie” również po zakończeniu starego planu.
+
+### Konflikty i domknięcie karty (PT-70)
+
+Konflikt `merge-tree` uruchamia krok `conflict` w worktree karty. Agent scala zatwierdzony commit
+ticketu i rozwiązuje pliki; usługa przyjmuje wynik tylko wtedy, gdy dokładny commit ticketu i wcześniejszy
+commit karty są przodkami czystej gałęzi karty. Pytanie albo błąd kroku trafia do panelu; nieudanej próby usługa nie
+zgaduje ani nie scala ponownie sama. Worktree z lokalnymi zmianami nie jest usuwany.
+
+Po scaleniu albo odrzuceniu wszystkich ticketów i sprzątnięciu worktree scalonych ticketów krok
+`close` zapisuje `summary.md`. Przy `check: manual` wymaga sekcji „Co przetestować ręcznie i jak”;
+przy `check: auto` pomija tę listę. Zdarzenie `card.closed` pokazuje podsumowanie w „Do sprawdzenia”.
+`check: auto` nie scala do gałęzi głównej. Panel daje jawne „Diff gałęzi”, „Do poprawy…” oraz
+„Scal do gałęzi głównej”. Odesłanie z uwagami uruchamia poprawę planu na tej samej gałęzi karty;
+dla wejścia „Od razu” usługa tworzy bazę jednoticketowego planu dopiero przy tym żądaniu.
+Scalenie do głównej działa w piaskownicy gita, sprawdza czystość checkoutu i zapisuje
+`card.main-merged`, a następnie przenosi kartę do Gotowych. Wcześniejsze kroki nie przesuwają
+gałęzi głównej.

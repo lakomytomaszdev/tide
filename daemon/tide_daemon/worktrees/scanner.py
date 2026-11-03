@@ -352,20 +352,22 @@ class WorktreeScanner:
 
     # --- wynik -----------------------------------------------------------------------------
 
-    def snapshot(self, cwds: list[str] = (), now: float | None = None, live=()) -> list[dict]:
+    def snapshot(self, cwds: list[str] = (), now: float | None = None, live=(), card_paths=()) -> list[dict]:
         """Lista dla D-Bus z bieżących danych — tania, bez wołania gita. live: żywe sesje
         (live_sessions) — mają pierwszeństwo przy powiązaniu worktree z sesją."""
         with self._lock:
             items = list(self.items)
         agents = _agents_by_worktree(items, cwds)
+        cards = _agents_by_worktree(items, card_paths)
         linked = (self.sessions.link([(w.path, w.real) for w in items], live)
                   if self.sessions is not None else {})
         now = self.clock() if now is None else now
-        out = [self._describe(w, w.path in agents, linked.get(w.path), now) for w in items]
+        out = [self._describe(w, w.path in agents, linked.get(w.path), now, w.path in cards) for w in items]
         out.sort(key=lambda d: (d["repo"].lower(), d["repoPath"], not d["isMain"], -d["lastChangeTs"]))
         return out
 
-    def _describe(self, wt: Worktree, has_agent: bool, session=None, now: float = 0.0) -> dict:
+    def _describe(self, wt: Worktree, has_agent: bool, session=None, now: float = 0.0,
+                  has_card: bool = False) -> dict:
         blocker = wt.blocker(has_agent)
         force_blocker = wt.force_blocker(has_agent)
         tag, title = humanize_branch(wt.branch)
@@ -383,6 +385,7 @@ class WorktreeScanner:
             "head": wt.head,
             "isMain": wt.is_main,
             "hasAgent": has_agent,
+            "hasCard": has_card,
             "dirty": wt.dirty,
             "mainBranch": wt.main_branch,
             "merged": wt.merged,

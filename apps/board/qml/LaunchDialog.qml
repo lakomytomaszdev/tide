@@ -1,9 +1,9 @@
 // Okno „Co ma zrobić agent?” (mock zatwierdzony 27.10.2026) — modalnie nad tablicą, po przeniesieniu
 // karty z Backlogu do Do zrobienia albo z „Uruchom agenta…” na karcie. Karta (ID, ◆ projekt, tagi),
-// zadanie z opisu karty (zmiany zapiszą się w karcie), narzędzie, tryb pracy z paskiem kroków,
+// zadanie z opisu karty (zmiany zapiszą się w karcie), narzędzie, wejście („Jak zacząć?”: Planowanie albo Tylko specyfikacja), tryb Planowania (Pełny, Lekki) z paskiem kroków,
 // miejsce dokumentów AI z linkiem do ustawień projektu, „Dodatkowe projekty” (PT-28: chipy i wybór
-// z projektów tablicy oraz repozytoriów — agent dostaje je przez --add-dir), „Nowy worktree” z gałęzią (w trybie spec
-// wyłączony), „Test ręczny po zakończeniu”, zdanie „co się stanie” i przyciski Anuluj, Tylko przenieś,
+// z projektów tablicy oraz repozytoriów — agent dostaje je przez --add-dir), „Nowy worktree” z gałęzią (przy wejściu Tylko
+// specyfikacja wyłączony), „Test ręczny po zakończeniu”, zdanie „co się stanie” i przyciski Anuluj, Tylko przenieś,
 // Uruchom agenta (Ctrl+Enter). Karta bez projektu z repozytorium — wyjaśnienie i wybór projektu.
 // To, co ma okno „Nowe zadanie” (PT-43): zrzuty ekranu pod zadaniem (Tide.ScreenshotStrip z widgets/lib —
 // miniatury, „Zrób zrzut”, przeciąganie plików na okno, Ctrl+V z obrazem w schowku) i model obok narzędzia
@@ -31,7 +31,9 @@ Rectangle {
     property string busyText: "Uruchamiam…"
     property var tagTone: null
     // Wybór w oknie.
-    property string mode: "full"
+    property string entry: "planning"      // wejście („Jak zacząć?”): planning | plan | spec | now
+    property string planPath: ""
+    property string mode: "full"           // tryb Planowania: full | light (przy innym wejściu zapamiętany)
     property string tool: "claude"
     property string branch: ""
     property bool branchEdited: false
@@ -45,6 +47,8 @@ Rectangle {
     property var images: []
     property bool canCapture: false
     property var modelsStatus: null        // Status() z /Models; {pending: true} — czekam; null — usługa nie podaje
+    property var limitsStatus: null        // Forecast() z /Limits; ostrzeżenie przy planowaniu w Konsoli
+    property int limitThresholdPercent: 10
     property var taskDefaults: ({})        // /Tasks Defaults: tools, model (zapamiętany), imagesDir
     property bool modelTouched: false      // użytkownik wybrał model w tym oknie — Defaults() już go nie zmienia
     // Ctrl+V: funkcja() → true, gdy schowek miał obraz (albo pliki obrazów) i trafił do zrzutów.
@@ -52,20 +56,39 @@ Rectangle {
     readonly property var localOption: AgentModel.localOption(modelsStatus)
     readonly property var localLine: AgentModel.localLine(localOption)
     readonly property string modelNote: AgentModel.modelNote(localOption, model)
-    // Program, który ruszy: przy „Lokalny” z Tide → Modele (agentProgram), w chmurze — przełącznik narzędzia.
-    readonly property string agentTool: AgentModel.agentTool(model, tool, localOption)
+    // Wejście przepływu karty („Od razu”, PT-58): krok w tle z wykonawcą z katalogu zamiast modelu i narzędzia.
+    readonly property bool flowEntry: Logic.isFlowEntry(entry, mode)
+    property string executor: ""
+    property string preferredProvider: "anthropic"
+    readonly property var providerOptions: Logic.preferredProviders(modelsStatus)
+    readonly property var executorOptions: entry === "planning" ? Logic.planningExecutors(modelsStatus, preferredProvider)
+                                                                  : Logic.launchExecutors(modelsStatus, preferredProvider)
+    readonly property var selectedExecutor: Logic.launchExecutor(modelsStatus, executor)
+    property string reviewer: ""
+    readonly property var reviewerOptions: Logic.reviewExecutors(modelsStatus, executor, preferredProvider)
+    // Program, który ruszy: przy „Lokalny” z Tide → Modele (agentProgram), w chmurze — przełącznik narzędzia;
+    // przy „Od razu” — program wybranego wykonawcy z katalogu.
+    readonly property string agentTool: flowEntry ? (selectedExecutor ? selectedExecutor.program : "")
+                                                  : AgentModel.agentTool(model, tool, localOption)
     readonly property var tools: taskDefaults && taskDefaults.tools ? taskDefaults.tools : ({})
-    readonly property string modelBlocker: tools[agentTool] === false ? "Nie znaleziono programu " + Logic.launchToolName(agentTool) + " — zainstaluj go albo wybierz inny."
-        : model === "local" && !localOption.enabled
+    readonly property string modelBlocker: flowEntry && executor === "" ? "Brak wykonawcy u wybranego dostawcy (Tide → Modele)."
+        : flowEntry && selectedExecutor && selectedExecutor.available === false
+          ? (selectedExecutor.error || "Wykonawca lokalny jest niedostępny.")
+        : tools[agentTool] === false ? "Nie znaleziono programu " + Logic.launchToolName(agentTool) + " — zainstaluj go albo wybierz inny."
+        : entry === "now" && reviewer === "" ? "Brak recenzenta z innym modelem (Tide → Modele)."
+        : !flowEntry && model === "local" && !localOption.enabled
           ? (localOption.pending ? localOption.reason : "Model lokalny niedostępny: " + localOption.reason) : ""
     readonly property var card: cardId ? ((snapshot && snapshot.cards) || []).find(c => c.id === cardId) || null : null
+    readonly property var planCandidates: Logic.planCandidates(card)
     readonly property var project: card && card.project ? Logic.projectBySlug(snapshot, card.project) : null
     readonly property var workProject: Logic.launchProject(snapshot, card)
     readonly property string blocker: Logic.launchBlocker(snapshot, card)
     readonly property bool canStart: blocker === "" && modelBlocker === "" && !busy && taskText.trim() !== ""
+                                      && (entry !== "plan" || planPath !== "")
     readonly property string taskText: taskEdit.text
     readonly property var launchState: ({
-        cardId: cardId, mode: mode, tool: agentTool, branch: branch, newWorktree: newWorktree,
+        cardId: cardId, entry: entry, mode: mode, planPath: planPath, tool: agentTool, branch: branch, newWorktree: newWorktree,
+        executor: executor, reviewer: reviewer, preferredProvider: preferredProvider,
         model: model === "local" ? "local" : "cloud", localModel: model === "local" ? localOption.model : "",
         images: images,
         check: manualCheck ? "manual" : "auto", aiDocs: workProject ? workProject.aiDocs : "",
@@ -74,6 +97,90 @@ Rectangle {
         extras: extras, projects: extras.map(p => p.key), projectsChanged: Logic.extrasChanged(card, extras)
     })
     readonly property alias taskEdit: taskEdit
+
+    // Karta wyboru (wejście albo tryb): radio z tytułem, opisem i uwagą; strzałki przesuwają wybór.
+    component ChoiceCard: Rectangle {
+        id: choiceCard
+        property string choiceId: ""
+        property var choices: []
+        property string selected: ""
+        property string title: ""
+        property string desc: ""
+        property string meta: ""
+        readonly property bool on: choiceId === selected
+        signal picked(string id)
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        Layout.fillHeight: true
+        implicitHeight: choiceColumn.implicitHeight + 28
+        radius: Tide.Tokens.radiusTile
+        color: on ? Tide.Theme.alpha(Tide.Tokens.accent, 0.09)
+             : choiceArea.containsMouse ? Qt.lighter(Tide.Tokens.backgroundCard, 1.06) : Tide.Tokens.backgroundCard
+        border.width: 1
+        border.color: on || activeFocus ? Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
+                                        : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.06)
+        activeFocusOnTab: true
+        Accessible.role: Accessible.RadioButton
+        Accessible.name: title
+        Accessible.checked: on
+        Accessible.onPressAction: picked(choiceId)
+        Keys.onSpacePressed: picked(choiceId)
+        Keys.onLeftPressed: picked(choices[Math.max(0, choices.indexOf(selected) - 1)])
+        Keys.onRightPressed: picked(choices[Math.min(choices.length - 1, choices.indexOf(selected) + 1)])
+        ColumnLayout {
+            id: choiceColumn
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 14
+            spacing: 8
+            RowLayout {
+                spacing: 8
+                Rectangle {
+                    implicitWidth: 14
+                    implicitHeight: 14
+                    radius: 7
+                    color: "transparent"
+                    border.width: choiceCard.on ? 4 : 1.5
+                    border.color: choiceCard.on ? Tide.Tokens.accent : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.35)
+                }
+                Text {
+                    text: choiceCard.title
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 15
+                    font.weight: Font.DemiBold
+                }
+            }
+            Text {
+                Layout.fillWidth: true
+                text: choiceCard.desc
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textSecondary
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 13
+                lineHeight: 1.1
+                wrapMode: Text.Wrap
+            }
+            Text {
+                Layout.fillWidth: true
+                text: choiceCard.meta
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 11
+                wrapMode: Text.Wrap
+            }
+        }
+        MouseArea {
+            id: choiceArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: choiceCard.picked(choiceCard.choiceId)
+        }
+    }
 
     signal launchRequested(var choice, string description, bool descriptionChanged)
     signal cancelRequested()
@@ -89,13 +196,23 @@ Rectangle {
         return tagTone ? tagTone(name) : Tide.Tokens.textMuted
     }
 
+    // Domyślne wejście i tryb projektu (dawne `mode: spec` to wejście Tylko specyfikacja).
+    function applyProjectDefaults(p) {
+        const d = Logic.launchDefaults(p)
+        entry = d.entry
+        mode = d.mode
+    }
+
     // Wartości z karty i projektu przy otwarciu (i po wybraniu projektu dla karty bez niego).
     function load() {
         const c = card
         const p = Logic.launchProject(snapshot, c)
         branchEdited = false
         editingBranch = false
-        mode = p ? p.mode || "full" : "full"
+        applyProjectDefaults(p)
+        const exact = planCandidates.find(candidate => candidate.card === cardId)
+        planPath = exact ? exact.path : (c && c.planPath && planCandidates.some(candidate => candidate.path === c.planPath) ? c.planPath : "")
+        if (exact || planPath) entry = "plan"
         // Model jak w oknie „Nowe zadanie”: zapamiętany wybór z ostatniego startu (Defaults().model).
         modelTouched = false
         model = taskDefaults && taskDefaults.model === "local" ? "local" : "cloud"
@@ -115,13 +232,28 @@ Rectangle {
     function reloadProject() {
         const p = Logic.launchProject(snapshot, card)
         if (!p) return
-        mode = p.mode || "full"
+        applyProjectDefaults(p)
+        const exact = planCandidates.find(candidate => candidate.card === cardId)
+        planPath = exact ? exact.path : ""
+        if (exact) entry = "plan"
         tool = p.tool || "claude"
         if (!branchEdited) branch = Logic.launchBranch(card, agentTool)
     }
 
     function pickTool(value) {
         tool = value
+    }
+
+    // Katalog wykonawców przychodzi z Status() (/Models) także po otwarciu okna: wybór zostaje, gdy jest na liście.
+    onExecutorOptionsChanged: {
+        if (!executorOptions.some(o => o.value === executor)) executor = Logic.defaultExecutor(executorOptions)
+    }
+    onReviewerOptionsChanged: {
+        if (!reviewerOptions.some(o => o.value === reviewer)) reviewer = Logic.defaultReviewer(executor, reviewerOptions)
+    }
+    Component.onCompleted: {
+        executor = Logic.defaultExecutor(executorOptions)
+        reviewer = Logic.defaultReviewer(executor, reviewerOptions)
     }
 
     // Odświeżone Defaults() (przy otwarciu okna) przychodzą po load(): zapamiętany model, dopóki nikt go tu nie zmienił.
@@ -404,9 +536,11 @@ Rectangle {
                     }
                 }
 
-                // Model i narzędzie (PT-43: jak w oknie „Nowe zadanie”) — najpierw model, potem program.
+                // Model i narzędzie (PT-43: jak w oknie „Nowe zadanie”) — najpierw model, potem program. Przy „Od razu”
+                // zamiast nich wykonawca (niżej, przy wejściach).
                 RowLayout {
                     Layout.fillWidth: true
+                    visible: !dialog.flowEntry
                     spacing: 10
                     FieldLabel { text: "Model"; color: Tide.Tokens.textSecondary }
                     Segmented {
@@ -488,7 +622,7 @@ Rectangle {
                     objectName: "launchModelNote"
                     Layout.fillWidth: true
                     Layout.topMargin: -8
-                    visible: dialog.modelNote !== "" && dialog.model === "local"
+                    visible: dialog.modelNote !== "" && dialog.model === "local" && !dialog.flowEntry
                     text: dialog.modelNote
                     textFormat: Text.PlainText
                     color: Tide.Tokens.textMuted
@@ -501,7 +635,7 @@ Rectangle {
                 RowLayout {
                     objectName: "launchExtras"
                     Layout.fillWidth: true
-                    visible: dialog.workProject !== null
+                    visible: dialog.workProject !== null && dialog.entry !== "now"   // krok w tle: jeden worktree ticketu
                     spacing: 10
                     FieldLabel { text: "Dodatkowe projekty"; color: Tide.Tokens.textSecondary }
                     Flow {
@@ -592,7 +726,7 @@ Rectangle {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 8
-                        FieldLabel { text: "Tryb pracy"; color: Tide.Tokens.textSecondary }
+                        FieldLabel { text: "Jak zacząć?"; color: Tide.Tokens.textSecondary }
                         Item { Layout.fillWidth: true }
                         RowLayout {
                             objectName: "launchDocsRow"
@@ -636,89 +770,175 @@ Rectangle {
                             }
                         }
                     }
+                    // Wejście: sposób rozpoczęcia zlecenia (Planowanie, Tylko specyfikacja; kolejne dojdą tu same).
                     RowLayout {
+                        objectName: "launchEntries"
                         Layout.fillWidth: true
                         spacing: 10
                         Repeater {
-                            model: Logic.LAUNCH_MODES
-                            Rectangle {
-                                id: modeCard
+                            model: Logic.LAUNCH_ENTRIES
+                            ChoiceCard {
                                 required property var modelData
-                                readonly property bool on: modelData.id === dialog.mode
-                                objectName: "launchMode-" + modelData.id
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.fillHeight: true
-                                implicitHeight: modeColumn.implicitHeight + 28
-                                radius: Tide.Tokens.radiusTile
-                                color: on ? Tide.Theme.alpha(Tide.Tokens.accent, 0.09)
-                                     : modeArea.containsMouse ? Qt.lighter(Tide.Tokens.backgroundCard, 1.06) : Tide.Tokens.backgroundCard
-                                border.width: 1
-                                border.color: on || activeFocus ? Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
-                                                                : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.06)
-                                activeFocusOnTab: true
-                                Accessible.role: Accessible.RadioButton
-                                Accessible.name: modelData.title
-                                Accessible.checked: on
-                                Accessible.onPressAction: dialog.mode = modelData.id
-                                Keys.onSpacePressed: dialog.mode = modelData.id
-                                Keys.onLeftPressed: dialog.mode = Logic.LAUNCH_MODES[Math.max(0, Logic.LAUNCH_MODES.findIndex(m => m.id === dialog.mode) - 1)].id
-                                Keys.onRightPressed: dialog.mode = Logic.LAUNCH_MODES[Math.min(2, Logic.LAUNCH_MODES.findIndex(m => m.id === dialog.mode) + 1)].id
-                                ColumnLayout {
-                                    id: modeColumn
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.top: parent.top
-                                    anchors.margins: 14
-                                    spacing: 8
-                                    RowLayout {
-                                        spacing: 8
-                                        Rectangle {
-                                            implicitWidth: 14
-                                            implicitHeight: 14
-                                            radius: 7
-                                            color: "transparent"
-                                            border.width: modeCard.on ? 4 : 1.5
-                                            border.color: modeCard.on ? Tide.Tokens.accent : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.35)
-                                        }
-                                        Text {
-                                            text: modeCard.modelData.title
-                                            textFormat: Text.PlainText
-                                            color: Tide.Tokens.textPrimary
-                                            font.family: Tide.Theme.uiFamily
-                                            font.pixelSize: 15
-                                            font.weight: Font.DemiBold
-                                        }
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: modeCard.modelData.desc
-                                        textFormat: Text.PlainText
-                                        color: Tide.Tokens.textSecondary
-                                        font.family: Tide.Theme.uiFamily
-                                        font.pixelSize: 13
-                                        lineHeight: 1.1
-                                        wrapMode: Text.Wrap
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: modeCard.modelData.meta
-                                        textFormat: Text.PlainText
-                                        color: Tide.Tokens.textMuted
-                                        font.family: Tide.Theme.uiFamily
-                                        font.pixelSize: 11
-                                        wrapMode: Text.Wrap
-                                    }
-                                }
-                                MouseArea {
-                                    id: modeArea
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: dialog.mode = modeCard.modelData.id
+                                objectName: "launchEntry-" + modelData.id
+                                choiceId: modelData.id
+                                choices: Logic.LAUNCH_ENTRIES.map(e => e.id)
+                                selected: dialog.entry
+                                title: modelData.title
+                                desc: modelData.desc
+                                meta: modelData.meta
+                                onPicked: id => dialog.entry = id
+                            }
+                        }
+                    }
+                    // Tryb (Pełny, Lekki): tylko przy wejściu z wyborem trybu, czyli Planowaniu.
+                    ColumnLayout {
+                        objectName: "launchModes"
+                        Layout.fillWidth: true
+                        spacing: 8
+                        visible: Logic.entryHasModes(dialog.entry)
+                        FieldLabel { text: "Tryb"; color: Tide.Tokens.textSecondary }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+                            Repeater {
+                                model: Logic.LAUNCH_MODES
+                                ChoiceCard {
+                                    required property var modelData
+                                    objectName: "launchMode-" + modelData.id
+                                    choiceId: modelData.id
+                                    choices: Logic.LAUNCH_MODES.map(m => m.id)
+                                    selected: dialog.mode
+                                    title: modelData.title
+                                    desc: modelData.desc
+                                    meta: modelData.meta
+                                    onPicked: id => dialog.mode = id
                                 }
                             }
                         }
+                    }
+                    // Dostawca jest wspólnym wyborem dla planowania i kroku „Od razu”; wykonawcę wybiera się z
+                    // katalogu tego dostawcy. Tryb mieszany pokazuje cały katalog.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: dialog.entry !== "spec"
+                        spacing: 10
+                        FieldLabel { text: "Preferowany dostawca"; color: Tide.Tokens.textSecondary }
+                        Segmented {
+                            objectName: "launchPreferredProvider"
+                            options: dialog.providerOptions
+                            current: dialog.preferredProvider
+                            itemHeight: 30
+                            pixelSize: 12
+                            onPicked: value => dialog.preferredProvider = value
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: dialog.entry === "planning" || dialog.entry === "plan"
+                        spacing: 10
+                        FieldLabel { text: "Planujący"; color: Tide.Tokens.textSecondary }
+                        Segmented {
+                            objectName: "launchPlanner"
+                            options: dialog.executorOptions
+                            current: dialog.executor
+                            itemHeight: 30
+                            pixelSize: 13
+                            onPicked: value => dialog.executor = value
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    ColumnLayout {
+                        objectName: "launchPlanCandidates"
+                        Layout.fillWidth: true
+                        spacing: 4
+                        visible: dialog.entry === "plan"
+                        FieldLabel { text: "Plan do przejęcia"; color: Tide.Tokens.textSecondary }
+                        Text {
+                            Layout.fillWidth: true
+                            visible: dialog.planCandidates.length === 0
+                            text: "Nie znalazłem niedokończonych planów w tym projekcie."
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            wrapMode: Text.Wrap
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            visible: dialog.planCandidates.length > 0 && !dialog.planCandidates.some(p => p.card === dialog.cardId)
+                            text: "Plany bez przypisanej karty są podpowiedzią. Wybierz ten, który chcesz przejąć."
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            wrapMode: Text.Wrap
+                        }
+                        Repeater {
+                            model: dialog.planCandidates
+                            QQC2.RadioButton {
+                                required property var modelData
+                                objectName: "launchPlan-" + String(modelData.path).split("/").pop()
+                                text: modelData.title + " · " + (modelData.card || "bez karty") + " · " + modelData.updated
+                                      + (modelData.needsCompletion ? " · wymaga uzupełnienia" : "")
+                                checked: dialog.planPath === modelData.path
+                                onClicked: dialog.planPath = modelData.path
+                                Accessible.name: text
+                            }
+                        }
+                    }
+                    // Wykonawca kroku „Od razu” z katalogu wybranego dostawcy.
+                    // Wykonawca ticketu i niezależny recenzent z katalogu.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: dialog.entry === "now"
+                        spacing: 10
+                        FieldLabel { text: "Wykonawca"; color: Tide.Tokens.textSecondary }
+                        Segmented {
+                            objectName: "launchExecutor"
+                            options: dialog.executorOptions
+                            current: dialog.executor
+                            itemHeight: 30
+                            pixelSize: 13
+                            onPicked: value => dialog.executor = value
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: dialog.entry === "now"
+                        spacing: 10
+                        FieldLabel { text: "Recenzent"; color: Tide.Tokens.textSecondary }
+                        Segmented {
+                            objectName: "launchReviewer"
+                            options: dialog.reviewerOptions
+                            current: dialog.reviewer
+                            itemHeight: 30
+                            pixelSize: 13
+                            onPicked: value => dialog.reviewer = value
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    Text {
+                        objectName: "launchCodexCommandPolicyNotice"
+                        Layout.fillWidth: true
+                        visible: Boolean(dialog.flowEntry && dialog.selectedExecutor
+                                         && dialog.selectedExecutor.program === "codex")
+                        text: "Codex działa w piaskownicy. Listy poleceń projektu są dla niego wskazówką, bez automatycznej blokady każdego polecenia."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "launchPlanningLimitWarning"
+                        Layout.fillWidth: true
+                        visible: dialog.entry === "planning" && dialog.mode === "full" && text !== ""
+                        text: Logic.planningLimitWarning(dialog.limitsStatus,
+                                                         dialog.selectedExecutor ? dialog.selectedExecutor.provider : "",
+                                                         dialog.limitThresholdPercent)
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.peach
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
                     }
                     Flow {
                         objectName: "launchSteps"
@@ -726,7 +946,7 @@ Rectangle {
                         Layout.topMargin: 4
                         spacing: 6
                         Repeater {
-                            model: Logic.launchMode(dialog.mode).steps
+                            model: Logic.launchSteps(dialog.entry, dialog.mode)
                             Row {
                                 id: stepItem
                                 required property var modelData
@@ -777,7 +997,8 @@ Rectangle {
                     spacing: 10
                     Rectangle {
                         objectName: "launchWorktree"
-                        readonly property bool spec: dialog.mode === "spec"
+                        readonly property bool spec: dialog.entry === "spec"
+                        visible: !dialog.flowEntry   // gałęzie i worktree karty i ticketu zakłada usługa
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         implicitHeight: worktreeColumn.implicitHeight + 28
@@ -796,8 +1017,8 @@ Rectangle {
                                 spacing: 12
                                 Toggle {
                                     objectName: "launchWorktreeToggle"
-                                    enabled: dialog.mode !== "spec"
-                                    checked: dialog.newWorktree && dialog.mode !== "spec"
+                                    enabled: dialog.entry !== "spec"
+                                    checked: dialog.newWorktree && dialog.entry !== "spec"
                                     accessibleName: "Nowy worktree"
                                     onToggled: value => dialog.newWorktree = value
                                 }
@@ -825,7 +1046,7 @@ Rectangle {
                                         objectName: "launchBranch"
                                         anchors.centerIn: parent
                                         width: Math.min(implicitWidth, parent.width - 16)
-                                        text: dialog.mode === "spec" || !dialog.newWorktree ? "bez gałęzi" : dialog.branch
+                                        text: dialog.entry === "spec" || !dialog.newWorktree ? "bez gałęzi" : dialog.branch
                                         textFormat: Text.PlainText
                                         color: Tide.Tokens.lavender
                                         font.family: Tide.Theme.monoFamily
@@ -847,7 +1068,7 @@ Rectangle {
                                 }
                                 Text {
                                     objectName: "launchBranchEdit"
-                                    visible: dialog.mode !== "spec" && dialog.newWorktree
+                                    visible: dialog.entry !== "spec" && dialog.newWorktree
                                     text: dialog.editingBranch ? "✓ gotowe" : "✎ zmień"
                                     textFormat: Text.PlainText
                                     color: branchArea.containsMouse ? Tide.Theme.alpha(Tide.Tokens.accent, 0.8) : Tide.Tokens.accent
@@ -915,9 +1136,19 @@ Rectangle {
                                 }
                             }
                             Text {
+                                objectName: "launchCheckNote"
                                 Layout.fillWidth: true
-                                text: dialog.manualCheck ? "Po review AI agent zostawi listę „Co przetestować ręcznie i jak” i nie scali gałęzi."
-                                                         : "Wystarczy review AI — agent kończy, gdy recenzent zatwierdzi."
+                                text: dialog.entry === "plan"
+                                      ? (dialog.manualCheck
+                                         ? "Po uzupełnieniu i review plan poczeka na zatwierdzenie. Na końcu karta dostanie listę testów ręcznych."
+                                         : "Po uzupełnieniu i review plan poczeka na zatwierdzenie; tickety ruszą na gałęzi karty.")
+                                      : dialog.entry === "now"
+                                      ? (dialog.manualCheck
+                                         ? "Po review u wybranego recenzenta i scaleniu ticketu karta trafi do Do sprawdzenia i poczeka na Twój test ręczny."
+                                         : "Po review u wybranego recenzenta ticket zostanie scalony z gałęzią karty i trafi do Do sprawdzenia.")
+                                      : (dialog.manualCheck
+                                         ? "Po review AI agent zostawi listę „Co przetestować ręcznie i jak” i nie scali gałęzi."
+                                         : "Wystarczy review AI — agent kończy, gdy recenzent zatwierdzi.")
                                 textFormat: Text.PlainText
                                 color: Tide.Tokens.textMuted
                                 font.family: Tide.Theme.uiFamily

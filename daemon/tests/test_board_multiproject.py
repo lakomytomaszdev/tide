@@ -559,7 +559,8 @@ class RenderLaunchTest(unittest.TestCase):
     def test_previous_seed_templates_migrate(self):
         for mode, text in flows.SEED_FLOWS.items():
             self.assertIn("{projects}", text)
-            previous = text.replace("{projects}", "").replace("tide-flow: 3\n", "tide-flow: 2\n")
+            previous = text.replace("{projects}", "").replace("tide-flow: 3\n", "tide-flow: 2\n") \
+                .replace("tide-flow: 4\n", "tide-flow: 2\n").replace("entry: spec", "mode: spec")
             self.assertTrue(flows.outdated(mode, previous), f"{mode}: szablon sprzed PT-28 zostanie podmieniony")
             self.assertFalse(flows.outdated(mode, text))
 

@@ -526,6 +526,7 @@ class FakeSource:
 
         class Source(QObject):
             changed = pyqtSignal()
+            raw_changed = pyqtSignal()  # AgentMonitor.raw_changed: start_card_flow podłącza do niego board.rederive
 
         source = Source()
         setattr(source, attr, [])

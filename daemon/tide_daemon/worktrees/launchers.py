@@ -94,7 +94,9 @@ class Launchers:
         self.agents = {name: shutil.which(name, path=search)
                        or _executable(os.path.join(home, ".local/bin", name)) or name for name in AGENTS}
         # Codex ze snapa i spoza niego osobno — wznowienie wybiera program po katalogu danych sesji.
-        self.codex_bins = codex_binaries(search, home)
+        self.codex_bins = codex_binaries(search, home, desktop_fallback=codex_homes.DESKTOP_CODEX)
+        if self.agents["codex"] == self.codex_bins["snap"] and self.codex_bins["other"]:
+            self.agents["codex"] = self.codex_bins["other"]
         self.window_script = window_script(env)
         self.task_dialog_script = task_dialog_script(env)
         self.sessions_script = sessions_window_script(env)
@@ -228,10 +230,11 @@ class Launchers:
         return True
 
 
-def codex_binaries(search: str, home: str, snap_fallback: str = codex_homes.SNAP_CODEX) -> dict:
+def codex_binaries(search: str, home: str, snap_fallback: str = codex_homes.SNAP_CODEX,
+                   desktop_fallback: str = "") -> dict:
     """Pierwszy `codex` ze snapa (katalog …/snap/bin w PATH, zapasowo snap_fallback — usługa systemd
     może nie mieć /snap/bin w PATH, jak przy kandydatach Ridera) i pierwszy spoza snapa (PATH, potem
-    ~/.local/bin). Bez rozwiązywania dowiązań: /snap/bin/codex wskazuje na /usr/bin/snap, który
+    program aplikacji, potem ~/.local/bin). Bez rozwiązywania dowiązań: /snap/bin/codex wskazuje na /usr/bin/snap, który
     rozpoznaje program po nazwie."""
     out = {"snap": "", "other": ""}
     for folder in (search or "").split(os.pathsep):
@@ -242,7 +245,8 @@ def codex_binaries(search: str, home: str, snap_fallback: str = codex_homes.SNAP
         if path and not out[kind]:
             out[kind] = path
     if not out["other"]:
-        out["other"] = _executable(os.path.join(home, ".local/bin", "codex"))
+        out["other"] = (_executable(desktop_fallback) if desktop_fallback else "") or \
+            _executable(os.path.join(home, ".local/bin", "codex"))
     if not out["snap"] and snap_fallback:
         out["snap"] = _executable(snap_fallback)
     return out

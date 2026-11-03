@@ -3,11 +3,11 @@
 Układ (opis: docs/tide-daemon.md, Tablica):
 
   board.md                 znacznik `tide-board: 1` i licznik `next-card` (ID nie wracają)
-  projects/<slug>.md       name, repo, tags, ai-docs, tool, mode; treść — opis projektu
+  projects/<slug>.md       name, repo, tags, ai-docs, tool, entry, mode; treść — opis projektu
   tags/<slug>.md           name, color (nazwa pastelu z palety); treść — opis tagu
   cards/K-<n>.md           id, title, project, tags, column, order, note, created, updated, moved,
                            youtrack, spec, session, branch, check; treść — opis karty (Markdown)
-  flows/<tryb>.md          szablony poleceń trybów (flows.py), flows/<projekt>/<tryb>.md — nadpisanie
+  flows/<klucz>.md         szablony poleceń (flows.py), flows/<projekt>/<klucz>.md — nadpisanie
   docs/<projekt>/          plany i specyfikacje agentów projektów z `ai-docs: tide`
 
 Repozytorium powstaje przy pierwszym poprawnym zapisie. Każda nasza zmiana to osobny commit
@@ -20,6 +20,7 @@ Wszystkie ścieżki zapisu powstają z ID karty i slugów po walidacji, a dodatk
 że po rozwinięciu dowiązań leżą w katalogu tablicy.
 """
 import os
+import json
 import secrets
 import stat
 import time
@@ -30,12 +31,12 @@ from ..agents.timeutil import parse_ts
 from ..coordination.youtrack import issue_key
 from ..worktrees.git import Git
 from ..worktrees.naming import slug_from_prompt
-from . import flows
-from .frontmatter import Document, FrontmatterError
+from . import flows, commands, assignment
+from .frontmatter import Document, FrontmatterError, dump
 from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
 from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUMNS, DEFAULT_CHECK, DEFAULT_COLUMN,
-                    DEFAULT_MODE, DEFAULT_TOOL, DESCRIPTION_MAX, FIELD_MAX, FILE_MAX, LAUNCH_KEYS, MANUAL_COLUMNS,
+                    DEFAULT_ENTRY, DEFAULT_MODE, DEFAULT_TOOL, DESCRIPTION_MAX, ENTRIES, FIELD_MAX, FILE_MAX, LAUNCH_KEYS, LEGACY_SPEC_MODE, MANUAL_COLUMNS,
                     MODES, MOVED_FROM_KEY, COLUMN_MOVED_KEY, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, PROJECT_SYNC_KEY,
                     PROJECT_YOUTRACK_KEY, PROJECTS_KEY, PROJECTS_MAX, RESERVED_CARD_KEYS, YOUTRACK_PROJECT_RE,
                     SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
@@ -57,6 +58,7 @@ GITIGNORE = f"""# Pliki tymczasowe zapisu Tide i edytorów — nie trafiają do 
 BOARD_MD = f"""---
 {MARKER_KEY}: {FORMAT_VERSION}
 next-card: 1
+assignment-rules: {dump(json.dumps(assignment.DEFAULT_RULES, ensure_ascii=False))}
 ---
 # Tablica Tide
 
@@ -67,13 +69,14 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 - `projects/<projekt>.md` — repozytorium, tagi, narzędzie, tryb i miejsce dokumentów AI,
 - `tags/<tag>.md` — nazwa i kolor tagu,
 - `cards/K-<numer>.md` — karty („rzeczy do zrobienia”), treść to opis,
-- `flows/<tryb>.md` — szablony poleceń trybów full, light i spec,
+- `flows/<klucz>.md` — szablony poleceń: full i light (Planowanie) oraz spec (Tylko specyfikacja),
 - `docs/<projekt>/` — plany i specyfikacje agentów projektów z `ai-docs: tide`.
 """
-CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "note", *RESERVED_CARD_KEYS, "check",
+CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "note", "planPath", *RESERVED_CARD_KEYS, "check",
                *LAUNCH_KEYS)
 CREATE_FIELDS = CARD_FIELDS + ("column",)
-PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "description", "youtrack", "youtrackSync")
+PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack",
+                  "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules")
 TAG_FIELDS = ("name", "newName", "color", "description")
 
 
@@ -159,6 +162,7 @@ class BoardStore:
         projects = sorted(board.projects.values(), key=lambda p: p.name.casefold())
         counts: dict[str, int] = {}
         cards_out = []
+        plan_cache = {}
         for card in sorted(board.cards.values(), key=lambda c: (_column_index(c.column), c.order, c.num)):
             project = board.projects.get(card.project)
             resolved = merge_tags(project.tags if project else [], card.tags)
@@ -173,7 +177,16 @@ class BoardStore:
                                       "extraRepos": [p.repo for p in extra if p.repo]})
                 except Exception as exc:  # stan z koordynatora to dodatek — nie może zepsuć tablicy
                     board.errors.append({"path": card.path, "message": f"{card.id}: stan koordynatora: {exc}"})
-            cards_out.append(_card_json(card, project, resolved, derived, extra))
+            card_data = _card_json(card, project, resolved, derived, extra)
+            if project and project.repo:
+                from .plan_candidates import candidates
+                key = project.repo
+                if key not in plan_cache:
+                    plan_cache[key] = candidates(project.repo, self.root)
+                card_data["planCandidates"] = [p for p in plan_cache[key] if p["card"] in ("", card.id) and p["status"] != "done"]
+            else:
+                card_data["planCandidates"] = []
+            cards_out.append(card_data)
         for name in board.used_tags():
             tags.setdefault(name.casefold(), Tag(name, fallback_color(name, self.colors), slug=slugify(name, "tag"),
                                                  defined=False))
@@ -192,6 +205,8 @@ class BoardStore:
         exists = board.meta is not None
         busy = self.repo.busy() if exists else ""
         git_state = {"busy": busy, "pending": len(self.repo.pending), "error": self.repo.last_error}
+        if exists:
+            board.errors.extend(self._flow_warnings(board))
         if busy:
             board.errors.insert(0, {"path": self.root, "message": self.repo.busy_message(busy)})
         if self.repo.pending:
@@ -199,6 +214,7 @@ class BoardStore:
                                                                   f"commit ({self.repo.last_error})"})
         last = self.repo.last_commit() if exists else None
         return {
+            "assignmentRules": assignment.rules(board),
             "boardDir": self.root,
             "exists": exists,
             "lastCommit": {"hash": last[0], "short": last[0][:7], "ts": last[1],
@@ -209,6 +225,7 @@ class BoardStore:
             "colors": dict(self.colors),
             "tools": list(TOOLS),
             "modes": list(MODES),
+            "entries": list(ENTRIES),
             "tags": [{"name": t.name, "slug": t.slug, "color": t.color, "description": t.description,
                       "defined": t.defined, "cards": counts.get(key, 0)}
                      for key, t in sorted(tags.items(), key=lambda kv: kv[1].name.casefold())],
@@ -217,6 +234,17 @@ class BoardStore:
             "repos": available,
             "errors": board.errors,
         }
+
+    def _flow_warnings(self, board: Board) -> list[dict]:
+        """Ostrzeżenia o szablonach `flows/` zmienionych przez użytkownika, które zostają bez zmian (PT-77)."""
+        out = []
+        rels = [os.path.join("flows", f"{key}.md") for key in flows.FLOW_KEYS]
+        rels += [os.path.join("flows", slug, f"{key}.md") for slug in sorted(board.projects) for key in flows.FLOW_KEYS]
+        for rel in rels:
+            message = flows.legacy_mode_warning(rel, self._read_file(rel, []))
+            if message:
+                out.append({"path": os.path.join(self.root, rel), "message": message})
+        return out
 
     def docs_dir(self, project: Project | None) -> str:
         """Gdzie agenci karty piszą plany i specyfikacje: docs/agents w repozytorium (`ai-docs: repo`)
@@ -234,19 +262,19 @@ class BoardStore:
     def render_launch(self, card_id: str, request: dict | None = None) -> dict:
         """Polecenie trybu dla karty (szablon z flows/ albo wbudowany) i dane uruchomienia.
 
-        request: {mode, tool, branch, check} — wszystko opcjonalne; pusty tryb i narzędzie to domyślne
-        projektu, pusta gałąź — `branch` karty albo propozycja `<narzędzie>/k-12-<opis>`, check —
+        request: {entry, mode, tool, branch, check} — wszystko opcjonalne; puste wejście, tryb i narzędzie to
+        domyślne projektu (wejście: planning albo spec; tryb full albo light dotyczy tylko Planowania; dawne
+        `mode: spec` to wejście spec), pusta gałąź — `branch` karty albo propozycja `<narzędzie>/k-12-<opis>`, check —
         `auto` (domyślnie: koniec po review AI) albo `manual` (test ręczny użytkownika po zakończeniu).
         Katalog dokumentów w tablicy (`ai-docs: tide`) zakładamy od razu — agent dostaje go przez
         --add-dir. Szablon `flows/<tryb>.md`, który jest nietkniętym dawnym zaczynem, zastępuje
         wbudowana treść (migrate_flows podmieni plik przy najbliższej okazji)."""
-        data = _fields(request or {}, ("mode", "tool", "branch", "check"))
+        data = _fields(request or {}, ("entry", "mode", "tool", "branch", "check", "preferredProvider"))
         board = self.load()
         card = self._card(board, card_num(card_id))
         project = board.projects.get(card.project)
-        mode = _text(data.get("mode"), "mode").strip().lower() or (project.mode if project else DEFAULT_MODE)
-        if mode not in MODES:
-            raise BoardError(f"nieznany tryb „{mode}” (full, light, spec)")
+        entry, mode = _launch_entry_mode(data, project)
+        flow_key = flows.flow_key(entry, mode)
         tool = _text(data.get("tool"), "tool").strip().lower() or (project.tool if project else DEFAULT_TOOL)
         if tool not in TOOLS:
             raise BoardError(f"nieznane narzędzie „{tool}” (claude, codex)")
@@ -254,18 +282,22 @@ class BoardStore:
         check = _text(data.get("check"), "check").strip().lower() or "auto"
         if check not in flows.CHECKS:
             raise BoardError(f"nieznany sposób sprawdzenia „{check}” (auto, manual)")
+        preferred = _text(data.get("preferredProvider"), "preferredProvider").strip() or "anthropic"
+        from ..models import config as models_config
+        if preferred not in ("mixed", "local") and not models_config.load().catalog.known_provider(preferred):
+            raise BoardError(f"nieznany preferowany dostawca „{preferred}”")
         template, source = None, "builtin"
-        candidates = ([os.path.join("flows", project.slug, f"{mode}.md")] if project else []) + \
-            [os.path.join("flows", f"{mode}.md")]
+        candidates = ([os.path.join("flows", project.slug, f"{flow_key}.md")] if project else []) + \
+            [os.path.join("flows", f"{flow_key}.md")]
         for rel in candidates:
             text = self._read_file(rel, [])
             if text is not None:
-                if rel == candidates[-1] and flows.outdated(mode, text):
+                if rel == candidates[-1] and flows.outdated(flow_key, text):
                     break  # dawny zaczyn — wbudowana treść
                 template, source = text, os.path.join(self.root, rel)
                 break
         if template is None:
-            template = flows.SEED_FLOWS[mode]
+            template = flows.SEED_FLOWS[flow_key]
         docs = self.docs_dir(project)
         in_board = _inside(docs, self.root)
         if in_board:
@@ -289,16 +321,21 @@ class BoardStore:
         add_dirs = ([docs] if in_board else []) + [repo for _name, repo in extra_repos]
         values = {"card_id": card.id, "title": card.title, "description": card.description.strip(),
                   "project": project.name if project else "", "repo": project.repo if project else "",
-                  "docs_dir": docs_ref, "branch": branch if mode != "spec" else "bez gałęzi — katalog projektu",
+                  "docs_dir": docs_ref, "branch": branch if flow_key != "spec" else "bez gałęzi — katalog projektu",
                   "tool": tool, "docs_note": docs_note, "spec": card.spec or "brak (zaczynasz od zera)",
                   "spec_file": os.path.join(docs_ref, "specs", spec_name(card)), "check": check,
                   "check_label": flows.CHECK_LABELS[check], "finish": flows.finish_text(check, docs_ref)}
         values["spec_commit"] = flows.spec_commit_text(in_board, card.id, values["spec_file"])
-        values["projects"] = flows.projects_text(extra_repos, mode, branch, values["repo"], docs_ref)
-        return {"ok": True, "id": card.id, "mode": mode, "tool": tool, "branch": branch, "check": check, "docsDir": docs,
+        values["projects"] = flows.projects_text(extra_repos, flow_key, branch, values["repo"], docs_ref)
+        rendered = flows.render(template, values)
+        if entry == "planning" and data.get("preferredProvider"):
+            rendered += f"\n\nPreferowany dostawca wykonawców: {preferred}. Dobieraj wykonawców według klas z katalogu Tide.\n"
+        return {"ok": True, "id": card.id, "entry": entry, "mode": mode, "tool": tool, "branch": branch, "check": check,
+                "preferredProvider": preferred,
+                "docsDir": docs,
                 "aiDocs": ai_docs, "repo": values["repo"], "repoMissing": bool(project and project.repo_missing),
                 "project": card.project, "projectName": values["project"], "template": source,
-                "specFile": os.path.join(docs, "specs", spec_name(card)), "text": flows.render(template, values),
+                "specFile": os.path.join(docs, "specs", spec_name(card)), "text": rendered,
                 "projects": [p.slug for p in extra], "extraRepos": [repo for _name, repo in extra_repos],
                 "addDirs": add_dirs}
 
@@ -309,10 +346,10 @@ class BoardStore:
         if not self.exists() or not self.repo.initialized() or self.repo.busy():
             return []
         writes = []
-        for mode in MODES:
-            rel = os.path.join("flows", f"{mode}.md")
-            if flows.outdated(mode, self._read_file(rel, [])):
-                writes.append((rel, flows.SEED_FLOWS[mode]))
+        for key in flows.FLOW_KEYS:
+            rel = os.path.join("flows", f"{key}.md")
+            if flows.outdated(key, self._read_file(rel, [])):
+                writes.append((rel, flows.SEED_FLOWS[key]))
         if not writes:
             return []
         paths = [self._write(rel, text) for rel, text in writes]
@@ -328,7 +365,7 @@ class BoardStore:
         board = self.load()
         done = []
         for card in sorted(board.cards.values(), key=lambda c: c.num):
-            if card.mode != "spec" or card.column != "todo" or card.spec:
+            if card.entry != "spec" or card.column != "todo" or card.spec:
                 continue
             path = find_ready_spec(self.docs_dir(board.projects.get(card.project)), card.id)
             if not path:
@@ -456,6 +493,8 @@ class BoardStore:
         for key in LAUNCH_KEYS:  # tylko ustawione — karta bez uruchomienia ich nie ma
             if v.get(key):
                 doc.set(key, v[key])
+        if v.get("planPath"):
+            doc.set("plan", self._checked_plan_path(v["planPath"], board.projects.get(slug), f"K-{num}"))
         if extra:
             doc.set(PROJECTS_KEY, ", ".join(extra))
         doc.body = v.get("description", "")
@@ -485,6 +524,10 @@ class BoardStore:
         for key in ("title", "tags", "note", *RESERVED_CARD_KEYS, "check", *LAUNCH_KEYS):
             if key in v and (v[key] or card.doc.has(key) or key not in LAUNCH_KEYS):
                 changed += _doc_set(card.doc, key, ", ".join(v[key]) if key == "tags" else v[key])
+        if "planPath" in v:
+            project = board.projects.get(primary)
+            checked = self._checked_plan_path(v["planPath"], project, card.id) if v["planPath"] else ""
+            changed += _doc_set(card.doc, "plan", checked)
         if "description" in v and v["description"].strip() != card.doc.body.strip():
             card.doc.body = v["description"]
             changed.append("description")
@@ -496,6 +539,17 @@ class BoardStore:
         change.result["changed"] = True
         return change
 
+    def _checked_plan_path(self, path: str, project: Project | None, card_id: str) -> str:
+        from .plan_candidates import candidates
+        if not project or not project.repo:
+            raise BoardError("wybierz projekt z repozytorium przed przejęciem planu", "no-project")
+        real = os.path.realpath(path)
+        allowed = candidates(project.repo, self.root)
+        if not any(item["path"] == real and item["card"] in ("", card_id) and item["status"] != "done"
+                   for item in allowed):
+            raise BoardError("wybrany plan nie należy do tej karty i projektu", "bad-plan")
+        return real
+
     def _plan_move(self, board: Board, num: int, column: str, index: int, shown: str = "") -> Change:
         """Nowa kolejność to środek między sąsiadami; całą kolumnę numerujemy co ORDER_STEP tylko
         wtedy, gdy między nimi nie ma miejsca — zwykle zmienia się jeden plik.
@@ -505,7 +559,9 @@ class BoardStore:
         ma zwykle zapisane `todo`, a przeniesienie jej „do poprawy” do Do zrobienia musi być widać
         (board/derive.py)."""
         card = self._card(board, num)
+        move_id = secrets.token_hex(16)
         change = Change(result={"ok": True, "id": card.id, "changed": False})
+        card.doc.set("move-id", move_id)
         others = board.column_cards(column, skip=card.num)
         if index < 0 or index > len(others):
             index = len(others)
@@ -571,6 +627,16 @@ class BoardStore:
         return change
 
     def _plan_project(self, board: Board, v: dict) -> Change:
+        if "globalAssignmentRules" in v:
+            if len(v) != 1:
+                raise BoardError("wspólne zasady zapisuje się oddzielnie od projektu")
+            doc = board.meta or Document.parse(BOARD_MD)
+            before = doc.text()
+            doc.set("assignment-rules", json.dumps(v["globalAssignmentRules"], ensure_ascii=False))
+            change = Change(result={"ok": True, "changed": doc.text() != before})
+            if doc.text() != before:
+                change.commits.append(("board: update assignment rules", [(MARKER_FILE, doc.text())]))
+            return change
         slug, repo, name = v.get("slug", ""), v.get("repo"), v.get("name")
         if slug:
             project = board.projects.get(slug)
@@ -602,9 +668,12 @@ class BoardStore:
                 _doc_set(doc, "repo", repo)
         if repo == "" and doc.get("ai-docs").strip().lower() == "repo":
             doc.set("ai-docs", "tide")  # bez repozytorium dokumenty idą do tablicy
-        for key, field_name in (("tags", "tags"), ("ai-docs", "aiDocs"), ("tool", "tool"), ("mode", "mode")):
+        for key, field_name in (("tags", "tags"), ("ai-docs", "aiDocs"), ("tool", "tool"), ("mode", "mode"),
+                                ("entry", "entry")):
             if field_name in v:
                 _doc_set(doc, key, ", ".join(v[field_name]) if field_name == "tags" else v[field_name])
+        if ("entry" in v or "mode" in v) and doc.get("mode").strip().lower() == LEGACY_SPEC_MODE:
+            doc.set("mode", DEFAULT_MODE)  # dawne `mode: spec` zastąpione wejściem (czyścimy tylko przy zapisie)
         if doc.get("ai-docs").strip().lower() == "repo" and not doc.get("repo").strip():
             raise BoardError("ai-docs „repo” wymaga repozytorium projektu")
         if "youtrack" in v:
@@ -616,6 +685,12 @@ class BoardStore:
                 _doc_set(doc, PROJECT_YOUTRACK_KEY, v["youtrack"])
         if "youtrackSync" in v and (doc.has(PROJECT_SYNC_KEY) or not v["youtrackSync"]):
             _doc_set(doc, PROJECT_SYNC_KEY, "on" if v["youtrackSync"] else "off")
+        for field_name, key in (("allowedCommands", commands.ALLOWED_KEY),
+                                ("deniedCommands", commands.DENIED_KEY)):
+            if field_name in v:
+                _doc_set(doc, key, json.dumps(v[field_name], ensure_ascii=False))
+        if "assignmentRules" in v:
+            _doc_set(doc, "assignment-rules", json.dumps(v["assignmentRules"], ensure_ascii=False))
         if "description" in v and v["description"].strip() != doc.body.strip():
             doc.body = v["description"]
         change.result = {"ok": True, "slug": slug, "changed": False}
@@ -971,8 +1046,8 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         # Ostatnia prawdziwa zmiana kolumny (PT-7, synchronizacja z YouTrackiem); 0 — nigdy.
         "columnMoved": card.column_moved, "columnMovedTs": parse_ts(card.column_moved),
         "youtrack": card.youtrack,
-        "spec": card.spec, "session": card.session, "branch": card.branch, "check": card.check,
-        "mode": card.mode, "tool": card.tool, "worktree": card.worktree, "launched": card.launched,
+        "spec": card.spec, "planPath": card.plan, "session": card.session, "branch": card.branch, "check": card.check,
+        "entry": card.entry, "mode": card.mode, "tool": card.tool, "worktree": card.worktree, "launched": card.launched,
         "launchedTs": parse_ts(card.launched), "branchSlug": branch_slug(card),
         # Dodatkowe projekty (PT-28): slugi z pliku i rozwiązane projekty (nieznane slugi pomijamy — błąd w errors).
         "projects": list(card.projects),
@@ -986,9 +1061,12 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
 def _project_json(project: Project, docs_dir: str, cards: int) -> dict:
     return {"slug": project.slug, "name": project.name, "repo": project.repo, "repoMissing": project.repo_missing,
             "tags": list(project.tags), "aiDocs": project.ai_docs, "aiDocsDefault": not project.ai_docs_set,
-            "tool": project.tool, "mode": project.mode, "description": project.description,
+            "tool": project.tool, "mode": project.mode, "entry": project.entry,
+            "description": project.description,
             "docsDir": docs_dir, "cards": cards, "path": project.path,
-            "youtrack": project.youtrack, "youtrackSync": bool(project.youtrack) and project.youtrack_sync}
+            "youtrack": project.youtrack, "youtrackSync": bool(project.youtrack) and project.youtrack_sync,
+            "allowedCommands": list(project.allowed_commands), "deniedCommands": list(project.denied_commands),
+            "assignmentRules": project.assignment_rules}
 
 
 def _column_index(column: str) -> int:
@@ -1066,6 +1144,44 @@ def _column(value) -> str:
     return column
 
 
+def _entry_mode_values(data: dict, allow_empty: bool) -> dict:
+    """Wejście (`entry`) i tryb (`mode`: full, light) z żądania; tylko podane klucze. Dawne `mode: spec` to
+    wejście Tylko specyfikacja: wpisujemy `entry: spec`, a trybu nie ruszamy (karta, allow_empty — czyścimy go,
+    bo przy tym wejściu trybu nie ma). allow_empty: karta może nie mieć wejścia i trybu (nie była uruchamiana)."""
+    out = {}
+    empty = ("",) if allow_empty else ()
+    if "entry" in data:
+        text = _text(data["entry"], "entry").strip().lower()
+        if text not in (*empty, *ENTRIES):
+            raise BoardError(f"nieznane wejście „{text}” ({', '.join(ENTRIES)})")
+        out["entry"] = text
+    if "mode" in data:
+        text = _text(data["mode"], "mode").strip().lower()
+        if text == LEGACY_SPEC_MODE:
+            if out.get("entry", "spec") != "spec":
+                raise BoardError(f"tryb „spec” to wejście Tylko specyfikacja, a wejście to „{out['entry']}”")
+            out["entry"] = "spec"
+            if allow_empty:
+                out["mode"] = ""
+        elif text in (*empty, *MODES):
+            out["mode"] = text
+            if text and "entry" not in out:
+                out["entry"] = "planning"  # sam tryb Pełny/Lekki to Planowanie (jak przed PT-77)
+        else:
+            raise BoardError(f"nieznany tryb „{text}” ({', '.join(MODES)})")
+    return out
+
+
+def _launch_entry_mode(data: dict, project: Project | None) -> tuple[str, str]:
+    """(wejście, tryb) uruchomienia: z żądania, a brakujące z projektu. Tryb dotyczy tylko wejść bez własnego
+    szablonu (Planowanie); przy Tylko specyfikacja jest pusty, nawet gdy okno go przysłało."""
+    values = _entry_mode_values({k: data[k] for k in ("entry", "mode") if k in data}, allow_empty=True)
+    entry = values.get("entry") or (project.entry if project else DEFAULT_ENTRY)
+    if entry in flows.ENTRY_FLOWS:
+        return entry, ""
+    return entry, values.get("mode") or (project.mode if project else DEFAULT_MODE)
+
+
 def _enum(value, allowed: tuple, label: str) -> str:
     text = _text(value, label).strip().lower()
     if text not in allowed:
@@ -1107,10 +1223,14 @@ def _card_values(data: dict, create: bool = False) -> dict:
         if not key:
             raise BoardError(f"pole youtrack to klucz zgłoszenia, np. LEGAL-35 („{out['youtrack']}”)")
         out["youtrack"] = key
+    if "planPath" in data:
+        path = _line(data["planPath"], PATH_MAX, "planPath")
+        if path and (not os.path.isabs(path) or not path.lower().endswith(".md")):
+            raise BoardError("planPath musi być bezwzględną ścieżką do pliku Markdown")
+        out["planPath"] = path
     if "check" in data:
         out["check"] = _enum(data["check"], CHECKS, "sprawdzenie")
-    if "mode" in data:
-        out["mode"] = _enum(data["mode"], ("", *MODES), "mode") if _text(data["mode"], "mode").strip() else ""
+    out.update(_entry_mode_values(data, allow_empty=True))
     if "tool" in data:
         out["tool"] = _enum(data["tool"], ("", *TOOLS), "tool") if _text(data["tool"], "tool").strip() else ""
     if "worktree" in data:
@@ -1162,6 +1282,16 @@ def _projects(value) -> list[str]:
 
 def _project_values(data: dict, board_root: str) -> dict:
     out = {}
+    for key in ("assignmentRules", "globalAssignmentRules"):
+        if key in data:
+            value = _body(data[key]).strip()
+            if len(value) > 8000:
+                raise BoardError("zasady przydziału mogą mieć najwyżej 8000 znaków")
+            out[key] = value
+    if "globalAssignmentRules" in out:
+        if len(data) != 1:
+            raise BoardError("wspólne zasady zapisuje się oddzielnie od projektu")
+        return out
     if "slug" in data:
         slug = _text(data["slug"], "slug").strip()
         if slug and not SLUG_RE.match(slug):
@@ -1180,8 +1310,7 @@ def _project_values(data: dict, board_root: str) -> dict:
         out["aiDocs"] = _enum(data["aiDocs"], AI_DOCS, "ai-docs")
     if "tool" in data:
         out["tool"] = _enum(data["tool"], TOOLS, "narzędzie")
-    if "mode" in data:
-        out["mode"] = _enum(data["mode"], MODES, "tryb")
+    out.update(_entry_mode_values(data, allow_empty=False))
     if "description" in data:
         out["description"] = _body(data["description"])
     if "youtrack" in data:
@@ -1193,6 +1322,13 @@ def _project_values(data: dict, board_root: str) -> dict:
         if not isinstance(data["youtrackSync"], bool):
             raise BoardError("youtrackSync to true albo false")
         out["youtrackSync"] = data["youtrackSync"]
+    for field_name, label in (("allowedCommands", commands.ALLOWED_KEY),
+                              ("deniedCommands", commands.DENIED_KEY)):
+        if field_name in data:
+            try:
+                out[field_name] = commands.validate(data[field_name], label)
+            except ValueError as exc:
+                raise BoardError(str(exc)) from None
     if not (out.get("slug") or out.get("name") or out.get("repo")):
         raise BoardError("projekt potrzebuje identyfikatora (slug), nazwy albo repozytorium")
     return out

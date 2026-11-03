@@ -105,6 +105,15 @@ def _column(card: dict) -> str:
 
 def _card_item(card: dict, column: str, sessions: dict, boards: dict) -> dict:
     derived = card.get("derived") or {}
+    flow = derived.get("flow") or {}
+    steps = flow.get("steps") or []
+    running_steps = sum(1 for step in steps if isinstance(step, dict) and not step.get("result"))
+    note = derived.get("note") or ""
+    if running_steps and not any(word in note for word in ("krok w toku", "kroki w toku", "kroków w toku")):
+        count = running_steps % 10
+        noun = ("krok" if running_steps == 1 else
+                "kroki" if count in (2, 3, 4) and running_steps % 100 not in (12, 13, 14) else "kroków")
+        note = f"{running_steps} {noun} w toku" + (f" · {note}" if note else "")
     target = str(derived.get("session") or derived.get("coordinator") or "")
     session = sessions.get(target)
     board = boards.get(str(derived.get("coordinator") or ""))
@@ -114,7 +123,7 @@ def _card_item(card: dict, column: str, sessions: dict, boards: dict) -> dict:
         "kind": "card", "id": card.get("id") or "", "card": card.get("id") or "",
         "title": card.get("title") or "", "project": card.get("project") or "",
         "projectName": card.get("projectName") or card.get("project") or "",
-        "group": column, "note": derived.get("note") or "",
+        "group": column, "note": note, "runningSteps": running_steps,
         "question": _clip(derived.get("question") or "", QUESTION_MAX) if column == "waiting" else "",
         "nextStep": derived.get("nextStep") or "",
         "agentState": (derived.get("agentState") or "") if target else "",

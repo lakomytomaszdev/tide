@@ -12,7 +12,9 @@ Aplikacja z plikiem views.json (okno Tide, apps/tide) dostaje też moduły widok
 "module" (np. apps/sessions) trafia do views/<id>/ z własną kopią biblioteki w views/<id>/qml/tide/,
 więc strony widoków importują "tide" tak samo jak w swoim katalogu.
 Wspólne moduły Pythona aplikacji (apps/common/*.py, np. taskimages.py — zrzuty ekranu zadania) trafiają obok
-programu aplikacji i do katalogu każdego widoku (views/<id>/), skąd ładuje je backend.
+programu aplikacji i do katalogu każdego widoku (views/<id>/), skąd ładuje je backend. Wspólne komponenty QML
+(apps/common/qml/<katalog>/, np. card/ — okno decyzji karty) trafiają do qml/<katalog>/ aplikacji i każdego widoku,
+obok biblioteki qml/tide/, więc strony importują je jako "card", a komponenty — bibliotekę jako "../tide".
 
 Widżet z kluczem "X-Tide-LimityConfig" w metadata.json dostaje dodatkowo plik JS (ścieżka
 z wartości klucza) z portem i tokenem usługi Limity AI (QuotaApp), przepisanymi z jej
@@ -138,10 +140,17 @@ APP_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "tests", "__init__.p
 
 
 def copy_common(out: str) -> None:
-    """Wspólne moduły Pythona (apps/common, bez __init__.py) obok programu aplikacji albo backendu widoku."""
+    """Wspólne moduły Pythona (apps/common, bez __init__.py) obok programu aplikacji albo backendu widoku
+    i wspólne komponenty QML (apps/common/qml/<katalog>) w jego qml/<katalog>."""
     for name in sorted(os.listdir(COMMON)):
         if name.endswith(".py") and name != "__init__.py":
             shutil.copyfile(os.path.join(COMMON, name), os.path.join(out, name))
+    qml = os.path.join(COMMON, "qml")
+    if os.path.isdir(qml):
+        for name in sorted(os.listdir(qml)):
+            if os.path.isdir(os.path.join(qml, name)):
+                shutil.copytree(os.path.join(qml, name), os.path.join(out, "qml", name), dirs_exist_ok=True,
+                                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.py"))
 
 
 def app_views(app_dir: str) -> list[dict]:

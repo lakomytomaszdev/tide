@@ -8,7 +8,9 @@ Dane z pliku (--data) to wynik `tide-daemon.py --print-coordination`, opcjonalni
 {id przebiegu: RunDetail} i „now”: chwila do liczenia czasów; akcje są wtedy wyłączone.
 Plakietka w pasku widoków: „● N” (brzoskwinia) — ilu agentów czeka na ciebie (/Agents).
 """
+import importlib.util
 import json
+import os
 
 from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import (QDBusConnection, QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply,
@@ -17,6 +19,29 @@ from PyQt6.QtDBus import (QDBusConnection, QDBusMessage, QDBusPendingCallWatcher
 SERVICE = "org.tide.Daemon"
 PATH, IFACE = "/Coordination", "org.tide.Daemon.Coordination"
 AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
+BOARD_PATH, BOARD_IFACE = "/Board", "org.tide.Daemon.Board"
+HERE = os.path.dirname(os.path.abspath(__file__))
+START_TIMEOUT_MS = 10 * 60 * 1000  # EnterStep zatrzymuje krok i zakłada kartę Konsoli — jak w Tablicy
+PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku — zmiany są wyłączone."}
+NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
+                    "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
+# Zapisy /Board, po których usługa ma nową migawkę kart (lista „Karty w przepływie” odświeża się od razu).
+WRITES = ("ResolveCardReview", "EnterStep", "ResolveCardStep", "ApproveCardPlan", "EditCardPlan", "ReportStepFault")
+
+
+def load_common(name: str):
+    """Moduł z apps/common: w pakiecie (widgets/stage.py) leży obok tego pliku, w repozytorium — w apps/common."""
+    for folder in (HERE, os.path.join(os.path.dirname(HERE), "common")):
+        path = os.path.join(folder, name + ".py")
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location(f"tide_common_{name}", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise ImportError(f"brak wspólnego modułu {name} (apps/common)")
+
+
+windowconfig = load_common("windowconfig")
 
 
 def waiting_count(sessions_json: str) -> int:
@@ -31,16 +56,29 @@ def waiting_count(sessions_json: str) -> int:
     return sum(1 for s in sessions if isinstance(s, dict) and s.get("state") == "waiting")
 
 
+def flow_cards(snapshot: dict) -> list[dict]:
+    """Karty z aktywnym przepływem; ich tickety, kroki i oś są już w `derived` z usługi."""
+    if not isinstance(snapshot, dict):
+        return []
+    return [card for card in snapshot.get("cards") or []
+            if isinstance(card, dict) and isinstance(card.get("derived"), dict)
+            and isinstance(card["derived"].get("flow"), dict)]
+
+
 class Backend(QObject):
     """Most między QML a tide-daemon: JSON-y list i tablicy, akcje jako wywołania D-Bus."""
 
     coordinatorsChanged = pyqtSignal()
     boardChanged = pyqtSignal()
     sessionsChanged = pyqtSignal()
+    flowCardsChanged = pyqtSignal()
     detailChanged = pyqtSignal()
     availableChanged = pyqtSignal()
     selectedChanged = pyqtSignal()
     badgeChanged = pyqtSignal()
+    cardOpenChanged = pyqtSignal()
+    callsChanged = pyqtSignal()
+    replied = pyqtSignal(str, str)  # tag z QML, odpowiedź usługi (JSON)
 
     def __init__(self, bus: QDBusConnection | None, data: dict | None = None, select: str = "", parent=None):
         super().__init__(parent)
@@ -48,6 +86,7 @@ class Backend(QObject):
         self._coordinators = "[]"
         self._board = "{}"
         self._sessions = "[]"
+        self._flow_cards = "[]"
         self._detail = "{}"
         self._available = False
         self._selected = select
@@ -55,9 +94,17 @@ class Backend(QObject):
         self._data = data
         self._pending: set = set()
         self._badge = ""
+        self._calls: list = []
+        self._card_open = windowconfig.CARD_OPEN_DEFAULT if data is not None else windowconfig.card_open()
+        # Tablica zapisuje to samo ustawienie w tym samym oknie — nadążamy za plikiem (PT-131).
+        self._card_open_watcher = windowconfig.watch(self._card_open_from_file, self) if data is None else None
         if data is not None:
+            if data.get("cardOpen") in windowconfig.CARD_OPEN_VALUES:
+                self._card_open = data["cardOpen"]
             self._coordinators = json.dumps(data.get("coordinators") or [], ensure_ascii=False)
             self._sessions = json.dumps(data.get("sessions") or [], ensure_ascii=False)
+            self._flow_cards = json.dumps(flow_cards(data.get("boardSnapshot") or
+                                                      {"cards": data.get("flowCards") or []}), ensure_ascii=False)
             self._now = float(data.get("now") or 0)
             self._available = True
             if not self._selected and data.get("coordinators"):
@@ -69,6 +116,7 @@ class Backend(QObject):
             return
         bus.connect(SERVICE, PATH, IFACE, "Changed", self._changed)
         bus.connect(SERVICE, AGENTS_PATH, AGENTS_IFACE, "Changed", self._agents_changed)
+        bus.connect(SERVICE, BOARD_PATH, BOARD_IFACE, "Changed", self._board_changed)
         self._watcher = QDBusServiceWatcher(SERVICE, bus, QDBusServiceWatcher.WatchModeFlag.WatchForRegistration
                                             | QDBusServiceWatcher.WatchModeFlag.WatchForUnregistration, self)
         self._watcher.serviceRegistered.connect(lambda _name: self.reload())
@@ -88,6 +136,10 @@ class Backend(QObject):
     @pyqtProperty(str, notify=sessionsChanged)
     def sessionsJson(self) -> str:
         return self._sessions
+
+    @pyqtProperty(str, notify=flowCardsChanged)
+    def flowCardsJson(self) -> str:
+        return self._flow_cards
 
     @pyqtProperty(str, notify=detailChanged)
     def detailJson(self) -> str:
@@ -118,7 +170,69 @@ class Backend(QObject):
     def badgeTone(self) -> str:
         return "waiting"
 
+    # Co otwiera klik w kartę z „Czeka na mnie”: "decision" (okno decyzji) albo "full" (pełna karta) — to samo
+    # ustawienie okna Tide (window.json) co w Tablicy.
+    @pyqtProperty(str, notify=cardOpenChanged)
+    def cardOpen(self) -> str:
+        return self._card_open
+
+    # Wywołania zapisów /Board z podglądu z pliku (testy).
+    @pyqtProperty(str, notify=callsChanged)
+    def callsJson(self) -> str:
+        return json.dumps(self._calls, ensure_ascii=False)
+
     # --- akcje --------------------------------------------------------------------------------
+
+    def _card_open_from_file(self, value: str) -> None:
+        if value != self._card_open:
+            self._card_open = value
+            self.cardOpenChanged.emit()
+
+    @pyqtSlot(str, result=str)
+    def setCardOpen(self, value: str) -> str:
+        """Zapisuje wybór w konfiguracji okna. Zwraca pusty tekst albo powód, gdy zapis się nie udał
+        (wtedy ustawienie działa do końca sesji okna, ale nie przeżyje restartu)."""
+        if value not in windowconfig.CARD_OPEN_VALUES:
+            return "Nieznane ustawienie otwierania karty."
+        problem = ""
+        if self._data is None:
+            try:
+                windowconfig.set_card_open(value)
+            except OSError as exc:
+                problem = f"Nie zapisano ustawienia: {exc.strerror or exc}."
+        if value != self._card_open:
+            self._card_open = value
+            self.cardOpenChanged.emit()
+        return problem
+
+    # Odpowiedzi z okna decyzji i pełnej karty: te same wywołania /Board co w Tablicy.
+    @pyqtSlot(str, str, str)
+    def enterStep(self, tag: str, card_id: str, step_id: str) -> None:
+        self._write(tag, "EnterStep", [card_id, step_id])
+
+    @pyqtSlot(str, str, str)
+    def resolveCardReview(self, tag: str, card_id: str, choice: str) -> None:
+        self._write(tag, "ResolveCardReview", [card_id, choice])
+
+    @pyqtSlot(str, str, str)
+    def resolveCardStep(self, tag: str, card_id: str, request: str) -> None:
+        self._write(tag, "ResolveCardStep", [card_id, request])
+
+    @pyqtSlot(str, str, str)
+    def previewStepFault(self, tag: str, card_id: str, request: str) -> None:
+        self._write(tag, "PreviewStepFault", [card_id, request])
+
+    @pyqtSlot(str, str, str)
+    def reportStepFault(self, tag: str, card_id: str, request: str) -> None:
+        self._write(tag, "ReportStepFault", [card_id, request])
+
+    @pyqtSlot(str, str, str)
+    def editCardPlan(self, tag: str, card_id: str, request: str) -> None:
+        self._write(tag, "EditCardPlan", [card_id, request])
+
+    @pyqtSlot(str, str)
+    def approveCardPlan(self, tag: str, card_id: str) -> None:
+        self._write(tag, "ApproveCardPlan", [card_id])
 
     @pyqtSlot(str)
     def select(self, coordinator_id: str) -> None:
@@ -144,6 +258,7 @@ class Backend(QObject):
             return
         self._call(PATH, IFACE, "Coordinators", [], self._got_coordinators)
         self._call(AGENTS_PATH, AGENTS_IFACE, "Sessions", [], self._got_sessions)
+        self._load_flow_cards()
 
     @pyqtSlot(str)
     def activate(self, coordinator_id: str) -> None:
@@ -188,6 +303,23 @@ class Backend(QObject):
     def _agents_changed(self) -> None:
         self._call(AGENTS_PATH, AGENTS_IFACE, "Sessions", [], self._got_sessions)
 
+    @pyqtSlot()
+    def _board_changed(self) -> None:
+        self._load_flow_cards()
+
+    def _load_flow_cards(self) -> None:
+        if self.bus is not None:
+            self._call(BOARD_PATH, BOARD_IFACE, "Snapshot", [], self._got_flow_cards)
+
+    def _got_flow_cards(self, ok: bool, value) -> None:
+        if not ok or not isinstance(value, str):
+            return
+        try:
+            cards = flow_cards(json.loads(value))
+        except ValueError:
+            cards = []
+        self._set("_flow_cards", json.dumps(cards, ensure_ascii=False), self.flowCardsChanged)
+
     def _got_coordinators(self, ok: bool, value) -> None:
         if not ok or not isinstance(value, str):
             self._set_available(False)
@@ -214,6 +346,25 @@ class Backend(QObject):
         self._call(PATH, IFACE, "Board", [selected],
                    lambda ok, value: self._set("_board", value, self.boardChanged)
                    if ok and isinstance(value, str) and selected == self._selected else None)
+
+    def _write(self, tag: str, member: str, args: list) -> None:
+        if self._data is not None or self.bus is None:
+            self._calls.append([member, *args])
+            self.callsChanged.emit()
+            self.replied.emit(tag, json.dumps(PREVIEW_REPLY if self._data is not None else NO_SERVICE_REPLY,
+                                              ensure_ascii=False))
+            return
+
+        def done(ok: bool, value) -> None:
+            if not ok or not isinstance(value, str):
+                self.replied.emit(tag, json.dumps(NO_SERVICE_REPLY, ensure_ascii=False))
+                return
+            self.replied.emit(tag, value)
+            if member in WRITES:
+                self._load_flow_cards()
+
+        self._call(BOARD_PATH, BOARD_IFACE, member, args, done,
+                   timeout=START_TIMEOUT_MS if member == "EnterStep" else 15_000)
 
     def _set(self, name: str, value: str, signal) -> None:
         if getattr(self, name) != value:

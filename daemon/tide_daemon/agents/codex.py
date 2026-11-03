@@ -55,6 +55,8 @@ class CodexLog(SessionLog):
         self.nickname = ""      # podagent: agent_nickname
         self.open_questions: dict[str, float] = {}  # pytania asynchroniczne bez odpowiedzi: call_id → czas
         self.open_question_texts: dict[str, str] = {}  # call_id → treść pytania (waitingText)
+        self._meta_seen = False
+        self._own_turn_started = False
 
     def feed(self, record: dict) -> None:
         kind = record.get("type")
@@ -66,6 +68,12 @@ class CodexLog(SessionLog):
         if kind == "session_meta":
             self._meta(payload)
             return
+        if self.parent_id and not self._own_turn_started:
+            # Fork podagenta zawiera kopię historii rodzica. Początek kopii może wypaść
+            # poza odczytanym ogonem; własna tura zaczyna się od task_started.
+            if kind != "event_msg" or payload.get("type") != "task_started":
+                return
+            self._own_turn_started = True
         if self.hidden and not self.parent_id:
             return
         self.touch(ts)
@@ -131,6 +139,11 @@ class CodexLog(SessionLog):
                     self.set_phase(MID_TURN, ts)
 
     def _meta(self, payload: dict) -> None:
+        incoming_id = str(payload.get("id") or "")
+        if self._meta_seen and incoming_id and incoming_id != self.session_id:
+            # Drugi session_meta w forkowanym dzienniku opisuje rodzica, nie ten plik.
+            return
+        self._meta_seen = True
         self.session_id = str(payload.get("id") or self.session_id)
         self.cwd = payload.get("cwd") or self.cwd
         self.launch_cwd = self.launch_cwd or str(payload.get("cwd") or "")

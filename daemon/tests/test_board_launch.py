@@ -154,20 +154,27 @@ class TemplatesTest(BoardCase):
         with self.assertRaises(BoardError):
             self.store.render_launch("K-9", {})
 
+    def test_preferred_provider_is_passed_to_planning_prompt(self):
+        flow = self.store.render_launch("K-1", {"mode": "full", "preferredProvider": "openai"})
+        self.assertEqual(flow["preferredProvider"], "openai")
+        self.assertIn("Preferowany dostawca wykonawców: openai", flow["text"])
+        with self.assertRaises(BoardError):
+            self.store.render_launch("K-1", {"preferredProvider": "nieznany"})
+
 
 class MigrationTest(BoardCase):
     def setUp(self):
         super().setUp()
         self.store.create_card({"title": "Grabie"})  # zakłada tablicę z obecnymi szablonami
         self.store.upsert_project({"name": "Dom"})
-        for mode in flows.MODES:
+        for mode in flows.FLOW_KEYS:
             self.write(f"flows/{mode}.md", old_seed(mode))
         self.write("flows/dom/full.md", old_seed("full"))  # nadpisanie projektu — własność użytkownika
         git_out(self.root, "add", "-A")
         git_out(self.root, "commit", "-qm", "stara tablica")
 
     def test_fixture_matches_known_seeds(self):
-        for mode in flows.MODES:
+        for mode in flows.FLOW_KEYS:
             self.assertTrue(flows.outdated(mode, old_seed(mode)), mode)
             self.assertFalse(flows.outdated(mode, flows.SEED_FLOWS[mode]), mode)
             self.assertFalse(flows.outdated(mode, old_seed(mode) + "\n"), "jeden bajt więcej — zmieniony")
@@ -215,7 +222,7 @@ class LaunchFieldsTest(BoardCase):
                                                 "mode": "full", "tool": "claude",
                                                 "launched": "2026-10-27T12:00:00+01:00"})
         self.assertTrue(result["changed"])
-        self.assertEqual(self.log()[-1], "K-1: update branch, mode, tool, worktree, launched")
+        self.assertEqual(self.log()[-1], "K-1: update branch, entry, mode, tool, worktree, launched")
         card = self.store.snapshot()["cards"][0]
         self.assertEqual((card["branch"], card["worktree"], card["mode"], card["tool"], card["launched"]),
                          ("claude/k-1-grabie", "/r-worktrees/k-1-grabie", "full", "claude", "2026-10-27T12:00:00+01:00"))
@@ -226,7 +233,8 @@ class LaunchFieldsTest(BoardCase):
                 self.store.update_card("K-1", bad)
         self.store.update_card("K-1", {"branch": "", "worktree": "", "mode": "spec"})
         card = self.store.snapshot()["cards"][0]
-        self.assertEqual((card["branch"], card["worktree"], card["mode"]), ("", "", "spec"))
+        self.assertEqual((card["branch"], card["worktree"], card["entry"], card["mode"]), ("", "", "spec", ""),
+                         "dawne mode: spec w żądaniu to wejście Tylko specyfikacja (PT-77)")
         self.store.create_card({"title": "Z polami", "mode": "light", "tool": "codex"})
         self.assertIn("mode: light", self.card_text("K-2"))
         self.assertNotIn("worktree:", self.card_text("K-2"))

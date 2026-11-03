@@ -33,6 +33,19 @@ function parse(text, fallback) {
     }
 }
 
+// Uwagi review planu (PT-127): `findings` to lista {severity, text, tickets}; stary napis też jest czytany.
+// Każda uwaga w osobnym wierszu z wagą i ticketami — nie same liczniki.
+var SEVERITY_NAMES = { "blocker": "blokująca", "major": "ważna", "nit": "drobna" }
+
+function reviewFindingsText(findings) {
+    if (!findings) return ""
+    if (typeof findings === "string") return findings
+    return findings.map(function (f) {
+        const tickets = f.tickets && f.tickets.length ? " (" + f.tickets.join(", ") + ")" : ""
+        return "• " + (SEVERITY_NAMES[f.severity] || "bez wagi") + ": " + f.text + tickets
+    }).join("\n")
+}
+
 // Polska liczba mnoga: plural(5, "karta", "karty", "kart") → "kart".
 function plural(n, one, few, many) {
     const abs = Math.abs(n)
@@ -72,16 +85,58 @@ function confirmable(card) {
     return shown === "review" || (shown === "done" && card.column !== "done")
 }
 
-// Karta w kolumnie ręcznej (bez stanu z koordynatora) albo do potwierdzenia — tylko taką da się przeciągać.
+// Pracująca karta przepływu karty (PT-58, stan z dziennika: `derived.flow`) w W toku albo Czeka na mnie.
+function workingFlow(card) {
+    const shown = card ? displayColumn(card) : ""
+    return !!(card && card.derived && card.derived.flow) && (shown === "progress" || shown === "waiting")
+}
+
+// Decyzje karty dla okna decyzji (PT-123: `derived.flow.decisions[]`, kolejność i treść z usługi) albo [].
+function decisions(card) {
+    const flow = card && card.derived && card.derived.flow
+    return flow && Array.isArray(flow.decisions) ? flow.decisions : []
+}
+
+// Karta w „Czeka na mnie” z decyzjami (PT-132) — tylko taka może otworzyć okno decyzji.
+function hasDecisions(card) {
+    return !!card && displayColumn(card) === "waiting" && decisions(card).length > 0
+}
+
+// Klik i powiadomienie (PT-133): okno decyzji tylko dla takiej karty i gdy ustawienie okna Tide to "decision"
+// (domyślne; "full" — pełna karta); każda inna karta otwiera pełną kartę.
+function opensDecisions(card, cardOpen) {
+    return cardOpen !== "full" && hasDecisions(card)
+}
+
+// Pełna karta (PT-128) dla karty z przepływem: usługa liczy jej fazy (`derived.phases`). Karta bez dziennika
+// (np. w Backlogu przed zleceniem) nie ma czego pokazać w fazach i otwiera panel karty.
+function hasFullCard(card) {
+    return !!card && !!card.derived && Array.isArray(card.derived.phases) && card.derived.phases.length > 0
+}
+
+// Karta w kolumnie ręcznej (bez stanu z koordynatora), do potwierdzenia albo pracująca karta z dziennikiem — tylko
+// taką da się przeciągać.
 function draggable(card) {
-    return !!card && ((isManual(displayColumn(card)) && isManual(card.column)) || confirmable(card))
+    return !!card && ((isManual(displayColumn(card)) && isManual(card.column)) || confirmable(card) || workingFlow(card))
 }
 
 // Dokąd wolno przenieść kartę: z kolumn ręcznych do każdej ręcznej, kartę do potwierdzenia — tylko do
-// Gotowych albo z powrotem do Do zrobienia. Do kolumn wyliczanych nigdy.
+// Gotowych albo z powrotem do Do zrobienia, pracującą kartę z dziennikiem — do Backlogu (wstrzymanie) albo do
+// Gotowych (koniec, zmiany zapisane). Do kolumn wyliczanych nigdy.
 function dropTargets(card) {
     if (confirmable(card)) return ["done", "todo"]
+    if (workingFlow(card)) return ["backlog", "done"]
     return draggable(card) ? MANUAL.slice() : []
+}
+
+// Rzadkie ustawienia pełnej karty (PT-134): te same reguły co moveCard — kolumny ręczne, a karta do potwierdzenia
+// tylko do Gotowych / Do zrobienia i bez archiwizacji.
+function settingTargets(card) {
+    return confirmable(card) || workingFlow(card) ? dropTargets(card) : MANUAL.slice()
+}
+
+function canArchive(card) {
+    return !!card && !confirmable(card)
 }
 
 // Cel „Otwórz w Sesjach” / „Przejdź do agenta”: koordynator karty (/Coordination), inaczej jej sesja (/Agents).
@@ -272,7 +327,7 @@ function noteTint(card, text) {
 }
 
 // Linia na karcie: notatka z koordynatora, inaczej notatka karty.
-// Gotowa specyfikacja (`spec` karty, tryb „tylko spec”) w Backlogu — „✓ specyfikacja gotowa”
+// Gotowa specyfikacja (`spec` karty, wejście „Tylko specyfikacja”) w Backlogu — „✓ specyfikacja gotowa”
 // przed własną notatką karty, bo to wynik pracy agenta, na który czekasz.
 function cardNote(card) {
     const d = card && card.derived
@@ -527,19 +582,182 @@ function columnLabel(snapshot, id) {
 
 // --- „Co ma zrobić agent?” (uruchomienie z karty, PT-4) ------------------------------------------
 
-// Tryby z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.
-var LAUNCH_MODES = [
-    { id: "full", title: "Pełny flow", desc: "Grilling, specyfikacja, tickety w planie, implementacja przez TDD i review.",
-      meta: "na start zada ci pytania", steps: ["Grilling", "Specyfikacja", "Tickety w planie", "TDD", "Review"] },
-    { id: "light", title: "Lekki", desc: "Krótka specyfikacja i 1–3 tickety w planie, potem od razu praca.",
-      meta: "pyta tylko przy wątpliwościach", steps: ["Krótka specyfikacja", "1–3 tickety w planie", "Praca", "Review"] },
+// Wejścia („Jak zacząć?”): sposób rozpoczęcia zlecenia. Kolejne (Mam plan, Od razu) dochodzą tu jako nowe pozycje;
+// `modes: true` — wejście ma wybór trybu (Pełny, Lekki), a bez niego kroki są własne wejścia (`steps`).
+var LAUNCH_ENTRIES = [
+    { id: "planning", title: "Planowanie", desc: "Agent planuje pracę: specyfikacja, tickety w planie, potem implementacja i review.",
+      meta: "wybierasz tryb: Pełny albo Lekki", modes: true },
+    { id: "plan", title: "Mam plan", desc: "Przejmij istniejący plan projektu, sprawdź go i kontynuuj niedokończone tickety.",
+      meta: "wybierz plan z projektu lub tablicy", modes: false, flow: true,
+      steps: ["Przejęcie planu", "Uzupełnienie i review", "Zatwierdzenie", "Tickety w tle"] },
     { id: "spec", title: "Tylko specyfikacja", desc: "Agent dopytuje i pisze specyfikację. Bez kodu i bez worktree.",
-      meta: "karta wraca do Backlogu", steps: ["Pytania", "Specyfikacja", "„specyfikacja gotowa” na karcie"] }
+      meta: "karta wraca do Backlogu", modes: false, steps: ["Pytania", "Specyfikacja", "„specyfikacja gotowa” na karcie"] },
+    // Przepływ karty (PT-58): jeden ticket w tle od razu, zlecenie przez /Board StartCard, bez Konsoli.
+    { id: "now", title: "Od razu", desc: "Jeden ticket w tle, bez planowania i bez terminala. Wynik na gałęzi karty.",
+      meta: "wybierasz wykonawcę i recenzenta", modes: false, flow: true,
+      steps: ["Ticket w tle", "Review", "Gałąź karty", "Do sprawdzenia"] }
+]
+
+// Wykonawcy kroku „Od razu” z katalogu Status() /Models. Zanim przyjdzie stan usługi, pokazujemy
+// domyślną grupę Anthropic; po odczycie wybór może obejmować Codex, lokalny i innych dostawców.
+var NOW_EXECUTORS = ["Haiku", "Sonnet", "Opus"]
+var NOW_DEFAULT = "Sonnet"
+
+function launchExecutorList(status) {
+    if (status && Array.isArray(status.executors)) return status.executors
+    if (status && status.executors && Array.isArray(status.executors.list)) return status.executors.list
+    return NOW_EXECUTORS.map(name => ({ name: name, program: "claude", provider: "anthropic", model: name.toLowerCase() }))
+}
+
+function preferredProviders(status) {
+    const known = status && status.providers && typeof status.providers === "object" ? status.providers : ({})
+    const base = [
+        { value: "anthropic", label: "Anthropic" }, { value: "openai", label: "OpenAI" },
+        { value: "local", label: "Tylko lokalnie" }, { value: "mixed", label: "Mieszany" }
+    ]
+    return base.concat(Object.keys(known).filter(name => !["anthropic", "openai", "local", "mixed"].includes(name))
+        .map(name => ({ value: name, label: String(known[name].label || name) })))
+}
+
+function launchExecutors(status, provider) {
+    const wanted = provider || "anthropic"
+    return launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
+        (wanted === "mixed" || e.provider === wanted))
+        .map(e => ({ value: String(e.name), label: String(e.name), disabled: e.available === false,
+                      hint: e.error || "" }))
+}
+
+function planningExecutors(status, provider) {
+    return launchExecutors(status, provider === "local" ? "local" : "mixed")
+        .filter(option => provider === "local" || launchExecutor(status, option.value).provider !== "local")
+}
+
+function transferExecutors(status, provider) {
+    if (!provider) return []
+    return launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
+        e.available !== false && e.provider && e.provider !== provider)
+        .map(e => ({ value: String(e.name), label: String(e.name) }))
+}
+
+function planReviewerExecutors(status, planner, blockedProvider) {
+    const author = launchExecutor(status, planner)
+    if (!author) return []
+    const options = launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
+        e.available !== false && e.name !== author.name &&
+        String(e.model).toLowerCase() !== String(author.model).toLowerCase() &&
+        (e.provider === "local") === (author.provider === "local"))
+        .map(e => ({ value: String(e.name), label: String(e.name) + " · " + String(e.provider) }))
+    if (blockedProvider) options.sort((a, b) => {
+        const ae = launchExecutor(status, a.value), be = launchExecutor(status, b.value)
+        const ap = ae.provider === blockedProvider ? 1 : 0, bp = be.provider === blockedProvider ? 1 : 0
+        if (ap !== bp) return ap - bp
+        return (a.value === "Codex Astra" ? -1 : b.value === "Codex Astra" ? 1 : 0)
+    })
+    return options
+}
+
+function transferSettingsExecutors(status) {
+    return launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
+        e.available !== false && e.provider)
+        .map(e => ({ value: String(e.name), label: String(e.name) + " · " + String(e.provider) }))
+}
+
+function planningLimitWarning(limits, provider, threshold) {
+    const service = provider === "anthropic" ? "claude" : provider === "openai" ? "chatgpt" : ""
+    if (!service || !limits || limits.available !== true || !limits.services) return ""
+    const values = limits.services[service] || {}
+    const low = [values.session, values.weekly].filter(window => window &&
+        typeof window.remaining === "number" && window.remaining <= threshold &&
+        window.reason !== "stale" && window.reason !== "resetPassed" && window.reason !== "noData")
+    if (!low.length) return ""
+    const remaining = Math.min(...low.map(window => window.remaining))
+    const name = service === "claude" ? "Claude" : "Codex"
+    return "Mało limitu " + name + ": pozostało " + remaining + "%. Planowanie w Konsoli może zostać przerwane; sprawdź Limity AI."
+}
+
+function launchExecutor(status, name) {
+    return launchExecutorList(status).find(e => e && e.name === name) || null
+}
+
+function defaultExecutor(options) {
+    const names = (options || []).map(o => o.value)
+    return names.indexOf(NOW_DEFAULT) >= 0 ? NOW_DEFAULT : (names[0] || "")
+}
+
+function reviewExecutors(status, author, provider) {
+    const current = launchExecutor(status, author)
+    if (!current) return []
+    return launchExecutorList(status).filter(e => e && e.name && e.model && e.program &&
+        e.name !== author && e.model.toLowerCase() !== String(current.model || "").toLowerCase() &&
+        (current.provider === "local" ? e.provider === "local" : e.provider !== "local") &&
+        (provider === "mixed" ? e.provider !== current.provider : e.provider === current.provider))
+        .map(e => ({ value: String(e.name), label: String(e.name), disabled: e.available === false,
+                     hint: e.error || "" }))
+}
+
+function defaultReviewer(author, options) {
+    const names = (options || []).map(o => o.value)
+    const preferred = author === "Opus" ? "Sonnet" : author === "Codex mocny" ? "Codex Astra" : "Opus"
+    return names.indexOf(preferred) >= 0 ? preferred : (names[0] || "")
+}
+
+function isFlowEntry(id, mode) {
+    return launchEntry(id).flow === true || id === "planning"
+}
+
+// Prośba /Board StartCard z okna („Od razu”): wejście, wykonawca i zrzuty z katalogu zadań.
+function startCardRequest(state, images) {
+    const request = { entry: state.entry === "plan" ? "import" : state.entry, executor: state.executor,
+                      check: state.check, images: (images || []).slice() }
+    if (state.entry === "planning") request.mode = state.mode
+    if (state.entry === "plan") request.planPath = state.planPath
+    if (state.reviewer && state.entry === "now") request.reviewer = state.reviewer
+    if (state.preferredProvider) request.preferredProvider = state.preferredProvider
+    return request
+}
+
+function planCandidates(card) {
+    const rows = card && Array.isArray(card.planCandidates) ? card.planCandidates.slice() : []
+    return rows.sort((a, b) => Number(b.card === card.id) - Number(a.card === card.id)
+        || Number(b.updatedTs || 0) - Number(a.updatedTs || 0))
+}
+
+// Tryby Planowania z mocka: tytuł, opis, uwaga pod opisem i kroki paska pod kartami trybów.
+var LAUNCH_MODES = [
+    { id: "full", title: "Pełny", desc: "Rozmowa w Konsoli: grilling z dokumentacją, specyfikacja i podział na tickety. Potem review i zatwierdzenie planu.",
+      meta: "na start zada ci pytania", steps: ["Grilling", "Specyfikacja", "Tickety w planie", "Review planu", "Zatwierdzenie planu"] },
+    { id: "light", title: "Lekki", desc: "Specyfikacja i pionowe tickety w tle; plan czeka na Twoje zatwierdzenie.",
+      meta: "bez pytań i bez Konsoli", steps: ["Specyfikacja", "Tickety w planie", "Zatwierdzenie planu"] }
 ]
 var LAUNCH_TOOLS = [{ value: "claude", label: "Claude Code" }, { value: "codex", label: "Codex" }]
 
 function launchMode(id) {
     return LAUNCH_MODES.find(m => m.id === id) || LAUNCH_MODES[0]
+}
+
+function launchEntry(id) {
+    return LAUNCH_ENTRIES.find(e => e.id === id) || LAUNCH_ENTRIES[0]
+}
+
+// Czy wejście ma wybór trybu (dziś tylko Planowanie).
+function entryHasModes(id) {
+    return launchEntry(id).modes === true
+}
+
+// Kroki paska pod wyborem: własne wejścia albo kroki wybranego trybu Planowania.
+function launchSteps(entry, mode) {
+    const e = launchEntry(entry)
+    return e.modes ? launchMode(mode).steps : e.steps
+}
+
+// Wejście i tryb z projektu przy otwarciu okna. Dawne `mode: spec` (stary zapis albo usługa sprzed PT-77) to wejście
+// Tylko specyfikacja; tryb zawsze Pełny albo Lekki — zapamiętany także wtedy, gdy projekt ma wejście spec.
+function launchDefaults(project) {
+    const p = project || {}
+    const legacySpec = p.mode === "spec"
+    const mode = p.mode === "light" ? "light" : "full"
+    const entry = p.entry && LAUNCH_ENTRIES.some(e => e.id === p.entry) ? p.entry : (legacySpec ? "spec" : "planning")
+    return { entry: entry, mode: mode }
 }
 
 function launchToolName(tool) {
@@ -586,7 +804,7 @@ function docsLabel(project) {
 // Katalog worktree jak w usłudze (tasks/core.py: worktree_path): `<repo>-worktrees/<nazwa>`, gdy taki
 // katalog już jest — tego okno nie wie, więc mówimy ogólnie o konwencji repozytorium.
 function worktreeNote(state) {
-    if (state.mode === "spec") return "Specyfikacja nie potrzebuje worktree: powstaje w " + specDir(state) + " w katalogu projektu."
+    if (state.entry === "spec") return "Specyfikacja nie potrzebuje worktree: powstaje w " + specDir(state) + " w katalogu projektu."
     if (!state.newWorktree) return "Agent pracuje w głównym katalogu repozytorium, na tym, co tam jest teraz."
     const name = String(state.branch || "").replace(/^(claude|codex)\//, "")
     return "Od lokalnej gałęzi głównej, katalog " + name + " obok repozytorium (konwencja projektu). Gałąź główna zostaje nietknięta."
@@ -598,19 +816,23 @@ function specDir(state) {
 
 // Zdanie „co się stanie” w stopce okna (z modelem lokalnym: „Codex na qwen3-coder:30b”).
 function launchFooter(state) {
+    if (state.entry === "plan")
+        return "Przejmę wybrany plan bez zmieniania go w projekcie. Brakujące przydziały i kartki uzupełni krok w tle, potem plan przejdzie niezależny przegląd i poczeka na zatwierdzenie."
+    if (state.entry === "now")
+        return "Krok w tle bez Konsoli: " + (state.executor || "wykonawca") + " robi jeden ticket we własnym worktree "
+            + "odgałęzionym od gałęzi karty. Potem ticket trafia na gałąź karty, a karta do „Do sprawdzenia”."
     const tool = launchToolName(state.tool) + (state.localModel ? " na " + state.localModel : "")
-    const where = state.repoName ? "„" + state.repoName + " · " + (state.newWorktree ? state.branch : "bieżąca gałąź") + "”" : ""
-    const check = extrasNote(state)
-        + (state.check === "manual" ? " Na koniec zostawi listę „Co przetestować ręcznie i jak” i poczeka na twój test." : "")
-    if (state.mode === "spec")
+    if (state.entry === "spec")
         return tool + " w katalogu projektu, bez worktree: dopyta i zapisze specyfikację w " + specDir(state)
             + ". Potem karta wróci do Backlogu ze znacznikiem „specyfikacja gotowa”."
     const room = state.newWorktree ? "praca w nowym worktree" : "praca w głównym katalogu"
     if (state.mode === "light")
-        return "Nowa karta Konsoli " + where + ", " + tool + " z szablonem „Lekki”: krótka specyfikacja i plan z 1–3 ticketami, potem "
-            + room + "." + check + " Karta przejdzie do „W toku”, gdy agent ruszy."
-    return "Nowa karta Konsoli " + where + ", " + tool + " z szablonem „Pełny flow”. Agent najpierw zada ci pytania, potem założy plan z kluczem card: "
-        + state.cardId + "." + check + " Karta przejdzie do „W toku”, gdy agent ruszy."
+        return "Planowanie w tle bez Konsoli: " + (state.executor || "planujący")
+            + " zapisze specyfikację i tickety. Plan poczeka w „Czeka na mnie” na Twoje zatwierdzenie."
+            + ((state.extras || []).length ? " Dodatkowe projekty do odczytu: " + state.extras.map(p => p.name).join(", ") + "." : "")
+    return "Planowanie Pełne w jednej karcie Konsoli: " + (state.executor || "planujący")
+        + " dopyta, zapisze specyfikację i pokaże podział na tickety. Po review plan poczeka w „Czeka na mnie” na Twoje zatwierdzenie."
+        + ((state.extras || []).length ? " Dodatkowe projekty jako kontekst: " + state.extras.map(p => p.name).join(", ") + "." : "")
 }
 
 // Zdanie stopki o dodatkowych projektach (PT-28): „ Pracuje też w mobileapp, infra (gałąź … w każdym, które zmieni).”
@@ -621,13 +843,13 @@ function extrasNote(state) {
     return " Pracuje też w: " + names.join(", ") + " (gałąź " + branch + " w każdym, które zmieni)."
 }
 
-// Prośba /Tasks Start z polecenia RenderLaunch: worktree tylko poza trybem spec, katalogi dla --add-dir
+// Prośba /Tasks Start z polecenia RenderLaunch: worktree tylko poza wejściem Tylko specyfikacja, katalogi dla --add-dir
 // z RenderLaunch (`addDirs`: dokumenty w tablicy przy ai-docs: tide i repozytoria dodatkowych projektów,
 // PT-28); usługa sprzed PT-28 — sam katalog dokumentów. Zrzuty ekranu i model jak z okna „Nowe zadanie”
 // (PT-43): `images` — pliki z katalogu zadań (imagesDir), `model` — cloud albo local (przy local usługa bierze
 // program z agentProgram w models.json; `tool` z okna to ten sam program).
 function launchStartRequest(flow, state) {
-    const worktree = state.mode !== "spec" && state.newWorktree
+    const worktree = state.entry !== "spec" && state.newWorktree
     const dirs = Array.isArray(flow.addDirs) ? flow.addDirs.slice()
                : (flow.aiDocs === "tide" && flow.docsDir ? [flow.docsDir] : [])
     return { repoPath: flow.repo, tool: flow.tool || state.tool, prompt: flow.text, newWorktree: worktree,
@@ -691,11 +913,11 @@ function pathTail(path) {
     return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : text
 }
 
-// UpdateCard po udanym starcie: gałąź i worktree (tylko nowy worktree), tryb, narzędzie, sprawdzenie, chwila,
+// UpdateCard po udanym starcie: gałąź i worktree (tylko nowy worktree), wejście i tryb (przy Tylko specyfikacja pusty), narzędzie, sprawdzenie, chwila,
 // a `session` pusty — ponowne uruchomienie odpina poprzednią sesję i usługa przypnie nową (PT-28).
 function launchMarkRequest(result, state, nowIso) {
-    return { branch: result.worktree ? result.branch || "" : "", worktree: result.worktree || "", mode: state.mode,
-             tool: result.tool || state.tool, check: state.check === "manual" ? "manual" : "auto", launched: nowIso,
+    return { branch: result.worktree ? result.branch || "" : "", worktree: result.worktree || "", entry: state.entry || "planning",
+             mode: state.entry === "spec" ? "" : state.mode, tool: result.tool || state.tool, check: state.check === "manual" ? "manual" : "auto", launched: nowIso,
              session: "" }
 }
 

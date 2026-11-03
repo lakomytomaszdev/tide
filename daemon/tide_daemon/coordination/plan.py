@@ -24,6 +24,7 @@ TRACKERS = ("youtrack", "local", "none")
 COORDINATORS = ("claude", "codex")
 STATUSES = ("active", "paused", "done")
 COLUMNS = ("ticket", "tytuł", "stan", "gałąź", "agent", "uwagi")
+OPTIONAL_COLUMNS = ("klasa", "review", "blokery")
 # Łagodność dla ręcznie pisanych planów: popularne warianty stanów.
 STATE_ALIASES = {"w toku": "w-toku", "wtoku": "w-toku", "in-progress": "w-toku", "doing": "w-toku",
                  "done": "gotowe", "todo": "todo", "to-do": "todo", "do zrobienia": "todo",
@@ -46,6 +47,9 @@ class PlanRow:
     branch: str = ""
     agent: str = ""
     note: str = ""
+    work_class: str = ""
+    reviewer: str = ""
+    blockers: tuple[str, ...] = ()
 
 
 @dataclass
@@ -65,6 +69,7 @@ class Plan:
     errors: list = field(default_factory=list)
     goal: str = ""             # cel planu: akapit pod nagłówkiem „Cel…” albo pierwszy akapit tekstu
     card: str = ""             # karta tablicy Tide (`card: K-12`, standard 1.1) albo pusty
+    tables: int = 0             # propozycja karty wymaga dokładnie jednej tabeli ticketów
 
     def to_json(self) -> dict:
         return {"path": self.path, "title": self.title, "tracker": self.tracker, "trackerUrl": self.tracker_url,
@@ -119,7 +124,7 @@ def parse(text: str, path: str = "", mtime: float = 0.0) -> Plan | None:
         plan.updated_ts = mtime
     if plan.tracker == "youtrack" and not (plan.tracker_url and plan.tracker_project):
         plan.errors.append("tracker youtrack wymaga tracker-url i tracker-project")
-    plan.rows = _table(body, plan.errors)
+    plan.rows, plan.tables = _table(body, plan.errors)
     plan.goal = goal_of(body)
     return plan
 
@@ -264,18 +269,27 @@ def _cells(line: str) -> list[str]:
     return [c.replace("\\|", "|").strip() for c in cells]
 
 
-def _table(body: str, errors: list) -> list[PlanRow]:
+def _table(body: str, errors: list) -> tuple[list[PlanRow], int]:
     lines = body.split("\n")
     rows: list[PlanRow] = []
+    tables = 0
+    ticket_tables = 0
     for i, line in enumerate(lines):
         if not line.strip().startswith("|"):
             continue
+        if i + 1 < len(lines) and lines[i + 1].strip().startswith("|") and all(
+            re.fullmatch(r":?-{3,}:?", cell) for cell in _cells(lines[i + 1])):
+            tables += 1
         header = [c.lower() for c in _cells(line)]
         if header[:3] != list(COLUMNS[:3]):
             continue
-        if header != list(COLUMNS):
-            errors.append("nagłówek tabeli: oczekiwano | Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |")
-        index = {name: header.index(name) for name in COLUMNS if name in header}
+        ticket_tables += 1
+        if ticket_tables > 1:
+            continue
+        if header not in [list(COLUMNS + OPTIONAL_COLUMNS[:n]) for n in range(4)]:
+            errors.append("nagłówek tabeli: oczekiwano | Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |"
+                          " z opcjonalnymi kolumnami Klasa | Review | Blokery na końcu")
+        index = {name: header.index(name) for name in COLUMNS + OPTIONAL_COLUMNS if name in header}
         for raw in lines[i + 2:]:
             if not raw.strip().startswith("|"):
                 break
@@ -290,9 +304,10 @@ def _table(body: str, errors: list) -> list[PlanRow]:
                 errors.append(f"{ticket}: nieznany stan „{raw_state}”")
                 state = ""
             rows.append(PlanRow(ticket=ticket, title=_plain(get("tytuł")), state=state,
-                                branch=_plain(get("gałąź")), agent=_plain(get("agent")), note=_plain(get("uwagi"))))
-        break
-    return rows
+                                branch=_plain(get("gałąź")), agent=_plain(get("agent")), note=_plain(get("uwagi")),
+                                work_class=_plain(get("klasa")).lower(), reviewer=_plain(get("review")),
+                                blockers=tuple(part for part in re.split(r"[,;\s]+", _plain(get("blokery"))) if part)))
+    return rows, tables
 
 
 GOAL_MAX = 600

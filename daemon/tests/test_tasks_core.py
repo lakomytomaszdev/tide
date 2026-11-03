@@ -293,11 +293,15 @@ class PlannerTest(unittest.TestCase):
             self.planner.prepare("nie słownik")
         self.assertEqual(ctx.exception.code, "bad-request")
 
-    def test_dirty_master_refuses_new_worktree(self):
+    def test_dirty_master_does_not_block_new_worktree(self):
         with open(os.path.join(self.alpha, "README.md"), "a", encoding="utf-8") as fh:
             fh.write("zmiana\n")
-        error = self.assert_refused("dirty-base", self.request())
-        self.assertIn("master", error.message)
+        open(os.path.join(self.alpha, "nowy.md"), "w").close()
+        plan = self.planner.prepare(self.request())
+        self.assertTrue(plan.worktree)
+        self.assertFalse(os.path.exists(os.path.join(plan.worktree, "nowy.md")))
+        with open(os.path.join(plan.worktree, "README.md"), encoding="utf-8") as fh:
+            self.assertNotIn("zmiana", fh.read())
 
     def test_missing_cli(self):
         os.unlink(os.path.join(self.bin, "codex"))

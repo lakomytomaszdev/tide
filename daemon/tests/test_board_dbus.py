@@ -176,8 +176,8 @@ class BoardDBusTest(unittest.TestCase):
                          ["backlog", "todo", "progress", "waiting", "review", "done", "archived"])
 
         flow = self.call("RenderFlow", "K-1", "")
-        self.assertEqual((flow["ok"], flow["mode"], flow["tool"], flow["branch"]),
-                         (True, "spec", "claude", "claude/k-1-historia-diagnoz-vin"))
+        self.assertEqual((flow["ok"], flow["entry"], flow["mode"], flow["tool"], flow["branch"]),
+                         (True, "spec", "", "claude", "claude/k-1-historia-diagnoz-vin"))
         self.assertIn("Karta K-1: Historia diagnoz po VIN", flow["text"])
 
         log = git_out(self.board, "log", "--format=%an|%s").splitlines()[::-1]

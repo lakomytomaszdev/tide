@@ -137,8 +137,10 @@ Rectangle {
         }
 
         Text {
-            Layout.preferredWidth: 110
-            text: row.worktree.hasAgent ? "agent pracuje" : Tide.Theme.agoText(row.worktree.lastActivityTs, row.nowTs)
+            objectName: "worktreeActivity"
+            Layout.preferredWidth: row.worktree.hasCard ? 160 : 110
+            text: row.worktree.hasCard ? "zajęty przez kartę"
+                  : row.worktree.hasAgent ? "agent pracuje" : Tide.Theme.agoText(row.worktree.lastActivityTs, row.nowTs)
             color: row.kind === "active" ? Tide.Tokens.working : row.old ? Tide.Tokens.textMuted : Tide.Tokens.textPrimary
             font.family: Tide.Theme.uiFamily
             font.pixelSize: 13

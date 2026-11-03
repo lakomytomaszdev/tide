@@ -238,11 +238,16 @@ def main(argv=None) -> int:
     # Osobny, mały indeks sesji dla worktrees (KRunner ma własny, pełniejszy — krunner/index.py).
     worktree_sessions = worktrees.SessionIndex(args.claude_dir, args.codex_dir)
     launchers = worktrees.Launchers()
+    # Worktree kroków w tle i kart w toku (przepływ karty, PT-58) — zajęte jak katalog agenta; sesje kroków nie są
+    # wierszami agentów, więc bez tego wyglądałyby na wolne. Źródło dochodzi po starcie Tablicy.
+    flow_places = []
     trees = WorktreeMonitor(worktrees.WorktreeScanner(args.workspace, args.worktree_depth, clock=clock,
                                                       sessions=worktree_sessions),
-                            lambda: worktrees.agent_cwds(monitor.sessions, monitor.procs),
+                            lambda: worktrees.agent_cwds(monitor.sessions, monitor.procs)
+                            + [place for source in flow_places for place in source()],
                             launchers, refresh_agents=monitor.recompute,
-                            live_source=lambda: worktrees.live_sessions(monitor.sessions))
+                            live_source=lambda: worktrees.live_sessions(monitor.sessions),
+                            card_places_source=lambda: [place for source in flow_places for place in source()])
     monitor.changed.connect(trees.publish)  # nowy albo zakończony agent zmienia flagę „aktywny agent”
     # KRunner przed główną nazwą: gdy org.tide.Daemon jest już na magistrali, wtyczka też.
     coordination = None if args.no_coordination else start_coordination(app, args, clock, monitor, trees,
@@ -258,7 +263,7 @@ def main(argv=None) -> int:
     if models is not None:
         scanner.known_local_models = models.known_models  # role i modele na serwerach ze stanu /Models
     tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
-    board = None if args.no_board else start_board(app, args, trees, monitor, coordination, clock)
+    board = None if args.no_board else start_board(app, args, trees, monitor, coordination, clock, limits)
     if board is not None:
         # Notki „Skończone dziś”: ręczne sprawdzenie z karty tablicy pracy (check: manual, spec — PT-5).
         report.card_check = board_card_check(board)
@@ -311,6 +316,20 @@ def main(argv=None) -> int:
         notifier = Notifier(monitor.activate)
         notifier.update(monitor.sessions)  # stan wyjściowy: czekające już wcześniej nie dostają powiadomień
         monitor.changed.connect(lambda: notifier.update(monitor.sessions))
+        if board is not None and board.flow is not None:
+            from .notifications import NoteNotifier
+            flow_notifier = NoteNotifier(board.show_window, parent=app)
+
+            def notify_card_step(item):
+                labels = {"question": "pytanie", "denied": "potrzebna zgoda", "error": "błąd kroku",
+                          "plan": "plan do zatwierdzenia", "review": "karta do sprawdzenia",
+                          "limit": "limit dostawcy", "stalled": "karta stoi"}
+                kind = labels.get(item["result"], "krok czeka")
+                flow_notifier.notify(f"flow:{item['card']}:{item['step']}",
+                                     f"{item['card']}: {kind}" + (f" z {item['ticket']}" if item['ticket'] else ""),
+                                     str(item.get("detail") or "")[:300], item["card"])
+
+            board.flow.notifier = notify_card_step
         if limits is not None:
             from .notifications import LimitsNotifier
             limits_notifier = LimitsNotifier(parent=app)
@@ -323,6 +342,9 @@ def main(argv=None) -> int:
         search.start()  # indeks po znaczeniu w tle, po --search-delay, z najniższym priorytetem kolejki modeli
     if board is not None:
         board.start()  # zmiany z czasu, gdy usługa nie działała, i obserwacja katalogu tablicy
+        if board.flow is not None:
+            flow_places.append(board.flow.engine.busy_places)
+            board.flow.start()  # kroki w tle z dziennika kart: podpięcie po restarcie, koniec, strażnik
     if coordination is not None:
         # Żywy raport i notki „Skończone dziś”: każda nowa wersja tablic koordynacji.
         coordination.changed.connect(lambda: report.coordination_changed(coordination.boards))
@@ -510,7 +532,9 @@ def board_snapshot(board):
     """Funkcja() → migawka tablicy pracy (/Board Snapshot()) dla raportu albo None."""
     def snapshot():
         try:
-            return json.loads(board.snapshot_json())
+            data = json.loads(board.snapshot_json())
+            data["flowRoot"] = board.store.root
+            return data
         except ValueError:
             return None
     return snapshot
@@ -521,7 +545,10 @@ def report_board(args):
     if args.no_board:
         return None
     try:
-        return board_store(args).snapshot()
+        store = board_store(args)
+        data = store.snapshot()
+        data["flowRoot"] = store.root
+        return data
     except Exception as exc:  # tablica to dodatek
         print(f"tide-daemon: raport: tablica pracy pominięta: {exc!r}", file=sys.stderr)
         return None
@@ -658,7 +685,7 @@ def pastel_colors(paths) -> dict | None:
     return None
 
 
-def start_board(app, args, trees, monitor=None, coordination=None, clock=time.time):
+def start_board(app, args, trees, monitor=None, coordination=None, clock=time.time, limits=None):
     """Obszar /Board: tablica pracy w lokalnym repozytorium git (board/, board_monitor.py).
     Repozytoria do dodania jako projekty bierzemy z gotowej listy obszaru Worktrees, a stan kart
     (W toku, Czeka na mnie, Do sprawdzenia — board/derive.py) z sesji /Agents i tablic /Coordination."""
@@ -690,6 +717,7 @@ def start_board(app, args, trees, monitor=None, coordination=None, clock=time.ti
                          coordinators=(lambda: coordination.boards) if coordination is not None else None,
                          youtrack=youtrack, parent=app)
     trees.changed.connect(board.publish)  # nowe repozytorium w katalogu projektów
+    board.flow = start_card_flow(app, args, board, monitor, limits)
     # Git (czy gałąź scalona) idzie w wątku roboczym; nowy wynik przelicza karty w wątku głównym.
     deriver.branches.on_result = board.rederive_later
     if monitor is not None:
@@ -697,6 +725,40 @@ def start_board(app, args, trees, monitor=None, coordination=None, clock=time.ti
     if coordination is not None:
         coordination.changed.connect(board.rederive)  # tickety, plan, pytania koordynatora
     return board
+
+
+def start_card_flow(app, args, board, monitor=None, limits=None):
+    """Przepływ karty (PT-58, cardflow/, cardflow_monitor.py): StartCard, kroki w tle, dziennik kart. Sesje kroków
+    znikają z /Agents (monitor.hidden). $TIDE_SYSTEMD_RUN i $TIDE_FLOW_POLL_MS — tylko testy usługi (atrapa
+    systemd-run, krótszy zegar)."""
+    from .cardflow.engine import FlowEngine
+    from .cardflow_monitor import POLL_MS, CardFlowMonitor
+    from .models import config as models_config
+    from .models import status as models_status
+    from .tasks.terminal import KonsoleWindows, TaskTerminal
+    try:
+        poll_ms = int(os.environ.get("TIDE_FLOW_POLL_MS") or POLL_MS)
+    except ValueError:
+        poll_ms = POLL_MS
+    claude_dir = getattr(args, "claude_dir", None) or default_claude_dir()   # testy podają częściowe argumenty
+    probe = activate = None
+    if not getattr(args, "no_processes", False):
+        from . import processes, windows
+        probe, activate = processes.probe, windows.activate
+    terminal = TaskTerminal(board.launchers, KonsoleWindows(), probe=probe, activate=activate)
+    engine = FlowEngine(board.store, claude_projects=os.path.join(claude_dir, "projects"),
+                        systemd_run=os.environ.get("TIDE_SYSTEMD_RUN", ""),
+                        catalog=lambda: models_config.load().catalog,
+                        models_config=models_config.load, model_probe=models_status.endpoint_status,
+                        codex_roots=getattr(args, "codex_dir", None), terminal=terminal,
+                        limits_source=(lambda: json.loads(limits.forecast_json())) if limits is not None else None)
+    if monitor is not None:
+        monitor.hidden = engine.is_hidden
+        engine.sessions_source = lambda: monitor.raw_sessions
+        monitor.raw_changed.connect(board.rederive)
+    return CardFlowMonitor(engine, board, poll_ms=max(100, poll_ms), parent=app)
+
+
 def docker_once(args, clock) -> dict:
     """--print-docker: migawka kontenerów i miejsce na dysku — wyłącznie zapytania GET do Engine API."""
     from .docker import DockerEngine

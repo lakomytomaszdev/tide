@@ -17,6 +17,13 @@ Rectangle {
     property var snapshot: null
     property string homeDir: ""
     property var tagTone: null
+    property var modelsStatus: null
+    property var flowSettings: null
+    property string limitTransferMode: "ask"
+    property string limitTransferExecutor: ""
+    property bool flowSettingsDirty: false
+    property bool flowSettingsBusy: false
+    property string flowSettingsError: ""
     property string openProject: ""     // slug projektu z otwartym formularzem
     property string openTag: ""         // nazwa tagu z otwartym formularzem ("+" — nowy)
     property string projectError: ""
@@ -37,6 +44,17 @@ Rectangle {
     signal issuesRequested(string tag, bool refresh)       // /Board YouTrackIssues
     signal importRequested(string tag, var keys)           // /Board ImportYouTrack
     signal resolveRequested(string tag, string ident, string choice)   // /Board ResolveYouTrack
+    signal flowSettingsSaveRequested(string tag, var request) // /Board SetCardFlowSettings
+
+    function loadFlowSettings() {
+        const value = flowSettings && flowSettings.limitTransfer ? flowSettings.limitTransfer : {}
+        limitTransferMode = value.mode === "auto" ? "auto" : "ask"
+        limitTransferExecutor = value.executor || ""
+        flowSettingsDirty = false
+    }
+
+    onFlowSettingsChanged: if (!flowSettingsDirty && !flowSettingsBusy) loadFlowSettings()
+    onVisibleChanged: if (visible) { flowSettingsDirty = false; loadFlowSettings() }
 
     function nextTag(prefix) {
         serial++
@@ -68,7 +86,9 @@ Rectangle {
     function handleReply(tag, reply) {
         if (tag === busyTag) busyTag = ""
         const error = reply && reply.ok ? "" : Logic.errorText(reply)
-        if (tag.indexOf("project:") === 0) {
+        if (tag.indexOf("rules:") === 0) {
+            assignmentError = error
+        } else if (tag.indexOf("project:") === 0) {
             projectError = error
             if (!error) openProject = ""
         } else if (tag.indexOf("tag:") === 0) {
@@ -99,11 +119,16 @@ Rectangle {
                 importPanel.picked = ({})
                 issuesRequested(nextTag("yt-issues"), false)
             }
+        } else if (tag.indexOf("flow-settings:") === 0) {
+            flowSettingsBusy = false
+            flowSettingsError = error
+            if (!error) flowSettingsDirty = false
         } else if (tag.indexOf("yt-resolve:") === 0) {
             youtrackError = error
         }
     }
     property string youtrackError: ""
+    property string assignmentError: ""
 
     function send(kind, key, request) {
         busyTag = kind + ":" + key
@@ -175,6 +200,7 @@ Rectangle {
             // --- projekty --------------------------------------------------------------------------
             Flickable {
                 id: projectsFlick
+                objectName: "manageProjectsFlick"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredWidth: 3
@@ -189,6 +215,105 @@ Rectangle {
                     width: projectsFlick.width - 12
                     spacing: 8
 
+                    SectionTitle { text: "PRZEPŁYW KARTY · LIMITY" }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Po wyczerpaniu limitu zapytaj o przeniesienie kroku albo przenieś go automatycznie do wybranego wykonawcy."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        QQC2.ComboBox {
+                            // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                            wheelEnabled: false
+                            objectName: "limitTransferMode"
+                            Layout.fillWidth: true
+                            model: [{value: "ask", label: "Zapytaj mnie"},
+                                    {value: "auto", label: "Przenieś automatycznie"}]
+                            textRole: "label"
+                            valueRole: "value"
+                            currentIndex: page.limitTransferMode === "auto" ? 1 : 0
+                            onActivated: index => {
+                                page.limitTransferMode = model[index].value
+                                page.flowSettingsDirty = true
+                            }
+                            Accessible.name: "Reakcja na wyczerpany limit"
+                        }
+                        QQC2.ComboBox {
+                            // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                            wheelEnabled: false
+                            objectName: "limitTransferExecutor"
+                            Layout.fillWidth: true
+                            visible: page.limitTransferMode === "auto"
+                            model: Logic.transferSettingsExecutors(page.modelsStatus)
+                            textRole: "label"
+                            valueRole: "value"
+                            currentIndex: model.findIndex(option => option.value === page.limitTransferExecutor)
+                            onActivated: index => {
+                                page.limitTransferExecutor = model[index].value
+                                page.flowSettingsDirty = true
+                            }
+                            Accessible.name: "Wykonawca docelowy przy limicie"
+                        }
+                        PillButton {
+                            objectName: "limitTransferSave"
+                            text: "Zapisz"
+                            enabled: page.flowSettingsDirty && !page.flowSettingsBusy &&
+                                     (page.limitTransferMode !== "auto" || page.limitTransferExecutor !== "")
+                            onClicked: {
+                                page.flowSettingsBusy = true
+                                page.flowSettingsError = ""
+                                page.flowSettingsSaveRequested(page.nextTag("flow-settings"),
+                                    { limitTransfer: { mode: page.limitTransferMode,
+                                                       executor: page.limitTransferMode === "auto" ? page.limitTransferExecutor : "" } })
+                            }
+                        }
+                    }
+                    Text {
+                        objectName: "limitTransferError"
+                        Layout.fillWidth: true
+                        visible: page.flowSettingsError !== ""
+                        text: page.flowSettingsError
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.rose
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+
+                    SectionTitle { text: "ZASADY PRZYDZIAŁU · WSPÓLNE" }
+                    QQC2.TextArea {
+                        id: globalRules
+                        objectName: "globalAssignmentRules"
+                        Layout.fillWidth: true
+                        implicitHeight: 130
+                        text: (page.snapshot && page.snapshot.assignmentRules) || ""
+                        wrapMode: TextEdit.Wrap
+                        color: Tide.Tokens.textPrimary
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        Accessible.name: "Wspólne zasady przydziału"
+                        background: Rectangle { radius: Tide.Tokens.radiusTile; color: Tide.Tokens.backgroundPanel }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: page.assignmentError !== ""
+                        text: page.assignmentError
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.rose
+                        wrapMode: Text.Wrap
+                    }
+                    PillButton {
+                        objectName: "globalAssignmentRulesSave"
+                        text: "Zapisz wspólne zasady"
+                        enabled: page.busyTag === ""
+                        onClicked: page.send("rules", "global", { globalAssignmentRules: globalRules.text.trim() })
+                    }
                     // --- YouTrack (PT-7) -------------------------------------------------------------
                     RowLayout {
                         Layout.fillWidth: true
@@ -558,7 +683,10 @@ Rectangle {
         property string aiDocs: ""
         property string tool: ""
         property string mode: ""
+        property string entry: ""
         property bool youtrackSync: true
+        property string allowedCommands: ""
+        property string deniedCommands: ""
         property alias youtrackKey: youtrackField.text
         readonly property bool youtrackToggleEnabled: youtrackToggle.enabled
         readonly property string youtrackSummary: youtrackLabel.visible ? youtrackLabel.text : ""
@@ -567,11 +695,22 @@ Rectangle {
             tags = (project.tags || []).slice()
             aiDocs = project.aiDocs || "tide"
             tool = project.tool || "claude"
-            mode = project.mode || "full"
+            const d = Logic.launchDefaults(project)   // dawne mode: spec to wejście Tylko specyfikacja
+            entry = d.entry
+            mode = d.mode
             nameField.text = project.name || ""
             descriptionField.text = project.description || ""
             youtrackField.text = project.youtrack || ""
             youtrackSync = project.youtrack ? !!project.youtrackSync : true
+            allowedCommands = (project.allowedCommands || []).join("\n")
+            deniedCommands = (project.deniedCommands || []).join("\n")
+            allowedCommandsArea.text = allowedCommands
+            deniedCommandsArea.text = deniedCommands
+            assignmentRulesArea.text = project.assignmentRules || ""
+        }
+
+        function commandLines(value) {
+            return value.split("\n").map(s => s.trim()).filter(s => s.length > 0)
         }
 
         function save() {
@@ -581,11 +720,18 @@ Rectangle {
             if (tags.join(",") !== (project.tags || []).join(",")) request.tags = tags
             if (aiDocs !== project.aiDocs || project.aiDocsDefault) request.aiDocs = aiDocs
             if (tool !== project.tool) request.tool = tool
-            if (mode !== project.mode) request.mode = mode
+            const d = Logic.launchDefaults(project)
+            if (entry !== d.entry) request.entry = entry
+            if (mode !== d.mode) request.mode = mode
             if (descriptionField.text.trim() !== (project.description || "")) request.description = descriptionField.text.trim()
             const key = youtrackField.text.trim().toUpperCase()
             if (key !== (project.youtrack || "")) request.youtrack = key
             if (key && youtrackSync !== (project.youtrack ? !!project.youtrackSync : true)) request.youtrackSync = youtrackSync
+            const allowed = commandLines(allowedCommands)
+            const denied = commandLines(deniedCommands)
+            if (JSON.stringify(allowed) !== JSON.stringify(project.allowedCommands || [])) request.allowedCommands = allowed
+            if (JSON.stringify(denied) !== JSON.stringify(project.deniedCommands || [])) request.deniedCommands = denied
+            if (assignmentRulesArea.text.trim() !== (project.assignmentRules || "")) request.assignmentRules = assignmentRulesArea.text.trim()
             page.send("project", project.slug, request)
         }
 
@@ -669,7 +815,8 @@ Rectangle {
                     Text {
                         text: (row.project.aiDocs === "repo" ? "dokumenty AI w repozytorium" : "dokumenty AI w tablicy")
                               + " · " + Logic.toolName(row.project.tool) + " · "
-                              + ({ full: "pełny", light: "lekki", spec: "tylko spec" }[row.project.mode] || row.project.mode || "")
+                              + (Logic.launchDefaults(row.project).entry === "spec" ? "tylko specyfikacja"
+                                 : ({ full: "planowanie, pełny", light: "planowanie, lekki" }[Logic.launchDefaults(row.project).mode] || ""))
                         textFormat: Text.PlainText
                         color: Tide.Tokens.textSecondary
                         font.family: Tide.Theme.uiFamily
@@ -745,11 +892,20 @@ Rectangle {
                     current: row.tool
                     onPicked: value => row.tool = value
                 }
-                FieldLabel { text: "Tryb" }
+                FieldLabel { text: "Domyślne wejście" }
                 Segmented {
+                    objectName: "projectEntry"
                     itemHeight: 28
-                    options: [{ value: "full", label: "Pełny" }, { value: "light", label: "Lekki" },
-                              { value: "spec", label: "Tylko spec" }]
+                    options: [{ value: "planning", label: "Planowanie" }, { value: "spec", label: "Tylko specyfikacja" }]
+                    current: row.entry
+                    onPicked: value => row.entry = value
+                }
+                FieldLabel { text: "Tryb"; visible: Logic.entryHasModes(row.entry) }
+                Segmented {
+                    objectName: "projectMode"
+                    visible: Logic.entryHasModes(row.entry)
+                    itemHeight: 28
+                    options: [{ value: "full", label: "Pełny" }, { value: "light", label: "Lekki" }]
                     current: row.mode
                     onPicked: value => row.mode = value
                 }
@@ -794,6 +950,60 @@ Rectangle {
                     Layout.fillWidth: true
                     placeholder: "Krótko, czego dotyczy projekt"
                     onAccepted: row.save()
+                }
+                FieldLabel { text: "Zasady przydziału"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 6 }
+                QQC2.TextArea {
+                    id: assignmentRulesArea
+                    objectName: "projectAssignmentRules"
+                    Layout.fillWidth: true
+                    implicitHeight: 100
+                    placeholderText: "Puste pole: dziedzicz wspólne zasady. Klasy: lekki, standard, mocny, lokalny."
+                    wrapMode: TextEdit.Wrap
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 12
+                    Accessible.name: "Zasady przydziału projektu, puste dziedziczą wspólne"
+                    background: Rectangle { radius: Tide.Tokens.radiusTile; color: Tide.Tokens.backgroundPanel }
+                }
+                FieldLabel { text: "Dozwolone polecenia"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 6 }
+                QQC2.TextArea {
+                    id: allowedCommandsArea
+                    objectName: "projectAllowedCommands"
+                    Layout.fillWidth: true
+                    implicitHeight: 116
+                    text: row.allowedCommands
+                    onTextChanged: row.allowedCommands = text
+                    wrapMode: TextEdit.NoWrap
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.monoFamily
+                    font.pixelSize: 12
+                    Accessible.name: "Dozwolone polecenia projektu, po jednym w wierszu"
+                    background: Rectangle { radius: 6; color: Tide.Tokens.backgroundPanel }
+                }
+                FieldLabel { text: "Zabronione polecenia"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 6 }
+                QQC2.TextArea {
+                    id: deniedCommandsArea
+                    objectName: "projectDeniedCommands"
+                    Layout.fillWidth: true
+                    implicitHeight: 68
+                    text: row.deniedCommands
+                    onTextChanged: row.deniedCommands = text
+                    wrapMode: TextEdit.NoWrap
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.monoFamily
+                    font.pixelSize: 12
+                    Accessible.name: "Zabronione polecenia projektu, po jednym w wierszu"
+                    background: Rectangle { radius: 6; color: Tide.Tokens.backgroundPanel }
+                }
+                Text {
+                    Layout.columnSpan: 2
+                    Layout.fillWidth: true
+                    text: "Claude stosuje listy poleceń w uprawnieniach CLI. Dla Codexa są wskazówką w kartce; jego piaskownica ogranicza zapis, ale nie blokuje każdego polecenia spoza listy."
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
                 }
                 Item { implicitWidth: 1 }
                 RowLayout {
