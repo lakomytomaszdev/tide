@@ -74,6 +74,27 @@ class ColumnRuleTest(unittest.TestCase):
         self.assertEqual(out["column"], "waiting")
         self.assertEqual([d["kind"] for d in out["flow"]["decisions"]], ["question"])
 
+    def _two_tickets(self, limit_first):
+        events = Events()
+        if limit_first:
+            stopped(events, name="K-1-PT-2-1", ticket="PT-2")
+        events.step("K-1-PT-1-1", ticket="PT-1", result="question", question="Którą wersję zostawić?")
+        if not limit_first:
+            stopped(events, name="K-1-PT-2-1", ticket="PT-2")
+        return view(events)
+
+    def test_decision_of_another_ticket_wins_over_limit_in_either_order(self):
+        for limit_first in (True, False):
+            with self.subTest(limit_first=limit_first):
+                out = self._two_tickets(limit_first)
+                self.assertEqual(out["column"], "waiting", "decyzja innego ticketu → „Czeka na mnie”")
+                self.assertEqual([d["kind"] for d in out["flow"]["decisions"]], ["question"])
+                self.assertNotIn("limit", out["note"])
+                self.assertEqual(out["flow"]["question"], "Którą wersję zostawić?")
+
+    def test_limit_does_not_leave_a_question_in_the_flow(self):
+        self.assertEqual(view(stopped())["flow"]["question"], "")
+
     def test_returns_to_review_when_the_resumed_step_finishes(self):
         events = stopped()
         events.step("K-1-PT-1-2", ticket="PT-1", parent="K-1-PT-1-1", result="done")
