@@ -74,7 +74,7 @@ class FlowCase(unittest.TestCase):
         git(self.repo, "commit", "-q", "-m", "init", env=self.git_env)
         self.master = git(self.repo, "rev-parse", "master").strip()
         with open(os.path.join(self.base, "config", "tide", "cardflow.json"), "w", encoding="utf-8") as fh:
-            json.dump({"stepGuardMinutes": self.guard_minutes, "autoConsent": False,
+            json.dump({"stepGuardMinutes": self.guard_minutes, "autoConsent": False, "escalateErrors": False,
                        "reviewRoundsBeforeQuestion": 3}, fh)
         fakebin = os.path.join(self.base, "fakebin")
         flowfakes.install(fakebin)

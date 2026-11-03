@@ -1701,11 +1701,20 @@ class FlowEngine(PlanEditing):
                         self._advance(card, current)
                     except FlowDeferred:
                         pass
+                    except Exception as exc:
+                        # Izolacja (03.11, „błędy koordynacji to rak”): błąd przy jednym tickecie zatrzymuje tylko
+                        # ten ticket — pozostałe tickety, start nowych i domknięcie karty idą dalej.
+                        self._isolated_fault(card, name, exc)
                 current = fold(self.journal.read(card))
-                if current.plan_approved is not None:
-                    self._plan_next(card, current)
-                elif not latest:
-                    self._advance(card, current)
+                try:
+                    if current.plan_approved is not None:
+                        self._plan_next(card, current)
+                    elif not latest:
+                        self._advance(card, current)
+                except FlowDeferred:
+                    pass
+                except Exception as exc:
+                    self._isolated_fault(card, "", exc)
                 self._advance_close(card, fold(self.journal.read(card)))
             except FlowDeferred:
                 pass
@@ -1731,6 +1740,18 @@ class FlowEngine(PlanEditing):
                         problem = f"{exc.__class__.__name__}: {exc}"
                         if st.flow_error != problem:
                             self.journal.append(card, "flow.error", error=problem)
+
+    def _isolated_fault(self, card: str, step_name: str, exc: Exception) -> None:
+        """Błąd koordynacji jednego kroku: zapis w dzienniku (raz dla tego samego tekstu) i ślad w dzienniku usługi."""
+        import traceback
+        problem = f"{exc.__class__.__name__}: {exc}"
+        st = fold(self.journal.read(card))
+        step = st.steps.get(step_name) or {}
+        if st.flow_error != problem:
+            self.journal.append(card, "flow.error", error=problem, step=step_name, ticket=step.get("ticket") or "")
+        if not isinstance(exc, (FlowError, FlowGitError)):
+            print(f"tide-daemon: przepływ karty {card}, krok {step_name or '-'}: "
+                  + "".join(traceback.format_exception_only(type(exc), exc)).strip(), flush=True)
 
     @staticmethod
     def _wip_for(st: FlowState, step_id: str) -> dict:

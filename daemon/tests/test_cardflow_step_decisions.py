@@ -573,3 +573,32 @@ class RetryInstructionTest(unittest.TestCase):
                                       out_dir="/tmp/x")
         self.assertIn("B1 odroczone do nowego ticketu", text)
         self.assertIn("ma pierwszeństwo", text)
+
+
+class IsolationTest(FlowInProcess):
+    def test_coordination_error_of_one_ticket_does_not_stop_the_others(self):
+        # 03.11: wyjątek przy jednym tickecie (np. AttributeError w obsłudze polecenia) zatrzymywał całą kartę.
+        from unittest import mock as _mock
+        from tide_daemon.cardflow.state import fold
+        card = self.card()
+        self.flow.stop()
+        engine = self.flow.engine
+        journal = engine.journal
+        journal.append(card, "card.started", entry="plan", repo=self.repo)
+        journal.append(card, "plan.approved", rows=[{"id": "PT-2", "blockers": []}, {"id": "PT-3", "blockers": []}])
+        for ticket in ("PT-2", "PT-3"):
+            journal.append(card, "step.started", step=f"s-{ticket}", ticket=ticket, kind="ticket")
+            journal.append(card, "step.finished", step=f"s-{ticket}", ticket=ticket, result="done")
+        calls = []
+
+        def advance(card_id, st):
+            calls.append(st.last_step)
+            if st.last_step == "s-PT-2":
+                raise AttributeError("zepsuty krok")
+
+        with _mock.patch.object(engine, "_advance", side_effect=advance), \
+                _mock.patch.object(engine, "_plan_next") as plan_next, _mock.patch.object(engine, "_advance_close"):
+            engine._tick_card(card, fold(journal.read(card)))
+        self.assertIn("s-PT-3", calls, "drugi ticket idzie dalej mimo błędu pierwszego")
+        plan_next.assert_called()
+        self.assertIn("zepsuty krok", self.of(card, "flow.error")[-1]["error"])
