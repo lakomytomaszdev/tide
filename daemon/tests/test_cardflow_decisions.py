@@ -557,3 +557,15 @@ class OutsideRunGuardTest(unittest.TestCase):
         self.assertIsNone(guard_reason(fold(events.items)))
         events.add("outside.finished", step="s", ticket="PT-1", exit=0, tail="")
         self.assertEqual(fold(events.items).outside_started, {})
+
+
+class PlanRevisionInProgressTest(unittest.TestCase):
+    def test_returned_plan_is_not_a_decision_while_the_planner_revises_it(self):
+        # 03.11, K-40: po „Odeślij z uwagami” okno dalej pokazywało plan do zatwierdzenia.
+        from tide_daemon.cardflow.decisions import build_decisions
+        from tide_daemon.cardflow.state import fold
+        events = (Events(entry="plan").add("plan.proposed", planner="Opus", rows=[])
+                  .add("plan.reviewed", verdict="REQUEST_CHANGES", findings="x"))
+        self.assertEqual([d["kind"] for d in build_decisions(fold(events.items))], ["plan-approval"])
+        events.add("plan.returned", feedback="popraw", baseline=[])
+        self.assertEqual(build_decisions(fold(events.items)), [])
