@@ -106,7 +106,7 @@ class CardClosingTest(FlowInProcess):
         self.assertTrue(self.approve(card)["ok"])
         self.assertTrue(wait_until(lambda: any(s.get("kind") == "conflict" for s in self.of(card, "step.started")),
                                    timeout=25), self.events(card))
-        self.assertTrue(wait_until(lambda: self.shown(card)["derived"]["flow"].get("action") == "error",
+        self.assertTrue(wait_until(lambda: any(d["kind"] == "error" for d in self.shown(card)["derived"]["flow"]["decisions"]),
                                    timeout=15), self.events(card))
         self.assertEqual(len([s for s in self.of(card, "step.started") if s.get("kind") == "conflict"]), 1)
         self.assertFalse(self.of(card, "card.closed"))

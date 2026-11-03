@@ -85,7 +85,7 @@ class FullPlanningTest(FlowInProcess):
         shown = self.shown(card)["derived"]
         self.assertEqual(shown["question"], "Jaki format pliku wybrać?")
         self.assertEqual(shown["nextStep"], "odpowiedz w Konsoli")
-        self.assertFalse(shown["flow"].get("action"), "panel nie powinien wznawiać otwartej rozmowy")
+        self.assertEqual(shown["flow"]["decisions"], [], "panel nie powinien wznawiać otwartej rozmowy")
 
         scanner.entries = [{**scanner.entries[0], "state": "working", "reason": "", "waitingText": ""}]
         monitor.recompute()
@@ -217,7 +217,7 @@ class FullPlanningTest(FlowInProcess):
         with open(os.path.join(step["stepDir"], "out", "result.json"), "w", encoding="utf-8") as fh:
             json.dump({"result": "question", "question": "Który wariant eksportu?"}, fh)
         shown = self.wait_column(card, "waiting")
-        self.assertEqual(shown["derived"]["flow"]["question"], "Który wariant eksportu?")
+        self.assertEqual(shown["derived"]["flow"]["decisions"][0]["technical"]["question"], "Który wariant eksportu?")
         self.assertEqual(self.of(card, "plan.proposed"), [])
         with open(os.path.join(step["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
             self.assertIn("Pełne planowanie", fh.read())

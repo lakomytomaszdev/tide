@@ -632,32 +632,6 @@ function planningExecutors(status, provider) {
         .filter(option => provider === "local" || launchExecutor(status, option.value).provider !== "local")
 }
 
-function retryExecutors(status, flow) {
-    if (!flow || !flow.provider) return []
-    if (flow.stepKind === "planning" || flow.stepKind === "plan-fix")
-        return planningExecutors(status, flow.provider === "local" ? "local" : "mixed")
-            .filter(option => option.value !== flow.executor && !option.disabled)
-    if (["plan-review", "plan-amend", "plan-revise"].indexOf(flow.stepKind) >= 0) {
-        // Kroki wokół planu: zakres lokalny/chmura jak przy planowaniu; review planu innym modelem niż planujący
-        // (ta sama reguła co w usłudze, `engine._resume_executor`).
-        const planner = flow.stepKind === "plan-review" && flow.planner ? launchExecutor(status, flow.planner) : null
-        const plannerModel = planner ? String(planner.model || "").toLowerCase() : ""
-        return planningExecutors(status, flow.provider === "local" ? "local" : "mixed")
-            .filter(option => option.value !== flow.executor && !option.disabled && option.value !== flow.planner &&
-                    (!plannerModel || String(launchExecutor(status, option.value).model || "").toLowerCase() !== plannerModel))
-    }
-    const review = flow.stepKind === "review"
-    const otherModel = String(review ? flow.authorModel || "" : flow.reviewerModel || "").toLowerCase()
-    const otherProvider = String(review ? flow.authorProvider || "" : flow.reviewerProvider || "")
-    const mixed = flow.preferredProvider === "mixed"
-    return launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
-        e.available !== false && e.name !== flow.executor &&
-        String(e.model).toLowerCase() !== otherModel &&
-        (e.provider === "local") === (otherProvider === "local") &&
-        (mixed ? e.provider !== otherProvider : e.provider === otherProvider))
-        .map(e => ({ value: String(e.name), label: String(e.name) }))
-}
-
 function transferExecutors(status, provider) {
     if (!provider) return []
     return launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&

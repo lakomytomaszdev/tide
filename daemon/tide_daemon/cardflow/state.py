@@ -495,10 +495,6 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     done = st.finished.get(st.last_step) or {}
     ident = step.get("ticket") or ticket["id"] or "ticket"
     executor = st.started.get("executor") or ""
-    author = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ident and
-                   s.get("kind") in ("ticket", "fix")), {})
-    reviewer = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ident and
-                     s.get("kind") == "review"), {})
     out = {"column": "", "done": 0, "total": 1, "tool": st.started.get("program") or "", "note": "", "nextStep": "",
            "check": st.started.get("check") or card.get("check") or "auto", "branch": ticket["cardBranch"], "session": "", "coordinator": "",
            "link": "flow", "agentState": "", "tickets": [], "question": "",
@@ -508,12 +504,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                     "cardBranch": ticket["cardBranch"], "branch": ticket["branch"] or step.get("branch") or "",
                     "provider": step.get("provider") or st.started.get("provider") or "",
                     "stepKind": step.get("kind") or "",
-                    "preferredProvider": st.started.get("preferredProvider") or "",
-                    "authorProvider": author.get("provider") or st.started.get("provider") or "",
-                    "authorModel": author.get("model") or st.started.get("model") or "",
-                    "reviewerProvider": reviewer.get("provider") or st.started.get("reviewerProvider") or "",
-                    "reviewerModel": reviewer.get("model") or st.started.get("reviewerModel") or "",
-                    # Nowy kontrakt okna decyzji (PT-123); stare pola wyżej i niżej zostają bez zmian.
+                    # Kontrakt okna decyzji (PT-123); stare pola decyzji usunął PT-135.
                     "decisions": decisions}}
     out["flow"].update({"paused": st.paused, "timeline": st.timeline,
                         "stalledSince": st.stalled_since,
@@ -557,11 +548,6 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             reason += f" do {reset}"
         if wip.get("error") or (wip.get("files") and not wip.get("committed")):
             reason += f" — zapis zmian wymaga naprawy ({wip.get('error') or 'brak commita WIP'})"
-        out["flow"].update({"action": "limit" if done.get("reason") == "limit" and
-                             (not decision or decision.get("choice") == "wait-limit") else "",
-                            "limit": {"provider": step.get("provider") or "", "reset": reset,
-                                      "reason": reason, "wipError": wip.get("error") or ""},
-                            "question": reason})
         out["question"] = reason
         if decision.get("choice") == "transfer":
             if not (wip.get("stopped") and not wip.get("error") and
@@ -574,13 +560,11 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             # po odnowieniu krok rusza od nowa i kolumnę liczą zwykłe reguły. Zapis zmian do naprawy zostaje
             # w „Czeka na mnie” (to praca dla użytkownika, nie limit).
             out["question"] = ""
-            out["flow"]["question"] = ""
             return _fill(out, "progress", f"{ident} · czeka na limit" + (f" do {reset}" if reset else ""))
         return _fill(out, "waiting", reason)
     failures = [e for e in st.tracker_failures() if e.get('action') != 'youtrack-note']
     if failures and not st.running():
         error = failures[-1].get('error') or 'odmowa operacji YouTracka'
-        out['flow'].update(action='error', error=error, trackerError=True)
         return _fill(out, 'waiting', 'Błąd YouTracka: ' + error + ' — popraw przyczynę i wybierz „Ponów”')
     if plan_entry:
         waiting_review = st.plan_review_wait or st.waiting.get(("", "plan-review")) or {}
@@ -603,14 +587,10 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             result = focus_done["result"]
             out["flow"].update({"step": focus, "stepKind": focus_step["kind"], "result": result,
                                 "executor": focus_step.get("executor") or "", "provider": focus_step.get("provider") or "",
-                                "planner": (st.plan_proposed or {}).get("planner") or "",
-                                "action": {"question": "answer", "denied": "permission", "error": "error"}[result],
-                                "question": focus_done.get("question") or "", "command": focus_done.get("command") or "",
-                                "canAllow": bool(focus_done.get("canAllow", True)), "error": focus_done.get("reason") or ""})
+                                "planner": (st.plan_proposed or {}).get("planner") or ""})
             out["question"] = focus_done.get("question") or "Decyzja dotycząca poprawy planu"
             if result == "error":
                 found = of_finished(focus_done)
-                out["flow"].update(fault=found["fault"], faultCause=found["cause"])
                 if found["fault"] == "tide":
                     tile = tide_fault_text(focus_step["kind"], focus_step.get("ticket"))
                     return _fill(out, "waiting", f"{tile}: {cause_label(found['cause'], REASON_LABELS)}")
@@ -723,15 +703,11 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     if result == "question" or (result == "stopped" and done.get("reason") == "interactive-closed"):
         if result == "question" and st.last_step in st.step_decisions:
             return _fill(out, "progress", f"{ident} · wznawiam po odpowiedzi")
-        if result == "question":
-            out["flow"].update({"action": "answer", "question": done.get("question") or ""})
         out["question"] = _clip(done.get("question") or "", 120)
         return _fill(out, "waiting", f"{ident} pyta: „{out['question']}”" if out["question"] else f"{ident} pyta")
     if result == "denied":
         if st.last_step in st.step_decisions:
             return _fill(out, "progress", f"{ident} · wznawiam po decyzji o poleceniu")
-        out["flow"].update({"action": "permission", "command": done.get("command") or "",
-                            "canAllow": bool(done.get("canAllow", True))})
         return _fill(out, "waiting", f"{ident}: brak zgody na „{done.get('command') or '?'}”")
     if result in ("error", "stopped"):
         reason = REASON_LABELS.get(done.get("reason") or "", done.get("reason") or "")
@@ -741,9 +717,6 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             if st.last_step in st.step_decisions:
                 return _fill(out, "progress", f"{ident} · wznawiam po decyzji użytkownika")
             found = of_finished(done)
-            out["flow"].update({"action": "error", "error": reason,
-                                "stalledSince": done.get("stalledSince") or "",
-                                "fault": found["fault"], "faultCause": found["cause"]})
             if found["fault"] == "tide":
                 tile = tide_fault_text(step.get("kind"), step.get("ticket") or ident)
                 return _fill(out, "waiting", f"{tile}: {cause_label(found['cause'], REASON_LABELS)}")

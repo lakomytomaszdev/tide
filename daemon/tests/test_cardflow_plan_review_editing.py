@@ -184,14 +184,14 @@ class PlanReviewEditingTest(FlowInProcess):
         journal = self.flow.engine.journal
         journal.append(card, "step.started", step="working", ticket=approved["map"]["#1"], kind="ticket", worktree="/tmp/ticket")
         for kind in ("plan-amend", "plan-review", "plan-revise"):
-            for result, choice, action in (("question", "answer", "answer"), ("denied", "allow", "permission"), ("error", "retry", "error")):
+            for result, choice, action in (("question", "answer", "question"), ("denied", "allow", "permission"), ("error", "retry", "error")):
                 with self.subTest(kind=kind, result=result):
                     name = kind + result
                     journal.append(card, "step.started", step=name, ticket="", kind=kind, worktree="/tmp/plan", executor="Sonnet", attempt=1)
                     journal.append(card, "step.finished", step=name, result=result, question="Który wariant?", command="git status")
                     state = fold(journal.read(card))
                     shown = derived(state, {"column": "todo"})
-                    self.assertEqual(shown["flow"].get("action"), action)
+                    self.assertEqual(shown["flow"]["decisions"][0]["kind"], action)
                     expected = {"plan-review": "review planu", "plan-amend": "poprawa planu", "plan-revise": "poprawa planu"}[kind]
                     self.assertEqual(shown["note"], expected + " czeka na decyzję (" + {"question": "pytanie", "denied": "brak zgody", "error": "błąd"}[result] + ")")
                     restarted = FlowEngine(self.store, journal=journal)
@@ -246,9 +246,9 @@ class PlanReviewEditingTest(FlowInProcess):
         box = []
         self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "ATRAPA: amend-question"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
-        self.assertTrue(wait_until(lambda: self.shown(card)["derived"]["flow"].get("action") == "answer", timeout=5), self.events(card))
+        self.assertTrue(wait_until(lambda: self.shown(card)["derived"]["flow"]["decisions"][:1] and self.shown(card)["derived"]["flow"]["decisions"][0]["kind"] == "question", timeout=5), self.events(card))
         self.restart()
-        self.assertEqual(self.shown(card)["derived"]["flow"]["action"], "answer")
+        self.assertEqual(self.shown(card)["derived"]["flow"]["decisions"][0]["kind"], "question")
         box = []
         self.flow.resolve_step(card, json.dumps({"choice": "answer", "answer": "Pierwszy"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=5))

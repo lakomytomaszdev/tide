@@ -30,7 +30,6 @@ class DecisionAnswerTest(FlowInProcess):
         [decision] = card["derived"]["flow"]["decisions"]
         self.assertEqual((decision["kind"], decision["options"], decision["freeText"]), ("question", [], True))
         self.assertIn("Który format daty?", decision["happened"])
-        self.assertEqual(card["derived"]["flow"]["action"], "answer", "stare pole bez zmian")
 
         reply = decision["reply"]
         self.assertEqual(reply["method"], "ResolveCardStep")

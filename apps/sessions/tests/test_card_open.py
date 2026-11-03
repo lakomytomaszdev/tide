@@ -171,9 +171,8 @@ class SharedSettingTest(unittest.TestCase):
 class SharedComponentTest(unittest.TestCase):
     def test_sessions_do_not_import_flow_card_panel(self):
         folder = os.path.join(APP_DIR, "qml")
+        self.assertFalse(os.path.exists(os.path.join(folder, "FlowCardPanel.qml")), "stary panel usunął PT-135")
         for name in os.listdir(folder):
-            if name == "FlowCardPanel.qml":    # sam plik usuwa PT-135
-                continue
             with open(os.path.join(folder, name), encoding="utf-8") as fh:
                 self.assertNotIn("FlowCardPanel", fh.read(), name)
 

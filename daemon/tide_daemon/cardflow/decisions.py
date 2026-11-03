@@ -1,8 +1,8 @@
 """Decyzje karty dla okna decyzji i pełnej karty: `build_decisions(st)` → `derived.flow.decisions[]` (K-35, PT-123).
 
 Lista mówi po ludzku, co się stało, dlaczego potrzebna jest decyzja i co da każda możliwość. Liczy się wyłącznie ze
-stanu dziennika (`FlowState`), bez Qt i bez dysku. Stare pola `derived` (`action`, `question`, `canAllow`…) zostają
-bez zmian; decyzje stoją obok nich, aż konsumenci przejdą na nowy kontrakt.
+stanu dziennika (`FlowState`), bez Qt i bez dysku. To jedyny kontrakt decyzji: stare pola `derived.flow` (`action`,
+`question`, `command`, `canAllow`, `error`, `limit`, `fault`…) usunął PT-135.
 
 Decyzja:
 - `id` — stały identyfikator (`step:<krok>`, `plan-approval:<seq>`, `review:<ticket>:<runda>`…),

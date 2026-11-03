@@ -90,7 +90,7 @@ class ColumnRuleTest(unittest.TestCase):
                 self.assertEqual(out["column"], "waiting", "decyzja innego ticketu → „Czeka na mnie”")
                 self.assertEqual([d["kind"] for d in out["flow"]["decisions"]], ["question"])
                 self.assertNotIn("limit", out["note"])
-                self.assertEqual(out["flow"]["question"], "Którą wersję zostawić?")
+                self.assertEqual(out["flow"]["decisions"][0]["technical"]["question"], "Którą wersję zostawić?")
 
     def test_limit_stays_in_progress_when_another_ticket_finished_last(self):
         events = stopped(name="K-1-PT-2-1", ticket="PT-2")
@@ -120,7 +120,7 @@ class ColumnRuleTest(unittest.TestCase):
         events.step("K-1-PT-1-1", ticket="PT-1", result="question", question="Którą wersję zostawić?")
         out = view(events)
         self.assertEqual(out["column"], "waiting")
-        self.assertEqual(out["flow"]["question"], "Którą wersję zostawić?")
+        self.assertEqual(out["flow"]["decisions"][0]["technical"]["question"], "Którą wersję zostawić?")
 
     def test_review_question_is_not_hidden_by_another_ticket_limit(self):
         events = stopped(name="K-1-PT-2-1", ticket="PT-2")
@@ -143,7 +143,7 @@ class ColumnRuleTest(unittest.TestCase):
         self.assertEqual(view(events)["flow"]["stoppedByLimit"], [])
 
     def test_limit_does_not_leave_a_question_in_the_flow(self):
-        self.assertEqual(view(stopped())["flow"]["question"], "")
+        self.assertEqual(view(stopped())["flow"]["decisions"], [])
 
     def test_returns_to_review_when_the_resumed_step_finishes(self):
         events = stopped()

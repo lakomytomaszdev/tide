@@ -14,6 +14,9 @@ DECISION_KEYS = {"id", "step", "stepKind", "ticket", "executor", "kind", "happen
 PERMISSION_KEYS = {"commands", "otherTitle", "otherHint"}       # PT-124: tylko przy zgodzie na polecenie
 OPTION_KEYS = {"id", "title", "effect", "recommended", "choice", "params", "method"}
 CARD = {"column": "todo"}
+# Pola `derived.flow` z czasów przed oknem decyzji; usunął je PT-135.
+OLD_FLOW_FIELDS = {"action", "question", "command", "canAllow", "error", "trackerError", "limit", "fault", "faultCause",
+                   "authorProvider", "authorModel", "reviewerProvider", "reviewerModel", "preferredProvider"}
 
 
 class Events:
@@ -211,7 +214,7 @@ class ContractTest(unittest.TestCase):
                   .step("K-1-PT-1-2", attempt=1, parent="K-1-PT-1-1", result="error", reason="exit",
                         fault="provider", faultCause="limit"))
         self.assertEqual(failed.decisions(), [])
-        self.assertEqual(derived(stopped.state(), CARD)["flow"]["action"], "limit", "stare pole panelu bez zmian")
+        self.assertEqual(derived(stopped.state(), CARD)["flow"]["decisions"], [])
 
     def test_provider_error_other_than_limit_reaches_the_window(self):
         events = (Events().step("K-1-PT-1-1", result="error", reason="exit", fault="provider", faultCause="auth")
@@ -400,21 +403,23 @@ class GenericSentenceTest(unittest.TestCase):
 
 
 class DerivedTest(unittest.TestCase):
-    def test_decisions_sit_next_to_unchanged_old_fields(self):
+    def test_derived_carries_decisions_and_no_old_decision_fields(self):
         events = Events().step("K-1-PT-1-1", result="denied", command="git fetch origin", canAllow=True)
         shown = derived(events.state(), CARD)
         flow = shown["flow"]
-        self.assertEqual((flow["action"], flow["command"], flow["canAllow"]),
+        # D-Bus: kontrakt bez starych pól decyzji (PT-135); wszystko o decyzji stoi w `decisions[]`.
+        self.assertEqual(set(flow) & OLD_FLOW_FIELDS, set())
+        technical = flow["decisions"][0]["technical"]
+        self.assertEqual((flow["decisions"][0]["kind"], technical["command"], technical["canAllow"]),
                          ("permission", "git fetch origin", True))
         self.assertEqual((shown["column"], shown["note"]), ("waiting", "PT-1: brak zgody na „git fetch origin”"))
         self.assertEqual(flow["decisions"], build_decisions(events.state()))
-        self.assertEqual(flow["decisions"][0]["kind"], "permission")
 
-    def test_question_keeps_old_question_field(self):
+    def test_question_keeps_card_level_question(self):
         events = Events().step("K-1-PT-1-1", result="question", question="Który format daty?")
         shown = derived(events.state(), CARD)
-        self.assertEqual((shown["flow"]["action"], shown["flow"]["question"], shown["question"]),
-                         ("answer", "Który format daty?", "Który format daty?"))
+        self.assertEqual((shown["flow"]["decisions"][0]["technical"]["question"], shown["question"]),
+                         ("Który format daty?", "Który format daty?"))
         self.assertEqual(len(shown["flow"]["decisions"]), 1)
 
     def test_tile_names_tide_fault_in_the_step(self):
@@ -425,7 +430,8 @@ class DerivedTest(unittest.TestCase):
         shown = derived(ticket.state(), CARD)
         self.assertEqual(shown["column"], "waiting")
         self.assertEqual(shown["note"], "błąd Tide w kroku PT-1: Tide nie dał prawa zapisu w katalogu wyniku kroku")
-        self.assertEqual((shown["flow"]["action"], shown["flow"]["fault"]), ("error", "tide"))
+        self.assertEqual((shown["flow"]["decisions"][0]["kind"], shown["flow"]["decisions"][0]["fault"]),
+                         ("error", "tide"))
 
         plan = plan_events()
         plan.step("K-1-plan-1", ticket="", kind="plan-review", executor="Haiku", result="error", reason="no-result",

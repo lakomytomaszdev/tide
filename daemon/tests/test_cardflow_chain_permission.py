@@ -47,7 +47,7 @@ class ChainPermissionFlowTest(FlowInProcess):
 
     def test_chain_is_listed_with_flags_and_own_step_reads_are_hidden(self):
         card_id, card, decision = self.chain_decision()
-        self.assertFalse(card["derived"]["flow"]["canAllow"], "stare pole bez zmian")
+        self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
         step = self.of(card_id, "step.started")[0]
         self.assertTrue(step["stepDir"])
         self.assertEqual([(c["text"], c["readOnly"], c["forbidden"], c["canAllow"], c["preselected"])

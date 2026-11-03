@@ -192,7 +192,7 @@ class LimitProjectionTest(unittest.TestCase):
         ]
         card = derived(fold(events), {"id": "K-1", "column": "todo", "check": "auto"})
         # PT-130: zamierzona zmiana reguły kolumn — limit to postój w „W toku”, nie „Czeka na mnie”.
-        self.assertEqual((card["column"], card["flow"]["action"]), ("progress", "limit"))
+        self.assertEqual(card["column"], "progress")
         self.assertIn("czeka na limit do piątek 18:00", card["note"])
         self.assertEqual(card["flow"]["decisions"], [])
         self.assertEqual(card["flow"]["limit"]["reset"], "piątek 18:00")
@@ -316,7 +316,6 @@ class TransferFlowTest(FlowInProcess):
         self.assertEqual(len(self.of(card, "step.started")), 1)
         self.assertEqual(self.of(card, "step.finished")[0]["wip"]["error"], "no-sandbox")
         self.assertEqual(self.results(card, "merge"), [])
-        self.assertEqual(self.shown(card)["derived"]["flow"]["action"], "")
         self.assertIn("zapis zmian wymaga naprawy", self.shown(card)["derived"]["note"])
         now = self.flow.engine.clock()
         self.flow.engine.clock = lambda: now + 61

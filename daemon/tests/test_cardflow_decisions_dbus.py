@@ -18,7 +18,7 @@ class DecisionDbusTest(FlowCase):
         [decision] = shown["derived"]["flow"]["decisions"]
         self.assertEqual((decision["kind"], decision["options"], decision["freeText"]), ("question", [], True))
         self.assertTrue(decision["happened"] and decision["why"])
-        self.assertEqual(shown["derived"]["flow"]["action"], "answer")
+        self.assertEqual(shown["derived"]["flow"]["decisions"][0]["kind"], "question")
 
         reply = decision["reply"]
         self.assertEqual(reply["method"], "ResolveCardStep")

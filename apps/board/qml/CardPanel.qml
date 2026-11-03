@@ -35,9 +35,6 @@ Rectangle {
     property string notice: ""
     property bool busy: false
     property var modelsStatus: null
-    property string stepAnswer: ""
-    property string stepExecutor: ""
-    property string limitExecutor: ""
     property string branchDiff: ""
     property var tagTone: null
     // Formularz.
@@ -123,9 +120,6 @@ Rectangle {
     function load() {
         error = ""
         notice = ""
-        stepAnswer = ""
-        stepExecutor = ""
-        limitExecutor = ""
         branchDiff = ""
         closingFeedback.text = ""
         busy = false
@@ -1081,178 +1075,6 @@ Rectangle {
                             }
                         }
                         Item { Layout.fillWidth: true }
-                    }
-                    ColumnLayout {
-                        id: stepDecision
-                        objectName: "cardStepDecision"
-                        Layout.fillWidth: true
-                        visible: Boolean(panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
-                                         && panel.card.derived.flow.action)
-                        spacing: 8
-                        readonly property var flow: panel.card && panel.card.derived ? panel.card.derived.flow : null
-                        // Decyzja leży pod polami karty; gdy czeka, panel przewija się do niej sam (K-33).
-                        function reveal() {
-                            if (!visible) return
-                            const y = mapToItem(formColumn, 0, 0).y
-                            formFlick.contentY = Math.max(0, Math.min(y - 12, formFlick.contentHeight - formFlick.height))
-                        }
-                        // Po ułożeniu formularza (wysokość treści znana dopiero po chwili).
-                        Timer { id: revealTimer; interval: 60; onTriggered: stepDecision.reveal() }
-                        onVisibleChanged: revealTimer.restart()
-                        Connections {
-                            target: panel
-                            function onCardChanged() { revealTimer.restart() }
-                        }
-                        Component.onCompleted: revealTimer.restart()
-                        Text {
-                            objectName: "cardStepDecisionText"
-                            Layout.fillWidth: true
-                            text: stepDecision.flow && stepDecision.flow.action === "answer" ? stepDecision.flow.question || ""
-                                : stepDecision.flow && stepDecision.flow.action === "permission"
-                                  ? "Polecenie wymaga zgody: " + (stepDecision.flow.command || "")
-                                : stepDecision.flow && stepDecision.flow.action === "error"
-                                  ? (stepDecision.flow.trackerError ? "Operacja YouTracka nie powiodła się: " : "Krok nie powiódł się: ")
-                                    + (stepDecision.flow.error || "")
-                                    + (stepDecision.flow.stalledSince ? " · bez postępu od " + stepDecision.flow.stalledSince : "")
-                                : stepDecision.flow && stepDecision.flow.action === "limit"
-                                  ? (stepDecision.flow.limit && stepDecision.flow.limit.reason
-                                      ? stepDecision.flow.limit.reason : "Limit dostawcy został wyczerpany.")
-                                    + (stepDecision.flow.limit && stepDecision.flow.limit.reset
-                                        && (!stepDecision.flow.limit.reason
-                                            || stepDecision.flow.limit.reason.indexOf(stepDecision.flow.limit.reset) < 0)
-                                        ? " · odnowienie " + stepDecision.flow.limit.reset : "")
-                                : ""
-                            textFormat: Text.PlainText
-                            color: Tide.Tokens.textPrimary
-                            font.family: Tide.Theme.uiFamily
-                            font.pixelSize: 13
-                            wrapMode: Text.Wrap
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: Boolean(stepDecision.flow && stepDecision.flow.action === "limit")
-                            spacing: 8
-                            QQC2.ComboBox {
-                                id: limitTransferPicker
-                                objectName: "cardLimitExecutor"
-                                Layout.fillWidth: true
-                                model: Logic.transferExecutors(panel.modelsStatus,
-                                    stepDecision.flow ? ((stepDecision.flow.limit || {}).provider || stepDecision.flow.provider) : "")
-                                textRole: "label"
-                                valueRole: "value"
-                                currentIndex: -1
-                                onActivated: index => panel.limitExecutor = model[index].value
-                                Accessible.name: "Wykonawca po wyczerpaniu limitu"
-                            }
-                            PillButton {
-                                objectName: "cardLimitTransfer"
-                                text: "Przenieś na…"
-                                enabled: !panel.busy && limitTransferPicker.model.some(
-                                             option => option.value === panel.limitExecutor)
-                                onClicked: {
-                                    panel.busy = true
-                                    panel.stepResolveRequested(panel.card.id,
-                                                               { choice: "transfer", executor: panel.limitExecutor })
-                                }
-                            }
-                            PillButton {
-                                objectName: "cardLimitWait"
-                                text: "Czekaj na odnowienie"
-                                outline: true
-                                enabled: !panel.busy
-                                onClicked: {
-                                    panel.busy = true
-                                    panel.stepResolveRequested(panel.card.id, { choice: "wait-limit" })
-                                }
-                            }
-                        }
-                        QQC2.TextArea {
-                            id: stepAnswerField
-                            objectName: "cardStepAnswer"
-                            Layout.fillWidth: true
-                            implicitHeight: 76
-                            visible: Boolean(stepDecision.flow && stepDecision.flow.action === "answer")
-                            text: panel.stepAnswer
-                            onTextChanged: panel.stepAnswer = text
-                            placeholderText: "Twoja odpowiedź dla wykonawcy"
-                            wrapMode: TextEdit.Wrap
-                            color: Tide.Tokens.textPrimary
-                            font.family: Tide.Theme.uiFamily
-                            font.pixelSize: 13
-                            Accessible.name: "Odpowiedź na pytanie z kroku"
-                            background: Rectangle { radius: 6; color: Tide.Tokens.backgroundPanel }
-                        }
-                        PillButton {
-                            objectName: "cardStepAnswerSend"
-                            visible: Boolean(stepDecision.flow && stepDecision.flow.action === "answer")
-                            text: "Odpowiedz i wznów w tle"
-                            enabled: !panel.busy && panel.stepAnswer.trim().length > 0
-                            onClicked: {
-                                panel.busy = true
-                                panel.stepResolveRequested(panel.card.id, { choice: "answer", answer: panel.stepAnswer.trim() })
-                            }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: Boolean(stepDecision.flow && stepDecision.flow.action === "permission")
-                            spacing: 8
-                            PillButton {
-                                objectName: "cardStepAllow"
-                                text: "Zezwól i wznów"
-                                enabled: Boolean(!panel.busy && stepDecision.flow && stepDecision.flow.canAllow === true)
-                                onClicked: {
-                                    panel.busy = true
-                                    panel.stepResolveRequested(panel.card.id, { choice: "allow" })
-                                }
-                            }
-                            PillButton {
-                                objectName: "cardStepDeny"
-                                text: "Odmów"
-                                outline: true
-                                enabled: !panel.busy
-                                onClicked: {
-                                    panel.busy = true
-                                    panel.stepResolveRequested(panel.card.id, { choice: "deny" })
-                                }
-                            }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: Boolean(stepDecision.flow && stepDecision.flow.action === "error")
-                            spacing: 8
-                            PillButton {
-                                objectName: "cardStepRetry"
-                                text: "Ponów"
-                                enabled: !panel.busy
-                                onClicked: {
-                                    panel.busy = true
-                                    panel.stepResolveRequested(panel.card.id, { choice: "retry" })
-                                }
-                            }
-                            QQC2.ComboBox {
-                                id: stepExecutorPicker
-                                visible: !stepDecision.flow || !stepDecision.flow.trackerError
-                                objectName: "cardStepExecutor"
-                                Layout.fillWidth: true
-                                model: Logic.retryExecutors(panel.modelsStatus, stepDecision.flow)
-                                textRole: "label"
-                                valueRole: "value"
-                                currentIndex: -1
-                                onActivated: index => panel.stepExecutor = model[index].value
-                                Accessible.name: "Nowy wykonawca kroku"
-                            }
-                            PillButton {
-                                objectName: "cardStepChangeExecutor"
-                                visible: !stepDecision.flow || !stepDecision.flow.trackerError
-                                text: "Zmień wykonawcę"
-                                enabled: !panel.busy && panel.stepExecutor !== ""
-                                onClicked: {
-                                    panel.busy = true
-                                    panel.stepResolveRequested(panel.card.id,
-                                                              { choice: "change-executor", executor: panel.stepExecutor })
-                                }
-                            }
-                        }
                     }
                     RowLayout {
                         Layout.fillWidth: true
