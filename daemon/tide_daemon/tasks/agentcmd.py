@@ -149,6 +149,7 @@ class Step:
     dotnet: bool = False           # projekt .NET: pamięć pakietów NuGet do odczytu i środowisko bez serwerów buildu
     node_home: str = ""            # projekt Node: instalacja Node (nvm) tylko do odczytu, jej bin na początku PATH
     network_domains: tuple = ()    # P1 (03.11): domeny rejestrów paczek dostępne z piaskownicy kroku Claude
+    chrome_bin: str = ""           # Chromium Playwrighta tylko do odczytu, jako CHROME_BIN (Karma, 03.11)
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
     codex_mcp_skip: tuple = ()      # serwery, których wyłączenie przez `-c` psuje konfigurację Codexa (03.11)
 
@@ -338,6 +339,8 @@ def _env(step: Step, home_env: dict, inp: str) -> dict:
         env["PATH"] = os.path.join(step.node_home, "bin") + os.pathsep + env.get("PATH", "")
         # `npm install` w kroku (sieć do rejestru z P1) potrzebuje zapisywalnej pamięci podręcznej — `~` jest zakryty.
         env["npm_config_cache"] = os.path.join(step.step_dir, "out", ".npm-cache")
+    if step.chrome_bin:
+        env["CHROME_BIN"] = step.chrome_bin
     if step.dotnet:
         from . import dotnet
         # Katalog CLI w katalogu wyjściowym kroku — jedynym miejscu z zapisem w piaskownicy (K-15: katalog
@@ -369,7 +372,8 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
         "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs,
                                                         *([env["NUGET_PACKAGES"]] if step.dotnet and env.get("NUGET_PACKAGES") else []),
                                                         *_font_dirs(home),
-                                                        *([step.node_home] if step.node_home else [])],
+                                                        *([step.node_home] if step.node_home else []),
+                                                        *([os.path.dirname(step.chrome_bin)] if step.chrome_bin else [])],
                        "allowWrite": [out]},
         "network": {"allowedDomains": list(step.network_domains)}},
         # Zasada projektów: commity bez podpisów i wzmianek o AI (K-33/PT-108: review odrzuciło stopkę

@@ -1467,7 +1467,8 @@ class FlowEngine(PlanEditing):
                 disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
                 enforce_command_policy=selected.tool == "claude",
                 tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet, node_home=node_home,
-                codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains))
+                codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains,
+                chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else ""))
             bg.prepare()
             for source, target in zip(images, shots):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -1877,6 +1878,14 @@ class FlowEngine(PlanEditing):
                                         reason=done.get("reason") or "")
                     st = fold(self.journal.read(card))
                 self._resume_step(card, st, step, {"choice": "auto"}, attempt=1)
+            else:
+                stronger = self._stronger_executor(step, done)
+                if stronger:
+                    # Po nieudanym ponowieniu ten sam wykonawca rzadko pomaga — Tide sam przekazuje krok mocniejszemu
+                    # modelowi tego dostawcy (03.11, K-31/DPT-5: „co mnie obchodzi, że Haiku czegoś nie umie”).
+                    self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
+                                        kind=step.get("kind") or "", choice="change-executor", answer="",
+                                        command="", executor=stronger, auto=True, escalated=True)
             return
         if result != "done":
             return
@@ -3731,6 +3740,29 @@ class FlowEngine(PlanEditing):
                                 kind=step.get("kind") or "", choice="run", answer="", command=command,
                                 executor="", auto=True)
 
+    CLASS_RANK = {"lekki": 0, "standard": 1, "mocny": 2}
+
+    def _stronger_executor(self, step: dict, done: dict) -> str:
+        """Następny mocniejszy wykonawca tego samego dostawcy (lekki → standard → mocny) po błędzie kroku, który nie
+        jest winą użytkownika ani limitu; pusty — nie ma mocniejszego albo błąd tego nie uzasadnia."""
+        if done.get("reason") in ("login", "limit", "local-unavailable") or \
+                faults.of_finished(done)["fault"] in ("user", "provider"):
+            return ""
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None:
+            return ""
+        current = next((e for e in catalog.executors if e.name == step.get("executor")), None)
+        if current is None:
+            return ""
+        rank = max((self.CLASS_RANK.get(c, -1) for c in current.classes), default=-1)
+        if rank < 0:
+            return ""
+        better = [e for e in catalog.executors if e.provider == current.provider and e.name != current.name and
+                  max((self.CLASS_RANK.get(c, -1) for c in e.classes), default=-1) > rank]
+        better.sort(key=lambda e: max(self.CLASS_RANK.get(c, -1) for c in e.classes))
+        return better[0].name if better else ""
+
     def _ticket_consent(self, card: str, ticket: str) -> bool:
         return bool(ticket) and any(e.get("type") == "outside.ticket-consent" and e.get("ticket") == ticket
                                     for e in self.journal.read(card))
@@ -3773,6 +3805,9 @@ class FlowEngine(PlanEditing):
         prefix = node_mod.node_home(os.path.expanduser("~"))
         if prefix:
             env["PATH"] = os.path.join(prefix, "bin") + os.pathsep + env.get("PATH", "")
+        chrome = node_mod.chrome_bin(os.path.expanduser("~"))
+        if chrome and not env.get("CHROME_BIN"):
+            env["CHROME_BIN"] = chrome
         argv = [self.systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet", f"--unit={unit}",
                 "-p", f"CPUWeight={STEP_CPU_WEIGHT}", "-p", f"IOWeight={STEP_CPU_WEIGHT}", "--",
                 "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",

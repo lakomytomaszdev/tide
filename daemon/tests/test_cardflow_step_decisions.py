@@ -549,3 +549,27 @@ class StepOptionsTest(FlowInProcess):
         self.assertEqual(decision["options"], [])
         self.assertTrue(decision["freeText"])
         self.assertEqual(self.of(card_id, "step.finished")[0]["result"], "question")
+
+
+class EscalationTest(FlowInProcess):
+    def test_failed_step_moves_to_a_stronger_executor_of_the_same_provider(self):
+        # 03.11, K-31/DPT-5: Haiku padł po ponowieniu, a użytkownik musiał klikać „Ponów krok”.
+        engine = self.flow.engine
+        failed = {"result": "error", "reason": "exit"}
+        self.assertEqual(engine._stronger_executor({"executor": "Haiku"}, failed), "Sonnet")
+        self.assertEqual(engine._stronger_executor({"executor": "Sonnet"}, failed), "Opus")
+        self.assertEqual(engine._stronger_executor({"executor": "Opus"}, failed), "")
+        self.assertEqual(engine._stronger_executor({"executor": "Codex lekki"}, failed), "Codex standard")
+        self.assertEqual(engine._stronger_executor({"executor": "Haiku"}, {"result": "error", "reason": "login"}), "")
+        self.assertEqual(engine._stronger_executor({"executor": "Haiku"}, {"result": "error", "reason": "limit"}), "")
+
+
+class EscalationTest(FlowInProcess):
+    def test_failed_step_moves_to_a_stronger_executor_of_the_same_provider(self):
+        # 03.11, K-31/DPT-5: Haiku padł po ponowieniu, a użytkownik musiał klikać „Ponów krok”.
+        engine = self.flow.engine
+        failed = {"result": "error", "reason": "exit"}
+        self.assertEqual(engine._stronger_executor({"executor": "Haiku"}, failed), "Sonnet")
+        self.assertEqual(engine._stronger_executor({"executor": "Sonnet"}, failed), "Opus")
+        self.assertEqual(engine._stronger_executor({"executor": "Opus"}, failed), "")
+        self.assertEqual(engine._stronger_executor({"executor": "Haiku"}, {"result": "error", "reason": "login"}), "")

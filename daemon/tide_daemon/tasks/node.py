@@ -94,3 +94,11 @@ def registry_domains(worktree: str, *, dotnet: bool) -> tuple:
     if any(os.path.isfile(os.path.join(worktree, name)) for name in ("pyproject.toml", "requirements.txt", "setup.py")):
         stacks.append("python")
     return tuple(dict.fromkeys(d for stack in stacks for d in REGISTRY_DOMAINS[stack]))
+
+
+def chrome_bin(home: str) -> str:
+    """Chromium z pamięci Playwrighta (najnowszy) dla Karmy i innych testów przeglądarkowych (`CHROME_BIN`, 03.11
+    K-31/DPT-5: „No binary for ChromeHeadless”). Pusty napis, gdy Playwright niczego nie pobrał."""
+    found = sorted(glob.glob(os.path.join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux*", "chrome")),
+                   key=lambda p: _version_key(os.path.basename(os.path.dirname(os.path.dirname(p))).split("-")[-1]))
+    return os.path.realpath(found[-1]) if found else ""
