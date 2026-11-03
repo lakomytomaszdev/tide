@@ -3059,7 +3059,8 @@ class FlowEngine(PlanEditing):
             self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="retry", answer="", command="", executor="",
                                 auto=True)
-        if data.get("result") == "denied" and not data.get("canAllow", True):
+        if data.get("result") == "denied" and not data.get("canAllow", True) and not data.get("outside"):
+            # Prośbie o uruchomienie poza piaskownicą Tide sam nie odmawia (K-16/LEGAL-66: odmowa bez wyjścia).
             self._auto_deny(card, name, step, data.get("command") or "")
         elif auto_allow:
             # Automatyczna zgoda na pojedyncze, bezpieczne polecenie w piaskownicy (03.11: „nie mam ochoty co 2 minuty

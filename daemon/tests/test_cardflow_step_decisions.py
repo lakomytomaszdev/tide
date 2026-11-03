@@ -57,8 +57,16 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(outside_matches("npm run e2e -- tests/e2e/x --workers=2", ["npm run e2e *"]))
         self.assertFalse(outside_matches("npm run lint", ["npm run e2e *"]))
         self.assertTrue(outside_allowed("E2E_PORT=4311 npm run e2e", []))
-        for bad in ("PATH=/tmp npm test", "NODE_OPTIONS=--require=x npm test", "npm test && rm -rf x", "make install"):
+        for bad in ("PATH=/tmp npm test", "NODE_OPTIONS=--require=x npm test", "npm test && rm -rf x", "make install",
+                    "npm test; ls", "npm test|tee x", "X=$(id) npm test", 'X="a" npm test && ls'):
             self.assertFalse(outside_allowed(bad, ["make install"]), bad)
+        # K-16/LEGAL-66: długie polecenie ze zmienną w cudzysłowie (średniki w wartości) było odrzucane bez wyjścia.
+        long_test = ('DATABASE_CONNECTION="Host=127.0.0.1;Port=1;Database=x;Username=none;Password=none" '
+                     'ANTHROPIC_API_KEY=test VOYAGE_API_KEY=test dotnet test tests/LegalApp.Tests.Integration '
+                     '--no-restore -m:1 -nodeReuse:false --filter "FullyQualifiedName~Upn58Settlement1855|FullyQualifiedName~WordingOpenSettlementHandlerTests"')
+        self.assertGreater(len(long_test), 300)
+        self.assertTrue(outside_allowed(long_test, []))
+        self.assertEqual(outside_pattern(long_test), "dotnet test *")
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
         self.assertTrue(self.start(card_id)["ok"])
         self.wait_column(card_id, "waiting")

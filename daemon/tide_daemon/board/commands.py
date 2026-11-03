@@ -155,23 +155,38 @@ OUTSIDE_FAMILY = {"npm": 2, "pnpm": 2, "yarn": 2, "npx": 3, "dotnet": 2, "make":
 
 
 def outside_argv(command: str) -> list[str] | None:
-    """Polecenie poza piaskownicą bez początkowych prostych zmiennych (`E2E_PORT=4311 npm run e2e`, K-31);
-    None dla łańcucha, podpowłoki albo zmiennej, która zmienia sposób uruchamiania (PATH, LD_*, NODE_OPTIONS…)."""
+    """Polecenie poza piaskownicą bez początkowych zmiennych (`E2E_PORT=4311 npm run e2e`, także w cudzysłowie:
+    `DATABASE_CONNECTION="Host=…;Port=1" dotnet test`, K-16); None dla łańcucha, podpowłoki albo zmiennej, która
+    zmienia sposób uruchamiania (PATH, LD_*, NODE_OPTIONS…)."""
     text = str(command or "").strip()
-    parts = text.split()
+    if not text or any(c in text for c in "\n\r\0`$"):
+        return None
+    try:
+        # Operatory powłoki poza cudzysłowem (`;`, `&&`, `|`, `>`…) — polecenie idzie do `/bin/sh -c`, więc odrzucamy.
+        lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|<>()")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        if any(token and set(token) <= set(";&|<>()") for token in lexer):
+            return None
+        parts = shlex.split(text)
+    except ValueError:
+        return None
     at = 0
     while at < len(parts) and "=" in parts[at]:
         name, value = parts[at].split("=", 1)
         if not OUTSIDE_ENV_NAME.fullmatch(name) or name in OUTSIDE_ENV_DENIED or name.startswith(("LD_", "DYLD_")) \
-                or not OUTSIDE_ENV_VALUE.fullmatch(value):
+                or len(value) > 500:
             return None
         at += 1
-    return _argv(" ".join(parts[at:])) if at < len(parts) else None
+    return _argv(shlex.join(parts[at:])) if at < len(parts) else None
+
+
+OUTSIDE_MAX = 2000      # polecenia poza piaskownicą bywają długie (zmienne połączeń, filtry testów)
 
 
 def outside_allowed(command: str, denied: list[str]) -> bool:
     argv = outside_argv(command)
-    return argv is not None and len(command) <= MAX_COMMAND and not is_forbidden(shlex.join(argv), denied)
+    return argv is not None and len(command) <= OUTSIDE_MAX and not is_forbidden(shlex.join(argv), denied)
 
 
 def outside_pattern(command: str) -> str:
