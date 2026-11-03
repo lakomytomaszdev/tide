@@ -22,12 +22,14 @@ zestawu nie dopełnia się tekstami syntetycznymi.
 
 `extract` i `review` nie zapisują nic w repozytorium (wyjście w repozytorium jest odrzucane); do repozytorium trafia
 dopiero `review --apply`, który wymaga „przejrzane: tak”, pomija wiadomości z „usuń: tak” i odmawia, gdy w tekście
-zostały ścieżki, adresy e-mail, tokeny albo nazwa firma — wtedy użytkownik poprawia je w pliku Markdown.
+zostały ścieżki, adresy e-mail, tokeny, nazwa firma albo treść z projektów klienta (nazwy produktów, tickety,
+ślady kroków w tle) — te ostatnie trzeba usunąć razem z wiadomością, nie da się ich zastąpić. Wtedy użytkownik poprawia je w pliku Markdown.
 
 Kody wyjścia: 0 — ok, 1 — błąd danych, 2 — użycie, 3 — za mało wiadomości w dziennikach, 4 — brak Ollamy.
 """
 import argparse
 import datetime
+import difflib
 import hashlib
 import json
 import os
@@ -82,8 +84,12 @@ PRIVATE = [
                          r"[^\s`\"'<>)\],;]*[^\s`\"'<>)\],;.]")),
     ("adres e-mail", re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")),
     ("token", re.compile(r"\b(?:sk-|ghp_|gho_|ghs_|github_pat_|xox[bpas]-|AKIA|glpt-|perm:)[A-Za-z0-9_\-:.]{8,}|"
-                         r"\beyJ[A-Za-z0-9_\-]{10,}|\b[A-Fa-f0-9]{32,}\b")),
+                         r"\basst_[A-Za-z0-9]{10,}|\beyJ[A-Za-z0-9_\-]{10,}|\b[A-Fa-f0-9]{32,}\b")),
     ("firma", re.compile(r"acme[\s_-]?corp[\w-]*", re.I)),
+    # treść z projektów klienta (nazwy produktów, tickety, repozytoria) i ślady kroków w tle — nie do zastąpienia
+    # automatycznego: usuń wiadomość albo zastąp ją wiadomością z własnych projektów
+    ("projekt klienta", re.compile(r"coretools\w*|\bDPT-\d+|\bDP[45]\b|"
+                                   r"[\w-]+\.step\b|\bout/(?:note\.md|result\.json)", re.I)),
     ("telefon / PESEL / IBAN", re.compile(r"(?<!\d)(?:\+48[\s-]?)?\d{3}[\s-]\d{3}[\s-]\d{3}(?!\d)|(?<!\d)\d{11}(?!\d)|"
                                           r"\bPL\d{2}(?:[\s]?\d{4}){6}\b")),
 ]
@@ -308,31 +314,55 @@ def shortage(items: list) -> str:
 
 def build_candidates(logs: list, extra: list, model: Ollama | None, per_class: int):
     """Kandydaci do przeglądu: przypadki ze skryptu z 28.10, kandydaci z notki #2 i wiadomości z dzienników
-    (najnowsze, najwyżej `per_class` na klasę proponowaną). Zwraca (lista, powód braku zestawu albo ""); liczby
-    w powodzie dotyczą wszystkiego, co jest w dziennikach, nie tylko tego, co zmieściło się w limicie."""
+    (najnowsze, najwyżej `per_class` na klasę proponowaną, bez prawie identycznych). Model jest pytany tylko do
+    zapełnienia limitów. Zwraca (lista, powód braku zestawu albo "")."""
     fixed = [{"text": t, "source": PROBE_SOURCE, "waits": w} for t, w in PROBE_CASES] + extra
-    seen, items = set(), []
+    quota = {True: per_class, False: per_class}
+    seen, shapes, kept = set(), [], []
+    judged = 0
     for entry in fixed + logs:
         text = entry["text"].strip()
+        known = "waits" in entry
         if not text or text in seen:
             continue
-        seen.add(text)
+        if not known and not quota[True] and not quota[False]:
+            break   # limity obu klas pełne — model nie jest pytany o resztę
+        shape = shape_of(text)
+        if not known and any(near_duplicate(shape, other) for other in shapes):
+            continue   # prawie to samo co już wybrana wiadomość (np. różni się numerem kroku)
         rules = rules_waits(text)
-        model_waits = model.judge(text)[0] if model else None
-        known = "waits" in entry
+        model_waits = None
+        if model:
+            model_waits = model.judge(text)[0]
+            judged += 1
+            if judged % 10 == 0:
+                print(f"  model lokalny: {judged} wiadomości ocenionych…", file=sys.stderr)
         proposal = entry["waits"] if known else (model_waits if model_waits is not None else rules)
-        items.append({"id": message_id(text), "text": text, "source": entry["source"], "rules": rules,
-                      "model": model_waits, "proposal": proposal, "known": known})
-    problem = shortage(items)
-    quota = {True: per_class, False: per_class}
-    kept = []
-    for item in items:
-        if not item["known"]:   # z dziennika: limit na klasę (przypadki stałe wchodzą zawsze)
-            if quota[item["proposal"]] <= 0:
+        if not known:   # z dziennika: limit na klasę (przypadki stałe wchodzą zawsze)
+            if quota[proposal] <= 0:
                 continue
-            quota[item["proposal"]] -= 1
-        kept.append(item)
+            quota[proposal] -= 1
+        seen.add(text)
+        shapes.append(shape)
+        kept.append({"id": message_id(text), "text": text, "source": entry["source"], "rules": rules,
+                     "model": model_waits, "proposal": proposal, "known": known})
+    problem = shortage(kept)
+    if problem and not all(quota.values()):
+        problem += f" Liczba w klasie, która dobiła do limitu --per-class {per_class}, może być w dziennikach większa."
     return kept, problem
+
+
+def shape_of(text: str) -> str:
+    """Tekst bez liczb, skrótów commitów i identyfikatorów kroków — do wykrywania prawie identycznych wiadomości."""
+    text = re.sub(r"\b[0-9a-f]{7,40}\b", "", text.lower())
+    return re.sub(r"[\d\s]+", " ", text).strip()[-1500:]
+
+
+def near_duplicate(shape: str, other: str, threshold: float = 0.85) -> bool:
+    if shape == other:
+        return True
+    matcher = difflib.SequenceMatcher(None, shape, other, autojunk=False)
+    return matcher.real_quick_ratio() >= threshold and matcher.quick_ratio() >= threshold and matcher.ratio() >= threshold
 
 
 def load_extra(path: str) -> list:
@@ -462,15 +492,14 @@ def redact(text: str) -> str:
     return text
 
 
-def apply_review(markdown: str, redact_text: bool = False, reviewed_note: str = ""):
+def apply_review(markdown: str, redact_text: bool = False):
     """(rekordy zestawu, błędy). Rekordy: {id, text, waits, source}.
 
-    redact_text   — przed kontrolą prywatności zastępuje ścieżki i nazwę firmy (`redact`),
-    reviewed_note — zamiast „- przejrzane: tak” w pliku: jawna notka, kto i jak zatwierdził (np. użytkownik
-                    zrezygnował z ręcznego przeglądu); bez niej plik musi być oznaczony jako przejrzany."""
+    redact_text — przed kontrolą prywatności zastępuje ścieżki i nazwę firmy (`redact`). Plik musi być oznaczony
+    „- przejrzane: tak” przez użytkownika; innego obejścia nie ma."""
     reviewed, items = parse_review(markdown)
     errors = []
-    if not reviewed and not reviewed_note.strip():
+    if not reviewed:
         errors.append("plik nie jest oznaczony jako przejrzany („- przejrzane: tak” na początku)")
     records = []
     for item in items:
@@ -496,9 +525,7 @@ def apply_review(markdown: str, redact_text: bool = False, reviewed_note: str = 
 def cmd_review(args) -> int:
     if args.apply:
         with open(args.apply, encoding="utf-8") as fh:
-            records, errors = apply_review(fh.read(), args.redact_paths, args.reviewed_note or "")
-        if args.reviewed_note:
-            print(f"Zatwierdzenie bez „przejrzane: tak” w pliku: {args.reviewed_note}", file=sys.stderr)
+            records, errors = apply_review(fh.read(), args.redact_paths)
         if errors:
             print("Zestaw nie został zapisany:", file=sys.stderr)
             for error in errors:
@@ -613,8 +640,6 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--apply", metavar="REVIEW.md")
     r.add_argument("--redact-paths", action="store_true",
                    help="z --apply: ścieżki → <ścieżka>, nazwa firmy (firma) → <firma>")
-    r.add_argument("--reviewed-note", metavar="NOTKA",
-                   help="z --apply: zatwierdzenie na odpowiedzialność użytkownika zamiast „przejrzane: tak” w pliku")
     r.add_argument("--out", required=True)
     b = sub.add_parser("bench", help="trafność reguł i modelu lokalnego na zestawie")
     b.add_argument("corpus", nargs="?", default=DEFAULT_CORPUS)

@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import random
 import tempfile
 import unittest
 from unittest import mock
@@ -15,7 +16,9 @@ TOOL = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.absp
                     "tools", "question_corpus.py")
 CORPUS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "question-corpus.jsonl")
 # Najniższa trafność obecnych reguł na zatwierdzonym zestawie (pełne punkty procentowe, w dół): wartość z
-# `question_corpus.py bench`. Kolejne tickety mogą ją tylko podnieść. None — zestaw jeszcze nie zatwierdzony.
+# `question_corpus.py bench` na zatwierdzonym zestawie. Kolejne tickety mogą ją tylko podnieść.
+# None — zestaw prawdziwych wiadomości jeszcze nie przejrzany przez użytkownika (PT-111, runda 2): w pliku jest
+# tylko 12 przypadków z 28.10, więc rozmiar i próg nie są sprawdzane.
 RULES_ACCURACY_FLOOR = None
 
 
@@ -231,10 +234,15 @@ class NoModel(FakeModel):
 def log_set(waits, idle):
     """Dzienniki Claude Code z `waits` pytaniami i `idle` raportami (każda wiadomość w osobnej sesji)."""
     sessions = []
+
+    def words(i, kind):   # różne treści, żeby nie były „prawie identyczne”
+        rng = random.Random(f"{kind}{i}")
+        return " ".join("".join(rng.choice("abcdefghijklmnoprstuwyz") for _ in range(rng.randint(4, 9))) for _ in range(14))
+
     for i in range(waits):
-        sessions.append((f"w{i}", [c_user("x"), c_text(f"Raport numer {i}.\n\nKtóry wariant numer {i} wolisz?")]))
+        sessions.append((f"w{i}", [c_user("x"), c_text(f"Raport {words(i, 'w')}.\n\nKtóry wariant {words(i, 'v')} wolisz?")]))
     for i in range(idle):
-        sessions.append((f"i{i}", [c_user("x"), c_text(f"Gotowe, zadanie numer {i} scalone i zainstalowane.")]))
+        sessions.append((f"i{i}", [c_user("x"), c_text(f"Gotowe, {words(i, 'i')} scalone i zainstalowane.")]))
     return sessions
 
 
@@ -267,9 +275,29 @@ class ExtractTest(unittest.TestCase):
             self.assertEqual(code, 3)
             self.assertFalse(os.path.exists(out))
             self.assertIn("„czeka” 8", err)
-            self.assertIn("„nie czeka” 47", err)   # 7 przypadków stałych + 40 z dzienników (limit na klasę nie fałszuje liczb)
+            self.assertIn("„nie czeka” 37", err)   # 7 przypadków stałych + 30 z dzienników (limit --per-class)
+            self.assertIn("może być w dziennikach większa", err)
             self.assertIn("szerszy zakres dat", err)
             self.assertIn("mniejszy zestaw", err)
+
+    def test_near_identical_messages_count_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            same = [(f"s{i}", [c_user("x"), c_text(f"Krok {i + 20} kończę wynikiem `denied`: nie udało się usunąć plików, "
+                                                   f"bo polecenie jest odrzucone. Czy mam spróbować inaczej?")])
+                    for i in range(12)]
+            code, out, err = self.run_extract(tmp, log_set(20, 20) + same)
+            self.assertEqual(code, 0, err)
+            texts = [i["text"] for i in read_json(out)["items"] if "kończę wynikiem" in i["text"]]
+            self.assertEqual(len(texts), 1)
+
+    def test_model_is_asked_only_until_class_limits_are_full(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = FakeModel()
+            code, out, err = self.run_extract(tmp, log_set(60, 60), "--per-class", "20", model=lambda *a: model)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(len(read_json(out)["items"]), 12 + 40)
+            # po zapełnieniu obu limitów model nie dostaje reszty dzienników (razem byłoby 12 + 120 wywołań)
+            self.assertLess(len(model.calls), 12 + 120)
 
     def test_candidates_from_note_are_included(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -364,38 +392,46 @@ class ReviewTest(unittest.TestCase):
                        "konto PL61 1090 1014 0000 0712 1981 2874"):
             self.assertNotEqual(qc.privacy_problems(qc.redact("Treść. " + secret)), [], secret)
 
-    def test_apply_with_redaction_and_reviewed_note_for_unreviewed_file(self):
+    def test_apply_with_redaction_needs_reviewed_flag(self):
         data = candidates()
         data["items"][0]["text"] += "\nPlik /home/ktos/projekt/a.py dla Firma"
         md = qc.render_review(data)   # „przejrzane: nie”
         _, errors = qc.apply_review(md, redact_text=True)
         self.assertTrue(any("przejrzany" in e for e in errors))
-        _, errors = qc.apply_review(md)
+        _, errors = qc.apply_review(md.replace("- przejrzane: nie", "- przejrzane: tak"))
         self.assertTrue(any("ścieżka" in e for e in errors))
-        records, errors = qc.apply_review(md, redact_text=True, reviewed_note="przegląd po automatycznym zastąpieniu")
+        records, errors = qc.apply_review(md.replace("- przejrzane: nie", "- przejrzane: tak"), redact_text=True)
         self.assertEqual(errors, [])
         self.assertIn("Plik <ścieżka> dla <firma>", records[0]["text"])
+
+    def test_no_way_around_the_reviewed_flag(self):
+        self.assertNotIn("reviewed_note", qc.apply_review.__code__.co_varnames)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            qc.main(["review", "--apply", "x.md", "--out", "y.jsonl", "--reviewed-note", "ok"])
 
     def test_redaction_still_refuses_remaining_private_data(self):
         data = candidates()
         data["items"][0]["text"] += "\nPisz na jan@firma.pl, plik /home/ktos/a.py"
-        errors = qc.apply_review(qc.render_review(data), redact_text=True, reviewed_note="x")[1]
+        md = qc.render_review(data).replace("- przejrzane: nie", "- przejrzane: tak")
+        errors = qc.apply_review(md, redact_text=True)[1]
         self.assertEqual(len(errors), 1)
         self.assertIn("adres e-mail", errors[0])
 
-    def test_cli_apply_with_redact_paths_and_reviewed_note(self):
+    def test_client_project_content_is_refused_and_not_redactable(self):
+        for secret in ("repo infracore", "ticket DPT-5 nadal stoi", "w APP5 jest błąd",
+                       "wiersz dpt-11-testy.fix-4.step/out/note.md", "id asst_sDfBnu0kDkEhKAFGftGCMiFi"):
+            self.assertNotEqual(qc.privacy_problems(qc.redact("Treść. " + secret)), [], secret)
+
+    def test_cli_apply_with_redact_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             md, corpus = os.path.join(tmp, "r.md"), os.path.join(tmp, "k.jsonl")
             data = candidates()
             data["items"][3]["text"] += "\nZob. /srv/klient/app.py (Firma)"
             with open(md, "w", encoding="utf-8") as fh:
-                fh.write(qc.render_review(data))
-            err = io.StringIO()
-            with contextlib.redirect_stderr(err):
-                self.assertEqual(qc.main(["review", "--apply", md, "--out", corpus, "--redact-paths"]), 1)
-                self.assertEqual(qc.main(["review", "--apply", md, "--out", corpus, "--redact-paths",
-                                          "--reviewed-note", "przegląd po automatycznym zastąpieniu"]), 0)
-            self.assertIn("przegląd po automatycznym zastąpieniu", err.getvalue())
+                fh.write(qc.render_review(data).replace("- przejrzane: nie", "- przejrzane: tak"))
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(qc.main(["review", "--apply", md, "--out", corpus]), 1)
+                self.assertEqual(qc.main(["review", "--apply", md, "--out", corpus, "--redact-paths"]), 0)
             rows = qc.load_corpus(corpus)
             self.assertIn("Zob. <ścieżka> (<firma>)", [r["text"] for r in rows][3])
 
@@ -509,21 +545,34 @@ class RealCorpusTest(unittest.TestCase):
     """Zestaw prawdziwych wiadomości zatwierdzony przez użytkownika (daemon/tests/fixtures/question-corpus.jsonl)."""
 
     def setUp(self):
-        if RULES_ACCURACY_FLOOR is None or not os.path.exists(CORPUS):
-            self.skipTest("zestaw prawdziwych wiadomości jeszcze nie zatwierdzony")
+        if not os.path.exists(CORPUS):
+            self.skipTest("brak pliku zestawu")
         self.corpus = qc.load_corpus(CORPUS)
 
+    def approved_only(self):
+        if RULES_ACCURACY_FLOOR is None:
+            self.skipTest("zestaw jeszcze nie zatwierdzony przez użytkownika")
+
     def test_shape_and_size(self):
-        self.assertGreaterEqual(len(self.corpus), qc.MIN_TOTAL)
         self.assertEqual(len({m["id"] for m in self.corpus}), len(self.corpus))
+        if RULES_ACCURACY_FLOOR is not None:
+            self.assertGreaterEqual(len(self.corpus), qc.MIN_TOTAL)
         for m in self.corpus:
             self.assertEqual(set(m), {"id", "text", "waits", "source"})
             self.assertIsInstance(m["waits"], bool)
             self.assertTrue(m["text"].strip())
             self.assertLessEqual(len(m["text"]), qc.MAX_CHARS)
         waits = sum(m["waits"] for m in self.corpus)
-        self.assertGreaterEqual(waits, qc.MIN_PER_CLASS)
-        self.assertGreaterEqual(len(self.corpus) - waits, qc.MIN_PER_CLASS)
+        if RULES_ACCURACY_FLOOR is not None:
+            self.assertGreaterEqual(waits, qc.MIN_PER_CLASS)
+            self.assertGreaterEqual(len(self.corpus) - waits, qc.MIN_PER_CLASS)
+
+    def test_no_near_duplicates(self):
+        shapes = []
+        for m in self.corpus:
+            shape = qc.shape_of(m["text"])
+            self.assertFalse(any(qc.near_duplicate(shape, other) for other in shapes), m["id"])
+            shapes.append(shape)
 
     def test_contains_the_twelve_probe_cases(self):
         texts = {m["text"]: m["waits"] for m in self.corpus}
@@ -535,6 +584,7 @@ class RealCorpusTest(unittest.TestCase):
             self.assertEqual(qc.privacy_problems(m["text"]), [], m["id"])
 
     def test_rules_accuracy_does_not_drop(self):
+        self.approved_only()
         self.assertGreaterEqual(qc.rules_accuracy(self.corpus), RULES_ACCURACY_FLOOR)
 
 

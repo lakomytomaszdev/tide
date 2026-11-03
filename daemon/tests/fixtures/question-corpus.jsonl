@@ -1,0 +1,12 @@
+{"id": "ma7c2eabe", "text": "Na stronę ustala się wynik i nazwy graczy. Do tego dochodzi przycisk „Zamień strony”.\n\nCzy taki podział Wydarzenie → Seria → wynik pasuje? Czy bywa u Ciebie castowanie bez wydarzenia, np. luźne mecze znajomych? Wtedy Wydarzenie byłoby opcjonalne, a płytka pokazywałaby tylko graczy i wynik.", "waits": true, "source": "probe 2026-10-28"}
+{"id": "m4739d966", "text": "Wszystkie sześć zadań jest gotowe.\n\n**Mogę scalić i zainstalować?**\n\nPrzy sprzątaniu worktree czeka jeszcze plik testowy w starym worktree PT-16. Mogę go przywrócić razem z resztą, jeśli napiszesz „przywróć”.", "waits": true, "source": "probe 2026-10-28"}
+{"id": "m9d989dd9", "text": "Gotowe. Testy przechodzą: 1071 OK. Scalone do mastera i zainstalowane.", "waits": false, "source": "probe 2026-10-28"}
+{"id": "m5e6d5ea9", "text": "Co się zmieniło? Dodałem pole daty. Testy przechodzą, review APPROVE.", "waits": false, "source": "probe 2026-10-28"}
+{"id": "m662c2ab2", "text": "Czy to było trudne? Trochę. Ale ostatecznie wszystkie testy przechodzą i jest scalone.", "waits": false, "source": "probe 2026-10-28"}
+{"id": "m0c681ea6", "text": "Pytanie 12 — model observera. Proponuję trzy pojęcia: Wydarzenie, Seria, Nakładka wyniku. Który podział wolisz: jeden ekran czy dwa?", "waits": true, "source": "probe 2026-10-28"}
+{"id": "m2a6836b0", "text": "Gotowe. Jeśli chcesz, mogę też dodać testy.", "waits": false, "source": "probe 2026-10-28"}
+{"id": "mfca492e6", "text": "Jasne. Do tej pory baza była tylko czytana.\n\n**Krok 1:** uruchom ten select i wklej mi wynik:\n\n```sql\nSELECT * FROM messages WHERE id = 5;\n```", "waits": true, "source": "probe 2026-10-28"}
+{"id": "ma2721885", "text": "Zrobiłem migrację. Dwie rzeczy wymagają twojej decyzji: 1) czy usuwamy starą kolumnę, 2) czy wypuszczamy dziś. Daj znać.", "waits": true, "source": "probe 2026-10-28"}
+{"id": "mf96fed0c", "text": "## Co dalej?\n\nNic, wszystko scalone i zainstalowane. Kafelek pokaże zmianę po restarcie Plasmy.", "waits": false, "source": "probe 2026-10-28"}
+{"id": "m12b87e95", "text": "Sprawdziłem logi. Błąd był w parsowaniu dat, poprawiłem i dodałem test. Czy warto by jeszcze przejrzeć inne parsery? Może kiedyś, na razie nie ma potrzeby.", "waits": false, "source": "probe 2026-10-28"}
+{"id": "m997eb408", "text": "Agent PT-33 pracuje w tle. Dam znać, jak skończy.", "waits": false, "source": "probe 2026-10-28"}
