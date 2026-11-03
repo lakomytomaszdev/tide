@@ -193,7 +193,7 @@ class PlanEditing:
         if not isinstance(own, str):
             raise FlowError("bad-feedback", "wpisz uwagi do planu (do 32000 znaków)")
         try:
-            chosen = review_findings.normalize(request.get("findings"))
+            chosen = review_findings.normalize(request.get("findings"), stored=True)
         except ValueError as error:
             raise FlowError("bad-feedback", f"niepoprawne uwagi do odesłania: {error}") from None
         feedback = review_findings.render(chosen, own)

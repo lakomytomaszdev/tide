@@ -171,6 +171,14 @@ class StructuredReviewFlowTest(FlowInProcess):
                     self.flow.engine.edit_plan(card, request)
                 self.assertEqual(error.exception.code, "bad-feedback")
 
+    def test_unweighted_finding_from_old_string_can_be_returned(self):
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        result = self.flow.engine.edit_plan(card, {
+            "action": "return", "findings": [{"severity": "", "text": "Doprecyzuj ryzyka.", "tickets": []}]})
+        self.assertTrue(result["ok"], result)
+        self.assertIn("Doprecyzuj ryzyka.", self.of(card, "plan.returned")[-1]["feedback"])
+
 
 if __name__ == "__main__":
     unittest.main()

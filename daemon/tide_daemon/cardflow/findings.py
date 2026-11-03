@@ -8,7 +8,6 @@ ma już postać listy.
 SEVERITIES = ("blocker", "major", "nit")
 MAX_TEXT = 32000
 MAX_TICKETS = 50
-LABELS = {"blocker": "blokująca", "major": "ważna", "nit": "drobna", "": "bez wagi"}
 
 
 def normalize(raw, stored: bool = False) -> list[dict]:
