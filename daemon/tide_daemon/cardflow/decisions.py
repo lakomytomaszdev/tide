@@ -61,6 +61,7 @@ GENERIC = {
                 "Karta czeka, aż przyczyna zostanie usunięta i ponowisz operację."),
 }
 
+# TODO PT-122: zastąpić wspólnymi etykietami rodzajów kroków, gdy PT-122 trafi na gałąź karty.
 STEP_WORDS = {"ticket": "ticket", "review": "review", "fix": "poprawki", "conflict": "konflikt",
               "close": "domknięcie", "planning": "planowanie", "plan-fix": "poprawa formatu planu",
               "plan-review": "review planu", "plan-revise": "poprawa planu", "plan-amend": "zmiana planu",
@@ -198,9 +199,7 @@ def _error(st, name, step, done) -> dict:
     reason = done.get("reason") or ""
     label = REASON_LABELS.get(reason, reason)
     fault = "tide" if reason in TIDE_REASONS else "provider" if reason in PROVIDER_REASONS else "step"
-    attempts = sum(1 for other in st.steps.values() if other.get("ticket") == step.get("ticket") and
-                   other.get("kind") == step.get("kind") and (other.get("step") == name or
-                   _ancestor(st, name, other.get("step"))))
+    attempts = _attempts(st, name)
     happened = f"{_who(step, True)} zakończył się błędem: {label}" if label else ""
     if happened and attempts > 1:
         happened += f" (próba {attempts})"
@@ -433,16 +432,15 @@ def _who(step: dict, capital: bool) -> str:
     return text[:1].upper() + text[1:] if capital else text
 
 
-def _ancestor(st: FlowState, name: str, other: str | None) -> bool:
-    """Czy `other` jest wcześniejszą próbą kroku `name` (łańcuch parentStep)."""
-    seen = set()
-    current = (st.steps.get(name) or {}).get("parentStep")
-    while current and current not in seen:
-        if current == other:
-            return True
+def _attempts(st: FlowState, name: str) -> int:
+    """Numer próby kroku: długość łańcucha `parentStep` w obrębie tego samego rodzaju kroku."""
+    kind = (st.steps.get(name) or {}).get("kind")
+    count, seen, current = 0, set(), name
+    while current and current not in seen and (st.steps.get(current) or {}).get("kind") == kind:
+        count += 1
         seen.add(current)
         current = (st.steps.get(current) or {}).get("parentStep")
-    return False
+    return count
 
 
 def _count(n: int, one: str, few: str, many: str) -> str:

@@ -54,7 +54,7 @@ echo "Sterownik NVIDIA: $(nvidia-smi --query-gpu=name,driver_version --format=cs
 
 # --- 2. oficjalny instalator ----------------------------------------------------------------------
 
-work=$(mktemp -d /tmp/tide-ollama-XXXXXX)
+work=$(mktemp -d "${TMPDIR:-/tmp}/tide-ollama-XXXXXX")
 trap 'rm -rf "$work"' EXIT
 curl -fsSL https://ollama.com/install.sh -o "$work/install.sh"
 echo

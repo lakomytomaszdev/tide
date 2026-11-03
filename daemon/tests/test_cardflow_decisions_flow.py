@@ -98,7 +98,7 @@ class DecisionStepTargetTest(FlowInProcess):
         from tide_daemon.cardflow.engine import FlowError
         with self.assertRaises(FlowError) as caught:
             self.engine.resolve_step(self.card_id, {"choice": "answer", "answer": "x", "step": "K-9-PT-9-1"})
-        self.assertEqual(caught.exception.code, "no-step-question")
+        self.assertEqual(caught.exception.code, "not-waiting")
 
     def test_request_without_step_keeps_the_old_focus(self):
         reply = self.engine.resolve_step(self.card_id, {"choice": "answer", "answer": "x"})

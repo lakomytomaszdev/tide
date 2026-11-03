@@ -54,7 +54,6 @@ from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for
 from .journal import Journal
 from .state import FlowState, derived, fold, ticket_of, graph_waves, attention_step, decision_step, guard_reason, _epoch
-from .decisions import build_decisions
 from .tracker import TrackerOutbox
 
 GUARD_MINUTES = 15.0
@@ -1287,8 +1286,14 @@ class FlowEngine(PlanEditing):
         self._hidden = (ids | {session}, tuple(sorted(set(places) | {os.path.realpath(worktree)})))
 
         def launch() -> dict:
+            nonlocal prompt
             from ..board.commands import claude_tools
+            from ..tasks import dotnet
             allowed_tools, disallowed_tools = claude_tools(project.allowed_commands, project.denied_commands)
+            is_dotnet = kind in ("ticket", "fix", "review", "conflict", "close") and dotnet.is_dotnet(worktree)
+            if is_dotnet:
+                ok, tail = dotnet.restore(worktree)
+                prompt += dotnet.prompt_note(ok, tail)
             bg = agentcmd.background(agentcmd.Step(
                 tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
                 step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
@@ -1298,7 +1303,7 @@ class FlowEngine(PlanEditing):
                 allowed_tools=allowed_tools if selected.tool == "claude" else (),
                 disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
                 enforce_command_policy=selected.tool == "claude",
-                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs)))
+                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet))
             bg.prepare()
             for source, target in zip(images, shots):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -2075,10 +2080,13 @@ class FlowEngine(PlanEditing):
         focus = decision_step(st)
         wanted = str(request.get("step") or "")
         if wanted and wanted != focus:
-            # Okno decyzji odpowiada na wskazaną decyzję z `flow.decisions[]`, nie tylko na tę z przodu kolejki;
-            # tick wznawia ostatni krok każdego ticketu, więc odpowiedź trafi do właściwego kroku.
-            if wanted not in {d["step"] for d in build_decisions(st) if d["kind"] in ("question", "permission", "error")}:
-                raise FlowError("no-step-question", f"{card}: krok {wanted} nie czeka na decyzję")
+            # Kilka decyzji naraz (K-15: pytanie LEGAL-60 i LEGAL-62): wskazany krok musi sam czekać na decyzję —
+            # zakończony pytaniem, odmową albo błędem, bez kroku-następcy i bez wcześniejszej decyzji.
+            done_wanted = st.finished.get(wanted) or {}
+            if wanted not in st.steps or wanted in st.step_decisions or \
+                    done_wanted.get("result") not in ("question", "denied", "error") or \
+                    any(s.get("parentStep") == wanted for s in st.steps.values()):
+                raise FlowError("not-waiting", f"krok {wanted} nie czeka na decyzję")
             focus = wanted
         step = st.steps.get(focus) or {}
         done = st.finished.get(focus) or {}

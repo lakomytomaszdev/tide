@@ -99,7 +99,7 @@ fi
 
 # --- 2. profil ------------------------------------------------------------------------------------
 
-work=$(mktemp -d /tmp/tide-sandbox-XXXXXX)
+work=$(mktemp -d "${TMPDIR:-/tmp}/tide-sandbox-XXXXXX")
 trap 'rm -rf "$work"' EXIT
 /usr/bin/python3 "$here/check.py" profile >"$work/bwrap-userns-restrict"
 if ! apparmor_parser -Q -K "$work/bwrap-userns-restrict"; then

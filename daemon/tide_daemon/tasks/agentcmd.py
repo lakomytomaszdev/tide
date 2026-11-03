@@ -143,6 +143,7 @@ class Step:
     base_env: dict | None = None    # skąd HOME, USER, PATH, LANG (domyślnie środowisko usługi)
     tmp_root: str = "/tmp"          # poza ~; tu Claude Code dostaje katalog tymczasowy kroku
     read_dirs: tuple = ()          # dodatkowe repozytoria karty, wyłącznie do odczytu
+    dotnet: bool = False           # projekt .NET: pamięć pakietów NuGet do odczytu i środowisko bez serwerów buildu
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
 
 
@@ -318,6 +319,12 @@ def _env(step: Step, home_env: dict, inp: str) -> dict:
         env["GIT_CONFIG_NOSYSTEM"] = "1"     # git w snapie nie czyta /etc/gitconfig (inaczej „unknown error”)
     else:
         env["CLAUDE_CODE_TMPDIR"] = os.path.join(step.tmp_root, f"tide-step-{step.step_id}")
+    if step.dotnet:
+        from . import dotnet
+        # Katalog CLI w katalogu wyjściowym kroku — jedynym miejscu z zapisem w piaskownicy (K-15: katalog
+        # tymczasowy Claude Code `/tmp/tide-step-…` jest w kroku tylko do odczytu).
+        cli_home = os.path.join(os.path.dirname(inp), "out", ".dotnet-home")
+        env.update(dotnet.step_env(cli_home, dotnet.packages_dir(home_env.get("HOME") or os.path.expanduser("~"))))
     return env
 
 
@@ -326,7 +333,8 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
     settings = {"sandbox": {
         "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
         "autoAllowBashIfSandboxed": not step.enforce_command_policy,
-        "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs],
+        "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs,
+                                                        *([env["NUGET_PACKAGES"]] if step.dotnet and env.get("NUGET_PACKAGES") else [])],
                        "allowWrite": [out]},
         "network": {"allowedDomains": []}}}
     if step.local is not None:
