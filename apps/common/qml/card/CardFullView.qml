@@ -54,6 +54,10 @@ Rectangle {
     readonly property var currentHistory: history.filter(h => !h.old).reverse()
     readonly property var oldHistory: history.filter(h => h.old === true).reverse()
     property bool oldOpen: false
+    readonly property var stoppedByLimit: flow && Array.isArray(flow.stoppedByLimit) ? flow.stoppedByLimit : []
+    readonly property var otherProviders: flow && Array.isArray(flow.otherProviders) ? flow.otherProviders : []
+    readonly property var limitTransfer: flow && flow.limitTransfer ? flow.limitTransfer : null
+    property bool transferSent: false
     readonly property alias form: form
 
     signal backRequested()
@@ -202,7 +206,28 @@ Rectangle {
         view.forceActiveFocus()
     }
 
+    function providerLabel(provider) {
+        return provider === "openai" ? "Codex" : provider === "anthropic" ? "Claude" : provider
+    }
+
+    function filesLabel(n) {
+        const count = Number(n) || 0
+        const few = count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14)
+        return count + " " + (count === 1 ? "plik WIP" : few ? "pliki WIP" : "plików WIP")
+    }
+
+    // „Przenieś na Codex”: istniejąca ścieżka przekazania kroku (ResolveCardStep, choice transfer), po jednym
+    // zdarzeniu na zatrzymany krok; koszt widać nad przyciskiem przed akcją.
+    function requestTransfer() {
+        if (!limitTransfer || limitTransfer.available !== true) return
+        transferSent = true
+        for (const stopped of stoppedByLimit)
+            answered("limit-transfer:" + stopped.step, "ResolveCardStep",
+                     { choice: "transfer", step: stopped.step, executor: limitTransfer.executor })
+    }
+
     function start() {
+        transferSent = false
         answeredIds = []
         confirming = null
         menuOpen = false
@@ -216,6 +241,7 @@ Rectangle {
 
     // Usługa odrzuciła odpowiedź: decyzja wraca na wierzch z powodem.
     function failed(decisionId, message) {
+        if (decisionId.indexOf("limit-transfer:") === 0) transferSent = false
         answeredIds = answeredIds.filter(id => id !== decisionId)
         form.fail(message)
     }
@@ -774,7 +800,7 @@ Rectangle {
                     Text {
                         objectName: "fullNowEmpty"
                         Layout.fillWidth: true
-                        visible: view.running.length === 0
+                        visible: view.running.length === 0 && view.stoppedByLimit.length === 0
                         text: view.current ? "Nic nie pracuje w tle — Tide czeka na Twoją decyzję."
                                            : "Nic nie pracuje teraz w tle."
                         textFormat: Text.PlainText
@@ -782,6 +808,83 @@ Rectangle {
                         font.family: Tide.Theme.uiFamily
                         font.pointSize: Tide.Tokens.fontSizePt
                         wrapMode: Text.Wrap
+                    }
+                    // Kroki zatrzymane przez limit dostawcy (PT-130): czekają na odnowienie, to nie decyzja.
+                    // Pola z usługi: `flow.stoppedByLimit[]`, `flow.otherProviders[]`, `flow.limitTransfer`.
+                    ColumnLayout {
+                        objectName: "fullLimitSection"
+                        Layout.fillWidth: true
+                        visible: view.stoppedByLimit.length > 0
+                        spacing: 6
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Zatrzymane przez limit"
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.butter
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt
+                            font.weight: Font.DemiBold
+                        }
+                        Repeater {
+                            model: view.stoppedByLimit
+                            delegate: Text {
+                                required property var modelData
+                                objectName: "fullStopped"
+                                readonly property string stepId: modelData.step
+                                Layout.fillWidth: true
+                                text: [modelData.ticket, modelData.step].filter(x => !!x).join(" · ")
+                                      + " — " + view.filesLabel(modelData.wipFiles)
+                                      + (modelData.until ? " · czeka do " + modelData.until : "")
+                                textFormat: Text.PlainText
+                                color: Tide.Tokens.textPrimary
+                                font.family: Tide.Theme.uiFamily
+                                font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                                wrapMode: Text.Wrap
+                            }
+                        }
+                        Text {
+                            objectName: "fullOtherProviders"
+                            Layout.fillWidth: true
+                            visible: view.otherProviders.length > 0
+                            text: "Pozostały limit: " + view.otherProviders.map(
+                                      p => view.providerLabel(p.provider) + " " + p.remaining + "%").join(", ")
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                            wrapMode: Text.Wrap
+                        }
+                        Text {
+                            objectName: "fullTransferCost"
+                            Layout.fillWidth: true
+                            visible: !!view.limitTransfer && view.limitTransfer.available === true
+                            text: view.limitTransfer ? view.limitTransfer.cost || "" : ""
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textPrimary
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                            wrapMode: Text.Wrap
+                        }
+                        Tide.TextButton {
+                            objectName: "fullTransfer"
+                            visible: !!view.limitTransfer && view.limitTransfer.available === true
+                            text: view.limitTransfer ? view.limitTransfer.text || "" : ""
+                            variant: "outline"
+                            enabled: !view.transferSent
+                            Accessible.name: text + ". " + (view.limitTransfer ? view.limitTransfer.cost || "" : "")
+                            onClicked: view.requestTransfer()
+                        }
+                        Text {
+                            objectName: "fullTransferHidden"
+                            Layout.fillWidth: true
+                            visible: !!view.limitTransfer && view.limitTransfer.available === false
+                            text: view.limitTransfer ? view.limitTransfer.reason || "" : ""
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                            wrapMode: Text.Wrap
+                        }
                     }
                     Repeater {
                         model: view.running

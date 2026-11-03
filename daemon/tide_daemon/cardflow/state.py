@@ -373,14 +373,26 @@ def ticket_of(st: FlowState, ticket_id: str = "") -> dict:
     return out
 
 
-def attention_step(st: FlowState) -> str:
-    """Najstarszy ostatni krok ticketu, który potrzebuje użytkownika; inne tickety pracują dalej."""
+def _limit_wait_only(st: FlowState, name: str) -> bool:
+    """Krok zatrzymany limitem z bezpiecznym WIP (D3): czeka na odnowienie, nie na użytkownika."""
+    done = st.finished.get(name) or {}
+    if done.get("result") != "error" or done.get("reason") != "limit":
+        return False
+    wip = (st.wip_retries.get(name) or {}).get("wip") or done.get("wip") or {}
+    return not wip.get("error") and not (wip.get("files") and not wip.get("committed"))
+
+
+def attention_step(st: FlowState, user_only: bool = False) -> str:
+    """Najstarszy ostatni krok ticketu, który potrzebuje użytkownika; inne tickety pracują dalej.
+    `user_only` pomija kroki czekające wyłącznie na limit (nie są ruchem użytkownika)."""
     latest = {}
     for name, item in st.steps.items():
         latest[item.get("ticket")] = name
     for name in latest.values():
         item, done = st.steps[name], st.finished.get(name) or {}
         if item.get("ticket") in st.rejected or name in st.step_decisions or name in st.superseded:
+            continue
+        if user_only and _limit_wait_only(st, name):
             continue
         if done.get("result") in ("question", "denied") or (done.get("result") == "error" and
                 (int(item.get("attempt") or 0) >= 1 or done.get("reason") == "limit")) or (
@@ -403,8 +415,10 @@ def guard_reason(st: FlowState) -> str | None:
     """None = praca lub koniec; napis = nazwany powód czekania; pusty napis = możliwy postój."""
     if not st.started or st.card_finished or st.paused or st.running() or st.open_intents() or st.open_consoles():
         return None
-    if attention_step(st):
+    if attention_step(st, True):
         return "pytanie, zgoda albo błąd kroku"
+    if attention_step(st):
+        return "limit dostawcy"
     if (st.plan_revision or {}).get("failed"):
         return "decyzja po nieudanej poprawie planu"
     if (st.plan_revision or {}).get("pending") and st.plan_reviewed:
@@ -433,7 +447,7 @@ def guard_reason(st: FlowState) -> str | None:
     return ""
 
 
-def decision_step(st: FlowState) -> str:
+def decision_step(st: FlowState, user_only: bool = False) -> str:
     """Krok planu czekający na decyzję ma pierwszeństwo nad równoległym ticketem."""
     for name, step in reversed(list(st.steps.items())):
         if step.get("kind") not in ("plan-amend", "plan-review", "plan-revise") or name in st.superseded:
@@ -443,10 +457,12 @@ def decision_step(st: FlowState) -> str:
             continue
         if done.get("result") == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "limit":
             continue
+        if user_only and _limit_wait_only(st, name):
+            continue
         if any(s.get("parentStep") == name for s in st.steps.values()):
             continue
         return name
-    return attention_step(st) or st.last_step
+    return attention_step(st, user_only) or st.last_step
 
 
 def derived(st: FlowState, card: dict) -> dict | None:
@@ -467,8 +483,11 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         return None
     from .decisions import build_decisions
     decisions = build_decisions(st)
-    attention = attention_step(st)
-    focus = decision_step(st)
+    attention = attention_step(st, True)
+    focus = decision_step(st, True)
+    if not decisions and not attention and not st.running():
+        # Nic nie czeka na użytkownika: zatrzymany limitem krok nadal wyznacza kolumnę („czeka na limit”).
+        focus = attention_step(st) or focus
     if focus:
         st = replace(st, last_step=focus)
     ticket = ticket_of(st)
@@ -549,6 +568,14 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                     (wip.get("committed") or wip.get("files") == 0)):
                 return _fill(out, "waiting", reason)
             return _fill(out, "progress", f"{ident} · przekazuję krok")
+        if done.get("reason") == "limit" and not decisions and not wip.get("error") and \
+                not (wip.get("files") and not wip.get("committed")):
+            # PT-130 (D3): limit nie jest decyzją. Karta czeka na odnowienie w „W toku”, nie w „Czeka na mnie”;
+            # po odnowieniu krok rusza od nowa i kolumnę liczą zwykłe reguły. Zapis zmian do naprawy zostaje
+            # w „Czeka na mnie” (to praca dla użytkownika, nie limit).
+            out["question"] = ""
+            out["flow"]["question"] = ""
+            return _fill(out, "progress", f"{ident} · czeka na limit" + (f" do {reset}" if reset else ""))
         return _fill(out, "waiting", reason)
     failures = [e for e in st.tracker_failures() if e.get('action') != 'youtrack-note']
     if failures and not st.running():
@@ -652,8 +679,12 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         work = ("krok w Konsoli" if step.get("mode") == "interactive" else
                 "review" if step.get("kind") == "review" else "poprawki" if step.get("kind") == "fix" else "krok w tle")
         label = out["flow"].get("waveLabel")
-        return _fill(out, "progress", f"{label} · {len(st.running())} kroków w toku" if label else
-                     f"{ident} · {work} ({step.get('executor') or executor})")
+        from .fullcard import limit_stops
+        held = limit_stops(st)
+        until = next((i["until"] for i in held if i.get("until")), "")
+        tail = (" · czeka na limit" + (f" do {until}" if until else "")) if held else ""
+        return _fill(out, "progress", f"{label} · {len(st.running())} kroków w toku{tail}" if label else
+                     f"{ident} · {work} ({step.get('executor') or executor}){tail}")
     if st.open_intents():
         return _fill(out, 'progress', tracker_reason or f"{ident} · {_intent_word(st.open_intents()[0])}")
     if failed and not done:

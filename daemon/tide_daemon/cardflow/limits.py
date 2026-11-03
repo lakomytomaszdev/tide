@@ -48,6 +48,38 @@ def low_limit(snapshot: dict, provider: str, threshold: float, now: float) -> di
     return min(candidates, key=lambda item: item["remaining"]) if candidates else None
 
 
+def remaining_of(snapshot: dict, provider: str, now: float) -> float | None:
+    """Pozostały limit dostawcy w procentach: najniższy ze świeżych odczytów okien; None — brak świeżych danych."""
+    service = SERVICE.get(provider)
+    if not service or not isinstance(snapshot, dict) or not snapshot.get("available"):
+        return None
+    windows = (snapshot.get("services") or {}).get(service) or {}
+    values = []
+    for name, stale in STALE_SECONDS.items():
+        row = windows.get(name) or {}
+        remaining, read = row.get("remaining"), row.get("readTs")
+        if (not isinstance(remaining, (int, float)) or isinstance(remaining, bool) or
+                not isinstance(read, (int, float)) or isinstance(read, bool) or
+                not 0 <= remaining <= 100 or not -60 <= now - read <= stale or
+                row.get("reason") == "resetPassed"):
+            continue
+        values.append(remaining)
+    return min(values) if values else None
+
+
+def other_providers(snapshot: dict, exclude, now: float) -> list[dict]:
+    """`[{provider, remaining}]` — pozostały limit pozostałych dostawców chmurowych (bez `exclude`), z odczytów
+    Limitów AI; dostawca bez świeżego odczytu nie trafia na listę."""
+    found = []
+    for provider in SERVICE:
+        if provider in exclude:
+            continue
+        remaining = remaining_of(snapshot, provider, now)
+        if remaining is not None:
+            found.append({"provider": provider, "remaining": remaining})
+    return found
+
+
 def recovered(snapshot: dict, provider: str, threshold: float, now: float, window: str = "") -> bool:
     """Odnowienie potwierdza świeży odczyt wyczerpanego okna; brak danych go nie zastępuje."""
     service = SERVICE.get(provider)

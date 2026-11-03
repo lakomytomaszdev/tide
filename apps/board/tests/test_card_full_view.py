@@ -12,7 +12,8 @@ import shutil
 import unittest
 from datetime import datetime, timedelta
 
-from .decisionfix import FINDINGS_C, derived, fold, full_c, full_card, full_d, journal_c, journal_d
+from .decisionfix import (FINDINGS_C, derived, fold, full_c, full_card, full_d, full_e, journal_c, journal_d,
+                         journal_e)
 from .test_decision_dialog import STATE_PY as DIALOG_STATE_PY
 from .test_view import ProbeCase
 
@@ -40,7 +41,13 @@ def full():
         "  waves: byX(all(v, 'fullWave')).map(w => byY(all(w, 'fullTicket')).map(t => [t.ticketId, t.statusLabel])), "
         "  planEmpty: !!one('fullPlanEmpty'), "
         "  now: byY(all(v, 'fullNow')).map(s => [s.stepId, s.label, all(s, 'fullNowEnter').length]), "
-        "  nowEmpty: one('fullNowEmpty') ? one('fullNowEmpty').text : null }) })()"))
+        "  nowEmpty: one('fullNowEmpty') ? one('fullNowEmpty').text : null, "
+        "  limit: { section: !!one('fullLimitSection') && one('fullLimitSection').visible, "
+        "    stopped: byY(all(v, 'fullStopped')).map(s => [s.stepId, s.text]), "
+        "    others: one('fullOtherProviders') && one('fullOtherProviders').visible ? one('fullOtherProviders').text : null, "
+        "    cost: one('fullTransferCost') && one('fullTransferCost').visible ? one('fullTransferCost').text : null, "
+        "    button: one('fullTransfer') && one('fullTransfer').visible ? one('fullTransfer').text : null, "
+        "    hidden: one('fullTransferHidden') && one('fullTransferHidden').visible ? one('fullTransferHidden').text : null } }) })()"))
 
 def full_option(i):
     return at("(function () { const v = page.cardFullView; const all = " + ALL + "; "
@@ -73,8 +80,61 @@ class FixtureTest(unittest.TestCase):
         self.assertEqual([s["id"] for s in out["flow"]["running"]], ["K-8-ticket-2-0", "K-8-review-3-1", "K-8-fix-4-1"])
 
 
+    def test_scenario_e_limit_keeps_the_card_in_progress_without_a_decision(self):
+        out = derived(fold(journal_e()), {"column": "todo"})
+        self.assertEqual(out["column"], "progress")
+        self.assertIn("czeka na limit do 16:30", out["note"])
+        self.assertEqual(out["flow"]["decisions"], [])
+        self.assertEqual([(s["ticket"], s["wipFiles"]) for s in out["flow"]["stoppedByLimit"]],
+                         [("#2", 6), ("#4", 11)])
+        self.assertEqual([p["state"] for p in out["phases"]][4], "hold")
+
+
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class FullViewTest(ProbeCase):
+    def test_scenario_e_lists_stopped_steps_and_moves_them_to_codex_after_showing_the_cost(self):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["opened"] = full()
+click(named("fullTransfer"))
+out["calls"] = calls()
+out["after"] = full()
+""", full_e(self.data))
+        state = out["opened"]
+        self.assertTrue(state["open"])
+        self.assertEqual(state["card"], "K-8")
+        self.assertEqual(state["headline"], "Kroki czekają na limit dostawcy do 16:30; Tide wznowi je sam, nie musisz nic robić.")
+        self.assertEqual(state["options"], [], "limit nie jest decyzją")
+        limit = state["limit"]
+        self.assertTrue(limit["section"])
+        self.assertEqual([s[0] for s in limit["stopped"]], ["K-8-ticket-2-0", "K-8-fix-4-1"])
+        self.assertEqual(limit["stopped"][0][1], "#2 · K-8-ticket-2-0 — 6 plików WIP · czeka do 16:30")
+        self.assertEqual(limit["stopped"][1][1], "#4 · K-8-fix-4-1 — 11 plików WIP · czeka do 16:30")
+        self.assertEqual(limit["others"], "Pozostały limit: Codex 91%")
+        self.assertEqual(limit["cost"], "2 zatrzymane kroki i 17 plików WIP do przekazania; "
+                                        "po przeniesieniu Codex ma jeszcze 91% limitu.")
+        self.assertEqual(limit["button"], "Przenieś na Codex")
+        self.assertIsNone(limit["hidden"])
+        self.assertEqual(state["now"], [], "zatrzymane kroki nie są na liście trwających")
+        self.assertIsNone(state["nowEmpty"], "zatrzymane kroki to nie „nic nie pracuje”")
+        self.assertEqual(
+            [[c[0], c[1], json.loads(c[2])] for c in out["calls"] if c[0] == "ResolveCardStep"],
+            [["ResolveCardStep", "K-8", {"choice": "transfer", "step": "K-8-ticket-2-0", "executor": "Codex mocny"}],
+             ["ResolveCardStep", "K-8", {"choice": "transfer", "step": "K-8-fix-4-1", "executor": "Codex mocny"}]])
+
+    def test_scenario_e_hides_the_action_with_one_sentence_when_codex_has_no_limit(self):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["opened"] = full()
+""", full_e(self.data, codex=4))
+        limit = out["opened"]["limit"]
+        self.assertTrue(limit["section"])
+        self.assertIsNone(limit["button"])
+        self.assertIsNone(limit["cost"])
+        self.assertEqual(limit["others"], "Pozostały limit: Codex 4%")
+        self.assertEqual(limit["hidden"], "Nie ma innego dostawcy z wolnym limitem, więc nie ma dokąd przenieść "
+                                          "zatrzymanych kroków.")
+
     def test_scenario_d_card_outside_waiting_opens_full_card_with_calm_move(self):
         out = self.probe(STATE_PY + """
 click(card("K-8"))

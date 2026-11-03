@@ -191,7 +191,10 @@ class LimitProjectionTest(unittest.TestCase):
              "wip": {"stopped": True, "committed": True, "commit": "a" * 40, "files": 1}},
         ]
         card = derived(fold(events), {"id": "K-1", "column": "todo", "check": "auto"})
-        self.assertEqual((card["column"], card["flow"]["action"]), ("waiting", "limit"))
+        # PT-130: zamierzona zmiana reguły kolumn — limit to postój w „W toku”, nie „Czeka na mnie”.
+        self.assertEqual((card["column"], card["flow"]["action"]), ("progress", "limit"))
+        self.assertIn("czeka na limit do piątek 18:00", card["note"])
+        self.assertEqual(card["flow"]["decisions"], [])
         self.assertEqual(card["flow"]["limit"]["reset"], "piątek 18:00")
         self.assertEqual(card["flow"]["steps"][0]["provider"], "anthropic")
 
@@ -279,6 +282,26 @@ class TransferFlowTest(FlowInProcess):
         second = self.of(card, "step.started")[1]
         self.assertEqual((second["provider"], second["ticket"], second["worktree"]),
                          ("anthropic", first["ticket"], first["worktree"]))
+        self.wait_column(card, "review", timeout=50)
+
+    def test_limit_without_any_choice_resumes_by_itself_after_the_reset(self):
+        now = self.flow.engine.clock()
+        metric = {"remaining": 25, "readTs": now, "resetTs": now + 1000}
+        self.flow.engine.limits_source = lambda: {"available": True,
+                                                  "services": {"claude": {"session": metric}}}
+        card = self.card(description="Dodaj eksport.\n\nATRAPA: limit")
+        self.assertTrue(self.start(card)["ok"])
+        metric["remaining"] = 0
+        self.assertTrue(wait_until(lambda: any(e.get("reason") == "limit" for e in
+                                        self.of(card, "step.finished")), timeout=30), self.events(card))
+        first = self.of(card, "step.started")[0]
+        self.assertEqual(self.of(card, "step.decision"), [], "limit nie tworzy decyzji")
+        metric.update(remaining=40, readTs=now + 1001)
+        self.flow.engine.clock = lambda: now + 1001
+        self.assertTrue(wait_until(lambda: len(self.of(card, "step.started")) >= 2, timeout=30), self.events(card))
+        second = self.of(card, "step.started")[1]
+        self.assertEqual((second["provider"], second["ticket"], second["worktree"], second["parentStep"]),
+                         ("anthropic", first["ticket"], first["worktree"], first["step"]))
         self.wait_column(card, "review", timeout=50)
 
     def test_failed_wip_never_starts_other_provider_and_can_be_repaired(self):

@@ -49,6 +49,7 @@ from . import handoff
 from .decisions import clean_options
 from . import execution
 from . import faults
+from . import fullcard
 from . import limits as flow_limits
 from . import planning
 from .planediting import PlanEditing
@@ -223,9 +224,45 @@ class FlowEngine(PlanEditing):
         return flow_limits.low_limit(snapshot, provider, self.get_flow_settings()["limitThresholdPercent"],
                                      self.clock())
 
+    def _limit_view(self, st: FlowState, out: dict) -> None:
+        """`flow.otherProviders[]` i `flow.limitTransfer` (PT-130) z odczytu Limitów AI i katalogu wykonawców;
+        silnik niczego tu nie zmienia — przekazanie idzie istniejącym `ResolveCardStep`."""
+        flow = out["flow"]
+        stopped = flow.get("stoppedByLimit") or []
+        if not stopped:
+            return
+        try:
+            snapshot = self.limits_source() if self.limits_source else {}
+        except Exception:
+            snapshot = {}
+        flow["otherProviders"] = flow_limits.other_providers(
+            snapshot, {item["provider"] for item in stopped}, self.clock())
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        settings = self.get_flow_settings()
+        preferred = settings["limitTransfer"]["executor"]
+        wanted = (st.steps.get(stopped[0]["step"]) or {}).get("executor") or ""
+        own = getattr(catalog.get(wanted), "classes", ()) if catalog is not None and wanted else ()
+
+        def pick(provider: str) -> str:
+            options = [e for e in (catalog.executors if catalog is not None else ())
+                       if e.provider == provider and e.program and e.model]
+            for executor in options:
+                if executor.name == preferred:
+                    return executor.name
+            for executor in options:
+                if own and set(executor.classes) & set(own):
+                    return executor.name
+            return options[0].name if options else ""
+
+        flow["limitTransfer"] = fullcard.limit_transfer(stopped, flow["otherProviders"],
+                                                        settings["limitThresholdPercent"], pick)
+
     def derived(self, card: dict) -> dict | None:
         st = fold(self.journal.read(card.get("id") or ""))
         out = derived(st, card)
+        if out:
+            self._limit_view(st, out)
         step = st.steps.get(st.last_step) or {}
         if not out or out.get("column") != "progress" or step.get("mode") != "interactive" or \
                 st.last_step in st.finished or step.get("consoleClosed") or not step.get("session") or \
@@ -1653,6 +1690,10 @@ class FlowEngine(PlanEditing):
                 self._save_transfer_reviewer(card, step, reviewer)
                 self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
                                     choice="transfer", executor=settings["executor"], automatic=True)
+                return True
+            # Limit nie jest decyzją (D3, PT-130): bez wyboru Tide czeka na odnowienie sam.
+            choice = {"choice": "wait-limit"}
+        if not choice:
             return True
         if choice.get("choice") == "wait-limit":
             limit = st.limits.get(st.last_step) or {}
