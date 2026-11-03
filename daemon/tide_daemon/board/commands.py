@@ -189,7 +189,8 @@ def outside_argv(command: str) -> list[str] | None:
         return None
     try:
         # Operatory powłoki poza cudzysłowem (`;`, `&&`, `|`, `>`…) — polecenie idzie do `/bin/sh -c`, więc odrzucamy.
-        lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|<>()")
+        # Znak poprzedzony ukośnikiem (`find … -exec … \;`) jest zwykłym argumentem, nie operatorem (K-33/PT-110).
+        lexer = shlex.shlex(re.sub(r"\\[;&|<>()]", "_", text), posix=True, punctuation_chars=";&|<>()")
         lexer.whitespace_split = True
         lexer.commenters = ""
         if any(token and set(token) <= set(";&|<>()") for token in lexer):
@@ -204,7 +205,13 @@ def outside_argv(command: str) -> list[str] | None:
                 or len(value) > 500:
             return None
         at += 1
-    return _argv(shlex.join(parts[at:])) if at < len(parts) else None
+    program = parts[at:]
+    # Operatory sprawdził lekser wyżej; tu tylko reguły programu jak w `_argv` (bez powłok, sudo, env i przypisań).
+    # `_argv` odrzuciłby argument `;` z `find -exec … \;`, choć powłoka dostaje go jako zwykły tekst.
+    if not program or program[0] in ("sh", "bash", "zsh", "fish", "eval", "exec", "env", "command", "builtin",
+                                     "sudo", "doas") or ("=" in program[0] and program[0].split("=", 1)[0].isidentifier()):
+        return None
+    return program
 
 
 OUTSIDE_MAX = 2000      # polecenia poza piaskownicą bywają długie (zmienne połączeń, filtry testów)
@@ -212,7 +219,18 @@ OUTSIDE_MAX = 2000      # polecenia poza piaskownicą bywają długie (zmienne p
 
 def outside_allowed(command: str, denied: list[str]) -> bool:
     argv = outside_argv(command)
-    return argv is not None and len(command) <= OUTSIDE_MAX and not is_forbidden(shlex.join(argv), denied)
+    if argv is None or len(command) > OUTSIDE_MAX:
+        return False
+    # Zakazy projektu porównujemy na gotowych argumentach (`is_forbidden` przepuszcza tekst przez `_argv`, który
+    # odrzuca np. argument `;` z `find -exec … \;` — i wtedy każde takie polecenie wyglądało na zakazane).
+    program = _without_locale(argv)
+    for rule in denied:
+        rule_argv = _argv(rule)
+        if rule_argv:
+            prefix = rule_argv[:-1] if rule_argv[-1] == "*" else rule_argv
+            if program[:len(prefix)] == prefix:
+                return False
+    return True
 
 
 def outside_pattern(command: str) -> str:

@@ -3695,9 +3695,14 @@ class FlowEngine(PlanEditing):
         command = done.get("command") or ""
         _, project = self._project(card)
         from ..board.commands import outside_risky
-        if outside_allowed(command, project.denied_commands) and \
-                (outside_matches(command, self._outside_remembered(project.slug)) or
-                 self._auto_outside(card) and not outside_risky(command)):
+        allowed = outside_allowed(command, project.denied_commands)
+        if allowed != bool(done.get("canAllow", True)):
+            # Reguły zmieniły się od wyniku kroku (K-33/PT-110: `find -exec … \;` uznane za łańcuch) — decyzja
+            # w oknie ma pokazać dzisiejszy stan, inaczej użytkownik nie ma czego wybrać.
+            self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
+                                ticket=step.get("ticket") or "", canAllow=allowed)
+        if allowed and (outside_matches(command, self._outside_remembered(project.slug)) or
+                        self._auto_outside(card) and not outside_risky(command)):
             self.journal.append(card, "step.decision", step=step.get("step") or "", ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="run", answer="", command=command,
                                 executor="", auto=True)

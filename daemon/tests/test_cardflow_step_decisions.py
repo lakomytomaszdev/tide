@@ -52,7 +52,7 @@ class StepDecisionTest(FlowInProcess):
 
     def test_remembered_family_and_one_outside_run_per_project(self):
         # 03.11, K-31: „pamiętaj” pamiętało dokładne polecenie, a pięć przebiegów e2e szło naraz.
-        from tide_daemon.board.commands import outside_allowed, outside_matches, outside_pattern
+        from tide_daemon.board.commands import outside_allowed, outside_matches, outside_pattern, outside_risky
         self.assertEqual(outside_pattern("E2E_PORT=4311 npm run e2e -- tests/e2e/devices"), "npm run e2e *")
         self.assertEqual(outside_pattern("npx playwright test tests/e2e/programs"), "npx playwright test *")
         self.assertEqual(outside_pattern("npm install --save-dev eslint@^9"), "npm install *")
@@ -62,6 +62,11 @@ class StepDecisionTest(FlowInProcess):
         for bad in ("PATH=/tmp npm test", "NODE_OPTIONS=--require=x npm test", "npm test && rm -rf x", "make install",
                     "npm test; ls", "npm test|tee x", "X=$(id) npm test", 'X="a" npm test && ls'):
             self.assertFalse(outside_allowed(bad, ["make install"]), bad)
+        # K-33/PT-110: `find … -exec … \;` — ukośnik czyni średnik argumentem; czyta `~`, więc pyta użytkownika.
+        found = r"""find /home/u/.claude/projects -name '*.jsonl' -exec grep -q 'x' {} \; -exec cp --parents -t build/l {} +"""
+        self.assertTrue(outside_allowed(found, []))
+        self.assertTrue(outside_risky(found))
+        self.assertFalse(outside_allowed("npm test; ls", []))
         # K-16/LEGAL-66: długie polecenie ze zmienną w cudzysłowie (średniki w wartości) było odrzucane bez wyjścia.
         long_test = ('DATABASE_CONNECTION="Host=127.0.0.1;Port=1;Database=x;Username=none;Password=none" '
                      'ANTHROPIC_API_KEY=test VOYAGE_API_KEY=test dotnet test tests/LegalApp.Tests.Integration '

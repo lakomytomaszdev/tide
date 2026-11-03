@@ -263,6 +263,9 @@ def fold(events: list[dict]) -> FlowState:
             st.step_retries[e.get("step")] = e
         elif kind == "step.decision":
             st.step_decisions[e.get("step")] = e
+        elif kind == "permission.rechecked":
+            if e.get("step") in st.finished:
+                st.finished[e["step"]] = {**st.finished[e["step"]], "canAllow": bool(e.get("canAllow"))}
         elif kind == "outside.started":
             st.outside_started[e.get("step")] = e
         elif kind == "step.wip":
