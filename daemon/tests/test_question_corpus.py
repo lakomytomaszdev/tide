@@ -354,6 +354,51 @@ class ReviewTest(unittest.TestCase):
             records, errors = qc.apply_review(md)
             self.assertTrue(any(data["items"][0]["id"] in e and "linia tekstu 2" in e for e in errors), (secret, errors))
 
+    def test_redact_replaces_paths_and_company_names_in_any_spelling(self):
+        text = "Plik /home/ktos/projekt/a.py i ~/x/y.md, klient Firma, FIRMA-a, Acme-Corp oraz acme corp."
+        self.assertEqual(qc.redact(text), "Plik <ścieżka> i <ścieżka>, klient <firma>, <firma>, <firma> oraz <firma>.")
+        self.assertEqual(qc.privacy_problems(qc.redact(text)), [])
+
+    def test_redact_does_not_hide_emails_tokens_and_personal_numbers(self):
+        for secret in ("jan@firma.pl", "token ghp_abcdefgh12345678", "tel. 601 234 567", "PESEL 44051401359",
+                       "konto PL61 1090 1014 0000 0712 1981 2874"):
+            self.assertNotEqual(qc.privacy_problems(qc.redact("Treść. " + secret)), [], secret)
+
+    def test_apply_with_redaction_and_reviewed_note_for_unreviewed_file(self):
+        data = candidates()
+        data["items"][0]["text"] += "\nPlik /home/ktos/projekt/a.py dla Firma"
+        md = qc.render_review(data)   # „przejrzane: nie”
+        _, errors = qc.apply_review(md, redact_text=True)
+        self.assertTrue(any("przejrzany" in e for e in errors))
+        _, errors = qc.apply_review(md)
+        self.assertTrue(any("ścieżka" in e for e in errors))
+        records, errors = qc.apply_review(md, redact_text=True, reviewed_note="przegląd po automatycznym zastąpieniu")
+        self.assertEqual(errors, [])
+        self.assertIn("Plik <ścieżka> dla <firma>", records[0]["text"])
+
+    def test_redaction_still_refuses_remaining_private_data(self):
+        data = candidates()
+        data["items"][0]["text"] += "\nPisz na jan@firma.pl, plik /home/ktos/a.py"
+        errors = qc.apply_review(qc.render_review(data), redact_text=True, reviewed_note="x")[1]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("adres e-mail", errors[0])
+
+    def test_cli_apply_with_redact_paths_and_reviewed_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            md, corpus = os.path.join(tmp, "r.md"), os.path.join(tmp, "k.jsonl")
+            data = candidates()
+            data["items"][3]["text"] += "\nZob. /srv/klient/app.py (Firma)"
+            with open(md, "w", encoding="utf-8") as fh:
+                fh.write(qc.render_review(data))
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(qc.main(["review", "--apply", md, "--out", corpus, "--redact-paths"]), 1)
+                self.assertEqual(qc.main(["review", "--apply", md, "--out", corpus, "--redact-paths",
+                                          "--reviewed-note", "przegląd po automatycznym zastąpieniu"]), 0)
+            self.assertIn("przegląd po automatycznym zastąpieniu", err.getvalue())
+            rows = qc.load_corpus(corpus)
+            self.assertIn("Zob. <ścieżka> (<firma>)", [r["text"] for r in rows][3])
+
     def test_text_edited_in_markdown_passes_after_redaction(self):
         data = candidates()
         data["items"][0]["text"] += "\nPlik /home/ktos/projekt/a.py"

@@ -78,12 +78,17 @@ PROBE_SOURCE = "probe 2026-10-28"
 
 # Prywatność: to, co nie może trafić do pliku w repozytorium.
 PRIVATE = [
-    ("ścieżka", re.compile(r"(?<![\w.:])(?:/(?:home|Users|srv|mnt|opt|var|tmp|etc|usr|root|media|run)/\S+|~/\S+)")),
+    ("ścieżka", re.compile(r"(?<![\w.:])(?:/(?:home|Users|srv|mnt|opt|var|tmp|etc|usr|root|media|run)/|~/)"
+                         r"[^\s`\"'<>)\],;]*[^\s`\"'<>)\],;.]")),
     ("adres e-mail", re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")),
     ("token", re.compile(r"\b(?:sk-|ghp_|gho_|ghs_|github_pat_|xox[bpas]-|AKIA|glpt-|perm:)[A-Za-z0-9_\-:.]{8,}|"
                          r"\beyJ[A-Za-z0-9_\-]{10,}|\b[A-Fa-f0-9]{32,}\b")),
-    ("firma", re.compile(r"firma", re.I)),
+    ("firma", re.compile(r"acme[\s_-]?corp[\w-]*", re.I)),
+    ("telefon / PESEL / IBAN", re.compile(r"(?<!\d)(?:\+48[\s-]?)?\d{3}[\s-]\d{3}[\s-]\d{3}(?!\d)|(?<!\d)\d{11}(?!\d)|"
+                                          r"\bPL\d{2}(?:[\s]?\d{4}){6}\b")),
 ]
+# Automatyczne zastąpienia (`review --apply --redact-paths`): rodzaj z PRIVATE → tekst zastępczy.
+REDACTIONS = {"ścieżka": "<ścieżka>", "firma": "<firma>"}
 
 
 class UsageError(Exception):
@@ -448,16 +453,31 @@ def parse_review(markdown: str):
     return reviewed, items
 
 
-def apply_review(markdown: str):
-    """(rekordy zestawu, błędy). Rekordy: {id, text, waits, source}."""
+def redact(text: str) -> str:
+    """Ścieżki → <ścieżka>, nazwa firmy w każdej pisowni → <firma>. E-maile, tokeny i numery nie są zastępowane
+    (blokują zapis, dopóki ktoś ich nie usunie)."""
+    for kind, pattern in PRIVATE:
+        if kind in REDACTIONS:
+            text = pattern.sub(REDACTIONS[kind], text)
+    return text
+
+
+def apply_review(markdown: str, redact_text: bool = False, reviewed_note: str = ""):
+    """(rekordy zestawu, błędy). Rekordy: {id, text, waits, source}.
+
+    redact_text   — przed kontrolą prywatności zastępuje ścieżki i nazwę firmy (`redact`),
+    reviewed_note — zamiast „- przejrzane: tak” w pliku: jawna notka, kto i jak zatwierdził (np. użytkownik
+                    zrezygnował z ręcznego przeglądu); bez niej plik musi być oznaczony jako przejrzany."""
     reviewed, items = parse_review(markdown)
     errors = []
-    if not reviewed:
+    if not reviewed and not reviewed_note.strip():
         errors.append("plik nie jest oznaczony jako przejrzany („- przejrzane: tak” na początku)")
     records = []
     for item in items:
         if item["remove"]:
             continue
+        if redact_text:
+            item["text"] = redact(item["text"])
         if item["waits"] is None:
             errors.append(f"{item['id']}: pole „czeka” musi mieć wartość tak albo nie")
         for number, kind in privacy_problems(item["text"]):
@@ -476,7 +496,9 @@ def apply_review(markdown: str):
 def cmd_review(args) -> int:
     if args.apply:
         with open(args.apply, encoding="utf-8") as fh:
-            records, errors = apply_review(fh.read())
+            records, errors = apply_review(fh.read(), args.redact_paths, args.reviewed_note or "")
+        if args.reviewed_note:
+            print(f"Zatwierdzenie bez „przejrzane: tak” w pliku: {args.reviewed_note}", file=sys.stderr)
         if errors:
             print("Zestaw nie został zapisany:", file=sys.stderr)
             for error in errors:
@@ -589,6 +611,10 @@ def parser() -> argparse.ArgumentParser:
     r = sub.add_parser("review", help="plik Markdown do przeglądu albo (--apply) zatwierdzony zestaw JSONL")
     r.add_argument("candidates", nargs="?")
     r.add_argument("--apply", metavar="REVIEW.md")
+    r.add_argument("--redact-paths", action="store_true",
+                   help="z --apply: ścieżki → <ścieżka>, nazwa firmy (firma) → <firma>")
+    r.add_argument("--reviewed-note", metavar="NOTKA",
+                   help="z --apply: zatwierdzenie na odpowiedzialność użytkownika zamiast „przejrzane: tak” w pliku")
     r.add_argument("--out", required=True)
     b = sub.add_parser("bench", help="trafność reguł i modelu lokalnego na zestawie")
     b.add_argument("corpus", nargs="?", default=DEFAULT_CORPUS)
