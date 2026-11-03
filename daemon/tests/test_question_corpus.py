@@ -17,12 +17,13 @@ TOOL = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.absp
 CORPUS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "question-corpus.jsonl")
 # Najniższa trafność obecnych reguł na zatwierdzonym zestawie (pełne punkty procentowe, w dół): wartość z
 # `question_corpus.py bench` na zatwierdzonym zestawie. Kolejne tickety mogą ją tylko podnieść.
-# Zestaw: 52 wiadomości (22 „czeka”, 30 „nie czeka”): 12 przypadków z 28.10 i 40 z dzienników Claude Code
-# (2026-11-03), reguły: 32/52 = 61,5% → 61. UWAGA: etykiety „czeka” poza 12 przypadkami z 28.10 ocenił koordynator (AI)
-# na prośbę użytkownika, nie sam użytkownik; treści klienta zanonimizowane (<firma>, <produkt>, TKT-n), 15 wiadomości
-# z nadal widocznymi śladami klienta pominięto (`review --apply --drop-flagged`). Próg jest więc względem etykiet AI.
+# Zestaw: 53 wiadomości (22 „czeka”, 31 „nie czeka”): 12 przypadków z 28.10 (`probe 2026-10-28`) i 41 z dzienników
+# Claude Code (`claude 2026-11-03`; brak Codexa), reguły: 34/53 = 64,2% → 64. UWAGA: etykiety „czeka” poza 12
+# przypadkami z 28.10 ocenił koordynator (AI) na prośbę użytkownika, nie sam użytkownik; treści klienta zanonimizowane
+# (<firma>, <produkt>, TKT-n), 15 wiadomości z nadal widocznymi śladami klienta pominięto
+# (`review --apply --drop-flagged`). Próg jest więc względem etykiet AI.
 # None — zestaw jeszcze nie zatwierdzony (testy rozmiaru i progu są wtedy pomijane).
-RULES_ACCURACY_FLOOR = 61
+RULES_ACCURACY_FLOOR = 64
 
 
 def load_tool():
