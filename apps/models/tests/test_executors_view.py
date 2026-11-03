@@ -199,8 +199,8 @@ Item {
 }
 """)
         self.assertEqual(problems(log), [])
-        self.assertEqual(warned(log, "NAMES"), "Haiku,Sonnet,Opus,Codex lekki,Codex standard,Codex mocny,Codex Astra,Lokalny,Groq mały")
-        self.assertEqual(warned(log, "PLACE"), ",".join(["Chmura"] * 9 + ["Lokalnie", "Chmura"]))
+        self.assertEqual(warned(log, "NAMES"), "Haiku,Sonnet,Opus,Codex lekki,Codex standard,Codex mocny,Codex Astra,Fable,Lokalny,Groq mały")
+        self.assertEqual(warned(log, "PLACE"), ",".join(["Chmura"] * 10 + ["Lokalnie", "Chmura"]))
         self.assertEqual(warned(log, "LINE"), "codex · llama-3.1-8b · chmura|codex · gpt-6-astra · wysiłek high · chmura")
         self.assertEqual(warned(log, "OPENED"), "Sonnet|sonnet|anthropic|standard")
         self.assertEqual(warned(log, "SAVE1"),
