@@ -65,17 +65,41 @@ def normalize_host(item: str) -> str:
     return str(item).strip().lower().rstrip(".")
 
 
+_INTERNAL_V4 = [ipaddress.ip_network(n) for n in (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+    "172.16.0.0/12", "192.168.0.0/16")]
+
+
+def _bare(host: str) -> str:
+    return host[2:] if host.startswith("*.") else host
+
+
 def _is_internal(host: str) -> bool:
-    """Adres wewnętrzny: 192.168.*, 10.*, 172.16–31.*, `*.local`, `*.firma.example`."""
-    host = host.lstrip("*.") if host.startswith("*.") else host
+    """Adres wewnętrzny (czerwony): 192.168.*, 10.*, 172.16–31.*, loopback, link-local, 100.64/10,
+    prywatne IPv6 (także IPv4 zmapowany), `localhost`, `*.local`, `*.firma.example` oraz nazwy
+    z liczbową/szesnastkową ostatnią etykietą (`10.1`, `3232235786`, `0xc0a8010a`) — resolver
+    zamienia je na adres IPv4, więc nie traktujemy ich jako nazw."""
+    host = _bare(host)
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        return host == "local" or host.endswith(".local") or host == "firma.example" \
-            or host.endswith(".firma.example")
-    return ip.version == 4 and (ip in ipaddress.ip_network("10.0.0.0/8")
-                                or ip in ipaddress.ip_network("172.16.0.0/12")
-                                or ip in ipaddress.ip_network("192.168.0.0/16"))
+        last = host.rsplit(".", 1)[-1]
+        if last.isdigit() or last.startswith("0x"):
+            return True
+        return host in ("local", "localhost", "firma.example") or host.endswith(
+            (".local", ".localhost", ".firma.example"))
+    if ip.version == 6:
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        else:
+            return (ip.is_private or ip.is_link_local or ip.is_loopback or ip.is_site_local
+                    or ip.is_unspecified)
+    return any(ip in net for net in _INTERNAL_V4)
+
+
+def _is_broad_wildcard(host: str) -> bool:
+    """`*.com` itp.: symbol wieloznaczny z jedną etykietą po `*.` to prawie `network.full`."""
+    return host.startswith("*.") and "." not in host[2:]
 
 
 def _is_remote_repo(host: str) -> bool:
@@ -99,9 +123,9 @@ def classify(item: str, known: dict | None = None) -> str:
     if item in ("box:per-card", "box:per-project"):
         return GREEN
     host = normalize_host(item)
-    if _is_internal(host) or _is_remote_repo(host):
+    if _is_internal(host) or _is_remote_repo(host) or _is_broad_wildcard(host):
         return RED
-    klass = (known or {}).get(host)
+    klass = {normalize_host(k): v for k, v in (known or {}).items()}.get(host)
     if klass in (GREEN, YELLOW, RED):
         return klass
     return YELLOW
@@ -248,6 +272,10 @@ def validate(raw, scope: str = "project") -> dict:
                 elif host not in domains:
                     domains.append(host)
             if not card:
+                for host in domains:
+                    if _is_broad_wildcard(host):
+                        errors.append(f"network.domains: symbol wieloznaczny {host!r} jest zbyt szeroki "
+                                      "(wymagane co najmniej dwie etykiety po `*.`)")
                 for host in internal_hosts(domains):
                     errors.append(f"network.domains: adres wewnętrzny {host!r} dozwolony tylko w profilu karty")
             clean["domains"] = domains
@@ -397,7 +425,8 @@ def merge(project: dict, card: dict, known: dict | None = None) -> MergeResult:
     """
     project = validate(project, "project")
     card = validate(card, "card")
-    accepted = card.get("accepted_red", [])
+    accepted = [a if a in ("network.full", "host-ollama") or a.startswith("pack:")
+                else normalize_host(a) for a in card.get("accepted_red", [])]
     card_red = red_items(card, known)
     unknown = [a for a in accepted if a not in card_red]
     if unknown:
@@ -430,7 +459,7 @@ def merge(project: dict, card: dict, known: dict | None = None) -> MergeResult:
         elif isinstance(pv, dict) or isinstance(cv, dict):
             merged = copy.deepcopy(pv or {})
             for sub, val in (cv or {}).items():
-                merged[sub] = _union(merged.get(sub), val) if isinstance(val, list) and key != "ports" else val
+                merged[sub] = _union(merged.get(sub), val) if isinstance(val, list) and sub != "pool" else val
             out[key] = merged
         else:
             out[key] = cv if cv is not None else pv
@@ -458,7 +487,7 @@ def _recipe_parts(profile: dict) -> dict:
         "base": full.get("base", ""),
         "stacks": list(full["stacks"]),                      # kolejność ma znaczenie (kolejność instalacji)
         "node": full.get("node", {}).get("version", ""),
-        "dotnet": list(dotnet.get("sdk", [])),
+        "dotnet": sorted(set(dotnet.get("sdk", []))),         # zbiór wersji SDK
         "apt": sorted(set(full["apt"])),                     # zbiór pakietów
         "setup": list(full["setup"]),                        # kolejność poleceń ma znaczenie
         "docker.enabled": full["docker"]["enabled"],

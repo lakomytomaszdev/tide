@@ -114,6 +114,38 @@ class SchemaTest(unittest.TestCase):
             self.assertRejected(project(network={"domains": [host]}), fragment="adres wewnętrzny")
             self.assertEqual(bp.validate(card(network={"domains": [host]}), "card")["network"]["domains"], [host])
 
+    def test_internal_address_in_other_notations(self):
+        for host in ("::ffff:10.20.1.10", "::ffff:10.0.0.5", "10.1", "3232235786", "0xc0a8010a",
+                     "010.0.0.5", "fd00::1", "fe80::1", "::1", "127.0.0.1", "localhost",
+                     "169.254.169.254", "100.64.0.1", "x.localhost"):
+            self.assertRejected(project(network={"domains": [host]}), fragment="adres wewnętrzny")
+            self.assertEqual(bp.classify(host), "red", host)
+            self.assertEqual(bp.classify(host, {host: "green"}), "red", host)
+
+    def test_broad_wildcard_rejected_in_project_and_red(self):
+        for host in ("*.com", "*.io"):
+            self.assertRejected(project(network={"domains": [host]}), fragment="zbyt szeroki")
+            self.assertEqual(bp.classify(host, {host: "green"}), "red")
+        self.assertEqual(bp.validate(project(network={"domains": ["*.npmjs.org"]}))["network"]["domains"],
+                         ["*.npmjs.org"])
+
+    def test_known_keys_and_accepted_red_are_normalized(self):
+        self.assertEqual(bp.classify("api.sejm.gov.pl", {"API.Sejm.GOV.pl.": "green"}), "green")
+        got = bp.merge(project(), card(network={"domains": ["GitHub.com"]}, accepted_red=["GitHub.com"]))
+        self.assertIn("github.com", got.profile["network"]["domains"])
+        self.assertEqual(got.dropped_red, [])
+
+    def test_ports_env_is_unioned_but_pool_is_replaced(self):
+        got = bp.merge(project(ports={"env": ["A"], "pool": [4000, 4100]}),
+                       card(ports={"env": ["B"], "pool": [5000, 5100]})).profile
+        self.assertEqual(got["ports"]["env"], ["A", "B"])
+        self.assertEqual(got["ports"]["pool"], [5000, 5100])
+
+    def test_dotnet_sdk_order_does_not_change_hash(self):
+        a = bp.recipe_stamp(project(dotnet={"sdk": ["8.0", "6.0"]}), "t1", "a1")["hash"]
+        b = bp.recipe_stamp(project(dotnet={"sdk": ["6.0", "8.0"]}), "t1", "a1")["hash"]
+        self.assertEqual(a, b)
+
     def test_public_172_outside_private_range_is_not_internal(self):
         self.assertEqual(bp.validate(project(network={"domains": ["172.32.0.1"]}))["network"]["domains"],
                          ["172.32.0.1"])
