@@ -1133,7 +1133,9 @@ var ALLOWED = ["mic.set", "profile.set", "module.set", "motion.set", "motion.tes
                "observer.series.start", "panel.pin", "panel.hide",
                "mode.set", "target.set", "recording.set", "cocaster.set", "preflight.run", "screen.set",
                "countdown.start", "countdown.clear", "topic.set", "observer.event.set", "observer.event.clear",
-               "mic.warning.set", "alerts.set", "alerts.test"]
+               "mic.warning.set", "alerts.set", "alerts.test",
+               // PT-141: lista pakietów planu gry i „Opracuj film” (rdzeń: tylko lokalnie, bez stanu OBS).
+               "build_orders.list", "build_orders.process"]
 
 function allowed(name) {
     return ALLOWED.indexOf(name) >= 0
