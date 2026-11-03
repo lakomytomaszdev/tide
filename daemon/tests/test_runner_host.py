@@ -67,3 +67,17 @@ class HostArgvTest(BackgroundBase):
         for name in got:
             with self.subTest(name):
                 self.assertEqual(got[name], want[name])
+
+    def test_env_is_the_environment_the_started_step_gets(self):
+        """`HostRunner.env` = środowisko kroku z `start` bez XDG_RUNTIME_DIR i zmiennych z `secret_env` (także dla
+        punktu lokalnego, który zmienia i usuwa zmienne)."""
+        for name, step in self.cases().items():
+            with self.subTest(name):
+                calls = []
+                with mock.patch.object(agentcmd.subprocess, "Popen",
+                                       lambda argv, **kw: calls.append(kw) or mock.Mock(returncode=None)):
+                    bg, _proc = start_step(step, "/x/systemd-run")
+                started = {k: v for k, v in calls[0]["env"].items()
+                           if k != "XDG_RUNTIME_DIR" and k not in bg.secret_env}
+                self.assertEqual(HostRunner().env(step), started)
+        self.assertIn("ANTHROPIC_BASE_URL", HostRunner().env(self.cases()["claude-local"]))

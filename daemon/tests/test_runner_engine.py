@@ -6,8 +6,10 @@ i deleguje do HostRunnera z atrapą systemd-run — kroki są prawdziwymi proces
 import json
 import os
 import unittest
+from unittest import mock
 
 from tide_daemon.cardflow.engine import FlowEngine
+from tide_daemon.cardflow_monitor import CardFlowMonitor
 from tide_daemon.tasks.runner import HostRunner
 from . import flowfakes
 from .privatebus import wait_until
@@ -37,10 +39,17 @@ class RecordingRunner:
 
 class EngineRunnerTest(FlowInProcess):
     guard_minutes = 0.05   # 3 s: strażnik zatrzymuje krok bez postępu
+    def make_flow(self):
+        """Atrapa wchodzi do silnika, zanim pętla przepływu wykona pierwszy `tick` (bez wyścigu)."""
+        with mock.patch.object(CardFlowMonitor, "start", lambda self: None):
+            flow = super().make_flow()
+        self.runner = RecordingRunner(HostRunner(self.fakes["systemd-run"]))
+        flow.engine.runner = self.runner
+        flow.start()
+        return flow
+
     def inject(self):
-        runner = RecordingRunner(HostRunner(self.fakes["systemd-run"]))
-        self.flow.engine.runner = runner
-        return runner
+        return self.runner
 
     def test_engine_defaults_to_host_runner(self):
         engine = FlowEngine(self.store, systemd_run="/x/systemd-run")

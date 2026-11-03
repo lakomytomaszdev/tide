@@ -1541,7 +1541,9 @@ tylko wstrzyknięty `Runner` (`FlowEngine(..., runner=)`, domyślnie `HostRunner
 before_start=)` składa krok (`agentcmd.background`), przygotowuje katalogi i pliki, woła `before_start` (kopiowanie
 zrzutów) i uruchamia program — zwraca `Started(background, proc)`, a `proc` (Popen) trafia do `procs` silnika;
 `kill(step, proc=, grace=)` zatrzymuje jednostkę z wpisu dziennika (`stop_step` dostaje go jako `kill=`, więc commit
-WIP i wiadomości zostają jak dotąd); `env(step)` zwraca środowisko programu kroku (`agentcmd.step_env`). `HostRunner`
+WIP i wiadomości zostają jak dotąd); `env(step)` zwraca środowisko programu kroku (`agentcmd.background(step).env` — ta sama ścieżka składania co w `start`, z
+zamianami punktu lokalnego, bez sekretów z `secret_env`). Krok Konsoli (`_launch_full_planning`, `resume_interactive`:
+`agentcmd.interactive` + plik zadania) nie pasuje do umowy `start → Background` i zostaje poza `Runner`. `HostRunner`
 to dzisiejszy sposób bez zmian: argv i środowisko pilnuje złoty plik `tests/fixtures/runner/host_argv.json`
 (zapis sprzed refaktoru). Format wpisów kroku (`unit`, `gitDir`, `stepDir`) i odczyt stanu po restarcie usługi
 (`stepstop.unit_state`, `read_exit_code`) bez zmian, więc kroki uruchomione przed aktualizacją są dalej rozpoznawane.

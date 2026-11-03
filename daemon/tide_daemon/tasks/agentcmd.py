@@ -437,12 +437,6 @@ def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
     return argv, secret
 
 
-def step_env(step: Step) -> dict:
-    """Środowisko programu kroku w tle — to samo, które `background` wkłada do `Background.env`."""
-    base = dict(os.environ if step.base_env is None else step.base_env)
-    return _env(step, base, os.path.join(step.step_dir, "in"))
-
-
 def background(step: Step) -> Background:
     """Krok w tle: `claude -p` albo `codex exec` z piaskownicą i środowiskiem bez kluczy (wzór PT-75)."""
     if step.tool not in ("claude", "codex"):

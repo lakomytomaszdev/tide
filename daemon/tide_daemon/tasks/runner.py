@@ -29,7 +29,8 @@ class Runner(Protocol):
         """Zatrzymuje krok opisany wpisem dziennika (`unit`) i/lub uchwytem `proc`. True, gdy nic nie żyje."""
 
     def env(self, step: agentcmd.Step) -> dict:
-        """Środowisko programu kroku (bez tokenów punktu — te czyta dopiero `start`)."""
+        """Środowisko programu kroku — dokładnie `Background.env` (z zamianami punktu lokalnego); sekrety
+        z `secret_env` dopisuje dopiero `start`."""
 
 
 class HostRunner:
@@ -50,4 +51,4 @@ class HostRunner:
         return stepstop.terminate(proc, step.get("unit") or "", grace)
 
     def env(self, step: agentcmd.Step) -> dict:
-        return agentcmd.step_env(step)
+        return agentcmd.background(step).env
