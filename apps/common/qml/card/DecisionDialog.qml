@@ -13,6 +13,7 @@
 // błąd usługi przy odpowiedzi (decyzja wraca), sygnały `answered(decisionId, method, params)` — żądanie
 // gotowe do wysłania (metoda /Board i parametry z decyzji), `laterRequested()`, `fullCardRequested(notice)`
 // (także dla możliwości, która wymaga wyboru w oknie, np. wykonawcy — na razie wybór jest w panelu karty)
+// `cardOpen` + `cardOpenRequested(wartość)` — pole ustawienia otwierania karty w stopce (PT-133),
 // i `finished()` — nic już nie czeka (ostatnia odpowiedziana albo migawka bez decyzji).
 import QtQuick
 import QtQuick.Layouts
@@ -27,6 +28,7 @@ Rectangle {
 
     property string cardId: ""
     property var decisions: []
+    property string cardOpen: "decision"   // ustawienie okna Tide (PT-133); zapis robi strona, okno tylko prosi
     property var answeredIds: []
     property int index: 0
     property string selected: ""
@@ -47,6 +49,7 @@ Rectangle {
     signal answered(string decisionId, string method, var params)
     signal laterRequested()
     signal fullCardRequested(string notice)
+    signal cardOpenRequested(string value)
     signal finished()
 
     function start() {
@@ -480,8 +483,9 @@ Rectangle {
             }
         }
 
-        // Stopka: „Otwórz całą kartę” po lewej, „Później” i „Wybierz” po prawej.
-        RowLayout {
+        // Stopka: u góry ustawienie otwierania karty (to samo co w menu „Widok” Tablicy, PT-133), niżej
+        // „Otwórz całą kartę” po lewej, „Później” i „Wybierz” po prawej.
+        ColumnLayout {
             id: footer
             anchors.left: parent.left
             anchors.right: parent.right
@@ -489,27 +493,36 @@ Rectangle {
             anchors.margins: 18
             anchors.leftMargin: 22
             spacing: 10
-            Tide.TextButton {
-                objectName: "decisionFullCard"
-                text: "Otwórz całą kartę"
-                onClicked: dialog.fullCardRequested("")
+            CardOpenSwitch {
+                objectName: "decisionCardOpen"
+                current: dialog.cardOpen
+                onPicked: value => dialog.cardOpenRequested(value)
             }
-            Item { Layout.fillWidth: true }
-            Tide.TextButton {
-                objectName: "decisionLater"
-                text: "Później  Esc"
-                variant: "outline"
-                Accessible.name: "Później"
-                onClicked: dialog.laterRequested()
-            }
-            Tide.TextButton {
-                objectName: "decisionChoose"
-                text: "Wybierz  ↵"
-                variant: "filled"
-                enabled: dialog.canChoose
-                opacity: enabled ? 1 : 0.45
-                Accessible.name: "Wybierz"
-                onClicked: dialog.choose()
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+                Tide.TextButton {
+                    objectName: "decisionFullCard"
+                    text: "Otwórz całą kartę"
+                    onClicked: dialog.fullCardRequested("")
+                }
+                Item { Layout.fillWidth: true }
+                Tide.TextButton {
+                    objectName: "decisionLater"
+                    text: "Później  Esc"
+                    variant: "outline"
+                    Accessible.name: "Później"
+                    onClicked: dialog.laterRequested()
+                }
+                Tide.TextButton {
+                    objectName: "decisionChoose"
+                    text: "Wybierz  ↵"
+                    variant: "filled"
+                    enabled: dialog.canChoose
+                    opacity: enabled ? 1 : 0.45
+                    Accessible.name: "Wybierz"
+                    onClicked: dialog.choose()
+                }
             }
         }
     }

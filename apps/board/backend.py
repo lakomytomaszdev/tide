@@ -102,6 +102,7 @@ def load_common(name: str):
 
 
 taskimages = load_common("taskimages")
+windowconfig = load_common("windowconfig")
 
 
 def tide_window_script() -> str:
@@ -205,6 +206,7 @@ class Backend(QObject):
     tasksChanged = pyqtSignal()
     limitsChanged = pyqtSignal()
     flowSettingsChanged = pyqtSignal()
+    cardOpenChanged = pyqtSignal()
 
     def __init__(self, bus: QDBusConnection | None, data: dict | None = None, parent=None,
                  spectacle: str | None = None):
@@ -217,7 +219,9 @@ class Backend(QObject):
         self._tasks = "{}"
         self._limits = "{}"
         self._flow_settings = "{}"
-        app = QCoreApplication.instance()
+        # Ustawienie okna (PT-133): na żywo z window.json; podgląd trzyma je tylko w pamięci i nie rusza plików.
+        self._card_open = windowconfig.CARD_OPEN_DEFAULT if data is not None else windowconfig.card_open()
+        app =QCoreApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self.discardImages)   # okno Tide zamknięte z otwartym oknem uruchomienia
         self.bus = bus
@@ -246,6 +250,9 @@ class Backend(QObject):
             self._tasks = json.dumps(data.pop("tasks", None) or {}, ensure_ascii=False)
             self._limits = json.dumps(data.pop("limits", None) or {}, ensure_ascii=False)
             self._flow_settings = json.dumps(data.pop("flowSettings", None) or {}, ensure_ascii=False)
+            preview_open = data.pop("cardOpen", None)
+            if preview_open in windowconfig.CARD_OPEN_VALUES:
+                self._card_open = preview_open
             self._snapshot = json.dumps(data, ensure_ascii=False)
             self._available = True
             self._update_badge()
@@ -323,6 +330,28 @@ class Backend(QObject):
     @pyqtProperty(str, notify=flowSettingsChanged)
     def flowSettingsJson(self) -> str:
         return self._flow_settings
+
+    # Co otwiera kafelek z „Czeka na mnie” i powiadomienie: "decision" (okno decyzji) albo "full" (pełna karta).
+    @pyqtProperty(str, notify=cardOpenChanged)
+    def cardOpen(self) -> str:
+        return self._card_open
+
+    @pyqtSlot(str, result=str)
+    def setCardOpen(self, value: str) -> str:
+        """Zapisuje wybór w konfiguracji okna. Zwraca pusty tekst albo powód, gdy zapis się nie udał
+        (wtedy ustawienie działa do końca sesji okna, ale nie przeżyje restartu)."""
+        if value not in windowconfig.CARD_OPEN_VALUES:
+            return "Nieznane ustawienie otwierania karty."
+        problem = ""
+        if not self._preview:
+            try:
+                windowconfig.set_card_open(value)
+            except OSError as exc:
+                problem = f"Nie zapisano ustawienia: {exc.strerror or exc}."
+        if value != self._card_open:
+            self._card_open = value
+            self.cardOpenChanged.emit()
+        return problem
 
     # Plakietka w pasku widoków okna Tide; pusta — ukryta.
     @pyqtProperty(str, notify=badgeChanged)

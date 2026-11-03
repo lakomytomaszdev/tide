@@ -84,9 +84,15 @@ function decisions(card) {
     return flow && Array.isArray(flow.decisions) ? flow.decisions : []
 }
 
-// Kafelek w „Czeka na mnie” z decyzjami otwiera okno decyzji (PT-132); wybór widoku w ustawieniach to PT-133.
-function opensDecisions(card) {
+// Karta w „Czeka na mnie” z decyzjami (PT-132) — tylko taka może otworzyć okno decyzji.
+function hasDecisions(card) {
     return !!card && displayColumn(card) === "waiting" && decisions(card).length > 0
+}
+
+// Klik i powiadomienie (PT-133): okno decyzji tylko dla takiej karty i gdy ustawienie okna Tide to "decision"
+// (domyślne; "full" — pełna karta); każda inna karta otwiera pełną kartę.
+function opensDecisions(card, cardOpen) {
+    return cardOpen !== "full" && hasDecisions(card)
 }
 
 // Karta w kolumnie ręcznej (bez stanu z koordynatora), do potwierdzenia albo pracująca karta z dziennikiem — tylko
