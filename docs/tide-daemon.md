@@ -1639,6 +1639,30 @@ osobne katalogi `.resume-<step>.step` i pliki wyniku; dziennik pozwala odtworzy�
 qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.ResolveCardStep K-12 '{"choice": "answer", "answer": "ISO 8601"}'
 ```
 
+### Pełna karta: fazy, powody czekania i trwające kroki (PT-128)
+
+Karta z dziennikiem dostaje w `derived` pola pełnej karty (`cardflow/fullcard.py`); widok
+`apps/common/qml/card/CardFullView.qml` tylko je wyświetla:
+
+- `phases[7]` — `{id, label, state, executor, ts, note}` w stałej kolejności: `order` (Zlecenie), `planning`,
+  `plan-review`, `plan-approval`, `tickets`, `closing` (Domknięcie), `main-merge` (Scalenie do master). `state`:
+  `done`, `now`, `you` (czeka na decyzję z `flow.decisions[]`), `hold` (czeka na limit, nie na użytkownika), `todo`,
+  `skipped` (planowanie przy wejściu „Od razu”, review planu zatwierdzonego bez review). `executor` to nazwa
+  wykonawcy albo `user` dla faz użytkownika, `ts` — chwila zdarzenia fazy (ISO 8601), `note` — dopisek
+  (np. „fala 2 z 4”, „prosi o zmiany”). Karta w „Czeka na mnie” bez decyzji w żadnej fazie ma `you` w bieżącej fazie.
+- `tickets[].waitingOn` — `{kind: "user"}`, `{kind: "blocker", ticket}` (pierwszy niescalony bloker) albo
+  `{kind: "limit", until}` (godzina odnowienia, gdy znana) albo `null`; przy kilku powodach naraz wygrywa użytkownik,
+  potem bloker, potem limit. Przed zatwierdzeniem planu zawsze `null`.
+- `tickets[].status` i `statusLabel` — ludzki stan (`w planie`, `w kolejce`, `pracuje`, `review`, `poprawki`,
+  `scalanie`, `czeka na Ciebie`, `czeka na limit do 16:30`, `czeka na PT-1`, `scalony`, `odrzucony`), do tego
+  `executor` i `reviewer` z przydziału albo z planu.
+- `flow.running[]` — tylko trwające kroki (`id`, `ticket`, `kind`, `kindLabel`, `executor`, `mode`, `startedTs`,
+  `lastActivityTs`, `canEnter`); `flow.headline` — jedno zdanie do „Twój ruch”, gdy `flow.decisions[]` jest puste.
+
+Zdarzenie `step.waiting` niesie `cause` (`quota` — okno limitu, `slots` — kroki dostawcy naraz, `local` — kolejka
+modeli lokalnych, `paused` — karta wstrzymana) i `until` (godzina odnowienia przy `quota`). Starsze zdarzenia bez
+`cause` rozpoznawane są po treści powodu. Tickety i fale planu liczą się także wtedy, gdy krok stoi na limicie.
+
 ## Docker
 
 Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Docker” w oknie Tide (`apps/docker`) i kafelka `org.tide.docker` w docku (`widgets/docker`). Usługa rozmawia z Docker Engine API przez lokalny socket (sama biblioteka standardowa, bez `docker` CLI i bez `docker compose`). Socket z `$DOCKER_HOST` (`unix:///ścieżka`), domyślnie `/var/run/docker.sock`; `tcp://`, `ssh://` i inne → stan `unsupported`, bez łączenia się przez sieć.

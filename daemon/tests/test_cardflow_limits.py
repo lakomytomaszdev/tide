@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from tide_daemon.cardflow import limits
-from tide_daemon.cardflow.engine import FlowError
+from tide_daemon.cardflow.engine import FlowDeferred, FlowError
 from tide_daemon.cardflow.state import derived, fold
 from tide_daemon.tasks import launch
 
@@ -126,6 +126,25 @@ class FlowQuotaContractTest(FlowInProcess):
         self.assertIn("7%", reason)
         self.flow.engine.limits_source = lambda: {"available": False, "services": {}}
         self.assertEqual(self.flow.engine._wait_reason(selected), "")
+
+    def test_waiting_step_records_cause_and_reset_for_the_full_card(self):
+        engine = self.flow.engine
+        now = engine.clock()
+        engine.limits_source = lambda: {
+            "available": True, "services": {"chatgpt": {
+                "session": {"remaining": None, "readTs": now},
+                "weekly": {"remaining": 7, "readTs": now, "resetTs": now + 3600}}}}
+        selected = SimpleNamespace(provider="openai", local=False)
+        with self.assertRaises(FlowDeferred):
+            engine._admit("K-77", selected, "PT-1", "ticket", "K-77-PT-1-1")
+        wait = fold(engine.journal.read("K-77")).waiting[("PT-1", "ticket")]
+        self.assertEqual((wait["cause"], wait["until"]), ("quota", limits.reset_label(now + 3600, now)))
+        engine.limits_source = lambda: {"available": False, "services": {}}
+        engine._wait_reason = lambda _selected: "limit kroków dostawcy openai: 3/3"
+        with self.assertRaises(FlowDeferred):
+            engine._admit("K-77", selected, "PT-2", "ticket", "K-77-PT-2-1")
+        wait = fold(engine.journal.read("K-77")).waiting[("PT-2", "ticket")]
+        self.assertEqual((wait["cause"], wait["until"]), ("slots", ""))
 
     def test_flow_settings_persist_without_erasing_other_fields(self):
         engine = self.flow.engine

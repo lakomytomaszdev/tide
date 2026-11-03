@@ -1217,6 +1217,15 @@ class FlowEngine(PlanEditing):
             out.append(real)
         return out
 
+    def _wait_cause(self, reason: str, selected) -> tuple[str, str]:
+        """(przyczyna, odnowienie) czekania do `step.waiting` (pełna karta, PT-128): `quota` (okno limitu, z godziną
+        odnowienia), `local` (kolejka modeli lokalnych) albo `slots` (kroki dostawcy naraz)."""
+        if reason.startswith("czeka na limit"):
+            return "quota", (self._low_limit(selected.provider) or {}).get("reset") or ""
+        if "modele lokalne" in reason:
+            return "local", ""
+        return "slots", ""
+
     def _wait_reason(self, selected) -> str:
         quota = self._low_limit(selected.provider)
         if quota:
@@ -1252,10 +1261,11 @@ class FlowEngine(PlanEditing):
             else:
                 self._local_claims[step_id] = claim
         if reason:
+            cause, until = ("paused", "") if st.paused else self._wait_cause(reason, selected)
             previous = st.waiting.get((ticket, kind)) or {}
             if previous.get("reason") != reason:
                 self.journal.append(card, "step.waiting", ticket=ticket, kind=kind,
-                                    provider=selected.provider, reason=reason)
+                                    provider=selected.provider, reason=reason, cause=cause, until=until)
             raise FlowDeferred(reason)
 
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,

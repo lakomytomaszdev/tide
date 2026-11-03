@@ -3,10 +3,10 @@
 - konfiguracja okna Tide (apps/common/windowconfig.py): domyślnie „Okno decyzji”, zapis i odczyt, przeżywa
   restart (nowy Backend czyta plik), uszkodzony plik i nieznana wartość nie psują odczytu,
 - jedno ustawienie w dwóch miejscach: menu „Widok” i stopka okna decyzji zmieniają tę samą wartość backendu,
-- klik w kartę z „Czeka na mnie” otwiera okno decyzji albo (tymczasowo) panel karty zgodnie z ustawieniem;
-  karta spoza „Czeka na mnie” zawsze otwiera panel,
+- klik w kartę z „Czeka na mnie” otwiera okno decyzji albo pełną kartę (PT-128) zgodnie z ustawieniem;
+  karta spoza „Czeka na mnie” z dziennikiem zawsze otwiera pełną kartę, a karta bez dziennika — panel karty,
 - powiadomienie (showItem z ID karty, jak ShowWindow/Show z D-Bus) idzie tą samą trasą co klik,
-- „Otwórz całą kartę” w oknie decyzji zawsze otwiera obecny panel karty (do PT-128).
+- „Otwórz całą kartę” w oknie decyzji zawsze otwiera pełną kartę.
 """
 import importlib.util
 import json
@@ -16,7 +16,7 @@ import tempfile
 import unittest
 
 from . import APP_DIR, REPO
-from .decisionfix import scenario_f
+from .decisionfix import full_card, full_d, journal, scenario_f
 from .test_decision_dialog import STATE_PY as DIALOG_STATE_PY
 from .test_view import ProbeCase
 
@@ -140,25 +140,25 @@ click(pill("cardOpen-full"))
 out["setting"] = [backend.cardOpen, js("page.cardOpen")]
 key(Qt.Key.Key_Escape)
 click(card("K-8"))
-out["full"] = [js("page.decisionOpen"), js("page.panelOpen"), js("page.panelCardId")]
-""", scenario_f(self.data))
+out["full"] = [js("page.decisionOpen"), js("page.fullOpen"), js("page.fullCardId"), js("page.panelOpen")]
+""", full_card(self.data, journal()))
         self.assertEqual(out["decision"], [True, False], "domyślnie okno decyzji")
         self.assertEqual(out["setting"], ["full", "full"], "menu „Widok” zmienia ustawienie backendu")
-        self.assertEqual(out["full"], [False, True, "K-8"], "po zmianie klik otwiera obecny panel karty")
+        self.assertEqual(out["full"], [False, True, "K-8", False], "po zmianie klik otwiera pełną kartę")
 
-    def test_card_outside_waiting_always_opens_the_card_panel(self):
+    def test_card_outside_waiting_opens_full_card_and_card_without_journal_the_panel(self):
         out = self.probe(STATE_PY + """
 col = js("page.cards.find(c => c.id === 'K-9').boardColumn")
 click(card("K-9"))
-out["default"] = [col, js("page.decisionOpen"), js("page.panelOpen"), js("page.panelCardId")]
+out["noJournal"] = [col, js("page.decisionOpen"), js("page.fullOpen"), js("page.panelOpen"), js("page.panelCardId")]
 key(Qt.Key.Key_Escape)
-js("page.decisionOpen = false")
+col = js("page.cards.find(c => c.id === 'K-8').boardColumn")
 click(card("K-8"))
-out["waitingNoDecisions"] = [js("page.decisionOpen"), js("page.panelOpen")]
-""", scenario_f(self.data))
-        self.assertNotEqual(out["default"][0], "waiting")
-        self.assertEqual(out["default"][1:], [False, True, "K-9"])
-        self.assertEqual(out["waitingNoDecisions"], [True, False], "K-8 ma decyzje w scenariuszu F")
+out["progress"] = [col, js("page.decisionOpen"), js("page.fullOpen"), js("page.panelOpen")]
+""", full_d(self.data))
+        self.assertNotEqual(out["noJournal"][0], "waiting")
+        self.assertEqual(out["noJournal"][1:], [False, False, True, "K-9"], "bez dziennika — panel karty")
+        self.assertEqual(out["progress"], ["progress", False, True, False], "karta z „W toku” — pełna karta")
 
     def test_footer_field_and_view_menu_change_the_same_setting(self):
         out = self.probe(STATE_PY + """
@@ -186,26 +186,26 @@ key(Qt.Key.Key_Escape)
 backend.setCardOpen("full")
 js("page.parent.showItem('k-8')")
 wait(150)
-out["full"] = [js("page.decisionOpen"), js("page.panelOpen"), js("page.panelCardId")]
-js("page.closePanel()")
+out["full"] = [js("page.decisionOpen"), js("page.fullOpen"), js("page.fullCardId")]
+js("page.closeFull()")
 js("page.parent.showItem('K-9')")
 wait(150)
-out["other"] = [js("page.decisionOpen"), js("page.panelOpen"), js("page.selectedId")]
-""", scenario_f(self.data))
+out["other"] = [js("page.decisionOpen"), js("page.fullOpen"), js("page.panelOpen"), js("page.selectedId")]
+""", full_card(self.data, journal()))
         self.assertEqual(out["decision"], [True, False, "K-8", "K-8"])
         self.assertEqual(out["full"], [False, True, "K-8"], "powiadomienie respektuje „Pełna karta”")
-        self.assertEqual(out["other"], [False, False, "K-9"], "karta bez decyzji tylko zaznaczona, jak dotąd")
+        self.assertEqual(out["other"], [False, False, False, "K-9"], "karta bez decyzji tylko zaznaczona, jak dotąd")
 
     def test_open_full_card_is_always_in_the_decision_window(self):
         for setting in ("decision", "full"):
-            data = scenario_f(self.data)
+            data = full_card(self.data, journal())
             data["cardOpen"] = setting
             out = self.probe(STATE_PY + """
 js("page.openDecisions('K-8')")
 click(named("decisionFullCard"))
-out["state"] = [js("page.decisionOpen"), js("page.panelOpen"), js("page.panelCardId")]
+out["state"] = [js("page.decisionOpen"), js("page.fullOpen"), js("page.fullCardId"), js("page.panelOpen")]
 """, data)
-            self.assertEqual(out["state"], [False, True, "K-8"], setting)
+            self.assertEqual(out["state"], [False, True, "K-8", False], setting)
 
 
 if __name__ == "__main__":

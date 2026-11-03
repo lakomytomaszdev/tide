@@ -445,7 +445,16 @@ def decision_step(st: FlowState) -> str:
 
 
 def derived(st: FlowState, card: dict) -> dict | None:
-    """Pole `derived` karty z dziennikiem (kształt jak board/derive.py, z `flow`) albo None — karta w swojej kolumnie."""
+    """Pole `derived` karty z dziennikiem (kształt jak board/derive.py, z `flow`) albo None — karta w swojej kolumnie.
+    Pola pełnej karty (fazy, powody czekania, trwające kroki — PT-128) dokłada `fullcard.enrich`."""
+    out = _derived(st, card)
+    if out is None:
+        return None
+    from .fullcard import enrich
+    return enrich(st, out)
+
+
+def _derived(st: FlowState, card: dict) -> dict | None:
     if st.started is None:
         return None
     column = card.get("column") or "backlog"
@@ -509,6 +518,9 @@ def derived(st: FlowState, card: dict) -> dict | None:
                              and not other.get("consoleClosed") for other in st.steps.values())}
         for name, item in st.steps.items()
     ]
+    plan_entry = st.started.get("entry") in ("plan", "planning")
+    if plan_entry:
+        rows, finished_ids = _plan_view(st, out)
     if done.get("reason") in ("limit", "transfer"):
         decision = st.step_decisions.get(st.last_step) or {}
         limit = st.limits.get(st.last_step) or {}
@@ -538,55 +550,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
         error = failures[-1].get('error') or 'odmowa operacji YouTracka'
         out['flow'].update(action='error', error=error, trackerError=True)
         return _fill(out, 'waiting', 'Błąd YouTracka: ' + error + ' — popraw przyczynę i wybierz „Ponów”')
-    if st.started.get("entry") in ("plan", "planning"):
-        proposal = st.plan_proposed or {}
-        approved = st.plan_approved or {}
-        revision_pending = bool((st.plan_revision or {}).get("pending"))
-        rows = (proposal.get("rows") if revision_pending else approved.get("rows")) or proposal.get("rows") or []
-        rows = [{**row, "editable": not st.plan_revision and (row.get("id") or row["workId"]) not in st.assignments
-                 and not any(s.get("ticket") == (row.get("id") or row["workId"]) for s in st.steps.values())}
-                for row in rows]
-        waves = graph_waves(rows)
-        finished_ids = set(st.imported_done) | {row.get("id") or row.get("workId") for row in rows
-                        if not st.plan_approved and row.get("sourceState") == "gotowe"} | {row.get("id") for row in rows if ("merge", row.get("id")) in st.results and
-                        st.results[("merge", row.get("id"))].get("ok")}
-        out["total"], out["done"] = len(rows), len(finished_ids)
-        wave_no = next((n for n, wave in enumerate(waves, 1) if set(wave) - finished_ids), len(waves))
-        out["flow"].update({"wave": wave_no, "waveTotal": len(waves), "paused": st.paused,
-                            "timeline": st.timeline})
-        for row in rows:
-            ident_row = row.get("id") or row.get("workId")
-            latest = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ident_row), {})
-            waits = [w for (ticket_id, _), w in st.waiting.items() if ticket_id == ident_row]
-            outcome = (st.finished.get(latest.get("step")) or {}).get("result")
-            if ident_row in finished_ids:
-                state = "gotowe"
-            elif ident_row in st.rejected or not st.plan_approved and row.get("sourceState") == "odrzucone":
-                state = "odrzucone"
-            elif waits or outcome in ("question", "denied", "error", "stopped"):
-                state = "czeka"
-            elif latest:
-                state = "review" if latest.get("kind") == "review" or outcome == "done" else "w-toku"
-            else:
-                state = "todo"
-            out["tickets"].append({"id": ident_row, "ticket": ident_row, "title": row.get("title") or "",
-                                   "state": state, "wave": next((n for n, w in enumerate(waves, 1) if ident_row in w), 0),
-                                   "waitReason": waits[-1]["reason"] if waits else ""})
-        out["tickets"].sort(key=lambda ticket: ticket["wave"])
-        out["flow"]["waveLabel"] = f"fala {wave_no} z {len(waves)}"
-        out["flow"]["plan"] = {"review": plan_review_view(st.plan_reviewed), "revision": st.plan_revision or {},
-                             "planner": proposal.get("planner") or "",
-                             "reviewStep": next((s.get("step") for s in reversed(list(st.steps.values()))
-                                                 if s.get("kind") == "plan-review" and s.get("step") not in st.finished), ""),
-                             "reviewProvider": next((s.get("provider") for s in reversed(list(st.steps.values()))
-                                                     if s.get("kind") == "plan-review" and s.get("step") not in st.finished), ""),
-                             "reviewExecutor": st.plan_reviewer,
-                             "plannerStep": next((s["step"] for s in reversed(list(st.steps.values())) if s.get("executor") == proposal.get("planner")), ""),
-                             "status": "reviewing" if not st.plan_reviewed and (not st.plan_approved or revision_pending)
-                             else "pending" if revision_pending else "done" if st.plan_finished else
-                             "approved" if st.plan_approved else "pending" if st.plan_proposed else "invalid",
-                             "rows": rows, "waves": waves,
-                             "errors": (st.plan_checked or {}).get("errors") or []}
+    if plan_entry:
         waiting_review = st.plan_review_wait or st.waiting.get(("", "plan-review")) or {}
         if st.plan_proposed and not st.plan_reviewed and not st.plan_reviewer and waiting_review and not any(
                 s.get("kind") == "plan-review" and s.get("step") not in st.finished
@@ -739,6 +703,60 @@ def derived(st: FlowState, card: dict) -> dict | None:
         since = f" od {done['stalledSince']}" if done.get("stalledSince") else ""
         return _fill(out, "waiting", f"błąd kroku {ident}: {reason}{since}" if reason else f"błąd kroku {ident}")
     return _fill(out, "progress", f"{ident} · zlecenie")
+
+
+def _plan_view(st: FlowState, out: dict) -> tuple[list, set]:
+    """Tickety, fale i plan karty z planowaniem (`tickets`, `flow.plan`, `waveLabel`, postęp). Liczone przed gałęzią
+    limitu i błędu YouTracka, żeby pełna karta (PT-128) widziała fale także wtedy, gdy krok stoi na limicie."""
+    proposal = st.plan_proposed or {}
+    approved = st.plan_approved or {}
+    revision_pending = bool((st.plan_revision or {}).get("pending"))
+    rows = (proposal.get("rows") if revision_pending else approved.get("rows")) or proposal.get("rows") or []
+    rows = [{**row, "editable": not st.plan_revision and (row.get("id") or row["workId"]) not in st.assignments
+             and not any(s.get("ticket") == (row.get("id") or row["workId"]) for s in st.steps.values())}
+            for row in rows]
+    waves = graph_waves(rows)
+    finished_ids = set(st.imported_done) | {row.get("id") or row.get("workId") for row in rows
+                    if not st.plan_approved and row.get("sourceState") == "gotowe"} | {row.get("id") for row in rows if ("merge", row.get("id")) in st.results and
+                    st.results[("merge", row.get("id"))].get("ok")}
+    out["total"], out["done"] = len(rows), len(finished_ids)
+    wave_no = next((n for n, wave in enumerate(waves, 1) if set(wave) - finished_ids), len(waves))
+    out["flow"].update({"wave": wave_no, "waveTotal": len(waves), "paused": st.paused,
+                        "timeline": st.timeline})
+    for row in rows:
+        ident_row = row.get("id") or row.get("workId")
+        latest = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ident_row), {})
+        waits = [w for (ticket_id, _), w in st.waiting.items() if ticket_id == ident_row]
+        outcome = (st.finished.get(latest.get("step")) or {}).get("result")
+        if ident_row in finished_ids:
+            state = "gotowe"
+        elif ident_row in st.rejected or not st.plan_approved and row.get("sourceState") == "odrzucone":
+            state = "odrzucone"
+        elif waits or outcome in ("question", "denied", "error", "stopped"):
+            state = "czeka"
+        elif latest:
+            state = "review" if latest.get("kind") == "review" or outcome == "done" else "w-toku"
+        else:
+            state = "todo"
+        out["tickets"].append({"id": ident_row, "ticket": ident_row, "title": row.get("title") or "",
+                               "state": state, "wave": next((n for n, w in enumerate(waves, 1) if ident_row in w), 0),
+                               "waitReason": waits[-1]["reason"] if waits else ""})
+    out["tickets"].sort(key=lambda ticket: ticket["wave"])
+    out["flow"]["waveLabel"] = f"fala {wave_no} z {len(waves)}"
+    out["flow"]["plan"] = {"review": plan_review_view(st.plan_reviewed), "revision": st.plan_revision or {},
+                           "planner": proposal.get("planner") or "",
+                           "reviewStep": next((s.get("step") for s in reversed(list(st.steps.values()))
+                                               if s.get("kind") == "plan-review" and s.get("step") not in st.finished), ""),
+                           "reviewProvider": next((s.get("provider") for s in reversed(list(st.steps.values()))
+                                                   if s.get("kind") == "plan-review" and s.get("step") not in st.finished), ""),
+                           "reviewExecutor": st.plan_reviewer,
+                           "plannerStep": next((s["step"] for s in reversed(list(st.steps.values())) if s.get("executor") == proposal.get("planner")), ""),
+                           "status": "reviewing" if not st.plan_reviewed and (not st.plan_approved or revision_pending)
+                           else "pending" if revision_pending else "done" if st.plan_finished else
+                           "approved" if st.plan_approved else "pending" if st.plan_proposed else "invalid",
+                           "rows": rows, "waves": waves,
+                           "errors": (st.plan_checked or {}).get("errors") or []}
+    return rows, finished_ids
 
 
 def _intent_word(intent: dict) -> str:

@@ -1,8 +1,8 @@
 // Okno decyzji karty (K-35, PT-132): wyśrodkowane nad stroną, jak pytanie w czacie. Pokazuje jedną decyzję
-// z `derived.flow.decisions[]` (PT-123) naraz: plakietka rodzaju, karta · ticket · wykonawca, „co się stało”
-// (`happened`), „dlaczego” (`why`), polecenie z `technical.command`, możliwości jako karty z jednym zdaniem
-// skutku (kolejność i polecona — z usługi), na końcu „Inna odpowiedź…” (gdy `freeText`), zwinięte
-// „Szczegóły techniczne”, stopka „Otwórz całą kartę”, „Później” (Esc) i „Wybierz” (Enter).
+// z `derived.flow.decisions[]` (PT-123) naraz: plakietka rodzaju, karta · ticket · wykonawca, treść decyzji
+// (DecisionForm.qml — wspólna z blokiem „Twój ruch” pełnej karty: „co się stało”, „dlaczego”, polecenie, możliwości
+// z jednym zdaniem skutku, „Inna odpowiedź…”, zwinięte „Szczegóły techniczne”), stopka „Otwórz całą kartę”,
+// „Później” (Esc) i „Wybierz” (Enter).
 //
 // Okno niczego nie liczy i niczego nie zaznacza z góry (D10): po otwarciu i po każdej odpowiedzi nic nie jest
 // wybrane, „Wybierz” jest nieaktywne, a Enter bez zaznaczenia nic nie robi. Po odpowiedzi okno przechodzi do
@@ -12,7 +12,7 @@
 // Umowa: `cardId`, `decisions` (z migawki), `start()` — otwarcie od pierwszej decyzji, `failed(id, tekst)` —
 // błąd usługi przy odpowiedzi (decyzja wraca), sygnały `answered(decisionId, method, params)` — żądanie
 // gotowe do wysłania (metoda /Board i parametry z decyzji), `laterRequested()`, `fullCardRequested(notice)`
-// (także dla możliwości, która wymaga wyboru w oknie, np. wykonawcy — na razie wybór jest w panelu karty)
+// (z napisem — możliwość wymaga wyboru w panelu karty, np. wykonawcy; bez — „Otwórz całą kartę”),
 // `cardOpen` + `cardOpenRequested(wartość)` — pole ustawienia otwierania karty w stopce (PT-133),
 // i `finished()` — nic już nie czeka (ostatnia odpowiedziana albo migawka bez decyzji).
 import QtQuick
@@ -24,29 +24,17 @@ import "decision.js" as Decision
 Rectangle {
     id: dialog
 
-    readonly property string otherId: "__other__"
-
     property string cardId: ""
     property var decisions: []
     property string cardOpen: "decision"   // ustawienie okna Tide (PT-133); zapis robi strona, okno tylko prosi
     property var answeredIds: []
     property int index: 0
-    property string selected: ""
-    property bool techOpen: false
-    property string error: ""
-    // Uwagi recenzenta zaznaczone do odesłania (id z `current.findings`); domyślne zaznaczenie daje usługa.
-    property var checkedIds: []
 
     readonly property var pending: (decisions || []).filter(d => answeredIds.indexOf(d.id) < 0)
     readonly property var current: pending.length > 0 ? pending[Math.min(index, pending.length - 1)] : null
-    readonly property string currentId: current ? current.id : ""
-    readonly property var options: current ? current.options || [] : []
-    readonly property bool freeText: !!current && current.freeText === true && !!current.reply
-    readonly property bool onlyText: freeText && options.length === 0
-    readonly property string choice: onlyText ? otherId : selected
-    readonly property bool canChoose: choice === otherId ? answer.text.trim() !== "" : choice !== ""
     readonly property string counter: pending.length > 1 ? (Math.min(index, pending.length - 1) + 1) + " z " + pending.length : ""
-    readonly property alias answerField: answer
+    readonly property alias answerField: form.answerField
+    readonly property alias form: form
 
     signal answered(string decisionId, string method, var params)
     signal laterRequested()
@@ -57,28 +45,8 @@ Rectangle {
     function start() {
         answeredIds = []
         index = 0
-        reset()
+        form.reset()
         forceActiveFocus()
-    }
-
-    function reset() {
-        selected = ""
-        techOpen = false
-        error = ""
-        answer.text = ""
-        checkedIds = Decision.defaultChecked(current)
-    }
-
-    function toggleFinding(id) {
-        const at = checkedIds.indexOf(id)
-        checkedIds = at >= 0 ? checkedIds.filter(x => x !== id) : checkedIds.concat([id])
-        error = ""
-    }
-
-    function pick(id) {
-        selected = id
-        error = ""
-        if (id === otherId) answer.forceActiveFocus()
     }
 
     function go(step) {
@@ -86,33 +54,8 @@ Rectangle {
         if (next !== index) index = next
     }
 
-    // „Wybierz” i Enter: bez zaznaczenia (albo z pustą własną odpowiedzią) nic się nie dzieje.
     function choose() {
-        if (!current || !canChoose) return
-        let request = null
-        if (choice === otherId) {
-            request = Decision.replyRequest(current, answer.text.trim())
-        } else {
-            const option = options.find(o => o.id === choice)
-            if (!option) return
-            if (Decision.needsInput(option)) {
-                fullCardRequested("„" + option.title + "”: wybierz wykonawcę w panelu karty.")
-                return
-            }
-            request = Decision.optionRequest(option)
-        }
-        if (!request || !request.method) return
-        // Odesłanie planu: do poprawy idą tylko zaznaczone uwagi i własny tekst (niezaznaczone nie).
-        request = Decision.applyFindings(current, request, checkedIds)
-        if (request.params && request.params.action === "return" && current.findings && current.findings.length > 0
-                && (request.params.findings || []).length === 0 && !request.params.feedback) {
-            error = "Zaznacz uwagi do odesłania albo dopisz własne."
-            return
-        }
-        const id = current.id
-        answeredIds = answeredIds.concat([id])
-        answered(id, request.method, request.params)
-        if (pending.length > 0) forceActiveFocus()
+        form.choose()
     }
 
     // Usługa odrzuciła odpowiedź: decyzja wraca do listy i pokazuje błąd.
@@ -120,10 +63,9 @@ Rectangle {
         answeredIds = answeredIds.filter(id => id !== decisionId)
         const at = pending.findIndex(d => d.id === decisionId)
         if (at >= 0) index = at
-        error = message
+        form.error = message
     }
 
-    onCurrentIdChanged: reset()
     // Nic już nie czeka (ostatnia odpowiedź albo nowa migawka bez decyzji) — okno kończy.
     onPendingChanged: {
         if (index > 0 && index >= pending.length) index = Math.max(0, pending.length - 1)
@@ -187,24 +129,9 @@ Rectangle {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 10
-                    Rectangle {
+                    DecisionKind {
                         objectName: "decisionKind"
-                        implicitWidth: kindText.implicitWidth + 16
-                        implicitHeight: kindText.implicitHeight + 8
-                        radius: Tide.Tokens.radiusSmall
-                        color: Tide.Theme.alpha(Tide.Tokens.waiting, 0.14)
-                        border.width: 1
-                        border.color: Tide.Theme.alpha(Tide.Tokens.waiting, 0.4)
-                        Text {
-                            id: kindText
-                            anchors.centerIn: parent
-                            text: Decision.kindLabel(dialog.current)
-                            textFormat: Text.PlainText
-                            color: Tide.Tokens.waiting
-                            font.family: Tide.Theme.uiFamily
-                            font.pointSize: Tide.Tokens.fontSizePt * 0.9
-                            font.weight: Font.DemiBold
-                        }
+                        decision: dialog.current
                     }
                     Text {
                         objectName: "decisionWho"
@@ -255,277 +182,17 @@ Rectangle {
                     }
                 }
 
-                Text {
-                    objectName: "decisionHappened"
+                DecisionForm {
+                    id: form
+                    objectName: "decisionForm"
                     Layout.fillWidth: true
-                    text: dialog.current ? dialog.current.happened : ""
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.textPrimary
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt * 1.35
-                    font.weight: Font.DemiBold
-                    wrapMode: Text.Wrap
-                }
-                Text {
-                    objectName: "decisionWhy"
-                    Layout.fillWidth: true
-                    text: dialog.current ? dialog.current.why : ""
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.textSecondary
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt * 1.05
-                    wrapMode: Text.Wrap
-                }
-                Rectangle {
-                    objectName: "decisionCommand"
-                    Layout.fillWidth: true
-                    visible: commandText.text !== ""
-                    implicitHeight: commandText.implicitHeight + 18
-                    radius: Tide.Tokens.radiusFrame
-                    color: Tide.Tokens.backgroundView
-                    border.width: 1
-                    border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
-                    Text {
-                        id: commandText
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.margins: 12
-                        text: dialog.current && dialog.current.technical ? Decision.text(dialog.current.technical.command) : ""
-                        textFormat: Text.PlainText
-                        color: Tide.Tokens.textPrimary
-                        font.family: Tide.Theme.monoFamily
-                        font.pointSize: Tide.Tokens.fontSizePt * 0.95
-                        wrapMode: Text.WrapAnywhere
-                    }
-                }
-
-                Text {
-                    objectName: "decisionError"
-                    Layout.fillWidth: true
-                    visible: dialog.error !== ""
-                    text: dialog.error
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.negative
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt
-                    wrapMode: Text.Wrap
-                }
-
-                // Uwagi recenzenta planu: waga, treść i tickety; do poprawy idą zaznaczone (nit domyślnie nie).
-                ColumnLayout {
-                    objectName: "decisionFindings"
-                    Layout.fillWidth: true
-                    visible: !!dialog.current && (dialog.current.findings || []).length > 0
-                    spacing: 6
-                    Accessible.role: Accessible.Grouping
-                    Accessible.name: "Uwagi recenzenta"
-                    Text {
-                        Layout.fillWidth: true
-                        text: "Uwagi recenzenta — zaznaczone trafią do poprawy"
-                        textFormat: Text.PlainText
-                        color: Tide.Tokens.textSecondary
-                        font.family: Tide.Theme.uiFamily
-                        font.pointSize: Tide.Tokens.fontSizePt
-                        font.weight: Font.Medium
-                    }
-                    Repeater {
-                        model: dialog.current ? dialog.current.findings || [] : []
-                        delegate: DecisionFinding {
-                            objectName: "decisionFinding"
-                            required property var modelData
-                            Layout.fillWidth: true
-                            severity: modelData.severity
-                            text: modelData.text
-                            tickets: modelData.tickets
-                            checked: dialog.checkedIds.indexOf(modelData.id) >= 0
-                            onToggled: dialog.toggleFinding(modelData.id)
-                        }
-                    }
-                }
-
-                // Możliwości w kolejności z usługi; „Inna odpowiedź…” zawsze ostatnia.
-                ColumnLayout {
-                    objectName: "decisionOptions"
-                    Layout.fillWidth: true
-                    Layout.topMargin: 4
-                    spacing: 8
-                    Accessible.role: Accessible.Grouping
-                    Accessible.name: "Możliwości"
-
-                    Repeater {
-                        id: optionRepeater
-                        model: dialog.options
-                        DecisionOption {
-                            objectName: "decisionOption"
-                            Layout.fillWidth: true
-                            title: modelData.title
-                            effect: modelData.effect
-                            recommended: modelData.recommended === true
-                            checked: dialog.selected === modelData.id
-                            onPicked: dialog.pick(modelData.id)
-                        }
-                    }
-
-                    Rectangle {
-                        id: other
-                        objectName: "decisionOther"
-                        Layout.fillWidth: true
-                        visible: dialog.freeText
-                        readonly property bool checked: dialog.choice === dialog.otherId
-                        implicitHeight: otherColumn.implicitHeight + 24
-                        radius: Tide.Tokens.radiusTile
-                        color: checked && !dialog.onlyText ? Tide.Theme.alpha(Tide.Tokens.accent, 0.09) : Tide.Tokens.backgroundCard
-                        border.width: 1
-                        border.color: checked && !dialog.onlyText || activeFocus ? Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
-                                                                                 : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
-                        activeFocusOnTab: !dialog.onlyText
-                        Accessible.role: Accessible.RadioButton
-                        Accessible.name: "Inna odpowiedź…"
-                        Accessible.checked: checked
-                        Accessible.onPressAction: dialog.pick(dialog.otherId)
-                        Keys.onSpacePressed: dialog.pick(dialog.otherId)
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: dialog.pick(dialog.otherId)
-                        }
-
-                        ColumnLayout {
-                            id: otherColumn
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.margins: 12
-                            anchors.leftMargin: 14
-                            spacing: 8
-                            RowLayout {
-                                spacing: 9
-                                visible: !dialog.onlyText
-                                Rectangle {
-                                    implicitWidth: 14
-                                    implicitHeight: 14
-                                    radius: width / 2
-                                    color: "transparent"
-                                    border.width: other.checked ? 4 : 1.5
-                                    border.color: other.checked ? Tide.Tokens.accent : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.35)
-                                }
-                                Text {
-                                    text: "Inna odpowiedź…"
-                                    textFormat: Text.PlainText
-                                    color: Tide.Tokens.textPrimary
-                                    font.family: Tide.Theme.uiFamily
-                                    font.pointSize: Tide.Tokens.fontSizePt * 1.1
-                                    font.weight: Font.DemiBold
-                                }
-                            }
-                            Text {
-                                visible: dialog.onlyText
-                                text: "Twoja odpowiedź"
-                                textFormat: Text.PlainText
-                                color: Tide.Tokens.textSecondary
-                                font.family: Tide.Theme.uiFamily
-                                font.pointSize: Tide.Tokens.fontSizePt
-                                font.weight: Font.Medium
-                            }
-                            Rectangle {
-                                Layout.fillWidth: true
-                                Layout.leftMargin: dialog.onlyText ? 0 : 23
-                                visible: dialog.onlyText || other.checked
-                                implicitHeight: Math.max(64, answer.implicitHeight + 16)
-                                radius: Tide.Tokens.radiusFrame
-                                color: Tide.Tokens.backgroundView
-                                border.width: 1
-                                border.color: answer.activeFocus ? Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
-                                                                 : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityOutline)
-                                TextEdit {
-                                    id: answer
-                                    objectName: "decisionAnswer"
-                                    anchors.fill: parent
-                                    anchors.margins: 8
-                                    textFormat: TextEdit.PlainText
-                                    wrapMode: TextEdit.Wrap
-                                    color: Tide.Tokens.textPrimary
-                                    selectionColor: Tide.Theme.alpha(Tide.Tokens.accent, 0.4)
-                                    font.family: Tide.Theme.uiFamily
-                                    font.pointSize: Tide.Tokens.fontSizePt * 1.05
-                                    activeFocusOnTab: true
-                                    Accessible.role: Accessible.EditableText
-                                    Accessible.name: "Inna odpowiedź"
-                                    onActiveFocusChanged: if (activeFocus && !dialog.onlyText) dialog.selected = dialog.otherId
-                                    // Enter wysyła jak w czacie, Shift+Enter — nowa linia; Esc zamyka okno.
-                                    Keys.onPressed: event => {
-                                        if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
-                                                && !(event.modifiers & Qt.ShiftModifier)) {
-                                            dialog.choose()
-                                            event.accepted = true
-                                        } else if (event.key === Qt.Key_Escape) {
-                                            dialog.laterRequested()
-                                            event.accepted = true
-                                        }
-                                    }
-                                    Text {
-                                        anchors.fill: parent
-                                        visible: answer.text === ""
-                                        text: "Odpowiedz własnymi słowami, jak w czacie z agentem."
-                                        textFormat: Text.PlainText
-                                        color: Tide.Tokens.textMuted
-                                        font: answer.font
-                                        wrapMode: Text.Wrap
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Szczegóły techniczne — zwinięte.
-                Tide.TextButton {
-                    objectName: "decisionTechToggle"
-                    visible: techRepeater.count > 0
-                    text: (dialog.techOpen ? "▾ " : "▸ ") + "Szczegóły techniczne"
-                    accent: Tide.Tokens.textMuted
-                    onClicked: dialog.techOpen = !dialog.techOpen
-                }
-                GridLayout {
-                    objectName: "decisionTech"
-                    Layout.fillWidth: true
-                    visible: dialog.techOpen
-                    columns: 2
-                    columnSpacing: 14
-                    rowSpacing: 4
-                    Repeater {
-                        id: techRepeater
-                        model: dialog.current ? Decision.techRows(dialog.current.technical) : []
-                        delegate: Item {
-                            id: techRow
-                            required property var modelData
-                            Layout.columnSpan: 2
-                            Layout.fillWidth: true
-                            implicitHeight: Math.max(techLabel.implicitHeight, techValue.implicitHeight)
-                            Text {
-                                id: techLabel
-                                width: 150
-                                text: techRow.modelData.label
-                                textFormat: Text.PlainText
-                                color: Tide.Tokens.textMuted
-                                font.family: Tide.Theme.uiFamily
-                                font.pointSize: Tide.Tokens.fontSizePt * 0.9
-                                elide: Text.ElideRight
-                            }
-                            Text {
-                                id: techValue
-                                x: techLabel.width + 14
-                                width: techRow.width - x
-                                text: techRow.modelData.value
-                                textFormat: Text.PlainText
-                                color: Tide.Tokens.textSecondary
-                                font.family: Tide.Theme.monoFamily
-                                font.pointSize: Tide.Tokens.fontSizePt * 0.9
-                                wrapMode: Text.WrapAnywhere
-                            }
-                        }
+                    decision: dialog.current
+                    onInputNeeded: notice => dialog.fullCardRequested(notice)
+                    onEscapePressed: dialog.laterRequested()
+                    onAnswered: (decisionId, method, params) => {
+                        dialog.answeredIds = dialog.answeredIds.concat([decisionId])
+                        dialog.answered(decisionId, method, params)
+                        if (dialog.pending.length > 0) dialog.forceActiveFocus()
                     }
                 }
             }
@@ -566,7 +233,7 @@ Rectangle {
                     objectName: "decisionChoose"
                     text: "Wybierz  ↵"
                     variant: "filled"
-                    enabled: dialog.canChoose
+                    enabled: form.canChoose
                     opacity: enabled ? 1 : 0.45
                     Accessible.name: "Wybierz"
                     onClicked: dialog.choose()
