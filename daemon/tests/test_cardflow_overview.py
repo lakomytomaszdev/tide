@@ -144,3 +144,31 @@ class StalePlanReviewWaitTest(unittest.TestCase):
         out = derived(st, {"column": "todo"})
         self.assertNotIn("limit", out["note"])
         self.assertEqual(out["flow"]["action"], "error")
+
+
+class QueuedPlanReviewTest(unittest.TestCase):
+    """03.11, K-31: kolejka miejsc u dostawcy to nie decyzja użytkownika i nie blokuje wznowienia review."""
+
+    def test_slot_queue_keeps_card_in_progress_and_does_not_block_review(self):
+        events = [
+            {"seq": 1, "type": "card.started", "entry": "planning", "executor": "Opus"},
+            {"seq": 2, "type": "plan.proposed", "rows": [], "planner": "Opus", "title": "X"},
+            {"seq": 3, "type": "step.waiting", "ticket": "", "kind": "plan-review", "provider": "anthropic",
+             "reason": "limit kroków dostawcy anthropic: 6/6"},
+        ]
+        st = fold(events)
+        self.assertIsNone(st.plan_review_wait)
+        out = derived(st, {"column": "todo"})
+        self.assertEqual(out["column"], "progress")
+        self.assertIn("w kolejce", out["note"])
+
+    def test_exhausted_limit_still_asks_for_a_reviewer(self):
+        events = [
+            {"seq": 1, "type": "card.started", "entry": "planning", "executor": "Opus"},
+            {"seq": 2, "type": "plan.proposed", "rows": [], "planner": "Opus", "title": "X"},
+            {"seq": 3, "type": "step.waiting", "ticket": "", "kind": "plan-review", "provider": "anthropic",
+             "reason": "czeka na limit Claude do sobota 18:00"},
+        ]
+        st = fold(events)
+        self.assertIsNotNone(st.plan_review_wait)
+        self.assertEqual(derived(st, {"column": "todo"})["column"], "waiting")

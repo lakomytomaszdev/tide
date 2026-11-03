@@ -212,7 +212,10 @@ def fold(events: list[dict]) -> FlowState:
             st.inputs = e
         elif kind == "step.waiting":
             st.waiting[(e.get("ticket"), e.get("kind"))] = e
-            if e.get("kind") == "plan-review" and "limit" in str(e.get("reason") or ""):
+            # Blokuje review planu do wyboru użytkownika tylko wyczerpany limit dostawcy; zwykła kolejka miejsc
+            # („limit kroków dostawcy”) rusza sama (03.11, K-31 utknął w kolejce na zawsze).
+            if e.get("kind") == "plan-review" and "limit" in str(e.get("reason") or "") and \
+                    not is_queue_wait(e.get("reason")):
                 st.plan_review_wait = e
         elif kind == "step.started":
             st.waiting.pop((e.get("ticket"), e.get("kind")), None)
@@ -471,6 +474,11 @@ def flow_error_hint(error: str) -> str:
     return "Tide ponawia tę akcję automatycznie; jeśli błąd się utrzymuje, otwórz kartę i sprawdź worktree ticketu."
 
 
+
+def is_queue_wait(reason) -> bool:
+    """Czekanie na wolne miejsce u dostawcy (`limit kroków dostawcy X: n/n`), nie na wyczerpany limit."""
+    return str(reason or "").startswith("limit kroków dostawcy")
+
 def derived(st: FlowState, card: dict) -> dict | None:
     """Pole `derived` karty z dziennikiem (kształt jak board/derive.py, z `flow`) albo None — karta w swojej kolumnie."""
     if st.started is None:
@@ -617,8 +625,15 @@ def derived(st: FlowState, card: dict) -> dict | None:
             out["flow"]["plan"].update(status="blocked", reviewWait={
                 "reason": waiting_review.get("reason") or "review planu czeka",
                 "provider": waiting_review.get("provider") or ""})
+            reason = waiting_review.get("reason") or "review planu czeka"
+            if is_queue_wait(reason):
+                # Kolejka miejsc u dostawcy nie jest ruchem użytkownika: karta zostaje „W toku” i rusza sama;
+                # wybór innego recenzenta zostaje w panelu jako opcja (03.11, K-31).
+                result = _fill(out, "progress", f"review planu w kolejce — ruszy samo ({reason})")
+                result["nextStep"] = "ruszy samo; możesz wybrać innego recenzenta planu"
+                return result
             out["question"] = "Wybierz recenzenta planu albo poczekaj na limit."
-            result = _fill(out, "waiting", waiting_review.get("reason") or "review planu czeka")
+            result = _fill(out, "waiting", reason)
             result["nextStep"] = "wybierz model do review planu"
             return result
         if st.stalled_since:
