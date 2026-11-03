@@ -616,7 +616,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
                 found = of_finished(focus_done)
                 out["flow"].update(fault=found["fault"], faultCause=found["cause"])
                 if found["fault"] == "tide":
-                    return _fill(out, "waiting", tide_fault_text(focus_step["kind"], focus_step.get("ticket")))
+                    tile = tide_fault_text(focus_step["kind"], focus_step.get("ticket"))
+                    return _fill(out, "waiting", f"{tile}: {cause_label(found['cause'], REASON_LABELS)}")
             return _fill(out, "waiting", waiting_text(focus_step["kind"], result))
         if (st.plan_revision or {}).get("failed"):
             out["question"] = "Poprawa planu jest nieprawidłowa. Odesłać ponownie czy odrzucić poprawkę?"

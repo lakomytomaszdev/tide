@@ -55,7 +55,14 @@ CAUSE_LABELS = {
     "review-changed-ticket": "recenzent zmienił gałąź albo pliki ticketu",
     "abandoned": "krok porzucono",
     "interactive-closed": "rozmowę w Konsoli zamknięto przed zapisaniem wyniku",
+    "other": "wykonawca zgłosił błąd z własnym powodem",
 }
+
+# Powody, które ustawia sam Tide (skończony zbiór). Swobodny powód z `result.json` agenta nie jest przyczyną:
+# przy `unknown` przyczyną jest wtedy `other`, żeby podpis był stały, a tekst agenta nie trafiał do tytułu i podpisu.
+TIDE_REASONS = frozenset({"no-result", "bad-result", "no-progress", "exit", "start", "timeout", "local-unavailable",
+                          "lost", "bad-review", "review-changed-ticket", "abandoned", "interactive-closed", "limit"})
+KNOWN_CAUSES = TIDE_REASONS | frozenset(CAUSE_LABELS)
 
 FAULT_LABELS = {"tide": "błąd Tide", "model": "błąd wykonawcy", "user": "przerwane przez użytkownika",
                 "provider": "błąd dostawcy", "unknown": "nie wiadomo, czyja to wina"}
@@ -101,15 +108,22 @@ def classify(reason: str, lines: list[str] | None = None, *, out_dir: str = "", 
         return {"fault": "provider", "cause": provider}
     if reason == "no-result" and out_dir and _write_denied(events, lines, out_dir):
         return {"fault": "tide", "cause": "write-denied"}
-    return {"fault": "unknown", "cause": reason}
+    return {"fault": "unknown", "cause": cause_code(reason)}
 
 
 def of_finished(done: dict) -> dict:
     """`{fault, cause}` z zakończenia kroku: zapisane przy wyniku albo (stary dziennik) z samego powodu."""
     fault = done.get("fault")
     if fault in FAULTS:
-        return {"fault": fault, "cause": str(done.get("faultCause") or "")}
+        cause = str(done.get("faultCause") or "")
+        return {"fault": fault, "cause": cause_code(cause) if cause else ""}
     return classify(done.get("reason") or "")
+
+
+def cause_code(cause: str) -> str:
+    """Przyczyna ze skończonego zbioru; swobodny tekst (powód pisany przez agenta, stary dziennik) → `other`."""
+    cause = str(cause or "")
+    return cause if cause in KNOWN_CAUSES else "other"
 
 
 def cause_label(cause: str, reason_labels: dict | None = None) -> str:
@@ -317,8 +331,9 @@ def _short(value) -> str:
 
 # --- treść karty ---------------------------------------------------------------------------------
 
-def card_title(step_kind: str, fault: str, cause: str, reason_labels: dict | None = None) -> str:
-    what = cause_label(cause, reason_labels) or "błąd"
+def card_title(step_kind: str, fault: str, cause: str, reason_labels: dict | None = None,
+               env: dict | None = None) -> str:
+    what = mask(cause_label(cause, reason_labels), env) or "błąd"
     if fault == "tide":
         title = f"Błąd Tide w kroku {kind_label(step_kind)}: {what}"
     else:
@@ -332,9 +347,13 @@ def occurrence(*, when: str, card: str, step: str, step_kind: str, ticket: str, 
     """Jedno wystąpienie błędu: kiedy, gdzie, czyja wina, opis użytkownika i wycinek dziennika kroku."""
     where = " ".join(part for part in (kind_label(step_kind), ticket) if part)
     head = f"### {when} · {card} · {where}" + (f" ({executor})" if executor else "")
+    # Powód wyniku może pisać agent (`result.json`) — przechodzi przez maskowanie jak opis i wycinek.
+    reason = " ".join(mask(reason, env).split())
+    reason = reason if len(reason) <= EXCERPT_LINE_CHARS else reason[:EXCERPT_LINE_CHARS - 1] + "…"
     lines = [head, "",
              f"- Krok: {step}" + (f" (próba {attempt + 1})" if attempt else "") + f", wynik: {result} / {reason or '—'}",
-             f"- Czyja wina: {FAULT_LABELS.get(fault, fault)} — {cause_label(cause, reason_labels) or 'brak szczegółów'}",
+             f"- Czyja wina: {FAULT_LABELS.get(fault, fault)} — "
+             f"{mask(cause_label(cause, reason_labels), env) or 'brak szczegółów'}",
              "", "Opis użytkownika:", ""]
     lines += ["> " + line if line else ">" for line in mask(description, env).strip().splitlines()] or ["> —"]
     if with_excerpt:
@@ -343,7 +362,8 @@ def occurrence(*, when: str, card: str, step: str, step_kind: str, ticket: str, 
     return "\n".join(lines) + "\n"
 
 
-def card_body(*, card: str, sig: str, happened: str, first: str) -> str:
+def card_body(*, card: str, sig: str, happened: str, first: str, env: dict | None = None) -> str:
+    happened = mask(happened, env)   # „co się stało” przy `unknown` cytuje powód wyniku pisany przez agenta
     return "\n".join([
         f"Błąd zgłoszony z karty {card} przyciskiem „Opisz problem i ponów”.", "",
         f"{SIGNATURE_PREFIX}`{sig}`", "",

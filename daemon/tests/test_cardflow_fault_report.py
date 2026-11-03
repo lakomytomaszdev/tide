@@ -10,6 +10,8 @@
 import json
 import os
 
+from tide_daemon.cardflow import faults
+
 from .gitrepos import git
 from .privatebus import wait_until
 from .test_cardflow import FlowInProcess
@@ -101,7 +103,7 @@ class DeduplicationTest(FaultReportCase):
         self.flow.stop()
         self.engine = self.flow.engine
 
-    def failed_card(self, title):
+    def failed_card(self, title, reason="no-result", fault="tide", cause="write-denied"):
         card_id = self.card(title=title)
         journal = self.engine.journal
         journal.append(card_id, "card.started", entry="now", executor="Sonnet", program="claude", provider="anthropic")
@@ -116,8 +118,8 @@ class DeduplicationTest(FaultReportCase):
             journal.append(card_id, "step.started", step=name, ticket="PT-1", kind="ticket", executor="Sonnet",
                            provider="anthropic", attempt=attempt, stepDir=step_dir,
                            parentStep=f"{card_id}-PT-1-1" if attempt else "")
-            journal.append(card_id, "step.finished", step=name, ticket="PT-1", result="error", reason="no-result",
-                           fault="tide", faultCause="write-denied")
+            journal.append(card_id, "step.finished", step=name, ticket="PT-1", result="error", reason=reason,
+                           fault=fault, faultCause=cause)
         return card_id, f"{card_id}-PT-1-2"
 
     def report(self, title):
@@ -152,6 +154,26 @@ class DeduplicationTest(FaultReportCase):
         second = self.report("Druga")
         self.assertEqual(second["action"], "create")
         self.assertNotEqual(second["reported"], first["reported"])
+
+    def test_token_in_the_agents_reason_is_masked_and_the_signature_is_stable(self):
+        """Powód z `result.json` agenta (np. z tokenem) nie trafia do karty w innym projekcie ani do podpisu."""
+        cards = []
+        for title, reason in (("Pierwsza", f"curl z GITHUB_TOKEN={TOKEN} nie zadziałał"),
+                              ("Druga", f"znowu {TOKEN} i inny tekst")):
+            # zapis kroku jak w engine: classify() przy wyniku
+            found = faults.classify(reason)
+            self.assertEqual(found, {"fault": "unknown", "cause": "other"})
+            card_id, step = self.failed_card(title, reason=reason, fault=found["fault"], cause=found["cause"])
+            preview = self.engine.preview_step_fault(card_id, {"step": step, "description": "Coś nie tak"})
+            reply = self.engine.report_step_fault(card_id, {"step": step, "description": "Coś nie tak"})
+            self.assertEqual(reply["choice"], "retry")
+            cards.append(reply)
+            [saved] = self.tide_cards()
+            for text in (preview["title"], preview["description"], saved.title, saved.description):
+                self.assertNotIn(TOKEN, text)
+            self.assertIn("Podpis błędu: `ticket/unknown/other`", saved.description)
+        self.assertEqual([c["action"] for c in cards], ["create", "append"],
+                         "ta sama awaria z innym tekstem agenta dopisuje wystąpienie")
 
     def test_preview_and_report_need_a_waiting_error_and_a_description(self):
         card_id, step = self.failed_card("Pierwsza")

@@ -40,7 +40,15 @@ class FaultFromStepLogTest(unittest.TestCase):
         self.assertEqual(classify("unknown.log"), {"fault": "unknown", "cause": "no-result"},
                          "odmowa gdzie indziej i tekst agenta o odmowie nie są dowodem winy Tide")
         self.assertEqual(faults.classify("exit", []), {"fault": "unknown", "cause": "exit"})
-        self.assertEqual(faults.classify("awaria testowa", []), {"fault": "unknown", "cause": "awaria testowa"})
+        self.assertEqual(faults.classify("awaria testowa", []), {"fault": "unknown", "cause": "other"},
+                         "swobodny powód agenta nie jest przyczyną — kod ze skończonego zbioru")
+
+    def test_free_text_cause_from_old_journal_is_other(self):
+        self.assertEqual(faults.of_finished({"reason": "x", "fault": "unknown", "faultCause": "curl z ghp_x nie"}),
+                         {"fault": "unknown", "cause": "other"})
+        self.assertEqual(faults.signature("ticket", "unknown", faults.classify("inny tekst agenta")["cause"]),
+                         faults.signature("ticket", "unknown", faults.classify("jeszcze inny tekst")["cause"]),
+                         "ta sama awaria z innym tekstem agenta ma ten sam podpis")
 
     def test_write_denial_needs_no_result_and_this_steps_out_dir(self):
         self.assertEqual(classify("write-denied.log", reason="bad-result")["fault"], "model",
@@ -93,6 +101,18 @@ class SignatureAndExcerptTest(unittest.TestCase):
         self.assertIn("> Po aktualizacji to samo.", block)
         self.assertNotIn("ghp_A1b2", block)
         self.assertIn("```text\n[result] odmowa Write\n```", block)
+
+    def test_reason_written_by_the_agent_is_masked_in_title_and_occurrence(self):
+        reason = "curl z GITHUB_TOKEN=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 nie zadziałał"
+        block = faults.occurrence(when="2026-11-03 23:02", card="K-33", step="K-33-PT-1-2", step_kind="ticket",
+                                  ticket="PT-1", executor="Sonnet", attempt=1, result="error", reason=reason,
+                                  fault="unknown", cause=reason, description="opis", log_excerpt="", env=ENV)
+        title = faults.card_title("ticket", "unknown", reason, env=ENV)
+        body = faults.card_body(card="K-33", sig="ticket/unknown/other", happened=f"Krok: {reason}.", first=block,
+                                env=ENV)
+        for text in (block, title, body):
+            self.assertNotIn("ghp_A1b2", text)
+        self.assertIn("GITHUB_TOKEN=" + faults.MASK, block)
 
     def test_commit_hashes_and_plain_words_stay_readable(self):
         text = faults.mask("commit 4edbaeb1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7 w K-33-plan-2, wynik no-result", env={})

@@ -322,7 +322,7 @@ class DerivedTest(unittest.TestCase):
         plan.step("K-1-plan-2", ticket="", kind="plan-review", executor="Haiku", attempt=1, parent="K-1-plan-1",
                   result="error", reason="no-result", fault="tide", faultCause="write-denied")
         shown = derived(plan.state(), CARD)
-        self.assertEqual((shown["column"], shown["note"]), ("waiting", "błąd Tide w kroku review planu"))
+        self.assertEqual((shown["column"], shown["note"]), ("waiting", "błąd Tide w kroku review planu: Tide nie dał prawa zapisu w katalogu wyniku kroku"))
 
         unknown = (Events().step("K-1-PT-1-1", result="error", reason="exit")
                    .step("K-1-PT-1-2", attempt=1, parent="K-1-PT-1-1", result="error", reason="exit"))
