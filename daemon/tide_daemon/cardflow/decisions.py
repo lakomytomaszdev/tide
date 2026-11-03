@@ -495,6 +495,10 @@ def _plan_decision(st: FlowState) -> dict | None:
                 ],
                 "freeText": True, "reply": {"method": EDIT_PLAN, "params": {"action": "return"}, "field": "feedback"},
                 "technical": technical}
+    if revision and not revision.get("pending") and not revision.get("failed"):
+        # Poprawa planu po odesłaniu trwa w tle — stary plan nie wraca jako decyzja (K-40, 03.11: okno pokazywało go
+        # z przyciskami przez cały czas poprawy, a kolejne kliknięcie kończyło się „poprawa planu już trwa”).
+        return None
     if st.plan_approved:
         return None
     if not st.plan_reviewed:
