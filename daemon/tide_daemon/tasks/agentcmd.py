@@ -452,9 +452,11 @@ def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
     if step.write_out_only:
         no_commands += ["-c", "sandbox_workspace_write.exclude_slash_tmp=true",
                         "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"]
+    # `out` leży obok worktree, poza repozytorium; wyjątek dotyczy tylko kroku z zapisem do `out`.
+    git_check = ["--skip-git-repo-check"] if step.write_out_only else []
     argv =[step.binary, "exec", *model, *effort, "--json", "--cd", cwd, "--sandbox", "workspace-write",
             "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots, ensure_ascii=False),
-            "-c", 'approval_policy="never"', *no_commands, *mcp,
+            "-c", 'approval_policy="never"', *no_commands, *mcp, *git_check,
             *(["resume", step.session_id] if step.resume else []), "-"]
     return argv, secret
 

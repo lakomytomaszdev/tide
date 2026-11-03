@@ -315,6 +315,7 @@ class BackgroundCodexTest(BackgroundBase):
         out = os.path.join(self.step_dir, "out")
         codex = agentcmd.background(self.step("codex", model="gpt-5-codex", codex_mcp=(), write_out_only=True))
         self.assertEqual(codex.argv[codex.argv.index("--cd") + 1], out)
+        self.assertIn("--skip-git-repo-check", codex.argv)
         self.assertIn("sandbox_workspace_write.writable_roots=" + json.dumps([out]), codex.argv)
         # Zakaz poleceń wymuszony konfiguracją Codexa (review PT-143/S1), nie tylko kartką.
         for feature in ("shell_tool", "unified_exec", "code_mode", "js_repl"):
@@ -327,6 +328,7 @@ class BackgroundCodexTest(BackgroundBase):
             self.assertEqual(codex.argv[at - 1], "-c")
             self.assertLess(at, codex.argv.index("-"))
         plain = agentcmd.background(self.step("codex", model="gpt-5-codex", codex_mcp=()))
+        self.assertNotIn("--skip-git-repo-check", plain.argv)
         self.assertFalse([arg for arg in plain.argv if arg.startswith("features.")], "zwykły krok bez zmian")
         self.assertFalse([arg for arg in plain.argv if "exclude_" in arg], "zwykły krok bez zmian")
         claude =agentcmd.background(self.step("claude", allowed_tools=("Bash(git status *)",),
@@ -337,6 +339,13 @@ class BackgroundCodexTest(BackgroundBase):
                                   f"Edit(/{os.path.normpath(self.repo)}/**)"])
         settings = json.loads(next(text for path, text in claude.files.items() if path.endswith("settings.json")))
         self.assertEqual(settings["sandbox"]["filesystem"]["allowWrite"], [out])
+
+    def test_caretaker_resume_skips_the_git_check_before_the_subcommand(self):
+        cmd = agentcmd.background(self.step("codex", codex_mcp=(), write_out_only=True,
+                                            resume=True, session_id="abc"))
+        self.assertEqual(cmd.argv[cmd.argv.index("--cd") + 1], os.path.join(self.step_dir, "out"))
+        self.assertLess(cmd.argv.index("--skip-git-repo-check"), cmd.argv.index("resume"))
+        self.assertEqual(cmd.argv[-3:], ["resume", "abc", "-"])
 
     def test_codex_local_model_options_come_right_after_exec(self):
         agent = local.LocalAgent("local", "http://127.0.0.1:11434", "ollama", "qwen3-coder:30b", 65536)

@@ -216,21 +216,32 @@ def _known_id(st, root: str) -> str:
 
 def owned(st, ident: str) -> dict:
     """Jedyne liczenie działań opiekuna przy problemie: kroki opiekuna z tym id od ostatniego zamknięcia problemu
-    (decyzja użytkownika bez pola `caretaker` albo rozwiązanie — krok łańcucha zakończony `done`).
+    (decyzja użytkownika bez pola `caretaker` albo rozwiązanie — zwykły krok zakończony `done`). Dla problemu
+    z krokiem zakres to jego łańcuch, bez kroku — wskazany ticket, a bez ticketu — cała karta.
 
     `count` — działania od zamknięcia, `runs` — te kroki, `next` — numer następnego kroku przy tym id (do klucza
     `caretaker:<problem>:<n>`, nigdy się nie powtarza), `open` — krok opiekuna bez wyniku, `handed` — ostatnie
     działanie oddało problem użytkownikowi."""
     runs_all = [run for run in st.caretaker_runs.values() if run.get("problem") == ident]
     roots = {run.get("root") for run in runs_all if run.get("root")}
+    tickets = {run.get("ticket") for run in runs_all if run.get("ticket")}
+
+    def in_scope(name: str) -> bool:
+        # `st.steps` nie zawiera kroków opiekuna: jego wynik `done` nigdy nie rozwiązuje problemu.
+        if name not in st.steps or not runs_all:
+            return False
+        if roots:
+            return chain_root(st, name) in roots
+        return not tickets or st.steps[name].get("ticket") in tickets
+
     closed = 0
     for name, decision in st.step_decisions.items():
         if decision.get("auto") or decision.get("automatic") or "caretaker" in decision:
             continue
-        if name in st.steps and chain_root(st, name) in roots:
+        if in_scope(name):
             closed = max(closed, int(decision.get("seq") or 0))
     for name, done in st.finished.items():
-        if done.get("result") == "done" and name in st.steps and chain_root(st, name) in roots:
+        if done.get("result") == "done" and in_scope(name):
             closed = max(closed, int(done.get("seq") or 0))
     runs = [run for run in runs_all if int(run.get("seq") or 0) > closed]
     open_run = next((run for run in runs_all if run.get("step") not in st.caretaker_outcomes), None)

@@ -1777,7 +1777,9 @@ Jeden łańcuch kroków ma naraz najwyżej jeden problem — kolejny wyzwalacz n
 jest jedynym liczeniem: kroki opiekuna z danym id od ostatniego zamknięcia (decyzja użytkownika bez pola `caretaker`
 albo krok łańcucha zakończony `done`); zwraca `count`, `runs`, `next` (numer do klucza, nigdy się nie powtarza),
 `open` i `handed`. Kolejne błędy ponowionego kroku to ten sam problem; decyzja użytkownika zeruje licznik bez
-zmiany id.
+zmiany id. Dla problemu bez kroku decyzja użytkownika albo zwykły krok zakończony `done` zamyka problem
+w obrębie wskazanego ticketu, a bez ticketu — całej karty. Wynik kroku opiekuna i decyzje automatów nie zamykają
+problemu. Ponowne wystąpienie ma to samo id, licznik od zera i kolejny, niepowtarzalny numer `next`.
 
 **Restart.** `caretaker.started` bez `step.started`: wynik `step-start` jest — `step.started` dopisuje
 `_recover_started_steps`; zamiar bez wyniku rozstrzyga `_reconcile`; bez zamiaru — `_caretake` startuje krok z tym
@@ -1844,6 +1846,8 @@ wykluczone z zapisu: `-c sandbox_workspace_write.exclude_slash_tmp=true`, `exclu
 `writable_roots` tylko dopisuje katalogi do domyślnych), zapis tylko do własnego `out`
 (`allowWrite` piaskownicy kroku). Opiekun czekający na slot dostawcy (`step.waiting` rodzaju `caretaker`) nie daje
 powiadomienia o limicie — problem nadal należy do opiekuna, powiadamia dopiero eskalacja.
+Ponieważ `out` leży poza repozytorium, tylko `write_out_only` dodaje `--skip-git-repo-check` do uruchomienia
+Codexa (także wznowienia); katalog roboczy i ograniczenia piaskownicy pozostają takie jak powyżej.
 
 ## Docker
 

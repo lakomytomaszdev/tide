@@ -101,6 +101,9 @@ class ProblemIdTest(unittest.TestCase):
         j.escalate("K-1-PT-7-2", "K-1-care-1", "K-1-PT-7-1")
         own = caretaker.owned(j.st, "error:K-1-PT-7-1")
         self.assertEqual((own["count"], own["open"], own["handed"]), (1, None, True))
+        j.step("K-1-PT-8-1", ticket="PT-8")
+        j.add("step.finished", step="K-1-PT-8-1", result="done")
+        self.assertEqual(caretaker.owned(j.st, "error:K-1-PT-7-1")["count"], 1)
         j.add("step.decision", step="K-1-PT-7-2", ticket="PT-7", choice="retry", answer="")
         own = caretaker.owned(j.st, "error:K-1-PT-7-1")
         self.assertEqual((own["count"], own["next"], own["handed"]), (0, 2, False))
@@ -119,6 +122,63 @@ class ProblemIdTest(unittest.TestCase):
             found = caretaker.problems(j.st)
         self.assertEqual(len(found), 1)
         self.assertEqual((found[0]["id"], found[0]["triggers"]), ("error:K-1-PT-7-1", ["error", "repeat"]))
+
+    def test_problem_without_a_step_resets_after_resolution_and_can_recur(self):
+        def flow_error(st):
+            return [{"trigger": "flow-error", "stage": "advance"}] if st.flow_error else []
+
+        j = Journal()
+        with mock.patch.object(caretaker, "TRIGGERS", [flow_error]):
+            j.add("flow.error", error="advance: awaria")
+            ident = caretaker.problems(j.st)[0]["id"]
+            self.assertEqual(ident, "flow-error:advance")
+            j.add(caretaker.STARTED, problem=ident, step="care-1", root="", target="", ticket="", n=1)
+            j.step("care-1", kind="caretaker", ticket="")
+            j.add("step.finished", step="care-1", result="done")
+            j.add(caretaker.ESCALATED, problem=ident, step="care-1", target="", ticket="")
+            own = caretaker.owned(j.st, ident)
+            self.assertEqual((own["count"], own["handed"], own["closedSeq"]), (1, True, 0))
+            j.step("K-1-PT-7-1")
+            self.assertEqual(caretaker.problems(j.st), [])
+            resolved = j.add("step.finished", step="K-1-PT-7-1", result="done")
+            own = caretaker.owned(j.st, ident)
+            self.assertEqual((own["count"], own["handed"], own["closedSeq"], own["next"]),
+                             (0, False, resolved["seq"], 2))
+            j.add("flow.error", error="advance: kolejna awaria")
+            self.assertEqual([p["id"] for p in caretaker.problems(j.st)], [ident])
+            j.add(caretaker.STARTED, problem=ident, step="care-2", root="", target="", ticket="", n=own["next"])
+            own = caretaker.owned(j.st, ident)
+            self.assertEqual((own["count"], own["handed"], own["next"], own["open"]["step"]),
+                             (1, False, 3, "care-2"))
+
+    def test_problem_without_a_step_closes_only_on_a_real_user_decision(self):
+        for extra in ({"auto": True}, {"automatic": True}, {"caretaker": {}}, {}):
+            with self.subTest(extra=extra):
+                j = Journal()
+                j.step("K-1-PT-7-1")
+                j.error("K-1-PT-7-1")
+                ident = caretaker.problem_id("stalled", stage="card")
+                j.add(caretaker.STARTED, problem=ident, step="care-1", root="", target="", ticket="", n=1)
+                j.add(caretaker.ESCALATED, problem=ident, step="care-1", target="", ticket="")
+                decision = j.add("step.decision", step="K-1-PT-7-1", choice="retry", **extra)
+                own = caretaker.owned(j.st, ident)
+                self.assertEqual((own["count"], own["handed"], own["closedSeq"]),
+                                 (1, True, 0) if extra else (0, False, decision["seq"]))
+
+    def test_problem_without_a_step_but_with_a_ticket_does_not_close_on_another_ticket(self):
+        j = Journal()
+        ident = caretaker.problem_id("repeat", ticket="PT-7", cause="exit")
+        j.add(caretaker.STARTED, problem=ident, step="care-1", root="", target="", ticket="PT-7", n=1)
+        j.add(caretaker.ESCALATED, problem=ident, step="care-1", target="", ticket="PT-7")
+        j.step("K-1-PT-8-1", ticket="PT-8")
+        j.add("step.decision", step="K-1-PT-8-1", choice="retry")
+        j.add("step.finished", step="K-1-PT-8-1", result="done")
+        own = caretaker.owned(j.st, ident)
+        self.assertEqual((own["count"], own["handed"], own["closedSeq"]), (1, True, 0))
+        j.step("K-1-PT-7-1")
+        resolved = j.add("step.finished", step="K-1-PT-7-1", result="done")
+        own = caretaker.owned(j.st, ident)
+        self.assertEqual((own["count"], own["handed"], own["closedSeq"]), (0, False, resolved["seq"]))
 
     def test_caretaker_step_is_never_a_problem_step(self):
         j = Journal()
@@ -454,6 +514,56 @@ class CaretakerFlowTest(FlowInProcess):
             self.assertTrue(step["stepDir"].startswith(branch["worktree"] + ".caretaker-"))
             wait_until(lambda: False, timeout=1.0)
             self.assertEqual(len(self.caretaker_steps(card_id)), 1, "oddany problem nie uruchamia opiekuna znowu")
+
+    def test_flow_error_without_a_step_can_start_again_after_resolution(self):
+        def flow_error(st):
+            return [{"trigger": "flow-error", "stage": "advance"}] if st.flow_error else []
+
+        def section(problem, st):
+            return "## Problem: błąd przepływu\n\nATRAPA-OPIEKUN: akcja-escalate"
+
+        with mock.patch.object(caretaker, "TRIGGERS", [flow_error]), \
+                mock.patch.dict(caretaker.BRIEF_SECTIONS, {"flow-error": section}):
+            card_id = self.card(description="Eksport.\n\nATRAPA: czekaj")
+            self.assertTrue(self.start(card_id)["ok"])
+            self.started(card_id)
+            engine = self.flow.engine
+            engine.journal.append(card_id, "flow.error", error="advance: awaria")
+            self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=40),
+                            self.events(card_id))
+            self.flow.stop()
+            wait_until(lambda: False, timeout=0.3)
+            ident = "flow-error:advance"
+            st = fold(engine.journal.read(card_id))
+            own = caretaker.owned(st, ident)
+            self.assertEqual((own["count"], own["handed"]), (1, True))
+            engine._caretake(card_id, st)
+            self.assertEqual(len(self.caretaker_steps(card_id)), 1, "otwarty problem pozostaje oddany")
+
+            engine.journal.append(card_id, "step.started", step="recovery", kind="ticket", ticket="PT-recovery")
+            resolved = engine.journal.append(card_id, "step.finished", step="recovery", result="done")
+            st = fold(engine.journal.read(card_id))
+            self.assertEqual(caretaker.problems(st), [])
+            own = caretaker.owned(st, ident)
+            self.assertEqual((own["count"], own["handed"], own["closedSeq"]), (0, False, resolved["seq"]))
+
+            engine.journal.append(card_id, "flow.error", error="advance: kolejna awaria")
+            engine._caretake(card_id, fold(engine.journal.read(card_id)))
+            runs = self.of(card_id, "caretaker.started")
+            self.assertEqual([(r["problem"], r["n"]) for r in runs], [(ident, 1), (ident, 2)])
+            self.assertNotEqual(runs[0]["step"], runs[1]["step"])
+            self.assertEqual([s["step"] for s in self.caretaker_steps(card_id)], [r["step"] for r in runs])
+            # Dokończ drugi prawdziwy proces atrapy bez uruchamiania reszty automatów przepływu.
+            step = self.caretaker_steps(card_id)[-1]
+
+            def escalated_again():
+                engine._poll(card_id, step)
+                engine._caretake(card_id, fold(engine.journal.read(card_id)))
+                return len(self.of(card_id, "caretaker.escalated")) == 2
+
+            self.assertTrue(wait_until(escalated_again, timeout=40), self.events(card_id))
+            self.assertEqual(len(self.caretaker_steps(card_id)), 2)
+            self.assertTrue(caretaker.owned(fold(engine.journal.read(card_id)), ident)["handed"])
 
     def test_login_error_gives_todays_decision_without_caretaker(self):
         card_id = self.card(description="Eksport.\n\nATRAPA: login")
