@@ -2008,7 +2008,8 @@ class FlowEngine(PlanEditing):
                 continue
             if any(s.get("ticket") == ticket for s in st.steps.values()):
                 continue  # inne tickety mogą pracować mimo pytania tego ticketu
-            if not set(row["blockers"]) <= merged:
+            # Odrzucony bloker nie blokuje na zawsze: użytkownik wydzielił go z karty (K-16/LEGAL-75, 03.11).
+            if not set(row["blockers"]) <= merged | set(st.rejected):
                 continue
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
@@ -2315,7 +2316,7 @@ class FlowEngine(PlanEditing):
         done = st.finished.get(focus) or {}
         result = done.get("result")
         valid = {"question": ("answer",), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
-                 else ("allow", "deny"), "error": ("retry", "change-executor"),
+                 else ("allow", "deny"), "error": ("retry", "change-executor", "reject"),
                  "stopped": ("background",) if done.get("reason") == "interactive-closed" else ()}.get(result, ())
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
@@ -2343,6 +2344,15 @@ class FlowEngine(PlanEditing):
                 raise FlowError("bad-executor", "wybierz wykonawcę")
             self._resume_executor(card, st, step, executor, changed=True)
         granted, skipped = [], []
+        if choice == "reject":
+            # „Odrzuć ticket” przy błędzie kroku (03.11): ticket wypada z karty, zależne tickety ruszają dalej.
+            ticket = step.get("ticket") or ""
+            if not ticket:
+                raise FlowError("bad-choice", "odrzucić można tylko krok ticketu")
+            event = self.journal.append(card, "step.decision", step=focus, ticket=ticket, choice="reject",
+                                        answer=answer, command="", executor="")
+            self.journal.append(card, "ticket.rejected", ticket=ticket)
+            return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
         if choice == "allow":
             granted, skipped = self._grant(card, step, done, request.get("allow"))
         if choice in ("run", "run-always", "run-ticket"):
