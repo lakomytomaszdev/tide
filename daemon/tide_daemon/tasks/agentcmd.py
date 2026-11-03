@@ -146,6 +146,7 @@ class Step:
     base_env: dict | None = None    # skąd HOME, USER, PATH, LANG (domyślnie środowisko usługi)
     tmp_root: str = "/tmp"          # poza ~; tu Claude Code dostaje katalog tymczasowy kroku
     read_dirs: tuple = ()          # dodatkowe repozytoria karty, wyłącznie do odczytu
+    context_dirs: tuple = ()       # katalogi wyniku poprzednich kroków ticketu (wznowienie): odczyt i narzędzie Read
     dotnet: bool = False           # projekt .NET: pamięć pakietów NuGet do odczytu i środowisko bez serwerów buildu
     node_home: str = ""            # projekt Node: instalacja Node (nvm) tylko do odczytu, jej bin na początku PATH
     network_domains: tuple = ()    # P1 (03.11): domeny rejestrów paczek dostępne z piaskownicy kroku Claude
@@ -369,7 +370,7 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
     settings = {"sandbox": {
         "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
         "autoAllowBashIfSandboxed": not step.enforce_command_policy,
-        "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs,
+        "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs, *step.context_dirs,
                                                         *([env["NUGET_PACKAGES"]] if step.dotnet and env.get("NUGET_PACKAGES") else []),
                                                         *_font_dirs(home),
                                                         *([step.node_home] if step.node_home else []),
@@ -405,6 +406,9 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
             # Katalog wyjściowy kroku musi być katalogiem roboczym sesji: `allowWrite` piaskownicy obejmuje tylko
             # polecenia Bash, a narzędzia Write/Edit poza katalogami sesji pytają o zgodę, której krok nie dostanie.
             "--add-dir", out]
+    for folder in step.context_dirs:
+        # Narzędzie Read poza katalogami sesji pyta o zgodę, której krok nie dostanie — stąd --add-dir.
+        argv += ["--add-dir", folder]
     if step.permission_mode:
         argv += ["--permission-mode", step.permission_mode]
     if step.allowed_tools:
