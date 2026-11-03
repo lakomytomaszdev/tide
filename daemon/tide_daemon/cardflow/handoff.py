@@ -84,7 +84,8 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
             detail = f"Polecenie nie zostało uruchomione: {command}\n{answer}"
     elif choice == "cleanup":
         detail = ("Krok zakończył się, ale worktree ticketu ma niezacommitowane albo nieśledzone pliki (sprawdź "
-                  "`git status`). Zacommituj zmiany potrzebne w tickecie, usuń pliki tymczasowe i diagnostyczne, "
+                  "`git status`). Zacommituj zmiany potrzebne w tickecie, usuń nieśledzone pliki tymczasowe i "
+                  "diagnostyczne poleceniem `git clean -f -- <ścieżka>` (nie `rm`), "
                   "a potem zakończ krok tym samym wynikiem co poprzednio.")
     elif choice == "change-executor":
         detail = "Użytkownik wybrał innego wykonawcę. Zachowaj zmiany z poprzednich prób w tym samym worktree."

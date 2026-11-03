@@ -19,7 +19,9 @@ ALWAYS_ALLOWED = ("cd *", "pwd", "ls *", "cat *", "head *", "tail *", "wc *", "s
                   "tr *", "nl *", "diff *", "cmp *", "stat *", "file *", "tree *", "du *", "realpath *",
                   "basename *", "dirname *", "which *", "echo *", "printf *", "true", "rg *", "grep *",
                   "git status *", "git diff *", "git log *", "git show *", "git branch *", "git rev-parse *",
-                  "git ls-files *", "git merge-base *", "git blame *")
+                  "git ls-files *", "git merge-base *", "git blame *",
+                  # usuwa tylko nieśledzone pliki w worktree kroku (K-35/PT-132: sprzątanie pliku diagnostycznego)
+                  "git clean -f -- *")
 MAX_COMMANDS = 100
 MAX_COMMAND = 300
 
