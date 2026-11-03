@@ -160,6 +160,26 @@ class CardFlowMonitor(QObject):
         if not self._submit(lambda: self.engine.resolve_step(card_id, data), answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
+    def preview_step_fault(self, card_id: str, request: str, reply) -> None:
+        """PreviewStepFault: podgląd karty z błędem kroku bez zapisu (PT-125)."""
+        self._json_action("PreviewStepFault", request, lambda data: self.engine.preview_step_fault(card_id, data),
+                          reply)
+
+    def report_step_fault(self, card_id: str, request: str, reply) -> None:
+        """ReportStepFault: karta z błędem w Backlogu plasma-tide (albo nowe wystąpienie) i ponowienie kroku."""
+        self._json_action("ReportStepFault", request, lambda data: self.engine.report_step_fault(card_id, data),
+                          reply)
+
+    def _json_action(self, name: str, request: str, work, reply) -> None:
+        try:
+            data = json.loads(request or "")
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            reply(json.dumps(_failure("bad-request", "oczekiwano obiektu JSON"), ensure_ascii=False))
+            return
+        self._action(name, lambda: work(data), reply)
+
     def edit_plan(self, card_id: str, request: str, reply) -> None:
         def work():
             try:

@@ -8,7 +8,7 @@
 // okno „Co ma zrobić agent?”, przycisk „Uruchom” w popupie kafelka), takeFocus(), tab=plan|spec
 // i expand=1 — zakładka dokumentu w otwartym panelu karty (z card=K-12),
 // railInfo — ramka „Dane tablicy” i link „Projekty i tagi” na dole paska; import=1 — strona „Projekty i tagi”
-// z otwartym importem z YouTracka (PT-7). Okno uruchomienia (PT-43): launch=K-9[,light|spec][,codex][,local][,move][,manual],
+// z otwartym importem z YouTracka (PT-7); decide=K-8 — okno decyzji karty (PT-132). Okno uruchomienia (PT-43): launch=K-9[,light|spec][,codex][,local][,move][,manual],
 // shots=/a.png,/b.png — miniatury zrzutów w oknie (tylko podgląd).
 // Zrzuty ekranu i model okna „Co ma zrobić agent?” idą przez backend (imagesJson, modelsJson, tasksJson,
 // pasteImage, addFiles, capture…); na czas „Zrób zrzut” widok chowa całe okno Tide i przywraca je po Spectacle.
@@ -55,6 +55,8 @@ Item {
             return
         }
         pendingItem = ""
+        // Powiadomienie o karcie czekającej na decyzję otwiera ją tak jak klik — wg ustawienia okna (PT-133).
+        if (!launch) page.openFromNotification(id)
         if (launch) {
             const card = snapshot.cards.find(c => c.id.toLowerCase() === id.toLowerCase())
             if (card) page.openLaunch(card.id, false)
@@ -62,7 +64,8 @@ Item {
     }
 
     function takeFocus() {
-        if (page.launchOpen) page.launchDialog.forceActiveFocus()
+        if (page.decisionOpen) page.decisionDialog.forceActiveFocus()
+        else if (page.launchOpen) page.launchDialog.forceActiveFocus()
         else if (page.panelOpen) page.cardPanel.forceActiveFocus()
         else page.forceActiveFocus()
     }
@@ -100,6 +103,8 @@ Item {
         onAbandonStepRequested: (tag, id, step) => view.backend.abandonStep(tag, id, step)
         onReviewResolveRequested: (tag, id, choice) => view.backend.resolveCardReview(tag, id, choice)
         onStepResolveRequested: (tag, id, request) => view.backend.resolveCardStep(tag, id, request)
+        onFaultPreviewRequested: (tag, id, request) => view.backend.previewStepFault(tag, id, request)
+        onFaultReportRequested: (tag, id, request) => view.backend.reportStepFault(tag, id, request)
         onFlowSettingsSaveRequested: (tag, request) => view.backend.setCardFlowSettings(tag, request)
         onFlowSettingsRefreshRequested: view.backend.refreshCardFlowSettings()
         onPauseRequested: (tag, id, paused) => view.backend.setCardPaused(tag, id, paused)
@@ -113,6 +118,12 @@ Item {
         modelsStatus: view.backend ? Logic.parse(view.backend.modelsJson, null) : null
         limitsStatus: view.backend ? Logic.parse(view.backend.limitsJson, null) : null
         flowSettings: view.backend ? Logic.parse(view.backend.flowSettingsJson, null) : null
+        // Ustawienie otwierania karty (PT-133): wartość i zapis w backendzie (window.json), strona tylko je pokazuje.
+        cardOpen: view.backend ? view.backend.cardOpen : "decision"
+        onCardOpenRequested: value => {
+            const problem = view.backend ? view.backend.setCardOpen(value) : ""
+            if (problem !== "") page.showToast(problem, "rose")
+        }
         taskDefaults: view.backend ? Logic.parse(view.backend.tasksJson, {}) : ({})
         pasteImage: function (inTextField) { return view.backend ? view.backend.pasteImage(!!inTextField) : false }
         // Zapamiętany model i programy w PATH mogły się zmienić od startu widoku (okno „Nowe zadanie”, instalacja).
@@ -191,6 +202,7 @@ Item {
                 managePage.openProject = view.previewValue("manage") === "1" ? "" : view.previewValue("manage")
             }
             if (view.previewValue("import")) openImport()
+            if (view.previewValue("decide")) openDecisions(view.previewValue("decide"))
         }
     }
 

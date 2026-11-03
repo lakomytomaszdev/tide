@@ -171,8 +171,25 @@ ograniczeniami oraz ścieżką katalogu wyjściowego. Autor zapisuje tam notkę 
 zapisuje `review.md` i wynik, np. `{"result":"done","verdict":"APPROVE","blockers":0,
 "majors":0,"nits":0,"notes":["review.md"]}`; `REQUEST_CHANGES` wymaga dodatniej liczby `blockers`
 lub `majors`. Brak poprawnego wyniku jest błędem
-kroku. Pytanie, zgoda i ponowienie przechodzą przez dziennik karty; wznowienie zachowuje worktree i zmiany.
+kroku. Pytanie, zgoda i ponowienie przechodzą przez dziennik karty;
+wznowienie zachowuje worktree i zmiany.
+
+**Pytanie z gotowymi opcjami.** `{"result":"question","question":"…"}` może mieć dodatkowo
+`"options":[{"title":"…","effect":"…","recommended":true}]`: od 1 do 4 pozycji, `title` niepusty (do 120 znaków),
+`effect` — jedno zdanie o skutku wyboru (do 400 znaków, opcjonalny), `recommended` — najwyżej jedna pozycja.
+Okno decyzji pokazuje opcje jako karty (polecona pierwsza, żadna nie jest wybrana domyślnie), a Tide zawsze
+dokłada na końcu „Inną odpowiedź…” — agent jej nie podaje. Wybór wznawia krok; tytuł i skutek opcji trafiają do
+`resume_context`. Niepoprawne lub brakujące `options` (pusty tytuł, więcej niż 4, kilka poleconych, powtórzony
+tytuł, zły typ) nie są błędem kroku: okno ma wtedy samo pole odpowiedzi. Pytanie bez `options` działa jak dotąd.
 Autor i recenzent nie wykonują push ani scalenia.
+
+**Review planu.** Krok `plan-review` zapisuje w katalogu wyjściowym `plan-review.json`:
+`{"verdict":"APPROVE"|"REQUEST_CHANGES","findings":[{"severity":"blocker"|"major"|"nit","text":"…","tickets":["#5"]}]}`.
+`severity`: `blocker` — plan nie może ruszyć bez poprawy, `major` — ważna zmiana przed startem, `nit` — drobiazg;
+`tickets` — numery ticketów z planu, których uwaga dotyczy (może być pusta lista). Przy `APPROVE` bez uwag
+`findings` to `[]`. Stary format (jeden napis w `findings`) nadal jest przyjmowany jako jedna uwaga bez wagi.
+Nieznana waga, uwaga bez tekstu albo `tickets` niebędące listą napisów to błąd formatu. To zmienia tylko wynik
+review; format pliku planu i reguły zatwierdzania zostają bez zmian.
 
 **Domknięcie.** Tide scala zaakceptowane tickety do gałęzi karty. `check: manual` dodaje listę „Co przetestować
 ręcznie i jak”; `check: auto` oznacza brak tej listy. W obu przypadkach **scalenie gałęzi karty do głównej wymaga

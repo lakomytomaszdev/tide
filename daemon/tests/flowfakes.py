@@ -4,7 +4,7 @@
   dziennik sesji w `$HOME/.claude/projects/<katalog>/<id>.jsonl` (jak prawdziwy program) i robi to, co każe linia
   „ATRAPA: …” w opisie karty: `gotowe` (plik, commit, plik wyniku i notka), `bez-wyniku` (commit bez pliku wyniku),
   `czekaj` (plik bez commita i sen — żyje, ale nic nie robi), `powoli N` (N sekund dopisywania, potem jak `gotowe`),
-  `pytanie` (wynik „pytanie”). Ścieżkę pliku wyniku bierze z kartki (linia „Plik wyniku: …”), nie z ustawień.
+  `pytanie` (wynik „pytanie”), `pytanie-opcje` (pytanie z poprawnymi `options[]`), `pytanie-zle-opcje` (kilka poleconych). Ścieżkę pliku wyniku bierze z kartki (linia „Plik wyniku: …”), nie z ustawień.
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
 - `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
@@ -74,8 +74,16 @@ if prompt.startswith("Popraw propozycję planu karty"):
     sys.exit(0)
 
 if prompt.startswith("Review propozycji planu"):
+    review = {"verdict": "REQUEST_CHANGES" if "ATRAPA: plan-review-changes" in prompt else "APPROVE", "findings": "Uzupełnij Dla recenzenta."}
+    if "ATRAPA: plan-review-structured" in prompt:  # nowy format uwag (PT-127)
+        review = {"verdict": "REQUEST_CHANGES", "findings": [
+            {"severity": "blocker", "text": "Pierwszy plasterek nie ma mierzalnego kryterium.", "tickets": ["#1"]},
+            {"severity": "major", "text": "Rozdziel pierwszy plasterek.", "tickets": ["#1"]},
+            {"severity": "nit", "text": "Drobiazg w nazwie drugiego.", "tickets": ["#2"]}]}
+    if "ATRAPA: plan-review-malformed" in prompt:
+        review = {"verdict": "REQUEST_CHANGES", "findings": [{"severity": "krytyczna", "text": "x", "tickets": []}]}
     with open(os.path.join(out, "plan-review.json"), "w", encoding="utf-8") as fh:
-        json.dump({"verdict": "REQUEST_CHANGES" if "ATRAPA: plan-review-changes" in prompt else "APPROVE", "findings": "Uzupełnij Dla recenzenta."}, fh)
+        json.dump(review, fh)
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "done", "notes": []}, fh)
     sys.exit(0)
@@ -212,11 +220,31 @@ if word == "cli-zgoda":
     sys.exit(0)
 if word == "bez-wyniku":
     sys.exit(0)
+if word == "odmowa-zapisu" and "Użytkownik polecił ponowić" not in prompt:
+    # PT-125: piaskownica odmawia zapisu pliku wyniku; w dzienniku kroku token i zmienne środowiskowe.
+    print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "name": "Bash", "input": {
+            "command": "GITHUB_TOKEN=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 gh api user"}}]}}), flush=True)
+    print("export TIDE_FAKE_SECRET_TOKEN=atrapa-sekret-z-env-42 HOME=" + os.environ["HOME"], flush=True)
+    print("wartość bez nazwy: atrapa-sekret-z-env-42", flush=True)
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "Nie zapisałem wyniku.",
+                      "permission_denials": [{"tool_name": "Write", "tool_input": {"file_path": result}}]}), flush=True)
+    sys.exit(0)
 if word == "pytanie":
     if "Odpowiedź użytkownika:" in prompt:
         finish("done")
     else:
         finish("question", question="Który format daty?")
+elif word in ("pytanie-opcje", "pytanie-zle-opcje"):
+    if "Odpowiedź użytkownika:" in prompt:
+        finish("done")
+    elif word == "pytanie-opcje":
+        finish("question", question="Który format daty?", options=[
+            {"title": "ISO 8601", "effect": "Daty w UTC, bez stref.", "recommended": True},
+            {"title": "Lokalny", "effect": "Daty jak w interfejsie."}])
+    else:
+        finish("question", question="Który format daty?", options=[
+            {"title": "A", "recommended": True}, {"title": "B", "recommended": True}])
 elif word == "zgoda":
     if "- git fetch origin\n" in prompt or "Użytkownik odmówił zgody" in prompt:
         finish("done")
@@ -230,6 +258,19 @@ elif word in ("zgoda-zabroniona", "zgoda-zabroniona-cytat", "zgoda-zabroniona-uk
                    "zgoda-zabroniona-ukosnik": r"make \install",
                    "zgoda-zabroniona-potok": "pwd |& make install"}[word]
         finish("denied", command=command)
+elif word == "zgoda-lancuch":
+    if "Wznowienie tego samego kroku" in prompt:
+        finish("done")
+    else:
+        step_dir = os.path.dirname(out)
+        finish("denied", command=f"ls -la {step_dir}/in {step_dir}/out; git fetch origin && git push origin | head; "
+                                 "echo $(make install)")
+elif word == "zgoda-katalog-kroku":
+    if "Wznowienie tego samego kroku" in prompt:
+        finish("done")
+    else:
+        step_dir = os.path.dirname(out)
+        finish("denied", command=f"ls -la {step_dir}/in {step_dir}/out")
 elif word == "zgoda-dluga":
     if "Użytkownik odmówił zgody" in prompt:
         finish("done")

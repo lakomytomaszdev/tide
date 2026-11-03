@@ -6,6 +6,8 @@ RESULT_FILE = "result.json"
 NOTE_FILE = "note.md"
 REVIEW_FILE = "review.md"
 SUMMARY_FILE = "summary.md"
+OPTIONS_HINT = ('Do pytania możesz dodać "options": [{"title": "…", "effect": "…", "recommended": true}] — '
+                "1–4 gotowe odpowiedzi, najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”.")
 
 
 def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
@@ -21,6 +23,7 @@ Zapisz notkę w {out_dir}/{NOTE_FILE}; jako ostatnią czynność zapisz plik:
 Plik wyniku: {out_dir}/{RESULT_FILE}
 {{"result":"done","notes":["{NOTE_FILE}"]}} albo
 {{"result":"question","question":"…"}} albo {{"result":"error","reason":"…"}}.
+{OPTIONS_HINT}
 """
 
 
@@ -37,6 +40,7 @@ Jako ostatnią czynność zapisz plik:
 Plik wyniku: {out_dir}/{RESULT_FILE}
 {{"result":"done","notes":["{SUMMARY_FILE}"]}} albo
 {{"result":"question","question":"…"}} albo {{"result":"error","reason":"…"}}.
+{OPTIONS_HINT}
 """
 
 
@@ -51,14 +55,17 @@ def resume_step(card_id: str, ticket: str, out_dir: str, *, kind: str = "ticket"
 Na koniec zapisz notkę w {out_dir}/{NOTE_FILE}, a jako ostatnią czynność plik {out_dir}/{RESULT_FILE}.
 Kontrakt wyniku jest taki sam jak wcześniej: JSON z result = done, question, denied albo error;
 dla question podaj question, dla denied command, dla error reason, dla done notes = [\"{NOTE_FILE}\"].
+{OPTIONS_HINT}
 Nie wykonuj push ani scalenia gałęzi.
 """
 
 
-def command_policy(allowed: list[str], denied: list[str]) -> str:
+def command_policy(allowed: list[str], denied: list[str], step_dir: str = "") -> str:
     """Wskazówka dla kooperującego agenta; twardą granicą pozostaje piaskownica kroku."""
     allow = "\n".join(f"- {cmd}" for cmd in allowed) or "- (brak)"
     deny = "\n".join(f"- {cmd}" for cmd in denied) or "- (brak)"
+    own = (f"Odczyt własnych katalogów kroku {step_dir}/in i {step_dir}/out (ls, cat) jest zawsze dozwolony —\n"
+           "nie proś o zgodę na niego.\n") if step_dir else ""
     return f"""
 
 Polecenia projektu w tym kroku (najnowsza lista):
@@ -66,7 +73,7 @@ Dozwolone polecenia i wzorce (końcowe `*` oznacza argumenty jednego polecenia):
 {allow}
 Zabronione polecenia:
 {deny}
-Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.
+{own}Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.
 Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedno polecenie nie zezwala
 na cały program ani na łańcuch poleceń. Zwykłe pojedyncze polecenia (testy, budowanie, lint, instalacja paczek)
 Tide zatwierdza i uruchamia automatycznie — zgłaszaj je śmiało, po jednym, bez łączenia.
@@ -81,10 +88,26 @@ Użytkownik może je uruchomić poza piaskownicą w tym worktree; przy wznowieni
 """
 
 
-def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_dir: str) -> str:
-    """Jawna decyzja do wznowionego kroku; kartka poprzedniej próby pozostaje wyżej w poleceniu."""
+def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_dir: str,
+                   allowed=None, skipped=(), instead: str = "") -> str:
+    """Jawna decyzja do wznowionego kroku; kartka poprzedniej próby pozostaje wyżej w poleceniu.
+    `allowed` — zgoda na wybrane polecenia z łańcucha (PT-124), `skipped` — niezaznaczone, `instead` — co krok ma
+    zrobić zamiast poleceń, na które nie było zgody („Zrób zamiast tego…”)."""
     if choice == "answer":
         detail = f"Pytanie z poprzedniej próby: {prior.get('question') or ''}\nOdpowiedź użytkownika: {answer}"
+        picked = next((o for o in prior.get("options") or [] if o.get("title") == answer), None)
+        if picked:
+            detail += "\nUżytkownik wybrał podaną opcję."
+            if picked.get("effect"):
+                detail += f"\nSkutek opcji: {picked['effect']}"
+    elif choice == "allow" and allowed is not None:
+        lines = "\n".join(f"- {text}" for text in allowed)
+        detail = (f"Prosiłeś o zgodę na łańcuch: {command}\n"
+                  f"Użytkownik zezwolił wyłącznie na te pojedyncze polecenia (dopisane do listy dozwolonych):\n{lines}\n"
+                  "Uruchamiaj je osobno, nie w łańcuchu.")
+        if skipped:
+            rest = "\n".join(f"- {text}" for text in skipped)
+            detail += f"\nNa pozostałe polecenia zgody nie ma — nie uruchamiaj ich i kontynuuj bez nich:\n{rest}"
     elif choice == "allow":
         detail = f"Użytkownik zezwolił na dokładne polecenie: {command}"
     elif choice in ("run", "run-always"):
@@ -92,6 +115,9 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
                   "Zmiany w plikach (np. package.json, package-lock.json) są już w worktree — sprawdź `git status`.")
     elif choice == "deny" and prior.get("outside"):
         detail = f"Użytkownik nie zgodził się uruchomić poza piaskownicą: {command}. Kontynuuj bez tego."
+    elif choice == "deny" and instead:
+        detail = (f"Polecenie nie zostało uruchomione: {command}\n"
+                  f"Użytkownik odmówił zgody na nie i prosi, żebyś zamiast tego: {instead}")
     elif choice == "deny":
         detail = f"Użytkownik odmówił zgody na polecenie: {command}. Kontynuuj bez niego."
         if answer:
@@ -149,7 +175,9 @@ Co masz zrobić:
 Plik wyniku: {out_dir}/{RESULT_FILE}
 
   {{"result": "done", "notes": ["{NOTE_FILE}"]}}                 — ticket gotowy,
-  {{"result": "question", "question": "…"}}                     — potrzebujesz decyzji użytkownika,
+  {{"result": "question", "question": "…"}}                     — potrzebujesz decyzji użytkownika
+     (opcjonalnie z "options": [{{"title": "…", "effect": "…", "recommended": true}}] — 1–4 gotowe odpowiedzi,
+     najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”),
   {{"result": "denied", "command": "…"}}                        — polecenie wymaga zgody,
   {{"result": "error", "reason": "…"}}                          — nie da się zrobić ticketu.
 

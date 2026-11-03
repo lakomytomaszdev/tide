@@ -196,7 +196,7 @@ class NowTest(FlowCase):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
         self.assertTrue(self.start(card_id)["ok"])
         shown = self.wait_column(card_id, "waiting")
-        self.assertEqual(shown["derived"]["flow"]["action"], "answer")
+        self.assertEqual(shown["derived"]["flow"]["decisions"][0]["kind"], "question")
         answer = self.call("ResolveCardStep", card_id, json.dumps({"choice": "answer", "answer": "ISO 8601"}))
         self.assertEqual((answer["ok"], answer["choice"]), (True, "answer"))
         self.wait_column(card_id, "review")

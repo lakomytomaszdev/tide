@@ -105,7 +105,7 @@ Rectangle {
                 width: reviewScroll.availableWidth
                 text: manager.plan && manager.plan.review
                       ? "Review: " + (manager.plan.review.verdict || "") + " · " + (manager.plan.review.reviewer || "")
-                        + " · " + (manager.plan.review.findings || "") : ""
+                        + " · " + Logic.reviewFindingsText(manager.plan.review.findings) : ""
                 textFormat: Text.PlainText
                 color: Tide.Tokens.textMuted
                 font.family: Tide.Theme.uiFamily

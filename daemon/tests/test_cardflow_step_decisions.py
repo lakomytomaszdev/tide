@@ -185,8 +185,8 @@ class StepDecisionTest(FlowInProcess):
         started = self.start(card_id)
         self.assertTrue(started["ok"], started)
         card = self.wait_column(card_id, "waiting")
-        self.assertEqual(card["derived"]["flow"]["action"], "answer")
-        self.assertEqual(card["derived"]["flow"]["question"], "Który format daty?")
+        self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "question")
+        self.assertEqual(card["derived"]["flow"]["decisions"][0]["technical"]["question"], "Który format daty?")
         self.assertEqual(len(notices), 1)
         self.assertEqual((notices[0]["card"], notices[0]["result"]), (card_id, "question"))
         self.flow.tick()
@@ -227,7 +227,7 @@ class StepDecisionTest(FlowInProcess):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: zgoda")
         self.assertTrue(self.start(card_id)["ok"])
         card = self.wait_column(card_id, "waiting")
-        self.assertEqual((card["derived"]["flow"]["action"], card["derived"]["flow"]["command"]),
+        self.assertEqual((card["derived"]["flow"]["decisions"][0]["kind"], card["derived"]["flow"]["decisions"][0]["technical"]["command"]),
                          ("permission", "git fetch origin"))
         self.assertTrue(self.decide(card_id, choice="allow")["ok"])
         self.wait_column(card_id, "review")
@@ -273,7 +273,7 @@ class StepDecisionTest(FlowInProcess):
         # K-35: na polecenie, na które nie da się zezwolić, Tide sam odmawia i wznawia krok z prośbą o pojedyncze
         # polecenia. Atrapa uparcie powtarza prośbę, więc po limicie automatycznych odmów decyzja wraca do użytkownika.
         card = self.wait_column(card_id, "waiting")
-        self.assertFalse(card["derived"]["flow"]["canAllow"])
+        self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
         auto = [d for d in self.of(card_id, "step.decision") if d.get("auto")]
         self.assertEqual([(d["choice"], d["auto"]) for d in auto], [("deny", True)] * 3)
         resumed = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][1]
@@ -287,16 +287,34 @@ class StepDecisionTest(FlowInProcess):
     def test_quoted_escaped_and_piped_forbidden_commands_cannot_be_granted(self):
         changed = json.loads(self.board.upsert_project(json.dumps({"slug": "proj", "deniedCommands": ["make install"]})))
         self.assertTrue(changed["ok"], changed)
-        for mode in ("zgoda-zabroniona-cytat", "zgoda-zabroniona-ukosnik", "zgoda-zabroniona-potok"):
+        for mode in ("zgoda-zabroniona-cytat", "zgoda-zabroniona-ukosnik"):
             with self.subTest(mode=mode):
                 card_id = self.card(description=f"Test.\n\nATRAPA: {mode}")
                 self.assertTrue(self.start(card_id)["ok"])
                 card = self.wait_column(card_id, "waiting")
-                self.assertFalse(card["derived"]["flow"]["canAllow"])
+                self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
                 self.assertTrue(self.of(card_id, "step.decision")[0]["auto"])
                 self.assertEqual(self.decide(card_id, choice="allow")["error"], "forbidden-command")
                 self.assertTrue(self.decide(card_id, choice="deny")["ok"])
                 self.wait_column(card_id, "review")
+
+    def test_piped_forbidden_command_is_split_and_only_the_rest_can_be_granted(self):
+        # PT-124: łańcuch z poleceniem, na które można zezwolić, czeka na użytkownika (bez automatycznej odmowy);
+        # zabronione z łańcucha nie przechodzi ani w całości, ani wskazane indeksem.
+        changed = json.loads(self.board.upsert_project(json.dumps({"slug": "proj", "deniedCommands": ["make install"]})))
+        self.assertTrue(changed["ok"], changed)
+        card_id = self.card(description="Test.\n\nATRAPA: zgoda-zabroniona-potok")
+        self.assertTrue(self.start(card_id)["ok"])
+        card = self.wait_column(card_id, "waiting")
+        self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
+        self.assertEqual(self.of(card_id, "step.decision"), [])
+        [decision] = card["derived"]["flow"]["decisions"]
+        self.assertEqual([(c["text"], c["forbidden"]) for c in decision["commands"]],
+                         [("pwd", False), ("make install", True)])
+        self.assertEqual(self.decide(card_id, choice="allow")["error"], "forbidden-command")
+        self.assertEqual(self.decide(card_id, choice="allow", allow=[1])["error"], "forbidden-command")
+        self.assertTrue(self.decide(card_id, choice="deny")["ok"])
+        self.assertNotIn("make install", self.store.load().projects["proj"].allowed_commands)
 
     def test_empty_allowlist_disables_claude_auto_allow(self):
         changed = json.loads(self.board.upsert_project(json.dumps({"slug": "proj", "allowedCommands": []})))
@@ -314,8 +332,8 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(self.start(card_id)["ok"])
         card = self.wait_column(card_id, "waiting")
         command = "git fetch origin " + "x" * 300
-        self.assertEqual(card["derived"]["flow"]["command"], command)
-        self.assertFalse(card["derived"]["flow"]["canAllow"])
+        self.assertEqual(card["derived"]["flow"]["decisions"][0]["technical"]["command"], command)
+        self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
         self.assertEqual(self.of(card_id, "step.decision")[0]["command"], command)
         self.assertEqual(self.decide(card_id, choice="allow")["error"], "command-too-long")
         self.assertTrue(self.decide(card_id, choice="deny")["ok"])
@@ -325,8 +343,8 @@ class StepDecisionTest(FlowInProcess):
         card_id = self.card(description="Test.\n\nATRAPA: cli-zgoda")
         self.assertTrue(self.start(card_id)["ok"])
         card = self.wait_column(card_id, "waiting")
-        self.assertEqual(card["derived"]["flow"]["action"], "permission")
-        self.assertEqual(card["derived"]["flow"]["command"], "git fetch origin")
+        self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "permission")
+        self.assertEqual(card["derived"]["flow"]["decisions"][0]["technical"]["command"], "git fetch origin")
         self.assertEqual([e["result"] for e in self.of(card_id, "step.finished")], ["denied"])
 
     def test_first_error_retries_once_and_then_proceeds(self):
@@ -342,7 +360,7 @@ class StepDecisionTest(FlowInProcess):
         card_id = self.card(description="Test.\n\nATRAPA: blad-dwa")
         self.assertTrue(self.start(card_id)["ok"])
         card = self.wait_column(card_id, "waiting")
-        self.assertEqual(card["derived"]["flow"]["action"], "error")
+        self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "error")
         first_two = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"]
         self.assertEqual([s.get("attempt") for s in first_two], [0, 1])
         self.restart()
@@ -396,7 +414,7 @@ class StepDecisionTest(FlowInProcess):
         started = self.start(card_id)
         self.assertTrue(started["ok"], started)
         card = self.wait_column(card_id, "waiting", timeout=30)
-        self.assertEqual(card["derived"]["flow"]["action"], "error")
+        self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "error")
         finished = self.of(card_id, "step.finished")
         self.assertEqual([(e["result"], e["reason"]) for e in finished],
                          [("error", "timeout"), ("error", "timeout")])
@@ -409,7 +427,7 @@ class StepDecisionTest(FlowInProcess):
         card_id = self.card(description="Test.\n\nATRAPA: czekaj")
         self.assertTrue(self.start(card_id)["ok"])
         card = self.wait_column(card_id, "waiting", timeout=30)
-        self.assertEqual(card["derived"]["flow"]["action"], "error")
+        self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "error")
         self.assertTrue(card["derived"]["flow"]["stalledSince"])
         self.assertIn("od ", card["derived"]["note"])
         self.assertEqual([e["reason"] for e in self.of(card_id, "step.finished")],
@@ -431,7 +449,7 @@ class StepDecisionTest(FlowInProcess):
         self.started(card_id)
         self.flow.engine.model_probe = lambda endpoint: {"online": False, "error": "offline", "models": []}
         card = self.wait_column(card_id, "waiting", timeout=30)
-        self.assertEqual(card["derived"]["flow"]["action"], "error")
+        self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "error")
         self.assertEqual([s["provider"] for s in self.of(card_id, "step.started")], ["local", "local"])
         self.assertEqual([e["reason"] for e in self.of(card_id, "step.finished")],
                          ["awaria testowa", "local-unavailable"])
@@ -462,3 +480,36 @@ class ReviewRoundsTest(FlowInProcess):
             json.dump({"stepGuardMinutes": 15.0}, fh)
         self.assertEqual(self.flow.engine._review_rounds(), engine_mod.REVIEW_ROUNDS)
         self.assertEqual((engine_mod.REVIEW_ROUNDS, engine_mod.ESCALATE_FIX_ROUND), (6, 3))
+
+
+class StepOptionsTest(FlowInProcess):
+    """PT-126: pytanie kroku z `options[]` — opcje w decyzji, wybór w `resume_context`, zły format bez błędu."""
+
+    decide = StepDecisionTest.decide
+
+    def ask(self, mode):
+        card_id = self.card(description=f"Dodaj eksport.\n\nATRAPA: {mode}")
+        self.assertTrue(self.start(card_id)["ok"])
+        card = self.wait_column(card_id, "waiting")
+        return card_id, card["derived"]["flow"]["decisions"][0]
+
+    def test_valid_options_reach_decision_and_choice_resumes_with_title_and_effect(self):
+        card_id, decision = self.ask("pytanie-opcje")
+        self.assertEqual([(o["title"], o["recommended"]) for o in decision["options"]],
+                         [("ISO 8601", True), ("Lokalny", False)])
+        self.assertTrue(decision["freeText"])
+        option = decision["options"][0]
+        answer = self.decide(card_id, **json.loads(json.dumps(option["params"])))
+        self.assertTrue(answer["ok"], answer)
+        self.wait_column(card_id, "review")
+        resumed = self.of(card_id, "step.started")[1]
+        with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            prompt = json.load(fh)["prompt"]
+        self.assertIn("Odpowiedź użytkownika: ISO 8601", prompt)
+        self.assertIn("Skutek opcji: Daty w UTC, bez stref.", prompt)
+
+    def test_invalid_options_leave_only_the_answer_field_and_no_step_error(self):
+        card_id, decision = self.ask("pytanie-zle-opcje")
+        self.assertEqual(decision["options"], [])
+        self.assertTrue(decision["freeText"])
+        self.assertEqual(self.of(card_id, "step.finished")[0]["result"], "question")
