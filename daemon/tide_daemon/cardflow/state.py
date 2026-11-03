@@ -780,7 +780,9 @@ def derived(st: FlowState, card: dict) -> dict | None:
     if result == "denied" and done.get("outside"):
         decision = st.step_decisions.get(st.last_step) or {}
         if decision.get("choice") in ("run", "run-always"):
-            return _fill(out, "progress", f"{ident} · uruchamiam poza piaskownicą: {_clip(done.get('command') or '', 80)}")
+            since = str(decision.get("ts") or "")[11:16]
+            return _fill(out, "progress", f"{ident} · od {since} trwa poza piaskownicą: "
+                                          f"{_clip(done.get('command') or '', 80)} (wynik wróci do agenta)")
         if decision:
             return _fill(out, "progress", f"{ident} · wznawiam po decyzji o poleceniu")
         out["flow"].update({"action": "outside", "command": done.get("command") or "",

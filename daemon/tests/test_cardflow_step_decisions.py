@@ -23,6 +23,8 @@ class StepDecisionTest(FlowInProcess):
         self.assertIn("sieć", flow["reason"])
         self.assertEqual(self.decide(card_id, choice="allow")["error"], "no-step-question")
         self.assertTrue(self.decide(card_id, choice="run")["ok"])
+        self.assertTrue(wait_until(lambda: "poza piaskownicą" in str(self.shown(card_id)["derived"].get("text"))
+                                   or self.of(card_id, "outside.finished"), timeout=10))
         self.wait_column(card_id, "review", timeout=30)
         finished = self.of(card_id, "outside.finished")
         self.assertEqual((finished[0]["exit"], finished[0]["tail"].strip()), (0, "zewnetrzne-ok"))
