@@ -17,12 +17,15 @@ TOOL = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.absp
 CORPUS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "question-corpus.jsonl")
 # Najniższa trafność obecnych reguł na zatwierdzonym zestawie (pełne punkty procentowe, w dół): wartość z
 # `question_corpus.py bench` na zatwierdzonym zestawie. Kolejne tickety mogą ją tylko podnieść.
-# Zestaw: 111 wiadomości (37 „czeka”, 74 „nie czeka”): 12 przypadków z 28.10 (`probe 2026-10-28`) i 99 z dzienników
+# Zestaw: 111 wiadomości (58 „czeka”, 53 „nie czeka”): 12 przypadków z 28.10 (`probe 2026-10-28`) i 99 z dzienników
 # Claude Code tylko z własnych projektów (`extract --project plasma-tide/BO/LogTool/TimeTracker --drop-flagged`, bez
-# treści klienta), reguły: 73% (w dół z dokładnego ilorazu). Etykiety: „czeka” tylko, gdy wiadomość prosi użytkownika
-# o decyzję, odpowiedź albo kliknięcie; przegląd i etykiety zrobił koordynator (AI) na prośbę użytkownika (PT-111 r3).
+# treści klienta), reguły: 54% (w dół z dokładnego ilorazu). Etykiety: „czeka”, gdy wiadomość prosi użytkownika teraz
+# o decyzję, odpowiedź albo działanie, od którego zależy dalsza praca (kliknięcie, polecenie, przegląd, ponowne
+# zlecenie). „Nie czeka”: oferta warunkowa („jeśli chcesz…”), zadanie dopiero na później, zapowiedź pytania po wyniku
+# polecenia, „zamknij i otwórz, żeby zobaczyć”, rada bez prośby („warto…”). Przegląd i etykiety zrobił koordynator
+# (AI) na prośbę użytkownika (PT-111 r3); w r4 etykiety przejrzane ponownie według tej reguły (25 poprawek).
 # None — zestaw jeszcze nie zatwierdzony (testy rozmiaru i progu są wtedy pomijane).
-RULES_ACCURACY_FLOOR = 73
+RULES_ACCURACY_FLOOR = 54
 
 
 def load_tool():
