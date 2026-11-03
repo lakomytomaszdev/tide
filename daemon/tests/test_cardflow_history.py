@@ -137,6 +137,29 @@ class ActorTest(unittest.TestCase):
         self.assertEqual(actors["PT-1: Sonnet — gotowe"], "Sonnet")
         self.assertEqual(actors["Review PT-1: zatwierdza"], "tide")
 
+    def test_automatic_decisions_are_tide_not_user(self):
+        events = Events()
+        events.step("S-0", result="denied")
+        events.add("step.decision", step="S-0", ticket="PT-1", choice="deny", auto=True)
+        events.add("step.decision", step="S-0", ticket="PT-1", choice="transfer", executor="Codex", automatic=True)
+        events.add("step.decision", step="S-0", ticket="PT-1", choice="allow")
+        items = [i for i in history(events) if i["kind"] == "decision"]
+        self.assertEqual([i["actor"] for i in items], ["tide", "tide", "user"])
+        self.assertTrue(items[0]["text"].startswith("Tide odmówił polecenia"))
+        self.assertIn("Tide przeniósł krok", items[1]["text"])
+        self.assertIn("Codex", items[1]["text"])
+        self.assertIn("zgoda na polecenie", items[2]["text"])
+
+    def test_review_decision_is_user_event(self):
+        events = Events()
+        events.add("review.decision", ticket="PT-1", round=3, choice="retry")
+        events.add("review.decision", ticket="PT-1", round=3, choice="reject")
+        events.add("ticket.rejected", ticket="PT-1")
+        items = [i for i in history(events) if i["kind"] == "decision"]
+        self.assertEqual([i["actor"] for i in items], ["user", "user"])
+        self.assertIn("kontynuacja", items[0]["text"])
+        self.assertEqual(items[1]["text"], "Ticket PT-1 odrzucony")
+
     def test_entries_are_chronological_and_have_no_iso_text(self):
         events = Events()
         events.step("S-0", result="done")

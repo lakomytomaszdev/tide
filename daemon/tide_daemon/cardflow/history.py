@@ -20,17 +20,18 @@ from datetime import datetime
 from .labels import result_label, step_name
 
 LOGGED = ("card.started", "card.paused", "card.resumed", "card.closed", "card.main-merged", "step.started",
-          "step.finished", "step.decision", "review.verdict", "plan.proposed", "plan.reviewed", "plan.approved",
+          "step.finished", "step.decision", "review.decision", "review.verdict", "plan.proposed", "plan.reviewed", "plan.approved",
           "ticket.rejected", "result")
 USER_EVENTS = ("card.started", "card.paused", "card.resumed", "card.main-merged", "step.decision", "plan.approved",
-               "ticket.rejected")
+               "ticket.rejected", "review.decision")
 RESUMABLE = ("question", "denied", "stopped")
 KIND_LABELS = {"step": "krok", "review": "review", "decision": "decyzja", "plan": "plan", "card": "karta",
                "merge": "scalanie"}
 RESULT_PHRASES = {"": "pracuje", "done": "gotowe", "question": "pyta", "denied": "prosi o zgodę",
                   "error": "błąd", "stopped": "zatrzymany"}
 CHOICES = {"retry": "ponowienie kroku", "wait-limit": "czekanie na limit", "transfer": "przekazanie kroku",
-           "abandon": "porzucenie kroku", "answer": "odpowiedź na pytanie", "reject": "odrzucenie ticketu"}
+           "abandon": "porzucenie kroku", "answer": "odpowiedź na pytanie", "reject": "odrzucenie ticketu",
+           "allow": "zgoda na polecenie", "deny": "kontynuacja bez polecenia"}
 VERDICTS = {"APPROVE": "zatwierdza", "REQUEST_CHANGES": "prosi o zmiany"}
 
 
@@ -53,7 +54,7 @@ def build(st, steps: list[dict]) -> list[dict]:
         elif kind == "step.finished":
             continue
         else:
-            entry = _event_entry(event)
+            entry = _event_entry(event, st)
             if entry:
                 entry["old"] = seq < last_started
                 items.append(entry)
@@ -96,7 +97,12 @@ def _step_entry(st, first: dict, chain: list[str], enter: dict) -> dict:
             "canResume": (not old and last["result"] in RESUMABLE and enter.get(last["step"], False))}
 
 
-def _event_entry(e: dict) -> dict | None:
+def _step_label(st, name) -> str:
+    step = (st.steps.get(name) if st is not None and name else None) or {}
+    return step_name(step.get("kind"), step.get("ticket")) if step else (name or "")
+
+
+def _event_entry(e: dict, st=None) -> dict | None:
     kind, ticket = e.get("type"), e.get("ticket") or ""
     who = e.get("executor") or e.get("reviewer") or ""
     if kind == "card.started":
@@ -111,7 +117,19 @@ def _event_entry(e: dict) -> dict | None:
         group, text = "merge", "Karta scalona do master"
     elif kind == "step.decision":
         group = "decision"
-        text = "Decyzja: " + CHOICES.get(e.get("choice"), "odpowiedź") + (f" ({e['step']})" if e.get("step") else "")
+        automatic = bool(e.get("auto") or e.get("automatic"))
+        label = _step_label(st, e.get("step"))
+        if automatic and e.get("choice") == "deny":
+            text = "Tide odmówił polecenia i poprosił o pojedyncze polecenia" + (f" ({label})" if label else "")
+        elif automatic and e.get("choice") == "transfer":
+            text = "Tide przeniósł krok" + (f" {label}" if label else "") + \
+                (f" na {e['executor']}" if e.get("executor") else "") + " (limit)"
+        else:
+            text = "Decyzja: " + CHOICES.get(e.get("choice"), "odpowiedź") + (f" ({label})" if label else "")
+    elif kind == "review.decision":
+        if e.get("choice") == "reject":
+            return None                                 # skutek („Ticket odrzucony”) jest osobnym wpisem
+        group, text = "decision", f"Review {ticket}: kontynuacja po 3. rundzie".replace("  ", " ")
     elif kind == "review.verdict":
         group = "review"
         text = f"Review {ticket}: " + VERDICTS.get(e.get("verdict"), "werdykt").strip()
@@ -127,7 +145,8 @@ def _event_entry(e: dict) -> dict | None:
         group, text = "merge", f"Ticket {e.get('key') or ticket} scalony do gałęzi karty".replace("  ", " ")
     else:
         return None
-    actor = "user" if kind in USER_EVENTS else (e.get("executor") or e.get("reviewer") or e.get("planner") or "tide")
+    automatic = kind == "step.decision" and bool(e.get("auto") or e.get("automatic"))
+    actor = "tide" if automatic else "user" if kind in USER_EVENTS else (e.get("executor") or e.get("reviewer") or e.get("planner") or "tide")
     return {"id": f"{kind}#{e.get('seq')}", "ts": _epoch(e.get("ts")), "kind": group, "kindLabel": KIND_LABELS[group],
             "text": text, "actor": actor, "old": False, "step": e.get("step") or "", "ticket": ticket,
             "result": "", "attempts": [], "canResume": False}
