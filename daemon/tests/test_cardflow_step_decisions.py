@@ -625,6 +625,11 @@ class RejectFailedTicketTest(FlowInProcess):
         self.assertTrue(reply["ok"], reply)
         st = fold(journal.read(card))
         self.assertIn("PT-2", st.rejected)
+        # Decyzja „reject” nie wznawia kroku (03.11: LEGAL-75 ruszył ponownie po odrzuceniu).
+        with _mock.patch.object(engine, "_resume_step") as resume, _mock.patch.object(engine, "_plan_next"):
+            st.last_step = "s1"
+            engine._advance(card, st)
+            resume.assert_not_called()
         started = []
 
         class Started(Exception):
