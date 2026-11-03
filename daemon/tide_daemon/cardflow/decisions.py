@@ -227,6 +227,10 @@ def _outside(st, name, step, done) -> dict:
             _option("run", "Uruchom raz",
                     "Tide uruchomi to jedno polecenie i wznowi krok z jego wynikiem; następnym razem zapyta znowu.",
                     RESOLVE_STEP, {"choice": "run", "step": name}),
+            _option("run-ticket", "Uruchom i zezwalaj do końca ticketu",
+                    f"Tide uruchomi to polecenie i kolejne polecenia poza piaskownicą {step.get('ticket') or 'tego ticketu'} "
+                    "bez pytania; zakazy projektu i łańcuchy nadal są blokowane.",
+                    RESOLVE_STEP, {"choice": "run-ticket", "step": name}),
             _option("deny", "Nie uruchamiaj",
                     "Krok wznowi się bez tego polecenia.", RESOLVE_STEP, {"choice": "deny", "step": name}),
         ]   # bez polecanej: to decyzja o Twoich danych i systemie, nie o środowisku

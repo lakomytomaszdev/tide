@@ -775,7 +775,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         return _fill(out, "waiting", f"{ident} pyta: „{out['question']}”" if out["question"] else f"{ident} pyta")
     if result == "denied" and done.get("outside"):
         decision = st.step_decisions.get(st.last_step) or {}
-        if decision.get("choice") in ("run", "run-always"):
+        if decision.get("choice") in ("run", "run-always", "run-ticket"):
             started = st.outside_started.get(st.last_step)
             if started is None:
                 return _fill(out, "progress", f"{ident} · w kolejce poza piaskownicą (jedno polecenie naraz w projekcie): "

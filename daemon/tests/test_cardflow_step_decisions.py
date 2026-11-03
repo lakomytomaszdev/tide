@@ -70,7 +70,8 @@ class StepDecisionTest(FlowInProcess):
         from tide_daemon.cardflow.decisions import _outside
         made = _outside(None, "s1", {"step": "s1", "kind": "ticket", "ticket": "PT-1"},
                         {"command": found, "canAllow": True, "pattern": "find *", "outside": True})
-        self.assertEqual([(o["choice"], o["recommended"]) for o in made["options"]], [("run", False), ("deny", False)])
+        self.assertEqual([(o["choice"], o["recommended"]) for o in made["options"]],
+                         [("run", False), ("run-ticket", False), ("deny", False)])
         # K-16/LEGAL-66: długie polecenie ze zmienną w cudzysłowie (średniki w wartości) było odrzucane bez wyjścia.
         long_test = ('DATABASE_CONNECTION="Host=127.0.0.1;Port=1;Database=x;Username=none;Password=none" '
                      'ANTHROPIC_API_KEY=test VOYAGE_API_KEY=test dotnet test tests/LegalApp.Tests.Integration '
@@ -152,6 +153,18 @@ class StepDecisionTest(FlowInProcess):
         self.assertEqual(sandbox_grant("git status", []), "git status")
         self.assertIsNone(sandbox_grant(long_rm, ["git rm"]))
         self.assertIsNone(sandbox_grant("a && b", []))
+
+    def test_ticket_consent_runs_later_outside_commands_of_the_ticket(self):
+        # 03.11, K-33/PT-110: trzy kopie danych, trzy pytania — zgoda do końca ticketu obejmuje kolejne polecenia.
+        first = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
+        self.assertTrue(self.start(first)["ok"])
+        self.wait_column(first, "waiting")
+        self.assertTrue(self.decide(first, choice="run-ticket")["ok"])
+        self.wait_column(first, "review", timeout=30)
+        self.assertEqual(len(self.of(first, "outside.ticket-consent")), 1)
+        engine = self.flow.engine
+        self.assertTrue(engine._ticket_consent(first, self.of(first, "outside.ticket-consent")[0]["ticket"]))
+        self.assertFalse(engine._ticket_consent(first, "PT-999"))
 
     def test_declined_outside_command_resumes_without_it(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")

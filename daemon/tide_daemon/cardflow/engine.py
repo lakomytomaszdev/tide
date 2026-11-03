@@ -2278,7 +2278,7 @@ class FlowEngine(PlanEditing):
         step = st.steps.get(focus) or {}
         done = st.finished.get(focus) or {}
         result = done.get("result")
-        valid = {"question": ("answer",), "denied": ("run", "run-always", "deny") if done.get("outside")
+        valid = {"question": ("answer",), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
                  else ("allow", "deny"), "error": ("retry", "change-executor")}.get(result, ())
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
@@ -2308,12 +2308,15 @@ class FlowEngine(PlanEditing):
         granted, skipped = [], []
         if choice == "allow":
             granted, skipped = self._grant(card, step, done, request.get("allow"))
-        if choice in ("run", "run-always"):
+        if choice in ("run", "run-always", "run-ticket"):
             from ..board.commands import outside_allowed, outside_pattern
             command = str(done.get("command") or "").strip()
             _, project = self._project(card)
             if not command or not outside_allowed(command, project.denied_commands):
                 raise FlowError("forbidden-command", f"polecenia „{command}” nie można uruchomić poza piaskownicą")
+            if choice == "run-ticket":
+                # Zgoda na polecenia poza piaskownicą do końca ticketu (03.11, K-33/PT-110: trzy kopie, trzy pytania).
+                self.journal.append(card, "outside.ticket-consent", ticket=step.get("ticket") or "", step=focus)
             if choice == "run-always":
                 from ..board.commands import outside_risky
                 if outside_risky(command):
@@ -2328,7 +2331,7 @@ class FlowEngine(PlanEditing):
             extra["auto"] = True
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
                                     choice=choice, answer=answer if choice in ("answer", "deny") else "",
-                                    command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always")
+                                    command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always", "run-ticket")
                                     else "", executor=executor if choice == "change-executor" else "", **extra)
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
 
@@ -2609,7 +2612,7 @@ class FlowEngine(PlanEditing):
         if any(s.get("parentStep") == step.get("step") for s in st.steps.values()):
             return
         done = st.finished.get(step.get("step")) or {}
-        if done.get("outside") and decision.get("choice") in ("run", "run-always"):
+        if done.get("outside") and decision.get("choice") in ("run", "run-always", "run-ticket"):
             decision = self._outside_ready(card, step, done, decision)
             if decision is None:
                 return          # polecenie poza piaskownicą jeszcze trwa
@@ -3301,6 +3304,7 @@ class FlowEngine(PlanEditing):
                 extra["pattern"] = outside_pattern(command)
                 data["canAllow"] = outside_allowed(command, project.denied_commands)
                 remembered = data["canAllow"] and (outside_matches(command, self._outside_remembered(project.slug))
+                                                   or self._ticket_consent(card, step.get("ticket") or "")
                                                    or self._auto_outside(card) and not outside_risky(command))
             else:
                 # PT-124: łańcuch rozłożony na pojedyncze polecenia z flagami i powodem blokady (dla okna decyzji).
@@ -3714,10 +3718,15 @@ class FlowEngine(PlanEditing):
             self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
                                 ticket=step.get("ticket") or "", canAllow=allowed)
         if allowed and (outside_matches(command, self._outside_remembered(project.slug)) or
+                        self._ticket_consent(card, step.get("ticket") or "") or
                         self._auto_outside(card) and not outside_risky(command)):
             self.journal.append(card, "step.decision", step=step.get("step") or "", ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="run", answer="", command=command,
                                 executor="", auto=True)
+
+    def _ticket_consent(self, card: str, ticket: str) -> bool:
+        return bool(ticket) and any(e.get("type") == "outside.ticket-consent" and e.get("ticket") == ticket
+                                    for e in self.journal.read(card))
 
     def _outside_busy(self, card: str) -> bool:
         """Jedno polecenie poza piaskownicą naraz w projekcie i OUTSIDE_TOTAL łącznie (03.11, K-31: pięć przebiegów

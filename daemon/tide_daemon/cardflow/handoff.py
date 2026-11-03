@@ -110,7 +110,7 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
             detail += f"\nNa pozostałe polecenia zgody nie ma — nie uruchamiaj ich i kontynuuj bez nich:\n{rest}"
     elif choice == "allow":
         detail = f"Użytkownik zezwolił na dokładne polecenie: {command}"
-    elif choice in ("run", "run-always"):
+    elif choice in ("run", "run-always", "run-ticket"):
         detail = (f"Użytkownik uruchomił poza piaskownicą, w tym worktree, polecenie: {command}\n{answer}\n"
                   "Zmiany w plikach (np. package.json, package-lock.json) są już w worktree — sprawdź `git status`.")
     elif choice == "deny" and prior.get("outside"):
