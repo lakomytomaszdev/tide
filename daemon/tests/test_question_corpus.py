@@ -17,13 +17,13 @@ TOOL = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.absp
 CORPUS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "question-corpus.jsonl")
 # Najniższa trafność obecnych reguł na zatwierdzonym zestawie (pełne punkty procentowe, w dół): wartość z
 # `question_corpus.py bench` na zatwierdzonym zestawie. Kolejne tickety mogą ją tylko podnieść.
-# Zestaw: 53 wiadomości (22 „czeka”, 31 „nie czeka”): 12 przypadków z 28.10 (`probe 2026-10-28`) i 41 z dzienników
-# Claude Code (`claude 2026-11-03`; brak Codexa), reguły: 34/53 = 64,2% → 64. UWAGA: etykiety „czeka” poza 12
-# przypadkami z 28.10 ocenił koordynator (AI) na prośbę użytkownika, nie sam użytkownik; treści klienta zanonimizowane
-# (<firma>, <produkt>, TKT-n), 15 wiadomości z nadal widocznymi śladami klienta pominięto
-# (`review --apply --drop-flagged`). Próg jest więc względem etykiet AI.
+# Zestaw: 47 wiadomości (19 „czeka”, 28 „nie czeka”): 12 przypadków z 28.10 (`probe 2026-10-28`) i 35 z dzienników
+# Claude Code (`claude 2026-11-03`; brak Codexa), reguły: 31/47 = 65,96% → 65. UWAGA (PT-111 review r3): etykiety
+# „czeka” poza 12 przypadkami z 28.10 ocenił koordynator (AI), nie sam użytkownik, a większość wiadomości nadal opisuje
+# (zanonimizowane) projekty klienta — zestaw czeka na decyzję i przegląd użytkownika; po wymianie trzeba przeliczyć próg.
+# Z poprzednich 53 usunięto 6 wiadomości z nazwami klienta, które przeszły przez filtr, i z opisem jego luki.
 # None — zestaw jeszcze nie zatwierdzony (testy rozmiaru i progu są wtedy pomijane).
-RULES_ACCURACY_FLOOR = 64
+RULES_ACCURACY_FLOOR = 65
 
 
 def load_tool():
@@ -423,8 +423,18 @@ class ReviewTest(unittest.TestCase):
 
     def test_client_project_content_is_refused_and_not_redactable(self):
         for secret in ("repo infracore", "ticket DPT-5 nadal stoi", "w APP5 jest błąd",
-                       "wiersz dpt-11-testy.fix-4.step/out/note.md", "id asst_sDfBnu0kDkEhKAFGftGCMiFi"):
+                       "wiersz dpt-11-testy.fix-4.step/out/note.md", "id asst_sDfBnu0kDkEhKAFGftGCMiFi",
+                       "stała `BUTTON_SCRIPT_DP4`", "klasa LogViewer", "repo LogViewer",
+                       "GET /api/NecAdapters/IsActiveOnDevice/:id", "urządzenie TST4-000X"):
             self.assertNotEqual(qc.privacy_problems(qc.redact("Treść. " + secret)), [], secret)
+        for fine in ("wersja DP45 nic nie znaczy", "plik udp4.c", "PT-111 i K-33 są w porządku"):
+            self.assertEqual(qc.privacy_problems(fine), [], fine)
+
+    def test_rules_accuracy_rounds_down_from_exact_ratio(self):
+        idle = {"text": "Gotowe. Testy przechodzą.", "waits": False}
+        wrong = {"text": "Gotowe. Testy przechodzą.", "waits": True}
+        self.assertEqual(qc.rules_accuracy([idle] * 31 + [wrong] * 16), 65)   # 65,96%
+        self.assertEqual(qc.rules_accuracy([]), 0)
 
     def test_drop_flagged_skips_messages_with_private_data_and_reports_ids_only(self):
         data = candidates(20, 30)

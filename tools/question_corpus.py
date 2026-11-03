@@ -89,7 +89,10 @@ PRIVATE = [
     # treść z projektów klienta (nazwy produktów, tickety, repozytoria) i ślady kroków w tle — nie do zastąpienia
     # automatycznego: usuń wiadomość albo zastąp ją wiadomością z własnych projektów
     # (same `out/note.md` i `out/result.json` nic nie zdradzają — kroki w tle własnych projektów piszą o nich stale)
-    ("projekt klienta", re.compile(r"coretools\w*|\bDPT-\d+|\bDP[45]\b|[\w-]+\.step\b", re.I)),
+    # (`APP4`/`APP5` także wewnątrz identyfikatorów: `BUTTON_SCRIPT_DP4`, `LogViewer` — `_` to znak słowa, więc
+    # `\b` tu nie wystarcza)
+    ("projekt klienta", re.compile(r"coretools\w*|\bDPT-\d+|(?<![A-Za-z])DP[45](?![0-9])|[\w-]+\.step\b|"
+                                   r"LogViewer|NecAdapters|IsActiveOnDevice|\bTST\d-[0-9X]{3,}", re.I)),
     ("telefon / PESEL / IBAN", re.compile(r"(?<!\d)(?:\+48[\s-]?)?\d{3}[\s-]\d{3}[\s-]\d{3}(?!\d)|(?<!\d)\d{11}(?!\d)|"
                                           r"\bPL\d{2}(?:[\s]?\d{4}){6}\b")),
 ]
@@ -586,7 +589,9 @@ def score(corpus: list, predictions: list, times: list | None = None) -> dict:
 
 def rules_accuracy(corpus: list) -> float:
     """Trafność obecnych reguł w pełnych punktach procentowych, zaokrąglona w dół (próg w teście `make test`)."""
-    return int(score(corpus, [rules_waits(m["text"]) for m in corpus])["accuracy"])
+    # z dokładnego ilorazu, nie z `accuracy` (ta jest już zaokrąglona do 0,1: 31/47 = 65,96 → 66,0 → 66 zamiast 65)
+    result = score(corpus, [rules_waits(m["text"]) for m in corpus])
+    return 100 * result["right"] // result["n"] if result["n"] else 0
 
 
 def bench(corpus: list, model: Ollama | None) -> dict:
