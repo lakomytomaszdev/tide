@@ -268,6 +268,8 @@ def fold(events: list[dict]) -> FlowState:
                 st.finished[e["step"]] = {**st.finished[e["step"]], "canAllow": bool(e.get("canAllow"))}
         elif kind == "outside.started":
             st.outside_started[e.get("step")] = e
+        elif kind == "outside.finished":
+            st.outside_started.pop(e.get("step"), None)
         elif kind == "step.wip":
             st.wip_retries[e.get("step")] = e
         elif kind == "step.limit":
@@ -429,6 +431,8 @@ def guard_reason(st: FlowState) -> str | None:
     """None = praca lub koniec; napis = nazwany powód czekania; pusty napis = możliwy postój."""
     if not st.started or st.card_finished or st.paused or st.running() or st.open_intents() or st.open_consoles():
         return None
+    if st.outside_started:
+        return None     # trwa polecenie poza piaskownicą — to praca, nie postój (K-31, 03.11: fałszywy alarm)
     if attention_step(st, True):
         return "pytanie, zgoda albo błąd kroku"
     if attention_step(st):
