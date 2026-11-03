@@ -697,6 +697,9 @@ Rectangle {
             cardPanel.busy = false
             cardPanel.error = error
             if (!error) cardPanel.notice = "Karta scalona do gałęzi głównej."
+            cardFullView.mergeBusy = false
+            showToast(error ? "Scalenie nie powiodło się: " + error : "Karta scalona do gałęzi głównej.",
+                      error ? "rose" : "mint")
         } else if (tag.indexOf("quicktag:") === 0) {
             tagEditorPopup.editorError = error
             if (!error) tagEditorPopup.close()
@@ -1800,6 +1803,8 @@ Rectangle {
         onPanelRequested: notice => page.panelFromFull(notice)
         onDescriptionRequested: page.openDescription(page.fullCardId)
         onSettingRequested: (kind, params) => page.applySetting(page.fullCardId, kind, params)
+        onMergeMainRequested: page.mergeMainRequested(page.nextTag("merge-main:" + page.fullCardId), page.fullCardId)
+        onBranchDiffRequested: page.panelFromFull("Diff gałęzi: kliknij „Diff gałęzi” w panelu karty.")
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)
     }

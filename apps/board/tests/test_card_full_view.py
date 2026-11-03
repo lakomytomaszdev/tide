@@ -319,6 +319,24 @@ out["noJournal"] = [js("page.fullOpen"), js("page.panelOpen"), js("page.panelCar
         self.assertEqual(out["panel"], [True, True, "K-8"], "„Edytuj opis” otwiera szufladę opisu nad pełną kartą (PT-134)")
         self.assertEqual(out["noJournal"], [False, True, "K-9"], "karta bez dziennika — panel karty")
 
+    def test_closed_card_offers_merge_to_main_in_the_full_card(self):
+        # 03.11, K-16: po K-35 klik w domkniętą kartę otwierał pełną kartę bez „Scal do gałęzi głównej”.
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["visible"] = js("(function () { const v = page.cardFullView; const all = " + ALL + "; "
+                   "return all(v, 'fullMergeMain')[0].visible })()")
+click(named("fullMergeMain"))
+out["call"] = calls()[-1][:2]
+""", data)
+        self.assertTrue(out["visible"])
+        self.assertEqual(out["call"], ["MergeCardToMain", "K-8"])
+
 
 if __name__ == "__main__":
     unittest.main()
