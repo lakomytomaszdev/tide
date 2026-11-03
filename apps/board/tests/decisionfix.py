@@ -99,6 +99,15 @@ def a1_journal(tail: str = "") -> list[dict]:
     ]
 
 
+def a1_one_journal(rest: str = "git fetch origin") -> list[dict]:
+    """Review PT-124 r2 MAJOR-1: łańcuch z własnym odczytem katalogu kroku i jednym poleceniem do zgody."""
+    events = a1_journal()
+    command = f"ls -la {A1_DIR}/in {A1_DIR}/out && {rest}"
+    events[2] = {**events[2], "command": command, "canAllow": False,
+                 "commands": describe(command, denied=DENIED, step_dir=A1_DIR)}
+    return events
+
+
 def a2_journal() -> list[dict]:
     """A2: #3 (Sonnet) prosi o zgodę na jedno polecenie, które można dopisać do listy."""
     return [

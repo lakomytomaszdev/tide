@@ -199,6 +199,49 @@ class ChainPermissionRequestTest(FlowInProcess):
         self.assertTrue(again.get("already"), again)
 
 
+class OneCommandChainDecisionTest(unittest.TestCase):
+    """Review PT-124 r2 MAJOR-1: łańcuch, z którego po odjęciu własnego odczytu katalogu kroku zostaje jedno
+    polecenie, jest decyzją łańcuchową z tym poleceniem na liście i na wierzchu."""
+
+    def decision(self, rest):
+        from tide_daemon.board.chain import describe
+        from tide_daemon.cardflow.decisions import build_decisions
+        from tide_daemon.cardflow.state import fold
+        step_dir = "/wt/x.step"
+        command = f"ls -la {step_dir}/in {step_dir}/out && {rest}"
+        events = [
+            {"v": 1, "seq": 1, "ts": "2026-11-03T10:00:00+01:00", "card": "K-1", "type": "card.started",
+             "entry": "now", "executor": "Sonnet", "program": "claude", "provider": "anthropic"},
+            {"v": 1, "seq": 2, "ts": "2026-11-03T10:01:00+01:00", "card": "K-1", "type": "step.started",
+             "step": "K-1-PT-1-1", "ticket": "PT-1", "kind": "ticket", "executor": "Sonnet", "provider": "anthropic",
+             "attempt": 0, "parentStep": "", "stepDir": step_dir},
+            {"v": 1, "seq": 3, "ts": "2026-11-03T10:02:00+01:00", "card": "K-1", "type": "step.finished",
+             "step": "K-1-PT-1-1", "ticket": "PT-1", "result": "denied", "command": command, "canAllow": False,
+             "commands": describe(command, denied=["make install"], step_dir=step_dir)},
+        ]
+        [decision] = build_decisions(fold(events))
+        return decision
+
+    def test_one_command_left_is_a_chain_decision_with_the_command_visible(self):
+        decision = self.decision("git fetch origin")
+        self.assertEqual([(c["text"], c["canAllow"], c["preselected"]) for c in decision["commands"]],
+                         [("git fetch origin", True, False)])
+        self.assertIn("git fetch origin", decision["happened"])
+        allow = [o for o in decision["options"] if o["choice"] == "allow"]
+        self.assertEqual([o["params"]["allow"] for o in allow], [[]], "okno uzupełnia indeksy z listy")
+
+    def test_one_read_only_command_left_is_preselected(self):
+        decision = self.decision("ls docs")
+        self.assertEqual([(c["text"], c["readOnly"], c["preselected"]) for c in decision["commands"]],
+                         [("ls docs", True, True)])
+
+    def test_one_forbidden_command_left_has_reason_and_no_allow(self):
+        decision = self.decision("make install")
+        self.assertEqual([(c["forbidden"], c["canAllow"], c["reason"]) for c in decision["commands"]],
+                         [(True, False, "Zabronione w projekcie regułą „make install”.")])
+        self.assertEqual([o["choice"] for o in decision["options"]], ["deny"])
+
+
 class ResumeContextTest(unittest.TestCase):
     def test_texts(self):
         prior = {"result": "denied"}

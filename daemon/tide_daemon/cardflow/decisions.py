@@ -199,8 +199,12 @@ def _chain_permission(st, name, step, done, commands) -> dict:
     who = _who(step, True)
     allowable = [item for item in commands if item["canAllow"]]
     blocked = len(commands) - len(allowable)
-    happened = (f"{who} chce uruchomić naraz {_count(len(commands), 'polecenie', 'polecenia', 'poleceń')} "
-                "spoza listy dozwolonych.")
+    if len(commands) == 1:
+        # Łańcuch, z którego po odjęciu własnego odczytu katalogu kroku zostało jedno polecenie: tekst na wierzchu.
+        happened = f"{who} chce uruchomić polecenie spoza listy dozwolonych: {commands[0]['text']}"
+    else:
+        happened = (f"{who} chce uruchomić naraz {_count(len(commands), 'polecenie', 'polecenia', 'poleceń')} "
+                    "spoza listy dozwolonych.")
     if allowable:
         why = ("Tide zatwierdza polecenia pojedynczo, więc łańcucha nie da się przepuścić w całości. Zaznacz te, "
                "na które zezwalasz, albo puść krok dalej bez nich.")

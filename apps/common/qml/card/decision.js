@@ -90,6 +90,19 @@ function picksCommands(option) {
     return !!option && !!option.params && Array.isArray(option.params.allow)
 }
 
+// Lista poleceń w oknie: zawsze, gdy decyzja ma możliwość wyboru poleceń (także łańcuch, z którego po
+// odjęciu własnego odczytu katalogu kroku zostało jedno polecenie — zgoda dotyczy tekstu widocznego na liście),
+// oraz gdy jest więcej niż jedno polecenie albo jedyne nie może być dopuszczone (powód przy poleceniu).
+function showsCommands(decision) {
+    var list = (decision && decision.commands) || []
+    if (list.length === 0) return false
+    var options = (decision && decision.options) || []
+    for (var i = 0; i < options.length; i++) {
+        if (picksCommands(options[i])) return true
+    }
+    return list.length > 1 || list[0].canAllow !== true
+}
+
 // Zaznaczenie poleceń po otwarciu decyzji: wprost z pola `preselected` usługi (to zaznaczenie poleceń,
 // nie możliwości decyzji — D10 dotyczy możliwości).
 function preselectedIndexes(decision) {

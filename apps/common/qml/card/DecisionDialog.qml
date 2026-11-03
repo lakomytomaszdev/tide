@@ -48,7 +48,7 @@ Rectangle {
     readonly property string choice: onlyText ? otherId : selected
     // Zgoda na polecenia z łańcucha (PT-124): lista `commands[]` z usługi, zaznaczenie poleceń w `checks`.
     readonly property var commands: current && current.commands ? current.commands : []
-    readonly property bool showCommands: commands.length > 1 || (commands.length === 1 && commands[0].canAllow !== true)
+    readonly property bool showCommands: Decision.showsCommands(current)
     readonly property var chosenOption: options.find(o => o.id === choice) || null
     readonly property bool picksCommands: Decision.picksCommands(chosenOption)
     readonly property string otherTitle: current && current.otherTitle ? current.otherTitle : "Inna odpowiedź…"

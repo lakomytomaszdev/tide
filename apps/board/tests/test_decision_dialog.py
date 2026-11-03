@@ -15,7 +15,8 @@ import shutil
 import unittest
 
 from . import REPO
-from .decisionfix import (A1_STEP, A2_COMMAND, A2_STEP, Q2, Q3, a1_journal, a2_journal, decisions, journal,
+from .decisionfix import (A1_STEP, A2_COMMAND, A2_STEP, Q2, Q3, a1_journal, a1_one_journal, a2_journal, decisions,
+                          journal,
                           scenario_f, without_options)
 from .test_view import ProbeCase
 
@@ -353,6 +354,43 @@ out["instead"] = calls()
 """, scenario_f(self.data, decisions(a1_journal())))
         self.assertEqual(json.loads(out["instead"][0][2]),
                          {"choice": "deny", "step": A1_STEP, "instead": "przeczytaj tylko docs/agent-plan-standard.md"})
+
+    def test_chain_with_own_read_and_one_command_shows_it_and_allows_it(self):
+        """Review PT-124 r2 MAJOR-1: po odjęciu własnego odczytu zostaje jedno polecenie — lista jest widoczna,
+        polecenie do zaznaczenia, a „Zezwól na wybrane” wysyła dokładnie je."""
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["opened"] = state()
+out["perm"] = permission()
+out["commands"] = commands()
+click(option(1))
+out["blocked"] = [state()["choose"], permission()["hint"]]
+click(command(0))
+out["checked"] = [state()["choose"], permission()["hint"], commands()[0][1]]
+key(Qt.Key.Key_Return)
+out["sent"] = calls()
+""", scenario_f(self.data, decisions(a1_one_journal())))
+        opened = out["opened"]
+        self.assertIn("git fetch origin", opened["happened"])
+        self.assertEqual([o[0] for o in opened["options"]], ["Kontynuuj bez tych poleceń", "Zezwól na wybrane i wznów"])
+        self.assertTrue(out["perm"]["list"], "lista poleceń widoczna także przy jednym poleceniu z łańcucha")
+        self.assertEqual(out["commands"], [["git fetch origin", False, True, "", []]])
+        self.assertEqual(out["blocked"], [False, True], "bez zaznaczenia „Wybierz” nieaktywne, podpowiedź wskazuje listę")
+        self.assertEqual(out["checked"], [True, False, True])
+        self.assertEqual(json.loads(out["sent"][0][2]), {"choice": "allow", "step": A1_STEP, "allow": [0]})
+
+    def test_chain_with_own_read_and_one_read_only_command_is_visible_and_preselected(self):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["perm"] = permission()
+out["commands"] = commands()
+click(option(1))
+key(Qt.Key.Key_Return)
+out["sent"] = calls()
+""", scenario_f(self.data, decisions(a1_one_journal("ls docs"))))
+        self.assertTrue(out["perm"]["list"], "zgoda tylko na tekst widoczny w oknie")
+        self.assertEqual(out["commands"], [["ls docs", True, True, "", ["tylko czyta"]]])
+        self.assertEqual(json.loads(out["sent"][0][2]), {"choice": "allow", "step": A1_STEP, "allow": [0]})
 
     def test_a2_single_command_allow_and_resume(self):
         out = self.probe(STATE_PY + """
