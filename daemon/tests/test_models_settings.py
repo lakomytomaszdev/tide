@@ -87,7 +87,8 @@ class ModelsJsonTest(SettingsTestCase):
         self.assertEqual(data["default"], "local")
         self.assertEqual(data["endpoints"]["local"], {"url": "http://127.0.0.1:11434", "kind": "ollama"})
         self.assertEqual(data["endpoints"]["mac"], {"url": "http://mac-studio:11434", "kind": "ollama"})
-        self.assertEqual(data["roles"], {"summary": "qwen3:8b", "describe": "qwen3:8b", "embed": "bge-m3"})
+        self.assertEqual(data["roles"], {"summary": "qwen3:8b", "describe": "qwen3:8b", "embed": "bge-m3",
+                                         "classify": "qwen3:8b"})
         after = self.cfg()
         self.assertEqual(after.warnings, ())
         self.assertEqual(after.roles, before.roles, "role działają jak bez pliku (ten sam punkt, model i ctx)")
@@ -242,7 +243,8 @@ class ModelsJsonTest(SettingsTestCase):
                               "embed": {"model": "mac:bge-m3"}, "broken": "zly:x"}})
         cfg = self.cfg()
         pinned = {name: role.pinned for name, role in cfg.roles.items()}
-        self.assertEqual(pinned, {"summary": True, "agent": False, "embed": True, "broken": True, "describe": False},
+        self.assertEqual(pinned, {"summary": True, "agent": False, "embed": True, "broken": True, "describe": False,
+                                  "classify": False},
                          "przypięta także do obecnego domyślnego; brakująca rola domyślna — nie")
         state = status.pending(cfg)
         self.assertEqual({n: r["pinned"] for n, r in state["roles"].items()}, pinned)
@@ -347,7 +349,7 @@ class ModelsJsonTest(SettingsTestCase):
         settings.set_role({"role": "agent", "model": "qwen3-coder:30b"}, self.path)
         before = self.text()
         message = self.refused(settings.set_endpoint, {"name": "qwen3", "url": "http://mac:11434"}, self.path)
-        self.assertEqual(message, "nazwa „qwen3” zmieniłaby role describe, summary (model „qwen3:8b” czytany "
+        self.assertEqual(message, "nazwa „qwen3” zmieniłaby role classify, describe, summary (model „qwen3:8b” czytany "
                                   "jako serwer „qwen3”) — wybierz inną nazwę serwera")
         self.assertEqual(self.text(), before, "nic nie zapisane")
         roles = self.cfg().roles
@@ -355,6 +357,7 @@ class ModelsJsonTest(SettingsTestCase):
         # Przypięta rola „local:qwen3:8b” nie jest dwuznaczna — taki punkt można dodać.
         settings.set_role({"role": "summary", "model": "qwen3:8b", "endpoint": "local"}, self.path)
         settings.set_role({"role": "describe", "model": "qwen3:8b", "endpoint": "local"}, self.path)
+        settings.set_role({"role": "classify", "model": "qwen3:8b", "endpoint": "local"}, self.path)
         settings.set_endpoint({"name": "qwen3", "url": "http://mac:11434"}, self.path)
         roles = self.cfg().roles
         self.assertEqual((roles["summary"].endpoint, roles["summary"].model), ("local", "qwen3:8b"))

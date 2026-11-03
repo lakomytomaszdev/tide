@@ -74,10 +74,13 @@ def _count(value) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _ollama(endpoint, model, messages, schema, ctx, timeout, cancel=None) -> tuple[str, dict]:
+def _ollama(endpoint, model, messages, schema, ctx, timeout, cancel=None, temperature=None) -> tuple[str, dict]:
     body = {"model": model, "messages": messages, "stream": False, "think": False}
-    if ctx:
-        body["options"] = {"num_ctx": ctx}
+    options = {"num_ctx": ctx} if ctx else {}
+    if temperature is not None:
+        options["temperature"] = temperature
+    if options:
+        body["options"] = options
     if schema is not None:
         body["format"] = schema
     try:
@@ -95,8 +98,10 @@ def _ollama(endpoint, model, messages, schema, ctx, timeout, cancel=None) -> tup
     return text, metrics
 
 
-def _openai(endpoint, model, messages, schema, ctx, timeout, cancel=None) -> tuple[str, dict]:
+def _openai(endpoint, model, messages, schema, ctx, timeout, cancel=None, temperature=None) -> tuple[str, dict]:
     body = {"model": model, "messages": messages, "stream": False}
+    if temperature is not None:
+        body["temperature"] = temperature
     if schema is not None:
         body["response_format"] = {"type": "json_schema",
                                    "json_schema": {"name": "answer", "strict": True, "schema": schema}}
@@ -119,9 +124,11 @@ def _limit(value: float) -> float:
     return max(round(value) if value >= 10 else round(value, 1), 0.1)
 
 
-def _resolver(config, role, endpoint, model, ctx, expect):
+def _resolver(config, role, endpoint, model, ctx, expect, allow_cloud=False):
     """Funkcja () → (punkt, model, kontekst) z ustawień czytanych w chwili wywołania (albo z podanych `config`):
-    rola albo jawny model, model chmurowy Ollamy odrzucony, `expect` porównane z celem (TargetChanged)."""
+    rola albo jawny model, model chmurowy Ollamy odrzucony, `expect` porównane z celem (TargetChanged).
+    `allow_cloud` (PT-42, rola `classify`): model chmurowy przechodzi tylko wtedy, gdy rola przypina go jawnie
+    do punktu („punkt:model” w models.json) — nigdy przez `default` ani jawny model spoza roli."""
     def resolve_target() -> tuple:
         cfg = config if config is not None else config_mod.load()
         if role is not None:
@@ -134,7 +141,8 @@ def _resolver(config, role, endpoint, model, ctx, expect):
         if ctx is not None:
             context = ctx or None
         target = cfg.endpoint(endpoint_name)
-        if config_mod.is_cloud_model(model_name):   # także jawny model, nie tylko rola z models.json
+        explicit_cloud = allow_cloud and role is not None and chosen.pinned
+        if config_mod.is_cloud_model(model_name) and not explicit_cloud:   # także jawny model, nie tylko rola
             raise ModelError(f"Model lokalny niedostępny: {config_mod.cloud_refusal(model_name)}")
         if expect is not None and (target.name, target.public_url(), model_name, context) != tuple(expect):
             raise TargetChanged("Model lokalny: ustawienia modeli zmieniły się w trakcie wywołania")
@@ -174,7 +182,8 @@ def _call_limit(timeout: float, deadline: float | None, started: float) -> float
 def chat(messages, *, role: str | None = None, endpoint: str | None = None, model: str | None = None,
          system: str | None = None, schema: dict | None = None, ctx: int | None = None,
          timeout: float = DEFAULT_TIMEOUT_S, config=None, cancel=None, priority: int | None = None,
-         wait: float | None = None, deadline: float | None = None, queue=None, expect: tuple | None = None) -> Answer:
+         wait: float | None = None, deadline: float | None = None, queue=None, expect: tuple | None = None,
+         temperature: float | None = None, allow_cloud: bool = False) -> Answer:
     """Odpowiedź modelu. `messages` to tekst polecenia albo lista {role, content}; `system` — polecenie
     systemowe na początku. Model z roli (`role`) albo jawnie (`endpoint` — domyślnie `default`, `model`).
     `ctx` nadpisuje kontekst roli. `schema` — schemat JSON odpowiedzi. `cancel` (transport.Cancel) — przerwanie
@@ -186,8 +195,9 @@ def chat(messages, *, role: str | None = None, endpoint: str | None = None, mode
     najpóźniej wtedy. Tor kolejki to serwer (`queue.lane_of(adres)`), a punkt, model i kontekst są ustalane
     jeszcze raz, gdy wywołanie dostaje kolej (models.json czytany wtedy, chyba że podano `config`).
     `expect` — (punkt, adres, model, kontekst), którego wywołujący oczekuje: inny cel (przy dołączeniu albo przy
-    starcie) → TargetChanged, zanim cokolwiek wyjdzie do serwera."""
-    resolve_target = _resolver(config, role, endpoint, model, ctx, expect)
+    starcie) → TargetChanged, zanim cokolwiek wyjdzie do serwera. `temperature` — temperatura próbkowania
+    (nie podana — domyślna serwera). `allow_cloud` — patrz `_resolver` (tylko rola przypięta jawnie)."""
+    resolve_target = _resolver(config, role, endpoint, model, ctx, expect, allow_cloud)
     resolve_target()  # zły cel (nieznana rola, model chmurowy) — błąd, zanim zbudujemy wiadomości
     body = _messages(messages, system)
 
@@ -195,7 +205,8 @@ def chat(messages, *, role: str | None = None, endpoint: str | None = None, mode
         target, model_name, context = current
         started = time.monotonic()
         limit = _call_limit(timeout, deadline, started)
-        text, metrics = ADAPTERS[target.kind](target, model_name, body, schema, context, limit, cancel)
+        text, metrics = ADAPTERS[target.kind](target, model_name, body, schema, context, limit, cancel,
+                                              temperature)
         if not isinstance(text, str) or not text.strip():
             raise ModelError(f"Model lokalny: pusta odpowiedź modelu {model_name} ({target.host})")
         metrics = {k: v for k, v in metrics.items() if v is not None}

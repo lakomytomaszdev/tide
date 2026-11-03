@@ -88,7 +88,10 @@ OUTPUT_MAX = 256 * 1024
 HANDOFF_DIFF_MAX = 64 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 DESCRIPTION_LIMIT_BYTES = DESCRIPTION_MAX - 1024   # zapas na kolejne wystąpienie bez wycinka (PT-125)
-REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check", "planPath", "mode")
+REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check", "planPath", "mode",
+                  "projects")
+# Zatwierdzenie planu z ticketami w kilku projektach zakłada karty rodzeństwa (K-33 #5); do tego czasu odmowa.
+GROUP_APPROVAL = "zatwierdzanie grupy kart — w następnej wersji"
 
 
 
@@ -517,6 +520,10 @@ class FlowEngine(PlanEditing):
         unknown = [k for k in request if k not in REQUEST_FIELDS]
         if unknown:
             raise FlowError("bad-request", f"nieznane pole „{unknown[0]}”; dozwolone: {', '.join(REQUEST_FIELDS)}")
+        if request.get("projects") and request.get("entry") != "planning":
+            # P7: Od razu i Mam plan pracują w jednym projekcie karty.
+            raise FlowError("single-project", "Od razu i Mam plan pracują w jednym projekcie karty; "
+                                              "kilka projektów zlecenia — wybierz Planowanie")
         if request.get("entry") == "import":
             return self.start_import(card_id, request)
         if request.get("entry") == "plan":
@@ -754,6 +761,9 @@ class FlowEngine(PlanEditing):
         busy = fold(self.journal.read(card_id)).busy_reason()
         if busy:
             raise FlowError("flow-active", f"{card_id}: {busy}")
+        if "projects" in request:
+            item = self._save_order_projects(card_id, item, request["projects"])
+        order = self._order_projects(item, project)
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
@@ -798,7 +808,8 @@ class FlowEngine(PlanEditing):
                             routeKind=selected.route.kind if selected.route else "",
                             routeTokenFile=selected.route.token_file if selected.route else "",
                             trackerProject=project.youtrack,
-                            trackerUrl=yt.load_config()['url'] if project.youtrack else '')
+                            trackerUrl=yt.load_config()['url'] if project.youtrack else '',
+                            projects=order)
         self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
         st = fold(self.journal.read(card_id))
         low = self._low_limit(selected.provider)
@@ -806,6 +817,66 @@ class FlowEngine(PlanEditing):
                 "interactive": mode == "full",
                 "limitWarning": flow_limits.planning_warning(low) if low else "",
                 "cardBranch": ticket_of(st)["cardBranch"], "cardWorktree": ticket_of(st)["cardWorktree"]}
+
+    def _save_order_projects(self, card_id: str, item, value):
+        """Pole `projects` żądania (dodatkowe projekty zlecenia: slugi albo ścieżki repozytoriów) trafia do
+        `projects` karty, gdy różni się od zapisanego; zapis i sprawdzenie (PROJECTS_MAX) robi Tablica."""
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",")]
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise FlowError("bad-request", "projects to lista slugów projektów albo ścieżek repozytoriów")
+        board = self.store.load()
+        wanted = []
+        for entry in (v.strip() for v in value):
+            known = board.project_by_repo(entry) if entry.startswith("/") else board.projects.get(entry)
+            slug = known.slug if known is not None else entry
+            if slug and slug != item.project and slug not in wanted:
+                wanted.append(slug)
+        if wanted == list(item.projects):
+            return item
+        try:
+            self.store.update_card(card_id, {"projects": value})
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        return self.store.load().cards[card_num(card_id)]
+
+    def _order_projects(self, item, project) -> list[dict]:
+        """Projekty zlecenia (K-33 #4): projekt karty i jej dodatkowe projekty, każdy z dostępnym repozytorium.
+        Źródło numerów: klucz YouTracka projektu Tablicy albo lokalny prefiks repozytorium. Repozytorium, które
+        numeruje w YouTracku, a projekt Tablicy nie ma klucza YouTracka, dostaje `configured: false` —
+        sprawdzanie propozycji odrzuci jego tickety. Projekt bez repozytorium kończy zlecenie błędem `no-repo`."""
+        board = self.store.load()
+        out = []
+        for slug in [project.slug, *item.projects]:
+            found = board.projects.get(slug)
+            name = found.name if found is not None else slug
+            if found is None or not found.repo:
+                raise FlowError("no-repo", f"projekt „{name}” nie ma repozytorium — zlecenie nie wystartowało")
+            if found.repo_missing or not os.path.isdir(found.repo):
+                raise FlowError("no-repo", f"repozytorium projektu „{name}” jest niedostępne ({found.repo}) — "
+                                           "zlecenie nie wystartowało")
+            info = {"slug": found.slug, "name": found.name, "repo": found.repo, "main": not out,
+                    "tracker": "youtrack" if found.youtrack else "local", "trackerProject": found.youtrack,
+                    "prefix": found.youtrack, "configured": True}
+            if not found.youtrack:
+                try:
+                    info["prefix"] = reservations.reserve(found.repo, dry_run=True)["prefix"]
+                except reservations.ReservationError as exc:
+                    text = str(exc)
+                    if reservations.REFUSE_YOUTRACK in text:
+                        key = text.split(":", 1)[0].strip()
+                        info.update(tracker="youtrack", trackerProject=key, prefix=key, configured=False)
+                    elif not out:
+                        raise FlowError("no-ticket-number", text) from None
+                    # Dodatkowy projekt bez ustalonego prefiksu: numery nada dopiero zatwierdzenie grupy (#5).
+            info["source"] = flow_plans.source_label(info) if info["prefix"] else "lokalny (prefiks nieustalony)"
+            out.append(info)
+        return out
+
+    @staticmethod
+    def _proposal_projects(order: list[dict]) -> dict:
+        return {p["slug"]: {k: p.get(k) for k in ("name", "prefix", "tracker", "trackerProject", "configured")}
+                for p in order}
 
     def _planning_launch(self, card, st, selected, catalog, *, errors=(), previous="", images=(), round_no=0):
         item, project = self._project(card)
@@ -836,7 +907,8 @@ class FlowEngine(PlanEditing):
                         prefix=st.started["prefix"], out_dir=out, tool=selected.tool, images=shots,
                         tracker="youtrack" if project.youtrack else "local",
                         tracker_url=st.started.get("trackerUrl") or "",
-                        tracker_project=project.youtrack or "")
+                        tracker_project=project.youtrack or "",
+                        projects=st.started.get("projects") or [])
             if prompt_fn is planning.prompt:
                 args.update(errors=errors, previous=previous)
             text = prompt_fn(**args)
@@ -880,7 +952,14 @@ class FlowEngine(PlanEditing):
         with open(os.path.join(inp, "prompt.txt"), "w", encoding="utf-8") as fh:
             fh.write(prompt)
         session = str(uuid.uuid4()) if selected.tool == "claude" else ""
-        command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots, [out], selected.route)
+        # Repozytoria pozostałych projektów zlecenia: Claude dostaje je przez --add-dir z zakazem zapisu (reguły
+        # Edit); Codex w piaskownicy workspace-write czyta dysk bez --add-dir, które dałoby mu prawo zapisu.
+        order = (fold(self.journal.read(item.id)).started or {}).get("projects") or [] if kind == "planning" else []
+        read_dirs = [p["repo"] for p in order if not p.get("main")] if selected.tool == "claude" else []
+        command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots, [out, *read_dirs],
+                                       selected.route)
+        if read_dirs:
+            command.argv[1:1] = ["--disallowedTools", *agentcmd.read_only_rules(read_dirs)]
         if selected.tool == "codex":
             command.argv[1:1] = ["--sandbox", "workspace-write"]
         if selected.route is None:
@@ -1296,12 +1375,19 @@ class FlowEngine(PlanEditing):
                  (finished.get("snapshotDir") or os.path.join(fold(self.journal.read(card_id)).steps[step]["stepDir"], "out"),))
         imported = fold(self.journal.read(card_id)).imported
         source_states = {row["id"]: row["state"] for row in (imported or {}).get("rows", [])}
+        # Projekty zlecenia z card.started (Planowanie); inne wejścia i dawne dzienniki — tylko projekt karty.
+        order = ((fold(self.journal.read(card_id)).started or {}).get("projects") or []
+                 if continuation else [])
+        order = order or [{"slug": project.slug, "name": project.name, "prefix": "", "configured": True,
+                           "tracker": "youtrack" if project.youtrack else "local",
+                           "trackerProject": project.youtrack}]
         proposal = flow_plans.read(path, card_id, catalog, allowed_roots=roots,
                                    tracker='youtrack' if project.youtrack else 'local',
                                    existing_ids=[*source_states,
                                                  *[r["id"] for r in ((fold(self.journal.read(card_id)).plan_approved or {}).get("rows") or [])]],
                                    imported=bool(imported),
-                                   other_plans=self._other_plan_todos(project.repo, card_id))
+                                   other_plans=self._other_plan_todos(project.repo, card_id),
+                                   projects=self._proposal_projects(order))
         if imported:
             original = {row["id"]: row["title"] for row in imported.get("rows") or []}
             proposed = {row["workId"]: row["title"] for row in proposal.rows}
@@ -1348,6 +1434,9 @@ class FlowEngine(PlanEditing):
                             session=proposal.plan.session, rows=rows,
                             planner=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("executor") or
                                     (fold(self.journal.read(card_id)).started or {}).get("executor") or proposal.rows[0]["executor"],
+                            **({"projects": [{k: p.get(k) for k in ("slug", "name", "prefix", "tracker",
+                                                                     "trackerProject", "source", "main")}
+                                             for p in order]} if len(order) > 1 else {}),
                             sourceStep=step, sourceKind=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("kind") or "",
                             specification=self._plan_spec(path) or (fold(self.journal.read(card_id)).plan_proposed or {}).get("specification") or item.description, planPath=os.path.realpath(path))
         return {"ok": True, "id": card_id, "rows": proposal.rows, "waves": proposal.waves}
@@ -1368,6 +1457,11 @@ class FlowEngine(PlanEditing):
         proposal = st.plan_proposed or {}
         if not proposal or st.card_finished:
             raise FlowError("no-plan", f"{card_id}: nie ma planu do zatwierdzenia")
+        main = next((p.get("slug") for p in proposal.get("projects") or [] if p.get("main")), "")
+        others = sorted({row.get("project") for row in proposal.get("rows") or []} - {None, "", main})
+        if others:
+            # Plan z ticketami w kilku projektach zakłada karty rodzeństwa (K-33 #5); dziennik zostaje bez zmian.
+            raise FlowError("group-approval", f"{GROUP_APPROVAL} (tickety w projektach: {', '.join(others)})")
         if not any(e['type'] == 'plan.approval_requested' and e.get('proposal') == proposal['seq']
                    for e in self.journal.read(card_id)):
             self.journal.append(card_id, 'plan.approval_requested', proposal=proposal['seq'])
@@ -1517,7 +1611,12 @@ class FlowEngine(PlanEditing):
                                                      card_branch=made["branch"], worktree=worktree, out_dir=out,
                                                      images=shots)
         read_dirs, context_dirs = [], []
-        if kind in ("planning", "plan-fix"):
+        order = ((fold(self.journal.read(card.id)).started or {}).get("projects") or []
+                 if kind in ("planning", "plan-fix") else [])
+        if order:
+            # Projekty zlecenia (K-33 #4): lista z repozytoriami jest w poleceniu planowania; tu tylko odczyt.
+            read_dirs = [p["repo"] for p in order if not p.get("main")]
+        elif kind in ("planning", "plan-fix"):
             board = self.store.load()
             extras = [board.projects[slug] for slug in card.projects if slug in board.projects]
             read_dirs = [p.repo for p in extras if p.repo and not p.repo_missing]

@@ -1,6 +1,6 @@
 # Standard planu pracy agentów (Tide)
 
-Wersja 1.2, 29.10.2026 (zgodna wstecz z wersjami 1 i 1.1: dodatkowe kolumny są opcjonalne,
+Wersja 1.3, 3.11.2026 (zgodna wstecz z wersjami 1, 1.1 i 1.2: dodatkowe kolumny są opcjonalne,
 a plany z sześcioma kolumnami działają jak dotąd). Ten dokument jest wzorcem, do którego odsyłają pliki `CLAUDE.md` i `AGENTS.md`
 projektów. Plan czyta tide-daemon: tablica w oknie **Tide Sesje**, postęp koordynatora w widżecie
 agentów i sekcja „Plany i tickety” w raporcie porannym (opis: [tide-daemon.md](tide-daemon.md#koordynacja),
@@ -134,6 +134,17 @@ plany sześciokolumnowe zachowują dotychczasowe znaczenie.
 | `Klasa` | `lekki`, `standard`, `mocny` albo `lokalny`; bez kolumny domyślnie `standard` przy zatwierdzaniu karty |
 | `Review` | nazwa recenzenta z katalogu wykonawców; gdy pusta, Tide dobiera inny model tego samego dostawcy |
 | `Blokery` | ID ticketów z tego planu, oddzielone przecinkiem; przed zatwierdzeniem mogą mieć postać `#1`, `#2` |
+
+**Wersja 1.3:** po `Blokery` może dojść opcjonalna kolumna `Projekt` (10 kolumn). Parser czyta plany o 6, 7, 8, 9
+i 10 kolumnach; znaczenie kolumn 1.2 się nie zmienia, a o obecności kolumny decyduje nagłówek, nie pusta ostatnia
+komórka (plan z 9 kolumnami nie staje się planem z kolumną `Projekt`).
+
+| Kolumna 1.3 | Opis |
+| --- | --- |
+| `Projekt` | slug projektu Tablicy, do którego należy ticket; pusta komórka albo brak kolumny = projekt karty. Nieznany slug nie psuje odczytu Sesji i raportu, zgłasza go dopiero sprawdzanie propozycji |
+
+Blokery `#n` w propozycji planu mogą wskazywać dowolny ticket z całego wspólnego planu karty, także z innego
+projektu. W zatwierdzonym planie bloker może być ID z innej karty grupy.
 
 Propozycja planu karty ma numery robocze `#1`, `#2` itd. oraz plik Markdown `tickets/1.md`,
 `tickets/2.md` itd. obok pliku planu. Każda kartka zawiera co najmniej jeden punkt kryteriów

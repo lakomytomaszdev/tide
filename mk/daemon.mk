@@ -30,3 +30,12 @@ next-id:
 	@test -n "$(REPO)" || { echo "Podaj REPO=<katalog repozytorium>, np. make next-id REPO=~/DevWorkspace/plasma-tide"; exit 1; }
 	@/usr/bin/python3 tools/next_id.py "$(REPO)" --count "$(COUNT)" $(if $(PREFIX),--prefix "$(PREFIX)") \
 		$(if $(TITLE),--title "$(TITLE)") $(if $(DRY_RUN),--dry-run)
+
+# Zgodność kart Tablicy po integracji (PT-109): te same pola liczone kodem sprzed i po, tylko odczyt kopii:
+#   make board-compat BOARD=/ścieżka/do/kopii-tablicy [BEFORE_REF=<commit>]
+BOARD ?=
+BEFORE_REF ?=
+.PHONY: board-compat
+board-compat:
+	@test -n "$(BOARD)" || { echo "Podaj BOARD=<kopia katalogu Tablicy> (nigdy prawdziwa Tablica)"; exit 1; }
+	@/usr/bin/python3 tools/board_compat_check.py "$(BOARD)" $(if $(BEFORE_REF),--before-ref "$(BEFORE_REF)")

@@ -127,6 +127,21 @@ _Avoid_: wpis, event w tekstach dla użytkownika
 Jednostka pracy w planie karty z własnym ID (np. `PT-58`, `LOG-240`); przed zatwierdzeniem ma numer roboczy (`#1`).
 _Avoid_: zadanie, issue, karta
 
+**Projekt ticketu**:
+Slug projektu Tablicy, do którego należy ticket; plan zapisuje go w kolumnie `Projekt` (standard 1.3), a pusta komórka albo brak kolumny oznacza projekt karty.
+_Avoid_: repozytorium, workspace
+
+**Projekty zlecenia**:
+Projekty Tablicy, w których ma powstać praca jednego zlecenia: projekt karty i dodatkowe projekty wybrane w oknie
+zlecenia (`projects` karty, razem najwyżej 6). Planowanie widzi ich repozytoria (projekt karty z zapisem, pozostałe
+tylko do odczytu) i daje jeden plan z kolumną `Projekt`; Od razu i Mam plan pracują w jednym projekcie.
+_Avoid_: dodatkowe repozytoria, workspace, multi-repo
+
+**Grupa kart**:
+Karty powstałe z jednego planu wielu projektów: karta zlecenia i po jednej karcie na każdy inny projekt zlecenia
+z ticketami; każda ma własny dziennik, gałąź karty i numery, a blokery mogą wskazywać tickety innej karty grupy.
+_Avoid_: epik, karta zbiorcza, projekt nadrzędny
+
 **Zgłoszenie**:
 Ticket albo karta w zewnętrznym trackerze (YouTrack), np. `LOG-240`.
 _Avoid_: issue, task
@@ -164,6 +179,12 @@ _Avoid_: provider w tekstach dla użytkownika
 Program z modelem i punktem pod jedną nazwą z katalogu, np. „Sonnet”, „Codex”, „Lokalny · qwen3-coder:30b”.
 Ten sam wykonawca może pełnić różne role.
 _Avoid_: agent, implementer, model (model to część wykonawcy)
+
+**Rozpoznawanie pytania**:
+Ustalanie, czy agent na końcu tury prosi użytkownika o cokolwiek (także bez „?”: „uruchom i wklej mi wynik”, „Daj
+znać.”). Dwa stopnie: reguły na tekście, a w wątpliwych końcówkach model lokalny z roli `classify`; do wyniku modelu
+liczą reguły, a bez modelu same reguły. Treść idzie tylko do punktu tej roli.
+_Avoid_: wykrywanie pytań, klasyfikator pytań w tekstach dla użytkownika
 
 **Autor ticketu**:
 Rola wykonawcy, który robi ticket (krok ticketu i poprawki).

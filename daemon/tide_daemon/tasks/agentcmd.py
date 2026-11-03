@@ -56,6 +56,13 @@ def agent_argv(tool: str, binary: str, prompt: str, images: list[str] = (), add_
     raise UnknownTool(tool)
 
 
+def read_only_rules(dirs) -> list[str]:
+    """Reguły Claude Code zabraniające zapisu w katalogach dodanych tylko do odczytu (`--add-dir` repozytoriów
+    innych projektów zlecenia). Reguła Edit obejmuje wszystkie narzędzia zmieniające pliki; `//` — ścieżka
+    bezwzględna od korzenia systemu plików."""
+    return [f"Edit(/{os.path.realpath(d).rstrip('/')}/**)" for d in dirs if d and os.path.isabs(d)]
+
+
 def interactive(tool: str, binary: str, prompt: str, images=(), add_dirs=(),
                 agent: "local_mod.LocalAgent | None" = None) -> "local_mod.Command":
     """Polecenie sesji w Konsoli. Bez `agent` (chmura) samo argv, z `agent` (model lokalny, inny punkt) także
@@ -411,10 +418,13 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
         argv += ["--add-dir", folder]
     if step.permission_mode:
         argv += ["--permission-mode", step.permission_mode]
+    for folder in step.read_dirs:
+        argv += ["--add-dir", folder]   # Read i Grep bez pytania; zapis blokują reguły Edit niżej i piaskownica
     if step.allowed_tools:
         argv += ["--allowedTools", *step.allowed_tools]
-    if step.disallowed_tools:
-        argv += ["--disallowedTools", *step.disallowed_tools]
+    disallowed = [*step.disallowed_tools, *read_only_rules(step.read_dirs)]
+    if disallowed:
+        argv += ["--disallowedTools", *disallowed]
     return argv, {settings_path: json.dumps(settings, indent=2, ensure_ascii=False) + "\n"}, secret
 
 

@@ -713,7 +713,48 @@ function startCardRequest(state, images) {
     if (state.entry === "plan") request.planPath = state.planPath
     if (state.reviewer && state.entry === "now") request.reviewer = state.reviewer
     if (state.preferredProvider) request.preferredProvider = state.preferredProvider
+    // Projekty zlecenia (K-33 #4): tylko Planowanie; Od razu i Mam plan są jednoprojektowe (P7).
+    if (state.entry === "planning") request.projects = (state.projects || []).slice()
     return request
+}
+
+// Zdanie o jednoprojektowości przy Od razu i Mam plan; pusty napis przy innych wejściach.
+function singleProjectNote(entry, project) {
+    if (entry !== "now" && entry !== "plan") return ""
+    const name = project && project.name ? " („" + project.name + "”)" : ""
+    return (entry === "now" ? "Od razu" : "Mam plan") + " pracuje w jednym projekcie karty" + name
+        + ". Kilka projektów zlecenia — wybierz Planowanie."
+}
+
+// --- plan z kolumną Projekt (K-33 #4) -------------------------------------------------------------
+
+// Projekty planu ze źródłem numerów; pusta lista — plan jednoprojektowy.
+function planProjects(plan) {
+    return plan && Array.isArray(plan.projects) && plan.projects.length > 1 ? plan.projects : []
+}
+
+// „Źródło numerów: plasma-tide — lokalny PT · mobileapp — YouTrack APP5”.
+function planProjectsLine(plan) {
+    const list = planProjects(plan)
+    if (!list.length) return ""
+    return "Źródło numerów: " + list.map(p => (p.name || p.slug) + " — " + (p.source || "")).join(" · ")
+}
+
+// Nazwa projektu wiersza (pusty napis w planie jednoprojektowym).
+function planRowProject(plan, row) {
+    const list = planProjects(plan)
+    if (!list.length || !row) return ""
+    const slug = row.project || (list.find(p => p.main) || list[0]).slug
+    const found = list.find(p => p.slug === slug)
+    return found ? (found.name || found.slug) : slug
+}
+
+// Plan z ticketami w więcej niż jednym projekcie — zatwierdzenie zakłada grupę kart (następna wersja).
+function planIsGroup(plan) {
+    const list = planProjects(plan)
+    if (!list.length) return false
+    const main = (list.find(p => p.main) || list[0]).slug
+    return (plan.rows || []).some(r => r.project && r.project !== main)
 }
 
 function planCandidates(card) {
@@ -829,10 +870,16 @@ function launchFooter(state) {
     if (state.mode === "light")
         return "Planowanie w tle bez Konsoli: " + (state.executor || "planujący")
             + " zapisze specyfikację i tickety. Plan poczeka w „Czeka na mnie” na Twoje zatwierdzenie."
-            + ((state.extras || []).length ? " Dodatkowe projekty do odczytu: " + state.extras.map(p => p.name).join(", ") + "." : "")
+            + orderNote(state)
     return "Planowanie Pełne w jednej karcie Konsoli: " + (state.executor || "planujący")
         + " dopyta, zapisze specyfikację i pokaże podział na tickety. Po review plan poczeka w „Czeka na mnie” na Twoje zatwierdzenie."
-        + ((state.extras || []).length ? " Dodatkowe projekty jako kontekst: " + state.extras.map(p => p.name).join(", ") + "." : "")
+        + orderNote(state)
+}
+
+// Zdanie stopki o projektach zlecenia przy Planowaniu: jeden plan z kolumną Projekt, inne repozytoria tylko do odczytu.
+function orderNote(state) {
+    const names = (state.extras || []).map(p => p.name)
+    return names.length ? " Projekty zlecenia (jeden plan z kolumną Projekt, do odczytu): " + names.join(", ") + "." : ""
 }
 
 // Zdanie stopki o dodatkowych projektach (PT-28): „ Pracuje też w mobileapp, infra (gałąź … w każdym, które zmieni).”

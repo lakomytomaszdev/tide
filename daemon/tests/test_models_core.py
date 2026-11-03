@@ -176,7 +176,7 @@ class ConfigTest(unittest.TestCase):
         local = cfg.endpoint()
         self.assertEqual((local.name, local.url, local.kind, local.token_file),
                          ("local", "http://127.0.0.1:11434", "ollama", ""))
-        self.assertEqual(sorted(cfg.roles), ["describe", "embed", "summary"])
+        self.assertEqual(sorted(cfg.roles), ["classify", "describe", "embed", "summary"])
         for name in ("summary", "describe"):
             role = cfg.role(name)
             self.assertEqual((role.endpoint, role.model, role.ctx), ("local", "qwen3:8b", 8192))
@@ -232,6 +232,7 @@ class ConfigTest(unittest.TestCase):
             "bielik": ("local", BIELIK, None),
             "server": ("local", "qwen3:8b", None),              # ctx 0 — kontekst serwera
             "mlx": ("lm", "mlx-community/Qwen3-8B-4bit", None),
+            "classify": ("local", "qwen3:8b", None),            # rola domyślna bez wpisu w pliku (PT-42)
         })
         self.assertEqual(cfg.endpoint("local").url, "http://127.0.0.1:11434")
         self.assertEqual(cfg.endpoint("lm").url, "http://mac-studio:1234")  # /v1 dokłada klient
@@ -244,7 +245,8 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg.endpoint().name, "mac")
         self.assertEqual({n: (r.endpoint, r.model) for n, r in cfg.roles.items()},
                          {"agent": ("mac", "qwen3-coder:30b"), "summary": ("mac", "qwen3:8b"),
-                          "describe": ("mac", "qwen3:8b"), "embed": ("mac", "bge-m3")})
+                          "describe": ("mac", "qwen3:8b"), "embed": ("mac", "bge-m3"),
+                          "classify": ("mac", "qwen3:8b")})
         self.assertEqual(cfg.endpoint("local").kind, "ollama")  # rodzaj domyślny
 
     def test_broken_file_falls_back_to_defaults_with_error(self):
@@ -338,7 +340,7 @@ class ConfigTest(unittest.TestCase):
         cfg = models_config.from_dict({"endpoints": {"mac": {"url": "mac-studio"}}, "roles": "nie"})
         self.assertEqual(list(cfg.endpoints), ["local"])
         self.assertEqual(len(cfg.warnings), 3, cfg.warnings)
-        self.assertEqual(sorted(cfg.roles), ["describe", "embed", "summary"])
+        self.assertEqual(sorted(cfg.roles), ["classify", "describe", "embed", "summary"])
 
     def test_unknown_role_and_endpoint_raise_model_error(self):
         cfg = models_config.from_dict({})
@@ -646,7 +648,7 @@ class StatusTest(unittest.TestCase):
         roles = {n: (r["installed"], r["available"], r["ctx"]) for n, r in state["roles"].items()}
         self.assertEqual(roles, {"embed": (True, True, None), "polish": (True, True, None),
                                  "agent": (False, False, None), "summary": (True, True, 8192),
-                                 "describe": (True, True, 8192)})
+                                 "describe": (True, True, 8192), "classify": (True, True, None)})
         self.assertTrue(state["checked"])
         self.assertEqual(state["config"], {"path": "", "exists": True, "error": "", "warnings": []})
         # Tylko odczyt: żadne zapytanie nie ładuje modelu.

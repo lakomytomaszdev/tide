@@ -88,6 +88,29 @@ Rectangle {
             font.pixelSize: 14
             wrapMode: Text.Wrap
         }
+        // Plan z kolumną Projekt (K-33 #4): źródło numerów każdego projektu zlecenia.
+        Text {
+            objectName: "planManagerProjects"
+            Layout.fillWidth: true
+            visible: text !== ""
+            text: Logic.planProjectsLine(manager.plan)
+            textFormat: Text.PlainText
+            color: Tide.Tokens.textSecondary
+            font.family: Tide.Theme.uiFamily
+            font.pixelSize: 13
+            wrapMode: Text.Wrap
+        }
+        Text {
+            objectName: "planManagerGroupNotice"
+            Layout.fillWidth: true
+            visible: Logic.planIsGroup(manager.plan)
+            text: "Plan obejmuje kilka projektów: zatwierdzanie grupy kart — w następnej wersji."
+            textFormat: Text.PlainText
+            color: Tide.Tokens.butter
+            font.family: Tide.Theme.uiFamily
+            font.pixelSize: 13
+            wrapMode: Text.Wrap
+        }
         // Uwagi review bywają długie (K-33: 23 punkty) — mają własne przewijanie i limit wysokości, żeby lista
         // ticketów i „Zatwierdź plan” zawsze mieściły się w oknie.
         QQC2.ScrollView {
@@ -209,8 +232,11 @@ Rectangle {
                             anchors.margins: 10
                             spacing: 3
                             Text {
+                                objectName: "planManagerRow-" + parent.parent.ticketId
                                 Layout.fillWidth: true
                                 text: "Fala " + manager.waveOf(parent.parent.ticketId) + " · " + parent.parent.ticketId
+                                      + (Logic.planRowProject(manager.plan, parent.parent.modelData)
+                                         ? " · ◆ " + Logic.planRowProject(manager.plan, parent.parent.modelData) : "")
                                       + " · " + parent.parent.modelData.title
                                 textFormat: Text.PlainText
                                 color: Tide.Tokens.textPrimary
@@ -250,6 +276,17 @@ Rectangle {
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: 16
                     font.bold: true
+                    wrapMode: Text.Wrap
+                }
+                Text {
+                    objectName: "planManagerTicketProject"
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    text: Logic.planRowProject(manager.plan, manager.selectedTicket)
+                          ? "Projekt: " + Logic.planRowProject(manager.plan, manager.selectedTicket) : ""
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
                     wrapMode: Text.Wrap
                 }
                 Text {

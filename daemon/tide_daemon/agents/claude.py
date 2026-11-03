@@ -131,7 +131,7 @@ class ClaudeLog(SessionLog):
         if uses:
             self.said("", ts)  # narzędzie po tekście — wcześniejsze pytanie nie kończy tury
         elif text:
-            self.said(text, ts)
+            self.said(text, ts, str(record.get("uuid") or ""))
         if uses:
             self.set_phase(TOOL_PENDING, ts)
             for use in uses:

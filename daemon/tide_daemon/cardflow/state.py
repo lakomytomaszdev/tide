@@ -873,6 +873,8 @@ def _plan_view(st: FlowState, out: dict) -> tuple[list, set]:
                            else "pending" if revision_pending else "done" if st.plan_finished else
                            "approved" if st.plan_approved else "pending" if st.plan_proposed else "invalid",
                            "rows": rows, "waves": waves,
+                           # Projekty zlecenia ze źródłem numerów (K-33 #4); pusta lista — jeden projekt.
+                           "projects": proposal.get("projects") or [],
                            "errors": plan_errors(st)}
     return rows, finished_ids
 

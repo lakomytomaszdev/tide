@@ -143,6 +143,10 @@ class LightPlanningTest(FlowInProcess):
         self.assertIn(extra, filesystem["allowRead"])
         self.assertNotIn(extra, filesystem["allowWrite"])
         self.assertEqual(filesystem["denyRead"], ["~"])
+        with open(os.path.join(step["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            argv = json.load(fh)["argv"]
+        self.assertIn(extra, [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"])  # obok katalogu wyjściowego kroku
+        self.assertIn(f"Edit(/{os.path.realpath(extra)}/**)", argv[argv.index("--disallowedTools"):])
 
     def test_initial_board_persists_class_based_rules_and_clearing_override_restores_them(self):
         from tide_daemon.board.assignment import KEY, DEFAULT_RULES

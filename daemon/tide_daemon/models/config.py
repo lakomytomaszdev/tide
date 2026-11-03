@@ -68,7 +68,12 @@ DEFAULT_CTX = 8192
 # Role domyślne (bez punktu — idą na `default`) i kontekst, który dostają, gdy plik go nie podaje.
 # `embed` — embeddingi do wyszukiwania po znaczeniu w KRunnerze (PT-19); mały model, dobry dla polskiego.
 DEFAULT_EMBED_MODEL = "bge-m3"
-DEFAULT_ROLES = {"summary": DEFAULT_MODEL, "describe": DEFAULT_MODEL, "embed": DEFAULT_EMBED_MODEL}
+# `classify` — rozpoznawanie pytań na końcu tury agenta (PT-42, agents/classify.py): krótkie wywołanie z JSON-em.
+DEFAULT_ROLES = {"summary": DEFAULT_MODEL, "describe": DEFAULT_MODEL, "embed": DEFAULT_EMBED_MODEL,
+                 "classify": DEFAULT_MODEL}
+# Role, którym użytkownik może jawnie przypisać model w chmurze („punkt:model”, np. „local:gpt-oss:120b-cloud”):
+# treść ostatniej wiadomości agenta wychodzi wtedy poza ten komputer, więc tylko z jawnym punktem (decyzja 70).
+CLOUD_ROLES = ("classify",)
 ROLE_CTX = {"summary": DEFAULT_CTX, "describe": DEFAULT_CTX}
 MAX_CTX = 1 << 20
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,39}")
@@ -266,7 +271,7 @@ def _role(name, value, endpoints, skipped, default, unreachable, warnings) -> Ro
             return Role(name, head, rest, ctx, reason, pinned=True)
     if endpoint is None and unreachable:
         return Role(name, unreachable[0], model, ctx, unreachable[1])
-    if is_cloud_model(model):
+    if is_cloud_model(model) and not (name in CLOUD_ROLES and endpoint is not None):
         reason = cloud_refusal(model)
         warnings.append(f"rola „{name}”: {reason} — rola niedostępna")
         return Role(name, endpoint or default, model, ctx, reason, pinned=endpoint is not None)

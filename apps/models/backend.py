@@ -34,7 +34,7 @@ LOST_ERROR = "usługa tide-daemon nie odpowiedziała — sprawdź stan po odświ
 THIS_PC = "Ten komputer"
 # Role, których używa Tide, w kolejności widoku; summary i describe liczą się tylko w trybie raportu „local”.
 # Wyszukiwanie (embed, PT-19) jest opcjonalne: brak jego modelu nie zapala plakietki (tylko wiersz roli).
-ROLE_TITLES = {"summary": "Raport", "describe": "Opisy kart", "agent": "Agent", "embed": "Wyszukiwanie"}
+ROLE_TITLES = {"summary": "Raport", "describe": "Opisy kart", "classify": "Rozpoznawanie pytań", "agent": "Agent", "embed": "Wyszukiwanie"}
 
 
 def is_local_url(url: str) -> bool:

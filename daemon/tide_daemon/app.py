@@ -262,6 +262,11 @@ def main(argv=None) -> int:
     models = None if args.no_models else start_models(app, args, report, coordination, search)
     if models is not None:
         scanner.known_local_models = models.known_models  # role i modele na serwerach ze stanu /Models
+        # Drugi stopień rozpoznawania pytań (PT-42): model roli `classify` ocenia wątpliwe końcówki tur; wynik
+        # przelicza stan w wątku Qt, zamknięcie usługi przerywa trwające wywołanie.
+        from .agents.classify import Classifier
+        scanner.classifier = Classifier(on_result=monitor.classified.emit)
+        app.aboutToQuit.connect(scanner.classifier.close)
     tasks = None if args.no_tasks else start_tasks(app, args, launchers, trees, monitor)
     board = None if args.no_board else start_board(app, args, trees, monitor, coordination, clock, limits)
     if board is not None:
