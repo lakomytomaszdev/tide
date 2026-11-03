@@ -328,15 +328,33 @@ def _env(step: Step, home_env: dict, inp: str) -> dict:
     return env
 
 
+FONT_DIRS = (".local/share/fonts", ".fonts", ".config/fontconfig")
+
+
+def _font_dirs(home: str) -> list[str]:
+    """Czcionki użytkownika tylko do odczytu: bez nich testy widoków QML w kroku liczą układ innymi czcionkami
+    i klikają obok przycisków (K-33/PT-108: dwa testy panelu przechodziły tylko poza piaskownicą)."""
+    found = []
+    for rel in FONT_DIRS:
+        path = os.path.realpath(os.path.join(home, rel)) if home else ""
+        if path and os.path.isdir(path) and path not in found:
+            found.append(path)
+    return found
+
+
 def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list, dict, dict]:
     """argv, pliki (ustawienia piaskownicy dla `--settings`) i pliki tokenów do sprawdzenia przed startem."""
     settings = {"sandbox": {
         "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
         "autoAllowBashIfSandboxed": not step.enforce_command_policy,
         "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs,
-                                                        *([env["NUGET_PACKAGES"]] if step.dotnet and env.get("NUGET_PACKAGES") else [])],
+                                                        *([env["NUGET_PACKAGES"]] if step.dotnet and env.get("NUGET_PACKAGES") else []),
+                                                        *_font_dirs(home)],
                        "allowWrite": [out]},
-        "network": {"allowedDomains": []}}}
+        "network": {"allowedDomains": []}},
+        # Zasada projektów: commity bez podpisów i wzmianek o AI (K-33/PT-108: review odrzuciło stopkę
+        # Co-Authored-By, którą Claude Code dopisuje domyślnie).
+        "includeCoAuthoredBy": False, "attribution": {"commit": "", "pr": ""}}
     if step.local is not None:
         opts = local_mod.options("claude", step.local)
         token = step.local.token_file

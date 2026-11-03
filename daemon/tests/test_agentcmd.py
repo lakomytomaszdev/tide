@@ -161,6 +161,15 @@ class BackgroundClaudeTest(BackgroundBase):
         with self.assertRaises(agentcmd.StepError):
             agentcmd.background(self.step(resume=True, session_id=""))
 
+    def test_steps_read_user_fonts_and_commit_without_attribution(self):
+        fonts = os.path.join(self.home, ".local", "share", "fonts")
+        os.makedirs(fonts)
+        settings = self.settings(agentcmd.background(self.step()))
+        self.assertIn(os.path.realpath(fonts), settings["sandbox"]["filesystem"]["allowRead"])
+        self.assertNotIn(os.path.realpath(fonts), settings["sandbox"]["filesystem"]["allowWrite"])
+        self.assertIs(settings["includeCoAuthoredBy"], False)
+        self.assertEqual(settings["attribution"], {"commit": "", "pr": ""})
+
     def test_sandbox_settings_match_the_pt75_pattern(self):
         sandbox = self.settings(agentcmd.background(self.step()))["sandbox"]
         inp, out = os.path.join(self.step_dir, "in"), os.path.join(self.step_dir, "out")
