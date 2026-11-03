@@ -600,3 +600,16 @@ class PlanWorkInProgressTest(unittest.TestCase):
         self.assertEqual(build_decisions(st), [])
         shown = derived(st, CARD)
         self.assertEqual((shown["column"], shown["note"]), ("progress", "review planu w tle"))
+
+
+class FlowErrorRecoveryTest(unittest.TestCase):
+    def test_flow_error_clears_when_the_failed_operation_succeeds(self):
+        # 04.11, K-38: zapis planu przeszedł po naprawie gita, a kafelek dalej pokazywał błąd przepływu.
+        events = (Events(entry="plan").add("result", action="plan-commit", key="1", ok=False,
+                                           error="worktree karty nie należy do gałęzi planu")
+                  .add("flow.error", error="FlowError: worktree karty nie należy do gałęzi planu"))
+        self.assertTrue(fold(events.items).flow_error)
+        events.add("result", action="merge", key="2", ok=True)
+        self.assertTrue(fold(events.items).flow_error)
+        events.add("result", action="plan-commit", key="1", ok=True)
+        self.assertEqual(fold(events.items).flow_error, "")

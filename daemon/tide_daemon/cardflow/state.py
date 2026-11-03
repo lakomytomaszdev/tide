@@ -92,6 +92,8 @@ class FlowState:
     store_move_id: str = ""                         # ostatni ruch MoveCard potwierdzony w dzienniku
     rejected: set = field(default_factory=set)
     flow_error: str = ""
+    flow_error_action: str = ""                     # akcja, której nieudany wynik poprzedził flow.error
+    last_failed_action: str = ""
     last_seq: int = 0
 
     def running(self) -> list[dict]:
@@ -220,6 +222,12 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "result":
             st.results[(e.get("action"), e.get("key"))] = e
             st.tracker_retries.pop((e.get('action'), e.get('key')), None)
+            if e.get("ok") and e.get("action") == st.flow_error_action:
+                # Ta sama operacja przeszła przy kolejnym ticku — błąd przepływu jest nieaktualny (K-38, 04.11:
+                # zapis planu przeszedł po naprawie gita, a kafelek dalej pokazywał błąd do startu kolejnego kroku).
+                st.flow_error = st.flow_error_action = ""
+            if not e.get("ok"):
+                st.last_failed_action = e.get("action") or ""
         elif kind == "card.inputs":
             st.inputs = e
         elif kind == "step.waiting":
@@ -239,7 +247,7 @@ def fold(events: list[dict]) -> FlowState:
             if not (st.plan_approved and e.get("kind") in ("plan-amend", "plan-review", "plan-revise")):
                 st.last_step = e.get("step") or ""
             st.moved_to = ""
-            st.flow_error = ""
+            st.flow_error = st.flow_error_action = ""
         elif kind == "step.entered" and e.get("step") in st.steps:
             st.steps[e["step"]] = {**st.steps[e["step"]], "mode": "interactive",
                                    "session": e.get("session") or "", "closeFile": e.get("closeFile") or "",
@@ -339,6 +347,7 @@ def fold(events: list[dict]) -> FlowState:
             st.reviewer_overrides[e.get("ticket")] = e
         elif kind == "flow.error":
             st.flow_error = e.get("error") or ""
+            st.flow_error_action = st.last_failed_action
         elif kind == "card.paused":
             st.paused = True
         elif kind == "card.resumed":
