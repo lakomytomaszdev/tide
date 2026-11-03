@@ -88,8 +88,8 @@ PRIVATE = [
     ("firma", re.compile(r"acme[\s_-]?corp[\w-]*", re.I)),
     # treść z projektów klienta (nazwy produktów, tickety, repozytoria) i ślady kroków w tle — nie do zastąpienia
     # automatycznego: usuń wiadomość albo zastąp ją wiadomością z własnych projektów
-    ("projekt klienta", re.compile(r"coretools\w*|\bDPT-\d+|\bDP[45]\b|"
-                                   r"[\w-]+\.step\b|\bout/(?:note\.md|result\.json)", re.I)),
+    # (same `out/note.md` i `out/result.json` nic nie zdradzają — kroki w tle własnych projektów piszą o nich stale)
+    ("projekt klienta", re.compile(r"coretools\w*|\bDPT-\d+|\bDP[45]\b|[\w-]+\.step\b", re.I)),
     ("telefon / PESEL / IBAN", re.compile(r"(?<!\d)(?:\+48[\s-]?)?\d{3}[\s-]\d{3}[\s-]\d{3}(?!\d)|(?<!\d)\d{11}(?!\d)|"
                                           r"\bPL\d{2}(?:[\s]?\d{4}){6}\b")),
 ]

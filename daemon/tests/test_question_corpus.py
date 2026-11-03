@@ -422,6 +422,10 @@ class ReviewTest(unittest.TestCase):
                        "wiersz dpt-11-testy.fix-4.step/out/note.md", "id asst_sDfBnu0kDkEhKAFGftGCMiFi"):
             self.assertNotEqual(qc.privacy_problems(qc.redact("Treść. " + secret)), [], secret)
 
+    def test_result_file_names_alone_are_not_client_content(self):
+        text = "Zapisałem `out/note.md` i `out/result.json` z wynikiem `done`."
+        self.assertEqual(qc.privacy_problems(text), [])
+
     def test_cli_apply_with_redact_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             md, corpus = os.path.join(tmp, "r.md"), os.path.join(tmp, "k.jsonl")
