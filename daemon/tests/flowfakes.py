@@ -201,6 +201,10 @@ elif word == "powoli":
     for i in range(count * 4):
         write(f"krok {i}")
         time.sleep(0.25)
+if word == "login" and "Użytkownik polecił ponowić" not in prompt:
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": True,
+                      "result": "Failed to authenticate: OAuth session expired and could not be refreshed"}), flush=True)
+    sys.exit(1)
 commit()
 if word == "cli-zgoda":
     print(json.dumps({"type": "result", "subtype": "success", "permission_denials": [

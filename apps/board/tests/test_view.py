@@ -1891,6 +1891,15 @@ out["allowBottom"] = js("(function(){ const b = " + FIND + "(page.cardPanel, 'ca
         self.assertFalse(out["reviewShown"], "po zatwierdzeniu review jest w widoku planu")
         self.assertLessEqual(out["allowBottom"], 0)
 
+    def test_flow_error_shows_what_to_do(self):
+        data = self.flow_card("", flowError="FlowGitError: worktree ticketu ma lokalne zmiany",
+                              flowErrorHint="W worktree ticketu są niezacommitowane pliki.")
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+out["hint"] = [obj("cardFlowErrorHint").property("visible"), obj("cardFlowErrorHint").property("text")]
+""", data=data)
+        self.assertEqual(out["hint"], [True, "W worktree ticketu są niezacommitowane pliki."])
+
     def test_error_shows_retry_and_change_executor(self):
         out = self.probe(FIND_PY + """
 click(card("K-6"))

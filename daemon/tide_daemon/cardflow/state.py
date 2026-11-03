@@ -25,6 +25,7 @@ from datetime import datetime
 RESULT_LABELS = {"done": "gotowe", "question": "pytanie", "denied": "brak zgody", "error": "błąd", "stopped": "zatrzymany"}
 REASON_LABELS = {"no-result": "brak pliku wyniku", "bad-result": "zły plik wyniku", "no-progress": "bez postępu",
                  "exit": "program zakończył się błędem", "start": "krok nie wystartował",
+                 "login": "wygasło logowanie agenta — zaloguj się (np. `claude /login` w terminalu) i kliknij Ponów",
                  "timeout": "przekroczony czas kroku", "local-unavailable": "serwer lokalny jest niedostępny",
                  "lost": "krok zniknął (restart usługi)", "bad-review": "niepoprawny werdykt review",
                  "review-changed-ticket": "recenzent zmienił gałąź albo pliki ticketu", "abandoned": "porzucony"}
@@ -434,12 +435,36 @@ def decision_step(st: FlowState) -> str:
         done = st.finished.get(name) or {}
         if done.get("result") not in ("question", "denied", "error"):
             continue
-        if done.get("result") == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "limit":
+        if done.get("result") == "error" and int(step.get("attempt") or 0) == 0 and \
+                done.get("reason") not in ("limit", "login"):
             continue
         if any(s.get("parentStep") == name for s in st.steps.values()):
             continue
         return name
     return attention_step(st) or st.last_step
+
+
+# Błąd przepływu (np. gita usługi) bez nazwy klasy i z tym, co użytkownik może zrobić sam; Tide ponawia akcję przy
+# każdym przebiegu, więc po usunięciu przyczyny karta rusza bez dalszych kliknięć (03.11: K-35, K-15).
+FLOW_ERROR_HINTS = (
+    ("lokalne zmiany", "W worktree ticketu są niezacommitowane pliki. Tide raz odsyła krok autorowi do sprzątnięcia; "
+                       "jeśli nadal są, otwórz worktree (Worktrees), zacommituj albo usuń te pliki — karta ruszy sama."),
+    ("przekracza 300 000", "Zmiany ticketu są za duże do review — podziel ticket w planie albo odeślij plan z uwagami."),
+    ("nie ma gałęzi", "Brakuje gałęzi ticketu albo karty — sprawdź Worktrees; jeśli ją usunięto, odrzuć ticket w planie."),
+    ("katalog recenzentów", "Brak modelu recenzenta — sprawdź widok Modele (logowanie, dostępność)."),
+)
+
+
+def flow_error_text(error: str) -> str:
+    return error.split(": ", 1)[1] if error.startswith(("FlowGitError: ", "FlowError: ")) else error
+
+
+def flow_error_hint(error: str) -> str:
+    low = error.casefold()
+    for needle, hint in FLOW_ERROR_HINTS:
+        if needle in low:
+            return hint
+    return "Tide ponawia tę akcję automatycznie; jeśli błąd się utrzymuje, otwórz kartę i sprawdź worktree ticketu."
 
 
 def derived(st: FlowState, card: dict) -> dict | None:
@@ -597,7 +622,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
         focus = decision_step(st)
         focus_step = st.steps.get(focus) or {}
         focus_done = st.finished.get(focus) or {}
-        if focus_step.get("kind") in ("plan-amend", "plan-review", "plan-revise") and focus_done.get("result") in ("question", "denied", "error") and focus not in st.step_decisions and (focus_done.get("result") != "error" or int(focus_step.get("attempt") or 0) > 0):
+        if focus_step.get("kind") in ("plan-amend", "plan-review", "plan-revise") and focus_done.get("result") in ("question", "denied", "error") and focus not in st.step_decisions and (focus_done.get("result") != "error" or int(focus_step.get("attempt") or 0) > 0 or focus_done.get("reason") == "login"):
             result = focus_done["result"]
             out["flow"].update({"step": focus, "stepKind": focus_step["kind"], "result": result,
                                 "executor": focus_step.get("executor") or "", "provider": focus_step.get("provider") or "",
@@ -678,7 +703,9 @@ def derived(st: FlowState, card: dict) -> dict | None:
     if failed and not done:
         return _fill(out, "waiting", f"błąd zlecenia: {failed[-1].get('error') or failed[-1].get('action')}")
     if st.flow_error:
-        return _fill(out, "waiting", f"{ident}: {st.flow_error}")
+        out["flow"]["flowError"] = st.flow_error
+        out["flow"]["flowErrorHint"] = flow_error_hint(st.flow_error)
+        return _fill(out, "waiting", f"{ident}: {flow_error_text(st.flow_error)}")
     result = done.get("result") or ""
     if result == "done":
         if step.get("mode") == "interactive" and not step.get("consoleClosed"):
@@ -724,7 +751,8 @@ def derived(st: FlowState, card: dict) -> dict | None:
     if result in ("error", "stopped"):
         reason = REASON_LABELS.get(done.get("reason") or "", done.get("reason") or "")
         if result == "error":
-            if int(step.get("attempt") or 0) == 0 and st.last_step not in st.step_decisions:
+            if int(step.get("attempt") or 0) == 0 and st.last_step not in st.step_decisions and \
+                    done.get("reason") != "login":
                 return _fill(out, "progress", f"{ident} · ponawiam krok po błędzie")
             if st.last_step in st.step_decisions:
                 return _fill(out, "progress", f"{ident} · wznawiam po decyzji użytkownika")

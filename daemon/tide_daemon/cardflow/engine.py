@@ -78,6 +78,22 @@ class FlowDeferred(Exception):
     """Krok czeka na wolne miejsce; nie jest to błąd karty."""
 
 
+
+LOGIN_MARKERS = ("failed to authenticate", "oauth session expired", "please run /login", "invalid api key",
+                 "authentication_error", "not logged in", "401 unauthorized")
+
+
+def _login_expired(log: str) -> bool:
+    """Koniec dziennika kroku mówi o wygasłym albo brakującym logowaniu programu agenta."""
+    try:
+        with open(log, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 20_000))
+            tail = fh.read().decode("utf-8", "replace").casefold()
+    except OSError:
+        return False
+    return any(marker in tail for marker in LOGIN_MARKERS)
+
 class FlowError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -805,7 +821,7 @@ class FlowEngine(PlanEditing):
         if result in ("question", "denied", "error"):
             if decision:
                 self._resume_step(card, st, step, decision)
-            elif result == "error" and int(step.get("attempt") or 0) == 0:
+            elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
                 if step["step"] not in st.step_retries:
                     self.journal.append(card, "step.retry", step=step["step"], ticket="",
                                         reason=done.get("reason") or "")
@@ -1702,7 +1718,7 @@ class FlowEngine(PlanEditing):
             decision = st.step_decisions.get(st.last_step)
             if decision:
                 self._resume_step(card, st, step, decision)
-            elif int(step.get("attempt") or 0) == 0:
+            elif int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
                 if st.last_step not in st.step_retries:
                     self.journal.append(card, "step.retry", step=st.last_step, ticket=step.get("ticket") or "",
                                         reason=done.get("reason") or "")
@@ -2110,7 +2126,7 @@ class FlowEngine(PlanEditing):
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
                    for s in st.running())
         if st.card_finished or busy or not step or choice not in valid or \
-                (result == "error" and int(step.get("attempt") or 0) == 0):
+                (result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login"):
             raise FlowError("no-step-question", f"{card}: ten krok nie czeka na taką decyzję")
         previous = st.step_decisions.get(focus)
         if previous:
@@ -2861,6 +2877,9 @@ class FlowEngine(PlanEditing):
         data = forced or self._result(os.path.join(out, handoff.RESULT_FILE))
         if forced is None and exit_code != 0:
             data = {**data, "result": "error", "reason": "lost" if exit_code is None else "exit"}
+        if forced is None and data.get("result") == "error" and _login_expired(os.path.join(out, "step.log")):
+            # K-35, 03.11 07:58: wygasłe logowanie wyglądało jak zwykły błąd „exit” i zużywało ponowienia.
+            data = {**data, "reason": "login"}
         if forced is None and step.get("program") == "claude" and data.get("result") == "error":
             denied = self._claude_denied_command(os.path.join(out, "step.log"))
             if denied:

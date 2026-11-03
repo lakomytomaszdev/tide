@@ -102,7 +102,7 @@ class PlanEditing:
         decision = st.step_decisions.get(step["step"])
         if decision:
             self._resume_step(card, st, step, decision)
-        elif result == "error" and int(step.get("attempt") or 0) == 0:
+        elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
             if step["step"] not in st.step_retries:
                 self.journal.append(card, "step.retry", step=step["step"], ticket="", reason=done.get("reason") or "")
             self._resume_step(card, fold(self.journal.read(card)), step, {"choice": "auto"}, attempt=1)

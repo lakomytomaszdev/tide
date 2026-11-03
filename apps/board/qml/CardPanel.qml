@@ -1071,6 +1071,19 @@ Rectangle {
                         }
                         Item { Layout.fillWidth: true }
                     }
+                    Text {
+                        // Błąd przepływu po ludzku: co się stało i co zrobić samemu (03.11).
+                        objectName: "cardFlowErrorHint"
+                        Layout.fillWidth: true
+                        visible: Boolean(panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
+                                         && panel.card.derived.flow.flowErrorHint)
+                        text: visible ? panel.card.derived.flow.flowErrorHint : ""
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.butter
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
                     ColumnLayout {
                         id: stepDecision
                         objectName: "cardStepDecision"

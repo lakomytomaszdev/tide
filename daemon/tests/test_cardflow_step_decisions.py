@@ -13,6 +13,19 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: box, timeout=20), "ResolveCardStep bez odpowiedzi")
         return json.loads(box[0])
 
+    def test_expired_login_asks_at_once_without_burning_the_retry(self):
+        # 03.11 07:58: wygasłe logowanie Claude wyglądało jak „exit” i zużywało automatyczne ponowienie.
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: login")
+        self.assertTrue(self.start(card_id)["ok"])
+        card = self.wait_column(card_id, "waiting")
+        finished = self.of(card_id, "step.finished")
+        self.assertEqual([(f["result"], f["reason"]) for f in finished], [("error", "login")])
+        self.assertEqual(self.of(card_id, "step.retry"), [])
+        self.assertEqual(card["derived"]["flow"]["action"], "error")
+        self.assertIn("zaloguj się", card["derived"]["note"])
+        self.assertTrue(self.decide(card_id, choice="retry")["ok"])
+        self.wait_column(card_id, "review")
+
     def test_leftover_files_send_the_step_back_once_to_clean_up(self):
         # K-35/PT-132: autor zostawił nieśledzony plik diagnostyczny i karta stała z flow.error.
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: smieci")
