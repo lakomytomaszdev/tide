@@ -12,20 +12,32 @@
 // usługi przy odpowiedzi (decyzja wraca), `showPreview(id, odpowiedź)` i sygnał `previewRequested(decisionId,
 // method, params)` — podgląd karty z błędem Tide przed zapisem (PT-125, DecisionForm.qml), sygnały
 // `backRequested()`, `answered(decisionId, method, params)`,
-// `decisionsRequested()` — wszystkie decyzje w oknie decyzji, `panelRequested(notice)` — panel karty (ustawienia,
-// akcje i wybór wykonawcy zostają tam do PT-134), `enterStepRequested(stepId)` — „Wejdź” przy trwającym kroku i „Wznów rozmowę” w historii (PT-129: `flow.history[]`,
-// wcześniejsze zlecenia zwinięte i bez wznawiania).
+// `decisionsRequested()` — wszystkie decyzje w oknie decyzji, `panelRequested(notice)` — panel karty (wybór
+// wykonawcy zostaje tam), `descriptionRequested()` — szuflada szybkiej edycji opisu, `enterStepRequested(stepId)` —
+// „Wejdź” przy trwającym kroku i „Wznów rozmowę” w historii (PT-129: `flow.history[]`, wcześniejsze zlecenia
+// zwinięte i bez wznawiania).
+//
+// Rzadkie ustawienia (PT-134, US 14): kolumna, zgłoszenie w YouTracku, gałąź, wstrzymanie i archiwizacja zapisują się
+// od razu — bez „Zapisz / Anuluj”. Każdy przycisk nazywa skutek („Przenieś do Gotowych”), a widok wysyła
+// `settingRequested(kind, params)` z gotowym zdaniem skutku (`params.effect`), które Tablica pokazuje po zapisie.
+// Archiwizacja i zmiana gałęzi najpierw pytają o potwierdzenie ze skutkiem; odmowa niczego nie wysyła. Sekcja
+// „Ustawienia karty” i menu „Karta ▾” biorą akcje z jednej listy (`actions`), więc zawsze są te same.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "../tide" as Tide
 import "decision.js" as Decision
+import "settings.js" as Settings
 
 Rectangle {
     id: view
 
     property var card: null
     property var answeredIds: []
+    // Reguły przenoszenia z Tablicy (PT-134): dokąd wolno przenieść kartę, czy wolno ją zarchiwizować, nazwy kolumn.
+    property var moveTargets: ["backlog", "todo", "done"]
+    property bool canArchive: true
+    property var columnLabels: ({})
 
     readonly property var derived: card && card.derived ? card.derived : null
     readonly property var flow: derived && derived.flow ? derived.flow : null
@@ -49,10 +61,154 @@ Rectangle {
     signal previewRequested(string decisionId, string method, var params)
     signal decisionsRequested()
     signal panelRequested(string notice)
+    signal descriptionRequested()
+    // kind: move {column} | update {field, value} | pause {paused} | archive {}; params.effect — zdanie o skutku.
+    signal settingRequested(string kind, var params)
     signal enterStepRequested(string stepId)
+
+    // --- rzadkie ustawienia (PT-134) -----------------------------------------------------------------
+    readonly property string storedBranch: card && card.branch ? card.branch : ""
+    readonly property string shownBranch: storedBranch || (flow && flow.cardBranch ? flow.cardBranch : "")
+    readonly property string storedYoutrack: card && card.youtrack ? card.youtrack : ""
+    // Kolumna widoczna na Tablicy (karta „Do sprawdzenia” ma zapisane todo).
+    readonly property string shownColumn: derived && derived.column ? derived.column : (card ? card.column : "")
+    readonly property bool paused: !!(flow && flow.paused)
+    readonly property bool canPause: !!(derived && (!flow || !flow.plan || flow.plan.status !== "done")
+                                        && derived.column !== "review")
+    property bool menuOpen: false
+    property string settingError: ""
+    // Pytanie o potwierdzenie: null albo {kind, params, title, effect, yes}.
+    property var confirming: null
+    readonly property string typedBranch: branchField.text.trim()
+    readonly property var typedYoutrack: Settings.issueKey(youtrackField.text)
+
+    // Jedna lista akcji dla sekcji ustawień i menu „Karta ▾”: {id, label, effect, danger, input}.
+    // Gałąź karty z przepływu ustala Tide (silnik jej używa, `card.branch` tylko dopasowuje pracę), więc jej nie zmieniamy.
+    readonly property bool branchLocked: !!(flow && flow.cardBranch)
+    readonly property var actions: card ? Settings.actions(card.id, shownColumn, storedYoutrack, canPause, paused,
+                                                           moveTargets, canArchive, branchLocked, finish) : []
+    // Skutek zakończenia karty z przepływu liczy usługa (`flow.finish`: trwające kroki, niescalone tickety).
+    readonly property var finish: flow && flow.finish ? flow.finish : null
+    readonly property string finishText: Settings.finishEffect(finish)
+
+    // Podpisy przycisków z polem nazywają skutek tego, co wpisano; puste pole tylko daje fokus (odłączenie to osobna akcja).
+    readonly property string youtrackButton: typedYoutrack === null || typedYoutrack === "" || typedYoutrack === storedYoutrack
+        ? actionLabel("youtrack")
+        : (storedYoutrack ? "Zmień zgłoszenie na " : "Powiąż ze zgłoszeniem ") + typedYoutrack
+    readonly property string branchButton: typedBranch === "" || typedBranch === shownBranch
+        ? actionLabel("branch") : "Zmień gałąź na " + typedBranch
+
+    // Menu „Karta ▾” nigdy nie zapisuje pola na ślepo: pozycje z polem przewijają do niego i dają fokus.
+    function focusAction(id) {
+        menuOpen = false
+        focusField(id === "youtrack" ? youtrackField : branchField)
+    }
+
+    function actionLabel(id) {
+        const found = actions.find(a => a.id === id)
+        return found ? found.label : ""
+    }
+
+    function run(id) {
+        menuOpen = false
+        if (!card || confirming) return
+        if (id.indexOf("move:") === 0) {
+            const column = id.slice(5)
+            const params = { column: column,
+                             effect: "Karta " + card.id + " przeniesiona do „" + Settings.columnName(columnLabels, column) + "”." }
+            if (column === "done" && finishText !== "") askFinish(params)
+            else settingRequested("move", params)
+        } else if (id === "pause") {
+            settingRequested("pause", { paused: !paused,
+                                        effect: paused ? "Karta " + card.id + " wznowiona."
+                                                       : "Karta " + card.id + " wstrzymana. Trwające kroki kończą się." })
+        } else if (id === "archive") {
+            askArchive()
+        } else if (id === "youtrack") {
+            // Puste pole albo to samo zgłoszenie: tylko fokus. Odłączenie jest osobną, jawną akcją.
+            if (typedYoutrack === "" || typedYoutrack === storedYoutrack) focusField(youtrackField)
+            else applyYoutrack()
+        } else if (id === "youtrack-clear") {
+            settingRequested("update", { field: "youtrack", value: "",
+                effect: "Karta " + card.id + " odłączona od zgłoszenia " + storedYoutrack + "." })
+        } else if (id === "branch") {
+            if (typedBranch === "" || typedBranch === shownBranch) focusField(branchField)
+            else askBranch()
+        }
+    }
+
+    // Przewija do sekcji „Ustawienia karty”.
+    function showSettings() {
+        flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, settings.y - 12))
+    }
+
+    function showTop() {
+        flick.contentY = 0
+    }
+
+    function focusField(field) {
+        showSettings()
+        field.forceActiveFocus()
+    }
+
+    function applyYoutrack() {
+        const key = typedYoutrack
+        if (key === null) {
+            settingError = "Zgłoszenie w YouTracku to klucz, np. LEGAL-35 (albo adres zgłoszenia)."
+            return
+        }
+        settingError = ""
+        if (key === storedYoutrack || key === "") return
+        settingRequested("update", { field: "youtrack", value: key,
+            effect: "Karta " + card.id + " powiązana ze zgłoszeniem " + key + "." })
+    }
+
+    function askFinish(params) {
+        confirming = { kind: "move", params: params,
+                       title: "Zakończyć kartę " + card.id + "?",
+                       effect: "Karta trafi do Gotowych, a przepływ się kończy: " + finishText + ".",
+                       yes: "Zakończ kartę" }
+    }
+
+    function askArchive() {
+        confirming = { kind: "archive", params: { effect: "Karta " + card.id + " zdjęta z tablicy." },
+                       title: "Zarchiwizować kartę " + card.id + "?",
+                       effect: "Karta zniknie z tablicy. Plik karty i historia zostają, więc da się ją odtworzyć z archiwum"
+                               + (finishText !== "" ? "; przepływ się kończy: " + finishText + "." : "."),
+                       yes: "Archiwizuj kartę" }
+    }
+
+    function askBranch() {
+        const next = typedBranch
+        if (next === "" || next === shownBranch) return
+        confirming = { kind: "update", params: { field: "branch", value: next,
+                                                 effect: "Gałąź karty " + card.id + ": " + next + "." },
+                       title: "Zmienić gałąź karty " + card.id + "?",
+                       effect: "Tide będzie wiązać z kartą pracę z gałęzi „" + next + "”"
+                               + (shownBranch ? " zamiast „" + shownBranch + "”" : "")
+                               + ". Gałęzie w repozytorium zostają bez zmian.",
+                       yes: "Zmień gałąź na " + next }
+    }
+
+    function confirmYes() {
+        const c = confirming
+        confirming = null
+        if (c) settingRequested(c.kind, c.params)
+        view.forceActiveFocus()
+    }
+
+    function confirmNo() {
+        confirming = null
+        view.forceActiveFocus()
+    }
 
     function start() {
         answeredIds = []
+        confirming = null
+        menuOpen = false
+        settingError = ""
+        branchField.text = ""
+        youtrackField.text = ""
         form.reset()
         flick.contentY = 0
         forceActiveFocus()
@@ -203,8 +359,12 @@ Rectangle {
 
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape) {
-            backRequested()
+            if (confirming) confirmNo()
+            else if (menuOpen) menuOpen = false
+            else backRequested()
             event.accepted = true
+        } else if (confirming) {
+            event.accepted = true   // pytanie o potwierdzenie przejmuje klawiaturę: Enter nie potwierdza po cichu
         } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && current) {
             form.choose()
             event.accepted = true
@@ -258,11 +418,19 @@ Rectangle {
                     elide: Text.ElideMiddle
                 }
                 Tide.TextButton {
-                    objectName: "fullPanel"
-                    text: "Panel karty"
+                    objectName: "fullDescription"
+                    text: "Edytuj opis"
                     variant: "outline"
-                    Accessible.name: "Panel karty: opis, ustawienia i akcje"
-                    onClicked: view.panelRequested("")
+                    Accessible.name: "Edytuj opis karty w szufladzie"
+                    onClicked: view.descriptionRequested()
+                }
+                Tide.TextButton {
+                    id: menuButton
+                    objectName: "fullMenu"
+                    text: "Karta ▾"
+                    variant: "outline"
+                    Accessible.name: "Menu karty: ustawienia i akcje"
+                    onClicked: view.menuOpen = !view.menuOpen
                 }
             }
 
@@ -717,6 +885,287 @@ Rectangle {
                 Repeater {
                     model: view.oldOpen ? view.oldHistory : []
                     delegate: HistoryLine { canResume: false; dimmed: true }
+                }
+            }
+
+            // Ustawienia karty (PT-134): zapisują się od razu, przyciski nazywają skutek.
+            Rectangle {
+                id: settings
+                objectName: "fullSettings"
+                Layout.fillWidth: true
+                implicitHeight: settingsColumn.implicitHeight + 36
+                radius: Tide.Tokens.radiusCard
+                color: Tide.Tokens.backgroundCard
+                border.width: 1
+                border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
+                Accessible.role: Accessible.Grouping
+                Accessible.name: "Ustawienia karty"
+
+                ColumnLayout {
+                    id: settingsColumn
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 18
+                    spacing: 10
+                    Text {
+                        text: "Ustawienia karty"
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textPrimary
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt * 1.1
+                        font.weight: Font.DemiBold
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Zmiany zapisują się od razu — bez „Zapisz”. Archiwizacja i zmiana gałęzi najpierw pytają o potwierdzenie."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "settingError"
+                        Layout.fillWidth: true
+                        visible: view.settingError !== ""
+                        text: view.settingError
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.rose
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt
+                        wrapMode: Text.Wrap
+                    }
+
+                    // Akcje bez pola (kolumna, odłączenie od zgłoszenia, wstrzymanie, archiwizacja) — z tej samej listy co menu „Karta ▾”.
+                    Repeater {
+                        model: view.actions.filter(a => !a.input)
+                        delegate: RowLayout {
+                            id: setting
+                            required property var modelData
+                            objectName: "fullSetting"
+                            Layout.fillWidth: true
+                            spacing: 12
+                            Tide.TextButton {
+                                objectName: "settingButton"
+                                Layout.preferredWidth: 220
+                                text: setting.modelData.label
+                                variant: "outline"
+                                textColor: setting.modelData.danger ? Tide.Tokens.rose : Tide.Tokens.textSecondary
+                                Accessible.name: setting.modelData.label
+                                onClicked: view.run(setting.modelData.id)
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: setting.modelData.effect
+                                textFormat: Text.PlainText
+                                color: Tide.Tokens.textMuted
+                                font.family: Tide.Theme.uiFamily
+                                font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                                wrapMode: Text.Wrap
+                            }
+                        }
+                    }
+
+                    // Zgłoszenie w YouTracku: pole poza Repeaterem, żeby wpisany tekst przeżył nową migawkę.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 12
+                        QQC2.TextField {
+                            id: youtrackField
+                            objectName: "settingYoutrackField"
+                            Layout.preferredWidth: 220
+                            placeholderText: view.storedYoutrack || "np. LEGAL-35"
+                            maximumLength: 200
+                            selectByMouse: true
+                            Accessible.name: "Zgłoszenie w YouTracku (teraz: " + (view.storedYoutrack || "brak") + ")"
+                            onAccepted: view.run("youtrack")
+                            onTextChanged: view.settingError = ""
+                        }
+                        Tide.TextButton {
+                            objectName: "settingYoutrackButton"
+                            text: view.youtrackButton
+                            variant: "outline"
+                            onClicked: view.run("youtrack")
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Teraz: " + (view.storedYoutrack || "brak") + "."
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                            wrapMode: Text.Wrap
+                        }
+                    }
+
+                    // Gałąź karty z przepływu ustala Tide: zmiany nie oferujemy, żeby nie obiecywać skutku, którego nie ma.
+                    Text {
+                        objectName: "settingBranchLocked"
+                        Layout.fillWidth: true
+                        visible: view.branchLocked
+                        text: "Gałąź karty: " + view.shownBranch + ". Ustala ją Tide dla przepływu karty, więc nie da się jej tu zmienić."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                        wrapMode: Text.Wrap
+                    }
+
+                    // Gałąź karty: zmiana pyta o potwierdzenie ze skutkiem.
+                    RowLayout {
+                        visible: !view.branchLocked
+                        Layout.fillWidth: true
+                        spacing: 12
+                        QQC2.TextField {
+                            id: branchField
+                            objectName: "settingBranchField"
+                            Layout.preferredWidth: 220
+                            placeholderText: "nazwa gałęzi"
+                            maximumLength: 200
+                            selectByMouse: true
+                            Accessible.name: "Gałąź karty (teraz: " + (view.shownBranch || "brak") + ")"
+                            onAccepted: view.run("branch")
+                        }
+                        Tide.TextButton {
+                            objectName: "settingBranchButton"
+                            text: view.branchButton
+                            variant: "outline"
+                            onClicked: view.run("branch")
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Teraz: " + (view.shownBranch || "brak") + ". Zapyta o potwierdzenie."
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Kliknięcie poza menu „Karta ▾” zamyka je.
+    MouseArea {
+        anchors.fill: parent
+        visible: view.menuOpen
+        z: 4
+        onClicked: view.menuOpen = false
+    }
+
+    // Menu „Karta ▾”: te same akcje co sekcja ustawień, zakotwiczone pod przyciskiem.
+    Rectangle {
+        id: cardMenu
+        objectName: "fullMenuList"
+        visible: view.menuOpen
+        z: 5
+        // Pozycja liczona przy każdym otwarciu (przycisk przewija się razem z treścią).
+        onVisibleChanged: if (visible) {
+            const p = menuButton.mapToItem(view, menuButton.width, menuButton.height)
+            x = Math.max(8, p.x - width)
+            y = p.y + 4
+        }
+        width: 300
+        implicitHeight: menuColumn.implicitHeight + 16
+        height: implicitHeight
+        radius: Tide.Tokens.radiusCard
+        color: Tide.Tokens.backgroundPanel
+        border.width: 1
+        border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
+        Accessible.role: Accessible.PopupMenu
+        Accessible.name: "Menu karty"
+        ColumnLayout {
+            id: menuColumn
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 8
+            spacing: 2
+            Repeater {
+                model: view.actions
+                delegate: Tide.TextButton {
+                    required property var modelData
+                    objectName: "fullMenuItem"
+                    Layout.fillWidth: true
+                    text: modelData.label + (modelData.input || modelData.danger ? "…" : "")
+                    accent: modelData.danger ? Tide.Tokens.rose : Tide.Tokens.textSecondary
+                    textColor: modelData.danger ? Tide.Tokens.rose : Tide.Tokens.textPrimary
+                    Accessible.name: modelData.label
+                    onClicked: modelData.input ? view.focusAction(modelData.id) : view.run(modelData.id)
+                }
+            }
+        }
+    }
+
+    // Potwierdzenie archiwizacji i zmiany gałęzi: opisuje skutek; odmowa (Esc, „Nie zmieniaj”) niczego nie wysyła.
+    Rectangle {
+        id: confirmLayer
+        objectName: "settingConfirm"
+        anchors.fill: parent
+        z: 10
+        visible: view.confirming !== null
+        color: Tide.Theme.alpha(Tide.Tokens.backgroundDesktop, 0.62)
+        MouseArea { anchors.fill: parent; onClicked: view.confirmNo() }
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 48, 480)
+            implicitHeight: confirmColumn.implicitHeight + 40
+            height: implicitHeight
+            radius: Tide.Tokens.radiusCard
+            color: Tide.Tokens.backgroundPanel
+            border.width: 1
+            border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
+            Accessible.role: Accessible.AlertMessage
+            Accessible.name: view.confirming ? view.confirming.title : ""
+            MouseArea { anchors.fill: parent }
+            ColumnLayout {
+                id: confirmColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 20
+                spacing: 12
+                Text {
+                    objectName: "settingConfirmTitle"
+                    Layout.fillWidth: true
+                    text: view.confirming ? view.confirming.title : ""
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 1.15
+                    font.weight: Font.DemiBold
+                    wrapMode: Text.Wrap
+                }
+                Text {
+                    objectName: "settingConfirmEffect"
+                    Layout.fillWidth: true
+                    text: view.confirming ? view.confirming.effect : ""
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textSecondary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt
+                    wrapMode: Text.Wrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    Item { Layout.fillWidth: true }
+                    Tide.TextButton {
+                        objectName: "settingConfirmNo"
+                        text: "Nie zmieniaj (Esc)"
+                        variant: "outline"
+                        onClicked: view.confirmNo()
+                    }
+                    Tide.TextButton {
+                        objectName: "settingConfirmYes"
+                        text: view.confirming ? view.confirming.yes : ""
+                        variant: "filled"
+                        accent: view.confirming && view.confirming.kind === "archive" ? Tide.Tokens.rose : Tide.Tokens.accent
+                        onClicked: view.confirmYes()
+                    }
                 }
             }
         }

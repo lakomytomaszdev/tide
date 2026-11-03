@@ -50,6 +50,9 @@ def enrich(st: FlowState, out: dict) -> dict:
         ticket.update(ticket_status(st, ticket))
     flow["running"] = running_steps(flow.get("steps") or [], st)
     flow["history"] = history.build(st, flow.get("steps") or [])
+    # Skutek ręcznego zakończenia (Gotowe / Archiwum → `_complete_manual_finish`): zatrzymane kroki i odrzucone tickety.
+    flow["finish"] = {"steps": len(flow["running"]),
+                      "tickets": sum(1 for t in out["tickets"] if t.get("status") not in ("merged", "rejected"))}
     out["phases"] = phases(st, out)
     flow["headline"] = headline(st, out)
     return out

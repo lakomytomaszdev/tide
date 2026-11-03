@@ -48,6 +48,18 @@ Rectangle {
     // Pełna karta (PT-128, apps/common/qml/card/CardFullView.qml) na całą stronę.
     property bool fullOpen: false
     property string fullCardId: ""
+    // Szuflada opisu (PT-134): panel karty tylko z opisem i „Zapisz opis”, otwierany z pełnej karty.
+    property bool descriptionDrawer: false
+    // Zdania o skutku rzadkich ustawień czekające na odpowiedź usługi: tag zapisu → zdanie.
+    property var settingNotes: ({})
+    property string pendingMoveNote: ""
+    property bool movingFromFull: false
+    // Nazwy kolumn z migawki (id → etykieta) dla podpisów pełnej karty.
+    readonly property var columnLabelMap: {
+        const out = {}
+        for (const c of Logic.columns(snapshot)) out[c.id] = c.label
+        return out
+    }
     property var decisionTags: ({})          // tag zapisu → [karta, id decyzji]
     // Przeciąganie.
     property bool dragging: false
@@ -167,7 +179,10 @@ Rectangle {
         cardPanel.load()
     }
 
+    onPanelOpenChanged: if (!panelOpen) descriptionDrawer = false
+
     function newCard(column) {
+        descriptionDrawer = false
         if (managing) managing = false
         panelCardId = ""
         panelColumn = column || "backlog"
@@ -212,7 +227,54 @@ Rectangle {
         else page.forceActiveFocus()
     }
 
-    // Panel karty z pełnej karty: ustawienia, akcje i wybór wykonawcy zostają tam (do PT-134).
+    // Szuflada szybkiej edycji opisu nad pełną kartą (PT-134): tylko opis, „Zapisz opis”, Esc anuluje bez zapisu.
+    function openDescription(id) {
+        descriptionDrawer = true
+        openCard(id)
+    }
+
+    // Rzadkie ustawienia z pełnej karty (PT-134) zapisują się od razu. Zdanie o skutku (`params.effect`) pokazuje
+    // się po odpowiedzi usługi — błąd usługi też, więc żadna zmiana nie przechodzi po cichu.
+    function applySetting(id, kind, params) {
+        if (kind === "move" || kind === "archive") {
+            // moveCard sam nadaje tag zapisu i może nic nie wysłać (karta już tam stoi) — notka czeka w pendingMoveNote.
+            pendingMoveNote = params.effect || ""
+            // Z pełnej karty przenosimy bez okna „Co ma zrobić agent?” (byłoby ukryte pod pełną kartą).
+            movingFromFull = true
+            const sent = moveCard(id, kind === "archive" ? "archived" : params.column, kind === "archive" ? "" : topOf(params.column))
+            movingFromFull = false
+            pendingMoveNote = ""
+            if (kind === "archive" && sent) closeFull()
+        } else if (kind === "pause") {
+            const tag = nextTag("flow-pause:" + id)
+            addSettingNote(tag, params.effect)
+            pauseRequested(tag, id, params.paused)
+        } else if (kind === "update") {
+            const tag = nextTag("setting:" + id)
+            addSettingNote(tag, params.effect)
+            const request = {}
+            request[params.field] = params.value
+            updateRequested(tag, id, JSON.stringify(request))
+        }
+    }
+
+    function addSettingNote(tag, text) {
+        const notes = Object.assign({}, settingNotes)
+        notes[tag] = text || ""
+        settingNotes = notes
+    }
+
+    // Zdanie o skutku zapisanego ustawienia (raz): wraca do użytkownika po odpowiedzi usługi.
+    function takeSettingNote(tag) {
+        if (!(tag in settingNotes)) return null
+        const notes = Object.assign({}, settingNotes)
+        const text = notes[tag]
+        delete notes[tag]
+        settingNotes = notes
+        return text
+    }
+
+    // Panel karty z pełnej karty: wybór wykonawcy (napis `notice`) zostaje tam.
     function panelFromFull(notice) {
         const id = fullCardId
         fullOpen = false
@@ -328,31 +390,33 @@ Rectangle {
     // zapisanych w kolumnie docelowej, karta od razu stoi w nowym miejscu (optimistic).
     function moveCard(id, column, before) {
         const card = (snapshot && snapshot.cards || []).find(c => c.id === id)
-        if (!card) return
+        if (!card) return false
         if (column !== "archived" && !Logic.isManual(column)) {
             showToast("Do kolumny „" + Logic.columnLabel(snapshot, column) + "” karta trafia sama, gdy pracuje nad nią agent.", "rose")
-            return
+            return false
         }
         const confirming = Logic.confirmable(card)
         if (confirming && Logic.dropTargets(card).indexOf(column) < 0) {
             showToast("Kartę z „" + Logic.columnLabel(snapshot, Logic.displayColumn(card)) + "” przenosisz do Gotowych "
                       + "(sprawdzone) albo z powrotem do Do zrobienia (do poprawy).", "rose")
-            return
+            return false
         }
         const index = column === "archived" ? 0 : Logic.moveIndex(snapshot, id, column, before)
         // Bez zmiany tylko wtedy, gdy karta już stoi w tej kolumnie także na ekranie (kolumna wyliczana
         // z koordynatora przy zapisanym todo to nie „ta sama kolumna”).
         if (column === Logic.displayColumn(card) && column === card.column && Logic.storedIndex(snapshot, id) === (index < 0
-                ? snapshot.cards.filter(c => c.column === column).length - 1 : index)) return
+                ? snapshot.cards.filter(c => c.column === column).length - 1 : index)) return false
         const fromBacklog = column === "todo" && card.column === "backlog"
         const origin = fromBacklog ? Logic.storedIndex(snapshot, id) : -1
         const backlogList = fromBacklog ? Logic.column(allCards, "backlog") : []
         const at = backlogList.findIndex(c => c.id === id)
         const originBefore = at >= 0 && at + 1 < backlogList.length ? backlogList[at + 1].id : ""
         const tag = nextTag("move:" + id)
+        if (pendingMoveNote) addSettingNote(tag, pendingMoveNote)
         optimistic = optimistic.concat([{ id: id, column: column, before: before || "", tag: tag }])
         moveRequested(tag, id, column, index)
-        if (fromBacklog) launchHook(id, origin, originBefore)
+        if (fromBacklog && !movingFromFull) launchHook(id, origin, originBefore)
+        return true
     }
 
     // Gotowe dostają kartę na górę (najnowsze pierwsze), inne kolumny — na koniec.
@@ -547,8 +611,17 @@ Rectangle {
     function handleReply(tag, reply) {
         const error = reply && reply.ok ? "" : Logic.errorText(reply)
         const notice = Logic.commitNote(reply)
+        // Rzadkie ustawienia z pełnej karty (PT-134): widoczny skutek albo powód odmowy usługi. Błąd przeniesienia
+        // pokazuje niżej gałąź „move:”, więc tu go nie dublujemy.
+        const settingNote = takeSettingNote(tag)
+        if (settingNote !== null && settingNote !== "") {
+            if (!error) showToast(settingNote, "mint")
+            else if (tag.indexOf("move:") !== 0) showToast("Nie zapisano: " + error, "rose")
+        }
         if (tag.indexOf("launch-") === 0) {
             handleLaunchReply(tag, reply)
+        } else if (tag.indexOf("setting:") === 0) {
+            if (notice) showToast(notice, "butter")
         } else if (tag.indexOf("fault-preview:") === 0) {
             handleFaultPreviewReply(tag, reply)
         } else if (tag.indexOf("decision:") === 0) {
@@ -1545,12 +1618,15 @@ Rectangle {
     MouseArea {
         anchors.fill: parent
         visible: page.panelOpen
+        z: page.descriptionDrawer ? 36 : 0
         onClicked: page.closePanel()
         onWheel: wheel => wheel.accepted = false
     }
     CardPanel {
         id: cardPanel
         objectName: "cardPanel"
+        z: page.descriptionDrawer ? 37 : 0
+        descriptionOnly: page.descriptionDrawer
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
@@ -1714,11 +1790,16 @@ Rectangle {
         z: 35
         visible: page.fullOpen && !page.managing
         card: page.fullOpen ? page.fullCard : null
+        moveTargets: page.fullCard ? Logic.settingTargets(page.fullCard) : []
+        canArchive: page.fullCard ? Logic.canArchive(page.fullCard) : false
+        columnLabels: page.columnLabelMap
         onBackRequested: page.closeFull()
         onAnswered: (decisionId, method, params) => page.sendDecision(page.fullCardId, decisionId, method, params)
         onPreviewRequested: (decisionId, method, params) => page.previewFault(page.fullCardId, decisionId, method, params)
         onDecisionsRequested: page.openDecisions(page.fullCardId)
         onPanelRequested: notice => page.panelFromFull(notice)
+        onDescriptionRequested: page.openDescription(page.fullCardId)
+        onSettingRequested: (kind, params) => page.applySetting(page.fullCardId, kind, params)
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)
     }

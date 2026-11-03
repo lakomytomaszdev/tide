@@ -249,13 +249,14 @@ out["enter"] = calls()
     def test_panel_button_and_cards_without_journal(self):
         out = self.probe(STATE_PY + """
 click(card("K-8"))
-click(named("fullPanel"))
+click(named("fullDescription"))
 out["panel"] = [js("page.fullOpen"), js("page.panelOpen"), js("page.panelCardId")]
 js("page.closePanel()")
+js("page.fullOpen = false")
 click(card("K-9"))
 out["noJournal"] = [js("page.fullOpen"), js("page.panelOpen"), js("page.panelCardId")]
 """, full_d(self.data))
-        self.assertEqual(out["panel"], [False, True, "K-8"], "„Panel karty” otwiera dotychczasowy panel")
+        self.assertEqual(out["panel"], [True, True, "K-8"], "„Edytuj opis” otwiera szufladę opisu nad pełną kartą (PT-134)")
         self.assertEqual(out["noJournal"], [False, True, "K-9"], "karta bez dziennika — panel karty")
 
 
