@@ -7,6 +7,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "tide" as Tide
+import "card" as CardUi
 import "sessions.js" as Logic
 
 Rectangle {
@@ -20,8 +21,16 @@ Rectangle {
     property bool available: true
     property real nowTs: Date.now() / 1000
     property string selectedId: ""
-    property string selectedFlowId: ""
     property string selectedKey: ""
+    // Karta z listy „Karty w przepływie” otwarta we wspólnym komponencie (apps/common/qml/card): okno decyzji
+    // albo pełna karta, zależnie od ustawienia okna Tide (`cardOpen`) i reguły „Czeka na mnie”.
+    property string cardOpen: "decision"
+    property bool decisionOpen: false
+    property string decisionCardId: ""
+    property bool fullOpen: false
+    property string fullCardId: ""
+    property var cardTags: ({})          // tag zapisu → [karta, id decyzji]
+    property int requestSerial: 0
     property bool showingResult: false
     property bool canDiff: true
 
@@ -33,15 +42,111 @@ Rectangle {
     signal resultRequested(string id, string run)
     signal urlRequested(string url)
     signal sessionRequested(string id)
+    signal cardOpenRequested(string value)
+    // Żądanie do /Board z okna decyzji albo pełnej karty (metoda i parametry wprost z decyzji, bez liczenia tutaj).
+    signal cardRequested(string tag, string cardId, string method, var params)
 
     readonly property var singles: Logic.singleSessions(sessions, coordinators)
-    readonly property var flowCard: Logic.flowCardById(flowCards, selectedFlowId)
+    readonly property var decisionCard: Logic.flowCardById(flowCards, decisionCardId)
+    readonly property var fullCard: Logic.flowCardById(flowCards, fullCardId)
+    readonly property string openedCardId: decisionOpen ? decisionCardId : fullOpen ? fullCardId : ""
+    readonly property alias decisionDialog: decisionDialog
+    readonly property alias cardFullView: cardFullView
     readonly property var ticket: Logic.ticketById(board, selectedKey)
     readonly property bool youtrack: board !== null && board.tracker && board.tracker.kind === "youtrack"
 
     function showResult(runId) {
         showingResult = true
         resultRequested(selectedId, runId)
+    }
+
+    // Klik w kartę z listy: karta z decyzjami w „Czeka na mnie” otwiera okno decyzji albo (ustawienie „Pełna karta”)
+    // pełną kartę; każda inna karta przepływu — pełną kartę.
+    function openCard(id) {
+        const card = Logic.flowCardById(flowCards, id)
+        if (!card) return false
+        showingResult = false
+        if (Logic.opensDecisions(card, cardOpen)) return openDecisions(id)
+        return openFull(id)
+    }
+
+    function openDecisions(id) {
+        const card = Logic.flowCardById(flowCards, id)
+        if (!card || Logic.cardDecisions(card).length === 0) return false
+        fullOpen = false
+        decisionCardId = id
+        decisionOpen = true
+        decisionDialog.start()
+        return true
+    }
+
+    function closeDecisions() {
+        if (!decisionOpen) return
+        decisionOpen = false
+        // Okno otwarte z pełnej karty („wszystkie w oknie decyzji”) wraca do niej.
+        if (fullOpen && fullCardId === decisionCardId) cardFullView.start()
+        else page.forceActiveFocus()
+    }
+
+    function openFull(id) {
+        if (!Logic.flowCardById(flowCards, id)) return false
+        decisionOpen = false
+        fullCardId = id
+        fullOpen = true
+        cardFullView.start()
+        return true
+    }
+
+    function closeFull() {
+        if (!fullOpen) return
+        fullOpen = false
+        page.forceActiveFocus()
+    }
+
+    function nextTag(prefix) {
+        requestSerial++
+        return prefix + ":" + requestSerial
+    }
+
+    function setCardOpen(value) {
+        if (value !== cardOpen) cardOpenRequested(value)
+    }
+
+    function sendCard(prefix, cardId, decisionId, method, params) {
+        const tag = nextTag(prefix + ":" + cardId)
+        const tags = Object.assign({}, cardTags)
+        tags[tag] = [cardId, decisionId]
+        cardTags = tags
+        cardRequested(tag, cardId, method, params)
+    }
+
+    // Odpowiedź usługi (decyzja albo podgląd karty z błędem) wraca tam, skąd poszła: do pełnej karty albo okna.
+    function handleReply(tag, reply) {
+        const sent = cardTags[tag]
+        const tags = Object.assign({}, cardTags)
+        delete tags[tag]
+        cardTags = tags
+        if (!sent) return
+        const fromFull = fullOpen && !decisionOpen && sent[0] === fullCardId
+        if (tag.indexOf("fault-preview:") === 0) {
+            if (fromFull) cardFullView.showPreview(sent[1], reply)
+            else if (sent[0] === decisionCardId) decisionDialog.showPreview(sent[1], reply)
+            return
+        }
+        if (reply && reply.ok) return
+        const error = !reply ? "Usługa tide-daemon nie odpowiedziała — spróbuj jeszcze raz."
+                    : reply.message ? String(reply.message) : "Nie udało się zapisać (" + (reply.error || "błąd") + ")."
+        if (fromFull) {
+            cardFullView.failed(sent[1], error)
+            return
+        }
+        // Usługa odrzuciła odpowiedź: decyzja wraca do okna z powodem (okno otwiera się ponownie, jeśli zamknięte).
+        if (sent[0] !== decisionCardId) return
+        if (!decisionOpen) {
+            decisionOpen = true
+            decisionDialog.forceActiveFocus()
+        }
+        decisionDialog.failed(sent[1], error)
     }
 
     onBoardChanged: {
@@ -131,11 +236,11 @@ Rectangle {
                             Layout.fillWidth: true
                             implicitHeight: flowTitle.implicitHeight + flowNote.implicitHeight + 18
                             radius: 10
-                            color: modelData.id === page.selectedFlowId ? Tide.Theme.alpha(Tide.Tokens.accent, 0.10)
+                            color: modelData.id === page.openedCardId ? Tide.Theme.alpha(Tide.Tokens.accent, 0.10)
                                   : flowArea.containsMouse ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.04) : "transparent"
                             Accessible.role: Accessible.Button
                             Accessible.name: modelData.id + " " + modelData.title
-                            Accessible.onPressAction: { page.selectedFlowId = modelData.id; page.showingResult = false }
+                            Accessible.onPressAction: page.openCard(modelData.id)
                             ColumnLayout {
                                 anchors.fill: parent
                                 anchors.leftMargin: 12
@@ -170,7 +275,8 @@ Rectangle {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: { page.selectedFlowId = flowEntry.modelData.id; page.showingResult = false }
+                                objectName: "flowCardEntry"
+                                onClicked: page.openCard(flowEntry.modelData.id)
                             }
                         }
                     }
@@ -248,7 +354,7 @@ Rectangle {
             RowLayout {
                 anchors.fill: parent
                 spacing: 0
-                visible: !page.showingResult && page.flowCard === null
+                visible: !page.showingResult
 
                 // Tablica.
                 ColumnLayout {
@@ -509,11 +615,44 @@ Rectangle {
                 onCloseRequested: page.showingResult = false
             }
 
-            FlowCardPanel {
-                anchors.fill: parent
-                visible: page.flowCard !== null
-                card: page.flowCard
-            }
+        }
+    }
+
+    // --- wspólny komponent karty (apps/common/qml/card): ten sam co w Tablicy, bez kopii ----------------
+    CardUi.CardFullView {
+        id: cardFullView
+        objectName: "cardFullView"
+        anchors.fill: parent
+        z: 35
+        visible: page.fullOpen
+        card: page.fullOpen ? page.fullCard : null
+        onBackRequested: page.closeFull()
+        onAnswered: (decisionId, method, params) => page.sendCard("decision", page.fullCardId, decisionId, method, params)
+        onPreviewRequested: (decisionId, method, params) => page.sendCard("fault-preview", page.fullCardId, decisionId, method, params)
+        onDecisionsRequested: page.openDecisions(page.fullCardId)
+        // Wybór wykonawcy i ustawienia karty są w panelu karty Tablicy; w Sesjach nie ma go, więc wracamy do listy.
+        onPanelRequested: page.closeFull()
+        onEnterStepRequested: stepId => page.sendCard("enter-step", page.fullCardId, "", "EnterStep", { step: stepId })
+    }
+
+    CardUi.DecisionDialog {
+        id: decisionDialog
+        objectName: "decisionDialog"
+        anchors.fill: parent
+        z: 40
+        visible: page.decisionOpen
+        cardId: page.decisionCardId
+        decisions: Logic.cardDecisions(page.decisionCard)
+        cardOpen: page.cardOpen
+        onCardOpenRequested: value => page.setCardOpen(value)
+        onAnswered: (decisionId, method, params) => page.sendCard("decision", page.decisionCardId, decisionId, method, params)
+        onPreviewRequested: (decisionId, method, params) => page.sendCard("fault-preview", page.decisionCardId, decisionId, method, params)
+        onLaterRequested: page.closeDecisions()
+        onFinished: page.closeDecisions()
+        onFullCardRequested: notice => {
+            const id = page.decisionCardId
+            page.decisionOpen = false
+            page.openFull(id)
         }
     }
 }

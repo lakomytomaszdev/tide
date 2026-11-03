@@ -25,10 +25,6 @@ Item {
     }
     readonly property var sessions: backend ? Logic.parse(backend.sessionsJson, []) : []
     readonly property var flowCards: backend ? Logic.parse(backend.flowCardsJson, []) : []
-    onFlowCardsChanged: {
-        if (page.selectedFlowId && Logic.flowCardById(flowCards, page.selectedFlowId)) return
-        page.selectedFlowId = !view.coordinators.length && flowCards.length ? flowCards[0].id : ""
-    }
     readonly property var detail: {
         if (!backend) return null
         const value = Logic.parse(backend.detailJson, null)
@@ -63,10 +59,10 @@ Item {
         available: view.backend ? view.backend.available : false
         selectedId: view.backend ? view.backend.selected : ""
         canDiff: view.backend ? view.backend.canDiff : false
-        onSelectRequested: id => {
-            page.selectedFlowId = ""
-            view.backend.select(id)
-        }
+        cardOpen: view.backend ? view.backend.cardOpen : "decision"
+        onCardOpenRequested: value => { if (view.backend) view.backend.setCardOpen(value) }
+        onCardRequested: (tag, cardId, method, params) => view.sendCardRequest(tag, cardId, method, params)
+        onSelectRequested: id => view.backend.select(id)
         onActivateRequested: id => view.backend.activate(id)
         onRefreshRequested: force => view.backend.refresh(force)
         onDiffRequested: (id, key) => view.backend.openDiff(id, key)
@@ -79,7 +75,29 @@ Item {
             const result = view.previewValue("result")
             if (ticket !== "") selectedKey = ticket
             if (result !== "") showResult(result)
-            if (!view.coordinators.length && view.flowCards.length) selectedFlowId = view.flowCards[0].id
+            const card = view.previewValue("card")
+            if (card !== "") openCard(card)
+        }
+    }
+
+    // Metoda /Board i parametry przychodzą z decyzji gotowe; tu tylko trafiają do właściwego wywołania backendu.
+    function sendCardRequest(tag, cardId, method, params) {
+        const b = view.backend
+        if (!b) return
+        if (method === "ResolveCardStep") b.resolveCardStep(tag, cardId, JSON.stringify(params))
+        else if (method === "ResolveCardReview") b.resolveCardReview(tag, cardId, params.choice || "")
+        else if (method === "ApproveCardPlan") b.approveCardPlan(tag, cardId)
+        else if (method === "EditCardPlan") b.editCardPlan(tag, cardId, JSON.stringify(params))
+        else if (method === "EnterStep") b.enterStep(tag, cardId, params.step || "")
+        else if (method === "ReportStepFault") b.reportStepFault(tag, cardId, JSON.stringify(params))
+        else if (method === "PreviewStepFault") b.previewStepFault(tag, cardId, JSON.stringify(params))
+        else page.handleReply(tag, { ok: false, error: "unknown-method", message: "Sesje nie znają metody " + method + "." })
+    }
+
+    Connections {
+        target: view.backend
+        function onReplied(tag, text) {
+            page.handleReply(tag, Logic.parse(text, null))
         }
     }
 

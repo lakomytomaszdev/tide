@@ -221,6 +221,8 @@ class Backend(QObject):
         self._flow_settings = "{}"
         # Ustawienie okna (PT-133): na żywo z window.json; podgląd trzyma je tylko w pamięci i nie rusza plików.
         self._card_open = windowconfig.CARD_OPEN_DEFAULT if data is not None else windowconfig.card_open()
+        # Sesje zapisują to samo ustawienie w tym samym oknie — nadążamy za plikiem (PT-131).
+        self._card_open_watcher = windowconfig.watch(self._card_open_from_file, self) if data is None else None
         app =QCoreApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self.discardImages)   # okno Tide zamknięte z otwartym oknem uruchomienia
@@ -335,6 +337,11 @@ class Backend(QObject):
     @pyqtProperty(str, notify=cardOpenChanged)
     def cardOpen(self) -> str:
         return self._card_open
+
+    def _card_open_from_file(self, value: str) -> None:
+        if value != self._card_open:
+            self._card_open = value
+            self.cardOpenChanged.emit()
 
     @pyqtSlot(str, result=str)
     def setCardOpen(self, value: str) -> str:
