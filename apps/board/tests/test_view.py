@@ -1319,6 +1319,18 @@ out["project"] = calls()[-1]
 FIND_PY = """
 FIND = "(function find(it, name) { if (!it) return null; if (it.objectName === name) return it; " \\
        "for (const c of it.children) { const r = find(c, name); if (r) return r } return null })"
+
+def steady(expression, ms=3000):
+    # Punkt elementu, gdy panel skończy się układać: decyzja kroku przewija panel do siebie z opóźnieniem
+    # (revealTimer w CardPanel.qml, 60 ms), więc punkt bierzemy dopiero, gdy nie zmienia się przez 150 ms.
+    last = None
+    for _ in range(max(1, ms // 150)):
+        point = at(expression)
+        if point == last:
+            return point
+        last = point
+        wait(150)
+    return last
 """
 
 
@@ -1896,7 +1908,7 @@ out["allowBottom"] = js("(function(){ const b = " + FIND + "(page.cardPanel, 'ca
 click(card("K-6"))
 out["visible"] = [obj("cardStepRetry").property("visible"), obj("cardStepChangeExecutor").property("visible")]
 js("page.cardPanel.stepExecutor = 'Haiku'")
-click(at(FIND + "(page.cardPanel, 'cardStepChangeExecutor')"))
+click(steady(FIND + "(page.cardPanel, 'cardStepChangeExecutor')"))
 out["call"] = calls()[-1]
 """, data=self.flow_card("error", error="bez postępu", stalledSince="2026-10-29T01:00:00Z",
                          provider="anthropic", executor="Sonnet", reviewerModel="opus"))
@@ -1908,7 +1920,7 @@ out["call"] = calls()[-1]
 click(card("K-6"))
 out["visible"] = [obj("cardStepRetry").property("visible"), obj("cardStepExecutor").property("visible"),
                   obj("cardStepChangeExecutor").property("visible")]
-click(at(FIND + "(page.cardPanel, 'cardStepRetry')"))
+click(steady(FIND + "(page.cardPanel, 'cardStepRetry')"))
 out["call"] = calls()[-1]
 """, data=self.flow_card("error", error="YouTrack odpowiedział 400", trackerError=True))
         self.assertEqual(out["visible"], [True, False, False])
