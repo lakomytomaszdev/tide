@@ -585,3 +585,18 @@ class CorrectedPlanReviewTest(unittest.TestCase):
         self.assertEqual(recommended, ["approve"])
         returned = next(o for o in decision["options"] if o["id"] == "return")
         self.assertEqual(returned["params"]["findings"], [])
+
+
+class PlanWorkInProgressTest(unittest.TestCase):
+    def test_review_of_a_revised_plan_is_progress_not_a_decision(self):
+        # 03.11, K-38: po odesłaniu kafelek i okno dalej pokazywały „plan do zatwierdzenia”.
+        from tide_daemon.cardflow.decisions import build_decisions
+        events = (Events(entry="plan").add("plan.proposed", planner="Fable", rows=[{"workId": "#1"}])
+                  .add("plan.reviewed", verdict="REQUEST_CHANGES", reviewer="Sonnet", findings="x")
+                  .add("plan.returned", feedback="popraw", baseline=[])
+                  .add("plan.revision-ready", pending=True, baseline=[], difference=[])
+                  .add("step.started", step="K-1-plan-review-9", kind="plan-review"))
+        st = fold(events.items)
+        self.assertEqual(build_decisions(st), [])
+        shown = derived(st, CARD)
+        self.assertEqual((shown["column"], shown["note"]), ("progress", "review planu w tle"))

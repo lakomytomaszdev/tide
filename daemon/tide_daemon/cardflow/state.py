@@ -36,6 +36,10 @@ REASON_LABELS = {"no-result": "brak pliku wyniku", "bad-result": "zły plik wyni
 NOTE_MAX = 160
 
 
+# Kroki, które poprawiają albo oceniają plan karty — w ich trakcie plan nie czeka na decyzję użytkownika.
+PLAN_WORK_KINDS = ("plan-amend", "plan-revise", "plan-review")
+
+
 @dataclass
 class FlowState:
     started: dict | None = None                     # ostatnie card.started
@@ -663,6 +667,13 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                     tile = tide_fault_text(focus_step["kind"], focus_step.get("ticket"))
                     return _fill(out, "waiting", f"{tile}: {cause_label(found['cause'], REASON_LABELS)}")
             return _fill(out, "waiting", waiting_text(focus_step["kind"], result))
+        # Poprawa albo review planu po odesłaniu trwa w tle — kafelek nie pokazuje starego planu jako decyzji
+        # (K-38, 03.11: po „Odeślij uwagi” karta dalej stała w „Czeka na mnie” jako „plan do zatwierdzenia”).
+        plan_work = [s.get("kind") for s in st.running() if s.get("kind") in PLAN_WORK_KINDS]
+        revision = st.plan_revision or {}
+        if plan_work or (revision and not revision.get("pending") and not revision.get("failed")):
+            label = "review planu w tle" if plan_work and plan_work[0] == "plan-review" else "poprawa planu w tle"
+            return _fill(out, "progress", label)
         if (st.plan_revision or {}).get("failed"):
             out["question"] = "Poprawa planu jest nieprawidłowa. Odesłać ponownie czy odrzucić poprawkę?"
             return _fill(out, "waiting", "poprawa planu wymaga decyzji")

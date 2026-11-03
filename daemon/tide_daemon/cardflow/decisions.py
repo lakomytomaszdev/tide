@@ -43,7 +43,7 @@ from __future__ import annotations
 from . import faults
 from . import findings as review_findings
 from .labels import kind_label
-from .state import REASON_LABELS, FlowState
+from .state import PLAN_WORK_KINDS, REASON_LABELS, FlowState
 
 # Limit dostawcy nie jest decyzją (D3, PT-125): Tide czeka na odnowienie albo przenosi krok według ustawień.
 KINDS = ("question", "permission", "error", "transfer", "stopped", "review",
@@ -456,6 +456,9 @@ def _review(st, ticket, round_no, question) -> dict:
 
 def _plan_decision(st: FlowState) -> dict | None:
     if (st.started or {}).get("entry") not in ("plan", "planning") or not st.plan_proposed:
+        return None
+    if any(s.get("kind") in PLAN_WORK_KINDS for s in st.running()):
+        # Poprawa albo review planu trwa w tle — decyzja przyjdzie, gdy się skończą (K-38, 03.11).
         return None
     proposal, review, revision = st.plan_proposed, st.plan_reviewed or {}, st.plan_revision or {}
     rows = proposal.get("rows") or []
