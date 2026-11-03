@@ -526,8 +526,14 @@ def _plan_decision(st: FlowState) -> dict | None:
     counts = review_findings.counts(listed)
     technical.update({"blockers": counts["blocker"], "majors": counts["major"], "nits": counts["nit"]})
     reviewer = review.get("reviewer") or ""
+    # Uwagi z review przed automatyczną poprawką planu: planujący już je uwzględnił, więc nie są prośbą o zmiany
+    # tego planu (K-38, 03.11: okno pisało „recenzent prosi o zmiany” i polecało odesłanie poprawionego planu).
+    corrected = bool(review.get("corrected")) and changes
     happened = ""
-    if rows:
+    if rows and corrected:
+        happened = (f"Plan ma {_count(len(rows), 'ticket', 'tickety', 'ticketów')}; planujący poprawił go po uwagach "
+                    f"recenzenta{f' ({reviewer})' if reviewer else ''} — uwagi niżej dotyczą wersji sprzed poprawki.")
+    elif rows:
         happened = f"Plan ma {_count(len(rows), 'ticket', 'tickety', 'ticketów')}"
         if reviewer:
             happened += f"; recenzent ({reviewer}) " + (
@@ -538,13 +544,15 @@ def _plan_decision(st: FlowState) -> dict | None:
     # przy nieznanym werdykcie żadna nie jest polecona (uwag bez werdyktu nie rozstrzygamy za recenzenta).
     if not verdict:
         recommend = ""
-    elif not listed:
+    elif corrected or not listed:
         recommend = "approve"
     elif counts["blocker"] or changes:
         recommend = "return"
     else:
         recommend = "approve"
-    if counts["blocker"]:
+    if corrected:
+        effect = "Pierwsza fala ticketów wystartuje od razu; uwagi recenzenta są już naniesione w tym planie."
+    elif counts["blocker"]:
         effect = (f"Mimo {_count(counts['blocker'], 'blokującej uwagi', 'blokujących uwag', 'blokujących uwag')} recenzenta "
                   "pierwsza fala ticketów wystartuje od razu, a uwagi nie zostaną poprawione.")
     elif listed and changes:
@@ -554,7 +562,8 @@ def _plan_decision(st: FlowState) -> dict | None:
     approve = _option("approve", "Zatwierdź plan i rozpocznij implementację", effect, APPROVE_PLAN, {},
                       recommended=recommend == "approve")
     # Okno zaznacza z góry blocker i major (nie nit) i odsyła tylko zaznaczone, razem z własnym tekstem.
-    chosen = [f for f in listed if review_findings.default_selected(f)]
+    # Po automatycznej poprawce nic nie jest zaznaczone z góry — uwagi są już naniesione, odsyła się tylko wybrane.
+    chosen = [] if corrected else [f for f in listed if review_findings.default_selected(f)]
     send_back = _option("return", "Odeślij uwagi do poprawy",
                         "Planujący poprawi plan w tle (dostanie zaznaczone uwagi i Twój tekst), a Ty wrócisz tu do zatwierdzenia.",
                         EDIT_PLAN, {"action": "return", "findings": chosen}, recommended=recommend == "return")
