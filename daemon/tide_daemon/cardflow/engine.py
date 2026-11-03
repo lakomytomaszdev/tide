@@ -1870,6 +1870,11 @@ class FlowEngine(PlanEditing):
         step = st.steps.get(st.last_step) or {}
         done = st.finished.get(st.last_step) or {}
         result = done.get("result")
+        if (step.get("ticket") or "") in st.rejected and result != "done":
+            # Odrzucony ticket (także z decyzji o błędzie kroku) nie jest wznawiany ani ponawiany (K-16/LEGAL-75).
+            if st.plan_approved is not None:
+                self._plan_next(card, st)
+            return
         if result in ("question", "denied"):
             decision = st.step_decisions.get(st.last_step)
             if decision:
