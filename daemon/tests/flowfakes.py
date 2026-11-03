@@ -242,6 +242,10 @@ elif word in ("blad-dwa", "blad-zmien"):
         finish("done")
     else:
         finish("error", reason="awaria testowa")
+elif word == "srodowisko":
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": "question",
+                   "question": "Czy możesz uruchomić testy z Dockerem/Testcontainers poza piaskownicą?"}, fh)
 elif word == "poza":
     if "uruchomił poza piaskownicą" in prompt and "zewnetrzne-ok" in prompt:
         finish("done")

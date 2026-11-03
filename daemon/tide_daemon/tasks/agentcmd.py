@@ -148,6 +148,7 @@ class Step:
     read_dirs: tuple = ()          # dodatkowe repozytoria karty, wyłącznie do odczytu
     dotnet: bool = False           # projekt .NET: pamięć pakietów NuGet do odczytu i środowisko bez serwerów buildu
     node_home: str = ""            # projekt Node: instalacja Node (nvm) tylko do odczytu, jej bin na początku PATH
+    network_domains: tuple = ()    # P1 (03.11): domeny rejestrów paczek dostępne z piaskownicy kroku Claude
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
     codex_mcp_skip: tuple = ()      # serwery, których wyłączenie przez `-c` psuje konfigurację Codexa (03.11)
 
@@ -335,6 +336,8 @@ def _env(step: Step, home_env: dict, inp: str) -> dict:
         env["CLAUDE_CODE_TMPDIR"] = os.path.join(step.tmp_root, f"tide-step-{step.step_id}")
     if step.node_home:
         env["PATH"] = os.path.join(step.node_home, "bin") + os.pathsep + env.get("PATH", "")
+        # `npm install` w kroku (sieć do rejestru z P1) potrzebuje zapisywalnej pamięci podręcznej — `~` jest zakryty.
+        env["npm_config_cache"] = os.path.join(step.step_dir, "out", ".npm-cache")
     if step.dotnet:
         from . import dotnet
         # Katalog CLI w katalogu wyjściowym kroku — jedynym miejscu z zapisem w piaskownicy (K-15: katalog
@@ -368,7 +371,7 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
                                                         *_font_dirs(home),
                                                         *([step.node_home] if step.node_home else [])],
                        "allowWrite": [out]},
-        "network": {"allowedDomains": []}},
+        "network": {"allowedDomains": list(step.network_domains)}},
         # Zasada projektów: commity bez podpisów i wzmianek o AI (K-33/PT-108: review odrzuciło stopkę
         # Co-Authored-By, którą Claude Code dopisuje domyślnie).
         "includeCoAuthoredBy": False, "attribution": {"commit": "", "pr": ""}}

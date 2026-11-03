@@ -64,10 +64,33 @@ def install(worktree: str, home: str, *, runner=subprocess.run, timeout: float =
     return run.returncode == 0, tail[-1200:]
 
 
-def prompt_note(ok: bool, tail: str) -> str:
+def prompt_note(ok: bool, tail: str, network: bool = False) -> str:
+    if ok and network:
+        return ("\nProjekt Node: Tide zainstalował zależności przed krokiem (`npm ci`); `node` i `npm` są na PATH. "
+                "Krok ma sieć do rejestru npm, więc `npm install <paczka>` działa tutaj. Serwery, e2e i Docker "
+                "zgłaszaj wynikiem `outside`.\n")
     if ok:
         return ("\nProjekt Node: Tide zainstalował zależności przed krokiem (`npm ci` poza piaskownicą); `node` i `npm` "
                 "są na PATH. Sieci w kroku nie ma — nowej paczki nie doinstalujesz sam: poproś o uruchomienie polecenia "
                 "poza piaskownicą (wynik `outside`).\n")
     return ("\nProjekt Node: instalacja zależności przed krokiem nie powiodła się. Ostatnie linie:\n"
             f"{tail}\nJeśli potrzebujesz instalacji, poproś o uruchomienie polecenia poza piaskownicą (wynik `outside`).\n")
+
+
+REGISTRY_DOMAINS = {
+    "node": ("registry.npmjs.org", "registry.yarnpkg.com", "fonts.googleapis.com", "fonts.gstatic.com"),
+    "dotnet": ("api.nuget.org", "globalcdn.nuget.org"),
+    "python": ("pypi.org", "files.pythonhosted.org"),
+}
+
+
+def registry_domains(worktree: str, *, dotnet: bool) -> tuple:
+    """P1 (03.11, docs/sandbox-and-permissions.md): domeny rejestrów paczek według stosu worktree."""
+    stacks = []
+    if is_node(worktree):
+        stacks.append("node")
+    if dotnet:
+        stacks.append("dotnet")
+    if any(os.path.isfile(os.path.join(worktree, name)) for name in ("pyproject.toml", "requirements.txt", "setup.py")):
+        stacks.append("python")
+    return tuple(dict.fromkeys(d for stack in stacks for d in REGISTRY_DOMAINS[stack]))

@@ -65,6 +65,16 @@ MAX_PROVIDER_SLOTS = 12
 RESULTS = ("done", "question", "denied", "error", "outside")
 OUTSIDE_TIMEOUT = 3600          # najdłużej działające polecenie uruchomione poza piaskownicą (s)
 OUTSIDE_TAIL = 12_000           # tyle końcowych znaków wyniku dostaje wznowiony krok
+ENV_QUESTION = re.compile(r"piaskownic|sandbox|docker|testcontainers|\boutside\b|ng serve|\bnpm\b|\bnpx\b|dotnet test|"
+                          r"playwright|\bport(?:u|y|em)?\b|:\d{4}\b|\bsieci\b|\bsieć\b|network|środowisk|"
+                          r"zainstalow|instalacj|uruchomi[ćeł]\w* (?:test|polecen|serwer)", re.IGNORECASE)
+ENV_ANSWER = ("Odpowiedź Tide (automatyczna — pytanie dotyczy środowiska, nie decyzji użytkownika): nie pytaj "
+              "użytkownika o środowisko. Tide uruchamia polecenia poza piaskownicą sam (sieć, Docker/Testcontainers, "
+              "serwery, pełne testy): zapisz {\"result\":\"outside\",\"command\":\"jedno pełne polecenie\","
+              "\"reason\":\"po co\"} i zakończ krok — przy wznowieniu dostaniesz kod wyjścia i koniec wyniku. Polecenie "
+              "może być długie i mieć zmienne w cudzysłowie, ale bez łączenia (&&, ;, |). Gdy polecenia nie da się "
+              "uruchomić, zakończ wynikiem error z przyczyną. Jeśli pytanie dotyczyło jednak zakresu albo decyzji "
+              "biznesowej, zadaj je ponownie: krótko, z opcjami i rekomendacją.")
 REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
 ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
 OUTSIDE_PER_PROJECT = 1         # polecenia poza piaskownicą naraz w jednym projekcie (porty, serwer e2e)
@@ -1380,12 +1390,19 @@ class FlowEngine(PlanEditing):
                 ok, tail = dotnet.restore(worktree)
                 prompt += dotnet.prompt_note(ok, tail)
             from ..tasks import node as node_mod
+            # P1: sieć z piaskownicy kroku tylko do rejestrów paczek stosu (Claude Code `allowedDomains`); Codex
+            # ma własną piaskownicę bez listy domen, więc tam bez zmian. `networkDomains[projekt]` dopisuje domeny.
+            domains = ()
+            if selected.tool == "claude" and kind in ("ticket", "fix", "conflict"):
+                extra = (self._settings_data().get("networkDomains") or {}).get(project.slug) or []
+                domains = tuple(dict.fromkeys([*node_mod.registry_domains(worktree, dotnet=is_dotnet),
+                                               *[d for d in extra if isinstance(d, str)]]))
             node_home = ""
             if kind in ("ticket", "fix", "review", "conflict", "close") and node_mod.is_node(worktree):
                 node_home = node_mod.node_home(os.path.expanduser("~"))
                 if kind in ("ticket", "fix", "conflict") and node_home:
                     ok, tail = node_mod.install(worktree, os.path.expanduser("~"))
-                    prompt += node_mod.prompt_note(ok, tail)
+                    prompt += node_mod.prompt_note(ok, tail, network=bool(domains))
             bg = agentcmd.background(agentcmd.Step(
                 tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
                 step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
@@ -1396,7 +1413,7 @@ class FlowEngine(PlanEditing):
                 disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
                 enforce_command_policy=selected.tool == "claude",
                 tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet, node_home=node_home,
-                codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ())))
+                codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains))
             bg.prepare()
             for source, target in zip(images, shots):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -1779,6 +1796,8 @@ class FlowEngine(PlanEditing):
                 self._resume_step(card, st, step, decision)
             elif result == "denied":
                 self._consent_recheck(card, step, done)
+            else:
+                self._env_question(card, step, done)
             return
         if result == "error":
             decision = st.step_decisions.get(st.last_step)
@@ -3045,7 +3064,7 @@ class FlowEngine(PlanEditing):
                 extra["pattern"] = outside_pattern(command)
                 data["canAllow"] = outside_allowed(command, project.denied_commands)
                 remembered = data["canAllow"] and (outside_matches(command, self._outside_remembered(project.slug))
-                                                   or self._auto_consent() and not outside_risky(command))
+                                                   or self._auto_outside(card) and not outside_risky(command))
             elif data["canAllow"] and self._auto_consent():
                 auto_allow = True       # w piaskownicy: zapisy tylko w worktree, bez sieci — wystarczy brak zakazu
         self.journal.append(card, "step.finished", step=name, ticket=step.get("ticket") or "",
@@ -3054,6 +3073,8 @@ class FlowEngine(PlanEditing):
                             canAllow=data.get("canAllow", True), stalledSince=data.get("stalledSince") or "",
                             notes=[n for n in data.get("notes") or [] if n in kept], kept=kept,
                             exit=exit_code, snapshotDir=snapshot_dir, **extra)
+        if data.get("result") == "question":
+            self._env_question(card, step, data)
         if broken_mcp:
             # Błąd konfiguracji Codexa po stronie Tide: zapamiętany serwer jest odtąd pomijany, krok rusza sam.
             self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
@@ -3383,6 +3404,32 @@ class FlowEngine(PlanEditing):
         """Automatyczne zgody (domyślnie włączone); `autoConsent: false` w ustawieniach przepływu je wyłącza."""
         return self._settings_data().get("autoConsent", True) is not False
 
+    def _auto_outside(self, card: str) -> bool:
+        """Automatyczne uruchamianie poza piaskownicą — przełącznik na projekt (`outsideAuto: {"slug": false}`),
+        bo poza piaskownicą kod z repozytorium działa z prawami użytkownika (docs/sandbox-and-permissions.md)."""
+        if not self._auto_consent():
+            return False
+        slug = self._project(card)[1].slug
+        return (self._settings_data().get("outsideAuto") or {}).get(slug, True) is not False
+
+    def _env_question(self, card: str, step: dict, done: dict) -> None:
+        """Pytanie kroku o środowisko (piaskownica, Docker, porty, instalacje, testy) dostaje odpowiedź Tide zamiast
+        trafić do użytkownika (03.11: „to serio tak ma działać, że muszę odpalać sesję ratunkową?”). Raz na ticket
+        z rzędu: gdy agent zapyta ponownie zaraz po odpowiedzi Tide, pytanie idzie do użytkownika."""
+        question = str(done.get("question") or "")
+        name = step.get("step") or ""
+        if not ENV_QUESTION.search(question) or self.journal is None:
+            return
+        events = self.journal.read(card)
+        if any(e.get("type") == "step.decision" and e.get("step") == name for e in events):
+            return
+        parent = step.get("parentStep") or ""
+        if any(e.get("type") == "step.decision" and e.get("step") == parent and e.get("envAnswer") for e in events):
+            return      # Tide już odpowiedział w poprzedniej próbie — teraz decyduje użytkownik
+        self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
+                            kind=step.get("kind") or "", choice="answer", answer=ENV_ANSWER, command="",
+                            executor="", auto=True, envAnswer=True)
+
     def _consent_recheck(self, card: str, step: dict, done: dict) -> None:
         """Prośba czekająca na zgodę sprzed zmiany reguł: zatwierdzana tak, jak zostałaby zgłoszona dziś."""
         if done.get("outside"):
@@ -3402,7 +3449,7 @@ class FlowEngine(PlanEditing):
         from ..board.commands import outside_risky
         if outside_allowed(command, project.denied_commands) and \
                 (outside_matches(command, self._outside_remembered(project.slug)) or
-                 self._auto_consent() and not outside_risky(command)):
+                 self._auto_outside(card) and not outside_risky(command)):
             self.journal.append(card, "step.decision", step=step.get("step") or "", ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="run", answer="", command=command,
                                 executor="", auto=True)

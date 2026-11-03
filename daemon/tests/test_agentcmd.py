@@ -1113,3 +1113,25 @@ class CodexMcpTest(unittest.TestCase):
             self.assertEqual(agentcmd.list_codex_mcp("codex"), ("linear", "repl"))
         found = agentcmd.CODEX_BROKEN_MCP.search("Error loading config.toml: invalid transport\nin `mcp_servers.codex_app`")
         self.assertEqual(found.group(1), "codex_app")
+
+
+class RegistryNetworkTest(BackgroundBase):
+    """03.11, P1 z docs/sandbox-and-permissions.md: sieć z piaskownicy kroku tylko do rejestrów paczek stosu."""
+
+    def test_step_gets_registry_domains_and_a_writable_npm_cache(self):
+        from tide_daemon.tasks import node
+        prefix = os.path.join(self.home, ".nvm", "versions", "node", "v20.1.0")
+        os.makedirs(os.path.join(prefix, "bin"))
+        cmd = agentcmd.background(self.step(node_home=prefix, network_domains=("registry.npmjs.org",)))
+        self.assertEqual(self.settings(cmd)["sandbox"]["network"]["allowedDomains"], ["registry.npmjs.org"])
+        self.assertTrue(cmd.env["npm_config_cache"].endswith(os.path.join("out", ".npm-cache")))
+        self.assertEqual(self.settings(agentcmd.background(self.step()))["sandbox"]["network"]["allowedDomains"], [])
+        project = os.path.join(self.root, "mix")
+        os.makedirs(project)
+        for name in ("package.json", "pyproject.toml"):
+            open(os.path.join(project, name), "w").close()
+        domains = node.registry_domains(project, dotnet=True)
+        self.assertIn("registry.npmjs.org", domains)
+        self.assertIn("api.nuget.org", domains)
+        self.assertIn("pypi.org", domains)
+        self.assertEqual(node.registry_domains(os.path.join(self.root, "pusty"), dotnet=False), ())

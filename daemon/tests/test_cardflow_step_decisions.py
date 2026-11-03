@@ -95,6 +95,14 @@ class StepDecisionTest(FlowInProcess):
         for risky in ("git push origin master", "npm publish", "rm -rf build", "npm install /home/x/pkg",
                       "cat ../../.ssh/id_rsa", "curl https://x"):
             self.assertTrue(outside_risky(risky), risky)
+        # Przełącznik na projekt: bez automatycznego uruchamiania poza piaskownicą krok czeka na użytkownika.
+        with open(self.settings, "w", encoding="utf-8") as fh:
+            json.dump({"stepGuardMinutes": 15.0, "autoConsent": True, "outsideAuto": {"proj": False}}, fh)
+        manual = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
+        self.assertTrue(self.start(manual)["ok"])
+        self.assertEqual(self.wait_column(manual, "waiting")["derived"]["flow"]["action"], "outside")
+        with open(self.settings, "w", encoding="utf-8") as fh:
+            json.dump({"stepGuardMinutes": 15.0, "autoConsent": True}, fh)
         outside = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
         self.assertTrue(self.start(outside)["ok"])
         self.wait_column(outside, "review", timeout=40)
@@ -109,6 +117,18 @@ class StepDecisionTest(FlowInProcess):
             json.dump({"stepGuardMinutes": 15.0, "autoConsent": True}, fh)
         self.wait_column(waiting, "review", timeout=40)
         self.assertEqual([(d["choice"], d.get("auto")) for d in self.of(waiting, "step.decision")], [("allow", True)])
+
+    def test_environment_question_is_answered_by_tide_once_then_goes_to_user(self):
+        # 03.11, K-16/LEGAL-66: pytanie o Docker/piaskownicę trafiało do użytkownika, który nie wiedział, co odpowiedzieć.
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: srodowisko")
+        self.assertTrue(self.start(card_id)["ok"])
+        card = self.wait_column(card_id, "waiting")
+        self.assertIn("Docker", card["derived"]["flow"]["question"])
+        answers = [d for d in self.of(card_id, "step.decision") if d.get("envAnswer")]
+        self.assertEqual(len(answers), 1)
+        resumed = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][1]
+        with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            self.assertIn('"result":"outside"', json.load(fh)["prompt"])
 
     def test_declined_outside_command_resumes_without_it(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
