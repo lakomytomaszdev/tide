@@ -356,7 +356,7 @@ class BackgroundCodexTest(BackgroundBase):
                 fh.write("#!/bin/sh\n" + body + "\n")
             os.chmod(path, 0o755)
             return path
-        ok = program('[ "$1 $2 $3" = "mcp list --json" ] && echo \'[{"name":"linear","enabled":true},{"name":"b"}]\'')
+        ok = program('[ "$1 $2 $3" = "mcp list --json" ] && echo \'[{"name":"linear","enabled":true,"transport":{"type":"streamable_http"}},{"name":"b","transport":{"type":"stdio"}}]\'')
         self.assertEqual(agentcmd.list_codex_mcp(ok), ("linear", "b"))
         cmd = agentcmd.background(self.step("codex", binary=ok))
         self.assertIn("mcp_servers.b.enabled=false", cmd.argv)
