@@ -6,6 +6,8 @@ RESULT_FILE = "result.json"
 NOTE_FILE = "note.md"
 REVIEW_FILE = "review.md"
 SUMMARY_FILE = "summary.md"
+OPTIONS_HINT = ('Do pytania możesz dodać "options": [{"title": "…", "effect": "…", "recommended": true}] — '
+                "1–4 gotowe odpowiedzi, najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”.")
 
 
 def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
@@ -21,6 +23,7 @@ Zapisz notkę w {out_dir}/{NOTE_FILE}; jako ostatnią czynność zapisz plik:
 Plik wyniku: {out_dir}/{RESULT_FILE}
 {{"result":"done","notes":["{NOTE_FILE}"]}} albo
 {{"result":"question","question":"…"}} albo {{"result":"error","reason":"…"}}.
+{OPTIONS_HINT}
 """
 
 
@@ -37,6 +40,7 @@ Jako ostatnią czynność zapisz plik:
 Plik wyniku: {out_dir}/{RESULT_FILE}
 {{"result":"done","notes":["{SUMMARY_FILE}"]}} albo
 {{"result":"question","question":"…"}} albo {{"result":"error","reason":"…"}}.
+{OPTIONS_HINT}
 """
 
 
@@ -51,6 +55,7 @@ def resume_step(card_id: str, ticket: str, out_dir: str, *, kind: str = "ticket"
 Na koniec zapisz notkę w {out_dir}/{NOTE_FILE}, a jako ostatnią czynność plik {out_dir}/{RESULT_FILE}.
 Kontrakt wyniku jest taki sam jak wcześniej: JSON z result = done, question, denied albo error;
 dla question podaj question, dla denied command, dla error reason, dla done notes = [\"{NOTE_FILE}\"].
+{OPTIONS_HINT}
 Nie wykonuj push ani scalenia gałęzi.
 """
 
@@ -78,7 +83,7 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
         detail = f"Pytanie z poprzedniej próby: {prior.get('question') or ''}\nOdpowiedź użytkownika: {answer}"
         picked = next((o for o in prior.get("options") or [] if o.get("title") == answer), None)
         if picked:
-            detail += f"\nUżytkownik wybrał jedną z podanych opcji. Tytuł: {picked['title']}"
+            detail += "\nUżytkownik wybrał podaną opcję."
             if picked.get("effect"):
                 detail += f"\nSkutek opcji: {picked['effect']}"
     elif choice == "allow":

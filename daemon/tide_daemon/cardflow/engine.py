@@ -2901,7 +2901,8 @@ class FlowEngine(PlanEditing):
         self.journal.append(card, "step.finished", step=name, ticket=step.get("ticket") or "",
                             result=data.get("result"), reason=data.get("reason") or "",
                             question=data.get("question") or "", command=data.get("command") or "",
-                            options=data.get("options") or [], canAllow=data.get("canAllow", True), stalledSince=data.get("stalledSince") or "",
+                            options=data.get("options") or [],
+                            canAllow=data.get("canAllow", True), stalledSince=data.get("stalledSince") or "",
                             notes=[n for n in data.get("notes") or [] if n in kept], kept=kept,
                             exit=exit_code, snapshotDir=snapshot_dir, **extra)
         if data.get("result") == "denied" and not data.get("canAllow", True):

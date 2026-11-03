@@ -335,6 +335,13 @@ class ResumeContextOptionTest(unittest.TestCase):
         text = ticket_card(card_id="K-1", title="t", description="d", project="p", ticket="PT-1", branch="b",
                            card_branch="c", worktree="/w", out_dir="/o")
         self.assertIn('"options"', text)
+        from tide_daemon.cardflow.handoff import conflict_card, close_card, resume_step
+        for cmd in (conflict_card(card_id="K-1", title="t", description="d", ticket="PT-1", card_branch="c",
+                                  ticket_branch="b", worktree="/w", out_dir="/o", error="e"),
+                    close_card(card_id="K-1", title="t", description="d", worktree="/w", out_dir="/o",
+                               tickets=[], manual=False),
+                    resume_step("K-1", "PT-1", "/o")):
+            self.assertIn('"options"', cmd)
 
 
 if __name__ == "__main__":
