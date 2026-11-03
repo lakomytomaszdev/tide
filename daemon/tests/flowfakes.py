@@ -74,8 +74,16 @@ if prompt.startswith("Popraw propozycję planu karty"):
     sys.exit(0)
 
 if prompt.startswith("Review propozycji planu"):
+    review = {"verdict": "REQUEST_CHANGES" if "ATRAPA: plan-review-changes" in prompt else "APPROVE", "findings": "Uzupełnij Dla recenzenta."}
+    if "ATRAPA: plan-review-structured" in prompt:  # nowy format uwag (PT-127)
+        review = {"verdict": "REQUEST_CHANGES", "findings": [
+            {"severity": "blocker", "text": "Pierwszy plasterek nie ma mierzalnego kryterium.", "tickets": ["#1"]},
+            {"severity": "major", "text": "Rozdziel pierwszy plasterek.", "tickets": ["#1"]},
+            {"severity": "nit", "text": "Drobiazg w nazwie drugiego.", "tickets": ["#2"]}]}
+    if "ATRAPA: plan-review-malformed" in prompt:
+        review = {"verdict": "REQUEST_CHANGES", "findings": [{"severity": "krytyczna", "text": "x", "tickets": []}]}
     with open(os.path.join(out, "plan-review.json"), "w", encoding="utf-8") as fh:
-        json.dump({"verdict": "REQUEST_CHANGES" if "ATRAPA: plan-review-changes" in prompt else "APPROVE", "findings": "Uzupełnij Dla recenzenta."}, fh)
+        json.dump(review, fh)
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "done", "notes": []}, fh)
     sys.exit(0)

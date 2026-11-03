@@ -15,7 +15,8 @@ import shutil
 import unittest
 
 from . import REPO
-from .decisionfix import Q2, Q3, decisions, journal, scenario_f, without_options
+from .decisionfix import (FINDINGS_C, Q2, Q3, decisions, decisions_c, journal, journal_c, scenario_c, scenario_f,
+                          without_options)
 from .test_view import ProbeCase
 
 CARD_DIR = os.path.join(REPO, "apps", "common", "qml", "card")
@@ -42,6 +43,9 @@ def state():
         "  badges: opts.map(o => all(o, 'decisionRecommended').length), "
         "  marks: opts.map(o => all(o, 'decisionOptionMark').length), "
         "  other: other ? [other.y > Math.max(0, ...opts.map(o => o.y)), other.checked] : null, "
+        "  findings: all(d, 'decisionFinding').sort((a, b) => y(a) - y(b)).map(f => [ "
+        "    all(f, 'decisionFindingSeverity')[0].children[0].text, all(f, 'decisionFindingText')[0].text, "
+        "    all(f, 'decisionFindingTicket').map(t => t.text), f.checked]), "
         "  answer: all(d, 'decisionAnswer').length, "
         "  tech: all(d, 'decisionTech').length, techToggle: all(d, 'decisionTechToggle').length, "
         "  error: one('decisionError') ? one('decisionError').text : '', "
@@ -68,7 +72,8 @@ class PackageTest(unittest.TestCase):
         from daemon.tests.fakebin import files_under
         with tempfile.TemporaryDirectory(prefix="tide-decision-pkg-") as tmp:
             files = files_under(os.path.join(stage(os.path.join(tmp, "pkg")), "views", "board"))
-        for name in ("qml/card/DecisionDialog.qml", "qml/card/DecisionOption.qml", "qml/card/decision.js",
+        for name in ("qml/card/DecisionDialog.qml", "qml/card/DecisionOption.qml", "qml/card/DecisionFinding.qml",
+                     "qml/card/decision.js",
                      "qml/tide/Tokens.qml"):
             self.assertIn(name, files)
 
@@ -165,6 +170,92 @@ out["again"] = [state()["counter"], state()["options"][0][3]]
         self.assertIn("Czeka na mnie", out["closed"][2])
         self.assertEqual(out["closed"][3], "waiting", "karta zostaje w „Czeka na mnie”")
         self.assertEqual(out["again"], ["1 z 2", False], "ponowne otwarcie bez nowej migawki — od początku, bez zaznaczenia")
+
+    def test_scenario_c_lists_findings_with_severity_tickets_and_default_selection(self):
+        out = self.probe(STATE_PY + """
+def finding(i):
+    return at("(" + ALL + ")(page.decisionDialog, 'decisionFinding').sort((a, b) => a.y - b.y)[" + str(i) + "]")
+click(card("K-8"))
+out["opened"] = state()
+click(finding(2))
+out["nitOn"] = [f[3] for f in state()["findings"]]
+click(finding(2))
+click(finding(0))
+out["firstOff"] = [f[3] for f in state()["findings"]]
+click(finding(0))
+click(option(0))
+key(Qt.Key.Key_Return)
+out["sent"] = calls()
+""", scenario_c(self.data))
+        opened = out["opened"]
+        self.assertTrue(opened["open"])
+        self.assertEqual(opened["kind"], "Plan do zatwierdzenia")
+        self.assertEqual(opened["who"], "K-8 · Opus")
+        self.assertIn("Plan ma 9 ticketów", opened["happened"])
+        self.assertIn("prosi o zmiany", opened["happened"])
+        self.assertEqual([f[0] for f in opened["findings"]], ["ważna", "ważna", "drobna"],
+                         "każda uwaga ma wagę, nie same liczniki")
+        self.assertEqual([f[2] for f in opened["findings"]], [["#5", "#7", "#8"], ["#3"], ["PT-42"]],
+                         "powiązane tickety przy każdej uwadze")
+        self.assertIn("kartka nie mówi", opened["findings"][1][1])
+        self.assertEqual([f[3] for f in opened["findings"]], [True, True, False], "blocker i major zaznaczone, nit nie")
+        self.assertEqual([(o[0], o[2]) for o in opened["options"]],
+                         [("Odeślij uwagi do poprawy", True), ("Zatwierdź plan i rozpocznij implementację", False)],
+                         "z prośbą o zmiany polecone jest odesłanie")
+        self.assertEqual(out["nitOn"], [True, True, True])
+        self.assertEqual(out["firstOff"], [False, True, False])
+        self.assertEqual(out["sent"][0][:2], ["EditCardPlan", "K-8"])
+        params = json.loads(out["sent"][0][2])
+        self.assertEqual(params["action"], "return")
+        self.assertEqual([f["text"] for f in params["findings"]], [f["text"] for f in FINDINGS_C[:2]],
+                         "odesłane tylko zaznaczone uwagi")
+        self.assertNotIn("feedback", params)
+
+    def test_scenario_c_sends_selected_findings_with_own_text_and_needs_something_to_send(self):
+        out = self.probe(STATE_PY + """
+def finding(i):
+    return at("(" + ALL + ")(page.decisionDialog, 'decisionFinding').sort((a, b) => a.y - b.y)[" + str(i) + "]")
+click(card("K-8"))
+click(finding(0))
+click(finding(1))
+click(option(0))
+key(Qt.Key.Key_Return)
+out["none"] = [len(calls()), state()["error"]]
+click(named("decisionOther", 0.5, 0.2))
+type_text("#7 i #8 zostaw w fali 3.")
+key(Qt.Key.Key_Return)
+out["sent"] = calls()
+""", scenario_c(self.data))
+        self.assertEqual(out["none"][0], 0, "bez zaznaczonych uwag i bez własnego tekstu nic nie wychodzi")
+        self.assertIn("Zaznacz uwagi", out["none"][1])
+        params = json.loads(out["sent"][0][2])
+        self.assertEqual(params["feedback"], "#7 i #8 zostaw w fali 3.")
+        self.assertEqual(params["findings"], [], "niezaznaczone uwagi nie wychodzą, własny tekst tak")
+
+    def test_scenario_c_approve_despite_blockers_states_its_effect(self):
+        blockers = [{"severity": "blocker", "text": "Pierwszy ticket nie ma kryteriów.", "tickets": ["#1"]}]
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["state"] = state()
+click(option(1))
+key(Qt.Key.Key_Return)
+out["sent"] = calls()
+""", scenario_c(self.data, decisions_c(journal_c(blockers))))
+        self.assertEqual([f[0] for f in out["state"]["findings"]], ["blokująca"])
+        self.assertEqual(out["state"]["options"][0][0], "Odeślij uwagi do poprawy")
+        approve = out["state"]["options"][1]
+        self.assertIn("Mimo 1 blokującej uwagi", approve[1])
+        self.assertEqual(out["sent"][0][:2], ["ApproveCardPlan", "K-8"])
+
+    def test_scenario_c_without_verdict_recommends_nothing_and_old_text_has_no_severity(self):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["state"] = state()
+""", scenario_c(self.data, decisions_c(journal_c("Stary tekst uwag.", verdict=""))))
+        state = out["state"]
+        self.assertEqual([o[2] for o in state["options"]], [False, False], "nieznany werdykt — brak polecanej")
+        self.assertEqual([(f[0], f[1], f[2], f[3]) for f in state["findings"]],
+                         [("bez wagi", "Stary tekst uwag.", [], True)], "stary tekst: bez wagi, bez ticketów")
 
     def test_single_decision_has_no_counter(self):
         out = self.probe(STATE_PY + """

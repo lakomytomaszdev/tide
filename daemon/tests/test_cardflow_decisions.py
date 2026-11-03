@@ -10,7 +10,7 @@ from tide_daemon.cardflow.decisions import GENERIC, KINDS, build_decisions
 from tide_daemon.cardflow.state import derived, fold
 
 DECISION_KEYS = {"id", "step", "stepKind", "ticket", "executor", "kind", "happened", "why", "options",
-                 "freeText", "reply", "fault", "technical"}
+                 "freeText", "reply", "fault", "technical", "findings"}
 OPTION_KEYS = {"id", "title", "effect", "recommended", "choice", "params", "method"}
 CARD = {"column": "todo"}
 
@@ -155,12 +155,60 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(decision["kind"], "plan-approval")
         self.assertEqual([(o["method"], o["choice"]) for o in decision["options"]],
                          [("EditCardPlan", "return"), ("ApproveCardPlan", "approve")])
-        self.assertEqual(decision["options"][0]["params"], {"action": "return", "feedback": "MAJOR: rozdziel fale."})
+        # Stary napis (karty w toku) to jedna uwaga bez wagi, zaznaczona z góry.
+        old = {"severity": "", "text": "MAJOR: rozdziel fale.", "tickets": []}
+        self.assertEqual(decision["options"][0]["params"], {"action": "return", "findings": [old]})
+        self.assertEqual(decision["findings"], [{"id": "f1", **old, "selected": True}])
         self.assertIn("2 tickety", decision["happened"])
         self.assertEqual(decision["reply"], {"method": "EditCardPlan", "params": {"action": "return"},
                                              "field": "feedback"})
         approve = plan_events(reviewer="Sonnet", verdict="APPROVE", findings="Dobrze.")
         self.assertEqual(approve.decisions()[0]["options"][0]["method"], "ApproveCardPlan")
+
+    SCENARIO_C = [
+        {"severity": "major", "text": "#5, #7 i #8 zmieniają to samo okno w jednej fali.", "tickets": ["#5", "#7", "#8"]},
+        {"severity": "major", "text": "#3 nie mówi, co zrobić przy odmowie zgody.", "tickets": ["#3"]},
+        {"severity": "nit", "text": "Brak testu kolejki.", "tickets": ["PT-42"]},
+    ]
+
+    def test_plan_approval_lists_findings_with_default_selection(self):
+        [decision] = plan_events(reviewer="Sonnet", verdict="REQUEST_CHANGES", findings=self.SCENARIO_C).decisions()
+        self.assert_contract(decision)
+        self.assertEqual([(f["severity"], f["selected"], f["tickets"]) for f in decision["findings"]],
+                         [("major", True, ["#5", "#7", "#8"]), ("major", True, ["#3"]), ("nit", False, ["PT-42"])])
+        [send_back, approve] = decision["options"]
+        self.assertEqual((send_back["title"], send_back["recommended"]), ("Odeślij uwagi do poprawy", True))
+        # Domyślnie odsyłane są blocker i major, nie nit.
+        self.assertEqual(send_back["params"], {"action": "return", "findings": self.SCENARIO_C[:2]})
+        self.assertFalse(approve["recommended"])
+        self.assertEqual(decision["technical"]["majors"], 2)
+        self.assertEqual(decision["technical"]["nits"], 1)
+
+    def test_plan_approval_recommended_action_depends_on_verdict(self):
+        nit = [{"severity": "nit", "text": "Drobiazg.", "tickets": []}]
+        blocker = [{"severity": "blocker", "text": "Brak kryteriów.", "tickets": ["#1"]}]
+        cases = [("APPROVE", [], "approve"), ("APPROVE", nit, "approve"), ("REQUEST_CHANGES", [], "approve"),
+                 ("REQUEST_CHANGES", nit, "return"), ("APPROVE", blocker, "return"), ("REQUEST_CHANGES", blocker, "return"),
+                 ("MOŻE", nit, None), ("", [], None)]
+        for verdict, findings, expected in cases:
+            with self.subTest(verdict=verdict, findings=len(findings)):
+                [decision] = plan_events(reviewer="Sonnet", verdict=verdict, findings=findings).decisions()
+                recommended = [o["id"] for o in decision["options"] if o["recommended"]]
+                self.assertEqual(recommended, [expected] if expected else [])
+                self.assertEqual(decision["options"][0]["id"], expected or decision["options"][0]["id"])
+
+    def test_no_findings_offer_only_approval(self):
+        [decision] = plan_events(reviewer="Sonnet", verdict="APPROVE", findings=[]).decisions()
+        self.assertEqual([(o["id"], o["recommended"]) for o in decision["options"]], [("approve", True)])
+        self.assertEqual(decision["findings"], [])
+
+    def test_approving_despite_blockers_is_described_by_its_effect(self):
+        blockers = [{"severity": "blocker", "text": "A", "tickets": []}, {"severity": "blocker", "text": "B", "tickets": []}]
+        [decision] = plan_events(reviewer="Sonnet", verdict="REQUEST_CHANGES", findings=blockers).decisions()
+        approve = next(o for o in decision["options"] if o["id"] == "approve")
+        self.assertEqual(approve["method"], "ApproveCardPlan")
+        self.assertIn("Mimo 2 blokujących uwag", approve["effect"])
+        self.assertIn("nie zostaną poprawione", approve["effect"])
 
     def test_review_question_after_three_rounds(self):
         events = Events().step("K-1-PT-1-3", kind="review", executor="Opus", result="done") \

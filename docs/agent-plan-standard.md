@@ -174,6 +174,14 @@ lub `majors`. Brak poprawnego wyniku jest błędem
 kroku. Pytanie, zgoda i ponowienie przechodzą przez dziennik karty; wznowienie zachowuje worktree i zmiany.
 Autor i recenzent nie wykonują push ani scalenia.
 
+**Review planu.** Krok `plan-review` zapisuje w katalogu wyjściowym `plan-review.json`:
+`{"verdict":"APPROVE"|"REQUEST_CHANGES","findings":[{"severity":"blocker"|"major"|"nit","text":"…","tickets":["#5"]}]}`.
+`severity`: `blocker` — plan nie może ruszyć bez poprawy, `major` — ważna zmiana przed startem, `nit` — drobiazg;
+`tickets` — numery ticketów z planu, których uwaga dotyczy (może być pusta lista). Przy `APPROVE` bez uwag
+`findings` to `[]`. Stary format (jeden napis w `findings`) nadal jest przyjmowany jako jedna uwaga bez wagi.
+Nieznana waga, uwaga bez tekstu albo `tickets` niebędące listą napisów to błąd formatu. To zmienia tylko wynik
+review; format pliku planu i reguły zatwierdzania zostają bez zmian.
+
 **Domknięcie.** Tide scala zaakceptowane tickety do gałęzi karty. `check: manual` dodaje listę „Co przetestować
 ręcznie i jak”; `check: auto` oznacza brak tej listy. W obu przypadkach **scalenie gałęzi karty do głównej wymaga
 osobnego polecenia użytkownika**. Statusy i numeracja pochodzą z dziennika oraz zatwierdzonego planu; istniejące

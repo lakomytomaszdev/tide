@@ -33,6 +33,19 @@ function parse(text, fallback) {
     }
 }
 
+// Uwagi review planu (PT-127): `findings` to lista {severity, text, tickets}; stary napis też jest czytany.
+// Każda uwaga w osobnym wierszu z wagą i ticketami — nie same liczniki.
+var SEVERITY_NAMES = { "blocker": "blokująca", "major": "ważna", "nit": "drobna" }
+
+function reviewFindingsText(findings) {
+    if (!findings) return ""
+    if (typeof findings === "string") return findings
+    return findings.map(function (f) {
+        const tickets = f.tickets && f.tickets.length ? " (" + f.tickets.join(", ") + ")" : ""
+        return "• " + (SEVERITY_NAMES[f.severity] || "bez wagi") + ": " + f.text + tickets
+    }).join("\n")
+}
+
 // Polska liczba mnoga: plural(5, "karta", "karty", "kart") → "kart".
 function plural(n, one, few, many) {
     const abs = Math.abs(n)

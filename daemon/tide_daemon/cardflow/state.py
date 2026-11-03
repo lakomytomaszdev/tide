@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from .labels import result_label, waiting_text
+from .findings import review_view as plan_review_view
 
 REASON_LABELS = {"no-result": "brak pliku wyniku", "bad-result": "zły plik wyniku", "no-progress": "bez postępu",
                  "exit": "program zakończył się błędem", "start": "krok nie wystartował",
@@ -573,7 +574,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
                                    "waitReason": waits[-1]["reason"] if waits else ""})
         out["tickets"].sort(key=lambda ticket: ticket["wave"])
         out["flow"]["waveLabel"] = f"fala {wave_no} z {len(waves)}"
-        out["flow"]["plan"] = {"review": st.plan_reviewed or {}, "revision": st.plan_revision or {},
+        out["flow"]["plan"] = {"review": plan_review_view(st.plan_reviewed), "revision": st.plan_revision or {},
                              "planner": proposal.get("planner") or "",
                              "reviewStep": next((s.get("step") for s in reversed(list(st.steps.values()))
                                                  if s.get("kind") == "plan-review" and s.get("step") not in st.finished), ""),

@@ -14,6 +14,8 @@ Decyzja:
 - `freeText` — czy okno pokazuje pole własnej odpowiedzi; `reply` mówi, dokąd ją wysłać
   (`{method, params, field}`: tekst trafia do `params[field]`), albo jest None,
 - `fault` — dla błędów: `tide`, `step`, `provider`, `tracker`; pusty napis dla pozostałych rodzajów,
+- `findings[]` — tylko `plan-approval`: uwagi recenzenta `{id, severity, text, tickets, selected}` (`selected`: domyślne
+  zaznaczenie — `blocker` i `major`, nie `nit`); dla pozostałych rodzajów pusta lista,
 - `technical{}` — szczegóły do zwiniętego bloku „Szczegóły techniczne”.
 
 Możliwość: `{id, title, effect, recommended, choice, params, method}`. `method` to metoda /Board na D-Bus,
@@ -25,6 +27,7 @@ Kolejność: najpierw decyzje karty (plan, YouTrack, kroki bez ticketu), potem t
 """
 from __future__ import annotations
 
+from . import findings as review_findings
 from .labels import kind_label
 from .state import REASON_LABELS, FlowState
 
@@ -94,7 +97,8 @@ def build_decisions(st: FlowState) -> list[dict]:
             continue
         add(0, failure.get("seq"), _tracker(failure))
     found.sort(key=lambda item: (item[0], item[1]))
-    return [decision for _group, _seq, decision in found]
+    # `findings[]` (uwagi recenzenta z wagą i ticketami) ma tylko zatwierdzenie planu; reszta — pusta lista.
+    return [{**decision, "findings": decision.get("findings", [])} for _group, _seq, decision in found]
 
 
 # --- kroki ---------------------------------------------------------------------------------------
@@ -288,8 +292,9 @@ def _plan_decision(st: FlowState) -> dict | None:
     proposal, review, revision = st.plan_proposed, st.plan_reviewed or {}, st.plan_revision or {}
     rows = proposal.get("rows") or []
     planner = proposal.get("planner") or ""
+    listed = review_findings.lenient(review.get("findings"))
     technical = {"planner": planner, "reviewer": review.get("reviewer") or "",
-                 "verdict": review.get("verdict") or "", "findings": _text(review.get("findings")),
+                 "verdict": review.get("verdict") or "", "findings": review_findings.render(listed),
                  "tickets": len(rows), "errors": list((st.plan_checked or {}).get("errors") or [])}
     base = {"step": "", "stepKind": "", "ticket": "", "executor": planner, "fault": ""}
     if revision.get("failed"):
@@ -344,27 +349,50 @@ def _plan_decision(st: FlowState) -> dict | None:
                 "freeText": False, "reply": None, "fault": "provider", "technical": technical}
     if st.approval_requested and (st.started or {}).get("trackerProject"):
         return None
-    changes = review.get("verdict") == "REQUEST_CHANGES"
+    verdict = review.get("verdict") if review.get("verdict") in ("APPROVE", "REQUEST_CHANGES") else ""
+    changes = verdict == "REQUEST_CHANGES"
+    counts = review_findings.counts(listed)
+    technical.update({"blockers": counts["blocker"], "majors": counts["major"], "nits": counts["nit"]})
     reviewer = review.get("reviewer") or ""
     happened = ""
     if rows:
         happened = f"Plan ma {_count(len(rows), 'ticket', 'tickety', 'ticketów')}"
         if reviewer:
-            happened += f"; recenzent ({reviewer}) " + ("prosi o zmiany." if changes else "go zatwierdził.")
+            happened += f"; recenzent ({reviewer}) " + (
+                "prosi o zmiany." if changes else "go zatwierdził." if verdict else "nie wydał werdyktu.")
         else:
             happened += "."
-    approve = _option("approve", "Zatwierdź plan i rozpocznij implementację",
-                      "Mimo uwag recenzenta pierwsza fala ticketów wystartuje od razu." if changes else
-                      "Pierwsza fala ticketów wystartuje od razu.", APPROVE_PLAN, {}, recommended=not changes)
-    feedback = technical["findings"]
-    send_back = _option("return", "Odeślij plan z uwagami recenzenta",
-                        "Planujący poprawi plan w tle, a Ty wrócisz tu do zatwierdzenia.",
-                        EDIT_PLAN, {"action": "return", "feedback": feedback}, recommended=changes and bool(feedback))
-    options = [approve, send_back] if feedback else [approve]
+    # Polecona akcja z werdyktu (US 11, D9): bez uwag — zatwierdzenie; z blokerem albo prośbą o zmiany — odesłanie;
+    # przy nieznanym werdykcie żadna nie jest polecona (uwag bez werdyktu nie rozstrzygamy za recenzenta).
+    if not verdict:
+        recommend = ""
+    elif not listed:
+        recommend = "approve"
+    elif counts["blocker"] or changes:
+        recommend = "return"
+    else:
+        recommend = "approve"
+    if counts["blocker"]:
+        effect = (f"Mimo {_count(counts['blocker'], 'blokującej uwagi', 'blokujących uwag', 'blokujących uwag')} recenzenta "
+                  "pierwsza fala ticketów wystartuje od razu, a uwagi nie zostaną poprawione.")
+    elif listed and changes:
+        effect = "Mimo uwag recenzenta pierwsza fala ticketów wystartuje od razu, a uwagi nie zostaną poprawione."
+    else:
+        effect = "Pierwsza fala ticketów wystartuje od razu."
+    approve = _option("approve", "Zatwierdź plan i rozpocznij implementację", effect, APPROVE_PLAN, {},
+                      recommended=recommend == "approve")
+    # Okno zaznacza z góry blocker i major (nie nit) i odsyła tylko zaznaczone, razem z własnym tekstem.
+    chosen = [f for f in listed if review_findings.default_selected(f)]
+    send_back = _option("return", "Odeślij uwagi do poprawy",
+                        "Planujący poprawi plan w tle (dostanie zaznaczone uwagi i Twój tekst), a Ty wrócisz tu do zatwierdzenia.",
+                        EDIT_PLAN, {"action": "return", "findings": chosen}, recommended=recommend == "return")
+    options = [approve, send_back] if listed else [approve]
     return {"_seq": review.get("seq"), "id": f"plan-approval:{proposal.get('seq') or 0}", **base,
             "kind": "plan-approval", **_sentences("plan-approval", happened, ""),
             "options": _recommended_first(options), "freeText": True,
             "reply": {"method": EDIT_PLAN, "params": {"action": "return"}, "field": "feedback"},
+            "findings": [{"id": f"f{n}", **f, "selected": review_findings.default_selected(f)}
+                         for n, f in enumerate(listed, 1)],
             "technical": technical}
 
 

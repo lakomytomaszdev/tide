@@ -2125,9 +2125,30 @@ Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawi
 Po `plan.proposed` plan czeka na krok `plan-review` u innego wykonawcy i modelu niż planujący.
 Recenzent dostaje pełną zachowaną specyfikację, opis karty i kartki oraz kryteria pionowości,
 rozmiaru, mierzalności kryteriów, blokerów i przydziałów. Ocenia też treść części „Dla recenzenta”.
-Zapisuje `out/plan-review.json` z `verdict` (`APPROVE` albo `REQUEST_CHANGES`) i tekstem `findings`.
-Uwagi uruchamiają jedną rundę `plan-revise`; po niej plan jest pokazany z wynikiem review,
-bez kolejnego review w pętli. `ApproveCardPlan` przed końcem review zwraca `review-pending`.
+Zapisuje `out/plan-review.json` z `verdict` (`APPROVE` albo `REQUEST_CHANGES`) i `findings`:
+
+```json
+{"verdict": "REQUEST_CHANGES",
+ "findings": [{"severity": "major", "text": "#7 i #8 zmieniają to samo okno w jednej fali.", "tickets": ["#7", "#8"]}]}
+```
+
+`severity` ∈ `blocker` (plan nie może ruszyć bez poprawy), `major` (ważna zmiana przed startem), `nit`
+(drobiazg); `tickets` to numery ticketów z planu, których uwaga dotyczy (może być pusta). Walidator
+(`cardflow/findings.py`) przyjmuje też stary format — jeden napis w `findings` (karty w toku): staje się jedną
+uwagą bez wagi (`severity: ""`, bez ticketów). Format błędny (nieznana waga, uwaga bez tekstu, `tickets` nie
+będące listą napisów) kończy krok błędem `bad-plan-review` z powodem; review nie zostaje zapisane.
+`plan.reviewed` przechowuje listę uwag, a stan karty daje `flow.plan.review{verdict, reviewer, findings[]}`
+(`verdict` pusty, gdy go brak lub jest nieznany).
+
+Uwagi uruchamiają jedną rundę `plan-revise`; bez człowieka w pętli poprawka dostaje to, co okno zaznacza
+domyślnie (`blocker` i `major`, bez `nit`; gdy są same drobne — wszystkie). Po poprawce plan jest pokazany
+z wynikiem review, bez kolejnego review w pętli. `ApproveCardPlan` przed końcem review zwraca `review-pending`.
+
+Okno decyzji (`plan-approval`) pokazuje werdykt i `findings[]` (waga, tekst, tickety, `selected`).
+Polecona akcja zależy od werdyktu: brak uwag → „Zatwierdź plan”; blocker albo `REQUEST_CHANGES` → „Odeślij
+uwagi do poprawy”; nieznany werdykt → żadna nie jest polecona. Zatwierdzenie mimo uwag działa zawsze, a jego
+skutek jest opisany („Mimo N blokujących uwag … uwagi nie zostaną poprawione”). `EditCardPlan` z `action: return`
+przyjmuje `findings` (zaznaczone uwagi) i/lub `feedback` (własny tekst); do planującego trafia tylko to.
 
 `EditCardPlan` zapisuje zmiany przydziału i treści kartki jako `plan.ticket-edited`.
 Nie przyjmuje zmian struktury planu tą drogą. Ticket z rozpoczętą gałęzią lub krokiem jest chroniony

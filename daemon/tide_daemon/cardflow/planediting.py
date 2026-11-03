@@ -2,7 +2,7 @@
 import json
 import os
 
-from . import execution, plans
+from . import execution, findings as review_findings, plans
 from .state import fold, ticket_of
 
 
@@ -26,7 +26,7 @@ class PlanEditing:
             source = st.steps.get(proposal.get("sourceStep")) or {}
             reviewer = next((s for s in reversed(list(st.steps.values())) if s.get("kind") == "plan-review" and s["seq"] < source.get("seq", 0)), {})
             self._record_plan_review(card, verdict="REQUEST_CHANGES", reviewer=reviewer.get("executor", ""),
-                                findings=source.get("reviewTip") or "", corrected=True)
+                                findings=self._reviewed_findings(reviewer, source.get("reviewTip")), corrected=True)
             return True
         steps = [s for s in st.steps.values() if s.get("kind") in ("plan-review", "plan-revise")
                  and s.get("seq", 0) > proposal["seq"]]
@@ -63,7 +63,7 @@ class PlanEditing:
             reply = self.propose_plan(card, os.path.join(step["stepDir"], "out", "plan.md"), continuation=True, step=step["step"])
             if reply["ok"]:
                 self._record_plan_review(card, verdict="REQUEST_CHANGES", reviewer=latest_review.get("executor", ""),
-                                    findings=step.get("reviewTip") or "", corrected=True)
+                                    findings=self._reviewed_findings(latest_review, step.get("reviewTip")), corrected=True)
             else:
                 self._record_plan_review(card, verdict="REQUEST_CHANGES", reviewer=latest_review.get("executor", ""),
                                     findings="Poprawa nie przeszła sprawdzenia formatu: " + "; ".join(reply["errors"]), corrected=False)
@@ -71,21 +71,36 @@ class PlanEditing:
         try:
             with open(os.path.join(step["stepDir"], "out", "plan-review.json"), encoding="utf-8") as fh:
                 report = json.loads(fh.read(plans.plan_mod.MAX_BYTES))
-            if report.get("verdict") not in ("APPROVE", "REQUEST_CHANGES") or not isinstance(report.get("findings"), str):
-                raise ValueError("niepoprawny wynik review planu")
-        except (OSError, ValueError, AttributeError):
+            if report.get("verdict") not in ("APPROVE", "REQUEST_CHANGES"):
+                raise ValueError("verdict musi być APPROVE albo REQUEST_CHANGES")
+            report["findings"] = review_findings.normalize(report.get("findings"))
+        except (OSError, ValueError, AttributeError) as error:
             from .engine import FlowError
-            raise FlowError("bad-plan-review", "recenzent nie zapisał poprawnego plan-review.json") from None
+            reason = str(error) if isinstance(error, ValueError) and not isinstance(error, json.JSONDecodeError) else ""
+            raise FlowError("bad-plan-review", "recenzent nie zapisał poprawnego plan-review.json"
+                            + (f": {reason}" if reason else "")) from None
         if report["verdict"] == "REQUEST_CHANGES":
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
             selected = execution.resolve(proposal["planner"], catalog, config=cfg, probe=self.model_probe, which=self.which)
-            self._plan_step(card, st, selected, "plan-revise", self._revision_prompt(card, proposal, report["findings"]), report["findings"])
+            # Bez człowieka w pętli poprawka dostaje to, co okno zaznaczyłoby domyślnie (blocker, major; nie nit).
+            sent = review_findings.render(review_findings.selection(report["findings"]))
+            self._plan_step(card, st, selected, "plan-revise", self._revision_prompt(card, proposal, sent), sent)
         else:
             self._record_plan_review(card, reviewer=step["executor"], verdict=report["verdict"], findings=report["findings"], corrected=False)
         return True
 
+    @staticmethod
+    def _reviewed_findings(review_step, fallback):
+        """Pełne uwagi recenzenta z jego pliku wyniku; bez pliku — tekst przekazany poprawce."""
+        try:
+            with open(os.path.join(review_step["stepDir"], "out", "plan-review.json"), encoding="utf-8") as fh:
+                return review_findings.normalize(json.loads(fh.read(plans.plan_mod.MAX_BYTES)).get("findings"))
+        except (OSError, ValueError, AttributeError, KeyError):
+            return review_findings.lenient(fallback or "")
+
     def _record_plan_review(self, card, **report):
+        report["findings"] = review_findings.lenient(report.get("findings"))
         st = fold(self.journal.read(card))
         revision = st.plan_revision or {}
         if revision.get("pending"):
@@ -132,9 +147,19 @@ class PlanEditing:
                 "opisującą ryzyka i zakres kontroli. Sam nagłówek nie wystarcza.\n"
                 f"Opis karty: {item.description}\nSpecyfikacja:\n{proposal.get('specification', 'Sprawdź opis karty i kartki przekazania.')}\n"
                 f"Propozycja i kartki:\n{json.dumps(proposal['rows'], ensure_ascii=False)}\n"
-                'Zapisz w katalogu wyjściowym plan-review.json: {"verdict":"APPROVE" albo "REQUEST_CHANGES","findings":"konkretne uwagi lub uzasadnienie"}.')
+                'Zapisz w katalogu wyjściowym plan-review.json: {"verdict":"APPROVE" albo "REQUEST_CHANGES",'
+                '"findings":[{"severity":"blocker"|"major"|"nit","text":"konkretna uwaga","tickets":["#5","PT-42"]}]}. '
+                'Waga: blocker — plan nie może ruszyć bez poprawy, major — ważna zmiana przed startem, nit — drobiazg. '
+                '`tickets` to numery ticketów z planu, których uwaga dotyczy (może być pusta lista). '
+                'Przy APPROVE bez uwag zapisz "findings":[].')
 
-    def _revision_prompt(self, card, proposal, findings):
+    def _revision_prompt(self, card, proposal, findings, own=""):
+        """`findings` to uwagi do odesłania (lista `{severity, text, tickets}` albo gotowy tekst), `own` — własne
+        słowa użytkownika. Niezaznaczone uwagi nie trafiają do promptu."""
+        if not isinstance(findings, str):
+            findings = review_findings.render(findings or [], own)
+        elif own and own.strip():
+            findings = (findings + "\nUwagi użytkownika:\n" if findings else "") + own.strip()
         # Krok poprawki nie widzi Tablicy (piaskownica), a gałąź karty może nie mieć aktualnego standardu planu
         # (K-35: plik z `tide-plan: 1.2` i dwiema tabelami). Dlatego dostaje oryginalny plan.md i wzór wprost.
         original = ""
@@ -157,12 +182,29 @@ class PlanEditing:
                 "(Agent to wykonawca, Review to recenzent, Blokery to numery robocze z tej tabeli).\n"
                 "Zachowaj card, prefiks i numery robocze. Nie implementuj ticketów ani nie publikuj.")
 
+    @staticmethod
+    def _returned_feedback(request):
+        """Tekst dla planującego z odesłania: zaznaczone uwagi recenzenta (`findings`) i/lub własny tekst
+        (`feedback`). Niezaznaczone uwagi okno w ogóle nie przysyła."""
+        from .engine import FlowError
+        own = request.get("feedback", "")
+        if own is None:
+            own = ""
+        if not isinstance(own, str):
+            raise FlowError("bad-feedback", "wpisz uwagi do planu (do 32000 znaków)")
+        try:
+            chosen = review_findings.normalize(request.get("findings"))
+        except ValueError as error:
+            raise FlowError("bad-feedback", f"niepoprawne uwagi do odesłania: {error}") from None
+        feedback = review_findings.render(chosen, own)
+        if not feedback.strip() or len(feedback) > 32000:
+            raise FlowError("bad-feedback", "wpisz uwagi do planu (do 32000 znaków)")
+        return feedback
+
     def edit_plan(self, card, request):
         from .engine import FlowError
         if request.get("action") == "return":
-            feedback = request.get("feedback")
-            if not isinstance(feedback, str) or not feedback.strip() or len(feedback) > 32000:
-                raise FlowError("bad-feedback", "wpisz uwagi do planu (do 32000 znaków)")
+            self._returned_feedback(request)
         st = fold(self.journal.read(card))
         proposal = st.plan_proposed
         if request.get("action") == "return" and not proposal and st.closed and (st.started or {}).get("entry") == "now":
@@ -212,9 +254,7 @@ class PlanEditing:
             self.journal.append(card, "plan.revision-discarded")
             return {"ok": True, "id": card}
         if request.get("action") == "return":
-            feedback = request.get("feedback")
-            if not isinstance(feedback, str) or not feedback.strip() or len(feedback) > 32000:
-                raise FlowError("bad-feedback", "wpisz uwagi do planu (do 32000 znaków)")
+            feedback = self._returned_feedback(request)
             if st.plan_revision and not st.plan_revision.get("failed"):
                 raise FlowError("revision-active", "poprawa planu już trwa")
             baseline = (st.plan_approved or proposal)["rows"]
