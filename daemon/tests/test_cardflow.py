@@ -377,14 +377,16 @@ class NowInProcessTest(FlowInProcess):
         self.assertEqual(git(self.repo, "branch", "--format=%(refname:short)").split(), ["master"])
         self.assertFalse(os.path.exists(self.repo + "-worktrees"))
 
-    def test_project_without_ticket_prefix_is_refused_before_anything(self):
+    def test_project_without_ticket_prefix_gets_one_from_the_repository_name(self):
+        # 04.11, K-41: nowy projekt bez ticket-prefix w CLAUDE.md nie może zaczynać się od walki ze środowiskiem.
+        from tide_daemon.coordination.reservations import repo_prefix
         with open(os.path.join(self.repo, "CLAUDE.md"), "w", encoding="utf-8") as fh:
             fh.write("# Projekt bez planu\n")
         card_id = self.card()
         reply = self.start(card_id)
-        self.assertEqual((reply["ok"], reply["error"]), (False, "no-ticket-number"), reply)
-        self.assertEqual(self.events(card_id), [])
-        self.assertEqual(self.shown(card_id)["boardColumn"], "todo")
+        self.assertTrue(reply["ok"], reply)
+        reserved = [e for e in self.events(card_id) if e["type"] == "result" and e.get("action") == "reserve"]
+        self.assertTrue(reserved[0]["ticket"].startswith(repo_prefix(self.repo) + "-"), reserved)
 
     def test_missing_result_file_is_a_step_error(self):
         card_id = self.card(description="ATRAPA: bez-wyniku")
