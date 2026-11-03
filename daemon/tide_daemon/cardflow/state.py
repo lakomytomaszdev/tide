@@ -22,7 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
-from .labels import result_label, waiting_text
+from .faults import cause_label, of_finished
+from .labels import result_label, tide_fault_text, waiting_text
 
 REASON_LABELS = {"no-result": "brak pliku wyniku", "bad-result": "zły plik wyniku", "no-progress": "bez postępu",
                  "exit": "program zakończył się błędem", "start": "krok nie wystartował",
@@ -611,6 +612,11 @@ def derived(st: FlowState, card: dict) -> dict | None:
                                 "question": focus_done.get("question") or "", "command": focus_done.get("command") or "",
                                 "canAllow": bool(focus_done.get("canAllow", True)), "error": focus_done.get("reason") or ""})
             out["question"] = focus_done.get("question") or "Decyzja dotycząca poprawy planu"
+            if result == "error":
+                found = of_finished(focus_done)
+                out["flow"].update(fault=found["fault"], faultCause=found["cause"])
+                if found["fault"] == "tide":
+                    return _fill(out, "waiting", tide_fault_text(focus_step["kind"], focus_step.get("ticket")))
             return _fill(out, "waiting", waiting_text(focus_step["kind"], result))
         if (st.plan_revision or {}).get("failed"):
             out["question"] = "Poprawa planu jest nieprawidłowa. Odesłać ponownie czy odrzucić poprawkę?"
@@ -733,8 +739,13 @@ def derived(st: FlowState, card: dict) -> dict | None:
                 return _fill(out, "progress", f"{ident} · ponawiam krok po błędzie")
             if st.last_step in st.step_decisions:
                 return _fill(out, "progress", f"{ident} · wznawiam po decyzji użytkownika")
+            found = of_finished(done)
             out["flow"].update({"action": "error", "error": reason,
-                                "stalledSince": done.get("stalledSince") or ""})
+                                "stalledSince": done.get("stalledSince") or "",
+                                "fault": found["fault"], "faultCause": found["cause"]})
+            if found["fault"] == "tide":
+                tile = tide_fault_text(step.get("kind"), step.get("ticket") or ident)
+                return _fill(out, "waiting", f"{tile}: {cause_label(found['cause'], REASON_LABELS)}")
         since = f" od {done['stalledSince']}" if done.get("stalledSince") else ""
         return _fill(out, "waiting", f"błąd kroku {ident}: {reason}{since}" if reason else f"błąd kroku {ident}")
     return _fill(out, "progress", f"{ident} · zlecenie")

@@ -497,6 +497,16 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="PreviewStepFault">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="ReportStepFault">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <method name="SetCardPaused">
     <arg name="id" type="s" direction="in"/>
     <arg name="paused" type="b" direction="in"/>
@@ -990,6 +1000,30 @@ class BoardAdaptor(QDBusAbstractAdaptor):
                 print("tide-daemon: nie udało się odesłać wyniku Board.ResolveCardStep", flush=True)
 
         self.monitor.resolve_card_step(card_id, request, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def PreviewStepFault(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.PreviewStepFault", flush=True)
+
+        self.monitor.preview_step_fault(card_id, request, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def ReportStepFault(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.ReportStepFault", flush=True)
+
+        self.monitor.report_step_fault(card_id, request, reply)
         return ""
 
     @pyqtSlot(str, bool, QDBusMessage, result=str)

@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "cwd": "/wt/k-33", "session_id": "s-1"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Czytam plan i zapisuję werdykt."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Write", "input": {"file_path": "/wt/K-33-plan-2.step/out/result.json", "content": "{}"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "is_error": true, "content": "Permission to write /wt/K-33-plan-2.step/out/result.json was denied."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "result": "Nie mogę zapisać wyniku.", "permission_denials": [{"tool_name": "Write", "tool_input": {"file_path": "/wt/K-33-plan-2.step/out/result.json", "content": "{}"}}]}

@@ -139,14 +139,71 @@ class ContractTest(unittest.TestCase):
         finished = Events().step("K-1-PT-1-1", result="question", question="?").add("card.finished", column="done")
         self.assertEqual(finished.decisions(), [])
 
-    def test_limit_waits_by_default_and_offers_transfer(self):
-        events = Events().step("K-1-PT-1-1", result="stopped", reason="limit") \
+    def test_limit_is_never_a_decision(self):
+        # D3 (PT-125): limit dostawcy nie jest decyzją — ani zatrzymany krok, ani błąd z kodem limitu w dzienniku.
+        stopped = Events().step("K-1-PT-1-1", result="stopped", reason="limit") \
             .add("step.limit", step="K-1-PT-1-1", reset="16:30")
+        self.assertEqual(stopped.decisions(), [])
+        failed = (Events().step("K-1-PT-1-1", result="error", reason="exit", fault="provider", faultCause="limit")
+                  .step("K-1-PT-1-2", attempt=1, parent="K-1-PT-1-1", result="error", reason="exit",
+                        fault="provider", faultCause="limit"))
+        self.assertEqual(failed.decisions(), [])
+        self.assertEqual(derived(stopped.state(), CARD)["flow"]["action"], "limit", "stare pole panelu bez zmian")
+
+    def test_provider_error_other_than_limit_reaches_the_window(self):
+        events = (Events().step("K-1-PT-1-1", result="error", reason="exit", fault="provider", faultCause="auth")
+                  .step("K-1-PT-1-2", attempt=1, parent="K-1-PT-1-1", result="error", reason="exit",
+                        fault="provider", faultCause="auth"))
         [decision] = events.decisions()
         self.assert_contract(decision)
-        self.assertEqual((decision["kind"], decision["fault"]), ("limit", "provider"))
-        self.assertIn("16:30", decision["happened"])
-        self.assertEqual([o["choice"] for o in decision["options"]], ["wait-limit", "transfer"])
+        self.assertEqual((decision["kind"], decision["fault"]), ("error", "provider"))
+        self.assertIn("dostawca odrzucił autoryzację", decision["happened"])
+        self.assertIn("błąd dostawcy (Claude)", decision["why"])
+        self.assertEqual(decision["options"][0]["choice"], "change-executor", "przy autoryzacji polecany inny wykonawca")
+        self.assertIsNone(decision["reply"], "błędu dostawcy nie zgłaszamy jako błędu Tide")
+        outage = (Events().step("K-1-PT-1-1", result="error", reason="exit", fault="provider", faultCause="outage")
+                  .step("K-1-PT-1-2", attempt=1, parent="K-1-PT-1-1", result="error", reason="exit",
+                        fault="provider", faultCause="outage"))
+        [decision] = outage.decisions()
+        self.assertEqual((decision["fault"], decision["options"][0]["choice"]), ("provider", "retry"))
+
+    def test_tide_fault_says_whose_fault_and_offers_report_and_retry(self):
+        events = (Events().step("K-1-plan-1", ticket="", kind="plan-review", executor="Haiku", result="error",
+                                reason="no-result", fault="tide", faultCause="write-denied")
+                  .step("K-1-plan-2", ticket="", kind="plan-review", executor="Haiku", attempt=1,
+                        parent="K-1-plan-1", result="error", reason="no-result", fault="tide",
+                        faultCause="write-denied"))
+        [decision] = events.decisions()
+        self.assert_contract(decision)
+        self.assertEqual((decision["kind"], decision["fault"]), ("error", "tide"))
+        self.assertEqual(decision["happened"], "Review planu (Haiku) zakończył się bez wyniku (próba 2): "
+                                               "Tide nie dał prawa zapisu w katalogu wyniku kroku.")
+        self.assertTrue(decision["why"].startswith("To błąd Tide, nie pracy kroku."))
+        self.assertEqual([(o["choice"], o["recommended"]) for o in decision["options"]],
+                         [("retry", True), ("change-executor", False)])
+        self.assertIn("tu nie był", decision["options"][1]["effect"])
+        reply = decision["reply"]
+        self.assertEqual((reply["method"], reply["preview"], reply["field"], reply["label"]),
+                         ("ReportStepFault", "PreviewStepFault", "description", "Opisz problem i ponów"))
+        self.assertEqual(reply["params"], {"step": "K-1-plan-2"})
+        self.assertEqual(decision["technical"]["signature"], "plan-review/tide/write-denied")
+
+    def test_unknown_fault_says_plainly_that_nobody_knows(self):
+        events = (Events().step("K-1-PT-1-1", result="error", reason="exit", fault="unknown", faultCause="exit")
+                  .step("K-1-PT-1-2", attempt=1, parent="K-1-PT-1-1", result="error", reason="exit",
+                        fault="unknown", faultCause="exit"))
+        [decision] = events.decisions()
+        self.assertEqual(decision["fault"], "unknown")
+        self.assertTrue(decision["why"].startswith("Nie wiadomo, czyja to wina"))
+        self.assertEqual(decision["reply"]["method"], "ReportStepFault", "podejrzenie błędu Tide można zgłosić")
+
+    def test_model_fault_recommends_another_executor(self):
+        events = (Events().step("K-1-PT-1-1", result="error", reason="bad-result")
+                  .step("K-1-PT-1-2", attempt=1, parent="K-1-PT-1-1", result="error", reason="bad-result"))
+        [decision] = events.decisions()
+        self.assertEqual(decision["fault"], "model", "stary dziennik bez pola fault — z samego powodu")
+        self.assertEqual(decision["options"][0]["choice"], "change-executor")
+        self.assertIsNone(decision["reply"])
 
     def test_plan_approval_recommends_from_the_verdict(self):
         changes = plan_events(reviewer="Sonnet", verdict="REQUEST_CHANGES", findings="MAJOR: rozdziel fale.")
@@ -207,8 +264,6 @@ class GenericSentenceTest(unittest.TestCase):
             "permission": Events().step("s", ticket="", kind="", result="denied", command=""),
             "error": Events().step("s0", ticket="", kind="", result="error", reason="")
                              .step("s", ticket="", kind="", attempt=1, parent="s0", result="error", reason=""),
-            "limit": Events().add("step.started", step="s", ticket="", kind="", attempt=0)
-                             .add("step.finished", step="s", ticket="", result="error", reason="limit"),
             "transfer": Events().step("s", ticket="", kind="", result="stopped", reason="transfer"),
             "stopped": Events().step("s", ticket="", kind="", result="stopped", reason="interactive-closed"),
             "review": Events().add("review.question", ticket="", round=0, question=""),
@@ -250,6 +305,29 @@ class DerivedTest(unittest.TestCase):
         self.assertEqual((shown["flow"]["action"], shown["flow"]["question"], shown["question"]),
                          ("answer", "Który format daty?", "Który format daty?"))
         self.assertEqual(len(shown["flow"]["decisions"]), 1)
+
+    def test_tile_names_tide_fault_in_the_step(self):
+        ticket = (Events().step("K-1-PT-1-1", result="error", reason="no-result", fault="tide",
+                                faultCause="write-denied")
+                  .step("K-1-PT-1-2", attempt=1, parent="K-1-PT-1-1", result="error", reason="no-result",
+                        fault="tide", faultCause="write-denied"))
+        shown = derived(ticket.state(), CARD)
+        self.assertEqual(shown["column"], "waiting")
+        self.assertEqual(shown["note"], "błąd Tide w kroku PT-1: Tide nie dał prawa zapisu w katalogu wyniku kroku")
+        self.assertEqual((shown["flow"]["action"], shown["flow"]["fault"]), ("error", "tide"))
+
+        plan = plan_events()
+        plan.step("K-1-plan-1", ticket="", kind="plan-review", executor="Haiku", result="error", reason="no-result",
+                  fault="tide", faultCause="write-denied")
+        plan.step("K-1-plan-2", ticket="", kind="plan-review", executor="Haiku", attempt=1, parent="K-1-plan-1",
+                  result="error", reason="no-result", fault="tide", faultCause="write-denied")
+        shown = derived(plan.state(), CARD)
+        self.assertEqual((shown["column"], shown["note"]), ("waiting", "błąd Tide w kroku review planu"))
+
+        unknown = (Events().step("K-1-PT-1-1", result="error", reason="exit")
+                   .step("K-1-PT-1-2", attempt=1, parent="K-1-PT-1-1", result="error", reason="exit"))
+        self.assertEqual(derived(unknown.state(), CARD)["note"], "błąd kroku PT-1: program zakończył się błędem",
+                         "bez winy Tide kafelek bez zmian")
 
     def test_working_card_has_empty_decisions(self):
         events = Events().step("K-1-PT-1-1")
