@@ -15,6 +15,10 @@
 // `reply.preview` jest ustawione, pierwszy wybór wysyła `previewRequested(decisionId, method, params)`, właściciel
 // oddaje odpowiedź usługi przez `showPreview(decisionId, reply)` (karta z opisem i wycinkiem dziennika), a dopiero
 // drugi wybór („Zapisz i ponów”) wysyła `answered` z `reply.method`. Zmiana opisu unieważnia podgląd.
+//
+// Zgoda na łańcuch poleceń (PT-124): lista `commands[]` z flagami i powodem blokady, pole wyboru tylko przy
+// poleceniach z `canAllow`, zaznaczenie początkowe z `preselected`; możliwość z `params.allow` wysyła indeksy
+// zaznaczonych (`checks`), bez zaznaczenia nie da się wybrać. Podpis pola własnej odpowiedzi — `otherTitle`.
 import QtQuick
 import QtQuick.Layouts
 import "../tide" as Tide
@@ -34,15 +38,27 @@ ColumnLayout {
     // Podgląd karty z błędem (PT-125): odpowiedź usługi na `reply.preview`; null — jeszcze nie pokazany.
     property var preview: null
     property bool previewing: false
+    // Zgoda na polecenia z łańcucha (PT-124): indeksy zaznaczonych poleceń z `decision.commands`.
+    property var checks: []
 
     readonly property string decisionId: decision ? decision.id : ""
     readonly property var options: decision ? decision.options || [] : []
     readonly property bool freeText: !!decision && decision.freeText === true && !!decision.reply
     readonly property bool onlyText: freeText && options.length === 0
     readonly property string choice: onlyText ? otherId : selected
+    readonly property var commands: decision && decision.commands ? decision.commands : []
+    readonly property bool showCommands: Decision.showsCommands(decision)
+    readonly property var chosenOption: options.find(o => o.id === choice) || null
+    readonly property bool picksCommands: Decision.picksCommands(chosenOption)
+    // Podpis i podpowiedź pola własnej odpowiedzi: przy zgodzie na polecenia z `otherTitle`/`otherHint` (PT-124).
+    readonly property string otherTitle: decision && decision.otherTitle ? decision.otherTitle : Decision.replyLabel(decision)
+    readonly property string otherHint: decision && decision.otherHint ? decision.otherHint
+                                        : decision && decision.reply && decision.reply.hint ? Decision.text(decision.reply.hint)
+                                        : "Odpowiedz własnymi słowami, jak w czacie z agentem."
     // Pole „Opisz problem i ponów” (błąd Tide): przed zapisem formularz pokazuje podgląd karty z usługi.
     readonly property bool needsPreview: choice === otherId && Decision.previewMethod(decision) !== ""
-    readonly property bool canChoose: !previewing && (choice === otherId ? answer.text.trim() !== "" : choice !== "")
+    readonly property bool canChoose: !previewing && (choice === otherId ? answer.text.trim() !== ""
+                                                                         : choice !== "" && (!picksCommands || checks.length > 0))
     // Napis przycisku wyboru w oknie i w pełnej karcie.
     readonly property string chooseLabel: needsPreview ? (preview ? "Zapisz i ponów" : "Pokaż podgląd") : "Wybierz"
     readonly property alias answerField: answer
@@ -60,6 +76,12 @@ ColumnLayout {
         previewing = false
         answer.text = ""
         checkedIds = Decision.defaultChecked(decision)
+        checks = Decision.preselectedIndexes(decision)
+    }
+
+    function toggleCommand(at) {
+        checks = Decision.toggled(commands, checks, at)
+        error = ""
     }
 
     // Usługa odrzuciła odpowiedź albo podgląd: formularz pokazuje powód.
@@ -113,7 +135,7 @@ ColumnLayout {
                 inputNeeded("„" + option.title + "”: wybierz wykonawcę w panelu karty.")
                 return false
             }
-            request = Decision.optionRequest(option)
+            request = Decision.optionRequest(option, checks)
         }
         if (!request || !request.method) return false
         // Odesłanie planu: do poprawy idą tylko zaznaczone uwagi i własny tekst (niezaznaczone nie).
@@ -173,6 +195,122 @@ ColumnLayout {
             font.family: Tide.Theme.monoFamily
             font.pointSize: Tide.Tokens.fontSizePt * 0.95
             wrapMode: Text.WrapAnywhere
+        }
+    }
+
+    // Polecenia łańcucha (PT-124): pole wyboru tylko przy poleceniach, na które można zezwolić;
+    // przy pozostałych zawsze widać powód. Flagi i zaznaczenie początkowe — z usługi.
+    ColumnLayout {
+        objectName: "decisionCommands"
+        Layout.fillWidth: true
+        visible: form.showCommands
+        spacing: 6
+        Accessible.role: Accessible.List
+        Accessible.name: "Polecenia z łańcucha"
+
+        Repeater {
+            model: form.showCommands ? form.commands : []
+            delegate: Rectangle {
+                id: commandRow
+                required property var modelData
+                required property int index
+                readonly property bool allowable: modelData.canAllow === true
+                readonly property bool checked: form.checks.indexOf(index) >= 0
+                readonly property string text: modelData.text
+                readonly property string reason: modelData.reason || ""
+                readonly property var tags: Decision.commandTags(modelData)
+                objectName: "decisionCommandRow"
+                Layout.fillWidth: true
+                implicitHeight: commandColumn.implicitHeight + 16
+                radius: Tide.Tokens.radiusFrame
+                color: checked ? Tide.Theme.alpha(Tide.Tokens.accent, 0.09) : Tide.Tokens.backgroundView
+                border.width: 1
+                border.color: activeFocus ? Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
+                                          : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
+                activeFocusOnTab: allowable
+                Accessible.role: allowable ? Accessible.CheckBox : Accessible.StaticText
+                Accessible.name: text
+                Accessible.description: reason
+                Accessible.checkable: allowable
+                Accessible.checked: checked
+                Accessible.onToggleAction: form.toggleCommand(index)
+                Keys.onSpacePressed: form.toggleCommand(index)
+
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: commandRow.allowable
+                    cursorShape: commandRow.allowable ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: form.toggleCommand(commandRow.index)
+                }
+
+                RowLayout {
+                    id: commandColumn
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.margins: 10
+                    spacing: 9
+                    Rectangle {
+                        objectName: "decisionCommandCheck"
+                        visible: commandRow.allowable
+                        Layout.alignment: Qt.AlignTop
+                        implicitWidth: 14
+                        implicitHeight: 14
+                        radius: Tide.Tokens.radiusSmall / 3
+                        color: commandRow.checked ? Tide.Tokens.accent : "transparent"
+                        border.width: 1.5
+                        border.color: commandRow.checked ? Tide.Tokens.accent : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.35)
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 3
+                        Text {
+                            objectName: "decisionCommandText"
+                            Layout.fillWidth: true
+                            text: commandRow.text
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textPrimary
+                            font.family: Tide.Theme.monoFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                            wrapMode: Text.WrapAnywhere
+                        }
+                        Text {
+                            objectName: "decisionCommandReason"
+                            Layout.fillWidth: true
+                            visible: commandRow.reason !== ""
+                            text: commandRow.reason
+                            textFormat: Text.PlainText
+                            color: commandRow.modelData.forbidden === true ? Tide.Tokens.negative : Tide.Tokens.textSecondary
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                    Repeater {
+                        model: commandRow.tags
+                        delegate: Rectangle {
+                            id: tag
+                            required property string modelData
+                            objectName: "decisionCommandTag"
+                            readonly property string label: modelData
+                            Layout.alignment: Qt.AlignTop
+                            implicitWidth: tagText.implicitWidth + 12
+                            implicitHeight: tagText.implicitHeight + 4
+                            radius: Tide.Tokens.radiusSmall
+                            color: Tide.Theme.alpha(modelData === "zabronione" ? Tide.Tokens.negative : Tide.Tokens.textPrimary, 0.08)
+                            Text {
+                                id: tagText
+                                anchors.centerIn: parent
+                                text: tag.modelData
+                                textFormat: Text.PlainText
+                                color: tag.modelData === "zabronione" ? Tide.Tokens.negative : Tide.Tokens.textMuted
+                                font.family: Tide.Theme.uiFamily
+                                font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -256,7 +394,7 @@ ColumnLayout {
                                                                    : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
             activeFocusOnTab: !form.onlyText
             Accessible.role: Accessible.RadioButton
-            Accessible.name: Decision.replyLabel(form.decision)
+            Accessible.name: form.otherTitle
             Accessible.checked: checked
             Accessible.onPressAction: form.pick(form.otherId)
             Keys.onSpacePressed: form.pick(form.otherId)
@@ -288,7 +426,7 @@ ColumnLayout {
                     }
                     Text {
                         objectName: "decisionOtherTitle"
-                        text: Decision.replyLabel(form.decision)
+                        text: form.otherTitle
                         textFormat: Text.PlainText
                         color: Tide.Tokens.textPrimary
                         font.family: Tide.Theme.uiFamily
@@ -340,7 +478,7 @@ ColumnLayout {
                         font.pointSize: Tide.Tokens.fontSizePt * 1.05
                         activeFocusOnTab: true
                         Accessible.role: Accessible.EditableText
-                        Accessible.name: Decision.replyLabel(form.decision)
+                        Accessible.name: form.otherTitle
                         onActiveFocusChanged: if (activeFocus && !form.onlyText) form.selected = form.otherId
                         // Zmieniony opis — podgląd karty przestaje być aktualny.
                         onTextChanged: form.preview = null
@@ -358,9 +496,7 @@ ColumnLayout {
                         Text {
                             anchors.fill: parent
                             visible: answer.text === ""
-                            text: form.decision && form.decision.reply && form.decision.reply.hint
-                                  ? Decision.text(form.decision.reply.hint)
-                                  : "Odpowiedz własnymi słowami, jak w czacie z agentem."
+                            text: form.otherHint
                             textFormat: Text.PlainText
                             color: Tide.Tokens.textMuted
                             font: answer.font
@@ -370,6 +506,19 @@ ColumnLayout {
                 }
             }
         }
+    }
+
+    // „Zezwól na wybrane” bez zaznaczonego polecenia: „Wybierz” jest nieaktywne, więc mówimy dlaczego.
+    Text {
+        objectName: "decisionAllowHint"
+        Layout.fillWidth: true
+        visible: form.picksCommands && form.checks.length === 0
+        text: "Zaznacz co najmniej jedno polecenie powyżej, na które zezwalasz."
+        textFormat: Text.PlainText
+        color: Tide.Tokens.waiting
+        font.family: Tide.Theme.uiFamily
+        font.pointSize: Tide.Tokens.fontSizePt
+        wrapMode: Text.Wrap
     }
 
     // Podgląd karty z błędem przed zapisem (PT-125): treść liczy usługa, formularz tylko ją pokazuje.

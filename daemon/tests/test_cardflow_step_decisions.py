@@ -120,7 +120,7 @@ class StepDecisionTest(FlowInProcess):
     def test_quoted_escaped_and_piped_forbidden_commands_cannot_be_granted(self):
         changed = json.loads(self.board.upsert_project(json.dumps({"slug": "proj", "deniedCommands": ["make install"]})))
         self.assertTrue(changed["ok"], changed)
-        for mode in ("zgoda-zabroniona-cytat", "zgoda-zabroniona-ukosnik", "zgoda-zabroniona-potok"):
+        for mode in ("zgoda-zabroniona-cytat", "zgoda-zabroniona-ukosnik"):
             with self.subTest(mode=mode):
                 card_id = self.card(description=f"Test.\n\nATRAPA: {mode}")
                 self.assertTrue(self.start(card_id)["ok"])
@@ -130,6 +130,24 @@ class StepDecisionTest(FlowInProcess):
                 self.assertEqual(self.decide(card_id, choice="allow")["error"], "forbidden-command")
                 self.assertTrue(self.decide(card_id, choice="deny")["ok"])
                 self.wait_column(card_id, "review")
+
+    def test_piped_forbidden_command_is_split_and_only_the_rest_can_be_granted(self):
+        # PT-124: łańcuch z poleceniem, na które można zezwolić, czeka na użytkownika (bez automatycznej odmowy);
+        # zabronione z łańcucha nie przechodzi ani w całości, ani wskazane indeksem.
+        changed = json.loads(self.board.upsert_project(json.dumps({"slug": "proj", "deniedCommands": ["make install"]})))
+        self.assertTrue(changed["ok"], changed)
+        card_id = self.card(description="Test.\n\nATRAPA: zgoda-zabroniona-potok")
+        self.assertTrue(self.start(card_id)["ok"])
+        card = self.wait_column(card_id, "waiting")
+        self.assertFalse(card["derived"]["flow"]["canAllow"])
+        self.assertEqual(self.of(card_id, "step.decision"), [])
+        [decision] = card["derived"]["flow"]["decisions"]
+        self.assertEqual([(c["text"], c["forbidden"]) for c in decision["commands"]],
+                         [("pwd", False), ("make install", True)])
+        self.assertEqual(self.decide(card_id, choice="allow")["error"], "forbidden-command")
+        self.assertEqual(self.decide(card_id, choice="allow", allow=[1])["error"], "forbidden-command")
+        self.assertTrue(self.decide(card_id, choice="deny")["ok"])
+        self.assertNotIn("make install", self.store.load().projects["proj"].allowed_commands)
 
     def test_empty_allowlist_disables_claude_auto_allow(self):
         changed = json.loads(self.board.upsert_project(json.dumps({"slug": "proj", "allowedCommands": []})))

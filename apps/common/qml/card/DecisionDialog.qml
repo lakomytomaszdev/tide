@@ -9,6 +9,12 @@
 // następnej decyzji (odpowiedziane czekają na nową migawkę ukryte); licznik „1 z N” tylko przy N > 1.
 // Esc zamyka bez wysyłania — decyzje zostają w „Czeka na mnie”.
 //
+// Zgoda na łańcuch poleceń (PT-124, w DecisionForm.qml): lista `commands[]` z flagami (tylko czyta, katalog
+// kroku, zabronione) i powodem blokady; pole wyboru tylko przy poleceniach z `canAllow`, zaznaczenie początkowe
+// z `preselected` usługi (zaznaczenie poleceń, nie możliwości). Możliwość z `params.allow` wysyła indeksy
+// zaznaczonych; bez zaznaczenia „Wybierz” jest nieaktywne i okno mówi dlaczego. Pole własnej odpowiedzi ma
+// podpis z `otherTitle`.
+//
 // Umowa: `cardId`, `decisions` (z migawki), `start()` — otwarcie od pierwszej decyzji, `failed(id, tekst)` —
 // błąd usługi przy odpowiedzi (decyzja wraca), sygnały `answered(decisionId, method, params)` — żądanie
 // gotowe do wysłania (metoda /Board i parametry z decyzji), `laterRequested()`, `fullCardRequested(notice)`

@@ -144,9 +144,63 @@ function copy(params) {
     return out
 }
 
-// Żądanie do usługi po wyborze możliwości: {method, params} wprost z decyzji.
-function optionRequest(option) {
-    return { method: option.method, params: copy(option.params) }
+// Zgoda na wybrane polecenia z łańcucha (PT-124): możliwość z `params.allow` (lista) dostaje indeksy
+// zaznaczonych poleceń z `commands[]` decyzji.
+function picksCommands(option) {
+    return !!option && !!option.params && Array.isArray(option.params.allow)
+}
+
+// Lista poleceń w oknie: zawsze, gdy decyzja ma możliwość wyboru poleceń (także łańcuch, z którego po
+// odjęciu własnego odczytu katalogu kroku zostało jedno polecenie — zgoda dotyczy tekstu widocznego na liście),
+// oraz gdy jest więcej niż jedno polecenie albo jedyne nie może być dopuszczone (powód przy poleceniu).
+function showsCommands(decision) {
+    var list = (decision && decision.commands) || []
+    if (list.length === 0) return false
+    var options = (decision && decision.options) || []
+    for (var i = 0; i < options.length; i++) {
+        if (picksCommands(options[i])) return true
+    }
+    return list.length > 1 || list[0].canAllow !== true
+}
+
+// Zaznaczenie poleceń po otwarciu decyzji: wprost z pola `preselected` usługi (to zaznaczenie poleceń,
+// nie możliwości decyzji — D10 dotyczy możliwości).
+function preselectedIndexes(decision) {
+    var out = []
+    var list = (decision && decision.commands) || []
+    for (var i = 0; i < list.length; i++) {
+        if (list[i].preselected === true && list[i].canAllow === true) out.push(i)
+    }
+    return out
+}
+
+// Zaznaczenie po kliknięciu polecenia `index`, w kolejności listy; polecenia bez zgody nie da się zaznaczyć.
+function toggled(commands, checks, index) {
+    var out = []
+    for (var i = 0; i < (commands || []).length; i++) {
+        var on = checks.indexOf(i) >= 0
+        if (i === index) on = !on && commands[i].canAllow === true
+        if (on) out.push(i)
+    }
+    return out
+}
+
+// Plakietki polecenia: flagi z usługi.
+function commandTags(command) {
+    var tags = []
+    if (!command) return tags
+    if (command.forbidden === true) tags.push("zabronione")
+    if (command.readOnly === true) tags.push("tylko czyta")
+    if (command.stepDir === true) tags.push("katalog kroku")
+    return tags
+}
+
+// Żądanie do usługi po wyborze możliwości: {method, params} wprost z decyzji (z indeksami zaznaczonych poleceń,
+// gdy możliwość ich wymaga).
+function optionRequest(option, checks) {
+    var params = copy(option.params)
+    if (picksCommands(option)) params.allow = (checks || []).slice()
+    return { method: option.method, params: params }
 }
 
 // Żądanie z własną odpowiedzią: `reply` decyzji z tekstem w `params[reply.field]`.
