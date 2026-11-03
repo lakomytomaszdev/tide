@@ -172,3 +172,25 @@ class QueuedPlanReviewTest(unittest.TestCase):
         st = fold(events)
         self.assertIsNotNone(st.plan_review_wait)
         self.assertEqual(derived(st, {"column": "todo"})["column"], "waiting")
+
+
+class DiscardedRevisionErrorsTest(unittest.TestCase):
+    """K-31: błędy odrzuconej poprawki po review mówią, że obowiązuje poprzednia wersja, i znikają po zatwierdzeniu."""
+
+    def events(self):
+        return [
+            {"seq": 1, "type": "card.started", "entry": "planning", "executor": "Opus"},
+            {"seq": 2, "type": "plan.proposed", "rows": [], "planner": "Opus", "title": "X", "sourceStep": "K-1-plan-1-0"},
+            {"seq": 3, "type": "plan.checked", "valid": False, "step": "K-1-plan-revise-2",
+             "errors": ["#1: recenzent musi mieć inny model i zachować pracę lokalną"]},
+        ]
+
+    def test_errors_explain_the_discarded_revision(self):
+        errors = derived(fold(self.events()), {"column": "todo"})["flow"]["plan"]["errors"]
+        self.assertIn("odrzucona", errors[0])
+        self.assertIn("#1: recenzent", errors[1])
+
+    def test_errors_disappear_after_approval(self):
+        events = self.events() + [{"seq": 4, "type": "plan.approved", "rows": []}]
+        flow = derived(fold(events), {"column": "todo"})["flow"]
+        self.assertEqual(flow["plan"]["errors"], [])

@@ -479,6 +479,20 @@ def is_queue_wait(reason) -> bool:
     """Czekanie na wolne miejsce u dostawcy (`limit kroków dostawcy X: n/n`), nie na wyczerpany limit."""
     return str(reason or "").startswith("limit kroków dostawcy")
 
+
+def plan_errors(st: FlowState) -> list[str]:
+    """Błędy sprawdzenia planu z wyjaśnieniem, której wersji dotyczą. Odrzucona poprawka (np. automatyczna po
+    review) zostawia poprzednią, poprawną propozycję — K-31: czerwone błędy wyglądały, jakby plan był zły."""
+    checked = st.plan_checked or {}
+    errors = list(checked.get("errors") or [])
+    if not errors or (st.plan_approved and not st.plan_revision):
+        return []          # zatwierdzony plan bez trwającej zmiany — stare błędy odrzuconej poprawki nie dotyczą
+    proposed = st.plan_proposed or {}
+    if proposed and checked.get("step") and checked.get("step") != proposed.get("sourceStep"):
+        return ["Poprawka planu nie przeszła sprawdzenia i została odrzucona — obowiązuje poprzednia, poprawna "
+                "wersja planu poniżej. Błędy odrzuconej poprawki:", *errors]
+    return errors
+
 def derived(st: FlowState, card: dict) -> dict | None:
     """Pole `derived` karty z dziennikiem (kształt jak board/derive.py, z `flow`) albo None — karta w swojej kolumnie."""
     if st.started is None:
@@ -617,7 +631,7 @@ def derived(st: FlowState, card: dict) -> dict | None:
                              else "pending" if revision_pending else "done" if st.plan_finished else
                              "approved" if st.plan_approved else "pending" if st.plan_proposed else "invalid",
                              "rows": rows, "waves": waves,
-                             "errors": (st.plan_checked or {}).get("errors") or []}
+                             "errors": plan_errors(st)}
         waiting_review = st.plan_review_wait or st.waiting.get(("", "plan-review")) or {}
         if st.plan_proposed and not st.plan_reviewed and not st.plan_reviewer and waiting_review and not any(
                 s.get("kind") == "plan-review" and s.get("step") not in st.finished

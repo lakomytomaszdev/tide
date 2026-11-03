@@ -155,6 +155,8 @@ class PlanEditing:
                 "tracker-project, ticket-prefix, coordinator, status, updated;\n"
                 "- dokładnie jedna tabela: `| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |` "
                 "(Agent to wykonawca, Review to recenzent, Blokery to numery robocze z tej tabeli).\n"
+                "Recenzent ticketu musi być innym modelem niż jego wykonawca (np. Opus wykonuje → Sonnet albo Codex "
+                "recenzuje), a praca lokalna ma lokalnego recenzenta — inaczej poprawka zostanie odrzucona.\n"
                 "Zachowaj card, prefiks i numery robocze. Nie implementuj ticketów ani nie publikuj.")
 
     def edit_plan(self, card, request):
