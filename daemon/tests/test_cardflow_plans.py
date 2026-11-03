@@ -77,6 +77,44 @@ class ProposalTest(unittest.TestCase):
             self.assertIn(fragment, joined)
 
 
+class TicketFromOtherPlanTest(ProposalTest):
+    """K-33 D2: istniejący ticket `todo` z innego planu repozytorium zachowuje numer w propozycji."""
+
+    OTHER = {"PT-42": {"title": "Rozpoznawanie pytań: drugie zdanie modelu lokalnego",
+                       "path": "/repo/docs/agents/plans/2026-10-27-board-and-docker.md"}}
+
+    def check_other(self, other=None):
+        return plans.read(self.path, "K-2", default_catalog(), allowed_roots=(self.tmp.name,),
+                          other_plans=self.OTHER if other is None else other)
+
+    def test_todo_ticket_from_other_plan_keeps_number_and_origin(self):
+        self.write("| #1 | Integracja | todo | | Sonnet | | standard | Opus | |\n"
+                   "| PT-42 | Rozpoznawanie pytań: drugie  zdanie modelu lokalnego | todo | | Sonnet | | standard | Opus | #1 |\n",
+                   {n: "## Kryteria akceptacji\n- [ ] Działa\n" for n in ("1", "PT-42")})
+        got = self.check_other()
+        self.assertEqual(got.errors, [])
+        self.assertEqual(got.waves, [["#1"], ["PT-42"]])
+        self.assertEqual(got.rows[1]["fromPlan"], self.OTHER["PT-42"]["path"])
+        self.assertNotIn("fromPlan", got.rows[0])
+
+    def test_other_title_is_rejected(self):
+        self.write("| PT-42 | Inny tytuł | todo | | Sonnet | | standard | Opus | |\n",
+                   {"PT-42": "## Kryteria akceptacji\n- [ ] Działa\n"})
+        self.assertTrue(any("ten sam tytuł" in e for e in self.check_other().errors))
+
+    def test_unknown_or_not_todo_ticket_still_needs_work_id(self):
+        self.write("| PT-43 | Coś | todo | | Sonnet | | standard | Opus | |\n",
+                   {"PT-43": "## Kryteria akceptacji\n- [ ] Działa\n"})
+        self.assertTrue(any("numeru roboczego" in e for e in self.check_other().errors))
+        self.assertTrue(any("numeru roboczego" in e for e in self.check().errors))
+
+    def test_other_prefix_is_rejected(self):
+        other = {"LOG-42": {"title": "X", "path": "/repo/p.md"}}
+        self.write("| LOG-42 | X | todo | | Sonnet | | standard | Opus | |\n",
+                   {"LOG-42": "## Kryteria akceptacji\n- [ ] Działa\n"})
+        self.assertTrue(any("numeru roboczego" in e for e in self.check_other(other).errors))
+
+
 class SavedPlanStateTest(unittest.TestCase):
     def test_ticket_transitions_update_plan_state_and_time(self):
         from daemon.tide_daemon.cardflow.engine import FlowEngine
