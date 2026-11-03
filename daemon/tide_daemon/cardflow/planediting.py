@@ -465,14 +465,25 @@ class PlanEditing:
         prefix = proposal["prefix"]
         floor = max((int(row["id"][len(prefix) + 1:]) for row in current["rows"]
                      if row["id"].startswith(prefix + "-") and row["id"][len(prefix) + 1:].isdigit()), default=0)
+        _, project = self._project(card)
         for row in proposal["rows"]:
             ident = row["workId"]
             if ident.startswith("#"):
                 key = f"plan:{proposal['seq']}:{ident}"
-                reserved = self._act(card, "reserve", key,
-                                     lambda r=row, k=key: self._reserve(self._repo(card), r["title"], f"{card}:{k}", proposal["prefix"], floor),
-                                     retry_failed=True, repo=self._repo(card), title=row["title"], prefix=proposal["prefix"],
-                                     minimumNumber=floor)
+                if project.youtrack:
+                    # Karta z YouTrackiem: nowy ticket poprawki planu zakłada się w YouTracku, jak przy pierwszym
+                    # zatwierdzeniu (K-16, 03.11: lokalna rezerwacja dawała numer LEGAL spoza YouTracka).
+                    from ..coordination import youtrack as yt
+                    try:
+                        reserved = self._tracker_reserve(card, key, int(ident[1:]), row["title"], row.get("body") or "")
+                    except yt.YouTrackError as exc:
+                        raise FlowError("youtrack", str(exc)) from None
+                else:
+                    reserved = self._act(card, "reserve", key,
+                                         lambda r=row, k=key: self._reserve(self._repo(card), r["title"], f"{card}:{k}",
+                                                                            proposal["prefix"], floor),
+                                         retry_failed=True, repo=self._repo(card), title=row["title"],
+                                         prefix=proposal["prefix"], minimumNumber=floor)
                 mapping[ident] = reserved["ticket"]
             else:
                 mapping[ident] = ident

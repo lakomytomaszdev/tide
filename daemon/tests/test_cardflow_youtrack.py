@@ -52,6 +52,30 @@ class YouTrackFlowTest(FlowInProcess):
         for expected in ('tracker: youtrack', 'tracker-project: LOG', 'ticket-prefix: LOG'):
             self.assertIn(expected, saved)
 
+    def test_plan_revision_creates_the_new_ticket_in_youtrack(self):
+        # 03.11, K-16: nowy ticket z poprawki planu dostawał lokalny numer zamiast zgłoszenia w YouTracku.
+        card = self.card()
+        path = self.proposal(card)
+        with open(path, encoding='utf-8') as fh:
+            proposal = fh.read().replace('tracker: local',
+                                         'tracker: youtrack\ntracker-project: LOG\ntracker-url: ' + self.fake.url)
+            proposal = proposal.replace('ticket-prefix: PT', 'ticket-prefix: LOG')
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write(proposal)
+        self.assertTrue(self.submit(card, path)['ok'])
+        self.assertTrue(self.approve(card)['ok'])
+        box = []
+        self.flow.edit_plan(card, json.dumps({'action': 'return', 'feedback': 'Dodaj ticket z poprawką'}), box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(json.loads(box[0])['ok'], box)
+        self.assertTrue(wait_until(lambda: self.of(card, 'plan.revision-ready'), timeout=25), self.events(card))
+        self.assertTrue(wait_until(lambda: len(self.of(card, 'plan.reviewed')) >= 2, timeout=25), self.events(card))
+        reply = self.approve(card)
+        self.assertTrue(reply['ok'], reply)
+        approved = self.of(card, 'plan.revision-approved')[-1]
+        self.assertEqual(approved['plan']['map'].get('#3'), 'LOG-3')
+        self.assertIn('LOG-3', self.fake.issues)
+
     def test_light_planning_uses_card_youtrack_metadata(self):
         card = self.card()
         reply = self.start(card, entry='planning', mode='light')
