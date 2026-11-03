@@ -272,6 +272,18 @@ class RolesTest(ClassifierBase):
         self.assertEqual((len(local.requests), len(cloud.requests)), (0, 1), "lokalny w tym trybie nie jest wołany")
         self.assertEqual(cloud.requests[0]["body"]["model"], "gpt-oss:120b-cloud")
 
+    def test_changed_role_model_is_used_by_the_next_judgement(self):
+        """PT-112: plik zmieniony w trakcie pracy (SetRole) — bez restartu następna ocena idzie nowym modelem."""
+        server = chat_server(self, waits=True)
+        self.single(server, role="local:qwen3:8b")
+        made = self.classifier()
+        made.judge("claude:u1", SELECT)
+        self.settle(made)
+        self.single(server, role="local:gemma3:4b")
+        made.judge("claude:u2", SELECT)
+        self.settle(made)
+        self.assertEqual([r["body"]["model"] for r in server.requests], ["qwen3:8b", "gemma3:4b"])
+
     def test_cloud_point_error_means_rules_only_without_a_substitute(self):
         local, cloud = self.two_points("cloud:gpt-oss:120b-cloud")
         cloud.routes[("POST", "/api/chat")] = (500, {"error": "boom"})
@@ -474,6 +486,36 @@ class ClassifyDBusTest(unittest.TestCase):
         saved = os.path.join(self.bus.tmp, "state", "tide", "classify.json")
         self.assertTrue(wait_until(lambda: os.path.exists(saved), timeout=5))
         self.assertTrue(json.load(open(saved, encoding="utf-8"))["results"]["claude:uuid-dbus-1"]["waits"])
+
+    def test_role_model_change_applies_to_the_next_judgement_without_restart(self):
+        """PT-112: SetRole classify w działającej usłudze — następna ocena idzie nowym modelem."""
+        server = chat_server(self, waits=True)
+        models = write_models(self.tmp, {"endpoints": {"local": {"url": server.url, "kind": "ollama"}}})
+        self.bus.spawn_daemon("--claude-dir", os.path.join(self.tmp, "claude"), "--codex-dir", self.empty,
+                              "--workspace", self.empty, "--no-processes", "--no-krunner", "--no-idle", "--no-limits",
+                              "--now", self.NOW_TEXT, extra_env={"TIDE_MODELS_CONFIG": models})
+
+        def judged():
+            return [r["body"]["model"] for r in server.requests if r["path"] == "/api/chat" and r["body"]
+                    and r["body"]["messages"][-1]["content"].startswith(classify.PROMPT)]
+
+        self.assertTrue(wait_until(lambda: len(judged()) >= 1, timeout=10), "pierwsza ocena")
+        self.assertEqual(judged(), ["qwen3:8b"], "domyślny model roli")
+        reply = self.bus.call(SERVICE, "/Models", "org.tide.Daemon.Models", "SetRole",
+                              json.dumps({"role": "classify", "model": "gemma3:4b"}))
+        self.assertEqual(json.loads(reply.arguments()[0]), {"ok": True, "error": ""})
+        folder = os.path.join(self.tmp, "claude", "projects", escape_cwd(os.path.join(self.tmp, "proj")))
+        path = os.path.join(folder, "5ad7a2f1-0000-4000-8000-000000000042.jsonl")
+        with open(path, "a", encoding="utf-8") as fh:   # nowa tura agenta z wątpliwą końcówką
+            for record in (
+                    {"type": "user", "timestamp": "2026-10-26T11:50:00Z", "message": {"role": "user", "content": "Wynik: 5"}},
+                    {"type": "assistant", "uuid": "uuid-dbus-2", "timestamp": "2026-10-26T11:55:00Z",
+                     "message": {"role": "assistant", "stop_reason": "end_turn",
+                                 "content": [{"type": "text", "text": "**Krok 2:** uruchom ten skrypt i wklej mi wynik"}]}},
+                    {"type": "system", "subtype": "turn_duration", "timestamp": "2026-10-26T11:55:01Z"}):
+                fh.write(json.dumps(dict(record, cwd=os.path.join(self.tmp, "proj"), gitBranch="main")) + "\n")
+        self.assertTrue(wait_until(lambda: len(judged()) >= 2, timeout=15), "druga ocena")
+        self.assertEqual(judged(), ["qwen3:8b", "gemma3:4b"], "następna ocena idzie nowym modelem")
 
 
 if __name__ == "__main__":

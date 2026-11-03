@@ -37,7 +37,7 @@ Rectangle {
     // Nazwy serwerów dla Repeatera kart — nowa tablica tylko wtedy, gdy zmieni się lista nazw. Inaczej każdy
     // Status() (model załadowany, serwer wstał) odtwarzałby karty, a otwarty formularz wracałby do zapisu.
     property var serverNames: []
-    readonly property var roleIds: ["summary", "describe", "agent", "embed"]
+    readonly property var roleIds: ["summary", "describe", "classify", "agent", "embed"]
 
     readonly property var problem: Logic.problem(status, serviceUp)
     readonly property bool ready: problem === null
