@@ -2088,6 +2088,40 @@ out["editCall"] = calls()[-1]
         self.assertEqual(out["editCall"][:2], ["EditCardPlan", "K-6"])
         self.assertEqual(json.loads(out["editCall"][2])["reviewer"], "Codex standard")
 
+    def test_selected_ticket_shows_its_own_reviewer_after_the_list_recalculates(self):
+        # K-33: #1 miał recenzenta Opus, a pole pokazywało pierwszą pozycję listy (Codex) po przeliczeniu.
+        data = json.loads(json.dumps(self.data))
+        real = [{"name": n, "program": p, "model": m, "provider": v, "local": v == "local"} for n, p, m, v in (
+            ("Haiku", "claude", "haiku", "anthropic"), ("Sonnet", "claude", "sonnet", "anthropic"),
+            ("Opus", "claude", "opus", "anthropic"), ("Codex lekki", "codex", "gpt-6-luna", "openai"),
+            ("Codex standard", "codex", "gpt-6.1-sol", "openai"), ("Codex mocny", "codex", "gpt-6.1-sol", "openai"),
+            ("Codex Astra", "codex", "gpt-6-astra", "openai"), ("Lokalny", "codex", "qwen3-coder:30b", "local"))]
+        data["models"] = dict(models_status(), executors={"list": real})
+        rows = [{"workId": "#1", "title": "A", "class": "standard", "executor": "Sonnet", "reviewer": "Opus",
+                 "blockers": [], "editable": True, "body": "# A", "cardPath": "/b/1.md"},
+                {"workId": "#2", "title": "B", "class": "mocny", "executor": "Opus", "reviewer": "Codex mocny",
+                 "blockers": [], "editable": True, "body": "# B", "cardPath": "/b/2.md"}]
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "planner": "Opus", "waves": [["#1", "#2"]], "rows": rows}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+wait(120)
+out["first"] = [obj("planManagerExecutor").property("currentValue"), obj("planManagerReviewer").property("currentValue")]
+js(FIND + "(page, 'planManager').selectTicket(" + FIND + "(page, 'planManager').rows[1])")
+wait(120)
+out["second"] = [obj("planManagerExecutor").property("currentValue"), obj("planManagerReviewer").property("currentValue")]
+js("(function(){ const m = " + FIND + "(page, 'planManager'); m.modelsStatus = JSON.parse(JSON.stringify(m.modelsStatus)) })()")
+wait(120)
+out["refreshed"] = [obj("planManagerExecutor").property("currentValue"), obj("planManagerReviewer").property("currentValue")]
+""", data=data)
+        self.assertEqual(out["first"], ["Sonnet", "Opus"])
+        self.assertEqual(out["second"], ["Opus", "Codex mocny"])
+        self.assertEqual(out["refreshed"], ["Opus", "Codex mocny"], "odświeżenie stanu modeli nie zmienia wyboru")
+
     def test_long_review_findings_scroll_and_keep_approval_on_screen(self):
         # K-33: 23 punkty uwag review zepchnęły listę ticketów i „Zatwierdź plan” poza okno bez przewijania.
         data = json.loads(json.dumps(self.data))

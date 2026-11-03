@@ -35,6 +35,7 @@ Rectangle {
         selectedTicketId = row.id || row.workId
         classPicker.currentIndex = ["lekki", "standard", "mocny", "lokalny"].indexOf(row.class || "standard")
         executorPicker.currentIndex = optionIndex(executorPicker.model, row.executor)
+        reviewerPicker.wanted = row.reviewer || ""
         reviewerPicker.currentIndex = optionIndex(reviewerPicker.model, row.reviewer)
         bodyEdit.text = row.body || ""
     }
@@ -260,33 +261,49 @@ Rectangle {
                     font.family: Tide.Theme.uiFamily
                     wrapMode: Text.Wrap
                 }
-                PlanSelect {
-                    id: classPicker
-                    objectName: "planManagerClass"
+                GridLayout {
                     Layout.fillWidth: true
-                    model: ["lekki", "standard", "mocny", "lokalny"]
-                    enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
-                    Accessible.name: "Klasa ticketu"
-                }
-                PlanSelect {
-                    id: executorPicker
-                    objectName: "planManagerExecutor"
-                    Layout.fillWidth: true
-                    model: Logic.transferSettingsExecutors(manager.modelsStatus)
-                    textRole: "label"
-                    valueRole: "value"
-                    enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
-                    Accessible.name: "Wykonawca ticketu"
-                }
-                PlanSelect {
-                    id: reviewerPicker
-                    objectName: "planManagerReviewer"
-                    Layout.fillWidth: true
-                    model: Logic.planReviewerExecutors(manager.modelsStatus, executorPicker.currentValue || "")
-                    textRole: "label"
-                    valueRole: "value"
-                    enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
-                    Accessible.name: "Recenzent ticketu"
+                    columns: 2
+                    columnSpacing: 12
+                    rowSpacing: 8
+                    PlanFieldLabel { text: "Klasa"; hint: "jak trudny jest ticket" }
+                    PlanSelect {
+                        id: classPicker
+                        objectName: "planManagerClass"
+                        Layout.fillWidth: true
+                        model: ["lekki", "standard", "mocny", "lokalny"]
+                        enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
+                        Accessible.name: "Klasa ticketu"
+                    }
+                    PlanFieldLabel { text: "Wykonawca"; hint: "model, który pisze kod" }
+                    PlanSelect {
+                        id: executorPicker
+                        objectName: "planManagerExecutor"
+                        Layout.fillWidth: true
+                        model: Logic.transferSettingsExecutors(manager.modelsStatus)
+                        textRole: "label"
+                        valueRole: "value"
+                        enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
+                        Accessible.name: "Wykonawca ticketu"
+                    }
+                    PlanFieldLabel { text: "Recenzent"; hint: "inny model, który sprawdza zmiany" }
+                    PlanSelect {
+                        id: reviewerPicker
+                        objectName: "planManagerReviewer"
+                        // Wybrany recenzent przeżywa przeliczenie listy po zmianie wykonawcy (K-33: lista
+                        // wracała do pierwszej pozycji i „Zapisz” po cichu zmieniał recenzenta).
+                        property string wanted: ""
+                        Layout.fillWidth: true
+                        model: Logic.planReviewerExecutors(manager.modelsStatus, executorPicker.currentValue || "")
+                        textRole: "label"
+                        valueRole: "value"
+                        enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
+                        Accessible.name: "Recenzent ticketu"
+                        onActivated: index => wanted = model[index].value
+                        onModelChanged: Qt.callLater(() => {
+                            reviewerPicker.currentIndex = manager.optionIndex(reviewerPicker.model, reviewerPicker.wanted)
+                        })
+                    }
                 }
                 QQC2.ScrollView {
                     Layout.fillWidth: true
