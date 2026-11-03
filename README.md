@@ -262,10 +262,12 @@ Dwie rzeczy z PT-38 (decyzja 81), obie w tide-daemon:
   o przełączenie wejścia przyciskiem na monitorze. Kody wejść są w `daemon/tide_daemon/monitors.toml` (gniazdo
   HDMI z Xboxem do sprawdzenia: HDMI-1 to `0x11`, HDMI-2 to `0x12`). Bez skrótu klawiszowego.
 - **Skróty tylko w Stream.** `Pause` — mikrofon (`kamp mic.toggle`), `Meta+Pause` — ekran prywatności
-  (`kamp privacy.toggle`), `Meta+B` — BRB i powrót (`kamp brb.toggle`). Usługa rejestruje je w KGlobalAccel dopiero
-  po wejściu do aktywności Stream i usuwa po wyjściu, więc w pracy klawisze działają jak dawniej. `Meta+B` jest na
-  czas Streamu zabierane „Przełącz profil zasilania”, a po powrocie oddawane dokładnie (zapis w
-  `$XDG_STATE_HOME/tide/stream-shortcuts.json`). `Meta+Shift+A` (Praca ⇄ Stream), `Meta+A` i `Meta+Q` bez zmian.
+  (`kamp privacy.toggle`), `Meta+B` — BRB i powrót (`kamp brb.toggle`), `Meta+F9` — start/pauza zegara planu gry,
+  `Meta+F10`/`Meta+F11` — zegar planu −/+5 s (te trzy odbiera widżet pulpitu Stream, decyzja 88). Usługa rejestruje
+  je w KGlobalAccel dopiero po wejściu do aktywności Stream i usuwa po wyjściu, więc w pracy klawisze działają jak
+  dawniej. Na czas Streamu `Meta+B` jest zabierane „Przełącz profil zasilania”, a `Meta+F9` i `Meta+F10` „Prezentacji
+  okien” KWin; po powrocie wracają dokładnie (zapis w `$XDG_STATE_HOME/tide/stream-shortcuts.json`). `Meta+Shift+A`
+  (Praca ⇄ Stream), `Meta+A` i `Meta+Q` bez zmian.
 
 ```bash
 make install-widget-monitors   # pakiet kafelka (miejsce w docku Stream — układ paneli Stream)
