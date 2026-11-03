@@ -122,6 +122,26 @@ class ColumnRuleTest(unittest.TestCase):
         self.assertEqual(out["column"], "waiting")
         self.assertEqual(out["flow"]["question"], "Którą wersję zostawić?")
 
+    def test_review_question_is_not_hidden_by_another_ticket_limit(self):
+        events = stopped(name="K-1-PT-2-1", ticket="PT-2")
+        events.add("review.question", ticket="PT-1", round=3, question="Ponowić?")
+        out = view(events)
+        self.assertEqual(out["column"], "waiting")
+        self.assertEqual([d["kind"] for d in out["flow"]["decisions"]], ["review"])
+
+    def test_tracker_failure_is_not_hidden_by_limit(self):
+        events = stopped(name="K-1-PT-2-1", ticket="PT-2")
+        events.add("result", action="youtrack-create", key="k", ok=False, permanent=True, error="boom")
+        out = view(events)
+        self.assertEqual(out["column"], "waiting")
+        self.assertEqual([d["kind"] for d in out["flow"]["decisions"]], ["tracker"])
+
+    def test_fault_cause_alone_is_not_a_limit_stop(self):
+        events = Events().step("K-1-PT-1-1", ticket="PT-1")
+        events.add("step.finished", step="K-1-PT-1-1", ticket="PT-1", result="error", reason="restart",
+                   faultCause="limit")
+        self.assertEqual(view(events)["flow"]["stoppedByLimit"], [])
+
     def test_limit_does_not_leave_a_question_in_the_flow(self):
         self.assertEqual(view(stopped())["flow"]["question"], "")
 

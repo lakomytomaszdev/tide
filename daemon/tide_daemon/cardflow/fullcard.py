@@ -211,7 +211,7 @@ def limit_stops(st: FlowState) -> list[dict]:
         done = st.finished.get(name) or {}
         if done.get("result") not in ("error", "stopped"):
             continue
-        if done.get("reason") != "limit" and done.get("faultCause") != "limit":
+        if done.get("reason") != "limit":
             continue
         if name in st.superseded or name in st.step_decisions or step.get("ticket") in st.rejected:
             continue

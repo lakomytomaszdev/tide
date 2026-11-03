@@ -481,7 +481,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     decisions = build_decisions(st)
     attention = attention_step(st, True)
     focus = decision_step(st, True)
-    if not attention and not st.running():
+    if not decisions and not attention and not st.running():
         # Nic nie czeka na użytkownika: zatrzymany limitem krok nadal wyznacza kolumnę („czeka na limit”).
         focus = attention_step(st) or focus
     if focus:
@@ -564,7 +564,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                     (wip.get("committed") or wip.get("files") == 0)):
                 return _fill(out, "waiting", reason)
             return _fill(out, "progress", f"{ident} · przekazuję krok")
-        if done.get("reason") == "limit" and not wip.get("error") and \
+        if done.get("reason") == "limit" and not decisions and not wip.get("error") and \
                 not (wip.get("files") and not wip.get("committed")):
             # PT-130 (D3): limit nie jest decyzją. Karta czeka na odnowienie w „W toku”, nie w „Czeka na mnie”;
             # po odnowieniu krok rusza od nowa i kolumnę liczą zwykłe reguły. Zapis zmian do naprawy zostaje
