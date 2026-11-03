@@ -391,6 +391,14 @@ class GenericSentenceTest(unittest.TestCase):
             "tracker": tracker,
         }
 
+    def test_closed_console_recommends_resuming_in_the_background(self):
+        # 03.11, K-33/PT-109: po zamknięciu Konsoli jedyną opcją było „Wróć do rozmowy”.
+        from tide_daemon.cardflow.decisions import build_decisions
+        from tide_daemon.cardflow.state import fold
+        made = build_decisions(fold(self.empty_inputs()["stopped"].items))[0]
+        self.assertEqual([(o["choice"], o["recommended"]) for o in made["options"]],
+                         [("background", True), ("enter", False)])
+
     def test_every_kind_with_empty_input_gets_its_generic_sentences(self):
         inputs = self.empty_inputs()
         self.assertEqual(set(inputs), set(KINDS), "tabela obejmuje każdy rodzaj decyzji")

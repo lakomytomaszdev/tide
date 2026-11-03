@@ -406,8 +406,10 @@ def _stopped(st, name, step, done) -> dict:
     happened = (f"{_who(step, True)}: rozmowa w Konsoli została zamknięta przed zapisaniem wyniku."
                 if step.get("kind") else "")
     options = [
+        _option("background", "Wznów w tle", "Krok wróci do pracy w tle w tej samej sesji, od miejsca przerwania.",
+                RESOLVE_STEP, {"choice": "background", "step": name}, recommended=True),
         _option("enter", "Wróć do rozmowy", "Krok otworzy się w Konsoli w tej samej sesji.",
-                ENTER_STEP, {"step": name}, recommended=True),
+                ENTER_STEP, {"step": name}),
     ]
     return _decision(st, name, step, "stopped", happened, "", options, None, "", _step_technical(step, done))
 

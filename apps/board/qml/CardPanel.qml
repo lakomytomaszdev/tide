@@ -991,7 +991,7 @@ Rectangle {
                                     }
                                     PillButton {
                                         objectName: "enterStep"
-                                        text: flowStep.result ? "Wznów rozmowę" : "Wejdź"
+                                        text: flowStep.result ? "Wznów rozmowę" : "Przejmij w Konsoli"
                                         toolTip: flowStep.result ? "Otwórz tę rozmowę w Konsoli, także po restarcie komputera" : "Otwórz krok w Konsoli"
                                         implicitHeight: 28
                                         pixelSize: 12

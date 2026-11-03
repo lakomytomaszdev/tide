@@ -940,7 +940,7 @@ Rectangle {
                                 Tide.TextButton {
                                     objectName: "fullNowEnter"
                                     visible: step.modelData.canEnter === true
-                                    text: "Wejdź"
+                                    text: "Przejmij w Konsoli"  // zatrzymuje pracę w tle i otwiera tę samą sesję (to nie podgląd)
                                     variant: "outline"
                                     Accessible.name: "Wejdź do kroku " + step.label
                                     onClicked: view.enterStepRequested(step.stepId)

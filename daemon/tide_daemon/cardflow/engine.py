@@ -1857,6 +1857,12 @@ class FlowEngine(PlanEditing):
             else:
                 self._env_question(card, step, done)
             return
+        if result == "stopped" and done.get("reason") == "interactive-closed":
+            # Konsola zamknięta bez wyniku: „Wznów w tle” oddaje krok pracy w tle w tej samej sesji (03.11).
+            decision = st.step_decisions.get(st.last_step)
+            if decision and decision.get("choice") == "background":
+                self._resume_step(card, st, step, decision)
+            return
         if result == "error":
             decision = st.step_decisions.get(st.last_step)
             if decision:
@@ -2279,7 +2285,8 @@ class FlowEngine(PlanEditing):
         done = st.finished.get(focus) or {}
         result = done.get("result")
         valid = {"question": ("answer",), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
-                 else ("allow", "deny"), "error": ("retry", "change-executor")}.get(result, ())
+                 else ("allow", "deny"), "error": ("retry", "change-executor"),
+                 "stopped": ("background",) if done.get("reason") == "interactive-closed" else ()}.get(result, ())
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
                    for s in st.running())
