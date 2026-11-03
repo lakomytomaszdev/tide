@@ -59,6 +59,8 @@ from .tracker import TrackerOutbox
 GUARD_MINUTES = 15.0
 TIMEOUT_MINUTES = 240.0
 SETTINGS_FILE = "cardflow.json"
+DEFAULT_PROVIDER_SLOTS = 3      # kroki naraz u jednego dostawcy chmurowego (providerSlots w ustawieniach)
+MAX_PROVIDER_SLOTS = 12
 RESULTS = ("done", "question", "denied", "error")
 OUTPUT_MAX = 256 * 1024
 HANDOFF_DIFF_MAX = 64 * 1024
@@ -172,11 +174,15 @@ class FlowEngine(PlanEditing):
             threshold = 10
         mode = transfer.get("mode") if transfer.get("mode") in ("ask", "auto") else "ask"
         executor = transfer.get("executor") if isinstance(transfer.get("executor"), str) else ""
+        slots = data.get("providerSlots") if isinstance(data.get("providerSlots"), dict) else {}
+        slots = {k: v for k, v in slots.items() if isinstance(k, str) and isinstance(v, int)
+                 and not isinstance(v, bool) and 1 <= v <= MAX_PROVIDER_SLOTS}
         return {"ok": True, "limitTransfer": {"mode": mode, "executor": executor},
-                "limitThresholdPercent": threshold}
+                "limitThresholdPercent": threshold, "providerSlots": slots,
+                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS}
 
     def set_flow_settings(self, request: dict) -> dict:
-        if not isinstance(request, dict) or set(request) - {"limitTransfer", "limitThresholdPercent"}:
+        if not isinstance(request, dict) or set(request) - {"limitTransfer", "limitThresholdPercent", "providerSlots"}:
             raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
         current = self.get_flow_settings()
         transfer = request.get("limitTransfer", current["limitTransfer"])
@@ -190,9 +196,14 @@ class FlowEngine(PlanEditing):
         threshold = request.get("limitThresholdPercent", current["limitThresholdPercent"])
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0 < threshold <= 100:
             raise FlowError("bad-settings", "próg limitu musi być procentem od 0 do 100")
+        slots = request.get("providerSlots", current["providerSlots"])
+        if not isinstance(slots, dict) or any(
+                not isinstance(k, str) or not k or len(k) > 40 or isinstance(v, bool) or not isinstance(v, int)
+                or not 1 <= v <= MAX_PROVIDER_SLOTS for k, v in slots.items()):
+            raise FlowError("bad-settings", f"liczba kroków naraz na dostawcę musi być od 1 do {MAX_PROVIDER_SLOTS}")
         data = self._settings_data()
         data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
-                    limitThresholdPercent=threshold)
+                    limitThresholdPercent=threshold, providerSlots=dict(slots))
         folder = os.path.dirname(self.settings) or "."
         os.makedirs(folder, mode=0o700, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=".cardflow-", dir=folder)
@@ -1225,11 +1236,11 @@ class FlowEngine(PlanEditing):
         running = [step for card in self.journal.cards()
                    for step in fold(self.journal.read(card)).running()]
         provider = selected.provider
-        limit = 1 if selected.local else 3
+        limit = 1 if selected.local else DEFAULT_PROVIDER_SLOTS
         if not selected.local:
             try:
                 with open(self.settings, encoding="utf-8") as fh:
-                    value = json.load(fh).get("providerSlots", {}).get(provider, 3)
+                    value = json.load(fh).get("providerSlots", {}).get(provider, DEFAULT_PROVIDER_SLOTS)
                 if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                     limit = value
             except (OSError, ValueError, AttributeError):

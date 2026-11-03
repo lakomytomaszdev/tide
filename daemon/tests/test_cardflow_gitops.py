@@ -264,3 +264,12 @@ class ReviewDiffTest(unittest.TestCase):
         self.assertIn("big.txt", out)
         self.assertIn("git diff refs/heads/card/k-1 refs/heads/ticket/pt-1 -- <ścieżka>", out)
         self.assertNotIn("+linia", out)
+
+
+class ForeignChangesTest(unittest.TestCase):
+    def test_user_agent_tooling_is_not_a_ticket_change(self):
+        # K-15/LEGAL-60: zewnętrzna synchronizacja rozłożyła .agents/skills i .codex/agents w worktree ticketu.
+        porcelain = "?? .agents/skills/x/SKILL.md\n?? .codex/agents/a.toml\n"
+        self.assertEqual(gitops._foreign_changes(porcelain), [])
+        self.assertEqual(gitops._foreign_changes(porcelain + "?? debug.py\n"), ["?? debug.py"])
+        self.assertEqual(gitops._foreign_changes(" M .codex/agents/a.toml\n"), [" M .codex/agents/a.toml"])

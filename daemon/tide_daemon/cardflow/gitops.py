@@ -36,6 +36,15 @@ def lock_for(repo: str) -> threading.Lock:
         return _locks.setdefault(key, threading.Lock())
 
 
+def _foreign_changes(porcelain: str) -> list[str]:
+    """Linie `git status --porcelain` bez nieśledzonych narzędzi agentów użytkownika (TOOLING_DIRS) — tych nie
+    wnosi krok, tylko zewnętrzna synchronizacja, więc nie blokują review ani scalenia."""
+    from ..tasks.agentcmd import TOOLING_DIRS
+    prefixes = tuple(d.strip("/") + "/" for d in TOOLING_DIRS)
+    return [line for line in porcelain.splitlines()
+            if line.strip() and not (line.startswith("?? ") and line[3:].strip('"').startswith(prefixes))]
+
+
 class FlowGitError(Exception):
     """Błąd gita z komunikatem po polsku."""
 
@@ -172,7 +181,7 @@ class FlowGit:
                 raise FlowGitError(f"nie można ustalić katalogu gita worktree ticketu: {exc}") from exc
             status = StepGit(repo, git_dir, path, path + ".step").run(
                 "status", "--porcelain", "--untracked-files=all")
-            if not status.ok or status.out.strip():
+            if not status.ok or _foreign_changes(status.out):
                 raise FlowGitError("worktree ticketu ma lokalne zmiany")
             return tip
 

@@ -83,6 +83,9 @@ EXIT_WRAPPER = ('umask 077; trap : TERM; status=$1; shift; "$@"; code=$?; '
                 'printf "%s\\n" "$code" > "$status.tmp" && mv -f -- "$status.tmp" "$status"; exit "$code"')
 SANDBOX_DUMMIES = ("/.bash_profile", "/.bashrc", "/.claude", "/.gitconfig", "/.gitmodules", "/.idea",
                    "/.mcp.json", "/.profile", "/.ripgreprc", "/.vscode", "/.zprofile", "/.zshrc")
+# Narzędzia agentów użytkownika rozkładane do worktree z zewnątrz (K-15: `.agents/skills`, `.codex/agents`) —
+# nigdy nie należą do ticketu: krok ich nie commituje, a kontrola czystości worktree je pomija.
+TOOLING_DIRS = ("/.agents/", "/.codex/")
 CODEX_GIT_DIRS = ("objects", "refs", "logs")        # reszta wspólnego .git (haki, config) zostaje tylko do odczytu
 
 
@@ -433,7 +436,7 @@ def background(step: Step) -> Background:
         files, session = {}, step.session_id if step.resume else ""
     files[os.path.join(inp, "gitconfig")] = (f"[user]\n\tname = {step.git_name}\n\temail = {step.git_email}\n"
                                               f"[core]\n\texcludesFile = {os.path.join(inp, 'ignore')}\n")
-    files[os.path.join(inp, "ignore")] = "\n".join(SANDBOX_DUMMIES) + "\n"
+    files[os.path.join(inp, "ignore")] = "\n".join(SANDBOX_DUMMIES + TOOLING_DIRS) + "\n"
     dirs = [inp, out, env["GH_CONFIG_DIR"]] + ([env["CLAUDE_CODE_TMPDIR"]] if step.tool == "claude" else [])
     return Background(argv, env, step.prompt, step.worktree, step.step_dir, session, step.tool, repo=step.repo,
                       git_dir=git_dir, unit="tide-step-" + step.step_id,
