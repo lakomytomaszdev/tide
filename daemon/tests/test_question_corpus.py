@@ -17,13 +17,12 @@ TOOL = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.absp
 CORPUS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "question-corpus.jsonl")
 # Najniższa trafność obecnych reguł na zatwierdzonym zestawie (pełne punkty procentowe, w dół): wartość z
 # `question_corpus.py bench` na zatwierdzonym zestawie. Kolejne tickety mogą ją tylko podnieść.
-# Zestaw: 47 wiadomości (19 „czeka”, 28 „nie czeka”): 12 przypadków z 28.10 (`probe 2026-10-28`) i 35 z dzienników
-# Claude Code (`claude 2026-11-03`; brak Codexa), reguły: 31/47 = 65,96% → 65. UWAGA (PT-111 review r3): etykiety
-# „czeka” poza 12 przypadkami z 28.10 ocenił koordynator (AI), nie sam użytkownik, a większość wiadomości nadal opisuje
-# (zanonimizowane) projekty klienta — zestaw czeka na decyzję i przegląd użytkownika; po wymianie trzeba przeliczyć próg.
-# Z poprzednich 53 usunięto 6 wiadomości z nazwami klienta, które przeszły przez filtr, i z opisem jego luki.
+# Zestaw: 111 wiadomości (37 „czeka”, 74 „nie czeka”): 12 przypadków z 28.10 (`probe 2026-10-28`) i 99 z dzienników
+# Claude Code tylko z własnych projektów (`extract --project plasma-tide/BO/LogTool/TimeTracker --drop-flagged`, bez
+# treści klienta), reguły: 73% (w dół z dokładnego ilorazu). Etykiety: „czeka” tylko, gdy wiadomość prosi użytkownika
+# o decyzję, odpowiedź albo kliknięcie; przegląd i etykiety zrobił koordynator (AI) na prośbę użytkownika (PT-111 r3).
 # None — zestaw jeszcze nie zatwierdzony (testy rozmiaru i progu są wtedy pomijane).
-RULES_ACCURACY_FLOOR = 65
+RULES_ACCURACY_FLOOR = 73
 
 
 def load_tool():
