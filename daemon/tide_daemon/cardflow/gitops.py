@@ -105,6 +105,30 @@ class FlowGit:
             raise FlowGitError("diff ticketu przekracza 300 000 znaków — podziel pracę na mniejszy ticket")
         return result.out
 
+    def review_diff(self, repo: str, card_branch: str, ticket_branch: str) -> str:
+        """Diff do review: pełny, gdy mieści się w limicie; większy (np. ticket scalający gałęzie, K-33/PT-108,
+        3,5 mln znaków) — podsumowanie `--stat` i polecenia, którymi recenzent przegląda go po ścieżkach."""
+        try:
+            return self.diff(repo, card_branch, ticket_branch)
+        except FlowGitError as exc:
+            if "przekracza" not in str(exc):
+                raise
+        stat = self.run(repo, "diff", "--no-ext-diff", "--no-textconv", "--stat=200,150",
+                        f"refs/heads/{card_branch}", f"refs/heads/{ticket_branch}", "--")
+        if not stat.ok:
+            raise FlowGitError("nie można odczytać podsumowania diffu ticketu: " + (stat.err.splitlines() or ["błąd"])[0])
+        lines = stat.out.splitlines()
+        shown = lines if len(lines) <= 400 else lines[:399] + [f"… ({len(lines) - 400} plików pominięto) …", lines[-1]]
+        merges = self.run(repo, "log", "--merges", "--format=%h %s", f"refs/heads/{card_branch}..refs/heads/{ticket_branch}")
+        return ("Diff jest za duży, żeby go wkleić (ponad 300 000 znaków). Poniżej podsumowanie; przeglądaj zmiany "
+                "poleceniami tylko do odczytu, ścieżka po ścieżce, np.\n"
+                f"  git diff refs/heads/{card_branch} refs/heads/{ticket_branch} -- <ścieżka>\n"
+                f"  git log --oneline refs/heads/{card_branch}..refs/heads/{ticket_branch}\n"
+                "Skup się na tym, co ticket zmienił sam (rozwiązania konfliktów, nowe pliki, testy), a nie na treści "
+                "scalanych gałęzi, które przeszły już własne review.\n\n"
+                + ("Commity scalające:\n" + merges.out.strip() + "\n\n" if merges.ok and merges.out.strip() else "")
+                + "\n".join(shown) + "\n")
+
     def merged_tip(self, repo: str, card_branch: str, ticket_branch: str, worktree: str,
                    expected_tip: str, card_tip: str) -> str:
         """Potwierdza rozwiązanie konfliktu: oba zatwierdzone tipy są przodkami czystej gałęzi karty."""

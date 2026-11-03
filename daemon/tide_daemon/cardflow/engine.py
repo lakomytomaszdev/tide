@@ -2432,7 +2432,7 @@ class FlowEngine(PlanEditing):
             raise FlowError("changed-reviewer", f"{card}: katalog zmienił recenzenta od startu ticketu")
         path = info["worktree"]
         tip = self.git.clean_tip(project.repo, info["branch"], path)
-        diff = self.git.diff(project.repo, info["cardBranch"], info["branch"])
+        diff = self.git.review_diff(project.repo, info["cardBranch"], info["branch"])
         step_id = self._next_step_id(card, ticket, st)
         out = path + f".review-{round_no}.step/out"
         title, description = self._ticket_text(card, st, ticket, item)

@@ -224,3 +224,43 @@ class MergeTest(unittest.TestCase):
         self.assertTrue(os.path.exists(inside), "filtr smudge był faktycznie uruchomiony")
         self.assertFalse(os.path.exists(marker))
         self.assertEqual(git(self.card, "status", "--porcelain", "--untracked-files=no"), "")
+
+
+class ReviewDiffTest(unittest.TestCase):
+    """K-33/PT-108: ticket scalający gałęzie ma diff rzędu milionów znaków — review dostaje podsumowanie."""
+
+    def setUp(self):
+        self.base = test_root()
+        self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
+        self.repo = os.path.join(self.base, "project")
+        os.mkdir(self.repo)
+        git(self.repo, "init", "-q", "-b", "master")
+        git(self.repo, "config", "user.name", "Tester")
+        git(self.repo, "config", "user.email", "tester@example.invalid")
+        with open(os.path.join(self.repo, "a.txt"), "w") as fh:
+            fh.write("a\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "start")
+        git(self.repo, "branch", "card/k-1")
+        git(self.repo, "checkout", "-qb", "ticket/pt-1")
+
+    def commit(self, name, text):
+        with open(os.path.join(self.repo, name), "w") as fh:
+            fh.write(text)
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", name)
+
+    def test_small_diff_is_given_whole(self):
+        self.commit("b.txt", "mała zmiana\n")
+        out = gitops.FlowGit().review_diff(self.repo, "card/k-1", "ticket/pt-1")
+        self.assertIn("+mała zmiana", out)
+
+    def test_huge_diff_becomes_stat_with_read_only_commands(self):
+        self.commit("big.txt", "x" * 80 + "\n" * 1 + ("linia\n" * 70_000))
+        with self.assertRaises(gitops.FlowGitError):
+            gitops.FlowGit().diff(self.repo, "card/k-1", "ticket/pt-1")
+        out = gitops.FlowGit().review_diff(self.repo, "card/k-1", "ticket/pt-1")
+        self.assertLess(len(out), 300_000)
+        self.assertIn("big.txt", out)
+        self.assertIn("git diff refs/heads/card/k-1 refs/heads/ticket/pt-1 -- <ścieżka>", out)
+        self.assertNotIn("+linia", out)
