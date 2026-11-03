@@ -60,7 +60,10 @@ class YouTrackFlowTest(FlowInProcess):
         self.assertEqual((started['trackerProject'], started['trackerUrl'], started['prefix']),
                          ('LOG', self.fake.url, 'LOG'))
         step = self.started(card)
-        with open(os.path.join(step['stepDir'], 'out', 'fake-call.json'), encoding='utf-8') as fh:
+        call = os.path.join(step['stepDir'], 'out', 'fake-call.json')
+        # atrapa agenta zapisuje plik już po step.started — czekamy, zamiast liczyć na kolejność
+        self.assertTrue(wait_until(lambda: os.path.exists(call), timeout=15), self.events(card))
+        with open(call, encoding='utf-8') as fh:
             prompt = json.load(fh)['prompt']
         for expected in ('tracker: youtrack', 'tracker-project: LOG',
                          'tracker-url: ' + self.fake.url, 'ticket-prefix: LOG'):
