@@ -428,6 +428,19 @@ class GuardInProcessTest(FlowInProcess):
         self.assertEqual((finished["result"], finished["reason"]), ("error", "no-progress"))
         self.assertEqual(finished["messages"], [{"role": "assistant", "text": "Sprawdzam testy."}])
 
+    def test_guard_counts_busy_processor_as_progress(self):
+        # K-35/PT-123: pełne `make test` w tle przez 25 min bez wyjścia — strażnik zatrzymał pracujący krok.
+        ticks = iter(range(10_000))
+        self.flow.engine.unit_cpu = lambda unit: next(ticks)
+        card_id = self.card(description="ATRAPA: czekaj")
+        self.start(card_id)
+        step = self.started(card_id)
+        self.assertFalse(wait_until(lambda: self.of(card_id, "step.finished"), timeout=8))
+        self.assertTrue(flowfakes.alive(self.unit_pid(step)))
+        self.flow.engine.unit_cpu = lambda unit: 7       # procesor stoi — strażnik działa jak dotąd
+        self.wait_column(card_id, "waiting", timeout=30)
+        self.assertEqual(self.of(card_id, "step.finished")[0]["reason"], "no-progress")
+
     def test_guard_stops_a_step_without_progress_and_keeps_its_changes(self):
         card_id = self.card(description="ATRAPA: czekaj")
         reply = self.start(card_id)

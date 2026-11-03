@@ -137,6 +137,8 @@ class FlowEngine(PlanEditing):
         self.which = which
         self.grace = grace
         self.guard_every = guard_every
+        # Czas procesora jednostki kroku jako znak postępu strażnika (None w testach bez systemd).
+        self.unit_cpu = stepstop.unit_cpu_bucket
         self.terminal = terminal
         self.task_files = task_files or TaskFiles()
         self.procs: dict[str, object] = {}         # krok → Popen (tylko kroki uruchomione przez tę usługę)
@@ -2743,7 +2745,8 @@ class FlowEngine(PlanEditing):
             log_st = os.stat(log) if log else None
         except OSError:
             log_st = None
-        return count, size, newest, (log_st.st_size, log_st.st_mtime_ns) if log_st else None
+        cpu = self.unit_cpu(step.get("unit") or "") if self.unit_cpu else None
+        return count, size, newest, (log_st.st_size, log_st.st_mtime_ns) if log_st else None, cpu
 
     def _handoff_note(self, card: str, step: dict, stopped, reason: str) -> str:
         """Notka z zatrzymania: dane techniczne i ograniczony diff, bez ponownego użycia modelu."""
