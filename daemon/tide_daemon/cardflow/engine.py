@@ -3502,6 +3502,8 @@ class FlowEngine(PlanEditing):
                           e.get("to") == "review"), {})
             once(f"review:{moved.get('seq') or st.last_seq}", "review", "Karta czeka na sprawdzenie")
         for wait in st.waiting.values():
+            if wait.get("kind") == caretaker.KIND:
+                continue      # opiekun w kolejce do dostawcy: problem nadal jego, powiadamia dopiero eskalacja
             if "limit" in (wait.get("reason") or "").lower():
                 once(f"limit:{wait.get('seq')}", "limit", wait.get("reason") or "Limit dostawcy")
 

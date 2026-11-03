@@ -1834,8 +1834,11 @@ wina według dziennika kroku — bez dziennika kroku i bez innych plików.
 Opiekun jest włączony na stałe, wykonawca to najmocniejsza klasa preferowanego dostawcy karty (w trybie mieszanym
 — dostawcy wykonawcy karty; domyślnie Opus albo Codex mocny). Piaskownica do #16: krok opiekuna nie ma żadnych
 dozwolonych poleceń (`agentcmd.Step.write_out_only`: Claude — `--disallowedTools Bash` i zakaz edycji worktree
-i repozytorium, bez `--allowedTools`; Codex — katalog roboczy i jedyny zapisywalny katalog to `<krok>/out`), zapis
-tylko do własnego `out` (`allowWrite` piaskownicy kroku).
+i repozytorium, bez `--allowedTools`; Codex — katalog roboczy i jedyny zapisywalny katalog to `<krok>/out`, a
+narzędzia poleceń i kodu są wyłączone: `-c features.shell_tool=false`, `unified_exec`, `code_mode`, `js_repl`
+— `agentcmd.CODEX_NO_COMMANDS`; plik wyniku Codex zapisuje łatką `apply_patch`), zapis tylko do własnego `out`
+(`allowWrite` piaskownicy kroku). Opiekun czekający na slot dostawcy (`step.waiting` rodzaju `caretaker`) nie daje
+powiadomienia o limicie — problem nadal należy do opiekuna, powiadamia dopiero eskalacja.
 
 ## Docker
 

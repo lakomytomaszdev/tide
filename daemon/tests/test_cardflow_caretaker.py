@@ -338,6 +338,44 @@ class CaretakerFlowTest(FlowInProcess):
         self.assertEqual([e["target"] for e in card["derived"]["flow"]["caretaker"]["escalated"]],
                          [decision["step"]])
 
+    def test_caretaker_waiting_for_a_provider_slot_does_not_notify_before_escalation(self):
+        """Review PT-143/P1: opiekun w kolejce do dostawcy (zajęte sloty) — decyzja ukryta, bez `step.notice`
+        i bez `flow.notice` o limicie; po zwolnieniu slotu i eskalacji jedno powiadomienie."""
+        import threading
+        engine = self.flow.engine
+        admit, released = engine._admit, threading.Event()
+        busy = "limit kroków dostawcy anthropic: 2/2"
+
+        def admit_with_busy_slots(card, selected, ticket, kind, step_id):
+            if kind == caretaker.KIND and not released.is_set():
+                with mock.patch.object(engine, "_wait_reason", return_value=busy):
+                    return admit(card, selected, ticket, kind, step_id)
+            return admit(card, selected, ticket, kind, step_id)
+
+        with mock.patch.object(engine, "_admit", side_effect=admit_with_busy_slots):
+            card_id = self.failing_card()
+            self.assertTrue(self.start(card_id)["ok"])
+            self.assertTrue(wait_until(lambda: [w for w in self.of(card_id, "step.waiting")
+                                                if w["kind"] == caretaker.KIND], timeout=30), self.events(card_id))
+            wait_until(lambda: False, timeout=1.0)          # kilka obrotów pętli z opiekunem w kolejce
+            card = self.wait_column(card_id, "progress")
+            self.assertEqual(card["derived"]["flow"]["decisions"], [])
+            self.assertEqual(self.caretaker_steps(card_id), [])
+            self.assertEqual(self.of(card_id, "caretaker.escalated"), [])
+            self.assertEqual(self.of(card_id, "step.notice"), [])
+            self.assertEqual(self.of(card_id, "flow.notice"), [])
+            self.assertFalse([n for n in engine._notices if n["card"] == card_id], engine._notices)
+
+            released.set()
+            card = self.wait_column(card_id, "waiting", timeout=40)
+            self.assertEqual(len(self.caretaker_steps(card_id)), 1)
+            self.assertEqual(len(self.of(card_id, "caretaker.escalated")), 1)
+            self.assertTrue(wait_until(lambda: len(self.of(card_id, "step.notice")) == 1, timeout=5))
+            wait_until(lambda: False, timeout=1.0)
+            self.assertEqual(len(self.of(card_id, "step.notice")), 1, "eskalacja powiadamia raz")
+            self.assertEqual(self.of(card_id, "flow.notice"), [])
+            self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "error")
+
     def test_failed_caretaker_results_hand_the_decision_back(self):
         cases = {"akcja-approve-plan": "bad-caretaker-action", "akcja-allow": "bad-caretaker-action",
                  "akcja-merge": "bad-caretaker-action", "akcja-push": "bad-caretaker-action",

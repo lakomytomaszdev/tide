@@ -87,6 +87,9 @@ SANDBOX_DUMMIES = ("/.bash_profile", "/.bashrc", "/.claude", "/.gitconfig", "/.g
 # nigdy nie należą do ticketu: krok ich nie commituje, a kontrola czystości worktree je pomija.
 TOOLING_DIRS = ("/.agents/", "/.codex/")
 CODEX_GIT_DIRS = ("objects", "refs", "logs")        # reszta wspólnego .git (haki, config) zostaje tylko do odczytu
+# Krok bez poleceń (opiekun karty do PT-158): Codex nie dostaje żadnego narzędzia wykonującego polecenia ani kod
+# (`shell`, `exec_command`, `exec` trybu kodu, `js_repl`); zapis pliku w `out` zostaje przez apply_patch.
+CODEX_NO_COMMANDS = ("shell_tool", "unified_exec", "code_mode", "js_repl")
 
 
 class StepError(ValueError):
@@ -440,9 +443,13 @@ def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
            for arg in ("-c", f"mcp_servers.{_toml_key(name)}.enabled=false")]
     # Opcje przed podpoleceniem: `codex exec resume <id> --cd …` kończy się „unexpected argument” (sprawdzone).
     effort = ["-c", f'model_reasoning_effort="{step.effort}"'] if step.effort else []
+    # PT-143/S1: zakaz poleceń wymusza konfiguracja kroku, nie tylko kartka — sama granica zapisu do `out` nie
+    # zabrania uruchomienia np. interpretera w `out`.
+    no_commands = [arg for name in CODEX_NO_COMMANDS for arg in ("-c", f"features.{name}=false")] \
+        if step.write_out_only else []
     argv = [step.binary, "exec", *model, *effort, "--json", "--cd", cwd, "--sandbox", "workspace-write",
             "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots, ensure_ascii=False),
-            "-c", 'approval_policy="never"', *mcp,
+            "-c", 'approval_policy="never"', *no_commands, *mcp,
             *(["resume", step.session_id] if step.resume else []), "-"]
     return argv, secret
 

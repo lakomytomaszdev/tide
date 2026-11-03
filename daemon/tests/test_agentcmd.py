@@ -316,7 +316,14 @@ class BackgroundCodexTest(BackgroundBase):
         codex = agentcmd.background(self.step("codex", model="gpt-5-codex", codex_mcp=(), write_out_only=True))
         self.assertEqual(codex.argv[codex.argv.index("--cd") + 1], out)
         self.assertIn("sandbox_workspace_write.writable_roots=" + json.dumps([out]), codex.argv)
-        claude = agentcmd.background(self.step("claude", allowed_tools=("Bash(git status *)",),
+        # Zakaz poleceń wymuszony konfiguracją Codexa (review PT-143/S1), nie tylko kartką.
+        for feature in ("shell_tool", "unified_exec", "code_mode", "js_repl"):
+            at = codex.argv.index(f"features.{feature}=false")
+            self.assertEqual(codex.argv[at - 1], "-c")
+            self.assertLess(at, codex.argv.index("-"))
+        plain = agentcmd.background(self.step("codex", model="gpt-5-codex", codex_mcp=()))
+        self.assertFalse([arg for arg in plain.argv if arg.startswith("features.")], "zwykły krok bez zmian")
+        claude =agentcmd.background(self.step("claude", allowed_tools=("Bash(git status *)",),
                                                disallowed_tools=("Bash(make install)",), write_out_only=True))
         self.assertNotIn("--allowedTools", claude.argv)
         banned = claude.argv[claude.argv.index("--disallowedTools") + 1:]
