@@ -46,7 +46,7 @@ class ReviewFlowTest(FlowInProcess):
         self.assertEqual((reply["ok"], reply["error"]), (False, "bad-reviewer"), reply)
         self.assertEqual(self.events(card), [])
 
-    def test_catalog_change_before_review_cannot_replace_reviewer_with_authors_model(self):
+    def test_catalog_change_before_review_is_noted_and_does_not_stop_the_card(self):
         from tide_daemon.models.executors import Catalog, default_catalog
 
         original = default_catalog()
@@ -62,10 +62,10 @@ class ReviewFlowTest(FlowInProcess):
         self.flow.engine.catalog = catalog
         card = self.card()
         self.assertTrue(self.start(card, reviewer="Opus")["ok"])
-        shown = self.wait_column(card, "waiting")
-        self.assertIn("katalog zmienił recenzenta", shown["derived"]["note"])
-        self.assertEqual([s["kind"] for s in self.of(card, "step.started")], ["ticket"])
-        self.assertEqual(self.results(card, "merge"), [])
+        # 03.11 (decyzja użytkownika): niezależny recenzent to rekomendacja, nie blokada — review rusza z notką.
+        self.wait_column(card, "review", timeout=30)
+        self.assertEqual(len(self.of(card, "review.reviewer-note")), 1)
+        self.assertIn("review", [s["kind"] for s in self.of(card, "step.started")])
 
     def test_ticket_ref_change_after_approval_cannot_merge_unreviewed_commit(self):
         card = self.card()

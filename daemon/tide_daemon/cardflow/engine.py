@@ -65,6 +65,8 @@ MAX_PROVIDER_SLOTS = 12
 RESULTS = ("done", "question", "denied", "error", "outside")
 OUTSIDE_TIMEOUT = 3600          # najdłużej działające polecenie uruchomione poza piaskownicą (s)
 OUTSIDE_TAIL = 12_000           # tyle końcowych znaków wyniku dostaje wznowiony krok
+REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
+ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
 OUTSIDE_PER_PROJECT = 1         # polecenia poza piaskownicą naraz w jednym projekcie (porty, serwer e2e)
 OUTSIDE_TOTAL = 2               # … i łącznie (testy i budowanie obciążają całą maszynę)
 STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
@@ -101,6 +103,22 @@ def _login_expired(log: str) -> bool:
     except OSError:
         return False
     return any(marker in tail for marker in LOGIN_MARKERS)
+
+
+
+def reviewer_changed(reviewer, expected: dict, source: dict, assigned: dict, transferred: bool) -> bool:
+    """Recenzent rozwiązany dziś nie jest tym z planu (albo z poprzedniej rundy) lub łamie regułę niezależności."""
+    return bool(reviewer.tool != expected["program"] or reviewer.model != expected["model"] or \
+            reviewer.provider != expected["provider"] or reviewer.effort != expected["effort"] or \
+            (reviewer.route.url if reviewer.route else "") != expected["routeUrl"] or \
+            (reviewer.route.kind if reviewer.route else "") != expected["routeKind"] or \
+            (reviewer.route.token_file if reviewer.route else "") != expected["routeTokenFile"] or \
+            reviewer.model.lower() == (source.get("model") or "").lower() or \
+            reviewer.local != (source.get("provider") == "local") or \
+            (not transferred and assigned.get("preferredProvider") == "mixed" and
+             reviewer.provider == source.get("provider")) or \
+            (not transferred and assigned.get("preferredProvider") != "mixed" and
+             reviewer.provider != source.get("provider")))
 
 
 REMARK = re.compile(r"^\s*(?:#{2,4}\s*)?(?:\*\*)?((?:BLOCKER|MAJOR|B|M)[- ]?\d*)[.:)]?\s*(?:\*\*)?\s*[—–:-]?\s*(.+)$")
@@ -1807,7 +1825,13 @@ class FlowEngine(PlanEditing):
         accepted = (st.review_decisions.get((ticket, step.get("round"))) or {}).get("choice") == "accept"
         if verdict.get("verdict") == "REQUEST_CHANGES" and not accepted:
             round_no = int(step.get("round") or 0)
-            if round_no < 3 or (st.review_decisions.get((ticket, round_no)) or {}).get("choice") == "retry":
+            if round_no < self._review_rounds() or \
+                    (st.review_decisions.get((ticket, round_no)) or {}).get("choice") == "retry":
+                if (ticket, round_no) in st.review_questions and (ticket, round_no) not in st.review_decisions:
+                    # Pytanie zadane przy dawnym progu (3 rundy) — Tide sam wybiera „Ponów poprawki”.
+                    self.journal.append(card, "review.decision", ticket=ticket, round=round_no, choice="retry",
+                                        auto=True)
+                    st = fold(self.journal.read(card))
                 self._fix(card, st, step)
             elif (ticket, round_no) not in st.review_questions:
                 self.journal.append(card, "review.question", ticket=ticket, round=round_no,
@@ -2509,20 +2533,17 @@ class FlowEngine(PlanEditing):
             "routeKind": previous.get("routeKind", assigned.get("reviewerRouteKind", "")),
             "routeTokenFile": previous.get("routeTokenFile", assigned.get("reviewerRouteTokenFile", "")),
         }
-        transferred = any((st.step_decisions.get(name) or {}).get("choice") == "transfer" and
+        # Przeniesienie przy limicie i ręczna zmiana wykonawcy (K-16/LEGAL-66: Codex padł, użytkownik wybrał Sonnet)
+        # zwalniają z reguły dostawców planu; recenzent nadal musi być innym modelem niż autor.
+        transferred = any((st.step_decisions.get(name) or {}).get("choice") in ("transfer", "change-executor") and
                           (st.steps.get(name) or {}).get("ticket") == ticket for name in st.step_decisions)
-        if reviewer.tool != expected["program"] or reviewer.model != expected["model"] or \
-                reviewer.provider != expected["provider"] or reviewer.effort != expected["effort"] or \
-                (reviewer.route.url if reviewer.route else "") != expected["routeUrl"] or \
-                (reviewer.route.kind if reviewer.route else "") != expected["routeKind"] or \
-                (reviewer.route.token_file if reviewer.route else "") != expected["routeTokenFile"] or \
-                reviewer.model.lower() == (source.get("model") or "").lower() or \
-                reviewer.local != (source.get("provider") == "local") or \
-                (assigned.get("preferredProvider") == "mixed" and
-                 reviewer.provider == source.get("provider")) or \
-                (not transferred and assigned.get("preferredProvider") != "mixed" and
-                 reviewer.provider != source.get("provider")):
-            raise FlowError("changed-reviewer", f"{card}: katalog zmienił recenzenta od startu ticketu")
+        if reviewer_changed(reviewer, expected, source, assigned, transferred) and \
+                not any(e.get("type") == "review.reviewer-note" and e.get("ticket") == ticket and
+                        e.get("round") == round_no for e in self.journal.read(card)):
+            # 03.11: niezależny recenzent to rekomendacja planu, nie blokada — karta stała na „katalog zmienił
+            # recenzenta”, a użytkownik nie miał czego wybrać. Review rusza, w historii zostaje notka.
+            self.journal.append(card, "review.reviewer-note", ticket=ticket, round=round_no,
+                                reviewer=reviewer_name, author=source.get("executor") or source.get("model") or "")
         path = info["worktree"]
         try:
             tip = self.git.clean_tip(project.repo, info["branch"], path)
@@ -2562,12 +2583,17 @@ class FlowEngine(PlanEditing):
                        s.get("kind") in ("ticket", "fix")), None)
         if author is None:
             raise FlowError("no-executor", f"{card}: nie ma kroku autora do poprawienia")
+        round_no = int(review_step.get("round") or 1)
+        escalate = round_no >= ESCALATE_FIX_ROUND and bool(review_step.get("executor"))
         try:
-            executor = execution.resolve(author.get("executor") or assigned.get("executor") or "", catalog,
+            executor = execution.resolve((review_step.get("executor") if escalate else None) or
+                                         author.get("executor") or assigned.get("executor") or "", catalog,
                                          config=cfg, probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if executor.tool != (author.get("program") or assigned.get("program")) or \
+        if escalate:
+            pass        # 03.11: po dwóch nieudanych rundach poprawki przejmuje recenzent, który zna uwagi
+        elif executor.tool != (author.get("program") or assigned.get("program")) or \
                 executor.model != (author.get("model") or assigned.get("model")) or \
                 executor.provider != (author.get("provider") or assigned.get("provider")) or \
                 executor.effort != author.get("effort", assigned.get("executorEffort", "")) or \
@@ -2575,7 +2601,6 @@ class FlowEngine(PlanEditing):
                 (executor.route.kind if executor.route else "") != author.get("routeKind", assigned.get("executorRouteKind", "")) or \
                 (executor.route.token_file if executor.route else "") != author.get("routeTokenFile", assigned.get("executorRouteTokenFile", "")):
             raise FlowError("changed-executor", f"{card}: katalog zmienił wykonawcę poprawek")
-        round_no = int(review_step.get("round") or 1)
         step_id = self._next_step_id(card, ticket, st)
         out = info["worktree"] + f".fix-{round_no}.step/out"
         title, description = self._ticket_text(card, st, ticket, item)
@@ -3309,6 +3334,13 @@ class FlowEngine(PlanEditing):
         self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
                             command=started.get("command") or "", exit=code, tail=tail)
         return {**decision, "answer": f"Kod wyjścia: {code}\nKoniec wyniku:\n{tail}"}
+
+    def _review_rounds(self) -> int:
+        """Po tylu rundach REQUEST_CHANGES Tide pyta użytkownika (domyślnie 6; 03.11: po 3 karty stały co chwilę)."""
+        try:
+            return max(1, min(20, int(self._settings_data().get("reviewRoundsBeforeQuestion", REVIEW_ROUNDS))))
+        except (TypeError, ValueError):
+            return REVIEW_ROUNDS
 
     def _auto_consent(self) -> bool:
         """Automatyczne zgody (domyślnie włączone); `autoConsent: false` w ustawieniach przepływu je wyłącza."""

@@ -1,5 +1,6 @@
 """Decyzje użytkownika po kroku w tle i ponowienia na prawdziwych atrapach procesu."""
 import json
+import unittest
 import os
 from unittest import mock
 
@@ -406,3 +407,30 @@ class StepDecisionTest(FlowInProcess):
         self.assertEqual([s["provider"] for s in self.of(card_id, "step.started")], ["local", "local"])
         self.assertEqual([e["reason"] for e in self.of(card_id, "step.finished")],
                          ["awaria testowa", "local-unavailable"])
+
+
+class ReviewerRuleTest(unittest.TestCase):
+    def test_manual_executor_change_releases_provider_rule_but_not_model_rule(self):
+        # 03.11, K-16/LEGAL-66: Codex padł, użytkownik wybrał Sonnet, poprawki zrobił Opus — karta stała na
+        # „katalog zmienił recenzenta”, a użytkownik nie miał czego wybrać.
+        from types import SimpleNamespace
+        from tide_daemon.cardflow.engine import reviewer_changed
+        sonnet = SimpleNamespace(tool="claude", model="sonnet", provider="anthropic", effort="", route=None, local=False)
+        expected = {"program": "claude", "model": "sonnet", "provider": "anthropic", "effort": "",
+                    "routeUrl": "", "routeKind": "", "routeTokenFile": ""}
+        mixed = {"preferredProvider": "mixed"}
+        self.assertTrue(reviewer_changed(sonnet, expected, {"model": "opus", "provider": "anthropic"}, mixed, False))
+        self.assertFalse(reviewer_changed(sonnet, expected, {"model": "opus", "provider": "anthropic"}, mixed, True))
+        self.assertTrue(reviewer_changed(sonnet, expected, {"model": "sonnet", "provider": "anthropic"}, mixed, True),
+                        "ten sam model co autor jest odnotowany (notka), ale nie blokuje review")
+
+
+class ReviewRoundsTest(FlowInProcess):
+    def test_default_rounds_before_question_and_escalation(self):
+        # 03.11: po 3 rundach karta stawała i czekała na „Ponów poprawki”; teraz domyślnie 6, a od 3. rundy
+        # poprawki robi wykonawca recenzji.
+        from tide_daemon.cardflow import engine as engine_mod
+        with open(self.settings, "w", encoding="utf-8") as fh:
+            json.dump({"stepGuardMinutes": 15.0}, fh)
+        self.assertEqual(self.flow.engine._review_rounds(), engine_mod.REVIEW_ROUNDS)
+        self.assertEqual((engine_mod.REVIEW_ROUNDS, engine_mod.ESCALATE_FIX_ROUND), (6, 3))
