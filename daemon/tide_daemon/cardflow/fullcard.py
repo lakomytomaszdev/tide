@@ -56,7 +56,8 @@ def enrich(st: FlowState, out: dict) -> dict:
         ticket["executor"] = assigned.get("executor") or row.get("executor") or ""
         ticket["reviewer"] = override.get("reviewer") or assigned.get("reviewer") or row.get("reviewer") or ""
         ticket.update(ticket_status(st, ticket))
-    flow["running"] = running_steps(flow.get("steps") or [], st)
+    from .caretaker import running_entries
+    flow["running"] = running_steps(flow.get("steps") or [], st) + running_entries(st)
     flow["history"] = history.build(st, flow.get("steps") or [])
     # Skutek ręcznego zakończenia (Gotowe / Archiwum → `_complete_manual_finish`): zatrzymane kroki i odrzucone tickety.
     flow["finish"] = {"steps": len(flow["running"]),
@@ -338,6 +339,8 @@ def ticket_status(st: FlowState, ticket: dict) -> dict:
         return status("review")
     if done.get("result") == "error" and int(latest.get("attempt") or 0) == 0:
         return status("running", "ponawia po błędzie")
+    if latest.get("step") in st.caretaking:
+        return status("running", "sprawdza opiekun")
     return status("waiting")
 
 

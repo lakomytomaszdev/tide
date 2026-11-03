@@ -426,7 +426,7 @@ class StepDecisionTest(FlowInProcess):
         self.wait_column(card_id, "review")
         steps = self.of(card_id, "step.started")
         self.assertEqual([(s["kind"], s["executor"]) for s in steps],
-                         [("ticket", "Sonnet"), ("ticket", "Sonnet"), ("ticket", "Haiku"),
+                         [("ticket", "Sonnet"), ("ticket", "Sonnet"), ("caretaker", "Opus"), ("ticket", "Haiku"),
                           ("review", "Opus"), ("fix", "Haiku"), ("review", "Opus"),
                           ("close", "Sonnet")])
 
@@ -439,7 +439,7 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(self.decide(card_id, choice="change-executor", executor="Haiku")["ok"])
         self.wait_column(card_id, "review")
         self.assertEqual([(s["kind"], s["executor"]) for s in self.of(card_id, "step.started")],
-                         [("ticket", "Sonnet"), ("review", "Opus"), ("review", "Opus"),
+                         [("ticket", "Sonnet"), ("review", "Opus"), ("review", "Opus"), ("caretaker", "Opus"),
                           ("review", "Haiku"), ("fix", "Sonnet"), ("review", "Haiku"),
                           ("close", "Sonnet")])
 
@@ -466,7 +466,8 @@ class StepDecisionTest(FlowInProcess):
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "error")
         self.assertTrue(card["derived"]["flow"]["stalledSince"])
         self.assertIn("od ", card["derived"]["note"])
-        self.assertEqual([e["reason"] for e in self.of(card_id, "step.finished")],
+        tickets = {s["step"] for s in self.of(card_id, "step.started") if s["kind"] == "ticket"}
+        self.assertEqual([e["reason"] for e in self.of(card_id, "step.finished") if e["step"] in tickets],
                          ["no-progress", "no-progress"])
 
     def test_local_offline_on_retry_waits_without_cloud_fallback(self):

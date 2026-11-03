@@ -3,7 +3,7 @@ import unittest
 from tide_daemon.cardflow import labels
 
 ALL_KINDS = ("planning", "plan-import", "plan-fix", "plan-review", "plan-revise", "plan-amend",
-             "ticket", "review", "fix", "conflict", "close", "interactive")
+             "ticket", "review", "fix", "conflict", "close", "interactive", "caretaker")
 ALL_RESULTS = ("done", "question", "denied", "error", "stopped")
 
 

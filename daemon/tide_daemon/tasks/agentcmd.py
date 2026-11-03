@@ -152,6 +152,9 @@ class Step:
     chrome_bin: str = ""           # Chromium Playwrighta tylko do odczytu, jako CHROME_BIN (Karma, 03.11)
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
     codex_mcp_skip: tuple = ()      # serwery, których wyłączenie przez `-c` psuje konfigurację Codexa (03.11)
+    # Krok opiekuna karty (PT-143): żadnych poleceń (Bash zabroniony, bez listy dozwolonych), zapis wyłącznie do
+    # `<krok>/out` — Claude: zakaz edycji worktree i repozytorium, Codex: katalog roboczy i jedyny zapisywalny `out`.
+    write_out_only: bool = False
 
 
 @dataclass
@@ -407,16 +410,23 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
             "--add-dir", out]
     if step.permission_mode:
         argv += ["--permission-mode", step.permission_mode]
-    if step.allowed_tools:
-        argv += ["--allowedTools", *step.allowed_tools]
-    if step.disallowed_tools:
-        argv += ["--disallowedTools", *step.disallowed_tools]
+    allowed, disallowed = step.allowed_tools, step.disallowed_tools
+    if step.write_out_only:
+        # Ścieżka bezwzględna w regule Claude CLI zaczyna się od `//`.
+        allowed = ()
+        disallowed = ("Bash", f"Edit(/{os.path.normpath(step.worktree)}/**)",
+                      f"Edit(/{os.path.normpath(step.repo)}/**)")
+    if allowed:
+        argv += ["--allowedTools", *allowed]
+    if disallowed:
+        argv += ["--disallowedTools", *disallowed]
     return argv, {settings_path: json.dumps(settings, indent=2, ensure_ascii=False) + "\n"}, secret
 
 
 def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
     git = os.path.join(step.repo, ".git")
-    roots = [git_dir, *(os.path.join(git, name) for name in CODEX_GIT_DIRS), out]
+    roots = [out] if step.write_out_only else [git_dir, *(os.path.join(git, name) for name in CODEX_GIT_DIRS), out]
+    cwd = out if step.write_out_only else step.worktree
     secret = {"secret_env": {}, "token_files": []}
     if step.local is not None:
         opts = local_mod.options("codex", step.local)
@@ -430,7 +440,7 @@ def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
            for arg in ("-c", f"mcp_servers.{_toml_key(name)}.enabled=false")]
     # Opcje przed podpoleceniem: `codex exec resume <id> --cd …` kończy się „unexpected argument” (sprawdzone).
     effort = ["-c", f'model_reasoning_effort="{step.effort}"'] if step.effort else []
-    argv = [step.binary, "exec", *model, *effort, "--json", "--cd", step.worktree, "--sandbox", "workspace-write",
+    argv = [step.binary, "exec", *model, *effort, "--json", "--cd", cwd, "--sandbox", "workspace-write",
             "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots, ensure_ascii=False),
             "-c", 'approval_policy="never"', *mcp,
             *(["resume", step.session_id] if step.resume else []), "-"]

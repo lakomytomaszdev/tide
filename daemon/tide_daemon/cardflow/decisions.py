@@ -40,6 +40,7 @@ Kolejność: najpierw decyzje karty (plan, YouTrack, kroki bez ticketu), potem t
 """
 from __future__ import annotations
 
+from . import caretaker
 from . import faults
 from . import findings as review_findings
 from .labels import kind_label
@@ -93,8 +94,11 @@ def build_decisions(st: FlowState) -> list[dict]:
         found.append((group, int(seq or 0), decision))
 
     for name in _latest_steps(st):
+        if caretaker.hidden(st, name):
+            continue                    # opiekun karty sprawdza ten krok — decyzja wróci z jego wynikiem (PT-143)
         made = _step_decision(st, name)
         if made:
+            made = caretaker.annotate(st, made)
             step = st.steps.get(name) or {}
             add(0 if not step.get("ticket") else 1, (st.finished.get(name) or {}).get("seq"), made)
     for (ticket, round_no), question in st.review_questions.items():
@@ -121,6 +125,11 @@ def _latest_steps(st: FlowState) -> list[str]:
     for name, item in st.steps.items():
         latest[item.get("ticket") or ""] = name
     return list(latest.values())
+
+
+def step_decision(st: FlowState, name: str) -> dict | None:
+    """Decyzja kroku bez ukrywania przez opiekuna i bez jego pola (opis problemu do kartki opiekuna)."""
+    return _step_decision(st, name)
 
 
 def _step_decision(st: FlowState, name: str) -> dict | None:
@@ -401,6 +410,9 @@ def _error(st, name, step, done) -> dict:
                  "hint": "Co zauważyłeś? Np. „po aktualizacji Tide to samo przy review ticketów”.",
                  "effect": f"Opis trafi do karty z błędem w Backlogu {faults.REPORT_PROJECT} razem z wycinkiem "
                            "dziennika kroku (bez sekretów); krok ruszy ponownie."}
+    note = caretaker.unavailable_note(st, name)
+    if note:
+        why = (why or GENERIC["error"][1]) + f" ({note[:1].upper()}{note[1:]}.)"
     technical = _step_technical(step, done)
     technical.update(attempts=attempts, stalledSince=done.get("stalledSince") or "", fault=fault,
                      faultCause=cause, faultLabel=faults.FAULT_LABELS.get(fault, fault),

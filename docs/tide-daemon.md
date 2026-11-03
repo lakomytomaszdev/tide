@@ -1734,6 +1734,109 @@ Pola w `derived.flow`:
 „Przenieś na Codex” w pełnej karcie wysyła istniejące `ResolveCardStep` (`choice: transfer`, `step`, `executor`)
 po jednym razie na zatrzymany krok; koszt jest widoczny nad przyciskiem przed kliknięciem.
 
+## Opiekun karty (K-37)
+
+Opiekun karty to krok w tle rodzaju `caretaker` („opiekun”), który Tide uruchamia sam przy problemie karty, zanim
+zapyta użytkownika (PT-143). Cały opiekun bez Qt i bez dysku jest w `daemon/tide_daemon/cardflow/caretaker.py`:
+publiczne `problems()`, `owned()`, `brief()`, `parse_result()`, `problem_id()` i rejestry `TRIGGERS`, `ACTIONS`,
+`HISTORY_LABELS`, `BRIEF_SECTIONS`. Kolejne tickety tylko dopisują wpisy w rejestrach i własne `####` w podsekcjach
+poniżej. Silnik ma jedno wejście: `FlowEngine._caretake(card, st)` na końcu `_tick_card` — po istniejących
+automatach (ponowienie, mocniejszy wykonawca, odpowiedź o środowisko, auto-odmowa) i przed `_queue_notices`;
+krok opiekuna kończy się istniejącym `_poll`/`_finish` (gałąź `_finish_caretaker`).
+
+Przebieg: wyzwalacz daje problem → `caretaker.started` (`problem`, `key` = `caretaker:<problem>:<n>`, `n`, `step`,
+`target` — krok problemu, `root`, `ticket`, `trigger`, `watermark` — ostatni `seq` dziennika w chwili startu) →
+istniejąca para „zamiar → wynik” `step-start` i `step.started` z `kind: caretaker` → wynik opiekuna w
+`<krok>/out/result.json` → `step.finished` z `outcome` (wynik `parse_result`) → akcja z rejestru albo nieudane
+działanie → `caretaker.escalated`. Schemat `caretaker.action` (`problem, step, target, ticket, action, params, ok,
+error`) jest zdefiniowany na wykonane akcje inne niż oddanie decyzji; zapisują go kolejne tickety.
+
+Stan i widok:
+
+- Kroki opiekuna nie są w `FlowState.steps` (osobno `caretakers`, `caretaker_runs`, `caretaker_outcomes`,
+  `caretaker_escalations`, `caretaking`), więc żaden wyzwalacz, „ostatni krok ticketu” ani decyzja ich nie widzą —
+  bez rekursji. `running()` je obejmuje (sloty dostawcy, zatrzymanie przy Gotowe/Archiwum, `busy_reason`).
+- Dopóki opiekun pracuje, decyzja problemu jest ukryta z `flow.decisions[]`, karta stoi w „W toku” ze znacznikiem
+  „opiekun sprawdza <krok>”, a `_queue_notices` nie powiadamia (także w przebiegu, w którym krok skończył się błędem,
+  zanim opiekun wystartował). `ResolveCardStep` dla tego ticketu odmawia (`no-step-question`, trwa krok tego ticketu).
+- `derived.flow.caretaker` — `{enabled, working[], escalated[]}`: `working[]` to `{problem, step, target, ticket,
+  label, startedTs}`, `escalated[]` — problemy oddane użytkownikowi, których decyzja czeka: `{problem, step,
+  target, ticket, summary, recommendation, optionId, failed, error}`. `flow.running[]` ma krok opiekuna z
+  `kind: caretaker`, `kindLabel: "opiekun"` (`labels.KIND_LABELS`), `canEnter: false`.
+- Oddana decyzja błędu ma pole `caretaker{summary, recommendation, tried[], optionId, failed}` (`tried[]` —
+  nieudane działania od ostatniego zamknięcia: `{step, action, ok, text}`); możliwość z `optionId` jest polecona
+  i pierwsza, żadna nie jest wybrana (D10). Renderowanie w oknie decyzji to #15. Eskalacja powiadamia raz
+  (zwykłe `step.notice` kroku problemu).
+- Historia (`flow.history[]`, rodzaj `caretaker`, `actor: "caretaker"`): „Opiekun: oddaje decyzję — <streszczenie>”
+  i „Opiekun: nie udało się wykonać działania „<akcja>” — <błąd>”.
+
+**Id problemu i liczenie działań.** `problem_id` jest jedynym miejscem budowy id (bez `seq`): wyzwalacz z krokiem —
+`<wyzwalacz>:<korzeń łańcucha parentStep>` (`error:K-37-PT-7-1`), powtórzenie przyczyny `repeat:<ticket>:<przyczyna>`,
+bez kroku `<wyzwalacz>:<etap>` (`flow-error:<etap>`, `stalled:card`), czekająca decyzja `waiting:<id decyzji>`.
+Jeden łańcuch kroków ma naraz najwyżej jeden problem — kolejny wyzwalacz na nim dołącza (`triggers[]`). `owned()`
+jest jedynym liczeniem: kroki opiekuna z danym id od ostatniego zamknięcia (decyzja użytkownika bez pola `caretaker`
+albo krok łańcucha zakończony `done`); zwraca `count`, `runs`, `next` (numer do klucza, nigdy się nie powtarza),
+`open` i `handed`. Kolejne błędy ponowionego kroku to ten sam problem; decyzja użytkownika zeruje licznik bez
+zmiany id.
+
+**Restart.** `caretaker.started` bez `step.started`: wynik `step-start` jest — `step.started` dopisuje
+`_recover_started_steps`; zamiar bez wyniku rozstrzyga `_reconcile`; bez zamiaru — `_caretake` startuje krok z tym
+samym id. Nieudany start (także „przerwane restartem”) jest nieudanym działaniem. Krok nigdy nie rusza drugi raz.
+
+**Kiedy opiekuna nie ma** (dzisiejsza decyzja bez kroku opiekuna): karta wstrzymana, w Backlogu, Gotowych albo
+Archiwum, błąd `login`, limit dostawcy, wina `user` i karta „Tylko lokalnie” (`preferredProvider: local`; decyzja
+z dopiskiem „opiekun niedostępny dla pracy tylko lokalnej”, `flow.caretaker.enabled: false`).
+
+### Wyzwalacze
+
+`TRIGGERS` to lista funkcji `(st) -> [kandydat]`, kandydat `{trigger, step?, ticket?, stage?, cause?, decision?}`.
+
+#### Błąd kroku ticketu (`error`, PT-143)
+
+Ostatni krok ticketu (`ticket`, `fix`, `review`, `conflict`) zakończony `error` po automatycznym ponowieniu
+(`attempt ≥ 1`) i ewentualnym przejściu na mocniejszego wykonawcę, bez decyzji, bez kroku-następcy, bez
+odrzucenia ticketu; bez `login`, limitu dostawcy i winy `user`. Id: `error:<korzeń łańcucha>`.
+
+### Akcje
+
+`ACTIONS` to `nazwa → Action(kinds, params, apply, description)`; `kinds` — wyzwalacze, przy których akcja jest
+dozwolona (`"*"` — każdy), `params` — pola wyniku (`Param(required, minimum, maximum, hint, choices)`), `apply(port,
+problem, params)` działa przez port silnika (`engine._CaretakerPort`). Walidacja jest w Tide (`parse_result`), nie
+tylko w kartce: nieznana nazwa (`approve-plan`, `allow`, `merge`, `push`, `reject`, …) → `bad-caretaker-action`;
+brak pliku albo zły format → `bad-caretaker-result`; `result` inny niż `done` → nieudane działanie (`question` niesie
+treść pytania jako streszczenie, jak `escalate`; inne — `caretaker-result`); zatrzymany albo niewystartowany krok —
+`caretaker-stopped`, `caretaker-not-started`. Długości: instrukcja/odpowiedź/uwaga do 4000 znaków, powód 1–600,
+streszczenie do 1200. W PT-143 każde nieudane działanie od razu oddaje problem użytkownikowi (limit i ponawianie
+dokłada #8).
+
+#### `escalate` (PT-143)
+
+Oddaje decyzję użytkownikowi: `summary` (wymagane, 1–1200 znaków), `recommendation` (wymagane, 1–600), `optionId`
+(opcjonalne, id możliwości decyzji problemu). Jedyna akcja w rejestrze po PT-143 — nie ma akcji zatwierdzenia planu,
+zgody, uruchomienia poza piaskownicą, scalenia, push ani odrzucenia ticketu.
+
+### Kontekst
+
+Kartka (`brief`) zaczyna się od „Jesteś opiekunem karty <K-…> w Tide.” i zawiera: przesłankę z `BRIEF_SECTIONS`
+według wyzwalacza (zamaskowaną `faults.mask`), listę dozwolonych akcji z polami, zakazy i ścieżkę wyniku
+(„Plik wyniku: …/out/result.json”). Krok opiekuna pracuje w worktree kroku problemu (tylko do odczytu) i ma osobny
+katalog `<worktree>.caretaker-<krok>.step`.
+
+#### Opis problemu z decyzji (PT-143, do #11)
+
+Sekcja `error`: krok, wykonawca, próba, „co się stało” i „dlaczego” z decyzji błędu, powód zakończenia kroku i czyja
+wina według dziennika kroku — bez dziennika kroku i bez innych plików.
+
+### Ustawienia
+
+#### Na stałe (PT-143, do #9)
+
+Opiekun jest włączony na stałe, wykonawca to najmocniejsza klasa preferowanego dostawcy karty (w trybie mieszanym
+— dostawcy wykonawcy karty; domyślnie Opus albo Codex mocny). Piaskownica do #16: krok opiekuna nie ma żadnych
+dozwolonych poleceń (`agentcmd.Step.write_out_only`: Claude — `--disallowedTools Bash` i zakaz edycji worktree
+i repozytorium, bez `--allowedTools`; Codex — katalog roboczy i jedyny zapisywalny katalog to `<krok>/out`), zapis
+tylko do własnego `out` (`allowWrite` piaskownicy kroku).
+
 ## Docker
 
 Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Docker” w oknie Tide (`apps/docker`) i kafelka `org.tide.docker` w docku (`widgets/docker`). Usługa rozmawia z Docker Engine API przez lokalny socket (sama biblioteka standardowa, bez `docker` CLI i bez `docker compose`). Socket z `$DOCKER_HOST` (`unix:///ścieżka`), domyślnie `/var/run/docker.sock`; `tcp://`, `ssh://` i inne → stan `unsupported`, bez łączenia się przez sieć.

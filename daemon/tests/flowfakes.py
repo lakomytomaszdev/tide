@@ -5,6 +5,9 @@
   „ATRAPA: …” w opisie karty: `gotowe` (plik, commit, plik wyniku i notka), `bez-wyniku` (commit bez pliku wyniku),
   `czekaj` (plik bez commita i sen — żyje, ale nic nie robi), `powoli N` (N sekund dopisywania, potem jak `gotowe`),
   `pytanie` (wynik „pytanie”), `pytanie-opcje` (pytanie z poprawnymi `options[]`), `pytanie-zle-opcje` (kilka poleconych). Ścieżkę pliku wyniku bierze z kartki (linia „Plik wyniku: …”), nie z ustawień.
+  Kartkę opiekuna karty (PT-143) rozpoznaje po pierwszej linii „Jesteś opiekunem karty”; co odpowiada, mówi
+  „ATRAPA-OPIEKUN: …” w opisie problemu (`escalate` — domyślnie, `powoli` — 6 s pracy i escalate,
+  `akcja-<nazwa>`, `bez-wyniku`, `zly-format`, `pytanie`, `blad`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …”.
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
 - `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
@@ -42,6 +45,32 @@ mode = re.search(r"ATRAPA: ([a-z-]+)(?: (\d+))?", prompt)
 word, count = (mode.group(1), int(mode.group(2) or 0)) if mode else ("gotowe", 0)
 file_match = re.search(r"ATRAPA-PLIK: ([a-zA-Z0-9_-]+)", prompt)
 work = os.path.join(cwd, "ATRAPA-" + file_match.group(1) + ".md" if file_match else "ATRAPA.md")
+
+if prompt.startswith("Jesteś opiekunem karty"):
+    # Krok opiekuna (PT-143): co zrobić mówi „ATRAPA-OPIEKUN: …” w opisie problemu (powód błędu kroku).
+    care = re.search(r"ATRAPA-OPIEKUN: ([a-z-]+)", prompt)
+    care = care.group(1) if care else "escalate"
+    if care == "powoli":            # opiekun pracuje kilka sekund (widok „W toku”, restart usługi), potem escalate
+        time.sleep(6)
+        care = "escalate"
+    data = None
+    if care == "zly-format":
+        with open(result, "w", encoding="utf-8") as fh:
+            fh.write("to nie jest JSON")
+    elif care == "pytanie":
+        data = {"result": "question", "question": "Czy ponowić krok z inną instrukcją?"}
+    elif care == "blad":
+        data = {"result": "error", "reason": "opiekun nie wie, co zrobić"}
+    elif care.startswith("akcja-"):
+        data = {"result": "done", "action": care[len("akcja-"):], "summary": "Sprawdziłem.", "recommendation": "Zrób to."}
+    elif care == "escalate":
+        data = {"result": "done", "action": "escalate", "summary": "Krok dwa razy padł na tym samym teście.",
+                "recommendation": "Zmień wykonawcę na mocniejszy model.", "optionId": "change-executor"}
+    if data is not None:
+        with open(result, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "session_id": sid}))
+    sys.exit(0)
 
 if prompt.startswith("Popraw propozycję planu karty"):
     if "ATRAPA: amend-question" in prompt and "Odpowiedź użytkownika:" not in prompt:
@@ -283,6 +312,13 @@ elif word in ("blad-dwa", "blad-zmien"):
         finish("done")
     else:
         finish("error", reason="awaria testowa")
+elif word == "blad-opiekun":
+    # PT-143: błąd po każdej próbie z powodem z linii „ATRAPA-POWOD: …” (tam też polecenie dla atrapy opiekuna).
+    if "Użytkownik polecił ponowić" in prompt or "Użytkownik wybrał innego wykonawcę" in prompt:
+        finish("done")
+    else:
+        reason = re.search(r"ATRAPA-POWOD: (.+)", prompt)
+        finish("error", reason=reason.group(1).strip() if reason else "awaria testowa")
 elif word == "srodowisko":
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "question",

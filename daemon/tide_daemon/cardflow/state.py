@@ -89,9 +89,17 @@ class FlowState:
     rejected: set = field(default_factory=set)
     flow_error: str = ""
     last_seq: int = 0
+    # Opiekun karty (PT-143): kroki `caretaker` nie są krokami ticketów — osobno od `steps`, żeby żaden wyzwalacz,
+    # „ostatni krok ticketu” ani decyzja ich nie widziały (bez rekursji). Ich `step.finished` trafia do `finished`.
+    caretakers: dict = field(default_factory=dict)            # krok opiekuna → step.started (kind caretaker)
+    caretaker_runs: dict = field(default_factory=dict)        # krok opiekuna → caretaker.started
+    caretaker_outcomes: dict = field(default_factory=dict)    # krok opiekuna → caretaker.escalated / caretaker.action
+    caretaker_escalations: dict = field(default_factory=dict)  # krok problemu → ostatnie caretaker.escalated
+    caretaking: dict = field(default_factory=dict)            # krok problemu → krok opiekuna, który nad nim pracuje
 
     def running(self) -> list[dict]:
-        return [s for name, s in self.steps.items() if name not in self.finished]
+        return [s for name, s in self.steps.items() if name not in self.finished] + \
+            [s for name, s in self.caretakers.items() if name not in self.finished]
 
     def open_consoles(self) -> list[dict]:
         """Karty Konsoli jeszcze otwarte, również po zapisaniu pliku wyniku."""
@@ -206,6 +214,20 @@ def fold(events: list[dict]) -> FlowState:
             st.limits = {}
             st.waiting = {}
             st.inputs = {}
+            st.caretaking = {}
+            st.caretaker_escalations = {}
+        elif kind == "step.started" and e.get("kind") == "caretaker":
+            st.waiting.pop((e.get("ticket"), "caretaker"), None)
+            st.caretakers[e.get("step")] = e
+        elif kind == "caretaker.started":
+            st.caretaker_runs[e.get("step")] = e
+            st.caretaking[e.get("target")] = e.get("step")
+        elif kind in ("caretaker.escalated", "caretaker.action"):
+            st.caretaker_outcomes[e.get("step")] = e
+            if st.caretaking.get(e.get("target")) == e.get("step"):
+                st.caretaking.pop(e.get("target"), None)
+            if kind == "caretaker.escalated":
+                st.caretaker_escalations[e.get("target")] = e
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
         elif kind == 'youtrack.reset':
@@ -404,7 +426,8 @@ def attention_step(st: FlowState, user_only: bool = False) -> str:
         latest[item.get("ticket")] = name
     for name in latest.values():
         item, done = st.steps[name], st.finished.get(name) or {}
-        if item.get("ticket") in st.rejected or name in st.step_decisions or name in st.superseded:
+        if item.get("ticket") in st.rejected or name in st.step_decisions or name in st.superseded or \
+                name in st.caretaking:      # nad krokiem pracuje opiekun karty (PT-143)
             continue
         if user_only and _limit_wait_only(st, name):
             continue
@@ -569,6 +592,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                         "mainMerged": bool(st.main_merged),
                         "waiting": [{"ticket": ticket, "kind": kind, "reason": item["reason"]}
                                     for (ticket, kind), item in st.waiting.items()]})
+    from .caretaker import view as caretaker_view
+    out["flow"]["caretaker"] = caretaker_view(st)
     out['flow']['trackerQueue'] = [
         {key: e.get(key) for key in ('action', 'key', 'after', 'error')} for e in st.tracker_retries.values()]
     tracker_reason = next(reversed(list(st.tracker_retries.values())), {}).get('error') or ''
@@ -719,6 +744,10 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     failed = [r for (a, _k), r in st.results.items() if not r.get("ok") and a != "merge"]
     if st.waiting and not st.running() and not attention:
         return _fill(out, "progress", f"{ident} · {next(reversed(st.waiting.values()))['reason']}")
+    caring = out["flow"]["caretaker"]["working"]
+    if caring and not attention:
+        # Opiekun sprawdza problem (PT-143): decyzja jest ukryta, karta „W toku” bez powiadomienia.
+        return _fill(out, "progress", caring[0]["label"])
     if st.running() and not attention:
         work = ("krok w Konsoli" if step.get("mode") == "interactive" else
                 "review" if step.get("kind") == "review" else "poprawki" if step.get("kind") == "fix" else "krok w tle")

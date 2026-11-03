@@ -309,6 +309,22 @@ class BackgroundCodexTest(BackgroundBase):
         self.assertNotIn("CLAUDE_CODE_TMPDIR", cmd.env)
         self.assertNotIn(git, roots)
 
+    def test_caretaker_step_writes_only_to_out_and_runs_no_commands(self):
+        """Krok opiekuna karty (PT-143): Codex pracuje w `out` i tylko tam pisze; Claude bez poleceń i bez edycji
+        worktree ani repozytorium, mimo listy dozwolonych poleceń projektu."""
+        out = os.path.join(self.step_dir, "out")
+        codex = agentcmd.background(self.step("codex", model="gpt-5-codex", codex_mcp=(), write_out_only=True))
+        self.assertEqual(codex.argv[codex.argv.index("--cd") + 1], out)
+        self.assertIn("sandbox_workspace_write.writable_roots=" + json.dumps([out]), codex.argv)
+        claude = agentcmd.background(self.step("claude", allowed_tools=("Bash(git status *)",),
+                                               disallowed_tools=("Bash(make install)",), write_out_only=True))
+        self.assertNotIn("--allowedTools", claude.argv)
+        banned = claude.argv[claude.argv.index("--disallowedTools") + 1:]
+        self.assertEqual(banned, ["Bash", f"Edit(/{os.path.normpath(self.worktree)}/**)",
+                                  f"Edit(/{os.path.normpath(self.repo)}/**)"])
+        settings = json.loads(next(text for path, text in claude.files.items() if path.endswith("settings.json")))
+        self.assertEqual(settings["sandbox"]["filesystem"]["allowWrite"], [out])
+
     def test_codex_local_model_options_come_right_after_exec(self):
         agent = local.LocalAgent("local", "http://127.0.0.1:11434", "ollama", "qwen3-coder:30b", 65536)
         cmd = agentcmd.background(self.step("codex", local=agent, codex_mcp=()))
