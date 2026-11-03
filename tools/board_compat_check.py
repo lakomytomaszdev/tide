@@ -15,8 +15,10 @@ projekt i repozytorium, projekty dodatkowe, `check` i komunikat blokady. Wyjści
 podglądów zlecenia kart z Backlogu bez błędu i tabela różnic (karta, pole, przed, po) albo „0 różnic”.
 Kod wyjścia: 0 — wszystkie karty wczytane (różnice są wynikiem, nie błędem), 1 — błąd wczytania tablicy albo
 podglądu zlecenia karty z Backlogu, 2 — użycie.
-Stan z żywych sesji agentów nie jest liczony (tablica z kopii nie ma sesji): karty dawnego przepływu liczą się
-z planu w repozytorium i z gałęzi, karty przepływu K-28 — z dziennika.
+Stan z żywych sesji agentów nie jest liczony (tablica z kopii nie ma sesji ani dzienników koordynatorów): karty
+dawnego przepływu liczą się z tablicy zbudowanej z planu w repozytorium (`plan_boards`, tym samym
+`coordination.board.build` co w usłudze, ale bez podagentów), karty przepływu K-28 — z dziennika. Commit kodu
+„przed” trafia na stderr; gdy jest równy HEAD, narzędzie ostrzega, że porównuje kod sam ze sobą.
 """
 import argparse
 import io
@@ -73,7 +75,7 @@ def worker(tree: str, board: str, out_path: str) -> int:
     workdir = os.getcwd()
     store = BoardStore(board)
     journal = Journal(board, mirror=os.path.join(workdir, "no-mirror"))  # bez kopii usługi: dziennik z tablicy
-    deriver = CardDeriver(clock=lambda: 0.0)
+    deriver = CardDeriver(clock=lambda: 0.0, boards_source=lambda: plan_boards(store))
 
     def derive(card):
         if journal.has(card["id"]):
@@ -118,6 +120,27 @@ def worker(tree: str, board: str, out_path: str) -> int:
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump({"cards": cards, "problems": problems}, fh, ensure_ascii=False)
     return 0
+
+
+def plan_boards(store) -> list:
+    """Tablice koordynatorów dawnych kart (jak `coordination.boards` w usłudze), liczone z planów w repozytoriach
+    projektów: dla karty z `session` albo planem — `coordination.board.build` na koordynatorze bez dziennika.
+    Tylko odczyt planów; stan żywej sesji i podagenci z dzienników nie są znani (tablica z kopii ich nie ma)."""
+    from tide_daemon.coordination import board as board_mod, plan as plan_mod
+    from tide_daemon.coordination.model import Coordinator
+    boards = []
+    for card in store.snapshot(repos=[], derive=lambda c: None).get("cards") or []:
+        sid, path = (card.get("session") or "").strip(), card.get("planPath") or ""
+        if card.get("column") == "archived" or not (sid or path):
+            continue
+        plan = plan_mod.read(path) if path and os.path.isfile(path) else None
+        if plan is None and not sid:
+            continue
+        coord = Coordinator(id=sid or f"plan:{card['id']}", tool="claude", session_id=sid, path="",
+                            cwd=card.get("repo") or "", branch=card.get("branch") or "")
+        boards.append(board_mod.build(coord, plan=plan, now=0.0, project=card.get("project") or "",
+                                      repo_path=card.get("repo") or "", cwd=coord.cwd, work_branch=coord.branch))
+    return boards
 
 
 def classify(card: dict, journal) -> str:
@@ -261,7 +284,14 @@ def main(argv: list[str]) -> int:
         if not before_tree:
             before_tree = os.path.join(scratch, "before-tree")
             os.makedirs(before_tree)
-            extract_ref(after_tree, args.before_ref or merge_base(after_tree), before_tree)
+            ref = args.before_ref or merge_base(after_tree)
+            head = subprocess.run(["git", "-C", after_tree, "rev-parse", "HEAD"], capture_output=True, text=True)
+            same = subprocess.run(["git", "-C", after_tree, "rev-parse", ref], capture_output=True, text=True)
+            print(f"Kod „przed”: {ref}", file=sys.stderr)
+            if head.stdout.strip() and head.stdout.strip() == same.stdout.strip():
+                print("UWAGA: kod „przed” to bieżący HEAD — porównanie kodu samego ze sobą; podaj --before-ref.",
+                      file=sys.stderr)
+            extract_ref(after_tree, ref, before_tree)
         result = report(compute(os.path.abspath(before_tree), board, scratch, "before"),
                         compute(after_tree, board, scratch, "after"))
     print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else render_text(result))

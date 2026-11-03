@@ -122,6 +122,13 @@ class SameCodeTest(BoardFixture):
                                              "projekty dodatkowe": 1, "dawny przepływ": 1, "inne": 1})
         self.assertEqual(result["loadErrors"], [])
 
+    def test_legacy_card_panel_is_computed_from_the_plan_not_empty(self):
+        scratch = os.path.join(self.base, "scratch")
+        os.makedirs(scratch)
+        done = self.tool.compute(self.tool.default_tree(), self.board, scratch, "after")
+        panel = done["cards"]["K-1"]["panel"]
+        self.assertEqual((panel["total"], panel["done"]), (2, 1))
+
     def test_backlog_cards_all_give_a_launch_preview(self):
         result = self.compare()
         self.assertEqual((result["backlog"], result["backlogBroken"]), (3, []))
