@@ -2119,6 +2119,99 @@ Stream to aktywność przypisana do wyglądu `stream` w `$XDG_CONFIG_HOME/tide/a
   stanu: usuwa je i oddaje Meta+B akcji, która ma go w domyślnych. Bezpieczniej jednak robić kopie w pracy.
 - **Wyłączenie:** `--no-stream-shortcuts`; pusty `$TIDE_KAMP` — naciśnięcia nic nie wołają (tak robią testy).
 
+## Pudełko
+
+Odizolowane środowisko projektu w kontenerze Incusa (karta K-38, projekt: `docs/card-box-design.md`, decyzje
+robocze: `docs/box-decisions.md`).
+
+### Instalacja
+
+Incusa, pulę, projekt i reguły sieci zakłada **wyłącznie** `scripts/box/install.sh` uruchamiany z sudo —
+usługa działa jako zwykły użytkownik i niczego z tej listy nie zmienia. `make install` motywu nie woła żadnego
+celu `box-*` (pilnuje tego test `scripts/tests/test_box_install.py`).
+
+```bash
+make box-state OUT=docs/box-prototype/host-before.txt   # migawka stanu hosta przed instalacją
+make box-install                                         # sudo pyta raz o hasło; potem bez pytań
+bash scripts/box/install.sh --dry-run                    # plan bez zmian (z sudo widzi cały stan Incusa)
+make box-uninstall                                       # cofnięcie (pyta, usuwa wszystkie pudełka)
+make box-state OUT=docs/box-prototype/host-after.txt
+diff docs/box-prototype/host-before.txt docs/box-prototype/host-after.txt   # pusty
+```
+
+`make box-install` przyjmuje `BOX_PROXY_PORT=18080` (port proxy Tide, ta sama wartość co `box.proxy-port`
+usługi; zmiana wymaga ponownego `make box-install`, bo reguły są statyczne) i `BOX_PROJECT_MODE=restricted|admin`.
+Kroki — każdy najpierw sprawdza stan, więc drugie uruchomienie nic nie zmienia i wypisuje „bez zmian”:
+
+1. **Symulacja apt** `apt-get -s install incus btrfs-progs` (plus `nftables`, gdy brak `nft`): odmowa, gdy lista
+   zawiera pakiet z `qt6`/`kf6`/`libkf`/`plasma` w nazwie (skrypt wypisuje te pakiety) albo gdy apt podnosi lub
+   usuwa zainstalowany pakiet — tego odinstalowanie by nie cofnęło. Pakiet `incus` z Ubuntu universe (6.0 LTS);
+   repozytorium Zabbly tylko jako osobny wariant z osobną zgodą (P-7). Incusa zainstalowanego wcześniej nie przez
+   ten skrypt nie przejmujemy.
+2. **Instalacja** tych samych pakietów; lista nowych pakietów (z symulacji) trafia do pliku stanu
+   `/var/lib/tide-box/install.state` przed instalacją, razem z grupami istniejącymi wcześniej i kopiami
+   `/etc/subuid`, `/etc/subgid`.
+3. **Preseed** `incus admin init --preseed`:
+   - **pula** btrfs `tide` w rzadkim pliku `/home/tide-incus-pool.img` (200 GiB, decyzja D8). Incus zakłada plik
+     pętli tylko w `/var/lib/incus/disks/tide.img`, więc skrypt robi tam dowiązanie do pliku na `/home` i po
+     preseedzie sprawdza, że plik jest na `/home`; istniejącego pliku bez puli nie formatuje;
+   - **mostek** `incusbr0`: IPv4 z NAT i DHCP (`ipv4.address: auto`), bez IPv6;
+   - profil `default`: dysk na puli `tide`, karta `eth0` w `incusbr0`.
+4. **Grupa**: użytkownik z `SUDO_USER` do grupy `incus` (dostęp przez `incus-user`, tylko do własnego projektu);
+   działa po ponownym zalogowaniu (usługa `tide-daemon` też potrzebuje nowej sesji).
+5. **Projekt ograniczony** `user-<uid>` — ten, którego używa `incus-user`; skrypt zakłada go sam, zanim zrobi to
+   `incus-user` (ten mógłby dać projektowi własny mostek bez naszych reguł): `restricted=true`,
+   `restricted.containers.nesting=allow` (Docker w pudełku), `restricted.devices.disk=allow` tylko pod katalogiem
+   domowym (`restricted.devices.disk.paths`), `restricted.idmap.uid/gid` użytkownika (uid 1000 w pudełku = 1000
+   na hoście), `restricted.networks.access=incusbr0`; własny profil `default` jak wyżej; `incus-user.socket`
+   włączony. `--project-mode admin` (grupa `incus-admin` = root hosta) skrypt przyjmuje tylko po próbie P-5
+   z PT-164 i z wierszem `tryb-admin` w `docs/box-decisions.md`.
+6. **nftables**: plik `/etc/tide-box/tide-box.nft` (treść: `scripts/box/files.sh rules <adres mostka> <port>`)
+   sprawdzony `nft -c`, potem wczytany `nft -f`.
+7. **Trwałość**: jednostka `tide-box-nft.service` wczytuje plik przy starcie (przed `network-pre.target`
+   i Incusem); drop-in `/etc/systemd/system/incus.service.d/tide-box.conf` daje `incus.service` `Requires=` na nią
+   — bez reguł Incus nie wstaje, a zatrzymanie jednostki zatrzymuje Incusa. Nie używamy `nftables.service`:
+   `/etc/nftables.conf` zaczyna od `flush ruleset` i skasowałby reguły Dockera i Incusa.
+
+Na koniec skrypt wypisuje raport: nowe pakiety z symulacji, `incus list`, `incus project show user-<uid>`
+i `nft list table inet tide-box`.
+
+**Reguły sieci — decyzja „nftables statyczne, polityka w proxy”.** Reguły są statyczne i zakłada je tylko
+skrypt z sudo; usługa nigdy nie modyfikuje nftables (bez sudoers i pomocnika z uprawnieniami, bez ACL sieciowych
+Incusa). Polityka per pudełko — lista domen, Ollama hosta — żyje w proxy Tide, które jako jedyne jest osiągalne
+z mostka. Podszycie się pudełka pod cudzy adres IP zatrzymuje filtrowanie NIC Incusa (PT-167), nie nftables.
+Tabela `inet tide-box` ma dwa nazwane łańcuchy bazowe:
+
+- `input` (hook input) i `forward` (hook forward), oba z priorytetem `filter + 10` — po łańcuchach tabeli
+  `incus` (priorytet `filter`), więc `accept` Incusa (DNS i DHCP jego dnsmasq, forward z NAT) nie wystarcza,
+  a `drop` tutaj jest ostateczny;
+- łańcuchy mają politykę `accept`, bo hook widzi ruch wszystkich interfejsów hosta; „polityką drop” dla ruchu
+  z `incusbr0` jest ostatnia reguła każdego łańcucha (`iifname "incusbr0" drop`);
+- `input`: accept tylko `ip daddr <adres mostka> tcp dport <port proxy>` i DHCP (`udp sport 68 udp dport 67`);
+  DNS (53, tcp i udp) jawnie DROP, potem cała reszta z mostka DROP;
+- `forward`: wszystko z `incusbr0` i do `incusbr0` DROP — pudełko nie wychodzi nigdzie przez NAT, a połączenia
+  z hosta do pudełka nie mają odpowiedzi (porty pudełka nie są wystawiane, sekcja 4.6 projektu).
+
+**Konwencja `tide-proto` dla prób.** Prototypy (PT-164, PT-178) mogą na czas próby wstawić własne reguły
+`accept` przed regułami drop: `nft insert rule inet tide-box forward iifname "incusbr0" … accept comment
+"tide-proto"` (albo w łańcuchu `input`), a po próbie usunąć je po uchwytach (`nft -a list chain inet tide-box
+forward`, `nft delete rule inet tide-box forward handle <n>`). Ponowne wczytanie pliku (`systemctl restart
+tide-box-nft`) też je usuwa. Usługa takich reguł nie zakłada.
+
+**Odinstalowanie** (`make box-uninstall`, `scripts/box/uninstall.sh`, z `--dry-run` bez sudo) cofa kroki
+w odwrotnej kolejności według pliku stanu: jednostka i drop-in, tabela `inet tide-box` i `/etc/tide-box`,
+`incus admin shutdown` i zatrzymanie jednostek `incus*`, odmontowanie `/var/lib/incus`, odłączenie pętli puli,
+usunięcie `incusbr0` i tabeli `inet incus`, `apt-get purge` pakietów z pliku stanu (najpierw symulacja; odmowa,
+gdy purge usunąłby coś spoza listy), potem `/var/lib/incus`, `/var/cache/incus`, `/var/log/incus`, plik puli,
+grupy założone przez pakiety, linie dopisane do `/etc/subuid` i `/etc/subgid` oraz plik stanu. Odmawia plików
+jednostek bez znacznika Tide. Wszystkie pudełka i ich dane w puli znikają; katalogi hosta montowane do pudełek
+(`~/.local/share/tide/box`) zostają.
+
+**Dowód odwracalności:** `scripts/box/host-state.sh` (tylko odczyt; `nft list ruleset` przez sudo, gdy trzeba)
+zapisuje pakiety (`dpkg-query -W`), łącza (`ip -o link`: nazwa i typ), `nft list ruleset` bez liczników,
+`getent group`, `/etc/subuid` i `/etc/subgid`, istnienie pliku puli i katalogów Incusa oraz jednostki `incus*`,
+`lxcfs*`, `tide-box*`. Migawka przed `make box-install` i po `make box-uninstall` musi być identyczna.
+
 ## Uruchamianie
 
 ```bash
