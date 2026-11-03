@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 
 from ..models import queue as model_queue
 from .. import codex_homes
-from ..board.model import BoardError, card_num
+from ..board.model import DESCRIPTION_MAX, BoardError, card_num
 from ..board import assignment
 from ..coordination import reservations, youtrack as yt
 from ..coordination import plan as source_plans
@@ -48,13 +48,15 @@ from ..worktrees.naming import slug_from_prompt
 from . import handoff
 from .decisions import clean_options
 from . import execution
+from . import faults
 from . import limits as flow_limits
 from . import planning
 from .planediting import PlanEditing
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for
 from .journal import Journal
-from .state import FlowState, derived, fold, ticket_of, graph_waves, attention_step, decision_step, guard_reason, _epoch
+from .state import (REASON_LABELS, FlowState, derived, fold, ticket_of, graph_waves, attention_step, decision_step,
+                    guard_reason, _epoch)
 from .tracker import TrackerOutbox
 
 GUARD_MINUTES = 15.0
@@ -64,6 +66,7 @@ RESULTS = ("done", "question", "denied", "error")
 OUTPUT_MAX = 256 * 1024
 HANDOFF_DIFF_MAX = 64 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+DESCRIPTION_LIMIT_BYTES = DESCRIPTION_MAX - 1024   # zapas na kolejne wystąpienie bez wycinka (PT-125)
 REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check", "planPath", "mode")
 
 
@@ -2138,6 +2141,126 @@ class FlowEngine(PlanEditing):
                                     executor=executor if choice == "change-executor" else "")
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
 
+    # --- zgłoszenie błędu kroku (PT-125) ----------------------------------------------------------
+
+    def preview_step_fault(self, card_id: str, request: dict) -> dict:
+        """PreviewStepFault: treść karty z błędem, która powstanie albo zostanie dopisana — bez zapisu."""
+        card, st, name = self._fault_request(card_id, request)
+        plan = self._fault_plan(card, st, name, str(request.get("description") or "").strip())
+        return {"ok": True, "id": card, "step": name, "preview": True, **plan}
+
+    def report_step_fault(self, card_id: str, request: dict) -> dict:
+        """ReportStepFault („Opisz problem i ponów”): karta w Backlogu projektu plasma-tide albo nowe wystąpienie
+        w otwartej karcie o tym samym podpisie, potem ponowienie kroku istniejącym StepResolve (`retry`).
+
+        Karta powstaje przez zwykłe API tablicy (`create_card`, `update_card`) wyłącznie w projekcie
+        `faults.REPORT_PROJECT` — projektu nie podaje żądanie. Zapis jest w dzienniku karty (`step.reported`), więc
+        powtórzone zgłoszenie tego samego kroku nie zakłada drugiej karty, tylko ponawia krok."""
+        card, st, name = self._fault_request(card_id, request)
+        description = str(request.get("description") or "").strip()
+        reported = next((e for e in reversed(self.journal.read(card))
+                         if e.get("type") == "step.reported" and e.get("step") == name), None)
+        if reported is None:
+            plan = self._fault_plan(card, st, name, description)
+            try:
+                with self.journal.lock:   # repozytorium tablicy commituje też wątek główny
+                    if plan["action"] == "append":
+                        board = self.store.load()
+                        target = board.cards[card_num(plan["card"])]
+                        saved = self.store.update_card(target.id, {
+                            "description": target.description.rstrip("\n") + "\n\n" + plan["occurrence"]})
+                    else:
+                        saved = self.store.create_card({"title": plan["title"], "description": plan["description"],
+                                                        "project": faults.REPORT_PROJECT, "column": "backlog"})
+            except BoardError as exc:
+                raise FlowError(exc.code, f"nie zapisano karty z błędem: {exc}") from None
+            reported = self.journal.append(card, "step.reported", step=name,
+                                           ticket=(st.steps.get(name) or {}).get("ticket") or "",
+                                           reported=saved.get("id") or plan["card"], action=plan["action"],
+                                           project=faults.REPORT_PROJECT, signature=plan["signature"],
+                                           fault=plan["fault"])
+        resumed = self.resolve_step(card, {"choice": "retry", "step": name})
+        return {**resumed, "reported": reported.get("reported") or "", "action": reported.get("action") or "",
+                "project": faults.REPORT_PROJECT}
+
+    def _fault_request(self, card_id: str, request: dict) -> tuple[str, FlowState, str]:
+        """Sprawdzenie zgłoszenia przed czymkolwiek: krok tej karty czeka na decyzję po błędzie (jak „Ponów krok”)."""
+        try:
+            card = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        if not isinstance(request, dict) or set(request) - {"step", "description"}:
+            raise FlowError("bad-request", "oczekiwano kroku i opisu problemu")
+        description = request.get("description")
+        if not isinstance(description, str) or not description.strip() or \
+                len(description.strip()) > faults.DESCRIPTION_LIMIT:
+            raise FlowError("bad-description", f"opis problemu musi mieć od 1 do {faults.DESCRIPTION_LIMIT} znaków")
+        st = fold(self.journal.read(card))
+        name = str(request.get("step") or "") or decision_step(st)
+        step, done = st.steps.get(name) or {}, st.finished.get(name) or {}
+        busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
+                    ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
+                   for s in st.running())
+        if not step or st.card_finished or busy or done.get("result") != "error" or \
+                int(step.get("attempt") or 0) == 0 or name in st.step_decisions or \
+                name in st.superseded or any(s.get("parentStep") == name for s in st.steps.values()):
+            raise FlowError("not-waiting", f"krok {name or '?'} nie czeka na decyzję po błędzie")
+        return card, st, name
+
+    def _fault_plan(self, card: str, st: FlowState, name: str, description: str) -> dict:
+        """Co zapisze zgłoszenie: nowa karta albo wystąpienie dopisane do otwartej karty o tym samym podpisie."""
+        from .decisions import build_decisions
+        step, done = st.steps.get(name) or {}, st.finished.get(name) or {}
+        found = faults.of_finished(done)
+        sig = faults.signature(step.get("kind") or "", found["fault"], found["cause"])
+        # Wycinek wyłącznie z dziennika tego kroku (bez dowiązań), po zamaskowaniu sekretów.
+        step_dir = step.get("stepDir") or ""
+        log = os.path.join(step_dir, "out", "step.log") if step_dir else ""
+        lines = faults.read_log(log) if log and os.path.realpath(log).startswith(
+            os.path.realpath(step_dir) + os.sep) else []
+        board = self.store.load()
+        if faults.REPORT_PROJECT not in board.projects:
+            raise FlowError("no-report-project", f"na tablicy nie ma projektu {faults.REPORT_PROJECT} — "
+                                                 "załóż go, żeby zgłaszać błędy Tide")
+        when = datetime.fromtimestamp(_epoch(done.get("ts")) or self.clock()).astimezone().strftime("%Y-%m-%d %H:%M")
+        occurrence = faults.occurrence(
+            when=when, card=card, step=name, step_kind=step.get("kind") or "", ticket=step.get("ticket") or "",
+            executor=step.get("executor") or "", attempt=int(step.get("attempt") or 0),
+            result=done.get("result") or "", reason=done.get("reason") or "", fault=found["fault"],
+            cause=found["cause"], description=description, log_excerpt=faults.excerpt(lines),
+            reason_labels=REASON_LABELS)
+        target = None
+        for item in sorted(board.cards.values(), key=lambda c: c.num, reverse=True):
+            if item.project == faults.REPORT_PROJECT and item.column != "archived" and \
+                    faults.has_signature(item.description, sig) and not self._card_merged(item.id):
+                target = item
+                break
+        plan = {"signature": sig, "fault": found["fault"], "project": faults.REPORT_PROJECT,
+                "occurrence": occurrence}
+        if target is not None:
+            body = target.description.rstrip("\n") + "\n\n" + occurrence
+            if len(body.encode("utf-8")) > DESCRIPTION_LIMIT_BYTES:
+                occurrence = faults.occurrence(
+                    when=when, card=card, step=name, step_kind=step.get("kind") or "",
+                    ticket=step.get("ticket") or "", executor=step.get("executor") or "",
+                    attempt=int(step.get("attempt") or 0), result=done.get("result") or "",
+                    reason=done.get("reason") or "", fault=found["fault"], cause=found["cause"],
+                    description=description, log_excerpt="", reason_labels=REASON_LABELS, with_excerpt=False)
+                plan["occurrence"] = occurrence
+            return {**plan, "action": "append", "card": target.id, "title": target.title, "description": occurrence}
+        decision = next((d for d in build_decisions(st) if d.get("step") == name), None) or {}
+        happened = decision.get("happened") or "Krok zakończył się błędem."
+        title = faults.card_title(step.get("kind") or "", found["fault"], found["cause"], REASON_LABELS)
+        body = faults.card_body(card=card, sig=sig, happened=happened, first=occurrence)
+        return {**plan, "action": "create", "card": "", "title": title, "description": body}
+
+    def _card_merged(self, card_id: str) -> bool:
+        """Karta scalona: jej przepływ doszedł do scalenia z gałęzią główną (`card.main-merged`)."""
+        try:
+            return self.journal.has(card_id) and bool(fold(self.journal.read(card_id)).main_merged)
+        except Exception:
+            return False
+
     def _resume_executor(self, card: str, st: FlowState, step: dict, name: str, *, changed=False,
                          transfer=False):
         cfg = self.models_config() if self.models_config else None
@@ -2898,6 +3021,12 @@ class FlowEngine(PlanEditing):
             _, project = self._project(card)
             command = data.get("command") or ""
             data["canAllow"] = len(command) <= MAX_COMMAND and not is_forbidden(command, project.denied_commands)
+        if data.get("result") in ("error", "stopped"):
+            # Czyja wina (PT-125): z powodu wyniku i dziennika tego kroku, w chwili wyniku — fold() nie czyta dysku.
+            log = os.path.join(out, "step.log")
+            found = faults.classify(data.get("reason") or "", faults.read_log(log), out_dir=out,
+                                    tool=step.get("program") or "", log_path=log)
+            extra.update(fault=found["fault"], faultCause=found["cause"])
         self.journal.append(card, "step.finished", step=name, ticket=step.get("ticket") or "",
                             result=data.get("result"), reason=data.get("reason") or "",
                             question=data.get("question") or "", command=data.get("command") or "",

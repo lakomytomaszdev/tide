@@ -8,12 +8,16 @@ Decyzja:
 - `id` — stały identyfikator (`step:<krok>`, `plan-approval:<seq>`, `review:<ticket>:<runda>`…),
 - `step`, `stepKind`, `ticket`, `executor` — krok, którego dotyczy (puste dla decyzji samej karty),
 - `kind` — rodzaj z `KINDS`; makieta K-35: A1/A2 → `permission`, B → `error` z `fault="tide"`, C → `plan-approval`,
-  E → `limit`, F → `question`,
-- `happened`, `why` — zdania dla użytkownika, nigdy puste (bez danych: zdanie ogólne dla rodzaju),
+  F → `question`; limit dostawcy (E) nie jest decyzją (D3),
+- `happened`, `why` — zdania dla użytkownika, nigdy puste (bez danych: zdanie ogólne dla rodzaju); dla błędu
+  „co się stało” i „czyja wina”,
 - `options[]` — możliwości; polecona jest najwyżej jedna i zawsze pierwsza, żadna nie jest wybrana domyślnie (D10),
 - `freeText` — czy okno pokazuje pole własnej odpowiedzi; `reply` mówi, dokąd ją wysłać
-  (`{method, params, field}`: tekst trafia do `params[field]`), albo jest None,
-- `fault` — dla błędów: `tide`, `step`, `provider`, `tracker`; pusty napis dla pozostałych rodzajów,
+  (`{method, params, field}`: tekst trafia do `params[field]`), albo jest None. Błąd z `fault` `tide` albo `unknown`
+  ma tu „Opisz problem i ponów” (`ReportStepFault`, pole `description`) z `preview` (`PreviewStepFault` — podgląd
+  karty przed zapisem), `label`, `hint` i `effect` do pola,
+- `fault` — dla błędów kroku z dziennika kroku (faults.py): `tide`, `model`, `user`, `provider`, `unknown`;
+  dla YouTracka `tracker`, dla review planu bez recenzenta `provider`; pusty napis dla pozostałych rodzajów,
 - `findings[]` — tylko `plan-approval`: uwagi recenzenta `{id, severity, text, tickets, selected}` (`selected`: domyślne
   zaznaczenie — `blocker` i `major`, nie `nit`); dla pozostałych rodzajów pusta lista,
 - `technical{}` — szczegóły do zwiniętego bloku „Szczegóły techniczne”.
@@ -27,15 +31,18 @@ Kolejność: najpierw decyzje karty (plan, YouTrack, kroki bez ticketu), potem t
 """
 from __future__ import annotations
 
+from . import faults
 from . import findings as review_findings
 from .labels import kind_label
 from .state import REASON_LABELS, FlowState
 
-KINDS = ("question", "permission", "error", "limit", "transfer", "stopped", "review",
+# Limit dostawcy nie jest decyzją (D3, PT-125): Tide czeka na odnowienie albo przenosi krok według ustawień.
+KINDS = ("question", "permission", "error", "transfer", "stopped", "review",
          "plan-approval", "plan-revision", "plan-revision-failed", "plan-reviewer", "tracker")
 
 RESOLVE_STEP, RESOLVE_REVIEW = "ResolveCardStep", "ResolveCardReview"
 APPROVE_PLAN, EDIT_PLAN, ENTER_STEP = "ApproveCardPlan", "EditCardPlan", "EnterStep"
+REPORT_FAULT, PREVIEW_FAULT = "ReportStepFault", "PreviewStepFault"
 
 # Zdania, gdy dziennik nie daje szczegółów (US 2) — każdy rodzaj ma swoje, nigdy pusty napis.
 GENERIC = {
@@ -44,9 +51,7 @@ GENERIC = {
     "permission": ("Krok poprosił o zgodę na polecenie spoza listy dozwolonych.",
                    "Tide nie uruchomi tego polecenia bez Twojej decyzji, więc krok stoi."),
     "error": ("Krok zakończył się błędem, także po automatycznym ponowieniu.",
-              "Tide nie ponawia kroku w nieskończoność — zdecyduj, co dalej."),
-    "limit": ("Skończył się limit dostawcy i krok się zatrzymał.",
-              "Tide wznowi krok po odnowieniu limitu; możesz też przenieść go do innego dostawcy."),
+              "Nie wiadomo, czyja to wina — dziennik kroku tego nie rozstrzyga. Zdecyduj, co dalej."),
     "transfer": ("Krok zatrzymano, żeby przekazać go innemu dostawcy.",
                  "Przekazanie czeka na wybór wykonawcy."),
     "stopped": ("Rozmowa z krokiem w Konsoli została zamknięta przed zapisaniem wyniku.",
@@ -66,8 +71,6 @@ GENERIC = {
 }
 
 PROVIDERS = {"anthropic": "Claude", "openai": "Codex", "local": "modelu lokalnego"}
-TIDE_REASONS = {"start", "lost"}
-PROVIDER_REASONS = {"limit", "local-unavailable"}
 PLAN_KINDS = ("planning", "plan-fix", "plan-review", "plan-revise", "plan-amend")
 
 
@@ -119,8 +122,9 @@ def _step_decision(st: FlowState, name: str) -> dict | None:
         return None
     result, reason = done.get("result") or "", done.get("reason") or ""
     decided = name in st.step_decisions
-    if reason == "limit" and result in ("error", "stopped"):
-        return None if decided else _limit(st, name, step, done)
+    if result in ("error", "stopped") and (reason == "limit" or done.get("faultCause") == "limit"):
+        # Limit nie jest decyzją (D3): Tide czeka na odnowienie sam albo przenosi krok według ustawień.
+        return None
     if reason == "transfer" and result == "stopped":
         return None if decided else _transfer(st, name, step, done)
     if decided:
@@ -208,52 +212,60 @@ def _permission(st, name, step, done) -> dict:
 
 
 def _error(st, name, step, done) -> dict:
+    """Błąd kroku po automatycznym ponowieniu: co się stało, czyja to wina (`fault` z dziennika kroku, PT-125)
+    i polecana akcja zależna od winy. Przy `unknown` okno mówi wprost, że nie wiadomo."""
     reason = done.get("reason") or ""
     label = REASON_LABELS.get(reason, reason)
-    fault = "tide" if reason in TIDE_REASONS else "provider" if reason in PROVIDER_REASONS else "step"
+    found = faults.of_finished(done)
+    fault, cause = found["fault"], found["cause"]
+    what = faults.cause_label(cause, REASON_LABELS) or label
     attempts = _attempts(st, name)
-    happened = f"{_who(step, True)} zakończył się błędem: {label}" if label else ""
-    if happened and attempts > 1:
-        happened += f" (próba {attempts})"
-    why = {"tide": "To błąd Tide, nie pracy kroku. Zmiany kroku zostają w jego worktree.",
-           "provider": "Wykonawca był niedostępny; zmiany kroku zostają w jego worktree.",
-           "step": "Tide ponowił krok raz sam; zmiany zostają w worktree, dalej decydujesz Ty."}[fault] if label else ""
+    who = _who(step, True)
+    tries = f" (próba {attempts})" if attempts > 1 else ""
+    provider = PROVIDERS.get(step.get("provider") or "", step.get("provider") or "") or "dostawcy"
+    if fault == "tide":
+        happened = f"{who} zakończył się bez wyniku{tries}: {what}." if what else ""
+        why = "To błąd Tide, nie pracy kroku. Zmiany kroku zostają w jego worktree; zmiana modelu tu nie pomoże."
+    elif fault == "provider":
+        happened = f"{who} przerwał się po stronie {provider}{tries}: {what}." if what else ""
+        why = (f"To błąd dostawcy ({provider}), nie pracy kroku. Zmiany kroku zostają w jego worktree."
+               + (" Ponowienie u tego samego dostawcy nie pomoże, dopóki autoryzacja nie zostanie naprawiona."
+                  if cause == "auth" else ""))
+    elif fault == "model":
+        happened = f"{who} oddał niepoprawny wynik{tries}: {what}." if what else ""
+        why = "To błąd wykonawcy, nie Tide: Tide ponowił krok raz sam, a wynik dalej był niepoprawny."
+    elif fault == "user":
+        happened = f"{who} przerwano{tries}: {what}." if what else ""
+        why = "Krok przerwano ręcznie; zmiany zostają w worktree kroku."
+    else:
+        happened = f"{who} zakończył się błędem{tries}: {label}." if label else ""
+        why = ("Nie wiadomo, czyja to wina: dziennik kroku tego nie rozstrzyga. Zmiany kroku zostają w jego worktree; "
+               "jeśli podejrzewasz Tide, opisz problem i ponów.") if label else ""
+    other_recommended = fault == "model" or (fault == "provider" and cause == "auth")
     options = [
-        _option("retry", "Ponów krok", "Ten sam wykonawca zacznie od zmian zapisanych w worktree kroku.",
-                RESOLVE_STEP, {"choice": "retry", "step": name}, recommended=True),
+        _option("retry", "Ponów krok",
+                "Ten sam wykonawca spróbuje jeszcze raz od zmian zapisanych w worktree kroku." if fault == "tide" else
+                "Ten sam wykonawca zacznie od zmian zapisanych w worktree kroku.",
+                RESOLVE_STEP, {"choice": "retry", "step": name}, recommended=not other_recommended),
         _option("change-executor", "Ponów innym wykonawcą…",
+                "Pomoże tylko wtedy, gdy przyczyną był model — tu nie był." if fault == "tide" else
                 "Wybierz model; nowy wykonawca zacznie od zmian zapisanych w worktree kroku.",
-                RESOLVE_STEP, {"choice": "change-executor", "step": name, "executor": ""}),
+                RESOLVE_STEP, {"choice": "change-executor", "step": name, "executor": ""},
+                recommended=other_recommended),
     ]
+    reply = None
+    if fault in ("tide", "unknown"):
+        # „Opisz problem i ponów”: opis trafia do karty z błędem w Backlogu plasma-tide (z podglądem), krok rusza znowu.
+        reply = {"method": REPORT_FAULT, "params": {"step": name}, "field": "description",
+                 "preview": PREVIEW_FAULT, "label": "Opisz problem i ponów",
+                 "hint": "Co zauważyłeś? Np. „po aktualizacji Tide to samo przy review ticketów”.",
+                 "effect": f"Opis trafi do karty z błędem w Backlogu {faults.REPORT_PROJECT} razem z wycinkiem "
+                           "dziennika kroku (bez sekretów); krok ruszy ponownie."}
     technical = _step_technical(step, done)
-    technical.update(attempts=attempts, stalledSince=done.get("stalledSince") or "")
-    return _decision(st, name, step, "error", happened, why, options, None, fault, technical)
-
-
-def _limit(st, name, step, done) -> dict:
-    limit = st.limits.get(name) or {}
-    provider = PROVIDERS.get(step.get("provider") or "", step.get("provider") or "")
-    reset = _text(limit.get("reset"))
-    happened = ""
-    if provider:
-        happened = f"Skończył się limit {provider}" + (f" (odnowi się o {reset})" if reset else "") + \
-            f"; {_who(step, False)} zatrzymał się w trakcie."
-    why = (f"Tide wznowi krok sam o {reset}; możesz też przenieść go do innego dostawcy teraz."
-           if reset else "")
-    options = [
-        _option("wait-limit", "Poczekaj na limit",
-                "Tide wznowi krok od miejsca, w którym stanął, gdy limit się odnowi.",
-                RESOLVE_STEP, {"choice": "wait-limit", "step": name}, recommended=True),
-        _option("transfer", "Przenieś do innego dostawcy…",
-                "Wybrany wykonawca dokończy krok od commita WIP w tym samym worktree.",
-                RESOLVE_STEP, {"choice": "transfer", "step": name, "executor": ""}),
-    ]
-    technical = _step_technical(step, done)
-    wip = (st.wip_retries.get(name) or {}).get("wip") or done.get("wip") or {}
-    technical.update(limitReset=reset, limitWindow=_text(limit.get("window")),
-                     wipCommitted=bool(wip.get("committed")), wipFiles=wip.get("files") or 0,
-                     wipError=_text(wip.get("error")))
-    return _decision(st, name, step, "limit", happened, why, options, None, "provider", technical)
+    technical.update(attempts=attempts, stalledSince=done.get("stalledSince") or "", fault=fault,
+                     faultCause=cause, faultLabel=faults.FAULT_LABELS.get(fault, fault),
+                     signature=faults.signature(step.get("kind") or "", fault, cause))
+    return _decision(st, name, step, "error", happened, why, options, reply, fault, technical)
 
 
 def _transfer(st, name, step, done) -> dict:

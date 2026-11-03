@@ -15,8 +15,8 @@ import shutil
 import unittest
 
 from . import REPO
-from .decisionfix import (FINDINGS_C, Q2, Q3, decisions, decisions_c, journal, journal_c, scenario_c, scenario_f,
-                          without_options)
+from .decisionfix import (FINDINGS_C, Q2, Q3, decisions, decisions_c, journal, journal_c, scenario_b, scenario_c,
+                          scenario_f, without_options)
 from .test_view import ProbeCase
 
 CARD_DIR = os.path.join(REPO, "apps", "common", "qml", "card")
@@ -330,6 +330,70 @@ out["calls"] = len(calls())
 """, scenario_f(self.data))
         self.assertEqual(out["state"], [False, True, "K-8"])
         self.assertEqual(out["calls"], 0)
+
+    def test_scenario_b_tide_error_previews_the_card_then_reports_and_retries(self):
+        preview = {"ok": True, "id": "K-8", "step": "K-8-plan-2", "preview": True, "action": "create", "card": "",
+                   "project": "plasma-tide", "title": "Błąd Tide w kroku review planu: Tide nie dał prawa zapisu",
+                   "description": "Podpis błędu: `plan-review/tide/write-denied`\n\n> Po aktualizacji to samo.\n"
+                                  "```text\n[result] odmowa Write: /wt/K-8-plan-2.step/out/result.json\n```"}
+        out = self.probe(STATE_PY + """
+PREVIEW = ("(function () { const all = " + ALL + "; const one = n => all(page.decisionDialog, n)[0] || null; "
+           "return JSON.stringify({ shown: !!one('decisionPreview'), "
+           "  where: one('decisionPreviewWhere') ? one('decisionPreviewWhere').text : '', "
+           "  title: one('decisionPreviewTitle') ? one('decisionPreviewTitle').text : '', "
+           "  body: one('decisionPreviewBody') ? one('decisionPreviewBody').text : '', "
+           "  other: one('decisionOtherTitle') ? one('decisionOtherTitle').text : '', "
+           "  effect: one('decisionOtherEffect') ? one('decisionOtherEffect').text : '', "
+           "  button: one('decisionChoose') ? one('decisionChoose').text : '' }) })()")
+replies.append(json.loads(%r))
+click(card("K-8"))
+out["opened"] = state()
+out["openedExtra"] = json.loads(js(PREVIEW))
+click(named("decisionOther", 0.5, 0.2))
+type_text("Po aktualizacji to samo.")
+out["typed"] = json.loads(js(PREVIEW))
+key(Qt.Key.Key_Return)
+wait(150)
+out["previewCall"] = calls()
+out["preview"] = json.loads(js(PREVIEW))
+out["previewState"] = state()
+key(Qt.Key.Key_Return)
+wait(150)
+out["sent"] = calls()
+out["after"] = [js("page.decisionOpen"), js("page.toast")]
+""" % json.dumps(preview, ensure_ascii=False), scenario_b(self.data))
+        opened = out["opened"]
+        self.assertTrue(opened["open"])
+        self.assertEqual(opened["kind"], "Błąd Tide", "plakietka oddziela usterkę narzędzia od decyzji o pracy")
+        self.assertEqual(opened["who"], "K-8 · Haiku")
+        self.assertEqual(opened["happened"], "Review planu (Haiku) zakończył się bez wyniku (próba 2): "
+                                             "Tide nie dał prawa zapisu w katalogu wyniku kroku.")
+        self.assertTrue(opened["why"].startswith("To błąd Tide, nie pracy kroku."))
+        self.assertEqual([(o[0], o[2], o[3]) for o in opened["options"]],
+                         [("Ponów krok", True, False), ("Ponów innym wykonawcą…", False, False)])
+        self.assertIn("tu nie był", opened["options"][1][1])
+        self.assertEqual(opened["other"], [True, False])
+        self.assertEqual(out["openedExtra"]["other"], "Opisz problem i ponów")
+        self.assertIn("Backlogu plasma-tide", out["openedExtra"]["effect"])
+        self.assertFalse(out["openedExtra"]["shown"], "podglądu nie ma przed opisem")
+
+        self.assertEqual(out["typed"]["button"], "Pokaż podgląd  ↵")
+        [call] = out["previewCall"]
+        self.assertEqual(call[:2], ["PreviewStepFault", "K-8"])
+        self.assertEqual(json.loads(call[2]), {"step": "K-8-plan-2", "description": "Po aktualizacji to samo."})
+        shown = out["preview"]
+        self.assertTrue(shown["shown"], "podgląd karty przed zapisem")
+        self.assertEqual(shown["where"], "Nowa karta w Backlogu plasma-tide:")
+        self.assertEqual(shown["title"], preview["title"])
+        self.assertIn("> Po aktualizacji to samo.", shown["body"], "opis użytkownika w podglądzie")
+        self.assertIn("odmowa Write", shown["body"], "wycinek dziennika w podglądzie")
+        self.assertEqual(shown["button"], "Zapisz i ponów  ↵")
+        self.assertTrue(out["previewState"]["open"], "podgląd niczego nie wysyła ani nie zamyka")
+
+        self.assertEqual(len(out["sent"]), 2)
+        self.assertEqual(out["sent"][1][:2], ["ReportStepFault", "K-8"])
+        self.assertEqual(json.loads(out["sent"][1][2]), {"step": "K-8-plan-2", "description": "Po aktualizacji to samo."})
+        self.assertFalse(out["after"][0], "jedyna decyzja odpowiedziana — okno się zamyka")
 
     def test_waiting_card_without_decisions_still_opens_panel(self):
         out = self.probe(STATE_PY + """

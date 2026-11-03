@@ -68,7 +68,7 @@ NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "ImportYouTrack", "ResolveYouTrack",
           "StartCard", "ResolveCardReview", "EnterStep", "AbandonStep", "ResolveCardStep", "ApproveCardPlan", "SetCardPaused",
-          "EditCardPlan", "MergeCardToMain", "SetCardFlowSettings")
+          "EditCardPlan", "MergeCardToMain", "SetCardFlowSettings", "ReportStepFault")
 YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w sieci lokalnej (po 4 s) i zapas
 TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
 COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
@@ -418,6 +418,16 @@ class Backend(QObject):
     @pyqtSlot(str, str, str)
     def resolveCardStep(self, tag: str, card_id: str, request: str) -> None:
         self._write(tag, "ResolveCardStep", [card_id, request])
+
+    @pyqtSlot(str, str, str)
+    def previewStepFault(self, tag: str, card_id: str, request: str) -> None:
+        """Podgląd karty z błędem kroku przed zapisem (/Board PreviewStepFault, PT-125) — usługa niczego nie zapisuje."""
+        self._write(tag, "PreviewStepFault", [card_id, request])
+
+    @pyqtSlot(str, str, str)
+    def reportStepFault(self, tag: str, card_id: str, request: str) -> None:
+        """„Opisz problem i ponów”: karta z błędem w Backlogu plasma-tide i ponowienie kroku (/Board ReportStepFault)."""
+        self._write(tag, "ReportStepFault", [card_id, request])
 
     @pyqtSlot(str, str, bool)
     def setCardPaused(self, tag: str, card_id: str, paused: bool) -> None:

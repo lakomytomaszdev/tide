@@ -216,6 +216,16 @@ if word == "cli-zgoda":
     sys.exit(0)
 if word == "bez-wyniku":
     sys.exit(0)
+if word == "odmowa-zapisu" and "Użytkownik polecił ponowić" not in prompt:
+    # PT-125: piaskownica odmawia zapisu pliku wyniku; w dzienniku kroku token i zmienne środowiskowe.
+    print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "name": "Bash", "input": {
+            "command": "GITHUB_TOKEN=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 gh api user"}}]}}), flush=True)
+    print("export TIDE_FAKE_SECRET_TOKEN=atrapa-sekret-z-env-42 HOME=" + os.environ["HOME"], flush=True)
+    print("wartość bez nazwy: atrapa-sekret-z-env-42", flush=True)
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "Nie zapisałem wyniku.",
+                      "permission_denials": [{"tool_name": "Write", "tool_input": {"file_path": result}}]}), flush=True)
+    sys.exit(0)
 if word == "pytanie":
     if "Odpowiedź użytkownika:" in prompt:
         finish("done")

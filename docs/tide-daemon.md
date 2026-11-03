@@ -1639,6 +1639,35 @@ osobne katalogi `.resume-<step>.step` i pliki wyniku; dziennik pozwala odtworzy�
 qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.ResolveCardStep K-12 '{"choice": "answer", "answer": "ISO 8601"}'
 ```
 
+### Czyja wina błędu kroku i „Opisz problem i ponów” (PT-125)
+
+Zakończenie kroku z wynikiem `error` albo `stopped` ma w `step.finished` pola `fault` (`tide`, `model`, `user`,
+`provider`, `unknown`) i `faultCause`, liczone w chwili wyniku z powodu i z dziennika tego kroku (`out/step.log`,
+`cardflow/faults.py`). `tide` daje tylko twarda przesłanka: brak pliku wyniku (`no-result`) i odmowa zapisu w katalogu
+wyjściowym tego kroku w wyniku narzędzia albo polecenia (odmowa `Write`/`Edit` w `permission_denials`, „Read-only file
+system”, „Permission denied” przy tej ścieżce) — tekst pisany przez agenta nie jest dowodem — albo powody ustawiane
+przez Tide (`start`, `lost`). Kod limitu (429, zdarzenie limitu) daje `provider`/`limit`, jawny błąd API autoryzacji
+(401, 403) albo awarii (5xx, przeciążenie) — `provider`/`auth` albo `outage`, zły plik wyniku albo werdykt — `model`.
+Gdy dziennik nie rozstrzyga, `unknown`, a okno mówi wprost, że nie wiadomo, czyja to wina. Limit nigdy nie tworzy
+decyzji w `flow.decisions[]` (D3); stare pola panelu (`flow.action: "limit"`) zostają bez zmian. Kafelek błędu z winy
+Tide pisze „błąd Tide w kroku X”.
+
+Błąd `tide` albo `unknown` ma w decyzji pole „Opisz problem i ponów” (`reply` z `method: "ReportStepFault"`,
+`preview: "PreviewStepFault"`, `field: "description"`). Okno najpierw pokazuje podgląd karty, potem zapisuje:
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `PreviewStepFault(s id, s request)` | `→ s` | `{"step", "description"}` → `{ok, preview: true, action: "create"\|"append", card, project, title, description, signature, fault}` bez żadnego zapisu |
+| `ReportStepFault(s id, s request)` | `→ s` | zakłada kartę w Backlogu projektu `plasma-tide` (`create_card`) albo dopisuje wystąpienie do otwartej karty o tym samym podpisie (`update_card`), zapisuje `step.reported` i ponawia krok przez `ResolveCardStep` (`retry`); odpowiedź jak `ResolveCardStep` z `reported`, `action`, `project` |
+
+Projekt docelowy jest stały (`plasma-tide`) — żądanie go nie podaje; bez tego projektu na tablicy zgłoszenie kończy
+się błędem `no-report-project`. Podpis błędu to rodzaj kroku, `fault` i przyczyna (`plan-review/tide/write-denied`),
+zapisany w treści karty linią „Podpis błędu: `…`”. Karta otwarta to karta nie zarchiwizowana i nie scalona (jej
+przepływ bez `card.main-merged`); dla zarchiwizowanej albo scalonej powstaje nowa. Wycinek pochodzi wyłącznie
+z dziennika kroku (ostatnie 30 zdarzeń po ludzku) i przed zapisem jest maskowany: wartości zmiennych środowiskowych
+(`NAZWA=…`), znane tokeny (`sk-…`, `ghp_…`, `github_pat_…`, `xox…`, `perm:…`, JWT, `Bearer …`), pary klucz–sekret
+i wartości sekretnych zmiennych środowiska usługi. Ten sam opis użytkownika też przechodzi maskowanie.
+
 ## Docker
 
 Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Docker” w oknie Tide (`apps/docker`) i kafelka `org.tide.docker` w docku (`widgets/docker`). Usługa rozmawia z Docker Engine API przez lokalny socket (sama biblioteka standardowa, bez `docker` CLI i bez `docker compose`). Socket z `$DOCKER_HOST` (`unix:///ścieżka`), domyślnie `/var/run/docker.sock`; `tcp://`, `ssh://` i inne → stan `unsupported`, bez łączenia się przez sieć.

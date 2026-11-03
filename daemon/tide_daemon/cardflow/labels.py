@@ -39,6 +39,19 @@ def result_label(result: object) -> str:
     return RESULT_LABELS.get(result, GENERIC_RESULT) if isinstance(result, str) else GENERIC_RESULT
 
 
+def step_name(kind: object, ticket: object = "") -> str:
+    """Krok po ludzku: „PT-7” dla ticketu, „review PT-7”, „review planu”; bez danych — „krok”."""
+    ticket = ticket if isinstance(ticket, str) else ""
+    if ticket and kind == "ticket":
+        return ticket
+    return f"{kind_label(kind)} {ticket}".strip()
+
+
+def tide_fault_text(kind: object, ticket: object = "") -> str:
+    """Tekst kafelka dla błędu kroku z winy Tide (PT-125)."""
+    return f"błąd Tide w kroku {step_name(kind, ticket)}"
+
+
 def waiting_text(kind: object, result: object = None) -> str:
     """Tekst kafelka dla kroku czekającego na decyzję; wynik (pytanie, brak zgody, błąd) dopisany w nawiasie."""
     text = f"{kind_label(kind)} czeka na decyzję"

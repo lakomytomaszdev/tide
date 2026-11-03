@@ -15,6 +15,11 @@
 // (także dla możliwości, która wymaga wyboru w oknie, np. wykonawcy — na razie wybór jest w panelu karty)
 // `cardOpen` + `cardOpenRequested(wartość)` — pole ustawienia otwierania karty w stopce (PT-133),
 // i `finished()` — nic już nie czeka (ostatnia odpowiedziana albo migawka bez decyzji).
+//
+// Błąd Tide (PT-125): pole własnej odpowiedzi ma podpis z usługi („Opisz problem i ponów”, `reply.label`). Gdy
+// `reply.preview` jest ustawione, pierwszy wybór wysyła `previewRequested(decisionId, method, params)`, strona
+// oddaje odpowiedź usługi przez `showPreview(decisionId, reply)` (karta z opisem i wycinkiem dziennika), a dopiero
+// drugi wybór („Zapisz i ponów”) wysyła `answered` z `reply.method`. Zmiana opisu unieważnia podgląd.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -36,6 +41,9 @@ Rectangle {
     property string error: ""
     // Uwagi recenzenta zaznaczone do odesłania (id z `current.findings`); domyślne zaznaczenie daje usługa.
     property var checkedIds: []
+    // Podgląd karty z błędem (PT-125): odpowiedź usługi na `reply.preview`; null — jeszcze nie pokazany.
+    property var preview: null
+    property bool previewing: false
 
     readonly property var pending: (decisions || []).filter(d => answeredIds.indexOf(d.id) < 0)
     readonly property var current: pending.length > 0 ? pending[Math.min(index, pending.length - 1)] : null
@@ -44,11 +52,14 @@ Rectangle {
     readonly property bool freeText: !!current && current.freeText === true && !!current.reply
     readonly property bool onlyText: freeText && options.length === 0
     readonly property string choice: onlyText ? otherId : selected
-    readonly property bool canChoose: choice === otherId ? answer.text.trim() !== "" : choice !== ""
+    // Pole „Opisz problem i ponów” (błąd Tide): przed zapisem okno pokazuje podgląd karty z usługi.
+    readonly property bool needsPreview: choice === otherId && Decision.previewMethod(current) !== ""
+    readonly property bool canChoose: !previewing && (choice === otherId ? answer.text.trim() !== "" : choice !== "")
     readonly property string counter: pending.length > 1 ? (Math.min(index, pending.length - 1) + 1) + " z " + pending.length : ""
     readonly property alias answerField: answer
 
     signal answered(string decisionId, string method, var params)
+    signal previewRequested(string decisionId, string method, var params)
     signal laterRequested()
     signal fullCardRequested(string notice)
     signal cardOpenRequested(string value)
@@ -65,6 +76,8 @@ Rectangle {
         selected = ""
         techOpen = false
         error = ""
+        preview = null
+        previewing = false
         answer.text = ""
         checkedIds = Decision.defaultChecked(current)
     }
@@ -92,6 +105,13 @@ Rectangle {
         let request = null
         if (choice === otherId) {
             request = Decision.replyRequest(current, answer.text.trim())
+            // Najpierw podgląd karty z błędem; dopiero drugi wybór („Zapisz i ponów”) zapisuje.
+            if (request && needsPreview && !preview) {
+                previewing = true
+                error = ""
+                previewRequested(current.id, Decision.previewMethod(current), request.params)
+                return
+            }
         } else {
             const option = options.find(o => o.id === choice)
             if (!option) return
@@ -120,7 +140,22 @@ Rectangle {
         answeredIds = answeredIds.filter(id => id !== decisionId)
         const at = pending.findIndex(d => d.id === decisionId)
         if (at >= 0) index = at
+        previewing = false
         error = message
+    }
+
+    // Odpowiedź usługi na podgląd karty z błędem; podgląd innej (już niewidocznej) decyzji jest pomijany.
+    function showPreview(decisionId, reply) {
+        if (decisionId !== currentId) return
+        previewing = false
+        if (reply && reply.ok) {
+            preview = reply
+            error = ""
+        } else {
+            preview = null
+            error = Decision.text(reply && (reply.message || reply.error)) || "Nie udało się przygotować podglądu."
+        }
+        forceActiveFocus()
     }
 
     onCurrentIdChanged: reset()
@@ -381,7 +416,7 @@ Rectangle {
                                                                                  : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
                         activeFocusOnTab: !dialog.onlyText
                         Accessible.role: Accessible.RadioButton
-                        Accessible.name: "Inna odpowiedź…"
+                        Accessible.name: Decision.replyLabel(dialog.current)
                         Accessible.checked: checked
                         Accessible.onPressAction: dialog.pick(dialog.otherId)
                         Keys.onSpacePressed: dialog.pick(dialog.otherId)
@@ -412,13 +447,26 @@ Rectangle {
                                     border.color: other.checked ? Tide.Tokens.accent : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.35)
                                 }
                                 Text {
-                                    text: "Inna odpowiedź…"
+                                    objectName: "decisionOtherTitle"
+                                    text: Decision.replyLabel(dialog.current)
                                     textFormat: Text.PlainText
                                     color: Tide.Tokens.textPrimary
                                     font.family: Tide.Theme.uiFamily
                                     font.pointSize: Tide.Tokens.fontSizePt * 1.1
                                     font.weight: Font.DemiBold
                                 }
+                            }
+                            Text {
+                                objectName: "decisionOtherEffect"
+                                Layout.fillWidth: true
+                                Layout.leftMargin: dialog.onlyText ? 0 : 23
+                                visible: text !== ""
+                                text: dialog.current && dialog.current.reply ? Decision.text(dialog.current.reply.effect) : ""
+                                textFormat: Text.PlainText
+                                color: Tide.Tokens.textSecondary
+                                font.family: Tide.Theme.uiFamily
+                                font.pointSize: Tide.Tokens.fontSizePt
+                                wrapMode: Text.Wrap
                             }
                             Text {
                                 visible: dialog.onlyText
@@ -452,8 +500,10 @@ Rectangle {
                                     font.pointSize: Tide.Tokens.fontSizePt * 1.05
                                     activeFocusOnTab: true
                                     Accessible.role: Accessible.EditableText
-                                    Accessible.name: "Inna odpowiedź"
+                                    Accessible.name: Decision.replyLabel(dialog.current)
                                     onActiveFocusChanged: if (activeFocus && !dialog.onlyText) dialog.selected = dialog.otherId
+                                    // Zmieniony opis — podgląd karty przestaje być aktualny.
+                                    onTextChanged: dialog.preview = null
                                     // Enter wysyła jak w czacie, Shift+Enter — nowa linia; Esc zamyka okno.
                                     Keys.onPressed: event => {
                                         if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
@@ -468,7 +518,9 @@ Rectangle {
                                     Text {
                                         anchors.fill: parent
                                         visible: answer.text === ""
-                                        text: "Odpowiedz własnymi słowami, jak w czacie z agentem."
+                                        text: dialog.current && dialog.current.reply && dialog.current.reply.hint
+                                              ? Decision.text(dialog.current.reply.hint)
+                                              : "Odpowiedz własnymi słowami, jak w czacie z agentem."
                                         textFormat: Text.PlainText
                                         color: Tide.Tokens.textMuted
                                         font: answer.font
@@ -476,6 +528,61 @@ Rectangle {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+
+                // Podgląd karty z błędem przed zapisem (PT-125): treść liczy usługa, okno tylko ją pokazuje.
+                Rectangle {
+                    objectName: "decisionPreview"
+                    Layout.fillWidth: true
+                    visible: (dialog.preview !== null || dialog.previewing) && dialog.choice === dialog.otherId
+                    implicitHeight: previewColumn.implicitHeight + 24
+                    radius: Tide.Tokens.radiusFrame
+                    color: Tide.Tokens.backgroundView
+                    border.width: 1
+                    border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityOutline)
+                    Accessible.role: Accessible.Grouping
+                    Accessible.name: "Podgląd karty z błędem"
+                    ColumnLayout {
+                        id: previewColumn
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 12
+                        spacing: 6
+                        Text {
+                            objectName: "decisionPreviewWhere"
+                            Layout.fillWidth: true
+                            text: dialog.previewing ? "Przygotowuję podgląd karty…" : Decision.previewWhere(dialog.preview)
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textSecondary
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                            wrapMode: Text.Wrap
+                        }
+                        Text {
+                            objectName: "decisionPreviewTitle"
+                            Layout.fillWidth: true
+                            visible: text !== ""
+                            text: dialog.preview ? Decision.text(dialog.preview.title) : ""
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textPrimary
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 1.05
+                            font.weight: Font.DemiBold
+                            wrapMode: Text.Wrap
+                        }
+                        Text {
+                            objectName: "decisionPreviewBody"
+                            Layout.fillWidth: true
+                            visible: text !== ""
+                            text: dialog.preview ? Decision.text(dialog.preview.description) : ""
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textSecondary
+                            font.family: Tide.Theme.monoFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                            wrapMode: Text.WrapAnywhere
                         }
                     }
                 }
@@ -564,11 +671,11 @@ Rectangle {
                 }
                 Tide.TextButton {
                     objectName: "decisionChoose"
-                    text: "Wybierz  ↵"
+                    text: (dialog.needsPreview ? (dialog.preview ? "Zapisz i ponów" : "Pokaż podgląd") : "Wybierz") + "  ↵"
                     variant: "filled"
                     enabled: dialog.canChoose
                     opacity: enabled ? 1 : 0.45
-                    Accessible.name: "Wybierz"
+                    Accessible.name: dialog.needsPreview ? (dialog.preview ? "Zapisz i ponów" : "Pokaż podgląd") : "Wybierz"
                     onClicked: dialog.choose()
                 }
             }
