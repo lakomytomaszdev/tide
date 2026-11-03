@@ -1664,7 +1664,9 @@ system”, „Permission denied” przy tej ścieżce) — tekst pisany przez ag
 przez Tide (`start`, `lost`). Kod limitu (429, zdarzenie limitu) daje `provider`/`limit`, jawny błąd API autoryzacji
 (401, 403) albo awarii (5xx, przeciążenie) — `provider`/`auth` albo `outage`, zły plik wyniku albo werdykt — `model`.
 Gdy dziennik nie rozstrzyga, `unknown`, a okno mówi wprost, że nie wiadomo, czyja to wina. Limit nigdy nie tworzy
-decyzji w `flow.decisions[]` (D3); starych pól panelu (`flow.action`, `flow.question`, `flow.command`, `flow.canAllow`, `flow.error`, `flow.limit`, `flow.fault`) już nie ma (PT-135) — `derived.flow` niesie decyzje wyłącznie w `decisions[]`; `derived.question` i `note` zostają na poziomie karty. Kafelek błędu z winy
+decyzji w `flow.decisions[]` (D3); starych pól panelu (`flow.action`, `flow.question`, `flow.command`,
+`flow.canAllow`, `flow.error`, `flow.limit`, `flow.fault`) już nie ma (PT-135) — `derived.flow` niesie decyzje
+wyłącznie w `decisions[]`; `derived.question` i `note` zostają na poziomie karty. Kafelek błędu z winy
 Tide pisze „błąd Tide w kroku X”.
 
 Błąd `tide` albo `unknown` ma w decyzji pole „Opisz problem i ponów” (`reply` z `method: "ReportStepFault"`,

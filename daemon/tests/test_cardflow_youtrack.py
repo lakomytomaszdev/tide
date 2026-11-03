@@ -219,7 +219,8 @@ class YouTrackFlowTest(FlowInProcess):
                 shown = self.shown(card)
                 self.assertEqual(shown['boardColumn'], 'waiting')
                 self.assertEqual(shown['derived']['flow']['decisions'][0]['kind'], 'error')
-                self.assertTrue(shown['derived']['flow']['trackerError'])
+                self.assertTrue(shown['derived']['flow']['decisions'][0]['id'].startswith('tracker:'))
+                self.assertTrue(shown['derived']['flow']['decisions'][0]['technical']['error'])
                 # Komentarz poprzedniej karty może jeszcze ponawiać się w tle.
                 # Liczymy wyłącznie operacje z identyfikatorem aktualnej karty.
                 def card_calls():

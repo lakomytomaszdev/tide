@@ -720,6 +720,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             if found["fault"] == "tide":
                 tile = tide_fault_text(step.get("kind"), step.get("ticket") or ident)
                 return _fill(out, "waiting", f"{tile}: {cause_label(found['cause'], REASON_LABELS)}")
+        out["flow"]["stalledSince"] = done.get("stalledSince") or ""
         since = f" od {done['stalledSince']}" if done.get("stalledSince") else ""
         return _fill(out, "waiting", f"błąd kroku {ident}: {reason}{since}" if reason else f"błąd kroku {ident}")
     return _fill(out, "progress", f"{ident} · zlecenie")

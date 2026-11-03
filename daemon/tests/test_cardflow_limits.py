@@ -195,7 +195,6 @@ class LimitProjectionTest(unittest.TestCase):
         self.assertEqual(card["column"], "progress")
         self.assertIn("czeka na limit do piątek 18:00", card["note"])
         self.assertEqual(card["flow"]["decisions"], [])
-        self.assertEqual(card["flow"]["limit"]["reset"], "piątek 18:00")
         self.assertEqual(card["flow"]["steps"][0]["provider"], "anthropic")
 
 
