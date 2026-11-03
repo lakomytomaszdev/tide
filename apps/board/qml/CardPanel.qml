@@ -531,15 +531,26 @@ Rectangle {
                 font.pixelSize: 15
                 font.bold: true
             }
-            Text {
+            // Podsumowanie domknięcia bywa długie, a ta sekcja leży nad przewijaną częścią panelu — bez limitu
+            // przyciski Diff/Scal i ich wynik znikały pod krawędzią (03.11, K-15).
+            QQC2.ScrollView {
+                id: closingSummaryScroll
+                objectName: "cardClosingSummary"
                 Layout.fillWidth: true
-                text: panel.card && panel.card.derived && panel.card.derived.flow
-                      ? panel.card.derived.flow.summary || "" : ""
-                textFormat: Text.PlainText
-                color: Tide.Tokens.textPrimary
-                font.family: Tide.Theme.uiFamily
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
+                Layout.preferredHeight: Math.min(closingSummaryText.implicitHeight, 140)
+                clip: true
+                contentWidth: availableWidth
+                Text {
+                    id: closingSummaryText
+                    width: closingSummaryScroll.availableWidth
+                    text: panel.card && panel.card.derived && panel.card.derived.flow
+                          ? panel.card.derived.flow.summary || "" : ""
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                }
             }
             RowLayout {
                 Layout.fillWidth: true

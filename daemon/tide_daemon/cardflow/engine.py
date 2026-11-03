@@ -3201,7 +3201,17 @@ class FlowEngine(PlanEditing):
                                for block in listed.out.split("\n\n"))
                               if part.get("branch") == f"refs/heads/{main}"), "") if listed.ok else ""
             if not main_tree:
-                raise FlowError("no-main-worktree", "otwórz gałąź główną w worktree przed scaleniem")
+                # Gałąź główna nie jest nigdzie otwarta (K-15: główny katalog stał na innej gałęzi z lokalnymi
+                # zmianami) — Tide zakłada na nią własny worktree zamiast odsyłać użytkownika do terminala.
+                from .gitops import worktrees_dir
+                path = os.path.join(worktrees_dir(repo), f"{main}-main")
+                if os.path.exists(path):
+                    raise FlowError("no-main-worktree", f"katalog {path} już istnieje — otwórz w nim gałąź {main}")
+                added = self.git.run(repo, "worktree", "add", path, main, timeout=600)
+                if not added.ok:
+                    raise FlowError("no-main-worktree", "nie udało się otworzyć gałęzi głównej w worktree: "
+                                    + ((added.err or "").splitlines() or ["błąd gita"])[0])
+                main_tree = path
             try:
                 tip = self.git.clean_tip(repo, info["cardBranch"], info["cardWorktree"])
                 merged = self.git.merge(repo, main, info["cardBranch"], main_tree,
