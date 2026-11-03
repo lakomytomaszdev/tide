@@ -124,6 +124,11 @@ class FlowInProcess(unittest.TestCase):
     def of(self, card_id, kind) -> list:
         return [e for e in self.events(card_id) if e["type"] == kind]
 
+    def ticket_finished(self, card_id) -> list:
+        """`step.finished` kroków ticketu, bez kroku opiekuna karty (PT-143), który rusza po drugim błędzie."""
+        tickets = {s["step"] for s in self.of(card_id, "step.started") if s.get("kind") != "caretaker"}
+        return [e for e in self.of(card_id, "step.finished") if e["step"] in tickets]
+
     def results(self, card_id, action) -> list:
         return [e for e in self.of(card_id, "result") if e.get("action") == action]
 
@@ -390,7 +395,7 @@ class NowInProcessTest(FlowInProcess):
         card_id = self.card(description="ATRAPA: bez-wyniku")
         reply = self.start(card_id)
         card = self.wait_column(card_id, "waiting")
-        finished = self.of(card_id, "step.finished")
+        finished = self.ticket_finished(card_id)
         self.assertEqual([(f["result"], f["reason"]) for f in finished],
                          [("error", "no-result"), ("error", "no-result")])
         self.assertEqual(len(self.of(card_id, "step.retry")), 1)
@@ -452,7 +457,7 @@ class GuardInProcessTest(FlowInProcess):
         pid = self.unit_pid(step)
         self.assertTrue(flowfakes.alive(pid))
         card = self.wait_column(card_id, "waiting", timeout=30)
-        finished = self.of(card_id, "step.finished")
+        finished = self.ticket_finished(card_id)
         self.assertEqual([(f["result"], f["reason"]) for f in finished],
                          [("error", "no-progress"), ("error", "no-progress")])
         self.assertEqual(len(self.of(card_id, "step.retry")), 1)

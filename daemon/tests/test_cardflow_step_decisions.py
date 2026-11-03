@@ -451,7 +451,8 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(started["ok"], started)
         card = self.wait_column(card_id, "waiting", timeout=30)
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "error")
-        finished = self.of(card_id, "step.finished")
+        tickets = {s["step"] for s in self.of(card_id, "step.started") if s["kind"] == "ticket"}
+        finished = [e for e in self.of(card_id, "step.finished") if e["step"] in tickets]
         self.assertEqual([(e["result"], e["reason"]) for e in finished],
                          [("error", "timeout"), ("error", "timeout")])
         self.assertTrue(all(e["wip"]["stopped"] for e in finished))
