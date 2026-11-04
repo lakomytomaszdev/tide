@@ -120,10 +120,11 @@ class Ctx:
         data = _read(path, self.roots, limit=limit, tail=False)
         return None if data is None else data.decode("utf-8", errors="replace")
 
-    def read_tail(self, path: str, *, limit: int = LOG_TAIL_BYTES) -> list[str] | None:
-        """Linie końcówki pliku (najwyżej `limit` bajtów) z korzeni kontekstu; None — jak `read_text`."""
+    def read_tail(self, path: str, *, limit: int = LOG_TAIL_BYTES) -> str | None:
+        """Tekst końcówki pliku (najwyżej `limit` bajtów) z korzeni kontekstu; None — jak `read_text`.
+        Zachowuje oryginalne białe znaki do maskowania przed podziałem surowego stderr na linie."""
         data = _read(path, self.roots, limit=limit, tail=True)
-        return None if data is None else data.decode("utf-8", errors="replace").splitlines()
+        return None if data is None else data.decode("utf-8", errors="replace")
 
     def why_not(self, path: str) -> str:
         """Powód pominięcia pliku do dopisku w kontekście (bez treści)."""
@@ -141,7 +142,7 @@ class Ctx:
 def _history(ctx: Ctx) -> list[File]:
     from .history import build as history_build
     items = []
-    for entry in history_build(ctx.st, []):
+    for entry in history_build(ctx.st, [], mask_event=lambda event: faults.mask_json(event, env=ctx.env)):
         when = _when(entry.get("ts"))
         who = entry.get("actor") or ""
         line = f"- {when} · {entry.get('kindLabel') or ''} · {entry.get('text') or ''}" + (f" ({who})" if who else "")
@@ -277,7 +278,7 @@ def _attempts(ctx: Ctx) -> list[File]:
         lines.append("(to pierwsze działanie opiekuna przy tym problemie)")
     for run in runs:
         name = run.get("step") or ""
-        outcome = st.caretaker_outcomes.get(name) or {}
+        outcome = faults.mask_json(st.caretaker_outcomes.get(name) or {}, env=ctx.env)
         finished = (st.finished.get(name) or {}).get("outcome") or {}
         lines += [f"### Działanie {run.get('n') or '?'}: {name} ({_when(run.get('ts'))})", ""]
         if outcome:
@@ -294,6 +295,8 @@ def _attempts(ctx: Ctx) -> list[File]:
         for entry, text in _step_files(ctx, name, ("note.md", "result.json")):
             if entry.endswith(".json"):
                 text = _json_text(text, ctx.env)
+            else:
+                text = faults.mask(text, ctx.env)
             lines += ["", f"#### {entry}", "", text.strip()]
         lines.append("")
     return [File("attempts.md", "poprzednie próby kroków i diagnozy opiekuna przy tym problemie",

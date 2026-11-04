@@ -1883,7 +1883,10 @@ sekretnej zmiennej środowiska) staje się `•••`. Niepoprawny lub niepełn
 Tak samo uszkodzone zdarzenie w `out/step.log` (linia zaczynająca się od `{`, także przy EOF po awarii) zastępuje
 dopisek bez jego treści. Poprawne zdarzenie bez końcowego znaku nowej linii nadal trafia do wycinka po odkodowaniu;
 odkodowane wartości zdarzenia przechodzą przez maskowanie przed łączeniem i normalizacją białych znaków,
-żeby wielowierszowy sekret środowiska nadal pasował do swojej wartości. Zwykłe linie stderr są maskowane jako tekst.
+żeby wielowierszowy sekret środowiska nadal pasował do swojej wartości. Surowy stderr między zdarzeniami JSON
+jest maskowany całymi blokami przed podziałem na linie, usuwaniem białych znaków i skracaniem; odczyt zachowuje
+oryginalne znaki końca linii (także CRLF). Historia i poprzednie diagnozy opiekuna dostają zamaskowane kopie
+zdarzeń przed formatowaniem przez `caretaker.history_text`, bez zmiany źródłowego stanu karty.
 Końcówka `out/step.log` czytana od środka pliku zaczyna się od
 pierwszej pełnej linii — sekret przecięty granicą odczytu nie traci nazwy zmiennej ani prefiksu tokenu przed
 maskowaniem. Tak samo odczyt kończący się przed końcem pliku (początek pliku dłuższego niż `FILE_READ_MAX` albo plik

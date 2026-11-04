@@ -65,6 +65,67 @@ class Tree:
 
 
 class MaskingTest(unittest.TestCase):
+    def written_context(self, tree, journal, problem, env, step=""):
+        context = os.path.join(tree.step_dir, "in", "context")
+        caretakerctx.build(problem, journal.st, journal.events, card="K-1",
+                           card_dir=tree.card_dir, worktree=tree.worktree, context_dir=context,
+                           env=env, step=step, tide_docs="")
+        written = {}
+        for folder, _, names in os.walk(context):
+            for name in names:
+                path = os.path.join(folder, name)
+                with open(path, encoding="utf-8") as fh:
+                    written[os.path.relpath(path, context)] = fh.read()
+        return written
+
+    def test_multiline_plain_stderr_is_masked_before_line_splitting(self):
+        tree = Tree(self)
+        j = tree.journal()
+        problem = caretaker.problems(j.st)[0]
+        for secret, raw, env in (
+            ("first-private-line\n\tsecond-private-line", None, True),
+            ("first-private-line\r\n\tsecond-private-line", None, True),
+            ("first-private-line\nsecond-private-line", 'PASSWORD="{}"', False),
+        ):
+            with self.subTest(secret=repr(secret), assignment=raw):
+                environ = {**ENV, "TIDE_PRIVATE_KEY": secret} if env else ENV
+                # Surowy stderr między zdarzeniami JSON: obie ścieżki zachowują maskowanie i czytelność.
+                event = json.dumps({"type": "error", "message": "jawne zdarzenie JSON"}) + "\n"
+                text = (raw.format(secret) if raw else secret) + "\n"
+                tree.write(os.path.join(tree.step_dir, "out", "step.log"),
+                           event + "jawny stderr\n" + text + event)
+                written = self.written_context(tree, j, problem, environ)
+                for path, content in written.items():
+                    for part in secret.split():
+                        self.assertNotIn(part, content, path)
+                log = written["steps/K-1-PT-7-2/step-log.md"]
+                self.assertIn("•••", log)
+                self.assertIn("jawny stderr", log)
+                self.assertEqual(log.count("[error] jawne zdarzenie JSON"), 2)
+
+    def test_multiline_previous_diagnosis_is_masked_before_history_normalization(self):
+        tree = Tree(self)
+        j = tree.journal()
+        problem = caretaker.problems(j.st)[0]
+        j.care("K-1-PT-7-2", "K-1-PT-7-1", 1, "K-1-care-1")
+        for field, failed in (("summary", False), ("error", True)):
+            secret = "first-private-line\n\tsecond-private-line"
+            detail = {"summary": "jawne streszczenie", "error": "", field: secret}
+            j.add(caretaker.ESCALATED, problem=problem["id"], step="K-1-care-1",
+                  target="K-1-PT-7-2", ticket="PT-7", action="escalate",
+                  recommendation="Zmień wykonawcę.", optionId="change-executor",
+                  failed=failed, code="", **detail)
+            with self.subTest(field=field):
+                written = self.written_context(tree, j, problem, {**ENV, "TIDE_PRIVATE_KEY": secret},
+                                               step="K-1-care-2")
+                for path, content in written.items():
+                    for part in secret.split():
+                        self.assertNotIn(part, content, path)
+                for path in ("history.md", "attempts.md", "journal.jsonl"):
+                    self.assertIn("•••", written[path], path)
+                self.assertIn("Zmień wykonawcę.", written["attempts.md"])
+                self.assertEqual(j.st.caretaker_outcomes["K-1-care-1"][field], secret)
+
     def test_multiline_environment_secret_is_masked_before_log_formatting(self):
         tree = Tree(self)
         j = tree.journal()

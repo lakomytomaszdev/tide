@@ -307,25 +307,40 @@ def mask_json(value, key: str = "", env: dict | None = None):
     return value if mask(str(value), env) == str(value) else MASK
 
 
-def excerpt(lines: list[str], env: dict | None = None, limit: int = EXCERPT_LINES) -> str:
+def excerpt(lines: list[str] | str, env: dict | None = None, limit: int = EXCERPT_LINES) -> str:
     """Wycinek dziennika kroku do karty: ostatnie `limit` zdarzeń po ludzku (typ i tekst), sekrety zamaskowane.
-    Uszkodzony obiekt JSON daje dopisek bez treści. Kontekst opiekuna (PT-153) bierze tak samo ostatnie 300 zdarzeń.
+    Uszkodzony obiekt JSON daje dopisek bez treści. Kontekst opiekuna (PT-153) przekazuje surowy tekst,
+    zachowując białe znaki wielowierszowych sekretów, i bierze tak samo ostatnie 300 zdarzeń.
     """
     picked = []
-    for line in lines:
-        event = _json(line)
-        if event is not None:
-            text = _event_text(event, env)
-        elif line.lstrip().startswith("{"):
-            # Nie traktujemy niepełnej serializacji jako tekstu: sekwencje ucieczki zmieniają granice sekretu
-            # dla `mask`. Dotyczy też EOF po awarii oraz uszkodzonego zdarzenia przed kolejną pełną linią.
-            text = "(pominięto: niepoprawne lub niepełne zdarzenie JSON)"
-        else:
-            text = line.strip()
+    plain = []
+
+    def add(text):
         if text:
             # najpierw maskowanie, potem skracanie — obcięty w pół token nie przeszedłby przez wzorce
             text = mask(text, env)
             picked.append(text if len(text) <= EXCERPT_LINE_CHARS else text[:EXCERPT_LINE_CHARS - 1] + "…")
+
+    def flush_plain():
+        # Surowy stderr maskujemy całym blokiem, zanim podział na linie lub `strip` zgubi granice sekretu.
+        # JSON pozostaje osobno: maskowanie jego serializacji mogłoby uszkodzić sekwencje ucieczki.
+        for line in mask("".join(plain), env).splitlines():
+            if line.lstrip().startswith("{"):
+                # Niepełna serializacja nie jest zwykłym tekstem; nie ujawniamy odkodowanych fragmentów.
+                add("(pominięto: niepoprawne lub niepełne zdarzenie JSON)")
+            else:
+                add(line.strip())
+        plain.clear()
+
+    raw_lines = lines.splitlines(keepends=True) if isinstance(lines, str) else [line + "\n" for line in lines]
+    for line in raw_lines:
+        event = _json(line)
+        if event is None:
+            plain.append(line)
+        else:
+            flush_plain()
+            add(_event_text(event, env))
+    flush_plain()
     return "\n".join(picked[-limit:]).replace("```", "'''")
 
 
