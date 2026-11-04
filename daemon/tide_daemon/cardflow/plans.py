@@ -128,12 +128,13 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
         klass = row.work_class or "standard"
         if klass not in CLASSES:
             errors.append(f"{ident}: nieznana klasa „{klass}”")
-        author = catalog.get(row.agent) if catalog is not None else None
+        author = catalog.resolve(row.agent, klass) if catalog is not None else None
         if author is None:
             errors.append(f"{ident}: nieznany wykonawca „{row.agent}”")
         elif klass == "lokalny" and author.provider != "local":
             errors.append(f"{ident}: klasa lokalny wymaga lokalnego wykonawcy")
-        reviewer = catalog.get(row.reviewer) if catalog is not None and row.reviewer else None
+        reviewer = (catalog.resolve(row.reviewer, klass, author.model if author is not None else "")
+                    if catalog is not None and row.reviewer else None)
         if reviewer is None and author is not None and not row.reviewer:
             preferred = {"Haiku": "Sonnet", "Sonnet": "Opus", "Opus": "Sonnet",
                          "Codex mocny": "Codex Astra"}.get(author.name, "")
@@ -161,7 +162,7 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
             except (OSError, UnicodeError, ValueError):
                 errors.append(f"{ident}: brak czytelnej kartki tickets/{card_name}")
         rows.append({"workId": ident, "title": row.title, "sourceState": row.state if imported else "",
-                     "executor": row.agent,
+                     "executor": author.name if author is not None else row.agent,
                      "reviewer": reviewer.name if reviewer else row.reviewer, "class": klass,
                      "note": row.note, "blockers": list(row.blockers),
                      **({"project": slug} if len(projects) > 1 else {}),

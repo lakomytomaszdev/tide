@@ -96,6 +96,33 @@ class Catalog:
     def get(self, name):
         return next((e for e in self.executors if e.name == name), None)
 
+    # Nazwy dostawcy i programu, które planujący wpisuje zamiast nazwy wykonawcy (K-41, 04.11: „Codex”).
+    ALIASES = {"codex": "codex", "openai": "codex", "gpt": "codex", "chatgpt": "codex",
+               "claude": "claude", "anthropic": "claude"}
+
+    def resolve(self, name, klass: str = "", avoid_model: str = ""):
+        """Wykonawca z nazwy wpisanej w planie: dokładna nazwa, ta sama bez względu na wielkość liter i spacje,
+        identyfikator modelu albo sama nazwa programu/dostawcy („Codex”, „Claude”) — wtedy wykonawca tego programu
+        w klasie ticketu, z innym modelem niż `avoid_model` (recenzent nie może mieć modelu autora)."""
+        if not name:
+            return None
+        found = self.get(name)
+        if found is not None:
+            return found
+        key = " ".join(str(name).lower().split())
+        found = next((e for e in self.executors if " ".join(e.name.lower().split()) == key), None)
+        if found is None:
+            found = next((e for e in self.executors if e.model and e.model.lower() == key and e.classes), None)
+        if found is not None:
+            return found
+        tool = self.ALIASES.get(key)
+        if not tool:
+            return None
+        same_tool = [e for e in self.executors if e.program == tool and e.classes]
+        allowed = [e for e in same_tool if not avoid_model or e.model.lower() != avoid_model.lower()]
+        return (next((e for e in allowed if klass in e.classes), None) or
+                next((e for e in allowed if "mocny" in e.classes), None) or (allowed[0] if allowed else None))
+
     def api_of(self, provider: str) -> str:
         """Rodzaj API dostawcy: anthropic, openai albo „” (lokalny: oba)."""
         if provider == "anthropic":

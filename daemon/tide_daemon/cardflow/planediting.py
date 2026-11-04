@@ -90,6 +90,29 @@ class PlanEditing:
             self._record_plan_review(card, reviewer=step["executor"], verdict=report["verdict"], findings=report["findings"], corrected=False)
         return True
 
+    AUTO_REVISION_RETRIES = 3
+
+    def _auto_return_invalid(self, card, revision, invalid):
+        """Poprawka planu z błędami formatu wraca do planującego z listą błędów, zanim zapyta użytkownika
+        (K-41, 04.11: recenzent „Codex” zamiast nazwy wykonawcy z katalogu kończył się pytaniem do użytkownika,
+        choć wystarczyło powiedzieć planującemu, co poprawić). Najwyżej AUTO_REVISION_RETRIES razy z rzędu."""
+        attempts = 0
+        for event in reversed(self.journal.read(card)):
+            if event.get("type") == "plan.returned":
+                if not event.get("automatic"):
+                    break
+                attempts += 1
+        if attempts >= self.AUTO_REVISION_RETRIES:
+            return
+        original = revision.get("userFeedback") or revision.get("feedback") or ""
+        feedback = ("Poprzednia poprawka planu nie przeszła sprawdzenia formatu Tide:\n"
+                    + "\n".join(f"- {error}" for error in invalid)
+                    + "\nPopraw te błędy (nazwy wykonawców i recenzentów wyłącznie dokładnie z katalogu) i zachowaj "
+                      "pozostałe zmiany.\n\nUwagi, które poprawka ma uwzględnić:\n" + original)
+        self.journal.append(card, "plan.returned", feedback=feedback, baseline=revision["baseline"], automatic=True,
+                            userFeedback=original, attempt=attempts + 1)
+        self._advance_user_revision(card, fold(self.journal.read(card)))
+
     @staticmethod
     def _reviewed_findings(review_step, fallback):
         """Pełne uwagi recenzenta z jego pliku wyniku; bez pliku — tekst przekazany poprawce."""
@@ -440,6 +463,7 @@ class PlanEditing:
             if not revision.get("failed"):
                 self.journal.append(card, "plan.revision-failed", failed=True, pending=False, errors=invalid,
                                     baseline=revision["baseline"], feedback=revision["feedback"])
+                self._auto_return_invalid(card, revision, invalid)
             return
         reply = ({"ok": True} if (st.plan_proposed or {}).get("sourceStep") == step["step"] else
                  self.propose_plan(card, path, continuation=True, step=step["step"]))
