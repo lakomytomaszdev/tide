@@ -1,0 +1,7 @@
+# próba PT-168 — 2026-11-04T17:20:50+01:00 — kontener tide-proto-net
+$ incus list tide-proto-net -c s4 -f csv
+   RUNNING,"172.17.0.1 (docker0)
+   10.173.184.91 (eth0)"
+-> kod 0
+incus network get incusbr0 ipv4.address: Error: User does not have permission for project "default" — czytam adres interfejsu
+słucha na 10.173.184.1:18080
