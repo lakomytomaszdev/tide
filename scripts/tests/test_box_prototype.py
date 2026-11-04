@@ -167,6 +167,19 @@ class PrototypeScriptsTest(unittest.TestCase):
         self.assertNotIn("docker-crun-nowy", log)
         self.assertIn("runtime runc, bez intercept", log)
 
+    def test_p1_takes_the_dotnet_channel_from_target_framework_without_global_json(self):
+        # Runda 5: LegalApp nie ma global.json — git show kończył się kodem 128 i skrypt padał.
+        git("rm", "-q", "global.json", cwd=self.la)
+        (self.la / "App.csproj").write_text("<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework>"
+                                            "</PropertyGroup></Project>\n")
+        git("add", ".", cwd=self.la)
+        git("commit", "-q", "-m", "csproj", cwd=self.la)
+        code, log, _ = self.run_script("p1")
+        self.assertEqual(code, 0, log)
+        self.assertIn("Kanał .NET SDK: 10.0", log)
+        self.assertIn("WYNIK dotnet-test: ok", log)
+        self.assertNotIn("WYNIK przerwanie", log)
+
     def test_p5_uses_the_address_of_exactly_this_container(self):
         # Runda 3: „incus list tide-proto” dopasował też tide-proto-net i P-5 wziął jego adres.
         _, log, _ = self.run_script("p5")

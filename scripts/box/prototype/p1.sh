@@ -103,10 +103,11 @@ fi
 [[ -n $la && -d $la/.git ]] || die "nie znalazłem repozytorium LegalApp (PROTO_LEGALAPP=<ścieżka>)"
 note "LegalApp: $la ($(git -C "$la" rev-parse --short HEAD))"
 
-channel=$(git -C "$la" show HEAD:global.json 2>/dev/null | sed -n 's/.*"version" *: *"\([0-9]*\.[0-9]*\).*/\1/p' | head -1)
+# Bez global.json git show kończy się kodem 128 — z pipefail i set -e przerwałby skrypt (runda 5), stąd || true.
+channel=$(git -C "$la" show HEAD:global.json 2>/dev/null | sed -n 's/.*"version" *: *"\([0-9]*\.[0-9]*\).*/\1/p' | head -1 || true)
 if [[ -z $channel ]]; then
     channel=$(git -C "$la" grep -hoE 'net[0-9]+\.[0-9]+' HEAD -- '*.csproj' '*.props' 2>/dev/null \
-        | sed 's/^.*:net//; s/^net//' | sort -V | tail -1)
+        | sed 's/^.*:net//; s/^net//' | sort -V | tail -1 || true)
 fi
 [[ -n $channel ]] || die "nie znam wersji .NET LegalApp (global.json ani TargetFramework)"
 note "Kanał .NET SDK: $channel"
