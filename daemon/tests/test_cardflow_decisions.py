@@ -341,7 +341,8 @@ class ContractTest(unittest.TestCase):
         self.assert_contract(decision)
         self.assertEqual((decision["kind"], decision["ticket"]), ("review", "PT-1"))
         self.assertEqual([(o["method"], o["params"]) for o in decision["options"]],
-                         [("ResolveCardReview", {"choice": "retry"}), ("ResolveCardReview", {"choice": "reject"})])
+                         [("ResolveCardReview", {"choice": "retry"}), ("ResolveCardReview", {"choice": "accept"}),
+                          ("ResolveCardReview", {"choice": "reject"})])
         self.assertEqual(decision["technical"]["majors"], 2)
 
 
@@ -613,3 +614,14 @@ class FlowErrorRecoveryTest(unittest.TestCase):
         self.assertTrue(fold(events.items).flow_error)
         events.add("result", action="plan-commit", key="1", ok=True)
         self.assertEqual(fold(events.items).flow_error, "")
+
+
+class ReviewRoundsOptionsTest(unittest.TestCase):
+    def test_review_rounds_offer_merge_despite_remarks(self):
+        # 04.11: po K-35 okno decyzji po rundach review miało tylko „Ponów poprawki” i „Odrzuć ticket”.
+        from tide_daemon.cardflow.decisions import _review
+        decision = _review(fold(Events().items), "PT-1", 6, {"question": "Co dalej?"})
+        options = {o["id"]: o for o in decision["options"]}
+        self.assertEqual(list(options), ["retry", "accept", "reject"])
+        self.assertEqual(options["accept"]["params"], {"choice": "accept"})
+        self.assertTrue(options["retry"]["recommended"])
