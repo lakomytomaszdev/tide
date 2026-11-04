@@ -2426,7 +2426,7 @@ nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źród
    `templates_version` to skrót wszystkich `box/stacks/*.yaml` i `*.sh`.
 
 Każde `incus exec` budowy: `-T`, jako root pudełka, z `HTTPS_PROXY`/`HTTP_PROXY` (i małymi literami)
-`http://<adres mostka>:<box.proxy-port>` z uruchomionego proxy, `NO_PROXY=localhost,127.0.0.1,::1`,
+`http://<adres mostka>:<box.proxy-port>` z uruchomionego proxy, `NO_PROXY` = `box/netenv.py` `BOX_NO_PROXY`,
 `DEBIAN_FRONTEND=noninteractive`, `TIDE_NODE_VERSION`/`TIDE_DOTNET_SDK` z profilu. **Brak uruchomionego proxy
 (albo jego adresu) to błąd przed pierwszym poleceniem `incus`** (polityka `ProxyMissing`) — budowy „bez proxy”
 nie ma. Proxy biegnie w usłudze, więc `tide box build` uruchomione jako osobny proces dziś zawsze odmawia;
@@ -2476,7 +2476,8 @@ filtrowania NIC, **zatwierdzonego profilu** (brak profilu = nieużywalne) i brak
 | `reset <slug> [--card K-38]` | `incus snapshot restore <pudełko> clean` (kopia karty ma własną migawkę `clean`); odmawia (kod 3), gdy według dziennika biegnie krok; `/home/agent` to osobny wolumen — reset go nie dotyka |
 | `destroy <slug> --yes` | usuwa pudełko i wszystkie kopie per karta (`user.tide.copy-of`) z ich wolumenami `/home/agent`; odmawia, gdy biegnie krok |
 | `approve <slug> --file box.yaml [--accept-red POZYCJA]…` | walidacja schematem z #2, zapis w Tablicy i `box.approved source=cli` — jawna zgoda z wiersza poleceń, równoważna pakietowi zgód; pozycja czerwona (np. `github.com`) tylko z `--accept-red` |
-| `base`, `login` | „niedostępne do #16” (obraz bazowy) |
+| `base` | buduje obraz bazowy Tide (`make box-base`) — niżej, „Obraz bazowy Tide” |
+| `login [<slug>]` | logowanie agentów bez K3 (K1) w pudełku projektu; przy K3 dla obu programów — „nic do zalogowania” |
 
 `stop`/`start` doda #19, `run` — #28.
 
@@ -2487,6 +2488,89 @@ set/config device set|override|add` i wolumeny go zmieniają), a `exec` wykonuje
 z PATH zaczynającym się od `<fakebin>/box` — `apt-get`, `docker` i inne programy „w pudełku” tylko zapisują
 wywołanie. `daemon/tests/__init__.py` ustawia `TIDE_INCUS_BIN` na nieistniejący program, więc żaden test nie
 dosięgnie prawdziwego Incusa. Testy: `daemon/tests/test_box_builder.py`.
+
+### Obraz bazowy Tide (PT-179)
+
+Obraz, z którego `incus init` buildera robi każde pudełko projektu (`box.base-image`, domyślnie `tide-base`).
+Budowa raz na host i po każdej zmianie wersji agentów albo skryptów: `make box-base` (= `python3 daemon/tide.py box
+base`, bez sudo — projekt ograniczony Incusa). Moduły: `box/base.py` (budowa i logowanie), `box/stacks/base.sh`
+(skrypt w pudełku), `box/stacks/tide-step.sh`, `box/agents.py` (wersje), `box/netenv.py` (`BOX_NO_PROXY`).
+
+**Kolejność `tide box base`:**
+
+1. Adres proxy Tide (#5) — przed pierwszym poleceniem `incus`. Polecenie z wiersza poleceń używa proxy uruchomionego
+   w tym procesie, a gdy go nie ma, startuje własną instancję tego samego `ProxyService` (`start_service` z ustawień:
+   adres mostka, `box.proxy-port` — jedyny port wpuszczany przez nftables) i zatrzymuje ją po budowie. Gdy port
+   trzyma już usługa Tide (`box.enabled`), start się nie uda — budowa odmawia z tą informacją (zatrzymaj usługę na
+   czas budowy). Brak mostka albo `incus` → odmowa. Ścieżki „bez proxy” nie ma.
+2. `incus init images:ubuntu/24.04 tide-base` (bez startu), filtrowanie NIC jak w builderze, start, adres IPv4.
+3. `set_box_policy(ip, domeny szablonu base, ollama=False, base-denied.log)` — lista budowy = `templates.build_domains({})`,
+   czyli szablon `base` z domenami instalatorów agentów z P-6 (`claude.ai`, `downloads.claude.ai`, `registry.npmjs.org`,
+   `archive.ubuntu.com`, `security.ubuntu.com`, `nodejs.org`). Dziennik odmów
+   `$XDG_STATE_HOME/tide/box/tide-base/base-denied.log` (0600) jest czyszczony na starcie budowy — pusty po udanej
+   budowie znaczy „żadna domena nie brakowała”; wyjście poleceń w `base-build.log` obok.
+4. `incus file push` skryptów do `/opt/tide/stacks/` i czcionek użytkownika: zwykłe pliki czcionek (`.ttf`, `.otf`,
+   `.ttc`, `.woff2`, …) z `$XDG_DATA_HOME/fonts` (`~/.local/share/fonts`) hosta, bez dowiązań, jako `fonts.tar`
+   (właściciel root, 0644) — kopiowane, nie montowane (K-33).
+5. `bash /opt/tide/stacks/base.sh <krok>` jako root pudełka, każdy krok osobnym `incus exec` z proxy w środowisku
+   i wartościami z usługi: `TIDE_BOX_PROXY`, `TIDE_BOX_NO_PROXY` (= `BOX_NO_PROXY`), `TIDE_AGENT_UID/GID`
+   (`box.agent-uid/gid`), `TIDE_CLAUDE_VERSION`, `TIDE_CODEX_VERSION`. Kroki (`base.STEPS`):
+
+   | Krok | Co robi |
+   | --- | --- |
+   | `sources` | źródła Ubuntu (`ubuntu.sources` albo `sources.list`) z `http://` na `https://` (decyzja `apt-przez-https`; obce źródło `http://` = błąd), `/etc/apt/apt.conf.d/90tide-proxy` z `Acquire::http::Proxy` i `Acquire::https::Proxy` |
+   | `packages` | `apt-get update --error-on=any`, `git build-essential curl ca-certificates xvfb weston fontconfig nodejs npm bubblewrap socat apparmor` |
+   | `user` | `agent` z uid/gid 1000 (`ubuntu` z uid 1000 jest przejmowany), lingering (`loginctl enable-linger`) |
+   | `environment` | `/etc/environment` (`HTTP_PROXY`, `HTTPS_PROXY`, małe litery, `NO_PROXY`/`no_proxy` = `BOX_NO_PROXY`, `DISABLE_AUTOUPDATER=1`; reszta pliku, np. `PATH`, zostaje), `/etc/profile.d/tide-proxy.sh` (powłoki logowania) i `/etc/systemd/user.conf.d/90-tide-proxy.conf` (`DefaultEnvironment` usług `systemd --user` — kroki) |
+   | `fonts` | `fonts.tar` do `/usr/local/share/fonts/tide`, `fc-cache` |
+   | `tide-step` | `/usr/local/bin/tide-step` (niżej) |
+   | `apparmor` | profil `bwrap` (ten sam co `scripts/sandbox/check.py profile` na hoście) w `/etc/apparmor.d/bwrap-userns-restrict`, `apparmor_parser -r`, usługa `apparmor` włączona — wczytuje go przy każdym starcie pudełka (decyzja `bwrap-profil-w-pudelku`) |
+   | `claude` | instalator natywny `https://claude.ai/install.sh` pobrany do pliku (bez potoku do powłoki) i uruchomiony z dokładną wersją w katalogu tymczasowym; program do `/usr/local/bin/claude` (poza `/home/agent`, który w pudełku projektu przykrywa wolumen); `claude --version` jako `agent` |
+   | `codex` | `npm install -g @openai/codex@<wersja>`; `codex --version` jako `agent` |
+   | `cleanup` | `apt-get clean`, pamięć npm, listy apt, `/opt/tide` |
+
+6. `user.tide.agents` = `agents.AGENTS_VERSION`, migawka **`tide-base/clean`**, `incus publish tide-base/clean --alias
+   tide-base --reuse` (obraz dla `incus init` buildera), `incus stop tide-base`.
+7. Polityka budowy zdjęta z proxy (`clear_box_policy`) — także po błędzie. Nieudany krok = błąd bez migawki i obrazu.
+
+Bez drop-inu `dockerd` (szablon `docker.sh`, #29). Skrypt nie wpisuje żadnej wartości z usługi (adres proxy,
+`NO_PROXY`, wersje): odmawia pracy bez `TIDE_BOX_PROXY` równego `HTTP(S)_PROXY` wywołania, z nieprzypiętą wersją
+(`x.y.z`) albo poza rootem.
+
+**Wersje agentów** (`box/agents.py`): Claude Code `CLAUDE_VERSION` (wersja hosta z analizy 4.7, sprawdzona w P-6),
+Codex `CODEX_VERSION` (P-3/P-6) — dokładne, nigdy `latest`; auto-aktualizacja Claude Code w pudełku wyłączona.
+`AGENTS_VERSION` wchodzi do hasha przepisu pudełek projektów (`Builder.agents_version`; `box.agents-version`
+w ustawieniach go nadpisuje), a skrypty `box/stacks/*.sh` — przez `templates_version`. Podbicie wersji albo zmiana
+`base.sh` robi pudełka projektów nieaktualnymi: `make box-base`, potem `tide box build <slug>`. Podbicie Codexa
+= powtórka P-3 (dostawca K3 zależy od ścieżek `backend-api/codex`).
+
+**`BOX_NO_PROXY`** (`box/netenv.py`) = `localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal` (P-6, „NO_PROXY
+per klient”): pętla zwrotna pudełka i sieci Dockera w pudełku. Ta sama stała idzie do `/etc/environment` obrazu,
+do każdego `incus exec` budowy (#4) i — w #6 — do kroku. `netenv.proxy_env(proxy)` daje komplet zmiennych.
+
+**`tide-step`** (`/usr/local/bin/tide-step`, kontrakt BoxRunnera #6/PT-169, który może go rozszerzyć):
+`tide-step <plik env> <plik kodu> <program> [argumenty…]` — wczytuje `/etc/environment`, potem plik kroku
+(`KLUCZ=wartość`, jako dane — nic nie jest wykonywane; zły wiersz → kod 2), uruchamia program i zapisuje jego kod
+wyjścia atomowo do `<plik kodu>` (0600), jak `EXIT_WRAPPER` kroku na hoście. Krok biegnie jako usługa
+`systemd --user` agenta (decyzja `krok-jako-usluga-user`), więc zmienne kroku nie mogą przyjść przez środowisko
+wywołującego.
+
+**Logowanie agentów (K1) — `tide box login [<slug>]`.** Poza budową, jednorazowo. Programy do zalogowania to
+`k3.login_programs()`: dziś puste (K3 dla Claude Code i Codexa), więc polecenie kończy się „nic do zalogowania”
+(kod 0), a `tide box base` — „logowanie agentów niepotrzebne”. Gdyby K3 dla programu zostało wyłączone, budowa
+kończy się instrukcją „zaloguj: `tide box login` <projekt>” (kod 0, nie błąd), a `tide box login <slug>` otwiera
+`incus exec -t <pudełko> --user 1000 --cwd /home/agent -- claude login` (i `codex login`) z proxy Tide i polityką
+projektu (`compose_policy`) na czas logowania. Poświadczenia z `~/.claude`/`~/.codex` hosta nigdy nie są kopiowane.
+
+**Co jest trwałe.** `/home/agent` pudełka projektu to wolumen `<pudełko>-home` w puli `tide` (#4) — przeżywa reset
+z migawki `clean` i przebudowę pudełka (logowanie K1, `~/.npm`, `~/.nuget/packages`, `~/.cache/ms-playwright`);
+znika z `tide box destroy`. Obraz bazowy (instancja `tide-base` z migawką `clean` i obraz `tide-base`) żyje do
+następnego `make box-base`; reszta systemu plików pudełka wraca do `clean` przy resecie. Programy agentów,
+czcionki i konfiguracja proxy są w obrazie, nie w `/home/agent`.
+
+Testy: `daemon/tests/test_box_base.py` (atrapa `incus` z `fake_incus.py` uczy się `publish`; prawdziwy `base.sh`
+nie jest wykonywany w całości — jego funkcje plików biegną po `source` w katalogu tymczasowym).
+
 ### Proxy wyjściowe (PT-168)
 
 `tide_daemon/box/proxy.py` to jedyna droga pudełka do sieci i do Ollamy hosta: nftables wpuszczają z `incusbr0`

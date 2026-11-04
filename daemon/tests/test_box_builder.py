@@ -14,8 +14,10 @@ import tempfile
 import unittest
 from unittest import mock
 
+from tide_daemon.box import agents
 from tide_daemon.box import builder as bb
 from tide_daemon.box import cli
+from tide_daemon.box import netenv
 from tide_daemon.box import profile as bp
 from tide_daemon.box import state as bs
 from tide_daemon.box import templates
@@ -228,7 +230,7 @@ class BuildTest(BoxCase):
         # hash w migawce clean = profile.recipe_stamp (jedno źródło)
         snap = self.fake_state()["instances"]["plasma-tide"]["snapshots"][0]
         stamp = json.loads(snap["config"][bs.RECIPE_KEY])
-        want = bp.recipe_stamp(PROFILE, bb.templates_version(self.stacks), "")
+        want = bp.recipe_stamp(PROFILE, bb.templates_version(self.stacks), agents.AGENTS_VERSION)
         self.assertEqual(stamp, want)
         self.assertEqual(res.hash, want["hash"])
         self.assertFalse(res.warning)
@@ -619,11 +621,20 @@ class ApproveTest(BoxCase):
 
 
 class CliTest(BoxCase):
-    def test_base_and_login_unavailable_until_16(self):
-        for cmd in (["base"], ["login", "plasma-tide"]):
-            code, _, err = self.run_cli(*cmd)
-            self.assertEqual(code, 1)
-            self.assertIn("niedostępne do #16", err)
+    def test_agents_version_enters_the_recipe_and_settings_override_it(self):
+        self.approve()
+        self.assertEqual(self.builder().agents_version, agents.AGENTS_VERSION)
+        own = BoxSettings(project="user-1000", ip_wait_seconds=0, agents_version="claude-code 9.9.9")
+        self.assertEqual(self.builder(own).agents_version, "claude-code 9.9.9")
+        self.builder().build("plasma-tide")
+        st = self.builder(own).status("plasma-tide")
+        self.assertEqual((st.state, st.diff), (bs.STALE, ["agents"]))
+
+    def test_build_uses_the_shared_no_proxy(self):
+        self.approve()
+        self.builder().build("plasma-tide")
+        for argv in (a for a in self.incus_calls() if a[0] == "exec"):
+            self.assertIn(f"NO_PROXY={netenv.BOX_NO_PROXY}", argv)
 
     def test_tide_entry_point_build_without_running_proxy_fails_before_incus(self):
         # Osobny proces czyta prawdziwe box/stacks (bez skryptów .sh z #29), więc profil bez stosów.

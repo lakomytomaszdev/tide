@@ -1,26 +1,26 @@
 """`tide box base|build|status|reset|destroy|approve|login` — pudełko projektu z wiersza poleceń.
 
-`base` i `login` należą do obrazu bazowego (#16), `stop|start` doda #19, `run` — #28.
+`base` i `login` należą do obrazu bazowego (#16, `box/base.py`), `stop|start` doda #19, `run` — #28.
 Kody wyjścia: 0 sukces, 1 błąd (profil, Incus, budowa), 2 zły argument, 3 odmowa (biegną kroki, pudełko niezgodne
-albo nieaktualne w `status`). Opis: docs/tide-daemon.md (Budowa pudełka → CLI).
+albo nieaktualne w `status`). Opis: docs/tide-daemon.md (Budowa pudełka → CLI, Obraz bazowy Tide).
 """
 import argparse
 import json
 import sys
 
+from . import base as bbase
 from . import builder as bb
+from . import k3
 from . import profile as bp
 from . import settings as bset
 from .incus import IncusError
-
-UNAVAILABLE = "niedostępne do #16 (obraz bazowy Tide)"
 
 
 def _parser():
     parser = argparse.ArgumentParser(prog="tide box", description="Pudełko projektu (Incus)")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("base", help=UNAVAILABLE)
-    p = sub.add_parser("login", help=UNAVAILABLE)
+    sub.add_parser("base", help="buduje obraz bazowy Tide (agenci, proxy, czcionki) — make box-base")
+    p = sub.add_parser("login", help="logowanie agentów bez K3 w pudełku projektu (K1, jednorazowo)")
     p.add_argument("slug", nargs="?")
     p = sub.add_parser("build", help="buduje pudełko z profilu w Tablicy")
     p.add_argument("slug")
@@ -69,15 +69,56 @@ def format_status(st) -> str:
     return "\n".join(lines)
 
 
-def main(argv=None, out=None, err=None, builder=None) -> int:
+def _settings(err):
+    settings = bset.load()
+    for warning in settings.warnings:
+        print(f"tide box: {warning}", file=err)
+    return settings
+
+
+def run_base(base_builder, out) -> int:
+    res = base_builder.build()
+    print(f"obraz bazowy {res.image}: migawka {res.image}/clean i obraz {res.image}, czcionek {res.fonts}, "
+          f"{res.duration:.1f} s", file=out)
+    print(f"dziennik odmów proxy: {res.denied_log}", file=out)
+    if res.login:
+        # Brak logowania nie jest błędem budowy: logowanie K1 jest jednorazowe, w pudełku projektu.
+        print(f"{bbase.LOGIN_HINT} <projekt> (bez K3: {', '.join(res.login)})", file=out)
+    else:
+        print("logowanie agentów niepotrzebne: claude i codex działają w pudełku przez K3", file=out)
+    return 0
+
+
+def main(argv=None, out=None, err=None, builder=None, base_builder=None) -> int:
     out = out or sys.stdout
     err = err or sys.stderr
     try:
         args = _parser().parse_args(argv)
     except SystemExit as exc:
         return 2 if exc.code else 0
-    if args.cmd in ("base", "login"):
-        print(f"tide box {args.cmd}: {UNAVAILABLE}", file=err)
+    try:
+        if args.cmd == "base":
+            if base_builder is not None:
+                return run_base(base_builder, out)
+            settings = _settings(err)
+            service, own = bbase.ensure_proxy(settings)
+            try:
+                return run_base(bbase.BaseBuilder(settings, policy=service), out)
+            finally:
+                if own:
+                    service.stop()
+        if args.cmd == "login":
+            settings = _settings(err)
+            if not k3.login_programs():
+                return bbase.login(settings, args.slug, out)
+            service, own = bbase.ensure_proxy(settings)
+            try:
+                return bbase.login(settings, args.slug, out, policy=service)
+            finally:
+                if own:
+                    service.stop()
+    except (bb.BuildError, bp.ProfileError, IncusError, OSError, ValueError) as exc:
+        print(f"tide box {args.cmd}: {exc}", file=err)
         return 1
     try:
         if args.cmd == "approve":
@@ -87,10 +128,7 @@ def main(argv=None, out=None, err=None, builder=None) -> int:
             print(f"profil {args.slug} zatwierdzony (box.approved source=cli): {bp.project_path(args.slug)}", file=out)
             return 0
         if builder is None:
-            settings = bset.load()
-            for warning in settings.warnings:
-                print(f"tide box: {warning}", file=err)
-            builder = bb.Builder(settings)
+            builder = bb.Builder(_settings(err))
         b = builder
         if args.cmd == "build":
             res = b.build(args.slug)

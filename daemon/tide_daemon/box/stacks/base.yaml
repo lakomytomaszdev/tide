@@ -1,4 +1,5 @@
-# Usługa pudełka: bez tego nie zbudujemy obrazu bazowego. Domeny instalatorów agentów dopisuje #16.
+# Usługa pudełka: bez tego nie zbudujemy obrazu bazowego. Domeny instalatorów agentów z P-6 dopisał #16 (PT-179);
+# to też lista budowy obrazu bazowego (`tide box base`).
 stack: base
 description: Obraz bazowy pudełka (Ubuntu, Node, git)
 apt: [git, build-essential, curl, ca-certificates, xvfb]
@@ -15,4 +16,10 @@ domains:
   - name: registry.npmjs.org
     risk: green
     note: rejestr npm (instalatory agentów)
+  - name: claude.ai
+    risk: green
+    note: instalator natywny Claude Code (P-6, obraz bazowy)
+  - name: downloads.claude.ai
+    risk: green
+    note: pliki instalatora Claude Code (P-6, obraz bazowy)
 images: []

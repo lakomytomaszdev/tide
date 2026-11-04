@@ -1,15 +1,20 @@
 # Pudełko karty: Incus z pulą btrfs, projekt ograniczony i statyczne nftables (PT-166). Instalacja wymaga
 # sudo i zmienia system, dlatego NIE jest częścią make install ani make uninstall — tylko jawne cele box-*.
 # Testy: scripts/tests/test_box_install.py (scripts/tests jest już w TEST_DIRS). Opis: docs/tide-daemon.md,
-# sekcja „Pudełko → Instalacja”. Cele box-base (#16) i box-check (#28) dopisują kolejne tickety.
+# sekcja „Pudełko → Instalacja”. box-base (#16, PT-179) buduje obraz bazowy Tide bez sudo (projekt ograniczony
+# Incusa, sieć przez proxy Tide) — sekcja „Obraz bazowy Tide”. Cel box-check (#28) dopisze kolejny ticket.
 SUDO ?= sudo
+PYTHON ?= /usr/bin/python3
 # Port proxy Tide na adresie mostka — ta sama wartość co box.proxy-port usługi; zmiana = ponowne box-install.
 BOX_PROXY_PORT ?= 18080
 # restricted (domyślnie) albo admin — admin tylko po P-5 z PT-164 z wpisem tryb-admin w docs/box-decisions.md.
 BOX_PROJECT_MODE ?= restricted
 OUT ?=
 
-.PHONY: box-install box-uninstall box-state
+.PHONY: box-install box-uninstall box-state box-base
+
+box-base:
+	$(PYTHON) daemon/tide.py box base
 
 box-install:
 	$(SUDO) bash scripts/box/install.sh --yes --project-mode $(BOX_PROJECT_MODE) --proxy-port $(BOX_PROXY_PORT)

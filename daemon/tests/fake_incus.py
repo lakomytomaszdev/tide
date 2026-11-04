@@ -4,8 +4,8 @@
 - stan: `$TIDE_FAKE_INCUS_STATE/state.json` — instancje (status, config, urządzenia lokalne, migawki, adres),
   wolumeny, urządzenia profilu `default` (`eth0`, `root`); pliki z `file push` w `files/<instancja>/…`,
 - `list`, `snapshot list`, `config show`, `config device show`, `info` wypisują JSON ze stanu;
-  `init/launch/copy/snapshot create/snapshot restore/start/stop/delete/config set/config device set|override|add`
-  i `storage volume create|delete` zmieniają stan,
+  `init/launch/copy/snapshot create/snapshot restore/start/stop/delete/config set/config device set|override|add`,
+  `storage volume create|delete` i `publish` (obraz z migawki pod aliasem, `images` w stanie) zmieniają stan,
 - `exec … -- polecenie` wykonuje polecenie **lokalnie** w katalogu `--cwd` (domyślnie `<stan>/cwd/<instancja>`),
   ze zmiennymi `--env`, stdin z `/dev/null` i PATH zaczynającym się od atrap programów pudełka
   (`<fakebin>/box`: `apt-get`, `docker`, `systemctl` tylko zapisują wywołanie) — nic nie trafia na hosta;
@@ -234,6 +234,15 @@ def main(argv):
         with open(source, "rb") as src, open(local, "wb") as dst:
             dst.write(src.read())
         data.setdefault("pushed", {}).setdefault(name, {})["/" + path.lstrip("/")] = local
+    elif cmd == "publish":
+        base, _, snap = args[1].partition("/")
+        src = inst_or_die(data, base)
+        if snap and not [s for s in src["snapshots"] if s["name"] == snap]:
+            die(f"Snapshot not found: {args[1]}")
+        alias = args[args.index("--alias") + 1] if "--alias" in args else ""
+        if alias in data.setdefault("images", {}) and "--reuse" not in args:
+            die(f"Alias already exists: {alias}")
+        data["images"][alias] = {"source": args[1]}
     elif cmd == "exec":
         return run_exec(data, args[1:], rest)
     else:

@@ -192,8 +192,11 @@ class TemplatesTest(unittest.TestCase):
         self.assertIn("K1", notes[ryuk[0]]["note"])
 
     def test_templates_are_yaml_data_not_shell(self):
+        # Skrypty powłoki budowy (`*.sh`, #16/#29) leżą obok, ale szablonem stosu jest wyłącznie plik `.yaml`.
         for filename in os.listdir(templates.STACKS_DIR):
-            self.assertTrue(filename.endswith(".yaml"), filename)
+            self.assertTrue(filename.endswith((".yaml", ".sh")), filename)
+        self.assertNotIn("tide-step", templates.stack_names())
+        self.assertNotIn("base", templates.stack_names())
 
     def test_parser_reads_the_supported_subset_and_rejects_the_rest(self):
         data = templates.parse("stack: x\napt: [a, b]\nimages:\n  - r/i:1\ndomains:\n  - name: \"*.q\"\n    risk: red\n")

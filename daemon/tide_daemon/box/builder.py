@@ -27,6 +27,8 @@ import os
 import time
 from dataclasses import dataclass, field
 
+from . import agents
+from . import netenv
 from . import profile as bp
 from . import state as bs
 from . import templates
@@ -36,7 +38,7 @@ from .settings import BoxSettings
 
 SCRIPTS_DIR = templates.STACKS_DIR      # `box/stacks/<stos>.sh` obok szablonów danych (#29)
 REMOTE_STACKS = "/opt/tide/stacks"       # gdzie w pudełku lądują skrypty szablonów
-BUILD_NO_PROXY = "localhost,127.0.0.1,::1"
+BUILD_NO_PROXY = netenv.BOX_NO_PROXY     # jedno NO_PROXY dla budowy, obrazu bazowego i kroku (P-6)
 
 
 class BuildError(RuntimeError):
@@ -116,7 +118,12 @@ class Builder:
         return got
 
     def stamp(self, profile: dict) -> dict:
-        return bp.recipe_stamp(profile, templates_version(self.scripts_dir), self.settings.agents_version)
+        return bp.recipe_stamp(profile, templates_version(self.scripts_dir), self.agents_version)
+
+    @property
+    def agents_version(self) -> str:
+        """Wersje agentów obrazu bazowego (`box/agents.py`); `box.agents-version` w ustawieniach je nadpisuje."""
+        return self.settings.agents_version or agents.AGENTS_VERSION
 
     # --- budowa ----------------------------------------------------------------------------------
 
@@ -181,8 +188,7 @@ class Builder:
             self.policy.clear_box_policy(ip)
 
     def _provision(self, slug, name, full, proxy, steps) -> BuildResult:
-        env = {"HTTPS_PROXY": proxy, "HTTP_PROXY": proxy, "https_proxy": proxy, "http_proxy": proxy,
-               "NO_PROXY": BUILD_NO_PROXY, "no_proxy": BUILD_NO_PROXY, "DEBIAN_FRONTEND": "noninteractive"}
+        env = {**netenv.proxy_env(proxy, BUILD_NO_PROXY), "DEBIAN_FRONTEND": "noninteractive"}
         if full.get("node", {}).get("version"):
             env["TIDE_NODE_VERSION"] = full["node"]["version"]
         if full.get("dotnet", {}).get("sdk"):
@@ -324,7 +330,7 @@ class Builder:
             if stamp is None:
                 st.diff = ["recipe"]
             else:
-                st.diff = bp.diff(profile, stamp, templates_version(self.scripts_dir), self.settings.agents_version)
+                st.diff = bp.diff(profile, stamp, templates_version(self.scripts_dir), self.agents_version)
         if not st.nic_filtering:
             st.state = bs.NONCOMPLIANT
         elif jstate in (bs.BUILDING, bs.RESETTING, bs.FAILED):

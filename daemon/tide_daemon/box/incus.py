@@ -120,6 +120,11 @@ class Incus:
     def snapshot_restore(self, name: str, snapshot: str):
         self.call("snapshot", "restore", name, snapshot)
 
+    def publish(self, source: str, alias: str):
+        """`incus publish <instancja>/<migawka> --alias <alias> --reuse` — obraz z migawki (obraz bazowy, #16);
+        `--reuse` zastępuje poprzedni obraz o tym aliasie."""
+        self.call("publish", source, "--alias", alias, "--reuse")
+
     def snapshot_list(self, name: str) -> list:
         data = json.loads(self.call("snapshot", "list", name, "--format", "json").stdout or "[]")
         return data if isinstance(data, list) else []
@@ -167,8 +172,9 @@ class Incus:
     # --- polecenia w pudełku -----------------------------------------------------------------------
 
     def exec_argv(self, name: str, command: list, env: dict | None = None, user: int | None = None,
-                  cwd: str | None = None) -> list:
-        args = ["exec", name, "-T"]
+                  cwd: str | None = None, tty: bool = False) -> list:
+        """argv `incus exec`; `tty=True` (`-t`) tylko dla poleceń interaktywnych użytkownika (`tide box login`)."""
+        args = ["exec", name, "-t" if tty else "-T"]
         if user is not None:
             args += ["--user", str(user), "--group", str(user)]
         if cwd:
