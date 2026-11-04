@@ -324,6 +324,12 @@ elif word == "smieci":
         with open(junk, "w") as fh:
             fh.write("# diagnostyka\n")
     finish("done")
+elif word == "dane-zostaja":
+    # Autor zostawia nieśledzone dane wejściowe i po prośbie o porządek ich nie usuwa (04.11, K-43/BO-9).
+    if not prompt.startswith("Krok review"):
+        with open(os.path.join(cwd, "dane-wejsciowe.tar"), "w") as fh:
+            fh.write("x\n")
+    finish("done")
 elif word == "blad-local":
     time.sleep(0.5)
     finish("error", reason="awaria testowa")

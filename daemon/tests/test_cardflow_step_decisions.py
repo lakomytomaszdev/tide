@@ -207,6 +207,16 @@ class StepDecisionTest(FlowInProcess):
             self.assertIn("worktree ticketu ma niezacommitowane", json.load(fh)["prompt"])
         self.assertEqual(self.of(card_id, "flow.error"), [])
 
+    def test_untracked_data_left_after_cleanup_does_not_stop_the_review(self):
+        # 04.11, K-43/BO-9: po jednej prośbie o porządek zostały nieśledzone dane wejściowe autora i karta stała
+        # z flow.error „worktree ticketu ma lokalne zmiany”. Review rusza, dane nie trafiają do scalenia.
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: dane-zostaja")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "review")
+        self.assertEqual(len(self.of(card_id, "step.cleanup")), 1)
+        self.assertEqual(self.of(card_id, "flow.error"), [])
+        self.assertEqual(len(self.of(card_id, "review.verdict")), 1)
+
     def test_decision_can_name_its_step_and_only_a_waiting_one(self):
         # K-15: przy dwóch pytaniach naraz odpowiedź trafiała do najnowszego kroku, a nie do zamierzonego.
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")

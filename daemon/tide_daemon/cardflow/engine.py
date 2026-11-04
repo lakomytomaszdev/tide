@@ -3117,12 +3117,18 @@ class FlowEngine(PlanEditing):
             # K-35/PT-132: autor skończył, ale zostawił nieśledzony plik diagnostyczny — zamiast stać, krok autora
             # wraca raz z prośbą o porządek (commit potrzebnych zmian, usunięcie tymczasowych plików).
             asked = sum(1 for e in self.journal.read(card) if e.get("type") == "step.cleanup" and e.get("ticket") == ticket)
-            if "lokalne zmiany" not in str(exc) or asked >= 1 or not source.get("step") or \
-                    any(s.get("parentStep") == source["step"] for s in st.steps.values()):
+            if "lokalne zmiany" not in str(exc):
                 raise
-            self.journal.append(card, "step.cleanup", step=source["step"], ticket=ticket)
-            self._resume_step(card, fold(self.journal.read(card)), source, {"choice": "cleanup"})
-            return
+            if asked >= 1 or not source.get("step") or \
+                    any(s.get("parentStep") == source["step"] for s in st.steps.values()):
+                # Po jednej prośbie o porządek zostały już tylko nieśledzone pliki (dane wejściowe, wyniki pomiarów):
+                # nie zmieniają gałęzi ani scalenia, więc review rusza; zmiany śledzonych plików dalej blokują
+                # (04.11, K-43/BO-9: ponowione review kończyło się flow.error „worktree ticketu ma lokalne zmiany”).
+                tip = self.git.clean_tip(project.repo, info["branch"], path, untracked=False)
+            else:
+                self.journal.append(card, "step.cleanup", step=source["step"], ticket=ticket)
+                self._resume_step(card, fold(self.journal.read(card)), source, {"choice": "cleanup"})
+                return
         diff = self.git.review_diff(project.repo, info["cardBranch"], info["branch"])
         step_id = self._next_step_id(card, ticket, st)
         out = path + f".review-{round_no}.step/out"
