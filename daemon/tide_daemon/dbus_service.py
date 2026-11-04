@@ -528,6 +528,16 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="id" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="ApproveCardEnvironment">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="yaml" type="s" direction="in"/>
+    <arg name="onlyPlan" type="b" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="BoxStatus">
+    <arg name="slug" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <method name="CardBranchDiff">
     <arg name="id" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
@@ -1085,6 +1095,30 @@ class BoardAdaptor(QDBusAbstractAdaptor):
                 print("tide-daemon: nie udało się odesłać wyniku Board.ApproveCardPlan", flush=True)
 
         self.monitor.approve_card_plan(card_id, reply)
+        return ""
+
+    @pyqtSlot(str, str, bool, QDBusMessage, result=str)
+    def ApproveCardEnvironment(self, card_id: str, yaml_text: str, only_plan: bool, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.ApproveCardEnvironment", flush=True)
+
+        self.monitor.approve_card_environment(card_id, yaml_text, only_plan, reply)
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def BoxStatus(self, slug: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.BoxStatus", flush=True)
+
+        self.monitor.box_status(slug, reply)
         return ""
 
     @pyqtSlot(str, QDBusMessage, result=str)

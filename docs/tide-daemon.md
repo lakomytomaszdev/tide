@@ -871,6 +871,8 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
 | `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
+| `ApproveCardEnvironment(s id, s yaml, b onlyPlan)` | `→ s` | pakiet zgód środowiska karty (PT-172, niżej): usługa waliduje `yaml` (profil karty) i zgodę na pozycje czerwone przed jakimkolwiek zapisem; `onlyPlan` zatwierdza sam plan i ustawia `boxWait: environment` |
+| `BoxStatus(s slug)` | `→ s` | stan pudełka projektu, hash przepisu, „filtrowanie NIC: tak/nie” i `boxWait` kart projektu (PT-172, niżej) |
 | `CardBranchDiff(s id)` | `→ s` | po domknięciu karty zwraca diff gałęzi karty względem głównej, wyłącznie do odczytu |
 | `MergeCardToMain(s id)` | `→ s` | wyłącznie na kliknięcie użytkownika scala domkniętą kartę do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych zmianach w głównym checkoutcie |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
@@ -1976,6 +1978,70 @@ Błędy formatu trafiają do `Proposal.errors` z prefiksem `box.yaml:`: nieznany
 `full-consent`, pozycja czerwona (adres wewnętrzny, `github.com`, `packs`) bez jawnego `accepted_red`, dowiązanie
 poza katalog planu, plik większy niż 64 KB. Brak pliku nie jest błędem (`Proposal.box` to `None`); poprawny plik
 wraca w `Proposal.box`. Plik nie jest zapisywany ani kopiowany do Tablicy — zatwierdza go użytkownik.
+
+### Pakiet zgód: środowisko karty (PT-172)
+
+Plan do zatwierdzenia (i plan zatwierdzony z „Tylko plan”) ma w `derived.flow.plan.environment` sekcję „Środowisko
+karty”, liczoną przez usługę (`cardflow/envconsent.py`) z profilu projektu (zatwierdzonego albo propozycji z PT-190)
+i propozycji `out/box.yaml` (zapisywanej w `plan.proposed.box`). Panel tylko ją pokazuje — nie zna listy kluczy ani
+reguł ryzyka. Pola sekcji:
+
+- `state` / `stateLabel`: `clean` (z datą migawki), `build` („do zbudowania”), `rebuild` („do przebudowy”) i `diff`
+  `{added, removed}` — różnica pozycji względem profilu zatwierdzonego przy hashu migawki `clean` (dziennik pudełka),
+- `items[]`: `id`, `label`, `group`, `risk` (`green|yellow|red` z `box/profile.py`, `display_items`), `riskLabel`, `token`
+  (nazwa koloru motywu), `scope` (`projekt|karta`), `enabled`, `needsConsent` (czerwone: domyślnie wyłączone, włącza je
+  tylko jawne zaznaczenie), `locked`, `note`; pozycja `docker` niesie opis ryzyka K1 z propozycji (szablon docker)
+  i dopisek „K3 aktywne/nieaktywne” według `box/k3.py`; pozycja `box:per-card` ma `toggle {on, off}` (domyślnie jak
+  w profilu projektu),
+- `yaml` (profil karty bez `box` i zgód, do pola „Zmień”), `acceptKey` (`accepted_red` — klucz zgody, który panel dopisuje
+  do YAML-a z zaznaczonych pozycji), `notes[]` (np. odrzucony adres wewnętrzny w `.tide/box.yaml`, D13),
+- `question`: „Czego potrzebuje środowisko?” dla projektu bez profilu i bez wzorca — pozycja planu, nie pytanie w kroku.
+
+`ApproveCardEnvironment(card, yaml, onlyPlan)` (JSON; błędy jak inne metody /Board):
+
+1. `prepare`: `yaml` jest profilem karty (`profile.parse(…, "card")`). Nieznany klucz, zły typ, pozycja czerwona
+   (`network.full`, adres wewnętrzny, `github.com`/`gitlab`, `packs`) bez wpisu w `accepted_red`, wpis `accepted_red`
+   bez takiej pozycji → `{ok: false, error: "invalid-environment", message, errors[], items[]}` **bez żadnego zapisu,
+   bez zatwierdzenia planu i bez budowy** (też gdy wołane spoza panelu). Projekt jeszcze bez profilu: usługa sama
+   buduje propozycję (`.tide/box.yaml` albo szablony stosów), a jej pozycje czerwone też wymagają zgody; adres
+   wewnętrzny w profilu projektu jest odrzucany (D13).
+2. Plan czekający na zatwierdzenie jest zatwierdzany (`ApproveCardPlan`); `review-pending` przerywa przed zapisem.
+3. `onlyPlan = true`: nic nie jest zapisywane w Tablicy; zdarzenie `box.wait` ustawia `boxWait: environment`.
+4. `onlyPlan = false`: zapis profilu projektu (jeśli nie był zatwierdzony) i karty do Tablicy
+   (`projects/<slug>/box.yaml`, `…/cards/k-n/box.yaml`), zdarzenie `box.approved source=ui` z `accepted_red`, `items`
+   i `recipe`, wyczyszczenie `boxWait`, a gdy pudełko nie ma migawki `clean` z tym hashem — budowa (`build`) albo
+   przebudowa (`rebuild`) przez `Builder` z PT-167 w osobnym wątku (atrapa: `FlowEngine.box_launcher`). Odpowiedź:
+   `{ok, saved[], acceptedRed[], build: "build"|"rebuild"|"", boxWait: ""}`.
+
+Tablicę commituje Tide; profil zapisuje wyłącznie usługa.
+
+`BoxStatus(slug)` zwraca `Builder.status` (`state`, `recipeHash`, `profileHash`, `diff`, `exists`, `usable`,
+`nicFiltering`) oraz `nicLabel` („filtrowanie NIC: tak/nie”) i `cards[]` = `{card, boxWait}` dla kart projektu z dziennikiem.
+Błędy: `bad-project`, `no-project`.
+
+#### Pole `boxWait`
+
+Pole stanu karty (dziennik: zdarzenie `box.wait` z `value`, puste = wyczyszczone; `FlowState.box_wait`;
+`derived.flow.boxWait` i `boxWaitLabel`; `BoxStatus.cards[].boxWait`). Jedyny czytnik: `cardflow/boxwait.py`,
+`card_box_wait(card)` (przyjmuje `FlowState`, słownik karty albo `derived.flow`); #18 korzysta z niego, nie czyta
+dziennika sam. Brak pola = nic nie blokuje.
+
+| Wartość | Znacznik w panelu | Kto ustawia | Kto czyści |
+|---|---|---|---|
+| `environment` | „czeka na środowisko” | PT-172: „Tylko plan” oraz każde zatwierdzenie planu (`engine.approve_plan`, także `ApproveCardPlan` z okna decyzji i widoku planu) — plan nie omija pakietu zgód | PT-172: `ApproveCardEnvironment` bez `onlyPlan` |
+| `start` | „czeka na pudełko” | #18 (silnik): pudełko zatrzymane, trwa start | #18 |
+| `rebuild` | „do przebudowy” | #18: hash przepisu niezgodny, przebudowa czeka na zatwierdzenie z planem | #18 |
+
+`set_box_wait(journal, card, value)` zapisuje zmianę (bez zdarzenia, gdy wartość się nie zmienia).
+
+#### Pytanie o domenę (wynik kroku `denied`)
+
+Wynik `{"result": "denied", "command": "network: <domena>"}` (odmowa proxy pudełka) nie jest zgodą na polecenie:
+`step.finished` dostaje pole `network`, a decyzja karty (`kind: permission`) ma dwie możliwości bez polecanej:
+`box-allow` („Dopisz do profilu karty i przebuduj”) i `deny` („Nie, wznów bez”). `box-allow` dopisuje domenę do
+profilu karty (`profile.save_card`, domena czerwona jest odrzucana — o niej decyduje się w planie), dopisuje zdarzenie
+`box.rebuild-requested` (dla silnika #18) i wznawia krok z informacją; `deny` wznawia krok z informacją o odmowie
+i niczego nie zapisuje.
 
 ### Migracja `cardflow.json` do propozycji profilu (PT-190)
 

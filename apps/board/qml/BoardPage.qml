@@ -111,6 +111,7 @@ Rectangle {
     signal pauseRequested(string tag, string cardId, bool paused)
     signal planEditRequested(string tag, string cardId, string request)
     signal planApproveRequested(string tag, string cardId)       // /Board ApproveCardPlan
+    signal environmentApproveRequested(string tag, string cardId, string yaml, bool onlyPlan)   // /Board ApproveCardEnvironment
     signal branchDiffRequested(string tag, string cardId)
     signal mergeMainRequested(string tag, string cardId)
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
@@ -690,6 +691,14 @@ Rectangle {
             planManager.busy = false
             planManager.error = error
             if (!error) planManager.notice = "Plan zatwierdzony. Uruchamiam pierwszy gotowy ticket."
+        } else if (tag.indexOf("env-approve:") === 0) {
+            // Odmowę waliduje usługa; panel pokazuje jej komunikat i pozycje (nowe do zaznaczenia), nic nie zgaduje.
+            cardPanel.busy = false
+            cardPanel.environmentError = error
+            cardPanel.environmentReply = error ? reply : null
+            if (!error) cardPanel.notice = reply.onlyPlan
+                ? "Plan zatwierdzony. Środowisko czeka na zatwierdzenie."
+                : (reply.build ? "Środowisko zatwierdzone. Budowa pudełka trwa w tle." : "Środowisko zatwierdzone.")
         } else if (tag.indexOf("branch-diff:") === 0) {
             cardPanel.error = error
             if (!error) cardPanel.branchDiff = reply.diff || "(brak różnic)"
@@ -1670,6 +1679,10 @@ Rectangle {
             page.planEditRequested(page.nextTag("plan-edit:" + cardId), cardId, JSON.stringify(request))
         onPlanApproveRequested: cardId =>
             page.planApproveRequested(page.nextTag("plan-approve:" + cardId), cardId)
+        onEnvironmentApproveRequested: (cardId, yaml, onlyPlan) => {
+            cardPanel.environmentError = ""
+            page.environmentApproveRequested(page.nextTag("env-approve:" + cardId), cardId, yaml, onlyPlan)
+        }
         onPlanManagerRequested: page.openPlanManager()
         onBranchDiffRequested: cardId =>
             page.branchDiffRequested(page.nextTag("branch-diff:" + cardId), cardId)

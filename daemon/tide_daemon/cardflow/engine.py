@@ -271,6 +271,9 @@ class FlowEngine(PlanEditing):
         self._busy: tuple = ()
         self._notices: list[dict] = []
         self._local_claims: dict[str, object] = {}
+        self.box_launcher = None        # PT-172: funkcja(slug, profil, "build"|"rebuild"); None — wątek z Builderem (#4)
+        self.box_builder = None         # PT-172: fabryka() → Builder dla BoxStatus; None — Builder z ustawień pudełka
+        self._env_cache: dict = {}      # karta → (klucz, sekcja „Środowisko karty”)
 
     # --- odczyt (wątek główny) -------------------------------------------------------------------
 
@@ -395,11 +398,48 @@ class FlowEngine(PlanEditing):
         flow["limitTransfer"] = fullcard.limit_transfer(stopped, flow["otherProviders"],
                                                         settings["limitThresholdPercent"], pick)
 
+    def _environment_view(self, card: str, st: FlowState, out: dict) -> None:
+        """PT-172: `flow.boxWait` i sekcja „Środowisko karty” w planie do zatwierdzenia (albo zatwierdzonym z „Tylko plan”).
+        Błąd odczytu profilu nie psuje migawki: sekcja dostaje komunikat zamiast pozycji."""
+        from . import boxwait, envconsent
+        wait = boxwait.card_box_wait(st)
+        flow = out.get("flow") or {}
+        flow["boxWait"], flow["boxWaitLabel"] = wait, boxwait.label(wait)
+        plan = flow.get("plan")
+        if not plan or not (plan.get("status") == "pending" or wait == boxwait.ENVIRONMENT):
+            return
+        proposal = st.plan_proposed or {}
+        try:
+            slug, _repo = envconsent._project_state(self, card)
+            stamp = tuple(os.path.getmtime(p) if os.path.exists(p) else 0 for p in
+                          (envconsent.bp.project_path(slug), envconsent.bp.card_path(slug, card),
+                           envconsent.bs.journal_path(slug)))
+            key = (proposal.get("seq"), wait, bool(st.plan_approved), stamp)
+            hit = self._env_cache.get(card)
+            if hit is None or hit[0] != key:
+                hit = (key, envconsent.model(self, card, st))
+                self._env_cache[card] = hit
+            plan["environment"] = hit[1]
+        except Exception as exc:
+            plan["environment"] = {"items": [], "notes": [f"środowisko karty: {exc}"], "state": "error", "stateLabel": "",
+                                   "boxWait": wait, "boxWaitLabel": boxwait.label(wait), "question": "", "yaml": "",
+                                   "acceptKey": envconsent.CONSENT_KEY, "diff": {"added": [], "removed": []}}
+
+    def approve_environment(self, card_id: str, text: str, only_plan: bool) -> dict:
+        """ApproveCardEnvironment: walidacja i klasyfikacja w usłudze, zapis do Tablicy, `box.approved`, budowa w tle."""
+        from . import envconsent
+        return envconsent.approve(self, card_id, text, bool(only_plan))
+
+    def box_status(self, slug: str) -> dict:
+        from . import envconsent
+        return envconsent.status(self, slug)
+
     def derived(self, card: dict) -> dict | None:
         st = fold(self.journal.read(card.get("id") or ""))
         out = derived(st, card)
         if out:
             self._limit_view(st, out)
+            self._environment_view(card.get("id") or "", st, out)
         step = st.steps.get(st.last_step) or {}
         if not out or out.get("column") != "progress" or step.get("mode") != "interactive" or \
                 st.last_step in st.finished or step.get("consoleClosed") or not step.get("session") or \
@@ -1315,6 +1355,7 @@ class FlowEngine(PlanEditing):
                             session=proposal.plan.session, rows=rows,
                             planner=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("executor") or
                                     (fold(self.journal.read(card_id)).started or {}).get("executor") or proposal.rows[0]["executor"],
+                            box=proposal.box,   # PT-172: propozycja rozszerzenia profilu (out/box.yaml) do pakietu zgód
                             sourceStep=step, sourceKind=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("kind") or "",
                             specification=self._plan_spec(path) or (fold(self.journal.read(card_id)).plan_proposed or {}).get("specification") or item.description, planPath=os.path.realpath(path))
         return {"ok": True, "id": card_id, "rows": proposal.rows, "waves": proposal.waves}
@@ -1390,6 +1431,9 @@ class FlowEngine(PlanEditing):
         for row in rows:
             if row.get("sourceState") in ("gotowe", "odrzucone"):
                 self.journal.append(card_id, "ticket.imported", ticket=row["id"], state=row["sourceState"])
+        # PT-172: plan bez zatwierdzonego środowiska to „czeka na środowisko”; czyści to dopiero ApproveCardEnvironment.
+        from . import boxwait
+        boxwait.set_box_wait(self.journal, card_id, boxwait.ENVIRONMENT, source="plan-approval")
         return {"ok": True, "id": card_id, "map": mapping, "waves": waves}
 
     def _images(self, value) -> list[str]:
@@ -2387,7 +2431,7 @@ class FlowEngine(PlanEditing):
         done = st.finished.get(focus) or {}
         result = done.get("result")
         valid = {"question": ("answer",), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
-                 else ("allow", "deny"), "error": ("retry", "change-executor", "reject"),
+                 else ("box-allow", "deny") if done.get("network") else ("allow", "deny"), "error": ("retry", "change-executor", "reject"),
                  "stopped": ("background",) if done.get("reason") == "interactive-closed" else ()}.get(result, ())
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
@@ -2426,6 +2470,17 @@ class FlowEngine(PlanEditing):
             return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
         if choice == "allow":
             granted, skipped = self._grant(card, step, done, request.get("allow"))
+        if choice == "box-allow":
+            # PT-172: domena z odmowy proxy trafia do profilu karty (tylko nie-czerwona), przebudowa jest zdarzeniem
+            # dla silnika (#18), a krok wznawia się z tą informacją.
+            from . import envconsent
+            domain = envconsent.network_domain(done.get("command"))
+            slug = self._project(card)[1].slug
+            try:
+                envconsent.add_card_domain(slug, card, domain)
+            except envconsent.bp.ProfileError as exc:
+                raise FlowError("red-domain", "; ".join(exc.errors)) from None
+            self.journal.append(card, "box.rebuild-requested", step=focus, domain=domain, project=slug)
         if choice in ("run", "run-always", "run-ticket"):
             from ..board.commands import outside_allowed, outside_pattern
             command = str(done.get("command") or "").strip()
@@ -2449,7 +2504,8 @@ class FlowEngine(PlanEditing):
             extra["auto"] = True
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
                                     choice=choice, answer=answer if choice in ("answer", "deny", "retry") else "",
-                                    command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always", "run-ticket")
+                                    command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always", "run-ticket",
+                                                                                    "box-allow")
                                     else "", executor=executor if choice == "change-executor" else "", **extra)
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
 
@@ -3424,7 +3480,14 @@ class FlowEngine(PlanEditing):
             command = data.get("command") or ""
             from ..board.commands import sandbox_grant
             data["canAllow"] = sandbox_grant(command, project.denied_commands) is not None
-            if data.get("outside"):
+            from . import envconsent
+            network = "" if data.get("outside") else envconsent.network_domain(command)
+            if network:
+                # PT-172: odmowa proxy to pytanie o domenę (dopisz do profilu karty i przebuduj / wznów bez), nie zgoda
+                # na polecenie — bez rozkładu łańcucha i bez automatycznej odmowy.
+                extra["network"] = network
+                data["canAllow"] = False
+            elif data.get("outside"):
                 from ..board.commands import outside_allowed, outside_matches, outside_pattern
                 extra["outside"] = True
                 extra["pattern"] = outside_pattern(command)
@@ -3458,7 +3521,7 @@ class FlowEngine(PlanEditing):
             self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="retry", answer="", command="", executor="",
                                 auto=True)
-        if data.get("result") == "denied" and not data.get("outside"):
+        if data.get("result") == "denied" and not data.get("outside") and not extra.get("network"):
             # Prośbie o uruchomienie poza piaskownicą Tide sam nie odmawia (K-16/LEGAL-66: odmowa bez wyjścia).
             listed = extra.get("commands") or []
             if listed and not data.get("canAllow", True) and not any(item["canAllow"] for item in listed):

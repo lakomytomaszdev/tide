@@ -218,6 +218,13 @@ class CardFlowMonitor(QObject):
         if not self._submit(lambda: self.engine.approve_plan(card_id), answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
+    def approve_environment(self, card_id: str, yaml_text: str, only_plan: bool, reply) -> None:
+        """ApproveCardEnvironment (PT-172): walidacja i zapis w tym samym szeregowym wątku co kroki; budowa w tle."""
+        self._action("ApproveCardEnvironment", lambda: self.engine.approve_environment(card_id, yaml_text, only_plan), reply)
+
+    def box_status(self, slug: str, reply) -> None:
+        self._action("BoxStatus", lambda: self.engine.box_status(slug), reply)
+
     def card_diff(self, card_id: str, reply) -> None:
         self._action("CardBranchDiff", lambda: self.engine.card_diff(card_id), reply)
 
