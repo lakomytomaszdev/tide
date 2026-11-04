@@ -3,7 +3,7 @@
 # ścieżkami, nakładki tylko do odczytu na .git/hooks, .git/config, .git/info; git status, git commit na gałęzi
 # proto/k-38, npm ci w kontenerze i na hoście; widoczność hosta z kontenera (~/.ssh, ~/.git-credentials,
 # główny worktree, gniazdo Dockera hosta, Postgres hosta).
-# Użycie: bash scripts/box/prototype/p4.sh   (sudo zapyta o hasło — sieć dla apt i npm)
+# Użycie: bash scripts/box/prototype/p4.sh   (sieć dla apt i npm przez chwilowe proxy z lib.sh, bez sudo)
 #
 # Projekt: PROTO_NODE_PROJECT (domyślnie ~/DevWorkspace/toolssuite — node z package-lock.json). Skrypt zakłada
 # worktree <proj>-worktrees/proto-k-38 na nowej gałęzi proto/k-38 i usuwa je (z gałęzią) na końcu; główny
@@ -31,7 +31,6 @@ note "Projekt: $proj, worktree próby: $wt, node hosta: $node_version"
 note "System plików: $(df -T "$proj" | awk 'NR==2 {print $2}') ($proj)"
 
 require_incus
-sudo_prime
 require_table
 ensure_box
 net_open

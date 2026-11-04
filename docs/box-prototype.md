@@ -12,20 +12,40 @@ o nic nie pytają (poza hasłem sudo przy nftables), nie używają `security.pri
 
 ## Wyniki
 
-Stan: skrypty gotowe, próby czekają na instalację Incusa na hoście (`make box-install`, PT-166); potem kolejność
-niżej, od `p5.sh`. Wiersze uzupełnia PT-164 po każdej rundzie. Bez instalacji każdy skrypt kończy się wynikiem
-`warunki: fail` (brak dostępu do Incusa albo tabeli `inet tide-box`) i niczego nie zmienia.
+Stan: runda 1 (04.11.2026, 11:29–11:39, Incus 6.0.0 po `make box-install`, logi `docs/box-prototype/*.log`)
+dała częściowe wyniki i ujawniła błędy skryptów; skrypty poprawione, runda 2: `bash scripts/box/prototype/all.sh`
+(p5 → p1 → p4 → p9 → measure). Kolumna „Wynik” to stan po rundzie 1.
 
 | Próba | Co sprawdza | Polecenie | Wynik | Czas | Wariant awaryjny (gdy nie działa) |
 | --- | --- | --- | --- | --- | --- |
-| P-1 | Docker w nieuprzywilejowanym kontenerze (`security.nesting`, intercept `mknod`/`setxattr`): `docker run --rm hello-world`, `dotnet test` LegalApp z Testcontainers (`pgvector/pgvector:pg16`) | `bash scripts/box/prototype/p1.sh` | czeka | — | Podman w pudełku z gniazdem Docker API (`podman system service`) albo `type: vm` dla projektów z Dockerem |
+| P-1 | Docker w nieuprzywilejowanym kontenerze (`security.nesting`, intercept `mknod`/`setxattr`): `docker run --rm hello-world`, `dotnet test` LegalApp z Testcontainers (`pgvector/pgvector:pg16`) | `bash scripts/box/prototype/p1.sh` | **nierozstrzygnięte** — kontener bez internetu mimo trzech reguł `tide-proto` (DNS działał, TCP `connection timed out`); `apt-get install docker.io` nie przeszedł. Tabela przed/po identyczna. Runda 2: sieć przez chwilowe proxy (niżej) | — | Podman w pudełku z gniazdem Docker API (`podman system service`) albo `type: vm` dla projektów z Dockerem |
 | P-2 | bwrap Claude Code i landlock Codexa w kontenerze | PT-178 | — | — | PT-178 |
 | P-3 | OAuth agentów przez inny base URL (K3) | PT-178 | — | — | PT-178 |
-| P-4 | `<proj>/.git` i `<proj>-worktrees` z ext4 `/home` przez `shift=true` pod identycznymi ścieżkami, nakładki ro na `.git/hooks`, `.git/config`, `.git/info`; `git status`, `git commit` na `proto/k-38`, `npm ci` (kontener i host) | `bash scripts/box/prototype/p4.sh` | czeka | — | `raw.idmap "both 1000 1000"` bez `shift` (skrypt próbuje sam i zapisuje wariant) |
-| P-5 | Projekt ograniczony `user-1000` (`incus-user`, grupa `incus`): nesting, intercept, filtrowanie NIC (`security.mac_filtering`, `security.ipv4_filtering`, `security.ipv6_filtering` na `eth0`), próba podszycia pod obcy adres | `bash scripts/box/prototype/p5.sh` | czeka | — | nesting/intercept: `--project-mode admin` w `scripts/box/install.sh` (grupa `incus-admin`, D9) z wpisem `tryb-admin`; filtrowanie NIC: brak wariantu — warunek konieczny (`question`) |
+| P-4 | `<proj>/.git` i `<proj>-worktrees` z ext4 `/home` przez `shift=true` pod identycznymi ścieżkami, nakładki ro na `.git/hooks`, `.git/config`, `.git/info`; `git status`, `git commit` na `proto/k-38`, `npm ci` (kontener i host) | `bash scripts/box/prototype/p4.sh` | **nierozstrzygnięte** — stanęło na `apt-get install git` (ta sama sieć co P-1), przed założeniem worktree (nic do sprzątania) | — | `raw.idmap "both 1000 1000"` bez `shift` (skrypt próbuje sam i zapisuje wariant) |
+| P-5 | Projekt ograniczony `user-1000` (`incus-user`, grupa `incus`): nesting, intercept, filtrowanie NIC (`security.mac_filtering`, `security.ipv4_filtering`, `security.ipv6_filtering` na `eth0`), próba podszycia pod obcy adres | `bash scripts/box/prototype/p5.sh` | **nesting działa** (projekt przyjął `security.nesting=true`, `unshare --mount-proc` w kontenerze OK). **Intercept odrzucony** przez projekt: „Container syscall interception is forbidden” (`restricted.containers.interception` domyślnie `block`); z chwilowym `allow`: `mknod c 1 3` OK, test setxattr był błędny (ENODATA z `getxattr`, poprawione). **Filtrowanie NIC nierozstrzygnięte**: `security.ipv6_filtering` wymaga `br_netfilter` — kontener nie wystartował; kontrola B pokazała, że bez filtrowania podszycie pod `10.173.184.250` dochodzi do mostka (test jest ważny) | 0,02–17 s | nesting/intercept: `--project-mode admin` w `scripts/box/install.sh` (grupa `incus-admin`, D9) z wpisem `tryb-admin` albo `restricted.containers.interception=allow` w projekcie (decyzja po rundzie 2); filtrowanie NIC: brak wariantu — warunek konieczny (`question`) |
 | P-6 | Klienci (npm, NuGet, pip, Docker, agenci) przez proxy CONNECT i `NO_PROXY` | PT-178 | — | — | PT-178 |
 | P-7 | Obrazy Incusa (bazowy Tide) | PT-178 | — | — | PT-178 |
-| P-9 | `systemd --user` agenta (lingering), `systemd-run --user --scope` przez `incus exec`; proces przeżywa śmierć klienta `incus exec` i `systemctl --user restart tide-daemon` | `bash scripts/box/prototype/p9.sh` | czeka | — | `systemd-run` jako root pudełka z `--uid=agent` (usługa zamiast scope; tokeny tylko w `in/env`) |
+| P-9 | `systemd --user` agenta (lingering), `systemd-run --user --scope` przez `incus exec`; proces przeżywa śmierć klienta `incus exec` i `systemctl --user restart tide-daemon` | `bash scripts/box/prototype/p9.sh` | **lingering i `systemd-run --user --scope` działają; proces w scope NIE przeżywa śmierci klienta `incus exec`** (`systemctl --user stop tide-proto-client` → `pgrep sleep` pusty). Restart `tide-daemon` nie zabił procesu, ale klient nie był dzieckiem usługi — test nie rozstrzyga. Runda 2 sprawdza też usługę `--user` (`systemd-run --user --wait`) i usługę roota z `--uid` | 0,06 s | `systemd-run` jako root pudełka z `--uid=agent` (usługa zamiast scope; tokeny tylko w `in/env`); bliżej projektu: `systemd-run --user` jako usługa (bez `--scope`) |
+
+### Wnioski z rundy 1 (dla kolejnych ticketów)
+
+- **Docker hosta blokuje forward z `incusbr0`.** Reguły `accept` w `inet tide-box` nie wystarczą, gdy inny łańcuch
+  `hook forward` (najpewniej `ip filter FORWARD` Dockera CE z polityką DROP) odrzuca pakiet — w nftables drop
+  w dowolnym łańcuchu bazowym jest ostateczny. Docelowa architektura (pudełko → tylko proxy na hoście, bez forwardu)
+  tego nie potrzebuje; dlatego runda 2 prowadzi sieć prób przez chwilowe proxy na porcie proxy Tide, bez zmian
+  w zaporze. Tryb reguł (`PROTO_NET=rules`) zostaje i loguje łańcuch `ip filter FORWARD` do diagnozy.
+- **Projekt ograniczony z PT-166 blokuje intercept i migawki** (`restricted.containers.interception=block`,
+  `restricted.snapshots=block` — wartości domyślne Incusa). Reset z migawki (US-4) wymaga `restricted.snapshots=allow`;
+  Docker być może działa bez intercept (jądro 7.0 pozwala na overlayfs i whiteout w przestrzeni użytkownika) —
+  rozstrzyga runda 2 (p1 próbuje najpierw bez intercept).
+- **`incus-user` dopisał własny mostek do projektu:** `restricted.networks.access: incusbr0,incusbr-1000`, choć
+  instalacja ustawiła tylko `incusbr0`. Mostek `incusbr-1000` nie jest objęty tabelą `inet tide-box` — do sprawdzenia
+  w PT-166 (p5 loguje `incus network list`).
+- **`security.ipv6_filtering` wymaga modułu `br_netfilter`** (Incus 6.0); załadowanie zmienia filtrowanie wszystkich
+  mostków hosta (także Dockera), więc próby go nie ładują. Mostek nie ma IPv6, a `inet tide-box` odrzuca cały ruch
+  z `incusbr0` poza proxy i DHCP (IPv4) — runda 2 sprawdza mac + ipv4.
+- **Proces w `systemd-run --user --scope` ginie razem z klientem `incus exec`** — scope zmienia tylko grupę cgroup,
+  a proces jest wykonany przez `incus exec`. BoxRunner (#6) nie może opierać przeżycia restartu usługi na scope.
 
 ## Pomiary (US-4)
 
@@ -34,9 +54,10 @@ niżej, od `p5.sh`. Wiersze uzupełnia PT-164 po każdej rundzie. Bez instalacji
 
 | Pomiar | Próg | Pomiary | Mediana | W progu |
 | --- | --- | --- | --- | --- |
-| Narzut kroku: `incus exec … --user 1000 -- systemd-run --user --scope true` | ≤ 3 s | — | — | — |
-| Zimny start zatrzymanego kontenera (`incus start` do końca startu systemd) | ≤ 30 s | — | — | — |
-| Reset: `incus snapshot restore` (do końca startu systemd) | ≤ 60 s | — | — | — |
+| Narzut kroku: `incus exec … --user 1000 -- systemd-run --user --scope true` | ≤ 3 s | 0,055 / 0,061 / 0,061 s | 0,061 s | tak |
+| Narzut kroku (usługa): `incus exec … -- systemd-run --user --wait true` | ≤ 3 s | runda 2 | — | — |
+| Zimny start zatrzymanego kontenera (`incus start` do końca startu systemd) | ≤ 30 s | runda 1: błąd skryptu (`Failed to connect to bus` tuż po starcie, bez ponawiania) — poprawione | — | — |
+| Reset: `incus snapshot restore` (do końca startu systemd) | ≤ 60 s | runda 1: „Project user-1000 doesn't allow for snapshot creation”; runda 2 z chwilowym `restricted.snapshots=allow` | — | — |
 
 ## Co widać z kontenera (P-4)
 
@@ -56,9 +77,16 @@ niżej, od `p5.sh`. Wiersze uzupełnia PT-164 po każdej rundzie. Bez instalacji
 intercept, skrypt tworzy kontener z samym nestingiem i zapisuje to w logu (ocenia P-5). Użytkownik `agent` ma uid 1000
 (jak na hoście). Kontener zostaje na hoście tylko przy wyniku `done`; inaczej `bash scripts/box/prototype/cleanup.sh`.
 
-**Sieć dla prób (P-1, P-4, pakiety w P-5).** Tabela `inet tide-box` z PT-166 to statyczny default-deny. Proxy z PT-178
-jeszcze nie działa, więc skrypty (`lib.sh`: `net_open`/`net_close`) wstawiają z sudo dokładnie trzy chwilowe
-reguły z komentarzem `tide-proto` **do tabeli `inet tide-box`** (`nft insert`, czyli przed regułami drop):
+**Sieć dla prób (P-1, P-4, pakiety w P-5) — od rundy 2 domyślnie przez chwilowe proxy.** Tabela `inet tide-box`
+z PT-166 to statyczny default-deny, który przepuszcza z mostka tylko port proxy Tide. Proxy z PT-178 jeszcze nie
+działa, a forward z reguł chwilowych w rundzie 1 ginął w łańcuchu Dockera hosta (wnioski wyżej), więc `lib.sh`
+(`net_open`/`net_close`) uruchamia na czas próby `scripts/box/prototype/proxy.py` (CONNECT i zwykłe HTTP, bez MITM,
+dziennik celów) na `<adres mostka>:<port proxy Tide>` i podaje kontenerowi `HTTP(S)_PROXY` (polecenia
+`incus exec`), `Acquire::http(s)::Proxy` (apt) i drop-in `dockerd` — dokładnie jak w docelowej architekturze
+(sekcja 4.5). Bez sudo i bez żadnej zmiany w nftables; lista celów trafia do logu (materiał dla P-6).
+
+Tryb `PROTO_NET=rules` (runda 1) wstawia z sudo dokładnie trzy chwilowe reguły z komentarzem `tide-proto`
+**do tabeli `inet tide-box`** (`nft insert`, czyli przed regułami drop):
 
 ```
 nft insert rule inet tide-box forward iifname "incusbr0" ip saddr <IP kontenera> accept comment "tide-proto"
@@ -83,13 +111,21 @@ z zimnym i ciepłym cache, z tą samą wersją node co host.
 filtrowania): `ip addr add <x.y.z.250>/24 dev eth0` i `nc -s <x.y.z.250> -z <adres mostka> <port>` — musi dojść, inaczej
 test jest nieważny; potem `incus config device override tide-proto eth0 security.mac_filtering=true
 security.ipv4_filtering=true security.ipv6_filtering=true`, restart i to samo podszycie — nie może dojść.
-Gdy projekt odrzuci intercept, skrypt sprawdza chwilowo `restricted.containers.interception=allow` (sudo, cofane).
+Gdy start z `security.ipv6_filtering` padnie (brak `br_netfilter`), próba idzie z `security.ipv6_filtering=false`
+(mac + ipv4) i zapisuje to w logu. Gdy projekt odrzuci intercept, skrypt sprawdza chwilowo
+`restricted.containers.interception=allow` (sudo, cofane). Pomiary z tego samego powodu chwilowo ustawiają
+`restricted.snapshots=allow` (sudo, cofane po usunięciu migawki).
 
-**P-9.** Klient `incus exec … --user 1000 -- systemd-run --user --scope sleep 30` biegnie na hoście w jednostce
-`tide-proto-client` (jak dziecko `tide-daemon`); `systemctl --user stop tide-proto-client` emuluje śmierć usługi,
-potem osobno `systemctl --user restart tide-daemon`; po każdym `incus exec tide-proto -T -- pgrep -u 1000 -x sleep`.
+**P-9.** Klient `incus exec` biegnie na hoście w jednostce `tide-proto-client` (jak dziecko `tide-daemon`);
+`systemctl --user stop tide-proto-client` emuluje śmierć usługi; po każdym `incus exec tide-proto -T -- pgrep -u 1000
+-x sleep`. Trzy warianty w kontenerze: `systemd-run --user --scope sleep 30`, `systemd-run --user --unit=… --collect
+--wait sleep 30` (usługa użytkownika agent) i `systemd-run --uid=1000 … --wait sleep 30` (usługa roota pudełka).
+Potem `systemctl --user restart tide-daemon` z wariantem scope (kryterium ticketu).
 
 ## Kolejność uruchomienia
+
+Wszystko naraz: `bash scripts/box/prototype/all.sh` (każda próba pisze własny log; niepowodzenie jednej nie
+zatrzymuje następnych). Pojedynczo:
 
 1. `bash scripts/box/prototype/p5.sh` — projekt, nesting, intercept, filtrowanie NIC (tworzy kontener).
 2. `bash scripts/box/prototype/p1.sh` — Docker i LegalApp.

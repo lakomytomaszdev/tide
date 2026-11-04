@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # P-1 (PT-164): Docker w nieuprzywilejowanym kontenerze Incusa — docker run hello-world i dotnet test LegalApp
-# z Testcontainers (pgvector/pgvector:pg16). Użycie: bash scripts/box/prototype/p1.sh   (sudo zapyta o hasło)
+# z Testcontainers (pgvector/pgvector:pg16). Użycie: bash scripts/box/prototype/p1.sh
 #
-# Sieć: chwilowe reguły tide-proto w tabeli inet tide-box (lib.sh: net_open/net_close), usuwane w pułapce EXIT.
+# Sieć: lib.sh net_open/net_close — domyślnie chwilowe proxy na porcie proxy Tide (bez sudo i bez zmian
+# w nftables), PROTO_NET=rules — trzy chwilowe reguły tide-proto w inet tide-box (sudo); zamykane w pułapce EXIT.
+# Docker najpierw w projekcie takim, jaki jest (bez intercept, który projekt ograniczony blokuje); gdy nie działa —
+# wariant z chwilowym restricted.containers.interception=allow i intercept mknod/setxattr (sudo, cofane).
 # Źródła LegalApp: git archive HEAD z repozytorium hosta wypakowane w /root/legalapp kontenera — kontener
 # nie montuje głównego worktree projektu. Repozytorium: PROTO_LEGALAPP albo pierwsze z listy niżej.
 # Wariant awaryjny (gdy nie działa): Podman w pudełku z gniazdem Docker API albo type: vm (docs/box-prototype.md).
@@ -12,7 +15,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 log_start p1 "P-1 — Docker w nieuprzywilejowanym kontenerze (nesting, intercept mknod/setxattr)"
 require_incus
-sudo_prime
 require_table
 ensure_box
 run "konfiguracja bezpieczeństwa kontenera" -- incus config get "$BOX" security.privileged
@@ -20,10 +22,23 @@ run "konfiguracja bezpieczeństwa kontenera" -- incus config get "$BOX" security
 
 net_open
 ensure_pkgs docker.io ca-certificates curl libicu74
-run "docker info (sterownik, opcje bezpieczeństwa)" -- in_box docker info --format '{{.Driver}} | {{.SecurityOptions}} | {{.Name}}'
-run "docker run --rm hello-world" -- in_box docker run --rm hello-world
+box_docker_proxy
+hello() {
+    run "docker info (sterownik, opcje bezpieczeństwa)" -- in_box docker info --format '{{.Driver}} | {{.SecurityOptions}} | {{.Name}}'
+    run "docker run --rm hello-world ($1)" -- in_box docker run --rm hello-world
+    ok && grep -q "Hello from Docker" <<<"$LAST_OUT"
+}
+variant="bez intercept"
+intercept_on && variant="z intercept"
+if ! hello "$variant" && ! intercept_on; then
+    result hello-world-bez-intercept fail "docker run bez intercept: kod $LAST_RC — próbuję wariantu z intercept"
+    variant="z intercept (chwilowe restricted.containers.interception=allow)"
+    if enable_intercept; then
+        hello "$variant" || true
+    fi
+fi
 if ok && grep -q "Hello from Docker" <<<"$LAST_OUT"; then
-    result hello-world ok "docker run --rm hello-world w kontenerze działa"
+    result hello-world ok "docker run --rm hello-world w kontenerze działa ($variant)"
 else
     result hello-world fail "docker run --rm hello-world: kod $LAST_RC (pełny błąd wyżej)"
     result dotnet-test skip "pominięte — Docker w kontenerze nie działa"
@@ -79,9 +94,9 @@ run "pełne wyjście dotnet test → docs/box-prototype/p1-dotnet-test.log" -- \
     incus file pull "$BOX/root/dotnet-test.log" "$LOG_DIR/p1-dotnet-test.log"
 run "obrazy Dockera w kontenerze" -- in_box docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}'
 if [[ $dotnet_rc -eq 0 ]]; then
-    result dotnet-test ok "dotnet test LegalApp z Testcontainers w kontenerze przeszedł ($(fmt_ms "$dotnet_ms") s)"
+    result dotnet-test ok "dotnet test LegalApp z Testcontainers w kontenerze przeszedł ($(fmt_ms "$dotnet_ms") s, $variant)"
 else
-    result dotnet-test fail "dotnet test LegalApp: kod $dotnet_rc ($(fmt_ms "$dotnet_ms") s) — błędy wyżej"
+    result dotnet-test fail "dotnet test LegalApp: kod $dotnet_rc ($(fmt_ms "$dotnet_ms") s, $variant) — błędy wyżej i w p1-dotnet-test.log"
 fi
 run "pozostałe kontenery Dockera" -- in_box docker ps -a --format '{{.Image}} {{.Status}}'
 

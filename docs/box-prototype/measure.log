@@ -1,0 +1,88 @@
+# Pomiary — narzut kroku, zimny start, reset z migawki
+
+- data: 2026-11-04T11:39:18+01:00
+- skrypt: scripts/box/prototype/measure.sh
+- jądro hosta: 7.0.0-38-generic
+- kontener: tide-proto (images:ubuntu/24.04)
+
+$ incus info 
+  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.014 s
+    | … (pominięto 440 wierszy)
+    |     network_phys_macvlan_mtu: "true"
+    |     network_veth_router: "true"
+    |     pidfd: "true"
+    |     seccomp_allow_deny_syntax: "true"
+    |     seccomp_notify: "true"
+    |     seccomp_proxy_send_notify_fd: "true"
+    |   os_name: KDE neon
+    |   os_version: "24.04"
+    |   project: user-1000
+    |   server: incus
+    |   server_clustered: false
+    |   server_event_mode: full-mesh
+    |   server_name: tomek-pc
+    |   server_pid: 3280418
+    |   server_version: 6.0.0
+    |   storage: btrfs
+    |   storage_version: 6.6.3
+    |   storage_supported_drivers:
+    |   - name: btrfs
+    |     version: 6.6.3
+    |     remote: false
+    |   - name: dir
+    |     version: "1"
+    |     remote: false
+    |   - name: lvm
+    |     version: 2.03.16(2) (2022-05-18) / 1.02.185 (2022-05-18) / 4.50.0
+    |     remote: false
+    |   - name: lvmcluster
+    |     version: 2.03.16(2) (2022-05-18) / 1.02.185 (2022-05-18) / 4.50.0
+    |     remote: true
+$ incus version 
+  [wersja Incusa] kod wyjścia: 0, czas: 0.013 s
+    | Client version: 6.0.0
+    | Server version: 6.0.0
+$ timeout 180 incus exec tide-proto -T -- systemctl is-system-running --wait 
+  [czekanie na systemd] kod wyjścia: 0, czas: 0.060 s
+    | running
+$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --scope --quiet true 
+  [narzut kroku #1: incus exec + systemd-run --user --scope true] kod wyjścia: 0, czas: 0.055 s
+$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --scope --quiet true 
+  [narzut kroku #2: incus exec + systemd-run --user --scope true] kod wyjścia: 0, czas: 0.061 s
+$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --scope --quiet true 
+  [narzut kroku #3: incus exec + systemd-run --user --scope true] kod wyjścia: 0, czas: 0.061 s
+
+WYNIK narzut-kroku: ok — incus exec + systemd-run --scope dla true: mediana 0.061 s (próg 3.000 s; pomiary: 0.055 0.061 0.061 )
+
+$ incus stop tide-proto 
+  [zatrzymanie #1] kod wyjścia: 0, czas: 0.947 s
+$ start_ready 
+  [zimny start #1 (incus start + koniec startu systemd)] kod wyjścia: 1, czas: 0.234 s
+    | Failed to connect to bus: No such file or directory
+$ incus stop tide-proto 
+  [zatrzymanie #2] kod wyjścia: 0, czas: 0.805 s
+$ start_ready 
+  [zimny start #2 (incus start + koniec startu systemd)] kod wyjścia: 1, czas: 0.228 s
+    | Failed to connect to bus: No such file or directory
+$ incus stop tide-proto 
+  [zatrzymanie #3] kod wyjścia: 0, czas: 0.814 s
+$ start_ready 
+  [zimny start #3 (incus start + koniec startu systemd)] kod wyjścia: 1, czas: 0.243 s
+    | Failed to connect to bus: No such file or directory
+
+WYNIK zimny-start: fail — start zatrzymanego kontenera: tylko 0 udanych pomiarów ()
+
+$ incus snapshot create tide-proto proto-measure 
+  [migawka proto-measure z bieżącego stanu] kod wyjścia: 1, czas: 0.015 s
+    | Error: Project "user-1000" doesn't allow for snapshot creation
+
+WYNIK warunki: fail — nie da się utworzyć migawki
+
+
+## Podsumowanie
+
+- narzut-kroku: ok — incus exec + systemd-run --scope dla true: mediana 0.061 s (próg 3.000 s; pomiary: 0.055 0.061 0.061 )
+- zimny-start: fail — start zatrzymanego kontenera: tylko 0 udanych pomiarów ()
+- warunki: fail — nie da się utworzyć migawki
+
+Niepowodzeń: 2

@@ -1,0 +1,235 @@
+# P-5 — projekt ograniczony: nesting, intercept i filtrowanie NIC
+
+- data: 2026-11-04T11:29:14+01:00
+- skrypt: scripts/box/prototype/p5.sh
+- jądro hosta: 7.0.0-38-generic
+- kontener: tide-proto (images:ubuntu/24.04)
+
+$ incus info 
+  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.088 s
+    | … (pominięto 440 wierszy)
+    |     network_phys_macvlan_mtu: "true"
+    |     network_veth_router: "true"
+    |     pidfd: "true"
+    |     seccomp_allow_deny_syntax: "true"
+    |     seccomp_notify: "true"
+    |     seccomp_proxy_send_notify_fd: "true"
+    |   os_name: KDE neon
+    |   os_version: "24.04"
+    |   project: user-1000
+    |   server: incus
+    |   server_clustered: false
+    |   server_event_mode: full-mesh
+    |   server_name: tomek-pc
+    |   server_pid: 3280418
+    |   server_version: 6.0.0
+    |   storage: btrfs
+    |   storage_version: 6.6.3
+    |   storage_supported_drivers:
+    |   - name: btrfs
+    |     version: 6.6.3
+    |     remote: false
+    |   - name: dir
+    |     version: "1"
+    |     remote: false
+    |   - name: lvm
+    |     version: 2.03.16(2) (2022-05-18) / 1.02.185 (2022-05-18) / 4.50.0
+    |     remote: false
+    |   - name: lvmcluster
+    |     version: 2.03.16(2) (2022-05-18) / 1.02.185 (2022-05-18) / 4.50.0
+    |     remote: true
+$ incus version 
+  [wersja Incusa] kod wyjścia: 0, czas: 0.012 s
+    | Client version: 6.0.0
+    | Server version: 6.0.0
+$ sudo nft list table inet tide-box 
+  [tabela inet tide-box z PT-166] kod wyjścia: 0, czas: 0.007 s
+    | table inet tide-box {
+    | 	chain input {
+    | 		type filter hook input priority filter + 10; policy accept;
+    | 		iifname "incusbr0" ip daddr 10.173.184.1 tcp dport 18080 accept comment "proxy Tide"
+    | 		iifname "incusbr0" udp sport 68 udp dport 67 accept comment "DHCP"
+    | 		iifname "incusbr0" meta l4proto { tcp, udp } th dport 53 drop comment "DNS tylko przez proxy"
+    | 		iifname "incusbr0" drop
+    | 	}
+    | 
+    | 	chain forward {
+    | 		type filter hook forward priority filter + 10; policy accept;
+    | 		iifname "incusbr0" drop
+    | 		oifname "incusbr0" drop
+    | 	}
+    | }
+$ incus project show user-1000 
+  [projekt user-1000 (incus-user)] kod wyjścia: 0, czas: 0.013 s
+    | config:
+    |   features.images: "true"
+    |   features.profiles: "true"
+    |   features.storage.buckets: "true"
+    |   features.storage.volumes: "true"
+    |   restricted: "true"
+    |   restricted.containers.nesting: allow
+    |   restricted.devices.disk: allow
+    |   restricted.devices.disk.paths: /home/user
+    |   restricted.idmap.gid: "1000"
+    |   restricted.idmap.uid: "1000"
+    |   restricted.networks.access: incusbr0,incusbr-1000
+    | description: ""
+    | name: user-1000
+    | used_by:
+    | - /1.0/profiles/default?project=user-1000
+$ sudo incus project show user-1000 
+  [projekt user-1000 widziany przez administratora] kod wyjścia: 0, czas: 0.013 s
+    | config:
+    |   features.images: "true"
+    |   features.profiles: "true"
+    |   features.storage.buckets: "true"
+    |   features.storage.volumes: "true"
+    |   restricted: "true"
+    |   restricted.containers.nesting: allow
+    |   restricted.devices.disk: allow
+    |   restricted.devices.disk.paths: /home/user
+    |   restricted.idmap.gid: "1000"
+    |   restricted.idmap.uid: "1000"
+    |   restricted.networks.access: incusbr0,incusbr-1000
+    | description: ""
+    | name: user-1000
+    | used_by:
+    | - /1.0/profiles/default?project=user-1000
+$ incus launch images:ubuntu/24.04 tide-proto -c security.nesting=true -c security.syscalls.intercept.mknod=true -c security.syscalls.intercept.setxattr=true 
+  [utworzenie kontenera (nesting, intercept mknod/setxattr)] kod wyjścia: 1, czas: 0.023 s
+    | Launching tide-proto
+    | Error: Failed instance creation: Failed checking if instance creation allowed: Invalid value "true" for config "security.syscalls.intercept.mknod" on container "tide-proto" of project "user-1000": Container syscall interception is forbidden
+Utworzenie z intercept odrzucone — ponawiam z samym nesting (intercept ocenia P-5).
+$ incus launch images:ubuntu/24.04 tide-proto -c security.nesting=true 
+  [utworzenie kontenera (sam nesting)] kod wyjścia: 0, czas: 17.224 s
+    | Launching tide-proto
+    | Retrieving image: metadata: 100% (2.50GB/s)                                            Retrieving image: rootfs: 1% (5.98MB/s)                                            Retrieving image: rootfs: 2% (7.93MB/s)                                            Retrieving image: rootfs: 3% (8.89MB/s)                                            Retrieving image: rootfs: 4% (9.47MB/s)                                            Retrieving image: rootfs: 5% (9.86MB/s)                                            Retrieving image: rootfs: 6% (10.13MB/s)                                            Retrieving image: rootfs: 7% (10.34MB/s)                                            Retrieving image: rootfs: 8% (10.50MB/s)                                            Retrieving image: rootfs: 9% (10.62MB/s)                                            Retrieving image: rootfs: 10% (10.73MB/s)                                            Retrieving image: rootfs: 10% (10.81MB/s)                                            Retrieving image: rootfs: 11% (10.89MB/s)                                            Retrieving image: rootfs: 12% (10.95MB/s)                                            Retrieving image: rootfs: 13% (11.01MB/s)                                            Retrieving image: rootfs: 14% (11.05MB/s)                                            Retrieving image: rootfs: 15% (11.10MB/s)                                            Retrieving image: rootfs: 16% (11.13MB/s)                                            Retrieving image: rootfs: 17% (11.17MB/s)                                            Retrieving image: rootfs: 18% (11.20MB/s)                                            Retrieving image: rootfs: 19% (11.22MB/s)                                            Retrieving image: rootfs: 19% (11.25MB/s)                                            Retrieving image: rootfs: 20% (11.27MB/s)                                            Retrieving image: rootfs: 21% (11.29MB/s)                                            Retrieving image: rootfs: 22% (11.31MB/s)                                            Retrieving image: rootfs: 23% (11.33MB/s)                                            Retrieving image: rootfs: 24% (11.34MB/s)                                            Retrieving image: rootfs: 25% (11.36MB/s)                                            Retrieving image: rootfs: 26% (11.37MB/s)                                            Retrieving image: rootfs: 27% (11.39MB/s)                                            Retrieving image: rootfs: 28% (11.40MB/s)                                            Retrieving image: rootfs: 28% (11.41MB/s)                                            Retrieving image: rootfs: 29% (11.42MB/s)                                            Retrieving image: rootfs: 30% (11.43MB/s)                                            Retrieving image: rootfs: 31% (11.44MB/s)                                            Retrieving image: rootfs: 32% (11.45MB/s)                                            Retrieving image: rootfs: 33% (11.46MB/s)                                            Retrieving image: rootfs: 34% (11.46MB/s)                                            Retrieving image: rootfs: 35% (11.46MB/s)                                            Retrieving image: rootfs: 36% (11.47MB/s)                                            Retrieving image: rootfs: 37% (11.48MB/s)                                            Retrieving image: rootfs: 37% (11.49MB/s)                                            Retrieving image: rootfs: 38% (11.49MB/s)                                            Retrieving image: rootfs: 39% (11.50MB/s)                                            Retrieving image: rootfs: 40% (11.50MB/s)                                            Retrieving image: rootfs: 41% (11.51MB/s)                                            Retrieving image: rootfs: 42% (11.52MB/s)                                            Retrieving image: rootfs: 43% (11.52MB/s)                                            Retrieving image: rootfs: 44% (11.53MB/s)                                            Retrieving image: rootfs: 45% (11.53MB/s)                                            Retrieving image: rootfs: 46% (11.54MB/s)                                            Retrieving image: rootfs: 47% (11.54MB/s)                                            Retrieving image: rootfs: 48% (11.55MB/s)                                            Retrieving image: rootfs: 49% (11.55MB/s)                                            Retrieving image: rootfs: 50% (11.56MB/s)                                            Retrieving image: rootfs: 51% (11.56MB/s)                                            Retrieving image: rootfs: 52% (11.56MB/s)                                            Retrieving image: rootfs: 53% (11.57MB/s)                                            Retrieving image: rootfs: 54% (11.57MB/s)                                            Retrieving image: rootfs: 55% (11.57MB/s)                                            Retrieving image: rootfs: 55% (11.58MB/s)                                            Retrieving image: rootfs: 56% (11.58MB/s)                                            Retrieving image: rootfs: 57% (11.58MB/s)                                            Retrieving image: rootfs: 58% (11.59MB/s)                                            Retrieving image: rootfs: 59% (11.59MB/s)                                            Retrieving image: rootfs: 60% (11.59MB/s)                                            Retrieving image: rootfs: 61% (11.59MB/s)                                            Retrieving image: rootfs: 62% (11.60MB/s)                                            Retrieving image: rootfs: 63% (11.60MB/s)                                            Retrieving image: rootfs: 64% (11.60MB/s)                                            Retrieving image: rootfs: 65% (11.60MB/s)                                            Retrieving image: rootfs: 66% (11.61MB/s)                                            Retrieving image: rootfs: 67% (11.61MB/s)                                            Retrieving image: rootfs: 68% (11.61MB/s)                                            Retrieving image: rootfs: 69% (11.61MB/s)                                            Retrieving image: rootfs: 70% (11.62MB/s)                                            Retrieving image: rootfs: 71% (11.62MB/s)                                            Retrieving image: rootfs: 72% (11.62MB/s)                                            Retrieving image: rootfs: 73% (11.62MB/s)                                            Retrieving image: rootfs: 74% (11.62MB/s)                                            Retrieving image: rootfs: 75% (11.63MB/s)                                            Retrieving image: rootfs: 76% (11.63MB/s)                                            Retrieving image: rootfs: 77% (11.63MB/s)                                            Retrieving image: rootfs: 78% (11.63MB/s)                                            Retrieving image: rootfs: 79% (11.63MB/s)                                            Retrieving image: rootfs: 80% (11.63MB/s)                                            Retrieving image: rootfs: 81% (11.64MB/s)                                            Retrieving image: rootfs: 82% (11.64MB/s)                                            Retrieving image: rootfs: 83% (11.64MB/s)                                            Retrieving image: rootfs: 84% (11.64MB/s)                                            Retrieving image: rootfs: 85% (11.38MB/s)                                            Retrieving image: rootfs: 86% (11.38MB/s)                                            Retrieving image: rootfs: 87% (11.39MB/s)                                            Retrieving image: rootfs: 88% (11.39MB/s)                                            Retrieving image: rootfs: 89% (11.39MB/s)                                            Retrieving image: rootfs: 90% (11.40MB/s)                                            Retrieving image: rootfs: 91% (11.40MB/s)                                            Retrieving image: rootfs: 92% (11.41MB/s)                                            Retrieving image: rootfs: 93% (11.41MB/s)                                            Retrieving image: rootfs: 94% (11.41MB/s)                                            Retrieving image: rootfs: 95% (11.42MB/s)                                            Retrieving image: rootfs: 96% (11.42MB/s)                                            Retrieving image: rootfs: 97% (11.42MB/s)                                            Retrieving image: rootfs: 98% (11.43MB/s)                                            Retrieving image: rootfs: 99% (11.43MB/s)                                            Retrieving image: rootfs: 100% (11.43MB/s)                                            Retrieving image: rootfs: 100% (11.44MB/s)                                            Retrieving image: Unpack: 100% (2.15GB/s)                                            Retrieving image: Unpack: 100% (2.15GB/s)                                            
+
+WYNIK kontener: info — utworzony: nesting
+
+$ timeout 180 incus exec tide-proto -T -- systemctl is-system-running --wait 
+  [czekanie na start systemd w kontenerze] kod wyjścia: 1, czas: 0.059 s
+    | Failed to connect to bus: No such file or directory
+uwaga: stan systemd: Failed to connect to bus: No such file or directory
+$ incus exec tide-proto -T -- bash -c $'\n        set -e\n        name=$(id -un 1000 2>/dev/null || true)\n        if [ -z "$name" ]; then\n            useradd -m -u 1000 -U -s /bin/bash agent\n        elif [ "$name" != agent ]; then\n            usermod -l agent -d /home/agent -m "$name"\n            groupmod -n agent "$(id -gn 1000)" 2>/dev/null || true\n        fi\n        id agent' 
+  [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.308 s
+    | uid=1000(agent) gid=1000(agent) groups=1000(agent),27(sudo)
+$ incus exec tide-proto -T -- dpkg-query -W -f \$\{Package\}\ \$\{Status\}\\n netcat-openbsd python3 iproute2 util-linux 
+  [pakiety w kontenerze: netcat-openbsd python3 iproute2 util-linux] kod wyjścia: 0, czas: 0.052 s
+    | iproute2 install ok installed
+    | netcat-openbsd install ok installed
+    | python3 install ok installed
+    | util-linux install ok installed
+$ incus config set tide-proto security.nesting=true security.syscalls.intercept.mknod=true security.syscalls.intercept.setxattr=true 
+  [nesting i intercept w projekcie ograniczonym] kod wyjścia: 1, czas: 0.021 s
+    | Error: Failed checking if instance update allowed: Invalid value "true" for config "security.syscalls.intercept.setxattr" on container "tide-proto" of project "user-1000": Container syscall interception is forbidden
+
+WYNIK config-nesting-intercept: fail — projekt ograniczony odrzucił ustawienia: Error: Failed checking if instance update allowed: Invalid value "true" for config "security.syscalls.intercept.setxattr" on container "tide-proto" of project "user-1000": Container syscall interception is forbidden
+
+$ sudo incus project get user-1000 restricted.containers.interception 
+  [restricted.containers.interception (przed)] kod wyjścia: 0, czas: 0.014 s
+$ sudo incus project set user-1000 restricted.containers.interception=allow 
+  [wariant: restricted.containers.interception=allow (chwilowo)] kod wyjścia: 0, czas: 0.027 s
+$ incus config set tide-proto security.nesting=true security.syscalls.intercept.mknod=true security.syscalls.intercept.setxattr=true 
+  [nesting i intercept po zmianie projektu] kod wyjścia: 0, czas: 0.048 s
+
+WYNIK config-wariant-interception: info — intercept działa po restricted.containers.interception=allow — decyzja w box-decisions
+
+$ incus config show tide-proto 
+  [ustawienia bezpieczeństwa kontenera] kod wyjścia: 0, czas: 0.014 s
+    | architecture: x86_64
+    | config:
+    |   image.architecture: amd64
+    |   image.description: Ubuntu noble amd64 (20261103_07:42)
+    |   image.os: Ubuntu
+    |   image.release: noble
+    |   image.requirements.cgroup: v2
+    |   image.serial: "20261103_07:42"
+    |   image.type: squashfs
+    |   image.variant: default
+    |   security.nesting: "true"
+    |   security.syscalls.intercept.mknod: "true"
+    |   security.syscalls.intercept.setxattr: "true"
+    |   volatile.base_image: c8260bb3cab33bbb3b20dd6cd581dab8735b2253484fc19ad904adbdf2b946eb
+    |   volatile.cloud-init.instance-id: 38468a45-11b4-49d1-a811-40423f87789f
+    |   volatile.eth0.host_name: veth5ba95534
+    |   volatile.eth0.hwaddr: 00:16:3e:ee:b5:9e
+    |   volatile.idmap.base: "0"
+    |   volatile.idmap.current: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
+    |   volatile.idmap.next: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
+    |   volatile.last_state.idmap: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
+    |   volatile.last_state.power: RUNNING
+    |   volatile.uuid: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
+    |   volatile.uuid.generation: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
+    | devices: {}
+    | ephemeral: false
+    | profiles:
+    | - default
+    | stateful: false
+    | description: ""
+$ incus restart tide-proto 
+  [restart kontenera (ustawienia działają od startu)] kod wyjścia: 0, czas: 0.947 s
+$ timeout 180 incus exec tide-proto -T -- systemctl is-system-running --wait 
+  [czekanie na start systemd w kontenerze] kod wyjścia: 1, czas: 0.055 s
+    | Failed to connect to bus: No such file or directory
+uwaga: stan systemd: Failed to connect to bus: No such file or directory
+$ incus exec tide-proto -T -- unshare --user --map-root-user --pid --fork --mount-proc true 
+  [nesting: przestrzeń użytkownika i /proc w kontenerze] kod wyjścia: 0, czas: 0.075 s
+
+WYNIK nesting: ok — unshare z --mount-proc w kontenerze działa
+
+$ incus exec tide-proto -T -- bash -c rm\ -f\ /var/tmp/proto-null\;\ mknod\ /var/tmp/proto-null\ c\ 1\ 3\ \&\&\ ls\ -l\ /var/tmp/proto-null\ \&\&\ rm\ -f\ /var/tmp/proto-null 
+  [intercept mknod: urządzenie znakowe 1:3 w kontenerze] kod wyjścia: 0, czas: 0.062 s
+    | crw-r--r-- 1 root root 1, 3 Nov  4 10:29 /var/tmp/proto-null
+$ incus exec tide-proto -T -- python3 -c $'\nimport os, shutil\nd = "/var/tmp/proto-xattr"\nshutil.rmtree(d, ignore_errors=True)\nos.mkdir(d)\nos.setxattr(d, "trusted.overlay.opaque", b"y")\nprint(os.getxattr(d, "trusted.overlay.opaque"))\nshutil.rmtree(d)' 
+  [intercept setxattr: trusted.overlay.opaque w kontenerze] kod wyjścia: 1, czas: 0.084 s
+    | Traceback (most recent call last):
+    |   File "<string>", line 7, in <module>
+    | OSError: [Errno 61] No data available: '/var/tmp/proto-xattr'
+
+WYNIK intercept: fail — mknod kod 0, setxattr kod 1 (restricted.containers.interception=allow)
+
+Mostek 10.173.184.1/24, port proxy 18080, obcy adres 10.173.184.250
+Serwer testowy na hoście: 10.173.184.1:18080 (zapisuje adres źródłowy połączenia)
+$ incus config device show tide-proto 
+  [eth0 kontenera przed próbą] kod wyjścia: 0, czas: 0.015 s
+    | {}
+$ incus exec tide-proto -T -- timeout 10 nc -z -w 3 10.173.184.1 18080 
+  [kontrola A: połączenie z własnego adresu 10.173.184.164 (bez filtrowania)] kod wyjścia: 0, czas: 0.068 s
+    | Connection to 10.173.184.1 18080 port [tcp/*] succeeded!
+$ incus exec tide-proto -T -- bash -c ip\ addr\ add\ 10.173.184.250/24\ dev\ eth0\ \&\&\ timeout\ 10\ nc\ -s\ 10.173.184.250\ -z\ -w\ 3\ 10.173.184.1\ 18080\;\ rc=\$\?\;\ ip\ addr\ del\ 10.173.184.250/24\ dev\ eth0\;\ exit\ \$rc 
+  [kontrola B: podszycie pod 10.173.184.250 bez filtrowania] kod wyjścia: 0, czas: 0.069 s
+    | Connection to 10.173.184.1 18080 port [tcp/*] succeeded!
+Kontrola A: doszło; kontrola B (podszycie bez filtrowania): doszło
+$ incus stop tide-proto 
+  [zatrzymanie kontenera przed włączeniem filtrowania] kod wyjścia: 0, czas: 0.810 s
+$ incus config device override tide-proto eth0 security.mac_filtering=true security.ipv4_filtering=true security.ipv6_filtering=true 
+  [filtrowanie NIC na eth0 (mac, ipv4, ipv6)] kod wyjścia: 0, czas: 0.048 s
+    | Device eth0 overridden for tide-proto
+$ incus start tide-proto 
+  [start kontenera z filtrowaniem] kod wyjścia: 1, czas: 0.054 s
+    | Error: Failed to start device "eth0": security.ipv6_filtering requires bridge netfilter: br_netfilter kernel module not loaded
+    | Try `incus info --show-log tide-proto` for more info
+$ timeout 180 incus exec tide-proto -T -- systemctl is-system-running --wait 
+  [czekanie na start systemd w kontenerze] kod wyjścia: 1, czas: 0.016 s
+    | Error: Instance is not running
+
+WYNIK warunki: fail — kontener tide-proto nie dostał adresu IPv4 w 180 s
+
+$ incus config unset tide-proto security.syscalls.intercept.mknod 
+  [zdjęcie intercept mknod przed cofnięciem projektu] kod wyjścia: 0, czas: 0.058 s
+$ incus config unset tide-proto security.syscalls.intercept.setxattr 
+  [zdjęcie intercept setxattr przed cofnięciem projektu] kod wyjścia: 0, czas: 0.049 s
+$ sudo incus project set user-1000 restricted.containers.interception=block 
+  [cofnięcie restricted.containers.interception] kod wyjścia: 0, czas: 0.030 s
+
+## Podsumowanie
+
+- kontener: info — utworzony: nesting
+- config-nesting-intercept: fail — projekt ograniczony odrzucił ustawienia: Error: Failed checking if instance update allowed: Invalid value "true" for config "security.syscalls.intercept.setxattr" on container "tide-proto" of project "user-1000": Container syscall interception is forbidden
+- config-wariant-interception: info — intercept działa po restricted.containers.interception=allow — decyzja w box-decisions
+- nesting: ok — unshare z --mount-proc w kontenerze działa
+- intercept: fail — mknod kod 0, setxattr kod 1 (restricted.containers.interception=allow)
+- warunki: fail — kontener tide-proto nie dostał adresu IPv4 w 180 s
+
+Niepowodzeń: 3

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # P-5 (PT-164): projekt ograniczony Incusa (incus-user, grupa incus) — nesting, intercept mknod/setxattr
 # i filtrowanie NIC (security.mac_filtering, security.ipv4_filtering, security.ipv6_filtering na eth0 pudełka).
-# Użycie: bash scripts/box/prototype/p5.sh   (sudo zapyta o hasło — nftables dla apt, wariant intercept)
+# Użycie: bash scripts/box/prototype/p5.sh   (sudo zapyta o hasło tylko dla wariantu intercept)
 #
 # Podszycie: na hoście słucha mały serwer TCP na adresie mostka i porcie proxy Tide (jedyny port, który tabela
 # inet tide-box przepuszcza z mostka) i zapisuje adres źródłowy każdego połączenia. Z kontenera:
@@ -10,72 +10,64 @@
 #                dowód, że test w ogóle widzi podszycie),
 #   próba     — po włączeniu filtrowania: to samo podszycie nie może dojść (brak wpisu w dzienniku serwera).
 # Wariant intercept, gdy projekt go blokuje: chwilowe restricted.containers.interception=allow (sudo incus),
-# cofane na końcu — tylko pomiar; decyzja trafia do docs/box-decisions.md. Filtrowanie NIC nie ma wariantu.
+# cofane na końcu — tylko pomiar; decyzja trafia do docs/box-decisions.md. Filtrowanie NIC nie ma wariantu;
+# security.ipv6_filtering wymaga modułu br_netfilter — gdy go nie ma, próba idzie z mac+ipv4 (wynik w logu).
 set -euo pipefail
 # shellcheck source=scripts/box/prototype/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-project="user-$(id -u)"
 log_start p5 "P-5 — projekt ograniczony: nesting, intercept i filtrowanie NIC"
 require_incus
-sudo_prime
 require_table
-run "projekt $project (incus-user)" -- incus project show "$project"
-run "projekt $project widziany przez administratora" -- as_root incus project show "$project"
+run "projekt $PROJECT (incus-user)" -- incus project show "$PROJECT"
+grep -q 'incusbr-' <<<"$LAST_OUT" && result siec-incus-user info \
+    "restricted.networks.access projektu zawiera mostek incus-user (incusbr-$(id -u)) — do sprawdzenia w PT-166"
+run "sieci widoczne w projekcie" -- incus network list
 ensure_box
 ensure_pkgs netcat-openbsd python3 iproute2 util-linux
 net_close
 
 # --- nesting i intercept -------------------------------------------------------------------------------
 
-intercept_variant=projekt
-run "nesting i intercept w projekcie ograniczonym" -- incus config set "$BOX" security.nesting=true \
-    security.syscalls.intercept.mknod=true security.syscalls.intercept.setxattr=true
-if ok; then
-    result config-nesting-intercept ok "projekt ograniczony przyjął security.nesting i intercept mknod/setxattr"
+intercept_variant="projekt bez zmian"
+if intercept_on; then
+    result config-nesting-intercept ok "kontener ma już intercept w projekcie (projekt przyjmuje interception)"
 else
-    result config-nesting-intercept fail "projekt ograniczony odrzucił ustawienia: $(tail -n 1 <<<"$LAST_OUT")"
-    run "restricted.containers.interception (przed)" -- as_root incus project get "$project" restricted.containers.interception
-    old_interception=$LAST_OUT
-    restore_interception() {
-        run "cofnięcie restricted.containers.interception" -- as_root incus project set "$project" \
-            "restricted.containers.interception=${old_interception:-block}"
-    }
-    unset_intercept() {
-        run "zdjęcie intercept mknod przed cofnięciem projektu" -- incus config unset "$BOX" security.syscalls.intercept.mknod
-        run "zdjęcie intercept setxattr przed cofnięciem projektu" -- incus config unset "$BOX" security.syscalls.intercept.setxattr
-    }
-    at_exit restore_interception
-    run "wariant: restricted.containers.interception=allow (chwilowo)" -- as_root incus project set "$project" \
-        restricted.containers.interception=allow
-    run "nesting i intercept po zmianie projektu" -- incus config set "$BOX" security.nesting=true \
-        security.syscalls.intercept.mknod=true security.syscalls.intercept.setxattr=true
+    run "intercept w projekcie ograniczonym (oczekiwana odmowa przy restricted.containers.interception=block)" -- \
+        incus config set "$BOX" security.syscalls.intercept.mknod=true security.syscalls.intercept.setxattr=true
     if ok; then
-        intercept_variant="restricted.containers.interception=allow"
-        at_exit unset_intercept
-        result config-wariant-interception info "intercept działa po restricted.containers.interception=allow — decyzja w box-decisions"
+        result config-nesting-intercept ok "projekt ograniczony przyjął intercept mknod/setxattr"
+        run "restart kontenera z intercept" -- incus restart "$BOX"
+        wait_box
     else
-        intercept_variant=brak
-        result config-wariant-interception fail "intercept odrzucony także po zmianie projektu: $(tail -n 1 <<<"$LAST_OUT")"
+        result config-nesting-intercept fail "projekt ograniczony odrzucił intercept: $(tail -n 1 <<<"$LAST_OUT")"
+        if enable_intercept; then
+            intercept_variant="chwilowe restricted.containers.interception=allow"
+            result config-wariant-interception info "intercept przyjęty po restricted.containers.interception=allow"
+        else
+            intercept_variant="brak (odrzucony także po zmianie projektu)"
+            result config-wariant-interception fail "intercept odrzucony także po zmianie projektu: $(tail -n 1 <<<"$LAST_OUT")"
+        fi
     fi
 fi
 run "ustawienia bezpieczeństwa kontenera" -- incus config show "$BOX"
 grep -q 'security.privileged: "true"' <<<"$LAST_OUT" && die "kontener jest uprzywilejowany (security.privileged) — niedozwolone"
-run "restart kontenera (ustawienia działają od startu)" -- incus restart "$BOX"
-wait_box
+grep -q 'security.nesting: "true"' <<<"$LAST_OUT" && result config-nesting ok "projekt ograniczony przyjął security.nesting=true" \
+    || result config-nesting fail "kontener nie ma security.nesting=true"
 
 run "nesting: przestrzeń użytkownika i /proc w kontenerze" -- in_box unshare --user --map-root-user --pid --fork --mount-proc true
 ok && result nesting ok "unshare z --mount-proc w kontenerze działa" \
     || result nesting fail "unshare --mount-proc w kontenerze: kod $LAST_RC"
 run "intercept mknod: urządzenie znakowe 1:3 w kontenerze" -- in_box bash -c 'rm -f /var/tmp/proto-null; mknod /var/tmp/proto-null c 1 3 && ls -l /var/tmp/proto-null && rm -f /var/tmp/proto-null'
 mknod_rc=$LAST_RC
+# getxattr trusted.* w przestrzeni użytkownika i tak zwraca ENODATA — liczy się tylko wynik setxattr.
 run "intercept setxattr: trusted.overlay.opaque w kontenerze" -- in_box python3 -c '
 import os, shutil
 d = "/var/tmp/proto-xattr"
 shutil.rmtree(d, ignore_errors=True)
 os.mkdir(d)
 os.setxattr(d, "trusted.overlay.opaque", b"y")
-print(os.getxattr(d, "trusted.overlay.opaque"))
+print("setxattr ok")
 shutil.rmtree(d)'
 setxattr_rc=$LAST_RC
 if [[ $mknod_rc -eq 0 && $setxattr_rc -eq 0 ]]; then
@@ -90,8 +82,7 @@ cidr=$(bridge_cidr)
 [[ -n $cidr ]] || die "brak adresu IPv4 mostka $BRIDGE"
 bridge=${cidr%/*}
 spoof="${bridge%.*}.250"
-port=$(as_root nft list table inet tide-box </dev/null | sed -n 's/.*tcp dport \([0-9]*\) accept comment "proxy Tide".*/\1/p' | head -1)
-[[ -n $port ]] || die "nie znalazłem portu proxy w tabeli inet tide-box"
+port=$(proxy_port)
 note "Mostek $cidr, port proxy $port, obcy adres $spoof"
 
 seen=$(mktemp "${TMPDIR:-/tmp}/tide-proto-seen-XXXXXX")
@@ -154,7 +145,18 @@ if ! ok; then
         security.mac_filtering=true security.ipv4_filtering=true
 fi
 filter_rc=$LAST_RC
-run "start kontenera z filtrowaniem" -- incus start "$BOX"
+run "start kontenera z filtrowaniem ($filters)" -- incus start "$BOX"
+if ! ok && [[ $filters == *ipv6* ]]; then
+    # Incus 6.0: security.ipv6_filtering wymaga br_netfilter (ładowanie modułu zmienia filtrowanie wszystkich
+    # mostków hosta, także Dockera — nie robimy tego w próbie). Mostek incusbr0 nie ma IPv6 (PT-166).
+    result filtrowanie-ipv6 info "start z security.ipv6_filtering odrzucony: $(head -n 1 <<<"$LAST_OUT")"
+    filters="mac, ipv4"
+    run "filtrowanie NIC bez ipv6 (security.ipv6_filtering=false)" -- incus config device set "$BOX" eth0 \
+        security.ipv6_filtering=false
+    run "start kontenera z filtrowaniem ($filters)" -- incus start "$BOX"
+fi
+ok || filter_rc=$LAST_RC
+[[ $filter_rc -eq 0 ]] || die "kontener z filtrowaniem NIC nie startuje: $(head -n 1 <<<"$LAST_OUT")"
 wait_box
 box_addr=$(box_ip)
 run "eth0 kontenera po włączeniu filtrowania" -- incus config device show "$BOX"
@@ -178,5 +180,5 @@ elif [[ $spoof_seen -eq 1 ]]; then
 else
     result filtrowanie-nic ok "podszycie pod $spoof nie doszło do $bridge:$port; własny adres dochodzi ($filters)"
 fi
-[[ $filters == "mac, ipv4" ]] && result filtrowanie-ipv6 info "security.ipv6_filtering odrzucone (mostek bez IPv6) — ruch IPv6 z mostka i tak DROP w inet tide-box"
+[[ $filters == "mac, ipv4" ]] && result filtrowanie-ipv6 info "bez security.ipv6_filtering: mostek bez IPv6, a ruch IPv6 z incusbr0 i tak DROP w inet tide-box (iifname incusbr0 drop w rodzinie inet)"
 finish

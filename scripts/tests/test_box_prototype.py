@@ -84,6 +84,7 @@ class PrototypeScriptsTest(unittest.TestCase):
             "PROTO_WAIT": "5",
             "PROTO_LEGALAPP": str(self.la),
             "PROTO_NODE_PROJECT": str(self.proj),
+            "PROTO_PORT": str(self.state["port"]),
             **env,
         }
         environ.pop("SUDO_ASKPASS", None)
@@ -131,8 +132,33 @@ class PrototypeScriptsTest(unittest.TestCase):
                 self.assert_log_shape(log, titles[name])
                 self.assertNotIn("WYNIK przerwanie", log)
 
+    def test_p1_by_default_goes_through_the_temporary_proxy_without_touching_nftables(self):
+        code, log, _ = self.run_script("p1")
+        self.assertEqual(code, 0, log)
+        self.assertEqual([c for c in self.calls() if c[0] in ("nft", "sudo")], [])
+        self.assertIn("chwilowe proxy scripts/box/prototype/proxy.py", log)
+        self.assertIn("WYNIK siec-proxy: info", log)
+        self.assertIn("https_proxy=http://127.0.0.1:", log)
+        self.assertIn("dockerd w kontenerze przez proxy", log)
+        # Proxy zamknięte: port znów wolny.
+        with socket.socket() as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", self.state["port"]))
+
+    def test_p1_tries_the_intercept_variant_and_restores_the_project_when_docker_fails(self):
+        code, log, _ = self.run_script("p1", FAKE_DOCKER_FAIL="1")
+        self.assertNotEqual(code, 0)
+        self.assertIn("WYNIK hello-world-bez-intercept: fail", log)
+        calls = self.calls()
+        set_allow = ["incus", "project", "set", f"user-{os.getuid()}", "restricted.containers.interception=allow"]
+        self.assertIn(set_allow, calls)
+        restore = [c for c in calls if c[:4] == ["incus", "project", "set", f"user-{os.getuid()}"]][-1]
+        self.assertNotEqual(restore, set_allow)
+        unset = [i for i, c in enumerate(calls) if c[:3] == ["incus", "config", "unset"]]
+        self.assertTrue(unset and unset[-1] < calls.index(restore), "intercept zdjęty przed cofnięciem projektu")
+
     def test_p1_inserts_exactly_the_three_tide_proto_rules_and_removes_them(self):
-        code, log, out = self.run_script("p1")
+        code, log, out = self.run_script("p1", PROTO_NET="rules")
         self.assertEqual(code, 0, log)
         state = self.state_now()
         self.assertEqual([(r["chain"], r["rule"]) for r in state["inserted"]], EXPECTED_RULES)
@@ -148,15 +174,15 @@ class PrototypeScriptsTest(unittest.TestCase):
         self.assertIn("(po usunięciu reguł chwilowych)", log)
         self.assertIn("WYNIK hello-world: ok", log)
         self.assertIn("WYNIK dotnet-test: ok", log)
-        # Nic nie dotyka tabeli nft poza list, insert i delete w inet tide-box.
+        # Zmiany nftables (insert, delete) wyłącznie w inet tide-box; poza nią tylko odczyt (diagnoza FORWARD).
         for c in self.calls():
-            if c[0] == "nft":
-                self.assertIn("tide-box", c, c)
+            if c[0] == "nft" and "list" not in c:
+                self.assertEqual(c[3:5], ["inet", "tide-box"], c)
 
     def test_p1_removes_rules_when_docker_run_fails(self):
-        code, log, _ = self.run_script("p1", FAKE_DOCKER_FAIL="1")
+        code, log, _ = self.run_script("p1", PROTO_NET="rules", FAKE_DOCKER_FAIL="1")
         self.assertNotEqual(code, 0)
-        self.assertRegex(log, r"docker run --rm hello-world\] kod wyjścia: 125")
+        self.assertRegex(log, r"docker run --rm hello-world \(bez intercept\)\] kod wyjścia: 125")
         self.assertIn("WYNIK hello-world: fail", log)
         state = self.state_now()
         self.assertEqual(len(state["inserted"]), 3)
@@ -164,7 +190,7 @@ class PrototypeScriptsTest(unittest.TestCase):
         self.assertIn("WYNIK nft-przed-po: ok", log)
 
     def test_p1_removes_rules_when_it_dies_in_the_middle(self):
-        code, log, _ = self.run_script("p1", FAKE_FAIL="dotnet-install")
+        code, log, _ = self.run_script("p1", PROTO_NET="rules", FAKE_FAIL="dotnet-install")
         self.assertEqual(code, 2, log)
         self.assertIn("WYNIK warunki: fail", log)
         state = self.state_now()
@@ -181,7 +207,7 @@ class PrototypeScriptsTest(unittest.TestCase):
         lib = self.copy / "scripts" / "box" / "prototype" / "lib.sh"
         lib.write_text(lib.read_text().replace("set -euo pipefail\n",
                                                "set -euo pipefail\nexport TIDE_PROTO_SCRIPT_PID=$$\n", 1))
-        code, log, _ = self.run_script("p1")
+        code, log, _ = self.run_script("p1", PROTO_NET="rules")
         self.assertEqual(code, 130, log)
         self.assertEqual(self.state_now()["nft_rules"], [])
         self.assertIn("WYNIK nft-przed-po: ok", log)
@@ -207,6 +233,14 @@ class PrototypeScriptsTest(unittest.TestCase):
         self.assertEqual(removed, ro | rw)
         self.assertEqual(self.state_now()["nft_rules"], [])
 
+    def test_p9_checks_every_variant_against_the_death_of_the_incus_exec_client(self):
+        self.run_script("p9")
+        log = (self.copy / "docs" / "box-prototype" / "p9.log").read_text()
+        for variant in ("scope", "usługa-user", "usługa-root"):
+            self.assertIn(f"WYNIK przezywa-klienta-{variant}:", log)
+        stops = [c for c in self.calls() if c[:3] == ["systemctl", "--user", "stop"]]
+        self.assertGreaterEqual(len(stops), 3)
+
     def test_note_has_a_row_per_trial_and_room_for_pt_178(self):
         note = (ROOT / "docs" / "box-prototype.md").read_text()
         for trial in ("P-1", "P-2", "P-3", "P-4", "P-5", "P-6", "P-7", "P-9"):
@@ -229,6 +263,60 @@ class PrototypeScriptsTest(unittest.TestCase):
                         self.assertTrue("<<<" in line or "< <(" in line or line.rstrip().endswith("do"), line)
         for name in (*SCRIPTS, "cleanup"):
             self.assertTrue((PROTO / f"{name}.sh").exists(), name)
+
+
+class TemporaryProxyTest(unittest.TestCase):
+    """proxy.py: zwykłe HTTP z pełnym adresem (apt) i tunel CONNECT (HTTPS), dziennik celów."""
+
+    def setUp(self):
+        import http.server
+        import threading
+        tmp = Path(tempfile.mkdtemp(prefix="tide-proto-proxy-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "www").mkdir()
+        (tmp / "www" / "hello.txt").write_text("cześć z serwera\n")
+        handler = lambda *a, **k: http.server.SimpleHTTPRequestHandler(*a, directory=str(tmp / "www"), **k)  # noqa: E731
+        http.server.SimpleHTTPRequestHandler.log_message = lambda *a: None
+        self.origin = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=self.origin.serve_forever, daemon=True).start()
+        self.addCleanup(self.origin.shutdown)
+        self.journal = tmp / "journal"
+        self.port = free_port()
+        self.proxy = subprocess.Popen(["python3", str(PROTO / "proxy.py"), "127.0.0.1", str(self.port),
+                                       str(self.journal)])
+        self.addCleanup(self.proxy.wait)
+        self.addCleanup(self.proxy.terminate)
+        for _ in range(100):
+            if self.journal.exists() and "ready" in self.journal.read_text():
+                break
+            import time
+            time.sleep(0.05)
+
+    def test_plain_http_with_absolute_url(self):
+        # Surowe gniazdo zamiast urllib: urllib omija proxy dla adresów z NO_PROXY środowiska testu.
+        origin_port = self.origin.server_address[1]
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as s:
+            s.sendall(f"GET http://127.0.0.1:{origin_port}/hello.txt HTTP/1.1\r\nHost: x\r\n"
+                      "Proxy-Connection: keep-alive\r\n\r\n".encode())
+            data = b""
+            while chunk := s.recv(4096):
+                data += chunk
+        self.assertTrue(data.startswith(b"HTTP/1.0 200"), data[:100])
+        self.assertIn("cześć z serwera".encode(), data)
+        self.assertIn(f"GET 127.0.0.1:{origin_port}", self.journal.read_text())
+
+    def test_connect_tunnel(self):
+        origin_port = self.origin.server_address[1]
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as s:
+            s.sendall(f"CONNECT 127.0.0.1:{origin_port} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+            reply = s.recv(4096)
+            self.assertTrue(reply.startswith(b"HTTP/1.1 200"), reply)
+            s.sendall(b"GET /hello.txt HTTP/1.0\r\nHost: x\r\n\r\n")
+            data = b""
+            while chunk := s.recv(4096):
+                data += chunk
+        self.assertIn("cześć z serwera".encode(), data)
+        self.assertIn(f"CONNECT 127.0.0.1:{origin_port}", self.journal.read_text())
 
 
 if __name__ == "__main__":
