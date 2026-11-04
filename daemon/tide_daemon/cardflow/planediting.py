@@ -6,6 +6,10 @@ from . import execution, findings as review_findings, plans
 from .state import fold, ticket_of
 
 
+def _text_of(value) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
 class PlanEditing:
     @staticmethod
     def _plan_spec(path):
@@ -326,11 +330,23 @@ class PlanEditing:
             return {"ok": True, "id": card}
         if request.get("action") == "return":
             feedback = self._returned_feedback(request)
-            if st.plan_revision and not st.plan_revision.get("failed"):
+            revision = st.plan_revision or {}
+            if revision and not revision.get("failed") and not revision.get("pending"):
                 raise FlowError("revision-active", "poprawa planu już trwa")
-            baseline = (st.plan_approved or proposal)["rows"]
-            # Przy zatwierdzonym planie poprawa posługuje się już nadanymi ID.
-            baseline = [{**r, "workId": r.get("id") or r["workId"]} for r in baseline]
+            if revision.get("pending"):
+                # Gotowa poprawka czeka na zatwierdzenie różnicy: „Odeślij” z okna decyzji zaczyna kolejną poprawkę
+                # od zaproponowanych wierszy, a różnica dalej liczy się od planu sprzed pierwszej poprawki
+                # (04.11, K-46: okno proponowało odesłanie, a usługa odpowiadała „poprawa planu już trwa”).
+                # Planujący poprawia zawsze plan bazowy, więc dostaje obie porcje uwag naraz — inaczej zmiany
+                # z pierwszej poprawki by przepadły.
+                baseline = revision["baseline"]
+                if _text_of(revision.get("feedback")):
+                    feedback = (_text_of(revision.get("feedback")) + "\n\nDodatkowe uwagi do poprawionego planu "
+                                "(uwzględnij obie części):\n" + feedback)
+            else:
+                baseline = (st.plan_approved or proposal)["rows"]
+                # Przy zatwierdzonym planie poprawa posługuje się już nadanymi ID.
+                baseline = [{**r, "workId": r.get("id") or r["workId"]} for r in baseline]
             self.journal.append(card, "plan.returned", feedback=feedback, baseline=baseline)
             self._advance_user_revision(card, fold(self.journal.read(card)))
             return {"ok": True, "id": card}
