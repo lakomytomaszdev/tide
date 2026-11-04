@@ -272,6 +272,12 @@ class ScriptsTest(unittest.TestCase):
             self.assertEqual(run.returncode, 0, f"{name}: {run.stderr}")
             self.assertIn("Użycie", run.stdout, name)
 
+    def test_p6_finds_apt_sources_in_both_formats(self):
+        # images:ubuntu/24.04 ma klasyczny /etc/apt/sources.list, nie deb822 ubuntu.sources (przebieg 2026-11-04).
+        text = (PROTO / "p6.sh").read_text()
+        self.assertIn("/etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list", text)
+        self.assertNotIn("SOURCES=/etc/apt/sources.list.d/ubuntu.sources\n", text)
+
     def test_cleanup_removes_proxy_and_containers(self):
         text = (PROTO / "cleanup.sh").read_text()
         self.assertIn("incus delete --force", text)

@@ -16,10 +16,10 @@ domen z listy (wariant awaryjny apt) i trasy wstrzykujące `/anthropic`, `/chatg
 
 | Próba | Pytanie | Skrypt | Wynik | Dziennik |
 | --- | --- | --- | --- | --- |
-| P-2 | bwrap (Claude Code) i landlock (Codex) w kontenerze przy `apparmor_restrict_unprivileged_userns=1` | `p2.sh` | czeka na Incusa (`make box-install`), potem próba | — |
-| P-3 | Claude Code (OAuth) przez `ANTHROPIC_BASE_URL` i Codex przez `chatgpt_base_url` na proxy wstrzykujące (K3) | `p3.sh` | czeka na Incusa (`make box-install`), potem próba | — |
-| P-6 | klienci przez CONNECT bez DNS, `NO_PROXY` dla localhost | `p6.sh` | czeka na Incusa (`make box-install`), potem próba | — |
-| P-7 | Incus 6.0 z Ubuntu universe: `images:` i `images:ubuntu/24.04` | `p7.sh` | czeka na Incusa (`make box-install`), potem próba | — |
+| P-2 | bwrap (Claude Code) i landlock (Codex) w kontenerze przy `apparmor_restrict_unprivileged_userns=1` | `p2.sh` | **niepełna** (przebieg 1): bwrap nie zainstalowany (P-6 padło przed apt), Claude/Codex brak. Sygnał wstępny: `unshare --user --map-root-user` jako `ubuntu` w pudełku → `Permission denied` (host: `apparmor_restrict_unprivileged_userns=1`, `security.nesting=true`; z wnętrza etykieta `unconfined`). Do powtórki po poprawce P-6 | `p2-2026-11-04T123432.log` |
+| P-3 | Claude Code (OAuth) przez `ANTHROPIC_BASE_URL` i Codex przez `chatgpt_base_url` na proxy wstrzykujące (K3) | `p3.sh` | **nieuruchomiona** (przebieg 1): brak `claude` w pudełku, bo P-6 padło przed instalacją | `p3-2026-11-04T123431.log` |
+| P-6 | klienci przez CONNECT bez DNS, `NO_PROXY` dla localhost | `p6.sh` | **błąd skryptu** (przebieg 1): obraz `images:ubuntu/24.04` ma klasyczny `/etc/apt/sources.list`, nie `ubuntu.sources` → `cp: cannot stat`. Potwierdzone: brak DNS w pudełku (`getent hosts registry.npmjs.org` pusto). Poprawka: p6.sh wykrywa oba formaty | `p6-2026-11-04T123348.log` |
+| P-7 | Incus 6.0 z Ubuntu universe: `images:` i `images:ubuntu/24.04` | `p7.sh` | **działa**: `incus 6.0.0-1ubuntu0.3` z noble-security/universe, `incus image list images: ubuntu/24.04` kod 0, `incus launch images:ubuntu/24.04` kod 0 w 2 s (Ubuntu 24.04.5 LTS) w projekcie `user-1000`. Zabbly niepotrzebne (decyzja `incus-z-ubuntu`) | `p7-2026-11-04T123343.log` |
 
 ## Domeny z dziennika odmów
 

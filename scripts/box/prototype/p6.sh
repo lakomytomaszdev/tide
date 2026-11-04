@@ -75,14 +75,23 @@ trial() {
 all_found() { printf '%s\n' "${FOUND[@]}" | tr ' ' '\n' | awk 'NF && !seen[$0]++'; }
 
 # --- apt ---------------------------------------------------------------------------------------------
-SOURCES=/etc/apt/sources.list.d/ubuntu.sources
+# Plik źródeł apt: deb822 (/etc/apt/sources.list.d/ubuntu.sources, obrazy chmurowe) albo klasyczny
+# /etc/apt/sources.list (obraz images:ubuntu/24.04 — przebieg 2026-11-04T1233 padł na braku ubuntu.sources).
+apt_sources() {
+    in_box sh -c 'for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+        if [ -s "$f" ] && grep -Eq "^(URIs:|deb )" "$f"; then echo "$f"; exit 0; fi; done; exit 1'
+}
 # apt-get update kończy się kodem 0 także przy części nieudanych pobrań (W:) — to też liczymy jako błąd.
 APT_UPDATE='rm -rf /var/lib/apt/lists/* && apt-get -o Acquire::Retries=0 update 2>&1 | tee /tmp/apt.out;
   rc=${PIPESTATUS[0]}; if [ "$rc" = 0 ] && grep -Eq "^(E|W): " /tmp/apt.out; then rc=1; fi; exit $rc'
+APT=""
 if want apt; then
+    SOURCES=$(apt_sources) || { echo "Brak źródeł apt w pudełku (ani ubuntu.sources, ani sources.list)" >&2; exit 1; }
+    result "P-6 apt-źródła" "$SOURCES"
     run in_box sh -c "test -f $SOURCES.tide-orig || cp $SOURCES $SOURCES.tide-orig"
     run in_box sed -i 's#http://#https://#g' "$SOURCES"
-    run in_box grep -E '^URIs' "$SOURCES" || true
+    run in_box grep -E '^(URIs:|deb )' "$SOURCES" || true
+    run in_box sh -c 'dpkg-query -W -f "\${Version}\n" ca-certificates 2>/dev/null || echo "ca-certificates: brak"' || true
     trial apt-https root "$APT_UPDATE"
     if [[ ${RC[apt-https]} -ne 0 ]]; then
         step "apt przez https nie działa — wariant awaryjny: zwykłe HTTP przez proxy"
@@ -98,6 +107,16 @@ fi
 if want apt-install; then
     trial apt-install root 'DEBIAN_FRONTEND=noninteractive apt-get install -y -o Acquire::Retries=0 \
         curl ca-certificates nodejs npm python3-pip dotnet-sdk-8.0 docker.io bubblewrap socat jq'
+    if [[ $APT == apt-http ]]; then
+        # Czy https padło przez proxy, czy przez brak ca-certificates w obrazie: druga próba po instalacji.
+        step "apt przez https ponownie, po instalacji ca-certificates"
+        run in_box sed -i 's#http://#https://#g' "$SOURCES"
+        trial apt-https-po-ca root "$APT_UPDATE"
+        if [[ ${RC[apt-https-po-ca]} -ne 0 ]]; then
+            run in_box cp "$SOURCES.tide-orig" "$SOURCES"
+        fi
+        result "P-6 apt-https-po-ca" "kod ${RC[apt-https-po-ca]}"
+    fi
 fi
 
 # --- npm, NuGet, pip ---------------------------------------------------------------------------------

@@ -38,13 +38,20 @@ for key in kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_user
 done
 run incus config get "$PROTO_BOX" security.nesting || true
 run in_box_user sh -c 'echo "etykieta AppArmor: $(cat /proc/self/attr/current)"; cat /proc/sys/user/max_user_namespaces' || true
+# Z wnętrza etykieta to „unconfined” (przestrzeń AppArmor kontenera); profil Incusa widać tylko od strony hosta.
+box_pid=$(incus info "$PROTO_BOX" 2>/dev/null | awk '/^PID:/ {print $2}')
+echo "host: profil AppArmor procesu init pudełka (pid ${box_pid:-?}): $(cat "/proc/${box_pid:-0}/attr/current" 2>/dev/null || echo nieczytelny)"
+run journalctl -k --since "-15min" --no-pager -g 'apparmor="DENIED".*userns' || true
 run in_box_user sh -c 'command -v bwrap socat; bwrap --version' || true
 
 step "goły bwrap i unshare jako $BOX_USER"
 bw_rc=0
 run in_box_user bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all --die-with-parent -- sh -c 'echo bwrap-ok' || bw_rc=$?
 result "P-2 bwrap-goły" "kod $bw_rc"
-run in_box_user unshare --user --map-root-user --net -- sh -c 'echo unshare-ok' || true
+us_rc=0
+run in_box_user unshare --user --map-root-user --net -- sh -c 'echo unshare-ok' || us_rc=$?
+result "P-2 unshare-userns" "kod $us_rc"
+run journalctl -k --since "-2min" --no-pager -g 'apparmor="DENIED"' || true
 
 in_box_user sh -c 'rm -rf ~/p2-work ~/p2-outside-*; mkdir -p ~/p2-work ~/.claude && echo p2-marker-not-a-secret > ~/.claude/p2-marker'
 
