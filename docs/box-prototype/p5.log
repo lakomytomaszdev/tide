@@ -1,12 +1,12 @@
 # P-5 — projekt ograniczony: nesting, intercept i filtrowanie NIC
 
-- data: 2026-11-04T13:57:00+01:00
+- data: 2026-11-04T14:45:20+01:00
 - skrypt: scripts/box/prototype/p5.sh
 - jądro hosta: 7.0.0-38-generic
 - kontener: tide-proto (images:ubuntu/24.04)
 
 $ incus info 
-  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.062 s
+  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.116 s
     | … (pominięto 440 wierszy)
     |     network_phys_macvlan_mtu: "true"
     |     network_veth_router: "true"
@@ -66,17 +66,16 @@ $ incus project show user-1000
     | - /1.0/instances/tide-proto?project=user-1000
     | - /1.0/instances/tide-proto-net?project=user-1000
     | - /1.0/profiles/default?project=user-1000
-    | - /1.0/images/c8260bb3cab33bbb3b20dd6cd581dab8735b2253484fc19ad904adbdf2b946eb?project=user-1000
+    | - /1.0/images/e5f84c14163ab8966bed4dc089f1c2a63edebd82773c63d2289b0f17fe91f180?project=user-1000
 $ incus network list 
-  [sieci widoczne w projekcie] kod wyjścia: 0, czas: 0.018 s
+  [sieci widoczne w projekcie] kod wyjścia: 0, czas: 0.015 s
     | +------+------+---------+------+------+-------------+---------+-------+
     | | NAME | TYPE | MANAGED | IPV4 | IPV6 | DESCRIPTION | USED BY | STATE |
     | +------+------+---------+------+------+-------------+---------+-------+
 Kontener tide-proto już jest — używam go.
 $ incus config show tide-proto 
-  [konfiguracja kontenera] kod wyjścia: 0, czas: 0.018 s
-    | … (pominięto 5 wierszy)
-    |   image.release: noble
+  [konfiguracja kontenera] kod wyjścia: 0, czas: 0.017 s
+    | … (pominięto 6 wierszy)
     |   image.requirements.cgroup: v2
     |   image.serial: "20261103_07:42"
     |   image.type: squashfs
@@ -84,15 +83,16 @@ $ incus config show tide-proto
     |   security.nesting: "true"
     |   volatile.base_image: c8260bb3cab33bbb3b20dd6cd581dab8735b2253484fc19ad904adbdf2b946eb
     |   volatile.cloud-init.instance-id: 38468a45-11b4-49d1-a811-40423f87789f
-    |   volatile.eth0.host_name: veth037645c5
+    |   volatile.eth0.host_name: vetheda18150
     |   volatile.eth0.hwaddr: 00:16:3e:ee:b5:9e
     |   volatile.idmap.base: "0"
     |   volatile.idmap.current: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
     |   volatile.idmap.next: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
     |   volatile.last_state.idmap: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
     |   volatile.last_state.power: RUNNING
+    |   volatile.last_state.ready: "false"
     |   volatile.uuid: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
-    |   volatile.uuid.generation: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
+    |   volatile.uuid.generation: e621d5b3-78ff-4998-9cae-efdbfe99f9bf
     | devices:
     |   eth0:
     |     name: eth0
@@ -107,40 +107,40 @@ $ incus config show tide-proto
     | stateful: false
     | description: ""
 $ systemd_ready 
-  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.068 s
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.074 s
     | running (próba 1)
 $ incus exec tide-proto -T -- bash -c $'\n        set -e\n        name=$(id -un 1000 2>/dev/null || true)\n        if [ -z "$name" ]; then\n            useradd -m -u 1000 -U -s /bin/bash agent\n        elif [ "$name" != agent ]; then\n            usermod -l agent -d /home/agent -m "$name"\n            groupmod -n agent "$(id -gn 1000)" 2>/dev/null || true\n        fi\n        id agent' 
-  [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.064 s
+  [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.053 s
     | uid=1000(agent) gid=1000(agent) groups=1000(agent),27(sudo)
 $ incus exec tide-proto -T -- dpkg-query -W -f \$\{Package\}\ \$\{Status\}\\n netcat-openbsd python3 iproute2 util-linux 
-  [pakiety w kontenerze: netcat-openbsd python3 iproute2 util-linux] kod wyjścia: 0, czas: 0.063 s
+  [pakiety w kontenerze: netcat-openbsd python3 iproute2 util-linux] kod wyjścia: 0, czas: 0.061 s
     | iproute2 install ok installed
     | netcat-openbsd install ok installed
     | python3 install ok installed
     | util-linux install ok installed
 $ incus config set tide-proto security.syscalls.intercept.mknod=true security.syscalls.intercept.setxattr=true 
-  [intercept w projekcie ograniczonym (oczekiwana odmowa przy restricted.containers.interception=block)] kod wyjścia: 1, czas: 0.025 s
-    | Error: Failed checking if instance update allowed: Invalid value "true" for config "security.syscalls.intercept.mknod" on container "tide-proto" of project "user-1000": Container syscall interception is forbidden
+  [intercept w projekcie ograniczonym (oczekiwana odmowa przy restricted.containers.interception=block)] kod wyjścia: 1, czas: 0.026 s
+    | Error: Failed checking if instance update allowed: Invalid value "true" for config "security.syscalls.intercept.setxattr" on container "tide-proto" of project "user-1000": Container syscall interception is forbidden
 
-WYNIK config-nesting-intercept: fail — projekt ograniczony odrzucił intercept: Error: Failed checking if instance update allowed: Invalid value "true" for config "security.syscalls.intercept.mknod" on container "tide-proto" of project "user-1000": Container syscall interception is forbidden
+WYNIK config-nesting-intercept: fail — projekt ograniczony odrzucił intercept: Error: Failed checking if instance update allowed: Invalid value "true" for config "security.syscalls.intercept.setxattr" on container "tide-proto" of project "user-1000": Container syscall interception is forbidden
 
 $ sudo incus project get user-1000 restricted.containers.interception 
-  [restricted.containers.interception (przed zmianą)] kod wyjścia: 0, czas: 0.017 s
+  [restricted.containers.interception (przed zmianą)] kod wyjścia: 0, czas: 0.016 s
     | block
 $ sudo incus project set user-1000 restricted.containers.interception=allow 
   [wariant: restricted.containers.interception=allow w projekcie user-1000 (chwilowo)] kod wyjścia: 0, czas: 0.039 s
 $ incus config set tide-proto security.syscalls.intercept.mknod=true security.syscalls.intercept.setxattr=true 
-  [intercept mknod/setxattr w kontenerze] kod wyjścia: 0, czas: 0.050 s
+  [intercept mknod/setxattr w kontenerze] kod wyjścia: 0, czas: 0.054 s
 $ incus restart tide-proto 
-  [restart kontenera z intercept] kod wyjścia: 0, czas: 1.073 s
+  [restart kontenera z intercept] kod wyjścia: 0, czas: 1.068 s
 $ systemd_ready 
-  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 2.561 s
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 1.781 s
     | running (próba 2)
 
 WYNIK config-wariant-interception: info — intercept przyjęty po restricted.containers.interception=allow
 
 $ incus config show tide-proto 
-  [ustawienia bezpieczeństwa kontenera] kod wyjścia: 0, czas: 0.016 s
+  [ustawienia bezpieczeństwa kontenera] kod wyjścia: 0, czas: 0.018 s
     | … (pominięto 8 wierszy)
     |   image.type: squashfs
     |   image.variant: default
@@ -149,7 +149,7 @@ $ incus config show tide-proto
     |   security.syscalls.intercept.setxattr: "true"
     |   volatile.base_image: c8260bb3cab33bbb3b20dd6cd581dab8735b2253484fc19ad904adbdf2b946eb
     |   volatile.cloud-init.instance-id: 38468a45-11b4-49d1-a811-40423f87789f
-    |   volatile.eth0.host_name: veth15321b5c
+    |   volatile.eth0.host_name: veth9b4cfb8f
     |   volatile.eth0.hwaddr: 00:16:3e:ee:b5:9e
     |   volatile.idmap.base: "0"
     |   volatile.idmap.current: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
@@ -158,7 +158,7 @@ $ incus config show tide-proto
     |   volatile.last_state.power: RUNNING
     |   volatile.last_state.ready: "false"
     |   volatile.uuid: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
-    |   volatile.uuid.generation: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
+    |   volatile.uuid.generation: e621d5b3-78ff-4998-9cae-efdbfe99f9bf
     | devices:
     |   eth0:
     |     name: eth0
@@ -176,15 +176,15 @@ $ incus config show tide-proto
 WYNIK config-nesting: ok — projekt ograniczony przyjął security.nesting=true
 
 $ incus exec tide-proto -T -- unshare --user --map-root-user --pid --fork --mount-proc true 
-  [nesting: przestrzeń użytkownika i /proc w kontenerze] kod wyjścia: 0, czas: 0.059 s
+  [nesting: przestrzeń użytkownika i /proc w kontenerze] kod wyjścia: 0, czas: 0.064 s
 
 WYNIK nesting: ok — unshare z --mount-proc w kontenerze działa
 
 $ incus exec tide-proto -T -- bash -c rm\ -f\ /var/tmp/proto-null\;\ mknod\ /var/tmp/proto-null\ c\ 1\ 3\ \&\&\ ls\ -l\ /var/tmp/proto-null\ \&\&\ rm\ -f\ /var/tmp/proto-null 
-  [intercept mknod: urządzenie znakowe 1:3 w kontenerze] kod wyjścia: 0, czas: 0.068 s
-    | crw-r--r-- 1 root root 1, 3 Nov  4 12:57 /var/tmp/proto-null
+  [intercept mknod: urządzenie znakowe 1:3 w kontenerze] kod wyjścia: 0, czas: 0.069 s
+    | crw-r--r-- 1 root root 1, 3 Nov  4 13:45 /var/tmp/proto-null
 $ incus exec tide-proto -T -- python3 -c $'\nimport os, shutil\nd = "/var/tmp/proto-xattr"\nshutil.rmtree(d, ignore_errors=True)\nos.mkdir(d)\nos.setxattr(d, "trusted.overlay.opaque", b"y")\nprint("setxattr ok")\nshutil.rmtree(d)' 
-  [intercept setxattr: trusted.overlay.opaque w kontenerze] kod wyjścia: 0, czas: 0.097 s
+  [intercept setxattr: trusted.overlay.opaque w kontenerze] kod wyjścia: 0, czas: 0.094 s
     | setxattr ok
 
 WYNIK intercept: ok — mknod i setxattr (trusted.overlay.*) działają w kontenerze (chwilowe restricted.containers.interception=allow)
@@ -201,43 +201,43 @@ $ incus config device show tide-proto
     |   security.mac_filtering: "true"
     |   type: nic
 $ incus stop tide-proto 
-  [zatrzymanie kontenera (zdjęcie filtrowania z poprzedniego uruchomienia)] kod wyjścia: 0, czas: 0.968 s
+  [zatrzymanie kontenera (zdjęcie filtrowania z poprzedniego uruchomienia)] kod wyjścia: 0, czas: 0.963 s
 $ incus config device remove tide-proto eth0 
-  [usunięcie nadpisania eth0] kod wyjścia: 0, czas: 0.058 s
+  [usunięcie nadpisania eth0] kod wyjścia: 0, czas: 0.069 s
     | Device eth0 removed from tide-proto
 $ incus start tide-proto 
-  [start kontenera] kod wyjścia: 0, czas: 0.166 s
+  [start kontenera] kod wyjścia: 0, czas: 0.181 s
 $ systemd_ready 
-  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 2.473 s
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 1.651 s
     | running (próba 2)
 $ incus exec tide-proto -T -- timeout 10 nc -z -w 3 10.173.184.1 18080 
-  [kontrola A: połączenie z własnego adresu 10.173.184.91 (bez filtrowania)] kod wyjścia: 0, czas: 0.058 s
+  [kontrola A: połączenie z własnego adresu 10.173.184.164 (bez filtrowania)] kod wyjścia: 0, czas: 0.060 s
     | Connection to 10.173.184.1 18080 port [tcp/*] succeeded!
 $ incus exec tide-proto -T -- bash -c ip\ addr\ add\ 10.173.184.250/24\ dev\ eth0\ \&\&\ timeout\ 10\ nc\ -s\ 10.173.184.250\ -z\ -w\ 3\ 10.173.184.1\ 18080\;\ rc=\$\?\;\ ip\ addr\ del\ 10.173.184.250/24\ dev\ eth0\;\ exit\ \$rc 
-  [kontrola B: podszycie pod 10.173.184.250 bez filtrowania] kod wyjścia: 0, czas: 0.067 s
+  [kontrola B: podszycie pod 10.173.184.250 bez filtrowania] kod wyjścia: 0, czas: 0.061 s
     | Connection to 10.173.184.1 18080 port [tcp/*] succeeded!
-Kontrola A: nie doszło; kontrola B (podszycie bez filtrowania): doszło
+Kontrola A: doszło; kontrola B (podszycie bez filtrowania): doszło
 $ incus stop tide-proto 
-  [zatrzymanie kontenera przed włączeniem filtrowania] kod wyjścia: 0, czas: 0.851 s
+  [zatrzymanie kontenera przed włączeniem filtrowania] kod wyjścia: 0, czas: 0.912 s
 $ incus config device override tide-proto eth0 security.mac_filtering=true security.ipv4_filtering=true security.ipv6_filtering=true 
-  [filtrowanie NIC na eth0 (mac, ipv4, ipv6)] kod wyjścia: 0, czas: 0.051 s
+  [filtrowanie NIC na eth0 (mac, ipv4, ipv6)] kod wyjścia: 0, czas: 0.059 s
     | Device eth0 overridden for tide-proto
 $ incus start tide-proto 
-  [start kontenera z filtrowaniem (mac, ipv4, ipv6)] kod wyjścia: 1, czas: 0.065 s
+  [start kontenera z filtrowaniem (mac, ipv4, ipv6)] kod wyjścia: 1, czas: 0.067 s
     | Error: Failed to start device "eth0": security.ipv6_filtering requires bridge netfilter: br_netfilter kernel module not loaded
     | Try `incus info --show-log tide-proto` for more info
 
 WYNIK filtrowanie-ipv6: info — start z security.ipv6_filtering odrzucony: Error: Failed to start device "eth0": security.ipv6_filtering requires bridge netfilter: br_netfilter kernel module not loaded
 
 $ incus config device set tide-proto eth0 security.ipv6_filtering=false 
-  [filtrowanie NIC bez ipv6 (security.ipv6_filtering=false)] kod wyjścia: 0, czas: 0.053 s
+  [filtrowanie NIC bez ipv6 (security.ipv6_filtering=false)] kod wyjścia: 0, czas: 0.067 s
 $ incus start tide-proto 
-  [start kontenera z filtrowaniem (mac, ipv4)] kod wyjścia: 0, czas: 0.162 s
+  [start kontenera z filtrowaniem (mac, ipv4)] kod wyjścia: 0, czas: 0.216 s
 $ systemd_ready 
-  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 1.743 s
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 1.664 s
     | running (próba 2)
 $ incus config device show tide-proto 
-  [eth0 kontenera po włączeniu filtrowania] kod wyjścia: 0, czas: 0.013 s
+  [eth0 kontenera po włączeniu filtrowania] kod wyjścia: 0, czas: 0.016 s
     | eth0:
     |   name: eth0
     |   network: incusbr0
@@ -246,37 +246,37 @@ $ incus config device show tide-proto
     |   security.mac_filtering: "true"
     |   type: nic
 $ incus exec tide-proto -T -- timeout 10 nc -z -w 3 10.173.184.1 18080 
-  [z filtrowaniem: połączenie z własnego adresu 10.173.184.91] kod wyjścia: 0, czas: 0.050 s
+  [z filtrowaniem: połączenie z własnego adresu 10.173.184.164] kod wyjścia: 0, czas: 0.067 s
     | Connection to 10.173.184.1 18080 port [tcp/*] succeeded!
 $ incus exec tide-proto -T -- bash -c ip\ addr\ add\ 10.173.184.250/24\ dev\ eth0\ \&\&\ timeout\ 10\ nc\ -s\ 10.173.184.250\ -z\ -w\ 3\ 10.173.184.1\ 18080\;\ rc=\$\?\;\ ip\ addr\ del\ 10.173.184.250/24\ dev\ eth0\;\ exit\ \$rc 
-  [z filtrowaniem: podszycie pod 10.173.184.250] kod wyjścia: 1, czas: 3.061 s
+  [z filtrowaniem: podszycie pod 10.173.184.250] kod wyjścia: 1, czas: 3.065 s
 --- adresy źródłowe zapisane przez serwer testowy
 10.173.184.164
 10.173.184.250
 10.173.184.164
 --- koniec: adresy źródłowe zapisane przez serwer testowy
 
-WYNIK filtrowanie-nic: fail — z filtrowaniem nie dochodzi nawet ruch z własnego adresu — filtr psuje sieć pudełka
+WYNIK filtrowanie-nic: ok — podszycie pod 10.173.184.250 nie doszło do 10.173.184.1:18080; własny adres dochodzi (mac, ipv4)
 
 
 WYNIK filtrowanie-ipv6: info — bez security.ipv6_filtering: mostek bez IPv6, a ruch IPv6 z incusbr0 i tak DROP w inet tide-box (iifname incusbr0 drop w rodzinie inet)
 
 $ incus config unset tide-proto security.syscalls.intercept.mknod 
-  [zdjęcie intercept mknod] kod wyjścia: 0, czas: 0.051 s
+  [zdjęcie intercept mknod] kod wyjścia: 0, czas: 0.063 s
 $ incus config unset tide-proto security.syscalls.intercept.setxattr 
-  [zdjęcie intercept setxattr] kod wyjścia: 0, czas: 0.057 s
+  [zdjęcie intercept setxattr] kod wyjścia: 0, czas: 0.056 s
 $ sudo incus project set user-1000 restricted.containers.interception=block 
-  [cofnięcie restricted.containers.interception=block] kod wyjścia: 0, czas: 0.029 s
+  [cofnięcie restricted.containers.interception=block] kod wyjścia: 0, czas: 0.030 s
 
 ## Podsumowanie
 
-- config-nesting-intercept: fail — projekt ograniczony odrzucił intercept: Error: Failed checking if instance update allowed: Invalid value "true" for config "security.syscalls.intercept.mknod" on container "tide-proto" of project "user-1000": Container syscall interception is forbidden
+- config-nesting-intercept: fail — projekt ograniczony odrzucił intercept: Error: Failed checking if instance update allowed: Invalid value "true" for config "security.syscalls.intercept.setxattr" on container "tide-proto" of project "user-1000": Container syscall interception is forbidden
 - config-wariant-interception: info — intercept przyjęty po restricted.containers.interception=allow
 - config-nesting: ok — projekt ograniczony przyjął security.nesting=true
 - nesting: ok — unshare z --mount-proc w kontenerze działa
 - intercept: ok — mknod i setxattr (trusted.overlay.*) działają w kontenerze (chwilowe restricted.containers.interception=allow)
 - filtrowanie-ipv6: info — start z security.ipv6_filtering odrzucony: Error: Failed to start device "eth0": security.ipv6_filtering requires bridge netfilter: br_netfilter kernel module not loaded
-- filtrowanie-nic: fail — z filtrowaniem nie dochodzi nawet ruch z własnego adresu — filtr psuje sieć pudełka
+- filtrowanie-nic: ok — podszycie pod 10.173.184.250 nie doszło do 10.173.184.1:18080; własny adres dochodzi (mac, ipv4)
 - filtrowanie-ipv6: info — bez security.ipv6_filtering: mostek bez IPv6, a ruch IPv6 z incusbr0 i tak DROP w inet tide-box (iifname incusbr0 drop w rodzinie inet)
 
-Niepowodzeń: 2
+Niepowodzeń: 1

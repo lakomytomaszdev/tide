@@ -426,6 +426,12 @@ proxy_open() {
         'Acquire::https::Proxy \"$url\";' 'Acquire::http::Pipeline-Depth \"0\";' >/etc/apt/apt.conf.d/95tide-proto"
 }
 
+# Restart dockerd w kontenerze (fragment skryptu powłoki): kilka restartów w minucie trafia w StartLimitBurst
+# jednostki docker.service („Job for docker.service failed”, runda 4) — najpierw reset-failed, a przy błędzie
+# koniec dziennika jednostki w logu próby.
+DOCKER_RESTART='{ systemctl reset-failed docker.service docker.socket 2>/dev/null || true; }
+    systemctl restart docker || { journalctl -u docker.service --no-pager -n 30; false; }'
+
 box_docker_proxy() {  # dockerd w kontenerze ciągnie obrazy przez chwilowe proxy (drop-in jak w #16)
     [[ $NET_MODE == proxy && $NET_OPEN -eq 1 ]] || return 0
     local url=${NET_ENV[1]#http_proxy=}
@@ -433,7 +439,8 @@ box_docker_proxy() {  # dockerd w kontenerze ciągnie obrazy przez chwilowe prox
         mkdir -p /etc/systemd/system/docker.service.d
         printf '%s\n' '[Service]' 'Environment=HTTP_PROXY=$url' 'Environment=HTTPS_PROXY=$url' \
             'Environment=NO_PROXY=localhost,127.0.0.1,::1' >/etc/systemd/system/docker.service.d/tide-proto.conf
-        systemctl daemon-reload && systemctl restart docker"
+        systemctl daemon-reload
+        $DOCKER_RESTART"
 }
 
 proxy_close() {

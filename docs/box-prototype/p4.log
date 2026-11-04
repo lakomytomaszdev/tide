@@ -1,6 +1,6 @@
 # P-4 — worktree i .git z ext4 przez shift=true, nakładki ro, git i npm ci
 
-- data: 2026-11-04T13:57:36+01:00
+- data: 2026-11-04T14:45:53+01:00
 - skrypt: scripts/box/prototype/p4.sh
 - jądro hosta: 7.0.0-38-generic
 - kontener: tide-proto (images:ubuntu/24.04)
@@ -8,7 +8,7 @@
 Projekt: /home/user/DevWorkspace/toolssuite, worktree próby: /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38, node hosta: 20.19.6
 System plików: ext4 (/home/user/DevWorkspace/toolssuite)
 $ incus info 
-  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.014 s
+  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.016 s
     | … (pominięto 440 wierszy)
     |     network_phys_macvlan_mtu: "true"
     |     network_veth_router: "true"
@@ -41,15 +41,15 @@ $ incus info
     |     version: 2.03.16(2) (2022-05-18) / 1.02.185 (2022-05-18) / 4.50.0
     |     remote: true
 $ incus version 
-  [wersja Incusa] kod wyjścia: 0, czas: 0.013 s
+  [wersja Incusa] kod wyjścia: 0, czas: 0.015 s
     | Client version: 6.0.0
     | Server version: 6.0.0
 $ systemctl is-active tide-box-nft.service 
-  [reguły inet tide-box wczytane (jednostka z PT-166)] kod wyjścia: 0, czas: 0.002 s
+  [reguły inet tide-box wczytane (jednostka z PT-166)] kod wyjścia: 0, czas: 0.003 s
     | active
 Kontener tide-proto już jest — używam go.
 $ incus config show tide-proto 
-  [konfiguracja kontenera] kod wyjścia: 0, czas: 0.014 s
+  [konfiguracja kontenera] kod wyjścia: 0, czas: 0.016 s
     | … (pominięto 6 wierszy)
     |   image.requirements.cgroup: v2
     |   image.serial: "20261103_07:42"
@@ -58,7 +58,7 @@ $ incus config show tide-proto
     |   security.nesting: "true"
     |   volatile.base_image: c8260bb3cab33bbb3b20dd6cd581dab8735b2253484fc19ad904adbdf2b946eb
     |   volatile.cloud-init.instance-id: 38468a45-11b4-49d1-a811-40423f87789f
-    |   volatile.eth0.host_name: vethb6f436f7
+    |   volatile.eth0.host_name: veth20973c07
     |   volatile.eth0.hwaddr: 00:16:3e:ee:b5:9e
     |   volatile.idmap.base: "0"
     |   volatile.idmap.current: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
@@ -67,7 +67,7 @@ $ incus config show tide-proto
     |   volatile.last_state.power: RUNNING
     |   volatile.last_state.ready: "false"
     |   volatile.uuid: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
-    |   volatile.uuid.generation: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
+    |   volatile.uuid.generation: e621d5b3-78ff-4998-9cae-efdbfe99f9bf
     | devices:
     |   eth0:
     |     name: eth0
@@ -82,81 +82,303 @@ $ incus config show tide-proto
     | stateful: false
     | description: ""
 $ systemd_ready 
-  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.062 s
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.075 s
     | degraded (próba 1)
 $ incus exec tide-proto -T -- bash -c $'\n        set -e\n        name=$(id -un 1000 2>/dev/null || true)\n        if [ -z "$name" ]; then\n            useradd -m -u 1000 -U -s /bin/bash agent\n        elif [ "$name" != agent ]; then\n            usermod -l agent -d /home/agent -m "$name"\n            groupmod -n agent "$(id -gn 1000)" 2>/dev/null || true\n        fi\n        id agent' 
-  [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.055 s
+  [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.061 s
     | uid=1000(agent) gid=1000(agent) groups=1000(agent),27(sudo)
 Sieć: chwilowe proxy scripts/box/prototype/proxy.py na 10.173.184.1:18080 (port proxy Tide, przepuszczany przez inet tide-box); bez zmian w nftables.
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c printf\ \'%s\\n\'\ \'Acquire::http::Proxy\ \"http://10.173.184.1:18080\"\;\'\ \ \ \ \ \ \ \ \ \'Acquire::https::Proxy\ \"http://10.173.184.1:18080\"\;\'\ \'Acquire::http::Pipeline-Depth\ \"0\"\;\'\ \>/etc/apt/apt.conf.d/95tide-proto 
-  [apt w kontenerze przez proxy] kod wyjścia: 0, czas: 0.061 s
+  [apt w kontenerze przez proxy] kod wyjścia: 0, czas: 0.067 s
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- dpkg-query -W -f \$\{Package\}\ \$\{Status\}\\n git ca-certificates curl xz-utils netcat-openbsd 
-  [pakiety w kontenerze: git ca-certificates curl xz-utils netcat-openbsd] kod wyjścia: 0, czas: 0.059 s
+  [pakiety w kontenerze: git ca-certificates curl xz-utils netcat-openbsd] kod wyjścia: 0, czas: 0.066 s
     | ca-certificates install ok installed
     | curl install ok installed
     | git install ok installed
     | netcat-openbsd install ok installed
     | xz-utils install ok installed
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c $'\n    set -e\n    if [ "$(node --version 2>/dev/null)" != v20.19.6 ]; then\n        curl -fsSL https://nodejs.org/dist/v20.19.6/node-v20.19.6-linux-x64.tar.xz             | tar -xJ -C /usr/local --strip-components=1\n    fi\n    node --version; npm --version' 
-  [node 20.19.6 w kontenerze (jak na hoście)] kod wyjścia: 0, czas: 0.133 s
+  [node 20.19.6 w kontenerze (jak na hoście)] kod wyjścia: 0, czas: 0.241 s
     | v20.19.6
     | 10.8.2
 $ git -C /home/user/DevWorkspace/toolssuite worktree add -b proto/k-38 /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 HEAD 
-  [worktree próby na hoście] kod wyjścia: 0, czas: 0.024 s
+  [worktree próby na hoście] kod wyjścia: 0, czas: 0.029 s
     | Przygotowywanie drzewa roboczego (nowa gałąź „proto/k-38”)
     | HEAD wskazuje teraz f877ed4 Merge card K-31 into master
 $ incus config device add tide-proto proto-git disk source=/home/user/DevWorkspace/toolssuite/.git path=/home/user/DevWorkspace/toolssuite/.git shift=true 
-  [montowanie /home/user/DevWorkspace/toolssuite/.git (shift=true)] kod wyjścia: 1, czas: 0.037 s
+  [montowanie /home/user/DevWorkspace/toolssuite/.git (shift=true)] kod wyjścia: 1, czas: 0.041 s
     | Error: Failed to start device "proto-git": The "shift" property cannot be used with a restricted source path
 $ incus config set tide-proto raw.idmap both\ 1000\ 1000 
-  [wariant awaryjny: raw.idmap both 1000 1000] kod wyjścia: 0, czas: 0.048 s
-$ incus restart tide-proto 
-  [restart kontenera po raw.idmap] kod wyjścia: 0, czas: 2.251 s
-    | Remapping container filesystem                                                                                             
-$ systemd_ready 
-  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 1.964 s
-    | running (próba 2)
+  [wariant awaryjny: raw.idmap both 1000 1000] kod wyjścia: 0, czas: 0.060 s
+$ incus stop tide-proto 
+  [zatrzymanie kontenera przed montowaniami (raw.idmap)] kod wyjścia: 0, czas: 0.921 s
 $ incus config device add tide-proto proto-git disk source=/home/user/DevWorkspace/toolssuite/.git path=/home/user/DevWorkspace/toolssuite/.git 
-  [montowanie /home/user/DevWorkspace/toolssuite/.git (shift=false)] kod wyjścia: 0, czas: 0.068 s
+  [montowanie /home/user/DevWorkspace/toolssuite/.git (shift=false)] kod wyjścia: 0, czas: 0.054 s
     | Device proto-git added to tide-proto
 $ incus config device add tide-proto proto-wt disk source=/home/user/DevWorkspace/toolssuite-worktrees path=/home/user/DevWorkspace/toolssuite-worktrees 
-  [montowanie /home/user/DevWorkspace/toolssuite-worktrees (shift=false)] kod wyjścia: 0, czas: 0.067 s
+  [montowanie /home/user/DevWorkspace/toolssuite-worktrees (shift=false)] kod wyjścia: 0, czas: 0.054 s
     | Device proto-wt added to tide-proto
 $ incus config device add tide-proto proto-hooks disk source=/home/user/DevWorkspace/toolssuite/.git/hooks path=/home/user/DevWorkspace/toolssuite/.git/hooks readonly=true 
-  [montowanie /home/user/DevWorkspace/toolssuite/.git/hooks (shift=false, ro)] kod wyjścia: 0, czas: 0.054 s
+  [montowanie /home/user/DevWorkspace/toolssuite/.git/hooks (shift=false, ro)] kod wyjścia: 0, czas: 0.055 s
     | Device proto-hooks added to tide-proto
 $ incus config device add tide-proto proto-config disk source=/home/user/DevWorkspace/toolssuite/.git/config path=/home/user/DevWorkspace/toolssuite/.git/config readonly=true 
-  [montowanie /home/user/DevWorkspace/toolssuite/.git/config (shift=false, ro)] kod wyjścia: 1, czas: 0.040 s
-    | Error: Failed to start device "proto-config": Failed to add mount for device inside container: Failed to run: /usr/libexec/incus/incusd forkmount lxc-mount -- user-1000_tide-proto /var/lib/incus/containers /run/incus/user-1000_tide-proto/lxc.conf /var/lib/incus/devices/user-1000_tide-proto/disk.proto--config.home-tomek-DevWorkspace-toolssuite-.git-config /home/user/DevWorkspace/toolssuite/.git/config none 4097: exit status 1
+  [montowanie /home/user/DevWorkspace/toolssuite/.git/config (shift=false, ro)] kod wyjścia: 0, czas: 0.057 s
+    | Device proto-config added to tide-proto
+$ incus config device add tide-proto proto-info disk source=/home/user/DevWorkspace/toolssuite/.git/info path=/home/user/DevWorkspace/toolssuite/.git/info readonly=true 
+  [montowanie /home/user/DevWorkspace/toolssuite/.git/info (shift=false, ro)] kod wyjścia: 0, czas: 0.054 s
+    | Device proto-info added to tide-proto
+$ incus start tide-proto 
+  [start kontenera z raw.idmap i montowaniami] kod wyjścia: 0, czas: 2.209 s
+    | Remapping container filesystem                                                                                             
+$ systemd_ready 
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 2.074 s
+    | running (próba 2)
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- stat -c %u:%g\ %n /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 
+  [właściciel worktree w kontenerze (raw.idmap)] kod wyjścia: 0, czas: 0.069 s
+    | 1000:1000 /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38
 
-WYNIK warunki: fail — montowanie bez shift (raw.idmap) nie przeszło
+WYNIK montowanie: ok — worktree i .git zamontowane pod identycznymi ścieżkami (raw.idmap), uid 1000 ↔ 1000
 
-$ incus config device remove tide-proto proto-git 
-  [odmontowanie proto-git] kod wyjścia: 0, czas: 0.071 s
-    | Device proto-git removed from tide-proto
-$ incus config device remove tide-proto proto-wt 
-  [odmontowanie proto-wt] kod wyjścia: 0, czas: 0.055 s
-    | Device proto-wt removed from tide-proto
-$ incus config device remove tide-proto proto-hooks 
-  [odmontowanie proto-hooks] kod wyjścia: 0, czas: 0.064 s
-    | Device proto-hooks removed from tide-proto
-$ incus config unset tide-proto raw.idmap 
-  [cofnięcie raw.idmap] kod wyjścia: 0, czas: 0.059 s
-$ git -C /home/user/DevWorkspace/toolssuite worktree remove --force /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 
-  [usunięcie worktree próby] kod wyjścia: 0, czas: 0.007 s
-$ git -C /home/user/DevWorkspace/toolssuite branch -D proto/k-38 
-  [usunięcie gałęzi próby] kod wyjścia: 0, czas: 0.002 s
-    | Usunięto gałąź proto/k-38 (wskazywała f877ed4).
+$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- git status --short --branch 
+  [git status w kontenerze] kod wyjścia: 0, czas: 0.076 s
+    | ## proto/k-38
+
+WYNIK git-status: ok — git status w worktree z kontenera
+
+$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c $'\n    echo \'PT-164: zapis z kontenera\' > proto-k-38.txt &&\n    git add proto-k-38.txt &&\n    git -c user.name=\'Tide proto\' -c user.email=proto@tide.invalid commit -q -m \'proto: commit from the box (PT-164)\'' 
+  [git add + commit na proto/k-38 w kontenerze] kod wyjścia: 0, czas: 0.076 s
+$ git -C /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 log -1 --format=%H\ %an\ %s 
+  [commit widoczny na hoście] kod wyjścia: 0, czas: 0.003 s
+    | 1c90f6e30c40a3ba2fed7ab2f764a44243c42986 Tide proto proto: commit from the box (PT-164)
+$ stat -c %U:%G\ %n /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38/proto-k-38.txt 
+  [właściciel pliku z kontenera na hoście] kod wyjścia: 0, czas: 0.001 s
+    | tomek:tomek /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38/proto-k-38.txt
+$ git -C /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 status --short --branch 
+  [git status na hoście po commicie z kontenera] kod wyjścia: 0, czas: 0.004 s
+    | ## proto/k-38
+
+WYNIK git-commit: ok — commit na proto/k-38 z kontenera widoczny na hoście, plik należy do tomek
+
+$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- sh -c mkdir\ \'/home/user/DevWorkspace/toolssuite/.git/hooks/.proto-k-38\' 
+  [zapis do hooks z kontenera (oczekiwana odmowa)] kod wyjścia: 1, czas: 0.062 s
+    | mkdir: cannot create directory ‘/home/user/DevWorkspace/toolssuite/.git/hooks/.proto-k-38’: Read-only file system
+
+WYNIK ro-hooks: ok — zapis do hooks odrzucony: mkdir: cannot create directory ‘/home/user/DevWorkspace/toolssuite/.git/hooks/.proto-k-38’: Read-only file system
+
+$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- sh -c :\ \>\>\ \'/home/user/DevWorkspace/toolssuite/.git/config\' 
+  [zapis do config z kontenera (oczekiwana odmowa)] kod wyjścia: 2, czas: 0.064 s
+    | sh: 1: cannot create /home/user/DevWorkspace/toolssuite/.git/config: Read-only file system
+
+WYNIK ro-config: ok — zapis do config odrzucony: sh: 1: cannot create /home/user/DevWorkspace/toolssuite/.git/config: Read-only file system
+
+$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- sh -c mkdir\ \'/home/user/DevWorkspace/toolssuite/.git/info/.proto-k-38\' 
+  [zapis do info z kontenera (oczekiwana odmowa)] kod wyjścia: 1, czas: 0.065 s
+    | mkdir: cannot create directory ‘/home/user/DevWorkspace/toolssuite/.git/info/.proto-k-38’: Read-only file system
+
+WYNIK ro-info: ok — zapis do info odrzucony: mkdir: cannot create directory ‘/home/user/DevWorkspace/toolssuite/.git/info/.proto-k-38’: Read-only file system
+
+npm ci w /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 (z --ignore-scripts)
+$ bash -c cd\ \'/home/user/DevWorkspace/toolssuite-worktrees/proto-k-38\'\ \&\&\ npm\ ci\ --ignore-scripts\ --no-audit\ --no-fund 
+  [npm ci na hoście] kod wyjścia: 0, czas: 8.591 s
+    | npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+    | npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated lodash.isequal@4.5.0: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
+    | npm warn deprecated har-validator@5.1.5: this library is no longer supported
+    | npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
+    | npm warn deprecated q@1.4.1: You or someone you depend on is using Q, the JavaScript Promise library that gave JavaScript developers strong feelings about promises. They can almost certainly migrate to the native JavaScript promise now. Thank you literally everyone for joining me in this bet against the odds. Be excellent to each other.
+    | npm warn deprecated
+    | npm warn deprecated (For a CapTP with native promises, see @endo/eventual-send and @endo/captp)
+    | npm warn deprecated uuid@3.4.0: Please upgrade  to version 7 or higher.  Older versions may use Math.random() in certain circumstances, which is known to be problematic.  See https://v8.dev/blog/math-random for details.
+    | npm warn deprecated request@2.88.2: request has been deprecated, see https://github.com/request/request/issues/3142
+    | npm warn deprecated protractor@7.0.0: We have news to share - Protractor is deprecated and will reach end-of-life by Summer 2023. To learn more and find out about other options please refer to this post on the Angular blog. Thank you for using and contributing to Protractor. https://goo.gle/state-of-e2e-in-angular
+    | npm warn deprecated popper.js@1.16.1: You can find the new Popper v2 at @popperjs/core, this package is dedicated to the legacy v1
+    | npm warn deprecated eslint@9.39.5: This version is no longer supported. Please see https://eslint.org/version-support for other options.
+    | 
+    | added 1248 packages in 8s
+$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c cd\ \'/home/user/DevWorkspace/toolssuite-worktrees/proto-k-38\'\ \&\&\ npm\ ci\ --ignore-scripts\ --no-audit\ --no-fund 
+  [npm ci w kontenerze (zimny cache)] kod wyjścia: 0, czas: 11.603 s
+    | npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+    | npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated lodash.isequal@4.5.0: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
+    | npm warn deprecated har-validator@5.1.5: this library is no longer supported
+    | npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
+    | npm warn deprecated q@1.4.1: You or someone you depend on is using Q, the JavaScript Promise library that gave JavaScript developers strong feelings about promises. They can almost certainly migrate to the native JavaScript promise now. Thank you literally everyone for joining me in this bet against the odds. Be excellent to each other.
+    | npm warn deprecated
+    | npm warn deprecated (For a CapTP with native promises, see @endo/eventual-send and @endo/captp)
+    | npm warn deprecated uuid@3.4.0: Please upgrade  to version 7 or higher.  Older versions may use Math.random() in certain circumstances, which is known to be problematic.  See https://v8.dev/blog/math-random for details.
+    | npm warn deprecated request@2.88.2: request has been deprecated, see https://github.com/request/request/issues/3142
+    | npm warn deprecated protractor@7.0.0: We have news to share - Protractor is deprecated and will reach end-of-life by Summer 2023. To learn more and find out about other options please refer to this post on the Angular blog. Thank you for using and contributing to Protractor. https://goo.gle/state-of-e2e-in-angular
+    | npm warn deprecated popper.js@1.16.1: You can find the new Popper v2 at @popperjs/core, this package is dedicated to the legacy v1
+    | npm warn deprecated eslint@9.39.5: This version is no longer supported. Please see https://eslint.org/version-support for other options.
+    | 
+    | added 1248 packages in 11s
+$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c cd\ \'/home/user/DevWorkspace/toolssuite-worktrees/proto-k-38\'\ \&\&\ npm\ ci\ --ignore-scripts\ --no-audit\ --no-fund 
+  [npm ci w kontenerze (ciepły cache)] kod wyjścia: 0, czas: 10.778 s
+    | npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+    | npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated lodash.isequal@4.5.0: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
+    | npm warn deprecated har-validator@5.1.5: this library is no longer supported
+    | npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+    | npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
+    | npm warn deprecated q@1.4.1: You or someone you depend on is using Q, the JavaScript Promise library that gave JavaScript developers strong feelings about promises. They can almost certainly migrate to the native JavaScript promise now. Thank you literally everyone for joining me in this bet against the odds. Be excellent to each other.
+    | npm warn deprecated
+    | npm warn deprecated (For a CapTP with native promises, see @endo/eventual-send and @endo/captp)
+    | npm warn deprecated uuid@3.4.0: Please upgrade  to version 7 or higher.  Older versions may use Math.random() in certain circumstances, which is known to be problematic.  See https://v8.dev/blog/math-random for details.
+    | npm warn deprecated request@2.88.2: request has been deprecated, see https://github.com/request/request/issues/3142
+    | npm warn deprecated protractor@7.0.0: We have news to share - Protractor is deprecated and will reach end-of-life by Summer 2023. To learn more and find out about other options please refer to this post on the Angular blog. Thank you for using and contributing to Protractor. https://goo.gle/state-of-e2e-in-angular
+    | npm warn deprecated popper.js@1.16.1: You can find the new Popper v2 at @popperjs/core, this package is dedicated to the legacy v1
+    | npm warn deprecated eslint@9.39.5: This version is no longer supported. Please see https://eslint.org/version-support for other options.
+    | 
+    | added 1248 packages in 11s
+
+WYNIK npm-ci: ok — npm ci na montowaniu: host 8.591 s (kod 0), kontener zimny 11.603 s (kod 0), ciepły 10.778 s (kod 0)
+
 --- połączenia przez chwilowe proxy (liczba, metoda, cel)
 
 --- koniec: połączenia przez chwilowe proxy (liczba, metoda, cel)
 
 WYNIK siec-proxy: info — chwilowe proxy zamknięte; celów: 0; nftables bez zmian
 
+$ incus exec tide-proto -T -- ls -la /home/user /home/user/DevWorkspace 
+  [katalog domowy hosta widziany z kontenera] kod wyjścia: 0, czas: 0.065 s
+    | /home/user:
+    | total 0
+    | drwxr-xr-x 1 root root 24 Nov  4 12:57 .
+    | drwxr-xr-x 1 root root 20 Nov  4 12:57 ..
+    | drwxr-xr-x 1 root root 72 Nov  4 13:45 DevWorkspace
+    | 
+    | /home/user/DevWorkspace:
+    | total 48
+    | drwxr-xr-x   1 root  root     72 Nov  4 13:45 .
+    | drwxr-xr-x   1 root  root     24 Nov  4 12:57 ..
+    | drwxr-xr-x   1 root  root      8 Nov  4 13:45 toolssuite
+    | drwxrwxr-x 483 agent agent 45056 Nov  4 13:45 toolssuite-worktrees
+$ incus exec tide-proto -T -- test -e /home/user/.ssh 
+  [~/.ssh (oczekiwany błąd)] kod wyjścia: 1, czas: 0.058 s
+
+WYNIK ukryte-ssh: ok — ~/.ssh: niewidoczne (kod 1)
+
+$ incus exec tide-proto -T -- test -e /home/user/.git-credentials 
+  [~/.git-credentials (oczekiwany błąd)] kod wyjścia: 1, czas: 0.057 s
+
+WYNIK ukryte-git-credentials: ok — ~/.git-credentials: niewidoczne (kod 1)
+
+$ incus exec tide-proto -T -- ls -A /home/user/DevWorkspace/toolssuite 
+  [główny worktree projektu w kontenerze (oczekiwane tylko .git)] kod wyjścia: 0, czas: 0.062 s
+    | .git
+
+WYNIK ukryty-glowny-worktree: ok — w /home/user/DevWorkspace/toolssuite widać tylko .git
+
+$ incus config show tide-proto --expanded 
+  [urządzenia kontenera (gniazdo Dockera hosta?)] kod wyjścia: 0, czas: 0.018 s
+    | … (pominięto 34 wierszy)
+    |     readonly: "true"
+    |     source: /home/user/DevWorkspace/toolssuite/.git/config
+    |     type: disk
+    |   proto-git:
+    |     path: /home/user/DevWorkspace/toolssuite/.git
+    |     source: /home/user/DevWorkspace/toolssuite/.git
+    |     type: disk
+    |   proto-hooks:
+    |     path: /home/user/DevWorkspace/toolssuite/.git/hooks
+    |     readonly: "true"
+    |     source: /home/user/DevWorkspace/toolssuite/.git/hooks
+    |     type: disk
+    |   proto-info:
+    |     path: /home/user/DevWorkspace/toolssuite/.git/info
+    |     readonly: "true"
+    |     source: /home/user/DevWorkspace/toolssuite/.git/info
+    |     type: disk
+    |   proto-wt:
+    |     path: /home/user/DevWorkspace/toolssuite-worktrees
+    |     source: /home/user/DevWorkspace/toolssuite-worktrees
+    |     type: disk
+    |   root:
+    |     path: /
+    |     pool: tide
+    |     type: disk
+    | ephemeral: false
+    | profiles:
+    | - default
+    | stateful: false
+    | description: ""
+
+WYNIK ukryty-docker-hosta: ok — żadne urządzenie kontenera nie wskazuje gniazda Dockera hosta
+
+$ incus exec tide-proto -T -- timeout 10 nc -z -w 3 10.20.1.159 5432 
+  [Postgres hosta 10.20.1.159:5432 (oczekiwany błąd)] kod wyjścia: 1, czas: 3.063 s
+
+WYNIK ukryty-postgres-10.20.1.159: ok — Postgres hosta 10.20.1.159:5432: niewidoczne (kod 1)
+
+$ incus exec tide-proto -T -- timeout 10 nc -z -w 3 100.87.229.94 5432 
+  [Postgres hosta 100.87.229.94:5432 (oczekiwany błąd)] kod wyjścia: 1, czas: 3.074 s
+
+WYNIK ukryty-postgres-100.87.229.94: ok — Postgres hosta 100.87.229.94:5432: niewidoczne (kod 1)
+
+$ incus exec tide-proto -T -- timeout 10 nc -z -w 3 10.173.184.1 5432 
+  [Postgres hosta 10.173.184.1:5432 (oczekiwany błąd)] kod wyjścia: 1, czas: 3.077 s
+
+WYNIK ukryty-postgres-10.173.184.1: ok — Postgres hosta 10.173.184.1:5432: niewidoczne (kod 1)
+
+$ incus exec tide-proto -T -- timeout 10 nc -z -w 3 10.60.187.1 5432 
+  [Postgres hosta 10.60.187.1:5432 (oczekiwany błąd)] kod wyjścia: 1, czas: 3.081 s
+
+WYNIK ukryty-postgres-10.60.187.1: ok — Postgres hosta 10.60.187.1:5432: niewidoczne (kod 1)
+
+$ incus config device remove tide-proto proto-git 
+  [odmontowanie proto-git] kod wyjścia: 0, czas: 0.093 s
+    | Device proto-git removed from tide-proto
+$ incus config device remove tide-proto proto-wt 
+  [odmontowanie proto-wt] kod wyjścia: 0, czas: 0.068 s
+    | Device proto-wt removed from tide-proto
+$ incus config device remove tide-proto proto-hooks 
+  [odmontowanie proto-hooks] kod wyjścia: 0, czas: 0.065 s
+    | Device proto-hooks removed from tide-proto
+$ incus config device remove tide-proto proto-config 
+  [odmontowanie proto-config] kod wyjścia: 0, czas: 0.063 s
+    | Device proto-config removed from tide-proto
+$ incus config device remove tide-proto proto-info 
+  [odmontowanie proto-info] kod wyjścia: 0, czas: 0.066 s
+    | Device proto-info removed from tide-proto
+$ incus config unset tide-proto raw.idmap 
+  [cofnięcie raw.idmap] kod wyjścia: 0, czas: 0.064 s
+$ incus restart tide-proto 
+  [restart kontenera bez raw.idmap (mapowanie zmienia się przy starcie)] kod wyjścia: 0, czas: 2.982 s
+    | Remapping container filesystem                                                                                             
+$ git -C /home/user/DevWorkspace/toolssuite worktree remove --force /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 
+  [usunięcie worktree próby] kod wyjścia: 0, czas: 1.068 s
+$ git -C /home/user/DevWorkspace/toolssuite branch -D proto/k-38 
+  [usunięcie gałęzi próby] kod wyjścia: 0, czas: 0.003 s
+    | Usunięto gałąź proto/k-38 (wskazywała 1c90f6e).
 
 ## Podsumowanie
 
-- warunki: fail — montowanie bez shift (raw.idmap) nie przeszło
+- montowanie: ok — worktree i .git zamontowane pod identycznymi ścieżkami (raw.idmap), uid 1000 ↔ 1000
+- git-status: ok — git status w worktree z kontenera
+- git-commit: ok — commit na proto/k-38 z kontenera widoczny na hoście, plik należy do tomek
+- ro-hooks: ok — zapis do hooks odrzucony: mkdir: cannot create directory ‘/home/user/DevWorkspace/toolssuite/.git/hooks/.proto-k-38’: Read-only file system
+- ro-config: ok — zapis do config odrzucony: sh: 1: cannot create /home/user/DevWorkspace/toolssuite/.git/config: Read-only file system
+- ro-info: ok — zapis do info odrzucony: mkdir: cannot create directory ‘/home/user/DevWorkspace/toolssuite/.git/info/.proto-k-38’: Read-only file system
+- npm-ci: ok — npm ci na montowaniu: host 8.591 s (kod 0), kontener zimny 11.603 s (kod 0), ciepły 10.778 s (kod 0)
 - siec-proxy: info — chwilowe proxy zamknięte; celów: 0; nftables bez zmian
+- ukryte-ssh: ok — ~/.ssh: niewidoczne (kod 1)
+- ukryte-git-credentials: ok — ~/.git-credentials: niewidoczne (kod 1)
+- ukryty-glowny-worktree: ok — w /home/user/DevWorkspace/toolssuite widać tylko .git
+- ukryty-docker-hosta: ok — żadne urządzenie kontenera nie wskazuje gniazda Dockera hosta
+- ukryty-postgres-10.20.1.159: ok — Postgres hosta 10.20.1.159:5432: niewidoczne (kod 1)
+- ukryty-postgres-100.87.229.94: ok — Postgres hosta 100.87.229.94:5432: niewidoczne (kod 1)
+- ukryty-postgres-10.173.184.1: ok — Postgres hosta 10.173.184.1:5432: niewidoczne (kod 1)
+- ukryty-postgres-10.60.187.1: ok — Postgres hosta 10.60.187.1:5432: niewidoczne (kod 1)
 
-Niepowodzeń: 1
+Niepowodzeń: 0

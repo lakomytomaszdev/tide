@@ -42,8 +42,9 @@ use_runtime() {  # use_runtime <wariant> — przygotowuje runtime dockerd w kont
             # Po rundzie 3 w kontenerze może zostać runc 1.1.12 z apt i daemon.json z crun — przywracamy stan z apt.
             run "runc z apt (aktualny) i dockerd bez daemon.json" -- in_box bash -c "
                 rm -f /etc/docker/daemon.json
-                DEBIAN_FRONTEND=noninteractive apt-get install -y runc &&
-                systemctl restart docker && runc --version | head -n 1"
+                DEBIAN_FRONTEND=noninteractive apt-get install -y runc || exit 1
+                $DOCKER_RESTART || exit 1
+                runc --version | head -n 1"
             ;;
         crun-nowy)
             run "crun z wydań GitHub (najnowszy, statyczny) jako domyślny runtime" -- in_box bash -c '
@@ -57,7 +58,7 @@ use_runtime() {  # use_runtime <wariant> — przygotowuje runtime dockerd w kont
                 /usr/local/bin/crun-gh --version | head -n 1
                 printf "%s\n" "{\"default-runtime\": \"crun-gh\", \"runtimes\": {\"crun-gh\": {\"path\": \"/usr/local/bin/crun-gh\"}}}" \
                     >/etc/docker/daemon.json
-                systemctl restart docker'
+                '"$DOCKER_RESTART"
             ;;
         runc-1.2.6)
             run "runc 1.2.6 z wydań GitHub (statyczny) jako domyślny runtime" -- in_box bash -c '
@@ -69,7 +70,7 @@ use_runtime() {  # use_runtime <wariant> — przygotowuje runtime dockerd w kont
                 /usr/local/bin/runc-1.2.6 --version | head -n 1
                 printf "%s\n" "{\"default-runtime\": \"runc-126\", \"runtimes\": {\"runc-126\": {\"path\": \"/usr/local/bin/runc-1.2.6\"}}}" \
                     >/etc/docker/daemon.json
-                systemctl restart docker'
+                '"$DOCKER_RESTART"
             ;;
     esac
     ok

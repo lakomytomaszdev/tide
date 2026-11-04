@@ -153,6 +153,8 @@ class PrototypeScriptsTest(unittest.TestCase):
         self.assertIn("runc/releases/download/v1.2.6/runc.amd64", log)
         self.assertIn("containers/crun/releases/latest", log)
         self.assertIn("default-runtime", log)
+        # Każdy restart dockerd najpierw zdejmuje limit startów (runda 4: „Job for docker.service failed”).
+        self.assertEqual(log.count("systemctl reset-failed docker.service docker.socket"), 4, "proxy + 3 runtime'y")
         # runc z apt przywrócony przed pierwszą próbą (po rundzie 3 mógł zostać runc 1.1.12).
         self.assertIn("[runc z apt (aktualny) i dockerd bez daemon.json] kod wyjścia: 0", log)
         self.assertIn("WYNIK dotnet-test: skip", log)
