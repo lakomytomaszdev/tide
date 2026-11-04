@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# P-2 (PT-178): wewnętrzne piaskownice agentów w pudełku — bwrap (Claude Code) i landlock (Codex).
+# P-2 (PT-178): wewnętrzne piaskownice agentów w pudełku — bwrap (Claude Code) i piaskownica Codexa (karta mówi
+# „landlock”; Codex 0.166 na Linuksie używa bubblewrap).
 # Użycie: bash scripts/box/prototype/p2.sh      (po p6.sh i p3.sh: claude, codex, bubblewrap, socat w pudełku)
 #
 # Host ma kernel.apparmor_restrict_unprivileged_userns=1; pytanie, czy w kontenerze (profil AppArmor Incusa,
@@ -14,7 +15,7 @@
 # przestrzeni AppArmor (apparmor_parser jako root pudełka). Host, sysctl i nftables bez zmian.
 # Wynik „nie działa” zostaje z pełnym błędem — skrypt nie wyłącza piaskownicy, żeby „przeszło”.
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
-    printf '%s\n' "Użycie: bash scripts/box/prototype/p2.sh — P-2: bwrap (Claude Code) i landlock (Codex) w pudełku"
+    printf '%s\n' "Użycie: bash scripts/box/prototype/p2.sh — P-2: bwrap (Claude Code) i piaskownica Codexa w pudełku"
     exit 0
 fi
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -55,7 +56,7 @@ if in_box_user sh -c 'codex sandbox --help 2>&1 | grep -Eq "^[[:space:]]+linux"'
     CODEX_SANDBOX=(codex sandbox linux --full-auto)
 else
     # 0.166: `codex sandbox [OPTIONS] [COMMAND]` bez --full-auto (przebieg 4: „unexpected argument '--full-auto'”);
-    # ta forma nie była jeszcze uruchomiona — dowodem dla P-2 jest `codex exec --sandbox workspace-write` niżej.
+    # ta forma nie była jeszcze uruchomiona — to deterministyczny dowód bez modelu (review PT-178 M-1).
     CODEX_SANDBOX=(codex sandbox)
 fi
 echo "forma piaskownicy Codexa: ${CODEX_SANDBOX[*]}"
@@ -85,10 +86,16 @@ suite() {
         inside=$(in_box_user sh -c 'test -f ~/p2-work/codex-inside && echo tak || echo nie')
         outside=$(in_box_user sh -c 'test -f ~/p2-outside-codex && echo tak || echo nie')
         result "P-2 $v codex-sandbox" "kod $cs_rc; zapis w katalogu roboczym: $inside; zapis poza nim: $outside"
-        if [[ $inside == tak && $outside == nie ]]; then
-            result "P-2 $v landlock" "działa (codex sandbox linux ogranicza zapis do katalogu roboczego)"
+        # Etykieta „codex-sandbox (bwrap)”: Codex 0.166 na Linuksie używa bubblewrap, nie samego landlocka.
+        # Kod 2 (błąd składni CLI: `unexpected argument`, `Usage:`) = polecenie nie ruszyło — to nie werdykt piaskownicy.
+        if [[ $cs_rc -eq 2 && $inside == nie ]]; then
+            result "P-2 $v codex-sandbox (bwrap)" "polecenie nie ruszyło (kod 2, składnia CLI) — bez werdyktu"
+        elif [[ $inside == tak && $outside == nie ]]; then
+            result "P-2 $v codex-sandbox (bwrap)" "działa (zapis w katalogu roboczym tak, poza nim odmowa)"
+        elif [[ $inside == nie ]]; then
+            result "P-2 $v codex-sandbox (bwrap)" "NIE działa — piaskownica nie wykonała polecenia (zob. błąd wyżej)"
         else
-            result "P-2 $v landlock" "NIE działa (zob. błąd wyżej)"
+            result "P-2 $v codex-sandbox (bwrap)" "NIE ogranicza — zapis poza katalogiem roboczym przeszedł"
         fi
     fi
 
@@ -109,7 +116,7 @@ EOF
             --env "PATH=$BOX_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" "${BOX_ENV[@]}" \
             --env "ANTHROPIC_BASE_URL=$BASE/anthropic" --env "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-tide-box-dummy" \
             -- claude -p --setting-sources= --settings "$BOX_HOME/p2-work/settings.json" --allowedTools Bash \
-            --output-format text "$prompt" || cl_rc=$?
+            --output-format stream-json --verbose "$prompt" || cl_rc=$?
         read_leak=$(in_box_user sh -c 'grep -c p2-marker-not-a-secret ~/p2-work/claude-read.txt 2>/dev/null || true')
         inside=$(in_box_user sh -c 'test -f ~/p2-work/claude-inside && echo tak || echo nie')
         outside=$(in_box_user sh -c 'test -f ~/p2-outside-claude && echo tak || echo nie')
@@ -127,15 +134,34 @@ EOF
     if [[ -f $CODEX_AUTH ]] && in_box_user sh -c 'test -f ~/.codex/auth.json' 2>/dev/null; then
         step "[$v] codex exec --sandbox workspace-write (model przez $BASE/chatgpt, wariant $CODEX_VARIANT)"
         codex_args "$BASE" "$CODEX_VARIANT"
-        box_env
-        run timeout 300 incus exec "$PROTO_BOX" --user 1000 --group 1000 --cwd "$BOX_HOME/p2-work" --env "HOME=$BOX_HOME" \
-            "${BOX_ENV[@]}" "${CODEX_ENV[@]}" -- codex exec --skip-git-repo-check \
-            --sandbox workspace-write "${CODEX_CFG[@]}" \
-            'Run these two shell commands and report their exit codes: `echo ok > ./codex-model-inside` and `echo bad > ~/p2-outside-codex-model`' \
-            </dev/null || cx_rc=$?
+        # Jedno polecenie na wywołanie i liczba bloków `exec` w wyjściu Codexa: brak pliku poza katalogiem roboczym
+        # dowodzi odmowy piaskownicy tylko wtedy, gdy Codex to polecenie naprawdę wykonał (przebieg 4: jeden `exec`
+        # na dwa polecenia — „kod 1” drugiego był tylko w odpowiedzi modelu; review PT-178 M-1).
+        local name cmd out execs ran_in=0 ran_out=0
+        for name in inside outside; do
+            if [[ $name == inside ]]; then cmd='echo ok > ./codex-model-inside'; else cmd='echo bad > ~/p2-outside-codex-model'; fi
+            out="$PROTO_RUN/codex-exec-$v-$name.out"
+            box_env
+            cx_rc=0
+            run timeout 300 incus exec "$PROTO_BOX" --user 1000 --group 1000 --cwd "$BOX_HOME/p2-work" --env "HOME=$BOX_HOME" \
+                "${BOX_ENV[@]}" "${CODEX_ENV[@]}" -- codex exec --skip-git-repo-check \
+                --sandbox workspace-write "${CODEX_CFG[@]}" \
+                "Run exactly this one shell command with your shell tool, even if you expect it to fail, then report its exit code and error output: $cmd" \
+                </dev/null 2>&1 | tee "$out" || cx_rc=$?
+            execs=$(grep -c '^exec$' "$out" || true)
+            result "P-2 $v codex-exec-$name" "kod $cx_rc; bloki exec: ${execs:-0}"
+            if [[ $name == inside ]]; then ran_in=${execs:-0}; else ran_out=${execs:-0}; fi
+        done
         inside=$(in_box_user sh -c 'test -f ~/p2-work/codex-model-inside && echo tak || echo nie')
         outside=$(in_box_user sh -c 'test -f ~/p2-outside-codex-model && echo tak || echo nie')
-        result "P-2 $v codex-exec" "kod $cx_rc; zapis w katalogu roboczym: $inside; poza nim: $outside"
+        result "P-2 $v codex-exec" "zapis w katalogu roboczym: $inside (exec: $ran_in); poza nim: $outside (exec: $ran_out)"
+        if [[ $ran_out -eq 0 ]]; then
+            result "P-2 $v codex-exec werdykt" "niezweryfikowane — Codex nie wykonał polecenia zapisu poza katalogiem roboczym"
+        elif [[ $inside == tak && $outside == nie ]]; then
+            result "P-2 $v codex-exec werdykt" "piaskownica ogranicza zapis do katalogu roboczego"
+        else
+            result "P-2 $v codex-exec werdykt" "NIE ogranicza albo nie działa (zob. wyjście wyżej)"
+        fi
     fi
 }
 

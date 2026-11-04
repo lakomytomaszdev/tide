@@ -244,6 +244,36 @@ class InjectTest(ProxyCase):
         self.assertEqual(run.returncode, 2)
         self.assertIn("poza repozytorium", run.stderr)
 
+    def test_main_checkout_of_a_worktree_counts_as_the_repository(self):
+        sys.path.insert(0, str(PROTO))
+        try:
+            import proxy
+        finally:
+            sys.path.remove(str(PROTO))
+        with tempfile.TemporaryDirectory() as tmp:
+            main, tree = Path(tmp) / "main", Path(tmp) / "tree"
+            (main / ".git" / "worktrees" / "tree").mkdir(parents=True)
+            tree.mkdir()
+            (tree / ".git").write_text(f"gitdir: {main / '.git' / 'worktrees' / 'tree'}\n")
+            roots = proxy.repo_roots(tree)
+            self.assertIn(main.resolve(), roots)
+            self.assertTrue(any(proxy.inside(main / "token.json", r) for r in roots))
+            self.assertEqual(proxy.repo_roots(main), [main])
+
+    def test_sigterm_stops_the_proxy_cleanly(self):
+        proc = subprocess.Popen([sys.executable, str(PROXY), "--listen", "127.0.0.1", "--port", "0",
+                                 "--domains", str(self.deny.parent / "none.txt"), "--deny-log", str(self.deny)],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertIn("słucha na", proc.stdout.readline())
+            proc.terminate()
+            out, err = proc.communicate(timeout=10)
+        finally:
+            proc.kill()
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertIn("zatrzymane", out)
+        self.assertNotIn("Traceback", err)
+
 
 class ScriptsTest(unittest.TestCase):
     """Skrypty prób: składnia, wspólny dziennik i sprzątanie."""
@@ -277,6 +307,16 @@ class ScriptsTest(unittest.TestCase):
         text = (PROTO / "p6.sh").read_text()
         self.assertIn("/etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list", text)
         self.assertNotIn("SOURCES=/etc/apt/sources.list.d/ubuntu.sources\n", text)
+
+    def test_p2_codex_verdict_needs_an_executed_command(self):
+        # Review PT-178 M-1: brak pliku poza katalogiem roboczym dowodzi odmowy tylko, gdy Codex wykonał polecenie.
+        text = (PROTO / "p2.sh").read_text()
+        self.assertIn("grep -c '^exec$'", text)
+        self.assertIn("niezweryfikowane", text)
+        self.assertIn("codex-sandbox (bwrap)", text)
+        self.assertIn("polecenie nie ruszyło", text)
+        self.assertNotIn('"P-2 $v landlock"', text)
+        self.assertIn("--output-format stream-json --verbose", text)
 
     def test_cleanup_removes_proxy_and_containers(self):
         text = (PROTO / "cleanup.sh").read_text()

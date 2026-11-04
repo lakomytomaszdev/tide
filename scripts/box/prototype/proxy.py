@@ -29,6 +29,7 @@ import datetime as dt
 import ipaddress
 import json
 import os
+import signal
 import ssl
 import sys
 from pathlib import Path
@@ -111,6 +112,22 @@ def inside(path: Path, root: Path) -> bool:
         return False
 
 
+def repo_roots(repo: Path) -> list[Path]:
+    """Worktree ze skryptem i główny checkout: w worktree `.git` to plik `gitdir: <główne>/.git/worktrees/<nazwa>`."""
+    roots = [repo]
+    git = repo / ".git"
+    if git.is_file():
+        text = git.read_text(errors="replace").strip()
+        if text.startswith("gitdir:"):
+            gitdir = Path(text.partition(":")[2].strip())
+            if not gitdir.is_absolute():
+                gitdir = repo / gitdir
+            gitdir = gitdir.resolve()
+            if gitdir.parent.name == "worktrees":
+                roots.append(gitdir.parent.parent.parent)
+    return roots
+
+
 class Proxy:
     def __init__(self, listen: str, port: int, domains: DomainList, deny_log: Path, access_log: Path | None,
                  connect_ports: set[int], http_ports: set[int], inject: dict[str, Path],
@@ -166,8 +183,8 @@ class Proxy:
         except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError, ConnectionError):
             pass
         except Exception as exc:  # noqa: BLE001 — prototyp: błąd połączenia nie może zatrzymać proxy
-            # Tylko typ i komunikat — nigdy nagłówki żądania.
-            print(f"{now()} błąd {client}: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            # Tylko typ wyjątku (jak w reverse()) — treść mogłaby nieść fragment żądania, a proxy.out trafia do repo.
+            print(f"{now()} błąd {client}: {type(exc).__name__}", file=sys.stderr, flush=True)
         finally:
             writer.close()
 
@@ -327,8 +344,8 @@ def build(argv: list[str]) -> Proxy:
         if route not in ROUTES or not path:
             p.error(f"--inject: TRASA=PLIK, trasa z {sorted(ROUTES)} (podano: {item})")
         token = Path(path).expanduser()
-        if inside(token, REPO):
-            p.error(f"--inject: plik tokenu musi leżeć poza repozytorium ({REPO})")
+        if any(inside(token, root) for root in repo_roots(REPO)):
+            p.error("--inject: plik tokenu musi leżeć poza repozytorium (worktree i główny checkout)")
         if not token.is_file():
             p.error(f"--inject: brak pliku tokenu dla trasy {route}")
         inject[route] = token
@@ -344,13 +361,20 @@ def build(argv: list[str]) -> Proxy:
 
 async def main(argv: list[str]):
     proxy = build(argv)
+    # SIGTERM (proxy_stop w common.sh) zamyka serwer zamiast zabijać pętlę w trakcie połączeń; obsługa przed
+    # komunikatem „słucha na”, na który czeka common.sh.
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
     server = await proxy.start()
     addrs = ", ".join(f"{s.getsockname()[0]}:{s.getsockname()[1]}" for s in server.sockets)
     routes = ", ".join(sorted(proxy.inject)) or "brak"
     print(f"{now()} proxy prototypowe słucha na {addrs}; lista: {proxy.domains.path}; wstrzykiwanie: {routes}",
           flush=True)
     async with server:
-        await server.serve_forever()
+        await stop.wait()
+    print(f"{now()} proxy prototypowe zatrzymane", flush=True)
 
 
 if __name__ == "__main__":
