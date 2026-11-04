@@ -2647,6 +2647,88 @@ K1: jedyną granicą dla poświadczeń jest pudełko, a lista domen proxy ograni
 **Domeny modeli.** Lista `MODEL_DOMAINS` się nie zmienia w PT-175 (`chatgpt.com`, `auth.openai.com` nadal na niej,
 choć z K3 Codex ich nie potrzebuje) — usunięcie to zmiana listy domen, osobna decyzja.
 
+### Krok w pudełku: BoxRunner (PT-169)
+
+`box/runner.py` — `BoxRunner`, drugi `Runner` obok `HostRunner` (`tasks/runner.py`, ta sama umowa `start`, `kill`,
+`env`). Uruchamia program agenta kroku w pudełku projektu (`box_name(slug)`) albo w kopii karty (`per_card=True` →
+`card_box_name(slug, card)`) jako użytkownik `agent` (uid/gid `box.agent-uid`/`agent-gid`) pod tymi samymi ścieżkami
+co na hoście. Wyboru runnera w silniku jeszcze nie ma (#18): silnik dalej dostaje `HostRunner`.
+
+**Polecenie.** Na hoście (widoczne w `ps`) jest tylko:
+
+```
+incus exec <pudełko> --project <p> -T --user 1000 --group 1000 --cwd <worktree> --
+  /usr/bin/env -i TIDE_STEP=<katalog kroku> XDG_RUNTIME_DIR=/run/user/1000
+  /usr/bin/systemd-run --user --unit=tide-step-<id>.service --collect --wait --quiet -p CPUWeight=40 -p IOWeight=40
+    --working-directory=<worktree> --setenv=TIDE_STEP=<katalog kroku> -- /usr/local/bin/tide-step <argv agenta>
+```
+
+Krok jest usługą użytkownika `agent`, a nie scope — decyzja `krok-jako-usluga-user` (P-9): proces w scope ginie
+razem z klientem `incus exec`, czyli z restartem usługi Tide; usługa przeżywa, a klient z `--wait` kończy się kodem
+jednostki. Nic z `in/env` nie trafia do argv ani do `--env` `incus exec`; klient `incus` dostaje tylko `HOME`,
+`PATH`, `LANG`, `USER`, `XDG_*` usługi. Wyjście klienta: `out/box-exec.log`.
+
+**`in/env` i `tide-step`.** `start` zapisuje `<krok>/in/env` (świeży plik `O_EXCL|O_NOFOLLOW`, 0600, właściciel —
+usługa; stary plik albo dowiązanie najpierw usuwa) w wierszach `KLUCZ=wartość` (nowa linia w wartości → odmowa):
+całe środowisko programu z `agentcmd.background` (`HOME=/home/agent`, `USER=agent`, `PATH` pudełka, `LANG`,
+zmienne gita i martwy D-Bus jak na hoście), sekrety punktu lokalnego (`secret_env`), `HTTPS_PROXY`, `HTTP_PROXY`
+(i małymi literami) na `http://<adres mostka>:<box.proxy-port>`, `NO_PROXY`/`no_proxy` = `box_no_proxy(<mostek>)`,
+`TIDE_CWD` i zmienne z `step_env(step)` (porty #8, atrapy K3 #18). Adres proxy: jawny `proxy_base`, inaczej proxy
+uruchomione w tym procesie, inaczej `incus network get <box.bridge> ipv4.address`; brak — krok odmówiony.
+`env(step)` zwraca to samo bez sekretów. Token Claude Code dla punktu lokalnego: kopia 0600 w `in/local-token`
+czytana przez `apiKeyHelper` (plik hosta nie jest w pudełku).
+
+Opakowanie `daemon/tide_daemon/box/tide-step` (POSIX sh; obraz bazowy #16 instaluje je jako
+`/usr/local/bin/tide-step`): czyści środowisko, sprawdza `in/env` (zwykły plik, tryb 0600, właściciel = bieżący
+użytkownik — inaczej kod 125), eksportuje wiersze bez `eval`, przechodzi do `TIDE_CWD`, zakłada
+`CLAUDE_CODE_TMPDIR` w `/tmp` pudełka, uruchamia agenta z `in/prompt.txt` na stdin i wyjściem dopisywanym do
+`out/step.log`, zapisuje kod atomowo w `in/exit-code` (jak `EXIT_WRAPPER` hosta; SIGTERM przeczekuje) i kończy się nim.
+
+**`BOX_NO_PROXY`** — jedna stała w `box/runner.py`: `localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal`,
+a `box_no_proxy(adres)` dokleja adres mostka (nigdy `*`). Używają jej: `in/env` i `env(step)` (tu),
+`/etc/environment` obrazu bazowego (#16) i drop-in `dockerd` szablonu `docker.sh` (#29). Sam adres mostka nie
+wystarczy: e2e Playwright, Karma i serwery testowe na `localhost` oraz kontenery Testcontainers poszłyby przez proxy
+(403). Klienci bez CIDR w `NO_PROXY` i tak trafiają w `localhost`, bo Testcontainers mapują porty na localhost (P-6).
+
+**Montowania** (`ensure_devices`, przy każdym starcie; dodaje tylko brakujące, pod blokadą plikową
+`$XDG_STATE_HOME/tide/box/<slug>/devices.lock` — dwa pierwsze kroki naraz dodają je raz):
+
+| Urządzenie | Źródło = ścieżka w pudełku | Tryb |
+| --- | --- | --- |
+| `tide-git` | `<repo>/.git` | rw |
+| `tide-git-hooks`, `tide-git-config`, `tide-git-info` | `.git/hooks`, `.git/config`, `.git/info` (puste katalogi `hooks`/`info` zakładane przed montowaniem) | ro, po `tide-git` |
+| `tide-wtcfg-<nazwa>` | istniejące `.git/worktrees/<nazwa>/config.worktree` | ro |
+| `tide-worktrees` | `<repo>-worktrees` (worktree i katalogi kroku obok niego) | rw |
+| `tide-home` | `~/.local/share/tide/box/<slug>/home` (0700) → `/home/agent` — pomijane, gdy builder podpiął już wolumen `<pudełko>-home` na `/home/agent` | rw |
+| `tide-step-<id>` | katalog kroku — tylko gdy leży poza `<repo>-worktrees` | rw |
+
+Bez `shift=true` (projekt ograniczony go odrzuca): pudełko dostaje `raw.idmap "both <uid> <agent-uid>"` (P-4,
+`raw-idmap-zamiast-shift`). Zmiana `raw.idmap` albo nowa nakładka-plik wymaga zatrzymanego pudełka (pliku nie da się
+dołączyć do działającego kontenera), więc runner zatrzymuje je na czas dodania i startuje z powrotem — a gdy według
+dziennika pudełka biegną w nim inne kroki, krok jest odmówiony. Worktree spoza `<repo>-worktrees` → odmowa. Źródło
+równe głównemu repozytorium (albo nad nim), katalogowi domowemu hosta (albo nad nim) albo leżące w głównym worktree
+poza `.git` → odmowa: główny worktree i `~` hosta nigdy nie trafiają do pudełka. Kopia karty dostaje urządzenia
+we własnej konfiguracji, pudełko projektu zostaje bez zmian.
+
+**Ustawienia agentów w pudełku.** Claude Code: plik `<krok>/in/settings.json` (katalog kroku — ustawienia hosta bez
+zmian) z `sandbox.enabled` = `BOX_SANDBOX` (wynik P-2, decyzja `bwrap-profil-w-pudelku`: `true`, z
+`failIfUnavailable`), `filesystem.denyRead: ["~/.claude", "~/.codex", "/packs", "<krok>/in/env"]` (+ `in/local-token`),
+`allowWrite: [<krok>/out, <repo>/.git]` (nakładki ro pilnują haków i konfiguracji), `network.allowedDomains: []`
+(granicą sieci jest proxy Tide), `autoAllowBashIfSandboxed: true`; `--allowedTools` bez list poleceń (`Bash(…)`
+wypadają, dochodzi `Bash`; zakazy projektu zostają wskazówkami w prompcie, `--disallowedTools` bez zmian). Wariant
+`sandbox=False`: `sandbox.enabled=false` i jeden wpis `box.risk` („ryzyko K1”) przez `journal(kind, fields)`
+w dzienniku karty. Codex: `--sandbox workspace-write` bez zmian, serwery MCP hosta nie są pytane
+(`codex_mcp=()`).
+
+**Zatrzymanie.** `kill(step)` woła przez `incus exec … --user <agent>` `systemctl --user kill --signal=SIGTERM
+tide-step-<id>.service` w pudełku z wpisu (`box`, domyślnie pudełko runnera), czeka `grace` na `is-active`, potem
+SIGKILL; klient `incus exec` kończy się razem z jednostką. Nazwy jednostki i pudełka są sprawdzane wzorcem.
+
+**Ręcznie** (poza piaskownicą, na pudełku z #1/#4): `python3 -m tide_daemon.box.runner --demo <slug> [--worktree W]
+[--card K-N] -- <polecenie>` — krok syntetyczny `<worktree>.demo-<czas>.step` z poleceniem zamiast agenta i znacznikiem
+`TIDE_DEMO_SECRET` w `in/env` (do sprawdzenia, że `ps -o args` hosta go nie pokazuje); wypisuje `step.log` i kod.
+Testy: `daemon/tests/test_box_runner.py` (atrapa `incus`, `tide-step` lokalnie przez `/bin/sh`).
+
 ## Uruchamianie
 
 ```bash
