@@ -54,7 +54,9 @@ run in_box sh -c 'f=/etc/apparmor.d/bwrap-userns-restrict; if [ -f "$f" ]; then 
 if in_box_user sh -c 'codex sandbox --help 2>&1 | grep -Eq "^[[:space:]]+linux"' 2>/dev/null; then
     CODEX_SANDBOX=(codex sandbox linux --full-auto)
 else
-    CODEX_SANDBOX=(codex sandbox --full-auto)
+    # 0.166: `codex sandbox [OPTIONS] [COMMAND]` bez --full-auto (przebieg 4: „unexpected argument '--full-auto'”);
+    # ta forma nie była jeszcze uruchomiona — dowodem dla P-2 jest `codex exec --sandbox workspace-write` niżej.
+    CODEX_SANDBOX=(codex sandbox)
 fi
 echo "forma piaskownicy Codexa: ${CODEX_SANDBOX[*]}"
 run in_box_user codex sandbox --help || true

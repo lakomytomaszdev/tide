@@ -1,0 +1,3 @@
+2026-11-04T14:27:44+01:00 proxy prototypowe słucha na 10.173.184.1:18080; lista: /home/user/DevWorkspace/plasma-tide-worktrees/pt-178-prototyp-proxy-agentow-pudelku/docs/box-prototype/p3-2026-11-04T142744/domains.txt; wstrzykiwanie: anthropic, chatgpt
+Task was destroyed but it is pending!
+task: <Task pending name='Task-281' coro=<Proxy.handle() done, defined at /home/user/DevWorkspace/plasma-tide-worktrees/pt-178-prototyp-proxy-agentow-pudelku/scripts/box/prototype/proxy.py:146> wait_for=<Future pending cb=[Task.task_wakeup()]> cb=[StreamReaderProtocol.connection_made.<locals>.callback() at /usr/lib/python3.12/asyncio/streams.py:248]>
