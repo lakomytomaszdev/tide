@@ -46,6 +46,7 @@ LOG_TAIL_BYTES = faults.LOG_TAIL_BYTES
 CONTEXT_DIR = "context"
 TRIM_NOTE = "(przycięto {n} najstarszych zdarzeń — limit kontekstu opiekuna {kb} kB)"
 CUT_NOTE = "\n… (koniec pliku przycięty — limit kontekstu opiekuna {kb} kB)\n"
+READ_CUT_NOTE = "… (dalsza część pliku pominięta — limit odczytu {kb} kB, bez urwanej ostatniej linii)\n"
 DROPPED_PATH = "przycieto.md"
 DROPPED_NOTE = "(pominięto {n} plików kontekstu w całości — limit kontekstu opiekuna {kb} kB)\n"
 SKIPPED = "(pominięto: {why})"
@@ -529,9 +530,11 @@ def _link_below(path: str, roots: tuple) -> bool:
 
 
 def _read(path: str, roots: tuple, *, limit: int, tail: bool) -> bytes | None:
-    """Zwykły plik w korzeniach kontekstu (`_open`: bez dowiązania na żadnym poziomie). Przy końcówce (`tail`)
-    odczyt zaczynający się w środku pliku odrzuca pierwszą, urwaną linię — sekret przecięty granicą odczytu
-    straciłby nazwę zmiennej albo prefiks tokenu i nie przeszedłby przez wzorce `faults.mask`."""
+    """Zwykły plik w korzeniach kontekstu (`_open`: bez dowiązania na żadnym poziomie). Obie granice ograniczonego
+    odczytu odrzucają urwaną linię — sekret przecięty granicą straciłby nazwę zmiennej albo resztę tokenu i nie
+    przeszedłby przez wzorce `faults.mask`: odczyt zaczynający się w środku pliku (końcówka, `tail`) odrzuca pierwszą
+    linię, a odczyt kończący się przed końcem pliku (początek pliku albo plik dopisywany w trakcie odczytu) —
+    ostatnią, niepełną linię, z dopiskiem `READ_CUT_NOTE`."""
     fd = _open(path, roots)
     if fd is None:
         return None
@@ -542,10 +545,14 @@ def _read(path: str, roots: tuple, *, limit: int, tail: bool) -> bytes | None:
         with os.fdopen(fd, "rb", closefd=False) as fh:
             start = max(0, info.st_size - limit) if tail else 0
             fh.seek(start)
-            data = fh.read(limit)
+            data = fh.read(limit + 1)      # bajt ponad limit — czy odczyt kończy się przed końcem pliku
+        more = len(data) > limit
+        data = data[:limit]
         if tail and start > 0:
             cut = data.find(b"\n")
             data = data[cut + 1:] if cut >= 0 else b""
+        if more:
+            data = data[:data.rfind(b"\n") + 1] + READ_CUT_NOTE.format(kb=limit // 1000).encode("utf-8")
         return data
     except OSError:
         return None

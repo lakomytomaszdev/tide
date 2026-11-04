@@ -1872,7 +1872,9 @@ uznaje za sekretne na próbce `nazwa=x` (`token`, `password`, `apiKey`…), trac
 i liczbę; pozostałe napisy przechodzą przez `faults.mask`, a liczba zmieniona przez `faults.mask` (np. równa wartości
 sekretnej zmiennej środowiska) staje się `•••`. Końcówka `out/step.log` czytana od środka pliku zaczyna się od
 pierwszej pełnej linii — sekret przecięty granicą odczytu nie traci nazwy zmiennej ani prefiksu tokenu przed
-maskowaniem. Odczyt tylko z korzeni: katalog karty w tablicy (`flow/<K-…>`), worktree kroku opiekuna oraz worktree
+maskowaniem. Tak samo odczyt kończący się przed końcem pliku (początek pliku dłuższego niż `FILE_READ_MAX` albo plik
+dopisywany w trakcie odczytu) odrzuca ostatnią, niepełną linię i dopisuje „dalsza część pliku pominięta” — urwana
+reszta tokenu nie trafia do `faults.mask` (review PT-153, runda 2). Odczyt tylko z korzeni: katalog karty w tablicy (`flow/<K-…>`), worktree kroku opiekuna oraz worktree
 i katalogi kroków problemu z dziennika. Korzeń, który sam jest dowiązaniem (np. cały `<worktree>.step` podmieniony na
 dowiązanie do `$HOME`), odpada (`lstat`); przy odczycie korzeń jest otwierany z `O_NOFOLLOW` i porównywany
 z tożsamością (`st_dev`, `st_ino`) z chwili sprawdzenia, a każdy składnik ścieżki — względem poprzedniego (`dir_fd`)

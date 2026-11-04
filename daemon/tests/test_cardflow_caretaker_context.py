@@ -123,6 +123,38 @@ class MaskingTest(unittest.TestCase):
         self.assertNotIn(secret_tail, log)
         self.assertIn("ostatnia linia", log)
 
+    def test_token_cut_by_the_file_head_boundary_does_not_leak(self):
+        # Granica `FILE_READ_MAX` wypada wewnątrz drugiego tokenu; pierwsze przypisanie kurczy się po maskowaniu,
+        # więc całość mieści się w limicie i `_fit` niczego by już nie przyciął.
+        tree = Tree(self)
+        j = tree.journal()
+        first = 'PASSWORD="' + "p" * (caretakerctx.FILE_READ_MAX - 14 - 12) + '"\n'
+        self.assertEqual(len(first), caretakerctx.FILE_READ_MAX - 14)
+        tree.write(os.path.join(tree.card_dir, "plan", "plan.md"), first + "ghp_" + "a" * 36 + "\n")
+        leaked = "ghp_" + "a" * 10
+        files = tree.collect(j)
+        plan = files["plan/plan.md"]
+        self.assertNotIn(leaked, plan)
+        self.assertIn("PASSWORD=", plan)
+        self.assertIn("dalsza część pliku pominięta", plan)
+        context = os.path.join(tree.step_dir, "in", "context")
+        caretakerctx.build(caretaker.problems(j.st)[0], j.st, j.events, card="K-1", card_dir=tree.card_dir,
+                           worktree=tree.worktree, context_dir=context, env=ENV, tide_docs="")
+        for folder, _, names in os.walk(context):
+            for name in names:
+                with open(os.path.join(folder, name), encoding="utf-8") as fh:
+                    self.assertNotIn(leaked, fh.read(), name)
+
+    def test_limited_head_read_drops_the_unfinished_last_line(self):
+        tree = Tree(self)
+        path = os.path.join(tree.card_dir, "plan", "plan.md")
+        tree.write(path, "pierwsza\n" + "GITHUB_TOKEN=ghp_" + "b" * 36 + "\n")
+        ctx = caretakerctx.Ctx(problem={}, st=None, card="K-1", card_dir=tree.card_dir, worktree=tree.worktree,
+                               roots=(caretakerctx._root(tree.card_dir),))
+        text = ctx.read_text(path, limit=20)
+        self.assertEqual(text.splitlines()[0], "pierwsza")
+        self.assertNotIn("ghp_", text)
+
 
 class LimitTest(unittest.TestCase):
     def test_journal_over_the_limit_keeps_the_newest_events_with_a_note(self):
@@ -156,7 +188,7 @@ class LimitTest(unittest.TestCase):
         tree = Tree(self)
         j = tree.journal()
         for name in ("plan.md", "source.md"):
-            tree.write(os.path.join(tree.card_dir, "plan", name), "plan " * 300_000)
+            tree.write(os.path.join(tree.card_dir, "plan", name), ("plan " * 20 + "\n") * 15_000)
         files = caretakerctx.collect(caretaker.problems(j.st)[0], j.st, j.events, card="K-1", card_dir=tree.card_dir,
                                      worktree=tree.worktree, env=ENV)
         self.assertLessEqual(caretakerctx.total_bytes(files), caretakerctx.MAX_BYTES)
