@@ -1,12 +1,12 @@
 # P-1 — Docker w nieuprzywilejowanym kontenerze (nesting, intercept mknod/setxattr)
 
-- data: 2026-11-04T15:18:28+01:00
+- data: 2026-11-04T15:20:12+01:00
 - skrypt: scripts/box/prototype/p1.sh
 - jądro hosta: 7.0.0-38-generic
 - kontener: tide-proto (images:ubuntu/24.04)
 
 $ incus info 
-  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.106 s
+  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.127 s
     | … (pominięto 440 wierszy)
     |     network_phys_macvlan_mtu: "true"
     |     network_veth_router: "true"
@@ -80,27 +80,27 @@ $ incus config show tide-proto
     | stateful: false
     | description: ""
 $ systemd_ready 
-  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.056 s
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.065 s
     | running (próba 1)
 $ incus exec tide-proto -T -- bash -c $'\n        set -e\n        name=$(id -un 1000 2>/dev/null || true)\n        if [ -z "$name" ]; then\n            useradd -m -u 1000 -U -s /bin/bash agent\n        elif [ "$name" != agent ]; then\n            usermod -l agent -d /home/agent -m "$name"\n            groupmod -n agent "$(id -gn 1000)" 2>/dev/null || true\n        fi\n        id agent' 
-  [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.062 s
+  [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.054 s
     | uid=1000(agent) gid=1000(agent) groups=1000(agent),27(sudo)
 $ incus config get tide-proto security.privileged 
-  [konfiguracja bezpieczeństwa kontenera] kod wyjścia: 0, czas: 0.017 s
+  [konfiguracja bezpieczeństwa kontenera] kod wyjścia: 0, czas: 0.014 s
 Sieć: chwilowe proxy scripts/box/prototype/proxy.py na 10.173.184.1:18080 (port proxy Tide, przepuszczany przez inet tide-box); bez zmian w nftables.
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c printf\ \'%s\\n\'\ \'Acquire::http::Proxy\ \"http://10.173.184.1:18080\"\;\'\ \ \ \ \ \ \ \ \ \'Acquire::https::Proxy\ \"http://10.173.184.1:18080\"\;\'\ \'Acquire::http::Pipeline-Depth\ \"0\"\;\'\ \>/etc/apt/apt.conf.d/95tide-proto 
-  [apt w kontenerze przez proxy] kod wyjścia: 0, czas: 0.073 s
+  [apt w kontenerze przez proxy] kod wyjścia: 0, czas: 0.052 s
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- dpkg-query -W -f \$\{Package\}\ \$\{Status\}\\n docker.io ca-certificates curl libicu74 python3 
-  [pakiety w kontenerze: docker.io ca-certificates curl libicu74 python3] kod wyjścia: 0, czas: 0.058 s
+  [pakiety w kontenerze: docker.io ca-certificates curl libicu74 python3] kod wyjścia: 0, czas: 0.052 s
     | ca-certificates install ok installed
     | curl install ok installed
     | docker.io install ok installed
     | libicu74 install ok installed
     | python3 install ok installed
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c $'\n        mkdir -p /etc/systemd/system/docker.service.d\n        printf \'%s\\n\' \'[Service]\' \'Environment=HTTP_PROXY=http://10.173.184.1:18080\' \'Environment=HTTPS_PROXY=http://10.173.184.1:18080\'             \'Environment=NO_PROXY=localhost,127.0.0.1,::1\' >/etc/systemd/system/docker.service.d/tide-proto.conf\n        systemctl daemon-reload\n        { systemctl reset-failed docker.service docker.socket 2>/dev/null || true; }\n    systemctl restart docker || { journalctl -u docker.service --no-pager -n 30; false; }' 
-  [dockerd w kontenerze przez proxy (drop-in)] kod wyjścia: 0, czas: 1.109 s
+  [dockerd w kontenerze przez proxy (drop-in)] kod wyjścia: 0, czas: 1.064 s
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c $'\n                rm -f /etc/docker/daemon.json\n                DEBIAN_FRONTEND=noninteractive apt-get install -y runc || exit 1\n                { systemctl reset-failed docker.service docker.socket 2>/dev/null || true; }\n    systemctl restart docker || { journalctl -u docker.service --no-pager -n 30; false; } || exit 1\n                runc --version | head -n 1' 
-  [runc z apt (aktualny) i dockerd bez daemon.json] kod wyjścia: 0, czas: 1.435 s
+  [runc z apt (aktualny) i dockerd bez daemon.json] kod wyjścia: 0, czas: 1.350 s
     | Reading package lists...
     | Building dependency tree...
     | Reading state information...
@@ -108,10 +108,10 @@ $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env http
     | 0 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.
     | runc version 1.3.4-0ubuntu1~24.04.1
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- docker info --format \{\{.DefaultRuntime\}\}\ \|\ \{\{.Driver\}\}\ \|\ \{\{.SecurityOptions\}\}\ \|\ \{\{.Name\}\} 
-  [docker info (runc: runtime, sterownik, opcje bezpieczeństwa)] kod wyjścia: 0, czas: 0.104 s
+  [docker info (runc: runtime, sterownik, opcje bezpieczeństwa)] kod wyjścia: 0, czas: 0.068 s
     | runc | overlayfs | [name=apparmor name=seccomp,profile=builtin name=cgroupns] | tide-proto
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- docker run --rm hello-world 
-  [docker run --rm hello-world (runc)] kod wyjścia: 126, czas: 0.831 s
+  [docker run --rm hello-world (runc)] kod wyjścia: 126, czas: 0.818 s
     | docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied
     | 
     | Run 'docker run --help' for more information
@@ -120,14 +120,14 @@ $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env http
 WYNIK docker-runc: fail — runtime runc: kod 126 — docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied
 
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c $'\n                set -e\n                tag=$(curl -fsSL https://api.github.com/repos/containers/crun/releases/latest \\\n                    | python3 -c "import json, sys; print(json.load(sys.stdin)[\\"tag_name\\"])")\n                curl -fsSL -o /usr/local/bin/crun-gh \\\n                    "https://github.com/containers/crun/releases/download/$tag/crun-$tag-linux-amd64"\n                chmod 755 /usr/local/bin/crun-gh\n                sha256sum /usr/local/bin/crun-gh\n                /usr/local/bin/crun-gh --version | head -n 1\n                printf "%s\\n" "{\\"default-runtime\\": \\"crun-gh\\", \\"runtimes\\": {\\"crun-gh\\": {\\"path\\": \\"/usr/local/bin/crun-gh\\"}}}" \\\n                    >/etc/docker/daemon.json\n                { systemctl reset-failed docker.service docker.socket 2>/dev/null || true; }\n    systemctl restart docker || { journalctl -u docker.service --no-pager -n 30; false; }' 
-  [crun z wydań GitHub (najnowszy, statyczny) jako domyślny runtime] kod wyjścia: 0, czas: 2.365 s
+  [crun z wydań GitHub (najnowszy, statyczny) jako domyślny runtime] kod wyjścia: 0, czas: 1.968 s
     | 86d1e6a0e76945975d3aebfab39cbc6a26eea15f1c3fc66b6776d19e5dc346a0  /usr/local/bin/crun-gh
     | crun version 1.30.1
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- docker info --format \{\{.DefaultRuntime\}\}\ \|\ \{\{.Driver\}\}\ \|\ \{\{.SecurityOptions\}\}\ \|\ \{\{.Name\}\} 
-  [docker info (crun-nowy: runtime, sterownik, opcje bezpieczeństwa)] kod wyjścia: 0, czas: 0.087 s
+  [docker info (crun-nowy: runtime, sterownik, opcje bezpieczeństwa)] kod wyjścia: 0, czas: 0.084 s
     | crun-gh | overlayfs | [name=apparmor name=seccomp,profile=builtin name=cgroupns] | tide-proto
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- docker run --rm hello-world 
-  [docker run --rm hello-world (crun-nowy)] kod wyjścia: 125, czas: 0.845 s
+  [docker run --rm hello-world (crun-nowy)] kod wyjścia: 125, czas: 0.788 s
     | docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: open `/proc/sys/net/ipv4/ip_unprivileged_port_start`: Permission denied
     | 
     | Run 'docker run --help' for more information
@@ -135,14 +135,14 @@ $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env http
 WYNIK docker-crun-nowy: fail — runtime crun-nowy: kod 125 — docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: open `/proc/sys/net/ipv4/ip_unprivileged_port_start`: Permission denied
 
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c $'\n                set -e\n                curl -fsSL -o /usr/local/bin/runc-1.2.6 \\\n                    https://github.com/opencontainers/runc/releases/download/v1.2.6/runc.amd64\n                chmod 755 /usr/local/bin/runc-1.2.6\n                sha256sum /usr/local/bin/runc-1.2.6\n                /usr/local/bin/runc-1.2.6 --version | head -n 1\n                printf "%s\\n" "{\\"default-runtime\\": \\"runc-126\\", \\"runtimes\\": {\\"runc-126\\": {\\"path\\": \\"/usr/local/bin/runc-1.2.6\\"}}}" \\\n                    >/etc/docker/daemon.json\n                { systemctl reset-failed docker.service docker.socket 2>/dev/null || true; }\n    systemctl restart docker || { journalctl -u docker.service --no-pager -n 30; false; }' 
-  [runc 1.2.6 z wydań GitHub (statyczny) jako domyślny runtime] kod wyjścia: 0, czas: 2.561 s
+  [runc 1.2.6 z wydań GitHub (statyczny) jako domyślny runtime] kod wyjścia: 0, czas: 2.223 s
     | 0774f49d1b1eebb5849e644db5e4dc6f2b06cee05f13b3d17d5d6ba62d6f2ebc  /usr/local/bin/runc-1.2.6
     | runc version 1.2.6
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- docker info --format \{\{.DefaultRuntime\}\}\ \|\ \{\{.Driver\}\}\ \|\ \{\{.SecurityOptions\}\}\ \|\ \{\{.Name\}\} 
-  [docker info (runc-1.2.6: runtime, sterownik, opcje bezpieczeństwa)] kod wyjścia: 0, czas: 0.077 s
+  [docker info (runc-1.2.6: runtime, sterownik, opcje bezpieczeństwa)] kod wyjścia: 0, czas: 0.069 s
     | runc-126 | overlayfs | [name=apparmor name=seccomp,profile=builtin name=cgroupns] | tide-proto
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- docker run --rm hello-world 
-  [docker run --rm hello-world (runc-1.2.6)] kod wyjścia: 0, czas: 1.249 s
+  [docker run --rm hello-world (runc-1.2.6)] kod wyjścia: 0, czas: 1.230 s
     | 
     | Hello from Docker!
     | This message shows that your installation appears to be working correctly.
@@ -171,16 +171,60 @@ WYNIK docker-runc-1.2.6: ok — docker run --rm hello-world działa z runtime ru
 WYNIK hello-world: ok — docker run --rm hello-world w kontenerze działa (runtime runc-1.2.6, bez intercept)
 
 LegalApp: /home/user/DevWorkspace/agent-team (e19ee3a3)
+Kanał .NET SDK: 10.0
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c $'\n    set -e\n    if ! /usr/share/dotnet/dotnet --list-sdks 2>/dev/null | grep -q \'^10.0\\.\'; then\n        curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh\n        bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/share/dotnet\n    fi\n    ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet\n    dotnet --list-sdks' 
+  [instalacja .NET SDK 10.0 w kontenerze] kod wyjścia: 0, czas: 26.769 s
+    | dotnet-install: Attempting to download using aka.ms link https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.403/dotnet-sdk-10.0.403-linux-x64.tar.gz
+    | dotnet-install: Remote file https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.403/dotnet-sdk-10.0.403-linux-x64.tar.gz size is 240199984 bytes.
+    | dotnet-install: Extracting archive from https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.403/dotnet-sdk-10.0.403-linux-x64.tar.gz
+    | dotnet-install: Downloaded file size is 240199984 bytes.
+    | dotnet-install: The remote and local file sizes are equal.
+    | dotnet-install: Installed version is 10.0.403
+    | dotnet-install: Adding to current process PATH: `/usr/share/dotnet`. Note: This change will be visible only when sourcing script.
+    | dotnet-install: Note that the script does not resolve dependencies during installation.
+    | dotnet-install: To check the list of dependencies, go to https://learn.microsoft.com/dotnet/core/install, select your operating system and check the "Dependencies" section.
+    | dotnet-install: Installation finished successfully.
+    | 10.0.403 [/usr/share/dotnet/sdk]
+$ copy_sources 
+  [kopia źródeł (git archive HEAD → /root/legalapp)] kod wyjścia: 0, czas: 0.395 s
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c $'\n    cd /root/legalapp\n    export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1\n    timeout 3600 dotnet test >/root/dotnet-test.log 2>&1\n    rc=$?\n    grep -E \'Passed!|Failed!|Skipped!|error [A-Z]+[0-9]+|Exception:\' /root/dotnet-test.log | sort | uniq -c | tail -n 40\n    exit $rc' 
+  [dotnet test LegalApp (Testcontainers, pgvector/pgvector:pg16)] kod wyjścia: 1, czas: 1183.342 s
+    |       1 Failed!  - Failed:    51, Passed:  1186, Skipped:     1, Total:  1238, Duration: 16 m 10 s - LegalApp.Tests.Integration.dll (net10.0)
+    |       1 Passed!  - Failed:     0, Passed:  5124, Skipped:    13, Total:  5137, Duration: 7 m 14 s - LegalApp.Tests.Unit.dll (net10.0)
+$ incus file pull tide-proto/root/dotnet-test.log /home/user/DevWorkspace/plasma-tide-worktrees/pt-164-prototyp-pudelka-docker-worktree/docs/box-prototype/p1-dotnet-test.log 
+  [pełne wyjście dotnet test → docs/box-prototype/p1-dotnet-test.log] kod wyjścia: 0, czas: 0.031 s
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- docker images --format \{\{.Repository\}\}:\{\{.Tag\}\}\ \{\{.Size\}\} 
+  [obrazy Dockera w kontenerze] kod wyjścia: 0, czas: 0.096 s
+    | pgvector/pgvector:pg16 619MB
+    | hello-world:latest 21.8kB
+    | testcontainers/ryuk:0.14.0 4.8MB
+
+WYNIK dotnet-test: fail — dotnet test LegalApp: kod 1 (1183.342 s, runc-1.2.6) — błędy wyżej i w p1-dotnet-test.log
+
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- docker ps -a --format \{\{.Image\}\}\ \{\{.Status\}\} 
+  [pozostałe kontenery Dockera] kod wyjścia: 0, czas: 0.073 s
+    | pgvector/pgvector:pg16 Up 16 minutes
+    | testcontainers/ryuk:0.14.0 Up 17 minutes
 --- połączenia przez chwilowe proxy (liczba, metoda, cel)
+     64 CONNECT api.nuget.org:443
+     22 GET crl3.digicert.com:80
+     13 CONNECT registry-1.docker.io:443
+     10 CONNECT production.cloudfront.docker.com:443
+      5 GET www.microsoft.com:80
+      5 GET ts-crl.ws.symantec.com:80
+      5 GET s.symcb.com:80
+      5 GET crl4.digicert.com:80
+      5 CONNECT builds.dotnet.microsoft.com:443
+      4 GET crl.sectigo.com:80
       2 CONNECT release-assets.githubusercontent.com:443
       2 CONNECT github.com:443
+      1 CONNECT dot.net:443
+      1 CONNECT auth.docker.io:443
       1 CONNECT api.github.com:443
+      1 CONNECT aka.ms:443
 --- koniec: połączenia przez chwilowe proxy (liczba, metoda, cel)
 
-WYNIK siec-proxy: info — chwilowe proxy zamknięte; celów: 3; nftables bez zmian
-
-
-WYNIK przerwanie: fail — skrypt przerwany (kod 128) — sprzątanie wykonane w pułapce EXIT
+WYNIK siec-proxy: info — chwilowe proxy zamknięte; celów: 16; nftables bez zmian
 
 
 ## Podsumowanie
@@ -189,7 +233,7 @@ WYNIK przerwanie: fail — skrypt przerwany (kod 128) — sprzątanie wykonane w
 - docker-crun-nowy: fail — runtime crun-nowy: kod 125 — docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: open `/proc/sys/net/ipv4/ip_unprivileged_port_start`: Permission denied
 - docker-runc-1.2.6: ok — docker run --rm hello-world działa z runtime runc-1.2.6
 - hello-world: ok — docker run --rm hello-world w kontenerze działa (runtime runc-1.2.6, bez intercept)
-- siec-proxy: info — chwilowe proxy zamknięte; celów: 3; nftables bez zmian
-- przerwanie: fail — skrypt przerwany (kod 128) — sprzątanie wykonane w pułapce EXIT
+- dotnet-test: fail — dotnet test LegalApp: kod 1 (1183.342 s, runc-1.2.6) — błędy wyżej i w p1-dotnet-test.log
+- siec-proxy: info — chwilowe proxy zamknięte; celów: 16; nftables bez zmian
 
 Niepowodzeń: 3
