@@ -453,12 +453,22 @@ def outside_queued(st: FlowState) -> list[str]:
     return queued
 
 
+def card_waits(st: FlowState) -> dict[str, str]:
+    """Tickety, których krok czeka na domknięcie innej karty (decyzja „wait-card”): ticket → karta."""
+    resumed = {s.get("parentStep") for s in st.steps.values() if s.get("parentStep")}
+    return {(st.steps.get(name) or {}).get("ticket") or "": d["waitCard"] for name, d in st.step_decisions.items()
+            if d.get("waitCard") and name not in resumed and (st.steps.get(name) or {}).get("ticket") not in st.rejected}
+
+
 def guard_reason(st: FlowState) -> str | None:
     """None = praca lub koniec; napis = nazwany powód czekania; pusty napis = możliwy postój."""
     if not st.started or st.card_finished or st.paused or st.running() or st.open_intents() or st.open_consoles():
         return None
     if st.outside_started:
         return None     # trwa polecenie poza piaskownicą — to praca, nie postój (K-31, 03.11: fałszywy alarm)
+    waits = card_waits(st)
+    if waits:
+        return "; ".join(f"{ticket} czeka na kartę {other}" for ticket, other in waits.items())
     if outside_queued(st):
         # Zgoda dana, a polecenie czeka na wolne miejsce (jedno na projekt) — K-37, 04.11: fałszywy „postój”.
         return "polecenie poza piaskownicą w kolejce"
@@ -729,6 +739,10 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             return _fill(out, "review", f"✓ plan karty: {len(finished_ids)}/{len(rows)} ticketów scalonych — do sprawdzenia")
         if st.paused:
             return _fill(out, "backlog" if column == "backlog" else "progress", "wstrzymana — trwające kroki kończą się" if st.running() else "wstrzymana")
+        waits = card_waits(st)
+        if waits and not st.running() and not attention:
+            return _fill(out, "progress", out["flow"]["waveLabel"] + " · " +
+                         ", ".join(f"{ticket} czeka na {other}" for ticket, other in waits.items()))
         if st.waiting and not st.running() and not attention:
             return _fill(out, "progress", out["flow"]["waveLabel"] + " · " + next(reversed(st.waiting.values()))["reason"])
         if st.plan_approved is not None and not st.last_step and not st.open_intents():
@@ -736,6 +750,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     if st.closed and not st.plan_approved:
         out["done"] = 1
         return _fill(out, "review", f"✓ {ident} na gałęzi karty — do sprawdzenia")
+    if card_waits(st) and not st.running():
+        return _fill(out, "progress", f"{ident} czeka na kartę {next(iter(card_waits(st).values()))}")
     if st.stalled_since:
         return _fill(out, "waiting", "stoi — nie ma pracującego kroku ani nazwanego powodu czekania")
     if st.started.get('trackerProject') and st.started.get('entry') == 'now' and not st.steps:

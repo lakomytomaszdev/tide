@@ -262,6 +262,30 @@ class StepDecisionTest(FlowInProcess):
         self.assertEqual([e["choice"] for e in self.of(card_id, "step.decision")], ["answer"])
         self.assertEqual(len([e for e in self.of(card_id, "step.notice") if e["result"] == "question"]), 1)
 
+    def test_step_waiting_for_another_card_leaves_user_queue_and_resumes_when_it_closes(self):
+        other = self.card(description="Druga karta.\n\nATRAPA: pytanie")
+        self.assertTrue(self.start(other)["ok"])
+        self.wait_column(other, "waiting")
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "waiting")
+        self.assertEqual(self.decide(card_id, choice="wait-card", card=card_id)["error"], "bad-card")
+        self.assertEqual(self.decide(card_id, choice="wait-card", card="K-999")["error"], "bad-card")
+        made = self.decide(card_id, choice="wait-card", card=other, answer="Karta obok gotowa — dane są na jej gałęzi.")
+        self.assertTrue(made["ok"], made)
+        card = self.wait_column(card_id, "progress")
+        self.assertEqual(card["derived"]["flow"]["decisions"], [])
+        self.assertIn(f"czeka na kartę {other}", card["derived"]["note"])
+        self.flow.tick()
+        self.assertEqual(len(self.of(card_id, "step.started")), 1)
+        self.flow.engine.journal.append(other, "card.finished")
+        self.flow.tick()
+        self.wait_column(card_id, "review")
+        steps = self.of(card_id, "step.started")
+        self.assertEqual(steps[1]["parentStep"], steps[0]["step"])
+        with open(os.path.join(steps[1]["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            self.assertIn("Karta obok gotowa", json.load(fh)["prompt"])
+
     def test_question_notification_is_once_across_ticks_and_restart(self):
         notices = []
         self.flow.notifier = notices.append
