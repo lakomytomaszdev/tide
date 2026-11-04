@@ -65,6 +65,41 @@ class Tree:
 
 
 class MaskingTest(unittest.TestCase):
+    def test_json_keys_and_collisions_are_masked_in_written_context(self):
+        tree = Tree(self)
+        j = tree.journal()
+        secret = "correct horse battery staple"
+        pairs = [(TOKEN, {"message": "token"}), (ENV_ONLY, {"message": "env"}),
+                 (f'password: "{secret}"', {"message": "pair"}),
+                 ("•••", {"message": "literal"}), ("••• [2]", {"message": "suffix"})]
+        context = os.path.join(tree.step_dir, "in", "context")
+        for order in (pairs, list(reversed(pairs))):
+            detail = dict(order)
+            j.add("step.note", step="K-1-PT-7-2", detail=detail)
+            tree.write(os.path.join(tree.card_dir, "steps", "K-1-PT-7-2", "result.json"),
+                       json.dumps({"result": "error", "detail": detail}))
+            caretakerctx.build(caretaker.problems(j.st)[0], j.st, j.events, card="K-1",
+                               card_dir=tree.card_dir, worktree=tree.worktree, context_dir=context,
+                               env=ENV, tide_docs="")
+            written = {}
+            for folder, _, names in os.walk(context):
+                for name in names:
+                    path = os.path.join(folder, name)
+                    with open(path, encoding="utf-8") as fh:
+                        written[os.path.relpath(path, context)] = fh.read()
+            for path, text in written.items():
+                with self.subTest(order=order[0][1], path=path):
+                    for part in (TOKEN, ENV_ONLY, *secret.split()):
+                        self.assertNotIn(part, text)
+            journal = [json.loads(line) for line in written["journal.jsonl"].splitlines()]
+            result = json.loads(written["steps/K-1-PT-7-2/result.json"])
+            for source, data in (("journal", journal[-1]), ("result", result)):
+                with self.subTest(order=order[0][1], source=source):
+                    self.assertEqual(len(data["detail"]), len(detail), "kolizja nie usuwa pól")
+                    self.assertEqual({v["message"] for v in data["detail"].values()},
+                                     {"token", "env", "pair", "literal", "suffix"})
+                    self.assertEqual(data["detail"]["••• [2]"]["message"], "suffix")
+
     def test_quoted_tool_input_secrets_are_masked_in_collect_and_build(self):
         tree = Tree(self)
         j = tree.journal()

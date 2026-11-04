@@ -74,6 +74,13 @@ class FaultFromStepLogTest(unittest.TestCase):
                          "stary dziennik bez pola fault")
 
 
+class MaskJsonTest(unittest.TestCase):
+    def test_masked_key_keeps_original_secret_field_semantics_in_nested_lists(self):
+        value = [{ENV["TIDE_SECRET_KEY"]: ["wartość ze spacjami", 123456789], "count": 7}]
+        self.assertEqual(faults.mask_json(value, env=ENV),
+                         [{faults.MASK: [faults.MASK, faults.MASK], "count": 7}])
+
+
 class SignatureAndExcerptTest(unittest.TestCase):
     def test_tool_inputs_mask_decoded_values_before_json_and_shortening(self):
         secret = "correct horse battery staple"

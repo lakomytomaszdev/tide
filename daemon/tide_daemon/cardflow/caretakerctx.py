@@ -12,9 +12,10 @@ Publiczny interfejs:
 przy limicie) z nagłówkiem `head`. Źródło czyta pliki wyłącznie przez `ctx.read_text` / `ctx.read_tail`.
 
 Granice bezpieczeństwa:
-- maskowanie wyłącznie `faults.mask` — każdy tekst i każde zdarzenie przed liczeniem rozmiaru (w JSON — każda wartość
-  osobno; pole, które `faults.mask` uznaje za sekretne na próbce `nazwa=x`, traci całą wartość, też liczbową, a plik
-  pozostaje poprawnym JSON-em); końcówka `step.log` zaczyna się od pełnej linii (urwany sekret nie omija wzorców),
+- maskowanie wyłącznie `faults.mask` — każdy tekst i każde zdarzenie przed liczeniem rozmiaru (w JSON — każdy klucz
+  i każda wartość osobno; pole, które `faults.mask` uznaje za sekretne na próbce `nazwa=x`, traci całą wartość,
+  też liczbową, a plik pozostaje poprawnym JSON-em); końcówka `step.log` zaczyna się od pełnej linii
+  (urwany sekret nie omija wzorców),
 - tylko pliki z katalogu karty w tablicy (`flow/<K-…>/`), worktree kroku opiekuna oraz worktree i katalogów kroków
   problemu z dziennika; korzeń nie może być dowiązaniem (`lstat`, tożsamość `st_dev`/`st_ino` sprawdzana przy
   otwarciu), a każdy składnik ścieżki poniżej korzenia jest otwierany względem poprzedniego z `O_NOFOLLOW` —
@@ -74,7 +75,7 @@ class File:
     trim: int | None = None
     trimmed: int = 0
     cut: bool = False
-    masked_json: bool = False   # zdarzenia JSON zamaskowane już wartościami (`faults.mask_json`, też `faults.mask`)
+    masked_json: bool = False   # klucze i wartości JSON już zamaskowane (`faults.mask_json`, też `faults.mask`)
 
     def render(self) -> str:
         if not self.items and not self.trimmed:
@@ -388,7 +389,7 @@ def collect(problem: dict, st, events: list, *, card: str, card_dir: str, worktr
                 continue
             seen.add(rel)
             item.path = rel
-            # JSON maskujemy po odkodowaniu wartości, zanim sekwencje ucieczki zmienią granice sekretów.
+            # JSON maskujemy po odkodowaniu kluczy i wartości, zanim sekwencje ucieczki zmienią granice sekretów.
             # Pozostały tekst w całości, zdarzenia każde osobno; zawsze przez `faults.mask`, przed limitem.
             item.text = (_json_text(item.text, env) if rel.endswith(".json") else faults.mask(item.text, env)) \
                 if item.text else ""
@@ -604,7 +605,7 @@ def _listdir(folder: str, roots: tuple) -> list[str]:
 # --- pomocnicze ----------------------------------------------------------------------------------
 
 def _json_text(text: str, env: dict | None) -> str:
-    """Maskowanie odkodowanych wartości JSON; niepoprawny lub przycięty JSON nie trafia do kontekstu w surowej postaci."""
+    """Maskowanie odkodowanych kluczy i wartości JSON; niepoprawny lub przycięty JSON daje dopisek o pominięciu."""
     try:
         return json.dumps(faults.mask_json(json.loads(text), env=env), ensure_ascii=False, indent=2) + "\n"
     except (ValueError, RecursionError):

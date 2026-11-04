@@ -276,10 +276,23 @@ def _secret_field(key: str, env: dict | None) -> bool:
 
 
 def mask_json(value, key: str = "", env: dict | None = None):
-    """Maskuje odkodowane wartości przed serializacją JSON. Sekretne pole traci całą wartość napisu lub liczby;
-    pozostałe wartości przechodzą przez `mask`, a struktura JSON pozostaje poprawna."""
+    """Maskuje odkodowane klucze i wartości przed serializacją JSON. Sekretne pole traci całą wartość napisu
+    lub liczby; kolizje zamaskowanych kluczy dostają unikalny dopisek liczbowy, bez nadpisywania pól."""
     if isinstance(value, dict):
-        return {k: mask_json(v, str(k), env) for k, v in value.items()}
+        entries = [(mask(k, env) if isinstance(k, str) else k, k, v) for k, v in value.items()]
+        reserved = {masked for masked, _, _ in entries}
+        result, suffixes = {}, {}
+        for masked, original, item in entries:
+            target = masked
+            if target in result:
+                number = suffixes.get(masked, 2)
+                while f"{masked} [{number}]" in reserved or f"{masked} [{number}]" in result:
+                    number += 1
+                target = f"{masked} [{number}]"
+                suffixes[masked] = number + 1
+            # Rezerwujemy także nazwy późniejszych pól; sekretność wartości oceniamy po oryginalnym kluczu.
+            result[target] = mask_json(item, str(original), env)
+        return result
     if isinstance(value, list):
         return [mask_json(v, key, env) for v in value]
     if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):

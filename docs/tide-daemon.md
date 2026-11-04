@@ -1869,8 +1869,9 @@ przycinane) i czyta pliki wyłącznie przez `ctx.read_text` / `ctx.read_tail`. K
 zamiast przerwania startu.
 
 **Granice.** Maskowanie wyłącznie `faults.mask`: każdy plik w całości, zdarzenia każde osobno przed liczeniem
-rozmiaru, a w `journal.jsonl` i plikach `*.json` każda odkodowana wartość osobno, przed ponowną serializacją
-(dotyczy też wyniku osadzonego w `attempts.md`): pole, które `faults.mask`
+rozmiaru, a w `journal.jsonl` i plikach `*.json` każdy odkodowany klucz i każda wartość osobno, przed ponowną
+serializacją (dotyczy też wyniku osadzonego w `attempts.md`). Kolizje kluczy po maskowaniu dostają unikalny
+dopisek ` [N]`, z pominięciem nazw innych pól, żeby nie nadpisywać danych. Pole, które `faults.mask`
 uznaje za sekretne na próbce `nazwa=x` (`token`, `password`, `apiKey`…), traci całą wartość — także napis ze spacjami
 i liczbę; pozostałe napisy przechodzą przez `faults.mask`, a liczba zmieniona przez `faults.mask` (np. równa wartości
 sekretnej zmiennej środowiska) staje się `•••`. Niepoprawny lub niepełny plik JSON jest zastępowany dopiskiem
