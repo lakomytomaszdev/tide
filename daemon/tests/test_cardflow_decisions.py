@@ -673,3 +673,14 @@ class OutsideQueueTest(unittest.TestCase):
         self.assertEqual(guard_reason(st), "polecenie poza piaskownicą w kolejce")
         events.add("outside.started", step="K-1-PT-1-1")
         self.assertEqual(outside_queued(events.state()), [])
+
+
+class BlockedScopeErrorTest(unittest.TestCase):
+    def test_error_saying_retry_will_not_help_does_not_recommend_retry(self):
+        # 04.11, K-41/KAMP-13: agent napisał „wymagane działanie koordynatora”, a okno polecało „Ponów krok”.
+        events = Events().step("K-1-PT-1-1", result="error", attempt=1,
+                               reason="B1 nadal otwarty: brak dostawy #13a z BO; wymagane działanie koordynatora "
+                                      "opisano w note.md.")
+        decision = next(d for d in build_decisions(events.state()) if d["kind"] == "error")
+        self.assertFalse(any(o["recommended"] for o in decision["options"] if o["id"] == "retry"))
+        self.assertIn("ponowienie nic nie da", decision["why"])
