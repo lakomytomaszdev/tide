@@ -327,7 +327,7 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, context:
         "",
         faults.mask(described),
         "",
-        *files,     # ścieżki i tytuły pisze Tide; maskowanie mogłoby zepsuć długą nazwę katalogu
+        *files,     # `collect` maskuje tytuły i nadaje sekretnej nazwie alias istniejącego pliku kontekstu
         "## Dostępne akcje",
         "",
         *listed,

@@ -1869,7 +1869,10 @@ przycinane) i czyta pliki wyłącznie przez `ctx.read_text` / `ctx.read_tail`. K
 zamiast przerwania startu.
 
 **Granice.** Maskowanie wyłącznie `faults.mask`: każdy plik w całości, zdarzenia każde osobno przed liczeniem
-rozmiaru, a w `journal.jsonl` i plikach `*.json` każdy odkodowany klucz i każda wartość osobno, przed ponowną
+rozmiaru. Tytuły plików także przechodzą przez maskowanie. Ścieżka zawierająca sekret (sprawdzana również przed
+sanitacją i skracaniem nazwy) dostaje unikalny alias `masked-N.*`, z rezerwacją pozostałych nazw. Alias jest nazwą
+zapisanego pliku, więc odnośnik w kartce nadal działa. W `journal.jsonl` i plikach `*.json` każdy odkodowany klucz
+i każda wartość są maskowane osobno, przed ponowną
 serializacją (dotyczy też wyniku osadzonego w `attempts.md`). Kolizje kluczy po maskowaniu dostają unikalny
 dopisek ` [N]`, z pominięciem nazw innych pól, żeby nie nadpisywać danych. Pole, które `faults.mask`
 uznaje za sekretne na próbce `nazwa=x` (`token`, `password`, `apiKey`…), traci całą wartość — także napis ze spacjami
@@ -1879,7 +1882,8 @@ sekretnej zmiennej środowiska) staje się `•••`. Niepoprawny lub niepełn
 „(pominięto: niepoprawny lub niepełny JSON)” — maskowanie surowych sekwencji ucieczki mogłoby ujawnić część sekretu.
 Tak samo uszkodzone zdarzenie w `out/step.log` (linia zaczynająca się od `{`, także przy EOF po awarii) zastępuje
 dopisek bez jego treści. Poprawne zdarzenie bez końcowego znaku nowej linii nadal trafia do wycinka po odkodowaniu;
-zwykłe linie stderr są maskowane jako tekst.
+odkodowane wartości zdarzenia przechodzą przez maskowanie przed łączeniem i normalizacją białych znaków,
+żeby wielowierszowy sekret środowiska nadal pasował do swojej wartości. Zwykłe linie stderr są maskowane jako tekst.
 Końcówka `out/step.log` czytana od środka pliku zaczyna się od
 pierwszej pełnej linii — sekret przecięty granicą odczytu nie traci nazwy zmiennej ani prefiksu tokenu przed
 maskowaniem. Tak samo odczyt kończący się przed końcem pliku (początek pliku dłuższego niż `FILE_READ_MAX` albo plik

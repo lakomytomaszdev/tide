@@ -65,6 +65,81 @@ class Tree:
 
 
 class MaskingTest(unittest.TestCase):
+    def test_multiline_environment_secret_is_masked_before_log_formatting(self):
+        tree = Tree(self)
+        j = tree.journal()
+        secret = "first-private-line\n\tsecond-private-line"
+        env = {**ENV, "TIDE_PRIVATE_KEY": secret}
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": secret}]}},
+            *({"type": "error", key: secret} for key in ("result", "message", "error")),
+            {"type": "error", "error": {"message": secret}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "content": secret}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "content": [{"text": secret}]}]}},
+            *({"type": "item.completed", "item": {key: secret}}
+              for key in ("command", "aggregated_output", "text")),
+        ]
+        context = os.path.join(tree.step_dir, "in", "context")
+        for event in events:
+            with self.subTest(event=event):
+                tree.write(os.path.join(tree.step_dir, "out", "step.log"), json.dumps(event) + "\n")
+                caretakerctx.build(caretaker.problems(j.st)[0], j.st, j.events, card="K-1",
+                                   card_dir=tree.card_dir, worktree=tree.worktree, context_dir=context,
+                                   env=env, tide_docs="")
+                for folder, _, names in os.walk(context):
+                    for name in names:
+                        with open(os.path.join(folder, name), encoding="utf-8") as fh:
+                            text = fh.read()
+                        for part in secret.split():
+                            self.assertNotIn(part, text, name)
+                with open(os.path.join(context, "steps", "K-1-PT-7-2", "step-log.md"),
+                          encoding="utf-8") as fh:
+                    self.assertIn("•••", fh.read())
+
+    def test_secret_note_names_get_unique_existing_paths_and_masked_titles(self):
+        tree = Tree(self)
+        j = tree.journal()
+        folder = os.path.join(tree.card_dir, "steps", "K-1-PT-7-2")
+        spaced_secret = "private-note-fragment\tprivate-second-fragment"
+        env = {**ENV, "TIDE_PRIVATE_KEY": spaced_secret}
+        names = [f"diagnosis-{secret}.md" for secret in (TOKEN, ENV_ONLY, spaced_secret)]
+        names.append("diagnosis-" + "x" * 100 + "-" + TOKEN + ".md")
+        tree.write(os.path.join(folder, "result.json"), json.dumps({"notes": names}))
+        for number, name in enumerate(names):
+            tree.write(os.path.join(folder, name), f"Diagnoza numer {number}.\n")
+        # Jawna nazwa nie może zostać nadpisana przez alias sekretnej ścieżki.
+        def extra(ctx):
+            return [caretakerctx.File(f"masked-{n}.md", "jawna nazwa", text="Jawna notka.\n")
+                    for n in range(1, 20)]
+
+        context = os.path.join(tree.step_dir, "in", "context")
+        problem = caretaker.problems(j.st)[0]
+        with mock.patch.dict(caretakerctx.SOURCES, {"error": [caretakerctx.Source("extra", extra)]}):
+            listed = caretakerctx.build(problem, j.st, j.events, card="K-1", card_dir=tree.card_dir,
+                                        worktree=tree.worktree, context_dir=context, env=env, tide_docs="")
+        prompt = caretaker.brief(problem, j.st, card="K-1", worktree=tree.worktree,
+                                 out_dir=os.path.join(tree.step_dir, "out"), context=listed,
+                                 context_dir=context)
+        self.assertEqual(len(listed), len({item["path"] for item in listed}))
+        contents = []
+        for item in listed:
+            self.assertIn(item["path"], prompt)
+            with open(item["path"], encoding="utf-8") as fh:
+                contents.append(fh.read())
+            for secret in (TOKEN, ENV_ONLY, *spaced_secret.split()):
+                self.assertNotIn(secret, item["path"])
+                self.assertNotIn(secret, item["title"])
+                self.assertNotIn(secret, contents[-1])
+            if contents[-1].startswith("Diagnoza numer"):
+                self.assertTrue(os.path.basename(item["path"]).startswith("masked-"))
+        for secret in (TOKEN, ENV_ONLY, *spaced_secret.split()):
+            self.assertNotIn(secret, prompt)
+        for number in range(len(names)):
+            self.assertIn(f"Diagnoza numer {number}.\n", contents)
+        self.assertEqual(contents.count("Jawna notka.\n"), 19)
+
     def test_secret_parent_masks_descendants_in_written_context(self):
         tree = Tree(self)
         j = tree.journal()

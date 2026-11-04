@@ -15,7 +15,8 @@ Granice bezpieczeństwa:
 - maskowanie wyłącznie `faults.mask` — każdy tekst i każde zdarzenie przed liczeniem rozmiaru (w JSON — każdy klucz
   i każda wartość osobno; pole, które `faults.mask` uznaje za sekretne na próbce `nazwa=x`, traci całą wartość,
   też liczbową, a plik pozostaje poprawnym JSON-em); końcówka `step.log` zaczyna się od pełnej linii
-  (urwany sekret nie omija wzorców),
+  (urwany sekret nie omija wzorców); tytuły są maskowane, a ścieżka zawierająca sekret dostaje unikalny alias
+  jeszcze przed zapisem (sekret wykrywany także w oryginale przed sanitacją nazwy),
 - tylko pliki z katalogu karty w tablicy (`flow/<K-…>/`), worktree kroku opiekuna oraz worktree i katalogów kroków
   problemu z dziennika; korzeń nie może być dowiązaniem (`lstat`, tożsamość `st_dev`/`st_ino` sprawdzana przy
   otwarciu), a każdy składnik ścieżki poniżej korzenia jest otwierany względem poprzedniego z `O_NOFOLLOW` —
@@ -377,6 +378,7 @@ def collect(problem: dict, st, events: list, *, card: str, card_dir: str, worktr
               tide_docs_dir() if tide_docs is None else tide_docs)
     files: list[File] = []
     seen = set()
+    secret_paths = set()
     for source in sources_for(problem):
         try:
             made = source.build(ctx) or []
@@ -388,7 +390,11 @@ def collect(problem: dict, st, events: list, *, card: str, card_dir: str, worktr
             if not rel or rel in seen:
                 continue
             seen.add(rel)
+            # Sprawdzamy też oryginał: `_safe_rel` skraca nazwy i zmienia białe znaki, co może urwać sekret.
+            if faults.mask(item.path, env) != item.path:
+                secret_paths.add(rel)
             item.path = rel
+            item.title = faults.mask(item.title, env)
             # JSON maskujemy po odkodowaniu kluczy i wartości, zanim sekwencje ucieczki zmienią granice sekretów.
             # Pozostały tekst w całości, zdarzenia każde osobno; zawsze przez `faults.mask`, przed limitem.
             item.text = (_json_text(item.text, env) if rel.endswith(".json") else faults.mask(item.text, env)) \
@@ -399,6 +405,19 @@ def collect(problem: dict, st, events: list, *, card: str, card_dir: str, worktr
             else:
                 item.items = [faults.mask(str(line), env) for line in item.items]
             files.append(item)
+    # Nazwy notek i plików dodatkowych źródeł mogą zawierać sekrety. Alias musi być rzeczywistą nazwą pliku,
+    # a nie tylko zamaskowaną ścieżką w kartce. Rezerwujemy też wszystkie późniejsze nazwy, by nie tracić plików.
+    for number, item in enumerate(files, 1):
+        if item.path not in secret_paths and faults.mask(item.path, env) == item.path:
+            continue
+        suffix = os.path.splitext(item.path)[1]
+        suffix = suffix if suffix in (".md", ".txt", ".json", ".jsonl") else ".txt"
+        alias = f"masked-{number}{suffix}"
+        while alias in seen or faults.mask(alias, env) != alias:
+            number += 1
+            alias = f"masked-{number}{suffix}"
+        seen.add(alias)
+        item.path = alias
     _fit(files)
     return files
 

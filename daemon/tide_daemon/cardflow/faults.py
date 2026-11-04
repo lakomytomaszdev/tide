@@ -330,6 +330,9 @@ def excerpt(lines: list[str], env: dict | None = None, limit: int = EXCERPT_LINE
 
 
 def _event_text(event: dict, env: dict | None = None) -> str:
+    # Maskujemy odkodowane wartości przed łączeniem i normalizacją białych znaków. Inaczej wielowierszowy
+    # sekret środowiska przestaje pasować do dokładnej wartości rozpoznawanej przez `mask`.
+    event = mask_json(event, env=env)
     kind = str(event.get("type") or "")
     parts = []
     for key in ("subtype", "api_error_status"):
