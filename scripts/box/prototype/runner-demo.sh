@@ -42,12 +42,34 @@ export TIDE_DEMO_MARKER="$marker"
 PYTHONPATH="$root/daemon" python3 -m tide_daemon.box.runner --demo "$slug" --worktree "$root" --push-tide-step \
     -- /bin/sh -c "$inner" &
 demo=$!
-sleep 4
+# Migawka `ps` dopiero, gdy krok naprawdę biegnie (klient `incus exec` z jednostką kroku w argv) — dodanie
+# montowań może zatrzymać i wystartować pudełko, co trwa dłużej niż stałe `sleep` (runda 1).
 snap=$(mktemp)
-ps -eo args > "$snap"
+seen=0
+for _ in $(seq 1 120); do
+    ps -eo args > "$snap"
+    if grep -q -- "--unit=tide-step-demo-" "$snap"; then seen=1; sleep 2; ps -eo args > "$snap"; break; fi
+    kill -0 "$demo" 2>/dev/null || break
+    sleep 0.5
+done
 leaks=$(grep -cF "$marker" "$snap")
 rm -f "$snap"
-if [ "$leaks" = 0 ]; then echo "WYNIK ps-bez-in-env: ok (0 procesów ze znacznikiem w argv)";
+if [ "$seen" != 1 ]; then echo "WYNIK ps-bez-in-env: skip (krok nie wystartował — migawka bez procesów kroku)";
+elif [ "$leaks" = 0 ]; then echo "WYNIK ps-bez-in-env: ok (0 procesów ze znacznikiem w argv, krok w trakcie)";
 else echo "WYNIK ps-bez-in-env: fail ($leaks procesów ze znacznikiem w argv)"; fi
 wait "$demo"
-echo "WYNIK demo: kod $?"
+code=$?
+echo "WYNIK demo: kod $code"
+if [ "$code" != 0 ]; then
+    echo "== diagnostyka"
+    incus config device show "$slug" </dev/null 2>&1 | sed 's/^/  /'
+    incus config get "$slug" raw.idmap </dev/null 2>&1 | sed 's/^/  raw.idmap: /'
+    incus exec "$slug" -T -- loginctl show-user 1000 -p Linger -p State </dev/null 2>&1 | sed 's/^/  /'
+    incus exec "$slug" -T --user 1000 --group 1000 -- /usr/bin/env -i XDG_RUNTIME_DIR=/run/user/1000 \
+        /usr/bin/systemctl --user is-system-running </dev/null 2>&1 | sed 's/^/  systemctl --user: /'
+    incus exec "$slug" -T --user 1000 --group 1000 -- ls -ld "$root" "$root".demo-*.step /opt/tide/tide-step \
+        </dev/null 2>&1 | sed 's/^/  /'
+    incus exec "$slug" -T --user 1000 --group 1000 -- /usr/bin/env -i XDG_RUNTIME_DIR=/run/user/1000 \
+        /usr/bin/journalctl --user -n 30 --no-pager </dev/null 2>&1 | sed 's/^/  /'
+fi
+exit "$code"

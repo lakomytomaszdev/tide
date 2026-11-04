@@ -60,6 +60,16 @@ class BoxRunnerCase(unittest.TestCase):
         self.incus.launch("tide-base", "proj")
         self.settings = BoxSettings(project="user-1000")
         self.popen_calls = []
+        # systemctl „w pudełku” (po `env -i` — ścieżka dziennika wpisana w skrypt): menedżer użytkownika gotowy
+        # po liczbie nieudanych prób z pliku `<licznik>.need` (domyślnie od razu); prawdziwy systemctl hosta nie rusza.
+        self.counter = os.path.join(self.tmp, "manager-tries")
+        self.box_systemctl = os.path.join(self.tmp, "fakebin", "box", "systemctl-agent")
+        with open(self.box_systemctl, "w", encoding="utf-8") as fh:
+            fh.write(f'#!/bin/sh\necho "box-systemctl $*" >> {shlex.quote(env["TIDE_FAKE_LOG"])}\n'
+                     f'case "$*" in *show-environment*) echo x >> {shlex.quote(self.counter)}; '
+                     f'[ "$(wc -l < {shlex.quote(self.counter)})" -gt "$(cat {shlex.quote(self.counter)}.need '
+                     f'2>/dev/null || echo 0)" ] ;; esac\n')
+        os.chmod(self.box_systemctl, 0o755)
 
     def step(self, tool="claude", **kw):
         args = dict(tool=tool, binary=tool, prompt="Zrób ticket", worktree=self.worktree, repo=self.repo,
@@ -73,7 +83,8 @@ class BoxRunnerCase(unittest.TestCase):
         return mock.Mock(returncode=None)
 
     def runner(self, **kw):
-        args = dict(incus=self.incus, proxy_base=PROXY, popen=self.popen, env=dict(os.environ))
+        args = dict(incus=self.incus, proxy_base=PROXY, popen=self.popen, env=dict(os.environ),
+                    systemctl=self.box_systemctl, sleep=lambda s: None)
         args.update(kw)
         return br.BoxRunner(self.settings, "proj", **args)
 
@@ -249,6 +260,37 @@ class DevicesTest(BoxRunnerCase):
         self.assertLess(stop, first_add)
         self.assertGreater(start, len(subs) - 1 - subs[::-1].index("config device add"))
         self.assertEqual(self.incus.instance("proj")["status"], "Running")
+
+    def manager_calls(self):
+        return [i for i, line in enumerate(calls(self.env)) if line == "box-systemctl --user show-environment"]
+
+    def test_after_restart_the_step_waits_for_the_agent_user_manager(self):
+        """Próba ręczna PT-169: tuż po starcie pudełka `systemd-run --user` kończył się kodem 1 (brak menedżera)."""
+        with open(self.counter + ".need", "w", encoding="utf-8") as fh:
+            fh.write("2\n")
+        self.runner().start(self.step())
+        lines = calls(self.env)
+        last_start = max(i for i, line in enumerate(lines) if line.startswith("incus start"))
+        tries = self.manager_calls()
+        self.assertEqual(len(tries), 3)
+        self.assertGreater(tries[0], last_start)
+        self.assertEqual(len(self.popen_calls), 1)
+        argv = shlex.split([line for line in lines if "show-environment" in line and line.startswith("incus")][0])
+        self.assertEqual(argv[argv.index("--user") + 1], "1000")
+
+    def test_manager_that_never_comes_up_refuses_the_step(self):
+        with open(self.counter + ".need", "w", encoding="utf-8") as fh:
+            fh.write("100000\n")
+        self.settings = BoxSettings(project="user-1000", ip_wait_seconds=0)
+        with self.assertRaises(agentcmd.StepError):
+            self.runner().start(self.step())
+        self.assertEqual(self.popen_calls, [])
+
+    def test_no_restart_no_wait(self):
+        self.runner().start(self.step())
+        before = len(self.manager_calls())
+        self.runner().start(self.step(step_id="s2"))
+        self.assertEqual(len(self.manager_calls()), before)
 
     def test_hooks_and_info_dirs_are_created_before_mounting(self):
         shutil.rmtree(os.path.join(self.repo, ".git", "hooks"))

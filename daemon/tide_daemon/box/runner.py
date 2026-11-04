@@ -366,7 +366,19 @@ class BoxRunner:
         finally:
             if stop and running:
                 self.incus.start(self.box)
+        if stop and running:
+            self.wait_user_manager(self.box)
         return [d.name for d in missing]
+
+    def wait_user_manager(self, box: str = "") -> None:
+        """Po (re)starcie pudełka `systemd-run --user` działa dopiero, gdy wstanie menedżer usług użytkownika `agent`
+        (lingering) — wcześniej „Failed to connect to bus” i kod 1 klienta `incus exec` (próba ręczna PT-169)."""
+        box = box or self.box
+        deadline = time.monotonic() + max(1.0, float(self.settings.ip_wait_seconds))
+        while self._systemctl(box, "show-environment") != 0:
+            if time.monotonic() >= deadline:
+                raise agentcmd.StepError(f"menedżer usług użytkownika agent w pudełku {box} nie wstał po starcie")
+            self._sleep(0.5)
 
     # --- start i zatrzymanie -----------------------------------------------------------------------
 
@@ -530,11 +542,12 @@ def _demo(argv: list) -> int:
     print(f"pudełko: {runner.box}\njednostka: {runner.unit_for(bg)}\nkatalog kroku: {step_dir}\n"
           f"znacznik w in/env (nie może być w `ps -o args` hosta): TIDE_DEMO_SECRET={marker}", flush=True)
     code = proc.wait()
-    try:
-        with open(bg.log_file, encoding="utf-8", errors="replace") as fh:
-            sys.stdout.write(fh.read())
-    except OSError:
-        pass
+    for title, path in (("step.log", bg.log_file), (EXEC_LOG, os.path.join(step_dir, "out", EXEC_LOG))):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                sys.stdout.write(f"--- {title}\n{fh.read()}")
+        except OSError:
+            print(f"--- {title}: brak")
     print(f"[kod klienta incus {code}, exit-code kroku: {_read(bg.exit_file)}]")
     return code
 
