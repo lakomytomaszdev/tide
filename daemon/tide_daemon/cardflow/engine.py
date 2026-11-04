@@ -3668,7 +3668,7 @@ class FlowEngine(PlanEditing):
             elif str(data.get("command") or "").strip() and not listed:
                 # Same odczyty własnego <krok>/in i <krok>/out — zawsze dozwolone, nie ma o co pytać użytkownika.
                 self._auto_deny(card, name, step, data.get("command") or "", note=STEP_READ_NOTE)
-            elif auto_allow:
+            elif auto_allow and not self._denied_before(card, step.get("ticket") or "", data.get("command") or ""):
                 # Automatyczna zgoda na pojedyncze, bezpieczne polecenie w piaskownicy (03.11: „nie mam ochoty co
                 # 2 minuty klikać zgody”). Piaskownica dalej chroni system; zgoda trafia do listy projektu.
                 try:
@@ -4085,6 +4085,13 @@ class FlowEngine(PlanEditing):
             except OSError:
                 continue
         return moved
+
+    def _denied_before(self, card: str, ticket: str, command: str) -> bool:
+        """Użytkownik odmówił już tego polecenia w tym tickecie — Tide nie zgadza się na nie sam (04.11, K-43/BO-13)."""
+        wanted = " ".join(str(command).split())
+        return bool(wanted) and any(
+            d.get("choice") == "deny" and d.get("ticket") == ticket and " ".join(str(d.get("command") or "").split()) == wanted
+            for d in fold(self.journal.read(card)).step_decisions.values())
 
     def _card_done(self, card: str) -> bool:
         """Karta domknięta (krok domknięcia przeszedł albo karta skończona) — koniec czekania „czeka na kartę”."""

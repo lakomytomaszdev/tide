@@ -181,6 +181,23 @@ class StepDecisionTest(FlowInProcess):
         self.wait_column(card_id, "review", timeout=30)
         self.assertEqual(self.of(card_id, "outside.started"), [])
 
+    def test_declined_outside_command_passes_the_instead_instruction_to_the_agent(self):
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "waiting")
+        self.assertTrue(self.decide(card_id, choice="deny", instead="użyj zrzutów z reports/p5-evidence")["ok"])
+        self.wait_column(card_id, "review", timeout=30)
+        resumed = self.of(card_id, "step.started")[1]
+        with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            prompt = json.load(fh)["prompt"]
+        self.assertIn("Zamiast tego: użyj zrzutów z reports/p5-evidence", prompt)
+        self.assertIn("Nie proś ponownie o to polecenie", prompt)
+        engine = self.flow.engine
+        denied = self.of(card_id, "step.decision")[0]
+        self.assertTrue(engine._denied_before(card_id, denied["ticket"], "  " + denied["command"] + " "))
+        self.assertFalse(engine._denied_before(card_id, denied["ticket"], "ls"))
+        self.assertFalse(engine._denied_before(card_id, "INNY-1", denied["command"]))
+
     def test_expired_login_asks_at_once_without_burning_the_retry(self):
         # 03.11 07:58: wygasłe logowanie Claude wyglądało jak „exit” i zużywało automatyczne ponowienie.
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: login")
