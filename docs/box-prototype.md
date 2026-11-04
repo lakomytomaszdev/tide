@@ -12,7 +12,9 @@ o nic nie pytają (poza hasłem sudo przy nftables), nie używają `security.pri
 
 ## Wyniki
 
-Stan: skrypty gotowe, próby czekają na uruchomienie (kolejność niżej). Wiersze uzupełnia PT-164 po każdej rundzie.
+Stan: skrypty gotowe, próby czekają na instalację Incusa na hoście (`make box-install`, PT-166); potem kolejność
+niżej, od `p5.sh`. Wiersze uzupełnia PT-164 po każdej rundzie. Bez instalacji każdy skrypt kończy się wynikiem
+`warunki: fail` (brak dostępu do Incusa albo tabeli `inet tide-box`) i niczego nie zmienia.
 
 | Próba | Co sprawdza | Polecenie | Wynik | Czas | Wariant awaryjny (gdy nie działa) |
 | --- | --- | --- | --- | --- | --- |
