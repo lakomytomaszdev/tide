@@ -2627,7 +2627,7 @@ class FlowEngine(PlanEditing):
                 self.journal.append(card, "outside.ticket-consent", ticket=step.get("ticket") or "", step=focus)
             if choice == "run-always":
                 from ..board.commands import outside_risky
-                if outside_risky(command, roots):
+                if outside_risky(command, roots, self._extra_repos(card)):
                     raise FlowError("risky-command", "ryzykownego polecenia nie można zapamiętać — uruchom je raz")
                 self._remember_outside(project.slug, outside_pattern(command))
         extra = {}
@@ -3618,7 +3618,7 @@ class FlowEngine(PlanEditing):
                 data["canAllow"] = outside_allowed(command, project.denied_commands, roots)
                 remembered = data["canAllow"] and (outside_matches(command, self._outside_remembered(project.slug))
                                                    or self._ticket_consent(card, step.get("ticket") or "")
-                                                   or self._auto_outside(card) and not outside_risky(command, roots))
+                                                   or self._auto_outside(card) and not outside_risky(command, roots, self._extra_repos(card)))
             else:
                 # PT-124: łańcuch rozłożony na pojedyncze polecenia z flagami i powodem blokady (dla okna decyzji).
                 extra["commands"] = chain.describe(command, denied=project.denied_commands,
@@ -4033,7 +4033,7 @@ class FlowEngine(PlanEditing):
                                 ticket=step.get("ticket") or "", canAllow=allowed)
         if allowed and (outside_matches(command, self._outside_remembered(project.slug)) or
                         self._ticket_consent(card, step.get("ticket") or "") or
-                        self._auto_outside(card) and not outside_risky(command, roots)):
+                        self._auto_outside(card) and not outside_risky(command, roots, self._extra_repos(card))):
             self.journal.append(card, "step.decision", step=step.get("step") or "", ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="run", answer="", command=command,
                                 executor="", auto=True)
@@ -4070,6 +4070,18 @@ class FlowEngine(PlanEditing):
             except OSError:
                 continue
         return moved
+
+    def _extra_repos(self, card: str) -> tuple:
+        """Repozytoria dodatkowych projektów karty — do odczytu gitem w poleceniach poza piaskownicą."""
+        try:
+            board = self.store.load()
+            item = board.cards.get(card_num(card))
+        except Exception:
+            return ()
+        if item is None:
+            return ()
+        return tuple(board.projects[slug].repo for slug in item.projects
+                     if slug in board.projects and board.projects[slug].repo)
 
     def _other_provider_executor(self, st: FlowState, step: dict) -> str:
         """Wykonawca innego dostawcy w tej samej klasie (albo mocny), inny model niż autor ticketu; pusty — brak."""

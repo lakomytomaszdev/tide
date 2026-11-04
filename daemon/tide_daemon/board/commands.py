@@ -299,10 +299,24 @@ OUTSIDE_RISKY = (
     "pip3 install", "python3 -m pip", "find", "xargs", "truncate", "shred", "ln", "tee", "open", "xdg-open")
 
 
-def outside_risky(command: str, roots=()) -> str:
+GIT_READ_ONLY = ("archive", "show", "log", "diff", "ls-tree", "cat-file", "rev-parse", "branch", "status")
+
+
+def outside_risky(command: str, roots=(), read_roots=()) -> str:
     """Powód, dla którego polecenie wymaga decyzji użytkownika mimo automatycznych zgód; pusty = bezpieczne.
-    `roots` — worktree ticketu i repozytorium projektu: ścieżki w nich nie są „spoza worktree”."""
+    `roots` — worktree ticketu i repozytorium projektu: ścieżki w nich nie są „spoza worktree”.
+    `read_roots` — dodatkowe projekty karty: wolno je tylko czytać gitem (`git -C <repo> archive|show|log…`), a wynik
+    (np. `--output`) musi trafić do `roots` (04.11, K-43: każdy ticket BO prosił o zgodę na `git archive` z streamer)."""
     argv = outside_argv(command, roots)
+    if argv and read_roots and argv[:2] == ["git", "-C"] and len(argv) > 3 and \
+            _inside_roots(argv[2], read_roots) and argv[3] in GIT_READ_ONLY:
+        if argv[3] == "branch" and any(a.startswith("-") and a not in ("-a", "--all", "-r", "--list", "-v", "-vv")
+                                       for a in argv[4:]):
+            return "„git branch” z opcją zmieniającą gałęzie w innym projekcie"
+        outputs = [a.split("=", 1)[1] for a in argv[4:] if a.startswith("--output=")]
+        outputs += [argv[i + 1] for i, a in enumerate(argv[4:-1], start=4) if a in ("--output", "-o")]
+        if all(o.startswith("/") and _inside_roots(o, roots) or not o.startswith("/") for o in outputs):
+            return ""
     if argv is None:
         return "łańcuch, podpowłoka albo niebezpieczna zmienna"
     if script_in_roots(argv, roots):

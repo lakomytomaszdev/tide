@@ -62,3 +62,15 @@ class OutsideLengthTest(unittest.TestCase):
         command = "python3 -m unittest -v " + " ".join(f"theme/m{i}/tests/test_generate.py" for i in range(70))
         self.assertGreater(len(command), 2000)
         self.assertTrue(outside_allowed(command, [], ROOTS))
+
+
+class OutsideReadOnlyExtraProjectTest(unittest.TestCase):
+    def test_read_only_git_on_a_card_extra_project_runs_without_consent(self):
+        # 04.11, K-43: każdy ticket BO prosił o zgodę na `git archive` z repo streamer (dodatkowy projekt karty).
+        extra = "/ws/kamp"
+        archive = f"git -C {extra} archive --format=tar --output={WT}/k43.tar card/k-41 core/tests"
+        self.assertEqual(outside_risky(archive, ROOTS, (extra,)), "")
+        self.assertIn("spoza worktree", outside_risky(archive, ROOTS))
+        self.assertNotEqual(outside_risky(f"git -C {extra} commit -am x", ROOTS, (extra,)), "")
+        self.assertNotEqual(outside_risky(f"git -C {extra} archive --output=/etc/x.tar HEAD", ROOTS, (extra,)), "")
+        self.assertNotEqual(outside_risky(f"git -C {extra} branch -D main", ROOTS, (extra,)), "")
