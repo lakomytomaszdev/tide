@@ -743,6 +743,13 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         if waits and not st.running() and not attention:
             return _fill(out, "progress", out["flow"]["waveLabel"] + " · " +
                          ", ".join(f"{ticket} czeka na {other}" for ticket, other in waits.items()))
+        outside = [n for n in st.outside_started] or outside_queued(st)
+        if outside and not st.running() and not attention:
+            # Polecenie poza piaskownicą innego ticketu niż ostatni krok to praca, nie „do sprawdzenia” (04.11, K-46:
+            # kafelek w „Do sprawdzenia” z notką o review KAMP-29, gdy KAMP-35 puszczał testy, a KAMP-33 czekał).
+            tickets = ", ".join(dict.fromkeys(st.steps.get(n, {}).get("ticket") or "" for n in outside))
+            what = "polecenie poza piaskownicą" if st.outside_started else "polecenie poza piaskownicą w kolejce"
+            return _fill(out, "progress", out["flow"]["waveLabel"] + " · " + (f"{tickets}: " if tickets else "") + what)
         if st.waiting and not st.running() and not attention:
             return _fill(out, "progress", out["flow"]["waveLabel"] + " · " + next(reversed(st.waiting.values()))["reason"])
         if st.plan_approved is not None and not st.last_step and not st.open_intents():

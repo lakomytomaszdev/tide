@@ -557,6 +557,33 @@ class CardOfFinishedSessionTest(unittest.TestCase):
         self.assertEqual(next(c for c in self.store.snapshot()["cards"] if c["id"] == "K-1")["movedFrom"], "review",
                          "w pliku zapisane todo, a karta była widoczna w Do sprawdzenia")
 
+    def test_restarted_monitor_shows_last_derived_column_until_derive_is_ready(self):
+        # 04.11: po restarcie usługi K-17 (gotowa wg planu, w pliku „todo”) skakała na kilka sekund do Do zrobienia.
+        from unittest import mock
+        from .privatebus import app
+        from tide_daemon.board_monitor import BoardMonitor
+        app()
+        cache = os.path.join(self.tmp, "state", "tide", "board-derived.json")
+        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": os.path.join(self.tmp, "state")}):
+            first = BoardMonitor(self.store, derive=lambda card: {"column": "done", "note": "✓ gotowe i scalone"})
+            self.addCleanup(first.stop)
+            first.publish()
+            self.assertTrue(os.path.exists(cache))
+            shown = {"value": None}
+            second = BoardMonitor(self.store, derive=lambda card: shown["value"])
+            self.addCleanup(second.stop)
+            second.publish()
+            card = next(c for c in json.loads(second.snapshot_json())["cards"] if c["id"] == "K-1")
+            self.assertEqual((card["boardColumn"], card["derived"].get("cached")), ("done", True))
+            shown["value"] = {"column": "review", "note": "świeży stan"}
+            second.publish()
+            card = next(c for c in json.loads(second.snapshot_json())["cards"] if c["id"] == "K-1")
+            self.assertEqual(card["boardColumn"], "review")
+            shown["value"] = None   # po gotowym przeliczeniu brak stanu znaczy brak stanu, nie stary zapis
+            second.publish()
+            card = next(c for c in json.loads(second.snapshot_json())["cards"] if c["id"] == "K-1")
+            self.assertEqual(card["boardColumn"], "todo")
+
 
 if __name__ == "__main__":
     unittest.main()
