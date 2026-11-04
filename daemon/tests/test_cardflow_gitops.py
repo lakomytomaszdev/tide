@@ -75,6 +75,21 @@ class MergeTest(unittest.TestCase):
             self.flow.clean_tip(self.repo, "ticket/test", self.ticket, untracked=False)
 
     @unittest.skipUnless(sandbox_available(), "brak bwrap")
+    def test_untracked_files_are_archived_and_the_worktree_removed(self):
+        # 04.11, K-43/BO-9: kopia zestawu klatek w worktree blokowała sprzątanie po scaleniu.
+        os.makedirs(os.path.join(self.ticket, ".dane"))
+        self.write(os.path.join(self.ticket, ".dane"), "kadr.jpg", "x\n")
+        self.assertTrue(self.flow.remove_worktree(self.repo, "ticket/test", self.ticket)["removed"])
+        self.assertFalse(os.path.exists(self.ticket))
+        self.assertTrue(os.path.isfile(os.path.join(self.ticket + ".step", "pozostawione-po-scaleniu", ".dane", "kadr.jpg")))
+
+    @unittest.skipUnless(sandbox_available(), "brak bwrap")
+    def test_tracked_changes_still_block_removal(self):
+        self.write(self.ticket, "base.txt", "zmienione\n")
+        with self.assertRaises(gitops.FlowGitError):
+            self.flow.remove_worktree(self.repo, "ticket/test", self.ticket)
+
+    @unittest.skipUnless(sandbox_available(), "brak bwrap")
     def test_worktree_with_only_user_agent_tooling_is_removed(self):
         os.makedirs(os.path.join(self.ticket, ".agents", "skills"))
         self.write(os.path.join(self.ticket, ".agents", "skills"), "SKILL.md", "x\n")
@@ -82,11 +97,12 @@ class MergeTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.ticket))
 
     @unittest.skipUnless(sandbox_available(), "brak bwrap")
-    def test_worktree_with_real_leftovers_is_kept(self):
+    def test_worktree_leftovers_are_not_lost(self):
+        # Nieśledzona praca nie przepada: trafia do katalogu kroku ticketu, zanim worktree zniknie (04.11).
         self.write(self.ticket, "notatka.txt", "praca\n")
-        with self.assertRaises(gitops.FlowGitError):
-            self.flow.remove_worktree(self.repo, "ticket/test", self.ticket)
-        self.assertTrue(os.path.exists(os.path.join(self.ticket, "notatka.txt")))
+        self.flow.remove_worktree(self.repo, "ticket/test", self.ticket)
+        with open(os.path.join(self.ticket + ".step", "pozostawione-po-scaleniu", "notatka.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "praca\n")
 
     def test_two_ticket_merges_share_one_repo_lock(self):
         self.ticket_commit()
