@@ -287,3 +287,22 @@ class ForeignChangesTest(unittest.TestCase):
         self.assertEqual(gitops._foreign_changes(porcelain), [])
         self.assertEqual(gitops._foreign_changes(porcelain + "?? debug.py\n"), ["?? debug.py"])
         self.assertEqual(gitops._foreign_changes(" M .codex/agents/a.toml\n"), [" M .codex/agents/a.toml"])
+
+
+class PinnedMainBranchTest(unittest.TestCase):
+    def test_repo_can_pin_the_card_base_branch(self):
+        # 04.11, BO: praca toczy się na feature/vision-frames, a karta zakładała gałąź od master.
+        import subprocess
+        import tempfile
+        base = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, base, True)
+        run = lambda *a: subprocess.run(["git", "-C", base, *a], check=True, capture_output=True)
+        run("init", "-q", "-b", "master")
+        run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "a")
+        run("branch", "feature/x")
+        git = gitops.FlowGit()
+        self.assertEqual(git.main_branch(base), "master")
+        run("config", "tide.mainBranch", "feature/x")
+        self.assertEqual(git.main_branch(base), "feature/x")
+        run("config", "tide.mainBranch", "nie-ma")
+        self.assertEqual(git.main_branch(base), "master")

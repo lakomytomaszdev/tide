@@ -67,6 +67,12 @@ class FlowGit:
         return self.git.run(cwd, *HARDENED, *args, timeout=timeout)
 
     def main_branch(self, repo: str) -> str:
+        # Gałąź bazowa wskazana w repozytorium (`git config tide.mainBranch <gałąź>`) — dla projektów, których praca
+        # toczy się na innej gałęzi niż master/main (04.11, BO: narzędzie hud-timeline jest tylko na feature/vision-frames).
+        chosen = self.run(repo, "config", "--get", "tide.mainBranch")
+        pinned = chosen.out.strip() if chosen.ok else ""
+        if pinned and self.sha(repo, f"refs/heads/{pinned}"):
+            return pinned
         refs = [f"refs/heads/{name}" for name in MAIN_CANDIDATES]
         listed = self.run(repo, "for-each-ref", "--format=%(refname:short)", *refs)
         current = self.run(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
