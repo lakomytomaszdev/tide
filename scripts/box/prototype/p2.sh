@@ -57,7 +57,10 @@ if in_box_user sh -c 'codex sandbox --help 2>&1 | grep -Eq "^[[:space:]]+linux"'
 else
     # 0.166: `codex sandbox [OPTIONS] [COMMAND]` bez --full-auto (przebieg 4: „unexpected argument '--full-auto'”);
     # ta forma nie była jeszcze uruchomiona — to deterministyczny dowód bez modelu (review PT-178 M-1).
-    CODEX_SANDBOX=(codex sandbox)
+    # Tryb piaskownicy jawnie: bez --full-auto polityka idzie z konfiguracji, a domyślne sandbox_mode Codexa to
+    # read-only — wtedy zapis w katalogu roboczym pada i werdykt byłby fałszywym „NIE działa” (review r2, M-2).
+    # W pudełku nie ma ~/.codex/config.toml, więc tryb musi przyjść z -c, jak w codex exec --sandbox workspace-write.
+    CODEX_SANDBOX=(codex sandbox -c 'sandbox_mode="workspace-write"')
 fi
 echo "forma piaskownicy Codexa: ${CODEX_SANDBOX[*]}"
 run in_box_user codex sandbox --help || true
@@ -79,12 +82,16 @@ suite() {
 
     if in_box_user sh -c 'command -v codex' >/dev/null 2>&1; then
         step "[$v] ${CODEX_SANDBOX[*]} (bez modelu)"
+        local cs_out="$PROTO_RUN/codex-sandbox-$v.out" cs_err
         box_env
         run incus exec "$PROTO_BOX" --user 1000 --group 1000 --cwd "$BOX_HOME/p2-work" --env "HOME=$BOX_HOME" \
             "${BOX_ENV[@]}" -- "${CODEX_SANDBOX[@]}" -- sh -c \
-            "echo ok > ./codex-inside; echo zle > $BOX_HOME/p2-outside-codex; cat $BOX_HOME/.claude/p2-marker" || cs_rc=$?
+            "echo ok > ./codex-inside; echo zle > $BOX_HOME/p2-outside-codex; cat $BOX_HOME/.claude/p2-marker" \
+            2>&1 | tee "$cs_out" || cs_rc=$?
         inside=$(in_box_user sh -c 'test -f ~/p2-work/codex-inside && echo tak || echo nie')
         outside=$(in_box_user sh -c 'test -f ~/p2-outside-codex && echo tak || echo nie')
+        # Komunikat powłoki o odrzuconym zapisie w katalogu roboczym (np. „cannot create ./codex-inside: …”).
+        cs_err=$(grep -m1 'codex-inside' "$cs_out" | tr -d '\r' || true)
         result "P-2 $v codex-sandbox" "kod $cs_rc; zapis w katalogu roboczym: $inside; zapis poza nim: $outside"
         # Etykieta „codex-sandbox (bwrap)”: Codex 0.166 na Linuksie używa bubblewrap, nie samego landlocka.
         # Kod 2 (błąd składni CLI: `unexpected argument`, `Usage:`) = polecenie nie ruszyło — to nie werdykt piaskownicy.
@@ -92,8 +99,10 @@ suite() {
             result "P-2 $v codex-sandbox (bwrap)" "polecenie nie ruszyło (kod 2, składnia CLI) — bez werdyktu"
         elif [[ $inside == tak && $outside == nie ]]; then
             result "P-2 $v codex-sandbox (bwrap)" "działa (zapis w katalogu roboczym tak, poza nim odmowa)"
+        elif [[ $inside == nie && -n $cs_err ]]; then
+            result "P-2 $v codex-sandbox (bwrap)" "NIE działa — zapis w katalogu roboczym odrzucony: $cs_err"
         elif [[ $inside == nie ]]; then
-            result "P-2 $v codex-sandbox (bwrap)" "NIE działa — piaskownica nie wykonała polecenia (zob. błąd wyżej)"
+            result "P-2 $v codex-sandbox (bwrap)" "NIE działa — polecenie nie wykonało się w piaskownicy (kod $cs_rc; zob. błąd wyżej)"
         else
             result "P-2 $v codex-sandbox (bwrap)" "NIE ogranicza — zapis poza katalogiem roboczym przeszedł"
         fi
@@ -155,8 +164,9 @@ EOF
         inside=$(in_box_user sh -c 'test -f ~/p2-work/codex-model-inside && echo tak || echo nie')
         outside=$(in_box_user sh -c 'test -f ~/p2-outside-codex-model && echo tak || echo nie')
         result "P-2 $v codex-exec" "zapis w katalogu roboczym: $inside (exec: $ran_in); poza nim: $outside (exec: $ran_out)"
-        if [[ $ran_out -eq 0 ]]; then
-            result "P-2 $v codex-exec werdykt" "niezweryfikowane — Codex nie wykonał polecenia zapisu poza katalogiem roboczym"
+        # Oba polecenia muszą być naprawdę wykonane (review r2, N-1): bez `exec` dla któregokolwiek brak pliku nic nie mówi.
+        if [[ $ran_in -eq 0 || $ran_out -eq 0 ]]; then
+            result "P-2 $v codex-exec werdykt" "niezweryfikowane — Codex nie wykonał polecenia zapisu (w katalogu roboczym exec: $ran_in, poza nim exec: $ran_out)"
         elif [[ $inside == tak && $outside == nie ]]; then
             result "P-2 $v codex-exec werdykt" "piaskownica ogranicza zapis do katalogu roboczego"
         else

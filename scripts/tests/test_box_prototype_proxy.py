@@ -274,6 +274,47 @@ class InjectTest(ProxyCase):
         self.assertIn("zatrzymane", out)
         self.assertNotIn("Traceback", err)
 
+    def test_sigterm_stops_the_proxy_with_an_open_tunnel(self):
+        # Review PT-178 r2, M-1: tunel CONNECT do serwera, który trzyma połączenie, nie może zatrzymać wyjścia proxy.
+        held = socket.socket()
+        held.bind(("127.0.0.1", 0))
+        held.listen()
+        self.addCleanup(held.close)
+        accepted = []
+
+        def accept():
+            conn, _ = held.accept()
+            accepted.append(conn)
+
+        threading.Thread(target=accept, daemon=True).start()
+        port = held.getsockname()[1]
+        self.domains.write_text("localhost\n")
+        proc = subprocess.Popen([sys.executable, str(PROXY), "--listen", "127.0.0.1", "--port", "0",
+                                 "--domains", str(self.domains), "--deny-log", str(self.deny),
+                                 "--connect-ports", str(port)],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(proc.kill)
+        line = proc.stdout.readline()
+        proxy_port = int(re.search(r"słucha na [0-9.]+:(\d+)", line).group(1))
+        client = socket.create_connection(("127.0.0.1", proxy_port), timeout=10)
+        self.addCleanup(client.close)
+        client.sendall(f"CONNECT localhost:{port} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode())
+        self.assertTrue(client.recv(4096).startswith(b"HTTP/1.1 200"))
+        for _ in range(50):
+            if accepted:
+                break
+            time.sleep(0.1)
+        self.assertTrue(accepted, "upstream nie dostał połączenia")
+        self.addCleanup(accepted[0].close)
+        started = time.monotonic()
+        proc.terminate()
+        out, err = proc.communicate(timeout=5)
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertIn("zatrzymane", out)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(client.recv(4096), b"", "tunel klienta zamknięty przy zatrzymaniu")
+
 
 class ScriptsTest(unittest.TestCase):
     """Skrypty prób: składnia, wspólny dziennik i sprzątanie."""
@@ -317,11 +358,28 @@ class ScriptsTest(unittest.TestCase):
         self.assertIn("polecenie nie ruszyło", text)
         self.assertNotIn('"P-2 $v landlock"', text)
         self.assertIn("--output-format stream-json --verbose", text)
+        # Review r2: oba polecenia wykonane, jawny tryb piaskownicy bez modelu, werdykt cytuje błąd powłoki.
+        self.assertIn("$ran_in -eq 0 || $ran_out -eq 0", text)
+        self.assertIn("""CODEX_SANDBOX=(codex sandbox -c 'sandbox_mode="workspace-write"')""", text)
+        self.assertIn("zapis w katalogu roboczym odrzucony: $cs_err", text)
+
+    def test_proxy_stop_is_bounded_and_falls_back_to_sigkill(self):
+        # Review r2, M-1: trap EXIT nie wisi na procesie, który ignoruje SIGTERM.
+        script = (f'source "{PROTO / "common.sh"}"; set +e; '
+                  f'{sys.executable} -c "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+                  f'print(1, flush=True); time.sleep(60)" & PROXY_PID=$!; PROTO_STATE=$(mktemp -d); sleep 0.5; '
+                  f'proxy_stop; kill -0 $PROXY_PID 2>/dev/null && echo zyje || echo koniec')
+        started = time.monotonic()
+        run = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertIn("koniec", run.stdout, run.stderr)
+        self.assertIn("SIGKILL", run.stderr)
 
     def test_cleanup_removes_proxy_and_containers(self):
         text = (PROTO / "cleanup.sh").read_text()
         self.assertIn("incus delete --force", text)
         self.assertIn("proxy.pid", text)
+        self.assertIn("kill -9", text)
 
 
 if __name__ == "__main__":

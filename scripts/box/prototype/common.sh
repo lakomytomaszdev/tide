@@ -94,9 +94,22 @@ proxy_start() {
     sed 's/^/   proxy: /' "$PROTO_RUN/proxy.out"
 }
 
+# stop_pid <pid> [sekundy] — SIGTERM, ograniczone czekanie, potem SIGKILL (review PT-178 r2, M-1: trap EXIT nie
+# może wisieć na proxy, które czeka na otwarty tunel).
+stop_pid() {
+    local pid=$1 limit=${2:-5} i
+    kill "$pid" 2>/dev/null || return 0
+    for (( i = 0; i < limit * 10; i++ )); do
+        kill -0 "$pid" 2>/dev/null || return 0
+        sleep 0.1
+    done
+    echo "proces $pid nie skończył się w ${limit} s po SIGTERM — SIGKILL" >&2
+    kill -9 "$pid" 2>/dev/null || true
+}
+
 proxy_stop() {
     if [[ -n ${PROXY_PID:-} ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
-        kill "$PROXY_PID" 2>/dev/null || true
+        stop_pid "$PROXY_PID" 5
         wait "$PROXY_PID" 2>/dev/null || true
     fi
     rm -f "$PROTO_STATE/proxy.pid"

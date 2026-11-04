@@ -138,6 +138,9 @@ class Proxy:
         self.inject = inject
         self.upstreams = {**ROUTES, **upstreams}
         self.server: asyncio.base_events.Server | None = None
+        # Otwarte strumienie (klienci i upstreamy) — zamykane przy zatrzymaniu, bo tunel CONNECT nie ma limitu czasu,
+        # a Server.wait_closed() w 3.12 czeka na koniec wszystkich połączeń (review PT-178 runda 2, M-1).
+        self.open: set[asyncio.StreamWriter] = set()
 
     # --- dzienniki ------------------------------------------------------------------------------------
 
@@ -160,9 +163,27 @@ class Proxy:
         self.server = await asyncio.start_server(self.handle, self.listen, self.port, limit=HEAD_LIMIT)
         return self.server
 
+    async def shutdown(self, grace: float = 2.0) -> bool:
+        """Zamyka nasłuch i wszystkie otwarte połączenia; False, gdy serwer nie zamknął się w `grace` s."""
+        if self.server is None:
+            return True
+        self.server.close()
+        for w in list(self.open):
+            w.close()
+        try:
+            await asyncio.wait_for(self.server.wait_closed(), grace)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    def track(self, writer: asyncio.StreamWriter) -> asyncio.StreamWriter:
+        self.open.add(writer)
+        return writer
+
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         peer = writer.get_extra_info("peername")
         client = peer[0] if peer else "?"
+        self.track(writer)
         try:
             head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=30)
             lines = head.decode("latin-1").split("\r\n")
@@ -186,6 +207,7 @@ class Proxy:
             # Tylko typ wyjątku (jak w reverse()) — treść mogłaby nieść fragment żądania, a proxy.out trafia do repo.
             print(f"{now()} błąd {client}: {type(exc).__name__}", file=sys.stderr, flush=True)
         finally:
+            self.open.discard(writer)
             writer.close()
 
     async def reply(self, writer, code: int, reason: str, body: str = ""):
@@ -216,10 +238,15 @@ class Proxy:
             self.access(client, "CONNECT", f"{host}:{port}", "502")
             await self.reply(writer, 502, "Bad Gateway", f"Tide proxy: {host}:{port}: {exc}\n")
             return
-        self.access(client, "CONNECT", f"{host}:{port}", "200")
-        writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
-        await writer.drain()
-        await self.pipe(reader, writer, up_reader, up_writer)
+        self.track(up_writer)
+        try:
+            self.access(client, "CONNECT", f"{host}:{port}", "200")
+            writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            await writer.drain()
+            await self.pipe(reader, writer, up_reader, up_writer)
+        finally:
+            self.open.discard(up_writer)
+            up_writer.close()
 
     async def forward(self, reader, writer, client, method, target, version, headers):
         url = urlsplit(target)
@@ -282,10 +309,12 @@ class Proxy:
             self.access(client, kind, target, "502")
             await self.reply(writer, 502, "Bad Gateway", f"Tide proxy: {host}:{port}: {type(exc).__name__}\n")
             return
-        up_writer.write(("\r\n".join([request_line, *headers, "Connection: close"]) + "\r\n\r\n").encode("latin-1"))
-        await up_writer.drain()
-        upload = asyncio.ensure_future(self.copy(reader, up_writer, close=False))
+        self.track(up_writer)
+        upload = None
         try:
+            up_writer.write(("\r\n".join([request_line, *headers, "Connection: close"]) + "\r\n\r\n").encode("latin-1"))
+            await up_writer.drain()
+            upload = asyncio.ensure_future(self.copy(reader, up_writer, close=False))
             status_head = await up_reader.readuntil(b"\r\n\r\n")
             status_lines = status_head.decode("latin-1").split("\r\n")
             code = status_lines[0].split(" ")[1] if len(status_lines[0].split(" ")) > 1 else "?"
@@ -296,7 +325,9 @@ class Proxy:
             await writer.drain()
             await self.copy(up_reader, writer, close=False)
         finally:
-            upload.cancel()
+            if upload is not None:
+                upload.cancel()
+            self.open.discard(up_writer)
             up_writer.close()
 
     async def copy(self, src: asyncio.StreamReader, dst: asyncio.StreamWriter, close: bool = True):
@@ -372,8 +403,10 @@ async def main(argv: list[str]):
     routes = ", ".join(sorted(proxy.inject)) or "brak"
     print(f"{now()} proxy prototypowe słucha na {addrs}; lista: {proxy.domains.path}; wstrzykiwanie: {routes}",
           flush=True)
-    async with server:
-        await stop.wait()
+    await stop.wait()
+    # Nie `async with server`: wyjście z niego czeka na koniec wszystkich tuneli bez limitu (review PT-178 r2, M-1).
+    if not await proxy.shutdown():
+        print(f"{now()} połączenia nie zamknęły się w 2 s — kończę mimo to", file=sys.stderr, flush=True)
     print(f"{now()} proxy prototypowe zatrzymane", flush=True)
 
 

@@ -11,16 +11,30 @@ state=${XDG_RUNTIME_DIR:-/tmp}/tide-box-prototype
 keep=0
 [[ ${1:-} == --keep-box ]] && keep=1
 
+# SIGTERM, do 5 s czekania, potem SIGKILL — zawieszone proxy nie może trzymać portu 18080 (review PT-178 r2, M-1).
+stop_pid() {
+    local pid=$1 i
+    kill "$pid" 2>/dev/null || return 0
+    for (( i = 0; i < 50; i++ )); do
+        kill -0 "$pid" 2>/dev/null || return 0
+        sleep 0.1
+    done
+    echo "proxy $pid nie skończyło się w 5 s po SIGTERM — SIGKILL"
+    kill -9 "$pid" 2>/dev/null || true
+}
+
 if [[ -f $state/proxy.pid ]]; then
     pid=$(cat "$state/proxy.pid")
     if kill -0 "$pid" 2>/dev/null && grep -q 'prototype/proxy.py' "/proc/$pid/cmdline" 2>/dev/null; then
-        kill "$pid"
+        stop_pid "$pid"
         echo "zatrzymano proxy prototypowe (pid $pid)"
     fi
     rm -f "$state/proxy.pid"
 fi
-leftover=$(pgrep -f 'scripts/box/prototype/proxy.py' || true)
-[[ -n $leftover ]] && { echo "zatrzymuję pozostałe proxy prototypowe: $leftover"; kill $leftover || true; }
+for pid in $(pgrep -f 'scripts/box/prototype/proxy.py' || true); do
+    echo "zatrzymuję pozostałe proxy prototypowe: $pid"
+    stop_pid "$pid"
+done
 
 if [[ $keep -eq 0 ]]; then
     for box in ${PROTO_BOX:-tide-proto-net} tide-proto-p7; do
