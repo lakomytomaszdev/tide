@@ -232,7 +232,8 @@ def _outside(st, name, step, done) -> dict:
                  else f"{who} prosi o uruchomienie polecenia poza piaskownicą") if command else "")
     reason = _text(done.get("reason"))
     from ..board.commands import outside_risky
-    risk = outside_risky(command) if command else ""
+    repo = ((getattr(st, "started", None) or {}).get("repo") or "")
+    risk = outside_risky(command, (step.get("worktree") or "", repo)) if command else ""
     if done.get("canAllow", True) and risk:
         # Ryzykowne (wychodzi poza worktree, czyta `~`, zmienia system): tylko jednorazowo i z powodem na wierzchu.
         why = (f"Uwaga: {risk}. Tide uruchomi je na Twoim koncie, w worktree ticketu, tylko raz."

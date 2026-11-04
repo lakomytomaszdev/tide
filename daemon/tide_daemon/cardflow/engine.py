@@ -2582,14 +2582,15 @@ class FlowEngine(PlanEditing):
             from ..board.commands import outside_allowed, outside_pattern
             command = str(done.get("command") or "").strip()
             _, project = self._project(card)
-            if not command or not outside_allowed(command, project.denied_commands):
+            roots = (step.get("worktree") or "", project.repo)
+            if not command or not outside_allowed(command, project.denied_commands, roots):
                 raise FlowError("forbidden-command", f"polecenia „{command}” nie można uruchomić poza piaskownicą")
             if choice == "run-ticket":
                 # Zgoda na polecenia poza piaskownicą do końca ticketu (03.11, K-33/PT-110: trzy kopie, trzy pytania).
                 self.journal.append(card, "outside.ticket-consent", ticket=step.get("ticket") or "", step=focus)
             if choice == "run-always":
                 from ..board.commands import outside_risky
-                if outside_risky(command):
+                if outside_risky(command, roots):
                     raise FlowError("risky-command", "ryzykownego polecenia nie można zapamiętać — uruchom je raz")
                 self._remember_outside(project.slug, outside_pattern(command))
         extra = {}
@@ -3568,10 +3569,11 @@ class FlowEngine(PlanEditing):
                 from ..board.commands import outside_allowed, outside_matches, outside_pattern
                 extra["outside"] = True
                 extra["pattern"] = outside_pattern(command)
-                data["canAllow"] = outside_allowed(command, project.denied_commands)
+                roots = (step.get("worktree") or "", project.repo)
+                data["canAllow"] = outside_allowed(command, project.denied_commands, roots)
                 remembered = data["canAllow"] and (outside_matches(command, self._outside_remembered(project.slug))
                                                    or self._ticket_consent(card, step.get("ticket") or "")
-                                                   or self._auto_outside(card) and not outside_risky(command))
+                                                   or self._auto_outside(card) and not outside_risky(command, roots))
             else:
                 # PT-124: łańcuch rozłożony na pojedyncze polecenia z flagami i powodem blokady (dla okna decyzji).
                 extra["commands"] = chain.describe(command, denied=project.denied_commands,
@@ -3977,7 +3979,8 @@ class FlowEngine(PlanEditing):
         command = done.get("command") or ""
         _, project = self._project(card)
         from ..board.commands import outside_risky
-        allowed = outside_allowed(command, project.denied_commands)
+        roots = (step.get("worktree") or "", project.repo)
+        allowed = outside_allowed(command, project.denied_commands, roots)
         if allowed != bool(done.get("canAllow", True)):
             # Reguły zmieniły się od wyniku kroku (K-33/PT-110: `find -exec … \;` uznane za łańcuch) — decyzja
             # w oknie ma pokazać dzisiejszy stan, inaczej użytkownik nie ma czego wybrać.
@@ -3985,7 +3988,7 @@ class FlowEngine(PlanEditing):
                                 ticket=step.get("ticket") or "", canAllow=allowed)
         if allowed and (outside_matches(command, self._outside_remembered(project.slug)) or
                         self._ticket_consent(card, step.get("ticket") or "") or
-                        self._auto_outside(card) and not outside_risky(command)):
+                        self._auto_outside(card) and not outside_risky(command, roots)):
             self.journal.append(card, "step.decision", step=step.get("step") or "", ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="run", answer="", command=command,
                                 executor="", auto=True)

@@ -180,7 +180,13 @@ OUTSIDE_ENV_DENIED = ("PATH", "HOME", "SHELL", "IFS", "ENV", "BASH_ENV", "PS4", 
 OUTSIDE_FAMILY = {"npm": 2, "pnpm": 2, "yarn": 2, "npx": 3, "dotnet": 2, "make": 2, "git": 2, "python3": 3}
 
 
-def outside_argv(command: str) -> list[str] | None:
+def _inside_roots(path: str, roots) -> bool:
+    import os
+    real = os.path.realpath(path)
+    return any(real == os.path.realpath(r) or real.startswith(os.path.realpath(r) + os.sep) for r in roots if r)
+
+
+def outside_argv(command: str, roots=()) -> list[str] | None:
     """Polecenie poza piaskownicą bez początkowych zmiennych (`E2E_PORT=4311 npm run e2e`, także w cudzysłowie:
     `DATABASE_CONNECTION="Host=…;Port=1" dotnet test`, K-16); None dla łańcucha, podpowłoki albo zmiennej, która
     zmienia sposób uruchamiania (PATH, LD_*, NODE_OPTIONS…)."""
@@ -199,10 +205,16 @@ def outside_argv(command: str) -> list[str] | None:
     except ValueError:
         return None
     at = 0
+    # `env NAZWA=… program` w obrębie projektu (04.11, K-41: testy rdzenia przez venv z PYTHONPATH do worktree
+    # ticketu pytały co ticket) — `env` traktujemy jak zwykłe przypisania przed programem.
+    if roots and parts[:1] == ["env"] and len(parts) > 2 and "=" in parts[1]:
+        at = 1
     while at < len(parts) and "=" in parts[at]:
         name, value = parts[at].split("=", 1)
-        if not OUTSIDE_ENV_NAME.fullmatch(name) or name in OUTSIDE_ENV_DENIED or name.startswith(("LD_", "DYLD_")) \
-                or len(value) > 500:
+        project_path = name == "PYTHONPATH" and roots and value and all(
+            part.startswith("/") and _inside_roots(part, roots) for part in value.split(":"))
+        if not OUTSIDE_ENV_NAME.fullmatch(name) or (name in OUTSIDE_ENV_DENIED and not project_path) \
+                or name.startswith(("LD_", "DYLD_")) or len(value) > 500:
             return None
         at += 1
     program = parts[at:]
@@ -217,8 +229,8 @@ def outside_argv(command: str) -> list[str] | None:
 OUTSIDE_MAX = 2000      # polecenia poza piaskownicą bywają długie (zmienne połączeń, filtry testów)
 
 
-def outside_allowed(command: str, denied: list[str]) -> bool:
-    argv = outside_argv(command)
+def outside_allowed(command: str, denied: list[str], roots=()) -> bool:
+    argv = outside_argv(command, roots)
     if argv is None or len(command) > OUTSIDE_MAX:
         return False
     # Zakazy projektu porównujemy na gotowych argumentach (`is_forbidden` przepuszcza tekst przez `_argv`, który
@@ -271,9 +283,10 @@ OUTSIDE_RISKY = (
     "pip3 install", "python3 -m pip", "find", "xargs", "truncate", "shred", "ln", "tee", "open", "xdg-open")
 
 
-def outside_risky(command: str) -> str:
-    """Powód, dla którego polecenie wymaga decyzji użytkownika mimo automatycznych zgód; pusty = bezpieczne."""
-    argv = outside_argv(command)
+def outside_risky(command: str, roots=()) -> str:
+    """Powód, dla którego polecenie wymaga decyzji użytkownika mimo automatycznych zgód; pusty = bezpieczne.
+    `roots` — worktree ticketu i repozytorium projektu: ścieżki w nich nie są „spoza worktree”."""
+    argv = outside_argv(command, roots)
     if argv is None:
         return "łańcuch, podpowłoka albo niebezpieczna zmienna"
     for rule in OUTSIDE_RISKY:
@@ -282,6 +295,8 @@ def outside_risky(command: str) -> str:
             return f"„{rule}” wychodzi poza worktree albo zmienia system"
     for arg in argv[1:]:
         value = arg.split("=", 1)[-1]
+        if value.startswith("/") and roots and _inside_roots(value, roots) and "../" not in value:
+            continue
         if value.startswith(("/", "~")) and not value.startswith("/tmp/") or "../" in value or value == "..":
             return f"ścieżka spoza worktree: {arg}"
     return ""
