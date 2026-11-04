@@ -66,11 +66,11 @@ class Tree:
 
 
 class MaskingTest(unittest.TestCase):
-    def written_context(self, tree, journal, problem, env, step=""):
+    def written_context(self, tree, journal, problem, env, step="", tide_docs=""):
         context = os.path.join(tree.step_dir, "in", "context")
         caretakerctx.build(problem, journal.st, journal.events, card="K-1",
                            card_dir=tree.card_dir, worktree=tree.worktree, context_dir=context,
-                           env=env, step=step, tide_docs="")
+                           env=env, step=step, tide_docs=tide_docs)
         written = {}
         for folder, _, names in os.walk(context):
             for name in names:
@@ -78,6 +78,50 @@ class MaskingTest(unittest.TestCase):
                 with open(path, encoding="utf-8") as fh:
                     written[os.path.relpath(path, context)] = fh.read()
         return written
+
+    def test_json_line_inside_multiline_stderr_secret_is_masked_in_build(self):
+        tree = Tree(self)
+        j = tree.journal()
+        problem = caretaker.problems(j.st)[0]
+        parts = ("first-private-line", "middle-private-line", "last-private-line")
+        secret = parts[0] + "\n" + json.dumps({"type": "error", "message": parts[1]}) + "\n" + parts[2]
+        visible = json.dumps({"type": "error", "message": 'jawny JSON z "cytatem" i ścieżką C:\\tmp'}) + "\n"
+        for raw, env in ((secret, {**ENV, "TIDE_PRIVATE_KEY": secret}),
+                         ('PASSWORD="first-private-line\n{}\nlast-private-line"', ENV)):
+            with self.subTest(raw=raw):
+                self.assertNotIn("private-line", faults.mask(raw, env))
+                tree.write(os.path.join(tree.step_dir, "out", "step.log"),
+                           visible + "jawny stderr\n" + raw + "\njawny koniec\n" + visible)
+                written = self.written_context(tree, j, problem, env)
+                for path, content in written.items():
+                    for part in parts:
+                        self.assertNotIn(part, content, path)
+                log = written["steps/K-1-PT-7-2/step-log.md"]
+                self.assertIn(faults.MASK, log)
+                self.assertIn("jawny stderr", log)
+                self.assertIn("jawny koniec", log)
+                self.assertEqual(log.count('[error] jawny JSON z "cytatem" i ścieżką C:\\tmp'), 2)
+
+    def test_agents_crlf_secret_is_masked_before_section_extraction_in_build(self):
+        tree = Tree(self)
+        j = tree.journal()
+        problem = caretaker.problems(j.st)[0]
+        secret = "first-private-line\r\nsecond-private-line"
+        env = {**ENV, "TIDE_PRIVATE_KEY": secret}
+        raw = ("# Projekt\r\n\r\n## Przepływ karty\r\n\r\n" + secret +
+               "\r\nJawna zasada.\r\n\r\n## Inne\r\nNie ta sekcja.\r\n")
+        for use_tide_docs in (False, True):
+            with self.subTest(use_tide_docs=use_tide_docs):
+                docs = os.path.join(tree.base, "tide-docs") if use_tide_docs else ""
+                tree.write(os.path.join(docs or tree.worktree, "AGENTS.md"), raw)
+                written = self.written_context(tree, j, problem, env, tide_docs=docs)
+                for path, content in written.items():
+                    for part in secret.splitlines():
+                        self.assertNotIn(part, content, path)
+                section = written["docs/AGENTS-przeplyw-karty.md"]
+                self.assertIn(faults.MASK, section)
+                self.assertIn("Jawna zasada.", section)
+                self.assertNotIn("Nie ta sekcja.", section)
 
     def test_multiline_plain_stderr_is_masked_before_line_splitting(self):
         tree = Tree(self)

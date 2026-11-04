@@ -319,7 +319,7 @@ def _doc_text(ctx: Ctx, rel: str) -> tuple[str | None, str]:
     if ctx.tide_docs:
         root = _root(ctx.tide_docs)
         if root is not None:
-            data = _read(os.path.join(root.path, rel), (root,), limit=FILE_READ_MAX, tail=False)
+            data = _read(os.path.join(root.path, rel), (root,), limit=FILE_READ_MAX, tail=False, env=ctx.env)
             if data is not None:
                 return data.decode("utf-8", errors="replace"), ""
     path = os.path.join(ctx.worktree, rel)
@@ -334,7 +334,8 @@ def _docs(ctx: Ctx) -> list[File]:
         out.append(File(target, title, text=text if text is not None else
                         f"# {rel}\n\n" + SKIPPED.format(why=ctx.why_not(path)) + "\n"))
     text, path = _doc_text(ctx, "AGENTS.md")
-    section = _section(text, AGENTS_SECTION) if text is not None else None
+    # Wycinanie sekcji normalizuje końce linii: maskowanie musi jeszcze widzieć oryginalne CRLF sekretu.
+    section = _section(faults.mask(text, ctx.env), AGENTS_SECTION) if text is not None else None
     if section is None:
         section = f"## {AGENTS_SECTION}\n\n" + SKIPPED.format(
             why=ctx.why_not(path) if text is None else "AGENTS.md nie ma tej sekcji") + "\n"

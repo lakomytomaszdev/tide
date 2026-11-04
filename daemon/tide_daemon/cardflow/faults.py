@@ -254,18 +254,26 @@ SECRET_KEY_VALUE = re.compile(r"(?i)(\"?\b(?:" + SECRET_NAME + r"|password|passw
 MASK = "•••"
 
 
-def mask(text: str, env: dict | None = None) -> str:
+def mask(text: str, env: dict | None = None, *, multiline_only: bool = False) -> str:
     """Wycinek bez sekretów: wartości zmiennych środowiskowych (`NAZWA=…`), znane tokeny, pary klucz–sekret
-    i wartości sekretnych zmiennych z bieżącego środowiska."""
+    i wartości sekretnych zmiennych z bieżącego środowiska. `multiline_only` maskuje tylko dopasowania
+    przecinające granice linii: zabezpiecza mieszany stderr/JSON przed podziałem, bez zmiany pojedynczych
+    serializacji JSON (ich odkodowane wartości maskuje później `mask_json`)."""
     text = str(text or "")
     environ = os.environ if env is None else env
+
+    def replacement(original, redacted):
+        if multiline_only and not any(char in original for char in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"):
+            return original
+        return redacted
+
     for name, value in environ.items():
         if isinstance(value, str) and len(value) >= 8 and re.fullmatch(SECRET_NAME, name, re.I):
-            text = text.replace(value, MASK)
+            text = text.replace(value, replacement(value, MASK))
     for pattern in TOKEN_PATTERNS:   # najpierw tokeny: „Authorization: Bearer <token>” traci token, nie tylko słowo
-        text = pattern.sub(lambda m: (m.group(1) + " " + MASK) if m.groups() else MASK, text)
-    text = ENV_ASSIGN.sub(lambda m: f"{m.group(1)}{m.group(2)}={MASK}", text)
-    text = SECRET_KEY_VALUE.sub(lambda m: m.group(1) + MASK, text)
+        text = pattern.sub(lambda m: replacement(m.group(0), (m.group(1) + " " + MASK) if m.groups() else MASK), text)
+    text = ENV_ASSIGN.sub(lambda m: replacement(m.group(0), f"{m.group(1)}{m.group(2)}={MASK}"), text)
+    text = SECRET_KEY_VALUE.sub(lambda m: replacement(m.group(0), m.group(1) + MASK), text)
     return text
 
 
@@ -396,7 +404,10 @@ def excerpt(lines: list[str] | str, env: dict | None = None, limit: int = EXCERP
                 add(line.strip())
         plain.clear()
 
-    raw_lines = lines.splitlines(keepends=True) if isinstance(lines, str) else [line + "\n" for line in lines]
+    # Linia JSON może być wnętrzem sekretu stderr. Najpierw maskujemy całe dopasowania wielowierszowe,
+    # a dopiero potem rozpoznajemy zdarzenia; pojedyncze serializacje pozostają nienaruszone do `mask_json`.
+    raw = lines if isinstance(lines, str) else "".join(line + "\n" for line in lines)
+    raw_lines = mask(raw, env, multiline_only=True).splitlines(keepends=True)
     for line in raw_lines:
         event = _json(line)
         if event is None:
