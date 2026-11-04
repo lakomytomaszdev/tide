@@ -233,11 +233,16 @@ class PlanReviewEditingTest(FlowInProcess):
         box = []
         self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "ATRAPA: invalid-amend"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.revision-failed"), timeout=10), self.events(card))
+        # Błędny format wraca do planującego sam, z listą błędów, trzy razy; dopiero potem decyzja użytkownika (K-41).
+        self.assertTrue(wait_until(lambda: len(self.of(card, "plan.revision-failed")) == 4, timeout=30), self.events(card))
+        automatic = [e for e in self.of(card, "plan.returned") if e.get("automatic")]
+        self.assertEqual(len(automatic), 3)
+        self.assertIn("nie przeszła sprawdzenia formatu", automatic[0]["feedback"])
+        self.assertIn("ATRAPA: invalid-amend", automatic[-1]["feedback"])
         self.flow.stop()
         self.assertTrue(self.flow.engine.edit_plan(card, {"action": "discard-revision"})["ok"])
         self.assertTrue(self.flow.engine.edit_plan(card, {"action": "return", "feedback": "Popraw ponownie"})["ok"])
-        self.assertEqual(len([s for s in self.of(card, "step.started") if s["kind"] == "plan-amend"]), 2)
+        self.assertEqual(len([s for s in self.of(card, "step.started") if s["kind"] == "plan-amend"]), 5)
 
     def test_answer_after_restart_resumes_amendment_without_stopping_ticket(self):
         card = self.card()
@@ -285,12 +290,12 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertEqual(journal.read(card)[-1]["type"], "plan.checked")
         self.assertEqual(self.of(card, "plan.revision-failed"), [])
         self.restart()
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.revision-failed"), timeout=4), self.events(card))
+        self.assertTrue(wait_until(lambda: len(self.of(card, "plan.revision-failed")) == 4, timeout=30), self.events(card))
         shown = self.wait_column(card, "waiting")
         self.assertTrue(shown["derived"]["flow"]["plan"]["revision"]["failed"])
         box = []
         self.flow.edit_plan(card, json.dumps({"action": "discard-revision"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=5))
         self.assertTrue(json.loads(box[0])["ok"], box)
-        self.assertEqual(len(self.of(card, "plan.revision-failed")), 1)
-        self.assertEqual(len([e for e in self.of(card, "plan.checked") if not e["valid"]]), 1)
+        self.assertEqual(len(self.of(card, "plan.revision-failed")), 4)
+        self.assertEqual(len([e for e in self.of(card, "plan.checked") if not e["valid"]]), 4)
