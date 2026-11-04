@@ -323,7 +323,7 @@ Rectangle {
         opacity: dimmed ? 0.7 : 1
         Accessible.role: Accessible.ListItem
         Accessible.name: [when, modelData.kindLabel, text, byUser ? "zdarzenie użytkownika" : "",
-                                         byCaretaker ? modelData.actorLabel : ""].filter(x => !!x).join(", ")
+                      byCaretaker ? modelData.actorLabel : ""].filter(x => !!x).join(", ")
         RowLayout {
             id: lineRow
             anchors.left: parent.left

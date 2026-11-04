@@ -341,16 +341,30 @@ out["enter"] = calls()
         data = full_card(self.data, self.caretaker_events())
         data["cardOpen"] = "full"
         derived_flow = [c for c in data["cards"] if c["id"] == "K-8"][0]["derived"]["flow"]
-        derived_flow["running"][0]["canEnter"] = True       # „Wejdź” pokazuje to, co mówi usługa
+        # Dane prosto z usługi: dla kroku opiekuna usługa daje canEnter=False (wejście — PT-149/PT-158).
+        self.assertIs(derived_flow["running"][0]["canEnter"], False)
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["full"] = full()
+""", data)
+        full_state = out["full"]
+        self.assertEqual(full_state["headline"], "Opiekun zajmuje się PT-2, nic nie czeka na Ciebie.")
+        self.assertEqual(full_state["now"], [["K-8-care-1", "PT-2 · opiekun · Opus", 0]],
+                         "„Wejdź” jest ukryte dla kroku opiekuna")
+
+    def test_view_shows_enter_for_a_running_step_exactly_when_can_enter_is_true(self):
+        # Test samego widoku: przycisk „Wejdź” wynika wyłącznie z pola canEnter (nie z rodzaju kroku).
+        data = full_card(self.data, self.caretaker_events())
+        data["cardOpen"] = "full"
+        derived_flow = [c for c in data["cards"] if c["id"] == "K-8"][0]["derived"]["flow"]
+        derived_flow["running"][0]["canEnter"] = True
         out = self.probe(STATE_PY + """
 click(card("K-8"))
 out["full"] = full()
 click(at("(" + ALL + ")(page.cardFullView, 'fullNowEnter')[0]"))
 out["enter"] = calls()
 """, data)
-        full_state = out["full"]
-        self.assertEqual(full_state["headline"], "Opiekun zajmuje się PT-2, nic nie czeka na Ciebie.")
-        self.assertEqual(full_state["now"], [["K-8-care-1", "PT-2 · opiekun · Opus", 1]])
+        self.assertEqual(out["full"]["now"], [["K-8-care-1", "PT-2 · opiekun · Opus", 1]])
         self.assertEqual(out["enter"][-1], ["EnterStep", "K-8", "K-8-care-1"])
 
     def test_caretaker_escalation_is_signed_opiekun_in_history(self):

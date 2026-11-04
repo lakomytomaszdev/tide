@@ -362,6 +362,15 @@ class DecisionAndViewTest(unittest.TestCase):
         self.assertEqual(flow["headline"], "Opiekun zajmuje się PT-7, nic nie czeka na Ciebie.")
         self.assertEqual(flow["caretaker"]["working"][0]["subject"], "PT-7")
 
+    def test_headline_names_only_the_caretaker_even_when_other_steps_run(self):
+        # Świadoma kolejność w fullcard: opiekun przed „N kroków pracuje w tle”.
+        self.j.care("K-1-PT-7-2", "K-1-PT-7-1", 1, "K-1-care-1")
+        self.j.add("step.started", step="K-1-care-1", kind="caretaker", ticket="PT-7", executor="Opus",
+                   worktree="/w")
+        self.j.step("K-1-PT-8-1", ticket="PT-8")
+        flow = derived(self.j.st, {"column": "todo"})["flow"]
+        self.assertEqual(flow["headline"], "Opiekun zajmuje się PT-7, nic nie czeka na Ciebie.")
+
     def test_headline_without_a_target_step_names_the_card(self):
         j = Journal()
         j.add(caretaker.STARTED, problem="flow-error:merge", key="caretaker:flow-error:merge:1", n=1,
