@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import re
 import stat
 import threading
@@ -268,10 +269,29 @@ class FlowGit:
                 git_dir = resolve_git_dir(repo, path)
             except StepError as exc:
                 raise FlowGitError(f"nie można ustalić katalogu gita worktree ticketu: {exc}") from exc
-            status = StepGit(repo, git_dir, path, path + ".step").run(
-                "status", "--porcelain", "--untracked-files=all")
-            if not status.ok or _foreign_changes(status.out):
+            git = StepGit(repo, git_dir, path, path + ".step")
+            tracked = git.run("status", "--porcelain", "--untracked-files=no")
+            if not tracked.ok or tracked.out.strip():
                 raise FlowGitError("worktree ma lokalne zmiany — nie usuwam")
+            # Nieśledzone pliki po scaleniu (dane wejściowe, wyniki pomiarów) nie przepadają: idą do katalogu kroku
+            # ticketu `pozostawione-po-scaleniu/`, a worktree jest usuwany (04.11, K-43/BO-9: karta stała
+            # z flow.error „worktree ma lokalne zmiany — nie usuwam” przez kopię zestawu klatek).
+            status = git.run("status", "--porcelain", "-z", "--untracked-files=all")
+            if not status.ok:
+                raise FlowGitError("worktree ma lokalne zmiany — nie usuwam")
+            from ..tasks.agentcmd import TOOLING_DIRS
+            prefixes = tuple(d.strip("/") + "/" for d in TOOLING_DIRS)
+            archive = os.path.realpath(os.path.join(path + ".step", "pozostawione-po-scaleniu"))
+            root = os.path.realpath(path)
+            for item in status.out.split("\0"):
+                rel = item[3:] if item.startswith("?? ") else ""
+                if not rel or rel.startswith(prefixes):
+                    continue
+                source = os.path.realpath(os.path.join(root, rel))
+                target = os.path.realpath(os.path.join(archive, rel))
+                if source.startswith(root + os.sep) and target.startswith(archive + os.sep) and os.path.lexists(source):
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    shutil.move(source, target)
             # Zostały wyłącznie nieśledzone narzędzia agentów użytkownika (kopie z zewnętrznej synchronizacji,
             # K-15/LEGAL-60) — git bez --force nie usunie worktree z nieśledzonymi plikami.
             force = ["--force"] if status.out.strip() else []
