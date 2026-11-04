@@ -100,7 +100,19 @@ fi
 if [[ $idmap == raw.idmap ]]; then
     run "wariant awaryjny: raw.idmap both $AGENT_UID $AGENT_UID" -- incus config set "$BOX" raw.idmap "both $AGENT_UID $AGENT_UID"
     ok || die "raw.idmap odrzucone — ani shift=true, ani raw.idmap"
+    # Runda 2: z raw.idmap kontener nie wystartował (incusd forkstart exit 1 — najpewniej brak root:1000:1
+    # w /etc/subuid i /etc/subgid hosta) i został zepsuty dla p9 i pomiarów. Zawsze cofamy raw.idmap na końcu.
+    unset_idmap() {
+        remove_devices
+        run "cofnięcie raw.idmap" -- incus config unset "$BOX" raw.idmap
+        [[ $(box_status) == RUNNING ]] || run "start kontenera bez raw.idmap" -- incus start "$BOX"
+    }
+    at_exit unset_idmap
     run "restart kontenera po raw.idmap" -- incus restart "$BOX"
+    if ! ok; then
+        run "dziennik startu kontenera" -- incus info --show-log "$BOX"
+        die "kontener z raw.idmap nie startuje (sprawdź root:$AGENT_UID:1 w /etc/subuid i /etc/subgid hosta)"
+    fi
     wait_box
     mount_all false || die "montowanie bez shift (raw.idmap) nie przeszło"
     run "właściciel worktree w kontenerze (raw.idmap)" -- in_box stat -c '%u:%g %n' "$wt"

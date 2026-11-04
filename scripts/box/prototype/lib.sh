@@ -284,8 +284,8 @@ systemd_ready() {  # czeka, aż systemd kontenera skończy start (running/degrad
     local i out=""   # szyny D-Bus („Failed to connect to bus”) — wtedy ponawia co 0,5 s
     for ((i = 0; i < WAIT * 2; i++)); do
         out=$(timeout "$WAIT" incus exec "$BOX" -T -- systemctl is-system-running --wait 2>&1 </dev/null) || true
-        case "$out" in
-            *running* | *degraded*) echo "$out (próba $((i + 1)))"; return 0 ;;
+        case "$out" in  # dokładnie: „Error: Instance is not running” też zawiera „running”
+            running | degraded) echo "$out (próba $((i + 1)))"; return 0 ;;
         esac
         sleep 0.5
     done
@@ -319,6 +319,12 @@ ensure_box() {  # kontener istnieje, działa, ma użytkownika agent (uid 1000)
     fi
     if [[ $(box_status) != RUNNING ]]; then
         run "start kontenera" -- incus start "$BOX"
+        if ! ok && [[ -n $(incus config get "$BOX" raw.idmap </dev/null 2>/dev/null) ]]; then
+            # Pozostałość wariantu raw.idmap z p4 (runda 2): bez root:1000:1 w /etc/subuid kontener nie wstaje.
+            note "Kontener nie startuje z raw.idmap pozostawionym przez p4 — zdejmuję raw.idmap."
+            run "zdjęcie pozostawionego raw.idmap" -- incus config unset "$BOX" raw.idmap
+            run "start kontenera bez raw.idmap" -- incus start "$BOX"
+        fi
         ok || die "kontener $BOX nie startuje"
     fi
     wait_box

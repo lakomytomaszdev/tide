@@ -1,12 +1,12 @@
-# P-9 — systemd --user agenta i systemd-run --user --scope przez incus exec
+# P-9 — systemd --user agenta i systemd-run przez incus exec
 
-- data: 2026-11-04T11:39:02+01:00
+- data: 2026-11-04T12:25:33+01:00
 - skrypt: scripts/box/prototype/p9.sh
 - jądro hosta: 7.0.0-38-generic
 - kontener: tide-proto (images:ubuntu/24.04)
 
 $ incus info 
-  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.013 s
+  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.014 s
     | … (pominięto 440 wierszy)
     |     network_phys_macvlan_mtu: "true"
     |     network_veth_router: "true"
@@ -44,23 +44,22 @@ $ incus version
     | Server version: 6.0.0
 Kontener tide-proto już jest — używam go.
 $ incus config show tide-proto 
-  [konfiguracja kontenera] kod wyjścia: 0, czas: 0.014 s
-    | … (pominięto 5 wierszy)
-    |   image.release: noble
-    |   image.requirements.cgroup: v2
+  [konfiguracja kontenera] kod wyjścia: 0, czas: 0.015 s
+    | … (pominięto 7 wierszy)
     |   image.serial: "20261103_07:42"
     |   image.type: squashfs
     |   image.variant: default
+    |   raw.idmap: both 1000 1000
     |   security.nesting: "true"
     |   volatile.base_image: c8260bb3cab33bbb3b20dd6cd581dab8735b2253484fc19ad904adbdf2b946eb
     |   volatile.cloud-init.instance-id: 38468a45-11b4-49d1-a811-40423f87789f
-    |   volatile.eth0.host_name: veth407d2e8c
+    |   volatile.eth0.host_name: veth779aa672
     |   volatile.eth0.hwaddr: 00:16:3e:ee:b5:9e
     |   volatile.idmap.base: "0"
-    |   volatile.idmap.current: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
-    |   volatile.idmap.next: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
-    |   volatile.last_state.idmap: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
-    |   volatile.last_state.power: RUNNING
+    |   volatile.idmap.current: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000},{"Isuid":true,"Isgid":true,"Hostid":1000,"Nsid":1000,"Maprange":1},{"Isuid":true,"Isgid":false,"Hostid":1001001,"Nsid":1001,"Maprange":999998999},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000},{"Isuid":false,"Isgid":true,"Hostid":1001001,"Nsid":1001,"Maprange":999998999}]'
+    |   volatile.idmap.next: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000},{"Isuid":true,"Isgid":true,"Hostid":1000,"Nsid":1000,"Maprange":1},{"Isuid":true,"Isgid":false,"Hostid":1001001,"Nsid":1001,"Maprange":999998999},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000},{"Isuid":false,"Isgid":true,"Hostid":1001001,"Nsid":1001,"Maprange":999998999}]'
+    |   volatile.last_state.idmap: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000},{"Isuid":true,"Isgid":true,"Hostid":1000,"Nsid":1000,"Maprange":1},{"Isuid":true,"Isgid":false,"Hostid":1001001,"Nsid":1001,"Maprange":999998999},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000},{"Isuid":false,"Isgid":true,"Hostid":1001001,"Nsid":1001,"Maprange":999998999}]'
+    |   volatile.last_state.power: STOPPED
     |   volatile.last_state.ready: "false"
     |   volatile.uuid: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
     |   volatile.uuid.generation: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
@@ -69,6 +68,7 @@ $ incus config show tide-proto
     |     name: eth0
     |     network: incusbr0
     |     security.ipv4_filtering: "true"
+    |     security.ipv6_filtering: "false"
     |     security.mac_filtering: "true"
     |     type: nic
     | ephemeral: false
@@ -76,61 +76,16 @@ $ incus config show tide-proto
     | - default
     | stateful: false
     | description: ""
-$ timeout 180 incus exec tide-proto -T -- systemctl is-system-running --wait 
-  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.060 s
-    | running
-$ incus exec tide-proto -T -- bash -c $'\n        set -e\n        name=$(id -un 1000 2>/dev/null || true)\n        if [ -z "$name" ]; then\n            useradd -m -u 1000 -U -s /bin/bash agent\n        elif [ "$name" != agent ]; then\n            usermod -l agent -d /home/agent -m "$name"\n            groupmod -n agent "$(id -gn 1000)" 2>/dev/null || true\n        fi\n        id agent' 
-  [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.056 s
-    | uid=1000(agent) gid=1000(agent) groups=1000(agent),27(sudo)
-$ incus exec tide-proto -T -- loginctl enable-linger agent 
-  [lingering użytkownika agent] kod wyjścia: 0, czas: 0.059 s
-$ incus exec tide-proto -T -- bash -c $'\n    for i in $(seq 60); do [ -S /run/user/1000/bus ] && systemctl is-active user@1000.service && exit 0; sleep 1; done\n    systemctl status user@1000.service --no-pager; exit 1' 
-  [czekanie na systemd --user agenta (user@1000)] kod wyjścia: 0, czas: 0.053 s
-    | active
+$ incus start tide-proto 
+  [start kontenera] kod wyjścia: 1, czas: 0.163 s
+    | Error: Failed to run: /usr/libexec/incus/incusd forkstart user-1000_tide-proto /var/lib/incus/containers /run/incus/user-1000_tide-proto/lxc.conf: exit status 1
+    | Try `incus info --show-log tide-proto` for more info
 
-WYNIK lingering: ok — systemd --user agenta działa (lingering)
+WYNIK warunki: fail — kontener tide-proto nie startuje
 
-$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --scope --quiet true 
-  [systemd-run --user --scope true przez incus exec] kod wyjścia: 0, czas: 0.060 s
-
-WYNIK scope: ok — systemd-run --user --scope przez incus exec --user 1000 działa
-
-$ systemd-run --user --unit=tide-proto-client --collect --quiet -- incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --scope --unit=tide-proto-sleep-1 sleep 30 
-  [klient incus exec w jednostce hosta tide-proto-client] kod wyjścia: 0, czas: 0.006 s
-$ incus exec tide-proto -T -- pgrep -u 1000 -a -x sleep 
-  [sleep w kontenerze przed zatrzymaniem klienta] kod wyjścia: 0, czas: 0.067 s
-    | 339 /usr/bin/sleep 30
-$ systemctl --user stop tide-proto-client 
-  [zatrzymanie klienta na hoście (systemctl --user stop tide-proto-client)] kod wyjścia: 0, czas: 0.006 s
-$ incus exec tide-proto -T -- pgrep -u 1000 -a -x sleep 
-  [sleep w kontenerze po zatrzymaniu klienta] kod wyjścia: 1, czas: 0.068 s
-
-WYNIK przezywa-klienta: fail — przed: 1, po zatrzymaniu klienta: 0 (scope)
-
-$ incus exec tide-proto -T -- pkill -u 1000 -x sleep 
-  [sprzątanie: sleep agenta w kontenerze] kod wyjścia: 1, czas: 0.059 s
-$ incus exec tide-proto -T -- pgrep -u 1000 -a -x sleep 
-  [sleep w kontenerze przed restartem tide-daemon] kod wyjścia: 0, czas: 0.063 s
-    | 343 /usr/bin/sleep 30
-$ systemctl --user restart tide-daemon 
-  [restart tide-daemon na hoście] kod wyjścia: 0, czas: 3.382 s
-$ incus exec tide-proto -T -- pgrep -u 1000 -a -x sleep 
-  [sleep w kontenerze po restarcie tide-daemon] kod wyjścia: 0, czas: 0.067 s
-    | 343 /usr/bin/sleep 30
-
-WYNIK przezywa-restart-daemona: ok — proces w scope żyje po systemctl --user restart tide-daemon
-
-$ systemctl --user stop tide-proto-client 
-  [sprzątanie: jednostka hosta tide-proto-client] kod wyjścia: 5, czas: 0.003 s
-    | Failed to stop tide-proto-client.service: Unit tide-proto-client.service not loaded.
-$ incus exec tide-proto -T -- pkill -u 1000 -x sleep 
-  [sprzątanie: sleep agenta w kontenerze] kod wyjścia: 1, czas: 0.058 s
 
 ## Podsumowanie
 
-- lingering: ok — systemd --user agenta działa (lingering)
-- scope: ok — systemd-run --user --scope przez incus exec --user 1000 działa
-- przezywa-klienta: fail — przed: 1, po zatrzymaniu klienta: 0 (scope)
-- przezywa-restart-daemona: ok — proces w scope żyje po systemctl --user restart tide-daemon
+- warunki: fail — kontener tide-proto nie startuje
 
 Niepowodzeń: 1

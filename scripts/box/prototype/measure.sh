@@ -15,8 +15,7 @@ SNAP=proto-measure
 log_start measure "Pomiary — narzut kroku, zimny start, reset z migawki"
 require_incus
 box_exists || die "brak kontenera $BOX — najpierw p1.sh/p4.sh/p5.sh/p9.sh"
-[[ $(box_status) == RUNNING ]] || run "start kontenera" -- incus start "$BOX"
-run "czekanie na systemd" -- systemd_ready
+ensure_box
 
 median() { printf '%s\n' "$@" | sort -n | sed -n "$((($# + 1) / 2))p"; }
 

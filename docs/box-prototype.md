@@ -12,20 +12,38 @@ o nic nie pytają (poza hasłem sudo przy nftables), nie używają `security.pri
 
 ## Wyniki
 
-Stan: runda 1 (04.11.2026, 11:29–11:39, Incus 6.0.0 po `make box-install`, logi `docs/box-prototype/*.log`)
-dała częściowe wyniki i ujawniła błędy skryptów; skrypty poprawione, runda 2: `bash scripts/box/prototype/all.sh`
-(p5 → p1 → p4 → p9 → measure). Kolumna „Wynik” to stan po rundzie 1.
+Stan: runda 1 (04.11.2026, 11:29–11:39, Incus 6.0.0 po `make box-install`) dała częściowe wyniki i ujawniła
+błędy skryptów; runda 2 (12:20–12:26, `all.sh`, logi `docs/box-prototype/*.log`) rozstrzygnęła P-5 i P-1,
+P-4 zatrzymało się na ograniczeniach projektu, a jego wariant `raw.idmap` zostawił kontener niestartujący, przez co
+P-9 i pomiary nie ruszyły (błąd skryptu poprawiony). Kolumna „Wynik” to stan po rundzie 2.
 
 | Próba | Co sprawdza | Polecenie | Wynik | Czas | Wariant awaryjny (gdy nie działa) |
 | --- | --- | --- | --- | --- | --- |
-| P-1 | Docker w nieuprzywilejowanym kontenerze (`security.nesting`, intercept `mknod`/`setxattr`): `docker run --rm hello-world`, `dotnet test` LegalApp z Testcontainers (`pgvector/pgvector:pg16`) | `bash scripts/box/prototype/p1.sh` | **nierozstrzygnięte** — kontener bez internetu mimo trzech reguł `tide-proto` (DNS działał, TCP `connection timed out`); `apt-get install docker.io` nie przeszedł. Tabela przed/po identyczna. Runda 2: sieć przez chwilowe proxy (niżej) | — | Podman w pudełku z gniazdem Docker API (`podman system service`) albo `type: vm` dla projektów z Dockerem |
+| P-1 | Docker w nieuprzywilejowanym kontenerze (`security.nesting`, intercept `mknod`/`setxattr`): `docker run --rm hello-world`, `dotnet test` LegalApp z Testcontainers (`pgvector/pgvector:pg16`) | `bash scripts/box/prototype/p1.sh` | **nie działa.** Sieć przez chwilowe proxy działa (apt, `docker pull` z `registry-1.docker.io`), `docker.io` 29.1.3 z runc 1.3.4 instaluje się, `docker info`: overlayfs, apparmor, seccomp. `docker run --rm hello-world` kończy się kodem 126 — bez intercept i z chwilowym intercept tak samo: `OCI runtime create failed: runc create failed: unable to start container process: error during container init: open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied`. `dotnet test` pominięty. Prawdopodobna przyczyna: nowy runc (poprawki bezpieczeństwa z 2025, ponowne otwieranie plików `/proc/sys` przez `/proc/thread-self/fd`) kontra profil AppArmor kontenera w Incusie 6.0.0 z Ubuntu — **hipoteza, niesprawdzona**. Runda 1 (reguły `tide-proto`): forward ginął, tabela przed/po identyczna | 4,4 s (pull + błąd) | Podman w pudełku z gniazdem Docker API (`podman system service`) albo `type: vm` dla projektów z Dockerem |
 | P-2 | bwrap Claude Code i landlock Codexa w kontenerze | PT-178 | — | — | PT-178 |
 | P-3 | OAuth agentów przez inny base URL (K3) | PT-178 | — | — | PT-178 |
-| P-4 | `<proj>/.git` i `<proj>-worktrees` z ext4 `/home` przez `shift=true` pod identycznymi ścieżkami, nakładki ro na `.git/hooks`, `.git/config`, `.git/info`; `git status`, `git commit` na `proto/k-38`, `npm ci` (kontener i host) | `bash scripts/box/prototype/p4.sh` | **nierozstrzygnięte** — stanęło na `apt-get install git` (ta sama sieć co P-1), przed założeniem worktree (nic do sprzątania) | — | `raw.idmap "both 1000 1000"` bez `shift` (skrypt próbuje sam i zapisuje wariant) |
-| P-5 | Projekt ograniczony `user-1000` (`incus-user`, grupa `incus`): nesting, intercept, filtrowanie NIC (`security.mac_filtering`, `security.ipv4_filtering`, `security.ipv6_filtering` na `eth0`), próba podszycia pod obcy adres | `bash scripts/box/prototype/p5.sh` | **nesting działa** (projekt przyjął `security.nesting=true`, `unshare --mount-proc` w kontenerze OK). **Intercept odrzucony** przez projekt: „Container syscall interception is forbidden” (`restricted.containers.interception` domyślnie `block`); z chwilowym `allow`: `mknod c 1 3` OK, test setxattr był błędny (ENODATA z `getxattr`, poprawione). **Filtrowanie NIC nierozstrzygnięte**: `security.ipv6_filtering` wymaga `br_netfilter` — kontener nie wystartował; kontrola B pokazała, że bez filtrowania podszycie pod `10.173.184.250` dochodzi do mostka (test jest ważny) | 0,02–17 s | nesting/intercept: `--project-mode admin` w `scripts/box/install.sh` (grupa `incus-admin`, D9) z wpisem `tryb-admin` albo `restricted.containers.interception=allow` w projekcie (decyzja po rundzie 2); filtrowanie NIC: brak wariantu — warunek konieczny (`question`) |
+| P-4 | `<proj>/.git` i `<proj>-worktrees` z ext4 `/home` przez `shift=true` pod identycznymi ścieżkami, nakładki ro na `.git/hooks`, `.git/config`, `.git/info`; `git status`, `git commit` na `proto/k-38`, `npm ci` (kontener i host) | `bash scripts/box/prototype/p4.sh` | **nie działa w projekcie ograniczonym.** `incus config device add … shift=true` odrzucone: „The "shift" property cannot be used with a restricted source path”. Wariant `raw.idmap "both 1000 1000"` przyjęty przez projekt (`restricted.idmap.uid/gid=1000` z PT-166), ale kontener nie wystartował (`incusd forkstart … exit status 1`) — najpewniej brak `root:1000:1` w `/etc/subuid` i `/etc/subgid` hosta (hipoteza). Worktree próby i gałąź `proto/k-38` usunięte; git, npm i widoczność hosta niesprawdzone | — | `raw.idmap "both 1000 1000"` bez `shift` (skrypt próbuje sam i zapisuje wariant) |
+| P-5 | Projekt ograniczony `user-1000` (`incus-user`, grupa `incus`): nesting, intercept, filtrowanie NIC (`security.mac_filtering`, `security.ipv4_filtering`, `security.ipv6_filtering` na `eth0`), próba podszycia pod obcy adres | `bash scripts/box/prototype/p5.sh` | **Nesting działa** (projekt przyjął `security.nesting=true`, `unshare --user --map-root-user --pid --fork --mount-proc true` OK). **Intercept w projekcie ograniczonym nie działa**: „Container syscall interception is forbidden” (`restricted.containers.interception=block`, domyślne); z chwilowym `allow`: `mknod c 1 3` i `setxattr trusted.overlay.opaque` działają. **Filtrowanie NIC działa (mac + ipv4)**: kontrola A (własny adres `10.173.184.164`) i B (podszycie `10.173.184.250` bez filtrowania) doszły do `10.173.184.1:18080`; po `security.mac_filtering=true security.ipv4_filtering=true` własny adres dochodzi, podszycie nie (`nc` kod 1, brak wpisu w dzienniku serwera). `security.ipv6_filtering=true` — kontener nie startuje bez `br_netfilter`; użyto `false` (decyzja `filtrowanie-nic-bez-ipv6`) | 0,05 s (nc) | nesting/intercept: `--project-mode admin` w `scripts/box/install.sh` (grupa `incus-admin`, D9) z wpisem `tryb-admin` albo `restricted.containers.interception=allow` w projekcie (decyzja po rundzie 2); filtrowanie NIC: brak wariantu — warunek konieczny (`question`) |
 | P-6 | Klienci (npm, NuGet, pip, Docker, agenci) przez proxy CONNECT i `NO_PROXY` | PT-178 | — | — | PT-178 |
 | P-7 | Obrazy Incusa (bazowy Tide) | PT-178 | — | — | PT-178 |
-| P-9 | `systemd --user` agenta (lingering), `systemd-run --user --scope` przez `incus exec`; proces przeżywa śmierć klienta `incus exec` i `systemctl --user restart tide-daemon` | `bash scripts/box/prototype/p9.sh` | **lingering i `systemd-run --user --scope` działają; proces w scope NIE przeżywa śmierci klienta `incus exec`** (`systemctl --user stop tide-proto-client` → `pgrep sleep` pusty). Restart `tide-daemon` nie zabił procesu, ale klient nie był dzieckiem usługi — test nie rozstrzyga. Runda 2 sprawdza też usługę `--user` (`systemd-run --user --wait`) i usługę roota z `--uid` | 0,06 s | `systemd-run` jako root pudełka z `--uid=agent` (usługa zamiast scope; tokeny tylko w `in/env`); bliżej projektu: `systemd-run --user` jako usługa (bez `--scope`) |
+| P-9 | `systemd --user` agenta (lingering), `systemd-run --user --scope` przez `incus exec`; proces przeżywa śmierć klienta `incus exec` i `systemctl --user restart tide-daemon` | `bash scripts/box/prototype/p9.sh` | Runda 1: **lingering i `systemd-run --user --scope` działają; proces w scope NIE przeżywa śmierci klienta `incus exec`** (`systemctl --user stop tide-proto-client` → `pgrep sleep` pusty). Restart `tide-daemon` nie zabił procesu, ale klient nie był dzieckiem usługi — test nie rozstrzyga. Runda 2 nie ruszyła (kontener zepsuty przez `raw.idmap` z p4); warianty usługi `--user --wait` i usługi roota z `--uid` czekają | 0,06 s | `systemd-run` jako root pudełka z `--uid=agent` (usługa zamiast scope; tokeny tylko w `in/env`); bliżej projektu: `systemd-run --user` jako usługa (bez `--scope`) |
+
+### Wnioski z rundy 2
+
+- **Projekt ograniczony z PT-166 w obecnym kształcie nie udźwignie pudełka**: blokuje intercept, migawki
+  (`restricted.snapshots`) i `shift=true` na ścieżkach z `restricted.devices.disk.paths`. Pierwsze dwa to ustawienia
+  projektu (`allow`), trzecie omija `raw.idmap` (projekt już ma `restricted.idmap.uid/gid=1000`), które wymaga
+  `root:1000:1` w `/etc/subuid` i `/etc/subgid` — wszystko to zmiany w skryptach #3 albo na hoście, więc wymagają
+  decyzji (pytanie w PT-164).
+- **Docker w kontenerze pada niezależnie od projektu i intercept** na runc 1.3.4 (`open sysctl
+  net.ipv4.ip_unprivileged_port_start … permission denied`). Do sprawdzenia: starszy runc w pudełku, Docker CE
+  z repozytorium Dockera, nowszy Incus (profil AppArmor) albo Podman / `type: vm`.
+- **Filtrowanie NIC (mac + ipv4) działa w projekcie ograniczonym** i odrzuca podszycie na hoście — polityka proxy
+  per IP (#5) ma swój warunek konieczny.
+- **Sieć przez proxy na porcie proxy Tide działa** dla apt i `docker pull` (cele w logu p1: `archive.ubuntu.com`,
+  `security.ubuntu.com`, `registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com`,
+  `motd.ubuntu.com`) — materiał dla P-6 i listy domen szablonu docker (`production.cloudfront.docker.com`, nie
+  `cloudflare` jak w sekcji 4.8 projektu).
 
 ### Wnioski z rundy 1 (dla kolejnych ticketów)
 
@@ -56,8 +74,8 @@ dała częściowe wyniki i ujawniła błędy skryptów; skrypty poprawione, rund
 | --- | --- | --- | --- | --- |
 | Narzut kroku: `incus exec … --user 1000 -- systemd-run --user --scope true` | ≤ 3 s | 0,055 / 0,061 / 0,061 s | 0,061 s | tak |
 | Narzut kroku (usługa): `incus exec … -- systemd-run --user --wait true` | ≤ 3 s | runda 2 | — | — |
-| Zimny start zatrzymanego kontenera (`incus start` do końca startu systemd) | ≤ 30 s | runda 1: błąd skryptu (`Failed to connect to bus` tuż po starcie, bez ponawiania) — poprawione | — | — |
-| Reset: `incus snapshot restore` (do końca startu systemd) | ≤ 60 s | runda 1: „Project user-1000 doesn't allow for snapshot creation”; runda 2 z chwilowym `restricted.snapshots=allow` | — | — |
+| Zimny start zatrzymanego kontenera (`incus start` do końca startu systemd) | ≤ 30 s | runda 1: błąd skryptu (brak ponawiania); runda 2: kontener nie startował (raw.idmap z p4); orientacyjnie z logów p1/p5: `incus start` 0,2 s + systemd 0,6–2,4 s | — | — |
+| Reset: `incus snapshot restore` (do końca startu systemd) | ≤ 60 s | „Project user-1000 doesn't allow for snapshot creation” (obie rundy); w rundzie 2 z chwilowym `restricted.snapshots=allow` migawka powstała (0,10 s), ale `restore` padł: „Instance is busy running a "stop" operation” (kontener zepsuty przez `raw.idmap` z p4) | — | — |
 
 ## Co widać z kontenera (P-4)
 

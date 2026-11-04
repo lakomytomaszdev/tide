@@ -1,12 +1,12 @@
 # P-1 — Docker w nieuprzywilejowanym kontenerze (nesting, intercept mknod/setxattr)
 
-- data: 2026-11-04T11:35:16+01:00
+- data: 2026-11-04T12:21:04+01:00
 - skrypt: scripts/box/prototype/p1.sh
 - jądro hosta: 7.0.0-38-generic
 - kontener: tide-proto (images:ubuntu/24.04)
 
 $ incus info 
-  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.089 s
+  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.014 s
     | … (pominięto 440 wierszy)
     |     network_phys_macvlan_mtu: "true"
     |     network_veth_router: "true"
@@ -42,28 +42,13 @@ $ incus version
   [wersja Incusa] kod wyjścia: 0, czas: 0.014 s
     | Client version: 6.0.0
     | Server version: 6.0.0
-$ sudo nft list table inet tide-box 
-  [tabela inet tide-box z PT-166] kod wyjścia: 0, czas: 0.010 s
-    | table inet tide-box {
-    | 	chain input {
-    | 		type filter hook input priority filter + 10; policy accept;
-    | 		iifname "incusbr0" ip daddr 10.173.184.1 tcp dport 18080 accept comment "proxy Tide"
-    | 		iifname "incusbr0" udp sport 68 udp dport 67 accept comment "DHCP"
-    | 		iifname "incusbr0" meta l4proto { tcp, udp } th dport 53 drop comment "DNS tylko przez proxy"
-    | 		iifname "incusbr0" drop
-    | 	}
-    | 
-    | 	chain forward {
-    | 		type filter hook forward priority filter + 10; policy accept;
-    | 		iifname "incusbr0" drop
-    | 		oifname "incusbr0" drop
-    | 	}
-    | }
+$ systemctl is-active tide-box-nft.service 
+  [reguły inet tide-box wczytane (jednostka z PT-166)] kod wyjścia: 0, czas: 0.003 s
+    | active
 Kontener tide-proto już jest — używam go.
 $ incus config show tide-proto 
-  [konfiguracja kontenera] kod wyjścia: 0, czas: 0.015 s
-    | … (pominięto 5 wierszy)
-    |   image.release: noble
+  [konfiguracja kontenera] kod wyjścia: 0, czas: 0.016 s
+    | … (pominięto 6 wierszy)
     |   image.requirements.cgroup: v2
     |   image.serial: "20261103_07:42"
     |   image.type: squashfs
@@ -71,7 +56,7 @@ $ incus config show tide-proto
     |   security.nesting: "true"
     |   volatile.base_image: c8260bb3cab33bbb3b20dd6cd581dab8735b2253484fc19ad904adbdf2b946eb
     |   volatile.cloud-init.instance-id: 38468a45-11b4-49d1-a811-40423f87789f
-    |   volatile.eth0.host_name: veth407d2e8c
+    |   volatile.eth0.host_name: veth372fd372
     |   volatile.eth0.hwaddr: 00:16:3e:ee:b5:9e
     |   volatile.idmap.base: "0"
     |   volatile.idmap.current: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
@@ -86,6 +71,7 @@ $ incus config show tide-proto
     |     name: eth0
     |     network: incusbr0
     |     security.ipv4_filtering: "true"
+    |     security.ipv6_filtering: "false"
     |     security.mac_filtering: "true"
     |     type: nic
     | ephemeral: false
@@ -93,132 +79,141 @@ $ incus config show tide-proto
     | - default
     | stateful: false
     | description: ""
-$ timeout 180 incus exec tide-proto -T -- systemctl is-system-running --wait 
-  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.073 s
-    | running
+$ systemd_ready 
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.056 s
+    | running (próba 1)
 $ incus exec tide-proto -T -- bash -c $'\n        set -e\n        name=$(id -un 1000 2>/dev/null || true)\n        if [ -z "$name" ]; then\n            useradd -m -u 1000 -U -s /bin/bash agent\n        elif [ "$name" != agent ]; then\n            usermod -l agent -d /home/agent -m "$name"\n            groupmod -n agent "$(id -gn 1000)" 2>/dev/null || true\n        fi\n        id agent' 
-  [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.060 s
+  [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.053 s
     | uid=1000(agent) gid=1000(agent) groups=1000(agent),27(sudo)
 $ incus config get tide-proto security.privileged 
-  [konfiguracja bezpieczeństwa kontenera] kod wyjścia: 0, czas: 0.015 s
---- nft list table inet tide-box (przed regułami chwilowymi)
-table inet tide-box {
-	chain input {
-		type filter hook input priority filter + 10; policy accept;
-		iifname "incusbr0" ip daddr 10.173.184.1 tcp dport 18080 accept comment "proxy Tide"
-		iifname "incusbr0" udp sport 68 udp dport 67 accept comment "DHCP"
-		iifname "incusbr0" meta l4proto { tcp, udp } th dport 53 drop comment "DNS tylko przez proxy"
-		iifname "incusbr0" drop
-	}
-
-	chain forward {
-		type filter hook forward priority filter + 10; policy accept;
-		iifname "incusbr0" drop
-		oifname "incusbr0" drop
-	}
-}
---- koniec: nft list table inet tide-box (przed regułami chwilowymi)
-Sieć: chwilowe reguły tide-proto w tabeli inet tide-box dla 10.173.184.164 (nie proxy z #15 — PT-178 jeszcze nie działa).
-$ sudo nft insert rule inet tide-box forward iifname\ \"incusbr0\"\ ip\ saddr\ 10.173.184.164\ accept\ comment\ \"tide-proto\" 
-  [reguła chwilowa: ruch wychodzący kontenera] kod wyjścia: 0, czas: 0.009 s
-$ sudo nft insert rule inet tide-box forward oifname\ \"incusbr0\"\ ip\ daddr\ 10.173.184.164\ ct\ state\ established\,related\ accept\ comment\ \"tide-proto\" 
-  [reguła chwilowa: odpowiedzi do kontenera] kod wyjścia: 0, czas: 0.042 s
-$ sudo nft insert rule inet tide-box input iifname\ \"incusbr0\"\ ip\ saddr\ 10.173.184.164\ meta\ l4proto\ \{\ tcp\,\ udp\ \}\ th\ dport\ 53\ accept\ comment\ \"tide-proto\" 
-  [reguła chwilowa: DNS przez dnsmasq na mostku] kod wyjścia: 0, czas: 0.009 s
-$ incus exec tide-proto -T -- dpkg-query -W -f \$\{Package\}\ \$\{Status\}\\n docker.io ca-certificates curl libicu74 
-  [pakiety w kontenerze: docker.io ca-certificates curl libicu74] kod wyjścia: 1, czas: 0.058 s
+  [konfiguracja bezpieczeństwa kontenera] kod wyjścia: 0, czas: 0.014 s
+Sieć: chwilowe proxy scripts/box/prototype/proxy.py na 10.173.184.1:18080 (port proxy Tide, przepuszczany przez inet tide-box); bez zmian w nftables.
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c printf\ \'%s\\n\'\ \'Acquire::http::Proxy\ \"http://10.173.184.1:18080\"\;\'\ \ \ \ \ \ \ \ \ \'Acquire::https::Proxy\ \"http://10.173.184.1:18080\"\;\'\ \'Acquire::http::Pipeline-Depth\ \"0\"\;\'\ \>/etc/apt/apt.conf.d/95tide-proto 
+  [apt w kontenerze przez proxy] kod wyjścia: 0, czas: 0.053 s
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- dpkg-query -W -f \$\{Package\}\ \$\{Status\}\\n docker.io ca-certificates curl libicu74 
+  [pakiety w kontenerze: docker.io ca-certificates curl libicu74] kod wyjścia: 1, czas: 0.059 s
     | ca-certificates install ok installed
     | curl install ok installed
     | libicu74 install ok installed
     | dpkg-query: no packages found matching docker.io
-$ incus exec tide-proto -T -- apt-get update 
-  [apt-get update w kontenerze] kod wyjścia: 0, czas: 40.254 s
-    | Ign:1 http://archive.ubuntu.com/ubuntu noble InRelease
-    | Ign:2 http://security.ubuntu.com/ubuntu noble-security InRelease
-    | Ign:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
-    | Ign:1 http://archive.ubuntu.com/ubuntu noble InRelease
-    | Ign:2 http://security.ubuntu.com/ubuntu noble-security InRelease
-    | Ign:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
-    | Ign:1 http://archive.ubuntu.com/ubuntu noble InRelease
-    | Ign:2 http://security.ubuntu.com/ubuntu noble-security InRelease
-    | Ign:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
-    | Err:1 http://archive.ubuntu.com/ubuntu noble InRelease
-    |   Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable) Could not connect to archive.ubuntu.com:80 (91.189.92.24), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.91.83), connection timed out Could not connect to archive.ubuntu.com:80 (185.125.190.82), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.91.81), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.92.22), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.91.82), connection timed out Could not connect to archive.ubuntu.com:80 (185.125.190.83), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.92.23), connection timed out Could not connect to archive.ubuntu.com:80 (185.125.190.81), connection timed out
-    | Err:2 http://security.ubuntu.com/ubuntu noble-security InRelease
-    |   Cannot initiate the connection to security.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Could not connect to security.ubuntu.com:80 (185.125.190.82), connection timed out Could not connect to security.ubuntu.com:80 (185.125.190.81), connection timed out Could not connect to security.ubuntu.com:80 (91.189.91.82), connection timed out Could not connect to security.ubuntu.com:80 (185.125.190.83), connection timed out Could not connect to security.ubuntu.com:80 (91.189.92.22), connection timed out Could not connect to security.ubuntu.com:80 (91.189.91.81), connection timed out Could not connect to security.ubuntu.com:80 (91.189.92.23), connection timed out Could not connect to security.ubuntu.com:80 (91.189.91.83), connection timed out Could not connect to security.ubuntu.com:80 (91.189.92.24), connection timed out
-    | Err:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
-    |   Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- apt-get update 
+  [apt-get update w kontenerze] kod wyjścia: 0, czas: 2.609 s
+    | Get:1 http://security.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+    | Hit:2 http://archive.ubuntu.com/ubuntu noble InRelease
+    | Get:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+    | Get:4 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages [1155 kB]
+    | Get:5 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1408 kB]
+    | Get:6 http://security.ubuntu.com/ubuntu noble-security/main Translation-en [233 kB]
+    | Get:7 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1224 kB]
+    | Get:8 http://security.ubuntu.com/ubuntu noble-security/universe Translation-en [247 kB]
+    | Get:9 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [1707 kB]
+    | Fetched 6226 kB in 2s (3575 kB/s)
     | Reading package lists...
-    | W: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble/InRelease  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable) Could not connect to archive.ubuntu.com:80 (91.189.92.24), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.91.83), connection timed out Could not connect to archive.ubuntu.com:80 (185.125.190.82), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.91.81), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.92.22), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.91.82), connection timed out Could not connect to archive.ubuntu.com:80 (185.125.190.83), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.92.23), connection timed out Could not connect to archive.ubuntu.com:80 (185.125.190.81), connection timed out
-    | W: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble-updates/InRelease  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | W: Failed to fetch http://security.ubuntu.com/ubuntu/dists/noble-security/InRelease  Cannot initiate the connection to security.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to security.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Could not connect to security.ubuntu.com:80 (185.125.190.82), connection timed out Could not connect to security.ubuntu.com:80 (185.125.190.81), connection timed out Could not connect to security.ubuntu.com:80 (91.189.91.82), connection timed out Could not connect to security.ubuntu.com:80 (185.125.190.83), connection timed out Could not connect to security.ubuntu.com:80 (91.189.92.22), connection timed out Could not connect to security.ubuntu.com:80 (91.189.91.81), connection timed out Could not connect to security.ubuntu.com:80 (91.189.92.23), connection timed out Could not connect to security.ubuntu.com:80 (91.189.91.83), connection timed out Could not connect to security.ubuntu.com:80 (91.189.92.24), connection timed out
-    | W: Some index files failed to download. They have been ignored, or old ones used instead.
-$ incus exec tide-proto -T -- env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker.io 
-  [apt-get install docker.io] kod wyjścia: 100, czas: 72.116 s
-    | … (pominięto 56 wierszy)
-    |   Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | Err:4 http://archive.ubuntu.com/ubuntu noble/main amd64 libnetfilter-conntrack3 amd64 1.0.9-6build1
-    |   Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | Err:5 http://archive.ubuntu.com/ubuntu noble/main amd64 libnftnl11 amd64 1.2.6-2build1
-    |   Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | Err:6 http://archive.ubuntu.com/ubuntu noble/main amd64 iptables amd64 1.8.10-3ubuntu2
-    |   Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | Err:7 http://archive.ubuntu.com/ubuntu noble/main amd64 libjansson4 amd64 2.14-2build2
-    |   Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | Err:8 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libnftables1 amd64 1.0.9-1ubuntu0.1
-    |   Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | Err:9 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 runc amd64 1.3.4-0ubuntu1~24.04.1
-    |   Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | Err:10 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 containerd amd64 2.2.1-0ubuntu1~24.04.4
-    |   Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | Ign:11 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 docker.io amd64 29.1.3-0ubuntu3~24.04.2
-    | Err:11 http://security.ubuntu.com/ubuntu noble-updates/universe amd64 docker.io amd64 29.1.3-0ubuntu3~24.04.2
-    |   Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/i/iptables/libip4tc2_1.8.10-3ubuntu2_amd64.deb  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable) Could not connect to archive.ubuntu.com:80 (91.189.92.24), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.91.83), connection timed out Could not connect to archive.ubuntu.com:80 (185.125.190.82), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.91.81), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.92.22), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.91.82), connection timed out Could not connect to archive.ubuntu.com:80 (185.125.190.83), connection timed out Could not connect to archive.ubuntu.com:80 (91.189.92.23), connection timed out Could not connect to archive.ubuntu.com:80 (185.125.190.81), connection timed out
-    | E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/i/iptables/libip6tc2_1.8.10-3ubuntu2_amd64.deb  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/libn/libnfnetlink/libnfnetlink0_1.0.2-2build1_amd64.deb  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/libn/libnetfilter-conntrack/libnetfilter-conntrack3_1.0.9-6build1_amd64.deb  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/libn/libnftnl/libnftnl11_1.2.6-2build1_amd64.deb  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/i/iptables/iptables_1.8.10-3ubuntu2_amd64.deb  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/j/jansson/libjansson4_2.14-2build2_amd64.deb  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/n/nftables/libnftables1_1.0.9-1ubuntu0.1_amd64.deb  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/r/runc-app/runc_1.3.4-0ubuntu1%7e24.04.1_amd64.deb  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/c/containerd-app/containerd_2.2.1-0ubuntu1%7e24.04.4_amd64.deb  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | E: Failed to fetch http://security.ubuntu.com/ubuntu/pool/universe/d/docker.io-app/docker.io_29.1.3-0ubuntu3%7e24.04.2_amd64.deb  Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::17). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::103). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::18). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::101). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2a06:bc80:0:1000::16). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4000:1::102). - connect (101: Network is unreachable) Cannot initiate the connection to archive.ubuntu.com:80 (2620:2d:4002:1::102). - connect (101: Network is unreachable)
-    | E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker.io 
+  [apt-get install docker.io] kod wyjścia: 0, czas: 22.759 s
+    | … (pominięto 58 wierszy)
+    | Unpacking runc (1.3.4-0ubuntu1~24.04.1) ...
+    | Selecting previously unselected package containerd.
+    | Preparing to unpack .../09-containerd_2.2.1-0ubuntu1~24.04.4_amd64.deb ...
+    | Unpacking containerd (2.2.1-0ubuntu1~24.04.4) ...
+    | Selecting previously unselected package docker.io.
+    | Preparing to unpack .../10-docker.io_29.1.3-0ubuntu3~24.04.2_amd64.deb ...
+    | Unpacking docker.io (29.1.3-0ubuntu3~24.04.2) ...
+    | Setting up libip4tc2:amd64 (1.8.10-3ubuntu2) ...
+    | Setting up libip6tc2:amd64 (1.8.10-3ubuntu2) ...
+    | Setting up libnftnl11:amd64 (1.2.6-2build1) ...
+    | Setting up runc (1.3.4-0ubuntu1~24.04.1) ...
+    | Setting up libjansson4:amd64 (2.14-2build2) ...
+    | Setting up libnfnetlink0:amd64 (1.0.2-2build1) ...
+    | Setting up containerd (2.2.1-0ubuntu1~24.04.4) ...
+    | Created symlink /etc/systemd/system/multi-user.target.wants/containerd.service → /usr/lib/systemd/system/containerd.service.
+    | Setting up libnftables1:amd64 (1.0.9-1ubuntu0.1) ...
+    | Setting up libnetfilter-conntrack3:amd64 (1.0.9-6build1) ...
+    | Setting up iptables (1.8.10-3ubuntu2) ...
+    | update-alternatives: using /usr/sbin/iptables-legacy to provide /usr/sbin/iptables (iptables) in auto mode
+    | update-alternatives: using /usr/sbin/ip6tables-legacy to provide /usr/sbin/ip6tables (ip6tables) in auto mode
+    | update-alternatives: using /usr/sbin/iptables-nft to provide /usr/sbin/iptables (iptables) in auto mode
+    | update-alternatives: using /usr/sbin/ip6tables-nft to provide /usr/sbin/ip6tables (ip6tables) in auto mode
+    | update-alternatives: using /usr/sbin/arptables-nft to provide /usr/sbin/arptables (arptables) in auto mode
+    | update-alternatives: using /usr/sbin/ebtables-nft to provide /usr/sbin/ebtables (ebtables) in auto mode
+    | Setting up docker.io (29.1.3-0ubuntu3~24.04.2) ...
+    | info: Selecting GID from range 100 to 999 ...
+    | info: Adding group `docker' (GID 104) ...
+    | Created symlink /etc/systemd/system/multi-user.target.wants/docker.service → /usr/lib/systemd/system/docker.service.
+    | Created symlink /etc/systemd/system/sockets.target.wants/docker.socket → /usr/lib/systemd/system/docker.socket.
+    | Processing triggers for libc-bin (2.39-0ubuntu8.9) ...
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c $'\n        mkdir -p /etc/systemd/system/docker.service.d\n        printf \'%s\\n\' \'[Service]\' \'Environment=HTTP_PROXY=http://10.173.184.1:18080\' \'Environment=HTTPS_PROXY=http://10.173.184.1:18080\'             \'Environment=NO_PROXY=localhost,127.0.0.1,::1\' >/etc/systemd/system/docker.service.d/tide-proto.conf\n        systemctl daemon-reload && systemctl restart docker' 
+  [dockerd w kontenerze przez proxy (drop-in)] kod wyjścia: 0, czas: 1.092 s
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- docker info --format \{\{.Driver\}\}\ \|\ \{\{.SecurityOptions\}\}\ \|\ \{\{.Name\}\} 
+  [docker info (sterownik, opcje bezpieczeństwa)] kod wyjścia: 0, czas: 0.077 s
+    | overlayfs | [name=apparmor name=seccomp,profile=builtin name=cgroupns] | tide-proto
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- docker run --rm hello-world 
+  [docker run --rm hello-world (bez intercept)] kod wyjścia: 126, czas: 4.428 s
+    | Unable to find image 'hello-world:latest' locally
+    | latest: Pulling from library/hello-world
+    | 4f55086f7dd0: Pulling fs layer
+    | 4f55086f7dd0: Download complete
+    | 4f55086f7dd0: Pull complete
+    | d5e71e642bf5: Download complete
+    | Digest: sha256:c567b231f65614688711a75f31518a064258a51d442117a3e771a3a8fdba78ef
+    | Status: Downloaded newer image for hello-world:latest
+    | docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied
+    | 
+    | Run 'docker run --help' for more information
+    | Error: Command not executable
 
-WYNIK warunki: fail — apt-get install docker.io w kontenerze nie przeszło
+WYNIK hello-world-bez-intercept: fail — docker run bez intercept: kod 126 — próbuję wariantu z intercept
 
-$ sudo nft delete rule inet tide-box input handle 15 
-  [usunięcie reguły chwilowej (input, uchwyt 15)] kod wyjścia: 0, czas: 0.014 s
-$ sudo nft delete rule inet tide-box forward handle 13 
-  [usunięcie reguły chwilowej (forward, uchwyt 13)] kod wyjścia: 0, czas: 0.017 s
-$ sudo nft delete rule inet tide-box forward handle 10 
-  [usunięcie reguły chwilowej (forward, uchwyt 10)] kod wyjścia: 0, czas: 0.018 s
---- nft list table inet tide-box (po usunięciu reguł chwilowych)
-table inet tide-box {
-	chain input {
-		type filter hook input priority filter + 10; policy accept;
-		iifname "incusbr0" ip daddr 10.173.184.1 tcp dport 18080 accept comment "proxy Tide"
-		iifname "incusbr0" udp sport 68 udp dport 67 accept comment "DHCP"
-		iifname "incusbr0" meta l4proto { tcp, udp } th dport 53 drop comment "DNS tylko przez proxy"
-		iifname "incusbr0" drop
-	}
+$ sudo incus project get user-1000 restricted.containers.interception 
+  [restricted.containers.interception (przed zmianą)] kod wyjścia: 0, czas: 0.015 s
+    | block
+$ sudo incus project set user-1000 restricted.containers.interception=allow 
+  [wariant: restricted.containers.interception=allow w projekcie user-1000 (chwilowo)] kod wyjścia: 0, czas: 0.029 s
+$ incus config set tide-proto security.syscalls.intercept.mknod=true security.syscalls.intercept.setxattr=true 
+  [intercept mknod/setxattr w kontenerze] kod wyjścia: 0, czas: 0.051 s
+$ incus restart tide-proto 
+  [restart kontenera z intercept] kod wyjścia: 0, czas: 1.042 s
+$ systemd_ready 
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 2.442 s
+    | running (próba 2)
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- docker info --format \{\{.Driver\}\}\ \|\ \{\{.SecurityOptions\}\}\ \|\ \{\{.Name\}\} 
+  [docker info (sterownik, opcje bezpieczeństwa)] kod wyjścia: 0, czas: 0.071 s
+    | overlayfs | [name=apparmor name=seccomp,profile=builtin name=cgroupns] | tide-proto
+$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- docker run --rm hello-world 
+  [docker run --rm hello-world (z intercept (chwilowe restricted.containers.interception=allow))] kod wyjścia: 126, czas: 0.818 s
+    | docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied
+    | 
+    | Run 'docker run --help' for more information
+    | Error: Command not executable
 
-	chain forward {
-		type filter hook forward priority filter + 10; policy accept;
-		iifname "incusbr0" drop
-		oifname "incusbr0" drop
-	}
-}
---- koniec: nft list table inet tide-box (po usunięciu reguł chwilowych)
+WYNIK hello-world: fail — docker run --rm hello-world: kod 126 (pełny błąd wyżej)
 
-WYNIK nft-przed-po: ok — tabela inet tide-box przed i po identyczna, brak tide-proto
+
+WYNIK dotnet-test: skip — pominięte — Docker w kontenerze nie działa
+
+$ incus config unset tide-proto security.syscalls.intercept.mknod 
+  [zdjęcie intercept mknod] kod wyjścia: 0, czas: 0.051 s
+$ incus config unset tide-proto security.syscalls.intercept.setxattr 
+  [zdjęcie intercept setxattr] kod wyjścia: 0, czas: 0.046 s
+$ sudo incus project set user-1000 restricted.containers.interception=block 
+  [cofnięcie restricted.containers.interception=block] kod wyjścia: 0, czas: 0.029 s
+--- połączenia przez chwilowe proxy (liczba, metoda, cel)
+     15 GET archive.ubuntu.com:80
+      5 GET security.ubuntu.com:80
+      4 CONNECT registry-1.docker.io:443
+      1 CONNECT production.cloudfront.docker.com:443
+      1 CONNECT motd.ubuntu.com:443
+      1 CONNECT auth.docker.io:443
+--- koniec: połączenia przez chwilowe proxy (liczba, metoda, cel)
+
+WYNIK siec-proxy: info — chwilowe proxy zamknięte; celów: 6; nftables bez zmian
 
 
 ## Podsumowanie
 
-- warunki: fail — apt-get install docker.io w kontenerze nie przeszło
-- nft-przed-po: ok — tabela inet tide-box przed i po identyczna, brak tide-proto
+- hello-world-bez-intercept: fail — docker run bez intercept: kod 126 — próbuję wariantu z intercept
+- hello-world: fail — docker run --rm hello-world: kod 126 (pełny błąd wyżej)
+- dotnet-test: skip — pominięte — Docker w kontenerze nie działa
+- siec-proxy: info — chwilowe proxy zamknięte; celów: 6; nftables bez zmian
 
-Niepowodzeń: 1
+Niepowodzeń: 2
