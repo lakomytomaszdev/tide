@@ -338,6 +338,13 @@ def ticket_status(st: FlowState, ticket: dict) -> dict:
         return status("review")
     if done.get("result") == "error" and int(latest.get("attempt") or 0) == 0:
         return status("running", "ponawia po błędzie")
+    if done.get("result") == "denied" and latest.get("step") in st.outside_started:
+        # Polecenie poza piaskownicą trwa (np. `make test`) — to praca, nie czekanie (04.11, K-37/PT-153: kafelek
+        # „czeka” i „Nic nie pracuje teraz w tle”, gdy testy szły od kwadransa).
+        return status("running", "polecenie poza piaskownicą")
+    if done.get("result") == "denied" and (st.step_decisions.get(latest.get("step")) or {}).get("choice") in \
+            ("run", "run-always", "run-ticket"):
+        return status("queued", "polecenie w kolejce")
     return status("waiting")
 
 
@@ -346,8 +353,11 @@ def ticket_status(st: FlowState, ticket: dict) -> dict:
 def running_steps(steps: list[dict], st: FlowState) -> list[dict]:
     """Tylko kroki, które trwają (bez wyniku); zakończone i czekające na decyzję tu nie trafiają."""
     keys = ("id", "ticket", "kind", "executor", "mode", "startedTs", "lastActivityTs", "canEnter")
-    return [{**{key: step.get(key) for key in keys}, "kindLabel": kind_label(step.get("kind"))}
-            for step in steps if step.get("id") not in st.finished]
+    resumed = {s.get("parentStep") for s in st.steps.values() if s.get("parentStep")}
+    return [{**{key: step.get(key) for key in keys},
+             "kindLabel": "polecenie poza piaskownicą" if step.get("id") in st.finished else kind_label(step.get("kind"))}
+            for step in steps if step.get("id") not in st.finished or
+            (step.get("id") in st.outside_started and step.get("id") not in resumed)]
 
 
 def headline(st: FlowState, out: dict) -> str:

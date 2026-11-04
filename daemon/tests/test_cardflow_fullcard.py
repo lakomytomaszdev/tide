@@ -212,6 +212,24 @@ class BackgroundTest(unittest.TestCase):
                          [("K-1-PT-1-r1", "review", "Opus")], "zakończone kroki (planowanie, ticket) nie trafiają")
         self.assertIn("canEnter", running[0])
 
+    def test_outside_command_counts_as_work_not_waiting(self):
+        # 04.11, K-37/PT-153: przy trwającym `make test` poza piaskownicą kafelek pokazywał „czeka”,
+        # a „Teraz w tle” — „Nic nie pracuje teraz w tle”.
+        events = approved().step("K-1-PT-1-1", ticket="PT-1", result="denied", outside=True, command="make test")
+        events.add("step.decision", step="K-1-PT-1-1", ticket="PT-1", choice="run", command="make test")
+        tickets = {t["id"]: t for t in view(events)["tickets"]}
+        self.assertEqual(tickets["PT-1"]["statusLabel"], "polecenie w kolejce")
+        events.add("outside.started", step="K-1-PT-1-1", command="make test")
+        out = view(events)
+        tickets = {t["id"]: t for t in out["tickets"]}
+        self.assertEqual((tickets["PT-1"]["status"], tickets["PT-1"]["statusLabel"]),
+                         ("running", "polecenie poza piaskownicą"))
+        self.assertEqual([(s["id"], s["kindLabel"]) for s in out["flow"]["running"]],
+                         [("K-1-PT-1-1", "polecenie poza piaskownicą")])
+        events.add("outside.finished", step="K-1-PT-1-1", ok=True)
+        events.step("K-1-PT-1-2", ticket="PT-1", parent="K-1-PT-1-1")
+        self.assertEqual([s["id"] for s in view(events)["flow"]["running"]], ["K-1-PT-1-2"])
+
     def test_finish_counts_running_steps_and_unmerged_tickets(self):
         events = approved().step("K-1-PT-1-1", ticket="PT-1", result="done")
         events.step("K-1-PT-1-r1", ticket="PT-1", kind="review", executor="Opus")

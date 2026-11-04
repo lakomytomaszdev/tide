@@ -1701,7 +1701,8 @@ class FlowEngine(PlanEditing):
                 enforce_command_policy=selected.tool == "claude",
                 tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), context_dirs=tuple(context_dirs), dotnet=is_dotnet, node_home=node_home,
                 codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains,
-                chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else ""))
+                chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else "",
+                **self._git_identity(project.repo)))
             bg.prepare()
             for source, target in zip(images, shots):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -4100,6 +4101,18 @@ class FlowEngine(PlanEditing):
         return bool(wanted) and any(
             d.get("choice") == "deny" and d.get("ticket") == ticket and " ".join(str(d.get("command") or "").split()) == wanted
             for d in fold(self.journal.read(card)).step_decisions.values())
+
+    def _git_identity(self, repo: str) -> dict:
+        """Autor commitów kroku = tożsamość gita użytkownika dla tego repozytorium (lokalna, inaczej globalna).
+        Commity agenta mają wyglądać jak commity użytkownika (04.11, K-49: „Krok <krok@tide.invalid>” na firmowym
+        GitLabie). Bez tożsamości w gicie zostaje domyślna kroku."""
+        found = {}
+        for key, field in (("user.name", "git_name"), ("user.email", "git_email")):
+            result = self.git.run(repo, "config", key)
+            value = (result.out or "").strip() if result.ok else ""
+            if value:
+                found[field] = value
+        return found
 
     def _card_done(self, card: str) -> bool:
         """Karta domknięta (krok domknięcia przeszedł albo karta skończona) — koniec czekania „czeka na kartę”."""
