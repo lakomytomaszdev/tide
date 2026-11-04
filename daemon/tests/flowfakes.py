@@ -264,6 +264,12 @@ elif word in ("zgoda-zabroniona", "zgoda-zabroniona-cytat", "zgoda-zabroniona-uk
                    "zgoda-zabroniona-ukosnik": r"make \install",
                    "zgoda-zabroniona-potok": "pwd |& make install"}[word]
         finish("denied", command=command)
+elif word == "siec":
+    # PT-172: odmowa proxy pudełka jest wynikiem denied z poleceniem „network: <domena>”.
+    if "dopisał tę domenę do profilu karty" in prompt or "nie dopisał domeny" in prompt:
+        finish("done")
+    else:
+        finish("denied", command="network: api.sejm.gov.pl")
 elif word == "zgoda-lancuch":
     if "Wznowienie tego samego kroku" in prompt:
         finish("done")

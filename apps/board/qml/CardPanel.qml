@@ -22,6 +22,7 @@ import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "board.js" as Logic
 import "cardDocs.js" as Docs
+import "card" as CardUi
 
 Rectangle {
     id: panel
@@ -83,6 +84,10 @@ Rectangle {
     signal planEditRequested(string cardId, var request)
     property var planEditTicket: null
     signal planApproveRequested(string cardId)                      // zatwierdzenie propozycji planu
+    signal environmentApproveRequested(string cardId, string yaml, bool onlyPlan)   // /Board ApproveCardEnvironment
+    property string environmentError: ""
+    property var environmentReply: null                             // odmowa usługi: pozycje do ponownego pokazania
+    readonly property var flowEnvironment: flowPlan ? (flowPlan.environment || null) : null
     signal planManagerRequested()                                   // szeroki widok planu karty
     signal branchDiffRequested(string cardId)
     signal mergeMainRequested(string cardId)
@@ -122,6 +127,11 @@ Rectangle {
         notice = ""
         branchDiff = ""
         closingFeedback.text = ""
+        environmentError = ""
+        environmentReply = null
+        cardEnvironment.consented = []
+        cardEnvironment.toggleLine = ""
+        cardEnvironment.editing = false
         busy = false
         base = card ? Object.assign({}, card, {tags: (card.tags || []).slice()}) : null
         titleField.text = card ? card.title : ""
@@ -475,6 +485,20 @@ Rectangle {
                     }
                 }
             }
+            // PT-172: pakiet zgód środowiska karty — wspólny komponent z K-35; model liczy usługa (flow.plan.environment).
+            CardUi.CardEnvironment {
+                id: cardEnvironment
+                Layout.fillWidth: true
+                environment: panel.flowEnvironment
+                planPending: !!panel.flowPlan && panel.flowPlan.status === "pending"
+                busy: panel.busy
+                error: panel.environmentError
+                reply: panel.environmentReply
+                onApproveRequested: (yaml, onlyPlan) => {
+                    panel.busy = true
+                    panel.environmentApproveRequested(panel.card.id, yaml, onlyPlan)
+                }
+            }
             QQC2.TextArea {
                 id: planFeedback
                 objectName: "cardPlanFeedback"
@@ -509,7 +533,7 @@ Rectangle {
                 objectName: "cardPlanApprove"
                 text: panel.flowPlan && panel.flowPlan.revision && panel.flowPlan.revision.pending
                       ? "Zatwierdź różnicę" : "Zatwierdź plan i rozpocznij implementację"
-                visible: !!panel.flowPlan && panel.flowPlan.status === "pending"
+                visible: !!panel.flowPlan && panel.flowPlan.status === "pending" && !panel.flowEnvironment
                 enabled: !panel.busy
                 onClicked: {
                     panel.busy = true

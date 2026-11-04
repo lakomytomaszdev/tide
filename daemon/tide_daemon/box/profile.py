@@ -165,6 +165,28 @@ def items(profile: dict, known: dict | None = None) -> list:
     return out
 
 
+def display_items(profile: dict, known: dict | None = None) -> list:
+    """Pozycje profilu do sekcji „Środowisko karty” (PT-172): [(id, grupa, klasa)], w stałej kolejności.
+
+    Grupy: `network`, `docker`, `ports`, `packs`, `resources`, `per-card`. Pozycje ryzykowne (`items`) mają tu te same
+    klasy; Docker i obrazy są żółte (K1: grupa docker = root pudełka), porty i zasoby zielone. UI niczego nie klasyfikuje.
+    """
+    out = [(name, "packs" if name.startswith("pack:") else "network", klass) for name, klass in items(profile, known)
+           if name != "box:per-card"]
+    docker = profile.get("docker") or {}
+    if docker.get("enabled"):
+        out.append(("docker", "docker", YELLOW))
+    for image in docker.get("images") or []:
+        out.append((f"image:{image}", "docker", YELLOW))
+    if profile.get("ports"):
+        out.append(("ports", "ports", GREEN))
+    if profile.get("resources"):
+        out.append(("resources", "resources", GREEN))
+    if profile.get("box") == "per-card":
+        out.append(("box:per-card", "per-card", GREEN))
+    return out
+
+
 def red_items(profile: dict, known: dict | None = None) -> list:
     return [name for name, klass in items(profile, known) if klass == RED]
 

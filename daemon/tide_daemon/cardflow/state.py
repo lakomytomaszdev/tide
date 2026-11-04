@@ -69,6 +69,7 @@ class FlowState:
     plan_review_wait: dict | None = None  # blokada limitu pozostaje po restarcie i próbie review
     plan_revision: dict | None = None
     plan_finished: bool = False
+    box_wait: str = ""                              # PT-172: na co karta czeka przed pudełkiem (boxwait.py)
     plan_change_seq: int = 0
     plan_change_ts: str = ""
     assignments: dict = field(default_factory=dict)  # ticket → autor i recenzent z planu
@@ -198,6 +199,7 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_reviewer = ""
             st.plan_review_wait = None
             st.plan_finished = False
+            st.box_wait = ""
             st.plan_change_seq, st.plan_change_ts = 0, ""
             st.assignments = {}
             st.reviewer_overrides = {}
@@ -263,6 +265,8 @@ def fold(events: list[dict]) -> FlowState:
             st.step_retries[e.get("step")] = e
         elif kind == "step.decision":
             st.step_decisions[e.get("step")] = e
+        elif kind == "box.wait":
+            st.box_wait = str(e.get("value") or "")
         elif kind == "permission.rechecked":
             if e.get("step") in st.finished:
                 st.finished[e["step"]] = {**st.finished[e["step"]], "canAllow": bool(e.get("canAllow"))}

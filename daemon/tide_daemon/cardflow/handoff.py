@@ -174,6 +174,12 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
     elif choice in ("run", "run-always", "run-ticket"):
         detail = (f"Użytkownik uruchomił poza piaskownicą, w tym worktree, polecenie: {command}\n{answer}\n"
                   "Zmiany w plikach (np. package.json, package-lock.json) są już w worktree — sprawdź `git status`.")
+    elif choice == "box-allow":
+        detail = (f"Proxy odmówiło połączenia: {command}. Użytkownik dopisał tę domenę do profilu karty i zlecił "
+                  "przebudowę środowiska. Kontynuuj; jeśli domena nadal jest niedostępna, zgłoś to w notce.")
+    elif choice == "deny" and prior.get("network"):
+        detail = (f"Użytkownik nie dopisał domeny do profilu środowiska: {command}. Połączenie jest odrzucone — "
+                  "kontynuuj bez niego.")
     elif choice == "deny" and prior.get("outside"):
         detail = f"Użytkownik nie zgodził się uruchomić poza piaskownicą: {command}. Kontynuuj bez tego."
     elif choice == "deny" and instead:

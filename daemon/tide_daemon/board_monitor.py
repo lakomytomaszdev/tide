@@ -297,6 +297,18 @@ class BoardMonitor(QObject):
             return
         self.flow.approve_plan(card_id, reply)
 
+    def approve_card_environment(self, card_id: str, yaml_text: str, only_plan: bool, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.approve_environment(card_id, yaml_text, only_plan, reply)
+
+    def box_status(self, slug: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.box_status(slug, reply)
+
     def card_branch_diff(self, card_id: str, reply) -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
