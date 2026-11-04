@@ -409,10 +409,19 @@ def hidden(st, name: str) -> bool:
     return name in st.caretaking
 
 
+def _escalations(st):
+    """Aktualne eskalacje według wspólnego cyklu życia problemu w `owned()`, także bez kroku-sprawcy."""
+    for ident, event in st.caretaker_escalations.items():
+        own = owned(st, ident)
+        if own["handed"] and own["runs"][-1].get("step") == event.get("step"):
+            yield event
+
+
 def annotate(st, decision: dict) -> dict:
     """Decyzja wracająca od opiekuna dostaje `caretaker{summary, recommendation, tried[], optionId, failed}`;
     możliwość z `optionId` jest polecona i pierwsza, a żadna nie jest wybrana (D10)."""
-    escalated = st.caretaker_escalations.get(decision.get("step") or "")
+    escalated = next((event for event in _escalations(st)
+                      if decision.get("step") and event.get("target") == decision["step"]), None)
     if not escalated:
         return decision
     run = st.caretaker_runs.get(escalated.get("step") or "") or {}
@@ -465,12 +474,10 @@ def working(st) -> list[dict]:
 
 def view(st) -> dict:
     """`derived.flow.caretaker`: `enabled`, `working[]` (jak `working`), `escalated[]` — problemy oddane
-    użytkownikowi, których decyzja nadal czeka: `{problem, step, target, ticket, summary, recommendation, optionId,
-    failed, error}`."""
+    użytkownikowi, które nadal są otwarte według `owned()`: `{problem, step, target, ticket, summary,
+    recommendation, optionId, failed, error}`."""
     escalated = []
-    for target, event in st.caretaker_escalations.items():
-        if target in st.step_decisions or any(s.get("parentStep") == target for s in st.steps.values()):
-            continue
+    for event in _escalations(st):
         escalated.append({key: event.get(key) or "" for key in
                           ("problem", "step", "target", "ticket", "summary", "recommendation", "optionId", "error")}
                          | {"failed": bool(event.get("failed"))})

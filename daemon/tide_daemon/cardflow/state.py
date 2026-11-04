@@ -94,7 +94,7 @@ class FlowState:
     caretakers: dict = field(default_factory=dict)            # krok opiekuna → step.started (kind caretaker)
     caretaker_runs: dict = field(default_factory=dict)        # krok opiekuna → caretaker.started
     caretaker_outcomes: dict = field(default_factory=dict)    # krok opiekuna → caretaker.escalated / caretaker.action
-    caretaker_escalations: dict = field(default_factory=dict)  # krok problemu → ostatnie caretaker.escalated
+    caretaker_escalations: dict = field(default_factory=dict)  # id problemu → ostatnie caretaker.escalated
     caretaking: dict = field(default_factory=dict)            # krok problemu → krok opiekuna, który nad nim pracuje
 
     def running(self) -> list[dict]:
@@ -227,7 +227,7 @@ def fold(events: list[dict]) -> FlowState:
             if st.caretaking.get(e.get("target")) == e.get("step"):
                 st.caretaking.pop(e.get("target"), None)
             if kind == "caretaker.escalated":
-                st.caretaker_escalations[e.get("target")] = e
+                st.caretaker_escalations[e.get("problem")] = e
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
         elif kind == 'youtrack.reset':

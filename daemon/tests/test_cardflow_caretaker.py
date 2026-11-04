@@ -192,6 +192,62 @@ class ProblemIdTest(unittest.TestCase):
         self.assertEqual([p["step"] for p in caretaker.problems(st)], ["K-1-PT-7-2"])
 
 
+class NoStepEscalationViewTest(unittest.TestCase):
+    def journal(self, explicit_parent=True):
+        j = Journal()
+        j.step("failed", attempt=1)
+        if not explicit_parent:
+            j.events[-1].pop("parentStep")
+        j.error("failed")
+        self.escalate(j, "flow-error:advance", "care-1")
+        return j
+
+    def escalate(self, j, ident, step, n=1):
+        j.add(caretaker.STARTED, problem=ident, step=step, root="", target="", ticket="", n=n)
+        j.step(step, kind="caretaker", ticket="")
+        j.add("step.finished", step=step, result="done")
+        j.add(caretaker.ESCALATED, problem=ident, step=step, target="", ticket="",
+              action="escalate", summary=ident, recommendation="Sprawdź kartę.")
+
+    def escalated(self, j):
+        return derived(j.st, {"column": "todo"})["flow"]["caretaker"]["escalated"]
+
+    def test_fresh_escalation_is_visible_despite_a_step_with_empty_parent(self):
+        j = self.journal()
+        self.assertTrue(caretaker.owned(j.st, "flow-error:advance")["handed"])
+        self.assertEqual([e["problem"] for e in self.escalated(j)], ["flow-error:advance"])
+
+    def test_resolved_escalation_disappears_and_a_recurrence_uses_the_new_run(self):
+        j = self.journal(explicit_parent=False)
+        self.assertEqual(len(self.escalated(j)), 1)
+        j.add("step.started", step="recovery", kind="ticket", ticket="PT-7")
+        j.add("step.finished", step="recovery", result="done")
+        self.assertFalse(caretaker.owned(j.st, "flow-error:advance")["handed"])
+        self.assertEqual(self.escalated(j), [])
+        self.escalate(j, "flow-error:advance", "care-2", n=2)
+        self.assertEqual([e["step"] for e in self.escalated(j)], ["care-2"])
+
+    def test_two_problems_without_a_step_keep_both_escalations(self):
+        j = self.journal(explicit_parent=False)
+        self.escalate(j, "stalled:card", "care-2")
+        self.assertEqual([e["problem"] for e in self.escalated(j)], ["flow-error:advance", "stalled:card"])
+
+    def test_only_a_user_decision_removes_the_escalation(self):
+        for extra in ({"auto": True}, {"automatic": True}, {"caretaker": {}}, {}):
+            with self.subTest(extra=extra):
+                j = self.journal()
+                j.add("step.decision", step="failed", choice="retry", **extra)
+                self.assertEqual([e["problem"] for e in self.escalated(j)],
+                                 ["flow-error:advance"] if extra else [])
+
+    def test_new_action_does_not_show_the_previous_escalation(self):
+        j = self.journal(explicit_parent=False)
+        j.add(caretaker.STARTED, problem="flow-error:advance", step="care-2", root="", target="", ticket="", n=2)
+        self.assertEqual(self.escalated(j), [])
+        j.add(caretaker.ACTION, problem="flow-error:advance", step="care-2", target="", ok=True)
+        self.assertEqual(self.escalated(j), [])
+
+
 class NoCaretakerTest(unittest.TestCase):
     def test_login_limit_and_user_fault_keep_todays_decision_without_a_problem(self):
         for reason, extra in (("login", {}), ("limit", {}), ("exit", {"fault": "user", "faultCause": "stopped"}),
@@ -330,6 +386,16 @@ class DecisionAndViewTest(unittest.TestCase):
         entries = [h for h in history.build(self.j.st, []) if h["kind"] == "caretaker"]
         self.assertEqual([h["actor"] for h in entries], ["caretaker"])
 
+    def test_user_decision_removes_escalation_and_its_annotation(self):
+        self.j.care("K-1-PT-7-2", "K-1-PT-7-1", 1, "K-1-care-1")
+        self.j.escalate("K-1-PT-7-2", "K-1-care-1", "K-1-PT-7-1")
+        decision = derived(self.j.st, {"column": "todo"})["flow"]["decisions"][0]
+        self.assertIn("caretaker", decision)
+        self.j.add("step.decision", step="K-1-PT-7-2", choice="retry")
+        st = self.j.st
+        self.assertEqual(derived(st, {"column": "todo"})["flow"]["caretaker"]["escalated"], [])
+        self.assertNotIn("caretaker", caretaker.annotate(st, {"step": "K-1-PT-7-2"}))
+
     def test_brief_lists_actions_forbids_and_masks_secrets(self):
         j = Journal()
         reason = "GITHUB_TOKEN=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 export TIDE_X_SECRET=sekret-z-env-42"
@@ -445,6 +511,8 @@ class CaretakerFlowTest(FlowInProcess):
             with self.subTest(care=care):
                 card_id = self.failing_card(care)
                 self.assertTrue(self.start(card_id)["ok"])
+                self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=40),
+                                self.events(card_id))
                 card = self.wait_column(card_id, "waiting", timeout=40)
                 escalated = self.of(card_id, "caretaker.escalated")
                 self.assertEqual([(e["failed"], e["code"]) for e in escalated], [(True, code)])

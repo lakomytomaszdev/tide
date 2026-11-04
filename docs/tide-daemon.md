@@ -1763,6 +1763,8 @@ Stan i widok:
   label, startedTs}`, `escalated[]` — problemy oddane użytkownikowi, których decyzja czeka: `{problem, step,
   target, ticket, summary, recommendation, optionId, failed, error}`. `flow.running[]` ma krok opiekuna z
   `kind: caretaker`, `kindLabel: "opiekun"` (`labels.KIND_LABELS`), `canEnter: false`.
+- Eskalacje są przechowywane według id problemu, także gdy `target` jest pusty. Widok i adnotacja decyzji
+  korzystają z cyklu życia w `owned()`: pokazują tylko eskalację ostatniego działania przy otwartym problemie.
 - Oddana decyzja błędu ma pole `caretaker{summary, recommendation, tried[], optionId, failed}` (`tried[]` —
   nieudane działania od ostatniego zamknięcia: `{step, action, ok, text}`); możliwość z `optionId` jest polecona
   i pierwsza, żadna nie jest wybrana (D10). Renderowanie w oknie decyzji to #15. Eskalacja powiadamia raz
