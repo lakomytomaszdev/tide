@@ -182,6 +182,27 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertTrue(approved["ok"], approved)
         self.assertEqual(len(approved["map"]), 3)
 
+    def test_ready_revision_can_be_returned_again_from_the_decision_window(self):
+        # 04.11, K-46: okno decyzji proponowało „Odeślij z uwagami” przy gotowej poprawce, a usługa odpowiadała
+        # „poprawa planu już trwa”.
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        box = []
+        self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "Dodaj ticket"}), box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(wait_until(lambda: len(self.of(card, "plan.reviewed")) == 2, timeout=20), self.events(card))
+        first = self.of(card, "plan.revision-ready")[-1]
+        again = self.flow.engine.edit_plan(card, {"action": "return", "feedback": "Doprecyzuj ryzyka."})
+        self.assertTrue(again["ok"], again)
+        self.assertTrue(wait_until(lambda: len(self.of(card, "plan.revision-ready")) >= 2 and
+                                   len(self.of(card, "plan.reviewed")) == 3, timeout=20), self.events(card))
+        second = self.of(card, "plan.revision-ready")[-1]
+        self.assertEqual(second["baseline"], first["baseline"])   # różnica dalej od planu sprzed pierwszej poprawki
+        self.assertEqual(second["difference"]["added"], ["#3"])   # zmiany z pierwszej poprawki zostają
+        self.assertIn("Dodaj ticket", second["feedback"])
+        self.assertIn("Doprecyzuj ryzyka.", second["feedback"])
+        self.assertTrue(self.approve(card)["ok"])
+
     def test_plan_question_can_be_answered_while_ticket_is_running_after_restart(self):
         from tide_daemon.cardflow.state import fold, derived
         from tide_daemon.cardflow.engine import FlowEngine
