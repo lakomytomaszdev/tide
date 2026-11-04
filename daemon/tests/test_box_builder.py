@@ -20,7 +20,8 @@ from tide_daemon.box import profile as bp
 from tide_daemon.box import state as bs
 from tide_daemon.box import templates
 from tide_daemon.box.incus import Incus
-from tide_daemon.box.settings import Settings
+from tide_daemon.box import settings as bset
+from tide_daemon.box.settings import BoxSettings
 
 from .fakebin import calls, make_env
 
@@ -53,15 +54,25 @@ images: [node:20]
 
 
 class RecordingPolicy:
-    """Atrapa interfejsu proxy (#5): zapisuje wywołanie do dziennika atrap (kolejność względem incus)."""
+    """Atrapa uruchomionego proxy (#5, `ProxyService`): adres nasłuchu i port jak z `proxy.running()`, wywołania
+    zapisane do dziennika atrap (kolejność względem incus)."""
 
-    def __init__(self):
+    def __init__(self, listen="10.173.184.1", port=18080):
+        self.listen, self.port = listen, port
         self.calls = []
+        self.cleared = []
+
+    def _log(self, line):
+        with open(os.environ["TIDE_FAKE_LOG"], "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
 
     def set_box_policy(self, ip, domains, ollama, denied_log_path):
         self.calls.append((ip, list(domains), ollama, denied_log_path))
-        with open(os.environ["TIDE_FAKE_LOG"], "a", encoding="utf-8") as fh:
-            fh.write(f"set_box_policy {ip} {','.join(domains)} {ollama} {denied_log_path}\n")
+        self._log(f"set_box_policy {ip} {','.join(domains)} {ollama} {denied_log_path}")
+
+    def clear_box_policy(self, ip):
+        self.cleared.append(ip)
+        self._log(f"clear_box_policy {ip}")
 
 
 class BoxCase(unittest.TestCase):
@@ -70,8 +81,7 @@ class BoxCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         env = make_env(self.tmp)
         env.update({"TIDE_BOARD_DIR": os.path.join(self.tmp, "board"),
-                    "XDG_STATE_HOME": os.path.join(self.tmp, "state"),
-                    "TIDE_BOX_SETTINGS": os.path.join(self.tmp, "box.json")})
+                    "XDG_STATE_HOME": os.path.join(self.tmp, "state")})
         self.env = env
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
@@ -90,8 +100,7 @@ class BoxCase(unittest.TestCase):
         self.addCleanup(p.stop)
         templates._cache.clear()
         self.addCleanup(templates._cache.clear)
-        self.settings = Settings(project="user-1000", proxy_address="10.173.184.1", proxy_port=18080,
-                                 ip_wait_seconds=0)
+        self.settings = BoxSettings(project="user-1000", ip_wait_seconds=0)
         self.policy = RecordingPolicy()
         self.fake_incus = os.path.join(self.tmp, "fakebin", "incus")
 
@@ -241,8 +250,7 @@ class BuildTest(BoxCase):
 
     def test_ipv6_filtering_follows_settings(self):
         self.approve()
-        settings = Settings(project="user-1000", proxy_address="10.173.184.1", ipv6_filtering=True,
-                            ip_wait_seconds=0)
+        settings = BoxSettings(project="user-1000", ipv6_filtering=True, ip_wait_seconds=0)
         self.builder(settings).build("plasma-tide")
         nic = [a for a in self.incus_calls() if a[:3] == ["config", "device", "override"] and "eth0" in a][0]
         self.assertIn("security.ipv6_filtering=true", nic)
@@ -261,21 +269,52 @@ class BuildTest(BoxCase):
         first_exec = min(i for i, l in enumerate(log) if l.startswith("incus exec"))
         self.assertLess(log.index([l for l in log if l.startswith("set_box_policy")][0]), first_exec)
 
-    def test_missing_proxy_settings_fail_before_any_incus_call(self):
+    def test_proxy_without_bridge_address_fails_before_any_incus_call(self):
         self.approve()
         with self.assertRaisesRegex(bb.BuildError, "proxy"):
-            self.builder(Settings(project="user-1000")).build("plasma-tide")
+            self.builder(policy=RecordingPolicy(listen="")).build("plasma-tide")
         self.assertEqual(self.incus_calls(), [])
 
-    def test_missing_proxy_service_fails_before_first_exec(self):
+    def test_missing_proxy_service_fails_before_any_incus_call(self):
         self.approve()
-        with self.assertRaisesRegex(bb.BuildError, "proxy"):
-            self.builder(policy=bb.ProxyMissing()).build("plasma-tide")
-        self.assertFalse([a for a in self.incus_calls() if a[0] == "exec"])
-        last = bs.events("plasma-tide")[-1]
-        self.assertEqual((last["type"], last["result"]), ("box.build", "error"))
-        self.assertIn("duration", last)
-        self.assertEqual(bs.journal_state("plasma-tide", "plasma-tide")[0], bs.FAILED)
+        with mock.patch("tide_daemon.box.proxy.running", return_value=None):
+            b = bb.Builder(self.settings, Incus("user-1000", binary=self.fake_incus), scripts_dir=self.stacks)
+        self.assertIsInstance(b.policy, bb.ProxyMissing)
+        with self.assertRaisesRegex(bb.BuildError, "proxy Tide \\(#5\\) nie jest uruchomione"):
+            b.build("plasma-tide")
+        self.assertEqual(self.incus_calls(), [])
+
+    def test_running_proxy_is_the_single_source_of_address_and_policy(self):
+        self.approve()
+        service = RecordingPolicy(listen="10.99.0.1", port=18555)
+        with mock.patch("tide_daemon.box.proxy.running", return_value=service):
+            b = bb.Builder(self.settings, Incus("user-1000", binary=self.fake_incus), scripts_dir=self.stacks)
+        b.build("plasma-tide")
+        self.assertEqual(len(service.calls), 1)
+        for argv in (a for a in self.incus_calls() if a[0] == "exec"):
+            self.assertIn("HTTPS_PROXY=http://10.99.0.1:18555", argv)
+
+    def test_build_policy_is_cleared_after_snapshot_and_on_failure(self):
+        self.approve()
+        self.builder().build("plasma-tide")
+        self.assertEqual(self.policy.cleared, [self.policy.calls[0][0]])
+        log = calls(self.env)
+        snap = max(i for i, l in enumerate(log) if "snapshot create" in l)
+        self.assertGreater(log.index(f"clear_box_policy {self.policy.cleared[0]}"), snap)
+        self.approve({**PROFILE, "setup": ["exit 7"]})
+        with self.assertRaises(bb.BuildError):
+            self.builder().build("plasma-tide")
+        self.assertEqual(len(self.policy.cleared), 2)
+
+    def test_home_volume_belongs_to_agent(self):
+        self.approve()
+        self.builder(BoxSettings(project="user-1000", ip_wait_seconds=0, agent_uid=1001, agent_gid=1002)) \
+            .build("plasma-tide")
+        create = [a for a in self.incus_calls() if a[:3] == ["storage", "volume", "create"]]
+        self.assertEqual(create, [["storage", "volume", "create", "--project", "user-1000", "tide", "plasma-tide-home",
+                                   "initial.uid=1001", "initial.gid=1002", "initial.mode=0750"]])
+        self.assertEqual(self.fake_state()["volume_config"]["tide/plasma-tide-home"],
+                         {"initial.uid": "1001", "initial.gid": "1002", "initial.mode": "0750"})
 
     def test_failed_verify_still_snapshots_with_warning(self):
         self.approve({**PROFILE, "verify": ["true", "exit 3"]})
@@ -383,6 +422,41 @@ class CardCopyTest(BoxCase):
         self.assertEqual(st.recipe_hash, res.hash)
         self.assertEqual(st.diff, [])
 
+    def test_card_copy_has_own_clean_snapshot_and_reset_card_restores_it(self):
+        self.approve()
+        b = self.builder()
+        b.build("plasma-tide")
+        name = b.copy_for_card("plasma-tide", "K-38")
+        inst = self.fake_state()["instances"][name]
+        self.assertEqual([s["name"] for s in inst["snapshots"]], ["clean"])
+        snap = inst["snapshots"][0]
+        # migawka kopii już ma własny /home/agent i filtrowanie NIC — reset ich nie cofa
+        self.assertEqual(snap["devices"]["home"]["source"], "plasma-tide-k-38-home")
+        self.assertEqual(snap["devices"]["eth0"]["security.mac_filtering"], "true")
+        create = [a for a in self.incus_calls() if a[:3] == ["storage", "volume", "create"] and name + "-home" in a]
+        self.assertIn("initial.uid=1000", create[0])
+        bs.mark_in_use("plasma-tide", name, "PT-2")
+        code, _, err = self.run_cli("reset", "plasma-tide", "--card", "K-38", builder=b)
+        self.assertEqual(code, 3, err)
+        bs.mark_released("plasma-tide", name, "PT-2")
+        code, out, err = self.run_cli("reset", "plasma-tide", "--card", "K-38", builder=b)
+        self.assertEqual(code, 0, err)
+        self.assertIn(["snapshot", "restore", "--project", "user-1000", name, "clean"], self.incus_calls())
+        st = b.status("plasma-tide", "K-38")
+        self.assertTrue(st.nic_filtering)
+        self.assertEqual(self.fake_state()["instances"][name]["devices"]["home"]["source"], "plasma-tide-k-38-home")
+        reset = [e for e in bs.events("plasma-tide", name) if e["type"] == "box.reset"]
+        self.assertIsInstance(reset[0]["duration"], (int, float))
+
+    def test_card_copy_keeps_verify_warning(self):
+        self.approve({**PROFILE, "verify": ["exit 3"]})
+        b = self.builder()
+        b.build("plasma-tide")
+        name = b.copy_for_card("plasma-tide", "K-38")
+        ready = [e for e in bs.events("plasma-tide", name) if e["type"] == "box.ready"]
+        self.assertTrue(ready[0]["warning"])
+        self.assertTrue(b.status("plasma-tide", "K-38").warning)
+
     def test_copy_without_clean_snapshot_is_refused(self):
         with self.assertRaisesRegex(bb.BuildError, "clean"):
             self.builder().copy_for_card("plasma-tide", "K-38")
@@ -441,6 +515,18 @@ class StatusResetDestroyTest(BoxCase):
         # zmiana poza hashem (zasoby) nie robi pudełka nieaktualnym
         self.approve({**PROFILE, "resources": {"cpu": 2}})
         self.assertEqual(b.status("plasma-tide").state, bs.CLEAN)
+
+    def test_box_without_approved_profile_is_not_usable(self):
+        self.approve()
+        b = self.builder()
+        b.build("plasma-tide")
+        os.remove(bp.project_path("plasma-tide"))
+        st = b.status("plasma-tide")
+        self.assertTrue(st.nic_filtering)
+        self.assertFalse(st.usable)
+        code, out, _ = self.run_cli("status", "plasma-tide", builder=b)
+        self.assertEqual(code, 3)
+        self.assertIn("brak zatwierdzonego profilu", out)
 
     def test_status_without_box(self):
         self.approve()
@@ -539,18 +625,41 @@ class CliTest(BoxCase):
             self.assertEqual(code, 1)
             self.assertIn("niedostępne do #16", err)
 
-    def test_tide_entry_point_build_without_proxy_fails_before_exec(self):
+    def test_tide_entry_point_build_without_running_proxy_fails_before_incus(self):
         # Osobny proces czyta prawdziwe box/stacks (bez skryptów .sh z #29), więc profil bez stosów.
+        # Ustawienia z sekcji `box` w cardflow.json (ten sam plik co proxy PT-168); proxy w tym procesie nie biegnie.
         self.approve({**PROFILE, "stacks": []})
-        with open(self.env["TIDE_BOX_SETTINGS"], "w", encoding="utf-8") as fh:
-            json.dump({"project": "user-1000", "proxy-address": "10.173.184.1", "ip-wait-seconds": 0}, fh)
+        path = bset.settings_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"box": {"project": "user-1000", "ip-wait-seconds": 0, "proxy-port": 18555}}, fh)
         env = {**os.environ, "PYTHONPATH": DAEMON}
         proc = subprocess.run([sys.executable, os.path.join(DAEMON, "tide.py"), "box", "build", "plasma-tide"],
                               env=env, stdin=subprocess.PIPE, capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 1, proc.stderr)
         self.assertIn("proxy Tide (#5)", proc.stderr)
-        self.assertTrue([a for a in self.incus_calls() if a[0] == "init"])
-        self.assertFalse([a for a in self.incus_calls() if a[0] == "exec"])
+        self.assertEqual(self.incus_calls(), [])
+
+
+class SettingsTest(unittest.TestCase):
+    def test_builder_keys_in_box_section_with_defaults(self):
+        got = bset.from_dict({})
+        self.assertEqual((got.project, got.base_image, got.pool, got.nic, got.ipv6_filtering, got.agent_uid),
+                         (f"user-{os.getuid()}", "tide-base", "tide", "eth0", False, 1000))
+        got = bset.from_dict({"box": {"enabled": True, "project": "user-7", "base-image": "tide-base-2",
+                                      "pool": "fast", "nic": "eth1", "ipv6-filtering": True, "agents-version": "1.2",
+                                      "ip-wait-seconds": 5, "agent-uid": 1001, "agent-gid": 1002}})
+        self.assertEqual((got.project, got.base_image, got.pool, got.nic, got.ipv6_filtering, got.agents_version,
+                          got.ip_wait_seconds, got.agent_uid, got.agent_gid, got.warnings),
+                         ("user-7", "tide-base-2", "fast", "eth1", True, "1.2", 5.0, 1001, 1002, ()))
+        self.assertTrue(got.enabled)
+
+    def test_bad_builder_values_warn_and_fall_back(self):
+        got = bset.from_dict({"box": {"project": "a b", "pool": "", "ipv6-filtering": "tak",
+                                      "ip-wait-seconds": -1, "agent-uid": 0}})
+        self.assertEqual((got.project, got.pool, got.ipv6_filtering, got.ip_wait_seconds, got.agent_uid),
+                         (f"user-{os.getuid()}", "tide", False, 30.0, 1000))
+        self.assertEqual(len(got.warnings), 5)
 
     def test_tide_entry_point_usage(self):
         proc = subprocess.run([sys.executable, os.path.join(DAEMON, "tide.py")], capture_output=True, text=True,

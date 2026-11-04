@@ -53,6 +53,8 @@ def format_status(st) -> str:
     lines.append(f"hash: {st.recipe_hash or '—'}")
     if st.profile_hash:
         lines.append(f"hash profilu: {st.profile_hash}")
+    elif st.exists:
+        lines.append("profil: brak zatwierdzonego profilu — pudełko nieużywalne (tide box approve …)")
     if st.diff:
         lines.append("różnice: " + ", ".join(st.diff))
     if st.exists:
@@ -84,7 +86,12 @@ def main(argv=None, out=None, err=None, builder=None) -> int:
             bb.approve(args.slug, text, args.accept_red)
             print(f"profil {args.slug} zatwierdzony (box.approved source=cli): {bp.project_path(args.slug)}", file=out)
             return 0
-        b = builder or bb.Builder(bset.load())
+        if builder is None:
+            settings = bset.load()
+            for warning in settings.warnings:
+                print(f"tide box: {warning}", file=err)
+            builder = bb.Builder(settings)
+        b = builder
         if args.cmd == "build":
             res = b.build(args.slug)
             print(f"pudełko {res.box}: migawka clean, hash {res.hash}, {res.duration:.1f} s", file=out)
@@ -109,7 +116,7 @@ def main(argv=None, out=None, err=None, builder=None) -> int:
     except bb.BoxBusy as exc:
         print(f"tide box {args.cmd}: {exc}", file=err)
         return 3
-    except (bb.BuildError, bp.ProfileError, bset.SettingsError, IncusError, OSError, ValueError) as exc:
+    except (bb.BuildError, bp.ProfileError, IncusError, OSError, ValueError) as exc:
         print(f"tide box {args.cmd}: {exc}", file=err)
         return 1
     return 2

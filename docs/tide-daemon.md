@@ -2392,9 +2392,13 @@ usunięcie, zatwierdzenie), `box/state.py` (dziennik, stany, `BoxStatus`, `card_
 z instalacji) i stdin z `/dev/null`. Program: `$TIDE_INCUS_BIN` albo `incus` z PATH. Instancję szukamy po
 dokładnej nazwie w `incus list --format json` (filtr `incus list <nazwa>` dopasowuje przedrostki — błąd z P-5).
 
-**Ustawienia** `$XDG_CONFIG_HOME/tide/box.json` (wszystko opcjonalne): `project`, `base-image` (`tide-base`),
-`pool` (`tide`), `nic` (`eth0`), `ipv6-filtering` (`false`), `proxy-address` (adres mostka, **bez wartości
-domyślnej**), `proxy-port` (18080), `agents-version`, `ip-wait-seconds` (30).
+**Ustawienia** — ta sama sekcja `box` w `$XDG_CONFIG_HOME/tide/cardflow.json` i ten sam moduł `box/settings.py`
+(`BoxSettings`) co proxy (niżej, „Proxy wyjściowe”); klucze buildera, wszystkie opcjonalne: `project`
+(`user-<uid>`), `base-image` (`tide-base`), `pool` (`tide`), `nic` (`eth0`), `ipv6-filtering` (`false`),
+`agents-version`, `ip-wait-seconds` (30), `agent-uid`/`agent-gid` (1000 — właściciel wolumenu `/home/agent`;
+ostateczną wartość ustala obraz bazowy #16). Zła wartość → ostrzeżenie na stderr `tide box` i wartość domyślna.
+Adresu proxy w ustawieniach nie ma: builder bierze adres i port z **uruchomionego proxy** (`box.proxy.running()`:
+nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źródło dla proxy i budowy.
 
 **Kolejność budowy** (`tide box build <slug>`, profil projektu z Tablicy):
 
@@ -2402,7 +2406,9 @@ domyślnej**), `proxy-port` (18080), `agents-version`, `ip-wait-seconds` (30).
    zanim wyśle pierwszy pakiet) z `-c limits.cpu=… -c limits.memory=… -c limits.memory.swap=false` z profilu
    (domyślnie 8 / 24GiB) i `security.nesting=true` tylko przy `docker.enabled`. **Nigdy `security.privileged`.**
    `incus config device override <slug> root size=<resources.disk>` (domyślnie 60GB); wolumen `<slug>-home`
-   w puli jako urządzenie dyskowe na `/home/agent`.
+   w puli jako urządzenie dyskowe na `/home/agent`, tworzony z `initial.uid=<agent-uid> initial.gid=<agent-gid>
+   initial.mode=0750` — pusty wolumen w pudełku nieuprzywilejowanym byłby `root:root` i agent nie mógłby w nim
+   pisać (istniejący wolumen nie jest zmieniany; `chown` istniejących danych to sprawa #16).
 2. Filtrowanie NIC (niżej).
 3. `incus start`, adres IPv4 pudełka, `set_box_policy(ip, build_domains(profile), host-ollama, dziennik odmów
    budowy)` w proxy Tide (#5) — przed pierwszym `incus exec`. Dziennik odmów:
@@ -2420,10 +2426,13 @@ domyślnej**), `proxy-port` (18080), `agents-version`, `ip-wait-seconds` (30).
    `templates_version` to skrót wszystkich `box/stacks/*.yaml` i `*.sh`.
 
 Każde `incus exec` budowy: `-T`, jako root pudełka, z `HTTPS_PROXY`/`HTTP_PROXY` (i małymi literami)
-`http://<proxy-address>:<proxy-port>`, `NO_PROXY=localhost,127.0.0.1,::1`, `DEBIAN_FRONTEND=noninteractive`,
-`TIDE_NODE_VERSION`/`TIDE_DOTNET_SDK` z profilu. **Brak `proxy-address` to błąd przed pierwszym poleceniem
-`incus`**, a dopóki nie ma proxy Tide (#5), domyślna polityka (`ProxyMissing`) przerywa budowę przed pierwszym
-`incus exec` — budowy „bez proxy” nie ma. Wyjście poleceń: `$XDG_STATE_HOME/tide/box/<slug>/build.log`.
+`http://<adres mostka>:<box.proxy-port>` z uruchomionego proxy, `NO_PROXY=localhost,127.0.0.1,::1`,
+`DEBIAN_FRONTEND=noninteractive`, `TIDE_NODE_VERSION`/`TIDE_DOTNET_SDK` z profilu. **Brak uruchomionego proxy
+(albo jego adresu) to błąd przed pierwszym poleceniem `incus`** (polityka `ProxyMissing`) — budowy „bez proxy”
+nie ma. Proxy biegnie w usłudze, więc `tide box build` uruchomione jako osobny proces dziś zawsze odmawia;
+pierwszą prawdziwą budowę (przez usługę) robi #29. Po migawce (i przy błędzie) builder zdejmuje politykę budowy
+(`clear_box_policy`), więc pudełko po budowie nie ma w proxy żadnej polityki do czasu kroku (#18).
+Wyjście poleceń trafia na bieżąco (strumieniowo) do `$XDG_STATE_HOME/tide/box/<slug>/build.log`.
 `type: vm` → błąd „nieobsługiwane w tej wersji” bez żadnego wywołania `incus`. Istniejące pudełko jest przy
 budowie usuwane i tworzone od nowa (wolumen `/home/agent` zostaje); budowa odmawia, gdy w pudełku biegną kroki.
 
@@ -2440,8 +2449,11 @@ nie startuje (#18).
 
 **Kopia per karta** (`box: per-card`): `copy_for_card(slug, card)` → `incus copy <slug>/clean <slug>-<karta>`
 (nazwa wyłącznie z `card_box_name(slug, card)`, np. `plasma-tide-k-38`), `user.tide.copy-of=<slug>`,
-`user.tide.card=K-38`, własny wolumen `<kopia>-home` na `/home/agent`, filtrowanie NIC (`device set`) i zdarzenie
-`box.ready` z `card`, `copy_of`, `hash`. Druga kopia dla tej samej karty nie powstaje (zwraca istniejącą nazwę).
+`user.tide.card=K-38`, własny wolumen `<kopia>-home` na `/home/agent` (z tym samym właścicielem `initial.*`),
+filtrowanie NIC (`device set`), **własna migawka `clean`** kopii (`incus copy` z migawki daje instancję bez
+migawek; migawka po podpięciu wolumenu i filtrowania, więc `reset --card` ich nie cofa) i zdarzenie `box.ready`
+z `card`, `copy_of`, `hash` i `warning` przeniesionym z pudełka projektu (zbudowane z ostrzeżeniem → kopia też).
+Druga kopia dla tej samej karty nie powstaje (zwraca istniejącą nazwę).
 Kopia startuje dopiero z pierwszym krokiem (#18/#19).
 
 **Dziennik i stany.** `<Tablica>/projects/<slug>/box/journal.jsonl` (JSON Lines, `flock`): `box.build`
@@ -2452,7 +2464,8 @@ Kopia startuje dopiero z pierwszym krokiem (#18/#19).
 zatrzymane`, plus `niezgodne` i `błąd budowy`. Stan z dziennika jest korygowany przez Incusa: brak instancji →
 `brak`, brak filtrowania → `niezgodne`, hash migawki różny od profilu → `nieaktualny (do przebudowy)` z listą
 kluczy z `profile.diff` (np. `stacks, apt`; zmiana zasobów albo domen nie jest różnicą przepisu), zatrzymana
-instancja → `zatrzymane`.
+instancja → `zatrzymane`. `BoxStatus.usable` (czy krok może wejść, #18) wymaga istniejącej instancji,
+filtrowania NIC, **zatwierdzonego profilu** (brak profilu = nieużywalne) i braku różnic przepisu.
 
 **CLI** `python3 daemon/tide.py box …` (kody: 0 sukces, 1 błąd, 2 zły argument, 3 odmowa/niezgodne/nieaktualne):
 
@@ -2460,7 +2473,7 @@ instancja → `zatrzymane`.
 | --- | --- |
 | `build <slug>` | budowa jak wyżej |
 | `status <slug> [--card K-38] [--json]` | stan, stan w dzienniku, hash migawki i profilu, różnice, filtrowanie NIC, kroki w pudełku |
-| `reset <slug> [--card K-38]` | `incus snapshot restore <pudełko> clean`; odmawia (kod 3), gdy według dziennika biegnie krok; `/home/agent` to osobny wolumen — reset go nie dotyka |
+| `reset <slug> [--card K-38]` | `incus snapshot restore <pudełko> clean` (kopia karty ma własną migawkę `clean`); odmawia (kod 3), gdy według dziennika biegnie krok; `/home/agent` to osobny wolumen — reset go nie dotyka |
 | `destroy <slug> --yes` | usuwa pudełko i wszystkie kopie per karta (`user.tide.copy-of`) z ich wolumenami `/home/agent`; odmawia, gdy biegnie krok |
 | `approve <slug> --file box.yaml [--accept-red POZYCJA]…` | walidacja schematem z #2, zapis w Tablicy i `box.approved source=cli` — jawna zgoda z wiersza poleceń, równoważna pakietowi zgód; pozycja czerwona (np. `github.com`) tylko z `--accept-red` |
 | `base`, `login` | „niedostępne do #16” (obraz bazowy) |
@@ -2474,6 +2487,88 @@ set/config device set|override|add` i wolumeny go zmieniają), a `exec` wykonuje
 z PATH zaczynającym się od `<fakebin>/box` — `apt-get`, `docker` i inne programy „w pudełku” tylko zapisują
 wywołanie. `daemon/tests/__init__.py` ustawia `TIDE_INCUS_BIN` na nieistniejący program, więc żaden test nie
 dosięgnie prawdziwego Incusa. Testy: `daemon/tests/test_box_builder.py`.
+### Proxy wyjściowe (PT-168)
+
+`tide_daemon/box/proxy.py` to jedyna droga pudełka do sieci i do Ollamy hosta: nftables wpuszczają z `incusbr0`
+tylko `<adres mostka>:<box.proxy-port>`, pudełko nie ma DNS ani NAT. Proxy działa w usłudze, we własnym wątku
+z pętlą asyncio, i nigdy nie zmienia nftables ani nie woła `sudo` (test przeszukuje kod usługi).
+
+**Start.** Ustawienia w sekcji `box` pliku `$XDG_CONFIG_HOME/tide/cardflow.json` (`box/settings.py`):
+
+```json
+{"box": {"enabled": true, "proxy-port": 18080, "bridge": "incusbr0"}}
+```
+
+Proxy startuje razem z usługą tylko przy `enabled: true` (domyślnie wyłączone; zła wartość — wyłączone), gdy jest
+polecenie `incus` i mostek ma adres (`incus network get incusbr0 ipv4.address`; z projektu ograniczonego
+`incus-user` to polecenie bywa niedostępne — na tym komputerze zawsze — wtedy zapasem jest adres interfejsu
+`ip -j -4 addr show dev incusbr0`, ten sam, który wpuszczają reguły nftables). Zapas jest słabszy niż odczyt
+z Incusa: sprawdza tylko, że interfejs o nazwie z `box.bridge` jest mostkiem w jądrze (`ip -j -d link show`,
+`linkinfo.info_kind == "bridge"`), więc `"bridge": "wlan0"` czy `eth0` daje odmowę startu, ale inny mostek
+wskazany w ustawieniach wprost (np. `virbr0`) przejdzie — wtedy jego goście dostają 403 na wszystko (brak polityki).
+Sprawdzenie, że profil Incusa podłącza pudełka do tego mostka (`incus profile show default`), odłożone: nie wiemy,
+czy `incus-user` je widzi. Słucha **wyłącznie** na tym
+adresie: `0.0.0.0`, `::`, pętla zwrotna i adres inny niż mostka → odmowa startu. Każda przeszkoda (brak Incusa,
+brak mostka, zły adres, zajęty port) to wpis w dzienniku usługi, a usługa działa dalej jak bez pudełka.
+`--no-box` wyłącza proxy niezależnie od ustawień. `proxy-port` musi być równy `BOX_PROXY_PORT` z `make box-install`.
+
+**Polityka per pudełko, kluczowana adresem IP.** `set_box_policy(ip, domains, ollama, denied_log_path, *,
+full=False, box="")` ustawia (albo zastępuje) politykę pudełka o adresie `ip`; działa od następnego połączenia,
+bez restartu proxy (otwarte tunele nie są przerywane). Woła ją krok w pudełku (PT-181) przy starcie kroku
+i builder (PT-167) przed pierwszym `incus exec` budowy; `box.proxy.running()` zwraca proxy uruchomione z usługą
+(po `stop()` — `None`).
+Nieznany adres = brak polityki = każde żądanie 403 (wpis tylko w dzienniku usługi). Klucz IP jest bezpieczny
+**wyłącznie dlatego**, że builder ustawia na NIC każdego pudełka `security.mac_filtering`, `ipv4_filtering`
+i `ipv6_filtering` (Incus odrzuca pakiety z cudzym adresem źródłowym) — proxy nie umie tego sprawdzić samo;
+„podszycie pod IP innego pudełka” jest na czerwonej liście PT-191.
+
+Listę składa `compose_policy(project, cards)`: domeny modeli (`MODEL_DOMAINS`: `api.anthropic.com`,
+`statsig.anthropic.com`, `api.openai.com`, `chatgpt.com`, `auth.openai.com` — dokłada usługa, nie profil)
++ `templates.build_domains` profilu projektu (`base`, szablony wg `stacks`, `network.domains` — ta sama funkcja co
+w builderze) + profile aktywnych kart scalone z profilem projektu przez `profile.merge` (czerwone pozycje karty
+tylko z `accepted_red`). Usługa sama nigdy nie dokłada `github.com`, `gitlab.*`, adresów wewnętrznych ani
+`*.firma.example` (test). `network.full` karty bez `network.full-consent: true` jest pomijane z wpisem w dzienniku
+usługi; z jawną zgodą i `accepted_red: [network.full]` daje `full=True`: każda poprawna nazwa i goły adres
+**publiczny**. Pełna sieć nie otwiera sieci lokalnej ani adresu hosta na mostku — to osobna czerwona klasa: cel
+spoza listy jest zawsze traktowany jako publiczny, więc `CONNECT 10.173.184.1:443`, `10.20.3.10:443`
+czy `nas.lan:443` (rozwiązane do sieci lokalnej) dostają 403, chyba że ten cel jest osobno na liście. `host-ollama: true` w profilu projektu albo karty daje `ollama=True`.
+
+**CONNECT bez MITM.** Tylko port 443; dopasowanie dokładne albo `*.domena` (tylko poddomeny:
+`*.npmjs.org` nie pasuje do `npmjs.org`, `npmjs.org.attacker.com` ani `evil-npmjs.org`). Nazwy są porównywane
+małymi literami i bez jednej kropki końcowej; nazwa z liczbową albo szesnastkową ostatnią etykietą (`10.1`,
+`3232235786`) nie jest nazwą. Goły adres IP przechodzi tylko wtedy, gdy jest dosłownie na liście. Nazwę rozwiązuje
+proxy i łączy się z adresem, który właśnie sprawdziło: pętla zwrotna, link-local, nieokreślony i multicast — nigdy;
+adres prywatny i 100.64/10 — tylko dla celu, który jest na liście pudełka i który profil uznaje za wewnętrzny
+(przyjęta czerwona pozycja karty, `BoxPolicy.internal`), więc nazwa publiczna wskazująca nagle do sieci lokalnej
+nie przechodzi (403 z rodzajem `ADDRESS`). Po `200 Connection established` proxy tylko
+przepisuje bajty w obie strony.
+
+**Zwykłe HTTP.** Do obcej domeny (`GET http://…`) — zawsze 403. Wariantu „zwykłe HTTP do domen z listy”
+(`box.proxy-plain-http`) nie ma: apt idzie przez HTTPS (decyzja `apt-przez-https`, `docs/box-decisions.md`).
+
+**Ollama hosta przez proxy.** Żądanie w formie względnej (`GET /api/tags`, czyli `http://<mostek>:<port>/api/tags`
+z pudełka) albo bezwzględnej na adres samego proxy idzie na `127.0.0.1:11434` — tylko dla pudełka z `ollama=True`
+i tylko ścieżki `/`, `/api/…`, `/v1/…` (reszta 404; miejsce na trasy PT-175). Proxy ustawia `Host:
+127.0.0.1:11434` i `Connection: close`, wyrzuca nagłówki „hop-by-hop”, a odpowiedź przekazuje bajt w bajt bez
+buforowania (strumień `/api/generate` dociera fragmentami). Inny cel niż `127.0.0.1:11434` nie jest możliwy —
+proxy nie jest przekaźnikiem HTTP. `ollama=False` → 403 i wiersz `host-ollama`. Zmian nftables w czasie pracy nie ma.
+`models/boxconfig.for_box(data, mostek, port)` robi z `models.json` hosta wersję dla pudełka: punkty Ollamy hosta
+(`127.0.0.1`/`localhost`/`[::1]` na 11434) → `http://<mostek>:<port proxy>`; inne punkty, dostawcy i `tokenFile`
+nie trafiają do pudełka, a role przypięte do pominiętego punktu znikają (obowiązuje rola domyślna).
+
+**Dziennik odmów.** Odmowa to 403 i wiersz TSV w `denied_log_path` (plik 0600) — w kroku karty
+`proxy-denied.log` w katalogu bieżącego kroku, przy budowie ścieżka od buildera (zdarzenie `box.build` w dzienniku
+Tablicy):
+
+```
+2026-11-04T15:02:11+01:00	tide-proto	10.173.184.23	example.com	443	CONNECT
+```
+
+Pola: czas, pudełko (nazwa z `box`, inaczej adres), adres IP pudełka, domena, port, rodzaj (`CONNECT` — cel spoza
+listy, `ADDRESS` — cel z listy rozwiązany na adres niedozwolony: pętla, link-local, sieć lokalna dla celu
+publicznego; dopisanie domeny tu nie pomoże, `HTTP`, `OLLAMA` z domeną `host-ollama`). Tylko nazwa hosta z celu żądania — nigdy ścieżka, parametry, nagłówki ani treść;
+znaki sterujące zamieniane na `?`. Zamianę odmowy w wynik kroku (`denied` z `command: "network: <domena>"`) robi
+PT-181, nie proxy.
 
 ## Uruchamianie
 

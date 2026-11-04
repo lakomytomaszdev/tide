@@ -59,6 +59,7 @@ Użycie: python3 tide-daemon.py [--print | --print-worktrees | --print-limits | 
 --no-board         bez obiektu /Board (tablica pracy: karty, projekty, tagi).
 --print-docker     jednorazowo: migawka kontenerów i miejsce na dysku jako JSON (tylko odczyt Engine API), bez D-Bus,
 --no-docker        bez obiektu /Docker (kontenery, akcje, porządki; socket z $DOCKER_HOST albo /var/run/docker.sock).
+--no-box           bez proxy pudełka (PT-168; i tak startuje tylko przy box.enabled w cardflow.json i mostku Incusa).
 --no-activity-look bez nakładania wyglądu aktywności po CurrentActivityChanged i przy starcie (PT-35; silnik
                    z $XDG_DATA_HOME/tide/activity-look, make install-activity-look; pusty
                    $TIDE_ACTIVITY_LOOK_ENGINE też wyłącza).
@@ -125,6 +126,7 @@ def parse_args(argv):
     parser.add_argument("--no-board", action="store_true")
     parser.add_argument("--print-docker", action="store_true")
     parser.add_argument("--no-docker", action="store_true")
+    parser.add_argument("--no-box", action="store_true")
     parser.add_argument("--no-activity-look", action="store_true")
     parser.add_argument("--no-monitors", action="store_true")
     parser.add_argument("--no-stream-shortcuts", action="store_true")
@@ -270,6 +272,7 @@ def main(argv=None) -> int:
         # Nazwy projektów z tablicy i karty, do których należy praca — w raporcie i jego tekście (reports/cards.py).
         report.board = board_snapshot(board)
     docker = None if args.no_docker else start_docker(app, args, clock, launchers)
+    box_proxy = None if args.no_box else start_box_proxy(app)  # noqa: F841 — musi żyć do końca
     monitors = None
     if not args.no_monitors:
         from .monitors_service import MonitorsService
@@ -767,6 +770,21 @@ def docker_once(args, clock) -> dict:
     snapshot = engine.refresh()
     disk = engine.disk() if snapshot.get("available") else {"ok": False, "error": snapshot.get("error", "")}
     return {"snapshot": snapshot, "disk": disk}
+
+
+def start_box_proxy(app, settings_file: str | None = None, **kwargs):
+    """Proxy wyjściowe pudełka (PT-168): tylko przy `box.enabled` i istniejącym mostku Incusa. Każda
+    przeszkoda (brak Incusa, brak mostka, zły adres, zajęty port) to wpis w dzienniku i usługa bez proxy."""
+    from .box import proxy as box_proxy
+    from .box import settings as box_settings
+    try:
+        service = box_proxy.start_service(box_settings.load(settings_file), **kwargs)
+    except box_proxy.ProxyError as exc:
+        print(f"tide-daemon: proxy pudełka nie startuje: {exc}", file=sys.stderr, flush=True)
+        return None
+    if service is not None and app is not None:
+        app.aboutToQuit.connect(service.stop)
+    return service
 
 
 def start_docker(app, args, clock, launchers):

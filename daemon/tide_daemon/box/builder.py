@@ -13,8 +13,10 @@ Kolejność budowy (`build`):
  5. `apt-get install` (pakiety szablonów i profilu), 6. `setup`, 7. `docker pull` (gdy `docker.enabled`),
  8. `verify` (nieudane → „zbudowane z ostrzeżeniem”), 9. migawka `clean` z odciskiem przepisu.
 
-Każde `incus exec` budowy biegnie jako root pudełka z `HTTPS_PROXY`/`HTTP_PROXY` na proxy Tide (adres i port
-z ustawień); brak ustawień proxy to błąd przed pierwszym poleceniem `incus`. Budowa nie czyta stdin.
+Każde `incus exec` budowy biegnie jako root pudełka z `HTTPS_PROXY`/`HTTP_PROXY` na proxy Tide: adres i port
+pochodzą z uruchomionego proxy (`proxy.running()` — nasłuch na adresie mostka z `box.bridge`, port `box.proxy-port`),
+więc proxy i builder mają jedno źródło. Brak uruchomionego proxy (albo brak jego adresu) to błąd przed pierwszym
+poleceniem `incus`. Po migawce polityka budowy jest zdejmowana (`clear_box_policy`). Budowa nie czyta stdin.
 Odcisk przepisu pochodzi wyłącznie z `profile.recipe_stamp` i jest zapisany w kluczu `user.tide.recipe`
 instancji tuż przed migawką, więc migawka `clean` (i każda kopia z niej) niesie go w swojej konfiguracji.
 Opis: docs/tide-daemon.md (Budowa pudełka).
@@ -29,7 +31,8 @@ from . import profile as bp
 from . import state as bs
 from . import templates
 from .incus import Incus, IncusError
-from .settings import Settings, SettingsError
+from . import proxy as bproxy
+from .settings import BoxSettings
 
 SCRIPTS_DIR = templates.STACKS_DIR      # `box/stacks/<stos>.sh` obok szablonów danych (#29)
 REMOTE_STACKS = "/opt/tide/stacks"       # gdzie w pudełku lądują skrypty szablonów
@@ -45,10 +48,24 @@ class BoxBusy(RuntimeError):
 
 
 class ProxyMissing:
-    """Domyślna polityka proxy, dopóki nie ma proxy Tide (#5): budowa bez proxy jest błędem."""
+    """Polityka, gdy proxy Tide (#5) nie biegnie w tym procesie: budowa bez proxy jest błędem."""
+    listen = ""
+    port = 0
 
     def set_box_policy(self, ip, domains, ollama, denied_log_path):
-        raise BuildError("proxy Tide (#5) nie jest dostępne — budowa bez proxy jest niedozwolona")
+        raise BuildError("proxy Tide (#5) nie jest uruchomione — budowa bez proxy jest niedozwolona")
+
+    def clear_box_policy(self, ip):
+        pass
+
+
+def proxy_url(policy) -> str:
+    """`http://<adres mostka>:<port>` z uruchomionego proxy (`listen`, `port`); brak → `BuildError`."""
+    listen, port = getattr(policy, "listen", ""), getattr(policy, "port", 0)
+    if not listen or not port:
+        raise BuildError("proxy Tide (#5) nie jest uruchomione (brak adresu mostka) — budowa bez proxy jest "
+                         "niedozwolona")
+    return f"http://{listen}:{port}"
 
 
 @dataclass
@@ -81,11 +98,12 @@ def state_dir(slug: str) -> str:
 
 
 class Builder:
-    def __init__(self, settings: Settings, incus: Incus | None = None, policy=None, clock=time.monotonic,
+    def __init__(self, settings: BoxSettings, incus: Incus | None = None, policy=None, clock=time.monotonic,
                  wall=time.time, sleep=time.sleep, scripts_dir: str | None = None):
         self.settings = settings
         self.incus = incus or Incus(settings.project)
-        self.policy = policy or ProxyMissing()
+        # Polityka i adres proxy: jawnie podane (testy) albo proxy uruchomione w tym procesie (PT-168).
+        self.policy = policy or bproxy.running() or ProxyMissing()
         self.clock, self.wall, self.sleep = clock, wall, sleep
         self.scripts_dir = scripts_dir or SCRIPTS_DIR
 
@@ -107,10 +125,7 @@ class Builder:
         full = bp.with_defaults(profile)
         if full["type"] == "vm":
             raise BuildError("type: vm — nieobsługiwane w tej wersji (tylko kontener)")
-        try:
-            proxy = self.settings.proxy_url()
-        except SettingsError as exc:
-            raise BuildError(str(exc)) from None
+        proxy = proxy_url(self.policy)
         missing = [s for s in full["stacks"] if not os.path.isfile(os.path.join(self.scripts_dir, f"{s}.sh"))]
         if missing:
             raise BuildError("brak skryptów szablonów stosów (#29): " + ", ".join(f"{s}.sh" for s in missing))
@@ -159,6 +174,13 @@ class Builder:
         ip = self._wait_ip(name)
         denied = os.path.join(state_dir(slug), "build-denied.log")
         self.policy.set_box_policy(ip, domains, bool(full["network"].get("host-ollama")), denied)
+        try:
+            return self._provision(slug, name, full, proxy, steps)
+        finally:
+            # polityka budowy nie zostaje w proxy po budowie (kroki dostaną politykę karty, #18)
+            self.policy.clear_box_policy(ip)
+
+    def _provision(self, slug, name, full, proxy, steps) -> BuildResult:
         env = {"HTTPS_PROXY": proxy, "HTTP_PROXY": proxy, "https_proxy": proxy, "http_proxy": proxy,
                "NO_PROXY": BUILD_NO_PROXY, "no_proxy": BUILD_NO_PROXY, "DEBIAN_FRONTEND": "noninteractive"}
         if full.get("node", {}).get("version"):
@@ -222,9 +244,13 @@ class Builder:
             self.sleep(0.5)
 
     def _attach_home(self, name):
+        """Wolumen `<pudełko>-home` na `/home/agent`; nowy wolumen od razu należy do użytkownika `agent`
+        (`initial.uid/gid/mode`), bo pusty wolumen w pudełku nieuprzywilejowanym byłby `root:root`."""
         volume = bs.home_volume(name)
         if not self.incus.volume_exists(self.settings.pool, volume):
-            self.incus.volume_create(self.settings.pool, volume)
+            self.incus.volume_create(self.settings.pool, volume, {
+                "initial.uid": self.settings.agent_uid, "initial.gid": self.settings.agent_gid,
+                "initial.mode": bs.HOME_MODE})
         devices = self.incus.device_show(name)
         values = {"pool": self.settings.pool, "source": volume, "path": bs.HOME_PATH}
         if "home" in devices:
@@ -243,7 +269,10 @@ class Builder:
     # --- kopia per karta -------------------------------------------------------------------------
 
     def copy_for_card(self, slug: str, card: str) -> str:
-        """Kopia `<slug>-<karta>` z migawki `clean` pudełka projektu (idempotentna)."""
+        """Kopia `<slug>-<karta>` z migawki `clean` pudełka projektu (idempotentna).
+
+        `incus copy` z migawki daje instancję **bez migawek**, więc po podpięciu `/home/agent` i filtrowaniu NIC
+        kopia dostaje własną migawkę `clean` — `reset --card` przywraca ją razem z tymi urządzeniami."""
         source = bs.box_name(slug)
         target = bs.card_box_name(slug, card)
         if self.incus.instance(target) is not None:
@@ -256,10 +285,12 @@ class Builder:
         self.incus.config_set(target, {bs.COPY_OF_KEY: source, bs.CARD_KEY: str(card).upper()})
         self._attach_home(target)
         self.apply_nic_filter(target)
+        self.incus.snapshot_create(target, bs.SNAPSHOT)
         stamp = bs.parse_stamp(self.incus.config_get(target, bs.RECIPE_KEY))
         recipe = stamp.get("hash", "") if isinstance(stamp, dict) else (stamp or "")
+        _, warning = bs.journal_state(slug, source)     # ostrzeżenie `verify` pudełka projektu przechodzi na kopię
         bs.record(slug, "box.ready", target, self.wall, card=str(card).upper(), copy_of=source, hash=recipe,
-                  warning=False, duration=round(self.clock() - started, 3))
+                  warning=bool(warning), duration=round(self.clock() - started, 3))
         return target
 
     # --- status ----------------------------------------------------------------------------------

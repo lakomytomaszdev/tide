@@ -152,8 +152,8 @@ class Incus:
 
     # --- wolumeny i pliki --------------------------------------------------------------------------
 
-    def volume_create(self, pool: str, volume: str):
-        self.call("storage", "volume", "create", pool, volume)
+    def volume_create(self, pool: str, volume: str, config: dict | None = None):
+        self.call("storage", "volume", "create", pool, volume, *_kv(config or {}))
 
     def volume_delete(self, pool: str, volume: str, check=True):
         return self.call("storage", "volume", "delete", pool, volume, check=check)
@@ -180,8 +180,12 @@ class Incus:
     def exec(self, name: str, command: list, env: dict | None = None, user: int | None = None,
              cwd: str | None = None) -> int:
         argv = self.exec_argv(name, command, env, user, cwd)
-        proc = self._run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True)
-        if self.log is not None:
-            self.log.write(f"$ {' '.join(command)}\n{proc.stdout or ''}{proc.stderr or ''}[kod {proc.returncode}]\n")
-            self.log.flush()
+        if self.log is None:
+            return self._run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True).returncode
+        # Wyjście strumieniowane do dziennika budowy na bieżąco (długie `apt-get install` widać w trakcie).
+        self.log.write(f"$ {' '.join(command)}\n")
+        self.log.flush()
+        proc = self._run(argv, stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT)
+        self.log.write(f"[kod {proc.returncode}]\n")
+        self.log.flush()
         return proc.returncode

@@ -39,6 +39,7 @@ COPY_OF_KEY = "user.tide.copy-of"    # kopia per karta: nazwa pudełka projektu
 CARD_KEY = "user.tide.card"
 SNAPSHOT = "clean"
 HOME_PATH = "/home/agent"
+HOME_MODE = "0750"                   # `initial.mode` wolumenu `/home/agent` (właściciel: agent-uid/gid z ustawień)
 
 _NAME_BAD = re.compile(r"[^a-z0-9-]+")
 
@@ -180,8 +181,9 @@ class BoxStatus:
 
     @property
     def usable(self) -> bool:
-        """Krok może wejść: pudełko istnieje, ma filtrowanie NIC, jest aktualne i nie trwa budowa/reset."""
-        return (self.exists and self.nic_filtering and not self.diff
+        """Krok może wejść: pudełko istnieje, ma filtrowanie NIC, jest zgodne z zatwierdzonym profilem (brak
+        profilu = nieużywalne) i nie trwa budowa/reset."""
+        return (self.exists and self.nic_filtering and bool(self.profile_hash) and not self.diff
                 and self.state in (CLEAN, IN_USE, STOPPED))
 
     def to_dict(self) -> dict:

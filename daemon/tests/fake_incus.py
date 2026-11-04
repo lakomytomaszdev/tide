@@ -213,10 +213,12 @@ def main(argv):
             if key in data["volumes"]:
                 die(f"Volume by that name already exists: {key}")
             data["volumes"].append(key)
+            data.setdefault("volume_config", {})[key] = kv(args[5:])
         elif action == "delete":
             if key not in data["volumes"]:
                 die(f"Storage volume not found: {key}")
             data["volumes"].remove(key)
+            data.setdefault("volume_config", {}).pop(key, None)
         elif action == "show":
             if key not in data["volumes"]:
                 die(f"Storage volume not found: {key}")
@@ -263,7 +265,8 @@ def run_exec(data, opts, command):
             j += 2
         else:
             j += 1
-    os.makedirs(cwd, exist_ok=True) if cwd.startswith(STATE) else None
+    if cwd.startswith(STATE):         # katalogi spoza stanu atrapy tworzy test (atrapa nie pisze po hoście)
+        os.makedirs(cwd, exist_ok=True)
     pushed = data.get("pushed", {}).get(name, {})
     command = [pushed.get(a, a) for a in command]
     env["TIDE_FAKE_BOX"] = name
