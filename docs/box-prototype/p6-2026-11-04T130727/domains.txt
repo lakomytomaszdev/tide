@@ -1,0 +1,15 @@
+registry.npmjs.org
+archive.ubuntu.com
+security.ubuntu.com
+motd.ubuntu.com
+pypi.org
+files.pythonhosted.org
+registry-1.docker.io
+auth.docker.io
+production.cloudfront.docker.com
+api.nuget.org
+crl3.digicert.com
+ocsp.digicert.com
+claude.ai
+downloads.claude.ai
+api.anthropic.com

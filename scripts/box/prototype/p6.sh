@@ -158,8 +158,11 @@ fi
 # --- Playwright --------------------------------------------------------------------------------------
 if want playwright; then
     in_box_user mkdir -p p6-pw
-    trial playwright user 'cd p6-pw && rm -rf node_modules package*.json ~/.cache/ms-playwright && npm cache clean --force &&
-        npm init -y >/dev/null && npm i playwright && npx playwright install chromium'
+    # nodejs z Ubuntu 24.04 to 18.19; Playwright ≥ 1.50 wymaga Node 20 (przebieg 2: „Playwright requires Node.js 20”).
+    # Wersja przypięta do ostatniej wspierającej Node 18 — próba dotyczy domen pobierania przeglądarki, nie wersji.
+    PW_VERSION=${PW_VERSION:-1.49.1}
+    trial playwright user "cd p6-pw && rm -rf node_modules package*.json ~/.cache/ms-playwright && npm cache clean --force &&
+        npm init -y >/dev/null && npm i playwright@$PW_VERSION && npx playwright install chromium"
 fi
 
 # --- instalatory agentów -----------------------------------------------------------------------------
@@ -190,10 +193,16 @@ fi
 
 # --- NO_PROXY dla localhost ---------------------------------------------------------------------------
 if want noproxy; then
-    printf '%s\n' $(all_found) | awk 'NF && !s[$0]++' >"$LIST"
+    # Domeny apt, npm i NuGet z przebiegu 2 (2026-11-04T1307) — potrzebne do install-deps i dotnet build także
+    # przy powtórce samego noproxy (--only).
+    printf '%s\n' $(all_found) archive.ubuntu.com security.ubuntu.com registry.npmjs.org api.nuget.org \
+        | awk 'NF && !s[$0]++' >"$LIST"
     step "NO_PROXY: serwer na pętli zwrotnej w pudełku (port 8765, :: = także 127.0.0.1)"
-    in_box_user sh -c 'pkill -f "[h]ttp.server 8765"; rm -f /tmp/p6-http.log;
-        setsid -f python3 -m http.server 8765 --bind :: </dev/null >/tmp/p6-http.log 2>&1'
+    # pkill osobnym poleceniem: w `sh -c '…pkill…; …http.server 8765…'` wzorzec pasował do samej powłoki i ją zabijał
+    # (przebieg 2, 2026-11-04T1321 — próba NO_PROXY przerwana bez wyniku).
+    in_box_user pkill -f "http.server 8765" || true
+    in_box_user rm -f /tmp/p6-http.log
+    in_box_user setsid -f sh -c 'exec python3 -m http.server 8765 --bind :: </dev/null >/tmp/p6-http.log 2>&1'
     sleep 1
     in_box_user sh -c 'cat > p6-pw/noproxy.js' <<'EOF'
 // P-6: Playwright (Chromium) do adresu z argumentu — czy przeglądarka honoruje NO_PROXY.
@@ -207,6 +216,8 @@ const { chromium } = require("playwright");
 })().catch(e => { console.error(String(e)); process.exit(1); });
 EOF
     run in_box_user sh -c 'cd p6-dotnet && dotnet build -nologo -v q -o /tmp/p6-dotnet-bin' || true
+    # Chromium potrzebuje bibliotek systemowych (apt jako root; lista ma już domeny apt).
+    run in_box sh -c "cd $BOX_HOME/p6-pw && npx --yes playwright install-deps chromium" || true
     declare -A CMD=(
         [curl]='curl -sS -o /dev/null -w "%{http_code}\n" URL'
         [node-fetch]='node -e "fetch(process.argv[1]).then(r => console.log(r.status))" URL'

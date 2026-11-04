@@ -10,9 +10,12 @@ fi
 set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 status=0
+# P6_ONLY=klient,… — powtórka tylko części P-6 (np. playwright,noproxy), reszta pudełka z poprzedniego przebiegu.
 for trial in p7 p6 p3 p2; do
     echo "######## $trial"
-    bash "$here/$trial.sh"
+    args=()
+    [[ $trial == p6 && -n ${P6_ONLY:-} ]] && args=(--only "$P6_ONLY")
+    bash "$here/$trial.sh" "${args[@]}"
     rc=$?
     echo "######## $trial: kod $rc"
     [[ $rc -ne 0 ]] && status=1

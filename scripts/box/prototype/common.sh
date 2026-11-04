@@ -125,9 +125,11 @@ in_box_user() {
         --env "USER=$BOX_USER" --env "PATH=$BOX_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" "${BOX_ENV[@]}" -- "$@"
 }
 
-# Zapis pliku w pudełku ze stdin: box_write <ścieżka> [właściciel] (domyślnie root).
+# Zapis pliku w pudełku ze stdin: box_write <ścieżka> [właściciel] (domyślnie root). Brakujący katalog dostaje tego
+# samego właściciela — przebieg 2 (2026-11-04T1321) zostawił ~/.codex roota i Codex padał na EACCES przed siecią.
 box_write() {
-    incus exec "$PROTO_BOX" -- sh -c 'mkdir -p "$(dirname "$1")" && cat >"$1" && chown "$2" "$1"' sh "$1" "${2:-root:root}"
+    incus exec "$PROTO_BOX" -- sh -c 'd=$(dirname "$1"); [ -d "$d" ] || install -d -o "${2%:*}" -g "${2#*:}" "$d"
+        cat >"$1" && chown "$2" "$1"' sh "$1" "${2:-root:root}"
 }
 
 # Pudełko prób z konfiguracją proxy z karty: /etc/environment, apt, drop-in dockerd.
@@ -169,5 +171,8 @@ EOF
 [Service]
 Environment="HTTP_PROXY=$url" "HTTPS_PROXY=$url" "NO_PROXY=$np"
 EOF
-    echo "   pudełko $PROTO_BOX: adres $(incus exec "$PROTO_BOX" -- hostname -I | awk '{print $1}'), proxy $url"
+    # Adres eth0 (hostname -I po instalacji Dockera zaczyna od docker0 172.17.0.1).
+    echo "   pudełko $PROTO_BOX: adres $(incus exec "$PROTO_BOX" -- ip -4 -o addr show dev eth0 | awk '{print $4}'), proxy $url"
+    # ~/.codex z przebiegu 2 mógł zostać roota — napraw właściciela katalogów domowych użytkownika pudełka.
+    incus exec "$PROTO_BOX" -- sh -c "for d in $BOX_HOME/.codex $BOX_HOME/.claude; do [ -d \"\$d\" ] && chown -R 1000:1000 \"\$d\"; done; true"
 }

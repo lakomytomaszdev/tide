@@ -104,7 +104,7 @@ EOF
         box_env
         run timeout 180 incus exec "$PROTO_BOX" --user 1000 --group 1000 --cwd "$BOX_HOME" --env "HOME=$BOX_HOME" \
             "${BOX_ENV[@]}" "${extra[@]}" -- codex exec --skip-git-repo-check \
-            -c "chatgpt_base_url=\"$BASE/chatgpt/backend-api/\"" 'Reply with the single word: hi' || rc=$?
+            -c "chatgpt_base_url=\"$BASE/chatgpt/backend-api/\"" 'Reply with the single word: hi' </dev/null || rc=$?
         echo "-- żądania przez proxy:"; since "$PROXY_ACCESS" "$mark_a" | cut -f3- | sort | uniq -c
         echo "-- odmowy CONNECT:"; since "$PROXY_DENY" "$mark_d" | cut -f2,3 | sort | uniq -c
         codes=$(since "$PROXY_ACCESS" "$mark_a" | awk -F'\t' '$4 ~ /^\/chatgpt/ {print $4" "$5}' | sort | uniq -c | tr -s ' ' | tr '\n' ';')
