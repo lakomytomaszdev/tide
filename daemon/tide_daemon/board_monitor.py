@@ -63,6 +63,32 @@ WORK_VOLATILE_MS = 10_000  # zmiana samej ostatniej czynności agenta na liście
 LINK_RETRY_S = 60.0  # nieudane utrwalenie sesji w karcie ponawiamy najwyżej tak często
 
 
+def derived_cache_path(env=None) -> str:
+    env = os.environ if env is None else env
+    base = env.get("XDG_STATE_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "tide", "board-derived.json")
+
+
+def _load_cache(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_cache(path: str, data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError as exc:   # pamięć stanu to dodatek — tablica działa bez niej
+        print(f"tide-daemon: tablica: zapis stanu kart: {exc!r}", flush=True)
+
+
 class BoardMonitor(QObject):
     changed = pyqtSignal()
     work_changed = pyqtSignal()           # lista „Praca” (Work()) się zmieniła — sygnał WorkChanged
@@ -104,6 +130,12 @@ class BoardMonitor(QObject):
         self._rederive = QTimer(self, singleShot=True, interval=rederive_ms)
         self._rederive.timeout.connect(self._apply)
         self._rederive_requested.connect(self.rederive)
+        # Ostatni wyliczony stan kart spoza przepływu (plany i sesje koordynatorów) — po restarcie usługi okno
+        # dostaje go od razu, zanim przeliczenie z pracy agentów będzie gotowe (04.11: K-17 skakała na kilka
+        # sekund do „Do zrobienia”, bo zapisana kolumna wygrywała z brakującym stanem).
+        self._derived_cache_path = derived_cache_path()
+        self._derived_cache: dict = _load_cache(self._derived_cache_path)
+        self._derive_ready = False
         self._links: list[tuple[str, str, str, str]] = []  # (karta, sesja, sposób, gałąź) do utrwalenia
         self._link_tried: dict[tuple[str, str], float] = {}
         # Przepływ karty (PT-58, cardflow_monitor.CardFlowMonitor) albo None: karta z dziennikiem dostaje stan
@@ -554,6 +586,7 @@ class BoardMonitor(QObject):
         repos = {p.get("slug"): p.get("repo") or "" for p in base.get("projects") or [] if isinstance(p, dict)}
         cards = []
         links = []
+        fresh: dict = {}
         for card in base.get("cards") or []:
             card = copy.copy(card)
             derived = None
@@ -573,9 +606,21 @@ class BoardMonitor(QObject):
             except Exception as exc:
                 snapshot["errors"].append({"path": card.get("path", ""),
                                            "message": f"{card.get('id', '')}: stan z pracy agentów: {exc}"})
+            ident = card.get("id") or ""
+            from_flow = self.flow is not None and self.flow.has_journal(ident)
+            if derived is not None and not from_flow:
+                fresh[ident] = derived
+            elif derived is None and not from_flow and not self._derive_ready and ident in self._derived_cache:
+                derived = {**self._derived_cache[ident], "cached": True}
             card["derived"] = derived
             card["boardColumn"] = (derived or {}).get("column") or card.get("column") or "backlog"
             cards.append(card)
+        if fresh:
+            # Pierwsze świeże przeliczenie kończy okres zapamiętanego stanu; zapis tylko przy zmianie.
+            self._derive_ready = True
+            if fresh != self._derived_cache:
+                self._derived_cache = fresh
+                _save_cache(self._derived_cache_path, fresh)
         snapshot["cards"] = cards
         self._queue_links(links)
         return snapshot, (derive if hasattr(derive, "sessions") else None)
