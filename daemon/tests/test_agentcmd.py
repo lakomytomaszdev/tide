@@ -351,10 +351,12 @@ class BackgroundCodexTest(BackgroundBase):
             self.assertNotIn(rule, argv)
         for program in ("rg", "grep", "cat", "ls", "find"):
             self.assertIn(f"Bash({program} *)", allowed)
-        for sub in ("log --no-ext-diff --no-textconv", "show --no-ext-diff --no-textconv",
-                    "diff --no-ext-diff --no-textconv", "status"):
+        for sub in ("log --no-ext-diff --no-textconv --ignore-submodules=all",
+                    "show --no-ext-diff --no-textconv --ignore-submodules=all",
+                    "diff --no-ext-diff --no-textconv --ignore-submodules=all", "status --ignore-submodules=all"):
             self.assertIn(f"Bash(git -C {wt} {sub} *)", allowed)
-        for sub in ("log", "show", "diff"):
+        for sub in ("log", "show", "diff", "status", "log --no-ext-diff --no-textconv",
+                    "show --no-ext-diff --no-textconv", "diff --no-ext-diff --no-textconv"):
             self.assertNotIn(f"Bash(git -C {wt} {sub} *)", allowed)
             self.assertNotIn(f"Bash(git -C {wt} {sub})", allowed)
         self.assertIn(f"Read(/{wt}/**)", allowed)
@@ -440,6 +442,67 @@ class BackgroundCodexTest(BackgroundBase):
         self.assertTrue(os.path.exists(marker))
         allowed, _ = agentcmd.read_only_tools(wt)
         self.assertFalse([r for r in allowed if r in (f"Bash(git -C {wt} diff)", f"Bash(git -C {wt} diff *)")])
+
+    def test_caretaker_git_never_inspects_submodule_with_its_own_filter(self):
+        """PT-158, review runda 4/M1: filtr nazwany wyłącznie w submodule nie może uruchomić programu nawet
+        z zapisem tylko do `out`. Sprawdzamy prawdziwy git i dopasowanie do faktycznie wygenerowanych reguł."""
+        source = os.path.join(self.root, "submodule-source")
+        os.makedirs(source)
+        gitrepos.git(source, "init", "-q", "-b", "master")
+        gitrepos.commit(source, ".gitattributes", "*.txt filter=bad\n")
+        gitrepos.commit(source, "a.txt", "hello\n")
+        gitrepos.git(self.worktree, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "nested")
+        gitrepos.git(self.worktree, "commit", "-qm", "add submodule")
+        nested = os.path.join(self.worktree, "nested")
+        out = os.path.join(self.step_dir, "out")
+        os.makedirs(out)
+        marker = os.path.join(out, "helper-ran")
+        gitrepos.git(nested, "config", "filter.bad.clean", f"echo invoked >> {marker}; cat")
+        # Konfiguracja konkretnego submodułu też nie może przeważyć obowiązkowej opcji polecenia.
+        gitrepos.git(self.worktree, "config", "submodule.nested.ignore", "none")
+        gitrepos.git(self.worktree, "config", "status.submoduleSummary", "true")
+        with open(os.path.join(nested, "a.txt"), "w", encoding="utf-8") as fh:
+            fh.write("HELLO\n")
+        cmd = agentcmd.background(self.step("claude", write_out_only=True))
+        env = dict(cmd.env, PATH=os.environ.get("PATH", "/usr/bin:/bin"))
+        self.assertNotIn("filter.bad.clean", env.values(), "filtr jest wyłącznie w submodule")
+        argv = cmd.argv
+        allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
+        banned = argv[argv.index("--disallowedTools") + 1:]
+
+        def matches(args, rules):
+            command = " ".join(args)
+            return any(fnmatch.fnmatchcase(command, rule[5:-1])
+                       for rule in rules if rule.startswith("Bash(") and rule.endswith(")"))
+
+        base = ["git", "-C", self.worktree]
+        unsafe = base + ["status", "--ignore-submodules=none"]
+        control = subprocess.run(unsafe, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(control.returncode, 0, control.stderr)
+        self.assertTrue(os.path.exists(marker), "kontrola musi odtworzyć uruchomienie filtra z raportu")
+        os.unlink(marker)
+        self.assertFalse(matches(unsafe, allowed) and not matches(unsafe, banned), "reprodukcja M1 jest zabroniona")
+        prefixes = {sub.split()[0]: sub.split() for sub in agentcmd.READ_ONLY_GIT}
+        for sub, options in (("status", []), ("status", ["--porcelain"]), ("diff", []),
+                             ("diff", ["HEAD"]), ("diff", ["--cached"]), ("log", ["-p"]), ("show", [])):
+            args = base + prefixes[sub] + options
+            with self.subTest(args=args):
+                self.assertTrue(matches(args, allowed))
+                self.assertFalse(matches(args, banned))
+                run = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertFalse(os.path.exists(marker), "dozwolone polecenie uruchomiło filtr submodułu")
+        for sub in prefixes.values():
+            for override in (["--ignore-submodules=none"], ["--ignore-submodules", "none"],
+                             ["--ignore-submodules=dirty"], ["--ignore-submodules=untracked"],
+                             ["--ignore-submodules"], ["--ignore-submodule=none"], ["--ign=none"],
+                             ["--i=none"], ["--no-ignore-submodules"], ["--no-ign"],
+                             ["--ignore-submodules=all", "--ignore-submodules=none"],
+                             ["--submodule=diff"], ["--sub=log"], ["--no-submodule"]):
+                args = base + sub + override
+                with self.subTest(args=args):
+                    self.assertTrue(matches(args, allowed))
+                    self.assertTrue(matches(args, banned), "późniejsza opcja nie może włączyć inspekcji submodułów")
 
     def test_ordinary_claude_step_keeps_the_project_list(self):
         """Zwykły krok bez zmian (PT-158): lista projektu, bez listy tylko do odczytu, katalog roboczy worktree."""

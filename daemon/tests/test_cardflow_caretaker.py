@@ -544,7 +544,7 @@ class CaretakerFlowTest(FlowInProcess):
         for secret in ("ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "atrapa-sekret-z-env-42",
                        "Dozwolone polecenia i wzorce"):
             self.assertNotIn(secret, prompt)
-        self.assertIn(f"`git -C {step['worktree']} log --no-ext-diff --no-textconv`", prompt)
+        self.assertIn(f"`git -C {step['worktree']} log --no-ext-diff --no-textconv --ignore-submodules=all`", prompt)
         self.assertIn("caretaker-wrote", prompt)
         with open(os.path.join(step["stepDir"], "in", "settings.json"), encoding="utf-8") as fh:
             settings = json.load(fh)
@@ -558,7 +558,7 @@ class CaretakerFlowTest(FlowInProcess):
         allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
         banned = argv[argv.index("--disallowedTools") + 1:]
         self.assertIn("Bash(rg *)", allowed)
-        self.assertIn(f"Bash(git -C {step['worktree']} diff --no-ext-diff --no-textconv *)", allowed)
+        self.assertIn(f"Bash(git -C {step['worktree']} diff --no-ext-diff --no-textconv --ignore-submodules=all *)", allowed)
         self.assertNotIn(f"Bash(git -C {step['worktree']} diff *)", allowed)
         programs = {rule[5:-1].split()[0] for rule in allowed if rule.startswith("Bash(")}
         self.assertLessEqual(programs, {"rg", "grep", "cat", "ls", "find", "git", "head", "tail", "wc"})

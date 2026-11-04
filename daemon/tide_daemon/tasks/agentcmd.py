@@ -97,14 +97,21 @@ CODEX_NO_COMMANDS = ("shell_tool", "unified_exec", "code_mode", "js_repl")
 READ_ONLY_COMMANDS = ("rg", "grep", "cat", "ls", "find")
 # Podpolecenia gita z obowiązkowymi opcjami: `--no-ext-diff` wyłącza `diff.external` i `diff.<sterownik>.command`,
 # `--no-textconv` — `diff.<sterownik>.textconv` (review M3; puste wartości w konfiguracji tego nie robią — git
-# próbuje wtedy uruchomić pusty program). `status` nie uruchamia sterowników diffa.
-READ_ONLY_GIT = ("log --no-ext-diff --no-textconv", "show --no-ext-diff --no-textconv",
-                 "diff --no-ext-diff --no-textconv", "status")
+# próbuje wtedy uruchomić pusty program). `status` nie uruchamia sterowników diffa. Wszystkie polecenia pomijają
+# submoduły: ich własna konfiguracja może nazywać inne filtry niż konfiguracja worktree (review runda 4/M1).
+READ_ONLY_GIT = ("log --no-ext-diff --no-textconv --ignore-submodules=all",
+                 "show --no-ext-diff --no-textconv --ignore-submodules=all",
+                 "diff --no-ext-diff --no-textconv --ignore-submodules=all", "status --ignore-submodules=all")
 READ_ONLY_BANS = (
     "find *-delete*", "find *-exec*", "find *-ok*", "find *-fprint*", "find *-fls*",   # usuwanie, programy, pliki
     "rg *--pre*", "rg *--hostname-bin*",                                               # programy pomocnicze rg
     "git *--output*", "git *--ext-diff*", "git *--textconv*",                          # zapis do pliku, sterowniki
     "git *--show-signature*",                                                          # gpg
+    # Obowiązkowe `--ignore-submodules=all` jest ostatnią opcją prefiksu zgody. Późniejsza opcja nie może jej
+    # nadpisać (git bierze ostatnią), także skrótem `--ign`/`--i` lub negacją. Zakazy są zachowawcze: obejmują
+    # wszystkie rozwinięcia tych początków, także np. bezpieczne `--ignore-space-change`. `--sub*` blokuje
+    # też żądanie widoku submodułu (`--submodule=diff`/`log`) i jego skróty.
+    "git *--ignore-submodules=all *--i*", "git *--no-i*", "git *--sub*", "git *--no-sub*",
     # `-z` działa też wewnątrz połączonych krótkich opcji (`-az`, `-iz`). Wildcard `*` obejmuje również spacje,
     # więc zakaz celowo odrzuca też bezpieczne wywołania z `z` w dalszym argumencie po `-` (review runda 3/M1).
     "rg *--search-zip*", "rg *-*z*",                                                    # dekompresory rg
@@ -116,7 +123,7 @@ READ_ONLY_BANS = (
 # fsmonitor (hak przy `status`/`diff`), pager, weryfikację podpisów i sterowniki filtrów (`clean`/`smudge`/`process`
 # przy `status`/`diff`) nazwane w konfiguracji — pusty filtr git pomija (`read_only_git_config`). Konfiguracji
 # systemowej (`GIT_CONFIG_NOSYSTEM`) i globalnej użytkownika (`GIT_CONFIG_GLOBAL` — plik kroku) krok nie czyta.
-READ_ONLY_GIT_CONFIG = (("core.fsmonitor", "false"), ("core.pager", "cat"),
+READ_ONLY_GIT_CONFIG = (("core.fsmonitor", "false"), ("core.pager", "cat"), ("status.submoduleSummary", "false"),
                         ("log.showSignature", "false"), ("gpg.program", "/bin/false"),
                         ("gpg.ssh.program", "/bin/false"), ("gpg.x509.program", "/bin/false"))
 GIT_DRIVER_KEYS = re.compile(r"^(filter)\.(.+)\.(clean|smudge|process)$", re.IGNORECASE)

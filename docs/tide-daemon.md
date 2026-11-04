@@ -1858,8 +1858,9 @@ zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
   zapisywalny (`allowWrite: [out]`), a jej puste pliki-atrapy (`.bashrc`…) lądują w `out`, nie w worktree.
 - Claude: stała lista tylko do odczytu `agentcmd.read_only_tools` zamiast listy kroku — `rg`, `grep`, `cat`, `ls`,
   `find` (`READ_ONLY_COMMANDS`, także ze wzorcami nazwanymi worktree), `git -C <worktree> log|show|diff
-  --no-ext-diff --no-textconv …` (opcje obowiązkowe: wyłączają `diff.external`, `diff.<d>.command`
-  i `textconv` z konfiguracji repozytorium) i `git -C <worktree> status` (`READ_ONLY_GIT`),
+  --no-ext-diff --no-textconv --ignore-submodules=all …` (opcje obowiązkowe: wyłączają `diff.external`,
+  `diff.<d>.command`, `textconv` i inspekcję submodułów) i `git -C <worktree> status --ignore-submodules=all`
+  (`READ_ONLY_GIT`),
   `Read(//<worktree>/**)` dla Read/Grep/Glob i odczyt własnych `in`/`out`
   (`board.commands.step_reads`). Lista jest w Tide, niezależna od ustawień projektu: silnik nie podaje kroku
   opiekuna listy projektu (`claude_tools`), a `agentcmd` i tak ją pomija. `--disallowedTools` (zakaz wygrywa ze
@@ -1877,6 +1878,14 @@ zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
   `GIT_CONFIG_NOSYSTEM=1`, `GIT_PAGER=cat`. Test na prawdziwym repozytorium z `diff.external`, `textconv`,
   `diff.<d>.command`, filtrem, `core.fsmonitor` i `gpg.program` sprawdza, że żadne dozwolone polecenie gita ich
   nie uruchamia (a zwykłe `git diff` — tak).
+- Submoduły (review runda 4/M1): ich konfiguracje mogą nazywać inne filtry niż konfiguracja worktree.
+  Każde dozwolone podpolecenie gita ma obowiązkowe `--ignore-submodules=all`, które wygrywa także z ustawieniem
+  `submodule.<nazwa>.ignore=none`; środowisko dodatkowo wymusza `status.submoduleSummary=false`.
+  Zakazy `git *--ignore-submodules=all *--i*`, `git *--no-i*`, `git *--sub*`, `git *--no-sub*` wykluczają późniejsze
+  nadpisanie opcji, jej skróty (`--ign`, `--i`), negację i żądania widoku submodułów. Reguły są zachowawcze:
+  odrzucają również np. `--ignore-space-change`. Test z prawdziwym submodułem i filtrem skonfigurowanym wyłącznie
+  w nim potwierdza uruchomienie helpera przez reprodukcję M1, odrzucenie jej przez reguły i brak helpera przy
+  dozwolonych wywołaniach `status`, `diff`, `log`, `show`.
 - Codex nie ma listy dozwolonych poleceń, więc opiekun u Codexa dostaje jej pusty podzbiór: narzędzia poleceń
   i kodu są wyłączone (`-c features.shell_tool=false`, `unified_exec`, `code_mode`, `js_repl` —
   `agentcmd.CODEX_NO_COMMANDS`), katalog roboczy i jedyny zapisywalny katalog to `out` (plik wyniku przez
