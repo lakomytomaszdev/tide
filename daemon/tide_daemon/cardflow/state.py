@@ -440,12 +440,28 @@ def _epoch(value) -> float:
         return 0.0
 
 
+def outside_queued(st: FlowState) -> list[str]:
+    """Kroki z decyzją „uruchom poza piaskownicą”, których polecenie jeszcze nie ruszyło (czeka na miejsce)."""
+    resumed = {s.get("parentStep") for s in st.steps.values() if s.get("parentStep")}
+    queued = []
+    for name, done in st.finished.items():
+        decision = st.step_decisions.get(name) or {}
+        if (done.get("result") == "denied" and done.get("outside") and name not in resumed
+                and decision.get("choice") in ("run", "run-always", "run-ticket")
+                and name not in st.outside_started):
+            queued.append(name)
+    return queued
+
+
 def guard_reason(st: FlowState) -> str | None:
     """None = praca lub koniec; napis = nazwany powód czekania; pusty napis = możliwy postój."""
     if not st.started or st.card_finished or st.paused or st.running() or st.open_intents() or st.open_consoles():
         return None
     if st.outside_started:
         return None     # trwa polecenie poza piaskownicą — to praca, nie postój (K-31, 03.11: fałszywy alarm)
+    if outside_queued(st):
+        # Zgoda dana, a polecenie czeka na wolne miejsce (jedno na projekt) — K-37, 04.11: fałszywy „postój”.
+        return "polecenie poza piaskownicą w kolejce"
     if attention_step(st, True):
         return "pytanie, zgoda albo błąd kroku"
     if attention_step(st):

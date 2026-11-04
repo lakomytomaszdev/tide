@@ -85,6 +85,10 @@ Jeśli potrzebujesz polecenia, którego piaskownica kroku nie wykona (sieć, np.
 Testcontainers; pełne testy, które same uruchamiają piaskownicę), zapisz
 {{"result":"outside","command":"jedno pełne polecenie","reason":"po co i dlaczego nie w piaskownicy"}} i zakończ krok.
 Użytkownik może je uruchomić poza piaskownicą w tym worktree; przy wznowieniu dostaniesz kod wyjścia i koniec wyniku.
+Polecenie startuje w katalogu worktree, więc nie pisz `cd … &&`, `;`, `|` ani `bash -c` — Tide uruchamia sam tylko
+jedno polecenie bez łańcucha. Ścieżki podawaj bezwzględnie albo względem worktree; zmienne tylko na początku,
+np. `env PYTHONPATH=<worktree>/src <repo>/.venv/bin/python -m pytest -q <worktree>/tests` (PYTHONPATH wyłącznie do
+worktree albo repozytorium projektu). Dłuższą procedurę zapisz jako skrypt w worktree i zgłoś `bash <skrypt>`.
 """
 
 

@@ -186,6 +186,17 @@ def _inside_roots(path: str, roots) -> bool:
     return any(real == os.path.realpath(r) or real.startswith(os.path.realpath(r) + os.sep) for r in roots if r)
 
 
+def script_in_roots(program: list[str], roots) -> bool:
+    """`bash skrypt.sh [argumenty]` / `sh …` — skrypt z worktree ticketu albo repozytorium projektu (04.11, KAMP-1:
+    agent zapisał procedurę jako skrypt w worktree, a Tide odrzucał ją jak `bash -c`). Ścieżka względna liczy się od
+    worktree (pierwszy z `roots`), polecenie i tak startuje w nim. Taki skrypt zawsze wymaga zgody (outside_risky)."""
+    import os
+    if not roots or len(program) < 2 or program[0] not in ("bash", "sh") or program[1].startswith("-"):
+        return False
+    path = program[1] if program[1].startswith("/") else os.path.join(roots[0] or "", program[1])
+    return bool(roots[0] or program[1].startswith("/")) and _inside_roots(path, roots) and "../" not in program[1]
+
+
 def outside_argv(command: str, roots=()) -> list[str] | None:
     """Polecenie poza piaskownicą bez początkowych zmiennych (`E2E_PORT=4311 npm run e2e`, także w cudzysłowie:
     `DATABASE_CONNECTION="Host=…;Port=1" dotnet test`, K-16); None dla łańcucha, podpowłoki albo zmiennej, która
@@ -218,6 +229,8 @@ def outside_argv(command: str, roots=()) -> list[str] | None:
             return None
         at += 1
     program = parts[at:]
+    if script_in_roots(program, roots):
+        return program
     # Operatory sprawdził lekser wyżej; tu tylko reguły programu jak w `_argv` (bez powłok, sudo, env i przypisań).
     # `_argv` odrzuciłby argument `;` z `find -exec … \;`, choć powłoka dostaje go jako zwykły tekst.
     if not program or program[0] in ("sh", "bash", "zsh", "fish", "eval", "exec", "env", "command", "builtin",
@@ -289,6 +302,8 @@ def outside_risky(command: str, roots=()) -> str:
     argv = outside_argv(command, roots)
     if argv is None:
         return "łańcuch, podpowłoka albo niebezpieczna zmienna"
+    if script_in_roots(argv, roots):
+        return f"skrypt powłoki {argv[1]} może zrobić wszystko na Twoim koncie — przejrzyj go przed uruchomieniem"
     for rule in OUTSIDE_RISKY:
         prefix = rule.split()
         if argv[:len(prefix)] == prefix:

@@ -32,3 +32,15 @@ class OutsideStepDirTest(unittest.TestCase):
         command = f"python3 -m unittest discover -s {step_dir}/out -p 'test_review_*.py' -v"
         self.assertEqual(outside_risky(command, (WT, REPO, step_dir)), "")
         self.assertIn("spoza worktree", outside_risky(command, ROOTS))
+
+
+class OutsideScriptTest(unittest.TestCase):
+    def test_worktree_script_is_allowed_but_always_needs_consent(self):
+        # 04.11, KAMP-1: `bash core/…/extract_incoming.sh` był odrzucany jak `bash -c`.
+        self.assertEqual(outside_argv("bash core/tests/extract.sh", ROOTS), ["bash", "core/tests/extract.sh"])
+        self.assertTrue(outside_allowed("bash core/tests/extract.sh", [], ROOTS))
+        self.assertIn("przejrzyj", outside_risky("bash core/tests/extract.sh", ROOTS))
+        self.assertIsNone(outside_argv("bash -c 'rm -rf ~'", ROOTS))
+        self.assertIsNone(outside_argv("bash /etc/evil.sh", ROOTS))
+        self.assertIsNone(outside_argv("bash ../../evil.sh", ROOTS))
+        self.assertIsNone(outside_argv("bash core/tests/extract.sh"))

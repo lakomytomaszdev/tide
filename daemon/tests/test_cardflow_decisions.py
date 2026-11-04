@@ -660,3 +660,16 @@ class OutsideHeadlineTest(unittest.TestCase):
         self.assertTrue(decision["happened"].endswith("prosi o uruchomienie polecenia poza piaskownicą"))
         self.assertEqual(decision["technical"]["command"], long_command)
         self.assertIn("\nPowód kroku: Nagrania leżą w katalogu domowym.", decision["why"])
+
+
+class OutsideQueueTest(unittest.TestCase):
+    def test_consented_outside_command_waiting_for_a_slot_is_not_a_stall(self):
+        # 04.11, K-37: zgoda na `make test` dana, polecenie czeka na wolne miejsce w projekcie → „stoi” po 3 min.
+        from tide_daemon.cardflow.state import guard_reason, outside_queued
+        events = Events().step("K-1-PT-1-1", result="denied", outside=True, command="make test")
+        events.add("step.decision", step="K-1-PT-1-1", ticket="PT-1", choice="run")
+        st = events.state()
+        self.assertEqual(outside_queued(st), ["K-1-PT-1-1"])
+        self.assertEqual(guard_reason(st), "polecenie poza piaskownicą w kolejce")
+        events.add("outside.started", step="K-1-PT-1-1")
+        self.assertEqual(outside_queued(events.state()), [])
