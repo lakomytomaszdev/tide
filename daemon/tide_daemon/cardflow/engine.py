@@ -2582,7 +2582,7 @@ class FlowEngine(PlanEditing):
             from ..board.commands import outside_allowed, outside_pattern
             command = str(done.get("command") or "").strip()
             _, project = self._project(card)
-            roots = (step.get("worktree") or "", project.repo)
+            roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
             if not command or not outside_allowed(command, project.denied_commands, roots):
                 raise FlowError("forbidden-command", f"polecenia „{command}” nie można uruchomić poza piaskownicą")
             if choice == "run-ticket":
@@ -3569,7 +3569,7 @@ class FlowEngine(PlanEditing):
                 from ..board.commands import outside_allowed, outside_matches, outside_pattern
                 extra["outside"] = True
                 extra["pattern"] = outside_pattern(command)
-                roots = (step.get("worktree") or "", project.repo)
+                roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
                 data["canAllow"] = outside_allowed(command, project.denied_commands, roots)
                 remembered = data["canAllow"] and (outside_matches(command, self._outside_remembered(project.slug))
                                                    or self._ticket_consent(card, step.get("ticket") or "")
@@ -3979,7 +3979,7 @@ class FlowEngine(PlanEditing):
         command = done.get("command") or ""
         _, project = self._project(card)
         from ..board.commands import outside_risky
-        roots = (step.get("worktree") or "", project.repo)
+        roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
         allowed = outside_allowed(command, project.denied_commands, roots)
         if allowed != bool(done.get("canAllow", True)):
             # Reguły zmieniły się od wyniku kroku (K-33/PT-110: `find -exec … \;` uznane za łańcuch) — decyzja

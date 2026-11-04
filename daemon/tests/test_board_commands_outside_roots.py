@@ -23,3 +23,12 @@ class OutsideRootsTest(unittest.TestCase):
         self.assertIsNone(outside_argv(f"env LD_PRELOAD={WT}/x.so python3 -m pytest", ROOTS))
         self.assertIn("spoza worktree", outside_risky(f"python3 -m pytest /etc/passwd", ROOTS))
         self.assertIn("spoza worktree", outside_risky(f"python3 -m pytest {WT}/../../etc", ROOTS))
+
+
+class OutsideStepDirTest(unittest.TestCase):
+    def test_own_step_directory_is_not_outside_the_worktree(self):
+        # 04.11, review KAMP-16: testy recenzenta z jego katalogu out były „ścieżką spoza worktree”.
+        step_dir = WT + ".review-1.step"
+        command = f"python3 -m unittest discover -s {step_dir}/out -p 'test_review_*.py' -v"
+        self.assertEqual(outside_risky(command, (WT, REPO, step_dir)), "")
+        self.assertIn("spoza worktree", outside_risky(command, ROOTS))
