@@ -352,6 +352,11 @@ def _single_permission(st, name, step, done) -> dict:
                      _step_technical(step, done))
 
 
+BLOCKED_BY_SCOPE = re.compile(r"ponowienie (?:kroku )?nic|nie zamknie|wymagane działanie koordynatora|decyzj\w* "
+                              r"(?:właściciela|koordynatora|użytkownika)|poza zakresem (?:tego )?kroku|brak dostawy|"
+                              r"zakres (?:tego )?kroku nie pozwala", re.I)
+
+
 def _error(st, name, step, done) -> dict:
     """Błąd kroku po automatycznym ponowieniu: co się stało, czyja to wina (`fault` z dziennika kroku, PT-125)
     i polecana akcja zależna od winy. Przy `unknown` okno mówi wprost, że nie wiadomo."""
@@ -389,7 +394,15 @@ def _error(st, name, step, done) -> dict:
     # Tylko opisowe powody wykonawcy (krótkie kody jak `exit` powtarzają się naturalnie).
     repeated = len(reason) > 40 and fault in ("unknown", "model") and \
         " ".join(str(parent.get("reason") or "").split())[:120] == " ".join(reason.split())[:120]
-    if repeated:
+    # Agent sam pisze, że ponowienie nie pomoże albo że potrzebna jest decyzja / praca poza krokiem (04.11, K-41/KAMP-13:
+    # „wymagane działanie koordynatora”, a okno polecało „Ponów krok”).
+    blocked = fault in ("unknown", "model") and bool(BLOCKED_BY_SCOPE.search(reason))
+    repeated = repeated or blocked
+    if blocked:
+        why = ("Wykonawca zgłasza, że ponowienie nic nie da: brakuje czegoś spoza tego kroku (inne repozytorium, "
+               "decyzja o zakresie, praca, której krok nie może wykonać). Wybierz: odrzuć ticket i przenieś pracę gdzie "
+               "indziej, albo „Ponów z instrukcją” — napisz, jak ma ograniczyć zakres.")
+    elif repeated:
         why = ("Ten sam powód co w poprzedniej próbie — samo ponowienie nic nie zmieni. Napisz wykonawcy, co ma zrobić "
                "inaczej („Ponów z instrukcją”), albo zmień wykonawcę.")
     options = [
