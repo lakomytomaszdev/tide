@@ -2859,6 +2859,18 @@ class FlowEngine(PlanEditing):
         except OSError:
             return ""
 
+    def _desk_items(self, card: str, st) -> list[tuple[str, str, list[str]]]:
+        """Pozycje „Do sprawdzenia na pulpicie” z notek wszystkich kroków karty, w kolejności kroków;
+        kroki odrzuconych ticketów są pomijane (ich zmian nie scalono)."""
+        found = []
+        for step in sorted(st.steps.values(), key=lambda s: int(s.get("seq") or 0)):
+            if step.get("kind") == "close" or (step.get("ticket") or "") in st.rejected:
+                continue
+            items = handoff.desk_items(self._note(card, step))
+            if items:
+                found.append((step.get("step") or "", step.get("ticket") or "", items))
+        return found
+
     def _rules(self, repo: str) -> str:
         out = []
         for name in ("AGENTS.md", "CLAUDE.md"):
@@ -4020,6 +4032,8 @@ class FlowEngine(PlanEditing):
                 path = os.path.join(self.store.root, self.journal.rel_dir(card), "steps", latest["step"], handoff.SUMMARY_FILE)
                 with open(path, encoding="utf-8") as fh:
                     summary = fh.read(OUTPUT_MAX)
+                if (st.started or {}).get("check") == "manual":
+                    summary += handoff.desk_section(self._desk_items(card, st))
                 self.journal.append(card, "card.closed", step=latest["step"], summary=summary,
                                     check=(st.started or {}).get("check") or "auto")
                 if st.plan_approved and not st.plan_finished:

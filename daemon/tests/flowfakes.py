@@ -150,6 +150,9 @@ if prompt.startswith("Krok review "):
             fh.write("nieautoryzowana zmiana\n")
     with open(os.path.join(out, "review.md"), "w", encoding="utf-8") as fh:
         fh.write("# Review\n\n" + ("MAJOR: popraw ATRAPA.md\n" if bad else "APPROVE\n"))
+        if "ATRAPA: pulpit" in prompt:
+            fh.write("\n## Do sprawdzenia na pulpicie\n\n- otwórz  widżet na drugim monitorze\n"
+                     "- Sprawdź skróty klawiszowe\n")
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "done", "verdict": "REQUEST_CHANGES" if bad else "APPROVE",
                    "blockers": 0, "majors": 1 if bad else 0, "nits": 0, "notes": ["review.md"]}, fh)
@@ -196,6 +199,9 @@ def commit():
 def finish(kind, **extra):
     with open(os.path.join(out, "note.md"), "w", encoding="utf-8") as fh:
         fh.write("# Notka wyniku\n\nAtrapa zrobiła ticket.\n")
+        if "ATRAPA: pulpit" in prompt:
+            fh.write("\n## Do sprawdzenia na pulpicie\n\n- Otwórz widżet na drugim monitorze\n"
+                     "- Przeciągnij okno\n  i sprawdź ramkę\n")
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": kind, "notes": ["note.md"], **extra}, fh)
 
