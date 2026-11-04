@@ -1847,11 +1847,13 @@ rozmowy z opiekunem w #7). Kartka dostaje sekcję „## Kontekst” z bezwzględ
 - `plan/plan.md`, `plan/source.md`, `plan/tickets/<id>.md` z katalogu karty w tablicy (bez planu — `plan/README.md`
   z dopiskiem) i `steps/<krok problemu>/prompt.txt` — kartka kroku problemu,
 - dla każdego kroku problemu (łańcuch `parentStep` problemu i wszystkie kroki jego ticketu): `steps/<krok>/note.md`,
-  `review.md`, `handoff.md`, `result.json` (z katalogu karty), `plan-review.json` (z `<krok>/out`) i `step-log.md` —
+  `review.md`, `handoff.md`, `result.json` oraz dodatkowe notki `*.md` wskazane w `notes`/`kept` wyniku lub zdarzenia
+  zakończenia (z archiwum kroku w katalogu karty), `plan-review.json` (z `<krok>/out`) i `step-log.md` —
   ostatnie 300 zdarzeń `out/step.log` po ludzku (`faults.excerpt(…, limit=300)`, jak wycinek PT-125),
 - `attempts.md` — próby kroków problemu (wykonawca, wynik, powód, czyja wina, decyzja) i poprzednie działania
-  opiekuna przy tym samym id problemu (wynik, streszczenie, rekomendacja, błąd, `note.md` i `result.json` kroku
-  opiekuna) — bez bieżącego kroku,
+  opiekuna przy tym samym id problemu (wynik, streszczenie, rekomendacja, błąd, `note.md`, `result.json` i dodatkowe
+  notki z `notes`/`kept` kroku opiekuna) — bez bieżącego kroku. Dodatkowe nazwy muszą wskazywać plik Markdown
+  bez składników ścieżki; odczyt nie podąża za dowiązaniami,
 - `docs/agent-plan-standard.md`, `docs/sandbox-and-permissions.md` i `docs/AGENTS-przeplyw-karty.md` (sekcja
   „Przepływ karty” z `AGENTS.md`) — migawki dokumentów działającej usługi Tide: `tide-docs/` obok pakietu
   (`daemon/install.sh` kopiuje tam te trzy pliki) albo repozytorium Tide przy uruchomieniu ze źródeł
@@ -1867,10 +1869,13 @@ przycinane) i czyta pliki wyłącznie przez `ctx.read_text` / `ctx.read_tail`. K
 zamiast przerwania startu.
 
 **Granice.** Maskowanie wyłącznie `faults.mask`: każdy plik w całości, zdarzenia każde osobno przed liczeniem
-rozmiaru, a w `journal.jsonl` każda wartość osobno (linie pozostają poprawnym JSON-em): pole, które `faults.mask`
+rozmiaru, a w `journal.jsonl` i plikach `*.json` każda odkodowana wartość osobno, przed ponowną serializacją
+(dotyczy też wyniku osadzonego w `attempts.md`): pole, które `faults.mask`
 uznaje za sekretne na próbce `nazwa=x` (`token`, `password`, `apiKey`…), traci całą wartość — także napis ze spacjami
 i liczbę; pozostałe napisy przechodzą przez `faults.mask`, a liczba zmieniona przez `faults.mask` (np. równa wartości
-sekretnej zmiennej środowiska) staje się `•••`. Końcówka `out/step.log` czytana od środka pliku zaczyna się od
+sekretnej zmiennej środowiska) staje się `•••`. Niepoprawny lub niepełny plik JSON jest zastępowany dopiskiem
+„(pominięto: niepoprawny lub niepełny JSON)” — maskowanie surowych sekwencji ucieczki mogłoby ujawnić część sekretu.
+Końcówka `out/step.log` czytana od środka pliku zaczyna się od
 pierwszej pełnej linii — sekret przecięty granicą odczytu nie traci nazwy zmiennej ani prefiksu tokenu przed
 maskowaniem. Tak samo odczyt kończący się przed końcem pliku (początek pliku dłuższego niż `FILE_READ_MAX` albo plik
 dopisywany w trakcie odczytu) odrzuca ostatnią, niepełną linię i dopisuje „dalsza część pliku pominięta” — urwana

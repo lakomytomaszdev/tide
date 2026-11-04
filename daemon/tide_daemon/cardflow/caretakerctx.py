@@ -188,16 +188,43 @@ def _plan(ctx: Ctx) -> list[File]:
 STEP_FILES = ("result.json", "note.md", "review.md", "handoff.md")
 
 
+def _step_files(ctx: Ctx, name: str, defaults: tuple = STEP_FILES) -> list[tuple[str, str]]:
+    """Pliki archiwum kroku: stałe nazwy i notki z `notes`/`kept` wyniku oraz zdarzenia zakończenia.
+
+    Dodatkowa notka musi być nazwą pliku Markdown bez składników ścieżki; także wewnątrz archiwum odczyt
+    przechodzi przez `ctx.read_text`, więc dowiązanie nie pozwala odczytać pliku spoza kroku.
+    """
+    folder = os.path.join(ctx.card_dir, "steps", name)
+    result = ctx.read_text(os.path.join(folder, "result.json"))
+    try:
+        data = json.loads(result) if result is not None else {}
+    except (ValueError, RecursionError):
+        data = {}
+    entries = list(defaults)
+    for source in (data, ctx.st.finished.get(name) or {}):
+        if not isinstance(source, dict):
+            continue
+        for key in ("notes", "kept"):
+            notes = source.get(key)
+            if not isinstance(notes, list):
+                continue
+            entries += [entry for entry in notes if isinstance(entry, str) and entry.endswith(".md")
+                        and "/" not in entry and "\\" not in entry]
+    out = []
+    for entry in dict.fromkeys(entries):
+        text = result if entry == "result.json" else ctx.read_text(os.path.join(folder, entry))
+        if text is not None:
+            out.append((entry, text))
+    return out
+
+
 def _steps(ctx: Ctx) -> list[File]:
     """Notki, review, `plan-review.json` i końcówka `out/step.log` (po ludzku) każdego kroku problemu."""
     out = []
     for name in ctx.steps():
         step = ctx.st.steps.get(name) or {}
-        kept = os.path.join(ctx.card_dir, "steps", name)
-        for entry in STEP_FILES:
-            text = ctx.read_text(os.path.join(kept, entry))
-            if text is not None:
-                out.append(File(f"steps/{name}/{entry}", f"{entry} kroku {name}", text=text))
+        for entry, text in _step_files(ctx, name):
+            out.append(File(f"steps/{name}/{entry}", f"{entry} kroku {name}", text=text))
         step_dir = step.get("stepDir") or ""
         if not step_dir:
             continue
@@ -262,10 +289,10 @@ def _attempts(ctx: Ctx) -> list[File]:
             lines.append(f"- Wynik kroku: {'akcja ' + finished.get('action') if finished.get('ok') else finished.get('error') or '?'}")
         else:
             lines.append("- Bez wyniku (krok trwa albo nie wystartował).")
-        for entry in ("note.md", "result.json"):
-            text = ctx.read_text(os.path.join(ctx.card_dir, "steps", name, entry))
-            if text is not None:
-                lines += ["", f"#### {entry}", "", text.strip()]
+        for entry, text in _step_files(ctx, name, ("note.md", "result.json")):
+            if entry.endswith(".json"):
+                text = _json_text(text, ctx.env)
+            lines += ["", f"#### {entry}", "", text.strip()]
         lines.append("")
     return [File("attempts.md", "poprzednie próby kroków i diagnozy opiekuna przy tym problemie",
                  text="\n".join(lines) + "\n")]
@@ -361,8 +388,10 @@ def collect(problem: dict, st, events: list, *, card: str, card_dir: str, worktr
                 continue
             seen.add(rel)
             item.path = rel
-            # Jedyne maskowanie: `faults.mask` — tekst w całości, zdarzenia każde osobno (przed liczeniem rozmiaru).
-            item.text = faults.mask(item.text, env) if item.text else ""
+            # JSON maskujemy po odkodowaniu wartości, zanim sekwencje ucieczki zmienią granice sekretów.
+            # Pozostały tekst w całości, zdarzenia każde osobno; zawsze przez `faults.mask`, przed limitem.
+            item.text = (_json_text(item.text, env) if rel.endswith(".json") else faults.mask(item.text, env)) \
+                if item.text else ""
             item.head = faults.mask(item.head, env) if item.head else ""
             if item.masked_json:
                 item.items = [str(line) for line in item.items]
@@ -574,6 +603,14 @@ def _listdir(folder: str, roots: tuple) -> list[str]:
 
 # --- pomocnicze ----------------------------------------------------------------------------------
 
+def _json_text(text: str, env: dict | None) -> str:
+    """Maskowanie odkodowanych wartości JSON; niepoprawny lub przycięty JSON nie trafia do kontekstu w surowej postaci."""
+    try:
+        return json.dumps(_mask_json(json.loads(text), env=env), ensure_ascii=False, indent=2) + "\n"
+    except (ValueError, RecursionError):
+        return SKIPPED.format(why="niepoprawny lub niepełny JSON") + "\n"
+
+
 def _secret_field(key: str, env: dict | None) -> bool:
     """Czy pole o tej nazwie jest sekretne — rozstrzyga `faults.mask` na próbce `nazwa=x` (bez drugiej listy nazw)."""
     probe = f"{key}=x"
@@ -581,7 +618,7 @@ def _secret_field(key: str, env: dict | None) -> bool:
 
 
 def _mask_json(value, key: str = "", env: dict | None = None):
-    """Zdarzenie dziennika z zamaskowanymi wartościami; struktura JSON zostaje poprawna. Pole o sekretnej nazwie
+    """JSON z zamaskowanymi wartościami; struktura JSON zostaje poprawna. Pole o sekretnej nazwie
     (`_secret_field`) traci całą wartość — napis ze spacjami i liczbę też; pozostałe napisy i liczby przechodzą przez
     `faults.mask` (zmieniona liczba — np. wartość sekretnej zmiennej środowiska — staje się `•••`)."""
     if isinstance(value, dict):

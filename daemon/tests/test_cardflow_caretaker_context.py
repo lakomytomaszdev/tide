@@ -65,6 +65,49 @@ class Tree:
 
 
 class MaskingTest(unittest.TestCase):
+    def test_json_values_are_decoded_before_masking_in_collect_and_build(self):
+        tree = Tree(self)
+        j = tree.journal()
+        j.care("K-1-PT-7-2", "K-1-PT-7-1", 1, "K-1-care-1")
+        secret = "correct horse battery staple"
+        question = f'Potrzebne password: "{secret}"'
+        result = json.dumps({"result": "question", "question": question})
+        for name in ("K-1-PT-7-2", "K-1-care-1"):
+            tree.write(os.path.join(tree.card_dir, "steps", name, "result.json"), result)
+        tree.write(os.path.join(tree.step_dir, "out", "plan-review.json"),
+                   json.dumps({"verdict": "REQUEST_CHANGES", "findings": [{"text": question}]}))
+        collected = tree.collect(j)
+        context = os.path.join(tree.step_dir, "in", "context")
+        caretakerctx.build(caretaker.problems(j.st)[0], j.st, j.events, card="K-1",
+                           card_dir=tree.card_dir, worktree=tree.worktree, context_dir=context,
+                           env=ENV, tide_docs="")
+        written = {}
+        for folder, _, names in os.walk(context):
+            for name in names:
+                path = os.path.join(folder, name)
+                with open(path, encoding="utf-8") as fh:
+                    written[os.path.relpath(path, context)] = fh.read()
+        for stage, files in (("collect", collected), ("build", written)):
+            with self.subTest(stage=stage):
+                for path, text in files.items():
+                    for part in secret.split():
+                        self.assertNotIn(part, text, path)
+                data = json.loads(files["steps/K-1-PT-7-2/result.json"])
+                self.assertIn("•••", data["question"])
+                review = json.loads(files["steps/K-1-PT-7-2/plan-review.json"])
+                self.assertIn("•••", review["findings"][0]["text"])
+                self.assertIn("#### result.json", files["attempts.md"])
+                self.assertIn("•••", files["attempts.md"])
+
+    def test_invalid_json_is_omitted_instead_of_masking_escaped_fragments(self):
+        tree = Tree(self)
+        j = tree.journal()
+        tree.write(os.path.join(tree.card_dir, "steps", "K-1-PT-7-2", "result.json"),
+                   json.dumps({"question": 'password: "correct horse battery staple"'})[:-1])
+        text = tree.collect(j)["steps/K-1-PT-7-2/result.json"]
+        self.assertIn("pominięto", text)
+        self.assertNotIn("horse", text)
+
     def test_token_env_variable_and_key_secret_pair_are_masked_in_every_file(self):
         tree = Tree(self)
         j = tree.journal()
@@ -315,6 +358,51 @@ class OutsideTest(unittest.TestCase):
 
 
 class AttemptsTest(unittest.TestCase):
+    def test_extra_problem_notes_from_result_and_journal_are_in_context(self):
+        tree = Tree(self)
+        j = tree.journal()
+        name = "K-1-PT-7-2"
+        j.events[-1].update(notes=["journal-note.md"], kept=["kept-note.md", "diagnosis.md"])
+        tree.write(os.path.join(tree.card_dir, "steps", name, "result.json"),
+                   json.dumps({"result": "error", "notes": ["diagnosis.md"]}))
+        for entry in ("diagnosis.md", "journal-note.md", "kept-note.md"):
+            tree.write(os.path.join(tree.card_dir, "steps", name, entry),
+                       f"Ustalenia {entry}: password={PAIR_SECRET}\n")
+        files = tree.collect(j)
+        for entry in ("diagnosis.md", "journal-note.md", "kept-note.md"):
+            text = files[f"steps/{name}/{entry}"]
+            self.assertIn(f"Ustalenia {entry}", text)
+            self.assertNotIn(PAIR_SECRET, text)
+
+    def test_extra_caretaker_diagnoses_are_in_next_attempt(self):
+        tree = Tree(self)
+        j = tree.journal()
+        name = "K-1-care-1"
+        j.care("K-1-PT-7-2", "K-1-PT-7-1", 1, name)
+        j.add("step.finished", step=name, result="done", kept=["journal-diagnosis.md"])
+        tree.write(os.path.join(tree.card_dir, "steps", name, "result.json"),
+                   json.dumps({"result": "done", "notes": ["diagnosis.md"]}))
+        for entry in ("diagnosis.md", "journal-diagnosis.md"):
+            tree.write(os.path.join(tree.card_dir, "steps", name, entry),
+                       f"Diagnoza {entry}: password={PAIR_SECRET}\n")
+        attempts = tree.collect(j, step="K-1-care-2")["attempts.md"]
+        for entry in ("diagnosis.md", "journal-diagnosis.md"):
+            self.assertIn(f"Diagnoza {entry}", attempts)
+        self.assertNotIn(PAIR_SECRET, attempts)
+
+    def test_extra_notes_cannot_escape_archive_or_follow_symlinks(self):
+        tree = Tree(self)
+        j = tree.journal()
+        secret = os.path.join(tree.home, "tajne.md")
+        for name in ("K-1-PT-7-2", "K-1-care-1"):
+            tree.write(os.path.join(tree.card_dir, "steps", name, "result.json"), json.dumps({
+                "notes": [secret, "../../../home/tajne.md", "../other/diagnosis.md", "link.md", 42]}))
+            os.symlink(secret, os.path.join(tree.card_dir, "steps", name, "link.md"))
+        tree.write(os.path.join(tree.card_dir, "steps", "other", "diagnosis.md"), LEAK)
+        j.care("K-1-PT-7-2", "K-1-PT-7-1", 1, "K-1-care-1")
+        for path, text in tree.collect(j).items():
+            self.assertNotIn(LEAK, text, path)
+
     def test_previous_caretaker_actions_and_diagnoses_are_in_the_next_context(self):
         tree = Tree(self)
         j = tree.journal()
