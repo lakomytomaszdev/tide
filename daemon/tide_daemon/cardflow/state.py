@@ -96,6 +96,9 @@ class FlowState:
     caretaker_outcomes: dict = field(default_factory=dict)    # krok opiekuna → caretaker.escalated / caretaker.action
     caretaker_escalations: dict = field(default_factory=dict)  # id problemu → ostatnie caretaker.escalated
     caretaking: dict = field(default_factory=dict)            # krok problemu → krok opiekuna, który nad nim pracuje
+    # Strażnik kroku opiekuna (PT-158): ostatni stan bazowy `caretaker.guard` i powody wykrytych po drodze zmian.
+    caretaker_guards: dict = field(default_factory=dict)      # krok opiekuna → ostatnie caretaker.guard
+    caretaker_wrote: dict = field(default_factory=dict)       # krok opiekuna → [powód zmiany]
 
     def running(self) -> list[dict]:
         return [s for name, s in self.steps.items() if name not in self.finished] + \
@@ -222,6 +225,10 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "caretaker.started":
             st.caretaker_runs[e.get("step")] = e
             st.caretaking[e.get("target")] = e.get("step")
+        elif kind == "caretaker.guard":
+            st.caretaker_guards[e.get("step")] = e
+            if e.get("wrote"):
+                st.caretaker_wrote.setdefault(e.get("step"), []).extend(e.get("wrote") or [])
         elif kind in ("caretaker.escalated", "caretaker.action"):
             st.caretaker_outcomes[e.get("step")] = e
             if st.caretaking.get(e.get("target")) == e.get("step"):

@@ -7,7 +7,9 @@
   `pytanie` (wynik „pytanie”), `pytanie-opcje` (pytanie z poprawnymi `options[]`), `pytanie-zle-opcje` (kilka poleconych). Ścieżkę pliku wyniku bierze z kartki (linia „Plik wyniku: …”), nie z ustawień.
   Kartkę opiekuna karty (PT-143) rozpoznaje po pierwszej linii „Jesteś opiekunem karty”; co odpowiada, mówi
   „ATRAPA-OPIEKUN: …” w opisie problemu (`escalate` — domyślnie, `powoli` — 6 s pracy i escalate,
-  `akcja-<nazwa>`, `bez-wyniku`, `zly-format`, `pytanie`, `blad`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …”.
+  `akcja-<nazwa>`, `bez-wyniku`, `zly-format`, `pytanie`, `blad`; PT-158: `pisze-sledzony`, `pisze-nowy`,
+  `commit` — zapis do worktree albo commit, `karta-sledzony`, `karta-nowy` — zapis do worktree karty; potem
+  poprawny `escalate`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …”.
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
 - `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
@@ -52,6 +54,33 @@ if prompt.startswith("Jesteś opiekunem karty"):
     care = care.group(1) if care else "escalate"
     if care == "powoli":            # opiekun pracuje kilka sekund (widok „W toku”, restart usługi), potem escalate
         time.sleep(6)
+        care = "escalate"
+    # PT-158: opiekun, który pisze poza `out` (zmienia plik śledzony, dodaje nieśledzony, robi commit), a potem
+    # zapisuje poprawny wynik `escalate` — strażnik ma go odrzucić przed odczytem wyniku.
+    tree = re.search(r"Worktree kroku \(wyłącznie do odczytu\): (\S+)", prompt).group(1)
+    if care == "pisze-sledzony":
+        tracked = subprocess.check_output(["git", "-C", tree, "ls-files"], text=True).split()
+        with open(os.path.join(tree, tracked[0]), "a", encoding="utf-8") as fh:
+            fh.write("zmiana opiekuna\n")
+    elif care == "pisze-nowy":
+        with open(os.path.join(tree, "opiekun-byl-tu.txt"), "w", encoding="utf-8") as fh:
+            fh.write("nowy plik\n")
+    elif care == "commit":
+        subprocess.run(["git", "-C", tree, "commit", "-q", "--allow-empty", "-m", "opiekun commituje"], check=True)
+    elif care in ("karta-sledzony", "karta-nowy"):
+        # Review M2 (PT-158): zapis w worktree karty (nie ticketu) bez commita.
+        listed = subprocess.check_output(["git", "-C", tree, "worktree", "list", "--porcelain"], text=True)
+        num = re.match(r"Jesteś opiekunem karty K-(\d+)", prompt).group(1)
+        card_tree = next(block.split("\n")[0][len("worktree "):] for block in listed.split("\n\n")
+                         if f"branch refs/heads/card/k-{num}-" in block)
+        if care == "karta-sledzony":
+            tracked = subprocess.check_output(["git", "-C", card_tree, "ls-files"], text=True).split()
+            with open(os.path.join(card_tree, tracked[0]), "a", encoding="utf-8") as fh:
+                fh.write("zmiana opiekuna w karcie\n")
+        else:
+            with open(os.path.join(card_tree, "opiekun-w-karcie.txt"), "w", encoding="utf-8") as fh:
+                fh.write("nowy plik\n")
+    if care in ("pisze-sledzony", "pisze-nowy", "commit", "karta-sledzony", "karta-nowy"):
         care = "escalate"
     data = None
     if care == "zly-format":

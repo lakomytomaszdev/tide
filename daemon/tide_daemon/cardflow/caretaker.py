@@ -9,6 +9,7 @@ Publiczny interfejs (silnik i widoki wołają tylko te funkcje):
 - `owned(st, id)` — jedyne liczenie działań opiekuna przy problemie (od ostatniego zamknięcia),
 - `brief(problem, st, ...)` — kartka kroku opiekuna (pierwsza linia „Jesteś opiekunem karty …”),
 - `parse_result(data, problem, st)` — walidacja pliku wyniku opiekuna; granica uprawnień jest tu, nie w kartce.
+  Przed nią silnik sprawdza strażnikiem (`guard.py`, PT-158), czy krok nie pisał poza `out` — inaczej `WROTE`.
 
 Rejestry (kolejne tickety tylko dopisują wpisy, bez edycji wspólnych gałęzi):
 - `TRIGGERS` — funkcje `(st) -> [kandydat]`, kandydat `{trigger, step?, ticket?, stage?, cause?, decision?}`,
@@ -55,6 +56,8 @@ OPTION_ID_MAX = 60
 BAD_ACTION, BAD_RESULT = "bad-caretaker-action", "bad-caretaker-result"
 QUESTION, OTHER_RESULT, NOT_STARTED, STOPPED = ("caretaker-question", "caretaker-result", "caretaker-not-started",
                                                  "caretaker-stopped")
+# Krok opiekuna zmienił worktree, HEAD albo gałąź pod strażą (PT-158, `guard.py`): wynik odrzucony przed walidacją.
+WROTE = "caretaker-wrote"
 
 TICKET_KINDS = ("ticket", "fix", "review", "conflict")
 
@@ -288,9 +291,28 @@ def executor_name(catalog, st) -> str:
 
 # --- kartka --------------------------------------------------------------------------------------
 
-def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str) -> str:
-    """Kartka kroku opiekuna: opis problemu (zamaskowany `faults.mask`), dostępne akcje z parametrami, zakazy
-    i ścieżka wyniku. Sekcja problemu pochodzi z `BRIEF_SECTIONS` według wyzwalacza."""
+def _commands_section(worktree: str, commands: bool) -> list[str]:
+    """Polecenia kroku opiekuna (PT-158): stała lista tylko do odczytu z `agentcmd` (Claude) albo żadne (Codex)."""
+    from ..tasks.agentcmd import READ_ONLY_COMMANDS, READ_ONLY_GIT
+    if not commands:
+        return ["- Nie uruchamiaj poleceń: ten krok opiekuna nie ma narzędzi poleceń, a zapis ma tylko do własnego "
+                "katalogu wyjściowego."]
+    listed = ", ".join(f"`{name}`" for name in READ_ONLY_COMMANDS)
+    git = ", ".join(f"`git -C {worktree} {sub}`" for sub in READ_ONLY_GIT)
+    return [f"- Dozwolone są wyłącznie polecenia tylko do odczytu: {listed} oraz {git}. Innych poleceń nie ma (także poleceń "
+            "projektu, testów i budowania); katalogiem roboczym kroku jest katalog wyjściowy, więc podawaj ścieżki "
+            "worktree bezwzględnie. Opcje pokazane po podpoleceniu gita są obowiązkowe, w tej kolejności "
+            "(bez nich polecenie nie jest dozwolone). `--ignore-submodules=all` pomija submoduły; nie dodawaj "
+            "opcji `--i…`, `--no-i…`, `--sub…` ani `--no-sub…`. Bez `find -delete`/`-exec`, `rg --pre`/`-z`, "
+            "`git --output`/`--ext-diff`/`--show-signature` i przekierowań do plików.",
+            "- Nie zmieniaj plików w worktree ani w repozytorium: Tide porównuje worktree, HEAD i gałęzie sprzed "
+            "kroku i po nim, a wynik kroku, który cokolwiek tam zmienił, odrzuca (`caretaker-wrote`)."]
+
+
+def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands: bool = True) -> str:
+    """Kartka kroku opiekuna: opis problemu (zamaskowany `faults.mask`), dostępne akcje z parametrami, zakazy,
+    polecenia tylko do odczytu (`commands` — program z listą poleceń, Claude) i ścieżka wyniku. Sekcja problemu
+    pochodzi z `BRIEF_SECTIONS` według wyzwalacza."""
     section = BRIEF_SECTIONS.get(problem.get("trigger") or "")
     described = section(problem, st) if section else f"## Problem\n\nProblem {problem.get('id')}."
     actions = allowed_actions(problem)
@@ -322,8 +344,7 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str) -> str:
         "",
         "## Zakazy",
         "",
-        "- Nie zmieniaj plików w worktree ani w repozytorium i nie uruchamiaj poleceń: krok opiekuna nie ma "
-        "dozwolonych poleceń, a zapis ma tylko do własnego katalogu wyjściowego.",
+        *_commands_section(worktree, commands),
         "- Nie commituj, nie rób push ani scalenia; nie zatwierdzaj planu, nie udzielaj zgód na polecenia, nie "
         "uruchamiaj niczego poza piaskownicą i nie odrzucaj ticketu. Takich akcji nie ma — akcja spoza listy jest "
         "nieudanym działaniem i problem od razu wraca do użytkownika.",
@@ -506,10 +527,12 @@ def history_text(event: dict) -> str:
         summary = _text(event.get("summary"))
         return f"Opiekun: {HISTORY_LABELS.get('escalate')}" + (f" — {summary}" if summary else "")
     if kind in (ESCALATED, ACTION) and (event.get("failed") or event.get("ok") is False):
+        error = _text(event.get("error"))
+        if event.get("code") == WROTE:          # strażnik (PT-158): akcja nie wykonana, powód z porównania stanu
+            return "Opiekun: wynik odrzucony, akcja nie wykonana" + (f" — {error}" if error else "")
         label = HISTORY_LABELS.get(action)
         what = f"nie udało się ({label})" if label else \
             "nie udało się wykonać działania" + (f" „{action}”" if action else "")
-        error = _text(event.get("error"))
         return f"Opiekun: {what}" + (f" — {error}" if error else "")
     if kind == ACTION:
         return f"Opiekun: {HISTORY_LABELS.get(action) or action or 'działanie'}"

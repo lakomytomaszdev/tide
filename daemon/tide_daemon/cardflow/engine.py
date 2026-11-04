@@ -25,6 +25,7 @@ pierwszego sprawdzenia — po restarcie usługi od nowa (krok dostaje pełny cza
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import shutil
@@ -52,6 +53,7 @@ from .decisions import clean_options
 from . import execution
 from . import faults
 from . import fullcard
+from . import guard
 from . import limits as flow_limits
 from . import planning
 from .planediting import PlanEditing
@@ -243,6 +245,8 @@ class FlowEngine(PlanEditing):
         self.guard_every = guard_every
         # Czas procesora jednostki kroku jako znak postępu strażnika (None w testach bez systemd).
         self.unit_cpu = stepstop.unit_cpu_bucket
+        # Strażnik opiekuna (PT-158): zamrożenie jednostki kroku na czas działania Tide (atrapa w testach).
+        self.freeze_unit = stepstop.freeze_unit
         self.terminal = terminal
         self.task_files = task_files or TaskFiles()
         self.procs: dict[str, object] = {}         # krok → Popen (tylko kroki uruchomione przez tę usługę)
@@ -1446,7 +1450,7 @@ class FlowEngine(PlanEditing):
             if extras:
                 prompt += "\nDodatkowe projekty karty (wyłącznie do odczytu):\n" + "\n".join(
                     f"- {p.name}: {p.repo}" for p in extras)
-        if kind != caretaker.KIND:      # krok opiekuna nie ma dozwolonych poleceń (PT-143)
+        if kind != caretaker.KIND:      # opiekun: stała lista tylko do odczytu w kartce, bez listy projektu (PT-158)
             prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
@@ -1456,8 +1460,10 @@ class FlowEngine(PlanEditing):
             nonlocal prompt
             from ..board.commands import claude_tools
             from ..tasks import dotnet
+            # Krok opiekuna (PT-158) nie dostaje listy poleceń projektu: jego stałą listę tylko do odczytu składa
+            # `agentcmd` (`write_out_only`).
             allowed_tools, disallowed_tools = claude_tools(project.allowed_commands, project.denied_commands,
-                                                           step_dir=step_dir)
+                                                           step_dir=step_dir) if kind != caretaker.KIND else ((), ())
             is_dotnet = kind in ("ticket", "fix", "review", "conflict", "close") and dotnet.is_dotnet(worktree)
             if is_dotnet:
                 ok, tail = dotnet.restore(worktree)
@@ -1493,6 +1499,16 @@ class FlowEngine(PlanEditing):
             for source, target in zip(images, shots):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 shutil.copyfile(source, target)
+            if kind == caretaker.KIND:
+                # Strażnik (PT-158): stan bazowy tuż przed startem programu, po wszystkich przygotowaniach Tide.
+                # Przy problemie ticketu pod strażą jest też drzewo i HEAD worktree karty (review M2); katalog gita
+                # ustala usługa z repozytorium, jak dla worktree kroku.
+                watched = [(worktree, bg.git_dir)]
+                card_tree = made.get("worktree") or ""
+                if card_tree and os.path.normpath(card_tree) != os.path.normpath(worktree):
+                    watched.append((card_tree, agentcmd.resolve_git_dir(project.repo, card_tree)))
+                self._guard_baseline(card.id, step_id, project.repo, watched,
+                                     (made_ticket["branch"], made["branch"]))
             proc = bg.start(systemd_run=self.systemd_run)
             self.procs[step_id] = proc
             return {"unit": bg.unit, "gitDir": bg.git_dir}
@@ -1534,15 +1550,110 @@ class FlowEngine(PlanEditing):
                 return done
         if (action, key) not in st.intents:
             self.journal.append(card, "intent", action=action, key=key, **intent)
+        # Strażnik (PT-158, review M1 rundy 2): najpierw zamrożenie, potem kontrola — zapis kroku opiekuna tuż
+        # przed skutecznym zamrożeniem trafia do `wrote`, zanim nowy stan bazowy po działaniu Tide go przykryje.
+        frozen = self._guard_freeze(st, self._guard_watched(st))
+        try:
+            guarded = self._guard_check(card, st)
+        except BaseException:
+            self._guard_thaw(st, frozen)
+            raise
         try:
             data = work()
         except (FlowGitError, reservations.ReservationError, agentcmd.StepError, OSError, FlowError) as exc:
+            self._guard_rebase(card, guarded, action, frozen)
             if done is None or done.get("error") != str(exc):
                 self.journal.append(card, "result", action=action, key=key, ok=False, error=str(exc))
             if isinstance(exc, (agentcmd.StepError, OSError)):
                 raise
             raise FlowError(action, str(exc)) from None
+        except BaseException:
+            self._guard_thaw(st, frozen)
+            raise
+        self._guard_rebase(card, guarded, action, frozen)
         return self.journal.append(card, "result", action=action, key=key, ok=True, **(data or {}))
+
+    # --- strażnik kroku opiekuna (PT-158) -------------------------------------------------------
+
+    def _guard_baseline(self, card: str, step: str, repo: str, worktrees, branches) -> None:
+        """Stan bazowy kroku opiekuna (`caretaker.guard`, `cause: start`): drzewo i HEAD worktree kroku i worktree
+        karty (pary worktree, gitDir), gałąź kroku i gałąź karty."""
+        base = guard.snapshot(self.git, repo=repo, worktrees=worktrees, branches=branches)
+        self.journal.append(card, guard.EVENT, step=step, cause="start", wrote=[], **base)
+
+    def _guard_freeze(self, st: FlowState, names: list[str]) -> dict:
+        """Na czas działania Tide zamraża jednostki trwających kroków opiekuna (M1 review PT-158): zmiana w oknie
+        działania jest wtedy zmianą Tide. Wynik: krok → "frozen" (zamrożony), "gone" (procesu już nie ma — nic nie
+        pisze) albo "" (żyje albo nie wiadomo, a zamrożenie się nie udało — zmiany z okna należą do kroku)."""
+        frozen = {}
+        for name in names:
+            unit = (st.caretakers.get(name) or {}).get("unit") or ""
+            if unit and self.freeze_unit(unit, True):
+                frozen[name] = "frozen"
+                continue
+            proc = self.procs.get(name)
+            if proc is not None and proc.poll() is not None or \
+                    proc is None and unit and stepstop.unit_state(unit) == "inactive":
+                frozen[name] = "gone"
+            else:
+                frozen[name] = ""
+        return frozen
+
+    def _guard_thaw(self, st: FlowState, frozen: dict) -> None:
+        for name, how in frozen.items():
+            unit = (st.caretakers.get(name) or {}).get("unit") or ""
+            if how == "frozen" and not self.freeze_unit(unit, False):
+                logging.getLogger(__name__).warning("nie udało się odmrozić kroku opiekuna %s (%s)", name, unit)
+
+    def _guard_watched(self, st: FlowState) -> list[str]:
+        """Trwające kroki opiekuna pod strażą."""
+        return [name for name in st.caretaker_guards if name not in st.finished]
+
+    def _guard_check(self, card: str, st: FlowState) -> list[str]:
+        """Przed działaniem Tide, które może zmienić worktree albo gałąź pod strażą (scalenie, commit planu, gałęzie,
+        sprzątanie), już po zamrożeniu kroków (`_guard_freeze`): zmiany od stanu bazowego trwającego kroku opiekuna
+        należą do kroku — zapisane w `wrote` przed działaniem, żeby zapis Tide ich nie przykrył. Zwraca kroki do
+        wzięcia stanu na nowo po działaniu."""
+        names = self._guard_watched(st)
+        for name in names:
+            base = st.caretaker_guards[name]
+            found = guard.changes(base, guard.again(self.git, base))
+            if found:
+                self.journal.append(card, guard.EVENT, step=name, cause="check", wrote=found,
+                                    **{k: base.get(k) for k in guard.FIELDS})
+        return names
+
+    def _guard_rebase(self, card: str, names: list[str], action: str, frozen: dict) -> None:
+        """Po działaniu Tide, jeszcze przed odmrożeniem kroku, stan pod strażą bierze się na nowo. Zmiana w oknie
+        działania jest zmianą Tide tylko wtedy, gdy krok był zamrożony albo już nie działał (`_guard_freeze`);
+        inaczej zostaje zapisana jako zapis kroku (`wrote`) — strażnik woli odrzucić, niż przepuścić."""
+        if not names:
+            return
+        try:
+            st = fold(self.journal.read(card))
+            for name in names:
+                base = st.caretaker_guards.get(name)
+                if base is None or name in st.finished:
+                    continue
+                fresh = guard.again(self.git, base)
+                if guard.same(base, fresh):
+                    continue
+                wrote = [] if frozen.get(name) else [
+                    f"zmiana w czasie działania Tide `{action}`, gdy kroku opiekuna nie dało się zamrozić — "
+                    + "; ".join(guard.changes(base, fresh))]
+                self.journal.append(card, guard.EVENT, step=name, cause=action, wrote=wrote, **fresh)
+        finally:
+            self._guard_thaw(fold(self.journal.read(card)), frozen)
+
+    def _guard_verdict(self, card: str, name: str) -> str:
+        """Powód odrzucenia wyniku kroku opiekuna (pusty — strażnik przepuszcza). Bez stanu bazowego wynik też jest
+        odrzucony: nie da się wykazać, że krok nie pisał."""
+        st = fold(self.journal.read(card))
+        base = st.caretaker_guards.get(name)
+        if base is None:
+            return "brak stanu worktree sprzed kroku opiekuna — nie da się sprawdzić, czy krok nie pisał"
+        found = [*st.caretaker_wrote.get(name, []), *guard.changes(base, guard.again(self.git, base))]
+        return guard.reason(found)[:caretaker.REASON_MAX] if found else ""
 
     # --- ręczne kolumny --------------------------------------------------------------------------
 
@@ -3281,7 +3392,8 @@ class FlowEngine(PlanEditing):
                                      branch=step.get("branch") or "", tool=step.get("program") or "claude",
                                      session_id=step.get("session") or "", claude_projects=self.claude_projects,
                                      codex_roots=self.codex_roots,
-                                     grace=self.grace, recovered_snapshot=recovered)
+                                     grace=self.grace, recovered_snapshot=recovered,
+                                     commit_wip=step.get("kind") != caretaker.KIND)
         wip = {"stopped": stopped.stopped, "committed": stopped.committed, "commit": stopped.commit,
                "files": stopped.files, "error": stopped.error, "notes": stopped.notes}
         if not stopped.stopped:
@@ -3607,8 +3719,9 @@ class FlowEngine(PlanEditing):
             if not worktree:
                 raise FlowError("no-worktree", "brak katalogu roboczego karty dla opiekuna")
             out = worktree + f".{caretaker.KIND}-{name}.step/out"
-            prompt = caretaker.brief(self._caretaker_problem(st, run), st, card=card, out_dir=out, worktree=worktree)
-            self._launch(item, project, selected, run.get("ticket") or "", {"branch": info["cardBranch"]},
+            prompt = caretaker.brief(self._caretaker_problem(st, run), st, card=card, out_dir=out, worktree=worktree,
+                                     commands=selected.tool == "claude")
+            self._launch(item, project, selected, run.get("ticket") or "", {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
                          {"branch": branch, "worktree": worktree}, name, [],
                          kind=caretaker.KIND, prompt_text=prompt)
         except FlowDeferred:
@@ -3633,7 +3746,12 @@ class FlowEngine(PlanEditing):
         out = os.path.join(step.get("stepDir") or "", "out")
         st = fold(self.journal.read(card))
         problem = self._caretaker_problem(st, st.caretaker_runs.get(name) or {})
-        if forced:
+        # Strażnik (PT-158) przed wszystkim innym, także przed `parse_result`: z kroku, który pisał poza `out`,
+        # żadna akcja nie przechodzi, nawet z poprawnym plikiem wyniku.
+        wrote = self._guard_verdict(card, name)
+        if wrote:
+            outcome = {"ok": False, "code": guard.WROTE, "action": "", "summary": "", "error": wrote}
+        elif forced:
             reason = forced.get("reason") or forced.get("result") or ""
             outcome = {"ok": False, "code": caretaker.STOPPED, "action": "", "summary": "",
                        "error": f"krok opiekuna zatrzymany: {REASON_LABELS.get(reason, reason)}"}

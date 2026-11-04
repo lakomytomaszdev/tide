@@ -1770,7 +1770,8 @@ Stan i widok:
   i pierwsza, żadna nie jest wybrana (D10). Renderowanie w oknie decyzji to #15. Eskalacja powiadamia raz
   (zwykłe `step.notice` kroku problemu).
 - Historia (`flow.history[]`, rodzaj `caretaker`, `actor: "caretaker"`): „Opiekun: oddaje decyzję — <streszczenie>”
-  i „Opiekun: nie udało się wykonać działania „<akcja>” — <błąd>”.
+  i „Opiekun: nie udało się wykonać działania „<akcja>” — <błąd>”; wynik odrzucony przez strażnika (PT-158):
+  „Opiekun: wynik odrzucony, akcja nie wykonana — <powód>”.
 
 **Id problemu i liczenie działań.** `problem_id` jest jedynym miejscem budowy id (bez `seq`): wyzwalacz z krokiem —
 `<wyzwalacz>:<korzeń łańcucha parentStep>` (`error:K-37-PT-7-1`), powtórzenie przyczyny `repeat:<ticket>:<przyczyna>`,
@@ -1812,7 +1813,8 @@ problem, params)` działa przez port silnika (`engine._CaretakerPort`). Walidacj
 tylko w kartce: nieznana nazwa (`approve-plan`, `allow`, `merge`, `push`, `reject`, …) → `bad-caretaker-action`;
 brak pliku albo zły format → `bad-caretaker-result`; `result` inny niż `done` → nieudane działanie (`question` niesie
 treść pytania jako streszczenie, jak `escalate`; inne — `caretaker-result`); zatrzymany albo niewystartowany krok —
-`caretaker-stopped`, `caretaker-not-started`. Długości: instrukcja/odpowiedź/uwaga do 4000 znaków, powód 1–600,
+`caretaker-stopped`, `caretaker-not-started`; krok, który pisał poza `out` — `caretaker-wrote` (strażnik, przed
+walidacją wyniku, „Piaskownica i strażnik”). Długości: instrukcja/odpowiedź/uwaga do 4000 znaków, powód 1–600,
 streszczenie do 1200. W PT-143 każde nieudane działanie od razu oddaje problem użytkownikowi (limit i ponawianie
 dokłada #8).
 
@@ -1839,17 +1841,98 @@ wina według dziennika kroku — bez dziennika kroku i bez innych plików.
 #### Na stałe (PT-143, do #9)
 
 Opiekun jest włączony na stałe, wykonawca to najmocniejsza klasa preferowanego dostawcy karty (w trybie mieszanym
-— dostawcy wykonawcy karty; domyślnie Opus albo Codex mocny). Piaskownica do #16: krok opiekuna nie ma żadnych
-dozwolonych poleceń (`agentcmd.Step.write_out_only`: Claude — `--disallowedTools Bash` i zakaz edycji worktree
-i repozytorium, bez `--allowedTools`; Codex — katalog roboczy i jedyny zapisywalny katalog to `<krok>/out`, a
-narzędzia poleceń i kodu są wyłączone: `-c features.shell_tool=false`, `unified_exec`, `code_mode`, `js_repl`
-— `agentcmd.CODEX_NO_COMMANDS`; plik wyniku Codex zapisuje łatką `apply_patch`; `/tmp` i `$TMPDIR` są jawnie
-wykluczone z zapisu: `-c sandbox_workspace_write.exclude_slash_tmp=true`, `exclude_tmpdir_env_var=true`, bo
-`writable_roots` tylko dopisuje katalogi do domyślnych), zapis tylko do własnego `out`
-(`allowWrite` piaskownicy kroku). Opiekun czekający na slot dostawcy (`step.waiting` rodzaju `caretaker`) nie daje
-powiadomienia o limicie — problem nadal należy do opiekuna, powiadamia dopiero eskalacja.
-Ponieważ `out` leży poza repozytorium, tylko `write_out_only` dodaje `--skip-git-repo-check` do uruchomienia
-Codexa (także wznowienia); katalog roboczy i ograniczenia piaskownicy pozostają takie jak powyżej.
+— dostawcy wykonawcy karty; domyślnie Opus albo Codex mocny). Piaskownica — „Piaskownica i strażnik” niżej.
+Opiekun czekający na slot dostawcy (`step.waiting` rodzaju `caretaker`) nie daje powiadomienia o limicie — problem
+nadal należy do opiekuna, powiadamia dopiero eskalacja.
+
+### Piaskownica i strażnik (PT-158)
+
+Granica bezpieczeństwa kroku opiekuna, wymagana przed akcjami zmieniającymi stan karty (#8): piaskownica pozwala
+pisać tylko do własnego `<krok>/out`, a strażnik niezależnie od piaskownicy sprawdza, czy krok nic poza nim nie
+zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
+
+**Piaskownica** (`agentcmd.Step.write_out_only`, ustawia ją silnik dla rodzaju `caretaker`):
+
+- Katalogiem roboczym programu jest `<krok>/out` (`Background.workdir`; `Background.cwd` — worktree — zostaje do
+  zatrzymania i dziennika sesji). Piaskownica Claude CLI daje zapis katalogowi roboczemu, więc tylko `out` jest
+  zapisywalny (`allowWrite: [out]`), a jej puste pliki-atrapy (`.bashrc`…) lądują w `out`, nie w worktree.
+- Claude: stała lista tylko do odczytu `agentcmd.read_only_tools` zamiast listy kroku — `rg`, `grep`, `cat`, `ls`,
+  `find` (`READ_ONLY_COMMANDS`, także ze wzorcami nazwanymi worktree), `git -C <worktree> log|show|diff
+  --no-ext-diff --no-textconv --ignore-submodules=all …` (opcje obowiązkowe: wyłączają `diff.external`,
+  `diff.<d>.command`, `textconv` i inspekcję submodułów) i `git -C <worktree> status --ignore-submodules=all`
+  (`READ_ONLY_GIT`),
+  `Read(//<worktree>/**)` dla Read/Grep/Glob i odczyt własnych `in`/`out`
+  (`board.commands.step_reads`). Lista jest w Tide, niezależna od ustawień projektu: silnik nie podaje kroku
+  opiekuna listy projektu (`claude_tools`), a `agentcmd` i tak ją pomija. `--disallowedTools` (zakaz wygrywa ze
+  zgodą): `READ_ONLY_BANS` — `find` z `-delete`, `-exec`/`-execdir`, `-ok`/`-okdir`, `-fprint*`, `-fls`; `rg`
+  z `--pre`, `--hostname-bin`, `--search-zip`/`-z` (także połączonym, np. `-az`, `-iz`); `git` z `--output`,
+  `--ext-diff`, `--textconv`, `--show-signature`; każde przekierowanie `>` — oraz zakaz edycji worktree i repozytorium.
+  `autoAllowBashIfSandboxed: false`: polecenie spoza listy nie ruszy.
+  Zakaz `rg *-*z*` jest zachowawczy: wildcard obejmuje spacje, więc odrzuca też bezpieczne wywołania z `z`
+  w dalszym argumencie po `-` (np. `rg -n wzorzec plik.txt`); można wtedy użyć `rg` bez opcji albo `grep`.
+- Programy pomocnicze gita (review M3): środowisko kroku opiekuna (`agentcmd.read_only_git_config`, dopisane do
+  `GIT_CONFIG_COUNT`, wygrywa z konfiguracją repozytorium) ma `core.fsmonitor=false`, `core.pager=cat`,
+  `log.showSignature=false`, `gpg.program`/`gpg.ssh.program`/`gpg.x509.program` = `/bin/false` i puste programy
+  wszystkich filtrów z konfiguracji worktree (`filter.<f>.clean|smudge|process`, `required=false`; listę czyta
+  usługa `git --git-dir <gitDir> config` przed startem, błąd odczytu — krok nie startuje), do tego
+  `GIT_CONFIG_NOSYSTEM=1`, `GIT_PAGER=cat`. Test na prawdziwym repozytorium z `diff.external`, `textconv`,
+  `diff.<d>.command`, filtrem, `core.fsmonitor` i `gpg.program` sprawdza, że żadne dozwolone polecenie gita ich
+  nie uruchamia (a zwykłe `git diff` — tak).
+- Submoduły (review runda 4/M1): ich konfiguracje mogą nazywać inne filtry niż konfiguracja worktree.
+  Każde dozwolone podpolecenie gita ma obowiązkowe `--ignore-submodules=all`, które wygrywa także z ustawieniem
+  `submodule.<nazwa>.ignore=none`; środowisko dodatkowo wymusza `status.submoduleSummary=false`.
+  Zakazy `git *--ignore-submodules=all *--i*`, `git *--no-i*`, `git *--sub*`, `git *--no-sub*` wykluczają późniejsze
+  nadpisanie opcji, jej skróty (`--ign`, `--i`), negację i żądania widoku submodułów. Reguły są zachowawcze:
+  odrzucają również np. `--ignore-space-change`. Test z prawdziwym submodułem i filtrem skonfigurowanym wyłącznie
+  w nim potwierdza uruchomienie helpera przez reprodukcję M1, odrzucenie jej przez reguły i brak helpera przy
+  dozwolonych wywołaniach `status`, `diff`, `log`, `show`.
+- Codex nie ma listy dozwolonych poleceń, więc opiekun u Codexa dostaje jej pusty podzbiór: narzędzia poleceń
+  i kodu są wyłączone (`-c features.shell_tool=false`, `unified_exec`, `code_mode`, `js_repl` —
+  `agentcmd.CODEX_NO_COMMANDS`), katalog roboczy i jedyny zapisywalny katalog to `out` (plik wyniku przez
+  `apply_patch`), `/tmp` i `$TMPDIR` są jawnie wykluczone (`sandbox_workspace_write.exclude_slash_tmp=true`,
+  `exclude_tmpdir_env_var=true`, bo `writable_roots` tylko dopisuje katalogi), a `--skip-git-repo-check` (także
+  przy wznowieniu) — bo `out` leży poza repozytorium. Kartka mówi wtedy, że krok nie ma poleceń.
+- Kartka (`caretaker.brief(…, commands=)`) wymienia listę, zakazy i strażnika.
+- Zatrzymanie kroku opiekuna (`_stop`) nie robi commita WIP (`stepstop.stop_step(commit_wip=False)`): worktree
+  i gałąź kroku zostają, jakie są, a ewentualny zapis kroku wykrywa strażnik.
+
+**Strażnik** (`cardflow/guard.py`, w silniku `_guard_baseline`, `_guard_check`, `_guard_freeze`, `_guard_rebase`,
+`_guard_thaw`, `_guard_verdict`):
+
+- Stan pod strażą: drzewo worktree kroku i — przy problemie ticketu, gdy to inny katalog — drzewo worktree karty
+  (wszystkie pliki, katalogi i dowiązania — śledzone, nieśledzone i ignorowane — bez katalogu `.git`; rekord:
+  ścieżka, typ i prawa, rozmiar, `mtime`, `ctime`, i-węzeł, cel dowiązania; skrót sha256 w podziale na wpisy
+  najwyższego poziomu), treść `<gitDir>/HEAD` każdego z tych worktree i sha gałęzi worktree kroku oraz gałęzi
+  karty. `ctime` zmienia każdy zapis i nie da się go cofnąć bez roota, więc wykrywa
+  też zapis tej samej treści i podmianę z przywróconym `mtime` — mocniej niż `git status` czy suma treści, bez
+  czytania plików. Git nie jest uruchamiany w worktree (haki, `core.fsmonitor`): drzewo czyta Python bez
+  podążania za dowiązaniami, `HEAD` — plik w katalogu gita ustalonym przez usługę, gałęzie — `FlowGit.sha`
+  w repozytorium.
+- Stan bazowy: `caretaker.guard` z `cause: start` tuż przed startem programu (po przygotowaniu katalogów kroku,
+  przed `step.started`) — `{step, repo, worktrees: [{worktree, gitDir, tree, head}], branches, refs, cause,
+  wrote}`.
+- Działania Tide w trakcie kroku opiekuna (każde `_act` tej karty z wykonaną pracą: scalenie, commit planu,
+  gałęzie, start innego kroku z przywracaniem zależności, sprzątanie…) nie są zapisem kroku: przed działaniem
+  strażnik najpierw zamraża jednostkę kroku (`stepstop.freeze_unit`, `systemctl --user freeze
+  <jednostka>.scope` — cgroup freezer zatrzymuje proces z potomkami), dopiero potem porównuje stan i zmiany
+  zapisuje jako `caretaker.guard` z `cause: check` i `wrote: [powód]` (zapis Tide ich nie przykryje; zapis kroku
+  tuż przed skutecznym zamrożeniem też tu trafia — review M1 rundy 2), wykonuje działanie, bierze stan bazowy na
+  nowo (`cause: <działanie>`) i dopiero wtedy odmraża krok (także po błędzie kontroli albo działania). Zmiana
+  w oknie działania jest więc zmianą Tide (review M1). Gdy zamrożenie się nie uda, a proces kroku żyje albo jego stanu nie da się
+  ustalić, zmiany z okna trafiają do `wrote` („zmiana w czasie działania Tide `<działanie>`, gdy kroku opiekuna
+  nie dało się zamrozić — …”) — strażnik odrzuca zamiast przepuszczać; proces już zakończony nic nie pisze.
+  `FlowState.caretaker_guards` — ostatni stan bazowy, `caretaker_wrote` — zebrane powody.
+- Koniec kroku (`_finish_caretaker`): strażnik działa pierwszy, przed `caretaker.parse_result` i niezależnie od
+  zatrzymania czy kodu wyjścia. Zmiana od stanu bazowego, wcześniej zapisane `wrote` albo brak stanu bazowego →
+  wynik odrzucony z kodem `caretaker-wrote` (`step.finished.outcome.code`, bez czytania pliku wyniku), powód np.
+  „krok opiekuna pisał poza swoim katalogiem wyjściowym: zmienione pliki w worktree <ścieżka>: opiekun-byl-tu.txt;
+  przesunięta gałąź ticket/pt-1”. Dalej jak każde nieudane działanie: `caretaker.escalated` z `failed: true`,
+  akcja nie jest wykonana, działanie liczy się w `owned()`, a historia karty ma wpis „Opiekun: wynik odrzucony,
+  akcja nie wykonana — <powód>”.
+- Ograniczenie: gałąź karty przesunięta w trakcie kroku opiekuna przez inny krok (np. rozwiązanie konfliktu
+  innego ticketu w worktree karty) nie jest działaniem Tide, więc odrzuca wynik opiekuna (bezpieczna pomyłka —
+  problem wraca do użytkownika z powodem). Tak samo działanie Tide przy kroku, którego nie dało się zamrozić
+  (np. systemd bez `freeze`).
 
 ## Docker
 
