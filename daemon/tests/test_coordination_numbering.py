@@ -481,6 +481,24 @@ class ReservationTest(unittest.TestCase):
         refused = self.next_id("--prefix", "APP5")
         self.assertIn("numer nadaje YouTrack", refused.stderr)
 
+    def test_card_flow_without_youtrack_in_tide_gets_a_local_prefix(self):
+        # 04.11, K-49 mobileapp: repozytorium deklaruje YouTrack, ale projekt Tide nie ma integracji — karta nie może
+        # utknąć na „załóż ticket tam”; dostaje lokalny numer z prefiksem, który nie jest kluczem YouTracka.
+        from tide_daemon.coordination import reservations
+        with open(os.path.join(self.repo, "CLAUDE.md"), "w", encoding="utf-8") as fh:
+            fh.write("## Plan pracy agentów (Tide)\n\n2. `tracker: youtrack`, `tracker-project: LOG`, "
+                     "`ticket-prefix: LOG`.\n")
+        with self.assertRaises(reservations.ReservationError):
+            reservations.reserve(self.repo, dry_run=True, path=self.registry)
+        preview = reservations.reserve(self.repo, dry_run=True, path=self.registry, local_fallback=True)
+        self.assertNotEqual(preview["prefix"], "LOG")
+        self.assertEqual(preview["prefix"], reservations.repo_prefix(self.repo))
+        got = reservations.reserve(self.repo, prefix=preview["prefix"], title="a", path=self.registry,
+                                   local_fallback=True)
+        self.assertEqual(got["ids"], [f"{preview['prefix']}-1"])
+        with self.assertRaises(reservations.ReservationError):   # jawny prefiks YouTracka dalej odmawia
+            reservations.reserve(self.repo, prefix="LOG", dry_run=True, path=self.registry, local_fallback=True)
+
     def test_plan_number_reserved_for_another_title(self):
         reservations = [{"prefix": "PT", "number": 22, "title": "Docker w tablicy"},
                         {"prefix": "PT", "number": 23, "title": ""}]

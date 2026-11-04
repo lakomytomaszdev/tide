@@ -219,6 +219,11 @@ class WaveFlowTest(FlowInProcess):
         started = self.of(second, "step.started")[0]
         with open(os.path.join(started["stepDir"], "in", "images", "1-shot.png"), "rb") as fh:
             self.assertEqual(fh.read(), b"screenshot-data")
+        # 04.11, K-49: narzędzie Read odrzucało zrzut spoza katalogów sesji — katalog zrzutów jest do odczytu.
+        with open(os.path.join(started["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            argv = json.load(fh)["argv"]
+        images = os.path.join(started["stepDir"], "in", "images")
+        self.assertIn(images, [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--add-dir"])
 
     def test_retry_uses_own_worktree_while_another_ticket_is_running(self):
         card = self.card()
