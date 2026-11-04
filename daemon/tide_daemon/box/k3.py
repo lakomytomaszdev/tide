@@ -9,7 +9,7 @@ Przepływ jednego kroku:
 
 1. krok w pudełku (PT-181) woła `GrantRegistry.issue(step, ip pudełka, program)` → atrapa (losowa, ważna tylko dla
    tego kroku, tego adresu IP pudełka i jednej trasy),
-2. `step_env(...)` daje zmienne do `in/env` (base URL na proxy + atrapa) i — dla Codexa — treść
+2. `step_credentials(...)` daje zmienne do `in/env` (base URL na proxy + atrapa) i — dla Codexa — treść
    `~/.codex/auth.json` z samymi atrapami (Codex bez pliku nie startuje; plik nie niesie poświadczeń),
 3. proxy (`box/proxy.py`) dla `/anthropic/…` i `/chatgpt/…` sprawdza atrapę (adres IP, trasa, ważność), wyrzuca
    nagłówki uwierzytelnienia z pudełka i wstawia prawdziwe, czytane **przy każdym żądaniu** z pliku hosta
@@ -25,6 +25,7 @@ import asyncio
 import base64
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -94,15 +95,21 @@ def default_routes(env=None) -> dict:
 
 PROGRAM_ROUTE = {"claude": "anthropic", "codex": "chatgpt"}
 
-_PATH = re.compile(r"^/[A-Za-z0-9._~/-]*$")
+_PATH = re.compile(r"/[A-Za-z0-9._~/-]*")
+_QUERY = re.compile(r"[A-Za-z0-9._~!$&'()*+,;=:@/?%-]*")
 
 
 def path_allowed(route: Route, path: str) -> bool:
     """Ścieżka (bez zapytania) z listy trasy. Bez `..`, `//`, `%` i znaków spoza bezpiecznego zestawu — żeby
     `/v1/messages/../organizations` czy `%2e%2e` nie wyszły poza listę po normalizacji po stronie serwera."""
-    if not _PATH.match(path) or "//" in path or any(seg in (".", "..") for seg in path.split("/")):
+    if not _PATH.fullmatch(path) or "//" in path or any(seg in (".", "..") for seg in path.split("/")):
         return False
     return any(path.startswith(p) if p.endswith("/") else path == p for p in route.paths)
+
+
+def query_allowed(query: str) -> bool:
+    """Zapytanie (bez `?`) tylko z bezpiecznego zestawu RFC 3986 — bez spacji, CR/LF/TAB, `#` i znaków spoza ASCII."""
+    return _QUERY.fullmatch(query) is not None
 
 
 class UpstreamRefused(Exception):
@@ -212,8 +219,9 @@ class GrantRegistry:
     Atrapa działa wyłącznie: z adresu IP pudełka, dla którego ją wydano, na jednej trasie (programu kroku), do
     `revoke_step` albo upływu `ttl`. Wszystko inne → `None` (proxy odpowiada 403)."""
 
-    def __init__(self, clock=time.monotonic, routes: dict | None = None):
+    def __init__(self, clock=time.monotonic, routes: dict | None = None, wall_clock=time.time):
         self.clock = clock
+        self.wall_clock = wall_clock     # czas epoki do sprawdzania `expiresAt` tokenu hosta (`auth_headers`)
         self.routes = routes if routes is not None else default_routes()
         self._grants: dict[str, Grant] = {}
         self._lock = threading.Lock()
@@ -223,6 +231,12 @@ class GrantRegistry:
             raise ValueError(f"program {program!r} nie działa z K3")
         if not step:
             raise ValueError("atrapa wymaga identyfikatora kroku")
+        try:
+            address = ipaddress.ip_address(str(ip))
+        except ValueError:
+            raise ValueError(f"adres pudełka {ip!r} nie jest adresem IP") from None
+        if address.version == 6 and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped      # jak `_ip` w proxy: `::ffff:a.b.c.d` → `a.b.c.d`
         route = PROGRAM_ROUTE[program]
         token = secrets.token_urlsafe(32)
         if program == "claude":
@@ -232,7 +246,7 @@ class GrantRegistry:
             # Codex porównuje konto z atrapy z listą kont z `wham/accounts/check` (P-3, przebieg 3), więc atrapa
             # niesie prawdziwy identyfikator konta i plan hosta (identyfikatory, nie poświadczenia).
             key = _dummy_jwt(token, *codex_account(self.routes["chatgpt"]))
-        grant = Grant(str(step), str(ip), route, key, self.clock() + float(ttl))
+        grant = Grant(str(step), str(address), route, key, self.clock() + float(ttl))
         with self._lock:
             self._grants[_digest(key)] = grant
         return grant

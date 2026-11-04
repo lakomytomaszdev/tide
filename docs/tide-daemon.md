@@ -2500,8 +2500,12 @@ skrót SHA-256 atrapy, nie samą atrapę.
    Anthropic `/v1/messages`, `/v1/messages/count_tokens`; ChatGPT `/backend-api/codex/…`,
    `/backend-api/wham/accounts/check`, `/backend-api/wham/settings/user`, `/backend-api/ps/plugins/…`,
    `/backend-api/ps/mcp`, `/backend-api/plugins/featured`. Ścieżka z `..`, `.`, `//`, `%` albo znakami spoza
-   `[A-Za-z0-9._~/-]` nie przechodzi;
-4. treść jednego żądania według `Content-Length` albo `chunked` (oba naraz, różne długości, inne kodowanie → 400);
+   `[A-Za-z0-9._~/-]` nie przechodzi; zapytanie po `?` tylko ze znaków `[A-Za-z0-9._~!$&'()*+,;=:@/?%-]` —
+   inaczej 400. Już wcześniej każde żądanie poza `CONNECT` ma metodę będącą tokenem HTTP, wersję `HTTP/1.0`/`1.1`
+   i cel z widocznego ASCII (`0x21–0x7E`), inaczej 400 — goły LF/CR/TAB w linii żądania nie dopisze nagłówków
+   (`Host`, `chatgpt-account-id`, `Content-Length`) przed tymi, które wstawia proxy;
+4. treść jednego żądania według `Content-Length` albo `chunked` (oba naraz, różne długości, inne kodowanie → 400;
+   rozmiar ramki tylko z cyfr szesnastkowych, bez `0x`, znaku, `_` i spacji — inaczej połączenie zamknięte);
    nic po niej (potokowane drugie żądanie) nie idzie dalej;
 5. token hosta czytany **przy każdym żądaniu** z `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`;
    `expiresAt` w przeszłości → błąd) albo `~/.codex/auth.json` hosta (`tokens.access_token`, `account_id`).

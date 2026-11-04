@@ -102,7 +102,8 @@ class K3Case(unittest.TestCase):
         self.assertEqual(base["anthropic"].token_file, self.claude_file)
         self.routes = base
         self.now = [1000.0]
-        self.grants = k3.GrantRegistry(clock=lambda: self.now[0], routes=self.routes)
+        self.wall = [1_800_000_000.0]
+        self.grants = k3.GrantRegistry(clock=lambda: self.now[0], routes=self.routes, wall_clock=lambda: self.wall[0])
         self.dialed = []
 
         async def k3_connector(route):
@@ -237,6 +238,48 @@ class ClaudeRouteTests(K3Case):
         self.assertTrue(reply.startswith(b"HTTP/1.1 400"), reply)
         self.assertEqual(self.upstream.requests, [])
 
+    def test_control_characters_in_request_line_are_400_without_upstream(self):
+        # Review M1: goły LF w zapytaniu dopisywał nagłówki (np. `chatgpt-account-id`, `Host`) przed tokenem hosta.
+        grant = self.grants.issue("PT-1", "127.0.0.1", "claude")
+        key = grant.key.encode()
+        for line in (b"POST /anthropic/v1/messages?x=1\nchatgpt-account-id:evil\nHost:evil.example HTTP/1.1",
+                     b"POST /anthropic/v1/messages?x=1\rHost:evil.example HTTP/1.1",
+                     b"POST /anthropic/v1/messages?x=1\tHost:evil.example HTTP/1.1",
+                     b"POST /anthropic/v1/messages?x=\x7f HTTP/1.1",
+                     b"POST /anthropic/v1/messages?x=\xc4\x85 HTTP/1.1",
+                     b"PO\nST /anthropic/v1/messages HTTP/1.1",
+                     b"PO(ST /anthropic/v1/messages HTTP/1.1",
+                     b"POST /anthropic/v1/messages HTTP/1.1x",
+                     b"POST /anthropic/v1/messages\n HTTP/1.1"):
+            with self.subTest(line=line):
+                reply = self.request(line + b"\r\nx-api-key: " + key + b"\r\nContent-Length: 0\r\n\r\n")
+                self.assertTrue(reply.startswith(b"HTTP/1.1 400"), reply)
+        self.assertEqual(self.dialed, [])
+        self.assertEqual(self.upstream.connections, 0)
+
+    def test_query_outside_safe_set_is_400_and_safe_query_passes(self):
+        grant = self.grants.issue("PT-1", "127.0.0.1", "claude")
+        for path in ('/anthropic/v1/messages?a="b"', "/anthropic/v1/messages?a=<b>", "/anthropic/v1/messages?a#b",
+                     "/anthropic/v1/messages?a\\b", "/anthropic/v1/messages?a={b}"):
+            with self.subTest(path=path):
+                self.assertTrue(self.messages(grant.key, path=path).startswith(b"HTTP/1.1 400"))
+        self.assertEqual(self.upstream.connections, 0)
+        ok = "/anthropic/v1/messages?beta=true&x=a%20b,c:d@e/f?g"
+        self.assertTrue(self.messages(grant.key, path=ok).startswith(b"HTTP/1.1 200"))
+        self.assertEqual(self.upstream.requests[0]["lines"][0], "POST /v1/messages?beta=true&x=a%20b,c:d@e/f?g HTTP/1.1")
+
+    def test_chunk_size_must_be_plain_hex(self):
+        # Review N1: `int(..., 16)` przyjmował `0x5`, `+0`, `0_5`, spacje — ścisły upstream policzyłby to inaczej.
+        grant = self.grants.issue("PT-1", "127.0.0.1", "claude")
+        for body in (b"0x5\r\nhello\r\n0\r\n\r\n", b"+5\r\nhello\r\n0\r\n\r\n", b"0_5\r\nhello\r\n0\r\n\r\n",
+                     b" 5\r\nhello\r\n0\r\n\r\n", b"\r\n"):
+            with self.subTest(body=body):
+                self.upstream.requests.clear()
+                self.request(b"POST /anthropic/v1/messages HTTP/1.1\r\nx-api-key: " + grant.key.encode() +
+                             b"\r\nTransfer-Encoding: chunked\r\n\r\n" + body)
+                for req in self.upstream.requests:
+                    self.assertNotIn(b"hello", req["body"])        # nic z niepoprawnej ramki nie przeszło
+
 
 class DummyLimitsTests(K3Case):
     def assert_k3_denied(self, reply, kind="K3", host="api.anthropic.com"):
@@ -268,6 +311,14 @@ class DummyLimitsTests(K3Case):
     def test_dummy_bound_to_box_address(self):
         grant = self.grants.issue("PT-1", "10.173.184.23", "claude")     # inne pudełko
         self.assert_k3_denied(self.messages(grant.key))
+
+    def test_grant_address_is_normalized_like_client_address(self):
+        # Review N3: `::ffff:127.0.0.1` z `issue` musi pasować do klienta po `_ip` (127.0.0.1).
+        grant = self.grants.issue("PT-1", "::ffff:127.0.0.1", "claude")
+        self.assertEqual(grant.ip, "127.0.0.1")
+        self.assertTrue(self.messages(grant.key).startswith(b"HTTP/1.1 200"))
+        with self.assertRaises(ValueError):
+            self.grants.issue("PT-1", "tide-k3", "claude")
 
     def test_dummy_bound_to_one_route(self):
         grant = self.grants.issue("PT-1", "127.0.0.1", "claude")
@@ -336,7 +387,10 @@ class HostTokenErrorsTests(K3Case):
 
     def test_expired_host_token_is_502_and_never_shown(self):
         grant = self.grants.issue("PT-1", "127.0.0.1", "claude")
-        self.write_claude(REAL_CLAUDE, expires=(self.now[0] - 10) * 1000)
+        self.write_claude(REAL_CLAUDE, expires=(self.wall[0] + 60) * 1000)
+        self.assertTrue(self.messages(grant.key).startswith(b"HTTP/1.1 200"))   # jeszcze ważny
+        self.upstream.requests.clear()
+        self.wall[0] += 61                                                       # zegar epoki, nie zegar atrap
         reply = self.messages(grant.key)
         self.assertTrue(reply.startswith(b"HTTP/1.1 502"), reply)
         self.assertIn("wygasł".encode("ascii", "replace"), reply)
@@ -423,6 +477,10 @@ class StepEnvTests(unittest.TestCase):
         self.assertTrue(k3.path_allowed(route, "/backend-api/ps/mcp"))
         self.assertFalse(k3.path_allowed(route, "/backend-api/ps/mcpx"))
         self.assertFalse(k3.path_allowed(route, "/backend-api/codex/./responses"))
+        self.assertFalse(k3.path_allowed(route, "/backend-api/codex/responses\n"))     # review N2: `$` przed `\n`
+        self.assertTrue(k3.query_allowed("beta=true&a=%2F"))
+        self.assertFalse(k3.query_allowed("a=1\nHost:x"))
+        self.assertFalse(k3.query_allowed("a=1\n"))
         self.assertFalse(k3.path_allowed(replace(route, paths=()), "/backend-api/codex/responses"))
 
 

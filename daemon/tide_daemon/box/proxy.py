@@ -104,6 +104,13 @@ def _stderr(message: str) -> None:
 
 # ------------------------------------------------------------ dopasowanie domen
 
+# Linia żądania (RFC 9110 `token`, RFC 9112 `request-target`, `HTTP-version`) i rozmiar chunka (`chunk-size`).
+_METHOD = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+_TARGET = re.compile(r"[\x21-\x7e]+")
+_VERSION = re.compile(r"HTTP/1\.[01]")
+_CHUNK_SIZE = re.compile(rb"[0-9A-Fa-f]{1,16}")
+
+
 def _ip(text: str):
     try:
         ip = ipaddress.ip_address(text)
@@ -519,7 +526,12 @@ class ProxyService:
             if not sep or not name or name != name.strip() or "\n" in line or "\r" in line:
                 return await self._reply(writer, 400, "Bad Request")
             headers.append(line)
-        if len(parts) != 3 or not parts[2].startswith("HTTP/1."):
+        # Linia żądania idzie (przy K3 — razem z tokenem hosta) do upstreamu: metoda tylko jako token HTTP, cel
+        # tylko z widocznego ASCII. Goły LF/CR/TAB w zapytaniu dopisałby nagłówki przed wstawionymi przez proxy.
+        # Cel CONNECT nigdzie nie jest przepisywany (idzie przez `normalize_target` i do dziennika odmów po
+        # oczyszczeniu), więc zostaje przy dotychczasowej ścieżce odmowy 403 z wpisem w dzienniku.
+        if (len(parts) != 3 or not _VERSION.fullmatch(parts[2]) or not _METHOD.fullmatch(parts[0])
+                or (parts[0] != "CONNECT" and not _TARGET.fullmatch(parts[1]))):
             return await self._reply(writer, 400, "Bad Request")
         method, target, _version = parts
         policy = self.policy(client)
@@ -617,15 +629,17 @@ class ProxyService:
         grant = self.grants.check(keys.pop(), client, route.name) if len(keys) == 1 else None
         if grant is None:
             return await self._deny(writer, client, policy, route.host, route.port, "K3")
-        bare = rest.split("?", 1)[0]
+        bare, qmark, query = rest.partition("?")
         if not k3.path_allowed(route, bare):
             return await self._deny(writer, client, policy, route.host, route.port, "K3PATH")
+        if qmark and not k3.query_allowed(query):
+            return await self._reply(writer, 400, "Bad Request")
         try:
             framing = self._framing(headers)
         except BadRequest:
             return await self._reply(writer, 400, "Bad Request", "Tide proxy: niejednoznaczna długość treści\n")
         try:
-            auth = k3.auth_headers(route)
+            auth = k3.auth_headers(route, now=self.grants.wall_clock)
         except k3.TokenError as exc:
             # Bez cichego powrotu do K1: krok dostaje błąd, użytkownik — wpis w dzienniku usługi (bez tokenu).
             self.log(f"{policy.box or client}: K3 {route.name}: {exc}")
@@ -712,11 +726,12 @@ class ProxyService:
                 line = await reader.readuntil(b"\r\n")
                 if len(line) > CHUNK_LINE_LIMIT:
                     raise asyncio.LimitOverrunError("chunk", len(line))
-                size_text = line[:-2].split(b";", 1)[0].strip()
-                try:
-                    size = int(size_text, 16)
-                except ValueError:
-                    raise asyncio.IncompleteReadError(b"", None) from None
+                size_text = line[:-2].split(b";", 1)[0]
+                # Tylko cyfry szesnastkowe (RFC 9112 `chunk-size`): `int()` przyjąłby też `0x5`, `+0`, `0_5`
+                # i spacje, które ścisły parser upstreamu policzyłby inaczej (przemyt żądań).
+                if not _CHUNK_SIZE.fullmatch(size_text):
+                    raise asyncio.IncompleteReadError(b"", None)
+                size = int(size_text, 16)
                 dst.write(line)
                 if size == 0:
                     while True:        # nagłówki końcowe aż do pustej linii
