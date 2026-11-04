@@ -144,6 +144,11 @@ class FlowCase(unittest.TestCase):
     def of(self, card_id, kind) -> list:
         return [e for e in self.events(card_id) if e["type"] == kind]
 
+    def ticket_finished(self, card_id) -> list:
+        """Wyniki kroków ticketu bez osobnych kroków opiekuna (PT-143)."""
+        steps = {s["step"] for s in self.of(card_id, "step.started") if s.get("kind") != "caretaker"}
+        return [e for e in self.of(card_id, "step.finished") if e["step"] in steps]
+
     def results(self, card_id, action) -> list:
         return [e for e in self.of(card_id, "result") if e.get("action") == action]
 
@@ -315,8 +320,9 @@ class NowTest(FlowCase):
     def test_missing_result_file_is_a_step_error(self):
         card_id = self.card(description="ATRAPA: bez-wyniku")
         reply = self.start(card_id)
+        self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=30), self.events(card_id))
         card = self.wait_column(card_id, "waiting")
-        finished = self.of(card_id, "step.finished")
+        finished = self.ticket_finished(card_id)
         self.assertEqual(len(finished), 2)
         self.assertEqual((finished[0]["result"], finished[0]["reason"]), ("error", "no-result"))
         self.assertEqual(len(self.of(card_id, "step.retry")), 1)
@@ -341,8 +347,9 @@ class GuardTest(FlowCase):
         started = wait_until(lambda: self.of(card_id, "step.started"), timeout=10)[0]
         pid = wait_until(lambda: flowfakes.unit_pid(self.runtime, started["unit"]), timeout=5)
         self.assertTrue(flowfakes.alive(pid))
+        self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=30), self.events(card_id))
         card = self.wait_column(card_id, "waiting", timeout=30)
-        finished = self.of(card_id, "step.finished")
+        finished = self.ticket_finished(card_id)
         self.assertEqual(len(finished), 2)
         self.assertEqual((finished[0]["result"], finished[0]["reason"]), ("error", "no-progress"))
         self.assertEqual(len(self.of(card_id, "step.retry")), 1)
