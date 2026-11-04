@@ -111,6 +111,9 @@ def incus_exec(cmd):
             print(f"{pkg} install ok installed")
     elif head == "stat":
         print(f"1000:1000 {cmd[-1]}")
+    elif head == "apt-cache":
+        print("      runc | 1.3.4-0ubuntu1~24.04.1 | http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages")
+        print("      runc | 1.1.12-0ubuntu3 | http://archive.ubuntu.com/ubuntu noble/main amd64 Packages")
     elif head == "pgrep":
         print("4242 sleep 30")
     elif head == "ls" and cmd[1:2] == ["-A"]:

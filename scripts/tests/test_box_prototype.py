@@ -145,17 +145,23 @@ class PrototypeScriptsTest(unittest.TestCase):
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(("127.0.0.1", self.state["port"]))
 
-    def test_p1_tries_the_intercept_variant_and_restores_the_project_when_docker_fails(self):
+    def test_p1_tries_crun_and_the_oldest_runc_when_docker_fails_without_touching_the_project(self):
         code, log, _ = self.run_script("p1", FAKE_DOCKER_FAIL="1")
         self.assertNotEqual(code, 0)
-        self.assertIn("WYNIK hello-world-bez-intercept: fail", log)
-        calls = self.calls()
-        set_allow = ["incus", "project", "set", f"user-{os.getuid()}", "restricted.containers.interception=allow"]
-        self.assertIn(set_allow, calls)
-        restore = [c for c in calls if c[:4] == ["incus", "project", "set", f"user-{os.getuid()}"]][-1]
-        self.assertNotEqual(restore, set_allow)
-        unset = [i for i, c in enumerate(calls) if c[:3] == ["incus", "config", "unset"]]
-        self.assertTrue(unset and unset[-1] < calls.index(restore), "intercept zdjęty przed cofnięciem projektu")
+        for runtime in ("runc", "crun", "runc-stary"):
+            self.assertIn(f"WYNIK docker-{runtime}: fail", log)
+        self.assertIn("apt-get install -y --allow-downgrades runc=1.1.12-0ubuntu3", log)
+        self.assertIn("[dockerd: domyślny runtime crun] kod wyjścia: 0", log)
+        self.assertIn("default-runtime", log)
+        self.assertIn("WYNIK dotnet-test: skip", log)
+        self.assertEqual([c for c in self.calls() if c[:2] == ["incus", "project"] or c[0] == "sudo"], [])
+
+    def test_p1_stops_at_the_first_working_runtime(self):
+        code, log, _ = self.run_script("p1")
+        self.assertEqual(code, 0, log)
+        self.assertIn("WYNIK docker-runc: ok", log)
+        self.assertNotIn("docker-crun", log)
+        self.assertIn("runtime runc, bez intercept", log)
 
     def test_p1_inserts_exactly_the_three_tide_proto_rules_and_removes_them(self):
         code, log, out = self.run_script("p1", PROTO_NET="rules")
@@ -182,7 +188,7 @@ class PrototypeScriptsTest(unittest.TestCase):
     def test_p1_removes_rules_when_docker_run_fails(self):
         code, log, _ = self.run_script("p1", PROTO_NET="rules", FAKE_DOCKER_FAIL="1")
         self.assertNotEqual(code, 0)
-        self.assertRegex(log, r"docker run --rm hello-world \(bez intercept\)\] kod wyjścia: 125")
+        self.assertRegex(log, r"docker run --rm hello-world \(runc\)\] kod wyjścia: 125")
         self.assertIn("WYNIK hello-world: fail", log)
         state = self.state_now()
         self.assertEqual(len(state["inserted"]), 3)

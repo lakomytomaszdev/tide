@@ -17,6 +17,13 @@ błędy skryptów; runda 2 (12:20–12:26, `all.sh`, logi `docs/box-prototype/*.
 P-4 zatrzymało się na ograniczeniach projektu, a jego wariant `raw.idmap` zostawił kontener niestartujący, przez co
 P-9 i pomiary nie ruszyły (błąd skryptu poprawiony). Kolumna „Wynik” to stan po rundzie 2.
 
+Runda 3 (decyzje `projekt-ograniczony-zostaje`, `raw-idmap-zamiast-shift` w `docs/box-decisions.md`):
+`bash scripts/box/prototype/all.sh --install` — najpierw `sudo bash scripts/box/install.sh --yes` (dopisuje
+`root:<uid>:1` do `/etc/subuid` i `/etc/subgid`, restart `incus`, przywraca `restricted.networks.access=incusbr0`),
+potem próby; P-1 sprawdza po kolei runtime'y runc, crun i najstarszy runc z Ubuntu 24.04. Jeśli Docker
+w kontenerze nie ruszy z żadnym, rekomendacja to `type: vm` dla projektów z Dockerem (LegalApp, toolssuite),
+bez Podmana.
+
 | Próba | Co sprawdza | Polecenie | Wynik | Czas | Wariant awaryjny (gdy nie działa) |
 | --- | --- | --- | --- | --- | --- |
 | P-1 | Docker w nieuprzywilejowanym kontenerze (`security.nesting`, intercept `mknod`/`setxattr`): `docker run --rm hello-world`, `dotnet test` LegalApp z Testcontainers (`pgvector/pgvector:pg16`) | `bash scripts/box/prototype/p1.sh` | **nie działa.** Sieć przez chwilowe proxy działa (apt, `docker pull` z `registry-1.docker.io`), `docker.io` 29.1.3 z runc 1.3.4 instaluje się, `docker info`: overlayfs, apparmor, seccomp. `docker run --rm hello-world` kończy się kodem 126 — bez intercept i z chwilowym intercept tak samo: `OCI runtime create failed: runc create failed: unable to start container process: error during container init: open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied`. `dotnet test` pominięty. Prawdopodobna przyczyna: nowy runc (poprawki bezpieczeństwa z 2025, ponowne otwieranie plików `/proc/sys` przez `/proc/thread-self/fd`) kontra profil AppArmor kontenera w Incusie 6.0.0 z Ubuntu — **hipoteza, niesprawdzona**. Runda 1 (reguły `tide-proto`): forward ginął, tabela przed/po identyczna | 4,4 s (pull + błąd) | Podman w pudełku z gniazdem Docker API (`podman system service`) albo `type: vm` dla projektów z Dockerem |

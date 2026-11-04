@@ -14,6 +14,9 @@
 #  4. grupa: użytkownik z SUDO_USER do grupy incus (restricted) albo incus-admin (admin).
 #  5. projekt: user-<uid> (ten, którego używa incus-user), ograniczony, z restricted.containers.nesting=allow,
 #     dyskami tylko z katalogu domowego, siecią tylko incusbr0; gniazdo incus-user.socket włączone.
+#     Do tego root:<uid>:1 w /etc/subuid i root:<gid>:1 w /etc/subgid (restart incus): bez tego raw.idmap
+#     „both <uid> <uid>” nie startuje, a projekt ograniczony odrzuca shift=true na ścieżkach z katalogu
+#     domowego (PT-164, próba P-4). Linie cofa uninstall.sh razem z resztą dopisanych po instalacji.
 #  6. nftables: tabela inet tide-box (scripts/box/files.sh rules) w /etc/tide-box/tide-box.nft, wczytana.
 #  7. trwałość: jednostka tide-box-nft.service (wczytuje plik przy starcie) i drop-in incus.service
 #     (Requires=) — Incus nie wstaje bez reguł.
@@ -250,7 +253,14 @@ user_socket=1
 if [[ $mode == restricted ]]; then
     [[ "$(systemctl is-enabled incus-user.socket 2>/dev/null || true)" == enabled ]] || user_socket=0
 fi
-if [[ ${#project_missing[@]} -eq 0 && $profile_ok -eq 1 && $user_socket -eq 1 ]]; then
+# raw.idmap „both <uid> <uid>” (montowania worktree, P-4 z PT-164) wymaga, żeby root mógł mapować uid i gid
+# użytkownika: root:<uid>:1 w /etc/subuid, root:<gid>:1 w /etc/subgid.
+SUBUID="$root/etc/subuid"
+SUBGID="$root/etc/subgid"
+subid_missing=()
+grep -qx "root:$uid:1" "$SUBUID" 2>/dev/null || subid_missing+=("root:$uid:1 w /etc/subuid")
+grep -qx "root:$gid:1" "$SUBGID" 2>/dev/null || subid_missing+=("root:$gid:1 w /etc/subgid")
+if [[ ${#project_missing[@]} -eq 0 && $profile_ok -eq 1 && $user_socket -eq 1 && ${#subid_missing[@]} -eq 0 ]]; then
     plan 5 projekt 0 "projekt $project ($mode) ma ustawienia i profil default"
 else
     desc="projekt $project ($mode)"
@@ -258,6 +268,7 @@ else
     [[ ${#project_missing[@]} -gt 0 ]] && desc+=", ustawienia: ${project_missing[*]}"
     [[ $profile_ok -eq 0 ]] && desc+=", profil default: root na $POOL, eth0 w $BRIDGE"
     [[ $user_socket -eq 0 ]] && desc+=", systemctl enable --now incus-user.socket"
+    [[ ${#subid_missing[@]} -gt 0 ]] && desc+=", raw.idmap: ${subid_missing[0]}${subid_missing[1]:+, ${subid_missing[1]}} (restart incus)"
     plan 5 projekt 1 "$desc"
 fi
 
@@ -449,6 +460,17 @@ if planned projekt; then
         incus profile device add default eth0 nic name=eth0 network="$BRIDGE" --project "$project"
     fi
     [[ $mode == restricted ]] && systemctl enable --now incus-user.socket
+    if [[ ${#subid_missing[@]} -gt 0 ]]; then
+        # Kopie sprzed instalacji (subuid.before) już są — uninstall.sh usuwa wszystkie linie dopisane później.
+        for f in subuid subgid; do
+            [[ -f $STATE_DIR/$f.before ]] || cp -p "/etc/$f" "$STATE_DIR/$f.before"
+        done
+        grep -qx "root:$uid:1" /etc/subuid || echo "root:$uid:1" >>/etc/subuid
+        grep -qx "root:$gid:1" /etc/subgid || echo "root:$gid:1" >>/etc/subgid
+        # Incus czyta /etc/subuid i /etc/subgid przy starcie.
+        systemctl restart incus
+        incus admin waitready --timeout 120
+    fi
 fi
 
 if planned nftables; then

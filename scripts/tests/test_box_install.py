@@ -169,6 +169,8 @@ class FakeHost(unittest.TestCase):
                    f"groups_before=\npackages={' '.join(INCUS_PACKAGES)}\nmember_of=incus\n")
         self.write("var/lib/tide-box/subuid.before", "")
         self.write("var/lib/tide-box/subgid.before", "")
+        self.write("etc/subuid", f"root:{os.getuid()}:1\n")
+        self.write("etc/subgid", f"root:{os.getgid()}:1\n")
         self.write("etc/tide-box/tide-box.nft", files_sh("rules", ADDRESS, port).stdout)
         self.write("etc/systemd/system/tide-box-nft.service", files_sh("unit").stdout)
         self.write("etc/systemd/system/incus.service.d/tide-box.conf", files_sh("dropin").stdout)
@@ -232,6 +234,28 @@ class InstallDryRunTest(FakeHost):
         result = self.run_script("install.sh")
         self.assertEqual([s[1] for s in self.steps(result.stdout) if s[2]], ["projekt"])
         self.assertIn("restricted.containers.nesting=allow", result.stdout)
+
+    def test_missing_root_subid_lines_plan_only_the_project_for_raw_idmap(self):
+        # PT-164 (P-4): raw.idmap „both <uid> <uid>” wymaga root:<uid>:1 w /etc/subuid i root:<gid>:1 w /etc/subgid.
+        self.installed()
+        self.write("etc/subuid", f"{self.user}:100000:65536\n")
+        before = self.files()
+        result = self.run_script("install.sh")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([s[1] for s in self.steps(result.stdout) if s[2]], ["projekt"])
+        self.assertIn(f"raw.idmap: root:{os.getuid()}:1 w /etc/subuid (restart incus)", result.stdout)
+        self.assertNotIn("/etc/subgid", result.stdout.split("raw.idmap:")[1].splitlines()[0])
+        self.assertEqual(self.files(), before)
+
+    def test_install_adds_and_uninstall_removes_the_root_subid_lines(self):
+        # Wykonanie bez --dry-run wymaga roota; sprawdzamy tekst skryptów: dopisanie, restart incus i to, że
+        # uninstall.sh usuwa linie dopisane po kopii *.before (także root:<uid>:1).
+        install = (BOX / "install.sh").read_text()
+        self.assertIn('echo "root:$uid:1" >>/etc/subuid', install)
+        self.assertIn('echo "root:$gid:1" >>/etc/subgid', install)
+        self.assertIn("systemctl restart incus", install)
+        uninstall = (BOX / "uninstall.sh").read_text()
+        self.assertIn('grep -vxF -f "$STATE_DIR/$f.before" "/etc/$f"', uninstall)
 
     def test_refuses_when_apt_simulation_pulls_qt_or_kde_and_lists_them(self):
         self.state["apt_new"] += ["libqt6core6t64", "libkf6coreaddons6", "plasma-workspace"]

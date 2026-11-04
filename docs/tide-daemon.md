@@ -2177,7 +2177,9 @@ Kroki — każdy najpierw sprawdza stan, więc drugie uruchomienie nic nie zmien
    `restricted.containers.nesting=allow` (Docker w pudełku), `restricted.devices.disk=allow` tylko pod katalogiem
    domowym (`restricted.devices.disk.paths`), `restricted.idmap.uid/gid` użytkownika (tylko pozwala instancji ustawić `raw.idmap`
    z tym uid/gid — mapowanie zakłada dopiero pudełko, PT-169), `restricted.networks.access=incusbr0`; własny profil `default` jak wyżej; `incus-user.socket`
-   włączony. `--project-mode admin` (grupa `incus-admin` = root hosta) skrypt przyjmuje tylko po próbie P-5
+   włączony. Do tego `root:<uid>:1` w `/etc/subuid` i `root:<gid>:1` w `/etc/subgid` z restartem `incus` —
+   bez nich kontener z `raw.idmap "both <uid> <uid>"` nie startuje, a projekt ograniczony odrzuca `shift=true`
+   na ścieżkach z katalogu domowego (PT-164, P-4); `make box-uninstall` usuwa te linie jak resztę dopisanych. `--project-mode admin` (grupa `incus-admin` = root hosta) skrypt przyjmuje tylko po próbie P-5
    z PT-164 i z wierszem `tryb-admin` w `docs/box-decisions.md`.
 6. **nftables**: plik `/etc/tide-box/tide-box.nft` (treść: `scripts/box/files.sh rules <adres mostka> <port>`)
    sprawdzony `nft -c`, potem wczytany `nft -f`.
