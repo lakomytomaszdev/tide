@@ -33,6 +33,9 @@ help:
 	@echo "make plymouth-preview      klatki ekranu startowego w build/plymouth/preview (bez sudo)"
 	@echo "make install-plymouth      ekran startowy Plymouth (sudo, update-initramfs, osobno od make install)"
 	@echo "make uninstall-plymouth    przywrócenie poprzedniego ekranu startowego (sudo)"
+	@echo "make box-install           Incus, pula btrfs, projekt ograniczony i nftables pudełka (sudo, osobno od make install)"
+	@echo "make box-uninstall         cofnięcie make box-install; usuwa wszystkie pudełka (sudo)"
+	@echo "make box-state [OUT=plik]  stan hosta do porównania przed instalacją i po odinstalowaniu"
 
 install: pre-install-backup $(INSTALL_TARGETS) $(LATE_INSTALL_TARGETS)
 	@echo "Zainstalowano Tide."
