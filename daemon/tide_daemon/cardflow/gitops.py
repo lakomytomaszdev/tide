@@ -342,24 +342,38 @@ class FlowGit:
                     raise FlowGitError("nie można odczytać indeksu worktree karty: " + result.err)
                 return result.out.strip()
 
-            def clean_files() -> None:
+            def dirty_files() -> set[str]:
                 work_git.run("update-index", "--refresh")
-                result = work_git.run("diff-files", "--quiet", "--")
+                result = work_git.run("diff-files", "--name-only", "-z", "--")
                 if not result.ok:
                     raise FlowGitError("worktree karty ma lokalne zmiany albo błąd gita: " + result.err)
+                return {name for name in result.out.split("\0") if name}
+
+            def changed(source: str, target: str) -> set[str]:
+                result = self.run(repo, "diff-tree", "-r", "--name-only", "-z", "--no-renames", source, target)
+                if not result.ok:
+                    raise FlowGitError("nie można odczytać zmian scalenia")
+                return {name for name in result.out.split("\0") if name}
+
+            def clean_files(source: str, target: str) -> None:
+                # Niezacommitowane zmiany użytkownika w plikach, których scalenie nie dotyka, zostają nietknięte —
+                # jak przy zwykłym `git merge` (04.11, K-43: główny katalog BO z pracą w bo-catalog blokował scalenie
+                # karty z tools/hud-timeline). Zmieniony plik, który scalenie zmienia, dalej blokuje.
+                overlap = sorted(dirty_files() & changed(source, target))
+                if overlap:
+                    raise FlowGitError("worktree karty ma lokalne zmiany w scalanych plikach: " + ", ".join(overlap[:5]))
 
             def sync(source: str, target: str) -> None:
+                clean_files(source, target)
                 result = work_git.run("read-tree", "-m", "-u", source, target)
                 if not result.ok:
                     raise FlowGitError("worktree karty nie przyjął scalenia (lokalne zmiany?): "
                                        + (result.err.splitlines() or ["błąd"])[0])
                 if index_tree() != tree_of(target):
                     raise FlowGitError("indeks worktree karty nie odpowiada scaleniu")
-                clean_files()
 
             current_tree = tree_of(old)
             staged_tree = index_tree()
-            clean_files()
             if self.run(repo, "merge-base", "--is-ancestor", tip, old).ok:
                 if staged_tree != current_tree:
                     parent = self.run(repo, "rev-parse", "--verify", "--quiet", f"{old}^1")
@@ -384,6 +398,8 @@ class FlowGit:
             commit = made.out.strip()
             if staged_tree == current_tree:
                 sync(old, commit)
+            else:
+                clean_files(old, commit)    # indeks już przygotowany (przerwane scalenie) — pliki muszą się zgadzać
             moved = self.run(repo, "update-ref", "-m", message, f"refs/heads/{card_branch}", commit, old)
             if not moved.ok:
                 latest = self.sha(repo, f"refs/heads/{card_branch}")
@@ -391,7 +407,6 @@ class FlowGit:
                     # Ref pozostał stary (np. błąd blokady): przed zapisaniem wyniku
                     # ok:false przywróć stare pliki i indeks. Gdy wygrał obcy git,
                     # wyrównaj worktree do jego refu. Obie operacje są w piaskownicy.
-                    clean_files()
                     sync(commit, latest)
                 if latest == old:
                     raise FlowGitError("nie udało się przesunąć gałęzi karty")

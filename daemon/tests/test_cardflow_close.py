@@ -73,14 +73,40 @@ class CardClosingTest(FlowInProcess):
         card = self.card()
         self.assertTrue(self.start(card)["ok"])
         self.assertTrue(wait_until(lambda: self.of(card, "card.closed"), timeout=30), self.events(card))
+        branch = self.of(card, "card.closed")[-1].get("branch") or \
+            next(e["branch"] for e in self.events(card) if e.get("type") == "result" and e.get("branch"))
+        touched = git(self.repo, "diff", "--name-only", f"master...{branch}").split()
+        self.assertTrue(touched)
+        # Zmiana w pliku, który scalenie zmienia, blokuje i niczego nie traci.
+        source = os.path.join(self.repo, touched[0])
+        if os.path.exists(source):
+            with open(source, "a", encoding="utf-8") as fh:
+                fh.write("\nMoja niezapisana zmiana.\n")
+        else:
+            with open(source, "w", encoding="utf-8") as fh:
+                fh.write("Moja niezapisana zmiana.\n")
+            git(self.repo, "add", "-N", touched[0])
+        box = []
+        self.flow.merge_card_to_main(card, box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertFalse(json.loads(box[0])["ok"])
+        self.assertEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
+        with open(source, encoding="utf-8") as fh:
+            self.assertIn("Moja niezapisana zmiana", fh.read())
+
+    def test_main_merge_keeps_unrelated_uncommitted_work(self):
+        # 04.11, K-43: niezacommitowana praca użytkownika w innych plikach gałęzi głównej nie blokuje scalenia karty.
+        card = self.card()
+        self.assertTrue(self.start(card)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "card.closed"), timeout=30), self.events(card))
         source = os.path.join(self.repo, "CLAUDE.md")
         with open(source, "a", encoding="utf-8") as fh:
             fh.write("\nMoja niezapisana zmiana.\n")
         box = []
         self.flow.merge_card_to_main(card, box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
-        self.assertFalse(json.loads(box[0])["ok"])
-        self.assertEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
+        self.assertTrue(json.loads(box[0])["ok"], box[0])
+        self.assertNotEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
         with open(source, encoding="utf-8") as fh:
             self.assertIn("Moja niezapisana zmiana", fh.read())
 
