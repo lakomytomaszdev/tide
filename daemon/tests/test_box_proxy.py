@@ -421,7 +421,9 @@ class OllamaTests(ProxyCase):
 
     def test_only_ollama_paths_and_never_another_host(self):
         self.policy(ollama=True)
-        self.assertTrue(self.request(b"GET /anthropic/v1/messages HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.1 404"))
+        self.assertTrue(self.request(b"GET /internal/v1/messages HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.1 404"))
+        # Trasa K3 (PT-175) bez atrapy kroku: 403, nigdy do Ollamy (szczegóły w test_box_k3.py).
+        self.assertTrue(self.request(b"GET /anthropic/v1/messages HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.1 403"))
         reply = self.request(f"GET http://127.0.0.1:{self.ollama.port}/api/tags HTTP/1.1\r\n\r\n".encode())
         self.assertTrue(reply.startswith(b"HTTP/1.1 403"), reply)
         self.assertEqual(self.ollama.requests, [])

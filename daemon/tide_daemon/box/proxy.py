@@ -13,6 +13,12 @@ wolno tylko do tego proxy na `<adres mostka>:<box.proxy-port>`. Proxy obsługuje
 - zwykłe HTTP w formie względnej (`GET /api/tags`) albo bezwzględnej na adres samego proxy — przekazywane wyłącznie
   na `127.0.0.1:11434` (Ollama hosta), tylko dla pudełka z `ollama=True` i tylko ścieżki `/`, `/api/…`, `/v1/…`;
   odpowiedź płynie do pudełka bajt w bajt, bez buforowania (strumieniowanie Ollamy).
+- K3 (PT-175, `box/k3.py`): `/anthropic/…` i `/chatgpt/…` w formie względnej (albo bezwzględnej na adres
+  proxy) — jedno żądanie z atrapą kroku. Proxy sprawdza atrapę (adres IP pudełka, trasa, ważność) i ścieżkę
+  (lista z P-3), wyrzuca nagłówki uwierzytelnienia z pudełka, wstawia token hosta czytany teraz z pliku i przekazuje
+  żądanie po TLS wyłącznie do hosta trasy (`api.anthropic.com`, `chatgpt.com`). Treść idzie bez zmian według
+  `Content-Length`/`chunked`; odpowiedź bajt w bajt. Zła atrapa → 403 `K3`, ścieżka spoza listy → 403 `K3PATH`,
+  brak tokenu hosta → 502 (bez powrotu do poświadczeń w pudełku).
 - każde inne zwykłe HTTP (`GET http://obca.domena/…`) → 403. Wariantu „zwykłe HTTP do domen z listy” nie ma —
   apt idzie przez HTTPS (decyzja `apt-przez-https` z P-6).
 
@@ -27,8 +33,9 @@ bieżącego kroku karty, przy budowie — ścieżka od buildera):
     czas<TAB>pudełko<TAB>adres IP<TAB>domena<TAB>port<TAB>rodzaj
 
 `rodzaj`: `CONNECT` (cel spoza listy), `ADDRESS` (nazwa z listy, ale rozwiązana na adres niedozwolony — pętla,
-sieć lokalna dla celu publicznego), `HTTP` (zwykłe HTTP do obcej domeny) albo `OLLAMA` (domena `host-ollama`:
-pudełko bez `ollama=True`). Nigdy ścieżka, parametry, nagłówki ani treść — tylko nazwa hosta z celu żądania.
+sieć lokalna dla celu publicznego), `HTTP` (zwykłe HTTP do obcej domeny), `OLLAMA` (domena `host-ollama`:
+pudełko bez `ollama=True`), `K3` (brak, zła albo wygasła atrapa; domena = host trasy) albo `K3PATH` (ścieżka
+spoza listy trasy). Nigdy ścieżka, parametry, nagłówki, atrapa ani treść — tylko nazwa hosta.
 
 Usługa nie woła `nft` ani `sudo`. Opis: docs/tide-daemon.md (Pudełko → Proxy wyjściowe).
 """
@@ -48,12 +55,14 @@ import threading
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from . import k3
 from . import profile as box_profile
 from . import templates
 
 # Domeny modeli dokładane przez usługę (nie przez profil). Bez zdalnych repozytoriów i adresów wewnętrznych —
 # pilnuje test. `chatgpt.com` i `auth.openai.com` są potrzebne Codexowi z własnym logowaniem w pudełku (K1);
-# gdy wejdzie K3 (PT-175), Codex idzie przez trasę proxy i `chatgpt.com` może zniknąć z tej listy.
+# z K3 (PT-175) Codex idzie przez trasę proxy `/chatgpt` i `chatgpt.com` może zniknąć z tej listy — to zmiana
+# listy domen, poza PT-175 (decyzja `k3-wdrozone` w docs/box-decisions.md).
 MODEL_DOMAINS = ("api.anthropic.com", "statsig.anthropic.com", "api.openai.com", "chatgpt.com", "auth.openai.com")
 
 CONNECT_PORTS = frozenset({443})
@@ -67,6 +76,9 @@ OLLAMA_ITEM = "host-ollama"
 # Nagłówki „hop-by-hop” i pośrednika: nie idą do Ollamy (Host i Connection ustawiamy sami).
 HOP_HEADERS = frozenset({"connection", "keep-alive", "proxy-connection", "proxy-authorization", "proxy-authenticate",
                          "te", "trailer", "upgrade", "host"})
+# Nagłówki uwierzytelnienia z pudełka: na trasach K3 nigdy nie idą dalej (zastępuje je token hosta).
+AUTH_HEADERS = frozenset({"authorization", "x-api-key", "chatgpt-account-id", "cookie"})
+CHUNK_LINE_LIMIT = 4096
 
 _LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")
@@ -360,18 +372,35 @@ async def _default_connector(host: str, port: int, internal: bool):
     raise error or OSError("brak adresu")
 
 
+async def _default_k3_connector(route: k3.Route):
+    """Połączenie z hostem trasy K3: adres sprawdzony jak dla CONNECT (cel publiczny); TLS klienta z weryfikacją
+    certyfikatu robi `k3.open_upstream` — moduł proxy nie ma TLS (żadnego przechwytywania)."""
+    try:
+        return await k3.open_upstream(route, lambda a: address_allowed(a, False), RESOLVE_TIMEOUT, CONNECT_TIMEOUT)
+    except k3.UpstreamRefused:
+        raise Refused(route.host) from None
+
+
+class BadRequest(Exception):
+    """Żądanie K3 z niejednoznaczną długością treści (oba `Content-Length` i `Transfer-Encoding` itp.)."""
+
+
 class ProxyService:
     """Serwer proxy w osobnym wątku z własną pętlą asyncio; polityki zmieniane z dowolnego wątku.
 
     Konstruktor nie sprawdza adresu nasłuchu — robi to `start_service` (jedyna droga w usłudze). Testy tworzą
     serwer wprost na 127.0.0.1 z własnym `connector` i `ollama`."""
 
-    def __init__(self, listen: str, port: int, *, ollama=OLLAMA, connector=None, log=_stderr):
+    def __init__(self, listen: str, port: int, *, ollama=OLLAMA, connector=None, log=_stderr,
+                 grants: k3.GrantRegistry | None = None, k3_connector=None):
         self.listen = listen
         self.port = port
         self.ollama_target = ollama
         self.connector = connector or _default_connector
         self.log = log
+        # Atrapy kroków (K3): krok w pudełku woła `grants.issue(...)` na starcie i `grants.revoke_step(...)` na końcu.
+        self.grants = grants if grants is not None else k3.GrantRegistry()
+        self.k3_connector = k3_connector or _default_k3_connector
         self._policies: dict[str, BoxPolicy] = {}
         self._lock = threading.Lock()
         self._loop = None
@@ -497,7 +526,7 @@ class ProxyService:
         if method == "CONNECT":
             return await self._connect(reader, writer, client, policy, target)
         if target.startswith("/"):
-            return await self._ollama(reader, writer, client, policy, method, target, headers)
+            return await self._local(reader, writer, client, policy, method, target, headers)
         try:
             url = urlsplit(target)
             host, port = url.hostname or "", url.port or (80 if url.scheme == "http" else 443)
@@ -505,7 +534,7 @@ class ProxyService:
             return await self._reply(writer, 400, "Bad Request")
         if url.scheme == "http" and _ip(host) == _ip(self.listen) and port == self.port:
             path = (url.path or "/") + (f"?{url.query}" if url.query else "")
-            return await self._ollama(reader, writer, client, policy, method, path, headers)
+            return await self._local(reader, writer, client, policy, method, path, headers)
         # Zwykłe HTTP do obcej domeny: zawsze odmowa (tunel tylko przez CONNECT, bez MITM).
         return await self._deny(writer, client, policy, host, port, "HTTP")
 
@@ -518,7 +547,11 @@ class ProxyService:
                 append_denied(policy.denied_log, policy.box, client, shown, port, kind)
             except OSError as exc:
                 self.log(f"{policy.box or client}: nie da się zapisać dziennika odmów ({type(exc).__name__})")
-        if kind == "OLLAMA":
+        if kind == "K3":
+            text = "Tide proxy: brak ważnej atrapy kroku dla tej trasy (K3)\n"
+        elif kind == "K3PATH":
+            text = "Tide proxy: ścieżka spoza listy trasy K3\n"
+        elif kind == "OLLAMA":
             text = "Tide proxy: Ollama hosta niedostępna dla tego pudełka (host-ollama)\n"
         elif kind == "ADDRESS":
             text = f"Tide proxy: {shown}:{port} wskazuje adres niedozwolony (host albo sieć lokalna)\n"
@@ -557,6 +590,153 @@ class ProxyService:
             self._open.discard(up_writer)
             up_writer.close()
 
+    async def _local(self, reader, writer, client, policy, method, path, headers):
+        """Żądanie do samego proxy: trasa K3 (`/anthropic/…`, `/chatgpt/…`) albo Ollama hosta."""
+        name, sep, _rest = path[1:].partition("/")
+        route = self.grants.routes.get(name.split("?", 1)[0]) if name else None
+        if route is not None and k3.k3_active(route.program):
+            return await self._inject(reader, writer, client, policy, method, route, path[1 + len(name):] or "/",
+                                      headers)
+        return await self._ollama(reader, writer, client, policy, method, path, headers)
+
+    async def _inject(self, reader, writer, client, policy, method, route, rest, headers):
+        """K3: jedno żądanie z atrapą kroku → host trasy z tokenem hosta. Zmieniane są wyłącznie nagłówki
+        uwierzytelnienia (plus beta OAuth Claude, bez której token subskrypcyjny nie działa) i nagłówki
+        połączenia (`Host`, `Connection: close`); linia żądania, pozostałe nagłówki i treść — bez zmian."""
+        if policy is None:
+            return await self._deny(writer, client, policy, route.host, route.port, "K3")
+        keys = set()
+        for line in headers:
+            name, _sep, value = line.partition(":")
+            lname, value = name.strip().lower(), value.strip()
+            if lname == "authorization":
+                scheme, _sp, token = value.partition(" ")
+                keys.add(token.strip() if scheme.lower() == "bearer" else value)
+            elif lname == "x-api-key":
+                keys.add(value)
+        grant = self.grants.check(keys.pop(), client, route.name) if len(keys) == 1 else None
+        if grant is None:
+            return await self._deny(writer, client, policy, route.host, route.port, "K3")
+        bare = rest.split("?", 1)[0]
+        if not k3.path_allowed(route, bare):
+            return await self._deny(writer, client, policy, route.host, route.port, "K3PATH")
+        try:
+            framing = self._framing(headers)
+        except BadRequest:
+            return await self._reply(writer, 400, "Bad Request", "Tide proxy: niejednoznaczna długość treści\n")
+        try:
+            auth = k3.auth_headers(route)
+        except k3.TokenError as exc:
+            # Bez cichego powrotu do K1: krok dostaje błąd, użytkownik — wpis w dzienniku usługi (bez tokenu).
+            self.log(f"{policy.box or client}: K3 {route.name}: {exc}")
+            return await self._reply(writer, 502, "Bad Gateway", f"Tide proxy: token hosta ({route.name}): {exc}\n")
+        drop = set(HOP_HEADERS) | AUTH_HEADERS
+        for line in headers:
+            name, _sep, value = line.partition(":")
+            if name.strip().lower() == "connection":
+                drop |= {v.strip().lower() for v in value.split(",") if v.strip()}
+        kept, beta = [], False
+        for line in headers:
+            lname = line.partition(":")[0].strip().lower()
+            if lname in drop:
+                continue
+            if lname == "anthropic-beta" and route.program == "claude":
+                beta = True
+                values = [v.strip() for v in line.partition(":")[2].split(",") if v.strip()]
+                if k3.OAUTH_BETA not in values:
+                    line = f"{line.partition(':')[0]}: {','.join(values + [k3.OAUTH_BETA])}"
+            kept.append(line)
+        if route.program == "claude" and not beta:
+            kept.append(f"anthropic-beta: {k3.OAUTH_BETA}")
+        host = route.host if route.port == (443 if route.tls else 80) else f"{route.host}:{route.port}"
+        request = [f"{method} {route.base}{rest} HTTP/1.1", *kept, *(f"{n}: {v}" for n, v in auth),
+                   f"Host: {host}", "Connection: close"]
+        try:
+            up_reader, up_writer = await self.k3_connector(route)
+        except Refused:
+            return await self._deny(writer, client, policy, route.host, route.port, "ADDRESS")
+        except (OSError, asyncio.TimeoutError) as exc:      # także ssl.SSLError (podklasa OSError)
+            return await self._reply(writer, 502, "Bad Gateway", f"Tide proxy: {route.host}: {type(exc).__name__}\n")
+        self._open.add(up_writer)
+        try:
+            up_writer.write(("\r\n".join(request) + "\r\n\r\n").encode("latin-1"))
+            await self._body(reader, up_writer, framing)
+            await up_writer.drain()
+            # Odpowiedź bajt w bajt do końca strumienia (upstream dostał `Connection: close`), bez buforowania SSE.
+            await self._copy(up_reader, writer, close=False)
+        finally:
+            self._open.discard(up_writer)
+            up_writer.close()
+
+    @staticmethod
+    def _framing(headers):
+        """Długość treści żądania: `("length", n)`, `("chunked", None)` albo `("none", None)`. Oba nagłówki naraz,
+        różne `Content-Length` albo inne kodowanie niż samo `chunked` → `BadRequest` (bez przemytu żądań)."""
+        lengths, encodings = set(), []
+        for line in headers:
+            name, _sep, value = line.partition(":")
+            lname = name.strip().lower()
+            if lname == "content-length":
+                lengths.add(value.strip())
+            elif lname == "transfer-encoding":
+                encodings += [v.strip().lower() for v in value.split(",") if v.strip()]
+        if lengths and encodings:
+            raise BadRequest()
+        if encodings:
+            if encodings != ["chunked"]:
+                raise BadRequest()
+            return "chunked", None
+        if len(lengths) > 1:
+            raise BadRequest()
+        if lengths:
+            value = lengths.pop()
+            if not value.isdigit():
+                raise BadRequest()
+            return "length", int(value)
+        return "none", None
+
+    @staticmethod
+    async def _body(reader, dst, framing):
+        """Przepisuje treść jednego żądania bez zmian (także ramki `chunked`); nic poza nią nie idzie dalej."""
+        kind, length = framing
+        if kind == "length":
+            while length > 0:
+                data = await reader.read(min(length, 65536))
+                if not data:
+                    raise asyncio.IncompleteReadError(b"", length)
+                dst.write(data)
+                length -= len(data)
+                await dst.drain()
+        elif kind == "chunked":
+            while True:
+                line = await reader.readuntil(b"\r\n")
+                if len(line) > CHUNK_LINE_LIMIT:
+                    raise asyncio.LimitOverrunError("chunk", len(line))
+                size_text = line[:-2].split(b";", 1)[0].strip()
+                try:
+                    size = int(size_text, 16)
+                except ValueError:
+                    raise asyncio.IncompleteReadError(b"", None) from None
+                dst.write(line)
+                if size == 0:
+                    while True:        # nagłówki końcowe aż do pustej linii
+                        trailer = await reader.readuntil(b"\r\n")
+                        dst.write(trailer)
+                        if trailer == b"\r\n":
+                            break
+                    await dst.drain()
+                    return
+                left = size
+                while left > 0:
+                    part = await reader.readexactly(min(left, 65536))
+                    dst.write(part)
+                    left -= len(part)
+                    await dst.drain()
+                if await reader.readexactly(2) != b"\r\n":
+                    raise asyncio.IncompleteReadError(b"", 2)
+                dst.write(b"\r\n")
+                await dst.drain()
+
     async def _ollama(self, reader, writer, client, policy, method, path, headers):
         if policy is None or not policy.ollama:
             return await self._deny(writer, client, policy, OLLAMA_ITEM, self.ollama_target[1], "OLLAMA")
@@ -582,7 +762,7 @@ class ProxyService:
             await up_writer.drain()
             # Reszta strumienia klienta idzie surowo (także potokowane kolejne żądanie, bez sprawdzenia ścieżki).
             # Dziś nieszkodliwe: cel to zawsze tylko Ollama z `Connection: close`. Trasy z wstrzykiwaniem tokenu
-            # (PT-175) muszą kopiować treść według `Content-Length`/`chunked`, nie „do końca strumienia”.
+            # (PT-175, `_inject`) kopiują treść według `Content-Length`/`chunked`, nie „do końca strumienia”.
             upload = asyncio.ensure_future(self._copy(reader, up_writer, close=False))
             await self._copy(up_reader, writer, close=False)   # odpowiedź bez buforowania, do końca strumienia
         finally:

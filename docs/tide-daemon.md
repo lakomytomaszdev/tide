@@ -2443,7 +2443,7 @@ przepisuje bajty w obie strony.
 
 **Ollama hosta przez proxy.** Żądanie w formie względnej (`GET /api/tags`, czyli `http://<mostek>:<port>/api/tags`
 z pudełka) albo bezwzględnej na adres samego proxy idzie na `127.0.0.1:11434` — tylko dla pudełka z `ollama=True`
-i tylko ścieżki `/`, `/api/…`, `/v1/…` (reszta 404; miejsce na trasy PT-175). Proxy ustawia `Host:
+i tylko ścieżki `/`, `/api/…`, `/v1/…` (reszta 404; `/anthropic/…` i `/chatgpt/…` to trasy K3 niżej). Proxy ustawia `Host:
 127.0.0.1:11434` i `Connection: close`, wyrzuca nagłówki „hop-by-hop”, a odpowiedź przekazuje bajt w bajt bez
 buforowania (strumień `/api/generate` dociera fragmentami). Inny cel niż `127.0.0.1:11434` nie jest możliwy —
 proxy nie jest przekaźnikiem HTTP. `ollama=False` → 403 i wiersz `host-ollama`. Zmian nftables w czasie pracy nie ma.
@@ -2461,9 +2461,82 @@ Tablicy):
 
 Pola: czas, pudełko (nazwa z `box`, inaczej adres), adres IP pudełka, domena, port, rodzaj (`CONNECT` — cel spoza
 listy, `ADDRESS` — cel z listy rozwiązany na adres niedozwolony: pętla, link-local, sieć lokalna dla celu
-publicznego; dopisanie domeny tu nie pomoże, `HTTP`, `OLLAMA` z domeną `host-ollama`). Tylko nazwa hosta z celu żądania — nigdy ścieżka, parametry, nagłówki ani treść;
+publicznego; dopisanie domeny tu nie pomoże, `HTTP`, `OLLAMA` z domeną `host-ollama`, `K3` i `K3PATH` z domeną
+hosta trasy — niżej). Tylko nazwa hosta z celu żądania — nigdy ścieżka, parametry, nagłówki, atrapa ani treść;
 znaki sterujące zamieniane na `?`. Zamianę odmowy w wynik kroku (`denied` z `command: "network: <domena>"`) robi
 PT-181, nie proxy.
+
+### Poświadczenia agentów: K3 (PT-175)
+
+Wynik P-3 (`docs/box-prototype.md`): K3 jest możliwe dla Claude Code i dla Codexa, więc w pudełku nie ma
+prawdziwych poświadczeń agentów — ani `~/.claude/.credentials.json`, ani tokenów w `~/.codex/auth.json`.
+`box/k3.py` to jedno miejsce stanu: `k3_active(program)` zwraca `True` dla `claude` i `codex` (czytają to krok
+w pudełku, `tide box login`, dziennik karty #18 i pakiet zgód #9); `login_programs()` — programy do zalogowania
+w obrazie (K1) — jest puste, więc `tide box login` (#4) pomija oba programy. Wewnętrzna piaskownica agenta
+w pudełku zostaje bez zmian (`sandbox.enabled`, `denyRead: ["~/.claude", "~/.codex"]`).
+
+**Atrapa per krok.** Krok w pudełku (PT-181) na starcie woła `box.proxy.running().grants.issue(step, ip pudełka,
+program)` i przekazuje w `in/env` wynik `k3.step_credentials(grant, "http://<mostek>:<box.proxy-port>")`:
+
+- Claude Code: `ANTHROPIC_BASE_URL=http://<mostek>:18080/anthropic` i `CLAUDE_CODE_OAUTH_TOKEN=<atrapa>`
+  (`sk-ant-oat01-tide-k3-<256 losowych bitów>`);
+- Codex: plik `~/.codex/auth.json` z samymi atrapami (JWT bez podpisu z losowym `tide_k3`; z pliku hosta
+  przechodzą tylko identyfikator konta i plan — identyfikatory, bez nich Codex odrzuca konto) i argumenty
+  `-c chatgpt_base_url=…/chatgpt/backend-api/ -c model_provider="tide" -c model_providers.tide={ … base_url =
+  "…/chatgpt/backend-api/codex", wire_api = "responses", requires_openai_auth = true }`. Bez własnego dostawcy
+  Codex woła model przez CONNECT do `chatgpt.com` (P-3) — z atrapą to i tak nic nie da.
+
+Na końcu kroku `grants.revoke_step(step)`; atrapa wygasa też sama po `ttl` (domyślnie 24 h). Atrapa działa tylko
+z adresu IP pudełka, któremu ją wydano, tylko na trasie swojego programu i tylko do odwołania; rejestr trzyma
+skrót SHA-256 atrapy, nie samą atrapę.
+
+**Trasy wstrzykujące w proxy.** Żądanie w formie względnej (albo bezwzględnej na adres proxy) `/anthropic/<ścieżka>`
+→ `https://api.anthropic.com/<ścieżka>`, `/chatgpt/<ścieżka>` → `https://chatgpt.com/<ścieżka>`. Kolejno:
+
+1. pudełko musi mieć politykę (nieznany adres → 403 `K3`);
+2. dokładnie jedna atrapa w `Authorization: Bearer` albo `x-api-key`, ważna dla tego adresu IP i tej trasy —
+   inaczej 403 `K3` (także atrapa po `revoke_step`, po `ttl`, z innego pudełka, z drugiej trasy);
+3. ścieżka z listy z dziennika P-3 — inaczej 403 `K3PATH` (bez ogólnego dostępu do API konta, „confused deputy”):
+   Anthropic `/v1/messages`, `/v1/messages/count_tokens`; ChatGPT `/backend-api/codex/…`,
+   `/backend-api/wham/accounts/check`, `/backend-api/wham/settings/user`, `/backend-api/ps/plugins/…`,
+   `/backend-api/ps/mcp`, `/backend-api/plugins/featured`. Ścieżka z `..`, `.`, `//`, `%` albo znakami spoza
+   `[A-Za-z0-9._~/-]` nie przechodzi;
+4. treść jednego żądania według `Content-Length` albo `chunked` (oba naraz, różne długości, inne kodowanie → 400);
+   nic po niej (potokowane drugie żądanie) nie idzie dalej;
+5. token hosta czytany **przy każdym żądaniu** z `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`;
+   `expiresAt` w przeszłości → błąd) albo `~/.codex/auth.json` hosta (`tokens.access_token`, `account_id`).
+   To pliki katalogu domowego hosta, nie pudełka (`~/.local/share/tide/box/<slug>/home`) — nigdy nie są montowane;
+6. nagłówki z pudełka: `Authorization`, `x-api-key`, `chatgpt-account-id`, `Cookie` i nagłówki połączenia są
+   wyrzucane; proxy dopisuje `Authorization: Bearer <token hosta>` (Codex także `chatgpt-account-id`), `Host`
+   hosta trasy i `Connection: close`; dla Claude dokłada `oauth-2025-04-20` do `anthropic-beta` (token
+   subskrypcyjny bez tej bety nie działa). Linia żądania, kolejność i treść pozostałych nagłówków oraz treść — bez
+   zmian (test porównuje bajty);
+7. połączenie z hostem trasy jak dla CONNECT (adres sprawdzony po rozwiązaniu, tylko publiczny), TLS klienta
+   z weryfikacją certyfikatu w `k3.open_upstream`; moduł `proxy.py` nie ma TLS — po stronie pudełka nie ma
+   przechwytywania. Odpowiedź płynie bajt w bajt bez buforowania (SSE).
+
+**Odświeżanie tokenu tylko na hoście.** Proxy nie odświeża tokenu i pudełko też nie (P-3: 0 żądań do punktów
+OAuth). Token odświeża Claude Code / Codex hosta przy zwykłej pracy w Konsoli; ponieważ proxy czyta plik przy każdym
+żądaniu, odświeżony token działa od następnego żądania bez restartu kroku. Brak pliku, zły JSON albo wygasły token
+Claude → 502 z opisem bez treści pliku i wpis w dzienniku usługi; **nie ma cichego powrotu do K1** (proxy nie
+kopiuje niczego do pudełka, a krok nie dostaje innego klucza).
+
+**Token nigdy w dzienniku ani w pudełku.** Komunikaty błędów niosą tylko rodzaj problemu; dziennik odmów — tylko
+host trasy i rodzaj; `Grant.key` nie występuje w `repr`. Test przeszukuje kod `box/`: plików poświadczeń hosta
+dotyka tylko `k3.py`.
+
+**Ryzyko resztkowe K1 przy Dockerze.** W pudełku z Dockerem użytkownik `agent` jest w grupie `docker`, czyli ma
+praktycznie prawa roota pudełka: przez kontener może zamontować rootfs pudełka i przeczytać każdy plik
+w `/home/agent`, niezależnie od `denyRead` wewnętrznej piaskownicy agenta i od wyniku P-2. To samo może każdy kod
+testów uruchomiony w takim pudełku. Przy K1 (osobne logowanie) to byłyby `/home/agent/.claude/.credentials.json`
+i `~/.codex/auth.json` z prawdziwymi tokenami. Z K3 tych plików nie ma: kod w pudełku może przeczytać tylko atrapę
+bieżącego kroku, która działa wyłącznie przez proxy, z tego pudełka, na ścieżkach z listy i do końca kroku — może
+więc w trakcie kroku wywołać model na koncie użytkownika (to samo, co robi agent), ale nie wyniesie tokenu ani nie
+użyje atrapy po kroku czy spoza pudełka. Gdyby K3 dla programu zostało wyłączone (`K3_PROGRAMS`), wraca pełne ryzyko
+K1: jedyną granicą dla poświadczeń jest pudełko, a lista domen proxy ogranicza tylko, dokąd wyciek może trafić.
+
+**Domeny modeli.** Lista `MODEL_DOMAINS` się nie zmienia w PT-175 (`chatgpt.com`, `auth.openai.com` nadal na niej,
+choć z K3 Codex ich nie potrzebuje) — usunięcie to zmiana listy domen, osobna decyzja.
 
 ## Uruchamianie
 
