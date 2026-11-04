@@ -279,12 +279,12 @@ class NoCaretakerTest(unittest.TestCase):
 
 
 class RegistryTest(unittest.TestCase):
-    def test_only_escalate_is_registered(self):
-        self.assertEqual(set(caretaker.ACTIONS), {"escalate"})
+    def test_only_escalate_and_retry_are_registered(self):
+        self.assertEqual(set(caretaker.ACTIONS), {"escalate", "retry"})      # `retry` — PT-150
         for name in ("approve-plan", "approve", "allow", "run", "run-always", "outside", "merge", "push", "reject",
                      "reject-ticket"):
             self.assertNotIn(name, caretaker.ACTIONS)
-        self.assertEqual(set(caretaker.HISTORY_LABELS), {"escalate"})
+        self.assertEqual(set(caretaker.HISTORY_LABELS), {"escalate", "retry"})
         self.assertEqual(set(caretaker.BRIEF_SECTIONS), {"error"})
         self.assertEqual([t.__name__ for t in caretaker.TRIGGERS], ["_error_trigger"])
 
@@ -573,6 +573,8 @@ class CaretakerFlowTest(FlowInProcess):
         card_id = self.failing_card(extra="GITHUB_TOKEN=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 "
                                           "export TIDE_FAKE_SECRET_TOKEN=atrapa-sekret-z-env-42 ")
         self.assertTrue(self.start(card_id)["ok"])
+        # Najpierw eskalacja: między błędem kroku a startem opiekuna kolumna może przez chwilę być „waiting”.
+        self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=40), self.events(card_id))
         self.wait_column(card_id, "waiting", timeout=40)
         step = self.caretaker_steps(card_id)[0]
         self.assertTrue(step["stepDir"].endswith(f".caretaker-{step['step']}.step"))

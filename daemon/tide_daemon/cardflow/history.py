@@ -128,6 +128,8 @@ def _event_entry(e: dict, st=None) -> dict | None:
         group, text = "card", "Praca domknięta na gałęzi karty"
     elif kind == "card.main-merged":
         group, text = "merge", "Karta scalona do master"
+    elif kind == "step.decision" and "caretaker" in e:
+        return None         # decyzja zapisana akcją opiekuna (PT-150): wpis daje jego `caretaker.action`
     elif kind == "step.decision":
         group = "decision"
         automatic = bool(e.get("auto") or e.get("automatic"))

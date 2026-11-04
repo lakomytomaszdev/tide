@@ -1748,8 +1748,9 @@ Przebieg: wyzwalacz daje problem → `caretaker.started` (`problem`, `key` = `ca
 `target` — krok problemu, `root`, `ticket`, `trigger`, `watermark` — ostatni `seq` dziennika w chwili startu) →
 istniejąca para „zamiar → wynik” `step-start` i `step.started` z `kind: caretaker` → wynik opiekuna w
 `<krok>/out/result.json` → `step.finished` z `outcome` (wynik `parse_result`) → akcja z rejestru albo nieudane
-działanie → `caretaker.escalated`. Schemat `caretaker.action` (`problem, step, target, ticket, action, params, ok,
-error`) jest zdefiniowany na wykonane akcje inne niż oddanie decyzji; zapisują go kolejne tickety.
+działanie → `caretaker.escalated`. Akcje inne niż oddanie decyzji kończą się `caretaker.action` (`problem, step,
+target, ticket, action, params, ok, error, code, label, retried, stale, detail?`) po parze „zamiar → wynik”
+`caretaker-action` — „Ponowienie, limit i nieaktualne akcje” niżej (PT-150).
 
 Stan i widok:
 
@@ -1766,12 +1767,16 @@ Stan i widok:
 - Eskalacje są przechowywane według id problemu, także gdy `target` jest pusty. Widok i adnotacja decyzji
   korzystają z cyklu życia w `owned()`: pokazują tylko eskalację ostatniego działania przy otwartym problemie.
 - Oddana decyzja błędu ma pole `caretaker{summary, recommendation, tried[], optionId, failed}` (`tried[]` —
-  nieudane działania od ostatniego zamknięcia: `{step, action, ok, text}`); możliwość z `optionId` jest polecona
+  działania od ostatniego zamknięcia poza samym oddaniem decyzji: `{step, action, ok, reason, text}`, bez
+  nieaktualnych); możliwość z `optionId` jest polecona
   i pierwsza, żadna nie jest wybrana (D10). Renderowanie w oknie decyzji to #15. Eskalacja powiadamia raz
   (zwykłe `step.notice` kroku problemu).
 - Historia (`flow.history[]`, rodzaj `caretaker`, `actor: "caretaker"`): „Opiekun: oddaje decyzję — <streszczenie>”
   i „Opiekun: nie udało się wykonać działania „<akcja>” — <błąd>”; wynik odrzucony przez strażnika (PT-158):
-  „Opiekun: wynik odrzucony, akcja nie wykonana — <powód>”.
+  „Opiekun: wynik odrzucony, akcja nie wykonana — <powód>”; PT-150: „Opiekun: ponowił <krok> z instrukcją —
+  <powód>” (bez osobnego wpisu „Decyzja: ponowienie kroku” — `step.decision` z polem `caretaker` nie ma wpisu),
+  „Opiekun: nie udało się (ponowienie kroku) — not-problem-step: …”, „Opiekun: działanie „<akcja>” nieaktualne, nic
+  nie wykonano — <powód>” i „Opiekun: oddaje decyzję po N działaniach (limit) — <streszczenie prób>”.
 
 **Id problemu i liczenie działań.** `problem_id` jest jedynym miejscem budowy id (bez `seq`): wyzwalacz z krokiem —
 `<wyzwalacz>:<korzeń łańcucha parentStep>` (`error:K-37-PT-7-1`), powtórzenie przyczyny `repeat:<ticket>:<przyczyna>`,
@@ -1787,6 +1792,7 @@ problemu. Ponowne wystąpienie ma to samo id, licznik od zera i kolejny, niepowt
 **Restart.** `caretaker.started` bez `step.started`: wynik `step-start` jest — `step.started` dopisuje
 `_recover_started_steps`; zamiar bez wyniku rozstrzyga `_reconcile`; bez zamiaru — `_caretake` startuje krok z tym
 samym id. Nieudany start (także „przerwane restartem”) jest nieudanym działaniem. Krok nigdy nie rusza drugi raz.
+Akcja opiekuna przerwana między zamiarem a wynikiem `caretaker-action` — „Ponowienie, limit i nieaktualne akcje”.
 
 **Kiedy opiekuna nie ma** (dzisiejsza decyzja bez kroku opiekuna): karta wstrzymana, w Backlogu, Gotowych albo
 Archiwum, błąd `login`, limit dostawcy, wina `user` i karta „Tylko lokalnie” (`preferredProvider: local`; decyzja
@@ -1815,14 +1821,80 @@ brak pliku albo zły format → `bad-caretaker-result`; `result` inny niż `done
 treść pytania jako streszczenie, jak `escalate`; inne — `caretaker-result`); zatrzymany albo niewystartowany krok —
 `caretaker-stopped`, `caretaker-not-started`; krok, który pisał poza `out` — `caretaker-wrote` (strażnik, przed
 walidacją wyniku, „Piaskownica i strażnik”). Długości: instrukcja/odpowiedź/uwaga do 4000 znaków, powód 1–600,
-streszczenie do 1200. W PT-143 każde nieudane działanie od razu oddaje problem użytkownikowi (limit i ponawianie
-dokłada #8).
+streszczenie do 1200. Nieudany wynik kroku opiekuna (wszystkie kody powyżej) od razu oddaje problem użytkownikowi;
+nieudane wykonanie poprawnej akcji (np. `not-problem-step`) jest działaniem liczonym do limitu, po którym rusza
+kolejny krok opiekuna (PT-150, „Ponowienie, limit i nieaktualne akcje”).
 
 #### `escalate` (PT-143)
 
 Oddaje decyzję użytkownikowi: `summary` (wymagane, 1–1200 znaków), `recommendation` (wymagane, 1–600), `optionId`
-(opcjonalne, id możliwości decyzji problemu). Jedyna akcja w rejestrze po PT-143 — nie ma akcji zatwierdzenia planu,
-zgody, uruchomienia poza piaskownicą, scalenia, push ani odrzucenia ticketu.
+(opcjonalne, id możliwości decyzji problemu). W rejestrze nie ma akcji zatwierdzenia planu, zgody, uruchomienia poza
+piaskownicą, scalenia, push ani odrzucenia ticketu.
+
+#### `retry` (PT-150)
+
+Ponawia krok problemu z instrukcją: `step` (wymagane, id kroku z linii „Kroki do ponowienia” kartki), `instruction`
+(wymagane, 1–4000 znaków), `reason` (wymagane, 1–600). Instrukcja trafia do kartki wznowionego kroku jako
+„Instrukcja od opiekuna karty (… ma pierwszeństwo przed wcześniejszym planem kroku)” (`handoff.resume_context(…,
+caretaker=True)`); opiekun wyprowadza ją z `step-log.md`, historii i dziennika z katalogu kontekstu. Dwie ścieżki:
+
+- problem z decyzją (`decision` w `caretaker.started`, np. `error:`) — istniejące `resolve_step` `retry` z instrukcją
+  jako `answer`; `step.decision` dostaje `auto: true` i `caretaker: <problem>` (parametr silnika
+  `caretaker_problem`, niedostępny z D-Bus), a wznowienie robi `_advance` jak przy decyzji użytkownika,
+- problem bez decyzji (np. `repeat:` z #6) — wewnętrzna ścieżka automatycznego ponowienia: `step.retry` z `caretaker:
+  <problem>`, `caretakerStep` i `instruction`, bez `step.decision`; `_advance` wznawia krok z `parentStep` i
+  `attempt: 1`, z instrukcją w kartce. Do wznowienia decyzja kroku jest ukryta, a `problems()` pomija ten krok.
+
+Ponowić można tylko krok z `caretaker.problem_steps(problem, st)`: przy decyzji — krok tej decyzji, bez decyzji —
+krok łańcucha problemu bez następcy, zakończony wynikiem innym niż `done`, bez decyzji i ponowienia. Inny krok
+(także spoza karty) to nieudane działanie `not-problem-step` z powodem w `error`, liczone do limitu.
+
+### Ponowienie, limit i nieaktualne akcje (PT-150)
+
+**Wspólna ścieżka akcji** (`FlowEngine._caretaker_act`, także z `_reconcile`): wynik kroku opiekuna (`outcome`
+w `step.finished`) → sprawdzenie nieaktualności → `escalate` jako jedno zdarzenie `caretaker.escalated` albo, dla
+każdej innej akcji, para „zamiar → wynik” `caretaker-action` z kluczem kroku opiekuna (`_act`) i na końcu
+`caretaker.action`. Zapisany wynik pary nie wykonuje akcji drugi raz; restart między zamiarem a wynikiem dokańcza ją
+tą samą ścieżką, a `apply` jest bezpieczne do powtórzenia (`resolve_step` zwraca `already` dla tej samej decyzji
+z tym samym `caretaker`, `step.retry` z `caretakerStep` tego kroku opiekuna nie powstaje drugi raz). Akcja nieudana
+przy wykonaniu zwraca z `apply` `{failed, error}`: wynik pary jest zapisany (`ok: true`), a `caretaker.action` ma
+`ok: false`, `code` i `error`.
+
+**Limit** `caretakerActionLimit` (domyślnie 3, `caretaker.ACTION_LIMIT`, `FlowEngine._caretaker_limit`; ustawialną
+wartość dokłada #9) — kroki opiekuna na problem, udane i nieudane, liczone wyłącznie przez `owned()` (`count`).
+Ponowiony krok, który znowu pada, to ten sam problem (id z korzenia łańcucha), więc kolejny krok opiekuna należy do
+niego. Przy `count ≥ limit` `_caretake` nie uruchamia kolejnego kroku opiekuna, tylko zapisuje `caretaker.escalated`
+z `limit: true`, `failed: true`, `code: caretaker-limit`, `count`, `step` ostatniego działania i streszczeniem prób
+(`caretaker.limit_summary`: akcja, powód, skutek każdego działania). Stan trzyma ją w `caretaker_limits` (nie jest
+wynikiem kroku opiekuna), a `owned()` daje wtedy `handed: true`; decyzja problemu ma `caretaker.tried[]` z pozycjami
+`{step, action, ok, reason, text}` (powód z pola `reason` wyniku, skutek jak w historii). Decyzja użytkownika (bez
+pola `caretaker`) zamyka problem i zeruje licznik — kolejny błąd tego kroku zaczyna od zera.
+
+**Nieaktualność** (`caretaker.stale(st, run, events)`, jedna funkcja dla obu rodzajów problemów) — sprawdzana przed
+startem kroku opiekuna i przed każdym skutkiem jego wyniku (także przed oddaniem nieudanego wyniku), ale nie po
+zaczętym zamiarze `caretaker-action`:
+
+- problem z decyzją (`decision` w `caretaker.started`; zapis sprzed PT-150 — decyzja aktualnego problemu): jest
+  `step.decision` kroku problemu bez pola `caretaker` („użytkownik już zdecydował”) albo `problems()` nie zwraca
+  problemu z tym samym id decyzji („decyzja problemu już nie czeka”),
+- problem bez decyzji: po `watermark` z `caretaker.started` jest zdarzenie spoza opiekuna — w łańcuchu problemu
+  (problem bez kroku: w jego tickecie, bez ticketu: w całej karcie) `step.started`, `step.retry` albo
+  `step.decision`, a w całej karcie `card.paused`, `card.moved`, `plan.returned` albo `plan.edited` („po starcie
+  opiekuna: <zdarzenie>”) — albo `problems()` nie zwraca już problemu („problem już nie występuje”). Zdarzenia samego
+  opiekuna nie liczą się: `caretaker.*`, zdarzenia z `kind: caretaker` (start, czekanie na slot), zdarzenia z polem
+  `caretaker` (zapisy jego akcji) oraz wyniki i aktywność kroku opiekuna (nie ma ich na liście).
+
+Akcja nieaktualna zapisuje `caretaker.action` z `ok: false, error: "stale", stale: true` i powodem w `detail`, nic
+nie wykonuje (bez pary `caretaker-action`), nie oddaje problemu i nie liczy się do limitu (`owned()` pomija takie
+kroki). Gdy wynik odrzucił też strażnik (wznowiony przez użytkownika krok pisał w tym samym worktree), jego powód
+jest dopisany do `detail`. Wyzwalacze #5, #6 i #13 testują regułę na swoich problemach.
+
+**Pierwszeństwo slotu** (US 37): krok opiekuna zajmuje slot dostawcy jak każdy krok (`providerSlots`,
+`_wait_reason`, `_admit`, `step.waiting` z powodem „limit kroków dostawcy …”). Gotowy krok opiekuna karty
+(`caretaker.started` bez startu i bez wyniku) u tego samego dostawcy rezerwuje miejsce przed każdym innym krokiem tej
+karty (`_caretaker_reserved`: rezerwacja liczy się w `_wait_reason` jak trwający krok), więc nowy ticket karty czeka,
+a opiekun startuje w tym samym przebiegu. Rezerwacja nie dotyczy innych kart, które dostają slot w dotychczasowej
+kolejności pętli (`journal.cards()`), nie omija limitu slotów ani okna limitu dostawcy (D3 — czeka jak inne kroki).
 
 ### Kontekst
 

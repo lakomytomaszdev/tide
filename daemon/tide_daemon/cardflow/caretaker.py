@@ -6,7 +6,10 @@ Publiczny interfejs (silnik i widoki wołają tylko te funkcje):
 - `problems(st)` — otwarte problemy karty z wyzwalaczy `TRIGGERS`; jeden łańcuch kroków ma naraz najwyżej jeden
   problem — kolejny wyzwalacz na tym łańcuchu dołącza do niego (`triggers[]`),
 - `problem_id(...)` — jedyna definicja id problemu, bez `seq` dziennika,
-- `owned(st, id)` — jedyne liczenie działań opiekuna przy problemie (od ostatniego zamknięcia),
+- `owned(st, id)` — jedyne liczenie działań opiekuna przy problemie (od ostatniego zamknięcia; bez `stale`),
+- `stale(st, run, events)` — czy działanie opiekuna jest nieaktualne (PT-150; jedna reguła dla problemów z decyzją
+  i bez niej),
+- `problem_steps(problem, st)` — kroki, które opiekun może ponowić akcją `retry` (PT-150),
 - `brief(problem, st, ...)` — kartka kroku opiekuna (pierwsza linia „Jesteś opiekunem karty …”),
 - `parse_result(data, problem, st)` — walidacja pliku wyniku opiekuna; granica uprawnień jest tu, nie w kartce.
   Przed nią silnik sprawdza strażnikiem (`guard.py`, PT-158), czy krok nie pisał poza `out` — inaczej `WROTE`.
@@ -23,14 +26,18 @@ przyczyny — `repeat:<ticket>:<przyczyna>`; bez kroku — `<wyzwalacz>:<etap>` 
 czekająca decyzja — `waiting:<id decyzji>`.
 
 Zdarzenia dziennika:
-- `caretaker.started` — `{problem, key, n, step, target, root, ticket, trigger, watermark}`: zamiar uruchomienia
-  kroku opiekuna; `key` = `caretaker:<problem>:<n>` (n — kolejny krok opiekuna przy tym problemie, od 1),
-  `step` — id kroku opiekuna, `target` — krok problemu, `watermark` — ostatni `seq` dziennika w chwili startu.
-  Start kroku idzie istniejącą parą „zamiar → wynik” `step-start` i zdarzeniem `step.started` z `kind: caretaker`.
+- `caretaker.started` — `{problem, key, n, step, target, root, ticket, trigger, decision, watermark}`: zamiar
+  uruchomienia kroku opiekuna; `key` = `caretaker:<problem>:<n>` (n — kolejny krok opiekuna przy tym problemie,
+  od 1), `step` — id kroku opiekuna, `target` — krok problemu, `decision` — id decyzji problemu (pusty — problem bez
+  decyzji), `watermark` — ostatni `seq` dziennika w chwili startu. Start kroku idzie istniejącą parą „zamiar →
+  wynik” `step-start` i zdarzeniem `step.started` z `kind: caretaker`.
 - `caretaker.escalated` — `{problem, step, target, ticket, action, summary, recommendation, optionId, failed,
-  error, code}`: problem wraca do użytkownika (akcja `escalate` albo nieudane działanie, `failed: true`),
-- `caretaker.action` — `{problem, step, target, ticket, action, params, ok, error}`: wykonana akcja inna niż oddanie
-  decyzji (schemat na potrzeby kolejnych ticketów; ten ticket go nie zapisuje).
+  error, code, limit?}`: problem wraca do użytkownika (akcja `escalate`, nieudany wynik kroku, `failed: true`, albo
+  wyczerpany limit działań — `limit: true`, `code: caretaker-limit`, `step` — ostatnie działanie przy problemie),
+- `caretaker.action` — `{problem, step, target, ticket, action, params, ok, error, code, label, stale}`: wynik akcji
+  innej niż oddanie decyzji (PT-150). Zamiarem jest para `intent`/`result` akcji `caretaker-action` z kluczem kroku
+  opiekuna (`FlowEngine._act`): zapisany wynik → po restarcie akcja nie wykonuje się drugi raz. `stale: true`
+  (`error: "stale"`) — akcja nieaktualna, nic nie wykonano i działanie nie liczy się do limitu.
 
 Bez rekursji: krok `caretaker` nie trafia do `st.steps`, więc żaden wyzwalacz go nie widzi (i wyzwalacz `error`
 sprawdza to jeszcze raz wprost).
@@ -58,6 +65,11 @@ QUESTION, OTHER_RESULT, NOT_STARTED, STOPPED = ("caretaker-question", "caretaker
                                                  "caretaker-stopped")
 # Krok opiekuna zmienił worktree, HEAD albo gałąź pod strażą (PT-158, `guard.py`): wynik odrzucony przed walidacją.
 WROTE = "caretaker-wrote"
+# PT-150: akcja nieaktualna (nie liczy się do limitu), `retry` na krok spoza problemu (liczy się), wyczerpany limit.
+STALE, NOT_PROBLEM_STEP, LIMIT = "stale", "not-problem-step", "caretaker-limit"
+# Kroki opiekuna na problem, udane i nieudane (`caretakerActionLimit`; ustawialną wartość dokłada #9).
+ACTION_LIMIT = 3
+STEP_MAX = 200
 
 TICKET_KINDS = ("ticket", "fix", "review", "conflict")
 
@@ -90,6 +102,10 @@ def _escalate(port, problem: dict, params: dict) -> None:
     port.escalate(problem, params)
 
 
+def _retry(port, problem: dict, params: dict) -> dict:
+    return port.retry(problem, params)
+
+
 ACTIONS: dict[str, Action] = {
     "escalate": Action(
         kinds=("*",),
@@ -100,9 +116,21 @@ ACTIONS: dict[str, Action] = {
         },
         apply=_escalate,
         description="oddaj decyzję użytkownikowi z krótkim streszczeniem i rekomendacją"),
+    # PT-150: ponowienie kroku problemu z instrukcją, którą wznowiony krok dostaje w kartce („Instrukcja od
+    # opiekuna”). Krok spoza problemu nie jest błędem formatu, tylko nieudanym działaniem (`not-problem-step`).
+    "retry": Action(
+        kinds=("*",),
+        params={
+            "step": Param(True, 1, STEP_MAX, "id kroku do ponowienia (z „Kroki do ponowienia”)"),
+            "instruction": Param(True, 1, TEXT_MAX, "co wznowiony krok ma zrobić inaczej — konkretnie, z dziennika "
+                                                    "kroku i historii karty"),
+            "reason": Param(True, 1, REASON_MAX, "dlaczego ponowienie z tą instrukcją rozwiąże problem"),
+        },
+        apply=_retry,
+        description="ponów krok problemu z instrukcją dla wznowionego kroku"),
 }
 
-HISTORY_LABELS = {"escalate": "oddaje decyzję"}
+HISTORY_LABELS = {"escalate": "oddaje decyzję", "retry": "ponowienie kroku"}
 
 
 # --- wyzwalacze ----------------------------------------------------------------------------------
@@ -192,6 +220,8 @@ def problems(st) -> list[dict]:
     for trigger in TRIGGERS:
         for candidate in trigger(st) or []:
             step = candidate.get("step") or ""
+            if step and (st.step_retries.get(step) or {}).get("caretaker"):
+                continue        # opiekun ponowił już ten krok (PT-150), wznowienie ruszy w kolejnym przebiegu
             root = chain_root(st, step) if step else ""
             ident = problem_id(candidate["trigger"], st, step=step, ticket=candidate.get("ticket") or "",
                                cause=candidate.get("cause") or "", stage=candidate.get("stage") or "",
@@ -223,9 +253,10 @@ def owned(st, ident: str) -> dict:
     (decyzja użytkownika bez pola `caretaker` albo rozwiązanie — zwykły krok zakończony `done`). Dla problemu
     z krokiem zakres to jego łańcuch, bez kroku — wskazany ticket, a bez ticketu — cała karta.
 
-    `count` — działania od zamknięcia, `runs` — te kroki, `next` — numer następnego kroku przy tym id (do klucza
-    `caretaker:<problem>:<n>`, nigdy się nie powtarza), `open` — krok opiekuna bez wyniku, `handed` — ostatnie
-    działanie oddało problem użytkownikowi."""
+    `count` — działania od zamknięcia (udane i nieudane; nieaktualne `stale` się nie liczą — PT-150), `runs` — te
+    kroki, `next` — numer następnego kroku przy tym id (do klucza `caretaker:<problem>:<n>`, nigdy się nie powtarza),
+    `open` — krok opiekuna bez wyniku, `handed` — ostatnie działanie oddało problem użytkownikowi albo po nim
+    wyczerpał się limit działań (`caretaker.escalated` z `limit: true`)."""
     runs_all = [run for run in st.caretaker_runs.values() if run.get("problem") == ident]
     roots = {run.get("root") for run in runs_all if run.get("root")}
     tickets = {run.get("ticket") for run in runs_all if run.get("ticket")}
@@ -247,11 +278,93 @@ def owned(st, ident: str) -> dict:
     for name, done in st.finished.items():
         if done.get("result") == "done" and in_scope(name):
             closed = max(closed, int(done.get("seq") or 0))
-    runs = [run for run in runs_all if int(run.get("seq") or 0) > closed]
+    runs = [run for run in runs_all if int(run.get("seq") or 0) > closed and
+            not (st.caretaker_outcomes.get(run.get("step")) or {}).get("stale")]
     open_run = next((run for run in runs_all if run.get("step") not in st.caretaker_outcomes), None)
     last = st.caretaker_outcomes.get(runs[-1].get("step")) if runs else None
+    limited = st.caretaker_limits.get(ident) or {}
+    handed = bool(last and last.get("type") == ESCALATED) or bool(
+        runs and limited and int(limited.get("seq") or 0) > int(runs[-1].get("seq") or 0))
     return {"count": len(runs), "runs": runs, "next": 1 + max([int(r.get("n") or 0) for r in runs_all], default=0),
-            "open": open_run, "handed": bool(last and last.get("type") == ESCALATED), "closedSeq": closed}
+            "open": open_run, "handed": handed, "closedSeq": closed}
+
+
+# --- nieaktualne działania i kroki problemu (PT-150) ---------------------------------------------
+
+# Zdarzenia spoza opiekuna, po których działanie problemu bez decyzji jest nieaktualne: w łańcuchu problemu
+# (`IN_CHAIN`) albo w całej karcie (`CARD_WIDE` — wstrzymanie, przeniesienie, zmiana planu).
+IN_CHAIN = ("step.started", "step.retry", "step.decision")
+CARD_WIDE = ("card.paused", "card.moved", "plan.returned", "plan.edited")
+
+
+def _own_event(event: dict) -> bool:
+    """Zdarzenie samego opiekuna: `caretaker.*`, krok rodzaju `caretaker` i zdarzenia z polem `caretaker`
+    (decyzja albo ponowienie zapisane przez akcję opiekuna)."""
+    kind = event.get("type") or ""
+    return kind.startswith("caretaker.") or event.get("kind") == KIND or "caretaker" in event
+
+
+def _in_problem(st, run: dict, event: dict) -> bool:
+    """Zdarzenie dotyczy łańcucha problemu (problem bez kroku: jego ticketu, a bez ticketu — całej karty)."""
+    root, ticket = run.get("root") or "", run.get("ticket") or ""
+    name = event.get("step") or ""
+    if root:
+        return bool(name) and name in st.steps and chain_root(st, name) == root
+    if ticket:
+        return (event.get("ticket") or (st.steps.get(name) or {}).get("ticket") or "") == ticket
+    return True
+
+
+def stale(st, run: dict, events: list) -> str:
+    """Dlaczego działanie kroku opiekuna `run` (`caretaker.started`) jest nieaktualne; pusty napis — aktualne.
+    Jedna reguła dla obu rodzajów problemów:
+    - z decyzją (`decision` w `caretaker.started`): decyzja problemu już nie czeka — jest `step.decision` bez pola
+      `caretaker` albo problem ma inną decyzję (albo go nie ma),
+    - bez decyzji: `problems()` nie zwraca już problemu albo po `watermark` jest zdarzenie spoza opiekuna — w łańcuchu
+      problemu `step.started`, `step.retry` albo `step.decision`, w całej karcie wstrzymanie, przeniesienie karty,
+      `plan.returned` albo `plan.edited`. Zdarzenia opiekuna (`caretaker.*`, krok `caretaker`, zapisy jego akcji)
+      nie czynią działania nieaktualnym."""
+    ident = run.get("problem") or ""
+    found = next((p for p in problems(st) if p["id"] == ident), None)
+    # Zapis sprzed PT-150 nie ma pola `decision` — wtedy decyzja aktualnego problemu.
+    decision = run["decision"] if "decision" in run else (found or {}).get("decision") or ""
+    if decision:
+        made = st.step_decisions.get(run.get("target") or "")
+        if made and "caretaker" not in made:
+            return "użytkownik już zdecydował"
+        if found is None or (found.get("decision") or "") != decision:
+            return "decyzja problemu już nie czeka"
+        return ""
+    watermark = int(run.get("watermark") or 0)
+    for event in events:
+        if int(event.get("seq") or 0) <= watermark or _own_event(event):
+            continue
+        kind = event.get("type")
+        if kind in CARD_WIDE or (kind in IN_CHAIN and _in_problem(st, run, event)):
+            return f"po starcie opiekuna: {kind}"
+    return "problem już nie występuje" if found is None else ""
+
+
+def problem_steps(problem: dict, st) -> list[str]:
+    """Kroki, które `retry` może ponowić: problem z decyzją — tylko krok tej decyzji; bez decyzji — kroki łańcucha
+    problemu zakończone wynikiem innym niż `done`, bez kroku-następcy, bez decyzji i bez ponowienia (problem bez
+    kroku: jego ticketu, a bez ticketu — całej karty)."""
+    if problem.get("decision"):
+        return [problem["step"]] if problem.get("step") in st.steps else []
+    root, ticket = problem.get("root") or "", problem.get("ticket") or ""
+    children = {item.get("parentStep") for item in st.steps.values()}
+    out = []
+    for name, item in st.steps.items():
+        done = st.finished.get(name) or {}
+        if name in children or not done or done.get("result") == "done" or item.get("ticket") in st.rejected or \
+                name in st.step_decisions or name in st.step_retries or name in st.superseded:
+            continue
+        if root and chain_root(st, name) != root:
+            continue
+        if not root and ticket and item.get("ticket") != ticket:
+            continue
+        out.append(name)
+    return out
 
 
 def local_only(st) -> bool:
@@ -311,7 +424,7 @@ def _commands_section(worktree: str, commands: bool) -> list[str]:
 
 
 def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands: bool = True,
-          context: list | None = None, context_dir: str = "") -> str:
+          context: list | None = None, context_dir: str = "", limit: int = ACTION_LIMIT) -> str:
     """Kartka kroku opiekuna: opis problemu (zamaskowany `faults.mask`), pliki kontekstu (PT-153, `context` —
     `[{path, title, trimmed}]` z `caretakerctx.build`), dostępne akcje z parametrami, zakazy, polecenia tylko do
     odczytu (`commands` — program z listą poleceń, Claude) i ścieżka wyniku. Sekcja problemu pochodzi
@@ -332,19 +445,23 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
         listed.append(f"- `{name}` — {action.description}. Pola:")
         for param, spec in action.params.items():
             need = "wymagane" if spec.required else "opcjonalne"
-            limit = f"od {spec.minimum} do {spec.maximum} znaków"
+            length = f"od {spec.minimum} do {spec.maximum} znaków"
             choices = spec.choices(problem) if spec.choices else None
             extra = f"; jedna z: {', '.join(choices)}" if choices else ""
-            listed.append(f"  - `{param}` ({need}, {limit}{extra}) — {spec.hint}")
+            listed.append(f"  - `{param}` ({need}, {length}{extra}) — {spec.hint}")
     example = {"result": "done", "action": "escalate", "summary": "…", "recommendation": "…"}
     if problem.get("options"):
         example["optionId"] = problem["options"][0]
     import json
+    retryable = problem_steps(problem, st) if "retry" in actions else []
+    retry_lines = [f"Kroki do ponowienia (pole `step` akcji `retry`): {', '.join(retryable)}"] if retryable else []
     text = "\n".join([
         f"{BRIEF_FIRST_LINE} {card} w Tide. Tide zatrzymał się na problemie i oddał go Tobie, zanim zapyta "
         "użytkownika. Sprawdź problem i odpowiedz dokładnie jedną akcją z listy poniżej.",
         "",
         f"Id problemu: {problem.get('id')}",
+        f"Krok problemu: {problem.get('step') or '(brak)'}",
+        *retry_lines,
         f"Worktree kroku (wyłącznie do odczytu): {worktree}",
         "",
         faults.mask(described),
@@ -361,6 +478,9 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
         "uruchamiaj niczego poza piaskownicą i nie odrzucaj ticketu. Takich akcji nie ma — akcja spoza listy jest "
         "nieudanym działaniem i problem od razu wraca do użytkownika.",
         "- Nie zadawaj pytań: gdy potrzebna jest decyzja użytkownika, użyj `escalate`.",
+        f"- Przy jednym problemie Tide uruchamia opiekuna najwyżej {limit} razy; potem problem wraca do użytkownika "
+        "ze streszczeniem prób. Nie ponawiaj kroku z tą samą instrukcją, która już nie pomogła (poprzednie próby są "
+        "w kontekście).",
         "",
         "## Wynik",
         "",
@@ -438,8 +558,8 @@ def parse_result(data, problem: dict, st) -> dict:
 # --- widoki: decyzja, derived, historia ----------------------------------------------------------
 
 def hidden(st, name: str) -> bool:
-    """Decyzja tego kroku jest ukryta, dopóki pracuje nad nim opiekun."""
-    return name in st.caretaking
+    """Decyzja tego kroku jest ukryta, dopóki pracuje nad nim opiekun albo czeka wznowienie po jego `retry`."""
+    return name in st.caretaking or bool((st.step_retries.get(name) or {}).get("caretaker"))
 
 
 def _escalations(st):
@@ -463,8 +583,10 @@ def annotate(st, decision: dict) -> dict:
         outcome = st.caretaker_outcomes.get(item.get("step") or "") or {}
         if outcome.get("type") == ESCALATED and not outcome.get("failed"):
             continue
+        # `tried[]` (PT-150): akcja, powód (pole `reason` wyniku opiekuna) i skutek (`text`, jak w historii).
         tried.append({"step": item.get("step") or "", "action": outcome.get("action") or "",
                       "ok": not outcome.get("failed") and outcome.get("ok", True) is not False,
+                      "reason": _text((outcome.get("params") or {}).get("reason")),
                       "text": history_text(outcome)})
     failed = bool(escalated.get("failed"))
     summary = escalated.get("summary") or (
@@ -535,6 +657,17 @@ def history_text(event: dict) -> str:
     """Wpis historii karty dla zdarzenia opiekuna (pusty napis — zdarzenie bez wpisu)."""
     kind = event.get("type")
     action = event.get("action") or ""
+    if kind == ESCALATED and event.get("limit"):
+        summary = _text(event.get("summary"))
+        return f"Opiekun: oddaje decyzję po {_actions(int(event.get('count') or 0))} (limit)" + \
+            (f" — {summary}" if summary else "")
+    if kind == ACTION and event.get("stale"):
+        detail = _text(event.get("detail"))
+        return f"Opiekun: działanie „{action or '?'}” nieaktualne, nic nie wykonano" + (f" — {detail}" if detail else "")
+    if kind == ACTION and action == "retry" and event.get("ok"):
+        reason = _text((event.get("params") or {}).get("reason"))
+        return f"Opiekun: ponowił {event.get('label') or event.get('retried') or 'krok'} z instrukcją" + \
+            (f" — {reason}" if reason else "")
     if kind == ESCALATED and not event.get("failed"):
         summary = _text(event.get("summary"))
         return f"Opiekun: {HISTORY_LABELS.get('escalate')}" + (f" — {summary}" if summary else "")
@@ -561,6 +694,24 @@ def _decision_of(st, name: str) -> dict | None:
 
 def _text(value) -> str:
     return " ".join(str(value or "").split())
+
+
+def _actions(n: int) -> str:
+    return f"{n} działaniu" if n == 1 else f"{n} działaniach"
+
+
+def limit_summary(st, ident: str, limit: int) -> str:
+    """Streszczenie prób do eskalacji po limicie: każde działanie od zamknięcia problemu — akcja, powód, skutek."""
+    parts = []
+    runs = owned(st, ident)["runs"]
+    for n, run in enumerate(runs, 1):
+        outcome = st.caretaker_outcomes.get(run.get("step") or "") or {}
+        reason = _text((outcome.get("params") or {}).get("reason"))
+        effect = history_text(outcome).removeprefix("Opiekun: ") or "bez wyniku"
+        parts.append(f"{n}. {outcome.get('action') or '?'}" + (f" ({reason})" if reason else "") + f": {effect}")
+    text = f"Opiekun wykonał {len(runs)} z {limit} dozwolonych działań, a problem nadal jest otwarty. " + \
+        "; ".join(parts)
+    return text[:SUMMARY_MAX]
 
 
 def _epoch(value) -> float:

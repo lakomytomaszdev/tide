@@ -96,6 +96,8 @@ class FlowState:
     caretaker_outcomes: dict = field(default_factory=dict)    # krok opiekuna → caretaker.escalated / caretaker.action
     caretaker_escalations: dict = field(default_factory=dict)  # id problemu → ostatnie caretaker.escalated
     caretaking: dict = field(default_factory=dict)            # krok problemu → krok opiekuna, który nad nim pracuje
+    # PT-150: eskalacja po wyczerpaniu limitu działań nie jest wynikiem żadnego kroku opiekuna (nie ma czwartego).
+    caretaker_limits: dict = field(default_factory=dict)      # id problemu → ostatnie caretaker.escalated z limit
     # Strażnik kroku opiekuna (PT-158): ostatni stan bazowy `caretaker.guard` i powody wykrytych po drodze zmian.
     caretaker_guards: dict = field(default_factory=dict)      # krok opiekuna → ostatnie caretaker.guard
     caretaker_wrote: dict = field(default_factory=dict)       # krok opiekuna → [powód zmiany]
@@ -219,6 +221,7 @@ def fold(events: list[dict]) -> FlowState:
             st.inputs = {}
             st.caretaking = {}
             st.caretaker_escalations = {}
+            st.caretaker_limits = {}
         elif kind == "step.started" and e.get("kind") == "caretaker":
             st.waiting.pop((e.get("ticket"), "caretaker"), None)
             st.caretakers[e.get("step")] = e
@@ -229,6 +232,9 @@ def fold(events: list[dict]) -> FlowState:
             st.caretaker_guards[e.get("step")] = e
             if e.get("wrote"):
                 st.caretaker_wrote.setdefault(e.get("step"), []).extend(e.get("wrote") or [])
+        elif kind == "caretaker.escalated" and e.get("limit"):
+            st.caretaker_limits[e.get("problem")] = e
+            st.caretaker_escalations[e.get("problem")] = e
         elif kind in ("caretaker.escalated", "caretaker.action"):
             st.caretaker_outcomes[e.get("step")] = e
             if st.caretaking.get(e.get("target")) == e.get("step"):

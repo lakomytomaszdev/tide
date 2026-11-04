@@ -89,11 +89,15 @@ Użytkownik może je uruchomić poza piaskownicą w tym worktree; przy wznowieni
 
 
 def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_dir: str,
-                   allowed=None, skipped=(), instead: str = "") -> str:
+                   allowed=None, skipped=(), instead: str = "", caretaker: bool = False) -> str:
     """Jawna decyzja do wznowionego kroku; kartka poprzedniej próby pozostaje wyżej w poleceniu.
     `allowed` — zgoda na wybrane polecenia z łańcucha (PT-124), `skipped` — niezaznaczone, `instead` — co krok ma
-    zrobić zamiast poleceń, na które nie było zgody („Zrób zamiast tego…”)."""
-    if choice == "answer":
+    zrobić zamiast poleceń, na które nie było zgody („Zrób zamiast tego…”), `caretaker` — ponowienie z instrukcją
+    od opiekuna karty (PT-150), nie od użytkownika."""
+    if caretaker and choice == "retry":
+        detail = ("Instrukcja od opiekuna karty (opiekun sprawdził dziennik tego kroku i historię karty; instrukcja ma "
+                  f"pierwszeństwo przed wcześniejszym planem kroku):\n{answer}\nZachowaj zmiany z poprzednich prób.")
+    elif choice == "answer":
         detail = f"Pytanie z poprzedniej próby: {prior.get('question') or ''}\nOdpowiedź użytkownika: {answer}"
         picked = next((o for o in prior.get("options") or [] if o.get("title") == answer), None)
         if picked:

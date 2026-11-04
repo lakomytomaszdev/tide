@@ -7,7 +7,9 @@
   `pytanie` (wynik „pytanie”), `pytanie-opcje` (pytanie z poprawnymi `options[]`), `pytanie-zle-opcje` (kilka poleconych). Ścieżkę pliku wyniku bierze z kartki (linia „Plik wyniku: …”), nie z ustawień.
   Kartkę opiekuna karty (PT-143) rozpoznaje po pierwszej linii „Jesteś opiekunem karty”; co odpowiada, mówi
   „ATRAPA-OPIEKUN: …” w opisie problemu (`escalate` — domyślnie, `powoli` — 6 s pracy i escalate,
-  `akcja-<nazwa>`, `bez-wyniku`, `zly-format`, `pytanie`, `blad`; PT-158: `pisze-sledzony`, `pisze-nowy`,
+  `akcja-<nazwa>`, `bez-wyniku`, `zly-format`, `pytanie`, `blad`; PT-150: `retry` — ponowienie „Kroku problemu”
+  z instrukcją, `retry-obcy` — ponowienie kroku spoza problemu, `retry-powoli` — 6 s pracy, potem `retry`;
+  PT-158: `pisze-sledzony`, `pisze-nowy`,
   `commit` — zapis do worktree albo commit, `karta-sledzony`, `karta-nowy` — zapis do worktree karty; potem
   poprawny `escalate`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …” (powód
   jest też w dzienniku kroku).
@@ -56,6 +58,9 @@ if prompt.startswith("Jesteś opiekunem karty"):
     if care == "powoli":            # opiekun pracuje kilka sekund (widok „W toku”, restart usługi), potem escalate
         time.sleep(6)
         care = "escalate"
+    if care == "retry-powoli":      # PT-150: kilka sekund pracy (decyzja użytkownika w tym czasie), potem retry
+        time.sleep(6)
+        care = "retry"
     # PT-158: opiekun, który pisze poza `out` (zmienia plik śledzony, dodaje nieśledzony, robi commit), a potem
     # zapisuje poprawny wynik `escalate` — strażnik ma go odrzucić przed odczytem wyniku.
     tree = re.search(r"Worktree kroku \(wyłącznie do odczytu\): (\S+)", prompt).group(1)
@@ -96,6 +101,12 @@ if prompt.startswith("Jesteś opiekunem karty"):
     elif care == "escalate":
         data = {"result": "done", "action": "escalate", "summary": "Krok dwa razy padł na tym samym teście.",
                 "recommendation": "Zmień wykonawcę na mocniejszy model.", "optionId": "change-executor"}
+    elif care in ("retry", "retry-obcy"):
+        # PT-150: ponowienie kroku problemu („Krok problemu: …” w kartce) albo kroku spoza problemu.
+        target = re.search(r"Krok problemu: (\S+)", prompt).group(1) if care == "retry" else "K-999-obcy-1"
+        data = {"result": "done", "action": "retry", "step": target,
+                "instruction": "Najpierw uruchom test eksportu i popraw format daty na ISO 8601.",
+                "reason": "Dziennik kroku pokazuje błąd formatu daty."}
     if data is not None:
         with open(result, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
