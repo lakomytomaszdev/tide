@@ -218,20 +218,25 @@ def _permission(st, name, step, done) -> dict:
     return made
 
 
+SHORT_COMMAND = 70   # dłuższe polecenie nie trafia do nagłówka decyzji
+
+
 def _outside(st, name, step, done) -> dict:
     """Prośba o uruchomienie poza piaskownicą (03.11): Tide wykonuje polecenie w worktree ticketu na koncie
     użytkownika i oddaje krokowi kod wyjścia; „zawsze w projekcie” zapamiętuje rodzinę polecenia (`pattern`)."""
     command = _text(done.get("command"))
     pattern = _text(done.get("pattern"))
     who = _who(step, True)
-    happened = f"{who} prosi o uruchomienie poza piaskownicą: {command}" if command else ""
+    # Długie polecenie stoi tylko w polu pod spodem (04.11: nagłówek był kilkulinijkowym zlepkiem z całym `bash -c`).
+    happened = ((f"{who} prosi o uruchomienie poza piaskownicą: {command}" if len(command) <= SHORT_COMMAND
+                 else f"{who} prosi o uruchomienie polecenia poza piaskownicą") if command else "")
     reason = _text(done.get("reason"))
     from ..board.commands import outside_risky
     risk = outside_risky(command) if command else ""
     if done.get("canAllow", True) and risk:
         # Ryzykowne (wychodzi poza worktree, czyta `~`, zmienia system): tylko jednorazowo i z powodem na wierzchu.
         why = (f"Uwaga: {risk}. Tide uruchomi je na Twoim koncie, w worktree ticketu, tylko raz."
-               + (f" Powód kroku: {reason}" if reason else ""))
+               + (f"\nPowód kroku: {reason}" if reason else ""))
         options = [
             _option("run", "Uruchom raz",
                     "Tide uruchomi to jedno polecenie i wznowi krok z jego wynikiem; następnym razem zapyta znowu.",
@@ -245,7 +250,7 @@ def _outside(st, name, step, done) -> dict:
         ]   # bez polecanej: to decyzja o Twoich danych i systemie, nie o środowisku
     elif done.get("canAllow", True):
         why = ("Piaskownica kroku nie ma sieci, Dockera ani pełnych testów. Tide uruchomi polecenie w worktree "
-               "ticketu na Twoim koncie i odda wynik krokowi." + (f" Powód kroku: {reason}" if reason else ""))
+               "ticketu na Twoim koncie i odda wynik krokowi." + (f"\nPowód kroku: {reason}" if reason else ""))
         options = [
             _option("run-always", f"Zawsze w projekcie: {pattern}" if pattern else "Uruchom i pamiętaj w projekcie",
                     "Polecenie ruszy teraz, a ta rodzina poleceń w tym projekcie będzie uruchamiana bez pytania.",
@@ -257,13 +262,15 @@ def _outside(st, name, step, done) -> dict:
                     "Krok wznowi się bez tego polecenia.", RESOLVE_STEP, {"choice": "deny", "step": name}),
         ]
     else:
-        why = ("Tego polecenia Tide nie uruchomi poza piaskownicą: łańcuch, operator powłoki, niebezpieczna "
-               "zmienna albo zakaz projektu." + (f" Powód kroku: {reason}" if reason else ""))
+        why = ("Tide nie uruchomi tego sam: to łańcuch poleceń, operator powłoki, niebezpieczna zmienna albo zakaz "
+               "projektu. Możesz je uruchomić samodzielnie (pole niżej, „Kopiuj”) i wpisać wynik w „Zrób zamiast tego”."
+               + (f"\nPowód kroku: {reason}" if reason else ""))
         options = [_option("deny", "Kontynuuj bez tego polecenia",
                            "Krok wznowi się bez niego; jeśli czegoś zabraknie, zgłosi pojedyncze polecenie.",
                            RESOLVE_STEP, {"choice": "deny", "step": name}, recommended=True)]
     reply = {"method": RESOLVE_STEP, "params": {"choice": "deny", "step": name}, "field": "instead"}
     made = _decision(st, name, step, "permission", happened, why, options, reply, "", _step_technical(step, done))
+    made["why"] = "\n".join(_text(line) for line in why.split("\n") if _text(line))   # linie zostają osobno
     made["commands"] = []
     made["otherTitle"], made["otherHint"] = OTHER_PERMISSION
     return made

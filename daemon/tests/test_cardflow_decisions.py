@@ -647,3 +647,16 @@ class QuestionLayoutTest(unittest.TestCase):
         decision = build_decisions(events.state())[0]
         self.assertIn("\n(b) zostaw.", decision["happened"])
         self.assertEqual(decision["copyCommands"], ["bash x.sh --all"])
+
+
+class OutsideHeadlineTest(unittest.TestCase):
+    def test_long_command_stays_out_of_the_headline_and_why_keeps_lines(self):
+        # 04.11, KAMP-1: nagłówek był kilkulinijkowym zlepkiem z całym `bash -c '…'`.
+        long_command = "bash -c 'for f in \"$HOME\"/*.mp4; do ffmpeg -i \"$f\" out/%05d.jpg; done; du -sh out'"
+        events = Events().step("K-1-PT-1-1", result="denied", outside=True, command=long_command,
+                               reason="Nagrania leżą w katalogu domowym.", canAllow=False)
+        decision = build_decisions(events.state())[0]
+        self.assertNotIn("ffmpeg", decision["happened"])
+        self.assertTrue(decision["happened"].endswith("prosi o uruchomienie polecenia poza piaskownicą"))
+        self.assertEqual(decision["technical"]["command"], long_command)
+        self.assertIn("\nPowód kroku: Nagrania leżą w katalogu domowym.", decision["why"])

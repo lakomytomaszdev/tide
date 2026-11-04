@@ -153,7 +153,10 @@ ColumnLayout {
 
     spacing: 12
 
-    Text {
+    TextEdit {
+        readOnly: true
+        selectByMouse: true
+        selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
         objectName: "decisionHappened"
         Layout.fillWidth: true
         text: form.decision ? form.decision.happened : ""
@@ -164,7 +167,10 @@ ColumnLayout {
         font.weight: Font.DemiBold
         wrapMode: Text.Wrap
     }
-    Text {
+    TextEdit {
+        readOnly: true
+        selectByMouse: true
+        selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
         objectName: "decisionWhy"
         Layout.fillWidth: true
         text: form.decision ? form.decision.why : ""
@@ -183,10 +189,13 @@ ColumnLayout {
         color: Tide.Tokens.backgroundView
         border.width: 1
         border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
-        Text {
+        TextEdit {
             id: commandText
+            readOnly: true
+            selectByMouse: true
+            selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
             anchors.left: parent.left
-            anchors.right: parent.right
+            anchors.right: commandCopy.left
             anchors.verticalCenter: parent.verticalCenter
             anchors.margins: 12
             text: form.decision && form.decision.technical ? Decision.text(form.decision.technical.command) : ""
@@ -195,6 +204,36 @@ ColumnLayout {
             font.family: Tide.Theme.monoFamily
             font.pointSize: Tide.Tokens.fontSizePt * 0.95
             wrapMode: Text.WrapAnywhere
+        }
+        Text {
+            id: commandCopy
+            property bool copied: false
+            objectName: "decisionCommandCopy"
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.rightMargin: 12
+            anchors.topMargin: 9
+            text: copied ? "Skopiowano" : "Kopiuj"
+            textFormat: Text.PlainText
+            color: Tide.Tokens.sky
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: Tide.Tokens.fontSizePt
+            Accessible.role: Accessible.Button
+            Accessible.name: "Kopiuj polecenie"
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    clipboardHelper.text = commandText.text
+                    clipboardHelper.selectAll()
+                    clipboardHelper.copy()
+                    commandCopy.copied = true
+                }
+            }
+        }
+        Connections {
+            target: form
+            function onDecisionIdChanged() { commandCopy.copied = false }
         }
     }
 
@@ -217,8 +256,11 @@ ColumnLayout {
             color: Tide.Tokens.backgroundView
             border.width: 1
             border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
-            Text {
+            TextEdit {
                 id: copyText
+                readOnly: true
+                selectByMouse: true
+                selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
                 anchors.left: parent.left
                 anchors.right: copyButton.left
                 anchors.verticalCenter: parent.verticalCenter
