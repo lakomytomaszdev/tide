@@ -2382,6 +2382,111 @@ zapisuje pakiety (`dpkg-query -W`), łącza (`ip -o link`: nazwa i typ), `nft li
 `getent group`, `/etc/subuid` i `/etc/subgid`, istnienie pliku puli i katalogów Incusa oraz jednostki `incus*`,
 `lxcfs*`, `tide-box*`. Migawka przed `make box-install` i po `make box-uninstall` musi być identyczna.
 
+### Budowa pudełka (PT-167)
+
+Moduły: `box/incus.py` (cienki adapter CLI), `box/builder.py` (budowa, kopia per karta, status, reset,
+usunięcie, zatwierdzenie), `box/state.py` (dziennik, stany, `BoxStatus`, `card_box_name`), `box/settings.py`,
+`box/cli.py`; punkt wejścia `python3 daemon/tide.py box …` (instalacja do PATH — z obrazem bazowym, #16).
+
+**Adapter.** Każde polecenie `incus` dostaje `--project <projekt>` (domyślnie `user-<uid>`, projekt ograniczony
+z instalacji) i stdin z `/dev/null`. Program: `$TIDE_INCUS_BIN` albo `incus` z PATH. Instancję szukamy po
+dokładnej nazwie w `incus list --format json` (filtr `incus list <nazwa>` dopasowuje przedrostki — błąd z P-5).
+
+**Ustawienia** — ta sama sekcja `box` w `$XDG_CONFIG_HOME/tide/cardflow.json` i ten sam moduł `box/settings.py`
+(`BoxSettings`) co proxy (niżej, „Proxy wyjściowe”); klucze buildera, wszystkie opcjonalne: `project`
+(`user-<uid>`), `base-image` (`tide-base`), `pool` (`tide`), `nic` (`eth0`), `ipv6-filtering` (`false`),
+`agents-version`, `ip-wait-seconds` (30), `agent-uid`/`agent-gid` (1000 — właściciel wolumenu `/home/agent`;
+ostateczną wartość ustala obraz bazowy #16). Zła wartość → ostrzeżenie na stderr `tide box` i wartość domyślna.
+Adresu proxy w ustawieniach nie ma: builder bierze adres i port z **uruchomionego proxy** (`box.proxy.running()`:
+nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źródło dla proxy i budowy.
+
+**Kolejność budowy** (`tide box build <slug>`, profil projektu z Tablicy):
+
+1. `incus init <base> <slug>` — kopia obrazu bazowego (to `launch` bez startu: karta sieciowa dostaje filtrowanie,
+   zanim wyśle pierwszy pakiet) z `-c limits.cpu=… -c limits.memory=… -c limits.memory.swap=false` z profilu
+   (domyślnie 8 / 24GiB) i `security.nesting=true` tylko przy `docker.enabled`. **Nigdy `security.privileged`.**
+   `incus config device override <slug> root size=<resources.disk>` (domyślnie 60GB); wolumen `<slug>-home`
+   w puli jako urządzenie dyskowe na `/home/agent`, tworzony z `initial.uid=<agent-uid> initial.gid=<agent-gid>
+   initial.mode=0750` — pusty wolumen w pudełku nieuprzywilejowanym byłby `root:root` i agent nie mógłby w nim
+   pisać (istniejący wolumen nie jest zmieniany; `chown` istniejących danych to sprawa #16).
+2. Filtrowanie NIC (niżej).
+3. `incus start`, adres IPv4 pudełka, `set_box_policy(ip, build_domains(profile), host-ollama, dziennik odmów
+   budowy)` w proxy Tide (#5) — przed pierwszym `incus exec`. Dziennik odmów:
+   `$XDG_STATE_HOME/tide/box/<slug>/build-denied.log`.
+4. Szablony stosów wg `stacks`: `incus file push box/stacks/<stos>.sh <slug>/opt/tide/stacks/<stos>.sh`
+   i `bash /opt/tide/stacks/<stos>.sh` (skrypty powstają w #29; brak skryptu = błąd przed `incus`).
+5. `apt-get update` i `apt-get install -y --no-install-recommends` z pakietami szablonów i profilu
+   (`templates.build_apt`). 6. Polecenia `setup` (`bash -c`). 7. `docker pull` obrazów (`templates.build_images`),
+   tylko przy `docker.enabled`. 8. `verify` — nieudane polecenie nie przerywa budowy: zdarzenie `box.verify`
+   z `result: fail` i listą `failed`, stan „zbudowane z ostrzeżeniem” (`clean` z `warning`).
+9. Klucz `user.tide.recipe` = odcisk `profile.recipe_stamp(profile, templates_version, agents-version)`
+   (JSON: hash i skróty kluczy do `diff`), potem `incus snapshot create <slug> clean --reuse`. Migawka niesie
+   klucz w swojej konfiguracji, więc każda kopia z `<slug>/clean` ma ten sam odcisk. (Incus 6.0 nie ustawia
+   opisu migawki przy `snapshot create`, dlatego „opis” to klucz `user.*` konfiguracji migawki.)
+   `templates_version` to skrót wszystkich `box/stacks/*.yaml` i `*.sh`.
+
+Każde `incus exec` budowy: `-T`, jako root pudełka, z `HTTPS_PROXY`/`HTTP_PROXY` (i małymi literami)
+`http://<adres mostka>:<box.proxy-port>` z uruchomionego proxy, `NO_PROXY=localhost,127.0.0.1,::1`,
+`DEBIAN_FRONTEND=noninteractive`, `TIDE_NODE_VERSION`/`TIDE_DOTNET_SDK` z profilu. **Brak uruchomionego proxy
+(albo jego adresu) to błąd przed pierwszym poleceniem `incus`** (polityka `ProxyMissing`) — budowy „bez proxy”
+nie ma. Proxy biegnie w usłudze, więc `tide box build` uruchomione jako osobny proces dziś zawsze odmawia;
+pierwszą prawdziwą budowę (przez usługę) robi #29. Po migawce (i przy błędzie) builder zdejmuje politykę budowy
+(`clear_box_policy`), więc pudełko po budowie nie ma w proxy żadnej polityki do czasu kroku (#18).
+Wyjście poleceń trafia na bieżąco (strumieniowo) do `$XDG_STATE_HOME/tide/box/<slug>/build.log`.
+`type: vm` → błąd „nieobsługiwane w tej wersji” bez żadnego wywołania `incus`. Istniejące pudełko jest przy
+budowie usuwane i tworzone od nowa (wolumen `/home/agent` zostaje); budowa odmawia, gdy w pudełku biegną kroki.
+
+**Filtrowanie NIC — dlaczego.** Proxy Tide (#5) rozpoznaje pudełko po adresie IP, a agent w grupie `docker`
+ma w pudełku prawa roota i mógłby zmienić adres IP albo MAC, żeby dostać politykę innego pudełka. Na karcie
+pudełka builder ustawia `security.mac_filtering=true`, `security.ipv4_filtering=true` i
+`security.ipv6_filtering=<ipv6-filtering>` — Incus odrzuca pakiety ze źródłowym adresem innym niż przydzielony
+(P-5: podszycie nie dochodzi do hosta). `ipv6_filtering` domyślnie `false` (decyzja `filtrowanie-nic-bez-ipv6`:
+Incus 6.0 nie startuje karty z nim bez `br_netfilter`, a mostek nie ma IPv6). Karta z profilu `default` dostaje
+`config device override`, karta lokalna (kopia per karta) — `config device set`. Dzieje się to na każdej ścieżce
+tworzącej pudełko: przy budowie i przy kopii. `tide box status` pokazuje „filtrowanie NIC: tak/nie” z
+`incus config device show`; „nie” (brak `mac`/`ipv4`) = stan **niezgodne** i `BoxStatus.usable == False` — krok
+nie startuje (#18).
+
+**Kopia per karta** (`box: per-card`): `copy_for_card(slug, card)` → `incus copy <slug>/clean <slug>-<karta>`
+(nazwa wyłącznie z `card_box_name(slug, card)`, np. `plasma-tide-k-38`), `user.tide.copy-of=<slug>`,
+`user.tide.card=K-38`, własny wolumen `<kopia>-home` na `/home/agent` (z tym samym właścicielem `initial.*`),
+filtrowanie NIC (`device set`), **własna migawka `clean`** kopii (`incus copy` z migawki daje instancję bez
+migawek; migawka po podpięciu wolumenu i filtrowania, więc `reset --card` ich nie cofa) i zdarzenie `box.ready`
+z `card`, `copy_of`, `hash` i `warning` przeniesionym z pudełka projektu (zbudowane z ostrzeżeniem → kopia też).
+Druga kopia dla tej samej karty nie powstaje (zwraca istniejącą nazwę).
+Kopia startuje dopiero z pierwszym krokiem (#18/#19).
+
+**Dziennik i stany.** `<Tablica>/projects/<slug>/box/journal.jsonl` (JSON Lines, `flock`): `box.build`
+(`phase: start|end`, `result`, `steps`, `hash`), `box.ready`, `box.verify` (`result`, `failed`), `box.reset`,
+`box.stop` (#19), `box.approved` (`source: cli`, `accepted_red`), `box.use`/`box.release` (krok w pudełku — woła
+#18 przez `mark_in_use`/`mark_released`) i `box.destroy`. `box.build` (koniec), `box.ready`, `box.reset`,
+`box.verify` mają `duration` w sekundach. Stany: `brak → budowa → clean → w użyciu → nieaktualny → reset →
+zatrzymane`, plus `niezgodne` i `błąd budowy`. Stan z dziennika jest korygowany przez Incusa: brak instancji →
+`brak`, brak filtrowania → `niezgodne`, hash migawki różny od profilu → `nieaktualny (do przebudowy)` z listą
+kluczy z `profile.diff` (np. `stacks, apt`; zmiana zasobów albo domen nie jest różnicą przepisu), zatrzymana
+instancja → `zatrzymane`. `BoxStatus.usable` (czy krok może wejść, #18) wymaga istniejącej instancji,
+filtrowania NIC, **zatwierdzonego profilu** (brak profilu = nieużywalne) i braku różnic przepisu.
+
+**CLI** `python3 daemon/tide.py box …` (kody: 0 sukces, 1 błąd, 2 zły argument, 3 odmowa/niezgodne/nieaktualne):
+
+| Polecenie | Działanie |
+| --- | --- |
+| `build <slug>` | budowa jak wyżej |
+| `status <slug> [--card K-38] [--json]` | stan, stan w dzienniku, hash migawki i profilu, różnice, filtrowanie NIC, kroki w pudełku |
+| `reset <slug> [--card K-38]` | `incus snapshot restore <pudełko> clean` (kopia karty ma własną migawkę `clean`); odmawia (kod 3), gdy według dziennika biegnie krok; `/home/agent` to osobny wolumen — reset go nie dotyka |
+| `destroy <slug> --yes` | usuwa pudełko i wszystkie kopie per karta (`user.tide.copy-of`) z ich wolumenami `/home/agent`; odmawia, gdy biegnie krok |
+| `approve <slug> --file box.yaml [--accept-red POZYCJA]…` | walidacja schematem z #2, zapis w Tablicy i `box.approved source=cli` — jawna zgoda z wiersza poleceń, równoważna pakietowi zgód; pozycja czerwona (np. `github.com`) tylko z `--accept-red` |
+| `base`, `login` | „niedostępne do #16” (obraz bazowy) |
+
+`stop`/`start` doda #19, `run` — #28.
+
+**Testy bez Incusa.** `daemon/tests/fakebin.py` ma atrapę `incus` (`daemon/tests/fake_incus.py`): zapisuje argv
+w `$TIDE_FAKE_LOG`, trzyma stan w `$TIDE_FAKE_INCUS_STATE` (`list`, `snapshot list`, `config show`,
+`config device show`, `info` wypisują z niego JSON; `init/launch/copy/snapshot/restore/start/stop/delete/config
+set/config device set|override|add` i wolumeny go zmieniają), a `exec` wykonuje polecenie lokalnie (w `--cwd`)
+z PATH zaczynającym się od `<fakebin>/box` — `apt-get`, `docker` i inne programy „w pudełku” tylko zapisują
+wywołanie. `daemon/tests/__init__.py` ustawia `TIDE_INCUS_BIN` na nieistniejący program, więc żaden test nie
+dosięgnie prawdziwego Incusa. Testy: `daemon/tests/test_box_builder.py`.
 ### Proxy wyjściowe (PT-168)
 
 `tide_daemon/box/proxy.py` to jedyna droga pudełka do sieci i do Ollamy hosta: nftables wpuszczają z `incusbr0`
