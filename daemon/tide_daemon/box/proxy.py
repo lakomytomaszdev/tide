@@ -6,8 +6,10 @@ wolno tylko do tego proxy na `<adres mostka>:<box.proxy-port>`. Proxy obsługuje
 - `CONNECT host:443` — tunel TCP bez MITM (proxy nie widzi treści TLS i niczego z niej nie zapisuje) do nazwy
   z polityki pudełka; dopasowanie dokładne albo `*.domena` (tylko poddomeny). Nazwę rozwiązuje proxy, a połączenie
   idzie na adres, który właśnie sprawdziło (bez drugiego rozwiązywania). Adres pętli zwrotnej, link-local,
-  nieokreślony i multicast są zawsze odrzucane; adres prywatny tylko dla nazwy, którą profil uznał za wewnętrzną
-  (pozycja czerwona przyjęta jawnie w profilu karty). Goły adres IP przechodzi tylko, gdy jest na liście dosłownie.
+  nieokreślony i multicast są zawsze odrzucane; adres prywatny tylko dla celu, który jest na liście pudełka i który
+  profil uznał za wewnętrzny (pozycja czerwona przyjęta jawnie w profilu karty). Goły adres IP przechodzi tylko, gdy
+  jest na liście dosłownie. Pełna sieć (`network.full` z jawną zgodą) otwiera tylko adresy publiczne — sieć
+  lokalna i adres hosta na mostku nadal wymagają osobnej pozycji czerwonej na liście.
 - zwykłe HTTP w formie względnej (`GET /api/tags`) albo bezwzględnej na adres samego proxy — przekazywane wyłącznie
   na `127.0.0.1:11434` (Ollama hosta), tylko dla pudełka z `ollama=True` i tylko ścieżki `/`, `/api/…`, `/v1/…`;
   odpowiedź płynie do pudełka bajt w bajt, bez buforowania (strumieniowanie Ollamy).
@@ -24,8 +26,9 @@ bieżącego kroku karty, przy budowie — ścieżka od buildera):
 
     czas<TAB>pudełko<TAB>adres IP<TAB>domena<TAB>port<TAB>rodzaj
 
-`rodzaj`: `CONNECT`, `HTTP` (zwykłe HTTP do obcej domeny) albo `OLLAMA` (domena `host-ollama`: pudełko bez
-`ollama=True`). Nigdy ścieżka, parametry, nagłówki ani treść — tylko nazwa hosta z celu żądania.
+`rodzaj`: `CONNECT` (cel spoza listy), `ADDRESS` (nazwa z listy, ale rozwiązana na adres niedozwolony — pętla,
+sieć lokalna dla celu publicznego), `HTTP` (zwykłe HTTP do obcej domeny) albo `OLLAMA` (domena `host-ollama`:
+pudełko bez `ollama=True`). Nigdy ścieżka, parametry, nagłówki ani treść — tylko nazwa hosta z celu żądania.
 
 Usługa nie woła `nft` ani `sudo`. Opis: docs/tide-daemon.md (Pudełko → Proxy wyjściowe).
 """
@@ -156,7 +159,8 @@ def address_allowed(address: str, internal: bool) -> bool:
     """Czy wolno połączyć się z adresem rozwiązanym dla nazwy z listy.
 
     Pętla zwrotna, link-local, nieokreślony, multicast i zarezerwowane — nigdy (to host i jego usługi). Prywatne
-    i 100.64/10 — tylko gdy cel jest wewnętrzny według profilu (`internal`), czyli przyjęty jawnie w profilu karty;
+    i 100.64/10 — tylko gdy cel jest na liście i wewnętrzny według profilu (`internal`, `BoxPolicy.internal`),
+    czyli przyjęty jawnie w profilu karty;
     nazwa publiczna, która nagle wskazuje do sieci lokalnej, nie przechodzi."""
     ip = _ip(address)
     if ip is None:
@@ -183,6 +187,12 @@ class BoxPolicy:
         if self.full:
             return normalize_target(host) is not None
         return self.matcher.allows(host)
+
+    def internal(self, host: str) -> bool:
+        """Czy cel może prowadzić do adresu prywatnego: tylko gdy jest na liście pudełka (przyjęty w profilu)
+        i profil uznaje go za wewnętrzny. Pełna sieć (`full`) nie otwiera sieci lokalnej — cel spoza listy
+        jest zawsze publiczny, więc adres prywatny/100.64/10 (także adres hosta na mostku) daje odmowę."""
+        return self.matcher.allows(host) and bool(box_profile.internal_hosts([host]))
 
 
 @dataclass(frozen=True)
@@ -268,7 +278,9 @@ def bridge_address(bridge: str = "incusbr0", run=subprocess.run, log=None) -> st
 
     Najpierw `incus network get <mostek> ipv4.address`. Z projektu ograniczonego (`incus-user`) to polecenie bywa
     niedostępne (próba ręczna PT-168), więc zapasem jest adres interfejsu w jądrze: `ip -j -4 addr show dev
-    <mostek>` — to ten sam adres, który nftables z PT-166 wpuszczają jako cel z mostka."""
+    <mostek>` — to ten sam adres, który nftables z PT-166 wpuszczają jako cel z mostka. Zapas przyjmuje tylko
+    interfejs, który jądro zna jako mostek (`ip -j -d link show`: `linkinfo.info_kind == "bridge"`), więc
+    `box.bridge: wlan0` albo `eth0` nie przeniesie nasłuchu na adres sieci lokalnej."""
     out, why = _run(run, ["incus", "network", "get", bridge, "ipv4.address"])
     if out is not None:
         try:
@@ -277,6 +289,14 @@ def bridge_address(bridge: str = "incusbr0", run=subprocess.run, log=None) -> st
             why = f"nieczytelny adres {_clean(out.strip(), 60)!r}"
     if log is not None:
         log(f"incus network get {bridge} ipv4.address: {why} — czytam adres interfejsu")
+    exists, kind = _link_kind(bridge, run)
+    if not exists:
+        if log is not None:
+            log(f"ip link show dev {bridge}: brak interfejsu")
+        return None
+    if kind != "bridge":
+        raise ProxyError(f"interfejs {bridge} nie jest mostkiem ({kind or 'zwykła karta sieciowa'}) — "
+                         "proxy słucha tylko na mostku Incusa")
     out, why = _run(run, ["ip", "-j", "-4", "addr", "show", "dev", bridge])
     if out is None:
         if log is not None:
@@ -292,6 +312,22 @@ def bridge_address(bridge: str = "incusbr0", run=subprocess.run, log=None) -> st
     except (ValueError, AttributeError, TypeError):
         pass
     return None
+
+
+def _link_kind(name: str, run) -> tuple[bool, str | None]:
+    """(czy interfejs istnieje, rodzaj z `ip -j -d link show dev <nazwa>`: `bridge`, `veth`…; `None` — zwykła
+    karta albo nieczytelna odpowiedź)."""
+    out, _why = _run(run, ["ip", "-j", "-d", "link", "show", "dev", name])
+    if out is None:
+        return False, None
+    try:
+        for link in json.loads(out or "[]"):
+            if link.get("ifname") == name:
+                kind = (link.get("linkinfo") or {}).get("info_kind")
+                return True, (str(kind) if kind else None)
+    except (ValueError, AttributeError, TypeError):
+        return True, None
+    return False, None
 
 
 def check_listen(listen: str, bridge: str | None) -> str:
@@ -411,6 +447,9 @@ class ProxyService:
         return self
 
     def stop(self, timeout: float = 5.0) -> None:
+        global _running
+        if _running is self:
+            _running = None
         loop = self._loop
         if loop is None or self._thread is None or loop.is_closed():
             return
@@ -481,6 +520,8 @@ class ProxyService:
                 self.log(f"{policy.box or client}: nie da się zapisać dziennika odmów ({type(exc).__name__})")
         if kind == "OLLAMA":
             text = "Tide proxy: Ollama hosta niedostępna dla tego pudełka (host-ollama)\n"
+        elif kind == "ADDRESS":
+            text = f"Tide proxy: {shown}:{port} wskazuje adres niedozwolony (host albo sieć lokalna)\n"
         else:
             text = f"Tide proxy: {shown}:{port} spoza listy domen pudełka\n"
         await self._reply(writer, 403, "Forbidden", text)
@@ -499,11 +540,12 @@ class ProxyService:
         name = normalize_target(host)
         if policy is None or name is None or port not in CONNECT_PORTS or not policy.allows(name):
             return await self._deny(writer, client, policy, host, port, "CONNECT")
-        internal = bool(box_profile.internal_hosts([name]))
         try:
-            up_reader, up_writer = await self.connector(name, port, internal)
+            up_reader, up_writer = await self.connector(name, port, policy.internal(name))
         except Refused:
-            return await self._deny(writer, client, policy, host, port, "CONNECT")
+            # Nazwa jest na liście, ale wskazuje adres niedozwolony — osobny rodzaj, żeby nikt nie dopisywał
+            # domeny, która już jest na liście.
+            return await self._deny(writer, client, policy, host, port, "ADDRESS")
         except (OSError, asyncio.TimeoutError) as exc:
             return await self._reply(writer, 502, "Bad Gateway", f"Tide proxy: {name}:{port}: {type(exc).__name__}\n")
         self._open.add(up_writer)
@@ -538,6 +580,9 @@ class ProxyService:
             request = [f"{method} {path} HTTP/1.1", *kept, f"Host: {host}:{port}", "Connection: close"]
             up_writer.write(("\r\n".join(request) + "\r\n\r\n").encode("latin-1"))
             await up_writer.drain()
+            # Reszta strumienia klienta idzie surowo (także potokowane kolejne żądanie, bez sprawdzenia ścieżki).
+            # Dziś nieszkodliwe: cel to zawsze tylko Ollama z `Connection: close`. Trasy z wstrzykiwaniem tokenu
+            # (PT-175) muszą kopiować treść według `Content-Length`/`chunked`, nie „do końca strumienia”.
             upload = asyncio.ensure_future(self._copy(reader, up_writer, close=False))
             await self._copy(up_reader, writer, close=False)   # odpowiedź bez buforowania, do końca strumienia
         finally:

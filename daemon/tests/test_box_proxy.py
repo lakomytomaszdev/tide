@@ -140,10 +140,14 @@ class ProxyCase(unittest.TestCase):
         self.addCleanup(self.ollama.close)
         self.connected = []
         self.logs = []
+        # Atrapa DNS: nazwa → adres. Goły adres IP „rozwiązuje się” na siebie. Adres sprawdzany jak w prawdziwym
+        # łączniku (`address_allowed`), połączenie zawsze idzie do lokalnego serwera echa.
+        self.resolved = {"refused.example.org": "127.0.0.1"}
 
         async def connector(host, port, internal):
             self.connected.append((host, port, internal))
-            if host == "refused.example.org":
+            address = self.resolved.get(host, host if bx._ip(host) is not None else None)
+            if address is not None and not bx.address_allowed(address, internal):
                 raise bx.Refused(host)
             return await asyncio.open_connection("127.0.0.1", self.echo.port)
 
@@ -215,12 +219,22 @@ class ConnectTests(ProxyCase):
         self.assertNotIn("/pkg", text)
         self.assertNotIn("SEKRET", reply.decode("latin-1"))
 
-    def test_resolved_address_refused_is_403(self):
+    def test_resolved_address_refused_is_403_with_own_kind(self):
         self.policy(domains=("refused.example.org",))
-        self.assertTrue(self.connect("refused.example.org:443").startswith(b"HTTP/1.1 403"))
-        self.assertEqual(self.denied_lines()[0][3], "refused.example.org")
+        reply = self.connect("refused.example.org:443")
+        self.assertTrue(reply.startswith(b"HTTP/1.1 403"), reply)
+        self.assertNotIn(b"spoza listy", reply)
+        self.assertIn(b"adres niedozwolony", reply)
+        self.assertEqual(self.denied_lines()[0][3:], ["refused.example.org", "443", "ADDRESS"])
+
+    def test_public_name_on_list_pointing_to_lan_is_refused(self):
+        self.resolved["cdn.example.net"] = "10.20.3.10"
+        self.policy(domains=("cdn.example.net",))
+        self.assertTrue(self.connect("cdn.example.net:443").startswith(b"HTTP/1.1 403"))
+        self.assertEqual(self.connected, [("cdn.example.net", 443, False)])
 
     def test_internal_name_accepted_in_card_may_reach_private_address(self):
+        self.resolved["git.firma.example"] = "10.20.3.20"
         self.policy(domains=("git.firma.example",))
         self.assertTrue(self.connect("git.firma.example:443").startswith(b"HTTP/1.1 200"))
         self.assertEqual(self.connected, [("git.firma.example", 443, True)])
@@ -298,6 +312,32 @@ class MatchingTests(ProxyCase):
         self.policy(domains=(), full=True)
         self.assertTrue(self.connect("anything.example.com:443").startswith(b"HTTP/1.1 200"))
         self.assertTrue(self.connect("3232235786:443").startswith(b"HTTP/1.1 403"))
+
+    def test_full_network_does_not_open_lan_or_host_bridge_address(self):
+        # M-1: `network.full` to osobna czerwona pozycja od adresów wewnętrznych.
+        self.resolved.update({"x.lan": "10.20.3.10", "nas.example.org": "10.0.0.9"})
+        self.policy(domains=("registry.npmjs.org",), full=True)
+        for target in ("10.0.0.5:443", "10.173.184.1:443", "10.20.3.10:443", "100.64.0.1:443", "[fd00::1]:443",
+                       "x.lan:443", "nas.example.org:443", "127.0.0.1:443"):
+            with self.subTest(target=target):
+                self.assertTrue(self.connect(target).startswith(b"HTTP/1.1 403"))
+        self.assertTrue(all(internal is False for _h, _p, internal in self.connected), self.connected)
+        self.assertTrue(all(line[5] == "ADDRESS" for line in self.denied_lines()))
+        self.assertTrue(self.connect("104.16.0.35:443").startswith(b"HTTP/1.1 200"))   # publiczny goły IP
+
+    def test_full_network_with_listed_internal_address(self):
+        self.policy(domains=("10.20.3.10",), full=True)
+        self.assertTrue(self.connect("10.20.3.10:443").startswith(b"HTTP/1.1 200"))
+        self.assertEqual(self.connected, [("10.20.3.10", 443, True)])
+        self.assertTrue(self.connect("192.168.3.11:443").startswith(b"HTTP/1.1 403"))
+
+    def test_policy_internal_needs_listed_target(self):
+        policy = self.policy(domains=("git.firma.example", "10.20.3.10"), full=True)
+        self.assertTrue(policy.internal("git.firma.example"))
+        self.assertTrue(policy.internal("10.20.3.10"))
+        for host in ("firma.example", "10.0.0.5", "nas.lan", "registry.npmjs.org"):
+            with self.subTest(host=host):
+                self.assertFalse(policy.internal(host))
 
 
 class PolicyRefreshTests(ProxyCase):
@@ -467,9 +507,13 @@ fi
 echo "Error: Network not found" >&2; exit 1
 """
 
-# Atrapa `ip` (zapas, gdy incus-user nie widzi sieci): JSON z $TIDE_FAKE_IP_JSON albo „Device does not exist”.
+# Atrapa `ip` (zapas, gdy incus-user nie widzi sieci): adres z $TIDE_FAKE_IP_JSON, rodzaj interfejsu
+# z $TIDE_FAKE_LINK_JSON; bez nich „Device does not exist”.
 FAKE_IP = """#!/bin/bash
 echo "ip $*" >> "$TIDE_FAKE_LOG"
+if [[ "$*" == "-j -d link show dev incusbr0" && -n "$TIDE_FAKE_LINK_JSON" ]]; then
+    echo "$TIDE_FAKE_LINK_JSON"; exit 0
+fi
 if [[ "$*" == "-j -4 addr show dev incusbr0" && -n "$TIDE_FAKE_IP_JSON" ]]; then
     echo "$TIDE_FAKE_IP_JSON"; exit 0
 fi
@@ -480,6 +524,13 @@ echo 'Device "incusbr0" does not exist.' >&2; exit 1
 def ip_json(address):
     return json.dumps([{"ifname": "incusbr0", "addr_info": [
         {"family": "inet", "local": address, "prefixlen": 24, "scope": "global"}]}])
+
+
+def link_json(kind="bridge"):
+    link = {"ifname": "incusbr0", "link_type": "ether"}
+    if kind:
+        link["linkinfo"] = {"info_kind": kind}
+    return json.dumps([link])
 
 
 class FakeService:
@@ -511,9 +562,10 @@ class StartTests(unittest.TestCase):
         self.logs = []
         FakeService.started = []
 
-    def start(self, bridge, settings=None, ip=None, **kw):
+    def start(self, bridge, settings=None, ip=None, kind="bridge", **kw):
         env = {"PATH": self.bin + os.pathsep + "/usr/bin:/bin", "TIDE_FAKE_LOG": self.calls,
-               "TIDE_FAKE_BRIDGE": bridge or "", "TIDE_FAKE_IP_JSON": ip_json(ip) if ip else ""}
+               "TIDE_FAKE_BRIDGE": bridge or "", "TIDE_FAKE_IP_JSON": ip_json(ip) if ip else "",
+               "TIDE_FAKE_LINK_JSON": link_json(kind) if ip else ""}
         settings = settings or bs.BoxSettings(enabled=True)
         return bx.start_service(settings, run=partial(subprocess.run, env=env),
                                 which=lambda name: shutil.which(name, path=self.bin), log=self.logs.append,
@@ -538,8 +590,18 @@ class StartTests(unittest.TestCase):
         self.assertEqual(FakeService.started, [("10.173.184.1", bs.DEFAULT_PORT)])
         self.assertIsInstance(service, FakeService)
         self.assertEqual(self.incus_calls(), ["incus network get incusbr0 ipv4.address",
+                                              "ip -j -d link show dev incusbr0",
                                               "ip -j -4 addr show dev incusbr0"])
         self.assertTrue(any("Network not found" in line for line in self.logs))
+
+    def test_fallback_refuses_interface_that_is_not_a_bridge(self):
+        # M-2: `box.bridge: wlan0` nie może przenieść nasłuchu na adres sieci lokalnej.
+        for kind in (None, "veth", "vlan"):
+            with self.subTest(kind=kind), self.assertRaises(bx.ProxyError) as ctx:
+                self.start(None, ip="10.20.3.5", kind=kind)
+            self.assertIn("nie jest mostkiem", str(ctx.exception))
+        self.assertEqual(FakeService.started, [])
+        self.assertNotIn("ip -j -4 addr show dev incusbr0", self.incus_calls())
 
     def test_fallback_address_is_checked_too(self):
         with self.assertRaises(bx.ProxyError):
@@ -597,7 +659,10 @@ class StartTests(unittest.TestCase):
     def test_real_service_binds_and_stops(self):
         service = bx.ProxyService("127.0.0.1", 0, log=self.logs.append).start()
         self.assertGreater(service.port, 0)
+        bx._running = service
+        self.addCleanup(setattr, bx, "_running", None)
         service.stop()
+        self.assertIsNone(bx.running())   # zatrzymane proxy nie jest już „uruchomionym”
         with self.assertRaises(OSError):
             socket.create_connection(("127.0.0.1", service.port), timeout=1).close()
 
