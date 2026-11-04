@@ -421,8 +421,11 @@ class StepDecisionTest(FlowInProcess):
     def test_change_executor_is_kept_for_review_fixes(self):
         card_id = self.card(description="Test.\n\nATRAPA: blad-zmien\nATRAPA: review-requests 1")
         self.assertTrue(self.start(card_id)["ok"])
+        # „Czeka” może być przejściowe między drugim błędem a startem opiekuna. Decyzję oddaje jego eskalacja.
+        self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=30), self.events(card_id))
         self.wait_column(card_id, "waiting")
-        self.assertTrue(self.decide(card_id, choice="change-executor", executor="Haiku")["ok"])
+        reply = self.decide(card_id, choice="change-executor", executor="Haiku")
+        self.assertTrue(reply["ok"], reply)
         self.wait_column(card_id, "review")
         steps = self.of(card_id, "step.started")
         self.assertEqual([(s["kind"], s["executor"]) for s in steps],
