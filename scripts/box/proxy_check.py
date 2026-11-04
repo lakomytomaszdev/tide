@@ -17,6 +17,7 @@ być zatrzymana albo bez tego ustawienia), Ollamy na `127.0.0.1:11434`.
 """
 import argparse
 import datetime as dt
+import json
 import os
 import subprocess
 import sys
@@ -26,6 +27,29 @@ sys.path.insert(0, os.path.join(REPO, "daemon"))
 
 from tide_daemon.box import proxy as bx  # noqa: E402
 from tide_daemon.box import settings as bs  # noqa: E402
+
+
+def trials(service, args, box_ip, denied, say, sh) -> dict:
+    bridge = service.listen
+    composed = bx.compose_policy(None, log=say)
+    service.set_box_policy(box_ip, composed.domains, True, denied, box=args.box)
+    say(f"polityka {box_ip}: {len(composed.domains)} domen, ollama=True, dziennik {os.path.relpath(denied, REPO)}")
+
+    proxy = f"http://{bridge}:{args.port}"
+    code = ["-sS", "-o", "/dev/null", "-w", "%{http_code}\\n", "--max-time", "30"]
+    results = {}
+    r = sh(["incus", "exec", args.box, "--", "curl", *code, "-x", proxy, "https://registry.npmjs.org/"])
+    results["npm"] = r.returncode == 0 and r.stdout.strip() == "200"
+    r = sh(["incus", "exec", args.box, "--", "curl", *code, "-x", proxy, "https://example.com"])
+    results["example"] = r.returncode != 0 and "403" in r.stdout + r.stderr
+    r = sh(["incus", "exec", args.box, "--", "curl", "-sS", "--noproxy", "*", "--max-time", "30",
+            f"http://{bridge}:{args.port}/api/tags"])
+    results["ollama-true"] = r.returncode == 0 and '"models"' in r.stdout
+    service.set_box_policy(box_ip, composed.domains, False, denied, box=args.box)
+    say("polityka odświeżona bez restartu: ollama=False")
+    r = sh(["incus", "exec", args.box, "--", "curl", *code, "--noproxy", "*", f"http://{bridge}:{args.port}/api/tags"])
+    results["ollama-false"] = r.stdout.strip() == "403"
+    return results
 
 
 def main(argv) -> int:
@@ -55,40 +79,33 @@ def main(argv) -> int:
         return done
 
     say(f"# próba PT-168 — {dt.datetime.now().astimezone().isoformat(timespec='seconds')} — kontener {args.box}")
-    state = sh(["incus", "list", args.box, "-c", "s4", "-f", "csv"])
-    fields = state.stdout.strip().split(",", 1)
-    if state.returncode != 0 or not fields[0] == "RUNNING":
+    # JSON, nie CSV: przy Dockerze w kontenerze kolumna adresów ma kilka wierszy (docker0 i eth0), a polityka
+    # proxy jest kluczowana adresem eth0 — tym, z którego kontener łączy się z mostkiem.
+    state = subprocess.run(["incus", "list", args.box, "-f", "json"], capture_output=True, text=True, timeout=60,
+                           stdin=subprocess.DEVNULL)
+    try:
+        info = next(i for i in json.loads(state.stdout or "[]") if i.get("name") == args.box)
+    except (ValueError, StopIteration):
+        info = {}
+    if state.returncode != 0 or info.get("status") != "Running":
         say(f"Kontener {args.box} nie działa — uruchom go (PT-178: scripts/box/prototype) i powtórz.")
         return 1
-    box_ip = fields[1].split(" ", 1)[0] if len(fields) > 1 else ""
+    eth0 = ((info.get("state") or {}).get("network") or {}).get("eth0") or {}
+    box_ip = next((a.get("address", "") for a in eth0.get("addresses") or []
+                   if a.get("family") == "inet" and a.get("scope") == "global"), "")
+    say(f"kontener {args.box}: adres eth0 {box_ip or 'brak'}")
     if not box_ip:
-        say("Kontener nie ma adresu IPv4.")
+        say("Kontener nie ma adresu IPv4 na eth0.")
         return 1
 
     service = bx.start_service(bs.BoxSettings(enabled=True, proxy_port=args.port), log=say)
     if service is None:
         say("Proxy nie wystartowało (brak incus albo mostka).")
         return 1
-    bridge = service.listen
-    composed = bx.compose_policy(None, log=say)
-    service.set_box_policy(box_ip, composed.domains, True, denied, box=args.box)
-    say(f"polityka {box_ip}: {len(composed.domains)} domen, ollama=True, dziennik {os.path.relpath(denied, REPO)}")
-
-    proxy = f"http://{bridge}:{args.port}"
-    code = ["-sS", "-o", "/dev/null", "-w", "%{http_code}\\n", "--max-time", "30"]
-    results = {}
-    r = sh(["incus", "exec", args.box, "--", "curl", *code, "-x", proxy, "https://registry.npmjs.org/"])
-    results["npm"] = r.returncode == 0 and r.stdout.strip() == "200"
-    r = sh(["incus", "exec", args.box, "--", "curl", *code, "-x", proxy, "https://example.com"])
-    results["example"] = r.returncode != 0 and "403" in r.stdout + r.stderr
-    r = sh(["incus", "exec", args.box, "--", "curl", "-sS", "--noproxy", "*", "--max-time", "30",
-            f"http://{bridge}:{args.port}/api/tags"])
-    results["ollama-true"] = r.returncode == 0 and '"models"' in r.stdout
-    service.set_box_policy(box_ip, composed.domains, False, denied, box=args.box)
-    say("polityka odświeżona bez restartu: ollama=False")
-    r = sh(["incus", "exec", args.box, "--", "curl", *code, "--noproxy", "*", f"http://{bridge}:{args.port}/api/tags"])
-    results["ollama-false"] = r.stdout.strip() == "403"
-    service.stop()
+    try:
+        results = trials(service, args, box_ip, denied, say, sh)
+    finally:
+        service.stop()
 
     say()
     say("dziennik odmów:")
