@@ -54,3 +54,11 @@ class OutsideRelativePythonPathTest(unittest.TestCase):
         self.assertEqual(outside_risky(command, ROOTS), "")
         self.assertIsNone(outside_argv("env PYTHONPATH=../../x python3 -m pytest", ROOTS))
         self.assertIsNone(outside_argv("env PYTHONPATH=core/src python3 -m pytest", ("", REPO)))
+
+
+class OutsideLengthTest(unittest.TestCase):
+    def test_long_list_of_test_modules_is_allowed(self):
+        # 04.11, K-37/PT-153: `python3 -m unittest -v <63 modułów>` miało 2318 znaków i Tide go odrzucał.
+        command = "python3 -m unittest -v " + " ".join(f"theme/m{i}/tests/test_generate.py" for i in range(70))
+        self.assertGreater(len(command), 2000)
+        self.assertTrue(outside_allowed(command, [], ROOTS))
