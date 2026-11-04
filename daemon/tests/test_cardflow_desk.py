@@ -18,6 +18,17 @@ class DeskItemsTest(unittest.TestCase):
         note = "### Do sprawdzenia na pulpicie:\n1. Otwórz okno\n   i sprawdź ramkę\n2. Drugi\n"
         self.assertEqual(handoff.desk_items(note), ["Otwórz okno i sprawdź ramkę", "Drugi"])
 
+    def test_paragraph_after_blank_line_is_not_glued_to_last_item(self):
+        note = "## Do sprawdzenia na pulpicie\n- Pierwszy\n\nUwaga: to nie pozycja.\n"
+        self.assertEqual(handoff.desk_items(note), ["Pierwszy"])
+        note = "## Do sprawdzenia na pulpicie\n- Pierwszy\n\n  dalszy ciąg wcięty\n"
+        self.assertEqual(handoff.desk_items(note), ["Pierwszy dalszy ciąg wcięty"])
+
+    def test_code_fence_inside_section_is_skipped(self):
+        note = ("## Do sprawdzenia na pulpicie\n- Uruchom:\n```\n# komentarz\n- nie pozycja\n```\n- Drugi\n"
+                "## Inne\n- poza\n")
+        self.assertEqual(handoff.desk_items(note), ["Uruchom:", "Drugi"])
+
     def test_same_item_twice_appears_once_with_both_steps(self):
         text = handoff.desk_section([("s1", "PT-1", ["Otwórz  okno"]), ("s2", "PT-2", ["otwórz okno", "Inne"])])
         self.assertEqual(text.count("Otwórz okno"), 1)

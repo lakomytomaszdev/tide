@@ -2278,7 +2278,8 @@ Po scaleniu albo odrzuceniu wszystkich ticketów i sprzątnięciu worktree scalo
 `close` zapisuje `summary.md`. Przy `check: manual` wymaga sekcji „Co przetestować ręcznie i jak”;
 przy `check: auto` pomija tę listę. **„Do sprawdzenia na pulpicie” (PT-183):** notka kroku (ticket, review,
 poprawki) może mieć nagłówek „Do sprawdzenia na pulpicie” z listą punktów (pozycje mogą zajmować kilka wierszy,
-pusta sekcja jest dozwolona). Przy `check: manual` usługa zbiera te punkty ze wszystkich kroków karty i dopisuje
+pusta sekcja jest dozwolona; kolejny akapit po pustym wierszu nie dokleja się do pozycji, a bloki ``` są pomijane;
+kroki odrzuconych ticketów są pomijane). Przy `check: manual` usługa zbiera te punkty ze wszystkich kroków karty i dopisuje
 do podsumowania w `card.closed` podsekcję „Do sprawdzenia na pulpicie (z notek kroków)”; każda pozycja ma odwołanie
 „(krok …, ticket …)”, a ta sama pozycja z kilku notek (bez względu na wielkość liter i odstępy) pojawia się raz,
 ze wszystkimi odwołaniami. Bez takich sekcji podsumowanie jest bez zmian. Mechanizm nie zależy od projektu ani

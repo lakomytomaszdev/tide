@@ -2851,10 +2851,11 @@ class FlowEngine(PlanEditing):
             return ""
 
     def _desk_items(self, card: str, st) -> list[tuple[str, str, list[str]]]:
-        """Pozycje „Do sprawdzenia na pulpicie” z notek wszystkich kroków karty, w kolejności kroków."""
+        """Pozycje „Do sprawdzenia na pulpicie” z notek wszystkich kroków karty, w kolejności kroków;
+        kroki odrzuconych ticketów są pomijane (ich zmian nie scalono)."""
         found = []
         for step in sorted(st.steps.values(), key=lambda s: int(s.get("seq") or 0)):
-            if step.get("kind") == "close":
+            if step.get("kind") == "close" or (step.get("ticket") or "") in st.rejected:
                 continue
             items = handoff.desk_items(self._note(card, step))
             if items:

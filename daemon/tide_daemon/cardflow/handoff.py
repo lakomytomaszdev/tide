@@ -20,10 +20,18 @@ _BULLET = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.*\S)\s*$")
 
 def desk_items(note: str) -> list[str]:
     """Pozycje sekcji „Do sprawdzenia na pulpicie” z notki kroku. Sekcja kończy się na następnym nagłówku;
-    pozycja może mieć kolejne wiersze (wcięte albo bez znacznika), pusta sekcja daje pustą listę."""
+    pozycja może mieć kolejne wiersze (wcięte albo bez pustego wiersza przed nimi); bloki ``` są pomijane,
+    pusta sekcja daje pustą listę."""
     items: list[str] = []
     inside = False
+    fenced = False
+    blank = False
     for line in (note or "").splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
         head = _HEADING.match(line)
         if head:
             inside = head.group(1).strip().strip("*_: ").casefold() == DESK_HEADING.casefold()
@@ -33,8 +41,13 @@ def desk_items(note: str) -> list[str]:
         bullet = _BULLET.match(line)
         if bullet:
             items.append(bullet.group(1).strip())
-        elif line.strip() and items:
-            items[-1] += " " + line.strip()
+            blank = False
+        elif not line.strip():
+            blank = True
+        else:
+            if items and (not blank or line[:1] in (" ", "\t")):
+                items[-1] += " " + line.strip()
+            blank = False
     return items
 
 

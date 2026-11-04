@@ -45,6 +45,14 @@ class CardClosingTest(FlowInProcess):
         self.assertIn("Do sprawdzenia na pulpicie", summary)
         self.assertRegex(summary, r"- Otwórz widżet na drugim monitorze \(krok [^,]+, ticket PT-\d+\)")
         self.assertRegex(summary, r"- Przeciągnij okno i sprawdź ramkę \(krok [^,]+, ticket PT-\d+\)")
+        # Notka kroku review: pozycja wspólna z ticketem ma oba kroki, własna tylko krok review.
+        self.assertEqual(summary.count("Otwórz widżet na drugim monitorze"), 1)
+        shared = next(line for line in summary.splitlines() if "Otwórz widżet" in line)
+        self.assertEqual(shared.count("krok "), 2, shared)
+        self.assertIn("review", shared.split(";")[1])
+        own = next(line for line in summary.splitlines() if "Sprawdź skróty klawiszowe" in line)
+        self.assertEqual(own.count("krok "), 1, own)
+        self.assertIn("review", own)
 
     def test_manual_close_without_desk_section_is_unchanged(self):
         card = self.card()
