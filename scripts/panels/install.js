@@ -51,6 +51,9 @@ var tideSpacerRight = tideAdd(tideBar, "org.kde.plasma.panelspacer", ["General"]
 tideWrite(tideKickoff, ["General"], {icon: P.icon});
 // Menu tylko dla okien z tego monitora — na lewym monitorze jest osobny pasek.
 tideWrite(tideMenu, ["Appearance"], {compactView: false, allScreens: false});
+// Ikony zasobnika rosną z wysokością paska: kafelki Tide (decyzja 95) mają wtedy jeden rozmiar
+// i nie giną obok obrazków aplikacji.
+tideWrite(tideTray, ["General"], {scaleIconsToFit: true});
 // Data obok godziny, jak na Macu: „pon 26 paź 17:03”.
 tideWrite(tideClock, ["Appearance"], {showDate: true, dateDisplayFormat: "BesideTime", dateFormat: "custom", customDateFormat: "ddd d MMM"});
 

@@ -84,16 +84,19 @@ def build_overlay(xdg: Xdg, base: str, out: Path, sources: list | None = None):
     resolver = base_resolver(xdg, base)
     apps = sources if sources is not None else visible_apps(xdg)
     palette = json.loads(PALETTE.read_text())
-    muted = glyphs.resolve(glyphs.load_config(), palette, resolver, cache_home())
+    config = glyphs.load_config()
+    muted = glyphs.resolve(config, palette, resolver, cache_home())
     result = plan(apps, resolver, base, muted)
-    manifest = build(result, resolver, palette, out)
+    manifest = build(result, resolver, palette, out, simple=glyphs.SimpleIcons(config, cache_home()),
+                     palette_tile=config["tile"], warn=lambda text: print(f"Uwaga: {text}", file=sys.stderr))
     return result, manifest
 
 
 def summary(manifest: dict) -> str:
     kinds = [entry["kind"] for entry in manifest["icons"].values()]
     return (f"stonowane glify: {kinds.count('muted')}, aliasy: {kinds.count('alias')}, "
-            f"kafelki: {kinds.count('tile')}, glify: {kinds.count('glyph')}, foldery: {manifest['folders']}")
+            f"kafelki: {kinds.count('tile')}, glify: {kinds.count('glyph')}, foldery: {manifest['folders']}, "
+            f"zasobnik: {manifest.get('tray', 0)}")
 
 
 def refresh_desktop() -> None:

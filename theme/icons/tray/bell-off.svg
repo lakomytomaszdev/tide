@@ -1,0 +1,3 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+<mask id="gap"><rect width="22" height="22" fill="white"/><path d="M4.2 3.6l13.6 15.2" stroke="black" stroke-width="4.2" stroke-linecap="round"/></mask><g class="ColorScheme-Text" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" mask="url(#gap)" opacity="0.7"><path d="M11 4.2c-2.6 0-4.6 2-4.6 4.6v3.3l-1.4 2.6c-.2.4.1.8.5.8h11c.4 0 .7-.4.5-.8l-1.4-2.6V8.8c0-2.6-2-4.6-4.6-4.6z"/><path d="M9.3 17.9a1.8 1.8 0 0 0 3.4 0"/></g><path class="ColorScheme-NegativeText" d="M4.2 3.6l13.6 15.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
