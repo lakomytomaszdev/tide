@@ -82,6 +82,17 @@ class MaskJsonTest(unittest.TestCase):
 
 
 class SignatureAndExcerptTest(unittest.TestCase):
+    def test_incomplete_json_is_omitted_and_complete_event_without_newline_is_kept(self):
+        secret = "correct horse battery staple"
+        event = json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": f'password: "{secret}"'}]}})
+        text = faults.excerpt(["  " + event[:-1], "[stderr] diagnoza", event], env={})
+        for part in secret.split():
+            self.assertNotIn(part, text)
+        self.assertIn("pominięto", text)
+        self.assertIn("[stderr] diagnoza", text)
+        self.assertIn("[assistant] password: " + faults.MASK, text)
+
     def test_tool_inputs_mask_decoded_values_before_json_and_shortening(self):
         secret = "correct horse battery staple"
         inputs = [

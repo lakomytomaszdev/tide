@@ -65,6 +65,65 @@ class Tree:
 
 
 class MaskingTest(unittest.TestCase):
+    def test_secret_parent_masks_descendants_in_written_context(self):
+        tree = Tree(self)
+        j = tree.journal()
+        secret = "correct horse battery staple"
+        detail = {"password": {"value": secret,
+                               "nested": [{"value": secret}, [{"value": secret}]],
+                               "number": 987654321},
+                  "readable": {"value": "zwykła diagnoza"}}
+        j.add("step.note", step="K-1-PT-7-2", detail=detail)
+        tree.write(os.path.join(tree.card_dir, "steps", "K-1-PT-7-2", "result.json"),
+                   json.dumps({"result": "error", "detail": detail}))
+        context = os.path.join(tree.step_dir, "in", "context")
+        caretakerctx.build(caretaker.problems(j.st)[0], j.st, j.events, card="K-1",
+                           card_dir=tree.card_dir, worktree=tree.worktree, context_dir=context,
+                           env=ENV, tide_docs="")
+        written = {}
+        for folder, _, names in os.walk(context):
+            for name in names:
+                path = os.path.join(folder, name)
+                with open(path, encoding="utf-8") as fh:
+                    written[os.path.relpath(path, context)] = fh.read()
+        for path, text in written.items():
+            with self.subTest(path=path):
+                for part in (*secret.split(), "987654321"):
+                    self.assertNotIn(part, text)
+        journal = [json.loads(line) for line in written["journal.jsonl"].splitlines()]
+        result = json.loads(written["steps/K-1-PT-7-2/result.json"])
+        for data in (journal[-1], result):
+            self.assertEqual(data["detail"]["password"]["value"], "•••")
+            self.assertEqual(data["detail"]["password"]["nested"],
+                             [{"value": "•••"}, [{"value": "•••"}]])
+            self.assertEqual(data["detail"]["readable"]["value"], "zwykła diagnoza")
+
+    def test_broken_stream_json_is_omitted_in_written_context(self):
+        tree = Tree(self)
+        j = tree.journal()
+        secret = "correct horse battery staple"
+        event = json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": f'password: "{secret}"'}]}})
+        context = os.path.join(tree.step_dir, "in", "context")
+        for ending in (event[:-1], event[:-1] + "\n", event[:-10]):
+            with self.subTest(ending=ending[-10:]):
+                tree.write(os.path.join(tree.step_dir, "out", "step.log"),
+                           "zwykły stderr\n" + ending)
+                caretakerctx.build(caretaker.problems(j.st)[0], j.st, j.events, card="K-1",
+                                   card_dir=tree.card_dir, worktree=tree.worktree, context_dir=context,
+                                   env=ENV, tide_docs="")
+                for folder, _, names in os.walk(context):
+                    for name in names:
+                        with open(os.path.join(folder, name), encoding="utf-8") as fh:
+                            text = fh.read()
+                        for part in secret.split():
+                            self.assertNotIn(part, text, name)
+                with open(os.path.join(context, "steps", "K-1-PT-7-2", "step-log.md"),
+                          encoding="utf-8") as fh:
+                    log = fh.read()
+                self.assertIn("pominięto", log)
+                self.assertIn("zwykły stderr", log)
+
     def test_json_keys_and_collisions_are_masked_in_written_context(self):
         tree = Tree(self)
         j = tree.journal()
@@ -96,8 +155,10 @@ class MaskingTest(unittest.TestCase):
             for source, data in (("journal", journal[-1]), ("result", result)):
                 with self.subTest(order=order[0][1], source=source):
                     self.assertEqual(len(data["detail"]), len(detail), "kolizja nie usuwa pól")
+                    # Pierwsze trzy klucze są sekretne według `faults.mask`; ich potomne wartości też.
                     self.assertEqual({v["message"] for v in data["detail"].values()},
-                                     {"token", "env", "pair", "literal", "suffix"})
+                                     {"•••", "literal", "suffix"})
+                    self.assertEqual(sum(v["message"] == "•••" for v in data["detail"].values()), 3)
                     self.assertEqual(data["detail"]["••• [2]"]["message"], "suffix")
 
     def test_quoted_tool_input_secrets_are_masked_in_collect_and_build(self):

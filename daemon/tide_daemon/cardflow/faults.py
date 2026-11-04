@@ -277,8 +277,10 @@ def _secret_field(key: str, env: dict | None) -> bool:
 
 def mask_json(value, key: str = "", env: dict | None = None):
     """Maskuje odkodowane klucze i wartości przed serializacją JSON. Sekretne pole traci całą wartość napisu
-    lub liczby; kolizje zamaskowanych kluczy dostają unikalny dopisek liczbowy, bez nadpisywania pól."""
+    lub liczby także w potomnych obiektach i listach; kolizje zamaskowanych kluczy dostają unikalny dopisek
+    liczbowy, bez nadpisywania pól."""
     if isinstance(value, dict):
+        secret_parent = _secret_field(key, env)
         entries = [(mask(k, env) if isinstance(k, str) else k, k, v) for k, v in value.items()]
         reserved = {masked for masked, _, _ in entries}
         result, suffixes = {}, {}
@@ -290,8 +292,9 @@ def mask_json(value, key: str = "", env: dict | None = None):
                     number += 1
                 target = f"{masked} [{number}]"
                 suffixes[masked] = number + 1
-            # Rezerwujemy także nazwy późniejszych pól; sekretność wartości oceniamy po oryginalnym kluczu.
-            result[target] = mask_json(item, str(original), env)
+            # Rezerwujemy także nazwy późniejszych pól. Sekretny rodzic zachowuje sekretność całego poddrzewa;
+            # poza nim wartości oceniamy po oryginalnym kluczu (przed maskowaniem i rozstrzyganiem kolizji).
+            result[target] = mask_json(item, key if secret_parent else str(original), env)
         return result
     if isinstance(value, list):
         return [mask_json(v, key, env) for v in value]
@@ -306,11 +309,19 @@ def mask_json(value, key: str = "", env: dict | None = None):
 
 def excerpt(lines: list[str], env: dict | None = None, limit: int = EXCERPT_LINES) -> str:
     """Wycinek dziennika kroku do karty: ostatnie `limit` zdarzeń po ludzku (typ i tekst), sekrety zamaskowane.
-    Kontekst opiekuna (PT-153) bierze tak samo ostatnie 300 zdarzeń."""
+    Uszkodzony obiekt JSON daje dopisek bez treści. Kontekst opiekuna (PT-153) bierze tak samo ostatnie 300 zdarzeń.
+    """
     picked = []
     for line in lines:
         event = _json(line)
-        text = _event_text(event, env) if event is not None else line.strip()
+        if event is not None:
+            text = _event_text(event, env)
+        elif line.lstrip().startswith("{"):
+            # Nie traktujemy niepełnej serializacji jako tekstu: sekwencje ucieczki zmieniają granice sekretu
+            # dla `mask`. Dotyczy też EOF po awarii oraz uszkodzonego zdarzenia przed kolejną pełną linią.
+            text = "(pominięto: niepoprawne lub niepełne zdarzenie JSON)"
+        else:
+            text = line.strip()
         if text:
             # najpierw maskowanie, potem skracanie — obcięty w pół token nie przeszedłby przez wzorce
             text = mask(text, env)
