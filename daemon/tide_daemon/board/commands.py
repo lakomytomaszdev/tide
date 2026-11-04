@@ -242,7 +242,7 @@ def outside_argv(command: str, roots=()) -> list[str] | None:
     return program
 
 
-OUTSIDE_MAX = 2000      # polecenia poza piaskownicą bywają długie (zmienne połączeń, filtry testów)
+OUTSIDE_MAX = 8000      # polecenia poza piaskownicą bywają długie (zmienne połączeń, filtry testów; K-37/PT-153, 04.11: lista 63 modułów testów miała 2318 znaków)
 
 
 def outside_allowed(command: str, denied: list[str], roots=()) -> bool:
