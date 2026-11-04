@@ -127,12 +127,12 @@ def _project_state(engine, card_id: str):
 
 
 def _stamp(profile: dict) -> str:
+    """Hash przepisu liczony tak samo jak `Builder.stamp` (wersja agentów z `box_builder.agents_version`)."""
     try:
         settings = box_settings.load()
-        agents = settings.agents_version
     except Exception:
-        agents = ""
-    return bp.recipe_stamp(profile, box_builder.templates_version(), agents)["hash"]
+        settings = None
+    return bp.recipe_stamp(profile, box_builder.templates_version(), box_builder.agents_version(settings))["hash"]
 
 
 def _journal_box(slug: str):

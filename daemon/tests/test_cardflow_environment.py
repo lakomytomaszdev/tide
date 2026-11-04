@@ -376,6 +376,40 @@ class NetworkQuestionTest(EnvBase):
         self.assertIn("nie dopisał domeny", self.resumed_prompt(card_id))
 
 
+class RecipeStampAgreementTest(unittest.TestCase):
+    """Pakiet zgód (PT-172) i budowa (PT-179) liczą ten sam hash przepisu — jedno źródło wersji agentów."""
+
+    def setUp(self):
+        import tempfile
+        self.config = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.config, True)
+        patcher = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.config})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.profile = bp.parse(BOX_YAML, "project")
+
+    def test_default_settings_give_the_same_hash_as_the_builder(self):
+        from tide_daemon.box import agents
+        from tide_daemon.box import settings as box_settings
+        builder = bb.Builder(box_settings.load(), incus=object(), policy=object())
+        self.assertEqual(builder.agents_version, agents.AGENTS_VERSION)
+        self.assertEqual(builder.stamp(bp.with_defaults(self.profile))["hash"], envconsent._stamp(self.profile))
+
+    def test_settings_override_is_seen_by_both(self):
+        from tide_daemon.box import settings as box_settings
+        os.makedirs(os.path.join(self.config, "tide"))
+        with open(os.path.join(self.config, "tide", "cardflow.json"), "w", encoding="utf-8") as fh:
+            json.dump({"box": {"agents-version": "claude-9.9.9"}}, fh)
+        settings = box_settings.load()
+        self.assertEqual(settings.agents_version, "claude-9.9.9")
+        builder = bb.Builder(settings, incus=object(), policy=object())
+        self.assertEqual(builder.stamp(self.profile)["hash"], envconsent._stamp(self.profile))
+
+    def test_unreadable_settings_fall_back_to_the_pinned_version(self):
+        from tide_daemon.box import agents
+        self.assertEqual(bb.agents_version(None), agents.AGENTS_VERSION)
+
+
 class NetworkDecisionUnitTest(unittest.TestCase):
     def decisions(self, domain):
         events = Events().step("K-1-PT-1-1", result="denied", command=f"network: {domain}", network=domain,

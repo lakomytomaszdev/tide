@@ -94,6 +94,12 @@ def templates_version(scripts_dir: str | None = None) -> str:
     return digest.hexdigest()
 
 
+def agents_version(settings: BoxSettings | None) -> str:
+    """Wersje agentów obrazu bazowego — jedno źródło dla hasha przepisu (`Builder`, `cardflow.envconsent`):
+    `box.agents-version` z ustawień, a bez niego (albo bez ustawień) `agents.AGENTS_VERSION`."""
+    return (settings.agents_version if settings is not None else "") or agents.AGENTS_VERSION
+
+
 def state_dir(slug: str) -> str:
     base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
     return os.path.join(base, "tide", "box", bp._check_slug(slug, "projekt"))
@@ -123,7 +129,7 @@ class Builder:
     @property
     def agents_version(self) -> str:
         """Wersje agentów obrazu bazowego (`box/agents.py`); `box.agents-version` w ustawieniach je nadpisuje."""
-        return self.settings.agents_version or agents.AGENTS_VERSION
+        return agents_version(self.settings)
 
     # --- budowa ----------------------------------------------------------------------------------
 

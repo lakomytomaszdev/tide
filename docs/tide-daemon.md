@@ -2496,7 +2496,8 @@ Każde `incus exec` budowy: `-T`, jako root pudełka, z `HTTPS_PROXY`/`HTTP_PROX
 `DEBIAN_FRONTEND=noninteractive`, `TIDE_NODE_VERSION`/`TIDE_DOTNET_SDK` z profilu. **Brak uruchomionego proxy
 (albo jego adresu) to błąd przed pierwszym poleceniem `incus`** (polityka `ProxyMissing`) — budowy „bez proxy”
 nie ma. Proxy biegnie w usłudze, więc `tide box build` uruchomione jako osobny proces dziś zawsze odmawia;
-pierwszą prawdziwą budowę (przez usługę) robi #29. Po migawce (i przy błędzie) builder zdejmuje politykę budowy
+pierwszą prawdziwą budowę (przez usługę) robi #29. Inaczej `tide box base` i `tide box login`: bez usługi startują
+własne proxy na czas polecenia (decyzja `base-wlasne-proxy-cli`), a przy działającej usłudze odmawiają (port zajęty). Po migawce (i przy błędzie) builder zdejmuje politykę budowy
 (`clear_box_policy`), więc pudełko po budowie nie ma w proxy żadnej polityki do czasu kroku (#18).
 Wyjście poleceń trafia na bieżąco (strumieniowo) do `$XDG_STATE_HOME/tide/box/<slug>/build.log`.
 `type: vm` → błąd „nieobsługiwane w tej wersji” bez żadnego wywołania `incus`. Istniejące pudełko jest przy

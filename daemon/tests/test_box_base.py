@@ -22,6 +22,7 @@ from tide_daemon.box import cli
 from tide_daemon.box import k3
 from tide_daemon.box import netenv
 from tide_daemon.box import proxy as bproxy
+from tide_daemon.box import state as bs
 from tide_daemon.box import templates
 from tide_daemon.box.incus import Incus
 from tide_daemon.box.settings import BoxSettings
@@ -430,6 +431,8 @@ class BaseBuildTest(BaseCase):
         self.assertFalse([a for a in argvs if a[0] in ("publish", "snapshot")])
         self.assertFalse([l for l in calls(self.env) if "base.sh codex" in l])
         self.assertEqual(self.proxy._policies, {})
+        self.assertEqual(argvs[-1][:2], ["stop", "--project"])   # nieudana budowa zatrzymuje tide-base
+        self.assertIn("tide-base", argvs[-1])
 
     def test_without_proxy_nothing_reaches_incus(self):
         with self.assertRaisesRegex(bb.BuildError, "proxy"):
@@ -567,6 +570,17 @@ class LoginTest(BaseCase):
         with self.assertRaisesRegex(bb.BuildError, "nie istnieje"):
             bbase.login(self.settings, "plasma-tide", io.StringIO(), incus=Incus("user-1000", binary=self.fake_incus),
                         policy=self.proxy, programs=("claude",))
+
+    def test_k1_login_refuses_while_steps_run_in_the_box(self):
+        inc = Incus("user-1000", binary=self.fake_incus)
+        inc.init("tide-base", "plasma-tide")
+        before = len(self.incus_calls())
+        bs.record("plasma-tide", "box.use", bs.box_name("plasma-tide"), step="K-1-PT-1-1")
+        with self.assertRaisesRegex(bb.BoxBusy, "K-1-PT-1-1"):
+            bbase.login(self.settings, "plasma-tide", io.StringIO(), incus=inc, policy=self.proxy,
+                        run=lambda argv: self.fail("logowanie przy biegnącym kroku"), programs=("claude",))
+        self.assertEqual(self.proxy.seen, [])
+        self.assertEqual(len(self.incus_calls()), before)
 
 
 # ------------------------------------------------------------ make box-base i dokumentacja

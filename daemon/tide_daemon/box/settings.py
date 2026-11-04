@@ -16,7 +16,8 @@ Builder (PT-167):
 - `nic` — nazwa karty sieciowej pudełka z profilu `default` (domyślnie `eth0`),
 - `ipv6-filtering` — `security.ipv6_filtering` karty (domyślnie `false`: decyzja `filtrowanie-nic-bez-ipv6`
   w `docs/box-decisions.md` — Incus 6.0 nie startuje karty z tym ustawieniem bez `br_netfilter`),
-- `agents-version` — wersja agentów w obrazie bazowym (wchodzi do hasha przepisu; ustawia #16),
+- `agents-version` — nadpisuje wersję agentów obrazu bazowego `box/agents.py` `AGENTS_VERSION` w hashu przepisu
+  (puste = `AGENTS_VERSION`; jedno źródło: `builder.agents_version`),
 - `ip-wait-seconds` — ile czekać na adres IP pudełka po starcie (domyślnie 30),
 - `agent-uid`, `agent-gid` — właściciel wolumenu `/home/agent` w pudełku (`initial.uid/gid`, domyślnie 1000;
   ostateczną wartość ustala obraz bazowy #16).

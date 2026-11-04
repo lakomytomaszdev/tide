@@ -162,8 +162,17 @@ class BaseBuilder:
         self.policy.set_box_policy(ip, list(build_domains()), False, denied)
         try:
             self._provision(name, proxy, result)
+        except BaseException:
+            self._stop_quietly(name)           # nieudana budowa nie zostawia uruchomionego tide-base
+            raise
         finally:
             self.policy.clear_box_policy(ip)
+
+    def _stop_quietly(self, name):
+        try:
+            self.incus.stop(name)
+        except Exception:                      # błąd zatrzymania nie może przykryć błędu budowy
+            pass
 
     def _provision(self, name, proxy, result):
         env = {**netenv.proxy_env(proxy), "DEBIAN_FRONTEND": "noninteractive",
@@ -208,6 +217,9 @@ def login(settings: BoxSettings, slug: str | None, out, incus: Incus | None = No
                             "pudełka projektu)")
     incus = incus or Incus(settings.project)
     name = bs.box_name(slug)
+    steps = bs.running_steps(slug, name)
+    if steps:                                  # polityka logowania zastąpiłaby politykę biegnących kroków
+        raise bb.BoxBusy(f"w pudełku {name} biegną kroki: {', '.join(steps)} — logowanie odmówione")
     inst = incus.instance(name)
     if inst is None:
         raise bb.BuildError(f"pudełko {name} nie istnieje (tide box build {slug})")
