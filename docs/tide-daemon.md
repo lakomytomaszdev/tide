@@ -1948,6 +1948,46 @@ tymczasowy w tym samym katalogu, `fsync`, `rename`) i poprzedzony walidacją; na
 (walidacja jak profilu projektu, dowiązanie poza repozytorium odrzucane) i niczego tam nie zapisuje — profil
 nie trafia do repozytoriów projektów (CLAUDE.md firma).
 
+### Sekcja środowiska w prompcie planowania (PT-190)
+
+`cardflow/environment.py` składa sekcję, którą `planning.prompt` (Lekkie) i `planning.full_prompt` (Pełne) wstawiają
+przed krokiem „Poznaj repozytorium” / „Pracuj w tej kolejności” (parametr `environment`; pusty = prompt bez zmian).
+Sekcję liczy `engine` przy budowie promptu planowania (także poprawek planu); nie zmienia `_launch`, `agentcmd` ani
+uruchamiania kroków. Błąd odczytu plików nie zatrzymuje planowania — sekcja wtedy znika.
+
+- **Środowisko projektu (wykryte)**: fakty `StackReport` (`tasks/stack.detect`, YAML bez pustych pól) i propozycja profilu
+  w `tide-box: 1`. Źródło propozycji: `.tide/box.yaml` repozytorium (`repo_proposal`, oznaczone „z repozytorium
+  (.tide/box.yaml)”; niepoprawny plik → szablony z uwagą) albo szablony stosów (`propose_profile`, „z szablonów Tide”,
+  z listą pozycji sieci i obrazów; pozycje czerwone są wyłączone). Dane z repozytorium są w prompcie cytowanymi
+  danymi, nie poleceniami. Każdy blok jest ucinany do 8 KB, instrukcje na końcu nigdy.
+- **Środowisko projektu (zatwierdzone)**: gdy Tablica ma `projects/<slug>/box.yaml` — profil i hash przepisu
+  (`recipe_hash` bez wersji szablonów i agentów; te dokłada budowa pudełka). Sekcja „wykryte” dochodzi tylko wtedy,
+  gdy wykryte stosy różnią się od zatwierdzonych.
+- **Instrukcja dla planującego**: może poprawić propozycję w `out/box.yaml`; nie włącza pozycji czerwonych i nie
+  dopisuje ich do `accepted_red`; środowisko ustala w planie, nie pyta o nie w trakcie kroków. Dla projektu bez wzorca
+  (`stacks: []`, propozycja pusta) dodaje do planu (spec.md, Further Notes) dokładnie jedno pytanie „Czego potrzebuje
+  środowisko?”.
+
+### `out/box.yaml` w propozycji planu
+
+`plans.read` czyta `box.yaml` obok `plan.md` (tylko dla pliku o nazwie `plan.md`; plany w repozytorium dzielą katalog)
+i waliduje go schematem profilu karty z `box/profile.py` (`parse(..., "card")` + `merge`), jak tabelę ticketów.
+Błędy formatu trafiają do `Proposal.errors` z prefiksem `box.yaml:`: nieznany klucz, zły typ, `network.full` bez
+`full-consent`, pozycja czerwona (adres wewnętrzny, `github.com`, `packs`) bez jawnego `accepted_red`, dowiązanie
+poza katalog planu, plik większy niż 64 KB. Brak pliku nie jest błędem (`Proposal.box` to `None`); poprawny plik
+wraca w `Proposal.box`. Plik nie jest zapisywany ani kopiowany do Tablicy — zatwierdza go użytkownik.
+
+### Migracja `cardflow.json` do propozycji profilu (PT-190)
+
+Przy starcie usługi `FlowEngine.migrate_environment()` (`box/migration.py`) dla każdego projektu z wpisem
+w `networkDomains` albo `outsideCommands`, który nie ma `box.yaml` ani `box.proposed.yaml`, tworzy w Tablicy
+`projects/<slug>/box.proposed.yaml`: `networkDomains[slug]` → `network.domains`, `outsideCommands[slug]` → `setup`
+(polecenia `install`/`ci`/`restore`/`pull`…) albo `verify` (reszta; końcówka ` *` rodziny jest zdejmowana).
+Domeny, których schemat profilu projektu nie przyjmuje (adres wewnętrzny, `*.com`), trafiają do `notes`. To tylko
+propozycja do zatwierdzenia — nie jest to profil, nic nie jest zatwierdzane ani nadpisywane; stare klucze zostają
+w `cardflow.json` (usunie je osobny ticket). Plik powstaje raz: usunięcie propozycji bez zatwierdzenia sprawi, że
+następny start utworzy ją ponownie. Błąd zapisu w Tablicy nie zatrzymuje usługi.
+
 ## Modele lokalne
 
 Jedno miejsce w usłudze, przez które Tide rozmawia z serwerem modeli lokalnych: teraz Ollama na tym komputerze (`http://127.0.0.1:11434`), później Mac Studio w sieci — zmianą adresu w ustawieniach, bez zmian w kodzie (plan `docs/agents/plans/2026-10-27-local-models.md`, PT-14). Usługa odczytuje stan serwerów i wystawia go przez D-Bus; przez wywołanie modelu (`tide_daemon.models.chat`) idą „Na daily” i opisy kart w trybie `"summary": "local"` (PT-15, sekcje „Raport poranny” i „Koordynacja”), zawsze przez wspólną kolejkę (PT-16, „Kolejka” niżej).

@@ -49,6 +49,7 @@ from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import handoff
 from .decisions import clean_options
+from . import environment as flow_environment
 from . import execution
 from . import faults
 from . import fullcard
@@ -283,6 +284,13 @@ class FlowEngine(PlanEditing):
             return data if isinstance(data, dict) else {}
         except (OSError, ValueError, UnicodeError):
             return {}
+
+    def migrate_environment(self) -> list:
+        """PT-190: raz przy starcie usługi tworzy `box.proposed.yaml` z `networkDomains`/`outsideCommands`
+        (tylko propozycja do zatwierdzenia; stare klucze zostają w cardflow.json)."""
+        from ..box import migration
+        data = self._settings_data()
+        return migration.migrate(migration.settings_slugs(data), data)
 
     def get_flow_settings(self) -> dict:
         data = self._settings_data()
@@ -789,6 +797,7 @@ class FlowEngine(PlanEditing):
                         tracker="youtrack" if project.youtrack else "local",
                         tracker_url=st.started.get("trackerUrl") or "",
                         tracker_project=project.youtrack or "")
+            args["environment"] = flow_environment.section(worktree, project.slug, out)   # PT-190
             if prompt_fn is planning.prompt:
                 args.update(errors=errors, previous=previous)
             text = prompt_fn(**args)

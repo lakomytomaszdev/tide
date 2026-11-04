@@ -13,6 +13,8 @@ import os
 import re
 from dataclasses import dataclass
 
+from ..box import profile as box_profile
+from ..box import templates
 from ..coordination import plan as plan_mod
 from ..models.executors import CLASSES
 
@@ -27,6 +29,7 @@ class Proposal:
     cards: dict[str, str]
     waves: list[list[str]]
     errors: list[str]
+    box: dict | None = None   # PT-190: rozszerzenie profilu środowiska z `box.yaml` obok plan.md (None = brak pliku)
 
 
 def _same_title(a: str, b: str) -> bool:
@@ -131,7 +134,45 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
     waves = _waves(rows)
     if rows and not waves:
         errors.append("plan zawiera cykl blokerów")
-    return Proposal(plan, rows, cards, waves, errors)
+    box = _read_box(real, errors)
+    return Proposal(plan, rows, cards, waves, errors, box)
+
+
+def _read_box(plan_path: str, errors: list[str]) -> dict | None:
+    """`box.yaml` obok `plan.md` (PT-190): walidacja schematem profilu karty z `box/profile.py`, jak tabela ticketów.
+
+    Brak pliku nie jest błędem. Błędy formatu: nieznany klucz, zły typ, a także pozycja czerwona, której
+    `accepted_red` nie wymienia jawnie. Pliku nie zapisujemy ani nie kopiujemy — zatwierdza go użytkownik.
+    """
+    if os.path.basename(plan_path) != "plan.md":
+        return None   # plany w repozytorium dzielą katalog; profil dotyczy tylko wyniku kroku planowania
+    folder = os.path.dirname(plan_path)
+    path = os.path.join(folder, "box.yaml")
+    if not os.path.lexists(path):
+        return None
+    real = os.path.realpath(path)
+    if not _inside(real, folder) or not os.path.isfile(real):
+        errors.append("box.yaml: musi być zwykłym plikiem obok plan.md")
+        return None
+    try:
+        with open(real, encoding="utf-8") as fh:
+            text = fh.read(box_profile._MAX_FILE + 1)
+    except (OSError, UnicodeError) as exc:
+        errors.append(f"box.yaml: nie można przeczytać: {exc}")
+        return None
+    if len(text) > box_profile._MAX_FILE:
+        errors.append(f"box.yaml: plik większy niż {box_profile._MAX_FILE} bajtów")
+        return None
+    try:
+        card = box_profile.parse(text, "card")
+        merged = box_profile.merge({"tide-box": box_profile.SCHEMA_VERSION}, card, templates.known_domains())
+    except box_profile.ProfileError as exc:
+        errors.extend(f"box.yaml: {message}" for message in exc.errors)
+        return None
+    for item in merged.dropped_red:
+        errors.append(f"box.yaml: pozycja czerwona {item!r} jest włączona bez jawnego zaznaczenia "
+                      "(wymaga accepted_red; zostaw ją wyłączoną i zostaw decyzję użytkownikowi)")
+    return card
 
 
 def _waves(rows: list[dict]) -> list[list[str]]:
