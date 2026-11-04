@@ -354,6 +354,48 @@ class DecisionAndViewTest(unittest.TestCase):
         running = [r for r in out["flow"]["running"] if r["kind"] == "caretaker"]
         self.assertEqual([(r["id"], r["kindLabel"]) for r in running], [("K-1-care-1", "opiekun")])
 
+    def test_headline_says_the_caretaker_is_on_it_and_nothing_waits_for_the_user(self):
+        self.j.care("K-1-PT-7-2", "K-1-PT-7-1", 1, "K-1-care-1")
+        self.j.add("step.started", step="K-1-care-1", kind="caretaker", ticket="PT-7", executor="Opus",
+                   worktree="/w")
+        flow = derived(self.j.st, {"column": "todo"})["flow"]
+        self.assertEqual(flow["headline"], "Opiekun zajmuje się PT-7, nic nie czeka na Ciebie.")
+        self.assertEqual(flow["caretaker"]["working"][0]["subject"], "PT-7")
+
+    def test_headline_names_only_the_caretaker_even_when_other_steps_run(self):
+        # Świadoma kolejność w fullcard: opiekun przed „N kroków pracuje w tle”.
+        self.j.care("K-1-PT-7-2", "K-1-PT-7-1", 1, "K-1-care-1")
+        self.j.add("step.started", step="K-1-care-1", kind="caretaker", ticket="PT-7", executor="Opus",
+                   worktree="/w")
+        self.j.step("K-1-PT-8-1", ticket="PT-8")
+        flow = derived(self.j.st, {"column": "todo"})["flow"]
+        self.assertEqual(flow["headline"], "Opiekun zajmuje się PT-7, nic nie czeka na Ciebie.")
+
+    def test_headline_without_a_target_step_names_the_card(self):
+        j = Journal()
+        j.add(caretaker.STARTED, problem="flow-error:merge", key="caretaker:flow-error:merge:1", n=1,
+              step="K-1-care-1", target="", root="", ticket="", trigger="flow-error", triggers=["flow-error"],
+              watermark=1)
+        j.add("step.started", step="K-1-care-1", kind="caretaker", ticket="", executor="Opus", worktree="/w")
+        flow = derived(j.st, {"column": "todo"})["flow"]
+        self.assertEqual(flow["headline"], "Opiekun zajmuje się kartą, nic nie czeka na Ciebie.")
+
+    def test_headline_returns_to_normal_once_the_caretaker_is_done(self):
+        self.j.care("K-1-PT-7-2", "K-1-PT-7-1", 1, "K-1-care-1")
+        self.j.add("step.started", step="K-1-care-1", kind="caretaker", ticket="PT-7", executor="Opus")
+        self.j.escalate("K-1-PT-7-2", "K-1-care-1", "K-1-PT-7-1")
+        flow = derived(self.j.st, {"column": "todo"})["flow"]
+        self.assertEqual(flow["headline"], "", "po eskalacji decyzja wraca do „Twojego ruchu”")
+
+    def test_caretaker_history_entries_are_signed_with_the_caretaker_not_an_executor(self):
+        self.j.care("K-1-PT-7-2", "K-1-PT-7-1", 1, "K-1-care-1")
+        self.j.add("step.started", step="K-1-care-1", kind="caretaker", ticket="PT-7", executor="Opus")
+        self.j.escalate("K-1-PT-7-2", "K-1-care-1", "K-1-PT-7-1")
+        entries = [h for h in derived(self.j.st, {"column": "todo"})["flow"]["history"] if h["kind"] == "caretaker"]
+        self.assertEqual([(h["actor"], h["actorLabel"], h["kindLabel"]) for h in entries],
+                         [("caretaker", "Opiekun", "opiekun")])
+        self.assertNotIn("Opus", entries[0]["text"])
+
     def test_escalation_brings_the_decision_back_with_the_recommended_option_first(self):
         self.j.care("K-1-PT-7-2", "K-1-PT-7-1", 1, "K-1-care-1")
         self.j.add("step.started", step="K-1-care-1", kind="caretaker", ticket="PT-7", executor="Opus")

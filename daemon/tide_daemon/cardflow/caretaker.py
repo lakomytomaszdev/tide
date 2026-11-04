@@ -457,17 +457,18 @@ def unavailable_note(st, step: str) -> str:
 
 
 def working(st) -> list[dict]:
-    """Kroki opiekuna bez wyniku: `{problem, step, target, ticket, label, startedTs}`."""
+    """Kroki opiekuna bez wyniku: `{problem, step, target, ticket, label, subject, startedTs}`; `subject` to to,
+    czym opiekun się zajmuje („PT-7”, „review PT-7”, „kartą”) — do zdania „Opiekun zajmuje się …”."""
     out = []
     for name, run in st.caretaker_runs.items():
         if name in st.caretaker_outcomes:
             continue
         target = st.steps.get(run.get("target") or "") or {}
         started = st.caretakers.get(name) or {}
+        what = step_name(target.get("kind"), target.get("ticket")) if target else run.get("ticket") or ""
         out.append({"problem": run.get("problem") or "", "step": name, "target": run.get("target") or "",
                     "ticket": run.get("ticket") or "",
-                    "label": "opiekun sprawdza " + (step_name(target.get("kind"), target.get("ticket")) if target
-                                                     else run.get("ticket") or "kartę"),
+                    "label": "opiekun sprawdza " + (what or "kartę"), "subject": what or "kartą",
                     "startedTs": _epoch(started.get("ts") or run.get("ts"))})
     return out
 

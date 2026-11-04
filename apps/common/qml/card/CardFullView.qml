@@ -314,6 +314,7 @@ Rectangle {
         objectName: "fullHistoryLine"
         readonly property string text: modelData.text
         readonly property bool byUser: modelData.actor === "user"
+        readonly property bool byCaretaker: modelData.actor === "caretaker"
         readonly property string when: view.historyWhen(modelData.ts)
         Layout.fillWidth: true
         implicitHeight: lineRow.implicitHeight + 14
@@ -321,7 +322,8 @@ Rectangle {
         color: Tide.Tokens.backgroundCard
         opacity: dimmed ? 0.7 : 1
         Accessible.role: Accessible.ListItem
-        Accessible.name: [when, modelData.kindLabel, text, byUser ? "zdarzenie użytkownika" : ""].filter(x => !!x).join(", ")
+        Accessible.name: [when, modelData.kindLabel, text, byUser ? "zdarzenie użytkownika" : "",
+                      byCaretaker ? modelData.actorLabel : ""].filter(x => !!x).join(", ")
         RowLayout {
             id: lineRow
             anchors.left: parent.left
@@ -363,6 +365,16 @@ Rectangle {
                 text: "Ty"
                 textFormat: Text.PlainText
                 color: Tide.Tokens.peach
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                font.weight: Font.DemiBold
+            }
+            Text {
+                objectName: "historyCaretaker"
+                visible: line.byCaretaker
+                text: line.modelData.actorLabel || ""   // podpis z usługi („Opiekun”) zamiast nazwy wykonawcy
+                textFormat: Text.PlainText
+                color: Tide.Tokens.teal
                 font.family: Tide.Theme.uiFamily
                 font.pointSize: Tide.Tokens.fontSizePt * 0.85
                 font.weight: Font.DemiBold
