@@ -198,6 +198,66 @@ ColumnLayout {
         }
     }
 
+    // Polecenia z treści pytania (04.11): gdy agent prosi o wpisanie czegoś w terminalu, polecenie stoi w osobnym
+    // polu z przyciskiem „Kopiuj” zamiast w środku akapitu.
+    TextEdit {
+        id: clipboardHelper
+        visible: false
+    }
+    Repeater {
+        model: form.decision && form.decision.copyCommands ? form.decision.copyCommands : []
+        delegate: Rectangle {
+            id: copyRow
+            required property string modelData
+            property bool copied: false
+            objectName: "decisionCopyCommand"
+            Layout.fillWidth: true
+            implicitHeight: Math.max(copyText.implicitHeight, copyButton.implicitHeight) + 14
+            radius: Tide.Tokens.radiusFrame
+            color: Tide.Tokens.backgroundView
+            border.width: 1
+            border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
+            Text {
+                id: copyText
+                anchors.left: parent.left
+                anchors.right: copyButton.left
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: 12
+                anchors.rightMargin: 8
+                text: copyRow.modelData
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textPrimary
+                font.family: Tide.Theme.monoFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                wrapMode: Text.WrapAnywhere
+            }
+            Text {
+                id: copyButton
+                objectName: "decisionCopyButton"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.rightMargin: 12
+                text: copyRow.copied ? "Skopiowano" : "Kopiuj"
+                textFormat: Text.PlainText
+                color: Tide.Tokens.sky
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt
+                Accessible.role: Accessible.Button
+                Accessible.name: "Kopiuj polecenie " + copyRow.modelData
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        clipboardHelper.text = copyRow.modelData
+                        clipboardHelper.selectAll()
+                        clipboardHelper.copy()
+                        copyRow.copied = true
+                    }
+                }
+            }
+        }
+    }
+
     // Polecenia łańcucha (PT-124): pole wyboru tylko przy poleceniach, na które można zezwolić;
     // przy pozostałych zawsze widać powód. Flagi i zaznaczenie początkowe — z usługi.
     ColumnLayout {

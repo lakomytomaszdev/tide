@@ -12,6 +12,7 @@ from tide_daemon.cardflow.state import derived, fold
 DECISION_KEYS = {"id", "step", "stepKind", "ticket", "executor", "kind", "happened", "why", "options",
                  "freeText", "reply", "fault", "technical", "findings"}
 PERMISSION_KEYS = {"commands", "otherTitle", "otherHint"}       # PT-124: tylko przy zgodzie na polecenie
+QUESTION_KEYS = {"copyCommands"}                                # 04.11: polecenia z pytania do skopiowania
 OPTION_KEYS = {"id", "title", "effect", "recommended", "choice", "params", "method"}
 CARD = {"column": "todo"}
 # Pola `derived.flow` z czasów przed oknem decyzji; usunął je PT-135.
@@ -58,7 +59,9 @@ def plan_events(**reviewed):
 
 class ContractTest(unittest.TestCase):
     def assert_contract(self, decision):
-        self.assertEqual(set(decision), DECISION_KEYS | (PERMISSION_KEYS if decision["kind"] == "permission" else set()))
+        extra = PERMISSION_KEYS if decision["kind"] == "permission" else QUESTION_KEYS if decision["kind"] == "question" \
+            else set()
+        self.assertEqual(set(decision), DECISION_KEYS | extra)
         self.assertIn(decision["kind"], KINDS)
         self.assertTrue(decision["happened"].strip())
         self.assertTrue(decision["why"].strip())
@@ -625,3 +628,22 @@ class ReviewRoundsOptionsTest(unittest.TestCase):
         self.assertEqual(list(options), ["retry", "accept", "reject"])
         self.assertEqual(options["accept"]["params"], {"choice": "accept"})
         self.assertTrue(options["retry"]["recommended"])
+
+
+class QuestionLayoutTest(unittest.TestCase):
+    def test_inline_options_get_their_own_lines_and_commands_are_copyable(self):
+        # 04.11: pytania z opcjami a, b, c w jednym akapicie i poleceniami do wpisania w terminalu w środku tekstu.
+        from tide_daemon.cardflow.decisions import layout, copy_commands
+        text = layout("Jak dalej? **(a)** uruchom `bash scripts/p5.sh`, (b) poczekaj na `make box-install`, (c) zamknij.")
+        self.assertEqual(text.split("\n"), ["Jak dalej?", "(a) uruchom `bash scripts/p5.sh`,",
+                                            "(b) poczekaj na `make box-install`,", "(c) zamknij."])
+        self.assertEqual(layout("Pytanie bez listy (a) tylko raz."), "Pytanie bez listy (a) tylko raz.")
+        self.assertEqual(copy_commands("Uruchom `bash scripts/p5.sh`, plik `docs/x.md`, `make box-install`."),
+                         ["bash scripts/p5.sh", "make box-install"])
+
+    def test_question_decision_keeps_lines_and_lists_commands(self):
+        events = Events().step("K-1-PT-1-1", result="question",
+                               question="Co robimy? (a) uruchom `bash x.sh --all`, (b) zostaw.")
+        decision = build_decisions(events.state())[0]
+        self.assertIn("\n(b) zostaw.", decision["happened"])
+        self.assertEqual(decision["copyCommands"], ["bash x.sh --all"])
