@@ -3,6 +3,7 @@
 Fixture'y w fixtures/step-logs/ to końcówki `out/step.log` kroku (Claude stream-json, Codex JSON) dla katalogu
 wyjściowego `/wt/K-33-plan-2.step/out` — jak w scenariuszu B makiety K-35 (review planu bez wyniku).
 """
+import json
 import os
 import unittest
 
@@ -74,6 +75,30 @@ class FaultFromStepLogTest(unittest.TestCase):
 
 
 class SignatureAndExcerptTest(unittest.TestCase):
+    def test_tool_inputs_mask_decoded_values_before_json_and_shortening(self):
+        secret = "correct horse battery staple"
+        inputs = [
+            {"payload": f'password: "{secret}"', "status": "readable"},
+            {"payload": [{"text": f"password: '{secret}'"}], "status": "readable"},
+            {"password": secret, "status": "readable"},
+            {"payload": {"secret": [secret, 123456789]}, "status": "readable"},
+        ]
+        for tool_input in inputs:
+            events = [
+                {"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "mcp__demo", "input": tool_input}]}},
+                {"type": "result", "permission_denials": [
+                    {"tool_name": "mcp__demo", "tool_input": tool_input}]},
+            ]
+            for event in events:
+                with self.subTest(tool_input=tool_input, event=event["type"]):
+                    text = faults.excerpt([json.dumps(event)], env={})
+                    for part in (*secret.split(), "123456789"):
+                        self.assertNotIn(part, text)
+                    self.assertIn(faults.MASK, text)
+                    self.assertIn("mcp__demo", text)
+                    self.assertIn("readable", text)
+
     def test_signature_is_kind_fault_and_cause(self):
         self.assertEqual(faults.signature("plan-review", "tide", "write-denied"), "plan-review/tide/write-denied")
         self.assertEqual(faults.signature("", "unknown", "Konflikt: nierozwiązany!"),

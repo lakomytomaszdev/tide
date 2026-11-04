@@ -269,6 +269,28 @@ def mask(text: str, env: dict | None = None) -> str:
     return text
 
 
+def _secret_field(key: str, env: dict | None) -> bool:
+    """Czy pole jest sekretne — rozstrzyga `mask` na próbce `nazwa=x`, bez drugiej listy nazw."""
+    probe = f"{key}=x"
+    return bool(key) and mask(probe, env) != probe
+
+
+def mask_json(value, key: str = "", env: dict | None = None):
+    """Maskuje odkodowane wartości przed serializacją JSON. Sekretne pole traci całą wartość napisu lub liczby;
+    pozostałe wartości przechodzą przez `mask`, a struktura JSON pozostaje poprawna."""
+    if isinstance(value, dict):
+        return {k: mask_json(v, str(k), env) for k, v in value.items()}
+    if isinstance(value, list):
+        return [mask_json(v, key, env) for v in value]
+    if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return value
+    if value != "" and _secret_field(key, env):
+        return MASK
+    if isinstance(value, str):
+        return mask(value, env)
+    return value if mask(str(value), env) == str(value) else MASK
+
+
 def excerpt(lines: list[str], env: dict | None = None, limit: int = EXCERPT_LINES) -> str:
     """Wycinek dziennika kroku do karty: ostatnie `limit` zdarzeń po ludzku (typ i tekst), sekrety zamaskowane.
     Kontekst opiekuna (PT-153) bierze tak samo ostatnie 300 zdarzeń."""
@@ -326,8 +348,9 @@ def _short(value, env: dict | None = None) -> str:
         for key in ("command", "file_path", "notebook_path", "path", "pattern"):
             if isinstance(value.get(key), str):
                 return value[key]
-        # Pełny token musi przejść przez maskowanie, zanim skrót przetnie go w środku.
-        return mask(json.dumps(value, ensure_ascii=False), env)[:200]
+        # Maskujemy odkodowane wartości przed serializacją i skróceniem: sekwencje ucieczki JSON
+        # zmieniają granice cytowanego sekretu, a obcięty token nie przeszedłby przez wzorce.
+        return json.dumps(mask_json(value, env=env), ensure_ascii=False)[:200]
     return str(value or "")
 
 

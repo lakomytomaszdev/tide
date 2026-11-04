@@ -74,7 +74,7 @@ class File:
     trim: int | None = None
     trimmed: int = 0
     cut: bool = False
-    masked_json: bool = False   # zdarzenia JSON zamaskowane już wartościami (`_mask_json`, też `faults.mask`)
+    masked_json: bool = False   # zdarzenia JSON zamaskowane już wartościami (`faults.mask_json`, też `faults.mask`)
 
     def render(self) -> str:
         if not self.items and not self.trimmed:
@@ -154,7 +154,7 @@ def _history(ctx: Ctx) -> list[File]:
 
 def _journal(ctx: Ctx) -> list[File]:
     events = ctx.events[-JOURNAL_EVENTS:]
-    items = [json.dumps(_mask_json(event, env=ctx.env), ensure_ascii=False) for event in events]
+    items = [json.dumps(faults.mask_json(event, env=ctx.env), ensure_ascii=False) for event in events]
     return [File("journal.jsonl", f"ostatnie {JOURNAL_EVENTS} zdarzeń dziennika karty (JSON Lines, od najstarszego)",
                  items=items, trim=0, masked_json=True)]
 
@@ -606,32 +606,9 @@ def _listdir(folder: str, roots: tuple) -> list[str]:
 def _json_text(text: str, env: dict | None) -> str:
     """Maskowanie odkodowanych wartości JSON; niepoprawny lub przycięty JSON nie trafia do kontekstu w surowej postaci."""
     try:
-        return json.dumps(_mask_json(json.loads(text), env=env), ensure_ascii=False, indent=2) + "\n"
+        return json.dumps(faults.mask_json(json.loads(text), env=env), ensure_ascii=False, indent=2) + "\n"
     except (ValueError, RecursionError):
         return SKIPPED.format(why="niepoprawny lub niepełny JSON") + "\n"
-
-
-def _secret_field(key: str, env: dict | None) -> bool:
-    """Czy pole o tej nazwie jest sekretne — rozstrzyga `faults.mask` na próbce `nazwa=x` (bez drugiej listy nazw)."""
-    probe = f"{key}=x"
-    return bool(key) and faults.mask(probe, env) != probe
-
-
-def _mask_json(value, key: str = "", env: dict | None = None):
-    """JSON z zamaskowanymi wartościami; struktura JSON zostaje poprawna. Pole o sekretnej nazwie
-    (`_secret_field`) traci całą wartość — napis ze spacjami i liczbę też; pozostałe napisy i liczby przechodzą przez
-    `faults.mask` (zmieniona liczba — np. wartość sekretnej zmiennej środowiska — staje się `•••`)."""
-    if isinstance(value, dict):
-        return {k: _mask_json(v, str(k), env) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_mask_json(v, key, env) for v in value]
-    if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
-        return value
-    if value != "" and _secret_field(key, env):
-        return faults.MASK
-    if isinstance(value, str):
-        return faults.mask(value, env)
-    return value if faults.mask(str(value), env) == str(value) else faults.MASK
 
 
 def _section(text: str, title: str) -> str | None:

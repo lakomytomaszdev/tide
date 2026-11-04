@@ -65,6 +65,41 @@ class Tree:
 
 
 class MaskingTest(unittest.TestCase):
+    def test_quoted_tool_input_secrets_are_masked_in_collect_and_build(self):
+        tree = Tree(self)
+        j = tree.journal()
+        secret = "correct horse battery staple"
+        tool_input = {"payload": f'password: "{secret}"',
+                      "nested": [{"password": secret}], "status": "readable"}
+        events = [
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "mcp__demo", "input": tool_input}]}},
+            {"type": "result", "permission_denials": [
+                {"tool_name": "mcp__demo", "tool_input": tool_input}]},
+        ]
+        context = os.path.join(tree.step_dir, "in", "context")
+        for event in events:
+            tree.write(os.path.join(tree.step_dir, "out", "step.log"), json.dumps(event) + "\n")
+            collected = tree.collect(j)
+            caretakerctx.build(caretaker.problems(j.st)[0], j.st, j.events, card="K-1",
+                               card_dir=tree.card_dir, worktree=tree.worktree, context_dir=context,
+                               env=ENV, tide_docs="")
+            written = {}
+            for folder, _, names in os.walk(context):
+                for name in names:
+                    path = os.path.join(folder, name)
+                    with open(path, encoding="utf-8") as fh:
+                        written[os.path.relpath(path, context)] = fh.read()
+            for stage, files in (("collect", collected), ("build", written)):
+                with self.subTest(event=event["type"], stage=stage):
+                    for path, text in files.items():
+                        for part in secret.split():
+                            self.assertNotIn(part, text, path)
+                    log = files["steps/K-1-PT-7-2/step-log.md"]
+                    self.assertIn("•••", log)
+                    self.assertIn("mcp__demo", log)
+                    self.assertIn("readable", log)
+
     def test_json_values_are_decoded_before_masking_in_collect_and_build(self):
         tree = Tree(self)
         j = tree.journal()
