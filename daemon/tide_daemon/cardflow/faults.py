@@ -275,7 +275,7 @@ def excerpt(lines: list[str], env: dict | None = None, limit: int = EXCERPT_LINE
     picked = []
     for line in lines:
         event = _json(line)
-        text = _event_text(event) if event is not None else line.strip()
+        text = _event_text(event, env) if event is not None else line.strip()
         if text:
             # najpierw maskowanie, potem skracanie — obcięty w pół token nie przeszedłby przez wzorce
             text = mask(text, env)
@@ -283,7 +283,7 @@ def excerpt(lines: list[str], env: dict | None = None, limit: int = EXCERPT_LINE
     return "\n".join(picked[-limit:]).replace("```", "'''")
 
 
-def _event_text(event: dict) -> str:
+def _event_text(event: dict, env: dict | None = None) -> str:
     kind = str(event.get("type") or "")
     parts = []
     for key in ("subtype", "api_error_status"):
@@ -302,7 +302,7 @@ def _event_text(event: dict) -> str:
         if item.get("type") == "text" and item.get("text"):
             parts.append(" ".join(str(item["text"]).split()))
         elif item.get("type") == "tool_use":
-            parts.append(f"{item.get('name') or 'narzędzie'}: {_short(item.get('input'))}")
+            parts.append(f"{item.get('name') or 'narzędzie'}: {_short(item.get('input'), env)}")
         elif item.get("type") == "tool_result":
             content = item.get("content")
             if isinstance(content, list):
@@ -311,7 +311,7 @@ def _event_text(event: dict) -> str:
                          " ".join(str(content or "").split()))
     for denial in event.get("permission_denials") or []:
         if isinstance(denial, dict):
-            parts.append(f"odmowa {denial.get('tool_name') or '?'}: {_short(denial.get('tool_input'))}")
+            parts.append(f"odmowa {denial.get('tool_name') or '?'}: {_short(denial.get('tool_input'), env)}")
     item = event.get("item") if isinstance(event.get("item"), dict) else {}
     for key in ("command", "aggregated_output", "text"):
         if isinstance(item.get(key), str) and item[key].strip():
@@ -321,12 +321,13 @@ def _event_text(event: dict) -> str:
     return f"[{kind}] " + " · ".join(parts) if kind else " · ".join(parts)
 
 
-def _short(value) -> str:
+def _short(value, env: dict | None = None) -> str:
     if isinstance(value, dict):
         for key in ("command", "file_path", "notebook_path", "path", "pattern"):
             if isinstance(value.get(key), str):
                 return value[key]
-        return json.dumps(value, ensure_ascii=False)[:200]
+        # Pełny token musi przejść przez maskowanie, zanim skrót przetnie go w środku.
+        return mask(json.dumps(value, ensure_ascii=False), env)[:200]
     return str(value or "")
 
 
