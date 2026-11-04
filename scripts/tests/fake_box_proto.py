@@ -153,7 +153,11 @@ def incus():
         state["box"] = False
         save()
     elif args[:1] == ["list"]:
-        print(f'"{state["box_ip"]} (eth0)"')
+        # Jak prawdziwy Incus: obok tide-proto jest tide-proto-net z innym adresem (runda 3).
+        def inst(name, ip):
+            return {"name": name, "state": {"network": {"eth0": {"addresses": [
+                {"family": "inet6", "address": "fe80::1"}, {"family": "inet", "address": ip}]}}}}
+        print(json.dumps([inst("tide-proto-net", "10.99.0.91"), inst("tide-proto", state["box_ip"])]))
     elif args[:2] == ["config", "get"]:
         print("")
     elif args[:2] == ["config", "show"]:

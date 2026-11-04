@@ -148,11 +148,13 @@ class PrototypeScriptsTest(unittest.TestCase):
     def test_p1_tries_crun_and_the_oldest_runc_when_docker_fails_without_touching_the_project(self):
         code, log, _ = self.run_script("p1", FAKE_DOCKER_FAIL="1")
         self.assertNotEqual(code, 0)
-        for runtime in ("runc", "crun", "runc-stary"):
+        for runtime in ("runc", "crun-nowy", "runc-1.2.6"):
             self.assertIn(f"WYNIK docker-{runtime}: fail", log)
-        self.assertIn("apt-get install -y --allow-downgrades runc=1.1.12-0ubuntu3", log)
-        self.assertIn("[dockerd: domyślny runtime crun] kod wyjścia: 0", log)
+        self.assertIn("runc/releases/download/v1.2.6/runc.amd64", log)
+        self.assertIn("containers/crun/releases/latest", log)
         self.assertIn("default-runtime", log)
+        # runc z apt przywrócony przed pierwszą próbą (po rundzie 3 mógł zostać runc 1.1.12).
+        self.assertIn("[runc z apt (aktualny) i dockerd bez daemon.json] kod wyjścia: 0", log)
         self.assertIn("WYNIK dotnet-test: skip", log)
         self.assertEqual([c for c in self.calls() if c[:2] == ["incus", "project"] or c[0] == "sudo"], [])
 
@@ -160,8 +162,26 @@ class PrototypeScriptsTest(unittest.TestCase):
         code, log, _ = self.run_script("p1")
         self.assertEqual(code, 0, log)
         self.assertIn("WYNIK docker-runc: ok", log)
-        self.assertNotIn("docker-crun", log)
+        self.assertNotIn("docker-crun-nowy", log)
         self.assertIn("runtime runc, bez intercept", log)
+
+    def test_p5_uses_the_address_of_exactly_this_container(self):
+        # Runda 3: „incus list tide-proto” dopasował też tide-proto-net i P-5 wziął jego adres.
+        _, log, _ = self.run_script("p5")
+        self.assertIn(f"własnego adresu {BOX_IP}", log)
+        self.assertNotIn("10.99.0.91", log)
+
+    def test_p4_adds_raw_idmap_mounts_while_the_box_is_stopped(self):
+        # Projekt ograniczony odrzuca shift=true: atrapa kończy add z shift=true błędem jak prawdziwy Incus.
+        _, log, _ = self.run_script("p4", FAKE_FAIL="shift=true")
+        calls = self.calls()
+        stop = calls.index(["incus", "stop", "tide-proto"])
+        adds = [i for i, c in enumerate(calls) if c[:4] == ["incus", "config", "device", "add"] and "shift=true" not in c]
+        start = [i for i, c in enumerate(calls) if c == ["incus", "start", "tide-proto"] and i > stop][0]
+        self.assertTrue(adds)
+        self.assertTrue(all(stop < i < start for i in adds), (stop, adds, start))
+        self.assertIn(["incus", "config", "set", "tide-proto", "raw.idmap", "both 1000 1000"], calls)
+        self.assertIn(["incus", "config", "unset", "tide-proto", "raw.idmap"], calls)
 
     def test_p1_inserts_exactly_the_three_tide_proto_rules_and_removes_them(self):
         code, log, out = self.run_script("p1", PROTO_NET="rules")

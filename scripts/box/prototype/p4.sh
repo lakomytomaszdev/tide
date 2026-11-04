@@ -105,16 +105,23 @@ if [[ $idmap == raw.idmap ]]; then
     unset_idmap() {
         remove_devices
         run "cofnięcie raw.idmap" -- incus config unset "$BOX" raw.idmap
-        [[ $(box_status) == RUNNING ]] || run "start kontenera bez raw.idmap" -- incus start "$BOX"
+        if [[ $(box_status) == RUNNING ]]; then
+            run "restart kontenera bez raw.idmap (mapowanie zmienia się przy starcie)" -- incus restart "$BOX"
+        else
+            run "start kontenera bez raw.idmap" -- incus start "$BOX"
+        fi
     }
     at_exit unset_idmap
-    run "restart kontenera po raw.idmap" -- incus restart "$BOX"
+    # Runda 3: dołączanie pliku (.git/config) do działającego kontenera pada w forkmount — montowania dodajemy
+    # przy zatrzymanym kontenerze, Incus zakłada je przy starcie (tak też zrobi BoxRunner przy budowie pudełka).
+    run "zatrzymanie kontenera przed montowaniami (raw.idmap)" -- incus stop "$BOX"
+    mount_all false || die "dodanie montowań bez shift (raw.idmap) nie przeszło"
+    run "start kontenera z raw.idmap i montowaniami" -- incus start "$BOX"
     if ! ok; then
         run "dziennik startu kontenera" -- incus info --show-log "$BOX"
-        die "kontener z raw.idmap nie startuje (sprawdź root:$AGENT_UID:1 w /etc/subuid i /etc/subgid hosta)"
+        die "kontener z raw.idmap i montowaniami nie startuje: $(head -n 1 <<<"$LAST_OUT")"
     fi
     wait_box
-    mount_all false || die "montowanie bez shift (raw.idmap) nie przeszło"
     run "właściciel worktree w kontenerze (raw.idmap)" -- in_box stat -c '%u:%g %n' "$wt"
 fi
 if [[ $LAST_OUT == "$AGENT_UID:"* ]]; then

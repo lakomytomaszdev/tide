@@ -1,12 +1,12 @@
 # Pomiary — narzut kroku, zimny start, reset z migawki
 
-- data: 2026-11-04T12:25:33+01:00
+- data: 2026-11-04T13:58:10+01:00
 - skrypt: scripts/box/prototype/measure.sh
 - jądro hosta: 7.0.0-38-generic
 - kontener: tide-proto (images:ubuntu/24.04)
 
 $ incus info 
-  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.014 s
+  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.013 s
     | … (pominięto 440 wierszy)
     |     network_phys_macvlan_mtu: "true"
     |     network_veth_router: "true"
@@ -21,7 +21,7 @@ $ incus info
     |   server_clustered: false
     |   server_event_mode: full-mesh
     |   server_name: tomek-pc
-    |   server_pid: 3280418
+    |   server_pid: 260168
     |   server_version: 6.0.0
     |   storage: btrfs
     |   storage_version: 6.6.3
@@ -39,93 +39,120 @@ $ incus info
     |     version: 2.03.16(2) (2022-05-18) / 1.02.185 (2022-05-18) / 4.50.0
     |     remote: true
 $ incus version 
-  [wersja Incusa] kod wyjścia: 0, czas: 0.015 s
+  [wersja Incusa] kod wyjścia: 0, czas: 0.013 s
     | Client version: 6.0.0
     | Server version: 6.0.0
+Kontener tide-proto już jest — używam go.
+$ incus config show tide-proto 
+  [konfiguracja kontenera] kod wyjścia: 0, czas: 0.015 s
+    | … (pominięto 6 wierszy)
+    |   image.requirements.cgroup: v2
+    |   image.serial: "20261103_07:42"
+    |   image.type: squashfs
+    |   image.variant: default
+    |   security.nesting: "true"
+    |   volatile.base_image: c8260bb3cab33bbb3b20dd6cd581dab8735b2253484fc19ad904adbdf2b946eb
+    |   volatile.cloud-init.instance-id: 38468a45-11b4-49d1-a811-40423f87789f
+    |   volatile.eth0.host_name: vethc4363d51
+    |   volatile.eth0.hwaddr: 00:16:3e:ee:b5:9e
+    |   volatile.idmap.base: "0"
+    |   volatile.idmap.current: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000},{"Isuid":true,"Isgid":true,"Hostid":1000,"Nsid":1000,"Maprange":1},{"Isuid":true,"Isgid":false,"Hostid":1001001,"Nsid":1001,"Maprange":999998999},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000},{"Isuid":false,"Isgid":true,"Hostid":1001001,"Nsid":1001,"Maprange":999998999}]'
+    |   volatile.idmap.next: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
+    |   volatile.last_state.idmap: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000},{"Isuid":true,"Isgid":true,"Hostid":1000,"Nsid":1000,"Maprange":1},{"Isuid":true,"Isgid":false,"Hostid":1001001,"Nsid":1001,"Maprange":999998999},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000},{"Isuid":false,"Isgid":true,"Hostid":1001001,"Nsid":1001,"Maprange":999998999}]'
+    |   volatile.last_state.power: RUNNING
+    |   volatile.last_state.ready: "false"
+    |   volatile.uuid: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
+    |   volatile.uuid.generation: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
+    | devices:
+    |   eth0:
+    |     name: eth0
+    |     network: incusbr0
+    |     security.ipv4_filtering: "true"
+    |     security.ipv6_filtering: "false"
+    |     security.mac_filtering: "true"
+    |     type: nic
+    | ephemeral: false
+    | profiles:
+    | - default
+    | stateful: false
+    | description: ""
 $ systemd_ready 
-  [czekanie na systemd] kod wyjścia: 0, czas: 0.571 s
-    | Error: Instance is not running (próba 2)
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.065 s
+    | running (próba 1)
+$ incus exec tide-proto -T -- bash -c $'\n        set -e\n        name=$(id -un 1000 2>/dev/null || true)\n        if [ -z "$name" ]; then\n            useradd -m -u 1000 -U -s /bin/bash agent\n        elif [ "$name" != agent ]; then\n            usermod -l agent -d /home/agent -m "$name"\n            groupmod -n agent "$(id -gn 1000)" 2>/dev/null || true\n        fi\n        id agent' 
+  [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.064 s
+    | uid=1000(agent) gid=1000(agent) groups=1000(agent),27(sudo)
 $ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --scope --quiet true 
-  [narzut kroku #1: incus exec + systemd-run --user --scope true] kod wyjścia: 1, czas: 0.017 s
-    | Error: Instance is not running
+  [narzut kroku #1: incus exec + systemd-run --user --scope true] kod wyjścia: 0, czas: 0.056 s
 $ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --scope --quiet true 
-  [narzut kroku #2: incus exec + systemd-run --user --scope true] kod wyjścia: 1, czas: 0.018 s
-    | Error: Instance is not running
+  [narzut kroku #2: incus exec + systemd-run --user --scope true] kod wyjścia: 0, czas: 0.052 s
 $ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --scope --quiet true 
-  [narzut kroku #3: incus exec + systemd-run --user --scope true] kod wyjścia: 1, czas: 0.018 s
-    | Error: Instance is not running
+  [narzut kroku #3: incus exec + systemd-run --user --scope true] kod wyjścia: 0, czas: 0.060 s
 
-WYNIK narzut-kroku: fail — incus exec + systemd-run --scope dla true: tylko 0 udanych pomiarów ()
+WYNIK narzut-kroku: ok — incus exec + systemd-run --scope dla true: mediana 0.056 s (próg 3.000 s; pomiary: 0.056 0.052 0.060 )
 
 $ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --quiet --collect --wait true 
-  [narzut kroku (usługa) #1: incus exec + systemd-run --user --wait true] kod wyjścia: 1, czas: 0.016 s
-    | Error: Instance is not running
+  [narzut kroku (usługa) #1: incus exec + systemd-run --user --wait true] kod wyjścia: 0, czas: 0.064 s
 $ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --quiet --collect --wait true 
-  [narzut kroku (usługa) #2: incus exec + systemd-run --user --wait true] kod wyjścia: 1, czas: 0.018 s
-    | Error: Instance is not running
+  [narzut kroku (usługa) #2: incus exec + systemd-run --user --wait true] kod wyjścia: 0, czas: 0.061 s
 $ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --quiet --collect --wait true 
-  [narzut kroku (usługa) #3: incus exec + systemd-run --user --wait true] kod wyjścia: 1, czas: 0.017 s
-    | Error: Instance is not running
+  [narzut kroku (usługa) #3: incus exec + systemd-run --user --wait true] kod wyjścia: 0, czas: 0.059 s
 
-WYNIK narzut-kroku-usluga: fail — incus exec + systemd-run --user --wait (usługa) dla true: tylko 0 udanych pomiarów ()
+WYNIK narzut-kroku-usluga: ok — incus exec + systemd-run --user --wait (usługa) dla true: mediana 0.061 s (próg 3.000 s; pomiary: 0.064 0.061 0.059 )
 
 $ incus stop tide-proto 
-  [zatrzymanie #1] kod wyjścia: 1, czas: 0.041 s
-    | Error: The instance is already stopped
+  [zatrzymanie #1] kod wyjścia: 0, czas: 0.914 s
 $ start_ready 
-  [zimny start #1 (incus start + koniec startu systemd)] kod wyjścia: 1, czas: 0.142 s
-    | Error: Failed to run: /usr/libexec/incus/incusd forkstart user-1000_tide-proto /var/lib/incus/containers /run/incus/user-1000_tide-proto/lxc.conf: exit status 1
-    | Try `incus info --show-log tide-proto` for more info
+  [zimny start #1 (incus start + koniec startu systemd)] kod wyjścia: 0, czas: 3.811 s
+    | running (próba 2)
 $ incus stop tide-proto 
-  [zatrzymanie #2] kod wyjścia: 0, czas: 0.594 s
+  [zatrzymanie #2] kod wyjścia: 0, czas: 0.909 s
 $ start_ready 
-  [zimny start #2 (incus start + koniec startu systemd)] kod wyjścia: 1, czas: 0.150 s
-    | Error: Failed to run: /usr/libexec/incus/incusd forkstart user-1000_tide-proto /var/lib/incus/containers /run/incus/user-1000_tide-proto/lxc.conf: exit status 1
-    | Try `incus info --show-log tide-proto` for more info
+  [zimny start #2 (incus start + koniec startu systemd)] kod wyjścia: 0, czas: 1.813 s
+    | running (próba 2)
 $ incus stop tide-proto 
-  [zatrzymanie #3] kod wyjścia: 0, czas: 0.600 s
+  [zatrzymanie #3] kod wyjścia: 0, czas: 0.892 s
 $ start_ready 
-  [zimny start #3 (incus start + koniec startu systemd)] kod wyjścia: 1, czas: 0.156 s
-    | Error: Failed to run: /usr/libexec/incus/incusd forkstart user-1000_tide-proto /var/lib/incus/containers /run/incus/user-1000_tide-proto/lxc.conf: exit status 1
-    | Try `incus info --show-log tide-proto` for more info
+  [zimny start #3 (incus start + koniec startu systemd)] kod wyjścia: 0, czas: 2.395 s
+    | running (próba 2)
 
-WYNIK zimny-start: fail — start zatrzymanego kontenera: tylko 0 udanych pomiarów ()
+WYNIK zimny-start: ok — start zatrzymanego kontenera: mediana 2.395 s (próg 30.000 s; pomiary: 3.811 1.813 2.395 )
 
 $ incus snapshot create tide-proto proto-measure 
-  [migawka proto-measure z bieżącego stanu] kod wyjścia: 1, czas: 0.020 s
+  [migawka proto-measure z bieżącego stanu] kod wyjścia: 1, czas: 0.018 s
     | Error: Project "user-1000" doesn't allow for snapshot creation
 
 WYNIK migawki-w-projekcie: fail — projekt user-1000 nie pozwala na migawki: Error: Project "user-1000" doesn't allow for snapshot creation
 
 $ sudo incus project get user-1000 restricted.snapshots 
-  [restricted.snapshots (przed zmianą)] kod wyjścia: 0, czas: 0.015 s
+  [restricted.snapshots (przed zmianą)] kod wyjścia: 0, czas: 0.014 s
 $ sudo incus project set user-1000 restricted.snapshots=allow 
-  [wariant: restricted.snapshots=allow w projekcie user-1000 (chwilowo)] kod wyjścia: 0, czas: 0.038 s
+  [wariant: restricted.snapshots=allow w projekcie user-1000 (chwilowo)] kod wyjścia: 0, czas: 0.029 s
 $ incus snapshot create tide-proto proto-measure 
-  [migawka proto-measure (restricted.snapshots=allow)] kod wyjścia: 0, czas: 0.103 s
+  [migawka proto-measure (restricted.snapshots=allow)] kod wyjścia: 0, czas: 0.126 s
 $ restore_ready 
-  [reset #1 (incus snapshot restore + koniec startu)] kod wyjścia: 1, czas: 0.033 s
-    | Error: Failed to create instance restore operation: Instance is busy running a "stop" operation
+  [reset #1 (incus snapshot restore + koniec startu)] kod wyjścia: 0, czas: 3.962 s
+    | running (próba 2)
 $ restore_ready 
-  [reset #2 (incus snapshot restore + koniec startu)] kod wyjścia: 1, czas: 0.033 s
-    | Error: Failed to create instance restore operation: Instance is busy running a "stop" operation
+  [reset #2 (incus snapshot restore + koniec startu)] kod wyjścia: 0, czas: 3.304 s
+    | running (próba 2)
 $ restore_ready 
-  [reset #3 (incus snapshot restore + koniec startu)] kod wyjścia: 1, czas: 0.038 s
-    | Error: Failed to create instance restore operation: Instance is busy running a "stop" operation
+  [reset #3 (incus snapshot restore + koniec startu)] kod wyjścia: 0, czas: 3.291 s
+    | running (próba 2)
 
-WYNIK reset: fail — incus snapshot restore: tylko 0 udanych pomiarów ()
+WYNIK reset: ok — incus snapshot restore: mediana 3.304 s (próg 60.000 s; pomiary: 3.962 3.304 3.291 )
 
 $ incus snapshot delete tide-proto proto-measure 
-  [usunięcie migawki proto-measure] kod wyjścia: 0, czas: 0.077 s
+  [usunięcie migawki proto-measure] kod wyjścia: 0, czas: 0.083 s
 $ sudo incus project unset user-1000 restricted.snapshots 
-  [cofnięcie restricted.snapshots (wartość domyślna)] kod wyjścia: 0, czas: 0.028 s
+  [cofnięcie restricted.snapshots (wartość domyślna)] kod wyjścia: 0, czas: 0.029 s
 
 ## Podsumowanie
 
-- narzut-kroku: fail — incus exec + systemd-run --scope dla true: tylko 0 udanych pomiarów ()
-- narzut-kroku-usluga: fail — incus exec + systemd-run --user --wait (usługa) dla true: tylko 0 udanych pomiarów ()
-- zimny-start: fail — start zatrzymanego kontenera: tylko 0 udanych pomiarów ()
+- narzut-kroku: ok — incus exec + systemd-run --scope dla true: mediana 0.056 s (próg 3.000 s; pomiary: 0.056 0.052 0.060 )
+- narzut-kroku-usluga: ok — incus exec + systemd-run --user --wait (usługa) dla true: mediana 0.061 s (próg 3.000 s; pomiary: 0.064 0.061 0.059 )
+- zimny-start: ok — start zatrzymanego kontenera: mediana 2.395 s (próg 30.000 s; pomiary: 3.811 1.813 2.395 )
 - migawki-w-projekcie: fail — projekt user-1000 nie pozwala na migawki: Error: Project "user-1000" doesn't allow for snapshot creation
-- reset: fail — incus snapshot restore: tylko 0 udanych pomiarów ()
+- reset: ok — incus snapshot restore: mediana 3.304 s (próg 60.000 s; pomiary: 3.962 3.304 3.291 )
 
-Niepowodzeń: 5
+Niepowodzeń: 1

@@ -1,6 +1,6 @@
 # P-4 — worktree i .git z ext4 przez shift=true, nakładki ro, git i npm ci
 
-- data: 2026-11-04T12:21:40+01:00
+- data: 2026-11-04T13:57:36+01:00
 - skrypt: scripts/box/prototype/p4.sh
 - jądro hosta: 7.0.0-38-generic
 - kontener: tide-proto (images:ubuntu/24.04)
@@ -8,7 +8,7 @@
 Projekt: /home/user/DevWorkspace/toolssuite, worktree próby: /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38, node hosta: 20.19.6
 System plików: ext4 (/home/user/DevWorkspace/toolssuite)
 $ incus info 
-  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.017 s
+  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.014 s
     | … (pominięto 440 wierszy)
     |     network_phys_macvlan_mtu: "true"
     |     network_veth_router: "true"
@@ -23,7 +23,7 @@ $ incus info
     |   server_clustered: false
     |   server_event_mode: full-mesh
     |   server_name: tomek-pc
-    |   server_pid: 3280418
+    |   server_pid: 260168
     |   server_version: 6.0.0
     |   storage: btrfs
     |   storage_version: 6.6.3
@@ -41,15 +41,15 @@ $ incus info
     |     version: 2.03.16(2) (2022-05-18) / 1.02.185 (2022-05-18) / 4.50.0
     |     remote: true
 $ incus version 
-  [wersja Incusa] kod wyjścia: 0, czas: 0.014 s
+  [wersja Incusa] kod wyjścia: 0, czas: 0.013 s
     | Client version: 6.0.0
     | Server version: 6.0.0
 $ systemctl is-active tide-box-nft.service 
-  [reguły inet tide-box wczytane (jednostka z PT-166)] kod wyjścia: 0, czas: 0.003 s
+  [reguły inet tide-box wczytane (jednostka z PT-166)] kod wyjścia: 0, czas: 0.002 s
     | active
 Kontener tide-proto już jest — używam go.
 $ incus config show tide-proto 
-  [konfiguracja kontenera] kod wyjścia: 0, czas: 0.015 s
+  [konfiguracja kontenera] kod wyjścia: 0, czas: 0.014 s
     | … (pominięto 6 wierszy)
     |   image.requirements.cgroup: v2
     |   image.serial: "20261103_07:42"
@@ -58,7 +58,7 @@ $ incus config show tide-proto
     |   security.nesting: "true"
     |   volatile.base_image: c8260bb3cab33bbb3b20dd6cd581dab8735b2253484fc19ad904adbdf2b946eb
     |   volatile.cloud-init.instance-id: 38468a45-11b4-49d1-a811-40423f87789f
-    |   volatile.eth0.host_name: vethef7b5491
+    |   volatile.eth0.host_name: vethb6f436f7
     |   volatile.eth0.hwaddr: 00:16:3e:ee:b5:9e
     |   volatile.idmap.base: "0"
     |   volatile.idmap.current: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
@@ -82,101 +82,81 @@ $ incus config show tide-proto
     | stateful: false
     | description: ""
 $ systemd_ready 
-  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.069 s
-    | running (próba 1)
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.062 s
+    | degraded (próba 1)
 $ incus exec tide-proto -T -- bash -c $'\n        set -e\n        name=$(id -un 1000 2>/dev/null || true)\n        if [ -z "$name" ]; then\n            useradd -m -u 1000 -U -s /bin/bash agent\n        elif [ "$name" != agent ]; then\n            usermod -l agent -d /home/agent -m "$name"\n            groupmod -n agent "$(id -gn 1000)" 2>/dev/null || true\n        fi\n        id agent' 
   [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.055 s
     | uid=1000(agent) gid=1000(agent) groups=1000(agent),27(sudo)
 Sieć: chwilowe proxy scripts/box/prototype/proxy.py na 10.173.184.1:18080 (port proxy Tide, przepuszczany przez inet tide-box); bez zmian w nftables.
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c printf\ \'%s\\n\'\ \'Acquire::http::Proxy\ \"http://10.173.184.1:18080\"\;\'\ \ \ \ \ \ \ \ \ \'Acquire::https::Proxy\ \"http://10.173.184.1:18080\"\;\'\ \'Acquire::http::Pipeline-Depth\ \"0\"\;\'\ \>/etc/apt/apt.conf.d/95tide-proto 
-  [apt w kontenerze przez proxy] kod wyjścia: 0, czas: 0.056 s
+  [apt w kontenerze przez proxy] kod wyjścia: 0, czas: 0.061 s
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- dpkg-query -W -f \$\{Package\}\ \$\{Status\}\\n git ca-certificates curl xz-utils netcat-openbsd 
-  [pakiety w kontenerze: git ca-certificates curl xz-utils netcat-openbsd] kod wyjścia: 0, czas: 0.056 s
+  [pakiety w kontenerze: git ca-certificates curl xz-utils netcat-openbsd] kod wyjścia: 0, czas: 0.059 s
     | ca-certificates install ok installed
     | curl install ok installed
-    | git unknown ok not-installed
+    | git install ok installed
     | netcat-openbsd install ok installed
-    | xz-utils unknown ok not-installed
-$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- apt-get update 
-  [apt-get update w kontenerze] kod wyjścia: 0, czas: 1.106 s
-    | Hit:1 http://security.ubuntu.com/ubuntu noble-security InRelease
-    | Hit:2 http://archive.ubuntu.com/ubuntu noble InRelease
-    | Hit:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
-    | Reading package lists...
-$ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git xz-utils 
-  [apt-get install git xz-utils] kod wyjścia: 0, czas: 42.726 s
-    | … (pominięto 43 wierszy)
-    | Selecting previously unselected package perl.
-    | Preparing to unpack .../4-perl_5.38.2-3.2ubuntu0.6_amd64.deb ...
-    | Unpacking perl (5.38.2-3.2ubuntu0.6) ...
-    | Selecting previously unselected package xz-utils.
-    | Preparing to unpack .../5-xz-utils_5.6.1+really5.4.5-1ubuntu0.4_amd64.deb ...
-    | Unpacking xz-utils (5.6.1+really5.4.5-1ubuntu0.4) ...
-    | Selecting previously unselected package libcurl3t64-gnutls:amd64.
-    | Preparing to unpack .../6-libcurl3t64-gnutls_8.5.0-2ubuntu10.16_amd64.deb ...
-    | Unpacking libcurl3t64-gnutls:amd64 (8.5.0-2ubuntu10.16) ...
-    | Selecting previously unselected package liberror-perl.
-    | Preparing to unpack .../7-liberror-perl_0.17029-2_all.deb ...
-    | Unpacking liberror-perl (0.17029-2) ...
-    | Selecting previously unselected package git-man.
-    | Preparing to unpack .../8-git-man_1%3a2.43.0-1ubuntu7.4_all.deb ...
-    | Unpacking git-man (1:2.43.0-1ubuntu7.4) ...
-    | Selecting previously unselected package git.
-    | Preparing to unpack .../9-git_1%3a2.43.0-1ubuntu7.4_amd64.deb ...
-    | Unpacking git (1:2.43.0-1ubuntu7.4) ...
-    | Setting up libgdbm6t64:amd64 (1.23-5.1build1) ...
-    | Setting up libgdbm-compat4t64:amd64 (1.23-5.1build1) ...
-    | Setting up libcurl3t64-gnutls:amd64 (8.5.0-2ubuntu10.16) ...
-    | Setting up xz-utils (5.6.1+really5.4.5-1ubuntu0.4) ...
-    | update-alternatives: using /usr/bin/xz to provide /usr/bin/lzma (lzma) in auto mode
-    | Setting up perl-modules-5.38 (5.38.2-3.2ubuntu0.6) ...
-    | Setting up git-man (1:2.43.0-1ubuntu7.4) ...
-    | Setting up libperl5.38t64:amd64 (5.38.2-3.2ubuntu0.6) ...
-    | Setting up perl (5.38.2-3.2ubuntu0.6) ...
-    | Setting up liberror-perl (0.17029-2) ...
-    | Setting up git (1:2.43.0-1ubuntu7.4) ...
-    | Processing triggers for libc-bin (2.39-0ubuntu8.9) ...
+    | xz-utils install ok installed
 $ incus exec tide-proto -T --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env no_proxy=localhost,127.0.0.1,::1 --env NO_PROXY=localhost,127.0.0.1,::1 -- bash -c $'\n    set -e\n    if [ "$(node --version 2>/dev/null)" != v20.19.6 ]; then\n        curl -fsSL https://nodejs.org/dist/v20.19.6/node-v20.19.6-linux-x64.tar.xz             | tar -xJ -C /usr/local --strip-components=1\n    fi\n    node --version; npm --version' 
-  [node 20.19.6 w kontenerze (jak na hoście)] kod wyjścia: 0, czas: 2.538 s
+  [node 20.19.6 w kontenerze (jak na hoście)] kod wyjścia: 0, czas: 0.133 s
     | v20.19.6
     | 10.8.2
 $ git -C /home/user/DevWorkspace/toolssuite worktree add -b proto/k-38 /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 HEAD 
-  [worktree próby na hoście] kod wyjścia: 0, czas: 0.033 s
+  [worktree próby na hoście] kod wyjścia: 0, czas: 0.024 s
     | Przygotowywanie drzewa roboczego (nowa gałąź „proto/k-38”)
     | HEAD wskazuje teraz f877ed4 Merge card K-31 into master
 $ incus config device add tide-proto proto-git disk source=/home/user/DevWorkspace/toolssuite/.git path=/home/user/DevWorkspace/toolssuite/.git shift=true 
   [montowanie /home/user/DevWorkspace/toolssuite/.git (shift=true)] kod wyjścia: 1, czas: 0.037 s
     | Error: Failed to start device "proto-git": The "shift" property cannot be used with a restricted source path
 $ incus config set tide-proto raw.idmap both\ 1000\ 1000 
-  [wariant awaryjny: raw.idmap both 1000 1000] kod wyjścia: 0, czas: 0.053 s
+  [wariant awaryjny: raw.idmap both 1000 1000] kod wyjścia: 0, czas: 0.048 s
 $ incus restart tide-proto 
-  [restart kontenera po raw.idmap] kod wyjścia: 1, czas: 2.235 s
-    | Remapping container filesystem                                                                                             Error: Failed to run: /usr/libexec/incus/incusd forkstart user-1000_tide-proto /var/lib/incus/containers /run/incus/user-1000_tide-proto/lxc.conf: exit status 1
-    | Try `incus info --show-log tide-proto` for more info
+  [restart kontenera po raw.idmap] kod wyjścia: 0, czas: 2.251 s
+    | Remapping container filesystem                                                                                             
 $ systemd_ready 
-  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.019 s
-    | Error: Instance is not running (próba 1)
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 1.964 s
+    | running (próba 2)
+$ incus config device add tide-proto proto-git disk source=/home/user/DevWorkspace/toolssuite/.git path=/home/user/DevWorkspace/toolssuite/.git 
+  [montowanie /home/user/DevWorkspace/toolssuite/.git (shift=false)] kod wyjścia: 0, czas: 0.068 s
+    | Device proto-git added to tide-proto
+$ incus config device add tide-proto proto-wt disk source=/home/user/DevWorkspace/toolssuite-worktrees path=/home/user/DevWorkspace/toolssuite-worktrees 
+  [montowanie /home/user/DevWorkspace/toolssuite-worktrees (shift=false)] kod wyjścia: 0, czas: 0.067 s
+    | Device proto-wt added to tide-proto
+$ incus config device add tide-proto proto-hooks disk source=/home/user/DevWorkspace/toolssuite/.git/hooks path=/home/user/DevWorkspace/toolssuite/.git/hooks readonly=true 
+  [montowanie /home/user/DevWorkspace/toolssuite/.git/hooks (shift=false, ro)] kod wyjścia: 0, czas: 0.054 s
+    | Device proto-hooks added to tide-proto
+$ incus config device add tide-proto proto-config disk source=/home/user/DevWorkspace/toolssuite/.git/config path=/home/user/DevWorkspace/toolssuite/.git/config readonly=true 
+  [montowanie /home/user/DevWorkspace/toolssuite/.git/config (shift=false, ro)] kod wyjścia: 1, czas: 0.040 s
+    | Error: Failed to start device "proto-config": Failed to add mount for device inside container: Failed to run: /usr/libexec/incus/incusd forkmount lxc-mount -- user-1000_tide-proto /var/lib/incus/containers /run/incus/user-1000_tide-proto/lxc.conf /var/lib/incus/devices/user-1000_tide-proto/disk.proto--config.home-tomek-DevWorkspace-toolssuite-.git-config /home/user/DevWorkspace/toolssuite/.git/config none 4097: exit status 1
 
-WYNIK warunki: fail — kontener tide-proto nie dostał adresu IPv4 w 180 s
+WYNIK warunki: fail — montowanie bez shift (raw.idmap) nie przeszło
 
+$ incus config device remove tide-proto proto-git 
+  [odmontowanie proto-git] kod wyjścia: 0, czas: 0.071 s
+    | Device proto-git removed from tide-proto
+$ incus config device remove tide-proto proto-wt 
+  [odmontowanie proto-wt] kod wyjścia: 0, czas: 0.055 s
+    | Device proto-wt removed from tide-proto
+$ incus config device remove tide-proto proto-hooks 
+  [odmontowanie proto-hooks] kod wyjścia: 0, czas: 0.064 s
+    | Device proto-hooks removed from tide-proto
+$ incus config unset tide-proto raw.idmap 
+  [cofnięcie raw.idmap] kod wyjścia: 0, czas: 0.059 s
 $ git -C /home/user/DevWorkspace/toolssuite worktree remove --force /home/user/DevWorkspace/toolssuite-worktrees/proto-k-38 
-  [usunięcie worktree próby] kod wyjścia: 0, czas: 0.008 s
+  [usunięcie worktree próby] kod wyjścia: 0, czas: 0.007 s
 $ git -C /home/user/DevWorkspace/toolssuite branch -D proto/k-38 
-  [usunięcie gałęzi próby] kod wyjścia: 0, czas: 0.003 s
+  [usunięcie gałęzi próby] kod wyjścia: 0, czas: 0.002 s
     | Usunięto gałąź proto/k-38 (wskazywała f877ed4).
 --- połączenia przez chwilowe proxy (liczba, metoda, cel)
-     12 GET archive.ubuntu.com:80
-      1 GET security.ubuntu.com:80
-      1 CONNECT nodejs.org:443
-      1 CONNECT motd.ubuntu.com:443
+
 --- koniec: połączenia przez chwilowe proxy (liczba, metoda, cel)
 
-WYNIK siec-proxy: info — chwilowe proxy zamknięte; celów: 4; nftables bez zmian
+WYNIK siec-proxy: info — chwilowe proxy zamknięte; celów: 0; nftables bez zmian
 
 
 ## Podsumowanie
 
-- warunki: fail — kontener tide-proto nie dostał adresu IPv4 w 180 s
-- siec-proxy: info — chwilowe proxy zamknięte; celów: 4; nftables bez zmian
+- warunki: fail — montowanie bez shift (raw.idmap) nie przeszło
+- siec-proxy: info — chwilowe proxy zamknięte; celów: 0; nftables bez zmian
 
 Niepowodzeń: 1

@@ -269,9 +269,20 @@ box_exists() { incus info "$BOX" >/dev/null 2>&1 </dev/null; }
 box_status() { incus info "$BOX" </dev/null 2>/dev/null | sed -n 's/^Status: *//p' | head -1; }
 
 box_ip() {  # adres IPv4 eth0 kontenera (czeka na DHCP)
+    # Dokładnie ten kontener: „incus list tide-proto” dopasowuje też tide-proto-net (runda 3: zły adres w P-5).
     local i ip
     for ((i = 0; i < WAIT; i++)); do
-        ip=$(incus list "$BOX" -c 4 -f csv </dev/null 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+){3} \(eth0\)' | head -1 | cut -d' ' -f1)
+        ip=$(incus list -f json </dev/null 2>/dev/null | python3 -c '
+import json, sys
+for inst in json.load(sys.stdin):
+    if inst.get("name") != sys.argv[1]:
+        continue
+    eth0 = ((inst.get("state") or {}).get("network") or {}).get("eth0") or {}
+    for a in eth0.get("addresses", []):
+        if a.get("family") == "inet":
+            print(a["address"])
+            break
+' "$BOX" 2>/dev/null | head -1)
         [[ -n $ip ]] && { echo "$ip"; return 0; }
         sleep 1
     done

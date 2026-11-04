@@ -5,12 +5,13 @@
 # Sieć: lib.sh net_open/net_close — domyślnie chwilowe proxy na porcie proxy Tide (bez sudo i bez zmian
 # w nftables), PROTO_NET=rules — trzy chwilowe reguły tide-proto w inet tide-box (sudo); zamykane w pułapce EXIT.
 # Docker w projekcie takim, jaki jest (bez intercept, który projekt ograniczony blokuje — runda 2 pokazała, że
-# intercept nie zmienia błędu). Runtime'y po kolei, do pierwszego działającego (runda 3):
-#   runc       — runc z docker.io (runda 2: „open sysctl net.ipv4.ip_unprivileged_port_start … reopen fd 8:
-#                permission denied” — nowy runc kontra profil AppArmor kontenera),
-#   crun       — crun z apt jako domyślny runtime dockerd (/etc/docker/daemon.json),
-#   runc-stary — najstarszy runc z repozytoriów Ubuntu 24.04 (sprzed poprawek procfs z 2025; ryzyko tylko
-#                w pudełku: root pudełka to nieuprzywilejowany uid hosta).
+# intercept nie zmienia błędu). Runtime'y po kolei, do pierwszego działającego (runda 4):
+#   runc       — runc z docker.io, aktualny z apt (rundy 2–3: „open sysctl net.ipv4.ip_unprivileged_port_start …
+#                reopen fd 8: permission denied” — nowy runc kontra profil AppArmor kontenera),
+#   crun-nowy  — najnowszy crun z wydań GitHub (statyczny) jako domyślny runtime dockerd; crun 1.14 z Ubuntu 24.04
+#                był za stary na specyfikację OCI Dockera 29 („unknown version specified”, runda 3),
+#   runc-1.2.6 — runc 1.2.6 z wydań GitHub (statyczny, sprzed poprawek procfs z 2025; ryzyko tylko w pudełku:
+#                root pudełka to nieuprzywilejowany uid hosta). runc 1.1.12 z apt w rundzie 3 położył dockerd.
 # Docker CE z repozytorium Dockera pominięty: containerd.io ma ten sam nowy runc.
 # Źródła LegalApp: git archive HEAD z repozytorium hosta wypakowane w /root/legalapp kontenera — kontener
 # nie montuje głównego worktree projektu. Repozytorium: PROTO_LEGALAPP albo pierwsze z listy niżej.
@@ -27,7 +28,7 @@ run "konfiguracja bezpieczeństwa kontenera" -- incus config get "$BOX" security
 [[ -z $LAST_OUT || $LAST_OUT == false ]] || die "kontener jest uprzywilejowany (security.privileged: $LAST_OUT) — próba niedozwolona"
 
 net_open
-ensure_pkgs docker.io ca-certificates curl libicu74
+ensure_pkgs docker.io ca-certificates curl libicu74 python3
 box_docker_proxy
 hello() {
     run "docker info ($1: runtime, sterownik, opcje bezpieczeństwa)" -- in_box docker info \
@@ -37,30 +38,44 @@ hello() {
 }
 use_runtime() {  # use_runtime <wariant> — przygotowuje runtime dockerd w kontenerze
     case "$1" in
-        runc) ;;
-        crun)
-            run "apt-get install crun" -- in_box env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-                --no-install-recommends crun
-            ok || return 1
-            run "dockerd: domyślny runtime crun" -- in_box bash -c '
-                printf "%s\n" "{\"default-runtime\": \"crun\", \"runtimes\": {\"crun\": {\"path\": \"/usr/bin/crun\"}}}" \
-                    >/etc/docker/daemon.json
-                systemctl restart docker && crun --version | head -n 1'
-            ;;
-        runc-stary)
-            run "wersje runc w repozytoriach" -- in_box apt-cache madison runc
-            old=$(awk '{print $3}' <<<"$LAST_OUT" | sort -V | head -n 1)
-            [[ -n $old ]] || return 1
-            run "runc $old (najstarszy w Ubuntu 24.04) i domyślny runtime" -- in_box bash -c "
+        runc)
+            # Po rundzie 3 w kontenerze może zostać runc 1.1.12 z apt i daemon.json z crun — przywracamy stan z apt.
+            run "runc z apt (aktualny) i dockerd bez daemon.json" -- in_box bash -c "
                 rm -f /etc/docker/daemon.json
-                DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades runc=$old &&
+                DEBIAN_FRONTEND=noninteractive apt-get install -y runc &&
                 systemctl restart docker && runc --version | head -n 1"
+            ;;
+        crun-nowy)
+            run "crun z wydań GitHub (najnowszy, statyczny) jako domyślny runtime" -- in_box bash -c '
+                set -e
+                tag=$(curl -fsSL https://api.github.com/repos/containers/crun/releases/latest \
+                    | python3 -c "import json, sys; print(json.load(sys.stdin)[\"tag_name\"])")
+                curl -fsSL -o /usr/local/bin/crun-gh \
+                    "https://github.com/containers/crun/releases/download/$tag/crun-$tag-linux-amd64"
+                chmod 755 /usr/local/bin/crun-gh
+                sha256sum /usr/local/bin/crun-gh
+                /usr/local/bin/crun-gh --version | head -n 1
+                printf "%s\n" "{\"default-runtime\": \"crun-gh\", \"runtimes\": {\"crun-gh\": {\"path\": \"/usr/local/bin/crun-gh\"}}}" \
+                    >/etc/docker/daemon.json
+                systemctl restart docker'
+            ;;
+        runc-1.2.6)
+            run "runc 1.2.6 z wydań GitHub (statyczny) jako domyślny runtime" -- in_box bash -c '
+                set -e
+                curl -fsSL -o /usr/local/bin/runc-1.2.6 \
+                    https://github.com/opencontainers/runc/releases/download/v1.2.6/runc.amd64
+                chmod 755 /usr/local/bin/runc-1.2.6
+                sha256sum /usr/local/bin/runc-1.2.6
+                /usr/local/bin/runc-1.2.6 --version | head -n 1
+                printf "%s\n" "{\"default-runtime\": \"runc-126\", \"runtimes\": {\"runc-126\": {\"path\": \"/usr/local/bin/runc-1.2.6\"}}}" \
+                    >/etc/docker/daemon.json
+                systemctl restart docker'
             ;;
     esac
     ok
 }
 variant=""
-for candidate in runc crun runc-stary; do
+for candidate in runc crun-nowy runc-1.2.6; do
     if use_runtime "$candidate" && hello "$candidate"; then
         result "docker-$candidate" ok "docker run --rm hello-world działa z runtime $candidate"
         variant=$candidate
@@ -71,7 +86,7 @@ done
 if [[ -n $variant ]]; then
     result hello-world ok "docker run --rm hello-world w kontenerze działa (runtime $variant, bez intercept)"
 else
-    result hello-world fail "docker run --rm hello-world nie działa z żadnym runtime (runc, crun, runc-stary) — błędy wyżej"
+    result hello-world fail "docker run --rm hello-world nie działa z żadnym runtime (runc, crun-nowy, runc-1.2.6) — błędy wyżej"
     result dotnet-test skip "pominięte — Docker w kontenerze nie działa"
     finish
 fi

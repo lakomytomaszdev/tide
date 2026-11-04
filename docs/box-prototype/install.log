@@ -1,0 +1,67 @@
+# make box-install przed rundą 3 PT-164 — 2026-11-04T13:56:51+01:00
+
+[1/7] symulacja apt: apt-get -s install incus btrfs-progs
+        brak nowych pakietów
+[2/7] instalacja: bez zmian — pakiety są zainstalowane
+[3/7] preseed: bez zmian — pula tide i mostek incusbr0 (10.173.184.1) są
+[4/7] grupa: bez zmian — tomek jest w grupie incus
+[5/7] projekt: zmiana — projekt user-1000 (restricted), ustawienia: restricted.networks.access=incusbr0, raw.idmap: root:1000:1 w /etc/subuid, root:1000:1 w /etc/subgid (restart incus)
+[6/7] nftables: bez zmian — tabela inet tide-box wczytana, /etc/tide-box/tide-box.nft aktualny (proxy 10.173.184.1:18080)
+[7/7] trwałość: bez zmian — tide-box-nft.service włączona, drop-in incus.service jest
+
+
+== apt-get -s install incus btrfs-progs (nowe pakiety)
+(brak)
+
+== incus list --project user-1000
++----------------+---------+-----------------------+------+-----------+-----------+
+|      NAME      |  STATE  |         IPV4          | IPV6 |   TYPE    | SNAPSHOTS |
++----------------+---------+-----------------------+------+-----------+-----------+
+| tide-proto     | RUNNING | 172.17.0.1 (docker0)  |      | CONTAINER | 0         |
+|                |         | 10.173.184.164 (eth0) |      |           |           |
++----------------+---------+-----------------------+------+-----------+-----------+
+| tide-proto-net | RUNNING | 172.17.0.1 (docker0)  |      | CONTAINER | 0         |
+|                |         | 10.173.184.91 (eth0)  |      |           |           |
++----------------+---------+-----------------------+------+-----------+-----------+
+
+== incus project show user-1000
+config:
+  features.images: "true"
+  features.profiles: "true"
+  features.storage.buckets: "true"
+  features.storage.volumes: "true"
+  restricted: "true"
+  restricted.containers.interception: block
+  restricted.containers.nesting: allow
+  restricted.devices.disk: allow
+  restricted.devices.disk.paths: /home/user
+  restricted.idmap.gid: "1000"
+  restricted.idmap.uid: "1000"
+  restricted.networks.access: incusbr0
+description: ""
+name: user-1000
+used_by:
+- /1.0/instances/tide-proto?project=user-1000
+- /1.0/instances/tide-proto-net?project=user-1000
+- /1.0/profiles/default?project=user-1000
+- /1.0/images/c8260bb3cab33bbb3b20dd6cd581dab8735b2253484fc19ad904adbdf2b946eb?project=user-1000
+
+== nft list table inet tide-box
+table inet tide-box {
+	chain input {
+		type filter hook input priority filter + 10; policy accept;
+		iifname "incusbr0" ip daddr 10.173.184.1 tcp dport 18080 accept comment "proxy Tide"
+		iifname "incusbr0" udp sport 68 udp dport 67 accept comment "DHCP"
+		iifname "incusbr0" meta l4proto { tcp, udp } th dport 53 drop comment "DNS tylko przez proxy"
+		iifname "incusbr0" drop
+	}
+
+	chain forward {
+		type filter hook forward priority filter + 10; policy accept;
+		iifname "incusbr0" drop
+		oifname "incusbr0" drop
+	}
+}
+
+Gotowe. Grupa incus działa po ponownym zalogowaniu tomek. Cofnięcie: make box-uninstall
+kod wyjścia: 0
