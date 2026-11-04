@@ -175,8 +175,11 @@ class FlowGit:
                 raise FlowGitError("worktree karty ma lokalne zmiany po rozwiązywaniu konfliktu")
             return tip
 
-    def clean_tip(self, repo: str, branch: str, path: str) -> str:
-        """Przed i po review potwierdza, że recenzent nie zmienił gałęzi ani plików ticketu."""
+    def clean_tip(self, repo: str, branch: str, path: str, *, untracked: bool = True) -> str:
+        """Przed i po review potwierdza, że recenzent nie zmienił gałęzi ani plików ticketu. `untracked=False` (po
+        review): liczą się tylko śledzone pliki — nieśledzony wynik pomiaru recenzenta nie zmienia tego, co trafi do
+        scalenia (04.11, K-43/BO-9: review odrzucane 9 razy przez `.k43-review-tune.json`). Przed review nieśledzone
+        pliki autora dalej odsyłają krok do sprzątnięcia (K-35/PT-132)."""
         with lock_for(repo):
             tip = self.sha(repo, f"refs/heads/{branch}")
             if not tip or not sandbox_available():
@@ -186,10 +189,25 @@ class FlowGit:
             except StepError as exc:
                 raise FlowGitError(f"nie można ustalić katalogu gita worktree ticketu: {exc}") from exc
             status = StepGit(repo, git_dir, path, path + ".step").run(
-                "status", "--porcelain", "--untracked-files=all")
+                "status", "--porcelain", "--untracked-files=all" if untracked else "--untracked-files=no")
             if not status.ok or _foreign_changes(status.out):
                 raise FlowGitError("worktree ticketu ma lokalne zmiany")
             return tip
+
+    def untracked(self, repo: str, path: str) -> list[str]:
+        """Nieśledzone pliki worktree (ścieżki względne), bez narzędzi agentów użytkownika; pusta lista przy błędzie."""
+        try:
+            git_dir = resolve_git_dir(repo, path)
+        except StepError:
+            return []
+        status = StepGit(repo, git_dir, path, path + ".step").run("status", "--porcelain", "-z",
+                                                                  "--untracked-files=all")
+        if not status.ok:
+            return []
+        from ..tasks.agentcmd import TOOLING_DIRS
+        prefixes = tuple(d.strip("/") + "/" for d in TOOLING_DIRS)
+        return sorted(item[3:] for item in status.out.split("\0")
+                      if item.startswith("?? ") and not item[3:].startswith(prefixes))
 
     def commit_plan(self, repo: str, branch: str, worktree: str, files: dict[str, bytes]) -> dict:
         """Zapisuje migawkę zatwierdzonego planu na gałęzi karty bez podążania za dowiązaniami."""

@@ -96,13 +96,16 @@ class ReviewFlowTest(FlowInProcess):
         self.assertEqual(git(self.repo, "rev-parse", card_branch).strip(), self.master)
         self.assertEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
 
-    def test_reviewer_changes_to_ticket_are_rejected_before_merge(self):
+    def test_reviewer_files_are_moved_out_of_the_ticket_and_the_review_counts(self):
+        # Nowy nieśledzony plik recenzenta nie trafia do ticketu (autor by go zacommitował), ale review nie przepada:
+        # Tide przenosi go do katalogu kroku review (04.11, K-43/BO-9: 9 odrzuconych review przez wynik pomiaru).
         card = self.card(description="Dodaj eksport.\n\nATRAPA: review-modifies")
         self.assertTrue(self.start(card)["ok"])
-        shown = self.wait_column(card, "waiting")
-        self.assertIn("recenzent zmienił", shown["derived"]["note"])
-        self.assertEqual(self.of(card, "review.verdict"), [])
-        self.assertEqual(self.results(card, "merge"), [])
+        self.wait_column(card, "review")
+        self.assertEqual(len(self.of(card, "review.verdict")), 1)
+        review = next(s for s in self.of(card, "step.started") if s["kind"] == "review")
+        self.assertFalse(os.path.exists(os.path.join(review["worktree"], "review-modified.txt")))
+        self.assertTrue(os.path.isfile(os.path.join(review["stepDir"], "out", "pliki-recenzenta", "review-modified.txt")))
 
     def test_approved_review_receives_full_context_and_cleans_worktrees(self):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: gotowe")

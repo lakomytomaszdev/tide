@@ -162,6 +162,9 @@ def _remove_placeholder(path: str, found: list, label: str) -> None:
             pass
 
 
+UNTRACKED_BEFORE = "untracked-before.json"    # nieśledzone pliki worktree ticketu w chwili startu review
+
+
 # Odmowy z filtra treści dostawcy w dzienniku kroku — ponowienie u tego samego dostawcy nic nie da.
 CONTENT_REFUSAL = re.compile(r"flagged for possible cybersecurity risk|content was flagged|violates (?:our|the) "
                              r"(?:usage )?polic|Usage Policy|refused to (?:help|continue) for safety", re.I)
@@ -1699,6 +1702,15 @@ class FlowEngine(PlanEditing):
             self.procs[step_id] = proc
             return {"unit": bg.unit, "gitDir": bg.git_dir}
 
+        if kind == "review":
+            # Nieśledzone pliki sprzed review: nowe po review to pliki recenzenta (wynik pomiaru, notatki) — Tide
+            # przenosi je do katalogu kroku zamiast unieważniać review (04.11, K-43/BO-9).
+            try:
+                os.makedirs(os.path.join(step_dir, "in"), exist_ok=True)
+                with open(os.path.join(step_dir, "in", UNTRACKED_BEFORE), "w", encoding="utf-8") as fh:
+                    json.dump(self.git.untracked(project.repo, worktree), fh)
+            except OSError:
+                pass
         try:
             begun = self._act(card.id, "step-start", step_id, launch, unit=f"tide-step-{step_id}",
                               session=session, stepDir=step_dir, worktree=worktree, kind=kind,
@@ -3184,9 +3196,10 @@ class FlowEngine(PlanEditing):
                 continue
             path = os.path.join(step.get("stepDir") or "", "out", handoff.RESULT_FILE)
             verdict = self._review_result(path)
+            self._move_reviewer_files(step, step.get("repo") or self._repo(card))
             try:
                 tip = self.git.clean_tip(step.get("repo") or self._repo(card),
-                                         step.get("branch") or "", step.get("worktree") or "")
+                                         step.get("branch") or "", step.get("worktree") or "", untracked=False)
             except FlowGitError:
                 tip = ""
             if verdict and tip and tip == step.get("reviewTip"):
@@ -3536,9 +3549,10 @@ class FlowEngine(PlanEditing):
             if verdict is None:
                 data = {"result": "error", "reason": "bad-review"}
             else:
+                self._move_reviewer_files(step, step.get("repo") or self._repo(card))
                 try:
                     tip = self.git.clean_tip(step.get("repo") or self._repo(card),
-                                             step.get("branch") or "", step.get("worktree") or "")
+                                             step.get("branch") or "", step.get("worktree") or "", untracked=False)
                 except FlowGitError:
                     tip = ""
                 if not tip or tip != step.get("reviewTip"):
@@ -4019,6 +4033,37 @@ class FlowEngine(PlanEditing):
                                 executor="", auto=True)
 
     CLASS_RANK = {"lekki": 0, "standard": 1, "mocny": 2}
+
+    def _move_reviewer_files(self, step: dict, repo: str) -> list[str]:
+        """Nieśledzone pliki, które pojawiły się w worktree ticketu podczas review, idą do `out/pliki-recenzenta/`
+        kroku review — ticket zostaje czysty (autor ich nie zacommituje), a review nie przepada."""
+        worktree = step.get("worktree") or ""
+        step_dir = step.get("stepDir") or ""
+        before_file = os.path.join(step_dir, "in", UNTRACKED_BEFORE)
+        if not worktree or not os.path.isfile(before_file):
+            return []
+        try:
+            with open(before_file, encoding="utf-8") as fh:
+                before = set(json.load(fh))
+        except (OSError, ValueError):
+            return []
+        moved = []
+        target_root = os.path.realpath(os.path.join(step_dir, "out", "pliki-recenzenta"))
+        root = os.path.realpath(worktree)
+        for rel in self.git.untracked(repo, worktree):
+            if rel in before:
+                continue
+            source = os.path.realpath(os.path.join(root, rel))
+            target = os.path.realpath(os.path.join(target_root, rel))
+            if not source.startswith(root + os.sep) or not target.startswith(target_root + os.sep):
+                continue
+            try:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.move(source, target)
+                moved.append(rel)
+            except OSError:
+                continue
+        return moved
 
     def _other_provider_executor(self, st: FlowState, step: dict) -> str:
         """Wykonawca innego dostawcy w tej samej klasie (albo mocny), inny model niż autor ticketu; pusty — brak."""

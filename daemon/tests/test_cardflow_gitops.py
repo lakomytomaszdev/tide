@@ -62,6 +62,19 @@ class MergeTest(unittest.TestCase):
                                expected_tip=git(self.repo, "rev-parse", "ticket/test"))
 
     @unittest.skipUnless(sandbox_available(), "brak bwrap")
+    def test_review_check_ignores_untracked_files_but_not_tracked_changes(self):
+        # 04.11, K-43/BO-9: wynik pomiaru recenzenta (nieśledzony plik) unieważniał review 9 razy.
+        self.ticket_commit()
+        tip = self.flow.clean_tip(self.repo, "ticket/test", self.ticket)
+        self.write(self.ticket, ".review-result.json", "{}\n")
+        self.assertEqual(self.flow.clean_tip(self.repo, "ticket/test", self.ticket, untracked=False), tip)
+        with self.assertRaises(gitops.FlowGitError):     # przed review nieśledzone pliki autora dalej blokują
+            self.flow.clean_tip(self.repo, "ticket/test", self.ticket)
+        self.write(self.ticket, "ticket.txt", "zmienione\n")
+        with self.assertRaises(gitops.FlowGitError):
+            self.flow.clean_tip(self.repo, "ticket/test", self.ticket, untracked=False)
+
+    @unittest.skipUnless(sandbox_available(), "brak bwrap")
     def test_worktree_with_only_user_agent_tooling_is_removed(self):
         os.makedirs(os.path.join(self.ticket, ".agents", "skills"))
         self.write(os.path.join(self.ticket, ".agents", "skills"), "SKILL.md", "x\n")
