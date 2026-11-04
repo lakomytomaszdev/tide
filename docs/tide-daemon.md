@@ -1902,11 +1902,12 @@ zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
   wrote}`.
 - Działania Tide w trakcie kroku opiekuna (każde `_act` tej karty z wykonaną pracą: scalenie, commit planu,
   gałęzie, start innego kroku z przywracaniem zależności, sprzątanie…) nie są zapisem kroku: przed działaniem
-  strażnik porównuje stan i zmiany zapisuje jako `caretaker.guard` z `cause: check` i `wrote: [powód]` (zapis Tide
-  ich nie przykryje), potem zamraża jednostkę kroku (`stepstop.freeze_unit`, `systemctl --user freeze
-  <jednostka>.scope` — cgroup freezer zatrzymuje proces z potomkami), wykonuje działanie, bierze stan bazowy na
-  nowo (`cause: <działanie>`) i dopiero wtedy odmraża krok (także po błędzie działania). Zmiana w oknie działania
-  jest więc zmianą Tide (review M1). Gdy zamrożenie się nie uda, a proces kroku żyje albo jego stanu nie da się
+  strażnik najpierw zamraża jednostkę kroku (`stepstop.freeze_unit`, `systemctl --user freeze
+  <jednostka>.scope` — cgroup freezer zatrzymuje proces z potomkami), dopiero potem porównuje stan i zmiany
+  zapisuje jako `caretaker.guard` z `cause: check` i `wrote: [powód]` (zapis Tide ich nie przykryje; zapis kroku
+  tuż przed skutecznym zamrożeniem też tu trafia — review M1 rundy 2), wykonuje działanie, bierze stan bazowy na
+  nowo (`cause: <działanie>`) i dopiero wtedy odmraża krok (także po błędzie kontroli albo działania). Zmiana
+  w oknie działania jest więc zmianą Tide (review M1). Gdy zamrożenie się nie uda, a proces kroku żyje albo jego stanu nie da się
   ustalić, zmiany z okna trafiają do `wrote` („zmiana w czasie działania Tide `<działanie>`, gdy kroku opiekuna
   nie dało się zamrozić — …”) — strażnik odrzuca zamiast przepuszczać; proces już zakończony nic nie pisze.
   `FlowState.caretaker_guards` — ostatni stan bazowy, `caretaker_wrote` — zebrane powody.

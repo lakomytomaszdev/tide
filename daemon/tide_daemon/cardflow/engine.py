@@ -1550,8 +1550,14 @@ class FlowEngine(PlanEditing):
                 return done
         if (action, key) not in st.intents:
             self.journal.append(card, "intent", action=action, key=key, **intent)
-        guarded = self._guard_check(card, st)
-        frozen = self._guard_freeze(st, guarded)
+        # Strażnik (PT-158, review M1 rundy 2): najpierw zamrożenie, potem kontrola — zapis kroku opiekuna tuż
+        # przed skutecznym zamrożeniem trafia do `wrote`, zanim nowy stan bazowy po działaniu Tide go przykryje.
+        frozen = self._guard_freeze(st, self._guard_watched(st))
+        try:
+            guarded = self._guard_check(card, st)
+        except BaseException:
+            self._guard_thaw(st, frozen)
+            raise
         try:
             data = work()
         except (FlowGitError, reservations.ReservationError, agentcmd.StepError, OSError, FlowError) as exc:
@@ -1599,11 +1605,16 @@ class FlowEngine(PlanEditing):
             if how == "frozen" and not self.freeze_unit(unit, False):
                 logging.getLogger(__name__).warning("nie udało się odmrozić kroku opiekuna %s (%s)", name, unit)
 
+    def _guard_watched(self, st: FlowState) -> list[str]:
+        """Trwające kroki opiekuna pod strażą."""
+        return [name for name in st.caretaker_guards if name not in st.finished]
+
     def _guard_check(self, card: str, st: FlowState) -> list[str]:
         """Przed działaniem Tide, które może zmienić worktree albo gałąź pod strażą (scalenie, commit planu, gałęzie,
-        sprzątanie): zmiany od stanu bazowego trwającego kroku opiekuna należą do kroku — zapisane w `wrote`
-        przed działaniem, żeby zapis Tide ich nie przykrył. Zwraca kroki do wzięcia stanu na nowo po działaniu."""
-        names = [name for name in st.caretaker_guards if name not in st.finished]
+        sprzątanie), już po zamrożeniu kroków (`_guard_freeze`): zmiany od stanu bazowego trwającego kroku opiekuna
+        należą do kroku — zapisane w `wrote` przed działaniem, żeby zapis Tide ich nie przykrył. Zwraca kroki do
+        wzięcia stanu na nowo po działaniu."""
+        names = self._guard_watched(st)
         for name in names:
             base = st.caretaker_guards[name]
             found = guard.changes(base, guard.again(self.git, base))

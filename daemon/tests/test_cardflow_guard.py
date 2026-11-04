@@ -150,8 +150,8 @@ class EngineGuardTest(GuardRepo):
 
         self.engine = SimpleNamespace(git=self.git, journal=Journal(board), freeze_unit=freeze,
                                       procs={"K-1-care-1": self.proc})
-        for name in ("_act", "_guard_baseline", "_guard_check", "_guard_freeze", "_guard_thaw", "_guard_rebase",
-                     "_guard_verdict"):
+        for name in ("_act", "_guard_baseline", "_guard_watched", "_guard_check", "_guard_freeze", "_guard_thaw",
+                     "_guard_rebase", "_guard_verdict"):
             setattr(self.engine, name, getattr(FlowEngine, name).__get__(self.engine))
         self.engine.journal.append(CARD, "flow.started", provider="anthropic")
 
@@ -195,6 +195,35 @@ class EngineGuardTest(GuardRepo):
         self.assertIn("`step-start`", verdict)
         self.assertIn("README.md", verdict)
         self.assertEqual(self.calls, [(self.UNIT, True)], "nie zamrożony — nie odmrażany")
+
+    def test_caretaker_write_before_the_freeze_completes_is_kept(self):
+        """Review M1 rundy 2: opiekun dopisuje do śledzonego README.md tuż przed skutecznym zamrożeniem, działanie
+        Tide jest puste — zapis należy do kroku, wynik odrzucony jako `caretaker-wrote`."""
+
+        def freeze(unit, frozen):
+            self.calls.append((unit, frozen))
+            if frozen:
+                self.append(os.path.join(self.wt, "README.md"))
+            return True
+
+        self.engine.freeze_unit = freeze
+        self.baseline()
+        self.tide_writes(lambda: None)
+        verdict = self.engine._guard_verdict(CARD, "K-1-care-1")
+        self.assertTrue(verdict.startswith("krok opiekuna pisał poza swoim katalogiem wyjściowym"), verdict)
+        self.assertIn("README.md", verdict)
+        self.assertEqual(self.calls, [(self.UNIT, True), (self.UNIT, False)])
+
+    def test_a_failing_check_still_thaws_the_step(self):
+        self.baseline()
+
+        def broken(card, st):
+            raise OSError("git")
+
+        self.engine._guard_check = broken
+        with self.assertRaises(OSError):
+            self.tide_writes(lambda: None)
+        self.assertEqual(self.calls, [(self.UNIT, True), (self.UNIT, False)])
 
     def test_caretaker_write_into_the_card_worktree_during_a_tide_action_is_kept(self):
         self.freezes = False
