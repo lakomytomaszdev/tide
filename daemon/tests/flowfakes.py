@@ -9,7 +9,8 @@
   „ATRAPA-OPIEKUN: …” w opisie problemu (`escalate` — domyślnie, `powoli` — 6 s pracy i escalate,
   `akcja-<nazwa>`, `bez-wyniku`, `zly-format`, `pytanie`, `blad`; PT-158: `pisze-sledzony`, `pisze-nowy`,
   `commit` — zapis do worktree albo commit, `karta-sledzony`, `karta-nowy` — zapis do worktree karty; potem
-  poprawny `escalate`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …”.
+  poprawny `escalate`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …” (powód
+  jest też w dzienniku kroku).
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
 - `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
@@ -347,7 +348,11 @@ elif word == "blad-opiekun":
         finish("done")
     else:
         reason = re.search(r"ATRAPA-POWOD: (.+)", prompt)
-        finish("error", reason=reason.group(1).strip() if reason else "awaria testowa")
+        reason = reason.group(1).strip() if reason else "awaria testowa"
+        # PT-153: powód (z sekretami z testu) trafia też do dziennika kroku — kontekst opiekuna musi go zamaskować.
+        print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Test pada: " + reason}]}}), flush=True)
+        finish("error", reason=reason)
 elif word == "srodowisko":
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "question",

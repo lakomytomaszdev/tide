@@ -308,6 +308,16 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(self.start(card_id)["ok"])
         # K-35: na polecenie, na które nie da się zezwolić, Tide sam odmawia i wznawia krok z prośbą o pojedyncze
         # polecenia. Atrapa uparcie powtarza prośbę, więc po limicie automatycznych odmów decyzja wraca do użytkownika.
+        def final_permission():
+            decisions = self.of(card_id, "step.decision")
+            if len([d for d in decisions if d.get("auto")]) < 3:
+                return False
+            decided = {d["step"] for d in decisions}
+            pending = self.shown(card_id)["derived"]["flow"]["decisions"]
+            return any(d["kind"] == "permission" and d["step"] not in decided for d in pending)
+
+        # Sama kolumna „Czeka na mnie” może być przejściową migawką po dowolnej z automatycznych odmów.
+        self.assertTrue(wait_until(final_permission, timeout=30), self.events(card_id))
         card = self.wait_column(card_id, "waiting")
         self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
         auto = [d for d in self.of(card_id, "step.decision") if d.get("auto")]

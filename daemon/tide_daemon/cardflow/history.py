@@ -35,8 +35,10 @@ CHOICES = {"retry": "ponowienie kroku", "wait-limit": "czekanie na limit", "tran
 VERDICTS = {"APPROVE": "zatwierdza", "REQUEST_CHANGES": "prosi o zmiany"}
 
 
-def build(st, steps: list[dict]) -> list[dict]:
-    """Historia karty: chronologicznie (od najstarszego); `steps` to `flow.steps[]` (stąd `canEnter`)."""
+def build(st, steps: list[dict], *, mask_event=None) -> list[dict]:
+    """Historia karty: chronologicznie (od najstarszego); `steps` to `flow.steps[]` (stąd `canEnter`).
+    `mask_event` pozwala kontekstowi opiekuna maskować zdarzenie przed formatowaniem i normalizacją tekstu,
+    bez zmiany stanu karty ani identyfikatorów używanych do grupowania prób."""
     last_started = max((int(e.get("seq") or 0) for e in st.log if e.get("type") == "card.started"), default=0)
     enter = {item.get("id"): item.get("canEnter") is True for item in steps}
     roots = {name: _root(st, name) for name in st.steps}
@@ -54,7 +56,7 @@ def build(st, steps: list[dict]) -> list[dict]:
         elif kind == "step.finished":
             continue
         else:
-            entry = _event_entry(event, st)
+            entry = _event_entry(mask_event(event) if mask_event else event, st)
             if entry:
                 entry["old"] = seq < last_started
                 items.append(entry)

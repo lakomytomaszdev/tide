@@ -254,35 +254,175 @@ SECRET_KEY_VALUE = re.compile(r"(?i)(\"?\b(?:" + SECRET_NAME + r"|password|passw
 MASK = "•••"
 
 
-def mask(text: str, env: dict | None = None) -> str:
+def mask(text: str, env: dict | None = None, *, multiline_only: bool = False) -> str:
     """Wycinek bez sekretów: wartości zmiennych środowiskowych (`NAZWA=…`), znane tokeny, pary klucz–sekret
-    i wartości sekretnych zmiennych z bieżącego środowiska."""
+    i wartości sekretnych zmiennych z bieżącego środowiska. `multiline_only` maskuje tylko dopasowania
+    przecinające granice linii: zabezpiecza mieszany stderr/JSON przed podziałem, bez zmiany pojedynczych
+    serializacji JSON (ich odkodowane wartości maskuje później `mask_json`)."""
     text = str(text or "")
     environ = os.environ if env is None else env
+
+    def replacement(original, redacted):
+        if multiline_only and not any(char in original for char in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"):
+            return original
+        return redacted
+
     for name, value in environ.items():
         if isinstance(value, str) and len(value) >= 8 and re.fullmatch(SECRET_NAME, name, re.I):
-            text = text.replace(value, MASK)
+            text = text.replace(value, replacement(value, MASK))
     for pattern in TOKEN_PATTERNS:   # najpierw tokeny: „Authorization: Bearer <token>” traci token, nie tylko słowo
-        text = pattern.sub(lambda m: (m.group(1) + " " + MASK) if m.groups() else MASK, text)
-    text = ENV_ASSIGN.sub(lambda m: f"{m.group(1)}{m.group(2)}={MASK}", text)
-    text = SECRET_KEY_VALUE.sub(lambda m: m.group(1) + MASK, text)
+        text = pattern.sub(lambda m: replacement(m.group(0), (m.group(1) + " " + MASK) if m.groups() else MASK), text)
+    text = ENV_ASSIGN.sub(lambda m: replacement(m.group(0), f"{m.group(1)}{m.group(2)}={MASK}"), text)
+    text = SECRET_KEY_VALUE.sub(lambda m: replacement(m.group(0), m.group(1) + MASK), text)
     return text
 
 
-def excerpt(lines: list[str], env: dict | None = None) -> str:
-    """Wycinek dziennika kroku do karty: ostatnie zdarzenia po ludzku (typ i tekst), sekrety zamaskowane."""
+def trim_secret_boundary(text: str, env: dict | None = None, *, tail: bool) -> str:
+    """Przesuwa uciętą granicę na pełną linię poza możliwym sekretem, bez maskowania serializacji JSON.
+
+    Korzysta z tych samych wzorców co `mask`. Przy początku końcówki nie znamy nazwy przypisania: pierwszy
+    cudzysłów każdego rodzaju może zamykać wartość rozpoczętą przed odczytem. Bez takiego cudzysłowu do EOF
+    nie ma zamkniętej wartości tego rodzaju, którą `mask` rozpoznałby w pełnym pliku. Przy urwanym końcu
+    dopięcie cudzysłowu pozwala tym samym wzorcom odnaleźć niedomkniętą wartość.
+
+    Przesunięcie nie może przeciąć kolejnego, kompletnego sekretu (także wartości środowiska). Dlatego
+    zachowujemy zakresy z oryginalnego tekstu i rozszerzamy odrzucany fragment do ustalenia granicy.
+    """
+    environ = os.environ if env is None else env
+    values = [value for name, value in environ.items()
+              if isinstance(value, str) and "\n" in value and mask(value, {name: value}) == MASK]
+    patterns = (*TOKEN_PATTERNS, ENV_ASSIGN, SECRET_KEY_VALUE)
+    spans = [(match.start(), match.end()) for pattern in patterns for match in pattern.finditer(text)]
+    for value in values:
+        offset = text.find(value)
+        while offset >= 0:
+            spans.append((offset, offset + len(value)))
+            offset = text.find(value, offset + 1)
+
+    def after_line(offset):
+        if text[offset - 1:offset] == "\n":
+            return offset
+        newline = text.find("\n", offset)
+        return newline + 1 if newline >= 0 else len(text)
+
+    start, end = 0, len(text)
+    if tail:
+        # Oba rodzaje cudzysłowów obsługiwane przez wzorce `mask`; utrata nazwy wyklucza ocenę jej sekretności.
+        start = max(text.find(quote) + 1 for quote in ('"', "'"))
+        if start:
+            start = after_line(start)
+    else:
+        for quote in ('"', "'"):
+            for pattern in (ENV_ASSIGN, SECRET_KEY_VALUE):
+                for match in pattern.finditer(text + quote):
+                    if match.end() > len(text):
+                        end = min(end, text.rfind("\n", 0, match.start()) + 1)
+
+    while start < end:
+        before = start, end
+        for left, right in spans:
+            if tail and left < start < right:
+                start = after_line(right)
+            elif not tail and left < end < right:
+                end = text.rfind("\n", 0, left) + 1
+        # Fragment wartości env może nie zawierać cudzysłowów ani nazwy. Sprawdzamy każdą nową granicę,
+        # również gdy przesunięcie przecięło inną, nakładającą się wartość.
+        for value in values:
+            for match in re.finditer("\n", value):
+                fragment = value[match.end():] if tail else value[:match.end()]
+                if not fragment:
+                    continue
+                if tail and text.startswith(fragment, start, end):
+                    start = after_line(start + len(fragment))
+                elif not tail and text.endswith(fragment, start, end):
+                    end = text.rfind("\n", start, end - len(fragment)) + 1
+        if before == (start, end):
+            break
+    return text[start:end]
+
+
+def _secret_field(key: str, env: dict | None) -> bool:
+    """Czy pole jest sekretne — rozstrzyga `mask` na próbce `nazwa=x`, bez drugiej listy nazw."""
+    probe = f"{key}=x"
+    return bool(key) and mask(probe, env) != probe
+
+
+def mask_json(value, key: str = "", env: dict | None = None):
+    """Maskuje odkodowane klucze i wartości przed serializacją JSON. Sekretne pole traci całą wartość napisu
+    lub liczby także w potomnych obiektach i listach; kolizje zamaskowanych kluczy dostają unikalny dopisek
+    liczbowy, bez nadpisywania pól."""
+    if isinstance(value, dict):
+        secret_parent = _secret_field(key, env)
+        entries = [(mask(k, env) if isinstance(k, str) else k, k, v) for k, v in value.items()]
+        reserved = {masked for masked, _, _ in entries}
+        result, suffixes = {}, {}
+        for masked, original, item in entries:
+            target = masked
+            if target in result:
+                number = suffixes.get(masked, 2)
+                while f"{masked} [{number}]" in reserved or f"{masked} [{number}]" in result:
+                    number += 1
+                target = f"{masked} [{number}]"
+                suffixes[masked] = number + 1
+            # Rezerwujemy także nazwy późniejszych pól. Sekretny rodzic zachowuje sekretność całego poddrzewa;
+            # poza nim wartości oceniamy po oryginalnym kluczu (przed maskowaniem i rozstrzyganiem kolizji).
+            result[target] = mask_json(item, key if secret_parent else str(original), env)
+        return result
+    if isinstance(value, list):
+        return [mask_json(v, key, env) for v in value]
+    if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return value
+    if value != "" and _secret_field(key, env):
+        return MASK
+    if isinstance(value, str):
+        return mask(value, env)
+    return value if mask(str(value), env) == str(value) else MASK
+
+
+def excerpt(lines: list[str] | str, env: dict | None = None, limit: int = EXCERPT_LINES) -> str:
+    """Wycinek dziennika kroku do karty: ostatnie `limit` zdarzeń po ludzku (typ i tekst), sekrety zamaskowane.
+    Uszkodzony obiekt JSON daje dopisek bez treści. Kontekst opiekuna (PT-153) przekazuje surowy tekst,
+    zachowując białe znaki wielowierszowych sekretów, i bierze tak samo ostatnie 300 zdarzeń.
+    """
     picked = []
-    for line in lines:
-        event = _json(line)
-        text = _event_text(event) if event is not None else line.strip()
+    plain = []
+
+    def add(text):
         if text:
             # najpierw maskowanie, potem skracanie — obcięty w pół token nie przeszedłby przez wzorce
             text = mask(text, env)
             picked.append(text if len(text) <= EXCERPT_LINE_CHARS else text[:EXCERPT_LINE_CHARS - 1] + "…")
-    return "\n".join(picked[-EXCERPT_LINES:]).replace("```", "'''")
+
+    def flush_plain():
+        # Surowy stderr maskujemy całym blokiem, zanim podział na linie lub `strip` zgubi granice sekretu.
+        # JSON pozostaje osobno: maskowanie jego serializacji mogłoby uszkodzić sekwencje ucieczki.
+        for line in mask("".join(plain), env).splitlines():
+            if line.lstrip().startswith("{"):
+                # Niepełna serializacja nie jest zwykłym tekstem; nie ujawniamy odkodowanych fragmentów.
+                add("(pominięto: niepoprawne lub niepełne zdarzenie JSON)")
+            else:
+                add(line.strip())
+        plain.clear()
+
+    # Linia JSON może być wnętrzem sekretu stderr. Najpierw maskujemy całe dopasowania wielowierszowe,
+    # a dopiero potem rozpoznajemy zdarzenia; pojedyncze serializacje pozostają nienaruszone do `mask_json`.
+    raw = lines if isinstance(lines, str) else "".join(line + "\n" for line in lines)
+    raw_lines = mask(raw, env, multiline_only=True).splitlines(keepends=True)
+    for line in raw_lines:
+        event = _json(line)
+        if event is None:
+            plain.append(line)
+        else:
+            flush_plain()
+            add(_event_text(event, env))
+    flush_plain()
+    return "\n".join(picked[-limit:]).replace("```", "'''")
 
 
-def _event_text(event: dict) -> str:
+def _event_text(event: dict, env: dict | None = None) -> str:
+    # Maskujemy odkodowane wartości przed łączeniem i normalizacją białych znaków. Inaczej wielowierszowy
+    # sekret środowiska przestaje pasować do dokładnej wartości rozpoznawanej przez `mask`.
+    event = mask_json(event, env=env)
     kind = str(event.get("type") or "")
     parts = []
     for key in ("subtype", "api_error_status"):
@@ -301,7 +441,7 @@ def _event_text(event: dict) -> str:
         if item.get("type") == "text" and item.get("text"):
             parts.append(" ".join(str(item["text"]).split()))
         elif item.get("type") == "tool_use":
-            parts.append(f"{item.get('name') or 'narzędzie'}: {_short(item.get('input'))}")
+            parts.append(f"{item.get('name') or 'narzędzie'}: {_short(item.get('input'), env)}")
         elif item.get("type") == "tool_result":
             content = item.get("content")
             if isinstance(content, list):
@@ -310,7 +450,7 @@ def _event_text(event: dict) -> str:
                          " ".join(str(content or "").split()))
     for denial in event.get("permission_denials") or []:
         if isinstance(denial, dict):
-            parts.append(f"odmowa {denial.get('tool_name') or '?'}: {_short(denial.get('tool_input'))}")
+            parts.append(f"odmowa {denial.get('tool_name') or '?'}: {_short(denial.get('tool_input'), env)}")
     item = event.get("item") if isinstance(event.get("item"), dict) else {}
     for key in ("command", "aggregated_output", "text"):
         if isinstance(item.get(key), str) and item[key].strip():
@@ -320,12 +460,14 @@ def _event_text(event: dict) -> str:
     return f"[{kind}] " + " · ".join(parts) if kind else " · ".join(parts)
 
 
-def _short(value) -> str:
+def _short(value, env: dict | None = None) -> str:
     if isinstance(value, dict):
         for key in ("command", "file_path", "notebook_path", "path", "pattern"):
             if isinstance(value.get(key), str):
                 return value[key]
-        return json.dumps(value, ensure_ascii=False)[:200]
+        # Maskujemy odkodowane wartości przed serializacją i skróceniem: sekwencje ucieczki JSON
+        # zmieniają granice cytowanego sekretu, a obcięty token nie przeszedłby przez wzorce.
+        return json.dumps(mask_json(value, env=env), ensure_ascii=False)[:200]
     return str(value or "")
 
 

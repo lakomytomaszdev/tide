@@ -139,7 +139,8 @@ TRIGGERS = [_error_trigger]
 
 
 def _error_section(problem: dict, st) -> str:
-    """Przesłanka do czasu #11: wyłącznie opis problemu z decyzji i powód zakończenia kroku."""
+    """Przesłanka: opis problemu z decyzji i powód zakończenia kroku; dziennik kroku, plan, notki i poprzednie
+    próby są w plikach kontekstu (`caretakerctx`, PT-153)."""
     name = problem.get("step") or ""
     step, done = st.steps.get(name) or {}, st.finished.get(name) or {}
     decision = _decision_of(st, name) or {}
@@ -309,12 +310,22 @@ def _commands_section(worktree: str, commands: bool) -> list[str]:
             "kroku i po nim, a wynik kroku, który cokolwiek tam zmienił, odrzuca (`caretaker-wrote`)."]
 
 
-def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands: bool = True) -> str:
-    """Kartka kroku opiekuna: opis problemu (zamaskowany `faults.mask`), dostępne akcje z parametrami, zakazy,
-    polecenia tylko do odczytu (`commands` — program z listą poleceń, Claude) i ścieżka wyniku. Sekcja problemu
-    pochodzi z `BRIEF_SECTIONS` według wyzwalacza."""
+def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands: bool = True,
+          context: list | None = None, context_dir: str = "") -> str:
+    """Kartka kroku opiekuna: opis problemu (zamaskowany `faults.mask`), pliki kontekstu (PT-153, `context` —
+    `[{path, title, trimmed}]` z `caretakerctx.build`), dostępne akcje z parametrami, zakazy, polecenia tylko do
+    odczytu (`commands` — program z listą poleceń, Claude) i ścieżka wyniku. Sekcja problemu pochodzi
+    z `BRIEF_SECTIONS` według wyzwalacza."""
     section = BRIEF_SECTIONS.get(problem.get("trigger") or "")
     described = section(problem, st) if section else f"## Problem\n\nProblem {problem.get('id')}."
+    files = []
+    if context:
+        files = ["## Kontekst", "",
+                 f"Tide przygotował pliki kontekstu w {context_dir or '(katalog kontekstu)'} (tylko do odczytu; "
+                 "sekrety zamaskowane jako •••, razem najwyżej 400 kB). Przeczytaj je, zanim wybierzesz akcję:", ""]
+        files += [f"- {item['path']} — {item['title']}" + (" (przycięty do limitu)" if item.get("trimmed") else "")
+                  for item in context]
+        files.append("")
     actions = allowed_actions(problem)
     listed = []
     for name, action in actions.items():
@@ -338,6 +349,7 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
         "",
         faults.mask(described),
         "",
+        *files,     # `collect` maskuje tytuły i nadaje sekretnej nazwie alias istniejącego pliku kontekstu
         "## Dostępne akcje",
         "",
         *listed,

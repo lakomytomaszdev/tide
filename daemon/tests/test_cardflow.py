@@ -13,9 +13,21 @@ import subprocess
 import unittest
 from unittest import mock
 
+from tide_daemon.cardflow_monitor import CardFlowMonitor
+
 from . import flowfakes
 from .privatebus import app, wait_until
 from .test_cardflow_dbus import CLAUDE_MD, git, test_root
+
+
+class _TestCardFlowMonitor(CardFlowMonitor):
+    def stop(self):
+        # Testy po stop() wywołują silnik bezpośrednio i wstrzykują awarie zapisu dziennika. Trwający tick
+        # musi się skończyć, zanim zaczną te operacje albo usuną katalogi atrapy. Usługa zatrzymuje się bez czekania.
+        pool = self._pool
+        super().stop()
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=True)
 
 
 class FlowInProcess(unittest.TestCase):
@@ -69,13 +81,12 @@ class FlowInProcess(unittest.TestCase):
 
     def make_flow(self):
         from tide_daemon.cardflow.engine import FlowEngine
-        from tide_daemon.cardflow_monitor import CardFlowMonitor
         from tide_daemon.models import executors
         engine = FlowEngine(self.store, claude_projects=os.path.join(self.base, "home", ".claude", "projects"),
                             systemd_run=self.fakes["systemd-run"], catalog=executors.default_catalog,
                             tmp_root=os.path.join(self.base, "tmp"), settings=self.settings,
                             which=lambda name: self.fakes.get(name), grace=5.0)
-        flow = CardFlowMonitor(engine, self.board, poll_ms=150)
+        flow = _TestCardFlowMonitor(engine, self.board, poll_ms=150)
         self.board.flow = flow
         flow.start()
         self.addCleanup(flow.stop)

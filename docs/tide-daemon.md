@@ -1827,14 +1827,99 @@ zgody, uruchomienia poza piaskownicą, scalenia, push ani odrzucenia ticketu.
 ### Kontekst
 
 Kartka (`brief`) zaczyna się od „Jesteś opiekunem karty <K-…> w Tide.” i zawiera: przesłankę z `BRIEF_SECTIONS`
-według wyzwalacza (zamaskowaną `faults.mask`), listę dozwolonych akcji z polami, zakazy i ścieżkę wyniku
+według wyzwalacza (zamaskowaną `faults.mask`), listę plików kontekstu, listę dozwolonych akcji z polami, zakazy i ścieżkę wyniku
 („Plik wyniku: …/out/result.json”). Krok opiekuna pracuje w worktree kroku problemu (tylko do odczytu) i ma osobny
 katalog `<worktree>.caretaker-<krok>.step`.
 
-#### Opis problemu z decyzji (PT-143, do #11)
+#### Opis problemu z decyzji (PT-143)
 
 Sekcja `error`: krok, wykonawca, próba, „co się stało” i „dlaczego” z decyzji błędu, powód zakończenia kroku i czyja
-wina według dziennika kroku — bez dziennika kroku i bez innych plików.
+wina według dziennika kroku. Dziennik kroku i pozostałe pliki są w katalogu kontekstu (niżej).
+
+#### Katalog `in/context/` (PT-153)
+
+Przy starcie kroku opiekuna (w parze „zamiar → wynik” `step-start`, po przyjęciu przez `_admit`, więc nie przy każdym
+obrocie pętli w kolejce do dostawcy) Tide buduje `<krok>/in/context/` modułem
+`daemon/tide_daemon/cardflow/caretakerctx.py` (`build(problem, st, events, …)`; `collect` — to samo w pamięci, dla
+rozmowy z opiekunem w #7). Kartka dostaje sekcję „## Kontekst” z bezwzględną ścieżką i opisem każdego pliku
+(„(przycięty do limitu)” przy przyciętych). Pliki wspólne dla każdego wyzwalacza:
+
+- `history.md` — historia karty po ludzku (`history.build`, od najstarszego wpisu, z próbami kroków),
+- `journal.jsonl` — ostatnie 200 zdarzeń dziennika karty (JSON Lines, od najstarszego),
+- `plan/plan.md`, `plan/source.md`, `plan/tickets/<id>.md` z katalogu karty w tablicy (bez planu — `plan/README.md`
+  z dopiskiem) i `steps/<krok problemu>/prompt.txt` — kartka kroku problemu,
+- dla każdego kroku problemu (łańcuch `parentStep` problemu i wszystkie kroki jego ticketu): `steps/<krok>/note.md`,
+  `review.md`, `handoff.md`, `result.json` oraz dodatkowe notki `*.md` wskazane w `notes`/`kept` wyniku lub zdarzenia
+  zakończenia (z archiwum kroku w katalogu karty), `plan-review.json` (z `<krok>/out`) i `step-log.md` —
+  ostatnie 300 zdarzeń `out/step.log` po ludzku (`faults.excerpt(…, limit=300)`, jak wycinek PT-125),
+- `attempts.md` — próby kroków problemu (wykonawca, wynik, powód, czyja wina, decyzja) i poprzednie działania
+  opiekuna przy tym samym id problemu (wynik, streszczenie, rekomendacja, błąd, `note.md`, `result.json` i dodatkowe
+  notki z `notes`/`kept` kroku opiekuna) — bez bieżącego kroku. Dodatkowe nazwy muszą wskazywać plik Markdown
+  bez składników ścieżki; odczyt nie podąża za dowiązaniami,
+- `docs/agent-plan-standard.md`, `docs/sandbox-and-permissions.md` i `docs/AGENTS-przeplyw-karty.md` (sekcja
+  „Przepływ karty” z `AGENTS.md`) — migawki dokumentów działającej usługi Tide: `tide-docs/` obok pakietu
+  (`daemon/install.sh` kopiuje tam te trzy pliki) albo repozytorium Tide przy uruchomieniu ze źródeł
+  (`caretakerctx.tide_docs_dir()`), więc dostają je też karty innych projektów; dopiero bez nich — z worktree kroku
+  opiekuna, a bez pliku i tam — dopisek „(pominięto: …)”. Katalog dokumentów jest osobnym korzeniem tylko dla tych
+  stałych nazw (inne źródła nie czytają z niego przez `ctx.read_text`).
+
+**Rejestr źródeł.** `caretakerctx.SOURCES` — wyzwalacz → lista `Source(name, build)`; `"*"` — źródła każdego
+problemu. Problem dostaje `"*"` i źródła wszystkich swoich wyzwalaczy (`triggers[]`). `build(ctx)` zwraca
+`File(path, title, text=…)` albo `File(path, title, items=[…], head=…, trim=n)` (zdarzenia od najstarszego,
+przycinane) i czyta pliki wyłącznie przez `ctx.read_text` / `ctx.read_tail`. Kolejne tickety dopisują własne wpisy
+(np. błędy sprawdzania formatu planu) bez edycji wspólnych źródeł; wyjątek w źródle daje `errors/<źródło>.md`
+zamiast przerwania startu.
+
+**Granice.** Maskowanie wyłącznie `faults.mask`: każdy plik w całości, zdarzenia każde osobno przed liczeniem
+rozmiaru. Tytuły plików także przechodzą przez maskowanie. Ścieżka zawierająca sekret (sprawdzana również przed
+sanitacją i skracaniem nazwy) dostaje unikalny alias `masked-N.*`, z rezerwacją pozostałych nazw. Alias jest nazwą
+zapisanego pliku, więc odnośnik w kartce nadal działa. W `journal.jsonl` i plikach `*.json` każdy odkodowany klucz
+i każda wartość są maskowane osobno, przed ponowną
+serializacją (dotyczy też wyniku osadzonego w `attempts.md`). Kolizje kluczy po maskowaniu dostają unikalny
+dopisek ` [N]`, z pominięciem nazw innych pól, żeby nie nadpisywać danych. Pole, które `faults.mask`
+uznaje za sekretne na próbce `nazwa=x` (`token`, `password`, `apiKey`…), traci całą wartość — także napis ze spacjami
+i liczbę w dowolnie zagnieżdżonych obiektach i listach pod tym polem; pozostałe napisy przechodzą przez
+`faults.mask`, a liczba zmieniona przez `faults.mask` (np. równa wartości
+sekretnej zmiennej środowiska) staje się `•••`. Niepoprawny lub niepełny plik JSON jest zastępowany dopiskiem
+„(pominięto: niepoprawny lub niepełny JSON)” — maskowanie surowych sekwencji ucieczki mogłoby ujawnić część sekretu.
+Tak samo uszkodzone zdarzenie w `out/step.log` (linia zaczynająca się od `{`, także przy EOF po awarii) zastępuje
+dopisek bez jego treści. Poprawne zdarzenie bez końcowego znaku nowej linii nadal trafia do wycinka po odkodowaniu;
+odkodowane wartości zdarzenia przechodzą przez maskowanie przed łączeniem i normalizacją białych znaków,
+żeby wielowierszowy sekret środowiska nadal pasował do swojej wartości. Przed rozdzieleniem stderr i zdarzeń
+`faults.mask(…, multiline_only=True)` maskuje dopasowania przekraczające granice linii: poprawny JSON wewnątrz
+sekretu nie rozcina go na jawne fragmenty. Jednoliniowe serializacje pozostają nienaruszone do odkodowania.
+Surowy stderr jest następnie maskowany całymi blokami przed podziałem na linie, usuwaniem białych znaków
+i skracaniem; odczyt zachowuje oryginalne znaki końca linii (także CRLF). Dokument `AGENTS.md` przechodzi przez
+`faults.mask` z tym samym środowiskiem przed wycięciem sekcji „Przepływ karty” i normalizacją CRLF, zarówno
+z kopii dokumentów Tide, jak i z worktree. Historia i poprzednie diagnozy opiekuna dostają zamaskowane kopie
+zdarzeń przed formatowaniem przez `caretaker.history_text`, bez zmiany źródłowego stanu karty.
+Końcówka `out/step.log` czytana od środka pliku zaczyna się od
+pierwszej pełnej linii — sekret przecięty granicą odczytu nie traci nazwy zmiennej ani prefiksu tokenu przed
+maskowaniem. Tak samo odczyt kończący się przed końcem pliku (początek pliku dłuższego niż `FILE_READ_MAX` albo plik
+dopisywany w trakcie odczytu) odrzuca ostatnią, niepełną linię i dopisuje „dalsza część pliku pominięta” — urwana
+reszta tokenu nie trafia do `faults.mask` (review PT-153, runda 2). Po odrzuceniu urwanej linii obie granice
+odrzucają też pozostałe linie przeciętej wielowierszowej wartości środowiska, której sekretność rozstrzyga
+`faults.mask`. Sprawdzenie zachowuje oryginalne białe znaki i bajty (bezstratne `surrogateescape`), przed
+formatowaniem; przesunięta granica jest sprawdzana ponownie na wypadek nakładających się wartości (review
+PT-153, runda 10). `faults.trim_secret_boundary` korzysta z tych samych wzorców co `faults.mask`, aby odrzucać
+także fragmenty cytowanych przypisań bez wartości w środowisku: na początku końcówki pierwszy cudzysłów każdego
+rodzaju może zamykać utraconą wartość, a przy urwanym końcu tymczasowe domknięcie ujawnia początek przypisania.
+Odrzucany fragment rozszerza się na całe linie i kompletne sekrety przecięte nową granicą; może obejmować też
+jawny tekst, którego nie da się odróżnić od kontynuacji sekretu. Bez dodatkowych odczytów ponad limit. Jeśli
+dopisywany dziennik ma obie granice ucięte (brakuje początku i nie osiągnięto EOF), cały odczyt zastępuje dopisek
+o pominięciu — brak obu cudzysłowów nie rozstrzyga wtedy, czy fragment jest środkiem sekretu (runda 11).
+Odczyt tylko z korzeni: katalog karty w tablicy (`flow/<K-…>`), worktree kroku opiekuna oraz worktree
+i katalogi kroków problemu z dziennika. Korzeń, który sam jest dowiązaniem (np. cały `<worktree>.step` podmieniony na
+dowiązanie do `$HOME`), odpada (`lstat`); przy odczycie korzeń jest otwierany z `O_NOFOLLOW` i porównywany
+z tożsamością (`st_dev`, `st_ino`) z chwili sprawdzenia, a każdy składnik ścieżki — względem poprzedniego (`dir_fd`)
+z `O_NOFOLLOW`; plik musi być zwykłym plikiem. Dowiązanie na dowolnym poziomie daje dopisek „(pominięto: dowiązanie
+symboliczne / plik spoza katalogu karty i worktree)”, nie treść. Całość ma najwyżej 400 kB (`MAX_BYTES = 400 000`
+bajtów): przycinane są najpierw najstarsze zdarzenia `journal.jsonl`, potem dzienników kroków, potem historii,
+z pierwszą linią „(przycięto N najstarszych zdarzeń — limit kontekstu opiekuna 400 kB)”; gdyby to nie wystarczyło,
+końcówki największych plików z dopiskiem „… (koniec pliku przycięty …)”, a plik, z którego zostałby sam dopisek,
+wypada w całości — zamiast nich jeden `przycieto.md` („(pominięto N plików kontekstu w całości …)”), na który
+budżet jest zarezerwowany z góry, więc limit obowiązuje przy dowolnej liczbie plików. Katalog kontekstu jest budowany
+od nowa przy każdym starcie.
 
 ### Ustawienia
 
