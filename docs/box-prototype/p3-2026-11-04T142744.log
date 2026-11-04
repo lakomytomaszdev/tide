@@ -1,0 +1,228 @@
+# próba p3 — 2026-11-04T14:27:44+01:00 — 7.0.0-38-generic — user@tomek-pc
+# dziennik: docs/box-prototype/p3-2026-11-04T142744.log
+
+== proxy wstrzykujące na http://10.173.184.1:18080 (lista CONNECT pusta)
+   proxy: 2026-11-04T14:27:44+01:00 proxy prototypowe słucha na 10.173.184.1:18080; lista: /home/user/DevWorkspace/plasma-tide-worktrees/pt-178-prototyp-proxy-agentow-pudelku/docs/box-prototype/p3-2026-11-04T142744/domains.txt; wstrzykiwanie: anthropic, chatgpt
+
+== pudełko tide-proto-net
+   pudełko tide-proto-net już jest — używam
+running
+   pudełko tide-proto-net: adres 10.173.184.91/24, proxy http://10.173.184.1:18080
+$ in_box_user sh -c rm -f ~/.claude/.credentials.json ~/.codex/auth.json; ls -la ~/.claude ~/.codex 2>&1 | head -20
+/home/ubuntu/.claude:
+total 8
+drwxr-xr-x 1 ubuntu ubuntu  278 Nov  4 12:56 .
+drwxr-x--- 1 ubuntu ubuntu  230 Nov  4 12:56 ..
+drwx------ 1 ubuntu ubuntu    0 Nov  4 12:56 .cc-writes
+-rw-r--r-- 1 ubuntu ubuntu   24 Nov  4 12:22 .last-cleanup
+drwxr-xr-x 1 ubuntu ubuntu  132 Nov  4 12:21 backups
+drwx------ 1 ubuntu ubuntu    0 Nov  4 12:56 bridge-spawn
+drwx------ 1 ubuntu ubuntu    0 Nov  4 12:22 dev-mods
+drwxr-xr-x 1 ubuntu ubuntu    0 Nov  4 12:20 downloads
+-rw-r--r-- 1 ubuntu ubuntu   23 Nov  4 12:56 p2-marker
+drwx------ 1 ubuntu ubuntu   10 Nov  4 12:21 plugins
+drwxr-xr-x 1 ubuntu ubuntu   64 Nov  4 12:56 projects
+drwx------ 1 ubuntu ubuntu    0 Nov  4 12:22 seed-admin
+drwxr-xr-x 1 ubuntu ubuntu   72 Nov  4 12:56 session-env
+drwx------ 1 ubuntu ubuntu    0 Nov  4 12:56 sessions
+drwxr-xr-x 1 ubuntu ubuntu    0 Nov  4 12:56 shell-snapshots
+drwx------ 1 ubuntu ubuntu    0 Nov  4 12:22 ssh
+drwxr-xr-x 1 ubuntu ubuntu 1900 Nov  4 12:56 telemetry
+
+-> kod 0
+$ in_box_user claude --version
+2.1.317 (Claude Code)
+-> kod 0
+
+== Claude Code: claude -p 'hi' ×3 przez http://10.173.184.1:18080/anthropic
+$ timeout 180 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu --env HOME=/home/ubuntu --env PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env ANTHROPIC_BASE_URL=http://10.173.184.1:18080/anthropic --env CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-tide-box-dummy -- claude -p hi
+Hi! What can I help you with today?
+-> kod 0
+-- powtórzenie 1: kod 0, czas 3,09 s
+$ timeout 180 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu --env HOME=/home/ubuntu --env PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env ANTHROPIC_BASE_URL=http://10.173.184.1:18080/anthropic --env CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-tide-box-dummy -- claude -p hi
+Hi! What can I help you with today?
+-> kod 0
+-- powtórzenie 2: kod 0, czas 2,22 s
+$ timeout 180 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu --env HOME=/home/ubuntu --env PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env ANTHROPIC_BASE_URL=http://10.173.184.1:18080/anthropic --env CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-tide-box-dummy -- claude -p hi
+Hi! What can I help you with today?
+-> kod 0
+-- powtórzenie 3: kod 0, czas 2,14 s
+-- żądania przez proxy:
+     18 CONNECT	api.anthropic.com:443	403
+      3 INJECT POST	/anthropic/v1/messages	200
+-- odmowy CONNECT:
+     18 api.anthropic.com	443
+WYNIK P-3 claude: 3/3 udanych; kody /anthropic:  3 200;; polecenie: ANTHROPIC_BASE_URL=http://10.173.184.1:18080/anthropic CLAUDE_CODE_OAUTH_TOKEN=<atrapa> claude -p 'hi'
+WYNIK P-3 claude czas-pudełko: 2,22 s (3,09 2,22 2,14)
+
+== host: claude -p 'hi' ×3 (pomiar porównawczy)
+$ timeout 180 claude -p hi
+Cześć! W czym mogę dziś pomóc?
+-> kod 0
+-- powtórzenie 1: kod 0, czas 5,33 s
+$ timeout 180 claude -p hi
+Cześć! W czym mogę pomóc?
+-> kod 0
+-- powtórzenie 2: kod 0, czas 5,55 s
+$ timeout 180 claude -p hi
+Cześć! W czym mogę dziś pomóc?
+-> kod 0
+-- powtórzenie 3: kod 0, czas 4,28 s
+WYNIK P-3 claude czas-host: 5,33 s (5,33 5,55 4,28)
+
+== Codex: atrapa ~/.codex/auth.json w pudełku
+$ in_box_user codex --version
+codex-cli 0.166.0
+-> kod 0
+
+== Codex wariant base-url
+$ timeout 180 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu --env HOME=/home/ubuntu --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 -- codex exec --skip-git-repo-check -c chatgpt_base_url="http://10.173.184.1:18080/chatgpt/backend-api/" Reply with the single word: hi
+Reading additional input from stdin...
+2026-11-04T13:28:11.255929Z ERROR codex_models_manager::manager: failed to refresh available models: Connection failed: error sending request
+2026-11-04T13:28:11.342743Z ERROR codex_models_manager::manager: failed to refresh available models: Connection failed: error sending request
+2026-11-04T13:28:14.504335Z ERROR codex_models_manager::manager: failed to refresh available models: Connection failed: error sending request
+OpenAI Codex v0.166.0
+--------
+workdir: /home/ubuntu
+model: gpt-6.1-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 01a1a6be-db21-7cd1-8af4-59d1ad78c477
+--------
+user
+Reply with the single word: hi
+2026-11-04T13:28:17.468388Z ERROR codex_models_manager::manager: failed to refresh available models: Connection failed: error sending request
+ERROR: Reconnecting... 2/5
+ERROR: Reconnecting... 3/5
+ERROR: Reconnecting... 4/5
+ERROR: Reconnecting... 5/5
+warning: Falling back from WebSockets to HTTPS transport. workspace backend must use an HTTPS origin without credentials
+ERROR: Reconnecting... 1/5
+ERROR: Reconnecting... 2/5
+ERROR: Reconnecting... 3/5
+ERROR: Reconnecting... 4/5
+ERROR: Reconnecting... 5/5
+ERROR: workspace backend must use an HTTPS origin without credentials
+ERROR: workspace backend must use an HTTPS origin without credentials
+-> kod 1
+-- żądania przez proxy:
+     20 CONNECT	chatgpt.com:443	403
+      1 CONNECT	sdmntprcentralus.oaiusercontent.com:443	403
+      5 CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+      1 INJECT GET	/chatgpt/backend-api/plugins/featured	200
+      2 INJECT GET	/chatgpt/backend-api/ps/plugins/installed	200
+     37 INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+      1 INJECT GET	/chatgpt/backend-api/ps/plugins/suggested/codex	200
+     15 INJECT GET	/chatgpt/backend-api/wham/accounts/check	200
+      1 INJECT GET	/chatgpt/backend-api/wham/settings/user	200
+      2 INJECT POST	/chatgpt/backend-api/codex/analytics-events/events	200
+      2 INJECT POST	/chatgpt/backend-api/ps/mcp	200
+      1 INJECT POST	/chatgpt/backend-api/ps/mcp	204
+-- odmowy CONNECT:
+     20 chatgpt.com	443
+      1 sdmntprcentralus.oaiusercontent.com	443
+      5 sdmntprsouthcentralus.oaiusercontent.com	443
+WYNIK P-3 codex base-url: kod 1; /chatgpt:  2 /chatgpt/backend-api/codex/analytics-events/events 200; 1 /chatgpt/backend-api/plugins/featured 200; 2 /chatgpt/backend-api/ps/mcp 200; 1 /chatgpt/backend-api/ps/mcp 204; 2 /chatgpt/backend-api/ps/plugins/installed 200; 37 /chatgpt/backend-api/ps/plugins/list 200; 1 /chatgpt/backend-api/ps/plugins/suggested/codex 200; 15 /chatgpt/backend-api/wham/accounts/check 200; 1 /chatgpt/backend-api/wham/settings/user 200;
+
+== Codex wariant openai
+$ timeout 180 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu --env HOME=/home/ubuntu --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env OPENAI_BASE_URL=http://10.173.184.1:18080/chatgpt/backend-api/codex -- codex exec --skip-git-repo-check -c chatgpt_base_url="http://10.173.184.1:18080/chatgpt/backend-api/" Reply with the single word: hi
+Reading additional input from stdin...
+2026-11-04T13:28:37.846128Z ERROR codex_models_manager::manager: failed to refresh available models: Connection failed: error sending request
+2026-11-04T13:28:38.001453Z ERROR codex_models_manager::manager: failed to refresh available models: Connection failed: error sending request
+2026-11-04T13:28:40.771154Z ERROR codex_models_manager::manager: failed to refresh available models: Connection failed: error sending request
+OpenAI Codex v0.166.0
+--------
+workdir: /home/ubuntu
+model: gpt-6.1-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 01a1a6bf-433b-77d3-a5bb-c093b15547aa
+--------
+user
+Reply with the single word: hi
+2026-11-04T13:28:43.908976Z ERROR codex_models_manager::manager: failed to refresh available models: Connection failed: error sending request
+ERROR: Reconnecting... 2/5
+ERROR: Reconnecting... 3/5
+ERROR: Reconnecting... 4/5
+ERROR: Reconnecting... 5/5
+warning: Falling back from WebSockets to HTTPS transport. workspace backend must use an HTTPS origin without credentials
+ERROR: Reconnecting... 1/5
+ERROR: Reconnecting... 2/5
+ERROR: Reconnecting... 3/5
+ERROR: Reconnecting... 4/5
+ERROR: Reconnecting... 5/5
+ERROR: workspace backend must use an HTTPS origin without credentials
+ERROR: workspace backend must use an HTTPS origin without credentials
+-> kod 1
+-- żądania przez proxy:
+     20 CONNECT	chatgpt.com:443	403
+      1 CONNECT	sdmntprcentralus.oaiusercontent.com:443	403
+      5 CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+      1 INJECT GET	/chatgpt/backend-api/plugins/featured	200
+      2 INJECT GET	/chatgpt/backend-api/ps/plugins/installed	200
+     20 INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+      1 INJECT GET	/chatgpt/backend-api/ps/plugins/suggested/codex	200
+     15 INJECT GET	/chatgpt/backend-api/wham/accounts/check	200
+      1 INJECT GET	/chatgpt/backend-api/wham/settings/user	200
+      2 INJECT POST	/chatgpt/backend-api/codex/analytics-events/events	200
+      2 INJECT POST	/chatgpt/backend-api/ps/mcp	200
+      1 INJECT POST	/chatgpt/backend-api/ps/mcp	204
+-- odmowy CONNECT:
+     20 chatgpt.com	443
+      1 sdmntprcentralus.oaiusercontent.com	443
+      5 sdmntprsouthcentralus.oaiusercontent.com	443
+WYNIK P-3 codex openai: kod 1; /chatgpt:  2 /chatgpt/backend-api/codex/analytics-events/events 200; 1 /chatgpt/backend-api/plugins/featured 200; 2 /chatgpt/backend-api/ps/mcp 200; 1 /chatgpt/backend-api/ps/mcp 204; 2 /chatgpt/backend-api/ps/plugins/installed 200; 20 /chatgpt/backend-api/ps/plugins/list 200; 1 /chatgpt/backend-api/ps/plugins/suggested/codex 200; 15 /chatgpt/backend-api/wham/accounts/check 200; 1 /chatgpt/backend-api/wham/settings/user 200;
+
+== Codex wariant provider
+$ timeout 180 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu --env HOME=/home/ubuntu --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 -- codex exec --skip-git-repo-check -c chatgpt_base_url="http://10.173.184.1:18080/chatgpt/backend-api/" -c model_provider="tide" -c model_providers.tide={ name = "tide", base_url = "http://10.173.184.1:18080/chatgpt/backend-api/codex", wire_api = "responses", requires_openai_auth = true } Reply with the single word: hi
+Reading additional input from stdin...
+OpenAI Codex v0.166.0
+--------
+workdir: /home/ubuntu
+model: gpt-6.1-sol
+provider: tide
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 01a1a6bf-a5cd-7a82-b374-765ad13adf49
+--------
+user
+Reply with the single word: hi
+codex
+hi
+tokens used
+1,818
+hi
+-> kod 0
+-- żądania przez proxy:
+      1 CONNECT	ab.chatgpt.com:443	403
+      1 CONNECT	sdmntprcentralus.oaiusercontent.com:443	403
+      5 CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+      2 INJECT GET	/chatgpt/backend-api/codex/models	200
+      1 INJECT GET	/chatgpt/backend-api/plugins/featured	200
+      2 INJECT GET	/chatgpt/backend-api/ps/plugins/installed	200
+      7 INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+      1 INJECT GET	/chatgpt/backend-api/ps/plugins/suggested/codex	200
+      2 INJECT GET	/chatgpt/backend-api/wham/accounts/check	200
+      1 INJECT GET	/chatgpt/backend-api/wham/settings/user	200
+      2 INJECT POST	/chatgpt/backend-api/codex/analytics-events/events	200
+      1 INJECT POST	/chatgpt/backend-api/codex/responses	200
+      2 INJECT POST	/chatgpt/backend-api/ps/mcp	200
+      1 INJECT POST	/chatgpt/backend-api/ps/mcp	204
+-- odmowy CONNECT:
+      1 ab.chatgpt.com	443
+      1 sdmntprcentralus.oaiusercontent.com	443
+      5 sdmntprsouthcentralus.oaiusercontent.com	443
+WYNIK P-3 codex provider: kod 0; /chatgpt:  2 /chatgpt/backend-api/codex/analytics-events/events 200; 2 /chatgpt/backend-api/codex/models 200; 1 /chatgpt/backend-api/codex/responses 200; 1 /chatgpt/backend-api/plugins/featured 200; 2 /chatgpt/backend-api/ps/mcp 200; 1 /chatgpt/backend-api/ps/mcp 204; 2 /chatgpt/backend-api/ps/plugins/installed 200; 7 /chatgpt/backend-api/ps/plugins/list 200; 1 /chatgpt/backend-api/ps/plugins/suggested/codex 200; 2 /chatgpt/backend-api/wham/accounts/check 200; 1 /chatgpt/backend-api/wham/settings/user 200;
+WYNIK P-3 codex: działa w wariancie provider
+
+== odświeżanie OAuth
+brak żądań odświeżenia (ani przez base URL, ani przez CONNECT)
+WYNIK P-3 odświeżanie: 0 żądań do punktów OAuth

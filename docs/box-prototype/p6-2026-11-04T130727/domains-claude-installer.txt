@@ -1,0 +1,3 @@
+claude.ai
+downloads.claude.ai
+api.anthropic.com

@@ -20,6 +20,10 @@ o nic nie pytają (poza hasłem sudo przy nftables), nie używają `security.pri
 | P-4 | **działa** | `raw.idmap "both 1000 1000"` zamiast `shift=true` (`raw-idmap-zamiast-shift`), montowania dodawane przy zatrzymanym pudełku; git status/commit, npm ci, nakładki ro, widoczność hosta — runda 4 |
 | P-5 | **działa** | nesting tak; intercept tylko po zmianie projektu (niepotrzebny); filtrowanie NIC mac + ipv4 odrzuca podszycie (`filtrowanie-nic-bez-ipv6`) — runda 4 |
 | P-9 | **działa** | krok jako usługa `systemd-run --user … --wait` (`krok-jako-usluga-user`): przeżywa śmierć klienta `incus exec` i restart `tide-daemon`; scope przeżywa restart `tide-daemon`, ale nie śmierć klienta — runda 4 |
+| P-2 | **działa z profilem AppArmor bwrap w pudełku** (PT-178) | bwrap Claude Code tak; Codex: piaskownica startuje, blokada zapisu poza katalogiem niezweryfikowana — „Próby PT-178” niżej |
+| P-3 | **K3 możliwe** (PT-178) | Claude Code przez `ANTHROPIC_BASE_URL`, Codex tylko z własnym dostawcą modelu — „Próby PT-178” niżej |
+| P-6 | **działa** (PT-178) | klienci przez CONNECT bez DNS, `NO_PROXY` honorowane; wyjątek Node `fetch` 18 — „Próby PT-178” niżej |
+| P-7 | **działa** (PT-178) | Incus 6.0 z Ubuntu, `images:ubuntu/24.04` — „Próby PT-178” niżej |
 | Pomiary | **w progach** | narzut 0,066 s, start 2,3 s, reset 3,9 s (reset wymaga `restricted.snapshots=allow`, `migawki-w-projekcie`) — runda 4 |
 
 **`dotnet test` LegalApp w pudełku — 51 porażek integracyjnych, żadna z Dockera ani Testcontainers**
@@ -29,6 +33,10 @@ pudełko nie ma — na hoście ustawia ją użytkownik), 4× brak plików `EvalS
 (nie ma ich w `git archive HEAD` — nieśledzone albo generowane), 11× asercje aplikacji (teksty lokalizacji,
 HTTP 405 zamiast 404, liczba uruchomień harmonogramu, kolejność wyników wyszukiwania). Wyjaśnienie i profil
 środowiska LegalApp (zmienne, pliki, kultura) należą do PT-184; porównania z wynikiem na hoście nie robiono.
+**Wiersz „działa” dotyczy Dockera i Testcontainers, nie wyniku testów:** 11 porażek z asercji (teksty lokalizacji,
+kolejność wyników) to rzeczy zależne od locale i kolacji, czyli możliwie od środowiska pudełka. PT-184 musi je
+sprawdzić na hoście tym samym `dotnet test --filter` bez `DATABASE_CONNECTION` — dopiero to rozstrzygnie, czy
+pudełko nie zmienia wyniku testów.
 
 Czasy: instalacja .NET SDK 10.0 w pudełku 26,8 s, `dotnet test` (restore, build, testy) 1183 s; cele przez proxy:
 `api.nuget.org`, `builds.dotnet.microsoft.com`, `dot.net`, `aka.ms`, rejestr Dockera, serwery CRL (`crl3/crl4.digicert.com`,
@@ -54,7 +62,7 @@ w progach**, P-5 działa (po poprawce odczytu adresu), P-4 doszło do montowań 
 działającego kontenera — poprawione), P-1 nadal nie działa (runc, crun z Ubuntu, runc 1.1). Runda 4:
 `bash scripts/box/prototype/all.sh` (bez `--install`) — P-4 z montowaniami przy zatrzymanym kontenerze, P-1
 z najnowszym crun i runc 1.2.6 z wydań GitHub. Na hoście jest też kontener `tide-proto-net` spoza skryptów
-(nie ruszamy go; `cleanup.sh` usuwa tylko `tide-proto`).
+(pudełko prób PT-178; po scaleniu z PT-178 wspólny `cleanup.sh` usuwa oba, `--keep-box` zostawia kontenery).
 
 Wynik rundy 4 (14:45–14:48): **P-4, P-5, P-9 i pomiary działają**; P-1 nierozstrzygnięte — oba nowe runtime'y
 (crun 1.30.1, runc 1.2.6) nie zostały sprawdzone, bo dockerd nie wstał po trzecim restarcie w minucie (limit
@@ -63,14 +71,14 @@ startów jednostki, błąd skryptu — poprawiony). Runda 5: tylko `bash scripts
 | Próba | Co sprawdza | Polecenie | Wynik | Czas | Wariant awaryjny (gdy nie działa) |
 | --- | --- | --- | --- | --- | --- |
 | P-1 | Docker w nieuprzywilejowanym kontenerze (`security.nesting`, intercept `mknod`/`setxattr`): `docker run --rm hello-world`, `dotnet test` LegalApp z Testcontainers (`pgvector/pgvector:pg16`) | `bash scripts/box/prototype/p1.sh` | **Runda 6: działa.** runc 1.2.6: hello-world OK; `dotnet test` LegalApp (SDK 10.0 z `TargetFramework`): Testcontainers z `pgvector/pgvector:pg16` i Ryuk działa, jednostkowe 5124 OK / 0 błędów, integracyjne 1186 OK / 51 błędów konfiguracji testów (stan końcowy wyżej), kod 1 | SDK 26,8 s, dotnet test 1183 s | — |
-| P-1 (historia) | jw. | jw. | **Runda 5: `docker run --rm hello-world` działa z runc 1.2.6** (statyczny z wydań GitHub, SHA-256 `0774f49d…2ebc`, domyślny runtime dockerd), bez intercept, w projekcie ograniczonym. runc 1.3.4 z apt: kod 126 (`open sysctl net.ipv4.ip_unprivileged_port_start … reopen fd 8: permission denied`); crun 1.30.1: kod 125 (`open /proc/sys/net/ipv4/ip_unprivileged_port_start: Permission denied`) — oba nowe runtime'y otwierają `/proc/sys` w sposób, którego profil AppArmor kontenera Incusa 6.0.0 nie przepuszcza. `dotnet test` LegalApp nie ruszył: skrypt padł (kod 128) przy odczycie `global.json`, którego w repozytorium nie ma — błąd skryptu, poprawiony; runda 6: znowu `bash scripts/box/prototype/p1.sh`. **Runda 4: nierozstrzygnięte.** runc 1.3.4 z apt: ten sam błąd AppArmor/procfs (kod 126). crun 1.30.1 i runc 1.2.6 z wydań GitHub pobrały się i działają (`--version`, sumy SHA-256 w logu), ale dockerd nie wstał po trzecim restarcie w minucie („Job for docker.service failed”) — najpewniej limit startów jednostki (`StartLimitBurst`), błąd skryptu, nie runtime'u; ten sam błąd mógł zafałszować runc 1.1 z rundy 3. Poprawione (`systemctl reset-failed` przed restartem, dziennik jednostki w logu); runda 5: tylko `bash scripts/box/prototype/p1.sh`. **Runda 3: nie działa.** runc 1.3.4 z apt: ten sam błąd `open sysctl net.ipv4.ip_unprivileged_port_start … reopen fd 8: permission denied` (kod 126); crun 1.14 z Ubuntu 24.04: `OCI runtime create failed: unknown version specified` (za stary na specyfikację OCI Dockera 29); runc 1.1.12 z apt (`--allow-downgrades`): dockerd nie wstaje (`See "systemctl status docker.service"`). Runda 4 (skrypt gotowy): najnowszy crun i runc 1.2.6 z wydań GitHub (statyczne). Rekomendacja na wypadek dalszej porażki: `type: vm` (decyzja `docker-w-vm`). **Runda 2: nie działa.** Sieć przez chwilowe proxy działa (apt, `docker pull` z `registry-1.docker.io`), `docker.io` 29.1.3 z runc 1.3.4 instaluje się, `docker info`: overlayfs, apparmor, seccomp. `docker run --rm hello-world` kończy się kodem 126 — bez intercept i z chwilowym intercept tak samo: `OCI runtime create failed: runc create failed: unable to start container process: error during container init: open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied`. `dotnet test` pominięty. Prawdopodobna przyczyna: nowy runc (poprawki bezpieczeństwa z 2025, ponowne otwieranie plików `/proc/sys` przez `/proc/thread-self/fd`) kontra profil AppArmor kontenera w Incusie 6.0.0 z Ubuntu — **hipoteza, niesprawdzona**. Runda 1 (reguły `tide-proto`): forward ginął, tabela przed/po identyczna | 4,4 s (pull + błąd) | Podman w pudełku z gniazdem Docker API (`podman system service`) albo `type: vm` dla projektów z Dockerem |
-| P-2 | bwrap Claude Code i landlock Codexa w kontenerze | PT-178 | — | — | PT-178 |
-| P-3 | OAuth agentów przez inny base URL (K3) | PT-178 | — | — | PT-178 |
+| P-1 (historia) | jw. | jw. | **Runda 5: `docker run --rm hello-world` działa z runc 1.2.6** (statyczny z wydań GitHub, SHA-256 `0774f49d…2ebc`, domyślny runtime dockerd), bez intercept, w projekcie ograniczonym. runc 1.3.4 z apt: kod 126 (`open sysctl net.ipv4.ip_unprivileged_port_start … reopen fd 8: permission denied`); crun 1.30.1: kod 125 (`open /proc/sys/net/ipv4/ip_unprivileged_port_start: Permission denied`) — oba nowe runtime'y otwierają `/proc/sys` w sposób, którego profil AppArmor kontenera Incusa 6.0.0 nie przepuszcza. `dotnet test` LegalApp nie ruszył: skrypt padł (kod 128) przy odczycie `global.json`, którego w repozytorium nie ma — błąd skryptu, poprawiony; runda 6: znowu `bash scripts/box/prototype/p1.sh`. **Runda 4: nierozstrzygnięte.** runc 1.3.4 z apt: ten sam błąd AppArmor/procfs (kod 126). crun 1.30.1 i runc 1.2.6 z wydań GitHub pobrały się i działają (`--version`, sumy SHA-256 w logu), ale dockerd nie wstał po trzecim restarcie w minucie („Job for docker.service failed”) — najpewniej limit startów jednostki (`StartLimitBurst`), błąd skryptu, nie runtime'u; ten sam błąd mógł zafałszować runc 1.1 z rundy 3. Poprawione (`systemctl reset-failed` przed restartem, dziennik jednostki w logu); runda 5: tylko `bash scripts/box/prototype/p1.sh`. **Runda 3: nie działa.** runc 1.3.4 z apt: ten sam błąd `open sysctl net.ipv4.ip_unprivileged_port_start … reopen fd 8: permission denied` (kod 126); crun 1.14 z Ubuntu 24.04: `OCI runtime create failed: unknown version specified` (za stary na specyfikację OCI Dockera 29); runc 1.1.12 z apt (`--allow-downgrades`): dockerd nie wstaje (`See "systemctl status docker.service"`). Runda 4 (skrypt gotowy): najnowszy crun i runc 1.2.6 z wydań GitHub (statyczne). Rekomendacja na wypadek dalszej porażki: `type: vm` (decyzja `docker-w-vm`). **Runda 2: nie działa.** Sieć przez chwilowe proxy działa (apt, `docker pull` z `registry-1.docker.io`), `docker.io` 29.1.3 z runc 1.3.4 instaluje się, `docker info`: overlayfs, apparmor, seccomp. `docker run --rm hello-world` kończy się kodem 126 — bez intercept i z chwilowym intercept tak samo: `OCI runtime create failed: runc create failed: unable to start container process: error during container init: open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied`. `dotnet test` pominięty. Prawdopodobna przyczyna: nowy runc (poprawki bezpieczeństwa z 2025, ponowne otwieranie plików `/proc/sys` przez `/proc/thread-self/fd`) kontra profil AppArmor kontenera w Incusie 6.0.0 z Ubuntu — **hipoteza, niesprawdzona**. Runda 1 (reguły `tide-proto`): forward ginął, tabela przed/po identyczna — `p1.log` jest nadpisywany co rundę, więc dowód trybu reguł (tabela `inet tide-box` przed i po, `WYNIK nft-przed-po: ok`) jest w wersji z commita `5b6977a`: `git show 5b6977a:docs/box-prototype/p1.log` | 4,4 s (pull + błąd) | Podman w pudełku z gniazdem Docker API (`podman system service`) albo `type: vm` dla projektów z Dockerem |
+| P-2 (PT-178) | bwrap Claude Code i landlock Codexa w kontenerze | `bash scripts/box/prototype/p2.sh` | w „Próby PT-178” niżej | — | — |
+| P-3 (PT-178) | OAuth agentów przez inny base URL (K3) | `bash scripts/box/prototype/p3.sh` | w „Próby PT-178” niżej | — | — |
 | P-4 | `<proj>/.git` i `<proj>-worktrees` z ext4 `/home` przez `shift=true` pod identycznymi ścieżkami, nakładki ro na `.git/hooks`, `.git/config`, `.git/info`; `git status`, `git commit` na `proto/k-38`, `npm ci` (kontener i host) | `bash scripts/box/prototype/p4.sh` | **Runda 4: działa (wariant `raw.idmap`).** `shift=true` odrzucony przez projekt ograniczony; z `raw.idmap "both 1000 1000"` (decyzja `raw-idmap-zamiast-shift`) i montowaniami dodanymi przy zatrzymanym kontenerze: uid 1000 ↔ 1000 pod identycznymi ścieżkami, `git status` i `git commit` na `proto/k-38` z kontenera (commit widoczny na hoście, plik należy do `tomek`), zapis do `.git/hooks`, `.git/config`, `.git/info` odrzucony („Read-only file system”), `npm ci --ignore-scripts` w toolssuite: host 8,6 s, kontener 11,6 s (zimny cache) i 10,8 s (ciepły). Worktree i gałąź próby usunięte | npm ci: 8,6 / 11,6 / 10,8 s | — |
 | P-4 (historia) | jw. | jw. | **Runda 3: częściowo.** Po `make box-install` z `root:1000:1` kontener z `raw.idmap "both 1000 1000"` startuje; `.git`, `<proj>-worktrees` i `.git/hooks` (ro) dołączają się do działającego kontenera, ale pojedynczy plik `.git/config` (ro) nie: `Failed to add mount for device inside container: … incusd forkmount lxc-mount … exit status 1`. Runda 4: montowania dodawane przy zatrzymanym kontenerze (Incus zakłada je przy starcie). Git, npm i widoczność hosta jeszcze niesprawdzone. **Runda 2: nie działa w projekcie ograniczonym.** `incus config device add … shift=true` odrzucone: „The "shift" property cannot be used with a restricted source path”. Wariant `raw.idmap "both 1000 1000"` przyjęty przez projekt (`restricted.idmap.uid/gid=1000` z PT-166), ale kontener nie wystartował (`incusd forkstart … exit status 1`) — najpewniej brak `root:1000:1` w `/etc/subuid` i `/etc/subgid` hosta (hipoteza). Worktree próby i gałąź `proto/k-38` usunięte; git, npm i widoczność hosta niesprawdzone | — | `raw.idmap "both 1000 1000"` bez `shift` (skrypt próbuje sam i zapisuje wariant) |
 | P-5 | Projekt ograniczony `user-1000` (`incus-user`, grupa `incus`): nesting, intercept, filtrowanie NIC (`security.mac_filtering`, `security.ipv4_filtering`, `security.ipv6_filtering` na `eth0`), próba podszycia pod obcy adres | `bash scripts/box/prototype/p5.sh` | **Runda 4: działa.** Nesting w projekcie ograniczonym działa; intercept tylko z `restricted.containers.interception=allow` (domyślnie zablokowany; Docker go nie potrzebuje — w P-1 nic nie zmienił). Filtrowanie NIC (mac + ipv4, decyzja `filtrowanie-nic-bez-ipv6`): własny adres dochodzi do `10.173.184.1:18080`, podszycie pod `10.173.184.250` nie (kontrola bez filtrowania: dochodzi). **Runda 3: działa (po ręcznej analizie logu).** Skrypt zgłosił „nie dochodzi nawet własny adres”, bo `incus list tide-proto` dopasował też drugi kontener `tide-proto-net` (10.173.184.91) i porównywał zły adres; serwer testowy zapisał `10.173.184.164` (tide-proto) przed i po włączeniu filtrowania, a `10.173.184.250` tylko przed — podszycie z filtrowaniem (mac + ipv4) nie doszło (`nc` kod 1). Błąd skryptu poprawiony (`box_ip` po dokładnej nazwie). **Runda 2:** **Nesting działa** (projekt przyjął `security.nesting=true`, `unshare --user --map-root-user --pid --fork --mount-proc true` OK). **Intercept w projekcie ograniczonym nie działa**: „Container syscall interception is forbidden” (`restricted.containers.interception=block`, domyślne); z chwilowym `allow`: `mknod c 1 3` i `setxattr trusted.overlay.opaque` działają. **Filtrowanie NIC działa (mac + ipv4)**: kontrola A (własny adres `10.173.184.164`) i B (podszycie `10.173.184.250` bez filtrowania) doszły do `10.173.184.1:18080`; po `security.mac_filtering=true security.ipv4_filtering=true` własny adres dochodzi, podszycie nie (`nc` kod 1, brak wpisu w dzienniku serwera). `security.ipv6_filtering=true` — kontener nie startuje bez `br_netfilter`; użyto `false` (decyzja `filtrowanie-nic-bez-ipv6`) | 0,05 s (nc) | nesting/intercept: `--project-mode admin` w `scripts/box/install.sh` (grupa `incus-admin`, D9) z wpisem `tryb-admin` albo `restricted.containers.interception=allow` w projekcie (decyzja po rundzie 2); filtrowanie NIC: brak wariantu — warunek konieczny (`question`) |
-| P-6 | Klienci (npm, NuGet, pip, Docker, agenci) przez proxy CONNECT i `NO_PROXY` | PT-178 | — | — | PT-178 |
-| P-7 | Obrazy Incusa (bazowy Tide) | PT-178 | — | — | PT-178 |
+| P-6 (PT-178) | Klienci (npm, NuGet, pip, Docker, agenci) przez proxy CONNECT i `NO_PROXY` | `bash scripts/box/prototype/p6.sh` | w „Próby PT-178” niżej | — | — |
+| P-7 (PT-178) | Obrazy Incusa (bazowy Tide) | `bash scripts/box/prototype/p7.sh` | w „Próby PT-178” niżej | — | — |
 | P-9 | `systemd --user` agenta (lingering), `systemd-run --user --scope` przez `incus exec`; proces przeżywa śmierć klienta `incus exec` i `systemctl --user restart tide-daemon` | `bash scripts/box/prototype/p9.sh` | **Runda 3: działa w wariancie usługi.** Lingering, `systemd-run --user --scope true` i `systemd-run --user --wait true` przez `incus exec --user 1000` działają. Śmierć klienta `incus exec` (`systemctl --user stop tide-proto-client`): proces w **scope ginie**, w **usłudze `--user`** (`systemd-run --user --unit=… --collect --wait sleep 30`) i w usłudze roota z `--uid=1000` **przeżywa**. `systemctl --user restart tide-daemon` nie zabija procesu (klient nie był dzieckiem usługi). Decyzja `krok-jako-usluga-user` | 0,06 s | — |
 | P-9 (historia) | jw. | jw. | Runda 1: **lingering i `systemd-run --user --scope` działają; proces w scope NIE przeżywa śmierci klienta `incus exec`** (`systemctl --user stop tide-proto-client` → `pgrep sleep` pusty). Restart `tide-daemon` nie zabił procesu, ale klient nie był dzieckiem usługi — test nie rozstrzyga. Runda 2 nie ruszyła (kontener zepsuty przez `raw.idmap` z p4); warianty usługi `--user --wait` i usługi roota z `--uid` czekają | 0,06 s | `systemd-run` jako root pudełka z `--uid=agent` (usługa zamiast scope; tokeny tylko w `in/env`); bliżej projektu: `systemd-run --user` jako usługa (bez `--scope`) |
 
@@ -144,10 +152,12 @@ intercept, skrypt tworzy kontener z samym nestingiem i zapisuje to w logu (oceni
 **Sieć dla prób (P-1, P-4, pakiety w P-5) — od rundy 2 domyślnie przez chwilowe proxy.** Tabela `inet tide-box`
 z PT-166 to statyczny default-deny, który przepuszcza z mostka tylko port proxy Tide. Proxy z PT-178 jeszcze nie
 działa, a forward z reguł chwilowych w rundzie 1 ginął w łańcuchu Dockera hosta (wnioski wyżej), więc `lib.sh`
-(`net_open`/`net_close`) uruchamia na czas próby `scripts/box/prototype/proxy.py` (CONNECT i zwykłe HTTP, bez MITM,
+(`net_open`/`net_close`) uruchamia na czas próby `scripts/box/prototype/proxy-plain.py` (CONNECT i zwykłe HTTP do każdego celu, bez MITM,
 dziennik celów) na `<adres mostka>:<port proxy Tide>` i podaje kontenerowi `HTTP(S)_PROXY` (polecenia
 `incus exec`), `Acquire::http(s)::Proxy` (apt) i drop-in `dockerd` — dokładnie jak w docelowej architekturze
-(sekcja 4.5). Bez sudo i bez żadnej zmiany w nftables; lista celów trafia do logu (materiał dla P-6).
+(sekcja 4.5). Bez sudo i bez żadnej zmiany w nftables; lista celów trafia do logu (materiał dla P-6). To inny plik
+niż `proxy.py` z PT-178 (lista domen, trasy wstrzykujące): proxy prób PT-164 przepuszcza każdy cel, bo P-1 i P-4
+sprawdzają Dockera i montowania, nie listę domen.
 
 Tryb `PROTO_NET=rules` (runda 1) wstawia z sudo dokładnie trzy chwilowe reguły z komentarzem `tide-proto`
 **do tabeli `inet tide-box`** (`nft insert`, czyli przed regułami drop):
@@ -188,11 +198,101 @@ Potem `systemctl --user restart tide-daemon` z wariantem scope (kryterium ticket
 
 ## Kolejność uruchomienia
 
-Wszystko naraz: `bash scripts/box/prototype/all.sh` (każda próba pisze własny log; niepowodzenie jednej nie
-zatrzymuje następnych). Pojedynczo:
+Wszystko naraz: `bash scripts/box/prototype/all.sh` — próby PT-164 (p5, p1, p4, p9, measure), potem PT-178 (p7, p6,
+p3, p2); każda pisze własny log, niepowodzenie jednej nie zatrzymuje następnych; `TRIALS="p1 p9"` wybiera próby.
+Sprzątanie: `bash scripts/box/prototype/cleanup.sh` (proxy prototypowe, kontenery `tide-proto`, `tide-proto-net`,
+`tide-proto-p7`, worktree `proto-k-38`; `--keep-box` zostawia kontenery, `--rules` z sudo usuwa pozostałe reguły
+`tide-proto`). Pojedynczo:
 
 1. `bash scripts/box/prototype/p5.sh` — projekt, nesting, intercept, filtrowanie NIC (tworzy kontener).
 2. `bash scripts/box/prototype/p1.sh` — Docker i LegalApp.
 3. `bash scripts/box/prototype/p4.sh` — montowania, git, npm, widoczność hosta.
 4. `bash scripts/box/prototype/p9.sh` — systemd --user i przeżycie restartu.
 5. `bash scripts/box/prototype/measure.sh` — pomiary.
+
+## Próby PT-178 (P-2, P-3, P-6, P-7)
+
+Próby z `docs/card-box-design.md`, sekcja 10. Każda próba to skrypt `scripts/box/prototype/p<N>.sh` uruchamiany
+przez użytkownika poza piaskownicą agenta; pełny dziennik w `docs/box-prototype/p<N>-<czas>.log` (wiersze
+`WYNIK …`), dzienniki proxy (odmowy, dostęp — bez nagłówków i tokenów) w katalogu `p<N>-<czas>/` obok.
+P-1, P-4, P-5, P-9 dopisuje PT-164 (#1); P-2, P-3, P-6, P-7 — PT-178 (#15). Decyzje z prób:
+`docs/box-decisions.md`.
+
+Pudełko prób PT-178: `tide-proto-net` (`images:ubuntu/24.04`, `security.nesting=true`) w projekcie użytkownika,
+sieć tylko przez nftables z PT-166 (z mostka wolno wyłącznie do `<adres mostka>:18080` i DHCP). Proxy prototypowe
+`scripts/box/prototype/proxy.py` słucha na adresie mostka, na porcie 18080: CONNECT do domen z listy, zwykłe HTTP do
+domen z listy (wariant awaryjny apt) i trasy wstrzykujące `/anthropic`, `/chatgpt` (K3). Sprzątanie:
+`scripts/box/prototype/cleanup.sh`.
+
+Przebiegi (2026-11-04): 1 — 12:33 (P-6 padło na źródłach apt); 2 — 13:07 (pełny P-6 bez Playwright i NO_PROXY,
+P-3 Claude, P-2 wariant A); 3 — 13:51 (`P6_ONLY=playwright,noproxy`: Playwright, NO_PROXY, P-3 Codex, P-2 warianty A
+i B); 4 — 14:27 (`TRIALS="p3 p2"`: Codex z własnym dostawcą modelu i identyfikatorem konta hosta w atrapie, P-2
+z Codexem przez model).
+
+### Tabela prób PT-178
+
+| Próba | Pytanie | Skrypt | Wynik | Dziennik |
+| --- | --- | --- | --- | --- |
+| P-2 | bwrap (Claude Code) i landlock (Codex) w kontenerze przy `apparmor_restrict_unprivileged_userns=1` | `p2.sh` | **bwrap (Claude Code): działa po wczytaniu profilu AppArmor w pudełku (wariant B); z gołego obrazu (A) nie.** A: `bwrap --unshare-all` → `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`, jądro: `apparmor="DENIED" operation="capable" namespace="root//incus-user-1000_tide-proto-net_<var-lib-incus>" profile="unprivileged_userns"` (setpcap, net_admin) — ograniczenie hosta obowiązuje w przestrzeni AppArmor pudełka; `claude -p` z `failIfUnavailable` odmawia startu („Ubuntu's AppArmor restriction on user namespaces stops bubblewrap here”). B: profil `profile bwrap /usr/bin/bwrap flags=(unconfined) { userns, }` (ten sam co na hoście, `scripts/sandbox/check.py profile`) wczytany przez `apparmor_parser -r` **wewnątrz** pudełka (root pudełka, host bez zmian) → goły bwrap `bwrap-ok`; `claude -p` z `sandbox.enabled=true` kod 0: odczyt `~/.claude/p2-marker` → `No such file or directory` (denyRead maskuje katalog; błąd `cat` zapisany w `claude-read.txt`, więc polecenie naprawdę poszło), zapis w katalogu roboczym tak, poza nim `Read-only file system` (kod i komunikat z odpowiedzi modelu w `--output-format text`; `p2.sh` po review loguje `stream-json` z wynikiem narzędzia Bash). `unshare --user` bez profilu nadal odmowa — ograniczenie zostaje dla reszty procesów. Decyzja `bwrap-profil-w-pudelku`. **Codex: piaskownica startuje po wczytaniu profilu (B), z gołego obrazu (A) nie; ograniczenie zapisu niezweryfikowane.** Codex 0.166 na Linuksie używa bubblewrap, nie samego landlocka („Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces”), więc dzieli los Claude Code. A: `codex exec --sandbox workspace-write` — polecenia nie ruszyły, „the sandbox failed to start with `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`”, żaden plik nie powstał. B (przebieg 4): `codex exec --sandbox workspace-write` (model przez proxy, wariant `provider`) kod 0 — w zapisie Codexa jest **jeden** blok `exec` (`echo ok > ./codex-model-inside`, „succeeded”), plik jest. Drugiego polecenia (`echo bad > ~/p2-outside-codex-model`) Codex nie wykonał — „kod 1, read-only file system” to tylko treść odpowiedzi modelu, więc brak pliku nie dowodzi odmowy piaskownicy. Próba bez modelu (`codex sandbox …`) nie dała wyniku przez składnię CLI 0.166 (`linux` jako polecenie, potem brak `--full-auto`). Udowodnione: z profilem piaskownica Codexa startuje i wykonuje polecenia w katalogu roboczym; nieudowodnione: że blokuje zapis poza nim — wariant `sandbox.enabled=false`/ryzyko K1 dla Codexa zostaje otwarty do #16 (decyzja `bwrap-profil-w-pudelku`). `p2.sh` po review: `codex sandbox -- sh -c …` bez modelu z werdyktem odróżniającym błąd składni od piaskownicy, a w ścieżce z modelem jedno polecenie na wywołanie i liczba bloków `exec` (bez `exec` → „niezweryfikowane”); powtórka: `TRIALS=p2 bash scripts/box/prototype/all.sh` | `p2-2026-11-04T142904.log`, `p2-2026-11-04T135550.log`, `p2-2026-11-04T132223.log` |
+| P-3 | Claude Code (OAuth) przez `ANTHROPIC_BASE_URL` i Codex przez `chatgpt_base_url` na proxy wstrzykujące (K3) | `p3.sh` | **Claude Code: K3 możliwe** — `ANTHROPIC_BASE_URL=http://<mostek>:18080/anthropic CLAUDE_CODE_OAUTH_TOKEN=<atrapa> claude -p 'hi'` 9/9 kod 0 w trzech przebiegach, proxy `INJECT POST /anthropic/v1/messages` → **200**, w pudełku tylko atrapa. Odświeżenie OAuth: 0 żądań przez proxy (ani base URL, ani CONNECT) — pudełko nie odświeża, token odświeża host, proxy czyta plik przy każdym żądaniu. Poza base URL Claude Code próbuje `CONNECT api.anthropic.com:443` (odmowa, bez wpływu). **Codex: K3 możliwe — tylko z własnym dostawcą modelu** (przebieg 4): `codex exec --skip-git-repo-check -c 'chatgpt_base_url="http://<mostek>:18080/chatgpt/backend-api/"' -c 'model_provider="tide"' -c 'model_providers.tide={ name = "tide", base_url = "http://<mostek>:18080/chatgpt/backend-api/codex", wire_api = "responses", requires_openai_auth = true }' 'Reply with the single word: hi'` kod 0, proxy `INJECT POST /chatgpt/backend-api/codex/responses` → **200** (plus `codex/models`, `wham/accounts/check`, `ps/plugins/*`, `ps/mcp`, `analytics-events` → 200/204). W pudełku `~/.codex/auth.json` z tokenami-atrapami (JWT bez podpisu); z pliku hosta przechodzą tylko identyfikator konta i rodzaj planu — z wymyślonym kontem Codex kończy „selected workspace missing from routing discovery”. Same `chatgpt_base_url` albo `+OPENAI_BASE_URL` **nie wystarczą** (przebiegi 3 i 4): wywołanie modelu idzie przez CONNECT prosto do `chatgpt.com:443` (odmowa), kod 1. Odświeżenie OAuth Codexa: 0 żądań (`auth.openai.com` się nie pojawia) | `p3-2026-11-04T142744.log`, `p3-2026-11-04T135419.log`, `p3-2026-11-04T132151.log` |
+| P-6 | klienci przez CONNECT bez DNS, `NO_PROXY` dla localhost | `p6.sh` | **działa**: apt (źródła przepisane na `https://`, decyzja `apt-przez-https`), npm, NuGet, pip, `docker pull`, Playwright (`playwright@1.49.1`), instalator Claude Code i `npm i -g @openai/codex` przechodzą przez CONNECT bez DNS z listą z dziennika odmów. **NO_PROXY honorują wszyscy badani** (curl, Node `fetch`, dotnet `HttpClient`, Playwright/Chromium) dla `localhost` i `127.0.0.1`: serwer w pudełku dostał żądanie, proxy 0 wpisów. Wyjątki: **Node `fetch`** (18.19) nie używa proxy wcale — ruch na zewnątrz pada (`ConnectTimeoutError`, połączenie bezpośrednie blokuje nftables); **Playwright ≥ 1.50 wymaga Node ≥ 20** (Ubuntu 24.04 ma 18.19) — obraz bazowy potrzebuje nowszego Node (#16/#29) | `p6-2026-11-04T135145.log`, `p6-2026-11-04T130727.log`, przebieg 1: `p6-2026-11-04T123348.log` |
+| P-7 | Incus 6.0 z Ubuntu universe: `images:` i `images:ubuntu/24.04` | `p7.sh` | **działa**: `incus 6.0.0-1ubuntu0.3` z noble-security/universe, `incus image list images: ubuntu/24.04` kod 0, `incus launch images:ubuntu/24.04` kod 0 w 1–2 s (Ubuntu 24.04.5 LTS) w projekcie `user-1000`, trzy przebiegi. Zabbly niepotrzebne (decyzja `incus-z-ubuntu`) | `p7-2026-11-04T135140.log`, `p7-2026-11-04T130723.log`, `p7-2026-11-04T123343.log` |
+
+#### Pomiar `claude -p 'hi'` (P-3, trzy powtórzenia na przebieg)
+
+| Gdzie | Przebieg 2 [s] | Przebieg 3 [s] | Przebieg 4 [s] | Mediana z 9 [s] |
+| --- | --- | --- | --- | --- |
+| pudełko, przez proxy wstrzykujące | 4,26 · 5,73 · 3,52 (mediana 4,26) | 5,81 · 5,45 · 12,18 (mediana 5,81) | 3,09 · 2,22 · 2,14 (mediana 2,22) | **4,26** |
+| host | 6,93 · 4,42 · 5,65 (mediana 5,65) | 4,32 · 4,08 · 5,09 (mediana 4,32) | 5,33 · 5,55 · 4,28 (mediana 5,33) | **5,09** |
+
+Narzutu proxy nie widać: w dwóch przebiegach z trzech pudełko było szybsze, mediana z dziewięciu prób to 4,26 s
+w pudełku vs 5,09 s na hoście. Pojedyncze 12,18 s to odstający wynik (opóźnienie API — przez proxy idzie jeden POST).
+Host uruchamia pełną konfigurację użytkownika (CLAUDE.md, wtyczki), pudełko gołe `claude`.
+
+### Domeny z dziennika odmów
+
+Źródło dla szablonów stosów (#16/PT-192, #29, #30/PT-193). Runda 1 każdego klienta biegnie z pustą listą; kolejne
+dokładają domeny z odmów, aż klient przejdzie (`docs/box-prototype/p6-*/domains-*.txt`). Tabela P-6 z kryterium
+karty: kolumny „przez CONNECT” i „NO_PROXY dla localhost” są przy każdym kliencie w tabeli niżej.
+
+| Klient | Przez CONNECT | NO_PROXY dla localhost | Domeny z dziennika odmów |
+| --- | --- | --- | --- |
+| apt | tak | nie dotyczy | `archive.ubuntu.com`, `security.ubuntu.com` |
+| npm | tak | nie dotyczy | `registry.npmjs.org` |
+| NuGet / dotnet (`HttpClient`) | tak | tak | `api.nuget.org`, `crl3.digicert.com`, `ocsp.digicert.com` |
+| pip | tak | nie dotyczy | `pypi.org`, `files.pythonhosted.org` |
+| docker pull | tak | nie dotyczy | `registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com` |
+| Playwright | tak | tak | `registry.npmjs.org`, lustra `playwright*.azureedge.net`, `playwright.download.prss.microsoft.com` |
+| Node `fetch` (18.19) | **nie** (ignoruje proxy) | tak | — (zob. „NO_PROXY per klient”) |
+| curl / instalator Claude Code | tak | tak | `claude.ai`, `downloads.claude.ai` |
+| Codex (`npm i -g`) | tak | nie dotyczy | `registry.npmjs.org` |
+
+Szczegóły rund i poleceń:
+
+| Klient | Polecenie | Pusta lista | Domeny potrzebne | Rundy |
+| --- | --- | --- | --- | --- |
+| apt | `apt-get update` (źródła `https://`) | kod 1 | `archive.ubuntu.com`, `security.ubuntu.com`; dodatkowo `motd.ubuntu.com` (motd-news, niepotrzebne do aktualizacji) | 3 |
+| apt (instalacja) | `apt-get install … dotnet-sdk-8.0 docker.io bubblewrap …` | kod 100 | `archive.ubuntu.com`, `security.ubuntu.com` | 2 |
+| npm | `npm install --package-lock-only && npm ci` | kod 1 (E403) | `registry.npmjs.org` | 2 |
+| NuGet / dotnet | `dotnet restore` | kod 1 | `api.nuget.org`, `crl3.digicert.com`, `ocsp.digicert.com` (sprawdzanie unieważnienia certyfikatów podpisu paczek) | 3 |
+| pip | `pip download requests==2.32.3` | kod 1 | `pypi.org`, `files.pythonhosted.org` | 3 |
+| docker pull | `docker pull hello-world` (dockerd z drop-inem proxy) | kod 1 | `registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com` | 4 |
+| Playwright | `npm i playwright@1.49.1 && npx playwright install chromium` | kod 1 | `registry.npmjs.org`, `playwright.azureedge.net`, `playwright-akamai.azureedge.net`, `playwright-verizon.azureedge.net`, `playwright.download.prss.microsoft.com` (lustra pobierania przeglądarki, próbowane po kolei) | 4 |
+| instalator Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash -s 2.1.317` | kod 22 | `claude.ai`, `downloads.claude.ai`; `api.anthropic.com` po instalacji (`claude --version`), niepotrzebne do instalacji | 4 |
+| Codex | `npm i -g @openai/codex` (0.166.0) | kod 1 | `registry.npmjs.org` | 2 |
+| Claude Code (praca, P-3) | `claude -p` przez base URL | — | żadnej przez CONNECT; odmowy `api.anthropic.com` bez wpływu na wynik | — |
+| Codex (praca, P-3) | `codex exec` (wariant `provider`) | — | żadnej przez CONNECT — model i usługi konta przez base URL; odmowy `ab.chatgpt.com` (telemetria), `sdmntprcentralus.oaiusercontent.com`, `sdmntprsouthcentralus.oaiusercontent.com` (pliki/obrazy wtyczek) bez wpływu na wynik. Bez wariantu `provider` model idzie do `chatgpt.com` — z K3 ta domena ma **nie** być na liście (poszłaby z atrapą) | — |
+
+### NO_PROXY per klient
+
+`NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,<adres mostka>`; serwer HTTP w pudełku
+(`python3 -m http.server 8765 --bind ::`) na pętli zwrotnej. „Tak” = serwer dostał żądanie, a dziennik proxy nie ma
+wpisu (przebieg 3, `docs/box-prototype/p6-2026-11-04T135145.log`).
+
+| Klient | Przez CONNECT | `localhost` bez proxy | `127.0.0.1` bez proxy | Obejście |
+| --- | --- | --- | --- | --- |
+| curl | tak (instalator Claude Code) | tak | tak | — |
+| Node `fetch` (18.19) | **nie** — ignoruje `HTTP(S)_PROXY` | tak (nie używa proxy wcale) | tak | ruch na zewnątrz: Node ≥ 24 z `NODE_USE_ENV_PROXY=1` albo `undici` `EnvHttpProxyAgent` w kodzie; Node 18 z `NODE_USE_ENV_PROXY=1` — bez zmian (`ConnectTimeoutError`) |
+| dotnet `HttpClient` | tak (NuGet) | tak | tak | — |
+| Playwright (Chromium 1.49.1) | tak (pobranie przeglądarki) | tak | tak | — |
+| apt, npm, pip, dockerd, instalator Codexa | tak | nie dotyczy (bez żądań do localhost) | | — |

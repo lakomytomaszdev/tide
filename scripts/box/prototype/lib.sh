@@ -13,7 +13,7 @@
 #
 # Sieć kontenera: tabela inet tide-box z PT-166 zostawia z mostka tylko proxy i DHCP. Gdy próba potrzebuje sieci
 # (apt, docker pull, npm ci), net_open ją otwiera na czas próby, net_close zamyka (także w pułapce EXIT):
-#   PROTO_NET=proxy (domyślnie) — chwilowe proxy proxy.py na adresie mostka i porcie proxy Tide (ten port tabela
+#   PROTO_NET=proxy (domyślnie) — chwilowe proxy proxy-plain.py na adresie mostka i porcie proxy Tide (ten port tabela
 #     już przepuszcza); kontener dostaje HTTP(S)_PROXY, apt i dockerd też. Bez sudo i bez zmian w nftables.
 #     Powód (runda 1, 04.11): reguły chwilowe w inet tide-box nie wystarczyły — forward z incusbr0 dalej ginął
 #     (najpewniej łańcuch FORWARD Dockera hosta z polityką DROP; iptables-nft, tabela ip filter).
@@ -412,7 +412,7 @@ proxy_open() {
     bridge=${cidr%/*}
     port=$(proxy_port)
     PROXY_LOG=$(mktemp "${TMPDIR:-/tmp}/tide-proto-proxy-XXXXXX")
-    python3 "$PROTO_DIR/proxy.py" "$bridge" "$port" "$PROXY_LOG" </dev/null >/dev/null 2>&1 &
+    python3 "$PROTO_DIR/proxy-plain.py" "$bridge" "$port" "$PROXY_LOG" </dev/null >/dev/null 2>&1 &
     PROXY_PID=$!
     NET_OPEN=1
     at_exit net_close
@@ -421,7 +421,7 @@ proxy_open() {
     url="http://$bridge:$port"
     NET_ENV=(--env "http_proxy=$url" --env "https_proxy=$url" --env "HTTP_PROXY=$url" --env "HTTPS_PROXY=$url"
              --env "no_proxy=localhost,127.0.0.1,::1" --env "NO_PROXY=localhost,127.0.0.1,::1")
-    note "Sieć: chwilowe proxy scripts/box/prototype/proxy.py na $bridge:$port (port proxy Tide, przepuszczany przez inet tide-box); bez zmian w nftables."
+    note "Sieć: chwilowe proxy scripts/box/prototype/proxy-plain.py na $bridge:$port (port proxy Tide, przepuszczany przez inet tide-box); bez zmian w nftables."
     run "apt w kontenerze przez proxy" -- in_box bash -c "printf '%s\n' 'Acquire::http::Proxy \"$url\";' \
         'Acquire::https::Proxy \"$url\";' 'Acquire::http::Pipeline-Depth \"0\";' >/etc/apt/apt.conf.d/95tide-proto"
 }

@@ -156,7 +156,11 @@ if ! ok && [[ $filters == *ipv6* ]]; then
     run "start kontenera z filtrowaniem ($filters)" -- incus start "$BOX"
 fi
 ok || filter_rc=$LAST_RC
-[[ $filter_rc -eq 0 ]] || die "kontener z filtrowaniem NIC nie startuje: $(head -n 1 <<<"$LAST_OUT")"
+if [[ $filter_rc -ne 0 ]]; then
+    # Klucz filtrowanie-nic, nie „warunki”: na nim opiera się question z karty (polityka proxy per IP).
+    result filtrowanie-nic fail "Incus odrzucił filtrowanie NIC albo kontener z nim nie startuje ($filters): $(head -n 1 <<<"$LAST_OUT") — warunek konieczny (question)"
+    finish
+fi
 wait_box
 box_addr=$(box_ip)
 run "eth0 kontenera po włączeniu filtrowania" -- incus config device show "$BOX"
@@ -169,9 +173,7 @@ connect "z filtrowaniem: podszycie pod $spoof" "$spoof"
 grep -qx "$spoof" <(seen_since "$m") && spoof_seen=1 || spoof_seen=0
 block "adresy źródłowe zapisane przez serwer testowy" "$(grep -v ready "$seen" || true)"
 
-if [[ $filter_rc -ne 0 ]]; then
-    result filtrowanie-nic fail "Incus odrzucił filtrowanie NIC w projekcie ograniczonym — warunek konieczny (question)"
-elif [[ $control_b -eq 0 ]]; then
+if [[ $control_b -eq 0 ]]; then
     result filtrowanie-nic fail "kontrola B nie zobaczyła podszycia bez filtrowania — test nieważny, wynik nieznany"
 elif [[ $own_ok -eq 0 ]]; then
     result filtrowanie-nic fail "z filtrowaniem nie dochodzi nawet ruch z własnego adresu — filtr psuje sieć pudełka"

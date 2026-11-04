@@ -1,0 +1,7 @@
+{
+  "name": "toolssuite",
+  "engines": {"node": ">=20"},
+  "scripts": {"lint": "ng lint", "build": "ng build", "test": "ng test", "e2e": "playwright test"},
+  "dependencies": {"@angular/core": "^19.1.0"},
+  "devDependencies": {"karma": "~6.4.0", "@playwright/test": "^1.50.0"}
+}

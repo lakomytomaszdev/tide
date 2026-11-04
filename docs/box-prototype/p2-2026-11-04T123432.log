@@ -1,0 +1,37 @@
+# próba p2 — 2026-11-04T12:34:32+01:00 — 7.0.0-38-generic — user@tomek-pc
+# dziennik: docs/box-prototype/p2-2026-11-04T123432.log
+
+== proxy (wstrzykujące, lista CONNECT pusta) na http://10.173.184.1:18080
+   proxy: 2026-11-04T12:34:32+01:00 proxy prototypowe słucha na 10.173.184.1:18080; lista: /home/user/DevWorkspace/plasma-tide-worktrees/pt-178-prototyp-proxy-agentow-pudelku/docs/box-prototype/p2-2026-11-04T123432/domains.txt; wstrzykiwanie: anthropic, chatgpt
+
+== pudełko tide-proto-net
+   pudełko tide-proto-net już jest — używam
+running
+   pudełko tide-proto-net: adres 10.173.184.91, proxy http://10.173.184.1:18080
+
+== host i pudełko: przestrzenie nazw i AppArmor
+host kernel.apparmor_restrict_unprivileged_userns = 1
+host kernel.unprivileged_userns_clone = 1
+host user.max_user_namespaces = 292993
+$ incus config get tide-proto-net security.nesting
+true
+-> kod 0
+$ in_box_user sh -c echo "etykieta AppArmor: $(cat /proc/self/attr/current)"; cat /proc/sys/user/max_user_namespaces
+etykieta AppArmor: unconfined
+2147483647
+-> kod 0
+$ in_box_user sh -c command -v bwrap socat; bwrap --version
+sh: 1: bwrap: not found
+Error: Command not found
+-> kod 127
+
+== goły bwrap i unshare jako ubuntu
+$ in_box_user bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all --die-with-parent -- sh -c echo bwrap-ok
+Error: Command not found
+-> kod 127
+WYNIK P-2 bwrap-goły: kod 127
+$ in_box_user unshare --user --map-root-user --net -- sh -c echo unshare-ok
+unshare: unshare failed: Permission denied
+-> kod 1
+WYNIK P-2 bwrap: pominięty z modelem (brak claude w pudełku albo /home/user/.claude/.credentials.json na hoście); zob. goły bwrap
+-- żądania przez proxy:

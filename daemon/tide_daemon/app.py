@@ -752,6 +752,7 @@ def start_card_flow(app, args, board, monitor=None, limits=None):
                         models_config=models_config.load, model_probe=models_status.endpoint_status,
                         codex_roots=getattr(args, "codex_dir", None), terminal=terminal,
                         limits_source=(lambda: json.loads(limits.forecast_json())) if limits is not None else None)
+    engine.migrate_environment()   # PT-190: propozycja profilu z cardflow.json, gdy projekt nie ma profilu
     if monitor is not None:
         monitor.hidden = engine.is_hidden
         engine.sessions_source = lambda: monitor.raw_sessions

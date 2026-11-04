@@ -1,0 +1,5 @@
+registry.npmjs.org
+playwright.azureedge.net
+playwright-akamai.azureedge.net
+playwright-verizon.azureedge.net
+playwright.download.prss.microsoft.com

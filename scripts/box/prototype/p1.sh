@@ -8,7 +8,7 @@
 # intercept nie zmienia błędu). Runtime'y po kolei, do pierwszego działającego (runda 4):
 #   runc       — runc z docker.io, aktualny z apt (rundy 2–3: „open sysctl net.ipv4.ip_unprivileged_port_start …
 #                reopen fd 8: permission denied” — nowy runc kontra profil AppArmor kontenera),
-#   crun-nowy  — najnowszy crun z wydań GitHub (statyczny) jako domyślny runtime dockerd; crun 1.14 z Ubuntu 24.04
+#   crun-nowy  — crun 1.30.1 z wydań GitHub (statyczny, najnowszy w rundzie 4) jako domyślny runtime dockerd; crun 1.14 z Ubuntu 24.04
 #                był za stary na specyfikację OCI Dockera 29 („unknown version specified”, runda 3),
 #   runc-1.2.6 — runc 1.2.6 z wydań GitHub (statyczny, sprzed poprawek procfs z 2025; ryzyko tylko w pudełku:
 #                root pudełka to nieuprzywilejowany uid hosta). runc 1.1.12 z apt w rundzie 3 położył dockerd.
@@ -16,7 +16,12 @@
 # Źródła LegalApp: git archive HEAD z repozytorium hosta wypakowane w /root/legalapp kontenera — kontener
 # nie montuje głównego worktree projektu. Repozytorium: PROTO_LEGALAPP albo pierwsze z listy niżej.
 # Wariant awaryjny (gdy nie działa): Podman w pudełku z gniazdem Docker API albo type: vm (docs/box-prototype.md).
+# Binaria z GitHuba mają przypiętą wersję i sumę SHA-256 (z pobrania w rundzie 4, p1.log); niezgodna suma przerywa
+# wariant przed instalacją (decyzja runc-1-2-6-w-pudelku).
 set -euo pipefail
+CRUN_TAG=1.30.1
+CRUN_SHA256=86d1e6a0e76945975d3aebfab39cbc6a26eea15f1c3fc66b6776d19e5dc346a0
+RUNC_126_SHA256=0774f49d1b1eebb5849e644db5e4dc6f2b06cee05f13b3d17d5d6ba62d6f2ebc
 # shellcheck source=scripts/box/prototype/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -47,26 +52,25 @@ use_runtime() {  # use_runtime <wariant> — przygotowuje runtime dockerd w kont
                 runc --version | head -n 1"
             ;;
         crun-nowy)
-            run "crun z wydań GitHub (najnowszy, statyczny) jako domyślny runtime" -- in_box bash -c '
+            # Wersja i suma przypięte do pobrania z rundy 4 (p1.log): wynik odtwarzalny, binarium sprawdzone.
+            run "crun $CRUN_TAG z wydań GitHub (statyczny, suma SHA-256 przypięta) jako domyślny runtime" -- in_box bash -c '
                 set -e
-                tag=$(curl -fsSL https://api.github.com/repos/containers/crun/releases/latest \
-                    | python3 -c "import json, sys; print(json.load(sys.stdin)[\"tag_name\"])")
                 curl -fsSL -o /usr/local/bin/crun-gh \
-                    "https://github.com/containers/crun/releases/download/$tag/crun-$tag-linux-amd64"
+                    "https://github.com/containers/crun/releases/download/'"$CRUN_TAG"'/crun-'"$CRUN_TAG"'-linux-amd64"
+                echo "'"$CRUN_SHA256"'  /usr/local/bin/crun-gh" | sha256sum -c -
                 chmod 755 /usr/local/bin/crun-gh
-                sha256sum /usr/local/bin/crun-gh
                 /usr/local/bin/crun-gh --version | head -n 1
                 printf "%s\n" "{\"default-runtime\": \"crun-gh\", \"runtimes\": {\"crun-gh\": {\"path\": \"/usr/local/bin/crun-gh\"}}}" \
                     >/etc/docker/daemon.json
                 '"$DOCKER_RESTART"
             ;;
         runc-1.2.6)
-            run "runc 1.2.6 z wydań GitHub (statyczny) jako domyślny runtime" -- in_box bash -c '
+            run "runc 1.2.6 z wydań GitHub (statyczny, suma SHA-256 przypięta) jako domyślny runtime" -- in_box bash -c '
                 set -e
                 curl -fsSL -o /usr/local/bin/runc-1.2.6 \
                     https://github.com/opencontainers/runc/releases/download/v1.2.6/runc.amd64
+                echo "'"$RUNC_126_SHA256"'  /usr/local/bin/runc-1.2.6" | sha256sum -c -
                 chmod 755 /usr/local/bin/runc-1.2.6
-                sha256sum /usr/local/bin/runc-1.2.6
                 /usr/local/bin/runc-1.2.6 --version | head -n 1
                 printf "%s\n" "{\"default-runtime\": \"runc-126\", \"runtimes\": {\"runc-126\": {\"path\": \"/usr/local/bin/runc-1.2.6\"}}}" \
                     >/etc/docker/daemon.json

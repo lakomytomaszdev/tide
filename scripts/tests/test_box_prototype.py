@@ -18,8 +18,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PROTO = ROOT / "scripts" / "box" / "prototype"
 FAKE = Path(__file__).resolve().parent / "fake_box_proto.py"
-FAKE_NAMES = ("incus", "nft", "docker", "sudo", "ip", "systemctl", "systemd-run", "npm", "node")
+FAKE_NAMES = ("incus", "nft", "docker", "sudo", "ip", "systemctl", "systemd-run", "npm", "node", "pgrep")
 SCRIPTS = ("p1", "p4", "p5", "p9", "measure")
+# Skrypty PT-164 (tryb ścisły, log przez lib.sh); p2/p3/p6/p7 i common.sh z PT-178 sprawdza test_box_prototype_proxy.
+PT164_SHELL = (*SCRIPTS, "lib", "cleanup", "all")
 BOX_IP = "10.99.0.5"
 
 EXPECTED_RULES = [
@@ -75,7 +77,7 @@ class PrototypeScriptsTest(unittest.TestCase):
         git("commit", "-q", "-m", "init", cwd=self.proj)
         (self.tmp / "nodeproj-worktrees").mkdir()
 
-    def run_script(self, name, **env):
+    def run_script(self, name, *args, **env):
         environ = {
             **os.environ,
             "PATH": f"{self.bin}:{os.environ['PATH']}",
@@ -91,7 +93,7 @@ class PrototypeScriptsTest(unittest.TestCase):
         # stdin zostaje otwartym potokiem: skrypt, który by z niego czytał, zawiśnie i test padnie na limicie.
         output = self.tmp / f"{name}.out"
         with open(output, "wb") as fh:
-            proc = subprocess.Popen(["bash", str(self.copy / "scripts" / "box" / "prototype" / f"{name}.sh")],
+            proc = subprocess.Popen(["bash", str(self.copy / "scripts" / "box" / "prototype" / f"{name}.sh"), *args],
                                     stdin=subprocess.PIPE, stdout=fh, stderr=subprocess.STDOUT,
                                     env=environ, start_new_session=True)
             try:
@@ -136,7 +138,7 @@ class PrototypeScriptsTest(unittest.TestCase):
         code, log, _ = self.run_script("p1")
         self.assertEqual(code, 0, log)
         self.assertEqual([c for c in self.calls() if c[0] in ("nft", "sudo")], [])
-        self.assertIn("chwilowe proxy scripts/box/prototype/proxy.py", log)
+        self.assertIn("chwilowe proxy scripts/box/prototype/proxy-plain.py", log)
         self.assertIn("WYNIK siec-proxy: info", log)
         self.assertIn("https_proxy=http://127.0.0.1:", log)
         self.assertIn("dockerd w kontenerze przez proxy", log)
@@ -151,7 +153,7 @@ class PrototypeScriptsTest(unittest.TestCase):
         for runtime in ("runc", "crun-nowy", "runc-1.2.6"):
             self.assertIn(f"WYNIK docker-{runtime}: fail", log)
         self.assertIn("runc/releases/download/v1.2.6/runc.amd64", log)
-        self.assertIn("containers/crun/releases/latest", log)
+        self.assertIn("containers/crun/releases/download/1.30.1/crun-1.30.1-linux-amd64", log)
         self.assertIn("default-runtime", log)
         # Każdy restart dockerd najpierw zdejmuje limit startów (runda 4: „Job for docker.service failed”).
         self.assertEqual(log.count("systemctl reset-failed docker.service docker.socket"), 4, "proxy + 3 runtime'y")
@@ -291,8 +293,56 @@ class PrototypeScriptsTest(unittest.TestCase):
         decisions = (ROOT / "docs" / "box-decisions.md").read_text()
         self.assertIn("| Etykieta | Data | Ticket | Treść | Uzasadnienie |", decisions)
 
+    def test_p5_reports_rejected_nic_filtering_under_its_own_key(self):
+        # Review r1, NIT 2: odrzucone filtrowanie to „filtrowanie-nic: fail” (question z karty), nie „warunki”.
+        code, log, _ = self.run_script("p5", FAKE_FAIL=r"config device override")
+        self.assertEqual(code, 1, log)
+        self.assertRegex(log, r"(?m)^WYNIK filtrowanie-nic: fail — Incus odrzucił filtrowanie NIC .*\(question\)$")
+        self.assertNotIn("WYNIK warunki", log)
+
+    def test_p1_pins_github_runtimes_by_version_and_checksum(self):
+        text = (PROTO / "p1.sh").read_text()
+        self.assertNotIn("releases/latest", text)
+        self.assertEqual(text.count("sha256sum -c -"), 2)
+        self.assertIn("CRUN_TAG=1.30.1", text)
+
+    def test_cleanup_removes_every_trial_box_and_touches_nft_only_with_rules(self):
+        self.state.update(box=True, status="RUNNING",
+                          nft_rules=[{"chain": "forward", "handle": 30,
+                                      "rule": 'iifname "incusbr0" accept comment "tide-proto"'}])
+        (self.fake / "state.json").write_text(json.dumps(self.state))
+        code, log, _ = self.run_script("cleanup")
+        self.assertEqual(code, 0, log)
+        self.assertFalse(self.state_now()["box"])
+        self.assertIn("WYNIK kontener-tide-proto: ok — kontener tide-proto usunięty", log)
+        for box in ("tide-proto-net", "tide-proto-p7"):
+            self.assertIn(f"WYNIK kontener-{box}: ok — kontenera {box} nie ma", log)
+        self.assertIn("WYNIK reguly-tide-proto: skip", log)
+        self.assertFalse([c for c in self.calls() if c[0] in ("sudo", "nft")], "bez --rules ani sudo, ani nft")
+
+        code, log, _ = self.run_script("cleanup", "--keep-box", "--rules")
+        self.assertEqual(code, 0, log)
+        self.assertIn("WYNIK kontenery: skip", log)
+        self.assertIn("WYNIK reguly-tide-proto: ok — pozostałych reguł tide-proto: 1 (usunięte)", log)
+        self.assertEqual(self.state_now()["nft_rules"], [])
+
+    def test_all_runs_both_trial_sets_and_rejects_unknown_trials(self):
+        text = (PROTO / "all.sh").read_text()
+        self.assertIn("p5 p1 p4 p9 measure p7 p6 p3 p2", text)
+        env = {**os.environ, "TRIALS": "p8"}
+        run = subprocess.run(["bash", str(PROTO / "all.sh")], capture_output=True, text=True, env=env,
+                             stdin=subprocess.DEVNULL, timeout=30)
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("nieznana próba p8", run.stderr)
+
+    def test_temporary_proxies_of_pt164_and_pt178_do_not_collide(self):
+        lib = (PROTO / "lib.sh").read_text()
+        self.assertIn('"$PROTO_DIR/proxy-plain.py" "$bridge" "$port" "$PROXY_LOG"', lib)
+        self.assertNotIn('"$PROTO_DIR/proxy.py"', lib)
+        self.assertTrue((PROTO / "proxy.py").exists(), "proxy PT-178 zostaje pod swoją nazwą")
+
     def test_scripts_have_strict_mode_and_never_use_privileged_containers(self):
-        for path in sorted(PROTO.glob("*.sh")):
+        for path in (PROTO / f"{name}.sh" for name in PT164_SHELL):
             with self.subTest(script=path.name):
                 text = path.read_text()
                 self.assertIn("set -euo pipefail", text)
@@ -307,7 +357,7 @@ class PrototypeScriptsTest(unittest.TestCase):
 
 
 class TemporaryProxyTest(unittest.TestCase):
-    """proxy.py: zwykłe HTTP z pełnym adresem (apt) i tunel CONNECT (HTTPS), dziennik celów."""
+    """proxy-plain.py (PT-164): zwykłe HTTP z pełnym adresem (apt) i tunel CONNECT (HTTPS), dziennik celów."""
 
     def setUp(self):
         import http.server
@@ -323,7 +373,7 @@ class TemporaryProxyTest(unittest.TestCase):
         self.addCleanup(self.origin.shutdown)
         self.journal = tmp / "journal"
         self.port = free_port()
-        self.proxy = subprocess.Popen(["python3", str(PROTO / "proxy.py"), "127.0.0.1", str(self.port),
+        self.proxy = subprocess.Popen(["python3", str(PROTO / "proxy-plain.py"), "127.0.0.1", str(self.port),
                                        str(self.journal)])
         self.addCleanup(self.proxy.wait)
         self.addCleanup(self.proxy.terminate)

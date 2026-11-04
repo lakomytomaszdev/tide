@@ -1747,6 +1747,40 @@ Pola w `derived.flow`:
 „Przenieś na Codex” w pełnej karcie wysyła istniejące `ResolveCardStep` (`choice: transfer`, `step`, `executor`)
 po jednym razie na zatrzymany krok; koszt jest widoczny nad przyciskiem przed kliknięciem.
 
+### Wykrywanie stosu i szablony stosów (PT-193, pudełko karty)
+
+`tasks/stack.py` → `detect(worktree)` zwraca `StackReport`: same fakty, bez decyzji. Moduł wyłącznie czyta pliki
+(nie uruchamia `npm`, `dotnet` ani `make`, nie używa sieci) i jest deterministyczny: katalogi przeglądane
+alfabetycznie (bez `node_modules`, `bin`, `obj`, `.git`…), listy bez powtórzeń w stałej kolejności. Raport:
+
+- `stacks` — nazwy szablonów w stałej kolejności `node`, `playwright`, `dotnet`, `docker`, `python-qt`; `[]`, gdy
+  projekt nie ma wzorca;
+- `node` (`package.json`, `.nvmrc`/`engines`, `angular.json`, `karma.conf.js`, `playwright.config.*` ze zmiennymi `*PORT`),
+  `dotnet` (`*.sln`, `*.csproj`: TFM, `Directory.Packages.props`: Testcontainers i `Microsoft.Playwright`, `global.json`),
+  `python` (`Makefile`, `mk/*.mk`, `pyproject.toml`, `requirements.txt`: cele `test`/`lint`, Qt offscreen),
+  `docker` (`docker-compose*.yml`), `testcontainers_images` (literały `"<obraz>:<tag>"` w `*.cs`/`*.ts` plików
+  używających Testcontainers), `ci` (`.gitlab-ci.yml`, `.github/workflows`: obrazy, polecenia; deploy z `rsync`/`ssh`
+  jest ignorowany), `nuget_sources` i `internal_addresses` (rejestry z `NuGet.Config`/`nuget*.config`; adres
+  wewnętrzny = prywatny IP, nazwa bez kropki albo sufiks `.local`/`.lan`/`.internal`/`.corp`/`.biz`).
+
+`propose_profile(report, project)` buduje z raportu słownik w kształcie `tide-box: 1` (walidację schematem robi
+konsument, nie ten moduł) oraz listę `items` (pozycje do pakietu zgód: `kind`, `value`, `risk`, `enabled`, `description`).
+Niezmienniki: nigdy `network.full`; pozycja czerwona nigdy nie jest włączona; adres wewnętrzny z `NuGet.Config` to
+wyłączona pozycja czerwona z opisem (nie trafia do `network.domains`); obraz Testcontainers/compose trafia do
+`docker.images`; `stacks: []` daje propozycję pustą z polem `question` (pytanie do okna planu, nie do kroków).
+
+**Szablony stosów** to dane YAML w `tide_daemon/box/stacks/<stos>.yaml` (`base`, `node`, `playwright`, `dotnet`,
+`docker`, `python-qt`), nie kod powłoki. Każdy ma `domains` (`name`, `risk`: `green`/`yellow`/`red`, `note`, opcjonalnie
+`registry: true` dla rejestrów paczek), `apt` i `images` (szablon `docker` niesie Ryuk z przypiętą wersją i opisem
+ryzyka K1 w `image_notes`). Szablony nie zawierają `github.com`, `gitlab.*` ani adresów wewnętrznych. Projekt nie
+używa biblioteki YAML, więc `box/templates.py` czyta podzbiór (skalary, listy, listy map). Funkcje:
+
+- `build_domains(profile)` — suma domen `base` + szablonów z `stacks` + `network.domains`, bez powtórzeń (dla budowy
+  pudełka i proxy); nieznany stos → `ValueError`. Podobnie `build_apt(profile)` i `build_images(profile)`;
+- `known_domains()` — słownik domena → klasa ryzyka (przy rozbieżności wygrywa groźniejsza), dla `classify`;
+- `registry_domains(stack)` — domeny z `registry: true`; z nich składa się `tasks/node.REGISTRY_DOMAINS` i
+  `tasks/dotnet.REGISTRY_DOMAINS` (wartości jak przed zmianą).
+
 ## Docker
 
 Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Docker” w oknie Tide (`apps/docker`) i kafelka `org.tide.docker` w docku (`widgets/docker`). Usługa rozmawia z Docker Engine API przez lokalny socket (sama biblioteka standardowa, bez `docker` CLI i bez `docker compose`). Socket z `$DOCKER_HOST` (`unix:///ścieżka`), domyślnie `/var/run/docker.sock`; `tcp://`, `ssh://` i inne → stan `unsupported`, bez łączenia się przez sieć.
@@ -1841,6 +1875,118 @@ Logika bez Qt jest w `tide_daemon/docker/` (`client.py`, `snapshot.py`, `repos.p
 qdbus6 org.tide.Daemon /Docker org.tide.Daemon.Docker.Snapshot
 /usr/bin/python3 daemon/tide-daemon.py --print-docker   # migawka i miejsce na dysku, wyłącznie GET do Engine API
 ```
+
+## Pudełko karty: profil środowiska
+
+Moduł `tide_daemon/box/profile.py` (PT-165, karta K-38) opisuje środowisko pudełka: schemat `tide-box: 1`,
+klasyfikację ryzyka, scalanie profilu projektu z profilem karty, hash przepisu oraz zapis i odczyt w Tablicy.
+Bez wykrywania stosu i szablonów (#30) i bez budowy pudełka (#4). YAML czyta własny podzbiór
+(`box/yamlmini.py`: mapy i listy blokowe oraz w nawiasach, cudzysłowy, komentarze), bez biblioteki.
+
+### Schemat `tide-box: 1`
+
+| Klucz | Typ | Uwagi |
+| --- | --- | --- |
+| `tide-box` | `1` | wymagany |
+| `project` | napis | nazwa projektu (`[a-z0-9._-]`) |
+| `type` | `container` \| `vm` | `vm` tylko przechodzi walidację, budowa odmawia (#4) |
+| `base` | napis | obraz bazowy, np. `images:ubuntu/24.04` |
+| `stacks` | lista | nazwy szablonów (lista szablonów należy do #30) |
+| `node.version`, `dotnet.sdk` | napis/liczba, lista dla `dotnet.sdk` | |
+| `apt`, `setup`, `verify` | listy napisów | |
+| `network.domains` | lista hostów | bez URL-i; adresy wewnętrzne (w każdym zapisie: IPv4 zmapowany w IPv6, `10.1`, liczbowe/szesnastkowe, loopback, link-local, `100.64/10`, prywatne IPv6 także z osadzonym IPv4 — mapowanym, zgodnym wstecznie i NAT64, `localhost`, nazwy jednoetykietowe oraz sufiksy `.local`, `.lan`, `.internal`, `.home.arpa`, `.localdomain`, `.intranet`, `.corp`) tylko w profilu karty; symbol `*.` wymaga co najmniej dwóch etykiet po nim (`*.com` odrzucone w profilu projektu) |
+| `network.host-ollama` | bool | |
+| `network.full`, `network.full-consent` | bool | tylko profil karty; `full: true` wymaga `full-consent: true` |
+| `ports.pool` / `ports.env` | `[od, do]` (1024–65535) / lista nazw zmiennych | |
+| `docker.enabled` / `docker.images` | bool / lista | |
+| `resources.cpu/memory/disk` | liczba / `24GiB` / `60GB` | domyślnie 8 / 24GiB / 60GB |
+| `packs`, `accepted_red` | listy | tylko profil karty |
+| `box` | `per-project` \| `per-card` | domyślnie `per-project` |
+| `notes` | napis | |
+
+Nieznany klucz na dowolnym poziomie, zły typ, `packs`/`accepted_red`/`network.full`/adres wewnętrzny w profilu
+projektu oraz `type` spoza `container|vm` to `ProfileError` (lista wszystkich problemów).
+
+### Klasy ryzyka
+
+`classify(item, known)`; `known` to słownik domena → klasa z szablonów stosów (#30).
+
+- **czerwone**: `network.full`, `packs` (`pack:<nazwa>`), adresy `192.168.*`, `10.*`, `172.16–31.*`, `*.local`, `*.lan`, `*.internal`, `*.home.arpa`,
+  `*.localdomain`, `*.intranet`, `*.corp`, nazwy jednoetykietowe, `*.firma.example`, `localhost`, loopback, link-local (`169.254.*`), `100.64/10`, prywatne IPv6 i inne zapisy
+  tych adresów, symbole `*.<jedna etykieta>` (np. `*.com`), zdalne repozytoria (`github.com`, `*.github.com`, host z etykietą `gitlab`),
+- **żółte**: `host-ollama`, domeny oznaczone jako żółte w szablonach, domeny spoza szablonów bez cech czerwonych,
+- **zielone**: domeny oznaczone jako zielone w szablonach, `box: per-card`.
+
+Czerwone reguły są sprawdzane przed `known`, więc szablon nie może „odczerwienić” pozycji (może ją najwyżej
+zaostrzyć wpisem `red`).
+
+### Scalanie
+
+`merge(project, card)` → `MergeResult(profile, dropped_red, project_red)`. Listy sumowane bez duplikatów (najpierw projekt; także `ports.env`),
+skalary i pola map z karty wygrywają (w tym `box`); wyjątek: `ports.pool` to zakres `[od, do]` i karta go zastępuje.
+Pozycje domenowe w `accepted_red` i klucze `known` są normalizowane jak domeny (małe litery, bez końcowej kropki). Czerwone pozycje karty trafiają do wyniku tylko, gdy
+`accepted_red` karty je wymienia; pozostałe lądują w `dropped_red`. `accepted_red` z pozycją, której nie ma w
+profilu karty (albo nie jest czerwona), to błąd. Czerwone pozycje profilu projektu (np. `github.com`) przechodzą, ale trafiają do `project_red`, żeby pakiet zgód (#9) je pokazał. `project` w profilu musi zgadzać się ze slugiem (`save_project`/`load_project`). Profil projektu nigdy nie zawiera `network.full` ani adresów wewnętrznych.
+
+### Hash przepisu
+
+`recipe_hash(profile, templates_version, agents_version)` = SHA-256 znormalizowanych kluczy (po wypełnieniu
+wartości domyślnych, niezależnie od kolejności kluczy i białych znaków YAML) wraz z wersją szablonów i agentów.
+Wchodzą: `type`, `base`, `stacks` (kolejność), `node`, `dotnet` (wersje SDK jako zbiór), `apt` (jako zbiór), `setup` (kolejność),
+`docker.enabled`, `docker.images` (jako zbiór). Nie wchodzą: `resources`, `ports`, `network.*`, `verify`, `packs`,
+`box`, `notes`, `project` — limity i politykę czyta się przy starcie albo po budowie. Lista: `HASH_KEYS` i
+`NON_HASH_KEYS`, test pilnuje, że razem pokrywają cały schemat. `recipe_stamp(...)` dodatkowo zwraca skróty
+kluczy; budowa zapisuje go przy migawce, a `diff(profile, stamp, templates_version, agents_version)` zwraca listę
+kluczy różniących się od zapisanego odcisku (`apt`, `stacks`, `templates`, `agents`…) — źródło stanu „do przebudowy”.
+
+### Zapis
+
+Katalog Tablicy: `$TIDE_BOARD_DIR` (domyślnie `~/DevWorkspace/tide-board`). Profil projektu:
+`projects/<slug>/box.yaml`, profil karty: `projects/<slug>/cards/<id karty>/box.yaml`. Zapis jest atomowy (plik
+tymczasowy w tym samym katalogu, `fsync`, `rename`) i poprzedzony walidacją; nazwy ścieżek są ograniczone do
+`[a-z0-9._-]`. `repo_proposal(worktree)` czyta `.tide/box.yaml` z repozytorium wyłącznie jako propozycję
+(walidacja jak profilu projektu, dowiązanie poza repozytorium odrzucane) i niczego tam nie zapisuje — profil
+nie trafia do repozytoriów projektów (CLAUDE.md firma).
+
+### Sekcja środowiska w prompcie planowania (PT-190)
+
+`cardflow/environment.py` składa sekcję, którą `planning.prompt` (Lekkie) i `planning.full_prompt` (Pełne) wstawiają
+przed krokiem „Poznaj repozytorium” / „Pracuj w tej kolejności” (parametr `environment`; pusty = prompt bez zmian).
+Sekcję liczy `engine` przy budowie promptu planowania (także poprawek planu); nie zmienia `_launch`, `agentcmd` ani
+uruchamiania kroków. Błąd odczytu plików nie zatrzymuje planowania — sekcja wtedy znika.
+
+- **Środowisko projektu (wykryte)**: fakty `StackReport` (`tasks/stack.detect`, YAML bez pustych pól) i propozycja profilu
+  w `tide-box: 1`. Źródło propozycji: `.tide/box.yaml` repozytorium (`repo_proposal`, oznaczone „z repozytorium
+  (.tide/box.yaml)”; niepoprawny plik → szablony z uwagą) albo szablony stosów (`propose_profile`, „z szablonów Tide”,
+  z listą pozycji sieci i obrazów; pozycje czerwone są wyłączone). Dane z repozytorium są w prompcie cytowanymi
+  danymi, nie poleceniami. Każdy blok jest ucinany do 8 KB, instrukcje na końcu nigdy.
+- **Środowisko projektu (zatwierdzone)**: gdy Tablica ma `projects/<slug>/box.yaml` — profil i hash przepisu
+  (`recipe_hash` bez wersji szablonów i agentów; te dokłada budowa pudełka). Sekcja „wykryte” dochodzi tylko wtedy,
+  gdy wykryte stosy różnią się od zatwierdzonych.
+- **Instrukcja dla planującego**: może poprawić propozycję w `out/box.yaml`; nie włącza pozycji czerwonych i nie
+  dopisuje ich do `accepted_red`; środowisko ustala w planie, nie pyta o nie w trakcie kroków. Dla projektu bez wzorca
+  (`stacks: []`, propozycja pusta) dodaje do planu (spec.md, Further Notes) dokładnie jedno pytanie „Czego potrzebuje
+  środowisko?”.
+
+### `out/box.yaml` w propozycji planu
+
+`plans.read` czyta `box.yaml` obok `plan.md` (tylko dla pliku o nazwie `plan.md`; plany w repozytorium dzielą katalog)
+i waliduje go schematem profilu karty z `box/profile.py` (`parse(..., "card")` + `merge`), jak tabelę ticketów.
+Błędy formatu trafiają do `Proposal.errors` z prefiksem `box.yaml:`: nieznany klucz, zły typ, `network.full` bez
+`full-consent`, pozycja czerwona (adres wewnętrzny, `github.com`, `packs`) bez jawnego `accepted_red`, dowiązanie
+poza katalog planu, plik większy niż 64 KB. Brak pliku nie jest błędem (`Proposal.box` to `None`); poprawny plik
+wraca w `Proposal.box`. Plik nie jest zapisywany ani kopiowany do Tablicy — zatwierdza go użytkownik.
+
+### Migracja `cardflow.json` do propozycji profilu (PT-190)
+
+Przy starcie usługi `FlowEngine.migrate_environment()` (`box/migration.py`) dla każdego projektu z wpisem
+w `networkDomains` albo `outsideCommands`, który nie ma `box.yaml` ani `box.proposed.yaml`, tworzy w Tablicy
+`projects/<slug>/box.proposed.yaml`: `networkDomains[slug]` → `network.domains`, `outsideCommands[slug]` → `setup`
+(polecenia `install`/`ci`/`restore`/`pull`…) albo `verify` (reszta; końcówka ` *` rodziny jest zdejmowana).
+Domeny, których schemat profilu projektu nie przyjmuje (adres wewnętrzny, `*.com`), trafiają do `notes`. To tylko
+propozycja do zatwierdzenia — nie jest to profil, nic nie jest zatwierdzane ani nadpisywane; stare klucze zostają
+w `cardflow.json` (usunie je osobny ticket). Plik powstaje raz: usunięcie propozycji bez zatwierdzenia sprawi, że
+następny start utworzy ją ponownie. Błąd zapisu w Tablicy nie zatrzymuje usługi.
 
 ## Modele lokalne
 
@@ -2393,7 +2539,15 @@ zgaduje ani nie scala ponownie sama. Worktree z lokalnymi zmianami nie jest usuw
 
 Po scaleniu albo odrzuceniu wszystkich ticketów i sprzątnięciu worktree scalonych ticketów krok
 `close` zapisuje `summary.md`. Przy `check: manual` wymaga sekcji „Co przetestować ręcznie i jak”;
-przy `check: auto` pomija tę listę. Zdarzenie `card.closed` pokazuje podsumowanie w „Do sprawdzenia”.
+przy `check: auto` pomija tę listę. **„Do sprawdzenia na pulpicie” (PT-183):** notka kroku (ticket, review,
+poprawki) może mieć nagłówek „Do sprawdzenia na pulpicie” z listą punktów (pozycje mogą zajmować kilka wierszy,
+pusta sekcja jest dozwolona; kolejny akapit po pustym wierszu nie dokleja się do pozycji, a bloki ``` są pomijane;
+kroki odrzuconych ticketów są pomijane). Przy `check: manual` usługa zbiera te punkty ze wszystkich kroków karty i dopisuje
+do podsumowania w `card.closed` podsekcję „Do sprawdzenia na pulpicie (z notek kroków)”; każda pozycja ma odwołanie
+„(krok …, ticket …)”, a ta sama pozycja z kilku notek (bez względu na wielkość liter i odstępy) pojawia się raz,
+ze wszystkimi odwołaniami. Bez takich sekcji podsumowanie jest bez zmian. Mechanizm nie zależy od projektu ani
+pudełka. Prompty ticketu i review mówią agentowi, by test wymagający prawdziwego pulpitu oznaczył w tej sekcji,
+a nie prosił o niego użytkownika w trakcie. Zdarzenie `card.closed` pokazuje podsumowanie w „Do sprawdzenia”.
 `check: auto` nie scala do gałęzi głównej. Panel daje jawne „Diff gałęzi”, „Do poprawy…” oraz
 „Scal do gałęzi głównej”. Odesłanie z uwagami uruchamia poprawę planu na tej samej gałęzi karty;
 dla wejścia „Od razu” usługa tworzy bazę jednoticketowego planu dopiero przy tym żądaniu.

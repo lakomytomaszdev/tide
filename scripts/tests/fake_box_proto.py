@@ -135,7 +135,7 @@ def incus():
     if args == ["info"]:
         print("api_status: stable")
     elif args[:1] == ["info"]:
-        if not box:
+        if not box or [a for a in args[1:] if not a.startswith("-")][:1] != ["tide-proto"]:
             fail("Error: Failed to fetch instance: Instance not found")
         print(f"Name: tide-proto\nStatus: {state.get('status', 'RUNNING')}")
     elif args[:1] == ["launch"]:
@@ -205,6 +205,11 @@ def node():
     print("v22.11.0")
 
 
+def pgrep():
+    # Na hoście atrapa nie zna żadnych procesów — cleanup.sh w teście nie może zabić prawdziwego proxy prób.
+    sys.exit(1)
+
+
 def generic():
     print("ok")
 
@@ -216,4 +221,5 @@ def generic():
     "sudo": sudo,
     "ip": ip,
     "node": node,
+    "pgrep": pgrep,
 }.get(name, generic)()
