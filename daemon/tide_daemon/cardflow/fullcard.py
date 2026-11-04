@@ -367,6 +367,10 @@ def headline(st: FlowState, out: dict) -> str:
         return "Karta jest scalona do master; nic już na Ciebie nie czeka."
     if st.closed:
         return "Praca jest na gałęzi karty i czeka, aż ją sprawdzisz i scalisz do master."
+    caring = (flow.get("caretaker") or {}).get("working") or []
+    if caring:
+        # Opiekun (PT-144): jego problem nie jest decyzją użytkownika, więc nic na niego nie czeka.
+        return f"Opiekun zajmuje się {caring[0].get('subject') or 'kartą'}, nic nie czeka na Ciebie."
     if hold and not count:
         until = next((t["waitingOn"].get("until") for t in out.get("tickets") or []
                       if t.get("waitingOn") and t["waitingOn"]["kind"] == "limit" and t["waitingOn"].get("until")), "")

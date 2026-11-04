@@ -306,6 +306,77 @@ out["enter"] = calls()
         self.assertEqual(old_step[3], 0, "wcześniejsze zlecenia są bez „Wznów rozmowę”")
         self.assertEqual(out["enter"][-1], ["EnterStep", "K-8", "NEW-2"])
 
+    def caretaker_events(self, escalated=False):
+        """Karta K-8: PT-2 padł dwa razy, opiekun (Opus) sprawdza go; z `escalated` oddaje decyzję."""
+        now = datetime.now().astimezone()
+        events = []
+
+        def add(etype, ago, /, **data):
+            events.append({"v": 1, "seq": len(events) + 1, "ts": (now - timedelta(minutes=ago)).isoformat(),
+                           "card": "K-8", "type": etype, **data})
+
+        def step(name, kind, ago, attempt=0, parent="", **extra):
+            add("step.started", ago, step=name, ticket="PT-2", kind=kind, executor=extra.pop("executor", "Sonnet"),
+                provider="anthropic", model="x", attempt=attempt, parentStep=parent,
+                stepDir=f"/wt/{name}.step", worktree="/wt/pt-2", branch="ticket/pt-2", **extra)
+
+        add("card.started", 60, entry="now", executor="Sonnet", program="claude", provider="anthropic")
+        step("K-8-PT-2-1", "ticket", 50)
+        add("step.finished", 49, step="K-8-PT-2-1", ticket="PT-2", result="error", reason="exit")
+        add("step.retry", 48, step="K-8-PT-2-1", ticket="PT-2")
+        step("K-8-PT-2-2", "ticket", 47, attempt=1, parent="K-8-PT-2-1")
+        add("step.finished", 46, step="K-8-PT-2-2", ticket="PT-2", result="error", reason="exit")
+        add("caretaker.started", 45, problem="error:K-8-PT-2-1", key="caretaker:error:K-8-PT-2-1:1", n=1,
+            step="K-8-care-1", target="K-8-PT-2-2", root="K-8-PT-2-1", ticket="PT-2", trigger="error",
+            triggers=["error"], watermark=len(events))
+        step("K-8-care-1", "caretaker", 44, executor="Opus")
+        if escalated:
+            add("step.finished", 20, step="K-8-care-1", ticket="PT-2", result="done", reason="")
+            add("caretaker.escalated", 19, problem="error:K-8-PT-2-1", step="K-8-care-1", target="K-8-PT-2-2",
+                ticket="PT-2", action="escalate", summary="Test pada za każdym razem.",
+                recommendation="Zmień wykonawcę.", optionId="change-executor", failed=False, error="", code="")
+        return events
+
+    def test_caretaker_work_shows_in_now_in_background_your_move_and_history(self):
+        data = full_card(self.data, self.caretaker_events())
+        data["cardOpen"] = "full"
+        derived_flow = [c for c in data["cards"] if c["id"] == "K-8"][0]["derived"]["flow"]
+        derived_flow["running"][0]["canEnter"] = True       # „Wejdź” pokazuje to, co mówi usługa
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["full"] = full()
+click(at("(" + ALL + ")(page.cardFullView, 'fullNowEnter')[0]"))
+out["enter"] = calls()
+""", data)
+        full_state = out["full"]
+        self.assertEqual(full_state["headline"], "Opiekun zajmuje się PT-2, nic nie czeka na Ciebie.")
+        self.assertEqual(full_state["now"], [["K-8-care-1", "PT-2 · opiekun · Opus", 1]])
+        self.assertEqual(out["enter"][-1], ["EnterStep", "K-8", "K-8-care-1"])
+
+    def test_caretaker_escalation_is_signed_opiekun_in_history(self):
+        data = full_card(self.data, self.caretaker_events(escalated=True))
+        data["cardOpen"] = "full"
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["lines"] = json.loads(js("(function () { const v = page.cardFullView; const all = " + ALL + "; "
+    "return JSON.stringify(all(v, 'fullHistoryLine').map(l => [l.text, "
+    "all(l, 'historyCaretaker').filter(t => t.visible).map(t => t.text), "
+    "all(l, 'historyKind').map(t => t.text)])) })()"))
+""", data)
+        lines = {row[0]: row for row in out["lines"]}
+        signed = lines["Opiekun: oddaje decyzję — Test pada za każdym razem."]
+        self.assertEqual((signed[1], signed[2]), (["Opiekun"], ["opiekun"]))
+        self.assertTrue(all(row[1] == [] for row in out["lines"] if row is not signed),
+                        "tylko wpisy opiekuna mają podpis")
+
+    def test_card_without_caretaker_has_no_caretaker_signature(self):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["full"] = full()
+out["signed"] = js("(" + ALL + ")(page.cardFullView, 'historyCaretaker').filter(t => t.visible).length")
+""", full_d(self.data))
+        self.assertEqual(out["signed"], 0)
+
     def test_panel_button_and_cards_without_journal(self):
         out = self.probe(STATE_PY + """
 click(card("K-8"))
