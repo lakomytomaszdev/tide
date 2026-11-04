@@ -95,13 +95,55 @@ CODEX_NO_COMMANDS = ("shell_tool", "unified_exec", "code_mode", "js_repl")
 # wyłącznie jako `git -C <worktree> <podpolecenie>` (katalogiem roboczym kroku jest `out`). Zakazy wycinają opcje,
 # którymi te programy piszą albo uruchamiają inne programy; piaskownica i tak daje zapis tylko do `out`.
 READ_ONLY_COMMANDS = ("rg", "grep", "cat", "ls", "find")
-READ_ONLY_GIT = ("log", "show", "diff", "status")
+# Podpolecenia gita z obowiązkowymi opcjami: `--no-ext-diff` wyłącza `diff.external` i `diff.<sterownik>.command`,
+# `--no-textconv` — `diff.<sterownik>.textconv` (review M3; puste wartości w konfiguracji tego nie robią — git
+# próbuje wtedy uruchomić pusty program). `status` nie uruchamia sterowników diffa.
+READ_ONLY_GIT = ("log --no-ext-diff --no-textconv", "show --no-ext-diff --no-textconv",
+                 "diff --no-ext-diff --no-textconv", "status")
 READ_ONLY_BANS = (
     "find *-delete*", "find *-exec*", "find *-ok*", "find *-fprint*", "find *-fls*",   # usuwanie, programy, pliki
     "rg *--pre*", "rg *--hostname-bin*",                                               # programy pomocnicze rg
     "git *--output*", "git *--ext-diff*", "git *--textconv*",                          # zapis do pliku, sterowniki
+    "git *--show-signature*",                                                          # gpg
+    "rg *--search-zip*", "rg * -z*", "rg -z*",                                         # dekompresory rg
     "*>*",                                                                             # przekierowanie do pliku
 )
+# Sam zakaz napisów w argv nie wyłącza programów pomocniczych gita z konfiguracji repozytorium (review M3: zwykłe
+# `git diff` uruchamia `diff.external`). Sterowniki diffa wyłączają obowiązkowe opcje z `READ_ONLY_GIT`; resztę
+# krok opiekuna dostaje wyłączoną w środowisku (`GIT_CONFIG_COUNT`, wygrywa z konfiguracją repozytorium):
+# fsmonitor (hak przy `status`/`diff`), pager, weryfikację podpisów i sterowniki filtrów (`clean`/`smudge`/`process`
+# przy `status`/`diff`) nazwane w konfiguracji — pusty filtr git pomija (`read_only_git_config`). Konfiguracji
+# systemowej (`GIT_CONFIG_NOSYSTEM`) i globalnej użytkownika (`GIT_CONFIG_GLOBAL` — plik kroku) krok nie czyta.
+READ_ONLY_GIT_CONFIG = (("core.fsmonitor", "false"), ("core.pager", "cat"),
+                        ("log.showSignature", "false"), ("gpg.program", "/bin/false"),
+                        ("gpg.ssh.program", "/bin/false"), ("gpg.x509.program", "/bin/false"))
+GIT_DRIVER_KEYS = re.compile(r"^(filter)\.(.+)\.(clean|smudge|process)$", re.IGNORECASE)
+
+
+def read_only_git_config(git_dir: str, timeout: float = 20.0) -> list[tuple[str, str]]:
+    """Nadpisania konfiguracji gita kroku tylko do odczytu: `READ_ONLY_GIT_CONFIG` i puste programy sterowników
+    filtrów z konfiguracji worktree (repozytorium, `config.worktree`, dołączone pliki). Konfigurację czyta usługa
+    (`git config` nie uruchamia programów), bez systemowej i globalnej — tych krok nie widzi. Błąd odczytu to
+    StepError: bez listy sterowników krok nie startuje."""
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C"}
+    try:
+        run = subprocess.run(["git", "--git-dir", git_dir, "config", "--name-only", "--get-regexp",
+                              r"^filter\..*\.(clean|smudge|process)$"],
+                             capture_output=True, text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise StepError(f"nie da się odczytać sterowników gita kroku ({type(exc).__name__})") from None
+    if run.returncode not in (0, 1):                # 1 — brak pasujących kluczy
+        raise StepError(f"nie da się odczytać sterowników gita kroku: {run.stderr.strip()[:200]}")
+    pairs = list(READ_ONLY_GIT_CONFIG)
+    for key in dict.fromkeys(line.strip() for line in run.stdout.splitlines() if line.strip()):
+        found = GIT_DRIVER_KEYS.match(key)
+        if found:
+            kind, name = found.group(1), found.group(2)
+            pairs.append((key, ""))
+            if kind.lower() == "filter":
+                pairs.append((f"{kind}.{name}.required", "false"))
+    return list(dict.fromkeys(pairs))
 
 
 def read_only_tools(worktree: str, step_dir: str = "") -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -392,6 +434,16 @@ def _env(step: Step, home_env: dict, inp: str) -> dict:
     return env
 
 
+def _read_only_git_env(env: dict, pairs: list[tuple[str, str]]) -> None:
+    """Dopisuje nadpisania `read_only_git_config` do `GIT_CONFIG_COUNT` kroku; bez konfiguracji systemowej i pagera."""
+    count = int(env.get("GIT_CONFIG_COUNT") or 0)
+    for key, value in pairs:
+        env[f"GIT_CONFIG_KEY_{count}"], env[f"GIT_CONFIG_VALUE_{count}"] = key, value
+        count += 1
+    env["GIT_CONFIG_COUNT"] = str(count)
+    env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_PAGER": "cat", "PAGER": "cat"})
+
+
 FONT_DIRS = (".local/share/fonts", ".fonts", ".config/fontconfig")
 
 
@@ -510,6 +562,8 @@ def background(step: Step) -> Background:
     inp, out = os.path.join(step.step_dir, "in"), os.path.join(step.step_dir, "out")
     env = _env(step, base, inp)
     git_dir = resolve_git_dir(step.repo, step.worktree)
+    if step.write_out_only:
+        _read_only_git_env(env, read_only_git_config(git_dir))
     if step.tool == "claude":
         step = replace(step, session_id=step.session_id or str(uuid.uuid4()))
         argv, files, extra = _claude(step, inp, out, env, home)

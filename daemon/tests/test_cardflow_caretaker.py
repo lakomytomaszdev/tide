@@ -544,7 +544,7 @@ class CaretakerFlowTest(FlowInProcess):
         for secret in ("ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "atrapa-sekret-z-env-42",
                        "Dozwolone polecenia i wzorce"):
             self.assertNotIn(secret, prompt)
-        self.assertIn(f"`git -C {step['worktree']} log`", prompt)
+        self.assertIn(f"`git -C {step['worktree']} log --no-ext-diff --no-textconv`", prompt)
         self.assertIn("caretaker-wrote", prompt)
         with open(os.path.join(step["stepDir"], "in", "settings.json"), encoding="utf-8") as fh:
             settings = json.load(fh)
@@ -558,7 +558,8 @@ class CaretakerFlowTest(FlowInProcess):
         allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
         banned = argv[argv.index("--disallowedTools") + 1:]
         self.assertIn("Bash(rg *)", allowed)
-        self.assertIn(f"Bash(git -C {step['worktree']} diff *)", allowed)
+        self.assertIn(f"Bash(git -C {step['worktree']} diff --no-ext-diff --no-textconv *)", allowed)
+        self.assertNotIn(f"Bash(git -C {step['worktree']} diff *)", allowed)
         programs = {rule[5:-1].split()[0] for rule in allowed if rule.startswith("Bash(")}
         self.assertLessEqual(programs, {"rg", "grep", "cat", "ls", "find", "git", "head", "tail", "wc"})
         for rule in ("Bash(make test)", "Bash(git commit *)", "Bash(git add *)", "Bash(python3 -m unittest *)"):
@@ -571,7 +572,11 @@ class CaretakerFlowTest(FlowInProcess):
         guards = self.of(card_id, "caretaker.guard")
         self.assertEqual([(g["step"], g["cause"], g["wrote"]) for g in guards][:1], [(step["step"], "start", [])])
         self.assertLess(guards[0]["seq"], step["seq"])
-        self.assertEqual(guards[0]["worktree"], step["worktree"])
+        watched = [w["worktree"] for w in guards[0]["worktrees"]]
+        self.assertEqual(watched[0], step["worktree"])
+        # Problem ticketu: pod strażą jest też worktree karty (review M2).
+        self.assertEqual(len(watched), 2, watched)
+        self.assertNotEqual(watched[1], watched[0])
         self.assertEqual(set(guards[0]["refs"]), {step["branch"], guards[0]["branches"][1]})
         self.assertFalse([g for g in guards if g["wrote"]])
         self.assertEqual([e["failed"] for e in self.of(card_id, "caretaker.escalated")], [False])
@@ -581,7 +586,9 @@ class CaretakerFlowTest(FlowInProcess):
         jako `caretaker-wrote` mimo poprawnego `escalate`; akcja nie wykonana, wpis w historii z powodem, działanie
         liczy się do problemu."""
         cases = {"pisze-sledzony": "zmienione pliki w worktree", "pisze-nowy": "opiekun-byl-tu.txt",
-                 "commit": "przesunięta gałąź"}
+                 "commit": "przesunięta gałąź",
+                 # Review M2: opiekun problemu ticketu pisze w worktree karty (plik śledzony i nowy, bez commita).
+                 "karta-sledzony": "zmienione pliki w worktree", "karta-nowy": "opiekun-w-karcie.txt"}
         for care, part in cases.items():
             with self.subTest(care=care):
                 card_id = self.failing_card(care)

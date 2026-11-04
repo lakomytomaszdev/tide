@@ -301,8 +301,9 @@ def _commands_section(worktree: str, commands: bool) -> list[str]:
     git = ", ".join(f"`git -C {worktree} {sub}`" for sub in READ_ONLY_GIT)
     return [f"- Dozwolone są wyłącznie polecenia tylko do odczytu: {listed} oraz {git}. Innych poleceń nie ma (także poleceń "
             "projektu, testów i budowania); katalogiem roboczym kroku jest katalog wyjściowy, więc podawaj ścieżki "
-            "worktree bezwzględnie. Bez `find -delete`/`-exec`, `rg --pre`, `git --output`/`--ext-diff` i "
-            "przekierowań do plików.",
+            "worktree bezwzględnie. Opcje `--no-ext-diff --no-textconv` są obowiązkowe zaraz po podpoleceniu gita "
+            "(bez nich polecenie nie jest dozwolone). Bez `find -delete`/`-exec`, `rg --pre`/`-z`, "
+            "`git --output`/`--ext-diff`/`--show-signature` i przekierowań do plików.",
             "- Nie zmieniaj plików w worktree ani w repozytorium: Tide porównuje worktree, HEAD i gałęzie sprzed "
             "kroku i po nim, a wynik kroku, który cokolwiek tam zmienił, odrzuca (`caretaker-wrote`)."]
 

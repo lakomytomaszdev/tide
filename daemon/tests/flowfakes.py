@@ -8,7 +8,8 @@
   Kartkę opiekuna karty (PT-143) rozpoznaje po pierwszej linii „Jesteś opiekunem karty”; co odpowiada, mówi
   „ATRAPA-OPIEKUN: …” w opisie problemu (`escalate` — domyślnie, `powoli` — 6 s pracy i escalate,
   `akcja-<nazwa>`, `bez-wyniku`, `zly-format`, `pytanie`, `blad`; PT-158: `pisze-sledzony`, `pisze-nowy`,
-  `commit` — zapis do worktree albo commit, potem poprawny `escalate`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …”.
+  `commit` — zapis do worktree albo commit, `karta-sledzony`, `karta-nowy` — zapis do worktree karty; potem
+  poprawny `escalate`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …”.
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
 - `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
@@ -66,7 +67,20 @@ if prompt.startswith("Jesteś opiekunem karty"):
             fh.write("nowy plik\n")
     elif care == "commit":
         subprocess.run(["git", "-C", tree, "commit", "-q", "--allow-empty", "-m", "opiekun commituje"], check=True)
-    if care in ("pisze-sledzony", "pisze-nowy", "commit"):
+    elif care in ("karta-sledzony", "karta-nowy"):
+        # Review M2 (PT-158): zapis w worktree karty (nie ticketu) bez commita.
+        listed = subprocess.check_output(["git", "-C", tree, "worktree", "list", "--porcelain"], text=True)
+        num = re.match(r"Jesteś opiekunem karty K-(\d+)", prompt).group(1)
+        card_tree = next(block.split("\n")[0][len("worktree "):] for block in listed.split("\n\n")
+                         if f"branch refs/heads/card/k-{num}-" in block)
+        if care == "karta-sledzony":
+            tracked = subprocess.check_output(["git", "-C", card_tree, "ls-files"], text=True).split()
+            with open(os.path.join(card_tree, tracked[0]), "a", encoding="utf-8") as fh:
+                fh.write("zmiana opiekuna w karcie\n")
+        else:
+            with open(os.path.join(card_tree, "opiekun-w-karcie.txt"), "w", encoding="utf-8") as fh:
+                fh.write("nowy plik\n")
+    if care in ("pisze-sledzony", "pisze-nowy", "commit", "karta-sledzony", "karta-nowy"):
         care = "escalate"
     data = None
     if care == "zly-format":

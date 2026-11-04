@@ -350,8 +350,12 @@ class BackgroundCodexTest(BackgroundBase):
             self.assertNotIn(rule, argv)
         for program in ("rg", "grep", "cat", "ls", "find"):
             self.assertIn(f"Bash({program} *)", allowed)
-        for sub in ("log", "show", "diff", "status"):
+        for sub in ("log --no-ext-diff --no-textconv", "show --no-ext-diff --no-textconv",
+                    "diff --no-ext-diff --no-textconv", "status"):
             self.assertIn(f"Bash(git -C {wt} {sub} *)", allowed)
+        for sub in ("log", "show", "diff"):
+            self.assertNotIn(f"Bash(git -C {wt} {sub} *)", allowed)
+            self.assertNotIn(f"Bash(git -C {wt} {sub})", allowed)
         self.assertIn(f"Read(/{wt}/**)", allowed)
         self.assertIn(f"Bash(cat {out}/*)", allowed)
         # Na liście nie ma programu spoza stałej listy (każda reguła Bash zaczyna się od jednego z nich).
@@ -368,6 +372,48 @@ class BackgroundCodexTest(BackgroundBase):
         self.assertEqual(settings["sandbox"]["filesystem"]["allowWrite"], [out])
         self.assertEqual(claude.workdir, out)
         self.assertEqual(claude.cwd, self.worktree)        # worktree kroku dla zatrzymania i dziennika sesji
+
+    def test_caretaker_git_runs_no_helper_programs_from_the_repository_config(self):
+        """Review M3 (PT-158): dozwolone `git -C <worktree> diff/status/log/show` w środowisku kroku opiekuna nie
+        uruchamia programów z konfiguracji repozytorium (zewnętrzny diff, textconv, filtr, fsmonitor, gpg)."""
+        out = os.path.join(self.step_dir, "out")
+        os.makedirs(out)
+        marker = os.path.join(out, "uruchomiony")
+        helper = os.path.join(self.root, "helper.sh")
+        with open(helper, "w", encoding="utf-8") as fh:
+            fh.write(f'#!/bin/sh\necho "$0 $*" >> {marker}\ncat "$1" 2>/dev/null || cat\n')
+        os.chmod(helper, 0o755)
+        for key, value in (("diff.external", helper), ("diff.conv.textconv", helper),
+                           ("diff.conv.command", helper), ("filter.Filtr.clean", helper),
+                           ("filter.Filtr.smudge", helper), ("filter.Filtr.required", "true"),
+                           ("core.fsmonitor", helper), ("log.showSignature", "true"), ("gpg.program", helper)):
+            gitrepos.git(self.repo, "config", key, value)
+        gitrepos.commit(self.worktree, ".gitattributes", "*.txt diff=conv filter=Filtr\n")
+        with open(os.path.join(self.worktree, "a.txt"), "a", encoding="utf-8") as fh:
+            fh.write("brudny\n")
+        if os.path.exists(marker):
+            os.unlink(marker)                         # commit testu sam mógł uruchomić filtr
+        env = agentcmd.background(self.step("claude", write_out_only=True)).env
+        env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+        env["TMPDIR"] = out                           # pliki tymczasowe zewnętrznego diffa — inaczej padłby wcześniej
+        wt = os.path.normpath(self.worktree)
+        prefixes = {sub.split()[0]: sub.split() for sub in agentcmd.READ_ONLY_GIT}
+        for sub in (["diff"], ["diff", "HEAD~1"], ["status"], ["status", "--porcelain"], ["log", "-p"],
+                    ["show"], ["show", "HEAD:a.txt"], ["log", "--stat"]):
+            with self.subTest(sub=sub):
+                # Dokładnie dozwolona postać: obowiązkowe opcje z listy, potem argumenty agenta.
+                run = subprocess.run(["git", "-C", wt, *prefixes[sub[0]], *sub[1:]], env=env, capture_output=True,
+                                     text=True, timeout=30)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertFalse(os.path.exists(marker), open(marker).read() if os.path.exists(marker) else "")
+        diff = subprocess.run(["git", "-C", wt, *prefixes["diff"]], env=env, capture_output=True, text=True,
+                              timeout=30)
+        self.assertIn("+brudny", diff.stdout)          # zwykły diff gita, nie wynik zewnętrznego programu
+        # Kontrola: zwykłe `git diff` bez tych opcji uruchamia program z konfiguracji — i nie pasuje do listy.
+        subprocess.run(["git", "-C", wt, "diff"], env=env, capture_output=True, text=True, timeout=30)
+        self.assertTrue(os.path.exists(marker))
+        allowed, _ = agentcmd.read_only_tools(wt)
+        self.assertFalse([r for r in allowed if r in (f"Bash(git -C {wt} diff)", f"Bash(git -C {wt} diff *)")])
 
     def test_ordinary_claude_step_keeps_the_project_list(self):
         """Zwykły krok bez zmian (PT-158): lista projektu, bez listy tylko do odczytu, katalog roboczy worktree."""

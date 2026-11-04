@@ -25,6 +25,7 @@ pierwszego sprawdzenia — po restarcie usługi od nowa (krok dostaje pełny cza
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import shutil
@@ -244,6 +245,8 @@ class FlowEngine(PlanEditing):
         self.guard_every = guard_every
         # Czas procesora jednostki kroku jako znak postępu strażnika (None w testach bez systemd).
         self.unit_cpu = stepstop.unit_cpu_bucket
+        # Strażnik opiekuna (PT-158): zamrożenie jednostki kroku na czas działania Tide (atrapa w testach).
+        self.freeze_unit = stepstop.freeze_unit
         self.terminal = terminal
         self.task_files = task_files or TaskFiles()
         self.procs: dict[str, object] = {}         # krok → Popen (tylko kroki uruchomione przez tę usługę)
@@ -1498,7 +1501,13 @@ class FlowEngine(PlanEditing):
                 shutil.copyfile(source, target)
             if kind == caretaker.KIND:
                 # Strażnik (PT-158): stan bazowy tuż przed startem programu, po wszystkich przygotowaniach Tide.
-                self._guard_baseline(card.id, step_id, project.repo, worktree, bg.git_dir,
+                # Przy problemie ticketu pod strażą jest też drzewo i HEAD worktree karty (review M2); katalog gita
+                # ustala usługa z repozytorium, jak dla worktree kroku.
+                watched = [(worktree, bg.git_dir)]
+                card_tree = made.get("worktree") or ""
+                if card_tree and os.path.normpath(card_tree) != os.path.normpath(worktree):
+                    watched.append((card_tree, agentcmd.resolve_git_dir(project.repo, card_tree)))
+                self._guard_baseline(card.id, step_id, project.repo, watched,
                                      (made_ticket["branch"], made["branch"]))
             proc = bg.start(systemd_run=self.systemd_run)
             self.procs[step_id] = proc
@@ -1542,25 +1551,53 @@ class FlowEngine(PlanEditing):
         if (action, key) not in st.intents:
             self.journal.append(card, "intent", action=action, key=key, **intent)
         guarded = self._guard_check(card, st)
+        frozen = self._guard_freeze(st, guarded)
         try:
             data = work()
         except (FlowGitError, reservations.ReservationError, agentcmd.StepError, OSError, FlowError) as exc:
-            self._guard_rebase(card, guarded, action)
+            self._guard_rebase(card, guarded, action, frozen)
             if done is None or done.get("error") != str(exc):
                 self.journal.append(card, "result", action=action, key=key, ok=False, error=str(exc))
             if isinstance(exc, (agentcmd.StepError, OSError)):
                 raise
             raise FlowError(action, str(exc)) from None
-        self._guard_rebase(card, guarded, action)
+        except BaseException:
+            self._guard_thaw(st, frozen)
+            raise
+        self._guard_rebase(card, guarded, action, frozen)
         return self.journal.append(card, "result", action=action, key=key, ok=True, **(data or {}))
 
     # --- strażnik kroku opiekuna (PT-158) -------------------------------------------------------
 
-    def _guard_baseline(self, card: str, step: str, repo: str, worktree: str, git_dir: str, branches) -> None:
-        """Stan bazowy kroku opiekuna (`caretaker.guard`, `cause: start`): worktree kroku, jego HEAD, gałąź kroku
-        i gałąź karty."""
-        base = guard.snapshot(self.git, repo=repo, worktree=worktree, git_dir=git_dir, branches=branches)
+    def _guard_baseline(self, card: str, step: str, repo: str, worktrees, branches) -> None:
+        """Stan bazowy kroku opiekuna (`caretaker.guard`, `cause: start`): drzewo i HEAD worktree kroku i worktree
+        karty (pary worktree, gitDir), gałąź kroku i gałąź karty."""
+        base = guard.snapshot(self.git, repo=repo, worktrees=worktrees, branches=branches)
         self.journal.append(card, guard.EVENT, step=step, cause="start", wrote=[], **base)
+
+    def _guard_freeze(self, st: FlowState, names: list[str]) -> dict:
+        """Na czas działania Tide zamraża jednostki trwających kroków opiekuna (M1 review PT-158): zmiana w oknie
+        działania jest wtedy zmianą Tide. Wynik: krok → "frozen" (zamrożony), "gone" (procesu już nie ma — nic nie
+        pisze) albo "" (żyje albo nie wiadomo, a zamrożenie się nie udało — zmiany z okna należą do kroku)."""
+        frozen = {}
+        for name in names:
+            unit = (st.caretakers.get(name) or {}).get("unit") or ""
+            if unit and self.freeze_unit(unit, True):
+                frozen[name] = "frozen"
+                continue
+            proc = self.procs.get(name)
+            if proc is not None and proc.poll() is not None or \
+                    proc is None and unit and stepstop.unit_state(unit) == "inactive":
+                frozen[name] = "gone"
+            else:
+                frozen[name] = ""
+        return frozen
+
+    def _guard_thaw(self, st: FlowState, frozen: dict) -> None:
+        for name, how in frozen.items():
+            unit = (st.caretakers.get(name) or {}).get("unit") or ""
+            if how == "frozen" and not self.freeze_unit(unit, False):
+                logging.getLogger(__name__).warning("nie udało się odmrozić kroku opiekuna %s (%s)", name, unit)
 
     def _guard_check(self, card: str, st: FlowState) -> list[str]:
         """Przed działaniem Tide, które może zmienić worktree albo gałąź pod strażą (scalenie, commit planu, gałęzie,
@@ -1575,18 +1612,27 @@ class FlowEngine(PlanEditing):
                                     **{k: base.get(k) for k in guard.FIELDS})
         return names
 
-    def _guard_rebase(self, card: str, names: list[str], action: str) -> None:
-        """Po działaniu Tide stan pod strażą bierze się na nowo (zmiana Tide nie jest zapisem kroku)."""
+    def _guard_rebase(self, card: str, names: list[str], action: str, frozen: dict) -> None:
+        """Po działaniu Tide, jeszcze przed odmrożeniem kroku, stan pod strażą bierze się na nowo. Zmiana w oknie
+        działania jest zmianą Tide tylko wtedy, gdy krok był zamrożony albo już nie działał (`_guard_freeze`);
+        inaczej zostaje zapisana jako zapis kroku (`wrote`) — strażnik woli odrzucić, niż przepuścić."""
         if not names:
             return
-        st = fold(self.journal.read(card))
-        for name in names:
-            base = st.caretaker_guards.get(name)
-            if base is None or name in st.finished:
-                continue
-            fresh = guard.again(self.git, base)
-            if any(fresh.get(k) != base.get(k) for k in ("tree", "head", "refs")):
-                self.journal.append(card, guard.EVENT, step=name, cause=action, wrote=[], **fresh)
+        try:
+            st = fold(self.journal.read(card))
+            for name in names:
+                base = st.caretaker_guards.get(name)
+                if base is None or name in st.finished:
+                    continue
+                fresh = guard.again(self.git, base)
+                if guard.same(base, fresh):
+                    continue
+                wrote = [] if frozen.get(name) else [
+                    f"zmiana w czasie działania Tide `{action}`, gdy kroku opiekuna nie dało się zamrozić — "
+                    + "; ".join(guard.changes(base, fresh))]
+                self.journal.append(card, guard.EVENT, step=name, cause=action, wrote=wrote, **fresh)
+        finally:
+            self._guard_thaw(fold(self.journal.read(card)), frozen)
 
     def _guard_verdict(self, card: str, name: str) -> str:
         """Powód odrzucenia wyniku kroku opiekuna (pusty — strażnik przepuszcza). Bez stanu bazowego wynik też jest
@@ -3664,7 +3710,7 @@ class FlowEngine(PlanEditing):
             out = worktree + f".{caretaker.KIND}-{name}.step/out"
             prompt = caretaker.brief(self._caretaker_problem(st, run), st, card=card, out_dir=out, worktree=worktree,
                                      commands=selected.tool == "claude")
-            self._launch(item, project, selected, run.get("ticket") or "", {"branch": info["cardBranch"]},
+            self._launch(item, project, selected, run.get("ticket") or "", {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
                          {"branch": branch, "worktree": worktree}, name, [],
                          kind=caretaker.KIND, prompt_text=prompt)
         except FlowDeferred:

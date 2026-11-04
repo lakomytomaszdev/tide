@@ -98,6 +98,15 @@ def unit_state(unit: str) -> str:
     return "active" if code == 0 else "inactive" if code in (3, 4) else "unknown"
 
 
+def freeze_unit(unit: str, frozen: bool) -> bool:
+    """Zamrożenie (`frozen`) albo odmrożenie całej cgroup kroku (`systemctl --user freeze|thaw`, systemd ≥ 246):
+    procesy kroku z potomkami stoją, dopóki Tide nie skończy własnego działania (strażnik opiekuna, PT-158).
+    `systemctl freeze` wraca po zamrożeniu. True — udało się."""
+    if not unit:
+        return False
+    return _systemctl("freeze" if frozen else "thaw", unit + ".scope").returncode == 0
+
+
 CPU_BUCKET_NS = 10_000_000_000
 
 
