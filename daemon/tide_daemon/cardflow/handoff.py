@@ -120,6 +120,11 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
     elif choice in ("run", "run-always", "run-ticket"):
         detail = (f"Użytkownik uruchomił poza piaskownicą, w tym worktree, polecenie: {command}\n{answer}\n"
                   "Zmiany w plikach (np. package.json, package-lock.json) są już w worktree — sprawdź `git status`.")
+    elif choice == "deny" and prior.get("outside") and instead:
+        # 04.11 (K-43/BO-13, K-38/PT-164): instrukcja „zamiast tego” przy odmowie polecenia poza piaskownicą ginęła —
+        # agent widział samo „nie zgodził się” i prosił o to samo polecenie w kółko.
+        detail = (f"Użytkownik nie zgodził się uruchomić poza piaskownicą: {command}\n"
+                  f"Nie proś ponownie o to polecenie. Zamiast tego: {instead}")
     elif choice == "deny" and prior.get("outside"):
         detail = f"Użytkownik nie zgodził się uruchomić poza piaskownicą: {command}. Kontynuuj bez tego."
     elif choice == "deny" and instead:
