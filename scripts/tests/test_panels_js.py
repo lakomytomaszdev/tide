@@ -53,6 +53,8 @@ class PanelScriptsTest(unittest.TestCase):
         self.assertEqual(config(bar, "org.kde.plasma.kickoff", "/General")["icon"], "tide-logo")
         self.assertEqual(config(bar, "org.kde.plasma.digitalclock", "/Appearance")["showDate"], "true")
         self.assertEqual(config(bar, "org.kde.plasma.appmenu", "/Appearance")["allScreens"], "false")
+        # Kafelki zasobnika rosną z paskiem (decyzja 95).
+        self.assertEqual(config(bar, "org.kde.plasma.systemtray", "/General")["scaleIconsToFit"], "true")
         # Zegar i zasobnik to te same widżety co wcześniej, z zachowaną konfiguracją.
         self.assertIn("/Applets/89", next(w for w in bar["widgets"] if w["id"] == 78)["config"])
         self.assertEqual(types(find(state, 90)), ["icontasks", "widget"])
@@ -102,6 +104,7 @@ class PanelScriptsTest(unittest.TestCase):
         self.assertEqual(types(bar), ["kickoff", "icon", "panelspacer", "digitalclock", "panelspacer", "systemtray"])
         self.assertEqual(bar["height"], 36)
         self.assertEqual(config(bar, "org.kde.plasma.kickoff", "/General")["icon"], "go-home-large-symbolic")
+        self.assertEqual(config(bar, "org.kde.plasma.systemtray", "/General")["scaleIconsToFit"], "false")
         icon = config(bar, "org.kde.plasma.icon", "/")
         self.assertEqual(icon["url"], "file:///tmp/index.html")
         # Zachowane widżety to te same obiekty (ten sam identyfikator).

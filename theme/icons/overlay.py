@@ -7,7 +7,8 @@ wyglądać inaczej niż w bazie:
 - aliasy: kopie ikon motywu pod nazwami, których motyw nie zna (Toolbox JetBrains, `code`),
 - kafelki: oryginalne ikony aplikacji spoza motywu w okręgu jak McMojave-circle,
 - glify: proste kafelki w kolorach palety dla aplikacji bez żadnej ikony,
-- foldery: ikony miejsc motywu bazowego przefarbowane na teal z palety.
+- foldery: ikony miejsc motywu bazowego przefarbowane na teal z palety,
+- zasobnik: glify Tide pod nazwami ikon apletów górnego paska (tray.py).
 Kopiujemy pliki zamiast dowiązań, żeby nakładka działała też we Flatpaku.
 """
 from __future__ import annotations
@@ -25,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from theme.icons import glyphs  # noqa: E402
+from theme.icons import glyphs, tray  # noqa: E402
 from theme.icons.audit import MANIFEST, OVERLAY, IconPlan, Plan, Resolver  # noqa: E402
 
 TILE_SIZE = 256
@@ -37,6 +38,7 @@ DIRECTORIES = {
     # weźmie dokładnie pasującą bitmapę z hicolor zamiast naszego kafelka.
     "apps/256": {"Size": "256", "Context": "Applications", "MinSize": "16", "MaxSize": "512", "Type": "Scalable"},
     "places/scalable": {"Size": "64", "Context": "Places", "MinSize": "32", "MaxSize": "512", "Type": "Scalable"},
+    tray.DIRECTORY: {"Size": "22", "Context": "Status", "MinSize": "8", "MaxSize": "512", "Type": "Scalable"},
 }
 COLOR_WORDS = {"black", "blue", "brown", "cyan", "green", "grey", "gray", "magenta", "orange", "pink",
                "purple", "red", "violet", "yellow", "white", "teal", "custom", "nordic", "indigo"}
@@ -194,7 +196,7 @@ def index_theme(plan: Plan, base: Resolver) -> str:
     lines = [
         "[Icon Theme]",
         f"Name={OVERLAY}",
-        f"Comment=Nakładka Tide na {plan.base}: stonowane glify, aliasy, kafelki aplikacji i foldery w kolorach palety",
+        f"Comment=Nakładka Tide na {plan.base}: stonowane glify, aliasy, kafelki aplikacji, foldery i zasobnik w kolorach palety",
         f"Inherits={plan.base},breeze-dark,hicolor",
         "Example=folder",
     ]
@@ -206,15 +208,20 @@ def index_theme(plan: Plan, base: Resolver) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build(plan: Plan, base: Resolver, palette: dict, out: Path) -> dict:
-    """Buduje nakładkę w katalogu obok i podmienia `out` w całości. Zwraca manifest."""
+def build(plan: Plan, base: Resolver, palette: dict, out: Path, simple=None, palette_tile: dict | None = None,
+          warn=None) -> dict:
+    """Buduje nakładkę w katalogu obok i podmienia `out` w całości. Zwraca manifest.
+
+    `simple` (glyphs.SimpleIcons) daje loga do kafelków zasobnika aplikacji, `palette_tile` — wzór
+    kafelka docka z glyphs.json, żeby zasobnik miał te same odcienie co dock.
+    """
     staging = out.with_name(f".{out.name}.new")
     if staging.exists():
         shutil.rmtree(staging)
     for directory in DIRECTORIES:
         (staging / directory).mkdir(parents=True)
 
-    manifest = {"base": plan.base, "icons": {}, "folders": 0}
+    manifest = {"base": plan.base, "icons": {}, "folders": 0, "tray": 0}
     for item in sorted(plan.icons.values(), key=lambda i: i.name):
         if item.kind == "alias":
             suffix = item.source.suffix
@@ -231,6 +238,10 @@ def build(plan: Plan, base: Resolver, palette: dict, out: Path) -> dict:
     for name, svg in folder_icons(base, palette).items():
         (staging / "places/scalable" / name).write_text(svg)
         manifest["folders"] += 1
+
+    for name, svg in tray.icons(palette, simple=simple, palette_tile=palette_tile, warn=warn).items():
+        (staging / tray.DIRECTORY / name).write_text(svg)
+        manifest["tray"] += 1
 
     (staging / "index.theme").write_text(index_theme(plan, base))
     (staging / MANIFEST).write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
