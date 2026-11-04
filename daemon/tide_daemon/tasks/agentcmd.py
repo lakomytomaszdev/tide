@@ -87,9 +87,40 @@ SANDBOX_DUMMIES = ("/.bash_profile", "/.bashrc", "/.claude", "/.gitconfig", "/.g
 # nigdy nie należą do ticketu: krok ich nie commituje, a kontrola czystości worktree je pomija.
 TOOLING_DIRS = ("/.agents/", "/.codex/")
 CODEX_GIT_DIRS = ("objects", "refs", "logs")        # reszta wspólnego .git (haki, config) zostaje tylko do odczytu
-# Krok bez poleceń (opiekun karty do PT-158): Codex nie dostaje żadnego narzędzia wykonującego polecenia ani kod
-# (`shell`, `exec_command`, `exec` trybu kodu, `js_repl`); zapis pliku w `out` zostaje przez apply_patch.
+# Krok opiekuna u Codexa: Codex nie ma listy dozwolonych poleceń, więc nie dostaje żadnego narzędzia wykonującego
+# polecenia ani kod (`shell`, `exec_command`, `exec` trybu kodu, `js_repl`); zapis pliku w `out` zostaje przez
+# apply_patch. To podzbiór listy tylko do odczytu niżej (PT-158).
 CODEX_NO_COMMANDS = ("shell_tool", "unified_exec", "code_mode", "js_repl")
+# Krok opiekuna u Claude (PT-158): stała lista poleceń tylko do odczytu, niezależna od ustawień projektu. Git działa
+# wyłącznie jako `git -C <worktree> <podpolecenie>` (katalogiem roboczym kroku jest `out`). Zakazy wycinają opcje,
+# którymi te programy piszą albo uruchamiają inne programy; piaskownica i tak daje zapis tylko do `out`.
+READ_ONLY_COMMANDS = ("rg", "grep", "cat", "ls", "find")
+READ_ONLY_GIT = ("log", "show", "diff", "status")
+READ_ONLY_BANS = (
+    "find *-delete*", "find *-exec*", "find *-ok*", "find *-fprint*", "find *-fls*",   # usuwanie, programy, pliki
+    "rg *--pre*", "rg *--hostname-bin*",                                               # programy pomocnicze rg
+    "git *--output*", "git *--ext-diff*", "git *--textconv*",                          # zapis do pliku, sterowniki
+    "*>*",                                                                             # przekierowanie do pliku
+)
+
+
+def read_only_tools(worktree: str, step_dir: str = "") -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """`--allowedTools` i `--disallowedTools` kroku tylko do odczytu (opiekun karty): polecenia z
+    `READ_ONLY_COMMANDS` (też z wzorcami nazwanymi worktree — Claude CLI pyta o polecenia ze ścieżką spoza katalogów
+    sesji mimo `cat *`, por. `board.commands.step_reads`), `git -C <worktree>` z `READ_ONLY_GIT`, odczyt worktree
+    narzędziami Read/Grep/Glob i odczyt własnych katalogów kroku; zakazy `READ_ONLY_BANS` (zakaz wygrywa z zgodą,
+    łańcuch poleceń Claude CLI sprawdza po kawałku). Bez listy poleceń projektu."""
+    from ..board.commands import step_reads
+    worktree = os.path.normpath(worktree)
+    allowed = []
+    for name in READ_ONLY_COMMANDS:
+        allowed += [f"Bash({name})", f"Bash({name} *)", f"Bash({name} {worktree})", f"Bash({name} {worktree}/*)",
+                    f"Bash({name} * {worktree})", f"Bash({name} * {worktree}/*)"]
+    for sub in READ_ONLY_GIT:
+        allowed += [f"Bash(git -C {worktree} {sub})", f"Bash(git -C {worktree} {sub} *)"]
+    # Ścieżka bezwzględna w regule Claude CLI zaczyna się od `//`; reguła Read obejmuje też Grep i Glob.
+    allowed += [f"Read(/{worktree}/**)", *step_reads(step_dir)]
+    return tuple(dict.fromkeys(allowed)), tuple(f"Bash({rule})" for rule in READ_ONLY_BANS)
 
 
 class StepError(ValueError):
@@ -155,8 +186,9 @@ class Step:
     chrome_bin: str = ""           # Chromium Playwrighta tylko do odczytu, jako CHROME_BIN (Karma, 03.11)
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
     codex_mcp_skip: tuple = ()      # serwery, których wyłączenie przez `-c` psuje konfigurację Codexa (03.11)
-    # Krok opiekuna karty (PT-143): żadnych poleceń (Bash zabroniony, bez listy dozwolonych), zapis wyłącznie do
-    # `<krok>/out` — Claude: zakaz edycji worktree i repozytorium, Codex: katalog roboczy i jedyny zapisywalny `out`.
+    # Krok opiekuna karty (PT-143, PT-158): zapis wyłącznie do `<krok>/out`, który jest też katalogiem roboczym
+    # programu. Claude: stała lista poleceń tylko do odczytu (`read_only_tools`, zamiast `allowed_tools`) i zakaz
+    # edycji worktree i repozytorium; Codex: jedyny zapisywalny `out` i żadnych poleceń (`CODEX_NO_COMMANDS`).
     write_out_only: bool = False
 
 
@@ -180,6 +212,10 @@ class Background:
     token_files: list = field(default_factory=list)
     files: dict = field(default_factory=dict)      # ścieżka → treść
     dirs: list = field(default_factory=list)
+    # Katalog roboczy procesu, gdy inny niż worktree (`cwd`): krok z zapisem wyłącznie do `out` (PT-158) startuje
+    # w `out` — piaskownica Claude CLI daje zapis katalogowi roboczemu, a jej puste pliki-atrapy (`.bashrc`…)
+    # lądują w nim, nie w worktree pod strażą.
+    workdir: str = ""
 
     @property
     def prompt_file(self) -> str:
@@ -238,7 +274,7 @@ class Background:
             log = stdout = open(self.log_file, "ab")
         try:
             with open(self.prompt_file, "rb") as stdin:
-                return subprocess.Popen(argv, cwd=self.cwd, env=env, stdin=stdin, stdout=stdout, stderr=stderr,
+                return subprocess.Popen(argv, cwd=self.workdir or self.cwd, env=env, stdin=stdin, stdout=stdout, stderr=stderr,
                                         text=True, start_new_session=True)
         finally:
             if log is not None:
@@ -415,9 +451,10 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
         argv += ["--permission-mode", step.permission_mode]
     allowed, disallowed = step.allowed_tools, step.disallowed_tools
     if step.write_out_only:
-        # Ścieżka bezwzględna w regule Claude CLI zaczyna się od `//`.
-        allowed = ()
-        disallowed = ("Bash", f"Edit(/{os.path.normpath(step.worktree)}/**)",
+        # PT-158: stała lista tylko do odczytu zamiast listy kroku (lista projektu nigdy tu nie trafia). Ścieżka
+        # bezwzględna w regule Claude CLI zaczyna się od `//`.
+        allowed, bans = read_only_tools(step.worktree, step.step_dir)
+        disallowed = (*bans, f"Edit(/{os.path.normpath(step.worktree)}/**)",
                       f"Edit(/{os.path.normpath(step.repo)}/**)")
     if allowed:
         argv += ["--allowedTools", *allowed]
@@ -488,5 +525,5 @@ def background(step: Step) -> Background:
                       git_dir=git_dir, unit="tide-step-" + step.step_id,
                       runtime_dir=base.get("XDG_RUNTIME_DIR", ""),
                       secret_env=extra.get("secret_env", {}), token_files=extra.get("token_files", []),
-                      files=files, dirs=dirs)
+                      files=files, dirs=dirs, workdir=out if step.write_out_only else "")
 

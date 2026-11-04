@@ -310,8 +310,8 @@ class BackgroundCodexTest(BackgroundBase):
         self.assertNotIn(git, roots)
 
     def test_caretaker_step_writes_only_to_out_and_runs_no_commands(self):
-        """Krok opiekuna karty (PT-143): Codex pracuje w `out` i tylko tam pisze; Claude bez poleceń i bez edycji
-        worktree ani repozytorium, mimo listy dozwolonych poleceń projektu."""
+        """Krok opiekuna karty (PT-143): Codex pracuje w `out`, tylko tam pisze i nie ma narzędzi poleceń (Codex nie
+        ma listy dozwolonych poleceń, więc dostaje podzbiór listy tylko do odczytu — pusty, PT-158)."""
         out = os.path.join(self.step_dir, "out")
         codex = agentcmd.background(self.step("codex", model="gpt-5-codex", codex_mcp=(), write_out_only=True))
         self.assertEqual(codex.argv[codex.argv.index("--cd") + 1], out)
@@ -331,14 +331,53 @@ class BackgroundCodexTest(BackgroundBase):
         self.assertNotIn("--skip-git-repo-check", plain.argv)
         self.assertFalse([arg for arg in plain.argv if arg.startswith("features.")], "zwykły krok bez zmian")
         self.assertFalse([arg for arg in plain.argv if "exclude_" in arg], "zwykły krok bez zmian")
-        claude =agentcmd.background(self.step("claude", allowed_tools=("Bash(git status *)",),
+        self.assertEqual(codex.workdir, out)
+        self.assertEqual(plain.workdir, "")
+
+    def test_caretaker_claude_has_only_the_fixed_read_only_list(self):
+        """PT-158: krok opiekuna u Claude ma stałą listę tylko do odczytu (bez listy poleceń projektu, także gdy
+        silnik by ją podał), zakazy opcji piszących, zapis tylko do `out` i `out` jako katalog roboczy."""
+        out = os.path.join(self.step_dir, "out")
+        wt = os.path.normpath(self.worktree)
+        project = ("Bash(make test)", "Bash(git commit)", "Bash(git commit *)", "Bash(git status *)",
+                   "Bash(python3 -m pytest *)")
+        claude = agentcmd.background(self.step("claude", allowed_tools=project,
                                                disallowed_tools=("Bash(make install)",), write_out_only=True))
-        self.assertNotIn("--allowedTools", claude.argv)
-        banned = claude.argv[claude.argv.index("--disallowedTools") + 1:]
-        self.assertEqual(banned, ["Bash", f"Edit(/{os.path.normpath(self.worktree)}/**)",
-                                  f"Edit(/{os.path.normpath(self.repo)}/**)"])
+        argv = claude.argv
+        allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
+        banned = argv[argv.index("--disallowedTools") + 1:]
+        for rule in project + ("Bash(make install)",):
+            self.assertNotIn(rule, argv)
+        for program in ("rg", "grep", "cat", "ls", "find"):
+            self.assertIn(f"Bash({program} *)", allowed)
+        for sub in ("log", "show", "diff", "status"):
+            self.assertIn(f"Bash(git -C {wt} {sub} *)", allowed)
+        self.assertIn(f"Read(/{wt}/**)", allowed)
+        self.assertIn(f"Bash(cat {out}/*)", allowed)
+        # Na liście nie ma programu spoza stałej listy (każda reguła Bash zaczyna się od jednego z nich).
+        programs = {rule[5:-1].split()[0] for rule in allowed if rule.startswith("Bash(")}
+        self.assertLessEqual(programs, {"rg", "grep", "cat", "ls", "find", "git", "head", "tail", "wc"})
+        self.assertFalse([r for r in allowed if r.startswith("Bash(git") and not r.startswith(f"Bash(git -C {wt} ")])
+        self.assertFalse([r for r in allowed if r.startswith(("Edit", "Write"))])
+        for rule in ("Bash(find *-delete*)", "Bash(find *-exec*)", "Bash(find *-ok*)", "Bash(find *-fprint*)",
+                     "Bash(rg *--pre*)", "Bash(git *--output*)", "Bash(git *--ext-diff*)", "Bash(*>*)",
+                     f"Edit(/{wt}/**)", f"Edit(/{os.path.normpath(self.repo)}/**)"):
+            self.assertIn(rule, banned)
+        self.assertNotIn("Bash", banned)
         settings = json.loads(next(text for path, text in claude.files.items() if path.endswith("settings.json")))
         self.assertEqual(settings["sandbox"]["filesystem"]["allowWrite"], [out])
+        self.assertEqual(claude.workdir, out)
+        self.assertEqual(claude.cwd, self.worktree)        # worktree kroku dla zatrzymania i dziennika sesji
+
+    def test_ordinary_claude_step_keeps_the_project_list(self):
+        """Zwykły krok bez zmian (PT-158): lista projektu, bez listy tylko do odczytu, katalog roboczy worktree."""
+        cmd = agentcmd.background(self.step("claude", allowed_tools=("Bash(make test)", "Bash(git commit *)"),
+                                            disallowed_tools=("Bash(make install)",)))
+        argv = cmd.argv
+        self.assertEqual(argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")],
+                         ["Bash(make test)", "Bash(git commit *)"])
+        self.assertEqual(argv[argv.index("--disallowedTools") + 1:], ["Bash(make install)"])
+        self.assertEqual(cmd.workdir, "")
 
     def test_caretaker_resume_skips_the_git_check_before_the_subcommand(self):
         cmd = agentcmd.background(self.step("codex", codex_mcp=(), write_out_only=True,
