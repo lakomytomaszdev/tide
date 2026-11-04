@@ -1864,9 +1864,11 @@ zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
   (`board.commands.step_reads`). Lista jest w Tide, niezależna od ustawień projektu: silnik nie podaje kroku
   opiekuna listy projektu (`claude_tools`), a `agentcmd` i tak ją pomija. `--disallowedTools` (zakaz wygrywa ze
   zgodą): `READ_ONLY_BANS` — `find` z `-delete`, `-exec`/`-execdir`, `-ok`/`-okdir`, `-fprint*`, `-fls`; `rg`
-  z `--pre`, `--hostname-bin`, `--search-zip`/`-z`; `git` z `--output`, `--ext-diff`, `--textconv`,
-  `--show-signature`; każde przekierowanie `>` — oraz zakaz edycji worktree i repozytorium.
+  z `--pre`, `--hostname-bin`, `--search-zip`/`-z` (także połączonym, np. `-az`, `-iz`); `git` z `--output`,
+  `--ext-diff`, `--textconv`, `--show-signature`; każde przekierowanie `>` — oraz zakaz edycji worktree i repozytorium.
   `autoAllowBashIfSandboxed: false`: polecenie spoza listy nie ruszy.
+  Zakaz `rg *-*z*` jest zachowawczy: wildcard obejmuje spacje, więc odrzuca też bezpieczne wywołania z `z`
+  w dalszym argumencie po `-` (np. `rg -n wzorzec plik.txt`); można wtedy użyć `rg` bez opcji albo `grep`.
 - Programy pomocnicze gita (review M3): środowisko kroku opiekuna (`agentcmd.read_only_git_config`, dopisane do
   `GIT_CONFIG_COUNT`, wygrywa z konfiguracją repozytorium) ma `core.fsmonitor=false`, `core.pager=cat`,
   `log.showSignature=false`, `gpg.program`/`gpg.ssh.program`/`gpg.x509.program` = `/bin/false` i puste programy

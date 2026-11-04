@@ -105,7 +105,9 @@ READ_ONLY_BANS = (
     "rg *--pre*", "rg *--hostname-bin*",                                               # programy pomocnicze rg
     "git *--output*", "git *--ext-diff*", "git *--textconv*",                          # zapis do pliku, sterowniki
     "git *--show-signature*",                                                          # gpg
-    "rg *--search-zip*", "rg * -z*", "rg -z*",                                         # dekompresory rg
+    # `-z` działa też wewnątrz połączonych krótkich opcji (`-az`, `-iz`). Wildcard `*` obejmuje również spacje,
+    # więc zakaz celowo odrzuca też bezpieczne wywołania z `z` w dalszym argumencie po `-` (review runda 3/M1).
+    "rg *--search-zip*", "rg *-*z*",                                                    # dekompresory rg
     "*>*",                                                                             # przekierowanie do pliku
 )
 # Sam zakaz napisów w argv nie wyłącza programów pomocniczych gita z konfiguracji repozytorium (review M3: zwykłe

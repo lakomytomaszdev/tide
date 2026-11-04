@@ -9,6 +9,7 @@
   zostaje commit WIP z nowymi i zmienionymi plikami, wracają ostatnie wiadomości z atrapy dziennika.
 Prawdziwy model nigdy nie jest wywoływany.
 """
+import fnmatch
 import json
 import os
 import shutil
@@ -372,6 +373,31 @@ class BackgroundCodexTest(BackgroundBase):
         self.assertEqual(settings["sandbox"]["filesystem"]["allowWrite"], [out])
         self.assertEqual(claude.workdir, out)
         self.assertEqual(claude.cwd, self.worktree)        # worktree kroku dla zatrzymania i dziennika sesji
+
+    def test_caretaker_rg_rejects_decompressors_also_in_combined_short_options(self):
+        """PT-158, review runda 3: dopasowanie poleceń do wygenerowanych reguł, z pierwszeństwem zakazu.
+        Użyte reguły Bash mają tylko wildcard `*` (bez klas znaków ani `?`)."""
+        cmd = agentcmd.background(self.step("claude", write_out_only=True))
+        argv = cmd.argv
+        allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
+        banned = argv[argv.index("--disallowedTools") + 1:]
+
+        def matches(command, rules):
+            return any(fnmatch.fnmatchcase(command, rule[5:-1])
+                       for rule in rules if rule.startswith("Bash(") and rule.endswith(")"))
+
+        for command in ("rg -az pattern file.gz", "rg -iz pattern file.gz", "rg -za pattern file.gz",
+                        "rg -niz pattern file.gz", "rg -azn pattern file.gz", "rg pattern -iz file.gz",
+                        "rg '-az' pattern file.gz", "rg -z pattern file.gz", "rg -n -z pattern file.gz",
+                        "rg --search-zip pattern file.gz"):
+            with self.subTest(command=command):
+                self.assertTrue(matches(command, allowed))   # sama zgoda przepuściłaby dekompresor
+                self.assertTrue(matches(command, banned))    # skuteczny zakaz mimo zgody
+        for command in ("rg pattern file.txt", "rg -n pattern file.txt", "rg -ai pattern file.txt",
+                        "rg --files", "rg wzorzec plik.txt"):
+            with self.subTest(command=command):
+                self.assertTrue(matches(command, allowed))
+                self.assertFalse(matches(command, banned))   # zwykłe wyszukiwanie nadal dostępne
 
     def test_caretaker_git_runs_no_helper_programs_from_the_repository_config(self):
         """Review M3 (PT-158): dozwolone `git -C <worktree> diff/status/log/show` w środowisku kroku opiekuna nie
