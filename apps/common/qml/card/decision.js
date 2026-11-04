@@ -203,6 +203,39 @@ function optionRequest(option, checks) {
     return { method: option.method, params: params }
 }
 
+// Blok „Opiekun poleca” (K-37, PT-157): pole `caretaker{summary, recommendation, tried[], optionId, failed}` liczy
+// usługa (caretaker.annotate). Okno tylko je formatuje: nie przestawia możliwości i niczego nie wybiera (D10).
+function hasCaretaker(decision) {
+    var care = decision && decision.caretaker
+    return !!care && typeof care === "object" && !!(care.recommendation || care.summary)
+}
+
+// Nagłówek bloku: „Opiekun poleca: <rekomendacja>”; bez rekomendacji (opiekun nie poradził sobie) — samo oddanie decyzji.
+function caretakerTitle(care) {
+    var recommendation = care && care.recommendation ? String(care.recommendation) : ""
+    return recommendation ? "Opiekun poleca: " + recommendation : "Opiekun oddaje decyzję"
+}
+
+var TRIED_ACTIONS = { "escalate": "Oddanie decyzji" }
+
+// Próby opiekuna w kolejności z usługi: [{action, reason, effect}] — akcja, powód (zdanie z usługi) i skutek.
+function triedRows(care) {
+    var rows = []
+    var list = care && Array.isArray(care.tried) ? care.tried : []
+    for (var i = 0; i < list.length; i++) {
+        var item = list[i] || {}
+        rows.push({ action: TRIED_ACTIONS[item.action] || item.action || "Działanie",
+                    reason: text(item.text),
+                    effect: item.ok === false ? "nie udało się" : "udało się" })
+    }
+    return rows
+}
+
+// Podpis przełącznika „Co próbowano”; pusta lista `tried[]` ukrywa sekcję (przycisk i listę).
+function triedToggleLabel(care, open) {
+    return (open ? "▾ " : "▸ ") + "Co próbowano (" + triedRows(care).length + ")"
+}
+
 // Żądanie z własną odpowiedzią: `reply` decyzji z tekstem w `params[reply.field]`.
 function replyRequest(decision, answer) {
     var reply = decision && decision.reply

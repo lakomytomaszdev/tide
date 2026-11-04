@@ -333,3 +333,55 @@ def scenario_f(data: dict, items: list[dict] | None = None) -> dict:
             card["derived"] = derived
             card["boardColumn"] = "waiting"
     return data
+
+
+# --- Opiekun karty (K-37, PT-157): decyzja błędu wraca od opiekuna z polem `caretaker` ---------------------
+
+CARE_TARGET = "K-8-ticket-3-1"
+CARE_SUMMARY = "Test pada na tym samym: brakuje dostępu do ~/.codex/sessions."
+CARE_RECOMMENDATION = "Zmień wykonawcę."
+
+
+def journal_caretaker(with_tried: bool = True) -> list[dict]:
+    """Ticket #3 pada dwa razy; opiekun (pierwszy krok nieudany, drugi oddaje decyzję) zostawia ją z rekomendacją
+    „change-executor”. Pole `caretaker` liczy usługa (`caretaker.annotate`), tak jak w dzienniku karty."""
+    items = []
+
+    def add(event_type, ts, **data):
+        items.append({"v": 1, "seq": len(items) + 1, "ts": f"2026-11-03T{ts}+01:00", "card": CARD,
+                      "type": event_type, **data})
+
+    def step(name, attempt, parent, ts, kind="ticket"):
+        add("step.started", ts, step=name, ticket="#3", kind=kind, executor="Sonnet", provider="anthropic",
+            model="sonnet", attempt=attempt, parentStep=parent, stepDir=f"/wt/{name}.step", worktree="/wt/3",
+            branch="ticket/3")
+
+    def care(n, name, ts):
+        add("caretaker.started", ts, problem="error:K-8-ticket-3-0", key=f"caretaker:error:K-8-ticket-3-0:{n}", n=n,
+            step=name, target=CARE_TARGET, root="K-8-ticket-3-0", ticket="#3", trigger="error", triggers=["error"],
+            watermark=len(items))
+        step(name, 0, "", ts, kind="caretaker")
+        add("step.finished", ts, step=name, ticket="#3", result="done", reason="")
+
+    add("card.started", "09:05:00", entry="now", executor="Sonnet", program="claude", provider="anthropic")
+    step("K-8-ticket-3-0", 0, "", "10:05:00")
+    add("step.finished", "10:20:00", step="K-8-ticket-3-0", ticket="#3", result="error", reason="awaria testowa")
+    add("step.retry", "10:20:01", step="K-8-ticket-3-0", ticket="#3")
+    step(CARE_TARGET, 1, "K-8-ticket-3-0", "10:21:00")
+    add("step.finished", "10:40:00", step=CARE_TARGET, ticket="#3", result="error", reason="awaria testowa")
+    if with_tried:
+        care(1, "K-8-care-1", "10:41:00")
+        add("caretaker.escalated", "10:45:01", problem="error:K-8-ticket-3-0", step="K-8-care-1", target=CARE_TARGET,
+            ticket="#3", action="merge", summary="", recommendation="", optionId="", failed=True,
+            error="nieznana akcja opiekuna „merge”", code="bad-caretaker-action")
+    name = "K-8-care-2" if with_tried else "K-8-care-1"
+    care(2 if with_tried else 1, name, "10:50:00")
+    add("caretaker.escalated", "10:55:01", problem="error:K-8-ticket-3-0", step=name, target=CARE_TARGET, ticket="#3",
+        action="escalate", summary=CARE_SUMMARY, recommendation=CARE_RECOMMENDATION, optionId="change-executor",
+        failed=False, error="", code="")
+    return items
+
+
+def decisions_caretaker(with_tried: bool = True) -> list[dict]:
+    """Decyzje policzone przez usługę z dziennika opiekuna."""
+    return build_decisions(fold(journal_caretaker(with_tried)))

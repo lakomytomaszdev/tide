@@ -16,8 +16,9 @@ import shutil
 import unittest
 
 from . import REPO
-from .decisionfix import (A1_STEP, A2_COMMAND, A2_STEP, FINDINGS_C, Q2, Q3, a1_journal, a1_one_journal, a2_journal,
-                          decisions, decisions_c, full_card, journal, journal_c, scenario_b, scenario_c, scenario_f,
+from .decisionfix import (A1_STEP, A2_COMMAND, A2_STEP, CARE_RECOMMENDATION, CARE_SUMMARY, FINDINGS_C, Q2, Q3,
+                          a1_journal, a1_one_journal, a2_journal, decisions, decisions_c, decisions_caretaker,
+                          full_card, journal, journal_c, scenario_b, scenario_c, scenario_f,
                           without_options)
 from .test_view import ProbeCase
 
@@ -586,6 +587,100 @@ out["sent"] = calls()
         self.assertEqual(out["perm"], {"otherTitle": "Zrób zamiast tego…", "hint": False, "list": False},
                          "jedno polecenie — bez listy, polecenie jest na wierzchu")
         self.assertEqual(json.loads(out["sent"][0][2]), {"choice": "allow", "step": A2_STEP})
+
+
+CARE_PY = r'''
+def caretaker():
+    """Blok opiekuna w oknie: tytuł, streszczenie, przełącznik „Co próbowano”, wiersze prób (akcja, powód)."""
+    return json.loads(js("(function () { const d = page.decisionDialog; const all = " + ALL + "; "
+        "const one = n => all(d, n)[0] || null; "
+        "const y = it => it.mapToItem(d, 0, 0).y; "
+        "const block = one('decisionCaretaker'); "
+        "const firstOption = all(d, 'decisionOption').sort((a, b) => y(a) - y(b))[0]; "
+        "return JSON.stringify({ block: !!block, "
+        "  title: one('decisionCaretakerTitle') ? one('decisionCaretakerTitle').text : null, "
+        "  summary: one('decisionCaretakerSummary') ? one('decisionCaretakerSummary').text : null, "
+        "  toggle: one('decisionTriedToggle') ? one('decisionTriedToggle').text : null, "
+        "  tried: !!one('decisionTried'), "
+        "  rows: all(d, 'decisionTriedRow').sort((a, b) => y(a) - y(b)).map(r => [ "
+        "    all(r, 'decisionTriedAction')[0].text, all(r, 'decisionTriedReason').map(t => t.text)]), "
+        "  aboveOptions: block && firstOption ? y(block) < y(firstOption) : null })})()"))
+'''
+
+
+@unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class DecisionDialogCaretakerTest(ProbeCase):
+    """Blok „Opiekun poleca” i zwijane „Co próbowano” (K-37, PT-157): okno tylko pokazuje pole `caretaker` z usługi."""
+
+    def scenario(self, with_tried=True):
+        return scenario_f(self.data, decisions_caretaker(with_tried))
+
+    def test_fixture_comes_from_the_service(self):
+        decision = decisions_caretaker()[0]
+        self.assertEqual(decision["caretaker"]["recommendation"], CARE_RECOMMENDATION)
+        self.assertEqual(decision["caretaker"]["summary"], CARE_SUMMARY)
+        self.assertEqual(len(decision["caretaker"]["tried"]), 1)
+        self.assertEqual(decision["options"][0]["id"], "change-executor", "polecona pierwsza już z usługi")
+        self.assertEqual(decisions_caretaker(False)[0]["caretaker"]["tried"], [])
+
+    def test_block_shows_recommendation_and_summary_above_the_options_without_choosing(self):
+        first = decisions_caretaker()[0]["options"][0]
+        out = self.probe(STATE_PY + CARE_PY + """
+click(card("K-8"))
+out["opened"] = state()
+out["care"] = caretaker()
+key(Qt.Key.Key_Return)
+out["enter"] = [len(calls()), state()["choose"]]
+""", self.scenario())
+        care = out["care"]
+        self.assertTrue(care["block"])
+        self.assertEqual(care["title"], f"Opiekun poleca: {CARE_RECOMMENDATION}")
+        self.assertEqual(care["summary"], CARE_SUMMARY)
+        self.assertTrue(care["aboveOptions"], "blok jest nad możliwościami")
+        opened = out["opened"]
+        self.assertEqual(opened["options"][0][0], first["title"], "polecona pierwsza, kolejność z usługi bez zmian")
+        self.assertEqual([o[3] for o in opened["options"]], [False] * len(opened["options"]),
+                         "okno niczego nie wybiera za użytkownika")
+        self.assertEqual(out["enter"], [0, False], "Enter bez wyboru nic nie wysyła")
+
+    def test_tried_is_collapsed_and_expands_in_order_with_action_reason_and_effect(self):
+        out = self.probe(STATE_PY + CARE_PY + """
+click(card("K-8"))
+out["closed"] = caretaker()
+click(named("decisionTriedToggle"))
+out["open"] = caretaker()
+click(named("decisionTriedToggle"))
+out["again"] = caretaker()
+""", self.scenario())
+        self.assertEqual(out["closed"]["toggle"], "▸ Co próbowano (1)")
+        self.assertFalse(out["closed"]["tried"], "domyślnie zwinięte")
+        self.assertEqual(out["closed"]["rows"], [])
+        self.assertTrue(out["open"]["tried"])
+        self.assertEqual(out["open"]["toggle"], "▾ Co próbowano (1)")
+        self.assertEqual(out["open"]["rows"],
+                         [["merge — nie udało się",
+                           ["Opiekun: nie udało się wykonać działania „merge” — nieznana akcja opiekuna „merge”"]]])
+        self.assertFalse(out["again"]["tried"], "ponowne kliknięcie zwija")
+
+    def test_empty_tried_hides_the_section_but_keeps_the_block(self):
+        out = self.probe(STATE_PY + CARE_PY + """
+click(card("K-8"))
+out["care"] = caretaker()
+""", self.scenario(with_tried=False))
+        self.assertTrue(out["care"]["block"])
+        self.assertIsNone(out["care"]["toggle"], "pusta lista tried[] ukrywa sekcję")
+        self.assertFalse(out["care"]["tried"])
+
+    def test_without_caretaker_the_dialog_looks_like_today(self):
+        out = self.probe(STATE_PY + CARE_PY + """
+click(card("K-8"))
+out["care"] = caretaker()
+out["state"] = state()
+""", scenario_f(self.data))
+        self.assertEqual(out["care"], {"block": False, "title": None, "summary": None, "toggle": None, "tried": False,
+                                       "rows": [], "aboveOptions": None})
+        self.assertEqual([o[0] for o in out["state"]["options"]],
+                         ["Tak, uruchom poza piaskownicą", "Tylko dzienniki Claude", "Nie, zbuduj zestaw z testów"])
 
 
 if __name__ == "__main__":

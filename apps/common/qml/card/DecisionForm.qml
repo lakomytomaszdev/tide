@@ -32,6 +32,7 @@ ColumnLayout {
     property var decision: null
     property string selected: ""
     property bool techOpen: false
+    property bool triedOpen: false
     property string error: ""
     // Uwagi recenzenta zaznaczone do odesłania (id z `decision.findings`); domyślne zaznaczenie daje usługa.
     property var checkedIds: []
@@ -46,6 +47,8 @@ ColumnLayout {
     readonly property bool freeText: !!decision && decision.freeText === true && !!decision.reply
     readonly property bool onlyText: freeText && options.length === 0
     readonly property string choice: onlyText ? otherId : selected
+    readonly property var caretaker: Decision.hasCaretaker(decision) ? decision.caretaker : null
+    readonly property var triedRows: Decision.triedRows(caretaker)
     readonly property var commands: decision && decision.commands ? decision.commands : []
     readonly property bool showCommands: Decision.showsCommands(decision)
     readonly property var chosenOption: options.find(o => o.id === choice) || null
@@ -71,6 +74,7 @@ ColumnLayout {
     function reset() {
         selected = ""
         techOpen = false
+        triedOpen = false
         error = ""
         preview = null
         previewing = false
@@ -354,6 +358,102 @@ ColumnLayout {
                 tickets: modelData.tickets
                 checked: form.checkedIds.indexOf(modelData.id) >= 0
                 onToggled: form.toggleFinding(modelData.id)
+            }
+        }
+    }
+
+    // Opiekun karty (K-37, PT-157): rekomendacja i streszczenie z usługi, zwijane „Co próbowano”. Możliwości zostają
+    // w kolejności z usługi, bez zaznaczenia (D10); bez pola `caretaker` bloku nie ma.
+    ColumnLayout {
+        objectName: "decisionCaretaker"
+        Layout.fillWidth: true
+        visible: form.caretaker !== null
+        spacing: 6
+        Accessible.role: Accessible.Grouping
+        Accessible.name: "Opiekun"
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: careColumn.implicitHeight + 24
+            radius: Tide.Tokens.radiusFrame
+            color: Tide.Theme.alpha(Tide.Tokens.accent, 0.09)
+            border.width: 1
+            border.color: Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
+            ColumnLayout {
+                id: careColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 12
+                spacing: 4
+                Text {
+                    objectName: "decisionCaretakerTitle"
+                    Layout.fillWidth: true
+                    text: Decision.caretakerTitle(form.caretaker)
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 1.1
+                    font.weight: Font.DemiBold
+                    wrapMode: Text.Wrap
+                }
+                Text {
+                    objectName: "decisionCaretakerSummary"
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    text: form.caretaker && form.caretaker.summary ? String(form.caretaker.summary) : ""
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textSecondary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt
+                    wrapMode: Text.Wrap
+                }
+            }
+        }
+        Tide.TextButton {
+            objectName: "decisionTriedToggle"
+            visible: form.triedRows.length > 0
+            text: Decision.triedToggleLabel(form.caretaker, form.triedOpen)
+            accent: Tide.Tokens.textMuted
+            onClicked: form.triedOpen = !form.triedOpen
+        }
+        ColumnLayout {
+            objectName: "decisionTried"
+            Layout.fillWidth: true
+            visible: form.triedOpen && form.triedRows.length > 0
+            spacing: 4
+            Repeater {
+                model: form.triedRows
+                delegate: ColumnLayout {
+                    id: triedRow
+                    objectName: "decisionTriedRow"
+                    required property var modelData
+                    readonly property string action: modelData.action
+                    readonly property string reason: modelData.reason
+                    readonly property string effect: modelData.effect
+                    Layout.fillWidth: true
+                    spacing: 0
+                    Text {
+                        objectName: "decisionTriedAction"
+                        Layout.fillWidth: true
+                        text: triedRow.action + " — " + triedRow.effect
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textPrimary
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "decisionTriedReason"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: triedRow.reason
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                        wrapMode: Text.Wrap
+                    }
+                }
             }
         }
     }
