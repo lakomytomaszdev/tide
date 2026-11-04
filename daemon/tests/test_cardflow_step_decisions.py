@@ -758,3 +758,21 @@ class WorktreeGhostTest(unittest.TestCase):
         self.assertEqual(listed.returncode, 0, listed.stderr)
         self.assertIn(os.path.join(base, "wt"), listed.stdout)
         self.assertEqual(run("config", "tide.test", "1").returncode, 0)
+
+
+class ContentRefusalTest(unittest.TestCase):
+    def test_provider_content_filter_refusal_is_detected_from_the_step_log(self):
+        # 04.11, K-37/PT-158: Codex odrzucał review granic piaskownicy („flagged for possible cybersecurity risk”).
+        import tempfile
+        from tide_daemon.cardflow.engine import content_refusal
+        base = tempfile.mkdtemp()
+        os.makedirs(os.path.join(base, "out"))
+        log = os.path.join(base, "out", "step.log")
+        with open(log, "w") as fh:
+            fh.write('{"type":"turn.failed","error":{"message":"This content was flagged for possible cybersecurity '
+                     'risk. If this seems wrong, try rephrasing your request."}}\n')
+        self.assertTrue(content_refusal({"stepDir": base}))
+        with open(log, "w") as fh:
+            fh.write('{"type":"error","message":"exit code 1"}\n')
+        self.assertFalse(content_refusal({"stepDir": base}))
+        self.assertFalse(content_refusal({"stepDir": "/nie/ma"}))

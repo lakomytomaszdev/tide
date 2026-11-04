@@ -162,6 +162,23 @@ def _remove_placeholder(path: str, found: list, label: str) -> None:
             pass
 
 
+# Odmowy z filtra treści dostawcy w dzienniku kroku — ponowienie u tego samego dostawcy nic nie da.
+CONTENT_REFUSAL = re.compile(r"flagged for possible cybersecurity risk|content was flagged|violates (?:our|the) "
+                             r"(?:usage )?polic|Usage Policy|refused to (?:help|continue) for safety", re.I)
+
+
+def content_refusal(step: dict) -> bool:
+    """Krok zakończony odmową filtra treści (ostatnie 20 KB `out/step.log`)."""
+    path = os.path.join(step.get("stepDir") or "", "out", "step.log")
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(path) - 20_000))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return False
+    return bool(CONTENT_REFUSAL.search(tail))
+
+
 def worktree_guard(repo: str, memory: dict) -> list[str]:
     """Strażnik worktree (03.11): w trakcie kroków agentów z `.git/worktrees/*/` repozytorium plasma-tide zniknęły pliki
     `HEAD` i `gitdir` (19 worktree naraz, dwa razy), więc git przestał znać worktree kart i ticketów. Zapamiętuje oba
@@ -2106,6 +2123,12 @@ class FlowEngine(PlanEditing):
             decision = st.step_decisions.get(st.last_step)
             if decision:
                 self._resume_step(card, st, step, decision)
+            elif content_refusal(step) and self._other_provider_executor(st, step):
+                # Filtr treści dostawcy (04.11, K-37/PT-158: Codex odrzucał review granic piaskownicy jako „ryzyko
+                # cyberbezpieczeństwa”) — ten sam dostawca odmówi znowu, więc krok od razu idzie do innego.
+                self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
+                                    kind=step.get("kind") or "", choice="change-executor", answer="", command="",
+                                    executor=self._other_provider_executor(st, step), auto=True, refusal=True)
             elif self._codex_broken_mcp(step, dict(done)):
                 self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
                                     kind=step.get("kind") or "", choice="retry", answer="", command="",
@@ -3994,6 +4017,26 @@ class FlowEngine(PlanEditing):
                                 executor="", auto=True)
 
     CLASS_RANK = {"lekki": 0, "standard": 1, "mocny": 2}
+
+    def _other_provider_executor(self, st: FlowState, step: dict) -> str:
+        """Wykonawca innego dostawcy w tej samej klasie (albo mocny), inny model niż autor ticketu; pusty — brak."""
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None:
+            return ""
+        current = next((e for e in catalog.executors if e.name == step.get("executor")), None)
+        if current is None or current.provider == "local":
+            return ""
+        # Recenzent nie może mieć modelu ostatniego autora kodu ticketu (krok ticket/fix przed tym review).
+        authors = [s for s in st.steps.values() if s.get("ticket") == step.get("ticket") and s.get("ticket")
+                   and s.get("kind") not in ("review",) and s.get("step") != step.get("step")]
+        avoid = ((authors[-1].get("model") if authors and step.get("kind") == "review" else "") or "").lower()
+        options = [e for e in catalog.executors if e.classes and e.provider not in (current.provider, "local")
+                   and e.model.lower() != avoid]
+        same = [e for e in options if set(e.classes) & set(current.classes)]
+        strong = [e for e in options if "mocny" in e.classes]
+        pick = (same or strong or options)
+        return pick[0].name if pick else ""
 
     def _stronger_executor(self, step: dict, done: dict) -> str:
         """Następny mocniejszy wykonawca tego samego dostawcy (lekki → standard → mocny) po błędzie kroku, który nie
