@@ -623,7 +623,7 @@ class FlowEngine(PlanEditing):
             raise FlowError("flow-active", f"{card.id}: {st.busy_reason()}")
         try:
             if not project.youtrack:
-                reservations.reserve(project.repo, count=1, title=card.title, dry_run=True)
+                reservations.reserve(project.repo, count=1, title=card.title, dry_run=True, local_fallback=True)
         except reservations.ReservationError as exc:
             raise FlowError("no-ticket-number", f"numer ticketu: {exc}") from None
         main = self.git.main_branch(project.repo)
@@ -723,7 +723,7 @@ class FlowEngine(PlanEditing):
                                  source.tracker_url.rstrip("/") != yt.load_config()["url"].rstrip("/")):
             raise FlowError("bad-plan", "projekt albo adres YouTracka w planie różni się od projektu karty")
         try:
-            prefix = project.youtrack or reservations.reserve(project.repo, dry_run=True)["prefix"]
+            prefix = project.youtrack or reservations.reserve(project.repo, dry_run=True, local_fallback=True)["prefix"]
         except reservations.ReservationError as exc:
             raise FlowError("no-ticket-number", str(exc)) from None
         if source.prefix != prefix:
@@ -814,7 +814,7 @@ class FlowEngine(PlanEditing):
             prefix = project.youtrack
         else:
             try:
-                prefix = reservations.reserve(project.repo, dry_run=True)["prefix"]
+                prefix = reservations.reserve(project.repo, dry_run=True, local_fallback=True)["prefix"]
             except reservations.ReservationError as exc:
                 raise FlowError("no-ticket-number", str(exc)) from None
         self.journal.append(card_id, "card.started", entry="planning", mode=mode, repo=project.repo,
@@ -880,7 +880,7 @@ class FlowEngine(PlanEditing):
                     "prefix": found.youtrack, "configured": True}
             if not found.youtrack:
                 try:
-                    info["prefix"] = reservations.reserve(found.repo, dry_run=True)["prefix"]
+                    info["prefix"] = reservations.reserve(found.repo, dry_run=True, local_fallback=True)["prefix"]
                 except reservations.ReservationError as exc:
                     text = str(exc)
                     if reservations.REFUSE_YOUTRACK in text:
@@ -1181,7 +1181,7 @@ class FlowEngine(PlanEditing):
                 pass
 
     def _reserve(self, repo: str, title: str, request_key: str, prefix: str = "", minimum_number: int = 0) -> dict:
-        got = reservations.reserve(repo, prefix=prefix, count=1, title=title, request_key=request_key,
+        got = reservations.reserve(repo, prefix=prefix, count=1, title=title, request_key=request_key, local_fallback=True,
                                    at_least=minimum_number)
         return {"ticket": got["ids"][0], "title": title}
 
@@ -1424,7 +1424,7 @@ class FlowEngine(PlanEditing):
                 proposal.errors.append('tracker-url planu różni się od serwera projektu karty')
         if proposal.plan is not None and not project.youtrack:
             try:
-                established = reservations.reserve(project.repo, dry_run=True)["prefix"]
+                established = reservations.reserve(project.repo, dry_run=True, local_fallback=True)["prefix"]
                 if proposal.plan.prefix != established:
                     proposal.errors.append(f"prefiks planu {proposal.plan.prefix} różni się od prefiksu repozytorium {established}")
             except reservations.ReservationError as exc:
@@ -1653,6 +1653,14 @@ class FlowEngine(PlanEditing):
             if context_dirs:
                 prompt += ("\nKatalogi wyniku poprzednich kroków tego ticketu (możesz je czytać; tam trafiły m.in. raporty "
                            "poleceń uruchomionych poza piaskownicą):\n" + "\n".join(f"- {d}" for d in context_dirs))
+        # Zrzuty ekranu z karty leżą w `in/images` kroku (a w wznowieniu — kroku, od którego zaczął się ticket):
+        # narzędzie Read poza katalogami sesji jest odrzucane, więc są katalogami do odczytu (04.11, K-49:
+        # agent nie mógł przeczytać zrzutu z komentarzami review).
+        image_dirs = [os.path.join(step_dir, "in", "images")] if shots else []
+        image_dirs += [os.path.join(os.path.dirname(d), "in", "images") for d in context_dirs]
+        image_dirs += [os.path.join(worktree + ".step", "in", "images")]
+        read_dirs = list(read_dirs) + [d for d in dict.fromkeys(image_dirs)
+                                       if d == os.path.join(step_dir, "in", "images") or os.path.isdir(d)]
         prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
