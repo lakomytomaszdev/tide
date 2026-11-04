@@ -18,6 +18,10 @@ os.environ["TIDE_CLAUDE_BIN"] = ""
 # obszaru Docker podają socket atrapy Engine API (fake_docker.py).
 os.environ["DOCKER_HOST"] = "unix:///nonexistent/tide-tests/docker.sock"
 
+# Testy nigdy nie wołają prawdziwego Incusa (pudełko karty, PT-167): adapter box/incus.py bierze program
+# z $TIDE_INCUS_BIN; testy pudełka podają atrapę z fakebin.py (incus w PATH, ta zmienna pusta).
+os.environ["TIDE_INCUS_BIN"] = "/nonexistent/tide-tests/incus"
+
 # Testy nigdy nie pytają prawdziwej Ollamy (127.0.0.1:11434 na tym komputerze — domyślny punkt modeli
 # lokalnych): ustawienia modeli wskazują zamknięty port, usługi w testach dziedziczą tę zmienną.
 # Testy modeli podają własny models.json z adresem atrapy (test_models_core.py, test_models_dbus.py).
