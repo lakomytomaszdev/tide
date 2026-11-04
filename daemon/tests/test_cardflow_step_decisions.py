@@ -1,5 +1,6 @@
 """Decyzje użytkownika po kroku w tle i ponowienia na prawdziwych atrapach procesu."""
 import json
+import subprocess
 import time
 import unittest
 import os
@@ -247,6 +248,19 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(right["ok"], right)
         self.assertEqual(right["step"], asked)
         self.wait_column(card_id, "review")
+
+    def test_agent_commits_with_the_users_git_identity_for_the_repository(self):
+        # 04.11, K-49: commity agenta szły na firmowy GitLab jako „Krok <krok@tide.invalid>”.
+        subprocess.run(["git", "-C", self.repo, "config", "user.name", "Tomek"], check=True)
+        subprocess.run(["git", "-C", self.repo, "config", "user.email", "user@firma.example"], check=True)
+        card_id = self.card(description="Dodaj eksport.")
+        self.assertTrue(self.start(card_id)["ok"])
+        started = self.of(card_id, "step.started")[0]
+        with open(os.path.join(started["stepDir"], "in", "gitconfig"), encoding="utf-8") as fh:
+            config = fh.read()
+        self.assertIn("name = Tomek", config)
+        self.assertIn("email = user@firma.example", config)
+        self.assertNotIn("tide.invalid", config)
 
     def test_question_answer_resumes_same_ticket_worktree_and_session(self):
         notices = []
