@@ -15,8 +15,9 @@ Granice bezpieczeństwa:
 - maskowanie wyłącznie `faults.mask` — każdy tekst i każde zdarzenie przed liczeniem rozmiaru (w JSON — każdy klucz
   i każda wartość osobno; pole, które `faults.mask` uznaje za sekretne na próbce `nazwa=x`, traci całą wartość,
   też liczbową, a plik pozostaje poprawnym JSON-em); granice odczytu odrzucają urwane linie oraz pozostałe linie
-  przeciętych sekretów środowiska rozpoznawanych przez `faults.mask`; tytuły są maskowane, a ścieżka z sekretem
-  dostaje unikalny alias jeszcze przed zapisem (sekret wykrywany także w oryginale przed sanitacją nazwy),
+  przeciętych wartości środowiska i cytowanych przypisań według wzorców `faults.mask`; tytuły są maskowane,
+  a ścieżka z sekretem dostaje unikalny alias jeszcze przed zapisem (sekret wykrywany także w oryginale
+  przed sanitacją nazwy),
 - tylko pliki z katalogu karty w tablicy (`flow/<K-…>/`), worktree kroku opiekuna oraz worktree i katalogów kroków
   problemu z dziennika; korzeń nie może być dowiązaniem (`lstat`, tożsamość `st_dev`/`st_ino` sprawdzana przy
   otwarciu), a każdy składnik ścieżki poniżej korzenia jest otwierany względem poprzedniego z `O_NOFOLLOW` —
@@ -582,38 +583,9 @@ def _link_below(path: str, roots: tuple) -> bool:
 
 
 def _trim_secret_boundary(data: bytes, *, tail: bool, env: dict | None) -> bytes:
-    """Po odrzuceniu urwanej linii odrzuca też pozostałe linie przeciętej wartości środowiska.
-
-    O sekretności rozstrzyga wyłącznie `faults.mask`, bez własnej listy nazw ani wzorców. Nie maskujemy tutaj
-    serializacji JSON: przesuwamy granicę odczytu na pełną linię poza potencjalnym fragmentem sekretu.
-    Powtarzamy sprawdzenie, bo przesunięcie może przeciąć inną, nakładającą się wartość.
-    """
-    environ = os.environ if env is None else env
-    values = [value.encode("utf-8", errors="surrogateescape") for name, value in environ.items()
-              if isinstance(value, str) and "\n" in value and faults.mask(value, {name: value}) == faults.MASK]
-    start, end = 0, len(data)
-    while start < end:
-        overlap = 0
-        for value in values:
-            for match in re.finditer(b"\n", value):
-                fragment = value[match.end():] if tail else value[:match.end()]
-                size = len(fragment)
-                if size <= overlap or size > end - start:
-                    continue
-                matches = data.startswith(fragment, start, end) if tail else data.endswith(fragment, start, end)
-                if matches:
-                    overlap = size
-        if not overlap:
-            break
-        if tail:
-            start += overlap
-            # Sekret może kończyć się w środku linii; jej reszty też nie przekazujemy dalej.
-            if data[start - 1:start] != b"\n":
-                newline = data.find(b"\n", start, end)
-                start = newline + 1 if newline >= 0 else end
-        else:
-            end = data.rfind(b"\n", start, end - overlap) + 1
-    return data[start:end]
+    """Reguły granic sekretów wspólne z `faults.mask`; bezstratna konwersja także dla uciętego UTF-8."""
+    text = data.decode("utf-8", errors="surrogateescape")
+    return faults.trim_secret_boundary(text, env, tail=tail).encode("utf-8", errors="surrogateescape")
 
 
 def _read(path: str, roots: tuple, *, limit: int, tail: bool, env: dict | None = None) -> bytes | None:
@@ -622,7 +594,7 @@ def _read(path: str, roots: tuple, *, limit: int, tail: bool, env: dict | None =
     przeszedłby przez wzorce `faults.mask`: odczyt zaczynający się w środku pliku (końcówka, `tail`) odrzuca pierwszą
     linię, a odczyt kończący się przed końcem pliku (początek pliku albo plik dopisywany w trakcie odczytu) —
     ostatnią, niepełną linię, z dopiskiem `READ_CUT_NOTE`. Pozostałe linie przeciętej wielowierszowej wartości
-    środowiska odrzuca `_trim_secret_boundary`, zanim zgubimy resztę wartości potrzebną do `faults.mask`."""
+    środowiska albo cytowanego przypisania odrzuca `_trim_secret_boundary` (wspólne wzorce `faults.mask`)."""
     fd = _open(path, roots)
     if fd is None:
         return None
@@ -636,6 +608,10 @@ def _read(path: str, roots: tuple, *, limit: int, tail: bool, env: dict | None =
             data = fh.read(limit + 1)      # bajt ponad limit — czy odczyt kończy się przed końcem pliku
         more = len(data) > limit
         data = data[:limit]
+        if tail and start > 0 and more:
+            # Plik urósł od `fstat`: nie znamy żadnej granicy, więc całość może być środkiem cytowanej wartości.
+            # Nie dokładamy odczytów ponad limit ani nie przekazujemy takiego fragmentu do kontekstu.
+            return READ_CUT_NOTE.format(kb=limit // 1000).encode("utf-8")
         if tail and start > 0:
             cut = data.find(b"\n")
             data = data[cut + 1:] if cut >= 0 else b""

@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from itertools import product
 from unittest import mock
 
 from tide_daemon.cardflow import caretaker, caretakerctx, faults
@@ -503,6 +504,87 @@ class MaskingTest(unittest.TestCase):
                     self.assertIn("PASSWORD=•••", written["plan/plan.md"])
                     self.assertIn("dalsza część pliku pominięta", written["plan/plan.md"])
 
+    def test_quoted_secret_without_env_cut_by_log_tail_is_not_written(self):
+        tree = Tree(self)
+        j = tree.journal()
+        for assignment, quote, newline in product(("PASSWORD=", "password: ", '"api_key": '),
+                                                ('"', "'"), ("\n", "\r\n")):
+            with self.subTest(assignment=assignment, quote=quote, newline=repr(newline)):
+                parts = ("first-private-line", "middle-private-line", "last-private-line")
+                secret = assignment + quote + newline.join(parts) + quote + newline
+                self.assertNotIn(parts[1], faults.mask(secret, {}))
+                ending = "\njawna końcówka\n"
+                padding = "x" * (caretakerctx.LOG_TAIL_BYTES + 5 - len(secret.encode())
+                                 - len(ending.encode()))
+                tree.write(os.path.join(tree.step_dir, "out", "step.log"), secret + padding + ending)
+                written = self.written_context(tree, j, caretaker.problems(j.st)[0], {})
+                for path, text in written.items():
+                    for part in parts:
+                        self.assertNotIn(part, text, path)
+                self.assertIn("jawna końcówka", written["steps/K-1-PT-7-2/step-log.md"])
+
+    def test_quoted_secret_without_env_cut_by_file_head_is_not_written(self):
+        tree = Tree(self)
+        j = tree.journal()
+        for assignment, quote, newline in product(("PASSWORD=", "password: ", '"api_key": '),
+                                                ('"', "'"), ("\n", "\r\n")):
+            with self.subTest(assignment=assignment, quote=quote, newline=repr(newline)):
+                parts = ("first-private-line", "middle-private-line", "last-private-line")
+                secret = assignment + quote + newline.join(parts) + quote + newline
+                self.assertNotIn(parts[1], faults.mask(secret, {}))
+                retained = assignment + quote + newline.join(parts[:2]) + newline
+                prefix_length = caretakerctx.FILE_READ_MAX - len(retained.encode()) - 5
+                prefix = 'DATA="' + "p" * (prefix_length - len('DATA=""\n')) + '"\n'
+                tree.write(os.path.join(tree.card_dir, "plan", "plan.md"), prefix + secret)
+                written = self.written_context(tree, j, caretaker.problems(j.st)[0], {})
+                for path, text in written.items():
+                    for part in parts:
+                        self.assertNotIn(part, text, path)
+                self.assertIn("DATA=•••", written["plan/plan.md"])
+                self.assertIn("dalsza część pliku pominięta", written["plan/plan.md"])
+
+    def test_shifted_quoted_tail_boundary_does_not_cut_another_secret(self):
+        tree = Tree(self)
+        j = tree.journal()
+        for quote, other in (('"', "'"), ("'", '"')):
+            with self.subTest(quote=quote):
+                secret = "password=" + quote + "first-private-line\nlast-private-line" + quote + "\n"
+                secret += "password=" + other + "next-private-line\nend-private-line" + other + "\n"
+                ending = '\n' + json.dumps({"type": "error", "message": "jawne zdarzenie JSON"}) + "\n"
+                padding = "x" * (caretakerctx.LOG_TAIL_BYTES + 5 - len(secret.encode()) - len(ending.encode()))
+                tree.write(os.path.join(tree.step_dir, "out", "step.log"), secret + padding + ending)
+                written = self.written_context(tree, j, caretaker.problems(j.st)[0], {})
+                for path, text in written.items():
+                    for part in ("first-private-line", "last-private-line", "next-private-line", "end-private-line"):
+                        self.assertNotIn(part, text, path)
+                self.assertIn("[error] jawne zdarzenie JSON", written["steps/K-1-PT-7-2/step-log.md"])
+
+    def test_growing_log_with_both_boundaries_inside_a_quoted_secret_is_omitted(self):
+        tree = Tree(self)
+        j = tree.journal()
+        path = os.path.join(tree.step_dir, "out", "step.log")
+        head = 'PASSWORD="first-private-line\nmiddle-private-line\n'
+        ending = '\nlast-private-line"\njawna końcówka\n'
+        padding = "x" * (caretakerctx.LOG_TAIL_BYTES + 55 - len(head.encode()) - len(ending.encode()))
+        tree.write(path, head + padding + ending)
+        original_fstat = os.fstat
+        log_info = os.stat(path)
+
+        def before_growth(fd):
+            info = original_fstat(fd)
+            if (info.st_dev, info.st_ino) == (log_info.st_dev, log_info.st_ino):
+                fields = list(info)
+                fields[6] -= 50     # fstat sprzed dopisania końca: po odczycie limitu nadal nie ma cudzysłowu
+                return os.stat_result(fields)
+            return info
+
+        with mock.patch.object(caretakerctx.os, "fstat", side_effect=before_growth):
+            written = self.written_context(tree, j, caretaker.problems(j.st)[0], {})
+        for name, text in written.items():
+            for part in ("first-private-line", "middle-private-line", "last-private-line"):
+                self.assertNotIn(part, text, name)
+        self.assertIn("dalsza część pliku pominięta", written["steps/K-1-PT-7-2/step-log.md"])
+
     def test_token_cut_by_the_file_head_boundary_does_not_leak(self):
         # Granica `FILE_READ_MAX` wypada wewnątrz drugiego tokenu; pierwsze przypisanie kurczy się po maskowaniu,
         # więc całość mieści się w limicie i `_fit` niczego by już nie przyciął.
@@ -531,7 +613,8 @@ class MaskingTest(unittest.TestCase):
         secret = "first-private-line\nshared-private-line\nlast-private-line"
         env = {**ENV, "TIDE_PRIVATE_KEY": secret,
                "TIDE_OTHER_KEY": "last-private-line\nextra-private-line",
-               "TIDE_FIRST_KEY": "extra-private-line\nfirst-private-line"}
+               "TIDE_FIRST_KEY": "extra-private-line\nfirst-private-line",
+               "TIDE_ENDED_KEY": "separate-private-line\n"}
         ctx = caretakerctx.Ctx(problem={}, st=None, card="K-1", card_dir=tree.card_dir, worktree=tree.worktree,
                                roots=(caretakerctx._root(tree.card_dir),))
         # Bez jawnego `env` odczyt i maskowanie korzystają ze środowiska procesu.
@@ -553,6 +636,12 @@ class MaskingTest(unittest.TestCase):
                             for part in value.splitlines():
                                 self.assertNotIn(part, content)
                     self.assertIn("jawna końcówka" if tail else "jawny początek", content)
+            # Pusty fragment za końcowym LF wartości środowiska nie jest sekretami na granicy odczytu.
+            text = "poza-limitem\njawny początek\njawna końcówka\n"
+            tree.write(path, text)
+            content = ctx.read_tail(path, limit=len(text.encode()) - 5)
+            self.assertIn("jawny początek", content)
+            self.assertIn("jawna końcówka", content)
 
     def test_limited_head_read_drops_the_unfinished_last_line(self):
         tree = Tree(self)

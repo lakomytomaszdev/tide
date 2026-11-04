@@ -1893,8 +1893,15 @@ maskowaniem. Tak samo odczyt kończący się przed końcem pliku (początek plik
 dopisywany w trakcie odczytu) odrzuca ostatnią, niepełną linię i dopisuje „dalsza część pliku pominięta” — urwana
 reszta tokenu nie trafia do `faults.mask` (review PT-153, runda 2). Po odrzuceniu urwanej linii obie granice
 odrzucają też pozostałe linie przeciętej wielowierszowej wartości środowiska, której sekretność rozstrzyga
-`faults.mask`. Sprawdzenie odbywa się na oryginalnych bajtach, przed dekodowaniem i formatowaniem; przesunięta
-granica jest sprawdzana ponownie na wypadek nakładających się wartości (review PT-153, runda 10).
+`faults.mask`. Sprawdzenie zachowuje oryginalne białe znaki i bajty (bezstratne `surrogateescape`), przed
+formatowaniem; przesunięta granica jest sprawdzana ponownie na wypadek nakładających się wartości (review
+PT-153, runda 10). `faults.trim_secret_boundary` korzysta z tych samych wzorców co `faults.mask`, aby odrzucać
+także fragmenty cytowanych przypisań bez wartości w środowisku: na początku końcówki pierwszy cudzysłów każdego
+rodzaju może zamykać utraconą wartość, a przy urwanym końcu tymczasowe domknięcie ujawnia początek przypisania.
+Odrzucany fragment rozszerza się na całe linie i kompletne sekrety przecięte nową granicą; może obejmować też
+jawny tekst, którego nie da się odróżnić od kontynuacji sekretu. Bez dodatkowych odczytów ponad limit. Jeśli
+dopisywany dziennik ma obie granice ucięte (brakuje początku i nie osiągnięto EOF), cały odczyt zastępuje dopisek
+o pominięciu — brak obu cudzysłowów nie rozstrzyga wtedy, czy fragment jest środkiem sekretu (runda 11).
 Odczyt tylko z korzeni: katalog karty w tablicy (`flow/<K-…>`), worktree kroku opiekuna oraz worktree
 i katalogi kroków problemu z dziennika. Korzeń, który sam jest dowiązaniem (np. cały `<worktree>.step` podmieniony na
 dowiązanie do `$HOME`), odpada (`lstat`); przy odczycie korzeń jest otwierany z `O_NOFOLLOW` i porównywany

@@ -269,6 +269,70 @@ def mask(text: str, env: dict | None = None) -> str:
     return text
 
 
+def trim_secret_boundary(text: str, env: dict | None = None, *, tail: bool) -> str:
+    """Przesuwa uciętą granicę na pełną linię poza możliwym sekretem, bez maskowania serializacji JSON.
+
+    Korzysta z tych samych wzorców co `mask`. Przy początku końcówki nie znamy nazwy przypisania: pierwszy
+    cudzysłów każdego rodzaju może zamykać wartość rozpoczętą przed odczytem. Bez takiego cudzysłowu do EOF
+    nie ma zamkniętej wartości tego rodzaju, którą `mask` rozpoznałby w pełnym pliku. Przy urwanym końcu
+    dopięcie cudzysłowu pozwala tym samym wzorcom odnaleźć niedomkniętą wartość.
+
+    Przesunięcie nie może przeciąć kolejnego, kompletnego sekretu (także wartości środowiska). Dlatego
+    zachowujemy zakresy z oryginalnego tekstu i rozszerzamy odrzucany fragment do ustalenia granicy.
+    """
+    environ = os.environ if env is None else env
+    values = [value for name, value in environ.items()
+              if isinstance(value, str) and "\n" in value and mask(value, {name: value}) == MASK]
+    patterns = (*TOKEN_PATTERNS, ENV_ASSIGN, SECRET_KEY_VALUE)
+    spans = [(match.start(), match.end()) for pattern in patterns for match in pattern.finditer(text)]
+    for value in values:
+        offset = text.find(value)
+        while offset >= 0:
+            spans.append((offset, offset + len(value)))
+            offset = text.find(value, offset + 1)
+
+    def after_line(offset):
+        if text[offset - 1:offset] == "\n":
+            return offset
+        newline = text.find("\n", offset)
+        return newline + 1 if newline >= 0 else len(text)
+
+    start, end = 0, len(text)
+    if tail:
+        # Oba rodzaje cudzysłowów obsługiwane przez wzorce `mask`; utrata nazwy wyklucza ocenę jej sekretności.
+        start = max(text.find(quote) + 1 for quote in ('"', "'"))
+        if start:
+            start = after_line(start)
+    else:
+        for quote in ('"', "'"):
+            for pattern in (ENV_ASSIGN, SECRET_KEY_VALUE):
+                for match in pattern.finditer(text + quote):
+                    if match.end() > len(text):
+                        end = min(end, text.rfind("\n", 0, match.start()) + 1)
+
+    while start < end:
+        before = start, end
+        for left, right in spans:
+            if tail and left < start < right:
+                start = after_line(right)
+            elif not tail and left < end < right:
+                end = text.rfind("\n", 0, left) + 1
+        # Fragment wartości env może nie zawierać cudzysłowów ani nazwy. Sprawdzamy każdą nową granicę,
+        # również gdy przesunięcie przecięło inną, nakładającą się wartość.
+        for value in values:
+            for match in re.finditer("\n", value):
+                fragment = value[match.end():] if tail else value[:match.end()]
+                if not fragment:
+                    continue
+                if tail and text.startswith(fragment, start, end):
+                    start = after_line(start + len(fragment))
+                elif not tail and text.endswith(fragment, start, end):
+                    end = text.rfind("\n", start, end - len(fragment)) + 1
+        if before == (start, end):
+            break
+    return text[start:end]
+
+
 def _secret_field(key: str, env: dict | None) -> bool:
     """Czy pole jest sekretne — rozstrzyga `mask` na próbce `nazwa=x`, bez drugiej listy nazw."""
     probe = f"{key}=x"
