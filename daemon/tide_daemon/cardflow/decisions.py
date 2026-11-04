@@ -40,6 +40,8 @@ Kolejność: najpierw decyzje karty (plan, YouTrack, kroki bez ticketu), potem t
 """
 from __future__ import annotations
 
+import re
+
 from . import faults
 from . import findings as review_findings
 from .labels import kind_label
@@ -153,15 +155,20 @@ def _step_decision(st: FlowState, name: str) -> dict | None:
 
 
 def _question(st, name, step, done) -> dict:
-    question = _text(done.get("question"))
+    question = layout(done.get("question"))
     happened = f"{_who(step, True)} pyta: „{question}”" if question else ""
+    raw_options = clean_options(done.get("options"))
     options = [_option(f"answer-{index + 1}", raw["title"], raw["effect"], RESOLVE_STEP,
                        {"choice": "answer", "step": name, "answer": raw["title"]}, recommended=raw["recommended"])
-               for index, raw in enumerate(clean_options(done.get("options")))]
+               for index, raw in enumerate(raw_options)]
     reply = {"method": RESOLVE_STEP, "params": {"choice": "answer", "step": name}, "field": "answer"}
-    return _decision(st, name, step, "question", happened,
-                     "Krok czeka na odpowiedź; bez niej nie pójdzie dalej." if question else "",
-                     _recommended_first(options), reply, "", _step_technical(step, done))
+    decision = _decision(st, name, step, "question", happened,
+                         "Krok czeka na odpowiedź; bez niej nie pójdzie dalej." if question else "",
+                         _recommended_first(options), reply, "", _step_technical(step, done))
+    if question:
+        decision["happened"] = happened          # z podziałem na linie (layout), nie spłaszczone przez _sentences
+    decision["copyCommands"] = copy_commands(done.get("question"), *(o["effect"] for o in raw_options))
+    return decision
 
 
 MAX_STEP_OPTIONS = 4
@@ -663,3 +670,40 @@ def _count(n: int, one: str, few: str, many: str) -> str:
 
 def _text(value) -> str:
     return " ".join(str(value or "").split())
+
+
+# Wyliczenia wpisane w tekst pytania: „(a) …”, „a) …”, „**(b)** …”, „1) …” — przy co najmniej dwóch zaczynają linie.
+ENUMERATION = re.compile(r"(?:(?<=\s)|^)(\*\*)?(\(?[a-hA-H1-9]\))(\*\*)?(?=\s)")
+# Polecenie do skopiowania: tekst w `…`, który wygląda na polecenie powłoki (program i co najmniej jeden argument).
+SHELL_COMMAND = re.compile(r"`([^`\n]{4,400})`")
+SHELL_PROGRAMS = ("bash", "sh", "make", "cd", "sudo", "git", "npm", "npx", "python3", "python", "pip", "dotnet",
+                  "docker", "incus", "systemctl", "busctl", "apt", "apt-get", "ollama", "kpackagetool6", "journalctl",
+                  "LC_ALL=")
+
+
+def layout(value) -> str:
+    """Tekst pytania do okna decyzji: białe znaki ujednolicone, ale wyliczenia „(a) … (b) …” w osobnych liniach
+    (04.11: pytania z opcjami a, b, c w jednym akapicie były nieczytelną ścianą tekstu)."""
+    text = _text(value).replace("**", "")      # okno pokazuje zwykły tekst — gwiazdki Markdowna tylko przeszkadzają
+    marks = list(ENUMERATION.finditer(text))
+    if len(marks) < 2:
+        return text
+    out, last = [], 0
+    for mark in marks:
+        out.append(text[last:mark.start()].rstrip())
+        last = mark.start()
+    out.append(text[last:])
+    return "\n".join(part for part in out if part)
+
+
+def copy_commands(*texts) -> list[str]:
+    """Polecenia powłoki z `…` w treści pytania i możliwości — okno pokazuje je w polu z przyciskiem „Kopiuj”."""
+    found = []
+    for text in texts:
+        for match in SHELL_COMMAND.finditer(str(text or "")):
+            command = match.group(1).strip()
+            first = command.split()[0] if command.split() else ""
+            if (" " in command and (first in SHELL_PROGRAMS or first.startswith("LC_ALL=") or first.startswith("./"))
+                    and command not in found):
+                found.append(command)
+    return found[:4]
