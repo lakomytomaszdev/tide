@@ -1633,7 +1633,9 @@ class FlowEngine(PlanEditing):
         if order:
             # Projekty zlecenia (K-33 #4): lista z repozytoriami jest w poleceniu planowania; tu tylko odczyt.
             read_dirs = [p["repo"] for p in order if not p.get("main")]
-        elif kind in ("planning", "plan-fix"):
+        else:
+            # Dodatkowe projekty karty są do odczytu w każdym kroku, nie tylko w planowaniu (04.11, K-43/BO-9: ticket
+            # w BO potrzebował zestawu klatek z repo streamer i musiał prosić o `git archive` poza piaskownicą).
             board = self.store.load()
             extras = [board.projects[slug] for slug in card.projects if slug in board.projects]
             read_dirs = [p.repo for p in extras if p.repo and not p.repo_missing]

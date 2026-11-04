@@ -178,3 +178,22 @@ class LightPlanningDBusTest(FlowCase):
         self.assertIn("mocny: projektowa", prompt)
         self.assertIn("Preferowany dostawca: openai", prompt)
         self.assertFalse(os.path.isfile(self.calls))
+
+
+class ExtraProjectInTicketTest(LightPlanningTest):
+    def test_ticket_step_reads_the_cards_extra_project(self):
+        # 04.11, K-43/BO-9: ticket w BO potrzebował plików z repo streamer (dodatkowy projekt karty) i prosił o
+        # `git archive` poza piaskownicą, bo odczyt dodatkowych projektów był tylko w planowaniu.
+        from .test_cardflow_dbus import git
+        extra = os.path.join(self.base, "ws", "extra2")
+        os.makedirs(extra)
+        git(extra, "init", "-q")
+        self.store.upsert_project({"slug": "extra2", "name": "Dodatkowy 2", "repo": extra})
+        card = self.card(description="Dodaj eksport.")
+        self.store.update_card(card, {"projects": ["extra2"]})
+        self.assertTrue(self.start(card)["ok"])
+        step = next(s for s in self.of(card, "step.started") if s["kind"] == "ticket")
+        with open(os.path.join(step["stepDir"], "in", "settings.json"), encoding="utf-8") as fh:
+            filesystem = json.load(fh)["sandbox"]["filesystem"]
+        self.assertIn(extra, filesystem["allowRead"])
+        self.assertNotIn(extra, filesystem["allowWrite"])
