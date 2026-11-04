@@ -223,7 +223,7 @@ def _network(st, name, step, done) -> dict:
     return made
 
 
-OTHER_PERMISSION = ("Zrób zamiast tego…","Napisz, co krok ma zrobić zamiast tego polecenia.")
+OTHER_PERMISSION = ("Zrób zamiast tego…", "Napisz, co krok ma zrobić zamiast tego polecenia.")
 
 
 def _permission(st, name, step, done) -> dict:

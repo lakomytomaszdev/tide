@@ -2028,7 +2028,7 @@ dziennika sam. Brak pola = nic nie blokuje.
 
 | Wartość | Znacznik w panelu | Kto ustawia | Kto czyści |
 |---|---|---|---|
-| `environment` | „czeka na środowisko” | PT-172: „Tylko plan” | PT-172: zatwierdzenie środowiska |
+| `environment` | „czeka na środowisko” | PT-172: „Tylko plan” oraz każde zatwierdzenie planu (`engine.approve_plan`, także `ApproveCardPlan` z okna decyzji i widoku planu) — plan nie omija pakietu zgód | PT-172: `ApproveCardEnvironment` bez `onlyPlan` |
 | `start` | „czeka na pudełko” | #18 (silnik): pudełko zatrzymane, trwa start | #18 |
 | `rebuild` | „do przebudowy” | #18: hash przepisu niezgodny, przebudowa czeka na zatwierdzenie z planem | #18 |
 
