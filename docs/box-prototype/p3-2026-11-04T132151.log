@@ -1,0 +1,96 @@
+# próba p3 — 2026-11-04T13:21:51+01:00 — 7.0.0-38-generic — user@tomek-pc
+# dziennik: docs/box-prototype/p3-2026-11-04T132151.log
+
+== proxy wstrzykujące na http://10.173.184.1:18080 (lista CONNECT pusta)
+   proxy: 2026-11-04T13:21:51+01:00 proxy prototypowe słucha na 10.173.184.1:18080; lista: /home/user/DevWorkspace/plasma-tide-worktrees/pt-178-prototyp-proxy-agentow-pudelku/docs/box-prototype/p3-2026-11-04T132151/domains.txt; wstrzykiwanie: anthropic, chatgpt
+
+== pudełko tide-proto-net
+   pudełko tide-proto-net już jest — używam
+running
+   pudełko tide-proto-net: adres 172.17.0.1, proxy http://10.173.184.1:18080
+$ in_box_user sh -c rm -f ~/.claude/.credentials.json ~/.codex/auth.json; ls -la ~/.claude ~/.codex 2>&1 | head -20
+ls: cannot access '/home/ubuntu/.codex': No such file or directory
+/home/ubuntu/.claude:
+total 4
+drwxr-xr-x 1 ubuntu ubuntu  84 Nov  4 12:19 .
+drwxr-x--- 1 ubuntu ubuntu 204 Nov  4 12:20 ..
+drwxr-xr-x 1 ubuntu ubuntu  66 Nov  4 12:19 backups
+drwxr-xr-x 1 ubuntu ubuntu   0 Nov  4 12:20 downloads
+-rw-r--r-- 1 ubuntu ubuntu  23 Nov  4 11:34 p2-marker
+drwx------ 1 ubuntu ubuntu   0 Nov  4 12:20 sessions
+drwxr-xr-x 1 ubuntu ubuntu 190 Nov  4 12:20 telemetry
+-> kod 0
+$ in_box_user claude --version
+2.1.317 (Claude Code)
+-> kod 0
+
+== Claude Code: claude -p 'hi' ×3 przez http://10.173.184.1:18080/anthropic
+$ timeout 180 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu --env HOME=/home/ubuntu --env PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env ANTHROPIC_BASE_URL=http://10.173.184.1:18080/anthropic --env CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-tide-box-dummy -- claude -p hi
+Hi! What can I help you with today?
+-> kod 0
+-- powtórzenie 1: kod 0, czas 4,26 s
+$ timeout 180 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu --env HOME=/home/ubuntu --env PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env ANTHROPIC_BASE_URL=http://10.173.184.1:18080/anthropic --env CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-tide-box-dummy -- claude -p hi
+Hi! What would you like to work on?
+-> kod 0
+-- powtórzenie 2: kod 0, czas 5,73 s
+$ timeout 180 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu --env HOME=/home/ubuntu --env PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env ANTHROPIC_BASE_URL=http://10.173.184.1:18080/anthropic --env CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-tide-box-dummy -- claude -p hi
+Hi! What can I help you with today?
+-> kod 0
+-- powtórzenie 3: kod 0, czas 3,52 s
+-- żądania przez proxy:
+     18 CONNECT	api.anthropic.com:443	403
+      3 INJECT POST	/anthropic/v1/messages	200
+-- odmowy CONNECT:
+     18 api.anthropic.com	443
+WYNIK P-3 claude: 3/3 udanych; kody /anthropic:  3 200;; polecenie: ANTHROPIC_BASE_URL=http://10.173.184.1:18080/anthropic CLAUDE_CODE_OAUTH_TOKEN=<atrapa> claude -p 'hi'
+WYNIK P-3 claude czas-pudełko: 4,26 s (4,26 5,73 3,52)
+
+== host: claude -p 'hi' ×3 (pomiar porównawczy)
+$ timeout 180 claude -p hi
+Cześć! W czym mogę pomóc? Jestem w katalogu `/tmp/tmp.2tvJGz7HWT`. To czyste repozytorium git bez commitów, więc możemy zacząć coś od zera albo zająć się czymś innym.
+-> kod 0
+-- powtórzenie 1: kod 0, czas 6,93 s
+$ timeout 180 claude -p hi
+Cześć! W czym mogę pomóc?
+-> kod 0
+-- powtórzenie 2: kod 0, czas 4,42 s
+$ timeout 180 claude -p hi
+Cześć! W czym mogę pomóc?
+-> kod 0
+-- powtórzenie 3: kod 0, czas 5,65 s
+WYNIK P-3 claude czas-host: 5,65 s (6,93 4,42 5,65)
+
+== Codex: atrapa ~/.codex/auth.json w pudełku
+$ in_box_user codex --version
+WARNING: proceeding, even though we could not create PATH aliases: Permission denied (os error 13)
+codex-cli 0.166.0
+-> kod 0
+
+== Codex wariant chatgpt_base_url
+$ timeout 180 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu --env HOME=/home/ubuntu --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 -- codex exec --skip-git-repo-check -c chatgpt_base_url="http://10.173.184.1:18080/chatgpt/backend-api/" Reply with the single word: hi
+WARNING: proceeding, even though we could not create PATH aliases: Permission denied (os error 13)
+Reading additional input from stdin...
+Error: failed to initialize in-process app-server client: Permission denied (os error 13)
+-> kod 1
+-- żądania przez proxy:
+      1 CONNECT	ab.chatgpt.com:443	403
+-- odmowy CONNECT:
+      1 ab.chatgpt.com	443
+WYNIK P-3 codex chatgpt_base_url: kod 1; /chatgpt: brak żądań
+
+== Codex wariant chatgpt_base_url+OPENAI_BASE_URL
+$ timeout 180 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu --env HOME=/home/ubuntu --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env OPENAI_BASE_URL=http://10.173.184.1:18080/chatgpt/backend-api/codex -- codex exec --skip-git-repo-check -c chatgpt_base_url="http://10.173.184.1:18080/chatgpt/backend-api/" Reply with the single word: hi
+WARNING: proceeding, even though we could not create PATH aliases: Permission denied (os error 13)
+Reading additional input from stdin...
+Error: failed to initialize in-process app-server client: Permission denied (os error 13)
+-> kod 1
+-- żądania przez proxy:
+      1 CONNECT	ab.chatgpt.com:443	403
+-- odmowy CONNECT:
+      1 ab.chatgpt.com	443
+WYNIK P-3 codex chatgpt_base_url+OPENAI_BASE_URL: kod 1; /chatgpt: brak żądań
+WYNIK P-3 codex: żaden wariant nie przeszedł
+
+== odświeżanie OAuth
+brak żądań odświeżenia (ani przez base URL, ani przez CONNECT)
+WYNIK P-3 odświeżanie: 0 żądań do punktów OAuth

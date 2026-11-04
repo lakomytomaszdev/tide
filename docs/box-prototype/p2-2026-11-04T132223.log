@@ -1,0 +1,80 @@
+# próba p2 — 2026-11-04T13:22:23+01:00 — 7.0.0-38-generic — user@tomek-pc
+# dziennik: docs/box-prototype/p2-2026-11-04T132223.log
+
+== proxy (wstrzykujące, lista CONNECT pusta) na http://10.173.184.1:18080
+   proxy: 2026-11-04T13:22:23+01:00 proxy prototypowe słucha na 10.173.184.1:18080; lista: /home/user/DevWorkspace/plasma-tide-worktrees/pt-178-prototyp-proxy-agentow-pudelku/docs/box-prototype/p2-2026-11-04T132223/domains.txt; wstrzykiwanie: anthropic, chatgpt
+
+== pudełko tide-proto-net
+   pudełko tide-proto-net już jest — używam
+running
+   pudełko tide-proto-net: adres 172.17.0.1, proxy http://10.173.184.1:18080
+
+== host i pudełko: przestrzenie nazw i AppArmor
+host kernel.apparmor_restrict_unprivileged_userns = 1
+host kernel.unprivileged_userns_clone = 1
+host user.max_user_namespaces = 292993
+$ incus config get tide-proto-net security.nesting
+true
+-> kod 0
+$ in_box_user sh -c echo "etykieta AppArmor: $(cat /proc/self/attr/current)"; cat /proc/sys/user/max_user_namespaces
+etykieta AppArmor: unconfined
+2147483647
+-> kod 0
+host: profil AppArmor procesu init pudełka (pid 3979359): incus-user-1000_tide-proto-net_</var/lib/incus>//&:incus-user-1000_tide-proto-net_<var-lib-incus>:unconfined (enforce)
+$ journalctl -k --since -15min --no-pager -g apparmor="DENIED".*userns
+-- No entries --
+-> kod 1
+$ in_box_user sh -c command -v bwrap socat; bwrap --version
+/usr/bin/bwrap
+bubblewrap 0.9.0
+-> kod 0
+
+== goły bwrap i unshare jako ubuntu
+$ in_box_user bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all --die-with-parent -- sh -c echo bwrap-ok
+bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+-> kod 1
+WYNIK P-2 bwrap-goły: kod 1
+$ in_box_user unshare --user --map-root-user --net -- sh -c echo unshare-ok
+unshare: write failed /proc/self/uid_map: Operation not permitted
+-> kod 1
+WYNIK P-2 unshare-userns: kod 1
+$ journalctl -k --since -2min --no-pager -g apparmor="DENIED"
+lis 04 13:22:24 tomek-pc kernel: audit: type=1400 audit(1793794944.003:21545): apparmor="DENIED" operation="capable" class="cap" namespace="root//incus-user-1000_tide-proto-net_<var-lib-incus>" profile="unprivileged_userns" pid=96804 comm="bwrap" capability=8  capname="setpcap"
+lis 04 13:22:24 tomek-pc kernel: audit: type=1400 audit(1793794944.003:21546): apparmor="DENIED" operation="capable" class="cap" namespace="root//incus-user-1000_tide-proto-net_<var-lib-incus>" profile="unprivileged_userns" pid=96804 comm="bwrap" capability=12  capname="net_admin"
+lis 04 13:22:24 tomek-pc kernel: audit: type=1400 audit(1793794944.063:21548): apparmor="DENIED" operation="capable" class="cap" namespace="root//incus-user-1000_tide-proto-net_<var-lib-incus>" profile="unprivileged_userns" pid=96822 comm="unshare" capability=21  capname="sys_admin"
+-> kod 0
+
+== codex sandbox linux --full-auto (bez modelu)
+$ in_box_user sh -c cd ~/p2-work && codex sandbox linux --full-auto -- sh -c \
+        "echo ok > ./codex-inside; echo zle > ~/p2-outside-codex; cat ~/.claude/p2-marker"
+WARNING: proceeding, even though we could not create PATH aliases: Permission denied (os error 13)
+bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+-> kod 1
+WYNIK P-2 codex-sandbox: kod 1; zapis w katalogu roboczym: nie; zapis poza nim: nie
+WYNIK P-2 landlock: NIE działa (zob. błąd wyżej)
+
+== claude -p z sandbox.enabled=true (model przez http://10.173.184.1:18080/anthropic)
+$ timeout 300 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu/p2-work --env HOME=/home/ubuntu --env PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env ANTHROPIC_BASE_URL=http://10.173.184.1:18080/anthropic --env CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-tide-box-dummy -- claude -p --setting-sources= --settings /home/ubuntu/p2-work/settings.json --allowedTools Bash --output-format text Run each of these three shell commands with the Bash tool, one per call, and report their exit codes:
+1) cat ~/.claude/p2-marker > ./claude-read.txt 2>&1
+2) echo ok > ./claude-inside
+3) echo bad > ~/p2-outside-claude
+
+Error: sandbox required but unavailable: sandbox is enabled but cannot start here: Ubuntu's AppArmor restriction on user namespaces stops bubblewrap here ("loopback: Failed RTM_NEWADDR: Operation not permitted"). Add bubblewrap's AppArmor profile from https://code.claude.com/docs/en/sandboxing, or run `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (holds until reboot), then restart Claude Code
+  sandbox.failIfUnavailable is set — refusing to start without a working sandbox.
+
+-> kod 1
+$ in_box_user sh -c cat ~/p2-work/claude-read.txt 2>/dev/null
+-> kod 1
+WYNIK P-2 claude-sandbox: kod 1; znacznik z ~/.claude przeczytany: 0; zapis w katalogu roboczym: nie; poza nim: nie
+WYNIK P-2 bwrap: NIE działa albo niepełne (zob. wyjście wyżej)
+
+== codex exec --sandbox workspace-write (model przez http://10.173.184.1:18080/chatgpt)
+$ timeout 300 incus exec tide-proto-net --user 1000 --group 1000 --cwd /home/ubuntu/p2-work --env HOME=/home/ubuntu --env HTTP_PROXY=http://10.173.184.1:18080 --env HTTPS_PROXY=http://10.173.184.1:18080 --env http_proxy=http://10.173.184.1:18080 --env https_proxy=http://10.173.184.1:18080 --env NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env no_proxy=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1 --env OPENAI_BASE_URL=http://10.173.184.1:18080/chatgpt/backend-api/codex -- codex exec --skip-git-repo-check --sandbox workspace-write -c chatgpt_base_url="http://10.173.184.1:18080/chatgpt/backend-api/" Run these two shell commands and report their exit codes: `echo ok > ./codex-model-inside` and `echo bad > ~/p2-outside-codex-model`
+WARNING: proceeding, even though we could not create PATH aliases: Permission denied (os error 13)
+Reading additional input from stdin...
+Error: failed to initialize in-process app-server client: Permission denied (os error 13)
+-> kod 1
+WYNIK P-2 codex-exec: kod 1; zapis w katalogu roboczym: nie; poza nim: nie
+-- żądania przez proxy:
+      1 CONNECT	ab.chatgpt.com:443	403
+      4 CONNECT	api.anthropic.com:443	403

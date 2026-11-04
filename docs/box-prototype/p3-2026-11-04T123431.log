@@ -1,0 +1,18 @@
+# próba p3 — 2026-11-04T12:34:31+01:00 — 7.0.0-38-generic — user@tomek-pc
+# dziennik: docs/box-prototype/p3-2026-11-04T123431.log
+
+== proxy wstrzykujące na http://10.173.184.1:18080 (lista CONNECT pusta)
+   proxy: 2026-11-04T12:34:31+01:00 proxy prototypowe słucha na 10.173.184.1:18080; lista: /home/user/DevWorkspace/plasma-tide-worktrees/pt-178-prototyp-proxy-agentow-pudelku/docs/box-prototype/p3-2026-11-04T123431/domains.txt; wstrzykiwanie: anthropic, chatgpt
+
+== pudełko tide-proto-net
+   pudełko tide-proto-net już jest — używam
+running
+   pudełko tide-proto-net: adres 10.173.184.91, proxy http://10.173.184.1:18080
+$ in_box_user sh -c rm -f ~/.claude/.credentials.json ~/.codex/auth.json; ls -la ~/.claude ~/.codex 2>&1 | head -20
+ls: cannot access '/home/ubuntu/.claude': No such file or directory
+ls: cannot access '/home/ubuntu/.codex': No such file or directory
+-> kod 0
+$ in_box_user claude --version
+Error: Command not found
+-> kod 127
+Brak claude w pudełku — najpierw p6.sh
